@@ -1,1 +1,1 @@
-print("Elysia AI environment is ready")
+print("Hello, Elysia")
