@@ -20,9 +20,10 @@ env/
 logs/
 *.log
 
-# Python cache
+# Python Cache
 .pytest_cache/
 .mypy_cache/
+.ruff_cache/
 .cache/
 
 # Environment Variables
@@ -34,18 +35,31 @@ logs/
 # Build
 dist/
 build/
+*.egg-info/
 
-# OS
+# Coverage
+.coverage
+htmlcov/
+
+# Operating System
 Thumbs.db
 Desktop.ini
 .DS_Store
 
-# AI Models
-models/
+# AI Model Weights
+models/blobs/
+models/manifests/
+models/weights/
+models/cache/
+*.gguf
+*.safetensors
+*.bin
 
 # Temporary
 tmp/
 temp/
+*.tmp
+*.bak
 
 # SQLite
 *.db
