@@ -63,3 +63,7 @@ temp/
 
 # SQLite
 *.db
+
+# Runtime conversation data
+workspace/conversations/
+memory/test_memory.txt
