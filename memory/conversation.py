@@ -1,6 +1,6 @@
 from datetime import datetime
 from pathlib import Path
-
+from memory.json_store import load_json_or_default, write_json
 from memory.file_manager import append_text
 
 
@@ -19,3 +19,30 @@ def save_message(
     record = f"[{timestamp}] {speaker}: {message}"
 
     append_text(file_path, record)
+
+def save_json_message(
+    file_path: Path,
+    speaker: str,
+    message: str,
+) -> None:
+    if not speaker.strip():
+        raise ValueError("Speaker cannot be empty")
+
+    if not message.strip():
+        raise ValueError("Message cannot be empty")
+
+    conversation_data = load_json_or_default(
+        file_path,
+        {"messages": []},
+    )
+
+    record = {
+        "timestamp": datetime.now().strftime(
+            "%Y-%m-%d %H:%M:%S"
+        ),
+        "speaker": speaker,
+        "message": message,
+    }
+
+    conversation_data["messages"].append(record)
+    write_json(file_path, conversation_data)
