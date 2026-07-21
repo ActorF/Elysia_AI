@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from memory.conversation import save_json_message
-from memory.json_store import load_json_or_default, write_json
+from .conversation import save_json_message
+from .json_store import load_json_or_default, write_json
 
 
 class Memory:

@@ -1,7 +1,6 @@
 import logging
 
-from memory.manager import Memory
-
+from memory import Memory
 
 logger = logging.getLogger(__name__)
 

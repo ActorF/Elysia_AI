@@ -2,10 +2,9 @@ import json
 import logging
 
 from config import settings
-from core.brain import Brain
-from core.exceptions import ConfigurationError
-from memory.manager import Memory
-
+from core import Brain, ConfigurationError
+from memory import Memory
+from ui import run_console_session
 
 LOG_DIR = settings.BASE_DIR / "logs"
 LOG_FILE = LOG_DIR / "app.log"
@@ -36,67 +35,24 @@ def validate_settings() -> None:
             "http:// or https://."
         )
 
+def create_brain() -> Brain:
+    """Create and connect Elysia's main objects."""
+    elysia_memory = Memory(settings.BASE_DIR)
+
+    return Brain(
+        settings.MODEL_NAME,
+        elysia_memory,
+    )
 
 def main() -> None:
     validate_settings()
 
     print(f"Using model: {settings.MODEL_NAME}")
 
-    # Create Elysia's objects.
-    elysia_memory = Memory(settings.BASE_DIR)
+    # Create Elysia's connected objects.
+    elysia_brain = create_brain()
 
-    elysia_brain = Brain(
-        settings.MODEL_NAME,
-        elysia_memory,
-    )
-
-    # Start the session and update launch_count.
-    loaded_profile = elysia_brain.start_session()
-
-    # Save sample conversation messages.
-    elysia_brain.remember_message(
-        "User",
-        "Hello, Elysia!",
-    )
-
-    elysia_brain.remember_message(
-        "Elysia",
-        "Hi! It is nice to see you.",
-    )
-
-    # Read and display recent messages.
-    recent_messages = (
-        elysia_brain.recall_recent_messages(10)
-    )
-
-    print("\nRecent conversation:")
-
-    for message_data in recent_messages:
-        timestamp = message_data["timestamp"]
-        speaker = message_data["speaker"]
-        message = message_data["message"]
-
-        print(
-            f"[{timestamp}] "
-            f"{speaker}: {message}"
-        )
-
-    # Display the user profile.
-    print("\nProfile:")
-    print(f"User: {loaded_profile['user_name']}")
-    print(
-        f"Assistant: "
-        f"{loaded_profile['assistant_name']}"
-    )
-    print(
-        f"Languages: "
-        f"{loaded_profile['languages']}"
-    )
-    print(f"Project: {loaded_profile['project']}")
-    print(
-        f"Launch count: "
-        f"{loaded_profile['launch_count']}"
-    )
+    run_console_session(elysia_brain)
 
 
 if __name__ == "__main__":

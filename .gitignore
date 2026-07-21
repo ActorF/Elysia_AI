@@ -68,3 +68,7 @@ temp/
 # Runtime user data
 workspace/
 memory/test_memory.txt
+
+# Personal project reference files
+/docs/ROADMAP.md
+/docs/tree.txt
