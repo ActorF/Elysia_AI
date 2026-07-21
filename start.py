@@ -2,13 +2,9 @@ import json
 import logging
 
 from config import settings
-from core import brain
+from core.brain import Brain
 from core.exceptions import ConfigurationError
-from memory.conversation import save_json_message
-from memory.json_store import (
-    load_json_or_default,
-    write_json,
-)
+from memory.manager import Memory
 
 
 LOG_DIR = settings.BASE_DIR / "logs"
@@ -26,133 +22,138 @@ logging.basicConfig(
 
 def validate_settings() -> None:
     if not settings.MODEL_NAME.strip():
-        raise ConfigurationError("MODEL_NAME cannot be empty")
-
-    if not settings.OLLAMA_HOST.startswith(("http://", "https://")):
         raise ConfigurationError(
-            "OLLAMA_HOST must begin with http:// or https://"
+            "MODEL_NAME cannot be empty."
+        )
+
+    ollama_host = settings.OLLAMA_HOST.strip()
+
+    if not ollama_host.startswith(
+        ("http://", "https://")
+    ):
+        raise ConfigurationError(
+            "OLLAMA_HOST must start with "
+            "http:// or https://."
         )
 
 
 def main() -> None:
+    validate_settings()
+
+    print(f"Using model: {settings.MODEL_NAME}")
+
+    # Create Elysia's objects.
+    elysia_memory = Memory(settings.BASE_DIR)
+
+    elysia_brain = Brain(
+        settings.MODEL_NAME,
+        elysia_memory,
+    )
+
+    # Start the session and update launch_count.
+    loaded_profile = elysia_brain.start_session()
+
+    # Save sample conversation messages.
+    elysia_brain.remember_message(
+        "User",
+        "Hello, Elysia!",
+    )
+
+    elysia_brain.remember_message(
+        "Elysia",
+        "Hi! It is nice to see you.",
+    )
+
+    # Read and display recent messages.
+    recent_messages = (
+        elysia_brain.recall_recent_messages(10)
+    )
+
+    print("\nRecent conversation:")
+
+    for message_data in recent_messages:
+        timestamp = message_data["timestamp"]
+        speaker = message_data["speaker"]
+        message = message_data["message"]
+
+        print(
+            f"[{timestamp}] "
+            f"{speaker}: {message}"
+        )
+
+    # Display the user profile.
+    print("\nProfile:")
+    print(f"User: {loaded_profile['user_name']}")
+    print(
+        f"Assistant: "
+        f"{loaded_profile['assistant_name']}"
+    )
+    print(
+        f"Languages: "
+        f"{loaded_profile['languages']}"
+    )
+    print(f"Project: {loaded_profile['project']}")
+    print(
+        f"Launch count: "
+        f"{loaded_profile['launch_count']}"
+    )
+
+
+if __name__ == "__main__":
     logging.info("Program started")
 
     try:
-        validate_settings()
-
-        print(f"Using model: {settings.MODEL_NAME}")
-        brain.hello()
-
-# JSON conversation file
-
-        conversation_file = (
-            settings.BASE_DIR
-            / "workspace"
-            / "conversations"
-            / "conversation.json"
-        )
-
-        save_json_message(
-            conversation_file,
-            "User",
-            "Hello, Elysia!",
-        )
-
-        save_json_message(
-            conversation_file,
-            "Elysia",
-            "Hi! It is nice to see you.",
-        )
-
-        conversation_data = load_json_or_default(
-            conversation_file,
-            {"messages": []},
-        )
-
-        recent_messages = conversation_data["messages"][-10:]
-
-        print("\nRecent conversation:")
-
-        for record in recent_messages:
-            print(
-                f"[{record['timestamp']}] "
-                f"{record['speaker']}: "
-                f"{record['message']}"
-            )
-
-        # --------------------------------
-        # JSON profile file
-        # --------------------------------
-
-        profile_file = (
-            settings.BASE_DIR
-            / "workspace"
-            / "memory"
-            / "profile.json"
-        )
-
-        profile_data = {
-            "user_name": "Ying",
-            "assistant_name": "Elysia",
-            "languages": [
-                "Chinese",
-                "English",
-            ],
-            "project": "Elysia AI",
-        }
-
-        loaded_profile = load_json_or_default(
-            profile_file,
-            profile_data,
-        )
-
-        launch_count = loaded_profile.get("launch_count", 0)
-        loaded_profile["launch_count"] = launch_count + 1
-
-        write_json(profile_file, loaded_profile)
-
-        print(f"\nProfile saved to: {profile_file}")
-
-        print("\nLoaded profile:")
-        print(f"User: {loaded_profile['user_name']}")
-        print(f"Assistant: {loaded_profile['assistant_name']}")
-        print(f"Languages: {loaded_profile['languages']}")
-        print(f"Project: {loaded_profile['project']}")
-        print(f"Launch count: {loaded_profile['launch_count']}")
+        main()
 
     except ConfigurationError as error:
-        logging.error("Invalid configuration: %s", error)
+        logging.error(
+            "Configuration error: %s",
+            error,
+        )
         print(f"Configuration error: {error}")
 
     except FileNotFoundError as error:
-        logging.error("Required file was not found: %s", error)
-        print(f"File error: {error}")
-
-    except json.JSONDecodeError as error:
-        logging.error("Invalid JSON data: %s", error)
-        print(f"JSON error: {error}")
-        
-    except ConnectionError as error:
         logging.error(
-            "Could not connect to the AI service: %s",
+            "File not found: %s",
             error,
         )
-        print("Elysia could not connect to the AI service.")
+        print(f"File not found: {error}")
 
-    except Exception as error:
-        logging.exception(
-            "The program encountered an unexpected error."
+    except json.JSONDecodeError as error:
+        logging.error(
+            "Invalid JSON data: %s",
+            error,
         )
-        print(f"Elysia encountered an unexpected error: {error}")
+        print(
+            "A JSON file contains invalid data. "
+            "Check logs/app.log for details."
+        )
+
+    except ConnectionError as error:
+        logging.error(
+            "Connection error: %s",
+            error,
+        )
+        print(
+            "Could not connect to the required service."
+        )
+
+    except Exception:
+        logging.exception(
+            "The program encountered "
+            "an unexpected error."
+        )
+        print(
+            "An unexpected error occurred. "
+            "Check logs/app.log for details."
+        )
 
     else:
-        logging.info("Program completed successfully")
+        logging.info(
+            "Elysia started successfully."
+        )
         print("\nElysia started successfully.")
 
     finally:
         logging.info("Program ended")
         print("Program ended safely.")
-
-
-if __name__ == "__main__":
-    main()
