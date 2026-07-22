@@ -1,6 +1,6 @@
 import logging
 
-from memory import Memory
+from memory import ConversationMessage, Memory, Profile
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +34,7 @@ class Brain:
             f"Model: {self.model_name}"
         )
 
-    def start_session(self) -> dict:
+    def start_session(self) -> Profile:
         profile = self._memory.record_launch()
 
         self.hello()
@@ -59,5 +59,5 @@ class Brain:
     def recall_recent_messages(
         self,
         limit: int = 10,
-    ) -> list[dict]:
+    ) -> list[ConversationMessage]:
         return self._memory.get_recent_messages(limit)

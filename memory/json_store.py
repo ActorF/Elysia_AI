@@ -1,10 +1,18 @@
 import json
 from pathlib import Path
-
+from collections.abc import Mapping
 from memory.file_manager import ensure_parent_directory
+from typing import TypeVar, cast
 
+JsonDataT = TypeVar(
+    "JsonDataT",
+    bound=Mapping[str, object],
+)
 
-def write_json(file_path: Path, data: dict) -> None:
+def write_json(
+        file_path: Path,
+        data: Mapping[str, object]
+    ) -> None:
     ensure_parent_directory(file_path)
 
     with file_path.open("w", encoding="utf-8") as file:
@@ -24,10 +32,10 @@ def read_json(file_path: Path) -> dict:
 
 def load_json_or_default(
     file_path: Path,
-    default_data: dict,
-) -> dict:
+    default_data: JsonDataT,
+) -> JsonDataT:
     if file_path.exists():
-        return read_json(file_path)
+        return cast(JsonDataT, read_json(file_path))
 
     write_json(file_path, default_data)
-    return default_data.copy()
+    return cast(JsonDataT, dict(default_data))

@@ -1,8 +1,18 @@
 from pathlib import Path
-
-from .conversation import save_json_message
 from .json_store import load_json_or_default, write_json
+from typing import NotRequired, TypedDict
+from .conversation import (
+    ConversationData,
+    ConversationMessage,
+    save_json_message,
+)
 
+class Profile(TypedDict):
+    user_name: str
+    assistant_name: str
+    languages: list[str]
+    project: str
+    launch_count: NotRequired[int]
 
 class Memory:
     """Manages Elysia's conversation and profile memory."""
@@ -46,19 +56,22 @@ class Memory:
     def get_recent_messages(
         self,
         limit: int = 10,
-    ) -> list[dict]:
+    ) -> list[ConversationMessage]:
         if limit <= 0:
             raise ValueError("Message limit must be greater than zero.")
 
+        default_data: ConversationData = {
+            "messages": [],
+        }
+
         conversation_data = load_json_or_default(
             self._conversation_file,
-            {"messages": []},
+            default_data,
         )
-
         return conversation_data["messages"][-limit:]
 
-    def load_profile(self) -> dict:
-        default_profile = {
+    def load_profile(self) -> Profile:
+        default_profile: Profile = {
             "user_name": "Ying",
             "assistant_name": "Elysia",
             "languages": ["Chinese", "English"],
@@ -70,13 +83,13 @@ class Memory:
             default_profile,
         )
 
-    def save_profile(self, profile: dict) -> None:
+    def save_profile(self, profile: Profile) -> None:
         write_json(
             self._profile_file,
             profile,
         )
 
-    def record_launch(self) -> dict:
+    def record_launch(self) -> Profile:
         profile = self.load_profile()
 
         launch_count = profile.get("launch_count", 0)

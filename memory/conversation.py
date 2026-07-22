@@ -2,6 +2,15 @@ from datetime import datetime
 from pathlib import Path
 from memory.json_store import load_json_or_default, write_json
 from memory.file_manager import append_text
+from typing import TypedDict
+
+class ConversationMessage(TypedDict):
+    timestamp: str
+    speaker: str
+    message: str
+
+class ConversationData(TypedDict):
+    messages: list[ConversationMessage]
 
 
 def save_message(
@@ -31,12 +40,16 @@ def save_json_message(
     if not message.strip():
         raise ValueError("Message cannot be empty")
 
-    conversation_data = load_json_or_default(
+    default_data: ConversationData = {
+        "messages": [],
+    }
+
+    conversation_data: ConversationData = load_json_or_default(
         file_path,
-        {"messages": []},
+        default_data,
     )
 
-    record = {
+    record: ConversationMessage = {
         "timestamp": datetime.now().strftime(
             "%Y-%m-%d %H:%M:%S"
         ),

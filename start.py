@@ -1,12 +1,12 @@
 import json
 import logging
 
-from config import settings
+from config.settings import SETTINGS
 from core import Brain, ConfigurationError
 from memory import Memory
 from ui import run_console_session
 
-LOG_DIR = settings.BASE_DIR / "logs"
+LOG_DIR = SETTINGS.base_dir / "logs"
 LOG_FILE = LOG_DIR / "app.log"
 
 LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -20,12 +20,12 @@ logging.basicConfig(
 
 
 def validate_settings() -> None:
-    if not settings.MODEL_NAME.strip():
+    if not SETTINGS.model_name.strip():
         raise ConfigurationError(
             "MODEL_NAME cannot be empty."
         )
 
-    ollama_host = settings.OLLAMA_HOST.strip()
+    ollama_host = SETTINGS.ollama_host.strip()
 
     if not ollama_host.startswith(
         ("http://", "https://")
@@ -37,17 +37,17 @@ def validate_settings() -> None:
 
 def create_brain() -> Brain:
     """Create and connect Elysia's main objects."""
-    elysia_memory = Memory(settings.BASE_DIR)
+    elysia_memory = Memory(SETTINGS.base_dir)
 
     return Brain(
-        settings.MODEL_NAME,
+        SETTINGS.model_name,
         elysia_memory,
     )
 
 def main() -> None:
     validate_settings()
 
-    print(f"Using model: {settings.MODEL_NAME}")
+    print(f"Using model: {SETTINGS.model_name}")
 
     # Create Elysia's connected objects.
     elysia_brain = create_brain()

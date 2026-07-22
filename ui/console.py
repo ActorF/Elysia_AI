@@ -1,9 +1,10 @@
 """Console output functions for Elysia."""
 
 from core import Brain
+from memory import ConversationMessage, Profile
 
 def display_recent_messages(
-    messages: list[dict],
+    messages: list[ConversationMessage],
 ) -> None:
     print("\nRecent conversation:")
 
@@ -22,7 +23,7 @@ def display_recent_messages(
         )
 
 
-def display_profile(profile: dict) -> None:
+def display_profile(profile: Profile) -> None:
     print("\nProfile:")
     print(f"User: {profile['user_name']}")
     print(f"Assistant: {profile['assistant_name']}")

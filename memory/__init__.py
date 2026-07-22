@@ -1,6 +1,7 @@
 """Public interface for Elysia's memory package."""
 
-from .manager import Memory
+from .conversation import ConversationMessage
+from .manager import Memory, Profile
 
 
-__all__ = ["Memory"]
+__all__ = ["ConversationMessage", "Memory", "Profile"]
