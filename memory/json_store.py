@@ -23,12 +23,21 @@ def write_json(
             indent=4,
         )
 
-def read_json(file_path: Path) -> dict:
-    if not file_path.exists():
-        raise FileNotFoundError(f"JSON file does not exist: {file_path}")
+def read_json(
+    file_path: Path,
+) -> dict[str, object]:
+    with file_path.open(
+        "r",
+        encoding="utf-8",
+    ) as file:
+        data: object = json.load(file)
 
-    with file_path.open("r", encoding="utf-8") as file:
-        return json.load(file)
+    if not isinstance(data, dict):
+        raise TypeError(
+            "JSON root must be an object."
+        )
+
+    return cast(dict[str, object], data)
 
 def load_json_or_default(
     file_path: Path,
