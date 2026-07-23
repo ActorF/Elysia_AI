@@ -10,7 +10,9 @@ from .exceptions import (
     ConfigurationError,
 )
 from .ollama_chat_model import OllamaChatModel
-
+from .langchain_ollama_chat_model import (
+    LangChainOllamaChatModel,
+)
 
 __all__ = [
     "Brain",
@@ -20,5 +22,6 @@ __all__ = [
     "ChatModelNotFoundError",
     "ChatModelResponseError",
     "ConfigurationError",
+    "LangChainOllamaChatModel",
     "OllamaChatModel",
 ]

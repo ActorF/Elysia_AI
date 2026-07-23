@@ -6,3 +6,4 @@ requests==2.34.2
 urllib3==2.7.0
 mypy==2.3.0
 pytest==9.1.1
+langchain-ollama==1.1.0

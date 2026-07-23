@@ -7,7 +7,7 @@ from core import (
     ChatModelConnectionError,
     ChatModelError,
     ConfigurationError,
-    OllamaChatModel,
+    LangChainOllamaChatModel,
 )
 from memory import Memory
 from ui import run_console_session
@@ -45,7 +45,7 @@ def create_brain() -> Brain:
     """Create and connect Elysia's main objects."""
     elysia_memory = Memory(SETTINGS.base_dir)
 
-    chat_model = OllamaChatModel(
+    chat_model = LangChainOllamaChatModel(
         SETTINGS.model_name,
         SETTINGS.ollama_host,
     )
