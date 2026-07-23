@@ -2,7 +2,13 @@ import json
 import logging
 
 from config.settings import SETTINGS
-from core import Brain, ConfigurationError
+from core import (
+    Brain,
+    ChatModelConnectionError,
+    ChatModelError,
+    ConfigurationError,
+    OllamaChatModel,
+)
 from memory import Memory
 from ui import run_console_session
 
@@ -39,9 +45,17 @@ def create_brain() -> Brain:
     """Create and connect Elysia's main objects."""
     elysia_memory = Memory(SETTINGS.base_dir)
 
+    chat_model = OllamaChatModel(
+        SETTINGS.model_name,
+        SETTINGS.ollama_host,
+    )
+
+    chat_model.ensure_model_available()
+
     return Brain(
         SETTINGS.model_name,
         elysia_memory,
+        chat_model,
     )
 
 def main() -> None:
@@ -85,14 +99,22 @@ if __name__ == "__main__":
             "Check logs/app.log for details."
         )
 
-    except ConnectionError as error:
+    except ChatModelConnectionError as error:
         logging.error(
-            "Connection error: %s",
+            "Chat model connection error: %s",
             error,
         )
         print(
-            "Could not connect to the required service."
+            "Could not connect to Ollama. "
+            "Make sure Ollama is running."
         )
+
+    except ChatModelError as error:
+        logging.error(
+            "Chat model error: %s",
+            error,
+        )
+        print(f"Chat model error: {error}")
 
     except Exception:
         logging.exception(

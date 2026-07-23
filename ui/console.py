@@ -42,3 +42,13 @@ def run_console_session(brain: Brain) -> None:
 
     display_recent_messages(recent_messages)
     display_profile(profile)
+
+    user_message = input("\nYou: ")
+
+    if not user_message.strip():
+        print("No message was entered.")
+        return
+
+    reply = brain.chat(user_message)
+
+    print(f"\nElysia: {reply}")
