@@ -64,6 +64,29 @@ def test_read_json_rejects_non_object_json(
         read_json(file_path)
 
 
+def test_read_json_rejects_invalid_json(
+    tmp_path: Path,
+) -> None:
+    file_path = tmp_path / "invalid.json"
+
+    file_path.write_text(
+        '{"message":',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(json.JSONDecodeError):
+        read_json(file_path)
+
+
+def test_read_json_rejects_missing_file(
+    tmp_path: Path,
+) -> None:
+    file_path = tmp_path / "missing.json"
+
+    with pytest.raises(FileNotFoundError):
+        read_json(file_path)
+
+
 def test_load_json_or_default_creates_missing_file(
     tmp_path: Path,
 ) -> None:
