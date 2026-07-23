@@ -5,3 +5,4 @@ python-dotenv==1.2.2
 requests==2.34.2
 urllib3==2.7.0
 mypy==2.3.0
+pytest==9.1.1
