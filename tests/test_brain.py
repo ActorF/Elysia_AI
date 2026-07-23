@@ -6,44 +6,88 @@ from core import Brain
 from memory import Memory
 
 
-def test_brain_cleans_model_name(
+class FakeChatModel:
+    """Test model that does not require Ollama."""
+
+    def __init__(self, reply: str) -> None:
+        self._reply = reply
+        self.received_message: str | None = None
+
+    def generate_reply(
+        self,
+        user_message: str,
+    ) -> str:
+        self.received_message = user_message
+        return self._reply
+
+
+def test_chat_returns_reply_and_saves_messages(
     tmp_path: Path,
 ) -> None:
+    memory = Memory(tmp_path)
+    chat_model = FakeChatModel("Hello, Ying!")
     brain = Brain(
-        "  test-model  ",
-        Memory(tmp_path),
+        "fake-model",
+        memory,
+        chat_model,
     )
 
-    assert brain.model_name == "test-model"
+    reply = brain.chat("  Hello, Elysia!  ")
+
+    assert reply == "Hello, Ying!"
+    assert (
+        chat_model.received_message
+        == "Hello, Elysia!"
+    )
+
+    messages = memory.get_recent_messages(2)
+
+    assert len(messages) == 2
+    assert messages[0]["speaker"] == "Ying"
+    assert (
+        messages[0]["message"]
+        == "Hello, Elysia!"
+    )
+    assert messages[1]["speaker"] == "Elysia"
+    assert (
+        messages[1]["message"]
+        == "Hello, Ying!"
+    )
 
 
-def test_brain_rejects_empty_model_name(
+def test_chat_rejects_empty_user_message(
     tmp_path: Path,
 ) -> None:
+    chat_model = FakeChatModel("Unused reply")
+    brain = Brain(
+        "fake-model",
+        Memory(tmp_path),
+        chat_model,
+    )
+
     with pytest.raises(
         ValueError,
-        match=r"Model name cannot be empty\.",
+        match=r"User message cannot be empty\.",
     ):
-        Brain("   ", Memory(tmp_path))
+        brain.chat("   ")
+
+    assert chat_model.received_message is None
 
 
-def test_brain_remembers_and_recalls_messages(
+def test_chat_rejects_empty_model_reply(
     tmp_path: Path,
 ) -> None:
+    memory = Memory(tmp_path)
     brain = Brain(
-        "test-model",
-        Memory(tmp_path),
+        "fake-model",
+        memory,
+        FakeChatModel("   "),
     )
 
-    brain.remember_message("Ying", "Hello")
-    brain.remember_message("Elysia", "Hi")
+    with pytest.raises(
+        ValueError,
+        match=r"Model reply cannot be empty\.",
+    ):
+        brain.chat("Hello")
 
-    messages = brain.recall_recent_messages(2)
-
-    assert [
-        (message["speaker"], message["message"])
-        for message in messages
-    ] == [
-        ("Ying", "Hello"),
-        ("Elysia", "Hi"),
-    ]
+    assert memory.get_recent_messages() == []
