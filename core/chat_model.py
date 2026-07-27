@@ -9,6 +9,8 @@ class ChatModel(Protocol):
     def generate_reply(
         self,
         user_message: str,
+        *,
+        system_prompt: str,
     ) -> str:
-        """Generate one reply for one user message."""
+        """Generate one reply using trusted system instructions."""
         ...

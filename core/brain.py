@@ -3,6 +3,7 @@ import logging
 from memory import ConversationMessage, Memory, Profile
 
 from .chat_model import ChatModel
+from .prompts import build_elysia_system_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -64,16 +65,20 @@ class Brain:
                 "Chat model is not connected."
             )
 
+        profile = self._memory.load_profile()
+        system_prompt = build_elysia_system_prompt(
+            profile
+        )
+
         reply = self._chat_model.generate_reply(
-            cleaned_user_message
+            cleaned_user_message,
+            system_prompt=system_prompt,
         ).strip()
 
         if not reply:
             raise ValueError(
                 "Model reply cannot be empty."
             )
-
-        profile = self._memory.load_profile()
 
         self.remember_message(
             profile["user_name"],

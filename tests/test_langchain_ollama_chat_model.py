@@ -3,6 +3,7 @@ from httpx import ConnectError
 from langchain_core.messages import (
     AIMessage,
     HumanMessage,
+    SystemMessage,
 )
 from langchain_ollama import ChatOllama
 
@@ -40,8 +41,7 @@ def test_ensure_model_available_uses_checker(
 
     assert check_count == 1
 
-
-def test_generate_reply_uses_human_message(
+def test_generate_reply_uses_system_and_human_messages(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def fake_invoke(
@@ -50,10 +50,23 @@ def test_generate_reply_uses_human_message(
         **kwargs: object,
     ) -> AIMessage:
         assert isinstance(messages, list)
-        assert len(messages) == 1
-        assert isinstance(messages[0], HumanMessage)
+        assert len(messages) == 2
+
+        assert isinstance(
+            messages[0],
+            SystemMessage,
+        )
         assert (
             messages[0].content
+            == "You are Elysia."
+        )
+
+        assert isinstance(
+            messages[1],
+            HumanMessage,
+        )
+        assert (
+            messages[1].content
             == "Hello, Elysia!"
         )
 
@@ -73,11 +86,11 @@ def test_generate_reply_uses_human_message(
     )
 
     reply = chat_model.generate_reply(
-        "  Hello, Elysia!  "
+        "  Hello, Elysia!  ",
+        system_prompt="  You are Elysia.  ",
     )
 
     assert reply == "Hello, Ying!"
-
 
 def test_generate_reply_rejects_non_text_content(
     monkeypatch: pytest.MonkeyPatch,
@@ -104,7 +117,10 @@ def test_generate_reply_rejects_non_text_content(
         ChatModelResponseError,
         match="non-text content",
     ):
-        chat_model.generate_reply("Hello")
+        chat_model.generate_reply(
+            "Hello",
+            system_prompt="You are Elysia.",
+        )
 
 
 def test_generate_reply_rejects_offline_ollama(
@@ -132,4 +148,7 @@ def test_generate_reply_rejects_offline_ollama(
         ChatModelConnectionError,
         match="Could not connect to Ollama",
     ):
-        chat_model.generate_reply("Hello")
+        chat_model.generate_reply(
+            "Hello",
+            system_prompt="You are Elysia.",
+        )

@@ -12,14 +12,17 @@ class FakeChatModel:
     def __init__(self, reply: str) -> None:
         self._reply = reply
         self.received_message: str | None = None
+        self.received_system_prompt: str | None = None
 
     def generate_reply(
         self,
         user_message: str,
+        *,
+        system_prompt: str,
     ) -> str:
         self.received_message = user_message
+        self.received_system_prompt = system_prompt
         return self._reply
-
 
 def test_chat_returns_reply_and_saves_messages(
     tmp_path: Path,
@@ -39,6 +42,13 @@ def test_chat_returns_reply_and_saves_messages(
         chat_model.received_message
         == "Hello, Elysia!"
     )
+
+    system_prompt = chat_model.received_system_prompt
+
+    assert system_prompt is not None
+    assert "You are Elysia" in system_prompt
+    assert "USER_PROFILE_JSON:" in system_prompt
+    assert '"user_name": "Ying"' in system_prompt
 
     messages = memory.get_recent_messages(2)
 
@@ -72,6 +82,7 @@ def test_chat_rejects_empty_user_message(
         brain.chat("   ")
 
     assert chat_model.received_message is None
+    assert chat_model.received_system_prompt is None
 
 
 def test_chat_rejects_empty_model_reply(

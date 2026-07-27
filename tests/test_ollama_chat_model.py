@@ -117,9 +117,13 @@ def test_generate_reply_returns_content(
             "model": "qwen3.5:9b",
             "messages": [
                 {
+                    "role": "system",
+                    "content": "You are Elysia.",
+                },
+                {
                     "role": "user",
                     "content": "Hello, Elysia!",
-                }
+                },
             ],
             "stream": False,
             "think": False,
@@ -144,9 +148,9 @@ def test_generate_reply_returns_content(
         "qwen3.5:9b",
         "http://localhost:11434",
     )
-
     reply = chat_model.generate_reply(
-        "  Hello, Elysia!  "
+        "  Hello, Elysia!  ",
+        system_prompt="  You are Elysia.  ",
     )
 
     assert reply == "Hello, Ying!"
@@ -212,4 +216,7 @@ def test_generate_reply_rejects_invalid_content(
         ChatModelResponseError,
         match="has no text content",
     ):
-        chat_model.generate_reply("Hello")
+        chat_model.generate_reply(
+            "Hello",
+            system_prompt="You are Elysia.",
+        )

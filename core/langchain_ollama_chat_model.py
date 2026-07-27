@@ -1,7 +1,10 @@
 """LangChain adapter for Ollama."""
 
 from httpx import ConnectError, TimeoutException
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import (
+    HumanMessage,
+    SystemMessage,
+)
 from langchain_ollama import ChatOllama
 from ollama import ResponseError
 
@@ -65,24 +68,34 @@ class LangChainOllamaChatModel:
     def generate_reply(
         self,
         user_message: str,
+        *,
+        system_prompt: str,
     ) -> str:
-        """Generate one non-streaming reply through LangChain."""
+        """Generate one reply through LangChain."""
         cleaned_user_message = user_message.strip()
+        cleaned_system_prompt = system_prompt.strip()
 
         if not cleaned_user_message:
             raise ValueError(
                 "User message cannot be empty."
             )
 
+        if not cleaned_system_prompt:
+            raise ValueError(
+                "System prompt cannot be empty."
+            )
+
         try:
             response = self._langchain_model.invoke(
                 [
+                    SystemMessage(
+                        content=cleaned_system_prompt
+                    ),
                     HumanMessage(
                         content=cleaned_user_message
-                    )
+                    ),
                 ]
             )
-
         except (
             ConnectError,
             TimeoutException,
