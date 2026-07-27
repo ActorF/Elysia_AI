@@ -46,7 +46,7 @@ def test_chat_returns_reply_and_saves_messages(
     system_prompt = chat_model.received_system_prompt
 
     assert system_prompt is not None
-    assert "You are Elysia" in system_prompt
+    assert "你是 Elysia" in system_prompt
     assert "USER_PROFILE_JSON:" in system_prompt
     assert '"user_name": "Ying"' in system_prompt
 
