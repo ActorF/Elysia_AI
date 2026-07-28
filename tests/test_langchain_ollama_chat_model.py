@@ -41,7 +41,7 @@ def test_ensure_model_available_uses_checker(
 
     assert check_count == 1
 
-def test_generate_reply_uses_system_and_human_messages(
+def test_generate_reply_uses_ordered_chat_messages(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def fake_invoke(
@@ -50,25 +50,19 @@ def test_generate_reply_uses_system_and_human_messages(
         **kwargs: object,
     ) -> AIMessage:
         assert isinstance(messages, list)
-        assert len(messages) == 2
+        assert len(messages) == 4
 
-        assert isinstance(
-            messages[0],
-            SystemMessage,
-        )
-        assert (
-            messages[0].content
-            == "You are Elysia."
-        )
+        assert isinstance(messages[0], SystemMessage)
+        assert messages[0].content == "You are Elysia."
 
-        assert isinstance(
-            messages[1],
-            HumanMessage,
-        )
-        assert (
-            messages[1].content
-            == "Hello, Elysia!"
-        )
+        assert isinstance(messages[1], HumanMessage)
+        assert messages[1].content == "Previous question"
+
+        assert isinstance(messages[2], AIMessage)
+        assert messages[2].content == "Previous answer"
+
+        assert isinstance(messages[3], HumanMessage)
+        assert messages[3].content == "Current question"
 
         return AIMessage(
             content="  Hello, Ying!  "
@@ -86,8 +80,24 @@ def test_generate_reply_uses_system_and_human_messages(
     )
 
     reply = chat_model.generate_reply(
-        "  Hello, Elysia!  ",
-        system_prompt="  You are Elysia.  ",
+        [
+            {
+                "role": "system",
+                "content": "  You are Elysia.  ",
+            },
+            {
+                "role": "user",
+                "content": "Previous question",
+            },
+            {
+                "role": "assistant",
+                "content": "Previous answer",
+            },
+            {
+                "role": "user",
+                "content": "Current question",
+            },
+        ]
     )
 
     assert reply == "Hello, Ying!"
@@ -118,8 +128,16 @@ def test_generate_reply_rejects_non_text_content(
         match="non-text content",
     ):
         chat_model.generate_reply(
-            "Hello",
-            system_prompt="You are Elysia.",
+            [
+                {
+                    "role": "system",
+                    "content": "You are Elysia.",
+                },
+                {
+                    "role": "user",
+                    "content": "Hello",
+                },
+            ]
         )
 
 
@@ -149,6 +167,14 @@ def test_generate_reply_rejects_offline_ollama(
         match="Could not connect to Ollama",
     ):
         chat_model.generate_reply(
-            "Hello",
-            system_prompt="You are Elysia.",
+            [
+                {
+                    "role": "system",
+                    "content": "You are Elysia.",
+                },
+                {
+                    "role": "user",
+                    "content": "Hello",
+                },
+            ]
         )

@@ -122,7 +122,15 @@ def test_generate_reply_returns_content(
                 },
                 {
                     "role": "user",
-                    "content": "Hello, Elysia!",
+                    "content": "Previous question",
+                },
+                {
+                    "role": "assistant",
+                    "content": "Previous answer",
+                },
+                {
+                    "role": "user",
+                    "content": "Current question",
                 },
             ],
             "stream": False,
@@ -149,8 +157,24 @@ def test_generate_reply_returns_content(
         "http://localhost:11434",
     )
     reply = chat_model.generate_reply(
-        "  Hello, Elysia!  ",
-        system_prompt="  You are Elysia.  ",
+        [
+            {
+                "role": "system",
+                "content": "You are Elysia.",
+            },
+            {
+                "role": "user",
+                "content": "Previous question",
+            },
+            {
+                "role": "assistant",
+                "content": "Previous answer",
+            },
+            {
+                "role": "user",
+                "content": "Current question",
+            },
+        ]
     )
 
     assert reply == "Hello, Ying!"
@@ -217,6 +241,22 @@ def test_generate_reply_rejects_invalid_content(
         match="has no text content",
     ):
         chat_model.generate_reply(
-            "Hello",
-            system_prompt="You are Elysia.",
+            [
+                {
+                    "role": "system",
+                    "content": "You are Elysia.",
+                },
+                {
+                    "role": "user",
+                    "content": "Previous question",
+                },
+                {
+                    "role": "assistant",
+                    "content": "Previous answer",
+                },
+                {
+                    "role": "user",
+                    "content": "Current question",
+                },
+            ]
         )

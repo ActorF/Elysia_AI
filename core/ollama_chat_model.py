@@ -4,6 +4,7 @@ import logging
 import requests
 
 from typing import Any, cast
+from .chat_model import ChatMessage
 
 from requests.exceptions import (
     ConnectionError as RequestsConnectionError,
@@ -94,36 +95,34 @@ class OllamaChatModel:
 
     def generate_reply(
         self,
-        user_message: str,
-        *,
-        system_prompt: str,
+        messages: list[ChatMessage],
     ) -> str:
         """Generate one non-streaming Ollama reply."""
-        cleaned_user_message = user_message.strip()
-        cleaned_system_prompt = system_prompt.strip()
-
-        if not cleaned_user_message:
+        if not messages:
             raise ValueError(
-                "User message cannot be empty."
+                "Chat messages cannot be empty."
             )
 
-        if not cleaned_system_prompt:
-            raise ValueError(
-                "System prompt cannot be empty."
+        cleaned_messages: list[ChatMessage] = []
+
+        for message in messages:
+            message_content = message["content"].strip()
+
+            if not message_content:
+                raise ValueError(
+                    "Chat message content cannot be empty."
+                )
+
+            cleaned_messages.append(
+                {
+                    "role": message["role"],
+                    "content": message_content,
+                }
             )
 
         payload: JsonObject = {
             "model": self._model_name,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": cleaned_system_prompt,
-                },
-                {
-                    "role": "user",
-                    "content": cleaned_user_message,
-                },
-            ],
+            "messages": cleaned_messages,
             "stream": False,
             "think": False,
         }

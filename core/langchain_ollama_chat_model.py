@@ -2,11 +2,14 @@
 
 from httpx import ConnectError, TimeoutException
 from langchain_core.messages import (
+    AIMessage,
+    BaseMessage,
     HumanMessage,
     SystemMessage,
 )
 from langchain_ollama import ChatOllama
 from ollama import ResponseError
+from .chat_model import ChatMessage
 
 from .exceptions import (
     ChatModelConnectionError,
@@ -67,34 +70,41 @@ class LangChainOllamaChatModel:
 
     def generate_reply(
         self,
-        user_message: str,
-        *,
-        system_prompt: str,
+        messages: list[ChatMessage],
     ) -> str:
         """Generate one reply through LangChain."""
-        cleaned_user_message = user_message.strip()
-        cleaned_system_prompt = system_prompt.strip()
-
-        if not cleaned_user_message:
+        if not messages:
             raise ValueError(
-                "User message cannot be empty."
+                "Chat messages cannot be empty."
             )
 
-        if not cleaned_system_prompt:
-            raise ValueError(
-                "System prompt cannot be empty."
-            )
+        langchain_messages: list[BaseMessage] = []
+
+        for message in messages:
+            role = message["role"]
+            message_content = message["content"].strip()
+
+            if not message_content:
+                raise ValueError(
+                    "Chat message content cannot be empty."
+                )
+
+            if role == "system":
+                langchain_messages.append(
+                    SystemMessage(content=message_content)
+                )
+            elif role == "user":
+                langchain_messages.append(
+                    HumanMessage(content=message_content)
+                )
+            elif role == "assistant":
+                langchain_messages.append(
+                    AIMessage(content=message_content)
+                )
 
         try:
             response = self._langchain_model.invoke(
-                [
-                    SystemMessage(
-                        content=cleaned_system_prompt
-                    ),
-                    HumanMessage(
-                        content=cleaned_user_message
-                    ),
-                ]
+                langchain_messages
             )
         except (
             ConnectError,

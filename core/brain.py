@@ -1,8 +1,7 @@
 import logging
 
 from memory import ConversationMessage, Memory, Profile
-
-from .chat_model import ChatModel
+from .chat_model import ChatMessage, ChatModel
 from .prompts import build_elysia_system_prompt
 
 logger = logging.getLogger(__name__)
@@ -66,13 +65,14 @@ class Brain:
             )
 
         profile = self._memory.load_profile()
-        system_prompt = build_elysia_system_prompt(
-            profile
+
+        chat_messages = self._build_chat_messages(
+            profile,
+            cleaned_user_message,
         )
 
         reply = self._chat_model.generate_reply(
-            cleaned_user_message,
-            system_prompt=system_prompt,
+            chat_messages
         ).strip()
 
         if not reply:
@@ -103,6 +103,80 @@ class Brain:
             message,
         )
 
+    def _to_chat_message(
+        self,
+        conversation_message: ConversationMessage,
+        profile: Profile,
+    ) -> ChatMessage | None:
+        speaker = conversation_message["speaker"]
+        content = conversation_message["message"]
+
+        if speaker == profile["user_name"]:
+            return {
+                "role": "user",
+                "content": content,
+            }
+
+        if speaker == profile["assistant_name"]:
+            return {
+                "role": "assistant",
+                "content": content,
+            }
+
+        return None
+
+    def _build_recent_context(
+        self,
+        profile: Profile,
+        limit: int = 10,
+    ) -> list[ChatMessage]:
+        recent_messages = self._memory.get_recent_messages(
+            limit
+        )
+
+        context: list[ChatMessage] = []
+
+        for conversation_message in recent_messages:
+            chat_message = self._to_chat_message(
+                conversation_message,
+                profile,
+            )
+
+            if chat_message is not None:
+                context.append(chat_message)
+
+        return context
+
+    def _build_chat_messages(
+        self,
+        profile: Profile,
+        current_user_message: str,
+        limit: int = 10,
+    ) -> list[ChatMessage]:
+        system_prompt = build_elysia_system_prompt(profile)
+
+        messages: list[ChatMessage] = [
+            {
+                "role": "system",
+                "content": system_prompt,
+            }
+        ]
+
+        messages.extend(
+            self._build_recent_context(
+                profile,
+                limit,
+            )
+        )
+
+        messages.append(
+            {
+                "role": "user",
+                "content": current_user_message,
+            }
+        )
+
+        return messages
     def recall_recent_messages(
         self,
         limit: int = 10,

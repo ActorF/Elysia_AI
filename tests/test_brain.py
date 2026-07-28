@@ -3,25 +3,20 @@ from pathlib import Path
 import pytest
 
 from core import Brain
+from core.chat_model import ChatMessage
 from memory import Memory
 
 
 class FakeChatModel:
-    """Test model that does not require Ollama."""
-
     def __init__(self, reply: str) -> None:
         self._reply = reply
-        self.received_message: str | None = None
-        self.received_system_prompt: str | None = None
+        self.received_messages: list[ChatMessage] | None = None
 
     def generate_reply(
         self,
-        user_message: str,
-        *,
-        system_prompt: str,
+        messages: list[ChatMessage],
     ) -> str:
-        self.received_message = user_message
-        self.received_system_prompt = system_prompt
+        self.received_messages = messages
         return self._reply
 
 def test_chat_returns_reply_and_saves_messages(
@@ -38,18 +33,27 @@ def test_chat_returns_reply_and_saves_messages(
     reply = brain.chat("  Hello, Elysia!  ")
 
     assert reply == "Hello, Ying!"
+
+    received_messages = chat_model.received_messages
+
+    assert received_messages is not None
+    assert len(received_messages) == 2
+
+    assert received_messages[0]["role"] == "system"
+    assert "你是 Elysia" in received_messages[0]["content"]
     assert (
-        chat_model.received_message
-        == "Hello, Elysia!"
+        "USER_PROFILE_JSON:"
+        in received_messages[0]["content"]
+    )
+    assert (
+        '"user_name": "Ying"'
+        in received_messages[0]["content"]
     )
 
-    system_prompt = chat_model.received_system_prompt
-
-    assert system_prompt is not None
-    assert "你是 Elysia" in system_prompt
-    assert "USER_PROFILE_JSON:" in system_prompt
-    assert '"user_name": "Ying"' in system_prompt
-
+    assert received_messages[1] == {
+        "role": "user",
+        "content": "Hello, Elysia!",
+    }
     messages = memory.get_recent_messages(2)
 
     assert len(messages) == 2
@@ -81,8 +85,7 @@ def test_chat_rejects_empty_user_message(
     ):
         brain.chat("   ")
 
-    assert chat_model.received_message is None
-    assert chat_model.received_system_prompt is None
+    assert chat_model.received_messages is None
 
 
 def test_chat_rejects_empty_model_reply(
@@ -102,3 +105,139 @@ def test_chat_rejects_empty_model_reply(
         brain.chat("Hello")
 
     assert memory.get_recent_messages() == []
+
+
+def test_build_recent_context_maps_message_roles(
+    tmp_path: Path,
+) -> None:
+    memory = Memory(tmp_path)
+    brain = Brain(
+        "fake-model",
+        memory,
+    )
+
+    memory.save_message("Ying", "First message")
+    memory.save_message("Elysia", "Second message")
+    memory.save_message("Unknown", "Ignored message")
+
+    profile = memory.load_profile()
+
+    context = brain._build_recent_context(
+        profile,
+        limit=3,
+    )
+
+    assert context == [
+        {
+            "role": "user",
+            "content": "First message",
+        },
+        {
+            "role": "assistant",
+            "content": "Second message",
+        },
+    ]
+
+def test_build_recent_context_respects_limit(
+    tmp_path: Path,
+) -> None:
+    memory = Memory(tmp_path)
+    brain = Brain(
+        "fake-model",
+        memory,
+    )
+
+    memory.save_message("Ying", "First")
+    memory.save_message("Elysia", "Second")
+    memory.save_message("Ying", "Third")
+    memory.save_message("Elysia", "Fourth")
+
+    profile = memory.load_profile()
+
+    context = brain._build_recent_context(
+        profile,
+        limit=2,
+    )
+
+    assert context == [
+        {
+            "role": "user",
+            "content": "Third",
+        },
+        {
+            "role": "assistant",
+            "content": "Fourth",
+        },
+    ]
+
+def test_build_chat_messages_orders_context(
+    tmp_path: Path,
+) -> None:
+    memory = Memory(tmp_path)
+    brain = Brain(
+        "fake-model",
+        memory,
+    )
+
+    memory.save_message("Ying", "Previous question")
+    memory.save_message("Elysia", "Previous answer")
+
+    profile = memory.load_profile()
+
+    messages = brain._build_chat_messages(
+        profile,
+        "Current question",
+        limit=2,
+    )
+
+    assert messages[0]["role"] == "system"
+
+    assert messages[1:] == [
+        {
+            "role": "user",
+            "content": "Previous question",
+        },
+        {
+            "role": "assistant",
+            "content": "Previous answer",
+        },
+        {
+            "role": "user",
+            "content": "Current question",
+        },
+    ]
+
+
+def test_chat_includes_previous_turn_in_context(
+    tmp_path: Path,
+) -> None:
+    memory = Memory(tmp_path)
+    chat_model = FakeChatModel("First reply")
+
+    brain = Brain(
+        "fake-model",
+        memory,
+        chat_model,
+    )
+
+    brain.chat("First question")
+    brain.chat("Second question")
+
+    received_messages = chat_model.received_messages
+
+    assert received_messages is not None
+
+    assert received_messages[1:] == [
+        {
+            "role": "user",
+            "content": "First question",
+        },
+        {
+            "role": "assistant",
+            "content": "First reply",
+        },
+        {
+            "role": "user",
+            "content": "Second question",
+        },
+    ]
