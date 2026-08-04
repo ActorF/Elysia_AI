@@ -49,6 +49,9 @@ def run_console_session(brain: Brain) -> None:
         print("No message was entered.")
         return
 
-    reply = brain.chat(user_message)
+    print("\nElysia: ", end="", flush=True)
 
-    print(f"\nElysia: {reply}")
+    for chunk in brain.stream_chat(user_message):
+        print(chunk, end="", flush=True)
+
+    print()

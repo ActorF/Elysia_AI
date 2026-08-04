@@ -1,4 +1,5 @@
 import logging
+from collections.abc import Iterator
 
 from memory import ConversationMessage, Memory, Profile
 from .chat_model import ChatMessage, ChatModel
@@ -92,6 +93,56 @@ class Brain:
         logger.info("Chat turn completed.")
 
         return reply
+
+    def stream_chat(
+        self,
+        user_message: str,
+    ) -> Iterator[str]:
+        """Yield and save one complete chat turn."""
+        cleaned_user_message = user_message.strip()
+
+        if not cleaned_user_message:
+            raise ValueError(
+                "User message cannot be empty."
+            )
+
+        if self._chat_model is None:
+            raise RuntimeError(
+                "Chat model is not connected."
+            )
+
+        profile = self._memory.load_profile()
+
+        chat_messages = self._build_chat_messages(
+            profile,
+            cleaned_user_message,
+        )
+
+        reply_chunks: list[str] = []
+
+        for chunk in self._chat_model.stream_reply(
+            chat_messages
+        ):
+            reply_chunks.append(chunk)
+            yield chunk
+
+        reply = "".join(reply_chunks).strip()
+
+        if not reply:
+            raise ValueError(
+                "Model reply cannot be empty."
+            )
+
+        self.remember_message(
+            profile["user_name"],
+            cleaned_user_message,
+        )
+        self.remember_message(
+            profile["assistant_name"],
+            reply,
+        )
+
+        logger.info("Streaming chat turn completed.")
 
     def remember_message(
         self,

@@ -1,5 +1,6 @@
 """LangChain adapter for Ollama."""
 
+from collections.abc import Iterator
 from httpx import ConnectError, TimeoutException
 from langchain_core.messages import (
     AIMessage,
@@ -135,3 +136,77 @@ class LangChainOllamaChatModel:
             )
 
         return cleaned_reply
+
+    def stream_reply(
+        self,
+        messages: list[ChatMessage],
+    ) -> Iterator[str]:
+        """Yield one reply through LangChain."""
+        if not messages:
+            raise ValueError(
+                "Chat messages cannot be empty."
+            )
+
+        langchain_messages: list[BaseMessage] = []
+
+        for message in messages:
+            role = message["role"]
+            message_content = message["content"].strip()
+
+            if not message_content:
+                raise ValueError(
+                    "Chat message content cannot be empty."
+                )
+
+            if role == "system":
+                langchain_messages.append(
+                    SystemMessage(content=message_content)
+                )
+            elif role == "user":
+                langchain_messages.append(
+                    HumanMessage(content=message_content)
+                )
+            elif role == "assistant":
+                langchain_messages.append(
+                    AIMessage(content=message_content)
+                )
+
+        has_text = False
+
+        try:
+            for chunk in self._langchain_model.stream(
+                langchain_messages
+            ):
+                content = chunk.content
+
+                if not isinstance(content, str):
+                    raise ChatModelResponseError(
+                        "LangChain returned non-text content."
+                    )
+
+                if not content:
+                    continue
+
+                if content.strip():
+                    has_text = True
+
+                yield content
+
+        except (
+            ConnectError,
+            TimeoutException,
+        ) as error:
+            raise ChatModelConnectionError(
+                "Could not connect to Ollama at "
+                f"{self._ollama_host}."
+            ) from error
+
+        except ResponseError as error:
+            raise ChatModelResponseError(
+                f"Ollama request failed: {error}"
+            ) from error
+
+        if not has_text:
+            raise ChatModelResponseError(
+                "LangChain returned an empty reply."
+            )

@@ -1,3 +1,4 @@
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -8,8 +9,19 @@ from memory import Memory
 
 
 class FakeChatModel:
-    def __init__(self, reply: str) -> None:
+    def __init__(
+        self,
+        reply: str,
+        stream_chunks: list[str] | None = None,
+        stream_error: Exception | None = None,
+    ) -> None:
         self._reply = reply
+        self._stream_chunks = (
+            stream_chunks
+            if stream_chunks is not None
+            else [reply]
+        )
+        self._stream_error = stream_error
         self.received_messages: list[ChatMessage] | None = None
 
     def generate_reply(
@@ -18,6 +30,17 @@ class FakeChatModel:
     ) -> str:
         self.received_messages = messages
         return self._reply
+
+    def stream_reply(
+        self,
+        messages: list[ChatMessage],
+    ) -> Iterator[str]:
+        self.received_messages = messages
+        yield from self._stream_chunks
+
+        if self._stream_error is not None:
+            raise self._stream_error
+
 
 def test_chat_returns_reply_and_saves_messages(
     tmp_path: Path,
@@ -241,3 +264,70 @@ def test_chat_includes_previous_turn_in_context(
             "content": "Second question",
         },
     ]
+
+
+def test_stream_chat_yields_chunks_and_saves_complete_turn(
+    tmp_path: Path,
+) -> None:
+    memory = Memory(tmp_path)
+    chat_model = FakeChatModel(
+        "Unused reply",
+        stream_chunks=["Hello", " ", "Ying!"],
+    )
+    brain = Brain(
+        "fake-model",
+        memory,
+        chat_model,
+    )
+
+    chunks = list(
+        brain.stream_chat("  Hello, Elysia!  ")
+    )
+
+    assert chunks == ["Hello", " ", "Ying!"]
+
+    received_messages = chat_model.received_messages
+
+    assert received_messages is not None
+    assert received_messages[-1] == {
+        "role": "user",
+        "content": "Hello, Elysia!",
+    }
+
+    messages = memory.get_recent_messages(2)
+
+    assert len(messages) == 2
+    assert messages[0]["speaker"] == "Ying"
+    assert messages[0]["message"] == "Hello, Elysia!"
+    assert messages[1]["speaker"] == "Elysia"
+    assert messages[1]["message"] == "Hello Ying!"
+
+
+def test_stream_chat_does_not_save_partial_turn_on_stream_error(
+    tmp_path: Path,
+) -> None:
+    memory = Memory(tmp_path)
+    chat_model = FakeChatModel(
+        "Unused reply",
+        stream_chunks=["Partial reply"],
+        stream_error=RuntimeError(
+            "Streaming interrupted."
+        ),
+    )
+    brain = Brain(
+        "fake-model",
+        memory,
+        chat_model,
+    )
+
+    stream = brain.stream_chat("Hello")
+
+    assert next(stream) == "Partial reply"
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"Streaming interrupted\.",
+    ):
+        next(stream)
+
+    assert memory.get_recent_messages(2) == []
