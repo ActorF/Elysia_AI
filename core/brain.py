@@ -1,7 +1,12 @@
 import logging
 from collections.abc import Iterator
 
-from memory import ConversationMessage, Memory, Profile
+from memory import (
+    ConversationMessage,
+    Memory,
+    Profile,
+    ShortTermMemory,
+)
 from .chat_model import ChatMessage, ChatModel
 from .prompts import build_elysia_system_prompt
 
@@ -14,6 +19,7 @@ class Brain:
         model_name: str,
         memory: Memory,
         chat_model: ChatModel | None = None,
+        short_term_memory: ShortTermMemory | None = None,
     ) -> None:
         cleaned_model_name = model_name.strip()
 
@@ -23,6 +29,7 @@ class Brain:
         self._model_name = cleaned_model_name
         self._memory = memory
         self._chat_model = chat_model
+        self._short_term_memory = short_term_memory
 
         logger.info(
             "Brain initialized with model: %s",
@@ -90,6 +97,12 @@ class Brain:
             reply,
         )
 
+        if self._short_term_memory is not None:
+            self._short_term_memory.remember_turn(
+                cleaned_user_message,
+                reply,
+            )
+
         logger.info("Chat turn completed.")
 
         return reply
@@ -142,6 +155,12 @@ class Brain:
             reply,
         )
 
+        if self._short_term_memory is not None:
+            self._short_term_memory.remember_turn(
+                cleaned_user_message,
+                reply,
+            )
+
         logger.info("Streaming chat turn completed.")
 
     def remember_message(
@@ -181,11 +200,28 @@ class Brain:
         profile: Profile,
         limit: int = 10,
     ) -> list[ChatMessage]:
+        context: list[ChatMessage] = []
+
+        if self._short_term_memory is not None:
+            for turn in self._short_term_memory.get_turns():
+                context.append(
+                    {
+                        "role": "user",
+                        "content": turn["user_message"],
+                    }
+                )
+                context.append(
+                    {
+                        "role": "assistant",
+                        "content": turn["assistant_message"],
+                    }
+                )
+
+            return context
+
         recent_messages = self._memory.get_recent_messages(
             limit
         )
-
-        context: list[ChatMessage] = []
 
         for conversation_message in recent_messages:
             chat_message = self._to_chat_message(

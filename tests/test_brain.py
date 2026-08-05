@@ -5,8 +5,7 @@ import pytest
 
 from core import Brain
 from core.chat_model import ChatMessage
-from memory import Memory
-
+from memory import Memory, ShortTermMemory
 
 class FakeChatModel:
     def __init__(
@@ -331,3 +330,218 @@ def test_stream_chat_does_not_save_partial_turn_on_stream_error(
         next(stream)
 
     assert memory.get_recent_messages(2) == []
+
+def test_chat_uses_and_updates_short_term_memory(
+    tmp_path: Path,
+) -> None:
+    memory = Memory(tmp_path)
+    short_term_memory = ShortTermMemory(
+        token_budget=100,
+    )
+    short_term_memory.remember_turn(
+        "Previous question",
+        "Previous answer",
+    )
+
+    chat_model = FakeChatModel("Current answer")
+    brain = Brain(
+        "fake-model",
+        memory,
+        chat_model,
+        short_term_memory=short_term_memory,
+    )
+
+    reply = brain.chat("Current question")
+
+    assert reply == "Current answer"
+
+    received_messages = chat_model.received_messages
+
+    assert received_messages is not None
+    assert received_messages[1:] == [
+        {
+            "role": "user",
+            "content": "Previous question",
+        },
+        {
+            "role": "assistant",
+            "content": "Previous answer",
+        },
+        {
+            "role": "user",
+            "content": "Current question",
+        },
+    ]
+
+    assert short_term_memory.get_turns() == [
+        {
+            "user_message": "Previous question",
+            "assistant_message": "Previous answer",
+        },
+        {
+            "user_message": "Current question",
+            "assistant_message": "Current answer",
+        },
+    ]
+
+
+def test_short_term_memory_trimming_changes_context(
+    tmp_path: Path,
+) -> None:
+    memory = Memory(tmp_path)
+    short_term_memory = ShortTermMemory(
+        token_budget=4,
+    )
+
+    short_term_memory.remember_turn("aaaa", "bbbb")
+    short_term_memory.remember_turn("cccc", "dddd")
+    short_term_memory.remember_turn("eeee", "ffff")
+
+    brain = Brain(
+        "fake-model",
+        memory,
+        short_term_memory=short_term_memory,
+    )
+
+    messages = brain._build_chat_messages(
+        memory.load_profile(),
+        "gggg",
+    )
+
+    assert messages[1:] == [
+        {
+            "role": "user",
+            "content": "cccc",
+        },
+        {
+            "role": "assistant",
+            "content": "dddd",
+        },
+        {
+            "role": "user",
+            "content": "eeee",
+        },
+        {
+            "role": "assistant",
+            "content": "ffff",
+        },
+        {
+            "role": "user",
+            "content": "gggg",
+        },
+    ]
+
+
+def test_new_short_term_session_ignores_saved_history(
+    tmp_path: Path,
+) -> None:
+    memory = Memory(tmp_path)
+    memory.save_message("Ying", "Old question")
+    memory.save_message("Elysia", "Old answer")
+
+    short_term_memory = ShortTermMemory(
+        token_budget=100,
+    )
+    chat_model = FakeChatModel("Current answer")
+
+    brain = Brain(
+        "fake-model",
+        memory,
+        chat_model,
+        short_term_memory=short_term_memory,
+    )
+
+    brain.chat("Current question")
+
+    received_messages = chat_model.received_messages
+
+    assert received_messages is not None
+    assert received_messages[1:] == [
+        {
+            "role": "user",
+            "content": "Current question",
+        }
+    ]
+
+
+def test_chat_does_not_save_failed_short_term_turn(
+    tmp_path: Path,
+) -> None:
+    short_term_memory = ShortTermMemory(
+        token_budget=100,
+    )
+    brain = Brain(
+        "fake-model",
+        Memory(tmp_path),
+        FakeChatModel("   "),
+        short_term_memory=short_term_memory,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"Model reply cannot be empty\.",
+    ):
+        brain.chat("Hello")
+
+    assert short_term_memory.get_turns() == []
+
+
+def test_stream_chat_saves_complete_short_term_turn(
+    tmp_path: Path,
+) -> None:
+    short_term_memory = ShortTermMemory(
+        token_budget=100,
+    )
+    chat_model = FakeChatModel(
+        "Unused reply",
+        stream_chunks=["Hello", " ", "Ying!"],
+    )
+    brain = Brain(
+        "fake-model",
+        Memory(tmp_path),
+        chat_model,
+        short_term_memory=short_term_memory,
+    )
+
+    chunks = list(brain.stream_chat("Hello, Elysia!"))
+
+    assert chunks == ["Hello", " ", "Ying!"]
+    assert short_term_memory.get_turns() == [
+        {
+            "user_message": "Hello, Elysia!",
+            "assistant_message": "Hello Ying!",
+        }
+    ]
+
+
+def test_stream_chat_does_not_save_partial_short_term_turn(
+    tmp_path: Path,
+) -> None:
+    short_term_memory = ShortTermMemory(
+        token_budget=100,
+    )
+    chat_model = FakeChatModel(
+        "Unused reply",
+        stream_chunks=["Partial reply"],
+        stream_error=RuntimeError(
+            "Streaming interrupted."
+        ),
+    )
+    brain = Brain(
+        "fake-model",
+        Memory(tmp_path),
+        chat_model,
+        short_term_memory=short_term_memory,
+    )
+
+    stream = brain.stream_chat("Hello")
+
+    assert next(stream) == "Partial reply"
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"Streaming interrupted\.",
+    ):
+        next(stream)
+
+    assert short_term_memory.get_turns() == []
