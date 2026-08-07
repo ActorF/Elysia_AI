@@ -1,7 +1,12 @@
 """Console output functions for Elysia."""
 
 from core import Brain
-from memory import ConversationMessage, Profile
+from memory import (
+    ConversationMessage,
+    LongTermMemoryRecord,
+    Profile,
+)
+
 
 def display_recent_messages(
     messages: list[ConversationMessage],
@@ -23,6 +28,34 @@ def display_recent_messages(
         )
 
 
+def display_long_term_memories(
+    memories: list[LongTermMemoryRecord],
+) -> None:
+    print("\nLong-term memories:")
+
+    if not memories:
+        print("No saved long-term memories.")
+        return
+
+    for memory_record in memories:
+        print(
+            f"- {memory_record['key']}: "
+            f"{memory_record['value']}"
+        )
+        print(
+            f"  Source type: "
+            f"{memory_record['source_type']}"
+        )
+        print(
+            f"  Source text: "
+            f"{memory_record['source_text']}"
+        )
+        print(
+            f"  Created at: "
+            f"{memory_record['created_at']}"
+        )
+
+
 def display_profile(profile: Profile) -> None:
     print("\nProfile:")
     print(f"User: {profile['user_name']}")
@@ -40,7 +73,12 @@ def run_console_session(brain: Brain) -> None:
         brain.recall_recent_messages(10)
     )
 
+    long_term_memories = (
+        brain.recall_long_term_memories()
+    )
+
     display_recent_messages(recent_messages)
+    display_long_term_memories(long_term_memories)
     display_profile(profile)
 
     user_message = input("\nYou: ")

@@ -6,6 +6,12 @@ from .conversation import (
     ConversationMessage,
     save_json_message,
 )
+from .long_term_memory import (
+    LongTermMemoryRecord,
+    LongTermMemorySource,
+    load_long_term_memory,
+    save_long_term_memory_record,
+)
 
 class Profile(TypedDict):
     user_name: str
@@ -34,6 +40,13 @@ class Memory:
             / "profile.json"
         )
 
+        self._long_term_memory_file = (
+            self._base_dir
+            / "workspace"
+            / "memory"
+            / "long_term_memory.json"
+        )
+
     @property
     def conversation_file(self) -> Path:
         return self._conversation_file
@@ -41,6 +54,33 @@ class Memory:
     @property
     def profile_file(self) -> Path:
         return self._profile_file
+
+    @property
+    def long_term_memory_file(self) -> Path:
+        return self._long_term_memory_file
+
+    def get_long_term_memories(
+        self,
+    ) -> list[LongTermMemoryRecord]:
+        memory_data = load_long_term_memory(
+            self._long_term_memory_file,
+        )
+        return memory_data["memories"]
+
+    def save_long_term_memory(
+        self,
+        key: str,
+        value: str,
+        source_type: LongTermMemorySource,
+        source_text: str,
+    ) -> LongTermMemoryRecord:
+        return save_long_term_memory_record(
+            self._long_term_memory_file,
+            key,
+            value,
+            source_type,
+            source_text,
+        )
 
     def save_message(
         self,

@@ -6,6 +6,7 @@ from memory import (
     Memory,
     Profile,
     ShortTermMemory,
+    LongTermMemoryRecord,
 )
 from .chat_model import ChatMessage, ChatModel
 from .prompts import build_elysia_system_prompt
@@ -264,6 +265,12 @@ class Brain:
         )
 
         return messages
+
+    def recall_long_term_memories(
+        self,
+    ) -> list[LongTermMemoryRecord]:
+        return self._memory.get_long_term_memories()
+
     def recall_recent_messages(
         self,
         limit: int = 10,
