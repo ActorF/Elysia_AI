@@ -1,6 +1,11 @@
 from pathlib import Path
 from .json_store import load_json_or_default, write_json
-from typing import NotRequired, TypedDict
+from .profile import (
+    PROFILE_SCHEMA_VERSION,
+    Profile,
+    migrate_profile,
+    validate_profile,
+)
 from .conversation import (
     ConversationData,
     ConversationMessage,
@@ -13,12 +18,6 @@ from .long_term_memory import (
     save_long_term_memory_record,
 )
 
-class Profile(TypedDict):
-    user_name: str
-    assistant_name: str
-    languages: list[str]
-    project: str
-    launch_count: NotRequired[int]
 
 class Memory:
     """Manages Elysia's conversation and profile memory."""
@@ -112,28 +111,33 @@ class Memory:
 
     def load_profile(self) -> Profile:
         default_profile: Profile = {
+            "schema_version": PROFILE_SCHEMA_VERSION,
             "user_name": "Ying",
             "assistant_name": "Elysia",
             "languages": ["Chinese", "English"],
             "project": "Elysia AI",
+            "launch_count": 0,
         }
 
-        return load_json_or_default(
+        profile_data = load_json_or_default(
             self._profile_file,
             default_profile,
         )
 
+        return migrate_profile(profile_data)
+
     def save_profile(self, profile: Profile) -> None:
+        validated_profile = validate_profile(profile)
+
         write_json(
             self._profile_file,
-            profile,
+            validated_profile,
         )
 
     def record_launch(self) -> Profile:
         profile = self.load_profile()
 
-        launch_count = profile.get("launch_count", 0)
-        profile["launch_count"] = launch_count + 1
+        profile["launch_count"] += 1
 
         self.save_profile(profile)
 

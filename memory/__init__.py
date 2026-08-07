@@ -8,7 +8,8 @@ from .long_term_memory import (
     load_long_term_memory,
     save_long_term_memory_record,
 )
-from .manager import Memory, Profile
+from .manager import Memory
+from .profile import PROFILE_SCHEMA_VERSION, Profile
 from .short_term_memory import ShortTermMemory, ShortTermTurn
 
 
@@ -18,6 +19,7 @@ __all__ = [
     "LongTermMemoryRecord",
     "LongTermMemorySource",
     "Memory",
+    "PROFILE_SCHEMA_VERSION",
     "Profile",
     "ShortTermMemory",
     "ShortTermTurn",

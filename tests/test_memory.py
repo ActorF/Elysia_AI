@@ -1,7 +1,10 @@
+import json
 from pathlib import Path
+from typing import cast
+
 import pytest
 
-from memory.manager import Memory
+from memory import Memory, Profile
 
 
 def test_load_profile_creates_default_profile(
@@ -12,12 +15,90 @@ def test_load_profile_creates_default_profile(
     profile = memory.load_profile()
 
     assert profile == {
+        "schema_version": 1,
+        "user_name": "Ying",
+        "assistant_name": "Elysia",
+        "languages": ["Chinese", "English"],
+        "project": "Elysia AI",
+        "launch_count": 0,
+    }
+    assert memory.profile_file.exists()
+
+
+def test_load_profile_migrates_legacy_profile_without_rewriting(
+    tmp_path: Path,
+) -> None:
+    memory = Memory(tmp_path)
+    memory.profile_file.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    legacy_profile = {
         "user_name": "Ying",
         "assistant_name": "Elysia",
         "languages": ["Chinese", "English"],
         "project": "Elysia AI",
     }
-    assert memory.profile_file.exists()
+
+    memory.profile_file.write_text(
+        json.dumps(legacy_profile),
+        encoding="utf-8",
+    )
+    original_file_content = (
+        memory.profile_file.read_text(
+            encoding="utf-8",
+        )
+    )
+
+    profile = memory.load_profile()
+
+    assert profile == {
+        **legacy_profile,
+        "schema_version": 1,
+        "launch_count": 0,
+    }
+    assert (
+        memory.profile_file.read_text(
+            encoding="utf-8",
+        )
+        == original_file_content
+    )
+
+
+def test_save_profile_rejects_invalid_data_before_write(
+    tmp_path: Path,
+) -> None:
+    memory = Memory(tmp_path)
+    valid_profile = memory.load_profile()
+    original_file_content = (
+        memory.profile_file.read_text(
+            encoding="utf-8",
+        )
+    )
+    invalid_profile = cast(
+        Profile,
+        {
+            **valid_profile,
+            "launch_count": "wrong",
+        },
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"launch_count must be a "
+            r"non-negative integer\."
+        ),
+    ):
+        memory.save_profile(invalid_profile)
+
+    assert (
+        memory.profile_file.read_text(
+            encoding="utf-8",
+        )
+        == original_file_content
+    )
 
 
 def test_record_launch_increments_and_saves_count(
