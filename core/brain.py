@@ -3,10 +3,13 @@ from collections.abc import Iterator
 
 from memory import (
     ConversationMessage,
+    MemoryCandidate,
+    MemoryExtractor,
     Memory,
     Profile,
     ShortTermMemory,
     LongTermMemoryRecord,
+
 )
 from .chat_model import ChatMessage, ChatModel
 from .prompts import build_elysia_system_prompt
@@ -21,6 +24,7 @@ class Brain:
         memory: Memory,
         chat_model: ChatModel | None = None,
         short_term_memory: ShortTermMemory | None = None,
+        memory_extractor: MemoryExtractor | None = None,
     ) -> None:
         cleaned_model_name = model_name.strip()
 
@@ -31,6 +35,7 @@ class Brain:
         self._memory = memory
         self._chat_model = chat_model
         self._short_term_memory = short_term_memory
+        self._memory_extractor = memory_extractor
 
         logger.info(
             "Brain initialized with model: %s",
@@ -270,6 +275,37 @@ class Brain:
         self,
     ) -> list[LongTermMemoryRecord]:
         return self._memory.get_long_term_memories()
+
+    def extract_memory_candidates(
+        self,
+        user_message: str,
+    ) -> list[MemoryCandidate]:
+        """Extract possible memories without saving them."""
+        cleaned_user_message = user_message.strip()
+
+        if not cleaned_user_message:
+            raise ValueError(
+                "User message cannot be empty."
+            )
+
+        if self._memory_extractor is None:
+            return []
+
+        return self._memory_extractor.extract_candidates(
+            cleaned_user_message
+        )
+
+    def confirm_memory_candidate(
+        self,
+        candidate: MemoryCandidate,
+    ) -> LongTermMemoryRecord:
+        """Save one candidate after the user confirms it."""
+        return self._memory.save_long_term_memory(
+            candidate["key"],
+            candidate["value"],
+            candidate["source_type"],
+            candidate["source_text"],
+        )
 
     def recall_recent_messages(
         self,

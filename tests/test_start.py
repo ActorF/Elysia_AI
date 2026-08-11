@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 import start
-from core import ConfigurationError
+from core import ConfigurationError, ModelMemoryExtractor
 from memory import ShortTermMemory
 
 
@@ -82,3 +82,8 @@ def test_create_brain_uses_configured_token_budget(
         }
     ]
     assert short_term_memory.get_token_count() == 2
+
+    assert isinstance(
+        brain._memory_extractor,
+        ModelMemoryExtractor,
+    )

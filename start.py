@@ -8,6 +8,7 @@ from core import (
     ChatModelError,
     ConfigurationError,
     LangChainOllamaChatModel,
+    ModelMemoryExtractor,
 )
 from memory import Memory, ShortTermMemory
 from ui import run_console_session
@@ -62,11 +63,16 @@ def create_brain() -> Brain:
 
     chat_model.ensure_model_available()
 
+    memory_extractor = ModelMemoryExtractor(
+        chat_model
+    )
+
     return Brain(
         SETTINGS.model_name,
         elysia_memory,
         chat_model,
         short_term_memory=short_term_memory,
+        memory_extractor=memory_extractor,
     )
 
 def main() -> None:

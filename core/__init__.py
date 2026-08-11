@@ -13,6 +13,7 @@ from .ollama_chat_model import OllamaChatModel
 from .langchain_ollama_chat_model import (
     LangChainOllamaChatModel,
 )
+from .model_memory_extractor import ModelMemoryExtractor
 from .prompts import build_elysia_system_prompt
 
 __all__ = [
@@ -24,6 +25,7 @@ __all__ = [
     "ChatModelResponseError",
     "ConfigurationError",
     "LangChainOllamaChatModel",
+    "ModelMemoryExtractor",
     "OllamaChatModel",
     "build_elysia_system_prompt",
 ]

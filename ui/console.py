@@ -4,6 +4,7 @@ from core import Brain
 from memory import (
     ConversationMessage,
     LongTermMemoryRecord,
+    MemoryCandidate,
     Profile,
 )
 
@@ -65,6 +66,37 @@ def display_profile(profile: Profile) -> None:
     print(f"Launch count: {profile['launch_count']}")
 
 
+def review_memory_candidates(
+    brain: Brain,
+    candidates: list[MemoryCandidate],
+) -> None:
+    """Ask before saving each extracted memory candidate."""
+    if not candidates:
+        return
+
+    print("\nPossible long-term memories:")
+
+    for candidate in candidates:
+        print(
+            f"- {candidate['key']}: "
+            f"{candidate['value']}"
+        )
+        print(
+            f"  Source type: "
+            f"{candidate['source_type']}"
+        )
+
+        decision = input(
+            "  Save this memory? [y/N]: "
+        ).strip().lower()
+
+        if decision in {"y", "yes"}:
+            brain.confirm_memory_candidate(candidate)
+            print("  Memory saved.")
+        else:
+            print("  Memory not saved.")
+
+
 def run_console_session(brain: Brain) -> None:
     """Start and display an Elysia console session."""
     profile = brain.start_session()
@@ -93,3 +125,16 @@ def run_console_session(brain: Brain) -> None:
         print(chunk, end="", flush=True)
 
     print()
+
+    try:
+        candidates = brain.extract_memory_candidates(
+            user_message
+        )
+    except ValueError as error:
+        print(
+            "Memory extraction skipped: "
+            f"{error}"
+        )
+        return
+
+    review_memory_candidates(brain, candidates)

@@ -1,6 +1,7 @@
 """Public interface for Elysia's memory package."""
 
 from .conversation import ConversationMessage
+from .extraction import MemoryCandidate, MemoryExtractor
 from .long_term_memory import (
     LongTermMemoryData,
     LongTermMemoryRecord,
@@ -19,6 +20,8 @@ __all__ = [
     "LongTermMemoryRecord",
     "LongTermMemorySource",
     "Memory",
+    "MemoryCandidate",
+    "MemoryExtractor",
     "PROFILE_SCHEMA_VERSION",
     "Profile",
     "ShortTermMemory",
