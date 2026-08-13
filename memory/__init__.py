@@ -10,7 +10,10 @@ from .conversation_summary import (
     save_conversation_summary,
     validate_conversation_summary_content,
 )
-from .extraction import MemoryCandidate, MemoryExtractor
+from .extraction import (
+    MemoryCandidate,
+    MemoryExtractor,
+)
 from .long_term_memory import (
     LongTermMemoryData,
     LongTermMemoryRecord,
@@ -24,9 +27,22 @@ from .long_term_memory import (
     search_long_term_memory_records,
 )
 from .manager import Memory
-from .profile import PROFILE_SCHEMA_VERSION, Profile
-from .short_term_memory import ShortTermMemory, ShortTermTurn
-from .summarization import ConversationSummarizer
+from .profile import (
+    PROFILE_SCHEMA_VERSION,
+    Profile,
+)
+from .retrieval import (
+    MemoryRetrievalSource,
+    MemoryRetriever,
+    RetrievedMemory,
+)
+from .short_term_memory import (
+    ShortTermMemory,
+    ShortTermTurn,
+)
+from .summarization import (
+    ConversationSummarizer,
+)
 
 
 __all__ = [
@@ -43,8 +59,11 @@ __all__ = [
     "Memory",
     "MemoryCandidate",
     "MemoryExtractor",
+    "MemoryRetrievalSource",
+    "MemoryRetriever",
     "PROFILE_SCHEMA_VERSION",
     "Profile",
+    "RetrievedMemory",
     "ShortTermMemory",
     "ShortTermTurn",
     "delete_long_term_memory_record",

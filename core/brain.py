@@ -1,20 +1,23 @@
 import logging
-from pathlib import Path
 from collections.abc import Iterator
 from datetime import datetime
+from pathlib import Path
+
 from memory import (
     ConversationMessage,
     ConversationSummary,
     ConversationSummarizer,
+    LongTermMemoryRecord,
     LongTermMemorySearchResult,
+    Memory,
     MemoryCandidate,
     MemoryExtractor,
-    Memory,
+    MemoryRetriever,
     Profile,
+    RetrievedMemory,
     ShortTermMemory,
-    LongTermMemoryRecord,
-
 )
+
 from .chat_model import ChatMessage, ChatModel
 from .prompts import build_elysia_system_prompt
 
@@ -67,25 +70,42 @@ class Brain:
         model_name: str,
         memory: Memory,
         chat_model: ChatModel | None = None,
-        short_term_memory: ShortTermMemory | None = None,
-        memory_extractor: MemoryExtractor | None = None,
+        short_term_memory: (
+            ShortTermMemory | None
+        ) = None,
+        memory_extractor: (
+            MemoryExtractor | None
+        ) = None,
         conversation_summarizer: (
             ConversationSummarizer | None
+        ) = None,
+        memory_retriever: (
+            MemoryRetriever | None
         ) = None,
     ) -> None:
         cleaned_model_name = model_name.strip()
 
         if not cleaned_model_name:
-            raise ValueError("Model name cannot be empty.")
+            raise ValueError(
+                "Model name cannot be empty."
+            )
 
         self._model_name = cleaned_model_name
         self._memory = memory
         self._chat_model = chat_model
-        self._short_term_memory = short_term_memory
-        self._memory_extractor = memory_extractor
+        self._short_term_memory = (
+            short_term_memory
+        )
+        self._memory_extractor = (
+            memory_extractor
+        )
         self._conversation_summarizer = (
             conversation_summarizer
         )
+        self._memory_retriever = (
+            memory_retriever
+        )
+
         logger.info(
             "Brain initialized with model: %s",
             self._model_name,
@@ -295,7 +315,19 @@ class Brain:
         current_user_message: str,
         limit: int = 10,
     ) -> list[ChatMessage]:
-        system_prompt = build_elysia_system_prompt(profile)
+        retrieved_memories = (
+            self.retrieve_relevant_memories(
+                current_user_message,
+                profile,
+            )
+        )
+
+        system_prompt = (
+            build_elysia_system_prompt(
+                profile,
+                retrieved_memories,
+            )
+        )
 
         messages: list[ChatMessage] = [
             {
@@ -314,11 +346,55 @@ class Brain:
         messages.append(
             {
                 "role": "user",
-                "content": current_user_message,
+                "content": (
+                    current_user_message
+                ),
             }
         )
 
         return messages
+
+    def retrieve_relevant_memories(
+        self,
+        query: str,
+        profile: Profile | None = None,
+    ) -> list[RetrievedMemory]:
+        """Retrieve relevant saved context for one user query."""
+        cleaned_query = query.strip()
+
+        if not cleaned_query:
+            raise ValueError(
+                "Memory retrieval query cannot be empty."
+            )
+
+        if self._memory_retriever is None:
+            return []
+
+        active_profile = (
+            profile
+            if profile is not None
+            else self._memory.load_profile()
+        )
+
+        summary_data = (
+            self._memory.get_conversation_summary()
+        )
+
+        results = (
+            self._memory_retriever.retrieve(
+                cleaned_query,
+                active_profile,
+                summary_data["summary"],
+                self._memory.get_long_term_memories(),
+            )
+        )
+
+        logger.info(
+            "Retrieved %s relevant memory items.",
+            len(results),
+        )
+
+        return results
 
     def recall_long_term_memories(
         self,

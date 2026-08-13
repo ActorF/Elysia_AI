@@ -11,7 +11,11 @@ from core import (
     ModelConversationSummarizer,
     ModelMemoryExtractor,
 )
-from memory import Memory, ShortTermMemory
+from memory import (
+    Memory,
+    MemoryRetriever,
+    ShortTermMemory,
+)
 from ui import run_console_session
 
 LOG_DIR = SETTINGS.base_dir / "logs"
@@ -43,15 +47,27 @@ def validate_settings() -> None:
             "http:// or https://."
         )
 
-    if SETTINGS.short_term_memory_token_budget <= 0:
+    if (
+        SETTINGS.short_term_memory_token_budget
+        <= 0
+    ):
         raise ConfigurationError(
             "SHORT_TERM_MEMORY_TOKEN_BUDGET "
             "must be greater than zero."
         )
 
+    if SETTINGS.memory_retrieval_limit <= 0:
+        raise ConfigurationError(
+            "MEMORY_RETRIEVAL_LIMIT "
+            "must be greater than zero."
+        )
+
+
 def create_brain() -> Brain:
     """Create and connect Elysia's main objects."""
-    elysia_memory = Memory(SETTINGS.base_dir)
+    elysia_memory = Memory(
+        SETTINGS.base_dir
+    )
 
     short_term_memory = ShortTermMemory(
         SETTINGS.short_term_memory_token_budget,
@@ -74,16 +90,28 @@ def create_brain() -> Brain:
         )
     )
 
+    memory_retriever = MemoryRetriever(
+        SETTINGS.memory_retrieval_limit,
+    )
+
     return Brain(
         SETTINGS.model_name,
         elysia_memory,
         chat_model,
-        short_term_memory=short_term_memory,
-        memory_extractor=memory_extractor,
+        short_term_memory=(
+            short_term_memory
+        ),
+        memory_extractor=(
+            memory_extractor
+        ),
         conversation_summarizer=(
             conversation_summarizer
         ),
+        memory_retriever=(
+            memory_retriever
+        ),
     )
+
 
 def main() -> None:
     validate_settings()
