@@ -19,11 +19,15 @@ from .conversation_summary import (
 )
 from .long_term_memory import (
     LongTermMemoryRecord,
+    LongTermMemorySearchResult,
     LongTermMemorySource,
+    delete_long_term_memory_record,
+    edit_long_term_memory_record,
+    export_long_term_memory,
     load_long_term_memory,
     save_long_term_memory_record,
+    search_long_term_memory_records,
 )
-
 
 class Memory:
     """Manages Elysia's conversation and profile memory."""
@@ -112,6 +116,49 @@ class Memory:
             value,
             source_type,
             source_text,
+        )
+
+    def search_long_term_memories(
+        self,
+        query: str,
+    ) -> list[LongTermMemorySearchResult]:
+        return search_long_term_memory_records(
+            self._long_term_memory_file,
+            query,
+        )
+
+    def edit_long_term_memory(
+        self,
+        memory_number: int,
+        key: str,
+        value: str,
+    ) -> LongTermMemoryRecord:
+        return edit_long_term_memory_record(
+            self._long_term_memory_file,
+            memory_number,
+            key,
+            value,
+        )
+
+    def delete_long_term_memory(
+        self,
+        memory_number: int,
+    ) -> LongTermMemoryRecord:
+        return delete_long_term_memory_record(
+            self._long_term_memory_file,
+            memory_number,
+        )
+
+    def export_long_term_memories(
+        self,
+        export_file: Path,
+        *,
+        overwrite: bool = False,
+    ) -> Path:
+        return export_long_term_memory(
+            self._long_term_memory_file,
+            export_file,
+            overwrite=overwrite,
         )
 
     def save_message(

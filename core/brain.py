@@ -1,10 +1,12 @@
 import logging
+from pathlib import Path
 from collections.abc import Iterator
 from datetime import datetime
 from memory import (
     ConversationMessage,
     ConversationSummary,
     ConversationSummarizer,
+    LongTermMemorySearchResult,
     MemoryCandidate,
     MemoryExtractor,
     Memory,
@@ -322,6 +324,84 @@ class Brain:
         self,
     ) -> list[LongTermMemoryRecord]:
         return self._memory.get_long_term_memories()
+
+    def search_long_term_memories(
+        self,
+        query: str,
+    ) -> list[LongTermMemorySearchResult]:
+        return self._memory.search_long_term_memories(
+            query
+        )
+
+    def edit_long_term_memory(
+        self,
+        memory_number: int,
+        key: str,
+        value: str,
+    ) -> LongTermMemoryRecord:
+        updated_record = (
+            self._memory.edit_long_term_memory(
+                memory_number,
+                key,
+                value,
+            )
+        )
+
+        logger.info(
+            "Long-term memory edited: "
+            "number=%s key=%s",
+            memory_number,
+            updated_record["key"],
+        )
+
+        return updated_record
+
+    def export_long_term_memories(
+        self,
+        export_file: Path,
+        *,
+        overwrite: bool = False,
+    ) -> Path:
+        exported_file = (
+            self._memory.export_long_term_memories(
+                export_file,
+                overwrite=overwrite,
+            )
+        )
+
+        logger.info(
+            "Long-term memories exported: path=%s",
+            exported_file,
+        )
+
+        return exported_file
+
+    def delete_long_term_memory(
+        self,
+        memory_number: int,
+        *,
+        confirmed: bool = False,
+    ) -> LongTermMemoryRecord:
+        if confirmed is not True:
+            raise PermissionError(
+                "Deleting long-term memory "
+                "requires confirmation."
+            )
+
+        deleted_record = (
+            self._memory.delete_long_term_memory(
+                memory_number
+            )
+        )
+
+        logger.info(
+            "Long-term memory deleted: "
+            "number=%s key=%s",
+            memory_number,
+            deleted_record["key"],
+        )
+
+        return deleted_record
 
     def extract_memory_candidates(
         self,

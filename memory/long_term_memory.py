@@ -1,4 +1,4 @@
-"""Data contracts for Elysia's persistent long-term memory."""
+"""Data contracts and operations for persistent long-term memory."""
 
 from datetime import datetime
 from pathlib import Path
@@ -22,6 +22,11 @@ class LongTermMemoryRecord(TypedDict):
 
 class LongTermMemoryData(TypedDict):
     memories: list[LongTermMemoryRecord]
+
+
+class LongTermMemorySearchResult(TypedDict):
+    number: int
+    memory: LongTermMemoryRecord
 
 
 def load_long_term_memory(
@@ -84,3 +89,156 @@ def save_long_term_memory_record(
     write_json(file_path, memory_data)
 
     return record
+
+
+def search_long_term_memory_records(
+    file_path: Path,
+    query: str,
+) -> list[LongTermMemorySearchResult]:
+    """Find records using case-insensitive text matching."""
+    cleaned_query = query.strip().casefold()
+
+    if not cleaned_query:
+        raise ValueError("Search query cannot be empty.")
+
+    memory_data = load_long_term_memory(file_path)
+    results: list[LongTermMemorySearchResult] = []
+
+    for number, record in enumerate(
+        memory_data["memories"],
+        start=1,
+    ):
+        searchable_values = (
+            record["key"],
+            record["value"],
+            record["source_type"],
+            record["source_text"],
+            record["created_at"],
+        )
+
+        if any(
+            cleaned_query in value.casefold()
+            for value in searchable_values
+        ):
+            results.append(
+                {
+                    "number": number,
+                    "memory": record.copy(),
+                }
+            )
+
+    return results
+
+
+def edit_long_term_memory_record(
+    file_path: Path,
+    memory_number: int,
+    key: str,
+    value: str,
+) -> LongTermMemoryRecord:
+    """Edit one record while preserving its source metadata."""
+    cleaned_key = key.strip()
+    cleaned_value = value.strip()
+
+    if not cleaned_key:
+        raise ValueError("Memory key cannot be empty.")
+
+    if not cleaned_value:
+        raise ValueError("Memory value cannot be empty.")
+
+    memory_data = load_long_term_memory(file_path)
+    memory_index = _resolve_memory_index(
+        memory_number,
+        len(memory_data["memories"]),
+    )
+    existing_record = memory_data["memories"][
+        memory_index
+    ]
+
+    updated_record: LongTermMemoryRecord = {
+        "key": cleaned_key,
+        "value": cleaned_value,
+        "source_type": existing_record["source_type"],
+        "source_text": existing_record["source_text"],
+        "created_at": existing_record["created_at"],
+    }
+
+    memory_data["memories"][memory_index] = (
+        updated_record
+    )
+    write_json(file_path, memory_data)
+
+    return updated_record
+
+
+def delete_long_term_memory_record(
+    file_path: Path,
+    memory_number: int,
+) -> LongTermMemoryRecord:
+    """Delete and return one numbered long-term memory."""
+    memory_data = load_long_term_memory(file_path)
+    memory_index = _resolve_memory_index(
+        memory_number,
+        len(memory_data["memories"]),
+    )
+    deleted_record = memory_data["memories"].pop(
+        memory_index
+    )
+
+    write_json(file_path, memory_data)
+
+    return deleted_record
+
+
+def export_long_term_memory(
+    file_path: Path,
+    export_file: Path,
+    *,
+    overwrite: bool = False,
+) -> Path:
+    """Export a portable JSON copy of long-term memories."""
+    if file_path.resolve() == export_file.resolve():
+        raise ValueError(
+            "Export file must be different from the "
+            "long-term memory store."
+        )
+
+    if export_file.exists() and not overwrite:
+        raise FileExistsError(
+            "Export file already exists."
+        )
+
+    memory_data = load_long_term_memory(file_path)
+    export_data: LongTermMemoryData = {
+        "memories": [
+            record.copy()
+            for record in memory_data["memories"]
+        ],
+    }
+
+    write_json(export_file, export_data)
+
+    return export_file
+
+
+def _resolve_memory_index(
+    memory_number: int,
+    memory_count: int,
+) -> int:
+    if (
+        not isinstance(memory_number, int)
+        or isinstance(memory_number, bool)
+        or memory_number <= 0
+    ):
+        raise ValueError(
+            "Memory number must be a positive integer."
+        )
+
+    memory_index = memory_number - 1
+
+    if memory_index >= memory_count:
+        raise IndexError(
+            "Long-term memory number does not exist."
+        )
+
+    return memory_index
