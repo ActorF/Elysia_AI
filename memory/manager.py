@@ -11,6 +11,12 @@ from .conversation import (
     ConversationMessage,
     save_json_message,
 )
+from .conversation_summary import (
+    ConversationSummary,
+    ConversationSummaryData,
+    load_conversation_summary,
+    save_conversation_summary as write_conversation_summary,
+)
 from .long_term_memory import (
     LongTermMemoryRecord,
     LongTermMemorySource,
@@ -32,6 +38,13 @@ class Memory:
             / "conversation.json"
         )
 
+        self._conversation_summary_file = (
+            self._base_dir
+            / "workspace"
+            / "conversations"
+            / "conversation_summary.json"
+        )
+
         self._profile_file = (
             self._base_dir
             / "workspace"
@@ -49,6 +62,26 @@ class Memory:
     @property
     def conversation_file(self) -> Path:
         return self._conversation_file
+
+    @property
+    def conversation_summary_file(self) -> Path:
+        return self._conversation_summary_file
+
+    def get_conversation_summary(
+        self,
+    ) -> ConversationSummaryData:
+        return load_conversation_summary(
+            self._conversation_summary_file,
+        )
+
+    def save_conversation_summary(
+        self,
+        summary: ConversationSummary,
+    ) -> None:
+        write_conversation_summary(
+            self._conversation_summary_file,
+            summary,
+        )
 
     @property
     def profile_file(self) -> Path:
@@ -90,6 +123,22 @@ class Memory:
             self._conversation_file,
             speaker,
             message,
+        )
+
+    def get_all_messages(
+        self,
+    ) -> list[ConversationMessage]:
+        default_data: ConversationData = {
+            "messages": [],
+        }
+
+        conversation_data = load_json_or_default(
+            self._conversation_file,
+            default_data,
+        )
+
+        return list(
+            conversation_data["messages"]
         )
 
     def get_recent_messages(

@@ -8,6 +8,7 @@ from core import (
     ChatModelError,
     ConfigurationError,
     LangChainOllamaChatModel,
+    ModelConversationSummarizer,
     ModelMemoryExtractor,
 )
 from memory import Memory, ShortTermMemory
@@ -67,12 +68,21 @@ def create_brain() -> Brain:
         chat_model
     )
 
+    conversation_summarizer = (
+        ModelConversationSummarizer(
+            chat_model
+        )
+    )
+
     return Brain(
         SETTINGS.model_name,
         elysia_memory,
         chat_model,
         short_term_memory=short_term_memory,
         memory_extractor=memory_extractor,
+        conversation_summarizer=(
+            conversation_summarizer
+        ),
     )
 
 def main() -> None:

@@ -4,7 +4,11 @@ from pathlib import Path
 import pytest
 
 import start
-from core import ConfigurationError, ModelMemoryExtractor
+from core import (
+    ConfigurationError,
+    ModelConversationSummarizer,
+    ModelMemoryExtractor,
+)
 from memory import ShortTermMemory
 
 
@@ -70,6 +74,19 @@ def test_create_brain_uses_configured_token_budget(
     assert isinstance(
         short_term_memory,
         ShortTermMemory,
+    )
+
+    conversation_summarizer = (
+        brain._conversation_summarizer
+    )
+
+    assert isinstance(
+        conversation_summarizer,
+        ModelConversationSummarizer,
+    )
+    assert (
+        conversation_summarizer._chat_model
+        is brain._chat_model
     )
 
     short_term_memory.remember_turn("aaaa", "bbbb")

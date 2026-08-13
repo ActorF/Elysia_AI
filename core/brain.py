@@ -1,8 +1,10 @@
 import logging
 from collections.abc import Iterator
-
+from datetime import datetime
 from memory import (
     ConversationMessage,
+    ConversationSummary,
+    ConversationSummarizer,
     MemoryCandidate,
     MemoryExtractor,
     Memory,
@@ -17,6 +19,46 @@ from .prompts import build_elysia_system_prompt
 logger = logging.getLogger(__name__)
 
 
+def _get_unsummarized_messages(
+    messages: list[ConversationMessage],
+    existing_summary: ConversationSummary | None,
+) -> list[ConversationMessage]:
+    if existing_summary is None:
+        return list(messages)
+
+    summarized_count = existing_summary[
+        "source_message_count"
+    ]
+
+    if (
+        summarized_count <= 0
+        or summarized_count > len(messages)
+    ):
+        raise ValueError(
+            "Conversation summary does not match "
+            "stored messages."
+        )
+
+    if (
+        messages[0]["timestamp"]
+        != existing_summary[
+            "source_start_timestamp"
+        ]
+        or messages[
+            summarized_count - 1
+        ]["timestamp"]
+        != existing_summary[
+            "source_end_timestamp"
+        ]
+    ):
+        raise ValueError(
+            "Conversation summary does not match "
+            "stored messages."
+        )
+
+    return messages[summarized_count:]
+
+
 class Brain:
     def __init__(
         self,
@@ -25,6 +67,9 @@ class Brain:
         chat_model: ChatModel | None = None,
         short_term_memory: ShortTermMemory | None = None,
         memory_extractor: MemoryExtractor | None = None,
+        conversation_summarizer: (
+            ConversationSummarizer | None
+        ) = None,
     ) -> None:
         cleaned_model_name = model_name.strip()
 
@@ -36,7 +81,9 @@ class Brain:
         self._chat_model = chat_model
         self._short_term_memory = short_term_memory
         self._memory_extractor = memory_extractor
-
+        self._conversation_summarizer = (
+            conversation_summarizer
+        )
         logger.info(
             "Brain initialized with model: %s",
             self._model_name,
@@ -306,6 +353,74 @@ class Brain:
             candidate["source_type"],
             candidate["source_text"],
         )
+
+    def summarize_conversation(
+        self,
+    ) -> ConversationSummary | None:
+        """Create or update the saved conversation summary."""
+        if self._conversation_summarizer is None:
+            raise RuntimeError(
+                "Conversation summarizer is not connected."
+            )
+
+        messages = self._memory.get_all_messages()
+
+        if not messages:
+            return None
+
+        summary_data = (
+            self._memory.get_conversation_summary()
+        )
+        existing_summary = summary_data["summary"]
+
+        unsummarized_messages = (
+            _get_unsummarized_messages(
+                messages,
+                existing_summary,
+            )
+        )
+
+        if not unsummarized_messages:
+            return existing_summary
+
+        previous_content = (
+            existing_summary["content"]
+            if existing_summary is not None
+            else None
+        )
+
+        content = (
+            self._conversation_summarizer.summarize(
+                unsummarized_messages,
+                previous_content,
+            )
+        )
+
+        summary: ConversationSummary = {
+            "content": content,
+            "source_message_count": len(messages),
+            "source_start_timestamp": (
+                messages[0]["timestamp"]
+            ),
+            "source_end_timestamp": (
+                messages[-1]["timestamp"]
+            ),
+            "updated_at": datetime.now().strftime(
+                "%Y-%m-%d %H:%M:%S"
+            ),
+        }
+
+        self._memory.save_conversation_summary(
+            summary
+        )
+
+        logger.info(
+            "Conversation summary updated through "
+            "%s messages.",
+            len(messages),
+        )
+
+        return summary
 
     def recall_recent_messages(
         self,
