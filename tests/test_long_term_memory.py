@@ -163,7 +163,7 @@ def test_console_session_displays_memory_source(
 
     monkeypatch.setattr(
         "builtins.input",
-        lambda _prompt: "",
+        lambda _prompt: "/quit",
     )
 
     run_console_session(brain)

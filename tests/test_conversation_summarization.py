@@ -547,3 +547,58 @@ def test_brain_requires_connected_summarizer(
         ),
     ):
         brain.summarize_conversation()
+
+
+def test_brain_counts_only_unsummarized_messages(
+    tmp_path: Path,
+) -> None:
+    memory = Memory(tmp_path)
+    summarizer = FakeConversationSummarizer(
+        [_summary_content()]
+    )
+    brain = Brain(
+        "fake-model",
+        memory,
+        conversation_summarizer=summarizer,
+    )
+
+    assert (
+        brain.get_unsummarized_message_count()
+        == 0
+    )
+
+    memory.save_message(
+        "Ying",
+        "First question",
+    )
+    memory.save_message(
+        "Elysia",
+        "First answer",
+    )
+
+    assert (
+        brain.get_unsummarized_message_count()
+        == 2
+    )
+
+    summary = brain.summarize_conversation()
+
+    assert summary is not None
+    assert (
+        brain.get_unsummarized_message_count()
+        == 0
+    )
+
+    memory.save_message(
+        "Ying",
+        "Second question",
+    )
+    memory.save_message(
+        "Elysia",
+        "Second answer",
+    )
+
+    assert (
+        brain.get_unsummarized_message_count()
+        == 2
+    )

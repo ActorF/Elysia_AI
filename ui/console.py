@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from core import Brain
+from core import Brain, ChatModelError
 from memory import (
     ConversationMessage,
     LongTermMemoryRecord,
@@ -11,6 +11,7 @@ from memory import (
     Profile,
 )
 
+AUTO_SUMMARY_MESSAGE_THRESHOLD = 10
 
 def display_recent_messages(
     messages: list[ConversationMessage],
@@ -360,8 +361,72 @@ def run_memory_management(brain: Brain) -> None:
             print("Unknown memory action.")
 
 
+def _update_conversation_summary(
+    brain: Brain,
+    *,
+    automatic: bool,
+) -> None:
+    """Update the summary manually or when enough messages exist."""
+    try:
+        unsummarized_message_count = (
+            brain.get_unsummarized_message_count()
+        )
+    except ValueError as error:
+        print(
+            "Conversation summary skipped: "
+            f"{error}"
+        )
+        return
+
+    if unsummarized_message_count == 0:
+        if not automatic:
+            print(
+                "No new conversation messages "
+                "to summarize."
+            )
+        return
+
+    if (
+        automatic
+        and unsummarized_message_count
+        < AUTO_SUMMARY_MESSAGE_THRESHOLD
+    ):
+        return
+
+    print("Updating conversation summary...")
+
+    try:
+        summary = brain.summarize_conversation()
+    except (
+        ChatModelError,
+        RuntimeError,
+        ValueError,
+    ) as error:
+        print(
+            "Conversation summary skipped: "
+            f"{error}"
+        )
+        return
+
+    if summary is None:
+        if not automatic:
+            print(
+                "No conversation messages "
+                "to summarize."
+            )
+        return
+
+    if automatic:
+        print(
+            "Conversation summary updated "
+            "automatically."
+        )
+    else:
+        print("Conversation summary updated.")
+
+
 def run_console_session(brain: Brain) -> None:
-    """Start and display an Elysia console session."""
+    """Run a continuous Elysia console chat session."""
     profile = brain.start_session()
 
     recent_messages = (
@@ -378,48 +443,83 @@ def run_console_session(brain: Brain) -> None:
     )
     display_profile(profile)
 
+    print("\nCommands:")
     print(
-        "\nEnter /memory instead of a message "
-        "to manage saved memories."
+        "/memory   - Manage saved memories"
+    )
+    print(
+        "/summarize - Update conversation summary"
+    )
+    print(
+        "/quit     - End the chat session"
     )
 
     while True:
         user_message = input("\nYou: ")
+        cleaned_user_message = (
+            user_message.strip()
+        )
+        command = (
+            cleaned_user_message.lower()
+        )
 
-        if (
-            user_message.strip().lower()
-            == "/memory"
-        ):
+        if not cleaned_user_message:
+            print("No message was entered.")
+            continue
+
+        if command in {"/quit", "/exit"}:
+            print("Chat session ended.")
+            return
+
+        if command == "/memory":
             run_memory_management(brain)
             continue
 
-        break
+        if command in {
+            "/summarize",
+            "/summary",
+        }:
+            _update_conversation_summary(
+                brain,
+                automatic=False,
+            )
+            continue
 
-    if not user_message.strip():
-        print("No message was entered.")
-        return
-
-    print("\nElysia: ", end="", flush=True)
-
-    for chunk in brain.stream_chat(
-        user_message
-    ):
-        print(chunk, end="", flush=True)
-
-    print()
-
-    try:
-        candidates = brain.extract_memory_candidates(
-            user_message
-        )
-    except ValueError as error:
         print(
-            "Memory extraction skipped: "
-            f"{error}"
+            "\nElysia: ",
+            end="",
+            flush=True,
         )
-        return
 
-    review_memory_candidates(
-        brain,
-        candidates,
-    )
+        for chunk in brain.stream_chat(
+            cleaned_user_message
+        ):
+            print(
+                chunk,
+                end="",
+                flush=True,
+            )
+
+        print()
+
+        try:
+            candidates = (
+                brain.extract_memory_candidates(
+                    cleaned_user_message
+                )
+            )
+        except ValueError as error:
+            print(
+                "Memory extraction skipped: "
+                f"{error}"
+            )
+        else:
+            review_memory_candidates(
+                brain,
+                candidates,
+            )
+
+        _update_conversation_summary(
+            brain,
+            automatic=True,
+        )

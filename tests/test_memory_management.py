@@ -291,7 +291,7 @@ def test_console_session_opens_memory_management_command(
             "/memory",
             "list",
             "back",
-            "",
+            "/quit",
         ]
     )
 
@@ -310,6 +310,6 @@ def test_console_session_opens_memory_management_command(
         in output
     )
     assert (
-        "No message was entered."
+        "Chat session ended."
         in output
     )

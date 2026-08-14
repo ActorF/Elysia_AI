@@ -510,6 +510,27 @@ class Brain:
             candidate["source_text"],
         )
 
+    def get_unsummarized_message_count(
+        self,
+    ) -> int:
+        """Return the number of messages not covered by the summary."""
+        messages = self._memory.get_all_messages()
+
+        summary_data = (
+            self._memory.get_conversation_summary()
+        )
+
+        unsummarized_messages = (
+            _get_unsummarized_messages(
+                messages,
+                summary_data["summary"],
+            )
+        )
+
+        return len(
+            unsummarized_messages
+        )
+
     def summarize_conversation(
         self,
     ) -> ConversationSummary | None:
