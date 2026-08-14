@@ -164,6 +164,17 @@ def test_model_summarizer_builds_validated_content() -> None:
         "new_messages": _source_messages(),
     }
 
+    assert (
+        "Phrase technical implementation as "
+        "project or configuration facts"
+        in model_messages[0]["content"]
+    )
+    assert (
+        "Do not preserve invented assistant "
+        "backstory"
+        in model_messages[0]["content"]
+    )
+
 
 def test_model_summarizer_sends_previous_content() -> None:
     previous_content: ConversationSummaryContent = {

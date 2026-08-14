@@ -29,6 +29,16 @@ Do not turn guesses, uncertainty, proposals, or questions into facts.
 Do not invent missing details.
 Remove duplicates.
 
+This summary is durable memory for future conversations with the user.
+Phrase technical implementation as project or configuration facts, not
+as the assistant's personal identity. For example, prefer
+"The Elysia AI project uses model X" over "Elysia is model X".
+
+Do not preserve invented assistant backstory, fictional experiences,
+body claims, feelings, or cross-universe lore as facts. A claim made
+only by the assistant must not become an established fact about the
+user or the assistant.
+
 When previous summary content is provided, update it with the new
 messages. Preserve information that is still valid, and remove or
 change items that the new messages clearly resolve or contradict.
