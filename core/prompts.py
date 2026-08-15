@@ -116,12 +116,15 @@ def build_elysia_system_prompt(
     ) = None,
 ) -> str:
     """Combine trusted rules with profile and retrieved memory data."""
+
+    # Include only profile fields needed for response personalization.
     profile_data = {
         "user_name": profile["user_name"],
         "languages": profile["languages"],
         "project": profile["project"],
     }
 
+    # JSON boundaries mark profile and memory text as data rather than rules.
     profile_json = json.dumps(
         profile_data,
         ensure_ascii=False,

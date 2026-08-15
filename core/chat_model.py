@@ -5,11 +5,14 @@ from typing import Literal, Protocol, TypedDict
 
 
 class ChatMessage(TypedDict):
+    """Represent one ordered message sent to a chat-model adapter."""
+
     role: Literal["system", "user", "assistant"]
     content: str
 
+
 class ChatModel(Protocol):
-    """Describe the behavior Brain needs from a chat model."""
+    """Decouple ``Brain`` from any specific local model implementation."""
 
     def generate_reply(
         self,

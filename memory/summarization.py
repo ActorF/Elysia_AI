@@ -7,7 +7,7 @@ from .conversation_summary import ConversationSummaryContent
 
 
 class ConversationSummarizer(Protocol):
-    """Describe how structured conversation content is generated."""
+    """Let ``Brain`` summarize conversations without model coupling."""
 
     def summarize(
         self,

@@ -1,5 +1,6 @@
 """Public interface for Elysia's memory package."""
 
+# Re-export schemas and services through one stable memory API.
 from .conversation import ConversationMessage
 from .conversation_summary import (
     CONVERSATION_SUMMARY_SCHEMA_VERSION,
@@ -45,6 +46,7 @@ from .summarization import (
 )
 
 
+# Explicit exports prevent internal helpers from becoming accidental API.
 __all__ = [
     "CONVERSATION_SUMMARY_SCHEMA_VERSION",
     "ConversationMessage",

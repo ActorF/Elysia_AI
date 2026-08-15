@@ -34,6 +34,12 @@ class OllamaChatModel:
         ollama_host: str,
         timeout_seconds: float = 120.0,
     ) -> None:
+        """Configure direct Ollama requests after validating connection data.
+
+        Raises:
+            ValueError: If the model name, host URL, or timeout is invalid.
+        """
+
         cleaned_model_name = model_name.strip()
         cleaned_host = ollama_host.strip().rstrip("/")
 
@@ -71,6 +77,7 @@ class OllamaChatModel:
                 "Ollama returned an invalid model list."
             )
 
+        # Ollama versions may expose the identifier under either key.
         for model_data in models_data:
             if not isinstance(model_data, dict):
                 continue
@@ -103,6 +110,7 @@ class OllamaChatModel:
                 "Chat messages cannot be empty."
             )
 
+        # Normalize content before any untrusted text reaches the HTTP payload.
         cleaned_messages: list[ChatMessage] = []
 
         for message in messages:
@@ -162,7 +170,12 @@ class OllamaChatModel:
         path: str,
         payload: JsonObject | None = None,
     ) -> JsonObject:
-        """Send one request and validate its JSON response."""
+        """Send one request, translate transport errors, and require JSON.
+
+        Project exceptions keep callers independent from ``requests`` and give
+        the console a small, stable set of errors to report.
+        """
+
         try:
             response = requests.request(
                 method,
@@ -171,6 +184,7 @@ class OllamaChatModel:
                 timeout=self._timeout_seconds,
             )
 
+        # Connection and timeout failures share the same actionable UI message.
         except (
             RequestsConnectionError,
             Timeout,
@@ -203,6 +217,7 @@ class OllamaChatModel:
             decoded_data,
         )
 
+        # Decode Ollama's structured error when available before raising.
         if response.status_code >= 400:
             error_data = response_data.get("error")
 

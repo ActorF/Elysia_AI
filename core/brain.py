@@ -1,3 +1,5 @@
+"""Orchestrate chat generation, prompt context, and memory services."""
+
 import logging
 from collections.abc import Iterator
 from datetime import datetime
@@ -28,6 +30,15 @@ def _get_unsummarized_messages(
     messages: list[ConversationMessage],
     existing_summary: ConversationSummary | None,
 ) -> list[ConversationMessage]:
+    """Return the message suffix not covered by an existing summary.
+
+    Count and timestamp anchors are checked before slicing so a stale or
+    mismatched summary can never silently skip unrelated conversation data.
+
+    Raises:
+        ValueError: If summary metadata does not match stored messages.
+    """
+
     if existing_summary is None:
         return list(messages)
 
@@ -65,6 +76,13 @@ def _get_unsummarized_messages(
 
 
 class Brain:
+    """Coordinate one conversational use case across pluggable services.
+
+    ``Brain`` owns application flow—building prompts, calling the model, and
+    committing completed results—while model adapters and memory stores own
+    their respective infrastructure details.
+    """
+
     def __init__(
         self,
         model_name: str,
@@ -83,6 +101,16 @@ class Brain:
             MemoryRetriever | None
         ) = None,
     ) -> None:
+        """Inject the model, persistence, retrieval, and summarization services.
+
+        Optional collaborators allow smaller configurations and make each use
+        case independently testable. Features return an empty result or raise a
+        clear runtime error when their required collaborator is unavailable.
+
+        Raises:
+            ValueError: If ``model_name`` contains no text.
+        """
+
         cleaned_model_name = model_name.strip()
 
         if not cleaned_model_name:
@@ -113,15 +141,21 @@ class Brain:
 
     @property
     def model_name(self) -> str:
+        """Return the configured local model identifier."""
+
         return self._model_name
 
     def hello(self) -> None:
+        """Print a small diagnostic banner naming the active model."""
+
         print(
             f"Hello from Brain! "
             f"Model: {self.model_name}"
         )
 
     def start_session(self) -> Profile:
+        """Record a launch, display the banner, and return the active profile."""
+
         profile = self._memory.record_launch()
 
         self.hello()
@@ -134,7 +168,8 @@ class Brain:
         return profile
 
     def chat(self, user_message: str) -> str:
-        """Generate and save one complete chat turn."""
+        """Generate, validate, and persist one non-streaming chat turn."""
+
         cleaned_user_message = user_message.strip()
 
         if not cleaned_user_message:
@@ -163,6 +198,7 @@ class Brain:
                 "Model reply cannot be empty."
             )
 
+        # Commit both sides only after a complete, non-empty reply exists.
         self.remember_message(
             profile["user_name"],
             cleaned_user_message,
@@ -186,7 +222,12 @@ class Brain:
         self,
         user_message: str,
     ) -> Iterator[str]:
-        """Yield and save one complete chat turn."""
+        """Yield model chunks immediately, then persist the completed turn.
+
+        Chunks are accumulated while streaming because memory must store one
+        coherent assistant message. A failed or empty stream is not committed.
+        """
+
         cleaned_user_message = user_message.strip()
 
         if not cleaned_user_message:
@@ -211,6 +252,7 @@ class Brain:
         for chunk in self._chat_model.stream_reply(
             chat_messages
         ):
+            # Preserve exact chunk order for both live output and final storage.
             reply_chunks.append(chunk)
             yield chunk
 
@@ -243,6 +285,8 @@ class Brain:
         speaker: str,
         message: str,
     ) -> None:
+        """Persist one named speaker message through the memory facade."""
+
         self._memory.save_message(
             speaker,
             message,
@@ -253,6 +297,12 @@ class Brain:
         conversation_message: ConversationMessage,
         profile: Profile,
     ) -> ChatMessage | None:
+        """Map a stored speaker name to a model role.
+
+        Messages from unknown speakers return ``None`` so unsupported records
+        do not acquire an invented model role.
+        """
+
         speaker = conversation_message["speaker"]
         content = conversation_message["message"]
 
@@ -275,6 +325,12 @@ class Brain:
         profile: Profile,
         limit: int = 10,
     ) -> list[ChatMessage]:
+        """Build ordered recent context from RAM or persistent history.
+
+        Configured short-term memory takes precedence because it already holds
+        complete token-bounded turns and avoids duplicating persistent records.
+        """
+
         context: list[ChatMessage] = []
 
         if self._short_term_memory is not None:
@@ -315,6 +371,12 @@ class Brain:
         current_user_message: str,
         limit: int = 10,
     ) -> list[ChatMessage]:
+        """Assemble system rules, recent context, and the current user message.
+
+        The ordering is deliberate: trusted system prompt first, chronological
+        history second, and the new request last.
+        """
+
         retrieved_memories = (
             self.retrieve_relevant_memories(
                 current_user_message,
@@ -399,12 +461,16 @@ class Brain:
     def recall_long_term_memories(
         self,
     ) -> list[LongTermMemoryRecord]:
+        """Return every saved long-term memory in storage order."""
+
         return self._memory.get_long_term_memories()
 
     def search_long_term_memories(
         self,
         query: str,
     ) -> list[LongTermMemorySearchResult]:
+        """Search persistent memories and retain their one-based numbers."""
+
         return self._memory.search_long_term_memories(
             query
         )
@@ -415,6 +481,8 @@ class Brain:
         key: str,
         value: str,
     ) -> LongTermMemoryRecord:
+        """Edit a selected memory and log the resulting key."""
+
         updated_record = (
             self._memory.edit_long_term_memory(
                 memory_number,
@@ -438,6 +506,8 @@ class Brain:
         *,
         overwrite: bool = False,
     ) -> Path:
+        """Export persistent memories and log the destination path."""
+
         exported_file = (
             self._memory.export_long_term_memories(
                 export_file,
@@ -458,6 +528,14 @@ class Brain:
         *,
         confirmed: bool = False,
     ) -> LongTermMemoryRecord:
+        """Delete one memory only after an explicit confirmation flag.
+
+        Raises:
+            PermissionError: If ``confirmed`` is not exactly ``True``.
+        """
+
+        # An exact True check prevents truthy strings or integers bypassing UI
+        # confirmation semantics.
         if confirmed is not True:
             raise PermissionError(
                 "Deleting long-term memory "
@@ -534,7 +612,13 @@ class Brain:
     def summarize_conversation(
         self,
     ) -> ConversationSummary | None:
-        """Create or update the saved conversation summary."""
+        """Incrementally summarize messages not covered by the saved summary.
+
+        Returns the existing summary when nothing is new and ``None`` when no
+        conversation exists. Newly generated content is saved with source
+        count and timestamp anchors for later consistency checks.
+        """
+
         if self._conversation_summarizer is None:
             raise RuntimeError(
                 "Conversation summarizer is not connected."
@@ -603,4 +687,6 @@ class Brain:
         self,
         limit: int = 10,
     ) -> list[ConversationMessage]:
+        """Return at most ``limit`` newest persistent conversation messages."""
+
         return self._memory.get_recent_messages(limit)

@@ -34,6 +34,7 @@ class ConversationSummaryData(TypedDict):
     summary: ConversationSummary | None
 
 
+# Frozen field sets enforce exact on-disk schemas and reject silent drift.
 _CONVERSATION_SUMMARY_CONTENT_FIELDS: Final[frozenset[str]] = frozenset(
     {
         "facts",
@@ -185,6 +186,7 @@ def validate_conversation_summary(
         "source_message_count"
     ]
 
+    # ``bool`` is an ``int`` subclass but is not a valid message count.
     if (
         not isinstance(source_message_count, int)
         or isinstance(source_message_count, bool)
@@ -259,6 +261,7 @@ def validate_conversation_summary_data(
 
     schema_version = file_data["schema_version"]
 
+    # Reject booleans as versions even though ``isinstance(True, int)`` holds.
     if (
         not isinstance(schema_version, int)
         or isinstance(schema_version, bool)
@@ -320,6 +323,7 @@ def save_conversation_summary(
         summary_data
     )
 
+    # Persist only after both the nested summary and wrapper have validated.
     write_json(
         file_path,
         summary_data,

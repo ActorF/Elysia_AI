@@ -52,6 +52,12 @@ def _build_summary_messages(
     messages: list[ConversationMessage],
     previous_content: ConversationSummaryContent | None,
 ) -> list[ChatMessage]:
+    """Wrap summary inputs as serialized, untrusted model data.
+
+    The trusted summarization policy remains in a system message, while prior
+    content and raw messages are encoded together in the user-data message.
+    """
+
     request_data: dict[str, object] = {
         "previous_summary_content": previous_content,
         "new_messages": messages,
@@ -79,6 +85,12 @@ def _build_summary_messages(
 def _parse_summary_content(
     response_text: str,
 ) -> ConversationSummaryContent:
+    """Decode a model reply and validate the exact summary schema.
+
+    Raises:
+        ValueError: If the reply is empty, invalid JSON, or schema-invalid.
+    """
+
     cleaned_response = response_text.strip()
 
     if not cleaned_response:
@@ -104,6 +116,8 @@ class ModelConversationSummarizer:
     """Generate structured summaries through a chat model."""
 
     def __init__(self, chat_model: ChatModel) -> None:
+        """Store the model adapter used for structured JSON requests."""
+
         self._chat_model = chat_model
 
     def summarize(
@@ -111,7 +125,12 @@ class ModelConversationSummarizer:
         messages: list[ConversationMessage],
         previous_content: ConversationSummaryContent | None = None,
     ) -> ConversationSummaryContent:
-        """Generate validated structured summary content."""
+        """Generate validated structured summary content.
+
+        Existing content is supplied for incremental updates, but the model's
+        response is never trusted until local JSON and schema validation pass.
+        """
+
         if not messages:
             raise ValueError(
                 "Conversation messages cannot be empty."

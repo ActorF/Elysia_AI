@@ -45,12 +45,20 @@ class ModelMemoryExtractor:
     """Use a chat model to identify unsaved memory candidates."""
 
     def __init__(self, chat_model: ChatModel) -> None:
+        """Store the model adapter used to request candidate JSON."""
+
         self._chat_model = chat_model
 
     def extract_candidates(
         self,
         user_message: str,
     ) -> list[MemoryCandidate]:
+        """Extract validated candidates without writing persistent memory.
+
+        Raises:
+            ValueError: If the user message or model response is invalid.
+        """
+
         cleaned_user_message = user_message.strip()
 
         if not cleaned_user_message:
@@ -86,6 +94,8 @@ def _parse_memory_candidates(
     response_text: str,
     source_text: str,
 ) -> list[MemoryCandidate]:
+    """Decode, validate, and de-duplicate a model-produced candidate array."""
+
     cleaned_response = _strip_json_code_fence(
         response_text
     )
@@ -113,6 +123,7 @@ def _parse_memory_candidates(
     candidates: list[MemoryCandidate] = []
     seen_candidates: set[tuple[str, str]] = set()
 
+    # Preserve first-seen ordering while removing exact key/value duplicates.
     for item in candidate_items:
         candidate = _build_memory_candidate(
             item,
@@ -136,6 +147,12 @@ def _build_memory_candidate(
     data: object,
     source_text: str,
 ) -> MemoryCandidate:
+    """Validate one decoded item and attach trusted source metadata.
+
+    Every proposed memory requires user confirmation, regardless of whether
+    the model labels the source explicit or inferred.
+    """
+
     if not isinstance(data, dict):
         raise ValueError(
             "Each memory candidate must be a JSON object."
@@ -208,6 +225,8 @@ def _build_memory_candidate(
 
 
 def _normalize_key(key: str) -> str:
+    """Convert a model-provided key to lowercase ASCII ``snake_case``."""
+
     normalized_key = re.sub(
         r"[^a-z0-9]+",
         "_",
@@ -217,6 +236,12 @@ def _normalize_key(key: str) -> str:
 
 
 def _strip_json_code_fence(response_text: str) -> str:
+    """Accept plain JSON or one complete optional JSON Markdown fence.
+
+    Raises:
+        ValueError: If a detected fence is incomplete or labels non-JSON data.
+    """
+
     cleaned_response = response_text.strip()
 
     if not cleaned_response.startswith("```"):

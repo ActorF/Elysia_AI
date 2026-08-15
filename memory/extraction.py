@@ -6,7 +6,7 @@ from .long_term_memory import LongTermMemorySource
 
 
 class MemoryCandidate(TypedDict):
-    """Describe extracted information before it is saved."""
+    """Describe extracted information awaiting explicit save approval."""
 
     key: str
     value: str
@@ -15,7 +15,7 @@ class MemoryCandidate(TypedDict):
     requires_confirmation: bool
 
 class MemoryExtractor(Protocol):
-    """Describe how candidate memories are extracted."""
+    """Let ``Brain`` use any implementation that proposes memories."""
 
     def extract_candidates(
         self,

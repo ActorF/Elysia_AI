@@ -1,3 +1,5 @@
+"""Validate configuration, compose services, and start the console app."""
+
 import json
 import logging
 
@@ -21,6 +23,7 @@ from ui import run_console_session
 LOG_DIR = SETTINGS.base_dir / "logs"
 LOG_FILE = LOG_DIR / "app.log"
 
+# Logging is configured at the process boundary before services are created.
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
 logging.basicConfig(
@@ -32,6 +35,13 @@ logging.basicConfig(
 
 
 def validate_settings() -> None:
+    """Validate cross-service configuration before any model work begins.
+
+    Raises:
+        ConfigurationError: If a required value cannot safely configure its
+            downstream service.
+    """
+
     if not SETTINGS.model_name.strip():
         raise ConfigurationError(
             "MODEL_NAME cannot be empty."
@@ -64,7 +74,12 @@ def validate_settings() -> None:
 
 
 def create_brain() -> Brain:
-    """Create and connect Elysia's main objects."""
+    """Construct and connect the application's model and memory services.
+
+    This function is the composition root: concrete infrastructure is created
+    here and injected into ``Brain``, leaving core orchestration testable.
+    """
+
     elysia_memory = Memory(
         SETTINGS.base_dir
     )
@@ -78,6 +93,7 @@ def create_brain() -> Brain:
         SETTINGS.ollama_host,
     )
 
+    # Fail during startup instead of after the user sends the first message.
     chat_model.ensure_model_available()
 
     memory_extractor = ModelMemoryExtractor(
@@ -114,17 +130,21 @@ def create_brain() -> Brain:
 
 
 def main() -> None:
+    """Run one validated console application session."""
+
     validate_settings()
 
     print(f"Using model: {SETTINGS.model_name}")
 
-    # Create Elysia's connected objects.
+    # Create Elysia's connected objects only after settings have passed checks.
     elysia_brain = create_brain()
 
     run_console_session(elysia_brain)
 
 
 if __name__ == "__main__":
+    # Translate expected boundary errors into concise user-facing messages,
+    # while preserving detailed diagnostics in the application log.
     logging.info("Program started")
 
     try:

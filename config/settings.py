@@ -1,3 +1,5 @@
+"""Load immutable application settings from defaults and ``.env``."""
+
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,6 +13,12 @@ DEFAULT_MEMORY_RETRIEVAL_LIMIT = 5
 
 @dataclass(frozen=True)
 class AppSettings:
+    """Hold the validated-at-startup configuration used by the app.
+
+    The dataclass is frozen so services receive one stable configuration
+    snapshot instead of changing environment values during a session.
+    """
+
     base_dir: Path
     model_name: str
     log_level: str
@@ -26,6 +34,12 @@ class AppSettings:
 
 
 def parse_bool(value: str) -> bool:
+    """Interpret common truthy environment-variable spellings.
+
+    Unrecognized values intentionally evaluate to ``False`` so callers get
+    deterministic behavior without relying on Python's non-empty-string rule.
+    """
+
     return value.strip().lower() in {
         "1",
         "true",
@@ -34,9 +48,11 @@ def parse_bool(value: str) -> bool:
     }
 
 
+# Anchor file locations to the repository, not the process working directory.
 BASE_DIR = Path(__file__).resolve().parent.parent
 ENV_FILE = BASE_DIR / ".env"
 
+# Load optional local overrides before reading individual environment values.
 load_dotenv(ENV_FILE)
 
 MODEL_NAME = os.getenv(
@@ -67,6 +83,7 @@ MEMORY_RETRIEVAL_LIMIT = int(
     )
 )
 
+# Export one settings object for the composition root and application services.
 SETTINGS = AppSettings(
     base_dir=BASE_DIR,
     model_name=MODEL_NAME,

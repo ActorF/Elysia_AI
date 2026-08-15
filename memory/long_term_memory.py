@@ -13,6 +13,8 @@ LongTermMemorySource = Literal[
 
 
 class LongTermMemoryRecord(TypedDict):
+    """Describe one durable fact together with its origin and timestamp."""
+
     key: str
     value: str
     source_type: LongTermMemorySource
@@ -21,10 +23,14 @@ class LongTermMemoryRecord(TypedDict):
 
 
 class LongTermMemoryData(TypedDict):
+    """Describe the top-level JSON structure for long-term memory."""
+
     memories: list[LongTermMemoryRecord]
 
 
 class LongTermMemorySearchResult(TypedDict):
+    """Pair a one-based UI number with its matching memory record."""
+
     number: int
     memory: LongTermMemoryRecord
 
@@ -50,7 +56,12 @@ def save_long_term_memory_record(
     source_type: LongTermMemorySource,
     source_text: str,
 ) -> LongTermMemoryRecord:
-    """Save one persistent long-term memory record."""
+    """Validate and append one persistent long-term memory record.
+
+    Raises:
+        ValueError: If required text is empty or ``source_type`` is invalid.
+    """
+
     cleaned_key = key.strip()
     cleaned_value = value.strip()
     cleaned_source_text = source_text.strip()
@@ -155,6 +166,7 @@ def edit_long_term_memory_record(
         memory_index
     ]
 
+    # Editing user-facing content must not rewrite provenance metadata.
     updated_record: LongTermMemoryRecord = {
         "key": cleaned_key,
         "value": cleaned_value,
@@ -209,6 +221,7 @@ def export_long_term_memory(
         )
 
     memory_data = load_long_term_memory(file_path)
+    # Copy records so the exported container shares no mutable dictionaries.
     export_data: LongTermMemoryData = {
         "memories": [
             record.copy()
@@ -225,6 +238,14 @@ def _resolve_memory_index(
     memory_number: int,
     memory_count: int,
 ) -> int:
+    """Validate a one-based UI number and convert it to a list index.
+
+    Raises:
+        ValueError: If the supplied number is not a positive integer.
+        IndexError: If the number exceeds the current record count.
+    """
+
+    # ``bool`` must be rejected because it is an ``int`` subclass in Python.
     if (
         not isinstance(memory_number, int)
         or isinstance(memory_number, bool)

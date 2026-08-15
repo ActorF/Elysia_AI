@@ -6,6 +6,8 @@ PROFILE_SCHEMA_VERSION: Final = 1
 
 
 class Profile(TypedDict):
+    """Describe durable user, assistant, language, and project preferences."""
+
     schema_version: Literal[1]
     user_name: str
     assistant_name: str
@@ -13,6 +15,8 @@ class Profile(TypedDict):
     project: str
     launch_count: int
 
+
+# Exact-field validation catches stale or misspelled persisted profile data.
 _PROFILE_FIELDS: Final[frozenset[str]] = frozenset(
     {
         "schema_version",
@@ -26,6 +30,15 @@ _PROFILE_FIELDS: Final[frozenset[str]] = frozenset(
 
 
 def validate_profile(data: object) -> Profile:
+    """Validate untrusted decoded JSON against the current profile schema.
+
+    Returns:
+        The same mapping narrowed to ``Profile`` after every field is checked.
+
+    Raises:
+        ValueError: If the object has missing, unknown, or invalid fields.
+    """
+
     if not isinstance(data, dict):
         raise ValueError(
             "Profile must be a JSON object."
@@ -65,6 +78,7 @@ def validate_profile(data: object) -> Profile:
         "schema_version"
     ]
 
+    # ``bool`` is an ``int`` subclass, so reject it explicitly for versions.
     if (
         not isinstance(schema_version, int)
         or isinstance(schema_version, bool)
@@ -107,6 +121,7 @@ def validate_profile(data: object) -> Profile:
 
     launch_count = profile_data["launch_count"]
 
+    # Apply the same bool guard to counters persisted as JSON integers.
     if (
         not isinstance(launch_count, int)
         or isinstance(launch_count, bool)
@@ -119,13 +134,21 @@ def validate_profile(data: object) -> Profile:
 
     return cast(Profile, profile_data)
 
+
 def migrate_profile(data: object) -> Profile:
+    """Upgrade a legacy versionless profile, then run full validation.
+
+    Versioned input is never guessed or rewritten; it must already satisfy the
+    declared schema. Only the known pre-version format receives defaults.
+    """
+
     if not isinstance(data, dict):
         return validate_profile(data)
 
     if "schema_version" in data:
         return validate_profile(data)
 
+    # Work on a copy so migration never mutates the decoded caller-owned data.
     migrated_data = dict(data)
     migrated_data["schema_version"] = (
         PROFILE_SCHEMA_VERSION

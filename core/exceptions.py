@@ -1,9 +1,13 @@
+"""Project-specific exceptions translated at application boundaries."""
+
+
 class ElysiaError(Exception):
     """Base exception for the Elysia AI project."""
 
 
 class ConfigurationError(ElysiaError):
     """Raised when an Elysia configuration value is invalid."""
+
 
 class ChatModelError(ElysiaError):
     """Base error raised by a chat-model adapter."""

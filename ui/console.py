@@ -1,4 +1,4 @@
-"""Console output functions for Elysia."""
+"""Provide interactive console chat and memory-management workflows."""
 
 from pathlib import Path
 
@@ -11,11 +11,15 @@ from memory import (
     Profile,
 )
 
+# Avoid an extra model call until enough unsummarized messages accumulate.
 AUTO_SUMMARY_MESSAGE_THRESHOLD = 10
+
 
 def display_recent_messages(
     messages: list[ConversationMessage],
 ) -> None:
+    """Print persistent conversation messages in chronological order."""
+
     print("\nRecent conversation:")
 
     if not messages:
@@ -37,6 +41,8 @@ def _display_long_term_memory(
     memory_number: int,
     memory_record: LongTermMemoryRecord,
 ) -> None:
+    """Print one memory and the provenance needed to review it safely."""
+
     print(
         f"- {memory_record['key']}: "
         f"{memory_record['value']}"
@@ -59,6 +65,8 @@ def _display_long_term_memory(
 def display_long_term_memories(
     memories: list[LongTermMemoryRecord],
 ) -> None:
+    """Print all long-term memories with one-based selection numbers."""
+
     print("\nLong-term memories:")
 
     if not memories:
@@ -78,6 +86,8 @@ def display_long_term_memories(
 def display_memory_search_results(
     results: list[LongTermMemorySearchResult],
 ) -> None:
+    """Print search matches while preserving their original memory numbers."""
+
     print("\nMemory search results:")
 
     if not results:
@@ -92,6 +102,8 @@ def display_memory_search_results(
 
 
 def display_profile(profile: Profile) -> None:
+    """Print the active persistent profile in a human-readable form."""
+
     print("\nProfile:")
     print(f"User: {profile['user_name']}")
     print(f"Assistant: {profile['assistant_name']}")
@@ -104,7 +116,8 @@ def review_memory_candidates(
     brain: Brain,
     candidates: list[MemoryCandidate],
 ) -> None:
-    """Ask before saving each extracted memory candidate."""
+    """Ask for separate approval before saving each extracted candidate."""
+
     if not candidates:
         return
 
@@ -132,6 +145,8 @@ def review_memory_candidates(
 
 
 def _prompt_memory_number() -> int | None:
+    """Read and validate a positive one-based memory number from the user."""
+
     raw_number = input("Memory number: ").strip()
 
     try:
@@ -154,6 +169,8 @@ def _prompt_memory_number() -> int | None:
 
 
 def _search_memories(brain: Brain) -> None:
+    """Run one interactive long-term-memory search command."""
+
     query = input("Search text: ")
 
     try:
@@ -168,6 +185,8 @@ def _search_memories(brain: Brain) -> None:
 
 
 def _edit_memory(brain: Brain) -> None:
+    """Interactively edit one memory while retaining unchanged blank fields."""
+
     memories = brain.recall_long_term_memories()
     display_long_term_memories(memories)
 
@@ -215,6 +234,8 @@ def _edit_memory(brain: Brain) -> None:
 
 
 def _export_memories(brain: Brain) -> None:
+    """Export memories after obtaining explicit overwrite permission."""
+
     export_text = input(
         "Export JSON path: "
     ).strip()
@@ -227,6 +248,7 @@ def _export_memories(brain: Brain) -> None:
     overwrite = False
 
     if export_file.exists():
+        # A deliberate token prevents an accidental Enter from overwriting.
         confirmation = input(
             "Export file exists. Type OVERWRITE "
             "to replace it: "
@@ -255,6 +277,8 @@ def _export_memories(brain: Brain) -> None:
 
 
 def _delete_memory(brain: Brain) -> None:
+    """Delete one reviewed memory only after a deliberate confirmation token."""
+
     memories = brain.recall_long_term_memories()
     display_long_term_memories(memories)
 
@@ -280,6 +304,7 @@ def _delete_memory(brain: Brain) -> None:
         f"{target['key']} = {target['value']}"
     )
 
+    # Require an exact destructive-action token after showing the target.
     confirmation = input(
         "Type DELETE to confirm: "
     ).strip()
@@ -307,7 +332,8 @@ def _delete_memory(brain: Brain) -> None:
 
 
 def run_memory_management(brain: Brain) -> None:
-    """Run the long-term memory management console."""
+    """Run the long-term memory management menu until the user returns."""
+
     while True:
         print("\nMemory management:")
         print(
@@ -366,7 +392,8 @@ def _update_conversation_summary(
     *,
     automatic: bool,
 ) -> None:
-    """Update the summary manually or when enough messages exist."""
+    """Update the summary manually or after the automatic message threshold."""
+
     try:
         unsummarized_message_count = (
             brain.get_unsummarized_message_count()
@@ -426,7 +453,8 @@ def _update_conversation_summary(
 
 
 def run_console_session(brain: Brain) -> None:
-    """Run a continuous Elysia console chat session."""
+    """Run chat commands, streaming replies, memory review, and summaries."""
+
     profile = brain.start_session()
 
     recent_messages = (
@@ -491,6 +519,7 @@ def run_console_session(brain: Brain) -> None:
             flush=True,
         )
 
+        # Print each model chunk immediately; ``Brain`` retains it for storage.
         for chunk in brain.stream_chat(
             cleaned_user_message
         ):
@@ -502,6 +531,8 @@ def run_console_session(brain: Brain) -> None:
 
         print()
 
+        # Memory extraction happens after the complete turn and never saves
+        # candidates without the separate review prompt below.
         try:
             candidates = (
                 brain.extract_memory_candidates(

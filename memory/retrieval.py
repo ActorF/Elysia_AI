@@ -31,6 +31,12 @@ class RetrievedMemory(TypedDict):
 
 @dataclass(frozen=True)
 class _RetrievalCandidate:
+    """Normalize heterogeneous memory sources before relevance scoring.
+
+    ``key_text`` may include hidden search hints, while the public ``key``
+    remains the original field name presented to prompt-building code.
+    """
+
     source: MemoryRetrievalSource
     key: str
     value: str
@@ -41,6 +47,8 @@ class _RetrievalCandidate:
     key_text: str
 
 
+# English words and overlapping CJK bigrams support local bilingual matching
+# without downloading a tokenizer or embedding model.
 _ASCII_WORD_PATTERN = re.compile(
     r"[A-Za-z0-9]+"
 )
@@ -106,6 +114,7 @@ _CJK_STOP_TERMS = frozenset(
     }
 )
 
+# Search hints connect natural questions to terse schema field names.
 _PROFILE_SEARCH_HINTS: dict[str, str] = {
     "user_name": (
         "user name username 姓名 名字 用户"
@@ -151,6 +160,12 @@ class MemoryRetriever:
         self,
         result_limit: int = 5,
     ) -> None:
+        """Create a retriever that returns at most ``result_limit`` items.
+
+        Raises:
+            ValueError: If the limit is not a positive, non-boolean integer.
+        """
+
         if (
             not isinstance(result_limit, int)
             or isinstance(result_limit, bool)
@@ -165,6 +180,8 @@ class MemoryRetriever:
 
     @property
     def result_limit(self) -> int:
+        """Return the maximum number of ranked items emitted per query."""
+
         return self._result_limit
 
     def retrieve(
@@ -178,7 +195,15 @@ class MemoryRetriever:
             list[LongTermMemoryRecord]
         ),
     ) -> list[RetrievedMemory]:
-        """Return relevant items from strongest to weakest."""
+        """Return relevant items from strongest to weakest.
+
+        Profile, conversation-summary, and long-term records are normalized,
+        scored using bilingual term overlap, and truncated to ``result_limit``.
+
+        Raises:
+            ValueError: If ``query`` contains no non-whitespace text.
+        """
+
         cleaned_query = query.strip()
 
         if not cleaned_query:
@@ -195,6 +220,7 @@ class MemoryRetriever:
 
         results: list[RetrievedMemory] = []
 
+        # Score all sources through the same normalized candidate contract.
         for candidate in _build_candidates(
             profile,
             conversation_summary,
@@ -229,6 +255,7 @@ class MemoryRetriever:
                 }
             )
 
+        # Confidence breaks relevance ties in favor of stronger provenance.
         results.sort(
             key=lambda item: (
                 item["relevance"],
@@ -251,6 +278,8 @@ def _build_candidates(
         list[LongTermMemoryRecord]
     ),
 ) -> list[_RetrievalCandidate]:
+    """Combine candidates from every currently available memory source."""
+
     candidates = _build_profile_candidates(
         profile
     )
@@ -274,6 +303,8 @@ def _build_candidates(
 def _build_profile_candidates(
     profile: Profile,
 ) -> list[_RetrievalCandidate]:
+    """Convert non-empty profile fields into highest-confidence candidates."""
+
     profile_values: dict[str, str] = {
         "user_name": profile["user_name"],
         "assistant_name": (
@@ -313,6 +344,8 @@ def _build_profile_candidates(
 def _build_summary_candidates(
     summary: ConversationSummary,
 ) -> list[_RetrievalCandidate]:
+    """Flatten structured summary categories into individually ranked items."""
+
     candidates: list[
         _RetrievalCandidate
     ] = []
@@ -379,6 +412,8 @@ def _build_summary_candidates(
 def _build_long_term_candidates(
     records: list[LongTermMemoryRecord],
 ) -> list[_RetrievalCandidate]:
+    """Convert long-term records while preserving their provenance metadata."""
+
     return [
         _RetrievalCandidate(
             source="long_term_memory",
@@ -387,6 +422,7 @@ def _build_long_term_candidates(
             source_type=record["source_type"],
             source_text=record["source_text"],
             timestamp=record["created_at"],
+            # Explicit user statements outrank model-inferred memories.
             confidence=(
                 1.0
                 if record["source_type"]
@@ -403,6 +439,13 @@ def _calculate_relevance(
     query_terms: set[str],
     candidate: _RetrievalCandidate,
 ) -> float:
+    """Score query coverage with extra weight for key and value matches.
+
+    Key matches contribute three units, value matches two, and source-text
+    matches one. The final value is bounded to ``[0.0, 1.0]`` and rounded for
+    stable prompt metadata and deterministic tests.
+    """
+
     key_matches = (
         query_terms
         & _extract_terms(
@@ -467,6 +510,8 @@ def _calculate_relevance(
 def _extract_terms(
     text: str,
 ) -> set[str]:
+    """Extract normalized English words and overlapping Chinese bigrams."""
+
     terms = {
         word.casefold()
         for word
@@ -485,6 +530,8 @@ def _extract_terms(
             terms.add(sequence)
             continue
 
+        # Overlapping bigrams allow partial matching without Chinese word
+        # segmentation, for example ``汽车颜色`` -> ``汽车/车颜/颜色``.
         for index in range(
             len(sequence) - 1
         ):

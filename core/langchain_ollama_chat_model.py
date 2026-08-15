@@ -28,6 +28,12 @@ class LangChainOllamaChatModel:
         ollama_host: str,
         timeout_seconds: float = 120.0,
     ) -> None:
+        """Configure LangChain generation and a direct availability checker.
+
+        Raises:
+            ValueError: If the model name, host URL, or timeout is invalid.
+        """
+
         cleaned_model_name = model_name.strip()
         cleaned_host = ollama_host.strip().rstrip("/")
 
@@ -50,6 +56,7 @@ class LangChainOllamaChatModel:
         self._model_name = cleaned_model_name
         self._ollama_host = cleaned_host
 
+        # Reuse the direct adapter's tested model-list validation.
         self._availability_checker = OllamaChatModel(
             self._model_name,
             self._ollama_host,
@@ -79,6 +86,7 @@ class LangChainOllamaChatModel:
                 "Chat messages cannot be empty."
             )
 
+        # Translate the project's lightweight message contract to LangChain.
         langchain_messages: list[BaseMessage] = []
 
         for message in messages:
@@ -147,6 +155,7 @@ class LangChainOllamaChatModel:
                 "Chat messages cannot be empty."
             )
 
+        # Streaming uses the same role conversion as non-streaming generation.
         langchain_messages: list[BaseMessage] = []
 
         for message in messages:
@@ -171,6 +180,8 @@ class LangChainOllamaChatModel:
                     AIMessage(content=message_content)
                 )
 
+        # Whitespace chunks may be yielded to preserve output order, but they
+        # cannot make an otherwise empty model response valid.
         has_text = False
 
         try:
