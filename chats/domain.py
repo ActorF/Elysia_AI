@@ -264,7 +264,7 @@ class ChatSessionMeta:
 
         if not isinstance(self.is_archived, bool):
             raise ValueError("is_archived must be a boolean.")
-        
+
         if self.mode not in ("chat", "work"):
             raise ValueError("mode must be chat or work.")
 
@@ -366,7 +366,7 @@ class ChatSession:
 
         if not isinstance(self.is_archived, bool):
             raise ValueError("is_archived must be a boolean.")
-        
+
         self._validate_message_identity_and_time()
         self._validate_summary_references()
 
