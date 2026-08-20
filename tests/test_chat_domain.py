@@ -80,6 +80,24 @@ def test_create_chat_session_builds_complete_empty_chat() -> None:
     assert session.summary is None
     assert session.project_id == "project_123"
     assert session.model_settings.model_name == "qwen3.5:9b"
+    assert session.is_pinned is False
+    assert session.is_archived is False
+
+
+def test_chat_session_rejects_non_boolean_pin_status() -> None:
+    with pytest.raises(ValueError, match=r"is_pinned must be a boolean"):
+        replace(
+            _session(),
+            is_pinned=cast(bool, 1),
+        )
+
+
+def test_chat_session_rejects_non_boolean_archive_status() -> None:
+    with pytest.raises(ValueError, match=r"is_archived must be a boolean"):
+        replace(
+            _session(),
+            is_archived=cast(bool, 1),
+        )
 
 
 def test_chat_ids_do_not_depend_on_titles() -> None:

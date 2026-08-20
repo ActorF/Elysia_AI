@@ -241,6 +241,8 @@ class ChatSessionMeta:
     message_count: int
     project_id: ProjectId | None
     model_name: str
+    is_pinned: bool = False
+    is_archived: bool = False
 
     def __post_init__(self) -> None:
         """Validate list metadata independently from the full chat entity."""
@@ -257,6 +259,12 @@ class ChatSessionMeta:
         _validate_identifier(self.chat_id, "chat_id")
         _validate_non_empty_text(self.title, "title")
 
+        if not isinstance(self.is_pinned, bool):
+            raise ValueError("is_pinned must be a boolean.")
+
+        if not isinstance(self.is_archived, bool):
+            raise ValueError("is_archived must be a boolean.")
+        
         if self.mode not in ("chat", "work"):
             raise ValueError("mode must be chat or work.")
 
@@ -285,7 +293,7 @@ class ChatSessionMeta:
 
 @dataclass(frozen=True, slots=True)
 class ChatSession:
-    """Represent one complete Chat or Work conversation entity."""
+    """Represent the complete persistable conversation aggregate."""
 
     schema_version: Literal[1]
     chat_id: ChatId
@@ -297,6 +305,8 @@ class ChatSession:
     summary: ChatSummary | None
     project_id: ProjectId | None
     model_settings: ChatModelSettings
+    is_pinned: bool = False
+    is_archived: bool = False
 
     def __post_init__(self) -> None:
         """Enforce invariants across the complete chat aggregate."""
@@ -351,6 +361,12 @@ class ChatSession:
                 "model_settings must be ChatModelSettings."
             )
 
+        if not isinstance(self.is_pinned, bool):
+            raise ValueError("is_pinned must be a boolean.")
+
+        if not isinstance(self.is_archived, bool):
+            raise ValueError("is_archived must be a boolean.")
+        
         self._validate_message_identity_and_time()
         self._validate_summary_references()
 
@@ -423,6 +439,8 @@ class ChatSession:
             message_count=len(self.messages),
             project_id=self.project_id,
             model_name=self.model_settings.model_name,
+            is_pinned=self.is_pinned,
+            is_archived=self.is_archived,
         )
 
 

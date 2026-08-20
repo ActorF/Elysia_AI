@@ -21,8 +21,21 @@ from .domain import (
     generate_chat_id,
     generate_chat_message_id,
 )
+from .exceptions import (
+    ChatAlreadyExistsError,
+    ChatDataCorruptionError,
+    ChatNotFoundError,
+    ChatRepositoryError,
+    ChatStorageError,
+)
+from .repository import (
+    ChatRepository,
+    JsonChatRepository,
+)
+from .serialization import CHAT_INDEX_SCHEMA_VERSION
 
 __all__ = [
+    "CHAT_INDEX_SCHEMA_VERSION",
     "CHAT_SESSION_SCHEMA_VERSION",
     "AttachmentId",
     "AttachmentMetadata",
@@ -31,11 +44,18 @@ __all__ = [
     "ChatMessageId",
     "ChatMessageRole",
     "ChatModelSettings",
+    "ChatAlreadyExistsError",
+    "ChatDataCorruptionError",
+    "ChatNotFoundError",
+    "ChatRepository",
+    "ChatRepositoryError",
     "ChatSession",
     "ChatSessionMeta",
+    "ChatStorageError",
     "ChatSummary",
     "ConversationMode",
     "ProjectId",
+    "JsonChatRepository",
     "create_attachment_metadata",
     "create_chat_message",
     "create_chat_session",
