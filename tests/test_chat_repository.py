@@ -292,6 +292,33 @@ def test_delete_removes_index_and_detail_file(
         repository.get_chat(chat.chat_id)
 
 
+def test_restore_chat_recreates_deleted_complete_session(
+    tmp_path: Path,
+) -> None:
+    repository = JsonChatRepository(
+        _storage_directory(tmp_path),
+        clock=_clock(BASE_TIME),
+    )
+    chat = repository.create_chat(
+        title="Restore me",
+        mode="chat",
+        model_name="qwen3.5:9b",
+        project_id=ProjectId("project_123"),
+    )
+    message = create_chat_message(
+        role="user",
+        content="Preserve this content.",
+        created_at=BASE_TIME,
+    )
+    complete_chat = replace(chat, messages=(message,))
+    repository.save_chat(complete_chat)
+    repository.delete_chat(chat.chat_id)
+
+    repository.restore_chat(complete_chat)
+
+    assert repository.get_chat(chat.chat_id) == complete_chat
+
+
 @pytest.mark.parametrize(
     "operation",
     [

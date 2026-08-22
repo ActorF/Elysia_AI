@@ -53,6 +53,10 @@ class ChatRepository(Protocol):
         """Create and persist one empty chat."""
         ...
 
+    def restore_chat(self, session: ChatSession) -> None:
+        """Restore a previously deleted complete Chat with its stable ID."""
+        ...
+
     def list_chats(
         self,
         *,
@@ -136,7 +140,6 @@ class JsonChatRepository:
     ) -> ChatSession:
         """Create the detail file first, then publish it in the index."""
 
-        metadata_entries = list(self._load_index())
         session = create_chat_session(
             title=title,
             mode=mode,
@@ -145,31 +148,16 @@ class JsonChatRepository:
             created_at=self._clock(),
         )
 
-        session_file = self._session_file(session.chat_id)
-        if any(
-            metadata.chat_id == session.chat_id
-            for metadata in metadata_entries
-        ) or session_file.exists():
-            raise ChatAlreadyExistsError(
-                f"Chat already exists: {session.chat_id}."
-            )
-
-        self._write_session(session)
-
-        try:
-            self._write_index(
-                [*metadata_entries, session.to_meta()]
-            )
-        except ChatRepositoryError:
-            try:
-                session_file.unlink(missing_ok=True)
-            except OSError as cleanup_error:
-                raise ChatStorageError(
-                    "Could not roll back a failed chat creation."
-                ) from cleanup_error
-            raise
-
+        self._insert_new_session(session)
         return session
+
+    def restore_chat(self, session: ChatSession) -> None:
+        """Restore deleted content for a higher-level transaction rollback."""
+
+        if not isinstance(session, ChatSession):
+            raise ValueError("session must be ChatSession.")
+
+        self._insert_new_session(session)
 
     def list_chats(
         self,
@@ -401,6 +389,34 @@ class JsonChatRepository:
             self._session_file(session.chat_id),
             session_to_data(session),
         )
+
+    def _insert_new_session(self, session: ChatSession) -> None:
+        """Insert one complete stable-ID session with creation rollback."""
+
+        metadata_entries = list(self._load_index())
+        session_file = self._session_file(session.chat_id)
+        if any(
+            metadata.chat_id == session.chat_id
+            for metadata in metadata_entries
+        ) or session_file.exists():
+            raise ChatAlreadyExistsError(
+                f"Chat already exists: {session.chat_id}."
+            )
+
+        self._write_session(session)
+
+        try:
+            self._write_index(
+                [*metadata_entries, session.to_meta()]
+            )
+        except ChatRepositoryError:
+            try:
+                session_file.unlink(missing_ok=True)
+            except OSError as cleanup_error:
+                raise ChatStorageError(
+                    "Could not roll back a failed Chat insertion."
+                ) from cleanup_error
+            raise
 
     def _scan_session_metadata(self) -> list[ChatSessionMeta]:
         """Read detail files only during explicit or missing-index recovery."""
