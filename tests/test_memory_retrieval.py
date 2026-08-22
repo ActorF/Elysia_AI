@@ -102,6 +102,8 @@ def _long_term_memories(
             "created_at": (
                 "2026-08-12 09:00:00"
             ),
+            "scope": "global",
+            "scope_id": None,
         },
         {
             "key": "favorite_food",
@@ -111,6 +113,8 @@ def _long_term_memories(
             "created_at": (
                 "2026-08-12 09:05:00"
             ),
+            "scope": "global",
+            "scope_id": None,
         },
     ]
 
@@ -267,6 +271,8 @@ def test_retrieval_preserves_provenance_and_confidence(
             ),
             "confidence": 0.6,
             "relevance": 0.942,
+            "scope": "global",
+            "scope_id": None,
         }
     ]
 
@@ -285,6 +291,8 @@ def test_prompt_serializes_retrieved_memory_as_data(
         "timestamp": "2026-08-12 09:00:00",
         "confidence": 1.0,
         "relevance": 0.9,
+        "scope": "global",
+        "scope_id": None,
     }
 
     prompt = build_elysia_system_prompt(

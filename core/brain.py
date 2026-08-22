@@ -5,6 +5,7 @@ from collections.abc import Iterator
 from datetime import datetime
 from pathlib import Path
 
+from chats import ChatSession
 from memory import (
     ConversationMessage,
     ConversationSummary,
@@ -15,6 +16,7 @@ from memory import (
     MemoryCandidate,
     MemoryExtractor,
     MemoryRetriever,
+    MemoryScope,
     Profile,
     RetrievedMemory,
     ShortTermMemory,
@@ -365,11 +367,37 @@ class Brain:
 
         return context
 
+    @staticmethod
+    def _build_session_recent_context(
+        chat_session: ChatSession,
+        limit: int = 10,
+    ) -> list[ChatMessage]:
+        """Build safe recent context from one explicit Chat aggregate."""
+
+        if limit <= 0:
+            raise ValueError(
+                "Message limit must be greater than zero."
+            )
+
+        return [
+            {
+                "role": message.role,
+                "content": message.content,
+            }
+            for message in chat_session.messages[-limit:]
+            if (
+                message.role in ("user", "assistant")
+                and message.content.strip()
+            )
+        ]
+
     def _build_chat_messages(
         self,
         profile: Profile,
         current_user_message: str,
         limit: int = 10,
+        *,
+        chat_session: ChatSession | None = None,
     ) -> list[ChatMessage]:
         """Assemble system rules, recent context, and the current user message.
 
@@ -377,12 +405,31 @@ class Brain:
         history second, and the new request last.
         """
 
-        retrieved_memories = (
-            self.retrieve_relevant_memories(
-                current_user_message,
-                profile,
+        if chat_session is None:
+            retrieved_memories = (
+                self.retrieve_relevant_memories(
+                    current_user_message,
+                    profile,
+                )
             )
-        )
+            recent_context = self._build_recent_context(
+                profile,
+                limit,
+            )
+        else:
+            retrieved_memories = (
+                self.retrieve_relevant_memories_for_chat(
+                    current_user_message,
+                    chat_session,
+                    profile,
+                )
+            )
+            recent_context = (
+                self._build_session_recent_context(
+                    chat_session,
+                    limit,
+                )
+            )
 
         system_prompt = (
             build_elysia_system_prompt(
@@ -398,12 +445,7 @@ class Brain:
             }
         ]
 
-        messages.extend(
-            self._build_recent_context(
-                profile,
-                limit,
-            )
-        )
+        messages.extend(recent_context)
 
         messages.append(
             {
@@ -447,7 +489,9 @@ class Brain:
                 cleaned_query,
                 active_profile,
                 summary_data["summary"],
-                self._memory.get_long_term_memories(),
+                self._memory.get_long_term_memories(
+                    scope="global",
+                ),
             )
         )
 
@@ -458,21 +502,73 @@ class Brain:
 
         return results
 
+    def retrieve_relevant_memories_for_chat(
+        self,
+        query: str,
+        chat_session: ChatSession,
+        profile: Profile | None = None,
+    ) -> list[RetrievedMemory]:
+        """Retrieve Global and matching Project/Chat context only."""
+
+        cleaned_query = query.strip()
+        if not cleaned_query:
+            raise ValueError(
+                "Memory retrieval query cannot be empty."
+            )
+
+        if not isinstance(chat_session, ChatSession):
+            raise ValueError(
+                "chat_session must be ChatSession."
+            )
+
+        if self._memory_retriever is None:
+            return []
+
+        active_profile = (
+            profile
+            if profile is not None
+            else self._memory.load_profile()
+        )
+        results = self._memory_retriever.retrieve_for_chat(
+            cleaned_query,
+            active_profile,
+            chat_session,
+            self._memory.get_long_term_memories(),
+        )
+
+        logger.info(
+            "Retrieved %s scoped memory items for Chat %s.",
+            len(results),
+            chat_session.chat_id,
+        )
+        return results
+
     def recall_long_term_memories(
         self,
+        *,
+        scope: MemoryScope | None = None,
+        scope_id: str | None = None,
     ) -> list[LongTermMemoryRecord]:
-        """Return every saved long-term memory in storage order."""
+        """Return all records or one exact scoped view."""
 
-        return self._memory.get_long_term_memories()
+        return self._memory.get_long_term_memories(
+            scope=scope,
+            scope_id=scope_id,
+        )
 
     def search_long_term_memories(
         self,
         query: str,
+        *,
+        scope: MemoryScope | None = None,
+        scope_id: str | None = None,
     ) -> list[LongTermMemorySearchResult]:
-        """Search persistent memories and retain their one-based numbers."""
+        """Search all records or one scoped view."""
 
         return self._memory.search_long_term_memories(
-            query
+            query,
+            scope=scope,
+            scope_id=scope_id,
         )
 
     def edit_long_term_memory(
@@ -480,6 +576,9 @@ class Brain:
         memory_number: int,
         key: str,
         value: str,
+        *,
+        scope: MemoryScope | None = None,
+        scope_id: str | None = None,
     ) -> LongTermMemoryRecord:
         """Edit a selected memory and log the resulting key."""
 
@@ -488,6 +587,8 @@ class Brain:
                 memory_number,
                 key,
                 value,
+                scope=scope,
+                scope_id=scope_id,
             )
         )
 
@@ -505,6 +606,8 @@ class Brain:
         export_file: Path,
         *,
         overwrite: bool = False,
+        scope: MemoryScope | None = None,
+        scope_id: str | None = None,
     ) -> Path:
         """Export persistent memories and log the destination path."""
 
@@ -512,6 +615,8 @@ class Brain:
             self._memory.export_long_term_memories(
                 export_file,
                 overwrite=overwrite,
+                scope=scope,
+                scope_id=scope_id,
             )
         )
 
@@ -527,6 +632,8 @@ class Brain:
         memory_number: int,
         *,
         confirmed: bool = False,
+        scope: MemoryScope | None = None,
+        scope_id: str | None = None,
     ) -> LongTermMemoryRecord:
         """Delete one memory only after an explicit confirmation flag.
 
@@ -544,7 +651,9 @@ class Brain:
 
         deleted_record = (
             self._memory.delete_long_term_memory(
-                memory_number
+                memory_number,
+                scope=scope,
+                scope_id=scope_id,
             )
         )
 
@@ -579,13 +688,18 @@ class Brain:
     def confirm_memory_candidate(
         self,
         candidate: MemoryCandidate,
+        *,
+        scope: MemoryScope = "global",
+        scope_id: str | None = None,
     ) -> LongTermMemoryRecord:
-        """Save one candidate after the user confirms it."""
+        """Save one confirmed candidate to an explicit scope."""
         return self._memory.save_long_term_memory(
             candidate["key"],
             candidate["value"],
             candidate["source_type"],
             candidate["source_text"],
+            scope=scope,
+            scope_id=scope_id,
         )
 
     def get_unsummarized_message_count(

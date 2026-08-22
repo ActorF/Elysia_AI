@@ -16,6 +16,7 @@ from .extraction import (
     MemoryExtractor,
 )
 from .long_term_memory import (
+    LONG_TERM_MEMORY_SCHEMA_VERSION,
     LongTermMemoryData,
     LongTermMemoryRecord,
     LongTermMemorySearchResult,
@@ -23,9 +24,12 @@ from .long_term_memory import (
     delete_long_term_memory_record,
     edit_long_term_memory_record,
     export_long_term_memory,
+    filter_long_term_memory_records,
     load_long_term_memory,
     save_long_term_memory_record,
     search_long_term_memory_records,
+    validate_long_term_memory_data,
+    validate_long_term_memory_record,
 )
 from .manager import Memory
 from .profile import (
@@ -36,6 +40,12 @@ from .retrieval import (
     MemoryRetrievalSource,
     MemoryRetriever,
     RetrievedMemory,
+)
+from .scope import (
+    MemoryScope,
+    MemoryScopeContext,
+    MemoryScopeRef,
+    validate_memory_scope,
 )
 from .short_term_memory import (
     ShortTermMemory,
@@ -54,6 +64,7 @@ __all__ = [
     "ConversationSummary",
     "ConversationSummaryContent",
     "ConversationSummaryData",
+    "LONG_TERM_MEMORY_SCHEMA_VERSION",
     "LongTermMemoryData",
     "LongTermMemoryRecord",
     "LongTermMemorySearchResult",
@@ -63,6 +74,9 @@ __all__ = [
     "MemoryExtractor",
     "MemoryRetrievalSource",
     "MemoryRetriever",
+    "MemoryScope",
+    "MemoryScopeContext",
+    "MemoryScopeRef",
     "PROFILE_SCHEMA_VERSION",
     "Profile",
     "RetrievedMemory",
@@ -71,10 +85,14 @@ __all__ = [
     "delete_long_term_memory_record",
     "edit_long_term_memory_record",
     "export_long_term_memory",
+    "filter_long_term_memory_records",
     "load_conversation_summary",
     "load_long_term_memory",
     "save_conversation_summary",
     "save_long_term_memory_record",
     "search_long_term_memory_records",
+    "validate_long_term_memory_data",
+    "validate_long_term_memory_record",
+    "validate_memory_scope",
     "validate_conversation_summary_content",
 ]

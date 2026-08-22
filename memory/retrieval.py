@@ -4,14 +4,18 @@ import re
 from dataclasses import dataclass
 from typing import Literal, TypedDict
 
+from chats import ChatId, ChatSession, ChatSummary
+
 from .conversation_summary import ConversationSummary
 from .long_term_memory import LongTermMemoryRecord
 from .profile import Profile
+from .scope import MemoryScope, MemoryScopeContext
 
 
 MemoryRetrievalSource = Literal[
     "profile",
     "conversation_summary",
+    "chat_summary",
     "long_term_memory",
 ]
 
@@ -27,6 +31,8 @@ class RetrievedMemory(TypedDict):
     timestamp: str | None
     confidence: float
     relevance: float
+    scope: MemoryScope
+    scope_id: str | None
 
 
 @dataclass(frozen=True)
@@ -45,6 +51,9 @@ class _RetrievalCandidate:
     timestamp: str | None
     confidence: float
     key_text: str
+    scope: MemoryScope
+    scope_id: str | None
+    scope_priority: int
 
 
 # English words and overlapping CJK bigrams support local bilingual matching
@@ -195,14 +204,71 @@ class MemoryRetriever:
             list[LongTermMemoryRecord]
         ),
     ) -> list[RetrievedMemory]:
-        """Return relevant items from strongest to weakest.
+        """Return relevant legacy single-conversation items.
 
-        Profile, conversation-summary, and long-term records are normalized,
-        scored using bilingual term overlap, and truncated to ``result_limit``.
+        Only Global long-term records are eligible here. Stage 5 callers use
+        ``retrieve_for_chat`` so Project and Chat records cannot leak into the
+        legacy single-conversation path.
 
         Raises:
             ValueError: If ``query`` contains no non-whitespace text.
         """
+
+        return self._retrieve_candidates(
+            query,
+            _build_candidates(
+                profile,
+                conversation_summary,
+                long_term_memories,
+            ),
+            prioritize_scope=False,
+        )
+
+    def retrieve_for_chat(
+        self,
+        query: str,
+        profile: Profile,
+        chat_session: ChatSession,
+        long_term_memories: list[LongTermMemoryRecord],
+    ) -> list[RetrievedMemory]:
+        """Retrieve only context readable by one active Chat."""
+
+        scope_context = MemoryScopeContext(
+            chat_id=chat_session.chat_id,
+            project_id=chat_session.project_id,
+        )
+        candidates = _build_profile_candidates(profile)
+
+        if chat_session.summary is not None:
+            candidates.extend(
+                _build_chat_summary_candidates(
+                    chat_session.summary,
+                    chat_session.chat_id,
+                )
+            )
+
+        scoped_records = _resolve_scoped_records(
+            long_term_memories,
+            scope_context,
+        )
+        candidates.extend(
+            _build_long_term_candidates(scoped_records)
+        )
+
+        return self._retrieve_candidates(
+            query,
+            candidates,
+            prioritize_scope=True,
+        )
+
+    def _retrieve_candidates(
+        self,
+        query: str,
+        candidates: list[_RetrievalCandidate],
+        *,
+        prioritize_scope: bool,
+    ) -> list[RetrievedMemory]:
+        """Score normalized candidates and apply deterministic ordering."""
 
         cleaned_query = query.strip()
 
@@ -220,12 +286,7 @@ class MemoryRetriever:
 
         results: list[RetrievedMemory] = []
 
-        # Score all sources through the same normalized candidate contract.
-        for candidate in _build_candidates(
-            profile,
-            conversation_summary,
-            long_term_memories,
-        ):
+        for candidate in candidates:
             relevance = _calculate_relevance(
                 query_terms,
                 candidate,
@@ -252,17 +313,47 @@ class MemoryRetriever:
                         candidate.confidence
                     ),
                     "relevance": relevance,
+                    "scope": candidate.scope,
+                    "scope_id": candidate.scope_id,
                 }
             )
 
-        # Confidence breaks relevance ties in favor of stronger provenance.
-        results.sort(
-            key=lambda item: (
-                item["relevance"],
-                item["confidence"],
-            ),
-            reverse=True,
-        )
+        candidate_priorities = {
+            (
+                candidate.source,
+                candidate.key,
+                candidate.value,
+                candidate.scope,
+                candidate.scope_id,
+            ): candidate.scope_priority
+            for candidate in candidates
+        }
+
+        if prioritize_scope:
+            results.sort(
+                key=lambda item: (
+                    candidate_priorities[
+                        (
+                            item["source"],
+                            item["key"],
+                            item["value"],
+                            item["scope"],
+                            item["scope_id"],
+                        )
+                    ],
+                    item["relevance"],
+                    item["confidence"],
+                ),
+                reverse=True,
+            )
+        else:
+            results.sort(
+                key=lambda item: (
+                    item["relevance"],
+                    item["confidence"],
+                ),
+                reverse=True,
+            )
 
         return results[
             : self._result_limit
@@ -291,10 +382,16 @@ def _build_candidates(
             )
         )
 
-    candidates.extend(
-        _build_long_term_candidates(
-            long_term_memories
+    global_records = [
+        record
+        for record in long_term_memories
+        if (
+            record["scope"] == "global"
+            and record["scope_id"] is None
         )
+    ]
+    candidates.extend(
+        _build_long_term_candidates(global_records)
     )
 
     return candidates
@@ -334,6 +431,9 @@ def _build_profile_candidates(
                 f"{field_name} "
                 f"{_PROFILE_SEARCH_HINTS[field_name]}"
             ),
+            scope="global",
+            scope_id=None,
+            scope_priority=1,
         )
         for field_name, value
         in profile_values.items()
@@ -403,6 +503,60 @@ def _build_summary_candidates(
                         f"{category} "
                         f"{_SUMMARY_SEARCH_HINTS[category]}"
                     ),
+                    scope="global",
+                    scope_id=None,
+                    scope_priority=1,
+                )
+            )
+
+    return candidates
+
+
+def _build_chat_summary_candidates(
+    summary: ChatSummary,
+    chat_id: ChatId,
+) -> list[_RetrievalCandidate]:
+    """Flatten only the summary owned by the active Chat."""
+
+    summary_entries: tuple[
+        tuple[str, tuple[str, ...]],
+        ...,
+    ] = (
+        ("facts", summary.facts),
+        ("decisions", summary.decisions),
+        ("action_items", summary.action_items),
+        (
+            "unresolved_questions",
+            summary.unresolved_questions,
+        ),
+    )
+    source_message_ids = ", ".join(
+        str(message_id)
+        for message_id in summary.source_message_ids
+    )
+    candidates: list[_RetrievalCandidate] = []
+
+    for category, entries in summary_entries:
+        for number, entry in enumerate(entries, start=1):
+            candidates.append(
+                _RetrievalCandidate(
+                    source="chat_summary",
+                    key=f"{category}[{number}]",
+                    value=entry,
+                    source_type=category,
+                    source_text=(
+                        "chat source messages: "
+                        f"{source_message_ids}"
+                    ),
+                    timestamp=summary.updated_at.isoformat(),
+                    confidence=0.75,
+                    key_text=(
+                        f"{category} "
+                        f"{_SUMMARY_SEARCH_HINTS[category]}"
+                    ),
+                    scope="chat",
+                    scope_id=str(chat_id),
+                    scope_priority=3,
                 )
             )
 
@@ -430,9 +584,64 @@ def _build_long_term_candidates(
                 else 0.6
             ),
             key_text=record["key"],
+            scope=record["scope"],
+            scope_id=record["scope_id"],
+            scope_priority=_scope_priority(
+                record["scope"]
+            ),
         )
         for record in records
     ]
+
+
+def _resolve_scoped_records(
+    records: list[LongTermMemoryRecord],
+    context: MemoryScopeContext,
+) -> list[LongTermMemoryRecord]:
+    """Filter inaccessible scopes and resolve keys to the closest scope."""
+
+    readable_scopes = context.readable_scopes()
+    priorities = {
+        (scope.scope, scope.scope_id): (
+            len(readable_scopes) - position
+        )
+        for position, scope in enumerate(readable_scopes)
+    }
+    visible_records: list[tuple[int, LongTermMemoryRecord]] = []
+
+    for record in records:
+        priority = priorities.get(
+            (record["scope"], record["scope_id"])
+        )
+        if priority is not None:
+            visible_records.append((priority, record))
+
+    highest_key_priorities: dict[str, int] = {}
+    for priority, record in visible_records:
+        normalized_key = record["key"].strip().casefold()
+        highest_key_priorities[normalized_key] = max(
+            priority,
+            highest_key_priorities.get(normalized_key, 0),
+        )
+
+    return [
+        record
+        for priority, record in visible_records
+        if priority
+        == highest_key_priorities[
+            record["key"].strip().casefold()
+        ]
+    ]
+
+
+def _scope_priority(scope: MemoryScope) -> int:
+    """Return the fixed specificity priority for one scope kind."""
+
+    return {
+        "global": 1,
+        "project": 2,
+        "chat": 3,
+    }[scope]
 
 
 def _calculate_relevance(

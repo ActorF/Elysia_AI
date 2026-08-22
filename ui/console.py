@@ -60,6 +60,11 @@ def _display_long_term_memory(
         f"  Created at: "
         f"{memory_record['created_at']}"
     )
+    scope_id = memory_record["scope_id"]
+    scope_label: str = memory_record["scope"]
+    if scope_id is not None:
+        scope_label = f"{scope_label} ({scope_id})"
+    print(f"  Scope: {scope_label}")
 
 
 def display_long_term_memories(

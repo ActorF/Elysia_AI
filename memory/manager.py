@@ -26,10 +26,12 @@ from .long_term_memory import (
     delete_long_term_memory_record,
     edit_long_term_memory_record,
     export_long_term_memory,
+    filter_long_term_memory_records,
     load_long_term_memory,
     save_long_term_memory_record,
     search_long_term_memory_records,
 )
+from .scope import MemoryScope
 
 
 class Memory:
@@ -119,13 +121,20 @@ class Memory:
 
     def get_long_term_memories(
         self,
+        *,
+        scope: MemoryScope | None = None,
+        scope_id: str | None = None,
     ) -> list[LongTermMemoryRecord]:
-        """Return all saved long-term memory records in storage order."""
+        """Return all records or those in one exact scope."""
 
         memory_data = load_long_term_memory(
             self._long_term_memory_file,
         )
-        return memory_data["memories"]
+        return filter_long_term_memory_records(
+            memory_data["memories"],
+            scope=scope,
+            scope_id=scope_id,
+        )
 
     def save_long_term_memory(
         self,
@@ -133,8 +142,11 @@ class Memory:
         value: str,
         source_type: LongTermMemorySource,
         source_text: str,
+        *,
+        scope: MemoryScope = "global",
+        scope_id: str | None = None,
     ) -> LongTermMemoryRecord:
-        """Validate and append one long-term memory through the store API."""
+        """Validate and append one record to an exact scope."""
 
         return save_long_term_memory_record(
             self._long_term_memory_file,
@@ -142,17 +154,24 @@ class Memory:
             value,
             source_type,
             source_text,
+            scope=scope,
+            scope_id=scope_id,
         )
 
     def search_long_term_memories(
         self,
         query: str,
+        *,
+        scope: MemoryScope | None = None,
+        scope_id: str | None = None,
     ) -> list[LongTermMemorySearchResult]:
-        """Search all long-term memory fields using case-insensitive text."""
+        """Search all records or one exact scope."""
 
         return search_long_term_memory_records(
             self._long_term_memory_file,
             query,
+            scope=scope,
+            scope_id=scope_id,
         )
 
     def edit_long_term_memory(
@@ -160,25 +179,35 @@ class Memory:
         memory_number: int,
         key: str,
         value: str,
+        *,
+        scope: MemoryScope | None = None,
+        scope_id: str | None = None,
     ) -> LongTermMemoryRecord:
-        """Edit the key and value of one one-based memory record."""
+        """Edit one record selected within an optional scoped view."""
 
         return edit_long_term_memory_record(
             self._long_term_memory_file,
             memory_number,
             key,
             value,
+            scope=scope,
+            scope_id=scope_id,
         )
 
     def delete_long_term_memory(
         self,
         memory_number: int,
+        *,
+        scope: MemoryScope | None = None,
+        scope_id: str | None = None,
     ) -> LongTermMemoryRecord:
-        """Delete and return one memory selected by its one-based number."""
+        """Delete one record selected within an optional scoped view."""
 
         return delete_long_term_memory_record(
             self._long_term_memory_file,
             memory_number,
+            scope=scope,
+            scope_id=scope_id,
         )
 
     def export_long_term_memories(
@@ -186,13 +215,17 @@ class Memory:
         export_file: Path,
         *,
         overwrite: bool = False,
+        scope: MemoryScope | None = None,
+        scope_id: str | None = None,
     ) -> Path:
-        """Export long-term memories to a separate portable JSON file."""
+        """Export all records or one exact scope."""
 
         return export_long_term_memory(
             self._long_term_memory_file,
             export_file,
             overwrite=overwrite,
+            scope=scope,
+            scope_id=scope_id,
         )
 
     def save_message(

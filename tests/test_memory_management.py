@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from core import Brain
-from memory import Memory
+from memory import LONG_TERM_MEMORY_SCHEMA_VERSION, Memory
 from ui.console import (
     run_console_session,
     run_memory_management,
@@ -134,6 +134,7 @@ def test_export_creates_portable_copy_and_refuses_overwrite(
             encoding="utf-8"
         )
     ) == {
+        "schema_version": LONG_TERM_MEMORY_SCHEMA_VERSION,
         "memories": (
             memory.get_long_term_memories()
         ),
@@ -149,6 +150,96 @@ def test_export_creates_portable_copy_and_refuses_overwrite(
             memory.long_term_memory_file,
             overwrite=True,
         )
+
+
+def test_scoped_management_filters_edit_and_delete_views(
+    tmp_path: Path,
+) -> None:
+    memory = Memory(tmp_path)
+    memory.save_long_term_memory(
+        "global_key",
+        "Global value",
+        "user_explicit",
+        "Global source.",
+    )
+    project_record = memory.save_long_term_memory(
+        "project_key",
+        "Project A value",
+        "user_explicit",
+        "Project A source.",
+        scope="project",
+        scope_id="project_a",
+    )
+    memory.save_long_term_memory(
+        "project_key",
+        "Project B value",
+        "user_explicit",
+        "Project B source.",
+        scope="project",
+        scope_id="project_b",
+    )
+
+    assert memory.get_long_term_memories(
+        scope="project",
+        scope_id="project_a",
+    ) == [project_record]
+    assert memory.search_long_term_memories(
+        "Project A",
+        scope="project",
+        scope_id="project_a",
+    )[0]["number"] == 1
+
+    updated = memory.edit_long_term_memory(
+        1,
+        "project_key",
+        "Updated A value",
+        scope="project",
+        scope_id="project_a",
+    )
+    deleted = memory.delete_long_term_memory(
+        1,
+        scope="project",
+        scope_id="project_b",
+    )
+
+    assert updated["scope_id"] == "project_a"
+    assert deleted["scope_id"] == "project_b"
+    assert [
+        record["value"]
+        for record in memory.get_long_term_memories()
+    ] == ["Global value", "Updated A value"]
+
+
+def test_export_can_limit_output_to_one_scope(tmp_path: Path) -> None:
+    memory = Memory(tmp_path)
+    memory.save_long_term_memory(
+        "global_key",
+        "Global value",
+        "user_explicit",
+        "Global source.",
+    )
+    project_record = memory.save_long_term_memory(
+        "project_key",
+        "Project value",
+        "user_explicit",
+        "Project source.",
+        scope="project",
+        scope_id="project_a",
+    )
+    export_file = tmp_path / "project-memory.json"
+
+    memory.export_long_term_memories(
+        export_file,
+        scope="project",
+        scope_id="project_a",
+    )
+
+    assert json.loads(
+        export_file.read_text(encoding="utf-8")
+    ) == {
+        "schema_version": LONG_TERM_MEMORY_SCHEMA_VERSION,
+        "memories": [project_record],
+    }
 
 
 def test_brain_requires_confirmation_and_logs_deletion(
