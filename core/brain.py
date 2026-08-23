@@ -1,14 +1,24 @@
 """Orchestrate chat generation, prompt context, and memory services."""
 
 import logging
-from collections.abc import Iterator
+from collections.abc import Generator
 from datetime import datetime
 from pathlib import Path
 
-from chats import ChatSession
+from chats import (
+    ChatId,
+    ChatMessage as StoredChatMessage,
+    ChatMessageId,
+    ChatSession,
+    ChatSessionMeta,
+    ChatSummary,
+    ConversationMode,
+    ProjectId,
+)
 from memory import (
     ConversationMessage,
     ConversationSummary,
+    ConversationSummaryContent,
     ConversationSummarizer,
     LongTermMemoryRecord,
     LongTermMemorySearchResult,
@@ -21,9 +31,16 @@ from memory import (
     RetrievedMemory,
     ShortTermMemory,
 )
+from projects import Project
 
+from .active_conversation import ActiveConversationService
 from .chat_model import ChatMessage, ChatModel
-from .prompts import build_elysia_system_prompt
+from .exceptions import ChatModelMismatchError
+from .prompts import (
+    ActiveConversationPromptContext,
+    ProjectPromptContext,
+    build_elysia_system_prompt,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +94,41 @@ def _get_unsummarized_messages(
     return messages[summarized_count:]
 
 
+def _get_unsummarized_chat_messages(
+    chat_session: ChatSession,
+) -> tuple[StoredChatMessage, ...]:
+    """Return user/assistant messages after a valid Chat summary prefix.
+
+    Stable IDs in an existing summary must exactly match the chronological
+    prefix they claim to cover.
+    """
+
+    messages = tuple(
+        message
+        for message in chat_session.messages
+        if (
+            message.role in ("user", "assistant")
+            and message.content.strip()
+        )
+    )
+    if chat_session.summary is None:
+        return messages
+
+    summarized_ids = chat_session.summary.source_message_ids
+    if (
+        len(summarized_ids) > len(messages)
+        or tuple(
+            message.message_id
+            for message in messages[: len(summarized_ids)]
+        )
+        != summarized_ids
+    ):
+        raise ValueError(
+            "Chat summary does not match the chronological message prefix."
+        )
+    return messages[len(summarized_ids) :]
+
+
 class Brain:
     """Coordinate one conversational use case across pluggable services.
 
@@ -101,6 +153,9 @@ class Brain:
         ) = None,
         memory_retriever: (
             MemoryRetriever | None
+        ) = None,
+        active_conversation_service: (
+            ActiveConversationService | None
         ) = None,
     ) -> None:
         """Inject the model, persistence, retrieval, and summarization services.
@@ -134,6 +189,9 @@ class Brain:
         )
         self._memory_retriever = (
             memory_retriever
+        )
+        self._active_conversation_service = (
+            active_conversation_service
         )
 
         logger.info(
@@ -169,8 +227,67 @@ class Brain:
 
         return profile
 
-    def chat(self, user_message: str) -> str:
-        """Generate, validate, and persist one non-streaming chat turn."""
+    def create_chat(
+        self,
+        *,
+        title: str,
+        mode: ConversationMode = "chat",
+        project_id: ProjectId | None = None,
+    ) -> ChatSession:
+        """Create one Chat through the active-conversation boundary."""
+
+        service = self._require_active_conversation_service()
+        return service.create_chat(
+            title=title,
+            mode=mode,
+            model_name=self.model_name,
+            project_id=project_id,
+        )
+
+    def get_or_create_default_chat(
+        self,
+        *,
+        title: str = "Console Chat",
+        mode: ConversationMode = "chat",
+    ) -> ChatSession:
+        """Resume one visible Chat or create a default for simple clients."""
+
+        service = self._require_active_conversation_service()
+        return service.get_or_create_default_chat(
+            title=title,
+            mode=mode,
+            model_name=self.model_name,
+        )
+
+    def list_chats(
+        self,
+        *,
+        include_archived: bool = False,
+    ) -> tuple[ChatSessionMeta, ...]:
+        """List Chat metadata without exposing repository paths."""
+
+        return self._require_active_conversation_service().list_chats(
+            include_archived=include_archived,
+        )
+
+    def get_chat(self, chat_id: ChatId) -> ChatSession:
+        """Load one persisted Chat through the application service."""
+
+        return self._require_active_conversation_service().get_chat(chat_id)
+
+    def is_chat_busy(self, chat_id: ChatId) -> bool:
+        """Return whether the Chat currently owns a generation operation."""
+
+        return self._require_active_conversation_service().is_chat_busy(
+            chat_id
+        )
+
+    def chat(
+        self,
+        chat_id: ChatId,
+        user_message: str,
+    ) -> str:
+        """Generate and commit one non-streaming turn to an explicit Chat."""
 
         cleaned_user_message = user_message.strip()
 
@@ -184,50 +301,47 @@ class Brain:
                 "Chat model is not connected."
             )
 
-        profile = self._memory.load_profile()
-
-        chat_messages = self._build_chat_messages(
-            profile,
-            cleaned_user_message,
-        )
-
-        reply = self._chat_model.generate_reply(
-            chat_messages
-        ).strip()
-
-        if not reply:
-            raise ValueError(
-                "Model reply cannot be empty."
+        service = self._require_active_conversation_service()
+        with service.open_turn(chat_id) as active_conversation:
+            self._validate_active_model(
+                active_conversation.chat_session
             )
-
-        # Commit both sides only after a complete, non-empty reply exists.
-        self.remember_message(
-            profile["user_name"],
-            cleaned_user_message,
-        )
-        self.remember_message(
-            profile["assistant_name"],
-            reply,
-        )
-
-        if self._short_term_memory is not None:
-            self._short_term_memory.remember_turn(
+            profile = self._memory.load_profile()
+            chat_messages = self._build_chat_messages(
+                profile,
                 cleaned_user_message,
-                reply,
+                chat_session=active_conversation.chat_session,
+                project=active_conversation.project,
             )
 
-        logger.info("Chat turn completed.")
+            reply = self._chat_model.generate_reply(
+                chat_messages
+            ).strip()
+            if not reply:
+                raise ValueError(
+                    "Model reply cannot be empty."
+                )
+
+            service.commit_turn(
+                active_conversation,
+                user_message=cleaned_user_message,
+                assistant_message=reply,
+            )
+
+        logger.info("Chat turn completed: chat_id=%s.", chat_id)
 
         return reply
 
     def stream_chat(
         self,
+        chat_id: ChatId,
         user_message: str,
-    ) -> Iterator[str]:
-        """Yield model chunks immediately, then persist the completed turn.
+    ) -> Generator[str, None, None]:
+        """Yield chunks, then commit a complete turn to the named Chat.
 
-        Chunks are accumulated while streaming because memory must store one
-        coherent assistant message. A failed or empty stream is not committed.
+        A failed, cancelled, empty, or concurrently invalidated stream is never
+        written as a partial turn. The Chat busy guard remains held for the
+        complete generator lifetime and is released when the generator closes.
         """
 
         cleaned_user_message = user_message.strip()
@@ -242,45 +356,62 @@ class Brain:
                 "Chat model is not connected."
             )
 
-        profile = self._memory.load_profile()
-
-        chat_messages = self._build_chat_messages(
-            profile,
-            cleaned_user_message,
-        )
-
-        reply_chunks: list[str] = []
-
-        for chunk in self._chat_model.stream_reply(
-            chat_messages
-        ):
-            # Preserve exact chunk order for both live output and final storage.
-            reply_chunks.append(chunk)
-            yield chunk
-
-        reply = "".join(reply_chunks).strip()
-
-        if not reply:
-            raise ValueError(
-                "Model reply cannot be empty."
+        service = self._require_active_conversation_service()
+        with service.open_turn(chat_id) as active_conversation:
+            self._validate_active_model(
+                active_conversation.chat_session
             )
-
-        self.remember_message(
-            profile["user_name"],
-            cleaned_user_message,
-        )
-        self.remember_message(
-            profile["assistant_name"],
-            reply,
-        )
-
-        if self._short_term_memory is not None:
-            self._short_term_memory.remember_turn(
+            profile = self._memory.load_profile()
+            chat_messages = self._build_chat_messages(
+                profile,
                 cleaned_user_message,
-                reply,
+                chat_session=active_conversation.chat_session,
+                project=active_conversation.project,
             )
 
-        logger.info("Streaming chat turn completed.")
+            reply_chunks: list[str] = []
+            for chunk in self._chat_model.stream_reply(chat_messages):
+                reply_chunks.append(chunk)
+                yield chunk
+
+            reply = "".join(reply_chunks).strip()
+            if not reply:
+                raise ValueError(
+                    "Model reply cannot be empty."
+                )
+
+            service.commit_turn(
+                active_conversation,
+                user_message=cleaned_user_message,
+                assistant_message=reply,
+            )
+
+        logger.info(
+            "Streaming chat turn completed: chat_id=%s.",
+            chat_id,
+        )
+
+    def _require_active_conversation_service(
+        self,
+    ) -> ActiveConversationService:
+        """Return the lifecycle service or fail before any model work."""
+
+        if self._active_conversation_service is None:
+            raise RuntimeError(
+                "Active conversation service is not connected."
+            )
+        return self._active_conversation_service
+
+    def _validate_active_model(self, chat_session: ChatSession) -> None:
+        """Prevent silently answering a Chat with the wrong model adapter."""
+
+        requested_model = chat_session.model_settings.model_name
+        if requested_model != self.model_name:
+            raise ChatModelMismatchError(
+                f"Chat {chat_session.chat_id} requires model "
+                f"{requested_model}, but Brain is connected to "
+                f"{self.model_name}."
+            )
 
     def remember_message(
         self,
@@ -367,29 +498,97 @@ class Brain:
 
         return context
 
-    @staticmethod
     def _build_session_recent_context(
+        self,
         chat_session: ChatSession,
         limit: int = 10,
     ) -> list[ChatMessage]:
-        """Build safe recent context from one explicit Chat aggregate."""
+        """Build one Chat-local context without sharing another Chat's RAM.
+
+        When a short-term-memory budget is configured, a fresh buffer is
+        rebuilt from this Chat's persisted complete turns. The configured
+        object supplies policy only; its mutable turns are never reused across
+        Chat IDs.
+        """
 
         if limit <= 0:
             raise ValueError(
                 "Message limit must be greater than zero."
             )
 
-        return [
-            {
-                "role": message.role,
-                "content": message.content,
-            }
-            for message in chat_session.messages[-limit:]
+        recent_messages = [
+            message
+            for message in chat_session.messages
             if (
                 message.role in ("user", "assistant")
                 and message.content.strip()
             )
         ]
+
+        if self._short_term_memory is None:
+            return [
+                {
+                    "role": message.role,
+                    "content": message.content,
+                }
+                for message in recent_messages[-limit:]
+            ]
+
+        chat_window = ShortTermMemory(
+            self._short_term_memory.token_budget
+        )
+        pending_user_message: str | None = None
+        for message in recent_messages:
+            if message.role == "user":
+                pending_user_message = message.content
+                continue
+
+            if pending_user_message is not None:
+                chat_window.remember_turn(
+                    pending_user_message,
+                    message.content,
+                )
+                pending_user_message = None
+
+        context: list[ChatMessage] = []
+        for turn in chat_window.get_turns():
+            context.extend(
+                [
+                    {
+                        "role": "user",
+                        "content": turn["user_message"],
+                    },
+                    {
+                        "role": "assistant",
+                        "content": turn["assistant_message"],
+                    },
+                ]
+            )
+        return context
+
+    @staticmethod
+    def _build_active_prompt_context(
+        chat_session: ChatSession,
+        project: Project | None,
+    ) -> ActiveConversationPromptContext:
+        """Select safe Chat and Project fields for prompt serialization."""
+
+        project_context: ProjectPromptContext | None = None
+        if project is not None:
+            project_context = {
+                "project_id": str(project.project_id),
+                "name": project.name,
+                "custom_instructions": (
+                    project.settings.custom_instructions
+                ),
+            }
+
+        return {
+            "chat_id": str(chat_session.chat_id),
+            "mode": chat_session.mode,
+            "model_name": chat_session.model_settings.model_name,
+            "project": project_context,
+        }
 
     def _build_chat_messages(
         self,
@@ -398,6 +597,7 @@ class Brain:
         limit: int = 10,
         *,
         chat_session: ChatSession | None = None,
+        project: Project | None = None,
     ) -> list[ChatMessage]:
         """Assemble system rules, recent context, and the current user message.
 
@@ -431,10 +631,20 @@ class Brain:
                 )
             )
 
+        active_prompt_context = (
+            None
+            if chat_session is None
+            else self._build_active_prompt_context(
+                chat_session,
+                project,
+            )
+        )
+
         system_prompt = (
             build_elysia_system_prompt(
                 profile,
                 retrieved_memories,
+                active_prompt_context,
             )
         )
 
@@ -701,6 +911,107 @@ class Brain:
             scope=scope,
             scope_id=scope_id,
         )
+
+    def get_unsummarized_chat_message_count(
+        self,
+        chat_id: ChatId,
+    ) -> int:
+        """Return active Chat messages not covered by its structured summary."""
+
+        chat_session = (
+            self._require_active_conversation_service().get_chat(chat_id)
+        )
+        return len(_get_unsummarized_chat_messages(chat_session))
+
+    def summarize_chat(
+        self,
+        chat_id: ChatId,
+    ) -> ChatSummary | None:
+        """Create or incrementally update the named Chat's summary.
+
+        Summary generation shares the Chat busy guard with reply generation,
+        so a summary can never race a new Turn or attach to another Chat.
+        """
+
+        if self._conversation_summarizer is None:
+            raise RuntimeError(
+                "Conversation summarizer is not connected."
+            )
+
+        service = self._require_active_conversation_service()
+        with service.open_turn(chat_id) as active_conversation:
+            chat_session = active_conversation.chat_session
+            self._validate_active_model(chat_session)
+            source_messages = tuple(
+                message
+                for message in chat_session.messages
+                if (
+                    message.role in ("user", "assistant")
+                    and message.content.strip()
+                )
+            )
+            if not source_messages:
+                return None
+
+            unsummarized_messages = _get_unsummarized_chat_messages(
+                chat_session
+            )
+            if not unsummarized_messages:
+                return chat_session.summary
+
+            profile = self._memory.load_profile()
+            messages_for_model: list[ConversationMessage] = [
+                {
+                    "timestamp": message.created_at.isoformat(),
+                    "speaker": (
+                        profile["user_name"]
+                        if message.role == "user"
+                        else profile["assistant_name"]
+                    ),
+                    "message": message.content,
+                }
+                for message in unsummarized_messages
+            ]
+            existing_summary = chat_session.summary
+            previous_content: ConversationSummaryContent | None = (
+                None
+                if existing_summary is None
+                else {
+                    "facts": list(existing_summary.facts),
+                    "decisions": list(existing_summary.decisions),
+                    "action_items": list(
+                        existing_summary.action_items
+                    ),
+                    "unresolved_questions": list(
+                        existing_summary.unresolved_questions
+                    ),
+                }
+            )
+            content = self._conversation_summarizer.summarize(
+                messages_for_model,
+                previous_content,
+            )
+            source_message_ids: tuple[ChatMessageId, ...] = tuple(
+                message.message_id
+                for message in source_messages
+            )
+            updated_session = service.commit_summary(
+                active_conversation,
+                facts=content["facts"],
+                decisions=content["decisions"],
+                action_items=content["action_items"],
+                unresolved_questions=(
+                    content["unresolved_questions"]
+                ),
+                source_message_ids=source_message_ids,
+            )
+
+        logger.info(
+            "Chat summary updated: chat_id=%s messages=%s.",
+            chat_id,
+            len(source_messages),
+        )
+        return updated_session.summary
 
     def get_unsummarized_message_count(
         self,

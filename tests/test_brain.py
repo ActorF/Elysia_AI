@@ -3,9 +3,11 @@ from pathlib import Path
 
 import pytest
 
-from core import Brain
+from chats import ChatSession, JsonChatRepository
+from core import ActiveConversationService, Brain
 from core.chat_model import ChatMessage
 from memory import Memory, ShortTermMemory
+from projects import JsonProjectRepository
 
 class FakeChatModel:
     def __init__(
@@ -41,18 +43,36 @@ class FakeChatModel:
             raise self._stream_error
 
 
-def test_chat_returns_reply_and_saves_messages(
+def _active_brain(
     tmp_path: Path,
-) -> None:
+    chat_model: FakeChatModel,
+    *,
+    short_term_memory: ShortTermMemory | None = None,
+) -> tuple[Brain, Memory, ChatSession]:
     memory = Memory(tmp_path)
-    chat_model = FakeChatModel("Hello, Ying!")
+    chats = JsonChatRepository(tmp_path / "data" / "chats")
+    projects = JsonProjectRepository(tmp_path / "data" / "projects")
     brain = Brain(
         "fake-model",
         memory,
         chat_model,
+        short_term_memory=short_term_memory,
+        active_conversation_service=ActiveConversationService(
+            chats,
+            projects,
+        ),
     )
+    chat = brain.create_chat(title="Test Chat")
+    return brain, memory, chat
 
-    reply = brain.chat("  Hello, Elysia!  ")
+
+def test_chat_returns_reply_and_saves_messages(
+    tmp_path: Path,
+) -> None:
+    chat_model = FakeChatModel("Hello, Ying!")
+    brain, memory, chat = _active_brain(tmp_path, chat_model)
+
+    reply = brain.chat(chat.chat_id, "  Hello, Elysia!  ")
 
     assert reply == "Hello, Ying!"
 
@@ -76,36 +96,27 @@ def test_chat_returns_reply_and_saves_messages(
         "role": "user",
         "content": "Hello, Elysia!",
     }
-    messages = memory.get_recent_messages(2)
+    messages = brain.get_chat(chat.chat_id).messages
 
     assert len(messages) == 2
-    assert messages[0]["speaker"] == "Ying"
-    assert (
-        messages[0]["message"]
-        == "Hello, Elysia!"
-    )
-    assert messages[1]["speaker"] == "Elysia"
-    assert (
-        messages[1]["message"]
-        == "Hello, Ying!"
-    )
+    assert messages[0].role == "user"
+    assert messages[0].content == "Hello, Elysia!"
+    assert messages[1].role == "assistant"
+    assert messages[1].content == "Hello, Ying!"
+    assert memory.get_recent_messages() == []
 
 
 def test_chat_rejects_empty_user_message(
     tmp_path: Path,
 ) -> None:
     chat_model = FakeChatModel("Unused reply")
-    brain = Brain(
-        "fake-model",
-        Memory(tmp_path),
-        chat_model,
-    )
+    brain, _memory, chat = _active_brain(tmp_path, chat_model)
 
     with pytest.raises(
         ValueError,
         match=r"User message cannot be empty\.",
     ):
-        brain.chat("   ")
+        brain.chat(chat.chat_id, "   ")
 
     assert chat_model.received_messages is None
 
@@ -113,20 +124,16 @@ def test_chat_rejects_empty_user_message(
 def test_chat_rejects_empty_model_reply(
     tmp_path: Path,
 ) -> None:
-    memory = Memory(tmp_path)
-    brain = Brain(
-        "fake-model",
-        memory,
-        FakeChatModel("   "),
-    )
+    chat_model = FakeChatModel("   ")
+    brain, _memory, chat = _active_brain(tmp_path, chat_model)
 
     with pytest.raises(
         ValueError,
         match=r"Model reply cannot be empty\.",
     ):
-        brain.chat("Hello")
+        brain.chat(chat.chat_id, "Hello")
 
-    assert memory.get_recent_messages() == []
+    assert brain.get_chat(chat.chat_id).messages == ()
 
 
 def test_build_recent_context_maps_message_roles(
@@ -233,17 +240,11 @@ def test_build_chat_messages_orders_context(
 def test_chat_includes_previous_turn_in_context(
     tmp_path: Path,
 ) -> None:
-    memory = Memory(tmp_path)
     chat_model = FakeChatModel("First reply")
+    brain, _memory, chat = _active_brain(tmp_path, chat_model)
 
-    brain = Brain(
-        "fake-model",
-        memory,
-        chat_model,
-    )
-
-    brain.chat("First question")
-    brain.chat("Second question")
+    brain.chat(chat.chat_id, "First question")
+    brain.chat(chat.chat_id, "Second question")
 
     received_messages = chat_model.received_messages
 
@@ -268,19 +269,14 @@ def test_chat_includes_previous_turn_in_context(
 def test_stream_chat_yields_chunks_and_saves_complete_turn(
     tmp_path: Path,
 ) -> None:
-    memory = Memory(tmp_path)
     chat_model = FakeChatModel(
         "Unused reply",
         stream_chunks=["Hello", " ", "Ying!"],
     )
-    brain = Brain(
-        "fake-model",
-        memory,
-        chat_model,
-    )
+    brain, _memory, chat = _active_brain(tmp_path, chat_model)
 
     chunks = list(
-        brain.stream_chat("  Hello, Elysia!  ")
+        brain.stream_chat(chat.chat_id, "  Hello, Elysia!  ")
     )
 
     assert chunks == ["Hello", " ", "Ying!"]
@@ -293,19 +289,18 @@ def test_stream_chat_yields_chunks_and_saves_complete_turn(
         "content": "Hello, Elysia!",
     }
 
-    messages = memory.get_recent_messages(2)
+    messages = brain.get_chat(chat.chat_id).messages
 
     assert len(messages) == 2
-    assert messages[0]["speaker"] == "Ying"
-    assert messages[0]["message"] == "Hello, Elysia!"
-    assert messages[1]["speaker"] == "Elysia"
-    assert messages[1]["message"] == "Hello Ying!"
+    assert messages[0].role == "user"
+    assert messages[0].content == "Hello, Elysia!"
+    assert messages[1].role == "assistant"
+    assert messages[1].content == "Hello Ying!"
 
 
 def test_stream_chat_does_not_save_partial_turn_on_stream_error(
     tmp_path: Path,
 ) -> None:
-    memory = Memory(tmp_path)
     chat_model = FakeChatModel(
         "Unused reply",
         stream_chunks=["Partial reply"],
@@ -313,13 +308,9 @@ def test_stream_chat_does_not_save_partial_turn_on_stream_error(
             "Streaming interrupted."
         ),
     )
-    brain = Brain(
-        "fake-model",
-        memory,
-        chat_model,
-    )
+    brain, _memory, chat = _active_brain(tmp_path, chat_model)
 
-    stream = brain.stream_chat("Hello")
+    stream = brain.stream_chat(chat.chat_id, "Hello")
 
     assert next(stream) == "Partial reply"
 
@@ -329,12 +320,11 @@ def test_stream_chat_does_not_save_partial_turn_on_stream_error(
     ):
         next(stream)
 
-    assert memory.get_recent_messages(2) == []
+    assert brain.get_chat(chat.chat_id).messages == ()
 
-def test_chat_uses_and_updates_short_term_memory(
+def test_active_chat_does_not_reuse_shared_short_term_turns(
     tmp_path: Path,
 ) -> None:
-    memory = Memory(tmp_path)
     short_term_memory = ShortTermMemory(
         token_budget=100,
     )
@@ -344,14 +334,13 @@ def test_chat_uses_and_updates_short_term_memory(
     )
 
     chat_model = FakeChatModel("Current answer")
-    brain = Brain(
-        "fake-model",
-        memory,
+    brain, _memory, chat = _active_brain(
+        tmp_path,
         chat_model,
         short_term_memory=short_term_memory,
     )
 
-    reply = brain.chat("Current question")
+    reply = brain.chat(chat.chat_id, "Current question")
 
     assert reply == "Current answer"
 
@@ -359,14 +348,6 @@ def test_chat_uses_and_updates_short_term_memory(
 
     assert received_messages is not None
     assert received_messages[1:] == [
-        {
-            "role": "user",
-            "content": "Previous question",
-        },
-        {
-            "role": "assistant",
-            "content": "Previous answer",
-        },
         {
             "role": "user",
             "content": "Current question",
@@ -378,11 +359,8 @@ def test_chat_uses_and_updates_short_term_memory(
             "user_message": "Previous question",
             "assistant_message": "Previous answer",
         },
-        {
-            "user_message": "Current question",
-            "assistant_message": "Current answer",
-        },
     ]
+    assert len(brain.get_chat(chat.chat_id).messages) == 2
 
 
 def test_short_term_memory_trimming_changes_context(
@@ -444,14 +422,13 @@ def test_new_short_term_session_ignores_saved_history(
     )
     chat_model = FakeChatModel("Current answer")
 
-    brain = Brain(
-        "fake-model",
-        memory,
+    brain, _memory, chat = _active_brain(
+        tmp_path,
         chat_model,
         short_term_memory=short_term_memory,
     )
 
-    brain.chat("Current question")
+    brain.chat(chat.chat_id, "Current question")
 
     received_messages = chat_model.received_messages
 
@@ -470,9 +447,8 @@ def test_chat_does_not_save_failed_short_term_turn(
     short_term_memory = ShortTermMemory(
         token_budget=100,
     )
-    brain = Brain(
-        "fake-model",
-        Memory(tmp_path),
+    brain, _memory, chat = _active_brain(
+        tmp_path,
         FakeChatModel("   "),
         short_term_memory=short_term_memory,
     )
@@ -481,9 +457,10 @@ def test_chat_does_not_save_failed_short_term_turn(
         ValueError,
         match=r"Model reply cannot be empty\.",
     ):
-        brain.chat("Hello")
+        brain.chat(chat.chat_id, "Hello")
 
     assert short_term_memory.get_turns() == []
+    assert brain.get_chat(chat.chat_id).messages == ()
 
 
 def test_stream_chat_saves_complete_short_term_turn(
@@ -496,22 +473,22 @@ def test_stream_chat_saves_complete_short_term_turn(
         "Unused reply",
         stream_chunks=["Hello", " ", "Ying!"],
     )
-    brain = Brain(
-        "fake-model",
-        Memory(tmp_path),
+    brain, _memory, chat = _active_brain(
+        tmp_path,
         chat_model,
         short_term_memory=short_term_memory,
     )
 
-    chunks = list(brain.stream_chat("Hello, Elysia!"))
+    chunks = list(
+        brain.stream_chat(chat.chat_id, "Hello, Elysia!")
+    )
 
     assert chunks == ["Hello", " ", "Ying!"]
-    assert short_term_memory.get_turns() == [
-        {
-            "user_message": "Hello, Elysia!",
-            "assistant_message": "Hello Ying!",
-        }
-    ]
+    assert short_term_memory.get_turns() == []
+    assert [
+        message.content
+        for message in brain.get_chat(chat.chat_id).messages
+    ] == ["Hello, Elysia!", "Hello Ying!"]
 
 
 def test_stream_chat_does_not_save_partial_short_term_turn(
@@ -527,14 +504,13 @@ def test_stream_chat_does_not_save_partial_short_term_turn(
             "Streaming interrupted."
         ),
     )
-    brain = Brain(
-        "fake-model",
-        Memory(tmp_path),
+    brain, _memory, chat = _active_brain(
+        tmp_path,
         chat_model,
         short_term_memory=short_term_memory,
     )
 
-    stream = brain.stream_chat("Hello")
+    stream = brain.stream_chat(chat.chat_id, "Hello")
 
     assert next(stream) == "Partial reply"
 
@@ -545,3 +521,4 @@ def test_stream_chat_does_not_save_partial_short_term_turn(
         next(stream)
 
     assert short_term_memory.get_turns() == []
+    assert brain.get_chat(chat.chat_id).messages == ()

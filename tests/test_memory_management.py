@@ -4,8 +4,10 @@ from pathlib import Path
 
 import pytest
 
-from core import Brain
+from chats import JsonChatRepository
+from core import ActiveConversationService, Brain
 from memory import LONG_TERM_MEMORY_SCHEMA_VERSION, Memory
+from projects import JsonProjectRepository
 from ui.console import (
     run_console_session,
     run_memory_management,
@@ -376,7 +378,14 @@ def test_console_session_opens_memory_management_command(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     memory = _memory_with_records(tmp_path)
-    brain = Brain("fake-model", memory)
+    brain = Brain(
+        "fake-model",
+        memory,
+        active_conversation_service=ActiveConversationService(
+            JsonChatRepository(tmp_path / "data" / "chats"),
+            JsonProjectRepository(tmp_path / "data" / "projects"),
+        ),
+    )
     answers = iter(
         [
             "/memory",

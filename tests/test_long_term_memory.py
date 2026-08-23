@@ -4,7 +4,8 @@ from typing import cast
 
 import pytest
 
-from core import Brain
+from chats import JsonChatRepository
+from core import ActiveConversationService, Brain
 from memory import (
     LONG_TERM_MEMORY_SCHEMA_VERSION,
     MemoryScope,
@@ -14,6 +15,7 @@ from memory import (
     save_long_term_memory_record,
 )
 from ui.console import run_console_session
+from projects import JsonProjectRepository
 
 
 def test_load_creates_empty_long_term_memory_store(
@@ -247,7 +249,14 @@ def test_console_session_displays_memory_source(
         "Please remember that I prefer Chinese replies.",
     )
 
-    brain = Brain("fake-model", memory)
+    brain = Brain(
+        "fake-model",
+        memory,
+        active_conversation_service=ActiveConversationService(
+            JsonChatRepository(tmp_path / "data" / "chats"),
+            JsonProjectRepository(tmp_path / "data" / "projects"),
+        ),
+    )
 
     monkeypatch.setattr(
         "builtins.input",

@@ -2,6 +2,7 @@
 
 # Expose UI entry points without leaking console-module implementation details.
 from .console import (
+    display_chat_messages,
     display_long_term_memories,
     display_memory_search_results,
     display_profile,
@@ -13,6 +14,7 @@ from .console import (
 
 # Declare the functions supported as the package's public interface.
 __all__ = [
+    "display_chat_messages",
     "display_long_term_memories",
     "display_memory_search_results",
     "display_profile",

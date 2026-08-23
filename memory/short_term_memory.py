@@ -52,6 +52,12 @@ class ShortTermMemory:
         self._turns: list[ShortTermTurn] = []
         self._token_count = 0
 
+    @property
+    def token_budget(self) -> int:
+        """Return the configured budget for rebuilding a Chat-local window."""
+
+        return self._token_budget
+
     def remember_turn(
         self,
         user_message: str,

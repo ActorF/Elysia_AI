@@ -1,5 +1,4 @@
 import json
-from collections.abc import Iterator
 from pathlib import Path
 from typing import cast
 
@@ -9,7 +8,6 @@ from core import (
     Brain,
     build_elysia_system_prompt,
 )
-from core.chat_model import ChatMessage
 from memory import (
     ConversationSummary,
     LongTermMemoryRecord,
@@ -18,31 +16,6 @@ from memory import (
     Profile,
     RetrievedMemory,
 )
-
-
-class FakeChatModel:
-    def __init__(
-        self,
-        reply: str,
-    ) -> None:
-        self._reply = reply
-        self.received_messages: (
-            list[ChatMessage] | None
-        ) = None
-
-    def generate_reply(
-        self,
-        messages: list[ChatMessage],
-    ) -> str:
-        self.received_messages = messages
-        return self._reply
-
-    def stream_reply(
-        self,
-        messages: list[ChatMessage],
-    ) -> Iterator[str]:
-        self.received_messages = messages
-        yield self._reply
 
 
 def _profile() -> Profile:
@@ -126,7 +99,7 @@ def _read_retrieved_memory_json(
         "RETRIEVED_MEMORY_JSON:\n",
         1,
     )[1].split(
-        "\nUSER_PROFILE_JSON:\n",
+        "\nACTIVE_CONVERSATION_JSON:\n",
         1,
     )[0]
 
@@ -330,29 +303,18 @@ def test_brain_injects_only_relevant_memories(
         _summary()
     )
 
-    chat_model = FakeChatModel(
-        "Use Chinese."
-    )
     brain = Brain(
         "fake-model",
         memory,
-        chat_model,
         memory_retriever=(
             MemoryRetriever(3)
         ),
     )
 
-    reply = brain.chat(
-        "Should replies use Chinese language?"
+    received_messages = brain._build_chat_messages(
+        memory.load_profile(),
+        "Should replies use Chinese language?",
     )
-
-    assert reply == "Use Chinese."
-
-    received_messages = (
-        chat_model.received_messages
-    )
-
-    assert received_messages is not None
 
     retrieved = (
         _read_retrieved_memory_json(
@@ -397,27 +359,18 @@ def test_brain_injects_empty_list_when_nothing_matches(
         ),
     )
 
-    chat_model = FakeChatModel(
-        "No stored context needed."
-    )
     brain = Brain(
         "fake-model",
         memory,
-        chat_model,
         memory_retriever=(
             MemoryRetriever(3)
         ),
     )
 
-    brain.chat(
-        "astronomy telescope orbit"
+    received_messages = brain._build_chat_messages(
+        memory.load_profile(),
+        "astronomy telescope orbit",
     )
-
-    received_messages = (
-        chat_model.received_messages
-    )
-
-    assert received_messages is not None
     assert (
         _read_retrieved_memory_json(
             received_messages[0]["content"]

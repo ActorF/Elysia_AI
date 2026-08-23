@@ -40,6 +40,8 @@ def test_rejects_non_positive_token_budget(
 def test_remember_turn_cleans_and_counts_messages() -> None:
     memory = ShortTermMemory(token_budget=10)
 
+    assert memory.token_budget == 10
+
     memory.remember_turn(
         "  abcd  ",
         "  你好  ",

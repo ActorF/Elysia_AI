@@ -5,6 +5,7 @@ import pytest
 
 import start
 from core import (
+    ActiveConversationService,
     ConfigurationError,
     ModelConversationSummarizer,
     ModelMemoryExtractor,
@@ -174,3 +175,16 @@ def test_create_brain_uses_configured_token_budget(
         memory_retriever.result_limit
         == start.SETTINGS.memory_retrieval_limit
     )
+
+    active_service = brain._active_conversation_service
+    assert isinstance(active_service, ActiveConversationService)
+
+    chat = brain.create_chat(title="Startup Chat")
+    assert brain.get_chat(chat.chat_id) == chat
+    assert (
+        tmp_path
+        / "workspace"
+        / "chats"
+        / "sessions"
+        / f"{chat.chat_id}.json"
+    ).exists()

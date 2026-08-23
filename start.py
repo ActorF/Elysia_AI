@@ -3,8 +3,10 @@
 import json
 import logging
 
+from chats import JsonChatRepository
 from config.settings import SETTINGS
 from core import (
+    ActiveConversationService,
     Brain,
     ChatModelConnectionError,
     ChatModelError,
@@ -18,6 +20,7 @@ from memory import (
     MemoryRetriever,
     ShortTermMemory,
 )
+from projects import JsonProjectRepository
 from ui import run_console_session
 
 LOG_DIR = SETTINGS.base_dir / "logs"
@@ -110,6 +113,19 @@ def create_brain() -> Brain:
         SETTINGS.memory_retrieval_limit,
     )
 
+    # Chats and Projects live in ignored runtime storage. Their repository
+    # paths remain infrastructure details owned by the composition root.
+    chat_repository = JsonChatRepository(
+        SETTINGS.base_dir / "workspace" / "chats"
+    )
+    project_repository = JsonProjectRepository(
+        SETTINGS.base_dir / "workspace" / "projects"
+    )
+    active_conversation_service = ActiveConversationService(
+        chat_repository,
+        project_repository,
+    )
+
     return Brain(
         SETTINGS.model_name,
         elysia_memory,
@@ -125,6 +141,9 @@ def create_brain() -> Brain:
         ),
         memory_retriever=(
             memory_retriever
+        ),
+        active_conversation_service=(
+            active_conversation_service
         ),
     )
 

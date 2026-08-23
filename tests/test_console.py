@@ -5,13 +5,15 @@ from pathlib import Path
 
 import pytest
 
-from core import Brain
+from chats import JsonChatRepository
+from core import ActiveConversationService, Brain
 from core.chat_model import ChatMessage
 from memory import (
     ConversationMessage,
     ConversationSummaryContent,
     Memory,
 )
+from projects import JsonProjectRepository
 from ui.console import run_console_session
 
 
@@ -94,6 +96,29 @@ class FakeConsoleSummarizer:
         }
 
 
+def _brain(
+    tmp_path: Path,
+    *,
+    chat_model: FakeConsoleChatModel | None = None,
+    summarizer: FakeConsoleSummarizer | None = None,
+) -> tuple[Brain, Memory]:
+    memory = Memory(tmp_path)
+    active = ActiveConversationService(
+        JsonChatRepository(tmp_path / "data" / "chats"),
+        JsonProjectRepository(tmp_path / "data" / "projects"),
+    )
+    return (
+        Brain(
+            "fake-model",
+            memory,
+            chat_model,
+            conversation_summarizer=summarizer,
+            active_conversation_service=active,
+        ),
+        memory,
+    )
+
+
 def _set_console_answers(
     monkeypatch: pytest.MonkeyPatch,
     answers: list[str],
@@ -111,12 +136,10 @@ def test_console_supports_multiple_turns_and_quit(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    memory = Memory(tmp_path)
     chat_model = FakeConsoleChatModel()
-    brain = Brain(
-        "fake-model",
-        memory,
-        chat_model,
+    brain, memory = _brain(
+        tmp_path,
+        chat_model=chat_model,
     )
 
     _set_console_answers(
@@ -130,32 +153,34 @@ def test_console_supports_multiple_turns_and_quit(
 
     run_console_session(brain)
 
-    messages = memory.get_all_messages()
+    chat_id = brain.list_chats()[0].chat_id
+    messages = brain.get_chat(chat_id).messages
 
     assert [
         (
-            message["speaker"],
-            message["message"],
+            message.role,
+            message.content,
         )
         for message in messages
     ] == [
         (
-            "Ying",
+            "user",
             "First question",
         ),
         (
-            "Elysia",
+            "assistant",
             "Reply to First question",
         ),
         (
-            "Ying",
+            "user",
             "Second question",
         ),
         (
-            "Elysia",
+            "assistant",
             "Reply to Second question",
         ),
     ]
+    assert memory.get_all_messages() == []
     assert (
         len(chat_model.received_messages)
         == 2
@@ -173,10 +198,7 @@ def test_console_continues_after_empty_input(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    brain = Brain(
-        "fake-model",
-        Memory(tmp_path),
-    )
+    brain, _memory = _brain(tmp_path)
 
     _set_console_answers(
         monkeypatch,
@@ -199,22 +221,15 @@ def test_console_can_manually_update_summary(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    memory = Memory(tmp_path)
-    memory.save_message(
-        "Ying",
-        "First question",
-    )
-    memory.save_message(
-        "Elysia",
-        "First answer",
-    )
-
+    chat_model = FakeConsoleChatModel()
     summarizer = FakeConsoleSummarizer()
-    brain = Brain(
-        "fake-model",
-        memory,
-        conversation_summarizer=summarizer,
+    brain, _memory = _brain(
+        tmp_path,
+        chat_model=chat_model,
+        summarizer=summarizer,
     )
+    chat = brain.create_chat(title="Existing Chat")
+    brain.chat(chat.chat_id, "First question")
 
     _set_console_answers(
         monkeypatch,
@@ -226,16 +241,10 @@ def test_console_can_manually_update_summary(
 
     run_console_session(brain)
 
-    summary = (
-        memory
-        .get_conversation_summary()["summary"]
-    )
+    summary = brain.get_chat(chat.chat_id).summary
 
     assert summary is not None
-    assert (
-        summary["source_message_count"]
-        == 2
-    )
+    assert len(summary.source_message_ids) == 2
     assert len(summarizer.calls) == 1
 
     output = capsys.readouterr().out
@@ -251,14 +260,12 @@ def test_console_automatically_summarizes_ten_messages(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    memory = Memory(tmp_path)
     chat_model = FakeConsoleChatModel()
     summarizer = FakeConsoleSummarizer()
-    brain = Brain(
-        "fake-model",
-        memory,
-        chat_model,
-        conversation_summarizer=summarizer,
+    brain, memory = _brain(
+        tmp_path,
+        chat_model=chat_model,
+        summarizer=summarizer,
     )
 
     _set_console_answers(
@@ -275,25 +282,20 @@ def test_console_automatically_summarizes_ten_messages(
 
     run_console_session(brain)
 
-    assert len(
-        memory.get_all_messages()
-    ) == 10
+    chat_id = brain.list_chats()[0].chat_id
+    persisted_chat = brain.get_chat(chat_id)
+    assert len(persisted_chat.messages) == 10
+    assert memory.get_all_messages() == []
     assert len(summarizer.calls) == 1
     assert len(
         summarizer.calls[0][0]
     ) == 10
     assert summarizer.calls[0][1] is None
 
-    summary = (
-        memory
-        .get_conversation_summary()["summary"]
-    )
+    summary = persisted_chat.summary
 
     assert summary is not None
-    assert (
-        summary["source_message_count"]
-        == 10
-    )
+    assert len(summary.source_message_ids) == 10
 
     output = capsys.readouterr().out
 
@@ -309,26 +311,19 @@ def test_console_summary_failure_does_not_end_session(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    memory = Memory(tmp_path)
-    memory.save_message(
-        "Ying",
-        "First question",
-    )
-    memory.save_message(
-        "Elysia",
-        "First answer",
-    )
-
+    chat_model = FakeConsoleChatModel()
     summarizer = FakeConsoleSummarizer(
         error=ValueError(
             "Summary generation failed."
         )
     )
-    brain = Brain(
-        "fake-model",
-        memory,
-        conversation_summarizer=summarizer,
+    brain, _memory = _brain(
+        tmp_path,
+        chat_model=chat_model,
+        summarizer=summarizer,
     )
+    chat = brain.create_chat(title="Existing Chat")
+    brain.chat(chat.chat_id, "First question")
 
     _set_console_answers(
         monkeypatch,

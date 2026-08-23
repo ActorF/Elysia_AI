@@ -100,7 +100,7 @@ def _retrieved_json(system_prompt: str) -> list[RetrievedMemory]:
         "RETRIEVED_MEMORY_JSON:\n",
         1,
     )[1].split(
-        "\nUSER_PROFILE_JSON:\n",
+        "\nACTIVE_CONVERSATION_JSON:\n",
         1,
     )[0]
     decoded: object = json.loads(memory_json)

@@ -2,7 +2,8 @@
 
 from pathlib import Path
 
-from core import Brain, ChatModelError
+from chats import ChatId, ChatMessage
+from core import ActiveConversationError, Brain, ChatModelError
 from memory import (
     ConversationMessage,
     LongTermMemoryRecord,
@@ -34,6 +35,29 @@ def display_recent_messages(
         print(
             f"[{timestamp}] "
             f"{speaker}: {message}"
+        )
+
+
+def display_chat_messages(
+    messages: tuple[ChatMessage, ...],
+    profile: Profile,
+) -> None:
+    """Print recent messages from one explicit Chat aggregate."""
+
+    print("\nRecent Chat messages:")
+    if not messages:
+        print("No saved messages in this Chat.")
+        return
+
+    speaker_names = {
+        "system": "System",
+        "user": profile["user_name"],
+        "assistant": profile["assistant_name"],
+    }
+    for message in messages:
+        print(
+            f"[{message.created_at.isoformat()}] "
+            f"{speaker_names[message.role]}: {message.content}"
         )
 
 
@@ -394,6 +418,7 @@ def run_memory_management(brain: Brain) -> None:
 
 def _update_conversation_summary(
     brain: Brain,
+    chat_id: ChatId,
     *,
     automatic: bool,
 ) -> None:
@@ -401,7 +426,7 @@ def _update_conversation_summary(
 
     try:
         unsummarized_message_count = (
-            brain.get_unsummarized_message_count()
+            brain.get_unsummarized_chat_message_count(chat_id)
         )
     except ValueError as error:
         print(
@@ -428,8 +453,9 @@ def _update_conversation_summary(
     print("Updating conversation summary...")
 
     try:
-        summary = brain.summarize_conversation()
+        summary = brain.summarize_chat(chat_id)
     except (
+        ActiveConversationError,
         ChatModelError,
         RuntimeError,
         ValueError,
@@ -461,16 +487,21 @@ def run_console_session(brain: Brain) -> None:
     """Run chat commands, streaming replies, memory review, and summaries."""
 
     profile = brain.start_session()
-
-    recent_messages = (
-        brain.recall_recent_messages(10)
-    )
+    active_chat = brain.get_or_create_default_chat()
 
     long_term_memories = (
         brain.recall_long_term_memories()
     )
 
-    display_recent_messages(recent_messages)
+    print(
+        "\nActive Chat: "
+        f"{active_chat.title} "
+        f"({active_chat.chat_id}, mode={active_chat.mode})"
+    )
+    display_chat_messages(
+        active_chat.messages[-10:],
+        profile,
+    )
     display_long_term_memories(
         long_term_memories
     )
@@ -514,6 +545,7 @@ def run_console_session(brain: Brain) -> None:
         }:
             _update_conversation_summary(
                 brain,
+                active_chat.chat_id,
                 automatic=False,
             )
             continue
@@ -526,6 +558,7 @@ def run_console_session(brain: Brain) -> None:
 
         # Print each model chunk immediately; ``Brain`` retains it for storage.
         for chunk in brain.stream_chat(
+            active_chat.chat_id,
             cleaned_user_message
         ):
             print(
@@ -557,5 +590,6 @@ def run_console_session(brain: Brain) -> None:
 
         _update_conversation_summary(
             brain,
+            active_chat.chat_id,
             automatic=True,
         )
