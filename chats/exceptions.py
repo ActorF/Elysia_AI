@@ -19,3 +19,7 @@ class ChatStorageError(ChatRepositoryError):
 
 class ChatDataCorruptionError(ChatRepositoryError):
     """Raised when stored JSON cannot produce a valid chat domain object."""
+
+
+class LegacyMigrationError(ChatRepositoryError):
+    """Raised when legacy conversation data cannot migrate safely."""

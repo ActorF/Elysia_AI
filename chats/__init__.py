@@ -27,6 +27,12 @@ from .exceptions import (
     ChatNotFoundError,
     ChatRepositoryError,
     ChatStorageError,
+    LegacyMigrationError,
+)
+from .migration import (
+    LEGACY_MIGRATION_SCHEMA_VERSION,
+    LegacyConversationMigrator,
+    LegacyMigrationResult,
 )
 from .repository import (
     ChatRepository,
@@ -52,6 +58,10 @@ __all__ = [
     "ChatSession",
     "ChatSessionMeta",
     "ChatStorageError",
+    "LEGACY_MIGRATION_SCHEMA_VERSION",
+    "LegacyConversationMigrator",
+    "LegacyMigrationError",
+    "LegacyMigrationResult",
     "ChatSummary",
     "ConversationMode",
     "ProjectId",

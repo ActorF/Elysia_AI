@@ -3,7 +3,11 @@
 import json
 import logging
 
-from chats import JsonChatRepository
+from chats import (
+    JsonChatRepository,
+    LegacyConversationMigrator,
+    LegacyMigrationError,
+)
 from config.settings import SETTINGS
 from core import (
     ActiveConversationService,
@@ -118,6 +122,11 @@ def create_brain() -> Brain:
     chat_repository = JsonChatRepository(
         SETTINGS.base_dir / "workspace" / "chats"
     )
+    LegacyConversationMigrator(
+        base_dir=SETTINGS.base_dir,
+        chat_repository=chat_repository,
+        model_name=SETTINGS.model_name,
+    ).migrate()
     project_repository = JsonProjectRepository(
         SETTINGS.base_dir / "workspace" / "projects"
     )
@@ -182,6 +191,13 @@ if __name__ == "__main__":
             error,
         )
         print(f"File not found: {error}")
+
+    except LegacyMigrationError as error:
+        logging.error(
+            "Legacy migration error: %s",
+            error,
+        )
+        print(f"Legacy data migration error: {error}")
 
     except json.JSONDecodeError as error:
         logging.error(

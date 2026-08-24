@@ -1,4 +1,5 @@
 from dataclasses import replace
+import json
 from pathlib import Path
 
 import pytest
@@ -188,3 +189,56 @@ def test_create_brain_uses_configured_token_budget(
         / "sessions"
         / f"{chat.chat_id}.json"
     ).exists()
+
+
+def test_create_brain_migrates_legacy_conversation_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    legacy_file = (
+        tmp_path
+        / "workspace"
+        / "conversations"
+        / "conversation.json"
+    )
+    legacy_file.parent.mkdir(parents=True)
+    legacy_file.write_text(
+        json.dumps({
+            "messages": [
+                {
+                    "timestamp": "2026-08-01 12:00:00",
+                    "speaker": "User",
+                    "message": "Legacy question",
+                },
+                {
+                    "timestamp": "2026-08-01 12:00:01",
+                    "speaker": "Elysia",
+                    "message": "Legacy answer",
+                },
+            ]
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        start,
+        "SETTINGS",
+        replace(start.SETTINGS, base_dir=tmp_path),
+    )
+    monkeypatch.setattr(
+        start,
+        "LangChainOllamaChatModel",
+        FakeStartupChatModel,
+    )
+
+    first_brain = start.create_brain()
+    second_brain = start.create_brain()
+
+    first_chats = first_brain.list_chats()
+    second_chats = second_brain.list_chats()
+    assert len(first_chats) == 1
+    assert second_chats == first_chats
+    migrated = first_brain.get_chat(first_chats[0].chat_id)
+    assert [message.content for message in migrated.messages] == [
+        "Legacy question",
+        "Legacy answer",
+    ]
