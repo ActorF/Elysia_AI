@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 
 DEFAULT_SHORT_TERM_MEMORY_TOKEN_BUDGET = 2048
 DEFAULT_MEMORY_RETRIEVAL_LIMIT = 5
+DEFAULT_DATA_IMPORT_MAX_BYTES = 16 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -31,6 +32,7 @@ class AppSettings:
     memory_retrieval_limit: int = (
         DEFAULT_MEMORY_RETRIEVAL_LIMIT
     )
+    data_import_max_bytes: int = DEFAULT_DATA_IMPORT_MAX_BYTES
 
 
 def parse_bool(value: str) -> bool:
@@ -82,6 +84,12 @@ MEMORY_RETRIEVAL_LIMIT = int(
         str(DEFAULT_MEMORY_RETRIEVAL_LIMIT),
     )
 )
+DATA_IMPORT_MAX_BYTES = int(
+    os.getenv(
+        "DATA_IMPORT_MAX_BYTES",
+        str(DEFAULT_DATA_IMPORT_MAX_BYTES),
+    )
+)
 
 # Export one settings object for the composition root and application services.
 SETTINGS = AppSettings(
@@ -94,4 +102,5 @@ SETTINGS = AppSettings(
         SHORT_TERM_MEMORY_TOKEN_BUDGET
     ),
     memory_retrieval_limit=MEMORY_RETRIEVAL_LIMIT,
+    data_import_max_bytes=DATA_IMPORT_MAX_BYTES,
 )

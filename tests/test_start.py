@@ -15,6 +15,7 @@ from memory import (
     MemoryRetriever,
     ShortTermMemory,
 )
+from recovery import DataPortabilityService
 
 
 class FakeStartupChatModel:
@@ -92,6 +93,24 @@ def test_validate_settings_rejects_invalid_retrieval_limit(
             r"MEMORY_RETRIEVAL_LIMIT "
             r"must be greater than zero\."
         ),
+    ):
+        start.validate_settings()
+
+
+@pytest.mark.parametrize("max_bytes", [0, -1])
+def test_validate_settings_rejects_invalid_import_size_limit(
+    monkeypatch: pytest.MonkeyPatch,
+    max_bytes: int,
+) -> None:
+    monkeypatch.setattr(
+        start,
+        "SETTINGS",
+        replace(start.SETTINGS, data_import_max_bytes=max_bytes),
+    )
+
+    with pytest.raises(
+        ConfigurationError,
+        match="DATA_IMPORT_MAX_BYTES must be greater than zero",
     ):
         start.validate_settings()
 
@@ -242,3 +261,23 @@ def test_create_brain_migrates_legacy_conversation_once(
         "Legacy question",
         "Legacy answer",
     ]
+
+
+def test_create_data_portability_service_uses_configured_limit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        start,
+        "SETTINGS",
+        replace(
+            start.SETTINGS,
+            base_dir=tmp_path,
+            data_import_max_bytes=1234,
+        ),
+    )
+
+    service = start.create_data_portability_service()
+
+    assert isinstance(service, DataPortabilityService)
+    assert service.max_import_bytes == 1234

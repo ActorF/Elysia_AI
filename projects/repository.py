@@ -43,6 +43,10 @@ class ProjectRepository(Protocol):
         """Create and persist one Project."""
         ...
 
+    def restore_project(self, project: Project) -> None:
+        """Restore one complete Project with its existing stable ID."""
+        ...
+
     def list_projects(
         self,
         *,
@@ -146,6 +150,23 @@ class JsonProjectRepository:
 
         self._write_projects([*projects, project])
         return project
+
+    def restore_project(self, project: Project) -> None:
+        """Insert validated imported or rollback Project data unchanged."""
+
+        if not isinstance(project, Project):
+            raise ValueError("project must be Project.")
+
+        projects = list(self._load_projects())
+        if any(
+            existing.project_id == project.project_id
+            for existing in projects
+        ):
+            raise ProjectAlreadyExistsError(
+                f"Project already exists: {project.project_id}."
+            )
+
+        self._write_projects([*projects, project])
 
     def list_projects(
         self,

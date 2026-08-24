@@ -25,6 +25,7 @@ from memory import (
     ShortTermMemory,
 )
 from projects import JsonProjectRepository
+from recovery import DataPortabilityError, DataPortabilityService
 from ui import run_console_session
 
 LOG_DIR = SETTINGS.base_dir / "logs"
@@ -78,6 +79,26 @@ def validate_settings() -> None:
             "MEMORY_RETRIEVAL_LIMIT "
             "must be greater than zero."
         )
+
+    if SETTINGS.data_import_max_bytes <= 0:
+        raise ConfigurationError(
+            "DATA_IMPORT_MAX_BYTES must be greater than zero."
+        )
+
+
+def create_data_portability_service() -> DataPortabilityService:
+    """Compose the Stage 5 import, export, and recovery boundary."""
+
+    return DataPortabilityService(
+        base_dir=SETTINGS.base_dir,
+        chat_repository=JsonChatRepository(
+            SETTINGS.base_dir / "workspace" / "chats"
+        ),
+        project_repository=JsonProjectRepository(
+            SETTINGS.base_dir / "workspace" / "projects"
+        ),
+        max_import_bytes=SETTINGS.data_import_max_bytes,
+    )
 
 
 def create_brain() -> Brain:
@@ -198,6 +219,13 @@ if __name__ == "__main__":
             error,
         )
         print(f"Legacy data migration error: {error}")
+
+    except DataPortabilityError as error:
+        logging.error(
+            "Data portability error: %s",
+            error,
+        )
+        print(f"Data import/export error: {error}")
 
     except json.JSONDecodeError as error:
         logging.error(
