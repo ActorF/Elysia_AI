@@ -13,6 +13,7 @@ from chats import (
     JsonChatRepository,
     LegacyConversationMigrator,
     ProjectId,
+    create_attachment_metadata,
     create_chat_message,
 )
 from projects import (
@@ -374,6 +375,19 @@ def test_full_restore_rebases_legacy_backup_to_target_workspace(
         clock=lambda: BASE_TIME,
     ).migrate()
     assert migration.chat_id is not None
+    migrated_session = source_chats.get_chat(migration.chat_id)
+    follow_up_time = migrated_session.updated_at + timedelta(seconds=1)
+    follow_up = create_chat_message(
+        role="assistant",
+        content="A new message after migration.",
+        created_at=follow_up_time,
+    )
+    extended_session = replace(
+        migrated_session,
+        updated_at=follow_up_time,
+        messages=(*migrated_session.messages, follow_up),
+    )
+    source_chats.save_chat(extended_session)
     source_state = json.loads(
         (
             source_dir
@@ -386,9 +400,11 @@ def test_full_restore_rebases_legacy_backup_to_target_workspace(
     export_file = tmp_path / "all.json"
     source_service.export_all_user_data(export_file)
     target_dir = tmp_path / "target"
-    target_service, _, _ = service_for(target_dir)
+    target_service, target_chats, _ = service_for(target_dir)
 
     target_service.import_bundle(export_file)
+
+    assert target_chats.get_chat(migration.chat_id) == extended_session
 
     restored_state = json.loads(
         (
@@ -405,7 +421,6 @@ def test_full_restore_rebases_legacy_backup_to_target_workspace(
         / "backups"
         / backup_name
     )
-    target_chats = JsonChatRepository(target_dir / "workspace" / "chats")
     repeated = LegacyConversationMigrator(
         base_dir=target_dir,
         chat_repository=target_chats,
@@ -414,6 +429,72 @@ def test_full_restore_rebases_legacy_backup_to_target_workspace(
     ).migrate()
     assert repeated.status == "already_migrated"
     assert repeated.chat_id == migration.chat_id
+
+
+@pytest.mark.parametrize(
+    "changed_field",
+    ["role", "content", "created_at", "attachments"],
+)
+def test_full_restore_rejects_a_tampered_legacy_message_prefix(
+    tmp_path: Path,
+    changed_field: str,
+) -> None:
+    source_dir = tmp_path / "source"
+    source_service, source_chats, _ = service_for(source_dir)
+    write_json(
+        source_dir
+        / "workspace"
+        / "conversations"
+        / "conversation.json",
+        {"messages": [{
+            "timestamp": "2026-08-01 12:00:00",
+            "speaker": "User",
+            "message": "Original legacy message",
+        }]},
+    )
+    migration = LegacyConversationMigrator(
+        base_dir=source_dir,
+        chat_repository=source_chats,
+        model_name="qwen3.5:9b",
+        clock=lambda: BASE_TIME,
+    ).migrate()
+    assert migration.chat_id is not None
+    session = source_chats.get_chat(migration.chat_id)
+    original = session.messages[0]
+    changed_updated_at = session.updated_at
+    if changed_field == "role":
+        changed = replace(original, role="assistant")
+    elif changed_field == "content":
+        changed = replace(original, content="Tampered content")
+    elif changed_field == "created_at":
+        changed_time = original.created_at + timedelta(seconds=1)
+        changed = replace(original, created_at=changed_time)
+        changed_updated_at = changed_time
+    else:
+        changed = replace(
+            original,
+            attachments=(create_attachment_metadata(
+                file_name="tampered.txt",
+                media_type="text/plain",
+                size_bytes=8,
+            ),),
+        )
+    source_chats.save_chat(replace(
+        session,
+        updated_at=changed_updated_at,
+        messages=(changed,),
+    ))
+    export_file = tmp_path / "all.json"
+    source_service.export_all_user_data(export_file)
+    target_service, target_chats, _ = service_for(tmp_path / "target")
+
+    with pytest.raises(
+        ImportValidationError,
+        match="does not match its exported Chat",
+    ):
+        target_service.import_bundle(export_file)
+
+    assert target_chats.list_chats(include_archived=True) == ()
 
 
 def test_import_size_and_export_path_are_validated(tmp_path: Path) -> None:

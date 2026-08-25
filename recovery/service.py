@@ -21,6 +21,11 @@ from chats import (
 )
 from chats.serialization import session_from_data, session_to_data
 from chats.storage import atomic_write_json
+from chats.legacy import (
+    LegacyConversationFormatError,
+    chat_messages_match_legacy_prefix,
+    legacy_conversation_messages_from_data,
+)
 from memory.conversation_summary import (
     validate_conversation_summary_data,
 )
@@ -667,43 +672,7 @@ class DataPortabilityService:
             ) from error
 
     def _validate_legacy_conversation(self, data: JsonObject) -> None:
-        self._require_exact_fields(data, {"messages"}, "conversation")
-        messages = self._as_list(data["messages"], "messages")
-        previous_timestamp: datetime | None = None
-        for message in messages:
-            record = self._as_object(message, "conversation message")
-            self._require_exact_fields(
-                record,
-                {"timestamp", "speaker", "message"},
-                "conversation message",
-            )
-            for field in ("timestamp", "speaker", "message"):
-                field_value = record[field]
-                if (
-                    not isinstance(field_value, str)
-                    or not field_value.strip()
-                ):
-                    raise ImportValidationError(
-                        "Legacy conversation message text is invalid."
-                    )
-            timestamp_value = cast(str, record["timestamp"])
-            try:
-                timestamp = datetime.strptime(
-                    timestamp_value,
-                    "%Y-%m-%d %H:%M:%S",
-                )
-            except ValueError as error:
-                raise ImportValidationError(
-                    "Legacy conversation timestamp is invalid."
-                ) from error
-            if (
-                previous_timestamp is not None
-                and timestamp < previous_timestamp
-            ):
-                raise ImportValidationError(
-                    "Legacy conversation is not chronological."
-                )
-            previous_timestamp = timestamp
+        legacy_conversation_messages_from_data(data)
 
     def _validate_legacy_migration_state(self, data: JsonObject) -> None:
         self._require_exact_fields(
@@ -866,12 +835,30 @@ class DataPortabilityService:
             return
         chat_id = cast(str, state["chat_id"])
         message_count = cast(int, state["message_count"])
+        backup_value = cast(str, state["backup_path"])
+        backup_name = backup_value.replace("\\", "/").rsplit("/", 1)[-1]
+        backup = workspace_files[
+            f"migrations/backups/{backup_name}"
+        ]
+        try:
+            source_messages = legacy_conversation_messages_from_data(backup)
+        except LegacyConversationFormatError as error:
+            raise ImportValidationError(
+                "Legacy migration backup is not a valid conversation."
+            ) from error
         matching = [
             session
             for session in sessions
             if str(session.chat_id) == chat_id
         ]
-        if len(matching) != 1 or len(matching[0].messages) != message_count:
+        if (
+            message_count != len(source_messages)
+            or len(matching) != 1
+            or not chat_messages_match_legacy_prefix(
+                matching[0].messages,
+                source_messages,
+            )
+        ):
             raise ImportValidationError(
                 "Legacy migration state does not match its exported Chat."
             )

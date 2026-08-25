@@ -1,0 +1,61 @@
+{
+  "name": "elysia-desktop",
+  "productName": "Elysia",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Local-first Elysia AI desktop client",
+  "author": "ActorF",
+  "type": "module",
+  "main": "dist-electron/main.js",
+  "scripts": {
+    "dev": "vite",
+    "electron:build": "tsc --project tsconfig.electron.json",
+    "electron:dev": "npm run electron:build && electron .",
+    "build:renderer": "tsc -b && vite build",
+    "build": "npm run build:renderer && npm run electron:build",
+    "typecheck": "tsc -b --pretty false && tsc --project tsconfig.electron.json --pretty false",
+    "test": "npm run test:contract",
+    "test:contract": "npm run electron:build && node tests/protocol.contract.test.mjs",
+    "package": "npm run build && electron-builder --dir",
+    "make": "npm run build && electron-builder --win nsis",
+    "lint": "eslint .",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^24.13.3",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "@vitejs/plugin-react": "^6.1.0",
+    "electron": "^43.4.1",
+    "electron-builder": "26.15.3",
+    "eslint": "^10.9.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-react-refresh": "^0.5.4",
+    "globals": "^17.11.0",
+    "typescript": "~6.0.2",
+    "typescript-eslint": "^8.67.0",
+    "vite": "^8.2.2"
+  },
+  "build": {
+    "appId": "ai.elysia.desktop",
+    "productName": "Elysia",
+    "asar": true,
+    "directories": {
+      "output": "out"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": "nsis",
+      "artifactName": "Elysia-Setup-${version}.${ext}"
+    }
+  }
+}

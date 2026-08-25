@@ -1,0 +1,107 @@
+/**
+ * Global dark theme tokens and platform-neutral reset for the desktop window.
+ */
+
+:root {
+  font-family:
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+    "Segoe UI", sans-serif;
+  color: #f8eff7;
+  background: #0f0b10;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+
+  --bg-app: #0f0b10;
+  --bg-sidebar: #141015;
+  --bg-panel: #171318;
+  --bg-raised: #211a22;
+  --bg-hover: #2a202b;
+  --bg-soft: rgba(240, 143, 194, 0.08);
+  --border: rgba(255, 232, 247, 0.09);
+  --border-strong: rgba(255, 232, 247, 0.15);
+  --text-primary: #fff7fc;
+  --text-secondary: #b9aeb9;
+  --text-muted: #7f747f;
+  --pink: #f08fc2;
+  --pink-bright: #ffabd7;
+  --purple: #b39ae5;
+  --green: #8dd8b5;
+  --red: #ff8f9e;
+  --shadow:
+    0 22px 65px rgba(0, 0, 0, 0.42),
+    0 2px 9px rgba(0, 0, 0, 0.22);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+}
+
+body {
+  min-width: 320px;
+  background:
+    radial-gradient(circle at 72% -15%, rgba(179, 154, 229, 0.09), transparent 34%),
+    var(--bg-app);
+}
+
+button,
+input,
+select,
+textarea {
+  color: inherit;
+  font: inherit;
+}
+
+button {
+  border: 0;
+}
+
+button,
+select {
+  cursor: pointer;
+}
+
+button:disabled,
+select:disabled,
+textarea:disabled {
+  cursor: not-allowed;
+}
+
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid rgba(240, 143, 194, 0.8);
+  outline-offset: 2px;
+}
+
+::selection {
+  color: #1a1018;
+  background: var(--pink);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 238, 249, 0.13);
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
+}

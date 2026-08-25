@@ -1,0 +1,416 @@
+{
+  "protocol": {
+    "name": "elysia.desktop",
+    "version": 1
+  },
+  "validClientMessages": [
+    {
+      "name": "handshake request",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "handshake-1",
+        "method": "handshake",
+        "params": {
+          "client": { "name": "elysia-electron", "version": "0.1.0" },
+          "sessionToken": "0123456789abcdef0123456789abcdef"
+        }
+      }
+    },
+    {
+      "name": "initialize request",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "initialize-1",
+        "method": "initialize",
+        "params": {}
+      }
+    },
+    {
+      "name": "chat stream request",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "chat-1",
+        "method": "chat.stream",
+        "params": { "chatId": "chat_fixture", "message": "Hello" }
+      }
+    },
+    {
+      "name": "unicode identifier boundary",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "unicode-boundary-1",
+        "method": "chat.stream",
+        "params": {
+          "chatId": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀",
+          "message": "Unicode boundary"
+        }
+      }
+    },
+    {
+      "name": "cancel request",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "cancel-1",
+        "method": "request.cancel",
+        "params": { "requestId": "chat-1", "reason": "User stopped" }
+      }
+    },
+    {
+      "name": "permission response request",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "permission-response-1",
+        "method": "permission.respond",
+        "params": { "permissionId": "permission-1", "granted": true }
+      }
+    },
+    {
+      "name": "shutdown request",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "shutdown-1",
+        "method": "shutdown",
+        "params": {}
+      }
+    },
+    {
+      "name": "exponent-form integer protocol version",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1e0 },
+        "id": "shutdown-exponent-1",
+        "method": "shutdown",
+        "params": {}
+      }
+    }
+  ],
+  "validServerMessages": [
+    {
+      "name": "handshake response",
+      "message": {
+        "type": "response",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "handshake-1",
+        "ok": true,
+        "result": {
+          "protocol": { "name": "elysia.desktop", "version": 1 },
+          "server": { "name": "elysia-python", "version": "0.1.0" },
+          "capabilities": ["chat.stream", "stream", "progress", "event"]
+        }
+      }
+    },
+    {
+      "name": "initialize response",
+      "message": {
+        "type": "response",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "initialize-1",
+        "ok": true,
+        "result": {
+          "modelName": "qwen3.5:9b",
+          "models": ["qwen3.5:9b"],
+          "chatId": "chat_fixture",
+          "chatTitle": "Elysia Chat"
+        }
+      }
+    },
+    {
+      "name": "chat response",
+      "message": {
+        "type": "response",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "chat-1",
+        "ok": true,
+        "result": { "chatId": "chat_fixture", "reply": "Hello back" }
+      }
+    },
+    {
+      "name": "shutdown response",
+      "message": {
+        "type": "response",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "shutdown-1",
+        "ok": true,
+        "result": { "stopped": true }
+      }
+    },
+    {
+      "name": "error response",
+      "message": {
+        "type": "response",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "chat-1",
+        "ok": false,
+        "error": {
+          "code": "chat.failed",
+          "message": "The reply failed.",
+          "retryable": true
+        }
+      }
+    },
+    {
+      "name": "stream chunk",
+      "message": {
+        "type": "stream",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "requestId": "chat-1",
+        "stream": "chat.reply",
+        "sequence": 0,
+        "chunk": "Hello",
+        "done": false
+      }
+    },
+    {
+      "name": "integral-float stream sequence",
+      "message": {
+        "type": "stream",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "requestId": "chat-1",
+        "stream": "chat.reply",
+        "sequence": 1.0,
+        "chunk": " world",
+        "done": false
+      }
+    },
+    {
+      "name": "stream completion",
+      "message": {
+        "type": "stream",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "requestId": "chat-1",
+        "stream": "chat.reply",
+        "sequence": 1,
+        "chunk": "",
+        "done": true
+      }
+    },
+    {
+      "name": "progress message",
+      "message": {
+        "type": "progress",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "requestId": "chat-1",
+        "operation": "chat.generate",
+        "completed": 1,
+        "total": 2,
+        "message": "Generating reply"
+      }
+    },
+    {
+      "name": "permission message",
+      "message": {
+        "type": "permission",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "requestId": null,
+        "permissionId": "permission-1",
+        "capability": "microphone.capture",
+        "reason": "Start a voice conversation",
+        "scopes": ["audio.input"]
+      }
+    },
+    {
+      "name": "event message",
+      "message": {
+        "type": "event",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "event": "chat.started",
+        "requestId": "chat-1",
+        "data": { "chatId": "chat_fixture" }
+      }
+    }
+  ],
+  "invalidClientMessages": [
+    {
+      "name": "missing protocol",
+      "message": {
+        "type": "request",
+        "id": "handshake-1",
+        "method": "handshake",
+        "params": {}
+      }
+    },
+    {
+      "name": "wrong version",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 2 },
+        "id": "shutdown-1",
+        "method": "shutdown",
+        "params": {}
+      }
+    },
+    {
+      "name": "short session token",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "handshake-1",
+        "method": "handshake",
+        "params": {
+          "client": { "name": "elysia-electron", "version": "0.1.0" },
+          "sessionToken": "short"
+        }
+      }
+    },
+    {
+      "name": "unknown method",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "unknown-1",
+        "method": "memory.write",
+        "params": {}
+      }
+    },
+    {
+      "name": "blank chat message",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "chat-1",
+        "method": "chat.stream",
+        "params": { "chatId": "chat_fixture", "message": "   " }
+      }
+    },
+    {
+      "name": "unicode next-line-only chat message",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "chat-2",
+        "method": "chat.stream",
+        "params": { "chatId": "chat_fixture", "message": "\u0085" }
+      }
+    },
+    {
+      "name": "unicode bom-only chat message",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "chat-3",
+        "method": "chat.stream",
+        "params": { "chatId": "chat_fixture", "message": "\ufeff" }
+      }
+    }
+  ],
+  "invalidServerMessages": [
+    {
+      "name": "unknown success result",
+      "message": {
+        "type": "response",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "unknown-result-1",
+        "ok": true,
+        "result": { "ready": true }
+      }
+    },
+    {
+      "name": "initialize result has no models",
+      "message": {
+        "type": "response",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "initialize-1",
+        "ok": true,
+        "result": {
+          "modelName": "qwen3.5:9b",
+          "models": [],
+          "chatId": "chat_fixture",
+          "chatTitle": "Elysia Chat"
+        }
+      }
+    },
+    {
+      "name": "initialize selected model is absent",
+      "runtimeOnly": true,
+      "message": {
+        "type": "response",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "initialize-1",
+        "ok": true,
+        "result": {
+          "modelName": "missing-model",
+          "models": ["installed-model"],
+          "chatId": "chat_fixture",
+          "chatTitle": "Elysia Chat"
+        }
+      }
+    },
+    {
+      "name": "error missing retryable",
+      "message": {
+        "type": "response",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "chat-1",
+        "ok": false,
+        "error": { "code": "chat.failed", "message": "Failed" }
+      }
+    },
+    {
+      "name": "negative stream sequence",
+      "message": {
+        "type": "stream",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "requestId": "chat-1",
+        "stream": "chat.reply",
+        "sequence": -1,
+        "chunk": "Hello",
+        "done": false
+      }
+    },
+    {
+      "name": "progress exceeds total",
+      "runtimeOnly": true,
+      "message": {
+        "type": "progress",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "requestId": "chat-1",
+        "operation": "chat.generate",
+        "completed": 3,
+        "total": 2,
+        "message": null
+      }
+    },
+    {
+      "name": "terminal stream contains text",
+      "message": {
+        "type": "stream",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "requestId": "chat-1",
+        "stream": "chat.reply",
+        "sequence": 2,
+        "chunk": "unexpected",
+        "done": true
+      }
+    },
+    {
+      "name": "permission scope is not a string",
+      "message": {
+        "type": "permission",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "requestId": null,
+        "permissionId": "permission-1",
+        "capability": "microphone.capture",
+        "reason": "Voice",
+        "scopes": [1]
+      }
+    },
+    {
+      "name": "event has an extra field",
+      "message": {
+        "type": "event",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "event": "chat.started",
+        "requestId": "chat-1",
+        "data": {},
+        "extra": true
+      }
+    }
+  ]
+}

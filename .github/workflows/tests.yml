@@ -26,3 +26,42 @@ jobs:
 
       - name: Run tests
         run: python -m pytest -v
+
+      - name: Run Python type checks
+        run: >-
+          python -m mypy
+          agent chats config core desktop_protocol memory projects recovery
+          tools ui voice desktop_backend.py start.py
+
+  desktop:
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: desktop
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Install desktop dependencies
+        run: npm ci
+
+      - name: Lint desktop sources
+        run: npm run lint
+
+      - name: Type-check desktop sources
+        run: npm run typecheck
+
+      - name: Run shared protocol contract tests
+        run: npm run test:contract
+
+      - name: Build the desktop application
+        run: npm run build

@@ -17,16 +17,19 @@ from .domain import (
     CHAT_SESSION_SCHEMA_VERSION,
     ChatId,
     ChatMessage,
-    ChatMessageRole,
     ChatModelSettings,
     ChatSession,
     ChatSummary,
-    create_chat_message,
 )
 from .exceptions import (
     ChatNotFoundError,
     ChatRepositoryError,
     LegacyMigrationError,
+)
+from .legacy import (
+    LegacyConversationFormatError,
+    chat_messages_match_legacy_prefix,
+    legacy_conversation_messages_from_data,
 )
 from .repository import ChatRepository
 from .storage import atomic_write_json, read_json_object
@@ -95,7 +98,7 @@ class LegacyConversationMigrator:
             return self._resolve_existing_state(
                 state,
                 conversation_hash,
-                len(messages),
+                messages,
             )
 
         summary_data = self._load_optional_summary()
@@ -152,56 +155,10 @@ class LegacyConversationMigrator:
                 "Legacy conversation.json is not valid UTF-8 JSON."
             ) from error
 
-        if not isinstance(decoded, dict) or set(decoded) != {"messages"}:
-            raise LegacyMigrationError(
-                "Legacy conversation.json does not match its expected schema."
-            )
-        raw_messages = decoded["messages"]
-        if not isinstance(raw_messages, list):
-            raise LegacyMigrationError("Legacy messages must be an array.")
-
-        converted: list[ChatMessage] = []
-        for position, raw_message in enumerate(raw_messages, start=1):
-            if not isinstance(raw_message, dict) or set(raw_message) != {
-                "timestamp", "speaker", "message"
-            }:
-                raise LegacyMigrationError(
-                    f"Legacy message {position} does not match its schema."
-                )
-            timestamp = raw_message["timestamp"]
-            speaker = raw_message["speaker"]
-            content = raw_message["message"]
-            if not all(isinstance(value, str) for value in (
-                timestamp, speaker, content
-            )) or not speaker.strip() or not content.strip():
-                raise LegacyMigrationError(
-                    f"Legacy message {position} contains invalid text."
-                )
-            try:
-                created_at = datetime.strptime(
-                    timestamp, _LEGACY_TIMESTAMP_FORMAT
-                ).replace(tzinfo=timezone.utc)
-            except ValueError as error:
-                raise LegacyMigrationError(
-                    f"Legacy message {position} has an invalid timestamp."
-                ) from error
-            role: ChatMessageRole = (
-                "user" if speaker.strip().casefold() in {
-                    "user", "human", "ying"
-                } else "assistant"
-            )
-            converted.append(create_chat_message(
-                role=role,
-                content=content,
-                created_at=created_at,
-            ))
-
-        for previous, current in zip(converted, converted[1:]):
-            if current.created_at < previous.created_at:
-                raise LegacyMigrationError(
-                    "Legacy messages are not in chronological order."
-                )
-        return tuple(converted)
+        try:
+            return legacy_conversation_messages_from_data(decoded)
+        except LegacyConversationFormatError as error:
+            raise LegacyMigrationError(str(error)) from error
 
     def _load_optional_summary(self) -> ConversationSummaryData | None:
         if not self._summary_file.exists():
@@ -310,7 +267,7 @@ class LegacyConversationMigrator:
         self,
         state: dict[str, object],
         digest: str,
-        message_count: int,
+        source_messages: tuple[ChatMessage, ...],
     ) -> LegacyMigrationResult:
         if state["source_sha256"] != digest:
             raise LegacyMigrationError(
@@ -327,7 +284,11 @@ class LegacyConversationMigrator:
             raise LegacyMigrationError(
                 "Migration state exists but its Legacy Chat is missing."
             ) from error
-        if len(session.messages) != message_count:
+        message_count = len(source_messages)
+        if not chat_messages_match_legacy_prefix(
+            session.messages,
+            source_messages,
+        ):
             raise LegacyMigrationError(
                 "The migrated Legacy Chat no longer matches its source."
             )

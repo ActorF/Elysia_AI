@@ -58,13 +58,14 @@ models/cache/
 # Temporary
 tmp/
 temp/
+.test-tmp*/
+pytest-cache-files-*/
 *.tmp
 *.bak
 
 # SQLite
 *.db
 
-# Runtime conversation data
 # Runtime user data
 workspace/
 memory/test_memory.txt
@@ -73,3 +74,10 @@ memory/test_memory.txt
 /docs/ROADMAP.md
 /docs/tree.txt
 /docs/02-ROADMAP.md
+
+# Node.js
+node_modules/
+dist-electron/
+out/
+*.tsbuildinfo
+npm-debug.log*

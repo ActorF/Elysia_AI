@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="elysia-gradient" x1="8" y1="8" x2="56" y2="56">
+      <stop stop-color="#f08fc2"/>
+      <stop offset="1" stop-color="#b39ae5"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="18" fill="#171318"/>
+  <path d="M18 17h31v9H28v8h17v8H28v7h22v9H18z" fill="url(#elysia-gradient)"/>
+  <path d="m44 9 2.1 6 5.9 2.1-5.9 2.1-2.1 6-2.1-6-5.9-2.1 5.9-2.1z" fill="#fff2fa"/>
+</svg>

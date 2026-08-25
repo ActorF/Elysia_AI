@@ -1,0 +1,412 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://elysia.ai/schema/desktop-protocol/v1",
+  "title": "Elysia Desktop Protocol v1",
+  "x-elysia-frameMaxBytes": 16777216,
+  "x-elysia-stringLengthUnit": "Unicode code points",
+  "x-elysia-blankCodePoints": [
+    "U+0009-U+000D", "U+0020", "U+0085", "U+00A0", "U+1680",
+    "U+2000-U+200A", "U+2028-U+2029", "U+202F", "U+205F",
+    "U+3000", "U+FEFF"
+  ],
+  "x-elysia-runtimeInvariants": [
+    "progress.total is null or greater than or equal to progress.completed",
+    "initializeResult.modelName is present in initializeResult.models",
+    "stream sequences are contiguous per request and have exactly one terminal chunk",
+    "the terminal response reply exactly equals the concatenated stream chunks",
+    "request and permission identifiers correlate with live pending operations"
+  ],
+  "oneOf": [
+    { "$ref": "#/$defs/handshakeRequest" },
+    { "$ref": "#/$defs/initializeRequest" },
+    { "$ref": "#/$defs/chatStreamRequest" },
+    { "$ref": "#/$defs/cancelRequest" },
+    { "$ref": "#/$defs/permissionResponseRequest" },
+    { "$ref": "#/$defs/shutdownRequest" },
+    { "$ref": "#/$defs/successResponse" },
+    { "$ref": "#/$defs/errorResponse" },
+    { "$ref": "#/$defs/streamChunk" },
+    { "$ref": "#/$defs/progress" },
+    { "$ref": "#/$defs/permission" },
+    { "$ref": "#/$defs/event" }
+  ],
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "protocol": {
+      "type": "object",
+      "properties": {
+        "name": { "const": "elysia.desktop" },
+        "version": { "const": 1 }
+      },
+      "required": ["name", "version"],
+      "additionalProperties": false
+    },
+    "requestEnvelope": {
+      "type": "object",
+      "properties": {
+        "type": { "const": "request" },
+        "protocol": { "$ref": "#/$defs/protocol" },
+        "id": { "$ref": "#/$defs/identifier" },
+        "method": {
+          "enum": [
+            "handshake",
+            "initialize",
+            "chat.stream",
+            "request.cancel",
+            "permission.respond",
+            "shutdown"
+          ]
+        },
+        "params": { "type": "object" }
+      },
+      "required": ["type", "protocol", "id", "method", "params"],
+      "additionalProperties": false
+    },
+    "handshakeParams": {
+      "type": "object",
+      "properties": {
+        "client": {
+          "type": "object",
+          "properties": {
+            "name": { "$ref": "#/$defs/identifier" },
+            "version": { "$ref": "#/$defs/identifier" }
+          },
+          "required": ["name", "version"],
+          "additionalProperties": false
+        },
+        "sessionToken": {
+          "type": "string",
+          "minLength": 32,
+          "maxLength": 512
+        }
+      },
+      "required": ["client", "sessionToken"],
+      "additionalProperties": false
+    },
+    "initializeParams": {
+      "type": "object",
+      "maxProperties": 0
+    },
+    "chatStreamParams": {
+      "type": "object",
+      "properties": {
+        "chatId": { "$ref": "#/$defs/identifier" },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000000,
+          "pattern": "[^\\u0009-\\u000D\\u0020\\u0085\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000\\uFEFF]"
+        }
+      },
+      "required": ["chatId", "message"],
+      "additionalProperties": false
+    },
+    "cancelParams": {
+      "type": "object",
+      "properties": {
+        "requestId": { "$ref": "#/$defs/identifier" },
+        "reason": { "type": "string", "minLength": 1, "maxLength": 512 }
+      },
+      "required": ["requestId"],
+      "additionalProperties": false
+    },
+    "permissionResponseParams": {
+      "type": "object",
+      "properties": {
+        "permissionId": { "$ref": "#/$defs/identifier" },
+        "granted": { "type": "boolean" }
+      },
+      "required": ["permissionId", "granted"],
+      "additionalProperties": false
+    },
+    "shutdownParams": {
+      "type": "object",
+      "maxProperties": 0
+    },
+    "handshakeRequest": {
+      "allOf": [
+        { "$ref": "#/$defs/requestEnvelope" },
+        {
+          "properties": {
+            "method": { "const": "handshake" },
+            "params": { "$ref": "#/$defs/handshakeParams" }
+          }
+        }
+      ]
+    },
+    "initializeRequest": {
+      "allOf": [
+        { "$ref": "#/$defs/requestEnvelope" },
+        {
+          "properties": {
+            "method": { "const": "initialize" },
+            "params": { "$ref": "#/$defs/initializeParams" }
+          }
+        }
+      ]
+    },
+    "chatStreamRequest": {
+      "allOf": [
+        { "$ref": "#/$defs/requestEnvelope" },
+        {
+          "properties": {
+            "method": { "const": "chat.stream" },
+            "params": { "$ref": "#/$defs/chatStreamParams" }
+          }
+        }
+      ]
+    },
+    "cancelRequest": {
+      "allOf": [
+        { "$ref": "#/$defs/requestEnvelope" },
+        {
+          "properties": {
+            "method": { "const": "request.cancel" },
+            "params": { "$ref": "#/$defs/cancelParams" }
+          }
+        }
+      ]
+    },
+    "permissionResponseRequest": {
+      "allOf": [
+        { "$ref": "#/$defs/requestEnvelope" },
+        {
+          "properties": {
+            "method": { "const": "permission.respond" },
+            "params": { "$ref": "#/$defs/permissionResponseParams" }
+          }
+        }
+      ]
+    },
+    "shutdownRequest": {
+      "allOf": [
+        { "$ref": "#/$defs/requestEnvelope" },
+        {
+          "properties": {
+            "method": { "const": "shutdown" },
+            "params": { "$ref": "#/$defs/shutdownParams" }
+          }
+        }
+      ]
+    },
+    "error": {
+      "type": "object",
+      "properties": {
+        "code": { "$ref": "#/$defs/identifier" },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000000
+        },
+        "retryable": { "type": "boolean" }
+      },
+      "required": ["code", "message", "retryable"],
+      "additionalProperties": false
+    },
+    "handshakeResult": {
+      "type": "object",
+      "properties": {
+        "protocol": { "$ref": "#/$defs/protocol" },
+        "server": {
+          "type": "object",
+          "properties": {
+            "name": { "$ref": "#/$defs/identifier" },
+            "version": { "$ref": "#/$defs/identifier" }
+          },
+          "required": ["name", "version"],
+          "additionalProperties": false
+        },
+        "capabilities": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/identifier" },
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      },
+      "required": ["protocol", "server", "capabilities"],
+      "additionalProperties": false
+    },
+    "initializeResult": {
+      "type": "object",
+      "properties": {
+        "modelName": { "$ref": "#/$defs/identifier" },
+        "models": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/identifier" },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "chatId": { "$ref": "#/$defs/identifier" },
+        "chatTitle": { "type": "string", "minLength": 1, "maxLength": 1000000 }
+      },
+      "required": ["modelName", "models", "chatId", "chatTitle"],
+      "additionalProperties": false
+    },
+    "chatResult": {
+      "type": "object",
+      "properties": {
+        "chatId": { "$ref": "#/$defs/identifier" },
+        "reply": { "type": "string", "minLength": 1, "maxLength": 1000000 }
+      },
+      "required": ["chatId", "reply"],
+      "additionalProperties": false
+    },
+    "shutdownResult": {
+      "type": "object",
+      "properties": { "stopped": { "const": true } },
+      "required": ["stopped"],
+      "additionalProperties": false
+    },
+    "successResponse": {
+      "type": "object",
+      "properties": {
+        "type": { "const": "response" },
+        "protocol": { "$ref": "#/$defs/protocol" },
+        "id": { "$ref": "#/$defs/identifier" },
+        "ok": { "const": true },
+        "result": {
+          "oneOf": [
+            { "$ref": "#/$defs/handshakeResult" },
+            { "$ref": "#/$defs/initializeResult" },
+            { "$ref": "#/$defs/chatResult" },
+            { "$ref": "#/$defs/shutdownResult" }
+          ]
+        }
+      },
+      "required": ["type", "protocol", "id", "ok", "result"],
+      "additionalProperties": false
+    },
+    "errorResponse": {
+      "type": "object",
+      "properties": {
+        "type": { "const": "response" },
+        "protocol": { "$ref": "#/$defs/protocol" },
+        "id": {
+          "oneOf": [
+            { "$ref": "#/$defs/identifier" },
+            { "type": "null" }
+          ]
+        },
+        "ok": { "const": false },
+        "error": { "$ref": "#/$defs/error" }
+      },
+      "required": ["type", "protocol", "id", "ok", "error"],
+      "additionalProperties": false
+    },
+    "streamChunk": {
+      "type": "object",
+      "properties": {
+        "type": { "const": "stream" },
+        "protocol": { "$ref": "#/$defs/protocol" },
+        "requestId": { "$ref": "#/$defs/identifier" },
+        "stream": { "const": "chat.reply" },
+        "sequence": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "chunk": { "type": "string", "maxLength": 1000000 },
+        "done": { "type": "boolean" }
+      },
+      "required": [
+        "type", "protocol", "requestId", "stream", "sequence", "chunk", "done"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": { "done": { "const": true } },
+            "required": ["done"]
+          },
+          "then": {
+            "properties": { "chunk": { "const": "" } }
+          }
+        }
+      ]
+    },
+    "progress": {
+      "type": "object",
+      "properties": {
+        "type": { "const": "progress" },
+        "protocol": { "$ref": "#/$defs/protocol" },
+        "requestId": { "$ref": "#/$defs/identifier" },
+        "operation": { "$ref": "#/$defs/identifier" },
+        "completed": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "total": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            { "type": "null" }
+          ]
+        },
+        "message": {
+          "oneOf": [
+            { "type": "string", "minLength": 1, "maxLength": 1000000 },
+            { "type": "null" }
+          ]
+        }
+      },
+      "required": [
+        "type", "protocol", "requestId", "operation", "completed", "total", "message"
+      ],
+      "additionalProperties": false
+    },
+    "permission": {
+      "type": "object",
+      "properties": {
+        "type": { "const": "permission" },
+        "protocol": { "$ref": "#/$defs/protocol" },
+        "requestId": {
+          "oneOf": [
+            { "$ref": "#/$defs/identifier" },
+            { "type": "null" }
+          ]
+        },
+        "permissionId": { "$ref": "#/$defs/identifier" },
+        "capability": { "$ref": "#/$defs/identifier" },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000000
+        },
+        "scopes": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/identifier" },
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "type", "protocol", "requestId", "permissionId", "capability", "reason", "scopes"
+      ],
+      "additionalProperties": false
+    },
+    "event": {
+      "type": "object",
+      "properties": {
+        "type": { "const": "event" },
+        "protocol": { "$ref": "#/$defs/protocol" },
+        "event": { "$ref": "#/$defs/identifier" },
+        "requestId": {
+          "oneOf": [
+            { "$ref": "#/$defs/identifier" },
+            { "type": "null" }
+          ]
+        },
+        "data": { "type": "object" }
+      },
+      "required": ["type", "protocol", "event", "requestId", "data"],
+      "additionalProperties": false
+    }
+  }
+}

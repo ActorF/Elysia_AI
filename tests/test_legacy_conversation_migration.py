@@ -1,6 +1,7 @@
 import hashlib
 import json
-from datetime import datetime, timezone
+from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -10,6 +11,7 @@ from chats import (
     JsonChatRepository,
     LegacyConversationMigrator,
     LegacyMigrationError,
+    create_chat_message,
 )
 
 
@@ -154,6 +156,57 @@ def test_migration_is_idempotent(tmp_path: Path) -> None:
     assert second.status == "already_migrated"
     assert second.chat_id == first.chat_id
     assert len(repository.list_chats()) == 1
+
+
+def test_migration_allows_new_messages_after_legacy_prefix(
+    tmp_path: Path,
+) -> None:
+    write_legacy_conversation(tmp_path)
+    migrator, repository = create_migrator(tmp_path)
+    first = migrator.migrate()
+    assert first.chat_id is not None
+    session = repository.get_chat(first.chat_id)
+    message_time = session.updated_at + timedelta(seconds=1)
+    new_message = create_chat_message(
+        role="user",
+        content="Continue this migrated Chat.",
+        created_at=message_time,
+    )
+    repository.save_chat(replace(
+        session,
+        updated_at=message_time,
+        messages=(*session.messages, new_message),
+    ))
+
+    repeated = migrator.migrate()
+
+    assert repeated.status == "already_migrated"
+    assert repeated.chat_id == first.chat_id
+    assert len(repository.get_chat(first.chat_id).messages) == 3
+
+
+def test_migration_rejects_a_changed_legacy_prefix(
+    tmp_path: Path,
+) -> None:
+    write_legacy_conversation(tmp_path)
+    migrator, repository = create_migrator(tmp_path)
+    first = migrator.migrate()
+    assert first.chat_id is not None
+    session = repository.get_chat(first.chat_id)
+    changed_first_message = replace(
+        session.messages[0],
+        content="Changed migrated content.",
+    )
+    repository.save_chat(replace(
+        session,
+        messages=(changed_first_message, *session.messages[1:]),
+    ))
+
+    with pytest.raises(
+        LegacyMigrationError,
+        match="no longer matches its source",
+    ):
+        migrator.migrate()
 
 
 def test_missing_or_empty_legacy_data_needs_no_migration(
