@@ -63,5 +63,8 @@ jobs:
       - name: Run shared protocol contract tests
         run: npm run test:contract
 
+      - name: Run Electron renderer UI tests
+        run: xvfb-run --auto-servernum npm run test:ui
+
       - name: Build the desktop application
         run: npm run build

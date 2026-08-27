@@ -14,6 +14,9 @@ export type BackendStatus =
   | 'stopped'
   | 'error'
 
+/** Appearance source accepted by both Electron native chrome and the renderer. */
+export type DesktopThemePreference = 'system' | 'light' | 'dark'
+
 export interface BackendSnapshot {
   revision: number
   status: BackendStatus
@@ -88,6 +91,8 @@ export type BackendEvent =
 
 export interface DesktopApi {
   rendererReady(): Promise<void>
+  /** Keep native window chrome aligned with the renderer's saved appearance. */
+  setThemePreference(theme: DesktopThemePreference): Promise<void>
   getSnapshot(): Promise<BackendSnapshot>
   restartBackend(): Promise<BackendSnapshot>
   sendMessage(request: ChatRequest): Promise<{ requestId: string }>

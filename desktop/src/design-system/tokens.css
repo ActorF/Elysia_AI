@@ -1,0 +1,217 @@
+/**
+ * Elysia design tokens.
+ *
+ * Components consume semantic tokens only. Theme-specific values live in this
+ * file so light and dark themes cannot drift into component styles.
+ */
+
+:root {
+  color-scheme: dark;
+
+  /* Typography */
+  --font-family-sans:
+    "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI",
+    "Noto Sans CJK SC", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-family-mono:
+    "Cascadia Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  --font-size-xs: 0.75rem;
+  --font-size-sm: 0.8125rem;
+  --font-size-md: 0.875rem;
+  --font-size-lg: 1rem;
+  --font-size-xl: 1.25rem;
+  --font-size-2xl: 1.5rem;
+  --font-size-3xl: 2rem;
+  --line-height-tight: 1.2;
+  --line-height-snug: 1.35;
+  --line-height-normal: 1.5;
+  --line-height-relaxed: 1.7;
+  --font-weight-regular: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+  --letter-spacing-tight: -0.025em;
+  --letter-spacing-wide: 0.08em;
+
+  /* Spacing */
+  --space-0: 0;
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.25rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --space-10: 2.5rem;
+  --space-12: 3rem;
+  --space-16: 4rem;
+
+  /* Shape and control sizing */
+  --radius-none: 0;
+  --radius-sm: 0.375rem;
+  --radius-md: 0.625rem;
+  --radius-lg: 0.875rem;
+  --radius-xl: 1.125rem;
+  --radius-2xl: 1.5rem;
+  --radius-full: 999rem;
+  --control-height-sm: 2rem;
+  --control-height-md: 2.5rem;
+  --control-height-lg: 2.75rem;
+  --control-hit-target: 2.75rem;
+  --icon-size-sm: 1rem;
+  --icon-size-md: 1.25rem;
+  --icon-size-lg: 1.5rem;
+
+  /* Motion */
+  --motion-duration-instant: 0ms;
+  --motion-duration-fast: 120ms;
+  --motion-duration-normal: 180ms;
+  --motion-duration-slow: 280ms;
+  --motion-easing-standard: cubic-bezier(0.2, 0, 0, 1);
+  --motion-easing-emphasized: cubic-bezier(0.2, 0.8, 0.2, 1);
+
+  /* Layering */
+  --z-index-base: 0;
+  --z-index-sticky: 10;
+  --z-index-dropdown: 20;
+  --z-index-overlay: 30;
+  --z-index-modal: 40;
+  --z-index-toast: 50;
+
+  /* App-shell layout */
+  --layout-window-min-width: 20rem;
+  --layout-sidebar-width: 15.25rem;
+  --layout-sidebar-compact-width: 4.5rem;
+  --layout-character-panel-width: 20.25rem;
+  --layout-header-height: 4.125rem;
+  --layout-content-max-width: 47.5rem;
+  --layout-settings-max-width: 52rem;
+  --layout-composer-max-width: 47.5rem;
+  --layout-main-min-width: 20rem;
+  --layout-compact-breakpoint: 65rem;
+
+  /* Dark theme palette */
+  --theme-color: #0f0b10;
+  --color-bg-canvas: #0f0b10;
+  --color-bg-sidebar: #141015;
+  --color-bg-surface: #171318;
+  --color-bg-raised: #211a22;
+  --color-bg-hover: #2a202b;
+  --color-bg-active: #352637;
+  --color-bg-soft: rgb(240 143 194 / 8%);
+  --color-bg-overlay: rgb(9 6 10 / 72%);
+  --color-text-primary: #fff7fc;
+  --color-text-secondary: #c9bec8;
+  --color-text-muted: #9a8e98;
+  --color-text-disabled: #706670;
+  --color-text-inverse: #24151f;
+  --color-text-link: #ffabd7;
+  --color-border: rgb(255 232 247 / 10%);
+  --color-border-strong: rgb(255 232 247 / 18%);
+  --color-border-focus: #f08fc2;
+  --color-accent: #f08fc2;
+  --color-accent-hover: #ffabd7;
+  --color-accent-secondary: #b39ae5;
+  --color-accent-contrast: #21131c;
+  --color-success: #8dd8b5;
+  --color-success-soft: rgb(141 216 181 / 10%);
+  --color-warning: #f3c77a;
+  --color-warning-soft: rgb(243 199 122 / 11%);
+  --color-danger: #ff8f9e;
+  --color-danger-soft: rgb(255 143 158 / 11%);
+  --color-info: #a9c7ff;
+  --color-info-soft: rgb(169 199 255 / 10%);
+  --color-selection-bg: #f08fc2;
+  --color-selection-text: #1a1018;
+  --color-scrollbar: rgb(255 238 249 / 20%);
+  --color-scrollbar-hover: rgb(255 238 249 / 32%);
+
+  /* Feedback-state aliases keep components independent of palette names. */
+  --color-state-loading: var(--color-info);
+  --color-state-loading-soft: var(--color-info-soft);
+  --color-state-success: var(--color-success);
+  --color-state-success-soft: var(--color-success-soft);
+  --color-state-warning: var(--color-warning);
+  --color-state-warning-soft: var(--color-warning-soft);
+  --color-state-error: var(--color-danger);
+  --color-state-error-soft: var(--color-danger-soft);
+  --color-state-empty: var(--color-text-muted);
+  --opacity-disabled: 0.46;
+
+  /* Elevation and focus depend on the active palette. */
+  --shadow-sm: 0 1px 3px rgb(0 0 0 / 24%);
+  --shadow-md: 0 8px 24px rgb(0 0 0 / 24%);
+  --shadow-lg: 0 18px 45px rgb(0 0 0 / 32%);
+  --shadow-floating:
+    0 22px 65px rgb(0 0 0 / 42%),
+    0 2px 9px rgb(0 0 0 / 22%);
+  --focus-ring-width: 0.125rem;
+  --focus-ring-offset: 0.125rem;
+  --focus-ring: var(--focus-ring-width) solid var(--color-border-focus);
+
+  /* Compatibility aliases for the existing shell during migration. */
+  --bg-app: var(--color-bg-canvas);
+  --bg-sidebar: var(--color-bg-sidebar);
+  --bg-panel: var(--color-bg-surface);
+  --bg-raised: var(--color-bg-raised);
+  --bg-hover: var(--color-bg-hover);
+  --bg-soft: var(--color-bg-soft);
+  --border: var(--color-border);
+  --border-strong: var(--color-border-strong);
+  --text-primary: var(--color-text-primary);
+  --text-secondary: var(--color-text-secondary);
+  --text-muted: var(--color-text-muted);
+  --pink: var(--color-accent);
+  --pink-bright: var(--color-accent-hover);
+  --purple: var(--color-accent-secondary);
+  --green: var(--color-success);
+  --red: var(--color-danger);
+  --shadow: var(--shadow-floating);
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --theme-color: #f8f5f8;
+  --color-bg-canvas: #f8f5f8;
+  --color-bg-sidebar: #f2edf2;
+  --color-bg-surface: #fffaff;
+  --color-bg-raised: #ffffff;
+  --color-bg-hover: #eee5ed;
+  --color-bg-active: #e6d8e3;
+  --color-bg-soft: rgb(165 63 121 / 9%);
+  --color-bg-overlay: rgb(36 27 35 / 42%);
+  --color-text-primary: #241b23;
+  --color-text-secondary: #594f57;
+  --color-text-muted: #746a72;
+  --color-text-disabled: #a39aa1;
+  --color-text-inverse: #fff8fc;
+  --color-text-link: #963768;
+  --color-border: rgb(67 42 61 / 13%);
+  --color-border-strong: rgb(67 42 61 / 22%);
+  --color-border-focus: #a53f79;
+  --color-accent: #a53f79;
+  --color-accent-hover: #8d2f65;
+  --color-accent-secondary: #6f55a4;
+  --color-accent-contrast: #ffffff;
+  --color-success: #267755;
+  --color-success-soft: rgb(38 119 85 / 10%);
+  --color-warning: #835600;
+  --color-warning-soft: rgb(131 86 0 / 10%);
+  --color-danger: #b4233f;
+  --color-danger-soft: rgb(180 35 63 / 10%);
+  --color-info: #315f9a;
+  --color-info-soft: rgb(49 95 154 / 10%);
+  --color-selection-bg: #a53f79;
+  --color-selection-text: #ffffff;
+  --color-scrollbar: rgb(67 42 61 / 24%);
+  --color-scrollbar-hover: rgb(67 42 61 / 38%);
+  --shadow-sm: 0 1px 3px rgb(50 31 45 / 10%);
+  --shadow-md: 0 8px 24px rgb(50 31 45 / 12%);
+  --shadow-lg: 0 18px 45px rgb(50 31 45 / 15%);
+  --shadow-floating:
+    0 22px 65px rgb(50 31 45 / 16%),
+    0 2px 9px rgb(50 31 45 / 9%);
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+}

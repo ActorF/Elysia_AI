@@ -81,3 +81,5 @@ dist-electron/
 out/
 *.tsbuildinfo
 npm-debug.log*
+test-results/
+playwright-report/

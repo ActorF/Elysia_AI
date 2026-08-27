@@ -14,8 +14,9 @@
     "build:renderer": "tsc -b && vite build",
     "build": "npm run build:renderer && npm run electron:build",
     "typecheck": "tsc -b --pretty false && tsc --project tsconfig.electron.json --pretty false",
-    "test": "npm run test:contract",
+    "test": "npm run test:contract && npm run test:ui",
     "test:contract": "npm run electron:build && node tests/protocol.contract.test.mjs",
+    "test:ui": "npm run build:renderer && playwright test",
     "package": "npm run build && electron-builder --dir",
     "make": "npm run build && electron-builder --win nsis",
     "lint": "eslint .",
@@ -27,6 +28,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@playwright/test": "^1.62.1",
     "@types/node": "^24.13.3",
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",

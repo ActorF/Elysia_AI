@@ -9,6 +9,7 @@ import type {
   BackendSnapshot,
   ChatRequest,
   DesktopApi,
+  DesktopThemePreference,
   SelectedFile,
 } from './contracts.js'
 
@@ -16,6 +17,12 @@ const desktopApi: DesktopApi = {
   rendererReady: () =>
     ipcRenderer.invoke(
       'window:renderer-ready',
+    ) as Promise<void>,
+
+  setThemePreference: (theme: DesktopThemePreference) =>
+    ipcRenderer.invoke(
+      'window:set-theme',
+      theme,
     ) as Promise<void>,
 
   getSnapshot: () =>

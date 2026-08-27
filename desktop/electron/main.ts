@@ -10,6 +10,7 @@ import {
   type IpcMainInvokeEvent,
   Menu,
   nativeImage,
+  nativeTheme,
   screen,
   session,
   Tray,
@@ -29,6 +30,7 @@ import { isTrustedRendererUrl as matchesRendererSource } from './renderer-source
 import type {
   BackendEvent,
   ChatRequest,
+  DesktopThemePreference,
   SelectedFile,
 } from './contracts.js'
 
@@ -131,6 +133,17 @@ function parseChatRequest(value: unknown): ChatRequest {
   }
 }
 
+function parseThemePreference(value: unknown): DesktopThemePreference {
+  if (value === 'system' || value === 'light' || value === 'dark') {
+    return value
+  }
+  throw new Error('Desktop theme preference is invalid.')
+}
+
+function nativeBackgroundColor(): string {
+  return nativeTheme.shouldUseDarkColors ? '#0f0b10' : '#f8f5f8'
+}
+
 function broadcastBackendEvent(event: BackendEvent): void {
   if (
     mainWindow !== null
@@ -160,6 +173,15 @@ function registerIpcHandlers(): void {
     (event): void => {
       assertTrustedSender(event)
       revealMainWindow()
+    },
+  )
+
+  ipcMain.handle(
+    'window:set-theme',
+    (event, value: unknown): void => {
+      assertTrustedSender(event)
+      nativeTheme.themeSource = parseThemePreference(value)
+      requireMainWindow().setBackgroundColor(nativeBackgroundColor())
     },
   )
 
@@ -350,7 +372,7 @@ function createMainWindow(): void {
     minWidth: 960,
     minHeight: 640,
     title: 'Elysia',
-    backgroundColor: '#171318',
+    backgroundColor: nativeBackgroundColor(),
     autoHideMenuBar: true,
     show: false,
     webPreferences: {
@@ -402,6 +424,11 @@ function createMainWindow(): void {
 }
 
 void app.whenReady().then(() => {
+  nativeTheme.on('updated', () => {
+    if (mainWindow !== null && !mainWindow.isDestroyed()) {
+      mainWindow.setBackgroundColor(nativeBackgroundColor())
+    }
+  })
   configureMediaPermission()
   registerIpcHandlers()
   backendProcess = new BackendProcess(
