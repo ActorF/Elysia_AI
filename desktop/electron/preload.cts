@@ -13,6 +13,11 @@ import type {
 } from './contracts.js'
 
 const desktopApi: DesktopApi = {
+  rendererReady: () =>
+    ipcRenderer.invoke(
+      'window:renderer-ready',
+    ) as Promise<void>,
+
   getSnapshot: () =>
     ipcRenderer.invoke(
       'backend:get-snapshot',

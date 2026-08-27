@@ -1,8 +1,11 @@
 # Elysia Desktop
 
-Stage 6 Modules 1–2 connect a React + TypeScript interface to the existing
+Stage 6 Modules 1–3 connect a React + TypeScript interface to the existing
 Python Brain through an Electron-owned child process and a strict, versioned
-local protocol.
+local protocol. Electron is frozen as the production shell. The Tauri source
+and toolchain were removed after the comparison; the rationale, recorded
+measurements, and revisit gates are in
+[`docs/decisions/0001-desktop-shell.md`](../docs/decisions/0001-desktop-shell.md).
 
 ## Development
 
@@ -34,7 +37,7 @@ Electron starts `D:\Elysia_AI\.venv\Scripts\python.exe`, runs
 ```bat
 npm run lint
 npm run typecheck
-npm run test:contract
+npm test
 npm run build
 npm audit --audit-level=high
 npm run package
@@ -47,6 +50,21 @@ The Stage 6 installer remains a shell smoke test. Stage 14 will freeze and bundl
 the Python runtime and define the production data layout. Until then, a
 packaged shell can be pointed at a development checkout with
 `ELYSIA_PROJECT_ROOT` and `ELYSIA_PYTHON`.
+
+## Electron performance benchmark
+
+The retained benchmark requires PowerShell 7.4 or newer. It measures the
+renderer-ready-gated, visible, non-minimized Electron window, followed by three
+idle seconds and an unforced zero-code exit plus orphan check:
+
+```powershell
+pwsh -NoProfile -File .\benchmarks\measure-shell.ps1 `
+  -Executable .\out\win-unpacked\Elysia.exe -Runs 10
+```
+
+This startup measurement is not Backend-ready time and does not prove that the
+first Chat request can be sent. The accepted decision records the complete
+method, results, capability gaps, and limitations.
 
 ## Security boundary
 

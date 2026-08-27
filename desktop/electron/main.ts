@@ -37,6 +37,7 @@ const moduleDirectory = path.dirname(
 )
 const DEVELOPMENT_URL = 'http://localhost:5173'
 const CHARACTER_PANEL_WIDTH = 324
+const RENDERER_READY_TIMEOUT_MS = 10_000
 const TRAY_ICON_DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAANsSURBVFhH1ZdJTBNhFMc5esPM2PkGL9WEEC9EExpjwgWNRI0XYyHRiyFCggcXpBRK9cBBo0IQ022IB1QE0YMh8SBHE7eiLGXvhqAnjy4cTLw8876ZNtP3TWtnggdf8juUeX3/t833lYqK/9UUSTnEZNZghvpsq7lcLlWR1QtMZlNMVqEEcSazAKtke2gMR1ZZ6d7JZNanSOyXhVhJqt3V9zFxGrNs01urfqOBy+Xh8AjwxHexMzT2X41JrMVJ1Tlq99UC/PwN9Qfrjb+xPqpR1FCcBrRDzd4aCPXf4wlgF/Cz8WyIagmGbTdX3nGyHSY7H8Bzg/D5OxA87YNexOuDgLeL0+PtgtvtN2Dm5TQXpjwdGQfPfg/gIlPNvOHC0Jmj+OfQLGyGZmEjNAefQnOwHpqHbHgeMuEEpMMJSIUXIBlZgLXIIqxGFuHLiw3YSn3nwuszGWg5ey4fD4tzuXYfoNrcsEW0nVi1HfGVyBKsRJchM5bmCWjXh4URMUmdpNr6e26xdJiAXfHl6DIsRVdgK/sDfE09YgKyCkIX+OFh4YgzN4s/843mZ450e/0cP9LUzeni9MDN9lvQWHdciMmRmEYSwBNMdMSFM1eO4tTHEZL6NS+un3YWTrLKt93cdqya+jglPwb9YhEdkFBrf8HMJ3yjJduOMy/adkruhFTkqlPCQwOceTkLtxhdhYXoKiSia9BZZPEoilTVYSSAt5zokEvAjvg8TyAgxLHGOJ6xFeJDHWy5HfG5aBKulp9AwHgD+K1n4aDCUOtAgfiYf1yYOYJtx8pR/KinzB2QWAtPwDiCRQdZ5ctmrhzFqY9TcPmNF5HvwSZ1QDABc9uxcurjBDx13W73jnwCVvcAgq+aeebYdurjCHof4KEgOMkqDLYNFizcI/8TYeZIB6cXrjTrXOYE4YjnhBATwVe/IAE0zIo64tIV2/bZWBJmYin4GEvBh1gaprU0xLUMvNcy8E7LwlstC5eag4I4k9QE1eZm1YXH/nHH4m+0dbhokYBl9Tmjt+JA213H4q95AtdI9eQWtDJFUidyX2isO2Zr5thyBCtH8cOFOxAv2Pxihk7mJLaJON66VKuk4VltEcg+EtPKqtzK9F/J6ishaBkoEkuWXDg7hoFwLFa/G0XYVP6c/xdm/Dcc0EdUQIPdVv8BMyc76Y4zJXMAAAAASUVORK5CYII='
 
 let mainWindow: BrowserWindow | null = null
@@ -48,6 +49,21 @@ let collapsedWindowPlacement: {
   width: number
 } | null = null
 let shutdownStarted = false
+let rendererReadyTimer: ReturnType<typeof setTimeout> | null = null
+
+function clearRendererReadyTimer(): void {
+  if (rendererReadyTimer !== null) {
+    clearTimeout(rendererReadyTimer)
+    rendererReadyTimer = null
+  }
+}
+
+function revealMainWindow(): void {
+  clearRendererReadyTimer()
+  if (mainWindow !== null && !mainWindow.isDestroyed()) {
+    mainWindow.show()
+  }
+}
 
 function resolveProjectRoot(): string {
   const configuredRoot = process.env.ELYSIA_PROJECT_ROOT
@@ -139,6 +155,14 @@ function requireMainWindow(): BrowserWindow {
 }
 
 function registerIpcHandlers(): void {
+  ipcMain.handle(
+    'window:renderer-ready',
+    (event): void => {
+      assertTrustedSender(event)
+      revealMainWindow()
+    },
+  )
+
   ipcMain.handle(
     'backend:get-snapshot',
     (event) => {
@@ -337,10 +361,6 @@ function createMainWindow(): void {
     },
   })
 
-  mainWindow.once('ready-to-show', () => {
-    mainWindow?.show()
-  })
-
   mainWindow.webContents.setWindowOpenHandler(() => ({
     action: 'deny',
   }))
@@ -352,6 +372,25 @@ function createMainWindow(): void {
       }
     },
   )
+  mainWindow.webContents.on(
+    'did-fail-load',
+    (_event, _errorCode, _errorDescription, _url, isMainFrame) => {
+      if (isMainFrame) {
+        revealMainWindow()
+      }
+    },
+  )
+  mainWindow.webContents.on('render-process-gone', () => {
+    revealMainWindow()
+  })
+  mainWindow.on('closed', () => {
+    clearRendererReadyTimer()
+    mainWindow = null
+  })
+
+  rendererReadyTimer = setTimeout(() => {
+    revealMainWindow()
+  }, RENDERER_READY_TIMEOUT_MS)
 
   if (app.isPackaged) {
     void mainWindow.loadFile(

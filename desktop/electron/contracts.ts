@@ -87,6 +87,7 @@ export type BackendEvent =
     }
 
 export interface DesktopApi {
+  rendererReady(): Promise<void>
   getSnapshot(): Promise<BackendSnapshot>
   restartBackend(): Promise<BackendSnapshot>
   sendMessage(request: ChatRequest): Promise<{ requestId: string }>
