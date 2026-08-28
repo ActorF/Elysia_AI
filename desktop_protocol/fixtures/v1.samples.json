@@ -38,6 +38,76 @@
       }
     },
     {
+      "name": "chat list request",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "chat-list-1",
+        "method": "chat.list",
+        "params": { "includeArchived": false }
+      }
+    },
+    {
+      "name": "chat create request",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "chat-create-1",
+        "method": "chat.create",
+        "params": { "title": "A new Chat", "mode": "chat" }
+      }
+    },
+    {
+      "name": "chat open request",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "chat-open-1",
+        "method": "chat.open",
+        "params": { "chatId": "chat_fixture" }
+      }
+    },
+    {
+      "name": "chat rename request",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "chat-rename-1",
+        "method": "chat.rename",
+        "params": { "chatId": "chat_fixture", "title": "Renamed Chat" }
+      }
+    },
+    {
+      "name": "chat pin request",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "chat-pin-1",
+        "method": "chat.pin",
+        "params": { "chatId": "chat_fixture", "pinned": true }
+      }
+    },
+    {
+      "name": "chat archive request",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "chat-archive-1",
+        "method": "chat.archive",
+        "params": { "chatId": "chat_fixture", "archived": true }
+      }
+    },
+    {
+      "name": "chat delete request",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "chat-delete-1",
+        "method": "chat.delete",
+        "params": { "chatId": "chat_fixture" }
+      }
+    },
+    {
       "name": "unicode identifier boundary",
       "message": {
         "type": "request",
@@ -102,7 +172,13 @@
         "result": {
           "protocol": { "name": "elysia.desktop", "version": 1 },
           "server": { "name": "elysia-python", "version": "0.1.0" },
-          "capabilities": ["chat.stream", "stream", "progress", "event"]
+          "capabilities": [
+            "chat.sessions",
+            "chat.stream",
+            "stream",
+            "progress",
+            "event"
+          ]
         }
       }
     },
@@ -129,6 +205,78 @@
         "id": "chat-1",
         "ok": true,
         "result": { "chatId": "chat_fixture", "reply": "Hello back" }
+      }
+    },
+    {
+      "name": "chat state response",
+      "message": {
+        "type": "response",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "chat-list-1",
+        "ok": true,
+        "result": {
+          "activeChat": {
+            "chatId": "chat_fixture",
+            "title": "Elysia Chat",
+            "mode": "chat",
+            "createdAt": "2026-08-27T10:00:00+00:00",
+            "updatedAt": "2026-08-27T10:01:00+00:00",
+            "messageCount": 2,
+            "projectId": "project_fixture",
+            "modelName": "qwen3.5:9b",
+            "pinned": true,
+            "archived": false,
+            "messages": [
+              {
+                "messageId": "message_fixture_user",
+                "role": "user",
+                "content": "Hello",
+                "createdAt": "2026-08-27T10:00:30+00:00",
+                "attachments": []
+              },
+              {
+                "messageId": "message_fixture_assistant",
+                "role": "assistant",
+                "content": "Hello back",
+                "createdAt": "2026-08-27T10:01:00+00:00",
+                "attachments": [
+                  {
+                    "attachmentId": "attachment_fixture",
+                    "fileName": "note.txt",
+                    "mediaType": "text/plain",
+                    "sizeBytes": 12
+                  }
+                ]
+              }
+            ]
+          },
+          "chats": [
+            {
+              "chatId": "chat_fixture",
+              "title": "Elysia Chat",
+              "mode": "chat",
+              "createdAt": "2026-08-27T10:00:00+00:00",
+              "updatedAt": "2026-08-27T10:01:00+00:00",
+              "messageCount": 2,
+              "projectId": "project_fixture",
+              "modelName": "qwen3.5:9b",
+              "pinned": true,
+              "archived": false
+            },
+            {
+              "chatId": "chat_second",
+              "title": "Second Chat",
+              "mode": "work",
+              "createdAt": "2026-08-26T09:00:00+00:00",
+              "updatedAt": "2026-08-26T09:00:00+00:00",
+              "messageCount": 0,
+              "projectId": null,
+              "modelName": "qwen3.5:9b",
+              "pinned": false,
+              "archived": false
+            }
+          ]
+        }
       }
     },
     {
@@ -309,6 +457,71 @@
         "id": "unknown-result-1",
         "ok": true,
         "result": { "ready": true }
+      }
+    },
+    {
+      "name": "chat state active summary is absent",
+      "runtimeOnly": true,
+      "message": {
+        "type": "response",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "chat-list-invalid-1",
+        "ok": true,
+        "result": {
+          "activeChat": {
+            "chatId": "chat_active",
+            "title": "Active",
+            "mode": "chat",
+            "createdAt": "2026-08-27T10:00:00+00:00",
+            "updatedAt": "2026-08-27T10:00:00+00:00",
+            "messageCount": 0,
+            "projectId": null,
+            "modelName": "qwen3.5:9b",
+            "pinned": false,
+            "archived": false,
+            "messages": []
+          },
+          "chats": []
+        }
+      }
+    },
+    {
+      "name": "chat state message count differs from history",
+      "runtimeOnly": true,
+      "message": {
+        "type": "response",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "chat-list-invalid-2",
+        "ok": true,
+        "result": {
+          "activeChat": {
+            "chatId": "chat_active",
+            "title": "Active",
+            "mode": "chat",
+            "createdAt": "2026-08-27T10:00:00+00:00",
+            "updatedAt": "2026-08-27T10:00:00+00:00",
+            "messageCount": 1,
+            "projectId": null,
+            "modelName": "qwen3.5:9b",
+            "pinned": false,
+            "archived": false,
+            "messages": []
+          },
+          "chats": [
+            {
+              "chatId": "chat_active",
+              "title": "Active",
+              "mode": "chat",
+              "createdAt": "2026-08-27T10:00:00+00:00",
+              "updatedAt": "2026-08-27T10:00:00+00:00",
+              "messageCount": 1,
+              "projectId": null,
+              "modelName": "qwen3.5:9b",
+              "pinned": false,
+              "archived": false
+            }
+          ]
+        }
       }
     },
     {

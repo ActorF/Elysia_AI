@@ -7,7 +7,7 @@ from threading import Barrier
 
 import pytest
 
-from chats import ChatId, JsonChatRepository
+from chats import ChatId, ChatNotFoundError, JsonChatRepository
 from core import (
     ActiveConversation,
     ActiveConversationService,
@@ -92,6 +92,119 @@ def test_same_chat_is_busy_but_different_chat_can_open(
 
         with active.open_turn(second.chat_id) as second_context:
             assert second_context.chat_session.chat_id == second.chat_id
+
+
+def test_chat_actions_preserve_messages_summary_and_project(
+    tmp_path: Path,
+) -> None:
+    chats, projects, active = _services(tmp_path)
+    project = projects.create_project(name="Action Project")
+    chat = active.create_chat(
+        title="Original",
+        mode="work",
+        model_name="fake-model",
+        project_id=project.project_id,
+    )
+    with active.open_turn(chat.chat_id) as context:
+        with_messages = active.commit_turn(
+            context,
+            user_message="Keep this question",
+            assistant_message="Keep this answer",
+        )
+    with active.open_turn(chat.chat_id) as context:
+        with_summary = active.commit_summary(
+            context,
+            facts=("Keep this fact",),
+            decisions=(),
+            action_items=(),
+            unresolved_questions=(),
+            source_message_ids=(
+                message.message_id for message in with_messages.messages
+            ),
+        )
+
+    renamed = active.rename_chat(chat.chat_id, "Renamed")
+    pinned = active.pin_chat(chat.chat_id)
+    archived = active.archive_chat(chat.chat_id)
+    persisted = active.get_chat(chat.chat_id)
+
+    assert renamed.title == "Renamed"
+    assert pinned.is_pinned is True
+    assert archived.is_archived is True
+    assert active.list_chats() == ()
+    assert active.list_chats(include_archived=True) == (archived,)
+    assert persisted.messages == with_summary.messages
+    assert persisted.summary == with_summary.summary
+    assert persisted.project_id == project.project_id
+    assert projects.get_project(project.project_id) == project
+
+    restored = active.archive_chat(chat.chat_id, archived=False)
+    unpinned = active.pin_chat(chat.chat_id, pinned=False)
+
+    assert restored.is_archived is False
+    assert unpinned.is_pinned is False
+    assert active.get_chat(chat.chat_id).messages == with_summary.messages
+
+
+@pytest.mark.parametrize(
+    "action",
+    ["rename", "pin", "archive", "delete"],
+)
+def test_busy_chat_rejects_session_actions_without_changes(
+    tmp_path: Path,
+    action: str,
+) -> None:
+    chats, _projects, active = _services(tmp_path)
+    chat = active.create_chat(
+        title="Busy",
+        mode="chat",
+        model_name="fake-model",
+    )
+
+    with active.open_turn(chat.chat_id):
+        with pytest.raises(ChatBusyError, match=r"cannot be changed"):
+            if action == "rename":
+                active.rename_chat(chat.chat_id, "Rejected")
+            elif action == "pin":
+                active.pin_chat(chat.chat_id)
+            elif action == "archive":
+                active.archive_chat(chat.chat_id)
+            else:
+                active.delete_chat(chat.chat_id)
+
+        assert chats.get_chat(chat.chat_id) == chat
+
+
+def test_delete_chat_removes_only_target_and_preserves_project_and_sibling(
+    tmp_path: Path,
+) -> None:
+    _chats, projects, active = _services(tmp_path)
+    project = projects.create_project(name="Kept Project")
+    target = active.create_chat(
+        title="Delete",
+        mode="work",
+        model_name="fake-model",
+        project_id=project.project_id,
+    )
+    sibling = active.create_chat(
+        title="Keep",
+        mode="work",
+        model_name="fake-model",
+        project_id=project.project_id,
+    )
+    with active.open_turn(sibling.chat_id) as context:
+        kept_sibling = active.commit_turn(
+            context,
+            user_message="Sibling question",
+            assistant_message="Sibling answer",
+        )
+
+    active.delete_chat(target.chat_id)
+
+    with pytest.raises(ChatNotFoundError):
+        active.get_chat(target.chat_id)
+    assert active.get_chat(sibling.chat_id) == kept_sibling
+    assert projects.get_project(project.project_id) == project
 
 
 def test_different_chat_commits_preserve_shared_index(

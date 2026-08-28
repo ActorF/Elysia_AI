@@ -36,6 +36,72 @@ export interface ChatRequest {
   message: string
 }
 
+/** Lightweight persisted Chat data used by the sidebar. */
+export interface ChatSessionSummary {
+  chatId: string
+  title: string
+  mode: 'chat' | 'work'
+  createdAt: string
+  updatedAt: string
+  messageCount: number
+  projectId: string | null
+  modelName: string
+  pinned: boolean
+  archived: boolean
+}
+
+/** Attachment metadata is displayed without exposing local file paths. */
+export interface ChatAttachment {
+  attachmentId: string
+  fileName: string
+  mediaType: string
+  sizeBytes: number
+}
+
+/** One canonical message loaded from Python persistence. */
+export interface ChatHistoryMessage {
+  messageId: string
+  role: 'system' | 'user' | 'assistant'
+  content: string
+  createdAt: string
+  attachments: ChatAttachment[]
+}
+
+/** Full active Chat data returned when a session is opened. */
+export interface ChatDetail extends ChatSessionSummary {
+  messages: ChatHistoryMessage[]
+}
+
+/** Canonical session collection returned after every Chat action. */
+export interface ChatSessionState {
+  activeChat: ChatDetail
+  chats: ChatSessionSummary[]
+}
+
+/** Human-readable title and conversation behavior for a new Chat. */
+export interface CreateChatRequest {
+  title: string
+  mode: 'chat' | 'work'
+}
+
+/** Identify one Chat and its replacement title. */
+export interface RenameChatRequest {
+  chatId: string
+  title: string
+}
+
+/** Identify one Chat and the desired pin state. */
+export interface PinChatRequest {
+  chatId: string
+  pinned: boolean
+}
+
+/** Identify one Chat and the desired archive state. */
+export interface ArchiveChatRequest {
+  chatId: string
+  archived: boolean
+}
+
 export interface SelectedFile {
   name: string
   sizeBytes: number
@@ -96,6 +162,13 @@ export interface DesktopApi {
   getSnapshot(): Promise<BackendSnapshot>
   restartBackend(): Promise<BackendSnapshot>
   sendMessage(request: ChatRequest): Promise<{ requestId: string }>
+  listChats(includeArchived: boolean): Promise<ChatSessionState>
+  createChat(request: CreateChatRequest): Promise<ChatSessionState>
+  openChat(chatId: string): Promise<ChatSessionState>
+  renameChat(request: RenameChatRequest): Promise<ChatSessionState>
+  setChatPinned(request: PinChatRequest): Promise<ChatSessionState>
+  setChatArchived(request: ArchiveChatRequest): Promise<ChatSessionState>
+  deleteChat(chatId: string): Promise<ChatSessionState>
   selectModel(modelName: string): Promise<BackendSnapshot>
   chooseFiles(): Promise<SelectedFile[]>
   setCharacterPanelOpen(open: boolean): Promise<void>

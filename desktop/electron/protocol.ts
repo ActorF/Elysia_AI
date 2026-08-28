@@ -44,6 +44,36 @@ export interface ChatStreamParams {
   message: string
 }
 
+export interface ChatListParams {
+  includeArchived: boolean
+}
+
+export type ConversationMode = 'chat' | 'work'
+
+export interface ChatCreateParams {
+  title: string
+  mode: ConversationMode
+}
+
+export interface ChatIdParams {
+  chatId: string
+}
+
+export interface ChatRenameParams {
+  chatId: string
+  title: string
+}
+
+export interface ChatPinParams {
+  chatId: string
+  pinned: boolean
+}
+
+export interface ChatArchiveParams {
+  chatId: string
+  archived: boolean
+}
+
 export interface CancelParams {
   requestId: string
   reason?: string
@@ -58,6 +88,13 @@ export interface RequestParamsByMethod {
   handshake: HandshakeParams
   initialize: Record<string, never>
   'chat.stream': ChatStreamParams
+  'chat.list': ChatListParams
+  'chat.create': ChatCreateParams
+  'chat.open': ChatIdParams
+  'chat.rename': ChatRenameParams
+  'chat.pin': ChatPinParams
+  'chat.archive': ChatArchiveParams
+  'chat.delete': ChatIdParams
   'request.cancel': CancelParams
   'permission.respond': PermissionResponseParams
   shutdown: Record<string, never>
@@ -162,6 +199,45 @@ export interface InitializeResult {
 export interface ChatResult {
   chatId: string
   reply: string
+}
+
+export interface ChatAttachment {
+  attachmentId: string
+  fileName: string
+  mediaType: string
+  sizeBytes: number
+}
+
+export type ChatMessageRole = 'system' | 'user' | 'assistant'
+
+export interface ChatSessionMessage {
+  messageId: string
+  role: ChatMessageRole
+  content: string
+  createdAt: string
+  attachments: ChatAttachment[]
+}
+
+export interface ChatSessionSummary {
+  chatId: string
+  title: string
+  mode: ConversationMode
+  createdAt: string
+  updatedAt: string
+  messageCount: number
+  projectId: string | null
+  modelName: string
+  pinned: boolean
+  archived: boolean
+}
+
+export interface ChatDetail extends ChatSessionSummary {
+  messages: ChatSessionMessage[]
+}
+
+export interface ChatStateResult {
+  activeChat: ChatDetail
+  chats: ChatSessionSummary[]
 }
 
 export class ProtocolValidationError extends Error {
@@ -346,6 +422,95 @@ function parseChatStreamParams(
   }
 }
 
+function readChatTitle(
+  value: Record<string, unknown>,
+  context: string,
+): string {
+  const title = readString(value, 'title', context)
+  if (!hasNonBlankCodePoint(title)) {
+    return fail(
+      'protocol.invalid_params',
+      `${context}.title cannot be blank.`,
+    )
+  }
+  return title
+}
+
+function readConversationMode(
+  value: Record<string, unknown>,
+  context: string,
+): ConversationMode {
+  const mode = readString(value, 'mode', context, { maximum: 4 })
+  return mode === 'chat' || mode === 'work'
+    ? mode
+    : fail(
+        'protocol.invalid_params',
+        `${context}.mode must be 'chat' or 'work'.`,
+      )
+}
+
+function parseChatListParams(value: unknown): ChatListParams {
+  const params = asRecord(value, 'chat.list params')
+  requireFields(params, ['includeArchived'], 'chat.list params')
+  return {
+    includeArchived: readBoolean(
+      params,
+      'includeArchived',
+      'chat.list params',
+    ),
+  }
+}
+
+function parseChatCreateParams(value: unknown): ChatCreateParams {
+  const context = 'chat.create params'
+  const params = asRecord(value, context)
+  requireFields(params, ['title', 'mode'], context)
+  return {
+    title: readChatTitle(params, context),
+    mode: readConversationMode(params, context),
+  }
+}
+
+function parseChatIdParams(
+  value: unknown,
+  method: 'chat.open' | 'chat.delete',
+): ChatIdParams {
+  const context = `${method} params`
+  const params = asRecord(value, context)
+  requireFields(params, ['chatId'], context)
+  return { chatId: readIdentifier(params, 'chatId', context) }
+}
+
+function parseChatRenameParams(value: unknown): ChatRenameParams {
+  const context = 'chat.rename params'
+  const params = asRecord(value, context)
+  requireFields(params, ['chatId', 'title'], context)
+  return {
+    chatId: readIdentifier(params, 'chatId', context),
+    title: readChatTitle(params, context),
+  }
+}
+
+function parseChatPinParams(value: unknown): ChatPinParams {
+  const context = 'chat.pin params'
+  const params = asRecord(value, context)
+  requireFields(params, ['chatId', 'pinned'], context)
+  return {
+    chatId: readIdentifier(params, 'chatId', context),
+    pinned: readBoolean(params, 'pinned', context),
+  }
+}
+
+function parseChatArchiveParams(value: unknown): ChatArchiveParams {
+  const context = 'chat.archive params'
+  const params = asRecord(value, context)
+  requireFields(params, ['chatId', 'archived'], context)
+  return {
+    chatId: readIdentifier(params, 'chatId', context),
+    archived: readBoolean(params, 'archived', context),
+  }
+}
+
 function parseCancelParams(value: unknown): CancelParams {
   const params = asRecord(value, 'request.cancel params')
   requireFields(
@@ -415,6 +580,42 @@ export function parseClientRequest(value: unknown): ClientRequest {
     return {
       type: 'request', protocol, id, method,
       params: parseChatStreamParams(request.params),
+    }
+  }
+  if (method === 'chat.list') {
+    return {
+      type: 'request', protocol, id, method,
+      params: parseChatListParams(request.params),
+    }
+  }
+  if (method === 'chat.create') {
+    return {
+      type: 'request', protocol, id, method,
+      params: parseChatCreateParams(request.params),
+    }
+  }
+  if (method === 'chat.open' || method === 'chat.delete') {
+    return {
+      type: 'request', protocol, id, method,
+      params: parseChatIdParams(request.params, method),
+    }
+  }
+  if (method === 'chat.rename') {
+    return {
+      type: 'request', protocol, id, method,
+      params: parseChatRenameParams(request.params),
+    }
+  }
+  if (method === 'chat.pin') {
+    return {
+      type: 'request', protocol, id, method,
+      params: parseChatPinParams(request.params),
+    }
+  }
+  if (method === 'chat.archive') {
+    return {
+      type: 'request', protocol, id, method,
+      params: parseChatArchiveParams(request.params),
     }
   }
   if (method === 'request.cancel') {
@@ -773,6 +974,202 @@ export function parseChatResult(value: unknown): ChatResult {
   }
 }
 
+const CHAT_SUMMARY_FIELDS = [
+  'chatId',
+  'title',
+  'mode',
+  'createdAt',
+  'updatedAt',
+  'messageCount',
+  'projectId',
+  'modelName',
+  'pinned',
+  'archived',
+] as const
+
+function parseChatAttachment(
+  value: unknown,
+  context: string,
+): ChatAttachment {
+  const attachment = asRecord(value, context)
+  requireFields(
+    attachment,
+    ['attachmentId', 'fileName', 'mediaType', 'sizeBytes'],
+    context,
+  )
+  const sizeBytes = readInteger(attachment, 'sizeBytes', context)
+  if (sizeBytes < 0) {
+    return fail(
+      'protocol.invalid_message',
+      `${context}.sizeBytes cannot be negative.`,
+    )
+  }
+  return {
+    attachmentId: readIdentifier(attachment, 'attachmentId', context),
+    fileName: readString(attachment, 'fileName', context),
+    mediaType: readString(attachment, 'mediaType', context),
+    sizeBytes,
+  }
+}
+
+function parseChatSessionMessage(
+  value: unknown,
+  context: string,
+): ChatSessionMessage {
+  const message = asRecord(value, context)
+  requireFields(
+    message,
+    ['messageId', 'role', 'content', 'createdAt', 'attachments'],
+    context,
+  )
+  const role = readString(message, 'role', context, { maximum: 9 })
+  if (role !== 'system' && role !== 'user' && role !== 'assistant') {
+    return fail(
+      'protocol.invalid_message',
+      `${context}.role is unsupported.`,
+    )
+  }
+  if (!Array.isArray(message.attachments)) {
+    return fail(
+      'protocol.invalid_message',
+      `${context}.attachments must be an array.`,
+    )
+  }
+  return {
+    messageId: readIdentifier(message, 'messageId', context),
+    role,
+    content: readString(message, 'content', context, { minimum: 0 }),
+    createdAt: readString(message, 'createdAt', context, { maximum: 128 }),
+    attachments: message.attachments.map((attachment, index) => (
+      parseChatAttachment(attachment, `${context}.attachments[${index}]`)
+    )),
+  }
+}
+
+function parseChatSessionSummary(
+  value: unknown,
+  context: string,
+  extraFields: readonly string[] = [],
+): ChatSessionSummary {
+  const chat = asRecord(value, context)
+  requireFields(chat, [...CHAT_SUMMARY_FIELDS, ...extraFields], context)
+  const mode = readString(chat, 'mode', context, { maximum: 4 })
+  if (mode !== 'chat' && mode !== 'work') {
+    return fail(
+      'protocol.invalid_message',
+      `${context}.mode is unsupported.`,
+    )
+  }
+  const messageCount = readInteger(chat, 'messageCount', context)
+  if (messageCount < 0) {
+    return fail(
+      'protocol.invalid_message',
+      `${context}.messageCount cannot be negative.`,
+    )
+  }
+  return {
+    chatId: readIdentifier(chat, 'chatId', context),
+    title: readString(chat, 'title', context),
+    mode,
+    createdAt: readString(chat, 'createdAt', context, { maximum: 128 }),
+    updatedAt: readString(chat, 'updatedAt', context, { maximum: 128 }),
+    messageCount,
+    projectId: chat.projectId === null
+      ? null
+      : readIdentifier(chat, 'projectId', context),
+    modelName: readIdentifier(chat, 'modelName', context),
+    pinned: readBoolean(chat, 'pinned', context),
+    archived: readBoolean(chat, 'archived', context),
+  }
+}
+
+function parseChatDetail(value: unknown, context: string): ChatDetail {
+  const chat = asRecord(value, context)
+  const summary = parseChatSessionSummary(chat, context, ['messages'])
+  if (!Array.isArray(chat.messages)) {
+    return fail(
+      'protocol.invalid_message',
+      `${context}.messages must be an array.`,
+    )
+  }
+  const messages = chat.messages.map((message, index) => (
+    parseChatSessionMessage(message, `${context}.messages[${index}]`)
+  ))
+  const messageIds = messages.map((message) => message.messageId)
+  if (new Set(messageIds).size !== messageIds.length) {
+    return fail(
+      'protocol.invalid_message',
+      `${context}.messages must have unique messageId values.`,
+    )
+  }
+  if (summary.messageCount !== messages.length) {
+    return fail(
+      'protocol.invalid_message',
+      `${context}.messageCount must equal the messages length.`,
+    )
+  }
+  return { ...summary, messages }
+}
+
+function chatSummariesMatch(
+  left: ChatSessionSummary,
+  right: ChatSessionSummary,
+): boolean {
+  return (
+    left.chatId === right.chatId
+    && left.title === right.title
+    && left.mode === right.mode
+    && left.createdAt === right.createdAt
+    && left.updatedAt === right.updatedAt
+    && left.messageCount === right.messageCount
+    && left.projectId === right.projectId
+    && left.modelName === right.modelName
+    && left.pinned === right.pinned
+    && left.archived === right.archived
+  )
+}
+
+export function parseChatStateResult(value: unknown): ChatStateResult {
+  const result = asRecord(value, 'chat state result')
+  requireFields(result, ['activeChat', 'chats'], 'chat state result')
+  const activeChat = parseChatDetail(
+    result.activeChat,
+    'chat state result.activeChat',
+  )
+  if (!Array.isArray(result.chats)) {
+    return fail(
+      'protocol.invalid_message',
+      'chat state result.chats must be an array.',
+    )
+  }
+  const chats = result.chats.map((chat, index) => (
+    parseChatSessionSummary(chat, `chat state result.chats[${index}]`)
+  ))
+  const chatIds = chats.map((chat) => chat.chatId)
+  if (new Set(chatIds).size !== chatIds.length) {
+    return fail(
+      'protocol.invalid_message',
+      'chat state result.chats must have unique chatId values.',
+    )
+  }
+  const matchingSummary = chats.find(
+    (chat) => chat.chatId === activeChat.chatId,
+  )
+  if (matchingSummary === undefined) {
+    return fail(
+      'protocol.invalid_message',
+      'chat state result.activeChat must appear in chats.',
+    )
+  }
+  if (!chatSummariesMatch(activeChat, matchingSummary)) {
+    return fail(
+      'protocol.invalid_message',
+      'chat state result.activeChat summary must match chats.',
+    )
+  }
+  return { activeChat, chats }
+}
+
 function validateSuccessResult(value: unknown): Record<string, unknown> {
   const result = asRecord(value, 'response.result')
   if (Object.hasOwn(result, 'protocol')) {
@@ -785,6 +1182,10 @@ function validateSuccessResult(value: unknown): Record<string, unknown> {
   }
   if (Object.hasOwn(result, 'chatId')) {
     parseChatResult(result)
+    return result
+  }
+  if (Object.hasOwn(result, 'activeChat')) {
+    parseChatStateResult(result)
     return result
   }
   requireFields(result, ['stopped'], 'shutdown result')

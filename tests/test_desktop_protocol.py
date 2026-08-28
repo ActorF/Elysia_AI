@@ -185,6 +185,13 @@ def test_machine_readable_schema_covers_every_protocol_message_kind() -> None:
         "handshakeRequest",
         "initializeRequest",
         "chatStreamRequest",
+        "chatListRequest",
+        "chatCreateRequest",
+        "chatOpenRequest",
+        "chatRenameRequest",
+        "chatPinRequest",
+        "chatArchiveRequest",
+        "chatDeleteRequest",
         "cancelRequest",
         "permissionResponseRequest",
         "shutdownRequest",
@@ -194,6 +201,9 @@ def test_machine_readable_schema_covers_every_protocol_message_kind() -> None:
         "progress",
         "permission",
         "event",
+        "chatSessionSummary",
+        "chatDetail",
+        "chatStateResult",
     }.issubset(definitions)
 
 

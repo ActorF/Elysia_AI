@@ -35,6 +35,32 @@ interface SelectedFile {
   sizeBytes: number
 }
 
+interface ChatSessionSummary {
+  chatId: string
+  title: string
+  mode: 'chat' | 'work'
+  createdAt: string
+  updatedAt: string
+  messageCount: number
+  projectId: string | null
+  modelName: string
+  pinned: boolean
+  archived: boolean
+}
+
+interface ChatSessionState {
+  activeChat: ChatSessionSummary & {
+    messages: Array<{
+      messageId: string
+      role: 'system' | 'user' | 'assistant'
+      content: string
+      createdAt: string
+      attachments: unknown[]
+    }>
+  }
+  chats: ChatSessionSummary[]
+}
+
 interface CallRecord {
   sequence: number
   method: string
@@ -48,6 +74,7 @@ interface RendererTestControl {
   getCalls(): CallRecord[]
   releaseNextCharacterPanelChange(): boolean
   setCharacterPanelChangeDelay(delayed: boolean): void
+  setChatState(state: ChatSessionState): void
   setSelectedFiles(files: SelectedFile[]): void
 }
 
@@ -93,6 +120,32 @@ async function clearCalls(): Promise<void> {
   await page.evaluate(() => {
     ;(window as TestWindow).elysiaDesktopTest.clearCalls()
   })
+}
+
+async function setChatState(state: ChatSessionState): Promise<void> {
+  await page.evaluate((nextState) => {
+    ;(window as TestWindow).elysiaDesktopTest.setChatState(nextState)
+  }, state)
+}
+
+function chatSummary(
+  chatId: string,
+  title: string,
+  overrides: Partial<ChatSessionSummary> = {},
+): ChatSessionSummary {
+  return {
+    chatId,
+    title,
+    mode: 'chat',
+    createdAt: '2026-08-25T12:00:00+00:00',
+    updatedAt: '2026-08-25T12:30:00+00:00',
+    messageCount: 0,
+    projectId: null,
+    modelName: 'qwen3.5:9b',
+    pinned: false,
+    archived: false,
+    ...overrides,
+  }
 }
 
 async function getCalls(): Promise<CallRecord[]> {
@@ -401,6 +454,173 @@ test('supports global navigation shortcuts and restores search focus', async () 
   await expect(
     page.getByRole('button', { name: 'Settings' }),
   ).toHaveAttribute('aria-current', 'page')
+})
+
+test('renders canonical Chat metadata and opens persisted sessions', async () => {
+  const first = chatSummary('chat-first', 'Pinned work', {
+    mode: 'work',
+    projectId: 'project_alpha',
+    pinned: true,
+    messageCount: 1,
+  })
+  const second = chatSummary('chat-second', 'Personal notes', {
+    updatedAt: '2026-08-25T12:10:00+00:00',
+  })
+  await setChatState({
+    activeChat: {
+      ...first,
+      messages: [{
+        messageId: 'message-persisted',
+        role: 'assistant',
+        content: 'Loaded from persisted history.',
+        createdAt: '2026-08-25T12:30:00+00:00',
+        attachments: [],
+      }],
+    },
+    chats: [first, second],
+  })
+  await emitSnapshot(readySnapshot({
+    chatId: first.chatId,
+    chatTitle: first.title,
+  }))
+
+  const firstRow = page.getByRole('button', {
+    name: `Open chat ${first.title}`,
+  })
+  await expect(firstRow).toContainText('Work')
+  await expect(firstRow).toContainText('project_alpha')
+  await expect(firstRow).toContainText('Pinned')
+  await expect(page.getByLabel('1 projects')).toBeVisible()
+  await expect(page.getByText('Loaded from persisted history.')).toBeVisible()
+
+  await clearCalls()
+  await page.getByRole('button', {
+    name: `Open chat ${second.title}`,
+  }).click()
+  await expect.poll(async () => (
+    (await getCalls()).find((call) => call.method === 'openChat')?.args
+  )).toEqual([second.chatId])
+  await expect(page.locator('.chat-heading strong')).toHaveText(second.title)
+
+  await clearCalls()
+  await page.getByRole('button', { name: 'Create chat' }).click()
+  await expect.poll(async () => (
+    (await getCalls()).find((call) => call.method === 'createChat')?.args
+  )).toEqual([{ title: 'New Chat', mode: 'chat' }])
+  await expect(page.getByRole('button', { name: 'Open chat New Chat' })).toBeVisible()
+})
+
+test('renames, pins, and confirms permanent Chat deletion', async () => {
+  await emitSnapshot(readySnapshot())
+  await expect(page.getByRole('button', {
+    name: 'Open chat Elysia Chat',
+  })).toBeVisible()
+
+  await page.getByRole('button', {
+    name: 'More actions for Elysia Chat',
+  }).click()
+  await page.getByRole('menuitem', { name: 'Rename' }).click()
+  const renameDialog = page.getByRole('dialog', { name: 'Rename Chat' })
+  await expect(renameDialog).toBeVisible()
+  await renameDialog.getByLabel('Chat title').fill('Renamed locally')
+  await renameDialog.getByRole('button', { name: 'Save' }).click()
+  await expect.poll(async () => (
+    (await getCalls()).find((call) => call.method === 'renameChat')?.args
+  )).toEqual([{ chatId: 'chat-test', title: 'Renamed locally' }])
+  await expect(page.getByRole('button', {
+    name: 'Open chat Renamed locally',
+  })).toBeVisible()
+
+  await clearCalls()
+  await page.getByRole('button', {
+    name: 'More actions for Renamed locally',
+  }).click()
+  await page.getByRole('menuitem', { name: 'Pin' }).click()
+  await expect.poll(async () => (
+    (await getCalls()).find((call) => call.method === 'setChatPinned')?.args
+  )).toEqual([{ chatId: 'chat-test', pinned: true }])
+
+  await clearCalls()
+  await page.getByRole('button', {
+    name: 'More actions for Renamed locally',
+  }).click()
+  await page.getByRole('menuitem', { name: 'Delete' }).click()
+  const deleteDialog = page.getByRole('dialog', {
+    name: /Delete “Renamed locally”/,
+  })
+  await expect(deleteDialog).toBeVisible()
+  await deleteDialog.getByRole('button', { name: 'Cancel' }).click()
+  expect((await getCalls()).some((call) => call.method === 'deleteChat')).toBe(false)
+
+  await page.getByRole('button', {
+    name: 'More actions for Renamed locally',
+  }).click()
+  await page.getByRole('menuitem', { name: 'Delete' }).click()
+  await page.getByRole('dialog', {
+    name: /Delete “Renamed locally”/,
+  }).getByRole('button', { name: 'Delete Chat' }).click()
+  await expect.poll(async () => (
+    (await getCalls()).find((call) => call.method === 'deleteChat')?.args
+  )).toEqual(['chat-test'])
+  await expect(page.getByRole('button', {
+    name: 'Open chat Renamed locally',
+  })).toHaveCount(0)
+})
+
+test('requires confirmation for bulk archive and delete actions', async () => {
+  const first = chatSummary('chat-bulk-one', 'Bulk one')
+  const second = chatSummary('chat-bulk-two', 'Bulk two', {
+    mode: 'work',
+  })
+  await setChatState({
+    activeChat: { ...first, messages: [] },
+    chats: [first, second],
+  })
+  await emitSnapshot(readySnapshot({
+    chatId: first.chatId,
+    chatTitle: first.title,
+  }))
+  await expect(page.getByRole('button', { name: 'Select chats' })).toBeEnabled()
+
+  await page.getByRole('button', { name: 'Select chats' }).click()
+  await page.getByRole('checkbox', { name: 'Select all visible' }).check()
+  await page.getByRole('button', { name: 'Archive', exact: true }).click()
+  const archiveDialog = page.getByRole('dialog', {
+    name: 'Archive 2 selected chats?',
+  })
+  await expect(archiveDialog).toBeVisible()
+  expect((await getCalls()).some(
+    (call) => call.method === 'setChatArchived',
+  )).toBe(false)
+  await archiveDialog.getByRole('button', { name: 'Archive chats' }).click()
+  await expect.poll(async () => (
+    (await getCalls())
+      .filter((call) => call.method === 'setChatArchived')
+      .map((call) => call.args[0])
+  )).toEqual([
+    { chatId: first.chatId, archived: true },
+    { chatId: second.chatId, archived: true },
+  ])
+
+  await page.getByRole('button', { name: 'Archived' }).click()
+  await expect(page.getByRole('button', {
+    name: `Open chat ${first.title}`,
+  })).toBeVisible()
+  await clearCalls()
+  await page.getByRole('button', { name: 'Select chats' }).click()
+  await page.getByRole('checkbox', { name: 'Select all visible' }).check()
+  await page.getByRole('button', { name: 'Delete', exact: true }).click()
+  const deleteDialog = page.getByRole('dialog', {
+    name: 'Delete 2 selected chats?',
+  })
+  await expect(deleteDialog).toBeVisible()
+  expect((await getCalls()).some((call) => call.method === 'deleteChat')).toBe(false)
+  await deleteDialog.getByRole('button', { name: 'Delete chats' }).click()
+  await expect.poll(async () => (
+    (await getCalls())
+      .filter((call) => call.method === 'deleteChat')
+      .map((call) => call.args[0])
+  )).toEqual([first.chatId, second.chatId])
 })
 
 test('moves focus to the workspace trigger when the wide sidebar closes', async () => {

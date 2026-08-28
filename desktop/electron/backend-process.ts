@@ -18,9 +18,14 @@ import {
 } from 'node:readline'
 
 import type {
+  ArchiveChatRequest,
   BackendEvent,
   BackendSnapshot,
   ChatRequest,
+  ChatSessionState,
+  CreateChatRequest,
+  PinChatRequest,
+  RenameChatRequest,
 } from './contracts.js'
 import {
   MAX_PROTOCOL_FRAME_BYTES,
@@ -30,6 +35,7 @@ import {
   createRequest,
   hasNonBlankCodePoint,
   parseChatResult,
+  parseChatStateResult,
   parseHandshakeResult,
   parseInitializeResult,
   parseServerMessage,
@@ -59,7 +65,28 @@ interface PendingRequest {
   streamCompleted: boolean
   streamedReply: string
   streamedLength: number
+  resolveChatState?: (state: ChatSessionState) => void
+  rejectChatState?: (error: Error) => void
 }
+
+type ChatSessionMethod =
+  | 'chat.list'
+  | 'chat.create'
+  | 'chat.open'
+  | 'chat.rename'
+  | 'chat.pin'
+  | 'chat.archive'
+  | 'chat.delete'
+
+const CHAT_SESSION_METHODS = new Set<ProtocolMethod>([
+  'chat.list',
+  'chat.create',
+  'chat.open',
+  'chat.rename',
+  'chat.pin',
+  'chat.archive',
+  'chat.delete',
+])
 
 export class BackendProcess {
   private child: ChildProcessWithoutNullStreams | null = null
@@ -307,6 +334,44 @@ export class BackendProcess {
     }
   }
 
+  /** Load the canonical sidebar collection and active Chat history. */
+  listChats(includeArchived: boolean): Promise<ChatSessionState> {
+    return this.requestChatState(
+      'chat.list',
+      { includeArchived },
+    )
+  }
+
+  /** Create and activate one persisted Chat through Python. */
+  createChat(request: CreateChatRequest): Promise<ChatSessionState> {
+    return this.requestChatState('chat.create', request)
+  }
+
+  /** Open one persisted Chat and replace the active desktop history. */
+  openChat(chatId: string): Promise<ChatSessionState> {
+    return this.requestChatState('chat.open', { chatId })
+  }
+
+  /** Rename one idle persisted Chat. */
+  renameChat(request: RenameChatRequest): Promise<ChatSessionState> {
+    return this.requestChatState('chat.rename', request)
+  }
+
+  /** Set one idle Chat's pin state. */
+  pinChat(request: PinChatRequest): Promise<ChatSessionState> {
+    return this.requestChatState('chat.pin', request)
+  }
+
+  /** Archive or restore one idle persisted Chat. */
+  archiveChat(request: ArchiveChatRequest): Promise<ChatSessionState> {
+    return this.requestChatState('chat.archive', request)
+  }
+
+  /** Permanently delete one idle persisted Chat. */
+  deleteChat(chatId: string): Promise<ChatSessionState> {
+    return this.requestChatState('chat.delete', { chatId })
+  }
+
   private resolvePythonExecutable(): string {
     const configuredPython = process.env.ELYSIA_PYTHON
     if (configuredPython?.trim()) {
@@ -328,10 +393,44 @@ export class BackendProcess {
         )
   }
 
+  private requestChatState<Method extends ChatSessionMethod>(
+    method: Method,
+    params: RequestParamsByMethod[Method],
+  ): Promise<ChatSessionState> {
+    if (this.snapshot.status !== 'ready') {
+      return Promise.reject(new Error('Python Backend is not ready.'))
+    }
+    if (
+      [...this.pendingRequests.values()].some(
+        (pending) => pending.method === 'chat.stream',
+      )
+    ) {
+      return Promise.reject(
+        new Error('Wait for the active Chat reply to finish.'),
+      )
+    }
+
+    return new Promise<ChatSessionState>((resolve, reject) => {
+      this.sendRequest(
+        method,
+        params,
+        undefined,
+        {
+          resolveChatState: resolve,
+          rejectChatState: reject,
+        },
+      )
+    })
+  }
+
   private sendRequest<Method extends ProtocolMethod>(
     method: Method,
     params: RequestParamsByMethod[Method],
     chatId?: string,
+    completion: Pick<
+      PendingRequest,
+      'resolveChatState' | 'rejectChatState'
+    > = {},
   ): string {
     const child = this.child
     if (child === null || !child.stdin.writable) {
@@ -347,6 +446,7 @@ export class BackendProcess {
       streamCompleted: false,
       streamedReply: '',
       streamedLength: 0,
+      ...completion,
     })
     child.stdin.write(
       `${JSON.stringify(request)}\n`,
@@ -457,6 +557,9 @@ export class BackendProcess {
           retryable: message.error.retryable,
         })
       }
+      if (CHAT_SESSION_METHODS.has(pending.method)) {
+        pending.rejectChatState?.(new Error(message.error.message))
+      }
       return
     }
 
@@ -464,6 +567,7 @@ export class BackendProcess {
       const result = parseHandshakeResult(message.result)
       const requiredCapabilities = [
         'chat.stream',
+        'chat.sessions',
         'stream',
         'progress',
         'event',
@@ -506,6 +610,26 @@ export class BackendProcess {
         chatTitle: result.chatTitle,
         error: undefined,
       })
+      return
+    }
+
+    if (CHAT_SESSION_METHODS.has(pending.method)) {
+      const result = parseChatStateResult(message.result)
+      if (result.activeChat.modelName !== this.snapshot.modelName) {
+        this.protocolFailure(
+          'Active Chat model does not match the running Backend.',
+        )
+        pending.rejectChatState?.(
+          new Error('Active Chat model does not match the running Backend.'),
+        )
+        return
+      }
+      this.updateSnapshot({
+        chatId: result.activeChat.chatId,
+        chatTitle: result.activeChat.title,
+        error: undefined,
+      })
+      pending.resolveChatState?.(result)
       return
     }
 
@@ -677,6 +801,11 @@ export class BackendProcess {
     this.initializeRequestId = null
     this.clearHandshakeTimeout()
     this.clearInitializeTimeout()
+    for (const pending of this.pendingRequests.values()) {
+      pending.rejectChatState?.(
+        new Error('Python Backend stopped before the Chat action completed.'),
+      )
+    }
     this.pendingRequests.clear()
   }
 

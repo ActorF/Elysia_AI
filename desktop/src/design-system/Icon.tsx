@@ -10,28 +10,34 @@
 import type { SVGProps } from 'react'
 
 export type IconName =
+  | 'archive'
   | 'arrow-left'
   | 'captions'
   | 'chat'
+  | 'check'
   | 'chevron'
   | 'close'
   | 'file'
   | 'folder'
   | 'hangup'
   | 'info'
+  | 'edit'
   | 'memory'
   | 'menu'
   | 'microphone'
   | 'monitor'
   | 'moon'
+  | 'more'
   | 'panel'
   | 'phone'
+  | 'pin'
   | 'plus'
   | 'search'
   | 'send'
   | 'settings'
   | 'sparkles'
   | 'sun'
+  | 'trash'
   | 'voice'
 
 export interface IconProps extends Omit<SVGProps<SVGSVGElement>, 'name'> {
@@ -56,6 +62,14 @@ export function Icon({
 
   let content
   switch (name) {
+    case 'archive':
+      content = (
+        <>
+          <path d="M4 7h16v13H4zM3 4h18v4H3z" />
+          <path d="M9 12h6" />
+        </>
+      )
+      break
     case 'arrow-left':
       content = <path d="m14.5 5-7 7 7 7M8 12h12" />
       break
@@ -69,6 +83,9 @@ export function Icon({
       break
     case 'chat':
       content = <path d="M5 18.5 3.5 21v-5A8 8 0 1 1 7 19.2" />
+      break
+    case 'check':
+      content = <path d="m5 12 4 4L19 6" />
       break
     case 'folder':
       content = <path d="M3.5 7.5h6l2-2h9v13h-17z" />
@@ -168,6 +185,39 @@ export function Icon({
           <circle cx="12" cy="12" r="9" />
           <path d="M12 10.5V17" />
           <path d="M12 7h.01" />
+        </>
+      )
+      break
+    case 'edit':
+      content = (
+        <>
+          <path d="M4 20h4L19 9l-4-4L4 16z" />
+          <path d="m13.5 6.5 4 4" />
+        </>
+      )
+      break
+    case 'more':
+      content = (
+        <>
+          <circle cx="5" cy="12" r="1" fill="currentColor" stroke="none" />
+          <circle cx="12" cy="12" r="1" fill="currentColor" stroke="none" />
+          <circle cx="19" cy="12" r="1" fill="currentColor" stroke="none" />
+        </>
+      )
+      break
+    case 'pin':
+      content = (
+        <>
+          <path d="m9 4 6 0-1 6 3 3H7l3-3z" />
+          <path d="M12 13v7" />
+        </>
+      )
+      break
+    case 'trash':
+      content = (
+        <>
+          <path d="M5 7h14M9 7V4h6v3M7 7l1 13h8l1-13" />
+          <path d="M10 11v5M14 11v5" />
         </>
       )
       break

@@ -18,9 +18,15 @@ from io import TextIOWrapper
 from typing import Any, TextIO, cast
 from urllib.request import Request, urlopen
 
-from chats import ChatId, ChatSession
+from chats import (
+    ChatId,
+    ChatNotFoundError,
+    ChatSession,
+    ChatSessionMeta,
+    ConversationMode,
+)
 from config.settings import SETTINGS
-from core import Brain
+from core import Brain, ChatBusyError
 from desktop_protocol import (
     MAX_MESSAGE_LENGTH,
     MAX_PROTOCOL_FRAME_BYTES,
@@ -48,6 +54,7 @@ SettingsValidator = Callable[[], None]
 SERVER_NAME = "elysia-python"
 SERVER_VERSION = "0.1.0"
 SERVER_CAPABILITIES = (
+    "chat.sessions",
     "chat.stream",
     "stream",
     "progress",
@@ -232,6 +239,20 @@ class DesktopBackend:
                 )
             elif method == "chat.stream":
                 self._stream_chat(request_id, params)
+            elif method == "chat.list":
+                self._list_chats(request_id, params)
+            elif method == "chat.create":
+                self._create_chat(request_id, params)
+            elif method == "chat.open":
+                self._open_chat(request_id, params)
+            elif method == "chat.rename":
+                self._rename_chat(request_id, params)
+            elif method == "chat.pin":
+                self._pin_chat(request_id, params)
+            elif method == "chat.archive":
+                self._archive_chat(request_id, params)
+            elif method == "chat.delete":
+                self._delete_chat(request_id, params)
             elif method == "request.cancel":
                 raise ProtocolValidationError(
                     "request.not_cancellable",
@@ -244,6 +265,10 @@ class DesktopBackend:
                 )
         except ProtocolValidationError as error:
             self._emit_error(request_id, error.code, str(error))
+        except ChatBusyError as error:
+            self._emit_error(request_id, "chat.busy", str(error))
+        except ChatNotFoundError as error:
+            self._emit_error(request_id, "chat.not_found", str(error))
         except Exception:
             logger.exception(
                 "Desktop request failed: method=%s request_id=%s.",
@@ -366,6 +391,191 @@ class DesktopBackend:
 
         return brain.create_chat(title="Elysia Chat")
 
+    @staticmethod
+    def _serialize_chat_summary(
+        chat: ChatSession | ChatSessionMeta,
+    ) -> JsonObject:
+        """Map Stage 5 metadata to the stable desktop session shape."""
+
+        if isinstance(chat, ChatSession):
+            message_count = len(chat.messages)
+            model_name = chat.model_settings.model_name
+        else:
+            message_count = chat.message_count
+            model_name = chat.model_name
+
+        return {
+            "chatId": str(chat.chat_id),
+            "title": chat.title,
+            "mode": chat.mode,
+            "createdAt": chat.created_at.isoformat(),
+            "updatedAt": chat.updated_at.isoformat(),
+            "messageCount": message_count,
+            "projectId": (
+                None if chat.project_id is None else str(chat.project_id)
+            ),
+            "modelName": model_name,
+            "pinned": chat.is_pinned,
+            "archived": chat.is_archived,
+        }
+
+    @classmethod
+    def _serialize_active_chat(cls, chat: ChatSession) -> JsonObject:
+        """Serialize an active Chat with complete messages and attachments."""
+
+        result = cls._serialize_chat_summary(chat)
+        result["messages"] = [
+            {
+                "messageId": str(message.message_id),
+                "role": message.role,
+                "content": message.content,
+                "createdAt": message.created_at.isoformat(),
+                "attachments": [
+                    {
+                        "attachmentId": str(attachment.attachment_id),
+                        "fileName": attachment.file_name,
+                        "mediaType": attachment.media_type,
+                        "sizeBytes": attachment.size_bytes,
+                    }
+                    for attachment in message.attachments
+                ],
+            }
+            for message in chat.messages
+        ]
+        return result
+
+    def _session_result(
+        self,
+        *,
+        include_archived: bool,
+    ) -> JsonObject:
+        """Refresh and serialize the active Chat plus one metadata listing."""
+
+        if self._brain is None or self._active_chat is None:
+            raise RuntimeError("Backend is not initialized.")
+
+        self._active_chat = self._brain.get_chat(
+            self._active_chat.chat_id
+        )
+        return {
+            "activeChat": self._serialize_active_chat(self._active_chat),
+            "chats": [
+                self._serialize_chat_summary(chat)
+                for chat in self._brain.list_chats(
+                    include_archived=include_archived,
+                )
+            ],
+        }
+
+    def _emit_session_response(
+        self,
+        request_id: str,
+        *,
+        include_archived: bool,
+    ) -> None:
+        """Emit the uniform result shared by desktop session operations."""
+
+        self._emit_response(
+            request_id,
+            self._session_result(include_archived=include_archived),
+        )
+
+    def _list_chats(self, request_id: str, params: JsonObject) -> None:
+        """Return the active Chat and the requested visible/archive listing."""
+
+        self._emit_session_response(
+            request_id,
+            include_archived=cast(bool, params["includeArchived"]),
+        )
+
+    def _create_chat(self, request_id: str, params: JsonObject) -> None:
+        """Create and activate one model-compatible Chat through Brain."""
+
+        if self._brain is None:
+            raise RuntimeError("Backend is not initialized.")
+
+        self._active_chat = self._brain.create_chat(
+            title=cast(str, params["title"]),
+            mode=cast(ConversationMode, params["mode"]),
+        )
+        self._emit_session_response(request_id, include_archived=True)
+
+    def _open_chat(self, request_id: str, params: JsonObject) -> None:
+        """Activate a visible Chat owned by the connected Brain model."""
+
+        if self._brain is None:
+            raise RuntimeError("Backend is not initialized.")
+
+        chat = self._brain.get_chat(ChatId(cast(str, params["chatId"])))
+        if chat.is_archived:
+            raise ProtocolValidationError(
+                "chat.archived",
+                "Archived Chat cannot become the active desktop Chat.",
+            )
+        if chat.model_settings.model_name != self._brain.model_name:
+            raise ProtocolValidationError(
+                "chat.model_mismatch",
+                "Chat model does not match the connected desktop model.",
+            )
+
+        self._active_chat = chat
+        self._emit_session_response(request_id, include_archived=True)
+
+    def _rename_chat(self, request_id: str, params: JsonObject) -> None:
+        """Rename one Chat through Brain and refresh desktop session state."""
+
+        if self._brain is None:
+            raise RuntimeError("Backend is not initialized.")
+
+        self._brain.rename_chat(
+            ChatId(cast(str, params["chatId"])),
+            cast(str, params["title"]),
+        )
+        self._emit_session_response(request_id, include_archived=True)
+
+    def _pin_chat(self, request_id: str, params: JsonObject) -> None:
+        """Set one Chat's pin state through Brain and return fresh state."""
+
+        if self._brain is None:
+            raise RuntimeError("Backend is not initialized.")
+
+        self._brain.pin_chat(
+            ChatId(cast(str, params["chatId"])),
+            cast(bool, params["pinned"]),
+        )
+        self._emit_session_response(request_id, include_archived=True)
+
+    def _archive_chat(self, request_id: str, params: JsonObject) -> None:
+        """Set archive state and replace an archived active Chat safely."""
+
+        if self._brain is None or self._active_chat is None:
+            raise RuntimeError("Backend is not initialized.")
+
+        chat_id = ChatId(cast(str, params["chatId"]))
+        archived = cast(bool, params["archived"])
+        was_active = chat_id == self._active_chat.chat_id
+        self._brain.archive_chat(chat_id, archived)
+
+        if was_active and archived:
+            self._active_chat = self._resolve_active_chat(self._brain)
+
+        self._emit_session_response(request_id, include_archived=True)
+
+    def _delete_chat(self, request_id: str, params: JsonObject) -> None:
+        """Delete one Chat and replace the active Chat when necessary."""
+
+        if self._brain is None or self._active_chat is None:
+            raise RuntimeError("Backend is not initialized.")
+
+        chat_id = ChatId(cast(str, params["chatId"]))
+        was_active = chat_id == self._active_chat.chat_id
+        self._brain.delete_chat(chat_id)
+
+        if was_active:
+            self._active_chat = self._resolve_active_chat(self._brain)
+
+        self._emit_session_response(request_id, include_archived=True)
+
     def _stream_chat(
         self,
         request_id: str,
@@ -446,6 +656,7 @@ class DesktopBackend:
                 "chat.empty_reply",
                 "The local model returned an empty reply.",
             )
+        self._active_chat = self._brain.get_chat(chat_id)
         self._emit(
             build_stream_chunk(
                 request_id,

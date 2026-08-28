@@ -143,6 +143,81 @@ class ActiveConversationService:
         with self._state_lock:
             return chat_id in self._active_turn_tokens
 
+    def rename_chat(
+        self,
+        chat_id: ChatId,
+        new_title: str,
+    ) -> ChatSession:
+        """Rename an idle Chat without changing its messages or Project link.
+
+        Raises:
+            ChatBusyError: If generation or summarization currently owns the
+                Chat.
+        """
+
+        with self._guard_idle_chat_action(chat_id):
+            return self._chat_repository.rename_chat(chat_id, new_title)
+
+    def pin_chat(
+        self,
+        chat_id: ChatId,
+        pinned: bool = True,
+    ) -> ChatSessionMeta:
+        """Set an idle Chat's pin state through the repository boundary.
+
+        Raises:
+            ChatBusyError: If generation or summarization currently owns the
+                Chat.
+        """
+
+        with self._guard_idle_chat_action(chat_id):
+            return self._chat_repository.pin_chat(chat_id, pinned)
+
+    def archive_chat(
+        self,
+        chat_id: ChatId,
+        archived: bool = True,
+    ) -> ChatSessionMeta:
+        """Set an idle Chat's archive state while retaining its full content.
+
+        Raises:
+            ChatBusyError: If generation or summarization currently owns the
+                Chat.
+        """
+
+        with self._guard_idle_chat_action(chat_id):
+            return self._chat_repository.archive_chat(chat_id, archived)
+
+    def delete_chat(self, chat_id: ChatId) -> None:
+        """Delete an idle Chat without modifying its associated Project.
+
+        Raises:
+            ChatBusyError: If generation or summarization currently owns the
+                Chat.
+        """
+
+        with self._guard_idle_chat_action(chat_id):
+            self._chat_repository.delete_chat(chat_id)
+
+    @contextmanager
+    def _guard_idle_chat_action(self, chat_id: ChatId) -> Iterator[None]:
+        """Make an idle check and repository action atomic against new turns.
+
+        The state lock stays held until the persistence call finishes, so an
+        ``open_turn`` cannot claim the Chat between the busy check and write.
+        The commit lock also protects the repository's shared Chat index.
+        """
+
+        with self._state_lock:
+            if chat_id in self._active_turn_tokens:
+                raise ChatBusyError(
+                    "Chat cannot be changed while it is generating or "
+                    f"being summarized: {chat_id}."
+                )
+
+            with self._commit_lock:
+                yield
+
     @contextmanager
     def open_turn(
         self,

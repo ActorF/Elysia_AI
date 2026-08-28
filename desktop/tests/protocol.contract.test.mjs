@@ -17,6 +17,7 @@ import {
   parseClientRequest,
   parseHandshakeResult,
   parseInitializeResult,
+  parseChatStateResult,
   parseServerMessage,
   trimProtocolBlankCharacters,
 } from '../dist-electron/protocol.js'
@@ -68,6 +69,16 @@ for (const sample of fixtures.validServerMessages) {
     if (sample.name === 'chat response') {
       assert.equal(parsed.ok, true)
       assert.equal(parseChatResult(parsed.result).chatId, 'chat_fixture')
+    }
+    if (sample.name === 'chat state response') {
+      assert.equal(parsed.ok, true)
+      const result = parseChatStateResult(parsed.result)
+      assert.equal(result.activeChat.chatId, 'chat_fixture')
+      assert.equal(result.activeChat.messages.length, 2)
+      assert.deepEqual(
+        result.chats.map((chat) => chat.chatId),
+        ['chat_fixture', 'chat_second'],
+      )
     }
   })
 }
@@ -206,6 +217,46 @@ test('Backend state machine rejects data after a terminal chunk', () => {
 
   assert.equal(events.at(-1).type, 'snapshot')
   assert.equal(events.at(-1).snapshot.status, 'error')
+})
+
+test('Backend state machine resolves a typed Chat session action', async () => {
+  const events = []
+  const backend = new BackendProcess('.', (event) => events.push(event))
+  backend.snapshot = {
+    revision: 1,
+    status: 'ready',
+    capabilities: ['chat.sessions'],
+    models: ['qwen3.5:9b'],
+    modelName: 'qwen3.5:9b',
+    chatId: 'chat_fixture',
+    chatTitle: 'Old title',
+  }
+  let resolveState
+  let rejectState
+  const statePromise = new Promise((resolve, reject) => {
+    resolveState = resolve
+    rejectState = reject
+  })
+  backend.pendingRequests.set('chat-list-1', {
+    method: 'chat.list',
+    nextSequence: 0,
+    streamCompleted: false,
+    streamedReply: '',
+    streamedLength: 0,
+    resolveChatState: resolveState,
+    rejectChatState: rejectState,
+  })
+  const sample = fixtures.validServerMessages.find(
+    (candidate) => candidate.name === 'chat state response',
+  )
+  assert.ok(sample)
+
+  backend.handleProtocolLine(JSON.stringify(sample.message))
+  const state = await statePromise
+
+  assert.equal(state.activeChat.chatId, 'chat_fixture')
+  assert.equal(backend.getSnapshot().chatTitle, 'Elysia Chat')
+  assert.equal(events.at(-1).type, 'snapshot')
 })
 
 test('renderer source policy accepts only the exact development document', () => {

@@ -282,6 +282,47 @@ class Brain:
             chat_id
         )
 
+    def rename_chat(
+        self,
+        chat_id: ChatId,
+        new_title: str,
+    ) -> ChatSession:
+        """Rename an idle Chat through the active-conversation service."""
+
+        return self._require_active_conversation_service().rename_chat(
+            chat_id,
+            new_title,
+        )
+
+    def pin_chat(
+        self,
+        chat_id: ChatId,
+        pinned: bool = True,
+    ) -> ChatSessionMeta:
+        """Pin or unpin an idle Chat through the application boundary."""
+
+        return self._require_active_conversation_service().pin_chat(
+            chat_id,
+            pinned,
+        )
+
+    def archive_chat(
+        self,
+        chat_id: ChatId,
+        archived: bool = True,
+    ) -> ChatSessionMeta:
+        """Archive or restore an idle Chat while retaining its content."""
+
+        return self._require_active_conversation_service().archive_chat(
+            chat_id,
+            archived,
+        )
+
+    def delete_chat(self, chat_id: ChatId) -> None:
+        """Delete an idle Chat through the active-conversation service."""
+
+        self._require_active_conversation_service().delete_chat(chat_id)
+
     def chat(
         self,
         chat_id: ChatId,

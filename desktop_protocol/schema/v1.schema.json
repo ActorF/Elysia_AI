@@ -12,6 +12,9 @@
   "x-elysia-runtimeInvariants": [
     "progress.total is null or greater than or equal to progress.completed",
     "initializeResult.modelName is present in initializeResult.models",
+    "chatStateResult.chats has unique chatId values",
+    "chatStateResult.activeChat appears in chats with identical summary fields",
+    "chatDetail.messages has unique messageId values and its length equals messageCount",
     "stream sequences are contiguous per request and have exactly one terminal chunk",
     "the terminal response reply exactly equals the concatenated stream chunks",
     "request and permission identifiers correlate with live pending operations"
@@ -20,6 +23,13 @@
     { "$ref": "#/$defs/handshakeRequest" },
     { "$ref": "#/$defs/initializeRequest" },
     { "$ref": "#/$defs/chatStreamRequest" },
+    { "$ref": "#/$defs/chatListRequest" },
+    { "$ref": "#/$defs/chatCreateRequest" },
+    { "$ref": "#/$defs/chatOpenRequest" },
+    { "$ref": "#/$defs/chatRenameRequest" },
+    { "$ref": "#/$defs/chatPinRequest" },
+    { "$ref": "#/$defs/chatArchiveRequest" },
+    { "$ref": "#/$defs/chatDeleteRequest" },
     { "$ref": "#/$defs/cancelRequest" },
     { "$ref": "#/$defs/permissionResponseRequest" },
     { "$ref": "#/$defs/shutdownRequest" },
@@ -56,6 +66,13 @@
             "handshake",
             "initialize",
             "chat.stream",
+            "chat.list",
+            "chat.create",
+            "chat.open",
+            "chat.rename",
+            "chat.pin",
+            "chat.archive",
+            "chat.delete",
             "request.cancel",
             "permission.respond",
             "shutdown"
@@ -103,6 +120,67 @@
         }
       },
       "required": ["chatId", "message"],
+      "additionalProperties": false
+    },
+    "chatListParams": {
+      "type": "object",
+      "properties": {
+        "includeArchived": { "type": "boolean" }
+      },
+      "required": ["includeArchived"],
+      "additionalProperties": false
+    },
+    "conversationMode": {
+      "enum": ["chat", "work"]
+    },
+    "chatTitle": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1000000,
+      "pattern": "[^\\u0009-\\u000D\\u0020\\u0085\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000\\uFEFF]"
+    },
+    "chatCreateParams": {
+      "type": "object",
+      "properties": {
+        "title": { "$ref": "#/$defs/chatTitle" },
+        "mode": { "$ref": "#/$defs/conversationMode" }
+      },
+      "required": ["title", "mode"],
+      "additionalProperties": false
+    },
+    "chatIdParams": {
+      "type": "object",
+      "properties": {
+        "chatId": { "$ref": "#/$defs/identifier" }
+      },
+      "required": ["chatId"],
+      "additionalProperties": false
+    },
+    "chatRenameParams": {
+      "type": "object",
+      "properties": {
+        "chatId": { "$ref": "#/$defs/identifier" },
+        "title": { "$ref": "#/$defs/chatTitle" }
+      },
+      "required": ["chatId", "title"],
+      "additionalProperties": false
+    },
+    "chatPinParams": {
+      "type": "object",
+      "properties": {
+        "chatId": { "$ref": "#/$defs/identifier" },
+        "pinned": { "type": "boolean" }
+      },
+      "required": ["chatId", "pinned"],
+      "additionalProperties": false
+    },
+    "chatArchiveParams": {
+      "type": "object",
+      "properties": {
+        "chatId": { "$ref": "#/$defs/identifier" },
+        "archived": { "type": "boolean" }
+      },
+      "required": ["chatId", "archived"],
       "additionalProperties": false
     },
     "cancelParams": {
@@ -156,6 +234,83 @@
           "properties": {
             "method": { "const": "chat.stream" },
             "params": { "$ref": "#/$defs/chatStreamParams" }
+          }
+        }
+      ]
+    },
+    "chatListRequest": {
+      "allOf": [
+        { "$ref": "#/$defs/requestEnvelope" },
+        {
+          "properties": {
+            "method": { "const": "chat.list" },
+            "params": { "$ref": "#/$defs/chatListParams" }
+          }
+        }
+      ]
+    },
+    "chatCreateRequest": {
+      "allOf": [
+        { "$ref": "#/$defs/requestEnvelope" },
+        {
+          "properties": {
+            "method": { "const": "chat.create" },
+            "params": { "$ref": "#/$defs/chatCreateParams" }
+          }
+        }
+      ]
+    },
+    "chatOpenRequest": {
+      "allOf": [
+        { "$ref": "#/$defs/requestEnvelope" },
+        {
+          "properties": {
+            "method": { "const": "chat.open" },
+            "params": { "$ref": "#/$defs/chatIdParams" }
+          }
+        }
+      ]
+    },
+    "chatRenameRequest": {
+      "allOf": [
+        { "$ref": "#/$defs/requestEnvelope" },
+        {
+          "properties": {
+            "method": { "const": "chat.rename" },
+            "params": { "$ref": "#/$defs/chatRenameParams" }
+          }
+        }
+      ]
+    },
+    "chatPinRequest": {
+      "allOf": [
+        { "$ref": "#/$defs/requestEnvelope" },
+        {
+          "properties": {
+            "method": { "const": "chat.pin" },
+            "params": { "$ref": "#/$defs/chatPinParams" }
+          }
+        }
+      ]
+    },
+    "chatArchiveRequest": {
+      "allOf": [
+        { "$ref": "#/$defs/requestEnvelope" },
+        {
+          "properties": {
+            "method": { "const": "chat.archive" },
+            "params": { "$ref": "#/$defs/chatArchiveParams" }
+          }
+        }
+      ]
+    },
+    "chatDeleteRequest": {
+      "allOf": [
+        { "$ref": "#/$defs/requestEnvelope" },
+        {
+          "properties": {
+            "method": { "const": "chat.delete" },
+            "params": { "$ref": "#/$defs/chatIdParams" }
           }
         }
       ]
@@ -255,6 +410,107 @@
       "required": ["chatId", "reply"],
       "additionalProperties": false
     },
+    "timestamp": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "nullableIdentifier": {
+      "oneOf": [
+        { "$ref": "#/$defs/identifier" },
+        { "type": "null" }
+      ]
+    },
+    "chatAttachment": {
+      "type": "object",
+      "properties": {
+        "attachmentId": { "$ref": "#/$defs/identifier" },
+        "fileName": { "type": "string", "minLength": 1, "maxLength": 1000000 },
+        "mediaType": { "type": "string", "minLength": 1, "maxLength": 1000000 },
+        "sizeBytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": ["attachmentId", "fileName", "mediaType", "sizeBytes"],
+      "additionalProperties": false
+    },
+    "chatSessionMessage": {
+      "type": "object",
+      "properties": {
+        "messageId": { "$ref": "#/$defs/identifier" },
+        "role": { "enum": ["system", "user", "assistant"] },
+        "content": { "type": "string", "maxLength": 1000000 },
+        "createdAt": { "$ref": "#/$defs/timestamp" },
+        "attachments": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/chatAttachment" }
+        }
+      },
+      "required": ["messageId", "role", "content", "createdAt", "attachments"],
+      "additionalProperties": false
+    },
+    "chatSummaryShape": {
+      "type": "object",
+      "properties": {
+        "chatId": { "$ref": "#/$defs/identifier" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 1000000 },
+        "mode": { "$ref": "#/$defs/conversationMode" },
+        "createdAt": { "$ref": "#/$defs/timestamp" },
+        "updatedAt": { "$ref": "#/$defs/timestamp" },
+        "messageCount": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "projectId": { "$ref": "#/$defs/nullableIdentifier" },
+        "modelName": { "$ref": "#/$defs/identifier" },
+        "pinned": { "type": "boolean" },
+        "archived": { "type": "boolean" }
+      },
+      "required": [
+        "chatId", "title", "mode", "createdAt", "updatedAt",
+        "messageCount", "projectId", "modelName", "pinned", "archived"
+      ]
+    },
+    "chatSessionSummary": {
+      "allOf": [
+        { "$ref": "#/$defs/chatSummaryShape" }
+      ],
+      "unevaluatedProperties": false
+    },
+    "chatDetail": {
+      "allOf": [
+        { "$ref": "#/$defs/chatSummaryShape" },
+        {
+          "type": "object",
+          "properties": {
+            "messages": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/chatSessionMessage" },
+              "uniqueItems": true
+            }
+          },
+          "required": ["messages"]
+        }
+      ],
+      "unevaluatedProperties": false
+    },
+    "chatStateResult": {
+      "type": "object",
+      "properties": {
+        "activeChat": { "$ref": "#/$defs/chatDetail" },
+        "chats": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/chatSessionSummary" },
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      },
+      "required": ["activeChat", "chats"],
+      "additionalProperties": false
+    },
     "shutdownResult": {
       "type": "object",
       "properties": { "stopped": { "const": true } },
@@ -273,6 +529,7 @@
             { "$ref": "#/$defs/handshakeResult" },
             { "$ref": "#/$defs/initializeResult" },
             { "$ref": "#/$defs/chatResult" },
+            { "$ref": "#/$defs/chatStateResult" },
             { "$ref": "#/$defs/shutdownResult" }
           ]
         }

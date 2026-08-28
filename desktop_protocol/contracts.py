@@ -42,6 +42,13 @@ ProtocolMethod = Literal[
     "handshake",
     "initialize",
     "chat.stream",
+    "chat.list",
+    "chat.create",
+    "chat.open",
+    "chat.rename",
+    "chat.pin",
+    "chat.archive",
+    "chat.delete",
     "request.cancel",
     "permission.respond",
     "shutdown",
@@ -50,12 +57,34 @@ SUPPORTED_METHODS: Final[tuple[ProtocolMethod, ...]] = (
     "handshake",
     "initialize",
     "chat.stream",
+    "chat.list",
+    "chat.create",
+    "chat.open",
+    "chat.rename",
+    "chat.pin",
+    "chat.archive",
+    "chat.delete",
     "request.cancel",
     "permission.respond",
     "shutdown",
 )
 
 JsonObject = dict[str, Any]
+
+_CHAT_SUMMARY_FIELDS: Final[frozenset[str]] = frozenset(
+    {
+        "chatId",
+        "title",
+        "mode",
+        "createdAt",
+        "updatedAt",
+        "messageCount",
+        "projectId",
+        "modelName",
+        "pinned",
+        "archived",
+    }
+)
 
 
 class ProtocolDescriptor(TypedDict):
@@ -84,6 +113,46 @@ class ChatStreamParams(TypedDict):
 
     chatId: str
     message: str
+
+
+class ChatListParams(TypedDict):
+    """Choose whether archived Chats appear in the sidebar."""
+
+    includeArchived: bool
+
+
+class ChatCreateParams(TypedDict):
+    """Create one Chat for the Backend's active model."""
+
+    title: str
+    mode: Literal["chat", "work"]
+
+
+class ChatIdParams(TypedDict):
+    """Identify one Chat for open and delete operations."""
+
+    chatId: str
+
+
+class ChatRenameParams(TypedDict):
+    """Rename one existing Chat."""
+
+    chatId: str
+    title: str
+
+
+class ChatPinParams(TypedDict):
+    """Set one Chat's pinned state explicitly."""
+
+    chatId: str
+    pinned: bool
+
+
+class ChatArchiveParams(TypedDict):
+    """Set one Chat's archived state explicitly."""
+
+    chatId: str
+    archived: bool
 
 
 class CancelParams(TypedDict, total=False):
@@ -182,6 +251,53 @@ class EventMessage(TypedDict):
     event: str
     requestId: str | None
     data: JsonObject
+
+
+class ChatAttachment(TypedDict):
+    """Expose attachment metadata without file bytes or private paths."""
+
+    attachmentId: str
+    fileName: str
+    mediaType: str
+    sizeBytes: int
+
+
+class ChatSessionMessage(TypedDict):
+    """Expose one persisted message in a Chat detail response."""
+
+    messageId: str
+    role: Literal["system", "user", "assistant"]
+    content: str
+    createdAt: str
+    attachments: list[ChatAttachment]
+
+
+class ChatSessionSummary(TypedDict):
+    """Expose bounded sidebar metadata for one Chat."""
+
+    chatId: str
+    title: str
+    mode: Literal["chat", "work"]
+    createdAt: str
+    updatedAt: str
+    messageCount: int
+    projectId: str | None
+    modelName: str
+    pinned: bool
+    archived: bool
+
+
+class ChatDetail(ChatSessionSummary):
+    """Expose one complete Chat together with its persisted messages."""
+
+    messages: list[ChatSessionMessage]
+
+
+class ChatStateResult(TypedDict):
+    """Return one atomic active-Chat detail and matching sidebar list."""
+
+    activeChat: ChatDetail
+    chats: list[ChatSessionSummary]
 
 
 ServerMessage = (
@@ -380,6 +496,75 @@ def _validate_chat_params(params: JsonObject) -> None:
         )
 
 
+def _validate_chat_list_params(params: JsonObject) -> None:
+    _require_fields(params, {"includeArchived"}, "chat.list params")
+    _require_boolean(params, "includeArchived", "chat.list params")
+
+
+def _validate_chat_title(
+    params: JsonObject,
+    *,
+    context: str,
+) -> None:
+    title = _require_string(params, "title", context)
+    if not any(
+        character not in _PROTOCOL_BLANK_CHARACTERS
+        for character in title
+    ):
+        raise ProtocolValidationError(
+            "protocol.invalid_params",
+            f"{context}.title cannot be blank.",
+        )
+
+
+def _validate_chat_mode(params: JsonObject, *, context: str) -> None:
+    mode = _require_string(
+        params,
+        "mode",
+        context,
+        maximum=4,
+    )
+    if mode not in {"chat", "work"}:
+        raise ProtocolValidationError(
+            "protocol.invalid_params",
+            f"{context}.mode must be 'chat' or 'work'.",
+        )
+
+
+def _validate_chat_create_params(params: JsonObject) -> None:
+    context = "chat.create params"
+    _require_fields(params, {"title", "mode"}, context)
+    _validate_chat_title(params, context=context)
+    _validate_chat_mode(params, context=context)
+
+
+def _validate_chat_id_params(params: JsonObject, *, method: str) -> None:
+    context = f"{method} params"
+    _require_fields(params, {"chatId"}, context)
+    _require_identifier(params, "chatId", context)
+
+
+def _validate_chat_rename_params(params: JsonObject) -> None:
+    context = "chat.rename params"
+    _require_fields(params, {"chatId", "title"}, context)
+    _require_identifier(params, "chatId", context)
+    _validate_chat_title(params, context=context)
+
+
+def _validate_chat_pin_params(params: JsonObject) -> None:
+    context = "chat.pin params"
+    _require_fields(params, {"chatId", "pinned"}, context)
+    _require_identifier(params, "chatId", context)
+    _require_boolean(params, "pinned", context)
+
+
+def _validate_chat_archive_params(params: JsonObject) -> None:
+    context = "chat.archive params"
+    _require_fields(params, {"chatId", "archived"}, context)
+    _require_identifier(params, "chatId", context)
+    _require_boolean(params, "archived", context)
+
+
 def _validate_cancel_params(params: JsonObject) -> None:
     _require_fields(
         params,
@@ -445,6 +630,18 @@ def parse_client_request(value: object) -> ClientRequest:
         _require_fields(params, set(), "initialize params")
     elif method == "chat.stream":
         _validate_chat_params(params)
+    elif method == "chat.list":
+        _validate_chat_list_params(params)
+    elif method == "chat.create":
+        _validate_chat_create_params(params)
+    elif method in {"chat.open", "chat.delete"}:
+        _validate_chat_id_params(params, method=method)
+    elif method == "chat.rename":
+        _validate_chat_rename_params(params)
+    elif method == "chat.pin":
+        _validate_chat_pin_params(params)
+    elif method == "chat.archive":
+        _validate_chat_archive_params(params)
     elif method == "request.cancel":
         _validate_cancel_params(params)
     elif method == "permission.respond":
@@ -475,6 +672,179 @@ def _validate_result_string_array(
             f"{context}.{key} must contain unique identifiers.",
         )
     return cast(list[str], raw)
+
+
+def _validate_chat_attachment(
+    value: object,
+    *,
+    context: str,
+) -> ChatAttachment:
+    attachment = _as_object(value, context)
+    _require_fields(
+        attachment,
+        {"attachmentId", "fileName", "mediaType", "sizeBytes"},
+        context,
+    )
+    _require_identifier(attachment, "attachmentId", context)
+    _require_string(attachment, "fileName", context)
+    _require_string(attachment, "mediaType", context)
+    size_bytes = _require_integer(attachment, "sizeBytes", context)
+    if size_bytes < 0:
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.sizeBytes cannot be negative.",
+        )
+    return cast(ChatAttachment, attachment)
+
+
+def _validate_chat_message(
+    value: object,
+    *,
+    context: str,
+) -> ChatSessionMessage:
+    message = _as_object(value, context)
+    _require_fields(
+        message,
+        {"messageId", "role", "content", "createdAt", "attachments"},
+        context,
+    )
+    _require_identifier(message, "messageId", context)
+    role = _require_string(message, "role", context, maximum=9)
+    if role not in {"system", "user", "assistant"}:
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.role is unsupported.",
+        )
+    _require_string(message, "content", context, minimum=0)
+    _require_string(message, "createdAt", context, maximum=128)
+    attachments = message.get("attachments")
+    if not isinstance(attachments, list):
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.attachments must be an array.",
+        )
+    for position, attachment in enumerate(attachments):
+        _validate_chat_attachment(
+            attachment,
+            context=f"{context}.attachments[{position}]",
+        )
+    return cast(ChatSessionMessage, message)
+
+
+def _validate_chat_summary(
+    value: object,
+    *,
+    context: str,
+    detail: bool = False,
+) -> ChatSessionSummary | ChatDetail:
+    chat = _as_object(value, context)
+    required = set(_CHAT_SUMMARY_FIELDS)
+    if detail:
+        required.add("messages")
+    _require_fields(chat, required, context)
+    _require_identifier(chat, "chatId", context)
+    _require_string(chat, "title", context)
+    mode = _require_string(chat, "mode", context, maximum=4)
+    if mode not in {"chat", "work"}:
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.mode is unsupported.",
+        )
+    _require_string(chat, "createdAt", context, maximum=128)
+    _require_string(chat, "updatedAt", context, maximum=128)
+    message_count = _require_integer(chat, "messageCount", context)
+    if message_count < 0:
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.messageCount cannot be negative.",
+        )
+    if chat.get("projectId") is not None:
+        _require_identifier(chat, "projectId", context)
+    _require_identifier(chat, "modelName", context)
+    _require_boolean(chat, "pinned", context)
+    _require_boolean(chat, "archived", context)
+
+    if not detail:
+        return cast(ChatSessionSummary, chat)
+
+    messages = chat.get("messages")
+    if not isinstance(messages, list):
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.messages must be an array.",
+        )
+    message_ids: set[str] = set()
+    for position, raw_message in enumerate(messages):
+        message = _validate_chat_message(
+            raw_message,
+            context=f"{context}.messages[{position}]",
+        )
+        message_id = message["messageId"]
+        if message_id in message_ids:
+            raise ProtocolValidationError(
+                "protocol.invalid_message",
+                f"{context}.messages must have unique messageId values.",
+            )
+        message_ids.add(message_id)
+    if message_count != len(messages):
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.messageCount must equal the messages length.",
+        )
+    return cast(ChatDetail, chat)
+
+
+def _validate_chat_state_result(value: object) -> ChatStateResult:
+    result = _as_object(value, "chat state result")
+    _require_fields(result, {"activeChat", "chats"}, "chat state result")
+    active_chat = _validate_chat_summary(
+        result["activeChat"],
+        context="chat state result.activeChat",
+        detail=True,
+    )
+    chats = result.get("chats")
+    if not isinstance(chats, list):
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            "chat state result.chats must be an array.",
+        )
+
+    chat_ids: set[str] = set()
+    matching_summary: ChatSessionSummary | None = None
+    for position, raw_summary in enumerate(chats):
+        summary = cast(
+            ChatSessionSummary,
+            _validate_chat_summary(
+                raw_summary,
+                context=f"chat state result.chats[{position}]",
+            ),
+        )
+        chat_id = summary["chatId"]
+        if chat_id in chat_ids:
+            raise ProtocolValidationError(
+                "protocol.invalid_message",
+                "chat state result.chats must have unique chatId values.",
+            )
+        chat_ids.add(chat_id)
+        if chat_id == active_chat["chatId"]:
+            matching_summary = summary
+
+    if matching_summary is None:
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            "chat state result.activeChat must appear in chats.",
+        )
+    active_object = cast(JsonObject, active_chat)
+    active_summary = {
+        key: active_object[key]
+        for key in _CHAT_SUMMARY_FIELDS
+    }
+    if active_summary != matching_summary:
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            "chat state result.activeChat summary must match chats.",
+        )
+    return cast(ChatStateResult, result)
 
 
 def _validate_success_result(result: JsonObject) -> None:
@@ -513,6 +883,9 @@ def _validate_success_result(result: JsonObject) -> None:
     if fields == {"chatId", "reply"}:
         _require_identifier(result, "chatId", "chat result")
         _require_string(result, "reply", "chat result")
+        return
+    if fields == {"activeChat", "chats"}:
+        _validate_chat_state_result(result)
         return
     if fields == {"stopped"} and result["stopped"] is True:
         return

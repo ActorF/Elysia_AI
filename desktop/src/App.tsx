@@ -17,6 +17,8 @@ import {
 import type {
   BackendEvent,
   BackendSnapshot,
+  ChatDetail,
+  ChatSessionState,
   SelectedFile,
 } from '../electron/contracts.ts'
 import {
@@ -44,13 +46,6 @@ const initialSnapshot: BackendSnapshot = {
   models: [],
 }
 
-const welcomeMessage: ChatMessage = {
-  id: 'welcome',
-  role: 'assistant',
-  text: 'Hi, I’m Elysia. The desktop shell is ready when your local Backend connects.',
-  state: 'complete',
-}
-
 function infoNotice(message: string): ChatNotice {
   return { message, tone: 'info' }
 }
@@ -66,6 +61,19 @@ function errorNotice(message: string): ChatNotice {
 function isCompactShell(): boolean {
   return typeof window.matchMedia === 'function'
     && window.matchMedia(COMPACT_SHELL_QUERY).matches
+}
+
+function presentChatMessages(chat: ChatDetail): ChatMessage[] {
+  return chat.messages
+    .filter((message) => message.role !== 'system')
+    .map((message) => ({
+      id: message.messageId,
+      role: message.role === 'assistant' ? 'assistant' : 'user',
+      text: message.content || message.attachments
+        .map((attachment) => attachment.fileName)
+        .join(', '),
+      state: 'complete',
+    }))
 }
 
 interface PlaceholderViewProps {
@@ -129,7 +137,10 @@ function App() {
         }
       : initialSnapshot
   ))
-  const [messages, setMessages] = useState<ChatMessage[]>([welcomeMessage])
+  const [messages, setMessages] = useState<ChatMessage[]>([])
+  const [chatState, setChatState] = useState<ChatSessionState | null>(null)
+  const [sessionMutationPending, setSessionMutationPending] = useState(false)
+  const [showArchived, setShowArchived] = useState(false)
   const [draft, setDraft] = useState('')
   const [activeView, setActiveView] = useState<AppView>('chat')
   const [searchOpen, setSearchOpen] = useState(false)
@@ -152,12 +163,18 @@ function App() {
   const modelSelectionPendingRef = useRef(false)
   const retryOperationRef = useRef(0)
   const retryPendingRef = useRef(false)
+  const sessionMutationPendingRef = useRef(false)
   const panelOperationRef = useRef(0)
   const panelCommittedOpenRef = useRef(false)
   const panelTargetOpenRef = useRef(false)
   const panelQueueRef = useRef<Promise<void>>(Promise.resolve())
 
-  const displayedChat = snapshot.chatTitle ?? 'Elysia Chat'
+  const displayedChat = chatState?.activeChat.title
+    ?? snapshot.chatTitle
+    ?? 'Chat'
+  const sessionUiPending = sessionMutationPending
+    || snapshot.status !== 'ready'
+    || chatState === null
   const canSend = (
     desktopApi !== undefined
     && snapshot.status === 'ready'
@@ -166,6 +183,8 @@ function App() {
     && !streaming
     && !modelSelectionPending
     && !retryPending
+    && !sessionUiPending
+    && chatState !== null
   )
   const modelOptions = useMemo(() => {
     if (snapshot.models.length > 0) {
@@ -190,6 +209,12 @@ function App() {
     activeChatIdRef.current = nextSnapshot.chatId
     setSnapshot(nextSnapshot)
     return true
+  }, [])
+
+  const acceptChatState = useCallback((nextState: ChatSessionState): void => {
+    activeChatIdRef.current = nextState.activeChat.chatId
+    setChatState(nextState)
+    setMessages(presentChatMessages(nextState.activeChat))
   }, [])
 
   const setCharacterPanelVisibility = useCallback((nextOpen: boolean) => {
@@ -239,6 +264,41 @@ function App() {
   useEffect(() => {
     activeChatIdRef.current = snapshot.chatId
   }, [snapshot.chatId])
+
+  useEffect(() => {
+    if (desktopApi === undefined || snapshot.status !== 'ready') {
+      return
+    }
+
+    let active = true
+    sessionMutationPendingRef.current = true
+    void desktopApi.listChats(true)
+      .then((nextState) => {
+        if (active) {
+          acceptChatState(nextState)
+        }
+      })
+      .catch((error: unknown) => {
+        if (active) {
+          setNotice(errorNotice(
+            error instanceof Error
+              ? error.message
+              : 'Could not load persisted Chats.',
+          ))
+        }
+      })
+      .finally(() => {
+        if (active) {
+          sessionMutationPendingRef.current = false
+          setSessionMutationPending(false)
+        }
+      })
+
+    return () => {
+      active = false
+      sessionMutationPendingRef.current = false
+    }
+  }, [acceptChatState, desktopApi, snapshot.status])
 
   useEffect(() => {
     if (typeof window.matchMedia !== 'function') {
@@ -373,6 +433,15 @@ function App() {
           ))
         })
         setStreaming(false)
+        void desktopApi.listChats(true)
+          .then(acceptChatState)
+          .catch((error: unknown) => {
+            setNotice(errorNotice(
+              error instanceof Error
+                ? error.message
+                : 'Reply completed, but Chat history could not be refreshed.',
+            ))
+          })
         return
       }
 
@@ -424,7 +493,7 @@ function App() {
       active = false
       unsubscribe()
     }
-  }, [acceptSnapshot, desktopApi])
+  }, [acceptChatState, acceptSnapshot, desktopApi])
 
   useEffect(() => {
     function handleGlobalKeyDown(event: globalThis.KeyboardEvent): void {
@@ -512,7 +581,7 @@ function App() {
 
   async function sendMessage(): Promise<void> {
     const message = trimProtocolBlankCharacters(draft)
-    const chatId = snapshot.chatId
+    const chatId = chatState?.activeChat.chatId
     if (
       desktopApi === undefined
       || chatId === undefined
@@ -585,7 +654,6 @@ function App() {
         return
       }
       acceptSnapshot(nextSnapshot)
-      setMessages([welcomeMessage])
       setNotice(null)
     } catch (error) {
       if (operationId === modelOperationRef.current) {
@@ -633,6 +701,134 @@ function App() {
         setRetryPending(false)
       }
     }
+  }
+
+  async function runSessionAction(
+    operation: () => Promise<ChatSessionState>,
+    fallbackMessage: string,
+  ): Promise<void> {
+    if (
+      desktopApi === undefined
+      || sessionMutationPendingRef.current
+      || streaming
+      || snapshot.status !== 'ready'
+      || chatState === null
+    ) {
+      throw new Error('Wait for the current Chat action to finish.')
+    }
+
+    sessionMutationPendingRef.current = true
+    setSessionMutationPending(true)
+    setNotice(null)
+    try {
+      acceptChatState(await operation())
+    } catch (error) {
+      const normalized = error instanceof Error
+        ? error
+        : new Error(fallbackMessage)
+      setNotice(errorNotice(normalized.message))
+      throw normalized
+    } finally {
+      sessionMutationPendingRef.current = false
+      setSessionMutationPending(false)
+    }
+  }
+
+  function createChat(): Promise<void> {
+    if (desktopApi === undefined) {
+      return Promise.reject(new Error('Desktop API is unavailable.'))
+    }
+    return runSessionAction(
+      () => desktopApi.createChat({ title: 'New Chat', mode: 'chat' }),
+      'Could not create the Chat.',
+    )
+  }
+
+  function openChat(chatId: string): Promise<void> {
+    if (desktopApi === undefined) {
+      return Promise.reject(new Error('Desktop API is unavailable.'))
+    }
+    return runSessionAction(
+      () => desktopApi.openChat(chatId),
+      'Could not open the Chat.',
+    )
+  }
+
+  function renameChat(chatId: string, title: string): Promise<void> {
+    if (desktopApi === undefined) {
+      return Promise.reject(new Error('Desktop API is unavailable.'))
+    }
+    return runSessionAction(
+      () => desktopApi.renameChat({ chatId, title }),
+      'Could not rename the Chat.',
+    )
+  }
+
+  function pinChat(chatId: string, pinned: boolean): Promise<void> {
+    if (desktopApi === undefined) {
+      return Promise.reject(new Error('Desktop API is unavailable.'))
+    }
+    return runSessionAction(
+      () => desktopApi.setChatPinned({ chatId, pinned }),
+      'Could not update the Chat pin.',
+    )
+  }
+
+  function archiveChat(chatId: string, archived: boolean): Promise<void> {
+    if (desktopApi === undefined) {
+      return Promise.reject(new Error('Desktop API is unavailable.'))
+    }
+    return runSessionAction(
+      () => desktopApi.setChatArchived({ chatId, archived }),
+      'Could not update the Chat archive.',
+    )
+  }
+
+  function deleteChat(chatId: string): Promise<void> {
+    if (desktopApi === undefined) {
+      return Promise.reject(new Error('Desktop API is unavailable.'))
+    }
+    return runSessionAction(
+      () => desktopApi.deleteChat(chatId),
+      'Could not delete the Chat.',
+    )
+  }
+
+  async function archiveChats(chatIds: string[]): Promise<void> {
+    if (desktopApi === undefined) {
+      throw new Error('Desktop API is unavailable.')
+    }
+    await runSessionAction(async () => {
+      let nextState: ChatSessionState | null = null
+      for (const chatId of chatIds) {
+        nextState = await desktopApi.setChatArchived({
+          chatId,
+          archived: true,
+        })
+        acceptChatState(nextState)
+      }
+      if (nextState === null) {
+        throw new Error('Select at least one Chat to archive.')
+      }
+      return nextState
+    }, 'Could not archive the selected Chats.')
+  }
+
+  async function deleteChats(chatIds: string[]): Promise<void> {
+    if (desktopApi === undefined) {
+      throw new Error('Desktop API is unavailable.')
+    }
+    await runSessionAction(async () => {
+      let nextState: ChatSessionState | null = null
+      for (const chatId of chatIds) {
+        nextState = await desktopApi.deleteChat(chatId)
+        acceptChatState(nextState)
+      }
+      if (nextState === null) {
+        throw new Error('Select at least one Chat to delete.')
+      }
+      return nextState
+    }, 'Could not delete the selected Chats.')
   }
 
   async function chooseFiles(): Promise<void> {
@@ -725,6 +921,7 @@ function App() {
       <ChatView
         callButtonRef={callButtonRef}
         canSend={canSend}
+        chatMode={chatState?.activeChat.mode ?? 'chat'}
         chatTitle={displayedChat}
         draft={draft}
         messages={messages}
@@ -776,17 +973,33 @@ function App() {
       }}
       sidebar={(
         <Sidebar
+          activeChatId={chatState?.activeChat.chatId}
           activeView={activeView}
-          chatTitle={displayedChat}
-          modelName={snapshot.modelName}
+          busyChatId={streaming ? chatState?.activeChat.chatId : undefined}
+          chats={chatState?.chats ?? []}
           modal={compactShell}
+          mutationPending={sessionUiPending}
           open={sidebarOpen}
-          projectCount={0}
+          projectCount={new Set(
+            (chatState?.chats ?? [])
+              .map((chat) => chat.projectId)
+              .filter((projectId) => projectId !== null),
+          ).size}
           searchOpen={searchOpen}
           searchQuery={searchQuery}
+          showArchived={showArchived}
+          onArchive={archiveChat}
+          onBulkArchive={archiveChats}
+          onBulkDelete={deleteChats}
+          onCreate={createChat}
+          onDelete={deleteChat}
           onNavigate={navigate}
+          onOpen={openChat}
+          onPin={pinChat}
+          onRename={renameChat}
           onSearchOpenChange={setSearchOpen}
           onSearchQueryChange={setSearchQuery}
+          onShowArchivedChange={setShowArchived}
         />
       )}
       panel={

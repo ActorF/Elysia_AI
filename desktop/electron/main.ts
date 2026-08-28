@@ -25,12 +25,17 @@ import {
   MAX_MESSAGE_LENGTH,
   codePointLength,
   hasNonBlankCodePoint,
+  trimProtocolBlankCharacters,
 } from './protocol.js'
 import { isTrustedRendererUrl as matchesRendererSource } from './renderer-source.js'
 import type {
+  ArchiveChatRequest,
   BackendEvent,
   ChatRequest,
+  CreateChatRequest,
   DesktopThemePreference,
+  PinChatRequest,
+  RenameChatRequest,
   SelectedFile,
 } from './contracts.js'
 
@@ -40,6 +45,7 @@ const moduleDirectory = path.dirname(
 const DEVELOPMENT_URL = 'http://localhost:5173'
 const CHARACTER_PANEL_WIDTH = 324
 const RENDERER_READY_TIMEOUT_MS = 10_000
+const MAX_CHAT_TITLE_LENGTH = 200
 const TRAY_ICON_DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAANsSURBVFhH1ZdJTBNhFMc5esPM2PkGL9WEEC9EExpjwgWNRI0XYyHRiyFCggcXpBRK9cBBo0IQ022IB1QE0YMh8SBHE7eiLGXvhqAnjy4cTLw8876ZNtP3TWtnggdf8juUeX3/t833lYqK/9UUSTnEZNZghvpsq7lcLlWR1QtMZlNMVqEEcSazAKtke2gMR1ZZ6d7JZNanSOyXhVhJqt3V9zFxGrNs01urfqOBy+Xh8AjwxHexMzT2X41JrMVJ1Tlq99UC/PwN9Qfrjb+xPqpR1FCcBrRDzd4aCPXf4wlgF/Cz8WyIagmGbTdX3nGyHSY7H8Bzg/D5OxA87YNexOuDgLeL0+PtgtvtN2Dm5TQXpjwdGQfPfg/gIlPNvOHC0Jmj+OfQLGyGZmEjNAefQnOwHpqHbHgeMuEEpMMJSIUXIBlZgLXIIqxGFuHLiw3YSn3nwuszGWg5ey4fD4tzuXYfoNrcsEW0nVi1HfGVyBKsRJchM5bmCWjXh4URMUmdpNr6e26xdJiAXfHl6DIsRVdgK/sDfE09YgKyCkIX+OFh4YgzN4s/843mZ450e/0cP9LUzeni9MDN9lvQWHdciMmRmEYSwBNMdMSFM1eO4tTHEZL6NS+un3YWTrLKt93cdqya+jglPwb9YhEdkFBrf8HMJ3yjJduOMy/adkruhFTkqlPCQwOceTkLtxhdhYXoKiSia9BZZPEoilTVYSSAt5zokEvAjvg8TyAgxLHGOJ6xFeJDHWy5HfG5aBKulp9AwHgD+K1n4aDCUOtAgfiYf1yYOYJtx8pR/KinzB2QWAtPwDiCRQdZ5ctmrhzFqY9TcPmNF5HvwSZ1QDABc9uxcurjBDx13W73jnwCVvcAgq+aeebYdurjCHof4KEgOMkqDLYNFizcI/8TYeZIB6cXrjTrXOYE4YjnhBATwVe/IAE0zIo64tIV2/bZWBJmYin4GEvBh1gaprU0xLUMvNcy8E7LwlstC5eag4I4k9QE1eZm1YXH/nHH4m+0dbhokYBl9Tmjt+JA213H4q95AtdI9eQWtDJFUidyX2isO2Zr5thyBCtH8cOFOxAv2Pxihk7mJLaJON66VKuk4VltEcg+EtPKqtzK9F/J6ishaBkoEkuWXDg7hoFwLFa/G0XYVP6c/xdm/Dcc0EdUQIPdVv8BMyc76Y4zJXMAAAAASUVORK5CYII='
 
 let mainWindow: BrowserWindow | null = null
@@ -133,6 +139,90 @@ function parseChatRequest(value: unknown): ChatRequest {
   }
 }
 
+function parseChatId(value: unknown): string {
+  if (
+    typeof value !== 'string'
+    || !hasNonBlankCodePoint(value)
+    || codePointLength(value) > MAX_IDENTIFIER_LENGTH
+  ) {
+    throw new Error('Chat id is invalid.')
+  }
+  return value
+}
+
+function parseChatTitle(value: unknown): string {
+  if (
+    typeof value !== 'string'
+    || !hasNonBlankCodePoint(value)
+    || codePointLength(value) > MAX_CHAT_TITLE_LENGTH
+  ) {
+    throw new Error('Chat title is invalid.')
+  }
+  return trimProtocolBlankCharacters(value)
+}
+
+function parseObject(
+  value: unknown,
+  fields: readonly string[],
+  context: string,
+): Record<string, unknown> {
+  if (
+    typeof value !== 'object'
+    || value === null
+    || Array.isArray(value)
+    || Object.keys(value).length !== fields.length
+    || fields.some((field) => !Object.hasOwn(value, field))
+  ) {
+    throw new Error(`${context} is invalid.`)
+  }
+  return value as Record<string, unknown>
+}
+
+function parseCreateChatRequest(value: unknown): CreateChatRequest {
+  const request = parseObject(value, ['title', 'mode'], 'Create Chat request')
+  if (request.mode !== 'chat' && request.mode !== 'work') {
+    throw new Error('Chat mode is invalid.')
+  }
+  return {
+    title: parseChatTitle(request.title),
+    mode: request.mode,
+  }
+}
+
+function parseRenameChatRequest(value: unknown): RenameChatRequest {
+  const request = parseObject(value, ['chatId', 'title'], 'Rename Chat request')
+  return {
+    chatId: parseChatId(request.chatId),
+    title: parseChatTitle(request.title),
+  }
+}
+
+function parsePinChatRequest(value: unknown): PinChatRequest {
+  const request = parseObject(value, ['chatId', 'pinned'], 'Pin Chat request')
+  if (typeof request.pinned !== 'boolean') {
+    throw new Error('Chat pin state is invalid.')
+  }
+  return {
+    chatId: parseChatId(request.chatId),
+    pinned: request.pinned,
+  }
+}
+
+function parseArchiveChatRequest(value: unknown): ArchiveChatRequest {
+  const request = parseObject(
+    value,
+    ['chatId', 'archived'],
+    'Archive Chat request',
+  )
+  if (typeof request.archived !== 'boolean') {
+    throw new Error('Chat archive state is invalid.')
+  }
+  return {
+    chatId: parseChatId(request.chatId),
+    archived: request.archived,
+  }
+}
+
 function parseThemePreference(value: unknown): DesktopThemePreference {
   if (value === 'system' || value === 'light' || value === 'dark') {
     return value
@@ -198,6 +288,65 @@ function registerIpcHandlers(): void {
     (event, request: unknown) => {
       assertTrustedSender(event)
       return requireBackend().beginChat(parseChatRequest(request))
+    },
+  )
+
+  ipcMain.handle(
+    'chat:list',
+    (event, includeArchived: unknown) => {
+      assertTrustedSender(event)
+      if (typeof includeArchived !== 'boolean') {
+        throw new Error('Archived Chat filter is invalid.')
+      }
+      return requireBackend().listChats(includeArchived)
+    },
+  )
+
+  ipcMain.handle(
+    'chat:create',
+    (event, request: unknown) => {
+      assertTrustedSender(event)
+      return requireBackend().createChat(parseCreateChatRequest(request))
+    },
+  )
+
+  ipcMain.handle(
+    'chat:open',
+    (event, chatId: unknown) => {
+      assertTrustedSender(event)
+      return requireBackend().openChat(parseChatId(chatId))
+    },
+  )
+
+  ipcMain.handle(
+    'chat:rename',
+    (event, request: unknown) => {
+      assertTrustedSender(event)
+      return requireBackend().renameChat(parseRenameChatRequest(request))
+    },
+  )
+
+  ipcMain.handle(
+    'chat:pin',
+    (event, request: unknown) => {
+      assertTrustedSender(event)
+      return requireBackend().pinChat(parsePinChatRequest(request))
+    },
+  )
+
+  ipcMain.handle(
+    'chat:archive',
+    (event, request: unknown) => {
+      assertTrustedSender(event)
+      return requireBackend().archiveChat(parseArchiveChatRequest(request))
+    },
+  )
+
+  ipcMain.handle(
+    'chat:delete',
+    (event, chatId: unknown) => {
+      assertTrustedSender(event)
+      return requireBackend().deleteChat(parseChatId(chatId))
     },
   )
 

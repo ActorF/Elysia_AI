@@ -5,11 +5,16 @@
 import { contextBridge, ipcRenderer } from 'electron'
 
 import type {
+  ArchiveChatRequest,
   BackendEvent,
   BackendSnapshot,
   ChatRequest,
+  ChatSessionState,
+  CreateChatRequest,
   DesktopApi,
   DesktopThemePreference,
+  PinChatRequest,
+  RenameChatRequest,
   SelectedFile,
 } from './contracts.js'
 
@@ -40,6 +45,48 @@ const desktopApi: DesktopApi = {
       'backend:send-message',
       request,
     ) as Promise<{ requestId: string }>,
+
+  listChats: (includeArchived: boolean) =>
+    ipcRenderer.invoke(
+      'chat:list',
+      includeArchived,
+    ) as Promise<ChatSessionState>,
+
+  createChat: (request: CreateChatRequest) =>
+    ipcRenderer.invoke(
+      'chat:create',
+      request,
+    ) as Promise<ChatSessionState>,
+
+  openChat: (chatId: string) =>
+    ipcRenderer.invoke(
+      'chat:open',
+      chatId,
+    ) as Promise<ChatSessionState>,
+
+  renameChat: (request: RenameChatRequest) =>
+    ipcRenderer.invoke(
+      'chat:rename',
+      request,
+    ) as Promise<ChatSessionState>,
+
+  setChatPinned: (request: PinChatRequest) =>
+    ipcRenderer.invoke(
+      'chat:pin',
+      request,
+    ) as Promise<ChatSessionState>,
+
+  setChatArchived: (request: ArchiveChatRequest) =>
+    ipcRenderer.invoke(
+      'chat:archive',
+      request,
+    ) as Promise<ChatSessionState>,
+
+  deleteChat: (chatId: string) =>
+    ipcRenderer.invoke(
+      'chat:delete',
+      chatId,
+    ) as Promise<ChatSessionState>,
 
   selectModel: (modelName: string) =>
     ipcRenderer.invoke(

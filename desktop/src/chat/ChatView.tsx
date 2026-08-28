@@ -24,6 +24,7 @@ import { Icon } from '../design-system/Icon.tsx'
 interface ChatViewProps {
   callButtonRef: RefObject<HTMLButtonElement | null>
   canSend: boolean
+  chatMode: 'chat' | 'work'
   chatTitle: string
   draft: string
   messages: ChatMessage[]
@@ -73,6 +74,7 @@ function statusLabel(snapshot: BackendSnapshot): string {
 export function ChatView({
   callButtonRef,
   canSend,
+  chatMode,
   chatTitle,
   draft,
   messages,
@@ -124,8 +126,8 @@ export function ChatView({
             <Icon name="menu" />
           </button>
           <div className="chat-heading">
-            <strong title={chatTitle}>{chatTitle}</strong>
-            <span>Chat mode</span>
+            <strong id="chat-title" title={chatTitle}>{chatTitle}</strong>
+            <span>{chatMode === 'work' ? 'Work mode' : 'Chat mode'}</span>
           </div>
         </div>
         <div className="connection-controls">

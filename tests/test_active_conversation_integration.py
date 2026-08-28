@@ -11,6 +11,7 @@ import pytest
 from chats import (
     ChatId,
     ChatMessageRole,
+    ChatNotFoundError,
     JsonChatRepository,
     create_chat_message,
 )
@@ -253,6 +254,38 @@ def test_project_mode_and_instructions_enter_only_active_prompt(
         "model_name": "fake-model",
         "project": None,
     }
+
+
+def test_brain_exposes_guarded_chat_session_actions(
+    tmp_path: Path,
+) -> None:
+    model = RoutedChatModel()
+    brain, _memory, _chats, projects = _brain(tmp_path, model)
+    project = projects.create_project(name="Brain Project")
+    chat = brain.create_chat(
+        title="Original",
+        mode="work",
+        project_id=project.project_id,
+    )
+    brain.chat(chat.chat_id, "Keep this turn")
+    stored_messages = brain.get_chat(chat.chat_id).messages
+
+    renamed = brain.rename_chat(chat.chat_id, "Renamed")
+    pinned = brain.pin_chat(chat.chat_id)
+    archived = brain.archive_chat(chat.chat_id)
+
+    assert renamed.title == "Renamed"
+    assert pinned.is_pinned is True
+    assert archived.is_archived is True
+    assert brain.get_chat(chat.chat_id).messages == stored_messages
+    assert brain.get_chat(chat.chat_id).project_id == project.project_id
+    assert projects.get_project(project.project_id) == project
+
+    brain.delete_chat(chat.chat_id)
+
+    with pytest.raises(ChatNotFoundError):
+        brain.get_chat(chat.chat_id)
+    assert projects.get_project(project.project_id) == project
 
 
 def test_active_chat_loads_only_its_readable_memory_scopes(
