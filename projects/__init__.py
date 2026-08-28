@@ -3,6 +3,9 @@
 from chats.domain import ProjectId
 
 from .domain import (
+    MAX_PROJECT_INSTRUCTIONS_LENGTH,
+    MAX_PROJECT_NAME_LENGTH,
+    MAX_WORKSPACE_PATH_LENGTH,
     PROJECT_SCHEMA_VERSION,
     Project,
     ProjectSettings,
@@ -14,6 +17,7 @@ from .exceptions import (
     ChatProjectConflictError,
     ProjectAlreadyExistsError,
     ProjectArchivedError,
+    ProjectChatBusyError,
     ProjectDataCorruptionError,
     ProjectHasChatsError,
     ProjectNotFoundError,
@@ -33,11 +37,15 @@ from .service import (
 __all__ = [
     "PROJECT_SCHEMA_VERSION",
     "PROJECT_STORE_SCHEMA_VERSION",
+    "MAX_PROJECT_INSTRUCTIONS_LENGTH",
+    "MAX_PROJECT_NAME_LENGTH",
+    "MAX_WORKSPACE_PATH_LENGTH",
     "ChatProjectConflictError",
     "JsonProjectRepository",
     "Project",
     "ProjectAlreadyExistsError",
     "ProjectArchivedError",
+    "ProjectChatBusyError",
     "ProjectChatService",
     "ProjectDataCorruptionError",
     "ProjectDeletionPolicy",

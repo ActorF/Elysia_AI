@@ -24,9 +24,16 @@ from chats import (
     ChatSession,
     ChatSessionMeta,
     ConversationMode,
+    ProjectId,
 )
 from config.settings import SETTINGS
 from core import Brain, ChatBusyError
+from projects import (
+    Project,
+    ProjectArchivedError,
+    ProjectChatBusyError,
+    ProjectNotFoundError,
+)
 from desktop_protocol import (
     MAX_MESSAGE_LENGTH,
     MAX_PROTOCOL_FRAME_BYTES,
@@ -56,6 +63,7 @@ SERVER_VERSION = "0.1.0"
 SERVER_CAPABILITIES = (
     "chat.sessions",
     "chat.stream",
+    "project.management",
     "stream",
     "progress",
     "event",
@@ -152,6 +160,7 @@ class DesktopBackend:
         self._authenticated = False
         self._brain: Brain | None = None
         self._active_chat: ChatSession | None = None
+        self._active_project_id: ProjectId | None = None
         self._models: tuple[str, ...] = ()
         self._seen_request_ids: set[str] = set()
         self._request_id_order: deque[str] = deque()
@@ -253,6 +262,20 @@ class DesktopBackend:
                 self._archive_chat(request_id, params)
             elif method == "chat.delete":
                 self._delete_chat(request_id, params)
+            elif method == "project.list":
+                self._list_projects(request_id)
+            elif method == "project.create":
+                self._create_project(request_id, params)
+            elif method == "project.open":
+                self._open_project(request_id, params)
+            elif method == "project.update":
+                self._update_project(request_id, params)
+            elif method == "project.workspace":
+                self._set_project_workspace(request_id, params)
+            elif method == "project.archive":
+                self._archive_project(request_id, params)
+            elif method == "project.chat.move":
+                self._move_project_chat(request_id, params)
             elif method == "request.cancel":
                 raise ProtocolValidationError(
                     "request.not_cancellable",
@@ -269,6 +292,17 @@ class DesktopBackend:
             self._emit_error(request_id, "chat.busy", str(error))
         except ChatNotFoundError as error:
             self._emit_error(request_id, "chat.not_found", str(error))
+        except ProjectChatBusyError as error:
+            self._emit_error(
+                request_id,
+                "project.chat_busy",
+                str(error),
+                retryable=True,
+            )
+        except ProjectArchivedError as error:
+            self._emit_error(request_id, "project.archived", str(error))
+        except ProjectNotFoundError as error:
+            self._emit_error(request_id, "project.not_found", str(error))
         except Exception:
             logger.exception(
                 "Desktop request failed: method=%s request_id=%s.",
@@ -360,6 +394,7 @@ class DesktopBackend:
             )
             self._brain = self._brain_factory()
             self._active_chat = self._resolve_active_chat(self._brain)
+            self._active_project_id = self._active_chat.project_id
             self._emit_progress(
                 request_id,
                 "backend.initialize",
@@ -575,6 +610,201 @@ class DesktopBackend:
             self._active_chat = self._resolve_active_chat(self._brain)
 
         self._emit_session_response(request_id, include_archived=True)
+
+    @staticmethod
+    def _serialize_project_summary(
+        project: Project,
+        *,
+        chat_count: int,
+    ) -> JsonObject:
+        """Map one Project aggregate to the stable desktop shape."""
+
+        return {
+            "projectId": str(project.project_id),
+            "name": project.name,
+            "createdAt": project.created_at.isoformat(),
+            "updatedAt": project.updated_at.isoformat(),
+            "customInstructions": project.settings.custom_instructions,
+            "workspacePath": (
+                None
+                if project.workspace_binding is None
+                else project.workspace_binding.root_path
+            ),
+            "archived": project.is_archived,
+            "chatCount": chat_count,
+        }
+
+    def _project_state_result(self) -> JsonObject:
+        """Return all Projects together with one matching complete Chat state."""
+
+        if self._brain is None or self._active_chat is None:
+            raise RuntimeError("Backend is not initialized.")
+
+        chat_state = self._session_result(include_archived=True)
+        projects = self._brain.list_projects(include_archived=True)
+        project_ids = {project.project_id for project in projects}
+
+        if self._active_project_id not in project_ids:
+            active_chat_project_id = self._active_chat.project_id
+            if active_chat_project_id in project_ids:
+                self._active_project_id = active_chat_project_id
+            else:
+                active_projects = tuple(
+                    project
+                    for project in projects
+                    if not project.is_archived
+                )
+                selected = (
+                    active_projects[0]
+                    if active_projects
+                    else projects[0] if projects else None
+                )
+                self._active_project_id = (
+                    None if selected is None else selected.project_id
+                )
+
+        chat_counts = {
+            str(project.project_id): 0
+            for project in projects
+        }
+        raw_chats = cast(list[JsonObject], chat_state["chats"])
+        for chat in raw_chats:
+            project_id = cast(str | None, chat["projectId"])
+            if project_id in chat_counts:
+                chat_counts[project_id] += 1
+
+        serialized_projects = [
+            self._serialize_project_summary(
+                project,
+                chat_count=chat_counts[str(project.project_id)],
+            )
+            for project in projects
+        ]
+        active_project = next(
+            (
+                project
+                for project in serialized_projects
+                if project["projectId"] == self._active_project_id
+            ),
+            None,
+        )
+        return {
+            "activeProject": active_project,
+            "projects": serialized_projects,
+            "chatState": chat_state,
+        }
+
+    def _emit_project_response(self, request_id: str) -> None:
+        """Emit the canonical result shared by every Project operation."""
+
+        self._emit_response(request_id, self._project_state_result())
+
+    def _list_projects(self, request_id: str) -> None:
+        """List every Project and select one stable active Project."""
+
+        self._emit_project_response(request_id)
+
+    def _create_project(self, request_id: str, params: JsonObject) -> None:
+        """Create and select one first-class Project."""
+
+        if self._brain is None:
+            raise RuntimeError("Backend is not initialized.")
+
+        project = self._brain.create_project(
+            name=cast(str, params["name"]),
+            custom_instructions=cast(
+                str | None,
+                params["customInstructions"],
+            ),
+        )
+        self._active_project_id = project.project_id
+        self._emit_project_response(request_id)
+
+    def _open_project(self, request_id: str, params: JsonObject) -> None:
+        """Select an existing Project without changing persisted state."""
+
+        if self._brain is None:
+            raise RuntimeError("Backend is not initialized.")
+
+        project = self._brain.get_project(
+            ProjectId(cast(str, params["projectId"]))
+        )
+        self._active_project_id = project.project_id
+        self._emit_project_response(request_id)
+
+    def _update_project(self, request_id: str, params: JsonObject) -> None:
+        """Atomically replace one active Project's editable text fields."""
+
+        if self._brain is None:
+            raise RuntimeError("Backend is not initialized.")
+
+        project_id = ProjectId(cast(str, params["projectId"]))
+        self._brain.update_project(
+            project_id,
+            name=cast(str, params["name"]),
+            custom_instructions=cast(
+                str | None,
+                params["customInstructions"],
+            ),
+        )
+        self._active_project_id = project_id
+        self._emit_project_response(request_id)
+
+    def _set_project_workspace(
+        self,
+        request_id: str,
+        params: JsonObject,
+    ) -> None:
+        """Bind, replace, or clear one active Project workspace path."""
+
+        if self._brain is None:
+            raise RuntimeError("Backend is not initialized.")
+
+        project_id = ProjectId(cast(str, params["projectId"]))
+        workspace_path = cast(str | None, params["workspacePath"])
+        if workspace_path is None:
+            self._brain.unbind_workspace(project_id)
+        else:
+            self._brain.bind_workspace(project_id, workspace_path)
+        self._active_project_id = project_id
+        self._emit_project_response(request_id)
+
+    def _archive_project(self, request_id: str, params: JsonObject) -> None:
+        """Set one Project's archive state without changing its Chats."""
+
+        if self._brain is None:
+            raise RuntimeError("Backend is not initialized.")
+
+        project_id = ProjectId(cast(str, params["projectId"]))
+        if cast(bool, params["archived"]):
+            self._brain.archive_project(project_id)
+        else:
+            self._brain.restore_project(project_id)
+        self._active_project_id = project_id
+        self._emit_project_response(request_id)
+
+    def _move_project_chat(
+        self,
+        request_id: str,
+        params: JsonObject,
+    ) -> None:
+        """Move one idle Chat into, between, or out of Projects."""
+
+        if self._brain is None:
+            raise RuntimeError("Backend is not initialized.")
+
+        raw_project_id = cast(str | None, params["projectId"])
+        self._brain.move_chat(
+            ChatId(cast(str, params["chatId"])),
+            (
+                None
+                if raw_project_id is None
+                else ProjectId(raw_project_id)
+            ),
+        )
+        if raw_project_id is not None:
+            self._active_project_id = ProjectId(raw_project_id)
+        self._emit_project_response(request_id)
 
     def _stream_chat(
         self,

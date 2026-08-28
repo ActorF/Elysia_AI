@@ -8,6 +8,7 @@ are rejected before application services are invoked.
 
 from __future__ import annotations
 
+import re
 from typing import Any, Final, Literal, TypedDict, cast
 
 PROTOCOL_NAME: Final = "elysia.desktop"
@@ -15,6 +16,8 @@ PROTOCOL_VERSION: Final = 1
 MAX_IDENTIFIER_LENGTH: Final = 128
 MAX_METHOD_LENGTH: Final = 96
 MAX_MESSAGE_LENGTH: Final = 1_000_000
+MAX_PROJECT_NAME_LENGTH: Final = 200
+MAX_WORKSPACE_PATH_LENGTH: Final = 32_767
 MAX_PROTOCOL_FRAME_BYTES: Final = 16_777_216
 MIN_SESSION_TOKEN_LENGTH: Final = 32
 MAX_SESSION_TOKEN_LENGTH: Final = 512
@@ -37,6 +40,7 @@ _PROTOCOL_BLANK_CHARACTERS: Final = frozenset(
     )
     for code_point in range(start, end + 1)
 )
+_PROJECT_ID_PATTERN: Final = re.compile(r"^project_[A-Za-z0-9_-]+$")
 
 ProtocolMethod = Literal[
     "handshake",
@@ -49,6 +53,13 @@ ProtocolMethod = Literal[
     "chat.pin",
     "chat.archive",
     "chat.delete",
+    "project.list",
+    "project.create",
+    "project.open",
+    "project.update",
+    "project.workspace",
+    "project.archive",
+    "project.chat.move",
     "request.cancel",
     "permission.respond",
     "shutdown",
@@ -64,6 +75,13 @@ SUPPORTED_METHODS: Final[tuple[ProtocolMethod, ...]] = (
     "chat.pin",
     "chat.archive",
     "chat.delete",
+    "project.list",
+    "project.create",
+    "project.open",
+    "project.update",
+    "project.workspace",
+    "project.archive",
+    "project.chat.move",
     "request.cancel",
     "permission.respond",
     "shutdown",
@@ -153,6 +171,48 @@ class ChatArchiveParams(TypedDict):
 
     chatId: str
     archived: bool
+
+
+class ProjectCreateParams(TypedDict):
+    """Create one first-class Project with optional instructions."""
+
+    name: str
+    customInstructions: str | None
+
+
+class ProjectIdParams(TypedDict):
+    """Identify one Project for selection."""
+
+    projectId: str
+
+
+class ProjectUpdateParams(TypedDict):
+    """Replace the editable text fields of one Project."""
+
+    projectId: str
+    name: str
+    customInstructions: str | None
+
+
+class ProjectWorkspaceParams(TypedDict):
+    """Bind, replace, or clear one Project workspace path."""
+
+    projectId: str
+    workspacePath: str | None
+
+
+class ProjectArchiveParams(TypedDict):
+    """Set one Project's archived state explicitly."""
+
+    projectId: str
+    archived: bool
+
+
+class ProjectChatMoveParams(TypedDict):
+    """Set one Chat's Project relationship or clear it."""
+
+    chatId: str
+    projectId: str | None
 
 
 class CancelParams(TypedDict, total=False):
@@ -300,6 +360,27 @@ class ChatStateResult(TypedDict):
     chats: list[ChatSessionSummary]
 
 
+class ProjectSummary(TypedDict):
+    """Expose one complete lightweight Project aggregate."""
+
+    projectId: str
+    name: str
+    createdAt: str
+    updatedAt: str
+    customInstructions: str | None
+    workspacePath: str | None
+    archived: bool
+    chatCount: int
+
+
+class ProjectStateResult(TypedDict):
+    """Return canonical Project selection, Projects, and Chat state."""
+
+    activeProject: ProjectSummary | None
+    projects: list[ProjectSummary]
+    chatState: ChatStateResult
+
+
 ServerMessage = (
     SuccessResponse
     | ErrorResponse
@@ -384,6 +465,63 @@ def _require_identifier(
         key,
         context,
         maximum=MAX_IDENTIFIER_LENGTH,
+    )
+
+
+def _require_project_identifier(
+    value: JsonObject,
+    key: str,
+    context: str,
+) -> str:
+    raw = _require_identifier(value, key, context)
+    if _PROJECT_ID_PATTERN.fullmatch(raw) is None:
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.{key} must use the project_<id> format.",
+        )
+    return raw
+
+
+def _has_non_blank_character(value: str) -> bool:
+    return any(
+        character not in _PROTOCOL_BLANK_CHARACTERS
+        for character in value
+    )
+
+
+def _require_non_blank_string(
+    value: JsonObject,
+    key: str,
+    context: str,
+    *,
+    maximum: int,
+    error_code: str,
+) -> str:
+    raw = _require_string(value, key, context, maximum=maximum)
+    if not _has_non_blank_character(raw):
+        raise ProtocolValidationError(
+            error_code,
+            f"{context}.{key} cannot be blank.",
+        )
+    return raw
+
+
+def _require_nullable_non_blank_string(
+    value: JsonObject,
+    key: str,
+    context: str,
+    *,
+    maximum: int,
+    error_code: str,
+) -> str | None:
+    if value.get(key) is None:
+        return None
+    return _require_non_blank_string(
+        value,
+        key,
+        context,
+        maximum=maximum,
+        error_code=error_code,
     )
 
 
@@ -565,6 +703,87 @@ def _validate_chat_archive_params(params: JsonObject) -> None:
     _require_boolean(params, "archived", context)
 
 
+def _validate_project_create_params(params: JsonObject) -> None:
+    context = "project.create params"
+    _require_fields(params, {"name", "customInstructions"}, context)
+    _require_non_blank_string(
+        params,
+        "name",
+        context,
+        maximum=MAX_PROJECT_NAME_LENGTH,
+        error_code="protocol.invalid_params",
+    )
+    _require_nullable_non_blank_string(
+        params,
+        "customInstructions",
+        context,
+        maximum=MAX_MESSAGE_LENGTH,
+        error_code="protocol.invalid_params",
+    )
+
+
+def _validate_project_id_params(
+    params: JsonObject,
+    *,
+    method: str,
+) -> None:
+    context = f"{method} params"
+    _require_fields(params, {"projectId"}, context)
+    _require_project_identifier(params, "projectId", context)
+
+
+def _validate_project_update_params(params: JsonObject) -> None:
+    context = "project.update params"
+    _require_fields(
+        params,
+        {"projectId", "name", "customInstructions"},
+        context,
+    )
+    _require_project_identifier(params, "projectId", context)
+    _require_non_blank_string(
+        params,
+        "name",
+        context,
+        maximum=MAX_PROJECT_NAME_LENGTH,
+        error_code="protocol.invalid_params",
+    )
+    _require_nullable_non_blank_string(
+        params,
+        "customInstructions",
+        context,
+        maximum=MAX_MESSAGE_LENGTH,
+        error_code="protocol.invalid_params",
+    )
+
+
+def _validate_project_workspace_params(params: JsonObject) -> None:
+    context = "project.workspace params"
+    _require_fields(params, {"projectId", "workspacePath"}, context)
+    _require_project_identifier(params, "projectId", context)
+    _require_nullable_non_blank_string(
+        params,
+        "workspacePath",
+        context,
+        maximum=MAX_WORKSPACE_PATH_LENGTH,
+        error_code="protocol.invalid_params",
+    )
+
+
+def _validate_project_archive_params(params: JsonObject) -> None:
+    context = "project.archive params"
+    _require_fields(params, {"projectId", "archived"}, context)
+    _require_project_identifier(params, "projectId", context)
+    _require_boolean(params, "archived", context)
+
+
+def _validate_project_chat_move_params(params: JsonObject) -> None:
+    context = "project.chat.move params"
+    _require_fields(params, {"chatId", "projectId"}, context)
+    _require_identifier(params, "chatId", context)
+    if params.get("projectId") is not None:
+        _require_project_identifier(params, "projectId", context)
+
+
 def _validate_cancel_params(params: JsonObject) -> None:
     _require_fields(
         params,
@@ -642,6 +861,20 @@ def parse_client_request(value: object) -> ClientRequest:
         _validate_chat_pin_params(params)
     elif method == "chat.archive":
         _validate_chat_archive_params(params)
+    elif method == "project.list":
+        _require_fields(params, set(), "project.list params")
+    elif method == "project.create":
+        _validate_project_create_params(params)
+    elif method == "project.open":
+        _validate_project_id_params(params, method=method)
+    elif method == "project.update":
+        _validate_project_update_params(params)
+    elif method == "project.workspace":
+        _validate_project_workspace_params(params)
+    elif method == "project.archive":
+        _validate_project_archive_params(params)
+    elif method == "project.chat.move":
+        _validate_project_chat_move_params(params)
     elif method == "request.cancel":
         _validate_cancel_params(params)
     elif method == "permission.respond":
@@ -847,6 +1080,138 @@ def _validate_chat_state_result(value: object) -> ChatStateResult:
     return cast(ChatStateResult, result)
 
 
+def _validate_project_summary(
+    value: object,
+    *,
+    context: str,
+) -> ProjectSummary:
+    project = _as_object(value, context)
+    _require_fields(
+        project,
+        {
+            "projectId",
+            "name",
+            "createdAt",
+            "updatedAt",
+            "customInstructions",
+            "workspacePath",
+            "archived",
+            "chatCount",
+        },
+        context,
+    )
+    _require_project_identifier(project, "projectId", context)
+    _require_non_blank_string(
+        project,
+        "name",
+        context,
+        maximum=MAX_PROJECT_NAME_LENGTH,
+        error_code="protocol.invalid_message",
+    )
+    _require_string(project, "createdAt", context, maximum=128)
+    _require_string(project, "updatedAt", context, maximum=128)
+    _require_nullable_non_blank_string(
+        project,
+        "customInstructions",
+        context,
+        maximum=MAX_MESSAGE_LENGTH,
+        error_code="protocol.invalid_message",
+    )
+    _require_nullable_non_blank_string(
+        project,
+        "workspacePath",
+        context,
+        maximum=MAX_WORKSPACE_PATH_LENGTH,
+        error_code="protocol.invalid_message",
+    )
+    _require_boolean(project, "archived", context)
+    chat_count = _require_integer(project, "chatCount", context)
+    if chat_count < 0:
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.chatCount cannot be negative.",
+        )
+    return cast(ProjectSummary, project)
+
+
+def _validate_project_state_result(value: object) -> ProjectStateResult:
+    result = _as_object(value, "project state result")
+    _require_fields(
+        result,
+        {"activeProject", "projects", "chatState"},
+        "project state result",
+    )
+    raw_projects = result.get("projects")
+    if not isinstance(raw_projects, list):
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            "project state result.projects must be an array.",
+        )
+
+    projects: list[ProjectSummary] = []
+    projects_by_id: dict[str, ProjectSummary] = {}
+    for position, raw_project in enumerate(raw_projects):
+        project = _validate_project_summary(
+            raw_project,
+            context=f"project state result.projects[{position}]",
+        )
+        project_id = project["projectId"]
+        if project_id in projects_by_id:
+            raise ProtocolValidationError(
+                "protocol.invalid_message",
+                "project state result.projects must have unique "
+                "projectId values.",
+            )
+        projects.append(project)
+        projects_by_id[project_id] = project
+
+    raw_active_project = result.get("activeProject")
+    active_project: ProjectSummary | None = None
+    if raw_active_project is not None:
+        active_project = _validate_project_summary(
+            raw_active_project,
+            context="project state result.activeProject",
+        )
+        matching_project = projects_by_id.get(active_project["projectId"])
+        if matching_project is None:
+            raise ProtocolValidationError(
+                "protocol.invalid_message",
+                "project state result.activeProject must appear in projects.",
+            )
+        if active_project != matching_project:
+            raise ProtocolValidationError(
+                "protocol.invalid_message",
+                "project state result.activeProject must match projects.",
+            )
+
+    chat_state = _validate_chat_state_result(result["chatState"])
+    observed_chat_counts = {
+        project_id: 0 for project_id in projects_by_id
+    }
+    for chat in chat_state["chats"]:
+        chat_project_id = chat["projectId"]
+        if chat_project_id is None:
+            continue
+        if chat_project_id not in projects_by_id:
+            raise ProtocolValidationError(
+                "protocol.invalid_message",
+                "project state result contains a Chat whose projectId "
+                "is absent from projects.",
+            )
+        observed_chat_counts[chat_project_id] += 1
+
+    for project in projects:
+        project_id = project["projectId"]
+        if project["chatCount"] != observed_chat_counts[project_id]:
+            raise ProtocolValidationError(
+                "protocol.invalid_message",
+                "project state result.project chatCount must match "
+                "chatState.chats.",
+            )
+
+    return cast(ProjectStateResult, result)
+
+
 def _validate_success_result(result: JsonObject) -> None:
     fields = set(result)
     if fields == {"protocol", "server", "capabilities"}:
@@ -886,6 +1251,9 @@ def _validate_success_result(result: JsonObject) -> None:
         return
     if fields == {"activeChat", "chats"}:
         _validate_chat_state_result(result)
+        return
+    if fields == {"activeProject", "projects", "chatState"}:
+        _validate_project_state_result(result)
         return
     if fields == {"stopped"} and result["stopped"] is True:
         return

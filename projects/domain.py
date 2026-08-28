@@ -10,22 +10,39 @@ from uuid import uuid4
 from chats.domain import ProjectId
 
 PROJECT_SCHEMA_VERSION: Final[Literal[1]] = 1
+MAX_PROJECT_NAME_LENGTH: Final = 200
+MAX_PROJECT_INSTRUCTIONS_LENGTH: Final = 1_000_000
+MAX_WORKSPACE_PATH_LENGTH: Final = 32_767
 
 _PROJECT_ID_PATTERN = re.compile(r"^project_[A-Za-z0-9_-]+$")
 
 
-def _validate_non_empty_text(value: object, field_name: str) -> None:
+def _validate_non_empty_text(
+    value: object,
+    field_name: str,
+    *,
+    maximum: int | None = None,
+) -> None:
     """Require one non-empty human-readable string."""
 
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{field_name} must be a non-empty string.")
+    if maximum is not None and len(value) > maximum:
+        raise ValueError(
+            f"{field_name} cannot exceed {maximum} characters."
+        )
 
 
-def _validate_optional_text(value: object, field_name: str) -> None:
+def _validate_optional_text(
+    value: object,
+    field_name: str,
+    *,
+    maximum: int | None = None,
+) -> None:
     """Require either None or one non-empty string."""
 
     if value is not None:
-        _validate_non_empty_text(value, field_name)
+        _validate_non_empty_text(value, field_name, maximum=maximum)
 
 
 def _validate_timestamp(value: object, field_name: str) -> None:
@@ -76,6 +93,7 @@ class ProjectSettings:
         _validate_optional_text(
             self.custom_instructions,
             "custom_instructions",
+            maximum=MAX_PROJECT_INSTRUCTIONS_LENGTH,
         )
 
 
@@ -88,7 +106,11 @@ class WorkspaceBinding:
     def __post_init__(self) -> None:
         """Accept absolute Windows or POSIX paths without touching disk."""
 
-        _validate_non_empty_text(self.root_path, "root_path")
+        _validate_non_empty_text(
+            self.root_path,
+            "root_path",
+            maximum=MAX_WORKSPACE_PATH_LENGTH,
+        )
 
         if self.root_path != self.root_path.strip():
             raise ValueError(
@@ -131,7 +153,11 @@ class Project:
             )
 
         _validate_project_id(self.project_id)
-        _validate_non_empty_text(self.name, "name")
+        _validate_non_empty_text(
+            self.name,
+            "name",
+            maximum=MAX_PROJECT_NAME_LENGTH,
+        )
         _validate_timestamp(self.created_at, "created_at")
         _validate_timestamp(self.updated_at, "updated_at")
 

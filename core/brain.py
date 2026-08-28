@@ -31,7 +31,7 @@ from memory import (
     RetrievedMemory,
     ShortTermMemory,
 )
-from projects import Project
+from projects import Project, ProjectChatService
 
 from .active_conversation import ActiveConversationService
 from .chat_model import ChatMessage, ChatModel
@@ -157,6 +157,7 @@ class Brain:
         active_conversation_service: (
             ActiveConversationService | None
         ) = None,
+        project_service: ProjectChatService | None = None,
     ) -> None:
         """Inject the model, persistence, retrieval, and summarization services.
 
@@ -193,6 +194,7 @@ class Brain:
         self._active_conversation_service = (
             active_conversation_service
         )
+        self._project_service = project_service
 
         logger.info(
             "Brain initialized with model: %s",
@@ -242,6 +244,162 @@ class Brain:
             mode=mode,
             model_name=self.model_name,
             project_id=project_id,
+        )
+
+    def create_project(
+        self,
+        *,
+        name: str,
+        custom_instructions: str | None = None,
+    ) -> Project:
+        """Create one Project through the Project application service."""
+
+        return self._require_project_service().create_project(
+            name=name,
+            custom_instructions=custom_instructions,
+        )
+
+    def list_projects(
+        self,
+        *,
+        include_archived: bool = False,
+    ) -> tuple[Project, ...]:
+        """List Projects through the application service boundary."""
+
+        return self._require_project_service().list_projects(
+            include_archived=include_archived,
+        )
+
+    def get_project(self, project_id: ProjectId) -> Project:
+        """Load one Project through the application service boundary."""
+
+        return self._require_project_service().get_project(project_id)
+
+    def rename_project(
+        self,
+        project_id: ProjectId,
+        new_name: str,
+    ) -> Project:
+        """Rename an active Project when its linked Chats are idle."""
+
+        return self._require_project_service().rename_project(
+            project_id,
+            new_name,
+        )
+
+    def update_project(
+        self,
+        project_id: ProjectId,
+        *,
+        name: str,
+        custom_instructions: str | None,
+    ) -> Project:
+        """Atomically update one Project's UI-editable fields."""
+
+        return self._require_project_service().update_project(
+            project_id,
+            name=name,
+            custom_instructions=custom_instructions,
+        )
+
+    def update_custom_instructions(
+        self,
+        project_id: ProjectId,
+        custom_instructions: str | None,
+    ) -> Project:
+        """Replace one Project's optional custom instructions."""
+
+        return self._require_project_service().update_custom_instructions(
+            project_id,
+            custom_instructions,
+        )
+
+    def bind_workspace(
+        self,
+        project_id: ProjectId,
+        root_path: str,
+    ) -> Project:
+        """Set or replace one active Project's Workspace root."""
+
+        return self._require_project_service().bind_workspace(
+            project_id,
+            root_path,
+        )
+
+    def unbind_workspace(self, project_id: ProjectId) -> Project:
+        """Remove one active Project's Workspace binding."""
+
+        return self._require_project_service().unbind_workspace(project_id)
+
+    def archive_project(self, project_id: ProjectId) -> Project:
+        """Archive one Project while preserving its Chat relationships."""
+
+        return self._require_project_service().archive_project(project_id)
+
+    def restore_project(self, project_id: ProjectId) -> Project:
+        """Restore one archived Project and preserve its Chats."""
+
+        return self._require_project_service().restore_project(project_id)
+
+    def list_project_chats(
+        self,
+        project_id: ProjectId,
+        *,
+        include_archived: bool = False,
+    ) -> tuple[ChatSessionMeta, ...]:
+        """List only Chat metadata linked to one Project."""
+
+        return self._require_project_service().list_project_chats(
+            project_id,
+            include_archived=include_archived,
+        )
+
+    def attach_chat(
+        self,
+        project_id: ProjectId,
+        chat_id: ChatId,
+    ) -> ChatSession:
+        """Attach one unassigned idle Chat to an active Project."""
+
+        return self._require_project_service().attach_chat(
+            project_id,
+            chat_id,
+        )
+
+    def detach_chat(
+        self,
+        project_id: ProjectId,
+        chat_id: ChatId,
+    ) -> ChatSession:
+        """Detach one idle Chat from its active Project."""
+
+        return self._require_project_service().detach_chat(
+            project_id,
+            chat_id,
+        )
+
+    def transfer_chat(
+        self,
+        chat_id: ChatId,
+        destination_project_id: ProjectId,
+    ) -> ChatSession:
+        """Transfer one assigned idle Chat between active Projects."""
+
+        return self._require_project_service().transfer_chat(
+            chat_id,
+            destination_project_id,
+        )
+
+    def move_chat(
+        self,
+        chat_id: ChatId,
+        project_id: ProjectId | None,
+    ) -> ChatSession:
+        """Move one idle Chat to a Project or to the unassigned scope."""
+
+        return self._require_project_service().move_chat(
+            chat_id,
+            project_id,
         )
 
     def get_or_create_default_chat(
@@ -442,6 +600,13 @@ class Brain:
                 "Active conversation service is not connected."
             )
         return self._active_conversation_service
+
+    def _require_project_service(self) -> ProjectChatService:
+        """Return the Project service or fail before repository access."""
+
+        if self._project_service is None:
+            raise RuntimeError("Project service is not connected.")
+        return self._project_service
 
     def _validate_active_model(self, chat_session: ChatSession) -> None:
         """Prevent silently answering a Chat with the wrong model adapter."""

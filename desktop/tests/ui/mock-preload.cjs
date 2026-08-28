@@ -26,12 +26,25 @@ function defaultChatState(chatId = 'chat-test', title = 'Elysia Chat') {
   }
 }
 
+function defaultProjectState() {
+  return {
+    activeProject: null,
+    projects: [],
+    chatState: clone(chatState),
+  }
+}
+
 let snapshot = clone(initialSnapshot)
 let chatState = defaultChatState()
+let projectState = defaultProjectState()
 let selectedFiles = []
+let selectedWorkspace = null
 let nextRequestNumber = 1
 let nextCallSequence = 1
+let nextProjectUpdateNumber = 1
 let calls = []
+let delayChatActions = false
+let pendingChatActions = []
 let delayCharacterPanelChanges = false
 let pendingCharacterPanelChanges = []
 const backendListeners = new Set()
@@ -76,6 +89,34 @@ function synchronizeChatState() {
   }
 }
 
+function projectUpdatedAt() {
+  const seconds = String(nextProjectUpdateNumber).padStart(2, '0')
+  nextProjectUpdateNumber += 1
+  return `2026-08-25T13:00:${seconds}+00:00`
+}
+
+function synchronizeProjectState() {
+  const projects = projectState.projects.map((project) => ({
+    ...project,
+    chatCount: chatState.chats.filter(
+      (chat) => chat.projectId === project.projectId,
+    ).length,
+  }))
+  const activeProjectId = projectState.activeProject?.projectId
+  projectState = {
+    activeProject: activeProjectId === undefined
+      ? null
+      : projects.find((project) => project.projectId === activeProjectId) ?? null,
+    projects,
+    chatState: clone(chatState),
+  }
+}
+
+function projectResult() {
+  synchronizeProjectState()
+  return clone(projectState)
+}
+
 function activateChat(chatId) {
   const summary = chatState.chats.find((chat) => chat.chatId === chatId)
   if (summary === undefined || summary.archived) {
@@ -108,6 +149,27 @@ function releaseNextCharacterPanelChange() {
 function releaseAllCharacterPanelChanges() {
   while (releaseNextCharacterPanelChange()) {
     // Drain every test-controlled IPC completion before resetting the mock.
+  }
+}
+
+async function waitForChatAction() {
+  if (!delayChatActions) {
+    return
+  }
+  await new Promise((resolve) => {
+    pendingChatActions.push(resolve)
+  })
+}
+
+function releaseNextChatAction() {
+  const release = pendingChatActions.shift()
+  release?.()
+  return release !== undefined
+}
+
+function releaseAllChatActions() {
+  while (releaseNextChatAction()) {
+    // Drain every test-controlled Chat action before resetting the mock.
   }
 }
 
@@ -150,6 +212,7 @@ const desktopApi = {
 
   createChat: async (request) => {
     record('createChat', [request])
+    await waitForChatAction()
     const chatId = `chat-created-${nextRequestNumber}`
     nextRequestNumber += 1
     const summary = {
@@ -240,6 +303,158 @@ const desktopApi = {
     return clone(chatState)
   },
 
+  listProjects: async () => {
+    record('listProjects')
+    synchronizeChatState()
+    return projectResult()
+  },
+
+  createProject: async (request) => {
+    record('createProject', [request])
+    const projectId = `project-created-${nextRequestNumber}`
+    nextRequestNumber += 1
+    const createdAt = projectUpdatedAt()
+    const project = {
+      projectId,
+      name: request.name,
+      createdAt,
+      updatedAt: createdAt,
+      customInstructions: request.customInstructions,
+      workspacePath: null,
+      archived: false,
+      chatCount: 0,
+    }
+    projectState = {
+      ...projectState,
+      activeProject: project,
+      projects: [project, ...projectState.projects],
+    }
+    return projectResult()
+  },
+
+  openProject: async (projectId) => {
+    record('openProject', [projectId])
+    const project = projectState.projects.find(
+      (candidate) => candidate.projectId === projectId,
+    )
+    if (project === undefined) {
+      throw new Error('Project does not exist.')
+    }
+    projectState = { ...projectState, activeProject: project }
+    return projectResult()
+  },
+
+  updateProject: async (request) => {
+    record('updateProject', [request])
+    let found = false
+    projectState.projects = projectState.projects.map((project) => {
+      if (project.projectId !== request.projectId) {
+        return project
+      }
+      found = true
+      return {
+        ...project,
+        name: request.name,
+        customInstructions: request.customInstructions,
+        updatedAt: projectUpdatedAt(),
+      }
+    })
+    if (!found) {
+      throw new Error('Project does not exist.')
+    }
+    return projectResult()
+  },
+
+  chooseProjectWorkspace: async (projectId) => {
+    record('chooseProjectWorkspace', [projectId])
+    if (selectedWorkspace === null) {
+      return null
+    }
+    let found = false
+    projectState.projects = projectState.projects.map((project) => {
+      if (project.projectId !== projectId) {
+        return project
+      }
+      found = true
+      return {
+        ...project,
+        workspacePath: selectedWorkspace,
+        updatedAt: projectUpdatedAt(),
+      }
+    })
+    if (!found) {
+      throw new Error('Project does not exist.')
+    }
+    return projectResult()
+  },
+
+  clearProjectWorkspace: async (projectId) => {
+    record('clearProjectWorkspace', [projectId])
+    let found = false
+    projectState.projects = projectState.projects.map((project) => {
+      if (project.projectId !== projectId) {
+        return project
+      }
+      found = true
+      return {
+        ...project,
+        workspacePath: null,
+        updatedAt: projectUpdatedAt(),
+      }
+    })
+    if (!found) {
+      throw new Error('Project does not exist.')
+    }
+    return projectResult()
+  },
+
+  setProjectArchived: async (request) => {
+    record('setProjectArchived', [request])
+    let found = false
+    projectState.projects = projectState.projects.map((project) => {
+      if (project.projectId !== request.projectId) {
+        return project
+      }
+      found = true
+      return {
+        ...project,
+        archived: request.archived,
+        updatedAt: projectUpdatedAt(),
+      }
+    })
+    if (!found) {
+      throw new Error('Project does not exist.')
+    }
+    return projectResult()
+  },
+
+  moveChatToProject: async (request) => {
+    record('moveChatToProject', [request])
+    if (
+      request.projectId !== null
+      && !projectState.projects.some(
+        (project) => project.projectId === request.projectId && !project.archived,
+      )
+    ) {
+      throw new Error('Destination Project is unavailable.')
+    }
+    let found = false
+    chatState.chats = chatState.chats.map((chat) => {
+      if (chat.chatId !== request.chatId) {
+        return chat
+      }
+      found = true
+      return { ...chat, projectId: request.projectId }
+    })
+    if (!found) {
+      throw new Error('Chat does not exist.')
+    }
+    if (chatState.activeChat.chatId === request.chatId) {
+      chatState.activeChat.projectId = request.projectId
+    }
+    return projectResult()
+  },
+
   selectModel: async (modelName) => {
     record('selectModel', [modelName])
     snapshot = {
@@ -276,13 +491,18 @@ const desktopApi = {
 
 const testControl = {
   reset: () => {
+    releaseAllChatActions()
     releaseAllCharacterPanelChanges()
     snapshot = clone(initialSnapshot)
     chatState = defaultChatState()
+    projectState = defaultProjectState()
     selectedFiles = []
+    selectedWorkspace = null
     nextRequestNumber = 1
     nextCallSequence = 1
+    nextProjectUpdateNumber = 1
     calls = []
+    delayChatActions = false
     delayCharacterPanelChanges = false
   },
 
@@ -292,6 +512,13 @@ const testControl = {
 
   setChatState: (nextChatState) => {
     chatState = clone(nextChatState)
+    synchronizeProjectState()
+  },
+
+  setProjectState: (nextProjectState) => {
+    projectState = clone(nextProjectState)
+    chatState = clone(nextProjectState.chatState)
+    synchronizeProjectState()
   },
 
   emitBackendEvent: (event) => {
@@ -338,12 +565,27 @@ const testControl = {
     selectedFiles = clone(files)
   },
 
+  setSelectedWorkspace: (workspacePath) => {
+    selectedWorkspace = workspacePath
+  },
+
   setCharacterPanelChangeDelay: (delayed) => {
     delayCharacterPanelChanges = delayed
     if (!delayed) {
       releaseAllCharacterPanelChanges()
     }
   },
+
+  setChatActionDelay: (delayed) => {
+    delayChatActions = delayed
+    if (!delayed) {
+      releaseAllChatActions()
+    }
+  },
+
+  getPendingChatActionCount: () => pendingChatActions.length,
+
+  releaseNextChatAction,
 
   getPendingCharacterPanelChangeCount: () => (
     pendingCharacterPanelChanges.length

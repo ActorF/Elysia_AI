@@ -37,5 +37,9 @@ class ChatProjectConflictError(ProjectRelationshipError):
     """Raised when a Chat has an incompatible Project relationship."""
 
 
+class ProjectChatBusyError(ProjectRelationshipError):
+    """Raised when a linked Chat is busy during a Project mutation."""
+
+
 class ProjectRelationshipRollbackError(ProjectRelationshipError):
     """Raised when cross-repository rollback cannot restore old data."""

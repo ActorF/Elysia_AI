@@ -30,13 +30,17 @@ import {
 import { isTrustedRendererUrl as matchesRendererSource } from './renderer-source.js'
 import type {
   ArchiveChatRequest,
+  ArchiveProjectRequest,
   BackendEvent,
   ChatRequest,
   CreateChatRequest,
+  CreateProjectRequest,
   DesktopThemePreference,
+  MoveChatToProjectRequest,
   PinChatRequest,
   RenameChatRequest,
   SelectedFile,
+  UpdateProjectRequest,
 } from './contracts.js'
 
 const moduleDirectory = path.dirname(
@@ -46,6 +50,8 @@ const DEVELOPMENT_URL = 'http://localhost:5173'
 const CHARACTER_PANEL_WIDTH = 324
 const RENDERER_READY_TIMEOUT_MS = 10_000
 const MAX_CHAT_TITLE_LENGTH = 200
+const MAX_PROJECT_NAME_LENGTH = 200
+const MAX_WORKSPACE_PATH_LENGTH = 32_767
 const TRAY_ICON_DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAANsSURBVFhH1ZdJTBNhFMc5esPM2PkGL9WEEC9EExpjwgWNRI0XYyHRiyFCggcXpBRK9cBBo0IQ022IB1QE0YMh8SBHE7eiLGXvhqAnjy4cTLw8876ZNtP3TWtnggdf8juUeX3/t833lYqK/9UUSTnEZNZghvpsq7lcLlWR1QtMZlNMVqEEcSazAKtke2gMR1ZZ6d7JZNanSOyXhVhJqt3V9zFxGrNs01urfqOBy+Xh8AjwxHexMzT2X41JrMVJ1Tlq99UC/PwN9Qfrjb+xPqpR1FCcBrRDzd4aCPXf4wlgF/Cz8WyIagmGbTdX3nGyHSY7H8Bzg/D5OxA87YNexOuDgLeL0+PtgtvtN2Dm5TQXpjwdGQfPfg/gIlPNvOHC0Jmj+OfQLGyGZmEjNAefQnOwHpqHbHgeMuEEpMMJSIUXIBlZgLXIIqxGFuHLiw3YSn3nwuszGWg5ey4fD4tzuXYfoNrcsEW0nVi1HfGVyBKsRJchM5bmCWjXh4URMUmdpNr6e26xdJiAXfHl6DIsRVdgK/sDfE09YgKyCkIX+OFh4YgzN4s/843mZ450e/0cP9LUzeni9MDN9lvQWHdciMmRmEYSwBNMdMSFM1eO4tTHEZL6NS+un3YWTrLKt93cdqya+jglPwb9YhEdkFBrf8HMJ3yjJduOMy/adkruhFTkqlPCQwOceTkLtxhdhYXoKiSia9BZZPEoilTVYSSAt5zokEvAjvg8TyAgxLHGOJ6xFeJDHWy5HfG5aBKulp9AwHgD+K1n4aDCUOtAgfiYf1yYOYJtx8pR/KinzB2QWAtPwDiCRQdZ5ctmrhzFqY9TcPmNF5HvwSZ1QDABc9uxcurjBDx13W73jnwCVvcAgq+aeebYdurjCHof4KEgOMkqDLYNFizcI/8TYeZIB6cXrjTrXOYE4YjnhBATwVe/IAE0zIo64tIV2/bZWBJmYin4GEvBh1gaprU0xLUMvNcy8E7LwlstC5eag4I4k9QE1eZm1YXH/nHH4m+0dbhokYBl9Tmjt+JA213H4q95AtdI9eQWtDJFUidyX2isO2Zr5thyBCtH8cOFOxAv2Pxihk7mJLaJON66VKuk4VltEcg+EtPKqtzK9F/J6ishaBkoEkuWXDg7hoFwLFa/G0XYVP6c/xdm/Dcc0EdUQIPdVv8BMyc76Y4zJXMAAAAASUVORK5CYII='
 
 let mainWindow: BrowserWindow | null = null
@@ -161,6 +167,59 @@ function parseChatTitle(value: unknown): string {
   return trimProtocolBlankCharacters(value)
 }
 
+function parseProjectId(value: unknown): string {
+  if (
+    typeof value !== 'string'
+    || !hasNonBlankCodePoint(value)
+    || codePointLength(value) > MAX_IDENTIFIER_LENGTH
+  ) {
+    throw new Error('Project id is invalid.')
+  }
+  return value
+}
+
+function parseProjectName(value: unknown): string {
+  if (
+    typeof value !== 'string'
+    || !hasNonBlankCodePoint(value)
+    || codePointLength(value) > MAX_PROJECT_NAME_LENGTH
+  ) {
+    throw new Error('Project name is invalid.')
+  }
+  return trimProtocolBlankCharacters(value)
+}
+
+function parseCustomInstructions(value: unknown): string | null {
+  if (value === null) {
+    return null
+  }
+  if (
+    typeof value !== 'string'
+    || !hasNonBlankCodePoint(value)
+    || codePointLength(value) > MAX_MESSAGE_LENGTH
+  ) {
+    throw new Error('Project instructions are invalid.')
+  }
+  return value
+}
+
+function parseWorkspacePath(value: unknown): string | null {
+  if (value === null) {
+    return null
+  }
+  if (
+    typeof value !== 'string'
+    || !hasNonBlankCodePoint(value)
+    || value.includes('\0')
+    || value !== value.trim()
+    || codePointLength(value) > MAX_WORKSPACE_PATH_LENGTH
+    || !path.isAbsolute(value)
+  ) {
+    throw new Error('Project workspace path is invalid.')
+  }
+  return value
+}
+
 function parseObject(
   value: unknown,
   fields: readonly string[],
@@ -220,6 +279,62 @@ function parseArchiveChatRequest(value: unknown): ArchiveChatRequest {
   return {
     chatId: parseChatId(request.chatId),
     archived: request.archived,
+  }
+}
+
+function parseCreateProjectRequest(value: unknown): CreateProjectRequest {
+  const request = parseObject(
+    value,
+    ['name', 'customInstructions'],
+    'Create Project request',
+  )
+  return {
+    name: parseProjectName(request.name),
+    customInstructions: parseCustomInstructions(request.customInstructions),
+  }
+}
+
+function parseUpdateProjectRequest(value: unknown): UpdateProjectRequest {
+  const request = parseObject(
+    value,
+    ['projectId', 'name', 'customInstructions'],
+    'Update Project request',
+  )
+  return {
+    projectId: parseProjectId(request.projectId),
+    name: parseProjectName(request.name),
+    customInstructions: parseCustomInstructions(request.customInstructions),
+  }
+}
+
+function parseArchiveProjectRequest(value: unknown): ArchiveProjectRequest {
+  const request = parseObject(
+    value,
+    ['projectId', 'archived'],
+    'Archive Project request',
+  )
+  if (typeof request.archived !== 'boolean') {
+    throw new Error('Project archive state is invalid.')
+  }
+  return {
+    projectId: parseProjectId(request.projectId),
+    archived: request.archived,
+  }
+}
+
+function parseMoveChatToProjectRequest(
+  value: unknown,
+): MoveChatToProjectRequest {
+  const request = parseObject(
+    value,
+    ['chatId', 'projectId'],
+    'Move Chat to Project request',
+  )
+  return {
+    chatId: parseChatId(request.chatId),
+    projectId: request.projectId === null
+      ? null
+      : parseProjectId(request.projectId),
   }
 }
 
@@ -351,6 +466,62 @@ function registerIpcHandlers(): void {
   )
 
   ipcMain.handle(
+    'project:list',
+    (event) => {
+      assertTrustedSender(event)
+      return requireBackend().listProjects()
+    },
+  )
+
+  ipcMain.handle(
+    'project:create',
+    (event, request: unknown) => {
+      assertTrustedSender(event)
+      return requireBackend().createProject(
+        parseCreateProjectRequest(request),
+      )
+    },
+  )
+
+  ipcMain.handle(
+    'project:open',
+    (event, projectId: unknown) => {
+      assertTrustedSender(event)
+      return requireBackend().openProject(parseProjectId(projectId))
+    },
+  )
+
+  ipcMain.handle(
+    'project:update',
+    (event, request: unknown) => {
+      assertTrustedSender(event)
+      return requireBackend().updateProject(
+        parseUpdateProjectRequest(request),
+      )
+    },
+  )
+
+  ipcMain.handle(
+    'project:archive',
+    (event, request: unknown) => {
+      assertTrustedSender(event)
+      return requireBackend().archiveProject(
+        parseArchiveProjectRequest(request),
+      )
+    },
+  )
+
+  ipcMain.handle(
+    'project:move-chat',
+    (event, request: unknown) => {
+      assertTrustedSender(event)
+      return requireBackend().moveChatToProject(
+        parseMoveChatToProjectRequest(request),
+      )
+    },
+  )
+
+  ipcMain.handle(
     'backend:restart',
     async (event) => {
       assertTrustedSender(event)
@@ -398,6 +569,47 @@ function registerIpcHandlers(): void {
           }
         }),
       )
+    },
+  )
+
+  ipcMain.handle(
+    'project:choose-workspace',
+    async (event, projectId: unknown) => {
+      assertTrustedSender(event)
+      const parsedProjectId = parseProjectId(projectId)
+      const result = await dialog.showOpenDialog(
+        requireMainWindow(),
+        {
+          title: 'Choose a workspace for this Project',
+          properties: ['openDirectory'],
+        },
+      )
+      if (result.canceled || result.filePaths.length === 0) {
+        return null
+      }
+      const workspacePath = parseWorkspacePath(result.filePaths[0])
+      if (workspacePath === null) {
+        throw new Error('Selected workspace path is invalid.')
+      }
+      const metadata = await stat(workspacePath)
+      if (!metadata.isDirectory()) {
+        throw new Error('Selected workspace is not a directory.')
+      }
+      return requireBackend().setProjectWorkspace({
+        projectId: parsedProjectId,
+        workspacePath,
+      })
+    },
+  )
+
+  ipcMain.handle(
+    'project:clear-workspace',
+    (event, projectId: unknown) => {
+      assertTrustedSender(event)
+      return requireBackend().setProjectWorkspace({
+        projectId: parseProjectId(projectId),
+        workspacePath: null,
+      })
     },
   )
 

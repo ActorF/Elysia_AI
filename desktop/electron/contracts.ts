@@ -102,6 +102,49 @@ export interface ArchiveChatRequest {
   archived: boolean
 }
 
+/** Canonical Project metadata returned by the Python application boundary. */
+export interface ProjectSummary {
+  projectId: string
+  name: string
+  createdAt: string
+  updatedAt: string
+  customInstructions: string | null
+  workspacePath: string | null
+  archived: boolean
+  chatCount: number
+}
+
+/** Atomic Project collection plus the matching canonical Chat collection. */
+export interface ProjectState {
+  activeProject: ProjectSummary | null
+  projects: ProjectSummary[]
+  chatState: ChatSessionState
+}
+
+export interface CreateProjectRequest {
+  name: string
+  customInstructions: string | null
+}
+
+export interface UpdateProjectRequest extends CreateProjectRequest {
+  projectId: string
+}
+
+export interface ProjectWorkspaceRequest {
+  projectId: string
+  workspacePath: string | null
+}
+
+export interface ArchiveProjectRequest {
+  projectId: string
+  archived: boolean
+}
+
+export interface MoveChatToProjectRequest {
+  chatId: string
+  projectId: string | null
+}
+
 export interface SelectedFile {
   name: string
   sizeBytes: number
@@ -169,6 +212,14 @@ export interface DesktopApi {
   setChatPinned(request: PinChatRequest): Promise<ChatSessionState>
   setChatArchived(request: ArchiveChatRequest): Promise<ChatSessionState>
   deleteChat(chatId: string): Promise<ChatSessionState>
+  listProjects(): Promise<ProjectState>
+  createProject(request: CreateProjectRequest): Promise<ProjectState>
+  openProject(projectId: string): Promise<ProjectState>
+  updateProject(request: UpdateProjectRequest): Promise<ProjectState>
+  chooseProjectWorkspace(projectId: string): Promise<ProjectState | null>
+  clearProjectWorkspace(projectId: string): Promise<ProjectState>
+  setProjectArchived(request: ArchiveProjectRequest): Promise<ProjectState>
+  moveChatToProject(request: MoveChatToProjectRequest): Promise<ProjectState>
   selectModel(modelName: string): Promise<BackendSnapshot>
   chooseFiles(): Promise<SelectedFile[]>
   setCharacterPanelOpen(open: boolean): Promise<void>

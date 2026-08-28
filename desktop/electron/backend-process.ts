@@ -19,13 +19,19 @@ import {
 
 import type {
   ArchiveChatRequest,
+  ArchiveProjectRequest,
   BackendEvent,
   BackendSnapshot,
   ChatRequest,
   ChatSessionState,
   CreateChatRequest,
+  CreateProjectRequest,
+  MoveChatToProjectRequest,
   PinChatRequest,
+  ProjectState,
+  ProjectWorkspaceRequest,
   RenameChatRequest,
+  UpdateProjectRequest,
 } from './contracts.js'
 import {
   MAX_PROTOCOL_FRAME_BYTES,
@@ -38,6 +44,7 @@ import {
   parseChatStateResult,
   parseHandshakeResult,
   parseInitializeResult,
+  parseProjectStateResult,
   parseServerMessage,
   type ProtocolMethod,
   type RequestParamsByMethod,
@@ -67,6 +74,8 @@ interface PendingRequest {
   streamedLength: number
   resolveChatState?: (state: ChatSessionState) => void
   rejectChatState?: (error: Error) => void
+  resolveProjectState?: (state: ProjectState) => void
+  rejectProjectState?: (error: Error) => void
 }
 
 type ChatSessionMethod =
@@ -86,6 +95,25 @@ const CHAT_SESSION_METHODS = new Set<ProtocolMethod>([
   'chat.pin',
   'chat.archive',
   'chat.delete',
+])
+
+type ProjectMethod =
+  | 'project.list'
+  | 'project.create'
+  | 'project.open'
+  | 'project.update'
+  | 'project.workspace'
+  | 'project.archive'
+  | 'project.chat.move'
+
+const PROJECT_METHODS = new Set<ProtocolMethod>([
+  'project.list',
+  'project.create',
+  'project.open',
+  'project.update',
+  'project.workspace',
+  'project.archive',
+  'project.chat.move',
 ])
 
 export class BackendProcess {
@@ -290,6 +318,9 @@ export class BackendProcess {
       return
     }
 
+    this.rejectPendingActionPromises(
+      'Python Backend is stopping before the action completed.',
+    )
     this.expectedExit = true
     this.updateSnapshot({
       status: 'stopping',
@@ -372,6 +403,45 @@ export class BackendProcess {
     return this.requestChatState('chat.delete', { chatId })
   }
 
+  /** Load the complete canonical Project and Chat collections. */
+  listProjects(): Promise<ProjectState> {
+    return this.requestProjectState('project.list', {})
+  }
+
+  /** Create and select one persisted Project. */
+  createProject(request: CreateProjectRequest): Promise<ProjectState> {
+    return this.requestProjectState('project.create', request)
+  }
+
+  /** Select one persisted Project without mutating it. */
+  openProject(projectId: string): Promise<ProjectState> {
+    return this.requestProjectState('project.open', { projectId })
+  }
+
+  /** Atomically update one Project's editable text fields. */
+  updateProject(request: UpdateProjectRequest): Promise<ProjectState> {
+    return this.requestProjectState('project.update', request)
+  }
+
+  /** Bind, replace, or clear one Project workspace root. */
+  setProjectWorkspace(
+    request: ProjectWorkspaceRequest,
+  ): Promise<ProjectState> {
+    return this.requestProjectState('project.workspace', request)
+  }
+
+  /** Archive or restore one persisted Project. */
+  archiveProject(request: ArchiveProjectRequest): Promise<ProjectState> {
+    return this.requestProjectState('project.archive', request)
+  }
+
+  /** Move one idle Chat into, between, or out of Projects. */
+  moveChatToProject(
+    request: MoveChatToProjectRequest,
+  ): Promise<ProjectState> {
+    return this.requestProjectState('project.chat.move', request)
+  }
+
   private resolvePythonExecutable(): string {
     const configuredPython = process.env.ELYSIA_PYTHON
     if (configuredPython?.trim()) {
@@ -423,13 +493,46 @@ export class BackendProcess {
     })
   }
 
+  private requestProjectState<Method extends ProjectMethod>(
+    method: Method,
+    params: RequestParamsByMethod[Method],
+  ): Promise<ProjectState> {
+    if (this.snapshot.status !== 'ready') {
+      return Promise.reject(new Error('Python Backend is not ready.'))
+    }
+    if (
+      [...this.pendingRequests.values()].some(
+        (pending) => pending.method === 'chat.stream',
+      )
+    ) {
+      return Promise.reject(
+        new Error('Wait for the active Chat reply to finish.'),
+      )
+    }
+
+    return new Promise<ProjectState>((resolve, reject) => {
+      this.sendRequest(
+        method,
+        params,
+        undefined,
+        {
+          resolveProjectState: resolve,
+          rejectProjectState: reject,
+        },
+      )
+    })
+  }
+
   private sendRequest<Method extends ProtocolMethod>(
     method: Method,
     params: RequestParamsByMethod[Method],
     chatId?: string,
     completion: Pick<
       PendingRequest,
-      'resolveChatState' | 'rejectChatState'
+      | 'resolveChatState'
+      | 'rejectChatState'
+      | 'resolveProjectState'
+      | 'rejectProjectState'
     > = {},
   ): string {
     const child = this.child
@@ -560,6 +663,9 @@ export class BackendProcess {
       if (CHAT_SESSION_METHODS.has(pending.method)) {
         pending.rejectChatState?.(new Error(message.error.message))
       }
+      if (PROJECT_METHODS.has(pending.method)) {
+        pending.rejectProjectState?.(new Error(message.error.message))
+      }
       return
     }
 
@@ -568,6 +674,7 @@ export class BackendProcess {
       const requiredCapabilities = [
         'chat.stream',
         'chat.sessions',
+        'project.management',
         'stream',
         'progress',
         'event',
@@ -630,6 +737,26 @@ export class BackendProcess {
         error: undefined,
       })
       pending.resolveChatState?.(result)
+      return
+    }
+
+    if (PROJECT_METHODS.has(pending.method)) {
+      const result = parseProjectStateResult(message.result)
+      if (result.chatState.activeChat.modelName !== this.snapshot.modelName) {
+        this.protocolFailure(
+          'Active Chat model does not match the running Backend.',
+        )
+        pending.rejectProjectState?.(
+          new Error('Active Chat model does not match the running Backend.'),
+        )
+        return
+      }
+      this.updateSnapshot({
+        chatId: result.chatState.activeChat.chatId,
+        chatTitle: result.chatState.activeChat.title,
+        error: undefined,
+      })
+      pending.resolveProjectState?.(result)
       return
     }
 
@@ -805,8 +932,27 @@ export class BackendProcess {
       pending.rejectChatState?.(
         new Error('Python Backend stopped before the Chat action completed.'),
       )
+      pending.rejectProjectState?.(
+        new Error(
+          'Python Backend stopped before the Project action completed.',
+        ),
+      )
     }
     this.pendingRequests.clear()
+  }
+
+  private rejectPendingActionPromises(message: string): void {
+    /** Settle renderer-facing actions before expected-exit responses vanish. */
+
+    for (const pending of this.pendingRequests.values()) {
+      const error = new Error(message)
+      pending.rejectChatState?.(error)
+      pending.rejectProjectState?.(error)
+      pending.resolveChatState = undefined
+      pending.rejectChatState = undefined
+      pending.resolveProjectState = undefined
+      pending.rejectProjectState = undefined
+    }
   }
 
   private fail(message: string): void {

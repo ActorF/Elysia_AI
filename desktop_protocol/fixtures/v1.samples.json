@@ -108,6 +108,86 @@
       }
     },
     {
+      "name": "project list request",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "project-list-1",
+        "method": "project.list",
+        "params": {}
+      }
+    },
+    {
+      "name": "project create request",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "project-create-1",
+        "method": "project.create",
+        "params": {
+          "name": "Elysia",
+          "customInstructions": "Keep changes local."
+        }
+      }
+    },
+    {
+      "name": "project open request",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "project-open-1",
+        "method": "project.open",
+        "params": { "projectId": "project_fixture" }
+      }
+    },
+    {
+      "name": "project update request",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "project-update-1",
+        "method": "project.update",
+        "params": {
+          "projectId": "project_fixture",
+          "name": "Elysia AI",
+          "customInstructions": null
+        }
+      }
+    },
+    {
+      "name": "project workspace request",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "project-workspace-1",
+        "method": "project.workspace",
+        "params": {
+          "projectId": "project_fixture",
+          "workspacePath": "D:\\Elysia_AI"
+        }
+      }
+    },
+    {
+      "name": "project archive request",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "project-archive-1",
+        "method": "project.archive",
+        "params": { "projectId": "project_fixture", "archived": true }
+      }
+    },
+    {
+      "name": "project Chat move request",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "project-chat-move-1",
+        "method": "project.chat.move",
+        "params": { "chatId": "chat_fixture", "projectId": null }
+      }
+    },
+    {
       "name": "unicode identifier boundary",
       "message": {
         "type": "request",
@@ -175,6 +255,7 @@
           "capabilities": [
             "chat.sessions",
             "chat.stream",
+            "project.management",
             "stream",
             "progress",
             "event"
@@ -276,6 +357,90 @@
               "archived": false
             }
           ]
+        }
+      }
+    },
+    {
+      "name": "project state response",
+      "message": {
+        "type": "response",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "project-list-1",
+        "ok": true,
+        "result": {
+          "activeProject": {
+            "projectId": "project_fixture",
+            "name": "Elysia AI",
+            "createdAt": "2026-08-27T09:00:00+00:00",
+            "updatedAt": "2026-08-27T10:00:00+00:00",
+            "customInstructions": "Keep changes local.",
+            "workspacePath": "D:\\Elysia_AI",
+            "archived": false,
+            "chatCount": 1
+          },
+          "projects": [
+            {
+              "projectId": "project_fixture",
+              "name": "Elysia AI",
+              "createdAt": "2026-08-27T09:00:00+00:00",
+              "updatedAt": "2026-08-27T10:00:00+00:00",
+              "customInstructions": "Keep changes local.",
+              "workspacePath": "D:\\Elysia_AI",
+              "archived": false,
+              "chatCount": 1
+            },
+            {
+              "projectId": "project_archived",
+              "name": "Archived Project",
+              "createdAt": "2026-08-26T09:00:00+00:00",
+              "updatedAt": "2026-08-26T10:00:00+00:00",
+              "customInstructions": null,
+              "workspacePath": null,
+              "archived": true,
+              "chatCount": 0
+            }
+          ],
+          "chatState": {
+            "activeChat": {
+              "chatId": "chat_fixture",
+              "title": "Elysia Chat",
+              "mode": "chat",
+              "createdAt": "2026-08-27T10:00:00+00:00",
+              "updatedAt": "2026-08-27T10:01:00+00:00",
+              "messageCount": 0,
+              "projectId": "project_fixture",
+              "modelName": "qwen3.5:9b",
+              "pinned": true,
+              "archived": false,
+              "messages": []
+            },
+            "chats": [
+              {
+                "chatId": "chat_fixture",
+                "title": "Elysia Chat",
+                "mode": "chat",
+                "createdAt": "2026-08-27T10:00:00+00:00",
+                "updatedAt": "2026-08-27T10:01:00+00:00",
+                "messageCount": 0,
+                "projectId": "project_fixture",
+                "modelName": "qwen3.5:9b",
+                "pinned": true,
+                "archived": false
+              },
+              {
+                "chatId": "chat_second",
+                "title": "Second Chat",
+                "mode": "work",
+                "createdAt": "2026-08-26T09:00:00+00:00",
+                "updatedAt": "2026-08-26T09:00:00+00:00",
+                "messageCount": 0,
+                "projectId": null,
+                "modelName": "qwen3.5:9b",
+                "pinned": false,
+                "archived": false
+              }
+            ]
+          }
         }
       }
     },
@@ -445,6 +610,53 @@
         "id": "chat-3",
         "method": "chat.stream",
         "params": { "chatId": "chat_fixture", "message": "\ufeff" }
+      }
+    },
+    {
+      "name": "blank Project name",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "project-create-invalid-1",
+        "method": "project.create",
+        "params": { "name": "\ufeff", "customInstructions": null }
+      }
+    },
+    {
+      "name": "blank Project instructions",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "project-update-invalid-1",
+        "method": "project.update",
+        "params": {
+          "projectId": "project_fixture",
+          "name": "Elysia",
+          "customInstructions": "   "
+        }
+      }
+    },
+    {
+      "name": "blank Project workspace path",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "project-workspace-invalid-1",
+        "method": "project.workspace",
+        "params": {
+          "projectId": "project_fixture",
+          "workspacePath": "\u0085"
+        }
+      }
+    },
+    {
+      "name": "malformed Project id",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "project-open-invalid-1",
+        "method": "project.open",
+        "params": { "projectId": "Elysia Project" }
       }
     }
   ],

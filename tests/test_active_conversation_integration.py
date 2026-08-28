@@ -30,7 +30,14 @@ from memory import (
     MemoryRetriever,
     ShortTermMemory,
 )
-from projects import JsonProjectRepository, ProjectSettings
+from projects import (
+    JsonProjectRepository,
+    ProjectArchivedError,
+    ProjectChatBusyError,
+    ProjectChatService,
+    ProjectSettings,
+    WorkspaceBinding,
+)
 
 
 class RoutedChatModel:
@@ -104,6 +111,11 @@ def _brain(
     chats = JsonChatRepository(tmp_path / "data" / "chats")
     projects = JsonProjectRepository(tmp_path / "data" / "projects")
     active = ActiveConversationService(chats, projects)
+    project_service = ProjectChatService(
+        projects,
+        chats,
+        is_chat_busy=active.is_chat_busy,
+    )
     brain = Brain(
         "fake-model",
         memory,
@@ -112,6 +124,7 @@ def _brain(
         conversation_summarizer=summarizer,
         memory_retriever=MemoryRetriever(10),
         active_conversation_service=active,
+        project_service=project_service,
     )
     return brain, memory, chats, projects
 
@@ -286,6 +299,100 @@ def test_brain_exposes_guarded_chat_session_actions(
     with pytest.raises(ChatNotFoundError):
         brain.get_chat(chat.chat_id)
     assert projects.get_project(project.project_id) == project
+
+
+def test_brain_exposes_complete_project_ui_application_boundary(
+    tmp_path: Path,
+) -> None:
+    model = RoutedChatModel()
+    brain, _memory, _chats, _projects = _brain(tmp_path, model)
+    first = brain.create_project(
+        name="First",
+        custom_instructions="Initial instructions",
+    )
+    second = brain.create_project(name="Second")
+    chat = brain.create_chat(title="Movable")
+
+    updated = brain.update_project(
+        first.project_id,
+        name="First renamed",
+        custom_instructions="Updated instructions",
+    )
+    bound = brain.bind_workspace(
+        first.project_id,
+        r"C:\Work\First",
+    )
+    attached = brain.move_chat(chat.chat_id, first.project_id)
+    transferred = brain.move_chat(chat.chat_id, second.project_id)
+    detached = brain.move_chat(chat.chat_id, None)
+
+    assert updated.name == "First renamed"
+    assert updated.settings.custom_instructions == "Updated instructions"
+    assert bound.workspace_binding == WorkspaceBinding(
+        root_path=r"C:\Work\First"
+    )
+    assert attached.project_id == first.project_id
+    assert transferred.project_id == second.project_id
+    assert detached.project_id is None
+    assert brain.list_project_chats(first.project_id) == ()
+    assert brain.list_project_chats(second.project_id) == ()
+
+    rebound = brain.bind_workspace(
+        first.project_id,
+        r"C:\Work\Replacement",
+    )
+    assert rebound.workspace_binding == WorkspaceBinding(
+        root_path=r"C:\Work\Replacement"
+    )
+    assert brain.unbind_workspace(first.project_id).workspace_binding is None
+
+    archived = brain.archive_project(first.project_id)
+    assert archived.is_archived is True
+    assert first.project_id not in {
+        project.project_id for project in brain.list_projects()
+    }
+    assert brain.get_project(first.project_id) == archived
+
+    with pytest.raises(ProjectArchivedError):
+        brain.rename_project(first.project_id, "Read only")
+
+    restored = brain.restore_project(first.project_id)
+    assert restored.is_archived is False
+    assert first.project_id in {
+        project.project_id for project in brain.list_projects()
+    }
+
+
+def test_brain_project_mutations_reject_an_active_chat_operation(
+    tmp_path: Path,
+) -> None:
+    model = RoutedChatModel(stream_chunks=["One", "Two"])
+    brain, _memory, _chats, _projects = _brain(tmp_path, model)
+    project = brain.create_project(name="Busy Project")
+    chat = brain.create_chat(
+        title="Busy Chat",
+        project_id=project.project_id,
+    )
+    stream = brain.stream_chat(chat.chat_id, "Question")
+
+    assert next(stream) == "One"
+    with pytest.raises(ProjectChatBusyError):
+        brain.update_project(
+            project.project_id,
+            name="Blocked",
+            custom_instructions=None,
+        )
+    with pytest.raises(ProjectChatBusyError):
+        brain.archive_project(project.project_id)
+    with pytest.raises(ProjectChatBusyError):
+        brain.move_chat(chat.chat_id, None)
+
+    assert brain.get_project(project.project_id) == project
+    assert brain.get_chat(chat.chat_id).project_id == project.project_id
+    stream.close()
+
+    moved = brain.move_chat(chat.chat_id, None)
+    assert moved.project_id is None
 
 
 def test_active_chat_loads_only_its_readable_memory_scopes(

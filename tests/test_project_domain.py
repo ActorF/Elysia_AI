@@ -5,6 +5,9 @@ from typing import Literal, cast
 import pytest
 
 from projects import (
+    MAX_PROJECT_INSTRUCTIONS_LENGTH,
+    MAX_PROJECT_NAME_LENGTH,
+    MAX_WORKSPACE_PATH_LENGTH,
     PROJECT_SCHEMA_VERSION,
     Project,
     ProjectId,
@@ -109,6 +112,43 @@ def test_project_settings_reject_empty_optional_text(
 
     with pytest.raises(ValueError, match=field_name):
         ProjectSettings(**values)
+
+
+def test_project_text_limits_match_the_desktop_contract() -> None:
+    name = "n" * MAX_PROJECT_NAME_LENGTH
+    instructions = "i" * MAX_PROJECT_INSTRUCTIONS_LENGTH
+    workspace = "C:\\" + "w" * (MAX_WORKSPACE_PATH_LENGTH - 3)
+
+    project = create_project(
+        name=name,
+        settings=ProjectSettings(custom_instructions=instructions),
+        workspace_binding=WorkspaceBinding(root_path=workspace),
+        created_at=BASE_TIME,
+    )
+
+    assert project.name == name
+    assert project.settings.custom_instructions == instructions
+    assert project.workspace_binding == WorkspaceBinding(root_path=workspace)
+
+
+def test_project_rejects_values_beyond_desktop_contract_limits() -> None:
+    with pytest.raises(ValueError, match=r"name cannot exceed"):
+        create_project(
+            name="n" * (MAX_PROJECT_NAME_LENGTH + 1),
+            created_at=BASE_TIME,
+        )
+    with pytest.raises(ValueError, match=r"custom_instructions cannot exceed"):
+        ProjectSettings(
+            custom_instructions=(
+                "i" * (MAX_PROJECT_INSTRUCTIONS_LENGTH + 1)
+            )
+        )
+    with pytest.raises(ValueError, match=r"root_path cannot exceed"):
+        WorkspaceBinding(
+            root_path=(
+                "C:\\" + "w" * (MAX_WORKSPACE_PATH_LENGTH - 2)
+            )
+        )
 
 
 def test_project_rejects_invalid_stable_id() -> None:

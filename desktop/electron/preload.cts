@@ -6,16 +6,21 @@ import { contextBridge, ipcRenderer } from 'electron'
 
 import type {
   ArchiveChatRequest,
+  ArchiveProjectRequest,
   BackendEvent,
   BackendSnapshot,
   ChatRequest,
   ChatSessionState,
   CreateChatRequest,
+  CreateProjectRequest,
   DesktopApi,
   DesktopThemePreference,
+  MoveChatToProjectRequest,
   PinChatRequest,
+  ProjectState,
   RenameChatRequest,
   SelectedFile,
+  UpdateProjectRequest,
 } from './contracts.js'
 
 const desktopApi: DesktopApi = {
@@ -87,6 +92,53 @@ const desktopApi: DesktopApi = {
       'chat:delete',
       chatId,
     ) as Promise<ChatSessionState>,
+
+  listProjects: () =>
+    ipcRenderer.invoke(
+      'project:list',
+    ) as Promise<ProjectState>,
+
+  createProject: (request: CreateProjectRequest) =>
+    ipcRenderer.invoke(
+      'project:create',
+      request,
+    ) as Promise<ProjectState>,
+
+  openProject: (projectId: string) =>
+    ipcRenderer.invoke(
+      'project:open',
+      projectId,
+    ) as Promise<ProjectState>,
+
+  updateProject: (request: UpdateProjectRequest) =>
+    ipcRenderer.invoke(
+      'project:update',
+      request,
+    ) as Promise<ProjectState>,
+
+  chooseProjectWorkspace: (projectId: string) =>
+    ipcRenderer.invoke(
+      'project:choose-workspace',
+      projectId,
+    ) as Promise<ProjectState | null>,
+
+  clearProjectWorkspace: (projectId: string) =>
+    ipcRenderer.invoke(
+      'project:clear-workspace',
+      projectId,
+    ) as Promise<ProjectState>,
+
+  setProjectArchived: (request: ArchiveProjectRequest) =>
+    ipcRenderer.invoke(
+      'project:archive',
+      request,
+    ) as Promise<ProjectState>,
+
+  moveChatToProject: (request: MoveChatToProjectRequest) =>
+    ipcRenderer.invoke(
+      'project:move-chat',
+      request,
+    ) as Promise<ProjectState>,
 
   selectModel: (modelName: string) =>
     ipcRenderer.invoke(

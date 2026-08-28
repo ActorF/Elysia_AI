@@ -35,6 +35,15 @@ from desktop_protocol import (
     build_event,
     build_request,
 )
+from projects import (
+    Project,
+    ProjectArchivedError,
+    ProjectChatBusyError,
+    ProjectNotFoundError,
+    ProjectSettings,
+    WorkspaceBinding,
+    create_project,
+)
 
 
 class FakeBrain:
@@ -56,6 +65,8 @@ class FakeBrain:
         self._chats: dict[ChatId, ChatSession] = {
             self.chat.chat_id: self.chat,
         }
+        self.next_project = create_project(name="Pending Project")
+        self._projects: dict[ProjectId, Project] = {}
         self.stream_calls: list[tuple[str, str]] = []
         self.session_calls: list[tuple[object, ...]] = []
 
@@ -63,6 +74,11 @@ class FakeBrain:
         """Add a prepared Chat for one bridge scenario."""
 
         self._chats[chat.chat_id] = chat
+
+    def add_project(self, project: Project) -> None:
+        """Add a prepared Project for one bridge scenario."""
+
+        self._projects[project.project_id] = project
 
     def list_chats(
         self,
@@ -140,6 +156,139 @@ class FakeBrain:
             raise ChatNotFoundError(
                 f"Chat does not exist: {chat_id}."
             ) from error
+
+    def create_project(
+        self,
+        *,
+        name: str,
+        custom_instructions: str | None = None,
+    ) -> Project:
+        self.session_calls.append(
+            ("create_project", name, custom_instructions)
+        )
+        project = replace(
+            self.next_project,
+            name=name,
+            settings=ProjectSettings(
+                custom_instructions=custom_instructions,
+            ),
+        )
+        self.add_project(project)
+        self.next_project = create_project(name="Pending Project")
+        return project
+
+    def list_projects(
+        self,
+        *,
+        include_archived: bool = False,
+    ) -> tuple[Project, ...]:
+        self.session_calls.append(("list_projects", include_archived))
+        return tuple(
+            project
+            for project in self._projects.values()
+            if include_archived or not project.is_archived
+        )
+
+    def get_project(self, project_id: ProjectId) -> Project:
+        self.session_calls.append(("get_project", str(project_id)))
+        try:
+            return self._projects[project_id]
+        except KeyError as error:
+            raise ProjectNotFoundError(
+                f"Project does not exist: {project_id}."
+            ) from error
+
+    def update_project(
+        self,
+        project_id: ProjectId,
+        *,
+        name: str,
+        custom_instructions: str | None,
+    ) -> Project:
+        self.session_calls.append(
+            (
+                "update_project",
+                str(project_id),
+                name,
+                custom_instructions,
+            )
+        )
+        current = self.get_project(project_id)
+        updated = replace(
+            current,
+            name=name,
+            settings=ProjectSettings(
+                default_model_name=current.settings.default_model_name,
+                custom_instructions=custom_instructions,
+            ),
+        )
+        self.add_project(updated)
+        return updated
+
+    def bind_workspace(
+        self,
+        project_id: ProjectId,
+        root_path: str,
+    ) -> Project:
+        self.session_calls.append(
+            ("bind_workspace", str(project_id), root_path)
+        )
+        updated = replace(
+            self.get_project(project_id),
+            workspace_binding=WorkspaceBinding(root_path=root_path),
+        )
+        self.add_project(updated)
+        return updated
+
+    def unbind_workspace(self, project_id: ProjectId) -> Project:
+        self.session_calls.append(("unbind_workspace", str(project_id)))
+        updated = replace(
+            self.get_project(project_id),
+            workspace_binding=None,
+        )
+        self.add_project(updated)
+        return updated
+
+    def archive_project(self, project_id: ProjectId) -> Project:
+        self.session_calls.append(("archive_project", str(project_id)))
+        updated = replace(self.get_project(project_id), is_archived=True)
+        self.add_project(updated)
+        return updated
+
+    def restore_project(self, project_id: ProjectId) -> Project:
+        self.session_calls.append(("restore_project", str(project_id)))
+        updated = replace(self.get_project(project_id), is_archived=False)
+        self.add_project(updated)
+        return updated
+
+    def list_project_chats(
+        self,
+        project_id: ProjectId,
+        *,
+        include_archived: bool = False,
+    ) -> tuple[ChatSessionMeta, ...]:
+        return tuple(
+            chat.to_meta()
+            for chat in self._chats.values()
+            if chat.project_id == project_id
+            and (include_archived or not chat.is_archived)
+        )
+
+    def move_chat(
+        self,
+        chat_id: ChatId,
+        project_id: ProjectId | None,
+    ) -> ChatSession:
+        self.session_calls.append(
+            (
+                "move_chat",
+                str(chat_id),
+                None if project_id is None else str(project_id),
+            )
+        )
+        updated = replace(self.get_chat(chat_id), project_id=project_id)
+        self.add_chat(updated)
+        return updated
 
     def stream_chat(
         self,
@@ -470,6 +619,213 @@ def test_chat_list_serializes_metadata_messages_and_attachments() -> None:
         "archived",
     }
     assert archived_summary["archived"] is True
+
+
+def test_project_actions_return_one_canonical_project_and_chat_state() -> None:
+    fake_brain = FakeBrain()
+    project_id = str(fake_brain.next_project.project_id)
+    chat_id = str(fake_brain.chat.chat_id)
+
+    _, messages = _run_bridge(
+        lambda _chat_id: [
+            _handshake_request(),
+            _initialize_request(),
+            _request("projects-empty", "project.list", {}),
+            _request(
+                "project-create",
+                "project.create",
+                {
+                    "name": "Desktop Project",
+                    "customInstructions": "Use concise answers.",
+                },
+            ),
+            _request(
+                "project-open",
+                "project.open",
+                {"projectId": project_id},
+            ),
+            _request(
+                "project-update",
+                "project.update",
+                {
+                    "projectId": project_id,
+                    "name": "Renamed Project",
+                    "customInstructions": None,
+                },
+            ),
+            _request(
+                "project-workspace",
+                "project.workspace",
+                {
+                    "projectId": project_id,
+                    "workspacePath": r"C:\Work\Elysia",
+                },
+            ),
+            _request(
+                "project-move-chat",
+                "project.chat.move",
+                {"chatId": chat_id, "projectId": project_id},
+            ),
+            _request(
+                "project-archive",
+                "project.archive",
+                {"projectId": project_id, "archived": True},
+            ),
+            _request(
+                "project-restore",
+                "project.archive",
+                {"projectId": project_id, "archived": False},
+            ),
+            _request(
+                "project-unbind",
+                "project.workspace",
+                {"projectId": project_id, "workspacePath": None},
+            ),
+            _request(
+                "project-detach-chat",
+                "project.chat.move",
+                {"chatId": chat_id, "projectId": None},
+            ),
+        ],
+        fake_brain=fake_brain,
+    )
+
+    empty_state = _success_result(messages, "projects-empty")
+    assert empty_state["activeProject"] is None
+    assert empty_state["projects"] == []
+    assert empty_state["chatState"]["activeChat"]["chatId"] == chat_id
+
+    created_state = _success_result(messages, "project-create")
+    assert created_state["activeProject"] == {
+        "projectId": project_id,
+        "name": "Desktop Project",
+        "createdAt": fake_brain._projects[
+            ProjectId(project_id)
+        ].created_at.isoformat(),
+        "updatedAt": fake_brain._projects[
+            ProjectId(project_id)
+        ].updated_at.isoformat(),
+        "customInstructions": "Use concise answers.",
+        "workspacePath": None,
+        "archived": False,
+        "chatCount": 0,
+    }
+    assert created_state["projects"] == [created_state["activeProject"]]
+    assert _success_result(
+        messages,
+        "project-open",
+    )["activeProject"]["projectId"] == project_id
+
+    moved_state = _success_result(messages, "project-move-chat")
+    assert moved_state["activeProject"]["chatCount"] == 1
+    assert moved_state["chatState"]["activeChat"]["projectId"] == project_id
+    assert moved_state["chatState"]["chats"][0]["projectId"] == project_id
+
+    assert _success_result(
+        messages,
+        "project-update",
+    )["activeProject"]["name"] == "Renamed Project"
+    assert _success_result(
+        messages,
+        "project-workspace",
+    )["activeProject"]["workspacePath"] == r"C:\Work\Elysia"
+    assert _success_result(
+        messages,
+        "project-archive",
+    )["activeProject"]["archived"] is True
+    assert _success_result(
+        messages,
+        "project-restore",
+    )["activeProject"]["archived"] is False
+    assert _success_result(
+        messages,
+        "project-unbind",
+    )["activeProject"]["workspacePath"] is None
+    detached_state = _success_result(messages, "project-detach-chat")
+    assert detached_state["activeProject"]["chatCount"] == 0
+    assert detached_state["chatState"]["activeChat"]["projectId"] is None
+
+    assert "project.management" in SERVER_CAPABILITIES
+    assert (
+        "update_project",
+        project_id,
+        "Renamed Project",
+        None,
+    ) in fake_brain.session_calls
+    assert ("move_chat", chat_id, project_id) in fake_brain.session_calls
+    assert ("move_chat", chat_id, None) in fake_brain.session_calls
+
+
+def test_project_bridge_exposes_stable_not_found_archived_and_busy_errors(
+) -> None:
+    class FailingProjectBrain(FakeBrain):
+        def update_project(
+            self,
+            project_id: ProjectId,
+            *,
+            name: str,
+            custom_instructions: str | None,
+        ) -> Project:
+            del name, custom_instructions
+            raise ProjectArchivedError(
+                f"Archived Project is read-only: {project_id}."
+            )
+
+        def move_chat(
+            self,
+            chat_id: ChatId,
+            project_id: ProjectId | None,
+        ) -> ChatSession:
+            del project_id
+            raise ProjectChatBusyError(
+                f"Chat cannot change Project while busy: {chat_id}."
+            )
+
+    fake_brain = FailingProjectBrain()
+    project = create_project(name="Error Project")
+    fake_brain.add_project(project)
+
+    _, messages = _run_bridge(
+        lambda chat_id: [
+            _handshake_request(),
+            _initialize_request(),
+            _request(
+                "project-missing",
+                "project.open",
+                {"projectId": "project_missing"},
+            ),
+            _request(
+                "project-archived",
+                "project.update",
+                {
+                    "projectId": str(project.project_id),
+                    "name": "Blocked",
+                    "customInstructions": None,
+                },
+            ),
+            _request(
+                "project-busy",
+                "project.chat.move",
+                {
+                    "chatId": chat_id,
+                    "projectId": str(project.project_id),
+                },
+            ),
+        ],
+        fake_brain=fake_brain,
+    )
+
+    assert _error(messages, "project-missing") == {
+        "code": "project.not_found",
+        "message": "Project does not exist: project_missing.",
+        "retryable": False,
+    }
+    assert _error(messages, "project-archived")["code"] == (
+        "project.archived"
+    )
+    assert _error(messages, "project-archived")["retryable"] is False
+    assert _error(messages, "project-busy")["code"] == "project.chat_busy"
+    assert _error(messages, "project-busy")["retryable"] is True
 
 
 def test_create_open_rename_and_pin_return_uniform_session_state() -> None:

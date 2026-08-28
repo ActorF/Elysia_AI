@@ -15,11 +15,16 @@ import {
 } from 'react'
 
 import type {
+  ArchiveProjectRequest,
   BackendEvent,
   BackendSnapshot,
   ChatDetail,
   ChatSessionState,
+  CreateProjectRequest,
+  MoveChatToProjectRequest,
+  ProjectState,
   SelectedFile,
+  UpdateProjectRequest,
 } from '../electron/contracts.ts'
 import {
   hasNonBlankCodePoint,
@@ -31,6 +36,7 @@ import { ChatView } from './chat/ChatView.tsx'
 import type { ChatMessage, ChatNotice } from './chat/types.ts'
 import { EmptyState } from './design-system/Feedback.tsx'
 import { Icon } from './design-system/Icon.tsx'
+import { ProjectView } from './projects/ProjectView.tsx'
 import { SettingsView } from './settings/SettingsView.tsx'
 import { AppShell } from './shell/AppShell.tsx'
 import { Sidebar, type AppView } from './shell/Sidebar.tsx'
@@ -140,6 +146,9 @@ function App() {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [chatState, setChatState] = useState<ChatSessionState | null>(null)
   const [sessionMutationPending, setSessionMutationPending] = useState(false)
+  const [projectState, setProjectState] = useState<ProjectState | null>(null)
+  const [projectLoading, setProjectLoading] = useState(true)
+  const [projectMutationPending, setProjectMutationPending] = useState(false)
   const [showArchived, setShowArchived] = useState(false)
   const [draft, setDraft] = useState('')
   const [activeView, setActiveView] = useState<AppView>('chat')
@@ -157,13 +166,19 @@ function App() {
   const [compactShell, setCompactShell] = useState(isCompactShell)
   const [sidebarOpen, setSidebarOpen] = useState(() => !isCompactShell())
   const activeChatIdRef = useRef<string | undefined>(snapshot.chatId)
+  const activeViewRef = useRef<AppView>('chat')
   const acceptedSnapshotRevisionRef = useRef(snapshot.revision)
+  const backendStatusRef = useRef(snapshot.status)
   const callButtonRef = useRef<HTMLButtonElement | null>(null)
   const modelOperationRef = useRef(0)
   const modelSelectionPendingRef = useRef(false)
   const retryOperationRef = useRef(0)
   const retryPendingRef = useRef(false)
   const sessionMutationPendingRef = useRef(false)
+  const projectMutationPendingRef = useRef(false)
+  const projectRefreshNeededRef = useRef(false)
+  const projectRefreshPromiseRef = useRef<Promise<void> | null>(null)
+  const streamingRef = useRef(false)
   const panelOperationRef = useRef(0)
   const panelCommittedOpenRef = useRef(false)
   const panelTargetOpenRef = useRef(false)
@@ -207,6 +222,7 @@ function App() {
 
     acceptedSnapshotRevisionRef.current = nextSnapshot.revision
     activeChatIdRef.current = nextSnapshot.chatId
+    backendStatusRef.current = nextSnapshot.status
     setSnapshot(nextSnapshot)
     return true
   }, [])
@@ -216,6 +232,70 @@ function App() {
     setChatState(nextState)
     setMessages(presentChatMessages(nextState.activeChat))
   }, [])
+
+  const acceptProjectState = useCallback((nextState: ProjectState): void => {
+    setProjectState(nextState)
+    acceptChatState(nextState.chatState)
+  }, [acceptChatState])
+
+  const flushProjectRefresh = useCallback(async (): Promise<void> => {
+    if (
+      desktopApi === undefined
+      || activeViewRef.current !== 'projects'
+      || !projectRefreshNeededRef.current
+      || projectRefreshPromiseRef.current !== null
+      || backendStatusRef.current !== 'ready'
+      || projectMutationPendingRef.current
+      || sessionMutationPendingRef.current
+      || streamingRef.current
+    ) {
+      return
+    }
+
+    projectRefreshNeededRef.current = false
+    projectMutationPendingRef.current = true
+    sessionMutationPendingRef.current = true
+    setProjectMutationPending(true)
+    setSessionMutationPending(true)
+
+    const refreshPromise = (async (): Promise<void> => {
+      try {
+        acceptProjectState(await desktopApi.listProjects())
+      } catch (error) {
+        setNotice(errorNotice(
+          error instanceof Error
+            ? error.message
+            : 'Could not refresh Projects.',
+        ))
+      } finally {
+        projectMutationPendingRef.current = false
+        sessionMutationPendingRef.current = false
+        setProjectMutationPending(false)
+        setSessionMutationPending(false)
+        setProjectLoading(false)
+      }
+    })()
+    projectRefreshPromiseRef.current = refreshPromise
+    try {
+      await refreshPromise
+    } finally {
+      if (projectRefreshPromiseRef.current === refreshPromise) {
+        projectRefreshPromiseRef.current = null
+      }
+    }
+  }, [acceptProjectState, desktopApi])
+
+  const requestProjectRefresh = useCallback((): Promise<void> => {
+    if (activeViewRef.current !== 'projects') {
+      return Promise.resolve()
+    }
+    const inFlightRefresh = projectRefreshPromiseRef.current
+    if (inFlightRefresh !== null) {
+      return inFlightRefresh
+    }
+    projectRefreshNeededRef.current = true
+    return flushProjectRefresh()
+  }, [flushProjectRefresh])
 
   const setCharacterPanelVisibility = useCallback((nextOpen: boolean) => {
     panelTargetOpenRef.current = nextOpen
@@ -272,33 +352,58 @@ function App() {
 
     let active = true
     sessionMutationPendingRef.current = true
-    void desktopApi.listChats(true)
-      .then((nextState) => {
-        if (active) {
-          acceptChatState(nextState)
-        }
-      })
-      .catch((error: unknown) => {
-        if (active) {
-          setNotice(errorNotice(
-            error instanceof Error
-              ? error.message
-              : 'Could not load persisted Chats.',
-          ))
-        }
-      })
-      .finally(() => {
-        if (active) {
-          sessionMutationPendingRef.current = false
-          setSessionMutationPending(false)
-        }
-      })
+    projectMutationPendingRef.current = true
+    queueMicrotask(() => {
+      if (!active) {
+        return
+      }
+      setSessionMutationPending(true)
+      setProjectMutationPending(true)
+      setProjectLoading(true)
+      void desktopApi.listProjects()
+        .then((nextState) => {
+          if (active) {
+            acceptProjectState(nextState)
+            projectRefreshNeededRef.current = false
+          }
+        })
+        .catch((error: unknown) => {
+          if (active) {
+            setNotice(errorNotice(
+              error instanceof Error
+                ? error.message
+                : 'Could not load persisted Projects and Chats.',
+            ))
+          }
+        })
+        .finally(() => {
+          if (active) {
+            sessionMutationPendingRef.current = false
+            projectMutationPendingRef.current = false
+            setSessionMutationPending(false)
+            setProjectMutationPending(false)
+            setProjectLoading(false)
+            if (
+              projectRefreshNeededRef.current
+              && activeViewRef.current === 'projects'
+            ) {
+              queueMicrotask(() => { void flushProjectRefresh() })
+            }
+          }
+        })
+    })
 
     return () => {
       active = false
       sessionMutationPendingRef.current = false
+      projectMutationPendingRef.current = false
     }
-  }, [acceptChatState, desktopApi, snapshot.status])
+  }, [
+    acceptProjectState,
+    desktopApi,
+    flushProjectRefresh,
+    snapshot.status,
+  ])
 
   useEffect(() => {
     if (typeof window.matchMedia !== 'function') {
@@ -335,6 +440,7 @@ function App() {
           return
         }
         if (nextSnapshot.status !== 'ready') {
+          streamingRef.current = false
           setStreaming(false)
         }
       })
@@ -360,6 +466,7 @@ function App() {
           return
         }
         if (event.snapshot.status !== 'ready') {
+          streamingRef.current = false
           setStreaming(false)
         }
         if (event.snapshot.status === 'error') {
@@ -432,16 +539,21 @@ function App() {
               : message
           ))
         })
+        streamingRef.current = false
         setStreaming(false)
-        void desktopApi.listChats(true)
-          .then(acceptChatState)
-          .catch((error: unknown) => {
-            setNotice(errorNotice(
-              error instanceof Error
-                ? error.message
-                : 'Reply completed, but Chat history could not be refreshed.',
-            ))
-          })
+        if (activeViewRef.current === 'projects') {
+          void requestProjectRefresh()
+        } else {
+          void desktopApi.listChats(true)
+            .then(acceptChatState)
+            .catch((error: unknown) => {
+              setNotice(errorNotice(
+                error instanceof Error
+                  ? error.message
+                  : 'Reply completed, but Chat history could not be refreshed.',
+              ))
+            })
+        }
         return
       }
 
@@ -449,6 +561,7 @@ function App() {
         if (event.chatId !== activeChatIdRef.current) {
           return
         }
+        streamingRef.current = false
         setStreaming(false)
         setNotice(errorNotice(event.message))
         setMessages((currentMessages) => {
@@ -470,6 +583,7 @@ function App() {
               : message
           ))
         })
+        void requestProjectRefresh()
         return
       }
 
@@ -493,7 +607,12 @@ function App() {
       active = false
       unsubscribe()
     }
-  }, [acceptChatState, acceptSnapshot, desktopApi])
+  }, [
+    acceptChatState,
+    acceptSnapshot,
+    desktopApi,
+    requestProjectRefresh,
+  ])
 
   useEffect(() => {
     function handleGlobalKeyDown(event: globalThis.KeyboardEvent): void {
@@ -502,6 +621,7 @@ function App() {
 
       if (modifier && key === 'k') {
         event.preventDefault()
+        activeViewRef.current = 'chat'
         setActiveView('chat')
         setSidebarOpen(true)
         setSearchOpen(true)
@@ -520,6 +640,7 @@ function App() {
       }
       if (modifier && event.key === ',') {
         event.preventDefault()
+        activeViewRef.current = 'settings'
         setActiveView('settings')
         setSearchOpen(false)
         setSearchQuery('')
@@ -544,6 +665,7 @@ function App() {
       } else if (compactShell && sidebarOpen) {
         setSidebarOpen(false)
       } else if (activeView !== 'chat') {
+        activeViewRef.current = 'chat'
         setActiveView('chat')
       }
     }
@@ -566,7 +688,13 @@ function App() {
   ])
 
   function navigate(view: AppView): void {
+    activeViewRef.current = view
     setActiveView(view)
+    if (view === 'projects') {
+      void requestProjectRefresh()
+    } else {
+      projectRefreshNeededRef.current = false
+    }
     if (view !== 'chat') {
       setSearchOpen(false)
       setSearchQuery('')
@@ -595,6 +723,7 @@ function App() {
 
     setDraft('')
     setNotice(null)
+    streamingRef.current = true
     setStreaming(true)
     setMessages((currentMessages) => [
       ...currentMessages,
@@ -624,12 +753,14 @@ function App() {
         ]
       })
     } catch (error) {
+      streamingRef.current = false
       setStreaming(false)
       setNotice(errorNotice(
         error instanceof Error
           ? error.message
           : 'Could not send the message.',
       ))
+      void requestProjectRefresh()
     }
   }
 
@@ -721,7 +852,8 @@ function App() {
     setSessionMutationPending(true)
     setNotice(null)
     try {
-      acceptChatState(await operation())
+      const nextChatState = await operation()
+      acceptChatState(nextChatState)
     } catch (error) {
       const normalized = error instanceof Error
         ? error
@@ -731,7 +863,140 @@ function App() {
     } finally {
       sessionMutationPendingRef.current = false
       setSessionMutationPending(false)
+      await requestProjectRefresh()
     }
+  }
+
+  async function runProjectAction(
+    operation: () => Promise<ProjectState>,
+    fallbackMessage: string,
+  ): Promise<void> {
+    if (
+      desktopApi === undefined
+      || projectMutationPendingRef.current
+      || sessionMutationPendingRef.current
+      || streaming
+      || snapshot.status !== 'ready'
+    ) {
+      throw new Error('Wait for the current Project or Chat action to finish.')
+    }
+
+    projectMutationPendingRef.current = true
+    sessionMutationPendingRef.current = true
+    setProjectMutationPending(true)
+    setSessionMutationPending(true)
+    try {
+      acceptProjectState(await operation())
+      projectRefreshNeededRef.current = false
+    } catch (error) {
+      throw error instanceof Error ? error : new Error(fallbackMessage)
+    } finally {
+      projectMutationPendingRef.current = false
+      sessionMutationPendingRef.current = false
+      setProjectMutationPending(false)
+      setSessionMutationPending(false)
+      setProjectLoading(false)
+    }
+  }
+
+  function createProject(request: CreateProjectRequest): Promise<void> {
+    if (desktopApi === undefined) {
+      return Promise.reject(new Error('Desktop API is unavailable.'))
+    }
+    return runProjectAction(
+      () => desktopApi.createProject(request),
+      'Could not create the Project.',
+    )
+  }
+
+  function openProject(projectId: string): Promise<void> {
+    if (desktopApi === undefined) {
+      return Promise.reject(new Error('Desktop API is unavailable.'))
+    }
+    return runProjectAction(
+      () => desktopApi.openProject(projectId),
+      'Could not open the Project.',
+    )
+  }
+
+  function updateProject(request: UpdateProjectRequest): Promise<void> {
+    if (desktopApi === undefined) {
+      return Promise.reject(new Error('Desktop API is unavailable.'))
+    }
+    return runProjectAction(
+      () => desktopApi.updateProject(request),
+      'Could not update the Project.',
+    )
+  }
+
+  async function chooseProjectWorkspace(projectId: string): Promise<boolean> {
+    if (desktopApi === undefined) {
+      throw new Error('Desktop API is unavailable.')
+    }
+    if (
+      projectMutationPendingRef.current
+      || sessionMutationPendingRef.current
+      || streaming
+      || snapshot.status !== 'ready'
+    ) {
+      throw new Error('Wait for the current Project or Chat action to finish.')
+    }
+
+    projectMutationPendingRef.current = true
+    sessionMutationPendingRef.current = true
+    setProjectMutationPending(true)
+    setSessionMutationPending(true)
+    try {
+      const nextState = await desktopApi.chooseProjectWorkspace(projectId)
+      if (nextState === null) {
+        return false
+      }
+      acceptProjectState(nextState)
+      projectRefreshNeededRef.current = false
+      return true
+    } finally {
+      projectMutationPendingRef.current = false
+      sessionMutationPendingRef.current = false
+      setProjectMutationPending(false)
+      setSessionMutationPending(false)
+    }
+  }
+
+  function unbindProjectWorkspace(projectId: string): Promise<void> {
+    if (desktopApi === undefined) {
+      return Promise.reject(new Error('Desktop API is unavailable.'))
+    }
+    return runProjectAction(
+      () => desktopApi.clearProjectWorkspace(projectId),
+      'Could not unbind the Project workspace.',
+    )
+  }
+
+  function archiveProject(request: ArchiveProjectRequest): Promise<void> {
+    if (desktopApi === undefined) {
+      return Promise.reject(new Error('Desktop API is unavailable.'))
+    }
+    return runProjectAction(
+      () => desktopApi.setProjectArchived(request),
+      'Could not update the Project archive.',
+    )
+  }
+
+  function moveChatToProject(
+    request: MoveChatToProjectRequest,
+  ): Promise<void> {
+    if (desktopApi === undefined) {
+      return Promise.reject(new Error('Desktop API is unavailable.'))
+    }
+    return runProjectAction(
+      () => desktopApi.moveChatToProject(request),
+      'Could not update the Chat Project.',
+    )
+  }
+
+  async function openChatFromProject(chatId: string): Promise<void> {
+    await openChat(chatId)
+    navigate('chat')
   }
 
   function createChat(): Promise<void> {
@@ -898,12 +1163,23 @@ function App() {
     )
   } else if (activeView === 'projects') {
     content = (
-      <PlaceholderView
-        title="Projects"
-        icon="folder"
-        description="Project creation and management will connect here without the renderer editing local data directly."
+      <ProjectView
+        busyChatId={streaming ? chatState?.activeChat.chatId : undefined}
+        loading={projectLoading}
+        mutationPending={
+          projectMutationPending || snapshot.status !== 'ready'
+        }
+        projectState={projectState}
         sidebarOpen={sidebarOpen}
+        onArchive={archiveProject}
+        onChooseWorkspace={chooseProjectWorkspace}
+        onCreate={createProject}
+        onMoveChat={moveChatToProject}
+        onOpenChat={openChatFromProject}
+        onOpenProject={openProject}
         onToggleSidebar={() => { setSidebarOpen((open) => !open) }}
+        onUnbindWorkspace={unbindProjectWorkspace}
+        onUpdate={updateProject}
       />
     )
   } else if (activeView === 'memory') {
@@ -980,11 +1256,10 @@ function App() {
           modal={compactShell}
           mutationPending={sessionUiPending}
           open={sidebarOpen}
-          projectCount={new Set(
-            (chatState?.chats ?? [])
-              .map((chat) => chat.projectId)
-              .filter((projectId) => projectId !== null),
-          ).size}
+          projectCount={
+            projectState?.projects.filter((project) => !project.archived).length
+            ?? 0
+          }
           searchOpen={searchOpen}
           searchQuery={searchQuery}
           showArchived={showArchived}

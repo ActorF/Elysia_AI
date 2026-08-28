@@ -23,8 +23,11 @@ export const MAX_PROTOCOL_FRAME_BYTES = 16_777_216
 export const MAX_IDENTIFIER_LENGTH = 128
 const MAX_METHOD_LENGTH = 96
 export const MAX_MESSAGE_LENGTH = 1_000_000
+export const MAX_PROJECT_NAME_LENGTH = 200
+export const MAX_WORKSPACE_PATH_LENGTH = 32_767
 const MIN_SESSION_TOKEN_LENGTH = 32
 const MAX_SESSION_TOKEN_LENGTH = 512
+const PROJECT_ID_PATTERN = /^project_[A-Za-z0-9_-]+$/
 
 export interface ProtocolDescriptor {
   name: typeof PROTOCOL_NAME
@@ -74,6 +77,36 @@ export interface ChatArchiveParams {
   archived: boolean
 }
 
+export interface ProjectCreateParams {
+  name: string
+  customInstructions: string | null
+}
+
+export interface ProjectIdParams {
+  projectId: string
+}
+
+export interface ProjectUpdateParams {
+  projectId: string
+  name: string
+  customInstructions: string | null
+}
+
+export interface ProjectWorkspaceParams {
+  projectId: string
+  workspacePath: string | null
+}
+
+export interface ProjectArchiveParams {
+  projectId: string
+  archived: boolean
+}
+
+export interface ProjectChatMoveParams {
+  chatId: string
+  projectId: string | null
+}
+
 export interface CancelParams {
   requestId: string
   reason?: string
@@ -95,6 +128,13 @@ export interface RequestParamsByMethod {
   'chat.pin': ChatPinParams
   'chat.archive': ChatArchiveParams
   'chat.delete': ChatIdParams
+  'project.list': Record<string, never>
+  'project.create': ProjectCreateParams
+  'project.open': ProjectIdParams
+  'project.update': ProjectUpdateParams
+  'project.workspace': ProjectWorkspaceParams
+  'project.archive': ProjectArchiveParams
+  'project.chat.move': ProjectChatMoveParams
   'request.cancel': CancelParams
   'permission.respond': PermissionResponseParams
   shutdown: Record<string, never>
@@ -240,6 +280,23 @@ export interface ChatStateResult {
   chats: ChatSessionSummary[]
 }
 
+export interface ProjectSummary {
+  projectId: string
+  name: string
+  createdAt: string
+  updatedAt: string
+  customInstructions: string | null
+  workspacePath: string | null
+  archived: boolean
+  chatCount: number
+}
+
+export interface ProjectStateResult {
+  activeProject: ProjectSummary | null
+  projects: ProjectSummary[]
+  chatState: ChatStateResult
+}
+
 export class ProtocolValidationError extends Error {
   readonly code: string
 
@@ -325,6 +382,47 @@ function readIdentifier(
   return readString(value, key, context, {
     maximum: MAX_IDENTIFIER_LENGTH,
   })
+}
+
+function readProjectIdentifier(
+  value: Record<string, unknown>,
+  key: string,
+  context: string,
+): string {
+  const raw = readIdentifier(value, key, context)
+  if (!PROJECT_ID_PATTERN.test(raw)) {
+    return fail(
+      'protocol.invalid_message',
+      `${context}.${key} must use the project_<id> format.`,
+    )
+  }
+  return raw
+}
+
+function readNonBlankString(
+  value: Record<string, unknown>,
+  key: string,
+  context: string,
+  maximum: number,
+  errorCode: string,
+): string {
+  const raw = readString(value, key, context, { maximum })
+  if (!hasNonBlankCodePoint(raw)) {
+    return fail(errorCode, `${context}.${key} cannot be blank.`)
+  }
+  return raw
+}
+
+function readNullableNonBlankString(
+  value: Record<string, unknown>,
+  key: string,
+  context: string,
+  maximum: number,
+  errorCode: string,
+): string | null {
+  return value[key] === null
+    ? null
+    : readNonBlankString(value, key, context, maximum, errorCode)
 }
 
 function readInteger(
@@ -511,6 +609,104 @@ function parseChatArchiveParams(value: unknown): ChatArchiveParams {
   }
 }
 
+function parseProjectCreateParams(value: unknown): ProjectCreateParams {
+  const context = 'project.create params'
+  const params = asRecord(value, context)
+  requireFields(params, ['name', 'customInstructions'], context)
+  return {
+    name: readNonBlankString(
+      params,
+      'name',
+      context,
+      MAX_PROJECT_NAME_LENGTH,
+      'protocol.invalid_params',
+    ),
+    customInstructions: readNullableNonBlankString(
+      params,
+      'customInstructions',
+      context,
+      MAX_MESSAGE_LENGTH,
+      'protocol.invalid_params',
+    ),
+  }
+}
+
+function parseProjectIdParams(value: unknown): ProjectIdParams {
+  const context = 'project.open params'
+  const params = asRecord(value, context)
+  requireFields(params, ['projectId'], context)
+  return {
+    projectId: readProjectIdentifier(params, 'projectId', context),
+  }
+}
+
+function parseProjectUpdateParams(value: unknown): ProjectUpdateParams {
+  const context = 'project.update params'
+  const params = asRecord(value, context)
+  requireFields(
+    params,
+    ['projectId', 'name', 'customInstructions'],
+    context,
+  )
+  return {
+    projectId: readProjectIdentifier(params, 'projectId', context),
+    name: readNonBlankString(
+      params,
+      'name',
+      context,
+      MAX_PROJECT_NAME_LENGTH,
+      'protocol.invalid_params',
+    ),
+    customInstructions: readNullableNonBlankString(
+      params,
+      'customInstructions',
+      context,
+      MAX_MESSAGE_LENGTH,
+      'protocol.invalid_params',
+    ),
+  }
+}
+
+function parseProjectWorkspaceParams(
+  value: unknown,
+): ProjectWorkspaceParams {
+  const context = 'project.workspace params'
+  const params = asRecord(value, context)
+  requireFields(params, ['projectId', 'workspacePath'], context)
+  return {
+    projectId: readProjectIdentifier(params, 'projectId', context),
+    workspacePath: readNullableNonBlankString(
+      params,
+      'workspacePath',
+      context,
+      MAX_WORKSPACE_PATH_LENGTH,
+      'protocol.invalid_params',
+    ),
+  }
+}
+
+function parseProjectArchiveParams(value: unknown): ProjectArchiveParams {
+  const context = 'project.archive params'
+  const params = asRecord(value, context)
+  requireFields(params, ['projectId', 'archived'], context)
+  return {
+    projectId: readProjectIdentifier(params, 'projectId', context),
+    archived: readBoolean(params, 'archived', context),
+  }
+}
+
+function parseProjectChatMoveParams(value: unknown): ProjectChatMoveParams {
+  const context = 'project.chat.move params'
+  const params = asRecord(value, context)
+  requireFields(params, ['chatId', 'projectId'], context)
+  return {
+    chatId: readIdentifier(params, 'chatId', context),
+    projectId: params.projectId === null
+      ? null
+      : readProjectIdentifier(params, 'projectId', context),
+  }
+}
+
 function parseCancelParams(value: unknown): CancelParams {
   const params = asRecord(value, 'request.cancel params')
   requireFields(
@@ -616,6 +812,47 @@ export function parseClientRequest(value: unknown): ClientRequest {
     return {
       type: 'request', protocol, id, method,
       params: parseChatArchiveParams(request.params),
+    }
+  }
+  if (method === 'project.list') {
+    const params = asRecord(request.params, 'project.list params')
+    requireFields(params, [], 'project.list params')
+    return { type: 'request', protocol, id, method, params: {} }
+  }
+  if (method === 'project.create') {
+    return {
+      type: 'request', protocol, id, method,
+      params: parseProjectCreateParams(request.params),
+    }
+  }
+  if (method === 'project.open') {
+    return {
+      type: 'request', protocol, id, method,
+      params: parseProjectIdParams(request.params),
+    }
+  }
+  if (method === 'project.update') {
+    return {
+      type: 'request', protocol, id, method,
+      params: parseProjectUpdateParams(request.params),
+    }
+  }
+  if (method === 'project.workspace') {
+    return {
+      type: 'request', protocol, id, method,
+      params: parseProjectWorkspaceParams(request.params),
+    }
+  }
+  if (method === 'project.archive') {
+    return {
+      type: 'request', protocol, id, method,
+      params: parseProjectArchiveParams(request.params),
+    }
+  }
+  if (method === 'project.chat.move') {
+    return {
+      type: 'request', protocol, id, method,
+      params: parseProjectChatMoveParams(request.params),
     }
   }
   if (method === 'request.cancel') {
@@ -1170,6 +1407,154 @@ export function parseChatStateResult(value: unknown): ChatStateResult {
   return { activeChat, chats }
 }
 
+function parseProjectSummary(
+  value: unknown,
+  context: string,
+): ProjectSummary {
+  const project = asRecord(value, context)
+  requireFields(
+    project,
+    [
+      'projectId',
+      'name',
+      'createdAt',
+      'updatedAt',
+      'customInstructions',
+      'workspacePath',
+      'archived',
+      'chatCount',
+    ],
+    context,
+  )
+  const chatCount = readInteger(project, 'chatCount', context)
+  if (chatCount < 0) {
+    return fail(
+      'protocol.invalid_message',
+      `${context}.chatCount cannot be negative.`,
+    )
+  }
+  return {
+    projectId: readProjectIdentifier(project, 'projectId', context),
+    name: readNonBlankString(
+      project,
+      'name',
+      context,
+      MAX_PROJECT_NAME_LENGTH,
+      'protocol.invalid_message',
+    ),
+    createdAt: readString(project, 'createdAt', context, { maximum: 128 }),
+    updatedAt: readString(project, 'updatedAt', context, { maximum: 128 }),
+    customInstructions: readNullableNonBlankString(
+      project,
+      'customInstructions',
+      context,
+      MAX_MESSAGE_LENGTH,
+      'protocol.invalid_message',
+    ),
+    workspacePath: readNullableNonBlankString(
+      project,
+      'workspacePath',
+      context,
+      MAX_WORKSPACE_PATH_LENGTH,
+      'protocol.invalid_message',
+    ),
+    archived: readBoolean(project, 'archived', context),
+    chatCount,
+  }
+}
+
+function projectSummariesMatch(
+  left: ProjectSummary,
+  right: ProjectSummary,
+): boolean {
+  return (
+    left.projectId === right.projectId
+    && left.name === right.name
+    && left.createdAt === right.createdAt
+    && left.updatedAt === right.updatedAt
+    && left.customInstructions === right.customInstructions
+    && left.workspacePath === right.workspacePath
+    && left.archived === right.archived
+    && left.chatCount === right.chatCount
+  )
+}
+
+export function parseProjectStateResult(value: unknown): ProjectStateResult {
+  const result = asRecord(value, 'project state result')
+  requireFields(
+    result,
+    ['activeProject', 'projects', 'chatState'],
+    'project state result',
+  )
+  if (!Array.isArray(result.projects)) {
+    return fail(
+      'protocol.invalid_message',
+      'project state result.projects must be an array.',
+    )
+  }
+  const projects = result.projects.map((project, index) => (
+    parseProjectSummary(project, `project state result.projects[${index}]`)
+  ))
+  const projectIds = projects.map((project) => project.projectId)
+  if (new Set(projectIds).size !== projectIds.length) {
+    return fail(
+      'protocol.invalid_message',
+      'project state result.projects must have unique projectId values.',
+    )
+  }
+
+  const activeProject = result.activeProject === null
+    ? null
+    : parseProjectSummary(
+        result.activeProject,
+        'project state result.activeProject',
+      )
+  if (activeProject !== null) {
+    const matchingProject = projects.find(
+      (project) => project.projectId === activeProject.projectId,
+    )
+    if (matchingProject === undefined) {
+      return fail(
+        'protocol.invalid_message',
+        'project state result.activeProject must appear in projects.',
+      )
+    }
+    if (!projectSummariesMatch(activeProject, matchingProject)) {
+      return fail(
+        'protocol.invalid_message',
+        'project state result.activeProject must match projects.',
+      )
+    }
+  }
+
+  const chatState = parseChatStateResult(result.chatState)
+  const observedChatCounts = new Map(
+    projects.map((project) => [project.projectId, 0]),
+  )
+  for (const chat of chatState.chats) {
+    if (chat.projectId === null) {
+      continue
+    }
+    const currentCount = observedChatCounts.get(chat.projectId)
+    if (currentCount === undefined) {
+      return fail(
+        'protocol.invalid_message',
+        'project state result contains a Chat whose projectId is absent from projects.',
+      )
+    }
+    observedChatCounts.set(chat.projectId, currentCount + 1)
+  }
+  for (const project of projects) {
+    if (project.chatCount !== observedChatCounts.get(project.projectId)) {
+      return fail(
+        'protocol.invalid_message',
+        'project state result.project chatCount must match chatState.chats.',
+      )
+    }
+  }
+  return { activeProject, projects, chatState }
+}
+
 function validateSuccessResult(value: unknown): Record<string, unknown> {
   const result = asRecord(value, 'response.result')
   if (Object.hasOwn(result, 'protocol')) {
@@ -1186,6 +1571,10 @@ function validateSuccessResult(value: unknown): Record<string, unknown> {
   }
   if (Object.hasOwn(result, 'activeChat')) {
     parseChatStateResult(result)
+    return result
+  }
+  if (Object.hasOwn(result, 'activeProject')) {
+    parseProjectStateResult(result)
     return result
   }
   requireFields(result, ['stopped'], 'shutdown result')

@@ -15,6 +15,10 @@
     "chatStateResult.chats has unique chatId values",
     "chatStateResult.activeChat appears in chats with identical summary fields",
     "chatDetail.messages has unique messageId values and its length equals messageCount",
+    "projectStateResult.projects has unique projectId values",
+    "projectStateResult.activeProject is null or appears in projects with identical fields",
+    "every non-null projectId in projectStateResult.chatState refers to projectStateResult.projects",
+    "each Project chatCount equals all matching Chats in projectStateResult.chatState.chats",
     "stream sequences are contiguous per request and have exactly one terminal chunk",
     "the terminal response reply exactly equals the concatenated stream chunks",
     "request and permission identifiers correlate with live pending operations"
@@ -30,6 +34,13 @@
     { "$ref": "#/$defs/chatPinRequest" },
     { "$ref": "#/$defs/chatArchiveRequest" },
     { "$ref": "#/$defs/chatDeleteRequest" },
+    { "$ref": "#/$defs/projectListRequest" },
+    { "$ref": "#/$defs/projectCreateRequest" },
+    { "$ref": "#/$defs/projectOpenRequest" },
+    { "$ref": "#/$defs/projectUpdateRequest" },
+    { "$ref": "#/$defs/projectWorkspaceRequest" },
+    { "$ref": "#/$defs/projectArchiveRequest" },
+    { "$ref": "#/$defs/projectChatMoveRequest" },
     { "$ref": "#/$defs/cancelRequest" },
     { "$ref": "#/$defs/permissionResponseRequest" },
     { "$ref": "#/$defs/shutdownRequest" },
@@ -45,6 +56,12 @@
       "type": "string",
       "minLength": 1,
       "maxLength": 128
+    },
+    "projectIdentifier": {
+      "type": "string",
+      "minLength": 9,
+      "maxLength": 128,
+      "pattern": "^project_[A-Za-z0-9_-]+$"
     },
     "protocol": {
       "type": "object",
@@ -73,6 +90,13 @@
             "chat.pin",
             "chat.archive",
             "chat.delete",
+            "project.list",
+            "project.create",
+            "project.open",
+            "project.update",
+            "project.workspace",
+            "project.archive",
+            "project.chat.move",
             "request.cancel",
             "permission.respond",
             "shutdown"
@@ -181,6 +205,97 @@
         "archived": { "type": "boolean" }
       },
       "required": ["chatId", "archived"],
+      "additionalProperties": false
+    },
+    "projectName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "pattern": "[^\\u0009-\\u000D\\u0020\\u0085\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000\\uFEFF]"
+    },
+    "nullableProjectInstructions": {
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000000,
+          "pattern": "[^\\u0009-\\u000D\\u0020\\u0085\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000\\uFEFF]"
+        },
+        { "type": "null" }
+      ]
+    },
+    "nullableWorkspacePath": {
+      "oneOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32767,
+          "pattern": "[^\\u0009-\\u000D\\u0020\\u0085\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000\\uFEFF]"
+        },
+        { "type": "null" }
+      ]
+    },
+    "projectListParams": {
+      "type": "object",
+      "maxProperties": 0
+    },
+    "projectCreateParams": {
+      "type": "object",
+      "properties": {
+        "name": { "$ref": "#/$defs/projectName" },
+        "customInstructions": { "$ref": "#/$defs/nullableProjectInstructions" }
+      },
+      "required": ["name", "customInstructions"],
+      "additionalProperties": false
+    },
+    "projectIdParams": {
+      "type": "object",
+      "properties": {
+        "projectId": { "$ref": "#/$defs/projectIdentifier" }
+      },
+      "required": ["projectId"],
+      "additionalProperties": false
+    },
+    "projectUpdateParams": {
+      "type": "object",
+      "properties": {
+        "projectId": { "$ref": "#/$defs/projectIdentifier" },
+        "name": { "$ref": "#/$defs/projectName" },
+        "customInstructions": { "$ref": "#/$defs/nullableProjectInstructions" }
+      },
+      "required": ["projectId", "name", "customInstructions"],
+      "additionalProperties": false
+    },
+    "projectWorkspaceParams": {
+      "type": "object",
+      "properties": {
+        "projectId": { "$ref": "#/$defs/projectIdentifier" },
+        "workspacePath": { "$ref": "#/$defs/nullableWorkspacePath" }
+      },
+      "required": ["projectId", "workspacePath"],
+      "additionalProperties": false
+    },
+    "projectArchiveParams": {
+      "type": "object",
+      "properties": {
+        "projectId": { "$ref": "#/$defs/projectIdentifier" },
+        "archived": { "type": "boolean" }
+      },
+      "required": ["projectId", "archived"],
+      "additionalProperties": false
+    },
+    "projectChatMoveParams": {
+      "type": "object",
+      "properties": {
+        "chatId": { "$ref": "#/$defs/identifier" },
+        "projectId": {
+          "oneOf": [
+            { "$ref": "#/$defs/projectIdentifier" },
+            { "type": "null" }
+          ]
+        }
+      },
+      "required": ["chatId", "projectId"],
       "additionalProperties": false
     },
     "cancelParams": {
@@ -311,6 +426,83 @@
           "properties": {
             "method": { "const": "chat.delete" },
             "params": { "$ref": "#/$defs/chatIdParams" }
+          }
+        }
+      ]
+    },
+    "projectListRequest": {
+      "allOf": [
+        { "$ref": "#/$defs/requestEnvelope" },
+        {
+          "properties": {
+            "method": { "const": "project.list" },
+            "params": { "$ref": "#/$defs/projectListParams" }
+          }
+        }
+      ]
+    },
+    "projectCreateRequest": {
+      "allOf": [
+        { "$ref": "#/$defs/requestEnvelope" },
+        {
+          "properties": {
+            "method": { "const": "project.create" },
+            "params": { "$ref": "#/$defs/projectCreateParams" }
+          }
+        }
+      ]
+    },
+    "projectOpenRequest": {
+      "allOf": [
+        { "$ref": "#/$defs/requestEnvelope" },
+        {
+          "properties": {
+            "method": { "const": "project.open" },
+            "params": { "$ref": "#/$defs/projectIdParams" }
+          }
+        }
+      ]
+    },
+    "projectUpdateRequest": {
+      "allOf": [
+        { "$ref": "#/$defs/requestEnvelope" },
+        {
+          "properties": {
+            "method": { "const": "project.update" },
+            "params": { "$ref": "#/$defs/projectUpdateParams" }
+          }
+        }
+      ]
+    },
+    "projectWorkspaceRequest": {
+      "allOf": [
+        { "$ref": "#/$defs/requestEnvelope" },
+        {
+          "properties": {
+            "method": { "const": "project.workspace" },
+            "params": { "$ref": "#/$defs/projectWorkspaceParams" }
+          }
+        }
+      ]
+    },
+    "projectArchiveRequest": {
+      "allOf": [
+        { "$ref": "#/$defs/requestEnvelope" },
+        {
+          "properties": {
+            "method": { "const": "project.archive" },
+            "params": { "$ref": "#/$defs/projectArchiveParams" }
+          }
+        }
+      ]
+    },
+    "projectChatMoveRequest": {
+      "allOf": [
+        { "$ref": "#/$defs/requestEnvelope" },
+        {
+          "properties": {
+            "method": { "const": "project.chat.move" },
+            "params": { "$ref": "#/$defs/projectChatMoveParams" }
           }
         }
       ]
@@ -511,6 +703,47 @@
       "required": ["activeChat", "chats"],
       "additionalProperties": false
     },
+    "projectSummary": {
+      "type": "object",
+      "properties": {
+        "projectId": { "$ref": "#/$defs/projectIdentifier" },
+        "name": { "$ref": "#/$defs/projectName" },
+        "createdAt": { "$ref": "#/$defs/timestamp" },
+        "updatedAt": { "$ref": "#/$defs/timestamp" },
+        "customInstructions": { "$ref": "#/$defs/nullableProjectInstructions" },
+        "workspacePath": { "$ref": "#/$defs/nullableWorkspacePath" },
+        "archived": { "type": "boolean" },
+        "chatCount": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "projectId", "name", "createdAt", "updatedAt",
+        "customInstructions", "workspacePath", "archived", "chatCount"
+      ],
+      "additionalProperties": false
+    },
+    "projectStateResult": {
+      "type": "object",
+      "properties": {
+        "activeProject": {
+          "oneOf": [
+            { "$ref": "#/$defs/projectSummary" },
+            { "type": "null" }
+          ]
+        },
+        "projects": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/projectSummary" },
+          "uniqueItems": true
+        },
+        "chatState": { "$ref": "#/$defs/chatStateResult" }
+      },
+      "required": ["activeProject", "projects", "chatState"],
+      "additionalProperties": false
+    },
     "shutdownResult": {
       "type": "object",
       "properties": { "stopped": { "const": true } },
@@ -530,6 +763,7 @@
             { "$ref": "#/$defs/initializeResult" },
             { "$ref": "#/$defs/chatResult" },
             { "$ref": "#/$defs/chatStateResult" },
+            { "$ref": "#/$defs/projectStateResult" },
             { "$ref": "#/$defs/shutdownResult" }
           ]
         }

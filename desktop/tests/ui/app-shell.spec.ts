@@ -61,6 +61,23 @@ interface ChatSessionState {
   chats: ChatSessionSummary[]
 }
 
+interface ProjectSummary {
+  projectId: string
+  name: string
+  createdAt: string
+  updatedAt: string
+  customInstructions: string | null
+  workspacePath: string | null
+  archived: boolean
+  chatCount: number
+}
+
+interface ProjectState {
+  activeProject: ProjectSummary | null
+  projects: ProjectSummary[]
+  chatState: ChatSessionState
+}
+
 interface CallRecord {
   sequence: number
   method: string
@@ -70,12 +87,17 @@ interface CallRecord {
 interface RendererTestControl {
   clearCalls(): void
   emitBackendEvent(event: unknown): void
+  getPendingChatActionCount(): number
   getPendingCharacterPanelChangeCount(): number
   getCalls(): CallRecord[]
+  releaseNextChatAction(): boolean
   releaseNextCharacterPanelChange(): boolean
+  setChatActionDelay(delayed: boolean): void
   setCharacterPanelChangeDelay(delayed: boolean): void
   setChatState(state: ChatSessionState): void
+  setProjectState(state: ProjectState): void
   setSelectedFiles(files: SelectedFile[]): void
+  setSelectedWorkspace(workspacePath: string | null): void
 }
 
 type TestWindow = Window & {
@@ -128,6 +150,21 @@ async function setChatState(state: ChatSessionState): Promise<void> {
   }, state)
 }
 
+async function setProjectState(state: ProjectState): Promise<void> {
+  await page.evaluate((nextState) => {
+    ;(window as TestWindow).elysiaDesktopTest.setProjectState(nextState)
+  }, state)
+}
+
+async function setSelectedWorkspace(
+  workspacePath: string | null,
+): Promise<void> {
+  await page.evaluate((nextWorkspacePath) => {
+    ;(window as TestWindow).elysiaDesktopTest
+      .setSelectedWorkspace(nextWorkspacePath)
+  }, workspacePath)
+}
+
 function chatSummary(
   chatId: string,
   title: string,
@@ -144,6 +181,24 @@ function chatSummary(
     modelName: 'qwen3.5:9b',
     pinned: false,
     archived: false,
+    ...overrides,
+  }
+}
+
+function projectSummary(
+  projectId: string,
+  name: string,
+  overrides: Partial<ProjectSummary> = {},
+): ProjectSummary {
+  return {
+    projectId,
+    name,
+    createdAt: '2026-08-25T11:00:00+00:00',
+    updatedAt: '2026-08-25T12:30:00+00:00',
+    customInstructions: null,
+    workspacePath: null,
+    archived: false,
+    chatCount: 0,
     ...overrides,
   }
 }
@@ -466,7 +521,7 @@ test('renders canonical Chat metadata and opens persisted sessions', async () =>
   const second = chatSummary('chat-second', 'Personal notes', {
     updatedAt: '2026-08-25T12:10:00+00:00',
   })
-  await setChatState({
+  const chatState: ChatSessionState = {
     activeChat: {
       ...first,
       messages: [{
@@ -478,6 +533,14 @@ test('renders canonical Chat metadata and opens persisted sessions', async () =>
       }],
     },
     chats: [first, second],
+  }
+  const project = projectSummary('project_alpha', 'Sidebar Project', {
+    chatCount: 1,
+  })
+  await setProjectState({
+    activeProject: project,
+    projects: [project],
+    chatState,
   })
   await emitSnapshot(readySnapshot({
     chatId: first.chatId,
@@ -1117,13 +1180,12 @@ test('contains long titles, files, and unbroken messages', async () => {
 })
 
 test('shows explicit empty states for Projects and Memory', async () => {
+  await emitSnapshot(readySnapshot())
   await page.getByRole('button', { name: /^Projects/ }).click()
   await expect(
-    page.getByRole('heading', { name: 'No projects to show yet' }),
+    page.getByRole('heading', { name: 'No Projects yet' }),
   ).toBeVisible()
-  await expect(page.getByText(
-    'Project creation and management will connect here without the renderer editing local data directly.',
-  )).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Create Project' })).toBeVisible()
 
   await page.getByRole('button', { name: 'Memory', exact: true }).click()
   await expect(
@@ -1132,4 +1194,430 @@ test('shows explicit empty states for Projects and Memory', async () => {
   await expect(page.getByText(
     'Memory browsing and editing will use the scoped Python services when that feature is added.',
   )).toBeVisible()
+})
+
+test('renders canonical Projects, scoped Chats, and every Project entry point', async () => {
+  const projectChat = chatSummary('chat-project', 'Architecture', {
+    mode: 'work',
+    projectId: 'project-alpha',
+    messageCount: 4,
+  })
+  const unassignedChat = chatSummary('chat-unassigned', 'Loose notes', {
+    updatedAt: '2026-08-25T12:10:00+00:00',
+  })
+  const alpha = projectSummary('project-alpha', 'Alpha Workspace', {
+    customInstructions: 'Use the Project vocabulary.',
+    workspacePath: 'D:\\Elysia_AI',
+    chatCount: 1,
+  })
+  const archived = projectSummary('project-archive', 'Past research', {
+    archived: true,
+  })
+  const chatState: ChatSessionState = {
+    activeChat: { ...projectChat, messages: [] },
+    chats: [projectChat, unassignedChat],
+  }
+  await setProjectState({
+    activeProject: alpha,
+    projects: [alpha, archived],
+    chatState,
+  })
+  await emitSnapshot(readySnapshot({
+    chatId: projectChat.chatId,
+    chatTitle: projectChat.title,
+  }))
+
+  await page.getByRole('button', { name: /^Projects/ }).click()
+  await expect(page.getByRole('heading', { name: 'Projects', exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Open project Alpha Workspace' }))
+    .toHaveAttribute('aria-current', 'page')
+  await expect(page.getByRole('button', { name: 'Open project Past research' }))
+    .toContainText('Archived')
+  await expect(page.getByRole('heading', { name: 'Alpha Workspace' })).toBeVisible()
+
+  const projectChats = page.getByRole('region', { name: 'Project Chats' })
+  await expect(projectChats).toContainText(projectChat.title)
+  await expect(projectChats).toContainText('Current')
+  const unassignedChats = page.getByRole('region', { name: 'Unassigned Chats' })
+  await expect(unassignedChats).toContainText(unassignedChat.title)
+
+  const sectionNavigation = page.getByRole('navigation', {
+    name: 'Project sections',
+  })
+  await sectionNavigation.getByRole('button', { name: 'Sources' }).click()
+  await expect(page.getByRole('heading', {
+    name: "Project Sources aren't connected yet",
+  })).toBeVisible()
+  await sectionNavigation.getByRole('button', { name: 'Memory' }).click()
+  await expect(page.getByRole('heading', {
+    name: "Project Memory isn't connected yet",
+  })).toBeVisible()
+  await sectionNavigation.getByRole('button', { name: 'Settings' }).click()
+  await expect(page.getByRole('heading', { name: 'Project Settings' })).toBeVisible()
+  await expect(page.getByLabel('Project name')).toHaveValue(alpha.name)
+  await expect(page.getByLabel('Custom instructions')).toHaveValue(
+    alpha.customInstructions ?? '',
+  )
+  await expect(page.getByText(alpha.workspacePath ?? '')).toBeVisible()
+})
+
+test('refreshes Projects once after navigating during a pending Chat action', async () => {
+  const activeChat = chatSummary('chat-before-create', 'Existing Chat')
+  const project = projectSummary('project-action-sync', 'Action Sync')
+  await setProjectState({
+    activeProject: project,
+    projects: [project],
+    chatState: {
+      activeChat: { ...activeChat, messages: [] },
+      chats: [activeChat],
+    },
+  })
+  await emitSnapshot(readySnapshot({
+    chatId: activeChat.chatId,
+    chatTitle: activeChat.title,
+  }))
+  await expect.poll(async () => (
+    (await getCalls()).filter((call) => call.method === 'listProjects').length
+  )).toBeGreaterThan(0)
+  await clearCalls()
+
+  await page.evaluate(() => {
+    ;(window as TestWindow).elysiaDesktopTest.setChatActionDelay(true)
+  })
+  await page.getByRole('button', { name: 'Create chat' }).click()
+  await expect.poll(() => page.evaluate(() => (
+    (window as TestWindow).elysiaDesktopTest.getPendingChatActionCount()
+  ))).toBe(1)
+
+  await page.getByRole('button', { name: /^Projects/ }).click()
+  expect(
+    (await getCalls()).filter((call) => call.method === 'listProjects'),
+  ).toHaveLength(0)
+
+  await page.evaluate(() => {
+    ;(window as TestWindow).elysiaDesktopTest.releaseNextChatAction()
+  })
+  const unassignedChats = page.getByRole('region', { name: 'Unassigned Chats' })
+  await expect(unassignedChats).toContainText('New Chat')
+  expect(
+    (await getCalls()).filter((call) => call.method === 'listProjects'),
+  ).toHaveLength(1)
+})
+
+test('refreshes Projects once when a Chat completes after navigation', async () => {
+  const projectChat = chatSummary('chat-stream-project', 'Streaming Project Chat', {
+    projectId: 'project-stream-sync',
+  })
+  const project = projectSummary('project-stream-sync', 'Stream Sync', {
+    chatCount: 1,
+  })
+  await setProjectState({
+    activeProject: project,
+    projects: [project],
+    chatState: {
+      activeChat: { ...projectChat, messages: [] },
+      chats: [projectChat],
+    },
+  })
+  await emitSnapshot(readySnapshot({
+    chatId: projectChat.chatId,
+    chatTitle: projectChat.title,
+  }))
+  await expect.poll(async () => (
+    (await getCalls()).filter((call) => call.method === 'listProjects').length
+  )).toBeGreaterThan(0)
+  await clearCalls()
+
+  const composer = page.getByLabel('Message Elysia')
+  await composer.fill('Refresh this Project when the reply completes.')
+  await composer.press('Enter')
+  await expect.poll(async () => (
+    (await getCalls()).filter((call) => call.method === 'sendMessage').length
+  )).toBe(1)
+
+  await page.getByRole('button', { name: /^Projects/ }).click()
+  expect(
+    (await getCalls()).filter((call) => call.method === 'listProjects'),
+  ).toHaveLength(0)
+
+  await emitEvent({
+    type: 'chat-complete',
+    requestId: 'test-request-1',
+    chatId: projectChat.chatId,
+    reply: 'Canonical reply.',
+  })
+  const projectChats = page.getByRole('region', { name: 'Project Chats' })
+  await expect(projectChats).toContainText('1 messages')
+  const calls = await getCalls()
+  expect(calls.filter((call) => call.method === 'listProjects')).toHaveLength(1)
+  expect(calls.filter((call) => call.method === 'listChats')).toHaveLength(0)
+})
+
+test('creates and edits a Project through canonical DesktopApi responses', async () => {
+  await emitSnapshot(readySnapshot())
+  await page.getByRole('button', { name: /^Projects/ }).click()
+
+  const createTrigger = page.getByRole('button', { name: 'New Project' })
+  await createTrigger.click()
+  const createDialog = page.getByRole('dialog', { name: 'Create Project' })
+  await expect(createDialog.getByLabel('Project name')).toBeFocused()
+  await createDialog.getByRole('button', { name: 'Create Project' }).click()
+  await expect(createDialog.getByRole('alert')).toContainText(
+    'Enter a name for this Project.',
+  )
+  await createDialog.press('Escape')
+  await expect(createDialog).toHaveCount(0)
+  await expect(createTrigger).toBeFocused()
+
+  await createTrigger.click()
+  const reopenedDialog = page.getByRole('dialog', { name: 'Create Project' })
+  await reopenedDialog.getByLabel('Project name').fill('Local Research')
+  await reopenedDialog.getByLabel('Custom instructions').fill(
+    'Prefer evidence from this workspace.',
+  )
+  await clearCalls()
+  await reopenedDialog.getByRole('button', { name: 'Create Project' }).click()
+  await expect.poll(async () => (
+    (await getCalls()).find((call) => call.method === 'createProject')?.args
+  )).toEqual([{
+    name: 'Local Research',
+    customInstructions: 'Prefer evidence from this workspace.',
+  }])
+  await expect(page.getByRole('heading', { name: 'Local Research' })).toBeFocused()
+
+  await page.getByRole('navigation', { name: 'Project sections' })
+    .getByRole('button', { name: 'Settings' }).click()
+  await page.getByLabel('Project name').fill('Renamed Research')
+  await page.getByLabel('Custom instructions').fill('   ')
+  await clearCalls()
+  await page.getByRole('button', { name: 'Save Settings' }).click()
+  await expect.poll(async () => (
+    (await getCalls()).find((call) => call.method === 'updateProject')?.args
+  )).toEqual([{
+    projectId: expect.stringMatching(/^project-created-/),
+    name: 'Renamed Research',
+    customInstructions: null,
+  }])
+  await expect(page.getByRole('heading', { name: 'Renamed Research' })).toBeVisible()
+  await expect(page.getByText('Project settings saved.')).toBeVisible()
+})
+
+test('binds, cancels, and confirms unbinding a Project workspace', async () => {
+  const activeChat = chatSummary('chat-workspace', 'Workspace Chat', {
+    projectId: 'project-workspace',
+  })
+  const project = projectSummary('project-workspace', 'Workspace Project', {
+    chatCount: 1,
+  })
+  await setProjectState({
+    activeProject: project,
+    projects: [project],
+    chatState: {
+      activeChat: { ...activeChat, messages: [] },
+      chats: [activeChat],
+    },
+  })
+  await emitSnapshot(readySnapshot({
+    chatId: activeChat.chatId,
+    chatTitle: activeChat.title,
+  }))
+  await page.getByRole('button', { name: /^Projects/ }).click()
+  await page.getByRole('navigation', { name: 'Project sections' })
+    .getByRole('button', { name: 'Settings' }).click()
+
+  await setSelectedWorkspace('D:\\Bound Workspace')
+  await clearCalls()
+  await page.getByRole('button', { name: 'Bind Workspace' }).click()
+  await expect.poll(async () => (
+    (await getCalls()).map((call) => call.method)
+  )).toEqual(['chooseProjectWorkspace'])
+  expect((await getCalls()).find(
+    (call) => call.method === 'chooseProjectWorkspace',
+  )?.args).toEqual([project.projectId])
+  await expect(page.getByText('D:\\Bound Workspace')).toBeVisible()
+
+  await setSelectedWorkspace(null)
+  await clearCalls()
+  await page.getByRole('button', { name: 'Replace Workspace' }).click()
+  await expect.poll(async () => (
+    (await getCalls()).map((call) => call.method)
+  )).toEqual(['chooseProjectWorkspace'])
+  await expect(page.getByText('Workspace selection canceled. Nothing changed.'))
+    .toBeVisible()
+  await expect(page.getByText('D:\\Bound Workspace')).toBeVisible()
+
+  const unbindTrigger = page.getByRole('button', { name: 'Unbind Workspace' })
+  await unbindTrigger.click()
+  const unbindDialog = page.getByRole('dialog', {
+    name: /Unbind workspace from “Workspace Project”/,
+  })
+  await unbindDialog.press('Escape')
+  await expect(unbindDialog).toHaveCount(0)
+  await expect(unbindTrigger).toBeFocused()
+
+  await unbindTrigger.click()
+  await clearCalls()
+  await page.getByRole('dialog', {
+    name: /Unbind workspace from “Workspace Project”/,
+  }).getByRole('button', { name: 'Unbind Workspace' }).click()
+  await expect.poll(async () => (
+    (await getCalls()).find(
+      (call) => call.method === 'clearProjectWorkspace',
+    )?.args
+  )).toEqual([project.projectId])
+  await expect(page.getByText('No workspace is bound.')).toBeVisible()
+})
+
+test('moves Project Chats and keeps archived Projects read-only until restored', async () => {
+  const linked = chatSummary('chat-linked', 'Linked Chat', {
+    projectId: 'project-move',
+  })
+  const unassigned = chatSummary('chat-loose', 'Unassigned Chat')
+  const project = projectSummary('project-move', 'Move Project', {
+    chatCount: 1,
+  })
+  await setProjectState({
+    activeProject: project,
+    projects: [project],
+    chatState: {
+      activeChat: { ...linked, messages: [] },
+      chats: [linked, unassigned],
+    },
+  })
+  await emitSnapshot(readySnapshot({
+    chatId: linked.chatId,
+    chatTitle: linked.title,
+  }))
+  await page.getByRole('button', { name: /^Projects/ }).click()
+
+  await clearCalls()
+  await page.getByRole('button', { name: `Move here ${unassigned.title}` }).click()
+  await expect.poll(async () => (
+    (await getCalls()).find((call) => call.method === 'moveChatToProject')?.args
+  )).toEqual([{
+    chatId: unassigned.chatId,
+    projectId: project.projectId,
+  }])
+  await expect(page.getByRole('region', { name: 'Project Chats' }))
+    .toContainText(unassigned.title)
+
+  await clearCalls()
+  await page.getByRole('button', { name: `Remove ${linked.title}` }).click()
+  await expect.poll(async () => (
+    (await getCalls()).find((call) => call.method === 'moveChatToProject')?.args
+  )).toEqual([{
+    chatId: linked.chatId,
+    projectId: null,
+  }])
+  await expect(page.getByRole('region', { name: 'Unassigned Chats' }))
+    .toContainText(linked.title)
+
+  await clearCalls()
+  await page.getByRole('button', { name: 'Archive Project' }).click()
+  const archiveDialog = page.getByRole('dialog', {
+    name: /Archive “Move Project”/,
+  })
+  expect((await getCalls()).some(
+    (call) => call.method === 'setProjectArchived',
+  )).toBe(false)
+  await archiveDialog.getByRole('button', { name: 'Archive Project' }).click()
+  await expect.poll(async () => (
+    (await getCalls()).find((call) => call.method === 'setProjectArchived')?.args
+  )).toEqual([{
+    projectId: project.projectId,
+    archived: true,
+  }])
+  await expect(page.getByText('Read-only Project')).toBeVisible()
+  await page.getByRole('navigation', { name: 'Project sections' })
+    .getByRole('button', { name: 'Settings' }).click()
+  await expect(page.getByLabel('Project name')).toBeDisabled()
+  await expect(page.getByRole('button', { name: 'Save Settings' })).toBeDisabled()
+
+  await clearCalls()
+  await page.getByRole('button', { name: 'Restore Project' }).click()
+  await expect.poll(async () => (
+    (await getCalls()).find((call) => call.method === 'setProjectArchived')?.args
+  )).toEqual([{
+    projectId: project.projectId,
+    archived: false,
+  }])
+  await expect(page.getByText('Read-only Project')).toHaveCount(0)
+})
+
+test('contains Project surfaces and dialog focus at compact high zoom', async () => {
+  const longName = `Project ${'界'.repeat(120)}`
+  const activeChat = chatSummary('chat-project-zoom', 'Compact Project Chat', {
+    projectId: 'project-zoom',
+  })
+  const project = projectSummary('project-zoom', longName, {
+    workspacePath: `D:\\${'workspace-segment-'.repeat(18)}`,
+    chatCount: 1,
+  })
+  await setProjectState({
+    activeProject: project,
+    projects: [project],
+    chatState: {
+      activeChat: { ...activeChat, messages: [] },
+      chats: [activeChat],
+    },
+  })
+  await emitSnapshot(readySnapshot({
+    chatId: activeChat.chatId,
+    chatTitle: activeChat.title,
+  }))
+  await page.getByRole('button', { name: /^Projects/ }).click()
+  await setWindowAndZoom(960, 640, 2)
+
+  const layout = await page.evaluate(() => {
+    const selectors = [
+      '.project-view',
+      '.project-topbar',
+      '.project-split-view',
+      '.project-list-panel',
+      '.project-detail',
+    ]
+    return {
+      viewportWidth: window.innerWidth,
+      rootScrollWidth: document.documentElement.scrollWidth,
+      bodyScrollWidth: document.body.scrollWidth,
+      regions: selectors.map((selector) => {
+        const element = document.querySelector(selector)
+        if (!(element instanceof HTMLElement)) {
+          throw new Error(`Missing Project region: ${selector}`)
+        }
+        const bounds = element.getBoundingClientRect()
+        return { selector, left: bounds.left, right: bounds.right }
+      }),
+    }
+  })
+  expect(layout.rootScrollWidth).toBeLessThanOrEqual(layout.viewportWidth + 1)
+  expect(layout.bodyScrollWidth).toBeLessThanOrEqual(layout.viewportWidth + 1)
+  for (const region of layout.regions) {
+    expect(region.left, region.selector).toBeGreaterThanOrEqual(-1)
+    expect(region.right, region.selector).toBeLessThanOrEqual(
+      layout.viewportWidth + 1,
+    )
+  }
+
+  const createTrigger = page.getByRole('button', { name: 'New Project' })
+  await createTrigger.click()
+  const dialog = page.getByRole('dialog', { name: 'Create Project' })
+  await expect(dialog.getByLabel('Project name')).toBeFocused()
+  const dialogBounds = await dialog.evaluate((element) => {
+    const bounds = element.getBoundingClientRect()
+    return {
+      top: bounds.top,
+      right: bounds.right,
+      bottom: bounds.bottom,
+      left: bounds.left,
+      viewportWidth: window.innerWidth,
+      viewportHeight: window.innerHeight,
+    }
+  })
+  expect(dialogBounds.left).toBeGreaterThanOrEqual(-1)
+  expect(dialogBounds.top).toBeGreaterThanOrEqual(-1)
+  expect(dialogBounds.right).toBeLessThanOrEqual(dialogBounds.viewportWidth + 1)
+  expect(dialogBounds.bottom).toBeLessThanOrEqual(dialogBounds.viewportHeight + 1)
+  await dialog.press('Escape')
+  await expect(createTrigger).toBeFocused()
 })

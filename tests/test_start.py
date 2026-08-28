@@ -15,6 +15,7 @@ from memory import (
     MemoryRetriever,
     ShortTermMemory,
 )
+from projects import ProjectChatService
 from recovery import DataPortabilityService
 
 
@@ -198,9 +199,26 @@ def test_create_brain_uses_configured_token_budget(
 
     active_service = brain._active_conversation_service
     assert isinstance(active_service, ActiveConversationService)
+    project_service = brain._project_service
+    assert isinstance(project_service, ProjectChatService)
+    assert (
+        project_service._chat_repository
+        is active_service._chat_repository
+    )
+    assert (
+        project_service._project_repository
+        is active_service._project_repository
+    )
+    assert getattr(project_service._is_chat_busy, "__self__", None) is (
+        active_service
+    )
 
     chat = brain.create_chat(title="Startup Chat")
     assert brain.get_chat(chat.chat_id) == chat
+    project = brain.create_project(name="Startup Project")
+    assert brain.move_chat(chat.chat_id, project.project_id).project_id == (
+        project.project_id
+    )
     assert (
         tmp_path
         / "workspace"

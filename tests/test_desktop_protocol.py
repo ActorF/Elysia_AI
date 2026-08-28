@@ -1,6 +1,7 @@
 """Validate the shared Stage 6 desktop-protocol contract in Python."""
 
 import json
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, cast
 
@@ -192,6 +193,13 @@ def test_machine_readable_schema_covers_every_protocol_message_kind() -> None:
         "chatPinRequest",
         "chatArchiveRequest",
         "chatDeleteRequest",
+        "projectListRequest",
+        "projectCreateRequest",
+        "projectOpenRequest",
+        "projectUpdateRequest",
+        "projectWorkspaceRequest",
+        "projectArchiveRequest",
+        "projectChatMoveRequest",
         "cancelRequest",
         "permissionResponseRequest",
         "shutdownRequest",
@@ -204,7 +212,54 @@ def test_machine_readable_schema_covers_every_protocol_message_kind() -> None:
         "chatSessionSummary",
         "chatDetail",
         "chatStateResult",
+        "projectSummary",
+        "projectStateResult",
     }.issubset(definitions)
+
+
+def _project_state_response() -> JsonObject:
+    sample = next(
+        cast(JsonObject, candidate)
+        for candidate in _fixtures()["validServerMessages"]
+        if cast(JsonObject, candidate)["name"] == "project state response"
+    )
+    return cast(JsonObject, deepcopy(sample["message"]))
+
+
+@pytest.mark.parametrize(
+    "invalid_state",
+    [
+        "active-absent",
+        "active-mismatch",
+        "duplicate-project",
+        "dangling-chat-project",
+        "wrong-chat-count",
+    ],
+)
+def test_project_state_runtime_invariants_are_enforced(
+    invalid_state: str,
+) -> None:
+    message = _project_state_response()
+    result = cast(JsonObject, message["result"])
+    projects = cast(list[JsonObject], result["projects"])
+    active_project = cast(JsonObject, result["activeProject"])
+    chat_state = cast(JsonObject, result["chatState"])
+    chats = cast(list[JsonObject], chat_state["chats"])
+
+    if invalid_state == "active-absent":
+        active_project["projectId"] = "project_missing"
+    elif invalid_state == "active-mismatch":
+        active_project["name"] = "Stale Project"
+    elif invalid_state == "duplicate-project":
+        projects.append(deepcopy(projects[0]))
+    elif invalid_state == "dangling-chat-project":
+        chats[1]["projectId"] = "project_missing"
+    else:
+        projects[0]["chatCount"] = 2
+        active_project["chatCount"] = 2
+
+    with pytest.raises(ProtocolValidationError):
+        parse_server_message(message)
 
 
 def test_json_schema_validates_the_shared_structural_samples() -> None:

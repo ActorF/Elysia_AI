@@ -24,7 +24,7 @@ from memory import (
     MemoryRetriever,
     ShortTermMemory,
 )
-from projects import JsonProjectRepository
+from projects import JsonProjectRepository, ProjectChatService
 from recovery import DataPortabilityError, DataPortabilityService
 from ui import run_console_session
 
@@ -155,6 +155,11 @@ def create_brain() -> Brain:
         chat_repository,
         project_repository,
     )
+    project_service = ProjectChatService(
+        project_repository,
+        chat_repository,
+        is_chat_busy=active_conversation_service.is_chat_busy,
+    )
 
     return Brain(
         SETTINGS.model_name,
@@ -175,6 +180,7 @@ def create_brain() -> Brain:
         active_conversation_service=(
             active_conversation_service
         ),
+        project_service=project_service,
     )
 
 
