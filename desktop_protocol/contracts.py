@@ -9,7 +9,7 @@ are rejected before application services are invoked.
 from __future__ import annotations
 
 import re
-from typing import Any, Final, Literal, TypedDict, cast
+from typing import Any, Final, Literal, NotRequired, TypedDict, cast
 
 PROTOCOL_NAME: Final = "elysia.desktop"
 PROTOCOL_VERSION: Final = 1
@@ -46,6 +46,7 @@ ProtocolMethod = Literal[
     "handshake",
     "initialize",
     "chat.stream",
+    "chat.retry",
     "chat.list",
     "chat.create",
     "chat.open",
@@ -68,6 +69,7 @@ SUPPORTED_METHODS: Final[tuple[ProtocolMethod, ...]] = (
     "handshake",
     "initialize",
     "chat.stream",
+    "chat.retry",
     "chat.list",
     "chat.create",
     "chat.open",
@@ -131,6 +133,15 @@ class ChatStreamParams(TypedDict):
 
     chatId: str
     message: str
+
+
+class ChatRetryParams(TypedDict):
+    """Regenerate or edit-and-retry one persisted tail turn."""
+
+    chatId: str
+    userMessageId: str
+    assistantMessageId: str
+    message: NotRequired[str]
 
 
 class ChatListParams(TypedDict):
@@ -634,6 +645,29 @@ def _validate_chat_params(params: JsonObject) -> None:
         )
 
 
+def _validate_chat_retry_params(params: JsonObject) -> None:
+    context = "chat.retry params"
+    _require_fields(
+        params,
+        {"chatId", "userMessageId", "assistantMessageId"},
+        context,
+        optional={"message"},
+    )
+    _require_identifier(params, "chatId", context)
+    _require_identifier(params, "userMessageId", context)
+    _require_identifier(params, "assistantMessageId", context)
+    if "message" in params:
+        message = _require_string(params, "message", context)
+        if not any(
+            character not in _PROTOCOL_BLANK_CHARACTERS
+            for character in message
+        ):
+            raise ProtocolValidationError(
+                "protocol.invalid_params",
+                "chat.retry params.message cannot be blank.",
+            )
+
+
 def _validate_chat_list_params(params: JsonObject) -> None:
     _require_fields(params, {"includeArchived"}, "chat.list params")
     _require_boolean(params, "includeArchived", "chat.list params")
@@ -849,6 +883,8 @@ def parse_client_request(value: object) -> ClientRequest:
         _require_fields(params, set(), "initialize params")
     elif method == "chat.stream":
         _validate_chat_params(params)
+    elif method == "chat.retry":
+        _validate_chat_retry_params(params)
     elif method == "chat.list":
         _validate_chat_list_params(params)
     elif method == "chat.create":

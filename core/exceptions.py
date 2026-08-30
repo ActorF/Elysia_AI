@@ -21,6 +21,14 @@ class ChatChangedDuringGenerationError(ActiveConversationError):
     """Raised when persisted Chat state changed before a turn committed."""
 
 
+class ChatRetryTargetError(ActiveConversationError):
+    """Raised when a retry does not name the persisted tail turn."""
+
+
+class GenerationCancelledError(ActiveConversationError):
+    """Raised when a generation is cancelled before its atomic commit."""
+
+
 class ConversationUnavailableError(ActiveConversationError):
     """Raised when an archived Chat or Project cannot accept a new turn."""
 

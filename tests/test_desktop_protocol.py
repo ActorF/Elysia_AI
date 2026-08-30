@@ -186,6 +186,7 @@ def test_machine_readable_schema_covers_every_protocol_message_kind() -> None:
         "handshakeRequest",
         "initializeRequest",
         "chatStreamRequest",
+        "chatRetryRequest",
         "chatListRequest",
         "chatCreateRequest",
         "chatOpenRequest",

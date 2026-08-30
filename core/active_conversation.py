@@ -8,6 +8,7 @@ from threading import Lock, RLock
 
 from chats import (
     ChatId,
+    ChatMessage,
     ChatMessageId,
     ChatRepository,
     ChatSession,
@@ -22,6 +23,7 @@ from projects import Project, ProjectRepository
 from .exceptions import (
     ChatBusyError,
     ChatChangedDuringGenerationError,
+    ChatRetryTargetError,
     ConversationUnavailableError,
 )
 
@@ -128,14 +130,16 @@ class ActiveConversationService:
     ) -> tuple[ChatSessionMeta, ...]:
         """Return lightweight Chat metadata through the service boundary."""
 
-        return self._chat_repository.list_chats(
-            include_archived=include_archived,
-        )
+        with self._commit_lock:
+            return self._chat_repository.list_chats(
+                include_archived=include_archived,
+            )
 
     def get_chat(self, chat_id: ChatId) -> ChatSession:
         """Return one persisted Chat without opening a generation operation."""
 
-        return self._chat_repository.get_chat(chat_id)
+        with self._commit_lock:
+            return self._chat_repository.get_chat(chat_id)
 
     def is_chat_busy(self, chat_id: ChatId) -> bool:
         """Return whether this process currently owns an operation for Chat."""
@@ -240,7 +244,8 @@ class ActiveConversationService:
             self._active_turn_tokens[chat_id] = turn_token
 
         try:
-            chat_session = self._chat_repository.get_chat(chat_id)
+            with self._commit_lock:
+                chat_session = self._chat_repository.get_chat(chat_id)
             if chat_session.is_archived:
                 raise ConversationUnavailableError(
                     f"Archived Chat cannot accept a new turn: {chat_id}."
@@ -302,6 +307,72 @@ class ActiveConversationService:
             self._chat_repository.save_chat(updated_session)
             return updated_session
 
+    def get_retry_turn(
+        self,
+        active_conversation: ActiveConversation,
+        *,
+        user_message_id: ChatMessageId,
+        assistant_message_id: ChatMessageId,
+    ) -> tuple[ChatMessage, ChatMessage]:
+        """Return the named persisted tail pair for guarded retry generation."""
+
+        self._require_active_token(active_conversation)
+        return self._require_retry_tail(
+            active_conversation.chat_session,
+            user_message_id=user_message_id,
+            assistant_message_id=assistant_message_id,
+        )
+
+    def commit_retry(
+        self,
+        active_conversation: ActiveConversation,
+        *,
+        user_message_id: ChatMessageId,
+        assistant_message_id: ChatMessageId,
+        user_message: str,
+        assistant_message: str,
+    ) -> ChatSession:
+        """Atomically replace the persisted tail pair after a successful retry.
+
+        Stable message identity, timestamps, and attachments are retained. A
+        summary cannot survive a content rewrite because its facts may describe
+        the superseded text even when its source message IDs remain unchanged.
+        """
+
+        self._require_active_token(active_conversation)
+        cleaned_user_message = user_message.strip()
+        cleaned_assistant_message = assistant_message.strip()
+        if not cleaned_user_message:
+            raise ValueError("User message cannot be empty.")
+        if not cleaned_assistant_message:
+            raise ValueError("Assistant message cannot be empty.")
+
+        with self._commit_lock:
+            current_session = self._load_unchanged_session(
+                active_conversation
+            )
+            user_record, assistant_record = self._require_retry_tail(
+                current_session,
+                user_message_id=user_message_id,
+                assistant_message_id=assistant_message_id,
+            )
+            commit_time = self._next_timestamp(current_session.updated_at)
+            updated_session = replace(
+                current_session,
+                updated_at=commit_time,
+                messages=(
+                    *current_session.messages[:-2],
+                    replace(user_record, content=cleaned_user_message),
+                    replace(
+                        assistant_record,
+                        content=cleaned_assistant_message,
+                    ),
+                ),
+                summary=None,
+            )
+            self._chat_repository.save_chat(updated_session)
+            return updated_session
+
     def commit_summary(
         self,
         active_conversation: ActiveConversation,
@@ -352,6 +423,31 @@ class ActiveConversationService:
                 f"{project_id}."
             )
         return project
+
+    @staticmethod
+    def _require_retry_tail(
+        chat_session: ChatSession,
+        *,
+        user_message_id: ChatMessageId,
+        assistant_message_id: ChatMessageId,
+    ) -> tuple[ChatMessage, ChatMessage]:
+        """Require one exact adjacent user/assistant pair at the Chat tail."""
+
+        if len(chat_session.messages) < 2:
+            raise ChatRetryTargetError(
+                "Chat retry requires a completed user and assistant tail turn."
+            )
+        user_record, assistant_record = chat_session.messages[-2:]
+        if (
+            user_record.role != "user"
+            or assistant_record.role != "assistant"
+            or user_record.message_id != user_message_id
+            or assistant_record.message_id != assistant_message_id
+        ):
+            raise ChatRetryTargetError(
+                "Chat retry must target the adjacent persisted tail turn."
+            )
+        return user_record, assistant_record
 
     def _require_active_token(
         self,

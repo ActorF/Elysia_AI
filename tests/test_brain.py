@@ -4,7 +4,11 @@ from pathlib import Path
 import pytest
 
 from chats import ChatSession, JsonChatRepository
-from core import ActiveConversationService, Brain
+from core import (
+    ActiveConversationService,
+    Brain,
+    GenerationCancelledError,
+)
 from core.chat_model import ChatMessage
 from memory import Memory, ShortTermMemory
 from projects import JsonProjectRepository
@@ -320,6 +324,255 @@ def test_stream_chat_does_not_save_partial_turn_on_stream_error(
     ):
         next(stream)
 
+    assert brain.get_chat(chat.chat_id).messages == ()
+
+
+def test_stream_retry_atomically_replaces_the_persisted_tail(
+    tmp_path: Path,
+) -> None:
+    chat_model = FakeChatModel(
+        "Original answer",
+        stream_chunks=["Replacement", " answer"],
+    )
+    brain, _memory, chat = _active_brain(tmp_path, chat_model)
+    brain.chat(chat.chat_id, "Original question")
+    original = brain.get_chat(chat.chat_id)
+    user_record, assistant_record = original.messages
+
+    chunks = list(
+        brain.stream_retry(
+            chat.chat_id,
+            user_record.message_id,
+            assistant_record.message_id,
+            "Edited question",
+        )
+    )
+
+    assert chunks == ["Replacement", " answer"]
+    retried = brain.get_chat(chat.chat_id)
+    assert [message.content for message in retried.messages] == [
+        "Edited question",
+        "Replacement answer",
+    ]
+    assert [message.message_id for message in retried.messages] == [
+        user_record.message_id,
+        assistant_record.message_id,
+    ]
+    assert chat_model.received_messages is not None
+    assert chat_model.received_messages[-1] == {
+        "role": "user",
+        "content": "Edited question",
+    }
+    assert all(
+        message["content"] != "Original answer"
+        for message in chat_model.received_messages
+    )
+
+
+def test_stream_retry_without_edit_reuses_the_original_user_text(
+    tmp_path: Path,
+) -> None:
+    chat_model = FakeChatModel(
+        "Original answer",
+        stream_chunks=["Regenerated answer"],
+    )
+    brain, _memory, chat = _active_brain(tmp_path, chat_model)
+    brain.chat(chat.chat_id, "Keep this question")
+    original = brain.get_chat(chat.chat_id)
+    user_record, assistant_record = original.messages
+
+    assert list(
+        brain.stream_retry(
+            chat.chat_id,
+            user_record.message_id,
+            assistant_record.message_id,
+        )
+    ) == ["Regenerated answer"]
+
+    retried = brain.get_chat(chat.chat_id)
+    assert [message.content for message in retried.messages] == [
+        "Keep this question",
+        "Regenerated answer",
+    ]
+    assert chat_model.received_messages is not None
+    assert chat_model.received_messages[-1] == {
+        "role": "user",
+        "content": "Keep this question",
+    }
+
+
+def test_stream_retry_failure_keeps_the_original_pair(
+    tmp_path: Path,
+) -> None:
+    chat_model = FakeChatModel(
+        "Original answer",
+        stream_chunks=["Partial replacement"],
+        stream_error=RuntimeError("Retry failed."),
+    )
+    brain, _memory, chat = _active_brain(tmp_path, chat_model)
+    brain.chat(chat.chat_id, "Original question")
+    original = brain.get_chat(chat.chat_id)
+    user_record, assistant_record = original.messages
+    stream = brain.stream_retry(
+        chat.chat_id,
+        user_record.message_id,
+        assistant_record.message_id,
+        "Edited question",
+    )
+
+    assert next(stream) == "Partial replacement"
+    with pytest.raises(RuntimeError, match=r"Retry failed"):
+        next(stream)
+
+    assert brain.get_chat(chat.chat_id) == original
+
+
+def test_cancelled_retry_keeps_the_original_pair(
+    tmp_path: Path,
+) -> None:
+    chat_model = FakeChatModel(
+        "Original answer",
+        stream_chunks=["Partial replacement", "Not emitted"],
+    )
+    brain, _memory, chat = _active_brain(tmp_path, chat_model)
+    brain.chat(chat.chat_id, "Original question")
+    original = brain.get_chat(chat.chat_id)
+    user_record, assistant_record = original.messages
+    cancelled = False
+    stream = brain.stream_retry(
+        chat.chat_id,
+        user_record.message_id,
+        assistant_record.message_id,
+        should_cancel=lambda: cancelled,
+    )
+
+    assert next(stream) == "Partial replacement"
+    cancelled = True
+    with pytest.raises(GenerationCancelledError, match=r"cancelled"):
+        next(stream)
+
+    assert brain.get_chat(chat.chat_id) == original
+
+
+def test_cancelled_stream_never_persists_a_partial_turn(
+    tmp_path: Path,
+) -> None:
+    chat_model = FakeChatModel(
+        "Unused reply",
+        stream_chunks=["First", "Second"],
+    )
+    brain, _memory, chat = _active_brain(tmp_path, chat_model)
+    cancelled = False
+    stream = brain.stream_chat(
+        chat.chat_id,
+        "Question",
+        should_cancel=lambda: cancelled,
+    )
+
+    assert next(stream) == "First"
+    cancelled = True
+    with pytest.raises(GenerationCancelledError, match=r"cancelled"):
+        next(stream)
+
+    assert brain.get_chat(chat.chat_id).messages == ()
+    assert brain.is_chat_busy(chat.chat_id) is False
+
+
+def test_pre_cancelled_stream_never_calls_the_model(
+    tmp_path: Path,
+) -> None:
+    chat_model = FakeChatModel(
+        "Unused reply",
+        stream_chunks=["Never requested"],
+    )
+    brain, _memory, chat = _active_brain(tmp_path, chat_model)
+
+    with pytest.raises(GenerationCancelledError, match=r"cancelled"):
+        next(
+            brain.stream_chat(
+                chat.chat_id,
+                "Question",
+                should_cancel=lambda: True,
+            )
+        )
+
+    assert chat_model.received_messages is None
+    assert brain.get_chat(chat.chat_id).messages == ()
+    assert brain.is_chat_busy(chat.chat_id) is False
+
+
+def test_stream_cleanup_error_does_not_replace_cancellation(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class CloseFailingIterator:
+        def __init__(self) -> None:
+            self._sent = False
+
+        def __iter__(self) -> Iterator[str]:
+            return self
+
+        def __next__(self) -> str:
+            if self._sent:
+                raise StopIteration
+            self._sent = True
+            return "Partial"
+
+        def close(self) -> None:
+            raise RuntimeError("Cleanup failed.")
+
+    class CloseFailingModel(FakeChatModel):
+        def stream_reply(
+            self,
+            messages: list[ChatMessage],
+        ) -> Iterator[str]:
+            self.received_messages = messages
+            return CloseFailingIterator()
+
+    chat_model = CloseFailingModel("Unused")
+    brain, _memory, chat = _active_brain(tmp_path, chat_model)
+    cancelled = False
+    stream = brain.stream_chat(
+        chat.chat_id,
+        "Question",
+        should_cancel=lambda: cancelled,
+    )
+
+    assert next(stream) == "Partial"
+    cancelled = True
+    with pytest.raises(GenerationCancelledError, match=r"cancelled"):
+        next(stream)
+
+    assert "Chat model stream cleanup failed" in caplog.text
+    assert brain.get_chat(chat.chat_id).messages == ()
+
+
+def test_commit_gate_gives_cancel_priority_before_persistence(
+    tmp_path: Path,
+) -> None:
+    chat_model = FakeChatModel(
+        "Unused reply",
+        stream_chunks=["Complete answer"],
+    )
+    brain, _memory, chat = _active_brain(tmp_path, chat_model)
+    commit_claims = 0
+
+    def reject_commit() -> bool:
+        nonlocal commit_claims
+        commit_claims += 1
+        return False
+
+    with pytest.raises(GenerationCancelledError, match=r"cancelled"):
+        list(
+            brain.stream_chat(
+                chat.chat_id,
+                "Question",
+                should_cancel=lambda: False,
+                begin_commit=reject_commit,
+            )
+        )
+
+    assert commit_claims == 1
     assert brain.get_chat(chat.chat_id).messages == ()
 
 def test_active_chat_does_not_reuse_shared_short_term_turns(

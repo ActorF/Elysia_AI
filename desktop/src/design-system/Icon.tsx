@@ -17,6 +17,7 @@ export type IconName =
   | 'check'
   | 'chevron'
   | 'close'
+  | 'copy'
   | 'file'
   | 'folder'
   | 'hangup'
@@ -33,10 +34,12 @@ export type IconName =
   | 'pin'
   | 'plus'
   | 'search'
+  | 'refresh'
   | 'send'
   | 'settings'
   | 'sparkles'
   | 'sun'
+  | 'stop'
   | 'trash'
   | 'voice'
 
@@ -87,6 +90,14 @@ export function Icon({
     case 'check':
       content = <path d="m5 12 4 4L19 6" />
       break
+    case 'copy':
+      content = (
+        <>
+          <rect x="8" y="8" width="11" height="11" rx="2" />
+          <path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3" />
+        </>
+      )
+      break
     case 'folder':
       content = <path d="M3.5 7.5h6l2-2h9v13h-17z" />
       break
@@ -128,6 +139,18 @@ export function Icon({
       break
     case 'send':
       content = <path d="m4 12 16-8-6 16-2.5-6.5zM11.5 13.5 20 4" />
+      break
+    case 'refresh':
+      content = (
+        <>
+          <path d="M20 7v5h-5" />
+          <path d="M4 17v-5h5" />
+          <path d="M6.1 8a7 7 0 0 1 11.6-2L20 8M4 16l2.3 2a7 7 0 0 0 11.6-2" />
+        </>
+      )
+      break
+    case 'stop':
+      content = <rect x="6" y="6" width="12" height="12" rx="2" />
       break
     case 'panel':
       content = (

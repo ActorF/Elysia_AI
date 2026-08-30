@@ -47,6 +47,13 @@ export interface ChatStreamParams {
   message: string
 }
 
+export interface ChatRetryParams {
+  chatId: string
+  userMessageId: string
+  assistantMessageId: string
+  message?: string
+}
+
 export interface ChatListParams {
   includeArchived: boolean
 }
@@ -121,6 +128,7 @@ export interface RequestParamsByMethod {
   handshake: HandshakeParams
   initialize: Record<string, never>
   'chat.stream': ChatStreamParams
+  'chat.retry': ChatRetryParams
   'chat.list': ChatListParams
   'chat.create': ChatCreateParams
   'chat.open': ChatIdParams
@@ -520,6 +528,38 @@ function parseChatStreamParams(
   }
 }
 
+function parseChatRetryParams(
+  value: unknown,
+): ChatRetryParams {
+  const context = 'chat.retry params'
+  const params = asRecord(value, context)
+  requireFields(
+    params,
+    ['chatId', 'userMessageId', 'assistantMessageId'],
+    context,
+    ['message'],
+  )
+  const message = params.message === undefined
+    ? undefined
+    : readString(params, 'message', context)
+  if (message !== undefined && !hasNonBlankCodePoint(message)) {
+    return fail(
+      'protocol.invalid_params',
+      'chat.retry params.message cannot be blank.',
+    )
+  }
+  return {
+    chatId: readIdentifier(params, 'chatId', context),
+    userMessageId: readIdentifier(params, 'userMessageId', context),
+    assistantMessageId: readIdentifier(
+      params,
+      'assistantMessageId',
+      context,
+    ),
+    ...(message === undefined ? {} : { message }),
+  }
+}
+
 function readChatTitle(
   value: Record<string, unknown>,
   context: string,
@@ -776,6 +816,12 @@ export function parseClientRequest(value: unknown): ClientRequest {
     return {
       type: 'request', protocol, id, method,
       params: parseChatStreamParams(request.params),
+    }
+  }
+  if (method === 'chat.retry') {
+    return {
+      type: 'request', protocol, id, method,
+      params: parseChatRetryParams(request.params),
     }
   }
   if (method === 'chat.list') {

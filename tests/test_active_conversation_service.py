@@ -1,18 +1,25 @@
 """Tests for guarded Chat lifecycle and completed persistence."""
 
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Barrier
 
 import pytest
 
-from chats import ChatId, ChatNotFoundError, JsonChatRepository
+from chats import (
+    ChatId,
+    ChatNotFoundError,
+    JsonChatRepository,
+    create_attachment_metadata,
+)
 from core import (
     ActiveConversation,
     ActiveConversationService,
     ChatBusyError,
     ChatChangedDuringGenerationError,
+    ChatRetryTargetError,
     ConversationUnavailableError,
 )
 from projects import JsonProjectRepository, ProjectSettings
@@ -280,6 +287,108 @@ def test_commit_turn_saves_complete_pair_only_to_named_chat(
     assert updated.updated_at == BASE_TIME + timedelta(minutes=1)
     assert chats.get_chat(first.chat_id) == updated
     assert chats.get_chat(second.chat_id).messages == ()
+
+
+def test_retry_replaces_only_tail_content_and_preserves_message_identity(
+    tmp_path: Path,
+) -> None:
+    chats, _projects, active = _services(tmp_path)
+    chat = active.create_chat(
+        title="Retry",
+        mode="chat",
+        model_name="fake-model",
+    )
+    with active.open_turn(chat.chat_id) as context:
+        with_turn = active.commit_turn(
+            context,
+            user_message="Original question",
+            assistant_message="Original answer",
+        )
+
+    attachment = create_attachment_metadata(
+        file_name="context.txt",
+        media_type="text/plain",
+        size_bytes=7,
+    )
+    user_record, assistant_record = with_turn.messages
+    with_attachment = replace(
+        with_turn,
+        messages=(
+            replace(user_record, attachments=(attachment,)),
+            assistant_record,
+        ),
+    )
+    chats.save_chat(with_attachment)
+    with active.open_turn(chat.chat_id) as context:
+        with_summary = active.commit_summary(
+            context,
+            facts=("Old fact",),
+            decisions=(),
+            action_items=(),
+            unresolved_questions=(),
+            source_message_ids=(
+                message.message_id for message in with_attachment.messages
+            ),
+        )
+
+    original_pair = with_summary.messages
+    with active.open_turn(chat.chat_id) as context:
+        retried = active.commit_retry(
+            context,
+            user_message_id=original_pair[0].message_id,
+            assistant_message_id=original_pair[1].message_id,
+            user_message="Edited question",
+            assistant_message="Replacement answer",
+        )
+
+    assert [message.content for message in retried.messages] == [
+        "Edited question",
+        "Replacement answer",
+    ]
+    assert [message.message_id for message in retried.messages] == [
+        message.message_id for message in original_pair
+    ]
+    assert [message.created_at for message in retried.messages] == [
+        message.created_at for message in original_pair
+    ]
+    assert retried.messages[0].attachments == (attachment,)
+    assert retried.summary is None
+    assert chats.get_chat(chat.chat_id) == retried
+
+
+def test_retry_rejects_a_non_tail_pair_without_changing_chat(
+    tmp_path: Path,
+) -> None:
+    chats, _projects, active = _services(tmp_path)
+    chat = active.create_chat(
+        title="Retry target",
+        mode="chat",
+        model_name="fake-model",
+    )
+    with active.open_turn(chat.chat_id) as context:
+        first_turn = active.commit_turn(
+            context,
+            user_message="First question",
+            assistant_message="First answer",
+        )
+    with active.open_turn(chat.chat_id) as context:
+        complete_chat = active.commit_turn(
+            context,
+            user_message="Second question",
+            assistant_message="Second answer",
+        )
+
+    with active.open_turn(chat.chat_id) as context:
+        with pytest.raises(ChatRetryTargetError, match=r"tail turn"):
+            active.commit_retry(
+                context,
+                user_message_id=first_turn.messages[0].message_id,
+                assistant_message_id=first_turn.messages[1].message_id,
+                user_message="Rejected edit",
+                assistant_message="Rejected answer",
+            )
+
+    assert chats.get_chat(chat.chat_id) == complete_chat
 
 
 def test_commit_rejects_context_after_guard_closes(

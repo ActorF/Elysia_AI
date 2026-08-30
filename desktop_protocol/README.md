@@ -30,10 +30,12 @@ entering the `ready` state.
 
 Version 1 defines strict request, response, error, stream, progress,
 permission, event, cancel, and permission-decision shapes. The current runtime
-advertises `chat.stream`, `stream`, `progress`, and `event`. Cancel and Backend
-permission prompts have stable schemas for later modules, but are not
-advertised as active capabilities; requests receive stable unsupported or
-not-found errors rather than a false success.
+advertises `chat.stream`, `chat.retry`, `request.cancel`, `stream`, `progress`,
+and `event`. Both new-turn and retry generation reuse the `chat.reply` stream.
+Cancellation succeeds only before generation claims its atomic commit gate, so
+a successful Stop response guarantees that the interrupted turn is not saved.
+Backend permission prompts retain their stable schema but are not yet
+advertised as an active capability.
 
 String limits are measured in Unicode code points and each UTF-8 NDJSON frame
 is capped at 16,777,216 bytes, including leading and trailing JSON whitespace.

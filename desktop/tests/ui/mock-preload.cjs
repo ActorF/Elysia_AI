@@ -37,6 +37,10 @@ function defaultProjectState() {
 let snapshot = clone(initialSnapshot)
 let chatState = defaultChatState()
 let projectState = defaultProjectState()
+let chatMessages = new Map([
+  [chatState.activeChat.chatId, clone(chatState.activeChat.messages)],
+])
+let pendingGenerations = new Map()
 let selectedFiles = []
 let selectedWorkspace = null
 let nextRequestNumber = 1
@@ -69,6 +73,7 @@ function synchronizeChatState() {
   if (snapshot.chatId === undefined) {
     return
   }
+  saveActiveMessages()
   const matching = chatState.chats.find(
     (chat) => chat.chatId === snapshot.chatId,
   )
@@ -83,10 +88,21 @@ function synchronizeChatState() {
   chatState = {
     activeChat: {
       ...summary,
-      messages: matching === undefined ? [] : chatState.activeChat.messages,
+      messages: messagesForChat(summary.chatId),
     },
     chats: matching === undefined ? [summary] : chatState.chats,
   }
+}
+
+function saveActiveMessages() {
+  chatMessages.set(
+    chatState.activeChat.chatId,
+    clone(chatState.activeChat.messages),
+  )
+}
+
+function messagesForChat(chatId) {
+  return clone(chatMessages.get(chatId) ?? [])
 }
 
 function projectUpdatedAt() {
@@ -122,13 +138,12 @@ function activateChat(chatId) {
   if (summary === undefined || summary.archived) {
     throw new Error('Chat cannot be opened.')
   }
+  saveActiveMessages()
   chatState = {
     ...chatState,
     activeChat: {
       ...summary,
-      messages: chatState.activeChat.chatId === chatId
-        ? chatState.activeChat.messages
-        : [],
+      messages: messagesForChat(chatId),
     },
   }
   snapshot = {
@@ -196,7 +211,37 @@ const desktopApi = {
     record('sendMessage', [request])
     const requestId = `test-request-${nextRequestNumber}`
     nextRequestNumber += 1
+    pendingGenerations.set(requestId, {
+      kind: 'send',
+      request: clone(request),
+    })
     return { requestId }
+  },
+
+  retryMessage: async (request) => {
+    record('retryMessage', [request])
+    const requestId = `test-request-${nextRequestNumber}`
+    nextRequestNumber += 1
+    pendingGenerations.set(requestId, {
+      kind: 'retry',
+      request: clone(request),
+    })
+    return { requestId }
+  },
+
+  stopGeneration: async (requestId) => {
+    record('stopGeneration', [requestId])
+    if (!pendingGenerations.has(requestId)) {
+      throw new Error('Generation is no longer running.')
+    }
+  },
+
+  copyText: async (text) => {
+    record('copyText', [text])
+  },
+
+  openExternalUrl: async (url) => {
+    record('openExternalUrl', [url])
   },
 
   listChats: async (includeArchived) => {
@@ -496,6 +541,10 @@ const testControl = {
     snapshot = clone(initialSnapshot)
     chatState = defaultChatState()
     projectState = defaultProjectState()
+    chatMessages = new Map([
+      [chatState.activeChat.chatId, clone(chatState.activeChat.messages)],
+    ])
+    pendingGenerations = new Map()
     selectedFiles = []
     selectedWorkspace = null
     nextRequestNumber = 1
@@ -512,12 +561,24 @@ const testControl = {
 
   setChatState: (nextChatState) => {
     chatState = clone(nextChatState)
+    chatMessages = new Map(chatState.chats.map((chat) => [
+      chat.chatId,
+      chat.chatId === chatState.activeChat.chatId
+        ? clone(chatState.activeChat.messages)
+        : [],
+    ]))
     synchronizeProjectState()
   },
 
   setProjectState: (nextProjectState) => {
     projectState = clone(nextProjectState)
     chatState = clone(nextProjectState.chatState)
+    chatMessages = new Map(chatState.chats.map((chat) => [
+      chat.chatId,
+      chat.chatId === chatState.activeChat.chatId
+        ? clone(chatState.activeChat.messages)
+        : [],
+    ]))
     synchronizeProjectState()
   },
 
@@ -526,35 +587,73 @@ const testControl = {
     if (nextEvent.type === 'snapshot') {
       snapshot = clone(nextEvent.snapshot)
     }
-    if (
-      nextEvent.type === 'chat-complete'
-      && nextEvent.chatId === chatState.activeChat.chatId
-    ) {
+    if (nextEvent.type === 'chat-complete') {
       const createdAt = '2026-08-25T12:01:00+00:00'
+      const generation = pendingGenerations.get(nextEvent.requestId)
+      let messages = messagesForChat(nextEvent.chatId)
       const assistantMessage = {
-        messageId: `assistant-${nextEvent.requestId}`,
+        messageId: generation?.kind === 'retry'
+          ? generation.request.assistantMessageId
+          : `assistant-${nextEvent.requestId}`,
         role: 'assistant',
         content: nextEvent.reply,
         createdAt,
         attachments: [],
       }
-      chatState.activeChat.messages = [
-        ...chatState.activeChat.messages.filter(
-          (message) => message.messageId !== assistantMessage.messageId,
-        ),
-        assistantMessage,
-      ]
-      chatState.activeChat.messageCount = chatState.activeChat.messages.length
-      chatState.activeChat.updatedAt = createdAt
+
+      if (generation?.kind === 'send') {
+        messages = [
+          ...messages,
+          {
+            messageId: `user-${nextEvent.requestId}`,
+            role: 'user',
+            content: generation.request.message,
+            createdAt,
+            attachments: [],
+          },
+          assistantMessage,
+        ]
+      } else if (generation?.kind === 'retry') {
+        messages = messages.map((message) => {
+          if (message.messageId === generation.request.userMessageId) {
+            return {
+              ...message,
+              content: generation.request.message ?? message.content,
+            }
+          }
+          if (message.messageId === generation.request.assistantMessageId) {
+            return { ...message, content: nextEvent.reply }
+          }
+          return message
+        })
+      } else {
+        messages = [
+          ...messages.filter(
+            (message) => message.messageId !== assistantMessage.messageId,
+          ),
+          assistantMessage,
+        ]
+      }
+
+      chatMessages.set(nextEvent.chatId, clone(messages))
+      if (nextEvent.chatId === chatState.activeChat.chatId) {
+        chatState.activeChat.messages = clone(messages)
+        chatState.activeChat.messageCount = messages.length
+        chatState.activeChat.updatedAt = createdAt
+      }
       chatState.chats = chatState.chats.map((chat) => (
         chat.chatId === nextEvent.chatId
           ? {
               ...chat,
-              messageCount: chatState.activeChat.messageCount,
+              messageCount: messages.length,
               updatedAt: createdAt,
             }
           : chat
       ))
+      pendingGenerations.delete(nextEvent.requestId)
+    }
+    if (nextEvent.type === 'chat-error') {
+      pendingGenerations.delete(nextEvent.requestId)
     }
     for (const listener of backendListeners) {
       listener(clone(nextEvent))

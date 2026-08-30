@@ -23,6 +23,7 @@ import type {
   CreateProjectRequest,
   MoveChatToProjectRequest,
   ProjectState,
+  RetryChatRequest,
   SelectedFile,
   UpdateProjectRequest,
 } from '../electron/contracts.ts'
@@ -33,7 +34,11 @@ import {
 import './App.css'
 import { CharacterPanel } from './character/CharacterPanel.tsx'
 import { ChatView } from './chat/ChatView.tsx'
-import type { ChatMessage, ChatNotice } from './chat/types.ts'
+import type {
+  ChatMessage,
+  ChatNotice,
+  RetryableChatPair,
+} from './chat/types.ts'
 import { EmptyState } from './design-system/Feedback.tsx'
 import { Icon } from './design-system/Icon.tsx'
 import { ProjectView } from './projects/ProjectView.tsx'
@@ -79,7 +84,125 @@ function presentChatMessages(chat: ChatDetail): ChatMessage[] {
         .map((attachment) => attachment.fileName)
         .join(', '),
       state: 'complete',
+      persisted: true,
     }))
+}
+
+type GenerationPhase =
+  | 'starting'
+  | 'streaming'
+  | 'stopping'
+  | 'complete'
+  | 'error'
+  | 'cancelled'
+
+interface InFlightTurn {
+  operationId: string
+  requestId: string | null
+  chatId: string
+  kind: 'send' | 'retry'
+  userMessageId: string
+  assistantMessageId: string
+  userText: string
+  assistantText: string
+  originalAssistantText: string
+  phase: GenerationPhase
+}
+
+function generationIsBusy(turn: InFlightTurn | null): boolean {
+  return turn !== null && (
+    turn.phase === 'starting'
+    || turn.phase === 'streaming'
+    || turn.phase === 'stopping'
+  )
+}
+
+function retryableTail(chat: ChatDetail | null): RetryableChatPair | null {
+  if (chat === null) {
+    return null
+  }
+  const visibleMessages = chat.messages.filter(
+    (message) => message.role !== 'system',
+  )
+  const user = visibleMessages.at(-2)
+  const assistant = visibleMessages.at(-1)
+  if (user?.role !== 'user' || assistant?.role !== 'assistant') {
+    return null
+  }
+  return {
+    chatId: chat.chatId,
+    userMessageId: user.messageId,
+    assistantMessageId: assistant.messageId,
+    userText: user.content,
+    assistantText: assistant.content,
+  }
+}
+
+function overlayTurn(
+  canonicalMessages: ChatMessage[],
+  turn: InFlightTurn | null,
+  activeChatId: string | undefined,
+): ChatMessage[] {
+  if (turn === null || turn.chatId !== activeChatId) {
+    return canonicalMessages
+  }
+
+  const assistantState = turn.phase === 'cancelled'
+    ? 'cancelled'
+    : turn.phase === 'error'
+      ? 'error'
+      : turn.phase === 'complete'
+        ? 'complete'
+        : 'streaming'
+  const assistantText = (
+    turn.kind === 'retry'
+    && (turn.phase === 'error' || turn.phase === 'cancelled')
+  )
+    ? turn.originalAssistantText
+    : turn.assistantText
+
+  if (turn.kind === 'send') {
+    return [
+      ...canonicalMessages,
+      {
+        id: turn.userMessageId,
+        role: 'user',
+        text: turn.userText,
+        state: 'complete',
+        persisted: false,
+      },
+      {
+        id: turn.assistantMessageId,
+        role: 'assistant',
+        text: assistantText,
+        state: assistantState,
+        persisted: false,
+      },
+    ]
+  }
+
+  return canonicalMessages.map((message) => {
+    if (message.id === turn.userMessageId) {
+      return {
+        ...message,
+        text: turn.phase === 'error' || turn.phase === 'cancelled'
+          ? retryableTailText(canonicalMessages, turn.userMessageId)
+          : turn.userText,
+      }
+    }
+    if (message.id === turn.assistantMessageId) {
+      return {
+        ...message,
+        text: assistantText,
+        state: assistantState,
+      }
+    }
+    return message
+  })
+}
+
+function retryableTailText(messages: ChatMessage[], messageId: string): string {
+  return messages.find((message) => message.id === messageId)?.text ?? ''
 }
 
 interface PlaceholderViewProps {
@@ -150,16 +273,19 @@ function App() {
   const [projectLoading, setProjectLoading] = useState(true)
   const [projectMutationPending, setProjectMutationPending] = useState(false)
   const [showArchived, setShowArchived] = useState(false)
-  const [draft, setDraft] = useState('')
+  const [draftsByChat, setDraftsByChat] = useState<Record<string, string>>({})
   const [activeView, setActiveView] = useState<AppView>('chat')
   const [searchOpen, setSearchOpen] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [panelOpen, setPanelOpen] = useState(false)
   const [panelTransitionPending, setPanelTransitionPending] = useState(false)
   const [streaming, setStreaming] = useState(false)
+  const [inFlightTurn, setInFlightTurn] = useState<InFlightTurn | null>(null)
   const [modelSelectionPending, setModelSelectionPending] = useState(false)
   const [retryPending, setRetryPending] = useState(false)
-  const [selectedFiles, setSelectedFiles] = useState<SelectedFile[]>([])
+  const [filesByChat, setFilesByChat] = useState<
+    Record<string, SelectedFile[]>
+  >({})
   const [notice, setNotice] = useState<ChatNotice | null>(null)
   const [callPreviewOpen, setCallPreviewOpen] = useState(false)
   const [captionsEnabled, setCaptionsEnabled] = useState(true)
@@ -179,11 +305,32 @@ function App() {
   const projectRefreshNeededRef = useRef(false)
   const projectRefreshPromiseRef = useRef<Promise<void> | null>(null)
   const streamingRef = useRef(false)
+  const inFlightTurnRef = useRef<InFlightTurn | null>(null)
   const panelOperationRef = useRef(0)
   const panelCommittedOpenRef = useRef(false)
   const panelTargetOpenRef = useRef(false)
   const panelQueueRef = useRef<Promise<void>>(Promise.resolve())
 
+  const activeChatId = chatState?.activeChat.chatId
+  const draft = activeChatId === undefined
+    ? ''
+    : draftsByChat[activeChatId] ?? ''
+  const selectedFiles = activeChatId === undefined
+    ? []
+    : filesByChat[activeChatId] ?? []
+  const displayedMessages = useMemo(() => overlayTurn(
+    messages,
+    inFlightTurn,
+    activeChatId,
+  ), [activeChatId, inFlightTurn, messages])
+  const retryPair = useMemo(
+    () => retryableTail(chatState?.activeChat ?? null),
+    [chatState?.activeChat],
+  )
+  const generationBusy = generationIsBusy(inFlightTurn)
+  const activeGeneration = generationBusy
+    && inFlightTurn?.chatId === activeChatId
+  const stopPending = activeGeneration && inFlightTurn?.phase === 'stopping'
   const displayedChat = chatState?.activeChat.title
     ?? snapshot.chatTitle
     ?? 'Chat'
@@ -221,7 +368,6 @@ function App() {
     }
 
     acceptedSnapshotRevisionRef.current = nextSnapshot.revision
-    activeChatIdRef.current = nextSnapshot.chatId
     backendStatusRef.current = nextSnapshot.status
     setSnapshot(nextSnapshot)
     return true
@@ -237,6 +383,15 @@ function App() {
     setProjectState(nextState)
     acceptChatState(nextState.chatState)
   }, [acceptChatState])
+
+  const updateInFlightTurn = useCallback((
+    update: (current: InFlightTurn | null) => InFlightTurn | null,
+  ): InFlightTurn | null => {
+    const nextTurn = update(inFlightTurnRef.current)
+    inFlightTurnRef.current = nextTurn
+    setInFlightTurn(nextTurn)
+    return nextTurn
+  }, [])
 
   const flushProjectRefresh = useCallback(async (): Promise<void> => {
     if (
@@ -342,10 +497,6 @@ function App() {
   ), [setCharacterPanelVisibility])
 
   useEffect(() => {
-    activeChatIdRef.current = snapshot.chatId
-  }, [snapshot.chatId])
-
-  useEffect(() => {
     if (desktopApi === undefined || snapshot.status !== 'ready') {
       return
     }
@@ -439,7 +590,13 @@ function App() {
         if (!acceptSnapshot(nextSnapshot)) {
           return
         }
-        if (nextSnapshot.status !== 'ready') {
+        if (
+          nextSnapshot.status !== 'ready'
+          && generationIsBusy(inFlightTurnRef.current)
+        ) {
+          updateInFlightTurn((current) => current === null
+            ? null
+            : { ...current, phase: 'error' })
           streamingRef.current = false
           setStreaming(false)
         }
@@ -465,92 +622,105 @@ function App() {
         if (!acceptSnapshot(event.snapshot)) {
           return
         }
-        if (event.snapshot.status !== 'ready') {
+        if (
+          event.snapshot.status !== 'ready'
+          && generationIsBusy(inFlightTurnRef.current)
+        ) {
+          updateInFlightTurn((current) => current === null
+            ? null
+            : { ...current, phase: 'error' })
           streamingRef.current = false
           setStreaming(false)
         }
         if (event.snapshot.status === 'error') {
           setNotice(null)
-          setMessages((currentMessages) => currentMessages.map((message) => (
-            message.state === 'streaming'
-              ? { ...message, state: 'error' }
-              : message
-          )))
         }
         return
       }
 
       if (event.type === 'chat-chunk') {
-        if (event.chatId !== activeChatIdRef.current) {
+        const currentTurn = inFlightTurnRef.current
+        if (
+          currentTurn === null
+          || event.chatId !== currentTurn.chatId
+          || (
+            currentTurn.requestId !== null
+            && event.requestId !== currentTurn.requestId
+          )
+          || !generationIsBusy(currentTurn)
+        ) {
           return
         }
-        const messageId = `assistant-${event.requestId}`
-        setMessages((currentMessages) => {
-          const existing = currentMessages.some(
-            (message) => message.id === messageId,
-          )
-          if (!existing) {
-            return [
-              ...currentMessages,
-              {
-                id: messageId,
-                role: 'assistant',
-                text: event.chunk,
-                state: 'streaming',
-              },
-            ]
-          }
-          return currentMessages.map((message) => (
-            message.id === messageId
-              ? {
-                  ...message,
-                  text: message.text + event.chunk,
-                  state: 'streaming',
-                }
-              : message
-          ))
-        })
+        const operationId = currentTurn.operationId
+        updateInFlightTurn((current) => current?.operationId === operationId
+          ? {
+              ...current,
+              requestId: event.requestId,
+              assistantMessageId: current.kind === 'send'
+                ? `assistant-${event.requestId}`
+                : current.assistantMessageId,
+              assistantText: current.assistantText + event.chunk,
+              phase: current.phase === 'stopping' ? 'stopping' : 'streaming',
+            }
+          : current)
         return
       }
 
       if (event.type === 'chat-complete') {
-        if (event.chatId !== activeChatIdRef.current) {
+        const currentTurn = inFlightTurnRef.current
+        if (
+          currentTurn === null
+          || event.chatId !== currentTurn.chatId
+          || (
+            currentTurn.requestId !== null
+            && event.requestId !== currentTurn.requestId
+          )
+        ) {
           return
         }
-        const messageId = `assistant-${event.requestId}`
-        setMessages((currentMessages) => {
-          const existing = currentMessages.some(
-            (message) => message.id === messageId,
-          )
-          if (!existing) {
-            return [
-              ...currentMessages,
-              {
-                id: messageId,
-                role: 'assistant',
-                text: event.reply,
-                state: 'complete',
-              },
-            ]
-          }
-          return currentMessages.map((message) => (
-            message.id === messageId
-              ? { ...message, state: 'complete' }
-              : message
-          ))
-        })
+        const operationId = currentTurn.operationId
+        updateInFlightTurn((current) => current?.operationId === operationId
+          ? {
+              ...current,
+              requestId: event.requestId,
+              assistantMessageId: current.kind === 'send'
+                ? `assistant-${event.requestId}`
+                : current.assistantMessageId,
+              assistantText: event.reply,
+              phase: 'complete',
+            }
+          : current)
         streamingRef.current = false
         setStreaming(false)
         if (activeViewRef.current === 'projects') {
           void requestProjectRefresh()
+        } else if (activeChatIdRef.current !== event.chatId) {
+          updateInFlightTurn((current) => current?.operationId === operationId
+            ? null
+            : current)
         } else {
           void desktopApi.listChats(true)
-            .then(acceptChatState)
+            .then((nextState) => {
+              if (
+                activeChatIdRef.current === event.chatId
+                && nextState.activeChat.chatId === event.chatId
+              ) {
+                acceptChatState(nextState)
+              }
+              updateInFlightTurn((current) => (
+                current?.operationId === operationId ? null : current
+              ))
+            })
             .catch((error: unknown) => {
-              setNotice(errorNotice(
-                error instanceof Error
-                  ? error.message
-                  : 'Reply completed, but Chat history could not be refreshed.',
+              if (activeChatIdRef.current === event.chatId) {
+                setNotice(errorNotice(
+                  error instanceof Error
+                    ? error.message
+                    : 'Reply completed, but Chat history could not be refreshed.',
+                ))
+              }
+              updateInFlightTurn((current) => (
+                current?.operationId === operationId ? null : current
               ))
             })
         }
@@ -558,36 +728,54 @@ function App() {
       }
 
       if (event.type === 'chat-error') {
-        if (event.chatId !== activeChatIdRef.current) {
+        const currentTurn = inFlightTurnRef.current
+        if (
+          currentTurn === null
+          || event.chatId !== currentTurn.chatId
+          || (
+            currentTurn.requestId !== null
+            && event.requestId !== currentTurn.requestId
+          )
+        ) {
           return
         }
+        const cancelled = event.code === 'request.cancelled'
+        const operationId = currentTurn.operationId
+        updateInFlightTurn((current) => current?.operationId === operationId
+          ? {
+              ...current,
+              requestId: event.requestId,
+              assistantText: current.assistantText || (
+                cancelled ? '' : event.message
+              ),
+              phase: cancelled ? 'cancelled' : 'error',
+            }
+          : current)
         streamingRef.current = false
         setStreaming(false)
-        setNotice(errorNotice(event.message))
-        setMessages((currentMessages) => {
-          const messageId = `assistant-${event.requestId}`
-          if (!currentMessages.some((message) => message.id === messageId)) {
-            return [
-              ...currentMessages,
-              {
-                id: messageId,
-                role: 'assistant',
-                text: event.message,
-                state: 'error',
-              },
-            ]
-          }
-          return currentMessages.map((message) => (
-            message.id === messageId
-              ? { ...message, state: 'error' }
-              : message
-          ))
-        })
+        if (event.chatId === activeChatIdRef.current) {
+          setNotice(cancelled
+            ? infoNotice('Generation stopped. No partial reply was saved.')
+            : errorNotice(event.message))
+        }
         void requestProjectRefresh()
         return
       }
 
       if (event.type === 'progress') {
+        if (event.operation === 'chat.generate') {
+          const currentTurn = inFlightTurnRef.current
+          if (
+            currentTurn === null
+            || currentTurn.chatId !== activeChatIdRef.current
+            || (
+              currentTurn.requestId !== null
+              && currentTurn.requestId !== event.requestId
+            )
+          ) {
+            return
+          }
+        }
         if (event.message !== null) {
           setNotice(infoNotice(event.message))
         } else if (event.total !== null && event.completed >= event.total) {
@@ -612,6 +800,7 @@ function App() {
     acceptSnapshot,
     desktopApi,
     requestProjectRefresh,
+    updateInFlightTurn,
   ])
 
   useEffect(() => {
@@ -707,6 +896,14 @@ function App() {
     }
   }
 
+  function updateActiveDraft(value: string): void {
+    const chatId = chatState?.activeChat.chatId
+    if (chatId === undefined) {
+      return
+    }
+    setDraftsByChat((current) => ({ ...current, [chatId]: value }))
+  }
+
   async function sendMessage(): Promise<void> {
     const message = trimProtocolBlankCharacters(draft)
     const chatId = chatState?.activeChat.chatId
@@ -721,47 +918,172 @@ function App() {
       return
     }
 
-    setDraft('')
+    const operationId = crypto.randomUUID()
+    setDraftsByChat((current) => ({ ...current, [chatId]: '' }))
     setNotice(null)
     streamingRef.current = true
     setStreaming(true)
-    setMessages((currentMessages) => [
-      ...currentMessages,
-      {
-        id: crypto.randomUUID(),
-        role: 'user',
-        text: message,
-        state: 'complete',
-      },
-    ])
+    updateInFlightTurn(() => ({
+      operationId,
+      requestId: null,
+      chatId,
+      kind: 'send',
+      userMessageId: `user-${operationId}`,
+      assistantMessageId: `assistant-${operationId}`,
+      userText: message,
+      assistantText: '',
+      originalAssistantText: '',
+      phase: 'starting',
+    }))
 
     try {
       const { requestId } = await desktopApi.sendMessage({ chatId, message })
-      setMessages((currentMessages) => {
-        const messageId = `assistant-${requestId}`
-        if (currentMessages.some((chatMessage) => chatMessage.id === messageId)) {
-          return currentMessages
+      updateInFlightTurn((current) => {
+        if (current?.operationId !== operationId) {
+          return current
         }
-        return [
-          ...currentMessages,
-          {
-            id: messageId,
-            role: 'assistant',
-            text: '',
-            state: 'streaming',
-          },
-        ]
+        if (current.requestId !== null && current.requestId !== requestId) {
+          return { ...current, phase: 'error' }
+        }
+        return {
+          ...current,
+          requestId,
+          assistantMessageId: `assistant-${requestId}`,
+        }
       })
     } catch (error) {
-      streamingRef.current = false
-      setStreaming(false)
+      if (inFlightTurnRef.current?.operationId === operationId) {
+        updateInFlightTurn((current) => current?.operationId === operationId
+          ? { ...current, phase: 'error' }
+          : current)
+        streamingRef.current = false
+        setStreaming(false)
+        setNotice(errorNotice(
+          error instanceof Error
+            ? error.message
+            : 'Could not send the message.',
+        ))
+        void requestProjectRefresh()
+      }
+    }
+  }
+
+  async function retryMessage(
+    pair: RetryableChatPair,
+    replacementMessage?: string,
+  ): Promise<void> {
+    if (
+      desktopApi === undefined
+      || streamingRef.current
+      || pair.chatId !== activeChatIdRef.current
+      || modelSelectionPendingRef.current
+      || retryPendingRef.current
+    ) {
+      return
+    }
+
+    const editedMessage = replacementMessage === undefined
+      ? undefined
+      : trimProtocolBlankCharacters(replacementMessage)
+    if (editedMessage !== undefined && !hasNonBlankCodePoint(editedMessage)) {
+      return
+    }
+
+    const operationId = crypto.randomUUID()
+    const request: RetryChatRequest = {
+      chatId: pair.chatId,
+      userMessageId: pair.userMessageId,
+      assistantMessageId: pair.assistantMessageId,
+      ...(editedMessage === undefined ? {} : { message: editedMessage }),
+    }
+    setNotice(null)
+    streamingRef.current = true
+    setStreaming(true)
+    updateInFlightTurn(() => ({
+      operationId,
+      requestId: null,
+      chatId: pair.chatId,
+      kind: 'retry',
+      userMessageId: pair.userMessageId,
+      assistantMessageId: pair.assistantMessageId,
+      userText: editedMessage ?? pair.userText,
+      assistantText: '',
+      originalAssistantText: pair.assistantText,
+      phase: 'starting',
+    }))
+
+    try {
+      const { requestId } = await desktopApi.retryMessage(request)
+      updateInFlightTurn((current) => {
+        if (current?.operationId !== operationId) {
+          return current
+        }
+        if (current.requestId !== null && current.requestId !== requestId) {
+          return { ...current, phase: 'error' }
+        }
+        return { ...current, requestId }
+      })
+    } catch (error) {
+      if (inFlightTurnRef.current?.operationId === operationId) {
+        updateInFlightTurn((current) => current?.operationId === operationId
+          ? { ...current, phase: 'error' }
+          : current)
+        streamingRef.current = false
+        setStreaming(false)
+        setNotice(errorNotice(
+          error instanceof Error
+            ? error.message
+            : 'Could not retry the message.',
+        ))
+      }
+    }
+  }
+
+  async function stopGeneration(): Promise<void> {
+    const currentTurn = inFlightTurnRef.current
+    if (
+      desktopApi === undefined
+      || currentTurn === null
+      || currentTurn.requestId === null
+      || currentTurn.chatId !== activeChatIdRef.current
+      || !generationIsBusy(currentTurn)
+      || currentTurn.phase === 'stopping'
+    ) {
+      return
+    }
+
+    const operationId = currentTurn.operationId
+    updateInFlightTurn((current) => current?.operationId === operationId
+      ? { ...current, phase: 'stopping' }
+      : current)
+    try {
+      await desktopApi.stopGeneration(currentTurn.requestId)
+    } catch (error) {
+      updateInFlightTurn((current) => (
+        current?.operationId === operationId && current.phase === 'stopping'
+          ? { ...current, phase: 'streaming' }
+          : current
+      ))
       setNotice(errorNotice(
         error instanceof Error
           ? error.message
-          : 'Could not send the message.',
+          : 'Could not stop generation.',
       ))
-      void requestProjectRefresh()
     }
+  }
+
+  async function copyText(text: string): Promise<void> {
+    if (desktopApi === undefined) {
+      throw new Error('Desktop API is unavailable.')
+    }
+    await desktopApi.copyText(text)
+  }
+
+  async function openExternalUrl(url: string): Promise<void> {
+    if (desktopApi === undefined) {
+      throw new Error('Desktop API is unavailable.')
+    }
+    await desktopApi.openExternalUrl(url)
   }
 
   async function selectModel(modelName: string): Promise<void> {
@@ -1009,14 +1331,36 @@ function App() {
     )
   }
 
-  function openChat(chatId: string): Promise<void> {
+  async function openChat(chatId: string): Promise<void> {
     if (desktopApi === undefined) {
-      return Promise.reject(new Error('Desktop API is unavailable.'))
+      throw new Error('Desktop API is unavailable.')
     }
-    return runSessionAction(
-      () => desktopApi.openChat(chatId),
-      'Could not open the Chat.',
-    )
+    if (
+      sessionMutationPendingRef.current
+      || snapshot.status !== 'ready'
+      || chatState === null
+    ) {
+      throw new Error('Wait for the current Chat action to finish.')
+    }
+
+    // Opening another Chat is deliberately allowed during generation. The
+    // in-flight turn remains keyed to its source Chat and is never overlaid on
+    // the destination Chat.
+    sessionMutationPendingRef.current = true
+    setSessionMutationPending(true)
+    setNotice(null)
+    try {
+      acceptChatState(await desktopApi.openChat(chatId))
+    } catch (error) {
+      const normalized = error instanceof Error
+        ? error
+        : new Error('Could not open the Chat.')
+      setNotice(errorNotice(normalized.message))
+      throw normalized
+    } finally {
+      sessionMutationPendingRef.current = false
+      setSessionMutationPending(false)
+    }
   }
 
   function renameChat(chatId: string, title: string): Promise<void> {
@@ -1100,8 +1444,13 @@ function App() {
     if (desktopApi === undefined) {
       return
     }
+    const chatId = chatState?.activeChat.chatId
+    if (chatId === undefined) {
+      return
+    }
     try {
-      setSelectedFiles(await desktopApi.chooseFiles())
+      const files = await desktopApi.chooseFiles()
+      setFilesByChat((current) => ({ ...current, [chatId]: files }))
     } catch (error) {
       setNotice(errorNotice(
         error instanceof Error
@@ -1164,7 +1513,7 @@ function App() {
   } else if (activeView === 'projects') {
     content = (
       <ProjectView
-        busyChatId={streaming ? chatState?.activeChat.chatId : undefined}
+        busyChatId={generationBusy ? inFlightTurn?.chatId : undefined}
         loading={projectLoading}
         mutationPending={
           projectMutationPending || snapshot.status !== 'ready'
@@ -1200,24 +1549,31 @@ function App() {
         chatMode={chatState?.activeChat.mode ?? 'chat'}
         chatTitle={displayedChat}
         draft={draft}
-        messages={messages}
+        generationBusy={generationBusy}
+        messages={displayedMessages}
         modelSelectionPending={modelSelectionPending}
         modelOptions={modelOptions}
         notice={notice}
         panelOpen={panelOpen}
         panelTransitionPending={panelTransitionPending}
         retryPending={retryPending}
+        retryPair={retryPair}
         selectedFiles={selectedFiles}
         sidebarOpen={sidebarOpen}
         snapshot={snapshot}
-        streaming={streaming}
+        streaming={activeGeneration}
+        stopPending={stopPending}
         onChooseFiles={() => { void chooseFiles() }}
+        onCopy={copyText}
         onDismissNotice={() => { setNotice(null) }}
-        onDraftChange={setDraft}
+        onDraftChange={updateActiveDraft}
         onOpenCall={() => { void openCallPreview() }}
+        onOpenExternalUrl={openExternalUrl}
+        onRetry={(pair, message) => { void retryMessage(pair, message) }}
         onRetryConnection={() => { void retryConnection() }}
         onSelectModel={(modelName) => { void selectModel(modelName) }}
         onSend={() => { void sendMessage() }}
+        onStop={() => { void stopGeneration() }}
         onTogglePanel={() => { void toggleCharacterPanel() }}
         onToggleSidebar={() => {
           setSidebarOpen((open) => {
@@ -1251,7 +1607,7 @@ function App() {
         <Sidebar
           activeChatId={chatState?.activeChat.chatId}
           activeView={activeView}
-          busyChatId={streaming ? chatState?.activeChat.chatId : undefined}
+          busyChatId={generationBusy ? inFlightTurn?.chatId : undefined}
           chats={chatState?.chats ?? []}
           modal={compactShell}
           mutationPending={sessionUiPending}

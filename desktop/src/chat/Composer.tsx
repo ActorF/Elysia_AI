@@ -22,6 +22,7 @@ interface ComposerProps {
   callButtonRef: RefObject<HTMLButtonElement | null>
   canSend: boolean
   draft: string
+  generationBusy: boolean
   modelSelectionPending: boolean
   modelOptions: string[]
   notice: ChatNotice | null
@@ -29,6 +30,7 @@ interface ComposerProps {
   selectedFiles: SelectedFile[]
   snapshot: BackendSnapshot
   streaming: boolean
+  stopPending: boolean
   onChooseFiles(): void
   onDismissNotice(): void
   onDraftChange(value: string): void
@@ -36,6 +38,7 @@ interface ComposerProps {
   onRetryConnection(): void
   onSelectModel(modelName: string): void
   onSend(): void
+  onStop(): void
   onVerifyMicrophone(): void
   onVoicePlaceholder(): void
 }
@@ -55,6 +58,7 @@ export function Composer({
   callButtonRef,
   canSend,
   draft,
+  generationBusy,
   modelSelectionPending,
   modelOptions,
   notice,
@@ -62,6 +66,7 @@ export function Composer({
   selectedFiles,
   snapshot,
   streaming,
+  stopPending,
   onChooseFiles,
   onDismissNotice,
   onDraftChange,
@@ -69,6 +74,7 @@ export function Composer({
   onRetryConnection,
   onSelectModel,
   onSend,
+  onStop,
   onVerifyMicrophone,
   onVoicePlaceholder,
 }: ComposerProps) {
@@ -100,18 +106,23 @@ export function Composer({
   return (
     <footer className="composer-zone" aria-label="Message composer">
       {selectedFiles.length > 0 && (
-        <div className="attachment-row" aria-label="Selected attachments">
-          {selectedFiles.map((file, index) => (
-            <span
-              className="attachment-chip"
-              key={`${file.name}-${file.sizeBytes}-${index}`}
-              title={file.name}
-            >
-              <Icon name="file" />
-              <span>{file.name}</span>
-              <small>{formatBytes(file.sizeBytes)}</small>
-            </span>
-          ))}
+        <div className="attachment-preview">
+          <div className="attachment-row" aria-label="Selected attachments">
+            {selectedFiles.map((file, index) => (
+              <span
+                className="attachment-chip"
+                key={`${file.name}-${file.sizeBytes}-${index}`}
+                title={file.name}
+              >
+                <Icon name="file" />
+                <span>{file.name}</span>
+                <small>{formatBytes(file.sizeBytes)}</small>
+              </span>
+            ))}
+          </div>
+          <p className="attachment-preview-note" role="note">
+            Preview only — these files are not sent with the message yet.
+          </p>
         </div>
       )}
 
@@ -173,7 +184,7 @@ export function Composer({
                 value={snapshot.modelName ?? ''}
                 disabled={
                   snapshot.status !== 'ready'
-                  || streaming
+                  || generationBusy
                   || modelSelectionPending
                   || modelOptions.length === 0
                 }
@@ -221,15 +232,28 @@ export function Composer({
             >
               <Icon name="phone" />
             </button>
-            <button
-              type="button"
-              className="send-button"
-              disabled={!canSend}
-              onClick={onSend}
-              aria-label="Send message"
-            >
-              <Icon name="send" />
-            </button>
+            {streaming ? (
+              <button
+                type="button"
+                className="send-button stop-button"
+                disabled={stopPending}
+                onClick={onStop}
+                aria-label={stopPending ? 'Stopping generation' : 'Stop generation'}
+                title={stopPending ? 'Stopping…' : 'Stop generation'}
+              >
+                <Icon name="stop" />
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="send-button"
+                disabled={!canSend}
+                onClick={onSend}
+                aria-label="Send message"
+              >
+                <Icon name="send" />
+              </button>
+            )}
           </div>
         </div>
       </div>

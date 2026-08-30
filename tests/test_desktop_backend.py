@@ -5,6 +5,7 @@ from collections.abc import Callable, Generator
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from io import BytesIO, StringIO, TextIOWrapper
+from threading import Event
 from typing import Any, cast
 from unittest.mock import patch
 
@@ -19,7 +20,7 @@ from chats import (
     create_chat_message,
     create_chat_session,
 )
-from core import Brain
+from core import Brain, GenerationCancelledError
 from desktop_backend import (
     SERVER_CAPABILITIES,
     SERVER_NAME,
@@ -294,10 +295,21 @@ class FakeBrain:
         self,
         chat_id: object,
         message: str,
+        *,
+        should_cancel: Callable[[], bool] | None = None,
+        begin_commit: Callable[[], bool] | None = None,
     ) -> Generator[str, None, None]:
         self.stream_calls.append((str(chat_id), message))
+        if should_cancel is not None and should_cancel():
+            raise GenerationCancelledError("Chat generation was cancelled.")
         yield "你好"
+        if should_cancel is not None and should_cancel():
+            raise GenerationCancelledError("Chat generation was cancelled.")
         yield "呀"
+        if should_cancel is not None and should_cancel():
+            raise GenerationCancelledError("Chat generation was cancelled.")
+        if begin_commit is not None and not begin_commit():
+            raise GenerationCancelledError("Chat generation was cancelled.")
         stored_chat = self._chats[ChatId(str(chat_id))]
         committed_at = max(
             datetime.now(timezone.utc),
@@ -321,6 +333,52 @@ class FakeBrain:
             ),
         )
         self.add_chat(updated)
+
+    def stream_retry(
+        self,
+        chat_id: object,
+        user_message_id: object,
+        assistant_message_id: object,
+        message: str | None = None,
+        *,
+        should_cancel: Callable[[], bool] | None = None,
+        begin_commit: Callable[[], bool] | None = None,
+    ) -> Generator[str, None, None]:
+        stored_chat = self._chats[ChatId(str(chat_id))]
+        user_record, assistant_record = stored_chat.messages[-2:]
+        if (
+            str(user_record.message_id) != str(user_message_id)
+            or str(assistant_record.message_id) != str(assistant_message_id)
+        ):
+            raise ValueError("Retry target does not match the tail turn.")
+        effective_message = (
+            user_record.content if message is None else message.strip()
+        )
+        if should_cancel is not None and should_cancel():
+            raise GenerationCancelledError("Chat generation was cancelled.")
+        yield "重"
+        if should_cancel is not None and should_cancel():
+            raise GenerationCancelledError("Chat generation was cancelled.")
+        yield "试"
+        if should_cancel is not None and should_cancel():
+            raise GenerationCancelledError("Chat generation was cancelled.")
+        if begin_commit is not None and not begin_commit():
+            raise GenerationCancelledError("Chat generation was cancelled.")
+        committed_at = max(
+            datetime.now(timezone.utc),
+            stored_chat.updated_at + timedelta(microseconds=1),
+        )
+        self.add_chat(
+            replace(
+                stored_chat,
+                updated_at=committed_at,
+                messages=(
+                    *stored_chat.messages[:-2],
+                    replace(user_record, content=effective_message),
+                    replace(assistant_record, content="重试"),
+                ),
+            )
+        )
 
 
 JsonObject = dict[str, Any]
@@ -430,12 +488,6 @@ def test_bridge_initializes_and_streams_one_real_brain_turn() -> None:
                 "chat.stream",
                 {"chatId": chat_id, "message": "你好呀"},
             ),
-            _request(
-                "list-after-chat",
-                "chat.list",
-                {"includeArchived": False},
-            ),
-            _request("shutdown-1", "shutdown", {}),
         ]
     )
     chat_id = str(actual_brain.chat.chat_id)
@@ -503,15 +555,551 @@ def test_bridge_initializes_and_streams_one_real_brain_turn() -> None:
         "chatId": chat_id,
         "reply": "你好呀",
     }
-    refreshed = _success_result(messages, "list-after-chat")
-    assert set(refreshed) == {"activeChat", "chats"}
-    assert refreshed["activeChat"]["messageCount"] == 2
+    persisted = actual_brain.get_chat(actual_brain.chat.chat_id)
     assert [
-        message["content"]
-        for message in refreshed["activeChat"]["messages"]
+        message.content
+        for message in persisted.messages
     ] == ["你好呀", "你好呀"]
-    assert messages[-1]["result"] == {"stopped": True}
     assert "chat.sessions" in SERVER_CAPABILITIES
+
+
+def test_bridge_retries_the_persisted_tail_with_stable_message_ids() -> None:
+    fake_brain = FakeBrain()
+    turn_time = fake_brain.chat.created_at + timedelta(seconds=1)
+    user_message = create_chat_message(
+        role="user",
+        content="Original question",
+        created_at=turn_time,
+    )
+    assistant_message = create_chat_message(
+        role="assistant",
+        content="Original answer",
+        created_at=turn_time,
+    )
+    fake_brain.add_chat(
+        replace(
+            fake_brain.chat,
+            updated_at=turn_time,
+            messages=(user_message, assistant_message),
+        )
+    )
+
+    _, messages = _run_bridge(
+        lambda chat_id: [
+            _handshake_request(),
+            _initialize_request(),
+            _request(
+                "retry-1",
+                "chat.retry",
+                {
+                    "chatId": chat_id,
+                    "userMessageId": str(user_message.message_id),
+                    "assistantMessageId": str(
+                        assistant_message.message_id
+                    ),
+                    "message": "Edited question",
+                },
+            ),
+        ],
+        fake_brain=fake_brain,
+    )
+
+    assert _success_result(messages, "retry-1") == {
+        "chatId": str(fake_brain.chat.chat_id),
+        "reply": "重试",
+    }
+    stream_messages = [
+        message
+        for message in messages
+        if message.get("type") == "stream"
+        and message.get("requestId") == "retry-1"
+    ]
+    assert [message["chunk"] for message in stream_messages] == [
+        "重",
+        "试",
+        "",
+    ]
+    refreshed_messages = fake_brain.get_chat(fake_brain.chat.chat_id).messages
+    assert [str(message.message_id) for message in refreshed_messages] == [
+        str(user_message.message_id),
+        str(assistant_message.message_id),
+    ]
+    assert [message.content for message in refreshed_messages] == [
+        "Edited question",
+        "重试",
+    ]
+    assert "chat.retry" in SERVER_CAPABILITIES
+    assert "request.cancel" in SERVER_CAPABILITIES
+
+
+def test_cancel_success_prevents_partial_turn_persistence() -> None:
+    class CancellableBrain(FakeBrain):
+        def stream_chat(
+            self,
+            chat_id: object,
+            message: str,
+            *,
+            should_cancel: Callable[[], bool] | None = None,
+            begin_commit: Callable[[], bool] | None = None,
+        ) -> Generator[str, None, None]:
+            del begin_commit
+            self.stream_calls.append((str(chat_id), message))
+            yield "partial"
+            while should_cancel is None or not should_cancel():
+                Event().wait(0.001)
+            raise GenerationCancelledError(
+                "Chat generation was cancelled."
+            )
+
+    fake_brain = CancellableBrain()
+    _, messages = _run_bridge(
+        lambda chat_id: [
+            _handshake_request(),
+            _initialize_request(),
+            _request(
+                "chat-cancelled",
+                "chat.stream",
+                {"chatId": chat_id, "message": "Do not save this"},
+            ),
+            _request(
+                "cancel-1",
+                "request.cancel",
+                {
+                    "requestId": "chat-cancelled",
+                    "reason": "User stopped",
+                },
+            ),
+        ],
+        fake_brain=fake_brain,
+    )
+
+    assert _success_result(messages, "cancel-1") == {"stopped": True}
+    assert _error(messages, "chat-cancelled") == {
+        "code": "request.cancelled",
+        "message": "Chat generation was cancelled.",
+        "retryable": False,
+    }
+    assert any(
+        message.get("type") == "event"
+        and message.get("event") == "chat.cancelled"
+        and message.get("requestId") == "chat-cancelled"
+        for message in messages
+    )
+    assert not any(
+        message.get("type") == "stream"
+        and message.get("requestId") == "chat-cancelled"
+        and message.get("done") is True
+        for message in messages
+    )
+    assert fake_brain.get_chat(fake_brain.chat.chat_id).messages == ()
+
+
+def test_chat_list_does_not_block_the_cancel_request_reader() -> None:
+    generation_started = Event()
+
+    class BlockingBrain(FakeBrain):
+        def stream_chat(
+            self,
+            chat_id: object,
+            message: str,
+            *,
+            should_cancel: Callable[[], bool] | None = None,
+            begin_commit: Callable[[], bool] | None = None,
+        ) -> Generator[str, None, None]:
+            del begin_commit
+            self.stream_calls.append((str(chat_id), message))
+            yield "partial"
+            generation_started.set()
+            for _ in range(2_000):
+                if should_cancel is not None and should_cancel():
+                    raise GenerationCancelledError(
+                        "Chat generation was cancelled."
+                    )
+                Event().wait(0.001)
+            raise RuntimeError("Cancel request reader was blocked.")
+
+    fake_brain = BlockingBrain()
+
+    def request_lines() -> Generator[str, None, None]:
+        chat_id = str(fake_brain.chat.chat_id)
+        for request in (
+            _handshake_request(),
+            _initialize_request(),
+            _request(
+                "blocked-chat",
+                "chat.stream",
+                {"chatId": chat_id, "message": "Wait"},
+            ),
+        ):
+            yield f"{json.dumps(request)}\n"
+        assert generation_started.wait(2.0)
+        yield f"{json.dumps(_request(
+            'list-during-generation',
+            'chat.list',
+            {'includeArchived': False},
+        ))}\n"
+        yield f"{json.dumps(_request(
+            'cancel-after-list',
+            'request.cancel',
+            {'requestId': 'blocked-chat'},
+        ))}\n"
+
+    output_stream = StringIO()
+    DesktopBackend(
+        brain_factory=lambda: cast(Brain, fake_brain),
+        model_loader=lambda: ("test-model",),
+        settings_validator=lambda: None,
+        input_stream=cast(TextIOWrapper, request_lines()),
+        output_stream=output_stream,
+        expected_session_token=SESSION_TOKEN,
+    ).run()
+    messages = [
+        cast(JsonObject, json.loads(line))
+        for line in output_stream.getvalue().splitlines()
+    ]
+
+    assert _success_result(
+        messages,
+        "list-during-generation",
+    )["activeChat"]["messageCount"] == 0
+    assert _success_result(messages, "cancel-after-list") == {
+        "stopped": True,
+    }
+    assert _error(messages, "blocked-chat")["code"] == "request.cancelled"
+
+
+def test_cancel_is_rejected_after_generation_claims_commit() -> None:
+    commit_claimed = Event()
+    release_commit = Event()
+
+    class CommittingBrain(FakeBrain):
+        def stream_chat(
+            self,
+            chat_id: object,
+            message: str,
+            *,
+            should_cancel: Callable[[], bool] | None = None,
+            begin_commit: Callable[[], bool] | None = None,
+        ) -> Generator[str, None, None]:
+            del should_cancel
+            self.stream_calls.append((str(chat_id), message))
+            yield "committed"
+            assert begin_commit is not None and begin_commit()
+            commit_claimed.set()
+            assert release_commit.wait(2.0)
+            stored_chat = self._chats[ChatId(str(chat_id))]
+            committed_at = max(
+                datetime.now(timezone.utc),
+                stored_chat.updated_at + timedelta(microseconds=1),
+            )
+            self.add_chat(
+                replace(
+                    stored_chat,
+                    updated_at=committed_at,
+                    messages=(
+                        *stored_chat.messages,
+                        create_chat_message(
+                            role="user",
+                            content=message,
+                            created_at=committed_at,
+                        ),
+                        create_chat_message(
+                            role="assistant",
+                            content="committed",
+                            created_at=committed_at,
+                        ),
+                    ),
+                )
+            )
+
+    fake_brain = CommittingBrain()
+
+    def request_lines() -> Generator[str, None, None]:
+        chat_id = str(fake_brain.chat.chat_id)
+        for request in (
+            _handshake_request(),
+            _initialize_request(),
+            _request(
+                "chat-committing",
+                "chat.stream",
+                {"chatId": chat_id, "message": "Save this"},
+            ),
+        ):
+            yield f"{json.dumps(request)}\n"
+        assert commit_claimed.wait(2.0)
+        yield f"{json.dumps(_request(
+            'cancel-too-late',
+            'request.cancel',
+            {'requestId': 'chat-committing'},
+        ))}\n"
+        release_commit.set()
+
+    output_stream = StringIO()
+    DesktopBackend(
+        brain_factory=lambda: cast(Brain, fake_brain),
+        model_loader=lambda: ("test-model",),
+        settings_validator=lambda: None,
+        input_stream=cast(TextIOWrapper, request_lines()),
+        output_stream=output_stream,
+        expected_session_token=SESSION_TOKEN,
+    ).run()
+    messages = [
+        cast(JsonObject, json.loads(line))
+        for line in output_stream.getvalue().splitlines()
+    ]
+
+    assert _error(messages, "cancel-too-late")["code"] == (
+        "request.not_cancellable"
+    )
+    assert _success_result(messages, "chat-committing")["reply"] == (
+        "committed"
+    )
+    assert len(fake_brain.get_chat(fake_brain.chat.chat_id).messages) == 2
+
+
+def test_background_completion_does_not_reactivate_a_chat_after_switch() -> None:
+    generation_started = Event()
+    release_generation = Event()
+
+    class SwitchingBrain(FakeBrain):
+        def stream_chat(
+            self,
+            chat_id: object,
+            message: str,
+            *,
+            should_cancel: Callable[[], bool] | None = None,
+            begin_commit: Callable[[], bool] | None = None,
+        ) -> Generator[str, None, None]:
+            self.stream_calls.append((str(chat_id), message))
+            yield "reply"
+            generation_started.set()
+            assert release_generation.wait(2.0)
+            if should_cancel is not None and should_cancel():
+                raise GenerationCancelledError(
+                    "Chat generation was cancelled."
+                )
+            assert begin_commit is None or begin_commit()
+            stored_chat = self._chats[ChatId(str(chat_id))]
+            committed_at = max(
+                datetime.now(timezone.utc),
+                stored_chat.updated_at + timedelta(microseconds=1),
+            )
+            self.add_chat(
+                replace(
+                    stored_chat,
+                    updated_at=committed_at,
+                    messages=(
+                        *stored_chat.messages,
+                        create_chat_message(
+                            role="user",
+                            content=message,
+                            created_at=committed_at,
+                        ),
+                        create_chat_message(
+                            role="assistant",
+                            content="reply",
+                            created_at=committed_at,
+                        ),
+                    ),
+                )
+            )
+
+    fake_brain = SwitchingBrain()
+    second_chat = create_chat_session(
+        title="Second Chat",
+        mode="chat",
+        model_name=fake_brain.model_name,
+    )
+    fake_brain.add_chat(second_chat)
+
+    def request_lines() -> Generator[str, None, None]:
+        first_chat_id = str(fake_brain.chat.chat_id)
+        for request in (
+            _handshake_request(),
+            _initialize_request(),
+            _request(
+                "chat-in-first",
+                "chat.stream",
+                {"chatId": first_chat_id, "message": "First Chat"},
+            ),
+        ):
+            yield f"{json.dumps(request)}\n"
+        assert generation_started.wait(2.0)
+        yield f"{json.dumps(_request(
+            'open-second',
+            'chat.open',
+            {'chatId': str(second_chat.chat_id)},
+        ))}\n"
+        release_generation.set()
+        yield f"{json.dumps(_request(
+            'list-after-switch',
+            'chat.list',
+            {'includeArchived': False},
+        ))}\n"
+
+    output_stream = StringIO()
+    DesktopBackend(
+        brain_factory=lambda: cast(Brain, fake_brain),
+        model_loader=lambda: ("test-model",),
+        settings_validator=lambda: None,
+        input_stream=cast(TextIOWrapper, request_lines()),
+        output_stream=output_stream,
+        expected_session_token=SESSION_TOKEN,
+    ).run()
+    messages = [
+        cast(JsonObject, json.loads(line))
+        for line in output_stream.getvalue().splitlines()
+    ]
+
+    assert _success_result(
+        messages,
+        "open-second",
+    )["activeChat"]["chatId"] == str(second_chat.chat_id)
+    assert _success_result(
+        messages,
+        "list-after-switch",
+    )["activeChat"]["chatId"] == str(second_chat.chat_id)
+    assert _success_result(messages, "chat-in-first")["chatId"] == str(
+        fake_brain.chat.chat_id
+    )
+    assert len(fake_brain.get_chat(fake_brain.chat.chat_id).messages) == 2
+
+
+def test_background_completion_does_not_replace_a_new_active_chat() -> None:
+    generation_started = Event()
+    release_generation = Event()
+
+    class CreatingBrain(FakeBrain):
+        def stream_chat(
+            self,
+            chat_id: object,
+            message: str,
+            *,
+            should_cancel: Callable[[], bool] | None = None,
+            begin_commit: Callable[[], bool] | None = None,
+        ) -> Generator[str, None, None]:
+            self.stream_calls.append((str(chat_id), message))
+            yield "reply"
+            generation_started.set()
+            assert release_generation.wait(2.0)
+            if should_cancel is not None and should_cancel():
+                raise GenerationCancelledError(
+                    "Chat generation was cancelled."
+                )
+            assert begin_commit is None or begin_commit()
+            stored_chat = self._chats[ChatId(str(chat_id))]
+            committed_at = stored_chat.updated_at + timedelta(microseconds=1)
+            self.add_chat(replace(
+                stored_chat,
+                updated_at=committed_at,
+                messages=(
+                    create_chat_message(
+                        role="user",
+                        content=message,
+                        created_at=committed_at,
+                    ),
+                    create_chat_message(
+                        role="assistant",
+                        content="reply",
+                        created_at=committed_at,
+                    ),
+                ),
+            ))
+
+    fake_brain = CreatingBrain()
+    created_chat_id = str(fake_brain.next_chat.chat_id)
+
+    def request_lines() -> Generator[str, None, None]:
+        first_chat_id = str(fake_brain.chat.chat_id)
+        for request in (
+            _handshake_request(),
+            _initialize_request(),
+            _request(
+                "chat-before-create",
+                "chat.stream",
+                {"chatId": first_chat_id, "message": "First Chat"},
+            ),
+        ):
+            yield f"{json.dumps(request)}\n"
+        assert generation_started.wait(2.0)
+        yield f"{json.dumps(_request(
+            'create-second',
+            'chat.create',
+            {'title': 'Second Chat', 'mode': 'chat'},
+        ))}\n"
+        release_generation.set()
+
+    output_stream = StringIO()
+    backend = DesktopBackend(
+        brain_factory=lambda: cast(Brain, fake_brain),
+        model_loader=lambda: ("test-model",),
+        settings_validator=lambda: None,
+        input_stream=cast(TextIOWrapper, request_lines()),
+        output_stream=output_stream,
+        expected_session_token=SESSION_TOKEN,
+    )
+    backend.run()
+    messages = [
+        cast(JsonObject, json.loads(line))
+        for line in output_stream.getvalue().splitlines()
+    ]
+
+    assert _success_result(
+        messages,
+        "create-second",
+    )["activeChat"]["chatId"] == created_chat_id
+    final_active_chat = backend._active_chat_snapshot()
+    assert final_active_chat is not None
+    assert str(final_active_chat.chat_id) == created_chat_id
+
+
+def test_post_commit_cache_refresh_failure_does_not_invite_retry() -> None:
+    class RefreshFailingBrain(FakeBrain):
+        def __init__(self) -> None:
+            super().__init__()
+            self.fail_next_refresh = False
+
+        def stream_chat(
+            self,
+            chat_id: object,
+            message: str,
+            *,
+            should_cancel: Callable[[], bool] | None = None,
+            begin_commit: Callable[[], bool] | None = None,
+        ) -> Generator[str, None, None]:
+            yield from super().stream_chat(
+                chat_id,
+                message,
+                should_cancel=should_cancel,
+                begin_commit=begin_commit,
+            )
+            self.fail_next_refresh = True
+
+        def get_chat(self, chat_id: object) -> ChatSession:
+            if self.fail_next_refresh:
+                self.fail_next_refresh = False
+                raise RuntimeError("Cache refresh failed after commit.")
+            return super().get_chat(chat_id)
+
+    fake_brain = RefreshFailingBrain()
+    _, messages = _run_bridge(
+        lambda chat_id: [
+            _handshake_request(),
+            _initialize_request(),
+            _request(
+                "committed-with-refresh-error",
+                "chat.stream",
+                {"chatId": chat_id, "message": "Save once"},
+            ),
+        ],
+        fake_brain=fake_brain,
+    )
+
+    assert _success_result(
+        messages,
+        "committed-with-refresh-error",
+    )["reply"] == "你好呀"
+    assert len(fake_brain._chats[fake_brain.chat.chat_id].messages) == 2
 
 
 def test_chat_list_serializes_metadata_messages_and_attachments() -> None:

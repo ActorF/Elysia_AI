@@ -31,9 +31,11 @@ import type {
   ProjectState,
   ProjectWorkspaceRequest,
   RenameChatRequest,
+  RetryChatRequest,
   UpdateProjectRequest,
 } from './contracts.js'
 import {
+  MAX_IDENTIFIER_LENGTH,
   MAX_PROTOCOL_FRAME_BYTES,
   MAX_MESSAGE_LENGTH,
   ProtocolValidationError,
@@ -64,6 +66,9 @@ const CLIENT_NAME = 'elysia-electron'
 const CLIENT_VERSION = '0.1.0'
 const HANDSHAKE_TIMEOUT_MS = 15_000
 const INITIALIZE_TIMEOUT_MS = 120_000
+const CANCEL_ACK_TIMEOUT_MS = 5_000
+const CANCEL_TERMINAL_TIMEOUT_MS = 15_000
+const SHUTDOWN_TIMEOUT_MS = 30_000
 
 interface PendingRequest {
   method: ProtocolMethod
@@ -76,7 +81,18 @@ interface PendingRequest {
   rejectChatState?: (error: Error) => void
   resolveProjectState?: (state: ProjectState) => void
   rejectProjectState?: (error: Error) => void
+  cancelTargetId?: string
+  resolveCancellation?: () => void
+  rejectCancellation?: (error: Error) => void
+  cancelAccepted?: boolean
+  deferredTargetResponse?: SuccessResponse | ErrorResponse
+  timeout?: ReturnType<typeof setTimeout>
 }
+
+const CHAT_GENERATION_METHODS = new Set<ProtocolMethod>([
+  'chat.stream',
+  'chat.retry',
+])
 
 type ChatSessionMethod =
   | 'chat.list'
@@ -228,12 +244,23 @@ export class BackendProcess {
 
     child.once('error', (error) => {
       if (this.child === child) {
-        this.fail(`Python Backend failed to start: ${error.message}`)
+        const message = `Python Backend process failed: ${error.message}`
+        this.rejectPendingActionPromises(message)
+        this.clearChild(child)
+        this.fail(message)
       }
     })
 
     child.once('exit', (code, signal) => {
       this.handleExit(child, code, signal)
+    })
+
+    child.stdin.on('error', (error) => {
+      if (this.child === child && !this.expectedExit) {
+        this.protocolFailure(
+          `Python Backend input failed: ${error.message}`,
+        )
+      }
     })
 
     this.updateSnapshot({ status: 'handshaking' })
@@ -268,7 +295,7 @@ export class BackendProcess {
 
     if (
       [...this.pendingRequests.values()].some(
-        (pending) => pending.method === 'chat.stream',
+        (pending) => CHAT_GENERATION_METHODS.has(pending.method),
       )
     ) {
       throw new Error('A Chat reply is already in progress.')
@@ -346,7 +373,7 @@ export class BackendProcess {
           child.kill()
         }
         finish()
-      }, 1500)
+      }, SHUTDOWN_TIMEOUT_MS)
 
       child.once('exit', finish)
     })
@@ -363,6 +390,115 @@ export class BackendProcess {
         chatTitle: undefined,
       })
     }
+  }
+
+  /** Retry the final persisted turn, optionally replacing its user text. */
+  beginRetry(request: RetryChatRequest): { requestId: string } {
+    if (
+      this.snapshot.status !== 'ready'
+      || this.snapshot.chatId === undefined
+    ) {
+      throw new Error('Python Backend is not ready.')
+    }
+    if (request.chatId !== this.snapshot.chatId) {
+      throw new Error('The requested Chat is not active.')
+    }
+    if (
+      [...this.pendingRequests.values()].some(
+        (pending) => CHAT_GENERATION_METHODS.has(pending.method),
+      )
+    ) {
+      throw new Error('A Chat reply is already in progress.')
+    }
+    for (const identifier of [
+      request.chatId,
+      request.userMessageId,
+      request.assistantMessageId,
+    ]) {
+      if (
+        !hasNonBlankCodePoint(identifier)
+        || codePointLength(identifier) > MAX_IDENTIFIER_LENGTH
+      ) {
+        throw new Error('Retry request contains an invalid identifier.')
+      }
+    }
+
+    const message = request.message === undefined
+      ? undefined
+      : trimProtocolBlankCharacters(request.message)
+    if (
+      message !== undefined
+      && (
+        !hasNonBlankCodePoint(message)
+        || codePointLength(message) > MAX_MESSAGE_LENGTH
+      )
+    ) {
+      throw new Error('Retry message is invalid.')
+    }
+
+    return {
+      requestId: this.sendRequest(
+        'chat.retry',
+        {
+          chatId: request.chatId,
+          userMessageId: request.userMessageId,
+          assistantMessageId: request.assistantMessageId,
+          ...(message === undefined ? {} : { message }),
+        },
+        request.chatId,
+      ),
+    }
+  }
+
+  /** Ask Python to stop one currently tracked generation request. */
+  stopGeneration(requestId: string): Promise<void> {
+    const generation = this.pendingRequests.get(requestId)
+    if (
+      generation === undefined
+      || !CHAT_GENERATION_METHODS.has(generation.method)
+    ) {
+      return Promise.reject(
+        new Error('The requested generation is not in progress.'),
+      )
+    }
+    if (
+      [...this.pendingRequests.values()].some(
+        (pending) => (
+          pending.method === 'request.cancel'
+          && pending.cancelTargetId === requestId
+        ),
+      )
+    ) {
+      return Promise.reject(
+        new Error('A stop request is already in progress.'),
+      )
+    }
+
+    return new Promise<void>((resolve, reject) => {
+      const cancelRequestId = this.sendRequest(
+        'request.cancel',
+        { requestId },
+        undefined,
+        {
+          cancelTargetId: requestId,
+          resolveCancellation: resolve,
+          rejectCancellation: reject,
+        },
+      )
+      const pendingCancel = this.pendingRequests.get(cancelRequestId)
+      if (pendingCancel !== undefined) {
+        pendingCancel.timeout = setTimeout(() => {
+          const current = this.pendingRequests.get(cancelRequestId)
+          if (current !== pendingCancel) {
+            return
+          }
+          this.pendingRequests.delete(cancelRequestId)
+          const error = new Error('Backend stop request timed out.')
+          pendingCancel.rejectCancellation?.(error)
+          this.protocolFailure(error.message)
+        }, CANCEL_ACK_TIMEOUT_MS)
+      }
+    })
   }
 
   /** Load the canonical sidebar collection and active Chat history. */
@@ -472,8 +608,9 @@ export class BackendProcess {
     }
     if (
       [...this.pendingRequests.values()].some(
-        (pending) => pending.method === 'chat.stream',
+        (pending) => CHAT_GENERATION_METHODS.has(pending.method),
       )
+      && method !== 'chat.open'
     ) {
       return Promise.reject(
         new Error('Wait for the active Chat reply to finish.'),
@@ -502,7 +639,7 @@ export class BackendProcess {
     }
     if (
       [...this.pendingRequests.values()].some(
-        (pending) => pending.method === 'chat.stream',
+        (pending) => CHAT_GENERATION_METHODS.has(pending.method),
       )
     ) {
       return Promise.reject(
@@ -533,6 +670,9 @@ export class BackendProcess {
       | 'rejectChatState'
       | 'resolveProjectState'
       | 'rejectProjectState'
+      | 'cancelTargetId'
+      | 'resolveCancellation'
+      | 'rejectCancellation'
     > = {},
   ): string {
     const child = this.child
@@ -542,6 +682,7 @@ export class BackendProcess {
 
     const requestId = randomUUID()
     const request = createRequest(requestId, method, params)
+    const wireRequest = `${JSON.stringify(request)}\n`
     this.pendingRequests.set(requestId, {
       method,
       ...(chatId === undefined ? {} : { chatId }),
@@ -551,9 +692,16 @@ export class BackendProcess {
       streamedLength: 0,
       ...completion,
     })
-    child.stdin.write(
-      `${JSON.stringify(request)}\n`,
-    )
+    try {
+      child.stdin.write(wireRequest)
+    } catch (error: unknown) {
+      this.pendingRequests.delete(requestId)
+      const message = error instanceof Error
+        ? error.message
+        : 'Unknown Backend input error.'
+      this.protocolFailure(`Could not write to Python Backend: ${message}`)
+      throw new Error('Could not write to the Python Backend.', { cause: error })
+    }
     return requestId
   }
 
@@ -623,7 +771,34 @@ export class BackendProcess {
       )
       return
     }
+
+    if (CHAT_GENERATION_METHODS.has(pending.method)) {
+      const cancellation = [...this.pendingRequests.values()].find(
+        (candidate) => (
+          candidate.method === 'request.cancel'
+          && candidate.cancelTargetId === message.id
+        ),
+      )
+      if (cancellation !== undefined) {
+        if (cancellation.deferredTargetResponse !== undefined) {
+          this.protocolFailure(
+            'Backend emitted duplicate terminal generation responses.',
+          )
+          return
+        }
+        // The cancellation acknowledgement decides whether this terminal
+        // response is valid. Holding it prevents a contradictory successful
+        // reply from reaching the renderer before that decision arrives.
+        cancellation.deferredTargetResponse = message
+        return
+      }
+    }
+
     this.pendingRequests.delete(message.id)
+    if (pending.timeout !== undefined) {
+      clearTimeout(pending.timeout)
+      pending.timeout = undefined
+    }
 
     if (pending.method === 'handshake') {
       this.handshakeRequestId = null
@@ -648,9 +823,18 @@ export class BackendProcess {
         return
       }
       if (
-        pending.method === 'chat.stream'
+        CHAT_GENERATION_METHODS.has(pending.method)
         && pending.chatId !== undefined
       ) {
+        if (
+          pending.cancelAccepted
+          && message.error.code !== 'request.cancelled'
+        ) {
+          this.protocolFailure(
+            'Backend failed a generation after accepting its cancellation.',
+          )
+          return
+        }
         this.emitToRenderer({
           type: 'chat-error',
           requestId: message.id,
@@ -666,6 +850,12 @@ export class BackendProcess {
       if (PROJECT_METHODS.has(pending.method)) {
         pending.rejectProjectState?.(new Error(message.error.message))
       }
+      if (pending.method === 'request.cancel') {
+        pending.rejectCancellation?.(new Error(message.error.message))
+        if (pending.deferredTargetResponse !== undefined) {
+          this.handleResponse(pending.deferredTargetResponse)
+        }
+      }
       return
     }
 
@@ -673,8 +863,10 @@ export class BackendProcess {
       const result = parseHandshakeResult(message.result)
       const requiredCapabilities = [
         'chat.stream',
+        'chat.retry',
         'chat.sessions',
         'project.management',
+        'request.cancel',
         'stream',
         'progress',
         'event',
@@ -760,7 +952,13 @@ export class BackendProcess {
       return
     }
 
-    if (pending.method === 'chat.stream') {
+    if (CHAT_GENERATION_METHODS.has(pending.method)) {
+      if (pending.cancelAccepted) {
+        this.protocolFailure(
+          'Backend completed a generation after accepting its cancellation.',
+        )
+        return
+      }
       if (!pending.streamCompleted || pending.chatId === undefined) {
         this.protocolFailure(
           'Chat response arrived before its stream completed.',
@@ -787,6 +985,67 @@ export class BackendProcess {
       return
     }
 
+    if (pending.method === 'request.cancel') {
+      if (message.result.stopped !== true) {
+        const error = new Error('Backend stop response is invalid.')
+        pending.rejectCancellation?.(error)
+        this.protocolFailure(error.message)
+        return
+      }
+      const targetId = pending.cancelTargetId
+      const target = targetId === undefined
+        ? undefined
+        : this.pendingRequests.get(targetId)
+      if (
+        targetId === undefined
+        || target === undefined
+        || !CHAT_GENERATION_METHODS.has(target.method)
+      ) {
+        const error = new Error(
+          'Backend accepted cancellation for an unknown generation.',
+        )
+        pending.rejectCancellation?.(error)
+        this.protocolFailure(error.message)
+        return
+      }
+
+      target.cancelAccepted = true
+      const deferredResponse = pending.deferredTargetResponse
+      if (
+        deferredResponse !== undefined
+        && (
+          deferredResponse.ok
+          || deferredResponse.error.code !== 'request.cancelled'
+        )
+      ) {
+        const error = new Error(
+          'Backend returned a non-cancelled generation after accepting cancellation.',
+        )
+        pending.rejectCancellation?.(error)
+        this.protocolFailure(error.message)
+        return
+      }
+
+      if (deferredResponse === undefined) {
+        target.timeout = setTimeout(() => {
+          if (
+            this.pendingRequests.get(targetId) !== target
+            || !target.cancelAccepted
+          ) {
+            return
+          }
+          this.protocolFailure(
+            'Cancelled generation did not reach a terminal response.',
+          )
+        }, CANCEL_TERMINAL_TIMEOUT_MS)
+      }
+      pending.resolveCancellation?.()
+      if (deferredResponse !== undefined) {
+        this.handleResponse(deferredResponse)
+      }
+      return
+    }
+
     if (
       pending.method === 'shutdown'
       && message.result.stopped !== true
@@ -799,10 +1058,16 @@ export class BackendProcess {
     const pending = this.pendingRequests.get(message.requestId)
     if (
       pending === undefined
-      || pending.method !== 'chat.stream'
+      || !CHAT_GENERATION_METHODS.has(pending.method)
       || pending.chatId === undefined
     ) {
       this.protocolFailure('Backend stream has no matching Chat request.')
+      return
+    }
+    if (pending.cancelAccepted && message.done) {
+      this.protocolFailure(
+        'Backend completed a stream after accepting its cancellation.',
+      )
       return
     }
     if (
@@ -929,6 +1194,9 @@ export class BackendProcess {
     this.clearHandshakeTimeout()
     this.clearInitializeTimeout()
     for (const pending of this.pendingRequests.values()) {
+      if (pending.timeout !== undefined) {
+        clearTimeout(pending.timeout)
+      }
       pending.rejectChatState?.(
         new Error('Python Backend stopped before the Chat action completed.'),
       )
@@ -936,6 +1204,9 @@ export class BackendProcess {
         new Error(
           'Python Backend stopped before the Project action completed.',
         ),
+      )
+      pending.rejectCancellation?.(
+        new Error('Python Backend stopped before generation was cancelled.'),
       )
     }
     this.pendingRequests.clear()
@@ -945,19 +1216,27 @@ export class BackendProcess {
     /** Settle renderer-facing actions before expected-exit responses vanish. */
 
     for (const pending of this.pendingRequests.values()) {
+      if (pending.timeout !== undefined) {
+        clearTimeout(pending.timeout)
+        pending.timeout = undefined
+      }
       const error = new Error(message)
       pending.rejectChatState?.(error)
       pending.rejectProjectState?.(error)
+      pending.rejectCancellation?.(error)
       pending.resolveChatState = undefined
       pending.rejectChatState = undefined
       pending.resolveProjectState = undefined
       pending.rejectProjectState = undefined
+      pending.resolveCancellation = undefined
+      pending.rejectCancellation = undefined
     }
   }
 
   private fail(message: string): void {
     this.clearHandshakeTimeout()
     this.clearInitializeTimeout()
+    this.rejectPendingActionPromises(message)
     this.updateSnapshot({
       status: 'error',
       protocolName: undefined,

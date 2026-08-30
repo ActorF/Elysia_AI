@@ -1,7 +1,8 @@
 """Orchestrate chat generation, prompt context, and memory services."""
 
 import logging
-from collections.abc import Generator
+from collections.abc import Callable, Generator, Iterator
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
@@ -35,7 +36,10 @@ from projects import Project, ProjectChatService
 
 from .active_conversation import ActiveConversationService
 from .chat_model import ChatMessage, ChatModel
-from .exceptions import ChatModelMismatchError
+from .exceptions import (
+    ChatModelMismatchError,
+    GenerationCancelledError,
+)
 from .prompts import (
     ActiveConversationPromptContext,
     ProjectPromptContext,
@@ -535,6 +539,9 @@ class Brain:
         self,
         chat_id: ChatId,
         user_message: str,
+        *,
+        should_cancel: Callable[[], bool] | None = None,
+        begin_commit: Callable[[], bool] | None = None,
     ) -> Generator[str, None, None]:
         """Yield chunks, then commit a complete turn to the named Chat.
 
@@ -555,11 +562,14 @@ class Brain:
                 "Chat model is not connected."
             )
 
+        self._raise_if_generation_cancelled(should_cancel)
         service = self._require_active_conversation_service()
         with service.open_turn(chat_id) as active_conversation:
+            self._raise_if_generation_cancelled(should_cancel)
             self._validate_active_model(
                 active_conversation.chat_session
             )
+            self._raise_if_generation_cancelled(should_cancel)
             profile = self._memory.load_profile()
             chat_messages = self._build_chat_messages(
                 profile,
@@ -568,16 +578,14 @@ class Brain:
                 project=active_conversation.project,
             )
 
-            reply_chunks: list[str] = []
-            for chunk in self._chat_model.stream_reply(chat_messages):
-                reply_chunks.append(chunk)
-                yield chunk
-
-            reply = "".join(reply_chunks).strip()
-            if not reply:
-                raise ValueError(
-                    "Model reply cannot be empty."
-                )
+            reply = yield from self._stream_model_reply(
+                chat_messages,
+                should_cancel=should_cancel,
+            )
+            self._claim_generation_commit(
+                should_cancel=should_cancel,
+                begin_commit=begin_commit,
+            )
 
             service.commit_turn(
                 active_conversation,
@@ -589,6 +597,143 @@ class Brain:
             "Streaming chat turn completed: chat_id=%s.",
             chat_id,
         )
+
+    def stream_retry(
+        self,
+        chat_id: ChatId,
+        user_message_id: ChatMessageId,
+        assistant_message_id: ChatMessageId,
+        message: str | None = None,
+        *,
+        should_cancel: Callable[[], bool] | None = None,
+        begin_commit: Callable[[], bool] | None = None,
+    ) -> Generator[str, None, None]:
+        """Regenerate the persisted tail turn and replace it only on success.
+
+        Omitting ``message`` reuses the stored user text. Supplying it performs
+        an edit-and-retry. The original pair remains canonical until the model
+        finishes and the caller atomically claims the commit gate.
+        """
+
+        if self._chat_model is None:
+            raise RuntimeError("Chat model is not connected.")
+
+        self._raise_if_generation_cancelled(should_cancel)
+        service = self._require_active_conversation_service()
+        with service.open_turn(chat_id) as active_conversation:
+            self._raise_if_generation_cancelled(should_cancel)
+            self._validate_active_model(active_conversation.chat_session)
+            user_record, _assistant_record = service.get_retry_turn(
+                active_conversation,
+                user_message_id=user_message_id,
+                assistant_message_id=assistant_message_id,
+            )
+            effective_user_message = (
+                user_record.content
+                if message is None
+                else message.strip()
+            )
+            if not effective_user_message.strip():
+                raise ValueError("User message cannot be empty.")
+
+            # The old pair must not enter its own replacement prompt. Clearing
+            # the summary also prevents facts derived from the old tail text
+            # from biasing this retry generation.
+            prompt_session = replace(
+                active_conversation.chat_session,
+                messages=active_conversation.chat_session.messages[:-2],
+                summary=None,
+            )
+            self._raise_if_generation_cancelled(should_cancel)
+            profile = self._memory.load_profile()
+            chat_messages = self._build_chat_messages(
+                profile,
+                effective_user_message,
+                chat_session=prompt_session,
+                project=active_conversation.project,
+            )
+            reply = yield from self._stream_model_reply(
+                chat_messages,
+                should_cancel=should_cancel,
+            )
+            self._claim_generation_commit(
+                should_cancel=should_cancel,
+                begin_commit=begin_commit,
+            )
+            service.commit_retry(
+                active_conversation,
+                user_message_id=user_message_id,
+                assistant_message_id=assistant_message_id,
+                user_message=effective_user_message,
+                assistant_message=reply,
+            )
+
+        logger.info("Chat retry completed: chat_id=%s.", chat_id)
+
+    def _stream_model_reply(
+        self,
+        chat_messages: list[ChatMessage],
+        *,
+        should_cancel: Callable[[], bool] | None,
+    ) -> Generator[str, None, str]:
+        """Yield model chunks while retaining one all-or-nothing reply."""
+
+        if self._chat_model is None:
+            raise RuntimeError("Chat model is not connected.")
+
+        self._raise_if_generation_cancelled(should_cancel)
+        reply_chunks: list[str] = []
+        stream_source = self._chat_model.stream_reply(chat_messages)
+        self._raise_if_generation_cancelled(should_cancel)
+        model_stream: Iterator[str] = iter(stream_source)
+        try:
+            while True:
+                self._raise_if_generation_cancelled(should_cancel)
+                try:
+                    chunk = next(model_stream)
+                except StopIteration:
+                    break
+                # A cancellation requested while ``next`` was blocked wins
+                # before the newly returned chunk becomes externally visible.
+                self._raise_if_generation_cancelled(should_cancel)
+                reply_chunks.append(chunk)
+                yield chunk
+        finally:
+            close_stream = getattr(model_stream, "close", None)
+            if callable(close_stream):
+                try:
+                    close_stream()
+                except Exception:
+                    # Cleanup must never replace a cancellation or a model
+                    # exception with a misleading retryable generation error.
+                    logger.exception("Chat model stream cleanup failed.")
+
+        self._raise_if_generation_cancelled(should_cancel)
+        reply = "".join(reply_chunks).strip()
+        if not reply:
+            raise ValueError("Model reply cannot be empty.")
+        return reply
+
+    @staticmethod
+    def _raise_if_generation_cancelled(
+        should_cancel: Callable[[], bool] | None,
+    ) -> None:
+        """Stop before yielding or persisting once cancellation is visible."""
+
+        if should_cancel is not None and should_cancel():
+            raise GenerationCancelledError("Chat generation was cancelled.")
+
+    def _claim_generation_commit(
+        self,
+        *,
+        should_cancel: Callable[[], bool] | None,
+        begin_commit: Callable[[], bool] | None,
+    ) -> None:
+        """Atomically linearize commit against an external cancel request."""
+
+        self._raise_if_generation_cancelled(should_cancel)
+        if begin_commit is not None and not begin_commit():
+            raise GenerationCancelledError("Chat generation was cancelled.")
 
     def _require_active_conversation_service(
         self,

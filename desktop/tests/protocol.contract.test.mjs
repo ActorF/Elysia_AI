@@ -6,6 +6,7 @@ import test from 'node:test'
 import { pathToFileURL } from 'node:url'
 
 import { BackendProcess } from '../dist-electron/backend-process.js'
+import { parseSafeExternalUrl } from '../dist-electron/external-url.js'
 import { isTrustedRendererUrl } from '../dist-electron/renderer-source.js'
 import {
   PROTOCOL_NAME,
@@ -127,6 +128,45 @@ test('TypeScript request builder produces the versioned envelope', () => {
   )
 })
 
+test('TypeScript validates regenerate and edit-and-retry requests', () => {
+  assert.deepEqual(
+    createRequest('retry-1', 'chat.retry', {
+      chatId: 'chat_fixture',
+      userMessageId: 'message_user',
+      assistantMessageId: 'message_assistant',
+    }).params,
+    {
+      chatId: 'chat_fixture',
+      userMessageId: 'message_user',
+      assistantMessageId: 'message_assistant',
+    },
+  )
+  assert.equal(
+    createRequest('retry-2', 'chat.retry', {
+      chatId: 'chat_fixture',
+      userMessageId: 'message_user',
+      assistantMessageId: 'message_assistant',
+      message: 'Edited prompt',
+    }).params.message,
+    'Edited prompt',
+  )
+  assert.throws(
+    () => parseClientRequest({
+      type: 'request',
+      protocol: fixtures.protocol,
+      id: 'retry-invalid',
+      method: 'chat.retry',
+      params: {
+        chatId: 'chat_fixture',
+        userMessageId: 'message_user',
+        assistantMessageId: 'message_assistant',
+        message: '\ufeff\u0085',
+      },
+    }),
+    ProtocolValidationError,
+  )
+})
+
 test('renderer text helpers follow the protocol blank definition', () => {
   assert.equal(hasNonBlankCodePoint('\u0085\ufeff'), false)
   assert.equal(hasNonBlankCodePoint('\u0085hello\ufeff'), true)
@@ -188,11 +228,11 @@ for (const invalidState of [
   })
 }
 
-function createPendingChat() {
+function createPendingChat(method = 'chat.stream') {
   const events = []
   const backend = new BackendProcess('.', (event) => events.push(event))
   backend.pendingRequests.set('chat-state-1', {
-    method: 'chat.stream',
+    method,
     chatId: 'chat_fixture',
     nextSequence: 0,
     streamCompleted: false,
@@ -236,6 +276,408 @@ test('Backend state machine accepts one ordered matching Chat stream', () => {
     events.map((event) => event.type),
     ['chat-chunk', 'chat-chunk', 'chat-complete'],
   )
+})
+
+test('Backend state machine accepts a retry over the Chat reply stream', () => {
+  const { backend, events } = createPendingChat('chat.retry')
+
+  backend.handleProtocolLine(streamFrame(0, 'replacement', false))
+  backend.handleProtocolLine(streamFrame(1, '', true))
+  backend.handleProtocolLine(responseFrame('replacement'))
+
+  assert.deepEqual(
+    events.map((event) => event.type),
+    ['chat-chunk', 'chat-complete'],
+  )
+})
+
+test('Backend sends an exact retry request and tracks it as generation', () => {
+  const writes = []
+  const backend = new BackendProcess('.', () => undefined)
+  backend.child = {
+    stdin: {
+      writable: true,
+      write: (value) => writes.push(value),
+    },
+  }
+  backend.snapshot = {
+    revision: 1,
+    status: 'ready',
+    capabilities: ['chat.retry'],
+    models: ['qwen3.5:9b'],
+    modelName: 'qwen3.5:9b',
+    chatId: 'chat_fixture',
+    chatTitle: 'Elysia Chat',
+  }
+
+  const { requestId } = backend.beginRetry({
+    chatId: 'chat_fixture',
+    userMessageId: 'message_user',
+    assistantMessageId: 'message_assistant',
+    message: '  Edited prompt  ',
+  })
+  const request = JSON.parse(writes.at(-1))
+
+  assert.equal(request.id, requestId)
+  assert.equal(request.method, 'chat.retry')
+  assert.deepEqual(request.params, {
+    chatId: 'chat_fixture',
+    userMessageId: 'message_user',
+    assistantMessageId: 'message_assistant',
+    message: 'Edited prompt',
+  })
+  assert.equal(backend.pendingRequests.get(requestId).method, 'chat.retry')
+})
+
+test('Backend stop request settles independently from cancelled generation', async () => {
+  const writes = []
+  const events = []
+  const backend = new BackendProcess('.', (event) => events.push(event))
+  backend.child = {
+    stdin: {
+      writable: true,
+      write: (value) => writes.push(value),
+    },
+  }
+  backend.pendingRequests.set('generation-1', {
+    method: 'chat.retry',
+    chatId: 'chat_fixture',
+    nextSequence: 0,
+    streamCompleted: false,
+    streamedReply: '',
+    streamedLength: 0,
+  })
+
+  const stopping = backend.stopGeneration('generation-1')
+  const cancelRequest = JSON.parse(writes.at(-1))
+  assert.equal(cancelRequest.method, 'request.cancel')
+  assert.deepEqual(cancelRequest.params, { requestId: 'generation-1' })
+
+  backend.handleProtocolLine(JSON.stringify({
+    type: 'response',
+    protocol: fixtures.protocol,
+    id: cancelRequest.id,
+    ok: true,
+    result: { stopped: true },
+  }))
+  await stopping
+  assert.equal(backend.pendingRequests.has('generation-1'), true)
+
+  backend.handleProtocolLine(JSON.stringify({
+    type: 'response',
+    protocol: fixtures.protocol,
+    id: 'generation-1',
+    ok: false,
+    error: {
+      code: 'request.cancelled',
+      message: 'Generation was stopped.',
+      retryable: false,
+    },
+  }))
+  assert.deepEqual(events.at(-1), {
+    type: 'chat-error',
+    requestId: 'generation-1',
+    chatId: 'chat_fixture',
+    code: 'request.cancelled',
+    message: 'Generation was stopped.',
+    retryable: false,
+  })
+})
+
+test('Backend rejects success after cancellation was accepted', async () => {
+  const writes = []
+  const backend = new BackendProcess('.', () => undefined)
+  backend.child = {
+    stdin: {
+      writable: true,
+      write: (value) => writes.push(value),
+    },
+    kill: () => undefined,
+  }
+  backend.pendingRequests.set('generation-cancelled', {
+    method: 'chat.stream',
+    chatId: 'chat_fixture',
+    nextSequence: 0,
+    streamCompleted: false,
+    streamedReply: '',
+    streamedLength: 0,
+  })
+
+  const stopping = backend.stopGeneration('generation-cancelled')
+  const cancelRequest = JSON.parse(writes.at(-1))
+  backend.handleProtocolLine(JSON.stringify({
+    type: 'response',
+    protocol: fixtures.protocol,
+    id: cancelRequest.id,
+    ok: true,
+    result: { stopped: true },
+  }))
+  await stopping
+
+  backend.handleProtocolLine(JSON.stringify({
+    type: 'stream',
+    protocol: fixtures.protocol,
+    requestId: 'generation-cancelled',
+    stream: 'chat.reply',
+    sequence: 0,
+    chunk: '',
+    done: true,
+  }))
+
+  assert.equal(backend.getSnapshot().status, 'error')
+  assert.match(
+    backend.getSnapshot().error,
+    /completed a stream after accepting its cancellation/,
+  )
+})
+
+test('Backend withholds success that precedes a contradictory cancel ack', async () => {
+  const writes = []
+  const events = []
+  const backend = new BackendProcess('.', (event) => events.push(event))
+  backend.child = {
+    stdin: {
+      writable: true,
+      write: (value) => writes.push(value),
+    },
+    kill: () => undefined,
+  }
+  backend.pendingRequests.set('generation-raced', {
+    method: 'chat.stream',
+    chatId: 'chat_fixture',
+    nextSequence: 0,
+    streamCompleted: false,
+    streamedReply: '',
+    streamedLength: 0,
+  })
+
+  const stopping = backend.stopGeneration('generation-raced')
+  const cancelRequest = JSON.parse(writes.at(-1))
+  backend.handleProtocolLine(JSON.stringify({
+    type: 'stream',
+    protocol: fixtures.protocol,
+    requestId: 'generation-raced',
+    stream: 'chat.reply',
+    sequence: 0,
+    chunk: 'Too late',
+    done: false,
+  }))
+  backend.handleProtocolLine(JSON.stringify({
+    type: 'stream',
+    protocol: fixtures.protocol,
+    requestId: 'generation-raced',
+    stream: 'chat.reply',
+    sequence: 1,
+    chunk: '',
+    done: true,
+  }))
+  backend.handleProtocolLine(JSON.stringify({
+    type: 'response',
+    protocol: fixtures.protocol,
+    id: 'generation-raced',
+    ok: true,
+    result: { chatId: 'chat_fixture', reply: 'Too late' },
+  }))
+
+  assert.equal(
+    events.some((event) => event.type === 'chat-complete'),
+    false,
+  )
+
+  backend.handleProtocolLine(JSON.stringify({
+    type: 'response',
+    protocol: fixtures.protocol,
+    id: cancelRequest.id,
+    ok: true,
+    result: { stopped: true },
+  }))
+
+  await assert.rejects(stopping, /non-cancelled generation/)
+  assert.equal(
+    events.some((event) => event.type === 'chat-complete'),
+    false,
+  )
+  assert.equal(backend.getSnapshot().status, 'error')
+  assert.match(
+    backend.getSnapshot().error,
+    /non-cancelled generation after accepting cancellation/,
+  )
+})
+
+test('Backend releases deferred success when cancellation is rejected', async () => {
+  const writes = []
+  const events = []
+  const backend = new BackendProcess('.', (event) => events.push(event))
+  backend.child = {
+    stdin: {
+      writable: true,
+      write: (value) => writes.push(value),
+    },
+  }
+  backend.pendingRequests.set('generation-committed', {
+    method: 'chat.stream',
+    chatId: 'chat_fixture',
+    nextSequence: 1,
+    streamCompleted: true,
+    streamedReply: 'Committed reply',
+    streamedLength: 15,
+  })
+
+  const stopping = backend.stopGeneration('generation-committed')
+  const cancelRequest = JSON.parse(writes.at(-1))
+  backend.handleProtocolLine(JSON.stringify({
+    type: 'response',
+    protocol: fixtures.protocol,
+    id: 'generation-committed',
+    ok: true,
+    result: { chatId: 'chat_fixture', reply: 'Committed reply' },
+  }))
+  assert.equal(events.length, 0)
+
+  backend.handleProtocolLine(JSON.stringify({
+    type: 'response',
+    protocol: fixtures.protocol,
+    id: cancelRequest.id,
+    ok: false,
+    error: {
+      code: 'request.not_cancellable',
+      message: 'Generation already committed.',
+      retryable: false,
+    },
+  }))
+
+  await assert.rejects(stopping, /already committed/)
+  assert.deepEqual(events.at(-1), {
+    type: 'chat-complete',
+    requestId: 'generation-committed',
+    chatId: 'chat_fixture',
+    reply: 'Committed reply',
+  })
+})
+
+test('Backend rolls back pending generation when stdin write throws', () => {
+  const backend = new BackendProcess('.', () => undefined)
+  backend.child = {
+    stdin: {
+      writable: true,
+      write: () => { throw new Error('write EOF') },
+    },
+    kill: () => undefined,
+  }
+  backend.snapshot = {
+    revision: 1,
+    status: 'ready',
+    capabilities: ['chat.stream'],
+    models: ['qwen3.5:9b'],
+    modelName: 'qwen3.5:9b',
+    chatId: 'chat_fixture',
+    chatTitle: 'Elysia Chat',
+  }
+
+  assert.throws(
+    () => backend.beginChat({
+      chatId: 'chat_fixture',
+      message: 'Hello',
+    }),
+    /Could not write to the Python Backend/,
+  )
+  assert.equal(backend.pendingRequests.size, 0)
+  assert.equal(backend.getSnapshot().status, 'error')
+})
+
+test('Backend protocol failure rejects pending renderer actions before exit', async () => {
+  const writes = []
+  let killCount = 0
+  const backend = new BackendProcess('.', () => undefined)
+  backend.child = {
+    stdin: {
+      writable: true,
+      write: (value) => writes.push(value),
+    },
+    kill: () => {
+      killCount += 1
+      return true
+    },
+  }
+  backend.snapshot = {
+    revision: 1,
+    status: 'ready',
+    capabilities: ['chat.sessions', 'project.management', 'request.cancel'],
+    models: ['qwen3.5:9b'],
+    modelName: 'qwen3.5:9b',
+    chatId: 'chat_fixture',
+    chatTitle: 'Elysia Chat',
+  }
+
+  const chatAction = backend.openChat('chat_other')
+  const projectAction = backend.listProjects()
+  backend.pendingRequests.set('generation-pending', {
+    method: 'chat.stream',
+    chatId: 'chat_fixture',
+    nextSequence: 0,
+    streamCompleted: false,
+    streamedReply: '',
+    streamedLength: 0,
+  })
+  const cancellation = backend.stopGeneration('generation-pending')
+  const rejections = [chatAction, projectAction, cancellation].map(
+    (action) => assert.rejects(action, /Protocol connection failed/),
+  )
+
+  backend.protocolFailure('Protocol connection failed.')
+
+  await Promise.all(rejections)
+  assert.equal(killCount, 1)
+  assert.equal(backend.getSnapshot().status, 'error')
+})
+
+test('Backend allows opening another Chat while generation remains tracked', async () => {
+  const writes = []
+  const backend = new BackendProcess('.', () => undefined)
+  backend.child = {
+    stdin: {
+      writable: true,
+      write: (value) => writes.push(value),
+    },
+  }
+  backend.snapshot = {
+    revision: 1,
+    status: 'ready',
+    capabilities: ['chat.stream', 'chat.sessions'],
+    models: ['qwen3.5:9b'],
+    modelName: 'qwen3.5:9b',
+    chatId: 'chat_fixture',
+    chatTitle: 'Elysia Chat',
+  }
+  backend.pendingRequests.set('generation-a', {
+    method: 'chat.stream',
+    chatId: 'chat_fixture',
+    nextSequence: 0,
+    streamCompleted: false,
+    streamedReply: '',
+    streamedLength: 0,
+  })
+
+  const opening = backend.openChat('chat_second')
+  const openRequest = JSON.parse(writes.at(-1))
+  assert.equal(openRequest.method, 'chat.open')
+  assert.deepEqual(openRequest.params, { chatId: 'chat_second' })
+
+  const sample = fixtures.validServerMessages.find(
+    (candidate) => candidate.name === 'chat state response',
+  )
+  const response = structuredClone(sample.message)
+  response.id = openRequest.id
+  response.result.activeChat = {
+    ...response.result.chats[1],
+    messages: [],
+  }
+  backend.handleProtocolLine(JSON.stringify(response))
+
+  const state = await opening
+  assert.equal(state.activeChat.chatId, 'chat_second')
+  assert.equal(backend.pendingRequests.has('generation-a'), true)
+  assert.equal(backend.getSnapshot().chatId, 'chat_second')
 })
 
 test('Backend state machine rejects a stream sequence gap', () => {
@@ -429,4 +871,15 @@ test('renderer source policy accepts only the packaged index file', () => {
 
   assert.equal(isTrustedRendererUrl(indexUrl, policy), true)
   assert.equal(isTrustedRendererUrl(otherUrl, policy), false)
+})
+
+test('external link policy allows credential-free HTTP(S) URLs only', () => {
+  assert.equal(
+    parseSafeExternalUrl('https://example.com/docs?q=elysia#message'),
+    'https://example.com/docs?q=elysia#message',
+  )
+  assert.throws(() => parseSafeExternalUrl('javascript:alert(1)'))
+  assert.throws(() => parseSafeExternalUrl('https://user@example.com/'))
+  assert.throws(() => parseSafeExternalUrl('https://example.com\0.invalid/'))
+  assert.throws(() => parseSafeExternalUrl(' https://example.com/'))
 })

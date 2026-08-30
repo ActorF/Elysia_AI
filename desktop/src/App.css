@@ -1057,11 +1057,37 @@ svg {
   min-width: 0;
 }
 
+.message-header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: baseline;
+  justify-content: space-between;
+}
+
 .message-author {
   color: var(--color-text-muted);
   font-size: var(--font-size-xs);
   font-weight: var(--font-weight-semibold);
   letter-spacing: 0.03em;
+}
+
+.message-status {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  line-height: var(--line-height-normal);
+}
+
+.message-status-streaming {
+  color: var(--color-info);
+}
+
+.message-status-error {
+  color: var(--color-danger);
+}
+
+.message-status-cancelled {
+  color: var(--color-warning);
 }
 
 .message-body p {
@@ -1071,6 +1097,246 @@ svg {
   line-height: var(--line-height-relaxed);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+.message-text {
+  white-space: pre-wrap;
+}
+
+.message-markdown {
+  min-width: 0;
+  color: var(--color-text-primary);
+  font-size: var(--font-size-md);
+  line-height: var(--line-height-relaxed);
+  overflow-wrap: anywhere;
+}
+
+.message-markdown > :first-child {
+  margin-top: var(--space-2);
+}
+
+.message-markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.message-markdown p {
+  white-space: normal;
+}
+
+.message-markdown h1,
+.message-markdown h2,
+.message-markdown h3,
+.message-markdown h4 {
+  margin: var(--space-5) 0 var(--space-2);
+  color: var(--color-text-primary);
+  line-height: var(--line-height-tight);
+}
+
+.message-markdown h1 {
+  font-size: var(--font-size-xl);
+}
+
+.message-markdown h2 {
+  font-size: var(--font-size-lg);
+}
+
+.message-markdown h3,
+.message-markdown h4 {
+  font-size: var(--font-size-md);
+}
+
+.message-markdown ul,
+.message-markdown ol {
+  margin: var(--space-2) 0;
+  padding-left: var(--space-6);
+}
+
+.message-markdown li + li {
+  margin-top: var(--space-1);
+}
+
+.message-markdown blockquote {
+  margin: var(--space-3) 0;
+  padding: var(--space-1) 0 var(--space-1) var(--space-4);
+  color: var(--color-text-secondary);
+  border-left: 0.1875rem solid var(--color-accent);
+}
+
+.message-markdown a {
+  color: var(--color-info);
+  text-decoration: underline;
+  text-underline-offset: 0.18em;
+}
+
+.message-markdown code {
+  padding: 0.1em 0.32em;
+  background: color-mix(in srgb, var(--color-text-primary) 8%, transparent);
+  border-radius: var(--radius-sm);
+  font-family: Consolas, "Cascadia Code", monospace;
+  font-size: 0.9em;
+}
+
+.message-markdown table {
+  display: block;
+  max-width: 100%;
+  margin: var(--space-3) 0;
+  overflow-x: auto;
+  border-collapse: collapse;
+}
+
+.message-markdown th,
+.message-markdown td {
+  min-width: 7rem;
+  padding: var(--space-2) var(--space-3);
+  text-align: left;
+  border: 1px solid var(--color-border-strong);
+}
+
+.message-markdown th {
+  background: var(--color-bg-soft);
+}
+
+.blocked-markdown-image,
+.unsafe-markdown-link {
+  display: inline-flex;
+  max-width: 100%;
+  padding: 0.1em 0.4em;
+  color: var(--color-text-muted);
+  background: var(--color-bg-soft);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-xs);
+  overflow-wrap: anywhere;
+}
+
+.code-block {
+  min-width: 0;
+  margin: var(--space-3) 0;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--color-bg-canvas) 82%, black);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-md);
+}
+
+.code-block-toolbar {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  justify-content: space-between;
+  min-height: 2.25rem;
+  padding: var(--space-1) var(--space-2) var(--space-1) var(--space-3);
+  color: var(--color-text-muted);
+  background: var(--color-bg-soft);
+  border-bottom: 1px solid var(--color-border);
+  font-size: var(--font-size-xs);
+}
+
+.code-block pre {
+  max-width: 100%;
+  margin: 0;
+  padding: var(--space-4);
+  overflow: auto;
+  overscroll-behavior-inline: contain;
+}
+
+.code-block pre code {
+  padding: 0;
+  background: transparent;
+  border-radius: 0;
+  white-space: pre;
+}
+
+.message-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  margin-top: var(--space-3);
+}
+
+.message-action {
+  display: inline-flex;
+  gap: var(--space-1);
+  align-items: center;
+  min-height: 2rem;
+  padding: var(--space-1) var(--space-2);
+  color: var(--color-text-muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-xs);
+}
+
+.message-action:hover:not(:disabled) {
+  color: var(--color-text-primary);
+  background: var(--color-bg-hover);
+  border-color: var(--color-border);
+}
+
+.message-action svg {
+  width: var(--icon-size-sm);
+  height: var(--icon-size-sm);
+}
+
+.message-action-error {
+  display: block;
+  margin-top: var(--space-2);
+  color: var(--color-danger);
+  font-size: var(--font-size-xs);
+}
+
+.message-edit-form {
+  display: grid;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+  padding: var(--space-3);
+  background: var(--color-bg-soft);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+.message-edit-form label {
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+}
+
+.message-edit-form textarea {
+  width: 100%;
+  min-height: 5rem;
+  max-height: 14rem;
+  padding: var(--space-2);
+  resize: vertical;
+  color: var(--color-text-primary);
+  background: var(--color-bg-raised);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  font: inherit;
+}
+
+.message-edit-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  justify-content: flex-end;
+}
+
+.message-edit-button {
+  min-height: var(--control-height-sm);
+  padding-inline: var(--space-3);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-xs);
+}
+
+.message-edit-button.secondary {
+  color: var(--color-text-secondary);
+  background: var(--color-bg-raised);
+}
+
+.message-edit-button.primary {
+  color: var(--color-accent-contrast);
+  background: var(--color-accent);
+  border-color: var(--color-accent);
 }
 
 .message-body small {
@@ -1255,6 +1521,23 @@ svg {
   margin: 0 auto var(--space-2);
   overflow-x: auto;
   overscroll-behavior-inline: contain;
+}
+
+.attachment-preview {
+  width: min(100%, var(--layout-composer-max-width));
+  margin: 0 auto var(--space-2);
+}
+
+.attachment-preview .attachment-row {
+  width: 100%;
+  margin-bottom: var(--space-1);
+}
+
+.attachment-preview-note {
+  margin: 0;
+  color: var(--color-warning);
+  font-size: var(--font-size-xs);
+  overflow-wrap: anywhere;
 }
 
 .attachment-chip {
@@ -1443,6 +1726,13 @@ svg {
 .send-button:hover:not(:disabled) {
   filter: brightness(1.04);
   transform: translateY(-1px);
+}
+
+.stop-button {
+  color: var(--color-danger);
+  background: var(--color-danger-soft);
+  border: 1px solid color-mix(in srgb, var(--color-danger) 32%, transparent);
+  box-shadow: none;
 }
 
 .send-button:disabled {

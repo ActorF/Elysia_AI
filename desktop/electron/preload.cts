@@ -19,6 +19,7 @@ import type {
   PinChatRequest,
   ProjectState,
   RenameChatRequest,
+  RetryChatRequest,
   SelectedFile,
   UpdateProjectRequest,
 } from './contracts.js'
@@ -50,6 +51,30 @@ const desktopApi: DesktopApi = {
       'backend:send-message',
       request,
     ) as Promise<{ requestId: string }>,
+
+  retryMessage: (request: RetryChatRequest) =>
+    ipcRenderer.invoke(
+      'backend:retry-message',
+      request,
+    ) as Promise<{ requestId: string }>,
+
+  stopGeneration: (requestId: string) =>
+    ipcRenderer.invoke(
+      'backend:stop-generation',
+      requestId,
+    ) as Promise<void>,
+
+  copyText: (text: string) =>
+    ipcRenderer.invoke(
+      'desktop:copy-text',
+      text,
+    ) as Promise<void>,
+
+  openExternalUrl: (url: string) =>
+    ipcRenderer.invoke(
+      'desktop:open-external-url',
+      url,
+    ) as Promise<void>,
 
   listChats: (includeArchived: boolean) =>
     ipcRenderer.invoke(

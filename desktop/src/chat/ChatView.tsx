@@ -14,7 +14,12 @@ import type {
   SelectedFile,
 } from '../../electron/contracts.ts'
 import { Composer } from './Composer.tsx'
-import type { ChatMessage, ChatNotice } from './types.ts'
+import { MessageView } from './MessageView.tsx'
+import type {
+  ChatMessage,
+  ChatNotice,
+  RetryableChatPair,
+} from './types.ts'
 import {
   EmptyState,
   LoadingState,
@@ -27,6 +32,7 @@ interface ChatViewProps {
   chatMode: 'chat' | 'work'
   chatTitle: string
   draft: string
+  generationBusy: boolean
   messages: ChatMessage[]
   modelSelectionPending: boolean
   modelOptions: string[]
@@ -34,17 +40,23 @@ interface ChatViewProps {
   panelOpen: boolean
   panelTransitionPending: boolean
   retryPending: boolean
+  retryPair: RetryableChatPair | null
   selectedFiles: SelectedFile[]
   sidebarOpen: boolean
   snapshot: BackendSnapshot
   streaming: boolean
+  stopPending: boolean
   onChooseFiles(): void
+  onCopy(text: string): Promise<void>
   onDismissNotice(): void
   onDraftChange(value: string): void
   onOpenCall(): void
+  onOpenExternalUrl(url: string): Promise<void>
+  onRetry(pair: RetryableChatPair, message?: string): void
   onRetryConnection(): void
   onSelectModel(modelName: string): void
   onSend(): void
+  onStop(): void
   onTogglePanel(): void
   onToggleSidebar(): void
   onVerifyMicrophone(): void
@@ -77,6 +89,7 @@ export function ChatView({
   chatMode,
   chatTitle,
   draft,
+  generationBusy,
   messages,
   modelSelectionPending,
   modelOptions,
@@ -84,17 +97,23 @@ export function ChatView({
   panelOpen,
   panelTransitionPending,
   retryPending,
+  retryPair,
   selectedFiles,
   sidebarOpen,
   snapshot,
   streaming,
+  stopPending,
   onChooseFiles,
+  onCopy,
   onDismissNotice,
   onDraftChange,
   onOpenCall,
+  onOpenExternalUrl,
+  onRetry,
   onRetryConnection,
   onSelectModel,
   onSend,
+  onStop,
   onTogglePanel,
   onToggleSidebar,
   onVerifyMicrophone,
@@ -203,31 +222,15 @@ export function ChatView({
           )}
 
           {messages.map((message) => (
-            <article
+            <MessageView
               key={message.id}
-              className={`message ${message.role}`}
-              aria-label={message.role === 'assistant'
-                ? 'Message from Elysia'
-                : 'Message from you'}
-            >
-              <div className="message-avatar" aria-hidden="true">
-                {message.role === 'assistant' ? 'E' : 'Y'}
-              </div>
-              <div className="message-body">
-                <span className="message-author">
-                  {message.role === 'assistant' ? 'Elysia' : 'You'}
-                </span>
-                <p>
-                  {message.text}
-                  {message.state === 'streaming' && (
-                    <span className="stream-caret" aria-hidden="true" />
-                  )}
-                </p>
-                {message.state === 'error' && (
-                  <small role="alert">Reply interrupted</small>
-                )}
-              </div>
-            </article>
+              message={message}
+              retryPair={retryPair}
+              retryDisabled={generationBusy}
+              onCopy={onCopy}
+              onOpenExternalUrl={onOpenExternalUrl}
+              onRetry={onRetry}
+            />
           ))}
         </div>
       </main>
@@ -236,6 +239,7 @@ export function ChatView({
         callButtonRef={callButtonRef}
         canSend={canSend}
         draft={draft}
+        generationBusy={generationBusy}
         modelSelectionPending={modelSelectionPending}
         modelOptions={modelOptions}
         notice={notice}
@@ -243,6 +247,7 @@ export function ChatView({
         selectedFiles={selectedFiles}
         snapshot={snapshot}
         streaming={streaming}
+        stopPending={stopPending}
         onChooseFiles={onChooseFiles}
         onDismissNotice={onDismissNotice}
         onDraftChange={onDraftChange}
@@ -253,6 +258,7 @@ export function ChatView({
           stickToBottomRef.current = true
           onSend()
         }}
+        onStop={onStop}
         onVerifyMicrophone={onVerifyMicrophone}
         onVoicePlaceholder={onVoicePlaceholder}
       />

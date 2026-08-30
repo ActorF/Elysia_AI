@@ -36,6 +36,14 @@ export interface ChatRequest {
   message: string
 }
 
+/** Regenerate the persisted tail turn, optionally replacing its user text. */
+export interface RetryChatRequest {
+  chatId: string
+  userMessageId: string
+  assistantMessageId: string
+  message?: string
+}
+
 /** Lightweight persisted Chat data used by the sidebar. */
 export interface ChatSessionSummary {
   chatId: string
@@ -205,6 +213,10 @@ export interface DesktopApi {
   getSnapshot(): Promise<BackendSnapshot>
   restartBackend(): Promise<BackendSnapshot>
   sendMessage(request: ChatRequest): Promise<{ requestId: string }>
+  retryMessage(request: RetryChatRequest): Promise<{ requestId: string }>
+  stopGeneration(requestId: string): Promise<void>
+  copyText(text: string): Promise<void>
+  openExternalUrl(url: string): Promise<void>
   listChats(includeArchived: boolean): Promise<ChatSessionState>
   createChat(request: CreateChatRequest): Promise<ChatSessionState>
   openChat(chatId: string): Promise<ChatSessionState>

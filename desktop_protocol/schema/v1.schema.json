@@ -27,6 +27,7 @@
     { "$ref": "#/$defs/handshakeRequest" },
     { "$ref": "#/$defs/initializeRequest" },
     { "$ref": "#/$defs/chatStreamRequest" },
+    { "$ref": "#/$defs/chatRetryRequest" },
     { "$ref": "#/$defs/chatListRequest" },
     { "$ref": "#/$defs/chatCreateRequest" },
     { "$ref": "#/$defs/chatOpenRequest" },
@@ -83,6 +84,7 @@
             "handshake",
             "initialize",
             "chat.stream",
+            "chat.retry",
             "chat.list",
             "chat.create",
             "chat.open",
@@ -144,6 +146,22 @@
         }
       },
       "required": ["chatId", "message"],
+      "additionalProperties": false
+    },
+    "chatRetryParams": {
+      "type": "object",
+      "properties": {
+        "chatId": { "$ref": "#/$defs/identifier" },
+        "userMessageId": { "$ref": "#/$defs/identifier" },
+        "assistantMessageId": { "$ref": "#/$defs/identifier" },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000000,
+          "pattern": "[^\\u0009-\\u000D\\u0020\\u0085\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000\\uFEFF]"
+        }
+      },
+      "required": ["chatId", "userMessageId", "assistantMessageId"],
       "additionalProperties": false
     },
     "chatListParams": {
@@ -349,6 +367,17 @@
           "properties": {
             "method": { "const": "chat.stream" },
             "params": { "$ref": "#/$defs/chatStreamParams" }
+          }
+        }
+      ]
+    },
+    "chatRetryRequest": {
+      "allOf": [
+        { "$ref": "#/$defs/requestEnvelope" },
+        {
+          "properties": {
+            "method": { "const": "chat.retry" },
+            "params": { "$ref": "#/$defs/chatRetryParams" }
           }
         }
       ]

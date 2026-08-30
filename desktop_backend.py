@@ -13,13 +13,17 @@ import os
 import secrets
 import sys
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass, field
+from enum import Enum
 from io import TextIOWrapper
+from threading import Event, Lock, RLock, Thread
 from typing import Any, TextIO, cast
 from urllib.request import Request, urlopen
 
 from chats import (
     ChatId,
+    ChatMessageId,
     ChatNotFoundError,
     ChatSession,
     ChatSessionMeta,
@@ -27,7 +31,12 @@ from chats import (
     ProjectId,
 )
 from config.settings import SETTINGS
-from core import Brain, ChatBusyError
+from core import (
+    Brain,
+    ChatBusyError,
+    ChatRetryTargetError,
+    GenerationCancelledError,
+)
 from projects import (
     Project,
     ProjectArchivedError,
@@ -63,6 +72,8 @@ SERVER_VERSION = "0.1.0"
 SERVER_CAPABILITIES = (
     "chat.sessions",
     "chat.stream",
+    "chat.retry",
+    "request.cancel",
     "project.management",
     "stream",
     "progress",
@@ -71,6 +82,66 @@ SERVER_CAPABILITIES = (
 MAX_REQUEST_ID_LENGTH = 128
 MAX_ERROR_MESSAGE_LENGTH = 4096
 MAX_RECENT_REQUEST_IDS = 4096
+GENERATION_SHUTDOWN_TIMEOUT_SECONDS = 2.0
+
+
+class _GenerationState(Enum):
+    """Linearize cancellation against one generation's commit boundary."""
+
+    RUNNING = "running"
+    CANCEL_REQUESTED = "cancel_requested"
+    COMMITTING = "committing"
+    FINISHED = "finished"
+
+
+@dataclass
+class _GenerationTask:
+    """Track one globally exclusive streamed Chat operation."""
+
+    request_id: str
+    chat_id: ChatId
+    method: str
+    state: _GenerationState = _GenerationState.RUNNING
+    done: Event = field(default_factory=Event)
+    thread: Thread | None = None
+    _lock: Lock = field(default_factory=Lock, repr=False)
+
+    def request_cancel(self) -> bool:
+        """Request cancellation only while commit can still be prevented."""
+
+        with self._lock:
+            if self.state is _GenerationState.RUNNING:
+                self.state = _GenerationState.CANCEL_REQUESTED
+                return True
+            return self.state is _GenerationState.CANCEL_REQUESTED
+
+    def should_cancel(self) -> bool:
+        """Return whether the worker must stop before yielding or committing."""
+
+        with self._lock:
+            return self.state is _GenerationState.CANCEL_REQUESTED
+
+    def begin_commit(self) -> bool:
+        """Claim the commit boundary unless cancellation won the race."""
+
+        with self._lock:
+            if self.state is not _GenerationState.RUNNING:
+                return False
+            self.state = _GenerationState.COMMITTING
+            return True
+
+    def finish(self) -> None:
+        """Publish terminal state to shutdown and serialized readers."""
+
+        with self._lock:
+            self.state = _GenerationState.FINISHED
+        self.done.set()
+
+    def state_snapshot(self) -> _GenerationState:
+        """Read the lifecycle state without exposing the task lock."""
+
+        with self._lock:
+            return self.state
 
 
 def _configure_protocol_streams(*streams: TextIO) -> None:
@@ -164,6 +235,21 @@ class DesktopBackend:
         self._models: tuple[str, ...] = ()
         self._seen_request_ids: set[str] = set()
         self._request_id_order: deque[str] = deque()
+        self._state_lock = RLock()
+        self._output_lock = Lock()
+        self._generation_task: _GenerationTask | None = None
+
+    def _active_chat_snapshot(self) -> ChatSession | None:
+        """Read the active Chat under the worker coordination lock."""
+
+        with self._state_lock:
+            return self._active_chat
+
+    def _set_active_chat(self, chat: ChatSession) -> None:
+        """Publish an active Chat without racing a completed generation."""
+
+        with self._state_lock:
+            self._active_chat = chat
 
     def run(self) -> None:
         """Read requests until shutdown or end-of-input."""
@@ -182,6 +268,14 @@ class DesktopBackend:
 
             if not self._handle_line(line):
                 return
+
+        # A finite test/input stream may end immediately after starting a
+        # generation. Give a healthy worker time to finish; if it is blocked,
+        # request cancellation so stdin closure cannot strand the process.
+        if not self._wait_for_generation(
+            timeout=GENERATION_SHUTDOWN_TIMEOUT_SECONDS,
+        ):
+            self._prepare_generation_shutdown()
 
     def _handle_line(self, line: str) -> bool:
         """Parse and dispatch one request, returning whether to continue."""
@@ -232,6 +326,7 @@ class DesktopBackend:
             if method == "handshake":
                 self._handshake(request_id, request)
             elif method == "shutdown":
+                self._prepare_generation_shutdown()
                 self._emit_response(request_id, {"stopped": True})
                 return False
             elif not self._authenticated:
@@ -241,13 +336,15 @@ class DesktopBackend:
                 )
             elif method == "initialize":
                 self._initialize(request_id)
-            elif self._brain is None or self._active_chat is None:
+            elif self._brain is None or self._active_chat_snapshot() is None:
                 raise ProtocolValidationError(
                     "protocol.not_initialized",
                     "Backend must be initialized before this request.",
                 )
             elif method == "chat.stream":
-                self._stream_chat(request_id, params)
+                self._start_chat_stream(request_id, params)
+            elif method == "chat.retry":
+                self._start_chat_retry(request_id, params)
             elif method == "chat.list":
                 self._list_chats(request_id, params)
             elif method == "chat.create":
@@ -277,10 +374,7 @@ class DesktopBackend:
             elif method == "project.chat.move":
                 self._move_project_chat(request_id, params)
             elif method == "request.cancel":
-                raise ProtocolValidationError(
-                    "request.not_cancellable",
-                    "No cancellable Backend request is active.",
-                )
+                self._cancel_request(request_id, params)
             elif method == "permission.respond":
                 raise ProtocolValidationError(
                     "permission.not_found",
@@ -290,6 +384,8 @@ class DesktopBackend:
             self._emit_error(request_id, error.code, str(error))
         except ChatBusyError as error:
             self._emit_error(request_id, "chat.busy", str(error))
+        except ChatRetryTargetError as error:
+            self._emit_error(request_id, "chat.retry_target", str(error))
         except ChatNotFoundError as error:
             self._emit_error(request_id, "chat.not_found", str(error))
         except ProjectChatBusyError as error:
@@ -313,15 +409,15 @@ class DesktopBackend:
                 request_id,
                 (
                     "chat.failed"
-                    if method == "chat.stream"
+                    if method in {"chat.stream", "chat.retry"}
                     else "backend.request_failed"
                 ),
                 (
                     "Chat request failed in the local Backend."
-                    if method == "chat.stream"
+                    if method in {"chat.stream", "chat.retry"}
                     else "Desktop Backend request failed."
                 ),
-                retryable=method == "chat.stream",
+                retryable=method in {"chat.stream", "chat.retry"},
             )
 
         return True
@@ -368,7 +464,9 @@ class DesktopBackend:
     def _initialize(self, request_id: str) -> None:
         """Validate settings, connect Brain, and select one model Chat."""
 
-        if self._brain is None or self._active_chat is None:
+        brain = self._brain
+        active_chat = self._active_chat_snapshot()
+        if brain is None or active_chat is None:
             self._emit_progress(
                 request_id,
                 "backend.initialize",
@@ -392,9 +490,11 @@ class DesktopBackend:
                 total=3,
                 message="Loading Chat services",
             )
-            self._brain = self._brain_factory()
-            self._active_chat = self._resolve_active_chat(self._brain)
-            self._active_project_id = self._active_chat.project_id
+            brain = self._brain_factory()
+            active_chat = self._resolve_active_chat(brain)
+            self._brain = brain
+            self._set_active_chat(active_chat)
+            self._active_project_id = active_chat.project_id
             self._emit_progress(
                 request_id,
                 "backend.initialize",
@@ -406,10 +506,10 @@ class DesktopBackend:
         self._emit_response(
             request_id,
             {
-                "modelName": self._brain.model_name,
+                "modelName": brain.model_name,
                 "models": list(self._models),
-                "chatId": str(self._active_chat.chat_id),
-                "chatTitle": self._active_chat.title,
+                "chatId": str(active_chat.chat_id),
+                "chatTitle": active_chat.title,
             },
         )
 
@@ -486,17 +586,30 @@ class DesktopBackend:
     ) -> JsonObject:
         """Refresh and serialize the active Chat plus one metadata listing."""
 
-        if self._brain is None or self._active_chat is None:
+        brain = self._brain
+        active_chat = self._active_chat_snapshot()
+        if brain is None or active_chat is None:
             raise RuntimeError("Backend is not initialized.")
 
-        self._active_chat = self._brain.get_chat(
-            self._active_chat.chat_id
-        )
+        refreshed_chat = brain.get_chat(active_chat.chat_id)
+        with self._state_lock:
+            current_chat = self._active_chat
+            generation = self._generation_task
+            if (
+                current_chat is not None
+                and current_chat.chat_id == active_chat.chat_id
+                and (
+                    generation is None
+                    or generation.chat_id != active_chat.chat_id
+                    or generation.done.is_set()
+                )
+            ):
+                self._active_chat = refreshed_chat
         return {
-            "activeChat": self._serialize_active_chat(self._active_chat),
+            "activeChat": self._serialize_active_chat(refreshed_chat),
             "chats": [
                 self._serialize_chat_summary(chat)
-                for chat in self._brain.list_chats(
+                for chat in brain.list_chats(
                     include_archived=include_archived,
                 )
             ],
@@ -529,10 +642,11 @@ class DesktopBackend:
         if self._brain is None:
             raise RuntimeError("Backend is not initialized.")
 
-        self._active_chat = self._brain.create_chat(
+        chat = self._brain.create_chat(
             title=cast(str, params["title"]),
             mode=cast(ConversationMode, params["mode"]),
         )
+        self._set_active_chat(chat)
         self._emit_session_response(request_id, include_archived=True)
 
     def _open_chat(self, request_id: str, params: JsonObject) -> None:
@@ -553,7 +667,7 @@ class DesktopBackend:
                 "Chat model does not match the connected desktop model.",
             )
 
-        self._active_chat = chat
+        self._set_active_chat(chat)
         self._emit_session_response(request_id, include_archived=True)
 
     def _rename_chat(self, request_id: str, params: JsonObject) -> None:
@@ -583,31 +697,33 @@ class DesktopBackend:
     def _archive_chat(self, request_id: str, params: JsonObject) -> None:
         """Set archive state and replace an archived active Chat safely."""
 
-        if self._brain is None or self._active_chat is None:
+        active_chat = self._active_chat_snapshot()
+        if self._brain is None or active_chat is None:
             raise RuntimeError("Backend is not initialized.")
 
         chat_id = ChatId(cast(str, params["chatId"]))
         archived = cast(bool, params["archived"])
-        was_active = chat_id == self._active_chat.chat_id
+        was_active = chat_id == active_chat.chat_id
         self._brain.archive_chat(chat_id, archived)
 
         if was_active and archived:
-            self._active_chat = self._resolve_active_chat(self._brain)
+            self._set_active_chat(self._resolve_active_chat(self._brain))
 
         self._emit_session_response(request_id, include_archived=True)
 
     def _delete_chat(self, request_id: str, params: JsonObject) -> None:
         """Delete one Chat and replace the active Chat when necessary."""
 
-        if self._brain is None or self._active_chat is None:
+        active_chat = self._active_chat_snapshot()
+        if self._brain is None or active_chat is None:
             raise RuntimeError("Backend is not initialized.")
 
         chat_id = ChatId(cast(str, params["chatId"]))
-        was_active = chat_id == self._active_chat.chat_id
+        was_active = chat_id == active_chat.chat_id
         self._brain.delete_chat(chat_id)
 
         if was_active:
-            self._active_chat = self._resolve_active_chat(self._brain)
+            self._set_active_chat(self._resolve_active_chat(self._brain))
 
         self._emit_session_response(request_id, include_archived=True)
 
@@ -637,15 +753,18 @@ class DesktopBackend:
     def _project_state_result(self) -> JsonObject:
         """Return all Projects together with one matching complete Chat state."""
 
-        if self._brain is None or self._active_chat is None:
+        if self._brain is None or self._active_chat_snapshot() is None:
             raise RuntimeError("Backend is not initialized.")
 
         chat_state = self._session_result(include_archived=True)
+        active_chat = self._active_chat_snapshot()
+        if active_chat is None:
+            raise RuntimeError("Backend active Chat became unavailable.")
         projects = self._brain.list_projects(include_archived=True)
         project_ids = {project.project_id for project in projects}
 
         if self._active_project_id not in project_ids:
-            active_chat_project_id = self._active_chat.project_id
+            active_chat_project_id = active_chat.project_id
             if active_chat_project_id in project_ids:
                 self._active_project_id = active_chat_project_id
             else:
@@ -806,43 +925,87 @@ class DesktopBackend:
             self._active_project_id = ProjectId(raw_project_id)
         self._emit_project_response(request_id)
 
-    def _stream_chat(
+    def _start_chat_stream(
         self,
         request_id: str,
         params: JsonObject,
     ) -> None:
-        """Stream one real reply through the active Stage 5 Chat."""
+        """Start one cancellable new-turn generation worker."""
 
-        if self._brain is None or self._active_chat is None:
-            raise RuntimeError(
-                "Backend is not initialized."
+        raw_message = cast(str, params["message"])
+        self._start_generation(
+            request_id,
+            params,
+            method="chat.stream",
+            run=lambda brain, task: brain.stream_chat(
+                task.chat_id,
+                raw_message,
+                should_cancel=task.should_cancel,
+                begin_commit=task.begin_commit,
+            ),
+        )
+
+    def _start_chat_retry(
+        self,
+        request_id: str,
+        params: JsonObject,
+    ) -> None:
+        """Start one cancellable regenerate or edit-and-retry worker."""
+
+        user_message_id = ChatMessageId(cast(str, params["userMessageId"]))
+        assistant_message_id = ChatMessageId(
+            cast(str, params["assistantMessageId"])
+        )
+        message = cast(str | None, params.get("message"))
+        self._start_generation(
+            request_id,
+            params,
+            method="chat.retry",
+            run=lambda brain, task: brain.stream_retry(
+                task.chat_id,
+                user_message_id,
+                assistant_message_id,
+                message,
+                should_cancel=task.should_cancel,
+                begin_commit=task.begin_commit,
+            ),
+        )
+
+    def _start_generation(
+        self,
+        request_id: str,
+        params: JsonObject,
+        *,
+        method: str,
+        run: Callable[[Brain, _GenerationTask], Iterable[str]],
+    ) -> None:
+        """Validate and launch one globally exclusive streamed operation."""
+
+        if self._brain is None:
+            raise RuntimeError("Backend is not initialized.")
+
+        raw_chat_id = cast(str, params["chatId"])
+        with self._state_lock:
+            active_chat = self._active_chat
+            existing = self._generation_task
+            if existing is not None and not existing.done.is_set():
+                raise ChatBusyError(
+                    "Another desktop Chat generation is already active."
+                )
+            if active_chat is None:
+                raise RuntimeError("Backend is not initialized.")
+            if raw_chat_id != str(active_chat.chat_id):
+                raise ProtocolValidationError(
+                    "chat.not_active",
+                    "chatId is not the active desktop Chat.",
+                )
+
+            task = _GenerationTask(
+                request_id=request_id,
+                chat_id=ChatId(raw_chat_id),
+                method=method,
             )
-
-        raw_chat_id = params.get("chatId")
-        raw_message = params.get("message")
-
-        if not isinstance(raw_chat_id, str) or not raw_chat_id:
-            raise ProtocolValidationError(
-                "protocol.invalid_params",
-                "chatId must be a non-empty string."
-            )
-
-        if raw_chat_id != str(self._active_chat.chat_id):
-            raise ProtocolValidationError(
-                "chat.not_active",
-                "chatId is not the active desktop Chat."
-            )
-
-        if not isinstance(raw_message, str) or not raw_message.strip():
-            raise ProtocolValidationError(
-                "protocol.invalid_params",
-                "message must be a non-empty string."
-            )
-
-        chat_id = ChatId(raw_chat_id)
-        reply_chunks: list[str] = []
-        reply_length = 0
-        sequence = 0
+            self._generation_task = task
 
         self._emit_event(
             "chat.started",
@@ -857,63 +1020,199 @@ class DesktopBackend:
             message="Generating reply",
         )
 
-        for chunk in self._brain.stream_chat(
-            chat_id,
-            raw_message,
-        ):
-            if not chunk:
-                continue
-            reply_length += len(chunk)
-            if reply_length > MAX_MESSAGE_LENGTH:
-                raise ProtocolValidationError(
-                    "chat.reply_too_large",
-                    "The local model reply exceeds the protocol limit.",
+        brain = self._brain
+        try:
+            worker = Thread(
+                target=self._run_generation,
+                args=(brain, task, run),
+                name=f"elysia-{task.method}-{request_id}",
+                daemon=True,
+            )
+            task.thread = worker
+            worker.start()
+        except Exception:
+            task.finish()
+            with self._state_lock:
+                if self._generation_task is task:
+                    self._generation_task = None
+            raise
+
+    def _run_generation(
+        self,
+        brain: Brain,
+        task: _GenerationTask,
+        run: Callable[[Brain, _GenerationTask], Iterable[str]],
+    ) -> None:
+        """Consume one Brain generator and publish its correlated frames."""
+
+        reply_chunks: list[str] = []
+        reply_length = 0
+        sequence = 0
+        raw_chat_id = str(task.chat_id)
+
+        try:
+            for chunk in run(brain, task):
+                if not chunk:
+                    continue
+                reply_length += len(chunk)
+                if reply_length > MAX_MESSAGE_LENGTH:
+                    raise ProtocolValidationError(
+                        "chat.reply_too_large",
+                        "The local model reply exceeds the protocol limit.",
+                    )
+                reply_chunks.append(chunk)
+                self._emit(
+                    build_stream_chunk(
+                        task.request_id,
+                        sequence,
+                        chunk,
+                        done=False,
+                    )
                 )
-            reply_chunks.append(chunk)
+                sequence += 1
+
+            reply = "".join(reply_chunks)
+            if not reply:
+                raise ProtocolValidationError(
+                    "chat.empty_reply",
+                    "The local model returned an empty reply.",
+                )
+
+            try:
+                refreshed_chat = brain.get_chat(task.chat_id)
+            except Exception:
+                # Natural generator exhaustion means Brain already committed.
+                # A cache refresh failure must not invite a duplicate retry.
+                logger.exception(
+                    "Committed Chat could not refresh the desktop cache: "
+                    "request_id=%s chat_id=%s.",
+                    task.request_id,
+                    task.chat_id,
+                )
+            else:
+                with self._state_lock:
+                    if (
+                        self._active_chat is not None
+                        and self._active_chat.chat_id == task.chat_id
+                    ):
+                        self._active_chat = refreshed_chat
+
             self._emit(
                 build_stream_chunk(
-                    request_id,
+                    task.request_id,
                     sequence,
-                    chunk,
-                    done=False,
+                    "",
+                    done=True,
                 )
             )
-            sequence += 1
+            self._emit_progress(
+                task.request_id,
+                "chat.generate",
+                1,
+                total=1,
+                message=None,
+            )
+            self._emit_event(
+                "chat.completed",
+                request_id=task.request_id,
+                data={"chatId": raw_chat_id},
+            )
+            self._emit_response(
+                task.request_id,
+                {"chatId": raw_chat_id, "reply": reply},
+            )
+        except GenerationCancelledError:
+            self._emit_event(
+                "chat.cancelled",
+                request_id=task.request_id,
+                data={"chatId": raw_chat_id},
+            )
+            self._emit_error(
+                task.request_id,
+                "request.cancelled",
+                "Chat generation was cancelled.",
+            )
+        except ProtocolValidationError as error:
+            self._emit_error(task.request_id, error.code, str(error))
+        except ChatRetryTargetError as error:
+            self._emit_error(
+                task.request_id,
+                "chat.retry_target",
+                str(error),
+            )
+        except ChatBusyError as error:
+            self._emit_error(task.request_id, "chat.busy", str(error))
+        except ChatNotFoundError as error:
+            self._emit_error(task.request_id, "chat.not_found", str(error))
+        except Exception:
+            logger.exception(
+                "Desktop generation failed: method=%s request_id=%s.",
+                task.method,
+                task.request_id,
+            )
+            self._emit_error(
+                task.request_id,
+                "chat.failed",
+                "Chat request failed in the local Backend.",
+                retryable=True,
+            )
+        finally:
+            task.finish()
+            with self._state_lock:
+                if self._generation_task is task:
+                    self._generation_task = None
 
-        reply = "".join(reply_chunks)
-        if not reply:
+    def _cancel_request(
+        self,
+        request_id: str,
+        params: JsonObject,
+    ) -> None:
+        """Cancel one matching generation before it claims commit."""
+
+        target_request_id = cast(str, params["requestId"])
+        with self._state_lock:
+            task = self._generation_task
+            stopped = (
+                task is not None
+                and task.request_id == target_request_id
+                and task.request_cancel()
+            )
+        if not stopped:
             raise ProtocolValidationError(
-                "chat.empty_reply",
-                "The local model returned an empty reply.",
+                "request.not_cancellable",
+                "No matching cancellable Backend request is active.",
             )
-        self._active_chat = self._brain.get_chat(chat_id)
-        self._emit(
-            build_stream_chunk(
-                request_id,
-                sequence,
-                "",
-                done=True,
-            )
-        )
-        self._emit_progress(
-            request_id,
-            "chat.generate",
-            1,
-            total=1,
-            message=None,
-        )
-        self._emit_event(
-            "chat.completed",
-            request_id=request_id,
-            data={"chatId": raw_chat_id},
-        )
-        self._emit_response(
-            request_id,
-            {
-                "chatId": raw_chat_id,
-                "reply": reply,
-            },
-        )
+        self._emit_response(request_id, {"stopped": True})
+
+    def _wait_for_generation(self, timeout: float | None = None) -> bool:
+        """Wait for the current generation, if any, without holding locks."""
+
+        with self._state_lock:
+            task = self._generation_task
+        if task is None:
+            return True
+        return task.done.wait(timeout)
+
+    def _prepare_generation_shutdown(self) -> None:
+        """Stop cancellable work and never exit during an atomic commit.
+
+        A worker blocked in model I/O may outlive the short join, but once its
+        state is CANCEL_REQUESTED it can no longer claim the commit gate. A
+        COMMITTING worker is different: persistence already owns the linearized
+        boundary, so shutdown waits for that short critical section to finish.
+        """
+
+        with self._state_lock:
+            task = self._generation_task
+        if task is None:
+            return
+
+        if task.request_cancel():
+            task.done.wait(GENERATION_SHUTDOWN_TIMEOUT_SECONDS)
+            return
+
+        if task.state_snapshot() is _GenerationState.COMMITTING:
+            task.done.wait()
 
     def _emit_response(
         self,
@@ -992,9 +1291,10 @@ class DesktopBackend:
                 "protocol.frame_too_large",
                 "Backend response exceeds the desktop protocol frame limit.",
             )
-        self._output_stream.write(wire_message)
-        self._output_stream.write("\n")
-        self._output_stream.flush()
+        with self._output_lock:
+            self._output_stream.write(wire_message)
+            self._output_stream.write("\n")
+            self._output_stream.flush()
 
 
 def main() -> None:

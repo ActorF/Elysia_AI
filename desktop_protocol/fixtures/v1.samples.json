@@ -38,6 +38,35 @@
       }
     },
     {
+      "name": "chat regenerate request",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "chat-retry-1",
+        "method": "chat.retry",
+        "params": {
+          "chatId": "chat_fixture",
+          "userMessageId": "message_user",
+          "assistantMessageId": "message_assistant"
+        }
+      }
+    },
+    {
+      "name": "chat edit and retry request",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "chat-retry-2",
+        "method": "chat.retry",
+        "params": {
+          "chatId": "chat_fixture",
+          "userMessageId": "message_user",
+          "assistantMessageId": "message_assistant",
+          "message": "Edited question"
+        }
+      }
+    },
+    {
       "name": "chat list request",
       "message": {
         "type": "request",
@@ -255,6 +284,8 @@
           "capabilities": [
             "chat.sessions",
             "chat.stream",
+            "chat.retry",
+            "request.cancel",
             "project.management",
             "stream",
             "progress",
@@ -610,6 +641,34 @@
         "id": "chat-3",
         "method": "chat.stream",
         "params": { "chatId": "chat_fixture", "message": "\ufeff" }
+      }
+    },
+    {
+      "name": "blank chat retry message",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "chat-retry-invalid-1",
+        "method": "chat.retry",
+        "params": {
+          "chatId": "chat_fixture",
+          "userMessageId": "message_user",
+          "assistantMessageId": "message_assistant",
+          "message": "\ufeff"
+        }
+      }
+    },
+    {
+      "name": "chat retry missing assistant id",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "chat-retry-invalid-2",
+        "method": "chat.retry",
+        "params": {
+          "chatId": "chat_fixture",
+          "userMessageId": "message_user"
+        }
       }
     },
     {

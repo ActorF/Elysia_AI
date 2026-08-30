@@ -5,6 +5,7 @@
 import {
   app,
   BrowserWindow,
+  clipboard,
   dialog,
   ipcMain,
   type IpcMainInvokeEvent,
@@ -13,6 +14,7 @@ import {
   nativeTheme,
   screen,
   session,
+  shell,
   Tray,
 } from 'electron'
 import { stat } from 'node:fs/promises'
@@ -20,6 +22,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { BackendProcess } from './backend-process.js'
+import { parseSafeExternalUrl } from './external-url.js'
 import {
   MAX_IDENTIFIER_LENGTH,
   MAX_MESSAGE_LENGTH,
@@ -39,6 +42,7 @@ import type {
   MoveChatToProjectRequest,
   PinChatRequest,
   RenameChatRequest,
+  RetryChatRequest,
   SelectedFile,
   UpdateProjectRequest,
 } from './contracts.js'
@@ -143,6 +147,61 @@ function parseChatRequest(value: unknown): ChatRequest {
     chatId: request.chatId,
     message: request.message,
   }
+}
+
+function parseRetryChatRequest(value: unknown): RetryChatRequest {
+  if (
+    typeof value !== 'object'
+    || value === null
+    || Array.isArray(value)
+  ) {
+    throw new Error('Retry Chat request must be an object.')
+  }
+  const request = value as Record<string, unknown>
+  const requiredFields = [
+    'chatId',
+    'userMessageId',
+    'assistantMessageId',
+  ]
+  const allowedFields = new Set([...requiredFields, 'message'])
+  if (
+    requiredFields.some((field) => !Object.hasOwn(request, field))
+    || Object.keys(request).some((field) => !allowedFields.has(field))
+  ) {
+    throw new Error('Retry Chat request is invalid.')
+  }
+
+  const hasMessage = Object.hasOwn(request, 'message')
+  const message = request.message
+  if (
+    hasMessage
+    && (
+      typeof message !== 'string'
+      || !hasNonBlankCodePoint(message)
+      || codePointLength(message) > MAX_MESSAGE_LENGTH
+    )
+  ) {
+    throw new Error('Retry Chat message is invalid.')
+  }
+  return {
+    chatId: parseChatId(request.chatId),
+    userMessageId: parseChatId(request.userMessageId),
+    assistantMessageId: parseChatId(request.assistantMessageId),
+    ...(hasMessage
+      ? { message: trimProtocolBlankCharacters(message as string) }
+      : {}),
+  }
+}
+
+function parseClipboardText(value: unknown): string {
+  if (
+    typeof value !== 'string'
+    || value.includes('\0')
+    || codePointLength(value) > MAX_MESSAGE_LENGTH
+  ) {
+    throw new Error('Clipboard text is invalid.')
+  }
+  return value
 }
 
 function parseChatId(value: unknown): string {
@@ -403,6 +462,38 @@ function registerIpcHandlers(): void {
     (event, request: unknown) => {
       assertTrustedSender(event)
       return requireBackend().beginChat(parseChatRequest(request))
+    },
+  )
+
+  ipcMain.handle(
+    'backend:retry-message',
+    (event, request: unknown) => {
+      assertTrustedSender(event)
+      return requireBackend().beginRetry(parseRetryChatRequest(request))
+    },
+  )
+
+  ipcMain.handle(
+    'backend:stop-generation',
+    (event, requestId: unknown) => {
+      assertTrustedSender(event)
+      return requireBackend().stopGeneration(parseChatId(requestId))
+    },
+  )
+
+  ipcMain.handle(
+    'desktop:copy-text',
+    (event, text: unknown): void => {
+      assertTrustedSender(event)
+      clipboard.writeText(parseClipboardText(text))
+    },
+  )
+
+  ipcMain.handle(
+    'desktop:open-external-url',
+    async (event, url: unknown): Promise<void> => {
+      assertTrustedSender(event)
+      await shell.openExternal(parseSafeExternalUrl(url))
     },
   )
 

@@ -462,12 +462,17 @@ test('ignores a stale error snapshot while a newer Chat is streaming', async () 
 test('announces Chat errors as assertive error notifications', async () => {
   const errorMessage = 'The local model interrupted this reply.'
   await emitSnapshot(readySnapshot())
-  await expect(page.getByLabel('Message Elysia')).toBeEnabled()
-  await waitForTwoAnimationFrames()
+  const composer = page.getByLabel('Message Elysia')
+  await expect(composer).toBeEnabled()
+  await composer.fill('Start a reply that will fail.')
+  await composer.press('Enter')
+  await expect.poll(async () => (
+    (await getCalls()).filter((call) => call.method === 'sendMessage').length
+  )).toBe(1)
 
   await emitEvent({
     type: 'chat-error',
-    requestId: 'chat-error-notification',
+    requestId: 'test-request-1',
     chatId: 'chat-test',
     code: 'MODEL_INTERRUPTED',
     message: errorMessage,
@@ -969,20 +974,9 @@ test('keeps a stressed composer reachable at compact high zoom', async () => {
     const workspace = bounds('.workspace-surface')
     const composer = bounds('.composer-zone')
     const messages = bounds('.message-scroll')
-    const controls = [
-      '.attachment-row',
-      '.inline-alert',
-      '.inline-alert-action',
-      '#chat-composer',
-      'button[aria-label="Choose files"]',
-      'select[aria-label="AI model"]',
-      'button[aria-label="Send message"]',
-    ].map((selector) => ({ selector, ...bounds(selector) }))
-
     return {
       bodyScrollWidth: document.body.scrollWidth,
       composer,
-      controls,
       messages,
       rootScrollWidth: document.documentElement.scrollWidth,
       viewportWidth: window.innerWidth,
@@ -1006,7 +1000,29 @@ test('keeps a stressed composer reachable at compact high zoom', async () => {
   expect.soft(stressLayout.messages.bottom).toBeLessThanOrEqual(
     stressLayout.composer.top + 1,
   )
-  for (const control of stressLayout.controls) {
+  const reachableControls = [
+    '.attachment-row',
+    '.inline-alert',
+    '.inline-alert-action',
+    '#chat-composer',
+    'button[aria-label="Choose files"]',
+    'select[aria-label="AI model"]',
+    'button[aria-label="Send message"]',
+  ]
+  for (const selector of reachableControls) {
+    const locator = page.locator(selector)
+    await locator.scrollIntoViewIfNeeded()
+    const control = await locator.evaluate((element, controlSelector) => {
+      const rectangle = element.getBoundingClientRect()
+      return {
+        selector: controlSelector,
+        bottom: rectangle.bottom,
+        height: rectangle.height,
+        left: rectangle.left,
+        right: rectangle.right,
+        top: rectangle.top,
+      }
+    }, selector)
     expect.soft(control.height, control.selector).toBeGreaterThan(0)
     expect.soft(control.top, control.selector).toBeGreaterThanOrEqual(
       stressLayout.composer.top - 1,
@@ -1347,7 +1363,7 @@ test('refreshes Projects once when a Chat completes after navigation', async () 
     reply: 'Canonical reply.',
   })
   const projectChats = page.getByRole('region', { name: 'Project Chats' })
-  await expect(projectChats).toContainText('1 messages')
+  await expect(projectChats).toContainText('2 messages')
   const calls = await getCalls()
   expect(calls.filter((call) => call.method === 'listProjects')).toHaveLength(1)
   expect(calls.filter((call) => call.method === 'listChats')).toHaveLength(0)
@@ -1620,4 +1636,333 @@ test('contains Project surfaces and dialog focus at compact high zoom', async ()
   expect(dialogBounds.bottom).toBeLessThanOrEqual(dialogBounds.viewportHeight + 1)
   await dialog.press('Escape')
   await expect(createTrigger).toBeFocused()
+})
+
+test('renders safe GFM, copies exact content, and delegates trusted links', async () => {
+  const markdown = [
+    '# Local answer',
+    '',
+    '- [x] Persisted',
+    '- [ ] Pending',
+    '',
+    '| Item | State |',
+    '| --- | --- |',
+    '| Memory | Local |',
+    '',
+    '```ts',
+    'const answer = 42',
+    '```',
+    '',
+    '<script>window.__elysiaXss = true</script>',
+    '',
+    '![tracking pixel](https://tracking.invalid/elysia.png)',
+    '',
+    '[Open docs](https://example.com/docs?q=elysia)',
+    '',
+    '[Unsafe link](javascript:alert(1))',
+  ].join('\n')
+  const summary = chatSummary('chat-markdown', 'Markdown Chat', {
+    messageCount: 2,
+  })
+  const requestedUrls: string[] = []
+  page.on('request', (request) => { requestedUrls.push(request.url()) })
+
+  await setChatState({
+    activeChat: {
+      ...summary,
+      messages: [
+        {
+          messageId: 'user-markdown',
+          role: 'user',
+          content: '**This stays literal user text.**',
+          createdAt: '2026-08-25T12:30:00+00:00',
+          attachments: [],
+        },
+        {
+          messageId: 'assistant-markdown',
+          role: 'assistant',
+          content: markdown,
+          createdAt: '2026-08-25T12:31:00+00:00',
+          attachments: [],
+        },
+      ],
+    },
+    chats: [summary],
+  })
+  await emitSnapshot(readySnapshot({
+    chatId: summary.chatId,
+    chatTitle: summary.title,
+  }))
+
+  const userMessage = page.locator('[data-message-id="user-markdown"]')
+  const assistant = page.locator('[data-message-id="assistant-markdown"]')
+  await expect(assistant.getByRole('heading', { name: 'Local answer' })).toBeVisible()
+  await expect(assistant.getByRole('checkbox')).toHaveCount(2)
+  await expect(assistant.getByRole('checkbox').first()).toBeChecked()
+  await expect(assistant.getByRole('table')).toContainText('Memory')
+  await expect(userMessage.locator('strong')).toHaveCount(0)
+  await expect(userMessage).toContainText('**This stays literal user text.**')
+  await expect(assistant).toContainText('Image blocked: tracking pixel')
+  await expect(assistant.getByRole('img')).toHaveCount(0)
+  await expect(assistant.getByRole('link', { name: 'Unsafe link' })).toHaveCount(0)
+  expect(await page.evaluate(() => '__elysiaXss' in window)).toBe(false)
+  await waitForTwoAnimationFrames()
+  expect(
+    requestedUrls.filter((url) => url.includes('tracking.invalid')),
+  ).toEqual([])
+
+  await clearCalls()
+  await assistant.getByRole('button', { name: 'Copy code' }).click()
+  await expect.poll(async () => (
+    (await getCalls()).find((call) => call.method === 'copyText')?.args
+  )).toEqual(['const answer = 42'])
+
+  await clearCalls()
+  await assistant.getByRole('button', { name: 'Copy message' }).click()
+  await expect.poll(async () => (
+    (await getCalls()).find((call) => call.method === 'copyText')?.args
+  )).toEqual([markdown])
+
+  await clearCalls()
+  await assistant.getByRole('link', { name: 'Open docs' }).click()
+  await expect.poll(async () => (
+    (await getCalls()).find((call) => call.method === 'openExternalUrl')?.args
+  )).toEqual(['https://example.com/docs?q=elysia'])
+
+  await setWindowAndZoom(960, 640, 2)
+  const containment = await assistant.evaluate((element) => {
+    const messageBounds = element.getBoundingClientRect()
+    const code = element.querySelector('.code-block')?.getBoundingClientRect()
+    return {
+      viewportWidth: window.innerWidth,
+      messageLeft: messageBounds.left,
+      messageRight: messageBounds.right,
+      codeLeft: code?.left,
+      codeRight: code?.right,
+      rootScrollWidth: document.documentElement.scrollWidth,
+    }
+  })
+  expect(containment.rootScrollWidth).toBeLessThanOrEqual(
+    containment.viewportWidth + 1,
+  )
+  expect(containment.messageLeft).toBeGreaterThanOrEqual(-1)
+  expect(containment.messageRight).toBeLessThanOrEqual(
+    containment.viewportWidth + 1,
+  )
+  expect(containment.codeLeft).toBeGreaterThanOrEqual(
+    containment.messageLeft - 1,
+  )
+  expect(containment.codeRight).toBeLessThanOrEqual(
+    containment.messageRight + 1,
+  )
+})
+
+test('stops only the active generation and exposes its cancelled state', async () => {
+  await emitSnapshot(readySnapshot())
+  const composer = page.getByLabel('Message Elysia')
+  await expect(composer).toBeEnabled()
+  await composer.fill('Please stream a long reply.')
+  await composer.press('Enter')
+  await expect(page.getByRole('button', { name: 'Stop generation' })).toBeVisible()
+
+  await emitEvent({
+    type: 'chat-chunk',
+    requestId: 'test-request-1',
+    chatId: 'chat-test',
+    chunk: 'Partial reply',
+  })
+  const reply = page.getByLabel('Message from Elysia').last()
+  await expect(reply.getByText('Generating', { exact: true })).toBeVisible()
+  await page.getByRole('button', { name: 'Stop generation' }).click()
+  await expect.poll(async () => (
+    (await getCalls()).find((call) => call.method === 'stopGeneration')?.args
+  )).toEqual(['test-request-1'])
+  await expect(
+    page.getByRole('button', { name: 'Stopping generation' }),
+  ).toBeDisabled()
+
+  await emitEvent({
+    type: 'chat-error',
+    requestId: 'test-request-1',
+    chatId: 'chat-test',
+    code: 'request.cancelled',
+    message: 'Generation cancelled.',
+    retryable: false,
+  })
+  await expect(reply.getByText('Stopped', { exact: true })).toBeVisible()
+  await expect(reply).toContainText('Partial reply')
+  await expect(page.getByText(
+    'Generation stopped. No partial reply was saved.',
+  )).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Stop generation' })).toHaveCount(0)
+})
+
+test('regenerates and edit-retries only the persisted tail pair', async () => {
+  const summary = chatSummary('chat-retry', 'Retry Chat', { messageCount: 2 })
+  await setChatState({
+    activeChat: {
+      ...summary,
+      messages: [
+        {
+          messageId: 'user-retry',
+          role: 'user',
+          content: 'Original question',
+          createdAt: '2026-08-25T12:30:00+00:00',
+          attachments: [],
+        },
+        {
+          messageId: 'assistant-retry',
+          role: 'assistant',
+          content: 'Original answer',
+          createdAt: '2026-08-25T12:31:00+00:00',
+          attachments: [],
+        },
+      ],
+    },
+    chats: [summary],
+  })
+  await emitSnapshot(readySnapshot({
+    chatId: summary.chatId,
+    chatTitle: summary.title,
+  }))
+
+  const assistant = page.locator('[data-message-id="assistant-retry"]')
+  await expect(assistant.getByRole('button', { name: 'Regenerate' })).toBeVisible()
+  await clearCalls()
+  await assistant.getByRole('button', { name: 'Regenerate' }).click()
+  await expect.poll(async () => (
+    (await getCalls()).find((call) => call.method === 'retryMessage')?.args
+  )).toEqual([{
+    chatId: summary.chatId,
+    userMessageId: 'user-retry',
+    assistantMessageId: 'assistant-retry',
+  }])
+  await expect(assistant.getByText('Generating', { exact: true })).toBeVisible()
+
+  await emitEvent({
+    type: 'chat-complete',
+    requestId: 'test-request-1',
+    chatId: summary.chatId,
+    reply: 'Regenerated answer',
+  })
+  await expect(assistant).toContainText('Regenerated answer')
+  await expect(assistant.getByText('Complete', { exact: true })).toBeVisible()
+
+  await clearCalls()
+  await assistant.getByRole('button', { name: 'Edit & retry' }).click()
+  const editForm = assistant.getByRole('form', { name: 'Edit and retry message' })
+  const editBox = editForm.getByLabel('Edit your last message')
+  await expect(editBox).toBeFocused()
+  await editBox.fill('Edited question')
+  await editForm.getByRole('button', { name: 'Retry edited message' }).click()
+  await expect.poll(async () => (
+    (await getCalls()).find((call) => call.method === 'retryMessage')?.args
+  )).toEqual([{
+    chatId: summary.chatId,
+    userMessageId: 'user-retry',
+    assistantMessageId: 'assistant-retry',
+    message: 'Edited question',
+  }])
+
+  await emitEvent({
+    type: 'chat-complete',
+    requestId: 'test-request-2',
+    chatId: summary.chatId,
+    reply: 'Answer to edited question',
+  })
+  await expect(page.locator('[data-message-id="user-retry"]')).toContainText(
+    'Edited question',
+  )
+  await expect(assistant).toContainText('Answer to edited question')
+  await expect(assistant.getByText('Complete', { exact: true })).toBeVisible()
+})
+
+test('isolates an A stream, drafts, and file previews while viewing Chat B', async () => {
+  const chatA = chatSummary('chat-a', 'Chat A')
+  const chatB = chatSummary('chat-b', 'Chat B')
+  await setChatState({
+    activeChat: { ...chatA, messages: [] },
+    chats: [chatA, chatB],
+  })
+  await emitSnapshot(readySnapshot({
+    chatId: chatA.chatId,
+    chatTitle: chatA.title,
+  }))
+
+  await page.evaluate(() => {
+    ;(window as TestWindow).elysiaDesktopTest.setSelectedFiles([
+      { name: 'chat-a.txt', sizeBytes: 10 },
+    ])
+  })
+  await page.getByRole('button', { name: 'Choose files' }).click()
+  const composer = page.getByLabel('Message Elysia')
+  await composer.fill('Start Chat A generation')
+  await composer.press('Enter')
+  await expect(page.getByRole('button', { name: 'Stop generation' })).toBeVisible()
+  await composer.fill('Unsent draft for A')
+
+  await page.getByRole('button', { name: 'Open chat Chat B' }).click()
+  await expect(page.locator('#chat-title')).toHaveText('Chat B')
+  await expect(page.getByLabel('Message Elysia')).toHaveValue('')
+  await expect(page.getByText('chat-a.txt', { exact: true })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Stop generation' })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Send message' })).toBeDisabled()
+
+  await page.getByLabel('Message Elysia').fill('Unsent draft for B')
+  await page.evaluate(() => {
+    ;(window as TestWindow).elysiaDesktopTest.setSelectedFiles([
+      { name: 'chat-b.txt', sizeBytes: 20 },
+    ])
+  })
+  await page.getByRole('button', { name: 'Choose files' }).click()
+  await emitEvent({
+    type: 'chat-chunk',
+    requestId: 'stale-request',
+    chatId: chatA.chatId,
+    chunk: 'STALE A CONTENT',
+  })
+  await emitEvent({
+    type: 'chat-chunk',
+    requestId: 'test-request-1',
+    chatId: chatA.chatId,
+    chunk: 'Hidden Chat A stream',
+  })
+  await expect(page.getByText('Hidden Chat A stream', { exact: true })).toHaveCount(0)
+
+  await page.getByRole('button', { name: 'Open chat Chat A' }).click()
+  await expect(page.locator('#chat-title')).toHaveText('Chat A')
+  await expect(page.getByLabel('Message Elysia')).toHaveValue('Unsent draft for A')
+  await expect(page.getByText('chat-a.txt', { exact: true })).toBeVisible()
+  await expect(page.getByText('chat-b.txt', { exact: true })).toHaveCount(0)
+  await expect(page.getByText('Hidden Chat A stream', { exact: true })).toBeVisible()
+  await expect(page.getByText('STALE A CONTENT', { exact: true })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Stop generation' })).toBeVisible()
+
+  await page.getByRole('button', { name: 'Open chat Chat B' }).click()
+  await expect(page.getByLabel('Message Elysia')).toHaveValue('Unsent draft for B')
+  await expect(page.getByText('chat-b.txt', { exact: true })).toBeVisible()
+  await expect(page.getByText('chat-a.txt', { exact: true })).toHaveCount(0)
+
+  await emitEvent({
+    type: 'progress',
+    requestId: 'test-request-1',
+    operation: 'chat.generate',
+    completed: 0,
+    total: null,
+    message: 'Hidden Chat A progress',
+  })
+  await expect(page.getByText('Hidden Chat A progress', { exact: true })).toHaveCount(0)
+  await emitEvent({
+    type: 'chat-complete',
+    requestId: 'test-request-1',
+    chatId: chatA.chatId,
+    reply: 'Completed Chat A answer',
+  })
+  await expect(page.locator('#chat-title')).toHaveText('Chat B')
+  await expect(page.getByText('Completed Chat A answer', { exact: true })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Send message' })).toBeEnabled()
+
+  await page.getByRole('button', { name: 'Open chat Chat A' }).click()
+  await expect(page.getByText('Completed Chat A answer', { exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Stop generation' })).toHaveCount(0)
 })
