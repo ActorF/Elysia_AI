@@ -25,7 +25,11 @@ import { BackendProcess } from './backend-process.js'
 import { parseSafeExternalUrl } from './external-url.js'
 import {
   MAX_IDENTIFIER_LENGTH,
+  MAX_DATA_IMPORT_BYTES,
+  MAX_MEMORY_SETTING,
   MAX_MESSAGE_LENGTH,
+  MAX_OLLAMA_HOST_LENGTH,
+  MAX_SETTINGS_MODEL_NAME_LENGTH,
   codePointLength,
   hasNonBlankCodePoint,
   trimProtocolBlankCharacters,
@@ -44,6 +48,7 @@ import type {
   RenameChatRequest,
   RetryChatRequest,
   SelectedFile,
+  UpdateDesktopSettingsRequest,
   UpdateProjectRequest,
 } from './contracts.js'
 
@@ -404,6 +409,105 @@ function parseThemePreference(value: unknown): DesktopThemePreference {
   throw new Error('Desktop theme preference is invalid.')
 }
 
+function parseUpdateDesktopSettingsRequest(
+  value: unknown,
+): UpdateDesktopSettingsRequest {
+  const request = parseObject(
+    value,
+    ['expectedRevision', 'settings'],
+    'Update Settings request',
+  )
+  if (
+    !Number.isSafeInteger(request.expectedRevision)
+    || (request.expectedRevision as number) < 0
+  ) {
+    throw new Error('Settings revision is invalid.')
+  }
+  const settings = parseObject(
+    request.settings,
+    [
+      'modelName',
+      'ollamaHost',
+      'shortTermMemoryTokenBudget',
+      'memoryRetrievalLimit',
+      'dataImportMaxBytes',
+    ],
+    'Settings values',
+  )
+  if (
+    typeof settings.modelName !== 'string'
+    || !hasNonBlankCodePoint(settings.modelName)
+    || settings.modelName !== settings.modelName.trim()
+    || settings.modelName.includes('\0')
+    || codePointLength(settings.modelName) > MAX_SETTINGS_MODEL_NAME_LENGTH
+  ) {
+    throw new Error('Default model is invalid.')
+  }
+  if (
+    typeof settings.ollamaHost !== 'string'
+    || settings.ollamaHost !== settings.ollamaHost.trim()
+    || settings.ollamaHost.includes('\0')
+    || /\s/u.test(settings.ollamaHost)
+    || codePointLength(settings.ollamaHost) > MAX_OLLAMA_HOST_LENGTH
+  ) {
+    throw new Error('Ollama origin is invalid.')
+  }
+  try {
+    const origin = new URL(settings.ollamaHost)
+    if (
+      (origin.protocol !== 'http:' && origin.protocol !== 'https:')
+      || origin.hostname.length === 0
+      || origin.username.length > 0
+      || origin.password.length > 0
+      || origin.port === '0'
+      || (origin.pathname !== '/' && origin.pathname !== '')
+      || origin.search.length > 0
+      || origin.hash.length > 0
+    ) {
+      throw new Error('invalid origin')
+    }
+  } catch {
+    throw new Error('Ollama origin is invalid.')
+  }
+  const parsePositiveInteger = (
+    field: 'shortTermMemoryTokenBudget'
+      | 'memoryRetrievalLimit'
+      | 'dataImportMaxBytes',
+    maximum: number,
+  ): number => {
+    const candidate = settings[field]
+    if (
+      !Number.isSafeInteger(candidate)
+      || (candidate as number) <= 0
+      || (candidate as number) > maximum
+    ) {
+      throw new Error('Numeric Settings value is invalid.')
+    }
+    return candidate as number
+  }
+  return {
+    expectedRevision: request.expectedRevision as number,
+    settings: {
+      modelName: settings.modelName,
+      ollamaHost: settings.ollamaHost.endsWith('/')
+        ? settings.ollamaHost.slice(0, -1)
+        : settings.ollamaHost,
+      shortTermMemoryTokenBudget: parsePositiveInteger(
+        'shortTermMemoryTokenBudget',
+        MAX_MEMORY_SETTING,
+      ),
+      memoryRetrievalLimit: parsePositiveInteger(
+        'memoryRetrievalLimit',
+        MAX_MEMORY_SETTING,
+      ),
+      dataImportMaxBytes: parsePositiveInteger(
+        'dataImportMaxBytes',
+        MAX_DATA_IMPORT_BYTES,
+      ),
+    },
+  }
+}
+
 function nativeBackgroundColor(): string {
   return nativeTheme.shouldUseDarkColors ? '#0f0b10' : '#f8f5f8'
 }
@@ -462,6 +566,24 @@ function registerIpcHandlers(): void {
     (event, request: unknown) => {
       assertTrustedSender(event)
       return requireBackend().beginChat(parseChatRequest(request))
+    },
+  )
+
+  ipcMain.handle(
+    'settings:get',
+    (event) => {
+      assertTrustedSender(event)
+      return requireBackend().getSettings()
+    },
+  )
+
+  ipcMain.handle(
+    'settings:update',
+    (event, request: unknown) => {
+      assertTrustedSender(event)
+      return requireBackend().updateSettings(
+        parseUpdateDesktopSettingsRequest(request),
+      )
     },
   )
 

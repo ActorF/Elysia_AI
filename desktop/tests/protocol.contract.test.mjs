@@ -21,6 +21,7 @@ import {
   parseInitializeResult,
   parseChatStateResult,
   parseProjectStateResult,
+  parseSettingsStateResult,
   parseServerMessage,
   trimProtocolBlankCharacters,
 } from '../dist-electron/protocol.js'
@@ -41,6 +42,23 @@ test('TypeScript uses the frame limit declared by the JSON Schema', () => {
     MAX_PROTOCOL_FRAME_BYTES,
     schema['x-elysia-frameMaxBytes'],
   )
+})
+
+test('JSON Schema declares the exact public settings surface', () => {
+  assert.deepEqual(
+    Object.keys(schema.$defs.settingsValues.properties),
+    [
+      'modelName',
+      'ollamaHost',
+      'shortTermMemoryTokenBudget',
+      'memoryRetrievalLimit',
+      'dataImportMaxBytes',
+    ],
+  )
+  assert.equal(schema.$defs.settingsValues.additionalProperties, false)
+  assert.ok(schema.$defs.settingsGetRequest)
+  assert.ok(schema.$defs.settingsUpdateRequest)
+  assert.ok(schema.$defs.settingsStateResult)
 })
 
 for (const sample of fixtures.validClientMessages) {
@@ -91,6 +109,32 @@ for (const sample of fixtures.validServerMessages) {
       assert.equal(result.projects[0].chatCount, 1)
       assert.equal(result.chatState.activeChat.chatId, 'chat_fixture')
     }
+    if (sample.name === 'settings state response') {
+      assert.equal(parsed.ok, true)
+      const result = parseSettingsStateResult(parsed.result)
+      assert.equal(result.revision, 3)
+      assert.equal(result.restartRequired, true)
+      assert.deepEqual(result.restartFields, [
+        'modelName',
+        'ollamaHost',
+        'shortTermMemoryTokenBudget',
+        'memoryRetrievalLimit',
+        'dataImportMaxBytes',
+      ])
+      assert.equal(result.scopes.project.projectId, 'project_fixture')
+      assert.equal(result.scopes.project.modelName, null)
+      assert.equal(result.scopes.chat.chatId, 'chat_fixture')
+    }
+    if (sample.name === 'settings recovered defaults response') {
+      assert.equal(parsed.ok, true)
+      const result = parseSettingsStateResult(parsed.result)
+      assert.equal(result.revision, 0)
+      assert.equal(result.updatedAt, null)
+      assert.equal(result.restartRequired, false)
+      assert.deepEqual(result.restartFields, [])
+      assert.deepEqual(result.scopes, { project: null, chat: null })
+      assert.match(result.warning, /Recovered safe defaults/)
+    }
   })
 }
 
@@ -125,6 +169,45 @@ test('TypeScript request builder produces the versioned envelope', () => {
       method: 'shutdown',
       params: {},
     },
+  )
+})
+
+test('TypeScript validates revisioned settings requests without secrets', () => {
+  assert.deepEqual(
+    createRequest('settings-get-1', 'settings.get', {}).params,
+    {},
+  )
+  const settings = {
+    modelName: 'qwen3.5:9b',
+    ollamaHost: 'http://127.0.0.1:11434',
+    shortTermMemoryTokenBudget: 2048,
+    memoryRetrievalLimit: 5,
+    dataImportMaxBytes: 16777216,
+  }
+  assert.deepEqual(
+    createRequest('settings-update-1', 'settings.update', {
+      expectedRevision: 0,
+      settings,
+    }).params,
+    { expectedRevision: 0, settings },
+  )
+
+  const secret = 'never-echo-this-secret'
+  assert.throws(
+    () => parseClientRequest({
+      type: 'request',
+      protocol: fixtures.protocol,
+      id: 'settings-update-secret',
+      method: 'settings.update',
+      params: {
+        expectedRevision: 0,
+        settings: { ...settings, apiKey: secret },
+      },
+    }),
+    (error) => (
+      error instanceof ProtocolValidationError
+      && !error.message.includes(secret)
+    ),
   )
 })
 
@@ -192,6 +275,14 @@ test('TypeScript rejects a successful response without an id', () => {
 function projectStateResponse() {
   const sample = fixtures.validServerMessages.find(
     (candidate) => candidate.name === 'project state response',
+  )
+  assert.ok(sample)
+  return structuredClone(sample.message)
+}
+
+function settingsStateResponse() {
+  const sample = fixtures.validServerMessages.find(
+    (candidate) => candidate.name === 'settings state response',
   )
   assert.ok(sample)
   return structuredClone(sample.message)
@@ -611,6 +702,7 @@ test('Backend protocol failure rejects pending renderer actions before exit', as
 
   const chatAction = backend.openChat('chat_other')
   const projectAction = backend.listProjects()
+  const settingsAction = backend.getSettings()
   backend.pendingRequests.set('generation-pending', {
     method: 'chat.stream',
     chatId: 'chat_fixture',
@@ -620,7 +712,12 @@ test('Backend protocol failure rejects pending renderer actions before exit', as
     streamedLength: 0,
   })
   const cancellation = backend.stopGeneration('generation-pending')
-  const rejections = [chatAction, projectAction, cancellation].map(
+  const rejections = [
+    chatAction,
+    projectAction,
+    settingsAction,
+    cancellation,
+  ].map(
     (action) => assert.rejects(action, /Protocol connection failed/),
   )
 
@@ -789,7 +886,276 @@ test('Backend state machine resolves a typed Project action atomically', async (
   assert.equal(events.at(-1).type, 'snapshot')
 })
 
-test('Backend stop rejects pending Chat and Project actions', async () => {
+test('Backend sends and strictly resolves typed Settings actions', async () => {
+  const writes = []
+  const backend = new BackendProcess('.', () => undefined)
+  backend.child = {
+    stdin: {
+      writable: true,
+      write: (value) => writes.push(value),
+    },
+  }
+  backend.snapshot = {
+    revision: 1,
+    status: 'ready',
+    capabilities: ['settings.management'],
+    models: ['qwen3.5:9b', 'llama3.2:3b'],
+    modelName: 'qwen3.5:9b',
+    chatId: 'chat_fixture',
+    chatTitle: 'Elysia Chat',
+  }
+
+  const getting = backend.getSettings()
+  const getRequest = JSON.parse(writes.at(-1))
+  assert.equal(getRequest.method, 'settings.get')
+  assert.deepEqual(getRequest.params, {})
+
+  const getResponse = settingsStateResponse()
+  getResponse.id = getRequest.id
+  backend.handleProtocolLine(JSON.stringify(getResponse))
+  const state = await getting
+  assert.deepEqual(state, getResponse.result)
+
+  const update = {
+    expectedRevision: state.revision,
+    settings: {
+      ...state.settings,
+      memoryRetrievalLimit: 9,
+    },
+  }
+  const updating = backend.updateSettings(update)
+  const updateRequest = JSON.parse(writes.at(-1))
+  assert.equal(updateRequest.method, 'settings.update')
+  assert.deepEqual(updateRequest.params, update)
+
+  const updateResponse = settingsStateResponse()
+  updateResponse.id = updateRequest.id
+  updateResponse.result.revision = state.revision + 1
+  updateResponse.result.settings = update.settings
+  backend.handleProtocolLine(JSON.stringify(updateResponse))
+  const updated = await updating
+  assert.deepEqual(updated, updateResponse.result)
+})
+
+test('Backend rejects a pending Settings action on a malformed result', async () => {
+  const writes = []
+  let killCount = 0
+  const backend = new BackendProcess('.', () => undefined)
+  backend.child = {
+    stdin: {
+      writable: true,
+      write: (value) => writes.push(value),
+    },
+    kill: () => {
+      killCount += 1
+      return true
+    },
+  }
+  backend.snapshot = {
+    revision: 1,
+    status: 'ready',
+    capabilities: ['settings.management'],
+    models: ['qwen3.5:9b'],
+    modelName: 'qwen3.5:9b',
+    chatId: 'chat_fixture',
+    chatTitle: 'Elysia Chat',
+  }
+
+  const getting = backend.getSettings()
+  const request = JSON.parse(writes.at(-1))
+  const response = settingsStateResponse()
+  const secret = 'must-not-appear-in-errors'
+  response.id = request.id
+  response.result.settings.apiKey = secret
+  backend.handleProtocolLine(JSON.stringify(response))
+
+  await assert.rejects(
+    getting,
+    (error) => (
+      error instanceof Error
+      && /Invalid Backend protocol frame/.test(error.message)
+      && !error.message.includes(secret)
+    ),
+  )
+  assert.equal(killCount, 1)
+  assert.equal(backend.getSnapshot().status, 'error')
+})
+
+test('Backend keeps an initialized child available for Settings repair', async () => {
+  const writes = []
+  let killCount = 0
+  const backend = new BackendProcess('.', () => undefined)
+  const child = {
+    stdin: {
+      writable: true,
+      write: (value) => writes.push(value),
+    },
+    kill: () => {
+      killCount += 1
+      return true
+    },
+  }
+  backend.child = child
+  backend.snapshot = {
+    revision: 1,
+    status: 'initializing',
+    capabilities: ['settings.management'],
+    models: [],
+  }
+  backend.initializeRequestId = 'initialize-repair'
+  backend.pendingRequests.set('initialize-repair', {
+    method: 'initialize',
+    nextSequence: 0,
+    streamCompleted: false,
+    streamedReply: '',
+    streamedLength: 0,
+  })
+
+  backend.handleProtocolLine(JSON.stringify({
+    type: 'response',
+    protocol: fixtures.protocol,
+    id: 'initialize-repair',
+    ok: false,
+    error: {
+      code: 'backend.initialization_failed',
+      message: 'Saved settings need repair.',
+      retryable: false,
+    },
+  }))
+
+  assert.equal(backend.child, child)
+  assert.equal(killCount, 0)
+  assert.equal(backend.getSnapshot().status, 'error')
+
+  const getting = backend.getSettings()
+  const request = JSON.parse(writes.at(-1))
+  assert.equal(request.method, 'settings.get')
+  const response = settingsStateResponse()
+  response.id = request.id
+  backend.handleProtocolLine(JSON.stringify(response))
+
+  assert.equal((await getting).revision, response.result.revision)
+  assert.equal(backend.child, child)
+})
+
+test('Backend restart settles only after ready and rejects on error', async () => {
+  const backend = new BackendProcess('.', () => undefined)
+  backend.stop = async () => undefined
+  backend.start = () => {
+    backend.updateSnapshot({ status: 'initializing' })
+  }
+
+  let settled = false
+  const restarting = backend.restart()
+  restarting.then(
+    () => { settled = true },
+    () => { settled = true },
+  )
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(settled, false)
+
+  backend.updateSnapshot({
+    status: 'ready',
+    modelName: 'qwen3.5:9b',
+    models: ['qwen3.5:9b'],
+    chatId: 'chat_fixture',
+    chatTitle: 'Elysia Chat',
+  })
+  assert.equal((await restarting).status, 'ready')
+  assert.equal(settled, true)
+
+  const failingBackend = new BackendProcess('.', () => undefined)
+  failingBackend.stop = async () => undefined
+  failingBackend.start = () => {
+    failingBackend.updateSnapshot({ status: 'initializing' })
+  }
+  const failingRestart = failingBackend.restart()
+  const rejected = assert.rejects(
+    failingRestart,
+    /Could not initialize saved settings/,
+  )
+  await new Promise((resolve) => setImmediate(resolve))
+  failingBackend.updateSnapshot({
+    status: 'error',
+    error: 'Could not initialize saved settings.',
+  })
+  await rejected
+})
+
+test('Backend rejects a concurrent restart before stopping twice', async () => {
+  const backend = new BackendProcess('.', () => undefined)
+  const firstRestartChild = { identity: 'first-restart-child' }
+  backend.child = firstRestartChild
+
+  let stopCalls = 0
+  let releaseInitialStop
+  const initialStop = new Promise((resolve) => {
+    releaseInitialStop = resolve
+  })
+  backend.stop = async () => {
+    stopCalls += 1
+    await initialStop
+  }
+  backend.start = () => {
+    backend.updateSnapshot({ status: 'initializing' })
+  }
+
+  const firstRestart = backend.restart()
+  await assert.rejects(
+    backend.restart(),
+    /A Backend restart is already pending/,
+  )
+  assert.equal(stopCalls, 1)
+  assert.equal(backend.child, firstRestartChild)
+
+  releaseInitialStop()
+  await new Promise((resolve) => setImmediate(resolve))
+  backend.updateSnapshot({
+    status: 'ready',
+    modelName: 'qwen3.5:9b',
+    models: ['qwen3.5:9b'],
+    chatId: 'chat_fixture',
+    chatTitle: 'Elysia Chat',
+  })
+  assert.equal((await firstRestart).status, 'ready')
+})
+
+test('Backend explicit stop promptly rejects an in-flight restart', async () => {
+  const backend = new BackendProcess('.', () => undefined)
+  backend.stop = async () => undefined
+  backend.start = () => {
+    backend.updateSnapshot({ status: 'initializing' })
+  }
+
+  const restarting = backend.restart()
+  const outcomePromise = restarting.then(
+    () => ({ kind: 'resolved' }),
+    (error) => ({ kind: 'rejected', error }),
+  )
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.notEqual(backend.restartCompletion, null)
+
+  delete backend.stop
+  await backend.stop()
+  const outcome = await Promise.race([
+    outcomePromise,
+    new Promise((resolve) => {
+      setTimeout(() => resolve({ kind: 'timeout' }), 100)
+    }),
+  ])
+  if (outcome.kind === 'timeout') {
+    backend.rejectRestartCompletion('Test cleanup after restart timeout.')
+  }
+
+  assert.equal(outcome.kind, 'rejected')
+  assert.match(
+    outcome.error.message,
+    /stopped before its restart completed/,
+  )
+  assert.equal(backend.getSnapshot().status, 'stopped')
+})
+
+test('Backend stop rejects pending Chat, Project, and Settings actions', async () => {
   const backend = new BackendProcess('.', () => undefined)
   const child = new EventEmitter()
   child.stdin = {
@@ -832,10 +1198,23 @@ test('Backend stop rejects pending Chat and Project actions', async () => {
     streamedLength: 0,
     rejectProjectState: rejectProject,
   })
+  let rejectSettings
+  const settingsPromise = new Promise((_resolve, reject) => {
+    rejectSettings = reject
+  })
+  backend.pendingRequests.set('settings-get-stop', {
+    method: 'settings.get',
+    nextSequence: 0,
+    streamCompleted: false,
+    streamedReply: '',
+    streamedLength: 0,
+    rejectSettingsState: rejectSettings,
+  })
 
   const stopping = backend.stop()
   await assert.rejects(chatPromise, /stopping before the action completed/)
   await assert.rejects(projectPromise, /stopping before the action completed/)
+  await assert.rejects(settingsPromise, /stopping before the action completed/)
   child.emit('exit', 0, null)
   await stopping
 })

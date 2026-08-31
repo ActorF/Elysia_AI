@@ -30,7 +30,19 @@ from chats import (
     ConversationMode,
     ProjectId,
 )
-from config.settings import SETTINGS
+from config.desktop_settings import (
+    DesktopSettingsConflictError,
+    DesktopSettingsRepository,
+    DesktopSettingsStorageError,
+    DesktopSettingsValidationError,
+    DesktopSettingsSnapshot,
+    EditableDesktopSettings,
+    apply_editable_settings,
+    changed_setting_names,
+    create_desktop_settings_repository,
+    editable_from_app_settings,
+)
+from config.settings import AppSettings, SETTINGS
 from core import (
     Brain,
     ChatBusyError,
@@ -75,6 +87,7 @@ SERVER_CAPABILITIES = (
     "chat.retry",
     "request.cancel",
     "project.management",
+    "settings.management",
     "stream",
     "progress",
     "event",
@@ -181,10 +194,13 @@ def _extract_model_names(
     return tuple(dict.fromkeys(name for name in ordered_names if name))
 
 
-def discover_ollama_models() -> tuple[str, ...]:
+def discover_ollama_models(
+    settings: AppSettings | None = None,
+) -> tuple[str, ...]:
     """List locally installed Ollama models without reading model files."""
 
-    endpoint = f"{SETTINGS.ollama_host.rstrip('/')}/api/tags"
+    runtime_settings = SETTINGS if settings is None else settings
+    endpoint = f"{runtime_settings.ollama_host.rstrip('/')}/api/tags"
     request = Request(
         endpoint,
         headers={"Accept": "application/json"},
@@ -200,7 +216,7 @@ def discover_ollama_models() -> tuple[str, ...]:
         )
         payload = {}
 
-    return _extract_model_names(payload, SETTINGS.model_name)
+    return _extract_model_names(payload, runtime_settings.model_name)
 
 
 class DesktopBackend:
@@ -212,6 +228,7 @@ class DesktopBackend:
         brain_factory: BrainFactory = create_brain,
         model_loader: ModelLoader = discover_ollama_models,
         settings_validator: SettingsValidator = validate_settings,
+        settings_repository: DesktopSettingsRepository | None = None,
         input_stream: TextIO = sys.stdin,
         output_stream: TextIO = sys.stdout,
         expected_session_token: str | None = None,
@@ -221,6 +238,38 @@ class DesktopBackend:
         self._brain_factory = brain_factory
         self._model_loader = model_loader
         self._settings_validator = settings_validator
+        self._uses_default_brain_factory = brain_factory is create_brain
+        self._uses_default_model_loader = model_loader is discover_ollama_models
+        self._uses_default_settings_validator = (
+            settings_validator is validate_settings
+        )
+        self._settings_repository = (
+            create_desktop_settings_repository(SETTINGS)
+            if settings_repository is None
+            else settings_repository
+        )
+        initial_settings = self._settings_repository.load()
+        self._settings_warning = initial_settings.warning
+        self._desired_settings = initial_settings
+        try:
+            self._runtime_settings = apply_editable_settings(
+                SETTINGS,
+                initial_settings.values,
+                model_override=os.environ.get("ELYSIA_MODEL_OVERRIDE"),
+            )
+        except DesktopSettingsValidationError:
+            self._runtime_settings = apply_editable_settings(
+                SETTINGS,
+                initial_settings.values,
+            )
+            override_warning = (
+                "An invalid temporary model override was ignored."
+            )
+            self._settings_warning = " ".join(
+                warning
+                for warning in (self._settings_warning, override_warning)
+                if warning is not None
+            )
         self._input_stream = input_stream
         self._output_stream = output_stream
         self._expected_session_token = (
@@ -336,6 +385,10 @@ class DesktopBackend:
                 )
             elif method == "initialize":
                 self._initialize(request_id)
+            elif method == "settings.get":
+                self._get_settings(request_id)
+            elif method == "settings.update":
+                self._update_settings(request_id, params)
             elif self._brain is None or self._active_chat_snapshot() is None:
                 raise ProtocolValidationError(
                     "protocol.not_initialized",
@@ -382,6 +435,22 @@ class DesktopBackend:
                 )
         except ProtocolValidationError as error:
             self._emit_error(request_id, error.code, str(error))
+        except DesktopSettingsConflictError as error:
+            self._emit_error(
+                request_id,
+                "settings.conflict",
+                str(error),
+                retryable=True,
+            )
+        except DesktopSettingsValidationError as error:
+            self._emit_error(request_id, "settings.invalid", str(error))
+        except DesktopSettingsStorageError as error:
+            self._emit_error(
+                request_id,
+                "settings.storage_failed",
+                str(error),
+                retryable=True,
+            )
         except ChatBusyError as error:
             self._emit_error(request_id, "chat.busy", str(error))
         except ChatRetryTargetError as error:
@@ -474,7 +543,10 @@ class DesktopBackend:
                 total=3,
                 message="Validating local settings",
             )
-            self._settings_validator()
+            if self._uses_default_settings_validator:
+                validate_settings(self._runtime_settings)
+            else:
+                self._settings_validator()
             self._emit_progress(
                 request_id,
                 "backend.initialize",
@@ -482,7 +554,11 @@ class DesktopBackend:
                 total=3,
                 message="Discovering local models",
             )
-            self._models = self._model_loader()
+            self._models = (
+                discover_ollama_models(self._runtime_settings)
+                if self._uses_default_model_loader
+                else self._model_loader()
+            )
             self._emit_progress(
                 request_id,
                 "backend.initialize",
@@ -490,7 +566,11 @@ class DesktopBackend:
                 total=3,
                 message="Loading Chat services",
             )
-            brain = self._brain_factory()
+            brain = (
+                create_brain(self._runtime_settings)
+                if self._uses_default_brain_factory
+                else self._brain_factory()
+            )
             active_chat = self._resolve_active_chat(brain)
             self._brain = brain
             self._set_active_chat(active_chat)
@@ -512,6 +592,131 @@ class DesktopBackend:
                 "chatTitle": active_chat.title,
             },
         )
+
+    @staticmethod
+    def _serialize_settings_values(
+        values: EditableDesktopSettings,
+    ) -> JsonObject:
+        """Map the public allowlist to its stable camel-case wire shape."""
+
+        return {
+            "modelName": values.model_name,
+            "ollamaHost": values.ollama_host,
+            "shortTermMemoryTokenBudget": (
+                values.short_term_memory_token_budget
+            ),
+            "memoryRetrievalLimit": values.memory_retrieval_limit,
+            "dataImportMaxBytes": values.data_import_max_bytes,
+        }
+
+    def _load_desired_settings(self) -> DesktopSettingsSnapshot:
+        """Refresh persisted desired values while retaining recovery notice."""
+
+        snapshot = self._settings_repository.load()
+        if snapshot.warning is not None:
+            self._settings_warning = snapshot.warning
+        self._desired_settings = snapshot
+        return snapshot
+
+    def _settings_state_result(self) -> JsonObject:
+        """Describe desired/active values and Global/Project/Chat ownership."""
+
+        desired = self._desired_settings
+        active_values = editable_from_app_settings(self._runtime_settings)
+        restart_fields = changed_setting_names(desired.values, active_values)
+        active_chat = self._active_chat_snapshot()
+
+        project_scope: JsonObject | None = None
+        if self._brain is not None and self._active_project_id is not None:
+            try:
+                project = self._brain.get_project(self._active_project_id)
+            except ProjectNotFoundError:
+                project = None
+            if project is not None:
+                project_scope = {
+                    "projectId": str(project.project_id),
+                    "projectName": project.name,
+                    "modelName": project.settings.default_model_name,
+                    "inheritedModelName": desired.values.model_name,
+                }
+
+        chat_scope: JsonObject | None = None
+        if active_chat is not None:
+            chat_scope = {
+                "chatId": str(active_chat.chat_id),
+                "chatTitle": active_chat.title,
+                "modelName": active_chat.model_settings.model_name,
+            }
+
+        return {
+            "revision": desired.revision,
+            "updatedAt": (
+                None
+                if desired.updated_at is None
+                else desired.updated_at.isoformat()
+            ),
+            "settings": self._serialize_settings_values(desired.values),
+            "activeSettings": self._serialize_settings_values(active_values),
+            "restartRequired": bool(restart_fields),
+            "restartFields": list(restart_fields),
+            "scopes": {
+                "project": project_scope,
+                "chat": chat_scope,
+            },
+            "warning": self._settings_warning,
+        }
+
+    def _get_settings(self, request_id: str) -> None:
+        """Return settings even when Brain initialization has failed."""
+
+        self._load_desired_settings()
+        self._emit_response(request_id, self._settings_state_result())
+
+    def _update_settings(
+        self,
+        request_id: str,
+        params: JsonObject,
+    ) -> None:
+        """Validate and atomically replace the complete public settings set."""
+
+        with self._state_lock:
+            if self._generation_task is not None:
+                raise ProtocolValidationError(
+                    "settings.busy",
+                    "Wait for the current reply before changing settings.",
+                )
+
+        raw = cast(JsonObject, params["settings"])
+        values = EditableDesktopSettings(
+            model_name=cast(str, raw["modelName"]),
+            ollama_host=cast(str, raw["ollamaHost"]),
+            short_term_memory_token_budget=cast(
+                int,
+                raw["shortTermMemoryTokenBudget"],
+            ),
+            memory_retrieval_limit=cast(
+                int,
+                raw["memoryRetrievalLimit"],
+            ),
+            data_import_max_bytes=cast(int, raw["dataImportMaxBytes"]),
+        )
+        saved = self._settings_repository.save(
+            values,
+            expected_revision=cast(int, params["expectedRevision"]),
+        )
+        self._desired_settings = saved
+        self._settings_warning = None
+
+        # Before Brain exists, the same authenticated recovery process can
+        # adopt repaired settings without requiring another child process.
+        if self._brain is None:
+            self._runtime_settings = apply_editable_settings(
+                SETTINGS,
+                saved.values,
+                model_override=os.environ.get("ELYSIA_MODEL_OVERRIDE"),
+            )
+
+        self._emit_response(request_id, self._settings_state_result())
 
     @staticmethod
     def _resolve_active_chat(brain: Brain) -> ChatSession:

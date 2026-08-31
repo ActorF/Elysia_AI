@@ -1836,6 +1836,12 @@ svg {
   margin-inline: auto;
   padding: var(--space-6);
   overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.settings-content > .inline-alert + .inline-alert,
+.settings-content > .inline-alert + .settings-section {
+  margin-top: var(--space-4);
 }
 
 .settings-section {
@@ -1955,6 +1961,137 @@ svg {
   margin: var(--space-4) 0 0;
   color: var(--color-text-muted);
   font-size: var(--font-size-xs);
+}
+
+.settings-scope-grid,
+.settings-field-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-3);
+  min-width: 0;
+  margin-top: var(--space-5);
+}
+
+.settings-scope-grid article {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-4);
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+}
+
+.settings-scope-grid strong,
+.settings-field > span,
+.settings-save-bar strong {
+  color: var(--color-text-primary);
+  font-size: var(--font-size-sm);
+}
+
+.settings-scope-grid span {
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+  overflow-wrap: anywhere;
+}
+
+.settings-scope-grid small,
+.settings-field small,
+.settings-save-bar span {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  line-height: var(--line-height-normal);
+  overflow-wrap: anywhere;
+}
+
+.settings-field-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.settings-field {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.settings-field-single {
+  width: min(100%, 30rem);
+  margin-top: var(--space-5);
+}
+
+.settings-field input,
+.settings-field select {
+  width: 100%;
+  min-width: 0;
+  min-height: var(--control-height-lg);
+  padding: 0 var(--space-3);
+  color: var(--color-text-primary);
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-md);
+  font: inherit;
+}
+
+.settings-field input:focus,
+.settings-field select:focus {
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-ring-offset);
+  border-color: var(--color-accent);
+}
+
+.settings-field input:disabled,
+.settings-field select:disabled {
+  opacity: 0.62;
+  cursor: not-allowed;
+}
+
+.settings-readonly-status {
+  margin: var(--space-5) 0 0;
+  padding: var(--space-4);
+  color: var(--color-text-secondary);
+  background: var(--color-bg-surface);
+  border: 1px dashed var(--color-border-strong);
+  border-radius: var(--radius-lg);
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-normal);
+}
+
+.settings-privacy-list {
+  display: grid;
+  gap: var(--space-2);
+  margin: var(--space-5) 0 0;
+  padding-left: var(--space-5);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-normal);
+}
+
+.settings-save-bar {
+  position: sticky;
+  bottom: calc(var(--space-6) * -1);
+  z-index: 2;
+  display: flex;
+  gap: var(--space-4);
+  align-items: center;
+  justify-content: space-between;
+  min-width: 0;
+  margin: var(--space-4) calc(var(--space-6) * -1) calc(var(--space-6) * -1);
+  padding: var(--space-4) var(--space-6);
+  background: color-mix(in srgb, var(--color-bg-surface) 94%, transparent);
+  border-top: 1px solid var(--color-border);
+  backdrop-filter: blur(16px);
+}
+
+.settings-save-bar > div:first-child {
+  display: grid;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.settings-save-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: var(--space-2);
 }
 
 .settings-shortcuts {
@@ -2569,6 +2706,11 @@ kbd {
   .theme-options {
     grid-template-columns: 1fr;
   }
+
+  .settings-scope-grid,
+  .settings-field-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 42rem) {
@@ -2653,6 +2795,19 @@ kbd {
 
   .settings-section {
     padding: var(--space-4);
+  }
+
+  .settings-save-bar {
+    bottom: calc(var(--space-4) * -1);
+    flex-direction: column;
+    align-items: stretch;
+    margin: var(--space-4) calc(var(--space-4) * -1) calc(var(--space-4) * -1);
+    padding: var(--space-4);
+  }
+
+  .settings-save-actions {
+    justify-content: flex-end;
+    flex-wrap: wrap;
   }
 
   .placeholder-content {

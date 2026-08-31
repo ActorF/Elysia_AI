@@ -217,6 +217,35 @@
       }
     },
     {
+      "name": "settings get request",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "settings-get-1",
+        "method": "settings.get",
+        "params": {}
+      }
+    },
+    {
+      "name": "settings update request",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "settings-update-1",
+        "method": "settings.update",
+        "params": {
+          "expectedRevision": 2,
+          "settings": {
+            "modelName": "qwen3.5:9b",
+            "ollamaHost": "http://127.0.0.1:11434",
+            "shortTermMemoryTokenBudget": 4096,
+            "memoryRetrievalLimit": 8,
+            "dataImportMaxBytes": 33554432
+          }
+        }
+      }
+    },
+    {
       "name": "unicode identifier boundary",
       "message": {
         "type": "request",
@@ -476,6 +505,86 @@
       }
     },
     {
+      "name": "settings state response",
+      "message": {
+        "type": "response",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "settings-get-1",
+        "ok": true,
+        "result": {
+          "revision": 3,
+          "updatedAt": "2026-08-30T12:00:00+00:00",
+          "settings": {
+            "modelName": "llama3.2:3b",
+            "ollamaHost": "http://localhost:11434",
+            "shortTermMemoryTokenBudget": 4096,
+            "memoryRetrievalLimit": 8,
+            "dataImportMaxBytes": 33554432
+          },
+          "activeSettings": {
+            "modelName": "qwen3.5:9b",
+            "ollamaHost": "http://127.0.0.1:11434",
+            "shortTermMemoryTokenBudget": 2048,
+            "memoryRetrievalLimit": 5,
+            "dataImportMaxBytes": 16777216
+          },
+          "restartRequired": true,
+          "restartFields": [
+            "modelName",
+            "ollamaHost",
+            "shortTermMemoryTokenBudget",
+            "memoryRetrievalLimit",
+            "dataImportMaxBytes"
+          ],
+          "scopes": {
+            "project": {
+              "projectId": "project_fixture",
+              "projectName": "Elysia AI",
+              "modelName": null,
+              "inheritedModelName": "llama3.2:3b"
+            },
+            "chat": {
+              "chatId": "chat_fixture",
+              "chatTitle": "Elysia Chat",
+              "modelName": "qwen3.5:9b"
+            }
+          },
+          "warning": null
+        }
+      }
+    },
+    {
+      "name": "settings recovered defaults response",
+      "message": {
+        "type": "response",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "settings-get-2",
+        "ok": true,
+        "result": {
+          "revision": 0,
+          "updatedAt": null,
+          "settings": {
+            "modelName": "qwen3.5:9b",
+            "ollamaHost": "http://127.0.0.1:11434",
+            "shortTermMemoryTokenBudget": 2048,
+            "memoryRetrievalLimit": 5,
+            "dataImportMaxBytes": 16777216
+          },
+          "activeSettings": {
+            "modelName": "qwen3.5:9b",
+            "ollamaHost": "http://127.0.0.1:11434",
+            "shortTermMemoryTokenBudget": 2048,
+            "memoryRetrievalLimit": 5,
+            "dataImportMaxBytes": 16777216
+          },
+          "restartRequired": false,
+          "restartFields": [],
+          "scopes": { "project": null, "chat": null },
+          "warning": "Recovered safe defaults after an unreadable settings file."
+        }
+      }
+    },
+    {
       "name": "shutdown response",
       "message": {
         "type": "response",
@@ -717,6 +826,93 @@
         "method": "project.open",
         "params": { "projectId": "Elysia Project" }
       }
+    },
+    {
+      "name": "settings get rejects extra fields",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "settings-get-invalid-1",
+        "method": "settings.get",
+        "params": { "includeSecrets": true }
+      }
+    },
+    {
+      "name": "settings update rejects sensitive fields",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "settings-update-invalid-1",
+        "method": "settings.update",
+        "params": {
+          "expectedRevision": 0,
+          "settings": {
+            "modelName": "qwen3.5:9b",
+            "ollamaHost": "http://127.0.0.1:11434",
+            "shortTermMemoryTokenBudget": 2048,
+            "memoryRetrievalLimit": 5,
+            "dataImportMaxBytes": 16777216,
+            "apiKey": "must-not-cross-the-wire"
+          }
+        }
+      }
+    },
+    {
+      "name": "settings update rejects negative revision",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "settings-update-invalid-2",
+        "method": "settings.update",
+        "params": {
+          "expectedRevision": -1,
+          "settings": {
+            "modelName": "qwen3.5:9b",
+            "ollamaHost": "http://127.0.0.1:11434",
+            "shortTermMemoryTokenBudget": 2048,
+            "memoryRetrievalLimit": 5,
+            "dataImportMaxBytes": 16777216
+          }
+        }
+      }
+    },
+    {
+      "name": "settings update rejects credentialed Ollama origin",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "settings-update-invalid-3",
+        "method": "settings.update",
+        "params": {
+          "expectedRevision": 0,
+          "settings": {
+            "modelName": "qwen3.5:9b",
+            "ollamaHost": "http://user:secret@127.0.0.1:11434",
+            "shortTermMemoryTokenBudget": 2048,
+            "memoryRetrievalLimit": 5,
+            "dataImportMaxBytes": 16777216
+          }
+        }
+      }
+    },
+    {
+      "name": "settings update rejects zero-port Ollama origin",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "settings-update-invalid-4",
+        "method": "settings.update",
+        "params": {
+          "expectedRevision": 0,
+          "settings": {
+            "modelName": "qwen3.5:9b",
+            "ollamaHost": "http://127.0.0.1:0",
+            "shortTermMemoryTokenBudget": 2048,
+            "memoryRetrievalLimit": 5,
+            "dataImportMaxBytes": 16777216
+          }
+        }
+      }
     }
   ],
   "invalidServerMessages": [
@@ -894,6 +1090,69 @@
         "requestId": "chat-1",
         "data": {},
         "extra": true
+      }
+    },
+    {
+      "name": "settings state rejects sensitive fields",
+      "message": {
+        "type": "response",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "settings-get-invalid-1",
+        "ok": true,
+        "result": {
+          "revision": 1,
+          "updatedAt": null,
+          "settings": {
+            "modelName": "qwen3.5:9b",
+            "ollamaHost": "http://127.0.0.1:11434",
+            "shortTermMemoryTokenBudget": 2048,
+            "memoryRetrievalLimit": 5,
+            "dataImportMaxBytes": 16777216,
+            "password": "must-not-cross-the-wire"
+          },
+          "activeSettings": {
+            "modelName": "qwen3.5:9b",
+            "ollamaHost": "http://127.0.0.1:11434",
+            "shortTermMemoryTokenBudget": 2048,
+            "memoryRetrievalLimit": 5,
+            "dataImportMaxBytes": 16777216
+          },
+          "restartRequired": false,
+          "restartFields": [],
+          "scopes": { "project": null, "chat": null },
+          "warning": null
+        }
+      }
+    },
+    {
+      "name": "settings state has inconsistent restart flag",
+      "message": {
+        "type": "response",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "settings-get-invalid-2",
+        "ok": true,
+        "result": {
+          "revision": 1,
+          "updatedAt": null,
+          "settings": {
+            "modelName": "llama3.2:3b",
+            "ollamaHost": "http://127.0.0.1:11434",
+            "shortTermMemoryTokenBudget": 2048,
+            "memoryRetrievalLimit": 5,
+            "dataImportMaxBytes": 16777216
+          },
+          "activeSettings": {
+            "modelName": "qwen3.5:9b",
+            "ollamaHost": "http://127.0.0.1:11434",
+            "shortTermMemoryTokenBudget": 2048,
+            "memoryRetrievalLimit": 5,
+            "dataImportMaxBytes": 16777216
+          },
+          "restartRequired": false,
+          "restartFields": ["modelName"],
+          "scopes": { "project": null, "chat": null },
+          "warning": null
+        }
       }
     }
   ]

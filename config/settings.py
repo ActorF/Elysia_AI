@@ -10,6 +10,8 @@ from dotenv import load_dotenv
 DEFAULT_SHORT_TERM_MEMORY_TOKEN_BUDGET = 2048
 DEFAULT_MEMORY_RETRIEVAL_LIMIT = 5
 DEFAULT_DATA_IMPORT_MAX_BYTES = 16 * 1024 * 1024
+DEFAULT_MODEL_NAME = "qwen3.5:9b"
+DEFAULT_OLLAMA_HOST = "http://localhost:11434"
 
 
 @dataclass(frozen=True)
@@ -50,6 +52,15 @@ def parse_bool(value: str) -> bool:
     }
 
 
+def parse_int(value: str, default: int) -> int:
+    """Parse one integer without making a malformed ``.env`` unloadable."""
+
+    try:
+        return int(value)
+    except ValueError:
+        return default
+
+
 # Anchor file locations to the repository, not the process working directory.
 BASE_DIR = Path(__file__).resolve().parent.parent
 ENV_FILE = BASE_DIR / ".env"
@@ -59,7 +70,7 @@ load_dotenv(ENV_FILE)
 
 MODEL_NAME = os.getenv(
     "MODEL_NAME",
-    "qwen3.5:9b",
+    DEFAULT_MODEL_NAME,
 )
 LOG_LEVEL = os.getenv(
     "LOG_LEVEL",
@@ -70,25 +81,28 @@ DEBUG = parse_bool(
 )
 OLLAMA_HOST = os.getenv(
     "OLLAMA_HOST",
-    "http://localhost:11434",
+    DEFAULT_OLLAMA_HOST,
 )
-SHORT_TERM_MEMORY_TOKEN_BUDGET = int(
+SHORT_TERM_MEMORY_TOKEN_BUDGET = parse_int(
     os.getenv(
         "SHORT_TERM_MEMORY_TOKEN_BUDGET",
         str(DEFAULT_SHORT_TERM_MEMORY_TOKEN_BUDGET),
-    )
+    ),
+    DEFAULT_SHORT_TERM_MEMORY_TOKEN_BUDGET,
 )
-MEMORY_RETRIEVAL_LIMIT = int(
+MEMORY_RETRIEVAL_LIMIT = parse_int(
     os.getenv(
         "MEMORY_RETRIEVAL_LIMIT",
         str(DEFAULT_MEMORY_RETRIEVAL_LIMIT),
-    )
+    ),
+    DEFAULT_MEMORY_RETRIEVAL_LIMIT,
 )
-DATA_IMPORT_MAX_BYTES = int(
+DATA_IMPORT_MAX_BYTES = parse_int(
     os.getenv(
         "DATA_IMPORT_MAX_BYTES",
         str(DEFAULT_DATA_IMPORT_MAX_BYTES),
-    )
+    ),
+    DEFAULT_DATA_IMPORT_MAX_BYTES,
 )
 
 # Export one settings object for the composition root and application services.

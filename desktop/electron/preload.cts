@@ -15,6 +15,7 @@ import type {
   CreateProjectRequest,
   DesktopApi,
   DesktopThemePreference,
+  DesktopSettingsState,
   MoveChatToProjectRequest,
   PinChatRequest,
   ProjectState,
@@ -22,6 +23,7 @@ import type {
   RetryChatRequest,
   SelectedFile,
   UpdateProjectRequest,
+  UpdateDesktopSettingsRequest,
 } from './contracts.js'
 
 const desktopApi: DesktopApi = {
@@ -45,6 +47,17 @@ const desktopApi: DesktopApi = {
     ipcRenderer.invoke(
       'backend:restart',
     ) as Promise<BackendSnapshot>,
+
+  getSettings: () =>
+    ipcRenderer.invoke(
+      'settings:get',
+    ) as Promise<DesktopSettingsState>,
+
+  updateSettings: (request: UpdateDesktopSettingsRequest) =>
+    ipcRenderer.invoke(
+      'settings:update',
+      request,
+    ) as Promise<DesktopSettingsState>,
 
   sendMessage: (request: ChatRequest) =>
     ipcRenderer.invoke(

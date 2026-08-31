@@ -1,10 +1,11 @@
 # Elysia Desktop
 
-Stage 6 Modules 1–4 connect a React + TypeScript interface to the existing
+Stage 6 Modules 1–8 connect a React + TypeScript interface to the existing
 Python Brain through an Electron-owned child process and a strict, versioned
-local protocol. The renderer now has a responsive application shell, semantic
-design tokens, system/light/dark themes, keyboard navigation, and consistent
-loading, empty, error, and fatal states. Electron is frozen as the production
+local protocol. The renderer has persistent Chat and Project surfaces,
+resilient streamed message actions, revisioned Settings, semantic design
+tokens, system/light/dark themes, keyboard navigation, and consistent loading,
+empty, error, and fatal states. Electron is frozen as the production
 shell. The Tauri source and toolchain were removed after the comparison; the
 rationale, recorded measurements, and revisit gates are in
 [`docs/decisions/0001-desktop-shell.md`](../docs/decisions/0001-desktop-shell.md).
@@ -36,8 +37,13 @@ Electron starts `D:\Elysia_AI\.venv\Scripts\python.exe`, runs
 
 ## Interface
 
-- Open **Settings** or press `Ctrl+,` to choose System, Light, or Dark. The
-  preference is stored only in the renderer's local application storage.
+- Open **Settings** or press `Ctrl+,` to manage the default Ollama model and
+  origin, Memory limits, file import size, and appearance. Backend values are
+  atomically stored in `workspace/settings/global.json`; appearance remains in
+  this device's renderer storage and applies immediately.
+- Settings shows Global defaults beside the active Project's inheritance and
+  the active Chat's pinned model. Backend-backed changes clearly request a
+  restart before they are reported as active.
 - Press `Ctrl+K` to open Chat search, `Escape` to close the current surface,
   and `Ctrl+B` to show or hide navigation.
 - Enter sends a message; Shift+Enter inserts a new line. IME composition is
@@ -46,9 +52,9 @@ Electron starts `D:\Elysia_AI\.venv\Scripts\python.exe`, runs
   Windows display or Electron zoom levels. The Composer remains in normal
   layout flow so attachments, alerts, and multiline input cannot cover the
   final message.
-- Projects and Memory currently show explicit empty states. Their real actions
-  are added by the following product slices instead of being simulated in the
-  renderer.
+- Projects support persisted metadata, instructions, workspace binding, Chat
+  assignment, archive, and restore. Voice, Work permissions, and later file
+  processing controls remain read-only until their service boundaries exist.
 
 ## Verification
 
@@ -102,3 +108,6 @@ method, results, capability gaps, and limitations.
 - Python and TypeScript validate the same samples in
   `desktop_protocol/fixtures/v1.samples.json`.
 - Python delegates persistence and streaming to the existing Stage 5 Brain.
+- Settings accepts an exact non-sensitive allowlist, uses optimistic revisions
+  and atomic replacement, and remains repairable after Backend initialization
+  rejects a saved model or Ollama origin.

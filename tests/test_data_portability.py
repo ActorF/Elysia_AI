@@ -128,6 +128,18 @@ def seed_workspace_files(base_dir: Path) -> dict[str, object]:
             "schema_version": 1,
             "summary": None,
         },
+        "settings/global.json": {
+            "schema_version": 1,
+            "revision": 1,
+            "updated_at": BASE_TIME.isoformat(),
+            "settings": {
+                "model_name": "qwen3.5:9b",
+                "ollama_host": "http://localhost:11434",
+                "short_term_memory_token_budget": 2048,
+                "memory_retrieval_limit": 5,
+                "data_import_max_bytes": 16 * 1024 * 1024,
+            },
+        },
     }
     for relative_path, data in files.items():
         write_json(base_dir / "workspace" / relative_path, data)
@@ -237,6 +249,113 @@ def test_all_user_data_round_trip_restores_equivalent_state(
             )
         )
         assert restored == expected
+
+
+def test_malformed_imported_settings_are_quarantined_as_validation_error(
+    tmp_path: Path,
+) -> None:
+    source_service, _, _ = service_for(tmp_path / "source")
+    seed_workspace_files(tmp_path / "source")
+    bundle_path = tmp_path / "invalid-settings.json"
+    source_service.export_all_user_data(bundle_path)
+    bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
+    secret = "must-not-appear-in-errors"
+    settings = bundle["payload"]["workspace_files"][
+        "settings/global.json"
+    ]["settings"]
+    settings["api_key"] = secret
+    bundle["payload_sha256"] = source_service._payload_digest(
+        bundle["payload"]
+    )
+    write_json(bundle_path, bundle)
+    target_dir = tmp_path / "target"
+    target_service, _, _ = service_for(target_dir)
+
+    with pytest.raises(
+        ImportValidationError,
+        match="Managed file schema is invalid",
+    ) as raised:
+        target_service.import_bundle(bundle_path)
+
+    assert secret not in str(raised.value)
+    assert not (
+        target_dir / "workspace" / "settings" / "global.json"
+    ).exists()
+    quarantine = tuple(
+        (
+            target_dir / "workspace" / "recovery" / "quarantine"
+        ).iterdir()
+    )
+    assert len(quarantine) == 1
+    assert quarantine[0].read_bytes() == bundle_path.read_bytes()
+
+
+def test_export_rejects_non_allowlisted_settings_without_leaking_secret(
+    tmp_path: Path,
+) -> None:
+    source_dir = tmp_path / "source"
+    source_service, _, _ = service_for(source_dir)
+    seed_workspace_files(source_dir)
+    settings_path = (
+        source_dir / "workspace" / "settings" / "global.json"
+    )
+    document = json.loads(settings_path.read_text(encoding="utf-8"))
+    settings = dict(document["settings"])
+    secret = "plaintext-secret-must-not-be-exported"
+    settings["api_key"] = secret
+    document["settings"] = settings
+    write_json(settings_path, document)
+    destination = tmp_path / "all-user-data.json"
+
+    with pytest.raises(
+        ExportValidationError,
+        match="Managed Settings schema is invalid",
+    ) as raised:
+        source_service.export_all_user_data(destination)
+
+    assert secret not in str(raised.value)
+    assert not destination.exists()
+
+
+@pytest.mark.parametrize("current_revision", [1, 5])
+def test_settings_import_rebases_equal_or_lower_revision_above_current(
+    tmp_path: Path,
+    current_revision: int,
+) -> None:
+    source_dir = tmp_path / "source"
+    source_service, _, _ = service_for(source_dir)
+    seed_workspace_files(source_dir)
+    bundle_path = tmp_path / "all-user-data.json"
+    source_service.export_all_user_data(bundle_path)
+
+    target_dir = tmp_path / "target"
+    target_settings = target_dir / "workspace" / "settings" / "global.json"
+    write_json(
+        target_settings,
+        {
+            "schema_version": 1,
+            "revision": current_revision,
+            "updated_at": BASE_TIME.isoformat(),
+            "settings": {
+                "model_name": "target-model",
+                "ollama_host": "http://localhost:11434",
+                "short_term_memory_token_budget": 4_096,
+                "memory_retrieval_limit": 8,
+                "data_import_max_bytes": 32 * 1024 * 1024,
+            },
+        },
+    )
+    target_service, _, _ = service_for(target_dir)
+
+    result = target_service.import_bundle(
+        bundle_path,
+        overwrite_user_files=True,
+    )
+
+    restored = json.loads(target_settings.read_text(encoding="utf-8"))
+    assert restored["revision"] == current_revision + 1
+    assert restored["settings"]["model_name"] == "qwen3.5:9b"
+    assert "settings/global.json" in result.restored_files
 
 
 def test_corrupt_bundle_is_quarantined_and_logged(tmp_path: Path) -> None:

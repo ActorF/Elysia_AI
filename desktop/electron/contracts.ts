@@ -5,6 +5,11 @@
  * the smaller capability-safe surface exposed to the sandboxed renderer.
  */
 
+import type {
+  SettingsStateResult,
+  SettingsValues,
+} from './protocol.js'
+
 export type BackendStatus =
   | 'starting'
   | 'handshaking'
@@ -158,6 +163,14 @@ export interface SelectedFile {
   sizeBytes: number
 }
 
+export type DesktopSettingsValues = SettingsValues
+export type DesktopSettingsState = SettingsStateResult
+
+export interface UpdateDesktopSettingsRequest {
+  expectedRevision: number
+  settings: DesktopSettingsValues
+}
+
 export type BackendEvent =
   | {
       type: 'snapshot'
@@ -212,6 +225,10 @@ export interface DesktopApi {
   setThemePreference(theme: DesktopThemePreference): Promise<void>
   getSnapshot(): Promise<BackendSnapshot>
   restartBackend(): Promise<BackendSnapshot>
+  getSettings(): Promise<DesktopSettingsState>
+  updateSettings(
+    request: UpdateDesktopSettingsRequest,
+  ): Promise<DesktopSettingsState>
   sendMessage(request: ChatRequest): Promise<{ requestId: string }>
   retryMessage(request: RetryChatRequest): Promise<{ requestId: string }>
   stopGeneration(requestId: string): Promise<void>

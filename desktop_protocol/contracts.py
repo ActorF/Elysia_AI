@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 from typing import Any, Final, Literal, NotRequired, TypedDict, cast
+from urllib.parse import urlsplit
 
 PROTOCOL_NAME: Final = "elysia.desktop"
 PROTOCOL_VERSION: Final = 1
@@ -18,6 +19,10 @@ MAX_METHOD_LENGTH: Final = 96
 MAX_MESSAGE_LENGTH: Final = 1_000_000
 MAX_PROJECT_NAME_LENGTH: Final = 200
 MAX_WORKSPACE_PATH_LENGTH: Final = 32_767
+MAX_SETTINGS_MODEL_NAME_LENGTH: Final = 200
+MAX_OLLAMA_HOST_LENGTH: Final = 2_048
+MAX_MEMORY_SETTING: Final = 10_000_000
+MAX_DATA_IMPORT_BYTES: Final = 2_147_483_647
 MAX_PROTOCOL_FRAME_BYTES: Final = 16_777_216
 MIN_SESSION_TOKEN_LENGTH: Final = 32
 MAX_SESSION_TOKEN_LENGTH: Final = 512
@@ -61,6 +66,8 @@ ProtocolMethod = Literal[
     "project.workspace",
     "project.archive",
     "project.chat.move",
+    "settings.get",
+    "settings.update",
     "request.cancel",
     "permission.respond",
     "shutdown",
@@ -84,6 +91,8 @@ SUPPORTED_METHODS: Final[tuple[ProtocolMethod, ...]] = (
     "project.workspace",
     "project.archive",
     "project.chat.move",
+    "settings.get",
+    "settings.update",
     "request.cancel",
     "permission.respond",
     "shutdown",
@@ -240,6 +249,23 @@ class PermissionResponseParams(TypedDict):
     granted: bool
 
 
+class DesktopSettingsValues(TypedDict):
+    """Expose only public settings that may safely cross the desktop wire."""
+
+    modelName: str
+    ollamaHost: str
+    shortTermMemoryTokenBudget: int
+    memoryRetrievalLimit: int
+    dataImportMaxBytes: int
+
+
+class SettingsUpdateParams(TypedDict):
+    """Replace one complete revisioned global settings snapshot."""
+
+    expectedRevision: int
+    settings: DesktopSettingsValues
+
+
 class ClientRequest(TypedDict):
     """Represent one request sent from Electron to Python."""
 
@@ -390,6 +416,43 @@ class ProjectStateResult(TypedDict):
     activeProject: ProjectSummary | None
     projects: list[ProjectSummary]
     chatState: ChatStateResult
+
+
+class SettingsProjectScope(TypedDict):
+    """Describe a Project model override without mutating its semantics."""
+
+    projectId: str
+    projectName: str
+    modelName: str | None
+    inheritedModelName: str
+
+
+class SettingsChatScope(TypedDict):
+    """Describe the active Chat's persisted pinned model."""
+
+    chatId: str
+    chatTitle: str
+    modelName: str
+
+
+class SettingsScopes(TypedDict):
+    """Distinguish global, Project, and Chat settings ownership."""
+
+    project: SettingsProjectScope | None
+    chat: SettingsChatScope | None
+
+
+class SettingsStateResult(TypedDict):
+    """Return desired settings beside the currently active runtime snapshot."""
+
+    revision: int
+    updatedAt: str | None
+    settings: DesktopSettingsValues
+    activeSettings: DesktopSettingsValues
+    restartRequired: bool
+    restartFields: list[str]
+    scopes: SettingsScopes
+    warning: str | None
 
 
 ServerMessage = (
@@ -849,6 +912,120 @@ def _validate_permission_response_params(params: JsonObject) -> None:
     _require_boolean(params, "granted", "permission.respond params")
 
 
+def _validate_settings_values(
+    value: object,
+    *,
+    context: str,
+    error_code: str = "protocol.invalid_params",
+) -> DesktopSettingsValues:
+    settings = _as_object(value, context)
+    _require_fields(
+        settings,
+        {
+            "modelName",
+            "ollamaHost",
+            "shortTermMemoryTokenBudget",
+            "memoryRetrievalLimit",
+            "dataImportMaxBytes",
+        },
+        context,
+    )
+    model_name = _require_non_blank_string(
+        settings,
+        "modelName",
+        context,
+        maximum=MAX_SETTINGS_MODEL_NAME_LENGTH,
+        error_code=error_code,
+    )
+    ollama_host = _require_non_blank_string(
+        settings,
+        "ollamaHost",
+        context,
+        maximum=MAX_OLLAMA_HOST_LENGTH,
+        error_code=error_code,
+    )
+    if (
+        model_name != model_name.strip()
+        or "\x00" in model_name
+        or any(character in "\r\n" for character in model_name)
+    ):
+        raise ProtocolValidationError(
+            error_code,
+            f"{context}.modelName must be trimmed and single-line.",
+        )
+    if (
+        ollama_host != ollama_host.strip()
+        or "\x00" in ollama_host
+        or any(character.isspace() for character in ollama_host)
+    ):
+        raise ProtocolValidationError(
+            error_code,
+            f"{context}.ollamaHost must be a valid HTTP origin.",
+        )
+    try:
+        parsed_host = urlsplit(ollama_host)
+        parsed_port = parsed_host.port
+    except ValueError as error:
+        raise ProtocolValidationError(
+            error_code,
+            f"{context}.ollamaHost must be a valid HTTP origin.",
+        ) from error
+    if (
+        parsed_host.scheme not in {"http", "https"}
+        or parsed_host.hostname is None
+        or parsed_host.username is not None
+        or parsed_host.password is not None
+        or parsed_host.query
+        or parsed_host.fragment
+        or parsed_host.path not in {"", "/"}
+        or parsed_port is not None and not 1 <= parsed_port <= 65_535
+    ):
+        raise ProtocolValidationError(
+            error_code,
+            f"{context}.ollamaHost must be a valid HTTP origin.",
+        )
+    integer_limits = {
+        "shortTermMemoryTokenBudget": MAX_MEMORY_SETTING,
+        "memoryRetrievalLimit": MAX_MEMORY_SETTING,
+        "dataImportMaxBytes": MAX_DATA_IMPORT_BYTES,
+    }
+    for key, maximum in integer_limits.items():
+        number = _require_integer(settings, key, context)
+        if number <= 0 or number > maximum:
+            raise ProtocolValidationError(
+                error_code,
+                f"{context}.{key} is outside its supported range.",
+            )
+    return cast(DesktopSettingsValues, settings)
+
+
+def _validate_settings_update_params(params: JsonObject) -> None:
+    context = "settings.update params"
+    _require_fields(params, {"expectedRevision", "settings"}, context)
+    expected_revision = _require_integer(params, "expectedRevision", context)
+    if expected_revision < 0:
+        raise ProtocolValidationError(
+            "protocol.invalid_params",
+            "settings.update params.expectedRevision cannot be negative.",
+        )
+    raw_settings = _as_object(params["settings"], f"{context}.settings")
+    if set(raw_settings) != {
+        "modelName",
+        "ollamaHost",
+        "shortTermMemoryTokenBudget",
+        "memoryRetrievalLimit",
+        "dataImportMaxBytes",
+    }:
+        raise ProtocolValidationError(
+            "protocol.invalid_params",
+            "settings.update params.settings has invalid fields.",
+        )
+    _validate_settings_values(
+        raw_settings,
+        context="settings.update params.settings",
+    )
+
+
 def parse_client_request(value: object) -> ClientRequest:
     """Validate and return one Electron-to-Python request."""
 
@@ -911,6 +1088,10 @@ def parse_client_request(value: object) -> ClientRequest:
         _validate_project_archive_params(params)
     elif method == "project.chat.move":
         _validate_project_chat_move_params(params)
+    elif method == "settings.get":
+        _require_fields(params, set(), "settings.get params")
+    elif method == "settings.update":
+        _validate_settings_update_params(params)
     elif method == "request.cancel":
         _validate_cancel_params(params)
     elif method == "permission.respond":
@@ -1291,12 +1472,119 @@ def _validate_success_result(result: JsonObject) -> None:
     if fields == {"activeProject", "projects", "chatState"}:
         _validate_project_state_result(result)
         return
+    if fields == {
+        "revision",
+        "updatedAt",
+        "settings",
+        "activeSettings",
+        "restartRequired",
+        "restartFields",
+        "scopes",
+        "warning",
+    }:
+        _validate_settings_state_result(result)
+        return
     if fields == {"stopped"} and result["stopped"] is True:
         return
     raise ProtocolValidationError(
         "protocol.invalid_message",
         "Success response.result does not match a supported result schema.",
     )
+
+
+def _validate_settings_state_result(
+    result: JsonObject,
+) -> SettingsStateResult:
+    context = "settings state result"
+    revision = _require_integer(result, "revision", context)
+    if revision < 0:
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.revision cannot be negative.",
+        )
+    if result.get("updatedAt") is not None:
+        _require_string(result, "updatedAt", context, maximum=128)
+    _validate_settings_values(
+        result["settings"],
+        context=f"{context}.settings",
+        error_code="protocol.invalid_message",
+    )
+    _validate_settings_values(
+        result["activeSettings"],
+        context=f"{context}.activeSettings",
+        error_code="protocol.invalid_message",
+    )
+    restart_required = _require_boolean(result, "restartRequired", context)
+    restart_fields = result.get("restartFields")
+    allowed_restart_fields = {
+        "modelName",
+        "ollamaHost",
+        "shortTermMemoryTokenBudget",
+        "memoryRetrievalLimit",
+        "dataImportMaxBytes",
+    }
+    if (
+        not isinstance(restart_fields, list)
+        or not all(
+            isinstance(field_name, str)
+            and field_name in allowed_restart_fields
+            for field_name in restart_fields
+        )
+        or len(restart_fields) != len(set(restart_fields))
+        or restart_required != bool(restart_fields)
+    ):
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.restartFields is inconsistent.",
+        )
+    scopes = _as_object(result["scopes"], f"{context}.scopes")
+    _require_fields(scopes, {"project", "chat"}, f"{context}.scopes")
+    raw_project = scopes.get("project")
+    if raw_project is not None:
+        project = _as_object(raw_project, f"{context}.scopes.project")
+        _require_fields(
+            project,
+            {"projectId", "projectName", "modelName", "inheritedModelName"},
+            f"{context}.scopes.project",
+        )
+        _require_project_identifier(
+            project,
+            "projectId",
+            f"{context}.scopes.project",
+        )
+        _require_string(project, "projectName", f"{context}.scopes.project")
+        if project.get("modelName") is not None:
+            _require_string(
+                project,
+                "modelName",
+                f"{context}.scopes.project",
+                maximum=MAX_SETTINGS_MODEL_NAME_LENGTH,
+            )
+        _require_string(
+            project,
+            "inheritedModelName",
+            f"{context}.scopes.project",
+            maximum=MAX_SETTINGS_MODEL_NAME_LENGTH,
+        )
+    raw_chat = scopes.get("chat")
+    if raw_chat is not None:
+        chat = _as_object(raw_chat, f"{context}.scopes.chat")
+        _require_fields(
+            chat,
+            {"chatId", "chatTitle", "modelName"},
+            f"{context}.scopes.chat",
+        )
+        _require_identifier(chat, "chatId", f"{context}.scopes.chat")
+        _require_string(chat, "chatTitle", f"{context}.scopes.chat")
+        _require_string(
+            chat,
+            "modelName",
+            f"{context}.scopes.chat",
+            maximum=MAX_SETTINGS_MODEL_NAME_LENGTH,
+        )
+    if result.get("warning") is not None:
+        _require_string(result, "warning", context, maximum=1_000)
+    return cast(SettingsStateResult, result)
 
 
 def _validate_response(message: JsonObject) -> ServerMessage:

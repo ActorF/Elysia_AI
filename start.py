@@ -8,7 +8,12 @@ from chats import (
     LegacyConversationMigrator,
     LegacyMigrationError,
 )
-from config.settings import SETTINGS
+from config.desktop_settings import (
+    DesktopSettingsValidationError,
+    validate_model_name,
+    validate_ollama_host,
+)
+from config.settings import AppSettings, SETTINGS
 from core import (
     ActiveConversationService,
     Brain,
@@ -42,7 +47,7 @@ logging.basicConfig(
 )
 
 
-def validate_settings() -> None:
+def validate_settings(settings: AppSettings | None = None) -> None:
     """Validate cross-service configuration before any model work begins.
 
     Raises:
@@ -50,23 +55,24 @@ def validate_settings() -> None:
             downstream service.
     """
 
-    if not SETTINGS.model_name.strip():
-        raise ConfigurationError(
-            "MODEL_NAME cannot be empty."
-        )
+    runtime_settings = SETTINGS if settings is None else settings
 
-    ollama_host = SETTINGS.ollama_host.strip()
-
-    if not ollama_host.startswith(
+    if not runtime_settings.model_name.strip():
+        raise ConfigurationError("MODEL_NAME cannot be empty.")
+    if not runtime_settings.ollama_host.strip().startswith(
         ("http://", "https://")
     ):
         raise ConfigurationError(
-            "OLLAMA_HOST must start with "
-            "http:// or https://."
+            "OLLAMA_HOST must start with http:// or https://."
         )
+    try:
+        validate_model_name(runtime_settings.model_name)
+        validate_ollama_host(runtime_settings.ollama_host)
+    except DesktopSettingsValidationError as error:
+        raise ConfigurationError(str(error)) from error
 
     if (
-        SETTINGS.short_term_memory_token_budget
+        runtime_settings.short_term_memory_token_budget
         <= 0
     ):
         raise ConfigurationError(
@@ -74,51 +80,56 @@ def validate_settings() -> None:
             "must be greater than zero."
         )
 
-    if SETTINGS.memory_retrieval_limit <= 0:
+    if runtime_settings.memory_retrieval_limit <= 0:
         raise ConfigurationError(
             "MEMORY_RETRIEVAL_LIMIT "
             "must be greater than zero."
         )
 
-    if SETTINGS.data_import_max_bytes <= 0:
+    if runtime_settings.data_import_max_bytes <= 0:
         raise ConfigurationError(
             "DATA_IMPORT_MAX_BYTES must be greater than zero."
         )
 
 
-def create_data_portability_service() -> DataPortabilityService:
+def create_data_portability_service(
+    settings: AppSettings | None = None,
+) -> DataPortabilityService:
     """Compose the Stage 5 import, export, and recovery boundary."""
 
+    runtime_settings = SETTINGS if settings is None else settings
     return DataPortabilityService(
-        base_dir=SETTINGS.base_dir,
+        base_dir=runtime_settings.base_dir,
         chat_repository=JsonChatRepository(
-            SETTINGS.base_dir / "workspace" / "chats"
+            runtime_settings.base_dir / "workspace" / "chats"
         ),
         project_repository=JsonProjectRepository(
-            SETTINGS.base_dir / "workspace" / "projects"
+            runtime_settings.base_dir / "workspace" / "projects"
         ),
-        max_import_bytes=SETTINGS.data_import_max_bytes,
+        max_import_bytes=runtime_settings.data_import_max_bytes,
     )
 
 
-def create_brain() -> Brain:
+def create_brain(settings: AppSettings | None = None) -> Brain:
     """Construct and connect the application's model and memory services.
 
     This function is the composition root: concrete infrastructure is created
     here and injected into ``Brain``, leaving core orchestration testable.
     """
 
+    runtime_settings = SETTINGS if settings is None else settings
+
     elysia_memory = Memory(
-        SETTINGS.base_dir
+        runtime_settings.base_dir
     )
 
     short_term_memory = ShortTermMemory(
-        SETTINGS.short_term_memory_token_budget,
+        runtime_settings.short_term_memory_token_budget,
     )
 
     chat_model = LangChainOllamaChatModel(
-        SETTINGS.model_name,
-        SETTINGS.ollama_host,
+        runtime_settings.model_name,
+        runtime_settings.ollama_host,
     )
 
     # Fail during startup instead of after the user sends the first message.
@@ -135,21 +146,21 @@ def create_brain() -> Brain:
     )
 
     memory_retriever = MemoryRetriever(
-        SETTINGS.memory_retrieval_limit,
+        runtime_settings.memory_retrieval_limit,
     )
 
     # Chats and Projects live in ignored runtime storage. Their repository
     # paths remain infrastructure details owned by the composition root.
     chat_repository = JsonChatRepository(
-        SETTINGS.base_dir / "workspace" / "chats"
+        runtime_settings.base_dir / "workspace" / "chats"
     )
     LegacyConversationMigrator(
-        base_dir=SETTINGS.base_dir,
+        base_dir=runtime_settings.base_dir,
         chat_repository=chat_repository,
-        model_name=SETTINGS.model_name,
+        model_name=runtime_settings.model_name,
     ).migrate()
     project_repository = JsonProjectRepository(
-        SETTINGS.base_dir / "workspace" / "projects"
+        runtime_settings.base_dir / "workspace" / "projects"
     )
     active_conversation_service = ActiveConversationService(
         chat_repository,
@@ -162,7 +173,7 @@ def create_brain() -> Brain:
     )
 
     return Brain(
-        SETTINGS.model_name,
+        runtime_settings.model_name,
         elysia_memory,
         chat_model,
         short_term_memory=(

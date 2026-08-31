@@ -34,9 +34,39 @@ function defaultProjectState() {
   }
 }
 
+function defaultSettingsState() {
+  const values = {
+    modelName: 'qwen3.5:9b',
+    ollamaHost: 'http://localhost:11434',
+    shortTermMemoryTokenBudget: 2048,
+    memoryRetrievalLimit: 5,
+    dataImportMaxBytes: 16777216,
+  }
+  return {
+    revision: 0,
+    updatedAt: null,
+    settings: values,
+    activeSettings: { ...values },
+    restartRequired: false,
+    restartFields: [],
+    scopes: {
+      project: null,
+      chat: {
+        chatId: 'chat-test',
+        chatTitle: 'Elysia Chat',
+        modelName: 'qwen3.5:9b',
+      },
+    },
+    warning: null,
+  }
+}
+
 let snapshot = clone(initialSnapshot)
 let chatState = defaultChatState()
 let projectState = defaultProjectState()
+let settingsState = defaultSettingsState()
+let nextSettingsError = null
+let nextRestartError = null
 let chatMessages = new Map([
   [chatState.activeChat.chatId, clone(chatState.activeChat.messages)],
 ])
@@ -51,6 +81,10 @@ let delayChatActions = false
 let pendingChatActions = []
 let delayCharacterPanelChanges = false
 let pendingCharacterPanelChanges = []
+let delayRestarts = false
+let pendingRestarts = []
+let delaySettingsLoads = false
+let pendingSettingsLoads = []
 const backendListeners = new Set()
 
 function clone(value) {
@@ -133,6 +167,28 @@ function projectResult() {
   return clone(projectState)
 }
 
+function settingsResult() {
+  const activeProject = projectState.activeProject
+  settingsState.scopes = {
+    project: activeProject === null
+      ? null
+      : {
+          projectId: activeProject.projectId,
+          projectName: activeProject.name,
+          modelName: null,
+          inheritedModelName: settingsState.settings.modelName,
+        },
+    chat: chatState.activeChat === undefined
+      ? null
+      : {
+          chatId: chatState.activeChat.chatId,
+          chatTitle: chatState.activeChat.title,
+          modelName: chatState.activeChat.modelName,
+        },
+  }
+  return clone(settingsState)
+}
+
 function activateChat(chatId) {
   const summary = chatState.chats.find((chat) => chat.chatId === chatId)
   if (summary === undefined || summary.archived) {
@@ -188,6 +244,48 @@ function releaseAllChatActions() {
   }
 }
 
+async function waitForRestart() {
+  if (!delayRestarts) {
+    return
+  }
+  await new Promise((resolve) => {
+    pendingRestarts.push(resolve)
+  })
+}
+
+function releaseNextRestart() {
+  const release = pendingRestarts.shift()
+  release?.()
+  return release !== undefined
+}
+
+function releaseAllRestarts() {
+  while (releaseNextRestart()) {
+    // Drain every test-controlled Backend restart before resetting the mock.
+  }
+}
+
+async function waitForSettingsLoad() {
+  if (!delaySettingsLoads) {
+    return
+  }
+  await new Promise((resolve) => {
+    pendingSettingsLoads.push(resolve)
+  })
+}
+
+function releaseNextSettingsLoad() {
+  const release = pendingSettingsLoads.shift()
+  release?.()
+  return release !== undefined
+}
+
+function releaseAllSettingsLoads() {
+  while (releaseNextSettingsLoad()) {
+    // Drain every test-controlled Settings read before resetting the mock.
+  }
+}
+
 const desktopApi = {
   rendererReady: async () => {
     record('rendererReady')
@@ -204,7 +302,60 @@ const desktopApi = {
 
   restartBackend: async () => {
     record('restartBackend')
+    await waitForRestart()
+    if (nextRestartError !== null) {
+      const message = nextRestartError
+      nextRestartError = null
+      throw new Error(message)
+    }
+    settingsState = {
+      ...settingsState,
+      activeSettings: clone(settingsState.settings),
+      restartRequired: false,
+      restartFields: [],
+    }
+    snapshot = {
+      ...snapshot,
+      revision: snapshot.revision + 1,
+      modelName: settingsState.settings.modelName,
+    }
     return clone(snapshot)
+  },
+
+  getSettings: async () => {
+    record('getSettings')
+    await waitForSettingsLoad()
+    return settingsResult()
+  },
+
+  updateSettings: async (request) => {
+    record('updateSettings', [request])
+    if (nextSettingsError !== null) {
+      const message = nextSettingsError
+      nextSettingsError = null
+      throw new Error(message)
+    }
+    if (request.expectedRevision !== settingsState.revision) {
+      throw new Error('Settings changed elsewhere. Reload them before saving.')
+    }
+    const changed = Object.keys(request.settings).filter(
+      (field) => request.settings[field] !== settingsState.activeSettings[field],
+    )
+    const same = JSON.stringify(request.settings) === JSON.stringify(
+      settingsState.settings,
+    )
+    settingsState = {
+      ...settingsState,
+      revision: same ? settingsState.revision : settingsState.revision + 1,
+      updatedAt: same
+        ? settingsState.updatedAt
+        : '2026-08-25T13:30:00+00:00',
+      settings: clone(request.settings),
+      restartRequired: changed.length > 0,
+      restartFields: changed,
+      warning: null,
+    }
+    return settingsResult()
   },
 
   sendMessage: async (request) => {
@@ -538,9 +689,14 @@ const testControl = {
   reset: () => {
     releaseAllChatActions()
     releaseAllCharacterPanelChanges()
+    releaseAllRestarts()
+    releaseAllSettingsLoads()
     snapshot = clone(initialSnapshot)
     chatState = defaultChatState()
     projectState = defaultProjectState()
+    settingsState = defaultSettingsState()
+    nextSettingsError = null
+    nextRestartError = null
     chatMessages = new Map([
       [chatState.activeChat.chatId, clone(chatState.activeChat.messages)],
     ])
@@ -553,6 +709,8 @@ const testControl = {
     calls = []
     delayChatActions = false
     delayCharacterPanelChanges = false
+    delayRestarts = false
+    delaySettingsLoads = false
   },
 
   setSnapshot: (nextSnapshot) => {
@@ -580,6 +738,18 @@ const testControl = {
         : [],
     ]))
     synchronizeProjectState()
+  },
+
+  setSettingsState: (nextSettingsState) => {
+    settingsState = clone(nextSettingsState)
+  },
+
+  failNextSettingsUpdate: (message) => {
+    nextSettingsError = message
+  },
+
+  failNextRestart: (message) => {
+    nextRestartError = message
   },
 
   emitBackendEvent: (event) => {
@@ -682,9 +852,31 @@ const testControl = {
     }
   },
 
+  setRestartDelay: (delayed) => {
+    delayRestarts = delayed
+    if (!delayed) {
+      releaseAllRestarts()
+    }
+  },
+
+  setSettingsLoadDelay: (delayed) => {
+    delaySettingsLoads = delayed
+    if (!delayed) {
+      releaseAllSettingsLoads()
+    }
+  },
+
   getPendingChatActionCount: () => pendingChatActions.length,
 
   releaseNextChatAction,
+
+  getPendingRestartCount: () => pendingRestarts.length,
+
+  releaseNextRestart,
+
+  getPendingSettingsLoadCount: () => pendingSettingsLoads.length,
+
+  releaseNextSettingsLoad,
 
   getPendingCharacterPanelChangeCount: () => (
     pendingCharacterPanelChanges.length

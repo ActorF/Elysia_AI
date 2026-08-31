@@ -25,6 +25,10 @@ const MAX_METHOD_LENGTH = 96
 export const MAX_MESSAGE_LENGTH = 1_000_000
 export const MAX_PROJECT_NAME_LENGTH = 200
 export const MAX_WORKSPACE_PATH_LENGTH = 32_767
+export const MAX_SETTINGS_MODEL_NAME_LENGTH = 200
+export const MAX_OLLAMA_HOST_LENGTH = 2_048
+export const MAX_MEMORY_SETTING = 10_000_000
+export const MAX_DATA_IMPORT_BYTES = 2_147_483_647
 const MIN_SESSION_TOKEN_LENGTH = 32
 const MAX_SESSION_TOKEN_LENGTH = 512
 const PROJECT_ID_PATTERN = /^project_[A-Za-z0-9_-]+$/
@@ -124,6 +128,19 @@ export interface PermissionResponseParams {
   granted: boolean
 }
 
+export interface SettingsValues {
+  modelName: string
+  ollamaHost: string
+  shortTermMemoryTokenBudget: number
+  memoryRetrievalLimit: number
+  dataImportMaxBytes: number
+}
+
+export interface SettingsUpdateParams {
+  expectedRevision: number
+  settings: SettingsValues
+}
+
 export interface RequestParamsByMethod {
   handshake: HandshakeParams
   initialize: Record<string, never>
@@ -143,6 +160,8 @@ export interface RequestParamsByMethod {
   'project.workspace': ProjectWorkspaceParams
   'project.archive': ProjectArchiveParams
   'project.chat.move': ProjectChatMoveParams
+  'settings.get': Record<string, never>
+  'settings.update': SettingsUpdateParams
   'request.cancel': CancelParams
   'permission.respond': PermissionResponseParams
   shutdown: Record<string, never>
@@ -303,6 +322,33 @@ export interface ProjectStateResult {
   activeProject: ProjectSummary | null
   projects: ProjectSummary[]
   chatState: ChatStateResult
+}
+
+export interface SettingsProjectScope {
+  projectId: string
+  projectName: string
+  modelName: string | null
+  inheritedModelName: string
+}
+
+export interface SettingsChatScope {
+  chatId: string
+  chatTitle: string
+  modelName: string
+}
+
+export interface SettingsStateResult {
+  revision: number
+  updatedAt: string | null
+  settings: SettingsValues
+  activeSettings: SettingsValues
+  restartRequired: boolean
+  restartFields: (keyof SettingsValues)[]
+  scopes: {
+    project: SettingsProjectScope | null
+    chat: SettingsChatScope | null
+  }
+  warning: string | null
 }
 
 export class ProtocolValidationError extends Error {
@@ -785,6 +831,118 @@ function parsePermissionResponseParams(
   }
 }
 
+function parseSettingsValues(
+  value: unknown,
+  context: string,
+  errorCode = 'protocol.invalid_params',
+): SettingsValues {
+  const settings = asRecord(value, context)
+  requireFields(
+    settings,
+    [
+      'modelName',
+      'ollamaHost',
+      'shortTermMemoryTokenBudget',
+      'memoryRetrievalLimit',
+      'dataImportMaxBytes',
+    ],
+    context,
+  )
+  const modelName = readNonBlankString(
+    settings,
+    'modelName',
+    context,
+    MAX_SETTINGS_MODEL_NAME_LENGTH,
+    errorCode,
+  )
+  const ollamaHost = readNonBlankString(
+    settings,
+    'ollamaHost',
+    context,
+    MAX_OLLAMA_HOST_LENGTH,
+    errorCode,
+  )
+  if (
+    modelName !== modelName.trim()
+    || modelName.includes('\0')
+    || /[\r\n]/u.test(modelName)
+  ) {
+    return fail(errorCode, `${context}.modelName must be trimmed and single-line.`)
+  }
+  if (
+    ollamaHost !== ollamaHost.trim()
+    || ollamaHost.includes('\0')
+    || /\s/u.test(ollamaHost)
+  ) {
+    return fail(errorCode, `${context}.ollamaHost must be a valid HTTP origin.`)
+  }
+  let parsedHost: URL
+  try {
+    parsedHost = new URL(ollamaHost)
+  } catch {
+    return fail(errorCode, `${context}.ollamaHost must be a valid HTTP origin.`)
+  }
+  if (
+    (parsedHost.protocol !== 'http:' && parsedHost.protocol !== 'https:')
+    || parsedHost.hostname.length === 0
+    || parsedHost.username.length > 0
+    || parsedHost.password.length > 0
+    || parsedHost.port === '0'
+    || (parsedHost.pathname !== '/' && parsedHost.pathname !== '')
+    || parsedHost.search.length > 0
+    || parsedHost.hash.length > 0
+  ) {
+    return fail(errorCode, `${context}.ollamaHost must be a valid HTTP origin.`)
+  }
+  const readPositive = (key: keyof Pick<
+    SettingsValues,
+    | 'shortTermMemoryTokenBudget'
+    | 'memoryRetrievalLimit'
+    | 'dataImportMaxBytes'
+  >, maximum: number): number => {
+    const number = readInteger(settings, key, context)
+    if (number <= 0 || number > maximum) {
+      return fail(errorCode, `${context}.${key} is outside its supported range.`)
+    }
+    return number
+  }
+  return {
+    modelName,
+    ollamaHost: ollamaHost.endsWith('/')
+      ? ollamaHost.slice(0, -1)
+      : ollamaHost,
+    shortTermMemoryTokenBudget: readPositive(
+      'shortTermMemoryTokenBudget',
+      MAX_MEMORY_SETTING,
+    ),
+    memoryRetrievalLimit: readPositive(
+      'memoryRetrievalLimit',
+      MAX_MEMORY_SETTING,
+    ),
+    dataImportMaxBytes: readPositive(
+      'dataImportMaxBytes',
+      MAX_DATA_IMPORT_BYTES,
+    ),
+  }
+}
+
+function parseSettingsUpdateParams(value: unknown): SettingsUpdateParams {
+  const context = 'settings.update params'
+  const params = asRecord(value, context)
+  requireFields(params, ['expectedRevision', 'settings'], context)
+  const expectedRevision = readInteger(params, 'expectedRevision', context)
+  if (expectedRevision < 0) {
+    return fail(
+      'protocol.invalid_params',
+      'settings.update params.expectedRevision cannot be negative.',
+    )
+  }
+  return {
+    expectedRevision,
+    settings: parseSettingsValues(params.settings, `${context}.settings`),
+  }
+}
+
 export function parseClientRequest(value: unknown): ClientRequest {
   const request = asRecord(value, 'request')
   requireFields(
@@ -899,6 +1057,17 @@ export function parseClientRequest(value: unknown): ClientRequest {
     return {
       type: 'request', protocol, id, method,
       params: parseProjectChatMoveParams(request.params),
+    }
+  }
+  if (method === 'settings.get') {
+    const params = asRecord(request.params, 'settings.get params')
+    requireFields(params, [], 'settings.get params')
+    return { type: 'request', protocol, id, method, params: {} }
+  }
+  if (method === 'settings.update') {
+    return {
+      type: 'request', protocol, id, method,
+      params: parseSettingsUpdateParams(request.params),
     }
   }
   if (method === 'request.cancel') {
@@ -1601,6 +1770,137 @@ export function parseProjectStateResult(value: unknown): ProjectStateResult {
   return { activeProject, projects, chatState }
 }
 
+export function parseSettingsStateResult(
+  value: unknown,
+): SettingsStateResult {
+  const context = 'settings state result'
+  const result = asRecord(value, context)
+  requireFields(
+    result,
+    [
+      'revision',
+      'updatedAt',
+      'settings',
+      'activeSettings',
+      'restartRequired',
+      'restartFields',
+      'scopes',
+      'warning',
+    ],
+    context,
+  )
+  const revision = readInteger(result, 'revision', context)
+  if (revision < 0) {
+    return fail('protocol.invalid_message', `${context}.revision cannot be negative.`)
+  }
+  const updatedAt = result.updatedAt === null
+    ? null
+    : readString(result, 'updatedAt', context, { maximum: 128 })
+  const settings = parseSettingsValues(
+    result.settings,
+    `${context}.settings`,
+    'protocol.invalid_message',
+  )
+  const activeSettings = parseSettingsValues(
+    result.activeSettings,
+    `${context}.activeSettings`,
+    'protocol.invalid_message',
+  )
+  const restartRequired = readBoolean(result, 'restartRequired', context)
+  const allowedFields = [
+    'modelName',
+    'ollamaHost',
+    'shortTermMemoryTokenBudget',
+    'memoryRetrievalLimit',
+    'dataImportMaxBytes',
+  ] as const
+  if (
+    !Array.isArray(result.restartFields)
+    || !result.restartFields.every(
+      (field): field is typeof allowedFields[number] => (
+        typeof field === 'string'
+        && (allowedFields as readonly string[]).includes(field)
+      ),
+    )
+    || new Set(result.restartFields).size !== result.restartFields.length
+    || restartRequired !== (result.restartFields.length > 0)
+  ) {
+    return fail(
+      'protocol.invalid_message',
+      `${context}.restartFields is inconsistent.`,
+    )
+  }
+  const scopes = asRecord(result.scopes, `${context}.scopes`)
+  requireFields(scopes, ['project', 'chat'], `${context}.scopes`)
+  let project: SettingsProjectScope | null = null
+  if (scopes.project !== null) {
+    const rawProject = asRecord(scopes.project, `${context}.scopes.project`)
+    requireFields(
+      rawProject,
+      ['projectId', 'projectName', 'modelName', 'inheritedModelName'],
+      `${context}.scopes.project`,
+    )
+    project = {
+      projectId: readProjectIdentifier(
+        rawProject,
+        'projectId',
+        `${context}.scopes.project`,
+      ),
+      projectName: readString(
+        rawProject,
+        'projectName',
+        `${context}.scopes.project`,
+      ),
+      modelName: rawProject.modelName === null
+        ? null
+        : readString(
+            rawProject,
+            'modelName',
+            `${context}.scopes.project`,
+            { maximum: MAX_SETTINGS_MODEL_NAME_LENGTH },
+          ),
+      inheritedModelName: readString(
+        rawProject,
+        'inheritedModelName',
+        `${context}.scopes.project`,
+        { maximum: MAX_SETTINGS_MODEL_NAME_LENGTH },
+      ),
+    }
+  }
+  let chat: SettingsChatScope | null = null
+  if (scopes.chat !== null) {
+    const rawChat = asRecord(scopes.chat, `${context}.scopes.chat`)
+    requireFields(
+      rawChat,
+      ['chatId', 'chatTitle', 'modelName'],
+      `${context}.scopes.chat`,
+    )
+    chat = {
+      chatId: readIdentifier(rawChat, 'chatId', `${context}.scopes.chat`),
+      chatTitle: readString(rawChat, 'chatTitle', `${context}.scopes.chat`),
+      modelName: readString(
+        rawChat,
+        'modelName',
+        `${context}.scopes.chat`,
+        { maximum: MAX_SETTINGS_MODEL_NAME_LENGTH },
+      ),
+    }
+  }
+  const warning = result.warning === null
+    ? null
+    : readString(result, 'warning', context, { maximum: 1_000 })
+  return {
+    revision,
+    updatedAt,
+    settings,
+    activeSettings,
+    restartRequired,
+    restartFields: [...result.restartFields],
+    scopes: { project, chat },
+    warning,
+  }
+}
+
 function validateSuccessResult(value: unknown): Record<string, unknown> {
   const result = asRecord(value, 'response.result')
   if (Object.hasOwn(result, 'protocol')) {
@@ -1621,6 +1921,10 @@ function validateSuccessResult(value: unknown): Record<string, unknown> {
   }
   if (Object.hasOwn(result, 'activeProject')) {
     parseProjectStateResult(result)
+    return result
+  }
+  if (Object.hasOwn(result, 'settings')) {
+    parseSettingsStateResult(result)
     return result
   }
   requireFields(result, ['stopped'], 'shutdown result')

@@ -31,11 +31,18 @@ entering the `ready` state.
 Version 1 defines strict request, response, error, stream, progress,
 permission, event, cancel, and permission-decision shapes. The current runtime
 advertises `chat.stream`, `chat.retry`, `request.cancel`, `stream`, `progress`,
-and `event`. Both new-turn and retry generation reuse the `chat.reply` stream.
+`event`, `chat.sessions`, `project.management`, and `settings.management`.
+Both new-turn and retry generation reuse the `chat.reply` stream.
 Cancellation succeeds only before generation claims its atomic commit gate, so
 a successful Stop response guarantees that the interrupted turn is not saved.
 Backend permission prompts retain their stable schema but are not yet
 advertised as an active capability.
+
+`settings.get` and `settings.update` expose one exact five-field public
+allowlist with optimistic revision checks. API keys, tokens, passwords, base
+paths, environment data, and arbitrary extension fields are rejected. The
+authenticated Settings methods remain available when Brain initialization
+fails so the desktop can repair an invalid saved model or Ollama origin.
 
 String limits are measured in Unicode code points and each UTF-8 NDJSON frame
 is capped at 16,777,216 bytes, including leading and trailing JSON whitespace.

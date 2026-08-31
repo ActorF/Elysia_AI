@@ -78,6 +78,37 @@ interface ProjectState {
   chatState: ChatSessionState
 }
 
+interface DesktopSettingsValues {
+  modelName: string
+  ollamaHost: string
+  shortTermMemoryTokenBudget: number
+  memoryRetrievalLimit: number
+  dataImportMaxBytes: number
+}
+
+interface DesktopSettingsState {
+  revision: number
+  updatedAt: string | null
+  settings: DesktopSettingsValues
+  activeSettings: DesktopSettingsValues
+  restartRequired: boolean
+  restartFields: Array<keyof DesktopSettingsValues>
+  scopes: {
+    project: {
+      projectId: string
+      projectName: string
+      modelName: string | null
+      inheritedModelName: string
+    } | null
+    chat: {
+      chatId: string
+      chatTitle: string
+      modelName: string
+    } | null
+  }
+  warning: string | null
+}
+
 interface CallRecord {
   sequence: number
   method: string
@@ -89,13 +120,22 @@ interface RendererTestControl {
   emitBackendEvent(event: unknown): void
   getPendingChatActionCount(): number
   getPendingCharacterPanelChangeCount(): number
+  getPendingRestartCount(): number
+  getPendingSettingsLoadCount(): number
   getCalls(): CallRecord[]
   releaseNextChatAction(): boolean
   releaseNextCharacterPanelChange(): boolean
+  releaseNextRestart(): boolean
+  releaseNextSettingsLoad(): boolean
   setChatActionDelay(delayed: boolean): void
   setCharacterPanelChangeDelay(delayed: boolean): void
+  setRestartDelay(delayed: boolean): void
+  setSettingsLoadDelay(delayed: boolean): void
   setChatState(state: ChatSessionState): void
   setProjectState(state: ProjectState): void
+  setSettingsState(state: DesktopSettingsState): void
+  failNextRestart(message: string): void
+  failNextSettingsUpdate(message: string): void
   setSelectedFiles(files: SelectedFile[]): void
   setSelectedWorkspace(workspacePath: string | null): void
 }
@@ -156,6 +196,52 @@ async function setProjectState(state: ProjectState): Promise<void> {
   }, state)
 }
 
+async function setSettingsState(
+  state: DesktopSettingsState,
+): Promise<void> {
+  await page.evaluate((nextState) => {
+    ;(window as TestWindow).elysiaDesktopTest.setSettingsState(nextState)
+  }, state)
+}
+
+async function failNextSettingsUpdate(message: string): Promise<void> {
+  await page.evaluate((nextMessage) => {
+    ;(window as TestWindow).elysiaDesktopTest
+      .failNextSettingsUpdate(nextMessage)
+  }, message)
+}
+
+async function failNextRestart(message: string): Promise<void> {
+  await page.evaluate((nextMessage) => {
+    ;(window as TestWindow).elysiaDesktopTest.failNextRestart(nextMessage)
+  }, message)
+}
+
+async function setRestartDelay(delayed: boolean): Promise<void> {
+  await page.evaluate((nextDelayed) => {
+    ;(window as TestWindow).elysiaDesktopTest.setRestartDelay(nextDelayed)
+  }, delayed)
+}
+
+async function releaseNextRestart(): Promise<boolean> {
+  return page.evaluate(() => (
+    (window as TestWindow).elysiaDesktopTest.releaseNextRestart()
+  ))
+}
+
+async function setSettingsLoadDelay(delayed: boolean): Promise<void> {
+  await page.evaluate((nextDelayed) => {
+    ;(window as TestWindow).elysiaDesktopTest
+      .setSettingsLoadDelay(nextDelayed)
+  }, delayed)
+}
+
+async function releaseNextSettingsLoad(): Promise<boolean> {
+  return page.evaluate(() => (
+    (window as TestWindow).elysiaDesktopTest.releaseNextSettingsLoad()
+  ))
+}
+
 async function setSelectedWorkspace(
   workspacePath: string | null,
 ): Promise<void> {
@@ -201,6 +287,54 @@ function projectSummary(
     chatCount: 0,
     ...overrides,
   }
+}
+
+function desktopSettingsState(
+  overrides: Partial<DesktopSettingsState> = {},
+): DesktopSettingsState {
+  const settings = overrides.settings ?? {
+    modelName: 'qwen3.5:9b',
+    ollamaHost: 'http://localhost:11434',
+    shortTermMemoryTokenBudget: 2048,
+    memoryRetrievalLimit: 5,
+    dataImportMaxBytes: 16_777_216,
+  }
+  const defaultState: DesktopSettingsState = {
+    revision: 0,
+    updatedAt: null,
+    settings,
+    activeSettings: overrides.activeSettings ?? { ...settings },
+    restartRequired: false,
+    restartFields: [],
+    scopes: {
+      project: null,
+      chat: {
+        chatId: 'chat-test',
+        chatTitle: 'Elysia Chat',
+        modelName: 'qwen3.5:9b',
+      },
+    },
+    warning: null,
+  }
+  return {
+    ...defaultState,
+    ...overrides,
+    settings,
+    activeSettings: overrides.activeSettings ?? { ...settings },
+  }
+}
+
+async function openSettings(
+  snapshot: BackendSnapshot = readySnapshot(),
+): Promise<void> {
+  await emitSnapshot(snapshot)
+  await pressControlShortcut(',')
+  await expect(
+    page.getByRole('heading', { name: 'Settings', exact: true }),
+  ).toBeVisible()
+  await expect(
+    page.getByRole('heading', { name: 'General', exact: true }),
+  ).toBeVisible()
 }
 
 async function getCalls(): Promise<CallRecord[]> {
@@ -780,7 +914,7 @@ test('settles a pending panel open before leaving Chat for Settings', async () =
 })
 
 test('persists system, light, and dark theme choices', async () => {
-  await pressControlShortcut(',')
+  await openSettings()
 
   await expect.poll(readThemeState).toEqual({
     preference: 'system',
@@ -832,6 +966,7 @@ test('persists system, light, and dark theme choices', async () => {
       .map((call) => call.args[0])
   )).toContain('dark')
 
+  await emitSnapshot(readySnapshot())
   await pressControlShortcut(',')
   await page.getByText('System', { exact: true }).click()
   await expect(page.getByRole('radio', { name: /^System/ })).toBeChecked()
@@ -857,6 +992,490 @@ test('persists system, light, and dark theme choices', async () => {
     'system',
     'dark',
   ]))
+})
+
+test('shows all Settings areas, ownership scopes, and no secret controls', async () => {
+  const scopedChat = chatSummary('chat-settings-scope', 'Scoped Chat', {
+    projectId: 'project-settings-scope',
+    modelName: 'qwen3.5:9b',
+  })
+  const scopedProject = projectSummary(
+    'project-settings-scope',
+    'Scoped Project',
+    { chatCount: 1 },
+  )
+  await setProjectState({
+    activeProject: scopedProject,
+    projects: [scopedProject],
+    chatState: {
+      activeChat: { ...scopedChat, messages: [] },
+      chats: [scopedChat],
+    },
+  })
+  await setSettingsState(desktopSettingsState({ revision: 4 }))
+  await openSettings(readySnapshot({
+    chatId: scopedChat.chatId,
+    chatTitle: scopedChat.title,
+  }))
+
+  await expect(page.locator('.settings-section h2')).toHaveText([
+    'General',
+    'Model',
+    'Memory',
+    'Voice',
+    'Files',
+    'Work',
+    'Privacy',
+    'Appearance',
+  ])
+
+  const scopes = page.locator('[aria-label="Settings scopes"]')
+  await expect(scopes.getByText('Global', { exact: true })).toBeVisible()
+  await expect(scopes.getByText('Project', { exact: true })).toBeVisible()
+  await expect(scopes.getByText('Chat', { exact: true })).toBeVisible()
+  await expect(scopes).toContainText('Scoped Project')
+  await expect(scopes).toContainText('Inherits qwen3.5:9b')
+  await expect(scopes).toContainText('Scoped Chat')
+  await expect(scopes).toContainText('Pinned to qwen3.5:9b')
+
+  const secretControlMetadata = await page.locator(
+    '.settings-view input, .settings-view select, .settings-view textarea',
+  ).evaluateAll((controls) => controls.map((control) => [
+    control.getAttribute('type'),
+    control.getAttribute('name'),
+    control.getAttribute('id'),
+    control.getAttribute('placeholder'),
+    control.getAttribute('autocomplete'),
+    control.getAttribute('aria-label'),
+  ].filter(Boolean).join(' ')).join('\n'))
+  expect(secretControlMetadata).not.toMatch(
+    /api[-_ ]?key|access[-_ ]?token|auth(?:entication)?[-_ ]?token|password|secret/iu,
+  )
+  await expect(page.locator('.settings-view input[type="password"]'))
+    .toHaveCount(0)
+})
+
+test('saves exact global Settings and restarts the Backend to apply them', async () => {
+  await setSettingsState(desktopSettingsState({ revision: 7 }))
+  await openSettings(readySnapshot({
+    models: ['qwen3.5:9b', 'llama3.2:3b'],
+  }))
+  await clearCalls()
+
+  const expectedSettings: DesktopSettingsValues = {
+    modelName: 'llama3.2:3b',
+    ollamaHost: 'http://127.0.0.1:11435',
+    shortTermMemoryTokenBudget: 4096,
+    memoryRetrievalLimit: 8,
+    dataImportMaxBytes: 33_554_432,
+  }
+  await page.getByLabel('Default model').fill(
+    expectedSettings.modelName,
+  )
+  await page.getByLabel('Ollama origin').fill(
+    `${expectedSettings.ollamaHost}/`,
+  )
+  await page.getByLabel('Short-term token budget').fill('4096')
+  await page.getByLabel('Retrieved memories per turn').fill('8')
+  await page.getByLabel('Maximum import size (bytes)').fill('33554432')
+  await page.getByRole('button', { name: 'Save changes' }).click()
+
+  await expect.poll(async () => (
+    (await getCalls()).find(
+      (call) => call.method === 'updateSettings',
+    )?.args
+  )).toEqual([{
+    expectedRevision: 7,
+    settings: expectedSettings,
+  }])
+  const restartAlert = page.locator('.inline-alert').filter({
+    hasText: 'Backend restart required',
+  })
+  await expect(restartAlert).toBeVisible()
+  await expect(restartAlert).toContainText(
+    'default model, Ollama origin, short-term memory budget, memory retrieval limit, file import limit',
+  )
+
+  await clearCalls()
+  await restartAlert.getByRole('button', { name: 'Restart Backend' }).click()
+  await expect.poll(async () => (
+    (await getCalls()).find(
+      (call) => call.method === 'restartBackend',
+    )?.args
+  )).toEqual([])
+  await expect(restartAlert).toHaveCount(0)
+})
+
+test('discards a Settings draft without persisting it', async () => {
+  await setSettingsState(desktopSettingsState({ revision: 2 }))
+  await openSettings()
+  await clearCalls()
+
+  const origin = page.getByLabel('Ollama origin')
+  const budget = page.getByLabel('Short-term token budget')
+  await origin.fill('http://127.0.0.1:11434')
+  await budget.fill('3072')
+  await expect(page.getByText('Unsaved global changes')).toBeVisible()
+  await page.getByRole('button', { name: 'Discard' }).click()
+
+  await expect(origin).toHaveValue('http://localhost:11434')
+  await expect(budget).toHaveValue('2048')
+  await expect(page.getByRole('button', { name: 'Save changes' }))
+    .toBeDisabled()
+  expect((await getCalls()).filter(
+    (call) => call.method === 'updateSettings',
+  )).toHaveLength(0)
+})
+
+test('blocks invalid Settings before they reach the Desktop API', async () => {
+  await setSettingsState(desktopSettingsState())
+  await openSettings()
+  await clearCalls()
+
+  const origin = page.getByLabel('Ollama origin')
+  const budget = page.getByLabel('Short-term token budget')
+  const save = page.getByRole('button', { name: 'Save changes' })
+  await origin.fill('ftp://localhost:11434')
+  await expect(save).toBeDisabled()
+  expect((await getCalls()).filter(
+    (call) => call.method === 'updateSettings',
+  )).toHaveLength(0)
+
+  await origin.fill('http://localhost:11434')
+  await budget.fill('0')
+  await expect(save).toBeDisabled()
+  expect((await getCalls()).filter(
+    (call) => call.method === 'updateSettings',
+  )).toHaveLength(0)
+})
+
+test('keeps an unsaved Settings draft after persistence fails', async () => {
+  await setSettingsState(desktopSettingsState({ revision: 3 }))
+  await openSettings()
+  await clearCalls()
+  await failNextSettingsUpdate('Settings storage is temporarily unavailable.')
+
+  const origin = page.getByLabel('Ollama origin')
+  await origin.fill('http://127.0.0.1:11434')
+  await page.getByRole('button', { name: 'Save changes' }).click()
+
+  await expect.poll(async () => (
+    (await getCalls()).filter(
+      (call) => call.method === 'updateSettings',
+    ).length
+  )).toBe(1)
+  const errorAlert = page.locator('.inline-alert').filter({
+    hasText: 'Settings were not saved',
+  })
+  await expect(errorAlert).toContainText(
+    'Settings storage is temporarily unavailable.',
+  )
+  await expect(origin).toHaveValue('http://127.0.0.1:11434')
+  await expect(page.getByText('Unsaved global changes')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Save changes' }))
+    .toBeEnabled()
+})
+
+test('confirms dirty Settings shortcuts and preserves the draft when cancelled', async () => {
+  await setSettingsState(desktopSettingsState({ revision: 4 }))
+  await openSettings()
+
+  const origin = page.getByLabel('Ollama origin')
+  const draftOrigin = 'http://127.0.0.1:11434'
+  await origin.fill(draftOrigin)
+  await expect(page.getByText('Unsaved global changes')).toBeVisible()
+
+  const controlKDialogPromise = page.waitForEvent('dialog')
+  const controlKPromise = pressControlShortcut('k')
+  const controlKDialog = await controlKDialogPromise
+  expect(controlKDialog.type()).toBe('confirm')
+  expect(controlKDialog.message()).toBe('Discard unsaved Settings changes?')
+  await controlKDialog.dismiss()
+  await controlKPromise
+
+  await expect(page.getByRole('heading', {
+    name: 'Settings',
+    exact: true,
+  })).toBeVisible()
+  await expect(origin).toHaveValue(draftOrigin)
+  await expect(page.getByPlaceholder('Search chats')).toHaveCount(0)
+
+  const escapeDialogPromise = page.waitForEvent('dialog')
+  const escapePromise = page.keyboard.press('Escape')
+  const escapeDialog = await escapeDialogPromise
+  expect(escapeDialog.type()).toBe('confirm')
+  expect(escapeDialog.message()).toBe('Discard unsaved Settings changes?')
+  await escapeDialog.dismiss()
+  await escapePromise
+
+  await expect(page.getByRole('heading', {
+    name: 'Settings',
+    exact: true,
+  })).toBeVisible()
+  await expect(origin).toHaveValue(draftOrigin)
+})
+
+test('blocks restart for a dirty draft and locks Backend fields while restarting', async () => {
+  const desiredSettings: DesktopSettingsValues = {
+    modelName: 'qwen3.5:9b',
+    ollamaHost: 'http://127.0.0.1:11434',
+    shortTermMemoryTokenBudget: 2048,
+    memoryRetrievalLimit: 5,
+    dataImportMaxBytes: 16_777_216,
+  }
+  await setSettingsState(desktopSettingsState({
+    revision: 5,
+    settings: desiredSettings,
+    activeSettings: {
+      ...desiredSettings,
+      ollamaHost: 'http://localhost:11434',
+    },
+    restartRequired: true,
+    restartFields: ['ollamaHost'],
+  }))
+  await openSettings()
+
+  const restartAlert = page.locator('.inline-alert').filter({
+    hasText: 'Backend restart required',
+  })
+  const restartButton = restartAlert.getByRole('button', {
+    name: 'Restart Backend',
+  })
+  const retrievalLimit = page.getByLabel('Retrieved memories per turn')
+  await retrievalLimit.fill('6')
+  await expect(restartButton).toBeDisabled()
+  await expect(restartAlert).toContainText(
+    'Save or discard the current draft first.',
+  )
+
+  await page.getByRole('button', { name: 'Discard' }).click()
+  await expect(restartButton).toBeEnabled()
+  await setRestartDelay(true)
+  await restartButton.click()
+  await expect.poll(() => page.evaluate(() => (
+    (window as TestWindow).elysiaDesktopTest.getPendingRestartCount()
+  ))).toBe(1)
+
+  const backendFields = page.locator('.settings-field input')
+  await expect.poll(() => backendFields.evaluateAll((inputs) => (
+    inputs.every((input) => (input as HTMLInputElement).disabled)
+  ))).toBe(true)
+  await expect(page.getByRole('radio', { name: /^System/ })).toBeEnabled()
+
+  expect(await releaseNextRestart()).toBe(true)
+  await setRestartDelay(false)
+  await expect(restartAlert).toHaveCount(0)
+  await expect.poll(() => backendFields.evaluateAll((inputs) => (
+    inputs.every((input) => !(input as HTMLInputElement).disabled)
+  ))).toBe(true)
+})
+
+test('locks Backend fields while Settings reload without disabling Appearance', async () => {
+  await setSettingsState(desktopSettingsState({ revision: 6 }))
+  await openSettings()
+  await setSettingsLoadDelay(true)
+  await clearCalls()
+
+  await emitSnapshot({
+    ...readySnapshot(),
+    revision: 2,
+    status: 'error',
+    error: 'Saved Settings need repair.',
+  })
+  await expect.poll(() => page.evaluate(() => (
+    (window as TestWindow).elysiaDesktopTest.getPendingSettingsLoadCount()
+  ))).toBe(1)
+
+  const backendFields = page.locator('.settings-field input')
+  await expect.poll(() => backendFields.evaluateAll((inputs) => (
+    inputs.every((input) => (input as HTMLInputElement).disabled)
+  ))).toBe(true)
+  await expect(page.getByRole('radio', { name: /^System/ })).toBeEnabled()
+
+  expect(await releaseNextSettingsLoad()).toBe(true)
+  await setSettingsLoadDelay(false)
+  await expect.poll(() => backendFields.evaluateAll((inputs) => (
+    inputs.every((input) => !(input as HTMLInputElement).disabled)
+  ))).toBe(true)
+})
+
+test('reports a Backend restart failure inside Settings', async () => {
+  const settings = desktopSettingsState({
+    revision: 7,
+    restartRequired: true,
+    restartFields: ['modelName'],
+  })
+  settings.activeSettings = {
+    ...settings.settings,
+    modelName: 'llama3.2:3b',
+  }
+  await setSettingsState(settings)
+  await openSettings()
+  const failure = 'The saved model is not installed.'
+  await failNextRestart(failure)
+
+  await page.getByRole('button', { name: 'Restart Backend' }).click()
+  const errorAlert = page.locator('.inline-alert').filter({
+    hasText: failure,
+  })
+  await expect(errorAlert).toBeVisible()
+  await expect(errorAlert).toHaveAttribute('role', 'alert')
+  await expect(page.getByRole('button', { name: 'Restart Backend' }))
+    .toBeEnabled()
+  await expect(page.getByLabel('Default model')).toBeEnabled()
+})
+
+test('disables Settings save while a Chat reply is active', async () => {
+  await setSettingsState(desktopSettingsState({ revision: 8 }))
+  await emitSnapshot(readySnapshot())
+  const composer = page.getByLabel('Message Elysia')
+  await composer.fill('Keep Settings read-only while this reply is active.')
+  await composer.press('Enter')
+  await expect.poll(async () => (
+    (await getCalls()).filter((call) => call.method === 'sendMessage').length
+  )).toBe(1)
+
+  await pressControlShortcut(',')
+  await expect(page.getByRole('heading', {
+    name: 'General',
+    exact: true,
+  })).toBeVisible()
+  await clearCalls()
+  await page.getByLabel('Ollama origin').fill('http://127.0.0.1:11434')
+
+  const save = page.getByRole('button', { name: 'Save changes' })
+  await expect(save).toBeDisabled()
+  await expect(page.getByText(
+    /Wait for the current reply before saving\./,
+  )).toBeVisible()
+  expect((await getCalls()).filter(
+    (call) => call.method === 'updateSettings',
+  )).toHaveLength(0)
+
+  await emitEvent({
+    type: 'chat-error',
+    requestId: 'test-request-1',
+    chatId: 'chat-test',
+    code: 'MODEL_INTERRUPTED',
+    message: 'The test reply ended.',
+    retryable: true,
+  })
+  await expect(save).toBeEnabled()
+})
+
+test('cancels dirty Settings Chat navigation before opening another Chat', async () => {
+  const first = chatSummary('chat-first-settings', 'First Settings Chat')
+  const second = chatSummary('chat-second-settings', 'Second Settings Chat')
+  await setChatState({
+    activeChat: { ...first, messages: [] },
+    chats: [first, second],
+  })
+  await setSettingsState(desktopSettingsState({ revision: 9 }))
+  await emitSnapshot(readySnapshot({
+    chatId: first.chatId,
+    chatTitle: first.title,
+  }))
+  await expect(page.getByRole('button', {
+    name: `Open chat ${second.title}`,
+  })).toBeVisible()
+  await pressControlShortcut(',')
+  await expect(page.getByRole('heading', {
+    name: 'General',
+    exact: true,
+  })).toBeVisible()
+
+  const origin = page.getByLabel('Ollama origin')
+  const draftOrigin = 'http://127.0.0.1:11434'
+  await origin.fill(draftOrigin)
+  await expect(page.getByText('Unsaved global changes')).toBeVisible()
+  await clearCalls()
+
+  const dialogPromise = page.waitForEvent('dialog')
+  const clickPromise = page.getByRole('button', {
+    name: `Open chat ${second.title}`,
+  }).click()
+  const dialog = await dialogPromise
+  expect(dialog.message()).toBe('Discard unsaved Settings changes?')
+  await dialog.dismiss()
+  await clickPromise
+
+  await expect(page.getByRole('heading', {
+    name: 'Settings',
+    exact: true,
+  })).toBeVisible()
+  await expect(origin).toHaveValue(draftOrigin)
+  expect((await getCalls()).filter(
+    (call) => call.method === 'openChat',
+  )).toHaveLength(0)
+})
+
+test('keeps Settings save controls reachable at compact high zoom', async () => {
+  await setSettingsState(desktopSettingsState({ revision: 5 }))
+  await openSettings()
+  await setWindowAndZoom(960, 640, 2)
+
+  const retrievalLimit = page.getByLabel('Retrieved memories per turn')
+  await retrievalLimit.fill('6')
+  const save = page.getByRole('button', { name: 'Save changes' })
+  await save.scrollIntoViewIfNeeded()
+  await expect(save).toBeVisible()
+
+  const layout = await page.evaluate(() => {
+    const view = document.querySelector('.settings-view')
+    const content = document.querySelector('.settings-content')
+    const saveBar = document.querySelector('.settings-save-bar')
+    if (
+      !(view instanceof HTMLElement)
+      || !(content instanceof HTMLElement)
+      || !(saveBar instanceof HTMLElement)
+    ) {
+      throw new Error('The Settings layout is incomplete.')
+    }
+    const viewRect = view.getBoundingClientRect()
+    const saveBarRect = saveBar.getBoundingClientRect()
+    return {
+      viewportWidth: window.innerWidth,
+      viewportHeight: window.innerHeight,
+      rootScrollWidth: document.documentElement.scrollWidth,
+      bodyScrollWidth: document.body.scrollWidth,
+      contentClientWidth: content.clientWidth,
+      contentScrollWidth: content.scrollWidth,
+      viewLeft: viewRect.left,
+      viewRight: viewRect.right,
+      saveBarLeft: saveBarRect.left,
+      saveBarRight: saveBarRect.right,
+      saveBarTop: saveBarRect.top,
+      saveBarBottom: saveBarRect.bottom,
+    }
+  })
+  expect(layout.rootScrollWidth).toBeLessThanOrEqual(layout.viewportWidth + 1)
+  expect(layout.bodyScrollWidth).toBeLessThanOrEqual(layout.viewportWidth + 1)
+  expect(layout.contentScrollWidth).toBeLessThanOrEqual(
+    layout.contentClientWidth + 1,
+  )
+  expect(layout.viewLeft).toBeGreaterThanOrEqual(-1)
+  expect(layout.viewRight).toBeLessThanOrEqual(layout.viewportWidth + 1)
+  expect(layout.saveBarLeft).toBeGreaterThanOrEqual(-1)
+  expect(layout.saveBarRight).toBeLessThanOrEqual(layout.viewportWidth + 1)
+  expect(layout.saveBarTop).toBeGreaterThanOrEqual(-1)
+  expect(layout.saveBarBottom).toBeLessThanOrEqual(layout.viewportHeight + 1)
+
+  await clearCalls()
+  await save.click()
+  await expect.poll(async () => (
+    (await getCalls()).find(
+      (call) => call.method === 'updateSettings',
+    )?.args[0]
+  )).toEqual({
+    expectedRevision: 5,
+    settings: {
+      modelName: 'qwen3.5:9b',
+      ollamaHost: 'http://localhost:11434',
+      shortTermMemoryTokenBudget: 2048,
+      memoryRetrievalLimit: 6,
+      dataImportMaxBytes: 16_777_216,
+    },
+  })
 })
 
 test('uses Shift+Enter for a line and Enter to send through DesktopApi', async () => {

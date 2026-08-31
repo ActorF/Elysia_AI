@@ -46,7 +46,7 @@ interface SidebarProps {
   onBulkDelete(chatIds: string[]): Promise<void>
   onCreate(): Promise<void>
   onDelete(chatId: string): Promise<void>
-  onNavigate(view: AppView): void
+  onNavigate(view: AppView): boolean
   onOpen(chatId: string): Promise<void>
   onPin(chatId: string, pinned: boolean): Promise<void>
   onRename(chatId: string, title: string): Promise<void>
@@ -354,8 +354,10 @@ export function Sidebar({
     selectionMode,
   ])
 
-  function navigate(view: AppView): void {
-    onNavigate(view)
+  function navigate(view: AppView): boolean {
+    if (!onNavigate(view)) {
+      return false
+    }
     if (view !== 'chat') {
       onSearchOpenChange(false)
       onSearchQueryChange('')
@@ -363,6 +365,7 @@ export function Sidebar({
       setSelectedChatIds(new Set())
       setOpenMenuId(null)
     }
+    return true
   }
 
   function focusAfterRemoval(removedChatIds: string[]): void {
@@ -403,6 +406,9 @@ export function Sidebar({
     if (pending) {
       return
     }
+    if (!navigate('chat')) {
+      return
+    }
     setSidebarError(null)
     setLocalPending(true)
     try {
@@ -418,11 +424,13 @@ export function Sidebar({
     if (openingChatId !== null || pending) {
       return
     }
+    if (!navigate('chat')) {
+      return
+    }
     setSidebarError(null)
     setOpeningChatId(chatId)
     try {
       await onOpen(chatId)
-      onNavigate('chat')
     } catch (error) {
       setSidebarError(actionError(error, 'Could not open the Chat.'))
     } finally {
@@ -636,7 +644,9 @@ export function Sidebar({
           aria-expanded={searchOpen}
           title="Search chats (Ctrl+K)"
           onClick={() => {
-            navigate('chat')
+            if (!navigate('chat')) {
+              return
+            }
             onSearchOpenChange(!searchOpen)
             if (searchOpen) {
               onSearchQueryChange('')

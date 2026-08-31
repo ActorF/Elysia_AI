@@ -32,6 +32,8 @@ import type {
   ProjectWorkspaceRequest,
   RenameChatRequest,
   RetryChatRequest,
+  DesktopSettingsState,
+  UpdateDesktopSettingsRequest,
   UpdateProjectRequest,
 } from './contracts.js'
 import {
@@ -47,6 +49,7 @@ import {
   parseHandshakeResult,
   parseInitializeResult,
   parseProjectStateResult,
+  parseSettingsStateResult,
   parseServerMessage,
   type ProtocolMethod,
   type RequestParamsByMethod,
@@ -69,6 +72,7 @@ const INITIALIZE_TIMEOUT_MS = 120_000
 const CANCEL_ACK_TIMEOUT_MS = 5_000
 const CANCEL_TERMINAL_TIMEOUT_MS = 15_000
 const SHUTDOWN_TIMEOUT_MS = 30_000
+const RESTART_TIMEOUT_MS = HANDSHAKE_TIMEOUT_MS + INITIALIZE_TIMEOUT_MS + 5_000
 
 interface PendingRequest {
   method: ProtocolMethod
@@ -81,6 +85,8 @@ interface PendingRequest {
   rejectChatState?: (error: Error) => void
   resolveProjectState?: (state: ProjectState) => void
   rejectProjectState?: (error: Error) => void
+  resolveSettingsState?: (state: DesktopSettingsState) => void
+  rejectSettingsState?: (error: Error) => void
   cancelTargetId?: string
   resolveCancellation?: () => void
   rejectCancellation?: (error: Error) => void
@@ -132,6 +138,11 @@ const PROJECT_METHODS = new Set<ProtocolMethod>([
   'project.chat.move',
 ])
 
+const SETTINGS_METHODS = new Set<ProtocolMethod>([
+  'settings.get',
+  'settings.update',
+])
+
 export class BackendProcess {
   private child: ChildProcessWithoutNullStreams | null = null
   private lineReader: ReadlineInterface | null = null
@@ -141,6 +152,12 @@ export class BackendProcess {
   private initializeTimeout: ReturnType<typeof setTimeout> | null = null
   private readonly pendingRequests = new Map<string, PendingRequest>()
   private expectedExit = false
+  private restartCompletion: {
+    resolve: (snapshot: BackendSnapshot) => void
+    reject: (error: Error) => void
+    timeout: ReturnType<typeof setTimeout>
+  } | null = null
+  private restartInProgress = false
   private lastDiagnostic = ''
   private snapshot: BackendSnapshot = {
     revision: 0,
@@ -218,7 +235,7 @@ export class BackendProcess {
           ELYSIA_DESKTOP_SESSION_TOKEN: sessionToken,
           ...(modelName === undefined
             ? {}
-            : { MODEL_NAME: modelName }),
+            : { ELYSIA_MODEL_OVERRIDE: modelName }),
         },
         stdio: ['pipe', 'pipe', 'pipe'],
         windowsHide: true,
@@ -318,19 +335,76 @@ export class BackendProcess {
     if (!this.snapshot.models.includes(modelName)) {
       throw new Error('Selected model is not installed in Ollama.')
     }
-
-    await this.stop()
-    this.start(modelName)
-    return this.getSnapshot()
+    return this.performRestart(modelName)
   }
 
   async restart(): Promise<BackendSnapshot> {
-    await this.stop()
-    this.start()
-    return this.getSnapshot()
+    return this.performRestart()
+  }
+
+  private async performRestart(modelName?: string): Promise<BackendSnapshot> {
+    if (this.restartInProgress || this.restartCompletion !== null) {
+      throw new Error('A Backend restart is already pending.')
+    }
+    this.restartInProgress = true
+    try {
+      await this.stop()
+      return await this.startAndWait(modelName)
+    } finally {
+      this.restartInProgress = false
+    }
+  }
+
+  private startAndWait(modelName?: string): Promise<BackendSnapshot> {
+    if (this.restartCompletion !== null) {
+      return Promise.reject(new Error('A Backend restart is already pending.'))
+    }
+    return new Promise<BackendSnapshot>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        if (this.restartCompletion?.timeout !== timeout) {
+          return
+        }
+        this.restartCompletion = null
+        reject(new Error('Python Backend restart timed out.'))
+      }, RESTART_TIMEOUT_MS)
+      this.restartCompletion = { resolve, reject, timeout }
+      this.start(modelName)
+      this.settleRestartCompletion()
+    })
+  }
+
+  private settleRestartCompletion(): void {
+    const completion = this.restartCompletion
+    if (completion === null) {
+      return
+    }
+    if (this.snapshot.status === 'ready') {
+      clearTimeout(completion.timeout)
+      this.restartCompletion = null
+      completion.resolve(this.getSnapshot())
+    } else if (this.snapshot.status === 'error') {
+      clearTimeout(completion.timeout)
+      this.restartCompletion = null
+      completion.reject(new Error(
+        this.snapshot.error ?? 'Python Backend restart failed.',
+      ))
+    }
+  }
+
+  private rejectRestartCompletion(message: string): void {
+    const completion = this.restartCompletion
+    if (completion === null) {
+      return
+    }
+    clearTimeout(completion.timeout)
+    this.restartCompletion = null
+    completion.reject(new Error(message))
   }
 
   async stop(): Promise<void> {
+    this.rejectRestartCompletion(
+      'Python Backend stopped before its restart completed.',
+    )
     const child = this.child
     if (child === null) {
       this.updateSnapshot({
@@ -578,6 +652,18 @@ export class BackendProcess {
     return this.requestProjectState('project.chat.move', request)
   }
 
+  /** Read public settings through the authenticated Python boundary. */
+  getSettings(): Promise<DesktopSettingsState> {
+    return this.requestSettingsState('settings.get', {})
+  }
+
+  /** Atomically replace one complete revisioned settings snapshot. */
+  updateSettings(
+    request: UpdateDesktopSettingsRequest,
+  ): Promise<DesktopSettingsState> {
+    return this.requestSettingsState('settings.update', request)
+  }
+
   private resolvePythonExecutable(): string {
     const configuredPython = process.env.ELYSIA_PYTHON
     if (configuredPython?.trim()) {
@@ -660,6 +746,48 @@ export class BackendProcess {
     })
   }
 
+  private requestSettingsState<
+    Method extends 'settings.get' | 'settings.update',
+  >(
+    method: Method,
+    params: RequestParamsByMethod[Method],
+  ): Promise<DesktopSettingsState> {
+    if (
+      this.child === null
+      || ['starting', 'handshaking', 'stopping', 'stopped'].includes(
+        this.snapshot.status,
+      )
+    ) {
+      return Promise.reject(
+        new Error('Python Backend settings are not available yet.'),
+      )
+    }
+    if (
+      method === 'settings.update'
+      && [...this.pendingRequests.values()].some(
+        (pending) => (
+          CHAT_GENERATION_METHODS.has(pending.method)
+          || pending.method === 'settings.update'
+        ),
+      )
+    ) {
+      return Promise.reject(
+        new Error('Wait for the current action before saving settings.'),
+      )
+    }
+    return new Promise<DesktopSettingsState>((resolve, reject) => {
+      this.sendRequest(
+        method,
+        params,
+        undefined,
+        {
+          resolveSettingsState: resolve,
+          rejectSettingsState: reject,
+        },
+      )
+    })
+  }
+
   private sendRequest<Method extends ProtocolMethod>(
     method: Method,
     params: RequestParamsByMethod[Method],
@@ -670,6 +798,8 @@ export class BackendProcess {
       | 'rejectChatState'
       | 'resolveProjectState'
       | 'rejectProjectState'
+      | 'resolveSettingsState'
+      | 'rejectSettingsState'
       | 'cancelTargetId'
       | 'resolveCancellation'
       | 'rejectCancellation'
@@ -794,6 +924,24 @@ export class BackendProcess {
       }
     }
 
+    // Validate method-specific success payloads before removing the pending
+    // entry so protocolFailure can still reject the renderer Promise.
+    if (message.ok) {
+      if (pending.method === 'handshake') {
+        parseHandshakeResult(message.result)
+      } else if (pending.method === 'initialize') {
+        parseInitializeResult(message.result)
+      } else if (CHAT_SESSION_METHODS.has(pending.method)) {
+        parseChatStateResult(message.result)
+      } else if (PROJECT_METHODS.has(pending.method)) {
+        parseProjectStateResult(message.result)
+      } else if (SETTINGS_METHODS.has(pending.method)) {
+        parseSettingsStateResult(message.result)
+      } else if (CHAT_GENERATION_METHODS.has(pending.method)) {
+        parseChatResult(message.result)
+      }
+    }
+
     this.pendingRequests.delete(message.id)
     if (pending.timeout !== undefined) {
       clearTimeout(pending.timeout)
@@ -814,12 +962,15 @@ export class BackendProcess {
     }
 
     if (!message.ok) {
-      if (
-        pending.method === 'handshake'
-        || pending.method === 'initialize'
-      ) {
+      if (pending.method === 'handshake') {
         this.fail(message.error.message)
         this.child?.kill()
+        return
+      }
+      if (pending.method === 'initialize') {
+        // Keep the authenticated child alive so Settings can repair a bad
+        // persisted model or Ollama origin without editing files manually.
+        this.fail(message.error.message)
         return
       }
       if (
@@ -850,6 +1001,9 @@ export class BackendProcess {
       if (PROJECT_METHODS.has(pending.method)) {
         pending.rejectProjectState?.(new Error(message.error.message))
       }
+      if (SETTINGS_METHODS.has(pending.method)) {
+        pending.rejectSettingsState?.(new Error(message.error.message))
+      }
       if (pending.method === 'request.cancel') {
         pending.rejectCancellation?.(new Error(message.error.message))
         if (pending.deferredTargetResponse !== undefined) {
@@ -866,6 +1020,7 @@ export class BackendProcess {
         'chat.retry',
         'chat.sessions',
         'project.management',
+        'settings.management',
         'request.cancel',
         'stream',
         'progress',
@@ -949,6 +1104,13 @@ export class BackendProcess {
         error: undefined,
       })
       pending.resolveProjectState?.(result)
+      return
+    }
+
+    if (SETTINGS_METHODS.has(pending.method)) {
+      pending.resolveSettingsState?.(
+        parseSettingsStateResult(message.result),
+      )
       return
     }
 
@@ -1205,6 +1367,11 @@ export class BackendProcess {
           'Python Backend stopped before the Project action completed.',
         ),
       )
+      pending.rejectSettingsState?.(
+        new Error(
+          'Python Backend stopped before the Settings action completed.',
+        ),
+      )
       pending.rejectCancellation?.(
         new Error('Python Backend stopped before generation was cancelled.'),
       )
@@ -1223,11 +1390,14 @@ export class BackendProcess {
       const error = new Error(message)
       pending.rejectChatState?.(error)
       pending.rejectProjectState?.(error)
+      pending.rejectSettingsState?.(error)
       pending.rejectCancellation?.(error)
       pending.resolveChatState = undefined
       pending.rejectChatState = undefined
       pending.resolveProjectState = undefined
       pending.rejectProjectState = undefined
+      pending.resolveSettingsState = undefined
+      pending.rejectSettingsState = undefined
       pending.resolveCancellation = undefined
       pending.rejectCancellation = undefined
     }
@@ -1288,5 +1458,6 @@ export class BackendProcess {
       type: 'snapshot',
       snapshot: this.getSnapshot(),
     })
+    this.settleRestartCompletion()
   }
 }

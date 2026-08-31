@@ -21,6 +21,8 @@ import type {
   ChatDetail,
   ChatSessionState,
   CreateProjectRequest,
+  DesktopSettingsState,
+  DesktopSettingsValues,
   MoveChatToProjectRequest,
   ProjectState,
   RetryChatRequest,
@@ -72,6 +74,12 @@ function errorNotice(message: string): ChatNotice {
 function isCompactShell(): boolean {
   return typeof window.matchMedia === 'function'
     && window.matchMedia(COMPACT_SHELL_QUERY).matches
+}
+
+function mayLeaveSettings(view: AppView, dirty: boolean): boolean {
+  return view !== 'settings' && dirty
+    ? window.confirm('Discard unsaved Settings changes?')
+    : true
 }
 
 function presentChatMessages(chat: ChatDetail): ChatMessage[] {
@@ -272,6 +280,11 @@ function App() {
   const [projectState, setProjectState] = useState<ProjectState | null>(null)
   const [projectLoading, setProjectLoading] = useState(true)
   const [projectMutationPending, setProjectMutationPending] = useState(false)
+  const [settingsState, setSettingsState] = useState<DesktopSettingsState | null>(null)
+  const [settingsLoading, setSettingsLoading] = useState(false)
+  const [settingsMutationPending, setSettingsMutationPending] = useState(false)
+  const [settingsError, setSettingsError] = useState<string | null>(null)
+  const [settingsRestartError, setSettingsRestartError] = useState<string | null>(null)
   const [showArchived, setShowArchived] = useState(false)
   const [draftsByChat, setDraftsByChat] = useState<Record<string, string>>({})
   const [activeView, setActiveView] = useState<AppView>('chat')
@@ -302,6 +315,8 @@ function App() {
   const retryPendingRef = useRef(false)
   const sessionMutationPendingRef = useRef(false)
   const projectMutationPendingRef = useRef(false)
+  const settingsDirtyRef = useRef(false)
+  const settingsLoadOperationRef = useRef(0)
   const projectRefreshNeededRef = useRef(false)
   const projectRefreshPromiseRef = useRef<Promise<void> | null>(null)
   const streamingRef = useRef(false)
@@ -383,6 +398,39 @@ function App() {
     setProjectState(nextState)
     acceptChatState(nextState.chatState)
   }, [acceptChatState])
+
+  const loadSettings = useCallback(async (): Promise<void> => {
+    if (desktopApi === undefined) {
+      setSettingsError('Desktop Settings API is unavailable.')
+      return
+    }
+    const operationId = settingsLoadOperationRef.current + 1
+    settingsLoadOperationRef.current = operationId
+    setSettingsLoading(true)
+    setSettingsError(null)
+    try {
+      const nextState = await desktopApi.getSettings()
+      if (operationId === settingsLoadOperationRef.current) {
+        setSettingsState(nextState)
+      }
+    } catch (error) {
+      if (operationId === settingsLoadOperationRef.current) {
+        setSettingsError(
+          error instanceof Error
+            ? error.message
+            : 'Could not load local Settings.',
+        )
+      }
+    } finally {
+      if (operationId === settingsLoadOperationRef.current) {
+        setSettingsLoading(false)
+      }
+    }
+  }, [desktopApi])
+
+  const handleSettingsDirtyChange = useCallback((dirty: boolean): void => {
+    settingsDirtyRef.current = dirty
+  }, [])
 
   const updateInFlightTurn = useCallback((
     update: (current: InFlightTurn | null) => InFlightTurn | null,
@@ -555,6 +603,25 @@ function App() {
     flushProjectRefresh,
     snapshot.status,
   ])
+
+  useEffect(() => {
+    if (
+      activeView !== 'settings'
+      || desktopApi === undefined
+      || !['ready', 'error'].includes(snapshot.status)
+    ) {
+      return
+    }
+    let active = true
+    queueMicrotask(() => {
+      if (active) {
+        void loadSettings()
+      }
+    })
+    return () => {
+      active = false
+    }
+  }, [activeView, desktopApi, loadSettings, snapshot.status])
 
   useEffect(() => {
     if (typeof window.matchMedia !== 'function') {
@@ -810,6 +877,9 @@ function App() {
 
       if (modifier && key === 'k') {
         event.preventDefault()
+        if (!mayLeaveSettings('chat', settingsDirtyRef.current)) {
+          return
+        }
         activeViewRef.current = 'chat'
         setActiveView('chat')
         setSidebarOpen(true)
@@ -854,6 +924,9 @@ function App() {
       } else if (compactShell && sidebarOpen) {
         setSidebarOpen(false)
       } else if (activeView !== 'chat') {
+        if (!mayLeaveSettings('chat', settingsDirtyRef.current)) {
+          return
+        }
         activeViewRef.current = 'chat'
         setActiveView('chat')
       }
@@ -876,7 +949,10 @@ function App() {
     toggleCharacterPanel,
   ])
 
-  function navigate(view: AppView): void {
+  function navigate(view: AppView): boolean {
+    if (!mayLeaveSettings(view, settingsDirtyRef.current)) {
+      return false
+    }
     activeViewRef.current = view
     setActiveView(view)
     if (view === 'projects') {
@@ -894,6 +970,7 @@ function App() {
     if (compactShell) {
       setSidebarOpen(false)
     }
+    return true
   }
 
   function updateActiveDraft(value: string): void {
@@ -1124,35 +1201,92 @@ function App() {
     }
   }
 
-  async function retryConnection(): Promise<void> {
-    if (desktopApi === undefined || retryPendingRef.current) {
-      return
+  async function retryConnection(reportToSettings = false): Promise<boolean> {
+    if (desktopApi === undefined) {
+      if (reportToSettings) {
+        setSettingsRestartError('Desktop API is unavailable.')
+      }
+      return false
+    }
+    if (retryPendingRef.current) {
+      return false
     }
 
     retryPendingRef.current = true
     const operationId = retryOperationRef.current + 1
     retryOperationRef.current = operationId
     setRetryPending(true)
-    setNotice(infoNotice('Reconnecting to the local Backend…'))
+    if (reportToSettings) {
+      setSettingsRestartError(null)
+    } else {
+      setNotice(infoNotice('Reconnecting to the local Backend…'))
+    }
     try {
       const nextSnapshot = await desktopApi.restartBackend()
       if (operationId === retryOperationRef.current) {
         acceptSnapshot(nextSnapshot)
-        setNotice(null)
+        if (reportToSettings) {
+          setSettingsRestartError(null)
+        } else {
+          setNotice(null)
+        }
       }
+      return true
     } catch (error) {
       if (operationId === retryOperationRef.current) {
-        setNotice(errorNotice(
-          error instanceof Error
-            ? error.message
-            : 'Could not restart the local Backend.',
-        ))
+        const message = error instanceof Error
+          ? error.message
+          : 'Could not restart the local Backend.'
+        if (reportToSettings) {
+          setSettingsRestartError(message)
+        } else {
+          setNotice(errorNotice(message))
+        }
       }
+      return false
     } finally {
       if (operationId === retryOperationRef.current) {
         retryPendingRef.current = false
         setRetryPending(false)
       }
+    }
+  }
+
+  async function saveSettings(
+    values: DesktopSettingsValues,
+  ): Promise<void> {
+    if (
+      desktopApi === undefined
+      || settingsState === null
+      || settingsMutationPending
+      || generationBusy
+    ) {
+      return
+    }
+    setSettingsMutationPending(true)
+    setSettingsError(null)
+    setSettingsRestartError(null)
+    try {
+      const nextState = await desktopApi.updateSettings({
+        expectedRevision: settingsState.revision,
+        settings: values,
+      })
+      setSettingsState(nextState)
+      settingsDirtyRef.current = false
+    } catch (error) {
+      setSettingsError(
+        error instanceof Error
+          ? error.message
+          : 'Could not save local Settings.',
+      )
+    } finally {
+      setSettingsMutationPending(false)
+    }
+  }
+
+  async function restartFromSettings(): Promise<void> {
+    if (await retryConnection(true)) {
+      await loadSettings()
     }
   }
 
@@ -1506,7 +1640,21 @@ function App() {
       <SettingsView
         themePreference={theme}
         resolvedTheme={resolvedTheme}
+        settingsState={settingsState}
+        models={modelOptions}
+        loading={settingsLoading}
+        pending={settingsMutationPending}
+        restartPending={retryPending}
+        generationBusy={generationBusy}
+        error={settingsRestartError ?? settingsError}
         onThemeChange={setTheme}
+        onSave={saveSettings}
+        onReload={() => {
+          setSettingsRestartError(null)
+          void loadSettings()
+        }}
+        onRestart={restartFromSettings}
+        onDirtyChange={handleSettingsDirtyChange}
         onBack={() => { navigate('chat') }}
       />
     )

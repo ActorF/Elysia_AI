@@ -1,1 +1,43 @@
 """Application configuration package for Elysia AI."""
+from .desktop_settings import (
+    DesktopSettingsConflictError,
+    DesktopSettingsError,
+    DesktopSettingsRepository,
+    DesktopSettingsSnapshot,
+    DesktopSettingsStorageError,
+    DesktopSettingsValidationError,
+    EditableDesktopSettings,
+    apply_editable_settings,
+    changed_setting_names,
+    create_desktop_settings_repository,
+    desktop_defaults_from_app_settings,
+    desktop_settings_file_lock,
+    desktop_settings_snapshot_from_document,
+    editable_from_app_settings,
+    validate_model_name,
+    validate_ollama_host,
+    validate_desktop_settings_document,
+)
+from .settings import AppSettings, SETTINGS
+
+__all__ = [
+    "AppSettings",
+    "DesktopSettingsConflictError",
+    "DesktopSettingsError",
+    "DesktopSettingsRepository",
+    "DesktopSettingsSnapshot",
+    "DesktopSettingsStorageError",
+    "DesktopSettingsValidationError",
+    "EditableDesktopSettings",
+    "SETTINGS",
+    "apply_editable_settings",
+    "changed_setting_names",
+    "create_desktop_settings_repository",
+    "desktop_defaults_from_app_settings",
+    "desktop_settings_file_lock",
+    "desktop_settings_snapshot_from_document",
+    "editable_from_app_settings",
+    "validate_model_name",
+    "validate_ollama_host",
+    "validate_desktop_settings_document",
+]

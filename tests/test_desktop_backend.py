@@ -5,10 +5,13 @@ from collections.abc import Callable, Generator
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from io import BytesIO, StringIO, TextIOWrapper
-from threading import Event
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from threading import Event, Timer
 from typing import Any, cast
 from unittest.mock import patch
 
+import desktop_backend as desktop_backend_module
 from chats import (
     ChatId,
     ChatNotFoundError,
@@ -19,6 +22,18 @@ from chats import (
     create_attachment_metadata,
     create_chat_message,
     create_chat_session,
+)
+from config.desktop_settings import (
+    DesktopSettingsRepository,
+    EditableDesktopSettings,
+)
+from config.settings import (
+    DEFAULT_DATA_IMPORT_MAX_BYTES,
+    DEFAULT_MEMORY_RETRIEVAL_LIMIT,
+    DEFAULT_MODEL_NAME,
+    DEFAULT_OLLAMA_HOST,
+    DEFAULT_SHORT_TERM_MEMORY_TOKEN_BUDGET,
+    AppSettings,
 )
 from core import Brain, GenerationCancelledError
 from desktop_backend import (
@@ -413,11 +428,42 @@ def _initialize_request() -> JsonObject:
     return _request("initialize-1", "initialize", {})
 
 
+def _desktop_settings_values(
+    *,
+    model_name: str = "test-model",
+    ollama_host: str = "http://localhost:11434",
+    short_term_memory_token_budget: int = 2_048,
+    memory_retrieval_limit: int = 5,
+    data_import_max_bytes: int = 16 * 1024 * 1024,
+) -> JsonObject:
+    return {
+        "modelName": model_name,
+        "ollamaHost": ollama_host,
+        "shortTermMemoryTokenBudget": short_term_memory_token_budget,
+        "memoryRetrievalLimit": memory_retrieval_limit,
+        "dataImportMaxBytes": data_import_max_bytes,
+    }
+
+
+def _desktop_settings_repository(path: Path) -> DesktopSettingsRepository:
+    return DesktopSettingsRepository(
+        path,
+        EditableDesktopSettings(
+            model_name="test-model",
+            ollama_host="http://localhost:11434",
+            short_term_memory_token_budget=2_048,
+            memory_retrieval_limit=5,
+            data_import_max_bytes=16 * 1024 * 1024,
+        ),
+    )
+
+
 def _run_bridge(
     build_lines: Callable[[str], list[JsonObject]],
     *,
     expected_session_token: str = SESSION_TOKEN,
     fake_brain: FakeBrain | None = None,
+    settings_repository: DesktopSettingsRepository | None = None,
 ) -> tuple[FakeBrain, list[JsonObject]]:
     active_brain = fake_brain if fake_brain is not None else FakeBrain()
     lines = build_lines(str(active_brain.chat.chat_id))
@@ -426,20 +472,63 @@ def _run_bridge(
     )
     output_stream = StringIO()
 
-    DesktopBackend(
-        brain_factory=lambda: cast(Brain, active_brain),
-        model_loader=lambda: ("test-model", "second-model"),
-        settings_validator=lambda: None,
-        input_stream=input_stream,
-        output_stream=output_stream,
-        expected_session_token=expected_session_token,
-    ).run()
+    with TemporaryDirectory(prefix="elysia-settings-test-") as temp_dir:
+        repository = settings_repository
+        if repository is None:
+            repository = _desktop_settings_repository(
+                Path(temp_dir) / "global.json"
+            )
+        DesktopBackend(
+            brain_factory=lambda: cast(Brain, active_brain),
+            model_loader=lambda: ("test-model", "second-model"),
+            settings_validator=lambda: None,
+            settings_repository=repository,
+            input_stream=input_stream,
+            output_stream=output_stream,
+            expected_session_token=expected_session_token,
+        ).run()
 
     messages = [
         cast(JsonObject, json.loads(line))
         for line in output_stream.getvalue().splitlines()
     ]
     return active_brain, messages
+
+
+def _run_bridge_with_bootstrap_settings(
+    bootstrap_settings: AppSettings,
+    fake_brain: FakeBrain,
+) -> list[JsonObject]:
+    requests = [
+        _handshake_request(),
+        _request("settings-safe", "settings.get", {}),
+        _initialize_request(),
+        _request("shutdown-safe", "shutdown", {}),
+    ]
+    input_stream = StringIO(
+        "".join(f"{json.dumps(request)}\n" for request in requests)
+    )
+    output_stream = StringIO()
+    with patch.object(
+        desktop_backend_module,
+        "SETTINGS",
+        bootstrap_settings,
+    ):
+        DesktopBackend(
+            brain_factory=lambda: cast(Brain, fake_brain),
+            model_loader=lambda: (
+                fake_brain.model_name,
+                "second-model",
+            ),
+            settings_validator=lambda: None,
+            input_stream=input_stream,
+            output_stream=output_stream,
+            expected_session_token=SESSION_TOKEN,
+        ).run()
+    return [
+        cast(JsonObject, json.loads(line))
+        for line in output_stream.getvalue().splitlines()
+    ]
 
 
 def _success_result(
@@ -694,7 +783,9 @@ def test_cancel_success_prevents_partial_turn_persistence() -> None:
     assert fake_brain.get_chat(fake_brain.chat.chat_id).messages == ()
 
 
-def test_chat_list_does_not_block_the_cancel_request_reader() -> None:
+def test_chat_list_does_not_block_the_cancel_request_reader(
+    tmp_path: Path,
+) -> None:
     generation_started = Event()
 
     class BlockingBrain(FakeBrain):
@@ -749,6 +840,9 @@ def test_chat_list_does_not_block_the_cancel_request_reader() -> None:
         brain_factory=lambda: cast(Brain, fake_brain),
         model_loader=lambda: ("test-model",),
         settings_validator=lambda: None,
+        settings_repository=_desktop_settings_repository(
+            tmp_path / "global.json"
+        ),
         input_stream=cast(TextIOWrapper, request_lines()),
         output_stream=output_stream,
         expected_session_token=SESSION_TOKEN,
@@ -768,7 +862,9 @@ def test_chat_list_does_not_block_the_cancel_request_reader() -> None:
     assert _error(messages, "blocked-chat")["code"] == "request.cancelled"
 
 
-def test_cancel_is_rejected_after_generation_claims_commit() -> None:
+def test_cancel_is_rejected_after_generation_claims_commit(
+    tmp_path: Path,
+) -> None:
     commit_claimed = Event()
     release_commit = Event()
 
@@ -839,6 +935,9 @@ def test_cancel_is_rejected_after_generation_claims_commit() -> None:
         brain_factory=lambda: cast(Brain, fake_brain),
         model_loader=lambda: ("test-model",),
         settings_validator=lambda: None,
+        settings_repository=_desktop_settings_repository(
+            tmp_path / "global.json"
+        ),
         input_stream=cast(TextIOWrapper, request_lines()),
         output_stream=output_stream,
         expected_session_token=SESSION_TOKEN,
@@ -857,7 +956,9 @@ def test_cancel_is_rejected_after_generation_claims_commit() -> None:
     assert len(fake_brain.get_chat(fake_brain.chat.chat_id).messages) == 2
 
 
-def test_background_completion_does_not_reactivate_a_chat_after_switch() -> None:
+def test_background_completion_does_not_reactivate_a_chat_after_switch(
+    tmp_path: Path,
+) -> None:
     generation_started = Event()
     release_generation = Event()
 
@@ -942,6 +1043,9 @@ def test_background_completion_does_not_reactivate_a_chat_after_switch() -> None
         brain_factory=lambda: cast(Brain, fake_brain),
         model_loader=lambda: ("test-model",),
         settings_validator=lambda: None,
+        settings_repository=_desktop_settings_repository(
+            tmp_path / "global.json"
+        ),
         input_stream=cast(TextIOWrapper, request_lines()),
         output_stream=output_stream,
         expected_session_token=SESSION_TOKEN,
@@ -965,7 +1069,9 @@ def test_background_completion_does_not_reactivate_a_chat_after_switch() -> None
     assert len(fake_brain.get_chat(fake_brain.chat.chat_id).messages) == 2
 
 
-def test_background_completion_does_not_replace_a_new_active_chat() -> None:
+def test_background_completion_does_not_replace_a_new_active_chat(
+    tmp_path: Path,
+) -> None:
     generation_started = Event()
     release_generation = Event()
 
@@ -1034,6 +1140,9 @@ def test_background_completion_does_not_replace_a_new_active_chat() -> None:
         brain_factory=lambda: cast(Brain, fake_brain),
         model_loader=lambda: ("test-model",),
         settings_validator=lambda: None,
+        settings_repository=_desktop_settings_repository(
+            tmp_path / "global.json"
+        ),
         input_stream=cast(TextIOWrapper, request_lines()),
         output_stream=output_stream,
         expected_session_token=SESSION_TOKEN,
@@ -1638,6 +1747,325 @@ def test_deleting_active_chat_creates_default_when_no_model_match() -> None:
     ) in fake_brain.session_calls
 
 
+def test_settings_can_be_read_and_repaired_before_initialize(
+    tmp_path: Path,
+) -> None:
+    repository = _desktop_settings_repository(tmp_path / "global.json")
+    changed = _desktop_settings_values(
+        model_name="second-model",
+        ollama_host="https://ollama.example.test:11434",
+        short_term_memory_token_budget=4_096,
+        memory_retrieval_limit=9,
+        data_import_max_bytes=32 * 1024 * 1024,
+    )
+
+    _, messages = _run_bridge(
+        lambda _chat_id: [
+            _handshake_request(),
+            _request("settings-before", "settings.get", {}),
+            _request(
+                "settings-repair",
+                "settings.update",
+                {"expectedRevision": 0, "settings": changed},
+            ),
+        ],
+        settings_repository=repository,
+    )
+
+    initial = _success_result(messages, "settings-before")
+    assert initial == {
+        "revision": 0,
+        "updatedAt": None,
+        "settings": _desktop_settings_values(),
+        "activeSettings": _desktop_settings_values(),
+        "restartRequired": False,
+        "restartFields": [],
+        "scopes": {"project": None, "chat": None},
+        "warning": None,
+    }
+    repaired = _success_result(messages, "settings-repair")
+    assert repaired["revision"] == 1
+    assert repaired["settings"] == changed
+    assert repaired["activeSettings"] == changed
+    assert repaired["restartRequired"] is False
+    assert repaired["restartFields"] == []
+    assert repository.load().values.model_name == "second-model"
+    assert "settings.management" in SERVER_CAPABILITIES
+
+
+def test_invalid_bootstrap_uses_safe_defaults_and_still_initializes(
+    tmp_path: Path,
+) -> None:
+    class DefaultModelBrain(FakeBrain):
+        model_name = DEFAULT_MODEL_NAME
+
+    invalid_bootstrap = AppSettings(
+        base_dir=tmp_path,
+        model_name=" ",
+        log_level="INFO",
+        debug=False,
+        ollama_host="not-an-origin",
+        short_term_memory_token_budget=0,
+        memory_retrieval_limit=-1,
+        data_import_max_bytes=2_147_483_648,
+    )
+
+    messages = _run_bridge_with_bootstrap_settings(
+        invalid_bootstrap,
+        DefaultModelBrain(),
+    )
+
+    settings = _success_result(messages, "settings-safe")
+    assert settings["revision"] == 0
+    assert settings["settings"] == {
+        "modelName": DEFAULT_MODEL_NAME,
+        "ollamaHost": DEFAULT_OLLAMA_HOST,
+        "shortTermMemoryTokenBudget": (
+            DEFAULT_SHORT_TERM_MEMORY_TOKEN_BUDGET
+        ),
+        "memoryRetrievalLimit": DEFAULT_MEMORY_RETRIEVAL_LIMIT,
+        "dataImportMaxBytes": DEFAULT_DATA_IMPORT_MAX_BYTES,
+    }
+    initialized = _success_result(messages, "initialize-1")
+    assert initialized["modelName"] == DEFAULT_MODEL_NAME
+
+
+def test_invalid_bootstrap_prefers_valid_persisted_settings(
+    tmp_path: Path,
+) -> None:
+    settings_path = (
+        tmp_path / "workspace" / "settings" / "global.json"
+    )
+    persisted_repository = _desktop_settings_repository(settings_path)
+    persisted_values = EditableDesktopSettings(
+        model_name="test-model",
+        ollama_host="https://ollama.example.test:11434",
+        short_term_memory_token_budget=4_096,
+        memory_retrieval_limit=9,
+        data_import_max_bytes=32 * 1024 * 1024,
+    )
+    persisted_repository.save(persisted_values, expected_revision=0)
+    invalid_bootstrap = AppSettings(
+        base_dir=tmp_path,
+        model_name="",
+        log_level="INFO",
+        debug=False,
+        ollama_host="ftp://invalid.example.test",
+        short_term_memory_token_budget=0,
+        memory_retrieval_limit=0,
+        data_import_max_bytes=0,
+    )
+
+    messages = _run_bridge_with_bootstrap_settings(
+        invalid_bootstrap,
+        FakeBrain(),
+    )
+
+    settings = _success_result(messages, "settings-safe")
+    assert settings["revision"] == 1
+    assert settings["settings"] == _desktop_settings_values(
+        model_name="test-model",
+        ollama_host="https://ollama.example.test:11434",
+        short_term_memory_token_budget=4_096,
+        memory_retrieval_limit=9,
+        data_import_max_bytes=32 * 1024 * 1024,
+    )
+    assert settings["activeSettings"] == settings["settings"]
+    initialized = _success_result(messages, "initialize-1")
+    assert initialized["modelName"] == "test-model"
+
+
+def test_settings_update_reports_restart_fields_and_active_scopes(
+    tmp_path: Path,
+) -> None:
+    repository = _desktop_settings_repository(tmp_path / "global.json")
+    fake_brain = FakeBrain()
+    project = create_project(
+        name="Scoped Project",
+        settings=ProjectSettings(default_model_name="project-model"),
+    )
+    fake_brain.add_project(project)
+    fake_brain.add_chat(
+        replace(fake_brain.chat, project_id=project.project_id)
+    )
+    changed = _desktop_settings_values(
+        model_name="second-model",
+        ollama_host="https://ollama.example.test:11434",
+        short_term_memory_token_budget=4_096,
+        memory_retrieval_limit=9,
+        data_import_max_bytes=32 * 1024 * 1024,
+    )
+
+    _, messages = _run_bridge(
+        lambda _chat_id: [
+            _handshake_request(),
+            _initialize_request(),
+            _request(
+                "settings-after",
+                "settings.update",
+                {"expectedRevision": 0, "settings": changed},
+            ),
+        ],
+        fake_brain=fake_brain,
+        settings_repository=repository,
+    )
+
+    result = _success_result(messages, "settings-after")
+    assert result["revision"] == 1
+    assert result["settings"] == changed
+    assert result["activeSettings"] == _desktop_settings_values()
+    assert result["restartRequired"] is True
+    assert result["restartFields"] == [
+        "modelName",
+        "ollamaHost",
+        "shortTermMemoryTokenBudget",
+        "memoryRetrievalLimit",
+        "dataImportMaxBytes",
+    ]
+    assert result["scopes"]["project"] == {
+        "projectId": str(project.project_id),
+        "projectName": "Scoped Project",
+        "modelName": "project-model",
+        "inheritedModelName": "second-model",
+    }
+    assert result["scopes"]["chat"] == {
+        "chatId": str(fake_brain.chat.chat_id),
+        "chatTitle": fake_brain.chat.title,
+        "modelName": "test-model",
+    }
+
+
+def test_settings_update_rejects_unknown_sensitive_fields_at_wire_boundary(
+    tmp_path: Path,
+) -> None:
+    repository = _desktop_settings_repository(tmp_path / "global.json")
+    update = {
+        "type": "request",
+        "protocol": {
+            "name": PROTOCOL_NAME,
+            "version": PROTOCOL_VERSION,
+        },
+        "id": "settings-sensitive",
+        "method": "settings.update",
+        "params": {
+            "expectedRevision": 0,
+            "settings": {
+                **_desktop_settings_values(),
+                "apiKey": "must-not-cross-the-wire",
+            },
+        },
+    }
+
+    _, messages = _run_bridge(
+        lambda _chat_id: [_handshake_request(), update],
+        settings_repository=repository,
+    )
+
+    assert _error(messages, "settings-sensitive")["code"] == (
+        "protocol.invalid_params"
+    )
+    assert "must-not-cross-the-wire" not in json.dumps(messages)
+    assert repository.load().revision == 0
+    assert not repository.path.exists()
+
+
+def test_settings_update_rejects_unsafe_ollama_origin_without_echoing_it(
+    tmp_path: Path,
+) -> None:
+    repository = _desktop_settings_repository(tmp_path / "global.json")
+    unsafe_origin = "http://user:secret@localhost:11434"
+    update = {
+        "type": "request",
+        "protocol": {
+            "name": PROTOCOL_NAME,
+            "version": PROTOCOL_VERSION,
+        },
+        "id": "settings-invalid",
+        "method": "settings.update",
+        "params": {
+            "expectedRevision": 0,
+            "settings": _desktop_settings_values(
+                ollama_host=unsafe_origin
+            ),
+        },
+    }
+
+    _, messages = _run_bridge(
+        lambda _chat_id: [_handshake_request(), update],
+        settings_repository=repository,
+    )
+
+    error = _error(messages, "settings-invalid")
+    assert error["code"] == "protocol.invalid_params"
+    assert error["retryable"] is False
+    assert unsafe_origin not in json.dumps(messages)
+    assert repository.load().revision == 0
+
+
+def test_settings_update_is_rejected_while_generation_is_active(
+    tmp_path: Path,
+) -> None:
+    generation_started = Event()
+    release_generation = Event()
+
+    class BlockingBrain(FakeBrain):
+        def stream_chat(
+            self,
+            chat_id: object,
+            message: str,
+            *,
+            should_cancel: Callable[[], bool] | None = None,
+            begin_commit: Callable[[], bool] | None = None,
+        ) -> Generator[str, None, None]:
+            generation_started.set()
+            assert release_generation.wait(1.0)
+            yield from super().stream_chat(
+                chat_id,
+                message,
+                should_cancel=should_cancel,
+                begin_commit=begin_commit,
+            )
+
+    repository = _desktop_settings_repository(tmp_path / "global.json")
+    release_timer = Timer(0.1, release_generation.set)
+    release_timer.start()
+    try:
+        _, messages = _run_bridge(
+            lambda chat_id: [
+                _handshake_request(),
+                _initialize_request(),
+                _request(
+                    "chat-active",
+                    "chat.stream",
+                    {"chatId": chat_id, "message": "Keep working"},
+                ),
+                _request(
+                    "settings-busy",
+                    "settings.update",
+                    {
+                        "expectedRevision": 0,
+                        "settings": _desktop_settings_values(
+                            model_name="second-model"
+                        ),
+                    },
+                ),
+            ],
+            fake_brain=BlockingBrain(),
+            settings_repository=repository,
+        )
+    finally:
+        release_generation.set()
+        release_timer.join()
+
+    assert generation_started.is_set()
+    assert _error(messages, "settings-busy") == {
+        "code": "settings.busy",
+        "message": "Wait for the current reply before changing settings.",
+        "retryable": False,
+    }
+    assert repository.load().revision == 0
+
+
 def test_bridge_rejects_a_chat_other_than_the_active_chat() -> None:
     _, messages = _run_bridge(
         lambda _chat_id: [
@@ -1727,9 +2155,16 @@ def test_model_names_are_unique_and_keep_the_active_model_first() -> None:
     assert models == ("active:latest", "other:latest")
 
 
-def test_protocol_output_is_ascii_safe_for_non_ascii_text() -> None:
+def test_protocol_output_is_ascii_safe_for_non_ascii_text(
+    tmp_path: Path,
+) -> None:
     output_stream = StringIO()
-    backend = DesktopBackend(output_stream=output_stream)
+    backend = DesktopBackend(
+        settings_repository=_desktop_settings_repository(
+            tmp_path / "global.json"
+        ),
+        output_stream=output_stream,
+    )
 
     backend._emit(
         build_event(
@@ -1752,12 +2187,17 @@ def test_protocol_streams_are_reconfigured_to_utf8() -> None:
     assert stream.encoding == "utf-8"
 
 
-def test_input_frame_limit_counts_leading_json_whitespace() -> None:
+def test_input_frame_limit_counts_leading_json_whitespace(
+    tmp_path: Path,
+) -> None:
     input_stream = StringIO(f"{' ' * 511}{{}}\n")
     output_stream = StringIO()
 
     with patch("desktop_backend.MAX_PROTOCOL_FRAME_BYTES", 512):
         DesktopBackend(
+            settings_repository=_desktop_settings_repository(
+                tmp_path / "global.json"
+            ),
             input_stream=input_stream,
             output_stream=output_stream,
         ).run()

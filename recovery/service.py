@@ -21,6 +21,13 @@ from chats import (
 )
 from chats.serialization import session_from_data, session_to_data
 from chats.storage import atomic_write_json
+from config.desktop_settings import (
+    MAX_JSON_SAFE_INTEGER,
+    DesktopSettingsValidationError,
+    desktop_settings_file_lock,
+    desktop_settings_snapshot_from_document,
+    validate_desktop_settings_document,
+)
 from chats.legacy import (
     LegacyConversationFormatError,
     chat_messages_match_legacy_prefix,
@@ -62,6 +69,7 @@ _SAFE_WORKSPACE_ROOTS: Final = frozenset({
     "conversations",
     "memory",
     "migrations",
+    "settings",
 })
 _SAFE_FILE_NAME = re.compile(r"[^A-Za-z0-9_.-]+")
 _SAFE_PATH_PART = re.compile(r"^[A-Za-z0-9_.-]+$")
@@ -507,6 +515,35 @@ class DataPortabilityService:
         workspace_files: dict[str, JsonObject],
         overwrite_user_files: bool,
     ) -> ImportResult:
+        settings_path = "settings/global.json"
+        if settings_path in workspace_files:
+            with desktop_settings_file_lock(
+                self._workspace_path(settings_path)
+            ):
+                return self._restore_entities_transactionally_locked(
+                    bundle_type=bundle_type,
+                    projects=projects,
+                    sessions=sessions,
+                    workspace_files=workspace_files,
+                    overwrite_user_files=overwrite_user_files,
+                )
+        return self._restore_entities_transactionally_locked(
+            bundle_type=bundle_type,
+            projects=projects,
+            sessions=sessions,
+            workspace_files=workspace_files,
+            overwrite_user_files=overwrite_user_files,
+        )
+
+    def _restore_entities_transactionally_locked(
+        self,
+        *,
+        bundle_type: ExportBundleType,
+        projects: tuple[Project, ...],
+        sessions: tuple[ChatSession, ...],
+        workspace_files: dict[str, JsonObject],
+        overwrite_user_files: bool,
+    ) -> ImportResult:
         restored_projects: list[Project] = []
         restored_chats: list[ChatSession] = []
         file_backups: dict[Path, bytes | None] = {}
@@ -525,6 +562,11 @@ class DataPortabilityService:
                 if target.exists() and not overwrite_user_files:
                     raise ImportConflictError(
                         f"User-data file already exists: {relative_path}."
+                    )
+                if relative_path == "settings/global.json":
+                    data = self._rebase_imported_settings(
+                        data,
+                        file_backups[target],
                     )
                 atomic_write_json(target, data)
         except Exception as error:
@@ -550,6 +592,50 @@ class DataPortabilityService:
             project_ids=tuple(project.project_id for project in projects),
             restored_files=tuple(sorted(workspace_files)),
         )
+
+    def _rebase_imported_settings(
+        self,
+        data: JsonObject,
+        previous_data: bytes | None,
+    ) -> JsonObject:
+        """Keep an import from reusing a revision held by an open UI."""
+
+        imported = desktop_settings_snapshot_from_document(data)
+        current_revision = 0
+        if previous_data is not None:
+            try:
+                current_value: object = json.loads(
+                    previous_data.decode("utf-8"),
+                    parse_constant=self._reject_json_constant,
+                    object_pairs_hook=self._reject_duplicate_keys,
+                )
+                current_revision = (
+                    desktop_settings_snapshot_from_document(
+                        current_value
+                    ).revision
+                )
+            except (
+                DesktopSettingsValidationError,
+                UnicodeError,
+                json.JSONDecodeError,
+                RecursionError,
+                ValueError,
+            ):
+                current_revision = 0
+        if current_revision == MAX_JSON_SAFE_INTEGER:
+            raise ImportConflictError(
+                "Settings revision limit prevents this restore."
+            )
+        revision = max(imported.revision, current_revision + 1)
+        if revision > MAX_JSON_SAFE_INTEGER:
+            raise ImportConflictError(
+                "Imported Settings revision is outside the supported range."
+            )
+        rebased = dict(data)
+        rebased["revision"] = revision
+        rebased["updated_at"] = self._aware_clock().isoformat()
+        validate_desktop_settings_document(rebased)
+        return rebased
 
     def _roll_back_import(
         self,
@@ -603,6 +689,13 @@ class DataPortabilityService:
                 relative_path = file_path.relative_to(
                     self._workspace_directory
                 ).as_posix()
+                if (
+                    root_name == "settings"
+                    and relative_path != "settings/global.json"
+                ):
+                    # Corrupt recovery copies stay local and are never part of
+                    # a portable user-data bundle.
+                    continue
                 try:
                     decoded: object = json.loads(
                         file_path.read_text(encoding="utf-8"),
@@ -625,6 +718,13 @@ class DataPortabilityService:
                     raise ExportValidationError(
                         f"Managed JSON root must be an object: {relative_path}."
                     )
+                if relative_path == "settings/global.json":
+                    try:
+                        validate_desktop_settings_document(decoded)
+                    except DesktopSettingsValidationError as error:
+                        raise ExportValidationError(
+                            "Managed Settings schema is invalid."
+                        ) from error
                 collected[relative_path] = cast(JsonObject, decoded)
                 if len(collected) > _MAX_WORKSPACE_FILE_COUNT:
                     raise ExportValidationError(
@@ -666,7 +766,11 @@ class DataPortabilityService:
                 self._validate_legacy_conversation(data)
             elif relative_path == "migrations/legacy_conversation_v1.json":
                 self._validate_legacy_migration_state(data)
-        except ValueError as error:
+            elif relative_path == "settings/global.json":
+                validate_desktop_settings_document(data)
+            elif relative_path.startswith("settings/"):
+                raise ValueError("Unknown managed Settings file.")
+        except (DesktopSettingsValidationError, ValueError) as error:
             raise ImportValidationError(
                 f"Managed file schema is invalid: {relative_path}."
             ) from error

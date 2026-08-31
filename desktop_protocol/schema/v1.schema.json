@@ -19,6 +19,7 @@
     "projectStateResult.activeProject is null or appears in projects with identical fields",
     "every non-null projectId in projectStateResult.chatState refers to projectStateResult.projects",
     "each Project chatCount equals all matching Chats in projectStateResult.chatState.chats",
+    "settingsStateResult.restartRequired is true exactly when restartFields is non-empty",
     "stream sequences are contiguous per request and have exactly one terminal chunk",
     "the terminal response reply exactly equals the concatenated stream chunks",
     "request and permission identifiers correlate with live pending operations"
@@ -42,6 +43,8 @@
     { "$ref": "#/$defs/projectWorkspaceRequest" },
     { "$ref": "#/$defs/projectArchiveRequest" },
     { "$ref": "#/$defs/projectChatMoveRequest" },
+    { "$ref": "#/$defs/settingsGetRequest" },
+    { "$ref": "#/$defs/settingsUpdateRequest" },
     { "$ref": "#/$defs/cancelRequest" },
     { "$ref": "#/$defs/permissionResponseRequest" },
     { "$ref": "#/$defs/shutdownRequest" },
@@ -99,6 +102,8 @@
             "project.workspace",
             "project.archive",
             "project.chat.move",
+            "settings.get",
+            "settings.update",
             "request.cancel",
             "permission.respond",
             "shutdown"
@@ -314,6 +319,68 @@
         }
       },
       "required": ["chatId", "projectId"],
+      "additionalProperties": false
+    },
+    "settingsValues": {
+      "type": "object",
+      "properties": {
+        "modelName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "allOf": [
+            {
+              "pattern": "[^\\u0009-\\u000D\\u0020\\u0085\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000\\uFEFF]"
+            },
+            { "pattern": "^[^\\u0000\\r\\n]*$" }
+          ]
+        },
+        "ollamaHost": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048,
+          "pattern": "^https?://(?![^/?#@\\s]*:0(?:/|$))[^/?#@\\s]+/?$"
+        },
+        "shortTermMemoryTokenBudget": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000000
+        },
+        "memoryRetrievalLimit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000000
+        },
+        "dataImportMaxBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2147483647
+        }
+      },
+      "required": [
+        "modelName",
+        "ollamaHost",
+        "shortTermMemoryTokenBudget",
+        "memoryRetrievalLimit",
+        "dataImportMaxBytes"
+      ],
+      "additionalProperties": false
+    },
+    "settingsGetParams": {
+      "type": "object",
+      "maxProperties": 0
+    },
+    "settingsUpdateParams": {
+      "type": "object",
+      "properties": {
+        "expectedRevision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "settings": { "$ref": "#/$defs/settingsValues" }
+      },
+      "required": ["expectedRevision", "settings"],
       "additionalProperties": false
     },
     "cancelParams": {
@@ -532,6 +599,28 @@
           "properties": {
             "method": { "const": "project.chat.move" },
             "params": { "$ref": "#/$defs/projectChatMoveParams" }
+          }
+        }
+      ]
+    },
+    "settingsGetRequest": {
+      "allOf": [
+        { "$ref": "#/$defs/requestEnvelope" },
+        {
+          "properties": {
+            "method": { "const": "settings.get" },
+            "params": { "$ref": "#/$defs/settingsGetParams" }
+          }
+        }
+      ]
+    },
+    "settingsUpdateRequest": {
+      "allOf": [
+        { "$ref": "#/$defs/requestEnvelope" },
+        {
+          "properties": {
+            "method": { "const": "settings.update" },
+            "params": { "$ref": "#/$defs/settingsUpdateParams" }
           }
         }
       ]
@@ -773,6 +862,134 @@
       "required": ["activeProject", "projects", "chatState"],
       "additionalProperties": false
     },
+    "settingsProjectScope": {
+      "type": "object",
+      "properties": {
+        "projectId": { "$ref": "#/$defs/projectIdentifier" },
+        "projectName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000000
+        },
+        "modelName": {
+          "oneOf": [
+            { "type": "string", "minLength": 1, "maxLength": 200 },
+            { "type": "null" }
+          ]
+        },
+        "inheritedModelName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        }
+      },
+      "required": [
+        "projectId", "projectName", "modelName", "inheritedModelName"
+      ],
+      "additionalProperties": false
+    },
+    "settingsChatScope": {
+      "type": "object",
+      "properties": {
+        "chatId": { "$ref": "#/$defs/identifier" },
+        "chatTitle": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000000
+        },
+        "modelName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        }
+      },
+      "required": ["chatId", "chatTitle", "modelName"],
+      "additionalProperties": false
+    },
+    "settingsScopes": {
+      "type": "object",
+      "properties": {
+        "project": {
+          "oneOf": [
+            { "$ref": "#/$defs/settingsProjectScope" },
+            { "type": "null" }
+          ]
+        },
+        "chat": {
+          "oneOf": [
+            { "$ref": "#/$defs/settingsChatScope" },
+            { "type": "null" }
+          ]
+        }
+      },
+      "required": ["project", "chat"],
+      "additionalProperties": false
+    },
+    "settingsStateResult": {
+      "type": "object",
+      "properties": {
+        "revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "updatedAt": {
+          "oneOf": [
+            { "$ref": "#/$defs/timestamp" },
+            { "type": "null" }
+          ]
+        },
+        "settings": { "$ref": "#/$defs/settingsValues" },
+        "activeSettings": { "$ref": "#/$defs/settingsValues" },
+        "restartRequired": { "type": "boolean" },
+        "restartFields": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "modelName",
+              "ollamaHost",
+              "shortTermMemoryTokenBudget",
+              "memoryRetrievalLimit",
+              "dataImportMaxBytes"
+            ]
+          },
+          "maxItems": 5,
+          "uniqueItems": true
+        },
+        "scopes": { "$ref": "#/$defs/settingsScopes" },
+        "warning": {
+          "oneOf": [
+            { "type": "string", "minLength": 1, "maxLength": 1000 },
+            { "type": "null" }
+          ]
+        }
+      },
+      "required": [
+        "revision",
+        "updatedAt",
+        "settings",
+        "activeSettings",
+        "restartRequired",
+        "restartFields",
+        "scopes",
+        "warning"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": { "restartRequired": { "const": true } },
+            "required": ["restartRequired"]
+          },
+          "then": {
+            "properties": { "restartFields": { "minItems": 1 } }
+          },
+          "else": {
+            "properties": { "restartFields": { "maxItems": 0 } }
+          }
+        }
+      ]
+    },
     "shutdownResult": {
       "type": "object",
       "properties": { "stopped": { "const": true } },
@@ -793,6 +1010,7 @@
             { "$ref": "#/$defs/chatResult" },
             { "$ref": "#/$defs/chatStateResult" },
             { "$ref": "#/$defs/projectStateResult" },
+            { "$ref": "#/$defs/settingsStateResult" },
             { "$ref": "#/$defs/shutdownResult" }
           ]
         }

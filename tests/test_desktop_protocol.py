@@ -201,6 +201,8 @@ def test_machine_readable_schema_covers_every_protocol_message_kind() -> None:
         "projectWorkspaceRequest",
         "projectArchiveRequest",
         "projectChatMoveRequest",
+        "settingsGetRequest",
+        "settingsUpdateRequest",
         "cancelRequest",
         "permissionResponseRequest",
         "shutdownRequest",
@@ -215,7 +217,23 @@ def test_machine_readable_schema_covers_every_protocol_message_kind() -> None:
         "chatStateResult",
         "projectSummary",
         "projectStateResult",
+        "settingsValues",
+        "settingsProjectScope",
+        "settingsChatScope",
+        "settingsScopes",
+        "settingsStateResult",
     }.issubset(definitions)
+
+    settings_values = cast(JsonObject, definitions["settingsValues"])
+    properties = cast(JsonObject, settings_values["properties"])
+    assert set(properties) == {
+        "modelName",
+        "ollamaHost",
+        "shortTermMemoryTokenBudget",
+        "memoryRetrievalLimit",
+        "dataImportMaxBytes",
+    }
+    assert settings_values["additionalProperties"] is False
 
 
 def _project_state_response() -> JsonObject:
