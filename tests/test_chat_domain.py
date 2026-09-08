@@ -30,12 +30,14 @@ def _message(
     *,
     content: str = "Hello",
     created_at: datetime = BASE_TIME,
+    attachments: tuple[AttachmentMetadata, ...] = (),
 ) -> ChatMessage:
     return ChatMessage(
         message_id=ChatMessageId(message_id),
         role="user",
         content=content,
         created_at=created_at,
+        attachments=attachments,
     )
 
 
@@ -371,14 +373,14 @@ def test_chat_message_rejects_invalid_role() -> None:
 
 @pytest.mark.parametrize(
     "invalid_size",
-    [-1, True, 1.5],
+    [-1, 0, True, 1.5],
 )
 def test_attachment_rejects_invalid_size(
     invalid_size: object,
 ) -> None:
     with pytest.raises(
         ValueError,
-        match=r"size_bytes must be a non-negative integer\.",
+        match=r"size_bytes must be a positive integer\.",
     ):
         AttachmentMetadata(
             attachment_id=AttachmentId("attachment_test"),
@@ -386,3 +388,31 @@ def test_attachment_rejects_invalid_size(
             media_type="text/plain",
             size_bytes=invalid_size,  # type: ignore[arg-type]
         )
+
+
+@pytest.mark.parametrize(
+    "file_name",
+    ["../notes.txt", "folder\\notes.txt", "notes.txt\n", " notes.txt"],
+)
+def test_attachment_rejects_unsafe_display_name(file_name: str) -> None:
+    with pytest.raises(ValueError, match="safe display basename"):
+        AttachmentMetadata(
+            attachment_id=AttachmentId("attachment_test"),
+            file_name=file_name,
+            media_type="text/plain",
+            size_bytes=1,
+        )
+
+
+def test_chat_session_rejects_attachment_id_reuse_across_messages() -> None:
+    attachment = AttachmentMetadata(
+        attachment_id=AttachmentId("attachment_shared"),
+        file_name="notes.txt",
+        media_type="text/plain",
+        size_bytes=1,
+    )
+    first = _message("message_first", attachments=(attachment,))
+    second = _message("message_second", attachments=(attachment,))
+
+    with pytest.raises(ValueError, match="unique across one Chat"):
+        _session(messages=(first, second))

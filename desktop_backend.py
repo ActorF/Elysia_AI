@@ -17,11 +17,23 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from enum import Enum
 from io import TextIOWrapper
+from pathlib import Path
 from threading import Event, Lock, RLock, Thread
 from typing import Any, TextIO, cast
 from urllib.request import Request, urlopen
 
+from attachments import (
+    AttachmentConflictError,
+    AttachmentNotFoundError,
+    AttachmentScope,
+    AttachmentState,
+    AttachmentStorageError,
+    AttachmentValidationError,
+    JsonAttachmentStore,
+)
 from chats import (
+    AttachmentId,
+    AttachmentMetadata,
     ChatId,
     ChatMessageId,
     ChatNotFoundError,
@@ -88,6 +100,7 @@ SERVER_CAPABILITIES = (
     "request.cancel",
     "project.management",
     "settings.management",
+    "attachment.management",
     "stream",
     "progress",
     "event",
@@ -229,6 +242,7 @@ class DesktopBackend:
         model_loader: ModelLoader = discover_ollama_models,
         settings_validator: SettingsValidator = validate_settings,
         settings_repository: DesktopSettingsRepository | None = None,
+        attachment_store: JsonAttachmentStore | None = None,
         input_stream: TextIO = sys.stdin,
         output_stream: TextIO = sys.stdout,
         expected_session_token: str | None = None,
@@ -248,6 +262,7 @@ class DesktopBackend:
             if settings_repository is None
             else settings_repository
         )
+        self._attachment_store = attachment_store
         initial_settings = self._settings_repository.load()
         self._settings_warning = initial_settings.warning
         self._desired_settings = initial_settings
@@ -412,6 +427,12 @@ class DesktopBackend:
                 self._archive_chat(request_id, params)
             elif method == "chat.delete":
                 self._delete_chat(request_id, params)
+            elif method == "attachment.list":
+                self._list_attachments(request_id, params)
+            elif method == "attachment.add":
+                self._add_attachments(request_id, params)
+            elif method == "attachment.remove":
+                self._remove_attachment(request_id, params)
             elif method == "project.list":
                 self._list_projects(request_id)
             elif method == "project.create":
@@ -457,6 +478,19 @@ class DesktopBackend:
             self._emit_error(request_id, "chat.retry_target", str(error))
         except ChatNotFoundError as error:
             self._emit_error(request_id, "chat.not_found", str(error))
+        except AttachmentValidationError as error:
+            self._emit_error(request_id, "attachment.invalid", str(error))
+        except AttachmentNotFoundError as error:
+            self._emit_error(request_id, "attachment.not_found", str(error))
+        except AttachmentConflictError as error:
+            self._emit_error(request_id, "attachment.conflict", str(error))
+        except AttachmentStorageError as error:
+            self._emit_error(
+                request_id,
+                "attachment.storage_failed",
+                str(error),
+                retryable=True,
+            )
         except ProjectChatBusyError as error:
             self._emit_error(
                 request_id,
@@ -570,6 +604,25 @@ class DesktopBackend:
                 create_brain(self._runtime_settings)
                 if self._uses_default_brain_factory
                 else self._brain_factory()
+            )
+            if self._attachment_store is None:
+                self._attachment_store = JsonAttachmentStore(
+                    self._runtime_settings.base_dir
+                    / "workspace"
+                    / "attachments",
+                    max_file_bytes=(
+                        self._runtime_settings.data_import_max_bytes
+                    ),
+                )
+            self._attachment_store.reconcile_owners(
+                chat_ids=(
+                    str(chat.chat_id)
+                    for chat in brain.list_chats(include_archived=True)
+                ),
+                project_ids=(
+                    str(project.project_id)
+                    for project in brain.list_projects(include_archived=True)
+                ),
             )
             active_chat = self._resolve_active_chat(brain)
             self._brain = brain
@@ -784,6 +837,138 @@ class DesktopBackend:
         ]
         return result
 
+    def _require_attachment_store(self) -> JsonAttachmentStore:
+        """Return the initialized private attachment storage boundary."""
+
+        if self._attachment_store is None:
+            raise RuntimeError("Attachment storage is not initialized.")
+        return self._attachment_store
+
+    @staticmethod
+    def _attachment_scope_from_params(params: JsonObject) -> AttachmentScope:
+        """Build one already protocol-validated canonical scope."""
+
+        raw_scope = cast(JsonObject, params["scope"])
+        return AttachmentScope(
+            kind=cast(Any, raw_scope["kind"]),
+            id=cast(str, raw_scope["id"]),
+        )
+
+    def _attachment_references(
+        self,
+        scope: AttachmentScope,
+        *,
+        require_writable: bool = True,
+    ) -> tuple[str, ...]:
+        """Validate scope ownership and return committed Chat references."""
+
+        if self._brain is None:
+            raise RuntimeError("Backend is not initialized.")
+        if scope.kind == "project":
+            project = self._brain.get_project(ProjectId(scope.id))
+            if require_writable and project.is_archived:
+                raise ProjectArchivedError(
+                    "Archived Projects cannot change local attachments."
+                )
+            return ()
+
+        chat = self._brain.get_chat(ChatId(scope.id))
+        if require_writable and chat.is_archived:
+            raise ProtocolValidationError(
+                "chat.archived",
+                "Archived Chats cannot change local attachments.",
+            )
+        return tuple(
+            str(attachment.attachment_id)
+            for message in chat.messages
+            for attachment in message.attachments
+        )
+
+    @staticmethod
+    def _serialize_attachment_state(state: AttachmentState) -> JsonObject:
+        """Return only renderer-safe metadata and canonical limits."""
+
+        return {
+            "scope": {
+                "kind": state.scope.kind,
+                "id": state.scope.id,
+            },
+            "attachments": [
+                {
+                    "attachmentId": item.attachment_id,
+                    "fileName": item.file_name,
+                    "mediaType": item.media_type,
+                    "sizeBytes": item.size_bytes,
+                    "status": item.status,
+                }
+                for item in state.attachments
+            ],
+            "maxFileBytes": state.max_file_bytes,
+            "maxFileCount": state.max_file_count,
+        }
+
+    def _list_attachments(
+        self,
+        request_id: str,
+        params: JsonObject,
+    ) -> None:
+        """Reconcile and list one exact Chat or Project namespace."""
+
+        scope = self._attachment_scope_from_params(params)
+        references = self._attachment_references(
+            scope,
+            require_writable=False,
+        )
+        state = self._require_attachment_store().list_state(
+            scope,
+            references,
+        )
+        self._emit_response(
+            request_id,
+            self._serialize_attachment_state(state),
+        )
+
+    def _add_attachments(
+        self,
+        request_id: str,
+        params: JsonObject,
+    ) -> None:
+        """Atomically copy trusted native files into one local namespace."""
+
+        scope = self._attachment_scope_from_params(params)
+        references = self._attachment_references(scope)
+        source_paths = tuple(
+            Path(path)
+            for path in cast(list[str], params["sourcePaths"])
+        )
+        state = self._require_attachment_store().stage_files(
+            scope,
+            source_paths,
+            references,
+        )
+        self._emit_response(
+            request_id,
+            self._serialize_attachment_state(state),
+        )
+
+    def _remove_attachment(
+        self,
+        request_id: str,
+        params: JsonObject,
+    ) -> None:
+        """Remove one ready item only from its exact canonical namespace."""
+
+        scope = self._attachment_scope_from_params(params)
+        self._attachment_references(scope)
+        state = self._require_attachment_store().remove(
+            scope,
+            cast(str, params["attachmentId"]),
+        )
+        self._emit_response(
+            request_id,
+            self._serialize_attachment_state(state),
+        )
+
     def _session_result(
         self,
         *,
@@ -903,16 +1088,17 @@ class DesktopBackend:
         """Set archive state and replace an archived active Chat safely."""
 
         active_chat = self._active_chat_snapshot()
-        if self._brain is None or active_chat is None:
+        brain = self._brain
+        if brain is None or active_chat is None:
             raise RuntimeError("Backend is not initialized.")
 
         chat_id = ChatId(cast(str, params["chatId"]))
         archived = cast(bool, params["archived"])
         was_active = chat_id == active_chat.chat_id
-        self._brain.archive_chat(chat_id, archived)
+        brain.archive_chat(chat_id, archived)
 
         if was_active and archived:
-            self._set_active_chat(self._resolve_active_chat(self._brain))
+            self._set_active_chat(self._resolve_active_chat(brain))
 
         self._emit_session_response(request_id, include_archived=True)
 
@@ -920,15 +1106,19 @@ class DesktopBackend:
         """Delete one Chat and replace the active Chat when necessary."""
 
         active_chat = self._active_chat_snapshot()
-        if self._brain is None or active_chat is None:
+        brain = self._brain
+        if brain is None or active_chat is None:
             raise RuntimeError("Backend is not initialized.")
 
         chat_id = ChatId(cast(str, params["chatId"]))
         was_active = chat_id == active_chat.chat_id
-        self._brain.delete_chat(chat_id)
+        self._require_attachment_store().delete_scope_with(
+            AttachmentScope(kind="chat", id=str(chat_id)),
+            lambda: brain.delete_chat(chat_id),
+        )
 
         if was_active:
-            self._set_active_chat(self._resolve_active_chat(self._brain))
+            self._set_active_chat(self._resolve_active_chat(brain))
 
         self._emit_session_response(request_id, include_archived=True)
 
@@ -1138,17 +1328,120 @@ class DesktopBackend:
         """Start one cancellable new-turn generation worker."""
 
         raw_message = cast(str, params["message"])
-        self._start_generation(
+        attachment_ids = tuple(
+            cast(list[str], params.get("attachmentIds", []))
+        )
+        brain, task = self._reserve_generation(
             request_id,
             params,
             method="chat.stream",
-            run=lambda brain, task: brain.stream_chat(
-                task.chat_id,
-                raw_message,
-                should_cancel=task.should_cancel,
-                begin_commit=task.begin_commit,
-            ),
         )
+        attachment_records: tuple[AttachmentMetadata, ...] = ()
+        try:
+            attachment_records = self._claim_chat_attachments(
+                task.chat_id,
+                attachment_ids,
+            )
+            run: Callable[[Brain, _GenerationTask], Iterable[str]]
+            if attachment_records:
+                run = lambda active_brain, active_task: active_brain.stream_chat(
+                    active_task.chat_id,
+                    raw_message,
+                    attachments=attachment_records,
+                    should_cancel=active_task.should_cancel,
+                    begin_commit=active_task.begin_commit,
+                )
+            else:
+                # Preserve the older callable shape for injected test/fallback
+                # Brain implementations that have no attachment support.
+                run = lambda active_brain, active_task: active_brain.stream_chat(
+                    active_task.chat_id,
+                    raw_message,
+                    should_cancel=active_task.should_cancel,
+                    begin_commit=active_task.begin_commit,
+                )
+            self._launch_reserved_generation(brain, task, run)
+        except Exception:
+            if attachment_records:
+                self._release_chat_attachment_claims(
+                    task.chat_id,
+                    tuple(
+                        str(attachment.attachment_id)
+                        for attachment in attachment_records
+                    ),
+                )
+            self._abandon_generation_task(task)
+            raise
+
+    def _claim_chat_attachments(
+        self,
+        chat_id: ChatId,
+        attachment_ids: tuple[str, ...],
+    ) -> tuple[AttachmentMetadata, ...]:
+        """Reserve ready drafts and map them to the stable Chat domain."""
+
+        if not attachment_ids:
+            return ()
+        scope = AttachmentScope(kind="chat", id=str(chat_id))
+        references = self._attachment_references(scope)
+        store = self._require_attachment_store()
+        store.reconcile(scope, references)
+        items = store.claim_chat(scope, attachment_ids)
+        return tuple(
+            AttachmentMetadata(
+                attachment_id=AttachmentId(item.attachment_id),
+                file_name=item.file_name,
+                media_type=item.media_type,
+                size_bytes=item.size_bytes,
+            )
+            for item in items
+        )
+
+    def _reconcile_chat_attachments(self, chat_id: ChatId) -> None:
+        """Finish committed blobs or release failed/cancelled claims."""
+
+        scope = AttachmentScope(kind="chat", id=str(chat_id))
+        try:
+            references = self._attachment_references(scope)
+            self._require_attachment_store().reconcile(scope, references)
+        except Exception:
+            # The Chat commit is already canonical at this point. A storage
+            # cleanup error must not invite the renderer to submit it twice;
+            # the next list/restart retries deterministic reconciliation.
+            logger.exception(
+                "Attachment reconciliation failed: chat_id=%s.",
+                chat_id,
+            )
+
+    def _release_chat_attachment_claims(
+        self,
+        chat_id: ChatId,
+        attachment_ids: tuple[str, ...],
+    ) -> None:
+        """Roll back only claims made by a generation that did not launch."""
+
+        scope = AttachmentScope(kind="chat", id=str(chat_id))
+        try:
+            self._require_attachment_store().release_chat_claims(
+                scope,
+                attachment_ids,
+            )
+        except Exception:
+            logger.exception(
+                "Attachment claim rollback failed: chat_id=%s.",
+                chat_id,
+            )
+
+    def _finish_generation_task(self, task: _GenerationTask) -> None:
+        """Publish Backend readiness before emitting a terminal response."""
+
+        if task.done.is_set():
+            return
+        self._reconcile_chat_attachments(task.chat_id)
+        task.finish()
+        with self._state_lock:
+            if self._generation_task is task:
+                self._generation_task = None
 
     def _start_chat_retry(
         self,
@@ -1186,9 +1479,26 @@ class DesktopBackend:
     ) -> None:
         """Validate and launch one globally exclusive streamed operation."""
 
+        brain, task = self._reserve_generation(
+            request_id,
+            params,
+            method=method,
+        )
+        self._launch_reserved_generation(brain, task, run)
+
+    def _reserve_generation(
+        self,
+        request_id: str,
+        params: JsonObject,
+        *,
+        method: str,
+    ) -> tuple[Brain, _GenerationTask]:
+        """Atomically admit one request before it can mutate attachment state."""
+
         if self._brain is None:
             raise RuntimeError("Backend is not initialized.")
 
+        brain = self._brain
         raw_chat_id = cast(str, params["chatId"])
         with self._state_lock:
             active_chat = self._active_chat
@@ -1212,35 +1522,49 @@ class DesktopBackend:
             )
             self._generation_task = task
 
-        self._emit_event(
-            "chat.started",
-            request_id=request_id,
-            data={"chatId": raw_chat_id},
-        )
-        self._emit_progress(
-            request_id,
-            "chat.generate",
-            0,
-            total=None,
-            message="Generating reply",
-        )
+        return brain, task
 
-        brain = self._brain
+    def _launch_reserved_generation(
+        self,
+        brain: Brain,
+        task: _GenerationTask,
+        run: Callable[[Brain, _GenerationTask], Iterable[str]],
+    ) -> None:
+        """Publish and start a worker for an already admitted request."""
+
         try:
+            self._emit_event(
+                "chat.started",
+                request_id=task.request_id,
+                data={"chatId": str(task.chat_id)},
+            )
+            self._emit_progress(
+                task.request_id,
+                "chat.generate",
+                0,
+                total=None,
+                message="Generating reply",
+            )
             worker = Thread(
                 target=self._run_generation,
                 args=(brain, task, run),
-                name=f"elysia-{task.method}-{request_id}",
+                name=f"elysia-{task.method}-{task.request_id}",
                 daemon=True,
             )
             task.thread = worker
             worker.start()
         except Exception:
-            task.finish()
-            with self._state_lock:
-                if self._generation_task is task:
-                    self._generation_task = None
+            self._abandon_generation_task(task)
             raise
+
+    def _abandon_generation_task(self, task: _GenerationTask) -> None:
+        """Clear an admitted request that never became a running worker."""
+
+        if not task.done.is_set():
+            task.finish()
+        with self._state_lock:
+            if self._generation_task is task:
+                self._generation_task = None
 
     def _run_generation(
         self,
@@ -1322,6 +1646,7 @@ class DesktopBackend:
                 request_id=task.request_id,
                 data={"chatId": raw_chat_id},
             )
+            self._finish_generation_task(task)
             self._emit_response(
                 task.request_id,
                 {"chatId": raw_chat_id, "reply": reply},
@@ -1332,22 +1657,27 @@ class DesktopBackend:
                 request_id=task.request_id,
                 data={"chatId": raw_chat_id},
             )
+            self._finish_generation_task(task)
             self._emit_error(
                 task.request_id,
                 "request.cancelled",
                 "Chat generation was cancelled.",
             )
         except ProtocolValidationError as error:
+            self._finish_generation_task(task)
             self._emit_error(task.request_id, error.code, str(error))
         except ChatRetryTargetError as error:
+            self._finish_generation_task(task)
             self._emit_error(
                 task.request_id,
                 "chat.retry_target",
                 str(error),
             )
         except ChatBusyError as error:
+            self._finish_generation_task(task)
             self._emit_error(task.request_id, "chat.busy", str(error))
         except ChatNotFoundError as error:
+            self._finish_generation_task(task)
             self._emit_error(task.request_id, "chat.not_found", str(error))
         except Exception:
             logger.exception(
@@ -1355,6 +1685,7 @@ class DesktopBackend:
                 task.method,
                 task.request_id,
             )
+            self._finish_generation_task(task)
             self._emit_error(
                 task.request_id,
                 "chat.failed",
@@ -1362,10 +1693,7 @@ class DesktopBackend:
                 retryable=True,
             )
         finally:
-            task.finish()
-            with self._state_lock:
-                if self._generation_task is task:
-                    self._generation_task = None
+            self._finish_generation_task(task)
 
     def _cancel_request(
         self,

@@ -289,6 +289,34 @@ def test_commit_turn_saves_complete_pair_only_to_named_chat(
     assert chats.get_chat(second.chat_id).messages == ()
 
 
+def test_commit_turn_persists_attachment_only_user_message(
+    tmp_path: Path,
+) -> None:
+    chats, _projects, active = _services(tmp_path)
+    chat = active.create_chat(
+        title="Attachment",
+        mode="chat",
+        model_name="fake-model",
+    )
+    attachment = create_attachment_metadata(
+        file_name="notes.md",
+        media_type="text/markdown",
+        size_bytes=12,
+    )
+
+    with active.open_turn(chat.chat_id) as context:
+        updated = active.commit_turn(
+            context,
+            user_message="",
+            assistant_message="The file is stored locally.",
+            attachments=(attachment,),
+        )
+
+    assert updated.messages[0].content == ""
+    assert updated.messages[0].attachments == (attachment,)
+    assert chats.get_chat(chat.chat_id) == updated
+
+
 def test_retry_replaces_only_tail_content_and_preserves_message_identity(
     tmp_path: Path,
 ) -> None:

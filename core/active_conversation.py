@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from threading import Lock, RLock
 
 from chats import (
+    AttachmentMetadata,
     ChatId,
     ChatMessage,
     ChatMessageId,
@@ -268,15 +269,19 @@ class ActiveConversationService:
         *,
         user_message: str,
         assistant_message: str,
+        attachments: Iterable[AttachmentMetadata] = (),
     ) -> ChatSession:
         """Append one complete turn if the guarded snapshot is still current."""
 
         self._require_active_token(active_conversation)
         cleaned_user_message = user_message.strip()
         cleaned_assistant_message = assistant_message.strip()
+        attachment_records = tuple(attachments)
 
-        if not cleaned_user_message:
-            raise ValueError("User message cannot be empty.")
+        if not cleaned_user_message and not attachment_records:
+            raise ValueError(
+                "User message must contain text or an attachment."
+            )
         if not cleaned_assistant_message:
             raise ValueError("Assistant message cannot be empty.")
 
@@ -288,6 +293,7 @@ class ActiveConversationService:
             user_record = create_chat_message(
                 role="user",
                 content=cleaned_user_message,
+                attachments=attachment_records,
                 created_at=commit_time,
             )
             assistant_record = create_chat_message(
@@ -342,8 +348,6 @@ class ActiveConversationService:
         self._require_active_token(active_conversation)
         cleaned_user_message = user_message.strip()
         cleaned_assistant_message = assistant_message.strip()
-        if not cleaned_user_message:
-            raise ValueError("User message cannot be empty.")
         if not cleaned_assistant_message:
             raise ValueError("Assistant message cannot be empty.")
 
@@ -356,6 +360,10 @@ class ActiveConversationService:
                 user_message_id=user_message_id,
                 assistant_message_id=assistant_message_id,
             )
+            if not cleaned_user_message and not user_record.attachments:
+                raise ValueError(
+                    "User message must contain text or an attachment."
+                )
             commit_time = self._next_timestamp(current_session.updated_at)
             updated_session = replace(
                 current_session,

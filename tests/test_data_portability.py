@@ -1,4 +1,6 @@
 import json
+import os
+import subprocess
 from collections.abc import Mapping
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -7,6 +9,7 @@ from pathlib import Path
 import pytest
 
 import recovery.service as recovery_service
+from attachments import AttachmentScope, JsonAttachmentStore
 from chats import (
     ChatSession,
     ChatSummary,
@@ -101,6 +104,32 @@ def write_json(path: Path, value: object) -> None:
         json.dumps(value, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
+
+
+def create_directory_redirect(link: Path, target: Path) -> None:
+    target.mkdir(parents=True, exist_ok=True)
+    link.parent.mkdir(parents=True, exist_ok=True)
+    if os.name == "nt":
+        result = subprocess.run(
+            ["cmd.exe", "/d", "/c", "mklink", "/J", str(link), str(target)],
+            capture_output=True,
+            check=False,
+            text=True,
+        )
+        if result.returncode != 0:
+            pytest.skip("This host does not allow test junctions.")
+        return
+    try:
+        link.symlink_to(target, target_is_directory=True)
+    except OSError:
+        pytest.skip("This host does not allow test directory symlinks.")
+
+
+def remove_directory_redirect(link: Path) -> None:
+    if link.is_symlink():
+        link.unlink()
+    elif link.exists():
+        link.rmdir()
 
 
 def seed_workspace_files(base_dir: Path) -> dict[str, object]:
@@ -552,7 +581,7 @@ def test_full_restore_rebases_legacy_backup_to_target_workspace(
 
 @pytest.mark.parametrize(
     "changed_field",
-    ["role", "content", "created_at", "attachments"],
+    ["role", "content", "created_at"],
 )
 def test_full_restore_rejects_a_tampered_legacy_message_prefix(
     tmp_path: Path,
@@ -589,15 +618,6 @@ def test_full_restore_rejects_a_tampered_legacy_message_prefix(
         changed_time = original.created_at + timedelta(seconds=1)
         changed = replace(original, created_at=changed_time)
         changed_updated_at = changed_time
-    else:
-        changed = replace(
-            original,
-            attachments=(create_attachment_metadata(
-                file_name="tampered.txt",
-                media_type="text/plain",
-                size_bytes=8,
-            ),),
-        )
     source_chats.save_chat(replace(
         session,
         updated_at=changed_updated_at,
@@ -614,6 +634,126 @@ def test_full_restore_rejects_a_tampered_legacy_message_prefix(
         target_service.import_bundle(export_file)
 
     assert target_chats.list_chats(include_archived=True) == ()
+
+
+def test_export_refuses_metadata_only_attachment_bundle(
+    tmp_path: Path,
+) -> None:
+    service, chats, _projects = service_for(tmp_path)
+    session = populated_chat(chats, title="Attachment")
+    attachment = create_attachment_metadata(
+        file_name="notes.txt",
+        media_type="text/plain",
+        size_bytes=8,
+    )
+    user, assistant = session.messages
+    chats.save_chat(replace(
+        session,
+        messages=(
+            replace(user, attachments=(attachment,)),
+            assistant,
+        ),
+    ))
+
+    with pytest.raises(
+        ExportValidationError,
+        match="file bytes",
+    ):
+        service.export_chat(session.chat_id, tmp_path / "chat.json")
+
+    assert not (tmp_path / "chat.json").exists()
+
+
+def test_export_refuses_a_redirected_workspace_root(tmp_path: Path) -> None:
+    application_root = tmp_path / "application"
+    outside = tmp_path / "outside"
+    write_json(outside / "memory" / "secret.json", {"secret": "outside"})
+    workspace = application_root / "workspace"
+    create_directory_redirect(workspace, outside)
+    chats = JsonChatRepository(tmp_path / "safe-repositories" / "chats")
+    projects = JsonProjectRepository(tmp_path / "safe-repositories" / "projects")
+    service = DataPortabilityService(
+        base_dir=application_root,
+        chat_repository=chats,
+        project_repository=projects,
+        clock=lambda: BASE_TIME,
+    )
+    destination = tmp_path / "redirected-workspace.json"
+    try:
+        with pytest.raises(ExportValidationError, match="redirected paths"):
+            service.export_all_user_data(destination)
+        assert not destination.exists()
+    finally:
+        remove_directory_redirect(workspace)
+
+
+def test_project_export_refuses_to_omit_local_project_files(
+    tmp_path: Path,
+) -> None:
+    service, _chats, projects = service_for(tmp_path)
+    project = projects.create_project(name="Local sources")
+    source = tmp_path / "source.md"
+    source.write_text("Project-only source", encoding="utf-8")
+    store = JsonAttachmentStore(
+        tmp_path / "workspace" / "attachments",
+        max_file_bytes=1_024,
+    )
+    store.stage_files(
+        AttachmentScope(kind="project", id=str(project.project_id)),
+        (source.resolve(),),
+    )
+
+    with pytest.raises(ExportValidationError, match="file bytes"):
+        service.export_project(
+            project.project_id,
+            tmp_path / "project.json",
+        )
+
+    assert not (tmp_path / "project.json").exists()
+
+
+def test_project_export_fails_closed_on_nested_attachment_layout(
+    tmp_path: Path,
+) -> None:
+    service, _chats, projects = service_for(tmp_path)
+    project = projects.create_project(name="Nested local sources")
+    nested = (
+        tmp_path
+        / "workspace"
+        / "attachments"
+        / "project"
+        / str(project.project_id)
+        / "drafts"
+        / "nested"
+    )
+    nested.mkdir(parents=True)
+    (nested / "source.blob").write_bytes(b"must not be omitted")
+
+    with pytest.raises(ExportValidationError, match="file bytes"):
+        service.export_project(
+            project.project_id,
+            tmp_path / "project.json",
+        )
+
+    assert not (tmp_path / "project.json").exists()
+
+
+def test_project_export_rejects_a_redirected_attachment_ancestor(
+    tmp_path: Path,
+) -> None:
+    service, _chats, projects = service_for(tmp_path)
+    project = projects.create_project(name="Redirected sources")
+    outside = tmp_path / "outside-project-attachments"
+    (outside / str(project.project_id)).mkdir(parents=True)
+    project_root = tmp_path / "workspace" / "attachments" / "project"
+    create_directory_redirect(project_root, outside)
+    destination = tmp_path / "redirected-project.json"
+    try:
+        with pytest.raises(ExportValidationError, match="redirected paths"):
+            service.export_project(project.project_id, destination)
+        assert not destination.exists()
+    finally:
+        remove_directory_redirect(project_root)
 
 
 def test_import_size_and_export_path_are_validated(tmp_path: Path) -> None:

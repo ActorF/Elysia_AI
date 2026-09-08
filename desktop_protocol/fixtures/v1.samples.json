@@ -137,6 +137,56 @@
       }
     },
     {
+      "name": "attachment-only chat stream request",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "chat-attachment-1",
+        "method": "chat.stream",
+        "params": {
+          "chatId": "chat_fixture",
+          "message": "",
+          "attachmentIds": ["attachment_fixture"]
+        }
+      }
+    },
+    {
+      "name": "attachment list request",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "attachment-list-1",
+        "method": "attachment.list",
+        "params": { "scope": { "kind": "chat", "id": "chat_fixture" } }
+      }
+    },
+    {
+      "name": "attachment add request",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "attachment-add-1",
+        "method": "attachment.add",
+        "params": {
+          "scope": { "kind": "project", "id": "project_fixture" },
+          "sourcePaths": ["D:\\Notes\\course.md"]
+        }
+      }
+    },
+    {
+      "name": "attachment remove request",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "attachment-remove-1",
+        "method": "attachment.remove",
+        "params": {
+          "scope": { "kind": "chat", "id": "chat_fixture" },
+          "attachmentId": "attachment_fixture"
+        }
+      }
+    },
+    {
       "name": "project list request",
       "message": {
         "type": "request",
@@ -417,6 +467,29 @@
               "archived": false
             }
           ]
+        }
+      }
+    },
+    {
+      "name": "attachment state response",
+      "message": {
+        "type": "response",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "attachment-list-1",
+        "ok": true,
+        "result": {
+          "scope": { "kind": "chat", "id": "chat_fixture" },
+          "attachments": [
+            {
+              "attachmentId": "attachment_fixture",
+              "fileName": "course notes.md",
+              "mediaType": "text/markdown",
+              "sizeBytes": 128,
+              "status": "ready"
+            }
+          ],
+          "maxFileBytes": 16777216,
+          "maxFileCount": 10
         }
       }
     },

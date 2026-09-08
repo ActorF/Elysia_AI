@@ -39,6 +39,7 @@ export interface BackendSnapshot {
 export interface ChatRequest {
   chatId: string
   message: string
+  attachmentIds: string[]
 }
 
 /** Regenerate the persisted tail turn, optionally replacing its user text. */
@@ -158,9 +159,33 @@ export interface MoveChatToProjectRequest {
   projectId: string | null
 }
 
-export interface SelectedFile {
-  name: string
+/** Identify the canonical owner of one pending attachment collection. */
+export interface AttachmentScope {
+  kind: 'chat' | 'project'
+  id: string
+}
+
+/** Renderer-safe attachment metadata. Local source and storage paths stay private. */
+export interface AttachmentItem {
+  attachmentId: string
+  fileName: string
+  mediaType: string
   sizeBytes: number
+  status: 'ready'
+}
+
+/** Canonical pending attachments plus limits applied to newly selected files. */
+export interface AttachmentState {
+  scope: AttachmentScope
+  attachments: AttachmentItem[]
+  maxFileBytes: number
+  maxFileCount: number
+}
+
+/** A native picker cancellation is a successful no-op, not an empty state. */
+export interface AttachmentSelectionResult {
+  cancelled: boolean
+  state: AttachmentState | null
 }
 
 export type DesktopSettingsValues = SettingsValues
@@ -250,7 +275,18 @@ export interface DesktopApi {
   setProjectArchived(request: ArchiveProjectRequest): Promise<ProjectState>
   moveChatToProject(request: MoveChatToProjectRequest): Promise<ProjectState>
   selectModel(modelName: string): Promise<BackendSnapshot>
-  chooseFiles(): Promise<SelectedFile[]>
+  listAttachments(scope: AttachmentScope): Promise<AttachmentState>
+  chooseAttachments(
+    scope: AttachmentScope,
+  ): Promise<AttachmentSelectionResult>
+  acceptDroppedAttachments(
+    scope: AttachmentScope,
+    files: File[],
+  ): Promise<AttachmentState>
+  removeAttachment(
+    scope: AttachmentScope,
+    attachmentId: string,
+  ): Promise<AttachmentState>
   setCharacterPanelOpen(open: boolean): Promise<void>
   onBackendEvent(listener: (event: BackendEvent) => void): () => void
 }

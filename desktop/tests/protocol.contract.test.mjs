@@ -15,6 +15,7 @@ import {
   ProtocolValidationError,
   createRequest,
   hasNonBlankCodePoint,
+  parseAttachmentStateResult,
   parseChatResult,
   parseClientRequest,
   parseHandshakeResult,
@@ -250,6 +251,179 @@ test('TypeScript validates regenerate and edit-and-retry requests', () => {
   )
 })
 
+test('TypeScript validates exact scoped Attachment requests', () => {
+  const chatScope = { kind: 'chat', id: 'chat_fixture' }
+  const projectScope = { kind: 'project', id: 'project_fixture' }
+  assert.deepEqual(
+    createRequest('attachment-list-1', 'attachment.list', {
+      scope: chatScope,
+    }).params,
+    { scope: chatScope },
+  )
+  assert.deepEqual(
+    createRequest('attachment-add-1', 'attachment.add', {
+      scope: projectScope,
+      sourcePaths: [String.raw`C:\Users\Actor\Documents\notes.txt`],
+    }).params,
+    {
+      scope: projectScope,
+      sourcePaths: [String.raw`C:\Users\Actor\Documents\notes.txt`],
+    },
+  )
+  assert.deepEqual(
+    createRequest('attachment-remove-1', 'attachment.remove', {
+      scope: chatScope,
+      attachmentId: 'attachment_fixture',
+    }).params,
+    { scope: chatScope, attachmentId: 'attachment_fixture' },
+  )
+  assert.deepEqual(
+    createRequest('chat-attachments-1', 'chat.stream', {
+      chatId: 'chat_fixture',
+      message: 'Use the attached notes.',
+      attachmentIds: ['attachment_fixture'],
+    }).params.attachmentIds,
+    ['attachment_fixture'],
+  )
+})
+
+for (const [name, method, params] of [
+  [
+    'unknown scope field',
+    'attachment.list',
+    { scope: { kind: 'chat', id: 'chat_fixture', sourcePath: 'private' } },
+  ],
+  [
+    'scope kind and id mismatch',
+    'attachment.list',
+    { scope: { kind: 'project', id: 'chat_fixture' } },
+  ],
+  [
+    'relative source path',
+    'attachment.add',
+    { scope: { kind: 'chat', id: 'chat_fixture' }, sourcePaths: ['note.txt'] },
+  ],
+  [
+    'device source path',
+    'attachment.add',
+    {
+      scope: { kind: 'chat', id: 'chat_fixture' },
+      sourcePaths: [String.raw`\\.\C:\notes.txt`],
+    },
+  ],
+  [
+    'dot-segment source path',
+    'attachment.add',
+    {
+      scope: { kind: 'chat', id: 'chat_fixture' },
+      sourcePaths: [String.raw`C:\safe\..\notes.txt`],
+    },
+  ],
+  [
+    'duplicate source path',
+    'attachment.add',
+    {
+      scope: { kind: 'chat', id: 'chat_fixture' },
+      sourcePaths: [String.raw`C:\notes.txt`, String.raw`C:\notes.txt`],
+    },
+  ],
+  [
+    'Windows-equivalent duplicate source path',
+    'attachment.add',
+    {
+      scope: { kind: 'chat', id: 'chat_fixture' },
+      sourcePaths: [String.raw`C:\Notes.txt`, 'c:/notes.txt'],
+    },
+  ],
+  [
+    'unknown remove field',
+    'attachment.remove',
+    {
+      scope: { kind: 'chat', id: 'chat_fixture' },
+      attachmentId: 'attachment_fixture',
+      sourcePath: String.raw`C:\private.txt`,
+    },
+  ],
+]) {
+  test(`TypeScript rejects Attachment request with ${name}`, () => {
+    assert.throws(
+      () => parseClientRequest({
+        type: 'request',
+        protocol: fixtures.protocol,
+        id: `invalid-attachment-${name}`,
+        method,
+        params,
+      }),
+      ProtocolValidationError,
+    )
+  })
+}
+
+test('TypeScript parses bounded Attachment state without local paths', () => {
+  const state = {
+    scope: { kind: 'chat', id: 'chat_fixture' },
+    attachments: [
+      {
+        attachmentId: 'attachment_fixture',
+        fileName: 'notes.txt',
+        mediaType: 'text/plain',
+        sizeBytes: 12,
+        status: 'ready',
+      },
+    ],
+    maxFileBytes: 16_777_216,
+    maxFileCount: 10,
+  }
+  assert.deepEqual(parseAttachmentStateResult(state), state)
+
+  assert.throws(
+    () => parseAttachmentStateResult({
+      ...state,
+      attachments: [{ ...state.attachments[0], sourcePath: 'private' }],
+    }),
+    ProtocolValidationError,
+  )
+  assert.throws(
+    () => parseAttachmentStateResult({
+      ...state,
+      attachments: [{ ...state.attachments[0], status: 'claimed' }],
+    }),
+    ProtocolValidationError,
+  )
+  assert.throws(
+    () => parseAttachmentStateResult({
+      ...state,
+      attachments: [
+        ...state.attachments,
+        ...Array.from({ length: 10 }, (_, index) => ({
+          ...state.attachments[0],
+          attachmentId: `attachment_extra_${index}`,
+        })),
+      ],
+    }),
+    ProtocolValidationError,
+  )
+  for (const invalidItem of [
+    { ...state.attachments[0], fileName: 'C:/secret.txt' },
+    { ...state.attachments[0], mediaType: 'not a mime' },
+  ]) {
+    assert.throws(
+      () => parseAttachmentStateResult({
+        ...state,
+        attachments: [invalidItem],
+      }),
+      ProtocolValidationError,
+    )
+  }
+
+  const historicalState = {
+    ...state,
+    attachments: [{ ...state.attachments[0], sizeBytes: 100 }],
+    maxFileBytes: 10,
+  }
+  assert.deepEqual(parseAttachmentStateResult(historicalState), historicalState)
+})
+
 test('renderer text helpers follow the protocol blank definition', () => {
   assert.equal(hasNonBlankCodePoint('\u0085\ufeff'), false)
   assert.equal(hasNonBlankCodePoint('\u0085hello\ufeff'), true)
@@ -418,6 +592,41 @@ test('Backend sends an exact retry request and tracks it as generation', () => {
     message: 'Edited prompt',
   })
   assert.equal(backend.pendingRequests.get(requestId).method, 'chat.retry')
+})
+
+test('Backend sends an attachment-only Chat request without paths', () => {
+  const writes = []
+  const backend = new BackendProcess('.', () => undefined)
+  backend.child = {
+    stdin: {
+      writable: true,
+      write: (value) => writes.push(value),
+    },
+  }
+  backend.snapshot = {
+    revision: 1,
+    status: 'ready',
+    capabilities: ['chat.stream', 'attachment.management'],
+    models: ['qwen3.5:9b'],
+    modelName: 'qwen3.5:9b',
+    chatId: 'chat_fixture',
+    chatTitle: 'Elysia Chat',
+  }
+
+  const { requestId } = backend.beginChat({
+    chatId: 'chat_fixture',
+    message: '',
+    attachmentIds: ['attachment_fixture'],
+  })
+  const request = JSON.parse(writes.at(-1))
+  assert.equal(request.id, requestId)
+  assert.equal(request.method, 'chat.stream')
+  assert.deepEqual(request.params, {
+    chatId: 'chat_fixture',
+    message: '',
+    attachmentIds: ['attachment_fixture'],
+  })
+  assert.equal(JSON.stringify(request).includes('sourcePath'), false)
 })
 
 test('Backend stop request settles independently from cancelled generation', async () => {
@@ -669,6 +878,7 @@ test('Backend rolls back pending generation when stdin write throws', () => {
     () => backend.beginChat({
       chatId: 'chat_fixture',
       message: 'Hello',
+      attachmentIds: [],
     }),
     /Could not write to the Python Backend/,
   )
@@ -703,6 +913,10 @@ test('Backend protocol failure rejects pending renderer actions before exit', as
   const chatAction = backend.openChat('chat_other')
   const projectAction = backend.listProjects()
   const settingsAction = backend.getSettings()
+  const attachmentAction = backend.listAttachments({
+    kind: 'chat',
+    id: 'chat_fixture',
+  })
   backend.pendingRequests.set('generation-pending', {
     method: 'chat.stream',
     chatId: 'chat_fixture',
@@ -716,6 +930,7 @@ test('Backend protocol failure rejects pending renderer actions before exit', as
     chatAction,
     projectAction,
     settingsAction,
+    attachmentAction,
     cancellation,
   ].map(
     (action) => assert.rejects(action, /Protocol connection failed/),
@@ -937,6 +1152,146 @@ test('Backend sends and strictly resolves typed Settings actions', async () => {
   assert.deepEqual(updated, updateResponse.result)
 })
 
+test('Backend sends and strictly resolves scoped Attachment actions', async () => {
+  const writes = []
+  const backend = new BackendProcess('.', () => undefined)
+  backend.child = {
+    stdin: {
+      writable: true,
+      write: (value) => writes.push(value),
+    },
+  }
+  backend.snapshot = {
+    revision: 1,
+    status: 'ready',
+    capabilities: ['attachment.management'],
+    models: ['qwen3.5:9b'],
+    modelName: 'qwen3.5:9b',
+    chatId: 'chat_fixture',
+    chatTitle: 'Elysia Chat',
+  }
+  const scope = { kind: 'chat', id: 'chat_fixture' }
+  const emptyState = {
+    scope,
+    attachments: [],
+    maxFileBytes: 16_777_216,
+    maxFileCount: 10,
+  }
+
+  const listing = backend.listAttachments(scope)
+  const listRequest = JSON.parse(writes.at(-1))
+  assert.equal(listRequest.method, 'attachment.list')
+  assert.deepEqual(listRequest.params, { scope })
+  backend.handleProtocolLine(JSON.stringify({
+    type: 'response',
+    protocol: fixtures.protocol,
+    id: listRequest.id,
+    ok: true,
+    result: emptyState,
+  }))
+  assert.deepEqual(await listing, emptyState)
+
+  const sourcePaths = [String.raw`C:\Users\Actor\Documents\notes.txt`]
+  const adding = backend.addAttachments(scope, sourcePaths)
+  const addRequest = JSON.parse(writes.at(-1))
+  assert.equal(addRequest.method, 'attachment.add')
+  assert.deepEqual(addRequest.params, { scope, sourcePaths })
+  assert.throws(
+    () => backend.beginChat({
+      chatId: 'chat_fixture',
+      message: 'Do not race this attachment write.',
+      attachmentIds: [],
+    }),
+    /attachment action/u,
+  )
+  const readyState = {
+    ...emptyState,
+    attachments: [
+      {
+        attachmentId: 'attachment_fixture',
+        fileName: 'notes.txt',
+        mediaType: 'text/plain',
+        sizeBytes: 12,
+        status: 'ready',
+      },
+    ],
+  }
+  backend.handleProtocolLine(JSON.stringify({
+    type: 'response',
+    protocol: fixtures.protocol,
+    id: addRequest.id,
+    ok: true,
+    result: readyState,
+  }))
+  assert.deepEqual(await adding, readyState)
+
+  const removing = backend.removeAttachment(
+    scope,
+    'attachment_fixture',
+  )
+  const removeRequest = JSON.parse(writes.at(-1))
+  assert.equal(removeRequest.method, 'attachment.remove')
+  assert.deepEqual(removeRequest.params, {
+    scope,
+    attachmentId: 'attachment_fixture',
+  })
+  backend.handleProtocolLine(JSON.stringify({
+    type: 'response',
+    protocol: fixtures.protocol,
+    id: removeRequest.id,
+    ok: true,
+    result: emptyState,
+  }))
+  assert.deepEqual(await removing, emptyState)
+})
+
+test('Backend rejects an Attachment response for another scope', async () => {
+  const writes = []
+  let killCount = 0
+  const backend = new BackendProcess('.', () => undefined)
+  backend.child = {
+    stdin: {
+      writable: true,
+      write: (value) => writes.push(value),
+    },
+    kill: () => {
+      killCount += 1
+      return true
+    },
+  }
+  backend.snapshot = {
+    revision: 1,
+    status: 'ready',
+    capabilities: ['attachment.management'],
+    models: ['qwen3.5:9b'],
+    modelName: 'qwen3.5:9b',
+    chatId: 'chat_fixture',
+    chatTitle: 'Elysia Chat',
+  }
+
+  const listing = backend.listAttachments({
+    kind: 'chat',
+    id: 'chat_fixture',
+  })
+  const request = JSON.parse(writes.at(-1))
+  backend.handleProtocolLine(JSON.stringify({
+    type: 'response',
+    protocol: fixtures.protocol,
+    id: request.id,
+    ok: true,
+    result: {
+      scope: { kind: 'chat', id: 'chat_second' },
+      attachments: [],
+      maxFileBytes: 16_777_216,
+      maxFileCount: 10,
+    },
+  }))
+
+  await assert.rejects(listing, /does not match its requested scope/)
+  assert.equal(killCount, 1)
+  assert.equal(backend.getSnapshot().status, 'error')
+})
+
 test('Backend rejects a pending Settings action on a malformed result', async () => {
   const writes = []
   let killCount = 0
@@ -1155,7 +1510,7 @@ test('Backend explicit stop promptly rejects an in-flight restart', async () => 
   assert.equal(backend.getSnapshot().status, 'stopped')
 })
 
-test('Backend stop rejects pending Chat, Project, and Settings actions', async () => {
+test('Backend stop rejects all pending renderer actions', async () => {
   const backend = new BackendProcess('.', () => undefined)
   const child = new EventEmitter()
   child.stdin = {
@@ -1210,11 +1565,28 @@ test('Backend stop rejects pending Chat, Project, and Settings actions', async (
     streamedLength: 0,
     rejectSettingsState: rejectSettings,
   })
+  let rejectAttachment
+  const attachmentPromise = new Promise((_resolve, reject) => {
+    rejectAttachment = reject
+  })
+  backend.pendingRequests.set('attachment-list-stop', {
+    method: 'attachment.list',
+    attachmentScope: { kind: 'chat', id: 'chat_fixture' },
+    nextSequence: 0,
+    streamCompleted: false,
+    streamedReply: '',
+    streamedLength: 0,
+    rejectAttachmentState: rejectAttachment,
+  })
 
   const stopping = backend.stop()
   await assert.rejects(chatPromise, /stopping before the action completed/)
   await assert.rejects(projectPromise, /stopping before the action completed/)
   await assert.rejects(settingsPromise, /stopping before the action completed/)
+  await assert.rejects(
+    attachmentPromise,
+    /stopping before the action completed/,
+  )
   child.emit('exit', 0, null)
   await stopping
 })

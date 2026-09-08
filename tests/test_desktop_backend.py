@@ -11,8 +11,16 @@ from threading import Event, Timer
 from typing import Any, cast
 from unittest.mock import patch
 
+import pytest
+
 import desktop_backend as desktop_backend_module
+from attachments import (
+    AttachmentConflictError,
+    AttachmentScope,
+    JsonAttachmentStore,
+)
 from chats import (
+    AttachmentMetadata,
     ChatId,
     ChatNotFoundError,
     ChatSession,
@@ -35,7 +43,7 @@ from config.settings import (
     DEFAULT_SHORT_TERM_MEMORY_TOKEN_BUDGET,
     AppSettings,
 )
-from core import Brain, GenerationCancelledError
+from core import Brain, ChatBusyError, GenerationCancelledError
 from desktop_backend import (
     SERVER_CAPABILITIES,
     SERVER_NAME,
@@ -311,6 +319,7 @@ class FakeBrain:
         chat_id: object,
         message: str,
         *,
+        attachments: tuple[AttachmentMetadata, ...] = (),
         should_cancel: Callable[[], bool] | None = None,
         begin_commit: Callable[[], bool] | None = None,
     ) -> Generator[str, None, None]:
@@ -338,6 +347,7 @@ class FakeBrain:
                 create_chat_message(
                     role="user",
                     content=message,
+                    attachments=attachments,
                     created_at=committed_at,
                 ),
                 create_chat_message(
@@ -464,6 +474,7 @@ def _run_bridge(
     expected_session_token: str = SESSION_TOKEN,
     fake_brain: FakeBrain | None = None,
     settings_repository: DesktopSettingsRepository | None = None,
+    attachment_store: JsonAttachmentStore | None = None,
 ) -> tuple[FakeBrain, list[JsonObject]]:
     active_brain = fake_brain if fake_brain is not None else FakeBrain()
     lines = build_lines(str(active_brain.chat.chat_id))
@@ -483,6 +494,7 @@ def _run_bridge(
             model_loader=lambda: ("test-model", "second-model"),
             settings_validator=lambda: None,
             settings_repository=repository,
+            attachment_store=attachment_store,
             input_stream=input_stream,
             output_stream=output_stream,
             expected_session_token=expected_session_token,
@@ -652,6 +664,237 @@ def test_bridge_initializes_and_streams_one_real_brain_turn() -> None:
     assert "chat.sessions" in SERVER_CAPABILITIES
 
 
+def test_attachment_add_returns_only_safe_canonical_metadata(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "course notes.md"
+    source.write_text("Local notes", encoding="utf-8")
+    store = JsonAttachmentStore(
+        tmp_path / "attachments",
+        max_file_bytes=1_024,
+    )
+
+    brain, messages = _run_bridge(
+        lambda chat_id: [
+            _handshake_request(),
+            _initialize_request(),
+            _request(
+                "attachment-add-1",
+                "attachment.add",
+                {
+                    "scope": {"kind": "chat", "id": chat_id},
+                    "sourcePaths": [str(source.resolve())],
+                },
+            ),
+        ],
+        attachment_store=store,
+    )
+
+    result = _success_result(messages, "attachment-add-1")
+    assert result["scope"] == {
+        "kind": "chat",
+        "id": str(brain.chat.chat_id),
+    }
+    attachments = cast(list[JsonObject], result["attachments"])
+    assert len(attachments) == 1
+    assert attachments[0]["fileName"] == "course notes.md"
+    assert attachments[0]["mediaType"] == "text/markdown"
+    assert attachments[0]["status"] == "ready"
+    assert str(source) not in json.dumps(result)
+
+
+def test_attachment_only_stream_commits_metadata_and_finalizes_blob(
+    tmp_path: Path,
+) -> None:
+    brain = FakeBrain()
+    scope = AttachmentScope(kind="chat", id=str(brain.chat.chat_id))
+    source = tmp_path / "notes.txt"
+    source.write_text("attachment bytes", encoding="utf-8")
+    store = JsonAttachmentStore(
+        tmp_path / "attachments",
+        max_file_bytes=1_024,
+    )
+    staged = store.stage_files(scope, (source.resolve(),))
+    attachment_id = staged.attachments[0].attachment_id
+
+    _actual, messages = _run_bridge(
+        lambda chat_id: [
+            _handshake_request(),
+            _initialize_request(),
+            _request(
+                "chat-attachment-1",
+                "chat.stream",
+                {
+                    "chatId": chat_id,
+                    "message": "",
+                    "attachmentIds": [attachment_id],
+                },
+            ),
+        ],
+        fake_brain=brain,
+        attachment_store=store,
+    )
+
+    assert _success_result(messages, "chat-attachment-1")["reply"] == "你好呀"
+    user_message = brain.get_chat(brain.chat.chat_id).messages[-2]
+    assert user_message.content == ""
+    assert [
+        str(attachment.attachment_id)
+        for attachment in user_message.attachments
+    ] == [attachment_id]
+    assert store.list_state(
+        scope,
+        referenced_ids=(attachment_id,),
+    ).attachments == ()
+    assert not any(
+        message.get("error", {}).get("message") == str(source)
+        for message in messages
+        if isinstance(message.get("error"), dict)
+    )
+
+
+def test_generation_terminal_response_waits_for_attachment_reconciliation(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    fake_brain = FakeBrain()
+    store = JsonAttachmentStore(
+        tmp_path / "attachments",
+        max_file_bytes=1_024,
+    )
+    reconcile_started = Event()
+    release_reconcile = Event()
+    first_response_seen = Event()
+    real_reconcile = store.reconcile
+    reconcile_calls = 0
+
+    def blocking_reconcile(
+        scope: AttachmentScope,
+        referenced_ids: tuple[str, ...] = (),
+    ) -> object:
+        nonlocal reconcile_calls
+        reconcile_calls += 1
+        if reconcile_calls == 1:
+            reconcile_started.set()
+            assert release_reconcile.wait(2.0)
+        return real_reconcile(scope, referenced_ids)
+
+    monkeypatch.setattr(store, "reconcile", blocking_reconcile)
+
+    class ResponseNotifyingStream(StringIO):
+        def write(self, value: str) -> int:
+            written = super().write(value)
+            if value.startswith("{"):
+                message = json.loads(value)
+                if (
+                    message.get("type") == "response"
+                    and message.get("id") == "chat-first"
+                ):
+                    first_response_seen.set()
+            return written
+
+    output_stream = ResponseNotifyingStream()
+    chat_id = str(fake_brain.chat.chat_id)
+
+    def request_lines() -> Generator[str, None, None]:
+        for request in (
+            _handshake_request(),
+            _initialize_request(),
+            _request(
+                "chat-first",
+                "chat.stream",
+                {"chatId": chat_id, "message": "First"},
+            ),
+        ):
+            yield f"{json.dumps(request)}\n"
+        assert reconcile_started.wait(2.0)
+        assert not first_response_seen.is_set()
+        release_reconcile.set()
+        assert first_response_seen.wait(2.0)
+        yield f"{json.dumps(_request(
+            'chat-second',
+            'chat.stream',
+            {'chatId': chat_id, 'message': 'Second'},
+        ))}\n"
+
+    DesktopBackend(
+        brain_factory=lambda: cast(Brain, fake_brain),
+        model_loader=lambda: ("test-model",),
+        settings_validator=lambda: None,
+        settings_repository=_desktop_settings_repository(
+            tmp_path / "global.json"
+        ),
+        attachment_store=store,
+        input_stream=cast(TextIOWrapper, request_lines()),
+        output_stream=output_stream,
+        expected_session_token=SESSION_TOKEN,
+    ).run()
+    messages = [
+        cast(JsonObject, json.loads(line))
+        for line in output_stream.getvalue().splitlines()
+    ]
+
+    assert _success_result(messages, "chat-first")["reply"] == "你好呀"
+    assert _success_result(messages, "chat-second")["reply"] == "你好呀"
+    assert not any(
+        message.get("id") == "chat-second"
+        and isinstance(message.get("error"), dict)
+        and message["error"].get("code") == "chat.busy"
+        for message in messages
+    )
+
+
+def test_busy_generation_rejection_does_not_release_the_active_claim(
+    tmp_path: Path,
+) -> None:
+    fake_brain = FakeBrain()
+    chat_id = str(fake_brain.chat.chat_id)
+    scope = AttachmentScope(kind="chat", id=chat_id)
+    source = tmp_path / "claimed.txt"
+    source.write_text("active claim", encoding="utf-8")
+    store = JsonAttachmentStore(
+        tmp_path / "attachments",
+        max_file_bytes=1_024,
+    )
+    item = store.stage_files(scope, (source.resolve(),)).attachments[0]
+    store.claim_chat(scope, (item.attachment_id,))
+    backend = DesktopBackend(
+        brain_factory=lambda: cast(Brain, fake_brain),
+        model_loader=lambda: ("test-model",),
+        settings_validator=lambda: None,
+        settings_repository=_desktop_settings_repository(
+            tmp_path / "global.json"
+        ),
+        attachment_store=store,
+        input_stream=StringIO(),
+        output_stream=StringIO(),
+        expected_session_token=SESSION_TOKEN,
+    )
+    backend._brain = cast(Brain, fake_brain)
+    backend._set_active_chat(fake_brain.chat)
+    active_task = desktop_backend_module._GenerationTask(
+        request_id="chat-active",
+        chat_id=fake_brain.chat.chat_id,
+        method="chat.stream",
+    )
+    backend._generation_task = active_task
+
+    with pytest.raises(ChatBusyError):
+        backend._start_chat_stream(
+            "chat-rejected",
+            {
+                "chatId": chat_id,
+                "message": "Must stay busy",
+                "attachmentIds": [item.attachment_id],
+            },
+        )
+
+    assert store.list_state(scope).attachments == ()
+    with pytest.raises(AttachmentConflictError, match="already in use"):
+        store.remove(scope, item.attachment_id)
+    active_task.finish()
+
+
 def test_bridge_retries_the_persisted_tail_with_stable_message_ids() -> None:
     fake_brain = FakeBrain()
     turn_time = fake_brain.chat.created_at + timedelta(seconds=1)
@@ -728,10 +971,11 @@ def test_cancel_success_prevents_partial_turn_persistence() -> None:
             chat_id: object,
             message: str,
             *,
+            attachments: tuple[AttachmentMetadata, ...] = (),
             should_cancel: Callable[[], bool] | None = None,
             begin_commit: Callable[[], bool] | None = None,
         ) -> Generator[str, None, None]:
-            del begin_commit
+            del attachments, begin_commit
             self.stream_calls.append((str(chat_id), message))
             yield "partial"
             while should_cancel is None or not should_cancel():
@@ -794,10 +1038,11 @@ def test_chat_list_does_not_block_the_cancel_request_reader(
             chat_id: object,
             message: str,
             *,
+            attachments: tuple[AttachmentMetadata, ...] = (),
             should_cancel: Callable[[], bool] | None = None,
             begin_commit: Callable[[], bool] | None = None,
         ) -> Generator[str, None, None]:
-            del begin_commit
+            del attachments, begin_commit
             self.stream_calls.append((str(chat_id), message))
             yield "partial"
             generation_started.set()
@@ -874,10 +1119,11 @@ def test_cancel_is_rejected_after_generation_claims_commit(
             chat_id: object,
             message: str,
             *,
+            attachments: tuple[AttachmentMetadata, ...] = (),
             should_cancel: Callable[[], bool] | None = None,
             begin_commit: Callable[[], bool] | None = None,
         ) -> Generator[str, None, None]:
-            del should_cancel
+            del attachments, should_cancel
             self.stream_calls.append((str(chat_id), message))
             yield "committed"
             assert begin_commit is not None and begin_commit()
@@ -968,9 +1214,11 @@ def test_background_completion_does_not_reactivate_a_chat_after_switch(
             chat_id: object,
             message: str,
             *,
+            attachments: tuple[AttachmentMetadata, ...] = (),
             should_cancel: Callable[[], bool] | None = None,
             begin_commit: Callable[[], bool] | None = None,
         ) -> Generator[str, None, None]:
+            del attachments
             self.stream_calls.append((str(chat_id), message))
             yield "reply"
             generation_started.set()
@@ -1081,9 +1329,11 @@ def test_background_completion_does_not_replace_a_new_active_chat(
             chat_id: object,
             message: str,
             *,
+            attachments: tuple[AttachmentMetadata, ...] = (),
             should_cancel: Callable[[], bool] | None = None,
             begin_commit: Callable[[], bool] | None = None,
         ) -> Generator[str, None, None]:
+            del attachments
             self.stream_calls.append((str(chat_id), message))
             yield "reply"
             generation_started.set()
@@ -1173,12 +1423,14 @@ def test_post_commit_cache_refresh_failure_does_not_invite_retry() -> None:
             chat_id: object,
             message: str,
             *,
+            attachments: tuple[AttachmentMetadata, ...] = (),
             should_cancel: Callable[[], bool] | None = None,
             begin_commit: Callable[[], bool] | None = None,
         ) -> Generator[str, None, None]:
             yield from super().stream_chat(
                 chat_id,
                 message,
+                attachments=attachments,
                 should_cancel=should_cancel,
                 begin_commit=begin_commit,
             )
@@ -2014,6 +2266,7 @@ def test_settings_update_is_rejected_while_generation_is_active(
             chat_id: object,
             message: str,
             *,
+            attachments: tuple[AttachmentMetadata, ...] = (),
             should_cancel: Callable[[], bool] | None = None,
             begin_commit: Callable[[], bool] | None = None,
         ) -> Generator[str, None, None]:
@@ -2022,6 +2275,7 @@ def test_settings_update_is_rejected_while_generation_is_active(
             yield from super().stream_chat(
                 chat_id,
                 message,
+                attachments=attachments,
                 should_cancel=should_cancel,
                 begin_commit=begin_commit,
             )

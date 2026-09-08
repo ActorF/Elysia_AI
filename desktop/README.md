@@ -1,11 +1,12 @@
 # Elysia Desktop
 
-Stage 6 Modules 1–8 connect a React + TypeScript interface to the existing
+Stage 6 Modules 1–9 connect a React + TypeScript interface to the existing
 Python Brain through an Electron-owned child process and a strict, versioned
 local protocol. The renderer has persistent Chat and Project surfaces,
-resilient streamed message actions, revisioned Settings, semantic design
-tokens, system/light/dark themes, keyboard navigation, and consistent loading,
-empty, error, and fatal states. Electron is frozen as the production
+resilient streamed message actions, revisioned Settings, Chat attachments,
+Project source storage, semantic design tokens, system/light/dark themes,
+keyboard navigation, and consistent loading, empty, error, and fatal states.
+Electron is frozen as the production
 shell. The Tauri source and toolchain were removed after the comparison; the
 rationale, recorded measurements, and revisit gates are in
 [`docs/decisions/0001-desktop-shell.md`](../docs/decisions/0001-desktop-shell.md).
@@ -48,6 +49,11 @@ Electron starts `D:\Elysia_AI\.venv\Scripts\python.exe`, runs
   and `Ctrl+B` to show or hide navigation.
 - Enter sends a message; Shift+Enter inserts a new line. IME composition is
   never treated as a send action.
+- Use the paperclip or drag and drop to stage files for the exact active Chat,
+  or add local files to a Project's Sources surface. Selection cancellation is
+  a no-op, failed sends keep the Chat draft, and removing a file never affects
+  another Chat or Project. Files are stored locally but are not parsed or
+  indexed yet.
 - Navigation becomes a modal drawer at narrow CSS widths, including high
   Windows display or Electron zoom levels. The Composer remains in normal
   layout flow so attachments, alerts, and multiline input cannot cover the
@@ -103,6 +109,9 @@ method, results, capability gaps, and limitations.
 - The sandboxed preload exposes only the methods in `electron/contracts.ts`.
 - Electron validates the exact renderer origin and top frame before handling
   any desktop IPC.
+- Electron admits only one application instance, and Python holds an exclusive
+  attachment-store lock, so another Backend cannot release or reuse in-flight
+  claims.
 - Each Python process must complete a version and capability handshake using a
   fresh local session token before Electron marks it connected.
 - Python and TypeScript validate the same samples in
@@ -111,3 +120,6 @@ method, results, capability gaps, and limitations.
 - Settings accepts an exact non-sensitive allowlist, uses optimistic revisions
   and atomic replacement, and remains repairable after Backend initialization
   rejects a saved model or Ollama origin.
+- Native selection and drop paths remain inside the trusted preload/Electron
+  boundary. Python copies validated regular files into opaque, scope-specific
+  storage, and protocol responses expose only safe metadata and attachment IDs.

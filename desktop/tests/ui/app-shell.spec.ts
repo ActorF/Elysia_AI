@@ -31,8 +31,27 @@ interface BackendSnapshot {
 }
 
 interface SelectedFile {
+  mediaType?: string
   name: string
   sizeBytes: number
+}
+
+interface AttachmentScope {
+  kind: 'chat' | 'project'
+  id: string
+}
+
+interface AttachmentState {
+  scope: AttachmentScope
+  attachments: Array<{
+    attachmentId: string
+    fileName: string
+    mediaType: string
+    sizeBytes: number
+    status: 'ready'
+  }>
+  maxFileBytes: number
+  maxFileCount: number
 }
 
 interface ChatSessionSummary {
@@ -122,20 +141,27 @@ interface RendererTestControl {
   getPendingCharacterPanelChangeCount(): number
   getPendingRestartCount(): number
   getPendingSettingsLoadCount(): number
+  getPendingAttachmentActionCount(): number
   getCalls(): CallRecord[]
   releaseNextChatAction(): boolean
   releaseNextCharacterPanelChange(): boolean
   releaseNextRestart(): boolean
   releaseNextSettingsLoad(): boolean
+  releaseNextAttachmentAction(): boolean
   setChatActionDelay(delayed: boolean): void
   setCharacterPanelChangeDelay(delayed: boolean): void
   setRestartDelay(delayed: boolean): void
   setSettingsLoadDelay(delayed: boolean): void
+  setAttachmentActionDelay(delayed: boolean): void
   setChatState(state: ChatSessionState): void
   setProjectState(state: ProjectState): void
   setSettingsState(state: DesktopSettingsState): void
   failNextRestart(message: string): void
   failNextSettingsUpdate(message: string): void
+  cancelNextAttachmentPicker(): void
+  failNextAttachmentAction(message: string): void
+  failNextSend(message: string): void
+  setAttachmentState(state: AttachmentState): void
   setSelectedFiles(files: SelectedFile[]): void
   setSelectedWorkspace(workspacePath: string | null): void
 }
@@ -1504,6 +1530,7 @@ test('uses Shift+Enter for a line and Enter to send through DesktopApi', async (
   expect(sendCall?.args).toEqual([{
     chatId: 'chat-test',
     message: 'first line\nsecond line',
+    attachmentIds: [],
   }])
   await expect(page.getByLabel('Message from you')).toContainText(
     'first line',
@@ -1620,7 +1647,7 @@ test('keeps a stressed composer reachable at compact high zoom', async () => {
     stressLayout.composer.top + 1,
   )
   const reachableControls = [
-    '.attachment-row',
+    '.attachment-list',
     '.inline-alert',
     '.inline-alert-action',
     '#chat-composer',
@@ -1790,7 +1817,7 @@ test('contains long titles, files, and unbroken messages', async () => {
     const selectors = [
       '.chat-heading',
       '.model-picker',
-      '.attachment-row',
+      '.message-attachment-list',
       '.message-column',
     ]
     return selectors.map((selector) => {
@@ -1881,8 +1908,28 @@ test('renders canonical Projects, scoped Chats, and every Project entry point', 
   })
   await sectionNavigation.getByRole('button', { name: 'Sources' }).click()
   await expect(page.getByRole('heading', {
-    name: "Project Sources aren't connected yet",
+    name: 'Project files',
   })).toBeVisible()
+  await expect(page.getByText('Search, parsing, and indexing are not enabled yet.'))
+    .toBeVisible()
+  await page.evaluate(() => {
+    ;(window as TestWindow).elysiaDesktopTest.setSelectedFiles([
+      { name: 'project-context.txt', sizeBytes: 512, mediaType: 'text/plain' },
+    ])
+  })
+  const projectFiles = page.getByRole('region', {
+    name: 'Shared in Project · Alpha Workspace',
+  })
+  await projectFiles.getByRole('button', {
+    name: 'Choose files',
+    exact: true,
+  }).click()
+  await expect(projectFiles.getByText('project-context.txt', { exact: true }))
+    .toBeVisible()
+  expect((await getCalls()).find(
+    (call) => call.method === 'chooseAttachments'
+      && (call.args[0] as AttachmentScope).kind === 'project',
+  )?.args).toEqual([{ kind: 'project', id: alpha.projectId }])
   await sectionNavigation.getByRole('button', { name: 'Memory' }).click()
   await expect(page.getByRole('heading', {
     name: "Project Memory isn't connected yet",
@@ -2496,6 +2543,270 @@ test('regenerates and edit-retries only the persisted tail pair', async () => {
   await expect(assistant.getByText('Complete', { exact: true })).toBeVisible()
 })
 
+test('preserves picker drafts on cancel and recovers a failed keyboard removal', async () => {
+  await emitSnapshot(readySnapshot())
+  await page.evaluate(() => {
+    ;(window as TestWindow).elysiaDesktopTest.setSelectedFiles([
+      { name: '课程笔记🙂.md', sizeBytes: 2_048, mediaType: 'text/markdown' },
+      { name: 'reference.pdf', sizeBytes: 4_096, mediaType: 'application/pdf' },
+    ])
+  })
+  await page.getByRole('button', { name: 'Choose files', exact: true }).click()
+
+  const chatFiles = page.getByRole('region', { name: /This message/ })
+  await expect(chatFiles.getByText('课程笔记🙂.md', { exact: true })).toBeVisible()
+  await expect(chatFiles.getByText('reference.pdf', { exact: true })).toBeVisible()
+  await expect(chatFiles.getByText('Ready', { exact: true })).toHaveCount(2)
+
+  await page.evaluate(() => {
+    const control = (window as TestWindow).elysiaDesktopTest
+    control.setSelectedFiles([
+      { name: 'too-large.bin', sizeBytes: 99_000_000 },
+    ])
+    control.failNextAttachmentAction('The file exceeds the local 16 MB limit.')
+  })
+  await chatFiles.getByRole('button', { name: 'Choose files', exact: true }).click()
+  await expect(chatFiles.getByRole('alert')).toContainText('exceeds the local 16 MB limit')
+  await expect(chatFiles.getByText('too-large.bin', { exact: true })).toHaveCount(0)
+  await chatFiles.getByRole('button', { name: 'Dismiss attachment error' }).click()
+
+  await page.evaluate(() => {
+    ;(window as TestWindow).elysiaDesktopTest.cancelNextAttachmentPicker()
+  })
+  await chatFiles.getByRole('button', { name: 'Choose files', exact: true }).click()
+  await expect(chatFiles.locator('.attachment-item')).toHaveCount(2)
+
+  await page.evaluate(() => {
+    ;(window as TestWindow).elysiaDesktopTest.failNextAttachmentAction(
+      'The local copy could not be removed.',
+    )
+  })
+  const firstRemove = chatFiles.getByRole('button', { name: 'Remove 课程笔记🙂.md' })
+  await firstRemove.click()
+  await expect(chatFiles.getByRole('alert')).toContainText(
+    'The local copy could not be removed.',
+  )
+  await expect(firstRemove).toBeFocused()
+
+  await firstRemove.click()
+  await expect(chatFiles.getByText('课程笔记🙂.md', { exact: true })).toHaveCount(0)
+  await expect(chatFiles.getByRole('button', { name: 'Remove reference.pdf' }))
+    .toBeFocused()
+
+  const calls = await getCalls()
+  expect(calls.filter((call) => call.method === 'chooseAttachments').at(-1)?.args)
+    .toEqual([{ kind: 'chat', id: 'chat-test' }])
+  expect(calls.filter((call) => call.method === 'removeAttachment')).toHaveLength(2)
+})
+
+test('adds a dropped file, retains it after send rejection, and persists its chip', async () => {
+  await emitSnapshot(readySnapshot())
+  const startingUrl = page.url()
+  const chatFiles = page.getByRole('region', { name: /This message/ })
+  await expect(chatFiles.getByRole('button', {
+    name: 'Choose files',
+    exact: true,
+  })).toBeEnabled()
+
+  await chatFiles.evaluate((surface) => {
+    const transfer = new DataTransfer()
+    transfer.items.add(new File(
+      ['# local only'],
+      'dropped-notes.md',
+      { type: 'text/markdown' },
+    ))
+    surface.dispatchEvent(new DragEvent('dragenter', {
+      bubbles: true,
+      cancelable: true,
+      dataTransfer: transfer,
+    }))
+  })
+  await expect(chatFiles).toHaveClass(/drag-active/)
+  await expect(chatFiles.getByText(/Drop files into This message/)).toBeVisible()
+
+  await chatFiles.evaluate((surface) => {
+    const transfer = new DataTransfer()
+    transfer.items.add(new File(
+      ['# local only'],
+      'dropped-notes.md',
+      { type: 'text/markdown' },
+    ))
+    surface.dispatchEvent(new DragEvent('drop', {
+      bubbles: true,
+      cancelable: true,
+      dataTransfer: transfer,
+    }))
+  })
+  await expect(page).toHaveURL(startingUrl)
+  await expect(chatFiles.getByText('dropped-notes.md', { exact: true })).toBeVisible()
+
+  const attachmentId = await page.evaluate(() => {
+    const calls = (window as TestWindow).elysiaDesktopTest.getCalls()
+    const addCall = calls.find((call) => call.method === 'acceptDroppedAttachments')
+    return addCall === undefined ? null : 'attachment_test_1'
+  })
+  expect(attachmentId).toBe('attachment_test_1')
+
+  await page.evaluate(() => {
+    ;(window as TestWindow).elysiaDesktopTest.failNextSend('Message storage is busy.')
+  })
+  const composer = page.getByLabel('Message Elysia')
+  await composer.fill('Keep this file attached.')
+  await composer.press('Enter')
+  await expect(page.getByRole('alert')).toContainText('Message storage is busy.')
+  await expect(composer).toHaveValue('Keep this file attached.')
+  await expect(chatFiles.getByText('dropped-notes.md', { exact: true })).toBeVisible()
+
+  await composer.press('Enter')
+  await expect(composer).toHaveValue('')
+  await expect(chatFiles.getByText('dropped-notes.md', { exact: true })).toHaveCount(0)
+  const optimisticMessage = page.getByLabel('Message from you').last()
+  await expect(optimisticMessage).toContainText('Keep this file attached.')
+  await expect(optimisticMessage).toContainText('dropped-notes.md')
+  await expect(optimisticMessage).toContainText('not read or indexed yet')
+
+  const sendCalls = (await getCalls()).filter((call) => call.method === 'sendMessage')
+  expect(sendCalls).toHaveLength(2)
+  expect(sendCalls[0]?.args).toEqual([{
+    chatId: 'chat-test',
+    message: 'Keep this file attached.',
+    attachmentIds: ['attachment_test_1'],
+  }])
+  expect(sendCalls[1]?.args).toEqual(sendCalls[0]?.args)
+
+  await emitEvent({
+    type: 'chat-complete',
+    requestId: 'test-request-1',
+    chatId: 'chat-test',
+    reply: 'The file is stored, but I did not read it.',
+  })
+  await expect(page.getByLabel('Message from you').last()).toContainText(
+    'dropped-notes.md',
+  )
+})
+
+test('sends an attachment-only message through the canonical Chat request', async () => {
+  await emitSnapshot(readySnapshot())
+  await page.evaluate(() => {
+    ;(window as TestWindow).elysiaDesktopTest.setSelectedFiles([
+      { name: 'attachment-only.pdf', sizeBytes: 8_192, mediaType: 'application/pdf' },
+    ])
+  })
+  await page.getByRole('button', { name: 'Choose files', exact: true }).click()
+
+  const composer = page.getByLabel('Message Elysia')
+  await expect(composer).toHaveValue('')
+  const sendButton = page.getByRole('button', { name: 'Send message' })
+  await expect(sendButton).toBeEnabled()
+  await sendButton.click()
+
+  const sendCall = (await getCalls()).find((call) => call.method === 'sendMessage')
+  expect(sendCall?.args).toEqual([{
+    chatId: 'chat-test',
+    message: '',
+    attachmentIds: ['attachment_test_1'],
+  }])
+  const optimisticMessage = page.getByLabel('Message from you').last()
+  await expect(optimisticMessage).toContainText('attachment-only.pdf')
+  await expect(optimisticMessage).toContainText('not read or indexed yet')
+})
+
+test('reloads a recovered Chat draft after a picker cancellation race', async () => {
+  await emitSnapshot(readySnapshot())
+  await page.evaluate(() => {
+    ;(window as TestWindow).elysiaDesktopTest.setSelectedFiles([
+      { name: 'recover-after-error.md', sizeBytes: 512, mediaType: 'text/markdown' },
+    ])
+  })
+  await page.getByRole('button', { name: 'Choose files', exact: true }).click()
+  const chatFiles = page.getByRole('region', { name: /This message/ })
+  await page.getByLabel('Message Elysia').fill('Start a failing generation')
+  await page.getByLabel('Message Elysia').press('Enter')
+  await expect(chatFiles.getByText('recover-after-error.md', { exact: true })).toHaveCount(0)
+
+  await page.evaluate(() => {
+    const control = (window as TestWindow).elysiaDesktopTest
+    control.setAttachmentActionDelay(true)
+    control.cancelNextAttachmentPicker()
+  })
+  await page.getByRole('button', { name: 'Choose files', exact: true }).click()
+  await expect.poll(async () => page.evaluate(() => (
+    (window as TestWindow).elysiaDesktopTest.getPendingAttachmentActionCount()
+  ))).toBe(1)
+
+  await emitEvent({
+    type: 'chat-error',
+    requestId: 'test-request-1',
+    chatId: 'chat-test',
+    code: 'chat.cancelled',
+    message: 'Generation stopped.',
+    retryable: false,
+  })
+  await page.evaluate(() => {
+    const control = (window as TestWindow).elysiaDesktopTest
+    control.releaseNextAttachmentAction()
+    control.setAttachmentActionDelay(false)
+  })
+
+  await expect(chatFiles.getByText('recover-after-error.md', { exact: true })).toBeVisible()
+})
+
+test('compensates when a cancelled picker supersedes a pending canonical list', async () => {
+  await page.evaluate(() => {
+    const control = (window as TestWindow).elysiaDesktopTest
+    control.setAttachmentState({
+      scope: { kind: 'chat', id: 'chat-test' },
+      attachments: [{
+        attachmentId: 'attachment_load_first',
+        fileName: 'recover-after-stale-list.md',
+        mediaType: 'text/markdown',
+        sizeBytes: 768,
+        status: 'ready',
+      }],
+      maxFileBytes: 16_777_216,
+      maxFileCount: 10,
+    })
+    control.setAttachmentActionDelay(true)
+  })
+  await emitSnapshot(readySnapshot())
+  await expect.poll(async () => page.evaluate(() => (
+    (window as TestWindow).elysiaDesktopTest.getPendingAttachmentActionCount()
+  ))).toBe(1)
+
+  const chatFiles = page.getByRole('region', { name: /This message/ })
+  await expect(chatFiles.getByText(
+    'recover-after-stale-list.md',
+    { exact: true },
+  )).toHaveCount(0)
+  await page.evaluate(() => {
+    ;(window as TestWindow).elysiaDesktopTest.cancelNextAttachmentPicker()
+  })
+  await chatFiles.getByRole('button', { name: 'Choose files', exact: true }).click()
+  await expect.poll(async () => page.evaluate(() => (
+    (window as TestWindow).elysiaDesktopTest.getPendingAttachmentActionCount()
+  ))).toBe(2)
+
+  await page.evaluate(() => {
+    ;(window as TestWindow).elysiaDesktopTest.releaseNextAttachmentAction()
+  })
+  await expect.poll(async () => page.evaluate(() => (
+    (window as TestWindow).elysiaDesktopTest.getPendingAttachmentActionCount()
+  ))).toBe(1)
+  await page.evaluate(() => {
+    const control = (window as TestWindow).elysiaDesktopTest
+    control.releaseNextAttachmentAction()
+    control.setAttachmentActionDelay(false)
+  })
+
+  await expect.poll(async () => (
+    (await getCalls()).filter((call) => call.method === 'listAttachments').length
+  )).toBe(2)
+  await expect(chatFiles.getByText(
+    'recover-after-stale-list.md',
+    { exact: true },
+  )).toBeVisible()
+})
+
 test('isolates an A stream, drafts, and file previews while viewing Chat B', async () => {
   const chatA = chatSummary('chat-a', 'Chat A')
   const chatB = chatSummary('chat-b', 'Chat B')
@@ -2508,17 +2819,17 @@ test('isolates an A stream, drafts, and file previews while viewing Chat B', asy
     chatTitle: chatA.title,
   }))
 
+  const composer = page.getByLabel('Message Elysia')
+  await composer.fill('Start Chat A generation')
+  await composer.press('Enter')
+  await expect(page.getByRole('button', { name: 'Stop generation' })).toBeVisible()
+  await composer.fill('Unsent draft for A')
   await page.evaluate(() => {
     ;(window as TestWindow).elysiaDesktopTest.setSelectedFiles([
       { name: 'chat-a.txt', sizeBytes: 10 },
     ])
   })
   await page.getByRole('button', { name: 'Choose files' }).click()
-  const composer = page.getByLabel('Message Elysia')
-  await composer.fill('Start Chat A generation')
-  await composer.press('Enter')
-  await expect(page.getByRole('button', { name: 'Stop generation' })).toBeVisible()
-  await composer.fill('Unsent draft for A')
 
   await page.getByRole('button', { name: 'Open chat Chat B' }).click()
   await expect(page.locator('#chat-title')).toHaveText('Chat B')

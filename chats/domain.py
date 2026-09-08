@@ -1,5 +1,6 @@
 """Define the stable domain model shared by every Elysia chat surface."""
 
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -7,6 +8,32 @@ from typing import Final, Literal, NewType
 from uuid import uuid4
 
 CHAT_SESSION_SCHEMA_VERSION: Final[Literal[1]] = 1
+MAX_ATTACHMENTS_PER_MESSAGE: Final = 10
+MAX_ATTACHMENT_FILE_NAME_LENGTH: Final = 255
+MAX_ATTACHMENT_MEDIA_TYPE_LENGTH: Final = 255
+
+_ATTACHMENT_ID_PATTERN = re.compile(
+    r"^attachment_[A-Za-z0-9_-]{1,117}$"
+)
+_WINDOWS_RESERVED_FILE_STEMS: Final = frozenset({
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    *(f"COM{number}" for number in range(1, 10)),
+    *(f"LPT{number}" for number in range(1, 10)),
+})
+_BIDI_CONTROL_CODE_POINTS: Final = frozenset({
+    0x061C,
+    0x200E,
+    0x200F,
+    *range(0x202A, 0x202F),
+    *range(0x2066, 0x206A),
+})
+_MEDIA_TYPE_PATTERN = re.compile(
+    r"^[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*/"
+    r"[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*$"
+)
 
 ConversationMode = Literal["chat", "work"]
 ChatMessageRole = Literal["system", "user", "assistant"]
@@ -103,17 +130,44 @@ class AttachmentMetadata:
             self.attachment_id,
             "attachment_id",
         )
+        if _ATTACHMENT_ID_PATTERN.fullmatch(self.attachment_id) is None:
+            raise ValueError("attachment_id has an invalid opaque-ID format.")
         _validate_non_empty_text(self.file_name, "file_name")
+        if (
+            self.file_name != self.file_name.strip()
+            or self.file_name in {".", ".."}
+            or self.file_name.endswith(".")
+            or len(self.file_name) > MAX_ATTACHMENT_FILE_NAME_LENGTH
+            or any(
+                character in '<>:"/\\|?*'
+                for character in self.file_name
+            )
+            or self.file_name.split(".", 1)[0].upper()
+            in _WINDOWS_RESERVED_FILE_STEMS
+            or any(
+                ord(character) < 32
+                or ord(character) == 127
+                or ord(character) in _BIDI_CONTROL_CODE_POINTS
+                for character in self.file_name
+            )
+        ):
+            raise ValueError("file_name must be a safe display basename.")
         _validate_non_empty_text(self.media_type, "media_type")
+        if (
+            self.media_type != self.media_type.strip()
+            or len(self.media_type) > MAX_ATTACHMENT_MEDIA_TYPE_LENGTH
+            or _MEDIA_TYPE_PATTERN.fullmatch(self.media_type) is None
+        ):
+            raise ValueError("media_type must be a normalized media type.")
 
         # bool is an int subclass but never represents a meaningful file size.
         if (
             not isinstance(self.size_bytes, int)
             or isinstance(self.size_bytes, bool)
-            or self.size_bytes < 0
+            or self.size_bytes <= 0
         ):
             raise ValueError(
-                "size_bytes must be a non-negative integer."
+                "size_bytes must be a positive integer."
             )
 
 
@@ -179,6 +233,11 @@ class ChatMessage:
         if len(attachment_ids) != len(set(attachment_ids)):
             raise ValueError(
                 "Message attachment IDs must be unique."
+            )
+        if len(self.attachments) > MAX_ATTACHMENTS_PER_MESSAGE:
+            raise ValueError(
+                "A message cannot contain more than "
+                f"{MAX_ATTACHMENTS_PER_MESSAGE} attachments."
             )
 
 
@@ -380,6 +439,16 @@ class ChatSession:
 
         if len(message_ids) != len(set(message_ids)):
             raise ValueError("Chat message IDs must be unique.")
+
+        attachment_ids = [
+            attachment.attachment_id
+            for message in self.messages
+            for attachment in message.attachments
+        ]
+        if len(attachment_ids) != len(set(attachment_ids)):
+            raise ValueError(
+                "Attachment IDs must be unique across one Chat."
+            )
 
         previous_timestamp = self.created_at
 

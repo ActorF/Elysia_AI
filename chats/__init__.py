@@ -2,6 +2,9 @@
 
 from .domain import (
     CHAT_SESSION_SCHEMA_VERSION,
+    MAX_ATTACHMENTS_PER_MESSAGE,
+    MAX_ATTACHMENT_FILE_NAME_LENGTH,
+    MAX_ATTACHMENT_MEDIA_TYPE_LENGTH,
     AttachmentId,
     AttachmentMetadata,
     ChatId,
@@ -43,6 +46,9 @@ from .serialization import CHAT_INDEX_SCHEMA_VERSION
 __all__ = [
     "CHAT_INDEX_SCHEMA_VERSION",
     "CHAT_SESSION_SCHEMA_VERSION",
+    "MAX_ATTACHMENTS_PER_MESSAGE",
+    "MAX_ATTACHMENT_FILE_NAME_LENGTH",
+    "MAX_ATTACHMENT_MEDIA_TYPE_LENGTH",
     "AttachmentId",
     "AttachmentMetadata",
     "ChatId",

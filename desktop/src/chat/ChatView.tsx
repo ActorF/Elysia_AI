@@ -10,8 +10,9 @@ import {
 } from 'react'
 
 import type {
+  AttachmentScope,
+  AttachmentState,
   BackendSnapshot,
-  SelectedFile,
 } from '../../electron/contracts.ts'
 import { Composer } from './Composer.tsx'
 import { MessageView } from './MessageView.tsx'
@@ -27,6 +28,13 @@ import {
 import { Icon } from '../design-system/Icon.tsx'
 
 interface ChatViewProps {
+  attachmentAdding: boolean
+  attachmentDisabled: boolean
+  attachmentError: string | null
+  attachmentLabel: string
+  attachmentRemovingIds: string[]
+  attachmentScope: AttachmentScope
+  attachmentState: AttachmentState | null
   callButtonRef: RefObject<HTMLButtonElement | null>
   canSend: boolean
   chatMode: 'chat' | 'work'
@@ -41,17 +49,19 @@ interface ChatViewProps {
   panelTransitionPending: boolean
   retryPending: boolean
   retryPair: RetryableChatPair | null
-  selectedFiles: SelectedFile[]
   sidebarOpen: boolean
   snapshot: BackendSnapshot
   streaming: boolean
   stopPending: boolean
-  onChooseFiles(): void
+  onChooseAttachments(): void
   onCopy(text: string): Promise<void>
+  onDismissAttachmentError(): void
   onDismissNotice(): void
   onDraftChange(value: string): void
+  onDropAttachments(files: File[]): void
   onOpenCall(): void
   onOpenExternalUrl(url: string): Promise<void>
+  onRemoveAttachment(attachmentId: string): Promise<boolean>
   onRetry(pair: RetryableChatPair, message?: string): void
   onRetryConnection(): void
   onSelectModel(modelName: string): void
@@ -84,6 +94,13 @@ function statusLabel(snapshot: BackendSnapshot): string {
 
 /** Render the active Chat from immutable snapshot and message props. */
 export function ChatView({
+  attachmentAdding,
+  attachmentDisabled,
+  attachmentError,
+  attachmentLabel,
+  attachmentRemovingIds,
+  attachmentScope,
+  attachmentState,
   callButtonRef,
   canSend,
   chatMode,
@@ -98,17 +115,19 @@ export function ChatView({
   panelTransitionPending,
   retryPending,
   retryPair,
-  selectedFiles,
   sidebarOpen,
   snapshot,
   streaming,
   stopPending,
-  onChooseFiles,
+  onChooseAttachments,
   onCopy,
+  onDismissAttachmentError,
   onDismissNotice,
   onDraftChange,
+  onDropAttachments,
   onOpenCall,
   onOpenExternalUrl,
+  onRemoveAttachment,
   onRetry,
   onRetryConnection,
   onSelectModel,
@@ -236,6 +255,13 @@ export function ChatView({
       </main>
 
       <Composer
+        attachmentAdding={attachmentAdding}
+        attachmentDisabled={attachmentDisabled}
+        attachmentError={attachmentError}
+        attachmentLabel={attachmentLabel}
+        attachmentRemovingIds={attachmentRemovingIds}
+        attachmentScope={attachmentScope}
+        attachmentState={attachmentState}
         callButtonRef={callButtonRef}
         canSend={canSend}
         draft={draft}
@@ -244,14 +270,16 @@ export function ChatView({
         modelOptions={modelOptions}
         notice={notice}
         retryPending={retryPending}
-        selectedFiles={selectedFiles}
         snapshot={snapshot}
         streaming={streaming}
         stopPending={stopPending}
-        onChooseFiles={onChooseFiles}
+        onChooseAttachments={onChooseAttachments}
+        onDismissAttachmentError={onDismissAttachmentError}
         onDismissNotice={onDismissNotice}
         onDraftChange={onDraftChange}
+        onDropAttachments={onDropAttachments}
         onOpenCall={onOpenCall}
+        onRemoveAttachment={onRemoveAttachment}
         onRetryConnection={onRetryConnection}
         onSelectModel={onSelectModel}
         onSend={() => {

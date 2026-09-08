@@ -31,6 +31,16 @@ interface MessageViewProps {
   onRetry(pair: RetryableChatPair, message?: string): void
 }
 
+function formatAttachmentBytes(sizeBytes: number): string {
+  if (sizeBytes < 1024) {
+    return `${sizeBytes} B`
+  }
+  if (sizeBytes < 1024 * 1024) {
+    return `${(sizeBytes / 1024).toFixed(1)} KB`
+  }
+  return `${(sizeBytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
 function nodeText(node: ReactNode): string {
   if (typeof node === 'string' || typeof node === 'number') {
     return String(node)
@@ -265,6 +275,28 @@ export function MessageView({
           />
         ) : (
           <p className="message-text">{message.text}</p>
+        )}
+
+        {message.attachments.length > 0 && (
+          <div className="message-attachments">
+            <ul
+              className="message-attachment-list"
+              aria-label={`Attachments in ${isAssistant ? 'Elysia message' : 'your message'}`}
+            >
+              {message.attachments.map((attachment) => (
+                <li key={attachment.attachmentId}>
+                  <Icon name="file" />
+                  <span>
+                    <strong title={attachment.fileName}>{attachment.fileName}</strong>
+                    <small>
+                      {attachment.mediaType} · {formatAttachmentBytes(attachment.sizeBytes)}
+                    </small>
+                  </span>
+                </li>
+              ))}
+            </ul>
+            <p>Stored locally · File contents are not read or indexed yet.</p>
+          </div>
         )}
 
         {message.state === 'streaming' && (

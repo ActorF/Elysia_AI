@@ -1,12 +1,14 @@
 """Orchestrate chat generation, prompt context, and memory services."""
 
+import json
 import logging
-from collections.abc import Callable, Generator, Iterator
+from collections.abc import Callable, Generator, Iterable, Iterator
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
 from chats import (
+    AttachmentMetadata,
     ChatId,
     ChatMessage as StoredChatMessage,
     ChatMessageId,
@@ -47,6 +49,52 @@ from .prompts import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _user_message_for_model(
+    content: str,
+    attachments: Iterable[AttachmentMetadata],
+) -> str:
+    """Add bounded, non-content attachment metadata to one model message.
+
+    The attachment bytes are deliberately not read in this desktop milestone.
+    JSON escaping keeps unusual but valid display names inside a clear data
+    boundary instead of letting them masquerade as prompt instructions.
+    """
+
+    attachment_records = tuple(attachments)
+    cleaned_content = content.strip()
+    if not attachment_records:
+        return cleaned_content
+
+    metadata = {
+        "notice": (
+            "These files are stored locally with the conversation, but their "
+            "contents have not been read, parsed, or indexed."
+        ),
+        "files": [
+            {
+                "name": attachment.file_name,
+                "mediaType": attachment.media_type,
+                "sizeBytes": attachment.size_bytes,
+            }
+            for attachment in attachment_records
+        ],
+    }
+    serialized = json.dumps(
+        metadata,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    prefix = (
+        f"{cleaned_content}\n\n"
+        if cleaned_content
+        else "I attached the following local files.\n\n"
+    )
+    return (
+        f"{prefix}<local-attachment-metadata>{serialized}"
+        "</local-attachment-metadata>"
+    )
 
 
 def _get_unsummarized_messages(
@@ -112,7 +160,7 @@ def _get_unsummarized_chat_messages(
         for message in chat_session.messages
         if (
             message.role in ("user", "assistant")
-            and message.content.strip()
+            and (message.content.strip() or message.attachments)
         )
     )
     if chat_session.summary is None:
@@ -489,12 +537,15 @@ class Brain:
         self,
         chat_id: ChatId,
         user_message: str,
+        *,
+        attachments: Iterable[AttachmentMetadata] = (),
     ) -> str:
         """Generate and commit one non-streaming turn to an explicit Chat."""
 
         cleaned_user_message = user_message.strip()
+        attachment_records = tuple(attachments)
 
-        if not cleaned_user_message:
+        if not cleaned_user_message and not attachment_records:
             raise ValueError(
                 "User message cannot be empty."
             )
@@ -510,9 +561,13 @@ class Brain:
                 active_conversation.chat_session
             )
             profile = self._memory.load_profile()
+            model_user_message = _user_message_for_model(
+                cleaned_user_message,
+                attachment_records,
+            )
             chat_messages = self._build_chat_messages(
                 profile,
-                cleaned_user_message,
+                model_user_message,
                 chat_session=active_conversation.chat_session,
                 project=active_conversation.project,
             )
@@ -529,6 +584,7 @@ class Brain:
                 active_conversation,
                 user_message=cleaned_user_message,
                 assistant_message=reply,
+                attachments=attachment_records,
             )
 
         logger.info("Chat turn completed: chat_id=%s.", chat_id)
@@ -540,6 +596,7 @@ class Brain:
         chat_id: ChatId,
         user_message: str,
         *,
+        attachments: Iterable[AttachmentMetadata] = (),
         should_cancel: Callable[[], bool] | None = None,
         begin_commit: Callable[[], bool] | None = None,
     ) -> Generator[str, None, None]:
@@ -551,8 +608,9 @@ class Brain:
         """
 
         cleaned_user_message = user_message.strip()
+        attachment_records = tuple(attachments)
 
-        if not cleaned_user_message:
+        if not cleaned_user_message and not attachment_records:
             raise ValueError(
                 "User message cannot be empty."
             )
@@ -571,9 +629,13 @@ class Brain:
             )
             self._raise_if_generation_cancelled(should_cancel)
             profile = self._memory.load_profile()
+            model_user_message = _user_message_for_model(
+                cleaned_user_message,
+                attachment_records,
+            )
             chat_messages = self._build_chat_messages(
                 profile,
-                cleaned_user_message,
+                model_user_message,
                 chat_session=active_conversation.chat_session,
                 project=active_conversation.project,
             )
@@ -591,6 +653,7 @@ class Brain:
                 active_conversation,
                 user_message=cleaned_user_message,
                 assistant_message=reply,
+                attachments=attachment_records,
             )
 
         logger.info(
@@ -633,8 +696,13 @@ class Brain:
                 if message is None
                 else message.strip()
             )
-            if not effective_user_message.strip():
-                raise ValueError("User message cannot be empty.")
+            if (
+                not effective_user_message.strip()
+                and not user_record.attachments
+            ):
+                raise ValueError(
+                    "User message cannot be empty."
+                )
 
             # The old pair must not enter its own replacement prompt. Clearing
             # the summary also prevents facts derived from the old tail text
@@ -646,9 +714,13 @@ class Brain:
             )
             self._raise_if_generation_cancelled(should_cancel)
             profile = self._memory.load_profile()
+            model_user_message = _user_message_for_model(
+                effective_user_message,
+                user_record.attachments,
+            )
             chat_messages = self._build_chat_messages(
                 profile,
-                effective_user_message,
+                model_user_message,
                 chat_session=prompt_session,
                 project=active_conversation.project,
             )
@@ -872,7 +944,7 @@ class Brain:
             for message in chat_session.messages
             if (
                 message.role in ("user", "assistant")
-                and message.content.strip()
+                and (message.content.strip() or message.attachments)
             )
         ]
 
@@ -880,7 +952,10 @@ class Brain:
             return [
                 {
                     "role": message.role,
-                    "content": message.content,
+                    "content": _user_message_for_model(
+                        message.content,
+                        message.attachments,
+                    ),
                 }
                 for message in recent_messages[-limit:]
             ]
@@ -891,7 +966,10 @@ class Brain:
         pending_user_message: str | None = None
         for message in recent_messages:
             if message.role == "user":
-                pending_user_message = message.content
+                pending_user_message = _user_message_for_model(
+                    message.content,
+                    message.attachments,
+                )
                 continue
 
             if pending_user_message is not None:
@@ -1298,7 +1376,7 @@ class Brain:
                 for message in chat_session.messages
                 if (
                     message.role in ("user", "assistant")
-                    and message.content.strip()
+                    and (message.content.strip() or message.attachments)
                 )
             )
             if not source_messages:
@@ -1319,7 +1397,10 @@ class Brain:
                         if message.role == "user"
                         else profile["assistant_name"]
                     ),
-                    "message": message.content,
+                    "message": _user_message_for_model(
+                        message.content,
+                        message.attachments,
+                    ),
                 }
                 for message in unsummarized_messages
             ]

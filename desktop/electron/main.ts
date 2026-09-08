@@ -17,7 +17,7 @@ import {
   shell,
   Tray,
 } from 'electron'
-import { stat } from 'node:fs/promises'
+import { lstat, stat } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -25,6 +25,8 @@ import { BackendProcess } from './backend-process.js'
 import { parseSafeExternalUrl } from './external-url.js'
 import {
   MAX_IDENTIFIER_LENGTH,
+  MAX_ATTACHMENT_FILE_COUNT,
+  MAX_ATTACHMENT_SOURCE_PATH_LENGTH,
   MAX_DATA_IMPORT_BYTES,
   MAX_MEMORY_SETTING,
   MAX_MESSAGE_LENGTH,
@@ -38,6 +40,9 @@ import { isTrustedRendererUrl as matchesRendererSource } from './renderer-source
 import type {
   ArchiveChatRequest,
   ArchiveProjectRequest,
+  AttachmentScope,
+  AttachmentSelectionResult,
+  AttachmentState,
   BackendEvent,
   ChatRequest,
   CreateChatRequest,
@@ -47,7 +52,6 @@ import type {
   PinChatRequest,
   RenameChatRequest,
   RetryChatRequest,
-  SelectedFile,
   UpdateDesktopSettingsRequest,
   UpdateProjectRequest,
 } from './contracts.js'
@@ -73,6 +77,7 @@ let collapsedWindowPlacement: {
 } | null = null
 let shutdownStarted = false
 let rendererReadyTimer: ReturnType<typeof setTimeout> | null = null
+const hasSingleInstanceLock = app.requestSingleInstanceLock()
 
 function clearRendererReadyTimer(): void {
   if (rendererReadyTimer !== null) {
@@ -138,19 +143,38 @@ function parseChatRequest(value: unknown): ChatRequest {
   }
   const request = value as Record<string, unknown>
   if (
-    Object.keys(request).length !== 2
+    Object.keys(request).length !== 3
     || typeof request.chatId !== 'string'
     || codePointLength(request.chatId) < 1
     || codePointLength(request.chatId) > MAX_IDENTIFIER_LENGTH
     || typeof request.message !== 'string'
-    || !hasNonBlankCodePoint(request.message)
     || codePointLength(request.message) > MAX_MESSAGE_LENGTH
+    || !Array.isArray(request.attachmentIds)
+    || request.attachmentIds.length > MAX_ATTACHMENT_FILE_COUNT
   ) {
     throw new Error('Chat request is invalid.')
+  }
+  const attachmentIds = request.attachmentIds as unknown[]
+  if (
+    attachmentIds.some((attachmentId) => (
+      typeof attachmentId !== 'string'
+      || !/^attachment_[A-Za-z0-9_-]+$/u.test(attachmentId)
+      || codePointLength(attachmentId) > MAX_IDENTIFIER_LENGTH
+    ))
+    || new Set(attachmentIds).size !== attachmentIds.length
+  ) {
+    throw new Error('Chat attachment selection is invalid.')
+  }
+  if (
+    !hasNonBlankCodePoint(request.message)
+    && attachmentIds.length === 0
+  ) {
+    throw new Error('Chat request needs a message or attachment.')
   }
   return {
     chatId: request.chatId,
     message: request.message,
+    attachmentIds: attachmentIds as string[],
   }
 }
 
@@ -240,6 +264,105 @@ function parseProjectId(value: unknown): string {
     throw new Error('Project id is invalid.')
   }
   return value
+}
+
+function parseAttachmentScope(value: unknown): AttachmentScope {
+  const scope = parseObject(
+    value,
+    ['kind', 'id'],
+    'Attachment scope',
+  )
+  if (scope.kind !== 'chat' && scope.kind !== 'project') {
+    throw new Error('Attachment scope kind is invalid.')
+  }
+  if (
+    typeof scope.id !== 'string'
+    || codePointLength(scope.id) > MAX_IDENTIFIER_LENGTH
+    || !(scope.kind === 'chat'
+      ? /^chat_[A-Za-z0-9_-]+$/u
+      : /^project_[A-Za-z0-9_-]+$/u).test(scope.id)
+  ) {
+    throw new Error('Attachment scope id is invalid.')
+  }
+  return { kind: scope.kind, id: scope.id }
+}
+
+function parseAttachmentId(value: unknown): string {
+  if (
+    typeof value !== 'string'
+    || !/^attachment_[A-Za-z0-9_-]+$/u.test(value)
+    || codePointLength(value) > MAX_IDENTIFIER_LENGTH
+  ) {
+    throw new Error('Attachment id is invalid.')
+  }
+  return value
+}
+
+function parseAttachmentSourcePaths(value: unknown): string[] {
+  if (
+    !Array.isArray(value)
+    || value.length === 0
+    || value.length > MAX_ATTACHMENT_FILE_COUNT
+  ) {
+    throw new Error('Attachment source selection is invalid.')
+  }
+  const sourcePaths = value.map((candidate) => {
+    const windowsPath = typeof candidate === 'string'
+      ? candidate.replaceAll('/', '\\')
+      : ''
+    const pathParts = windowsPath.slice(2).split('\\').filter(Boolean)
+    if (
+      typeof candidate !== 'string'
+      || candidate.length === 0
+      || candidate !== candidate.trim()
+      || candidate.includes('\0')
+      || /[\r\n]/u.test(candidate)
+      || codePointLength(candidate) > MAX_ATTACHMENT_SOURCE_PATH_LENGTH
+      || !path.win32.isAbsolute(windowsPath)
+      || !/^[A-Za-z]:[\\/]/u.test(candidate)
+      || pathParts.some((part) => part === '.' || part === '..')
+    ) {
+      throw new Error('Attachment source path is invalid.')
+    }
+    const absolutePath = path.win32.normalize(windowsPath)
+    const suffixAfterDrive = /^[A-Za-z]:/u.test(absolutePath)
+      ? absolutePath.slice(2)
+      : absolutePath
+    if (suffixAfterDrive.includes(':')) {
+      throw new Error('Attachment source path is invalid.')
+    }
+    return absolutePath
+  })
+  const normalized = sourcePaths.map((sourcePath) => (
+    process.platform === 'win32' ? sourcePath.toLocaleLowerCase('en-US') : sourcePath
+  ))
+  if (new Set(normalized).size !== normalized.length) {
+    throw new Error('Attachment source paths must be unique.')
+  }
+  return sourcePaths
+}
+
+async function validateAttachmentSourcePaths(value: unknown): Promise<string[]> {
+  const sourcePaths = parseAttachmentSourcePaths(value)
+  await Promise.all(sourcePaths.map(async (sourcePath) => {
+    try {
+      const metadata = await lstat(sourcePath)
+      if (!metadata.isFile() || metadata.isSymbolicLink()) {
+        throw new Error('Attachment source must be a regular file.')
+      }
+    } catch (error) {
+      if (
+        error instanceof Error
+        && error.message === 'Attachment source must be a regular file.'
+      ) {
+        throw error
+      }
+      throw new Error('Attachment source could not be opened.', {
+        cause: error,
+      })
+    }
+  }))
+  return sourcePaths
 }
 
 function parseProjectName(value: unknown): string {
@@ -758,29 +881,83 @@ function registerIpcHandlers(): void {
   )
 
   ipcMain.handle(
-    'desktop:choose-files',
-    async (event): Promise<SelectedFile[]> => {
+    'attachment:list',
+    (event, scope: unknown): Promise<AttachmentState> => {
       assertTrustedSender(event)
+      return requireBackend().listAttachments(parseAttachmentScope(scope))
+    },
+  )
+
+  ipcMain.handle(
+    'attachment:choose',
+    async (
+      event,
+      scope: unknown,
+    ): Promise<AttachmentSelectionResult> => {
+      assertTrustedSender(event)
+      const parsedScope = parseAttachmentScope(scope)
       const result = await dialog.showOpenDialog(
         requireMainWindow(),
         {
-          title: 'Choose files for Elysia',
-          properties: ['openFile', 'multiSelections'],
+          title: 'Add attachments to Elysia',
+          properties: ['openFile', 'multiSelections', 'dontAddToRecent'],
+          filters: [
+            {
+              name: 'Supported files',
+              extensions: [
+                'txt', 'md', 'markdown', 'pdf', 'csv', 'json', 'docx',
+                'png', 'jpg', 'jpeg', 'webp', 'gif', 'css', 'htm', 'html',
+                'ini', 'js', 'jsx', 'py', 'sql', 'toml', 'ts', 'tsx', 'xml',
+                'yaml', 'yml',
+              ],
+            },
+          ],
         },
       )
 
-      if (result.canceled) {
-        return []
+      if (result.canceled || result.filePaths.length === 0) {
+        return { cancelled: true, state: null }
       }
+      const sourcePaths = await validateAttachmentSourcePaths(
+        result.filePaths,
+      )
+      const state = await requireBackend().addAttachments(
+        parsedScope,
+        sourcePaths,
+      )
+      return { cancelled: false, state }
+    },
+  )
 
-      return Promise.all(
-        result.filePaths.map(async (filePath) => {
-          const metadata = await stat(filePath)
-          return {
-            name: path.basename(filePath),
-            sizeBytes: metadata.size,
-          }
-        }),
+  ipcMain.handle(
+    'attachment:add-dropped',
+    async (event, value: unknown): Promise<AttachmentState> => {
+      assertTrustedSender(event)
+      const request = parseObject(
+        value,
+        ['scope', 'sourcePaths'],
+        'Dropped Attachment request',
+      )
+      const scope = parseAttachmentScope(request.scope)
+      const sourcePaths = await validateAttachmentSourcePaths(
+        request.sourcePaths,
+      )
+      return requireBackend().addAttachments(scope, sourcePaths)
+    },
+  )
+
+  ipcMain.handle(
+    'attachment:remove',
+    (event, value: unknown): Promise<AttachmentState> => {
+      assertTrustedSender(event)
+      const request = parseObject(
+        value,
+        ['scope', 'attachmentId'],
+        'Remove Attachment request',
+      )
+      return requireBackend().removeAttachment(
+        parseAttachmentScope(request.scope),
+        parseAttachmentId(request.attachmentId),
       )
     },
   )
@@ -997,51 +1174,65 @@ function createMainWindow(): void {
   }
 }
 
-void app.whenReady().then(() => {
-  nativeTheme.on('updated', () => {
+if (!hasSingleInstanceLock) {
+  app.quit()
+} else {
+  app.on('second-instance', () => {
     if (mainWindow !== null && !mainWindow.isDestroyed()) {
-      mainWindow.setBackgroundColor(nativeBackgroundColor())
+      if (mainWindow.isMinimized()) {
+        mainWindow.restore()
+      }
+      mainWindow.show()
+      mainWindow.focus()
     }
   })
-  configureMediaPermission()
-  registerIpcHandlers()
-  backendProcess = new BackendProcess(
-    resolveProjectRoot(),
-    broadcastBackendEvent,
-  )
-  createMainWindow()
-  createTray()
-  backendProcess.start()
 
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      createMainWindow()
-    } else {
-      mainWindow?.show()
+  void app.whenReady().then(() => {
+    nativeTheme.on('updated', () => {
+      if (mainWindow !== null && !mainWindow.isDestroyed()) {
+        mainWindow.setBackgroundColor(nativeBackgroundColor())
+      }
+    })
+    configureMediaPermission()
+    registerIpcHandlers()
+    backendProcess = new BackendProcess(
+      resolveProjectRoot(),
+      broadcastBackendEvent,
+    )
+    createMainWindow()
+    createTray()
+    backendProcess.start()
+
+    app.on('activate', () => {
+      if (BrowserWindow.getAllWindows().length === 0) {
+        createMainWindow()
+      } else {
+        mainWindow?.show()
+      }
+    })
+  })
+
+  app.on('before-quit', (event) => {
+    if (
+      shutdownStarted
+      || backendProcess === null
+      || backendProcess.getSnapshot().status === 'stopped'
+    ) {
+      return
+    }
+
+    event.preventDefault()
+    shutdownStarted = true
+    void backendProcess.stop().finally(() => {
+      tray?.destroy()
+      tray = null
+      app.quit()
+    })
+  })
+
+  app.on('window-all-closed', () => {
+    if (process.platform !== 'darwin') {
+      app.quit()
     }
   })
-})
-
-app.on('before-quit', (event) => {
-  if (
-    shutdownStarted
-    || backendProcess === null
-    || backendProcess.getSnapshot().status === 'stopped'
-  ) {
-    return
-  }
-
-  event.preventDefault()
-  shutdownStarted = true
-  void backendProcess.stop().finally(() => {
-    tray?.destroy()
-    tray = null
-    app.quit()
-  })
-})
-
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
-    app.quit()
-  }
-})
+}

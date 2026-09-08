@@ -491,6 +491,17 @@
   width: min(100%, 34rem);
 }
 
+.project-sources-card {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.project-sources-card .attachment-surface {
+  width: 100%;
+  max-width: none;
+  margin: 0;
+}
+
 .project-settings {
   align-items: start;
 }

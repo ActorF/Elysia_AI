@@ -3,7 +3,11 @@ from pathlib import Path
 
 import pytest
 
-from chats import ChatSession, JsonChatRepository
+from chats import (
+    ChatSession,
+    JsonChatRepository,
+    create_attachment_metadata,
+)
 from core import (
     ActiveConversationService,
     Brain,
@@ -300,6 +304,38 @@ def test_stream_chat_yields_chunks_and_saves_complete_turn(
     assert messages[0].content == "Hello, Elysia!"
     assert messages[1].role == "assistant"
     assert messages[1].content == "Hello Ying!"
+
+
+def test_stream_chat_uses_metadata_only_and_commits_attachment(
+    tmp_path: Path,
+) -> None:
+    chat_model = FakeChatModel(
+        "Stored locally.",
+        stream_chunks=["Stored locally."],
+    )
+    brain, _memory, chat = _active_brain(tmp_path, chat_model)
+    attachment = create_attachment_metadata(
+        file_name="course notes.md",
+        media_type="text/markdown",
+        size_bytes=128,
+    )
+
+    chunks = list(
+        brain.stream_chat(
+            chat.chat_id,
+            "",
+            attachments=(attachment,),
+        )
+    )
+
+    assert chunks == ["Stored locally."]
+    assert chat_model.received_messages is not None
+    prompt = chat_model.received_messages[-1]["content"]
+    assert "course notes.md" in prompt
+    assert "have not been read, parsed, or indexed" in prompt
+    persisted = brain.get_chat(chat.chat_id).messages[0]
+    assert persisted.content == ""
+    assert persisted.attachments == (attachment,)
 
 
 def test_stream_chat_does_not_save_partial_turn_on_stream_error(

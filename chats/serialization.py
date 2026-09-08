@@ -130,6 +130,13 @@ def _attachment_from_value(value: object) -> AttachmentMetadata:
     """Build validated attachment metadata from stored JSON."""
 
     data = _as_object(value, "attachment")
+    if set(data) != {
+        "attachment_id",
+        "file_name",
+        "media_type",
+        "size_bytes",
+    }:
+        raise ValueError("attachment has invalid fields.")
     return AttachmentMetadata(
         attachment_id=AttachmentId(
             _as_string(

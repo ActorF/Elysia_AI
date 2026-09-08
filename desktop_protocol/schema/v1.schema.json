@@ -22,7 +22,8 @@
     "settingsStateResult.restartRequired is true exactly when restartFields is non-empty",
     "stream sequences are contiguous per request and have exactly one terminal chunk",
     "the terminal response reply exactly equals the concatenated stream chunks",
-    "request and permission identifiers correlate with live pending operations"
+    "request and permission identifiers correlate with live pending operations",
+    "attachment.add sourcePaths are unique after Windows separator, dot-segment, and case normalization"
   ],
   "oneOf": [
     { "$ref": "#/$defs/handshakeRequest" },
@@ -36,6 +37,9 @@
     { "$ref": "#/$defs/chatPinRequest" },
     { "$ref": "#/$defs/chatArchiveRequest" },
     { "$ref": "#/$defs/chatDeleteRequest" },
+    { "$ref": "#/$defs/attachmentListRequest" },
+    { "$ref": "#/$defs/attachmentAddRequest" },
+    { "$ref": "#/$defs/attachmentRemoveRequest" },
     { "$ref": "#/$defs/projectListRequest" },
     { "$ref": "#/$defs/projectCreateRequest" },
     { "$ref": "#/$defs/projectOpenRequest" },
@@ -95,6 +99,9 @@
             "chat.pin",
             "chat.archive",
             "chat.delete",
+            "attachment.list",
+            "attachment.add",
+            "attachment.remove",
             "project.list",
             "project.create",
             "project.open",
@@ -145,12 +152,99 @@
         "chatId": { "$ref": "#/$defs/identifier" },
         "message": {
           "type": "string",
-          "minLength": 1,
-          "maxLength": 1000000,
-          "pattern": "[^\\u0009-\\u000D\\u0020\\u0085\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000\\uFEFF]"
+          "maxLength": 1000000
+        },
+        "attachmentIds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^attachment_[A-Za-z0-9_-]+$",
+            "maxLength": 128
+          },
+          "maxItems": 10,
+          "uniqueItems": true
         }
       },
       "required": ["chatId", "message"],
+      "additionalProperties": false,
+      "anyOf": [
+        {
+          "properties": {
+            "message": {
+              "minLength": 1,
+              "pattern": "[^\\u0009-\\u000D\\u0020\\u0085\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000\\uFEFF]"
+            }
+          }
+        },
+        {
+          "properties": { "attachmentIds": { "minItems": 1 } },
+          "required": ["attachmentIds"]
+        }
+      ]
+    },
+    "attachmentScope": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": { "const": "chat" },
+            "id": {
+              "type": "string",
+              "pattern": "^chat_[A-Za-z0-9_-]+$",
+              "maxLength": 128
+            }
+          },
+          "required": ["kind", "id"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": { "const": "project" },
+            "id": { "$ref": "#/$defs/projectIdentifier" }
+          },
+          "required": ["kind", "id"],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "attachmentListParams": {
+      "type": "object",
+      "properties": { "scope": { "$ref": "#/$defs/attachmentScope" } },
+      "required": ["scope"],
+      "additionalProperties": false
+    },
+    "attachmentAddParams": {
+      "type": "object",
+      "properties": {
+        "scope": { "$ref": "#/$defs/attachmentScope" },
+        "sourcePaths": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 4,
+            "maxLength": 32767,
+            "pattern": "^(?!\\s)(?!.*[\\r\\n\\u0000])[A-Za-z]:[\\\\/](?!\\.{1,2}(?:[\\\\/]|$))(?!.*:)(?!.*[\\\\/]\\.{1,2}(?:[\\\\/]|$)).*\\S$"
+          },
+          "minItems": 1,
+          "maxItems": 10,
+          "uniqueItems": true
+        }
+      },
+      "required": ["scope", "sourcePaths"],
+      "additionalProperties": false
+    },
+    "attachmentRemoveParams": {
+      "type": "object",
+      "properties": {
+        "scope": { "$ref": "#/$defs/attachmentScope" },
+        "attachmentId": {
+          "type": "string",
+          "pattern": "^attachment_[A-Za-z0-9_-]+$",
+          "maxLength": 128
+        }
+      },
+      "required": ["scope", "attachmentId"],
       "additionalProperties": false
     },
     "chatRetryParams": {
@@ -526,6 +620,39 @@
         }
       ]
     },
+    "attachmentListRequest": {
+      "allOf": [
+        { "$ref": "#/$defs/requestEnvelope" },
+        {
+          "properties": {
+            "method": { "const": "attachment.list" },
+            "params": { "$ref": "#/$defs/attachmentListParams" }
+          }
+        }
+      ]
+    },
+    "attachmentAddRequest": {
+      "allOf": [
+        { "$ref": "#/$defs/requestEnvelope" },
+        {
+          "properties": {
+            "method": { "const": "attachment.add" },
+            "params": { "$ref": "#/$defs/attachmentAddParams" }
+          }
+        }
+      ]
+    },
+    "attachmentRemoveRequest": {
+      "allOf": [
+        { "$ref": "#/$defs/requestEnvelope" },
+        {
+          "properties": {
+            "method": { "const": "attachment.remove" },
+            "params": { "$ref": "#/$defs/attachmentRemoveParams" }
+          }
+        }
+      ]
+    },
     "projectListRequest": {
       "allOf": [
         { "$ref": "#/$defs/requestEnvelope" },
@@ -731,19 +858,70 @@
         { "type": "null" }
       ]
     },
+    "attachmentFileName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255,
+      "pattern": "^(?!(?:[Cc][Oo][Nn]|[Pp][Rr][Nn]|[Aa][Uu][Xx]|[Nn][Uu][Ll]|[Cc][Oo][Mm][1-9]|[Ll][Pp][Tt][1-9])(?:\\.|$))(?!\\.{1,2}$)(?!\\s)(?!.*[<>:\"/\\\\|?*\\u0000-\\u001F\\u007F\\u061C\\u200E\\u200F\\u202A-\\u202E\\u2066-\\u2069])(?!.*\\.$).*\\S$"
+    },
+    "attachmentMediaType": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 255,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9!#$&^_.+\\-]*/[A-Za-z0-9][A-Za-z0-9!#$&^_.+\\-]*$"
+    },
     "chatAttachment": {
       "type": "object",
       "properties": {
-        "attachmentId": { "$ref": "#/$defs/identifier" },
-        "fileName": { "type": "string", "minLength": 1, "maxLength": 1000000 },
-        "mediaType": { "type": "string", "minLength": 1, "maxLength": 1000000 },
+        "attachmentId": {
+          "type": "string",
+          "pattern": "^attachment_[A-Za-z0-9_-]+$",
+          "maxLength": 128
+        },
+        "fileName": { "$ref": "#/$defs/attachmentFileName" },
+        "mediaType": { "$ref": "#/$defs/attachmentMediaType" },
         "sizeBytes": {
           "type": "integer",
-          "minimum": 0,
+          "minimum": 1,
           "maximum": 9007199254740991
         }
       },
       "required": ["attachmentId", "fileName", "mediaType", "sizeBytes"],
+      "additionalProperties": false
+    },
+    "attachmentItem": {
+      "type": "object",
+      "properties": {
+        "attachmentId": {
+          "type": "string",
+          "pattern": "^attachment_[A-Za-z0-9_-]+$",
+          "maxLength": 128
+        },
+        "fileName": { "$ref": "#/$defs/attachmentFileName" },
+        "mediaType": { "$ref": "#/$defs/attachmentMediaType" },
+        "sizeBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "status": { "const": "ready" }
+      },
+      "required": ["attachmentId", "fileName", "mediaType", "sizeBytes", "status"],
+      "additionalProperties": false
+    },
+    "attachmentStateResult": {
+      "type": "object",
+      "properties": {
+        "scope": { "$ref": "#/$defs/attachmentScope" },
+        "attachments": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/attachmentItem" },
+          "maxItems": 10
+        },
+        "maxFileBytes": { "type": "integer", "minimum": 1, "maximum": 2147483647 },
+        "maxFileCount": { "type": "integer", "minimum": 1, "maximum": 10 }
+      },
+      "required": ["scope", "attachments", "maxFileBytes", "maxFileCount"],
       "additionalProperties": false
     },
     "chatSessionMessage": {
@@ -755,7 +933,9 @@
         "createdAt": { "$ref": "#/$defs/timestamp" },
         "attachments": {
           "type": "array",
-          "items": { "$ref": "#/$defs/chatAttachment" }
+          "items": { "$ref": "#/$defs/chatAttachment" },
+          "maxItems": 10,
+          "uniqueItems": true
         }
       },
       "required": ["messageId", "role", "content", "createdAt", "attachments"],
@@ -1010,6 +1190,7 @@
             { "$ref": "#/$defs/chatResult" },
             { "$ref": "#/$defs/chatStateResult" },
             { "$ref": "#/$defs/projectStateResult" },
+            { "$ref": "#/$defs/attachmentStateResult" },
             { "$ref": "#/$defs/settingsStateResult" },
             { "$ref": "#/$defs/shutdownResult" }
           ]

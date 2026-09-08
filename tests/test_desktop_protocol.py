@@ -125,6 +125,115 @@ def test_all_server_message_builders_round_trip_through_the_parser() -> None:
     assert [parse_server_message(message) for message in messages] == messages
 
 
+def test_attachment_only_chat_request_is_valid_but_blank_without_ids_is_not(
+) -> None:
+    request: JsonObject = {
+        "type": "request",
+        "protocol": {"name": PROTOCOL_NAME, "version": PROTOCOL_VERSION},
+        "id": "attachment-chat",
+        "method": "chat.stream",
+        "params": {
+            "chatId": "chat_attachment",
+            "message": "",
+            "attachmentIds": ["attachment_ready"],
+        },
+    }
+
+    assert parse_client_request(request)["params"]["attachmentIds"] == [
+        "attachment_ready"
+    ]
+    invalid = deepcopy(request)
+    cast(JsonObject, invalid["params"])["attachmentIds"] = []
+    with pytest.raises(ProtocolValidationError, match="cannot be blank"):
+        parse_client_request(invalid)
+
+
+@pytest.mark.parametrize(
+    "source_path",
+    [
+        "notes.txt",
+        r"\\server\share\notes.txt",
+        r"\\?\C:\notes.txt",
+        r"\\.\C:\notes.txt",
+        r"C:\notes.txt:secret",
+        r"C:\safe\.\notes.txt",
+        r"C:\safe\..\notes.txt",
+    ],
+)
+def test_attachment_add_rejects_untrusted_path_forms(
+    source_path: str,
+) -> None:
+    request: JsonObject = {
+        "type": "request",
+        "protocol": {"name": PROTOCOL_NAME, "version": PROTOCOL_VERSION},
+        "id": "attachment-add",
+        "method": "attachment.add",
+        "params": {
+            "scope": {"kind": "chat", "id": "chat_attachment"},
+            "sourcePaths": [source_path],
+        },
+    }
+
+    with pytest.raises(ProtocolValidationError, match="invalid path"):
+        parse_client_request(request)
+
+
+def test_attachment_add_rejects_windows_equivalent_duplicate_paths() -> None:
+    request: JsonObject = {
+        "type": "request",
+        "protocol": {"name": PROTOCOL_NAME, "version": PROTOCOL_VERSION},
+        "id": "attachment-add",
+        "method": "attachment.add",
+        "params": {
+            "scope": {"kind": "chat", "id": "chat_attachment"},
+            "sourcePaths": [r"C:\Notes.txt", "c:/notes.txt"],
+        },
+    }
+
+    with pytest.raises(ProtocolValidationError, match="must be unique"):
+        parse_client_request(request)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("fileName", "C:/secret.txt"),
+        ("mediaType", "not a mime"),
+    ],
+)
+def test_attachment_state_rejects_unsafe_or_inconsistent_metadata(
+    field: str,
+    value: object,
+) -> None:
+    sample = next(
+        cast(JsonObject, candidate)
+        for candidate in _fixtures()["validServerMessages"]
+        if cast(JsonObject, candidate)["name"] == "attachment state response"
+    )
+    message = cast(JsonObject, deepcopy(sample["message"]))
+    result = cast(JsonObject, message["result"])
+    attachment = cast(list[JsonObject], result["attachments"])[0]
+    attachment[field] = value
+
+    with pytest.raises(ProtocolValidationError):
+        parse_server_message(message)
+
+
+def test_attachment_state_accepts_a_draft_from_an_older_larger_limit() -> None:
+    sample = next(
+        cast(JsonObject, candidate)
+        for candidate in _fixtures()["validServerMessages"]
+        if cast(JsonObject, candidate)["name"] == "attachment state response"
+    )
+    message = cast(JsonObject, deepcopy(sample["message"]))
+    result = cast(JsonObject, message["result"])
+    result["maxFileBytes"] = 10
+    attachment = cast(list[JsonObject], result["attachments"])[0]
+    attachment["sizeBytes"] = 100
+
+    assert parse_server_message(message)["type"] == "response"
+
+
 def test_success_response_requires_a_non_null_request_id() -> None:
     message: JsonObject = {
         "type": "response",

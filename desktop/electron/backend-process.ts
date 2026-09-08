@@ -20,6 +20,8 @@ import {
 import type {
   ArchiveChatRequest,
   ArchiveProjectRequest,
+  AttachmentScope,
+  AttachmentState,
   BackendEvent,
   BackendSnapshot,
   ChatRequest,
@@ -37,6 +39,7 @@ import type {
   UpdateProjectRequest,
 } from './contracts.js'
 import {
+  MAX_ATTACHMENT_FILE_COUNT,
   MAX_IDENTIFIER_LENGTH,
   MAX_PROTOCOL_FRAME_BYTES,
   MAX_MESSAGE_LENGTH,
@@ -46,6 +49,7 @@ import {
   hasNonBlankCodePoint,
   parseChatResult,
   parseChatStateResult,
+  parseAttachmentStateResult,
   parseHandshakeResult,
   parseInitializeResult,
   parseProjectStateResult,
@@ -77,6 +81,7 @@ const RESTART_TIMEOUT_MS = HANDSHAKE_TIMEOUT_MS + INITIALIZE_TIMEOUT_MS + 5_000
 interface PendingRequest {
   method: ProtocolMethod
   chatId?: string
+  attachmentScope?: AttachmentScope
   nextSequence: number
   streamCompleted: boolean
   streamedReply: string
@@ -87,6 +92,8 @@ interface PendingRequest {
   rejectProjectState?: (error: Error) => void
   resolveSettingsState?: (state: DesktopSettingsState) => void
   rejectSettingsState?: (error: Error) => void
+  resolveAttachmentState?: (state: AttachmentState) => void
+  rejectAttachmentState?: (error: Error) => void
   cancelTargetId?: string
   resolveCancellation?: () => void
   rejectCancellation?: (error: Error) => void
@@ -141,6 +148,21 @@ const PROJECT_METHODS = new Set<ProtocolMethod>([
 const SETTINGS_METHODS = new Set<ProtocolMethod>([
   'settings.get',
   'settings.update',
+])
+
+type AttachmentMethod =
+  | 'attachment.list'
+  | 'attachment.add'
+  | 'attachment.remove'
+
+const ATTACHMENT_METHODS = new Set<ProtocolMethod>([
+  'attachment.list',
+  'attachment.add',
+  'attachment.remove',
+])
+const ATTACHMENT_MUTATION_METHODS = new Set<ProtocolMethod>([
+  'attachment.add',
+  'attachment.remove',
 ])
 
 export class BackendProcess {
@@ -317,9 +339,29 @@ export class BackendProcess {
     ) {
       throw new Error('A Chat reply is already in progress.')
     }
+    if (
+      [...this.pendingRequests.values()].some(
+        (pending) => ATTACHMENT_MUTATION_METHODS.has(pending.method),
+      )
+    ) {
+      throw new Error('Wait for the current attachment action to finish.')
+    }
 
-    if (!hasNonBlankCodePoint(request.message)) {
-      throw new Error('Message cannot be empty.')
+    if (
+      request.attachmentIds.length > MAX_ATTACHMENT_FILE_COUNT
+      || new Set(request.attachmentIds).size !== request.attachmentIds.length
+      || request.attachmentIds.some((attachmentId) => (
+        !/^attachment_[A-Za-z0-9_-]+$/u.test(attachmentId)
+        || codePointLength(attachmentId) > MAX_IDENTIFIER_LENGTH
+      ))
+    ) {
+      throw new Error('Chat attachment selection is invalid.')
+    }
+    if (
+      !hasNonBlankCodePoint(request.message)
+      && request.attachmentIds.length === 0
+    ) {
+      throw new Error('Message cannot be empty without attachments.')
     }
     const message = trimProtocolBlankCharacters(request.message)
 
@@ -327,6 +369,7 @@ export class BackendProcess {
       requestId: this.sendRequest('chat.stream', {
         chatId: request.chatId,
         message,
+        attachmentIds: [...request.attachmentIds],
       }, request.chatId),
     }
   }
@@ -664,6 +707,33 @@ export class BackendProcess {
     return this.requestSettingsState('settings.update', request)
   }
 
+  /** Load pending attachments for one exact Chat or Project scope. */
+  listAttachments(scope: AttachmentScope): Promise<AttachmentState> {
+    return this.requestAttachmentState('attachment.list', { scope })
+  }
+
+  /** Import trusted main-process source paths into canonical Backend storage. */
+  addAttachments(
+    scope: AttachmentScope,
+    sourcePaths: string[],
+  ): Promise<AttachmentState> {
+    return this.requestAttachmentState(
+      'attachment.add',
+      { scope, sourcePaths },
+    )
+  }
+
+  /** Remove one pending attachment without exposing its storage path. */
+  removeAttachment(
+    scope: AttachmentScope,
+    attachmentId: string,
+  ): Promise<AttachmentState> {
+    return this.requestAttachmentState(
+      'attachment.remove',
+      { scope, attachmentId },
+    )
+  }
+
   private resolvePythonExecutable(): string {
     const configuredPython = process.env.ELYSIA_PYTHON
     if (configuredPython?.trim()) {
@@ -788,6 +858,41 @@ export class BackendProcess {
     })
   }
 
+  private requestAttachmentState<Method extends AttachmentMethod>(
+    method: Method,
+    params: RequestParamsByMethod[Method],
+  ): Promise<AttachmentState> {
+    if (this.snapshot.status !== 'ready') {
+      return Promise.reject(new Error('Python Backend is not ready.'))
+    }
+    const pendingRequests = [...this.pendingRequests.values()]
+    if (
+      pendingRequests.some((pending) => ATTACHMENT_METHODS.has(pending.method))
+      || (
+        method !== 'attachment.list'
+        && pendingRequests.some(
+          (pending) => CHAT_GENERATION_METHODS.has(pending.method),
+        )
+      )
+    ) {
+      return Promise.reject(
+        new Error('Wait for the current attachment action to finish.'),
+      )
+    }
+    return new Promise<AttachmentState>((resolve, reject) => {
+      this.sendRequest(
+        method,
+        params,
+        undefined,
+        {
+          attachmentScope: { ...params.scope },
+          resolveAttachmentState: resolve,
+          rejectAttachmentState: reject,
+        },
+      )
+    })
+  }
+
   private sendRequest<Method extends ProtocolMethod>(
     method: Method,
     params: RequestParamsByMethod[Method],
@@ -800,6 +905,9 @@ export class BackendProcess {
       | 'rejectProjectState'
       | 'resolveSettingsState'
       | 'rejectSettingsState'
+      | 'resolveAttachmentState'
+      | 'rejectAttachmentState'
+      | 'attachmentScope'
       | 'cancelTargetId'
       | 'resolveCancellation'
       | 'rejectCancellation'
@@ -937,6 +1045,8 @@ export class BackendProcess {
         parseProjectStateResult(message.result)
       } else if (SETTINGS_METHODS.has(pending.method)) {
         parseSettingsStateResult(message.result)
+      } else if (ATTACHMENT_METHODS.has(pending.method)) {
+        parseAttachmentStateResult(message.result)
       } else if (CHAT_GENERATION_METHODS.has(pending.method)) {
         parseChatResult(message.result)
       }
@@ -1004,6 +1114,9 @@ export class BackendProcess {
       if (SETTINGS_METHODS.has(pending.method)) {
         pending.rejectSettingsState?.(new Error(message.error.message))
       }
+      if (ATTACHMENT_METHODS.has(pending.method)) {
+        pending.rejectAttachmentState?.(new Error(message.error.message))
+      }
       if (pending.method === 'request.cancel') {
         pending.rejectCancellation?.(new Error(message.error.message))
         if (pending.deferredTargetResponse !== undefined) {
@@ -1021,6 +1134,7 @@ export class BackendProcess {
         'chat.sessions',
         'project.management',
         'settings.management',
+        'attachment.management',
         'request.cancel',
         'stream',
         'progress',
@@ -1111,6 +1225,25 @@ export class BackendProcess {
       pending.resolveSettingsState?.(
         parseSettingsStateResult(message.result),
       )
+      return
+    }
+
+    if (ATTACHMENT_METHODS.has(pending.method)) {
+      const result = parseAttachmentStateResult(message.result)
+      const expectedScope = pending.attachmentScope
+      if (
+        expectedScope === undefined
+        || result.scope.kind !== expectedScope.kind
+        || result.scope.id !== expectedScope.id
+      ) {
+        const error = new Error(
+          'Attachment response does not match its requested scope.',
+        )
+        pending.rejectAttachmentState?.(error)
+        this.protocolFailure(error.message)
+        return
+      }
+      pending.resolveAttachmentState?.(result)
       return
     }
 
@@ -1372,6 +1505,11 @@ export class BackendProcess {
           'Python Backend stopped before the Settings action completed.',
         ),
       )
+      pending.rejectAttachmentState?.(
+        new Error(
+          'Python Backend stopped before the Attachment action completed.',
+        ),
+      )
       pending.rejectCancellation?.(
         new Error('Python Backend stopped before generation was cancelled.'),
       )
@@ -1391,6 +1529,7 @@ export class BackendProcess {
       pending.rejectChatState?.(error)
       pending.rejectProjectState?.(error)
       pending.rejectSettingsState?.(error)
+      pending.rejectAttachmentState?.(error)
       pending.rejectCancellation?.(error)
       pending.resolveChatState = undefined
       pending.rejectChatState = undefined
@@ -1398,6 +1537,8 @@ export class BackendProcess {
       pending.rejectProjectState = undefined
       pending.resolveSettingsState = undefined
       pending.rejectSettingsState = undefined
+      pending.resolveAttachmentState = undefined
+      pending.rejectAttachmentState = undefined
       pending.resolveCancellation = undefined
       pending.rejectCancellation = undefined
     }

@@ -11,14 +11,23 @@ import {
 } from 'react'
 
 import type {
+  AttachmentScope,
+  AttachmentState,
   BackendSnapshot,
-  SelectedFile,
 } from '../../electron/contracts.ts'
+import { AttachmentSurface } from '../attachments/AttachmentSurface.tsx'
 import { InlineAlert } from '../design-system/Feedback.tsx'
 import { Icon } from '../design-system/Icon.tsx'
 import type { ChatNotice } from './types.ts'
 
 interface ComposerProps {
+  attachmentAdding: boolean
+  attachmentDisabled: boolean
+  attachmentError: string | null
+  attachmentLabel: string
+  attachmentRemovingIds: string[]
+  attachmentScope: AttachmentScope
+  attachmentState: AttachmentState | null
   callButtonRef: RefObject<HTMLButtonElement | null>
   canSend: boolean
   draft: string
@@ -27,14 +36,16 @@ interface ComposerProps {
   modelOptions: string[]
   notice: ChatNotice | null
   retryPending: boolean
-  selectedFiles: SelectedFile[]
   snapshot: BackendSnapshot
   streaming: boolean
   stopPending: boolean
-  onChooseFiles(): void
+  onChooseAttachments(): void
+  onDismissAttachmentError(): void
   onDismissNotice(): void
   onDraftChange(value: string): void
+  onDropAttachments(files: File[]): void
   onOpenCall(): void
+  onRemoveAttachment(attachmentId: string): Promise<boolean>
   onRetryConnection(): void
   onSelectModel(modelName: string): void
   onSend(): void
@@ -43,18 +54,15 @@ interface ComposerProps {
   onVoicePlaceholder(): void
 }
 
-function formatBytes(sizeBytes: number): string {
-  if (sizeBytes < 1024) {
-    return `${sizeBytes} B`
-  }
-  if (sizeBytes < 1024 * 1024) {
-    return `${(sizeBytes / 1024).toFixed(1)} KB`
-  }
-  return `${(sizeBytes / (1024 * 1024)).toFixed(1)} MB`
-}
-
 /** Render the controlled Chat composer and translate user gestures to actions. */
 export function Composer({
+  attachmentAdding,
+  attachmentDisabled,
+  attachmentError,
+  attachmentLabel,
+  attachmentRemovingIds,
+  attachmentScope,
+  attachmentState,
   callButtonRef,
   canSend,
   draft,
@@ -63,14 +71,16 @@ export function Composer({
   modelOptions,
   notice,
   retryPending,
-  selectedFiles,
   snapshot,
   streaming,
   stopPending,
-  onChooseFiles,
+  onChooseAttachments,
+  onDismissAttachmentError,
   onDismissNotice,
   onDraftChange,
+  onDropAttachments,
   onOpenCall,
+  onRemoveAttachment,
   onRetryConnection,
   onSelectModel,
   onSend,
@@ -105,26 +115,20 @@ export function Composer({
 
   return (
     <footer className="composer-zone" aria-label="Message composer">
-      {selectedFiles.length > 0 && (
-        <div className="attachment-preview">
-          <div className="attachment-row" aria-label="Selected attachments">
-            {selectedFiles.map((file, index) => (
-              <span
-                className="attachment-chip"
-                key={`${file.name}-${file.sizeBytes}-${index}`}
-                title={file.name}
-              >
-                <Icon name="file" />
-                <span>{file.name}</span>
-                <small>{formatBytes(file.sizeBytes)}</small>
-              </span>
-            ))}
-          </div>
-          <p className="attachment-preview-note" role="note">
-            Preview only — these files are not sent with the message yet.
-          </p>
-        </div>
-      )}
+      <AttachmentSurface
+        key={`${attachmentScope.kind}:${attachmentScope.id}`}
+        adding={attachmentAdding}
+        disabled={attachmentDisabled}
+        error={attachmentError}
+        label={attachmentLabel}
+        removingIds={attachmentRemovingIds}
+        scope={attachmentScope}
+        state={attachmentState}
+        onChoose={onChooseAttachments}
+        onDismissError={onDismissAttachmentError}
+        onDrop={onDropAttachments}
+        onRemove={onRemoveAttachment}
+      />
 
       {displayedNotice !== null && (
         <InlineAlert
@@ -165,16 +169,6 @@ export function Composer({
         />
         <div className="composer-toolbar">
           <div className="composer-tools">
-            <button
-              type="button"
-              className="tool-button"
-              onClick={onChooseFiles}
-              aria-label="Choose files"
-              title="Choose files"
-            >
-              <Icon name="file" />
-            </button>
-
             <label className="model-picker">
               <span className="model-spark">
                 <Icon name="sparkles" />

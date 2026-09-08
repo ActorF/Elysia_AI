@@ -16,8 +16,12 @@ import {
 
 import type {
   ArchiveProjectRequest,
+  AttachmentItem,
+  AttachmentScope,
+  AttachmentState,
   BackendEvent,
   BackendSnapshot,
+  ChatAttachment,
   ChatDetail,
   ChatSessionState,
   CreateProjectRequest,
@@ -26,7 +30,6 @@ import type {
   MoveChatToProjectRequest,
   ProjectState,
   RetryChatRequest,
-  SelectedFile,
   UpdateProjectRequest,
 } from '../electron/contracts.ts'
 import {
@@ -86,11 +89,10 @@ function presentChatMessages(chat: ChatDetail): ChatMessage[] {
   return chat.messages
     .filter((message) => message.role !== 'system')
     .map((message) => ({
+      attachments: message.attachments,
       id: message.messageId,
       role: message.role === 'assistant' ? 'assistant' : 'user',
-      text: message.content || message.attachments
-        .map((attachment) => attachment.fileName)
-        .join(', '),
+      text: message.content,
       state: 'complete',
       persisted: true,
     }))
@@ -105,6 +107,7 @@ type GenerationPhase =
   | 'cancelled'
 
 interface InFlightTurn {
+  attachments: ChatAttachment[]
   operationId: string
   requestId: string | null
   chatId: string
@@ -115,6 +118,38 @@ interface InFlightTurn {
   assistantText: string
   originalAssistantText: string
   phase: GenerationPhase
+}
+
+interface AttachmentActivity {
+  adding: boolean
+  error: string | null
+  removingIds: string[]
+}
+
+const idleAttachmentActivity: AttachmentActivity = {
+  adding: false,
+  error: null,
+  removingIds: [],
+}
+
+function attachmentScopeKey(scope: AttachmentScope): string {
+  return `${scope.kind}:${scope.id}`
+}
+
+function attachmentScopesEqual(
+  left: AttachmentScope,
+  right: AttachmentScope,
+): boolean {
+  return left.kind === right.kind && left.id === right.id
+}
+
+function asChatAttachments(items: AttachmentItem[]): ChatAttachment[] {
+  return items.map((item) => ({
+    attachmentId: item.attachmentId,
+    fileName: item.fileName,
+    mediaType: item.mediaType,
+    sizeBytes: item.sizeBytes,
+  }))
 }
 
 function generationIsBusy(turn: InFlightTurn | null): boolean {
@@ -173,6 +208,7 @@ function overlayTurn(
     return [
       ...canonicalMessages,
       {
+        attachments: turn.attachments,
         id: turn.userMessageId,
         role: 'user',
         text: turn.userText,
@@ -180,6 +216,7 @@ function overlayTurn(
         persisted: false,
       },
       {
+        attachments: [],
         id: turn.assistantMessageId,
         role: 'assistant',
         text: assistantText,
@@ -296,8 +333,11 @@ function App() {
   const [inFlightTurn, setInFlightTurn] = useState<InFlightTurn | null>(null)
   const [modelSelectionPending, setModelSelectionPending] = useState(false)
   const [retryPending, setRetryPending] = useState(false)
-  const [filesByChat, setFilesByChat] = useState<
-    Record<string, SelectedFile[]>
+  const [attachmentStates, setAttachmentStates] = useState<
+    Record<string, AttachmentState>
+  >({})
+  const [attachmentActivities, setAttachmentActivities] = useState<
+    Record<string, AttachmentActivity>
   >({})
   const [notice, setNotice] = useState<ChatNotice | null>(null)
   const [callPreviewOpen, setCallPreviewOpen] = useState(false)
@@ -319,6 +359,9 @@ function App() {
   const settingsLoadOperationRef = useRef(0)
   const projectRefreshNeededRef = useRef(false)
   const projectRefreshPromiseRef = useRef<Promise<void> | null>(null)
+  const attachmentOperationsRef = useRef(new Map<string, number>())
+  const attachmentMutationScopesRef = useRef(new Set<string>())
+  const attachmentReloadPendingScopesRef = useRef(new Set<string>())
   const streamingRef = useRef(false)
   const inFlightTurnRef = useRef<InFlightTurn | null>(null)
   const panelOperationRef = useRef(0)
@@ -327,12 +370,32 @@ function App() {
   const panelQueueRef = useRef<Promise<void>>(Promise.resolve())
 
   const activeChatId = chatState?.activeChat.chatId
+  const activeChatScope = useMemo<AttachmentScope>(() => ({
+    kind: 'chat',
+    id: activeChatId ?? 'chat_unavailable',
+  }), [activeChatId])
+  const activeProjectId = projectState?.activeProject?.projectId
+  const activeProjectScope = useMemo<AttachmentScope | null>(() => (
+    activeProjectId === undefined
+      ? null
+      : { kind: 'project', id: activeProjectId }
+  ), [activeProjectId])
   const draft = activeChatId === undefined
     ? ''
     : draftsByChat[activeChatId] ?? ''
-  const selectedFiles = activeChatId === undefined
-    ? []
-    : filesByChat[activeChatId] ?? []
+  const activeChatAttachmentKey = attachmentScopeKey(activeChatScope)
+  const activeChatAttachments = attachmentStates[activeChatAttachmentKey] ?? null
+  const activeChatAttachmentActivity = attachmentActivities[activeChatAttachmentKey]
+    ?? idleAttachmentActivity
+  const activeProjectAttachmentKey = activeProjectScope === null
+    ? null
+    : attachmentScopeKey(activeProjectScope)
+  const activeProjectAttachments = activeProjectAttachmentKey === null
+    ? null
+    : attachmentStates[activeProjectAttachmentKey] ?? null
+  const activeProjectAttachmentActivity = activeProjectAttachmentKey === null
+    ? idleAttachmentActivity
+    : attachmentActivities[activeProjectAttachmentKey] ?? idleAttachmentActivity
   const displayedMessages = useMemo(() => overlayTurn(
     messages,
     inFlightTurn,
@@ -356,10 +419,15 @@ function App() {
     desktopApi !== undefined
     && snapshot.status === 'ready'
     && snapshot.chatId !== undefined
-    && hasNonBlankCodePoint(draft)
+    && (
+      hasNonBlankCodePoint(draft)
+      || (activeChatAttachments?.attachments.length ?? 0) > 0
+    )
     && !streaming
     && !modelSelectionPending
     && !retryPending
+    && !activeChatAttachmentActivity.adding
+    && activeChatAttachmentActivity.removingIds.length === 0
     && !sessionUiPending
     && chatState !== null
   )
@@ -431,6 +499,256 @@ function App() {
   const handleSettingsDirtyChange = useCallback((dirty: boolean): void => {
     settingsDirtyRef.current = dirty
   }, [])
+
+  const updateAttachmentActivity = useCallback((
+    scope: AttachmentScope,
+    update: (current: AttachmentActivity) => AttachmentActivity,
+  ): void => {
+    const key = attachmentScopeKey(scope)
+    setAttachmentActivities((current) => ({
+      ...current,
+      [key]: update(current[key] ?? idleAttachmentActivity),
+    }))
+  }, [])
+
+  const acceptAttachmentState = useCallback((
+    expectedScope: AttachmentScope,
+    nextState: AttachmentState,
+  ): void => {
+    if (!attachmentScopesEqual(expectedScope, nextState.scope)) {
+      throw new Error('The local Backend returned files for a different scope.')
+    }
+    setAttachmentStates((current) => ({
+      ...current,
+      [attachmentScopeKey(expectedScope)]: nextState,
+    }))
+  }, [])
+
+  const beginAttachmentOperation = useCallback((scope: AttachmentScope): number => {
+    const key = attachmentScopeKey(scope)
+    const operationId = (attachmentOperationsRef.current.get(key) ?? 0) + 1
+    attachmentOperationsRef.current.set(key, operationId)
+    return operationId
+  }, [])
+
+  const attachmentOperationIsCurrent = useCallback((
+    scope: AttachmentScope,
+    operationId: number,
+  ): boolean => (
+    attachmentOperationsRef.current.get(attachmentScopeKey(scope)) === operationId
+  ), [])
+
+  const loadAttachments = useCallback(async (
+    scope: AttachmentScope,
+    preserveError = false,
+  ): Promise<void> => {
+    const key = attachmentScopeKey(scope)
+    if (
+      desktopApi === undefined
+      || snapshot.status !== 'ready'
+    ) {
+      return
+    }
+    if (attachmentMutationScopesRef.current.has(key)) {
+      attachmentReloadPendingScopesRef.current.add(key)
+      return
+    }
+    const operationId = beginAttachmentOperation(scope)
+    try {
+      const nextState = await desktopApi.listAttachments(scope)
+      if (attachmentOperationIsCurrent(scope, operationId)) {
+        acceptAttachmentState(scope, nextState)
+        updateAttachmentActivity(scope, (current) => ({
+          ...current,
+          error: preserveError ? current.error : null,
+        }))
+      }
+    } catch (error) {
+      if (attachmentOperationIsCurrent(scope, operationId)) {
+        updateAttachmentActivity(scope, (current) => ({
+          ...current,
+          error: preserveError && current.error !== null
+            ? current.error
+            : error instanceof Error
+              ? error.message
+              : 'Could not load local files.',
+        }))
+      }
+    }
+  }, [
+    acceptAttachmentState,
+    attachmentOperationIsCurrent,
+    beginAttachmentOperation,
+    desktopApi,
+    snapshot.status,
+    updateAttachmentActivity,
+  ])
+
+  const chooseAttachments = useCallback(async (
+    scope: AttachmentScope,
+  ): Promise<void> => {
+    if (desktopApi === undefined) {
+      return
+    }
+    const operationId = beginAttachmentOperation(scope)
+    const scopeKey = attachmentScopeKey(scope)
+    attachmentMutationScopesRef.current.add(scopeKey)
+    attachmentReloadPendingScopesRef.current.add(scopeKey)
+    updateAttachmentActivity(scope, (current) => ({
+      ...current,
+      adding: true,
+      error: null,
+    }))
+    try {
+      const result = await desktopApi.chooseAttachments(scope)
+      if (!attachmentOperationIsCurrent(scope, operationId) || result.cancelled) {
+        return
+      }
+      if (result.state === null) {
+        throw new Error('The file picker did not return canonical file state.')
+      }
+      acceptAttachmentState(scope, result.state)
+    } catch (error) {
+      if (attachmentOperationIsCurrent(scope, operationId)) {
+        updateAttachmentActivity(scope, (current) => ({
+          ...current,
+          error: error instanceof Error
+            ? error.message
+            : 'Could not add the selected files.',
+        }))
+      }
+    } finally {
+      const key = attachmentScopeKey(scope)
+      attachmentMutationScopesRef.current.delete(key)
+      if (attachmentOperationIsCurrent(scope, operationId)) {
+        updateAttachmentActivity(scope, (current) => ({
+          ...current,
+          adding: false,
+        }))
+      }
+      if (attachmentReloadPendingScopesRef.current.delete(key)) {
+        void loadAttachments(scope, true)
+      }
+    }
+  }, [
+    acceptAttachmentState,
+    attachmentOperationIsCurrent,
+    beginAttachmentOperation,
+    desktopApi,
+    loadAttachments,
+    updateAttachmentActivity,
+  ])
+
+  const acceptDroppedAttachments = useCallback(async (
+    scope: AttachmentScope,
+    files: File[],
+  ): Promise<void> => {
+    if (desktopApi === undefined || files.length === 0) {
+      return
+    }
+    const operationId = beginAttachmentOperation(scope)
+    const scopeKey = attachmentScopeKey(scope)
+    attachmentMutationScopesRef.current.add(scopeKey)
+    attachmentReloadPendingScopesRef.current.add(scopeKey)
+    updateAttachmentActivity(scope, (current) => ({
+      ...current,
+      adding: true,
+      error: null,
+    }))
+    try {
+      const nextState = await desktopApi.acceptDroppedAttachments(scope, files)
+      if (attachmentOperationIsCurrent(scope, operationId)) {
+        acceptAttachmentState(scope, nextState)
+      }
+    } catch (error) {
+      if (attachmentOperationIsCurrent(scope, operationId)) {
+        updateAttachmentActivity(scope, (current) => ({
+          ...current,
+          error: error instanceof Error
+            ? error.message
+            : 'Could not add the dropped files.',
+        }))
+      }
+    } finally {
+      const key = attachmentScopeKey(scope)
+      attachmentMutationScopesRef.current.delete(key)
+      if (attachmentOperationIsCurrent(scope, operationId)) {
+        updateAttachmentActivity(scope, (current) => ({
+          ...current,
+          adding: false,
+        }))
+      }
+      if (attachmentReloadPendingScopesRef.current.delete(key)) {
+        void loadAttachments(scope, true)
+      }
+    }
+  }, [
+    acceptAttachmentState,
+    attachmentOperationIsCurrent,
+    beginAttachmentOperation,
+    desktopApi,
+    loadAttachments,
+    updateAttachmentActivity,
+  ])
+
+  const removeAttachment = useCallback(async (
+    scope: AttachmentScope,
+    attachmentId: string,
+  ): Promise<boolean> => {
+    if (desktopApi === undefined) {
+      return false
+    }
+    const operationId = beginAttachmentOperation(scope)
+    const scopeKey = attachmentScopeKey(scope)
+    attachmentMutationScopesRef.current.add(scopeKey)
+    attachmentReloadPendingScopesRef.current.add(scopeKey)
+    updateAttachmentActivity(scope, (current) => ({
+      ...current,
+      error: null,
+      removingIds: [...current.removingIds, attachmentId],
+    }))
+    try {
+      const nextState = await desktopApi.removeAttachment(scope, attachmentId)
+      if (!attachmentOperationIsCurrent(scope, operationId)) {
+        return false
+      }
+      acceptAttachmentState(scope, nextState)
+      return true
+    } catch (error) {
+      if (attachmentOperationIsCurrent(scope, operationId)) {
+        updateAttachmentActivity(scope, (current) => ({
+          ...current,
+          error: error instanceof Error
+            ? error.message
+            : 'Could not remove the file.',
+        }))
+      }
+      return false
+    } finally {
+      const key = attachmentScopeKey(scope)
+      attachmentMutationScopesRef.current.delete(key)
+      if (attachmentOperationIsCurrent(scope, operationId)) {
+        updateAttachmentActivity(scope, (current) => ({
+          ...current,
+          removingIds: current.removingIds.filter((id) => id !== attachmentId),
+        }))
+      }
+      if (attachmentReloadPendingScopesRef.current.delete(key)) {
+        void loadAttachments(scope, true)
+      }
+    }
+  }, [
+    acceptAttachmentState,
+    attachmentOperationIsCurrent,
+    beginAttachmentOperation,
+    desktopApi,
+    loadAttachments,
+    updateAttachmentActivity,
+  ])
+
+  const dismissAttachmentError = useCallback((scope: AttachmentScope): void => {
+    updateAttachmentActivity(scope, (current) => ({ ...current, error: null }))
+  }, [updateAttachmentActivity])
 
   const updateInFlightTurn = useCallback((
     update: (current: InFlightTurn | null) => InFlightTurn | null,
@@ -624,6 +942,20 @@ function App() {
   }, [activeView, desktopApi, loadSettings, snapshot.status])
 
   useEffect(() => {
+    if (activeChatId === undefined || snapshot.status !== 'ready') {
+      return
+    }
+    void loadAttachments(activeChatScope)
+  }, [activeChatId, activeChatScope, loadAttachments, snapshot.status])
+
+  useEffect(() => {
+    if (activeProjectScope === null || snapshot.status !== 'ready') {
+      return
+    }
+    void loadAttachments(activeProjectScope)
+  }, [activeProjectScope, loadAttachments, snapshot.status])
+
+  useEffect(() => {
     if (typeof window.matchMedia !== 'function') {
       return
     }
@@ -639,6 +971,20 @@ function App() {
     mediaQuery.addEventListener('change', handleShellWidthChange)
     return () => {
       mediaQuery.removeEventListener('change', handleShellWidthChange)
+    }
+  }, [])
+
+  useEffect(() => {
+    function preventUnscopedFileNavigation(event: globalThis.DragEvent): void {
+      if (Array.from(event.dataTransfer?.types ?? []).includes('Files')) {
+        event.preventDefault()
+      }
+    }
+    window.addEventListener('dragover', preventUnscopedFileNavigation)
+    window.addEventListener('drop', preventUnscopedFileNavigation)
+    return () => {
+      window.removeEventListener('dragover', preventUnscopedFileNavigation)
+      window.removeEventListener('drop', preventUnscopedFileNavigation)
     }
   }, [])
 
@@ -825,6 +1171,7 @@ function App() {
             ? infoNotice('Generation stopped. No partial reply was saved.')
             : errorNotice(event.message))
         }
+        void loadAttachments({ kind: 'chat', id: event.chatId })
         void requestProjectRefresh()
         return
       }
@@ -866,6 +1213,7 @@ function App() {
     acceptChatState,
     acceptSnapshot,
     desktopApi,
+    loadAttachments,
     requestProjectRefresh,
     updateInFlightTurn,
   ])
@@ -981,16 +1329,43 @@ function App() {
     setDraftsByChat((current) => ({ ...current, [chatId]: value }))
   }
 
+  function forgetChatDraft(chatId: string): void {
+    const scope: AttachmentScope = { kind: 'chat', id: chatId }
+    const key = attachmentScopeKey(scope)
+    attachmentOperationsRef.current.delete(key)
+    attachmentMutationScopesRef.current.delete(key)
+    attachmentReloadPendingScopesRef.current.delete(key)
+    setDraftsByChat((current) => {
+      const next = { ...current }
+      delete next[chatId]
+      return next
+    })
+    setAttachmentStates((current) => {
+      const next = { ...current }
+      delete next[key]
+      return next
+    })
+    setAttachmentActivities((current) => {
+      const next = { ...current }
+      delete next[key]
+      return next
+    })
+  }
+
   async function sendMessage(): Promise<void> {
     const message = trimProtocolBlankCharacters(draft)
     const chatId = chatState?.activeChat.chatId
+    const attachmentItems = activeChatAttachments?.attachments ?? []
+    const attachmentIds = attachmentItems.map((item) => item.attachmentId)
     if (
       desktopApi === undefined
       || chatId === undefined
-      || !message
+      || (!message && attachmentIds.length === 0)
       || streaming
       || modelSelectionPendingRef.current
       || retryPendingRef.current
+      || activeChatAttachmentActivity.adding
+      || activeChatAttachmentActivity.removingIds.length > 0
     ) {
       return
     }
@@ -1001,6 +1376,7 @@ function App() {
     streamingRef.current = true
     setStreaming(true)
     updateInFlightTurn(() => ({
+      attachments: asChatAttachments(attachmentItems),
       operationId,
       requestId: null,
       chatId,
@@ -1014,7 +1390,28 @@ function App() {
     }))
 
     try {
-      const { requestId } = await desktopApi.sendMessage({ chatId, message })
+      const { requestId } = await desktopApi.sendMessage({
+        chatId,
+        message,
+        attachmentIds,
+      })
+      const sentIds = new Set(attachmentIds)
+      setAttachmentStates((current) => {
+        const currentState = current[activeChatAttachmentKey]
+        if (currentState === undefined) {
+          return current
+        }
+        return {
+          ...current,
+          [activeChatAttachmentKey]: {
+            ...currentState,
+            attachments: currentState.attachments.filter(
+              (attachment) => !sentIds.has(attachment.attachmentId),
+            ),
+          },
+        }
+      })
+      void loadAttachments(activeChatScope)
       updateInFlightTurn((current) => {
         if (current?.operationId !== operationId) {
           return current
@@ -1031,8 +1428,12 @@ function App() {
     } catch (error) {
       if (inFlightTurnRef.current?.operationId === operationId) {
         updateInFlightTurn((current) => current?.operationId === operationId
-          ? { ...current, phase: 'error' }
+          ? null
           : current)
+        setDraftsByChat((current) => ({
+          ...current,
+          [chatId]: current[chatId] === '' ? message : current[chatId],
+        }))
         streamingRef.current = false
         setStreaming(false)
         setNotice(errorNotice(
@@ -1077,6 +1478,7 @@ function App() {
     streamingRef.current = true
     setStreaming(true)
     updateInFlightTurn(() => ({
+      attachments: [],
       operationId,
       requestId: null,
       chatId: pair.chatId,
@@ -1527,14 +1929,15 @@ function App() {
     )
   }
 
-  function deleteChat(chatId: string): Promise<void> {
+  async function deleteChat(chatId: string): Promise<void> {
     if (desktopApi === undefined) {
-      return Promise.reject(new Error('Desktop API is unavailable.'))
+      throw new Error('Desktop API is unavailable.')
     }
-    return runSessionAction(
+    await runSessionAction(
       () => desktopApi.deleteChat(chatId),
       'Could not delete the Chat.',
     )
+    forgetChatDraft(chatId)
   }
 
   async function archiveChats(chatIds: string[]): Promise<void> {
@@ -1566,32 +1969,13 @@ function App() {
       for (const chatId of chatIds) {
         nextState = await desktopApi.deleteChat(chatId)
         acceptChatState(nextState)
+        forgetChatDraft(chatId)
       }
       if (nextState === null) {
         throw new Error('Select at least one Chat to delete.')
       }
       return nextState
     }, 'Could not delete the selected Chats.')
-  }
-
-  async function chooseFiles(): Promise<void> {
-    if (desktopApi === undefined) {
-      return
-    }
-    const chatId = chatState?.activeChat.chatId
-    if (chatId === undefined) {
-      return
-    }
-    try {
-      const files = await desktopApi.chooseFiles()
-      setFilesByChat((current) => ({ ...current, [chatId]: files }))
-    } catch (error) {
-      setNotice(errorNotice(
-        error instanceof Error
-          ? error.message
-          : 'Could not open the file picker.',
-      ))
-    }
   }
 
   async function verifyMicrophone(): Promise<void> {
@@ -1661,6 +2045,10 @@ function App() {
   } else if (activeView === 'projects') {
     content = (
       <ProjectView
+        attachmentAdding={activeProjectAttachmentActivity.adding}
+        attachmentError={activeProjectAttachmentActivity.error}
+        attachmentRemovingIds={activeProjectAttachmentActivity.removingIds}
+        attachmentState={activeProjectAttachments}
         busyChatId={generationBusy ? inFlightTurn?.chatId : undefined}
         loading={projectLoading}
         mutationPending={
@@ -1669,11 +2057,17 @@ function App() {
         projectState={projectState}
         sidebarOpen={sidebarOpen}
         onArchive={archiveProject}
+        onChooseAttachments={(scope) => { void chooseAttachments(scope) }}
         onChooseWorkspace={chooseProjectWorkspace}
         onCreate={createProject}
+        onDismissAttachmentError={dismissAttachmentError}
+        onDropAttachments={(scope, files) => {
+          void acceptDroppedAttachments(scope, files)
+        }}
         onMoveChat={moveChatToProject}
         onOpenChat={openChatFromProject}
         onOpenProject={openProject}
+        onRemoveAttachment={removeAttachment}
         onToggleSidebar={() => { setSidebarOpen((open) => !open) }}
         onUnbindWorkspace={unbindProjectWorkspace}
         onUpdate={updateProject}
@@ -1692,6 +2086,12 @@ function App() {
   } else {
     content = (
       <ChatView
+        attachmentAdding={activeChatAttachmentActivity.adding}
+        attachmentError={activeChatAttachmentActivity.error}
+        attachmentLabel={`This message · ${displayedChat}`}
+        attachmentRemovingIds={activeChatAttachmentActivity.removingIds}
+        attachmentScope={activeChatScope}
+        attachmentState={activeChatAttachments}
         callButtonRef={callButtonRef}
         canSend={canSend}
         chatMode={chatState?.activeChat.mode ?? 'chat'}
@@ -1706,17 +2106,40 @@ function App() {
         panelTransitionPending={panelTransitionPending}
         retryPending={retryPending}
         retryPair={retryPair}
-        selectedFiles={selectedFiles}
         sidebarOpen={sidebarOpen}
         snapshot={snapshot}
         streaming={activeGeneration}
         stopPending={stopPending}
-        onChooseFiles={() => { void chooseFiles() }}
+        attachmentDisabled={sessionUiPending || activeChatId === undefined}
+        onChooseAttachments={() => {
+          if (activeChatId !== undefined) {
+            void chooseAttachments({ kind: 'chat', id: activeChatId })
+          }
+        }}
         onCopy={copyText}
+        onDismissAttachmentError={() => {
+          dismissAttachmentError(activeChatScope)
+        }}
         onDismissNotice={() => { setNotice(null) }}
         onDraftChange={updateActiveDraft}
+        onDropAttachments={(files) => {
+          if (activeChatId !== undefined) {
+            void acceptDroppedAttachments(
+              { kind: 'chat', id: activeChatId },
+              files,
+            )
+          }
+        }}
         onOpenCall={() => { void openCallPreview() }}
         onOpenExternalUrl={openExternalUrl}
+        onRemoveAttachment={(attachmentId) => (
+          activeChatId === undefined
+            ? Promise.resolve(false)
+            : removeAttachment(
+                { kind: 'chat', id: activeChatId },
+                attachmentId,
+              )
+        )}
         onRetry={(pair, message) => { void retryMessage(pair, message) }}
         onRetryConnection={() => { void retryConnection() }}
         onSelectModel={(modelName) => { void selectModel(modelName) }}

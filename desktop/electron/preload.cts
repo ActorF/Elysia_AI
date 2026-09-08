@@ -2,11 +2,14 @@
  * Expose a deliberately small desktop API to the sandboxed React renderer.
  */
 
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webUtils } from 'electron'
 
 import type {
   ArchiveChatRequest,
   ArchiveProjectRequest,
+  AttachmentScope,
+  AttachmentSelectionResult,
+  AttachmentState,
   BackendEvent,
   BackendSnapshot,
   ChatRequest,
@@ -21,10 +24,11 @@ import type {
   ProjectState,
   RenameChatRequest,
   RetryChatRequest,
-  SelectedFile,
   UpdateProjectRequest,
   UpdateDesktopSettingsRequest,
 } from './contracts.js'
+
+const MAX_DROPPED_ATTACHMENT_FILES = 10
 
 const desktopApi: DesktopApi = {
   rendererReady: () =>
@@ -184,10 +188,54 @@ const desktopApi: DesktopApi = {
       modelName,
     ) as Promise<BackendSnapshot>,
 
-  chooseFiles: () =>
+  listAttachments: (scope: AttachmentScope) =>
     ipcRenderer.invoke(
-      'desktop:choose-files',
-    ) as Promise<SelectedFile[]>,
+      'attachment:list',
+      scope,
+    ) as Promise<AttachmentState>,
+
+  chooseAttachments: (scope: AttachmentScope) =>
+    ipcRenderer.invoke(
+      'attachment:choose',
+      scope,
+    ) as Promise<AttachmentSelectionResult>,
+
+  acceptDroppedAttachments: (
+    scope: AttachmentScope,
+    files: File[],
+  ) => {
+    if (
+      !Array.isArray(files)
+      || files.length === 0
+      || files.length > MAX_DROPPED_ATTACHMENT_FILES
+    ) {
+      return Promise.reject(new Error(
+        `Drop between 1 and ${MAX_DROPPED_ATTACHMENT_FILES} real local files.`,
+      ))
+    }
+    let sourcePaths: string[]
+    try {
+      sourcePaths = files.map((file) => webUtils.getPathForFile(file))
+    } catch {
+      return Promise.reject(new Error('Dropped file selection is invalid.'))
+    }
+    if (sourcePaths.some((sourcePath) => sourcePath.length === 0)) {
+      return Promise.reject(new Error('Drop only real local files.'))
+    }
+    return ipcRenderer.invoke(
+      'attachment:add-dropped',
+      { scope, sourcePaths },
+    ) as Promise<AttachmentState>
+  },
+
+  removeAttachment: (
+    scope: AttachmentScope,
+    attachmentId: string,
+  ) =>
+    ipcRenderer.invoke(
+      'attachment:remove',
+      { scope, attachmentId },
+    ) as Promise<AttachmentState>,
 
   setCharacterPanelOpen: (open: boolean) =>
     ipcRenderer.invoke(

@@ -61,6 +61,72 @@ function defaultSettingsState() {
   }
 }
 
+function attachmentScopeKey(scope) {
+  return `${scope.kind}:${scope.id}`
+}
+
+function defaultAttachmentState(scope) {
+  return {
+    scope: clone(scope),
+    attachments: [],
+    maxFileBytes: 16_777_216,
+    maxFileCount: 10,
+  }
+}
+
+function mediaTypeFor(file) {
+  if (typeof file.mediaType === 'string' && file.mediaType) {
+    return file.mediaType
+  }
+  if (typeof file.type === 'string' && file.type) {
+    return file.type
+  }
+  const extension = String(file.name ?? '').split('.').pop()?.toLowerCase()
+  return extension === 'txt'
+    ? 'text/plain'
+    : extension === 'md'
+      ? 'text/markdown'
+      : extension === 'pdf'
+        ? 'application/pdf'
+        : 'application/octet-stream'
+}
+
+function attachmentStateFor(scope) {
+  const key = attachmentScopeKey(scope)
+  if (!attachmentStates.has(key)) {
+    attachmentStates.set(key, defaultAttachmentState(scope))
+  }
+  return attachmentStates.get(key)
+}
+
+function addAttachmentFiles(scope, files) {
+  const current = attachmentStateFor(scope)
+  const attachments = [...current.attachments]
+  for (const file of files) {
+    const fileName = String(file.name)
+    const sizeBytes = Number(file.sizeBytes ?? file.size)
+    const mediaType = mediaTypeFor(file)
+    const duplicate = attachments.some((item) => (
+      item.fileName === fileName
+      && item.sizeBytes === sizeBytes
+      && item.mediaType === mediaType
+    ))
+    if (!duplicate) {
+      attachments.push({
+        attachmentId: `attachment_test_${nextAttachmentNumber}`,
+        fileName,
+        mediaType,
+        sizeBytes,
+        status: 'ready',
+      })
+      nextAttachmentNumber += 1
+    }
+  }
+  const nextState = { ...current, attachments }
+  attachmentStates.set(attachmentScopeKey(scope), nextState)
+  return clone(nextState)
+}
+
 let snapshot = clone(initialSnapshot)
 let chatState = defaultChatState()
 let projectState = defaultProjectState()
@@ -72,8 +138,13 @@ let chatMessages = new Map([
 ])
 let pendingGenerations = new Map()
 let selectedFiles = []
+let attachmentStates = new Map()
+let nextAttachmentError = null
+let nextAttachmentPickerCancelled = false
+let nextSendError = null
 let selectedWorkspace = null
 let nextRequestNumber = 1
+let nextAttachmentNumber = 1
 let nextCallSequence = 1
 let nextProjectUpdateNumber = 1
 let calls = []
@@ -85,6 +156,8 @@ let delayRestarts = false
 let pendingRestarts = []
 let delaySettingsLoads = false
 let pendingSettingsLoads = []
+let delayAttachmentActions = false
+let pendingAttachmentActions = []
 const backendListeners = new Set()
 
 function clone(value) {
@@ -244,6 +317,27 @@ function releaseAllChatActions() {
   }
 }
 
+async function waitForAttachmentAction() {
+  if (!delayAttachmentActions) {
+    return
+  }
+  await new Promise((resolve) => {
+    pendingAttachmentActions.push(resolve)
+  })
+}
+
+function releaseNextAttachmentAction() {
+  const release = pendingAttachmentActions.shift()
+  release?.()
+  return release !== undefined
+}
+
+function releaseAllAttachmentActions() {
+  while (releaseNextAttachmentAction()) {
+    // Drain every test-controlled Attachment action before resetting the mock.
+  }
+}
+
 async function waitForRestart() {
   if (!delayRestarts) {
     return
@@ -360,11 +454,32 @@ const desktopApi = {
 
   sendMessage: async (request) => {
     record('sendMessage', [request])
+    if (nextSendError !== null) {
+      const message = nextSendError
+      nextSendError = null
+      throw new Error(message)
+    }
+    const scope = { kind: 'chat', id: request.chatId }
+    const attachmentState = attachmentStateFor(scope)
+    const attachmentIds = new Set(request.attachmentIds)
+    const attachments = attachmentState.attachments.filter((attachment) => (
+      attachmentIds.has(attachment.attachmentId)
+    ))
+    if (attachments.length !== attachmentIds.size) {
+      throw new Error('One or more attachments are not ready in this Chat.')
+    }
+    attachmentStates.set(attachmentScopeKey(scope), {
+      ...attachmentState,
+      attachments: attachmentState.attachments.filter(
+        (attachment) => !attachmentIds.has(attachment.attachmentId),
+      ),
+    })
     const requestId = `test-request-${nextRequestNumber}`
     nextRequestNumber += 1
     pendingGenerations.set(requestId, {
       kind: 'send',
       request: clone(request),
+      attachments: clone(attachments),
     })
     return { requestId }
   },
@@ -482,6 +597,7 @@ const desktopApi = {
 
   deleteChat: async (chatId) => {
     record('deleteChat', [chatId])
+    attachmentStates.delete(attachmentScopeKey({ kind: 'chat', id: chatId }))
     chatState.chats = chatState.chats.filter((chat) => chat.chatId !== chatId)
     if (chatState.activeChat.chatId === chatId) {
       const fallback = chatState.chats.find((chat) => !chat.archived)
@@ -661,9 +777,65 @@ const desktopApi = {
     return clone(snapshot)
   },
 
-  chooseFiles: async () => {
-    record('chooseFiles')
-    return clone(selectedFiles)
+  listAttachments: async (scope) => {
+    record('listAttachments', [scope])
+    await waitForAttachmentAction()
+    return clone(attachmentStateFor(scope))
+  },
+
+  chooseAttachments: async (scope) => {
+    record('chooseAttachments', [scope])
+    await waitForAttachmentAction()
+    if (nextAttachmentError !== null) {
+      const message = nextAttachmentError
+      nextAttachmentError = null
+      selectedFiles = []
+      throw new Error(message)
+    }
+    if (nextAttachmentPickerCancelled) {
+      nextAttachmentPickerCancelled = false
+      selectedFiles = []
+      return { cancelled: true, state: null }
+    }
+    const state = addAttachmentFiles(scope, selectedFiles)
+    selectedFiles = []
+    return { cancelled: false, state }
+  },
+
+  acceptDroppedAttachments: async (scope, files) => {
+    const safeFiles = Array.from(files, (file) => ({
+      name: file.name,
+      sizeBytes: file.size,
+      type: file.type,
+    }))
+    record('acceptDroppedAttachments', [scope, safeFiles])
+    if (nextAttachmentError !== null) {
+      const message = nextAttachmentError
+      nextAttachmentError = null
+      throw new Error(message)
+    }
+    return addAttachmentFiles(scope, safeFiles)
+  },
+
+  removeAttachment: async (scope, attachmentId) => {
+    record('removeAttachment', [scope, attachmentId])
+    if (nextAttachmentError !== null) {
+      const message = nextAttachmentError
+      nextAttachmentError = null
+      throw new Error(message)
+    }
+    const current = attachmentStateFor(scope)
+    if (!current.attachments.some((item) => item.attachmentId === attachmentId)) {
+      throw new Error('Attachment does not exist in this scope.')
+    }
+    const state = {
+      ...current,
+      attachments: current.attachments.filter(
+        (item) => item.attachmentId !== attachmentId,
+      ),
+    }
+    attachmentStates.set(attachmentScopeKey(scope), state)
+    return clone(state)
   },
 
   setCharacterPanelOpen: async (open) => {
@@ -691,6 +863,7 @@ const testControl = {
     releaseAllCharacterPanelChanges()
     releaseAllRestarts()
     releaseAllSettingsLoads()
+    releaseAllAttachmentActions()
     snapshot = clone(initialSnapshot)
     chatState = defaultChatState()
     projectState = defaultProjectState()
@@ -702,8 +875,13 @@ const testControl = {
     ])
     pendingGenerations = new Map()
     selectedFiles = []
+    attachmentStates = new Map()
+    nextAttachmentError = null
+    nextAttachmentPickerCancelled = false
+    nextSendError = null
     selectedWorkspace = null
     nextRequestNumber = 1
+    nextAttachmentNumber = 1
     nextCallSequence = 1
     nextProjectUpdateNumber = 1
     calls = []
@@ -711,6 +889,7 @@ const testControl = {
     delayCharacterPanelChanges = false
     delayRestarts = false
     delaySettingsLoads = false
+    delayAttachmentActions = false
   },
 
   setSnapshot: (nextSnapshot) => {
@@ -779,7 +958,7 @@ const testControl = {
             role: 'user',
             content: generation.request.message,
             createdAt,
-            attachments: [],
+            attachments: clone(generation.attachments ?? []),
           },
           assistantMessage,
         ]
@@ -823,6 +1002,22 @@ const testControl = {
       pendingGenerations.delete(nextEvent.requestId)
     }
     if (nextEvent.type === 'chat-error') {
+      const generation = pendingGenerations.get(nextEvent.requestId)
+      if (generation?.kind === 'send' && generation.attachments?.length > 0) {
+        const scope = { kind: 'chat', id: nextEvent.chatId }
+        const current = attachmentStateFor(scope)
+        attachmentStates.set(attachmentScopeKey(scope), {
+          ...current,
+          attachments: [
+            ...current.attachments,
+            ...generation.attachments.filter((attachment) => (
+              !current.attachments.some(
+                (currentItem) => currentItem.attachmentId === attachment.attachmentId,
+              )
+            )),
+          ],
+        })
+      }
       pendingGenerations.delete(nextEvent.requestId)
     }
     for (const listener of backendListeners) {
@@ -832,6 +1027,22 @@ const testControl = {
 
   setSelectedFiles: (files) => {
     selectedFiles = clone(files)
+  },
+
+  setAttachmentState: (state) => {
+    attachmentStates.set(attachmentScopeKey(state.scope), clone(state))
+  },
+
+  cancelNextAttachmentPicker: () => {
+    nextAttachmentPickerCancelled = true
+  },
+
+  failNextAttachmentAction: (message) => {
+    nextAttachmentError = message
+  },
+
+  failNextSend: (message) => {
+    nextSendError = message
   },
 
   setSelectedWorkspace: (workspacePath) => {
@@ -866,6 +1077,13 @@ const testControl = {
     }
   },
 
+  setAttachmentActionDelay: (delayed) => {
+    delayAttachmentActions = delayed
+    if (!delayed) {
+      releaseAllAttachmentActions()
+    }
+  },
+
   getPendingChatActionCount: () => pendingChatActions.length,
 
   releaseNextChatAction,
@@ -877,6 +1095,10 @@ const testControl = {
   getPendingSettingsLoadCount: () => pendingSettingsLoads.length,
 
   releaseNextSettingsLoad,
+
+  getPendingAttachmentActionCount: () => pendingAttachmentActions.length,
+
+  releaseNextAttachmentAction,
 
   getPendingCharacterPanelChangeCount: () => (
     pendingCharacterPanelChanges.length

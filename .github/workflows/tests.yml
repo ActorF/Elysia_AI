@@ -30,7 +30,7 @@ jobs:
       - name: Run Python type checks
         run: >-
           python -m mypy
-          agent chats config core desktop_protocol memory projects recovery
+          agent attachments chats config core desktop_protocol memory projects recovery
           tools ui voice desktop_backend.py start.py
 
   desktop:

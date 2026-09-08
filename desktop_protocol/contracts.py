@@ -8,9 +8,12 @@ are rejected before application services are invoked.
 
 from __future__ import annotations
 
+import ntpath
 import re
 from typing import Any, Final, Literal, NotRequired, TypedDict, cast
 from urllib.parse import urlsplit
+
+from attachments.domain import validate_file_name, validate_media_type
 
 PROTOCOL_NAME: Final = "elysia.desktop"
 PROTOCOL_VERSION: Final = 1
@@ -24,6 +27,10 @@ MAX_OLLAMA_HOST_LENGTH: Final = 2_048
 MAX_MEMORY_SETTING: Final = 10_000_000
 MAX_DATA_IMPORT_BYTES: Final = 2_147_483_647
 MAX_PROTOCOL_FRAME_BYTES: Final = 16_777_216
+MAX_ATTACHMENTS_PER_SCOPE: Final = 10
+MAX_ATTACHMENT_FILE_NAME_LENGTH: Final = 255
+MAX_ATTACHMENT_MEDIA_TYPE_LENGTH: Final = 255
+MAX_ATTACHMENT_SOURCE_PATH_LENGTH: Final = 32_767
 MIN_SESSION_TOKEN_LENGTH: Final = 32
 MAX_SESSION_TOKEN_LENGTH: Final = 512
 MAX_SAFE_INTEGER: Final = 9_007_199_254_740_991
@@ -46,6 +53,10 @@ _PROTOCOL_BLANK_CHARACTERS: Final = frozenset(
     for code_point in range(start, end + 1)
 )
 _PROJECT_ID_PATTERN: Final = re.compile(r"^project_[A-Za-z0-9_-]+$")
+_CHAT_ID_PATTERN: Final = re.compile(r"^chat_[A-Za-z0-9_-]+$")
+_ATTACHMENT_ID_PATTERN: Final = re.compile(
+    r"^attachment_[A-Za-z0-9_-]+$"
+)
 
 ProtocolMethod = Literal[
     "handshake",
@@ -59,6 +70,9 @@ ProtocolMethod = Literal[
     "chat.pin",
     "chat.archive",
     "chat.delete",
+    "attachment.list",
+    "attachment.add",
+    "attachment.remove",
     "project.list",
     "project.create",
     "project.open",
@@ -84,6 +98,9 @@ SUPPORTED_METHODS: Final[tuple[ProtocolMethod, ...]] = (
     "chat.pin",
     "chat.archive",
     "chat.delete",
+    "attachment.list",
+    "attachment.add",
+    "attachment.remove",
     "project.list",
     "project.create",
     "project.open",
@@ -142,6 +159,34 @@ class ChatStreamParams(TypedDict):
 
     chatId: str
     message: str
+    attachmentIds: NotRequired[list[str]]
+
+
+class AttachmentScope(TypedDict):
+    """Identify one exact Chat or Project attachment namespace."""
+
+    kind: Literal["chat", "project"]
+    id: str
+
+
+class AttachmentListParams(TypedDict):
+    """List canonical local attachments for one scope."""
+
+    scope: AttachmentScope
+
+
+class AttachmentAddParams(TypedDict):
+    """Import trusted native paths supplied only by Electron main."""
+
+    scope: AttachmentScope
+    sourcePaths: list[str]
+
+
+class AttachmentRemoveParams(TypedDict):
+    """Remove one uncommitted Chat item or one Project item."""
+
+    scope: AttachmentScope
+    attachmentId: str
 
 
 class ChatRetryParams(TypedDict):
@@ -357,6 +402,21 @@ class ChatAttachment(TypedDict):
     fileName: str
     mediaType: str
     sizeBytes: int
+
+
+class AttachmentItem(ChatAttachment):
+    """Expose one locally stored item without its private source or blob path."""
+
+    status: Literal["ready"]
+
+
+class AttachmentStateResult(TypedDict):
+    """Return the exact canonical items and limits for one scope."""
+
+    scope: AttachmentScope
+    attachments: list[AttachmentItem]
+    maxFileBytes: int
+    maxFileCount: int
 
 
 class ChatSessionMessage(TypedDict):
@@ -695,16 +755,175 @@ def _validate_handshake_params(params: JsonObject) -> None:
 
 
 def _validate_chat_params(params: JsonObject) -> None:
-    _require_fields(params, {"chatId", "message"}, "chat.stream params")
-    _require_identifier(params, "chatId", "chat.stream params")
-    message = _require_string(params, "message", "chat.stream params")
-    if not any(
+    context = "chat.stream params"
+    _require_fields(
+        params,
+        {"chatId", "message"},
+        context,
+        optional={"attachmentIds"},
+    )
+    _require_identifier(params, "chatId", context)
+    message = _require_string(params, "message", context, minimum=0)
+    attachment_ids = _validate_attachment_id_array(
+        params.get("attachmentIds", []),
+        context=f"{context}.attachmentIds",
+    )
+    if not attachment_ids and not any(
         character not in _PROTOCOL_BLANK_CHARACTERS
         for character in message
     ):
         raise ProtocolValidationError(
             "protocol.invalid_params",
             "chat.stream params.message cannot be blank.",
+        )
+
+
+def _validate_attachment_id_array(
+    value: object,
+    *,
+    context: str,
+) -> list[str]:
+    if not isinstance(value, list):
+        raise ProtocolValidationError(
+            "protocol.invalid_params",
+            f"{context} must be an array.",
+        )
+    if len(value) > MAX_ATTACHMENTS_PER_SCOPE:
+        raise ProtocolValidationError(
+            "protocol.invalid_params",
+            f"{context} contains too many attachments.",
+        )
+    normalized: list[str] = []
+    for item in value:
+        if (
+            not isinstance(item, str)
+            or _ATTACHMENT_ID_PATTERN.fullmatch(item) is None
+        ):
+            raise ProtocolValidationError(
+                "protocol.invalid_params",
+                f"{context} must contain attachment IDs.",
+            )
+        normalized.append(item)
+    if len(normalized) != len(set(normalized)):
+        raise ProtocolValidationError(
+            "protocol.invalid_params",
+            f"{context} must contain unique attachment IDs.",
+        )
+    return normalized
+
+
+def _validate_attachment_scope(
+    value: object,
+    *,
+    context: str,
+    error_code: str = "protocol.invalid_params",
+) -> AttachmentScope:
+    scope = _as_object(value, context)
+    _require_fields(scope, {"kind", "id"}, context)
+    kind = _require_string(scope, "kind", context, maximum=7)
+    identifier = _require_string(
+        scope,
+        "id",
+        context,
+        maximum=MAX_IDENTIFIER_LENGTH,
+    )
+    expected_pattern = (
+        _CHAT_ID_PATTERN if kind == "chat" else _PROJECT_ID_PATTERN
+    )
+    if (
+        kind not in {"chat", "project"}
+        or expected_pattern.fullmatch(identifier) is None
+    ):
+        raise ProtocolValidationError(
+            error_code,
+            f"{context} must identify one valid Chat or Project.",
+        )
+    return cast(AttachmentScope, scope)
+
+
+def _validate_attachment_list_params(params: JsonObject) -> None:
+    context = "attachment.list params"
+    _require_fields(params, {"scope"}, context)
+    _validate_attachment_scope(params["scope"], context=f"{context}.scope")
+
+
+def _validate_attachment_add_params(params: JsonObject) -> None:
+    context = "attachment.add params"
+    _require_fields(params, {"scope", "sourcePaths"}, context)
+    _validate_attachment_scope(params["scope"], context=f"{context}.scope")
+    source_paths = params["sourcePaths"]
+    if (
+        not isinstance(source_paths, list)
+        or not source_paths
+        or len(source_paths) > MAX_ATTACHMENTS_PER_SCOPE
+    ):
+        raise ProtocolValidationError(
+            "protocol.invalid_params",
+            f"{context}.sourcePaths must contain 1 to "
+            f"{MAX_ATTACHMENTS_PER_SCOPE} paths.",
+        )
+    normalized_paths: list[str] = []
+    for source_path in source_paths:
+        if not isinstance(source_path, str):
+            raise ProtocolValidationError(
+                "protocol.invalid_params",
+                f"{context}.sourcePaths must contain strings.",
+            )
+        holder: JsonObject = {"path": source_path}
+        path = _require_string(
+            holder,
+            "path",
+            context,
+            maximum=MAX_ATTACHMENT_SOURCE_PATH_LENGTH,
+        )
+        normalized_path = path.replace("/", "\\")
+        drive, tail = ntpath.splitdrive(normalized_path)
+        path_parts = tuple(
+            part
+            for part in normalized_path[len(drive):].split("\\")
+            if part
+        )
+        if (
+            not path.strip()
+            or path != path.strip()
+            or "\x00" in path
+            or "\r" in path
+            or "\n" in path
+            or not ntpath.isabs(normalized_path)
+            or not drive
+            or drive.startswith("\\")
+            or normalized_path.startswith(("\\\\?\\", "\\\\.\\"))
+            or ":" in tail
+            or any(part in {".", ".."} for part in path_parts)
+        ):
+            raise ProtocolValidationError(
+                "protocol.invalid_params",
+                f"{context}.sourcePaths contains an invalid path.",
+            )
+        normalized_paths.append(
+            ntpath.normcase(ntpath.normpath(normalized_path))
+        )
+    if len(normalized_paths) != len(set(normalized_paths)):
+        raise ProtocolValidationError(
+            "protocol.invalid_params",
+            f"{context}.sourcePaths must be unique.",
+        )
+
+
+def _validate_attachment_remove_params(params: JsonObject) -> None:
+    context = "attachment.remove params"
+    _require_fields(params, {"scope", "attachmentId"}, context)
+    _validate_attachment_scope(params["scope"], context=f"{context}.scope")
+    attachment_id = _require_string(
+        params,
+        "attachmentId",
+        context,
+        maximum=MAX_IDENTIFIER_LENGTH,
+    )
+    if _ATTACHMENT_ID_PATTERN.fullmatch(attachment_id) is None:
+        raise ProtocolValidationError(
+            "protocol.invalid_params",
+            f"{context}.attachmentId is invalid.",
         )
 
 
@@ -1074,6 +1293,12 @@ def parse_client_request(value: object) -> ClientRequest:
         _validate_chat_pin_params(params)
     elif method == "chat.archive":
         _validate_chat_archive_params(params)
+    elif method == "attachment.list":
+        _validate_attachment_list_params(params)
+    elif method == "attachment.add":
+        _validate_attachment_add_params(params)
+    elif method == "attachment.remove":
+        _validate_attachment_remove_params(params)
     elif method == "project.list":
         _require_fields(params, set(), "project.list params")
     elif method == "project.create":
@@ -1135,16 +1360,115 @@ def _validate_chat_attachment(
         {"attachmentId", "fileName", "mediaType", "sizeBytes"},
         context,
     )
-    _require_identifier(attachment, "attachmentId", context)
-    _require_string(attachment, "fileName", context)
-    _require_string(attachment, "mediaType", context)
-    size_bytes = _require_integer(attachment, "sizeBytes", context)
-    if size_bytes < 0:
+    attachment_id = _require_identifier(
+        attachment,
+        "attachmentId",
+        context,
+    )
+    if _ATTACHMENT_ID_PATTERN.fullmatch(attachment_id) is None:
         raise ProtocolValidationError(
             "protocol.invalid_message",
-            f"{context}.sizeBytes cannot be negative.",
+            f"{context}.attachmentId is invalid.",
+        )
+    file_name = _require_string(
+        attachment,
+        "fileName",
+        context,
+        maximum=MAX_ATTACHMENT_FILE_NAME_LENGTH,
+    )
+    media_type = _require_string(
+        attachment,
+        "mediaType",
+        context,
+        maximum=MAX_ATTACHMENT_MEDIA_TYPE_LENGTH,
+    )
+    try:
+        validate_file_name(file_name)
+        validate_media_type(media_type)
+    except ValueError as error:
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context} contains unsafe attachment metadata.",
+        ) from error
+    size_bytes = _require_integer(attachment, "sizeBytes", context)
+    if size_bytes <= 0:
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.sizeBytes must be positive.",
         )
     return cast(ChatAttachment, attachment)
+
+
+def _validate_attachment_state_result(
+    value: object,
+) -> AttachmentStateResult:
+    context = "attachment state result"
+    result = _as_object(value, context)
+    _require_fields(
+        result,
+        {"scope", "attachments", "maxFileBytes", "maxFileCount"},
+        context,
+    )
+    _validate_attachment_scope(
+        result["scope"],
+        context=f"{context}.scope",
+        error_code="protocol.invalid_message",
+    )
+    max_file_bytes = _require_integer(result, "maxFileBytes", context)
+    max_file_count = _require_integer(result, "maxFileCount", context)
+    if (
+        not 1 <= max_file_bytes <= MAX_DATA_IMPORT_BYTES
+        or not 1 <= max_file_count <= MAX_ATTACHMENTS_PER_SCOPE
+    ):
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context} limits are invalid.",
+        )
+    attachments = result["attachments"]
+    if (
+        not isinstance(attachments, list)
+        or len(attachments) > max_file_count
+    ):
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.attachments exceeds its canonical limit.",
+        )
+    attachment_ids: set[str] = set()
+    for position, raw_attachment in enumerate(attachments):
+        item_context = f"{context}.attachments[{position}]"
+        item = _as_object(raw_attachment, item_context)
+        _require_fields(
+            item,
+            {
+                "attachmentId",
+                "fileName",
+                "mediaType",
+                "sizeBytes",
+                "status",
+            },
+            item_context,
+        )
+        metadata = {
+            key: item[key]
+            for key in ("attachmentId", "fileName", "mediaType", "sizeBytes")
+        }
+        validated = _validate_chat_attachment(
+            metadata,
+            context=item_context,
+        )
+        if item.get("status") != "ready":
+            raise ProtocolValidationError(
+                "protocol.invalid_message",
+                f"{item_context}.status must be 'ready'.",
+            )
+        attachment_id = validated["attachmentId"]
+        if attachment_id in attachment_ids:
+            raise ProtocolValidationError(
+                "protocol.invalid_message",
+                f"{context}.attachments must have unique IDs.",
+            )
+        attachment_ids.add(attachment_id)
+    return cast(AttachmentStateResult, result)
 
 
 def _validate_chat_message(
@@ -1173,11 +1497,24 @@ def _validate_chat_message(
             "protocol.invalid_message",
             f"{context}.attachments must be an array.",
         )
+    if len(attachments) > MAX_ATTACHMENTS_PER_SCOPE:
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.attachments contains too many items.",
+        )
+    attachment_ids: set[str] = set()
     for position, attachment in enumerate(attachments):
-        _validate_chat_attachment(
+        validated_attachment = _validate_chat_attachment(
             attachment,
             context=f"{context}.attachments[{position}]",
         )
+        attachment_id = validated_attachment["attachmentId"]
+        if attachment_id in attachment_ids:
+            raise ProtocolValidationError(
+                "protocol.invalid_message",
+                f"{context}.attachments must have unique IDs.",
+            )
+        attachment_ids.add(attachment_id)
     return cast(ChatSessionMessage, message)
 
 
@@ -1471,6 +1808,14 @@ def _validate_success_result(result: JsonObject) -> None:
         return
     if fields == {"activeProject", "projects", "chatState"}:
         _validate_project_state_result(result)
+        return
+    if fields == {
+        "scope",
+        "attachments",
+        "maxFileBytes",
+        "maxFileCount",
+    }:
+        _validate_attachment_state_result(result)
         return
     if fields == {
         "revision",

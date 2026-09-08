@@ -31,7 +31,8 @@ entering the `ready` state.
 Version 1 defines strict request, response, error, stream, progress,
 permission, event, cancel, and permission-decision shapes. The current runtime
 advertises `chat.stream`, `chat.retry`, `request.cancel`, `stream`, `progress`,
-`event`, `chat.sessions`, `project.management`, and `settings.management`.
+`event`, `chat.sessions`, `project.management`, `settings.management`, and
+`attachment.management`.
 Both new-turn and retry generation reuse the `chat.reply` stream.
 Cancellation succeeds only before generation claims its atomic commit gate, so
 a successful Stop response guarantees that the interrupted turn is not saved.
@@ -43,6 +44,19 @@ allowlist with optimistic revision checks. API keys, tokens, passwords, base
 paths, environment data, and arbitrary extension fields are rejected. The
 authenticated Settings methods remain available when Brain initialization
 fails so the desktop can repair an invalid saved model or Ollama origin.
+
+`attachment.list`, `attachment.add`, and `attachment.remove` operate on one
+exact Chat or Project scope. Native source paths are accepted only across the
+authenticated Electron-main-to-Python boundary and are never returned in a
+response, persisted in a manifest, or forwarded to the renderer. The public
+state contains only an opaque ID, display basename, canonical media type,
+byte size, ready status, and configured intake limits. A draft created under an
+older, larger limit remains visible and removable after the limit is lowered.
+`chat.stream.attachmentIds`
+claims only ready items in that Chat; cancellation restores the draft, while
+a successful Chat commit reconciles the blob to the persisted message. File
+contents are stored locally but are not read, parsed, or indexed in this
+protocol milestone.
 
 String limits are measured in Unicode code points and each UTF-8 NDJSON frame
 is capped at 16,777,216 bytes, including leading and trailing JSON whitespace.

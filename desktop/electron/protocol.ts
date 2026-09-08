@@ -29,9 +29,28 @@ export const MAX_SETTINGS_MODEL_NAME_LENGTH = 200
 export const MAX_OLLAMA_HOST_LENGTH = 2_048
 export const MAX_MEMORY_SETTING = 10_000_000
 export const MAX_DATA_IMPORT_BYTES = 2_147_483_647
+export const MAX_ATTACHMENT_FILE_COUNT = 10
+export const MAX_ATTACHMENT_FILE_NAME_LENGTH = 255
+export const MAX_ATTACHMENT_MEDIA_TYPE_LENGTH = 255
+export const MAX_ATTACHMENT_SOURCE_PATH_LENGTH = 32_767
 const MIN_SESSION_TOKEN_LENGTH = 32
 const MAX_SESSION_TOKEN_LENGTH = 512
 const PROJECT_ID_PATTERN = /^project_[A-Za-z0-9_-]+$/
+const CHAT_ID_PATTERN = /^chat_[A-Za-z0-9_-]+$/
+const ATTACHMENT_ID_PATTERN = /^attachment_[A-Za-z0-9_-]+$/
+const WINDOWS_RESERVED_FILE_STEMS = new Set([
+  'CON', 'PRN', 'AUX', 'NUL',
+  ...Array.from({ length: 9 }, (_, index) => `COM${index + 1}`),
+  ...Array.from({ length: 9 }, (_, index) => `LPT${index + 1}`),
+])
+const BIDI_CONTROL_CODE_POINTS = new Set([
+  0x061c, 0x200e, 0x200f,
+  0x202a, 0x202b, 0x202c, 0x202d, 0x202e,
+  0x2066, 0x2067, 0x2068, 0x2069,
+])
+const MEDIA_TYPE_PATTERN = (
+  /^[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*\/[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*$/u
+)
 
 export interface ProtocolDescriptor {
   name: typeof PROTOCOL_NAME
@@ -49,6 +68,7 @@ export interface HandshakeParams {
 export interface ChatStreamParams {
   chatId: string
   message: string
+  attachmentIds: string[]
 }
 
 export interface ChatRetryParams {
@@ -141,6 +161,25 @@ export interface SettingsUpdateParams {
   settings: SettingsValues
 }
 
+export interface AttachmentScope {
+  kind: 'chat' | 'project'
+  id: string
+}
+
+export interface AttachmentListParams {
+  scope: AttachmentScope
+}
+
+export interface AttachmentAddParams {
+  scope: AttachmentScope
+  sourcePaths: string[]
+}
+
+export interface AttachmentRemoveParams {
+  scope: AttachmentScope
+  attachmentId: string
+}
+
 export interface RequestParamsByMethod {
   handshake: HandshakeParams
   initialize: Record<string, never>
@@ -162,6 +201,9 @@ export interface RequestParamsByMethod {
   'project.chat.move': ProjectChatMoveParams
   'settings.get': Record<string, never>
   'settings.update': SettingsUpdateParams
+  'attachment.list': AttachmentListParams
+  'attachment.add': AttachmentAddParams
+  'attachment.remove': AttachmentRemoveParams
   'request.cancel': CancelParams
   'permission.respond': PermissionResponseParams
   shutdown: Record<string, never>
@@ -351,6 +393,21 @@ export interface SettingsStateResult {
   warning: string | null
 }
 
+export interface AttachmentItem {
+  attachmentId: string
+  fileName: string
+  mediaType: string
+  sizeBytes: number
+  status: 'ready'
+}
+
+export interface AttachmentStateResult {
+  scope: AttachmentScope
+  attachments: AttachmentItem[]
+  maxFileBytes: number
+  maxFileCount: number
+}
+
 export class ProtocolValidationError extends Error {
   readonly code: string
 
@@ -442,12 +499,45 @@ function readProjectIdentifier(
   value: Record<string, unknown>,
   key: string,
   context: string,
+  errorCode = 'protocol.invalid_message',
 ): string {
   const raw = readIdentifier(value, key, context)
   if (!PROJECT_ID_PATTERN.test(raw)) {
     return fail(
-      'protocol.invalid_message',
+      errorCode,
       `${context}.${key} must use the project_<id> format.`,
+    )
+  }
+  return raw
+}
+
+function readChatIdentifier(
+  value: Record<string, unknown>,
+  key: string,
+  context: string,
+  errorCode = 'protocol.invalid_message',
+): string {
+  const raw = readIdentifier(value, key, context)
+  if (!CHAT_ID_PATTERN.test(raw)) {
+    return fail(
+      errorCode,
+      `${context}.${key} must use the chat_<id> format.`,
+    )
+  }
+  return raw
+}
+
+function readAttachmentIdentifier(
+  value: Record<string, unknown>,
+  key: string,
+  context: string,
+  errorCode = 'protocol.invalid_message',
+): string {
+  const raw = readIdentifier(value, key, context)
+  if (!ATTACHMENT_ID_PATTERN.test(raw)) {
+    return fail(
+      errorCode,
+      `${context}.${key} must use the attachment_<id> format.`,
     )
   }
   return raw
@@ -560,17 +650,49 @@ function parseChatStreamParams(
   value: unknown,
 ): ChatStreamParams {
   const params = asRecord(value, 'chat.stream params')
-  requireFields(params, ['chatId', 'message'], 'chat.stream params')
-  const message = readString(params, 'message', 'chat.stream params')
-  if (!hasNonBlankCodePoint(message)) {
+  requireFields(
+    params,
+    ['chatId', 'message'],
+    'chat.stream params',
+    ['attachmentIds'],
+  )
+  const message = readString(params, 'message', 'chat.stream params', {
+    minimum: 0,
+  })
+  const rawAttachmentIds = params.attachmentIds ?? []
+  if (
+    !Array.isArray(rawAttachmentIds)
+    || rawAttachmentIds.length > MAX_ATTACHMENT_FILE_COUNT
+  ) {
     return fail(
       'protocol.invalid_params',
-      'chat.stream params.message cannot be blank.',
+      `chat.stream params.attachmentIds must contain at most ${MAX_ATTACHMENT_FILE_COUNT} items.`,
+    )
+  }
+  const attachmentIds = rawAttachmentIds.map((attachmentId, index) => (
+    readAttachmentIdentifier(
+      { attachmentId },
+      'attachmentId',
+      `chat.stream params.attachmentIds[${index}]`,
+      'protocol.invalid_params',
+    )
+  ))
+  if (new Set(attachmentIds).size !== attachmentIds.length) {
+    return fail(
+      'protocol.invalid_params',
+      'chat.stream params.attachmentIds must be unique.',
+    )
+  }
+  if (!hasNonBlankCodePoint(message) && attachmentIds.length === 0) {
+    return fail(
+      'protocol.invalid_params',
+      'chat.stream params.message cannot be blank without attachments.',
     )
   }
   return {
     chatId: readIdentifier(params, 'chatId', 'chat.stream params'),
     message,
+    attachmentIds,
   }
 }
 
@@ -943,6 +1065,117 @@ function parseSettingsUpdateParams(value: unknown): SettingsUpdateParams {
   }
 }
 
+function parseAttachmentScope(
+  value: unknown,
+  context: string,
+  errorCode = 'protocol.invalid_params',
+): AttachmentScope {
+  const scope = asRecord(value, context)
+  requireFields(scope, ['kind', 'id'], context)
+  const kind = readString(scope, 'kind', context, { maximum: 7 })
+  if (kind !== 'chat' && kind !== 'project') {
+    return fail(
+      errorCode,
+      `${context}.kind must be 'chat' or 'project'.`,
+    )
+  }
+  return {
+    kind,
+    id: kind === 'chat'
+      ? readChatIdentifier(scope, 'id', context, errorCode)
+      : readProjectIdentifier(scope, 'id', context, errorCode),
+  }
+}
+
+function parseAttachmentListParams(value: unknown): AttachmentListParams {
+  const context = 'attachment.list params'
+  const params = asRecord(value, context)
+  requireFields(params, ['scope'], context)
+  return { scope: parseAttachmentScope(params.scope, `${context}.scope`) }
+}
+
+function readSourcePath(value: unknown, context: string): string {
+  if (
+    typeof value !== 'string'
+    || value.length === 0
+    || codePointLength(value) > MAX_ATTACHMENT_SOURCE_PATH_LENGTH
+    || value !== value.trim()
+    || value.includes('\0')
+    || /[\r\n]/u.test(value)
+  ) {
+    return fail(
+      'protocol.invalid_params',
+      `${context} must be a bounded absolute path.`,
+    )
+  }
+  const driveAbsolute = /^[A-Za-z]:[\\/]/u.test(value)
+  const windowsPath = value.replaceAll('/', '\\')
+  const pathParts = windowsPath.slice(2).split('\\').filter(Boolean)
+  if (
+    !driveAbsolute
+    || value.slice(2).includes(':')
+    || pathParts.some((part) => part === '.' || part === '..')
+  ) {
+    return fail(
+      'protocol.invalid_params',
+      `${context} must be a bounded absolute path.`,
+    )
+  }
+  return value
+}
+
+function parseAttachmentAddParams(value: unknown): AttachmentAddParams {
+  const context = 'attachment.add params'
+  const params = asRecord(value, context)
+  requireFields(params, ['scope', 'sourcePaths'], context)
+  if (
+    !Array.isArray(params.sourcePaths)
+    || params.sourcePaths.length === 0
+    || params.sourcePaths.length > MAX_ATTACHMENT_FILE_COUNT
+  ) {
+    return fail(
+      'protocol.invalid_params',
+      `attachment.add params.sourcePaths must contain 1..${MAX_ATTACHMENT_FILE_COUNT} paths.`,
+    )
+  }
+  const sourcePaths = params.sourcePaths.map((sourcePath, index) => (
+    readSourcePath(sourcePath, `${context}.sourcePaths[${index}]`)
+  ))
+  const normalizedSourcePaths = sourcePaths.map((sourcePath) => {
+    const windowsPath = sourcePath.replaceAll('/', '\\')
+    const drive = windowsPath.slice(0, 2).toLocaleLowerCase('en-US')
+    const parts = windowsPath.slice(2).split('\\').filter(Boolean)
+    return `${drive}\\${parts.join('\\')}`.toLocaleLowerCase('en-US')
+  })
+  if (new Set(normalizedSourcePaths).size !== sourcePaths.length) {
+    return fail(
+      'protocol.invalid_params',
+      'attachment.add params.sourcePaths must be unique.',
+    )
+  }
+  return {
+    scope: parseAttachmentScope(params.scope, `${context}.scope`),
+    sourcePaths,
+  }
+}
+
+function parseAttachmentRemoveParams(
+  value: unknown,
+): AttachmentRemoveParams {
+  const context = 'attachment.remove params'
+  const params = asRecord(value, context)
+  requireFields(params, ['scope', 'attachmentId'], context)
+  return {
+    scope: parseAttachmentScope(params.scope, `${context}.scope`),
+    attachmentId: readAttachmentIdentifier(
+      params,
+      'attachmentId',
+      context,
+      'protocol.invalid_params',
+    ),
+  }
+}
+
 export function parseClientRequest(value: unknown): ClientRequest {
   const request = asRecord(value, 'request')
   requireFields(
@@ -1068,6 +1301,24 @@ export function parseClientRequest(value: unknown): ClientRequest {
     return {
       type: 'request', protocol, id, method,
       params: parseSettingsUpdateParams(request.params),
+    }
+  }
+  if (method === 'attachment.list') {
+    return {
+      type: 'request', protocol, id, method,
+      params: parseAttachmentListParams(request.params),
+    }
+  }
+  if (method === 'attachment.add') {
+    return {
+      type: 'request', protocol, id, method,
+      params: parseAttachmentAddParams(request.params),
+    }
+  }
+  if (method === 'attachment.remove') {
+    return {
+      type: 'request', protocol, id, method,
+      params: parseAttachmentRemoveParams(request.params),
     }
   }
   if (method === 'request.cancel') {
@@ -1450,17 +1701,158 @@ function parseChatAttachment(
     context,
   )
   const sizeBytes = readInteger(attachment, 'sizeBytes', context)
-  if (sizeBytes < 0) {
+  if (sizeBytes <= 0) {
     return fail(
       'protocol.invalid_message',
-      `${context}.sizeBytes cannot be negative.`,
+      `${context}.sizeBytes must be positive.`,
     )
   }
   return {
-    attachmentId: readIdentifier(attachment, 'attachmentId', context),
-    fileName: readString(attachment, 'fileName', context),
-    mediaType: readString(attachment, 'mediaType', context),
+    attachmentId: readAttachmentIdentifier(
+      attachment,
+      'attachmentId',
+      context,
+    ),
+    fileName: readAttachmentFileName(attachment, context),
+    mediaType: readAttachmentMediaType(attachment, context),
     sizeBytes,
+  }
+}
+
+function readAttachmentFileName(
+  value: Record<string, unknown>,
+  context: string,
+): string {
+  const fileName = readString(value, 'fileName', context, {
+    maximum: MAX_ATTACHMENT_FILE_NAME_LENGTH,
+  })
+  if (
+    !hasNonBlankCodePoint(fileName)
+    || fileName !== fileName.trim()
+    || fileName === '.'
+    || fileName === '..'
+    || fileName.endsWith('.')
+    || /[<>:"/\\|?*]/u.test(fileName)
+    || WINDOWS_RESERVED_FILE_STEMS.has(
+      fileName.split('.', 1)[0]?.toUpperCase() ?? '',
+    )
+    || [...fileName].some((character) => {
+      const codePoint = character.codePointAt(0) ?? 0
+      return codePoint <= 0x1f
+        || codePoint === 0x7f
+        || BIDI_CONTROL_CODE_POINTS.has(codePoint)
+    })
+  ) {
+    return fail(
+      'protocol.invalid_message',
+      `${context}.fileName contains unsafe characters.`,
+    )
+  }
+  return fileName
+}
+
+function readAttachmentMediaType(
+  value: Record<string, unknown>,
+  context: string,
+): string {
+  const mediaType = readString(value, 'mediaType', context, {
+    maximum: MAX_ATTACHMENT_MEDIA_TYPE_LENGTH,
+  })
+  if (
+    mediaType !== mediaType.trim()
+    || !MEDIA_TYPE_PATTERN.test(mediaType)
+  ) {
+    return fail(
+      'protocol.invalid_message',
+      `${context}.mediaType must be a canonical MIME type.`,
+    )
+  }
+  return mediaType
+}
+
+/** Parse one canonical pending-attachment collection from Python. */
+export function parseAttachmentStateResult(
+  value: unknown,
+): AttachmentStateResult {
+  const context = 'attachment state result'
+  const result = asRecord(value, context)
+  requireFields(
+    result,
+    ['scope', 'attachments', 'maxFileBytes', 'maxFileCount'],
+    context,
+  )
+  const scope = parseAttachmentScope(
+    result.scope,
+    `${context}.scope`,
+    'protocol.invalid_message',
+  )
+  const maxFileBytes = readInteger(result, 'maxFileBytes', context)
+  const maxFileCount = readInteger(result, 'maxFileCount', context)
+  if (
+    maxFileBytes <= 0
+    || maxFileBytes > MAX_DATA_IMPORT_BYTES
+    || maxFileCount <= 0
+    || maxFileCount > MAX_ATTACHMENT_FILE_COUNT
+  ) {
+    return fail(
+      'protocol.invalid_message',
+      `${context} limits are outside the supported range.`,
+    )
+  }
+  if (
+    !Array.isArray(result.attachments)
+    || result.attachments.length > maxFileCount
+  ) {
+    return fail(
+      'protocol.invalid_message',
+      `${context}.attachments exceeds maxFileCount.`,
+    )
+  }
+  const attachments = result.attachments.map((rawItem, index) => {
+    const itemContext = `${context}.attachments[${index}]`
+    const item = asRecord(rawItem, itemContext)
+    requireFields(
+      item,
+      ['attachmentId', 'fileName', 'mediaType', 'sizeBytes', 'status'],
+      itemContext,
+    )
+    const sizeBytes = readInteger(item, 'sizeBytes', itemContext)
+    if (sizeBytes <= 0) {
+      return fail(
+        'protocol.invalid_message',
+        `${itemContext}.sizeBytes must be positive.`,
+      )
+    }
+    if (item.status !== 'ready') {
+      return fail(
+        'protocol.invalid_message',
+        `${itemContext}.status must be 'ready'.`,
+      )
+    }
+    return {
+      attachmentId: readAttachmentIdentifier(
+        item,
+        'attachmentId',
+        itemContext,
+      ),
+      fileName: readAttachmentFileName(item, itemContext),
+      mediaType: readAttachmentMediaType(item, itemContext),
+      sizeBytes,
+      status: 'ready' as const,
+    }
+  })
+  const attachmentIds = attachments.map((item) => item.attachmentId)
+  if (new Set(attachmentIds).size !== attachmentIds.length) {
+    return fail(
+      'protocol.invalid_message',
+      `${context}.attachments must have unique attachmentId values.`,
+    )
+  }
+  return {
+    scope,
+    attachments,
+    maxFileBytes,
+    maxFileCount,
   }
 }
 
@@ -1487,14 +1879,30 @@ function parseChatSessionMessage(
       `${context}.attachments must be an array.`,
     )
   }
+  if (message.attachments.length > MAX_ATTACHMENT_FILE_COUNT) {
+    return fail(
+      'protocol.invalid_message',
+      `${context}.attachments contains too many items.`,
+    )
+  }
+  const attachments = message.attachments.map((attachment, index) => (
+    parseChatAttachment(attachment, `${context}.attachments[${index}]`)
+  ))
+  if (
+    new Set(attachments.map((attachment) => attachment.attachmentId)).size
+    !== attachments.length
+  ) {
+    return fail(
+      'protocol.invalid_message',
+      `${context}.attachments must have unique attachmentId values.`,
+    )
+  }
   return {
     messageId: readIdentifier(message, 'messageId', context),
     role,
     content: readString(message, 'content', context, { minimum: 0 }),
     createdAt: readString(message, 'createdAt', context, { maximum: 128 }),
-    attachments: message.attachments.map((attachment, index) => (
-      parseChatAttachment(attachment, `${context}.attachments[${index}]`)
-    )),
+    attachments,
   }
 }
 
@@ -1925,6 +2333,13 @@ function validateSuccessResult(value: unknown): Record<string, unknown> {
   }
   if (Object.hasOwn(result, 'settings')) {
     parseSettingsStateResult(result)
+    return result
+  }
+  if (
+    Object.hasOwn(result, 'scope')
+    && Object.hasOwn(result, 'attachments')
+  ) {
+    parseAttachmentStateResult(result)
     return result
   }
   requireFields(result, ['stopped'], 'shutdown result')

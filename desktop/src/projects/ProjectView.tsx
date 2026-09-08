@@ -16,6 +16,8 @@ import {
 
 import type {
   ArchiveProjectRequest,
+  AttachmentScope,
+  AttachmentState,
   ChatSessionSummary,
   CreateProjectRequest,
   MoveChatToProjectRequest,
@@ -23,6 +25,7 @@ import type {
   ProjectSummary,
   UpdateProjectRequest,
 } from '../../electron/contracts.ts'
+import { AttachmentSurface } from '../attachments/AttachmentSurface.tsx'
 import {
   codePointLength,
   hasNonBlankCodePoint,
@@ -48,17 +51,28 @@ type ProjectDialogState =
   | { kind: 'unbind'; project: ProjectSummary }
 
 export interface ProjectViewProps {
+  attachmentAdding: boolean
+  attachmentError: string | null
+  attachmentRemovingIds: string[]
+  attachmentState: AttachmentState | null
   busyChatId?: string
   loading?: boolean
   mutationPending?: boolean
   projectState: ProjectState | null
   sidebarOpen: boolean
   onArchive(request: ArchiveProjectRequest): Promise<void>
+  onChooseAttachments(scope: AttachmentScope): void
   onChooseWorkspace(projectId: string): Promise<boolean>
   onCreate(request: CreateProjectRequest): Promise<void>
+  onDismissAttachmentError(scope: AttachmentScope): void
+  onDropAttachments(scope: AttachmentScope, files: File[]): void
   onMoveChat(request: MoveChatToProjectRequest): Promise<void>
   onOpenChat(chatId: string): Promise<void>
   onOpenProject(projectId: string): Promise<void>
+  onRemoveAttachment(
+    scope: AttachmentScope,
+    attachmentId: string,
+  ): Promise<boolean>
   onToggleSidebar(): void
   onUnbindWorkspace(projectId: string): Promise<void>
   onUpdate(request: UpdateProjectRequest): Promise<void>
@@ -316,17 +330,25 @@ function ProjectSettingsPanel({
 
 /** Render the complete Project list, detail surfaces, and relationship actions. */
 export function ProjectView({
+  attachmentAdding,
+  attachmentError,
+  attachmentRemovingIds,
+  attachmentState,
   busyChatId,
   loading = false,
   mutationPending = false,
   projectState,
   sidebarOpen,
   onArchive,
+  onChooseAttachments,
   onChooseWorkspace,
   onCreate,
+  onDismissAttachmentError,
+  onDropAttachments,
   onMoveChat,
   onOpenChat,
   onOpenProject,
+  onRemoveAttachment,
   onToggleSidebar,
   onUnbindWorkspace,
   onUpdate,
@@ -939,11 +961,50 @@ export function ProjectView({
                   )}
 
                   {section === 'sources' && (
-                    <section className="project-card project-feature-placeholder">
-                      <EmptyState
-                        icon="file"
-                        title="Project Sources aren't connected yet"
-                        description="This entry is reserved for shared Project files and indexing. Sources remain untouched until their local service is connected."
+                    <section className="project-card project-sources-card">
+                      <div className="project-card-heading">
+                        <div>
+                          <h3>Project files</h3>
+                          <p>
+                            Files are stored for this Project only. Search,
+                            parsing, and indexing are not enabled yet.
+                          </p>
+                        </div>
+                        <span className="project-count">
+                          {attachmentState?.attachments.length ?? 0}
+                        </span>
+                      </div>
+                      <AttachmentSurface
+                        key={`project:${activeProject.projectId}`}
+                        adding={attachmentAdding}
+                        error={attachmentError}
+                        label={`Shared in Project · ${activeProject.name}`}
+                        readOnly={activeProject.archived}
+                        removingIds={attachmentRemovingIds}
+                        scope={{ kind: 'project', id: activeProject.projectId }}
+                        state={attachmentState}
+                        onChoose={() => {
+                          onChooseAttachments({
+                            kind: 'project',
+                            id: activeProject.projectId,
+                          })
+                        }}
+                        onDismissError={() => {
+                          onDismissAttachmentError({
+                            kind: 'project',
+                            id: activeProject.projectId,
+                          })
+                        }}
+                        onDrop={(files) => {
+                          onDropAttachments(
+                            { kind: 'project', id: activeProject.projectId },
+                            files,
+                          )
+                        }}
+                        onRemove={(attachmentId) => onRemoveAttachment(
+                          { kind: 'project', id: activeProject.projectId },
+                          attachmentId,
+                        )}
                       />
                     </section>
                   )}

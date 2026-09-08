@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import stat as stat_module
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -114,7 +115,7 @@ class DataPortabilityService:
         ):
             raise ValueError("max_import_bytes must be a positive integer.")
 
-        self._base_dir = Path(base_dir)
+        self._base_dir = Path(base_dir).absolute()
         self._workspace_directory = self._base_dir / "workspace"
         self._chat_repository = chat_repository
         self._project_repository = project_repository
@@ -145,7 +146,9 @@ class DataPortabilityService:
     ) -> Path:
         """Export one complete Chat without loading unrelated Chats."""
 
+        self._require_workspace_trust(ExportValidationError)
         session = self._chat_repository.get_chat(chat_id)
+        self._require_attachment_free_export((session,))
         return self._write_bundle(
             destination,
             "chat",
@@ -162,8 +165,11 @@ class DataPortabilityService:
     ) -> Path:
         """Export one Project and every Chat assigned to it."""
 
+        self._require_workspace_trust(ExportValidationError)
         project = self._project_repository.get_project(project_id)
         sessions = self._project_chats(project_id)
+        self._require_attachment_free_export(sessions)
+        self._require_project_sources_exportable((project_id,))
         return self._write_bundle(
             destination,
             "project",
@@ -182,6 +188,7 @@ class DataPortabilityService:
     ) -> Path:
         """Export all Projects, Chats, memory, migration, and legacy JSON."""
 
+        self._require_workspace_trust(ExportValidationError)
         projects = self._project_repository.list_projects(
             include_archived=True
         )
@@ -190,6 +197,10 @@ class DataPortabilityService:
             for metadata in self._chat_repository.list_chats(
                 include_archived=True
             )
+        )
+        self._require_attachment_free_export(sessions)
+        self._require_project_sources_exportable(
+            tuple(project.project_id for project in projects)
         )
         return self._write_bundle(
             destination,
@@ -210,6 +221,7 @@ class DataPortabilityService:
     ) -> ImportResult:
         """Validate a bundle completely, then restore it transactionally."""
 
+        self._require_workspace_trust(ImportValidationError)
         source_path = self._validate_import_path(source)
         raw_data = self._read_import_bytes(source_path)
 
@@ -228,6 +240,103 @@ class DataPortabilityService:
         except ImportValidationError as error:
             self._quarantine_corrupt_bundle(source_path, raw_data, error)
             raise
+
+    @staticmethod
+    def _require_attachment_free_export(
+        sessions: tuple[ChatSession, ...],
+    ) -> None:
+        """Refuse a metadata-only bundle that would create broken files.
+
+        Attachment binaries intentionally remain outside the version-one JSON
+        portability format. Silently exporting only their metadata would make
+        a later import look successful while every file reference is broken.
+        """
+
+        if any(
+            message.attachments
+            for session in sessions
+            for message in session.messages
+        ):
+            raise ExportValidationError(
+                "Chats with local attachments cannot be exported until the "
+                "portable bundle format includes their file bytes."
+            )
+
+    def _require_project_sources_exportable(
+        self,
+        project_ids: tuple[ProjectId, ...],
+    ) -> None:
+        """Refuse to omit local Project files from a JSON-only bundle."""
+
+        project_root = self._workspace_directory / "attachments" / "project"
+        self._require_safe_directory_chain(
+            project_root,
+            error_type=ExportValidationError,
+            message="Project attachment storage cannot traverse redirected paths.",
+        )
+        for project_id in project_ids:
+            scope_root = project_root / str(project_id)
+            try:
+                self._require_empty_project_attachment_scope(scope_root)
+            except ExportValidationError:
+                raise
+            except (OSError, ValueError) as error:
+                raise ExportValidationError(
+                    "Project attachment storage could not be verified for export."
+                ) from error
+
+    def _require_empty_project_attachment_scope(self, scope_root: Path) -> None:
+        """Allow an absent/empty scope only; fail closed on every other layout."""
+
+        if not scope_root.exists() and not scope_root.is_symlink():
+            return
+        self._require_safe_directory(
+            scope_root,
+            error_type=ExportValidationError,
+            message="Project attachment storage cannot traverse redirected paths.",
+        )
+        allowed = {"manifest.json", "drafts", "committed"}
+        for entry in tuple(scope_root.iterdir()):
+            if entry.name not in allowed or self._path_is_redirected(entry):
+                raise ExportValidationError(
+                    "Project attachment storage has an unsafe layout."
+                )
+            if entry.name == "manifest.json":
+                if not entry.is_file():
+                    raise ExportValidationError(
+                        "Project attachment manifest is not a regular file."
+                    )
+                raw = json.loads(
+                    entry.read_text(encoding="utf-8"),
+                    parse_constant=self._reject_json_constant,
+                    object_pairs_hook=self._reject_duplicate_keys,
+                )
+                if (
+                    not isinstance(raw, dict)
+                    or set(raw) != {"schema_version", "scope", "items"}
+                    or raw.get("schema_version") != 1
+                    or raw.get("scope") != {
+                        "kind": "project",
+                        "id": scope_root.name,
+                    }
+                    or not isinstance(raw.get("items"), list)
+                    or raw["items"]
+                ):
+                    raise ExportValidationError(
+                        "Projects with local files cannot be exported until "
+                        "the portable bundle format includes their file bytes."
+                    )
+                continue
+            self._require_safe_directory(
+                entry,
+                error_type=ExportValidationError,
+                message="Project attachment storage cannot traverse redirected paths.",
+            )
+            if any(True for _ in entry.iterdir()):
+                raise ExportValidationError(
+                    "Projects with local files cannot be exported until "
+                    "the portable bundle format includes their file bytes."
+                )
 
     def _write_bundle(
         self,
@@ -284,12 +393,12 @@ class DataPortabilityService:
             raise ExportValidationError(
                 "Export destination must use the .json extension."
             )
-        if path.is_symlink():
+        if self._path_is_redirected(path):
             raise ExportValidationError(
                 "Export destination cannot be a symlink."
             )
         if path.exists():
-            if path.is_symlink() or not path.is_file():
+            if self._path_is_redirected(path) or not path.is_file():
                 raise ExportValidationError(
                     "Export destination must be a regular file path."
                 )
@@ -306,7 +415,7 @@ class DataPortabilityService:
             raise ImportValidationError(
                 "Import source must use the .json extension."
             )
-        if path.is_symlink():
+        if self._path_is_redirected(path):
             raise ImportValidationError("Import source cannot be a symlink.")
         try:
             size_bytes = path.stat().st_size
@@ -333,7 +442,7 @@ class DataPortabilityService:
     ) -> None:
         parent = path.parent
         while parent != parent.parent:
-            if parent.exists() and parent.is_symlink():
+            if parent.exists() and self._path_is_redirected(parent):
                 error_type = (
                     ImportValidationError
                     if import_path
@@ -669,23 +778,13 @@ class DataPortabilityService:
             ) from original_error
 
     def _collect_workspace_files(self) -> JsonObject:
+        self._require_workspace_trust(ExportValidationError)
         collected: JsonObject = {}
         for root_name in sorted(_SAFE_WORKSPACE_ROOTS):
             root = self._workspace_directory / root_name
-            if not root.exists():
+            if not root.exists() and not root.is_symlink():
                 continue
-            if root.is_symlink() or any(
-                managed_path.is_symlink()
-                for managed_path in root.rglob("*")
-            ):
-                raise ExportValidationError(
-                    "Managed workspace data cannot traverse symlinks."
-                )
-            for file_path in sorted(root.rglob("*.json")):
-                if file_path.is_symlink() or not file_path.is_file():
-                    raise ExportValidationError(
-                        "Managed workspace data cannot contain symlinked JSON."
-                    )
+            for file_path in self._safe_workspace_json_files(root):
                 relative_path = file_path.relative_to(
                     self._workspace_directory
                 ).as_posix()
@@ -731,6 +830,35 @@ class DataPortabilityService:
                         "Too many managed workspace files to export safely."
                     )
         return collected
+
+    def _safe_workspace_json_files(self, root: Path) -> tuple[Path, ...]:
+        """Traverse managed JSON without following symlinks or junctions."""
+
+        self._require_safe_directory(
+            root,
+            error_type=ExportValidationError,
+            message="Managed workspace data cannot traverse redirected paths.",
+        )
+        pending = [root]
+        files: list[Path] = []
+        while pending:
+            directory = pending.pop()
+            for entry in sorted(directory.iterdir(), key=lambda item: item.name):
+                if self._path_is_redirected(entry):
+                    raise ExportValidationError(
+                        "Managed workspace data cannot traverse redirected paths."
+                    )
+                details = entry.lstat()
+                if stat_module.S_ISDIR(details.st_mode):
+                    pending.append(entry)
+                elif stat_module.S_ISREG(details.st_mode):
+                    if entry.suffix.casefold() == ".json":
+                        files.append(entry)
+                else:
+                    raise ExportValidationError(
+                        "Managed workspace data contains an unsafe entry."
+                    )
+        return tuple(sorted(files))
 
     def _validate_workspace_files(
         self,
@@ -969,18 +1097,87 @@ class DataPortabilityService:
 
     def _workspace_path(self, relative_path: str) -> Path:
         self._validate_workspace_relative_path(relative_path)
+        self._require_workspace_trust(ImportValidationError)
         target = self._workspace_directory.joinpath(
             *PurePosixPath(relative_path).parts
         )
         current = target
         workspace_parent = self._workspace_directory.parent
         while current != workspace_parent:
-            if current.is_symlink():
+            if current.exists() and self._path_is_redirected(current):
                 raise ImportValidationError(
-                    "Restore target cannot traverse a symlink."
+                    "Restore target cannot traverse a redirected path."
                 )
             current = current.parent
         return target
+
+    def _require_workspace_trust(
+        self,
+        error_type: type[DataPortabilityError],
+    ) -> None:
+        self._require_safe_directory_chain(
+            self._workspace_directory,
+            error_type=error_type,
+            message="Managed workspace data cannot traverse redirected paths.",
+        )
+
+    @staticmethod
+    def _path_is_redirected(path: Path) -> bool:
+        """Return whether an existing path is a symlink or Windows reparse point."""
+
+        try:
+            details = path.lstat()
+        except FileNotFoundError:
+            return False
+        attributes = getattr(details, "st_file_attributes", 0)
+        reparse_flag = getattr(
+            stat_module,
+            "FILE_ATTRIBUTE_REPARSE_POINT",
+            0x400,
+        )
+        return path.is_symlink() or bool(attributes & reparse_flag)
+
+    @classmethod
+    def _require_safe_directory(
+        cls,
+        path: Path,
+        *,
+        error_type: type[DataPortabilityError],
+        message: str,
+    ) -> None:
+        try:
+            details = path.lstat()
+        except OSError as error:
+            raise error_type(message) from error
+        if (
+            cls._path_is_redirected(path)
+            or not stat_module.S_ISDIR(details.st_mode)
+        ):
+            raise error_type(message)
+
+    @classmethod
+    def _require_safe_directory_chain(
+        cls,
+        path: Path,
+        *,
+        error_type: type[DataPortabilityError],
+        message: str,
+    ) -> None:
+        """Validate every existing directory from the filesystem root down."""
+
+        for candidate in reversed((path, *path.parents)):
+            try:
+                details = candidate.lstat()
+            except FileNotFoundError:
+                continue
+            except OSError as error:
+                raise error_type(message) from error
+            if (
+                stat_module.S_ISLNK(details.st_mode)
+                or cls._path_is_redirected(candidate)
+                or not stat_module.S_ISDIR(details.st_mode)
+            ):
+                raise error_type(message)
 
     def _project_chats(
         self,
@@ -1073,6 +1270,11 @@ class DataPortabilityService:
         if session_to_data(session) != data:
             raise ImportValidationError(
                 "Imported Chat is not in canonical schema form."
+            )
+        if any(message.attachments for message in session.messages):
+            raise ImportValidationError(
+                "Imported Chat attachment metadata has no portable file "
+                "bytes in this bundle format."
             )
         return session
 
