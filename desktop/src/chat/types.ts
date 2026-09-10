@@ -29,6 +29,15 @@ export interface RetryableChatPair {
   assistantText: string
 }
 
+/** A renderer-owned edit that must survive retry failures and window reloads. */
+export interface RetryEditDraft {
+  chatId: string
+  userMessageId: string
+  assistantMessageId: string
+  text: string
+  submitted: boolean
+}
+
 /** Contextual feedback with explicit semantics for visual and live-region use. */
 export interface ChatNotice {
   message: string

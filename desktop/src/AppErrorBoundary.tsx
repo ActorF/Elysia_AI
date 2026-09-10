@@ -5,6 +5,7 @@
 
 import {
   Component,
+  createRef,
   type ErrorInfo,
   type ReactNode,
 } from 'react'
@@ -23,6 +24,7 @@ export class AppErrorBoundary extends Component<
   AppErrorBoundaryState
 > {
   state: AppErrorBoundaryState = { error: null }
+  private readonly fallbackRef = createRef<HTMLElement>()
 
   static getDerivedStateFromError(error: Error): AppErrorBoundaryState {
     return { error }
@@ -30,12 +32,18 @@ export class AppErrorBoundary extends Component<
 
   componentDidCatch(error: Error, info: ErrorInfo): void {
     console.error('Elysia renderer failed.', error, info.componentStack)
+    this.fallbackRef.current?.focus({ preventScroll: true })
   }
 
   render() {
     if (this.state.error !== null) {
       return (
-        <main className="fatal-renderer" role="alert">
+        <main
+          ref={this.fallbackRef}
+          className="fatal-renderer"
+          role="alert"
+          tabIndex={-1}
+        >
           <span className="fatal-renderer-mark" aria-hidden="true">✦</span>
           <p className="eyebrow">Renderer error</p>
           <h1>Elysia could not display this view.</h1>

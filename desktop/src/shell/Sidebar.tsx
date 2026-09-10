@@ -18,6 +18,7 @@ import {
 
 import type { ChatSessionSummary } from '../../electron/contracts.ts'
 import {
+  codePointLength,
   hasNonBlankCodePoint,
   trimProtocolBlankCharacters,
 } from '../../electron/protocol-text.js'
@@ -227,6 +228,7 @@ export function Sidebar({
   const searchTriggerRef = useRef<HTMLButtonElement | null>(null)
   const searchInputRef = useRef<HTMLInputElement | null>(null)
   const createButtonRef = useRef<HTMLButtonElement | null>(null)
+  const selectionTriggerRef = useRef<HTMLButtonElement | null>(null)
   const selectAllRef = useRef<HTMLInputElement | null>(null)
   const wasSearchOpenRef = useRef(searchOpen)
   const menuButtonRefs = useRef(new Map<string, HTMLButtonElement>())
@@ -337,8 +339,7 @@ export function Sidebar({
         onSearchOpenChange(false)
         onSearchQueryChange('')
       } else {
-        setSelectionMode(false)
-        setSelectedChatIds(new Set())
+        closeSelectionMode(true)
       }
     }
     window.addEventListener('keydown', closeTopSidebarLayer, true)
@@ -366,6 +367,16 @@ export function Sidebar({
       setOpenMenuId(null)
     }
     return true
+  }
+
+  function closeSelectionMode(restoreFocus: boolean): void {
+    setSelectionMode(false)
+    setSelectedChatIds(new Set())
+    if (restoreFocus) {
+      window.requestAnimationFrame(() => {
+        selectionTriggerRef.current?.focus({ preventScroll: true })
+      })
+    }
   }
 
   function focusAfterRemoval(removedChatIds: string[]): void {
@@ -642,6 +653,7 @@ export function Sidebar({
           aria-label="Search chats"
           aria-controls="chat-search"
           aria-expanded={searchOpen}
+          aria-keyshortcuts="Control+K Meta+K"
           title="Search chats (Ctrl+K)"
           onClick={() => {
             if (!navigate('chat')) {
@@ -734,12 +746,16 @@ export function Sidebar({
               <Icon name="archive" /><span>Archived</span>
             </button>
             <button
+              ref={selectionTriggerRef}
               type="button"
               className="chat-filter-button"
               disabled={pending || selectableChats.length === 0}
               onClick={() => {
                 setSelectionMode(true)
                 setOpenMenuId(null)
+                window.requestAnimationFrame(() => {
+                  selectAllRef.current?.focus({ preventScroll: true })
+                })
               }}
             >
               <Icon name="check" /><span>Select chats</span>
@@ -767,8 +783,7 @@ export function Sidebar({
               type="button"
               disabled={pending}
               onClick={() => {
-                setSelectionMode(false)
-                setSelectedChatIds(new Set())
+                closeSelectionMode(true)
               }}
             >
               Cancel
@@ -1007,6 +1022,7 @@ export function Sidebar({
         type="button"
         className={'sidebar-settings' + (activeView === 'settings' ? ' active' : '')}
         aria-current={activeView === 'settings' ? 'page' : undefined}
+        aria-keyshortcuts="Control+, Meta+,"
         title="Settings (Ctrl+,)"
         onClick={() => { navigate('settings') }}
       >
@@ -1031,12 +1047,20 @@ export function Sidebar({
               id="chat-rename-title"
               data-dialog-initial-focus
               value={renameDraft}
-              maxLength={MAX_CHAT_TITLE_LENGTH}
               disabled={pending}
               aria-invalid={!hasNonBlankCodePoint(renameDraft)}
-              onChange={(event) => { setRenameDraft(event.target.value) }}
+              aria-describedby="chat-rename-title-count"
+              onChange={(event) => {
+                setRenameDraft(
+                  Array.from(event.target.value)
+                    .slice(0, MAX_CHAT_TITLE_LENGTH)
+                    .join(''),
+                )
+              }}
             />
-            <small>{renameDraft.length}/{MAX_CHAT_TITLE_LENGTH}</small>
+            <small id="chat-rename-title-count">
+              {codePointLength(renameDraft)}/{MAX_CHAT_TITLE_LENGTH}
+            </small>
           </label>
         ) : undefined}
       </ChatActionDialog>

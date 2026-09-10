@@ -8,28 +8,50 @@ import { Icon } from '../design-system/Icon.tsx'
 
 interface CharacterPanelProps {
   chatTitle: string
+  modal: boolean
+  pending: boolean
   snapshot: BackendSnapshot
+  onClose(): void
 }
 
 /** Render Elysia's collapsible presence panel for the active conversation. */
 export function CharacterPanel({
   chatTitle,
+  modal,
+  pending,
   snapshot,
+  onClose,
 }: CharacterPanelProps) {
   return (
     <aside
       className="character-panel"
       id="character-panel"
-      aria-label="Elysia character panel"
+      aria-labelledby="character-panel-title"
+      aria-modal={modal ? true : undefined}
+      role={modal ? 'dialog' : undefined}
+      tabIndex={-1}
     >
       <div className="character-panel-header">
         <div>
           <span className="eyebrow">Elysia</span>
-          <h2>Here with you</h2>
+          <h2 id="character-panel-title">Here with you</h2>
         </div>
-        <span className="soft-status">
-          {snapshot.status === 'ready' ? 'Ready' : 'Waiting'}
-        </span>
+        <div className="character-panel-actions">
+          <span className="soft-status">
+            {snapshot.status === 'ready' ? 'Ready' : 'Waiting'}
+          </span>
+          <button
+            type="button"
+            className="icon-button character-panel-close"
+            data-panel-initial-focus
+            aria-label="Close Elysia character panel"
+            title="Close panel"
+            disabled={pending}
+            onClick={onClose}
+          >
+            <Icon name="close" />
+          </button>
+        </div>
       </div>
 
       <div className="character-card">

@@ -42,9 +42,10 @@ import { ChatView } from './chat/ChatView.tsx'
 import type {
   ChatMessage,
   ChatNotice,
+  RetryEditDraft,
   RetryableChatPair,
 } from './chat/types.ts'
-import { EmptyState } from './design-system/Feedback.tsx'
+import { EmptyState, InlineAlert } from './design-system/Feedback.tsx'
 import { Icon } from './design-system/Icon.tsx'
 import { ProjectView } from './projects/ProjectView.tsx'
 import { SettingsView } from './settings/SettingsView.tsx'
@@ -54,6 +55,28 @@ import { useTheme } from './theme/ThemeProvider.tsx'
 import { CallPreview } from './voice/CallPreview.tsx'
 
 const COMPACT_SHELL_QUERY = '(max-width: 52rem)'
+const CHAT_DRAFTS_STORAGE_KEY = 'elysia.chat-drafts.v1'
+const PENDING_CHAT_SEND_STORAGE_KEY = 'elysia.pending-chat-send.v1'
+const RETRY_EDIT_DRAFT_STORAGE_KEY = 'elysia.retry-edit-draft.v1'
+const MAX_PERSISTED_CHAT_DRAFTS = 100
+const MAX_PERSISTED_DRAFT_LENGTH = 1_000_000
+
+interface PersistedPendingChatSend {
+  operationId: string
+  requestId?: string
+  chatId: string
+  userText: string
+  baseMessageCount: number
+}
+
+interface PersistedRetryEditDraft {
+  chatId: string
+  userMessageId: string
+  assistantMessageId: string
+  text: string
+  operationId?: string
+  requestId?: string
+}
 
 const initialSnapshot: BackendSnapshot = {
   revision: 0,
@@ -74,9 +97,291 @@ function errorNotice(message: string): ChatNotice {
   return { message, tone: 'error' }
 }
 
+function warningNotice(message: string): ChatNotice {
+  return { message, tone: 'warning' }
+}
+
 function isCompactShell(): boolean {
   return typeof window.matchMedia === 'function'
     && window.matchMedia(COMPACT_SHELL_QUERY).matches
+}
+
+function readRecoveryStorageItem(key: string): string | null {
+  try {
+    return window.localStorage.getItem(key)
+  } catch {
+    throw new Error(
+      'Elysia could not read local recovery storage. Reload the window before continuing.',
+    )
+  }
+}
+
+function clearRecoveryStorageItem(
+  key: string,
+  tombstone: string,
+): boolean {
+  try {
+    window.localStorage.removeItem(key)
+    if (window.localStorage.getItem(key) === null) {
+      return true
+    }
+  } catch {
+    // Some storage implementations can reject removal while still allowing an
+    // exact overwrite. The verified tombstone prevents stale recovery data.
+  }
+  try {
+    window.localStorage.setItem(key, tombstone)
+    return window.localStorage.getItem(key) === tombstone
+  } catch {
+    return false
+  }
+}
+
+function loadChatDrafts(): Record<string, string> {
+  const raw = readRecoveryStorageItem(CHAT_DRAFTS_STORAGE_KEY)
+  if (raw === null) {
+    return {}
+  }
+  try {
+    const value: unknown = JSON.parse(raw)
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+      return {}
+    }
+    const drafts: Record<string, string> = {}
+    for (const [chatId, draft] of Object.entries(value).slice(
+      0,
+      MAX_PERSISTED_CHAT_DRAFTS,
+    )) {
+      if (
+        chatId.length > 0
+        && typeof draft === 'string'
+        && draft.length > 0
+        && draft.length <= MAX_PERSISTED_DRAFT_LENGTH
+      ) {
+        drafts[chatId] = draft
+      }
+    }
+    return drafts
+  } catch {
+    return {}
+  }
+}
+
+function persistChatDrafts(
+  drafts: Record<string, string>,
+  requiredChatId?: string,
+): boolean {
+  try {
+    const entries = Object.entries(drafts).filter(([, draft]) => draft.length > 0)
+    if (entries.some(([, draft]) => draft.length > MAX_PERSISTED_DRAFT_LENGTH)) {
+      return false
+    }
+    const orderedEntries = requiredChatId === undefined
+      ? entries
+      : [
+          ...entries.filter(([chatId]) => chatId === requiredChatId),
+          ...entries.filter(([chatId]) => chatId !== requiredChatId),
+        ]
+    const nonEmptyDrafts = Object.fromEntries(
+      orderedEntries.slice(0, MAX_PERSISTED_CHAT_DRAFTS),
+    )
+    if (Object.keys(nonEmptyDrafts).length === 0) {
+      return clearRecoveryStorageItem(CHAT_DRAFTS_STORAGE_KEY, '{}')
+    } else {
+      const serializedDrafts = JSON.stringify(nonEmptyDrafts)
+      window.localStorage.setItem(
+        CHAT_DRAFTS_STORAGE_KEY,
+        serializedDrafts,
+      )
+      if (window.localStorage.getItem(CHAT_DRAFTS_STORAGE_KEY) !== serializedDrafts) {
+        return false
+      }
+      if (
+        requiredChatId !== undefined
+        && (nonEmptyDrafts[requiredChatId] ?? '') !== (drafts[requiredChatId] ?? '')
+      ) {
+        return false
+      }
+      return true
+    }
+  } catch {
+    // A full or unavailable storage area must not block local Chat input.
+    return false
+  }
+}
+
+function loadPendingChatSend(): PersistedPendingChatSend | null {
+  const raw = readRecoveryStorageItem(PENDING_CHAT_SEND_STORAGE_KEY)
+  if (raw === null) {
+    return null
+  }
+  try {
+    const value: unknown = JSON.parse(raw)
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+      return null
+    }
+    const candidate = value as Partial<PersistedPendingChatSend>
+    if (
+      typeof candidate.operationId !== 'string'
+      || candidate.operationId.length === 0
+      || candidate.operationId.length > 512
+      || (
+        candidate.requestId !== undefined
+        && (
+          typeof candidate.requestId !== 'string'
+          || candidate.requestId.length === 0
+          || candidate.requestId.length > 512
+        )
+      )
+      || typeof candidate.chatId !== 'string'
+      || candidate.chatId.length === 0
+      || candidate.chatId.length > 512
+      || typeof candidate.userText !== 'string'
+      || candidate.userText.length > MAX_PERSISTED_DRAFT_LENGTH
+      || !Number.isSafeInteger(candidate.baseMessageCount)
+      || (candidate.baseMessageCount ?? -1) < 0
+    ) {
+      return null
+    }
+    return {
+      operationId: candidate.operationId,
+      ...(candidate.requestId === undefined
+        ? {}
+        : { requestId: candidate.requestId }),
+      chatId: candidate.chatId,
+      userText: candidate.userText,
+      baseMessageCount: candidate.baseMessageCount!,
+    }
+  } catch {
+    return null
+  }
+}
+
+function persistPendingChatSend(
+  pendingSend: PersistedPendingChatSend | null,
+): boolean {
+  try {
+    if (pendingSend === null) {
+      return clearRecoveryStorageItem(PENDING_CHAT_SEND_STORAGE_KEY, 'null')
+    } else {
+      const serializedPendingSend = JSON.stringify(pendingSend)
+      window.localStorage.setItem(
+        PENDING_CHAT_SEND_STORAGE_KEY,
+        serializedPendingSend,
+      )
+      return window.localStorage.getItem(PENDING_CHAT_SEND_STORAGE_KEY)
+        === serializedPendingSend
+    }
+  } catch {
+    // Callers keep the previous durable record and surface a recoverable error.
+    return false
+  }
+}
+
+function loadRetryEditDraft(): PersistedRetryEditDraft | null {
+  const raw = readRecoveryStorageItem(RETRY_EDIT_DRAFT_STORAGE_KEY)
+  if (raw === null) {
+    return null
+  }
+  try {
+    const value: unknown = JSON.parse(raw)
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+      return null
+    }
+    const candidate = value as Partial<PersistedRetryEditDraft>
+    const identifiers = [
+      candidate.chatId,
+      candidate.userMessageId,
+      candidate.assistantMessageId,
+    ]
+    if (
+      identifiers.some((identifier) => (
+        typeof identifier !== 'string'
+        || identifier.length === 0
+        || identifier.length > 512
+      ))
+      || typeof candidate.text !== 'string'
+      || candidate.text.length > MAX_PERSISTED_DRAFT_LENGTH
+      || (
+        candidate.operationId !== undefined
+        && (
+          typeof candidate.operationId !== 'string'
+          || candidate.operationId.length === 0
+          || candidate.operationId.length > 512
+        )
+      )
+      || (
+        candidate.requestId !== undefined
+        && (
+          candidate.operationId === undefined
+          || typeof candidate.requestId !== 'string'
+          || candidate.requestId.length === 0
+          || candidate.requestId.length > 512
+        )
+      )
+    ) {
+      return null
+    }
+    return {
+      chatId: candidate.chatId!,
+      userMessageId: candidate.userMessageId!,
+      assistantMessageId: candidate.assistantMessageId!,
+      text: candidate.text,
+      ...(candidate.operationId === undefined
+        ? {}
+        : { operationId: candidate.operationId }),
+      ...(candidate.requestId === undefined
+        ? {}
+        : { requestId: candidate.requestId }),
+    }
+  } catch {
+    return null
+  }
+}
+
+function persistRetryEditDraft(
+  draft: PersistedRetryEditDraft | null,
+): boolean {
+  try {
+    if (draft === null) {
+      return clearRecoveryStorageItem(RETRY_EDIT_DRAFT_STORAGE_KEY, 'null')
+    }
+    const serializedDraft = JSON.stringify(draft)
+    window.localStorage.setItem(RETRY_EDIT_DRAFT_STORAGE_KEY, serializedDraft)
+    return window.localStorage.getItem(RETRY_EDIT_DRAFT_STORAGE_KEY)
+      === serializedDraft
+  } catch {
+    return false
+  }
+}
+
+function mergeRecoveredDraft(recovered: string, current: string): string {
+  if (
+    current.length === 0
+    || current === recovered
+    || current.startsWith(`${recovered}\n\n`)
+  ) {
+    return current.length === 0 ? recovered : current
+  }
+  return `${recovered}\n\n${current}`
+}
+
+function focusAfterRender(...selectors: string[]): void {
+  window.requestAnimationFrame(() => {
+    window.requestAnimationFrame(() => {
+      for (const selector of selectors) {
+        const target = document.querySelector<HTMLElement>(selector)
+        if (target !== null) {
+          target.focus({ preventScroll: true })
+          return
+        }
+      }
+    })
+  })
+}
+
+function focusChatComposer(): void {
+  focusAfterRender('#chat-composer', '#main-content')
 }
 
 function mayLeaveSettings(view: AppView, dirty: boolean): boolean {
@@ -108,6 +413,7 @@ type GenerationPhase =
 
 interface InFlightTurn {
   attachments: ChatAttachment[]
+  baseMessageCount: number
   operationId: string
   requestId: string | null
   chatId: string
@@ -275,6 +581,7 @@ function PlaceholderView({
             aria-label={sidebarOpen ? 'Hide navigation' : 'Show navigation'}
             aria-controls="app-sidebar"
             aria-expanded={sidebarOpen}
+            aria-keyshortcuts="Control+B Meta+B"
             title="Toggle navigation (Ctrl+B)"
             onClick={onToggleSidebar}
           >
@@ -323,13 +630,20 @@ function App() {
   const [settingsError, setSettingsError] = useState<string | null>(null)
   const [settingsRestartError, setSettingsRestartError] = useState<string | null>(null)
   const [showArchived, setShowArchived] = useState(false)
-  const [draftsByChat, setDraftsByChat] = useState<Record<string, string>>({})
+  const [draftsByChat, setDraftsByChat] = useState<Record<string, string>>(
+    loadChatDrafts,
+  )
+  const [pendingChatSend, setPendingChatSend] = useState(loadPendingChatSend)
+  const [retryEditDraftRecord, setRetryEditDraftRecord] = useState(
+    loadRetryEditDraft,
+  )
   const [activeView, setActiveView] = useState<AppView>('chat')
   const [searchOpen, setSearchOpen] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
   const [panelOpen, setPanelOpen] = useState(false)
   const [panelTransitionPending, setPanelTransitionPending] = useState(false)
   const [streaming, setStreaming] = useState(false)
+  const [generationReconcilePending, setGenerationReconcilePending] = useState(false)
   const [inFlightTurn, setInFlightTurn] = useState<InFlightTurn | null>(null)
   const [modelSelectionPending, setModelSelectionPending] = useState(false)
   const [retryPending, setRetryPending] = useState(false)
@@ -346,7 +660,17 @@ function App() {
   const [sidebarOpen, setSidebarOpen] = useState(() => !isCompactShell())
   const activeChatIdRef = useRef<string | undefined>(snapshot.chatId)
   const activeViewRef = useRef<AppView>('chat')
+  const pendingChatSendRef = useRef<PersistedPendingChatSend | null>(
+    pendingChatSend,
+  )
+  const retryEditDraftRef = useRef<PersistedRetryEditDraft | null>(
+    retryEditDraftRecord,
+  )
+  const draftsByChatRef = useRef(draftsByChat)
+  const restoredPendingSendIdsRef = useRef(new Set<string>())
+  const knownChatMessageCountsRef = useRef(new Map<string, number>())
   const acceptedSnapshotRevisionRef = useRef(snapshot.revision)
+  const settledGenerationRequestIdsRef = useRef(new Set<string>())
   const backendStatusRef = useRef(snapshot.status)
   const callButtonRef = useRef<HTMLButtonElement | null>(null)
   const modelOperationRef = useRef(0)
@@ -363,11 +687,26 @@ function App() {
   const attachmentMutationScopesRef = useRef(new Set<string>())
   const attachmentReloadPendingScopesRef = useRef(new Set<string>())
   const streamingRef = useRef(false)
+  const generationReconcilePendingRef = useRef(false)
   const inFlightTurnRef = useRef<InFlightTurn | null>(null)
   const panelOperationRef = useRef(0)
   const panelCommittedOpenRef = useRef(false)
   const panelTargetOpenRef = useRef(false)
   const panelQueueRef = useRef<Promise<void>>(Promise.resolve())
+
+  const updateChatDrafts = useCallback((
+    update: (current: Record<string, string>) => Record<string, string>,
+  ): Record<string, string> => {
+    const nextDrafts = update(draftsByChatRef.current)
+    draftsByChatRef.current = nextDrafts
+    setDraftsByChat(nextDrafts)
+    return nextDrafts
+  }, [])
+
+  useEffect(() => {
+    draftsByChatRef.current = draftsByChat
+    persistChatDrafts(draftsByChat)
+  }, [draftsByChat])
 
   const activeChatId = chatState?.activeChat.chatId
   const activeChatScope = useMemo<AttachmentScope>(() => ({
@@ -383,6 +722,16 @@ function App() {
   const draft = activeChatId === undefined
     ? ''
     : draftsByChat[activeChatId] ?? ''
+  const retryEditDraft: RetryEditDraft | null = retryEditDraftRecord === null
+    ? null
+    : {
+        chatId: retryEditDraftRecord.chatId,
+        userMessageId: retryEditDraftRecord.userMessageId,
+        assistantMessageId: retryEditDraftRecord.assistantMessageId,
+        text: retryEditDraftRecord.text,
+        submitted: retryEditDraftRecord.operationId !== undefined,
+      }
+  const retryEditBlocksGeneration = retryEditDraftRecord !== null
   const activeChatAttachmentKey = attachmentScopeKey(activeChatScope)
   const activeChatAttachments = attachmentStates[activeChatAttachmentKey] ?? null
   const activeChatAttachmentActivity = attachmentActivities[activeChatAttachmentKey]
@@ -424,8 +773,11 @@ function App() {
       || (activeChatAttachments?.attachments.length ?? 0) > 0
     )
     && !streaming
+    && !generationReconcilePending
     && !modelSelectionPending
     && !retryPending
+    && pendingChatSend === null
+    && !retryEditBlocksGeneration
     && !activeChatAttachmentActivity.adding
     && activeChatAttachmentActivity.removingIds.length === 0
     && !sessionUiPending
@@ -450,13 +802,48 @@ function App() {
       return false
     }
 
+    let acceptedSnapshot = nextSnapshot
+    const activeRequestId = nextSnapshot.activeGeneration?.requestId
+    if (
+      activeRequestId !== undefined
+      && settledGenerationRequestIdsRef.current.has(activeRequestId)
+    ) {
+      acceptedSnapshot = { ...nextSnapshot }
+      delete acceptedSnapshot.activeGeneration
+    }
     acceptedSnapshotRevisionRef.current = nextSnapshot.revision
-    backendStatusRef.current = nextSnapshot.status
-    setSnapshot(nextSnapshot)
+    backendStatusRef.current = acceptedSnapshot.status
+    setSnapshot(acceptedSnapshot)
     return true
   }, [])
 
+  const markGenerationSettled = useCallback((requestId: string): void => {
+    const settledIds = settledGenerationRequestIdsRef.current
+    settledIds.add(requestId)
+    if (settledIds.size > 128) {
+      const oldestId = settledIds.values().next().value as string | undefined
+      if (oldestId !== undefined) {
+        settledIds.delete(oldestId)
+      }
+    }
+    setSnapshot((currentSnapshot) => {
+      if (currentSnapshot.activeGeneration?.requestId !== requestId) {
+        return currentSnapshot
+      }
+      const nextSnapshot = { ...currentSnapshot }
+      delete nextSnapshot.activeGeneration
+      return nextSnapshot
+    })
+  }, [])
+
   const acceptChatState = useCallback((nextState: ChatSessionState): void => {
+    for (const chat of [...nextState.chats, nextState.activeChat]) {
+      const knownCount = knownChatMessageCountsRef.current.get(chat.chatId) ?? 0
+      knownChatMessageCountsRef.current.set(
+        chat.chatId,
+        Math.max(knownCount, chat.messageCount),
+      )
+    }
     activeChatIdRef.current = nextState.activeChat.chatId
     setChatState(nextState)
     setMessages(presentChatMessages(nextState.activeChat))
@@ -750,6 +1137,183 @@ function App() {
     updateAttachmentActivity(scope, (current) => ({ ...current, error: null }))
   }, [updateAttachmentActivity])
 
+  const replacePendingChatSend = useCallback((
+    pendingSend: PersistedPendingChatSend | null,
+  ): boolean => {
+    const persisted = persistPendingChatSend(pendingSend)
+    if (!persisted && pendingSend !== null) {
+      return false
+    }
+    pendingChatSendRef.current = pendingSend
+    setPendingChatSend(pendingSend)
+    return persisted
+  }, [])
+
+  const replaceRetryEditDraft = useCallback((
+    draft: PersistedRetryEditDraft | null,
+  ): boolean => {
+    const persisted = persistRetryEditDraft(draft)
+    if (!persisted) {
+      return false
+    }
+    retryEditDraftRef.current = draft
+    setRetryEditDraftRecord(draft)
+    return persisted
+  }, [])
+
+  const clearPendingChatSend = useCallback((expected: {
+    operationId?: string
+    requestId?: string
+  } = {}): boolean => {
+    const pendingSend = pendingChatSendRef.current
+    if (
+      pendingSend === null
+      || (
+        expected.operationId !== undefined
+        && pendingSend.operationId !== expected.operationId
+      )
+      || (
+        expected.requestId !== undefined
+        && pendingSend.requestId !== expected.requestId
+      )
+    ) {
+      return false
+    }
+    replacePendingChatSend(null)
+    return true
+  }, [replacePendingChatSend])
+
+  const clearRetryEditDraft = useCallback((expected: {
+    operationId?: string
+    requestId?: string
+  } = {}): boolean => {
+    const draft = retryEditDraftRef.current
+    if (
+      draft === null
+      || (
+        expected.operationId !== undefined
+        && draft.operationId !== expected.operationId
+      )
+      || (
+        expected.requestId !== undefined
+        && draft.requestId !== expected.requestId
+      )
+    ) {
+      return false
+    }
+    return replaceRetryEditDraft(null)
+  }, [replaceRetryEditDraft])
+
+  const restoreRetryEditDraft = useCallback((expected: {
+    operationId?: string
+    requestId?: string
+  } = {}): boolean => {
+    const draft = retryEditDraftRef.current
+    if (
+      draft === null
+      || (
+        expected.operationId !== undefined
+        && draft.operationId !== expected.operationId
+      )
+      || (
+        expected.requestId !== undefined
+        && draft.requestId !== expected.requestId
+      )
+    ) {
+      return false
+    }
+    if (draft.operationId === undefined && draft.requestId === undefined) {
+      return true
+    }
+    const restoredDraft: PersistedRetryEditDraft = {
+      chatId: draft.chatId,
+      userMessageId: draft.userMessageId,
+      assistantMessageId: draft.assistantMessageId,
+      text: draft.text,
+    }
+    if (!replaceRetryEditDraft(restoredDraft)) {
+      // The submitted record still protects the text on disk. Expose the same
+      // text in this renderer so the user can retry or cancel without waiting.
+      retryEditDraftRef.current = restoredDraft
+      setRetryEditDraftRecord(restoredDraft)
+    }
+    return true
+  }, [replaceRetryEditDraft])
+
+  const restorePendingChatSend = useCallback((expected: {
+    operationId?: string
+    requestId?: string
+  } = {}): boolean => {
+    const pendingSend = pendingChatSendRef.current
+    if (
+      pendingSend === null
+      || (
+        expected.operationId !== undefined
+        && pendingSend.operationId !== expected.operationId
+      )
+      || (
+        expected.requestId !== undefined
+        && pendingSend.requestId !== expected.requestId
+      )
+    ) {
+      return false
+    }
+    if (pendingSend.userText.length === 0) {
+      replacePendingChatSend(null)
+      return true
+    }
+    const nextDrafts = updateChatDrafts((current) => {
+      const otherDrafts = { ...current }
+      delete otherDrafts[pendingSend.chatId]
+      return {
+        [pendingSend.chatId]: mergeRecoveredDraft(
+        pendingSend.userText,
+        current[pendingSend.chatId] ?? '',
+        ),
+        ...otherDrafts,
+      }
+    })
+    restoredPendingSendIdsRef.current.add(pendingSend.operationId)
+    if (persistChatDrafts(nextDrafts, pendingSend.chatId)) {
+      replacePendingChatSend(null)
+      restoredPendingSendIdsRef.current.delete(pendingSend.operationId)
+    }
+    return true
+  }, [replacePendingChatSend, updateChatDrafts])
+
+  useEffect(() => {
+    const pendingSend = pendingChatSendRef.current
+    if (
+      pendingSend === null
+      || !restoredPendingSendIdsRef.current.has(pendingSend.operationId)
+      || !persistChatDrafts(draftsByChat, pendingSend.chatId)
+    ) {
+      return
+    }
+    replacePendingChatSend(null)
+    restoredPendingSendIdsRef.current.delete(pendingSend.operationId)
+  }, [draftsByChat, replacePendingChatSend])
+
+  const clearCommittedPendingChatSend = useCallback((
+    nextState: ChatSessionState,
+  ): boolean => {
+    const pendingSend = pendingChatSendRef.current
+    if (pendingSend === null) {
+      return false
+    }
+    const summary = nextState.chats.find(
+      (chat) => chat.chatId === pendingSend.chatId,
+    )
+    if (
+      summary === undefined
+      || summary.messageCount < pendingSend.baseMessageCount + 2
+    ) {
+      return false
+    }
+    replacePendingChatSend(null)
+    return true
+  }, [replacePendingChatSend])
+
   const updateInFlightTurn = useCallback((
     update: (current: InFlightTurn | null) => InFlightTurn | null,
   ): InFlightTurn | null => {
@@ -758,6 +1322,311 @@ function App() {
     setInFlightTurn(nextTurn)
     return nextTurn
   }, [])
+
+  const interruptInFlightTurn = useCallback((): void => {
+    const currentTurn = inFlightTurnRef.current
+    if (!generationIsBusy(currentTurn)) {
+      return
+    }
+    if (currentTurn?.kind === 'send') {
+      if (!restorePendingChatSend({ operationId: currentTurn.operationId })) {
+        if (currentTurn.requestId !== null) {
+          restorePendingChatSend({ requestId: currentTurn.requestId })
+        }
+      }
+    } else if (currentTurn?.kind === 'retry') {
+      if (!restoreRetryEditDraft({ operationId: currentTurn.operationId })) {
+        if (currentTurn.requestId !== null) {
+          restoreRetryEditDraft({ requestId: currentTurn.requestId })
+        }
+      }
+    }
+    updateInFlightTurn((current) => current === null
+      ? null
+      : { ...current, phase: 'error' })
+    streamingRef.current = false
+    setStreaming(false)
+  }, [restorePendingChatSend, restoreRetryEditDraft, updateInFlightTurn])
+
+  useEffect(() => {
+    const activeGeneration = snapshot.activeGeneration
+    const currentTurn = inFlightTurnRef.current
+
+    if (activeGeneration === undefined) {
+      if (
+        currentTurn?.operationId.startsWith('resumed:')
+        && snapshot.status === 'ready'
+      ) {
+        generationReconcilePendingRef.current = true
+        setGenerationReconcilePending(true)
+        updateInFlightTurn(() => null)
+        streamingRef.current = false
+        setStreaming(false)
+        void desktopApi?.listChats(true)
+          .then(acceptChatState)
+          .catch((error: unknown) => {
+            setNotice(errorNotice(
+              error instanceof Error
+                ? error.message
+                : 'Could not reconcile the completed Chat reply.',
+            ))
+          })
+          .finally(() => {
+            generationReconcilePendingRef.current = false
+            setGenerationReconcilePending(false)
+          })
+      }
+      return
+    }
+
+    if (snapshot.status !== 'ready') {
+      return
+    }
+
+    if (currentTurn?.requestId === activeGeneration.requestId) {
+      updateInFlightTurn((current) => {
+        if (current?.requestId !== activeGeneration.requestId) {
+          return current
+        }
+        const canonicalChat = chatState?.activeChat.chatId === current.chatId
+          ? chatState.activeChat
+          : null
+        const canonicalUser = canonicalChat?.messages.find(
+          (message) => message.messageId === current.userMessageId,
+        )
+        const canonicalAssistant = canonicalChat?.messages.find(
+          (message) => message.messageId === current.assistantMessageId,
+        )
+        const reply = activeGeneration.reply.startsWith(current.assistantText)
+          ? activeGeneration.reply
+          : current.assistantText
+        return {
+          ...current,
+          userText: current.userText
+            || activeGeneration.userText
+            || canonicalUser?.content
+            || '',
+          assistantText: reply,
+          originalAssistantText: current.originalAssistantText
+            || canonicalAssistant?.content
+            || '',
+          phase: activeGeneration.stopping
+            ? 'stopping'
+            : reply.length > 0 ? 'streaming' : 'starting',
+        }
+      })
+      streamingRef.current = true
+      setStreaming(true)
+      return
+    }
+
+    if (chatState === null) {
+      return
+    }
+
+    const activeChat = chatState.activeChat.chatId === activeGeneration.chatId
+      ? chatState.activeChat
+      : null
+    const canonicalUser = activeGeneration.userMessageId === undefined
+      ? undefined
+      : activeChat?.messages.find(
+          (message) => message.messageId === activeGeneration.userMessageId,
+        )
+    const canonicalAssistant = activeGeneration.assistantMessageId === undefined
+      ? undefined
+      : activeChat?.messages.find(
+          (message) => message.messageId === activeGeneration.assistantMessageId,
+        )
+    const generationSummary = chatState.chats.find(
+      (chat) => chat.chatId === activeGeneration.chatId,
+    )
+    const pendingSend = pendingChatSendRef.current
+    const matchingPendingBase = (
+      activeGeneration.kind === 'send'
+      && pendingSend?.chatId === activeGeneration.chatId
+      && (
+        pendingSend.requestId === activeGeneration.requestId
+        || (
+          pendingSend.requestId === undefined
+          && pendingSend.userText === activeGeneration.userText
+        )
+      )
+    )
+      ? pendingSend.baseMessageCount
+      : 0
+    const baseMessageCount = Math.max(
+      matchingPendingBase,
+      generationSummary?.messageCount ?? 0,
+      knownChatMessageCountsRef.current.get(activeGeneration.chatId) ?? 0,
+    )
+
+    updateInFlightTurn(() => ({
+      attachments: [],
+      baseMessageCount,
+      operationId: `resumed:${activeGeneration.requestId}`,
+      requestId: activeGeneration.requestId,
+      chatId: activeGeneration.chatId,
+      kind: activeGeneration.kind,
+      userMessageId: activeGeneration.userMessageId
+        ?? `user-${activeGeneration.requestId}`,
+      assistantMessageId: activeGeneration.assistantMessageId
+        ?? `assistant-${activeGeneration.requestId}`,
+      userText: activeGeneration.userText ?? canonicalUser?.content ?? '',
+      assistantText: activeGeneration.reply,
+      originalAssistantText: canonicalAssistant?.content ?? '',
+      phase: activeGeneration.stopping
+        ? 'stopping'
+        : activeGeneration.reply.length > 0 ? 'streaming' : 'starting',
+    }))
+    streamingRef.current = true
+    setStreaming(true)
+  }, [
+    acceptChatState,
+    chatState,
+    desktopApi,
+    snapshot.activeGeneration,
+    snapshot.status,
+    updateInFlightTurn,
+  ])
+
+  useEffect(() => {
+    if (
+      chatState === null
+      || generationIsBusy(inFlightTurnRef.current)
+      || generationReconcilePendingRef.current
+      || (
+        snapshot.status === 'ready'
+        && snapshot.activeGeneration !== undefined
+      )
+      || !['ready', 'error', 'stopped'].includes(snapshot.status)
+    ) {
+      return
+    }
+    if (clearCommittedPendingChatSend(chatState)) {
+      return
+    }
+    const pendingSend = pendingChatSendRef.current
+    if (pendingSend === null || !restorePendingChatSend()) {
+      return
+    }
+    if (snapshot.status === 'ready' && pendingSend.userText.length > 0) {
+      const chatTitle = chatState.chats.find(
+        (chat) => chat.chatId === pendingSend.chatId,
+      )?.title
+      const destination = chatTitle === undefined
+        ? 'the original Chat draft'
+        : `${chatTitle}'s draft`
+      setNotice(warningNotice(
+        `An unfinished prompt was restored to ${destination}. Review it before sending.`,
+      ))
+    }
+  }, [
+    chatState,
+    clearCommittedPendingChatSend,
+    generationReconcilePending,
+    inFlightTurn,
+    restorePendingChatSend,
+    snapshot.activeGeneration,
+    snapshot.status,
+  ])
+
+  useEffect(() => {
+    const draft = retryEditDraftRef.current
+    if (
+      draft === null
+      || chatState === null
+      || generationIsBusy(inFlightTurnRef.current)
+      || generationReconcilePendingRef.current
+      || (
+        snapshot.status === 'ready'
+        && snapshot.activeGeneration !== undefined
+      )
+      || !['ready', 'error', 'stopped'].includes(snapshot.status)
+    ) {
+      return
+    }
+    const draftChatExists = chatState.chats.some(
+      (chat) => chat.chatId === draft.chatId,
+    )
+    if (draftChatExists && draft.chatId !== chatState.activeChat.chatId) {
+      return
+    }
+    const canonicalUser = draft.chatId === chatState.activeChat.chatId
+      ? chatState.activeChat.messages.find(
+          (message) => message.messageId === draft.userMessageId,
+        )
+      : undefined
+    if (draft.operationId !== undefined && canonicalUser?.content === draft.text) {
+      if (!replaceRetryEditDraft(null)) {
+        restoreRetryEditDraft()
+        setNotice(errorNotice(
+          'The completed retry was loaded, but its local recovery record could not be cleared. Restore local storage access, then cancel the saved edit.',
+        ))
+      }
+      return
+    }
+    const targetIsRetryable = retryPair !== null
+      && retryPair.chatId === draft.chatId
+      && retryPair.userMessageId === draft.userMessageId
+      && retryPair.assistantMessageId === draft.assistantMessageId
+    if (targetIsRetryable) {
+      if (draft.operationId !== undefined && restoreRetryEditDraft()) {
+        setNotice(warningNotice(
+          'Your edited retry was restored. Retry it again or cancel the saved edit.',
+        ))
+      }
+      return
+    }
+
+    if (draft.text.length === 0) {
+      replaceRetryEditDraft(null)
+      return
+    }
+    const destinationChatId = draftChatExists
+      ? draft.chatId
+      : chatState.activeChat.chatId
+    const currentComposerDraft = draftsByChatRef.current[destinationChatId] ?? ''
+    const recoveredComposerDraft = mergeRecoveredDraft(
+      draft.text,
+      currentComposerDraft,
+    )
+    const nextDrafts = recoveredComposerDraft === currentComposerDraft
+      ? draftsByChatRef.current
+      : updateChatDrafts((current) => {
+          const otherDrafts = { ...current }
+          delete otherDrafts[destinationChatId]
+          return {
+            [destinationChatId]: recoveredComposerDraft,
+            ...otherDrafts,
+          }
+        })
+    if (persistChatDrafts(nextDrafts, destinationChatId)) {
+      if (replaceRetryEditDraft(null)) {
+        setNotice(warningNotice(
+          'The original retry target is no longer available, so its saved edit was moved to the Chat composer.',
+        ))
+      } else {
+        setNotice(errorNotice(
+          'The saved retry edit was moved to the composer, but its recovery record could not be cleared. Restore local storage access before sending it.',
+        ))
+      }
+    } else {
+      setNotice(errorNotice(
+        'The saved retry edit is visible in the composer but still needs local storage. Shorten it or free disk space before continuing.',
+      ))
+    }
+  }, [
+    chatState,
+    draftsByChat,
+    generationReconcilePending,
+    inFlightTurn,
+    replaceRetryEditDraft,
+    retryPair,
+    restoreRetryEditDraft,
+    snapshot.activeGeneration,
+    snapshot.status,
+    updateChatDrafts,
+  ])
 
   const flushProjectRefresh = useCallback(async (): Promise<void> => {
     if (
@@ -1007,11 +1876,7 @@ function App() {
           nextSnapshot.status !== 'ready'
           && generationIsBusy(inFlightTurnRef.current)
         ) {
-          updateInFlightTurn((current) => current === null
-            ? null
-            : { ...current, phase: 'error' })
-          streamingRef.current = false
-          setStreaming(false)
+          interruptInFlightTurn()
         }
       })
       .catch((error: unknown) => {
@@ -1039,11 +1904,7 @@ function App() {
           event.snapshot.status !== 'ready'
           && generationIsBusy(inFlightTurnRef.current)
         ) {
-          updateInFlightTurn((current) => current === null
-            ? null
-            : { ...current, phase: 'error' })
-          streamingRef.current = false
-          setStreaming(false)
+          interruptInFlightTurn()
         }
         if (event.snapshot.status === 'error') {
           setNotice(null)
@@ -1080,10 +1941,68 @@ function App() {
       }
 
       if (event.type === 'chat-complete') {
+        markGenerationSettled(event.requestId)
         const currentTurn = inFlightTurnRef.current
+        const pendingSend = pendingChatSendRef.current
+        const pendingRetryEdit = retryEditDraftRef.current
+        const currentTurnMatches = currentTurn !== null
+          && event.chatId === currentTurn.chatId
+          && (
+            currentTurn.requestId === null
+            || event.requestId === currentTurn.requestId
+          )
+        const pendingSendMatches = pendingSend !== null
+          && event.chatId === pendingSend.chatId
+          && event.requestId === pendingSend.requestId
+        const pendingRetryEditMatches = pendingRetryEdit !== null
+          && event.chatId === pendingRetryEdit.chatId
+          && event.requestId === pendingRetryEdit.requestId
+        const committedMessageCount = currentTurnMatches
+          && currentTurn.kind === 'send'
+          ? currentTurn.baseMessageCount + 2
+          : pendingSendMatches ? pendingSend.baseMessageCount + 2 : null
+        if (committedMessageCount !== null) {
+          knownChatMessageCountsRef.current.set(
+            event.chatId,
+            Math.max(
+              knownChatMessageCountsRef.current.get(event.chatId) ?? 0,
+              committedMessageCount,
+            ),
+          )
+        }
+        if (currentTurnMatches && currentTurn.kind === 'send') {
+          if (!clearPendingChatSend({ operationId: currentTurn.operationId })) {
+            clearPendingChatSend({ requestId: event.requestId })
+          }
+        } else if (pendingSendMatches) {
+          clearPendingChatSend({ requestId: event.requestId })
+        }
+        if (currentTurnMatches && currentTurn.kind === 'retry') {
+          if (!clearRetryEditDraft({ operationId: currentTurn.operationId })) {
+            clearRetryEditDraft({ requestId: event.requestId })
+          }
+        } else if (pendingRetryEditMatches) {
+          clearRetryEditDraft({ requestId: event.requestId })
+        }
+        if (currentTurn === null) {
+          streamingRef.current = false
+          setStreaming(false)
+          void desktopApi.listChats(true)
+            .then(acceptChatState)
+            .catch((error: unknown) => {
+              if (event.chatId === activeChatIdRef.current) {
+                setNotice(errorNotice(
+                  error instanceof Error
+                    ? error.message
+                    : 'Reply completed, but Chat history could not be refreshed.',
+                ))
+              }
+            })
+          void requestProjectRefresh()
+          return
+        }
         if (
-          currentTurn === null
-          || event.chatId !== currentTurn.chatId
+          event.chatId !== currentTurn.chatId
           || (
             currentTurn.requestId !== null
             && event.requestId !== currentTurn.requestId
@@ -1141,16 +2060,39 @@ function App() {
       }
 
       if (event.type === 'chat-error') {
+        markGenerationSettled(event.requestId)
         const currentTurn = inFlightTurnRef.current
+        if (currentTurn === null) {
+          restorePendingChatSend({ requestId: event.requestId })
+          restoreRetryEditDraft({ requestId: event.requestId })
+          streamingRef.current = false
+          setStreaming(false)
+          if (event.chatId === activeChatIdRef.current) {
+            setNotice(event.code === 'request.cancelled'
+              ? infoNotice('Generation stopped. No partial reply was saved.')
+              : errorNotice(event.message))
+            void loadAttachments({ kind: 'chat', id: event.chatId })
+          }
+          void requestProjectRefresh()
+          return
+        }
         if (
-          currentTurn === null
-          || event.chatId !== currentTurn.chatId
+          event.chatId !== currentTurn.chatId
           || (
             currentTurn.requestId !== null
             && event.requestId !== currentTurn.requestId
           )
         ) {
           return
+        }
+        if (currentTurn.kind === 'send') {
+          if (!restorePendingChatSend({ operationId: currentTurn.operationId })) {
+            restorePendingChatSend({ requestId: event.requestId })
+          }
+        } else {
+          if (!restoreRetryEditDraft({ operationId: currentTurn.operationId })) {
+            restoreRetryEditDraft({ requestId: event.requestId })
+          }
         }
         const cancelled = event.code === 'request.cancelled'
         const operationId = currentTurn.operationId
@@ -1212,14 +2154,27 @@ function App() {
   }, [
     acceptChatState,
     acceptSnapshot,
+    clearPendingChatSend,
+    clearRetryEditDraft,
     desktopApi,
+    interruptInFlightTurn,
     loadAttachments,
+    markGenerationSettled,
     requestProjectRefresh,
+    restorePendingChatSend,
+    restoreRetryEditDraft,
     updateInFlightTurn,
   ])
 
   useEffect(() => {
     function handleGlobalKeyDown(event: globalThis.KeyboardEvent): void {
+      if (
+        document.querySelector(
+          'dialog[open], #character-panel[aria-modal="true"]',
+        ) !== null
+      ) {
+        return
+      }
       const modifier = event.ctrlKey || event.metaKey
       const key = event.key.toLocaleLowerCase()
 
@@ -1257,6 +2212,7 @@ function App() {
         if (compactShell) {
           setSidebarOpen(false)
         }
+        focusAfterRender('#settings-title', '#main-content')
         return
       }
       if (event.key !== 'Escape' || event.defaultPrevented) {
@@ -1277,6 +2233,7 @@ function App() {
         }
         activeViewRef.current = 'chat'
         setActiveView('chat')
+        focusChatComposer()
       }
     }
 
@@ -1326,16 +2283,89 @@ function App() {
     if (chatId === undefined) {
       return
     }
-    setDraftsByChat((current) => ({ ...current, [chatId]: value }))
+    updateChatDrafts((current) => {
+      const otherDrafts = { ...current }
+      delete otherDrafts[chatId]
+      return { [chatId]: value, ...otherDrafts }
+    })
+  }
+
+  function beginRetryEdit(pair: RetryableChatPair): void {
+    const existingDraft = retryEditDraftRef.current
+    if (
+      existingDraft !== null
+      && (
+        existingDraft.chatId !== pair.chatId
+        || existingDraft.userMessageId !== pair.userMessageId
+        || existingDraft.assistantMessageId !== pair.assistantMessageId
+      )
+    ) {
+      setNotice(warningNotice(
+        'Finish or cancel the saved edited retry before editing another Chat.',
+      ))
+      return
+    }
+    if (!replaceRetryEditDraft({
+      chatId: pair.chatId,
+      userMessageId: pair.userMessageId,
+      assistantMessageId: pair.assistantMessageId,
+      text: pair.userText,
+    })) {
+      setNotice(errorNotice(
+        'The edited retry could not be saved locally. Free some disk space and try again.',
+      ))
+      return
+    }
+    setNotice(null)
+  }
+
+  function updateRetryEdit(
+    pair: RetryableChatPair,
+    text: string,
+  ): void {
+    const currentDraft = retryEditDraftRef.current
+    if (
+      currentDraft === null
+      || currentDraft.chatId !== pair.chatId
+      || currentDraft.userMessageId !== pair.userMessageId
+      || currentDraft.assistantMessageId !== pair.assistantMessageId
+    ) {
+      return
+    }
+    if (!replaceRetryEditDraft({
+      chatId: pair.chatId,
+      userMessageId: pair.userMessageId,
+      assistantMessageId: pair.assistantMessageId,
+      text,
+    })) {
+      setNotice(errorNotice(
+        'The latest edit could not be saved locally. Free some disk space and try again.',
+      ))
+    }
+  }
+
+  function cancelRetryEdit(): void {
+    if (!replaceRetryEditDraft(null)) {
+      setNotice(errorNotice(
+        'The saved edit could not be cleared. Free some disk space and try again.',
+      ))
+    }
   }
 
   function forgetChatDraft(chatId: string): void {
     const scope: AttachmentScope = { kind: 'chat', id: chatId }
     const key = attachmentScopeKey(scope)
+    knownChatMessageCountsRef.current.delete(chatId)
     attachmentOperationsRef.current.delete(key)
     attachmentMutationScopesRef.current.delete(key)
     attachmentReloadPendingScopesRef.current.delete(key)
-    setDraftsByChat((current) => {
+    if (pendingChatSendRef.current?.chatId === chatId) {
+      replacePendingChatSend(null)
+    }
+    if (retryEditDraftRef.current?.chatId === chatId) {
+      replaceRetryEditDraft(null)
+    }
+    updateChatDrafts((current) => {
       const next = { ...current }
       delete next[chatId]
       return next
@@ -1357,6 +2387,9 @@ function App() {
     const chatId = chatState?.activeChat.chatId
     const attachmentItems = activeChatAttachments?.attachments ?? []
     const attachmentIds = attachmentItems.map((item) => item.attachmentId)
+    const generationRecoveryBlocked = pendingChatSendRef.current !== null
+      || retryEditDraftRef.current !== null
+      || generationReconcilePendingRef.current
     if (
       desktopApi === undefined
       || chatId === undefined
@@ -1364,6 +2397,7 @@ function App() {
       || streaming
       || modelSelectionPendingRef.current
       || retryPendingRef.current
+      || generationRecoveryBlocked
       || activeChatAttachmentActivity.adding
       || activeChatAttachmentActivity.removingIds.length > 0
     ) {
@@ -1371,12 +2405,33 @@ function App() {
     }
 
     const operationId = crypto.randomUUID()
-    setDraftsByChat((current) => ({ ...current, [chatId]: '' }))
+    const baseMessageCount = Math.max(
+      chatState?.activeChat.messageCount ?? messages.length,
+      knownChatMessageCountsRef.current.get(chatId) ?? 0,
+    )
+    if (!replacePendingChatSend({
+      operationId,
+      chatId,
+      userText: message,
+      baseMessageCount,
+    })) {
+      setNotice(errorNotice(
+        'The message could not be protected in local storage, so it was not sent. '
+        + 'Free some disk space and try again.',
+      ))
+      return
+    }
+    updateChatDrafts((current) => {
+      const next = { ...current }
+      delete next[chatId]
+      return next
+    })
     setNotice(null)
     streamingRef.current = true
     setStreaming(true)
     updateInFlightTurn(() => ({
       attachments: asChatAttachments(attachmentItems),
+      baseMessageCount,
       operationId,
       requestId: null,
       chatId,
@@ -1412,6 +2467,10 @@ function App() {
         }
       })
       void loadAttachments(activeChatScope)
+      const pendingSend = pendingChatSendRef.current
+      if (pendingSend?.operationId === operationId) {
+        replacePendingChatSend({ ...pendingSend, requestId })
+      }
       updateInFlightTurn((current) => {
         if (current?.operationId !== operationId) {
           return current
@@ -1430,10 +2489,7 @@ function App() {
         updateInFlightTurn((current) => current?.operationId === operationId
           ? null
           : current)
-        setDraftsByChat((current) => ({
-          ...current,
-          [chatId]: current[chatId] === '' ? message : current[chatId],
-        }))
+        restorePendingChatSend({ operationId })
         streamingRef.current = false
         setStreaming(false)
         setNotice(errorNotice(
@@ -1446,28 +2502,58 @@ function App() {
     }
   }
 
-  async function retryMessage(
+  function retryMessage(
     pair: RetryableChatPair,
     replacementMessage?: string,
-  ): Promise<void> {
+  ): boolean {
     if (
       desktopApi === undefined
       || streamingRef.current
       || pair.chatId !== activeChatIdRef.current
       || modelSelectionPendingRef.current
       || retryPendingRef.current
+      || pendingChatSendRef.current !== null
+      || generationReconcilePendingRef.current
     ) {
-      return
+      return false
     }
 
     const editedMessage = replacementMessage === undefined
       ? undefined
       : trimProtocolBlankCharacters(replacementMessage)
     if (editedMessage !== undefined && !hasNonBlankCodePoint(editedMessage)) {
-      return
+      return false
     }
 
     const operationId = crypto.randomUUID()
+    const existingEdit = retryEditDraftRef.current
+    if (editedMessage === undefined && existingEdit !== null) {
+      return false
+    }
+    if (editedMessage !== undefined) {
+      if (
+        existingEdit !== null
+        && (
+          existingEdit.chatId !== pair.chatId
+          || existingEdit.userMessageId !== pair.userMessageId
+          || existingEdit.assistantMessageId !== pair.assistantMessageId
+        )
+      ) {
+        return false
+      }
+      if (!replaceRetryEditDraft({
+        chatId: pair.chatId,
+        userMessageId: pair.userMessageId,
+        assistantMessageId: pair.assistantMessageId,
+        text: editedMessage,
+        operationId,
+      })) {
+        setNotice(errorNotice(
+          'The edited retry could not be protected in local storage, so it was not started.',
+        ))
+        return false
+      }
+    }
     const request: RetryChatRequest = {
       chatId: pair.chatId,
       userMessageId: pair.userMessageId,
@@ -1479,6 +2565,10 @@ function App() {
     setStreaming(true)
     updateInFlightTurn(() => ({
       attachments: [],
+      baseMessageCount: Math.max(
+        chatState?.activeChat.messageCount ?? messages.length,
+        knownChatMessageCountsRef.current.get(pair.chatId) ?? 0,
+      ),
       operationId,
       requestId: null,
       chatId: pair.chatId,
@@ -1491,31 +2581,39 @@ function App() {
       phase: 'starting',
     }))
 
-    try {
-      const { requestId } = await desktopApi.retryMessage(request)
-      updateInFlightTurn((current) => {
-        if (current?.operationId !== operationId) {
-          return current
+    void (async (): Promise<void> => {
+      try {
+        const { requestId } = await desktopApi.retryMessage(request)
+        const currentEdit = retryEditDraftRef.current
+        if (currentEdit?.operationId === operationId) {
+          replaceRetryEditDraft({ ...currentEdit, requestId })
         }
-        if (current.requestId !== null && current.requestId !== requestId) {
-          return { ...current, phase: 'error' }
+        updateInFlightTurn((current) => {
+          if (current?.operationId !== operationId) {
+            return current
+          }
+          if (current.requestId !== null && current.requestId !== requestId) {
+            return { ...current, phase: 'error' }
+          }
+          return { ...current, requestId }
+        })
+      } catch (error) {
+        if (inFlightTurnRef.current?.operationId === operationId) {
+          restoreRetryEditDraft({ operationId })
+          updateInFlightTurn((current) => current?.operationId === operationId
+            ? { ...current, phase: 'error' }
+            : current)
+          streamingRef.current = false
+          setStreaming(false)
+          setNotice(errorNotice(
+            error instanceof Error
+              ? error.message
+              : 'Could not retry the message.',
+          ))
         }
-        return { ...current, requestId }
-      })
-    } catch (error) {
-      if (inFlightTurnRef.current?.operationId === operationId) {
-        updateInFlightTurn((current) => current?.operationId === operationId
-          ? { ...current, phase: 'error' }
-          : current)
-        streamingRef.current = false
-        setStreaming(false)
-        setNotice(errorNotice(
-          error instanceof Error
-            ? error.message
-            : 'Could not retry the message.',
-        ))
       }
-    }
+    })()
+    return true
   }
 
   async function stopGeneration(): Promise<void> {
@@ -1854,7 +2952,9 @@ function App() {
 
   async function openChatFromProject(chatId: string): Promise<void> {
     await openChat(chatId)
-    navigate('chat')
+    if (navigate('chat')) {
+      focusChatComposer()
+    }
   }
 
   function createChat(): Promise<void> {
@@ -1887,6 +2987,14 @@ function App() {
     setNotice(null)
     try {
       acceptChatState(await desktopApi.openChat(chatId))
+      if (
+        retryEditDraftRef.current !== null
+        && retryEditDraftRef.current.chatId !== chatId
+      ) {
+        setNotice(warningNotice(
+          'A saved edited retry is waiting in another Chat. Return to it to retry or cancel.',
+        ))
+      }
     } catch (error) {
       const normalized = error instanceof Error
         ? error
@@ -2039,7 +3147,11 @@ function App() {
         }}
         onRestart={restartFromSettings}
         onDirtyChange={handleSettingsDirtyChange}
-        onBack={() => { navigate('chat') }}
+        onBack={() => {
+          if (navigate('chat')) {
+            focusChatComposer()
+          }
+        }}
       />
     )
   } else if (activeView === 'projects') {
@@ -2104,6 +3216,7 @@ function App() {
         notice={notice}
         panelOpen={panelOpen}
         panelTransitionPending={panelTransitionPending}
+        retryEditDraft={retryEditDraft}
         retryPending={retryPending}
         retryPair={retryPair}
         sidebarOpen={sidebarOpen}
@@ -2111,6 +3224,8 @@ function App() {
         streaming={activeGeneration}
         stopPending={stopPending}
         attachmentDisabled={sessionUiPending || activeChatId === undefined}
+        onBeginRetryEdit={beginRetryEdit}
+        onCancelRetryEdit={cancelRetryEdit}
         onChooseAttachments={() => {
           if (activeChatId !== undefined) {
             void chooseAttachments({ kind: 'chat', id: activeChatId })
@@ -2140,7 +3255,8 @@ function App() {
                 attachmentId,
               )
         )}
-        onRetry={(pair, message) => { void retryMessage(pair, message) }}
+        onRetry={retryMessage}
+        onRetryEditChange={updateRetryEdit}
         onRetryConnection={() => { void retryConnection() }}
         onSelectModel={(modelName) => { void selectModel(modelName) }}
         onSend={() => { void sendMessage() }}
@@ -2165,10 +3281,73 @@ function App() {
     )
   }
 
+  let globalFeedback
+  if (activeView !== 'chat' && snapshot.status !== 'ready') {
+    const retryable = snapshot.status === 'error' || snapshot.status === 'stopped'
+    globalFeedback = (
+      <InlineAlert
+        className="global-workspace-alert"
+        tone={retryable ? 'error' : 'info'}
+        title={retryable ? 'Local Backend unavailable' : 'Local Backend is starting'}
+        action={retryable
+          ? {
+              label: retryPending ? 'Retrying…' : 'Retry connection',
+              onClick: () => { void retryConnection() },
+              disabled: retryPending,
+            }
+          : undefined}
+      >
+        {snapshot.error
+          ?? (retryable
+            ? 'Reconnect to resume this local view.'
+            : 'This view will unlock automatically when local services are ready.')}
+      </InlineAlert>
+    )
+  } else if (activeView !== 'chat' && notice !== null) {
+    const detachedTurnFailed = inFlightTurn !== null
+      && (inFlightTurn.phase === 'error' || inFlightTurn.phase === 'cancelled')
+    const projectNeedsReload = activeView === 'projects' && projectState === null
+    globalFeedback = (
+      <InlineAlert
+        className="global-workspace-alert"
+        tone={notice.tone}
+        title={notice.tone === 'error' ? 'Local action failed' : 'Local update'}
+        action={projectNeedsReload
+          ? {
+              label: 'Reload Projects',
+              onClick: () => {
+                setNotice(null)
+                void requestProjectRefresh()
+              },
+            }
+          : detachedTurnFailed
+            ? {
+                label: 'Open Chat',
+                onClick: () => {
+                  if (navigate('chat')) {
+                    focusChatComposer()
+                  }
+                },
+              }
+            : undefined}
+        onDismiss={() => { setNotice(null) }}
+      >
+        {notice.message}
+      </InlineAlert>
+    )
+  }
+
   return (
     <AppShell
+      globalFeedback={globalFeedback}
       modalSidebar={compactShell}
+      modalPanel={compactShell && panelOpen}
       sidebarOpen={sidebarOpen}
+      onDismissPanel={() => {
+        if (!panelTransitionPending) {
+          void setCharacterPanelVisibility(false)
+        }
+      }}
       onDismissSidebar={() => {
         setSidebarOpen(false)
         setSearchOpen(false)
@@ -2206,7 +3385,15 @@ function App() {
       )}
       panel={
         activeView === 'chat' && panelOpen
-          ? <CharacterPanel chatTitle={displayedChat} snapshot={snapshot} />
+          ? (
+              <CharacterPanel
+                chatTitle={displayedChat}
+                modal={compactShell}
+                pending={panelTransitionPending}
+                snapshot={snapshot}
+                onClose={() => { void setCharacterPanelVisibility(false) }}
+              />
+            )
           : undefined
       }
     >

@@ -1117,11 +1117,13 @@ function createTray(): void {
 }
 
 function createMainWindow(): void {
+  const primaryWorkArea = screen.getPrimaryDisplay().workArea
   mainWindow = new BrowserWindow({
-    width: 1180,
-    height: 780,
-    minWidth: 960,
-    minHeight: 640,
+    width: Math.min(1180, primaryWorkArea.width),
+    height: Math.min(780, primaryWorkArea.height),
+    minWidth: Math.min(640, primaryWorkArea.width),
+    minHeight: Math.min(480, primaryWorkArea.height),
+    center: true,
     title: 'Elysia',
     backgroundColor: nativeBackgroundColor(),
     autoHideMenuBar: true,

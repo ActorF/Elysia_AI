@@ -19,6 +19,7 @@ import { MessageView } from './MessageView.tsx'
 import type {
   ChatMessage,
   ChatNotice,
+  RetryEditDraft,
   RetryableChatPair,
 } from './types.ts'
 import {
@@ -48,12 +49,15 @@ interface ChatViewProps {
   panelOpen: boolean
   panelTransitionPending: boolean
   retryPending: boolean
+  retryEditDraft: RetryEditDraft | null
   retryPair: RetryableChatPair | null
   sidebarOpen: boolean
   snapshot: BackendSnapshot
   streaming: boolean
   stopPending: boolean
   onChooseAttachments(): void
+  onBeginRetryEdit(pair: RetryableChatPair): void
+  onCancelRetryEdit(): void
   onCopy(text: string): Promise<void>
   onDismissAttachmentError(): void
   onDismissNotice(): void
@@ -62,7 +66,8 @@ interface ChatViewProps {
   onOpenCall(): void
   onOpenExternalUrl(url: string): Promise<void>
   onRemoveAttachment(attachmentId: string): Promise<boolean>
-  onRetry(pair: RetryableChatPair, message?: string): void
+  onRetry(pair: RetryableChatPair, message?: string): boolean
+  onRetryEditChange(pair: RetryableChatPair, message: string): void
   onRetryConnection(): void
   onSelectModel(modelName: string): void
   onSend(): void
@@ -114,12 +119,15 @@ export function ChatView({
   panelOpen,
   panelTransitionPending,
   retryPending,
+  retryEditDraft,
   retryPair,
   sidebarOpen,
   snapshot,
   streaming,
   stopPending,
   onChooseAttachments,
+  onBeginRetryEdit,
+  onCancelRetryEdit,
   onCopy,
   onDismissAttachmentError,
   onDismissNotice,
@@ -129,6 +137,7 @@ export function ChatView({
   onOpenExternalUrl,
   onRemoveAttachment,
   onRetry,
+  onRetryEditChange,
   onRetryConnection,
   onSelectModel,
   onSend,
@@ -140,6 +149,9 @@ export function ChatView({
 }: ChatViewProps) {
   const scrollRef = useRef<HTMLElement | null>(null)
   const stickToBottomRef = useRef(true)
+  const generationAnnouncement = streaming
+    ? 'Elysia is generating a reply.'
+    : 'Elysia is ready for your next message.'
 
   useLayoutEffect(() => {
     const scroller = scrollRef.current
@@ -158,6 +170,7 @@ export function ChatView({
             aria-label={sidebarOpen ? 'Hide navigation' : 'Show navigation'}
             aria-controls="app-sidebar"
             aria-expanded={sidebarOpen}
+            aria-keyshortcuts="Control+B Meta+B"
             title="Toggle navigation (Ctrl+B)"
             onClick={onToggleSidebar}
           >
@@ -205,9 +218,18 @@ export function ChatView({
           stickToBottomRef.current = remaining < 96
         }}
       >
+        <p
+          className="visually-hidden"
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+          data-generation-announcement
+        >
+          {generationAnnouncement}
+        </p>
         <div
           className="message-column"
-          aria-live="polite"
+          aria-live="off"
           aria-busy={streaming}
         >
           <div className="conversation-intro">
@@ -244,11 +266,15 @@ export function ChatView({
             <MessageView
               key={message.id}
               message={message}
+              retryEditDraft={retryEditDraft}
               retryPair={retryPair}
               retryDisabled={generationBusy}
+              onBeginRetryEdit={onBeginRetryEdit}
+              onCancelRetryEdit={onCancelRetryEdit}
               onCopy={onCopy}
               onOpenExternalUrl={onOpenExternalUrl}
               onRetry={onRetry}
+              onRetryEditChange={onRetryEditChange}
             />
           ))}
         </div>

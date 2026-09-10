@@ -671,6 +671,7 @@ export function ProjectView({
             aria-label={sidebarOpen ? 'Hide navigation' : 'Show navigation'}
             aria-controls="app-sidebar"
             aria-expanded={sidebarOpen}
+            aria-keyshortcuts="Control+B Meta+B"
             title="Toggle navigation (Ctrl+B)"
             onClick={onToggleSidebar}
           >

@@ -43,11 +43,20 @@ function showFatalRendererError(error: unknown): void {
   const root = document.getElementById('root')
   if (root !== null) {
     root.className = 'fatal-renderer'
+    root.setAttribute('role', 'alert')
+    root.setAttribute('tabindex', '-1')
     const heading = document.createElement('h1')
     heading.textContent = 'Elysia could not initialize.'
     const detail = document.createElement('p')
-    detail.textContent = 'Close the application and try again.'
-    root.replaceChildren(heading, detail)
+    detail.textContent = 'Reload the interface, or close and reopen Elysia if the problem continues.'
+    const reload = document.createElement('button')
+    reload.type = 'button'
+    reload.textContent = 'Reload interface'
+    reload.addEventListener('click', () => { window.location.reload() })
+    root.replaceChildren(heading, detail, reload)
+    window.requestAnimationFrame(() => {
+      root.focus({ preventScroll: true })
+    })
   }
 
   void window.elysiaDesktop?.rendererReady().catch(() => {

@@ -1,11 +1,12 @@
 # Elysia Desktop
 
-Stage 6 Modules 1–9 connect a React + TypeScript interface to the existing
+Stage 6 Modules 1–10 connect a React + TypeScript interface to the existing
 Python Brain through an Electron-owned child process and a strict, versioned
 local protocol. The renderer has persistent Chat and Project surfaces,
 resilient streamed message actions, revisioned Settings, Chat attachments,
 Project source storage, semantic design tokens, system/light/dark themes,
-keyboard navigation, and consistent loading, empty, error, and fatal states.
+keyboard and screen-reader navigation, durable per-Chat drafts, renderer-refresh
+stream recovery, and consistent loading, empty, error, offline, and fatal states.
 Electron is frozen as the production
 shell. The Tauri source and toolchain were removed after the comparison; the
 rationale, recorded measurements, and revisit gates are in
@@ -49,6 +50,9 @@ Electron starts `D:\Elysia_AI\.venv\Scripts\python.exe`, runs
   and `Ctrl+B` to show or hide navigation.
 - Enter sends a message; Shift+Enter inserts a new line. IME composition is
   never treated as a send action.
+- Unsent Chat text is stored per Chat on this device. Refreshing or reopening
+  the renderer restores that draft, while a renderer refresh during generation
+  reconnects to the request still owned by Electron.
 - Use the paperclip or drag and drop to stage files for the exact active Chat,
   or add local files to a Project's Sources surface. Selection cancellation is
   a no-op, failed sends keep the Chat draft, and removing a file never affects
@@ -57,7 +61,8 @@ Electron starts `D:\Elysia_AI\.venv\Scripts\python.exe`, runs
 - Navigation becomes a modal drawer at narrow CSS widths, including high
   Windows display or Electron zoom levels. The Composer remains in normal
   layout flow so attachments, alerts, and multiline input cannot cover the
-  final message.
+  final message. The compact character panel is also modal, traps focus, and
+  has its own close control.
 - Projects support persisted metadata, instructions, workspace binding, Chat
   assignment, archive, and restore. Voice, Work permissions, and later file
   processing controls remain read-only until their service boundaries exist.

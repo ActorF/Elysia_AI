@@ -1,5 +1,17 @@
 const { contextBridge } = require('electron')
 
+const RELOAD_STATE_KEY = 'elysia.ui-test.backend-state.v1'
+
+function takeReloadState() {
+  try {
+    const raw = window.sessionStorage.getItem(RELOAD_STATE_KEY)
+    window.sessionStorage.removeItem(RELOAD_STATE_KEY)
+    return raw === null ? null : JSON.parse(raw)
+  } catch {
+    return null
+  }
+}
+
 const initialSnapshot = {
   revision: 0,
   status: 'starting',
@@ -150,6 +162,8 @@ let nextProjectUpdateNumber = 1
 let calls = []
 let delayChatActions = false
 let pendingChatActions = []
+let delayChatLists = false
+let pendingChatLists = []
 let delayCharacterPanelChanges = false
 let pendingCharacterPanelChanges = []
 let delayRestarts = false
@@ -159,6 +173,20 @@ let pendingSettingsLoads = []
 let delayAttachmentActions = false
 let pendingAttachmentActions = []
 const backendListeners = new Set()
+
+const reloadState = takeReloadState()
+if (reloadState !== null) {
+  snapshot = clone(reloadState.snapshot)
+  chatState = clone(reloadState.chatState)
+  projectState = clone(reloadState.projectState)
+  settingsState = clone(reloadState.settingsState)
+  chatMessages = new Map(clone(reloadState.chatMessages))
+  pendingGenerations = new Map(clone(reloadState.pendingGenerations))
+  attachmentStates = new Map(clone(reloadState.attachmentStates))
+  nextRequestNumber = reloadState.nextRequestNumber
+  nextAttachmentNumber = reloadState.nextAttachmentNumber
+  nextProjectUpdateNumber = reloadState.nextProjectUpdateNumber
+}
 
 function clone(value) {
   if (value === undefined) {
@@ -314,6 +342,27 @@ function releaseNextChatAction() {
 function releaseAllChatActions() {
   while (releaseNextChatAction()) {
     // Drain every test-controlled Chat action before resetting the mock.
+  }
+}
+
+async function waitForChatList() {
+  if (!delayChatLists) {
+    return
+  }
+  await new Promise((resolve) => {
+    pendingChatLists.push(resolve)
+  })
+}
+
+function releaseNextChatList() {
+  const release = pendingChatLists.shift()
+  release?.()
+  return release !== undefined
+}
+
+function releaseAllChatLists() {
+  while (releaseNextChatList()) {
+    // Drain every test-controlled Chat list before resetting the mock.
   }
 }
 
@@ -481,6 +530,17 @@ const desktopApi = {
       request: clone(request),
       attachments: clone(attachments),
     })
+    snapshot = {
+      ...snapshot,
+      activeGeneration: {
+        requestId,
+        chatId: request.chatId,
+        kind: 'send',
+        userText: request.message,
+        reply: '',
+        stopping: false,
+      },
+    }
     return { requestId }
   },
 
@@ -492,6 +552,19 @@ const desktopApi = {
       kind: 'retry',
       request: clone(request),
     })
+    snapshot = {
+      ...snapshot,
+      activeGeneration: {
+        requestId,
+        chatId: request.chatId,
+        kind: 'retry',
+        ...(request.message === undefined ? {} : { userText: request.message }),
+        userMessageId: request.userMessageId,
+        assistantMessageId: request.assistantMessageId,
+        reply: '',
+        stopping: false,
+      },
+    }
     return { requestId }
   },
 
@@ -499,6 +572,15 @@ const desktopApi = {
     record('stopGeneration', [requestId])
     if (!pendingGenerations.has(requestId)) {
       throw new Error('Generation is no longer running.')
+    }
+    if (snapshot.activeGeneration?.requestId === requestId) {
+      snapshot = {
+        ...snapshot,
+        activeGeneration: {
+          ...snapshot.activeGeneration,
+          stopping: true,
+        },
+      }
     }
   },
 
@@ -512,6 +594,7 @@ const desktopApi = {
 
   listChats: async (includeArchived) => {
     record('listChats', [includeArchived])
+    await waitForChatList()
     synchronizeChatState()
     return clone({
       ...chatState,
@@ -860,6 +943,7 @@ const desktopApi = {
 const testControl = {
   reset: () => {
     releaseAllChatActions()
+    releaseAllChatLists()
     releaseAllCharacterPanelChanges()
     releaseAllRestarts()
     releaseAllSettingsLoads()
@@ -886,6 +970,7 @@ const testControl = {
     nextProjectUpdateNumber = 1
     calls = []
     delayChatActions = false
+    delayChatLists = false
     delayCharacterPanelChanges = false
     delayRestarts = false
     delaySettingsLoads = false
@@ -935,6 +1020,18 @@ const testControl = {
     const nextEvent = clone(event)
     if (nextEvent.type === 'snapshot') {
       snapshot = clone(nextEvent.snapshot)
+    }
+    if (
+      nextEvent.type === 'chat-chunk'
+      && snapshot.activeGeneration?.requestId === nextEvent.requestId
+    ) {
+      snapshot = {
+        ...snapshot,
+        activeGeneration: {
+          ...snapshot.activeGeneration,
+          reply: snapshot.activeGeneration.reply + nextEvent.chunk,
+        },
+      }
     }
     if (nextEvent.type === 'chat-complete') {
       const createdAt = '2026-08-25T12:01:00+00:00'
@@ -1000,6 +1097,10 @@ const testControl = {
           : chat
       ))
       pendingGenerations.delete(nextEvent.requestId)
+      if (snapshot.activeGeneration?.requestId === nextEvent.requestId) {
+        snapshot = { ...snapshot }
+        delete snapshot.activeGeneration
+      }
     }
     if (nextEvent.type === 'chat-error') {
       const generation = pendingGenerations.get(nextEvent.requestId)
@@ -1019,6 +1120,10 @@ const testControl = {
         })
       }
       pendingGenerations.delete(nextEvent.requestId)
+      if (snapshot.activeGeneration?.requestId === nextEvent.requestId) {
+        snapshot = { ...snapshot }
+        delete snapshot.activeGeneration
+      }
     }
     for (const listener of backendListeners) {
       listener(clone(nextEvent))
@@ -1063,6 +1168,13 @@ const testControl = {
     }
   },
 
+  setChatListDelay: (delayed) => {
+    delayChatLists = delayed
+    if (!delayed) {
+      releaseAllChatLists()
+    }
+  },
+
   setRestartDelay: (delayed) => {
     delayRestarts = delayed
     if (!delayed) {
@@ -1088,6 +1200,10 @@ const testControl = {
 
   releaseNextChatAction,
 
+  getPendingChatListCount: () => pendingChatLists.length,
+
+  releaseNextChatList,
+
   getPendingRestartCount: () => pendingRestarts.length,
 
   releaseNextRestart,
@@ -1107,6 +1223,21 @@ const testControl = {
   releaseNextCharacterPanelChange,
 
   getCalls: () => clone(calls),
+
+  persistForReload: () => {
+    window.sessionStorage.setItem(RELOAD_STATE_KEY, JSON.stringify({
+      snapshot,
+      chatState,
+      projectState,
+      settingsState,
+      chatMessages: [...chatMessages.entries()],
+      pendingGenerations: [...pendingGenerations.entries()],
+      attachmentStates: [...attachmentStates.entries()],
+      nextRequestNumber,
+      nextAttachmentNumber,
+      nextProjectUpdateNumber,
+    }))
+  },
 
   clearCalls: () => {
     nextCallSequence = 1

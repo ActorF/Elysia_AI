@@ -20,6 +20,7 @@ import {
 import type {
   ArchiveChatRequest,
   ArchiveProjectRequest,
+  ActiveChatGeneration,
   AttachmentScope,
   AttachmentState,
   BackendEvent,
@@ -86,6 +87,10 @@ interface PendingRequest {
   streamCompleted: boolean
   streamedReply: string
   streamedLength: number
+  generation?: Omit<
+    ActiveChatGeneration,
+    'requestId' | 'chatId' | 'reply' | 'stopping'
+  >
   resolveChatState?: (state: ChatSessionState) => void
   rejectChatState?: (error: Error) => void
   resolveProjectState?: (state: ProjectState) => void
@@ -181,6 +186,10 @@ export class BackendProcess {
   } | null = null
   private restartInProgress = false
   private lastDiagnostic = ''
+  private lastReadySelection: {
+    chatId: string
+    modelName: string
+  } | null = null
   private snapshot: BackendSnapshot = {
     revision: 0,
     status: 'stopped',
@@ -194,10 +203,40 @@ export class BackendProcess {
   ) {}
 
   getSnapshot(): BackendSnapshot {
+    const activeEntry = [...this.pendingRequests.entries()].find(
+      ([, pending]) => CHAT_GENERATION_METHODS.has(pending.method),
+    )
+    const activeGeneration = activeEntry === undefined
+      ? undefined
+      : {
+          requestId: activeEntry[0],
+          chatId: activeEntry[1].chatId!,
+          kind: activeEntry[1].generation?.kind
+            ?? (activeEntry[1].method === 'chat.retry' ? 'retry' : 'send'),
+          ...(activeEntry[1].generation?.userText === undefined
+            ? {}
+            : { userText: activeEntry[1].generation.userText }),
+          ...(activeEntry[1].generation?.userMessageId === undefined
+            ? {}
+            : { userMessageId: activeEntry[1].generation.userMessageId }),
+          ...(activeEntry[1].generation?.assistantMessageId === undefined
+            ? {}
+            : {
+                assistantMessageId:
+                  activeEntry[1].generation.assistantMessageId,
+              }),
+          reply: activeEntry[1].streamedReply,
+          stopping: activeEntry[1].cancelAccepted === true
+            || [...this.pendingRequests.values()].some((pending) => (
+              pending.method === 'request.cancel'
+              && pending.cancelTargetId === activeEntry[0]
+            )),
+        } satisfies ActiveChatGeneration
     return {
       ...this.snapshot,
       capabilities: [...this.snapshot.capabilities],
       models: [...this.snapshot.models],
+      ...(activeGeneration === undefined ? {} : { activeGeneration }),
     }
   }
 
@@ -370,7 +409,12 @@ export class BackendProcess {
         chatId: request.chatId,
         message,
         attachmentIds: [...request.attachmentIds],
-      }, request.chatId),
+      }, request.chatId, {
+        generation: {
+          kind: 'send',
+          userText: message,
+        },
+      }),
     }
   }
 
@@ -390,9 +434,26 @@ export class BackendProcess {
       throw new Error('A Backend restart is already pending.')
     }
     this.restartInProgress = true
+    const previousChatId = this.snapshot.chatId
+      ?? this.lastReadySelection?.chatId
+    const previousModelName = this.snapshot.modelName
+      ?? this.lastReadySelection?.modelName
     try {
       await this.stop()
-      return await this.startAndWait(modelName)
+      const restarted = await this.startAndWait(modelName)
+      if (
+        previousChatId !== undefined
+        && previousModelName !== undefined
+        && restarted.modelName === previousModelName
+        && restarted.chatId !== previousChatId
+      ) {
+        try {
+          await this.openChat(previousChatId)
+        } catch {
+          // The Chat may have been removed externally while restarting.
+        }
+      }
+      return this.getSnapshot()
     } finally {
       this.restartInProgress = false
     }
@@ -563,6 +624,14 @@ export class BackendProcess {
           ...(message === undefined ? {} : { message }),
         },
         request.chatId,
+        {
+          generation: {
+            kind: 'retry',
+            ...(message === undefined ? {} : { userText: message }),
+            userMessageId: request.userMessageId,
+            assistantMessageId: request.assistantMessageId,
+          },
+        },
       ),
     }
   }
@@ -767,6 +836,7 @@ export class BackendProcess {
         (pending) => CHAT_GENERATION_METHODS.has(pending.method),
       )
       && method !== 'chat.open'
+      && method !== 'chat.list'
     ) {
       return Promise.reject(
         new Error('Wait for the active Chat reply to finish.'),
@@ -797,6 +867,7 @@ export class BackendProcess {
       [...this.pendingRequests.values()].some(
         (pending) => CHAT_GENERATION_METHODS.has(pending.method),
       )
+      && method !== 'project.list'
     ) {
       return Promise.reject(
         new Error('Wait for the active Chat reply to finish.'),
@@ -867,7 +938,15 @@ export class BackendProcess {
     }
     const pendingRequests = [...this.pendingRequests.values()]
     if (
-      pendingRequests.some((pending) => ATTACHMENT_METHODS.has(pending.method))
+      (
+        method === 'attachment.list'
+          ? pendingRequests.some(
+              (pending) => ATTACHMENT_MUTATION_METHODS.has(pending.method),
+            )
+          : pendingRequests.some(
+              (pending) => ATTACHMENT_METHODS.has(pending.method),
+            )
+      )
       || (
         method !== 'attachment.list'
         && pendingRequests.some(
@@ -911,6 +990,7 @@ export class BackendProcess {
       | 'cancelTargetId'
       | 'resolveCancellation'
       | 'rejectCancellation'
+      | 'generation'
     > = {},
   ): string {
     const child = this.child
@@ -1548,6 +1628,7 @@ export class BackendProcess {
     this.clearHandshakeTimeout()
     this.clearInitializeTimeout()
     this.rejectPendingActionPromises(message)
+    this.pendingRequests.clear()
     this.updateSnapshot({
       status: 'error',
       protocolName: undefined,
@@ -1594,6 +1675,16 @@ export class BackendProcess {
       ...this.snapshot,
       ...update,
       revision: this.snapshot.revision + 1,
+    }
+    if (
+      this.snapshot.status === 'ready'
+      && this.snapshot.chatId !== undefined
+      && this.snapshot.modelName !== undefined
+    ) {
+      this.lastReadySelection = {
+        chatId: this.snapshot.chatId,
+        modelName: this.snapshot.modelName,
+      }
     }
     this.emitToRenderer({
       type: 'snapshot',

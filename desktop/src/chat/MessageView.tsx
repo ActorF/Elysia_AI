@@ -19,16 +19,21 @@ import remarkGfm from 'remark-gfm'
 import { Icon } from '../design-system/Icon.tsx'
 import type {
   ChatMessage,
+  RetryEditDraft,
   RetryableChatPair,
 } from './types.ts'
 
 interface MessageViewProps {
   message: ChatMessage
+  retryEditDraft: RetryEditDraft | null
   retryPair: RetryableChatPair | null
   retryDisabled: boolean
+  onBeginRetryEdit(pair: RetryableChatPair): void
+  onCancelRetryEdit(): void
   onCopy(text: string): Promise<void>
   onOpenExternalUrl(url: string): Promise<void>
-  onRetry(pair: RetryableChatPair, message?: string): void
+  onRetry(pair: RetryableChatPair, message?: string): boolean
+  onRetryEditChange(pair: RetryableChatPair, message: string): void
 }
 
 function formatAttachmentBytes(sizeBytes: number): string {
@@ -221,15 +226,27 @@ function AssistantMarkdown({
 /** Render one user or assistant message with its complete lifecycle state. */
 export function MessageView({
   message,
+  retryEditDraft,
   retryPair,
   retryDisabled,
+  onBeginRetryEdit,
+  onCancelRetryEdit,
   onCopy,
   onOpenExternalUrl,
   onRetry,
+  onRetryEditChange,
 }: MessageViewProps) {
-  const [editing, setEditing] = useState(false)
-  const [editedMessage, setEditedMessage] = useState('')
   const editRef = useRef<HTMLTextAreaElement | null>(null)
+  const activeEditDraft = retryPair !== null
+    && message.role === 'assistant'
+    && message.id === retryPair.assistantMessageId
+    && retryEditDraft?.chatId === retryPair.chatId
+    && retryEditDraft.userMessageId === retryPair.userMessageId
+    && retryEditDraft.assistantMessageId === retryPair.assistantMessageId
+    ? retryEditDraft
+    : null
+  const editing = activeEditDraft !== null && !activeEditDraft.submitted
+  const anotherEditDraftExists = retryEditDraft !== null && activeEditDraft === null
 
   useEffect(() => {
     if (editing) {
@@ -309,12 +326,12 @@ export function MessageView({
             text={message.text}
             onCopy={onCopy}
           />
-          {pairActionsAvailable && (
+          {pairActionsAvailable && activeEditDraft === null && (
             <>
               <button
                 type="button"
                 className="message-action"
-                disabled={retryDisabled}
+                disabled={retryDisabled || anotherEditDraftExists}
                 onClick={() => { onRetry(retryPair) }}
               >
                 <Icon name="refresh" />
@@ -323,10 +340,9 @@ export function MessageView({
               <button
                 type="button"
                 className="message-action"
-                disabled={retryDisabled}
+                disabled={retryDisabled || anotherEditDraftExists}
                 onClick={() => {
-                  setEditedMessage(retryPair.userText)
-                  setEditing(true)
+                  onBeginRetryEdit(retryPair)
                 }}
               >
                 <Icon name="edit" />
@@ -342,11 +358,10 @@ export function MessageView({
             aria-label="Edit and retry message"
             onSubmit={(event) => {
               event.preventDefault()
-              if (editedMessage.trim() === '') {
+              if (activeEditDraft.text.trim() === '') {
                 return
               }
-              setEditing(false)
-              onRetry(retryPair, editedMessage)
+              onRetry(retryPair, activeEditDraft.text)
             }}
           >
             <label htmlFor={`edit-message-${message.id}`}>
@@ -355,26 +370,26 @@ export function MessageView({
             <textarea
               ref={editRef}
               id={`edit-message-${message.id}`}
-              value={editedMessage}
+              value={activeEditDraft.text}
               rows={3}
+              maxLength={1_000_000}
               disabled={retryDisabled}
-              onChange={(event) => { setEditedMessage(event.target.value) }}
+              onChange={(event) => {
+                onRetryEditChange(retryPair, event.target.value)
+              }}
             />
             <div className="message-edit-actions">
               <button
                 type="button"
                 className="message-edit-button secondary"
-                onClick={() => {
-                  setEditing(false)
-                  setEditedMessage(retryPair.userText)
-                }}
+                onClick={onCancelRetryEdit}
               >
                 Cancel
               </button>
               <button
                 type="submit"
                 className="message-edit-button primary"
-                disabled={retryDisabled || editedMessage.trim() === ''}
+                disabled={retryDisabled || activeEditDraft.text.trim() === ''}
               >
                 Retry edited message
               </button>

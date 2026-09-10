@@ -12,6 +12,7 @@ import type {
   DesktopSettingsState,
   DesktopSettingsValues,
 } from '../../electron/contracts.ts'
+import { codePointLength } from '../../electron/protocol-text.js'
 import { InlineAlert, LoadingState } from '../design-system/Feedback'
 import { Icon, type IconName } from '../design-system/Icon'
 
@@ -50,6 +51,8 @@ interface SettingsDraft {
   memoryRetrievalLimit: string
   dataImportMaxBytes: string
 }
+
+type SettingsValidationErrors = Partial<Record<keyof SettingsDraft, string>>
 
 const themeOptions: readonly ThemeOption[] = [
   {
@@ -115,14 +118,15 @@ function positiveInteger(
   return Number.isSafeInteger(parsed) && parsed <= maximum ? parsed : null
 }
 
-function validateDraft(draft: SettingsDraft): string | null {
+function validateDraft(draft: SettingsDraft): SettingsValidationErrors {
+  const errors: SettingsValidationErrors = {}
   if (
     !draft.modelName
     || draft.modelName !== draft.modelName.trim()
-    || draft.modelName.length > 200
+    || codePointLength(draft.modelName) > 200
     || /[\0\r\n]/u.test(draft.modelName)
   ) {
-    return 'Choose a valid installed model.'
+    errors.modelName = 'Choose a valid installed model.'
   }
   try {
     const origin = new URL(draft.ollamaHost)
@@ -137,21 +141,21 @@ function validateDraft(draft: SettingsDraft): string | null {
       || origin.hash.length > 0
       || draft.ollamaHost !== draft.ollamaHost.trim()
     ) {
-      return 'Enter an HTTP or HTTPS Ollama origin without credentials or a path.'
+      errors.ollamaHost = 'Enter an HTTP or HTTPS Ollama origin without credentials or a path.'
     }
   } catch {
-    return 'Enter a valid HTTP or HTTPS Ollama origin.'
+    errors.ollamaHost = 'Enter a valid HTTP or HTTPS Ollama origin.'
   }
   if (positiveInteger(draft.shortTermMemoryTokenBudget, 10_000_000) === null) {
-    return 'Short-term memory budget must be a positive whole number.'
+    errors.shortTermMemoryTokenBudget = 'Short-term memory budget must be a positive whole number.'
   }
   if (positiveInteger(draft.memoryRetrievalLimit, 10_000_000) === null) {
-    return 'Memory retrieval limit must be a positive whole number.'
+    errors.memoryRetrievalLimit = 'Memory retrieval limit must be a positive whole number.'
   }
   if (positiveInteger(draft.dataImportMaxBytes, 2_147_483_647) === null) {
-    return 'File import limit must be a positive whole number.'
+    errors.dataImportMaxBytes = 'File import limit must be a positive whole number.'
   }
-  return null
+  return errors
 }
 
 function AppearanceSettings({
@@ -225,6 +229,7 @@ export function SettingsView({
   onBack,
 }: SettingsViewProps) {
   const modelListId = useId()
+  const backendFieldId = useId()
   const [draft, setDraft] = useState<SettingsDraft | null>(null)
   const [clientError, setClientError] = useState<string | null>(null)
 
@@ -255,19 +260,20 @@ export function SettingsView({
     ])]
   }, [models, settingsState?.settings.modelName])
 
-  const validationError = draft === null ? null : validateDraft(draft)
+  const validationErrors = draft === null ? {} : validateDraft(draft)
+  const firstValidationError = Object.values(validationErrors)[0] ?? null
   const backendFieldsDisabled = pending || restartPending || loading
 
   async function submit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault()
     if (
       draft === null
-      || validationError !== null
+      || firstValidationError !== null
       || !dirty
       || backendFieldsDisabled
       || generationBusy
     ) {
-      setClientError(validationError)
+      setClientError(firstValidationError)
       return
     }
     setClientError(null)
@@ -316,7 +322,7 @@ export function SettingsView({
         </button>
         <div className="settings-heading">
           <span className="eyebrow">Preferences</span>
-          <h1>Settings</h1>
+          <h1 id="settings-title" tabIndex={-1}>Settings</h1>
           <p>Manage local defaults and see where each value is owned.</p>
         </div>
       </header>
@@ -447,15 +453,33 @@ export function SettingsView({
                   disabled={backendFieldsDisabled}
                   spellCheck={false}
                   autoComplete="off"
+                  aria-invalid={validationErrors.modelName !== undefined}
+                  aria-describedby={[
+                    `${backendFieldId}-model-name-help`,
+                    validationErrors.modelName === undefined
+                      ? null
+                      : `${backendFieldId}-model-name-error`,
+                  ].filter(Boolean).join(' ')}
+                  aria-errormessage={validationErrors.modelName === undefined
+                    ? undefined
+                    : `${backendFieldId}-model-name-error`}
                 />
                 <datalist id={modelListId}>
                   {modelOptions.map((model) => (
                     <option key={model} value={model}>{model}</option>
                   ))}
                 </datalist>
-                <small>
+                <small id={`${backendFieldId}-model-name-help`}>
                   Choose an installed model, or enter its exact Ollama name to repair a failed startup.
                 </small>
+                {validationErrors.modelName !== undefined && (
+                  <small
+                    className="settings-field-error"
+                    id={`${backendFieldId}-model-name-error`}
+                  >
+                    {validationErrors.modelName}
+                  </small>
+                )}
               </label>
               <label className="settings-field">
                 <span>Ollama origin</span>
@@ -467,8 +491,28 @@ export function SettingsView({
                   spellCheck={false}
                   autoComplete="off"
                   disabled={backendFieldsDisabled}
+                  aria-invalid={validationErrors.ollamaHost !== undefined}
+                  aria-describedby={[
+                    `${backendFieldId}-ollama-host-help`,
+                    validationErrors.ollamaHost === undefined
+                      ? null
+                      : `${backendFieldId}-ollama-host-error`,
+                  ].filter(Boolean).join(' ')}
+                  aria-errormessage={validationErrors.ollamaHost === undefined
+                    ? undefined
+                    : `${backendFieldId}-ollama-host-error`}
                 />
-                <small>Credentials, paths, query strings, and fragments are rejected.</small>
+                <small id={`${backendFieldId}-ollama-host-help`}>
+                  Credentials, paths, query strings, and fragments are rejected.
+                </small>
+                {validationErrors.ollamaHost !== undefined && (
+                  <small
+                    className="settings-field-error"
+                    id={`${backendFieldId}-ollama-host-error`}
+                  >
+                    {validationErrors.ollamaHost}
+                  </small>
+                )}
               </label>
             </div>
           </section>
@@ -491,7 +535,28 @@ export function SettingsView({
                     updateDraft('shortTermMemoryTokenBudget', event.target.value)
                   }}
                   disabled={backendFieldsDisabled}
+                  aria-invalid={validationErrors.shortTermMemoryTokenBudget !== undefined}
+                  aria-describedby={[
+                    `${backendFieldId}-short-term-memory-help`,
+                    validationErrors.shortTermMemoryTokenBudget === undefined
+                      ? null
+                      : `${backendFieldId}-short-term-memory-error`,
+                  ].filter(Boolean).join(' ')}
+                  aria-errormessage={validationErrors.shortTermMemoryTokenBudget === undefined
+                    ? undefined
+                    : `${backendFieldId}-short-term-memory-error`}
                 />
+                <small id={`${backendFieldId}-short-term-memory-help`}>
+                  Enter a whole number from 1 to 10,000,000.
+                </small>
+                {validationErrors.shortTermMemoryTokenBudget !== undefined && (
+                  <small
+                    className="settings-field-error"
+                    id={`${backendFieldId}-short-term-memory-error`}
+                  >
+                    {validationErrors.shortTermMemoryTokenBudget}
+                  </small>
+                )}
               </label>
               <label className="settings-field">
                 <span>Retrieved memories per turn</span>
@@ -505,7 +570,28 @@ export function SettingsView({
                     updateDraft('memoryRetrievalLimit', event.target.value)
                   }}
                   disabled={backendFieldsDisabled}
+                  aria-invalid={validationErrors.memoryRetrievalLimit !== undefined}
+                  aria-describedby={[
+                    `${backendFieldId}-memory-retrieval-help`,
+                    validationErrors.memoryRetrievalLimit === undefined
+                      ? null
+                      : `${backendFieldId}-memory-retrieval-error`,
+                  ].filter(Boolean).join(' ')}
+                  aria-errormessage={validationErrors.memoryRetrievalLimit === undefined
+                    ? undefined
+                    : `${backendFieldId}-memory-retrieval-error`}
                 />
+                <small id={`${backendFieldId}-memory-retrieval-help`}>
+                  Enter a whole number from 1 to 10,000,000.
+                </small>
+                {validationErrors.memoryRetrievalLimit !== undefined && (
+                  <small
+                    className="settings-field-error"
+                    id={`${backendFieldId}-memory-retrieval-error`}
+                  >
+                    {validationErrors.memoryRetrievalLimit}
+                  </small>
+                )}
               </label>
             </div>
           </section>
@@ -535,12 +621,30 @@ export function SettingsView({
                 value={draft.dataImportMaxBytes}
                 onChange={(event) => { updateDraft('dataImportMaxBytes', event.target.value) }}
                 disabled={backendFieldsDisabled}
+                aria-invalid={validationErrors.dataImportMaxBytes !== undefined}
+                aria-describedby={[
+                  `${backendFieldId}-data-import-help`,
+                  validationErrors.dataImportMaxBytes === undefined
+                    ? null
+                    : `${backendFieldId}-data-import-error`,
+                ].filter(Boolean).join(' ')}
+                aria-errormessage={validationErrors.dataImportMaxBytes === undefined
+                  ? undefined
+                  : `${backendFieldId}-data-import-error`}
               />
-              <small>
+              <small id={`${backendFieldId}-data-import-help`}>
                 Current draft: {positiveInteger(draft.dataImportMaxBytes, 2_147_483_647) === null
                   ? 'invalid'
                   : `${(Number(draft.dataImportMaxBytes) / 1_048_576).toFixed(1)} MiB`}.
               </small>
+              {validationErrors.dataImportMaxBytes !== undefined && (
+                <small
+                  className="settings-field-error"
+                  id={`${backendFieldId}-data-import-error`}
+                >
+                  {validationErrors.dataImportMaxBytes}
+                </small>
+              )}
             </label>
           </section>
 
@@ -601,7 +705,7 @@ export function SettingsView({
                   !dirty
                   || backendFieldsDisabled
                   || generationBusy
-                  || validationError !== null
+                  || firstValidationError !== null
                 }
               >
                 {pending ? 'Saving…' : 'Save changes'}

@@ -22,6 +22,18 @@ export type BackendStatus =
 /** Appearance source accepted by both Electron native chrome and the renderer. */
 export type DesktopThemePreference = 'system' | 'light' | 'dark'
 
+/** One generation still owned by Electron when a renderer is reloaded. */
+export interface ActiveChatGeneration {
+  requestId: string
+  chatId: string
+  kind: 'send' | 'retry'
+  userText?: string
+  userMessageId?: string
+  assistantMessageId?: string
+  reply: string
+  stopping: boolean
+}
+
 export interface BackendSnapshot {
   revision: number
   status: BackendStatus
@@ -33,6 +45,7 @@ export interface BackendSnapshot {
   models: string[]
   chatId?: string
   chatTitle?: string
+  activeGeneration?: ActiveChatGeneration
   error?: string
 }
 

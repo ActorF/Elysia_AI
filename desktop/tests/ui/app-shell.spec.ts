@@ -26,6 +26,16 @@ interface BackendSnapshot {
   models: string[]
   chatId?: string
   chatTitle?: string
+  activeGeneration?: {
+    requestId: string
+    chatId: string
+    kind: 'send' | 'retry'
+    userText?: string
+    userMessageId?: string
+    assistantMessageId?: string
+    reply: string
+    stopping: boolean
+  }
   error?: string
   modelName?: string
 }
@@ -138,19 +148,24 @@ interface RendererTestControl {
   clearCalls(): void
   emitBackendEvent(event: unknown): void
   getPendingChatActionCount(): number
+  getPendingChatListCount(): number
   getPendingCharacterPanelChangeCount(): number
   getPendingRestartCount(): number
   getPendingSettingsLoadCount(): number
   getPendingAttachmentActionCount(): number
   getCalls(): CallRecord[]
+  persistForReload(): void
   releaseNextChatAction(): boolean
+  releaseNextChatList(): boolean
   releaseNextCharacterPanelChange(): boolean
   releaseNextRestart(): boolean
   releaseNextSettingsLoad(): boolean
   releaseNextAttachmentAction(): boolean
   setChatActionDelay(delayed: boolean): void
+  setChatListDelay(delayed: boolean): void
   setCharacterPanelChangeDelay(delayed: boolean): void
   setRestartDelay(delayed: boolean): void
+  setSnapshot(snapshot: BackendSnapshot): void
   setSettingsLoadDelay(delayed: boolean): void
   setAttachmentActionDelay(delayed: boolean): void
   setChatState(state: ChatSessionState): void
@@ -175,6 +190,8 @@ const electronExecutablePath = require('electron') as string
 const testDirectory = path.dirname(fileURLToPath(import.meta.url))
 const desktopDirectory = path.resolve(testDirectory, '..', '..')
 const electronMainPath = path.join(testDirectory, 'electron-main.cjs')
+const rendererPath = path.join(desktopDirectory, 'dist', 'index.html')
+const mockPreloadPath = path.join(testDirectory, 'mock-preload.cjs')
 
 let electronApp: ElectronApplication | undefined
 let page: Page
@@ -198,6 +215,55 @@ async function emitEvent(event: unknown): Promise<void> {
   await page.evaluate((nextEvent) => {
     ;(window as TestWindow).elysiaDesktopTest.emitBackendEvent(nextEvent)
   }, event)
+}
+
+async function emitEvents(events: unknown[]): Promise<void> {
+  await page.evaluate((nextEvents) => {
+    const control = (window as TestWindow).elysiaDesktopTest
+    for (const event of nextEvents) {
+      control.emitBackendEvent(event)
+    }
+  }, events)
+}
+
+async function persistBackendForReload(): Promise<void> {
+  await page.evaluate(() => {
+    ;(window as TestWindow).elysiaDesktopTest.persistForReload()
+  })
+}
+
+async function replaceRendererWindow(): Promise<void> {
+  const runningApp = electronApp
+  expect(runningApp).toBeDefined()
+  const nextWindow = runningApp!.waitForEvent('window')
+  await runningApp!.evaluate(async ({ BrowserWindow }, paths) => {
+    const previousWindow = BrowserWindow.getAllWindows()[0]
+    const replacementWindow = new BrowserWindow({
+      width: 1180,
+      height: 780,
+      show: true,
+      webPreferences: {
+        preload: paths.preloadPath,
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: true,
+        partition: `elysia-ui-test-${process.pid}`,
+      },
+    })
+    await replacementWindow.loadFile(paths.rendererPath)
+    previousWindow?.close()
+  }, {
+    preloadPath: mockPreloadPath,
+    rendererPath,
+  })
+  page = await nextWindow
+  await page.waitForLoadState('domcontentloaded')
+  await page.waitForFunction(() => (
+    'elysiaDesktopTest' in window
+    && (window as TestWindow).elysiaDesktopTest
+      .getCalls()
+      .some((call) => call.method === 'onBackendEvent.subscribe')
+  ))
 }
 
 async function emitSnapshot(snapshot: BackendSnapshot): Promise<void> {
@@ -1538,6 +1604,7 @@ test('uses Shift+Enter for a line and Enter to send through DesktopApi', async (
 })
 
 const layoutCases = [
+  { width: 640, height: 480, zoom: 1 },
   { width: 960, height: 640, zoom: 1 },
   { width: 960, height: 640, zoom: 1.5 },
   { width: 960, height: 640, zoom: 2 },
@@ -2516,10 +2583,16 @@ test('regenerates and edit-retries only the persisted tail pair', async () => {
 
   await clearCalls()
   await assistant.getByRole('button', { name: 'Edit & retry' }).click()
+  await expect(page.getByRole('form', {
+    name: 'Edit and retry message',
+  })).toHaveCount(1)
   const editForm = assistant.getByRole('form', { name: 'Edit and retry message' })
   const editBox = editForm.getByLabel('Edit your last message')
   await expect(editBox).toBeFocused()
   await editBox.fill('Edited question')
+  await expect.poll(() => page.evaluate(() => (
+    window.localStorage.getItem('elysia.retry-edit-draft.v1')
+  ))).toContain('Edited question')
   await editForm.getByRole('button', { name: 'Retry edited message' }).click()
   await expect.poll(async () => (
     (await getCalls()).find((call) => call.method === 'retryMessage')?.args
@@ -2541,6 +2614,298 @@ test('regenerates and edit-retries only the persisted tail pair', async () => {
   )
   await expect(assistant).toContainText('Answer to edited question')
   await expect(assistant.getByText('Complete', { exact: true })).toBeVisible()
+  await expect.poll(() => page.evaluate(() => (
+    window.localStorage.getItem('elysia.retry-edit-draft.v1')
+  ))).toBeNull()
+})
+
+test('restores an edited retry after its renderer window closes', async () => {
+  const summary = chatSummary('chat-retry-window', 'Retry Window', {
+    messageCount: 2,
+  })
+  const canonicalState: ChatSessionState = {
+    activeChat: {
+      ...summary,
+      messages: [
+        {
+          messageId: 'user-retry-window',
+          role: 'user',
+          content: 'Original window question',
+          createdAt: '2026-08-25T12:30:00+00:00',
+          attachments: [],
+        },
+        {
+          messageId: 'assistant-retry-window',
+          role: 'assistant',
+          content: 'Original window answer',
+          createdAt: '2026-08-25T12:31:00+00:00',
+          attachments: [],
+        },
+      ],
+    },
+    chats: [summary],
+  }
+  await setChatState(canonicalState)
+  await emitSnapshot(readySnapshot({
+    chatId: summary.chatId,
+    chatTitle: summary.title,
+  }))
+  const assistant = page.locator('[data-message-id="assistant-retry-window"]')
+  await assistant.getByRole('button', { name: 'Edit & retry' }).click()
+  const replacement = 'Replacement survives a closed renderer'
+  await assistant.getByLabel('Edit your last message').fill(replacement)
+  await assistant.getByRole('button', { name: 'Retry edited message' }).click()
+  await expect.poll(() => page.evaluate(() => {
+    const raw = window.localStorage.getItem('elysia.retry-edit-draft.v1')
+    return raw === null ? null : JSON.parse(raw).operationId
+  })).not.toBeNull()
+
+  await replaceRendererWindow()
+  await page.evaluate(({ nextSnapshot, nextState }) => {
+    const control = (window as TestWindow).elysiaDesktopTest
+    control.setChatState(nextState)
+    control.setSnapshot(nextSnapshot)
+  }, {
+    nextSnapshot: readySnapshot({
+      chatId: summary.chatId,
+      chatTitle: summary.title,
+    }),
+    nextState: canonicalState,
+  })
+  await emitSnapshot(readySnapshot({
+    chatId: summary.chatId,
+    chatTitle: summary.title,
+  }))
+
+  const restoredAssistant = page.locator(
+    '[data-message-id="assistant-retry-window"]',
+  )
+  await expect(restoredAssistant.getByRole('form', {
+    name: 'Edit and retry message',
+  })).toBeVisible()
+  await expect(restoredAssistant.getByLabel('Edit your last message'))
+    .toHaveValue(replacement)
+  await expect.poll(() => page.evaluate(() => {
+    const raw = window.localStorage.getItem('elysia.retry-edit-draft.v1')
+    return raw === null ? null : JSON.parse(raw).operationId ?? null
+  })).toBeNull()
+  await restoredAssistant.getByRole('button', { name: 'Cancel' }).click()
+  await expect.poll(() => page.evaluate(() => (
+    window.localStorage.getItem('elysia.retry-edit-draft.v1')
+  ))).toBeNull()
+})
+
+test('keeps a saved retry edit isolated from another Chat', async () => {
+  const chatA = chatSummary('chat-edit-a', 'Edit A', { messageCount: 2 })
+  const chatB = chatSummary('chat-edit-b', 'Edit B', { messageCount: 2 })
+  const stateFor = (
+    active: ChatSessionSummary,
+    userId: string,
+    assistantId: string,
+    question: string,
+  ): ChatSessionState => ({
+    activeChat: {
+      ...active,
+      messages: [
+        {
+          messageId: userId,
+          role: 'user',
+          content: question,
+          createdAt: '2026-08-25T12:30:00+00:00',
+          attachments: [],
+        },
+        {
+          messageId: assistantId,
+          role: 'assistant',
+          content: `Answer for ${active.title}`,
+          createdAt: '2026-08-25T12:31:00+00:00',
+          attachments: [],
+        },
+      ],
+    },
+    chats: [chatA, chatB],
+  })
+  const stateA = stateFor(
+    chatA,
+    'user-edit-a',
+    'assistant-edit-a',
+    'Question A',
+  )
+  const stateB = stateFor(
+    chatB,
+    'user-edit-b',
+    'assistant-edit-b',
+    'Question B',
+  )
+  await setChatState(stateA)
+  await emitSnapshot(readySnapshot({
+    chatId: chatA.chatId,
+    chatTitle: chatA.title,
+  }))
+  const assistantA = page.locator('[data-message-id="assistant-edit-a"]')
+  await assistantA.getByRole('button', { name: 'Edit & retry' }).click()
+  await assistantA.getByLabel('Edit your last message').fill('Saved edit for A')
+
+  await page.evaluate((nextState) => {
+    ;(window as TestWindow).elysiaDesktopTest.setChatState(nextState)
+  }, stateB)
+  await page.getByRole('button', { name: 'Open chat Edit B' }).click()
+  const assistantB = page.locator('[data-message-id="assistant-edit-b"]')
+  await expect(assistantB.getByRole('button', { name: 'Regenerate' })).toBeDisabled()
+  await expect(assistantB.getByRole('button', { name: 'Edit & retry' })).toBeDisabled()
+  await page.getByLabel('Message Elysia').fill('A separate Chat draft')
+  await expect(page.getByRole('button', { name: 'Send message' })).toBeDisabled()
+  await expect(page.getByText(
+    'A saved edited retry is waiting in another Chat. Return to it to retry or cancel.',
+    { exact: true },
+  )).toBeVisible()
+  await expect.poll(() => page.evaluate(() => (
+    window.localStorage.getItem('elysia.retry-edit-draft.v1')
+  ))).toContain('Saved edit for A')
+
+  await page.evaluate((nextState) => {
+    ;(window as TestWindow).elysiaDesktopTest.setChatState(nextState)
+  }, stateA)
+  await page.getByRole('button', { name: 'Open chat Edit A' }).click()
+  await expect(page.locator('[data-message-id="assistant-edit-a"]')
+    .getByLabel('Edit your last message')).toHaveValue('Saved edit for A')
+})
+
+test('moves an orphaned retry edit into the Chat composer', async () => {
+  const summary = chatSummary('chat-orphaned-edit', 'Changed Retry Chat', {
+    messageCount: 2,
+  })
+  const canonicalState: ChatSessionState = {
+    activeChat: {
+      ...summary,
+      messages: [
+        {
+          messageId: 'new-user-tail',
+          role: 'user',
+          content: 'A newer canonical question',
+          createdAt: '2026-08-25T12:30:00+00:00',
+          attachments: [],
+        },
+        {
+          messageId: 'new-assistant-tail',
+          role: 'assistant',
+          content: 'A newer canonical answer',
+          createdAt: '2026-08-25T12:31:00+00:00',
+          attachments: [],
+        },
+      ],
+    },
+    chats: [summary],
+  }
+  await setChatState(canonicalState)
+  await emitSnapshot(readySnapshot({
+    chatId: summary.chatId,
+    chatTitle: summary.title,
+  }))
+  await persistBackendForReload()
+  await page.evaluate((chatId) => {
+    window.localStorage.setItem(
+      'elysia.retry-edit-draft.v1',
+      JSON.stringify({
+        chatId,
+        userMessageId: 'old-user-tail',
+        assistantMessageId: 'old-assistant-tail',
+        text: 'Move this saved edit to the composer',
+      }),
+    )
+  }, summary.chatId)
+
+  await page.reload()
+  await page.waitForFunction(() => (
+    'elysiaDesktopTest' in window
+    && (window as TestWindow).elysiaDesktopTest
+      .getCalls()
+      .some((call) => call.method === 'onBackendEvent.subscribe')
+  ))
+
+  await expect(page.getByLabel('Message Elysia')).toHaveValue(
+    'Move this saved edit to the composer',
+  )
+  await expect(page.getByText(
+    'The original retry target is no longer available, so its saved edit was moved to the Chat composer.',
+    { exact: true },
+  )).toBeVisible()
+  await expect.poll(() => page.evaluate(() => (
+    window.localStorage.getItem('elysia.retry-edit-draft.v1')
+  ))).toBeNull()
+  await expect(page.locator('[data-message-id="new-assistant-tail"]')
+    .getByRole('button', { name: 'Edit & retry' })).toBeEnabled()
+})
+
+test('rescues a retry edit whose Chat was deleted', async () => {
+  const summary = chatSummary('chat-survivor', 'Surviving Chat')
+  const survivingState: ChatSessionState = {
+    activeChat: { ...summary, messages: [] },
+    chats: [summary],
+  }
+  await setChatState(survivingState)
+  await emitSnapshot(readySnapshot({
+    chatId: summary.chatId,
+    chatTitle: summary.title,
+  }))
+  await persistBackendForReload()
+  await page.evaluate(() => {
+    window.localStorage.setItem(
+      'elysia.retry-edit-draft.v1',
+      JSON.stringify({
+        chatId: 'chat-that-was-deleted',
+        userMessageId: 'deleted-user-tail',
+        assistantMessageId: 'deleted-assistant-tail',
+        text: 'Rescue this edit from the deleted Chat',
+      }),
+    )
+  })
+  await page.addInitScript(() => {
+    const originalRemoveItem = Storage.prototype.removeItem
+    Storage.prototype.removeItem = function removeItem(key: string): void {
+      if (key === 'elysia.retry-edit-draft.v1') {
+        throw new DOMException('Test retry cleanup failure', 'SecurityError')
+      }
+      originalRemoveItem.call(this, key)
+    }
+  })
+
+  await page.reload()
+  await page.waitForFunction(() => (
+    'elysiaDesktopTest' in window
+    && (window as TestWindow).elysiaDesktopTest
+      .getCalls()
+      .some((call) => call.method === 'onBackendEvent.subscribe')
+  ))
+
+  await expect(page.getByLabel('Message Elysia')).toHaveValue(
+    'Rescue this edit from the deleted Chat',
+  )
+  await expect.poll(() => page.evaluate(() => (
+    window.localStorage.getItem('elysia.retry-edit-draft.v1')
+  ))).toBe('null')
+  await expect(page.getByRole('button', { name: 'Send message' })).toBeEnabled()
+
+  await page.getByLabel('Message Elysia').press('Enter')
+  await emitEvent({
+    type: 'chat-complete',
+    requestId: 'test-request-1',
+    chatId: summary.chatId,
+    reply: 'The rescued edit was answered once',
+  })
+  await persistBackendForReload()
+  await page.reload()
+  await page.waitForFunction(() => (
+    'elysiaDesktopTest' in window
+    && (window as TestWindow).elysiaDesktopTest
+      .getCalls()
+      .some((call) => call.method === 'onBackendEvent.subscribe')
+  ))
+  await expect(page.getByLabel('Message Elysia')).toHaveValue('')
+  await expect(page.getByText(
+    'Rescue this edit from the deleted Chat',
+    { exact: true },
+  )).toBeVisible()
 })
 
 test('preserves picker drafts on cancel and recovers a failed keyboard removal', async () => {
@@ -2895,4 +3260,992 @@ test('isolates an A stream, drafts, and file previews while viewing Chat B', asy
   await page.getByRole('button', { name: 'Open chat Chat A' }).click()
   await expect(page.getByText('Completed Chat A answer', { exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Stop generation' })).toHaveCount(0)
+})
+
+test('keeps global shortcuts inside native modal boundaries', async () => {
+  await emitSnapshot(readySnapshot())
+  await setWindowAndZoom(960, 640, 2)
+  await page.getByRole('button', { name: 'Show navigation' }).click()
+  const sidebar = page.locator('#app-sidebar')
+  await page.getByRole('button', {
+    name: 'More actions for Elysia Chat',
+  }).click()
+  await page.getByRole('menuitem', { name: 'Rename' }).click()
+
+  const dialog = page.getByRole('dialog', { name: 'Rename Chat' })
+  const input = dialog.getByLabel('Chat title')
+  await expect(input).toBeFocused()
+  for (const key of ['b', 'k', ',']) {
+    await pressControlShortcut(key)
+    await expect(dialog).toBeVisible()
+    await expect(sidebar).toHaveAttribute('aria-hidden', 'false')
+    await expect(input).toBeFocused()
+  }
+  await expect(page.getByPlaceholder('Search chats')).toHaveCount(0)
+  await expect(page.getByRole('heading', { name: 'Settings' })).toHaveCount(0)
+
+  await dialog.getByRole('button', { name: 'Save' }).focus()
+  await page.keyboard.press('Tab')
+  await expect(input).toBeFocused()
+  await page.keyboard.press('Shift+Tab')
+  await expect(dialog.getByRole('button', { name: 'Save' })).toBeFocused()
+  await page.keyboard.press('Escape')
+  await expect(dialog).toHaveCount(0)
+  await expect(page.getByRole('button', {
+    name: 'More actions for Elysia Chat',
+  })).toBeFocused()
+})
+
+test('makes the compact character panel modal and directly dismissible', async () => {
+  await emitSnapshot(readySnapshot())
+  await setWindowAndZoom(960, 640, 2)
+  const trigger = page.getByRole('button', { name: 'Expand Elysia panel' })
+  await trigger.focus()
+  await trigger.click()
+
+  const panel = page.getByRole('dialog', { name: 'Here with you' })
+  const close = panel.getByRole('button', {
+    name: 'Close Elysia character panel',
+  })
+  await expect(panel).toBeVisible()
+  await expect(close).toBeFocused()
+  await expect(page.locator('#main-content')).toHaveAttribute('inert', '')
+
+  await page.keyboard.press('Tab')
+  await expect(close).toBeFocused()
+  for (const key of ['b', 'k', ',']) {
+    await pressControlShortcut(key)
+    await expect(panel).toBeVisible()
+    await expect(close).toBeFocused()
+  }
+
+  await page.keyboard.press('Escape')
+  await expect(panel).toHaveCount(0)
+  await expect(trigger).toBeFocused()
+})
+
+test('exposes field errors and restores focus across Settings navigation', async () => {
+  await emitSnapshot(readySnapshot())
+  await pressControlShortcut(',')
+  const heading = page.getByRole('heading', { name: 'Settings', exact: true })
+  await expect(heading).toBeFocused()
+
+  const origin = page.getByLabel('Ollama origin')
+  await origin.fill('http://localhost:11434/private')
+  await expect(origin).toHaveAttribute('aria-invalid', 'true')
+  await expect(origin).toHaveAccessibleDescription(
+    /without credentials or a path/i,
+  )
+  await expect(page.getByText(
+    'Enter an HTTP or HTTPS Ollama origin without credentials or a path.',
+    { exact: true },
+  )).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Save changes' })).toBeDisabled()
+
+  const back = page.getByRole('button', { name: 'Back to chat' })
+  page.once('dialog', async (dialog) => { await dialog.accept() })
+  await back.focus()
+  await back.press('Enter')
+  await expect(page.getByLabel('Message Elysia')).toBeFocused()
+})
+
+test('moves focus into and back out of Chat selection mode', async () => {
+  await emitSnapshot(readySnapshot())
+  const trigger = page.getByRole('button', { name: 'Select chats' })
+  await trigger.focus()
+  await trigger.press('Enter')
+  await expect(page.getByRole('checkbox', {
+    name: 'Select all visible',
+  })).toBeFocused()
+  await page.keyboard.press('Escape')
+  await expect(trigger).toBeFocused()
+})
+
+test('keeps focus visible in Windows forced-colors mode', async () => {
+  await page.emulateMedia({ forcedColors: 'active' })
+  await emitSnapshot(readySnapshot())
+  const composer = page.getByLabel('Message Elysia')
+  await composer.focus()
+  const composerOutline = await page.locator('.composer-card').evaluate(
+    (element) => ({
+      style: getComputedStyle(element).outlineStyle,
+      width: getComputedStyle(element).outlineWidth,
+    }),
+  )
+  expect(composerOutline.style).not.toBe('none')
+  expect(composerOutline.width).not.toBe('0px')
+
+  await pressControlShortcut('k')
+  const searchOutline = await page.locator('.search-box').evaluate(
+    (element) => ({
+      style: getComputedStyle(element).outlineStyle,
+      width: getComputedStyle(element).outlineWidth,
+    }),
+  )
+  expect(searchOutline.style).not.toBe('none')
+  expect(searchOutline.width).not.toBe('0px')
+})
+
+test('counts Chat rename limits by Unicode code point and contains long dialogs', async () => {
+  const astralTitle = '🙂'.repeat(200)
+  await emitSnapshot(readySnapshot())
+  await page.getByRole('button', {
+    name: 'More actions for Elysia Chat',
+  }).click()
+  await page.getByRole('menuitem', { name: 'Rename' }).click()
+  const renameDialog = page.getByRole('dialog', { name: 'Rename Chat' })
+  const titleInput = renameDialog.getByLabel('Chat title')
+  await titleInput.fill(`${astralTitle}🙂`)
+  await expect(titleInput).toHaveValue(astralTitle)
+  await expect(renameDialog.getByText('200/200', { exact: true })).toBeVisible()
+  await renameDialog.getByRole('button', { name: 'Save' }).click()
+  await expect.poll(async () => (
+    (await getCalls()).find((call) => call.method === 'renameChat')?.args
+  )).toEqual([{ chatId: 'chat-test', title: astralTitle }])
+
+  await setWindowAndZoom(960, 640, 2)
+  await page.getByRole('button', { name: 'Show navigation' }).click()
+  await page.getByRole('button', {
+    name: `More actions for ${astralTitle}`,
+  }).click()
+  await page.getByRole('menuitem', { name: 'Delete' }).click()
+  const deleteDialog = page.getByRole('dialog', {
+    name: new RegExp(`Delete`),
+  })
+  const geometry = await deleteDialog.locator('.chat-action-dialog-card').evaluate(
+    (element) => ({
+      clientWidth: element.clientWidth,
+      scrollWidth: element.scrollWidth,
+    }),
+  )
+  expect(geometry.scrollWidth).toBeLessThanOrEqual(geometry.clientWidth + 1)
+  await expect(deleteDialog.getByRole('button', { name: 'Delete Chat' })).toBeVisible()
+})
+
+test('does not send while a Chinese IME composition is active', async () => {
+  await emitSnapshot(readySnapshot())
+  const composer = page.getByLabel('Message Elysia')
+  await composer.fill('你好，爱莉希雅')
+  await composer.evaluate((element) => {
+    element.dispatchEvent(new KeyboardEvent('keydown', {
+      key: 'Enter',
+      bubbles: true,
+      cancelable: true,
+      isComposing: true,
+    }))
+  })
+  expect((await getCalls()).some((call) => call.method === 'sendMessage')).toBe(false)
+  await composer.press('Enter')
+  await expect.poll(async () => (
+    (await getCalls()).filter((call) => call.method === 'sendMessage').length
+  )).toBe(1)
+})
+
+test('keeps Chat drafts and canonical history across renderer reload', async () => {
+  const summary = chatSummary('chat-reload', 'Reloaded Chat', {
+    messageCount: 1,
+  })
+  await setProjectState({
+    activeProject: null,
+    projects: [],
+    chatState: {
+      activeChat: {
+        ...summary,
+        messages: [{
+          messageId: 'message-before-reload',
+          role: 'assistant',
+          content: 'Persisted before renderer refresh.',
+          createdAt: '2026-08-25T12:30:00+00:00',
+          attachments: [],
+        }],
+      },
+      chats: [summary],
+    },
+  })
+  await emitSnapshot(readySnapshot({
+    chatId: summary.chatId,
+    chatTitle: summary.title,
+  }))
+  await page.getByLabel('Message Elysia').fill('Unsent 中文 draft survives reload')
+  await expect.poll(() => page.evaluate(() => (
+    window.localStorage.getItem('elysia.chat-drafts.v1')
+  ))).toContain('Unsent 中文 draft survives reload')
+  await persistBackendForReload()
+
+  await page.reload()
+  await page.waitForFunction(() => (
+    'elysiaDesktopTest' in window
+    && (window as TestWindow).elysiaDesktopTest
+      .getCalls()
+      .some((call) => call.method === 'onBackendEvent.subscribe')
+  ))
+  await expect(page.locator('#chat-title')).toHaveText(summary.title)
+  await expect(page.getByText(
+    'Persisted before renderer refresh.',
+    { exact: true },
+  )).toBeVisible()
+  await expect(page.getByLabel('Message Elysia')).toHaveValue(
+    'Unsent 中文 draft survives reload',
+  )
+})
+
+test('resumes an Electron-owned stream after renderer reload', async () => {
+  await emitSnapshot(readySnapshot())
+  const composer = page.getByLabel('Message Elysia')
+  await composer.fill('Continue safely after refresh')
+  await composer.press('Enter')
+  await emitEvents([
+    {
+      type: 'chat-chunk',
+      requestId: 'test-request-1',
+      chatId: 'chat-test',
+      chunk: 'First ',
+    },
+    {
+      type: 'chat-chunk',
+      requestId: 'test-request-1',
+      chatId: 'chat-test',
+      chunk: 'half',
+    },
+  ])
+  await persistBackendForReload()
+  await page.reload()
+  await page.waitForFunction(() => (
+    'elysiaDesktopTest' in window
+    && (window as TestWindow).elysiaDesktopTest
+      .getCalls()
+      .some((call) => call.method === 'onBackendEvent.subscribe')
+  ))
+
+  const reply = page.getByLabel('Message from Elysia').last()
+  await expect(reply).toContainText('First half')
+  await expect(page.getByRole('button', { name: 'Stop generation' })).toBeVisible()
+  await emitEvent({
+    type: 'chat-chunk',
+    requestId: 'test-request-1',
+    chatId: 'chat-test',
+    chunk: ' and second half.',
+  })
+  await emitEvent({
+    type: 'chat-complete',
+    requestId: 'test-request-1',
+    chatId: 'chat-test',
+    reply: 'First half and second half.',
+  })
+  await expect(page.getByText(
+    'First half and second half.',
+    { exact: true },
+  )).toBeVisible()
+  await expect(page.getByLabel('Message from you')).toHaveCount(1)
+  await expect(page.getByLabel('Message from Elysia')).toHaveCount(1)
+  await expect(page.getByRole('button', { name: 'Stop generation' })).toHaveCount(0)
+  await expect.poll(() => page.evaluate(() => (
+    window.localStorage.getItem('elysia.pending-chat-send.v1')
+  ))).toBeNull()
+
+  await emitSnapshot(readySnapshot({
+    activeGeneration: {
+      requestId: 'test-request-1',
+      chatId: 'chat-test',
+      kind: 'send',
+      userText: 'Continue safely after refresh',
+      reply: 'First half',
+      stopping: false,
+    },
+  }))
+  await expect(page.getByRole('button', { name: 'Stop generation' })).toHaveCount(0)
+  await expect(page.getByLabel('Message from you')).toHaveCount(1)
+  await expect(page.getByLabel('Message from Elysia')).toHaveCount(1)
+})
+
+test('restores a send draft when Backend failure interrupts generation', async () => {
+  await emitSnapshot(readySnapshot())
+  const composer = page.getByLabel('Message Elysia')
+  await composer.fill('Recover this prompt after Backend failure')
+  await composer.press('Enter')
+  await emitEvent({
+    type: 'chat-chunk',
+    requestId: 'test-request-1',
+    chatId: 'chat-test',
+    chunk: 'Partial before failure',
+  })
+  await emitSnapshot({
+    ...readySnapshot(),
+    revision: 2,
+    status: 'error',
+    capabilities: [],
+    models: [],
+    error: 'The local Backend stopped unexpectedly.',
+    activeGeneration: {
+      requestId: 'test-request-1',
+      chatId: 'chat-test',
+      kind: 'send',
+      userText: 'Recover this prompt after Backend failure',
+      reply: 'Partial before failure',
+      stopping: false,
+    },
+  })
+
+  await expect(page.getByRole('button', { name: 'Stop generation' })).toHaveCount(0)
+  await expect(composer).toHaveValue('Recover this prompt after Backend failure')
+  await expect(page.getByText(
+    'The local Backend stopped unexpectedly.',
+    { exact: true },
+  )).toBeVisible()
+})
+
+test('retains the pending send until a recovered draft is durably stored', async () => {
+  await emitSnapshot(readySnapshot())
+  const composer = page.getByLabel('Message Elysia')
+  await composer.fill('Keep the durable pending copy')
+  await composer.press('Enter')
+  await composer.fill('Newer local draft')
+  await page.evaluate(() => {
+    const originalSetItem = Storage.prototype.setItem
+    const testWindow = window as Window & { restoreDraftStorage?: () => void }
+    testWindow.restoreDraftStorage = () => {
+      Storage.prototype.setItem = originalSetItem
+      delete testWindow.restoreDraftStorage
+    }
+    Storage.prototype.setItem = function setItem(key: string, value: string): void {
+      if (key === 'elysia.chat-drafts.v1') {
+        throw new DOMException('Test quota exceeded', 'QuotaExceededError')
+      }
+      originalSetItem.call(this, key, value)
+    }
+  })
+
+  await emitEvent({
+    type: 'chat-error',
+    requestId: 'test-request-1',
+    chatId: 'chat-test',
+    code: 'generation.failed',
+    message: 'Generation failed safely.',
+    retryable: true,
+  })
+
+  await expect(composer).toHaveValue(
+    'Keep the durable pending copy\n\nNewer local draft',
+  )
+  await expect(page.getByRole('button', { name: 'Send message' })).toBeDisabled()
+  await expect.poll(() => page.evaluate(() => (
+    window.localStorage.getItem('elysia.pending-chat-send.v1')
+  ))).toContain('Keep the durable pending copy')
+
+  await page.evaluate(() => {
+    const testWindow = window as Window & { restoreDraftStorage?: () => void }
+    testWindow.restoreDraftStorage?.()
+  })
+  await composer.fill('Keep the durable pending copy\n\nNewer local draft!')
+  await expect.poll(() => page.evaluate(() => (
+    window.localStorage.getItem('elysia.pending-chat-send.v1')
+  ))).toBeNull()
+})
+
+test('keeps a recovered prompt inside the 100-draft storage cap', async () => {
+  const recoveredChatId = 'chat-recovered-overflow'
+  const recoveredPrompt = 'Keep the 101st recovered prompt'
+  await page.evaluate(({ chatId, prompt }) => {
+    const drafts = Object.fromEntries(Array.from(
+      { length: 100 },
+      (_, index) => [`chat-existing-${index}`, `Draft ${index}`],
+    ))
+    window.localStorage.setItem(
+      'elysia.chat-drafts.v1',
+      JSON.stringify(drafts),
+    )
+    window.localStorage.setItem(
+      'elysia.pending-chat-send.v1',
+      JSON.stringify({
+        operationId: 'recover-overflow-operation',
+        chatId,
+        userText: prompt,
+        baseMessageCount: 0,
+      }),
+    )
+  }, { chatId: recoveredChatId, prompt: recoveredPrompt })
+
+  await page.reload()
+  await page.waitForFunction(() => (
+    'elysiaDesktopTest' in window
+    && (window as TestWindow).elysiaDesktopTest
+      .getCalls()
+      .some((call) => call.method === 'onBackendEvent.subscribe')
+  ))
+  await emitSnapshot(readySnapshot())
+
+  await expect.poll(() => page.evaluate(() => (
+    window.localStorage.getItem('elysia.pending-chat-send.v1')
+  ))).toBeNull()
+  await expect.poll(() => page.evaluate((chatId) => {
+    const raw = window.localStorage.getItem('elysia.chat-drafts.v1')
+    const drafts = raw === null ? {} : JSON.parse(raw)
+    return {
+      count: Object.keys(drafts).length,
+      recovered: drafts[chatId] ?? null,
+    }
+  }, recoveredChatId)).toEqual({ count: 100, recovered: recoveredPrompt })
+
+  await page.reload()
+  await page.waitForFunction(() => (
+    'elysiaDesktopTest' in window
+    && (window as TestWindow).elysiaDesktopTest
+      .getCalls()
+      .some((call) => call.method === 'onBackendEvent.subscribe')
+  ))
+  await expect.poll(() => page.evaluate((chatId) => {
+    const raw = window.localStorage.getItem('elysia.chat-drafts.v1')
+    const drafts = raw === null ? {} : JSON.parse(raw)
+    return drafts[chatId] ?? null
+  }, recoveredChatId)).toBe(recoveredPrompt)
+})
+
+test('fails closed when recovery storage cannot be read', async () => {
+  const protectedDraft = 'Do not overwrite this protected draft'
+  await page.evaluate((draft) => {
+    window.localStorage.setItem(
+      'elysia.chat-drafts.v1',
+      JSON.stringify({ 'chat-test': draft }),
+    )
+  }, protectedDraft)
+  await page.addInitScript(() => {
+    const key = 'elysia.chat-drafts.v1'
+    const originalGetItem = Storage.prototype.getItem
+    const originalSetItem = Storage.prototype.setItem
+    const originalRemoveItem = Storage.prototype.removeItem
+    let mutations = 0
+    const testWindow = window as Window & {
+      readProtectedRecoveryState?: () => {
+        mutations: number
+        value: string | null
+      }
+    }
+    testWindow.readProtectedRecoveryState = () => ({
+      mutations,
+      value: originalGetItem.call(window.localStorage, key),
+    })
+    Storage.prototype.getItem = function getItem(storageKey: string): string | null {
+      if (storageKey === key) {
+        throw new DOMException('Test storage read failure', 'SecurityError')
+      }
+      return originalGetItem.call(this, storageKey)
+    }
+    Storage.prototype.setItem = function setItem(
+      storageKey: string,
+      value: string,
+    ): void {
+      if (storageKey === key) {
+        mutations += 1
+      }
+      originalSetItem.call(this, storageKey, value)
+    }
+    Storage.prototype.removeItem = function removeItem(storageKey: string): void {
+      if (storageKey === key) {
+        mutations += 1
+      }
+      originalRemoveItem.call(this, storageKey)
+    }
+  })
+
+  await page.reload()
+  await expect(page.getByRole('heading', {
+    name: 'Elysia could not display this view.',
+  })).toBeVisible()
+  const recoveryState = await page.evaluate(() => {
+    const testWindow = window as Window & {
+      readProtectedRecoveryState?: () => {
+        mutations: number
+        value: string | null
+      }
+    }
+    return testWindow.readProtectedRecoveryState?.()
+  })
+  expect(recoveryState).toEqual({
+    mutations: 0,
+    value: JSON.stringify({ 'chat-test': protectedDraft }),
+  })
+})
+
+test('does not lock Chat when completed-send cleanup fails', async () => {
+  await emitSnapshot(readySnapshot())
+  const composer = page.getByLabel('Message Elysia')
+  await composer.fill('First prompt with failed cleanup')
+  await composer.press('Enter')
+  await expect.poll(() => page.evaluate(() => (
+    window.localStorage.getItem('elysia.pending-chat-send.v1')
+  ))).toContain('First prompt with failed cleanup')
+  await page.evaluate(() => {
+    const originalRemoveItem = Storage.prototype.removeItem
+    Storage.prototype.removeItem = function removeItem(key: string): void {
+      if (key === 'elysia.pending-chat-send.v1') {
+        throw new DOMException('Test cleanup failure', 'SecurityError')
+      }
+      originalRemoveItem.call(this, key)
+    }
+  })
+
+  await emitEvent({
+    type: 'chat-complete',
+    requestId: 'test-request-1',
+    chatId: 'chat-test',
+    reply: 'First reply committed safely',
+  })
+  await expect(page.getByText(
+    'First reply committed safely',
+    { exact: true },
+  )).toBeVisible()
+
+  await composer.fill('Second prompt remains available')
+  await expect(page.getByRole('button', { name: 'Send message' })).toBeEnabled()
+  await composer.press('Enter')
+  await expect.poll(async () => (
+    (await getCalls()).filter((call) => call.method === 'sendMessage').length
+  )).toBe(2)
+  await expect.poll(() => page.evaluate(() => (
+    window.localStorage.getItem('elysia.pending-chat-send.v1')
+  ))).toContain('Second prompt remains available')
+})
+
+test('does not let an unrelated terminal event consume an unbound pending send', async () => {
+  await emitSnapshot(readySnapshot())
+  await page.evaluate(() => {
+    const control = (window as TestWindow).elysiaDesktopTest
+    control.failNextSend('The request failed before an id was returned.')
+    const originalSetItem = Storage.prototype.setItem
+    const testWindow = window as Window & { restoreDraftStorage?: () => void }
+    testWindow.restoreDraftStorage = () => {
+      Storage.prototype.setItem = originalSetItem
+      delete testWindow.restoreDraftStorage
+    }
+    Storage.prototype.setItem = function setItem(key: string, value: string): void {
+      if (key === 'elysia.chat-drafts.v1') {
+        throw new DOMException('Test quota exceeded', 'QuotaExceededError')
+      }
+      originalSetItem.call(this, key, value)
+    }
+  })
+  const composer = page.getByLabel('Message Elysia')
+  await composer.fill('Pending without a Backend request id')
+  await composer.press('Enter')
+  await expect(page.getByText(
+    'The request failed before an id was returned.',
+    { exact: true },
+  )).toBeVisible()
+  await expect.poll(() => page.evaluate(() => {
+    const raw = window.localStorage.getItem('elysia.pending-chat-send.v1')
+    const pending = raw === null ? null : JSON.parse(raw)
+    return pending === null
+      ? null
+      : { text: pending.userText, hasRequestId: 'requestId' in pending }
+  })).toEqual({
+    text: 'Pending without a Backend request id',
+    hasRequestId: false,
+  })
+
+  await emitEvent({
+    type: 'chat-error',
+    requestId: 'unrelated-request',
+    chatId: 'chat-test',
+    code: 'generation.failed',
+    message: 'An unrelated request failed.',
+    retryable: true,
+  })
+  await expect.poll(() => page.evaluate(() => (
+    window.localStorage.getItem('elysia.pending-chat-send.v1')
+  ))).toContain('Pending without a Backend request id')
+  await expect(composer).toHaveValue('Pending without a Backend request id')
+  await expect(page.getByRole('button', { name: 'Send message' })).toBeDisabled()
+
+  await page.evaluate(() => {
+    const testWindow = window as Window & { restoreDraftStorage?: () => void }
+    testWindow.restoreDraftStorage?.()
+  })
+  await composer.fill('Pending without a Backend request id!')
+  await expect.poll(() => page.evaluate(() => (
+    window.localStorage.getItem('elysia.pending-chat-send.v1')
+  ))).toBeNull()
+})
+
+test('keeps both durable copies when a recovered draft exceeds its limit', async () => {
+  const newerDraft = 'n'.repeat(999_990)
+  const recoveredPrompt = 'recovered prompt remains protected'
+  await page.evaluate(({ draft, prompt }) => {
+    window.localStorage.setItem(
+      'elysia.chat-drafts.v1',
+      JSON.stringify({ 'chat-test': draft }),
+    )
+    window.localStorage.setItem(
+      'elysia.pending-chat-send.v1',
+      JSON.stringify({
+        operationId: 'oversized-recovery-operation',
+        chatId: 'chat-test',
+        userText: prompt,
+        baseMessageCount: 0,
+      }),
+    )
+  }, { draft: newerDraft, prompt: recoveredPrompt })
+
+  await page.reload()
+  await page.waitForFunction(() => (
+    'elysiaDesktopTest' in window
+    && (window as TestWindow).elysiaDesktopTest
+      .getCalls()
+      .some((call) => call.method === 'onBackendEvent.subscribe')
+  ))
+  await emitSnapshot(readySnapshot())
+
+  await expect.poll(() => page.getByLabel('Message Elysia').inputValue())
+    .toHaveLength(recoveredPrompt.length + 2 + newerDraft.length)
+  const durableState = await page.evaluate(() => ({
+    drafts: window.localStorage.getItem('elysia.chat-drafts.v1'),
+    pending: window.localStorage.getItem('elysia.pending-chat-send.v1'),
+  }))
+  expect(durableState.drafts).toContain(`"chat-test":"${'n'.repeat(32)}`)
+  expect(durableState.pending).toContain(recoveredPrompt)
+})
+
+test('uses the committed count floor for an immediate second send', async () => {
+  await emitSnapshot(readySnapshot())
+  await page.evaluate(() => {
+    ;(window as TestWindow).elysiaDesktopTest.setChatListDelay(true)
+  })
+  const composer = page.getByLabel('Message Elysia')
+  await composer.fill('First message')
+  await composer.press('Enter')
+  await emitEvent({
+    type: 'chat-complete',
+    requestId: 'test-request-1',
+    chatId: 'chat-test',
+    reply: 'First reply',
+  })
+  await expect.poll(() => page.evaluate(() => (
+    (window as TestWindow).elysiaDesktopTest.getPendingChatListCount()
+  ))).toBe(1)
+
+  await composer.fill('Second message before history refresh')
+  await composer.press('Enter')
+  await expect.poll(() => page.evaluate(() => {
+    const raw = window.localStorage.getItem('elysia.pending-chat-send.v1')
+    return raw === null ? null : JSON.parse(raw).baseMessageCount
+  })).toBe(2)
+
+  await replaceRendererWindow()
+  const firstSummary = chatSummary('chat-test', 'Elysia Chat', { messageCount: 2 })
+  const firstCommittedState: ChatSessionState = {
+    activeChat: {
+      ...firstSummary,
+      messages: [
+        {
+          messageId: 'user-first',
+          role: 'user',
+          content: 'First message',
+          createdAt: '2026-08-25T12:30:00+00:00',
+          attachments: [],
+        },
+        {
+          messageId: 'assistant-first',
+          role: 'assistant',
+          content: 'First reply',
+          createdAt: '2026-08-25T12:31:00+00:00',
+          attachments: [],
+        },
+      ],
+    },
+    chats: [firstSummary],
+  }
+  await page.evaluate(({ nextSnapshot, nextState }) => {
+    const control = (window as TestWindow).elysiaDesktopTest
+    control.setChatState(nextState)
+    control.setSnapshot(nextSnapshot)
+  }, {
+    nextSnapshot: readySnapshot(),
+    nextState: firstCommittedState,
+  })
+  await emitSnapshot(readySnapshot())
+
+  await expect(page.getByLabel('Message Elysia')).toHaveValue(
+    'Second message before history refresh',
+  )
+  await expect.poll(() => page.evaluate(() => (
+    window.localStorage.getItem('elysia.pending-chat-send.v1')
+  ))).toBeNull()
+})
+
+test('recovers a pending send beside a newer draft after a window boundary', async () => {
+  await emitSnapshot(readySnapshot())
+  const composer = page.getByLabel('Message Elysia')
+  await composer.fill('Submitted before the window closed')
+  await composer.press('Enter')
+  await composer.fill('A newer draft written during generation')
+  await expect.poll(() => page.evaluate(() => (
+    window.localStorage.getItem('elysia.pending-chat-send.v1')
+  ))).toContain('Submitted before the window closed')
+
+  const runningApp = electronApp
+  expect(runningApp).toBeDefined()
+  const nextWindow = runningApp!.waitForEvent('window')
+  await runningApp!.evaluate(async ({ BrowserWindow }, paths) => {
+    const previousWindow = BrowserWindow.getAllWindows()[0]
+    const replacementWindow = new BrowserWindow({
+      width: 1180,
+      height: 780,
+      show: true,
+      webPreferences: {
+        preload: paths.preloadPath,
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: true,
+        partition: `elysia-ui-test-${process.pid}`,
+      },
+    })
+    await replacementWindow.loadFile(paths.rendererPath)
+    previousWindow?.close()
+  }, {
+    preloadPath: mockPreloadPath,
+    rendererPath,
+  })
+  page = await nextWindow
+  await page.waitForLoadState('domcontentloaded')
+  await page.waitForFunction(() => (
+    'elysiaDesktopTest' in window
+    && (window as TestWindow).elysiaDesktopTest
+      .getCalls()
+      .some((call) => call.method === 'onBackendEvent.subscribe')
+  ))
+  await emitSnapshot(readySnapshot())
+
+  await expect(page.getByLabel('Message Elysia')).toHaveValue(
+    'Submitted before the window closed\n\nA newer draft written during generation',
+  )
+  await expect(page.getByText(
+    /An unfinished prompt was restored to Elysia Chat's draft/,
+  )).toBeVisible()
+  await expect.poll(() => page.evaluate(() => (
+    window.localStorage.getItem('elysia.pending-chat-send.v1')
+  ))).toBeNull()
+})
+
+test('does not restore a pending send already present in canonical history', async () => {
+  await emitSnapshot(readySnapshot())
+  const composer = page.getByLabel('Message Elysia')
+  await composer.fill('Committed while the renderer was unavailable')
+  await composer.press('Enter')
+  await composer.fill('Keep only this newer draft')
+
+  const summary = chatSummary('chat-test', 'Elysia Chat', { messageCount: 2 })
+  const canonicalState: ChatSessionState = {
+    activeChat: {
+      ...summary,
+      messages: [
+        {
+          messageId: 'user-committed-offscreen',
+          role: 'user',
+          content: 'Committed while the renderer was unavailable',
+          createdAt: '2026-08-25T12:30:00+00:00',
+          attachments: [],
+        },
+        {
+          messageId: 'assistant-committed-offscreen',
+          role: 'assistant',
+          content: 'Canonical reply committed safely.',
+          createdAt: '2026-08-25T12:31:00+00:00',
+          attachments: [],
+        },
+      ],
+    },
+    chats: [summary],
+  }
+  await page.evaluate(({ nextSnapshot, nextState }) => {
+    const control = (window as TestWindow).elysiaDesktopTest
+    control.setChatState(nextState)
+    control.setSnapshot(nextSnapshot)
+  }, {
+    nextSnapshot: readySnapshot(),
+    nextState: canonicalState,
+  })
+  await persistBackendForReload()
+  await page.reload()
+  await page.waitForFunction(() => (
+    'elysiaDesktopTest' in window
+    && (window as TestWindow).elysiaDesktopTest
+      .getCalls()
+      .some((call) => call.method === 'onBackendEvent.subscribe')
+  ))
+
+  await expect(page.getByText(
+    'Canonical reply committed safely.',
+    { exact: true },
+  )).toBeVisible()
+  await expect(page.getByLabel('Message Elysia')).toHaveValue(
+    'Keep only this newer draft',
+  )
+  await expect(page.getByText(/An unfinished prompt was restored/)).toHaveCount(0)
+  await expect.poll(() => page.evaluate(() => (
+    window.localStorage.getItem('elysia.pending-chat-send.v1')
+  ))).toBeNull()
+})
+
+test('rehydrates a hidden retry with its canonical message pair', async () => {
+  const chatA = chatSummary('chat-retry-a', 'Retry A', { messageCount: 2 })
+  const chatB = chatSummary('chat-retry-b', 'Retry B')
+  await setChatState({
+    activeChat: {
+      ...chatA,
+      messages: [
+        {
+          messageId: 'user-retry-hidden',
+          role: 'user',
+          content: 'Original hidden question',
+          createdAt: '2026-08-25T12:30:00+00:00',
+          attachments: [],
+        },
+        {
+          messageId: 'assistant-retry-hidden',
+          role: 'assistant',
+          content: 'Original hidden answer',
+          createdAt: '2026-08-25T12:31:00+00:00',
+          attachments: [],
+        },
+      ],
+    },
+    chats: [chatA, chatB],
+  })
+  await emitSnapshot(readySnapshot({
+    chatId: chatA.chatId,
+    chatTitle: chatA.title,
+  }))
+
+  await page.locator('[data-message-id="assistant-retry-hidden"]')
+    .getByRole('button', { name: 'Regenerate' })
+    .click()
+  await emitEvent({
+    type: 'chat-chunk',
+    requestId: 'test-request-1',
+    chatId: chatA.chatId,
+    chunk: 'Replacement in progress',
+  })
+  await page.getByRole('button', { name: `Open chat ${chatB.title}` }).click()
+  await persistBackendForReload()
+  await page.reload()
+  await page.waitForFunction(() => (
+    'elysiaDesktopTest' in window
+    && (window as TestWindow).elysiaDesktopTest
+      .getCalls()
+      .some((call) => call.method === 'onBackendEvent.subscribe')
+  ))
+
+  await page.getByRole('button', { name: `Open chat ${chatA.title}` }).click()
+  await expect(page.getByText('Original hidden question', { exact: true })).toBeVisible()
+  await expect(page.getByText('Replacement in progress', { exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Stop generation' })).toBeVisible()
+
+  await emitEvent({
+    type: 'chat-error',
+    requestId: 'test-request-1',
+    chatId: chatA.chatId,
+    code: 'generation.failed',
+    message: 'Retry failed safely.',
+    retryable: true,
+  })
+  await expect(page.getByText('Original hidden answer', { exact: true })).toBeVisible()
+  await expect(page.getByText('Replacement in progress', { exact: true })).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Stop generation' })).toHaveCount(0)
+})
+
+test('recovers an offline non-Chat view without losing its Chat draft', async () => {
+  await emitSnapshot(readySnapshot())
+  await page.getByLabel('Message Elysia').fill('Keep this draft while offline')
+  await page.getByRole('button', { name: /^Projects/ }).click()
+  await emitSnapshot({
+    ...readySnapshot(),
+    revision: 2,
+    status: 'error',
+    error: 'The local Backend stopped unexpectedly.',
+  })
+  const alert = page.getByRole('alert').filter({
+    hasText: 'Local Backend unavailable',
+  })
+  await expect(alert).toContainText('stopped unexpectedly')
+  await expect(alert.getByRole('button', { name: 'Retry connection' })).toBeVisible()
+
+  await emitSnapshot({ ...readySnapshot(), revision: 3 })
+  await expect(alert).toHaveCount(0)
+  await page.getByRole('button', { name: 'Chat', exact: true }).click()
+  await expect(page.getByLabel('Message Elysia')).toHaveValue(
+    'Keep this draft while offline',
+  )
+})
+
+test('keeps long multi-chunk output responsive and out of the live region', async () => {
+  await emitSnapshot(readySnapshot())
+  await setWindowAndZoom(960, 640, 1.5)
+  const composer = page.getByLabel('Message Elysia')
+  await composer.fill('Generate a long bilingual response')
+  await composer.press('Enter')
+
+  const chunks = Array.from(
+    { length: 240 },
+    (_, index) => `片段${String(index).padStart(3, '0')} English🙂 `,
+  )
+  for (let offset = 0; offset < chunks.length; offset += 40) {
+    await emitEvents(chunks.slice(offset, offset + 40).map((chunk) => ({
+      type: 'chat-chunk',
+      requestId: 'test-request-1',
+      chatId: 'chat-test',
+      chunk,
+    })))
+  }
+  const expectedReply = chunks.join('')
+  const streamed = page.getByLabel('Message from Elysia').last()
+  await expect(streamed).toContainText(expectedReply)
+  await expect(page.locator('.message-column')).toHaveAttribute('aria-live', 'off')
+  await expect(page.locator('[data-generation-announcement]')).toHaveText(
+    'Elysia is generating a reply.',
+  )
+  await composer.fill('Next draft remains editable during generation')
+  await expect(page.getByRole('button', { name: 'Stop generation' })).toBeVisible()
+
+  await emitEvent({
+    type: 'chat-complete',
+    requestId: 'test-request-1',
+    chatId: 'chat-test',
+    reply: expectedReply,
+  })
+  await expect(page.locator('[data-generation-announcement]')).toHaveText(
+    'Elysia is ready for your next message.',
+  )
+  await expect(composer).toHaveValue('Next draft remains editable during generation')
+  await expectShellWithoutHorizontalOverflow()
+})
+
+test('restores a failed hidden Chat prompt before another turn replaces it', async () => {
+  const chatA = chatSummary('chat-failed-a', 'Failed Chat A')
+  const chatB = chatSummary('chat-next-b', 'Next Chat B')
+  await setChatState({
+    activeChat: { ...chatA, messages: [] },
+    chats: [chatA, chatB],
+  })
+  await emitSnapshot(readySnapshot({
+    chatId: chatA.chatId,
+    chatTitle: chatA.title,
+  }))
+  const composer = page.getByLabel('Message Elysia')
+  await composer.fill('Recover this failed prompt')
+  await composer.press('Enter')
+  await page.getByRole('button', { name: 'Open chat Next Chat B' }).click()
+  await emitEvent({
+    type: 'chat-error',
+    requestId: 'test-request-1',
+    chatId: chatA.chatId,
+    code: 'model.unavailable',
+    message: 'The model stopped responding.',
+    retryable: true,
+  })
+  await composer.fill('A separate prompt in Chat B')
+  await composer.press('Enter')
+  await page.getByRole('button', { name: 'Open chat Failed Chat A' }).click()
+  await expect(composer).toHaveValue('Recover this failed prompt')
+  await expect(page.getByText('A separate prompt in Chat B', {
+    exact: true,
+  })).toHaveCount(0)
 })

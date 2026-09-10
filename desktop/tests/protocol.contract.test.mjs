@@ -592,6 +592,87 @@ test('Backend sends an exact retry request and tracks it as generation', () => {
     message: 'Edited prompt',
   })
   assert.equal(backend.pendingRequests.get(requestId).method, 'chat.retry')
+  assert.deepEqual(backend.getSnapshot().activeGeneration, {
+    requestId,
+    chatId: 'chat_fixture',
+    kind: 'retry',
+    userText: 'Edited prompt',
+    userMessageId: 'message_user',
+    assistantMessageId: 'message_assistant',
+    reply: '',
+    stopping: false,
+  })
+})
+
+test('Backend snapshot preserves an in-flight reply through stop completion', async () => {
+  const writes = []
+  const backend = new BackendProcess('.', () => undefined)
+  backend.child = {
+    stdin: {
+      writable: true,
+      write: (value) => writes.push(value),
+    },
+  }
+  backend.snapshot = {
+    revision: 1,
+    status: 'ready',
+    capabilities: ['chat.stream', 'request.cancel'],
+    models: ['qwen3.5:9b'],
+    modelName: 'qwen3.5:9b',
+    chatId: 'chat_fixture',
+    chatTitle: 'Elysia Chat',
+  }
+
+  const { requestId } = backend.beginChat({
+    chatId: 'chat_fixture',
+    message: '  Continue after reload.  ',
+    attachmentIds: [],
+  })
+  assert.deepEqual(backend.getSnapshot().activeGeneration, {
+    requestId,
+    chatId: 'chat_fixture',
+    kind: 'send',
+    userText: 'Continue after reload.',
+    reply: '',
+    stopping: false,
+  })
+
+  backend.handleProtocolLine(JSON.stringify({
+    type: 'stream',
+    protocol: fixtures.protocol,
+    requestId,
+    stream: 'chat.reply',
+    sequence: 0,
+    chunk: '继续',
+    done: false,
+  }))
+  assert.equal(backend.getSnapshot().activeGeneration.reply, '继续')
+
+  const stopping = backend.stopGeneration(requestId)
+  const cancelRequest = JSON.parse(writes.at(-1))
+  assert.equal(backend.getSnapshot().activeGeneration.stopping, true)
+  backend.handleProtocolLine(JSON.stringify({
+    type: 'response',
+    protocol: fixtures.protocol,
+    id: cancelRequest.id,
+    ok: true,
+    result: { stopped: true },
+  }))
+  await stopping
+  assert.equal(backend.getSnapshot().activeGeneration.stopping, true)
+
+  backend.handleProtocolLine(JSON.stringify({
+    type: 'response',
+    protocol: fixtures.protocol,
+    id: requestId,
+    ok: false,
+    error: {
+      code: 'request.cancelled',
+      message: 'Generation was stopped.',
+      retryable: false,
+    },
+  }))
+  assert.equal(backend.getSnapshot().activeGeneration, undefined)
 })
 
 test('Backend sends an attachment-only Chat request without paths', () => {
@@ -888,8 +969,9 @@ test('Backend rolls back pending generation when stdin write throws', () => {
 
 test('Backend protocol failure rejects pending renderer actions before exit', async () => {
   const writes = []
+  const events = []
   let killCount = 0
-  const backend = new BackendProcess('.', () => undefined)
+  const backend = new BackendProcess('.', (event) => events.push(event))
   backend.child = {
     stdin: {
       writable: true,
@@ -936,11 +1018,27 @@ test('Backend protocol failure rejects pending renderer actions before exit', as
     (action) => assert.rejects(action, /Protocol connection failed/),
   )
 
+  assert.equal(
+    backend.getSnapshot().activeGeneration.requestId,
+    'generation-pending',
+  )
+
   backend.protocolFailure('Protocol connection failed.')
 
   await Promise.all(rejections)
   assert.equal(killCount, 1)
-  assert.equal(backend.getSnapshot().status, 'error')
+  assert.equal(backend.pendingRequests.size, 0)
+  const errorSnapshot = events.at(-1)
+  assert.equal(errorSnapshot.type, 'snapshot')
+  assert.equal(errorSnapshot.snapshot.status, 'error')
+  assert.equal(
+    Object.hasOwn(errorSnapshot.snapshot, 'activeGeneration'),
+    false,
+  )
+  assert.equal(
+    Object.hasOwn(backend.getSnapshot(), 'activeGeneration'),
+    false,
+  )
 })
 
 test('Backend allows opening another Chat while generation remains tracked', async () => {
@@ -990,6 +1088,75 @@ test('Backend allows opening another Chat while generation remains tracked', asy
   assert.equal(state.activeChat.chatId, 'chat_second')
   assert.equal(backend.pendingRequests.has('generation-a'), true)
   assert.equal(backend.getSnapshot().chatId, 'chat_second')
+})
+
+test('Backend permits collection reads but blocks writes during generation', async () => {
+  const writes = []
+  const backend = new BackendProcess('.', () => undefined)
+  backend.child = {
+    stdin: {
+      writable: true,
+      write: (value) => writes.push(value),
+    },
+  }
+  backend.snapshot = {
+    revision: 1,
+    status: 'ready',
+    capabilities: [
+      'chat.stream',
+      'chat.sessions',
+      'project.management',
+    ],
+    models: ['qwen3.5:9b'],
+    modelName: 'qwen3.5:9b',
+    chatId: 'chat_fixture',
+    chatTitle: 'Elysia Chat',
+  }
+
+  const { requestId } = backend.beginChat({
+    chatId: 'chat_fixture',
+    message: 'Keep reading state while I generate.',
+    attachmentIds: [],
+  })
+  const listingChats = backend.listChats(false)
+  const listingProjects = backend.listProjects()
+
+  await assert.rejects(
+    backend.renameChat({ chatId: 'chat_fixture', title: 'Busy Chat' }),
+    /active Chat reply/,
+  )
+  await assert.rejects(
+    backend.openProject('project_second'),
+    /active Chat reply/,
+  )
+
+  const requests = writes.map((wireRequest) => JSON.parse(wireRequest))
+  assert.deepEqual(
+    requests.map((request) => request.method),
+    ['chat.stream', 'chat.list', 'project.list'],
+  )
+  assert.deepEqual(requests[1].params, { includeArchived: false })
+  assert.deepEqual(requests[2].params, {})
+
+  const chatSample = fixtures.validServerMessages.find(
+    (candidate) => candidate.name === 'chat state response',
+  )
+  assert.ok(chatSample)
+  const chatResponse = structuredClone(chatSample.message)
+  chatResponse.id = requests[1].id
+  backend.handleProtocolLine(JSON.stringify(chatResponse))
+
+  const projectResponse = projectStateResponse()
+  projectResponse.id = requests[2].id
+  backend.handleProtocolLine(JSON.stringify(projectResponse))
+
+  const [chatState, projectState] = await Promise.all([
+    listingChats,
+    listingProjects,
+  ])
+  assert.equal(chatState.activeChat.chatId, 'chat_fixture')
+  assert.equal(projectState.activeProject.projectId, 'project_fixture')
+  assert.equal(backend.getSnapshot().activeGeneration.requestId, requestId)
 })
 
 test('Backend state machine rejects a stream sequence gap', () => {
@@ -1245,6 +1412,64 @@ test('Backend sends and strictly resolves scoped Attachment actions', async () =
   assert.deepEqual(await removing, emptyState)
 })
 
+test('Backend allows concurrent Attachment reads while serializing writes', async () => {
+  const writes = []
+  const backend = new BackendProcess('.', () => undefined)
+  backend.child = {
+    stdin: {
+      writable: true,
+      write: (value) => writes.push(value),
+    },
+  }
+  backend.snapshot = {
+    revision: 1,
+    status: 'ready',
+    capabilities: ['attachment.management'],
+    models: ['qwen3.5:9b'],
+    modelName: 'qwen3.5:9b',
+    chatId: 'chat_fixture',
+    chatTitle: 'Elysia Chat',
+  }
+  const chatScope = { kind: 'chat', id: 'chat_fixture' }
+  const projectScope = { kind: 'project', id: 'project_fixture' }
+
+  const chatListing = backend.listAttachments(chatScope)
+  const projectListing = backend.listAttachments(projectScope)
+  await assert.rejects(
+    backend.addAttachments(
+      chatScope,
+      [String.raw`C:\Users\Actor\Documents\notes.txt`],
+    ),
+    /current attachment action/,
+  )
+
+  const requests = writes.map((wireRequest) => JSON.parse(wireRequest))
+  assert.deepEqual(
+    requests.map((request) => request.method),
+    ['attachment.list', 'attachment.list'],
+  )
+  for (const [request, scope] of [
+    [requests[0], chatScope],
+    [requests[1], projectScope],
+  ]) {
+    backend.handleProtocolLine(JSON.stringify({
+      type: 'response',
+      protocol: fixtures.protocol,
+      id: request.id,
+      ok: true,
+      result: {
+        scope,
+        attachments: [],
+        maxFileBytes: 16_777_216,
+        maxFileCount: 10,
+      },
+    }))
+  }
+
+  assert.deepEqual((await chatListing).scope, chatScope)
+  assert.deepEqual((await projectListing).scope, projectScope)
+})
+
 test('Backend rejects an Attachment response for another scope', async () => {
   const writes = []
   let killCount = 0
@@ -1435,6 +1660,63 @@ test('Backend restart settles only after ready and rejects on error', async () =
     error: 'Could not initialize saved settings.',
   })
   await rejected
+})
+
+test('Backend restart restores the previous Chat after a failure', async () => {
+  const writes = []
+  const backend = new BackendProcess('.', () => undefined)
+  backend.child = {
+    stdin: {
+      writable: true,
+      write: (value) => writes.push(value),
+    },
+    kill: () => true,
+  }
+  backend.updateSnapshot({
+    status: 'ready',
+    capabilities: ['chat.sessions'],
+    models: ['qwen3.5:9b'],
+    modelName: 'qwen3.5:9b',
+    chatId: 'chat_fixture',
+    chatTitle: 'Original Chat',
+  })
+  backend.protocolFailure('Temporary connection failure.')
+  assert.equal(backend.getSnapshot().status, 'error')
+  assert.equal(backend.getSnapshot().chatId, undefined)
+  assert.equal(backend.getSnapshot().modelName, undefined)
+
+  backend.stop = async () => undefined
+  backend.start = () => {
+    backend.updateSnapshot({ status: 'initializing' })
+  }
+
+  const restarting = backend.restart()
+  await new Promise((resolve) => setImmediate(resolve))
+  backend.updateSnapshot({
+    status: 'ready',
+    modelName: 'qwen3.5:9b',
+    models: ['qwen3.5:9b'],
+    chatId: 'chat_second',
+    chatTitle: 'Backend Default',
+  })
+  await new Promise((resolve) => setImmediate(resolve))
+
+  const openRequest = JSON.parse(writes.at(-1))
+  assert.equal(openRequest.method, 'chat.open')
+  assert.deepEqual(openRequest.params, { chatId: 'chat_fixture' })
+
+  const chatSample = fixtures.validServerMessages.find(
+    (candidate) => candidate.name === 'chat state response',
+  )
+  assert.ok(chatSample)
+  const openResponse = structuredClone(chatSample.message)
+  openResponse.id = openRequest.id
+  backend.handleProtocolLine(JSON.stringify(openResponse))
+
+  const snapshot = await restarting
+  assert.equal(snapshot.status, 'ready')
+  assert.equal(snapshot.chatId, 'chat_fixture')
+  assert.equal(snapshot.chatTitle, 'Elysia Chat')
 })
 
 test('Backend rejects a concurrent restart before stopping twice', async () => {
