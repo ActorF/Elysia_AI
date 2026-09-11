@@ -27,10 +27,12 @@ import type {
   CreateProjectRequest,
   DesktopSettingsState,
   DesktopSettingsValues,
+  MicrophonePermissionStatus,
   MoveChatToProjectRequest,
   ProjectState,
   RetryChatRequest,
   UpdateProjectRequest,
+  VoiceSettingsState,
 } from '../electron/contracts.ts'
 import {
   hasNonBlankCodePoint,
@@ -49,10 +51,15 @@ import { EmptyState, InlineAlert } from './design-system/Feedback.tsx'
 import { Icon } from './design-system/Icon.tsx'
 import { ProjectView } from './projects/ProjectView.tsx'
 import { SettingsView } from './settings/SettingsView.tsx'
+import type { VoiceSettingsDraft } from './settings/VoiceSettingsSection.tsx'
 import { AppShell } from './shell/AppShell.tsx'
 import { Sidebar, type AppView } from './shell/Sidebar.tsx'
 import { useTheme } from './theme/ThemeProvider.tsx'
 import { CallPreview } from './voice/CallPreview.tsx'
+import {
+  AudioDeviceController,
+  type AudioDeviceSnapshot,
+} from './voice/audio-devices.ts'
 
 const COMPACT_SHELL_QUERY = '(max-width: 52rem)'
 const CHAT_DRAFTS_STORAGE_KEY = 'elysia.chat-drafts.v1'
@@ -60,6 +67,24 @@ const PENDING_CHAT_SEND_STORAGE_KEY = 'elysia.pending-chat-send.v1'
 const RETRY_EDIT_DRAFT_STORAGE_KEY = 'elysia.retry-edit-draft.v1'
 const MAX_PERSISTED_CHAT_DRAFTS = 100
 const MAX_PERSISTED_DRAFT_LENGTH = 1_000_000
+
+const EMPTY_AUDIO_DEVICE_SNAPSHOT: AudioDeviceSnapshot = {
+  inputs: [],
+  outputs: [],
+  refreshing: false,
+  deviceError: null,
+  inputTest: {
+    status: 'idle',
+    deviceId: null,
+    level: 0,
+    error: null,
+  },
+  outputTest: {
+    status: 'idle',
+    deviceId: null,
+    error: null,
+  },
+}
 
 interface PersistedPendingChatSend {
   operationId: string
@@ -629,6 +654,15 @@ function App() {
   const [settingsMutationPending, setSettingsMutationPending] = useState(false)
   const [settingsError, setSettingsError] = useState<string | null>(null)
   const [settingsRestartError, setSettingsRestartError] = useState<string | null>(null)
+  const [voiceSettingsState, setVoiceSettingsState] = useState<VoiceSettingsState | null>(null)
+  const [voiceSettingsLoading, setVoiceSettingsLoading] = useState(false)
+  const [voiceSettingsPending, setVoiceSettingsPending] = useState(false)
+  const [voiceSettingsError, setVoiceSettingsError] = useState<string | null>(null)
+  const [microphonePermissionStatus, setMicrophonePermissionStatus]
+    = useState<MicrophonePermissionStatus>('unknown')
+  const [audioDevices, setAudioDevices] = useState<AudioDeviceSnapshot>(
+    EMPTY_AUDIO_DEVICE_SNAPSHOT,
+  )
   const [showArchived, setShowArchived] = useState(false)
   const [draftsByChat, setDraftsByChat] = useState<Record<string, string>>(
     loadChatDrafts,
@@ -681,6 +715,10 @@ function App() {
   const projectMutationPendingRef = useRef(false)
   const settingsDirtyRef = useRef(false)
   const settingsLoadOperationRef = useRef(0)
+  const voiceSettingsLoadOperationRef = useRef(0)
+  const voiceSettingsPendingRef = useRef(false)
+  const audioDeviceControllerRef = useRef<AudioDeviceController | null>(null)
+  const microphoneActionOperationRef = useRef(0)
   const projectRefreshNeededRef = useRef(false)
   const projectRefreshPromiseRef = useRef<Promise<void> | null>(null)
   const attachmentOperationsRef = useRef(new Map<string, number>())
@@ -797,6 +835,27 @@ function App() {
     })
   }, [])
 
+  useEffect(() => {
+    const controller = new AudioDeviceController()
+    audioDeviceControllerRef.current = controller
+    const unsubscribe = controller.subscribe(setAudioDevices)
+    return () => {
+      unsubscribe()
+      controller.dispose()
+      if (audioDeviceControllerRef.current === controller) {
+        audioDeviceControllerRef.current = null
+      }
+    }
+  }, [])
+
+  useEffect(() => {
+    // A short test belongs to the visible Chat or Settings surface. Switching
+    // context is an immediate privacy boundary even though every test also has
+    // its own safety timeout.
+    ++microphoneActionOperationRef.current
+    audioDeviceControllerRef.current?.stopAll()
+  }, [activeChatId, activeView])
+
   const acceptSnapshot = useCallback((nextSnapshot: BackendSnapshot): boolean => {
     if (nextSnapshot.revision < acceptedSnapshotRevisionRef.current) {
       return false
@@ -880,6 +939,101 @@ function App() {
       if (operationId === settingsLoadOperationRef.current) {
         setSettingsLoading(false)
       }
+    }
+  }, [desktopApi])
+
+  const loadVoiceSettings = useCallback(async (): Promise<void> => {
+    if (desktopApi === undefined) {
+      setVoiceSettingsError('Desktop Voice Settings API is unavailable.')
+      return
+    }
+    const operationId = voiceSettingsLoadOperationRef.current + 1
+    voiceSettingsLoadOperationRef.current = operationId
+    setVoiceSettingsLoading(true)
+    setVoiceSettingsError(null)
+    try {
+      const nextState = await desktopApi.getVoiceSettings()
+      if (operationId === voiceSettingsLoadOperationRef.current) {
+        setVoiceSettingsState(nextState)
+      }
+    } catch (error) {
+      if (operationId === voiceSettingsLoadOperationRef.current) {
+        setVoiceSettingsError(
+          error instanceof Error
+            ? error.message
+            : 'Could not load local Voice Settings.',
+        )
+      }
+    } finally {
+      if (operationId === voiceSettingsLoadOperationRef.current) {
+        setVoiceSettingsLoading(false)
+      }
+    }
+  }, [desktopApi])
+
+  const refreshAudioDevices = useCallback(async (): Promise<void> => {
+    await audioDeviceControllerRef.current?.refreshDevices()
+  }, [])
+
+  const refreshMicrophonePermissionStatus = useCallback(async (): Promise<void> => {
+    if (desktopApi === undefined) {
+      setMicrophonePermissionStatus('unknown')
+      return
+    }
+    try {
+      setMicrophonePermissionStatus(
+        await desktopApi.getMicrophonePermissionStatus(),
+      )
+    } catch {
+      setMicrophonePermissionStatus('unknown')
+    }
+  }, [desktopApi])
+
+  const startMicrophoneTest = useCallback(async (
+    deviceId: string | null,
+  ): Promise<void> => {
+    const controller = audioDeviceControllerRef.current
+    if (controller === null) {
+      throw new Error('Audio device controls are not ready yet.')
+    }
+    await controller.startMicrophoneTest(deviceId)
+    // A successful user gesture can reveal labels and update native permission.
+    await Promise.allSettled([
+      refreshMicrophonePermissionStatus(),
+      controller.refreshDevices(),
+    ])
+  }, [refreshMicrophonePermissionStatus])
+
+  const stopMicrophoneTest = useCallback((): void => {
+    audioDeviceControllerRef.current?.stopMicrophoneTest()
+  }, [])
+
+  const startSpeakerTest = useCallback(async (
+    deviceId: string | null,
+  ): Promise<void> => {
+    const controller = audioDeviceControllerRef.current
+    if (controller === null) {
+      throw new Error('Audio device controls are not ready yet.')
+    }
+    await controller.startSpeakerTest(deviceId)
+  }, [])
+
+  const stopSpeakerTest = useCallback((): void => {
+    audioDeviceControllerRef.current?.stopSpeakerTest()
+  }, [])
+
+  const openMicrophonePrivacySettings = useCallback(async (): Promise<void> => {
+    if (desktopApi === undefined) {
+      setVoiceSettingsError('Desktop Voice Settings API is unavailable.')
+      return
+    }
+    try {
+      await desktopApi.openMicrophonePrivacySettings()
+    } catch (error) {
+      const message = error instanceof Error
+        ? error.message
+        : 'Could not open Windows microphone privacy settings.'
+      setVoiceSettingsError(message)
     }
   }, [desktopApi])
 
@@ -1803,12 +1957,23 @@ function App() {
     queueMicrotask(() => {
       if (active) {
         void loadSettings()
+        void loadVoiceSettings()
+        void refreshAudioDevices()
+        void refreshMicrophonePermissionStatus()
       }
     })
     return () => {
       active = false
     }
-  }, [activeView, desktopApi, loadSettings, snapshot.status])
+  }, [
+    activeView,
+    desktopApi,
+    loadSettings,
+    loadVoiceSettings,
+    refreshAudioDevices,
+    refreshMicrophonePermissionStatus,
+    snapshot.status,
+  ])
 
   useEffect(() => {
     if (activeChatId === undefined || snapshot.status !== 'ready') {
@@ -2784,9 +2949,40 @@ function App() {
     }
   }
 
+  async function saveVoiceSettings(
+    draft: VoiceSettingsDraft,
+  ): Promise<void> {
+    if (desktopApi === undefined || voiceSettingsState === null) {
+      throw new Error('Desktop Voice Settings API is unavailable.')
+    }
+    if (voiceSettingsPendingRef.current) {
+      throw new Error('Wait for the current Voice Settings action to finish.')
+    }
+    voiceSettingsPendingRef.current = true
+    setVoiceSettingsPending(true)
+    setVoiceSettingsError(null)
+    try {
+      const nextState = await desktopApi.updateVoiceSettings({
+        expectedRevision: voiceSettingsState.revision,
+        inputDeviceId: draft.inputDeviceId,
+        outputDeviceId: draft.outputDeviceId,
+      })
+      setVoiceSettingsState(nextState)
+    } catch (error) {
+      const normalized = error instanceof Error
+        ? error
+        : new Error('Could not save local Voice Settings.')
+      setVoiceSettingsError(normalized.message)
+      throw normalized
+    } finally {
+      voiceSettingsPendingRef.current = false
+      setVoiceSettingsPending(false)
+    }
+  }
+
   async function restartFromSettings(): Promise<void> {
     if (await retryConnection(true)) {
-      await loadSettings()
+      await Promise.all([loadSettings(), loadVoiceSettings()])
     }
   }
 
@@ -3087,21 +3283,74 @@ function App() {
   }
 
   async function verifyMicrophone(): Promise<void> {
-    if (navigator.mediaDevices?.getUserMedia === undefined) {
-      setNotice(errorNotice('No microphone API is available on this device.'))
+    const controller = audioDeviceControllerRef.current
+    if (controller === null) {
+      setNotice(errorNotice('Audio device controls are not ready yet.'))
+      return
+    }
+    const operation = ++microphoneActionOperationRef.current
+    const chatId = activeChatIdRef.current
+    const actionIsCurrent = (): boolean => (
+      operation === microphoneActionOperationRef.current
+      && activeViewRef.current === 'chat'
+      && activeChatIdRef.current === chatId
+      && audioDeviceControllerRef.current === controller
+    )
+    const currentTest = controller.getSnapshot().inputTest
+    if (currentTest.status === 'starting' || currentTest.status === 'running') {
+      controller.stopMicrophoneTest()
+      setNotice(infoNotice('Microphone test stopped. No audio was stored.'))
       return
     }
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-      stream.getTracks().forEach((track) => { track.stop() })
+      let savedState = voiceSettingsState
+      if (savedState === null && desktopApi !== undefined) {
+        savedState = await desktopApi.getVoiceSettings()
+        if (!actionIsCurrent()) {
+          return
+        }
+        setVoiceSettingsState(savedState)
+      }
+      await controller.refreshDevices()
+      if (!actionIsCurrent()) {
+        return
+      }
+      const availableInputs = controller.getSnapshot().inputs
+      const savedDeviceId = savedState?.inputDeviceId ?? null
+      // Missing saved hardware stays persisted, but live capture safely follows
+      // the current system default until that device returns.
+      const effectiveDeviceId = savedDeviceId !== null
+        && availableInputs.some((device) => device.deviceId === savedDeviceId)
+        ? savedDeviceId
+        : null
+      await startMicrophoneTest(effectiveDeviceId)
+      if (!actionIsCurrent()) {
+        return
+      }
+      const test = controller.getSnapshot().inputTest
+      if (test.error !== null) {
+        setNotice(errorNotice(test.error.message))
+        return
+      }
+      if (test.status !== 'running') {
+        setNotice(infoNotice(
+          'The microphone test ended before it could start. No audio was stored.',
+        ))
+        return
+      }
       setNotice(successNotice(
-        'Microphone permission verified. Audio is not being recorded.',
+        savedDeviceId !== null && effectiveDeviceId === null
+          ? 'The saved microphone is unavailable, so the system default is being tested. Only the level is sampled; no audio is stored.'
+          : 'Microphone test started. Only the level is sampled; no audio is stored, and the test stops automatically.',
       ))
     } catch (error) {
+      if (!actionIsCurrent()) {
+        return
+      }
       setNotice(errorNotice(
         error instanceof Error
-          ? `Microphone check failed: ${error.message}`
-          : 'Microphone permission was not granted.',
+          ? error.message
+          : 'The microphone test could not start.',
       ))
     }
   }
@@ -3139,6 +3388,12 @@ function App() {
         restartPending={retryPending}
         generationBusy={generationBusy}
         error={settingsRestartError ?? settingsError}
+        voiceState={voiceSettingsState}
+        audioDevices={audioDevices}
+        microphonePermissionStatus={microphonePermissionStatus}
+        voiceLoading={voiceSettingsLoading}
+        voicePending={voiceSettingsPending}
+        voiceError={voiceSettingsError}
         onThemeChange={setTheme}
         onSave={saveSettings}
         onReload={() => {
@@ -3146,6 +3401,14 @@ function App() {
           void loadSettings()
         }}
         onRestart={restartFromSettings}
+        onReloadVoice={() => { void loadVoiceSettings() }}
+        onRefreshAudioDevices={refreshAudioDevices}
+        onSaveVoice={saveVoiceSettings}
+        onStartMicrophoneTest={startMicrophoneTest}
+        onStopMicrophoneTest={stopMicrophoneTest}
+        onStartSpeakerTest={startSpeakerTest}
+        onStopSpeakerTest={stopSpeakerTest}
+        onOpenMicrophonePrivacySettings={openMicrophonePrivacySettings}
         onDirtyChange={handleSettingsDirtyChange}
         onBack={() => {
           if (navigate('chat')) {
@@ -3211,6 +3474,10 @@ function App() {
         draft={draft}
         generationBusy={generationBusy}
         messages={displayedMessages}
+        microphoneTesting={
+          audioDevices.inputTest.status === 'starting'
+          || audioDevices.inputTest.status === 'running'
+        }
         modelSelectionPending={modelSelectionPending}
         modelOptions={modelOptions}
         notice={notice}

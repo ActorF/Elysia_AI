@@ -5,7 +5,9 @@ const RELOAD_STATE_KEY = 'elysia.ui-test.backend-state.v1'
 function takeReloadState() {
   try {
     const raw = window.sessionStorage.getItem(RELOAD_STATE_KEY)
+      ?? window.localStorage.getItem(RELOAD_STATE_KEY)
     window.sessionStorage.removeItem(RELOAD_STATE_KEY)
+    window.localStorage.removeItem(RELOAD_STATE_KEY)
     return raw === null ? null : JSON.parse(raw)
   } catch {
     return null
@@ -69,6 +71,16 @@ function defaultSettingsState() {
         modelName: 'qwen3.5:9b',
       },
     },
+    warning: null,
+  }
+}
+
+function defaultVoiceSettingsState() {
+  return {
+    revision: 0,
+    updatedAt: null,
+    inputDeviceId: null,
+    outputDeviceId: null,
     warning: null,
   }
 }
@@ -143,7 +155,10 @@ let snapshot = clone(initialSnapshot)
 let chatState = defaultChatState()
 let projectState = defaultProjectState()
 let settingsState = defaultSettingsState()
+let voiceSettingsState = defaultVoiceSettingsState()
+let microphonePermissionStatus = 'granted'
 let nextSettingsError = null
+let nextVoiceSettingsError = null
 let nextRestartError = null
 let chatMessages = new Map([
   [chatState.activeChat.chatId, clone(chatState.activeChat.messages)],
@@ -180,6 +195,11 @@ if (reloadState !== null) {
   chatState = clone(reloadState.chatState)
   projectState = clone(reloadState.projectState)
   settingsState = clone(reloadState.settingsState)
+  voiceSettingsState = clone(
+    reloadState.voiceSettingsState ?? defaultVoiceSettingsState(),
+  )
+  microphonePermissionStatus = reloadState.microphonePermissionStatus
+    ?? 'granted'
   chatMessages = new Map(clone(reloadState.chatMessages))
   pendingGenerations = new Map(clone(reloadState.pendingGenerations))
   attachmentStates = new Map(clone(reloadState.attachmentStates))
@@ -499,6 +519,46 @@ const desktopApi = {
       warning: null,
     }
     return settingsResult()
+  },
+
+  getVoiceSettings: async () => {
+    record('getVoiceSettings')
+    return clone(voiceSettingsState)
+  },
+
+  updateVoiceSettings: async (request) => {
+    record('updateVoiceSettings', [request])
+    if (nextVoiceSettingsError !== null) {
+      const message = nextVoiceSettingsError
+      nextVoiceSettingsError = null
+      throw new Error(message)
+    }
+    if (request.expectedRevision !== voiceSettingsState.revision) {
+      throw new Error('Voice settings changed elsewhere. Reload before saving.')
+    }
+    const same = request.inputDeviceId === voiceSettingsState.inputDeviceId
+      && request.outputDeviceId === voiceSettingsState.outputDeviceId
+    voiceSettingsState = {
+      revision: same
+        ? voiceSettingsState.revision
+        : voiceSettingsState.revision + 1,
+      updatedAt: same
+        ? voiceSettingsState.updatedAt
+        : '2026-09-10T12:00:00+00:00',
+      inputDeviceId: request.inputDeviceId,
+      outputDeviceId: request.outputDeviceId,
+      warning: null,
+    }
+    return clone(voiceSettingsState)
+  },
+
+  getMicrophonePermissionStatus: async () => {
+    record('getMicrophonePermissionStatus')
+    return microphonePermissionStatus
+  },
+
+  openMicrophonePrivacySettings: async () => {
+    record('openMicrophonePrivacySettings')
   },
 
   sendMessage: async (request) => {
@@ -952,7 +1012,10 @@ const testControl = {
     chatState = defaultChatState()
     projectState = defaultProjectState()
     settingsState = defaultSettingsState()
+    voiceSettingsState = defaultVoiceSettingsState()
+    microphonePermissionStatus = 'granted'
     nextSettingsError = null
+    nextVoiceSettingsError = null
     nextRestartError = null
     chatMessages = new Map([
       [chatState.activeChat.chatId, clone(chatState.activeChat.messages)],
@@ -1008,8 +1071,20 @@ const testControl = {
     settingsState = clone(nextSettingsState)
   },
 
+  setVoiceSettingsState: (nextVoiceSettingsState) => {
+    voiceSettingsState = clone(nextVoiceSettingsState)
+  },
+
+  setMicrophonePermissionStatus: (status) => {
+    microphonePermissionStatus = status
+  },
+
   failNextSettingsUpdate: (message) => {
     nextSettingsError = message
+  },
+
+  failNextVoiceSettingsUpdate: (message) => {
+    nextVoiceSettingsError = message
   },
 
   failNextRestart: (message) => {
@@ -1225,18 +1300,22 @@ const testControl = {
   getCalls: () => clone(calls),
 
   persistForReload: () => {
-    window.sessionStorage.setItem(RELOAD_STATE_KEY, JSON.stringify({
+    const reloadState = JSON.stringify({
       snapshot,
       chatState,
       projectState,
       settingsState,
+      voiceSettingsState,
+      microphonePermissionStatus,
       chatMessages: [...chatMessages.entries()],
       pendingGenerations: [...pendingGenerations.entries()],
       attachmentStates: [...attachmentStates.entries()],
       nextRequestNumber,
       nextAttachmentNumber,
       nextProjectUpdateNumber,
-    }))
+    })
+    window.sessionStorage.setItem(RELOAD_STATE_KEY, reloadState)
+    window.localStorage.setItem(RELOAD_STATE_KEY, reloadState)
   },
 
   clearCalls: () => {

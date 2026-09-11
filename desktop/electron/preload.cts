@@ -19,6 +19,7 @@ import type {
   DesktopApi,
   DesktopThemePreference,
   DesktopSettingsState,
+  MicrophonePermissionStatus,
   MoveChatToProjectRequest,
   PinChatRequest,
   ProjectState,
@@ -26,6 +27,8 @@ import type {
   RetryChatRequest,
   UpdateProjectRequest,
   UpdateDesktopSettingsRequest,
+  UpdateVoiceSettingsRequest,
+  VoiceSettingsState,
 } from './contracts.js'
 
 const MAX_DROPPED_ATTACHMENT_FILES = 10
@@ -62,6 +65,27 @@ const desktopApi: DesktopApi = {
       'settings:update',
       request,
     ) as Promise<DesktopSettingsState>,
+
+  getVoiceSettings: () =>
+    ipcRenderer.invoke(
+      'voice:settings-get',
+    ) as Promise<VoiceSettingsState>,
+
+  updateVoiceSettings: (request: UpdateVoiceSettingsRequest) =>
+    ipcRenderer.invoke(
+      'voice:settings-update',
+      request,
+    ) as Promise<VoiceSettingsState>,
+
+  getMicrophonePermissionStatus: () =>
+    ipcRenderer.invoke(
+      'voice:microphone-permission-status',
+    ) as Promise<MicrophonePermissionStatus>,
+
+  openMicrophonePrivacySettings: () =>
+    ipcRenderer.invoke(
+      'voice:open-microphone-settings',
+    ) as Promise<void>,
 
   sendMessage: (request: ChatRequest) =>
     ipcRenderer.invoke(

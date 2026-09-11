@@ -9,6 +9,7 @@ import pytest
 from jsonschema import Draft202012Validator
 
 from desktop_protocol import (
+    MAX_AUDIO_DEVICE_ID_LENGTH,
     MAX_PROTOCOL_FRAME_BYTES,
     PROTOCOL_NAME,
     PROTOCOL_VERSION,
@@ -279,6 +280,57 @@ def test_permission_scopes_must_be_unique() -> None:
         parse_server_message(message)
 
 
+@pytest.mark.parametrize(
+    "invalid_id",
+    [
+        "default",
+        "communications",
+        "private\x00device",
+        "x" * (MAX_AUDIO_DEVICE_ID_LENGTH + 1),
+    ],
+)
+def test_voice_settings_reject_unsafe_ids_without_echoing_them(
+    invalid_id: str,
+) -> None:
+    request: JsonObject = {
+        "type": "request",
+        "protocol": {"name": PROTOCOL_NAME, "version": PROTOCOL_VERSION},
+        "id": "voice-settings-invalid",
+        "method": "voice.settings.update",
+        "params": {
+            "expectedRevision": 0,
+            "inputDeviceId": invalid_id,
+            "outputDeviceId": None,
+        },
+    }
+
+    with pytest.raises(ProtocolValidationError) as raised:
+        parse_client_request(request)
+
+    assert raised.value.code == "protocol.invalid_params"
+    assert invalid_id not in str(raised.value)
+
+
+def test_voice_settings_result_requires_its_explicit_kind() -> None:
+    message: JsonObject = {
+        "type": "response",
+        "protocol": {"name": PROTOCOL_NAME, "version": PROTOCOL_VERSION},
+        "id": "voice-settings-get",
+        "ok": True,
+        "result": {
+            "kind": "audio.devices",
+            "revision": 0,
+            "updatedAt": None,
+            "inputDeviceId": None,
+            "outputDeviceId": None,
+            "warning": None,
+        },
+    }
+
+    with pytest.raises(ProtocolValidationError, match="kind is unsupported"):
+        parse_server_message(message)
+
+
 def test_machine_readable_schema_covers_every_protocol_message_kind() -> None:
     schema = cast(JsonObject, json.loads(SCHEMA_PATH.read_text("utf-8")))
     definitions = cast(JsonObject, schema["$defs"])
@@ -312,6 +364,8 @@ def test_machine_readable_schema_covers_every_protocol_message_kind() -> None:
         "projectChatMoveRequest",
         "settingsGetRequest",
         "settingsUpdateRequest",
+        "voiceSettingsGetRequest",
+        "voiceSettingsUpdateRequest",
         "cancelRequest",
         "permissionResponseRequest",
         "shutdownRequest",
@@ -331,6 +385,9 @@ def test_machine_readable_schema_covers_every_protocol_message_kind() -> None:
         "settingsChatScope",
         "settingsScopes",
         "settingsStateResult",
+        "voiceSettingsStateResult",
+        "audioDeviceId",
+        "nullableAudioDeviceId",
     }.issubset(definitions)
 
     settings_values = cast(JsonObject, definitions["settingsValues"])

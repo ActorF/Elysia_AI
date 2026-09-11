@@ -1,12 +1,15 @@
 # Elysia Desktop
 
-Stage 6 Modules 1–10 connect a React + TypeScript interface to the existing
-Python Brain through an Electron-owned child process and a strict, versioned
-local protocol. The renderer has persistent Chat and Project surfaces,
-resilient streamed message actions, revisioned Settings, Chat attachments,
-Project source storage, semantic design tokens, system/light/dark themes,
-keyboard and screen-reader navigation, durable per-Chat drafts, renderer-refresh
-stream recovery, and consistent loading, empty, error, offline, and fatal states.
+The Stage 6 desktop foundation connects a React + TypeScript interface to the
+existing Python Brain through an Electron-owned child process and a strict,
+versioned local protocol. The first Stage 7 Voice slice adds host-local
+microphone and speaker selection, native permission status, and bounded input
+and output tests without recording audio. The renderer has persistent Chat and
+Project surfaces, resilient streamed message actions, revisioned Settings,
+Chat attachments, Project source storage, semantic design tokens,
+system/light/dark themes, keyboard and screen-reader navigation, durable
+per-Chat drafts, renderer-refresh stream recovery, and consistent loading,
+empty, error, offline, and fatal states.
 Electron is frozen as the production
 shell. The Tauri source and toolchain were removed after the comparison; the
 rationale, recorded measurements, and revisit gates are in
@@ -43,6 +46,11 @@ Electron starts `D:\Elysia_AI\.venv\Scripts\python.exe`, runs
   origin, Memory limits, file import size, and appearance. Backend values are
   atomically stored in `workspace/settings/global.json`; appearance remains in
   this device's renderer storage and applies immediately.
+- The Voice section selects a system-default or exact microphone and speaker,
+  reports Windows microphone access, and runs short local tests. Desired opaque
+  device IDs are stored separately in `workspace/settings/audio-device.json`;
+  device labels, permission state, availability, and test audio never enter
+  Python.
 - Settings shows Global defaults beside the active Project's inheritance and
   the active Chat's pinned model. Backend-backed changes clearly request a
   restart before they are reported as active.
@@ -64,8 +72,9 @@ Electron starts `D:\Elysia_AI\.venv\Scripts\python.exe`, runs
   final message. The compact character panel is also modal, traps focus, and
   has its own close control.
 - Projects support persisted metadata, instructions, workspace binding, Chat
-  assignment, archive, and restore. Voice, Work permissions, and later file
-  processing controls remain read-only until their service boundaries exist.
+  assignment, archive, and restore. Recording, speech recognition, speech
+  output, Work permissions, and later file processing controls remain
+  read-only until their service boundaries exist.
 
 ## Verification
 
@@ -125,6 +134,11 @@ method, results, capability gaps, and limitations.
 - Settings accepts an exact non-sensitive allowlist, uses optimistic revisions
   and atomic replacement, and remains repairable after Backend initialization
   rejects a saved model or Ollama origin.
+- Audio-device preferences use an independent optimistic revision and remain
+  repairable while Chat generation is active or Brain initialization has
+  failed. Electron owns hardware enumeration, Windows permission state, and
+  immediate resource cleanup when a test or visible context ends. Microphone
+  and speaker-selection permissions are limited to the trusted main renderer.
 - Native selection and drop paths remain inside the trusted preload/Electron
   boundary. Python copies validated regular files into opaque, scope-specific
   storage, and protocol responses expose only safe metadata and attachment IDs.

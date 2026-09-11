@@ -31,6 +31,7 @@ from recovery import (
     ImportConflictError,
     ImportValidationError,
 )
+from voice import AudioDevicePreferences, JsonVoiceSettingsRepository
 
 BASE_TIME = datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc)
 
@@ -278,6 +279,80 @@ def test_all_user_data_round_trip_restores_equivalent_state(
             )
         )
         assert restored == expected
+
+
+def test_all_user_data_export_excludes_device_local_audio_preferences(
+    tmp_path: Path,
+) -> None:
+    source_dir = tmp_path / "source"
+    source_service, _, _ = service_for(source_dir)
+    audio_path = (
+        source_dir / "workspace" / "settings" / "audio-device.json"
+    )
+    JsonVoiceSettingsRepository(audio_path).save(
+        AudioDevicePreferences(
+            input_device_id="private-input-id",
+            output_device_id="private-output-id",
+        ),
+        expected_revision=0,
+    )
+    export_file = tmp_path / "all-user-data.json"
+
+    source_service.export_all_user_data(export_file)
+    bundle = json.loads(export_file.read_text(encoding="utf-8"))
+
+    assert "settings/audio-device.json" not in (
+        bundle["payload"]["workspace_files"]
+    )
+    assert audio_path.exists()
+
+
+def test_import_rejects_device_local_audio_path_without_overwriting_it(
+    tmp_path: Path,
+) -> None:
+    source_dir = tmp_path / "source"
+    source_service, _, _ = service_for(source_dir)
+    seed_workspace_files(source_dir)
+    bundle_path = tmp_path / "injected-device-settings.json"
+    source_service.export_all_user_data(bundle_path)
+    bundle = json.loads(bundle_path.read_text(encoding="utf-8"))
+    bundle["payload"]["workspace_files"]["settings/audio-device.json"] = {
+        "schema_version": 1,
+        "revision": 99,
+        "updated_at": BASE_TIME.isoformat(),
+        "preferences": {
+            "input_device_id": "injected-input-id",
+            "output_device_id": "injected-output-id",
+        },
+    }
+    bundle["payload_sha256"] = source_service._payload_digest(
+        bundle["payload"]
+    )
+    write_json(bundle_path, bundle)
+
+    target_dir = tmp_path / "target"
+    target_service, _, _ = service_for(target_dir)
+    target_audio_path = (
+        target_dir / "workspace" / "settings" / "audio-device.json"
+    )
+    target_repository = JsonVoiceSettingsRepository(target_audio_path)
+    local = target_repository.save(
+        AudioDevicePreferences(input_device_id="local-input-id"),
+        expected_revision=0,
+    )
+    before = target_audio_path.read_bytes()
+
+    with pytest.raises(
+        ImportValidationError,
+        match="Managed file schema is invalid",
+    ):
+        target_service.import_bundle(
+            bundle_path,
+            overwrite_user_files=True,
+        )
+
+    assert target_audio_path.read_bytes() == before
+    assert target_repository.load() == local
 
 
 def test_malformed_imported_settings_are_quarantined_as_validation_error(

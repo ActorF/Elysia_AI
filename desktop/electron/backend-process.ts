@@ -36,7 +36,9 @@ import type {
   RenameChatRequest,
   RetryChatRequest,
   DesktopSettingsState,
+  VoiceSettingsState,
   UpdateDesktopSettingsRequest,
+  UpdateVoiceSettingsRequest,
   UpdateProjectRequest,
 } from './contracts.js'
 import {
@@ -55,6 +57,7 @@ import {
   parseInitializeResult,
   parseProjectStateResult,
   parseSettingsStateResult,
+  parseVoiceSettingsStateResult,
   parseServerMessage,
   type ProtocolMethod,
   type RequestParamsByMethod,
@@ -97,6 +100,8 @@ interface PendingRequest {
   rejectProjectState?: (error: Error) => void
   resolveSettingsState?: (state: DesktopSettingsState) => void
   rejectSettingsState?: (error: Error) => void
+  resolveVoiceSettingsState?: (state: VoiceSettingsState) => void
+  rejectVoiceSettingsState?: (error: Error) => void
   resolveAttachmentState?: (state: AttachmentState) => void
   rejectAttachmentState?: (error: Error) => void
   cancelTargetId?: string
@@ -153,6 +158,15 @@ const PROJECT_METHODS = new Set<ProtocolMethod>([
 const SETTINGS_METHODS = new Set<ProtocolMethod>([
   'settings.get',
   'settings.update',
+])
+
+type VoiceSettingsMethod =
+  | 'voice.settings.get'
+  | 'voice.settings.update'
+
+const VOICE_SETTINGS_METHODS = new Set<ProtocolMethod>([
+  'voice.settings.get',
+  'voice.settings.update',
 ])
 
 type AttachmentMethod =
@@ -776,6 +790,18 @@ export class BackendProcess {
     return this.requestSettingsState('settings.update', request)
   }
 
+  /** Read host-local audio routing preferences over the authenticated channel. */
+  getVoiceSettings(): Promise<VoiceSettingsState> {
+    return this.requestVoiceSettingsState('voice.settings.get', {})
+  }
+
+  /** Atomically update host-local audio routing preferences. */
+  updateVoiceSettings(
+    request: UpdateVoiceSettingsRequest,
+  ): Promise<VoiceSettingsState> {
+    return this.requestVoiceSettingsState('voice.settings.update', request)
+  }
+
   /** Load pending attachments for one exact Chat or Project scope. */
   listAttachments(scope: AttachmentScope): Promise<AttachmentState> {
     return this.requestAttachmentState('attachment.list', { scope })
@@ -929,6 +955,38 @@ export class BackendProcess {
     })
   }
 
+  private requestVoiceSettingsState<Method extends VoiceSettingsMethod>(
+    method: Method,
+    params: RequestParamsByMethod[Method],
+  ): Promise<VoiceSettingsState> {
+    if (
+      this.child === null
+      || ['starting', 'handshaking', 'stopping', 'stopped'].includes(
+        this.snapshot.status,
+      )
+    ) {
+      return Promise.reject(
+        new Error('Python Backend voice settings are not available yet.'),
+      )
+    }
+    if (!this.snapshot.capabilities.includes('voice.settings')) {
+      return Promise.reject(
+        new Error('Python Backend does not support voice settings.'),
+      )
+    }
+    return new Promise<VoiceSettingsState>((resolve, reject) => {
+      this.sendRequest(
+        method,
+        params,
+        undefined,
+        {
+          resolveVoiceSettingsState: resolve,
+          rejectVoiceSettingsState: reject,
+        },
+      )
+    })
+  }
+
   private requestAttachmentState<Method extends AttachmentMethod>(
     method: Method,
     params: RequestParamsByMethod[Method],
@@ -984,6 +1042,8 @@ export class BackendProcess {
       | 'rejectProjectState'
       | 'resolveSettingsState'
       | 'rejectSettingsState'
+      | 'resolveVoiceSettingsState'
+      | 'rejectVoiceSettingsState'
       | 'resolveAttachmentState'
       | 'rejectAttachmentState'
       | 'attachmentScope'
@@ -1125,6 +1185,8 @@ export class BackendProcess {
         parseProjectStateResult(message.result)
       } else if (SETTINGS_METHODS.has(pending.method)) {
         parseSettingsStateResult(message.result)
+      } else if (VOICE_SETTINGS_METHODS.has(pending.method)) {
+        parseVoiceSettingsStateResult(message.result)
       } else if (ATTACHMENT_METHODS.has(pending.method)) {
         parseAttachmentStateResult(message.result)
       } else if (CHAT_GENERATION_METHODS.has(pending.method)) {
@@ -1160,7 +1222,7 @@ export class BackendProcess {
       if (pending.method === 'initialize') {
         // Keep the authenticated child alive so Settings can repair a bad
         // persisted model or Ollama origin without editing files manually.
-        this.fail(message.error.message)
+        this.failInitialization(message.error.message)
         return
       }
       if (
@@ -1194,6 +1256,9 @@ export class BackendProcess {
       if (SETTINGS_METHODS.has(pending.method)) {
         pending.rejectSettingsState?.(new Error(message.error.message))
       }
+      if (VOICE_SETTINGS_METHODS.has(pending.method)) {
+        pending.rejectVoiceSettingsState?.(new Error(message.error.message))
+      }
       if (ATTACHMENT_METHODS.has(pending.method)) {
         pending.rejectAttachmentState?.(new Error(message.error.message))
       }
@@ -1214,6 +1279,7 @@ export class BackendProcess {
         'chat.sessions',
         'project.management',
         'settings.management',
+        'voice.settings',
         'attachment.management',
         'request.cancel',
         'stream',
@@ -1305,6 +1371,18 @@ export class BackendProcess {
       pending.resolveSettingsState?.(
         parseSettingsStateResult(message.result),
       )
+      return
+    }
+
+    if (VOICE_SETTINGS_METHODS.has(pending.method)) {
+      const result = parseVoiceSettingsStateResult(message.result)
+      pending.resolveVoiceSettingsState?.({
+        revision: result.revision,
+        updatedAt: result.updatedAt,
+        inputDeviceId: result.inputDeviceId,
+        outputDeviceId: result.outputDeviceId,
+        warning: result.warning,
+      })
       return
     }
 
@@ -1585,6 +1663,11 @@ export class BackendProcess {
           'Python Backend stopped before the Settings action completed.',
         ),
       )
+      pending.rejectVoiceSettingsState?.(
+        new Error(
+          'Python Backend stopped before the Voice Settings action completed.',
+        ),
+      )
       pending.rejectAttachmentState?.(
         new Error(
           'Python Backend stopped before the Attachment action completed.',
@@ -1609,6 +1692,7 @@ export class BackendProcess {
       pending.rejectChatState?.(error)
       pending.rejectProjectState?.(error)
       pending.rejectSettingsState?.(error)
+      pending.rejectVoiceSettingsState?.(error)
       pending.rejectAttachmentState?.(error)
       pending.rejectCancellation?.(error)
       pending.resolveChatState = undefined
@@ -1617,6 +1701,8 @@ export class BackendProcess {
       pending.rejectProjectState = undefined
       pending.resolveSettingsState = undefined
       pending.rejectSettingsState = undefined
+      pending.resolveVoiceSettingsState = undefined
+      pending.rejectVoiceSettingsState = undefined
       pending.resolveAttachmentState = undefined
       pending.rejectAttachmentState = undefined
       pending.resolveCancellation = undefined
@@ -1635,6 +1721,24 @@ export class BackendProcess {
       protocolVersion: undefined,
       serverVersion: undefined,
       capabilities: [],
+      modelName: undefined,
+      models: [],
+      error: message,
+      chatId: undefined,
+      chatTitle: undefined,
+    })
+  }
+
+  private failInitialization(message: string): void {
+    this.clearHandshakeTimeout()
+    this.clearInitializeTimeout()
+    this.rejectPendingActionPromises(message)
+    this.pendingRequests.clear()
+    // The handshake remains valid even though Brain creation failed. Preserve
+    // negotiated capabilities so repair-only Settings methods remain gated by
+    // the authenticated contract instead of looking like an unknown child.
+    this.updateSnapshot({
+      status: 'error',
       modelName: undefined,
       models: [],
       error: message,

@@ -43,6 +43,7 @@ interface ChatViewProps {
   draft: string
   generationBusy: boolean
   messages: ChatMessage[]
+  microphoneTesting: boolean
   modelSelectionPending: boolean
   modelOptions: string[]
   notice: ChatNotice | null
@@ -113,6 +114,7 @@ export function ChatView({
   draft,
   generationBusy,
   messages,
+  microphoneTesting,
   modelSelectionPending,
   modelOptions,
   notice,
@@ -292,6 +294,7 @@ export function ChatView({
         canSend={canSend}
         draft={draft}
         generationBusy={generationBusy}
+        microphoneTesting={microphoneTesting}
         modelSelectionPending={modelSelectionPending}
         modelOptions={modelOptions}
         notice={notice}

@@ -296,6 +296,30 @@
       }
     },
     {
+      "name": "voice settings get request",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "voice-settings-get-1",
+        "method": "voice.settings.get",
+        "params": {}
+      }
+    },
+    {
+      "name": "voice settings update request",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "voice-settings-update-1",
+        "method": "voice.settings.update",
+        "params": {
+          "expectedRevision": 2,
+          "inputDeviceId": "opaque-input-id",
+          "outputDeviceId": null
+        }
+      }
+    },
+    {
       "name": "unicode identifier boundary",
       "message": {
         "type": "request",
@@ -658,6 +682,40 @@
       }
     },
     {
+      "name": "voice settings state response",
+      "message": {
+        "type": "response",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "voice-settings-get-1",
+        "ok": true,
+        "result": {
+          "kind": "voice.settings",
+          "revision": 3,
+          "updatedAt": "2026-09-09T12:00:00+00:00",
+          "inputDeviceId": "opaque-input-id",
+          "outputDeviceId": null,
+          "warning": null
+        }
+      }
+    },
+    {
+      "name": "voice settings system defaults response",
+      "message": {
+        "type": "response",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "voice-settings-get-2",
+        "ok": true,
+        "result": {
+          "kind": "voice.settings",
+          "revision": 0,
+          "updatedAt": null,
+          "inputDeviceId": null,
+          "outputDeviceId": null,
+          "warning": "Recovered system-default device preferences."
+        }
+      }
+    },
+    {
       "name": "shutdown response",
       "message": {
         "type": "response",
@@ -986,6 +1044,63 @@
           }
         }
       }
+    },
+    {
+      "name": "voice settings update rejects live device fields",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "voice-settings-update-invalid-1",
+        "method": "voice.settings.update",
+        "params": {
+          "expectedRevision": 0,
+          "inputDeviceId": null,
+          "outputDeviceId": null,
+          "permission": "granted"
+        }
+      }
+    },
+    {
+      "name": "voice settings update rejects control characters",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "voice-settings-update-invalid-2",
+        "method": "voice.settings.update",
+        "params": {
+          "expectedRevision": 0,
+          "inputDeviceId": "unsafe\u0000input",
+          "outputDeviceId": null
+        }
+      }
+    },
+    {
+      "name": "voice settings update rejects Chromium default pseudo id",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "voice-settings-update-invalid-3",
+        "method": "voice.settings.update",
+        "params": {
+          "expectedRevision": 0,
+          "inputDeviceId": "default",
+          "outputDeviceId": null
+        }
+      }
+    },
+    {
+      "name": "voice settings update rejects communications pseudo id",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "voice-settings-update-invalid-4",
+        "method": "voice.settings.update",
+        "params": {
+          "expectedRevision": 0,
+          "inputDeviceId": null,
+          "outputDeviceId": "communications"
+        }
+      }
     }
   ],
   "invalidServerMessages": [
@@ -1225,6 +1340,24 @@
           "restartFields": ["modelName"],
           "scopes": { "project": null, "chat": null },
           "warning": null
+        }
+      }
+    },
+    {
+      "name": "voice settings state rejects live permission",
+      "message": {
+        "type": "response",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "voice-settings-get-invalid-1",
+        "ok": true,
+        "result": {
+          "kind": "voice.settings",
+          "revision": 0,
+          "updatedAt": null,
+          "inputDeviceId": null,
+          "outputDeviceId": null,
+          "warning": null,
+          "permission": "granted"
         }
       }
     }

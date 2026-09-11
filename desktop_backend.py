@@ -83,6 +83,14 @@ from desktop_protocol import (
     parse_client_request,
 )
 from start import create_brain, validate_settings
+from voice import (
+    VoiceSettingsConflictError,
+    VoiceSettingsService,
+    VoiceSettingsSnapshot,
+    VoiceSettingsStorageError,
+    VoiceSettingsValidationError,
+    create_voice_settings_service,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +108,7 @@ SERVER_CAPABILITIES = (
     "request.cancel",
     "project.management",
     "settings.management",
+    "voice.settings",
     "attachment.management",
     "stream",
     "progress",
@@ -242,6 +251,7 @@ class DesktopBackend:
         model_loader: ModelLoader = discover_ollama_models,
         settings_validator: SettingsValidator = validate_settings,
         settings_repository: DesktopSettingsRepository | None = None,
+        voice_settings_service: VoiceSettingsService | None = None,
         attachment_store: JsonAttachmentStore | None = None,
         input_stream: TextIO = sys.stdin,
         output_stream: TextIO = sys.stdout,
@@ -261,6 +271,11 @@ class DesktopBackend:
             create_desktop_settings_repository(SETTINGS)
             if settings_repository is None
             else settings_repository
+        )
+        self._voice_settings_service = (
+            create_voice_settings_service(SETTINGS.base_dir)
+            if voice_settings_service is None
+            else voice_settings_service
         )
         self._attachment_store = attachment_store
         initial_settings = self._settings_repository.load()
@@ -404,6 +419,10 @@ class DesktopBackend:
                 self._get_settings(request_id)
             elif method == "settings.update":
                 self._update_settings(request_id, params)
+            elif method == "voice.settings.get":
+                self._get_voice_settings(request_id)
+            elif method == "voice.settings.update":
+                self._update_voice_settings(request_id, params)
             elif self._brain is None or self._active_chat_snapshot() is None:
                 raise ProtocolValidationError(
                     "protocol.not_initialized",
@@ -469,6 +488,22 @@ class DesktopBackend:
             self._emit_error(
                 request_id,
                 "settings.storage_failed",
+                str(error),
+                retryable=True,
+            )
+        except VoiceSettingsConflictError as error:
+            self._emit_error(
+                request_id,
+                "voice.settings.conflict",
+                str(error),
+                retryable=True,
+            )
+        except VoiceSettingsValidationError as error:
+            self._emit_error(request_id, "voice.settings.invalid", str(error))
+        except VoiceSettingsStorageError as error:
+            self._emit_error(
+                request_id,
+                "voice.settings.storage_failed",
                 str(error),
                 retryable=True,
             )
@@ -770,6 +805,51 @@ class DesktopBackend:
             )
 
         self._emit_response(request_id, self._settings_state_result())
+
+    @staticmethod
+    def _voice_settings_state_result(
+        snapshot: VoiceSettingsSnapshot,
+    ) -> JsonObject:
+        """Serialize preferences without labels or live device information."""
+
+        return {
+            "kind": "voice.settings",
+            "revision": snapshot.revision,
+            "updatedAt": (
+                None
+                if snapshot.updated_at is None
+                else snapshot.updated_at.isoformat()
+            ),
+            "inputDeviceId": snapshot.values.input_device_id,
+            "outputDeviceId": snapshot.values.output_device_id,
+            "warning": snapshot.warning,
+        }
+
+    def _get_voice_settings(self, request_id: str) -> None:
+        """Return device preferences before or after Brain initialization."""
+
+        snapshot = self._voice_settings_service.get_settings()
+        self._emit_response(
+            request_id,
+            self._voice_settings_state_result(snapshot),
+        )
+
+    def _update_voice_settings(
+        self,
+        request_id: str,
+        params: JsonObject,
+    ) -> None:
+        """Save device preferences independently of Chat generation state."""
+
+        snapshot = self._voice_settings_service.update_settings(
+            input_device_id=cast(str | None, params["inputDeviceId"]),
+            output_device_id=cast(str | None, params["outputDeviceId"]),
+            expected_revision=cast(int, params["expectedRevision"]),
+        )
+        self._emit_response(
+            request_id,
+            self._voice_settings_state_result(snapshot),
+        )
 
     @staticmethod
     def _resolve_active_chat(brain: Brain) -> ChatSession:

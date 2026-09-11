@@ -138,6 +138,21 @@ interface DesktopSettingsState {
   warning: string | null
 }
 
+interface VoiceSettingsState {
+  revision: number
+  updatedAt: string | null
+  inputDeviceId: string | null
+  outputDeviceId: string | null
+  warning: string | null
+}
+
+type MicrophonePermissionStatus =
+  | 'not-determined'
+  | 'granted'
+  | 'denied'
+  | 'restricted'
+  | 'unknown'
+
 interface CallRecord {
   sequence: number
   method: string
@@ -171,8 +186,11 @@ interface RendererTestControl {
   setChatState(state: ChatSessionState): void
   setProjectState(state: ProjectState): void
   setSettingsState(state: DesktopSettingsState): void
+  setVoiceSettingsState(state: VoiceSettingsState): void
+  setMicrophonePermissionStatus(status: MicrophonePermissionStatus): void
   failNextRestart(message: string): void
   failNextSettingsUpdate(message: string): void
+  failNextVoiceSettingsUpdate(message: string): void
   cancelNextAttachmentPicker(): void
   failNextAttachmentAction(message: string): void
   failNextSend(message: string): void
@@ -296,6 +314,398 @@ async function setSettingsState(
   }, state)
 }
 
+async function setVoiceSettingsState(
+  state: VoiceSettingsState,
+): Promise<void> {
+  await page.evaluate((nextState) => {
+    ;(window as TestWindow).elysiaDesktopTest.setVoiceSettingsState(nextState)
+  }, state)
+}
+
+async function setMicrophonePermissionStatus(
+  status: MicrophonePermissionStatus,
+): Promise<void> {
+  await page.evaluate((nextStatus) => {
+    ;(window as TestWindow).elysiaDesktopTest
+      .setMicrophonePermissionStatus(nextStatus)
+  }, status)
+}
+
+interface AudioMockDevice {
+  deviceId: string
+  kind: 'audioinput' | 'audiooutput'
+  label: string
+  groupId?: string
+}
+
+interface AudioMockStats {
+  enumerateCalls: number
+  getUserMediaCalls: MediaStreamConstraints[]
+  trackStopCount: number
+  contextsCreated: number
+  contextsClosed: number
+  sinkIds: string[]
+  oscillatorDurations: number[]
+}
+
+const defaultAudioMockDevices: AudioMockDevice[] = [
+  {
+    deviceId: 'default',
+    kind: 'audioinput',
+    label: 'Default - Built-in microphone',
+  },
+  {
+    deviceId: 'communications',
+    kind: 'audioinput',
+    label: 'Communications - Built-in microphone',
+  },
+  {
+    deviceId: 'mic-built-in',
+    kind: 'audioinput',
+    label: 'Built-in microphone',
+  },
+  {
+    deviceId: 'mic-usb',
+    kind: 'audioinput',
+    label: 'USB microphone',
+  },
+  {
+    deviceId: 'default',
+    kind: 'audiooutput',
+    label: 'Default - Built-in speakers',
+  },
+  {
+    deviceId: 'speaker-built-in',
+    kind: 'audiooutput',
+    label: 'Built-in speakers',
+  },
+  {
+    deviceId: 'speaker-usb',
+    kind: 'audiooutput',
+    label: 'USB speakers',
+  },
+]
+
+async function installAudioMock(
+  devices: AudioMockDevice[] = defaultAudioMockDevices,
+): Promise<void> {
+  await page.context().addInitScript((initialDevices) => {
+    let availableDevices = initialDevices.map((device) => ({
+      ...device,
+      groupId: device.groupId ?? '',
+      toJSON: () => ({ ...device }),
+    }))
+    let nextCaptureError: string | null = null
+    let deferNextEnumeration = false
+    let deferredEnumeration: (() => void) | null = null
+    let deferNextResume = false
+    let deferredResume: (() => void) | null = null
+    let deferNextSinkSelection = false
+    let deferredSinkSelection: (() => void) | null = null
+    const stats: AudioMockStats = {
+      enumerateCalls: 0,
+      getUserMediaCalls: [],
+      trackStopCount: 0,
+      contextsCreated: 0,
+      contextsClosed: 0,
+      sinkIds: [],
+      oscillatorDurations: [],
+    }
+
+    class FakeTrack extends EventTarget {
+      readonly kind = 'audio'
+      private stopped = false
+
+      stop(): void {
+        if (!this.stopped) {
+          this.stopped = true
+          stats.trackStopCount += 1
+        }
+      }
+    }
+
+    class FakeMediaDevices extends EventTarget {
+      async enumerateDevices(): Promise<MediaDeviceInfo[]> {
+        stats.enumerateCalls += 1
+        if (deferNextEnumeration) {
+          deferNextEnumeration = false
+          await new Promise<void>((resolve) => {
+            deferredEnumeration = resolve
+          })
+          deferredEnumeration = null
+        }
+        return availableDevices as unknown as MediaDeviceInfo[]
+      }
+
+      async getUserMedia(
+        constraints: MediaStreamConstraints,
+      ): Promise<MediaStream> {
+        stats.getUserMediaCalls.push(structuredClone(constraints))
+        if (nextCaptureError !== null) {
+          const name = nextCaptureError
+          nextCaptureError = null
+          throw new DOMException('Synthetic audio failure.', name)
+        }
+        const track = new FakeTrack()
+        return {
+          getAudioTracks: () => [track],
+          getTracks: () => [track],
+        } as unknown as MediaStream
+      }
+    }
+
+    class FakeAudioParam {
+      setValueAtTime(): void {}
+      linearRampToValueAtTime(): void {}
+    }
+
+    class FakeAudioNode {
+      connect(): FakeAudioNode {
+        return this
+      }
+
+      disconnect(): void {}
+    }
+
+    class FakeAnalyser extends FakeAudioNode {
+      fftSize = 2_048
+      smoothingTimeConstant = 0
+
+      getByteTimeDomainData(samples: Uint8Array): void {
+        samples.fill(144)
+      }
+    }
+
+    class FakeOscillator extends FakeAudioNode {
+      type = 'sine'
+      frequency = new FakeAudioParam()
+      onended: (() => void) | null = null
+      private started = false
+
+      start(): void {
+        this.started = true
+      }
+
+      stop(when?: number): void {
+        if (typeof when === 'number') {
+          stats.oscillatorDurations.push(when)
+          window.setTimeout(() => { this.onended?.() }, 10)
+          return
+        }
+        if (!this.started) {
+          throw new DOMException('Oscillator has not started.', 'InvalidStateError')
+        }
+      }
+    }
+
+    class FakeGain extends FakeAudioNode {
+      gain = new FakeAudioParam()
+    }
+
+    class FakeAudioContext {
+      state: AudioContextState = 'suspended'
+      currentTime = 0
+      destination = new FakeAudioNode()
+
+      constructor() {
+        stats.contextsCreated += 1
+      }
+
+      async resume(): Promise<void> {
+        if (deferNextResume) {
+          deferNextResume = false
+          await new Promise<void>((resolve) => {
+            deferredResume = resolve
+          })
+          deferredResume = null
+        }
+        if (this.state !== 'closed') {
+          this.state = 'running'
+        }
+      }
+
+      async close(): Promise<void> {
+        if (this.state !== 'closed') {
+          this.state = 'closed'
+          stats.contextsClosed += 1
+        }
+      }
+
+      async setSinkId(sinkId: string): Promise<void> {
+        stats.sinkIds.push(sinkId)
+        if (deferNextSinkSelection) {
+          deferNextSinkSelection = false
+          await new Promise<void>((resolve) => {
+            deferredSinkSelection = resolve
+          })
+          deferredSinkSelection = null
+        }
+      }
+
+      createMediaStreamSource(): FakeAudioNode {
+        return new FakeAudioNode()
+      }
+
+      createAnalyser(): FakeAnalyser {
+        return new FakeAnalyser()
+      }
+
+      createOscillator(): FakeOscillator {
+        return new FakeOscillator()
+      }
+
+      createGain(): FakeGain {
+        return new FakeGain()
+      }
+    }
+
+    const mediaDevices = new FakeMediaDevices()
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: mediaDevices,
+    })
+    Object.defineProperty(window, 'AudioContext', {
+      configurable: true,
+      value: FakeAudioContext,
+    })
+
+    Object.defineProperty(window, '__elysiaAudioMock', {
+      configurable: true,
+      value: {
+        dispatchDeviceChange(nextDevices: AudioMockDevice[]): void {
+          availableDevices = nextDevices.map((device) => ({
+            ...device,
+            groupId: device.groupId ?? '',
+            toJSON: () => ({ ...device }),
+          }))
+          mediaDevices.dispatchEvent(new Event('devicechange'))
+        },
+        failNextCapture(name: string): void {
+          nextCaptureError = name
+        },
+        deferNextEnumeration(): void {
+          deferNextEnumeration = true
+        },
+        releaseEnumeration(): boolean {
+          if (deferredEnumeration === null) {
+            return false
+          }
+          deferredEnumeration()
+          return true
+        },
+        deferNextResume(): void {
+          deferNextResume = true
+        },
+        releaseResume(): boolean {
+          if (deferredResume === null) {
+            return false
+          }
+          deferredResume()
+          return true
+        },
+        deferNextSinkSelection(): void {
+          deferNextSinkSelection = true
+        },
+        releaseSinkSelection(): boolean {
+          if (deferredSinkSelection === null) {
+            return false
+          }
+          deferredSinkSelection()
+          return true
+        },
+        getStats(): AudioMockStats {
+          return structuredClone(stats)
+        },
+      },
+    })
+  }, devices)
+  await persistBackendForReload()
+  await page.reload()
+  await page.waitForLoadState('domcontentloaded')
+  await page.waitForFunction(() => (
+    'elysiaDesktopTest' in window
+    && (window as TestWindow).elysiaDesktopTest
+      .getCalls()
+      .some((call) => call.method === 'onBackendEvent.subscribe')
+  ))
+}
+
+async function audioMockStats(): Promise<AudioMockStats> {
+  return page.evaluate(() => (
+    (window as Window & {
+      __elysiaAudioMock: { getStats(): AudioMockStats }
+    }).__elysiaAudioMock.getStats()
+  ))
+}
+
+async function failNextAudioCapture(name: string): Promise<void> {
+  await page.evaluate((errorName) => {
+    ;(window as Window & {
+      __elysiaAudioMock: { failNextCapture(name: string): void }
+    }).__elysiaAudioMock.failNextCapture(errorName)
+  }, name)
+}
+
+async function deferNextAudioEnumeration(): Promise<void> {
+  await page.evaluate(() => {
+    ;(window as Window & {
+      __elysiaAudioMock: { deferNextEnumeration(): void }
+    }).__elysiaAudioMock.deferNextEnumeration()
+  })
+}
+
+async function releaseAudioEnumeration(): Promise<boolean> {
+  return page.evaluate(() => (
+    (window as Window & {
+      __elysiaAudioMock: { releaseEnumeration(): boolean }
+    }).__elysiaAudioMock.releaseEnumeration()
+  ))
+}
+
+async function deferNextAudioResume(): Promise<void> {
+  await page.evaluate(() => {
+    ;(window as Window & {
+      __elysiaAudioMock: { deferNextResume(): void }
+    }).__elysiaAudioMock.deferNextResume()
+  })
+}
+
+async function releaseAudioResume(): Promise<boolean> {
+  return page.evaluate(() => (
+    (window as Window & {
+      __elysiaAudioMock: { releaseResume(): boolean }
+    }).__elysiaAudioMock.releaseResume()
+  ))
+}
+
+async function deferNextSinkSelection(): Promise<void> {
+  await page.evaluate(() => {
+    ;(window as Window & {
+      __elysiaAudioMock: { deferNextSinkSelection(): void }
+    }).__elysiaAudioMock.deferNextSinkSelection()
+  })
+}
+
+async function releaseSinkSelection(): Promise<boolean> {
+  return page.evaluate(() => (
+    (window as Window & {
+      __elysiaAudioMock: { releaseSinkSelection(): boolean }
+    }).__elysiaAudioMock.releaseSinkSelection()
+  ))
+}
+
+async function dispatchAudioDeviceChange(
+  devices: AudioMockDevice[],
+): Promise<void> {
+  await page.evaluate((nextDevices) => {
+    ;(window as Window & {
+      __elysiaAudioMock: {
+        dispatchDeviceChange(devices: AudioMockDevice[]): void
+      }
+    }).__elysiaAudioMock.dispatchDeviceChange(nextDevices)
+  }, devices)
+}
+
 async function failNextSettingsUpdate(message: string): Promise<void> {
   await page.evaluate((nextMessage) => {
     ;(window as TestWindow).elysiaDesktopTest
@@ -413,6 +823,19 @@ function desktopSettingsState(
     ...overrides,
     settings,
     activeSettings: overrides.activeSettings ?? { ...settings },
+  }
+}
+
+function voiceSettingsState(
+  overrides: Partial<VoiceSettingsState> = {},
+): VoiceSettingsState {
+  return {
+    revision: 0,
+    updatedAt: null,
+    inputDeviceId: null,
+    outputDeviceId: null,
+    warning: null,
+    ...overrides,
   }
 }
 
@@ -1147,6 +1570,326 @@ test('shows all Settings areas, ownership scopes, and no secret controls', async
     .toHaveCount(0)
 })
 
+test('saves exact audio devices and restores them in a replacement window', async () => {
+  await installAudioMock()
+  await openSettings()
+
+  const microphone = page.getByRole('combobox', { name: /^Microphone/ })
+  const speaker = page.getByRole('combobox', { name: /^Speaker/ })
+  await expect(microphone).toBeEnabled()
+  await expect(speaker).toBeEnabled()
+  await expect(microphone.locator('option')).toHaveText([
+    'System default',
+    'Built-in microphone',
+    'USB microphone',
+  ])
+  await expect(speaker.locator('option')).toHaveText([
+    'System default',
+    'Built-in speakers',
+    'USB speakers',
+  ])
+
+  await microphone.selectOption('mic-usb')
+  await speaker.selectOption('speaker-usb')
+  await clearCalls()
+  await page.getByRole('button', { name: 'Save devices' }).click()
+  await expect(page.getByText('Revision 1.')).toBeVisible()
+
+  expect((await getCalls()).find(
+    (call) => call.method === 'updateVoiceSettings',
+  )?.args).toEqual([{
+    expectedRevision: 0,
+    inputDeviceId: 'mic-usb',
+    outputDeviceId: 'speaker-usb',
+  }])
+
+  await persistBackendForReload()
+  await replaceRendererWindow()
+  await pressControlShortcut(',')
+  await expect(page.getByRole('heading', { name: 'Voice', exact: true }))
+    .toBeVisible()
+  await expect(page.getByRole('combobox', { name: /^Microphone/ }))
+    .toHaveValue('mic-usb')
+  await expect(page.getByRole('combobox', { name: /^Speaker/ }))
+    .toHaveValue('speaker-usb')
+  expect((await audioMockStats()).getUserMediaCalls).toHaveLength(0)
+})
+
+test('keeps an unsaved device draft across a same-revision Backend reload', async () => {
+  await installAudioMock()
+  await openSettings()
+  const microphone = page.getByRole('combobox', { name: /^Microphone/ })
+  await microphone.selectOption('mic-usb')
+  await expect(page.getByRole('button', { name: 'Save devices' })).toBeEnabled()
+  const previousReads = (await getCalls()).filter(
+    (call) => call.method === 'getVoiceSettings',
+  ).length
+
+  await emitSnapshot({
+    ...readySnapshot(),
+    revision: 2,
+    status: 'error',
+    error: 'The test Backend needs repair.',
+  })
+
+  await expect.poll(async () => (
+    (await getCalls()).filter(
+      (call) => call.method === 'getVoiceSettings',
+    ).length
+  )).toBeGreaterThan(previousReads)
+  await expect(microphone).toHaveValue('mic-usb')
+  await expect(page.getByRole('button', { name: 'Save devices' })).toBeEnabled()
+})
+
+test('keeps an unsaved device draft while global Settings finish loading', async () => {
+  await installAudioMock()
+  await setSettingsLoadDelay(true)
+  await emitSnapshot(readySnapshot())
+  await pressControlShortcut(',')
+
+  await expect(page.getByRole('heading', { name: 'Settings', exact: true }))
+    .toBeVisible()
+  await expect.poll(() => page.evaluate(() => (
+    (window as TestWindow).elysiaDesktopTest.getPendingSettingsLoadCount()
+  ))).toBe(1)
+  const microphone = page.getByRole('combobox', { name: /^Microphone/ })
+  await expect(microphone).toBeEnabled()
+  await microphone.selectOption('mic-usb')
+
+  expect(await releaseNextSettingsLoad()).toBe(true)
+  await setSettingsLoadDelay(false)
+  await expect(page.getByRole('heading', { name: 'General', exact: true }))
+    .toBeVisible()
+  await expect(microphone).toHaveValue('mic-usb')
+  await expect(page.getByRole('button', { name: 'Save devices' })).toBeEnabled()
+})
+
+test('reports denied microphone permission without touching real media', async () => {
+  await setMicrophonePermissionStatus('denied')
+  await installAudioMock()
+  await openSettings()
+
+  await expect(page.getByText('Microphone access denied', { exact: true }))
+    .toBeVisible()
+  await clearCalls()
+  await page.getByRole('button', { name: 'Open Windows settings' }).click()
+  expect((await getCalls()).some(
+    (call) => call.method === 'openMicrophonePrivacySettings',
+  )).toBe(true)
+
+  await failNextAudioCapture('NotAllowedError')
+  await page.getByRole('button', { name: 'Test microphone' }).click()
+  await expect(page.getByRole('alert')).toContainText(
+    'Microphone access was denied by Windows or Elysia.',
+  )
+  const stats = await audioMockStats()
+  expect(stats.getUserMediaCalls).toEqual([{ audio: true, video: false }])
+  expect(stats.trackStopCount).toBe(0)
+})
+
+test('reports a microphone that Windows cannot open because it is busy', async () => {
+  await installAudioMock()
+  await openSettings()
+  await failNextAudioCapture('NotReadableError')
+
+  await page.getByRole('button', { name: 'Test microphone' }).click()
+
+  await expect(page.getByRole('alert')).toContainText(
+    'The microphone is busy or could not be opened by Windows.',
+  )
+  expect((await audioMockStats()).getUserMediaCalls).toEqual([
+    { audio: true, video: false },
+  ])
+})
+
+test('cancels microphone resources while AudioContext resume is pending', async () => {
+  await installAudioMock()
+  await openSettings()
+  await deferNextAudioResume()
+
+  await page.getByRole('button', { name: 'Test microphone' }).click()
+  await expect(page.getByRole('button', { name: 'Cancel microphone test' }))
+    .toBeVisible()
+  await expect.poll(async () => (await audioMockStats()).contextsCreated).toBe(1)
+  await page.getByRole('button', { name: 'Cancel microphone test' }).click()
+
+  await expect.poll(async () => (await audioMockStats()).trackStopCount).toBe(1)
+  await expect.poll(async () => (await audioMockStats()).contextsClosed).toBe(1)
+  expect(await releaseAudioResume()).toBe(true)
+  await waitForTwoAnimationFrames()
+  await expect(page.getByRole('button', { name: 'Test microphone' })).toBeVisible()
+  expect((await audioMockStats()).trackStopCount).toBe(1)
+  expect((await audioMockStats()).contextsClosed).toBe(1)
+})
+
+test('cancels speaker resources while output routing is pending', async () => {
+  await installAudioMock()
+  await openSettings()
+  await page.getByRole('combobox', { name: /^Speaker/ })
+    .selectOption('speaker-usb')
+  await deferNextSinkSelection()
+
+  await page.getByRole('button', { name: 'Test speaker' }).click()
+  await expect(page.getByRole('button', { name: 'Cancel speaker test' }))
+    .toBeVisible()
+  await expect.poll(async () => (await audioMockStats()).sinkIds)
+    .toEqual(['speaker-usb'])
+  await page.getByRole('button', { name: 'Cancel speaker test' }).click()
+
+  await expect.poll(async () => (await audioMockStats()).contextsClosed).toBe(1)
+  expect((await audioMockStats()).oscillatorDurations).toHaveLength(0)
+  expect(await releaseSinkSelection()).toBe(true)
+  await waitForTwoAnimationFrames()
+  await expect(page.getByRole('button', { name: 'Test speaker' })).toBeVisible()
+  expect((await audioMockStats()).oscillatorDurations).toHaveLength(0)
+  expect((await audioMockStats()).contextsClosed).toBe(1)
+})
+
+test('keeps missing selections while tests safely follow system defaults', async () => {
+  await setVoiceSettingsState(voiceSettingsState({
+    revision: 3,
+    updatedAt: '2026-09-10T12:00:00+00:00',
+    inputDeviceId: 'mic-usb',
+    outputDeviceId: 'speaker-usb',
+  }))
+  await installAudioMock()
+  await openSettings()
+  const beforeChange = (await audioMockStats()).enumerateCalls
+
+  await dispatchAudioDeviceChange([
+    {
+      deviceId: 'default',
+      kind: 'audioinput',
+      label: 'Default microphone',
+    },
+    {
+      deviceId: 'mic-built-in',
+      kind: 'audioinput',
+      label: 'Built-in microphone',
+    },
+    {
+      deviceId: 'default',
+      kind: 'audiooutput',
+      label: 'Default speakers',
+    },
+    {
+      deviceId: 'speaker-built-in',
+      kind: 'audiooutput',
+      label: 'Built-in speakers',
+    },
+  ])
+
+  await expect(page.getByText(
+    'The saved microphone is disconnected. System default is used safely until it returns or you save another choice.',
+  )).toBeVisible()
+  await expect(page.getByText(
+    'The saved speaker is disconnected. System default is used safely until it returns or you save another choice.',
+  )).toBeVisible()
+  await expect(page.getByRole('combobox', { name: /^Microphone/ }))
+    .toHaveValue('mic-usb')
+  await expect(page.getByRole('combobox', { name: /^Speaker/ }))
+    .toHaveValue('speaker-usb')
+  await expect.poll(async () => (await audioMockStats()).enumerateCalls)
+    .toBeGreaterThan(beforeChange)
+
+  await page.getByRole('button', { name: 'Test microphone' }).click()
+  await expect(page.getByRole('button', { name: 'Stop microphone test' }))
+    .toBeVisible()
+  expect((await audioMockStats()).getUserMediaCalls.at(-1)).toEqual({
+    audio: true,
+    video: false,
+  })
+  await page.getByRole('button', { name: 'Stop microphone test' }).click()
+  await expect.poll(async () => (await audioMockStats()).trackStopCount).toBe(1)
+
+  await page.getByRole('button', { name: 'Test speaker' }).click()
+  await expect.poll(async () => (await audioMockStats()).oscillatorDurations)
+    .toEqual([0.8])
+  await expect.poll(async () => (await audioMockStats()).sinkIds.at(-1)).toBe('')
+  await expect.poll(async () => (await audioMockStats()).contextsClosed)
+    .toBe(2)
+})
+
+test('reports and releases a microphone that disconnects during its test', async () => {
+  await installAudioMock()
+  await openSettings()
+  await page.getByRole('combobox', { name: /^Microphone/ })
+    .selectOption('mic-usb')
+  await page.getByRole('button', { name: 'Test microphone' }).click()
+  await expect(page.getByRole('button', { name: 'Stop microphone test' }))
+    .toBeVisible()
+
+  await dispatchAudioDeviceChange(defaultAudioMockDevices.filter(
+    (device) => device.deviceId !== 'mic-usb',
+  ))
+
+  await expect(page.getByRole('alert')).toContainText(
+    'The microphone disconnected during the test.',
+  )
+  await expect.poll(async () => (await audioMockStats()).trackStopCount).toBe(1)
+  await expect.poll(async () => (await audioMockStats()).contextsClosed).toBe(1)
+})
+
+test('stops microphone tracks and audio contexts when Settings closes', async () => {
+  await installAudioMock()
+  await openSettings()
+  await page.getByRole('button', { name: 'Test microphone' }).click()
+  await expect(page.getByRole('button', { name: 'Stop microphone test' }))
+    .toBeVisible()
+
+  await page.getByRole('button', { name: 'Back to chat' }).click()
+  await expect(page.getByRole('heading', { name: 'Talk with Elysia' }))
+    .toBeVisible()
+  await expect.poll(async () => (await audioMockStats()).trackStopCount).toBe(1)
+  await expect.poll(async () => (await audioMockStats()).contextsClosed).toBe(1)
+})
+
+test('stops the Chat microphone test when navigation changes context', async () => {
+  await installAudioMock()
+  await page.getByRole('button', { name: 'Test microphone input' }).click()
+  await expect.poll(async () => (await audioMockStats()).getUserMediaCalls)
+    .toHaveLength(1)
+  await expect(page.getByRole('button', { name: 'Stop microphone test' }))
+    .toHaveAttribute('aria-pressed', 'true')
+
+  await page.getByRole('button', { name: /^Projects/ }).click()
+  await expect(page.getByRole('heading', { name: 'Projects', exact: true }))
+    .toBeVisible()
+  await expect.poll(async () => (await audioMockStats()).trackStopCount).toBe(1)
+  await expect.poll(async () => (await audioMockStats()).contextsClosed).toBe(1)
+})
+
+test('does not open the Chat microphone after navigation interrupts discovery', async () => {
+  await installAudioMock()
+  await deferNextAudioEnumeration()
+
+  await page.getByRole('button', { name: 'Test microphone input' }).click()
+  await expect.poll(async () => (await audioMockStats()).enumerateCalls).toBe(1)
+  await page.getByRole('button', { name: /^Projects/ }).click()
+  await expect(page.getByRole('heading', { name: 'Projects', exact: true }))
+    .toBeVisible()
+
+  expect(await releaseAudioEnumeration()).toBe(true)
+  await waitForTwoAnimationFrames()
+  expect((await audioMockStats()).getUserMediaCalls).toHaveLength(0)
+  expect((await audioMockStats()).contextsCreated).toBe(0)
+  expect((await audioMockStats()).trackStopCount).toBe(0)
+})
+
+test('routes one bounded low-volume speaker test without microphone access', async () => {
+  await installAudioMock()
+  await openSettings()
+  await page.getByRole('combobox', { name: /^Speaker/ }).selectOption('speaker-usb')
+  await page.getByRole('button', { name: 'Test speaker' }).click()
+
+  await expect.poll(async () => (await audioMockStats()).sinkIds)
+    .toEqual(['speaker-usb'])
+  await expect.poll(async () => (await audioMockStats()).oscillatorDurations)
+    .toEqual([0.8])
+  await expect.poll(async () => (await audioMockStats()).contextsClosed).toBe(1)
+  expect((await audioMockStats()).getUserMediaCalls).toHaveLength(0)
+})
+
 test('saves exact global Settings and restarts the Backend to apply them', async () => {
   await setSettingsState(desktopSettingsState({ revision: 7 }))
   await openSettings(readySnapshot({
@@ -1208,7 +1951,7 @@ test('discards a Settings draft without persisting it', async () => {
   await origin.fill('http://127.0.0.1:11434')
   await budget.fill('3072')
   await expect(page.getByText('Unsaved global changes')).toBeVisible()
-  await page.getByRole('button', { name: 'Discard' }).click()
+  await page.getByRole('button', { name: 'Discard', exact: true }).click()
 
   await expect(origin).toHaveValue('http://localhost:11434')
   await expect(budget).toHaveValue('2048')
@@ -1340,7 +2083,7 @@ test('blocks restart for a dirty draft and locks Backend fields while restarting
     'Save or discard the current draft first.',
   )
 
-  await page.getByRole('button', { name: 'Discard' }).click()
+  await page.getByRole('button', { name: 'Discard', exact: true }).click()
   await expect(restartButton).toBeEnabled()
   await setRestartDelay(true)
   await restartButton.click()

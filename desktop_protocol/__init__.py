@@ -1,6 +1,7 @@
 """Expose the versioned Electron-to-Python desktop protocol."""
 
 from .contracts import (
+    MAX_AUDIO_DEVICE_ID_LENGTH,
     MAX_MESSAGE_LENGTH,
     MAX_PROTOCOL_FRAME_BYTES,
     PROTOCOL_NAME,
@@ -16,6 +17,7 @@ from .contracts import (
     ServerMessage,
     StreamChunkMessage,
     SuccessResponse,
+    VoiceSettingsStateResult,
     build_error_response,
     build_event,
     build_permission,
@@ -28,6 +30,7 @@ from .contracts import (
 )
 
 __all__ = [
+    "MAX_AUDIO_DEVICE_ID_LENGTH",
     "MAX_MESSAGE_LENGTH",
     "MAX_PROTOCOL_FRAME_BYTES",
     "PROTOCOL_NAME",
@@ -43,6 +46,7 @@ __all__ = [
     "ServerMessage",
     "StreamChunkMessage",
     "SuccessResponse",
+    "VoiceSettingsStateResult",
     "build_error_response",
     "build_event",
     "build_permission",

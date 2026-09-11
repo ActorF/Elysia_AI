@@ -209,6 +209,30 @@ export interface UpdateDesktopSettingsRequest {
   settings: DesktopSettingsValues
 }
 
+/** Persisted, host-local audio routing preferences owned by the Python boundary. */
+export interface VoiceSettingsState {
+  revision: number
+  updatedAt: string | null
+  inputDeviceId: string | null
+  outputDeviceId: string | null
+  warning: string | null
+}
+
+/** Replace audio routing preferences using optimistic revision control. */
+export interface UpdateVoiceSettingsRequest {
+  expectedRevision: number
+  inputDeviceId: string | null
+  outputDeviceId: string | null
+}
+
+/** Native operating-system microphone access state (not device availability). */
+export type MicrophonePermissionStatus =
+  | 'not-determined'
+  | 'granted'
+  | 'denied'
+  | 'restricted'
+  | 'unknown'
+
 export type BackendEvent =
   | {
       type: 'snapshot'
@@ -267,6 +291,12 @@ export interface DesktopApi {
   updateSettings(
     request: UpdateDesktopSettingsRequest,
   ): Promise<DesktopSettingsState>
+  getVoiceSettings(): Promise<VoiceSettingsState>
+  updateVoiceSettings(
+    request: UpdateVoiceSettingsRequest,
+  ): Promise<VoiceSettingsState>
+  getMicrophonePermissionStatus(): Promise<MicrophonePermissionStatus>
+  openMicrophonePrivacySettings(): Promise<void>
   sendMessage(request: ChatRequest): Promise<{ requestId: string }>
   retryMessage(request: RetryChatRequest): Promise<{ requestId: string }>
   stopGeneration(requestId: string): Promise<void>

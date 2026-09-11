@@ -6,6 +6,10 @@ import test from 'node:test'
 import { pathToFileURL } from 'node:url'
 
 import { BackendProcess } from '../dist-electron/backend-process.js'
+import {
+  allowAudioPermissionCheck,
+  allowAudioPermissionRequest,
+} from '../dist-electron/audio-permission.js'
 import { parseSafeExternalUrl } from '../dist-electron/external-url.js'
 import { isTrustedRendererUrl } from '../dist-electron/renderer-source.js'
 import {
@@ -457,6 +461,14 @@ function projectStateResponse() {
 function settingsStateResponse() {
   const sample = fixtures.validServerMessages.find(
     (candidate) => candidate.name === 'settings state response',
+  )
+  assert.ok(sample)
+  return structuredClone(sample.message)
+}
+
+function voiceSettingsStateResponse() {
+  const sample = fixtures.validServerMessages.find(
+    (candidate) => candidate.name === 'voice settings state response',
   )
   assert.ok(sample)
   return structuredClone(sample.message)
@@ -1319,6 +1331,68 @@ test('Backend sends and strictly resolves typed Settings actions', async () => {
   assert.deepEqual(updated, updateResponse.result)
 })
 
+test('Backend sends typed Voice Settings actions during generation', async () => {
+  const writes = []
+  const backend = new BackendProcess('.', () => undefined)
+  backend.child = {
+    stdin: {
+      writable: true,
+      write: (value) => writes.push(value),
+    },
+  }
+  backend.snapshot = {
+    revision: 1,
+    status: 'ready',
+    capabilities: ['chat.stream', 'voice.settings'],
+    models: ['qwen3.5:9b'],
+    modelName: 'qwen3.5:9b',
+    chatId: 'chat_fixture',
+    chatTitle: 'Elysia Chat',
+  }
+  backend.pendingRequests.set('voice-generation', {
+    method: 'chat.stream',
+    chatId: 'chat_fixture',
+    nextSequence: 0,
+    streamCompleted: false,
+    streamedReply: '',
+    streamedLength: 0,
+  })
+
+  const getting = backend.getVoiceSettings()
+  const getRequest = JSON.parse(writes.at(-1))
+  assert.equal(getRequest.method, 'voice.settings.get')
+  assert.deepEqual(getRequest.params, {})
+
+  const getResponse = voiceSettingsStateResponse()
+  getResponse.id = getRequest.id
+  backend.handleProtocolLine(JSON.stringify(getResponse))
+  const state = await getting
+  const expectedState = { ...getResponse.result }
+  delete expectedState.kind
+  assert.deepEqual(state, expectedState)
+
+  const update = {
+    expectedRevision: state.revision,
+    inputDeviceId: 'microphone_exact',
+    outputDeviceId: null,
+  }
+  const updating = backend.updateVoiceSettings(update)
+  const updateRequest = JSON.parse(writes.at(-1))
+  assert.equal(updateRequest.method, 'voice.settings.update')
+  assert.deepEqual(updateRequest.params, update)
+
+  const updateResponse = voiceSettingsStateResponse()
+  updateResponse.id = updateRequest.id
+  updateResponse.result.revision = state.revision + 1
+  updateResponse.result.inputDeviceId = update.inputDeviceId
+  updateResponse.result.outputDeviceId = update.outputDeviceId
+  backend.handleProtocolLine(JSON.stringify(updateResponse))
+  const expectedUpdate = { ...updateResponse.result }
+  delete expectedUpdate.kind
+  assert.deepEqual(await updating, expectedUpdate)
+  assert.equal(backend.pendingRequests.has('voice-generation'), true)
+})
+
 test('Backend sends and strictly resolves scoped Attachment actions', async () => {
   const writes = []
   const backend = new BackendProcess('.', () => undefined)
@@ -1579,7 +1653,7 @@ test('Backend keeps an initialized child available for Settings repair', async (
   backend.snapshot = {
     revision: 1,
     status: 'initializing',
-    capabilities: ['settings.management'],
+    capabilities: ['settings.management', 'voice.settings'],
     models: [],
   }
   backend.initializeRequestId = 'initialize-repair'
@@ -1606,6 +1680,10 @@ test('Backend keeps an initialized child available for Settings repair', async (
   assert.equal(backend.child, child)
   assert.equal(killCount, 0)
   assert.equal(backend.getSnapshot().status, 'error')
+  assert.deepEqual(
+    backend.getSnapshot().capabilities,
+    ['settings.management', 'voice.settings'],
+  )
 
   const getting = backend.getSettings()
   const request = JSON.parse(writes.at(-1))
@@ -1615,6 +1693,16 @@ test('Backend keeps an initialized child available for Settings repair', async (
   backend.handleProtocolLine(JSON.stringify(response))
 
   assert.equal((await getting).revision, response.result.revision)
+  assert.equal(backend.child, child)
+
+  const gettingVoice = backend.getVoiceSettings()
+  const voiceRequest = JSON.parse(writes.at(-1))
+  assert.equal(voiceRequest.method, 'voice.settings.get')
+  const voiceResponse = voiceSettingsStateResponse()
+  voiceResponse.id = voiceRequest.id
+  backend.handleProtocolLine(JSON.stringify(voiceResponse))
+
+  assert.equal((await gettingVoice).revision, voiceResponse.result.revision)
   assert.equal(backend.child, child)
 })
 
@@ -1904,6 +1992,57 @@ test('renderer source policy accepts only the packaged index file', () => {
 
   assert.equal(isTrustedRendererUrl(indexUrl, policy), true)
   assert.equal(isTrustedRendererUrl(otherUrl, policy), false)
+})
+
+test('audio permission policy allows only trusted microphone access', () => {
+  const trusted = {
+    isMainFrame: true,
+    isMainWindow: true,
+    requestingUrlTrusted: true,
+    currentUrlTrusted: true,
+  }
+
+  assert.equal(allowAudioPermissionCheck('media', 'audio', trusted), true)
+  assert.equal(
+    allowAudioPermissionRequest('media', ['audio'], trusted),
+    true,
+  )
+  assert.equal(allowAudioPermissionCheck('media', 'video', trusted), false)
+  assert.equal(
+    allowAudioPermissionRequest('media', ['audio', 'video'], trusted),
+    false,
+  )
+  assert.equal(
+    allowAudioPermissionRequest('media', ['video'], trusted),
+    false,
+  )
+})
+
+test('audio permission policy narrowly allows trusted speaker selection', () => {
+  const trusted = {
+    isMainFrame: true,
+    isMainWindow: true,
+    requestingUrlTrusted: true,
+    currentUrlTrusted: true,
+  }
+
+  assert.equal(
+    allowAudioPermissionRequest('speaker-selection', undefined, trusted),
+    true,
+  )
+  assert.equal(
+    allowAudioPermissionRequest('notifications', undefined, trusted),
+    false,
+  )
+  for (const field of Object.keys(trusted)) {
+    assert.equal(
+      allowAudioPermissionRequest('speaker-selection', undefined, {
+        ...trusted,
+        [field]: false,
+      }),
+      false,
+    )
+  }
 })
 
 test('external link policy allows credential-free HTTP(S) URLs only', () => {

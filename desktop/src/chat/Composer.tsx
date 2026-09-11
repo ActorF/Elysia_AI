@@ -32,6 +32,7 @@ interface ComposerProps {
   canSend: boolean
   draft: string
   generationBusy: boolean
+  microphoneTesting: boolean
   modelSelectionPending: boolean
   modelOptions: string[]
   notice: ChatNotice | null
@@ -67,6 +68,7 @@ export function Composer({
   canSend,
   draft,
   generationBusy,
+  microphoneTesting,
   modelSelectionPending,
   modelOptions,
   notice,
@@ -202,8 +204,13 @@ export function Composer({
               type="button"
               className="tool-button optional-tool"
               onClick={onVerifyMicrophone}
-              aria-label="Verify microphone permission"
-              title="Verify microphone permission"
+              aria-label={microphoneTesting
+                ? 'Stop microphone test'
+                : 'Test microphone input'}
+              aria-pressed={microphoneTesting}
+              title={microphoneTesting
+                ? 'Stop microphone test'
+                : 'Test microphone input'}
             >
               <Icon name="microphone" />
             </button>

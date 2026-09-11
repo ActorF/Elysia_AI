@@ -15,6 +15,7 @@ import {
   screen,
   session,
   shell,
+  systemPreferences,
   Tray,
 } from 'electron'
 import { lstat, stat } from 'node:fs/promises'
@@ -22,11 +23,16 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { BackendProcess } from './backend-process.js'
+import {
+  allowAudioPermissionCheck,
+  allowAudioPermissionRequest,
+} from './audio-permission.js'
 import { parseSafeExternalUrl } from './external-url.js'
 import {
   MAX_IDENTIFIER_LENGTH,
   MAX_ATTACHMENT_FILE_COUNT,
   MAX_ATTACHMENT_SOURCE_PATH_LENGTH,
+  MAX_AUDIO_DEVICE_ID_LENGTH,
   MAX_DATA_IMPORT_BYTES,
   MAX_MEMORY_SETTING,
   MAX_MESSAGE_LENGTH,
@@ -53,6 +59,7 @@ import type {
   RenameChatRequest,
   RetryChatRequest,
   UpdateDesktopSettingsRequest,
+  UpdateVoiceSettingsRequest,
   UpdateProjectRequest,
 } from './contracts.js'
 
@@ -631,6 +638,44 @@ function parseUpdateDesktopSettingsRequest(
   }
 }
 
+function parseVoiceDeviceId(value: unknown): string | null {
+  if (value === null) {
+    return null
+  }
+  if (
+    typeof value !== 'string'
+    || codePointLength(value) < 1
+    || codePointLength(value) > MAX_AUDIO_DEVICE_ID_LENGTH
+    || /\p{Cc}/u.test(value)
+    || value === 'default'
+    || value === 'communications'
+  ) {
+    throw new Error('Audio device selection is invalid.')
+  }
+  return value
+}
+
+function parseUpdateVoiceSettingsRequest(
+  value: unknown,
+): UpdateVoiceSettingsRequest {
+  const request = parseObject(
+    value,
+    ['expectedRevision', 'inputDeviceId', 'outputDeviceId'],
+    'Update Voice Settings request',
+  )
+  if (
+    !Number.isSafeInteger(request.expectedRevision)
+    || (request.expectedRevision as number) < 0
+  ) {
+    throw new Error('Voice Settings revision is invalid.')
+  }
+  return {
+    expectedRevision: request.expectedRevision as number,
+    inputDeviceId: parseVoiceDeviceId(request.inputDeviceId),
+    outputDeviceId: parseVoiceDeviceId(request.outputDeviceId),
+  }
+}
+
 function nativeBackgroundColor(): string {
   return nativeTheme.shouldUseDarkColors ? '#0f0b10' : '#f8f5f8'
 }
@@ -707,6 +752,46 @@ function registerIpcHandlers(): void {
       return requireBackend().updateSettings(
         parseUpdateDesktopSettingsRequest(request),
       )
+    },
+  )
+
+  ipcMain.handle(
+    'voice:settings-get',
+    (event) => {
+      assertTrustedSender(event)
+      return requireBackend().getVoiceSettings()
+    },
+  )
+
+  ipcMain.handle(
+    'voice:settings-update',
+    (event, request: unknown) => {
+      assertTrustedSender(event)
+      return requireBackend().updateVoiceSettings(
+        parseUpdateVoiceSettingsRequest(request),
+      )
+    },
+  )
+
+  ipcMain.handle(
+    'voice:microphone-permission-status',
+    (event) => {
+      assertTrustedSender(event)
+      if (process.platform !== 'win32' && process.platform !== 'darwin') {
+        return 'unknown'
+      }
+      return systemPreferences.getMediaAccessStatus('microphone')
+    },
+  )
+
+  ipcMain.handle(
+    'voice:open-microphone-settings',
+    async (event): Promise<void> => {
+      assertTrustedSender(event)
+      if (process.platform !== 'win32') {
+        throw new Error('Microphone privacy settings are only available on Windows.')
+      }
+      await shell.openExternal('ms-settings:privacy-microphone')
     },
   )
 
@@ -1058,29 +1143,36 @@ function registerIpcHandlers(): void {
   )
 }
 
-function configureMediaPermission(): void {
+function configureAudioPermissions(): void {
   session.defaultSession.setPermissionCheckHandler(
     (webContents, permission, _origin, details) => (
-      permission === 'media'
-      && details.mediaType === 'audio'
-      && details.isMainFrame
-      && webContents === mainWindow?.webContents
-      && isTrustedRendererUrl(details.requestingUrl ?? '')
-      && isTrustedRendererUrl(webContents?.getURL() ?? '')
+      allowAudioPermissionCheck(permission, details.mediaType, {
+        isMainFrame: details.isMainFrame,
+        isMainWindow: webContents !== null
+          && webContents === mainWindow?.webContents,
+        requestingUrlTrusted: isTrustedRendererUrl(
+          details.requestingUrl ?? '',
+        ),
+        currentUrlTrusted: isTrustedRendererUrl(webContents?.getURL() ?? ''),
+      })
     ),
   )
 
   session.defaultSession.setPermissionRequestHandler(
     (webContents, permission, callback, details) => {
-      const mediaDetails = details as Electron.MediaAccessPermissionRequest
       callback(
-        permission === 'media'
-        && mediaDetails.mediaTypes?.length === 1
-        && mediaDetails.mediaTypes[0] === 'audio'
-        && mediaDetails.isMainFrame
-        && isTrustedRendererUrl(mediaDetails.requestingUrl)
-        && webContents === mainWindow?.webContents
-        && isTrustedRendererUrl(webContents.getURL()),
+        allowAudioPermissionRequest(
+          permission,
+          permission === 'media'
+            ? (details as Electron.MediaAccessPermissionRequest).mediaTypes
+            : undefined,
+          {
+            isMainFrame: details.isMainFrame,
+            isMainWindow: webContents === mainWindow?.webContents,
+            requestingUrlTrusted: isTrustedRendererUrl(details.requestingUrl),
+            currentUrlTrusted: isTrustedRendererUrl(webContents.getURL()),
+          },
+        ),
       )
     },
   )
@@ -1195,7 +1287,7 @@ if (!hasSingleInstanceLock) {
         mainWindow.setBackgroundColor(nativeBackgroundColor())
       }
     })
-    configureMediaPermission()
+    configureAudioPermissions()
     registerIpcHandlers()
     backendProcess = new BackendProcess(
       resolveProjectRoot(),

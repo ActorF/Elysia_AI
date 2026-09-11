@@ -11,10 +11,17 @@ import {
 import type {
   DesktopSettingsState,
   DesktopSettingsValues,
+  MicrophonePermissionStatus,
+  VoiceSettingsState,
 } from '../../electron/contracts.ts'
 import { codePointLength } from '../../electron/protocol-text.js'
 import { InlineAlert, LoadingState } from '../design-system/Feedback'
 import { Icon, type IconName } from '../design-system/Icon'
+import type { AudioDeviceSnapshot } from '../voice/audio-devices.ts'
+import {
+  VoiceSettingsSection,
+  type VoiceSettingsDraft,
+} from './VoiceSettingsSection.tsx'
 
 export type ThemePreference = 'system' | 'light' | 'dark'
 export type ResolvedTheme = Exclude<ThemePreference, 'system'>
@@ -29,10 +36,24 @@ export interface SettingsViewProps {
   restartPending: boolean
   generationBusy: boolean
   error: string | null
+  voiceState: VoiceSettingsState | null
+  audioDevices: AudioDeviceSnapshot
+  microphonePermissionStatus: MicrophonePermissionStatus
+  voiceLoading: boolean
+  voicePending: boolean
+  voiceError: string | null
   onThemeChange(theme: ThemePreference): void
   onSave(settings: DesktopSettingsValues): Promise<void>
   onReload(): void
   onRestart(): Promise<void>
+  onReloadVoice(): void
+  onRefreshAudioDevices(): Promise<void>
+  onSaveVoice(draft: VoiceSettingsDraft): Promise<void>
+  onStartMicrophoneTest(deviceId: string | null): Promise<void>
+  onStopMicrophoneTest(): void
+  onStartSpeakerTest(deviceId: string | null): Promise<void>
+  onStopSpeakerTest(): void
+  onOpenMicrophonePrivacySettings(): Promise<void>
   onDirtyChange(dirty: boolean): void
   onBack(): void
 }
@@ -210,7 +231,7 @@ function AppearanceSettings({
   )
 }
 
-/** Render eight settings areas while keeping unsupported controls read-only. */
+/** Render eight settings areas with independent global and device-local drafts. */
 export function SettingsView({
   themePreference,
   resolvedTheme,
@@ -221,10 +242,24 @@ export function SettingsView({
   restartPending,
   generationBusy,
   error,
+  voiceState,
+  audioDevices,
+  microphonePermissionStatus,
+  voiceLoading,
+  voicePending,
+  voiceError,
   onThemeChange,
   onSave,
   onReload,
   onRestart,
+  onReloadVoice,
+  onRefreshAudioDevices,
+  onSaveVoice,
+  onStartMicrophoneTest,
+  onStopMicrophoneTest,
+  onStartSpeakerTest,
+  onStopSpeakerTest,
+  onOpenMicrophonePrivacySettings,
   onDirtyChange,
   onBack,
 }: SettingsViewProps) {
@@ -232,6 +267,7 @@ export function SettingsView({
   const backendFieldId = useId()
   const [draft, setDraft] = useState<SettingsDraft | null>(null)
   const [clientError, setClientError] = useState<string | null>(null)
+  const [voiceDirty, setVoiceDirty] = useState(false)
 
   useLayoutEffect(() => {
     let active = true
@@ -244,13 +280,13 @@ export function SettingsView({
     return () => { active = false }
   }, [settingsState])
 
-  const dirty = draft !== null
+  const globalDirty = draft !== null
     && settingsState !== null
     && !draftEqualsValues(draft, settingsState.settings)
   useLayoutEffect(() => {
-    onDirtyChange(dirty)
+    onDirtyChange(globalDirty || voiceDirty)
     return () => { onDirtyChange(false) }
-  }, [dirty, onDirtyChange])
+  }, [globalDirty, onDirtyChange, voiceDirty])
 
   const modelOptions = useMemo(() => {
     const desiredModel = settingsState?.settings.modelName
@@ -269,7 +305,7 @@ export function SettingsView({
     if (
       draft === null
       || firstValidationError !== null
-      || !dirty
+      || !globalDirty
       || backendFieldsDisabled
       || generationBusy
     ) {
@@ -300,13 +336,34 @@ export function SettingsView({
 
   function reloadSavedSettings(): void {
     if (
-      dirty
+      globalDirty
       && !window.confirm('Discard this draft and reload saved Settings?')
     ) {
       return
     }
     onReload()
   }
+
+  const voiceSection = (
+    <VoiceSettingsSection
+      key="voice-settings"
+      state={voiceState}
+      devices={audioDevices}
+      permissionStatus={microphonePermissionStatus}
+      loading={voiceLoading}
+      pending={voicePending}
+      error={voiceError}
+      onDirtyChange={setVoiceDirty}
+      onReload={onReloadVoice}
+      onRefreshDevices={onRefreshAudioDevices}
+      onSave={onSaveVoice}
+      onStartMicrophoneTest={onStartMicrophoneTest}
+      onStopMicrophoneTest={onStopMicrophoneTest}
+      onStartSpeakerTest={onStartSpeakerTest}
+      onStopSpeakerTest={onStopSpeakerTest}
+      onOpenMicrophonePrivacySettings={onOpenMicrophonePrivacySettings}
+    />
+  )
 
   return (
     <main className="settings-view">
@@ -328,7 +385,10 @@ export function SettingsView({
       </header>
 
       {loading && settingsState === null ? (
-        <div className="settings-content">
+        <form
+          className="settings-content"
+          onSubmit={(event) => { event.preventDefault() }}
+        >
           <LoadingState
             title="Loading settings"
             description="Reading the local settings snapshot."
@@ -338,9 +398,13 @@ export function SettingsView({
             resolvedTheme={resolvedTheme}
             onThemeChange={onThemeChange}
           />
-        </div>
+          {voiceSection}
+        </form>
       ) : settingsState === null || draft === null ? (
-        <div className="settings-content">
+        <form
+          className="settings-content"
+          onSubmit={(event) => { event.preventDefault() }}
+        >
           <InlineAlert
             tone="error"
             title="Settings are unavailable"
@@ -353,7 +417,8 @@ export function SettingsView({
             resolvedTheme={resolvedTheme}
             onThemeChange={onThemeChange}
           />
-        </div>
+          {voiceSection}
+        </form>
       ) : (
         <form className="settings-content" onSubmit={(event) => { void submit(event) }}>
           {settingsState.warning !== null && (
@@ -386,14 +451,14 @@ export function SettingsView({
                   || generationBusy
                   || pending
                   || loading
-                  || dirty
+                  || globalDirty
                 ),
               }}
             >
               Saved changes to {settingsState.restartFields
                 .map((field) => restartLabels[field])
                 .join(', ')} will apply after restart.
-              {dirty ? ' Save or discard the current draft first.' : ''}
+              {globalDirty ? ' Save or discard the current draft first.' : ''}
             </InlineAlert>
           )}
 
@@ -596,15 +661,7 @@ export function SettingsView({
             </div>
           </section>
 
-          <section className="settings-section" aria-labelledby="voice-settings-heading">
-            <div className="settings-section-heading">
-              <h2 id="voice-settings-heading">Voice</h2>
-              <p>Microphone permission can be verified in Call Preview.</p>
-            </div>
-            <p className="settings-readonly-status">
-              Speech recognition and voice output are not connected yet. No inactive device switches are shown.
-            </p>
-          </section>
+          {voiceSection}
 
           <section className="settings-section" aria-labelledby="files-settings-heading">
             <div className="settings-section-heading">
@@ -678,7 +735,7 @@ export function SettingsView({
 
           <footer className="settings-save-bar">
             <div>
-              <strong>{dirty ? 'Unsaved global changes' : 'Global settings are up to date'}</strong>
+              <strong>{globalDirty ? 'Unsaved global changes' : 'Global settings are up to date'}</strong>
               <span>
                 {generationBusy
                   ? 'Wait for the current reply before saving. '
@@ -690,7 +747,7 @@ export function SettingsView({
               <button
                 type="button"
                 className="secondary-button"
-                disabled={!dirty || backendFieldsDisabled}
+                disabled={!globalDirty || backendFieldsDisabled}
                 onClick={() => {
                   setDraft(draftFromValues(settingsState.settings))
                   setClientError(null)
@@ -702,7 +759,7 @@ export function SettingsView({
                 type="submit"
                 className="primary-button"
                 disabled={
-                  !dirty
+                  !globalDirty
                   || backendFieldsDisabled
                   || generationBusy
                   || firstValidationError !== null

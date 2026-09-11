@@ -31,8 +31,8 @@ entering the `ready` state.
 Version 1 defines strict request, response, error, stream, progress,
 permission, event, cancel, and permission-decision shapes. The current runtime
 advertises `chat.stream`, `chat.retry`, `request.cancel`, `stream`, `progress`,
-`event`, `chat.sessions`, `project.management`, `settings.management`, and
-`attachment.management`.
+`event`, `chat.sessions`, `project.management`, `settings.management`,
+`attachment.management`, and `voice.settings`.
 Both new-turn and retry generation reuse the `chat.reply` stream.
 Cancellation succeeds only before generation claims its atomic commit gate, so
 a successful Stop response guarantees that the interrupted turn is not saved.
@@ -44,6 +44,13 @@ allowlist with optimistic revision checks. API keys, tokens, passwords, base
 paths, environment data, and arbitrary extension fields are rejected. The
 authenticated Settings methods remain available when Brain initialization
 fails so the desktop can repair an invalid saved model or Ollama origin.
+
+`voice.settings.get` and `voice.settings.update` persist only the desired
+opaque microphone and speaker IDs, with `null` meaning the current system
+default. They use independent optimistic revisions and remain available when
+Brain initialization fails or Chat generation is active. Device labels,
+Windows permission state, live availability, and audio samples never cross
+this Python protocol boundary; Electron owns those transient hardware details.
 
 `attachment.list`, `attachment.add`, and `attachment.remove` operate on one
 exact Chat or Project scope. Native source paths are accepted only across the

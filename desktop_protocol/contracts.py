@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import ntpath
 import re
+import unicodedata
 from typing import Any, Final, Literal, NotRequired, TypedDict, cast
 from urllib.parse import urlsplit
 
@@ -24,6 +25,7 @@ MAX_PROJECT_NAME_LENGTH: Final = 200
 MAX_WORKSPACE_PATH_LENGTH: Final = 32_767
 MAX_SETTINGS_MODEL_NAME_LENGTH: Final = 200
 MAX_OLLAMA_HOST_LENGTH: Final = 2_048
+MAX_AUDIO_DEVICE_ID_LENGTH: Final = 2_048
 MAX_MEMORY_SETTING: Final = 10_000_000
 MAX_DATA_IMPORT_BYTES: Final = 2_147_483_647
 MAX_PROTOCOL_FRAME_BYTES: Final = 16_777_216
@@ -57,6 +59,10 @@ _CHAT_ID_PATTERN: Final = re.compile(r"^chat_[A-Za-z0-9_-]+$")
 _ATTACHMENT_ID_PATTERN: Final = re.compile(
     r"^attachment_[A-Za-z0-9_-]+$"
 )
+_RESERVED_AUDIO_DEVICE_IDS: Final = frozenset({
+    "default",
+    "communications",
+})
 
 ProtocolMethod = Literal[
     "handshake",
@@ -82,6 +88,8 @@ ProtocolMethod = Literal[
     "project.chat.move",
     "settings.get",
     "settings.update",
+    "voice.settings.get",
+    "voice.settings.update",
     "request.cancel",
     "permission.respond",
     "shutdown",
@@ -110,6 +118,8 @@ SUPPORTED_METHODS: Final[tuple[ProtocolMethod, ...]] = (
     "project.chat.move",
     "settings.get",
     "settings.update",
+    "voice.settings.get",
+    "voice.settings.update",
     "request.cancel",
     "permission.respond",
     "shutdown",
@@ -309,6 +319,14 @@ class SettingsUpdateParams(TypedDict):
 
     expectedRevision: int
     settings: DesktopSettingsValues
+
+
+class VoiceSettingsUpdateParams(TypedDict):
+    """Replace both opaque local audio-device preferences atomically."""
+
+    expectedRevision: int
+    inputDeviceId: str | None
+    outputDeviceId: str | None
 
 
 class ClientRequest(TypedDict):
@@ -512,6 +530,17 @@ class SettingsStateResult(TypedDict):
     restartRequired: bool
     restartFields: list[str]
     scopes: SettingsScopes
+    warning: str | None
+
+
+class VoiceSettingsStateResult(TypedDict):
+    """Expose saved device preferences without live hardware information."""
+
+    kind: Literal["voice.settings"]
+    revision: int
+    updatedAt: str | None
+    inputDeviceId: str | None
+    outputDeviceId: str | None
     warning: str | None
 
 
@@ -1245,6 +1274,60 @@ def _validate_settings_update_params(params: JsonObject) -> None:
     )
 
 
+def _validate_nullable_audio_device_id(
+    value: JsonObject,
+    key: str,
+    context: str,
+    *,
+    error_code: str,
+) -> str | None:
+    """Validate an opaque ID without exposing or interpreting its content."""
+
+    if value.get(key) is None:
+        return None
+    raw = value.get(key)
+    if (
+        not isinstance(raw, str)
+        or not raw
+        or len(raw) > MAX_AUDIO_DEVICE_ID_LENGTH
+        or raw in _RESERVED_AUDIO_DEVICE_IDS
+        or any(unicodedata.category(character) == "Cc" for character in raw)
+    ):
+        raise ProtocolValidationError(
+            error_code,
+            f"{context}.{key} must be null or a bounded hardware device ID "
+            "without reserved values or control characters.",
+        )
+    return raw
+
+
+def _validate_voice_settings_update_params(params: JsonObject) -> None:
+    context = "voice.settings.update params"
+    _require_fields(
+        params,
+        {"expectedRevision", "inputDeviceId", "outputDeviceId"},
+        context,
+    )
+    expected_revision = _require_integer(params, "expectedRevision", context)
+    if expected_revision < 0:
+        raise ProtocolValidationError(
+            "protocol.invalid_params",
+            f"{context}.expectedRevision cannot be negative.",
+        )
+    _validate_nullable_audio_device_id(
+        params,
+        "inputDeviceId",
+        context,
+        error_code="protocol.invalid_params",
+    )
+    _validate_nullable_audio_device_id(
+        params,
+        "outputDeviceId",
+        context,
+        error_code="protocol.invalid_params",
+    )
+
+
 def parse_client_request(value: object) -> ClientRequest:
     """Validate and return one Electron-to-Python request."""
 
@@ -1317,6 +1400,10 @@ def parse_client_request(value: object) -> ClientRequest:
         _require_fields(params, set(), "settings.get params")
     elif method == "settings.update":
         _validate_settings_update_params(params)
+    elif method == "voice.settings.get":
+        _require_fields(params, set(), "voice.settings.get params")
+    elif method == "voice.settings.update":
+        _validate_voice_settings_update_params(params)
     elif method == "request.cancel":
         _validate_cancel_params(params)
     elif method == "permission.respond":
@@ -1829,6 +1916,16 @@ def _validate_success_result(result: JsonObject) -> None:
     }:
         _validate_settings_state_result(result)
         return
+    if fields == {
+        "kind",
+        "revision",
+        "updatedAt",
+        "inputDeviceId",
+        "outputDeviceId",
+        "warning",
+    }:
+        _validate_voice_settings_state_result(result)
+        return
     if fields == {"stopped"} and result["stopped"] is True:
         return
     raise ProtocolValidationError(
@@ -1930,6 +2027,40 @@ def _validate_settings_state_result(
     if result.get("warning") is not None:
         _require_string(result, "warning", context, maximum=1_000)
     return cast(SettingsStateResult, result)
+
+
+def _validate_voice_settings_state_result(
+    result: JsonObject,
+) -> VoiceSettingsStateResult:
+    context = "voice settings state result"
+    if result.get("kind") != "voice.settings":
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.kind is unsupported.",
+        )
+    revision = _require_integer(result, "revision", context)
+    if revision < 0:
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.revision cannot be negative.",
+        )
+    if result.get("updatedAt") is not None:
+        _require_string(result, "updatedAt", context, maximum=128)
+    _validate_nullable_audio_device_id(
+        result,
+        "inputDeviceId",
+        context,
+        error_code="protocol.invalid_message",
+    )
+    _validate_nullable_audio_device_id(
+        result,
+        "outputDeviceId",
+        context,
+        error_code="protocol.invalid_message",
+    )
+    if result.get("warning") is not None:
+        _require_string(result, "warning", context, maximum=1_000)
+    return cast(VoiceSettingsStateResult, result)
 
 
 def _validate_response(message: JsonObject) -> ServerMessage:

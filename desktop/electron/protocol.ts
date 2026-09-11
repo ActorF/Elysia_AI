@@ -29,6 +29,7 @@ export const MAX_SETTINGS_MODEL_NAME_LENGTH = 200
 export const MAX_OLLAMA_HOST_LENGTH = 2_048
 export const MAX_MEMORY_SETTING = 10_000_000
 export const MAX_DATA_IMPORT_BYTES = 2_147_483_647
+export const MAX_AUDIO_DEVICE_ID_LENGTH = 2_048
 export const MAX_ATTACHMENT_FILE_COUNT = 10
 export const MAX_ATTACHMENT_FILE_NAME_LENGTH = 255
 export const MAX_ATTACHMENT_MEDIA_TYPE_LENGTH = 255
@@ -161,6 +162,12 @@ export interface SettingsUpdateParams {
   settings: SettingsValues
 }
 
+export interface VoiceSettingsUpdateParams {
+  expectedRevision: number
+  inputDeviceId: string | null
+  outputDeviceId: string | null
+}
+
 export interface AttachmentScope {
   kind: 'chat' | 'project'
   id: string
@@ -201,6 +208,8 @@ export interface RequestParamsByMethod {
   'project.chat.move': ProjectChatMoveParams
   'settings.get': Record<string, never>
   'settings.update': SettingsUpdateParams
+  'voice.settings.get': Record<string, never>
+  'voice.settings.update': VoiceSettingsUpdateParams
   'attachment.list': AttachmentListParams
   'attachment.add': AttachmentAddParams
   'attachment.remove': AttachmentRemoveParams
@@ -390,6 +399,15 @@ export interface SettingsStateResult {
     project: SettingsProjectScope | null
     chat: SettingsChatScope | null
   }
+  warning: string | null
+}
+
+export interface VoiceSettingsStateResult {
+  kind: 'voice.settings'
+  revision: number
+  updatedAt: string | null
+  inputDeviceId: string | null
+  outputDeviceId: string | null
   warning: string | null
 }
 
@@ -1065,6 +1083,64 @@ function parseSettingsUpdateParams(value: unknown): SettingsUpdateParams {
   }
 }
 
+function readNullableAudioDeviceId(
+  value: Record<string, unknown>,
+  key: 'inputDeviceId' | 'outputDeviceId',
+  context: string,
+  errorCode = 'protocol.invalid_params',
+): string | null {
+  const raw = value[key]
+  if (raw === null) {
+    return null
+  }
+  if (
+    typeof raw !== 'string'
+    || codePointLength(raw) < 1
+    || codePointLength(raw) > MAX_AUDIO_DEVICE_ID_LENGTH
+    || /\p{Cc}/u.test(raw)
+    || raw === 'default'
+    || raw === 'communications'
+  ) {
+    return fail(
+      errorCode,
+      `${context}.${key} must be null or a bounded opaque device identifier.`,
+    )
+  }
+  return raw
+}
+
+function parseVoiceSettingsUpdateParams(
+  value: unknown,
+): VoiceSettingsUpdateParams {
+  const context = 'voice.settings.update params'
+  const params = asRecord(value, context)
+  requireFields(
+    params,
+    ['expectedRevision', 'inputDeviceId', 'outputDeviceId'],
+    context,
+  )
+  const expectedRevision = readInteger(params, 'expectedRevision', context)
+  if (expectedRevision < 0) {
+    return fail(
+      'protocol.invalid_params',
+      `${context}.expectedRevision cannot be negative.`,
+    )
+  }
+  return {
+    expectedRevision,
+    inputDeviceId: readNullableAudioDeviceId(
+      params,
+      'inputDeviceId',
+      context,
+    ),
+    outputDeviceId: readNullableAudioDeviceId(
+      params,
+      'outputDeviceId',
+      context,
+    ),
+  }
+}
+
 function parseAttachmentScope(
   value: unknown,
   context: string,
@@ -1301,6 +1377,17 @@ export function parseClientRequest(value: unknown): ClientRequest {
     return {
       type: 'request', protocol, id, method,
       params: parseSettingsUpdateParams(request.params),
+    }
+  }
+  if (method === 'voice.settings.get') {
+    const params = asRecord(request.params, 'voice.settings.get params')
+    requireFields(params, [], 'voice.settings.get params')
+    return { type: 'request', protocol, id, method, params: {} }
+  }
+  if (method === 'voice.settings.update') {
+    return {
+      type: 'request', protocol, id, method,
+      params: parseVoiceSettingsUpdateParams(request.params),
     }
   }
   if (method === 'attachment.list') {
@@ -2309,8 +2396,67 @@ export function parseSettingsStateResult(
   }
 }
 
+/** Parse canonical host-local voice device preferences from Python. */
+export function parseVoiceSettingsStateResult(
+  value: unknown,
+): VoiceSettingsStateResult {
+  const context = 'voice settings state result'
+  const result = asRecord(value, context)
+  requireFields(
+    result,
+    [
+      'kind',
+      'revision',
+      'updatedAt',
+      'inputDeviceId',
+      'outputDeviceId',
+      'warning',
+    ],
+    context,
+  )
+  if (result.kind !== 'voice.settings') {
+    return fail(
+      'protocol.invalid_message',
+      `${context}.kind must be 'voice.settings'.`,
+    )
+  }
+  const revision = readInteger(result, 'revision', context)
+  if (revision < 0) {
+    return fail(
+      'protocol.invalid_message',
+      `${context}.revision cannot be negative.`,
+    )
+  }
+  return {
+    kind: 'voice.settings',
+    revision,
+    updatedAt: result.updatedAt === null
+      ? null
+      : readString(result, 'updatedAt', context, { maximum: 128 }),
+    inputDeviceId: readNullableAudioDeviceId(
+      result,
+      'inputDeviceId',
+      context,
+      'protocol.invalid_message',
+    ),
+    outputDeviceId: readNullableAudioDeviceId(
+      result,
+      'outputDeviceId',
+      context,
+      'protocol.invalid_message',
+    ),
+    warning: result.warning === null
+      ? null
+      : readString(result, 'warning', context, { maximum: 1_000 }),
+  }
+}
+
 function validateSuccessResult(value: unknown): Record<string, unknown> {
   const result = asRecord(value, 'response.result')
+  if (result.kind === 'voice.settings') {
+    parseVoiceSettingsStateResult(result)
+    return result
+  }
   if (Object.hasOwn(result, 'protocol')) {
     parseHandshakeResult(result)
     return result

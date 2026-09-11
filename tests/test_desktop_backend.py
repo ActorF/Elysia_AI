@@ -68,6 +68,11 @@ from projects import (
     WorkspaceBinding,
     create_project,
 )
+from voice import (
+    JsonVoiceSettingsRepository,
+    VoiceSettingsService,
+    create_voice_settings_service,
+)
 
 
 class FakeBrain:
@@ -474,6 +479,7 @@ def _run_bridge(
     expected_session_token: str = SESSION_TOKEN,
     fake_brain: FakeBrain | None = None,
     settings_repository: DesktopSettingsRepository | None = None,
+    voice_settings_service: VoiceSettingsService | None = None,
     attachment_store: JsonAttachmentStore | None = None,
 ) -> tuple[FakeBrain, list[JsonObject]]:
     active_brain = fake_brain if fake_brain is not None else FakeBrain()
@@ -489,11 +495,17 @@ def _run_bridge(
             repository = _desktop_settings_repository(
                 Path(temp_dir) / "global.json"
             )
+        active_voice_settings = voice_settings_service
+        if active_voice_settings is None:
+            active_voice_settings = create_voice_settings_service(
+                Path(temp_dir)
+            )
         DesktopBackend(
             brain_factory=lambda: cast(Brain, active_brain),
             model_loader=lambda: ("test-model", "second-model"),
             settings_validator=lambda: None,
             settings_repository=repository,
+            voice_settings_service=active_voice_settings,
             attachment_store=attachment_store,
             input_stream=input_stream,
             output_stream=output_stream,
@@ -2043,6 +2055,223 @@ def test_settings_can_be_read_and_repaired_before_initialize(
     assert repaired["restartFields"] == []
     assert repository.load().values.model_name == "second-model"
     assert "settings.management" in SERVER_CAPABILITIES
+
+
+def test_voice_settings_round_trip_before_brain_initialization(
+    tmp_path: Path,
+) -> None:
+    service = create_voice_settings_service(tmp_path)
+
+    _, messages = _run_bridge(
+        lambda _chat_id: [
+            _handshake_request(),
+            _request("voice-before", "voice.settings.get", {}),
+            _request(
+                "voice-save",
+                "voice.settings.update",
+                {
+                    "expectedRevision": 0,
+                    "inputDeviceId": "opaque-input-id",
+                    "outputDeviceId": None,
+                },
+            ),
+            _request("voice-after", "voice.settings.get", {}),
+        ],
+        voice_settings_service=service,
+    )
+
+    assert _success_result(messages, "voice-before") == {
+        "kind": "voice.settings",
+        "revision": 0,
+        "updatedAt": None,
+        "inputDeviceId": None,
+        "outputDeviceId": None,
+        "warning": None,
+    }
+    saved = _success_result(messages, "voice-save")
+    assert saved["revision"] == 1
+    assert saved["inputDeviceId"] == "opaque-input-id"
+    assert saved["outputDeviceId"] is None
+    assert _success_result(messages, "voice-after") == saved
+    assert JsonVoiceSettingsRepository(
+        tmp_path / "workspace" / "settings" / "audio-device.json"
+    ).load().values.input_device_id == "opaque-input-id"
+    assert "voice.settings" in SERVER_CAPABILITIES
+
+
+def test_voice_settings_remain_available_after_brain_initialization_fails(
+    tmp_path: Path,
+) -> None:
+    requests = [
+        _handshake_request(),
+        _initialize_request(),
+        _request("voice-after-failure", "voice.settings.get", {}),
+        _request("shutdown-after-failure", "shutdown", {}),
+    ]
+    input_stream = StringIO(
+        "".join(f"{json.dumps(request)}\n" for request in requests)
+    )
+    output_stream = StringIO()
+
+    def fail_brain() -> Brain:
+        raise RuntimeError("simulated Brain initialization failure")
+
+    DesktopBackend(
+        brain_factory=fail_brain,
+        model_loader=lambda: ("test-model",),
+        settings_validator=lambda: None,
+        settings_repository=_desktop_settings_repository(
+            tmp_path / "global.json"
+        ),
+        voice_settings_service=create_voice_settings_service(tmp_path),
+        input_stream=input_stream,
+        output_stream=output_stream,
+        expected_session_token=SESSION_TOKEN,
+    ).run()
+    messages = [
+        cast(JsonObject, json.loads(line))
+        for line in output_stream.getvalue().splitlines()
+    ]
+
+    assert _error(messages, "initialize-1")["code"] == (
+        "backend.request_failed"
+    )
+    assert _success_result(messages, "voice-after-failure")["kind"] == (
+        "voice.settings"
+    )
+
+
+def test_voice_settings_conflict_is_typed_and_retryable(
+    tmp_path: Path,
+) -> None:
+    service = create_voice_settings_service(tmp_path)
+
+    _, messages = _run_bridge(
+        lambda _chat_id: [
+            _handshake_request(),
+            _request(
+                "voice-first",
+                "voice.settings.update",
+                {
+                    "expectedRevision": 0,
+                    "inputDeviceId": "first-input",
+                    "outputDeviceId": None,
+                },
+            ),
+            _request(
+                "voice-stale",
+                "voice.settings.update",
+                {
+                    "expectedRevision": 0,
+                    "inputDeviceId": "stale-input",
+                    "outputDeviceId": None,
+                },
+            ),
+        ],
+        voice_settings_service=service,
+    )
+
+    assert _error(messages, "voice-stale") == {
+        "code": "voice.settings.conflict",
+        "message": "Voice settings changed elsewhere. Reload before saving.",
+        "retryable": True,
+    }
+    assert service.get_settings().values.input_device_id == "first-input"
+
+
+def test_voice_settings_storage_failure_is_typed_and_keeps_ids_private(
+    tmp_path: Path,
+) -> None:
+    blocked_base = tmp_path / "blocked"
+    blocked_base.mkdir()
+    (blocked_base / "workspace").write_text("not a directory", encoding="utf-8")
+    private_id = "private-device-id"
+
+    _, messages = _run_bridge(
+        lambda _chat_id: [
+            _handshake_request(),
+            _request(
+                "voice-storage-failure",
+                "voice.settings.update",
+                {
+                    "expectedRevision": 0,
+                    "inputDeviceId": private_id,
+                    "outputDeviceId": None,
+                },
+            ),
+        ],
+        voice_settings_service=create_voice_settings_service(blocked_base),
+    )
+
+    error = _error(messages, "voice-storage-failure")
+    assert error["code"] == "voice.settings.storage_failed"
+    assert error["retryable"] is True
+    assert private_id not in json.dumps(messages)
+
+
+def test_voice_settings_update_is_not_blocked_by_active_chat_generation(
+    tmp_path: Path,
+) -> None:
+    generation_started = Event()
+    release_generation = Event()
+
+    class BlockingBrain(FakeBrain):
+        def stream_chat(
+            self,
+            chat_id: object,
+            message: str,
+            *,
+            attachments: tuple[AttachmentMetadata, ...] = (),
+            should_cancel: Callable[[], bool] | None = None,
+            begin_commit: Callable[[], bool] | None = None,
+        ) -> Generator[str, None, None]:
+            generation_started.set()
+            assert release_generation.wait(1.0)
+            yield from super().stream_chat(
+                chat_id,
+                message,
+                attachments=attachments,
+                should_cancel=should_cancel,
+                begin_commit=begin_commit,
+            )
+
+    service = create_voice_settings_service(tmp_path)
+    release_timer = Timer(0.1, release_generation.set)
+    release_timer.start()
+    try:
+        _, messages = _run_bridge(
+            lambda chat_id: [
+                _handshake_request(),
+                _initialize_request(),
+                _request(
+                    "chat-active-for-voice",
+                    "chat.stream",
+                    {"chatId": chat_id, "message": "Keep working"},
+                ),
+                _request(
+                    "voice-during-generation",
+                    "voice.settings.update",
+                    {
+                        "expectedRevision": 0,
+                        "inputDeviceId": "input-during-generation",
+                        "outputDeviceId": None,
+                    },
+                ),
+            ],
+            fake_brain=BlockingBrain(),
+            voice_settings_service=service,
+        )
+    finally:
+        release_generation.set()
+        release_timer.join()
+
+    assert generation_started.is_set()
+    result = _success_result(messages, "voice-during-generation")
+    assert result["revision"] == 1
+    assert result["inputDeviceId"] == "input-during-generation"
+    assert service.get_settings().values.input_device_id == (
+        "input-during-generation"
+    )
 
 
 def test_invalid_bootstrap_uses_safe_defaults_and_still_initializes(
