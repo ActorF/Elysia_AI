@@ -7,6 +7,7 @@ import json
 import os
 import re
 import stat as stat_module
+import sys
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -1170,7 +1171,7 @@ class JsonAttachmentStore:
     @staticmethod
     def _lock_process_descriptor(descriptor: int) -> None:
         os.lseek(descriptor, 0, os.SEEK_SET)
-        if os.name == "nt":
+        if sys.platform == "win32":
             import msvcrt
 
             msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
@@ -1185,7 +1186,7 @@ class JsonAttachmentStore:
     @staticmethod
     def _unlock_process_descriptor(descriptor: int) -> None:
         os.lseek(descriptor, 0, os.SEEK_SET)
-        if os.name == "nt":
+        if sys.platform == "win32":
             import msvcrt
 
             msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)

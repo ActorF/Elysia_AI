@@ -1660,7 +1660,11 @@ function App() {
       return
     }
     const pendingSend = pendingChatSendRef.current
-    if (pendingSend === null || !restorePendingChatSend()) {
+    if (
+      pendingSend === null
+      || restoredPendingSendIdsRef.current.has(pendingSend.operationId)
+      || !restorePendingChatSend()
+    ) {
       return
     }
     if (snapshot.status === 'ready' && pendingSend.userText.length > 0) {
