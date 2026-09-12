@@ -1,6 +1,7 @@
 """Test the versioned Electron-to-Python bridge without starting Ollama."""
 
 import json
+import sys
 from collections.abc import Callable, Generator
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -676,6 +677,10 @@ def test_bridge_initializes_and_streams_one_real_brain_turn() -> None:
     assert "chat.sessions" in SERVER_CAPABILITIES
 
 
+@pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="attachment.add accepts only native Windows drive-absolute paths",
+)
 def test_attachment_add_returns_only_safe_canonical_metadata(
     tmp_path: Path,
 ) -> None:
@@ -703,16 +708,30 @@ def test_attachment_add_returns_only_safe_canonical_metadata(
     )
 
     result = _success_result(messages, "attachment-add-1")
+    assert set(result) == {
+        "scope",
+        "attachments",
+        "maxFileBytes",
+        "maxFileCount",
+    }
     assert result["scope"] == {
         "kind": "chat",
         "id": str(brain.chat.chat_id),
     }
     attachments = cast(list[JsonObject], result["attachments"])
     assert len(attachments) == 1
-    assert attachments[0]["fileName"] == "course notes.md"
-    assert attachments[0]["mediaType"] == "text/markdown"
-    assert attachments[0]["status"] == "ready"
-    assert str(source) not in json.dumps(result)
+    attachment = attachments[0]
+    assert set(attachment) == {
+        "attachmentId",
+        "fileName",
+        "mediaType",
+        "sizeBytes",
+        "status",
+    }
+    assert attachment["fileName"] == "course notes.md"
+    assert attachment["mediaType"] == "text/markdown"
+    assert attachment["sizeBytes"] == len(b"Local notes")
+    assert attachment["status"] == "ready"
 
 
 def test_attachment_only_stream_commits_metadata_and_finalizes_blob(

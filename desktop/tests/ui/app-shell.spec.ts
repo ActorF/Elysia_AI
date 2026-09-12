@@ -2543,10 +2543,10 @@ test('traps compact sidebar focus and restores its trigger on close', async () =
 
   await page.keyboard.press('Escape')
   await expect(sidebar).toHaveAttribute('aria-hidden', 'true')
-  expect.soft(
-    await trigger.evaluate((element) => element === document.activeElement),
+  await expect.soft(
+    trigger,
     'Escape should restore focus to the sidebar trigger',
-  ).toBe(true)
+  ).toBeFocused()
 
   await trigger.focus()
   await trigger.press('Enter')
@@ -2562,10 +2562,10 @@ test('traps compact sidebar focus and restores its trigger on close', async () =
   }))
   await page.mouse.click(scrimPoint.x, scrimPoint.y)
   await expect(sidebar).toHaveAttribute('aria-hidden', 'true')
-  expect.soft(
-    await trigger.evaluate((element) => element === document.activeElement),
+  await expect.soft(
+    trigger,
     'clicking the scrim should restore focus to the sidebar trigger',
-  ).toBe(true)
+  ).toBeFocused()
 })
 
 test('contains long titles, files, and unbroken messages', async () => {
