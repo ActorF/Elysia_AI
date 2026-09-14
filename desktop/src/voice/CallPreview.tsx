@@ -1,25 +1,46 @@
 /**
- * Present one explicit, bounded microphone capture without implying that
- * transcription, playback, or a continuous call already exists.
+ * Present one bounded microphone capture, local final-transcript review, and
+ * an explicit handoff into the current Chat composer without continuous audio.
  */
 
 import { useEffect, useRef } from 'react'
 
-import type { VoiceCaptureReceipt } from '../../electron/contracts.ts'
+import { hasNonBlankCodePoint } from '../../electron/protocol-text.js'
 import { Icon } from '../design-system/Icon.tsx'
 import type { AudioCaptureSnapshot } from './audio-capture.ts'
+
+/** Renderer-only phases for one bounded local transcription review. */
+export type VoiceTranscriptionPhase =
+  | 'starting'
+  | 'transcribing'
+  | 'cancelling'
+  | 'final'
+  | 'cancelled'
+  | 'error'
+
+/** Safe, PCM-free transcription data displayed by the Voice surface. */
+export interface VoiceTranscriptionView {
+  phase: VoiceTranscriptionPhase
+  text: string
+  language: 'zh' | 'en' | null
+  languageProbability: number | null
+  error: string | null
+  retryable: boolean
+}
 
 interface CallPreviewProps {
   captionsEnabled: boolean
   capture: AudioCaptureSnapshot
   captureDisabledReason: string | null
+  composerHasDraft: boolean
   modelName?: string
-  receipt: VoiceCaptureReceipt | null
-  submitting: boolean
+  transcription: VoiceTranscriptionView | null
   submissionError: string | null
   onCaptionsChange(): void
   onClose(): void
+  onTranscriptChange(value: string): void
   onToggleCapture(): void
+  onUseTranscript(): void
 }
 
 function captureIsActive(status: AudioCaptureSnapshot['status']): boolean {
@@ -28,18 +49,27 @@ function captureIsActive(status: AudioCaptureSnapshot['status']): boolean {
 
 function captureStateLabel(
   capture: AudioCaptureSnapshot,
-  receipt: VoiceCaptureReceipt | null,
-  submitting: boolean,
+  transcription: VoiceTranscriptionView | null,
   submissionError: string | null,
 ): string {
-  if (submitting) {
-    return 'Validating capture'
-  }
-  if (receipt !== null) {
-    return 'Speech captured'
-  }
   if (submissionError !== null) {
-    return 'Capture rejected'
+    return 'Voice action failed'
+  }
+  if (transcription !== null) {
+    switch (transcription.phase) {
+      case 'starting':
+        return 'Preparing transcription'
+      case 'transcribing':
+        return 'Transcribing locally'
+      case 'cancelling':
+        return 'Cancelling transcription'
+      case 'final':
+        return 'Transcript ready'
+      case 'cancelled':
+        return 'Transcription cancelled'
+      case 'error':
+        return 'Transcription failed'
+    }
   }
   switch (capture.status) {
     case 'starting':
@@ -64,18 +94,31 @@ function captureStateLabel(
 function captureDescription(
   capture: AudioCaptureSnapshot,
   captureDisabledReason: string | null,
-  receipt: VoiceCaptureReceipt | null,
-  submitting: boolean,
+  transcription: VoiceTranscriptionView | null,
   submissionError: string | null,
 ): string {
-  if (submitting) {
-    return 'Valid speech was found. Python is validating the temporary PCM payload.'
-  }
-  if (receipt !== null) {
-    return `Validated locally · ${(receipt.speechDurationMs / 1_000).toFixed(1)} s speech · no Chat message was created.`
-  }
   if (submissionError !== null) {
     return submissionError
+  }
+  if (transcription !== null) {
+    if (transcription.phase === 'starting') {
+      return 'Valid speech was found. Temporary audio is entering the local transcription boundary.'
+    }
+    if (transcription.phase === 'transcribing') {
+      return 'Faster-Whisper is processing this utterance locally. No Chat message has been created.'
+    }
+    if (transcription.phase === 'cancelling') {
+      return 'Stopping this transcription and discarding any result that arrives late.'
+    }
+    if (transcription.phase === 'final') {
+      return 'Review the final transcript. It enters Chat only after you place it in the composer and send it.'
+    }
+    if (transcription.phase === 'cancelled') {
+      return 'The transcript was discarded. Record again when the local speech engine is ready.'
+    }
+    if (transcription.error !== null) {
+      return transcription.error
+    }
   }
   if (capture.error !== null) {
     return capture.error.message
@@ -98,7 +141,7 @@ function captureDescription(
   if (captureDisabledReason !== null) {
     return captureDisabledReason
   }
-  return 'The microphone stays off until you start it. Audio is temporary, and transcription is not connected yet.'
+  return 'The microphone stays off until you start it. Audio remains temporary and is transcribed locally.'
 }
 
 /** Render the full-window capture surface and return focus through onClose. */
@@ -106,39 +149,75 @@ export function CallPreview({
   captionsEnabled,
   capture,
   captureDisabledReason,
+  composerHasDraft,
   modelName,
-  receipt,
-  submitting,
+  transcription,
   submissionError,
   onCaptionsChange,
   onClose,
+  onTranscriptChange,
   onToggleCapture,
+  onUseTranscript,
 }: CallPreviewProps) {
   const microphoneButtonRef = useRef<HTMLButtonElement | null>(null)
   const closeButtonRef = useRef<HTMLButtonElement | null>(null)
   const active = captureIsActive(capture.status)
-  const microphoneDisabled = !active
-    && (captureDisabledReason !== null || submitting)
-  const stateClass = submissionError !== null
-    ? 'error'
-    : submitting
-      ? 'starting'
-      : receipt !== null
-        ? 'completed'
-        : capture.status
+  const transcriptionPending = transcription !== null && (
+    transcription.phase === 'starting'
+    || transcription.phase === 'transcribing'
+    || transcription.phase === 'cancelling'
+  )
+  const transcriptionRetryBlocked = transcription?.phase === 'error'
+    && !transcription.retryable
+  const microphoneDisabled = transcription?.phase === 'cancelling'
+    || transcriptionRetryBlocked
+    || (
+      !active
+      && !transcriptionPending
+      && captureDisabledReason !== null
+    )
+  let stateClass = capture.status
+  if (submissionError !== null
+    || transcription?.phase === 'cancelled'
+    || transcription?.phase === 'error') {
+    stateClass = 'error'
+  } else if (
+    transcription?.phase === 'starting'
+    || transcription?.phase === 'cancelling'
+  ) {
+    stateClass = 'starting'
+  } else if (transcription?.phase === 'transcribing') {
+    stateClass = 'waiting'
+  } else if (transcription?.phase === 'final') {
+    stateClass = 'completed'
+  }
   const stateLabel = captureStateLabel(
     capture,
-    receipt,
-    submitting,
+    transcription,
     submissionError,
   )
   const description = captureDescription(
     capture,
     captureDisabledReason,
-    receipt,
-    submitting,
+    transcription,
     submissionError,
   )
+  const transcriptReady = transcription?.phase === 'final'
+  const transcriptCanBeUsed = transcriptReady
+    && hasNonBlankCodePoint(transcription.text)
+  const actionHasError = submissionError !== null
+    || capture.error !== null
+    || transcription?.phase === 'error'
+  let microphoneLabel = 'Record again'
+  if (active) {
+    microphoneLabel = 'Cancel capture'
+  } else if (transcriptionPending) {
+    microphoneLabel = 'Cancel transcription'
+  } else if (transcriptionRetryBlocked) {
+    microphoneLabel = 'Transcription unavailable'
+  } else if (transcription === null) {
+    microphoneLabel = 'Start microphone'
+  }
 
   useEffect(() => {
     if (microphoneButtonRef.current?.disabled === false) {
@@ -183,15 +262,64 @@ export function CallPreview({
           <span className="call-state-dot" />
           {stateLabel}
         </div>
-        {captionsEnabled && (
+        {!transcriptReady && (captionsEnabled || actionHasError) && (
           <p
             className="call-caption"
-            role={capture.error !== null || submissionError !== null
-              ? 'alert'
-              : undefined}
+            role={actionHasError ? 'alert' : undefined}
           >
             {description}
           </p>
+        )}
+        {transcriptReady && (
+          <section
+            className="call-transcript"
+            aria-labelledby="voice-transcript-heading"
+          >
+            <div className="call-transcript-heading">
+              <label id="voice-transcript-heading" htmlFor="voice-transcript">
+                Final transcript
+              </label>
+              {transcription.language !== null && (
+                <span>
+                  {transcription.language === 'zh' ? 'Chinese' : 'English'}
+                  {transcription.languageProbability === null
+                    ? ''
+                    : ` · ${Math.round(transcription.languageProbability * 100)}%`}
+                </span>
+              )}
+            </div>
+            <textarea
+              id="voice-transcript"
+              aria-label="Final transcript"
+              maxLength={4_096}
+              value={transcription.text}
+              onChange={(event) => { onTranscriptChange(event.target.value) }}
+              rows={4}
+              autoFocus
+            />
+            {submissionError !== null && (
+              <p className="call-transcript-error" role="alert">
+                {submissionError}
+              </p>
+            )}
+            <div className="call-transcript-actions">
+              <p>
+                {composerHasDraft
+                  ? 'Your existing Chat draft will be kept before this transcript.'
+                  : 'This does not send a message automatically.'}
+              </p>
+              <button
+                type="button"
+                className="primary-button"
+                disabled={!transcriptCanBeUsed}
+                onClick={onUseTranscript}
+              >
+                {composerHasDraft
+                  ? 'Append transcript to message'
+                  : 'Use transcript in message'}
+              </button>
+            </div>
+          </section>
         )}
       </section>
 
@@ -211,13 +339,17 @@ export function CallPreview({
           className={'call-control microphone' + (active ? ' active' : '')}
           disabled={microphoneDisabled}
           onClick={onToggleCapture}
-          aria-pressed={active}
+          aria-pressed={active || transcriptionPending}
           title={active
             ? 'Cancel and discard this capture'
-            : captureDisabledReason ?? 'Start a temporary microphone capture'}
+            : transcriptionPending
+              ? 'Cancel and discard this transcription'
+              : transcriptionRetryBlocked
+                ? transcription?.error ?? 'Local transcription is unavailable'
+                : captureDisabledReason ?? 'Start a temporary microphone capture'}
         >
           <Icon name="microphone" />
-          <span>{active ? 'Cancel capture' : 'Start microphone'}</span>
+          <span>{microphoneLabel}</span>
         </button>
         <button
           ref={closeButtonRef}

@@ -32,7 +32,6 @@ import type {
   ProjectState,
   RetryChatRequest,
   UpdateProjectRequest,
-  VoiceCaptureReceipt,
   VoiceSettingsState,
 } from '../electron/contracts.ts'
 import {
@@ -56,7 +55,10 @@ import type { VoiceSettingsDraft } from './settings/VoiceSettingsSection.tsx'
 import { AppShell } from './shell/AppShell.tsx'
 import { Sidebar, type AppView } from './shell/Sidebar.tsx'
 import { useTheme } from './theme/ThemeProvider.tsx'
-import { CallPreview } from './voice/CallPreview.tsx'
+import {
+  CallPreview,
+  type VoiceTranscriptionView,
+} from './voice/CallPreview.tsx'
 import {
   AudioCaptureController,
   type AudioCaptureSnapshot,
@@ -140,6 +142,30 @@ interface PersistedRetryEditDraft {
   text: string
   operationId?: string
   requestId?: string
+}
+
+/**
+ * Correlate one cancellable STT job without retaining audio. A terminal IPC
+ * event can beat the start acknowledgement, so requestId begins nullable;
+ * token plus session/Chat IDs reject results after close or navigation, while
+ * cancelRequested defers cancellation until that request ID becomes known.
+ * This ref deliberately contains identifiers and flags only, never PCM/Base64.
+ */
+interface VoiceTranscriptionOperation {
+  token: number
+  sessionId: string
+  chatId: string
+  requestId: string | null
+  cancelRequested: boolean
+  cancelSent: boolean
+  terminal: boolean
+}
+
+interface VoiceTranscriptionState extends VoiceTranscriptionView {
+  token: number
+  sessionId: string
+  chatId: string
+  requestId: string | null
 }
 
 const initialSnapshot: BackendSnapshot = {
@@ -706,9 +732,8 @@ function App() {
   const [voiceCapture, setVoiceCapture] = useState<AudioCaptureSnapshot>(
     EMPTY_AUDIO_CAPTURE_SNAPSHOT,
   )
-  const [voiceCaptureReceipt, setVoiceCaptureReceipt]
-    = useState<VoiceCaptureReceipt | null>(null)
-  const [voiceCaptureSubmitting, setVoiceCaptureSubmitting] = useState(false)
+  const [voiceTranscription, setVoiceTranscription]
+    = useState<VoiceTranscriptionState | null>(null)
   const [voiceCaptureSubmissionError, setVoiceCaptureSubmissionError]
     = useState<string | null>(null)
   const [showArchived, setShowArchived] = useState(false)
@@ -771,6 +796,8 @@ function App() {
     () => undefined,
   )
   const voiceCaptureOperationRef = useRef(0)
+  const voiceTranscriptionOperationRef
+    = useRef<VoiceTranscriptionOperation | null>(null)
   const microphoneActionOperationRef = useRef(0)
   const projectRefreshNeededRef = useRef(false)
   const projectRefreshPromiseRef = useRef<Promise<void> | null>(null)
@@ -855,13 +882,15 @@ function App() {
       ? 'Reconnect the local Backend before starting the microphone.'
       : !snapshot.capabilities.includes('voice.capture')
         ? 'The local Backend does not support bounded voice capture.'
-        : activeChatId === undefined || snapshot.chatId !== activeChatId
-          ? 'Wait for the active Chat to finish loading.'
-          : generationBusy || generationReconcilePending
-            ? 'Wait for the current Chat reply to finish.'
-            : sessionMutationPending
-              ? 'Wait for the current Chat action to finish.'
-              : null
+        : !snapshot.capabilities.includes('voice.transcription')
+          ? 'The local Backend does not support local speech transcription.'
+          : activeChatId === undefined || snapshot.chatId !== activeChatId
+            ? 'Wait for the active Chat to finish loading.'
+            : generationBusy || generationReconcilePending
+              ? 'Wait for the current Chat reply to finish.'
+              : sessionMutationPending
+                ? 'Wait for the current Chat action to finish.'
+                : null
   const displayedChat = chatState?.activeChat.title
     ?? snapshot.chatTitle
     ?? 'Chat'
@@ -894,17 +923,73 @@ function App() {
     return snapshot.modelName === undefined ? [] : [snapshot.modelName]
   }, [snapshot.modelName, snapshot.models])
 
-  const closeCallPreview = useCallback((): void => {
+  const cancelVoiceTranscription = useCallback((
+    operation: VoiceTranscriptionOperation,
+    surfaceError: boolean,
+  ): void => {
+    operation.cancelRequested = true
+    if (
+      desktopApi === undefined
+      || operation.requestId === null
+      || operation.terminal
+      || operation.cancelSent
+    ) {
+      return
+    }
+    operation.cancelSent = true
+    void desktopApi.stopVoiceTranscription(operation.requestId)
+      .catch((error: unknown) => {
+        if (
+          surfaceError
+          && voiceTranscriptionOperationRef.current === operation
+          && operation.token === voiceCaptureOperationRef.current
+          && !operation.terminal
+        ) {
+          setVoiceTranscription((current) => (
+            current?.token === operation.token
+              ? {
+                  ...current,
+                  phase: 'error',
+                  error: error instanceof Error
+                    ? error.message
+                    : 'Local transcription could not be cancelled.',
+                  retryable: true,
+                }
+              : current
+          ))
+        }
+      })
+      .finally(() => {
+        operation.cancelSent = false
+        if (
+          voiceTranscriptionOperationRef.current === operation
+          && operation.token !== voiceCaptureOperationRef.current
+        ) {
+          voiceTranscriptionOperationRef.current = null
+        }
+      })
+  }, [desktopApi])
+
+  const discardVoiceOperation = useCallback((): void => {
+    const operation = voiceTranscriptionOperationRef.current
     ++voiceCaptureOperationRef.current
+    if (operation !== null && !operation.terminal) {
+      cancelVoiceTranscription(operation, false)
+    } else {
+      voiceTranscriptionOperationRef.current = null
+    }
+    setVoiceTranscription(null)
+  }, [cancelVoiceTranscription])
+
+  const closeCallPreview = useCallback((): void => {
+    discardVoiceOperation()
     void audioCaptureControllerRef.current?.cancel()
-    setVoiceCaptureSubmitting(false)
-    setVoiceCaptureReceipt(null)
     setVoiceCaptureSubmissionError(null)
     setCallPreviewOpen(false)
     window.requestAnimationFrame(() => {
       callButtonRef.current?.focus()
     })
-  }, [])
+  }, [discardVoiceOperation])
 
   useEffect(() => {
     const controller = new AudioDeviceController()
@@ -942,31 +1027,32 @@ function App() {
     // its own safety timeout.
     ++microphoneActionOperationRef.current
     audioDeviceControllerRef.current?.stopAll()
-    ++voiceCaptureOperationRef.current
+    discardVoiceOperation()
     void audioCaptureControllerRef.current?.cancel()
-    setVoiceCaptureSubmitting(false)
-    setVoiceCaptureReceipt(null)
     setVoiceCaptureSubmissionError(null)
     setCallPreviewOpen(false)
-  }, [activeChatId, activeView])
+  }, [activeChatId, activeView, discardVoiceOperation])
 
   useEffect(() => {
     if (snapshot.status === 'ready' && !generationBusy) {
       return
     }
     const controller = audioCaptureControllerRef.current
-    if (controller === null) {
+    if (controller !== null) {
+      const status = controller.getSnapshot().status
+      if (status === 'starting' || status === 'waiting' || status === 'speaking') {
+        void controller.cancel()
+      }
+    }
+    // A final/error result is already PCM-free and no longer owns Backend
+    // capacity. Preserve it across a disconnect so the user can still recover
+    // edited text into this Chat's durable draft; navigation remains the hard
+    // privacy boundary handled by the separate active-view effect above.
+    if (voiceTranscriptionOperationRef.current?.terminal) {
       return
     }
-    const status = controller.getSnapshot().status
-    if (status !== 'starting' && status !== 'waiting' && status !== 'speaking') {
-      return
-    }
-    ++voiceCaptureOperationRef.current
-    void controller.cancel()
-    setVoiceCaptureSubmitting(false)
-    setVoiceCaptureReceipt(null)
-  }, [generationBusy, snapshot.status])
+    discardVoiceOperation()
+  }, [discardVoiceOperation, generationBusy, snapshot.status])
 
   const acceptSnapshot = useCallback((nextSnapshot: BackendSnapshot): boolean => {
     if (nextSnapshot.revision < acceptedSnapshotRevisionRef.current) {
@@ -2193,6 +2279,78 @@ function App() {
         return
       }
 
+      if (event.type === 'voice-transcription-complete') {
+        const operation = voiceTranscriptionOperationRef.current
+        if (
+          operation === null
+          || operation.terminal
+          || operation.token !== voiceCaptureOperationRef.current
+          || operation.sessionId !== event.sessionId
+          || operation.chatId !== event.chatId
+          || activeChatIdRef.current !== event.chatId
+          || (
+            operation.requestId !== null
+            && operation.requestId !== event.requestId
+          )
+        ) {
+          return
+        }
+        operation.requestId = event.requestId
+        operation.terminal = true
+        setVoiceCaptureSubmissionError(null)
+        setVoiceTranscription({
+          token: operation.token,
+          sessionId: event.sessionId,
+          chatId: event.chatId,
+          requestId: event.requestId,
+          phase: operation.cancelRequested ? 'cancelled' : 'final',
+          text: operation.cancelRequested ? '' : event.text,
+          language: operation.cancelRequested ? null : event.language,
+          languageProbability: operation.cancelRequested
+            ? null
+            : event.languageProbability,
+          error: null,
+          retryable: false,
+        })
+        return
+      }
+
+      if (event.type === 'voice-transcription-error') {
+        const operation = voiceTranscriptionOperationRef.current
+        if (
+          operation === null
+          || operation.terminal
+          || operation.token !== voiceCaptureOperationRef.current
+          || operation.sessionId !== event.sessionId
+          || operation.chatId !== event.chatId
+          || activeChatIdRef.current !== event.chatId
+          || (
+            operation.requestId !== null
+            && operation.requestId !== event.requestId
+          )
+        ) {
+          return
+        }
+        operation.requestId = event.requestId
+        operation.terminal = true
+        const cancelled = operation.cancelRequested
+          || event.code === 'request.cancelled'
+        setVoiceCaptureSubmissionError(null)
+        setVoiceTranscription({
+          token: operation.token,
+          sessionId: event.sessionId,
+          chatId: event.chatId,
+          requestId: event.requestId,
+          phase: cancelled ? 'cancelled' : 'error',
+          text: '',
+          language: null,
+          languageProbability: null,
+          error: cancelled ? null : event.message,
+          retryable: cancelled || event.retryable,
+        })
+        return
+      }
+
       if (event.type === 'chat-chunk') {
         const currentTurn = inFlightTurnRef.current
         if (
@@ -2400,6 +2558,25 @@ function App() {
       }
 
       if (event.type === 'progress') {
+        if (event.operation === 'voice.transcribe') {
+          const operation = voiceTranscriptionOperationRef.current
+          if (
+            operation === null
+            || operation.terminal
+            || operation.cancelRequested
+            || operation.token !== voiceCaptureOperationRef.current
+            || operation.requestId !== event.requestId
+            || operation.chatId !== activeChatIdRef.current
+          ) {
+            return
+          }
+          setVoiceTranscription((current) => (
+            current?.token === operation.token
+              ? { ...current, phase: 'transcribing' }
+              : current
+          ))
+          return
+        }
         if (event.operation === 'chat.generate') {
           const currentTurn = inFlightTurnRef.current
           if (
@@ -3401,13 +3578,13 @@ function App() {
   async function submitCompletedVoiceCapture(
     segment: CompletedVoiceSegment,
   ): Promise<void> {
-    const operation = voiceCaptureOperationRef.current
+    const token = voiceCaptureOperationRef.current
     const chatId = activeChatIdRef.current
     if (
       desktopApi === undefined
       || chatId === undefined
       || snapshot.status !== 'ready'
-      || !snapshot.capabilities.includes('voice.capture')
+      || !snapshot.capabilities.includes('voice.transcription')
     ) {
       segment.pcm.fill(0)
       return
@@ -3417,7 +3594,7 @@ function App() {
     try {
       pcmBase64 = encodePcm16LittleEndian(segment.pcm)
     } catch (error: unknown) {
-      if (operation === voiceCaptureOperationRef.current) {
+      if (token === voiceCaptureOperationRef.current) {
         setVoiceCaptureSubmissionError(
           error instanceof Error
             ? error.message
@@ -3429,50 +3606,117 @@ function App() {
       segment.pcm.fill(0)
     }
     if (
-      operation !== voiceCaptureOperationRef.current
+      token !== voiceCaptureOperationRef.current
       || activeChatIdRef.current !== chatId
     ) {
       return
     }
 
-    setVoiceCaptureReceipt(null)
     setVoiceCaptureSubmissionError(null)
-    setVoiceCaptureSubmitting(true)
+    const operation: VoiceTranscriptionOperation = {
+      token,
+      sessionId: segment.sessionId,
+      chatId,
+      requestId: null,
+      cancelRequested: false,
+      cancelSent: false,
+      terminal: false,
+    }
+    voiceTranscriptionOperationRef.current = operation
+    setVoiceTranscription({
+      token,
+      sessionId: segment.sessionId,
+      chatId,
+      requestId: null,
+      phase: 'starting',
+      text: '',
+      language: null,
+      languageProbability: null,
+      error: null,
+      retryable: false,
+    })
     try {
-      const receipt = await desktopApi.submitVoiceCapture({
-        sessionId: segment.sessionId,
-        chatId,
-        sampleRateHz: segment.sampleRate,
-        channelCount: segment.channelCount,
-        sampleFormat: segment.sampleFormat,
-        sampleCount: segment.sampleCount,
-        speechStartSample: segment.speechStartSample,
-        speechEndSample: segment.speechEndSample,
-        pcmBase64,
-      })
+      let starting: Promise<{ requestId: string }>
+      try {
+        starting = desktopApi.beginVoiceTranscription({
+          sessionId: segment.sessionId,
+          chatId,
+          sampleRateHz: segment.sampleRate,
+          channelCount: segment.channelCount,
+          sampleFormat: segment.sampleFormat,
+          sampleCount: segment.sampleCount,
+          speechStartSample: segment.speechStartSample,
+          speechEndSample: segment.speechEndSample,
+          pcmBase64,
+          language: 'auto',
+        })
+      } finally {
+        // JavaScript strings cannot be wiped in place. Dropping the only local
+        // reference immediately after IPC keeps encoded audio out of UI state.
+        pcmBase64 = ''
+      }
+      const { requestId } = await starting
       if (
-        operation !== voiceCaptureOperationRef.current
-        || activeChatIdRef.current !== chatId
+        operation.requestId !== null
+        && operation.requestId !== requestId
       ) {
+        operation.cancelRequested = true
+        // A mismatched acknowledgement breaks the renderer's correlation
+        // boundary. Cancel that unexpected request directly so neither the
+        // already-observed terminal result nor this orphan can affect Chat.
+        void desktopApi.stopVoiceTranscription(requestId).catch(() => undefined)
+        if (
+          operation.token === voiceCaptureOperationRef.current
+          && voiceTranscriptionOperationRef.current === operation
+        ) {
+          operation.terminal = true
+          setVoiceTranscription((current) => current?.token === operation.token
+            ? {
+                ...current,
+                phase: 'error',
+                error: 'Local transcription returned a mismatched request identifier.',
+                retryable: true,
+              }
+            : current)
+        }
         return
       }
-      setVoiceCaptureReceipt(receipt)
+      operation.requestId = requestId
+      if (operation.terminal) {
+        return
+      }
+      if (
+        operation.cancelRequested
+        || operation.token !== voiceCaptureOperationRef.current
+        || voiceTranscriptionOperationRef.current !== operation
+        || activeChatIdRef.current !== chatId
+      ) {
+        cancelVoiceTranscription(operation, false)
+        return
+      }
+      setVoiceTranscription((current) => current?.token === operation.token
+        ? { ...current, requestId, phase: 'transcribing' }
+        : current)
     } catch (error: unknown) {
       if (
-        operation !== voiceCaptureOperationRef.current
+        operation.token !== voiceCaptureOperationRef.current
+        || voiceTranscriptionOperationRef.current !== operation
+        || operation.terminal
         || activeChatIdRef.current !== chatId
       ) {
         return
       }
-      setVoiceCaptureSubmissionError(
-        error instanceof Error
-          ? error.message
-          : 'The local Backend rejected the voice capture.',
-      )
-    } finally {
-      if (operation === voiceCaptureOperationRef.current) {
-        setVoiceCaptureSubmitting(false)
-      }
+      operation.terminal = true
+      setVoiceTranscription((current) => current?.token === operation.token
+        ? {
+            ...current,
+            phase: 'error',
+            error: error instanceof Error
+              ? error.message
+              : 'Local speech transcription could not start.',
+            retryable: true,
+          }
+        : current)
     }
   }
 
@@ -3497,16 +3741,15 @@ function App() {
       return
     }
 
-    const operation = ++voiceCaptureOperationRef.current
+    discardVoiceOperation()
+    const operation = voiceCaptureOperationRef.current
     const actionIsCurrent = (): boolean => (
       operation === voiceCaptureOperationRef.current
       && activeChatIdRef.current === chatId
       && audioCaptureControllerRef.current === controller
     )
     setVoiceCapture(EMPTY_AUDIO_CAPTURE_SNAPSHOT)
-    setVoiceCaptureReceipt(null)
     setVoiceCaptureSubmissionError(null)
-    setVoiceCaptureSubmitting(false)
     ++microphoneActionOperationRef.current
     deviceController.stopAll()
 
@@ -3553,11 +3796,24 @@ function App() {
     }
     const status = controller.getSnapshot().status
     if (status === 'starting' || status === 'waiting' || status === 'speaking') {
-      ++voiceCaptureOperationRef.current
-      setVoiceCaptureSubmitting(false)
-      setVoiceCaptureReceipt(null)
+      discardVoiceOperation()
       setVoiceCaptureSubmissionError(null)
       await controller.cancel()
+      return
+    }
+    const transcriptionOperation = voiceTranscriptionOperationRef.current
+    if (
+      transcriptionOperation !== null
+      && !transcriptionOperation.terminal
+      && transcriptionOperation.token === voiceCaptureOperationRef.current
+    ) {
+      transcriptionOperation.cancelRequested = true
+      setVoiceTranscription((current) => (
+        current?.token === transcriptionOperation.token
+          ? { ...current, phase: 'cancelling' }
+          : current
+      ))
+      cancelVoiceTranscription(transcriptionOperation, true)
       return
     }
     await startVoiceCapture()
@@ -3636,16 +3892,86 @@ function App() {
     }
   }
 
+  function updateVoiceTranscript(value: string): void {
+    const operation = voiceTranscriptionOperationRef.current
+    if (
+      operation === null
+      || !operation.terminal
+      || operation.token !== voiceCaptureOperationRef.current
+    ) {
+      return
+    }
+    setVoiceCaptureSubmissionError(null)
+    setVoiceTranscription((current) => (
+      current?.token === operation.token && current.phase === 'final'
+        ? { ...current, text: value }
+        : current
+    ))
+  }
+
+  function useVoiceTranscriptInMessage(): void {
+    const operation = voiceTranscriptionOperationRef.current
+    const transcriptState = voiceTranscription
+    if (
+      operation === null
+      || transcriptState === null
+      || transcriptState.phase !== 'final'
+      || !operation.terminal
+      || operation.token !== voiceCaptureOperationRef.current
+      || transcriptState.token !== operation.token
+      || activeChatIdRef.current !== operation.chatId
+    ) {
+      return
+    }
+    const transcript = trimProtocolBlankCharacters(transcriptState.text)
+    if (!hasNonBlankCodePoint(transcript)) {
+      setVoiceCaptureSubmissionError('Final transcript cannot be blank.')
+      return
+    }
+
+    const currentDraft = draftsByChatRef.current[operation.chatId] ?? ''
+    const draftHasText = hasNonBlankCodePoint(currentDraft)
+    // Treat an identical draft as already handed off so an accidental second
+    // click cannot duplicate the same transcript before the preview closes.
+    const nextDraft = !draftHasText
+      ? transcript
+      : currentDraft === transcript
+        ? currentDraft
+        : `${currentDraft}\n\n${transcript}`
+    if (nextDraft.length > MAX_PERSISTED_DRAFT_LENGTH) {
+      setVoiceCaptureSubmissionError(
+        'The existing message draft is too long to append this transcript.',
+      )
+      return
+    }
+    const otherDrafts = { ...draftsByChatRef.current }
+    delete otherDrafts[operation.chatId]
+    const nextDrafts = { [operation.chatId]: nextDraft, ...otherDrafts }
+    if (!persistChatDrafts(nextDrafts, operation.chatId)) {
+      setVoiceCaptureSubmissionError(
+        'The transcript could not be protected in local draft storage. Free some disk space and try again.',
+      )
+      return
+    }
+
+    updateChatDrafts(() => nextDrafts)
+    ++voiceCaptureOperationRef.current
+    voiceTranscriptionOperationRef.current = null
+    setVoiceTranscription(null)
+    setVoiceCaptureSubmissionError(null)
+    setCallPreviewOpen(false)
+    focusChatComposer()
+  }
+
   async function openCallPreview(): Promise<void> {
     if (panelOpen || panelTargetOpenRef.current) {
       await setCharacterPanelVisibility(false)
     }
     ++microphoneActionOperationRef.current
     audioDeviceControllerRef.current?.stopAll()
+    discardVoiceOperation()
     setVoiceCapture(EMPTY_AUDIO_CAPTURE_SNAPSHOT)
-    setVoiceCaptureReceipt(null)
     setVoiceCaptureSubmissionError(null)
-    setVoiceCaptureSubmitting(false)
     setCallPreviewOpen(true)
   }
 
@@ -3655,15 +3981,17 @@ function App() {
         captionsEnabled={captionsEnabled}
         capture={voiceCapture}
         captureDisabledReason={voiceCaptureDisabledReason}
+        composerHasDraft={hasNonBlankCodePoint(draft)}
         modelName={snapshot.modelName}
-        receipt={voiceCaptureReceipt}
-        submitting={voiceCaptureSubmitting}
+        transcription={voiceTranscription}
         submissionError={voiceCaptureSubmissionError}
         onCaptionsChange={() => {
           setCaptionsEnabled((enabled) => !enabled)
         }}
         onClose={closeCallPreview}
+        onTranscriptChange={updateVoiceTranscript}
         onToggleCapture={() => { void toggleVoiceCapture() }}
+        onUseTranscript={useVoiceTranscriptInMessage}
       />
     )
   }

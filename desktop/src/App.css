@@ -2988,6 +2988,83 @@ kbd {
   line-height: var(--line-height-normal);
 }
 
+.call-transcript {
+  position: absolute;
+  z-index: 1;
+  right: 50%;
+  bottom: var(--space-5);
+  display: grid;
+  gap: var(--space-3);
+  width: min(40rem, calc(100% - var(--space-8)));
+  max-height: calc(100% - var(--space-8));
+  padding: var(--space-4);
+  overflow-y: auto;
+  background: color-mix(in srgb, var(--color-bg-raised) 92%, transparent);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-floating);
+  transform: translateX(50%);
+  backdrop-filter: blur(1rem);
+}
+
+.call-transcript-heading,
+.call-transcript-actions {
+  display: flex;
+  gap: var(--space-3);
+  align-items: center;
+  justify-content: space-between;
+}
+
+.call-transcript-heading label {
+  color: var(--color-text-primary);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+}
+
+.call-transcript-heading span,
+.call-transcript-actions p {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+  line-height: var(--line-height-normal);
+}
+
+.call-transcript textarea {
+  width: 100%;
+  min-height: 6.5rem;
+  max-height: 14rem;
+  padding: var(--space-3);
+  resize: vertical;
+  color: var(--color-text-primary);
+  background: var(--color-bg-canvas);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-lg);
+  outline: none;
+  font: inherit;
+  line-height: var(--line-height-normal);
+}
+
+.call-transcript textarea:focus-visible {
+  border-color: var(--color-accent);
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-ring-offset);
+}
+
+.call-transcript-actions p {
+  max-width: 27rem;
+}
+
+.call-transcript .call-transcript-error {
+  margin: 0;
+  color: var(--color-danger);
+  font-size: var(--font-size-xs);
+  line-height: var(--line-height-normal);
+}
+
+.call-transcript-actions button {
+  flex: 0 0 auto;
+}
+
 .call-controls {
   z-index: var(--z-index-sticky);
   justify-content: center;
@@ -3365,6 +3442,20 @@ kbd {
   .call-controls {
     gap: var(--space-2);
     padding: var(--space-3);
+  }
+
+  .call-transcript {
+    width: calc(100% - var(--space-6));
+    padding: var(--space-3);
+  }
+
+  .call-transcript-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .call-transcript-actions button {
+    align-self: stretch;
   }
 
   .call-control {
