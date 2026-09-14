@@ -1,4 +1,4 @@
-"""Public Voice settings, bounded capture, and transcription-domain API."""
+"""Public Voice settings, capture, transcription, and synthesis API."""
 
 from .capture import (
     VOICE_CAPTURE_BYTES_PER_SAMPLE,
@@ -78,10 +78,31 @@ from .transcription_jobs import (
     TranscriptionJobValidationError,
     TranscriptionJobWaitTimeoutError,
 )
+from .synthesis import (
+    SYNTHESIS_MAX_AUDIO_BYTES,
+    SYNTHESIS_MAX_IDENTIFIER_LENGTH,
+    SYNTHESIS_MAX_SPEED_FACTOR,
+    SYNTHESIS_MAX_TEXT_CODE_POINTS,
+    SYNTHESIS_MIN_SPEED_FACTOR,
+    SpeechSynthesizer,
+    SynthesisAudioFormat,
+    SynthesisError,
+    SynthesisFailedError,
+    SynthesisLanguage,
+    SynthesisRequest,
+    SynthesisResult,
+    SynthesisUnavailableError,
+    SynthesisValidationError,
+)
 
 __all__ = [
     "MAX_AUDIO_DEVICE_ID_LENGTH",
     "MAX_JSON_SAFE_INTEGER",
+    "SYNTHESIS_MAX_AUDIO_BYTES",
+    "SYNTHESIS_MAX_IDENTIFIER_LENGTH",
+    "SYNTHESIS_MAX_SPEED_FACTOR",
+    "SYNTHESIS_MAX_TEXT_CODE_POINTS",
+    "SYNTHESIS_MIN_SPEED_FACTOR",
     "TRANSCRIPTION_MAX_TEXT_CODE_POINTS",
     "TRANSCRIPTION_JOB_MAX_ID_LENGTH",
     "TRANSCRIPTION_JOB_MAX_QUEUE_SIZE",
@@ -109,6 +130,15 @@ __all__ = [
     "FasterWhisperTranscriber",
     "JsonVoiceSettingsRepository",
     "RuntimeCapabilities",
+    "SpeechSynthesizer",
+    "SynthesisAudioFormat",
+    "SynthesisError",
+    "SynthesisFailedError",
+    "SynthesisLanguage",
+    "SynthesisRequest",
+    "SynthesisResult",
+    "SynthesisUnavailableError",
+    "SynthesisValidationError",
     "TranscriptLanguage",
     "Transcriber",
     "TranscriptionJobCallback",
