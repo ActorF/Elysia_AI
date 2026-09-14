@@ -253,6 +253,20 @@ export interface VoiceCaptureReceipt {
   sha256Hex: string
 }
 
+/** One bounded capture plus the only language hints accepted by local STT. */
+export interface VoiceTranscriptionRequest extends VoiceCaptureRequest {
+  language: 'auto' | 'zh' | 'en'
+}
+
+/** Final renderer-safe transcript with no PCM or native engine diagnostics. */
+export interface VoiceTranscriptionResult {
+  sessionId: string
+  chatId: string
+  text: string
+  language: 'zh' | 'en'
+  languageProbability: number
+}
+
 /** Native operating-system microphone access state (not device availability). */
 export type MicrophonePermissionStatus =
   | 'not-determined'
@@ -293,6 +307,19 @@ export type BackendEvent =
       completed: number
       total: number | null
       message: string | null
+    }
+  | ({
+      type: 'voice-transcription-complete'
+      requestId: string
+    } & VoiceTranscriptionResult)
+  | {
+      type: 'voice-transcription-error'
+      requestId: string
+      sessionId: string
+      chatId: string
+      code: string
+      message: string
+      retryable: boolean
     }
   | {
       type: 'permission'
@@ -339,6 +366,12 @@ export interface DesktopApi {
   submitVoiceCapture(
     request: VoiceCaptureRequest,
   ): Promise<VoiceCaptureReceipt>
+  /** Begin local speech recognition and return its cancellable request ID. */
+  beginVoiceTranscription(
+    request: VoiceTranscriptionRequest,
+  ): Promise<{ requestId: string }>
+  /** Cancel only the matching in-flight local speech-recognition request. */
+  stopVoiceTranscription(requestId: string): Promise<void>
   /** Read native microphone permission without opening a capture device. */
   getMicrophonePermissionStatus(): Promise<MicrophonePermissionStatus>
   /** Open native microphone privacy settings when the platform supports it. */

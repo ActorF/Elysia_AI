@@ -41,6 +41,7 @@ import {
   codePointLength,
   hasNonBlankCodePoint,
   parseVoiceCaptureCompleteParams,
+  parseVoiceTranscriptionStartParams,
   trimProtocolBlankCharacters,
 } from './protocol.js'
 import { isTrustedRendererUrl as matchesRendererSource } from './renderer-source.js'
@@ -73,6 +74,9 @@ const RENDERER_READY_TIMEOUT_MS = 10_000
 const MAX_CHAT_TITLE_LENGTH = 200
 const MAX_PROJECT_NAME_LENGTH = 200
 const MAX_WORKSPACE_PATH_LENGTH = 32_767
+const BACKEND_REQUEST_ID_PATTERN = (
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u
+)
 const TRAY_ICON_DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAANsSURBVFhH1ZdJTBNhFMc5esPM2PkGL9WEEC9EExpjwgWNRI0XYyHRiyFCggcXpBRK9cBBo0IQ022IB1QE0YMh8SBHE7eiLGXvhqAnjy4cTLw8876ZNtP3TWtnggdf8juUeX3/t833lYqK/9UUSTnEZNZghvpsq7lcLlWR1QtMZlNMVqEEcSazAKtke2gMR1ZZ6d7JZNanSOyXhVhJqt3V9zFxGrNs01urfqOBy+Xh8AjwxHexMzT2X41JrMVJ1Tlq99UC/PwN9Qfrjb+xPqpR1FCcBrRDzd4aCPXf4wlgF/Cz8WyIagmGbTdX3nGyHSY7H8Bzg/D5OxA87YNexOuDgLeL0+PtgtvtN2Dm5TQXpjwdGQfPfg/gIlPNvOHC0Jmj+OfQLGyGZmEjNAefQnOwHpqHbHgeMuEEpMMJSIUXIBlZgLXIIqxGFuHLiw3YSn3nwuszGWg5ey4fD4tzuXYfoNrcsEW0nVi1HfGVyBKsRJchM5bmCWjXh4URMUmdpNr6e26xdJiAXfHl6DIsRVdgK/sDfE09YgKyCkIX+OFh4YgzN4s/843mZ450e/0cP9LUzeni9MDN9lvQWHdciMmRmEYSwBNMdMSFM1eO4tTHEZL6NS+un3YWTrLKt93cdqya+jglPwb9YhEdkFBrf8HMJ3yjJduOMy/adkruhFTkqlPCQwOceTkLtxhdhYXoKiSia9BZZPEoilTVYSSAt5zokEvAjvg8TyAgxLHGOJ6xFeJDHWy5HfG5aBKulp9AwHgD+K1n4aDCUOtAgfiYf1yYOYJtx8pR/KinzB2QWAtPwDiCRQdZ5ctmrhzFqY9TcPmNF5HvwSZ1QDABc9uxcurjBDx13W73jnwCVvcAgq+aeebYdurjCHof4KEgOMkqDLYNFizcI/8TYeZIB6cXrjTrXOYE4YjnhBATwVe/IAE0zIo64tIV2/bZWBJmYin4GEvBh1gaprU0xLUMvNcy8E7LwlstC5eag4I4k9QE1eZm1YXH/nHH4m+0dbhokYBl9Tmjt+JA213H4q95AtdI9eQWtDJFUidyX2isO2Zr5thyBCtH8cOFOxAv2Pxihk7mJLaJON66VKuk4VltEcg+EtPKqtzK9F/J6ishaBkoEkuWXDg7hoFwLFa/G0XYVP6c/xdm/Dcc0EdUQIPdVv8BMyc76Y4zJXMAAAAASUVORK5CYII='
 
 let mainWindow: BrowserWindow | null = null
@@ -256,6 +260,16 @@ function parseChatId(value: unknown): string {
     || codePointLength(value) > MAX_IDENTIFIER_LENGTH
   ) {
     throw new Error('Chat id is invalid.')
+  }
+  return value
+}
+
+function parseBackendRequestId(value: unknown): string {
+  if (
+    typeof value !== 'string'
+    || !BACKEND_REQUEST_ID_PATTERN.test(value)
+  ) {
+    throw new Error('Backend request id is invalid.')
   }
   return value
 }
@@ -793,6 +807,26 @@ function registerIpcHandlers(): void {
   )
 
   ipcMain.handle(
+    'voice:transcription-start',
+    (event, request: unknown) => {
+      assertTrustedSender(event)
+      return requireBackend().beginVoiceTranscription(
+        parseVoiceTranscriptionStartParams(request),
+      )
+    },
+  )
+
+  ipcMain.handle(
+    'voice:transcription-stop',
+    (event, requestId: unknown) => {
+      assertTrustedSender(event)
+      return requireBackend().stopVoiceTranscription(
+        parseBackendRequestId(requestId),
+      )
+    },
+  )
+
+  ipcMain.handle(
     'voice:microphone-permission-status',
     (event) => {
       assertTrustedSender(event)
@@ -826,7 +860,9 @@ function registerIpcHandlers(): void {
     'backend:stop-generation',
     (event, requestId: unknown) => {
       assertTrustedSender(event)
-      return requireBackend().stopGeneration(parseChatId(requestId))
+      return requireBackend().stopGeneration(
+        parseBackendRequestId(requestId),
+      )
     },
   )
 

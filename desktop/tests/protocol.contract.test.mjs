@@ -667,6 +667,40 @@ function voiceTranscriptionResponse() {
   return structuredClone(sample.message)
 }
 
+function readyVoiceTranscriptionBackend(
+  capabilities = ['voice.transcription', 'request.cancel'],
+) {
+  const writes = []
+  const events = []
+  let killCount = 0
+  const backend = new BackendProcess('.', (event) => events.push(event))
+  backend.child = {
+    stdin: {
+      writable: true,
+      write: (value) => writes.push(value),
+    },
+    kill: () => {
+      killCount += 1
+      return true
+    },
+  }
+  backend.snapshot = {
+    revision: 1,
+    status: 'ready',
+    capabilities,
+    models: ['qwen3.5:9b'],
+    modelName: 'qwen3.5:9b',
+    chatId: 'chat_fixture',
+    chatTitle: 'Elysia Chat',
+  }
+  return {
+    backend,
+    events,
+    writes,
+    getKillCount: () => killCount,
+  }
+}
+
 test('TypeScript accepts one-shot Voice transcription PCM and language', () => {
   const request = voiceTranscriptionRequest()
   const params = parseVoiceTranscriptionStartParams(request.params)
@@ -1851,6 +1885,372 @@ test('Backend blocks Voice capture while a Chat reply is active', async () => {
     /current Chat or voice action/,
   )
   assert.equal(backend.pendingRequests.size, 1)
+})
+
+test('Backend starts one correlated Voice transcript without retaining PCM', () => {
+  const { backend, events, writes } = readyVoiceTranscriptionBackend()
+  const params = voiceTranscriptionRequest().params
+
+  const { requestId } = backend.beginVoiceTranscription(params)
+  const request = JSON.parse(writes.at(-1))
+  const pending = backend.pendingRequests.get(requestId)
+  const expectedMetadata = { ...params }
+  delete expectedMetadata.pcmBase64
+
+  assert.equal(request.id, requestId)
+  assert.equal(request.method, 'voice.transcription.start')
+  assert.deepEqual(request.params, params)
+  assert.deepEqual(pending.voiceTranscriptionRequest, expectedMetadata)
+  assert.equal(JSON.stringify(pending).includes('pcmBase64'), false)
+
+  backend.handleProtocolLine(JSON.stringify({
+    type: 'progress',
+    protocol: fixtures.protocol,
+    requestId,
+    operation: 'voice.transcribe',
+    completed: 0,
+    total: 1,
+    message: 'D:/private/model is loading',
+  }))
+  backend.handleProtocolLine(JSON.stringify({
+    type: 'event',
+    protocol: fixtures.protocol,
+    event: 'voice.transcription.started',
+    requestId,
+    data: {
+      sessionId: params.sessionId,
+      chatId: params.chatId,
+    },
+  }))
+
+  const response = voiceTranscriptionResponse()
+  response.id = requestId
+  backend.handleProtocolLine(JSON.stringify(response))
+
+  const expectedResult = { ...response.result }
+  delete expectedResult.kind
+  assert.deepEqual(events, [
+    {
+      type: 'progress',
+      requestId,
+      operation: 'voice.transcribe',
+      completed: 0,
+      total: 1,
+      message: 'Transcribing audio',
+    },
+    {
+      type: 'voice-transcription-complete',
+      requestId,
+      ...expectedResult,
+    },
+  ])
+  assert.equal(backend.pendingRequests.has(requestId), false)
+  assert.equal(JSON.stringify(events).includes('pcmBase64'), false)
+  assert.equal(JSON.stringify(events).includes('private'), false)
+})
+
+test('Backend gates Voice transcription by capability and active Chat', () => {
+  const unsupported = readyVoiceTranscriptionBackend([])
+  assert.throws(
+    () => unsupported.backend.beginVoiceTranscription(
+      voiceTranscriptionRequest().params,
+    ),
+    /does not support voice transcription/,
+  )
+  assert.equal(unsupported.writes.length, 0)
+
+  const mismatched = readyVoiceTranscriptionBackend()
+  const params = voiceTranscriptionRequest().params
+  params.chatId = 'chat_other'
+  assert.throws(
+    () => mismatched.backend.beginVoiceTranscription(params),
+    /requested Chat is not active/,
+  )
+  assert.equal(mismatched.writes.length, 0)
+})
+
+test('Backend serializes Voice transcription with Chat and capture actions', async () => {
+  const activeTranscript = readyVoiceTranscriptionBackend([
+    'voice.transcription',
+    'voice.capture',
+    'chat.stream',
+    'chat.retry',
+  ])
+  const { requestId } = activeTranscript.backend.beginVoiceTranscription(
+    voiceTranscriptionRequest().params,
+  )
+
+  assert.throws(
+    () => activeTranscript.backend.beginChat({
+      chatId: 'chat_fixture',
+      message: 'Do not race STT.',
+      attachmentIds: [],
+    }),
+    /voice transcription/,
+  )
+  assert.throws(
+    () => activeTranscript.backend.beginRetry({
+      chatId: 'chat_fixture',
+      userMessageId: 'message_user',
+      assistantMessageId: 'message_assistant',
+    }),
+    /voice transcription/,
+  )
+  await assert.rejects(
+    activeTranscript.backend.submitVoiceCapture(voiceCaptureRequest().params),
+    /current Chat or voice action/,
+  )
+  await assert.rejects(
+    activeTranscript.backend.createChat({ title: 'Blocked', mode: 'chat' }),
+    /voice transcription/,
+  )
+  await assert.rejects(
+    activeTranscript.backend.moveChatToProject({
+      chatId: 'chat_fixture',
+      projectId: 'project_fixture',
+    }),
+    /voice transcription/,
+  )
+  await assert.rejects(
+    activeTranscript.backend.addAttachments(
+      { kind: 'chat', id: 'chat_fixture' },
+      ['D:\\input.txt'],
+    ),
+    /attachment action/,
+  )
+  assert.throws(
+    () => activeTranscript.backend.beginVoiceTranscription(
+      voiceTranscriptionRequest().params,
+    ),
+    /current Chat or voice action/,
+  )
+  await assert.rejects(
+    activeTranscript.backend.stopGeneration(requestId),
+    /generation is not in progress/,
+  )
+
+  const activeChat = readyVoiceTranscriptionBackend([
+    'voice.transcription',
+  ])
+  activeChat.backend.pendingRequests.set('chat-active', {
+    method: 'chat.stream',
+    chatId: 'chat_fixture',
+    nextSequence: 0,
+    streamCompleted: false,
+    streamedReply: '',
+    streamedLength: 0,
+  })
+  assert.throws(
+    () => activeChat.backend.beginVoiceTranscription(
+      voiceTranscriptionRequest().params,
+    ),
+    /current Chat or voice action/,
+  )
+  await assert.rejects(
+    activeChat.backend.stopVoiceTranscription('chat-active'),
+    /voice transcription is not in progress/,
+  )
+
+  const allowedReads = readyVoiceTranscriptionBackend([
+    'voice.transcription',
+  ])
+  allowedReads.backend.beginVoiceTranscription(
+    voiceTranscriptionRequest().params,
+  )
+  void allowedReads.backend.listChats(false)
+  void allowedReads.backend.openChat('chat_other')
+  void allowedReads.backend.listProjects()
+  void allowedReads.backend.openProject('project_fixture')
+  void allowedReads.backend.listAttachments({
+    kind: 'chat',
+    id: 'chat_fixture',
+  })
+  assert.deepEqual(
+    allowedReads.writes.slice(1).map((wire) => JSON.parse(wire).method),
+    [
+      'chat.list',
+      'chat.open',
+      'project.list',
+      'project.open',
+      'attachment.list',
+    ],
+  )
+
+  const activeCapture = readyVoiceTranscriptionBackend([
+    'voice.transcription',
+  ])
+  activeCapture.backend.pendingRequests.set('capture-active', {
+    method: 'voice.capture.complete',
+    nextSequence: 0,
+    streamCompleted: false,
+    streamedReply: '',
+    streamedLength: 0,
+  })
+  assert.throws(
+    () => activeCapture.backend.beginVoiceTranscription(
+      voiceTranscriptionRequest().params,
+    ),
+    /current Chat or voice action/,
+  )
+})
+
+test('Backend rejects a mismatched Voice transcript correlation', () => {
+  const {
+    backend,
+    events,
+    getKillCount,
+  } = readyVoiceTranscriptionBackend()
+  const { requestId } = backend.beginVoiceTranscription(
+    voiceTranscriptionRequest().params,
+  )
+  const response = voiceTranscriptionResponse()
+  response.id = requestId
+  response.result.chatId = 'chat_other'
+
+  backend.handleProtocolLine(JSON.stringify(response))
+
+  assert.equal(
+    events.some((event) => event.type === 'voice-transcription-complete'),
+    false,
+  )
+  assert.equal(backend.getSnapshot().status, 'error')
+  assert.match(backend.getSnapshot().error, /does not match its request/)
+  assert.equal(getKillCount(), 1)
+})
+
+test('Backend replaces private Voice transcription errors with fixed text', () => {
+  const { backend, events } = readyVoiceTranscriptionBackend()
+  const params = voiceTranscriptionRequest().params
+  const { requestId } = backend.beginVoiceTranscription(params)
+
+  backend.handleProtocolLine(JSON.stringify({
+    type: 'response',
+    protocol: fixtures.protocol,
+    id: requestId,
+    ok: false,
+    error: {
+      code: 'voice.transcription.failed',
+      message: 'D:/private/model/native.dll failed',
+      retryable: true,
+    },
+  }))
+
+  assert.deepEqual(events, [{
+    type: 'voice-transcription-error',
+    requestId,
+    sessionId: params.sessionId,
+    chatId: params.chatId,
+    code: 'voice.transcription.failed',
+    message: 'Local voice transcription failed.',
+    retryable: true,
+  }])
+  assert.equal(JSON.stringify(events).includes('private'), false)
+})
+
+test('Backend defers cancelled Voice terminal output until cancel ack', async () => {
+  const { backend, events, writes } = readyVoiceTranscriptionBackend()
+  const params = voiceTranscriptionRequest().params
+  const { requestId } = backend.beginVoiceTranscription(params)
+  const stopping = backend.stopVoiceTranscription(requestId)
+  const cancelRequest = JSON.parse(writes.at(-1))
+
+  backend.handleProtocolLine(JSON.stringify({
+    type: 'response',
+    protocol: fixtures.protocol,
+    id: requestId,
+    ok: false,
+    error: {
+      code: 'request.cancelled',
+      message: 'Voice transcription was cancelled.',
+      retryable: false,
+    },
+  }))
+  assert.equal(events.length, 0)
+
+  backend.handleProtocolLine(JSON.stringify({
+    type: 'response',
+    protocol: fixtures.protocol,
+    id: cancelRequest.id,
+    ok: true,
+    result: { stopped: true },
+  }))
+  await stopping
+
+  assert.deepEqual(events, [{
+    type: 'voice-transcription-error',
+    requestId,
+    sessionId: params.sessionId,
+    chatId: params.chatId,
+    code: 'request.cancelled',
+    message: 'Voice transcription was cancelled.',
+    retryable: false,
+  }])
+  assert.equal(backend.pendingRequests.size, 0)
+})
+
+test('Backend releases Voice success when cancellation loses the race', async () => {
+  const { backend, events, writes } = readyVoiceTranscriptionBackend()
+  const { requestId } = backend.beginVoiceTranscription(
+    voiceTranscriptionRequest().params,
+  )
+  const stopping = backend.stopVoiceTranscription(requestId)
+  const cancelRequest = JSON.parse(writes.at(-1))
+  const response = voiceTranscriptionResponse()
+  response.id = requestId
+
+  backend.handleProtocolLine(JSON.stringify(response))
+  assert.equal(events.length, 0)
+
+  backend.handleProtocolLine(JSON.stringify({
+    type: 'response',
+    protocol: fixtures.protocol,
+    id: cancelRequest.id,
+    ok: false,
+    error: {
+      code: 'request.not_cancellable',
+      message: 'Voice transcription already completed.',
+      retryable: false,
+    },
+  }))
+
+  await assert.rejects(stopping, /already completed/)
+  assert.equal(events.length, 1)
+  assert.equal(events[0].type, 'voice-transcription-complete')
+  assert.equal(events[0].requestId, requestId)
+  assert.equal(backend.getSnapshot().status, 'ready')
+})
+
+test('Backend fails if accepted Voice cancellation never becomes terminal', async (context) => {
+  context.mock.timers.enable({ apis: ['setTimeout'] })
+  const {
+    backend,
+    getKillCount,
+    writes,
+  } = readyVoiceTranscriptionBackend()
+  const { requestId } = backend.beginVoiceTranscription(
+    voiceTranscriptionRequest().params,
+  )
+  const stopping = backend.stopVoiceTranscription(requestId)
+  const cancelRequest = JSON.parse(writes.at(-1))
+
+  backend.handleProtocolLine(JSON.stringify({
+    type: 'response',
+    protocol: fixtures.protocol,
+    id: cancelRequest.id,
+    ok: true,
+    result: { stopped: true },
+  }))
+  await stopping
+  assert.ok(backend.pendingRequests.get(requestId).timeout)
+
+  context.mock.timers.runAll()
+
+  assert.equal(backend.getSnapshot().status, 'error')
+  assert.match(
+    backend.getSnapshot().error,
+    /Cancelled voice transcription did not reach a terminal response/,
+  )
+  assert.equal(getKillCount(), 1)
 })
 
 test('Backend sends and strictly resolves scoped Attachment actions', async () => {

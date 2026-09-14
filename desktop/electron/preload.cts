@@ -31,6 +31,7 @@ import type {
   VoiceCaptureReceipt,
   VoiceCaptureRequest,
   VoiceSettingsState,
+  VoiceTranscriptionRequest,
 } from './contracts.js'
 
 const MAX_DROPPED_ATTACHMENT_FILES = 10
@@ -84,6 +85,18 @@ const desktopApi: DesktopApi = {
       'voice:capture-complete',
       request,
     ) as Promise<VoiceCaptureReceipt>,
+
+  beginVoiceTranscription: (request: VoiceTranscriptionRequest) =>
+    ipcRenderer.invoke(
+      'voice:transcription-start',
+      request,
+    ) as Promise<{ requestId: string }>,
+
+  stopVoiceTranscription: (requestId: string) =>
+    ipcRenderer.invoke(
+      'voice:transcription-stop',
+      requestId,
+    ) as Promise<void>,
 
   getMicrophonePermissionStatus: () =>
     ipcRenderer.invoke(

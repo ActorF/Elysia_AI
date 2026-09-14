@@ -42,6 +42,7 @@ import type {
   UpdateProjectRequest,
   VoiceCaptureReceipt,
   VoiceCaptureRequest,
+  VoiceTranscriptionRequest,
 } from './contracts.js'
 import {
   MAX_ATTACHMENT_FILE_COUNT,
@@ -61,6 +62,7 @@ import {
   parseSettingsStateResult,
   parseVoiceCaptureResult,
   parseVoiceSettingsStateResult,
+  parseVoiceTranscriptionResult,
   parseServerMessage,
   type ProtocolMethod,
   type RequestParamsByMethod,
@@ -97,6 +99,63 @@ const BACKEND_PROCESS_FAILURE_MESSAGE =
   'Python Backend process could not be started.'
 const BACKEND_INPUT_FAILURE_MESSAGE = 'Python Backend input failed.'
 
+const VOICE_TRANSCRIPTION_FAILURES = {
+  'protocol.not_initialized': {
+    message: 'Local voice transcription is not initialized.',
+    retryable: false,
+  },
+  'voice.transcription.chat_mismatch': {
+    message: 'Voice transcription no longer belongs to the active Chat.',
+    retryable: false,
+  },
+  'voice.transcription.invalid': {
+    message: 'Voice transcription request was rejected.',
+    retryable: false,
+  },
+  'voice.transcription.busy': {
+    message: 'Local voice transcription is already busy.',
+    retryable: true,
+  },
+  'voice.transcription.unavailable': {
+    message: 'Local voice transcription is unavailable.',
+    retryable: false,
+  },
+  'voice.transcription.timeout': {
+    message: 'Local voice transcription timed out.',
+    retryable: true,
+  },
+  'voice.transcription.failed': {
+    message: 'Local voice transcription failed.',
+    retryable: true,
+  },
+  'request.cancelled': {
+    message: 'Voice transcription was cancelled.',
+    retryable: false,
+  },
+} as const
+
+function safeVoiceTranscriptionFailure(error: ErrorResponse['error']): {
+  code: string
+  message: string
+  retryable: boolean
+} {
+  // Native adapters may accidentally include paths in an error string. The
+  // known code, rather than Backend-authored text, selects Renderer wording.
+  if (!Object.hasOwn(VOICE_TRANSCRIPTION_FAILURES, error.code)) {
+    return {
+      code: 'voice.transcription.failed',
+      message: (
+        VOICE_TRANSCRIPTION_FAILURES['voice.transcription.failed'].message
+      ),
+      retryable: true,
+    }
+  }
+  const known = VOICE_TRANSCRIPTION_FAILURES[
+    error.code as keyof typeof VOICE_TRANSCRIPTION_FAILURES
+  ]
+  return { code: error.code, ...known }
+}
+
 interface PendingRequest {
   method: ProtocolMethod
   chatId?: string
@@ -120,6 +179,10 @@ interface PendingRequest {
   voiceCaptureRequest?: Omit<VoiceCaptureRequest, 'pcmBase64'>
   resolveVoiceCapture?: (receipt: VoiceCaptureReceipt) => void
   rejectVoiceCapture?: (error: Error) => void
+  voiceTranscriptionRequest?: Omit<
+    VoiceTranscriptionRequest,
+    'pcmBase64'
+  >
   resolveAttachmentState?: (state: AttachmentState) => void
   rejectAttachmentState?: (error: Error) => void
   cancelTargetId?: string
@@ -133,6 +196,23 @@ interface PendingRequest {
 const CHAT_GENERATION_METHODS = new Set<ProtocolMethod>([
   'chat.stream',
   'chat.retry',
+])
+
+const VOICE_TRANSCRIPTION_METHODS = new Set<ProtocolMethod>([
+  'voice.transcription.start',
+])
+
+const CANCELLABLE_METHODS = new Set<ProtocolMethod>([
+  ...CHAT_GENERATION_METHODS,
+  ...VOICE_TRANSCRIPTION_METHODS,
+])
+
+const VOICE_TRANSCRIPTION_LIFECYCLE_EVENTS = new Set([
+  'voice.transcription.started',
+  'voice.transcription.completed',
+  'voice.transcription.cancelled',
+  'voice.transcription.timed_out',
+  'voice.transcription.failed',
 ])
 
 type ChatSessionMethod =
@@ -416,6 +496,13 @@ export class BackendProcess {
     }
     if (
       [...this.pendingRequests.values()].some(
+        (pending) => VOICE_TRANSCRIPTION_METHODS.has(pending.method),
+      )
+    ) {
+      throw new Error('Wait for local voice transcription to finish.')
+    }
+    if (
+      [...this.pendingRequests.values()].some(
         (pending) => ATTACHMENT_MUTATION_METHODS.has(pending.method),
       )
     ) {
@@ -627,6 +714,13 @@ export class BackendProcess {
     ) {
       throw new Error('A Chat reply is already in progress.')
     }
+    if (
+      [...this.pendingRequests.values()].some(
+        (pending) => VOICE_TRANSCRIPTION_METHODS.has(pending.method),
+      )
+    ) {
+      throw new Error('Wait for local voice transcription to finish.')
+    }
     for (const identifier of [
       request.chatId,
       request.userMessageId,
@@ -677,13 +771,35 @@ export class BackendProcess {
 
   /** Ask Python to stop one currently tracked generation request. */
   stopGeneration(requestId: string): Promise<void> {
-    const generation = this.pendingRequests.get(requestId)
+    return this.cancelPendingRequest(
+      requestId,
+      CHAT_GENERATION_METHODS,
+      'generation',
+    )
+  }
+
+  /** Ask Python to stop one currently tracked transcription request. */
+  stopVoiceTranscription(requestId: string): Promise<void> {
+    return this.cancelPendingRequest(
+      requestId,
+      VOICE_TRANSCRIPTION_METHODS,
+      'voice transcription',
+    )
+  }
+
+  /** Share cancellation races while preserving each public action's ownership. */
+  private cancelPendingRequest(
+    requestId: string,
+    allowedMethods: ReadonlySet<ProtocolMethod>,
+    actionName: string,
+  ): Promise<void> {
+    const target = this.pendingRequests.get(requestId)
     if (
-      generation === undefined
-      || !CHAT_GENERATION_METHODS.has(generation.method)
+      target === undefined
+      || !allowedMethods.has(target.method)
     ) {
       return Promise.reject(
-        new Error('The requested generation is not in progress.'),
+        new Error(`The requested ${actionName} is not in progress.`),
       )
     }
     if (
@@ -695,7 +811,7 @@ export class BackendProcess {
       )
     ) {
       return Promise.reject(
-        new Error('A stop request is already in progress.'),
+        new Error(`A stop request for this ${actionName} is already in progress.`),
       )
     }
 
@@ -846,6 +962,7 @@ export class BackendProcess {
       [...this.pendingRequests.values()].some((pending) => (
         CHAT_GENERATION_METHODS.has(pending.method)
         || pending.method === 'voice.capture.complete'
+        || VOICE_TRANSCRIPTION_METHODS.has(pending.method)
       ))
     ) {
       return Promise.reject(
@@ -876,6 +993,52 @@ export class BackendProcess {
       )
       this.startVoiceCaptureValidationTimeout(requestId)
     })
+  }
+
+  /** Begin one cancellable local transcript without retaining its PCM bytes. */
+  beginVoiceTranscription(
+    request: VoiceTranscriptionRequest,
+  ): { requestId: string } {
+    if (this.snapshot.status !== 'ready') {
+      throw new Error('Python Backend is not ready.')
+    }
+    if (!this.snapshot.capabilities.includes('voice.transcription')) {
+      throw new Error('Python Backend does not support voice transcription.')
+    }
+    if (request.chatId !== this.snapshot.chatId) {
+      throw new Error('The requested Chat is not active.')
+    }
+    if (
+      [...this.pendingRequests.values()].some((pending) => (
+        CANCELLABLE_METHODS.has(pending.method)
+        || pending.method === 'voice.capture.complete'
+      ))
+    ) {
+      throw new Error('Wait for the current Chat or voice action to finish.')
+    }
+
+    const voiceTranscriptionRequest: Omit<
+      VoiceTranscriptionRequest,
+      'pcmBase64'
+    > = {
+      sessionId: request.sessionId,
+      chatId: request.chatId,
+      sampleRateHz: request.sampleRateHz,
+      channelCount: request.channelCount,
+      sampleFormat: request.sampleFormat,
+      sampleCount: request.sampleCount,
+      speechStartSample: request.speechStartSample,
+      speechEndSample: request.speechEndSample,
+      language: request.language,
+    }
+    return {
+      requestId: this.sendRequest(
+        'voice.transcription.start',
+        request,
+        request.chatId,
+        { voiceTranscriptionRequest },
+      ),
+    }
   }
 
   private startVoiceCaptureValidationTimeout(requestId: string): void {
@@ -988,6 +1151,17 @@ export class BackendProcess {
         new Error('Wait for the active Chat reply to finish.'),
       )
     }
+    if (
+      [...this.pendingRequests.values()].some(
+        (pending) => VOICE_TRANSCRIPTION_METHODS.has(pending.method),
+      )
+      && method !== 'chat.open'
+      && method !== 'chat.list'
+    ) {
+      return Promise.reject(
+        new Error('Wait for local voice transcription to finish.'),
+      )
+    }
 
     return new Promise<ChatSessionState>((resolve, reject) => {
       this.sendRequest(
@@ -1017,6 +1191,17 @@ export class BackendProcess {
     ) {
       return Promise.reject(
         new Error('Wait for the active Chat reply to finish.'),
+      )
+    }
+    if (
+      [...this.pendingRequests.values()].some(
+        (pending) => VOICE_TRANSCRIPTION_METHODS.has(pending.method),
+      )
+      && method !== 'project.list'
+      && method !== 'project.open'
+    ) {
+      return Promise.reject(
+        new Error('Wait for local voice transcription to finish.'),
       )
     }
 
@@ -1128,7 +1313,7 @@ export class BackendProcess {
       || (
         method !== 'attachment.list'
         && pendingRequests.some(
-          (pending) => CHAT_GENERATION_METHODS.has(pending.method),
+          (pending) => CANCELLABLE_METHODS.has(pending.method),
         )
       )
     ) {
@@ -1167,6 +1352,7 @@ export class BackendProcess {
       | 'voiceCaptureRequest'
       | 'resolveVoiceCapture'
       | 'rejectVoiceCapture'
+      | 'voiceTranscriptionRequest'
       | 'resolveAttachmentState'
       | 'rejectAttachmentState'
       | 'attachmentScope'
@@ -1273,7 +1459,7 @@ export class BackendProcess {
       return
     }
 
-    if (CHAT_GENERATION_METHODS.has(pending.method)) {
+    if (CANCELLABLE_METHODS.has(pending.method)) {
       const cancellation = [...this.pendingRequests.values()].find(
         (candidate) => (
           candidate.method === 'request.cancel'
@@ -1283,7 +1469,7 @@ export class BackendProcess {
       if (cancellation !== undefined) {
         if (cancellation.deferredTargetResponse !== undefined) {
           this.protocolFailure(
-            'Backend emitted duplicate terminal generation responses.',
+            'Backend emitted duplicate terminal cancellable responses.',
           )
           return
         }
@@ -1312,6 +1498,8 @@ export class BackendProcess {
         parseVoiceSettingsStateResult(message.result)
       } else if (pending.method === 'voice.capture.complete') {
         parseVoiceCaptureResult(message.result)
+      } else if (VOICE_TRANSCRIPTION_METHODS.has(pending.method)) {
+        parseVoiceTranscriptionResult(message.result)
       } else if (ATTACHMENT_METHODS.has(pending.method)) {
         parseAttachmentStateResult(message.result)
       } else if (CHAT_GENERATION_METHODS.has(pending.method)) {
@@ -1351,18 +1539,19 @@ export class BackendProcess {
         return
       }
       if (
+        CANCELLABLE_METHODS.has(pending.method)
+        && pending.cancelAccepted
+        && message.error.code !== 'request.cancelled'
+      ) {
+        this.protocolFailure(
+          'Backend failed a request after accepting its cancellation.',
+        )
+        return
+      }
+      if (
         CHAT_GENERATION_METHODS.has(pending.method)
         && pending.chatId !== undefined
       ) {
-        if (
-          pending.cancelAccepted
-          && message.error.code !== 'request.cancelled'
-        ) {
-          this.protocolFailure(
-            'Backend failed a generation after accepting its cancellation.',
-          )
-          return
-        }
         this.emitToRenderer({
           type: 'chat-error',
           requestId: message.id,
@@ -1370,6 +1559,23 @@ export class BackendProcess {
           code: message.error.code,
           message: message.error.message,
           retryable: message.error.retryable,
+        })
+      }
+      if (VOICE_TRANSCRIPTION_METHODS.has(pending.method)) {
+        const expected = pending.voiceTranscriptionRequest
+        if (expected === undefined) {
+          this.protocolFailure(
+            'Voice transcription response has no matching request metadata.',
+          )
+          return
+        }
+        const failure = safeVoiceTranscriptionFailure(message.error)
+        this.emitToRenderer({
+          type: 'voice-transcription-error',
+          requestId: message.id,
+          sessionId: expected.sessionId,
+          chatId: expected.chatId,
+          ...failure,
         })
       }
       if (CHAT_SESSION_METHODS.has(pending.method)) {
@@ -1453,6 +1659,13 @@ export class BackendProcess {
         chatTitle: result.chatTitle,
         error: undefined,
       })
+      return
+    }
+
+    if (CANCELLABLE_METHODS.has(pending.method) && pending.cancelAccepted) {
+      this.protocolFailure(
+        'Backend completed a request after accepting its cancellation.',
+      )
       return
     }
 
@@ -1552,6 +1765,31 @@ export class BackendProcess {
       return
     }
 
+    if (VOICE_TRANSCRIPTION_METHODS.has(pending.method)) {
+      const result = parseVoiceTranscriptionResult(message.result)
+      const expected = pending.voiceTranscriptionRequest
+      if (
+        expected === undefined
+        || result.sessionId !== expected.sessionId
+        || result.chatId !== expected.chatId
+      ) {
+        this.protocolFailure(
+          'Voice transcription response does not match its request.',
+        )
+        return
+      }
+      this.emitToRenderer({
+        type: 'voice-transcription-complete',
+        requestId: message.id,
+        sessionId: result.sessionId,
+        chatId: result.chatId,
+        text: result.text,
+        language: result.language,
+        languageProbability: result.languageProbability,
+      })
+      return
+    }
+
     if (ATTACHMENT_METHODS.has(pending.method)) {
       const result = parseAttachmentStateResult(message.result)
       const expectedScope = pending.attachmentScope
@@ -1572,12 +1810,6 @@ export class BackendProcess {
     }
 
     if (CHAT_GENERATION_METHODS.has(pending.method)) {
-      if (pending.cancelAccepted) {
-        this.protocolFailure(
-          'Backend completed a generation after accepting its cancellation.',
-        )
-        return
-      }
       if (!pending.streamCompleted || pending.chatId === undefined) {
         this.protocolFailure(
           'Chat response arrived before its stream completed.',
@@ -1618,10 +1850,10 @@ export class BackendProcess {
       if (
         targetId === undefined
         || target === undefined
-        || !CHAT_GENERATION_METHODS.has(target.method)
+        || !CANCELLABLE_METHODS.has(target.method)
       ) {
         const error = new Error(
-          'Backend accepted cancellation for an unknown generation.',
+          'Backend accepted cancellation for an unknown request.',
         )
         pending.rejectCancellation?.(error)
         this.protocolFailure(error.message)
@@ -1629,6 +1861,9 @@ export class BackendProcess {
       }
 
       target.cancelAccepted = true
+      const targetName = VOICE_TRANSCRIPTION_METHODS.has(target.method)
+        ? 'voice transcription'
+        : 'generation'
       const deferredResponse = pending.deferredTargetResponse
       if (
         deferredResponse !== undefined
@@ -1638,7 +1873,7 @@ export class BackendProcess {
         )
       ) {
         const error = new Error(
-          'Backend returned a non-cancelled generation after accepting cancellation.',
+          `Backend returned a non-cancelled ${targetName} after accepting cancellation.`,
         )
         pending.rejectCancellation?.(error)
         this.protocolFailure(error.message)
@@ -1654,7 +1889,7 @@ export class BackendProcess {
             return
           }
           this.protocolFailure(
-            'Cancelled generation did not reach a terminal response.',
+            `Cancelled ${targetName} did not reach a terminal response.`,
           )
         }, CANCEL_TERMINAL_TIMEOUT_MS)
       }
@@ -1719,8 +1954,30 @@ export class BackendProcess {
   }
 
   private handleProgress(message: ProgressMessage): void {
-    if (!this.pendingRequests.has(message.requestId)) {
+    const pending = this.pendingRequests.get(message.requestId)
+    if (pending === undefined) {
       this.protocolFailure('Backend progress has no matching request.')
+      return
+    }
+    if (VOICE_TRANSCRIPTION_METHODS.has(pending.method)) {
+      if (
+        message.operation !== 'voice.transcribe'
+        || message.total !== 1
+        || (message.completed !== 0 && message.completed !== 1)
+      ) {
+        this.protocolFailure('Backend Voice transcription progress is invalid.')
+        return
+      }
+      // Backend progress text could contain native diagnostics if an optional
+      // adapter regresses, so Renderer receives only this fixed local wording.
+      this.emitToRenderer({
+        type: 'progress',
+        requestId: message.requestId,
+        operation: 'voice.transcribe',
+        completed: message.completed,
+        total: 1,
+        message: message.completed === 0 ? 'Transcribing audio' : null,
+      })
       return
     }
     this.emitToRenderer({
@@ -1757,6 +2014,27 @@ export class BackendProcess {
       && !this.pendingRequests.has(message.requestId)
     ) {
       this.protocolFailure('Backend event has no matching request.')
+      return
+    }
+    if (message.event.startsWith('voice.transcription.')) {
+      const pending = message.requestId === null
+        ? undefined
+        : this.pendingRequests.get(message.requestId)
+      const expected = pending?.voiceTranscriptionRequest
+      if (
+        !VOICE_TRANSCRIPTION_LIFECYCLE_EVENTS.has(message.event)
+        || !VOICE_TRANSCRIPTION_METHODS.has(pending?.method ?? 'shutdown')
+        || expected === undefined
+        || Object.keys(message.data).length !== 2
+        || message.data.sessionId !== expected.sessionId
+        || message.data.chatId !== expected.chatId
+      ) {
+        this.protocolFailure(
+          'Backend Voice transcription event is invalid.',
+        )
+      }
+      // Final renderer state comes only from the validated terminal response.
+      // Swallowing Python lifecycle events avoids forwarding arbitrary data.
       return
     }
     this.emitToRenderer({
