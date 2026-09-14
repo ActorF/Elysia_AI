@@ -37,6 +37,7 @@ from chats import (
 )
 from config.desktop_settings import (
     DesktopSettingsRepository,
+    DesktopSettingsValidationError,
     EditableDesktopSettings,
 )
 from config.settings import (
@@ -45,6 +46,9 @@ from config.settings import (
     DEFAULT_MODEL_NAME,
     DEFAULT_OLLAMA_HOST,
     DEFAULT_SHORT_TERM_MEMORY_TOKEN_BUDGET,
+    DEFAULT_TRANSCRIPTION_DEVICE,
+    DEFAULT_TRANSCRIPTION_LANGUAGE,
+    DEFAULT_TRANSCRIPTION_MODEL,
     AppSettings,
 )
 from core import Brain, ChatBusyError, GenerationCancelledError
@@ -74,6 +78,8 @@ from projects import (
     create_project,
 )
 from voice import (
+    FasterWhisperConfig,
+    FasterWhisperStatus,
     JsonVoiceSettingsRepository,
     Transcriber,
     TranscriptionJobCallback,
@@ -478,6 +484,43 @@ class _ControlledTranscriber:
             self.finished.set()
 
 
+class _StatusTranscriber:
+    """Expose an available-to-ready transition for Backend readiness tests."""
+
+    def __init__(self, *, fallback_from_cuda: bool = True) -> None:
+        """Begin available and optionally model an automatic CUDA fallback."""
+
+        self.ready = False
+        self.finished = Event()
+        self.requests: list[TranscriptionRequest] = []
+        self.fallback_from_cuda = fallback_from_cuda
+
+    def get_status(self) -> FasterWhisperStatus:
+        """Return the sanitized readiness state observed by Voice settings."""
+
+        return FasterWhisperStatus(
+            state="ready" if self.ready else "available",
+            device="cpu",
+            compute_type="int8",
+            reason="cuda_unavailable" if self.fallback_from_cuda else None,
+        )
+
+    def transcribe(
+        self,
+        request: TranscriptionRequest,
+    ) -> TranscriptionResult:
+        """Mark the shared adapter ready and return a deterministic result."""
+
+        self.requests.append(request)
+        self.ready = True
+        self.finished.set()
+        return TranscriptionResult(
+            text="Local transcript",
+            language="en",
+            language_probability=1.0,
+        )
+
+
 def _transcription_runner_factory(
     transcriber: Transcriber,
     *,
@@ -610,6 +653,9 @@ def _desktop_settings_values(
     short_term_memory_token_budget: int = 2_048,
     memory_retrieval_limit: int = 5,
     data_import_max_bytes: int = 16 * 1024 * 1024,
+    transcription_model: str = DEFAULT_TRANSCRIPTION_MODEL,
+    transcription_device: str = DEFAULT_TRANSCRIPTION_DEVICE,
+    transcription_language: str = DEFAULT_TRANSCRIPTION_LANGUAGE,
 ) -> JsonObject:
     """Provide the desktop settings values fixture used by these tests."""
     return {
@@ -618,6 +664,9 @@ def _desktop_settings_values(
         "shortTermMemoryTokenBudget": short_term_memory_token_budget,
         "memoryRetrievalLimit": memory_retrieval_limit,
         "dataImportMaxBytes": data_import_max_bytes,
+        "transcriptionModel": transcription_model,
+        "transcriptionDevice": transcription_device,
+        "transcriptionLanguage": transcription_language,
     }
 
 
@@ -2256,6 +2305,9 @@ def test_settings_can_be_read_and_repaired_before_initialize(
         short_term_memory_token_budget=4_096,
         memory_retrieval_limit=9,
         data_import_max_bytes=32 * 1024 * 1024,
+        transcription_model="medium",
+        transcription_device="cuda",
+        transcription_language="zh",
     )
 
     _, messages = _run_bridge(
@@ -2290,6 +2342,126 @@ def test_settings_can_be_read_and_repaired_before_initialize(
     assert repaired["restartFields"] == []
     assert repository.load().values.model_name == "second-model"
     assert "settings.management" in SERVER_CAPABILITIES
+
+
+def test_preinitialize_transcription_settings_rebuild_readiness_config(
+    tmp_path: Path,
+) -> None:
+    """Adopt repaired STT settings and discard a status probe using old values."""
+
+    observed_settings: list[AppSettings] = []
+
+    def build_status_transcriber(settings: AppSettings) -> _StatusTranscriber:
+        """Record each active configuration used to construct an STT adapter."""
+
+        observed_settings.append(settings)
+        return _StatusTranscriber(
+            fallback_from_cuda=settings.transcription_device == "auto"
+        )
+
+    changed = _desktop_settings_values(
+        transcription_model="medium",
+        transcription_device="cpu",
+        transcription_language="zh",
+    )
+    with patch.object(
+        desktop_backend_module,
+        "_create_transcriber",
+        side_effect=build_status_transcriber,
+    ):
+        _, messages = _run_bridge(
+            lambda _chat_id: [
+                _handshake_request(),
+                _request("voice-status-old", "voice.settings.get", {}),
+                _request(
+                    "settings-stt-repair",
+                    "settings.update",
+                    {"expectedRevision": 0, "settings": changed},
+                ),
+                _request("voice-status-new", "voice.settings.get", {}),
+            ],
+            settings_repository=_desktop_settings_repository(
+                tmp_path / "global.json"
+            ),
+        )
+
+    assert [settings.transcription_model for settings in observed_settings] == [
+        "small",
+        "medium",
+    ]
+    assert [settings.transcription_device for settings in observed_settings] == [
+        "auto",
+        "cpu",
+    ]
+    repaired = _success_result(messages, "settings-stt-repair")
+    assert repaired["activeSettings"] == changed
+    assert repaired["restartRequired"] is False
+    assert _success_result(messages, "voice-status-old")[
+        "transcriptionStatus"
+    ]["model"] == "small"
+    new_status = _success_result(messages, "voice-status-new")[
+        "transcriptionStatus"
+    ]
+    assert new_status["model"] == "medium"
+    assert new_status["requestedDevice"] == "cpu"
+
+
+def test_preinitialize_transcription_settings_replace_an_idle_runner(
+    tmp_path: Path,
+) -> None:
+    """Close an idle old-config worker before constructing its replacement."""
+
+    observed_settings: list[AppSettings] = []
+
+    def build_transcriber(settings: AppSettings) -> _StatusTranscriber:
+        """Record the active configuration used by each default runner."""
+
+        observed_settings.append(settings)
+        return _StatusTranscriber()
+
+    output_stream = StringIO()
+    with patch.object(
+        desktop_backend_module,
+        "_create_transcriber",
+        side_effect=build_transcriber,
+    ):
+        backend = DesktopBackend(
+            settings_repository=_desktop_settings_repository(
+                tmp_path / "global.json"
+            ),
+            voice_settings_service=create_voice_settings_service(tmp_path),
+            input_stream=StringIO(),
+            output_stream=output_stream,
+            expected_session_token=SESSION_TOKEN,
+        )
+        with backend._state_lock:
+            original_runner = backend._get_transcription_runner_locked()
+        assert backend._handle_line(json.dumps(_handshake_request()))
+        assert backend._handle_line(
+            json.dumps(
+                _request(
+                    "settings-replace-idle-stt",
+                    "settings.update",
+                    {
+                        "expectedRevision": 0,
+                        "settings": _desktop_settings_values(
+                            transcription_model="medium",
+                            transcription_device="cpu",
+                            transcription_language="en",
+                        ),
+                    },
+                )
+            )
+        )
+        assert original_runner.get_status().closed is True
+        with backend._state_lock:
+            replacement_runner = backend._get_transcription_runner_locked()
+        assert replacement_runner is not original_runner
+        assert [settings.transcription_model for settings in observed_settings] == [
+            "small",
+            "medium",
+        ]
+        backend._prepare_transcription_shutdown()
 
 
 def test_voice_capture_returns_only_safe_metadata_without_chat_side_effects(
@@ -2542,6 +2714,130 @@ def test_voice_transcription_is_lazy_ordered_and_pcm_free(
         backend._prepare_transcription_shutdown()
 
 
+@pytest.mark.parametrize(
+    "model_name",
+    ["tiny", "base", "small", "medium", "large-v3", "turbo"],
+)
+def test_transcriber_path_is_derived_only_from_the_model_allowlist(
+    tmp_path: Path,
+    model_name: str,
+) -> None:
+    """Map every public model choice to its fixed offline directory."""
+
+    settings = replace(
+        desktop_backend_module.SETTINGS,
+        base_dir=tmp_path,
+        transcription_model=cast(Any, model_name),
+        transcription_device="cpu",
+    )
+    sentinel = object()
+    with patch.object(
+        desktop_backend_module,
+        "FasterWhisperTranscriber",
+        return_value=sentinel,
+    ) as constructor:
+        assert desktop_backend_module._create_transcriber(settings) is sentinel
+
+    config = constructor.call_args.args[0]
+    assert isinstance(config, FasterWhisperConfig)
+    assert config.model_path == (
+        tmp_path.resolve()
+        / "models"
+        / "weights"
+        / "faster-whisper"
+        / model_name
+    )
+    assert config.device == "cpu"
+
+
+def test_transcriber_rejects_a_model_alias_before_path_construction(
+    tmp_path: Path,
+) -> None:
+    """Prevent arbitrary paths or downloadable aliases reaching the adapter."""
+
+    settings = replace(
+        desktop_backend_module.SETTINGS,
+        base_dir=tmp_path,
+        transcription_model=cast(Any, "../../remote-model"),
+    )
+
+    with pytest.raises(DesktopSettingsValidationError):
+        desktop_backend_module._create_transcriber(settings)
+
+
+def test_voice_readiness_uses_the_same_adapter_as_default_transcription(
+    tmp_path: Path,
+) -> None:
+    """Report the production adapter's available-to-ready transition safely."""
+
+    transcriber = _StatusTranscriber()
+    fake_brain = FakeBrain()
+    output_stream = StringIO()
+    with patch.object(
+        desktop_backend_module,
+        "_create_transcriber",
+        return_value=transcriber,
+    ) as create_transcriber:
+        backend = DesktopBackend(
+            brain_factory=lambda: cast(Brain, fake_brain),
+            model_loader=lambda: (fake_brain.model_name,),
+            settings_validator=lambda: None,
+            settings_repository=_desktop_settings_repository(
+                tmp_path / "global.json"
+            ),
+            voice_settings_service=create_voice_settings_service(tmp_path),
+            attachment_store=JsonAttachmentStore(
+                tmp_path / "attachments",
+                max_file_bytes=1_024 * 1_024,
+            ),
+            input_stream=StringIO(),
+            output_stream=output_stream,
+            expected_session_token=SESSION_TOKEN,
+        )
+        assert backend._handle_line(json.dumps(_handshake_request()))
+        assert backend._handle_line(json.dumps(_initialize_request()))
+        assert backend._handle_line(
+            json.dumps(_request("voice-status-before", "voice.settings.get", {}))
+        )
+        assert backend._handle_line(
+            json.dumps(
+                _request(
+                    "voice-status-transcribe",
+                    "voice.transcription.start",
+                    {
+                        **_voice_capture_params(str(fake_brain.chat.chat_id)),
+                        "language": "zh",
+                    },
+                )
+            )
+        )
+        assert transcriber.finished.wait(2.0)
+        assert backend._handle_line(
+            json.dumps(_request("voice-status-after", "voice.settings.get", {}))
+        )
+
+        messages = _output_messages(output_stream)
+        before = _success_result(messages, "voice-status-before")
+        after = _success_result(messages, "voice-status-after")
+        assert before["transcriptionStatus"] == {
+            "state": "available",
+            "model": "small",
+            "requestedDevice": "auto",
+            "resolvedDevice": "cpu",
+            "computeType": "int8",
+            "reason": "cuda_unavailable",
+        }
+        assert after["transcriptionStatus"] == {
+            **before["transcriptionStatus"],
+            "state": "ready",
+        }
+        assert create_transcriber.call_count == 1
+        assert transcriber.requests[0].language == "zh"
+        assert str(tmp_path) not in output_stream.getvalue()
+        assert "native" not in output_stream.getvalue().lower()
+        backend._prepare_transcription_shutdown()
+
+
 def test_voice_transcription_failure_hides_adapter_details(
     tmp_path: Path,
 ) -> None:
@@ -2716,6 +3012,33 @@ def test_cancelled_transcription_blocks_work_until_native_inference_drains(
                 )
             )
         )
+        assert backend._handle_line(
+            json.dumps(
+                _request(
+                    "settings-during-drain",
+                    "settings.update",
+                    {
+                        "expectedRevision": 0,
+                        "settings": _desktop_settings_values(
+                            transcription_model="medium"
+                        ),
+                    },
+                )
+            )
+        )
+        assert backend._handle_line(
+            json.dumps(
+                _request(
+                    "voice-settings-during-drain",
+                    "voice.settings.update",
+                    {
+                        "expectedRevision": 0,
+                        "inputDeviceId": None,
+                        "outputDeviceId": None,
+                    },
+                )
+            )
+        )
         messages = _output_messages(output_stream)
         assert _error(messages, "voice-cancel-target")["code"] == (
             "request.cancelled"
@@ -2741,6 +3064,18 @@ def test_cancelled_transcription_blocks_work_until_native_inference_drains(
             "code": "chat.busy",
             "message": (
                 "Wait for local voice transcription before generating a reply."
+            ),
+            "retryable": False,
+        }
+        assert _error(messages, "settings-during-drain") == {
+            "code": "settings.busy",
+            "message": "Wait for local transcription before changing settings.",
+            "retryable": False,
+        }
+        assert _error(messages, "voice-settings-during-drain") == {
+            "code": "voice.settings.busy",
+            "message": (
+                "Wait for local transcription before changing voice settings."
             ),
             "retryable": False,
         }
@@ -3034,7 +3369,9 @@ def test_voice_settings_round_trip_before_brain_initialization(
         voice_settings_service=service,
     )
 
-    assert _success_result(messages, "voice-before") == {
+    before = _success_result(messages, "voice-before")
+    transcription_status = before.pop("transcriptionStatus")
+    assert before == {
         "kind": "voice.settings",
         "revision": 0,
         "updatedAt": None,
@@ -3042,6 +3379,17 @@ def test_voice_settings_round_trip_before_brain_initialization(
         "outputDeviceId": None,
         "warning": None,
     }
+    assert transcription_status["model"] == "small"
+    assert transcription_status["requestedDevice"] == "auto"
+    assert set(transcription_status) == {
+        "state",
+        "model",
+        "requestedDevice",
+        "resolvedDevice",
+        "computeType",
+        "reason",
+    }
+    assert str(tmp_path) not in json.dumps(transcription_status)
     saved = _success_result(messages, "voice-save")
     assert saved["revision"] == 1
     assert saved["inputDeviceId"] == "opaque-input-id"
@@ -3271,6 +3619,9 @@ def test_invalid_bootstrap_uses_safe_defaults_and_still_initializes(
         ),
         "memoryRetrievalLimit": DEFAULT_MEMORY_RETRIEVAL_LIMIT,
         "dataImportMaxBytes": DEFAULT_DATA_IMPORT_MAX_BYTES,
+        "transcriptionModel": DEFAULT_TRANSCRIPTION_MODEL,
+        "transcriptionDevice": DEFAULT_TRANSCRIPTION_DEVICE,
+        "transcriptionLanguage": DEFAULT_TRANSCRIPTION_LANGUAGE,
     }
     initialized = _success_result(messages, "initialize-1")
     assert initialized["modelName"] == DEFAULT_MODEL_NAME
@@ -3342,6 +3693,9 @@ def test_settings_update_reports_restart_fields_and_active_scopes(
         short_term_memory_token_budget=4_096,
         memory_retrieval_limit=9,
         data_import_max_bytes=32 * 1024 * 1024,
+        transcription_model="medium",
+        transcription_device="cuda",
+        transcription_language="zh",
     )
 
     _, messages = _run_bridge(
@@ -3369,6 +3723,9 @@ def test_settings_update_reports_restart_fields_and_active_scopes(
         "shortTermMemoryTokenBudget",
         "memoryRetrievalLimit",
         "dataImportMaxBytes",
+        "transcriptionModel",
+        "transcriptionDevice",
+        "transcriptionLanguage",
     ]
     assert result["scopes"]["project"] == {
         "projectId": str(project.project_id),

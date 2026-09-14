@@ -41,6 +41,46 @@ export const VOICE_CAPTURE_MIN_SPEECH_SAMPLES = 3_200
 export const VOICE_CAPTURE_MAX_SESSION_ID_LENGTH = 128
 export const VOICE_CAPTURE_MAX_BASE64_CHARACTERS = 1_280_000
 export const VOICE_TRANSCRIPTION_MAX_TEXT_CODE_POINTS = 4_096
+export const TRANSCRIPTION_MODELS = [
+  'tiny',
+  'base',
+  'small',
+  'medium',
+  'large-v3',
+  'turbo',
+] as const
+export const TRANSCRIPTION_DEVICES = ['auto', 'cuda', 'cpu'] as const
+export const TRANSCRIPTION_LANGUAGES = ['auto', 'zh', 'en'] as const
+const TRANSCRIPTION_STATUS_STATES = [
+  'unavailable',
+  'available',
+  'ready',
+] as const
+const TRANSCRIPTION_RESOLVED_DEVICES = ['cuda', 'cpu'] as const
+const TRANSCRIPTION_COMPUTE_TYPES = [
+  'float16',
+  'int8_float16',
+  'int8',
+  'float32',
+] as const
+const TRANSCRIPTION_STATUS_REASONS = [
+  'model_missing',
+  'dependencies_missing',
+  'runtime_probe_failed',
+  'device_unavailable',
+  'cuda_unavailable',
+  'cuda_initialization_failed',
+  'initialization_failed',
+] as const
+const TRANSCRIPTION_UNAVAILABLE_REASONS = new Set<
+  typeof TRANSCRIPTION_STATUS_REASONS[number]
+>([
+  'model_missing',
+  'dependencies_missing',
+  'runtime_probe_failed',
+  'device_unavailable',
+  'initialization_failed',
+])
 export const MAX_ATTACHMENT_FILE_COUNT = 10
 export const MAX_ATTACHMENT_FILE_NAME_LENGTH = 255
 export const MAX_ATTACHMENT_MEDIA_TYPE_LENGTH = 255
@@ -198,12 +238,24 @@ export interface PermissionResponseParams {
   granted: boolean
 }
 
+/** Closed set of faster-whisper model identifiers accepted in persisted settings. */
+export type TranscriptionModel = typeof TRANSCRIPTION_MODELS[number]
+
+/** Requested execution target; `auto` lets the trusted Backend choose CUDA or CPU. */
+export type TranscriptionDevice = typeof TRANSCRIPTION_DEVICES[number]
+
+/** Persisted recognition-language preference used when a capture has no override. */
+export type TranscriptionLanguage = typeof TRANSCRIPTION_LANGUAGES[number]
+
 export interface SettingsValues {
   modelName: string
   ollamaHost: string
   shortTermMemoryTokenBudget: number
   memoryRetrievalLimit: number
   dataImportMaxBytes: number
+  transcriptionModel: TranscriptionModel
+  transcriptionDevice: TranscriptionDevice
+  transcriptionLanguage: TranscriptionLanguage
 }
 
 export interface SettingsUpdateParams {
@@ -234,7 +286,7 @@ export interface VoiceCaptureCompleteParams extends VoiceCaptureMetadata {
 
 export interface VoiceTranscriptionStartParams
   extends VoiceCaptureCompleteParams {
-  language: 'auto' | 'zh' | 'en'
+  language: TranscriptionLanguage
 }
 
 export interface AttachmentScope {
@@ -479,7 +531,18 @@ export interface VoiceSettingsStateResult {
   updatedAt: string | null
   inputDeviceId: string | null
   outputDeviceId: string | null
+  transcriptionStatus: VoiceTranscriptionStatus
   warning: string | null
+}
+
+/** Renderer-safe runtime readiness without model paths or native diagnostics. */
+export interface VoiceTranscriptionStatus {
+  state: typeof TRANSCRIPTION_STATUS_STATES[number]
+  model: TranscriptionModel
+  requestedDevice: TranscriptionDevice
+  resolvedDevice: typeof TRANSCRIPTION_RESOLVED_DEVICES[number] | null
+  computeType: typeof TRANSCRIPTION_COMPUTE_TYPES[number] | null
+  reason: typeof TRANSCRIPTION_STATUS_REASONS[number] | null
 }
 
 export interface VoiceCaptureResult extends VoiceCaptureMetadata {
@@ -590,6 +653,36 @@ function readString(
     )
   }
   return raw
+}
+
+function readStringLiteral<Allowed extends readonly string[]>(
+  value: Record<string, unknown>,
+  key: string,
+  context: string,
+  allowed: Allowed,
+  errorCode = 'protocol.invalid_message',
+): Allowed[number] {
+  const raw = value[key]
+  // Closed wire enums prevent Python implementation details or future values
+  // from silently crossing the renderer trust boundary before Desktop supports them.
+  if (
+    typeof raw !== 'string'
+    || !(allowed as readonly string[]).includes(raw)
+  ) {
+    return fail(errorCode, `${context}.${key} is not supported.`)
+  }
+  return raw as Allowed[number]
+}
+
+function readNullableStringLiteral<Allowed extends readonly string[]>(
+  value: Record<string, unknown>,
+  key: string,
+  context: string,
+  allowed: Allowed,
+): Allowed[number] | null {
+  return value[key] === null
+    ? null
+    : readStringLiteral(value, key, context, allowed)
 }
 
 function readIdentifier(
@@ -1074,6 +1167,9 @@ function parseSettingsValues(
       'shortTermMemoryTokenBudget',
       'memoryRetrievalLimit',
       'dataImportMaxBytes',
+      'transcriptionModel',
+      'transcriptionDevice',
+      'transcriptionLanguage',
     ],
     context,
   )
@@ -1151,6 +1247,27 @@ function parseSettingsValues(
     dataImportMaxBytes: readPositive(
       'dataImportMaxBytes',
       MAX_DATA_IMPORT_BYTES,
+    ),
+    transcriptionModel: readStringLiteral(
+      settings,
+      'transcriptionModel',
+      context,
+      TRANSCRIPTION_MODELS,
+      errorCode,
+    ),
+    transcriptionDevice: readStringLiteral(
+      settings,
+      'transcriptionDevice',
+      context,
+      TRANSCRIPTION_DEVICES,
+      errorCode,
+    ),
+    transcriptionLanguage: readStringLiteral(
+      settings,
+      'transcriptionLanguage',
+      context,
+      TRANSCRIPTION_LANGUAGES,
+      errorCode,
     ),
   }
 }
@@ -2573,6 +2690,9 @@ export function parseSettingsStateResult(
     'shortTermMemoryTokenBudget',
     'memoryRetrievalLimit',
     'dataImportMaxBytes',
+    'transcriptionModel',
+    'transcriptionDevice',
+    'transcriptionLanguage',
   ] as const
   if (
     !Array.isArray(result.restartFields)
@@ -2661,7 +2781,119 @@ export function parseSettingsStateResult(
   }
 }
 
-/** Parse canonical host-local voice device preferences from Python. */
+function parseVoiceTranscriptionStatus(
+  value: unknown,
+  context: string,
+): VoiceTranscriptionStatus {
+  const status = asRecord(value, context)
+  requireFields(
+    status,
+    [
+      'state',
+      'model',
+      'requestedDevice',
+      'resolvedDevice',
+      'computeType',
+      'reason',
+    ],
+    context,
+  )
+  const parsed: VoiceTranscriptionStatus = {
+    state: readStringLiteral(
+      status,
+      'state',
+      context,
+      TRANSCRIPTION_STATUS_STATES,
+    ),
+    model: readStringLiteral(
+      status,
+      'model',
+      context,
+      TRANSCRIPTION_MODELS,
+    ),
+    requestedDevice: readStringLiteral(
+      status,
+      'requestedDevice',
+      context,
+      TRANSCRIPTION_DEVICES,
+    ),
+    resolvedDevice: readNullableStringLiteral(
+      status,
+      'resolvedDevice',
+      context,
+      TRANSCRIPTION_RESOLVED_DEVICES,
+    ),
+    computeType: readNullableStringLiteral(
+      status,
+      'computeType',
+      context,
+      TRANSCRIPTION_COMPUTE_TYPES,
+    ),
+    reason: readNullableStringLiteral(
+      status,
+      'reason',
+      context,
+      TRANSCRIPTION_STATUS_REASONS,
+    ),
+  }
+  // These correlations mirror the schema so a path-free status cannot still
+  // misrepresent which native device and fallback policy are actually active.
+  if (
+    parsed.state === 'unavailable'
+    && (
+      parsed.resolvedDevice !== null
+      || parsed.computeType !== null
+      || parsed.reason === null
+      || !TRANSCRIPTION_UNAVAILABLE_REASONS.has(parsed.reason)
+    )
+  ) {
+    return fail(
+      'protocol.invalid_message',
+      `${context} unavailable state is inconsistent.`,
+    )
+  }
+  if (parsed.state === 'unavailable') {
+    return parsed
+  }
+  if (parsed.resolvedDevice === 'cuda' && (
+    !['auto', 'cuda'].includes(parsed.requestedDevice)
+    || !['float16', 'int8_float16'].includes(parsed.computeType ?? '')
+    || parsed.reason !== null
+  )) {
+    return fail(
+      'protocol.invalid_message',
+      `${context} CUDA state is inconsistent.`,
+    )
+  }
+  if (parsed.resolvedDevice === 'cpu') {
+    const allowedReasons: Array<VoiceTranscriptionStatus['reason']>
+      = parsed.requestedDevice === 'cpu'
+      ? [null]
+      : parsed.requestedDevice === 'auto' && parsed.state === 'available'
+        ? ['cuda_unavailable']
+        : parsed.requestedDevice === 'auto'
+          ? ['cuda_unavailable', 'cuda_initialization_failed']
+          : []
+    if (
+      !['int8', 'float32'].includes(parsed.computeType ?? '')
+      || !allowedReasons.includes(parsed.reason)
+    ) {
+      return fail(
+        'protocol.invalid_message',
+        `${context} CPU state is inconsistent.`,
+      )
+    }
+  }
+  if (parsed.resolvedDevice === null) {
+    return fail(
+      'protocol.invalid_message',
+      `${context} usable state requires a resolved device.`,
+    )
+  }
+  return parsed
+}
+
+/** Parse canonical audio routing and renderer-safe transcription readiness. */
 export function parseVoiceSettingsStateResult(
   value: unknown,
 ): VoiceSettingsStateResult {
@@ -2675,6 +2907,7 @@ export function parseVoiceSettingsStateResult(
       'updatedAt',
       'inputDeviceId',
       'outputDeviceId',
+      'transcriptionStatus',
       'warning',
     ],
     context,
@@ -2709,6 +2942,10 @@ export function parseVoiceSettingsStateResult(
       'outputDeviceId',
       context,
       'protocol.invalid_message',
+    ),
+    transcriptionStatus: parseVoiceTranscriptionStatus(
+      result.transcriptionStatus,
+      `${context}.transcriptionStatus`,
     ),
     warning: result.warning === null
       ? null

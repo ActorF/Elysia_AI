@@ -82,6 +82,9 @@ def _settings_document(
             ),
             "memory_retrieval_limit": values.memory_retrieval_limit,
             "data_import_max_bytes": values.data_import_max_bytes,
+            "transcription_model": values.transcription_model,
+            "transcription_device": values.transcription_device,
+            "transcription_language": values.transcription_language,
         },
     }
 
@@ -139,6 +142,9 @@ def test_save_and_reload_round_trip_the_complete_allowlist(
             "model_name": "saved-model",
             "ollama_host": "https://ollama.example.test:11434",
             "short_term_memory_token_budget": 4_096,
+            "transcription_device": "auto",
+            "transcription_language": "auto",
+            "transcription_model": "small",
         },
         "updated_at": SAVED_AT.isoformat(),
     }
@@ -295,6 +301,9 @@ def test_unknown_or_sensitive_persisted_fields_are_quarantined(
             "short_term_memory_token_budget": 2_048,
             "memory_retrieval_limit": 5,
             "data_import_max_bytes": 1024,
+            "transcription_model": "small",
+            "transcription_device": "auto",
+            "transcription_language": "auto",
             extra_field: "must-not-be-accepted",
         },
     }
@@ -412,7 +421,69 @@ def test_runtime_settings_apply_desired_values_and_explicit_model_override(
     assert runtime.short_term_memory_token_budget == 4_096
     assert runtime.memory_retrieval_limit == 8
     assert runtime.data_import_max_bytes == 32 * 1024 * 1024
+    assert runtime.transcription_model == desired.transcription_model
+    assert runtime.transcription_device == desired.transcription_device
+    assert runtime.transcription_language == desired.transcription_language
     assert runtime.base_dir == base.base_dir
     assert changed_setting_names(desired, editable_from_app_settings(runtime)) == (
         "modelName",
     )
+
+
+def test_version_one_settings_load_without_quarantine_and_upgrade_on_edit(
+    tmp_path: Path,
+) -> None:
+    """Preserve a valid five-field document until its next explicit edit."""
+
+    repository = _repository(tmp_path)
+    legacy_values = _changed_values(tmp_path)
+    legacy_document = _settings_document(legacy_values, revision=7)
+    legacy_document["schema_version"] = 1
+    legacy_settings = legacy_document["settings"]
+    assert isinstance(legacy_settings, dict)
+    for field_name in (
+        "transcription_model",
+        "transcription_device",
+        "transcription_language",
+    ):
+        del legacy_settings[field_name]
+    repository.path.parent.mkdir(parents=True)
+    original = json.dumps(legacy_document).encode("utf-8")
+    repository.path.write_bytes(original)
+
+    loaded = repository.load()
+
+    assert loaded.revision == 7
+    assert loaded.values.transcription_model == "small"
+    assert loaded.values.transcription_device == "auto"
+    assert loaded.values.transcription_language == "auto"
+    assert repository.path.read_bytes() == original
+    assert list(repository.path.parent.glob("global.corrupt-*.json")) == []
+
+    saved = repository.save(
+        replace(loaded.values, transcription_model="medium"),
+        expected_revision=7,
+    )
+    upgraded = json.loads(repository.path.read_text(encoding="utf-8"))
+    assert saved.revision == 8
+    assert upgraded["schema_version"] == DESKTOP_SETTINGS_SCHEMA_VERSION
+    assert upgraded["settings"]["transcription_model"] == "medium"
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value"),
+    [
+        ("transcription_model", "../../remote-model"),
+        ("transcription_device", "gpu"),
+        ("transcription_language", "fr"),
+    ],
+)
+def test_transcription_choices_reject_values_outside_the_allowlist(
+    tmp_path: Path,
+    field_name: str,
+    value: str,
+) -> None:
+    """Keep aliases, arbitrary paths, devices, and languages out of settings."""
+
+    with pytest.raises(DesktopSettingsValidationError):
+        replace(_editable(tmp_path), **{field_name: value})

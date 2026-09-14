@@ -8,6 +8,7 @@
 import type {
   SettingsStateResult,
   SettingsValues,
+  VoiceTranscriptionStatus,
 } from './protocol.js'
 
 export type BackendStatus =
@@ -215,6 +216,7 @@ export interface VoiceSettingsState {
   updatedAt: string | null
   inputDeviceId: string | null
   outputDeviceId: string | null
+  transcriptionStatus: VoiceTranscriptionStatus
   warning: string | null
 }
 

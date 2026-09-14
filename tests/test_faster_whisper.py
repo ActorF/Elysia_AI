@@ -325,6 +325,231 @@ def test_default_runtime_is_lazy_and_forces_local_model_loading(
     assert numpy_calls[0][1] == "fake-float32"
 
 
+def test_windows_probe_suppresses_cuda_when_required_dlls_are_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reject driver-only CUDA capability before a user records any audio."""
+
+    runtime = SimpleNamespace(
+        __file__="C:/safe/ctranslate2/__init__.py",
+        get_cuda_device_count=lambda: 1,
+        get_supported_compute_types=lambda device, _index: (
+            {"float16"} if device == "cuda" else {"int8"}
+        ),
+    )
+    modules = {
+        "numpy": object(),
+        "ctranslate2": runtime,
+        "faster_whisper": object(),
+    }
+    monkeypatch.setattr(
+        faster_whisper_module,
+        "import_module",
+        lambda name: modules[name],
+    )
+    monkeypatch.setattr(faster_whisper_module.sys, "platform", "win32")
+    monkeypatch.setattr(
+        faster_whisper_module,
+        "_windows_cuda_runtime_available",
+        lambda _runtime: False,
+    )
+
+    capabilities = faster_whisper_module._DefaultRuntimeProbe().probe(
+        device_index=0
+    )
+
+    assert capabilities.dependencies_available is True
+    assert capabilities.cpu_compute_types == frozenset({"int8"})
+    assert capabilities.cuda_device_count == 0
+    assert capabilities.cuda_compute_types == frozenset()
+
+
+def test_non_windows_probe_keeps_reported_cuda_capability(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Keep the Windows loader preflight from changing other platforms."""
+
+    runtime = SimpleNamespace(
+        get_cuda_device_count=lambda: 1,
+        get_supported_compute_types=lambda device, _index: (
+            {"float16"} if device == "cuda" else {"int8"}
+        ),
+    )
+    modules = {
+        "numpy": object(),
+        "ctranslate2": runtime,
+        "faster_whisper": object(),
+    }
+    monkeypatch.setattr(
+        faster_whisper_module,
+        "import_module",
+        lambda name: modules[name],
+    )
+    monkeypatch.setattr(faster_whisper_module.sys, "platform", "linux")
+
+    capabilities = faster_whisper_module._DefaultRuntimeProbe().probe(
+        device_index=0
+    )
+
+    assert capabilities.cuda_device_count == 1
+    assert capabilities.cuda_compute_types == frozenset({"float16"})
+
+
+def test_cpu_only_default_probe_does_not_inspect_cuda(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Keep an explicit CPU choice from loading or querying CUDA libraries."""
+
+    def unexpected_cuda_probe() -> int:
+        """Fail if the CPU-only path touches CUDA device enumeration."""
+
+        raise AssertionError("CPU-only readiness must not inspect CUDA.")
+
+    def unexpected_windows_runtime(_runtime: object) -> bool:
+        """Fail if the CPU-only path attempts to load CUDA libraries."""
+
+        raise AssertionError("CPU-only readiness must not load CUDA DLLs.")
+
+    runtime = SimpleNamespace(
+        get_cuda_device_count=unexpected_cuda_probe,
+        get_supported_compute_types=lambda device, _index: (
+            {"int8"} if device == "cpu" else set()
+        ),
+    )
+    modules = {
+        "numpy": object(),
+        "ctranslate2": runtime,
+        "faster_whisper": object(),
+    }
+    monkeypatch.setattr(
+        faster_whisper_module,
+        "import_module",
+        lambda name: modules[name],
+    )
+    monkeypatch.setattr(faster_whisper_module.sys, "platform", "win32")
+    monkeypatch.setattr(
+        faster_whisper_module,
+        "_windows_cuda_runtime_available",
+        unexpected_windows_runtime,
+    )
+
+    capabilities = faster_whisper_module._DefaultRuntimeProbe(
+        probe_cuda=False
+    ).probe(device_index=0)
+
+    assert capabilities.dependencies_available is True
+    assert capabilities.cpu_compute_types == frozenset({"int8"})
+    assert capabilities.cuda_device_count == 0
+    assert capabilities.cuda_compute_types == frozenset()
+
+
+def test_windows_cuda_preflight_requires_every_runtime_component(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Treat a partial CUDA/cuDNN install as unavailable without diagnostics."""
+
+    attempted: list[str] = []
+
+    def load_library(
+        library_name: str,
+        _directories: tuple[Path, ...],
+    ) -> object | None:
+        """Fail only the cuDNN operations component and record probe order."""
+
+        attempted.append(library_name)
+        if library_name == "cudnn_ops64_9.dll":
+            return None
+        return object()
+
+    monkeypatch.setattr(
+        faster_whisper_module,
+        "_windows_cuda_search_directories",
+        lambda _runtime: (),
+    )
+    monkeypatch.setattr(
+        faster_whisper_module,
+        "_load_windows_runtime_library",
+        load_library,
+    )
+
+    assert not faster_whisper_module._windows_cuda_runtime_available(object())
+    assert attempted == [
+        "cublas64_12.dll",
+        "cublasLt64_12.dll",
+        "cudnn64_9.dll",
+        "cudnn_ops64_9.dll",
+    ]
+
+
+def test_windows_runtime_loader_uses_only_absolute_existing_candidates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Prevent CUDA preflight from falling back to the working directory."""
+
+    import ctypes
+
+    trusted_directory = tmp_path / "trusted-runtime"
+    trusted_directory.mkdir()
+    library_path = trusted_directory / "cublas64_12.dll"
+    library_path.write_bytes(b"test-double")
+    loaded_names: list[str] = []
+
+    def load_library(path: str) -> object:
+        """Record the fully qualified path used by the safe loader seam."""
+
+        loaded_names.append(path)
+        return object()
+
+    monkeypatch.setattr(ctypes, "WinDLL", load_library, raising=False)
+
+    loaded = faster_whisper_module._load_windows_runtime_library(
+        library_path.name,
+        (Path("relative-runtime"), trusted_directory),
+    )
+
+    assert loaded is not None
+    assert loaded_names == [str(library_path)]
+    assert Path(loaded_names[0]).is_absolute()
+
+
+def test_missing_windows_cuda_runtime_selects_safe_device_statuses(
+    tmp_path: Path,
+) -> None:
+    """Fall auto back to CPU while explicit CUDA remains unavailable."""
+
+    capabilities = _capabilities(
+        cpu_compute_types=("int8",),
+        cuda_device_count=0,
+    )
+    model_path = _model_directory(tmp_path)
+    automatic, _probe, _factory = _transcriber(
+        model_path,
+        device="auto",
+        capabilities=capabilities,
+    )
+    explicit, _probe, _factory = _transcriber(
+        model_path,
+        device="cuda",
+        capabilities=capabilities,
+    )
+
+    automatic_status = automatic.get_status()
+    explicit_status = explicit.get_status()
+    assert (
+        automatic_status.state,
+        automatic_status.device,
+        automatic_status.compute_type,
+        automatic_status.reason,
+    ) == ("available", "cpu", "int8", "cuda_unavailable")
+    assert (
+        explicit_status.state,
+        explicit_status.device,
+        explicit_status.compute_type,
+        explicit_status.reason,
+    ) == ("unavailable", None, None, "device_unavailable")
+
+
 def test_cpu_int8_status_and_lazy_initialization(tmp_path: Path) -> None:
     """Report CPU/int8 as available before constructing the model on demand."""
 

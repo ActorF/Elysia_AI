@@ -67,6 +67,7 @@ import {
   AudioDeviceController,
   type AudioDeviceSnapshot,
 } from './voice/audio-devices.ts'
+import { describeTranscriptionReadiness } from './voice/transcription-readiness.ts'
 import type { CompletedVoiceSegment } from './voice/voice-activity-detector.ts'
 
 const COMPACT_SHELL_QUERY = '(max-width: 52rem)'
@@ -798,6 +799,8 @@ function App() {
   const voiceCaptureOperationRef = useRef(0)
   const voiceTranscriptionOperationRef
     = useRef<VoiceTranscriptionOperation | null>(null)
+  const voiceTranscriptionLanguageRef
+    = useRef<DesktopSettingsValues['transcriptionLanguage']>('auto')
   const microphoneActionOperationRef = useRef(0)
   const projectRefreshNeededRef = useRef(false)
   const projectRefreshPromiseRef = useRef<Promise<void> | null>(null)
@@ -876,6 +879,11 @@ function App() {
   const activeGeneration = generationBusy
     && inFlightTurn?.chatId === activeChatId
   const stopPending = activeGeneration && inFlightTurn?.phase === 'stopping'
+  const transcriptionReadiness = voiceSettingsState === null
+    ? null
+    : describeTranscriptionReadiness(voiceSettingsState.transcriptionStatus)
+  const transcriptionBlockingMessage = transcriptionReadiness?.blockingMessage
+    ?? null
   const voiceCaptureDisabledReason = desktopApi === undefined
     ? 'Open this page through Electron to use the microphone.'
     : snapshot.status !== 'ready'
@@ -884,13 +892,15 @@ function App() {
         ? 'The local Backend does not support bounded voice capture.'
         : !snapshot.capabilities.includes('voice.transcription')
           ? 'The local Backend does not support local speech transcription.'
-          : activeChatId === undefined || snapshot.chatId !== activeChatId
-            ? 'Wait for the active Chat to finish loading.'
-            : generationBusy || generationReconcilePending
-              ? 'Wait for the current Chat reply to finish.'
-              : sessionMutationPending
-                ? 'Wait for the current Chat action to finish.'
-                : null
+          : transcriptionBlockingMessage !== null
+            ? transcriptionBlockingMessage
+            : activeChatId === undefined || snapshot.chatId !== activeChatId
+              ? 'Wait for the active Chat to finish loading.'
+              : generationBusy || generationReconcilePending
+                ? 'Wait for the current Chat reply to finish.'
+                : sessionMutationPending
+                  ? 'Wait for the current Chat action to finish.'
+                  : null
   const displayedChat = chatState?.activeChat.title
     ?? snapshot.chatTitle
     ?? 'Chat'
@@ -3648,7 +3658,7 @@ function App() {
           speechStartSample: segment.speechStartSample,
           speechEndSample: segment.speechEndSample,
           pcmBase64,
-          language: 'auto',
+          language: voiceTranscriptionLanguageRef.current,
         })
       } finally {
         // JavaScript strings cannot be wiped in place. Dropping the only local
@@ -3754,14 +3764,28 @@ function App() {
     deviceController.stopAll()
 
     try {
-      let savedState = voiceSettingsState
-      if (savedState === null) {
-        savedState = await desktopApi.getVoiceSettings()
-        if (!actionIsCurrent()) {
-          return
-        }
-        setVoiceSettingsState(savedState)
+      const savedState = await desktopApi.getVoiceSettings()
+      if (!actionIsCurrent()) {
+        return
       }
+      setVoiceSettingsState(savedState)
+      const readiness = describeTranscriptionReadiness(
+        savedState.transcriptionStatus,
+      )
+      if (readiness.blockingMessage !== null) {
+        throw new Error(readiness.blockingMessage)
+      }
+
+      // Read the active value for every fresh capture. A Backend can restart
+      // outside Settings, so a cached desired/active snapshot may be stale.
+      const savedGlobalSettings = await desktopApi.getSettings()
+      if (!actionIsCurrent()) {
+        return
+      }
+      setSettingsState(savedGlobalSettings)
+      voiceTranscriptionLanguageRef.current = (
+        savedGlobalSettings.activeSettings.transcriptionLanguage
+      )
       await deviceController.refreshDevices()
       if (!actionIsCurrent()) {
         return
@@ -3973,6 +3997,15 @@ function App() {
     setVoiceCapture(EMPTY_AUDIO_CAPTURE_SNAPSHOT)
     setVoiceCaptureSubmissionError(null)
     setCallPreviewOpen(true)
+    if (
+      desktopApi !== undefined
+      && snapshot.status === 'ready'
+      && snapshot.capabilities.includes('voice.transcription')
+    ) {
+      // Refresh readiness whenever the surface opens so an external model or
+      // runtime repair can clear a previously cached unavailable state.
+      void loadVoiceSettings()
+    }
   }
 
   if (callPreviewOpen) {

@@ -38,6 +38,9 @@ import {
   MAX_MESSAGE_LENGTH,
   MAX_OLLAMA_HOST_LENGTH,
   MAX_SETTINGS_MODEL_NAME_LENGTH,
+  TRANSCRIPTION_DEVICES,
+  TRANSCRIPTION_LANGUAGES,
+  TRANSCRIPTION_MODELS,
   codePointLength,
   hasNonBlankCodePoint,
   parseVoiceCaptureCompleteParams,
@@ -584,6 +587,9 @@ function parseUpdateDesktopSettingsRequest(
       'shortTermMemoryTokenBudget',
       'memoryRetrievalLimit',
       'dataImportMaxBytes',
+      'transcriptionModel',
+      'transcriptionDevice',
+      'transcriptionLanguage',
     ],
     'Settings values',
   )
@@ -638,6 +644,21 @@ function parseUpdateDesktopSettingsRequest(
     }
     return candidate as number
   }
+  const parseClosedSetting = <Allowed extends readonly string[]>(
+    candidate: unknown,
+    allowed: Allowed,
+    label: string,
+  ): Allowed[number] => {
+    // Keep renderer-originated settings on the same closed vocabulary as the
+    // Python wire; arbitrary native runtime/device strings must not pass IPC.
+    if (
+      typeof candidate !== 'string'
+      || !(allowed as readonly string[]).includes(candidate)
+    ) {
+      throw new Error(`${label} is invalid.`)
+    }
+    return candidate as Allowed[number]
+  }
   return {
     expectedRevision: request.expectedRevision as number,
     settings: {
@@ -656,6 +677,21 @@ function parseUpdateDesktopSettingsRequest(
       dataImportMaxBytes: parsePositiveInteger(
         'dataImportMaxBytes',
         MAX_DATA_IMPORT_BYTES,
+      ),
+      transcriptionModel: parseClosedSetting(
+        settings.transcriptionModel,
+        TRANSCRIPTION_MODELS,
+        'Transcription model',
+      ),
+      transcriptionDevice: parseClosedSetting(
+        settings.transcriptionDevice,
+        TRANSCRIPTION_DEVICES,
+        'Transcription device',
+      ),
+      transcriptionLanguage: parseClosedSetting(
+        settings.transcriptionLanguage,
+        TRANSCRIPTION_LANGUAGES,
+        'Transcription language',
       ),
     },
   }

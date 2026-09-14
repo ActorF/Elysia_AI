@@ -57,6 +57,9 @@ function defaultSettingsState() {
     shortTermMemoryTokenBudget: 2048,
     memoryRetrievalLimit: 5,
     dataImportMaxBytes: 16777216,
+    transcriptionModel: 'small',
+    transcriptionDevice: 'auto',
+    transcriptionLanguage: 'auto',
   }
   return {
     revision: 0,
@@ -79,11 +82,28 @@ function defaultSettingsState() {
 
 function defaultVoiceSettingsState() {
   return {
+    kind: 'voice.settings',
     revision: 0,
     updatedAt: null,
     inputDeviceId: null,
     outputDeviceId: null,
+    transcriptionStatus: {
+      state: 'ready',
+      model: 'small',
+      requestedDevice: 'auto',
+      resolvedDevice: 'cpu',
+      computeType: 'int8',
+      reason: 'cuda_unavailable',
+    },
     warning: null,
+  }
+}
+
+function defaultVoiceTranscriptionResult() {
+  return {
+    text: 'Hello from local transcription.',
+    language: 'en',
+    languageProbability: 0.98,
   }
 }
 
@@ -162,6 +182,8 @@ let microphonePermissionStatus = 'granted'
 let nextSettingsError = null
 let nextVoiceSettingsError = null
 let nextVoiceCaptureError = null
+let nextVoiceTranscriptionError = null
+let nextVoiceTranscriptionResult = defaultVoiceTranscriptionResult()
 let nextRestartError = null
 let chatMessages = new Map([
   [chatState.activeChat.chatId, clone(chatState.activeChat.messages)],
@@ -190,6 +212,10 @@ let delaySettingsLoads = false
 let pendingSettingsLoads = []
 let delayAttachmentActions = false
 let pendingAttachmentActions = []
+let delayVoiceTranscriptions = false
+let pendingVoiceTranscriptions = []
+let nextVoiceTranscriptionNumber = 1
+let nextVoiceTranscriptionTerminalBeforeAcknowledgement = false
 const backendListeners = new Set()
 
 const reloadState = takeReloadState()
@@ -452,6 +478,69 @@ function releaseAllSettingsLoads() {
   }
 }
 
+function emitVoiceTranscriptionOutcome(job) {
+  const event = job.error === null
+    ? {
+        type: 'voice-transcription-complete',
+        requestId: job.requestId,
+        sessionId: job.request.sessionId,
+        chatId: job.request.chatId,
+        ...job.result,
+      }
+    : {
+        type: 'voice-transcription-error',
+        requestId: job.requestId,
+        sessionId: job.request.sessionId,
+        chatId: job.request.chatId,
+        code: 'voice.transcription.failed',
+        message: job.error,
+        retryable: true,
+      }
+  for (const listener of backendListeners) {
+    listener(clone(event))
+  }
+}
+
+function releaseVoiceTranscriptionAt(index) {
+  if (index < 0 || index >= pendingVoiceTranscriptions.length) {
+    return false
+  }
+  const [job] = pendingVoiceTranscriptions.splice(index, 1)
+  if (job.timerId !== null) {
+    window.clearTimeout(job.timerId)
+    job.timerId = null
+  }
+  emitVoiceTranscriptionOutcome(job)
+  return true
+}
+
+function releaseVoiceTranscription(requestId) {
+  return releaseVoiceTranscriptionAt(
+    pendingVoiceTranscriptions.findIndex(
+      (job) => job.requestId === requestId,
+    ),
+  )
+}
+
+function releaseNextVoiceTranscription() {
+  return releaseVoiceTranscriptionAt(0)
+}
+
+function releaseAllVoiceTranscriptions() {
+  while (releaseNextVoiceTranscription()) {
+    // Drain each deterministic terminal event when delay control is disabled.
+  }
+}
+
+function discardAllVoiceTranscriptions() {
+  for (const job of pendingVoiceTranscriptions) {
+    if (job.timerId !== null) {
+      window.clearTimeout(job.timerId)
+    }
+  }
+  pendingVoiceTranscriptions = []
+}
+
 const desktopApi = {
   rendererReady: async () => {
     record('rendererReady')
@@ -542,6 +631,7 @@ const desktopApi = {
     const same = request.inputDeviceId === voiceSettingsState.inputDeviceId
       && request.outputDeviceId === voiceSettingsState.outputDeviceId
     voiceSettingsState = {
+      kind: 'voice.settings',
       revision: same
         ? voiceSettingsState.revision
         : voiceSettingsState.revision + 1,
@@ -550,6 +640,7 @@ const desktopApi = {
         : '2026-09-10T12:00:00+00:00',
       inputDeviceId: request.inputDeviceId,
       outputDeviceId: request.outputDeviceId,
+      transcriptionStatus: clone(voiceSettingsState.transcriptionStatus),
       warning: null,
     }
     return clone(voiceSettingsState)
@@ -579,6 +670,48 @@ const desktopApi = {
       ),
       sha256Hex: 'a'.repeat(64),
     }
+  },
+
+  beginVoiceTranscription: async (request) => {
+    record('beginVoiceTranscription', [request])
+    const requestId = `test-voice-transcription-${nextVoiceTranscriptionNumber}`
+    nextVoiceTranscriptionNumber += 1
+    const terminalBeforeAcknowledgement
+      = nextVoiceTranscriptionTerminalBeforeAcknowledgement
+    nextVoiceTranscriptionTerminalBeforeAcknowledgement = false
+    const job = {
+      requestId,
+      request: clone(request),
+      result: clone(nextVoiceTranscriptionResult),
+      error: nextVoiceTranscriptionError,
+      timerId: null,
+    }
+    nextVoiceTranscriptionError = null
+    nextVoiceTranscriptionResult = defaultVoiceTranscriptionResult()
+    pendingVoiceTranscriptions.push(job)
+    if (terminalBeforeAcknowledgement) {
+      // IPC can deliver a Backend event before Electron resolves the invoke
+      // acknowledgement. This synchronous branch reproduces that legal race.
+      releaseVoiceTranscription(requestId)
+    } else if (!delayVoiceTranscriptions) {
+      // A macrotask preserves the real IPC ordering: begin resolves with its
+      // request ID before a fast Backend terminal event reaches the renderer.
+      job.timerId = window.setTimeout(() => {
+        releaseVoiceTranscription(requestId)
+      }, 0)
+    }
+    return { requestId }
+  },
+
+  stopVoiceTranscription: async (requestId) => {
+    record('stopVoiceTranscription', [requestId])
+    if (!pendingVoiceTranscriptions.some(
+      (job) => job.requestId === requestId,
+    )) {
+      throw new Error('Transcription is no longer running.')
+    }
+    // Keep the pending result releasable so tests can prove the renderer
+    // rejects a terminal event that races behind cancellation.
   },
 
   getMicrophonePermissionStatus: async () => {
@@ -1037,6 +1170,7 @@ const testControl = {
     releaseAllRestarts()
     releaseAllSettingsLoads()
     releaseAllAttachmentActions()
+    discardAllVoiceTranscriptions()
     snapshot = clone(initialSnapshot)
     chatState = defaultChatState()
     projectState = defaultProjectState()
@@ -1046,6 +1180,8 @@ const testControl = {
     nextSettingsError = null
     nextVoiceSettingsError = null
     nextVoiceCaptureError = null
+    nextVoiceTranscriptionError = null
+    nextVoiceTranscriptionResult = defaultVoiceTranscriptionResult()
     nextRestartError = null
     chatMessages = new Map([
       [chatState.activeChat.chatId, clone(chatState.activeChat.messages)],
@@ -1061,6 +1197,7 @@ const testControl = {
     nextAttachmentNumber = 1
     nextCallSequence = 1
     nextProjectUpdateNumber = 1
+    nextVoiceTranscriptionNumber = 1
     calls = []
     delayChatActions = false
     delayChatLists = false
@@ -1068,6 +1205,8 @@ const testControl = {
     delayRestarts = false
     delaySettingsLoads = false
     delayAttachmentActions = false
+    delayVoiceTranscriptions = false
+    nextVoiceTranscriptionTerminalBeforeAcknowledgement = false
   },
 
   setSnapshot: (nextSnapshot) => {
@@ -1119,6 +1258,18 @@ const testControl = {
 
   failNextVoiceCapture: (message) => {
     nextVoiceCaptureError = message
+  },
+
+  failNextVoiceTranscription: (message) => {
+    nextVoiceTranscriptionError = message
+  },
+
+  setNextVoiceTranscriptionResult: (result) => {
+    nextVoiceTranscriptionResult = clone(result)
+  },
+
+  setNextVoiceTranscriptionTerminalBeforeAcknowledgement: () => {
+    nextVoiceTranscriptionTerminalBeforeAcknowledgement = true
   },
 
   failNextRestart: (message) => {
@@ -1305,6 +1456,13 @@ const testControl = {
     }
   },
 
+  setVoiceTranscriptionDelay: (delayed) => {
+    delayVoiceTranscriptions = delayed
+    if (!delayed) {
+      releaseAllVoiceTranscriptions()
+    }
+  },
+
   getPendingChatActionCount: () => pendingChatActions.length,
 
   releaseNextChatAction,
@@ -1324,6 +1482,12 @@ const testControl = {
   getPendingAttachmentActionCount: () => pendingAttachmentActions.length,
 
   releaseNextAttachmentAction,
+
+  getPendingVoiceTranscriptionCount: () => (
+    pendingVoiceTranscriptions.length
+  ),
+
+  releaseNextVoiceTranscription,
 
   getPendingCharacterPanelChangeCount: () => (
     pendingCharacterPanelChanges.length

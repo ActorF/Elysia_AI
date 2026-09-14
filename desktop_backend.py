@@ -53,6 +53,8 @@ from config.desktop_settings import (
     changed_setting_names,
     create_desktop_settings_repository,
     editable_from_app_settings,
+    validate_transcription_device,
+    validate_transcription_model,
 )
 from config.settings import AppSettings, SETTINGS
 from core import (
@@ -85,6 +87,7 @@ from desktop_protocol import (
 from start import create_brain, validate_settings
 from voice import (
     FasterWhisperConfig,
+    FasterWhisperStatus,
     FasterWhisperTranscriber,
     TranscriptionJobCallback,
     TranscriptionJobCapacityError,
@@ -275,27 +278,11 @@ def discover_ollama_models(
 
 
 def _create_transcription_runner(
-    settings: AppSettings,
+    transcriber: FasterWhisperTranscriber,
     on_terminal: TranscriptionJobCallback,
 ) -> TranscriptionJobRunner:
-    """Build the offline STT boundary only after the first transcript request.
+    """Build the bounded worker boundary around one configured transcriber."""
 
-    An explicit local directory prevents Faster-Whisper from interpreting a
-    model alias as permission to download weights. Construction remains light:
-    the optional package and model are probed and loaded by the worker only
-    when it processes the admitted capture.
-    """
-
-    model_path = (
-        settings.base_dir
-        / "models"
-        / "weights"
-        / "faster-whisper"
-        / "small"
-    ).resolve()
-    transcriber = FasterWhisperTranscriber(
-        FasterWhisperConfig(model_path=model_path, device="auto")
-    )
     return TranscriptionJobRunner(
         transcriber,
         config=TranscriptionJobRunnerConfig(
@@ -304,6 +291,37 @@ def _create_transcription_runner(
             default_timeout_seconds=TRANSCRIPTION_TIMEOUT_SECONDS,
         ),
         on_terminal=on_terminal,
+    )
+
+
+def _create_transcriber(settings: AppSettings) -> FasterWhisperTranscriber:
+    """Build one offline adapter from allowlisted active settings.
+
+    An explicit local directory prevents Faster-Whisper from interpreting a
+    model alias as permission to download weights. Construction remains light:
+    neither optional dependencies nor model weights load until a readiness
+    query or admitted transcription asks for them.
+    """
+
+    model_name = validate_transcription_model(settings.transcription_model)
+    requested_device = validate_transcription_device(
+        settings.transcription_device
+    )
+    # The final segment is selected from a closed allowlist. No user-provided
+    # path or model alias can cross this composition boundary and trigger an
+    # implicit Faster-Whisper download.
+    model_path = (
+        settings.base_dir.resolve()
+        / "models"
+        / "weights"
+        / "faster-whisper"
+        / model_name
+    )
+    return FasterWhisperTranscriber(
+        FasterWhisperConfig(
+            model_path=model_path,
+            device=requested_device,
+        )
     )
 
 
@@ -367,17 +385,7 @@ class DesktopBackend:
                 for warning in (self._settings_warning, override_warning)
                 if warning is not None
             )
-        runtime_settings = self._runtime_settings
-        self._transcription_runner_factory = (
-            (
-                lambda callback: _create_transcription_runner(
-                    runtime_settings,
-                    callback,
-                )
-            )
-            if transcription_runner_factory is None
-            else transcription_runner_factory
-        )
+        self._transcription_runner_factory = transcription_runner_factory
         self._input_stream = input_stream
         self._output_stream = output_stream
         self._expected_session_token = (
@@ -396,6 +404,7 @@ class DesktopBackend:
         self._output_lock = Lock()
         self._generation_task: _GenerationTask | None = None
         self._transcription_runner: TranscriptionJobRunner | None = None
+        self._transcription_transcriber: FasterWhisperTranscriber | None = None
         self._transcription_task: _TranscriptionTask | None = None
         # This gate linearizes terminal output against shutdown. A callback
         # that already owns it may finish before the shutdown response; one
@@ -834,6 +843,9 @@ class DesktopBackend:
             ),
             "memoryRetrievalLimit": values.memory_retrieval_limit,
             "dataImportMaxBytes": values.data_import_max_bytes,
+            "transcriptionModel": values.transcription_model,
+            "transcriptionDevice": values.transcription_device,
+            "transcriptionLanguage": values.transcription_language,
         }
 
     def _load_desired_settings(self) -> DesktopSettingsSnapshot:
@@ -912,44 +924,69 @@ class DesktopBackend:
                     "settings.busy",
                     "Wait for the current reply before changing settings.",
                 )
+            if self._transcription_capacity_reserved_locked():
+                # Logical cancellation can finish before uninterruptible native
+                # inference releases its slot. Waiting for physical release
+                # prevents a settings response from promising a configuration
+                # that an old model is still actively using.
+                raise ProtocolValidationError(
+                    "settings.busy",
+                    "Wait for local transcription before changing settings.",
+                )
 
-        raw = cast(JsonObject, params["settings"])
-        values = EditableDesktopSettings(
-            model_name=cast(str, raw["modelName"]),
-            ollama_host=cast(str, raw["ollamaHost"]),
-            short_term_memory_token_budget=cast(
-                int,
-                raw["shortTermMemoryTokenBudget"],
-            ),
-            memory_retrieval_limit=cast(
-                int,
-                raw["memoryRetrievalLimit"],
-            ),
-            data_import_max_bytes=cast(int, raw["dataImportMaxBytes"]),
-        )
-        saved = self._settings_repository.save(
-            values,
-            expected_revision=cast(int, params["expectedRevision"]),
-        )
-        self._desired_settings = saved
-        self._settings_warning = None
-
-        # Before Brain exists, the same authenticated recovery process can
-        # adopt repaired settings without requiring another child process.
-        if self._brain is None:
-            self._runtime_settings = apply_editable_settings(
-                SETTINGS,
-                saved.values,
-                model_override=os.environ.get("ELYSIA_MODEL_OVERRIDE"),
+            raw = cast(JsonObject, params["settings"])
+            values = EditableDesktopSettings(
+                model_name=cast(str, raw["modelName"]),
+                ollama_host=cast(str, raw["ollamaHost"]),
+                short_term_memory_token_budget=cast(
+                    int,
+                    raw["shortTermMemoryTokenBudget"],
+                ),
+                memory_retrieval_limit=cast(
+                    int,
+                    raw["memoryRetrievalLimit"],
+                ),
+                data_import_max_bytes=cast(int, raw["dataImportMaxBytes"]),
+                transcription_model=cast(Any, raw["transcriptionModel"]),
+                transcription_device=cast(Any, raw["transcriptionDevice"]),
+                transcription_language=cast(Any, raw["transcriptionLanguage"]),
             )
+            saved = self._settings_repository.save(
+                values,
+                expected_revision=cast(int, params["expectedRevision"]),
+            )
+            self._desired_settings = saved
+            self._settings_warning = None
+
+            # Before Brain exists, the same authenticated recovery process can
+            # adopt repaired settings without requiring another child process.
+            if self._brain is None:
+                previous_runtime = self._runtime_settings
+                self._runtime_settings = apply_editable_settings(
+                    SETTINGS,
+                    saved.values,
+                    model_override=os.environ.get("ELYSIA_MODEL_OVERRIDE"),
+                )
+                if (
+                    previous_runtime.transcription_model
+                    != self._runtime_settings.transcription_model
+                    or previous_runtime.transcription_device
+                    != self._runtime_settings.transcription_device
+                    or previous_runtime.transcription_language
+                    != self._runtime_settings.transcription_language
+                ):
+                    self._reset_transcription_runtime_locked()
 
         self._emit_response(request_id, self._settings_state_result())
 
-    @staticmethod
     def _voice_settings_state_result(
+        self,
         snapshot: VoiceSettingsSnapshot,
     ) -> JsonObject:
-        """Serialize preferences without labels or live device information."""
+        """Serialize preferences and sanitized, model-path-free readiness."""
+
+        with self._state_lock:
+            transcription_status = self._transcription_status_locked()
 
         return {
             "kind": "voice.settings",
@@ -961,6 +998,7 @@ class DesktopBackend:
             ),
             "inputDeviceId": snapshot.values.input_device_id,
             "outputDeviceId": snapshot.values.output_device_id,
+            "transcriptionStatus": transcription_status,
             "warning": snapshot.warning,
         }
 
@@ -980,11 +1018,17 @@ class DesktopBackend:
     ) -> None:
         """Save device preferences independently of Chat generation state."""
 
-        snapshot = self._voice_settings_service.update_settings(
-            input_device_id=cast(str | None, params["inputDeviceId"]),
-            output_device_id=cast(str | None, params["outputDeviceId"]),
-            expected_revision=cast(int, params["expectedRevision"]),
-        )
+        with self._state_lock:
+            if self._transcription_capacity_reserved_locked():
+                raise ProtocolValidationError(
+                    "voice.settings.busy",
+                    "Wait for local transcription before changing voice settings.",
+                )
+            snapshot = self._voice_settings_service.update_settings(
+                input_device_id=cast(str | None, params["inputDeviceId"]),
+                output_device_id=cast(str | None, params["outputDeviceId"]),
+                expected_revision=cast(int, params["expectedRevision"]),
+            )
         self._emit_response(
             request_id,
             self._voice_settings_state_result(snapshot),
@@ -1016,15 +1060,61 @@ class DesktopBackend:
             )
         runner = self._transcription_runner
         if runner is None:
-            runner = self._transcription_runner_factory(
-                self._on_transcription_terminal
-            )
+            factory = self._transcription_runner_factory
+            if factory is None:
+                runner = _create_transcription_runner(
+                    self._get_transcription_transcriber_locked(),
+                    self._on_transcription_terminal,
+                )
+            else:
+                runner = factory(self._on_transcription_terminal)
             if not isinstance(runner, TranscriptionJobRunner):
                 raise TypeError(
                     "transcription_runner_factory returned an invalid runner."
                 )
             self._transcription_runner = runner
         return runner
+
+    def _get_transcription_transcriber_locked(
+        self,
+    ) -> FasterWhisperTranscriber:
+        """Return the lightweight adapter configured from active settings."""
+
+        transcriber = self._transcription_transcriber
+        if transcriber is None:
+            transcriber = _create_transcriber(self._runtime_settings)
+            self._transcription_transcriber = transcriber
+        return transcriber
+
+    def _transcription_status_locked(self) -> JsonObject:
+        """Return readiness from the adapter the production runner will use."""
+
+        status: FasterWhisperStatus = (
+            self._get_transcription_transcriber_locked().get_status()
+        )
+        return {
+            "state": status.state,
+            "model": self._runtime_settings.transcription_model,
+            "requestedDevice": self._runtime_settings.transcription_device,
+            "resolvedDevice": status.device,
+            "computeType": status.compute_type,
+            "reason": status.reason,
+        }
+
+    def _reset_transcription_runtime_locked(self) -> None:
+        """Discard idle STT state after pre-initialization config adoption.
+
+        Callers first prove that no logical or physically draining job owns a
+        slot. Closing the idle runner avoids reusing a model initialized with
+        the former selection; clearing the adapter also makes the next status
+        query reflect the newly active settings.
+        """
+
+        runner = self._transcription_runner
+        if runner is not None:
+            runner.shutdown(wait=False)
+        self._transcription_runner = None
+        self._transcription_transcriber = None
 
     @staticmethod
     def _transcription_request_from_params(

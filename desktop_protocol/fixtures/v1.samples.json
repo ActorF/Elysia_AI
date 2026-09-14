@@ -290,7 +290,10 @@
             "ollamaHost": "http://127.0.0.1:11434",
             "shortTermMemoryTokenBudget": 4096,
             "memoryRetrievalLimit": 8,
-            "dataImportMaxBytes": 33554432
+            "dataImportMaxBytes": 33554432,
+            "transcriptionModel": "small",
+            "transcriptionDevice": "auto",
+            "transcriptionLanguage": "auto"
           }
         }
       }
@@ -657,14 +660,20 @@
             "ollamaHost": "http://localhost:11434",
             "shortTermMemoryTokenBudget": 4096,
             "memoryRetrievalLimit": 8,
-            "dataImportMaxBytes": 33554432
+            "dataImportMaxBytes": 33554432,
+            "transcriptionModel": "medium",
+            "transcriptionDevice": "cuda",
+            "transcriptionLanguage": "zh"
           },
           "activeSettings": {
             "modelName": "qwen3.5:9b",
             "ollamaHost": "http://127.0.0.1:11434",
             "shortTermMemoryTokenBudget": 2048,
             "memoryRetrievalLimit": 5,
-            "dataImportMaxBytes": 16777216
+            "dataImportMaxBytes": 16777216,
+            "transcriptionModel": "small",
+            "transcriptionDevice": "auto",
+            "transcriptionLanguage": "auto"
           },
           "restartRequired": true,
           "restartFields": [
@@ -672,7 +681,10 @@
             "ollamaHost",
             "shortTermMemoryTokenBudget",
             "memoryRetrievalLimit",
-            "dataImportMaxBytes"
+            "dataImportMaxBytes",
+            "transcriptionModel",
+            "transcriptionDevice",
+            "transcriptionLanguage"
           ],
           "scopes": {
             "project": {
@@ -706,14 +718,20 @@
             "ollamaHost": "http://127.0.0.1:11434",
             "shortTermMemoryTokenBudget": 2048,
             "memoryRetrievalLimit": 5,
-            "dataImportMaxBytes": 16777216
+            "dataImportMaxBytes": 16777216,
+            "transcriptionModel": "small",
+            "transcriptionDevice": "auto",
+            "transcriptionLanguage": "auto"
           },
           "activeSettings": {
             "modelName": "qwen3.5:9b",
             "ollamaHost": "http://127.0.0.1:11434",
             "shortTermMemoryTokenBudget": 2048,
             "memoryRetrievalLimit": 5,
-            "dataImportMaxBytes": 16777216
+            "dataImportMaxBytes": 16777216,
+            "transcriptionModel": "small",
+            "transcriptionDevice": "auto",
+            "transcriptionLanguage": "auto"
           },
           "restartRequired": false,
           "restartFields": [],
@@ -735,6 +753,14 @@
           "updatedAt": "2026-09-09T12:00:00+00:00",
           "inputDeviceId": "opaque-input-id",
           "outputDeviceId": null,
+          "transcriptionStatus": {
+            "state": "available",
+            "model": "small",
+            "requestedDevice": "auto",
+            "resolvedDevice": "cpu",
+            "computeType": "int8",
+            "reason": "cuda_unavailable"
+          },
           "warning": null
         }
       }
@@ -752,6 +778,14 @@
           "updatedAt": null,
           "inputDeviceId": null,
           "outputDeviceId": null,
+          "transcriptionStatus": {
+            "state": "unavailable",
+            "model": "small",
+            "requestedDevice": "auto",
+            "resolvedDevice": null,
+            "computeType": null,
+            "reason": "model_missing"
+          },
           "warning": "Recovered system-default device preferences."
         }
       }
@@ -1064,6 +1098,9 @@
             "shortTermMemoryTokenBudget": 2048,
             "memoryRetrievalLimit": 5,
             "dataImportMaxBytes": 16777216,
+            "transcriptionModel": "small",
+            "transcriptionDevice": "auto",
+            "transcriptionLanguage": "auto",
             "apiKey": "must-not-cross-the-wire"
           }
         }
@@ -1083,7 +1120,10 @@
             "ollamaHost": "http://127.0.0.1:11434",
             "shortTermMemoryTokenBudget": 2048,
             "memoryRetrievalLimit": 5,
-            "dataImportMaxBytes": 16777216
+            "dataImportMaxBytes": 16777216,
+            "transcriptionModel": "small",
+            "transcriptionDevice": "auto",
+            "transcriptionLanguage": "auto"
           }
         }
       }
@@ -1102,7 +1142,10 @@
             "ollamaHost": "http://user:secret@127.0.0.1:11434",
             "shortTermMemoryTokenBudget": 2048,
             "memoryRetrievalLimit": 5,
-            "dataImportMaxBytes": 16777216
+            "dataImportMaxBytes": 16777216,
+            "transcriptionModel": "small",
+            "transcriptionDevice": "auto",
+            "transcriptionLanguage": "auto"
           }
         }
       }
@@ -1121,7 +1164,10 @@
             "ollamaHost": "http://127.0.0.1:0",
             "shortTermMemoryTokenBudget": 2048,
             "memoryRetrievalLimit": 5,
-            "dataImportMaxBytes": 16777216
+            "dataImportMaxBytes": 16777216,
+            "transcriptionModel": "small",
+            "transcriptionDevice": "auto",
+            "transcriptionLanguage": "auto"
           }
         }
       }
@@ -1457,6 +1503,9 @@
             "shortTermMemoryTokenBudget": 2048,
             "memoryRetrievalLimit": 5,
             "dataImportMaxBytes": 16777216,
+            "transcriptionModel": "small",
+            "transcriptionDevice": "auto",
+            "transcriptionLanguage": "auto",
             "password": "must-not-cross-the-wire"
           },
           "activeSettings": {
@@ -1464,7 +1513,10 @@
             "ollamaHost": "http://127.0.0.1:11434",
             "shortTermMemoryTokenBudget": 2048,
             "memoryRetrievalLimit": 5,
-            "dataImportMaxBytes": 16777216
+            "dataImportMaxBytes": 16777216,
+            "transcriptionModel": "small",
+            "transcriptionDevice": "auto",
+            "transcriptionLanguage": "auto"
           },
           "restartRequired": false,
           "restartFields": [],
@@ -1488,14 +1540,20 @@
             "ollamaHost": "http://127.0.0.1:11434",
             "shortTermMemoryTokenBudget": 2048,
             "memoryRetrievalLimit": 5,
-            "dataImportMaxBytes": 16777216
+            "dataImportMaxBytes": 16777216,
+            "transcriptionModel": "small",
+            "transcriptionDevice": "auto",
+            "transcriptionLanguage": "auto"
           },
           "activeSettings": {
             "modelName": "qwen3.5:9b",
             "ollamaHost": "http://127.0.0.1:11434",
             "shortTermMemoryTokenBudget": 2048,
             "memoryRetrievalLimit": 5,
-            "dataImportMaxBytes": 16777216
+            "dataImportMaxBytes": 16777216,
+            "transcriptionModel": "small",
+            "transcriptionDevice": "auto",
+            "transcriptionLanguage": "auto"
           },
           "restartRequired": false,
           "restartFields": ["modelName"],
@@ -1517,6 +1575,14 @@
           "updatedAt": null,
           "inputDeviceId": null,
           "outputDeviceId": null,
+          "transcriptionStatus": {
+            "state": "unavailable",
+            "model": "small",
+            "requestedDevice": "auto",
+            "resolvedDevice": null,
+            "computeType": null,
+            "reason": "model_missing"
+          },
           "warning": null,
           "permission": "granted"
         }

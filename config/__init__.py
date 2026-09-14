@@ -17,8 +17,17 @@ from .desktop_settings import (
     validate_model_name,
     validate_ollama_host,
     validate_desktop_settings_document,
+    validate_transcription_device,
+    validate_transcription_language,
+    validate_transcription_model,
 )
-from .settings import AppSettings, SETTINGS
+from .settings import (
+    AppSettings,
+    SETTINGS,
+    TranscriptionDevice,
+    TranscriptionLanguage,
+    TranscriptionModel,
+)
 
 __all__ = [
     "AppSettings",
@@ -30,6 +39,9 @@ __all__ = [
     "DesktopSettingsValidationError",
     "EditableDesktopSettings",
     "SETTINGS",
+    "TranscriptionDevice",
+    "TranscriptionLanguage",
+    "TranscriptionModel",
     "apply_editable_settings",
     "changed_setting_names",
     "create_desktop_settings_repository",
@@ -40,4 +52,7 @@ __all__ = [
     "validate_model_name",
     "validate_ollama_host",
     "validate_desktop_settings_document",
+    "validate_transcription_device",
+    "validate_transcription_language",
+    "validate_transcription_model",
 ]

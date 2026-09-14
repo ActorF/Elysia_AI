@@ -51,6 +51,38 @@ MIN_SESSION_TOKEN_LENGTH: Final = 32
 MAX_SESSION_TOKEN_LENGTH: Final = 512
 MAX_SAFE_INTEGER: Final = 9_007_199_254_740_991
 
+TRANSCRIPTION_MODELS: Final = (
+    "tiny",
+    "base",
+    "small",
+    "medium",
+    "large-v3",
+    "turbo",
+)
+TRANSCRIPTION_REQUESTED_DEVICES: Final = ("auto", "cuda", "cpu")
+TRANSCRIPTION_LANGUAGES: Final = ("auto", "zh", "en")
+TRANSCRIPTION_STATUS_STATES: Final = (
+    "unavailable",
+    "available",
+    "ready",
+)
+TRANSCRIPTION_RESOLVED_DEVICES: Final = ("cuda", "cpu")
+TRANSCRIPTION_COMPUTE_TYPES: Final = (
+    "float16",
+    "int8_float16",
+    "int8",
+    "float32",
+)
+TRANSCRIPTION_STATUS_REASONS: Final = (
+    "model_missing",
+    "dependencies_missing",
+    "runtime_probe_failed",
+    "device_unavailable",
+    "cuda_unavailable",
+    "cuda_initialization_failed",
+    "initialization_failed",
+)
+
 # An explicit table keeps blank-string decisions identical in Python and
 # TypeScript instead of depending on runtime-specific Unicode whitespace data.
 _PROTOCOL_BLANK_CHARACTERS: Final = frozenset(
@@ -333,6 +365,16 @@ class DesktopSettingsValues(TypedDict):
     shortTermMemoryTokenBudget: int
     memoryRetrievalLimit: int
     dataImportMaxBytes: int
+    transcriptionModel: Literal[
+        "tiny",
+        "base",
+        "small",
+        "medium",
+        "large-v3",
+        "turbo",
+    ]
+    transcriptionDevice: Literal["auto", "cuda", "cpu"]
+    transcriptionLanguage: Literal["auto", "zh", "en"]
 
 
 class SettingsUpdateParams(TypedDict):
@@ -587,7 +629,27 @@ class VoiceSettingsStateResult(TypedDict):
     updatedAt: str | None
     inputDeviceId: str | None
     outputDeviceId: str | None
+    transcriptionStatus: "TranscriptionStatus"
     warning: str | None
+
+
+class TranscriptionStatus(TypedDict):
+    """Expose sanitized local STT readiness without paths or native errors."""
+
+    state: Literal["unavailable", "available", "ready"]
+    model: Literal["tiny", "base", "small", "medium", "large-v3", "turbo"]
+    requestedDevice: Literal["auto", "cuda", "cpu"]
+    resolvedDevice: Literal["cuda", "cpu"] | None
+    computeType: Literal["float16", "int8_float16", "int8", "float32"] | None
+    reason: Literal[
+        "model_missing",
+        "dependencies_missing",
+        "runtime_probe_failed",
+        "device_unavailable",
+        "cuda_unavailable",
+        "cuda_initialization_failed",
+        "initialization_failed",
+    ] | None
 
 
 class VoiceCaptureResult(VoiceCaptureMetadata):
@@ -1243,6 +1305,9 @@ def _validate_settings_values(
             "shortTermMemoryTokenBudget",
             "memoryRetrievalLimit",
             "dataImportMaxBytes",
+            "transcriptionModel",
+            "transcriptionDevice",
+            "transcriptionLanguage",
         },
         context,
     )
@@ -1312,6 +1377,39 @@ def _validate_settings_values(
                 error_code,
                 f"{context}.{key} is outside its supported range.",
             )
+    transcription_model = _require_string(
+        settings,
+        "transcriptionModel",
+        context,
+        maximum=8,
+    )
+    if transcription_model not in TRANSCRIPTION_MODELS:
+        raise ProtocolValidationError(
+            error_code,
+            f"{context}.transcriptionModel is unsupported.",
+        )
+    transcription_device = _require_string(
+        settings,
+        "transcriptionDevice",
+        context,
+        maximum=4,
+    )
+    if transcription_device not in TRANSCRIPTION_REQUESTED_DEVICES:
+        raise ProtocolValidationError(
+            error_code,
+            f"{context}.transcriptionDevice is unsupported.",
+        )
+    transcription_language = _require_string(
+        settings,
+        "transcriptionLanguage",
+        context,
+        maximum=4,
+    )
+    if transcription_language not in TRANSCRIPTION_LANGUAGES:
+        raise ProtocolValidationError(
+            error_code,
+            f"{context}.transcriptionLanguage is unsupported.",
+        )
     return cast(DesktopSettingsValues, settings)
 
 
@@ -1331,6 +1429,9 @@ def _validate_settings_update_params(params: JsonObject) -> None:
         "shortTermMemoryTokenBudget",
         "memoryRetrievalLimit",
         "dataImportMaxBytes",
+        "transcriptionModel",
+        "transcriptionDevice",
+        "transcriptionLanguage",
     }:
         raise ProtocolValidationError(
             "protocol.invalid_params",
@@ -2151,6 +2252,7 @@ def _validate_success_result(result: JsonObject) -> None:
         "updatedAt",
         "inputDeviceId",
         "outputDeviceId",
+        "transcriptionStatus",
         "warning",
     }:
         _validate_voice_settings_state_result(result)
@@ -2219,6 +2321,9 @@ def _validate_settings_state_result(
         "shortTermMemoryTokenBudget",
         "memoryRetrievalLimit",
         "dataImportMaxBytes",
+        "transcriptionModel",
+        "transcriptionDevice",
+        "transcriptionLanguage",
     }
     if (
         not isinstance(restart_fields, list)
@@ -2313,9 +2418,125 @@ def _validate_voice_settings_state_result(
         context,
         error_code="protocol.invalid_message",
     )
+    _validate_transcription_status(result.get("transcriptionStatus"))
     if result.get("warning") is not None:
         _require_string(result, "warning", context, maximum=1_000)
     return cast(VoiceSettingsStateResult, result)
+
+
+def _validate_transcription_status(value: object) -> TranscriptionStatus:
+    """Validate the fixed, path-free local transcription readiness shape."""
+
+    context = "voice settings state result.transcriptionStatus"
+    status = _as_object(value, context)
+    _require_fields(
+        status,
+        {
+            "state",
+            "model",
+            "requestedDevice",
+            "resolvedDevice",
+            "computeType",
+            "reason",
+        },
+        context,
+    )
+    state = _require_string(status, "state", context, maximum=11)
+    if state not in TRANSCRIPTION_STATUS_STATES:
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.state is unsupported.",
+        )
+    model = _require_string(status, "model", context, maximum=8)
+    if model not in TRANSCRIPTION_MODELS:
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.model is unsupported.",
+        )
+    requested_device = _require_string(
+        status,
+        "requestedDevice",
+        context,
+        maximum=4,
+    )
+    if requested_device not in TRANSCRIPTION_REQUESTED_DEVICES:
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.requestedDevice is unsupported.",
+        )
+    resolved_device = status.get("resolvedDevice")
+    if (
+        resolved_device is not None
+        and resolved_device not in TRANSCRIPTION_RESOLVED_DEVICES
+    ):
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.resolvedDevice is unsupported.",
+        )
+    compute_type = status.get("computeType")
+    if compute_type is not None and compute_type not in TRANSCRIPTION_COMPUTE_TYPES:
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.computeType is unsupported.",
+        )
+    reason = status.get("reason")
+    if reason is not None and reason not in TRANSCRIPTION_STATUS_REASONS:
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.reason is unsupported.",
+        )
+    if state == "unavailable" and (
+        resolved_device is not None
+        or compute_type is not None
+        or reason
+        not in {
+            "model_missing",
+            "dependencies_missing",
+            "runtime_probe_failed",
+            "device_unavailable",
+            "initialization_failed",
+        }
+    ):
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context} unavailable state has inconsistent details.",
+        )
+    if state in {"available", "ready"} and resolved_device == "cuda" and (
+        requested_device not in {"auto", "cuda"}
+        or compute_type not in {"float16", "int8_float16"}
+        or reason is not None
+    ):
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context} has inconsistent CUDA readiness details.",
+        )
+    if state in {"available", "ready"} and resolved_device == "cpu":
+        allowed_cpu_reasons: set[object]
+        if requested_device == "cpu":
+            allowed_cpu_reasons = {None}
+        elif requested_device == "auto" and state == "available":
+            allowed_cpu_reasons = {"cuda_unavailable"}
+        elif requested_device == "auto":
+            allowed_cpu_reasons = {
+                "cuda_unavailable",
+                "cuda_initialization_failed",
+            }
+        else:
+            allowed_cpu_reasons = set()
+        if (
+            compute_type not in {"int8", "float32"}
+            or reason not in allowed_cpu_reasons
+        ):
+            raise ProtocolValidationError(
+                "protocol.invalid_message",
+                f"{context} has inconsistent CPU readiness details.",
+            )
+    if state in {"available", "ready"} and resolved_device is None:
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context} usable state requires a resolved device.",
+        )
+    return cast(TranscriptionStatus, status)
 
 
 def _validate_voice_capture_result(

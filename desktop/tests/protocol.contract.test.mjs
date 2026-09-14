@@ -35,6 +35,7 @@ import {
   parseServerMessage,
   parseVoiceCaptureCompleteParams,
   parseVoiceCaptureResult,
+  parseVoiceSettingsStateResult,
   parseVoiceTranscriptionResult,
   parseVoiceTranscriptionStartParams,
   trimProtocolBlankCharacters,
@@ -67,6 +68,9 @@ test('JSON Schema declares the exact public settings surface', () => {
       'shortTermMemoryTokenBudget',
       'memoryRetrievalLimit',
       'dataImportMaxBytes',
+      'transcriptionModel',
+      'transcriptionDevice',
+      'transcriptionLanguage',
     ],
   )
   assert.equal(schema.$defs.settingsValues.additionalProperties, false)
@@ -93,6 +97,7 @@ test('JSON Schema declares bounded frame-aligned Voice capture', () => {
 
 test('JSON Schema declares the transcription runtime invariants', () => {
   const invariants = schema['x-elysia-runtimeInvariants']
+  const status = schema.$defs.transcriptionStatus
 
   assert.equal(
     schema.$defs.voiceTranscriptionResult.properties.text.maxLength,
@@ -113,6 +118,22 @@ test('JSON Schema declares the transcription runtime invariants', () => {
       'voice.transcription result text follows the protocol non-blank',
     ),
   ))
+  assert.deepEqual(
+    Object.keys(status.properties),
+    [
+      'state',
+      'model',
+      'requestedDevice',
+      'resolvedDevice',
+      'computeType',
+      'reason',
+    ],
+  )
+  assert.equal(status.additionalProperties, false)
+  assert.deepEqual(
+    status.properties.model.enum,
+    ['tiny', 'base', 'small', 'medium', 'large-v3', 'turbo'],
+  )
 })
 
 for (const sample of fixtures.validClientMessages) {
@@ -174,6 +195,9 @@ for (const sample of fixtures.validServerMessages) {
         'shortTermMemoryTokenBudget',
         'memoryRetrievalLimit',
         'dataImportMaxBytes',
+        'transcriptionModel',
+        'transcriptionDevice',
+        'transcriptionLanguage',
       ])
       assert.equal(result.scopes.project.projectId, 'project_fixture')
       assert.equal(result.scopes.project.modelName, null)
@@ -237,6 +261,9 @@ test('TypeScript validates revisioned settings requests without secrets', () => 
     shortTermMemoryTokenBudget: 2048,
     memoryRetrievalLimit: 5,
     dataImportMaxBytes: 16777216,
+    transcriptionModel: 'small',
+    transcriptionDevice: 'auto',
+    transcriptionLanguage: 'auto',
   }
   assert.deepEqual(
     createRequest('settings-update-1', 'settings.update', {
@@ -263,6 +290,27 @@ test('TypeScript validates revisioned settings requests without secrets', () => 
       && !error.message.includes(secret)
     ),
   )
+
+  for (const [field, value] of [
+    ['transcriptionModel', 'D:/private/model'],
+    ['transcriptionDevice', 'directml'],
+    ['transcriptionLanguage', 'fr'],
+  ]) {
+    assert.throws(
+      () => parseClientRequest({
+        type: 'request',
+        protocol: fixtures.protocol,
+        id: `settings-update-invalid-${field}`,
+        method: 'settings.update',
+        params: {
+          expectedRevision: 0,
+          settings: { ...settings, [field]: value },
+        },
+      }),
+      ProtocolValidationError,
+    )
+  }
+
 })
 
 test('TypeScript validates regenerate and edit-and-retry requests', () => {
@@ -523,6 +571,174 @@ function voiceSettingsStateResponse() {
   return structuredClone(sample.message)
 }
 
+test('TypeScript accepts only exact renderer-safe transcription status', () => {
+  const response = voiceSettingsStateResponse()
+  const parsed = parseVoiceSettingsStateResult(response.result)
+
+  assert.deepEqual(
+    Object.keys(parsed.transcriptionStatus),
+    [
+      'state',
+      'model',
+      'requestedDevice',
+      'resolvedDevice',
+      'computeType',
+      'reason',
+    ],
+  )
+  assert.equal(parsed.transcriptionStatus.model, 'small')
+  assert.equal(parsed.transcriptionStatus.requestedDevice, 'auto')
+
+  for (const validStatus of [
+    {
+      state: 'unavailable',
+      model: 'small',
+      requestedDevice: 'cuda',
+      resolvedDevice: null,
+      computeType: null,
+      reason: 'device_unavailable',
+    },
+    {
+      state: 'ready',
+      model: 'small',
+      requestedDevice: 'auto',
+      resolvedDevice: 'cpu',
+      computeType: 'int8',
+      reason: 'cuda_unavailable',
+    },
+    {
+      state: 'ready',
+      model: 'small',
+      requestedDevice: 'auto',
+      resolvedDevice: 'cpu',
+      computeType: 'float32',
+      reason: 'cuda_initialization_failed',
+    },
+    {
+      state: 'available',
+      model: 'small',
+      requestedDevice: 'cuda',
+      resolvedDevice: 'cuda',
+      computeType: 'float16',
+      reason: null,
+    },
+    {
+      state: 'ready',
+      model: 'small',
+      requestedDevice: 'cpu',
+      resolvedDevice: 'cpu',
+      computeType: 'int8',
+      reason: null,
+    },
+  ]) {
+    const valid = voiceSettingsStateResponse()
+    valid.result.transcriptionStatus = validStatus
+    assert.deepEqual(
+      parseVoiceSettingsStateResult(valid.result).transcriptionStatus,
+      validStatus,
+    )
+  }
+
+  for (const field of ['path', 'modelPath', 'message', 'native']) {
+    const unsafe = voiceSettingsStateResponse()
+    unsafe.result.transcriptionStatus[field] = 'D:/private/native.dll'
+    assert.throws(
+      () => parseVoiceSettingsStateResult(unsafe.result),
+      ProtocolValidationError,
+    )
+  }
+
+  for (const [field, value] of [
+    ['state', 'loading'],
+    ['model', 'D:/private/model'],
+    ['requestedDevice', 'directml'],
+    ['resolvedDevice', 'auto'],
+    ['computeType', 'float64'],
+    ['reason', 'native_error'],
+  ]) {
+    const invalid = voiceSettingsStateResponse()
+    invalid.result.transcriptionStatus[field] = value
+    assert.throws(
+      () => parseVoiceSettingsStateResult(invalid.result),
+      ProtocolValidationError,
+    )
+  }
+
+  for (const inconsistentStatus of [
+    {
+      state: 'unavailable',
+      model: 'small',
+      requestedDevice: 'auto',
+      resolvedDevice: 'cpu',
+      computeType: 'int8',
+      reason: 'model_missing',
+    },
+    {
+      state: 'unavailable',
+      model: 'small',
+      requestedDevice: 'auto',
+      resolvedDevice: null,
+      computeType: null,
+      reason: null,
+    },
+    {
+      state: 'ready',
+      model: 'small',
+      requestedDevice: 'cpu',
+      resolvedDevice: null,
+      computeType: null,
+      reason: null,
+    },
+    {
+      state: 'available',
+      model: 'small',
+      requestedDevice: 'auto',
+      resolvedDevice: 'cpu',
+      computeType: 'int8',
+      reason: 'model_missing',
+    },
+    {
+      state: 'available',
+      model: 'small',
+      requestedDevice: 'auto',
+      resolvedDevice: 'cpu',
+      computeType: 'int8',
+      reason: 'cuda_initialization_failed',
+    },
+    {
+      state: 'ready',
+      model: 'small',
+      requestedDevice: 'auto',
+      resolvedDevice: 'cuda',
+      computeType: 'int8',
+      reason: null,
+    },
+    {
+      state: 'ready',
+      model: 'small',
+      requestedDevice: 'cuda',
+      resolvedDevice: 'cpu',
+      computeType: 'int8',
+      reason: null,
+    },
+    {
+      state: 'unavailable',
+      model: 'small',
+      requestedDevice: 'auto',
+      resolvedDevice: null,
+      computeType: null,
+      reason: 'cuda_unavailable',
+    },
+  ]) {
+    const invalid = voiceSettingsStateResponse()
+    invalid.result.transcriptionStatus = inconsistentStatus
+    assert.throws(
+      () => parseVoiceSettingsStateResult(invalid.result),
+      ProtocolValidationError,
+    )
+  }
+})
+
 function voiceCaptureRequest() {
   const sample = fixtures.validClientMessages.find(
     (candidate) => candidate.name === 'voice capture complete request',
@@ -700,6 +916,87 @@ function readyVoiceTranscriptionBackend(
     getKillCount: () => killCount,
   }
 }
+
+test('Backend permits settings reads but gates mutations while STT drains', async () => {
+  const { backend, writes } = readyVoiceTranscriptionBackend([
+    'voice.transcription',
+    'request.cancel',
+    'settings.management',
+    'voice.settings',
+  ])
+  const params = voiceTranscriptionRequest().params
+  const { requestId } = backend.beginVoiceTranscription(params)
+  const gettingSettings = backend.getSettings()
+  const settingsRequest = JSON.parse(writes.at(-1))
+  const gettingVoiceSettings = backend.getVoiceSettings()
+  const voiceSettingsRequest = JSON.parse(writes.at(-1))
+  const currentSettings = settingsStateResponse().result
+  const currentVoiceSettings = voiceSettingsStateResponse().result
+
+  const assertMutationsBlocked = async () => {
+    await assert.rejects(
+      backend.updateSettings({
+        expectedRevision: currentSettings.revision,
+        settings: currentSettings.settings,
+      }),
+      /voice transcription|current action/,
+    )
+    await assert.rejects(
+      backend.updateVoiceSettings({
+        expectedRevision: currentVoiceSettings.revision,
+        inputDeviceId: null,
+        outputDeviceId: null,
+      }),
+      /voice transcription/,
+    )
+  }
+
+  await assertMutationsBlocked()
+  const stopping = backend.stopVoiceTranscription(requestId)
+  const cancelRequest = JSON.parse(writes.at(-1))
+  await assertMutationsBlocked()
+  assert.deepEqual(
+    writes.map((wire) => JSON.parse(wire).method),
+    [
+      'voice.transcription.start',
+      'settings.get',
+      'voice.settings.get',
+      'request.cancel',
+    ],
+  )
+
+  const settingsResponse = settingsStateResponse()
+  settingsResponse.id = settingsRequest.id
+  backend.handleProtocolLine(JSON.stringify(settingsResponse))
+  const voiceSettingsResponse = voiceSettingsStateResponse()
+  voiceSettingsResponse.id = voiceSettingsRequest.id
+  backend.handleProtocolLine(JSON.stringify(voiceSettingsResponse))
+  assert.equal((await gettingSettings).revision, currentSettings.revision)
+  assert.deepEqual(
+    (await gettingVoiceSettings).transcriptionStatus,
+    currentVoiceSettings.transcriptionStatus,
+  )
+
+  backend.handleProtocolLine(JSON.stringify({
+    type: 'response',
+    protocol: fixtures.protocol,
+    id: requestId,
+    ok: false,
+    error: {
+      code: 'request.cancelled',
+      message: 'Voice transcription was cancelled.',
+      retryable: false,
+    },
+  }))
+  backend.handleProtocolLine(JSON.stringify({
+    type: 'response',
+    protocol: fixtures.protocol,
+    id: cancelRequest.id,
+    ok: true,
+    result: { stopped: true },
+  }))
+  await stopping
+})
 
 test('TypeScript accepts one-shot Voice transcription PCM and language', () => {
   const request = voiceTranscriptionRequest()

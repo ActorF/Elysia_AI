@@ -22,6 +22,7 @@ import {
   VoiceSettingsSection,
   type VoiceSettingsDraft,
 } from './VoiceSettingsSection.tsx'
+import { describeTranscriptionReadiness } from '../voice/transcription-readiness.ts'
 
 export type ThemePreference = 'system' | 'light' | 'dark'
 export type ResolvedTheme = Exclude<ThemePreference, 'system'>
@@ -85,6 +86,9 @@ interface SettingsDraft {
   shortTermMemoryTokenBudget: string
   memoryRetrievalLimit: string
   dataImportMaxBytes: string
+  transcriptionModel: DesktopSettingsValues['transcriptionModel']
+  transcriptionDevice: DesktopSettingsValues['transcriptionDevice']
+  transcriptionLanguage: DesktopSettingsValues['transcriptionLanguage']
 }
 
 type SettingsValidationErrors = Partial<Record<keyof SettingsDraft, string>>
@@ -110,12 +114,34 @@ const themeOptions: readonly ThemeOption[] = [
   },
 ]
 
+const transcriptionModels: readonly SettingsDraft['transcriptionModel'][] = [
+  'tiny',
+  'base',
+  'small',
+  'medium',
+  'large-v3',
+  'turbo',
+]
+const transcriptionDevices: readonly SettingsDraft['transcriptionDevice'][] = [
+  'auto',
+  'cuda',
+  'cpu',
+]
+const transcriptionLanguages: readonly SettingsDraft['transcriptionLanguage'][] = [
+  'auto',
+  'zh',
+  'en',
+]
+
 const restartLabels: Record<keyof DesktopSettingsValues, string> = {
   modelName: 'default model',
   ollamaHost: 'Ollama origin',
   shortTermMemoryTokenBudget: 'short-term memory budget',
   memoryRetrievalLimit: 'memory retrieval limit',
   dataImportMaxBytes: 'file import limit',
+  transcriptionModel: 'speech-recognition model',
+  transcriptionDevice: 'speech-recognition device',
+  transcriptionLanguage: 'speech-recognition language',
 }
 
 function draftFromValues(values: DesktopSettingsValues): SettingsDraft {
@@ -125,6 +151,9 @@ function draftFromValues(values: DesktopSettingsValues): SettingsDraft {
     shortTermMemoryTokenBudget: String(values.shortTermMemoryTokenBudget),
     memoryRetrievalLimit: String(values.memoryRetrievalLimit),
     dataImportMaxBytes: String(values.dataImportMaxBytes),
+    transcriptionModel: values.transcriptionModel,
+    transcriptionDevice: values.transcriptionDevice,
+    transcriptionLanguage: values.transcriptionLanguage,
   }
 }
 
@@ -139,6 +168,9 @@ function draftEqualsValues(
       === String(values.shortTermMemoryTokenBudget)
     && draft.memoryRetrievalLimit === String(values.memoryRetrievalLimit)
     && draft.dataImportMaxBytes === String(values.dataImportMaxBytes)
+    && draft.transcriptionModel === values.transcriptionModel
+    && draft.transcriptionDevice === values.transcriptionDevice
+    && draft.transcriptionLanguage === values.transcriptionLanguage
   )
 }
 
@@ -189,6 +221,15 @@ function validateDraft(draft: SettingsDraft): SettingsValidationErrors {
   }
   if (positiveInteger(draft.dataImportMaxBytes, 2_147_483_647) === null) {
     errors.dataImportMaxBytes = 'File import limit must be a positive whole number.'
+  }
+  if (!transcriptionModels.includes(draft.transcriptionModel)) {
+    errors.transcriptionModel = 'Choose a supported local speech model.'
+  }
+  if (!transcriptionDevices.includes(draft.transcriptionDevice)) {
+    errors.transcriptionDevice = 'Choose Auto, CUDA, or CPU.'
+  }
+  if (!transcriptionLanguages.includes(draft.transcriptionLanguage)) {
+    errors.transcriptionLanguage = 'Choose automatic, Chinese, or English recognition.'
   }
   return errors
 }
@@ -245,7 +286,7 @@ function AppearanceSettings({
   )
 }
 
-/** Render eight settings areas with independent global and device-local drafts. */
+/** Render nine settings areas with independent global and device-local drafts. */
 export function SettingsView({
   themePreference,
   resolvedTheme,
@@ -313,6 +354,9 @@ export function SettingsView({
   const validationErrors = draft === null ? {} : validateDraft(draft)
   const firstValidationError = Object.values(validationErrors)[0] ?? null
   const backendFieldsDisabled = pending || restartPending || loading
+  const transcriptionReadiness = voiceState === null
+    ? null
+    : describeTranscriptionReadiness(voiceState.transcriptionStatus)
 
   async function submit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault()
@@ -335,6 +379,9 @@ export function SettingsView({
       shortTermMemoryTokenBudget: Number(draft.shortTermMemoryTokenBudget),
       memoryRetrievalLimit: Number(draft.memoryRetrievalLimit),
       dataImportMaxBytes: Number(draft.dataImportMaxBytes),
+      transcriptionModel: draft.transcriptionModel,
+      transcriptionDevice: draft.transcriptionDevice,
+      transcriptionLanguage: draft.transcriptionLanguage,
     })
   }
 
@@ -592,6 +639,98 @@ export function SettingsView({
                     {validationErrors.ollamaHost}
                   </small>
                 )}
+              </label>
+            </div>
+          </section>
+
+          <section
+            className="settings-section"
+            aria-labelledby="transcription-settings-heading"
+          >
+            <div className="settings-section-heading">
+              <h2 id="transcription-settings-heading">Speech recognition</h2>
+              <p>
+                Choose an installed local model, execution device, and default
+                language. Changes apply after the Backend restarts.
+              </p>
+            </div>
+            {transcriptionReadiness === null ? (
+              <p className="settings-readonly-status">
+                Local speech-recognition readiness has not loaded yet.
+              </p>
+            ) : (
+              <InlineAlert
+                tone={transcriptionReadiness.tone}
+                title={`Local speech recognition: ${transcriptionReadiness.label}`}
+              >
+                {transcriptionReadiness.summary}
+              </InlineAlert>
+            )}
+            <div className="settings-field-grid">
+              <label className="settings-field">
+                <span>Speech model</span>
+                <select
+                  value={draft.transcriptionModel}
+                  onChange={(event) => {
+                    updateDraft(
+                      'transcriptionModel',
+                      event.target.value as SettingsDraft['transcriptionModel'],
+                    )
+                  }}
+                  disabled={backendFieldsDisabled}
+                  aria-describedby={`${backendFieldId}-transcription-model-help`}
+                >
+                  {transcriptionModels.map((model) => (
+                    <option key={model} value={model}>{model}</option>
+                  ))}
+                </select>
+                <small id={`${backendFieldId}-transcription-model-help`}>
+                  Elysia only opens the matching local folder and never treats
+                  this name as permission to download weights.
+                </small>
+              </label>
+              <label className="settings-field">
+                <span>Recognition device</span>
+                <select
+                  value={draft.transcriptionDevice}
+                  onChange={(event) => {
+                    updateDraft(
+                      'transcriptionDevice',
+                      event.target.value as SettingsDraft['transcriptionDevice'],
+                    )
+                  }}
+                  disabled={backendFieldsDisabled}
+                  aria-describedby={`${backendFieldId}-transcription-device-help`}
+                >
+                  <option value="auto">Auto (CUDA, then CPU fallback)</option>
+                  <option value="cuda">CUDA only</option>
+                  <option value="cpu">CPU only</option>
+                </select>
+                <small id={`${backendFieldId}-transcription-device-help`}>
+                  Active: {settingsState.activeSettings.transcriptionDevice};
+                  readiness reports the resolved device without native details.
+                </small>
+              </label>
+              <label className="settings-field">
+                <span>Default recognition language</span>
+                <select
+                  value={draft.transcriptionLanguage}
+                  onChange={(event) => {
+                    updateDraft(
+                      'transcriptionLanguage',
+                      event.target.value as SettingsDraft['transcriptionLanguage'],
+                    )
+                  }}
+                  disabled={backendFieldsDisabled}
+                  aria-describedby={`${backendFieldId}-transcription-language-help`}
+                >
+                  <option value="auto">Automatic Chinese / English detection</option>
+                  <option value="zh">Chinese</option>
+                  <option value="en">English</option>
+                </select>
+                <small id={`${backendFieldId}-transcription-language-help`}>
+                  This language hint applies to new captures after restart.
+                </small>
               </label>
             </div>
           </section>

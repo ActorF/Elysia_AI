@@ -28,10 +28,20 @@ from .settings import (
     DEFAULT_MODEL_NAME,
     DEFAULT_OLLAMA_HOST,
     DEFAULT_SHORT_TERM_MEMORY_TOKEN_BUDGET,
+    DEFAULT_TRANSCRIPTION_DEVICE,
+    DEFAULT_TRANSCRIPTION_LANGUAGE,
+    DEFAULT_TRANSCRIPTION_MODEL,
+    TRANSCRIPTION_DEVICES,
+    TRANSCRIPTION_LANGUAGES,
+    TRANSCRIPTION_MODELS,
     AppSettings,
+    TranscriptionDevice,
+    TranscriptionLanguage,
+    TranscriptionModel,
 )
 
-DESKTOP_SETTINGS_SCHEMA_VERSION: Final = 1
+DESKTOP_SETTINGS_SCHEMA_VERSION: Final = 2
+_LEGACY_DESKTOP_SETTINGS_SCHEMA_VERSION: Final = 1
 MAX_MODEL_NAME_LENGTH: Final = 200
 MAX_OLLAMA_HOST_LENGTH: Final = 2_048
 MAX_MEMORY_SETTING: Final = 10_000_000
@@ -45,12 +55,18 @@ _DOCUMENT_FIELDS: Final = frozenset({
     "updated_at",
     "settings",
 })
-_SETTINGS_FIELDS: Final = frozenset({
+_LEGACY_SETTINGS_FIELDS: Final = frozenset({
     "model_name",
     "ollama_host",
     "short_term_memory_token_budget",
     "memory_retrieval_limit",
     "data_import_max_bytes",
+})
+_SETTINGS_FIELDS: Final = frozenset({
+    *_LEGACY_SETTINGS_FIELDS,
+    "transcription_model",
+    "transcription_device",
+    "transcription_language",
 })
 _PATH_LOCKS_GUARD = Lock()
 _PATH_LOCKS: dict[Path, RLock] = {}
@@ -162,6 +178,11 @@ class EditableDesktopSettings:
     short_term_memory_token_budget: int
     memory_retrieval_limit: int
     data_import_max_bytes: int
+    transcription_model: TranscriptionModel = DEFAULT_TRANSCRIPTION_MODEL
+    transcription_device: TranscriptionDevice = DEFAULT_TRANSCRIPTION_DEVICE
+    transcription_language: TranscriptionLanguage = (
+        DEFAULT_TRANSCRIPTION_LANGUAGE
+    )
 
     def __post_init__(self) -> None:
         """Normalize nothing implicitly and reject every invalid field."""
@@ -183,6 +204,9 @@ class EditableDesktopSettings:
             "data_import_max_bytes",
             maximum=MAX_DATA_IMPORT_BYTES,
         )
+        validate_transcription_model(self.transcription_model)
+        validate_transcription_device(self.transcription_device)
+        validate_transcription_language(self.transcription_language)
 
 
 @dataclass(frozen=True, slots=True)
@@ -272,6 +296,36 @@ def validate_ollama_host(value: object) -> str:
     return value.removesuffix("/")
 
 
+def validate_transcription_model(value: object) -> TranscriptionModel:
+    """Return one offline model choice from the fixed local allowlist."""
+
+    if not isinstance(value, str) or value not in TRANSCRIPTION_MODELS:
+        raise DesktopSettingsValidationError(
+            "transcription_model must be a supported local model."
+        )
+    return cast(TranscriptionModel, value)
+
+
+def validate_transcription_device(value: object) -> TranscriptionDevice:
+    """Return one supported local transcription device preference."""
+
+    if not isinstance(value, str) or value not in TRANSCRIPTION_DEVICES:
+        raise DesktopSettingsValidationError(
+            "transcription_device must be auto, cuda, or cpu."
+        )
+    return cast(TranscriptionDevice, value)
+
+
+def validate_transcription_language(value: object) -> TranscriptionLanguage:
+    """Return one supported default transcription language hint."""
+
+    if not isinstance(value, str) or value not in TRANSCRIPTION_LANGUAGES:
+        raise DesktopSettingsValidationError(
+            "transcription_language must be auto, zh, or en."
+        )
+    return cast(TranscriptionLanguage, value)
+
+
 def editable_from_app_settings(
     settings: AppSettings,
 ) -> EditableDesktopSettings:
@@ -285,6 +339,15 @@ def editable_from_app_settings(
         ),
         memory_retrieval_limit=settings.memory_retrieval_limit,
         data_import_max_bytes=settings.data_import_max_bytes,
+        transcription_model=validate_transcription_model(
+            settings.transcription_model
+        ),
+        transcription_device=validate_transcription_device(
+            settings.transcription_device
+        ),
+        transcription_language=validate_transcription_language(
+            settings.transcription_language
+        ),
     )
 
 
@@ -301,6 +364,24 @@ def desktop_defaults_from_app_settings(
         ollama_host = validate_ollama_host(settings.ollama_host.strip())
     except DesktopSettingsValidationError:
         ollama_host = DEFAULT_OLLAMA_HOST
+    try:
+        transcription_model = validate_transcription_model(
+            settings.transcription_model
+        )
+    except DesktopSettingsValidationError:
+        transcription_model = DEFAULT_TRANSCRIPTION_MODEL
+    try:
+        transcription_device = validate_transcription_device(
+            settings.transcription_device
+        )
+    except DesktopSettingsValidationError:
+        transcription_device = DEFAULT_TRANSCRIPTION_DEVICE
+    try:
+        transcription_language = validate_transcription_language(
+            settings.transcription_language
+        )
+    except DesktopSettingsValidationError:
+        transcription_language = DEFAULT_TRANSCRIPTION_LANGUAGE
 
     def positive_or_default(value: object, default: int, maximum: int) -> int:
         try:
@@ -327,6 +408,9 @@ def desktop_defaults_from_app_settings(
             DEFAULT_DATA_IMPORT_MAX_BYTES,
             MAX_DATA_IMPORT_BYTES,
         ),
+        transcription_model=transcription_model,
+        transcription_device=transcription_device,
+        transcription_language=transcription_language,
     )
 
 
@@ -350,6 +434,9 @@ def apply_editable_settings(
         ),
         memory_retrieval_limit=values.memory_retrieval_limit,
         data_import_max_bytes=values.data_import_max_bytes,
+        transcription_model=values.transcription_model,
+        transcription_device=values.transcription_device,
+        transcription_language=values.transcription_language,
     )
 
 
@@ -376,6 +463,21 @@ def changed_setting_names(
             "dataImportMaxBytes",
             desired.data_import_max_bytes,
             active.data_import_max_bytes,
+        ),
+        (
+            "transcriptionModel",
+            desired.transcription_model,
+            active.transcription_model,
+        ),
+        (
+            "transcriptionDevice",
+            desired.transcription_device,
+            active.transcription_device,
+        ),
+        (
+            "transcriptionLanguage",
+            desired.transcription_language,
+            active.transcription_language,
         ),
     )
     return tuple(name for name, wanted, current in fields if wanted != current)
@@ -465,7 +567,11 @@ class DesktopSettingsRepository:
             raise DesktopSettingsValidationError(
                 "Saved settings document has invalid fields."
             )
-        if value.get("schema_version") != DESKTOP_SETTINGS_SCHEMA_VERSION:
+        schema_version = value.get("schema_version")
+        if schema_version not in {
+            _LEGACY_DESKTOP_SETTINGS_SCHEMA_VERSION,
+            DESKTOP_SETTINGS_SCHEMA_VERSION,
+        }:
             raise DesktopSettingsValidationError(
                 "Saved settings schema version is unsupported."
             )
@@ -491,10 +597,36 @@ class DesktopSettingsRepository:
                 "Saved settings timestamp is invalid."
             )
         raw_settings = value.get("settings")
-        if not isinstance(raw_settings, dict) or set(raw_settings) != _SETTINGS_FIELDS:
+        expected_fields = (
+            _LEGACY_SETTINGS_FIELDS
+            if schema_version == _LEGACY_DESKTOP_SETTINGS_SCHEMA_VERSION
+            else _SETTINGS_FIELDS
+        )
+        if (
+            not isinstance(raw_settings, dict)
+            or set(raw_settings) != expected_fields
+        ):
             raise DesktopSettingsValidationError(
                 "Saved settings values have invalid fields."
             )
+        # Version 1 predates local-transcription choices. Supplying the fixed
+        # safe defaults in memory preserves the user's existing file and CAS
+        # revision; the next real edit writes the complete version 2 document.
+        transcription_model = (
+            DEFAULT_TRANSCRIPTION_MODEL
+            if schema_version == _LEGACY_DESKTOP_SETTINGS_SCHEMA_VERSION
+            else raw_settings.get("transcription_model")
+        )
+        transcription_device = (
+            DEFAULT_TRANSCRIPTION_DEVICE
+            if schema_version == _LEGACY_DESKTOP_SETTINGS_SCHEMA_VERSION
+            else raw_settings.get("transcription_device")
+        )
+        transcription_language = (
+            DEFAULT_TRANSCRIPTION_LANGUAGE
+            if schema_version == _LEGACY_DESKTOP_SETTINGS_SCHEMA_VERSION
+            else raw_settings.get("transcription_language")
+        )
         values = EditableDesktopSettings(
             model_name=cast(str, raw_settings.get("model_name")),
             ollama_host=cast(str, raw_settings.get("ollama_host")),
@@ -509,6 +641,18 @@ class DesktopSettingsRepository:
             data_import_max_bytes=cast(
                 int,
                 raw_settings.get("data_import_max_bytes"),
+            ),
+            transcription_model=cast(
+                TranscriptionModel,
+                transcription_model,
+            ),
+            transcription_device=cast(
+                TranscriptionDevice,
+                transcription_device,
+            ),
+            transcription_language=cast(
+                TranscriptionLanguage,
+                transcription_language,
             ),
         )
         return DesktopSettingsSnapshot(
@@ -532,6 +676,11 @@ class DesktopSettingsRepository:
                 ),
                 "memory_retrieval_limit": snapshot.values.memory_retrieval_limit,
                 "data_import_max_bytes": snapshot.values.data_import_max_bytes,
+                "transcription_model": snapshot.values.transcription_model,
+                "transcription_device": snapshot.values.transcription_device,
+                "transcription_language": (
+                    snapshot.values.transcription_language
+                ),
             },
         }
 

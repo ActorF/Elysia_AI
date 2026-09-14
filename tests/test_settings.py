@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 import start
-from config.settings import AppSettings, parse_bool
+from config.settings import AppSettings, parse_bool, parse_choice
 from core import ConfigurationError
 
 
@@ -52,6 +52,15 @@ def test_parse_bool_returns_false_for_other_values() -> None:
 
     for value in false_values:
         assert parse_bool(value) is False
+
+
+def test_parse_choice_normalizes_allowlisted_values_and_rejects_aliases() -> None:
+    """Keep environment choices bounded to explicit local configuration."""
+
+    allowed = ("small", "medium")
+
+    assert parse_choice(" MEDIUM ", allowed, "small") == "medium"
+    assert parse_choice("../remote-model", allowed, "small") == "small"
 
 
 def test_validate_settings_accepts_valid_settings(

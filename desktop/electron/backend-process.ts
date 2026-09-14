@@ -1239,6 +1239,7 @@ export class BackendProcess {
       && [...this.pendingRequests.values()].some(
         (pending) => (
           CHAT_GENERATION_METHODS.has(pending.method)
+          || VOICE_TRANSCRIPTION_METHODS.has(pending.method)
           || pending.method === 'settings.update'
         ),
       )
@@ -1277,6 +1278,19 @@ export class BackendProcess {
     if (!this.snapshot.capabilities.includes('voice.settings')) {
       return Promise.reject(
         new Error('Python Backend does not support voice settings.'),
+      )
+    }
+    if (
+      method === 'voice.settings.update'
+      && [...this.pendingRequests.values()].some(
+        (pending) => VOICE_TRANSCRIPTION_METHODS.has(pending.method),
+      )
+    ) {
+      // A terminal STT response removes the observable pending request. The
+      // Python boundary remains the final gate if native inference is still
+      // physically draining after that response or cancellation race.
+      return Promise.reject(
+        new Error('Wait for local voice transcription before saving voice settings.'),
       )
     }
     return new Promise<VoiceSettingsState>((resolve, reject) => {
@@ -1723,6 +1737,7 @@ export class BackendProcess {
         updatedAt: result.updatedAt,
         inputDeviceId: result.inputDeviceId,
         outputDeviceId: result.outputDeviceId,
+        transcriptionStatus: { ...result.transcriptionStatus },
         warning: result.warning,
       })
       return

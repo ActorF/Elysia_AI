@@ -343,12 +343,151 @@ def test_voice_settings_result_requires_its_explicit_kind() -> None:
             "updatedAt": None,
             "inputDeviceId": None,
             "outputDeviceId": None,
+            "transcriptionStatus": {
+                "state": "unavailable",
+                "model": "small",
+                "requestedDevice": "auto",
+                "resolvedDevice": None,
+                "computeType": None,
+                "reason": "model_missing",
+            },
             "warning": None,
         },
     }
 
     with pytest.raises(ProtocolValidationError, match="kind is unsupported"):
         parse_server_message(message)
+
+
+def _voice_settings_response() -> JsonObject:
+    """Provide one valid Voice settings response with sanitized readiness."""
+
+    sample = next(
+        cast(JsonObject, candidate)
+        for candidate in _fixtures()["validServerMessages"]
+        if cast(JsonObject, candidate)["name"]
+        == "voice settings state response"
+    )
+    return cast(JsonObject, deepcopy(sample["message"]))
+
+
+@pytest.mark.parametrize(
+    ("field_name", "invalid_value"),
+    [
+        ("state", "loading"),
+        ("model", "../../private-model"),
+        ("requestedDevice", "gpu"),
+        ("resolvedDevice", "private-device-name"),
+        ("computeType", "native-secret"),
+        ("reason", "D:/private/model failed"),
+    ],
+)
+def test_transcription_status_rejects_values_outside_safe_enums(
+    field_name: str,
+    invalid_value: str,
+) -> None:
+    """Keep model paths and native diagnostic strings off the desktop wire."""
+
+    message = _voice_settings_response()
+    result = cast(JsonObject, message["result"])
+    status = cast(JsonObject, result["transcriptionStatus"])
+    status[field_name] = invalid_value
+
+    with pytest.raises(ProtocolValidationError):
+        parse_server_message(message)
+
+
+@pytest.mark.parametrize(
+    (
+        "state",
+        "requested_device",
+        "resolved_device",
+        "compute_type",
+        "reason",
+    ),
+    [
+        ("unavailable", "auto", "cpu", "int8", "model_missing"),
+        ("unavailable", "auto", None, None, None),
+        ("unavailable", "auto", None, None, "cuda_unavailable"),
+        ("available", "auto", None, None, "model_missing"),
+        ("available", "auto", "cpu", "int8", "model_missing"),
+        ("available", "auto", "cpu", "int8", "cuda_initialization_failed"),
+        ("available", "auto", "cuda", "int8", None),
+        ("available", "auto", "cpu", "float16", "cuda_unavailable"),
+        ("ready", "auto", "cpu", None, None),
+        ("ready", "cuda", "cpu", "int8", "cuda_unavailable"),
+        ("ready", "auto", "cuda", "float16", "cuda_unavailable"),
+    ],
+)
+def test_transcription_status_rejects_inconsistent_state_details(
+    state: str,
+    requested_device: str,
+    resolved_device: str | None,
+    compute_type: str | None,
+    reason: str | None,
+) -> None:
+    """Require readiness metadata that cannot misrepresent engine usability."""
+
+    message = _voice_settings_response()
+    result = cast(JsonObject, message["result"])
+    status = cast(JsonObject, result["transcriptionStatus"])
+    status.update(
+        state=state,
+        requestedDevice=requested_device,
+        resolvedDevice=resolved_device,
+        computeType=compute_type,
+        reason=reason,
+    )
+
+    with pytest.raises(ProtocolValidationError):
+        parse_server_message(message)
+    schema = cast(JsonObject, json.loads(SCHEMA_PATH.read_text("utf-8")))
+    assert not Draft202012Validator(schema).is_valid(message)
+
+
+@pytest.mark.parametrize(
+    (
+        "state",
+        "requested_device",
+        "resolved_device",
+        "compute_type",
+        "reason",
+    ),
+    [
+        ("unavailable", "cuda", None, None, "device_unavailable"),
+        ("available", "auto", "cuda", "float16", None),
+        ("available", "cuda", "cuda", "int8_float16", None),
+        ("available", "cpu", "cpu", "float32", None),
+        ("available", "auto", "cpu", "int8", "cuda_unavailable"),
+        ("ready", "auto", "cuda", "float16", None),
+        ("ready", "cpu", "cpu", "int8", None),
+        ("ready", "auto", "cpu", "int8", "cuda_unavailable"),
+        ("ready", "auto", "cpu", "int8", "cuda_initialization_failed"),
+    ],
+)
+def test_transcription_status_runtime_and_schema_accept_same_valid_states(
+    state: str,
+    requested_device: str,
+    resolved_device: str | None,
+    compute_type: str | None,
+    reason: str | None,
+) -> None:
+    """Keep semantic readiness branches aligned across both validators."""
+
+    message = _voice_settings_response()
+    result = cast(JsonObject, message["result"])
+    status = cast(JsonObject, result["transcriptionStatus"])
+    status.update(
+        state=state,
+        requestedDevice=requested_device,
+        resolvedDevice=resolved_device,
+        computeType=compute_type,
+        reason=reason,
+    )
+
+    assert parse_server_message(deepcopy(message))["type"] == "response"
+    schema = cast(JsonObject, json.loads(SCHEMA_PATH.read_text("utf-8")))
+    Draft202012Validator(schema).validate(message)
 
 
 def _voice_capture_request() -> JsonObject:
@@ -705,6 +844,10 @@ def test_machine_readable_schema_covers_every_protocol_message_kind() -> None:
         in invariant
         for invariant in runtime_invariants
     )
+    assert any(
+        "transcriptionStatus requested and resolved devices" in invariant
+        for invariant in runtime_invariants
+    )
 
     settings_values = cast(JsonObject, definitions["settingsValues"])
     properties = cast(JsonObject, settings_values["properties"])
@@ -714,7 +857,11 @@ def test_machine_readable_schema_covers_every_protocol_message_kind() -> None:
         "shortTermMemoryTokenBudget",
         "memoryRetrievalLimit",
         "dataImportMaxBytes",
+        "transcriptionModel",
+        "transcriptionDevice",
+        "transcriptionLanguage",
     }
+    assert "transcriptionStatus" in definitions
     assert settings_values["additionalProperties"] is False
 
     transcription_result = cast(

@@ -6,6 +6,7 @@ from array import array
 from collections.abc import Iterable
 from dataclasses import dataclass
 from importlib import import_module
+import os
 from pathlib import Path
 import sys
 from threading import Lock
@@ -56,6 +57,12 @@ _OPTIONAL_RUNTIME_MODULES: Final = (
     "numpy",
     "ctranslate2",
     "faster_whisper",
+)
+_WINDOWS_CUDA_RUNTIME_DLLS: Final = (
+    "cublas64_12.dll",
+    "cublasLt64_12.dll",
+    "cudnn64_9.dll",
+    "cudnn_ops64_9.dll",
 )
 
 _DEPENDENCIES_MESSAGE: Final = (
@@ -240,6 +247,13 @@ class _Selection:
 class _DefaultRuntimeProbe:
     """Inspect optional Faster-Whisper dependencies only when requested."""
 
+    def __init__(self, *, probe_cuda: bool = True) -> None:
+        """Choose whether this adapter configuration needs CUDA inspection."""
+
+        if not isinstance(probe_cuda, bool):
+            raise TypeError("probe_cuda must be a Boolean.")
+        self._probe_cuda = probe_cuda
+
     def probe(self, *, device_index: int) -> RuntimeCapabilities:
         """Import the optional runtime and query CPU/CUDA compute support.
 
@@ -264,15 +278,29 @@ class _DefaultRuntimeProbe:
         runtime = modules["ctranslate2"]
         cpu_compute_types = self._supported_compute_types(runtime, "cpu", 0)
 
-        try:
-            raw_device_count = getattr(runtime, "get_cuda_device_count")()
-            if (
-                not _is_strict_integer(raw_device_count)
-                or raw_device_count < 0
-            ):
-                raise ValueError("Invalid CUDA device count.")
-            cuda_device_count = raw_device_count
-        except Exception:
+        cuda_device_count = 0
+        if self._probe_cuda:
+            try:
+                raw_device_count = getattr(runtime, "get_cuda_device_count")()
+                if (
+                    not _is_strict_integer(raw_device_count)
+                    or raw_device_count < 0
+                ):
+                    raise ValueError("Invalid CUDA device count.")
+                cuda_device_count = raw_device_count
+            except Exception:
+                cuda_device_count = 0
+
+        # CTranslate2 can enumerate a driver-backed CUDA device and advertise
+        # float16 even when the dynamically loaded CUDA 12/cuDNN 9 libraries
+        # required by speech inference are absent. On Windows that false
+        # positive would select CUDA in auto mode and fail only after the user
+        # records audio, so verify the concrete DLL set before advertising it.
+        if (
+            cuda_device_count > 0
+            and sys.platform == "win32"
+            and not _windows_cuda_runtime_available(runtime)
+        ):
             cuda_device_count = 0
 
         cuda_compute_types = frozenset[str]()
@@ -308,6 +336,98 @@ class _DefaultRuntimeProbe:
             )
         except Exception:
             return frozenset()
+
+
+def _windows_cuda_search_directories(runtime: object) -> tuple[Path, ...]:
+    """Return bounded trusted candidates for separately installed CUDA DLLs.
+
+    ``ctypes`` deliberately excludes the process working directory from its
+    default DLL search. Explicit absolute candidates retain that protection
+    while supporting normal CUDA ``PATH`` installs, virtual-environment NVIDIA
+    wheels, and the CTranslate2 package directory.
+    """
+
+    candidates: list[Path] = []
+    runtime_file = getattr(runtime, "__file__", None)
+    if isinstance(runtime_file, (str, os.PathLike)):
+        candidates.append(Path(runtime_file).resolve().parent)
+
+    prefix = Path(sys.prefix).resolve()
+    candidates.extend(
+        (
+            prefix / "Library" / "bin",
+            prefix / "Lib" / "site-packages" / "nvidia" / "cublas" / "bin",
+            prefix / "Lib" / "site-packages" / "nvidia" / "cublas" / "lib" / "x64",
+            prefix / "Lib" / "site-packages" / "nvidia" / "cudnn" / "bin",
+        )
+    )
+    cuda_root = os.environ.get("CUDA_PATH")
+    if cuda_root:
+        root = Path(cuda_root.strip('"'))
+        if root.is_absolute():
+            candidates.append(root / "bin")
+    for raw_directory in os.get_exec_path():
+        directory = Path(raw_directory.strip('"'))
+        if directory.is_absolute():
+            candidates.append(directory)
+
+    # Preserve search priority while avoiding repeated file probes. Resolving
+    # only absolute directory strings prevents a hostile current directory
+    # from influencing readiness through a relative PATH entry.
+    return tuple(dict.fromkeys(candidate.resolve() for candidate in candidates))
+
+
+def _load_windows_runtime_library(
+    library_name: str,
+    search_directories: tuple[Path, ...],
+) -> object | None:
+    """Load one known DLL only from explicit absolute search directories."""
+
+    import ctypes
+
+    loader = getattr(ctypes, "WinDLL", None)
+    if not callable(loader):
+        return None
+
+    for directory in search_directories:
+        if not directory.is_absolute():
+            continue
+        candidate = directory / library_name
+        try:
+            if candidate.is_file():
+                # A fully qualified path makes Python add the DLL's directory
+                # only for resolving its dependencies and never searches CWD.
+                return loader(str(candidate))
+        except (OSError, ValueError):
+            continue
+    return None
+
+
+def _windows_cuda_runtime_available(runtime: object) -> bool:
+    """Return whether CUDA 12 and cuDNN 9 speech DLLs really load on Windows."""
+
+    try:
+        search_directories = _windows_cuda_search_directories(runtime)
+    except (OSError, ValueError):
+        # Environment search paths and optional package metadata are local
+        # inputs. A malformed entry means CUDA is unavailable; it must never
+        # escape as a path-bearing readiness error.
+        return False
+    loaded_libraries: list[object] = []
+    for library_name in _WINDOWS_CUDA_RUNTIME_DLLS:
+        try:
+            library = _load_windows_runtime_library(
+                library_name,
+                search_directories,
+            )
+        except Exception:
+            return False
+        if library is None:
+            return False
+        # Keep each dependency loaded until the complete set has been checked;
+        # releasing an early handle can make a later component look missing.
+        loaded_libraries.append(library)
+    return len(loaded_libraries) == len(_WINDOWS_CUDA_RUNTIME_DLLS)
 
 
 class _DefaultModelFactory:
@@ -444,7 +564,9 @@ class FasterWhisperTranscriber:
         if not isinstance(config, FasterWhisperConfig):
             raise TypeError("config must be a FasterWhisperConfig.")
         self._config = config
-        self._runtime_probe = runtime_probe or _DefaultRuntimeProbe()
+        self._runtime_probe = runtime_probe or _DefaultRuntimeProbe(
+            probe_cuda=config.device != "cpu"
+        )
         self._model_factory = model_factory or _DefaultModelFactory()
         self._model: _WhisperModel | None = None
         self._resolved_device: FasterWhisperResolvedDevice | None = None

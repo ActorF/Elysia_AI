@@ -3,6 +3,7 @@
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Final, Literal, TypeAlias, cast
 
 from dotenv import load_dotenv
 
@@ -12,6 +13,32 @@ DEFAULT_MEMORY_RETRIEVAL_LIMIT = 5
 DEFAULT_DATA_IMPORT_MAX_BYTES = 16 * 1024 * 1024
 DEFAULT_MODEL_NAME = "qwen3.5:9b"
 DEFAULT_OLLAMA_HOST = "http://localhost:11434"
+
+TranscriptionModel: TypeAlias = Literal[
+    "tiny",
+    "base",
+    "small",
+    "medium",
+    "large-v3",
+    "turbo",
+]
+TranscriptionDevice: TypeAlias = Literal["auto", "cuda", "cpu"]
+TranscriptionLanguage: TypeAlias = Literal["auto", "zh", "en"]
+
+DEFAULT_TRANSCRIPTION_MODEL: Final[TranscriptionModel] = "small"
+DEFAULT_TRANSCRIPTION_DEVICE: Final[TranscriptionDevice] = "auto"
+DEFAULT_TRANSCRIPTION_LANGUAGE: Final[TranscriptionLanguage] = "auto"
+
+TRANSCRIPTION_MODELS: Final = (
+    "tiny",
+    "base",
+    "small",
+    "medium",
+    "large-v3",
+    "turbo",
+)
+TRANSCRIPTION_DEVICES: Final = ("auto", "cuda", "cpu")
+TRANSCRIPTION_LANGUAGES: Final = ("auto", "zh", "en")
 
 
 @dataclass(frozen=True)
@@ -35,6 +62,11 @@ class AppSettings:
         DEFAULT_MEMORY_RETRIEVAL_LIMIT
     )
     data_import_max_bytes: int = DEFAULT_DATA_IMPORT_MAX_BYTES
+    transcription_model: TranscriptionModel = DEFAULT_TRANSCRIPTION_MODEL
+    transcription_device: TranscriptionDevice = DEFAULT_TRANSCRIPTION_DEVICE
+    transcription_language: TranscriptionLanguage = (
+        DEFAULT_TRANSCRIPTION_LANGUAGE
+    )
 
 
 def parse_bool(value: str) -> bool:
@@ -59,6 +91,19 @@ def parse_int(value: str, default: int) -> int:
         return int(value)
     except ValueError:
         return default
+
+
+def parse_choice(value: str, allowed: tuple[str, ...], default: str) -> str:
+    """Return a normalized allowlisted environment choice or its default.
+
+    Environment configuration is untrusted local input. Falling back instead
+    of forwarding an arbitrary model alias is especially important for local
+    transcription because Faster-Whisper aliases may otherwise trigger an
+    implicit network download.
+    """
+
+    normalized = value.strip().lower()
+    return normalized if normalized in allowed else default
 
 
 # Anchor file locations to the repository, not the process working directory.
@@ -104,6 +149,30 @@ DATA_IMPORT_MAX_BYTES = parse_int(
     ),
     DEFAULT_DATA_IMPORT_MAX_BYTES,
 )
+TRANSCRIPTION_MODEL = cast(
+    TranscriptionModel,
+    parse_choice(
+        os.getenv("TRANSCRIPTION_MODEL", DEFAULT_TRANSCRIPTION_MODEL),
+        TRANSCRIPTION_MODELS,
+        DEFAULT_TRANSCRIPTION_MODEL,
+    ),
+)
+TRANSCRIPTION_DEVICE = cast(
+    TranscriptionDevice,
+    parse_choice(
+        os.getenv("TRANSCRIPTION_DEVICE", DEFAULT_TRANSCRIPTION_DEVICE),
+        TRANSCRIPTION_DEVICES,
+        DEFAULT_TRANSCRIPTION_DEVICE,
+    ),
+)
+TRANSCRIPTION_LANGUAGE = cast(
+    TranscriptionLanguage,
+    parse_choice(
+        os.getenv("TRANSCRIPTION_LANGUAGE", DEFAULT_TRANSCRIPTION_LANGUAGE),
+        TRANSCRIPTION_LANGUAGES,
+        DEFAULT_TRANSCRIPTION_LANGUAGE,
+    ),
+)
 
 # Export one settings object for the composition root and application services.
 SETTINGS = AppSettings(
@@ -117,4 +186,7 @@ SETTINGS = AppSettings(
     ),
     memory_retrieval_limit=MEMORY_RETRIEVAL_LIMIT,
     data_import_max_bytes=DATA_IMPORT_MAX_BYTES,
+    transcription_model=TRANSCRIPTION_MODEL,
+    transcription_device=TRANSCRIPTION_DEVICE,
+    transcription_language=TRANSCRIPTION_LANGUAGE,
 )
