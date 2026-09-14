@@ -20,6 +20,7 @@ from .synthesis import (
     SYNTHESIS_MIN_SPEED_FACTOR,
     SynthesisAudioFormat,
     SynthesisUnavailableError,
+    _contains_spoken_text,
 )
 
 
@@ -53,7 +54,11 @@ _DOCUMENT_FIELDS: Final = frozenset(
     {"schema_version", "default_profile_id", "profiles"}
 )
 _RIGHTS_STATUSES: Final = ("verified", "local-evaluation-only")
-_AUDIO_FORMATS: Final = ("wav", "ogg", "aac")
+# The upstream v2 API rejects Ogg when ``streaming_mode`` is false. Profiles
+# configure this deliberately non-streaming adapter, so reject that impossible
+# combination while the engine-independent result contract can still validate
+# Ogg Opus produced by a future streaming engine.
+_AUDIO_FORMATS: Final = ("wav", "aac")
 _PROMPT_LANGUAGES: Final = ("zh", "en")
 _IDENTIFIER_PATTERN: Final = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
 _MAX_DISPLAY_NAME_CODE_POINTS: Final = 80
@@ -208,7 +213,7 @@ class LocalVoiceReference:
             raise ValueError("Local voice audio_path must end with .wav.")
         if (
             not isinstance(self.prompt_text, str)
-            or not self.prompt_text.strip(" \t\r\n\ufeff")
+            or not _contains_spoken_text(self.prompt_text)
             or len(self.prompt_text) > SYNTHESIS_MAX_TEXT_CODE_POINTS
         ):
             raise ValueError("Local voice prompt_text is invalid.")
@@ -521,7 +526,7 @@ def _reference_from_value(
     prompt_text = reference["prompt_text"]
     if (
         not isinstance(prompt_text, str)
-        or not prompt_text.strip(" \t\r\n\ufeff")
+        or not _contains_spoken_text(prompt_text)
         or len(prompt_text) > SYNTHESIS_MAX_TEXT_CODE_POINTS
         or "\x00" in prompt_text
     ):

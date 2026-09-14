@@ -8,6 +8,7 @@ import json
 import math
 from pathlib import Path
 from threading import Lock
+from time import monotonic
 from typing import Any, Final, Literal, Protocol, TypeAlias, cast
 from urllib.parse import urlsplit, urlunsplit
 
@@ -17,6 +18,8 @@ from requests.exceptions import (
     RequestException,
     Timeout,
 )
+from urllib3.exceptions import ReadTimeoutError as Urllib3ReadTimeoutError
+from urllib3.util import Timeout as Urllib3Timeout
 
 from .synthesis import (
     SYNTHESIS_MAX_AUDIO_BYTES,
@@ -30,6 +33,7 @@ from .synthesis import (
     SynthesisResult,
     SynthesisUnavailableError,
     SynthesisValidationError,
+    _contains_spoken_text,
 )
 
 
@@ -50,18 +54,12 @@ GptSovitsStatusReason: TypeAlias = Literal[
 ]
 
 _PROMPT_LANGUAGES: Final = ("zh", "en")
-_AUDIO_FORMATS: Final = ("wav", "ogg", "aac")
+_AUDIO_FORMATS: Final = ("wav", "aac")
 _AUDIO_MEDIA_TYPES: Final = {
     "wav": frozenset(
         {"audio/wav", "audio/wave", "audio/x-wav", "audio/vnd.wave"}
     ),
-    "ogg": frozenset({"audio/ogg", "audio/x-ogg"}),
     "aac": frozenset({"audio/aac", "audio/aacp", "audio/x-aac"}),
-}
-_AUDIO_EXTENSION: Final = {
-    "wav": ".wav",
-    "ogg": ".ogg",
-    "aac": ".aac",
 }
 _SERVICE_UNAVAILABLE_MESSAGE: Final = (
     "Local speech synthesis service is not running or reachable."
@@ -89,6 +87,10 @@ _UNAVAILABLE_STATUS_REASONS: Final = (
     "service_unreachable",
     "invalid_service",
 )
+
+
+class _WallClockDeadlineExceeded(Exception):
+    """Mark a local HTTP operation that exhausted its total time budget."""
 
 
 def _is_strict_integer(value: object) -> bool:
@@ -120,7 +122,12 @@ def _normalize_loopback_base_url(value: object) -> str:
         raise ValueError("GPT-SoVITS base_url has an invalid port.")
 
     normalized_host = hostname.lower()
-    if normalized_host != "localhost":
+    if normalized_host == "localhost":
+        # Resolve the sole accepted hostname before I/O so DNS cannot sit
+        # outside the adapter's bounded socket lifecycle. IPv6 callers can
+        # still configure the explicit ``[::1]`` origin.
+        normalized_host = "127.0.0.1"
+    else:
         try:
             address = ip_address(normalized_host)
         except ValueError as error:
@@ -138,13 +145,140 @@ def _normalize_loopback_base_url(value: object) -> str:
     return urlunsplit(("http", netloc, "", "", ""))
 
 
-def _contains_prompt_text(value: str) -> bool:
-    """Return whether an exact reference transcript contains visible text."""
+def _require_deadline(deadline: float) -> None:
+    """Stop work once a request's total monotonic time budget is exhausted."""
 
-    return any(
-        not (character.isspace() or character == "\ufeff")
-        for character in value
+    if monotonic() >= deadline:
+        raise _WallClockDeadlineExceeded
+
+
+def _total_http_timeout(total_seconds: float) -> Urllib3Timeout:
+    """Share one ordinary budget across connection and response headers.
+
+    Requests normally interprets a float as two independent inactivity limits:
+    one for connecting and another for reading.  Passing urllib3's explicit
+    total timeout prevents those phases from each consuming the full budget.
+    Once compatible identity headers arrive, streamed reads are additionally
+    shortened to the monotonic remaining deadline. Requests cannot interrupt a
+    peer that drip-feeds header lines, so this is not described as a universal
+    cancellable HTTP deadline; unsupported transfer shapes fail closed below.
+    Requests 2.34 accepts this object even though its bundled typing currently
+    describes only floats and tuples, so call sites narrow the cast locally.
+    """
+
+    return Urllib3Timeout(
+        total=total_seconds,
+        connect=total_seconds,
+        read=total_seconds,
     )
+
+
+def _require_content_length(
+    value: str | None,
+    *,
+    max_bytes: int,
+    invalid_message: str,
+) -> int:
+    """Parse one bounded canonical decimal length without huge-int work.
+
+    Python deliberately rejects extremely long decimal-to-integer conversions.
+    Capping digits before conversion keeps a malicious local header inside the
+    adapter's typed, sanitized failure boundary and avoids needless big integers.
+    """
+
+    if (
+        value is None
+        or not value.isascii()
+        or not value.isdigit()
+        or len(value) > len(str(max_bytes))
+    ):
+        raise SynthesisFailedError(invalid_message)
+    try:
+        declared_bytes = int(value)
+    except ValueError as error:
+        raise SynthesisFailedError(invalid_message) from error
+    if not 1 <= declared_bytes <= max_bytes:
+        raise SynthesisFailedError(invalid_message)
+    return declared_bytes
+
+
+def _set_remaining_socket_timeout(
+    response: requests.Response,
+    deadline: float,
+    invalid_message: str,
+) -> None:
+    """Limit the next raw read to the request's remaining wall-clock budget.
+
+    Requests has no public total-body deadline. The project pins Requests and
+    urllib3, so this narrow adapter may reach their active response socket while
+    keeping that dependency private to this module. Failing closed if the
+    expected socket shape changes is safer than silently reverting to a per-read
+    timeout that a slow peer can renew indefinitely.
+    """
+
+    remaining = deadline - monotonic()
+    if remaining <= 0:
+        raise _WallClockDeadlineExceeded
+    raw = cast(Any, response.raw)
+    connection = getattr(raw, "_connection", None)
+    active_socket = getattr(connection, "sock", None)
+    if active_socket is None:
+        http_response = getattr(raw, "_fp", None)
+        buffered_reader = getattr(http_response, "fp", None)
+        socket_io = getattr(buffered_reader, "raw", None)
+        active_socket = getattr(socket_io, "_sock", None)
+    if active_socket is None:
+        raise SynthesisFailedError(invalid_message)
+    try:
+        active_socket.settimeout(remaining)
+    except (OSError, ValueError) as error:
+        raise SynthesisFailedError(invalid_message) from error
+
+
+def _read_bounded_body(
+    response: requests.Response,
+    *,
+    deadline: float,
+    max_bytes: int,
+    invalid_message: str,
+) -> bytes:
+    """Read one identity body without allowing slow chunks to reset its budget.
+
+    Requests' ordinary timeout is an inactivity timeout, so a peer can evade it
+    by continuously dripping bytes. ``urllib3`` exposes ``read1`` through the
+    streamed response; unlike a fill-the-buffer read, it returns the currently
+    available bytes and lets the monotonic deadline be checked between arrivals.
+    Any transport exception is translated here because raw-response exceptions
+    are not guaranteed to inherit from Requests' public exception hierarchy.
+    """
+
+    chunks: list[bytes] = []
+    total_bytes = 0
+    raw = cast(Any, response.raw)
+    read_one = getattr(raw, "read1", None)
+    if not callable(read_one):
+        raise SynthesisFailedError(invalid_message)
+    while True:
+        _require_deadline(deadline)
+        if bool(getattr(raw, "closed", False)):
+            break
+        _set_remaining_socket_timeout(response, deadline, invalid_message)
+        try:
+            chunk = read_one(64 * 1024, decode_content=False)
+        except (TimeoutError, Urllib3ReadTimeoutError) as error:
+            raise _WallClockDeadlineExceeded from error
+        except Exception as error:
+            if monotonic() >= deadline:
+                raise _WallClockDeadlineExceeded from error
+            raise SynthesisFailedError(invalid_message) from error
+        if not chunk:
+            break
+        total_bytes += len(chunk)
+        if total_bytes > max_bytes:
+            raise SynthesisFailedError(invalid_message)
+        chunks.append(chunk)
+    _require_deadline(deadline)
+    return b"".join(chunks)
 
 
 @dataclass(frozen=True, slots=True)
@@ -242,7 +376,7 @@ class GptSovitsVoice:
             not isinstance(self.prompt_text, str)
             or len(self.prompt_text) > SYNTHESIS_MAX_TEXT_CODE_POINTS
             or "\x00" in self.prompt_text
-            or not _contains_prompt_text(self.prompt_text)
+            or not _contains_spoken_text(self.prompt_text)
         ):
             raise ValueError(
                 "GPT-SoVITS prompt_text must be non-blank and within the "
@@ -268,7 +402,12 @@ class GptSovitsVoice:
             not isinstance(self.audio_format, str)
             or self.audio_format not in _AUDIO_FORMATS
         ):
-            raise ValueError("GPT-SoVITS audio_format must be wav, ogg, or aac.")
+            # GPT-SoVITS v2 rejects Ogg when streaming_mode is false. This
+            # adapter is deliberately non-streaming, so accepting Ogg here would
+            # defer a deterministic configuration error to an expensive call.
+            raise ValueError(
+                "GPT-SoVITS audio_format must be wav or aac in non-streaming mode."
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -453,8 +592,9 @@ class GptSovitsSynthesizer:
         payload: dict[str, object],
         audio_format: SynthesisAudioFormat,
     ) -> bytes:
-        """Perform one non-redirecting request and read a bounded audio body."""
+        """Read one length-declared identity response under a body deadline."""
 
+        deadline = monotonic() + self._config.request_timeout_seconds
         try:
             with requests.Session() as session:
                 # Local synthesis must not inherit proxy variables: doing so can
@@ -464,11 +604,17 @@ class GptSovitsSynthesizer:
                 response = session.post(
                     url,
                     json=cast(Any, payload),
-                    timeout=self._config.request_timeout_seconds,
+                    timeout=cast(
+                        Any,
+                        _total_http_timeout(
+                            self._config.request_timeout_seconds
+                        ),
+                    ),
                     allow_redirects=False,
                     stream=True,
                 )
                 try:
+                    _require_deadline(deadline)
                     if response.status_code != 200:
                         raise SynthesisFailedError(_SERVICE_REJECTED_MESSAGE)
                     content_encoding = response.headers.get(
@@ -477,6 +623,8 @@ class GptSovitsSynthesizer:
                     ).strip().lower()
                     if content_encoding not in ("", "identity"):
                         raise SynthesisFailedError(_INVALID_AUDIO_MESSAGE)
+                    if response.headers.get("Transfer-Encoding") is not None:
+                        raise SynthesisFailedError(_INVALID_AUDIO_MESSAGE)
                     content_type = response.headers.get(
                         "Content-Type",
                         "",
@@ -484,32 +632,28 @@ class GptSovitsSynthesizer:
                     if content_type not in _AUDIO_MEDIA_TYPES[audio_format]:
                         raise SynthesisFailedError(_INVALID_AUDIO_MESSAGE)
                     content_length = response.headers.get("Content-Length")
-                    if content_length is not None:
-                        try:
-                            declared_length = int(content_length)
-                        except ValueError as error:
-                            raise SynthesisFailedError(
-                                _INVALID_AUDIO_MESSAGE
-                            ) from error
-                        if (
-                            declared_length <= 0
-                            or declared_length > self._config.max_response_bytes
-                        ):
-                            raise SynthesisFailedError(_INVALID_AUDIO_MESSAGE)
+                    declared_length = _require_content_length(
+                        content_length,
+                        max_bytes=self._config.max_response_bytes,
+                        invalid_message=_INVALID_AUDIO_MESSAGE,
+                    )
 
-                    chunks: list[bytes] = []
-                    total_bytes = 0
-                    for chunk in response.iter_content(chunk_size=64 * 1024):
-                        if not chunk:
-                            continue
-                        total_bytes += len(chunk)
-                        if total_bytes > self._config.max_response_bytes:
-                            raise SynthesisFailedError(_INVALID_AUDIO_MESSAGE)
-                        chunks.append(chunk)
-                    return b"".join(chunks)
+                    body = _read_bounded_body(
+                        response,
+                        deadline=deadline,
+                        max_bytes=self._config.max_response_bytes,
+                        invalid_message=_INVALID_AUDIO_MESSAGE,
+                    )
+                    if len(body) != declared_length:
+                        raise SynthesisFailedError(_INVALID_AUDIO_MESSAGE)
+                    return body
                 finally:
                     response.close()
-        except (RequestsConnectionError, Timeout) as error:
+        except (
+            RequestsConnectionError,
+            Timeout,
+            _WallClockDeadlineExceeded,
+        ) as error:
             raise SynthesisUnavailableError(
                 _SERVICE_UNAVAILABLE_MESSAGE
             ) from error
@@ -519,18 +663,25 @@ class GptSovitsSynthesizer:
             raise SynthesisFailedError(_SERVICE_REQUEST_MESSAGE) from error
 
     def _probe_openapi(self, url: str) -> None:
-        """Require a bounded local OpenAPI document containing POST ``/tts``."""
+        """Validate one length-declared local OpenAPI response safely."""
 
+        deadline = monotonic() + self._config.probe_timeout_seconds
         try:
             with requests.Session() as session:
                 session.trust_env = False
                 response = session.get(
                     url,
-                    timeout=self._config.probe_timeout_seconds,
+                    timeout=cast(
+                        Any,
+                        _total_http_timeout(
+                            self._config.probe_timeout_seconds
+                        ),
+                    ),
                     allow_redirects=False,
                     stream=True,
                 )
                 try:
+                    _require_deadline(deadline)
                     if response.status_code != 200:
                         raise SynthesisFailedError(_SERVICE_REQUEST_MESSAGE)
                     content_type = response.headers.get(
@@ -548,26 +699,24 @@ class GptSovitsSynthesizer:
                     ).strip().lower()
                     if content_encoding not in ("", "identity"):
                         raise SynthesisFailedError(_SERVICE_REQUEST_MESSAGE)
+                    if response.headers.get("Transfer-Encoding") is not None:
+                        raise SynthesisFailedError(_SERVICE_REQUEST_MESSAGE)
                     declared = response.headers.get("Content-Length")
-                    if declared is not None:
-                        try:
-                            declared_bytes = int(declared)
-                        except ValueError as error:
-                            raise SynthesisFailedError(
-                                _SERVICE_REQUEST_MESSAGE
-                            ) from error
-                        if not 1 <= declared_bytes <= _OPENAPI_MAX_BYTES:
-                            raise SynthesisFailedError(_SERVICE_REQUEST_MESSAGE)
-                    chunks: list[bytes] = []
-                    total_bytes = 0
-                    for chunk in response.iter_content(chunk_size=64 * 1024):
-                        if not chunk:
-                            continue
-                        total_bytes += len(chunk)
-                        if total_bytes > _OPENAPI_MAX_BYTES:
-                            raise SynthesisFailedError(_SERVICE_REQUEST_MESSAGE)
-                        chunks.append(chunk)
-                    document: object = json.loads(b"".join(chunks))
+                    declared_bytes = _require_content_length(
+                        declared,
+                        max_bytes=_OPENAPI_MAX_BYTES,
+                        invalid_message=_SERVICE_REQUEST_MESSAGE,
+                    )
+                    body = _read_bounded_body(
+                        response,
+                        deadline=deadline,
+                        max_bytes=_OPENAPI_MAX_BYTES,
+                        invalid_message=_SERVICE_REQUEST_MESSAGE,
+                    )
+                    if len(body) != declared_bytes:
+                        raise SynthesisFailedError(_SERVICE_REQUEST_MESSAGE)
+                    document: object = json.loads(body)
+                    _require_deadline(deadline)
                     if not isinstance(document, dict):
                         raise SynthesisFailedError(_SERVICE_REQUEST_MESSAGE)
                     paths = document.get("paths")
@@ -583,7 +732,11 @@ class GptSovitsSynthesizer:
                     raise SynthesisFailedError(_SERVICE_REQUEST_MESSAGE) from error
                 finally:
                     response.close()
-        except (RequestsConnectionError, Timeout) as error:
+        except (
+            RequestsConnectionError,
+            Timeout,
+            _WallClockDeadlineExceeded,
+        ) as error:
             raise SynthesisUnavailableError(
                 _SERVICE_UNAVAILABLE_MESSAGE
             ) from error

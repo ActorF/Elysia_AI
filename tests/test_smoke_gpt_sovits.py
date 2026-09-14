@@ -38,10 +38,10 @@ def _wav_bytes(sample_count: int = 24) -> bytes:
     return output.getvalue()
 
 
-def _ogg_bytes() -> bytes:
-    """Create one structurally valid Ogg page for format rejection tests."""
+def _aac_bytes() -> bytes:
+    """Create one complete AAC-LC ADTS frame for format-summary tests."""
 
-    return b"OggS\x00" + (b"\x00" * 21) + b"\x01\x01\x00"
+    return bytes.fromhex("FF F1 50 80 01 BF FC 21 10 04 60 8C 1C")
 
 
 class _FakeService:
@@ -273,9 +273,7 @@ def test_non_wav_result_reports_unknown_duration(
 ) -> None:
     """Accept validated containers without inventing unavailable duration data."""
 
-    service = _FakeService(
-        [SynthesisResult(_ogg_bytes(), "ogg", 1.0)]
-    )
+    service = _FakeService([SynthesisResult(_aac_bytes(), "aac", 1.0)])
     _install_fake(monkeypatch, service)
 
     assert smoke_gpt_sovits.main([]) == 0
@@ -283,7 +281,7 @@ def test_non_wav_result_reports_unknown_duration(
     output = capsys.readouterr()
     assert output.err == ""
     summary = json.loads(output.out)["results"][0]
-    assert summary["format"] == "ogg"
+    assert summary["format"] == "aac"
     assert summary["duration_seconds"] is None
 
 

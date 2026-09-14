@@ -34,16 +34,168 @@ def _wav_bytes(sample_count: int = 1) -> bytes:
     return buffer.getvalue()
 
 
-def _ogg_bytes() -> bytes:
-    """Create one structurally complete minimal Ogg page for validation tests."""
+def _ogg_bytes(
+    *,
+    include_audio: bool = True,
+    audio_sequence: int = 2,
+    audio_packet: bytes = b"\xf8\xff\xfe",
+    tag_suffix: bytes = b"",
+    identification_granule: int = 0,
+    combine_tags_and_audio: bool = False,
+    split_audio_after_tags: bool = False,
+) -> bytes:
+    """Create a checksummed Ogg Opus stream with optional encoded audio."""
 
-    return b"OggS\x00" + (b"\x00" * 21) + b"\x01\x01\x00"
+    identification = (
+        b"OpusHead"
+        + b"\x01\x01"
+        + (312).to_bytes(2, "little")
+        + (48_000).to_bytes(4, "little")
+        + (0).to_bytes(2, "little", signed=True)
+        + b"\x00"
+    )
+    vendor = b"Elysia"
+    comments = (
+        b"OpusTags"
+        + len(vendor).to_bytes(4, "little")
+        + vendor
+        + (0).to_bytes(4, "little")
+        + tag_suffix
+    )
+    # The default F8 FF FE packet is conventional single-frame Opus silence. A
+    # parameter lets edge tests exercise RFC-valid zero-length frame layouts.
+    pages = [
+        _ogg_page(
+            identification,
+            flags=0x02,
+            sequence=0,
+            granule=identification_granule,
+        ),
+    ]
+    if include_audio and combine_tags_and_audio:
+        pages.append(
+            _ogg_page(
+                (comments, audio_packet),
+                flags=0x04,
+                sequence=1,
+                granule=960,
+            )
+        )
+        return b"".join(pages)
+    if include_audio and split_audio_after_tags:
+        first_audio_segment = b"\x78" + (b"\x00" * 254)
+        pages.extend(
+            (
+                _ogg_page(
+                    (comments, first_audio_segment),
+                    flags=0,
+                    sequence=1,
+                    granule=0,
+                    continue_last_packet=True,
+                ),
+                _ogg_page(
+                    b"\x00",
+                    flags=0x05,
+                    sequence=2,
+                    granule=960,
+                ),
+            )
+        )
+        return b"".join(pages)
+    pages.append(
+        _ogg_page(
+            comments,
+            flags=0 if include_audio else 0x04,
+            sequence=1,
+            granule=0,
+        )
+    )
+    if include_audio:
+        pages.append(
+            _ogg_page(
+                audio_packet,
+                flags=0x04,
+                sequence=audio_sequence,
+                granule=960,
+            )
+        )
+    return b"".join(pages)
 
 
-def _aac_bytes() -> bytes:
-    """Create one complete seven-byte ADTS AAC frame for validation tests."""
+def _ogg_crc(page: bytes) -> int:
+    """Return the non-reflected CRC used by Ogg pages in test fixtures."""
 
-    return bytes((0xFF, 0xF1, 0x50, 0x80, 0x00, 0xFF, 0xFC))
+    checksum = 0
+    for byte in page:
+        checksum ^= byte << 24
+        for _ in range(8):
+            checksum = (
+                ((checksum << 1) ^ 0x04C11DB7)
+                if checksum & 0x80000000
+                else checksum << 1
+            ) & 0xFFFFFFFF
+    return checksum
+
+
+def _ogg_page(
+    packet: bytes | tuple[bytes, ...],
+    *,
+    flags: int,
+    sequence: int,
+    granule: int,
+    continue_last_packet: bool = False,
+) -> bytes:
+    """Wrap complete packets in one checksummed single-stream Ogg page."""
+
+    lacing_values: list[int] = []
+    body = bytearray()
+    packets = (packet,) if isinstance(packet, bytes) else packet
+    for index, complete_packet in enumerate(packets):
+        remaining = len(complete_packet)
+        while remaining >= 255:
+            lacing_values.append(255)
+            remaining -= 255
+        if not (
+            continue_last_packet
+            and index == len(packets) - 1
+            and remaining == 0
+        ):
+            lacing_values.append(remaining)
+        body.extend(complete_packet)
+    page = bytearray(b"OggS\x00")
+    page.append(flags)
+    page.extend(granule.to_bytes(8, "little"))
+    page.extend((0x454C5953).to_bytes(4, "little"))
+    page.extend(sequence.to_bytes(4, "little"))
+    page.extend(b"\x00\x00\x00\x00")
+    page.append(len(lacing_values))
+    page.extend(lacing_values)
+    page.extend(body)
+    page[22:26] = _ogg_crc(bytes(page)).to_bytes(4, "little")
+    return bytes(page)
+
+
+def _aac_bytes(
+    payload: bytes = bytes.fromhex("21 10 04 60 8C 1C"),
+    *,
+    protected: bool = False,
+) -> bytes:
+    """Create one structurally complete AAC-LC ADTS frame."""
+
+    header_length = 9 if protected else 7
+    frame_length = header_length + len(payload)
+    header = bytes(
+        (
+            0xFF,
+            0xF0 | (0 if protected else 1),
+            0x50,
+            0x80 | ((frame_length >> 11) & 0x03),
+            (frame_length >> 3) & 0xFF,
+            ((frame_length & 0x07) << 5) | 0x1F,
+            0xFC,
+        )
+    )
+    return header + (b"\x00\x00" if protected else b"") + payload
 
 
 class _StubSynthesizer:
@@ -92,12 +244,33 @@ def test_request_accepts_supported_language_hints(language: str) -> None:
     assert request.language == language
 
 
-@pytest.mark.parametrize("text", ["", " ", "\r\n\t", "\ufeff", 42])
+@pytest.mark.parametrize(
+    "text",
+    [
+        "",
+        " ",
+        "\r\n\t",
+        "\x00\x1f\x7f",
+        "\u200b\u200d\u2060\u202e\ufeff",
+        "\u0301\u20dd\ufe0f",
+        "\u115f\u1160\u2800\u3164\uffa0",
+        "...——！？",
+        42,
+    ],
+)
 def test_request_rejects_text_that_cannot_be_spoken(text: object) -> None:
-    """Prevent invisible or non-string values from consuming local inference."""
+    """Prevent invisible or punctuation-only input from consuming inference."""
 
     with pytest.raises(SynthesisValidationError, match="text must"):
         SynthesisRequest(text=text)  # type: ignore[arg-type]
+
+
+def test_request_accepts_visible_text_with_unicode_formatting() -> None:
+    """Preserve exact mixed text when at least one speakable base character exists."""
+
+    text = "爱莉希雅\u200d\ufe0f"
+
+    assert SynthesisRequest(text=text).text == text
 
 
 def test_request_accepts_text_at_the_code_point_limit() -> None:
@@ -185,8 +358,11 @@ def test_result_accepts_supported_non_empty_audio_containers(
         (b"", "wav"),
         (b"RIFF\x04\x00\x00\x00WAVE", "wav"),
         (b"not-wave-data", "wav"),
+        (_wav_bytes()[:-1], "wav"),
         (b"OggS\x00" + (b"\x00" * 22), "ogg"),
+        (_ogg_bytes()[:-1], "ogg"),
         (b"\xff\xf1\x50\x80\x01\xff\xfc", "aac"),
+        (_aac_bytes()[:-1], "aac"),
     ],
 )
 def test_result_rejects_empty_or_truncated_audio(
@@ -201,6 +377,171 @@ def test_result_rejects_empty_or_truncated_audio(
             audio_format=audio_format,  # type: ignore[arg-type]
             speed_factor=1.0,
         )
+
+
+@pytest.mark.parametrize(
+    ("audio", "audio_format"),
+    [
+        (_wav_bytes() + b"\x00", "wav"),
+        (_ogg_bytes() + b"\x00", "ogg"),
+        (_aac_bytes() + b"\x00", "aac"),
+    ],
+)
+def test_result_rejects_bytes_after_a_complete_container(
+    audio: bytes,
+    audio_format: str,
+) -> None:
+    """Reject hidden trailing data rather than validating only the first record."""
+
+    with pytest.raises(SynthesisValidationError, match="encoded audio"):
+        SynthesisResult(
+            audio=audio,
+            audio_format=audio_format,  # type: ignore[arg-type]
+            speed_factor=1.0,
+        )
+
+
+def test_result_rejects_inconsistent_or_non_pcm_wav() -> None:
+    """Require a complete PCM fmt/data relationship and whole sample frames."""
+
+    valid = _wav_bytes()
+    data_offset = valid.index(b"data")
+
+    empty_data = _wav_bytes(0)
+    misaligned = bytearray(valid[:-1])
+    misaligned[4:8] = (len(misaligned) - 8).to_bytes(4, "little")
+    misaligned[data_offset + 4 : data_offset + 8] = (1).to_bytes(4, "little")
+    invalid_byte_rate = bytearray(valid)
+    invalid_byte_rate[28:32] = (0).to_bytes(4, "little")
+    non_pcm = bytearray(valid)
+    non_pcm[20:22] = (3).to_bytes(2, "little")
+    incomplete_extended_format = bytearray(valid)
+    incomplete_extended_format[16:20] = (17).to_bytes(4, "little")
+    incomplete_extended_format[4:8] = (
+        len(incomplete_extended_format) + 2 - 8
+    ).to_bytes(4, "little")
+    incomplete_extended_format[36:36] = b"\x00\x00"
+
+    for audio in (
+        empty_data,
+        bytes(misaligned),
+        bytes(invalid_byte_rate),
+        bytes(non_pcm),
+        bytes(incomplete_extended_format),
+    ):
+        with pytest.raises(SynthesisValidationError, match="encoded audio"):
+            SynthesisResult(audio=audio, audio_format="wav", speed_factor=1.0)
+
+
+def test_result_accepts_pcm_waveformatex_with_empty_extension() -> None:
+    """Accept the complete 18-byte PCM form while rejecting partial cbSize."""
+
+    audio = bytearray(_wav_bytes())
+    audio[16:20] = (18).to_bytes(4, "little")
+    audio[4:8] = (len(audio) + 2 - 8).to_bytes(4, "little")
+    audio[36:36] = b"\x00\x00"
+
+    assert SynthesisResult(bytes(audio), "wav", 1.0).audio == bytes(audio)
+
+
+def test_result_rejects_corrupt_or_incomplete_ogg_opus() -> None:
+    """Require checksums, ordered pages, Opus headers, and an audio packet."""
+
+    corrupt_crc = bytearray(_ogg_bytes())
+    corrupt_crc[-1] ^= 0x01
+    unsupported_codec = _ogg_page(
+        b"not-an-opus-header",
+        flags=0x06,
+        sequence=0,
+        granule=0,
+    )
+    family_one_header = (
+        b"OpusHead"
+        + b"\x01\x02"
+        + (312).to_bytes(2, "little")
+        + (48_000).to_bytes(4, "little")
+        + (0).to_bytes(2, "little", signed=True)
+        + b"\x01\x01\x01\x00\x01"
+    )
+    default_stream = _ogg_bytes()
+    tail_offset = default_stream.find(b"OggS", 4)
+    assert tail_offset > 0
+    unsupported_multistream = (
+        _ogg_page(family_one_header, flags=0x02, sequence=0, granule=0)
+        + default_stream[tail_offset:]
+    )
+
+    for audio in (
+        bytes(corrupt_crc),
+        _ogg_bytes(include_audio=False),
+        _ogg_bytes(audio_sequence=3),
+        _ogg_bytes(identification_granule=1),
+        _ogg_bytes(combine_tags_and_audio=True),
+        _ogg_bytes(split_audio_after_tags=True),
+        _ogg_bytes(audio_packet=b"\x03"),
+        unsupported_codec,
+        unsupported_multistream,
+    ):
+        with pytest.raises(SynthesisValidationError, match="encoded audio"):
+            SynthesisResult(audio=audio, audio_format="ogg", speed_factor=1.0)
+
+
+@pytest.mark.parametrize("audio_packet", [b"\x00", b"\x02\x00"])
+def test_result_accepts_opus_zero_length_frames(audio_packet: bytes) -> None:
+    """Preserve RFC 6716 DTX/loss packets whose frames contain zero bytes."""
+
+    audio = _ogg_bytes(audio_packet=audio_packet)
+
+    assert SynthesisResult(audio, "ogg", 1.0).audio == audio
+
+
+def test_result_accepts_opus_tags_trailing_metadata() -> None:
+    """Permit RFC-defined opaque padding after the parsed Opus comment list."""
+
+    audio = _ogg_bytes(tag_suffix=b"\x00\xffopaque")
+
+    assert SynthesisResult(audio, "ogg", 1.0).audio == audio
+
+
+def test_result_accepts_multiple_consistent_adts_frames() -> None:
+    """Accept a fully walked AAC stream instead of stopping at its first frame."""
+
+    audio = _aac_bytes() * 2
+
+    assert SynthesisResult(audio, "aac", 1.0).audio == audio
+
+
+def test_result_rejects_malformed_or_inconsistent_adts_frames() -> None:
+    """Reject header-only, unchecked, reserved, and mixed AAC frame sequences."""
+
+    header_only = _aac_bytes(b"")
+    protected = _aac_bytes(protected=True)
+    reserved_sample_rate = bytearray(_aac_bytes())
+    reserved_sample_rate[2] = (reserved_sample_rate[2] & 0xC3) | (0x0F << 2)
+    no_channel_configuration = bytearray(_aac_bytes())
+    no_channel_configuration[3] &= 0x3F
+    different_sample_rate = bytearray(_aac_bytes())
+    different_sample_rate[2] = (
+        (different_sample_rate[2] & 0xC3) | (0x03 << 2)
+    )
+
+    for audio in (
+        header_only,
+        protected,
+        bytes(reserved_sample_rate),
+        bytes(no_channel_configuration),
+        _aac_bytes() + bytes(different_sample_rate),
+    ):
+        with pytest.raises(SynthesisValidationError, match="encoded audio"):
+            SynthesisResult(audio=audio, audio_format="aac", speed_factor=1.0)
+
+
+def test_result_accepts_zero_filled_adts_payload_as_transport_framing() -> None:
+    """Leave AAC codec decodability to playback instead of guessing from bytes."""
+
+    audio = _aac_bytes(b"\x00" * 6)
+
+    assert SynthesisResult(audio, "aac", 1.0).audio == audio
 
 
 def test_result_rejects_audio_above_the_memory_limit() -> None:

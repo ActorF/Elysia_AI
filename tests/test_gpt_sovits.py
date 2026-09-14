@@ -37,16 +37,10 @@ def _wav_bytes(sample_count: int = 12) -> bytes:
     return buffer.getvalue()
 
 
-def _ogg_bytes() -> bytes:
-    """Create one structurally complete Ogg page for output-format tests."""
-
-    return b"OggS\x00" + (b"\x00" * 21) + b"\x01\x01\x00"
-
-
 def _aac_bytes() -> bytes:
-    """Create one complete seven-byte ADTS frame for output-format tests."""
+    """Create one complete ADTS frame with a non-empty AAC payload."""
 
-    return bytes((0xFF, 0xF1, 0x50, 0x80, 0x00, 0xFF, 0xFC))
+    return bytes((0xFF, 0xF1, 0x50, 0x80, 0x01, 0x1F, 0xFC, 0x01))
 
 
 class _ServerState:
@@ -58,8 +52,12 @@ class _ServerState:
         self.content_encoding: str | None = None
         self.body = _wav_bytes()
         self.content_length: str | None = None
+        self.send_content_length = True
+        self.transfer_encoding: str | None = None
         self.location: str | None = None
         self.delay_seconds = 0.0
+        self.body_chunks: tuple[bytes, ...] | None = None
+        self.body_chunk_delay_seconds = 0.0
         self.paths: list[str] = []
         self.payloads: list[object] = []
         self.get_paths: list[str] = []
@@ -67,9 +65,13 @@ class _ServerState:
         self.openapi_content_type = "application/json"
         self.openapi_content_encoding: str | None = None
         self.openapi_content_length: str | None = None
+        self.send_openapi_content_length = True
+        self.openapi_transfer_encoding: str | None = None
         self.openapi_body = json.dumps(
             {"openapi": "3.1.0", "paths": {"/tts": {"post": {}}}}
         ).encode("utf-8")
+        self.openapi_chunks: tuple[bytes, ...] | None = None
+        self.openapi_chunk_delay_seconds = 0.0
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -93,15 +95,26 @@ class _Handler(BaseHTTPRequestHandler):
                 "Content-Encoding",
                 self.server.state.content_encoding,
             )
-        if self.server.state.content_length is not None:
+        if self.server.state.transfer_encoding is not None:
+            self.send_header(
+                "Transfer-Encoding",
+                self.server.state.transfer_encoding,
+            )
+        if self.server.state.send_content_length:
             self.send_header(
                 "Content-Length",
-                self.server.state.content_length,
+                self.server.state.content_length
+                if self.server.state.content_length is not None
+                else str(len(self.server.state.body)),
             )
         if self.server.state.location is not None:
             self.send_header("Location", self.server.state.location)
         self.end_headers()
-        self.wfile.write(self.server.state.body)
+        self._write_slow_chunks(
+            self.server.state.body,
+            self.server.state.body_chunks,
+            self.server.state.body_chunk_delay_seconds,
+        )
 
     def do_GET(self) -> None:  # noqa: N802
         """Return a configurable OpenAPI document for readiness probes."""
@@ -117,13 +130,39 @@ class _Handler(BaseHTTPRequestHandler):
                 "Content-Encoding",
                 self.server.state.openapi_content_encoding,
             )
-        if self.server.state.openapi_content_length is not None:
+        if self.server.state.openapi_transfer_encoding is not None:
+            self.send_header(
+                "Transfer-Encoding",
+                self.server.state.openapi_transfer_encoding,
+            )
+        if self.server.state.send_openapi_content_length:
             self.send_header(
                 "Content-Length",
-                self.server.state.openapi_content_length,
+                self.server.state.openapi_content_length
+                if self.server.state.openapi_content_length is not None
+                else str(len(self.server.state.openapi_body)),
             )
         self.end_headers()
-        self.wfile.write(self.server.state.openapi_body)
+        self._write_slow_chunks(
+            self.server.state.openapi_body,
+            self.server.state.openapi_chunks,
+            self.server.state.openapi_chunk_delay_seconds,
+        )
+
+    def _write_slow_chunks(
+        self,
+        body: bytes,
+        chunks: tuple[bytes, ...] | None,
+        delay_seconds: float,
+    ) -> None:
+        """Flush small chunks whose individual gaps stay below read timeout."""
+
+        selected = chunks if chunks is not None else (body,)
+        for index, chunk in enumerate(selected):
+            if index and delay_seconds:
+                time.sleep(delay_seconds)
+            self.wfile.write(chunk)
+            self.wfile.flush()
 
     def log_message(self, format: str, *args: object) -> None:
         """Suppress the standard HTTP server's stderr output during tests."""
@@ -223,6 +262,7 @@ def _adapter(
     voice: GptSovitsVoice,
     *,
     timeout: float = 1.0,
+    probe_timeout: float = 1.0,
     max_response_bytes: int = 32 * 1024 * 1024,
 ) -> tuple[GptSovitsSynthesizer, _Resolver]:
     """Create an adapter and expose its recording resolver for assertions."""
@@ -233,6 +273,7 @@ def _adapter(
             GptSovitsConfig(
                 asset_root=root.resolve(),
                 request_timeout_seconds=timeout,
+                probe_timeout_seconds=probe_timeout,
                 deterministic_seed=2026,
                 max_response_bytes=max_response_bytes,
             ),
@@ -301,7 +342,6 @@ def test_same_text_repeatedly_returns_valid_audio(tmp_path: Path) -> None:
     ("audio_format", "content_type", "body"),
     [
         ("wav", "audio/x-wav", _wav_bytes()),
-        ("ogg", "audio/ogg", _ogg_bytes()),
         ("aac", "audio/aac", _aac_bytes()),
     ],
 )
@@ -311,7 +351,7 @@ def test_adapter_honors_each_supported_output_format(
     content_type: str,
     body: bytes,
 ) -> None:
-    """Map configured media types while preserving bounded encoded bytes."""
+    """Map supported non-streaming media while preserving bounded bytes."""
 
     state = _ServerState()
     state.content_type = content_type
@@ -352,6 +392,14 @@ def test_voice_rejects_non_loopback_or_ambiguous_base_urls(
         _voice(tmp_path, base_url)
 
 
+def test_voice_normalizes_localhost_before_network_io(tmp_path: Path) -> None:
+    """Avoid placing DNS resolution outside the bounded socket lifecycle."""
+
+    voice = _voice(tmp_path, "HTTP://LOCALHOST:9880/")
+
+    assert voice.base_url == "http://127.0.0.1:9880"
+
+
 @pytest.mark.parametrize(
     ("field_name", "suffix"),
     [
@@ -387,12 +435,15 @@ def test_voice_rejects_incorrect_asset_types(
     [
         ("prompt_text", ""),
         ("prompt_text", "\ufeff \n"),
+        ("prompt_text", "\u200b\u2060"),
+        ("prompt_text", "...——"),
         ("prompt_text", "contains\x00nul"),
         ("prompt_language", "auto"),
         ("prompt_language", "ja"),
         ("speed_factor", 0.49),
         ("speed_factor", 2.01),
         ("speed_factor", True),
+        ("audio_format", "ogg"),
         ("audio_format", "mp3"),
     ],
 )
@@ -582,6 +633,67 @@ def test_service_timeout_returns_the_same_unavailable_error(tmp_path: Path) -> N
     assert state.paths == ["/tts"]
 
 
+def test_total_synthesis_deadline_rejects_continuous_slow_chunks(
+    tmp_path: Path,
+) -> None:
+    """Prevent frequent body bytes from extending the total synthesis budget."""
+
+    state = _ServerState()
+    state.body_chunks = (
+        state.body[:1],
+        state.body[1:2],
+        state.body[2:],
+    )
+    # Each 300 ms gap is below the original 400 ms inactivity timeout. Only
+    # shrinking the next socket timeout to the remaining total budget can stop
+    # the third read near 400 ms instead of letting it complete near 600 ms.
+    state.body_chunk_delay_seconds = 0.3
+    with _serve(state) as base_url:
+        adapter, _ = _adapter(
+            tmp_path,
+            _voice(tmp_path, base_url),
+            timeout=0.4,
+        )
+        started = time.monotonic()
+        with pytest.raises(SynthesisUnavailableError) as raised:
+            adapter.synthesize(SynthesisRequest(text="private local text"))
+        elapsed = time.monotonic() - started
+
+    assert elapsed == pytest.approx(0.4, abs=0.12)
+    assert str(raised.value) == (
+        "Local speech synthesis service is not running or reachable."
+    )
+    assert "private" not in str(raised.value)
+    assert state.paths == ["/tts"]
+
+
+def test_total_probe_deadline_rejects_continuous_slow_chunks(
+    tmp_path: Path,
+) -> None:
+    """Prevent frequent OpenAPI bytes from extending the total probe budget."""
+
+    state = _ServerState()
+    state.openapi_chunks = (
+        state.openapi_body[:1],
+        state.openapi_body[1:2],
+        state.openapi_body[2:],
+    )
+    state.openapi_chunk_delay_seconds = 0.3
+    with _serve(state) as base_url:
+        adapter, _ = _adapter(
+            tmp_path,
+            _voice(tmp_path, base_url),
+            probe_timeout=0.4,
+        )
+        started = time.monotonic()
+        status = adapter.get_status()
+        elapsed = time.monotonic() - started
+
+    assert elapsed == pytest.approx(0.4, abs=0.12)
+    assert status == GptSovitsStatus("unavailable", "service_unreachable")
+    assert state.get_paths == ["/openapi.json"]
+
+
 def test_http_error_is_sanitized_and_does_not_leak_service_body(
     tmp_path: Path,
 ) -> None:
@@ -620,10 +732,12 @@ def test_redirect_is_rejected_without_contacting_destination(tmp_path: Path) -> 
 @pytest.mark.parametrize(
     ("content_type", "content_encoding", "body", "content_length"),
     [
+        ("audio/wav", None, _wav_bytes(), None),
         ("application/json", None, b"{}", None),
         ("audio/wav", "gzip", _wav_bytes(), None),
         ("audio/wav", None, b"not-wave", None),
         ("audio/wav", None, _wav_bytes(), "not-a-number"),
+        ("audio/wav", None, _wav_bytes(), "9" * 5_000),
         ("audio/wav", None, _wav_bytes(), "0"),
         ("audio/wav", None, b"", str(32 * 1024 * 1024 + 1)),
     ],
@@ -642,6 +756,7 @@ def test_invalid_service_audio_is_rejected(
     state.content_encoding = content_encoding
     state.body = body
     state.content_length = content_length
+    state.send_content_length = content_length is not None
     with _serve(state) as base_url:
         adapter, _ = _adapter(tmp_path, _voice(tmp_path, base_url))
         with pytest.raises(SynthesisFailedError) as raised:
@@ -652,19 +767,16 @@ def test_invalid_service_audio_is_rejected(
     )
 
 
-def test_chunked_response_cannot_exceed_configured_byte_limit(
+def test_transfer_encoded_audio_response_is_rejected(
     tmp_path: Path,
 ) -> None:
-    """Enforce the actual streamed byte count when Content-Length is absent."""
+    """Reject chunk framing whose size lines could renew socket inactivity."""
 
     state = _ServerState()
-    state.body = _wav_bytes(sample_count=64)
+    state.send_content_length = False
+    state.transfer_encoding = "chunked"
     with _serve(state) as base_url:
-        adapter, _ = _adapter(
-            tmp_path,
-            _voice(tmp_path, base_url),
-            max_response_bytes=64,
-        )
+        adapter, _ = _adapter(tmp_path, _voice(tmp_path, base_url))
         with pytest.raises(SynthesisFailedError) as raised:
             adapter.synthesize(SynthesisRequest(text="hello"))
 
@@ -739,11 +851,19 @@ def test_status_distinguishes_selection_assets_and_offline_service(
             200,
             "application/json",
             None,
+            b'{"openapi":"3.1.0","paths":{"/tts":{"post":{}}}}',
+            None,
+        ),
+        (
+            200,
+            "application/json",
+            None,
             b'{"paths":{"/tts":{"get":{}}}}',
             None,
         ),
         (200, "application/json", None, b"{}", "0"),
         (200, "application/json", None, b"{}", "not-a-number"),
+        (200, "application/json", None, b"{}", "9" * 5_000),
         (200, "application/json", None, b"", str(512 * 1024 + 1)),
     ],
 )
@@ -763,6 +883,20 @@ def test_status_rejects_invalid_or_ambiguous_service_api(
     state.openapi_content_encoding = encoding
     state.openapi_body = body
     state.openapi_content_length = length
+    state.send_openapi_content_length = length is not None
+    with _serve(state) as base_url:
+        adapter, _ = _adapter(tmp_path, _voice(tmp_path, base_url))
+        status = adapter.get_status()
+
+    assert status == GptSovitsStatus("unavailable", "invalid_service")
+
+
+def test_status_rejects_transfer_encoded_openapi(tmp_path: Path) -> None:
+    """Keep readiness on a length-declared identity response shape."""
+
+    state = _ServerState()
+    state.send_openapi_content_length = False
+    state.openapi_transfer_encoding = "chunked"
     with _serve(state) as base_url:
         adapter, _ = _adapter(tmp_path, _voice(tmp_path, base_url))
         status = adapter.get_status()
