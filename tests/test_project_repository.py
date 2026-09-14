@@ -1,3 +1,5 @@
+"""Test durable Project repository operations and recovery."""
+
 import json
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
@@ -20,17 +22,20 @@ BASE_TIME = datetime(2026, 8, 21, 12, 0, tzinfo=timezone.utc)
 
 
 def _clock(*times: datetime) -> Callable[[], datetime]:
+    """Provide the clock fixture used by these tests."""
     time_iterator = iter(times)
     return lambda: next(time_iterator)
 
 
 def _storage_directory(tmp_path: Path) -> Path:
+    """Provide the storage directory fixture used by these tests."""
     return tmp_path / "data" / "projects"
 
 
 def test_complete_project_survives_repository_restart(
     tmp_path: Path,
 ) -> None:
+    """Verify that complete project survives repository restart."""
     storage_directory = _storage_directory(tmp_path)
     repository: ProjectRepository = JsonProjectRepository(
         storage_directory,
@@ -56,6 +61,7 @@ def test_complete_project_survives_repository_restart(
 def test_duplicate_names_and_workspace_paths_keep_distinct_ids(
     tmp_path: Path,
 ) -> None:
+    """Verify that duplicate names and workspace paths keep distinct IDs."""
     repository = JsonProjectRepository(
         _storage_directory(tmp_path),
         clock=lambda: BASE_TIME,
@@ -78,6 +84,7 @@ def test_duplicate_names_and_workspace_paths_keep_distinct_ids(
 def test_project_updates_are_persisted_and_timestamped(
     tmp_path: Path,
 ) -> None:
+    """Verify that project updates are persisted and timestamped."""
     repository = JsonProjectRepository(
         _storage_directory(tmp_path),
         clock=_clock(
@@ -128,6 +135,7 @@ def test_project_updates_are_persisted_and_timestamped(
 def test_archive_hides_and_restore_returns_project(
     tmp_path: Path,
 ) -> None:
+    """Verify that archive hides and restore returns project."""
     repository = JsonProjectRepository(
         _storage_directory(tmp_path),
         clock=lambda: BASE_TIME,
@@ -152,6 +160,7 @@ def test_archive_hides_and_restore_returns_project(
 def test_list_projects_orders_latest_update_first(
     tmp_path: Path,
 ) -> None:
+    """Verify that list projects orders latest update first."""
     repository = JsonProjectRepository(
         _storage_directory(tmp_path),
         clock=_clock(
@@ -170,6 +179,7 @@ def test_list_projects_orders_latest_update_first(
 def test_delete_project_removes_persisted_record(
     tmp_path: Path,
 ) -> None:
+    """Verify that delete project removes persisted record."""
     repository = JsonProjectRepository(
         _storage_directory(tmp_path),
         clock=lambda: BASE_TIME,
@@ -191,6 +201,7 @@ def test_missing_project_operations_raise_not_found(
     tmp_path: Path,
     operation: str,
 ) -> None:
+    """Verify that missing project operations raise not found."""
     repository = JsonProjectRepository(_storage_directory(tmp_path))
     missing_id = ProjectId("project_missing")
 
@@ -213,6 +224,7 @@ def test_atomic_replace_failure_preserves_existing_project(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Leave the last durable Project intact when atomic replacement fails."""
     storage_directory = _storage_directory(tmp_path)
     repository = JsonProjectRepository(
         storage_directory,
@@ -223,6 +235,7 @@ def test_atomic_replace_failure_preserves_existing_project(
     original_text = store_file.read_text(encoding="utf-8")
 
     def fail_replace(source: object, destination: object) -> None:
+        """Simulate failure at the repository's atomic replace boundary."""
         raise OSError("simulated replace failure")
 
     monkeypatch.setattr("projects.storage.os.replace", fail_replace)
@@ -238,6 +251,7 @@ def test_atomic_replace_failure_preserves_existing_project(
 def test_corrupt_project_json_is_reported_explicitly(
     tmp_path: Path,
 ) -> None:
+    """Surface corrupt Project JSON explicitly rather than inventing defaults."""
     storage_directory = _storage_directory(tmp_path)
     repository = JsonProjectRepository(
         storage_directory,
@@ -256,6 +270,7 @@ def test_corrupt_project_json_is_reported_explicitly(
 def test_unknown_project_field_is_not_silently_accepted(
     tmp_path: Path,
 ) -> None:
+    """Verify that unknown project field is not silently accepted."""
     storage_directory = _storage_directory(tmp_path)
     repository = JsonProjectRepository(
         storage_directory,
@@ -275,6 +290,7 @@ def test_unknown_project_field_is_not_silently_accepted(
 
 
 def test_project_repository_rejects_naive_clock(tmp_path: Path) -> None:
+    """Verify that project repository rejects naive clock."""
     repository = JsonProjectRepository(
         _storage_directory(tmp_path),
         clock=lambda: datetime(2026, 8, 21, 12, 0),

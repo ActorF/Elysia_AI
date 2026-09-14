@@ -1,1 +1,1 @@
-"""Namespace reserved for Elysia's future desktop-agent features."""
+"""Define the package boundary for Elysia desktop-agent components."""

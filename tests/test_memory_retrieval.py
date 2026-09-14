@@ -1,3 +1,5 @@
+"""Test local memory retrieval, ranking, and prompt injection boundaries."""
+
 import json
 from pathlib import Path
 from typing import cast
@@ -19,6 +21,7 @@ from memory import (
 
 
 def _profile() -> Profile:
+    """Provide the profile fixture used by these tests."""
     return {
         "schema_version": 1,
         "user_name": "Ying",
@@ -33,6 +36,7 @@ def _profile() -> Profile:
 
 
 def _summary() -> ConversationSummary:
+    """Provide the summary fixture used by these tests."""
     return {
         "content": {
             "facts": [
@@ -63,6 +67,7 @@ def _summary() -> ConversationSummary:
 
 def _long_term_memories(
 ) -> list[LongTermMemoryRecord]:
+    """Provide the long term memories fixture used by these tests."""
     return [
         {
             "key": "preferred_language",
@@ -95,6 +100,7 @@ def _long_term_memories(
 def _read_retrieved_memory_json(
     system_prompt: str,
 ) -> list[RetrievedMemory]:
+    """Extract and decode the bounded retrieved-memory prompt section."""
     memory_json = system_prompt.split(
         "RETRIEVED_MEMORY_JSON:\n",
         1,
@@ -126,6 +132,7 @@ def _read_retrieved_memory_json(
 def test_retriever_rejects_invalid_limit(
     result_limit: int,
 ) -> None:
+    """Verify that retriever rejects invalid limit."""
     with pytest.raises(
         ValueError,
         match=(
@@ -138,6 +145,7 @@ def test_retriever_rejects_invalid_limit(
 
 def test_retriever_rejects_empty_query(
 ) -> None:
+    """Verify that retriever rejects empty query."""
     retriever = MemoryRetriever()
 
     with pytest.raises(
@@ -157,6 +165,7 @@ def test_retriever_rejects_empty_query(
 
 def test_retrieves_profile_summary_and_long_term_memory(
 ) -> None:
+    """Merge relevant profile, summary, and long-term facts into ranked results."""
     retriever = MemoryRetriever(
         result_limit=5
     )
@@ -185,6 +194,7 @@ def test_retrieves_profile_summary_and_long_term_memory(
 
 def test_retrieval_limit_keeps_highest_ranked_results(
 ) -> None:
+    """Verify that retrieval limit keeps highest ranked results."""
     retriever = MemoryRetriever(
         result_limit=2
     )
@@ -209,6 +219,7 @@ def test_retrieval_limit_keeps_highest_ranked_results(
 
 def test_retrieval_returns_empty_for_unrelated_query(
 ) -> None:
+    """Verify that retrieval returns empty for unrelated query."""
     retriever = MemoryRetriever()
 
     results = retriever.retrieve(
@@ -223,6 +234,7 @@ def test_retrieval_returns_empty_for_unrelated_query(
 
 def test_retrieval_preserves_provenance_and_confidence(
 ) -> None:
+    """Verify that retrieval preserves provenance and confidence."""
     retriever = MemoryRetriever()
 
     results = retriever.retrieve(
@@ -252,6 +264,7 @@ def test_retrieval_preserves_provenance_and_confidence(
 
 def test_prompt_serializes_retrieved_memory_as_data(
 ) -> None:
+    """Verify that prompt serializes retrieved memory as data."""
     retrieved_memory: RetrievedMemory = {
         "source": "long_term_memory",
         "key": "preferred_language",
@@ -289,6 +302,7 @@ def test_prompt_serializes_retrieved_memory_as_data(
 def test_brain_injects_only_relevant_memories(
     tmp_path: Path,
 ) -> None:
+    """Verify that brain injects only relevant memories."""
     memory = Memory(tmp_path)
 
     for record in _long_term_memories():
@@ -347,6 +361,7 @@ def test_brain_injects_only_relevant_memories(
 def test_brain_injects_empty_list_when_nothing_matches(
     tmp_path: Path,
 ) -> None:
+    """Verify that brain injects empty list when nothing matches."""
     memory = Memory(tmp_path)
 
     memory.save_long_term_memory(

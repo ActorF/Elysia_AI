@@ -1,3 +1,5 @@
+"""Test scoped long-term-memory schemas and persistence."""
+
 import json
 from pathlib import Path
 from typing import cast
@@ -21,6 +23,7 @@ from projects import JsonProjectRepository
 def test_load_creates_empty_long_term_memory_store(
     tmp_path: Path,
 ) -> None:
+    """Verify that load creates empty long term memory store."""
     memory_file = tmp_path / "long_term_memory.json"
 
     memory_data = load_long_term_memory(memory_file)
@@ -43,6 +46,7 @@ def test_save_preserves_memory_source(
     tmp_path: Path,
     source_type: LongTermMemorySource,
 ) -> None:
+    """Verify that save preserves memory source."""
     memory_file = tmp_path / "long_term_memory.json"
 
     saved_record = save_long_term_memory_record(
@@ -82,6 +86,7 @@ def test_save_preserves_exact_non_global_scope(
     scope: MemoryScope,
     scope_id: str,
 ) -> None:
+    """Verify that save preserves exact non global scope."""
     saved_record = save_long_term_memory_record(
         tmp_path / "long_term_memory.json",
         "architecture",
@@ -99,6 +104,7 @@ def test_save_preserves_exact_non_global_scope(
 def test_load_migrates_versionless_records_to_global_scope(
     tmp_path: Path,
 ) -> None:
+    """Verify that load migrates versionless records to global scope."""
     memory_file = tmp_path / "long_term_memory.json"
     legacy_data = {
         "memories": [
@@ -139,6 +145,7 @@ def test_save_rejects_invalid_scope_pair(
     scope: MemoryScope,
     scope_id: str | None,
 ) -> None:
+    """Verify that save rejects invalid scope pair."""
     with pytest.raises(ValueError):
         save_long_term_memory_record(
             tmp_path / "long_term_memory.json",
@@ -169,6 +176,7 @@ def test_save_rejects_empty_required_text(
     value: str,
     source_text: str,
 ) -> None:
+    """Verify that save rejects empty required text."""
     with pytest.raises(ValueError):
         save_long_term_memory_record(
             tmp_path / "long_term_memory.json",
@@ -182,6 +190,7 @@ def test_save_rejects_empty_required_text(
 def test_save_rejects_unknown_source_type(
     tmp_path: Path,
 ) -> None:
+    """Verify that save rejects unknown source type."""
     invalid_source = cast(
         LongTermMemorySource,
         "unknown_source",
@@ -200,6 +209,7 @@ def test_save_rejects_unknown_source_type(
 def test_memory_reads_record_after_restart(
     tmp_path: Path,
 ) -> None:
+    """Verify that memory reads record after restart."""
     first_memory = Memory(tmp_path)
 
     saved_record = first_memory.save_long_term_memory(
@@ -219,6 +229,7 @@ def test_memory_reads_record_after_restart(
 def test_brain_recalls_long_term_memories(
     tmp_path: Path,
 ) -> None:
+    """Verify that brain recalls long term memories."""
     memory = Memory(tmp_path)
 
     saved_record = memory.save_long_term_memory(
@@ -240,6 +251,7 @@ def test_console_session_displays_memory_source(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    """Verify that console session displays memory source."""
     memory = Memory(tmp_path)
 
     saved_record = memory.save_long_term_memory(

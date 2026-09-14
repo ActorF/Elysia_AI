@@ -49,11 +49,13 @@ class RoutedChatModel:
         stream_chunks: list[str] | None = None,
         stream_error: Exception | None = None,
     ) -> None:
+        """Initialize deterministic state for this test double."""
         self.stream_chunks = stream_chunks
         self.stream_error = stream_error
         self.received_messages: list[list[ChatMessage]] = []
 
     def generate_reply(self, messages: list[ChatMessage]) -> str:
+        """Return the configured deterministic model reply."""
         self.received_messages.append(list(messages))
         return f"Reply to {messages[-1]['content']}"
 
@@ -61,6 +63,7 @@ class RoutedChatModel:
         self,
         messages: list[ChatMessage],
     ) -> Iterator[str]:
+        """Yield the configured deterministic model reply chunks."""
         self.received_messages.append(list(messages))
         chunks = (
             self.stream_chunks
@@ -73,7 +76,9 @@ class RoutedChatModel:
 
 
 class FakeChatSummarizer:
+    """Record summary inputs and return deterministic integration-test content."""
     def __init__(self) -> None:
+        """Initialize deterministic state for this test double."""
         self.calls: list[
             tuple[
                 list[ConversationMessage],
@@ -86,6 +91,7 @@ class FakeChatSummarizer:
         messages: list[ConversationMessage],
         previous_content: ConversationSummaryContent | None = None,
     ) -> ConversationSummaryContent:
+        """Return a deterministic summary while recording test inputs."""
         self.calls.append((list(messages), previous_content))
         return {
             "facts": [f"Covered {len(messages)} new messages"],
@@ -107,6 +113,7 @@ def _brain(
     JsonChatRepository,
     JsonProjectRepository,
 ]:
+    """Compose a Brain with isolated repositories and controllable collaborators."""
     memory = Memory(tmp_path)
     chats = JsonChatRepository(tmp_path / "data" / "chats")
     projects = JsonProjectRepository(tmp_path / "data" / "projects")
@@ -130,6 +137,7 @@ def _brain(
 
 
 def _active_context_json(system_prompt: str) -> object:
+    """Decode the active-Chat section embedded in a generated system prompt."""
     serialized = system_prompt.split(
         "ACTIVE_CONVERSATION_JSON:\n",
         1,
@@ -138,6 +146,7 @@ def _active_context_json(system_prompt: str) -> object:
 
 
 def _retrieved_memory_json(system_prompt: str) -> list[dict[str, object]]:
+    """Decode and type-check the retrieved-memory section of a system prompt."""
     serialized = system_prompt.split(
         "RETRIEVED_MEMORY_JSON:\n",
         1,
@@ -150,6 +159,7 @@ def _retrieved_memory_json(system_prompt: str) -> list[dict[str, object]]:
 def test_switching_chats_keeps_context_and_persistence_independent(
     tmp_path: Path,
 ) -> None:
+    """Verify that switching chats keeps context and persistence independent."""
     model = RoutedChatModel()
     brain, legacy_memory, _chats, _projects = _brain(tmp_path, model)
     first = brain.create_chat(title="First")
@@ -183,6 +193,7 @@ def test_switching_chats_keeps_context_and_persistence_independent(
 def test_each_chat_rebuilds_its_own_token_bounded_recent_window(
     tmp_path: Path,
 ) -> None:
+    """Verify that each chat rebuilds its own token bounded recent window."""
     model = RoutedChatModel()
     brain, _memory, chats, _projects = _brain(
         tmp_path,
@@ -227,6 +238,7 @@ def test_each_chat_rebuilds_its_own_token_bounded_recent_window(
 def test_project_mode_and_instructions_enter_only_active_prompt(
     tmp_path: Path,
 ) -> None:
+    """Verify that project mode and instructions enter only active prompt."""
     model = RoutedChatModel()
     brain, _memory, _chats, projects = _brain(tmp_path, model)
     project = projects.create_project(
@@ -272,6 +284,7 @@ def test_project_mode_and_instructions_enter_only_active_prompt(
 def test_brain_exposes_guarded_chat_session_actions(
     tmp_path: Path,
 ) -> None:
+    """Verify that brain exposes guarded chat session actions."""
     model = RoutedChatModel()
     brain, _memory, _chats, projects = _brain(tmp_path, model)
     project = projects.create_project(name="Brain Project")
@@ -304,6 +317,7 @@ def test_brain_exposes_guarded_chat_session_actions(
 def test_brain_exposes_complete_project_ui_application_boundary(
     tmp_path: Path,
 ) -> None:
+    """Verify that brain exposes complete project UI application boundary."""
     model = RoutedChatModel()
     brain, _memory, _chats, _projects = _brain(tmp_path, model)
     first = brain.create_project(
@@ -366,6 +380,7 @@ def test_brain_exposes_complete_project_ui_application_boundary(
 def test_brain_project_mutations_reject_an_active_chat_operation(
     tmp_path: Path,
 ) -> None:
+    """Verify that brain project mutations reject an active chat operation."""
     model = RoutedChatModel(stream_chunks=["One", "Two"])
     brain, _memory, _chats, _projects = _brain(tmp_path, model)
     project = brain.create_project(name="Busy Project")
@@ -398,6 +413,7 @@ def test_brain_project_mutations_reject_an_active_chat_operation(
 def test_active_chat_loads_only_its_readable_memory_scopes(
     tmp_path: Path,
 ) -> None:
+    """Verify that active chat loads only its readable memory scopes."""
     model = RoutedChatModel()
     brain, memory, _chats, projects = _brain(tmp_path, model)
     alpha = projects.create_project(name="Alpha")
@@ -435,6 +451,7 @@ def test_active_chat_loads_only_its_readable_memory_scopes(
 def test_stream_failure_never_saves_partial_or_wrong_chat(
     tmp_path: Path,
 ) -> None:
+    """Keep partial model output out of both the target and active Chats on failure."""
     model = RoutedChatModel(
         stream_chunks=["Partial"],
         stream_error=RuntimeError("stream failed"),
@@ -456,6 +473,7 @@ def test_stream_failure_never_saves_partial_or_wrong_chat(
 def test_closing_stream_discards_partial_turn_and_releases_busy_guard(
     tmp_path: Path,
 ) -> None:
+    """Treat consumer-closed streams as aborts and release the per-Chat busy guard."""
     model = RoutedChatModel(stream_chunks=["One", "Two"])
     brain, _memory, _chats, _projects = _brain(tmp_path, model)
     chat = brain.create_chat(title="Cancelable")
@@ -472,6 +490,7 @@ def test_closing_stream_discards_partial_turn_and_releases_busy_guard(
 def test_busy_chat_rejects_second_generation_but_other_chat_can_run(
     tmp_path: Path,
 ) -> None:
+    """Verify that busy chat rejects second generation but other chat can run."""
     model = RoutedChatModel(stream_chunks=["One", "Two"])
     brain, _memory, _chats, _projects = _brain(tmp_path, model)
     first = brain.create_chat(title="First")
@@ -495,6 +514,7 @@ def test_busy_chat_rejects_second_generation_but_other_chat_can_run(
 def test_chat_changed_during_stream_is_not_overwritten(
     tmp_path: Path,
 ) -> None:
+    """Prevent a completed stream from overwriting a concurrently changed Chat."""
     model = RoutedChatModel(stream_chunks=["Complete reply"])
     brain, _memory, chats, _projects = _brain(tmp_path, model)
     chat = brain.create_chat(title="Original")
@@ -513,6 +533,7 @@ def test_chat_changed_during_stream_is_not_overwritten(
 def test_model_mismatch_fails_before_model_or_storage_work(
     tmp_path: Path,
 ) -> None:
+    """Verify that model mismatch fails before model or storage work."""
     model = RoutedChatModel()
     brain, _memory, chats, _projects = _brain(tmp_path, model)
     wrong_model_chat = chats.create_chat(
@@ -531,6 +552,7 @@ def test_model_mismatch_fails_before_model_or_storage_work(
 def test_chat_summary_updates_only_named_chat(
     tmp_path: Path,
 ) -> None:
+    """Verify that chat summary updates only named chat."""
     model = RoutedChatModel()
     summarizer = FakeChatSummarizer()
     brain, _memory, _chats, _projects = _brain(
@@ -559,6 +581,7 @@ def test_chat_summary_updates_only_named_chat(
 def test_chat_entry_requires_real_chat_id_and_connected_service(
     tmp_path: Path,
 ) -> None:
+    """Verify that chat entry requires real chat ID and connected service."""
     model = RoutedChatModel()
     brain = Brain("fake-model", Memory(tmp_path), model)
 

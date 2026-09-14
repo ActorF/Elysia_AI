@@ -1,3 +1,5 @@
+/** Verify the Electron bridge and Python backend share one strict wire contract. */
+
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import { readFile } from 'node:fs/promises'
@@ -16,6 +18,7 @@ import {
   PROTOCOL_NAME,
   PROTOCOL_VERSION,
   MAX_PROTOCOL_FRAME_BYTES,
+  VOICE_CAPTURE_MAX_BASE64_CHARACTERS,
   ProtocolValidationError,
   createRequest,
   hasNonBlankCodePoint,
@@ -28,6 +31,8 @@ import {
   parseProjectStateResult,
   parseSettingsStateResult,
   parseServerMessage,
+  parseVoiceCaptureCompleteParams,
+  parseVoiceCaptureResult,
   trimProtocolBlankCharacters,
 } from '../dist-electron/protocol.js'
 
@@ -64,6 +69,22 @@ test('JSON Schema declares the exact public settings surface', () => {
   assert.ok(schema.$defs.settingsGetRequest)
   assert.ok(schema.$defs.settingsUpdateRequest)
   assert.ok(schema.$defs.settingsStateResult)
+})
+
+test('JSON Schema declares bounded frame-aligned Voice capture', () => {
+  assert.ok(schema.$defs.voiceCaptureCompleteRequest)
+  assert.ok(schema.$defs.voiceCaptureCompleteParams)
+  assert.ok(schema.$defs.voiceCaptureResult)
+  assert.equal(
+    schema.$defs.voiceCaptureCompleteParams.properties.sampleCount.multipleOf,
+    320,
+  )
+  assert.ok(schema['x-elysia-runtimeInvariants'].some(
+    (invariant) => invariant.includes('decoded byte length equals sampleCount * 2'),
+  ))
+  assert.ok(schema['x-elysia-runtimeInvariants'].some(
+    (invariant) => invariant.includes('aligned to 320-sample frames'),
+  ))
 })
 
 for (const sample of fixtures.validClientMessages) {
@@ -473,6 +494,134 @@ function voiceSettingsStateResponse() {
   assert.ok(sample)
   return structuredClone(sample.message)
 }
+
+function voiceCaptureRequest() {
+  const sample = fixtures.validClientMessages.find(
+    (candidate) => candidate.name === 'voice capture complete request',
+  )
+  assert.ok(sample)
+  return structuredClone(sample.message)
+}
+
+function voiceCaptureResponse() {
+  const sample = fixtures.validServerMessages.find(
+    (candidate) => candidate.name === 'voice capture response',
+  )
+  assert.ok(sample)
+  return structuredClone(sample.message)
+}
+
+test('TypeScript accepts exact canonical Voice capture PCM metadata', () => {
+  const request = voiceCaptureRequest()
+  const parsedParams = parseVoiceCaptureCompleteParams(request.params)
+
+  assert.equal(parsedParams.sessionId, 'voice_fixture')
+  assert.equal(Buffer.from(parsedParams.pcmBase64, 'base64').byteLength, 6_400)
+  assert.deepEqual(
+    createRequest(
+      'voice-capture-builder',
+      'voice.capture.complete',
+      parsedParams,
+    ).params,
+    parsedParams,
+  )
+})
+
+for (const invalidBase64 of [
+  'AB==',
+  'AA==\n',
+  '_A==',
+  'AQ',
+  'AAAA====',
+  '音频',
+]) {
+  test(`TypeScript rejects noncanonical Voice Base64: ${JSON.stringify(invalidBase64)}`, () => {
+    const request = voiceCaptureRequest()
+    request.params.pcmBase64 = invalidBase64
+
+    assert.throws(
+      () => parseClientRequest(request),
+      /strict canonical Base64/,
+    )
+  })
+}
+
+test('TypeScript rejects Voice PCM whose decoded length is inconsistent', () => {
+  const request = voiceCaptureRequest()
+  request.params.pcmBase64 = Buffer.alloc(6_402).toString('base64')
+
+  assert.throws(
+    () => parseClientRequest(request),
+    /sampleCount \* 2/,
+  )
+})
+
+test('TypeScript bounds Voice PCM text before decoding', () => {
+  const request = voiceCaptureRequest()
+  request.params.pcmBase64 = 'A'.repeat(
+    VOICE_CAPTURE_MAX_BASE64_CHARACTERS + 1,
+  )
+
+  assert.throws(() => parseClientRequest(request), ProtocolValidationError)
+})
+
+for (const [field, value] of [
+  ['sampleCount', 3_199],
+  ['sampleCount', 3_201],
+  ['sampleCount', 480_320],
+  ['speechStartSample', -320],
+  ['speechStartSample', 1],
+  ['speechStartSample', 320],
+  ['speechEndSample', 3_520],
+  ['speechEndSample', 3_199],
+]) {
+  test(`TypeScript rejects invalid Voice capture ${field}: ${value}`, () => {
+    const request = voiceCaptureRequest()
+    request.params[field] = value
+
+    assert.throws(() => parseClientRequest(request), ProtocolValidationError)
+  })
+}
+
+test('TypeScript parses Voice receipt without returning PCM', () => {
+  const message = voiceCaptureResponse()
+  const result = parseVoiceCaptureResult(message.result)
+
+  assert.equal(result.kind, 'voice.capture')
+  assert.equal(result.durationMs, 200)
+  assert.equal(result.speechDurationMs, 200)
+  assert.equal(Object.hasOwn(result, 'pcmBase64'), false)
+})
+
+for (const [field, value] of [
+  ['durationMs', -1],
+  ['durationMs', 201],
+  ['speechDurationMs', 1.5],
+  ['speechDurationMs', 201],
+  ['sha256Hex', 'A'.repeat(64)],
+  ['sampleCount', 3_201],
+  ['speechEndSample', 3_520],
+]) {
+  test(`TypeScript rejects invalid Voice result ${field}: ${value}`, () => {
+    const message = voiceCaptureResponse()
+    message.result[field] = value
+
+    assert.throws(
+      () => parseVoiceCaptureResult(message.result),
+      ProtocolValidationError,
+    )
+  })
+}
+
+test('TypeScript rejects Voice result PCM and other extra fields', () => {
+  const message = voiceCaptureResponse()
+  message.result.pcmBase64 = 'AAAA'
+
+  assert.throws(
+    () => parseVoiceCaptureResult(message.result),
+    ProtocolValidationError,
+  )
+})
 
 for (const invalidState of [
   'active-absent',
@@ -997,7 +1146,12 @@ test('Backend protocol failure rejects pending renderer actions before exit', as
   backend.snapshot = {
     revision: 1,
     status: 'ready',
-    capabilities: ['chat.sessions', 'project.management', 'request.cancel'],
+    capabilities: [
+      'chat.sessions',
+      'project.management',
+      'voice.capture',
+      'request.cancel',
+    ],
     models: ['qwen3.5:9b'],
     modelName: 'qwen3.5:9b',
     chatId: 'chat_fixture',
@@ -1011,6 +1165,12 @@ test('Backend protocol failure rejects pending renderer actions before exit', as
     kind: 'chat',
     id: 'chat_fixture',
   })
+  const voiceAction = backend.submitVoiceCapture(
+    voiceCaptureRequest().params,
+  )
+  const voiceRequest = JSON.parse(writes.at(-1))
+  const voicePending = backend.pendingRequests.get(voiceRequest.id)
+  assert.ok(voicePending.timeout)
   backend.pendingRequests.set('generation-pending', {
     method: 'chat.stream',
     chatId: 'chat_fixture',
@@ -1025,6 +1185,7 @@ test('Backend protocol failure rejects pending renderer actions before exit', as
     projectAction,
     settingsAction,
     attachmentAction,
+    voiceAction,
     cancellation,
   ].map(
     (action) => assert.rejects(action, /Protocol connection failed/),
@@ -1038,6 +1199,7 @@ test('Backend protocol failure rejects pending renderer actions before exit', as
   backend.protocolFailure('Protocol connection failed.')
 
   await Promise.all(rejections)
+  assert.equal(voicePending.timeout, undefined)
   assert.equal(killCount, 1)
   assert.equal(backend.pendingRequests.size, 0)
   const errorSnapshot = events.at(-1)
@@ -1391,6 +1553,175 @@ test('Backend sends typed Voice Settings actions during generation', async () =>
   delete expectedUpdate.kind
   assert.deepEqual(await updating, expectedUpdate)
   assert.equal(backend.pendingRequests.has('voice-generation'), true)
+})
+
+test('Backend sends and strictly resolves one transient Voice capture', async () => {
+  const writes = []
+  const backend = new BackendProcess('.', () => undefined)
+  backend.child = {
+    stdin: {
+      writable: true,
+      write: (value) => writes.push(value),
+    },
+  }
+  backend.snapshot = {
+    revision: 1,
+    status: 'ready',
+    capabilities: ['voice.capture'],
+    models: ['qwen3.5:9b'],
+    modelName: 'qwen3.5:9b',
+    chatId: 'chat_fixture',
+    chatTitle: 'Elysia Chat',
+  }
+  const params = voiceCaptureRequest().params
+
+  const submitting = backend.submitVoiceCapture(params)
+  const request = JSON.parse(writes.at(-1))
+  const pending = backend.pendingRequests.get(request.id)
+  assert.equal(request.method, 'voice.capture.complete')
+  assert.deepEqual(request.params, params)
+  assert.ok(pending.timeout)
+  assert.equal(
+    Object.hasOwn(pending, 'pcmBase64'),
+    false,
+  )
+
+  const response = voiceCaptureResponse()
+  response.id = request.id
+  backend.handleProtocolLine(JSON.stringify(response))
+  const expectedReceipt = { ...response.result }
+  delete expectedReceipt.kind
+  assert.deepEqual(await submitting, expectedReceipt)
+  assert.equal(pending.timeout, undefined)
+  assert.equal(backend.pendingRequests.has(request.id), false)
+  assert.equal(Object.hasOwn(expectedReceipt, 'pcmBase64'), false)
+})
+
+test('Backend times out Voice validation without disturbing other requests', async (context) => {
+  context.mock.timers.enable({ apis: ['setTimeout'] })
+  const writes = []
+  const backend = new BackendProcess('.', () => undefined)
+  backend.child = {
+    stdin: {
+      writable: true,
+      write: (value) => writes.push(value),
+    },
+  }
+  backend.snapshot = {
+    revision: 1,
+    status: 'ready',
+    capabilities: ['voice.capture', 'voice.settings'],
+    models: ['qwen3.5:9b'],
+    modelName: 'qwen3.5:9b',
+    chatId: 'chat_fixture',
+    chatTitle: 'Elysia Chat',
+  }
+
+  const submitting = backend.submitVoiceCapture(voiceCaptureRequest().params)
+  const voiceRequest = JSON.parse(writes.at(-1))
+  const voicePending = backend.pendingRequests.get(voiceRequest.id)
+  assert.ok(voicePending.timeout)
+  assert.equal(
+    Object.hasOwn(voicePending.voiceCaptureRequest, 'pcmBase64'),
+    false,
+  )
+
+  const gettingSettings = backend.getVoiceSettings()
+  const settingsRequest = JSON.parse(writes.at(-1))
+  const timedOut = assert.rejects(
+    submitting,
+    /voice capture validation timed out/,
+  )
+  context.mock.timers.runAll()
+  await timedOut
+
+  assert.equal(voicePending.timeout, undefined)
+  assert.equal(voicePending.voiceCaptureRequest, undefined)
+  assert.equal(backend.pendingRequests.has(voiceRequest.id), false)
+  assert.equal(backend.pendingRequests.has(settingsRequest.id), true)
+  assert.equal(backend.getSnapshot().status, 'ready')
+
+  const lateVoiceResponse = voiceCaptureResponse()
+  lateVoiceResponse.id = voiceRequest.id
+  backend.handleProtocolLine(JSON.stringify(lateVoiceResponse))
+  assert.equal(backend.getSnapshot().status, 'ready')
+  assert.equal(backend.pendingRequests.has(settingsRequest.id), true)
+
+  const settingsResponse = voiceSettingsStateResponse()
+  settingsResponse.id = settingsRequest.id
+  backend.handleProtocolLine(JSON.stringify(settingsResponse))
+  const expectedSettings = { ...settingsResponse.result }
+  delete expectedSettings.kind
+  assert.deepEqual(await gettingSettings, expectedSettings)
+  assert.equal(backend.pendingRequests.size, 0)
+})
+
+test('Backend rejects mismatched Voice receipt and clears transient actions', async () => {
+  const writes = []
+  let killCount = 0
+  const backend = new BackendProcess('.', () => undefined)
+  backend.child = {
+    stdin: {
+      writable: true,
+      write: (value) => writes.push(value),
+    },
+    kill: () => {
+      killCount += 1
+      return true
+    },
+  }
+  backend.snapshot = {
+    revision: 1,
+    status: 'ready',
+    capabilities: ['voice.capture'],
+    models: ['qwen3.5:9b'],
+    modelName: 'qwen3.5:9b',
+    chatId: 'chat_fixture',
+    chatTitle: 'Elysia Chat',
+  }
+
+  const submitting = backend.submitVoiceCapture(voiceCaptureRequest().params)
+  const request = JSON.parse(writes.at(-1))
+  const response = voiceCaptureResponse()
+  response.id = request.id
+  response.result.sampleCount += 320
+  response.result.durationMs += 20
+  backend.handleProtocolLine(JSON.stringify(response))
+
+  await assert.rejects(submitting, /does not match its request/)
+  assert.equal(killCount, 1)
+  assert.equal(backend.getSnapshot().status, 'error')
+  assert.equal(backend.pendingRequests.size, 0)
+})
+
+test('Backend blocks Voice capture while a Chat reply is active', async () => {
+  const backend = new BackendProcess('.', () => undefined)
+  backend.child = {
+    stdin: { writable: true, write: () => undefined },
+  }
+  backend.snapshot = {
+    revision: 1,
+    status: 'ready',
+    capabilities: ['voice.capture'],
+    models: ['qwen3.5:9b'],
+    modelName: 'qwen3.5:9b',
+    chatId: 'chat_fixture',
+    chatTitle: 'Elysia Chat',
+  }
+  backend.pendingRequests.set('active-generation', {
+    method: 'chat.stream',
+    chatId: 'chat_fixture',
+    nextSequence: 0,
+    streamCompleted: false,
+    streamedReply: '',
+    streamedLength: 0,
+  })
+
+  await assert.rejects(
+    backend.submitVoiceCapture(voiceCaptureRequest().params),
+    /current Chat or voice action/,
+  )
+  assert.equal(backend.pendingRequests.size, 1)
 })
 
 test('Backend sends and strictly resolves scoped Attachment actions', async () => {
@@ -1892,7 +2223,11 @@ test('Backend stop rejects all pending renderer actions', async () => {
   backend.snapshot = {
     revision: 1,
     status: 'ready',
-    capabilities: ['chat.sessions', 'project.management'],
+    capabilities: [
+      'chat.sessions',
+      'project.management',
+      'voice.capture',
+    ],
     models: ['qwen3.5:9b'],
     modelName: 'qwen3.5:9b',
     chatId: 'chat_fixture',
@@ -1948,6 +2283,13 @@ test('Backend stop rejects all pending renderer actions', async () => {
     streamedLength: 0,
     rejectAttachmentState: rejectAttachment,
   })
+  const voicePromise = backend.submitVoiceCapture(
+    voiceCaptureRequest().params,
+  )
+  const voicePending = [...backend.pendingRequests.values()].find(
+    (pending) => pending.method === 'voice.capture.complete',
+  )
+  assert.ok(voicePending.timeout)
 
   const stopping = backend.stop()
   await assert.rejects(chatPromise, /stopping before the action completed/)
@@ -1957,6 +2299,8 @@ test('Backend stop rejects all pending renderer actions', async () => {
     attachmentPromise,
     /stopping before the action completed/,
   )
+  await assert.rejects(voicePromise, /stopping before the action completed/)
+  assert.equal(voicePending.timeout, undefined)
   child.emit('exit', 0, null)
   await stopping
 })

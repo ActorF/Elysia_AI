@@ -23,7 +23,11 @@
     "stream sequences are contiguous per request and have exactly one terminal chunk",
     "the terminal response reply exactly equals the concatenated stream chunks",
     "request and permission identifiers correlate with live pending operations",
-    "attachment.add sourcePaths are unique after Windows separator, dot-segment, and case normalization"
+    "attachment.add sourcePaths are unique after Windows separator, dot-segment, and case normalization",
+    "voice.capture.complete sampleCount and speech markers are aligned to 320-sample frames",
+    "voice.capture.complete speech markers satisfy 0 <= speechStartSample < speechEndSample <= sampleCount and span at least 3200 samples",
+    "voice.capture.complete pcmBase64 is strict canonical Base64 whose decoded byte length equals sampleCount * 2",
+    "voice.capture results derive durationMs and speechDurationMs exactly from their sample metadata"
   ],
   "oneOf": [
     { "$ref": "#/$defs/handshakeRequest" },
@@ -51,6 +55,7 @@
     { "$ref": "#/$defs/settingsUpdateRequest" },
     { "$ref": "#/$defs/voiceSettingsGetRequest" },
     { "$ref": "#/$defs/voiceSettingsUpdateRequest" },
+    { "$ref": "#/$defs/voiceCaptureCompleteRequest" },
     { "$ref": "#/$defs/cancelRequest" },
     { "$ref": "#/$defs/permissionResponseRequest" },
     { "$ref": "#/$defs/shutdownRequest" },
@@ -66,6 +71,12 @@
       "type": "string",
       "minLength": 1,
       "maxLength": 128
+    },
+    "voiceSessionIdentifier": {
+      "type": "string",
+      "minLength": 7,
+      "maxLength": 128,
+      "pattern": "^voice_[A-Za-z0-9_-]+$"
     },
     "audioDeviceId": {
       "type": "string",
@@ -127,6 +138,7 @@
             "settings.update",
             "voice.settings.get",
             "voice.settings.update",
+            "voice.capture.complete",
             "request.cancel",
             "permission.respond",
             "shutdown"
@@ -513,6 +525,47 @@
       ],
       "additionalProperties": false
     },
+    "voiceCaptureCompleteParams": {
+      "type": "object",
+      "properties": {
+        "sessionId": { "$ref": "#/$defs/voiceSessionIdentifier" },
+        "chatId": { "$ref": "#/$defs/identifier" },
+        "sampleRateHz": { "const": 16000 },
+        "channelCount": { "const": 1 },
+        "sampleFormat": { "const": "s16le" },
+        "sampleCount": {
+          "type": "integer",
+          "minimum": 3200,
+          "maximum": 480000,
+          "multipleOf": 320
+        },
+        "speechStartSample": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 480000,
+          "multipleOf": 320
+        },
+        "speechEndSample": {
+          "type": "integer",
+          "minimum": 3200,
+          "maximum": 480000,
+          "multipleOf": 320
+        },
+        "pcmBase64": {
+          "type": "string",
+          "minLength": 8536,
+          "maxLength": 1280000,
+          "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$",
+          "contentEncoding": "base64"
+        }
+      },
+      "required": [
+        "sessionId", "chatId", "sampleRateHz", "channelCount",
+        "sampleFormat", "sampleCount", "speechStartSample",
+        "speechEndSample", "pcmBase64"
+      ],
+      "additionalProperties": false
+    },
     "cancelParams": {
       "type": "object",
       "properties": {
@@ -806,6 +859,17 @@
           "properties": {
             "method": { "const": "voice.settings.update" },
             "params": { "$ref": "#/$defs/voiceSettingsUpdateParams" }
+          }
+        }
+      ]
+    },
+    "voiceCaptureCompleteRequest": {
+      "allOf": [
+        { "$ref": "#/$defs/requestEnvelope" },
+        {
+          "properties": {
+            "method": { "const": "voice.capture.complete" },
+            "params": { "$ref": "#/$defs/voiceCaptureCompleteParams" }
           }
         }
       ]
@@ -1258,6 +1322,55 @@
       ],
       "additionalProperties": false
     },
+    "voiceCaptureResult": {
+      "type": "object",
+      "properties": {
+        "kind": { "const": "voice.capture" },
+        "sessionId": { "$ref": "#/$defs/voiceSessionIdentifier" },
+        "chatId": { "$ref": "#/$defs/identifier" },
+        "sampleRateHz": { "const": 16000 },
+        "channelCount": { "const": 1 },
+        "sampleFormat": { "const": "s16le" },
+        "sampleCount": {
+          "type": "integer",
+          "minimum": 3200,
+          "maximum": 480000,
+          "multipleOf": 320
+        },
+        "speechStartSample": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 480000,
+          "multipleOf": 320
+        },
+        "speechEndSample": {
+          "type": "integer",
+          "minimum": 3200,
+          "maximum": 480000,
+          "multipleOf": 320
+        },
+        "durationMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 30000
+        },
+        "speechDurationMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 30000
+        },
+        "sha256Hex": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "required": [
+        "kind", "sessionId", "chatId", "sampleRateHz", "channelCount",
+        "sampleFormat", "sampleCount", "speechStartSample",
+        "speechEndSample", "durationMs", "speechDurationMs", "sha256Hex"
+      ],
+      "additionalProperties": false
+    },
     "shutdownResult": {
       "type": "object",
       "properties": { "stopped": { "const": true } },
@@ -1281,6 +1394,7 @@
             { "$ref": "#/$defs/attachmentStateResult" },
             { "$ref": "#/$defs/settingsStateResult" },
             { "$ref": "#/$defs/voiceSettingsStateResult" },
+            { "$ref": "#/$defs/voiceCaptureResult" },
             { "$ref": "#/$defs/shutdownResult" }
           ]
         }

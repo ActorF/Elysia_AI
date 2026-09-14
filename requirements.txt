@@ -1,3 +1,4 @@
+# Runtime and quality dependencies pinned for repeatable local and CI installs.
 certifi==2026.6.17
 charset-normalizer==3.4.9
 idna==3.18

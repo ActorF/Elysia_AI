@@ -1,3 +1,5 @@
+"""Test application composition and startup validation."""
+
 from dataclasses import replace
 import json
 from pathlib import Path
@@ -20,17 +22,20 @@ from recovery import DataPortabilityService
 
 
 class FakeStartupChatModel:
+    """Expose startup model configuration without contacting Ollama."""
     def __init__(
         self,
         model_name: str,
         ollama_host: str,
     ) -> None:
+        """Initialize deterministic state for this test double."""
         self.model_name = model_name
         self.ollama_host = ollama_host
 
     def ensure_model_available(
         self,
     ) -> None:
+        """Emulate or record model-availability validation."""
         pass
 
 
@@ -45,6 +50,7 @@ def test_validate_settings_rejects_invalid_token_budget(
     monkeypatch: pytest.MonkeyPatch,
     token_budget: int,
 ) -> None:
+    """Verify that validate settings rejects invalid token budget."""
     monkeypatch.setattr(
         start,
         "SETTINGS",
@@ -77,6 +83,7 @@ def test_validate_settings_rejects_invalid_retrieval_limit(
     monkeypatch: pytest.MonkeyPatch,
     retrieval_limit: int,
 ) -> None:
+    """Verify that validate settings rejects invalid retrieval limit."""
     monkeypatch.setattr(
         start,
         "SETTINGS",
@@ -103,6 +110,7 @@ def test_validate_settings_rejects_invalid_import_size_limit(
     monkeypatch: pytest.MonkeyPatch,
     max_bytes: int,
 ) -> None:
+    """Verify that validate settings rejects invalid import size limit."""
     monkeypatch.setattr(
         start,
         "SETTINGS",
@@ -120,6 +128,7 @@ def test_create_brain_uses_configured_token_budget(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Verify that create brain uses configured token budget."""
     monkeypatch.setattr(
         start,
         "SETTINGS",
@@ -232,6 +241,7 @@ def test_create_brain_migrates_legacy_conversation_once(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Verify that create brain migrates legacy conversation once."""
     legacy_file = (
         tmp_path
         / "workspace"
@@ -285,6 +295,7 @@ def test_create_data_portability_service_uses_configured_limit(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Verify that create data portability service uses configured limit."""
     monkeypatch.setattr(
         start,
         "SETTINGS",

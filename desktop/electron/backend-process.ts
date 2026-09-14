@@ -40,6 +40,8 @@ import type {
   UpdateDesktopSettingsRequest,
   UpdateVoiceSettingsRequest,
   UpdateProjectRequest,
+  VoiceCaptureReceipt,
+  VoiceCaptureRequest,
 } from './contracts.js'
 import {
   MAX_ATTACHMENT_FILE_COUNT,
@@ -57,6 +59,7 @@ import {
   parseInitializeResult,
   parseProjectStateResult,
   parseSettingsStateResult,
+  parseVoiceCaptureResult,
   parseVoiceSettingsStateResult,
   parseServerMessage,
   type ProtocolMethod,
@@ -79,6 +82,8 @@ const HANDSHAKE_TIMEOUT_MS = 15_000
 const INITIALIZE_TIMEOUT_MS = 120_000
 const CANCEL_ACK_TIMEOUT_MS = 5_000
 const CANCEL_TERMINAL_TIMEOUT_MS = 15_000
+const VOICE_CAPTURE_VALIDATION_TIMEOUT_MS = 5_000
+const MAX_TIMED_OUT_VOICE_CAPTURE_REQUEST_IDS = 32
 const SHUTDOWN_TIMEOUT_MS = 30_000
 const RESTART_TIMEOUT_MS = HANDSHAKE_TIMEOUT_MS + INITIALIZE_TIMEOUT_MS + 5_000
 
@@ -102,6 +107,9 @@ interface PendingRequest {
   rejectSettingsState?: (error: Error) => void
   resolveVoiceSettingsState?: (state: VoiceSettingsState) => void
   rejectVoiceSettingsState?: (error: Error) => void
+  voiceCaptureRequest?: Omit<VoiceCaptureRequest, 'pcmBase64'>
+  resolveVoiceCapture?: (receipt: VoiceCaptureReceipt) => void
+  rejectVoiceCapture?: (error: Error) => void
   resolveAttachmentState?: (state: AttachmentState) => void
   rejectAttachmentState?: (error: Error) => void
   cancelTargetId?: string
@@ -184,6 +192,10 @@ const ATTACHMENT_MUTATION_METHODS = new Set<ProtocolMethod>([
   'attachment.remove',
 ])
 
+/**
+ * Own the authenticated Python child process and translate its NDJSON stream
+ * into renderer snapshots, events, and request promises.
+ */
 export class BackendProcess {
   private child: ChildProcessWithoutNullStreams | null = null
   private lineReader: ReadlineInterface | null = null
@@ -192,6 +204,7 @@ export class BackendProcess {
   private handshakeTimeout: ReturnType<typeof setTimeout> | null = null
   private initializeTimeout: ReturnType<typeof setTimeout> | null = null
   private readonly pendingRequests = new Map<string, PendingRequest>()
+  private readonly timedOutVoiceCaptureRequestIds = new Set<string>()
   private expectedExit = false
   private restartCompletion: {
     resolve: (snapshot: BackendSnapshot) => void
@@ -216,6 +229,7 @@ export class BackendProcess {
     private readonly emitToRenderer: EventSink,
   ) {}
 
+  /** Return an immutable renderer snapshot including the active generation ID. */
   getSnapshot(): BackendSnapshot {
     const activeEntry = [...this.pendingRequests.entries()].find(
       ([, pending]) => CHAT_GENERATION_METHODS.has(pending.method),
@@ -254,6 +268,7 @@ export class BackendProcess {
     }
   }
 
+  /** Spawn the Backend and begin its authenticated handshake and initialization. */
   start(modelName?: string): void {
     if (this.child !== null) {
       return
@@ -283,6 +298,7 @@ export class BackendProcess {
     this.lastDiagnostic = ''
     const sessionToken = randomBytes(32).toString('base64url')
     this.pendingRequests.clear()
+    this.timedOutVoiceCaptureRequestIds.clear()
     this.updateSnapshot({
       status: 'starting',
       protocolName: undefined,
@@ -373,6 +389,7 @@ export class BackendProcess {
     }, HANDSHAKE_TIMEOUT_MS)
   }
 
+  /** Start a streamed Chat operation and return the ID used for cancellation. */
   beginChat(request: ChatRequest): { requestId: string } {
     if (
       this.snapshot.status !== 'ready'
@@ -432,6 +449,7 @@ export class BackendProcess {
     }
   }
 
+  /** Restart with an installed model and restore the prior Chat when possible. */
   async restartWithModel(modelName: string): Promise<BackendSnapshot> {
     if (!this.snapshot.models.includes(modelName)) {
       throw new Error('Selected model is not installed in Ollama.')
@@ -439,6 +457,7 @@ export class BackendProcess {
     return this.performRestart(modelName)
   }
 
+  /** Restart the Backend without changing its selected model. */
   async restart(): Promise<BackendSnapshot> {
     return this.performRestart()
   }
@@ -519,6 +538,7 @@ export class BackendProcess {
     completion.reject(new Error(message))
   }
 
+  /** Shut down the child process and settle every outstanding renderer request. */
   async stop(): Promise<void> {
     this.rejectRestartCompletion(
       'Python Backend stopped before its restart completed.',
@@ -802,6 +822,101 @@ export class BackendProcess {
     return this.requestVoiceSettingsState('voice.settings.update', request)
   }
 
+  /** Validate one renderer-owned utterance without retaining its PCM bytes. */
+  submitVoiceCapture(
+    request: VoiceCaptureRequest,
+  ): Promise<VoiceCaptureReceipt> {
+    if (this.snapshot.status !== 'ready') {
+      return Promise.reject(new Error('Python Backend is not ready.'))
+    }
+    if (!this.snapshot.capabilities.includes('voice.capture')) {
+      return Promise.reject(
+        new Error('Python Backend does not support voice capture.'),
+      )
+    }
+    if (request.chatId !== this.snapshot.chatId) {
+      return Promise.reject(new Error('The requested Chat is not active.'))
+    }
+    if (
+      [...this.pendingRequests.values()].some((pending) => (
+        CHAT_GENERATION_METHODS.has(pending.method)
+        || pending.method === 'voice.capture.complete'
+      ))
+    ) {
+      return Promise.reject(
+        new Error('Wait for the current Chat or voice action to finish.'),
+      )
+    }
+
+    const voiceCaptureRequest: Omit<VoiceCaptureRequest, 'pcmBase64'> = {
+      sessionId: request.sessionId,
+      chatId: request.chatId,
+      sampleRateHz: request.sampleRateHz,
+      channelCount: request.channelCount,
+      sampleFormat: request.sampleFormat,
+      sampleCount: request.sampleCount,
+      speechStartSample: request.speechStartSample,
+      speechEndSample: request.speechEndSample,
+    }
+    return new Promise<VoiceCaptureReceipt>((resolve, reject) => {
+      const requestId = this.sendRequest(
+        'voice.capture.complete',
+        request,
+        request.chatId,
+        {
+          voiceCaptureRequest,
+          resolveVoiceCapture: resolve,
+          rejectVoiceCapture: reject,
+        },
+      )
+      this.startVoiceCaptureValidationTimeout(requestId)
+    })
+  }
+
+  private startVoiceCaptureValidationTimeout(requestId: string): void {
+    const pending = this.pendingRequests.get(requestId)
+    if (
+      pending === undefined
+      || pending.method !== 'voice.capture.complete'
+    ) {
+      return
+    }
+
+    pending.timeout = setTimeout(() => {
+      if (this.pendingRequests.get(requestId) !== pending) {
+        return
+      }
+
+      this.pendingRequests.delete(requestId)
+      pending.timeout = undefined
+      this.rememberTimedOutVoiceCaptureRequest(requestId)
+
+      const reject = pending.rejectVoiceCapture
+      pending.voiceCaptureRequest = undefined
+      pending.resolveVoiceCapture = undefined
+      pending.rejectVoiceCapture = undefined
+      reject?.(new Error('Python Backend voice capture validation timed out.'))
+    }, VOICE_CAPTURE_VALIDATION_TIMEOUT_MS)
+  }
+
+  private rememberTimedOutVoiceCaptureRequest(requestId: string): void {
+    this.timedOutVoiceCaptureRequestIds.add(requestId)
+    if (
+      this.timedOutVoiceCaptureRequestIds.size
+      <= MAX_TIMED_OUT_VOICE_CAPTURE_REQUEST_IDS
+    ) {
+      return
+    }
+
+    const oldestRequestId = this.timedOutVoiceCaptureRequestIds
+      .values()
+      .next()
+      .value
+    if (oldestRequestId !== undefined) {
+      this.timedOutVoiceCaptureRequestIds.delete(oldestRequestId)
+    }
+  }
+
   /** Load pending attachments for one exact Chat or Project scope. */
   listAttachments(scope: AttachmentScope): Promise<AttachmentState> {
     return this.requestAttachmentState('attachment.list', { scope })
@@ -1044,6 +1159,9 @@ export class BackendProcess {
       | 'rejectSettingsState'
       | 'resolveVoiceSettingsState'
       | 'rejectVoiceSettingsState'
+      | 'voiceCaptureRequest'
+      | 'resolveVoiceCapture'
+      | 'rejectVoiceCapture'
       | 'resolveAttachmentState'
       | 'rejectAttachmentState'
       | 'attachmentScope'
@@ -1144,6 +1262,9 @@ export class BackendProcess {
 
     const pending = this.pendingRequests.get(message.id)
     if (pending === undefined) {
+      if (this.timedOutVoiceCaptureRequestIds.delete(message.id)) {
+        return
+      }
       this.protocolFailure(
         `Backend responded to an unknown request: ${message.id}.`,
       )
@@ -1187,6 +1308,8 @@ export class BackendProcess {
         parseSettingsStateResult(message.result)
       } else if (VOICE_SETTINGS_METHODS.has(pending.method)) {
         parseVoiceSettingsStateResult(message.result)
+      } else if (pending.method === 'voice.capture.complete') {
+        parseVoiceCaptureResult(message.result)
       } else if (ATTACHMENT_METHODS.has(pending.method)) {
         parseAttachmentStateResult(message.result)
       } else if (CHAT_GENERATION_METHODS.has(pending.method)) {
@@ -1259,6 +1382,9 @@ export class BackendProcess {
       if (VOICE_SETTINGS_METHODS.has(pending.method)) {
         pending.rejectVoiceSettingsState?.(new Error(message.error.message))
       }
+      if (pending.method === 'voice.capture.complete') {
+        pending.rejectVoiceCapture?.(new Error(message.error.message))
+      }
       if (ATTACHMENT_METHODS.has(pending.method)) {
         pending.rejectAttachmentState?.(new Error(message.error.message))
       }
@@ -1280,6 +1406,7 @@ export class BackendProcess {
         'project.management',
         'settings.management',
         'voice.settings',
+        'voice.capture',
         'attachment.management',
         'request.cancel',
         'stream',
@@ -1382,6 +1509,43 @@ export class BackendProcess {
         inputDeviceId: result.inputDeviceId,
         outputDeviceId: result.outputDeviceId,
         warning: result.warning,
+      })
+      return
+    }
+
+    if (pending.method === 'voice.capture.complete') {
+      const result = parseVoiceCaptureResult(message.result)
+      const expected = pending.voiceCaptureRequest
+      if (
+        expected === undefined
+        || result.sessionId !== expected.sessionId
+        || result.chatId !== expected.chatId
+        || result.sampleRateHz !== expected.sampleRateHz
+        || result.channelCount !== expected.channelCount
+        || result.sampleFormat !== expected.sampleFormat
+        || result.sampleCount !== expected.sampleCount
+        || result.speechStartSample !== expected.speechStartSample
+        || result.speechEndSample !== expected.speechEndSample
+      ) {
+        const error = new Error(
+          'Voice capture response does not match its request.',
+        )
+        pending.rejectVoiceCapture?.(error)
+        this.protocolFailure(error.message)
+        return
+      }
+      pending.resolveVoiceCapture?.({
+        sessionId: result.sessionId,
+        chatId: result.chatId,
+        sampleRateHz: result.sampleRateHz,
+        channelCount: result.channelCount,
+        sampleFormat: result.sampleFormat,
+        sampleCount: result.sampleCount,
+        speechStartSample: result.speechStartSample,
+        speechEndSample: result.speechEndSample,
+        durationMs: result.durationMs,
+        speechDurationMs: result.speechDurationMs,
+        sha256Hex: result.sha256Hex,
       })
       return
     }
@@ -1646,6 +1810,7 @@ export class BackendProcess {
     this.initializeRequestId = null
     this.clearHandshakeTimeout()
     this.clearInitializeTimeout()
+    this.timedOutVoiceCaptureRequestIds.clear()
     for (const pending of this.pendingRequests.values()) {
       if (pending.timeout !== undefined) {
         clearTimeout(pending.timeout)
@@ -1666,6 +1831,11 @@ export class BackendProcess {
       pending.rejectVoiceSettingsState?.(
         new Error(
           'Python Backend stopped before the Voice Settings action completed.',
+        ),
+      )
+      pending.rejectVoiceCapture?.(
+        new Error(
+          'Python Backend stopped before the Voice Capture action completed.',
         ),
       )
       pending.rejectAttachmentState?.(
@@ -1693,6 +1863,7 @@ export class BackendProcess {
       pending.rejectProjectState?.(error)
       pending.rejectSettingsState?.(error)
       pending.rejectVoiceSettingsState?.(error)
+      pending.rejectVoiceCapture?.(error)
       pending.rejectAttachmentState?.(error)
       pending.rejectCancellation?.(error)
       pending.resolveChatState = undefined
@@ -1703,6 +1874,8 @@ export class BackendProcess {
       pending.rejectSettingsState = undefined
       pending.resolveVoiceSettingsState = undefined
       pending.rejectVoiceSettingsState = undefined
+      pending.resolveVoiceCapture = undefined
+      pending.rejectVoiceCapture = undefined
       pending.resolveAttachmentState = undefined
       pending.rejectAttachmentState = undefined
       pending.resolveCancellation = undefined
@@ -1715,6 +1888,7 @@ export class BackendProcess {
     this.clearInitializeTimeout()
     this.rejectPendingActionPromises(message)
     this.pendingRequests.clear()
+    this.timedOutVoiceCaptureRequestIds.clear()
     this.updateSnapshot({
       status: 'error',
       protocolName: undefined,
@@ -1734,6 +1908,7 @@ export class BackendProcess {
     this.clearInitializeTimeout()
     this.rejectPendingActionPromises(message)
     this.pendingRequests.clear()
+    this.timedOutVoiceCaptureRequestIds.clear()
     // The handshake remains valid even though Brain creation failed. Preserve
     // negotiated capabilities so repair-only Settings methods remain gated by
     // the authenticated contract instead of looking like an unknown child.

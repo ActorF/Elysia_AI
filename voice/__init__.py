@@ -1,4 +1,17 @@
-"""Public Voice settings API; audio capture and playback remain in Electron."""
+"""Public Voice settings and bounded PCM capture-domain API."""
+
+from .capture import (
+    VOICE_CAPTURE_BYTES_PER_SAMPLE,
+    VOICE_CAPTURE_CHANNEL_COUNT,
+    VOICE_CAPTURE_FRAME_DURATION_MS,
+    VOICE_CAPTURE_FRAME_SAMPLES,
+    VOICE_CAPTURE_MAX_SAMPLES,
+    VOICE_CAPTURE_MAX_SESSION_ID_LENGTH,
+    VOICE_CAPTURE_MIN_SPEECH_SAMPLES,
+    VOICE_CAPTURE_SAMPLE_FORMAT,
+    VOICE_CAPTURE_SAMPLE_RATE_HZ,
+    VoiceCapture,
+)
 
 from .domain import (
     MAX_AUDIO_DEVICE_ID_LENGTH,
@@ -7,6 +20,7 @@ from .domain import (
     validate_audio_device_id,
 )
 from .exceptions import (
+    VoiceCaptureValidationError,
     VoiceSettingsConflictError,
     VoiceSettingsError,
     VoiceSettingsStorageError,
@@ -23,9 +37,20 @@ from .storage import (
 __all__ = [
     "MAX_AUDIO_DEVICE_ID_LENGTH",
     "MAX_JSON_SAFE_INTEGER",
+    "VOICE_CAPTURE_BYTES_PER_SAMPLE",
+    "VOICE_CAPTURE_CHANNEL_COUNT",
+    "VOICE_CAPTURE_FRAME_DURATION_MS",
+    "VOICE_CAPTURE_FRAME_SAMPLES",
+    "VOICE_CAPTURE_MAX_SAMPLES",
+    "VOICE_CAPTURE_MAX_SESSION_ID_LENGTH",
+    "VOICE_CAPTURE_MIN_SPEECH_SAMPLES",
+    "VOICE_CAPTURE_SAMPLE_FORMAT",
+    "VOICE_CAPTURE_SAMPLE_RATE_HZ",
     "VOICE_SETTINGS_SCHEMA_VERSION",
     "AudioDevicePreferences",
     "JsonVoiceSettingsRepository",
+    "VoiceCapture",
+    "VoiceCaptureValidationError",
     "VoiceSettingsConflictError",
     "VoiceSettingsError",
     "VoiceSettingsService",

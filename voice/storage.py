@@ -93,7 +93,13 @@ def _unlock_stream(stream: BinaryIO) -> None:
 
 @contextmanager
 def voice_settings_file_lock(path: Path) -> Iterator[None]:
-    """Serialize preference CAS operations across threads and app processes."""
+    """Serialize preference CAS operations across threads and app processes.
+
+    A shared per-path ``RLock`` coordinates repository instances in this
+    process, while an OS lock on a stable sidecar file protects the complete
+    read/compare/write transaction from other Elysia processes. The sidecar
+    contains one byte because Windows cannot lock an empty byte range.
+    """
 
     normalized = Path(path).resolve()
     lock_path = normalized.with_name(f".{normalized.name}.lock")
@@ -326,6 +332,8 @@ class JsonVoiceSettingsRepository:
         }
 
     def _atomic_write(self, value: dict[str, object]) -> None:
+        """Flush a sibling temporary file before atomically replacing state."""
+
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
             descriptor, temporary_name = mkstemp(

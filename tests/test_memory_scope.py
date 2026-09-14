@@ -1,3 +1,5 @@
+"""Test Global, Project, and Chat memory-scope validation."""
+
 from typing import cast
 
 import pytest
@@ -12,6 +14,7 @@ from memory import (
 
 
 def test_context_orders_readable_scopes_by_specificity() -> None:
+    """Verify that context orders readable scopes by specificity."""
     context = MemoryScopeContext(
         chat_id=ChatId("chat_active"),
         project_id=ProjectId("project_active"),
@@ -25,6 +28,7 @@ def test_context_orders_readable_scopes_by_specificity() -> None:
 
 
 def test_unassigned_chat_reads_chat_and_global_only() -> None:
+    """Verify that unassigned chat reads chat and global only."""
     context = MemoryScopeContext(
         chat_id=ChatId("chat_unassigned"),
         project_id=None,
@@ -50,11 +54,13 @@ def test_scope_ref_rejects_invalid_scope_id_pairs(
     scope: MemoryScope,
     scope_id: str | None,
 ) -> None:
+    """Verify that scope ref rejects invalid scope ID pairs."""
     with pytest.raises(ValueError):
         MemoryScopeRef(scope, scope_id)
 
 
 def test_validate_memory_scope_rejects_unknown_external_value() -> None:
+    """Verify that validate memory scope rejects unknown external value."""
     with pytest.raises(
         ValueError,
         match=r"scope must be global, project, or chat",
@@ -63,6 +69,7 @@ def test_validate_memory_scope_rejects_unknown_external_value() -> None:
 
 
 def test_context_rejects_invalid_identifiers() -> None:
+    """Verify that context rejects invalid identifiers."""
     with pytest.raises(ValueError):
         MemoryScopeContext(
             chat_id=cast(ChatId, "project_wrong"),

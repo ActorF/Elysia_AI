@@ -1,3 +1,5 @@
+"""Test user-data export, import, validation, and rollback."""
+
 import json
 import os
 import subprocess
@@ -45,6 +47,7 @@ def service_for(
     JsonChatRepository,
     JsonProjectRepository,
 ]:
+    """Compose an isolated portability service and its backing repositories."""
     chats = JsonChatRepository(base_dir / "workspace" / "chats")
     projects = JsonProjectRepository(base_dir / "workspace" / "projects")
     service = DataPortabilityService(
@@ -63,6 +66,7 @@ def populated_chat(
     title: str,
     project_id: ProjectId | None = None,
 ) -> ChatSession:
+    """Persist a two-message Chat with a summary for round-trip assertions."""
     chat = chats.create_chat(
         title=title,
         mode="chat",
@@ -100,6 +104,7 @@ def populated_chat(
 
 
 def write_json(path: Path, value: object) -> None:
+    """Write deterministic UTF-8 fixture JSON with the repository convention."""
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps(value, ensure_ascii=False, indent=2) + "\n",
@@ -108,6 +113,7 @@ def write_json(path: Path, value: object) -> None:
 
 
 def create_directory_redirect(link: Path, target: Path) -> None:
+    """Create a junction or symlink used to probe import path containment."""
     target.mkdir(parents=True, exist_ok=True)
     link.parent.mkdir(parents=True, exist_ok=True)
     if os.name == "nt":
@@ -127,6 +133,7 @@ def create_directory_redirect(link: Path, target: Path) -> None:
 
 
 def remove_directory_redirect(link: Path) -> None:
+    """Remove directory redirect created by the fixture."""
     if link.is_symlink():
         link.unlink()
     elif link.exists():
@@ -134,6 +141,7 @@ def remove_directory_redirect(link: Path) -> None:
 
 
 def seed_workspace_files(base_dir: Path) -> dict[str, object]:
+    """Write the canonical legacy/user workspace set and return its contents."""
     files: dict[str, object] = {
         "memory/profile.json": {
             "schema_version": 1,
@@ -179,6 +187,7 @@ def seed_workspace_files(base_dir: Path) -> dict[str, object]:
 def test_single_chat_export_import_restores_equivalent_session(
     tmp_path: Path,
 ) -> None:
+    """Verify that single chat export import restores equivalent session."""
     source_service, source_chats, _ = service_for(tmp_path / "source")
     original = populated_chat(source_chats, title="Standalone")
     export_file = tmp_path / "exports" / "chat.json"
@@ -195,6 +204,7 @@ def test_single_chat_export_import_restores_equivalent_session(
 def test_project_export_import_restores_project_and_every_chat(
     tmp_path: Path,
 ) -> None:
+    """Verify that project export import restores project and every chat."""
     source_service, source_chats, source_projects = service_for(
         tmp_path / "source"
     )
@@ -232,6 +242,7 @@ def test_project_export_import_restores_project_and_every_chat(
 def test_all_user_data_round_trip_restores_equivalent_state(
     tmp_path: Path,
 ) -> None:
+    """Verify that all user data round trip restores equivalent state."""
     source_dir = tmp_path / "source"
     source_service, source_chats, source_projects = service_for(source_dir)
     first_project = source_projects.create_project(name="First Project")
@@ -284,6 +295,7 @@ def test_all_user_data_round_trip_restores_equivalent_state(
 def test_all_user_data_export_excludes_device_local_audio_preferences(
     tmp_path: Path,
 ) -> None:
+    """Verify that all user data export excludes device local audio preferences."""
     source_dir = tmp_path / "source"
     source_service, _, _ = service_for(source_dir)
     audio_path = (
@@ -310,6 +322,7 @@ def test_all_user_data_export_excludes_device_local_audio_preferences(
 def test_import_rejects_device_local_audio_path_without_overwriting_it(
     tmp_path: Path,
 ) -> None:
+    """Verify that import rejects device local audio path without overwriting it."""
     source_dir = tmp_path / "source"
     source_service, _, _ = service_for(source_dir)
     seed_workspace_files(source_dir)
@@ -358,6 +371,7 @@ def test_import_rejects_device_local_audio_path_without_overwriting_it(
 def test_malformed_imported_settings_are_quarantined_as_validation_error(
     tmp_path: Path,
 ) -> None:
+    """Quarantine malformed imported settings without making them live state."""
     source_service, _, _ = service_for(tmp_path / "source")
     seed_workspace_files(tmp_path / "source")
     bundle_path = tmp_path / "invalid-settings.json"
@@ -397,6 +411,7 @@ def test_malformed_imported_settings_are_quarantined_as_validation_error(
 def test_export_rejects_non_allowlisted_settings_without_leaking_secret(
     tmp_path: Path,
 ) -> None:
+    """Verify that export rejects non allowlisted settings without leaking secret."""
     source_dir = tmp_path / "source"
     source_service, _, _ = service_for(source_dir)
     seed_workspace_files(source_dir)
@@ -426,6 +441,7 @@ def test_settings_import_rebases_equal_or_lower_revision_above_current(
     tmp_path: Path,
     current_revision: int,
 ) -> None:
+    """Verify that settings import rebases equal or lower revision above current."""
     source_dir = tmp_path / "source"
     source_service, _, _ = service_for(source_dir)
     seed_workspace_files(source_dir)
@@ -463,6 +479,7 @@ def test_settings_import_rebases_equal_or_lower_revision_above_current(
 
 
 def test_corrupt_bundle_is_quarantined_and_logged(tmp_path: Path) -> None:
+    """Move an unreadable bundle aside and retain a recoverable audit record."""
     service, chats, projects = service_for(tmp_path)
     corrupt_file = tmp_path / "incoming" / "broken.json"
     corrupt_file.parent.mkdir()
@@ -494,6 +511,7 @@ def test_corrupt_bundle_is_quarantined_and_logged(tmp_path: Path) -> None:
 
 
 def test_checksum_mismatch_is_rejected_before_mutation(tmp_path: Path) -> None:
+    """Verify that checksum mismatch is rejected before mutation."""
     source_service, source_chats, _ = service_for(tmp_path / "source")
     original = populated_chat(source_chats, title="Checksum")
     export_file = tmp_path / "chat.json"
@@ -515,6 +533,7 @@ def test_checksum_mismatch_is_rejected_before_mutation(tmp_path: Path) -> None:
 def test_unknown_chat_schema_field_is_rejected_and_quarantined(
     tmp_path: Path,
 ) -> None:
+    """Verify that unknown chat schema field is rejected and quarantined."""
     source_service, source_chats, _ = service_for(tmp_path / "source")
     original = populated_chat(source_chats, title="Strict Schema")
     export_file = tmp_path / "chat.json"
@@ -553,6 +572,7 @@ def test_unsafe_embedded_workspace_path_is_rejected(
     tmp_path: Path,
     unsafe_path: str,
 ) -> None:
+    """Reject archive entries that could write outside the selected workspace."""
     source_service, _, _ = service_for(tmp_path / "source")
     export_file = tmp_path / "all.json"
     source_service.export_all_user_data(export_file)
@@ -578,6 +598,7 @@ def test_unsafe_embedded_workspace_path_is_rejected(
 def test_full_restore_rebases_legacy_backup_to_target_workspace(
     tmp_path: Path,
 ) -> None:
+    """Verify that full restore rebases legacy backup to target workspace."""
     source_dir = tmp_path / "source"
     source_service, source_chats, _ = service_for(source_dir)
     write_json(
@@ -662,6 +683,7 @@ def test_full_restore_rejects_a_tampered_legacy_message_prefix(
     tmp_path: Path,
     changed_field: str,
 ) -> None:
+    """Refuse restore when migrated Legacy Chat history diverges from its source."""
     source_dir = tmp_path / "source"
     source_service, source_chats, _ = service_for(source_dir)
     write_json(
@@ -714,6 +736,7 @@ def test_full_restore_rejects_a_tampered_legacy_message_prefix(
 def test_export_refuses_metadata_only_attachment_bundle(
     tmp_path: Path,
 ) -> None:
+    """Verify that export refuses metadata only attachment bundle."""
     service, chats, _projects = service_for(tmp_path)
     session = populated_chat(chats, title="Attachment")
     attachment = create_attachment_metadata(
@@ -740,6 +763,7 @@ def test_export_refuses_metadata_only_attachment_bundle(
 
 
 def test_export_refuses_a_redirected_workspace_root(tmp_path: Path) -> None:
+    """Stop export at a redirected root to preserve workspace containment."""
     application_root = tmp_path / "application"
     outside = tmp_path / "outside"
     write_json(outside / "memory" / "secret.json", {"secret": "outside"})
@@ -765,6 +789,7 @@ def test_export_refuses_a_redirected_workspace_root(tmp_path: Path) -> None:
 def test_project_export_refuses_to_omit_local_project_files(
     tmp_path: Path,
 ) -> None:
+    """Verify that project export refuses to omit local project files."""
     service, _chats, projects = service_for(tmp_path)
     project = projects.create_project(name="Local sources")
     source = tmp_path / "source.md"
@@ -790,6 +815,7 @@ def test_project_export_refuses_to_omit_local_project_files(
 def test_project_export_fails_closed_on_nested_attachment_layout(
     tmp_path: Path,
 ) -> None:
+    """Verify that project export fails closed on nested attachment layout."""
     service, _chats, projects = service_for(tmp_path)
     project = projects.create_project(name="Nested local sources")
     nested = (
@@ -816,6 +842,7 @@ def test_project_export_fails_closed_on_nested_attachment_layout(
 def test_project_export_rejects_a_redirected_attachment_ancestor(
     tmp_path: Path,
 ) -> None:
+    """Reject Project export when an attachment ancestor escapes storage."""
     service, _chats, projects = service_for(tmp_path)
     project = projects.create_project(name="Redirected sources")
     outside = tmp_path / "outside-project-attachments"
@@ -832,6 +859,7 @@ def test_project_export_rejects_a_redirected_attachment_ancestor(
 
 
 def test_import_size_and_export_path_are_validated(tmp_path: Path) -> None:
+    """Verify that import size and export path are validated."""
     service, chats, _ = service_for(tmp_path, max_import_bytes=10)
     oversized = tmp_path / "oversized.json"
     oversized.write_bytes(b"{" + b"x" * 20 + b"}")
@@ -846,6 +874,7 @@ def test_import_size_and_export_path_are_validated(tmp_path: Path) -> None:
 def test_existing_ids_are_conflicts_and_are_not_overwritten(
     tmp_path: Path,
 ) -> None:
+    """Verify that existing IDs are conflicts and are not overwritten."""
     service, chats, _ = service_for(tmp_path)
     original = populated_chat(chats, title="Existing")
     export_file = tmp_path / "chat.json"
@@ -862,6 +891,7 @@ def test_mid_import_failure_rolls_back_projects_chats_and_files(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Restore Projects, Chats, and user files after a mid-import failure."""
     source_dir = tmp_path / "source"
     source_service, source_chats, source_projects = service_for(source_dir)
     project = source_projects.create_project(name="Rollback")
@@ -893,6 +923,7 @@ def test_mid_import_failure_rolls_back_projects_chats_and_files(
         path: Path,
         data: Mapping[str, object],
     ) -> None:
+        """Fail mid-restore so the import transaction must restore old data."""
         nonlocal write_count
         write_count += 1
         if write_count == 2:
@@ -920,6 +951,7 @@ def test_mid_import_failure_rolls_back_projects_chats_and_files(
 
 
 def test_restore_project_rejects_duplicate_stable_id(tmp_path: Path) -> None:
+    """Verify that restore project rejects duplicate stable ID."""
     _service, _chats, projects = service_for(tmp_path)
     project = projects.create_project(name="Stable")
 

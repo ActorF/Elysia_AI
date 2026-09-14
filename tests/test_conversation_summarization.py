@@ -1,3 +1,5 @@
+"""Test model-backed conversation summarization and Brain integration."""
+
 import json
 import re
 from collections.abc import Iterator
@@ -16,7 +18,9 @@ from memory import (
 )
 
 class FakeSummaryChatModel:
+    """Capture the summarizer prompt and return one configured model payload."""
     def __init__(self, reply: str) -> None:
+        """Initialize deterministic state for this test double."""
         self._reply = reply
         self.received_messages: (
             list[ChatMessage] | None
@@ -26,6 +30,7 @@ class FakeSummaryChatModel:
         self,
         messages: list[ChatMessage],
     ) -> str:
+        """Return the configured deterministic model reply."""
         self.received_messages = messages
         return self._reply
 
@@ -33,15 +38,18 @@ class FakeSummaryChatModel:
         self,
         messages: list[ChatMessage],
     ) -> Iterator[str]:
+        """Yield the configured deterministic model reply chunks."""
         self.received_messages = messages
         yield self._reply
 
 
 class FakeConversationSummarizer:
+    """Return queued summaries while preserving every incremental call input."""
     def __init__(
         self,
         contents: list[ConversationSummaryContent],
     ) -> None:
+        """Initialize deterministic state for this test double."""
         self._contents = list(contents)
         self.calls: list[
             tuple[
@@ -57,6 +65,7 @@ class FakeConversationSummarizer:
             ConversationSummaryContent | None
         ) = None,
     ) -> ConversationSummaryContent:
+        """Return a deterministic summary while recording test inputs."""
         self.calls.append(
             (
                 list(messages),
@@ -73,6 +82,7 @@ class FakeConversationSummarizer:
 
 
 def _source_messages() -> list[ConversationMessage]:
+    """Build the canonical two-message source window used in summary tests."""
     return [
         {
             "timestamp": "2026-08-12 12:00:00",
@@ -88,6 +98,7 @@ def _source_messages() -> list[ConversationMessage]:
 
 
 def _summary_content() -> ConversationSummaryContent:
+    """Build a valid initial structured summary for the source window."""
     return {
         "facts": [
             "The user prefers Chinese replies.",
@@ -102,6 +113,7 @@ def _summary_content() -> ConversationSummaryContent:
 
 def _updated_summary_content(
     ) -> ConversationSummaryContent:
+    """Build the next structured summary used to test incremental updates."""
     return {
         "facts": [
             "The user prefers Chinese replies.",
@@ -118,6 +130,7 @@ def _updated_summary_content(
 
 
 def test_model_summarizer_builds_validated_content() -> None:
+    """Verify that model summarizer builds validated content."""
     chat_model = FakeSummaryChatModel(
         json.dumps(
             _summary_content(),
@@ -177,6 +190,7 @@ def test_model_summarizer_builds_validated_content() -> None:
 
 
 def test_model_summarizer_sends_previous_content() -> None:
+    """Verify that model summarizer sends previous content."""
     previous_content: ConversationSummaryContent = {
         "facts": [
             "The user studies computer science.",
@@ -221,6 +235,7 @@ def test_model_summarizer_sends_previous_content() -> None:
 
 
 def test_model_summarizer_rejects_empty_messages() -> None:
+    """Verify that model summarizer rejects empty messages."""
     chat_model = FakeSummaryChatModel(
         json.dumps(_summary_content())
     )
@@ -265,6 +280,7 @@ def test_model_summarizer_rejects_invalid_json(
     reply: str,
     expected_message: str,
 ) -> None:
+    """Verify that model summarizer rejects invalid JSON."""
     summarizer = ModelConversationSummarizer(
         FakeSummaryChatModel(reply)
     )
@@ -304,6 +320,7 @@ def test_model_summarizer_rejects_invalid_json(
 def test_model_summarizer_rejects_invalid_schema(
     reply: str,
 ) -> None:
+    """Verify that model summarizer rejects invalid schema."""
     summarizer = ModelConversationSummarizer(
         FakeSummaryChatModel(reply)
     )
@@ -317,6 +334,7 @@ def test_model_summarizer_rejects_invalid_schema(
 def test_brain_creates_and_saves_initial_summary(
     tmp_path: Path,
 ) -> None:
+    """Verify that brain creates and saves initial summary."""
     memory = Memory(tmp_path)
     memory.save_message(
         "Ying",
@@ -368,6 +386,7 @@ def test_brain_creates_and_saves_initial_summary(
 def test_brain_updates_summary_from_only_new_messages(
     tmp_path: Path,
 ) -> None:
+    """Verify that brain updates summary from only new messages."""
     memory = Memory(tmp_path)
     memory.save_message("Ying", "First question")
     memory.save_message("Elysia", "First answer")
@@ -423,6 +442,7 @@ def test_brain_updates_summary_from_only_new_messages(
 def test_brain_reuses_summary_when_no_new_messages(
     tmp_path: Path,
 ) -> None:
+    """Verify that brain reuses summary when no new messages."""
     memory = Memory(tmp_path)
     memory.save_message("Ying", "First question")
     memory.save_message("Elysia", "First answer")
@@ -461,6 +481,7 @@ def test_brain_reuses_summary_when_no_new_messages(
 def test_brain_rejects_summary_source_mismatch(
     tmp_path: Path,
 ) -> None:
+    """Verify that brain rejects summary source mismatch."""
     memory = Memory(tmp_path)
     memory.conversation_file.parent.mkdir(
         parents=True,
@@ -529,6 +550,7 @@ def test_brain_rejects_summary_source_mismatch(
 def test_brain_returns_none_for_empty_conversation(
     tmp_path: Path,
 ) -> None:
+    """Verify that brain returns none for empty conversation."""
     memory = Memory(tmp_path)
     summarizer = FakeConversationSummarizer(
         [_summary_content()]
@@ -547,6 +569,7 @@ def test_brain_returns_none_for_empty_conversation(
 def test_brain_requires_connected_summarizer(
     tmp_path: Path,
 ) -> None:
+    """Verify that brain requires connected summarizer."""
     memory = Memory(tmp_path)
     memory.save_message("Ying", "Hello")
     brain = Brain("fake-model", memory)
@@ -563,6 +586,7 @@ def test_brain_requires_connected_summarizer(
 def test_brain_counts_only_unsummarized_messages(
     tmp_path: Path,
 ) -> None:
+    """Verify that brain counts only unsummarized messages."""
     memory = Memory(tmp_path)
     summarizer = FakeConversationSummarizer(
         [_summary_content()]

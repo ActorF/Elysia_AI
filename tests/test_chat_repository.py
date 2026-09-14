@@ -1,3 +1,5 @@
+"""Test durable Chat repository behavior and corruption handling."""
+
 import json
 from collections.abc import Callable
 from dataclasses import replace
@@ -24,21 +26,25 @@ BASE_TIME = datetime(2026, 8, 20, 12, 0, tzinfo=timezone.utc)
 
 
 def _clock(*times: datetime) -> Callable[[], datetime]:
+    """Provide the clock fixture used by these tests."""
     time_iterator = iter(times)
     return lambda: next(time_iterator)
 
 
 def _storage_directory(tmp_path: Path) -> Path:
+    """Provide the storage directory fixture used by these tests."""
     return tmp_path / "data" / "chats"
 
 
 def _session_file(storage_directory: Path, chat_id: ChatId) -> Path:
+    """Provide the session file fixture used by these tests."""
     return storage_directory / "sessions" / f"{chat_id}.json"
 
 
 def test_complete_chat_survives_repository_restart(
     tmp_path: Path,
 ) -> None:
+    """Verify that complete chat survives repository restart."""
     storage_directory = _storage_directory(tmp_path)
     repository: ChatRepository = JsonChatRepository(
         storage_directory,
@@ -97,6 +103,7 @@ def test_complete_chat_survives_repository_restart(
 def test_index_contains_metadata_but_not_messages(
     tmp_path: Path,
 ) -> None:
+    """Verify that index contains metadata but not messages."""
     storage_directory = _storage_directory(tmp_path)
     repository = JsonChatRepository(
         storage_directory,
@@ -135,6 +142,7 @@ def test_index_contains_metadata_but_not_messages(
 def test_list_chats_does_not_read_corrupt_session_details(
     tmp_path: Path,
 ) -> None:
+    """Verify that list chats does not read corrupt session details."""
     storage_directory = _storage_directory(tmp_path)
     repository = JsonChatRepository(
         storage_directory,
@@ -162,6 +170,7 @@ def test_list_chats_does_not_read_corrupt_session_details(
 def test_pin_order_survives_repository_restart(
     tmp_path: Path,
 ) -> None:
+    """Verify that pin order survives repository restart."""
     storage_directory = _storage_directory(tmp_path)
     repository = JsonChatRepository(
         storage_directory,
@@ -200,6 +209,7 @@ def test_pin_order_survives_repository_restart(
 def test_archive_hides_and_restore_returns_chat(
     tmp_path: Path,
 ) -> None:
+    """Verify that archive hides and restore returns chat."""
     repository = JsonChatRepository(
         _storage_directory(tmp_path),
         clock=_clock(BASE_TIME),
@@ -231,6 +241,7 @@ def test_archive_hides_and_restore_returns_chat(
 def test_rename_preserves_id_messages_and_project(
     tmp_path: Path,
 ) -> None:
+    """Verify that rename preserves ID messages and project."""
     repository = JsonChatRepository(
         _storage_directory(tmp_path),
         clock=_clock(
@@ -272,6 +283,7 @@ def test_rename_preserves_id_messages_and_project(
 def test_delete_removes_index_and_detail_file(
     tmp_path: Path,
 ) -> None:
+    """Verify that delete removes index and detail file."""
     storage_directory = _storage_directory(tmp_path)
     repository = JsonChatRepository(
         storage_directory,
@@ -295,6 +307,7 @@ def test_delete_removes_index_and_detail_file(
 def test_restore_chat_recreates_deleted_complete_session(
     tmp_path: Path,
 ) -> None:
+    """Verify that restore chat recreates deleted complete session."""
     repository = JsonChatRepository(
         _storage_directory(tmp_path),
         clock=_clock(BASE_TIME),
@@ -333,6 +346,7 @@ def test_missing_chat_operations_raise_not_found(
     tmp_path: Path,
     operation: str,
 ) -> None:
+    """Verify that missing chat operations raise not found."""
     repository = JsonChatRepository(_storage_directory(tmp_path))
     missing_id = ChatId("chat_missing")
 
@@ -353,6 +367,7 @@ def test_atomic_replace_failure_preserves_existing_chat(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Leave the last durable Chat intact when atomic replacement fails."""
     storage_directory = _storage_directory(tmp_path)
     repository = JsonChatRepository(
         storage_directory,
@@ -367,6 +382,7 @@ def test_atomic_replace_failure_preserves_existing_chat(
     original_text = session_file.read_text(encoding="utf-8")
 
     def fail_replace(source: object, destination: object) -> None:
+        """Simulate failure at the repository's atomic replace boundary."""
         raise OSError("simulated replace failure")
 
     monkeypatch.setattr(
@@ -385,6 +401,7 @@ def test_atomic_replace_failure_preserves_existing_chat(
 def test_corrupt_index_can_be_backed_up_and_recovered(
     tmp_path: Path,
 ) -> None:
+    """Quarantine a corrupt index and rebuild metadata from valid Chat details."""
     storage_directory = _storage_directory(tmp_path)
     repository = JsonChatRepository(
         storage_directory,
@@ -417,6 +434,7 @@ def test_corrupt_index_can_be_backed_up_and_recovered(
 def test_missing_index_is_rebuilt_from_session_files(
     tmp_path: Path,
 ) -> None:
+    """Verify that missing index is rebuilt from session files."""
     storage_directory = _storage_directory(tmp_path)
     repository = JsonChatRepository(
         storage_directory,
@@ -438,6 +456,7 @@ def test_missing_index_is_rebuilt_from_session_files(
 def test_index_detail_disagreement_is_reported_as_corruption(
     tmp_path: Path,
 ) -> None:
+    """Verify that index detail disagreement is reported as corruption."""
     storage_directory = _storage_directory(tmp_path)
     repository = JsonChatRepository(
         storage_directory,
@@ -466,6 +485,7 @@ def test_index_detail_disagreement_is_reported_as_corruption(
 def test_invalid_chat_id_cannot_escape_storage_directory(
     tmp_path: Path,
 ) -> None:
+    """Reject traversal-shaped Chat IDs before they address files outside storage."""
     repository = JsonChatRepository(_storage_directory(tmp_path))
 
     with pytest.raises(ChatNotFoundError, match=r"Invalid chat ID"):
@@ -475,6 +495,7 @@ def test_invalid_chat_id_cannot_escape_storage_directory(
 def test_list_handles_two_hundred_chats_from_index(
     tmp_path: Path,
 ) -> None:
+    """Verify that list handles two hundred chats from index."""
     storage_directory = _storage_directory(tmp_path)
     repository = JsonChatRepository(
         storage_directory,
@@ -502,6 +523,7 @@ def test_list_handles_two_hundred_chats_from_index(
 def test_detail_with_unknown_summary_message_is_corrupt(
     tmp_path: Path,
 ) -> None:
+    """Verify that detail with unknown summary message is corrupt."""
     storage_directory = _storage_directory(tmp_path)
     repository = JsonChatRepository(
         storage_directory,

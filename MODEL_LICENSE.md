@@ -1,6 +1,6 @@
 # Model & Voice Asset Notice / 模型与语音素材说明
 
-> Last reviewed / 最近核对：2026-09-13
+> Last reviewed / 最近核对：2026-09-14
 
 ## Purpose and Status / 用途与性质
 
@@ -10,9 +10,9 @@ This document records the known provenance, local handling rules, and current au
 
 > [!IMPORTANT]
 >
-> This is an **asset and rights notice**, not an open-source license and not a grant of third-party rights. Where redistribution permission cannot be verified, the asset must remain local and must not be committed, released, or packaged.
+> This is an **asset and rights notice**, not an open-source license and not a grant of third-party rights. Unverified third-party assets remain local by default. Any maintainer-approved exception must record its source category, intended scope, applicable rights-holder guidance, attribution, license exclusion, and removal risk.
 >
-> 本文件是**素材与权利告知**，不是开源许可证，也不代表本项目能够转授第三方权利。凡无法核实再分发许可的素材，都必须保留在本机，不得提交、发布或打包。
+> 本文件是**素材与权利告知**，不是开源许可证，也不代表本项目能够转授第三方权利。无法核实的第三方素材默认只留本机；维护者决定公开的例外必须记录素材类别、用途范围、权利人规则、署名、许可证排除和移除风险。
 
 ---
 
@@ -23,7 +23,7 @@ This document records the known provenance, local handling rules, and current au
 | `models/weights/gpt-sovits/elysia-v2/` | Ignored and currently outside the Git index / 已忽略且当前不在 Git Index 中 | Local-only GPT-SoVITS weights and reference audio; every package/release must independently verify exclusion / 本地 GPT-SoVITS 权重与参考音频；每次打包和发布都须独立确认排除 |
 | `models/blobs/` and `models/manifests/` | Ignored and currently outside the Git index / 已忽略且当前不在 Git Index 中 | Ollama-managed local models; each upstream model has its own terms / Ollama 管理的本地模型，各自遵循上游条款 |
 | `data/characters/elysia_character_reference_zh.md` | Tracked / 已跟踪 | Character background and quotations requiring separate source review / 需要单独审查来源的角色背景与语录 |
-| `desktop/public/favicon.svg` | Tracked / 已跟踪 | Application branding asset; it does not depict the game character / 应用品牌图标，不包含游戏角色形象 |
+| `desktop/public/elysia-icon.png` and `desktop/assets/elysia-icon.ico` | Tracked third-party branding / 已跟踪的第三方品牌素材 | Derived from an official *Honkai Impact 3rd* Elysia signet and included at the project owner's express direction for this unofficial, non-commercial fan project; © HoYoverse / miHoYo, excluded from every source-code license, no endorsement implied, and removable on rights-holder request / 由《崩坏3》爱莉希雅官方刻印制作，并按项目所有者明确决定用于本非官方、非商业粉丝项目；© HoYoverse / miHoYo，不属于任何源码许可证，不代表官方背书，权利人要求时应移除 |
 
 The current runtime does **not** yet load the local GPT-SoVITS weights. They are retained only as a future local integration candidate.
 

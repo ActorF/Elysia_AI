@@ -1,3 +1,5 @@
+"""Test the Memory facade for profile and conversation data."""
+
 import json
 from pathlib import Path
 from typing import cast
@@ -10,6 +12,7 @@ from memory import Memory, Profile
 def test_load_profile_creates_default_profile(
     tmp_path: Path,
 ) -> None:
+    """Verify that load profile creates default profile."""
     memory = Memory(tmp_path)
 
     profile = memory.load_profile()
@@ -28,6 +31,7 @@ def test_load_profile_creates_default_profile(
 def test_load_profile_migrates_legacy_profile_without_rewriting(
     tmp_path: Path,
 ) -> None:
+    """Verify that load profile migrates legacy profile without rewriting."""
     memory = Memory(tmp_path)
     memory.profile_file.parent.mkdir(
         parents=True,
@@ -69,6 +73,7 @@ def test_load_profile_migrates_legacy_profile_without_rewriting(
 def test_save_profile_rejects_invalid_data_before_write(
     tmp_path: Path,
 ) -> None:
+    """Verify that save profile rejects invalid data before write."""
     memory = Memory(tmp_path)
     valid_profile = memory.load_profile()
     original_file_content = (
@@ -104,6 +109,7 @@ def test_save_profile_rejects_invalid_data_before_write(
 def test_record_launch_increments_and_saves_count(
     tmp_path: Path,
 ) -> None:
+    """Verify that record launch increments and saves count."""
     memory = Memory(tmp_path)
 
     first_profile = memory.record_launch()
@@ -117,6 +123,7 @@ def test_record_launch_increments_and_saves_count(
 def test_get_recent_messages_rejects_non_positive_limit(
     tmp_path: Path,
 ) -> None:
+    """Verify that get recent messages rejects non positive limit."""
     memory = Memory(tmp_path)
 
     with pytest.raises(
@@ -129,6 +136,7 @@ def test_get_recent_messages_rejects_non_positive_limit(
 def test_get_recent_messages_returns_requested_messages(
     tmp_path: Path,
 ) -> None:
+    """Verify that get recent messages returns requested messages."""
     memory = Memory(tmp_path)
 
     memory.save_message("Ying", "First message")

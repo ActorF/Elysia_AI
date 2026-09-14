@@ -26,15 +26,18 @@ export class AppErrorBoundary extends Component<
   state: AppErrorBoundaryState = { error: null }
   private readonly fallbackRef = createRef<HTMLElement>()
 
+  /** Convert a render exception into deterministic fallback state. */
   static getDerivedStateFromError(error: Error): AppErrorBoundaryState {
     return { error }
   }
 
+  /** Report component context and focus the accessible recovery surface. */
   componentDidCatch(error: Error, info: ErrorInfo): void {
     console.error('Elysia renderer failed.', error, info.componentStack)
     this.fallbackRef.current?.focus({ preventScroll: true })
   }
 
+  /** Render the protected children or a local-data-safe recovery message. */
   render() {
     if (this.state.error !== null) {
       return (

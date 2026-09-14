@@ -8,6 +8,8 @@ are rejected before application services are invoked.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import ntpath
 import re
 import unicodedata
@@ -26,6 +28,16 @@ MAX_WORKSPACE_PATH_LENGTH: Final = 32_767
 MAX_SETTINGS_MODEL_NAME_LENGTH: Final = 200
 MAX_OLLAMA_HOST_LENGTH: Final = 2_048
 MAX_AUDIO_DEVICE_ID_LENGTH: Final = 2_048
+VOICE_CAPTURE_SAMPLE_RATE_HZ: Final = 16_000
+VOICE_CAPTURE_CHANNEL_COUNT: Final = 1
+VOICE_CAPTURE_SAMPLE_FORMAT: Final = "s16le"
+VOICE_CAPTURE_FRAME_SAMPLES: Final = 320
+VOICE_CAPTURE_BYTES_PER_SAMPLE: Final = 2
+VOICE_CAPTURE_MIN_SAMPLES: Final = 3_200
+VOICE_CAPTURE_MAX_SAMPLES: Final = 480_000
+VOICE_CAPTURE_MIN_SPEECH_SAMPLES: Final = 3_200
+VOICE_CAPTURE_MAX_SESSION_ID_LENGTH: Final = 128
+VOICE_CAPTURE_MAX_BASE64_CHARACTERS: Final = 1_280_000
 MAX_MEMORY_SETTING: Final = 10_000_000
 MAX_DATA_IMPORT_BYTES: Final = 2_147_483_647
 MAX_PROTOCOL_FRAME_BYTES: Final = 16_777_216
@@ -37,6 +49,8 @@ MIN_SESSION_TOKEN_LENGTH: Final = 32
 MAX_SESSION_TOKEN_LENGTH: Final = 512
 MAX_SAFE_INTEGER: Final = 9_007_199_254_740_991
 
+# An explicit table keeps blank-string decisions identical in Python and
+# TypeScript instead of depending on runtime-specific Unicode whitespace data.
 _PROTOCOL_BLANK_CHARACTERS: Final = frozenset(
     chr(code_point)
     for start, end in (
@@ -56,6 +70,7 @@ _PROTOCOL_BLANK_CHARACTERS: Final = frozenset(
 )
 _PROJECT_ID_PATTERN: Final = re.compile(r"^project_[A-Za-z0-9_-]+$")
 _CHAT_ID_PATTERN: Final = re.compile(r"^chat_[A-Za-z0-9_-]+$")
+_VOICE_SESSION_ID_PATTERN: Final = re.compile(r"^voice_[A-Za-z0-9_-]+$")
 _ATTACHMENT_ID_PATTERN: Final = re.compile(
     r"^attachment_[A-Za-z0-9_-]+$"
 )
@@ -90,6 +105,7 @@ ProtocolMethod = Literal[
     "settings.update",
     "voice.settings.get",
     "voice.settings.update",
+    "voice.capture.complete",
     "request.cancel",
     "permission.respond",
     "shutdown",
@@ -120,6 +136,7 @@ SUPPORTED_METHODS: Final[tuple[ProtocolMethod, ...]] = (
     "settings.update",
     "voice.settings.get",
     "voice.settings.update",
+    "voice.capture.complete",
     "request.cancel",
     "permission.respond",
     "shutdown",
@@ -291,7 +308,7 @@ class ProjectChatMoveParams(TypedDict):
 
 
 class CancelParams(TypedDict, total=False):
-    """Identify a request that a future cancellable operation may stop."""
+    """Identify the in-flight operation a cancellation request should stop."""
 
     requestId: str
     reason: str
@@ -327,6 +344,25 @@ class VoiceSettingsUpdateParams(TypedDict):
     expectedRevision: int
     inputDeviceId: str | None
     outputDeviceId: str | None
+
+
+class VoiceCaptureMetadata(TypedDict):
+    """Describe one fixed-format, frame-aligned Voice capture."""
+
+    sessionId: str
+    chatId: str
+    sampleRateHz: Literal[16000]
+    channelCount: Literal[1]
+    sampleFormat: Literal["s16le"]
+    sampleCount: int
+    speechStartSample: int
+    speechEndSample: int
+
+
+class VoiceCaptureCompleteParams(VoiceCaptureMetadata):
+    """Carry one transient canonical Base64 PCM capture to Python."""
+
+    pcmBase64: str
 
 
 class ClientRequest(TypedDict):
@@ -542,6 +578,15 @@ class VoiceSettingsStateResult(TypedDict):
     inputDeviceId: str | None
     outputDeviceId: str | None
     warning: str | None
+
+
+class VoiceCaptureResult(VoiceCaptureMetadata):
+    """Acknowledge validated PCM through metadata and a digest only."""
+
+    kind: Literal["voice.capture"]
+    durationMs: int
+    speechDurationMs: int
+    sha256Hex: str
 
 
 ServerMessage = (
@@ -905,6 +950,8 @@ def _validate_attachment_add_params(params: JsonObject) -> None:
             context,
             maximum=MAX_ATTACHMENT_SOURCE_PATH_LENGTH,
         )
+        # ``ntpath`` makes the native-path contract deterministic even when
+        # protocol fixtures are validated on a non-Windows CI host.
         normalized_path = path.replace("/", "\\")
         drive, tail = ntpath.splitdrive(normalized_path)
         path_parts = tuple(
@@ -1328,8 +1375,128 @@ def _validate_voice_settings_update_params(params: JsonObject) -> None:
     )
 
 
+def _validate_voice_capture_metadata(
+    value: JsonObject,
+    *,
+    context: str,
+    error_code: str,
+) -> None:
+    session_id = _require_string(
+        value,
+        "sessionId",
+        context,
+        maximum=VOICE_CAPTURE_MAX_SESSION_ID_LENGTH,
+    )
+    if _VOICE_SESSION_ID_PATTERN.fullmatch(session_id) is None:
+        raise ProtocolValidationError(
+            error_code,
+            f"{context}.sessionId must use the voice_<id> format.",
+        )
+    _require_identifier(value, "chatId", context)
+
+    sample_rate_hz = _require_integer(value, "sampleRateHz", context)
+    channel_count = _require_integer(value, "channelCount", context)
+    sample_format = _require_string(
+        value,
+        "sampleFormat",
+        context,
+        maximum=len(VOICE_CAPTURE_SAMPLE_FORMAT),
+    )
+    if (
+        sample_rate_hz != VOICE_CAPTURE_SAMPLE_RATE_HZ
+        or channel_count != VOICE_CAPTURE_CHANNEL_COUNT
+        or sample_format != VOICE_CAPTURE_SAMPLE_FORMAT
+    ):
+        raise ProtocolValidationError(
+            error_code,
+            f"{context} must describe 16000 Hz mono s16le PCM.",
+        )
+
+    sample_count = _require_integer(value, "sampleCount", context)
+    speech_start = _require_integer(value, "speechStartSample", context)
+    speech_end = _require_integer(value, "speechEndSample", context)
+    if (
+        sample_count < VOICE_CAPTURE_MIN_SAMPLES
+        or sample_count > VOICE_CAPTURE_MAX_SAMPLES
+        or sample_count % VOICE_CAPTURE_FRAME_SAMPLES != 0
+    ):
+        raise ProtocolValidationError(
+            error_code,
+            f"{context}.sampleCount must be a frame-aligned value from "
+            f"{VOICE_CAPTURE_MIN_SAMPLES} to {VOICE_CAPTURE_MAX_SAMPLES}.",
+        )
+    if (
+        speech_start < 0
+        or speech_end > sample_count
+        or speech_end - speech_start < VOICE_CAPTURE_MIN_SPEECH_SAMPLES
+        or speech_start % VOICE_CAPTURE_FRAME_SAMPLES != 0
+        or speech_end % VOICE_CAPTURE_FRAME_SAMPLES != 0
+    ):
+        raise ProtocolValidationError(
+            error_code,
+            f"{context} speech markers must be frame-aligned, ordered, "
+            "bounded by sampleCount, and span at least 3200 samples.",
+        )
+
+
+def _validate_voice_capture_complete_params(params: JsonObject) -> None:
+    context = "voice.capture.complete params"
+    _require_fields(
+        params,
+        {
+            "sessionId",
+            "chatId",
+            "sampleRateHz",
+            "channelCount",
+            "sampleFormat",
+            "sampleCount",
+            "speechStartSample",
+            "speechEndSample",
+            "pcmBase64",
+        },
+        context,
+    )
+    _validate_voice_capture_metadata(
+        params,
+        context=context,
+        error_code="protocol.invalid_params",
+    )
+    encoded_pcm = _require_string(
+        params,
+        "pcmBase64",
+        context,
+        maximum=VOICE_CAPTURE_MAX_BASE64_CHARACTERS,
+    )
+    try:
+        decoded_pcm = base64.b64decode(encoded_pcm, validate=True)
+    except (binascii.Error, UnicodeEncodeError, ValueError) as error:
+        raise ProtocolValidationError(
+            "protocol.invalid_params",
+            f"{context}.pcmBase64 must be strict canonical Base64.",
+        ) from error
+    # Strict decoding checks the alphabet; the round trip also rejects
+    # alternate padding and non-zero pad bits accepted by some decoders.
+    if base64.b64encode(decoded_pcm).decode("ascii") != encoded_pcm:
+        raise ProtocolValidationError(
+            "protocol.invalid_params",
+            f"{context}.pcmBase64 must be strict canonical Base64.",
+        )
+    sample_count = cast(int, params["sampleCount"])
+    if len(decoded_pcm) != sample_count * VOICE_CAPTURE_BYTES_PER_SAMPLE:
+        raise ProtocolValidationError(
+            "protocol.invalid_params",
+            f"{context}.pcmBase64 decoded length must equal sampleCount * 2.",
+        )
+
+
 def parse_client_request(value: object) -> ClientRequest:
-    """Validate and return one Electron-to-Python request."""
+    """Validate and return one Electron-to-Python request.
+
+    The common envelope is checked first, then the selected method's exact
+    parameter schema is checked before the mapping is narrowed to
+    ``ClientRequest``. This keeps partially validated renderer data from
+    reaching application services.
+    """
 
     request = _as_object(value, "request")
     _require_fields(
@@ -1404,6 +1571,8 @@ def parse_client_request(value: object) -> ClientRequest:
         _require_fields(params, set(), "voice.settings.get params")
     elif method == "voice.settings.update":
         _validate_voice_settings_update_params(params)
+    elif method == "voice.capture.complete":
+        _validate_voice_capture_complete_params(params)
     elif method == "request.cancel":
         _validate_cancel_params(params)
     elif method == "permission.respond":
@@ -1926,6 +2095,22 @@ def _validate_success_result(result: JsonObject) -> None:
     }:
         _validate_voice_settings_state_result(result)
         return
+    if fields == {
+        "kind",
+        "sessionId",
+        "chatId",
+        "sampleRateHz",
+        "channelCount",
+        "sampleFormat",
+        "sampleCount",
+        "speechStartSample",
+        "speechEndSample",
+        "durationMs",
+        "speechDurationMs",
+        "sha256Hex",
+    }:
+        _validate_voice_capture_result(result)
+        return
     if fields == {"stopped"} and result["stopped"] is True:
         return
     raise ProtocolValidationError(
@@ -2061,6 +2246,49 @@ def _validate_voice_settings_state_result(
     if result.get("warning") is not None:
         _require_string(result, "warning", context, maximum=1_000)
     return cast(VoiceSettingsStateResult, result)
+
+
+def _validate_voice_capture_result(
+    result: JsonObject,
+) -> VoiceCaptureResult:
+    context = "voice capture result"
+    if result.get("kind") != "voice.capture":
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.kind must be 'voice.capture'.",
+        )
+    _validate_voice_capture_metadata(
+        result,
+        context=context,
+        error_code="protocol.invalid_message",
+    )
+    duration_ms = _require_integer(result, "durationMs", context)
+    speech_duration_ms = _require_integer(result, "speechDurationMs", context)
+    sample_count = cast(int, result["sampleCount"])
+    speech_start = cast(int, result["speechStartSample"])
+    speech_end = cast(int, result["speechEndSample"])
+    if (
+        duration_ms != sample_count * 1_000 // VOICE_CAPTURE_SAMPLE_RATE_HZ
+        or speech_duration_ms
+        != (speech_end - speech_start) * 1_000
+        // VOICE_CAPTURE_SAMPLE_RATE_HZ
+    ):
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context} durations must exactly match its sample metadata.",
+        )
+    sha256_hex = _require_string(
+        result,
+        "sha256Hex",
+        context,
+        maximum=64,
+    )
+    if re.fullmatch(r"[0-9a-f]{64}", sha256_hex) is None:
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.sha256Hex must be a lowercase SHA-256 digest.",
+        )
+    return cast(VoiceCaptureResult, result)
 
 
 def _validate_response(message: JsonObject) -> ServerMessage:
@@ -2229,7 +2457,12 @@ def _validate_event(message: JsonObject) -> EventMessage:
 
 
 def parse_server_message(value: object) -> ServerMessage:
-    """Validate and return one Python-to-Electron message."""
+    """Validate and return one Python-to-Electron message.
+
+    Protocol metadata is verified before dispatching to the exact validator
+    for the declared message type, so consumers never receive a partially
+    checked response, stream, progress, permission, or event payload.
+    """
 
     message = _as_object(value, "server message")
     message_type = message.get("type")

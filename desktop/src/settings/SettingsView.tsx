@@ -42,19 +42,33 @@ export interface SettingsViewProps {
   voiceLoading: boolean
   voicePending: boolean
   voiceError: string | null
+  /** Apply the selected renderer and native-chrome theme preference. */
   onThemeChange(theme: ThemePreference): void
+  /** Persist validated global Desktop settings. */
   onSave(settings: DesktopSettingsValues): Promise<void>
+  /** Reload canonical global settings and discard the current draft. */
   onReload(): void
+  /** Restart the Python Backend using the persisted settings. */
   onRestart(): Promise<void>
+  /** Reload canonical voice preferences and discard their draft. */
   onReloadVoice(): void
+  /** Refresh renderer-visible input and output device metadata. */
   onRefreshAudioDevices(): Promise<void>
+  /** Persist the selected voice-device preferences. */
   onSaveVoice(draft: VoiceSettingsDraft): Promise<void>
+  /** Start a bounded local test of the selected microphone. */
   onStartMicrophoneTest(deviceId: string | null): Promise<void>
+  /** Stop the active microphone test and release its device. */
   onStopMicrophoneTest(): void
+  /** Start a bounded local test on the selected output device. */
   onStartSpeakerTest(deviceId: string | null): Promise<void>
+  /** Stop the active speaker test and release its audio resources. */
   onStopSpeakerTest(): void
+  /** Open native microphone privacy settings when supported. */
   onOpenMicrophonePrivacySettings(): Promise<void>
+  /** Report whether either settings form has unsaved changes. */
   onDirtyChange(dirty: boolean): void
+  /** Leave Settings after any navigation guard has been satisfied. */
   onBack(): void
 }
 

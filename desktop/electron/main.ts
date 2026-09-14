@@ -40,6 +40,7 @@ import {
   MAX_SETTINGS_MODEL_NAME_LENGTH,
   codePointLength,
   hasNonBlankCodePoint,
+  parseVoiceCaptureCompleteParams,
   trimProtocolBlankCharacters,
 } from './protocol.js'
 import { isTrustedRendererUrl as matchesRendererSource } from './renderer-source.js'
@@ -112,6 +113,14 @@ function resolveProjectRoot(): string {
   }
 
   return path.resolve(app.getAppPath(), '..')
+}
+
+function resolveApplicationIconPath(): string {
+  return path.join(
+    app.getAppPath(),
+    app.isPackaged ? 'dist' : 'public',
+    'elysia-icon.png',
+  )
 }
 
 function isTrustedRendererUrl(rawUrl: string): boolean {
@@ -774,6 +783,16 @@ function registerIpcHandlers(): void {
   )
 
   ipcMain.handle(
+    'voice:capture-complete',
+    (event, request: unknown) => {
+      assertTrustedSender(event)
+      return requireBackend().submitVoiceCapture(
+        parseVoiceCaptureCompleteParams(request),
+      )
+    },
+  )
+
+  ipcMain.handle(
     'voice:microphone-permission-status',
     (event) => {
       assertTrustedSender(event)
@@ -1179,7 +1198,12 @@ function configureAudioPermissions(): void {
 }
 
 function createTray(): void {
-  const image = nativeImage.createFromDataURL(TRAY_ICON_DATA_URL)
+  const brandedImage = nativeImage.createFromPath(
+    resolveApplicationIconPath(),
+  )
+  const image = brandedImage.isEmpty()
+    ? nativeImage.createFromDataURL(TRAY_ICON_DATA_URL)
+    : brandedImage
 
   if (image.isEmpty()) {
     throw new Error('The Elysia tray icon could not be loaded.')
@@ -1217,6 +1241,7 @@ function createMainWindow(): void {
     minHeight: Math.min(480, primaryWorkArea.height),
     center: true,
     title: 'Elysia',
+    icon: resolveApplicationIconPath(),
     backgroundColor: nativeBackgroundColor(),
     autoHideMenuBar: true,
     show: false,

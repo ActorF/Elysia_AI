@@ -13,9 +13,10 @@
     "electron:dev": "npm run electron:build && electron .",
     "build:renderer": "tsc -b && vite build",
     "build": "npm run build:renderer && npm run electron:build",
+    "docs:check": "node scripts/check-documentation.mjs",
     "typecheck": "tsc -b --pretty false && tsc --project tsconfig.electron.json --pretty false",
     "test": "npm run test:contract && npm run test:ui",
-    "test:contract": "npm run electron:build && node tests/protocol.contract.test.mjs",
+    "test:contract": "npm run electron:build && node tests/protocol.contract.test.mjs && node --test tests/voice-capture.test.mjs",
     "test:ui": "npm run build:renderer && playwright test",
     "package": "npm run build && electron-builder --dir",
     "make": "npm run build && electron-builder --win nsis",
@@ -50,7 +51,8 @@
     "productName": "Elysia",
     "asar": true,
     "directories": {
-      "output": "out"
+      "output": "out",
+      "buildResources": "assets"
     },
     "files": [
       "dist/**/*",
@@ -59,6 +61,7 @@
     ],
     "win": {
       "target": "nsis",
+      "icon": "elysia-icon.ico",
       "artifactName": "Elysia-Setup-${version}.${ext}"
     }
   }

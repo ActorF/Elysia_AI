@@ -1,5 +1,6 @@
-"""Validate the shared Stage 6 desktop-protocol contract in Python."""
+"""Validate the shared desktop-protocol contract in Python."""
 
+import base64
 import json
 from copy import deepcopy
 from pathlib import Path
@@ -13,6 +14,7 @@ from desktop_protocol import (
     MAX_PROTOCOL_FRAME_BYTES,
     PROTOCOL_NAME,
     PROTOCOL_VERSION,
+    VOICE_CAPTURE_MAX_BASE64_CHARACTERS,
     ProtocolValidationError,
     build_error_response,
     build_event,
@@ -33,6 +35,7 @@ JsonObject = dict[str, Any]
 
 
 def _fixtures() -> JsonObject:
+    """Load canonical wire samples shared by Python and Electron validators."""
     return cast(JsonObject, json.loads(FIXTURE_PATH.read_text("utf-8")))
 
 
@@ -44,6 +47,7 @@ def _fixtures() -> JsonObject:
 def test_python_accepts_every_shared_valid_client_sample(
     sample: JsonObject,
 ) -> None:
+    """Verify that python accepts every shared valid client sample."""
     parsed = parse_client_request(sample["message"])
 
     assert parsed["protocol"] == {
@@ -60,6 +64,7 @@ def test_python_accepts_every_shared_valid_client_sample(
 def test_python_accepts_every_shared_valid_server_sample(
     sample: JsonObject,
 ) -> None:
+    """Verify that python accepts every shared valid server sample."""
     parsed = parse_server_message(sample["message"])
 
     assert parsed["protocol"] == {
@@ -76,6 +81,7 @@ def test_python_accepts_every_shared_valid_server_sample(
 def test_python_rejects_every_shared_invalid_client_sample(
     sample: JsonObject,
 ) -> None:
+    """Verify that python rejects every shared invalid client sample."""
     with pytest.raises(ProtocolValidationError):
         parse_client_request(sample["message"])
 
@@ -88,11 +94,13 @@ def test_python_rejects_every_shared_invalid_client_sample(
 def test_python_rejects_every_shared_invalid_server_sample(
     sample: JsonObject,
 ) -> None:
+    """Verify that python rejects every shared invalid server sample."""
     with pytest.raises(ProtocolValidationError):
         parse_server_message(sample["message"])
 
 
 def test_all_server_message_builders_round_trip_through_the_parser() -> None:
+    """Verify that all server message builders round trip through the parser."""
     messages = [
         build_success_response("request-1", {"stopped": True}),
         build_error_response(
@@ -128,6 +136,8 @@ def test_all_server_message_builders_round_trip_through_the_parser() -> None:
 
 def test_attachment_only_chat_request_is_valid_but_blank_without_ids_is_not(
 ) -> None:
+    """Verify that attachment only chat request is valid but blank without IDs is not.
+    """
     request: JsonObject = {
         "type": "request",
         "protocol": {"name": PROTOCOL_NAME, "version": PROTOCOL_VERSION},
@@ -164,6 +174,7 @@ def test_attachment_only_chat_request_is_valid_but_blank_without_ids_is_not(
 def test_attachment_add_rejects_untrusted_path_forms(
     source_path: str,
 ) -> None:
+    """Verify that attachment add rejects untrusted path forms."""
     request: JsonObject = {
         "type": "request",
         "protocol": {"name": PROTOCOL_NAME, "version": PROTOCOL_VERSION},
@@ -180,6 +191,7 @@ def test_attachment_add_rejects_untrusted_path_forms(
 
 
 def test_attachment_add_rejects_windows_equivalent_duplicate_paths() -> None:
+    """Verify that attachment add rejects windows equivalent duplicate paths."""
     request: JsonObject = {
         "type": "request",
         "protocol": {"name": PROTOCOL_NAME, "version": PROTOCOL_VERSION},
@@ -206,6 +218,7 @@ def test_attachment_state_rejects_unsafe_or_inconsistent_metadata(
     field: str,
     value: object,
 ) -> None:
+    """Verify that attachment state rejects unsafe or inconsistent metadata."""
     sample = next(
         cast(JsonObject, candidate)
         for candidate in _fixtures()["validServerMessages"]
@@ -221,6 +234,7 @@ def test_attachment_state_rejects_unsafe_or_inconsistent_metadata(
 
 
 def test_attachment_state_accepts_a_draft_from_an_older_larger_limit() -> None:
+    """Verify that attachment state accepts a draft from an older larger limit."""
     sample = next(
         cast(JsonObject, candidate)
         for candidate in _fixtures()["validServerMessages"]
@@ -236,6 +250,7 @@ def test_attachment_state_accepts_a_draft_from_an_older_larger_limit() -> None:
 
 
 def test_success_response_requires_a_non_null_request_id() -> None:
+    """Verify that success response requires a non null request ID."""
     message: JsonObject = {
         "type": "response",
         "protocol": {"name": PROTOCOL_NAME, "version": PROTOCOL_VERSION},
@@ -249,6 +264,7 @@ def test_success_response_requires_a_non_null_request_id() -> None:
 
 
 def test_python_normalizes_json_mathematical_integers() -> None:
+    """Verify that python normalizes JSON mathematical integers."""
     message = cast(
         JsonObject,
         json.loads(
@@ -266,6 +282,7 @@ def test_python_normalizes_json_mathematical_integers() -> None:
 
 
 def test_permission_scopes_must_be_unique() -> None:
+    """Verify that permission scopes must be unique."""
     message: JsonObject = {
         "type": "permission",
         "protocol": {"name": PROTOCOL_NAME, "version": PROTOCOL_VERSION},
@@ -292,6 +309,7 @@ def test_permission_scopes_must_be_unique() -> None:
 def test_voice_settings_reject_unsafe_ids_without_echoing_them(
     invalid_id: str,
 ) -> None:
+    """Verify that voice settings reject unsafe IDs without echoing them."""
     request: JsonObject = {
         "type": "request",
         "protocol": {"name": PROTOCOL_NAME, "version": PROTOCOL_VERSION},
@@ -312,6 +330,7 @@ def test_voice_settings_reject_unsafe_ids_without_echoing_them(
 
 
 def test_voice_settings_result_requires_its_explicit_kind() -> None:
+    """Verify that voice settings result requires its explicit kind."""
     message: JsonObject = {
         "type": "response",
         "protocol": {"name": PROTOCOL_NAME, "version": PROTOCOL_VERSION},
@@ -331,7 +350,154 @@ def test_voice_settings_result_requires_its_explicit_kind() -> None:
         parse_server_message(message)
 
 
+def _voice_capture_request() -> JsonObject:
+    """Provide the voice capture request fixture used by these tests."""
+    sample = next(
+        cast(JsonObject, candidate)
+        for candidate in _fixtures()["validClientMessages"]
+        if cast(JsonObject, candidate)["name"]
+        == "voice capture complete request"
+    )
+    return cast(JsonObject, deepcopy(sample["message"]))
+
+
+def _voice_capture_response() -> JsonObject:
+    """Provide the voice capture response fixture used by these tests."""
+    sample = next(
+        cast(JsonObject, candidate)
+        for candidate in _fixtures()["validServerMessages"]
+        if cast(JsonObject, candidate)["name"] == "voice capture response"
+    )
+    return cast(JsonObject, deepcopy(sample["message"]))
+
+
+def test_voice_capture_request_accepts_exact_canonical_pcm_metadata() -> None:
+    """Verify that voice capture request accepts exact canonical PCM metadata."""
+    request = _voice_capture_request()
+
+    parsed = parse_client_request(request)
+    params = cast(JsonObject, parsed["params"])
+
+    assert parsed["method"] == "voice.capture.complete"
+    assert params["sessionId"] == "voice_fixture"
+    assert len(base64.b64decode(cast(str, params["pcmBase64"]))) == 6_400
+
+
+@pytest.mark.parametrize(
+    "invalid_base64",
+    [
+        "AB==",
+        "AA==\n",
+        "_A==",
+        "AQ",
+        "AAAA====",
+        "音频",
+    ],
+)
+def test_voice_capture_request_requires_strict_canonical_base64(
+    invalid_base64: str,
+) -> None:
+    """Verify that voice capture request requires strict canonical Base64."""
+    request = _voice_capture_request()
+    cast(JsonObject, request["params"])["pcmBase64"] = invalid_base64
+
+    with pytest.raises(ProtocolValidationError, match="canonical Base64"):
+        parse_client_request(request)
+
+
+def test_voice_capture_request_rejects_wrong_decoded_pcm_length() -> None:
+    """Verify that voice capture request rejects wrong decoded PCM length."""
+    request = _voice_capture_request()
+    params = cast(JsonObject, request["params"])
+    params["pcmBase64"] = base64.b64encode(bytes(6_402)).decode("ascii")
+
+    with pytest.raises(ProtocolValidationError, match=r"sampleCount \* 2"):
+        parse_client_request(request)
+
+
+def test_voice_capture_request_bounds_encoded_pcm_before_decoding() -> None:
+    """Verify that voice capture request bounds encoded PCM before decoding."""
+    request = _voice_capture_request()
+    params = cast(JsonObject, request["params"])
+    params["pcmBase64"] = "A" * (VOICE_CAPTURE_MAX_BASE64_CHARACTERS + 1)
+
+    with pytest.raises(ProtocolValidationError, match="length"):
+        parse_client_request(request)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("sampleCount", 3_199),
+        ("sampleCount", 3_201),
+        ("sampleCount", 480_320),
+        ("speechStartSample", -320),
+        ("speechStartSample", 1),
+        ("speechStartSample", 320),
+        ("speechEndSample", 3_520),
+        ("speechEndSample", 3_199),
+    ],
+)
+def test_voice_capture_request_enforces_frame_and_marker_invariants(
+    field: str,
+    value: int,
+) -> None:
+    """Verify that voice capture request enforces frame and marker invariants."""
+    request = _voice_capture_request()
+    cast(JsonObject, request["params"])[field] = value
+
+    with pytest.raises(ProtocolValidationError):
+        parse_client_request(request)
+
+
+def test_voice_capture_result_contains_only_safe_exact_metadata() -> None:
+    """Verify that voice capture result contains only safe exact metadata."""
+    message = _voice_capture_response()
+
+    parsed = parse_server_message(message)
+    result = cast(JsonObject, parsed["result"])
+
+    assert result["kind"] == "voice.capture"
+    assert result["durationMs"] == 200
+    assert result["speechDurationMs"] == 200
+    assert "pcmBase64" not in result
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("durationMs", -1),
+        ("durationMs", 201),
+        ("speechDurationMs", 1.5),
+        ("speechDurationMs", 201),
+        ("sha256Hex", "A" * 64),
+        ("sampleCount", 3_201),
+        ("speechEndSample", 3_520),
+    ],
+)
+def test_voice_capture_result_rejects_invalid_metadata(
+    field: str,
+    value: object,
+) -> None:
+    """Verify that voice capture result rejects invalid metadata."""
+    message = _voice_capture_response()
+    cast(JsonObject, message["result"])[field] = value
+
+    with pytest.raises(ProtocolValidationError):
+        parse_server_message(message)
+
+
+def test_voice_capture_result_rejects_pcm_or_other_extra_fields() -> None:
+    """Verify that voice capture result rejects PCM or other extra fields."""
+    message = _voice_capture_response()
+    cast(JsonObject, message["result"])["pcmBase64"] = "AAAA"
+
+    with pytest.raises(ProtocolValidationError, match="supported result"):
+        parse_server_message(message)
+
+
 def test_machine_readable_schema_covers_every_protocol_message_kind() -> None:
+    """Verify that machine readable schema covers every protocol message kind."""
     schema = cast(JsonObject, json.loads(SCHEMA_PATH.read_text("utf-8")))
     definitions = cast(JsonObject, schema["$defs"])
 
@@ -366,6 +532,7 @@ def test_machine_readable_schema_covers_every_protocol_message_kind() -> None:
         "settingsUpdateRequest",
         "voiceSettingsGetRequest",
         "voiceSettingsUpdateRequest",
+        "voiceCaptureCompleteRequest",
         "cancelRequest",
         "permissionResponseRequest",
         "shutdownRequest",
@@ -386,9 +553,22 @@ def test_machine_readable_schema_covers_every_protocol_message_kind() -> None:
         "settingsScopes",
         "settingsStateResult",
         "voiceSettingsStateResult",
+        "voiceCaptureCompleteParams",
+        "voiceCaptureResult",
+        "voiceSessionIdentifier",
         "audioDeviceId",
         "nullableAudioDeviceId",
     }.issubset(definitions)
+
+    runtime_invariants = schema["x-elysia-runtimeInvariants"]
+    assert any(
+        "decoded byte length equals sampleCount * 2" in invariant
+        for invariant in runtime_invariants
+    )
+    assert any(
+        "aligned to 320-sample frames" in invariant
+        for invariant in runtime_invariants
+    )
 
     settings_values = cast(JsonObject, definitions["settingsValues"])
     properties = cast(JsonObject, settings_values["properties"])
@@ -403,6 +583,7 @@ def test_machine_readable_schema_covers_every_protocol_message_kind() -> None:
 
 
 def _project_state_response() -> JsonObject:
+    """Provide the project state response fixture used by these tests."""
     sample = next(
         cast(JsonObject, candidate)
         for candidate in _fixtures()["validServerMessages"]
@@ -424,6 +605,7 @@ def _project_state_response() -> JsonObject:
 def test_project_state_runtime_invariants_are_enforced(
     invalid_state: str,
 ) -> None:
+    """Verify that project state runtime invariants are enforced."""
     message = _project_state_response()
     result = cast(JsonObject, message["result"])
     projects = cast(list[JsonObject], result["projects"])
@@ -448,6 +630,7 @@ def test_project_state_runtime_invariants_are_enforced(
 
 
 def test_json_schema_validates_the_shared_structural_samples() -> None:
+    """Verify that JSON schema validates the shared structural samples."""
     fixtures = _fixtures()
     schema = cast(JsonObject, json.loads(SCHEMA_PATH.read_text("utf-8")))
     Draft202012Validator.check_schema(schema)

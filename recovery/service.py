@@ -97,7 +97,12 @@ def _default_clock() -> datetime:
 
 
 class DataPortabilityService:
-    """Own safe Stage 5 export, import, rollback, and recovery logging."""
+    """Own strict JSON export, transactional import, and recovery logging.
+
+    Version-one bundles carry domain records and managed workspace JSON only.
+    Exports fail closed when Chat or Project attachment bytes would be omitted,
+    rather than producing a bundle with broken references.
+    """
 
     def __init__(
         self,
@@ -144,7 +149,7 @@ class DataPortabilityService:
         *,
         overwrite: bool = False,
     ) -> Path:
-        """Export one complete Chat without loading unrelated Chats."""
+        """Export one attachment-free Chat without loading unrelated Chats."""
 
         self._require_workspace_trust(ExportValidationError)
         session = self._chat_repository.get_chat(chat_id)
@@ -163,7 +168,7 @@ class DataPortabilityService:
         *,
         overwrite: bool = False,
     ) -> Path:
-        """Export one Project and every Chat assigned to it."""
+        """Export one Project and its Chats when no attachment bytes are omitted."""
 
         self._require_workspace_trust(ExportValidationError)
         project = self._project_repository.get_project(project_id)
@@ -186,7 +191,11 @@ class DataPortabilityService:
         *,
         overwrite: bool = False,
     ) -> Path:
-        """Export all Projects, Chats, memory, migration, and legacy JSON."""
+        """Export all domain records and supported managed workspace JSON.
+
+        The version-one format excludes local file bytes, so export is refused
+        if any Chat attachment or Project attachment scope contains user data.
+        """
 
         self._require_workspace_trust(ExportValidationError)
         projects = self._project_repository.list_projects(
@@ -219,7 +228,12 @@ class DataPortabilityService:
         *,
         overwrite_user_files: bool = False,
     ) -> ImportResult:
-        """Validate a bundle completely, then restore it transactionally."""
+        """Validate a bundle fully, then restore it transactionally.
+
+        Once source bytes are read safely, validation-invalid payloads are
+        quarantined byte-for-byte. Ordinary conflicts with existing user data
+        are reported without being mislabeled as corrupt input.
+        """
 
         self._require_workspace_trust(ImportValidationError)
         source_path = self._validate_import_path(source)
@@ -346,6 +360,12 @@ class DataPortabilityService:
         *,
         overwrite: bool,
     ) -> Path:
+        """Hash canonical payload JSON and atomically publish a bounded bundle.
+
+        The final serialized size is checked against the import limit before a
+        file is written, ensuring this process can always accept its own export.
+        """
+
         destination_path = self._validate_export_path(
             destination,
             overwrite=overwrite,
@@ -468,6 +488,12 @@ class DataPortabilityService:
         self,
         raw_data: bytes,
     ) -> tuple[ExportBundleType, JsonObject]:
+        """Strictly parse and verify bundle integrity before domain conversion.
+
+        Duplicate keys and non-finite constants are rejected because either
+        would make a checksum interpretation ambiguous across JSON readers.
+        """
+
         try:
             decoded: object = json.loads(
                 raw_data.decode("utf-8"),
@@ -568,6 +594,8 @@ class DataPortabilityService:
         *,
         overwrite_user_files: bool,
     ) -> ImportResult:
+        """Validate every cross-record reference before mutating local data."""
+
         self._require_exact_fields(
             payload,
             {"projects", "chats", "workspace_files"},
@@ -624,6 +652,13 @@ class DataPortabilityService:
         workspace_files: dict[str, JsonObject],
         overwrite_user_files: bool,
     ) -> ImportResult:
+        """Hold the Settings lock only when that shared file will be restored.
+
+        Locking covers revision rebasing and replacement as one critical
+        section, preventing an open UI from committing the same revision in
+        between the current-file read and imported-file write.
+        """
+
         settings_path = "settings/global.json"
         if settings_path in workspace_files:
             with desktop_settings_file_lock(
@@ -653,6 +688,13 @@ class DataPortabilityService:
         workspace_files: dict[str, JsonObject],
         overwrite_user_files: bool,
     ) -> ImportResult:
+        """Restore records and files while journaling each completed mutation.
+
+        Projects precede their Chats so imported relationships always have an
+        owner. Original file bytes are captured immediately before replacement;
+        any failure drives the inverse operations in rollback order.
+        """
+
         restored_projects: list[Project] = []
         restored_chats: list[ChatSession] = []
         file_backups: dict[Path, bytes | None] = {}
@@ -753,6 +795,12 @@ class DataPortabilityService:
         file_backups: dict[Path, bytes | None],
         original_error: Exception,
     ) -> None:
+        """Undo completed import steps in reverse order and report any gap.
+
+        Rollback continues after individual failures so one damaged target does
+        not prevent other records and files from being restored.
+        """
+
         rollback_errors: list[Exception] = []
         for target, old_data in reversed(tuple(file_backups.items())):
             try:
@@ -778,6 +826,13 @@ class DataPortabilityService:
             ) from original_error
 
     def _collect_workspace_files(self) -> JsonObject:
+        """Collect strict JSON only from the managed portability allowlist.
+
+        Settings recovery copies are deliberately local diagnostics, not user
+        state. Every included file is decoded before export so an unreadable
+        managed file cannot silently become a partial backup.
+        """
+
         self._require_workspace_trust(ExportValidationError)
         collected: JsonObject = {}
         for root_name in sorted(_SAFE_WORKSPACE_ROOTS):
@@ -864,6 +919,8 @@ class DataPortabilityService:
         self,
         value: object,
     ) -> dict[str, JsonObject]:
+        """Validate paths, known schemas, and legacy links before any write."""
+
         data = self._as_object(value, "workspace_files")
         if len(data) > _MAX_WORKSPACE_FILE_COUNT:
             raise ImportValidationError(
@@ -907,6 +964,8 @@ class DataPortabilityService:
         legacy_conversation_messages_from_data(data)
 
     def _validate_legacy_migration_state(self, data: JsonObject) -> None:
+        """Validate the complete legacy migration commit-marker schema."""
+
         self._require_exact_fields(
             data,
             {
@@ -992,6 +1051,8 @@ class DataPortabilityService:
         self,
         workspace_files: dict[str, JsonObject],
     ) -> None:
+        """Require the backup named by a migrated-state record in the bundle."""
+
         state = workspace_files.get(
             "migrations/legacy_conversation_v1.json"
         )
@@ -1060,6 +1121,12 @@ class DataPortabilityService:
         workspace_files: dict[str, JsonObject],
         sessions: tuple[ChatSession, ...],
     ) -> None:
+        """Cross-check migration state, backup content, and imported Chat.
+
+        This prevents an individually valid set of files from claiming that a
+        different Chat was produced by the exported legacy conversation.
+        """
+
         state = workspace_files.get(
             "migrations/legacy_conversation_v1.json"
         )
@@ -1096,6 +1163,8 @@ class DataPortabilityService:
             )
 
     def _workspace_path(self, relative_path: str) -> Path:
+        """Resolve one allowlisted target without traversing redirected paths."""
+
         self._validate_workspace_relative_path(relative_path)
         self._require_workspace_trust(ImportValidationError)
         target = self._workspace_directory.joinpath(
@@ -1238,6 +1307,8 @@ class DataPortabilityService:
         )
 
     def _project_from_value(self, value: object) -> Project:
+        """Build a Project and require its stored form to be canonical."""
+
         try:
             project = project_from_value(value)
         except (TypeError, ValueError) as error:
@@ -1260,6 +1331,8 @@ class DataPortabilityService:
         )
 
     def _session_from_value(self, value: object) -> ChatSession:
+        """Build a canonical Chat that needs no unavailable attachment bytes."""
+
         data = self._as_object(value, "chat")
         try:
             session = session_from_data(data)
@@ -1284,6 +1357,8 @@ class DataPortabilityService:
         raw_data: bytes,
         error: ImportValidationError,
     ) -> None:
+        """Preserve exact rejected bytes under a safe name and audit the event."""
+
         digest = hashlib.sha256(raw_data).hexdigest()
         timestamp = self._aware_clock().strftime("%Y%m%dT%H%M%SZ")
         safe_stem = _SAFE_FILE_NAME.sub("_", source.stem)[:80] or "bundle"
@@ -1315,6 +1390,12 @@ class DataPortabilityService:
         quarantine_path: str,
         detail: str,
     ) -> None:
+        """Append a bounded event, preserving an unreadable prior log aside.
+
+        The latest 1,000 events are enough for diagnosis without allowing
+        repeated invalid imports to grow this managed file without bound.
+        """
+
         log_data: JsonObject = {
             "schema_version": RECOVERY_LOG_SCHEMA_VERSION,
             "events": [],
@@ -1361,6 +1442,8 @@ class DataPortabilityService:
         atomic_write_json(self._recovery_log_file, log_data)
 
     def _payload_digest(self, payload: Mapping[str, object]) -> str:
+        """Hash canonical JSON so key order and whitespace cannot alter identity."""
+
         canonical = json.dumps(
             payload,
             ensure_ascii=False,
@@ -1445,6 +1528,8 @@ class DataPortabilityService:
             )
 
     def _atomic_write_bytes(self, target: Path, data: bytes) -> None:
+        """Atomically restore exact prior bytes through a same-directory temp."""
+
         target.parent.mkdir(parents=True, exist_ok=True)
         descriptor, temp_name = mkstemp(
             dir=target.parent,

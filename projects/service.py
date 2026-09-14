@@ -1,4 +1,4 @@
-"""Coordinate Project and Chat relationships without exposing paths."""
+"""Coordinate Project lifecycle and Chat relationships across repositories."""
 
 from collections.abc import Callable
 from dataclasses import replace

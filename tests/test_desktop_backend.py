@@ -1,5 +1,7 @@
 """Test the versioned Electron-to-Python bridge without starting Ollama."""
 
+import base64
+import hashlib
 import json
 import sys
 from collections.abc import Callable, Generator
@@ -82,6 +84,7 @@ class FakeBrain:
     model_name = "test-model"
 
     def __init__(self) -> None:
+        """Initialize deterministic state for this test double."""
         self.chat = create_chat_session(
             title="Elysia Chat",
             mode="chat",
@@ -115,6 +118,7 @@ class FakeBrain:
         *,
         include_archived: bool = False,
     ) -> tuple[ChatSessionMeta, ...]:
+        """Provide deterministic list chats behavior for this test double."""
         self.session_calls.append(("list_chats", include_archived))
         return tuple(
             chat.to_meta()
@@ -123,6 +127,7 @@ class FakeBrain:
         )
 
     def get_chat(self, chat_id: object) -> ChatSession:
+        """Provide deterministic get chat behavior for this test double."""
         normalized_id = ChatId(str(chat_id))
         self.session_calls.append(("get_chat", str(normalized_id)))
         try:
@@ -138,6 +143,7 @@ class FakeBrain:
         title: str,
         mode: ConversationMode = "chat",
     ) -> ChatSession:
+        """Create chat for this scenario."""
         self.session_calls.append(("create_chat", title, mode))
         created = replace(self.next_chat, title=title, mode=mode)
         self.add_chat(created)
@@ -153,6 +159,7 @@ class FakeBrain:
         chat_id: ChatId,
         title: str,
     ) -> ChatSession:
+        """Provide deterministic rename chat behavior for this test double."""
         self.session_calls.append(("rename_chat", str(chat_id), title))
         renamed = replace(self._chats[chat_id], title=title)
         self.add_chat(renamed)
@@ -163,6 +170,7 @@ class FakeBrain:
         chat_id: ChatId,
         pinned: bool = True,
     ) -> ChatSessionMeta:
+        """Provide deterministic pin chat behavior for this test double."""
         self.session_calls.append(("pin_chat", str(chat_id), pinned))
         updated = replace(self._chats[chat_id], is_pinned=pinned)
         self.add_chat(updated)
@@ -173,12 +181,14 @@ class FakeBrain:
         chat_id: ChatId,
         archived: bool = True,
     ) -> ChatSessionMeta:
+        """Provide deterministic archive chat behavior for this test double."""
         self.session_calls.append(("archive_chat", str(chat_id), archived))
         updated = replace(self._chats[chat_id], is_archived=archived)
         self.add_chat(updated)
         return updated.to_meta()
 
     def delete_chat(self, chat_id: ChatId) -> None:
+        """Provide deterministic delete chat behavior for this test double."""
         self.session_calls.append(("delete_chat", str(chat_id)))
         try:
             del self._chats[chat_id]
@@ -193,6 +203,7 @@ class FakeBrain:
         name: str,
         custom_instructions: str | None = None,
     ) -> Project:
+        """Create project for this scenario."""
         self.session_calls.append(
             ("create_project", name, custom_instructions)
         )
@@ -212,6 +223,7 @@ class FakeBrain:
         *,
         include_archived: bool = False,
     ) -> tuple[Project, ...]:
+        """Provide deterministic list projects behavior for this test double."""
         self.session_calls.append(("list_projects", include_archived))
         return tuple(
             project
@@ -220,6 +232,7 @@ class FakeBrain:
         )
 
     def get_project(self, project_id: ProjectId) -> Project:
+        """Provide deterministic get project behavior for this test double."""
         self.session_calls.append(("get_project", str(project_id)))
         try:
             return self._projects[project_id]
@@ -235,6 +248,7 @@ class FakeBrain:
         name: str,
         custom_instructions: str | None,
     ) -> Project:
+        """Provide deterministic update project behavior for this test double."""
         self.session_calls.append(
             (
                 "update_project",
@@ -260,6 +274,7 @@ class FakeBrain:
         project_id: ProjectId,
         root_path: str,
     ) -> Project:
+        """Provide deterministic bind workspace behavior for this test double."""
         self.session_calls.append(
             ("bind_workspace", str(project_id), root_path)
         )
@@ -271,6 +286,7 @@ class FakeBrain:
         return updated
 
     def unbind_workspace(self, project_id: ProjectId) -> Project:
+        """Provide deterministic unbind workspace behavior for this test double."""
         self.session_calls.append(("unbind_workspace", str(project_id)))
         updated = replace(
             self.get_project(project_id),
@@ -280,12 +296,14 @@ class FakeBrain:
         return updated
 
     def archive_project(self, project_id: ProjectId) -> Project:
+        """Provide deterministic archive project behavior for this test double."""
         self.session_calls.append(("archive_project", str(project_id)))
         updated = replace(self.get_project(project_id), is_archived=True)
         self.add_project(updated)
         return updated
 
     def restore_project(self, project_id: ProjectId) -> Project:
+        """Provide deterministic restore project behavior for this test double."""
         self.session_calls.append(("restore_project", str(project_id)))
         updated = replace(self.get_project(project_id), is_archived=False)
         self.add_project(updated)
@@ -297,6 +315,7 @@ class FakeBrain:
         *,
         include_archived: bool = False,
     ) -> tuple[ChatSessionMeta, ...]:
+        """Provide deterministic list project chats behavior for this test double."""
         return tuple(
             chat.to_meta()
             for chat in self._chats.values()
@@ -309,6 +328,7 @@ class FakeBrain:
         chat_id: ChatId,
         project_id: ProjectId | None,
     ) -> ChatSession:
+        """Provide deterministic move chat behavior for this test double."""
         self.session_calls.append(
             (
                 "move_chat",
@@ -329,6 +349,7 @@ class FakeBrain:
         should_cancel: Callable[[], bool] | None = None,
         begin_commit: Callable[[], bool] | None = None,
     ) -> Generator[str, None, None]:
+        """Provide deterministic stream chat behavior for this test double."""
         self.stream_calls.append((str(chat_id), message))
         if should_cancel is not None and should_cancel():
             raise GenerationCancelledError("Chat generation was cancelled.")
@@ -375,6 +396,7 @@ class FakeBrain:
         should_cancel: Callable[[], bool] | None = None,
         begin_commit: Callable[[], bool] | None = None,
     ) -> Generator[str, None, None]:
+        """Provide deterministic stream retry behavior for this test double."""
         stored_chat = self._chats[ChatId(str(chat_id))]
         user_record, assistant_record = stored_chat.messages[-2:]
         if (
@@ -427,6 +449,7 @@ def _request(
 
 
 def _handshake_request(*, token: str = SESSION_TOKEN) -> JsonObject:
+    """Provide the handshake request fixture used by these tests."""
     return _request(
         "handshake-1",
         "handshake",
@@ -440,7 +463,25 @@ def _handshake_request(*, token: str = SESSION_TOKEN) -> JsonObject:
     )
 
 
+def _voice_capture_params(chat_id: str, *, silent: bool = False) -> JsonObject:
+    """Build one frame-aligned transient PCM utterance for bridge tests."""
+
+    pcm = (b"\x00\x00" if silent else b"\xe8\x03") * 3_200
+    return {
+        "sessionId": "voice_backend_fixture",
+        "chatId": chat_id,
+        "sampleRateHz": 16_000,
+        "channelCount": 1,
+        "sampleFormat": "s16le",
+        "sampleCount": 3_200,
+        "speechStartSample": 0,
+        "speechEndSample": 3_200,
+        "pcmBase64": base64.b64encode(pcm).decode("ascii"),
+    }
+
+
 def _initialize_request() -> JsonObject:
+    """Provide the initialize request fixture used by these tests."""
     return _request("initialize-1", "initialize", {})
 
 
@@ -452,6 +493,7 @@ def _desktop_settings_values(
     memory_retrieval_limit: int = 5,
     data_import_max_bytes: int = 16 * 1024 * 1024,
 ) -> JsonObject:
+    """Provide the desktop settings values fixture used by these tests."""
     return {
         "modelName": model_name,
         "ollamaHost": ollama_host,
@@ -462,6 +504,7 @@ def _desktop_settings_values(
 
 
 def _desktop_settings_repository(path: Path) -> DesktopSettingsRepository:
+    """Provide the desktop settings repository fixture used by these tests."""
     return DesktopSettingsRepository(
         path,
         EditableDesktopSettings(
@@ -483,6 +526,7 @@ def _run_bridge(
     voice_settings_service: VoiceSettingsService | None = None,
     attachment_store: JsonAttachmentStore | None = None,
 ) -> tuple[FakeBrain, list[JsonObject]]:
+    """Provide the run bridge fixture used by these tests."""
     active_brain = fake_brain if fake_brain is not None else FakeBrain()
     lines = build_lines(str(active_brain.chat.chat_id))
     input_stream = StringIO(
@@ -524,6 +568,7 @@ def _run_bridge_with_bootstrap_settings(
     bootstrap_settings: AppSettings,
     fake_brain: FakeBrain,
 ) -> list[JsonObject]:
+    """Provide the run bridge with bootstrap settings fixture used by these tests."""
     requests = [
         _handshake_request(),
         _request("settings-safe", "settings.get", {}),
@@ -593,6 +638,7 @@ def _error(
 
 
 def test_bridge_initializes_and_streams_one_real_brain_turn() -> None:
+    """Verify that bridge initializes and streams one real brain turn."""
     actual_brain, messages = _run_bridge(
         lambda chat_id: [
             _handshake_request(),
@@ -684,6 +730,7 @@ def test_bridge_initializes_and_streams_one_real_brain_turn() -> None:
 def test_attachment_add_returns_only_safe_canonical_metadata(
     tmp_path: Path,
 ) -> None:
+    """Verify that attachment add returns only safe canonical metadata."""
     source = tmp_path / "course notes.md"
     source.write_text("Local notes", encoding="utf-8")
     store = JsonAttachmentStore(
@@ -737,6 +784,7 @@ def test_attachment_add_returns_only_safe_canonical_metadata(
 def test_attachment_only_stream_commits_metadata_and_finalizes_blob(
     tmp_path: Path,
 ) -> None:
+    """Commit attachment metadata and its blob even when message text is empty."""
     brain = FakeBrain()
     scope = AttachmentScope(kind="chat", id=str(brain.chat.chat_id))
     source = tmp_path / "notes.txt"
@@ -788,6 +836,7 @@ def test_generation_terminal_response_waits_for_attachment_reconciliation(
     tmp_path: Path,
     monkeypatch: Any,
 ) -> None:
+    """Verify that generation terminal response waits for attachment reconciliation."""
     fake_brain = FakeBrain()
     store = JsonAttachmentStore(
         tmp_path / "attachments",
@@ -803,6 +852,7 @@ def test_generation_terminal_response_waits_for_attachment_reconciliation(
         scope: AttachmentScope,
         referenced_ids: tuple[str, ...] = (),
     ) -> object:
+        """Block the first reconciliation until the test inspects response order."""
         nonlocal reconcile_calls
         reconcile_calls += 1
         if reconcile_calls == 1:
@@ -813,7 +863,10 @@ def test_generation_terminal_response_waits_for_attachment_reconciliation(
     monkeypatch.setattr(store, "reconcile", blocking_reconcile)
 
     class ResponseNotifyingStream(StringIO):
+        """Signal when the first generation response reaches the output stream."""
+
         def write(self, value: str) -> int:
+            """Record output and notify on the first Chat terminal response."""
             written = super().write(value)
             if value.startswith("{"):
                 message = json.loads(value)
@@ -828,6 +881,7 @@ def test_generation_terminal_response_waits_for_attachment_reconciliation(
     chat_id = str(fake_brain.chat.chat_id)
 
     def request_lines() -> Generator[str, None, None]:
+        """Feed requests around the deliberately blocked reconciliation point."""
         for request in (
             _handshake_request(),
             _initialize_request(),
@@ -878,6 +932,7 @@ def test_generation_terminal_response_waits_for_attachment_reconciliation(
 def test_busy_generation_rejection_does_not_release_the_active_claim(
     tmp_path: Path,
 ) -> None:
+    """Keep the original busy claim when a second generation request is rejected."""
     fake_brain = FakeBrain()
     chat_id = str(fake_brain.chat.chat_id)
     scope = AttachmentScope(kind="chat", id=chat_id)
@@ -927,6 +982,7 @@ def test_busy_generation_rejection_does_not_release_the_active_claim(
 
 
 def test_bridge_retries_the_persisted_tail_with_stable_message_ids() -> None:
+    """Verify that bridge retries the persisted tail with stable message IDs."""
     fake_brain = FakeBrain()
     turn_time = fake_brain.chat.created_at + timedelta(seconds=1)
     user_message = create_chat_message(
@@ -996,7 +1052,10 @@ def test_bridge_retries_the_persisted_tail_with_stable_message_ids() -> None:
 
 
 def test_cancel_success_prevents_partial_turn_persistence() -> None:
+    """Acknowledge cancellation while keeping streamed partial text transient."""
     class CancellableBrain(FakeBrain):
+        """Stream a partial reply until the bridge cancellation flag is raised."""
+
         def stream_chat(
             self,
             chat_id: object,
@@ -1006,6 +1065,7 @@ def test_cancel_success_prevents_partial_turn_persistence() -> None:
             should_cancel: Callable[[], bool] | None = None,
             begin_commit: Callable[[], bool] | None = None,
         ) -> Generator[str, None, None]:
+            """Hold generation after one chunk so cancellation can interrupt it."""
             del attachments, begin_commit
             self.stream_calls.append((str(chat_id), message))
             yield "partial"
@@ -1061,9 +1121,12 @@ def test_cancel_success_prevents_partial_turn_persistence() -> None:
 def test_chat_list_does_not_block_the_cancel_request_reader(
     tmp_path: Path,
 ) -> None:
+    """Serve Chat listing without starving cancellation of an active stream."""
     generation_started = Event()
 
     class BlockingBrain(FakeBrain):
+        """Keep generation active while independent bridge requests are read."""
+
         def stream_chat(
             self,
             chat_id: object,
@@ -1073,6 +1136,7 @@ def test_chat_list_does_not_block_the_cancel_request_reader(
             should_cancel: Callable[[], bool] | None = None,
             begin_commit: Callable[[], bool] | None = None,
         ) -> Generator[str, None, None]:
+            """Poll cancellation long enough to expose a blocked request reader."""
             del attachments, begin_commit
             self.stream_calls.append((str(chat_id), message))
             yield "partial"
@@ -1088,6 +1152,7 @@ def test_chat_list_does_not_block_the_cancel_request_reader(
     fake_brain = BlockingBrain()
 
     def request_lines() -> Generator[str, None, None]:
+        """Issue list and cancel requests only after generation has started."""
         chat_id = str(fake_brain.chat.chat_id)
         for request in (
             _handshake_request(),
@@ -1141,10 +1206,13 @@ def test_chat_list_does_not_block_the_cancel_request_reader(
 def test_cancel_is_rejected_after_generation_claims_commit(
     tmp_path: Path,
 ) -> None:
+    """Reject late cancellation once generation crosses the persistence boundary."""
     commit_claimed = Event()
     release_commit = Event()
 
     class CommittingBrain(FakeBrain):
+        """Pause after claiming commit to test the non-cancellable boundary."""
+
         def stream_chat(
             self,
             chat_id: object,
@@ -1154,6 +1222,7 @@ def test_cancel_is_rejected_after_generation_claims_commit(
             should_cancel: Callable[[], bool] | None = None,
             begin_commit: Callable[[], bool] | None = None,
         ) -> Generator[str, None, None]:
+            """Claim commit, wait for a late cancel, then persist the turn."""
             del attachments, should_cancel
             self.stream_calls.append((str(chat_id), message))
             yield "committed"
@@ -1188,6 +1257,7 @@ def test_cancel_is_rejected_after_generation_claims_commit(
     fake_brain = CommittingBrain()
 
     def request_lines() -> Generator[str, None, None]:
+        """Send cancellation only after generation has claimed commit."""
         chat_id = str(fake_brain.chat.chat_id)
         for request in (
             _handshake_request(),
@@ -1236,10 +1306,13 @@ def test_cancel_is_rejected_after_generation_claims_commit(
 def test_background_completion_does_not_reactivate_a_chat_after_switch(
     tmp_path: Path,
 ) -> None:
+    """Verify that background completion does not reactivate a chat after switch."""
     generation_started = Event()
     release_generation = Event()
 
     class SwitchingBrain(FakeBrain):
+        """Delay one Chat's completion while the active Chat changes."""
+
         def stream_chat(
             self,
             chat_id: object,
@@ -1249,6 +1322,7 @@ def test_background_completion_does_not_reactivate_a_chat_after_switch(
             should_cancel: Callable[[], bool] | None = None,
             begin_commit: Callable[[], bool] | None = None,
         ) -> Generator[str, None, None]:
+            """Persist the original Chat only after the bridge opens another."""
             del attachments
             self.stream_calls.append((str(chat_id), message))
             yield "reply"
@@ -1293,6 +1367,7 @@ def test_background_completion_does_not_reactivate_a_chat_after_switch(
     fake_brain.add_chat(second_chat)
 
     def request_lines() -> Generator[str, None, None]:
+        """Open another Chat while the first Chat's generation is suspended."""
         first_chat_id = str(fake_brain.chat.chat_id)
         for request in (
             _handshake_request(),
@@ -1351,10 +1426,13 @@ def test_background_completion_does_not_reactivate_a_chat_after_switch(
 def test_background_completion_does_not_replace_a_new_active_chat(
     tmp_path: Path,
 ) -> None:
+    """Verify that background completion does not replace a new active chat."""
     generation_started = Event()
     release_generation = Event()
 
     class CreatingBrain(FakeBrain):
+        """Delay one Chat's completion while the bridge creates another Chat."""
+
         def stream_chat(
             self,
             chat_id: object,
@@ -1364,6 +1442,7 @@ def test_background_completion_does_not_replace_a_new_active_chat(
             should_cancel: Callable[[], bool] | None = None,
             begin_commit: Callable[[], bool] | None = None,
         ) -> Generator[str, None, None]:
+            """Persist the original Chat after a new active Chat is created."""
             del attachments
             self.stream_calls.append((str(chat_id), message))
             yield "reply"
@@ -1397,6 +1476,7 @@ def test_background_completion_does_not_replace_a_new_active_chat(
     created_chat_id = str(fake_brain.next_chat.chat_id)
 
     def request_lines() -> Generator[str, None, None]:
+        """Create another Chat while the first Chat's generation is suspended."""
         first_chat_id = str(fake_brain.chat.chat_id)
         for request in (
             _handshake_request(),
@@ -1444,8 +1524,12 @@ def test_background_completion_does_not_replace_a_new_active_chat(
 
 
 def test_post_commit_cache_refresh_failure_does_not_invite_retry() -> None:
+    """Report post-commit refresh failure as non-retryable to avoid duplicate turns."""
     class RefreshFailingBrain(FakeBrain):
+        """Commit successfully, then fail the bridge's post-commit refresh once."""
+
         def __init__(self) -> None:
+            """Initialize the one-shot post-commit failure flag."""
             super().__init__()
             self.fail_next_refresh = False
 
@@ -1458,6 +1542,7 @@ def test_post_commit_cache_refresh_failure_does_not_invite_retry() -> None:
             should_cancel: Callable[[], bool] | None = None,
             begin_commit: Callable[[], bool] | None = None,
         ) -> Generator[str, None, None]:
+            """Delegate persistence, then arm a one-shot refresh failure."""
             yield from super().stream_chat(
                 chat_id,
                 message,
@@ -1468,6 +1553,7 @@ def test_post_commit_cache_refresh_failure_does_not_invite_retry() -> None:
             self.fail_next_refresh = True
 
         def get_chat(self, chat_id: object) -> ChatSession:
+            """Raise once after commit, then resume normal Chat lookup."""
             if self.fail_next_refresh:
                 self.fail_next_refresh = False
                 raise RuntimeError("Cache refresh failed after commit.")
@@ -1495,6 +1581,7 @@ def test_post_commit_cache_refresh_failure_does_not_invite_retry() -> None:
 
 
 def test_chat_list_serializes_metadata_messages_and_attachments() -> None:
+    """Verify that chat list serializes metadata messages and attachments."""
     fake_brain = FakeBrain()
     attachment = create_attachment_metadata(
         file_name="notes.txt",
@@ -1602,6 +1689,7 @@ def test_chat_list_serializes_metadata_messages_and_attachments() -> None:
 
 
 def test_project_actions_return_one_canonical_project_and_chat_state() -> None:
+    """Verify that project actions return one canonical project and chat state."""
     fake_brain = FakeBrain()
     project_id = str(fake_brain.next_project.project_id)
     chat_id = str(fake_brain.chat.chat_id)
@@ -1738,7 +1826,10 @@ def test_project_actions_return_one_canonical_project_and_chat_state() -> None:
 
 def test_project_bridge_exposes_stable_not_found_archived_and_busy_errors(
 ) -> None:
+    """Map Project absence, archival, and busy conflicts to stable wire errors."""
     class FailingProjectBrain(FakeBrain):
+        """Expose stable archived and busy Project failures to the bridge."""
+
         def update_project(
             self,
             project_id: ProjectId,
@@ -1746,6 +1837,7 @@ def test_project_bridge_exposes_stable_not_found_archived_and_busy_errors(
             name: str,
             custom_instructions: str | None,
         ) -> Project:
+            """Reject updates as if the selected Project were archived."""
             del name, custom_instructions
             raise ProjectArchivedError(
                 f"Archived Project is read-only: {project_id}."
@@ -1756,6 +1848,7 @@ def test_project_bridge_exposes_stable_not_found_archived_and_busy_errors(
             chat_id: ChatId,
             project_id: ProjectId | None,
         ) -> ChatSession:
+            """Reject relationship changes as if the Chat were generating."""
             del project_id
             raise ProjectChatBusyError(
                 f"Chat cannot change Project while busy: {chat_id}."
@@ -1809,6 +1902,7 @@ def test_project_bridge_exposes_stable_not_found_archived_and_busy_errors(
 
 
 def test_create_open_rename_and_pin_return_uniform_session_state() -> None:
+    """Verify that create open rename and pin return uniform session state."""
     fake_brain = FakeBrain()
     created_id = str(fake_brain.next_chat.chat_id)
     open_target = create_chat_session(
@@ -1884,6 +1978,7 @@ def test_create_open_rename_and_pin_return_uniform_session_state() -> None:
 
 
 def test_open_rejects_archived_and_wrong_model_chats() -> None:
+    """Verify that open rejects archived and wrong model chats."""
     fake_brain = FakeBrain()
     archived = replace(
         create_chat_session(
@@ -1936,6 +2031,7 @@ def test_open_rejects_archived_and_wrong_model_chats() -> None:
 
 
 def test_archiving_active_chat_selects_visible_same_model_chat() -> None:
+    """Verify that archiving active chat selects visible same model chat."""
     fake_brain = FakeBrain()
     fallback = create_chat_session(
         title="Fallback",
@@ -1980,6 +2076,7 @@ def test_archiving_active_chat_selects_visible_same_model_chat() -> None:
 
 
 def test_deleting_active_chat_creates_default_when_no_model_match() -> None:
+    """Verify that deleting active chat creates default when no model match."""
     fake_brain = FakeBrain()
     replacement_id = str(fake_brain.next_chat.chat_id)
     wrong_model = create_chat_session(
@@ -2033,6 +2130,7 @@ def test_deleting_active_chat_creates_default_when_no_model_match() -> None:
 def test_settings_can_be_read_and_repaired_before_initialize(
     tmp_path: Path,
 ) -> None:
+    """Verify that settings can be read and repaired before initialize."""
     repository = _desktop_settings_repository(tmp_path / "global.json")
     changed = _desktop_settings_values(
         model_name="second-model",
@@ -2076,9 +2174,175 @@ def test_settings_can_be_read_and_repaired_before_initialize(
     assert "settings.management" in SERVER_CAPABILITIES
 
 
+def test_voice_capture_returns_only_safe_metadata_without_chat_side_effects(
+) -> None:
+    """Verify that voice capture returns only safe metadata without chat side effects.
+    """
+    fake_brain = FakeBrain()
+    original_chat = fake_brain.chat
+    chat_id = str(original_chat.chat_id)
+    params = _voice_capture_params(chat_id)
+    encoded_pcm = cast(str, params["pcmBase64"])
+    pcm = base64.b64decode(encoded_pcm, validate=True)
+
+    brain, messages = _run_bridge(
+        lambda _chat_id: [
+            _handshake_request(),
+            _initialize_request(),
+            _request(
+                "voice-capture-valid",
+                "voice.capture.complete",
+                params,
+            ),
+        ],
+        fake_brain=fake_brain,
+    )
+
+    assert _success_result(messages, "voice-capture-valid") == {
+        "kind": "voice.capture",
+        "sessionId": "voice_backend_fixture",
+        "chatId": chat_id,
+        "sampleRateHz": 16_000,
+        "channelCount": 1,
+        "sampleFormat": "s16le",
+        "sampleCount": 3_200,
+        "speechStartSample": 0,
+        "speechEndSample": 3_200,
+        "durationMs": 200,
+        "speechDurationMs": 200,
+        "sha256Hex": hashlib.sha256(pcm).hexdigest(),
+    }
+    assert encoded_pcm not in json.dumps(messages)
+    assert brain.stream_calls == []
+    assert brain.get_chat(original_chat.chat_id) == original_chat
+
+
+def test_voice_capture_rejects_silence_without_leaking_pcm() -> None:
+    """Verify that voice capture rejects silence without leaking PCM."""
+    fake_brain = FakeBrain()
+    original_chat = fake_brain.chat
+    params = _voice_capture_params(str(original_chat.chat_id), silent=True)
+    encoded_pcm = cast(str, params["pcmBase64"])
+
+    brain, messages = _run_bridge(
+        lambda _chat_id: [
+            _handshake_request(),
+            _initialize_request(),
+            _request(
+                "voice-capture-silent",
+                "voice.capture.complete",
+                params,
+            ),
+        ],
+        fake_brain=fake_brain,
+    )
+
+    assert _error(messages, "voice-capture-silent") == {
+        "code": "voice.capture.invalid",
+        "message": "Voice capture speech window must contain non-silent PCM.",
+        "retryable": False,
+    }
+    assert encoded_pcm not in json.dumps(messages)
+    assert brain.stream_calls == []
+    assert brain.get_chat(original_chat.chat_id) == original_chat
+
+
+def test_voice_capture_rejects_a_chat_other_than_the_active_chat() -> None:
+    """Verify that voice capture rejects a chat other than the active chat."""
+    fake_brain = FakeBrain()
+    original_chat = fake_brain.chat
+    params = _voice_capture_params("chat_voice_mismatch")
+
+    brain, messages = _run_bridge(
+        lambda _chat_id: [
+            _handshake_request(),
+            _initialize_request(),
+            _request(
+                "voice-capture-wrong-chat",
+                "voice.capture.complete",
+                params,
+            ),
+        ],
+        fake_brain=fake_brain,
+    )
+
+    assert _error(messages, "voice-capture-wrong-chat") == {
+        "code": "voice.capture.chat_mismatch",
+        "message": "Voice capture no longer belongs to the active Chat.",
+        "retryable": False,
+    }
+    assert brain.stream_calls == []
+    assert brain.get_chat(original_chat.chat_id) == original_chat
+
+
+def test_voice_capture_is_rejected_while_chat_generation_is_active() -> None:
+    """Verify that voice capture is rejected while chat generation is active."""
+    generation_started = Event()
+    release_generation = Event()
+
+    class BlockingBrain(FakeBrain):
+        """Hold generation active while a Voice capture request is handled."""
+
+        def stream_chat(
+            self,
+            chat_id: object,
+            message: str,
+            *,
+            attachments: tuple[AttachmentMetadata, ...] = (),
+            should_cancel: Callable[[], bool] | None = None,
+            begin_commit: Callable[[], bool] | None = None,
+        ) -> Generator[str, None, None]:
+            """Signal active generation and wait before delegating persistence."""
+            generation_started.set()
+            assert release_generation.wait(1.0)
+            yield from super().stream_chat(
+                chat_id,
+                message,
+                attachments=attachments,
+                should_cancel=should_cancel,
+                begin_commit=begin_commit,
+            )
+
+    fake_brain = BlockingBrain()
+    release_timer = Timer(0.1, release_generation.set)
+    release_timer.start()
+    try:
+        brain, messages = _run_bridge(
+            lambda chat_id: [
+                _handshake_request(),
+                _initialize_request(),
+                _request(
+                    "chat-active-for-capture",
+                    "chat.stream",
+                    {"chatId": chat_id, "message": "Keep working"},
+                ),
+                _request(
+                    "voice-capture-busy",
+                    "voice.capture.complete",
+                    _voice_capture_params(chat_id),
+                ),
+            ],
+            fake_brain=fake_brain,
+        )
+    finally:
+        release_generation.set()
+        release_timer.join()
+
+    assert generation_started.is_set()
+    assert _error(messages, "voice-capture-busy") == {
+        "code": "voice.capture.busy",
+        "message": "Wait for the current reply before submitting voice input.",
+        "retryable": False,
+    }
+    assert brain.stream_calls == [
+        (str(fake_brain.chat.chat_id), "Keep working")
+    ]
+
+
 def test_voice_settings_round_trip_before_brain_initialization(
     tmp_path: Path,
 ) -> None:
+    """Verify that voice settings round trip before brain initialization."""
     service = create_voice_settings_service(tmp_path)
 
     _, messages = _run_bridge(
@@ -2121,6 +2385,7 @@ def test_voice_settings_round_trip_before_brain_initialization(
 def test_voice_settings_remain_available_after_brain_initialization_fails(
     tmp_path: Path,
 ) -> None:
+    """Verify that voice settings remain available after brain initialization fails."""
     requests = [
         _handshake_request(),
         _initialize_request(),
@@ -2133,6 +2398,7 @@ def test_voice_settings_remain_available_after_brain_initialization_fails(
     output_stream = StringIO()
 
     def fail_brain() -> Brain:
+        """Simulate deferred Brain initialization failing after handshake."""
         raise RuntimeError("simulated Brain initialization failure")
 
     DesktopBackend(
@@ -2163,6 +2429,7 @@ def test_voice_settings_remain_available_after_brain_initialization_fails(
 def test_voice_settings_conflict_is_typed_and_retryable(
     tmp_path: Path,
 ) -> None:
+    """Verify that voice settings conflict is typed and retryable."""
     service = create_voice_settings_service(tmp_path)
 
     _, messages = _run_bridge(
@@ -2201,6 +2468,7 @@ def test_voice_settings_conflict_is_typed_and_retryable(
 def test_voice_settings_storage_failure_is_typed_and_keeps_ids_private(
     tmp_path: Path,
 ) -> None:
+    """Type Voice storage failures without leaking private device identifiers."""
     blocked_base = tmp_path / "blocked"
     blocked_base.mkdir()
     (blocked_base / "workspace").write_text("not a directory", encoding="utf-8")
@@ -2231,10 +2499,13 @@ def test_voice_settings_storage_failure_is_typed_and_keeps_ids_private(
 def test_voice_settings_update_is_not_blocked_by_active_chat_generation(
     tmp_path: Path,
 ) -> None:
+    """Verify that voice settings update is not blocked by active chat generation."""
     generation_started = Event()
     release_generation = Event()
 
     class BlockingBrain(FakeBrain):
+        """Hold generation active while Voice device settings are updated."""
+
         def stream_chat(
             self,
             chat_id: object,
@@ -2244,6 +2515,7 @@ def test_voice_settings_update_is_not_blocked_by_active_chat_generation(
             should_cancel: Callable[[], bool] | None = None,
             begin_commit: Callable[[], bool] | None = None,
         ) -> Generator[str, None, None]:
+            """Signal active generation and wait before delegating persistence."""
             generation_started.set()
             assert release_generation.wait(1.0)
             yield from super().stream_chat(
@@ -2296,7 +2568,10 @@ def test_voice_settings_update_is_not_blocked_by_active_chat_generation(
 def test_invalid_bootstrap_uses_safe_defaults_and_still_initializes(
     tmp_path: Path,
 ) -> None:
+    """Verify that invalid bootstrap uses safe defaults and still initializes."""
     class DefaultModelBrain(FakeBrain):
+        """Represent the safe fallback Brain selected for invalid bootstrap data."""
+
         model_name = DEFAULT_MODEL_NAME
 
     invalid_bootstrap = AppSettings(
@@ -2333,6 +2608,7 @@ def test_invalid_bootstrap_uses_safe_defaults_and_still_initializes(
 def test_invalid_bootstrap_prefers_valid_persisted_settings(
     tmp_path: Path,
 ) -> None:
+    """Verify that invalid bootstrap prefers valid persisted settings."""
     settings_path = (
         tmp_path / "workspace" / "settings" / "global.json"
     )
@@ -2378,6 +2654,7 @@ def test_invalid_bootstrap_prefers_valid_persisted_settings(
 def test_settings_update_reports_restart_fields_and_active_scopes(
     tmp_path: Path,
 ) -> None:
+    """Verify that settings update reports restart fields and active scopes."""
     repository = _desktop_settings_repository(tmp_path / "global.json")
     fake_brain = FakeBrain()
     project = create_project(
@@ -2438,6 +2715,7 @@ def test_settings_update_reports_restart_fields_and_active_scopes(
 def test_settings_update_rejects_unknown_sensitive_fields_at_wire_boundary(
     tmp_path: Path,
 ) -> None:
+    """Verify that settings update rejects unknown sensitive fields at wire boundary."""
     repository = _desktop_settings_repository(tmp_path / "global.json")
     update = {
         "type": "request",
@@ -2472,6 +2750,7 @@ def test_settings_update_rejects_unknown_sensitive_fields_at_wire_boundary(
 def test_settings_update_rejects_unsafe_ollama_origin_without_echoing_it(
     tmp_path: Path,
 ) -> None:
+    """Reject an unsafe Ollama origin without reflecting the secret-bearing URL."""
     repository = _desktop_settings_repository(tmp_path / "global.json")
     unsafe_origin = "http://user:secret@localhost:11434"
     update = {
@@ -2505,10 +2784,13 @@ def test_settings_update_rejects_unsafe_ollama_origin_without_echoing_it(
 def test_settings_update_is_rejected_while_generation_is_active(
     tmp_path: Path,
 ) -> None:
+    """Verify that settings update is rejected while generation is active."""
     generation_started = Event()
     release_generation = Event()
 
     class BlockingBrain(FakeBrain):
+        """Hold generation active while a global settings update is attempted."""
+
         def stream_chat(
             self,
             chat_id: object,
@@ -2518,6 +2800,7 @@ def test_settings_update_is_rejected_while_generation_is_active(
             should_cancel: Callable[[], bool] | None = None,
             begin_commit: Callable[[], bool] | None = None,
         ) -> Generator[str, None, None]:
+            """Signal active generation and wait before delegating persistence."""
             generation_started.set()
             assert release_generation.wait(1.0)
             yield from super().stream_chat(
@@ -2569,6 +2852,7 @@ def test_settings_update_is_rejected_while_generation_is_active(
 
 
 def test_bridge_rejects_a_chat_other_than_the_active_chat() -> None:
+    """Verify that bridge rejects a chat other than the active chat."""
     _, messages = _run_bridge(
         lambda _chat_id: [
             _handshake_request(),
@@ -2589,6 +2873,7 @@ def test_bridge_rejects_a_chat_other_than_the_active_chat() -> None:
 
 
 def test_bridge_rejects_the_wrong_local_session_token_before_startup() -> None:
+    """Verify that bridge rejects the wrong local session token before startup."""
     brain, messages = _run_bridge(
         lambda _chat_id: [_handshake_request(token="x" * 32)],
     )
@@ -2602,6 +2887,7 @@ def test_bridge_rejects_the_wrong_local_session_token_before_startup() -> None:
 
 
 def test_bridge_requires_handshake_before_initialization() -> None:
+    """Verify that bridge requires handshake before initialization."""
     brain, messages = _run_bridge(
         lambda _chat_id: [_initialize_request()],
     )
@@ -2611,6 +2897,7 @@ def test_bridge_requires_handshake_before_initialization() -> None:
 
 
 def test_bridge_rejects_a_version_mismatch_without_starting_services() -> None:
+    """Verify that bridge rejects a version mismatch without starting services."""
     request = _handshake_request()
     cast(JsonObject, request["protocol"])["version"] = 2
     brain, messages = _run_bridge(lambda _chat_id: [request])
@@ -2620,6 +2907,7 @@ def test_bridge_rejects_a_version_mismatch_without_starting_services() -> None:
 
 
 def test_bridge_rejects_duplicate_request_ids() -> None:
+    """Verify that bridge rejects duplicate request IDs."""
     _, messages = _run_bridge(
         lambda _chat_id: [
             _handshake_request(),
@@ -2642,6 +2930,7 @@ def test_bridge_rejects_duplicate_request_ids() -> None:
 
 
 def test_model_names_are_unique_and_keep_the_active_model_first() -> None:
+    """Verify that model names are unique and keep the active model first."""
     models = _extract_model_names(
         {
             "models": [
@@ -2660,6 +2949,7 @@ def test_model_names_are_unique_and_keep_the_active_model_first() -> None:
 def test_protocol_output_is_ascii_safe_for_non_ascii_text(
     tmp_path: Path,
 ) -> None:
+    """Verify that protocol output is ascii safe for non ascii text."""
     output_stream = StringIO()
     backend = DesktopBackend(
         settings_repository=_desktop_settings_repository(
@@ -2682,6 +2972,7 @@ def test_protocol_output_is_ascii_safe_for_non_ascii_text(
 
 
 def test_protocol_streams_are_reconfigured_to_utf8() -> None:
+    """Verify that protocol streams are reconfigured to UTF-8."""
     stream = TextIOWrapper(BytesIO(), encoding="cp1252")
 
     _configure_protocol_streams(stream)
@@ -2692,6 +2983,7 @@ def test_protocol_streams_are_reconfigured_to_utf8() -> None:
 def test_input_frame_limit_counts_leading_json_whitespace(
     tmp_path: Path,
 ) -> None:
+    """Verify that input frame limit counts leading JSON whitespace."""
     input_stream = StringIO(f"{' ' * 511}{{}}\n")
     output_stream = StringIO()
 

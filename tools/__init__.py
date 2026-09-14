@@ -1,1 +1,1 @@
-"""Namespace reserved for permissioned tools used by Elysia."""
+"""Define the package boundary for permissioned tools used by Elysia."""

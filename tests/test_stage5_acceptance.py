@@ -21,12 +21,14 @@ class AcceptanceChatModel:
     """Provide deterministic normal and streaming replies."""
 
     def generate_reply(self, messages: list[ChatMessage]) -> str:
+        """Return the configured deterministic model reply."""
         return f"Reply to {messages[-1]['content']}"
 
     def stream_reply(
         self,
         messages: list[ChatMessage],
     ) -> Iterator[str]:
+        """Yield the configured deterministic model reply chunks."""
         yield "Reply to "
         yield messages[-1]["content"]
 
@@ -39,6 +41,7 @@ class AcceptanceSummarizer:
         messages: list[ConversationMessage],
         previous_content: ConversationSummaryContent | None = None,
     ) -> ConversationSummaryContent:
+        """Return a deterministic summary while recording test inputs."""
         return {
             "facts": [f"Summarized {len(messages)} messages"],
             "decisions": [],
@@ -50,6 +53,7 @@ class AcceptanceSummarizer:
 def build_brain(
     base_dir: Path,
 ) -> tuple[Brain, Memory, JsonChatRepository, JsonProjectRepository]:
+    """Build brain for this scenario."""
     memory = Memory(base_dir)
     chats = JsonChatRepository(base_dir / "workspace" / "chats")
     projects = JsonProjectRepository(base_dir / "workspace" / "projects")
@@ -71,6 +75,7 @@ def build_brain(
 def test_stage5_multi_chat_restart_retrieval_and_recovery_gate(
     tmp_path: Path,
 ) -> None:
+    """Verify that stage5 multi chat restart retrieval and recovery gate."""
     source_dir = tmp_path / "source"
     brain, memory, chats, projects = build_brain(source_dir)
     first_project = projects.create_project(

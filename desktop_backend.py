@@ -84,6 +84,10 @@ from desktop_protocol import (
 )
 from start import create_brain, validate_settings
 from voice import (
+    VOICE_CAPTURE_CHANNEL_COUNT,
+    VOICE_CAPTURE_SAMPLE_FORMAT,
+    VoiceCapture,
+    VoiceCaptureValidationError,
     VoiceSettingsConflictError,
     VoiceSettingsService,
     VoiceSettingsSnapshot,
@@ -109,6 +113,7 @@ SERVER_CAPABILITIES = (
     "project.management",
     "settings.management",
     "voice.settings",
+    "voice.capture",
     "attachment.management",
     "stream",
     "progress",
@@ -219,7 +224,7 @@ def _extract_model_names(
 def discover_ollama_models(
     settings: AppSettings | None = None,
 ) -> tuple[str, ...]:
-    """List locally installed Ollama models without reading model files."""
+    """Return Ollama model choices with the configured fallback listed first."""
 
     runtime_settings = SETTINGS if settings is None else settings
     endpoint = f"{runtime_settings.ollama_host.rstrip('/')}/api/tags"
@@ -428,6 +433,8 @@ class DesktopBackend:
                     "protocol.not_initialized",
                     "Backend must be initialized before this request.",
                 )
+            elif method == "voice.capture.complete":
+                self._complete_voice_capture(request_id, params)
             elif method == "chat.stream":
                 self._start_chat_stream(request_id, params)
             elif method == "chat.retry":
@@ -507,6 +514,8 @@ class DesktopBackend:
                 str(error),
                 retryable=True,
             )
+        except VoiceCaptureValidationError as error:
+            self._emit_error(request_id, "voice.capture.invalid", str(error))
         except ChatBusyError as error:
             self._emit_error(request_id, "chat.busy", str(error))
         except ChatRetryTargetError as error:
@@ -849,6 +858,69 @@ class DesktopBackend:
         self._emit_response(
             request_id,
             self._voice_settings_state_result(snapshot),
+        )
+
+    def _complete_voice_capture(
+        self,
+        request_id: str,
+        params: JsonObject,
+    ) -> None:
+        """Validate one transient utterance without persisting or transcribing it."""
+
+        active_chat = self._active_chat_snapshot()
+        if active_chat is None:
+            raise ProtocolValidationError(
+                "protocol.not_initialized",
+                "Backend must be initialized before this request.",
+            )
+        requested_chat_id = cast(str, params["chatId"])
+        if requested_chat_id != str(active_chat.chat_id):
+            raise ProtocolValidationError(
+                "voice.capture.chat_mismatch",
+                "Voice capture no longer belongs to the active Chat.",
+            )
+        with self._state_lock:
+            if self._generation_task is not None:
+                raise ProtocolValidationError(
+                    "voice.capture.busy",
+                    "Wait for the current reply before submitting voice input.",
+                )
+
+        capture = VoiceCapture.from_base64(
+            session_id=cast(str, params["sessionId"]),
+            pcm_s16le_base64=cast(str, params["pcmBase64"]),
+            sample_rate_hz=cast(int, params["sampleRateHz"]),
+            sample_count=cast(int, params["sampleCount"]),
+            speech_start_sample=cast(int, params["speechStartSample"]),
+            speech_end_sample=cast(int, params["speechEndSample"]),
+        )
+        if (
+            params["channelCount"] != VOICE_CAPTURE_CHANNEL_COUNT
+            or params["sampleFormat"] != VOICE_CAPTURE_SAMPLE_FORMAT
+        ):
+            raise VoiceCaptureValidationError(
+                "Voice capture PCM format is invalid."
+            )
+
+        # The PCM object intentionally remains request-local. The next Voice
+        # slice may pass it directly to speech recognition; this milestone only
+        # proves a validated, non-persistent boundary and returns safe metadata.
+        self._emit_response(
+            request_id,
+            {
+                "kind": "voice.capture",
+                "sessionId": capture.session_id,
+                "chatId": requested_chat_id,
+                "sampleRateHz": capture.sample_rate_hz,
+                "channelCount": VOICE_CAPTURE_CHANNEL_COUNT,
+                "sampleFormat": VOICE_CAPTURE_SAMPLE_FORMAT,
+                "sampleCount": capture.sample_count,
+                "speechStartSample": capture.speech_start_sample,
+                "speechEndSample": capture.speech_end_sample,
+                "durationMs": capture.duration_ms,
+                "speechDurationMs": capture.speech_duration_ms,
+                "sha256Hex": capture.sha256_hex,
+            },
         )
 
     @staticmethod

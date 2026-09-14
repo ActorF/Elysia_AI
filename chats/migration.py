@@ -82,7 +82,12 @@ class LegacyConversationMigrator:
         )
 
     def migrate(self) -> LegacyMigrationResult:
-        """Import legacy data once, rolling back a failed Chat creation."""
+        """Import legacy data once, with a backup and completion marker.
+
+        The source backup is created before the Chat. The migration state is
+        written last as the idempotency marker; if that final write fails, the
+        newly inserted Chat is removed so a retry cannot create a duplicate.
+        """
 
         if not self._conversation_file.exists():
             return LegacyMigrationResult(status="not_needed")
@@ -177,6 +182,14 @@ class LegacyConversationMigrator:
         messages: tuple[ChatMessage, ...],
         summary_data: ConversationSummaryData | None,
     ) -> ChatSession:
+        """Build one Chat while normalizing legacy summary time bounds.
+
+        Legacy summary clocks can fall outside their conversation, so they are
+        clamped to the Chat lifetime required by the current domain model. The
+        message-ID digest yields an opaque Chat ID tied to this generated
+        message set instead of editable legacy display text.
+        """
+
         created_at = messages[0].created_at
         updated_at = messages[-1].created_at
         summary: ChatSummary | None = None
@@ -269,6 +282,13 @@ class LegacyConversationMigrator:
         digest: str,
         source_messages: tuple[ChatMessage, ...],
     ) -> LegacyMigrationResult:
+        """Verify the commit marker without rejecting later appended messages.
+
+        The original legacy messages must remain an exact semantic prefix;
+        matching only that prefix preserves idempotence after the migrated Chat
+        has legitimately received new messages.
+        """
+
         if state["source_sha256"] != digest:
             raise LegacyMigrationError(
                 "Legacy conversation changed after migration; refusing to "

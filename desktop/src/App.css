@@ -171,12 +171,15 @@ svg {
 .brand-mark {
   width: 2rem;
   height: 2rem;
+  overflow: hidden;
   border-radius: var(--radius-md);
 }
 
-.brand-mark svg {
-  width: var(--icon-size-sm);
-  height: var(--icon-size-sm);
+.brand-mark img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 
 .icon-button,
@@ -2903,6 +2906,11 @@ kbd {
   animation: aura 3.6s var(--motion-easing-standard) infinite;
 }
 
+.call-aura.speaking {
+  border-color: color-mix(in srgb, var(--color-success) 34%, transparent);
+  animation-duration: 1.2s;
+}
+
 .call-portrait {
   width: min(19.375rem, 42vw);
   height: min(27.5rem, 56vh);
@@ -2952,6 +2960,22 @@ kbd {
   border-radius: var(--radius-full);
 }
 
+.call-state.starting .call-state-dot,
+.call-state.waiting .call-state-dot {
+  background: var(--color-info);
+  animation: pulse 1.4s var(--motion-easing-standard) infinite;
+}
+
+.call-state.speaking .call-state-dot,
+.call-state.completed .call-state-dot {
+  background: var(--color-success);
+}
+
+.call-state.error .call-state-dot,
+.call-state.no-speech .call-state-dot {
+  background: var(--color-danger);
+}
+
 .call-caption {
   position: absolute;
   right: 15%;
@@ -2998,6 +3022,12 @@ kbd {
 .call-control.active {
   color: var(--color-text-primary);
   background: var(--color-bg-hover);
+}
+
+.call-control.microphone.active {
+  color: var(--color-text-inverse);
+  background: var(--color-danger);
+  border-color: transparent;
 }
 
 .call-control:disabled {

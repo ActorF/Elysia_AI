@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./desktop/public/favicon.svg" alt="Elysia AI" width="104">
+  <img src="./desktop/public/elysia-icon.png" alt="Elysia AI" width="104">
 </p>
 
 <h1 align="center">Elysia AI</h1>
@@ -32,7 +32,7 @@
 - 🧠 **Scoped Memory** — Keeps Global, Project, and Chat boundaries distinct, with long-term memory, summaries, and confirmation flows
 - 🛡️ **Strict Desktop Boundary** — Sandboxed Renderer, narrow Preload API, origin checks, and authenticated NDJSON Protocol v1
 - 📎 **Safe Attachment Surface** — Select, drop, preview, remove, and recover Chat or Project files; content is not parsed or indexed yet
-- 🎙️ **Local Audio Foundation** — Device selection, permission state, and short hardware tests are available; one-utterance PCM/VAD capture remains experimental
+- 🎙️ **Local Audio Foundation** — Device selection, permission state, short hardware tests, and bounded one-utterance PCM/VAD capture are available
 - 💾 **Recovery First** — Local JSON storage, legacy migration, quarantine, atomic writes, and import/export services
 - ♿ **Desktop Usability** — Themes, keyboard navigation, focus management, Windows scaling, Chinese IME, and offline/error recovery
 
@@ -49,7 +49,7 @@
 | Settings | ✅ Available | Model, Ollama origin, Memory limits, file size, and theme |
 | Attachments / Sources | ✅ Foundation available | Safe storage and metadata only; no content reading, parsing, Embedding, or RAG |
 | Audio Devices | ✅ Available | Microphone/speaker selection, Windows permission state, input level, and output tone tests |
-| One-utterance recording and local VAD | 🚧 In development | Explicit start, 16 kHz mono `s16le`, transient validation; no Chat Turn |
+| One-utterance recording and local VAD | ✅ Available | Explicit start, 16 kHz mono `s16le`, transient validation; no Chat Turn |
 | STT / Faster-Whisper | ⏳ Planned | Audio is not converted to text yet |
 | GPT-SoVITS / TTS | ⏳ Planned | Local weights are not connected to runtime code |
 | Continuous voice and barge-in | ⏳ Planned | No complete `LISTENING → THINKING → SPEAKING` session yet |
@@ -208,7 +208,7 @@ The current application connects only to local Ollama and does not require a clo
 ### 🎙️ Voice
 
 - Microphone/speaker enumeration, saved device preferences, Windows microphone permission state, short input-level tests, and output-tone tests are implemented.
-- Experimental one-utterance capture starts only after **Start microphone** is pressed. The Renderer performs local downmixing, resampling, and bounded VAD.
+- Bounded one-utterance capture starts only after **Start microphone** is pressed. The Renderer performs local downmixing, resampling, and local VAD.
 - A valid segment uses 16 kHz mono signed 16-bit little-endian PCM. Python returns only safe receipt data such as format, duration, and SHA-256.
 - The current slice does not persist recordings, invoke the Brain, create a Chat message, perform STT, or perform TTS.
 - Optional local GPT-SoVITS weights are not connected yet. See [MODEL_LICENSE.md](./MODEL_LICENSE.md) for provenance and restrictions.
@@ -221,14 +221,16 @@ The current application connects only to local Ollama and does not require a clo
 
 ```bat
 cd /d D:\Elysia_AI
+.venv\Scripts\python.exe scripts\check_python_documentation.py
 .venv\Scripts\python.exe -m pytest -q
-.venv\Scripts\python.exe -m mypy agent attachments chats config core desktop_protocol memory projects recovery tools ui voice desktop_backend.py start.py
+.venv\Scripts\python.exe -m mypy agent attachments chats config core desktop_protocol memory models projects recovery scripts tools ui voice desktop_backend.py start.py
 ```
 
 ### Desktop
 
 ```bat
 cd /d D:\Elysia_AI\desktop
+npm run docs:check
 npm run lint
 npm run typecheck
 npm run test:contract
@@ -260,8 +262,8 @@ The unpacked output is written to `desktop\out\win-unpacked`. `npm run make` can
 | Renderer | React 19 + TypeScript 6 + Vite 8 |
 | Local Protocol | authenticated NDJSON Protocol v1 + JSON Schema |
 | Persistence | revisioned/atomic local JSON under `workspace/` |
-| Python Quality | pytest 9 + mypy 2 |
-| Desktop Quality | ESLint 10 + Playwright 1.62 + TypeScript compiler |
+| Python Quality | AST documentation coverage + pytest 9 + mypy 2 |
+| Desktop Quality | source-documentation coverage + ESLint 10 + Playwright 1.62 + TypeScript compiler |
 | Packaging | electron-builder + unsigned NSIS development artifact |
 
 ---
@@ -335,7 +337,7 @@ Files are currently stored safely and represented by metadata only. Loaders, Chu
 - `workspace/` and `logs/` are excluded from Git. Treat both as private and do not include them in public diagnostic archives.
 - `.env` is ignored by Git but should still stay outside untrusted synchronization locations.
 - Original attachment filesystem paths are not returned to React. Public attachment state contains only minimal safe metadata.
-- Audio tests do not retain recordings. Experimental PCM exists only for the transient validation lifecycle and does not enter Chat or Memory.
+- Audio tests do not retain recordings. Bounded-capture PCM exists only for the transient validation lifecycle and does not enter Chat or Memory.
 - Do not remove `workspace/` while cleaning source or build output. Use validated Recovery Service exports when moving data.
 
 ---
@@ -347,6 +349,8 @@ Local GPT-SoVITS weights, reference audio, Ollama models, and caches are not Ely
 In particular, the local model-pack note does not provide complete, verifiable redistribution permission. Do not commit the weights or reference audio, upload them to a Release, or include them in an installer.
 
 `data/characters/elysia_character_reference_zh.md` is already tracked, while its quotations and voice transcriptions have not received item-level provenance and permission review. This is a current repository-distribution risk rather than something to defer until a formal release; [MODEL_LICENSE.md](./MODEL_LICENSE.md) records the details and recommended actions.
+
+The project owner has expressly selected the official *Honkai Impact 3rd* Elysia signet as public branding for this unofficial, non-commercial fan project. The PNG/ICO is outside any source-code license and remains the property of HoYoverse / miHoYo; this project claims no endorsement and will respond to a rights-holder removal request.
 
 ---
 
@@ -376,4 +380,4 @@ If any provenance, credit, or rights statement is incorrect, please request a co
 
 ## 💌 Contributing
 
-Issues and pull requests about code, tests, documentation, and accessibility are welcome. Do not submit model weights, game voice clips, runtime user data, logs, `.env`, or any asset whose redistribution rights cannot be demonstrated.
+Issues and pull requests about code, tests, documentation, and accessibility are welcome. Source-documentation requirements live in [`AGENTS.md`](./AGENTS.md); new and modified source must pass its documentation checks. Do not submit model weights, game voice clips, runtime user data, logs, `.env`, or third-party assets lacking recorded provenance, rights-holder rules, and a maintainer decision.

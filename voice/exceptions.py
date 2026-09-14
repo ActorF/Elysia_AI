@@ -1,4 +1,8 @@
-"""Define stable failures for local Voice settings operations."""
+"""Define stable failures for local Voice domain operations."""
+
+
+class VoiceCaptureValidationError(Exception):
+    """Raised when bounded PCM capture data violates the Voice contract."""
 
 
 class VoiceSettingsError(Exception):

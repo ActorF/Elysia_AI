@@ -1,3 +1,5 @@
+/** Configure isolated Electron renderer end-to-end tests and their artifacts. */
+
 import { defineConfig } from '@playwright/test'
 
 export default defineConfig({

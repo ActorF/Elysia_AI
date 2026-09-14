@@ -4,6 +4,7 @@ import { codePointLength, hasNonBlankCodePoint } from './protocol-text.js'
 
 export const MAX_EXTERNAL_URL_LENGTH = 8_192
 
+/** Validate and canonicalize an uncredentialed HTTP(S) URL before OS handoff. */
 export function parseSafeExternalUrl(value: unknown): string {
   if (
     typeof value !== 'string'

@@ -16,7 +16,12 @@ class LegacyConversationFormatError(ValueError):
 def legacy_conversation_messages_from_data(
     data: object,
 ) -> tuple[ChatMessage, ...]:
-    """Validate and convert one legacy conversation JSON object."""
+    """Validate and convert one legacy two-party conversation JSON object.
+
+    The old schema did not enumerate roles and used several labels for the
+    human side. Known human labels become ``user``; every other non-empty
+    speaker remains on the legacy assistant side.
+    """
 
     if not isinstance(data, dict) or set(data) != {"messages"}:
         raise LegacyConversationFormatError(

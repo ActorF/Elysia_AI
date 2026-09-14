@@ -30,6 +30,16 @@ export const MAX_OLLAMA_HOST_LENGTH = 2_048
 export const MAX_MEMORY_SETTING = 10_000_000
 export const MAX_DATA_IMPORT_BYTES = 2_147_483_647
 export const MAX_AUDIO_DEVICE_ID_LENGTH = 2_048
+export const VOICE_CAPTURE_SAMPLE_RATE_HZ = 16_000 as const
+export const VOICE_CAPTURE_CHANNEL_COUNT = 1 as const
+export const VOICE_CAPTURE_SAMPLE_FORMAT = 's16le' as const
+export const VOICE_CAPTURE_FRAME_SAMPLES = 320
+export const VOICE_CAPTURE_BYTES_PER_SAMPLE = 2
+export const VOICE_CAPTURE_MIN_SAMPLES = 3_200
+export const VOICE_CAPTURE_MAX_SAMPLES = 480_000
+export const VOICE_CAPTURE_MIN_SPEECH_SAMPLES = 3_200
+export const VOICE_CAPTURE_MAX_SESSION_ID_LENGTH = 128
+export const VOICE_CAPTURE_MAX_BASE64_CHARACTERS = 1_280_000
 export const MAX_ATTACHMENT_FILE_COUNT = 10
 export const MAX_ATTACHMENT_FILE_NAME_LENGTH = 255
 export const MAX_ATTACHMENT_MEDIA_TYPE_LENGTH = 255
@@ -38,7 +48,45 @@ const MIN_SESSION_TOKEN_LENGTH = 32
 const MAX_SESSION_TOKEN_LENGTH = 512
 const PROJECT_ID_PATTERN = /^project_[A-Za-z0-9_-]+$/
 const CHAT_ID_PATTERN = /^chat_[A-Za-z0-9_-]+$/
+const VOICE_SESSION_ID_PATTERN = /^voice_[A-Za-z0-9_-]+$/
 const ATTACHMENT_ID_PATTERN = /^attachment_[A-Za-z0-9_-]+$/
+const CANONICAL_BASE64_PATTERN = (
+  /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u
+)
+
+function base64DigitValue(character: string): number {
+  const codePoint = character.charCodeAt(0)
+  if (codePoint >= 65 && codePoint <= 90) {
+    return codePoint - 65
+  }
+  if (codePoint >= 97 && codePoint <= 122) {
+    return codePoint - 71
+  }
+  if (codePoint >= 48 && codePoint <= 57) {
+    return codePoint + 4
+  }
+  return character === '+' ? 62 : 63
+}
+
+function canonicalBase64ByteLength(value: string): number | null {
+  if (!CANONICAL_BASE64_PATTERN.test(value)) {
+    return null
+  }
+  const padding = value.endsWith('==') ? 2 : value.endsWith('=') ? 1 : 0
+  if (
+    padding === 2
+    && (base64DigitValue(value.at(-3) ?? '/') & 0x0f) !== 0
+  ) {
+    return null
+  }
+  if (
+    padding === 1
+    && (base64DigitValue(value.at(-2) ?? '/') & 0x03) !== 0
+  ) {
+    return null
+  }
+  return value.length / 4 * 3 - padding
+}
 const WINDOWS_RESERVED_FILE_STEMS = new Set([
   'CON', 'PRN', 'AUX', 'NUL',
   ...Array.from({ length: 9 }, (_, index) => `COM${index + 1}`),
@@ -168,6 +216,21 @@ export interface VoiceSettingsUpdateParams {
   outputDeviceId: string | null
 }
 
+export interface VoiceCaptureMetadata {
+  sessionId: string
+  chatId: string
+  sampleRateHz: typeof VOICE_CAPTURE_SAMPLE_RATE_HZ
+  channelCount: typeof VOICE_CAPTURE_CHANNEL_COUNT
+  sampleFormat: typeof VOICE_CAPTURE_SAMPLE_FORMAT
+  sampleCount: number
+  speechStartSample: number
+  speechEndSample: number
+}
+
+export interface VoiceCaptureCompleteParams extends VoiceCaptureMetadata {
+  pcmBase64: string
+}
+
 export interface AttachmentScope {
   kind: 'chat' | 'project'
   id: string
@@ -210,6 +273,7 @@ export interface RequestParamsByMethod {
   'settings.update': SettingsUpdateParams
   'voice.settings.get': Record<string, never>
   'voice.settings.update': VoiceSettingsUpdateParams
+  'voice.capture.complete': VoiceCaptureCompleteParams
   'attachment.list': AttachmentListParams
   'attachment.add': AttachmentAddParams
   'attachment.remove': AttachmentRemoveParams
@@ -411,6 +475,13 @@ export interface VoiceSettingsStateResult {
   warning: string | null
 }
 
+export interface VoiceCaptureResult extends VoiceCaptureMetadata {
+  kind: 'voice.capture'
+  durationMs: number
+  speechDurationMs: number
+  sha256Hex: string
+}
+
 export interface AttachmentItem {
   attachmentId: string
   fileName: string
@@ -426,6 +497,7 @@ export interface AttachmentStateResult {
   maxFileCount: number
 }
 
+/** Report a stable wire error code alongside a human-readable validation failure. */
 export class ProtocolValidationError extends Error {
   readonly code: string
 
@@ -440,6 +512,7 @@ function fail(code: string, message: string): never {
   throw new ProtocolValidationError(code, message)
 }
 
+/** Narrow unknown input to a non-null, non-array object before field validation. */
 export function isRecord(
   value: unknown,
 ): value is Record<string, unknown> {
@@ -1141,6 +1214,129 @@ function parseVoiceSettingsUpdateParams(
   }
 }
 
+function parseVoiceCaptureMetadata(
+  value: Record<string, unknown>,
+  context: string,
+  errorCode: string,
+): VoiceCaptureMetadata {
+  const sessionId = readString(value, 'sessionId', context, {
+    maximum: VOICE_CAPTURE_MAX_SESSION_ID_LENGTH,
+  })
+  if (!VOICE_SESSION_ID_PATTERN.test(sessionId)) {
+    return fail(
+      errorCode,
+      `${context}.sessionId must use the voice_<id> format.`,
+    )
+  }
+
+  const sampleRateHz = readInteger(value, 'sampleRateHz', context)
+  const channelCount = readInteger(value, 'channelCount', context)
+  const sampleFormat = readString(value, 'sampleFormat', context, {
+    maximum: VOICE_CAPTURE_SAMPLE_FORMAT.length,
+  })
+  if (
+    sampleRateHz !== VOICE_CAPTURE_SAMPLE_RATE_HZ
+    || channelCount !== VOICE_CAPTURE_CHANNEL_COUNT
+    || sampleFormat !== VOICE_CAPTURE_SAMPLE_FORMAT
+  ) {
+    return fail(
+      errorCode,
+      `${context} must describe 16000 Hz mono s16le PCM.`,
+    )
+  }
+
+  const sampleCount = readInteger(value, 'sampleCount', context)
+  const speechStartSample = readInteger(
+    value,
+    'speechStartSample',
+    context,
+  )
+  const speechEndSample = readInteger(value, 'speechEndSample', context)
+  if (
+    sampleCount < VOICE_CAPTURE_MIN_SAMPLES
+    || sampleCount > VOICE_CAPTURE_MAX_SAMPLES
+    || sampleCount % VOICE_CAPTURE_FRAME_SAMPLES !== 0
+  ) {
+    return fail(
+      errorCode,
+      `${context}.sampleCount must be a frame-aligned value from ${VOICE_CAPTURE_MIN_SAMPLES} to ${VOICE_CAPTURE_MAX_SAMPLES}.`,
+    )
+  }
+  if (
+    speechStartSample < 0
+    || speechEndSample > sampleCount
+    || speechEndSample - speechStartSample
+      < VOICE_CAPTURE_MIN_SPEECH_SAMPLES
+    || speechStartSample % VOICE_CAPTURE_FRAME_SAMPLES !== 0
+    || speechEndSample % VOICE_CAPTURE_FRAME_SAMPLES !== 0
+  ) {
+    return fail(
+      errorCode,
+      `${context} speech markers must be frame-aligned, ordered, bounded by sampleCount, and span at least 3200 samples.`,
+    )
+  }
+
+  return {
+    sessionId,
+    chatId: readIdentifier(value, 'chatId', context),
+    sampleRateHz: VOICE_CAPTURE_SAMPLE_RATE_HZ,
+    channelCount: VOICE_CAPTURE_CHANNEL_COUNT,
+    sampleFormat: VOICE_CAPTURE_SAMPLE_FORMAT,
+    sampleCount,
+    speechStartSample,
+    speechEndSample,
+  }
+}
+
+/**
+ * Validate bounded capture metadata and its encoded audio as one atomic request.
+ * Cross-field checks prevent a renderer from claiming dimensions inconsistent
+ * with the transmitted raw PCM payload.
+ */
+export function parseVoiceCaptureCompleteParams(
+  value: unknown,
+): VoiceCaptureCompleteParams {
+  const context = 'voice.capture.complete params'
+  const params = asRecord(value, context)
+  requireFields(
+    params,
+    [
+      'sessionId',
+      'chatId',
+      'sampleRateHz',
+      'channelCount',
+      'sampleFormat',
+      'sampleCount',
+      'speechStartSample',
+      'speechEndSample',
+      'pcmBase64',
+    ],
+    context,
+  )
+  const metadata = parseVoiceCaptureMetadata(
+    params,
+    context,
+    'protocol.invalid_params',
+  )
+  const pcmBase64 = readString(params, 'pcmBase64', context, {
+    maximum: VOICE_CAPTURE_MAX_BASE64_CHARACTERS,
+  })
+  const decodedLength = canonicalBase64ByteLength(pcmBase64)
+  if (decodedLength === null) {
+    return fail(
+      'protocol.invalid_params',
+      `${context}.pcmBase64 must be strict canonical Base64.`,
+    )
+  }
+  if (decodedLength !== metadata.sampleCount * VOICE_CAPTURE_BYTES_PER_SAMPLE) {
+    return fail(
+      'protocol.invalid_params',
+      `${context}.pcmBase64 decoded length must equal sampleCount * 2.`,
+    )
+  }
+  return { ...metadata, pcmBase64 }
+}
+
 function parseAttachmentScope(
   value: unknown,
   context: string,
@@ -1252,6 +1448,7 @@ function parseAttachmentRemoveParams(
   }
 }
 
+/** Parse a renderer request with exact common fields and method-specific parameters. */
 export function parseClientRequest(value: unknown): ClientRequest {
   const request = asRecord(value, 'request')
   requireFields(
@@ -1390,6 +1587,12 @@ export function parseClientRequest(value: unknown): ClientRequest {
       params: parseVoiceSettingsUpdateParams(request.params),
     }
   }
+  if (method === 'voice.capture.complete') {
+    return {
+      type: 'request', protocol, id, method,
+      params: parseVoiceCaptureCompleteParams(request.params),
+    }
+  }
   if (method === 'attachment.list') {
     return {
       type: 'request', protocol, id, method,
@@ -1431,6 +1634,7 @@ export function parseClientRequest(value: unknown): ClientRequest {
   )
 }
 
+/** Build an outbound request and run it through the canonical parser before sending. */
 export function createRequest<Method extends ProtocolMethod>(
   id: string,
   method: Method,
@@ -1650,6 +1854,7 @@ function parseEvent(
   }
 }
 
+/** Parse one untrusted Backend line into the protocol's response/stream/event union. */
 export function parseServerMessage(value: unknown): ServerMessage {
   const message = asRecord(value, 'server message')
   const type = message.type
@@ -1705,6 +1910,7 @@ function readStringArray(
   return [...raw]
 }
 
+/** Validate protocol identity, server metadata, and advertised capabilities. */
 export function parseHandshakeResult(value: unknown): HandshakeResult {
   const result = asRecord(value, 'handshake result')
   requireFields(
@@ -1728,6 +1934,7 @@ export function parseHandshakeResult(value: unknown): HandshakeResult {
   }
 }
 
+/** Validate the initial model inventory and canonical active-Chat selection. */
 export function parseInitializeResult(value: unknown): InitializeResult {
   const result = asRecord(value, 'initialize result')
   requireFields(
@@ -1755,6 +1962,7 @@ export function parseInitializeResult(value: unknown): InitializeResult {
   }
 }
 
+/** Validate the terminal result of a streamed Chat request. */
 export function parseChatResult(value: unknown): ChatResult {
   const result = asRecord(value, 'chat result')
   requireFields(result, ['chatId', 'reply'], 'chat result')
@@ -2076,6 +2284,11 @@ function chatSummariesMatch(
   )
 }
 
+/**
+ * Validate Chat details, list ordering, unique IDs, and active-item consistency.
+ * These cross-record invariants keep a malformed Backend snapshot from creating
+ * contradictory renderer state.
+ */
 export function parseChatStateResult(value: unknown): ChatStateResult {
   const result = asRecord(value, 'chat state result')
   requireFields(result, ['activeChat', 'chats'], 'chat state result')
@@ -2189,6 +2402,10 @@ function projectSummariesMatch(
   )
 }
 
+/**
+ * Validate Project records together with their Chat ownership and count summary.
+ * Counts are recomputed from the nested Chat state rather than trusted directly.
+ */
 export function parseProjectStateResult(value: unknown): ProjectStateResult {
   const result = asRecord(value, 'project state result')
   requireFields(
@@ -2265,6 +2482,7 @@ export function parseProjectStateResult(value: unknown): ProjectStateResult {
   return { activeProject, projects, chatState }
 }
 
+/** Validate persisted settings, revision metadata, and available scope summaries. */
 export function parseSettingsStateResult(
   value: unknown,
 ): SettingsStateResult {
@@ -2451,10 +2669,83 @@ export function parseVoiceSettingsStateResult(
   }
 }
 
+/** Parse a safe receipt for one validated transient Voice capture. */
+export function parseVoiceCaptureResult(
+  value: unknown,
+): VoiceCaptureResult {
+  const context = 'voice capture result'
+  const result = asRecord(value, context)
+  requireFields(
+    result,
+    [
+      'kind',
+      'sessionId',
+      'chatId',
+      'sampleRateHz',
+      'channelCount',
+      'sampleFormat',
+      'sampleCount',
+      'speechStartSample',
+      'speechEndSample',
+      'durationMs',
+      'speechDurationMs',
+      'sha256Hex',
+    ],
+    context,
+  )
+  if (result.kind !== 'voice.capture') {
+    return fail(
+      'protocol.invalid_message',
+      `${context}.kind must be 'voice.capture'.`,
+    )
+  }
+  const metadata = parseVoiceCaptureMetadata(
+    result,
+    context,
+    'protocol.invalid_message',
+  )
+  const durationMs = readInteger(result, 'durationMs', context)
+  const speechDurationMs = readInteger(result, 'speechDurationMs', context)
+  const expectedDurationMs = metadata.sampleCount * 1_000
+    / VOICE_CAPTURE_SAMPLE_RATE_HZ
+  const expectedSpeechDurationMs = (
+    metadata.speechEndSample - metadata.speechStartSample
+  ) * 1_000 / VOICE_CAPTURE_SAMPLE_RATE_HZ
+  if (
+    durationMs !== expectedDurationMs
+    || speechDurationMs !== expectedSpeechDurationMs
+  ) {
+    return fail(
+      'protocol.invalid_message',
+      `${context} durations must exactly match its sample metadata.`,
+    )
+  }
+  const sha256Hex = readString(result, 'sha256Hex', context, {
+    maximum: 64,
+  })
+  if (!/^[0-9a-f]{64}$/u.test(sha256Hex)) {
+    return fail(
+      'protocol.invalid_message',
+      `${context}.sha256Hex must be a lowercase SHA-256 digest.`,
+    )
+  }
+  return {
+    kind: 'voice.capture',
+    ...metadata,
+    durationMs,
+    speechDurationMs,
+    sha256Hex,
+  }
+}
+
 function validateSuccessResult(value: unknown): Record<string, unknown> {
   const result = asRecord(value, 'response.result')
   if (result.kind === 'voice.settings') {
     parseVoiceSettingsStateResult(result)
+    return result
+  }
+  if (result.kind === 'voice.capture') {
+    parseVoiceCaptureResult(result)
     return result
   }
   if (Object.hasOwn(result, 'protocol')) {

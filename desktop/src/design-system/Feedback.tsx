@@ -8,6 +8,7 @@ import { Icon, type IconName } from './Icon'
 
 export interface FeedbackAction {
   label: string
+  /** Run the feedback surface's optional next or recovery action. */
   onClick(): void
   disabled?: boolean
 }
@@ -36,6 +37,7 @@ export interface InlineAlertProps extends FeedbackBaseProps {
   title?: string
   action?: FeedbackAction
   dismissLabel?: string
+  /** Dismiss the transient alert when its close control is activated. */
   onDismiss?(): void
 }
 

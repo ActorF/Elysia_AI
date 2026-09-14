@@ -27,9 +27,13 @@ export interface AttachmentSurfaceProps {
   removingIds: string[]
   scope: AttachmentScope
   state: AttachmentState | null
+  /** Request native file selection for this attachment scope. */
   onChoose(): void
+  /** Clear the recoverable attachment error displayed for this scope. */
   onDismissError(): void
+  /** Submit files dropped onto this scope for canonical staging. */
   onDrop(files: File[]): void
+  /** Remove one draft and report whether focus may leave its control. */
   onRemove(attachmentId: string): Promise<boolean>
 }
 

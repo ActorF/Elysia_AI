@@ -1,3 +1,5 @@
+/** Exercise the renderer shell through its user-visible desktop workflows. */
+
 import { createRequire } from 'node:module'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -191,6 +193,7 @@ interface RendererTestControl {
   failNextRestart(message: string): void
   failNextSettingsUpdate(message: string): void
   failNextVoiceSettingsUpdate(message: string): void
+  failNextVoiceCapture(message: string): void
   cancelNextAttachmentPicker(): void
   failNextAttachmentAction(message: string): void
   failNextSend(message: string): void
@@ -344,6 +347,8 @@ interface AudioMockStats {
   trackStopCount: number
   contextsCreated: number
   contextsClosed: number
+  processorsCreated: number
+  audioProcessCalls: number
   sinkIds: string[]
   oscillatorDurations: number[]
 }
@@ -402,12 +407,16 @@ async function installAudioMock(
     let deferredResume: (() => void) | null = null
     let deferNextSinkSelection = false
     let deferredSinkSelection: (() => void) | null = null
+    const tracks: FakeTrack[] = []
+    const processors = new Set<FakeScriptProcessor>()
     const stats: AudioMockStats = {
       enumerateCalls: 0,
       getUserMediaCalls: [],
       trackStopCount: 0,
       contextsCreated: 0,
       contextsClosed: 0,
+      processorsCreated: 0,
+      audioProcessCalls: 0,
       sinkIds: [],
       oscillatorDurations: [],
     }
@@ -421,6 +430,10 @@ async function installAudioMock(
           this.stopped = true
           stats.trackStopCount += 1
         }
+      }
+
+      end(): void {
+        this.dispatchEvent(new Event('ended'))
       }
     }
 
@@ -447,6 +460,7 @@ async function installAudioMock(
           throw new DOMException('Synthetic audio failure.', name)
         }
         const track = new FakeTrack()
+        tracks.push(track)
         return {
           getAudioTracks: () => [track],
           getTracks: () => [track],
@@ -502,9 +516,42 @@ async function installAudioMock(
       gain = new FakeAudioParam()
     }
 
+    class FakeAudioBuffer {
+      readonly length: number
+      readonly numberOfChannels = 1
+      private readonly samples: Float32Array
+
+      constructor(samples: Float32Array) {
+        this.samples = samples
+        this.length = samples.length
+      }
+
+      getChannelData(): Float32Array {
+        return this.samples
+      }
+    }
+
+    class FakeScriptProcessor extends FakeAudioNode {
+      onaudioprocess: ((event: AudioProcessingEvent) => void) | null = null
+
+      override disconnect(): void {
+        processors.delete(this)
+      }
+
+      process(samples: Float32Array): void {
+        const output = new Float32Array(samples.length)
+        this.onaudioprocess?.({
+          inputBuffer: new FakeAudioBuffer(samples),
+          outputBuffer: new FakeAudioBuffer(output),
+        } as unknown as AudioProcessingEvent)
+        stats.audioProcessCalls += 1
+      }
+    }
+
     class FakeAudioContext {
       state: AudioContextState = 'suspended'
       currentTime = 0
+      sampleRate = 48_000
       destination = new FakeAudioNode()
 
       constructor() {
@@ -557,6 +604,13 @@ async function installAudioMock(
       createGain(): FakeGain {
         return new FakeGain()
       }
+
+      createScriptProcessor(): FakeScriptProcessor {
+        const processor = new FakeScriptProcessor()
+        processors.add(processor)
+        stats.processorsCreated += 1
+        return processor
+      }
     }
 
     const mediaDevices = new FakeMediaDevices()
@@ -579,6 +633,42 @@ async function installAudioMock(
             toJSON: () => ({ ...device }),
           }))
           mediaDevices.dispatchEvent(new Event('devicechange'))
+        },
+        emitAudioFrames(amplitude: number, count: number): void {
+          for (let frame = 0; frame < count; frame += 1) {
+            const samples = new Float32Array(960)
+            for (let index = 0; index < samples.length; index += 1) {
+              samples[index] = amplitude * Math.sin(
+                2 * Math.PI * 440 * (frame * samples.length + index) / 48_000,
+              )
+            }
+            for (const processor of [...processors]) {
+              processor.process(samples)
+            }
+          }
+        },
+        emitSpeechFrames(amplitude: number, count: number): void {
+          for (let frame = 0; frame < count; frame += 1) {
+            const samples = new Float32Array(960)
+            const envelope = 0.75 + 0.2 * Math.sin(frame * 0.73)
+            for (let index = 0; index < samples.length; index += 1) {
+              const sampleIndex = frame * samples.length + index
+              samples[index] = amplitude * envelope * (
+                0.4 * Math.sin(2 * Math.PI * 120 * sampleIndex / 48_000)
+                + 0.28 * Math.sin(2 * Math.PI * 240 * sampleIndex / 48_000)
+                + 0.2 * Math.sin(2 * Math.PI * 720 * sampleIndex / 48_000)
+                + 0.12 * Math.sin(2 * Math.PI * 1_450 * sampleIndex / 48_000)
+              )
+            }
+            for (const processor of [...processors]) {
+              processor.process(samples)
+            }
+          }
+        },
+        endLatestTrack(): boolean {
+          const track = tracks.at(-1)
+          track?.end()
+          return track !== undefined
         },
         failNextCapture(name: string): void {
           nextCaptureError = name
@@ -635,6 +725,34 @@ async function audioMockStats(): Promise<AudioMockStats> {
     (window as Window & {
       __elysiaAudioMock: { getStats(): AudioMockStats }
     }).__elysiaAudioMock.getStats()
+  ))
+}
+
+async function emitAudioFrames(amplitude: number, count: number): Promise<void> {
+  await page.evaluate(({ frameAmplitude, frameCount }) => {
+    ;(window as Window & {
+      __elysiaAudioMock: {
+        emitAudioFrames(amplitude: number, count: number): void
+      }
+    }).__elysiaAudioMock.emitAudioFrames(frameAmplitude, frameCount)
+  }, { frameAmplitude: amplitude, frameCount: count })
+}
+
+async function emitSpeechFrames(amplitude: number, count: number): Promise<void> {
+  await page.evaluate(({ frameAmplitude, frameCount }) => {
+    ;(window as Window & {
+      __elysiaAudioMock: {
+        emitSpeechFrames(amplitude: number, count: number): void
+      }
+    }).__elysiaAudioMock.emitSpeechFrames(frameAmplitude, frameCount)
+  }, { frameAmplitude: amplitude, frameCount: count })
+}
+
+async function endLatestAudioTrack(): Promise<boolean> {
+  return page.evaluate(() => (
+    (window as Window & {
+      __elysiaAudioMock: { endLatestTrack(): boolean }
+    }).__elysiaAudioMock.endLatestTrack()
   ))
 }
 
@@ -710,6 +828,12 @@ async function failNextSettingsUpdate(message: string): Promise<void> {
   await page.evaluate((nextMessage) => {
     ;(window as TestWindow).elysiaDesktopTest
       .failNextSettingsUpdate(nextMessage)
+  }, message)
+}
+
+async function failNextVoiceCapture(message: string): Promise<void> {
+  await page.evaluate((nextMessage) => {
+    ;(window as TestWindow).elysiaDesktopTest.failNextVoiceCapture(nextMessage)
   }, message)
 }
 
@@ -850,6 +974,16 @@ async function openSettings(
   await expect(
     page.getByRole('heading', { name: 'General', exact: true }),
   ).toBeVisible()
+}
+
+async function openVoiceCapturePage(): Promise<void> {
+  await emitSnapshot(readySnapshot({
+    capabilities: ['chat.stream', 'voice.settings', 'voice.capture'],
+  }))
+  await page.getByRole('button', { name: 'Start voice' }).click()
+  await expect(page.getByRole('main', { name: 'Voice capture' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Start microphone' }))
+    .toBeEnabled()
 }
 
 async function getCalls(): Promise<CallRecord[]> {
@@ -1166,6 +1300,13 @@ test('supports global navigation shortcuts and restores search focus', async () 
 })
 
 test('renders canonical Chat metadata and opens persisted sessions', async () => {
+  const brandIcon = page.locator('.brand-mark img')
+  await expect(brandIcon).toBeVisible()
+  await expect(brandIcon).toHaveAttribute('src', './elysia-icon.png')
+  await expect.poll(() => brandIcon.evaluate((element) => (
+    (element as HTMLImageElement).naturalWidth
+  ))).toBeGreaterThan(0)
+
   const first = chatSummary('chat-first', 'Pinned work', {
     mode: 'work',
     projectId: 'project_alpha',
@@ -1888,6 +2029,215 @@ test('routes one bounded low-volume speaker test without microphone access', asy
     .toEqual([0.8])
   await expect.poll(async () => (await audioMockStats()).contextsClosed).toBe(1)
   expect((await audioMockStats()).getUserMediaCalls).toHaveLength(0)
+})
+
+test('keeps the microphone off until Voice capture is explicitly started', async () => {
+  await installAudioMock()
+  await openVoiceCapturePage()
+
+  expect((await audioMockStats()).getUserMediaCalls).toHaveLength(0)
+  await clearCalls()
+  await page.getByRole('button', { name: 'Start microphone' }).click()
+  await expect(page.getByText('Listening for speech', { exact: true }))
+    .toBeVisible()
+
+  expect((await audioMockStats()).getUserMediaCalls).toEqual([{
+    audio: { channelCount: { ideal: 1 } },
+    video: false,
+  }])
+  await page.getByRole('button', { name: 'Cancel capture' }).click()
+  await expect(page.getByText('Capture cancelled', { exact: true }))
+    .toBeVisible()
+  await expect.poll(async () => (await audioMockStats()).trackStopCount).toBe(1)
+  await expect.poll(async () => (await audioMockStats()).contextsClosed).toBe(1)
+  const calls = await getCalls()
+  expect(calls.some((call) => call.method === 'submitVoiceCapture')).toBe(false)
+  expect(calls.some((call) => call.method === 'sendMessage')).toBe(false)
+})
+
+test('submits one bounded 16 kHz utterance without creating a Chat Turn', async () => {
+  await installAudioMock()
+  await setVoiceSettingsState(voiceSettingsState({
+    inputDeviceId: 'mic-usb',
+  }))
+  await openVoiceCapturePage()
+  await clearCalls()
+
+  await page.getByRole('button', { name: 'Start microphone' }).click()
+  await expect(page.getByText('Listening for speech', { exact: true }))
+    .toBeVisible()
+  await emitSpeechFrames(0.08, 10)
+  await expect(page.getByText('Speech detected', { exact: true }))
+    .toBeVisible()
+  await emitAudioFrames(0, 30)
+  await expect(page.getByText('Speech captured', { exact: true }))
+    .toBeVisible()
+  await expect(page.getByText(/Validated locally · 0\.2 s speech/u))
+    .toBeVisible()
+
+  const captureCalls = (await getCalls()).filter(
+    (call) => call.method === 'submitVoiceCapture',
+  )
+  expect(captureCalls).toHaveLength(1)
+  const request = captureCalls[0]?.args[0] as {
+    sessionId: string
+    chatId: string
+    sampleRateHz: number
+    channelCount: number
+    sampleFormat: string
+    sampleCount: number
+    speechStartSample: number
+    speechEndSample: number
+    pcmBase64: string
+  }
+  expect(request.sessionId).toMatch(/^voice_[A-Za-z0-9_-]+$/u)
+  expect(request.chatId).toBe('chat-test')
+  expect(request.sampleRateHz).toBe(16_000)
+  expect(request.channelCount).toBe(1)
+  expect(request.sampleFormat).toBe('s16le')
+  expect(request.sampleCount).toBeGreaterThanOrEqual(3_200)
+  expect(request.sampleCount).toBeLessThanOrEqual(480_000)
+  expect(request.sampleCount % 320).toBe(0)
+  expect(request.speechStartSample % 320).toBe(0)
+  expect(request.speechEndSample - request.speechStartSample)
+    .toBeGreaterThanOrEqual(3_200)
+  expect(Buffer.from(request.pcmBase64, 'base64').byteLength)
+    .toBe(request.sampleCount * 2)
+  expect((await getCalls()).some((call) => call.method === 'sendMessage'))
+    .toBe(false)
+  expect((await audioMockStats()).getUserMediaCalls.at(-1)).toEqual({
+    audio: {
+      deviceId: { exact: 'mic-usb' },
+      channelCount: { ideal: 1 },
+    },
+    video: false,
+  })
+  await expect.poll(async () => (await audioMockStats()).trackStopCount).toBe(1)
+  await expect.poll(async () => (await audioMockStats()).contextsClosed).toBe(1)
+})
+
+test('releases audio and permits retry after the Backend rejects a capture', async () => {
+  await installAudioMock()
+  await openVoiceCapturePage()
+  await clearCalls()
+  await failNextVoiceCapture('Voice capture validation timed out.')
+
+  await page.getByRole('button', { name: 'Start microphone' }).click()
+  await expect(page.getByText('Listening for speech', { exact: true }))
+    .toBeVisible()
+  await emitSpeechFrames(0.08, 10)
+  await emitAudioFrames(0, 30)
+  await expect(page.getByText('Capture rejected', { exact: true }))
+    .toBeVisible()
+  await expect(page.getByRole('alert')).toContainText(
+    'Voice capture validation timed out.',
+  )
+  await expect.poll(async () => (await audioMockStats()).trackStopCount).toBe(1)
+  await expect.poll(async () => (await audioMockStats()).contextsClosed).toBe(1)
+  expect((await getCalls()).filter(
+    (call) => call.method === 'submitVoiceCapture',
+  )).toHaveLength(1)
+  expect((await getCalls()).some((call) => call.method === 'sendMessage'))
+    .toBe(false)
+
+  await page.getByRole('button', { name: 'Start microphone' }).click()
+  await expect(page.getByText('Listening for speech', { exact: true }))
+    .toBeVisible()
+  await emitSpeechFrames(0.08, 10)
+  await emitAudioFrames(0, 30)
+  await expect(page.getByText('Speech captured', { exact: true }))
+    .toBeVisible()
+  await expect.poll(async () => (await audioMockStats()).trackStopCount).toBe(2)
+  await expect.poll(async () => (await audioMockStats()).contextsClosed).toBe(2)
+  expect((await getCalls()).filter(
+    (call) => call.method === 'submitVoiceCapture',
+  )).toHaveLength(2)
+  expect((await getCalls()).some((call) => call.method === 'sendMessage'))
+    .toBe(false)
+})
+
+test('caps continuous Voice input at the 30 second PCM boundary', async () => {
+  await installAudioMock()
+  await openVoiceCapturePage()
+  await clearCalls()
+
+  await page.getByRole('button', { name: 'Start microphone' }).click()
+  await expect(page.getByText('Listening for speech', { exact: true }))
+    .toBeVisible()
+  await emitSpeechFrames(0.08, 1_500)
+  await expect(page.getByText('Speech captured', { exact: true }))
+    .toBeVisible()
+
+  const captureCall = (await getCalls()).find(
+    (call) => call.method === 'submitVoiceCapture',
+  )
+  expect(captureCall).toBeDefined()
+  const request = captureCall?.args[0] as {
+    sampleCount: number
+    speechEndSample: number
+    pcmBase64: string
+  }
+  expect(request.sampleCount).toBe(480_000)
+  expect(request.speechEndSample).toBe(480_000)
+  expect(request.pcmBase64).toHaveLength(1_280_000)
+  expect((await getCalls()).some((call) => call.method === 'sendMessage'))
+    .toBe(false)
+  await expect.poll(async () => (await audioMockStats()).trackStopCount).toBe(1)
+  await expect.poll(async () => (await audioMockStats()).contextsClosed).toBe(1)
+})
+
+test('discards silence and short noise without submitting audio', async () => {
+  await installAudioMock()
+  await openVoiceCapturePage()
+  await clearCalls()
+
+  await page.getByRole('button', { name: 'Start microphone' }).click()
+  await expect(page.getByText('Listening for speech', { exact: true }))
+    .toBeVisible()
+  await emitAudioFrames(0.08, 5)
+  await emitAudioFrames(0, 495)
+  await expect(page.getByText('No speech detected', { exact: true }))
+    .toBeVisible()
+  await expect(page.getByText(
+    'No usable speech was captured. Nothing was sent or added to Chat.',
+    { exact: true },
+  )).toBeVisible()
+
+  const calls = await getCalls()
+  expect(calls.some((call) => call.method === 'submitVoiceCapture')).toBe(false)
+  expect(calls.some((call) => call.method === 'sendMessage')).toBe(false)
+  await expect.poll(async () => (await audioMockStats()).trackStopCount).toBe(1)
+  await expect.poll(async () => (await audioMockStats()).contextsClosed).toBe(1)
+})
+
+test('releases an active Voice capture on Escape and device disconnect', async () => {
+  await installAudioMock()
+  await openVoiceCapturePage()
+  await clearCalls()
+
+  await page.getByRole('button', { name: 'Start microphone' }).click()
+  await expect(page.getByText('Listening for speech', { exact: true }))
+    .toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(page.getByRole('main', { name: 'Voice capture' })).toHaveCount(0)
+  await expect.poll(async () => (await audioMockStats()).trackStopCount).toBe(1)
+  await expect.poll(async () => (await audioMockStats()).contextsClosed).toBe(1)
+
+  await openVoiceCapturePage()
+  await page.getByRole('button', { name: 'Start microphone' }).click()
+  await expect(page.getByText('Listening for speech', { exact: true }))
+    .toBeVisible()
+  expect(await endLatestAudioTrack()).toBe(true)
+  await expect(page.getByText('Microphone unavailable', { exact: true }))
+    .toBeVisible()
+  await expect(page.getByRole('alert')).toContainText(
+    'The microphone disconnected during voice capture.',
+  )
+  await expect.poll(async () => (await audioMockStats()).trackStopCount).toBe(2)
+  await expect.poll(async () => (await audioMockStats()).contextsClosed).toBe(2)
+  const calls = await getCalls()
+  expect(calls.some((call) => call.method === 'submitVoiceCapture')).toBe(false)
+  expect(calls.some((call) => call.method === 'sendMessage')).toBe(false)
 })
 
 test('saves exact global Settings and restarts the Backend to apply them', async () => {

@@ -1,3 +1,5 @@
+"""Test the LangChain Ollama adapter and streamed error translation."""
+
 from collections.abc import Iterator
 
 import pytest
@@ -21,11 +23,13 @@ from core import (
 def test_ensure_model_available_uses_checker(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Verify that ensure model available uses checker."""
     check_count = 0
 
     def fake_ensure_model_available(
         self: OllamaChatModel,
     ) -> None:
+        """Count delegation to the direct Ollama availability checker."""
         nonlocal check_count
         check_count += 1
 
@@ -47,11 +51,13 @@ def test_ensure_model_available_uses_checker(
 def test_generate_reply_uses_ordered_chat_messages(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Verify that generate reply uses ordered chat messages."""
     def fake_invoke(
         self: ChatOllama,
         messages: object,
         **kwargs: object,
     ) -> AIMessage:
+        """Assert role-preserving LangChain conversion and return text."""
         assert isinstance(messages, list)
         assert len(messages) == 4
 
@@ -108,11 +114,13 @@ def test_generate_reply_uses_ordered_chat_messages(
 def test_generate_reply_rejects_non_text_content(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Verify that generate reply rejects non text content."""
     def fake_invoke(
         self: ChatOllama,
         messages: object,
         **kwargs: object,
     ) -> AIMessage:
+        """Return LangChain's non-text content shape for rejection coverage."""
         return AIMessage(content=["Hello"])
 
     monkeypatch.setattr(
@@ -147,11 +155,13 @@ def test_generate_reply_rejects_non_text_content(
 def test_generate_reply_rejects_offline_ollama(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Verify that generate reply rejects offline Ollama."""
     def fake_invoke(
         self: ChatOllama,
         messages: object,
         **kwargs: object,
     ) -> AIMessage:
+        """Simulate an offline Ollama connection during synchronous invoke."""
         raise ConnectError("Offline")
 
     monkeypatch.setattr(
@@ -186,11 +196,13 @@ def test_generate_reply_rejects_offline_ollama(
 def test_stream_reply_yields_ordered_text_chunks(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Verify that stream reply yields ordered text chunks."""
     def fake_stream(
         self: ChatOllama,
         messages: object,
         **kwargs: object,
     ) -> Iterator[AIMessageChunk]:
+        """Assert ordered prompt conversion and yield three text chunks."""
         assert isinstance(messages, list)
         assert len(messages) == 2
 
@@ -236,11 +248,13 @@ def test_stream_reply_yields_ordered_text_chunks(
 def test_stream_reply_rejects_empty_reply(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Verify that stream reply rejects empty reply."""
     def fake_stream(
         self: ChatOllama,
         messages: object,
         **kwargs: object,
     ) -> Iterator[AIMessageChunk]:
+        """Yield only blank chunks so the adapter must reject an empty reply."""
         yield AIMessageChunk(content="")
         yield AIMessageChunk(content="   ")
 
@@ -273,11 +287,13 @@ def test_stream_reply_rejects_empty_reply(
 def test_stream_reply_rejects_non_text_content(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Verify that stream reply rejects non text content."""
     def fake_stream(
         self: ChatOllama,
         messages: object,
         **kwargs: object,
     ) -> Iterator[AIMessageChunk]:
+        """Yield a non-text chunk for streamed response validation."""
         yield AIMessageChunk(content=["Hello"])
 
     monkeypatch.setattr(
@@ -309,11 +325,13 @@ def test_stream_reply_rejects_non_text_content(
 def test_stream_reply_translates_midstream_connection_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Verify that stream reply translates midstream connection error."""
     def fake_stream(
         self: ChatOllama,
         messages: object,
         **kwargs: object,
     ) -> Iterator[AIMessageChunk]:
+        """Yield partial text before simulating a midstream disconnect."""
         yield AIMessageChunk(content="Partial reply")
         raise ConnectError("Connection refused")
 

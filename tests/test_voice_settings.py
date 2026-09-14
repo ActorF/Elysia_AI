@@ -30,6 +30,7 @@ SAVED_AT = datetime(2026, 9, 9, 12, 34, 56, tzinfo=timezone.utc)
 
 
 def _path(tmp_path: Path) -> Path:
+    """Return the device-local Voice settings path inside an isolated workspace."""
     return tmp_path / "workspace" / "settings" / "audio-device.json"
 
 
@@ -38,6 +39,7 @@ def _repository(
     *,
     replace_file=os.replace,
 ) -> JsonVoiceSettingsRepository:
+    """Create a deterministic repository with an injectable atomic replace."""
     return JsonVoiceSettingsRepository(
         _path(tmp_path),
         clock=lambda: SAVED_AT,
@@ -50,6 +52,7 @@ def _document(
     *,
     revision: int,
 ) -> dict[str, object]:
+    """Build the exact persisted Voice settings schema for disk assertions."""
     return {
         "schema_version": VOICE_SETTINGS_SCHEMA_VERSION,
         "revision": revision,
@@ -64,6 +67,7 @@ def _document(
 def test_first_load_follows_system_defaults_without_creating_a_file(
     tmp_path: Path,
 ) -> None:
+    """Verify that first load follows system defaults without creating a file."""
     repository = _repository(tmp_path)
 
     snapshot = repository.load()
@@ -78,6 +82,7 @@ def test_first_load_follows_system_defaults_without_creating_a_file(
 def test_explicit_device_ids_round_trip_across_repository_instances(
     tmp_path: Path,
 ) -> None:
+    """Verify that explicit device IDs round trip across repository instances."""
     preferences = AudioDevicePreferences(
         input_device_id="opaque-input-id",
         output_device_id="opaque-output-id",
@@ -97,6 +102,7 @@ def test_explicit_device_ids_round_trip_across_repository_instances(
 def test_null_is_the_only_persisted_system_default_representation(
     tmp_path: Path,
 ) -> None:
+    """Verify that null is the only persisted system default representation."""
     repository = _repository(tmp_path)
     explicit = repository.save(
         AudioDevicePreferences(
@@ -130,6 +136,7 @@ def test_null_is_the_only_persisted_system_default_representation(
 def test_invalid_device_ids_are_rejected_without_echoing_them(
     invalid_id: object,
 ) -> None:
+    """Verify that invalid device IDs are rejected without echoing them."""
     with pytest.raises(VoiceSettingsValidationError) as raised:
         AudioDevicePreferences(input_device_id=invalid_id)  # type: ignore[arg-type]
 
@@ -138,6 +145,7 @@ def test_invalid_device_ids_are_rejected_without_echoing_them(
 
 
 def test_reserved_output_pseudo_id_is_also_rejected() -> None:
+    """Verify that reserved output pseudo ID is also rejected."""
     with pytest.raises(VoiceSettingsValidationError):
         AudioDevicePreferences(output_device_id="communications")
 
@@ -145,6 +153,7 @@ def test_reserved_output_pseudo_id_is_also_rejected() -> None:
 def test_saving_identical_preferences_is_a_no_op(
     tmp_path: Path,
 ) -> None:
+    """Verify that saving identical preferences is a no op."""
     repository = _repository(tmp_path)
     preferences = AudioDevicePreferences(input_device_id="input-id")
     first = repository.save(preferences, expected_revision=0)
@@ -159,6 +168,7 @@ def test_saving_identical_preferences_is_a_no_op(
 def test_stale_revision_cannot_overwrite_newer_preferences(
     tmp_path: Path,
 ) -> None:
+    """Verify that stale revision cannot overwrite newer preferences."""
     repository = _repository(tmp_path)
     first = repository.save(
         AudioDevicePreferences(input_device_id="first-input"),
@@ -179,6 +189,7 @@ def test_stale_revision_cannot_overwrite_newer_preferences(
 def test_repository_instances_cannot_both_commit_the_same_revision(
     tmp_path: Path,
 ) -> None:
+    """Allow only one concurrent Voice writer to advance a shared revision."""
     initial = _repository(tmp_path)
     first = initial.save(
         AudioDevicePreferences(input_device_id="initial-input"),
@@ -192,6 +203,7 @@ def test_repository_instances_cannot_both_commit_the_same_revision(
         repository: JsonVoiceSettingsRepository,
         device_id: str,
     ) -> str:
+        """Race one revision-checked save and report its observable outcome."""
         ready.wait()
         try:
             repository.save(
@@ -214,6 +226,7 @@ def test_repository_instances_cannot_both_commit_the_same_revision(
 def test_corrupt_recovery_cannot_quarantine_a_concurrent_valid_save(
     tmp_path: Path,
 ) -> None:
+    """Serialize quarantine and save so recovery cannot discard newer valid state."""
     path = _path(tmp_path)
     path.parent.mkdir(parents=True)
     path.write_text("{broken", encoding="utf-8")
@@ -221,6 +234,7 @@ def test_corrupt_recovery_cannot_quarantine_a_concurrent_valid_save(
     release_quarantine = Event()
 
     def delayed_replace(source: object, target: object) -> None:
+        """Pause corrupt-file quarantine while another repository attempts save."""
         quarantine_started.set()
         if not release_quarantine.wait(timeout=5):
             raise OSError("simulated quarantine timeout")
@@ -255,6 +269,7 @@ def test_corrupt_recovery_cannot_quarantine_a_concurrent_valid_save(
 def test_unknown_or_live_fields_are_quarantined_without_becoming_state(
     tmp_path: Path,
 ) -> None:
+    """Quarantine unknown or live device fields instead of accepting them."""
     repository = _repository(tmp_path)
     repository.path.parent.mkdir(parents=True)
     document = _document(AudioDevicePreferences(), revision=1)
@@ -279,6 +294,7 @@ def test_unknown_or_live_fields_are_quarantined_without_becoming_state(
 def test_duplicate_json_fields_are_quarantined(
     tmp_path: Path,
 ) -> None:
+    """Quarantine duplicate JSON keys whose last-value semantics are ambiguous."""
     repository = _repository(tmp_path)
     repository.path.parent.mkdir(parents=True)
     repository.path.write_text(
@@ -299,6 +315,7 @@ def test_duplicate_json_fields_are_quarantined(
 def test_invalid_utf8_is_quarantined_and_can_be_repaired(
     tmp_path: Path,
 ) -> None:
+    """Quarantine invalid UTF-8 while leaving the settings store repairable."""
     repository = _repository(tmp_path)
     repository.path.parent.mkdir(parents=True)
     repository.path.write_bytes(b"\xff\xfe\x00")
@@ -321,6 +338,7 @@ def test_invalid_utf8_is_quarantined_and_can_be_repaired(
 def test_oversized_json_integer_is_quarantined(
     tmp_path: Path,
 ) -> None:
+    """Quarantine revisions beyond the transport-safe JSON integer boundary."""
     repository = _repository(tmp_path)
     repository.path.parent.mkdir(parents=True)
     repository.path.write_text(
@@ -345,6 +363,7 @@ def test_oversized_json_integer_is_quarantined(
 def test_failed_atomic_replace_preserves_previous_preferences(
     tmp_path: Path,
 ) -> None:
+    """Retain previous Voice preferences when atomic replacement fails."""
     working = _repository(tmp_path)
     first = working.save(
         AudioDevicePreferences(input_device_id="working-input"),
@@ -353,6 +372,7 @@ def test_failed_atomic_replace_preserves_previous_preferences(
     before = working.path.read_bytes()
 
     def fail_replace(_source: object, _target: object) -> None:
+        """Simulate atomic replacement failing while saving preferences."""
         raise OSError("simulated replace failure")
 
     failing = _repository(tmp_path, replace_file=fail_replace)
@@ -370,12 +390,14 @@ def test_failed_atomic_replace_preserves_previous_preferences(
 def test_corruption_is_not_silently_overwritten_if_quarantine_fails(
     tmp_path: Path,
 ) -> None:
+    """Refuse to overwrite corrupt state when its quarantine step itself fails."""
     repository = _repository(tmp_path)
     repository.path.parent.mkdir(parents=True)
     repository.path.write_text("{broken", encoding="utf-8")
     before = repository.path.read_bytes()
 
     def fail_replace(_source: object, _target: object) -> None:
+        """Simulate failure while quarantining a corrupt settings document."""
         raise OSError("simulated quarantine failure")
 
     failing = _repository(tmp_path, replace_file=fail_replace)
@@ -388,6 +410,7 @@ def test_corruption_is_not_silently_overwritten_if_quarantine_fails(
 def test_maximum_revision_cannot_increment_or_modify_the_file(
     tmp_path: Path,
 ) -> None:
+    """Verify that maximum revision cannot increment or modify the file."""
     repository = _repository(tmp_path)
     repository.path.parent.mkdir(parents=True)
     repository.path.write_text(
@@ -413,6 +436,7 @@ def test_maximum_revision_cannot_increment_or_modify_the_file(
 def test_service_factory_uses_the_device_local_settings_path(
     tmp_path: Path,
 ) -> None:
+    """Verify that service factory uses the device local settings path."""
     service = create_voice_settings_service(tmp_path)
     saved = service.update_settings(
         input_device_id="input-id",

@@ -1,3 +1,5 @@
+/** Launch the packaged-style Electron test harness used by Playwright. */
+
 const path = require('node:path')
 const { pathToFileURL } = require('node:url')
 

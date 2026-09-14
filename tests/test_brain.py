@@ -1,3 +1,5 @@
+"""Test Brain orchestration, streaming, cancellation, and persistence."""
+
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -18,12 +20,14 @@ from memory import Memory, ShortTermMemory
 from projects import JsonProjectRepository
 
 class FakeChatModel:
+    """Capture prompts and serve configured sync or streaming model output."""
     def __init__(
         self,
         reply: str,
         stream_chunks: list[str] | None = None,
         stream_error: Exception | None = None,
     ) -> None:
+        """Initialize deterministic state for this test double."""
         self._reply = reply
         self._stream_chunks = (
             stream_chunks
@@ -37,6 +41,7 @@ class FakeChatModel:
         self,
         messages: list[ChatMessage],
     ) -> str:
+        """Return the configured deterministic model reply."""
         self.received_messages = messages
         return self._reply
 
@@ -44,6 +49,7 @@ class FakeChatModel:
         self,
         messages: list[ChatMessage],
     ) -> Iterator[str]:
+        """Yield the configured deterministic model reply chunks."""
         self.received_messages = messages
         yield from self._stream_chunks
 
@@ -57,6 +63,7 @@ def _active_brain(
     *,
     short_term_memory: ShortTermMemory | None = None,
 ) -> tuple[Brain, Memory, ChatSession]:
+    """Compose a Brain around one persisted Chat and an optional token budget."""
     memory = Memory(tmp_path)
     chats = JsonChatRepository(tmp_path / "data" / "chats")
     projects = JsonProjectRepository(tmp_path / "data" / "projects")
@@ -77,6 +84,7 @@ def _active_brain(
 def test_chat_returns_reply_and_saves_messages(
     tmp_path: Path,
 ) -> None:
+    """Verify that chat returns reply and saves messages."""
     chat_model = FakeChatModel("Hello, Ying!")
     brain, memory, chat = _active_brain(tmp_path, chat_model)
 
@@ -117,6 +125,7 @@ def test_chat_returns_reply_and_saves_messages(
 def test_chat_rejects_empty_user_message(
     tmp_path: Path,
 ) -> None:
+    """Verify that chat rejects empty user message."""
     chat_model = FakeChatModel("Unused reply")
     brain, _memory, chat = _active_brain(tmp_path, chat_model)
 
@@ -132,6 +141,7 @@ def test_chat_rejects_empty_user_message(
 def test_chat_rejects_empty_model_reply(
     tmp_path: Path,
 ) -> None:
+    """Verify that chat rejects empty model reply."""
     chat_model = FakeChatModel("   ")
     brain, _memory, chat = _active_brain(tmp_path, chat_model)
 
@@ -147,6 +157,7 @@ def test_chat_rejects_empty_model_reply(
 def test_build_recent_context_maps_message_roles(
     tmp_path: Path,
 ) -> None:
+    """Verify that build recent context maps message roles."""
     memory = Memory(tmp_path)
     brain = Brain(
         "fake-model",
@@ -178,6 +189,7 @@ def test_build_recent_context_maps_message_roles(
 def test_build_recent_context_respects_limit(
     tmp_path: Path,
 ) -> None:
+    """Verify that build recent context respects limit."""
     memory = Memory(tmp_path)
     brain = Brain(
         "fake-model",
@@ -210,6 +222,7 @@ def test_build_recent_context_respects_limit(
 def test_build_chat_messages_orders_context(
     tmp_path: Path,
 ) -> None:
+    """Verify that build chat messages orders context."""
     memory = Memory(tmp_path)
     brain = Brain(
         "fake-model",
@@ -248,6 +261,7 @@ def test_build_chat_messages_orders_context(
 def test_chat_includes_previous_turn_in_context(
     tmp_path: Path,
 ) -> None:
+    """Verify that chat includes previous turn in context."""
     chat_model = FakeChatModel("First reply")
     brain, _memory, chat = _active_brain(tmp_path, chat_model)
 
@@ -277,6 +291,7 @@ def test_chat_includes_previous_turn_in_context(
 def test_stream_chat_yields_chunks_and_saves_complete_turn(
     tmp_path: Path,
 ) -> None:
+    """Verify that stream chat yields chunks and saves complete turn."""
     chat_model = FakeChatModel(
         "Unused reply",
         stream_chunks=["Hello", " ", "Ying!"],
@@ -309,6 +324,7 @@ def test_stream_chat_yields_chunks_and_saves_complete_turn(
 def test_stream_chat_uses_metadata_only_and_commits_attachment(
     tmp_path: Path,
 ) -> None:
+    """Verify that stream chat uses metadata only and commits attachment."""
     chat_model = FakeChatModel(
         "Stored locally.",
         stream_chunks=["Stored locally."],
@@ -341,6 +357,7 @@ def test_stream_chat_uses_metadata_only_and_commits_attachment(
 def test_stream_chat_does_not_save_partial_turn_on_stream_error(
     tmp_path: Path,
 ) -> None:
+    """Verify that stream chat does not save partial turn on stream error."""
     chat_model = FakeChatModel(
         "Unused reply",
         stream_chunks=["Partial reply"],
@@ -366,6 +383,7 @@ def test_stream_chat_does_not_save_partial_turn_on_stream_error(
 def test_stream_retry_atomically_replaces_the_persisted_tail(
     tmp_path: Path,
 ) -> None:
+    """Replace exactly the persisted tail pair only after retry generation succeeds."""
     chat_model = FakeChatModel(
         "Original answer",
         stream_chunks=["Replacement", " answer"],
@@ -408,6 +426,7 @@ def test_stream_retry_atomically_replaces_the_persisted_tail(
 def test_stream_retry_without_edit_reuses_the_original_user_text(
     tmp_path: Path,
 ) -> None:
+    """Verify that stream retry without edit reuses the original user text."""
     chat_model = FakeChatModel(
         "Original answer",
         stream_chunks=["Regenerated answer"],
@@ -440,6 +459,7 @@ def test_stream_retry_without_edit_reuses_the_original_user_text(
 def test_stream_retry_failure_keeps_the_original_pair(
     tmp_path: Path,
 ) -> None:
+    """Preserve the original turn when a retry stream fails before commit."""
     chat_model = FakeChatModel(
         "Original answer",
         stream_chunks=["Partial replacement"],
@@ -466,6 +486,7 @@ def test_stream_retry_failure_keeps_the_original_pair(
 def test_cancelled_retry_keeps_the_original_pair(
     tmp_path: Path,
 ) -> None:
+    """Verify that cancelled retry keeps the original pair."""
     chat_model = FakeChatModel(
         "Original answer",
         stream_chunks=["Partial replacement", "Not emitted"],
@@ -493,6 +514,7 @@ def test_cancelled_retry_keeps_the_original_pair(
 def test_cancelled_stream_never_persists_a_partial_turn(
     tmp_path: Path,
 ) -> None:
+    """Keep streamed partial text transient when cancellation precedes commit."""
     chat_model = FakeChatModel(
         "Unused reply",
         stream_chunks=["First", "Second"],
@@ -517,6 +539,7 @@ def test_cancelled_stream_never_persists_a_partial_turn(
 def test_pre_cancelled_stream_never_calls_the_model(
     tmp_path: Path,
 ) -> None:
+    """Verify that pre cancelled stream never calls the model."""
     chat_model = FakeChatModel(
         "Unused reply",
         stream_chunks=["Never requested"],
@@ -541,27 +564,37 @@ def test_stream_cleanup_error_does_not_replace_cancellation(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
+    """Preserve cancellation as the public failure even if iterator cleanup fails."""
     class CloseFailingIterator:
+        """Emit one chunk, then fail if Brain attempts iterator cleanup."""
+
         def __init__(self) -> None:
+            """Start before the iterator's sole partial chunk."""
             self._sent = False
 
         def __iter__(self) -> Iterator[str]:
+            """Return this stateful iterator."""
             return self
 
         def __next__(self) -> str:
+            """Return the partial chunk once before stopping iteration."""
             if self._sent:
                 raise StopIteration
             self._sent = True
             return "Partial"
 
         def close(self) -> None:
+            """Simulate a cleanup failure that must not hide cancellation."""
             raise RuntimeError("Cleanup failed.")
 
     class CloseFailingModel(FakeChatModel):
+        """Return a stream whose cleanup path raises an unrelated error."""
+
         def stream_reply(
             self,
             messages: list[ChatMessage],
         ) -> Iterator[str]:
+            """Capture the prompt and return the close-failing iterator."""
             self.received_messages = messages
             return CloseFailingIterator()
 
@@ -586,6 +619,7 @@ def test_stream_cleanup_error_does_not_replace_cancellation(
 def test_commit_gate_gives_cancel_priority_before_persistence(
     tmp_path: Path,
 ) -> None:
+    """Let a last-moment cancellation veto persistence at the commit gate."""
     chat_model = FakeChatModel(
         "Unused reply",
         stream_chunks=["Complete answer"],
@@ -594,6 +628,7 @@ def test_commit_gate_gives_cancel_priority_before_persistence(
     commit_claims = 0
 
     def reject_commit() -> bool:
+        """Count and reject the generation's transition into commit."""
         nonlocal commit_claims
         commit_claims += 1
         return False
@@ -614,6 +649,7 @@ def test_commit_gate_gives_cancel_priority_before_persistence(
 def test_active_chat_does_not_reuse_shared_short_term_turns(
     tmp_path: Path,
 ) -> None:
+    """Verify that active chat does not reuse shared short term turns."""
     short_term_memory = ShortTermMemory(
         token_budget=100,
     )
@@ -655,6 +691,7 @@ def test_active_chat_does_not_reuse_shared_short_term_turns(
 def test_short_term_memory_trimming_changes_context(
     tmp_path: Path,
 ) -> None:
+    """Verify that short term memory trimming changes context."""
     memory = Memory(tmp_path)
     short_term_memory = ShortTermMemory(
         token_budget=4,
@@ -702,6 +739,7 @@ def test_short_term_memory_trimming_changes_context(
 def test_new_short_term_session_ignores_saved_history(
     tmp_path: Path,
 ) -> None:
+    """Verify that new short term session ignores saved history."""
     memory = Memory(tmp_path)
     memory.save_message("Ying", "Old question")
     memory.save_message("Elysia", "Old answer")
@@ -733,6 +771,7 @@ def test_new_short_term_session_ignores_saved_history(
 def test_chat_does_not_save_failed_short_term_turn(
     tmp_path: Path,
 ) -> None:
+    """Verify that chat does not save failed short term turn."""
     short_term_memory = ShortTermMemory(
         token_budget=100,
     )
@@ -755,6 +794,7 @@ def test_chat_does_not_save_failed_short_term_turn(
 def test_stream_chat_saves_complete_short_term_turn(
     tmp_path: Path,
 ) -> None:
+    """Verify that stream chat saves complete short term turn."""
     short_term_memory = ShortTermMemory(
         token_budget=100,
     )
@@ -783,6 +823,7 @@ def test_stream_chat_saves_complete_short_term_turn(
 def test_stream_chat_does_not_save_partial_short_term_turn(
     tmp_path: Path,
 ) -> None:
+    """Verify that stream chat does not save partial short term turn."""
     short_term_memory = ShortTermMemory(
         token_budget=100,
     )

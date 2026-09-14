@@ -16,7 +16,12 @@ def atomic_write_json(
     file_path: Path,
     data: Mapping[str, object],
 ) -> None:
-    """Replace JSON atomically using a temp file on the same filesystem."""
+    """Replace JSON atomically through a temp file on the same filesystem.
+
+    Flushing the complete temporary document before ``os.replace`` prevents
+    readers from observing a partial write, while co-location keeps the rename
+    on the target filesystem's atomic replacement boundary.
+    """
 
     file_path.parent.mkdir(parents=True, exist_ok=True)
     file_descriptor, temp_name = mkstemp(

@@ -18,7 +18,9 @@ from ui.console import run_console_session
 
 
 class FakeConsoleChatModel:
+    """Record console prompts and derive deterministic replies from each turn."""
     def __init__(self) -> None:
+        """Initialize deterministic state for this test double."""
         self.received_messages: list[
             list[ChatMessage]
         ] = []
@@ -27,6 +29,8 @@ class FakeConsoleChatModel:
         self,
         messages: list[ChatMessage],
     ) -> str:
+        """Provide deterministic record and build reply behavior for this test double.
+        """
         self.received_messages.append(
             list(messages)
         )
@@ -40,6 +44,7 @@ class FakeConsoleChatModel:
         self,
         messages: list[ChatMessage],
     ) -> str:
+        """Return the configured deterministic model reply."""
         return self._record_and_build_reply(
             messages
         )
@@ -48,16 +53,19 @@ class FakeConsoleChatModel:
         self,
         messages: list[ChatMessage],
     ) -> Iterator[str]:
+        """Yield the configured deterministic model reply chunks."""
         yield self._record_and_build_reply(
             messages
         )
 
 
 class FakeConsoleSummarizer:
+    """Record console summary calls and optionally raise a configured failure."""
     def __init__(
         self,
         error: Exception | None = None,
     ) -> None:
+        """Initialize deterministic state for this test double."""
         self._error = error
         self.calls: list[
             tuple[
@@ -73,6 +81,7 @@ class FakeConsoleSummarizer:
             ConversationSummaryContent | None
         ) = None,
     ) -> ConversationSummaryContent:
+        """Return a deterministic summary while recording test inputs."""
         self.calls.append(
             (
                 list(messages),
@@ -102,6 +111,7 @@ def _brain(
     chat_model: FakeConsoleChatModel | None = None,
     summarizer: FakeConsoleSummarizer | None = None,
 ) -> tuple[Brain, Memory]:
+    """Compose an isolated console Brain with injectable model collaborators."""
     memory = Memory(tmp_path)
     active = ActiveConversationService(
         JsonChatRepository(tmp_path / "data" / "chats"),
@@ -123,6 +133,7 @@ def _set_console_answers(
     monkeypatch: pytest.MonkeyPatch,
     answers: list[str],
 ) -> None:
+    """Replace interactive input with a finite sequence of scripted answers."""
     answer_iterator = iter(answers)
 
     monkeypatch.setattr(
@@ -136,6 +147,7 @@ def test_console_supports_multiple_turns_and_quit(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    """Verify that console supports multiple turns and quit."""
     chat_model = FakeConsoleChatModel()
     brain, memory = _brain(
         tmp_path,
@@ -198,6 +210,7 @@ def test_console_continues_after_empty_input(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    """Verify that console continues after empty input."""
     brain, _memory = _brain(tmp_path)
 
     _set_console_answers(
@@ -221,6 +234,7 @@ def test_console_can_manually_update_summary(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    """Verify that console can manually update summary."""
     chat_model = FakeConsoleChatModel()
     summarizer = FakeConsoleSummarizer()
     brain, _memory = _brain(
@@ -260,6 +274,7 @@ def test_console_automatically_summarizes_ten_messages(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    """Verify that console automatically summarizes ten messages."""
     chat_model = FakeConsoleChatModel()
     summarizer = FakeConsoleSummarizer()
     brain, memory = _brain(
@@ -311,6 +326,7 @@ def test_console_summary_failure_does_not_end_session(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    """Verify that console summary failure does not end session."""
     chat_model = FakeConsoleChatModel()
     summarizer = FakeConsoleSummarizer(
         error=ValueError(

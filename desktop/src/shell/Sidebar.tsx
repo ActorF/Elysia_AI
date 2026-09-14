@@ -643,7 +643,9 @@ export function Sidebar({
     >
       <div className="brand-row">
         <div className="brand">
-          <span className="brand-mark"><Icon name="sparkles" /></span>
+          <span className="brand-mark" aria-hidden="true">
+            <img src="./elysia-icon.png" alt="" />
+          </span>
           <span>Elysia AI</span>
         </div>
         <button

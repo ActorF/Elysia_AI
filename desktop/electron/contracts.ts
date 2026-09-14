@@ -225,6 +225,34 @@ export interface UpdateVoiceSettingsRequest {
   outputDeviceId: string | null
 }
 
+/** One bounded mono PCM utterance produced by renderer-owned capture and VAD. */
+export interface VoiceCaptureRequest {
+  sessionId: string
+  chatId: string
+  sampleRateHz: 16000
+  channelCount: 1
+  sampleFormat: 's16le'
+  sampleCount: number
+  speechStartSample: number
+  speechEndSample: number
+  pcmBase64: string
+}
+
+/** Safe acknowledgement returned after Python validates transient PCM bytes. */
+export interface VoiceCaptureReceipt {
+  sessionId: string
+  chatId: string
+  sampleRateHz: 16000
+  channelCount: 1
+  sampleFormat: 's16le'
+  sampleCount: number
+  speechStartSample: number
+  speechEndSample: number
+  durationMs: number
+  speechDurationMs: number
+  sha256Hex: string
+}
+
 /** Native operating-system microphone access state (not device availability). */
 export type MicrophonePermissionStatus =
   | 'not-determined'
@@ -281,55 +309,100 @@ export type BackendEvent =
       data: Record<string, unknown>
     }
 
+/**
+ * Expose the narrow, validated IPC surface available to the sandboxed renderer.
+ * Renderer code receives domain data and owned actions, never Electron or raw
+ * filesystem primitives.
+ */
 export interface DesktopApi {
+  /** Signal that the renderer can receive events and the main window may appear. */
   rendererReady(): Promise<void>
   /** Keep native window chrome aligned with the renderer's saved appearance. */
   setThemePreference(theme: DesktopThemePreference): Promise<void>
+  /** Return the current Python Backend lifecycle and capability snapshot. */
   getSnapshot(): Promise<BackendSnapshot>
+  /** Restart the Python Backend and return its resulting snapshot. */
   restartBackend(): Promise<BackendSnapshot>
+  /** Load the canonical persisted Desktop settings state. */
   getSettings(): Promise<DesktopSettingsState>
+  /** Validate and persist a revision-aware Desktop settings update. */
   updateSettings(
     request: UpdateDesktopSettingsRequest,
   ): Promise<DesktopSettingsState>
+  /** Load the canonical persisted voice-device preferences. */
   getVoiceSettings(): Promise<VoiceSettingsState>
+  /** Validate and persist a revision-aware voice settings update. */
   updateVoiceSettings(
     request: UpdateVoiceSettingsRequest,
   ): Promise<VoiceSettingsState>
+  /** Submit one bounded PCM segment for Backend validation. */
+  submitVoiceCapture(
+    request: VoiceCaptureRequest,
+  ): Promise<VoiceCaptureReceipt>
+  /** Read native microphone permission without opening a capture device. */
   getMicrophonePermissionStatus(): Promise<MicrophonePermissionStatus>
+  /** Open native microphone privacy settings when the platform supports it. */
   openMicrophonePrivacySettings(): Promise<void>
+  /** Begin one Chat generation and return its request identifier. */
   sendMessage(request: ChatRequest): Promise<{ requestId: string }>
+  /** Begin a retry for one persisted assistant message. */
   retryMessage(request: RetryChatRequest): Promise<{ requestId: string }>
+  /** Ask the Backend to stop the named in-flight generation. */
   stopGeneration(requestId: string): Promise<void>
+  /** Copy validated plain text through the native clipboard boundary. */
   copyText(text: string): Promise<void>
+  /** Open a validated uncredentialed HTTP(S) URL with the operating system. */
   openExternalUrl(url: string): Promise<void>
+  /** Return canonical Chat state with the requested archive visibility. */
   listChats(includeArchived: boolean): Promise<ChatSessionState>
+  /** Create an empty Chat and return it as the active canonical state. */
   createChat(request: CreateChatRequest): Promise<ChatSessionState>
+  /** Open one Chat by stable identifier and return canonical state. */
   openChat(chatId: string): Promise<ChatSessionState>
+  /** Rename one Chat and return the refreshed canonical state. */
   renameChat(request: RenameChatRequest): Promise<ChatSessionState>
+  /** Persist one Chat's pin state and return refreshed canonical state. */
   setChatPinned(request: PinChatRequest): Promise<ChatSessionState>
+  /** Persist one Chat's archive state and return refreshed canonical state. */
   setChatArchived(request: ArchiveChatRequest): Promise<ChatSessionState>
+  /** Delete one Chat and return the next canonical Chat state. */
   deleteChat(chatId: string): Promise<ChatSessionState>
+  /** Return canonical Project state, including archived Projects. */
   listProjects(): Promise<ProjectState>
+  /** Create one Project and return it as the active canonical state. */
   createProject(request: CreateProjectRequest): Promise<ProjectState>
+  /** Open one Project by stable identifier and return canonical state. */
   openProject(projectId: string): Promise<ProjectState>
+  /** Persist editable Project fields and return refreshed canonical state. */
   updateProject(request: UpdateProjectRequest): Promise<ProjectState>
+  /** Choose and bind a native directory, or return null when cancelled. */
   chooseProjectWorkspace(projectId: string): Promise<ProjectState | null>
+  /** Remove a Project's workspace binding and return refreshed state. */
   clearProjectWorkspace(projectId: string): Promise<ProjectState>
+  /** Persist one Project's archive state and return refreshed state. */
   setProjectArchived(request: ArchiveProjectRequest): Promise<ProjectState>
+  /** Attach, transfer, or detach one Chat according to the request. */
   moveChatToProject(request: MoveChatToProjectRequest): Promise<ProjectState>
+  /** Restart the Backend with the selected model and return its snapshot. */
   selectModel(modelName: string): Promise<BackendSnapshot>
+  /** Return renderer-safe attachment drafts and limits for one scope. */
   listAttachments(scope: AttachmentScope): Promise<AttachmentState>
+  /** Choose native files and stage them, preserving explicit cancellation. */
   chooseAttachments(
     scope: AttachmentScope,
   ): Promise<AttachmentSelectionResult>
+  /** Resolve dropped File handles and stage them in one attachment scope. */
   acceptDroppedAttachments(
     scope: AttachmentScope,
     files: File[],
   ): Promise<AttachmentState>
+  /** Remove one unclaimed attachment draft and return refreshed state. */
   removeAttachment(
     scope: AttachmentScope,
     attachmentId: string,
   ): Promise<AttachmentState>
+  /** Expand or restore the native window for the character panel. */
   setCharacterPanelOpen(open: boolean): Promise<void>
+  /** Subscribe to validated Backend events and return an unsubscribe callback. */
   onBackendEvent(listener: (event: BackendEvent) => void): () => void
 }

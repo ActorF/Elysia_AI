@@ -228,8 +228,8 @@ export function Composer({
               type="button"
               className="tool-button phone-button"
               onClick={onOpenCall}
-              aria-label="Open one-to-one call preview"
-              title="Open one-to-one call preview"
+              aria-label="Open voice capture"
+              title="Open voice capture"
             >
               <Icon name="phone" />
             </button>

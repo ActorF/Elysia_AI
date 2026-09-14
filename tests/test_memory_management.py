@@ -1,3 +1,5 @@
+"""Test long-term-memory search, editing, export, and deletion."""
+
 import json
 import logging
 from pathlib import Path
@@ -17,6 +19,7 @@ from ui.console import (
 def _memory_with_records(
     tmp_path: Path,
 ) -> Memory:
+    """Provide the memory with records fixture used by these tests."""
     memory = Memory(tmp_path)
 
     memory.save_long_term_memory(
@@ -38,6 +41,7 @@ def _memory_with_records(
 def test_search_is_case_insensitive_and_preserves_number(
     tmp_path: Path,
 ) -> None:
+    """Verify that search is case insensitive and preserves number."""
     memory = _memory_with_records(tmp_path)
 
     results = memory.search_long_term_memories(
@@ -55,6 +59,7 @@ def test_search_is_case_insensitive_and_preserves_number(
 def test_edit_preserves_source_metadata(
     tmp_path: Path,
 ) -> None:
+    """Verify that edit preserves source metadata."""
     memory = _memory_with_records(tmp_path)
     original = (
         memory.get_long_term_memories()[0]
@@ -93,6 +98,7 @@ def test_edit_preserves_source_metadata(
 def test_invalid_edit_preserves_file(
     tmp_path: Path,
 ) -> None:
+    """Verify that invalid edit preserves file."""
     memory = _memory_with_records(tmp_path)
     before = (
         memory.long_term_memory_file.read_text(
@@ -118,6 +124,7 @@ def test_invalid_edit_preserves_file(
 def test_export_creates_portable_copy_and_refuses_overwrite(
     tmp_path: Path,
 ) -> None:
+    """Verify that export creates portable copy and refuses overwrite."""
     memory = _memory_with_records(tmp_path)
     export_file = (
         tmp_path
@@ -157,6 +164,7 @@ def test_export_creates_portable_copy_and_refuses_overwrite(
 def test_scoped_management_filters_edit_and_delete_views(
     tmp_path: Path,
 ) -> None:
+    """Verify that scoped management filters edit and delete views."""
     memory = Memory(tmp_path)
     memory.save_long_term_memory(
         "global_key",
@@ -213,6 +221,7 @@ def test_scoped_management_filters_edit_and_delete_views(
 
 
 def test_export_can_limit_output_to_one_scope(tmp_path: Path) -> None:
+    """Verify that export can limit output to one scope."""
     memory = Memory(tmp_path)
     memory.save_long_term_memory(
         "global_key",
@@ -248,6 +257,7 @@ def test_brain_requires_confirmation_and_logs_deletion(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
+    """Verify that brain requires confirmation and logs deletion."""
     memory = _memory_with_records(tmp_path)
     brain = Brain("fake-model", memory)
 
@@ -290,6 +300,7 @@ def test_console_cancels_deletion_without_exact_confirmation(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    """Verify that console cancels deletion without exact confirmation."""
     memory = _memory_with_records(tmp_path)
     brain = Brain("fake-model", memory)
     answers = iter(
@@ -322,6 +333,7 @@ def test_console_can_search_edit_export_and_delete(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    """Verify that console can search edit export and delete."""
     memory = _memory_with_records(tmp_path)
     brain = Brain("fake-model", memory)
     export_file = (
@@ -377,6 +389,7 @@ def test_console_session_opens_memory_management_command(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    """Verify that console session opens memory management command."""
     memory = _memory_with_records(tmp_path)
     brain = Brain(
         "fake-model",

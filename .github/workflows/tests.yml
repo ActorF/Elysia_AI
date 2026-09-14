@@ -1,3 +1,4 @@
+# Enforce documentation, contracts, types, tests, and builds across supported hosts.
 name: Tests
 
 on: [push, pull_request]
@@ -24,14 +25,17 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
 
+      - name: Check Python documentation coverage
+        run: python scripts/check_python_documentation.py
+
       - name: Run tests
         run: python -m pytest -v
 
       - name: Run Python type checks
         run: >-
           python -m mypy
-          agent attachments chats config core desktop_protocol memory projects recovery
-          tools ui voice desktop_backend.py start.py
+          agent attachments chats config core desktop_protocol memory models projects recovery
+          scripts tools ui voice desktop_backend.py start.py
 
   windows-attachment-integration:
     runs-on: windows-latest
@@ -43,6 +47,27 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
+
+      - name: Parse PowerShell sources
+        shell: pwsh
+        run: |
+          $hasParseFailure = $false
+          foreach ($sourcePath in @(git ls-files -- '*.ps1' '*.psm1')) {
+            $sourceTokens = $null
+            $parseErrors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path -LiteralPath $sourcePath).Path,
+              [ref] $sourceTokens,
+              [ref] $parseErrors
+            ) | Out-Null
+            foreach ($parseError in $parseErrors) {
+              Write-Host "::error file=$sourcePath::$($parseError.Message)"
+              $hasParseFailure = $true
+            }
+          }
+          if ($hasParseFailure) {
+            throw 'PowerShell syntax validation failed.'
+          }
 
       - name: Set up Python
         uses: actions/setup-python@v7
@@ -80,6 +105,9 @@ jobs:
 
       - name: Install desktop dependencies
         run: npm ci
+
+      - name: Check desktop documentation coverage
+        run: npm run docs:check
 
       - name: Lint desktop sources
         run: npm run lint

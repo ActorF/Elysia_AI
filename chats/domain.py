@@ -536,7 +536,10 @@ def create_chat_message(
     attachments: Iterable[AttachmentMetadata] = (),
     created_at: datetime | None = None,
 ) -> ChatMessage:
-    """Create a message with a stable ID and UTC timestamp."""
+    """Create a message with a stable ID and an optional aware timestamp.
+
+    When no timestamp is supplied, the current UTC time is used.
+    """
 
     message_created_at = (
         datetime.now(timezone.utc)

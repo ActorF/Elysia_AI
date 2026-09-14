@@ -55,7 +55,11 @@ def validate_attachment_id(value: object) -> str:
 
 
 def validate_file_name(value: object) -> str:
-    """Validate a display-only basename without treating it as a path."""
+    """Validate a cross-platform display basename without resolving a path.
+
+    Names cross both renderer and operating-system boundaries, so reserved
+    Windows stems and bidirectional controls are rejected even on other hosts.
+    """
 
     if (
         not isinstance(value, str)
@@ -136,7 +140,7 @@ class AttachmentItem:
 
 @dataclass(frozen=True, slots=True)
 class AttachmentState:
-    """Return renderer-safe drafts plus limits for newly selected files."""
+    """Carry renderer-safe drafts plus limits for newly selected files."""
 
     scope: AttachmentScope
     attachments: tuple[AttachmentItem, ...]

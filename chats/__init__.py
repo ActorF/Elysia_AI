@@ -1,4 +1,4 @@
-"""Public interface for Elysia's chat domain model."""
+"""Public interface for Elysia chat domains, persistence, and migration."""
 
 from .domain import (
     CHAT_SESSION_SCHEMA_VERSION,

@@ -34,6 +34,7 @@ SAVED_AT = datetime(2026, 8, 30, 12, 34, 56, tzinfo=timezone.utc)
 
 
 def _app_settings(tmp_path: Path) -> AppSettings:
+    """Provide the app settings fixture used by these tests."""
     return AppSettings(
         base_dir=tmp_path,
         model_name="bootstrap-model",
@@ -47,10 +48,12 @@ def _app_settings(tmp_path: Path) -> AppSettings:
 
 
 def _editable(tmp_path: Path) -> EditableDesktopSettings:
+    """Provide the editable fixture used by these tests."""
     return editable_from_app_settings(_app_settings(tmp_path))
 
 
 def _changed_values(tmp_path: Path) -> EditableDesktopSettings:
+    """Provide the changed values fixture used by these tests."""
     return replace(
         _editable(tmp_path),
         model_name="saved-model",
@@ -66,6 +69,7 @@ def _settings_document(
     *,
     revision: int,
 ) -> dict[str, object]:
+    """Provide the settings document fixture used by these tests."""
     return {
         "schema_version": DESKTOP_SETTINGS_SCHEMA_VERSION,
         "revision": revision,
@@ -87,6 +91,7 @@ def _repository(
     *,
     replace_file: ReplaceFile = os.replace,
 ) -> DesktopSettingsRepository:
+    """Provide the repository fixture used by these tests."""
     return DesktopSettingsRepository(
         tmp_path / "workspace" / "settings" / "global.json",
         _editable(tmp_path),
@@ -98,6 +103,7 @@ def _repository(
 def test_first_load_returns_bootstrap_defaults_without_creating_a_file(
     tmp_path: Path,
 ) -> None:
+    """Verify that first load returns bootstrap defaults without creating a file."""
     repository = _repository(tmp_path)
 
     snapshot = repository.load()
@@ -112,6 +118,7 @@ def test_first_load_returns_bootstrap_defaults_without_creating_a_file(
 def test_save_and_reload_round_trip_the_complete_allowlist(
     tmp_path: Path,
 ) -> None:
+    """Verify that save and reload round trip the complete allowlist."""
     repository = _repository(tmp_path)
     values = _changed_values(tmp_path)
 
@@ -144,6 +151,7 @@ def test_save_and_reload_round_trip_the_complete_allowlist(
 def test_saving_identical_values_is_a_no_op_without_revision_bump(
     tmp_path: Path,
 ) -> None:
+    """Verify that saving identical values is a no op without revision bump."""
     repository = _repository(tmp_path)
     values = _changed_values(tmp_path)
     first = repository.save(values, expected_revision=0)
@@ -158,6 +166,7 @@ def test_saving_identical_values_is_a_no_op_without_revision_bump(
 def test_stale_revision_cannot_overwrite_newer_settings(
     tmp_path: Path,
 ) -> None:
+    """Verify that stale revision cannot overwrite newer settings."""
     repository = _repository(tmp_path)
     first = repository.save(_changed_values(tmp_path), expected_revision=0)
     before = repository.path.read_bytes()
@@ -176,6 +185,7 @@ def test_stale_revision_cannot_overwrite_newer_settings(
 
 
 def test_revision_above_json_safe_integer_is_rejected() -> None:
+    """Verify that revision above JSON safe integer is rejected."""
     values = EditableDesktopSettings(
         model_name="safe-model",
         ollama_host="http://localhost:11434",
@@ -199,6 +209,7 @@ def test_revision_above_json_safe_integer_is_rejected() -> None:
 def test_maximum_revision_cannot_increment_or_modify_the_file(
     tmp_path: Path,
 ) -> None:
+    """Verify that maximum revision cannot increment or modify the file."""
     repository = _repository(tmp_path)
     current_values = _changed_values(tmp_path)
     repository.path.parent.mkdir(parents=True)
@@ -230,6 +241,7 @@ def test_maximum_revision_cannot_increment_or_modify_the_file(
 def test_repository_instances_cannot_both_commit_the_same_revision(
     tmp_path: Path,
 ) -> None:
+    """Allow only one concurrent writer to advance a shared settings revision."""
     initial_repository = _repository(tmp_path)
     first = initial_repository.save(
         _changed_values(tmp_path),
@@ -243,6 +255,7 @@ def test_repository_instances_cannot_both_commit_the_same_revision(
         repository: DesktopSettingsRepository,
         model_name: str,
     ) -> str:
+        """Race one revision-checked save and report its observable outcome."""
         ready.wait()
         try:
             repository.save(
@@ -269,6 +282,7 @@ def test_unknown_or_sensitive_persisted_fields_are_quarantined(
     tmp_path: Path,
     extra_field: str,
 ) -> None:
+    """Quarantine unknown or secret-bearing fields instead of accepting state."""
     repository = _repository(tmp_path)
     repository.path.parent.mkdir(parents=True)
     document = {
@@ -314,6 +328,7 @@ def test_unknown_or_sensitive_persisted_fields_are_quarantined(
 def test_invalid_ollama_origins_are_rejected_without_echoing_values(
     value: str,
 ) -> None:
+    """Verify that invalid Ollama origins are rejected without echoing values."""
     with pytest.raises(DesktopSettingsValidationError) as raised:
         validate_ollama_host(value)
 
@@ -324,6 +339,8 @@ def test_invalid_ollama_origins_are_rejected_without_echoing_values(
 def test_failed_atomic_replace_preserves_old_file_and_removes_temporary_file(
     tmp_path: Path,
 ) -> None:
+    """Verify that failed atomic replace preserves old file and removes temporary file.
+    """
     working_repository = _repository(tmp_path)
     first = working_repository.save(
         _changed_values(tmp_path),
@@ -335,6 +352,7 @@ def test_failed_atomic_replace_preserves_old_file_and_removes_temporary_file(
         _source: object,
         _target: object,
     ) -> None:
+        """Simulate failure at the settings file's atomic replace boundary."""
         raise OSError("simulated replace failure")
 
     failing_repository = _repository(tmp_path, replace_file=fail_replace)
@@ -355,6 +373,7 @@ def test_failed_atomic_replace_preserves_old_file_and_removes_temporary_file(
 def test_corrupt_json_is_quarantined_and_defaults_remain_recoverable(
     tmp_path: Path,
 ) -> None:
+    """Quarantine corrupt JSON and continue from safe recoverable defaults."""
     repository = _repository(tmp_path)
     repository.path.parent.mkdir(parents=True)
     repository.path.write_text('{"api_key": "do-not-log"', encoding="utf-8")
@@ -378,6 +397,7 @@ def test_corrupt_json_is_quarantined_and_defaults_remain_recoverable(
 def test_runtime_settings_apply_desired_values_and_explicit_model_override(
     tmp_path: Path,
 ) -> None:
+    """Verify that runtime settings apply desired values and explicit model override."""
     base = _app_settings(tmp_path)
     desired = _changed_values(tmp_path)
 

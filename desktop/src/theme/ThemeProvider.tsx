@@ -24,6 +24,7 @@ export interface ThemeState {
 }
 
 export interface ThemeContextValue extends ThemeState {
+  /** Apply and persist a theme preference for all provider consumers. */
   setTheme(theme: ThemePreference): void
 }
 

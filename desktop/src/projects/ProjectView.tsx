@@ -60,21 +60,34 @@ export interface ProjectViewProps {
   mutationPending?: boolean
   projectState: ProjectState | null
   sidebarOpen: boolean
+  /** Persist the requested archive or restore transition. */
   onArchive(request: ArchiveProjectRequest): Promise<void>
+  /** Request native attachment selection for the supplied Project scope. */
   onChooseAttachments(scope: AttachmentScope): void
+  /** Choose a workspace and report whether its binding changed. */
   onChooseWorkspace(projectId: string): Promise<boolean>
+  /** Create and activate a Project from validated form values. */
   onCreate(request: CreateProjectRequest): Promise<void>
+  /** Clear the attachment error belonging to the supplied scope. */
   onDismissAttachmentError(scope: AttachmentScope): void
+  /** Submit dropped files for canonical Project attachment staging. */
   onDropAttachments(scope: AttachmentScope, files: File[]): void
+  /** Attach, transfer, or detach one Chat according to the request. */
   onMoveChat(request: MoveChatToProjectRequest): Promise<void>
+  /** Switch from this Project surface to the selected Chat. */
   onOpenChat(chatId: string): Promise<void>
+  /** Load and activate the selected Project. */
   onOpenProject(projectId: string): Promise<void>
+  /** Remove one Project attachment and report whether it succeeded. */
   onRemoveAttachment(
     scope: AttachmentScope,
     attachmentId: string,
   ): Promise<boolean>
+  /** Toggle the compact navigation sidebar. */
   onToggleSidebar(): void
+  /** Remove the selected Project's persisted workspace binding. */
   onUnbindWorkspace(projectId: string): Promise<void>
+  /** Persist editable fields for the active Project. */
   onUpdate(request: UpdateProjectRequest): Promise<void>
 }
 

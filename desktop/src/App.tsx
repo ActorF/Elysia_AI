@@ -32,6 +32,7 @@ import type {
   ProjectState,
   RetryChatRequest,
   UpdateProjectRequest,
+  VoiceCaptureReceipt,
   VoiceSettingsState,
 } from '../electron/contracts.ts'
 import {
@@ -57,9 +58,14 @@ import { Sidebar, type AppView } from './shell/Sidebar.tsx'
 import { useTheme } from './theme/ThemeProvider.tsx'
 import { CallPreview } from './voice/CallPreview.tsx'
 import {
+  AudioCaptureController,
+  type AudioCaptureSnapshot,
+} from './voice/audio-capture.ts'
+import {
   AudioDeviceController,
   type AudioDeviceSnapshot,
 } from './voice/audio-devices.ts'
+import type { CompletedVoiceSegment } from './voice/voice-activity-detector.ts'
 
 const COMPACT_SHELL_QUERY = '(max-width: 52rem)'
 const CHAT_DRAFTS_STORAGE_KEY = 'elysia.chat-drafts.v1'
@@ -84,6 +90,39 @@ const EMPTY_AUDIO_DEVICE_SNAPSHOT: AudioDeviceSnapshot = {
     deviceId: null,
     error: null,
   },
+}
+
+const EMPTY_AUDIO_CAPTURE_SNAPSHOT: AudioCaptureSnapshot = {
+  status: 'idle',
+  sessionId: null,
+  deviceId: null,
+  level: 0,
+  elapsedMs: 0,
+  bufferedSampleCount: 0,
+  voicedSampleCount: 0,
+  completedSampleCount: 0,
+  error: null,
+}
+
+function encodePcm16LittleEndian(pcm: Int16Array): string {
+  const bytes = new Uint8Array(pcm.length * 2)
+  const view = new DataView(bytes.buffer)
+  for (let index = 0; index < pcm.length; index += 1) {
+    view.setInt16(index * 2, pcm[index] ?? 0, true)
+  }
+  const chunks: string[] = []
+  const chunkSize = 32_768
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    chunks.push(String.fromCharCode(
+      ...bytes.subarray(offset, offset + chunkSize),
+    ))
+  }
+  try {
+    return window.btoa(chunks.join(''))
+  } finally {
+    bytes.fill(0)
+    chunks.length = 0
+  }
 }
 
 interface PersistedPendingChatSend {
@@ -629,6 +668,7 @@ function PlaceholderView({
   )
 }
 
+/** Coordinate Backend state, durable drafts, and all top-level renderer workflows. */
 function App() {
   const desktopApi = window.elysiaDesktop
   const { theme, resolvedTheme, setTheme } = useTheme()
@@ -663,6 +703,14 @@ function App() {
   const [audioDevices, setAudioDevices] = useState<AudioDeviceSnapshot>(
     EMPTY_AUDIO_DEVICE_SNAPSHOT,
   )
+  const [voiceCapture, setVoiceCapture] = useState<AudioCaptureSnapshot>(
+    EMPTY_AUDIO_CAPTURE_SNAPSHOT,
+  )
+  const [voiceCaptureReceipt, setVoiceCaptureReceipt]
+    = useState<VoiceCaptureReceipt | null>(null)
+  const [voiceCaptureSubmitting, setVoiceCaptureSubmitting] = useState(false)
+  const [voiceCaptureSubmissionError, setVoiceCaptureSubmissionError]
+    = useState<string | null>(null)
   const [showArchived, setShowArchived] = useState(false)
   const [draftsByChat, setDraftsByChat] = useState<Record<string, string>>(
     loadChatDrafts,
@@ -718,6 +766,11 @@ function App() {
   const voiceSettingsLoadOperationRef = useRef(0)
   const voiceSettingsPendingRef = useRef(false)
   const audioDeviceControllerRef = useRef<AudioDeviceController | null>(null)
+  const audioCaptureControllerRef = useRef<AudioCaptureController | null>(null)
+  const voiceCaptureCompleteRef = useRef<(segment: CompletedVoiceSegment) => void>(
+    () => undefined,
+  )
+  const voiceCaptureOperationRef = useRef(0)
   const microphoneActionOperationRef = useRef(0)
   const projectRefreshNeededRef = useRef(false)
   const projectRefreshPromiseRef = useRef<Promise<void> | null>(null)
@@ -796,6 +849,19 @@ function App() {
   const activeGeneration = generationBusy
     && inFlightTurn?.chatId === activeChatId
   const stopPending = activeGeneration && inFlightTurn?.phase === 'stopping'
+  const voiceCaptureDisabledReason = desktopApi === undefined
+    ? 'Open this page through Electron to use the microphone.'
+    : snapshot.status !== 'ready'
+      ? 'Reconnect the local Backend before starting the microphone.'
+      : !snapshot.capabilities.includes('voice.capture')
+        ? 'The local Backend does not support bounded voice capture.'
+        : activeChatId === undefined || snapshot.chatId !== activeChatId
+          ? 'Wait for the active Chat to finish loading.'
+          : generationBusy || generationReconcilePending
+            ? 'Wait for the current Chat reply to finish.'
+            : sessionMutationPending
+              ? 'Wait for the current Chat action to finish.'
+              : null
   const displayedChat = chatState?.activeChat.title
     ?? snapshot.chatTitle
     ?? 'Chat'
@@ -829,6 +895,11 @@ function App() {
   }, [snapshot.modelName, snapshot.models])
 
   const closeCallPreview = useCallback((): void => {
+    ++voiceCaptureOperationRef.current
+    void audioCaptureControllerRef.current?.cancel()
+    setVoiceCaptureSubmitting(false)
+    setVoiceCaptureReceipt(null)
+    setVoiceCaptureSubmissionError(null)
     setCallPreviewOpen(false)
     window.requestAnimationFrame(() => {
       callButtonRef.current?.focus()
@@ -849,12 +920,53 @@ function App() {
   }, [])
 
   useEffect(() => {
+    const controller = new AudioCaptureController({
+      onComplete: (segment) => {
+        voiceCaptureCompleteRef.current(segment)
+      },
+    })
+    audioCaptureControllerRef.current = controller
+    const unsubscribe = controller.subscribe(setVoiceCapture)
+    return () => {
+      unsubscribe()
+      void controller.dispose()
+      if (audioCaptureControllerRef.current === controller) {
+        audioCaptureControllerRef.current = null
+      }
+    }
+  }, [])
+
+  useEffect(() => {
     // A short test belongs to the visible Chat or Settings surface. Switching
     // context is an immediate privacy boundary even though every test also has
     // its own safety timeout.
     ++microphoneActionOperationRef.current
     audioDeviceControllerRef.current?.stopAll()
+    ++voiceCaptureOperationRef.current
+    void audioCaptureControllerRef.current?.cancel()
+    setVoiceCaptureSubmitting(false)
+    setVoiceCaptureReceipt(null)
+    setVoiceCaptureSubmissionError(null)
+    setCallPreviewOpen(false)
   }, [activeChatId, activeView])
+
+  useEffect(() => {
+    if (snapshot.status === 'ready' && !generationBusy) {
+      return
+    }
+    const controller = audioCaptureControllerRef.current
+    if (controller === null) {
+      return
+    }
+    const status = controller.getSnapshot().status
+    if (status !== 'starting' && status !== 'waiting' && status !== 'speaking') {
+      return
+    }
+    ++voiceCaptureOperationRef.current
+    void controller.cancel()
+    setVoiceCaptureSubmitting(false)
+    setVoiceCaptureReceipt(null)
+  }, [generationBusy, snapshot.status])
 
   const acceptSnapshot = useCallback((nextSnapshot: BackendSnapshot): boolean => {
     if (nextSnapshot.revision < acceptedSnapshotRevisionRef.current) {
@@ -3286,6 +3398,171 @@ function App() {
     }, 'Could not delete the selected Chats.')
   }
 
+  async function submitCompletedVoiceCapture(
+    segment: CompletedVoiceSegment,
+  ): Promise<void> {
+    const operation = voiceCaptureOperationRef.current
+    const chatId = activeChatIdRef.current
+    if (
+      desktopApi === undefined
+      || chatId === undefined
+      || snapshot.status !== 'ready'
+      || !snapshot.capabilities.includes('voice.capture')
+    ) {
+      segment.pcm.fill(0)
+      return
+    }
+
+    let pcmBase64: string
+    try {
+      pcmBase64 = encodePcm16LittleEndian(segment.pcm)
+    } catch (error: unknown) {
+      if (operation === voiceCaptureOperationRef.current) {
+        setVoiceCaptureSubmissionError(
+          error instanceof Error
+            ? error.message
+            : 'Captured audio could not be encoded safely.',
+        )
+      }
+      return
+    } finally {
+      segment.pcm.fill(0)
+    }
+    if (
+      operation !== voiceCaptureOperationRef.current
+      || activeChatIdRef.current !== chatId
+    ) {
+      return
+    }
+
+    setVoiceCaptureReceipt(null)
+    setVoiceCaptureSubmissionError(null)
+    setVoiceCaptureSubmitting(true)
+    try {
+      const receipt = await desktopApi.submitVoiceCapture({
+        sessionId: segment.sessionId,
+        chatId,
+        sampleRateHz: segment.sampleRate,
+        channelCount: segment.channelCount,
+        sampleFormat: segment.sampleFormat,
+        sampleCount: segment.sampleCount,
+        speechStartSample: segment.speechStartSample,
+        speechEndSample: segment.speechEndSample,
+        pcmBase64,
+      })
+      if (
+        operation !== voiceCaptureOperationRef.current
+        || activeChatIdRef.current !== chatId
+      ) {
+        return
+      }
+      setVoiceCaptureReceipt(receipt)
+    } catch (error: unknown) {
+      if (
+        operation !== voiceCaptureOperationRef.current
+        || activeChatIdRef.current !== chatId
+      ) {
+        return
+      }
+      setVoiceCaptureSubmissionError(
+        error instanceof Error
+          ? error.message
+          : 'The local Backend rejected the voice capture.',
+      )
+    } finally {
+      if (operation === voiceCaptureOperationRef.current) {
+        setVoiceCaptureSubmitting(false)
+      }
+    }
+  }
+
+  voiceCaptureCompleteRef.current = (segment): void => {
+    void submitCompletedVoiceCapture(segment)
+  }
+
+  async function startVoiceCapture(): Promise<void> {
+    const controller = audioCaptureControllerRef.current
+    const deviceController = audioDeviceControllerRef.current
+    const chatId = activeChatIdRef.current
+    if (
+      controller === null
+      || deviceController === null
+      || desktopApi === undefined
+      || chatId === undefined
+      || voiceCaptureDisabledReason !== null
+    ) {
+      setVoiceCaptureSubmissionError(
+        voiceCaptureDisabledReason ?? 'Voice capture controls are not ready yet.',
+      )
+      return
+    }
+
+    const operation = ++voiceCaptureOperationRef.current
+    const actionIsCurrent = (): boolean => (
+      operation === voiceCaptureOperationRef.current
+      && activeChatIdRef.current === chatId
+      && audioCaptureControllerRef.current === controller
+    )
+    setVoiceCapture(EMPTY_AUDIO_CAPTURE_SNAPSHOT)
+    setVoiceCaptureReceipt(null)
+    setVoiceCaptureSubmissionError(null)
+    setVoiceCaptureSubmitting(false)
+    ++microphoneActionOperationRef.current
+    deviceController.stopAll()
+
+    try {
+      let savedState = voiceSettingsState
+      if (savedState === null) {
+        savedState = await desktopApi.getVoiceSettings()
+        if (!actionIsCurrent()) {
+          return
+        }
+        setVoiceSettingsState(savedState)
+      }
+      await deviceController.refreshDevices()
+      if (!actionIsCurrent()) {
+        return
+      }
+      const savedDeviceId = savedState.inputDeviceId
+      const availableInputs = deviceController.getSnapshot().inputs
+      const effectiveDeviceId = savedDeviceId !== null
+        && availableInputs.some((device) => device.deviceId === savedDeviceId)
+        ? savedDeviceId
+        : null
+      await controller.start(effectiveDeviceId)
+      if (!actionIsCurrent()) {
+        await controller.cancel()
+      }
+    } catch (error: unknown) {
+      if (!actionIsCurrent()) {
+        return
+      }
+      setVoiceCaptureSubmissionError(
+        error instanceof Error
+          ? error.message
+          : 'Voice capture could not start.',
+      )
+    }
+  }
+
+  async function toggleVoiceCapture(): Promise<void> {
+    const controller = audioCaptureControllerRef.current
+    if (controller === null) {
+      setVoiceCaptureSubmissionError('Voice capture controls are not ready yet.')
+      return
+    }
+    const status = controller.getSnapshot().status
+    if (status === 'starting' || status === 'waiting' || status === 'speaking') {
+      ++voiceCaptureOperationRef.current
+      setVoiceCaptureSubmitting(false)
+      setVoiceCaptureReceipt(null)
+      setVoiceCaptureSubmissionError(null)
+      await controller.cancel()
+      return
+    }
+    await startVoiceCapture()
+  }
+
   async function verifyMicrophone(): Promise<void> {
     const controller = audioDeviceControllerRef.current
     if (controller === null) {
@@ -3363,6 +3640,12 @@ function App() {
     if (panelOpen || panelTargetOpenRef.current) {
       await setCharacterPanelVisibility(false)
     }
+    ++microphoneActionOperationRef.current
+    audioDeviceControllerRef.current?.stopAll()
+    setVoiceCapture(EMPTY_AUDIO_CAPTURE_SNAPSHOT)
+    setVoiceCaptureReceipt(null)
+    setVoiceCaptureSubmissionError(null)
+    setVoiceCaptureSubmitting(false)
     setCallPreviewOpen(true)
   }
 
@@ -3370,11 +3653,17 @@ function App() {
     return (
       <CallPreview
         captionsEnabled={captionsEnabled}
+        capture={voiceCapture}
+        captureDisabledReason={voiceCaptureDisabledReason}
         modelName={snapshot.modelName}
+        receipt={voiceCaptureReceipt}
+        submitting={voiceCaptureSubmitting}
+        submissionError={voiceCaptureSubmissionError}
         onCaptionsChange={() => {
           setCaptionsEnabled((enabled) => !enabled)
         }}
         onClose={closeCallPreview}
+        onToggleCapture={() => { void toggleVoiceCapture() }}
       />
     )
   }
@@ -3543,11 +3832,7 @@ function App() {
           })
         }}
         onVerifyMicrophone={() => { void verifyMicrophone() }}
-        onVoicePlaceholder={() => {
-          setNotice(infoNotice(
-            'Voice will stay attached to this Chat when it is added.',
-          ))
-        }}
+        onVoicePlaceholder={() => { void openCallPreview() }}
       />
     )
   }

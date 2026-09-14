@@ -1,3 +1,5 @@
+/** Provide a deterministic, stateful Desktop API double to renderer UI tests. */
+
 const { contextBridge } = require('electron')
 
 const RELOAD_STATE_KEY = 'elysia.ui-test.backend-state.v1'
@@ -159,6 +161,7 @@ let voiceSettingsState = defaultVoiceSettingsState()
 let microphonePermissionStatus = 'granted'
 let nextSettingsError = null
 let nextVoiceSettingsError = null
+let nextVoiceCaptureError = null
 let nextRestartError = null
 let chatMessages = new Map([
   [chatState.activeChat.chatId, clone(chatState.activeChat.messages)],
@@ -550,6 +553,32 @@ const desktopApi = {
       warning: null,
     }
     return clone(voiceSettingsState)
+  },
+
+  submitVoiceCapture: async (request) => {
+    record('submitVoiceCapture', [request])
+    if (nextVoiceCaptureError !== null) {
+      const message = nextVoiceCaptureError
+      nextVoiceCaptureError = null
+      throw new Error(message)
+    }
+    return {
+      sessionId: request.sessionId,
+      chatId: request.chatId,
+      sampleRateHz: request.sampleRateHz,
+      channelCount: request.channelCount,
+      sampleFormat: request.sampleFormat,
+      sampleCount: request.sampleCount,
+      speechStartSample: request.speechStartSample,
+      speechEndSample: request.speechEndSample,
+      durationMs: request.sampleCount * 1_000 / request.sampleRateHz,
+      speechDurationMs: (
+        (request.speechEndSample - request.speechStartSample)
+        * 1_000
+        / request.sampleRateHz
+      ),
+      sha256Hex: 'a'.repeat(64),
+    }
   },
 
   getMicrophonePermissionStatus: async () => {
@@ -1016,6 +1045,7 @@ const testControl = {
     microphonePermissionStatus = 'granted'
     nextSettingsError = null
     nextVoiceSettingsError = null
+    nextVoiceCaptureError = null
     nextRestartError = null
     chatMessages = new Map([
       [chatState.activeChat.chatId, clone(chatState.activeChat.messages)],
@@ -1085,6 +1115,10 @@ const testControl = {
 
   failNextVoiceSettingsUpdate: (message) => {
     nextVoiceSettingsError = message
+  },
+
+  failNextVoiceCapture: (message) => {
+    nextVoiceCaptureError = message
   },
 
   failNextRestart: (message) => {

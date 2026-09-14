@@ -28,6 +28,8 @@ import type {
   UpdateProjectRequest,
   UpdateDesktopSettingsRequest,
   UpdateVoiceSettingsRequest,
+  VoiceCaptureReceipt,
+  VoiceCaptureRequest,
   VoiceSettingsState,
 } from './contracts.js'
 
@@ -76,6 +78,12 @@ const desktopApi: DesktopApi = {
       'voice:settings-update',
       request,
     ) as Promise<VoiceSettingsState>,
+
+  submitVoiceCapture: (request: VoiceCaptureRequest) =>
+    ipcRenderer.invoke(
+      'voice:capture-complete',
+      request,
+    ) as Promise<VoiceCaptureReceipt>,
 
   getMicrophonePermissionStatus: () =>
     ipcRenderer.invoke(

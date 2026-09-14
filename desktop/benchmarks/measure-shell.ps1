@@ -1,5 +1,15 @@
 #Requires -Version 7.4
 
+<#
+.SYNOPSIS
+Measures Elysia Desktop startup, memory use, shutdown, and orphan cleanup.
+
+.DESCRIPTION
+Launches an unpacked Electron build repeatedly with an isolated profile. Process
+identity is tracked by PID plus creation time so benchmark cleanup cannot target
+an unrelated process after Windows reuses a PID.
+#>
+
 param(
     [Parameter(Mandatory = $true)]
     [string] $Executable,
@@ -20,16 +30,20 @@ Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
 
+/// <summary>Provides the minimal User32 calls needed by the shell benchmark.</summary>
 public static class ElysiaBenchmarkNative
 {
+    /// <summary>Reports whether a native window is visible.</summary>
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool IsWindowVisible(IntPtr window);
 
+    /// <summary>Reports whether a native window is minimized.</summary>
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool IsIconic(IntPtr window);
 
+    /// <summary>Posts a non-blocking native message to a window.</summary>
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool PostMessage(
@@ -43,10 +57,22 @@ public static class ElysiaBenchmarkNative
 
 $wmClose = [uint32] 0x0010
 
+<#
+.SYNOPSIS
+Captures a consistent CIM snapshot of every current Windows process.
+#>
 function Get-ProcessSnapshot {
     return @(Get-CimInstance Win32_Process)
 }
 
+<#
+.SYNOPSIS
+Checks that a candidate child was created no earlier than its exact parent.
+
+.DESCRIPTION
+Creation ordering prevents PID reuse from attaching an older, unrelated process
+to the benchmark's process tree.
+#>
 function Test-ChildCreatedAfterParent {
     param(
         [object] $Child,
@@ -62,6 +88,14 @@ function Test-ChildCreatedAfterParent {
     }
 }
 
+<#
+.SYNOPSIS
+Builds the process tree rooted at one PID-and-creation-time identity.
+
+.DESCRIPTION
+The tree expands to a fixed point because the flat CIM snapshot is not ordered
+by ancestry and a grandchild may appear before its parent.
+#>
 function Get-ProcessTree {
     param(
         [int] $RootProcessId,
@@ -103,6 +137,14 @@ function Get-ProcessTree {
     return @($nodes.Values)
 }
 
+<#
+.SYNOPSIS
+Adds newly discovered descendants to the identities tracked across snapshots.
+
+.DESCRIPTION
+Tracking survives parent exit between samples, while creation-time comparisons
+ensure that later PID reuse does not turn another program into a cleanup target.
+#>
 function Expand-TrackedProcesses {
     param(
         [System.Collections.Generic.Dictionary[int, string]] $Tracked,
@@ -140,6 +182,10 @@ function Expand-TrackedProcesses {
     } while ($added)
 }
 
+<#
+.SYNOPSIS
+Returns processes whose PID and creation time still match tracked identities.
+#>
 function Get-LiveTrackedProcesses {
     param(
         [System.Collections.Generic.Dictionary[int, string]] $Tracked,
@@ -155,6 +201,14 @@ function Get-LiveTrackedProcesses {
     )
 }
 
+<#
+.SYNOPSIS
+Finds Python backend processes and their descendants in a benchmark tree.
+
+.DESCRIPTION
+Descendants are included because a Python launcher may delegate work to another
+process whose executable name no longer identifies it directly as the backend.
+#>
 function Get-BackendProcessIds {
     param([object[]] $Tree)
 
@@ -181,6 +235,10 @@ function Get-BackendProcessIds {
     Write-Output -NoEnumerate $ids
 }
 
+<#
+.SYNOPSIS
+Sums one numeric CIM process property and returns zero for an empty set.
+#>
 function Get-Sum {
     param(
         [object[]] $Processes,
@@ -193,6 +251,14 @@ function Get-Sum {
     return [double] (($Processes | Measure-Object $Property -Sum).Sum)
 }
 
+<#
+.SYNOPSIS
+Calculates a percentile with the R-7 linear interpolation method.
+
+.DESCRIPTION
+R-7 matches the common default used by statistical tools and keeps reported
+benchmark percentiles reproducible when the requested rank falls between runs.
+#>
 function Get-Percentile {
     param(
         [double[]] $Values,
@@ -216,6 +282,14 @@ function Get-Percentile {
     return $ordered[$lower] + (($ordered[$upper] - $ordered[$lower]) * $weight)
 }
 
+<#
+.SYNOPSIS
+Stops the exact benchmark process tree without affecting PID-reuse successors.
+
+.DESCRIPTION
+The owned root process is terminated directly, then descendants are stopped only
+after a fresh PID-and-creation-time identity check.
+#>
 function Stop-BenchmarkProcessTree {
     param(
         [System.Diagnostics.Process] $RootProcess,
@@ -462,6 +536,10 @@ try {
     $firstRun = $samples[0]
     $warmSamples = @($samples | Select-Object -Skip 1)
 
+    <#
+    .SYNOPSIS
+    Computes one rounded percentile from warm runs for the requested metric.
+    #>
     function Get-WarmMetric {
         param(
             [string] $Property,

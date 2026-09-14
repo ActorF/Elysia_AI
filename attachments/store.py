@@ -108,6 +108,8 @@ class _ManifestItem:
             raise ValueError("Stored attachment status is invalid.")
 
     def to_public(self) -> AttachmentItem:
+        """Expose metadata without internal digest or lifecycle state."""
+
         return AttachmentItem(
             attachment_id=self.attachment_id,
             file_name=self.file_name,
@@ -189,10 +191,14 @@ class JsonAttachmentStore:
 
     @property
     def max_file_bytes(self) -> int:
+        """Return the configured byte limit for each staged file."""
+
         return self._max_file_bytes
 
     @property
     def max_file_count(self) -> int:
+        """Return the configured active-file limit for each scope."""
+
         return self._max_file_count
 
     def list_state(
@@ -215,7 +221,13 @@ class JsonAttachmentStore:
         source_paths: Sequence[Path],
         referenced_ids: Iterable[str] = (),
     ) -> AttachmentState:
-        """Atomically add a batch, deduplicating equal content in the scope."""
+        """Atomically add a batch, deduplicating equal content in the scope.
+
+        Sources are copied and hashed into scoped temporary files before their
+        opaque blobs are published. The manifest is replaced last, allowing an
+        ordinary failure to remove the whole batch and startup reconciliation
+        to discard any blobs left by a process interruption.
+        """
 
         self._require_scope(scope)
         if isinstance(source_paths, (str, bytes)):
@@ -407,7 +419,12 @@ class JsonAttachmentStore:
         scope: AttachmentScope,
         attachment_ids: Iterable[str],
     ) -> AttachmentState:
-        """Finalize claimed Chat blobs; Project items remain available."""
+        """Finalize claimed Chat blobs; Project items remain available.
+
+        Chat blobs move before the manifest is published. A manifest failure
+        reverses those moves, while reconciliation uses persisted message
+        references to finish a transition interrupted by process termination.
+        """
 
         self._require_scope(scope)
         safe_ids = self._validated_id_tuple(attachment_ids)
@@ -613,6 +630,15 @@ class JsonAttachmentStore:
         *,
         release_claims: bool,
     ) -> AttachmentState:
+        """Resolve manifest state against canonical message references.
+
+        A persisted Chat reference wins over an interrupted draft/commit
+        transition and therefore keeps exactly one verified committed blob.
+        Conversely, committed entries with no persisted owner are discarded.
+        Stale claims are released only for explicit startup reconciliation so
+        a normal state read cannot steal an in-flight request's reservation.
+        """
+
         self._require_scope(scope)
         references = set(self._validated_id_tuple(referenced_ids))
         self._clean_scope_temporary_files(scope)
@@ -672,6 +698,8 @@ class JsonAttachmentStore:
         draft: Path,
         committed: Path,
     ) -> None:
+        """Leave one verified committed copy for a referenced Chat item."""
+
         if draft.exists() and committed.exists():
             self._verify_blob(draft, item)
             self._verify_blob(committed, item)
@@ -697,6 +725,8 @@ class JsonAttachmentStore:
         draft: Path,
         committed: Path,
     ) -> None:
+        """Restore an unreferenced interrupted move to its draft location."""
+
         if committed.exists() and draft.exists():
             self._unlink_required(committed)
         elif committed.exists():
@@ -713,6 +743,14 @@ class JsonAttachmentStore:
         scope: AttachmentScope,
         source_path: Path,
     ) -> _CopiedCandidate:
+        """Copy and hash one stable regular source into scoped temporary data.
+
+        The descriptor is opened without following links where supported, and
+        its identity, size, and modification time are compared before and
+        after the streaming copy. The streaming byte limit also catches a file
+        that grows after the initial stat call.
+        """
+
         source = self._validate_source_path(source_path)
         file_name = source.name
         extension = source.suffix.casefold()
@@ -796,6 +834,8 @@ class JsonAttachmentStore:
                 os.close(source_descriptor)
 
     def _validate_source_path(self, source_path: Path) -> Path:
+        """Reject redirected, UNC, internal, or non-regular sources."""
+
         source = Path(source_path)
         raw_text = str(source)
         windows_text = raw_text.replace("/", "\\")
@@ -837,6 +877,12 @@ class JsonAttachmentStore:
             ) from error
 
     def _load_manifest(self, scope: AttachmentScope) -> tuple[_ManifestItem, ...]:
+        """Load a strict manifest whose transitions can be reconciled uniquely.
+
+        Exact fields, unique IDs, and unique active digests keep recovery and
+        content deduplication unambiguous after an interrupted operation.
+        """
+
         manifest_path = self._manifest_path(scope)
         if not manifest_path.exists() and not manifest_path.is_symlink():
             return ()
@@ -965,6 +1011,8 @@ class JsonAttachmentStore:
         }
 
     def _verify_blob(self, path: Path, item: _ManifestItem) -> None:
+        """Verify regular-file identity, byte count, and digest from storage."""
+
         try:
             details = path.lstat()
             if path.is_symlink() or self._stat_is_reparse(details):
@@ -1126,6 +1174,14 @@ class JsonAttachmentStore:
             )
 
     def _acquire_process_lock(self) -> None:
+        """Take the cross-process lease and defend its path from replacement.
+
+        Device/inode checks ensure the opened descriptor still names the
+        validated lock file. A single sentinel byte gives Windows a stable
+        byte range to lock; the in-process ``RLock`` alone cannot exclude a
+        second Backend process.
+        """
+
         lock_path = self._base_dir / _PROCESS_LOCK_FILE_NAME
         descriptor = -1
         flags = os.O_RDWR | os.O_CREAT
@@ -1285,6 +1341,14 @@ class JsonAttachmentStore:
         return self._committed_directory(scope) / f"{attachment_id}{_BLOB_SUFFIX}"
 
     def _clean_startup_temporary_entries(self) -> None:
+        """Resolve deletion tombstones conservatively after an interrupted run.
+
+        A ``.tmp`` tombstone means owner deletion committed and can be purged.
+        A ``.pending`` tombstone is ambiguous, so it is restored first to avoid
+        data loss; ``reconcile_owners`` later removes it only if the canonical
+        repository confirms that its owner no longer exists.
+        """
+
         try:
             for kind in ("chat", "project"):
                 kind_value = cast(Literal["chat", "project"], kind)

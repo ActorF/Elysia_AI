@@ -1,3 +1,5 @@
+"""Test the direct Ollama chat-model adapter and failures."""
+
 import pytest
 import requests
 from requests.exceptions import (
@@ -20,21 +22,25 @@ class FakeResponse:
         payload: object,
         status_code: int = 200,
     ) -> None:
+        """Initialize deterministic state for this test double."""
         self._payload = payload
         self.status_code = status_code
 
     def json(self) -> object:
+        """Return the configured fake JSON response."""
         return self._payload
 
 
 def test_ensure_model_available_finds_model(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Verify that ensure model available finds model."""
     def fake_request(
         method: str,
         url: str,
         **kwargs: object,
     ) -> FakeResponse:
+        """Validate the tags request and report the configured model present."""
         assert method == "GET"
         assert url == (
             "http://localhost:11434/api/tags"
@@ -70,11 +76,13 @@ def test_ensure_model_available_finds_model(
 def test_ensure_model_available_rejects_missing_model(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Verify that ensure model available rejects missing model."""
     def fake_request(
         method: str,
         url: str,
         **kwargs: object,
     ) -> FakeResponse:
+        """Return a tags payload that omits the requested model."""
         return FakeResponse(
             {
                 "models": [
@@ -104,11 +112,13 @@ def test_ensure_model_available_rejects_missing_model(
 def test_generate_reply_returns_content(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Verify that generate reply returns content."""
     def fake_request(
         method: str,
         url: str,
         **kwargs: object,
     ) -> FakeResponse:
+        """Validate the chat request and return a padded assistant reply."""
         assert method == "POST"
         assert url == (
             "http://localhost:11434/api/chat"
@@ -183,11 +193,13 @@ def test_generate_reply_returns_content(
 def test_request_rejects_offline_ollama(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Verify that request rejects offline Ollama."""
     def fake_request(
         method: str,
         url: str,
         **kwargs: object,
     ) -> FakeResponse:
+        """Simulate an offline Ollama endpoint for request error mapping."""
         raise RequestsConnectionError("Offline")
 
     monkeypatch.setattr(
@@ -211,11 +223,13 @@ def test_request_rejects_offline_ollama(
 def test_generate_reply_rejects_invalid_content(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Verify that generate reply rejects invalid content."""
     def fake_request(
         method: str,
         url: str,
         **kwargs: object,
     ) -> FakeResponse:
+        """Return a response whose assistant content is not textual."""
         return FakeResponse(
             {
                 "message": {

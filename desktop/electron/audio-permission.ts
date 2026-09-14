@@ -14,6 +14,7 @@ function isTrustedContext(context: AudioPermissionContext): boolean {
     && context.currentUrlTrusted
 }
 
+/** Allow only audio-media checks originating from the trusted main renderer. */
 export function allowAudioPermissionCheck(
   permission: string,
   mediaType: string | undefined,
@@ -24,6 +25,7 @@ export function allowAudioPermissionCheck(
     && mediaType === 'audio'
 }
 
+/** Allow only audio capture requests from the trusted main renderer frame. */
 export function allowAudioPermissionRequest(
   permission: string,
   mediaTypes: readonly string[] | undefined,

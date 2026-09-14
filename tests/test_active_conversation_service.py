@@ -34,6 +34,7 @@ def _services(
     JsonProjectRepository,
     ActiveConversationService,
 ]:
+    """Provide the services fixture used by these tests."""
     chats = JsonChatRepository(
         tmp_path / "data" / "chats",
         clock=lambda: BASE_TIME,
@@ -53,6 +54,7 @@ def _services(
 def test_open_turn_loads_matching_chat_project_and_mode(
     tmp_path: Path,
 ) -> None:
+    """Verify that open turn loads matching chat project and mode."""
     chats, projects, active = _services(tmp_path)
     project = projects.create_project(
         name="Scoped Project",
@@ -80,6 +82,7 @@ def test_open_turn_loads_matching_chat_project_and_mode(
 def test_same_chat_is_busy_but_different_chat_can_open(
     tmp_path: Path,
 ) -> None:
+    """Verify that same chat is busy but different chat can open."""
     _chats, _projects, active = _services(tmp_path)
     first = active.create_chat(
         title="First",
@@ -104,6 +107,7 @@ def test_same_chat_is_busy_but_different_chat_can_open(
 def test_chat_actions_preserve_messages_summary_and_project(
     tmp_path: Path,
 ) -> None:
+    """Verify that chat actions preserve messages summary and project."""
     chats, projects, active = _services(tmp_path)
     project = projects.create_project(name="Action Project")
     chat = active.create_chat(
@@ -161,6 +165,7 @@ def test_busy_chat_rejects_session_actions_without_changes(
     tmp_path: Path,
     action: str,
 ) -> None:
+    """Verify that busy chat rejects session actions without changes."""
     chats, _projects, active = _services(tmp_path)
     chat = active.create_chat(
         title="Busy",
@@ -185,6 +190,7 @@ def test_busy_chat_rejects_session_actions_without_changes(
 def test_delete_chat_removes_only_target_and_preserves_project_and_sibling(
     tmp_path: Path,
 ) -> None:
+    """Verify that delete chat removes only target and preserves project and sibling."""
     _chats, projects, active = _services(tmp_path)
     project = projects.create_project(name="Kept Project")
     target = active.create_chat(
@@ -217,6 +223,7 @@ def test_delete_chat_removes_only_target_and_preserves_project_and_sibling(
 def test_different_chat_commits_preserve_shared_index(
     tmp_path: Path,
 ) -> None:
+    """Ensure concurrent Chat commits merge rather than lose a shared index entry."""
     chats, _projects, active = _services(tmp_path)
     first = active.create_chat(
         title="First",
@@ -231,6 +238,7 @@ def test_different_chat_commits_preserve_shared_index(
     barrier = Barrier(2)
 
     def commit(chat_id: ChatId, label: str) -> None:
+        """Commit one Chat turn after both repository writers are ready."""
         with active.open_turn(chat_id) as context:
             barrier.wait()
             active.commit_turn(
@@ -257,6 +265,7 @@ def test_different_chat_commits_preserve_shared_index(
 def test_commit_turn_saves_complete_pair_only_to_named_chat(
     tmp_path: Path,
 ) -> None:
+    """Verify that commit turn saves complete pair only to named chat."""
     chats, _projects, active = _services(tmp_path)
     first = active.create_chat(
         title="First",
@@ -292,6 +301,7 @@ def test_commit_turn_saves_complete_pair_only_to_named_chat(
 def test_commit_turn_persists_attachment_only_user_message(
     tmp_path: Path,
 ) -> None:
+    """Verify that commit turn persists attachment only user message."""
     chats, _projects, active = _services(tmp_path)
     chat = active.create_chat(
         title="Attachment",
@@ -320,6 +330,7 @@ def test_commit_turn_persists_attachment_only_user_message(
 def test_retry_replaces_only_tail_content_and_preserves_message_identity(
     tmp_path: Path,
 ) -> None:
+    """Verify that retry replaces only tail content and preserves message identity."""
     chats, _projects, active = _services(tmp_path)
     chat = active.create_chat(
         title="Retry",
@@ -387,6 +398,7 @@ def test_retry_replaces_only_tail_content_and_preserves_message_identity(
 def test_retry_rejects_a_non_tail_pair_without_changing_chat(
     tmp_path: Path,
 ) -> None:
+    """Verify that retry rejects a non tail pair without changing chat."""
     chats, _projects, active = _services(tmp_path)
     chat = active.create_chat(
         title="Retry target",
@@ -422,6 +434,7 @@ def test_retry_rejects_a_non_tail_pair_without_changing_chat(
 def test_commit_rejects_context_after_guard_closes(
     tmp_path: Path,
 ) -> None:
+    """Verify that commit rejects context after guard closes."""
     chats, _projects, active = _services(tmp_path)
     chat = active.create_chat(
         title="Closed",
@@ -449,6 +462,7 @@ def test_commit_rejects_context_after_guard_closes(
 def test_concurrent_repository_change_is_not_overwritten(
     tmp_path: Path,
 ) -> None:
+    """Reject a stale turn commit so an external repository update survives."""
     chats, _projects, active = _services(tmp_path)
     chat = active.create_chat(
         title="Original",
@@ -477,6 +491,7 @@ def test_concurrent_repository_change_is_not_overwritten(
 def test_archived_chat_and_project_are_read_only(
     tmp_path: Path,
 ) -> None:
+    """Verify that archived chat and project are read only."""
     chats, projects, active = _services(tmp_path)
     archived_project = projects.create_project(name="Archived Project")
     projects.archive_project(archived_project.project_id)
@@ -512,6 +527,7 @@ def test_archived_chat_and_project_are_read_only(
 def test_get_or_create_default_chat_resumes_existing_chat(
     tmp_path: Path,
 ) -> None:
+    """Verify that get or create default chat resumes existing chat."""
     _chats, _projects, active = _services(tmp_path)
     created = active.get_or_create_default_chat(
         title="Console Chat",
@@ -531,6 +547,7 @@ def test_get_or_create_default_chat_resumes_existing_chat(
 def test_commit_summary_is_bound_to_guarded_chat(
     tmp_path: Path,
 ) -> None:
+    """Verify that commit summary is bound to guarded chat."""
     chats, _projects, active = _services(tmp_path)
     chat = active.create_chat(
         title="Summary",
@@ -568,6 +585,7 @@ def test_commit_summary_is_bound_to_guarded_chat(
 def test_naive_service_clock_cannot_persist_turn(
     tmp_path: Path,
 ) -> None:
+    """Verify that naive service clock cannot persist turn."""
     chats = JsonChatRepository(
         tmp_path / "data" / "chats",
         clock=lambda: BASE_TIME,

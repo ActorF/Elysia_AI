@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./desktop/public/favicon.svg" alt="Elysia AI" width="104">
+  <img src="./desktop/public/elysia-icon.png" alt="Elysia AI" width="104">
 </p>
 
 <h1 align="center">Elysia AI</h1>
@@ -32,7 +32,7 @@
 - 🧠 **分范围记忆** — 为 Global、Project、Chat 提供独立边界，并保留长期记忆、摘要与人工确认流程
 - 🛡️ **严格桌面边界** — Renderer 沙箱、受限 Preload、来源校验与认证 NDJSON Protocol v1
 - 📎 **安全附件表面** — Chat 与 Project 文件可选择、拖放、预览、移除和恢复；文件内容尚不解析或索引
-- 🎙️ **本地音频基础** — 已有设备选择、权限状态和短暂硬件测试；单句 PCM/VAD 采集仍属实验性开发
+- 🎙️ **本地音频基础** — 已有设备选择、权限状态、短暂硬件测试，以及有界单句 PCM/VAD 采集
 - 💾 **恢复优先** — 本地 JSON 存储、旧会话迁移、损坏隔离、原子写入以及导入/导出服务
 - ♿ **桌面可用性** — 主题、键盘导航、焦点管理、Windows 缩放、中文 IME 与离线/错误恢复
 
@@ -49,7 +49,7 @@
 | Settings | ✅ 可用 | 模型、Ollama Origin、Memory 限额、文件大小和主题 |
 | Attachments / Sources | ✅ 基础可用 | 仅安全存储与元数据；尚不读取、解析、Embedding 或 RAG |
 | Audio Devices | ✅ 可用 | 麦克风/扬声器选择、Windows 权限、输入电平与输出音调测试 |
-| 单句录音与本地 VAD | 🚧 开发中 | 显式启动、16 kHz mono `s16le`、临时验证；不生成 Chat Turn |
+| 单句录音与本地 VAD | ✅ 可用 | 显式启动、16 kHz mono `s16le`、临时验证；不生成 Chat Turn |
 | STT / Faster-Whisper | ⏳ 计划中 | 尚未把语音转换为文字 |
 | GPT-SoVITS / TTS | ⏳ 计划中 | 本地权重尚未接入运行时代码 |
 | 连续语音与打断 | ⏳ 计划中 | 尚无完整 `LISTENING → THINKING → SPEAKING` 会话 |
@@ -208,7 +208,7 @@ DEBUG=False
 ### 🎙️ Voice
 
 - 已实现麦克风/扬声器枚举、设备偏好、Windows 麦克风权限状态、短暂输入电平与输出音调测试。
-- 实验性单句采集只在用户点击 **Start microphone** 后开始；Renderer 本地 downmix、重采样并运行有界 VAD。
+- 有界单句采集只在用户点击 **Start microphone** 后开始；Renderer 本地 downmix、重采样并运行本地 VAD。
 - 有效片段固定为 16 kHz、mono、signed 16-bit little-endian PCM；Python 只返回格式、时长和 SHA-256 等安全收据。
 - 当前不会保存录音、不会调用 Brain、不会创建 Chat 消息，也不会进行 STT 或 TTS。
 - 本机可选的 GPT-SoVITS 权重仍未接入。来源和使用限制见 [MODEL_LICENSE.md](./MODEL_LICENSE.md)。
@@ -221,14 +221,16 @@ DEBUG=False
 
 ```bat
 cd /d D:\Elysia_AI
+.venv\Scripts\python.exe scripts\check_python_documentation.py
 .venv\Scripts\python.exe -m pytest -q
-.venv\Scripts\python.exe -m mypy agent attachments chats config core desktop_protocol memory projects recovery tools ui voice desktop_backend.py start.py
+.venv\Scripts\python.exe -m mypy agent attachments chats config core desktop_protocol memory models projects recovery scripts tools ui voice desktop_backend.py start.py
 ```
 
 ### Desktop
 
 ```bat
 cd /d D:\Elysia_AI\desktop
+npm run docs:check
 npm run lint
 npm run typecheck
 npm run test:contract
@@ -260,8 +262,8 @@ npm run package
 | Renderer | React 19 + TypeScript 6 + Vite 8 |
 | Local Protocol | authenticated NDJSON Protocol v1 + JSON Schema |
 | Persistence | revisioned/atomic local JSON under `workspace/` |
-| Python Quality | pytest 9 + mypy 2 |
-| Desktop Quality | ESLint 10 + Playwright 1.62 + TypeScript compiler |
+| Python Quality | AST 文档覆盖检查 + pytest 9 + mypy 2 |
+| Desktop Quality | 源码文档覆盖检查 + ESLint 10 + Playwright 1.62 + TypeScript compiler |
 | Packaging | electron-builder + unsigned NSIS development artifact |
 
 ---
@@ -335,7 +337,7 @@ cd /d D:\Elysia_AI\desktop
 - `workspace/` 和 `logs/` 不进入 Git；请把它们视为私人数据，也不要随调试包公开。
 - `.env` 被 Git 忽略，但仍不应放入不受信任的同步目录。
 - 文件源路径不会返回给 React；附件公开状态只包含最小安全元数据。
-- 音频测试不会保存录音。实验性采集的 PCM 只在校验所需的短暂生命周期内存在，不进入 Chat 或 Memory。
+- 音频测试不会保存录音。有界采集的 PCM 只在校验所需的短暂生命周期内存在，不进入 Chat 或 Memory。
 - 删除源码或构建产物时不要误删 `workspace/`；需要迁移数据时应使用 Recovery Service 生成的受校验导出。
 
 ---
@@ -347,6 +349,8 @@ cd /d D:\Elysia_AI\desktop
 尤其需要注意：本地模型包的说明没有提供可核验的完整再分发授权，因此不得把权重或参考音频提交到本仓库、上传到 Release，或打进安装包。
 
 `data/characters/elysia_character_reference_zh.md` 已被 Git 跟踪，其中语录与语音转写尚未完成逐条来源和授权审查。这是当前仓库的分发风险，不应等到正式发行时才处理；详情与建议动作同样记录在 [MODEL_LICENSE.md](./MODEL_LICENSE.md)。
+
+项目所有者明确选择把《崩坏3》爱莉希雅官方刻印作为本非官方、非商业粉丝项目的公开品牌素材。PNG/ICO 不属于项目源码许可，相关权利仍归 HoYoverse / miHoYo；本项目不声称获得官方背书，并会响应权利人的移除要求。
 
 ---
 
@@ -376,4 +380,4 @@ Elysia AI 是非官方粉丝开发项目，与 HoYoverse / miHoYo **没有隶属
 
 ## 💌 参与项目
 
-欢迎提交与代码、测试、文档和可访问性有关的 Issue 或 Pull Request。请勿提交模型权重、游戏语音、运行时用户数据、日志、`.env` 或任何无法证明可再分发的素材。
+欢迎提交与代码、测试、文档和可访问性有关的 Issue 或 Pull Request。源码注释要求见 [`AGENTS.md`](./AGENTS.md)，新增或修改源码必须通过其中的文档覆盖检查。请勿提交模型权重、游戏语音、运行时用户数据、日志、`.env`，或未记录来源、权利人规则和维护者决定的第三方素材。

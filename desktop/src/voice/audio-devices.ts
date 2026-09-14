@@ -61,10 +61,15 @@ type SinkCapableAudioContext = AudioContext & {
 /** Replace browser primitives for deterministic renderer lifecycle tests. */
 export interface AudioDeviceControllerOptions {
   mediaDevices?: MediaDevices | null
+  /** Create Web Audio resources only when an explicit device test starts. */
   createAudioContext?: () => AudioContext
+  /** Schedule the next level sample through an injectable animation clock. */
   requestFrame?: (callback: FrameRequestCallback) => number
+  /** Cancel a pending level sample when input ownership ends. */
   cancelFrame?: (handle: number) => void
+  /** Schedule the hard stop that bounds a microphone or speaker test. */
   scheduleTimeout?: (callback: () => void, delay: number) => number
+  /** Cancel a bounded-test deadline during normal or exceptional cleanup. */
   cancelTimeout?: (handle: number) => void
 }
 

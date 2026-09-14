@@ -1,3 +1,5 @@
+"""Test end-to-end memory isolation across Chat and Project scopes."""
+
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -27,6 +29,7 @@ BASE_TIME = datetime(2026, 8, 22, 12, 0, tzinfo=timezone.utc)
 
 
 def _profile() -> Profile:
+    """Provide the profile fixture used by these tests."""
     return {
         "schema_version": 1,
         "user_name": "Ying",
@@ -44,6 +47,7 @@ def _record(
     scope: str,
     scope_id: str | None,
 ) -> LongTermMemoryRecord:
+    """Provide the record fixture used by these tests."""
     return {
         "key": key,
         "value": value,
@@ -61,6 +65,7 @@ def _chat_session(
     project_id: str | None = "project_alpha",
     summary_fact: str = "Active Chat uses stable message IDs.",
 ) -> ChatSession:
+    """Provide the chat session fixture used by these tests."""
     message = ChatMessage(
         message_id=ChatMessageId("message_active"),
         role="user",
@@ -96,6 +101,7 @@ def _chat_session(
 
 
 def _retrieved_json(system_prompt: str) -> list[RetrievedMemory]:
+    """Provide the retrieved JSON fixture used by these tests."""
     memory_json = system_prompt.split(
         "RETRIEVED_MEMORY_JSON:\n",
         1,
@@ -109,6 +115,7 @@ def _retrieved_json(system_prompt: str) -> list[RetrievedMemory]:
 
 
 def test_scoped_retrieval_excludes_other_project_and_chat() -> None:
+    """Verify that scoped retrieval excludes other project and chat."""
     records = [
         _record(
             "preferred_language",
@@ -158,6 +165,7 @@ def test_scoped_retrieval_excludes_other_project_and_chat() -> None:
 
 
 def test_more_specific_scope_wins_same_key_conflict() -> None:
+    """Verify that more specific scope wins same key conflict."""
     records = [
         _record(
             "storage_backend",
@@ -199,6 +207,7 @@ def test_more_specific_scope_wins_same_key_conflict() -> None:
 
 
 def test_chat_summary_is_labeled_with_owning_chat_scope() -> None:
+    """Verify that chat summary is labeled with owning chat scope."""
     chat = _chat_session()
 
     results = MemoryRetriever(10).retrieve_for_chat(
@@ -222,6 +231,7 @@ def test_chat_summary_is_labeled_with_owning_chat_scope() -> None:
 
 
 def test_chat_summary_does_not_cross_chat_boundary() -> None:
+    """Verify that chat summary does not cross chat boundary."""
     chat_a = _chat_session(
         chat_id="chat_a",
         summary_fact="Alpha private summary fact.",
@@ -257,6 +267,7 @@ def test_chat_summary_does_not_cross_chat_boundary() -> None:
 
 
 def test_legacy_retrieval_never_reads_project_or_chat_records() -> None:
+    """Verify that legacy retrieval never reads project or chat records."""
     results = MemoryRetriever(10).retrieve(
         "storage backend",
         _profile(),
@@ -290,6 +301,7 @@ def test_legacy_retrieval_never_reads_project_or_chat_records() -> None:
 def test_brain_builds_prompt_from_active_scopes_only(
     tmp_path: Path,
 ) -> None:
+    """Verify that brain builds prompt from active scopes only."""
     memory = Memory(tmp_path)
     memory.save_message("Ying", "Legacy conversation must not leak")
     memory.save_long_term_memory(

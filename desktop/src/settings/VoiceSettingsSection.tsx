@@ -35,14 +35,23 @@ export interface VoiceSettingsSectionProps {
   loading: boolean
   pending: boolean
   error: string | null
+  /** Report whether the voice-device draft differs from persisted state. */
   onDirtyChange(dirty: boolean): void
+  /** Reload persisted voice preferences and discard this draft. */
   onReload(): void
+  /** Refresh renderer-visible input and output device metadata. */
   onRefreshDevices(): Promise<void>
+  /** Persist the current voice-device draft. */
   onSave(draft: VoiceSettingsDraft): Promise<void>
+  /** Start a bounded local test of the selected microphone. */
   onStartMicrophoneTest(deviceId: string | null): Promise<void>
+  /** Stop the active microphone test and release its device. */
   onStopMicrophoneTest(): void
+  /** Start a bounded local test on the selected output device. */
   onStartSpeakerTest(deviceId: string | null): Promise<void>
+  /** Stop the active speaker test and release its audio resources. */
   onStopSpeakerTest(): void
+  /** Open native microphone privacy settings when supported. */
   onOpenMicrophonePrivacySettings(): Promise<void>
 }
 
@@ -242,7 +251,7 @@ export function VoiceSettingsSection({
       <div className="settings-section-heading voice-settings-heading">
         <div>
           <h2 id="voice-settings-heading">Voice</h2>
-          <p>Select device-local defaults and run short tests before voice capture is added.</p>
+          <p>Select device-local defaults and run short tests before starting a voice capture.</p>
         </div>
         <button
           type="button"

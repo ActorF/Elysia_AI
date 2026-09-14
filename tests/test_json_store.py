@@ -1,3 +1,5 @@
+"""Test JSON storage validation and default creation."""
+
 import json
 import pytest
 
@@ -11,6 +13,7 @@ from memory.json_store import (
 def test_write_json_creates_file(
     tmp_path: Path,
 ) -> None:
+    """Verify that write JSON creates file."""
     file_path = tmp_path / "data.json"
     data: dict[str, object] = {
         "message": "Hello, Elysia!",
@@ -30,6 +33,7 @@ def test_write_json_creates_file(
 def test_read_json_returns_saved_data(
     tmp_path: Path,
 ) -> None:
+    """Verify that read JSON returns saved data."""
     file_path = tmp_path / "data.json"
     expected_data: dict[str, object] = {
         "message": "Hello, Elysia!",
@@ -50,6 +54,7 @@ def test_read_json_returns_saved_data(
 def test_read_json_rejects_non_object_json(
     tmp_path: Path,
 ) -> None:
+    """Verify that read JSON rejects non object JSON."""
     file_path = tmp_path / "data.json"
 
     file_path.write_text(
@@ -67,6 +72,7 @@ def test_read_json_rejects_non_object_json(
 def test_read_json_rejects_invalid_json(
     tmp_path: Path,
 ) -> None:
+    """Verify that read JSON rejects invalid JSON."""
     file_path = tmp_path / "invalid.json"
 
     file_path.write_text(
@@ -81,6 +87,7 @@ def test_read_json_rejects_invalid_json(
 def test_read_json_rejects_missing_file(
     tmp_path: Path,
 ) -> None:
+    """Verify that read JSON rejects missing file."""
     file_path = tmp_path / "missing.json"
 
     with pytest.raises(FileNotFoundError):
@@ -90,6 +97,7 @@ def test_read_json_rejects_missing_file(
 def test_load_json_or_default_creates_missing_file(
     tmp_path: Path,
 ) -> None:
+    """Verify that load JSON or default creates missing file."""
     file_path = tmp_path / "profile.json"
     default_data: dict[str, object] = {
         "name": "",

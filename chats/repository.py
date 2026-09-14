@@ -54,7 +54,7 @@ class ChatRepository(Protocol):
         ...
 
     def restore_chat(self, session: ChatSession) -> None:
-        """Restore a previously deleted complete Chat with its stable ID."""
+        """Insert a complete Chat while preserving its stable ID."""
         ...
 
     def list_chats(
@@ -62,7 +62,7 @@ class ChatRepository(Protocol):
         *,
         include_archived: bool = False,
     ) -> tuple[ChatSessionMeta, ...]:
-        """Return lightweight chat metadata without loading messages."""
+        """Return lightweight chat metadata without returning message content."""
         ...
 
     def get_chat(self, chat_id: ChatId) -> ChatSession:
@@ -86,7 +86,7 @@ class ChatRepository(Protocol):
         chat_id: ChatId,
         pinned: bool = True,
     ) -> ChatSessionMeta:
-        """Pin or unpin a chat in the lightweight index."""
+        """Persist pin state and return the updated lightweight metadata."""
         ...
 
     def archive_chat(
@@ -152,7 +152,7 @@ class JsonChatRepository:
         return session
 
     def restore_chat(self, session: ChatSession) -> None:
-        """Restore deleted content for a higher-level transaction rollback."""
+        """Insert imported or rollback Chat data with its stable ID unchanged."""
 
         if not isinstance(session, ChatSession):
             raise ValueError("session must be ChatSession.")
@@ -164,7 +164,7 @@ class JsonChatRepository:
         *,
         include_archived: bool = False,
     ) -> tuple[ChatSessionMeta, ...]:
-        """Read only the lightweight index, never the session details."""
+        """Read index metadata, rebuilding it from details only if absent."""
 
         metadata_entries = self._load_index()
 

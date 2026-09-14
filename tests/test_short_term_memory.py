@@ -1,3 +1,5 @@
+"""Test token-bounded short-term conversation memory."""
+
 import pytest
 
 from memory.short_term_memory import (
@@ -20,6 +22,7 @@ def test_estimate_token_count(
     text: str,
     expected_token_count: int,
 ) -> None:
+    """Verify that estimate token count."""
     assert (
         estimate_token_count(text)
         == expected_token_count
@@ -30,6 +33,7 @@ def test_estimate_token_count(
 def test_rejects_non_positive_token_budget(
     token_budget: int,
 ) -> None:
+    """Reject non-positive token budgets before context-window calculations."""
     with pytest.raises(
         ValueError,
         match=r"Token budget must be greater than zero\.",
@@ -38,6 +42,7 @@ def test_rejects_non_positive_token_budget(
 
 
 def test_remember_turn_cleans_and_counts_messages() -> None:
+    """Verify that remember turn cleans and counts messages."""
     memory = ShortTermMemory(token_budget=10)
 
     assert memory.token_budget == 10
@@ -80,6 +85,7 @@ def test_remember_turn_rejects_empty_messages(
     assistant_message: str,
     error_pattern: str,
 ) -> None:
+    """Verify that remember turn rejects empty messages."""
     memory = ShortTermMemory(token_budget=10)
 
     with pytest.raises(
@@ -96,6 +102,7 @@ def test_remember_turn_rejects_empty_messages(
 
 
 def test_trims_oldest_complete_turns() -> None:
+    """Trim oldest complete turns without splitting a user-assistant pair."""
     memory = ShortTermMemory(token_budget=4)
 
     memory.remember_turn("aaaa", "bbbb")
@@ -116,6 +123,7 @@ def test_trims_oldest_complete_turns() -> None:
 
 
 def test_discards_turn_larger_than_budget() -> None:
+    """Verify that discards turn larger than budget."""
     memory = ShortTermMemory(token_budget=1)
 
     memory.remember_turn("aaaa", "bbbb")
@@ -125,6 +133,7 @@ def test_discards_turn_larger_than_budget() -> None:
 
 
 def test_get_turns_returns_a_new_list() -> None:
+    """Verify that get turns returns a new list."""
     memory = ShortTermMemory(token_budget=10)
     memory.remember_turn("Question", "Answer")
 

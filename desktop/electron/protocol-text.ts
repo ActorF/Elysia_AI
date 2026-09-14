@@ -1,5 +1,6 @@
 /** Language-independent string rules shared by the renderer and wire parser. */
 
+/** Count Unicode code points so astral characters match Python protocol limits. */
 export function codePointLength(value: string): number {
   let length = 0
   for (const character of value) {
@@ -30,6 +31,7 @@ function isProtocolBlankCharacter(character: string): boolean {
   return isProtocolBlankCodePoint(character.codePointAt(0) ?? -1)
 }
 
+/** Return whether text contains a code point outside the protocol blank set. */
 export function hasNonBlankCodePoint(value: string): boolean {
   for (const character of value) {
     if (!isProtocolBlankCharacter(character)) {
@@ -39,6 +41,7 @@ export function hasNonBlankCodePoint(value: string): boolean {
   return false
 }
 
+/** Trim protocol-defined blank code points without splitting surrogate pairs. */
 export function trimProtocolBlankCharacters(value: string): string {
   let start = 0
   for (const character of value) {

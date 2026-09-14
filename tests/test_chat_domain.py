@@ -1,3 +1,5 @@
+"""Test Chat domain entities and aggregate invariants."""
+
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from typing import Literal, cast
@@ -32,6 +34,7 @@ def _message(
     created_at: datetime = BASE_TIME,
     attachments: tuple[AttachmentMetadata, ...] = (),
 ) -> ChatMessage:
+    """Provide the message fixture used by these tests."""
     return ChatMessage(
         message_id=ChatMessageId(message_id),
         role="user",
@@ -47,6 +50,7 @@ def _session(
     summary: ChatSummary | None = None,
     updated_at: datetime = BASE_TIME,
 ) -> ChatSession:
+    """Provide the session fixture used by these tests."""
     return ChatSession(
         schema_version=CHAT_SESSION_SCHEMA_VERSION,
         chat_id=ChatId("chat_test"),
@@ -64,6 +68,7 @@ def _session(
 
 
 def test_create_chat_session_builds_complete_empty_chat() -> None:
+    """Verify that create chat session builds complete empty chat."""
     session = create_chat_session(
         title="New chat",
         mode="chat",
@@ -87,6 +92,7 @@ def test_create_chat_session_builds_complete_empty_chat() -> None:
 
 
 def test_chat_session_rejects_non_boolean_pin_status() -> None:
+    """Verify that chat session rejects non boolean pin status."""
     with pytest.raises(ValueError, match=r"is_pinned must be a boolean"):
         replace(
             _session(),
@@ -95,6 +101,7 @@ def test_chat_session_rejects_non_boolean_pin_status() -> None:
 
 
 def test_chat_session_rejects_non_boolean_archive_status() -> None:
+    """Verify that chat session rejects non boolean archive status."""
     with pytest.raises(ValueError, match=r"is_archived must be a boolean"):
         replace(
             _session(),
@@ -103,6 +110,7 @@ def test_chat_session_rejects_non_boolean_archive_status() -> None:
 
 
 def test_chat_ids_do_not_depend_on_titles() -> None:
+    """Verify that chat IDs do not depend on titles."""
     first = create_chat_session(
         title="Same title",
         mode="chat",
@@ -120,6 +128,7 @@ def test_chat_ids_do_not_depend_on_titles() -> None:
 
 
 def test_attachment_ids_do_not_depend_on_file_names() -> None:
+    """Verify that attachment IDs do not depend on file names."""
     first = create_attachment_metadata(
         file_name="notes.txt",
         media_type="text/plain",
@@ -137,6 +146,7 @@ def test_attachment_ids_do_not_depend_on_file_names() -> None:
 
 
 def test_create_chat_message_supports_attachment_only_input() -> None:
+    """Verify that create chat message supports attachment only input."""
     attachment = create_attachment_metadata(
         file_name="diagram.png",
         media_type="image/png",
@@ -156,6 +166,7 @@ def test_create_chat_message_supports_attachment_only_input() -> None:
 
 
 def test_message_id_survives_content_regeneration() -> None:
+    """Verify that message ID survives content regeneration."""
     original = create_chat_message(
         role="assistant",
         content="First reply",
@@ -172,6 +183,7 @@ def test_message_id_survives_content_regeneration() -> None:
 
 
 def test_chat_session_meta_omits_heavy_chat_content() -> None:
+    """Verify that chat session meta omits heavy chat content."""
     message = _message("message_1")
     session = _session(messages=(message,))
 
@@ -188,6 +200,7 @@ def test_chat_session_meta_omits_heavy_chat_content() -> None:
 
 
 def test_chat_summary_links_to_owned_message_ids() -> None:
+    """Verify that chat summary links to owned message IDs."""
     message = _message("message_1")
     summary = ChatSummary(
         facts=("Ying is developing Elysia AI.",),
@@ -219,6 +232,7 @@ def test_chat_session_rejects_invalid_identity_fields(
     field_name: str,
     invalid_value: object,
 ) -> None:
+    """Verify that chat session rejects invalid identity fields."""
     values: dict[str, object] = {
         "schema_version": CHAT_SESSION_SCHEMA_VERSION,
         "chat_id": ChatId("chat_test"),
@@ -243,6 +257,7 @@ def test_chat_session_rejects_invalid_identity_fields(
 def test_chat_session_rejects_unsupported_schema_version(
     invalid_version: object,
 ) -> None:
+    """Verify that chat session rejects unsupported schema version."""
     with pytest.raises(
         ValueError,
         match=r"Unsupported chat session schema version: (2|True)\.",
@@ -264,6 +279,7 @@ def test_chat_session_rejects_unsupported_schema_version(
 
 
 def test_chat_session_rejects_naive_timestamp() -> None:
+    """Verify that chat session rejects naive timestamp."""
     naive_time = datetime(2026, 8, 14, 12, 0)
 
     with pytest.raises(
@@ -281,6 +297,7 @@ def test_chat_session_rejects_naive_timestamp() -> None:
 
 
 def test_chat_session_rejects_updated_time_before_creation() -> None:
+    """Verify that chat session rejects updated time before creation."""
     with pytest.raises(
         ValueError,
         match=r"updated_at cannot be earlier than created_at\.",
@@ -292,6 +309,7 @@ def test_chat_session_rejects_updated_time_before_creation() -> None:
 
 
 def test_chat_session_rejects_duplicate_message_ids() -> None:
+    """Verify that chat session rejects duplicate message IDs."""
     first = _message("message_same")
     second = _message("message_same")
 
@@ -303,6 +321,7 @@ def test_chat_session_rejects_duplicate_message_ids() -> None:
 
 
 def test_chat_session_rejects_out_of_order_messages() -> None:
+    """Verify that chat session rejects out of order messages."""
     first = _message(
         "message_1",
         created_at=BASE_TIME + timedelta(seconds=2),
@@ -323,6 +342,7 @@ def test_chat_session_rejects_out_of_order_messages() -> None:
 
 
 def test_chat_session_rejects_unknown_summary_message_id() -> None:
+    """Verify that chat session rejects unknown summary message ID."""
     message = _message("message_1")
     summary = ChatSummary(
         facts=(),
@@ -348,6 +368,7 @@ def test_chat_session_rejects_unknown_summary_message_id() -> None:
 
 
 def test_chat_message_rejects_empty_content_without_attachment() -> None:
+    """Verify that chat message rejects empty content without attachment."""
     with pytest.raises(
         ValueError,
         match=r"A message must contain text or an attachment\.",
@@ -360,6 +381,7 @@ def test_chat_message_rejects_empty_content_without_attachment() -> None:
 
 
 def test_chat_message_rejects_invalid_role() -> None:
+    """Verify that chat message rejects invalid role."""
     with pytest.raises(
         ValueError,
         match=r"role must be system, user, or assistant\.",
@@ -378,6 +400,7 @@ def test_chat_message_rejects_invalid_role() -> None:
 def test_attachment_rejects_invalid_size(
     invalid_size: object,
 ) -> None:
+    """Verify that attachment rejects invalid size."""
     with pytest.raises(
         ValueError,
         match=r"size_bytes must be a positive integer\.",
@@ -395,6 +418,7 @@ def test_attachment_rejects_invalid_size(
     ["../notes.txt", "folder\\notes.txt", "notes.txt\n", " notes.txt"],
 )
 def test_attachment_rejects_unsafe_display_name(file_name: str) -> None:
+    """Verify that attachment rejects unsafe display name."""
     with pytest.raises(ValueError, match="safe display basename"):
         AttachmentMetadata(
             attachment_id=AttachmentId("attachment_test"),
@@ -405,6 +429,7 @@ def test_attachment_rejects_unsafe_display_name(file_name: str) -> None:
 
 
 def test_chat_session_rejects_attachment_id_reuse_across_messages() -> None:
+    """Verify that chat session rejects attachment ID reuse across messages."""
     attachment = AttachmentMetadata(
         attachment_id=AttachmentId("attachment_shared"),
         file_name="notes.txt",

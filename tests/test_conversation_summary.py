@@ -1,3 +1,5 @@
+"""Test conversation-summary schemas and storage operations."""
+
 from pathlib import Path
 
 import pytest
@@ -14,6 +16,7 @@ from memory.conversation_summary import (
 
 
 def _valid_content() -> dict[str, object]:
+    """Provide the valid content fixture used by these tests."""
     return {
         "facts": [
             "Ying has a gray car.",
@@ -31,6 +34,7 @@ def _valid_content() -> dict[str, object]:
 
 
 def _valid_summary() -> dict[str, object]:
+    """Provide the valid summary fixture used by these tests."""
     return {
         "content": _valid_content(),
         "source_message_count": 4,
@@ -41,6 +45,7 @@ def _valid_summary() -> dict[str, object]:
 
 
 def test_validate_content_accepts_all_categories() -> None:
+    """Verify that validate content accepts all categories."""
     content = _valid_content()
 
     validated_content = (
@@ -89,6 +94,7 @@ def test_validate_content_accepts_all_categories() -> None:
 def test_validate_content_rejects_invalid_data(
     invalid_content: object,
 ) -> None:
+    """Verify that validate content rejects invalid data."""
     with pytest.raises(ValueError):
         validate_conversation_summary_content(
             invalid_content
@@ -96,6 +102,7 @@ def test_validate_content_rejects_invalid_data(
 
 
 def test_validate_summary_accepts_valid_metadata() -> None:
+    """Verify that validate summary accepts valid metadata."""
     summary = _valid_summary()
 
     validated_summary = validate_conversation_summary(
@@ -118,6 +125,7 @@ def test_validate_summary_accepts_valid_metadata() -> None:
 def test_validate_summary_rejects_invalid_message_count(
     invalid_count: object,
 ) -> None:
+    """Verify that validate summary rejects invalid message count."""
     summary = _valid_summary()
     summary["source_message_count"] = invalid_count
 
@@ -149,6 +157,7 @@ def test_validate_summary_rejects_invalid_timestamp(
     field_name: str,
     invalid_value: object,
 ) -> None:
+    """Verify that validate summary rejects invalid timestamp."""
     summary = _valid_summary()
     summary[field_name] = invalid_value
 
@@ -157,6 +166,7 @@ def test_validate_summary_rejects_invalid_timestamp(
 
 
 def test_validate_data_accepts_empty_summary() -> None:
+    """Verify that validate data accepts empty summary."""
     summary_data = {
         "schema_version": 1,
         "summary": None,
@@ -186,6 +196,7 @@ def test_validate_data_accepts_empty_summary() -> None:
 def test_validate_data_rejects_invalid_structure(
     invalid_data: object,
 ) -> None:
+    """Verify that validate data rejects invalid structure."""
     with pytest.raises(ValueError):
         validate_conversation_summary_data(
             invalid_data
@@ -205,6 +216,7 @@ def test_validate_data_rejects_invalid_structure(
 def test_validate_data_rejects_invalid_schema_version(
     invalid_version: object,
 ) -> None:
+    """Verify that validate data rejects invalid schema version."""
     summary_data = {
         "schema_version": invalid_version,
         "summary": None,
@@ -219,6 +231,7 @@ def test_validate_data_rejects_invalid_schema_version(
 def test_load_creates_empty_summary_store(
     tmp_path: Path,
 ) -> None:
+    """Verify that load creates empty summary store."""
     summary_file = (
         tmp_path / "conversation_summary.json"
     )
@@ -237,6 +250,7 @@ def test_load_creates_empty_summary_store(
 def test_save_and_load_summary_round_trip(
     tmp_path: Path,
 ) -> None:
+    """Verify that save and load summary round trip."""
     summary_file = (
         tmp_path / "conversation_summary.json"
     )
@@ -260,6 +274,7 @@ def test_save_and_load_summary_round_trip(
 def test_save_updates_existing_summary(
     tmp_path: Path,
 ) -> None:
+    """Verify that save updates existing summary."""
     summary_file = (
         tmp_path / "conversation_summary.json"
     )
@@ -307,6 +322,7 @@ def test_save_updates_existing_summary(
 def test_invalid_update_preserves_existing_summary(
     tmp_path: Path,
 ) -> None:
+    """Verify that invalid update preserves existing summary."""
     summary_file = (
         tmp_path / "conversation_summary.json"
     )

@@ -1,3 +1,5 @@
+/** Mount the Elysia renderer with strict runtime checks and shared global styles. */
+
 import { StrictMode } from 'react'
 import { flushSync } from 'react-dom'
 import { createRoot } from 'react-dom/client'

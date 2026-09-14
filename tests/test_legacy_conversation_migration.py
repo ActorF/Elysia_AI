@@ -1,3 +1,5 @@
+"""Test backed-up and idempotent legacy conversation migration."""
+
 import hashlib
 import json
 from dataclasses import replace
@@ -16,6 +18,7 @@ from chats import (
 
 
 def write_json(path: Path, data: object) -> None:
+    """Write JSON for this scenario."""
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps(data, ensure_ascii=False, indent=2) + "\n",
@@ -24,6 +27,7 @@ def write_json(path: Path, data: object) -> None:
 
 
 def conversation_path(base_dir: Path) -> Path:
+    """Provide the conversation path fixture used by these tests."""
     return (
         base_dir
         / "workspace"
@@ -35,6 +39,7 @@ def conversation_path(base_dir: Path) -> Path:
 def create_migrator(
     base_dir: Path,
 ) -> tuple[LegacyConversationMigrator, JsonChatRepository]:
+    """Create migrator for this scenario."""
     repository = JsonChatRepository(
         base_dir / "workspace" / "chats"
     )
@@ -50,6 +55,7 @@ def create_migrator(
 
 
 def write_legacy_conversation(base_dir: Path) -> None:
+    """Write legacy conversation for this scenario."""
     write_json(
         conversation_path(base_dir),
         {
@@ -72,6 +78,7 @@ def write_legacy_conversation(base_dir: Path) -> None:
 def test_migration_preserves_messages_summary_and_sources(
     tmp_path: Path,
 ) -> None:
+    """Preserve Legacy messages, summary facts, and provenance in migration."""
     write_legacy_conversation(tmp_path)
     conversations = tmp_path / "workspace" / "conversations"
     write_json(
@@ -146,6 +153,7 @@ def test_migration_preserves_messages_summary_and_sources(
 
 
 def test_migration_is_idempotent(tmp_path: Path) -> None:
+    """Reuse the migrated Chat rather than duplicating it on restart."""
     write_legacy_conversation(tmp_path)
     migrator, repository = create_migrator(tmp_path)
 
@@ -161,6 +169,7 @@ def test_migration_is_idempotent(tmp_path: Path) -> None:
 def test_migration_allows_new_messages_after_legacy_prefix(
     tmp_path: Path,
 ) -> None:
+    """Allow later Chat growth while the migrated Legacy prefix is unchanged."""
     write_legacy_conversation(tmp_path)
     migrator, repository = create_migrator(tmp_path)
     first = migrator.migrate()
@@ -188,6 +197,7 @@ def test_migration_allows_new_messages_after_legacy_prefix(
 def test_migration_rejects_a_changed_legacy_prefix(
     tmp_path: Path,
 ) -> None:
+    """Detect edits inside the migrated Legacy prefix instead of diverging."""
     write_legacy_conversation(tmp_path)
     migrator, repository = create_migrator(tmp_path)
     first = migrator.migrate()
@@ -212,6 +222,7 @@ def test_migration_rejects_a_changed_legacy_prefix(
 def test_missing_or_empty_legacy_data_needs_no_migration(
     tmp_path: Path,
 ) -> None:
+    """Verify that missing or empty legacy data needs no migration."""
     migrator, repository = create_migrator(tmp_path)
     assert migrator.migrate().status == "not_needed"
 
@@ -223,6 +234,7 @@ def test_missing_or_empty_legacy_data_needs_no_migration(
 def test_invalid_legacy_data_creates_neither_backup_nor_chat(
     tmp_path: Path,
 ) -> None:
+    """Verify that invalid legacy data creates neither backup nor chat."""
     conversation_path(tmp_path).parent.mkdir(parents=True)
     conversation_path(tmp_path).write_text("not json", encoding="utf-8")
     migrator, repository = create_migrator(tmp_path)
@@ -238,6 +250,7 @@ def test_invalid_legacy_data_creates_neither_backup_nor_chat(
 
 
 def test_changed_source_is_not_imported_twice(tmp_path: Path) -> None:
+    """Verify that changed source is not imported twice."""
     write_legacy_conversation(tmp_path)
     migrator, repository = create_migrator(tmp_path)
     migrator.migrate()
@@ -265,10 +278,12 @@ def test_state_write_failure_rolls_back_created_chat(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Delete a migrated Chat if its idempotency marker cannot be saved."""
     write_legacy_conversation(tmp_path)
     migrator, repository = create_migrator(tmp_path)
 
     def fail_state_write(path: Path, data: object) -> None:
+        """Simulate failure while persisting migration completion state."""
         raise OSError("simulated state failure")
 
     monkeypatch.setattr(

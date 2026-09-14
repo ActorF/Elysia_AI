@@ -1,3 +1,5 @@
+"""Test Project lifecycle and Project-Chat relationship coordination."""
+
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import cast
@@ -33,6 +35,7 @@ def _repositories(
     JsonChatRepository,
     ProjectChatService,
 ]:
+    """Provide the repositories fixture used by these tests."""
     project_repository = JsonProjectRepository(
         tmp_path / "data" / "projects",
         clock=lambda: BASE_TIME,
@@ -52,6 +55,7 @@ def _repositories(
 def test_add_and_remove_chat_updates_single_relationship_source(
     tmp_path: Path,
 ) -> None:
+    """Verify that add and remove chat updates single relationship source."""
     projects, chats, service = _repositories(tmp_path)
     project = projects.create_project(name="Elysia")
     chat = chats.create_chat(
@@ -78,6 +82,7 @@ def test_add_and_remove_chat_updates_single_relationship_source(
 def test_add_rejects_chat_owned_by_another_project(
     tmp_path: Path,
 ) -> None:
+    """Verify that add rejects chat owned by another project."""
     projects, chats, service = _repositories(tmp_path)
     first = projects.create_project(name="First")
     second = projects.create_project(name="Second")
@@ -98,6 +103,7 @@ def test_add_rejects_chat_owned_by_another_project(
 def test_transfer_moves_chat_between_project_scopes(
     tmp_path: Path,
 ) -> None:
+    """Verify that transfer moves chat between project scopes."""
     projects, chats, service = _repositories(tmp_path)
     first = projects.create_project(name="First")
     second = projects.create_project(name="Second")
@@ -121,6 +127,7 @@ def test_transfer_moves_chat_between_project_scopes(
 
 
 def test_transfer_rejects_unassigned_chat(tmp_path: Path) -> None:
+    """Verify that transfer rejects unassigned chat."""
     projects, chats, service = _repositories(tmp_path)
     project = projects.create_project(name="Target")
     chat = chats.create_chat(
@@ -134,6 +141,7 @@ def test_transfer_rejects_unassigned_chat(tmp_path: Path) -> None:
 
 
 def test_remove_rejects_wrong_project_scope(tmp_path: Path) -> None:
+    """Verify that remove rejects wrong project scope."""
     projects, chats, service = _repositories(tmp_path)
     first = projects.create_project(name="First")
     second = projects.create_project(name="Second")
@@ -151,6 +159,7 @@ def test_remove_rejects_wrong_project_scope(tmp_path: Path) -> None:
 def test_project_chat_lists_do_not_leak_other_scopes(
     tmp_path: Path,
 ) -> None:
+    """Verify that project chat lists do not leak other scopes."""
     projects, chats, service = _repositories(tmp_path)
     first = projects.create_project(name="First")
     second = projects.create_project(name="Second")
@@ -185,6 +194,7 @@ def test_project_chat_lists_do_not_leak_other_scopes(
 def test_archived_project_cannot_accept_or_receive_chat(
     tmp_path: Path,
 ) -> None:
+    """Verify that archived project cannot accept or receive chat."""
     projects, chats, service = _repositories(tmp_path)
     source = projects.create_project(name="Source")
     archived = projects.create_project(name="Archived")
@@ -211,6 +221,7 @@ def test_archived_project_cannot_accept_or_receive_chat(
 def test_restrict_deletion_preserves_project_and_linked_chats(
     tmp_path: Path,
 ) -> None:
+    """Verify that restrict deletion preserves project and linked chats."""
     projects, chats, service = _repositories(tmp_path)
     project = projects.create_project(name="Keep")
     chat = chats.create_chat(
@@ -230,6 +241,7 @@ def test_restrict_deletion_preserves_project_and_linked_chats(
 def test_detach_deletion_keeps_chats_without_project(
     tmp_path: Path,
 ) -> None:
+    """Verify that detach deletion keeps chats without project."""
     projects, chats, service = _repositories(tmp_path)
     project = projects.create_project(name="Detach")
     first = chats.create_chat(
@@ -257,6 +269,7 @@ def test_detach_deletion_keeps_chats_without_project(
 def test_cascade_deletion_removes_project_and_all_linked_chats(
     tmp_path: Path,
 ) -> None:
+    """Verify that cascade deletion removes project and all linked chats."""
     projects, chats, service = _repositories(tmp_path)
     project = projects.create_project(name="Cascade")
     first = chats.create_chat(
@@ -285,6 +298,7 @@ def test_cascade_deletion_removes_project_and_all_linked_chats(
 def test_empty_project_can_be_deleted_with_restrict(
     tmp_path: Path,
 ) -> None:
+    """Verify that empty project can be deleted with restrict."""
     projects, _, service = _repositories(tmp_path)
     project = projects.create_project(name="Empty")
 
@@ -298,6 +312,7 @@ def test_detach_rolls_back_when_project_deletion_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Restore detached Chat relationships if Project deletion cannot commit."""
     projects, chats, service = _repositories(tmp_path)
     project = projects.create_project(name="Rollback detach")
     chat = chats.create_chat(
@@ -308,6 +323,7 @@ def test_detach_rolls_back_when_project_deletion_fails(
     service.add_chat(project.project_id, chat.chat_id)
 
     def fail_delete(project_id: ProjectId) -> None:
+        """Simulate Project deletion failing after Chat detachment."""
         raise ProjectStorageError(f"Cannot delete {project_id}")
 
     monkeypatch.setattr(projects, "delete_project", fail_delete)
@@ -325,6 +341,7 @@ def test_cascade_rolls_back_deleted_chats_when_project_delete_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Restore cascaded Chats if deleting their owning Project fails."""
     projects, chats, service = _repositories(tmp_path)
     project = projects.create_project(name="Rollback cascade")
     chat = chats.create_chat(
@@ -336,6 +353,7 @@ def test_cascade_rolls_back_deleted_chats_when_project_delete_fails(
     assigned_chat = chats.get_chat(chat.chat_id)
 
     def fail_delete(project_id: ProjectId) -> None:
+        """Simulate Project deletion failing after cascade Chat deletion."""
         raise ProjectStorageError(f"Cannot delete {project_id}")
 
     monkeypatch.setattr(projects, "delete_project", fail_delete)
@@ -352,6 +370,7 @@ def test_cascade_rolls_back_deleted_chats_when_project_delete_fails(
 def test_invalid_deletion_policy_is_rejected_before_changes(
     tmp_path: Path,
 ) -> None:
+    """Verify that invalid deletion policy is rejected before changes."""
     projects, _, service = _repositories(tmp_path)
     project = projects.create_project(name="Safe")
 
@@ -365,6 +384,7 @@ def test_invalid_deletion_policy_is_rejected_before_changes(
 
 
 def test_validate_deletion_policy_narrows_external_strings() -> None:
+    """Verify that validate deletion policy narrows external strings."""
     assert validate_deletion_policy("detach") == "detach"
 
     with pytest.raises(ValueError, match=r"Unknown"):
@@ -374,6 +394,7 @@ def test_validate_deletion_policy_narrows_external_strings() -> None:
 def test_project_lifecycle_operations_are_exposed_by_service(
     tmp_path: Path,
 ) -> None:
+    """Verify that project lifecycle operations are exposed by service."""
     projects, _chats, service = _repositories(tmp_path)
 
     created = service.create_project(
@@ -404,6 +425,7 @@ def test_project_lifecycle_operations_are_exposed_by_service(
 def test_custom_instruction_update_preserves_default_model(
     tmp_path: Path,
 ) -> None:
+    """Verify that custom instruction update preserves default model."""
     projects, _chats, service = _repositories(tmp_path)
     project = projects.create_project(
         name="Settings",
@@ -436,6 +458,7 @@ def test_update_project_saves_name_and_instructions_atomically(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Persist Project name and instructions through one atomic repository save."""
     projects, _chats, service = _repositories(tmp_path)
     project = projects.create_project(
         name="Before",
@@ -449,6 +472,7 @@ def test_update_project_saves_name_and_instructions_atomically(
     real_save_project = projects.save_project
 
     def record_save(updated_project: Project) -> None:
+        """Count atomic Project writes while delegating to real persistence."""
         nonlocal save_calls
         save_calls += 1
         real_save_project(updated_project)
@@ -487,6 +511,7 @@ def test_update_project_saves_name_and_instructions_atomically(
 def test_invalid_atomic_project_update_does_not_partially_persist(
     tmp_path: Path,
 ) -> None:
+    """Reject invalid Project updates without persisting only valid fields."""
     projects, _chats, service = _repositories(tmp_path)
     project = projects.create_project(
         name="Unchanged",
@@ -506,6 +531,7 @@ def test_invalid_atomic_project_update_does_not_partially_persist(
 def test_workspace_bind_replaces_and_unbinds_idempotently(
     tmp_path: Path,
 ) -> None:
+    """Verify that workspace bind replaces and unbinds idempotently."""
     _projects, _chats, service = _repositories(tmp_path)
     first = service.create_project(name="First")
     second = service.create_project(name="Second")
@@ -552,6 +578,7 @@ def test_archived_project_is_read_only_for_project_ui_mutations(
     tmp_path: Path,
     action: str,
 ) -> None:
+    """Verify that archived project is read only for project UI mutations."""
     projects, chats, service = _repositories(tmp_path)
     project = projects.create_project(
         name="Archived",
@@ -595,6 +622,7 @@ def test_archived_project_is_read_only_for_project_ui_mutations(
 def test_transfer_rejects_archived_source_project(
     tmp_path: Path,
 ) -> None:
+    """Verify that transfer rejects archived source project."""
     projects, chats, service = _repositories(tmp_path)
     source = projects.create_project(name="Archived source")
     destination = projects.create_project(name="Destination")
@@ -615,6 +643,7 @@ def test_transfer_rejects_archived_source_project(
 def test_archive_preserves_all_chat_relationships(
     tmp_path: Path,
 ) -> None:
+    """Verify that archive preserves all chat relationships."""
     _projects, chats, service = _repositories(tmp_path)
     project = service.create_project(name="Keep relationships")
     visible = chats.create_chat(
@@ -647,6 +676,7 @@ def test_archive_preserves_all_chat_relationships(
 def test_move_chat_selects_attach_transfer_detach_and_no_op(
     tmp_path: Path,
 ) -> None:
+    """Verify that move chat selects attach transfer detach and no op."""
     _projects, chats, service = _repositories(tmp_path)
     first = service.create_project(name="First")
     second = service.create_project(name="Second")
@@ -672,6 +702,7 @@ def test_move_chat_selects_attach_transfer_detach_and_no_op(
 def test_move_chat_rejects_archived_source_or_destination(
     tmp_path: Path,
 ) -> None:
+    """Verify that move chat rejects archived source or destination."""
     projects, chats, service = _repositories(tmp_path)
     source = service.create_project(name="Source")
     destination = service.create_project(name="Destination")
@@ -714,6 +745,7 @@ def test_busy_chat_rejects_project_and_relationship_mutations(
     tmp_path: Path,
     action: str,
 ) -> None:
+    """Freeze Project relationships while the affected Chat is generating."""
     busy_chat_ids: set[object] = set()
     projects = JsonProjectRepository(tmp_path / "data" / "projects")
     chats = JsonChatRepository(tmp_path / "data" / "chats")

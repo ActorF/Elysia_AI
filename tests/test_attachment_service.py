@@ -1,3 +1,5 @@
+"""Test secure local attachment staging, ownership, and recovery."""
+
 import json
 import os
 import subprocess
@@ -18,14 +20,17 @@ from attachments import (
 
 
 def _chat_scope(name: str = "test") -> AttachmentScope:
+    """Build a valid Chat-owned attachment scope with a stable test ID."""
     return AttachmentScope(kind="chat", id=f"chat_{name}")
 
 
 def _project_scope(name: str = "test") -> AttachmentScope:
+    """Build a valid Project-owned attachment scope with a stable test ID."""
     return AttachmentScope(kind="project", id=f"project_{name}")
 
 
 def _store(tmp_path: Path, *, size: int = 1024, count: int = 10) -> JsonAttachmentStore:
+    """Create an isolated store with deliberately small configurable limits."""
     return JsonAttachmentStore(
         tmp_path / "workspace" / "attachments",
         max_file_bytes=size,
@@ -34,6 +39,7 @@ def _store(tmp_path: Path, *, size: int = 1024, count: int = 10) -> JsonAttachme
 
 
 def _source(tmp_path: Path, name: str, content: bytes) -> Path:
+    """Write and resolve an external source file for attachment staging."""
     source = tmp_path / "incoming" / name
     source.parent.mkdir(parents=True, exist_ok=True)
     source.write_bytes(content)
@@ -41,6 +47,7 @@ def _source(tmp_path: Path, name: str, content: bytes) -> Path:
 
 
 def _manifest_path(tmp_path: Path, scope: AttachmentScope) -> Path:
+    """Return the canonical manifest path for an isolated attachment scope."""
     return (
         tmp_path
         / "workspace"
@@ -52,11 +59,13 @@ def _manifest_path(tmp_path: Path, scope: AttachmentScope) -> Path:
 
 
 def _blob_files(tmp_path: Path, scope: AttachmentScope, folder: str) -> tuple[Path, ...]:
+    """List persisted blob files in one scope lifecycle directory."""
     directory = _manifest_path(tmp_path, scope).parent / folder
     return tuple(directory.glob("*.blob")) if directory.exists() else ()
 
 
 def _create_directory_redirect(link: Path, target: Path) -> None:
+    """Create a junction or symlink used to exercise redirect-escape defenses."""
     target.mkdir(parents=True, exist_ok=True)
     link.parent.mkdir(parents=True, exist_ok=True)
     if os.name == "nt":
@@ -76,6 +85,7 @@ def _create_directory_redirect(link: Path, target: Path) -> None:
 
 
 def _remove_directory_redirect(link: Path) -> None:
+    """Remove directory redirect created by the fixture."""
     if link.is_symlink():
         link.unlink()
     elif link.exists():
@@ -83,6 +93,7 @@ def _remove_directory_redirect(link: Path) -> None:
 
 
 def test_scope_requires_a_matching_storage_safe_id() -> None:
+    """Verify that scope requires a matching storage safe ID."""
     assert AttachmentScope(kind="chat", id="chat_safe_123").id == "chat_safe_123"
     assert AttachmentScope(kind="project", id="project_safe-123").kind == "project"
 
@@ -93,6 +104,7 @@ def test_scope_requires_a_matching_storage_safe_id() -> None:
 
 
 def test_stage_persists_only_safe_metadata_and_an_opaque_blob(tmp_path: Path) -> None:
+    """Verify that stage persists only safe metadata and an opaque blob."""
     store = _store(tmp_path)
     scope = _chat_scope()
     source = _source(tmp_path, "private notes.TXT", b"local context")
@@ -134,6 +146,7 @@ def test_stage_persists_only_safe_metadata_and_an_opaque_blob(tmp_path: Path) ->
 def test_redirected_workspace_root_is_rejected_before_external_write(
     tmp_path: Path,
 ) -> None:
+    """Reject a redirected storage root before attacker-controlled external writes."""
     application_root = tmp_path / "application"
     outside = tmp_path / "outside"
     workspace = application_root / "workspace"
@@ -152,6 +165,7 @@ def test_redirected_workspace_root_is_rejected_before_external_write(
 def test_hard_linked_process_lock_is_rejected_without_touching_target(
     tmp_path: Path,
 ) -> None:
+    """Verify that hard linked process lock is rejected without touching target."""
     base_dir = tmp_path / "workspace" / "attachments"
     base_dir.mkdir(parents=True)
     victim = tmp_path / "outside-lock-target"
@@ -167,6 +181,7 @@ def test_hard_linked_process_lock_is_rejected_without_touching_target(
 
 
 def test_equal_content_is_deduplicated_within_one_scope(tmp_path: Path) -> None:
+    """Verify that equal content is deduplicated within one scope."""
     store = _store(tmp_path)
     scope = _chat_scope()
     first = _source(tmp_path, "first.txt", b"same bytes")
@@ -183,6 +198,7 @@ def test_equal_content_is_deduplicated_within_one_scope(tmp_path: Path) -> None:
 def test_smaller_restart_limit_keeps_existing_drafts_visible(
     tmp_path: Path,
 ) -> None:
+    """Verify that smaller restart limit keeps existing drafts visible."""
     store = _store(tmp_path, size=1_024)
     scope = _chat_scope("smaller-limit")
     item = store.stage_files(
@@ -204,6 +220,7 @@ def test_smaller_restart_limit_keeps_existing_drafts_visible(
 
 
 def test_deduplication_does_not_cross_scope_boundaries(tmp_path: Path) -> None:
+    """Verify that deduplication does not cross scope boundaries."""
     store = _store(tmp_path)
     source = _source(tmp_path, "same.txt", b"same bytes")
 
@@ -216,6 +233,7 @@ def test_deduplication_does_not_cross_scope_boundaries(tmp_path: Path) -> None:
 def test_batch_failure_rolls_back_every_new_blob_and_manifest_change(
     tmp_path: Path,
 ) -> None:
+    """Make multi-file staging atomic when any member violates store limits."""
     store = _store(tmp_path, size=8)
     scope = _chat_scope()
     valid = _source(tmp_path, "valid.txt", b"1234")
@@ -232,6 +250,7 @@ def test_manifest_replace_failure_rolls_back_a_staged_batch(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Remove newly copied blobs when the authoritative manifest cannot commit."""
     store = _store(tmp_path)
     scope = _chat_scope()
     source = _source(tmp_path, "notes.txt", b"notes")
@@ -241,6 +260,7 @@ def test_manifest_replace_failure_rolls_back_a_staged_batch(
         source_path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
         destination: str | bytes | os.PathLike[str] | os.PathLike[bytes],
     ) -> None:
+        """Fail only the manifest replace after allowing blob moves."""
         if os.path.basename(os.fsdecode(destination)) == "manifest.json":
             raise OSError("simulated manifest failure")
         real_replace(source_path, destination)
@@ -267,12 +287,14 @@ def test_unsupported_and_empty_files_are_rejected(
     content: bytes,
     message: str,
 ) -> None:
+    """Verify that unsupported and empty files are rejected."""
     store = _store(tmp_path)
     with pytest.raises(AttachmentValidationError, match=message):
         store.stage_files(_chat_scope(), [_source(tmp_path, name, content)])
 
 
 def test_common_code_file_is_stored_without_parsing_it(tmp_path: Path) -> None:
+    """Verify that common code file is stored without parsing it."""
     store = _store(tmp_path)
     state = store.stage_files(
         _chat_scope(),
@@ -283,6 +305,7 @@ def test_common_code_file_is_stored_without_parsing_it(tmp_path: Path) -> None:
 
 
 def test_directory_relative_path_and_internal_blob_are_rejected(tmp_path: Path) -> None:
+    """Verify that directory relative path and internal blob are rejected."""
     store = _store(tmp_path)
     scope = _chat_scope()
     source = _source(tmp_path, "first.txt", b"content")
@@ -302,6 +325,7 @@ def test_directory_relative_path_and_internal_blob_are_rejected(tmp_path: Path) 
 
 
 def test_symlink_source_is_rejected_without_leaking_its_path(tmp_path: Path) -> None:
+    """Block symlink sources and keep both link and target paths out of errors."""
     target = _source(tmp_path, "target.txt", b"content")
     link = tmp_path / "incoming" / "link.txt"
     try:
@@ -320,6 +344,7 @@ def test_source_change_during_copy_rolls_back_the_temporary_file(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Detect a source mutation during secure copy and remove its partial blob."""
     store = _store(tmp_path)
     scope = _chat_scope()
     source = _source(tmp_path, "changing.txt", b"content")
@@ -329,6 +354,7 @@ def test_source_change_during_copy_rolls_back_the_temporary_file(
     source_checks = 0
 
     def changing_fstat(descriptor: int) -> object:
+        """Make the second source stat appear modified during secure copy."""
         nonlocal source_checks
         details = real_fstat(descriptor)
         if (details.st_dev, details.st_ino) != source_identity:
@@ -355,6 +381,7 @@ def test_source_change_during_copy_rolls_back_the_temporary_file(
 
 
 def test_remove_is_scope_isolated_and_rejects_claimed_items(tmp_path: Path) -> None:
+    """Verify that remove is scope isolated and rejects claimed items."""
     store = _store(tmp_path)
     first_scope = _chat_scope("first")
     second_scope = _chat_scope("second")
@@ -383,6 +410,7 @@ def test_remove_is_scope_isolated_and_rejects_claimed_items(tmp_path: Path) -> N
 def test_live_store_lock_prevents_a_second_backend_releasing_claims(
     tmp_path: Path,
 ) -> None:
+    """Verify that live store lock prevents a second backend releasing claims."""
     store = _store(tmp_path)
     scope = _chat_scope("exclusive")
     item = store.stage_files(
@@ -401,6 +429,7 @@ def test_live_store_lock_prevents_a_second_backend_releasing_claims(
 
 
 def test_claim_is_all_or_none_and_requires_a_chat_scope(tmp_path: Path) -> None:
+    """Verify that claim is all or none and requires a chat scope."""
     store = _store(tmp_path)
     chat_scope = _chat_scope()
     project_scope = _project_scope()
@@ -424,6 +453,7 @@ def test_claim_is_all_or_none_and_requires_a_chat_scope(tmp_path: Path) -> None:
 def test_chat_commit_removes_draft_state_but_keeps_referenced_blob(
     tmp_path: Path,
 ) -> None:
+    """Verify that chat commit removes draft state but keeps referenced blob."""
     store = _store(tmp_path)
     scope = _chat_scope()
     item = store.stage_files(
@@ -451,6 +481,7 @@ def test_chat_commit_rolls_blob_back_when_manifest_replace_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Return a moved blob to draft state if its committed manifest write fails."""
     store = _store(tmp_path)
     scope = _chat_scope()
     item = store.stage_files(
@@ -464,6 +495,7 @@ def test_chat_commit_rolls_blob_back_when_manifest_replace_fails(
         source_path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
         destination: str | bytes | os.PathLike[str] | os.PathLike[bytes],
     ) -> None:
+        """Fail only the manifest replace during the commit transition."""
         if os.path.basename(os.fsdecode(destination)) == "manifest.json":
             raise OSError("simulated manifest failure")
         real_replace(source_path, destination)
@@ -482,6 +514,7 @@ def test_chat_commit_rolls_blob_back_when_manifest_replace_fails(
 def test_interrupted_chat_commit_is_repaired_from_canonical_references(
     tmp_path: Path,
 ) -> None:
+    """Reconcile interrupted attachment state from persisted Chat references."""
     store = _store(tmp_path)
     scope = _chat_scope()
     item = store.stage_files(
@@ -506,6 +539,7 @@ def test_interrupted_chat_commit_is_repaired_from_canonical_references(
 
 
 def test_reconcile_verifies_committed_blob_integrity(tmp_path: Path) -> None:
+    """Verify that reconcile verifies committed blob integrity."""
     store = _store(tmp_path)
     scope = _chat_scope("committed-integrity")
     item = store.stage_files(
@@ -522,6 +556,7 @@ def test_reconcile_verifies_committed_blob_integrity(tmp_path: Path) -> None:
 
 
 def test_project_items_remain_available_when_marked_committed(tmp_path: Path) -> None:
+    """Verify that project items remain available when marked committed."""
     store = _store(tmp_path)
     scope = _project_scope()
     item = store.stage_files(
@@ -537,6 +572,7 @@ def test_project_items_remain_available_when_marked_committed(tmp_path: Path) ->
 def test_staging_claimed_content_is_a_safe_deduplicated_noop(
     tmp_path: Path,
 ) -> None:
+    """Verify that staging claimed content is a safe deduplicated noop."""
     store = _store(tmp_path)
     scope = _chat_scope("claimed-dedupe")
     source = _source(tmp_path, "same.txt", b"same bytes")
@@ -557,6 +593,7 @@ def test_staging_claimed_content_is_a_safe_deduplicated_noop(
 
 
 def test_reconcile_removes_temporary_and_orphan_files(tmp_path: Path) -> None:
+    """Verify that reconcile removes temporary and orphan files."""
     store = _store(tmp_path)
     scope = _chat_scope()
     scope_root = _manifest_path(tmp_path, scope).parent
@@ -574,6 +611,7 @@ def test_reconcile_removes_temporary_and_orphan_files(tmp_path: Path) -> None:
 
 
 def test_corrupt_blob_is_reported_with_a_stable_path_free_error(tmp_path: Path) -> None:
+    """Verify that corrupt blob is reported with a stable path free error."""
     store = _store(tmp_path)
     scope = _chat_scope()
     store.stage_files(
@@ -590,6 +628,7 @@ def test_corrupt_blob_is_reported_with_a_stable_path_free_error(tmp_path: Path) 
 
 
 def test_manifest_rejects_unknown_fields_and_duplicate_json_keys(tmp_path: Path) -> None:
+    """Verify that manifest rejects unknown fields and duplicate JSON keys."""
     scope = _chat_scope()
     store = _store(tmp_path)
     manifest = _manifest_path(tmp_path, scope)
@@ -608,6 +647,7 @@ def test_manifest_rejects_unknown_fields_and_duplicate_json_keys(tmp_path: Path)
 def test_file_count_limit_is_enforced_without_changing_existing_state(
     tmp_path: Path,
 ) -> None:
+    """Verify that file count limit is enforced without changing existing state."""
     store = _store(tmp_path, count=1)
     scope = _chat_scope()
     first = store.stage_files(
@@ -625,6 +665,7 @@ def test_file_count_limit_is_enforced_without_changing_existing_state(
 
 
 def test_delete_scope_removes_only_the_exact_requested_scope(tmp_path: Path) -> None:
+    """Verify that delete scope removes only the exact requested scope."""
     store = _store(tmp_path)
     first_scope = _chat_scope("first")
     second_scope = _chat_scope("second")
@@ -642,12 +683,14 @@ def test_delete_scope_removes_only_the_exact_requested_scope(tmp_path: Path) -> 
 def test_owner_delete_failure_restores_hidden_attachment_scope(
     tmp_path: Path,
 ) -> None:
+    """Restore a hidden scope when deleting its canonical owner fails atomically."""
     store = _store(tmp_path)
     scope = _chat_scope("rollback")
     source = _source(tmp_path, "notes.txt", b"notes")
     original = store.stage_files(scope, [source])
 
     def fail_owner_delete() -> None:
+        """Simulate owner deletion failing after its attachment scope is hidden."""
         raise RuntimeError("owner stayed canonical")
 
     with pytest.raises(RuntimeError, match="owner stayed canonical"):
@@ -659,6 +702,7 @@ def test_owner_delete_failure_restores_hidden_attachment_scope(
 def test_startup_restores_ambiguous_delete_then_reconciles_owner(
     tmp_path: Path,
 ) -> None:
+    """Verify that startup restores ambiguous delete then reconciles owner."""
     store = _store(tmp_path)
     scope = _chat_scope("crash-delete")
     original = store.stage_files(

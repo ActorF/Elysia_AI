@@ -1,3 +1,5 @@
+"""Test model-backed memory candidate extraction and confirmation."""
+
 import re
 from collections.abc import Iterator
 from pathlib import Path
@@ -14,7 +16,9 @@ from ui.console import review_memory_candidates
 
 
 class FakeExtractionChatModel:
+    """Capture extraction prompts and return one configured model payload."""
     def __init__(self, reply: str) -> None:
+        """Initialize deterministic state for this test double."""
         self._reply = reply
         self.received_messages: (
             list[ChatMessage] | None
@@ -24,6 +28,7 @@ class FakeExtractionChatModel:
         self,
         messages: list[ChatMessage],
     ) -> str:
+        """Return the configured deterministic model reply."""
         self.received_messages = messages
         return self._reply
 
@@ -31,15 +36,18 @@ class FakeExtractionChatModel:
         self,
         messages: list[ChatMessage],
     ) -> Iterator[str]:
+        """Yield the configured deterministic model reply chunks."""
         self.received_messages = messages
         yield self._reply
 
 
 class FakeMemoryExtractor:
+    """Record source text and return configured memory candidates."""
     def __init__(
         self,
         candidates: list[MemoryCandidate],
     ) -> None:
+        """Initialize deterministic state for this test double."""
         self._candidates = candidates
         self.received_user_message: str | None = None
 
@@ -47,11 +55,13 @@ class FakeMemoryExtractor:
         self,
         user_message: str,
     ) -> list[MemoryCandidate]:
+        """Return the configured memory candidates for the test."""
         self.received_user_message = user_message
         return list(self._candidates)
 
 
 def _candidate() -> MemoryCandidate:
+    """Build a canonical inferred candidate that requires user confirmation."""
     return {
         "key": "preferred_language",
         "value": "Chinese",
@@ -64,6 +74,7 @@ def _candidate() -> MemoryCandidate:
 
 
 def test_model_extractor_builds_confirmable_candidate() -> None:
+    """Verify that model extractor builds confirmable candidate."""
     chat_model = FakeExtractionChatModel(
         """
         [
@@ -100,6 +111,7 @@ def test_model_extractor_builds_confirmable_candidate() -> None:
 
 
 def test_model_extractor_returns_no_small_talk_memory() -> None:
+    """Verify that model extractor returns no small talk memory."""
     extractor = ModelMemoryExtractor(
         FakeExtractionChatModel("[]")
     )
@@ -108,6 +120,7 @@ def test_model_extractor_returns_no_small_talk_memory() -> None:
 
 
 def test_model_extractor_accepts_json_code_fence() -> None:
+    """Verify that model extractor accepts JSON code fence."""
     extractor = ModelMemoryExtractor(
         FakeExtractionChatModel(
             """```json
@@ -128,6 +141,7 @@ def test_model_extractor_accepts_json_code_fence() -> None:
 
 
 def test_model_extractor_removes_duplicate_candidates() -> None:
+    """Verify that model extractor removes duplicate candidates."""
     extractor = ModelMemoryExtractor(
         FakeExtractionChatModel(
             """
@@ -200,6 +214,7 @@ def test_model_extractor_rejects_invalid_reply(
     reply: str,
     expected_message: str,
 ) -> None:
+    """Verify that model extractor rejects invalid reply."""
     extractor = ModelMemoryExtractor(
         FakeExtractionChatModel(reply)
     )
@@ -212,6 +227,7 @@ def test_model_extractor_rejects_invalid_reply(
 
 
 def test_model_extractor_rejects_empty_user_message() -> None:
+    """Verify that model extractor rejects empty user message."""
     chat_model = FakeExtractionChatModel("[]")
     extractor = ModelMemoryExtractor(chat_model)
 
@@ -227,6 +243,7 @@ def test_model_extractor_rejects_empty_user_message() -> None:
 def test_brain_extracts_candidate_without_saving(
     tmp_path: Path,
 ) -> None:
+    """Verify that brain extracts candidate without saving."""
     memory = Memory(tmp_path)
     extractor = FakeMemoryExtractor([_candidate()])
     brain = Brain(
@@ -250,6 +267,7 @@ def test_brain_extracts_candidate_without_saving(
 def test_brain_without_extractor_returns_no_candidates(
     tmp_path: Path,
 ) -> None:
+    """Verify that brain without extractor returns no candidates."""
     brain = Brain("fake-model", Memory(tmp_path))
 
     assert brain.extract_memory_candidates("Hello") == []
@@ -258,6 +276,7 @@ def test_brain_without_extractor_returns_no_candidates(
 def test_brain_saves_confirmed_candidate(
     tmp_path: Path,
 ) -> None:
+    """Verify that brain saves confirmed candidate."""
     memory = Memory(tmp_path)
     brain = Brain("fake-model", memory)
 
@@ -278,6 +297,7 @@ def test_console_rejects_candidate_without_saving(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    """Verify that console rejects candidate without saving."""
     memory = Memory(tmp_path)
     brain = Brain("fake-model", memory)
     monkeypatch.setattr(
@@ -298,6 +318,7 @@ def test_console_saves_candidate_after_confirmation(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    """Verify that console saves candidate after confirmation."""
     memory = Memory(tmp_path)
     brain = Brain("fake-model", memory)
     monkeypatch.setattr(

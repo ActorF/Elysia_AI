@@ -32,7 +32,7 @@ Version 1 defines strict request, response, error, stream, progress,
 permission, event, cancel, and permission-decision shapes. The current runtime
 advertises `chat.stream`, `chat.retry`, `request.cancel`, `stream`, `progress`,
 `event`, `chat.sessions`, `project.management`, `settings.management`,
-`attachment.management`, and `voice.settings`.
+`attachment.management`, `voice.settings`, and `voice.capture`.
 Both new-turn and retry generation reuse the `chat.reply` stream.
 Cancellation succeeds only before generation claims its atomic commit gate, so
 a successful Stop response guarantees that the interrupted turn is not saved.
@@ -51,6 +51,19 @@ default. They use independent optimistic revisions and remain available when
 Brain initialization fails or Chat generation is active. Device labels,
 Windows permission state, live availability, and audio samples never cross
 this Python protocol boundary; Electron owns those transient hardware details.
+
+`voice.capture.complete` is an intentionally narrow bridge for one bounded
+utterance. It is reachable only after the user explicitly starts microphone
+capture in the renderer. The renderer downmixes and resamples input to 16 kHz
+mono signed 16-bit little-endian PCM, processes 20 ms / 320-sample frames, and
+uses bounded local VAD so silence or short input is discarded before submission.
+An accepted request carries the active Chat ID, a bounded Voice session ID,
+frame-aligned speech markers, sample counts, fixed-format metadata, and strict
+canonical Base64 PCM. Python validates that transient payload and returns only
+the session and Chat IDs, format metadata, total and speech durations, and a
+SHA-256 digest; PCM is never echoed in the response. This operation does not
+persist audio, invoke the Brain, or create a Chat Turn. Speech-to-text, TTS, and
+continuous voice conversation remain future work.
 
 `attachment.list`, `attachment.add`, and `attachment.remove` operate on one
 exact Chat or Project scope. Native source paths are accepted only across the

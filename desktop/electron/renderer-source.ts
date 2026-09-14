@@ -10,6 +10,7 @@ export interface RendererSourcePolicy {
   platform: NodeJS.Platform
 }
 
+/** Check that an IPC caller is exactly the configured development or packaged renderer. */
 export function isTrustedRendererUrl(
   rawUrl: string,
   policy: RendererSourcePolicy,

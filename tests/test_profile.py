@@ -1,3 +1,5 @@
+"""Test profile schema validation and legacy migration."""
+
 import re
 
 import pytest
@@ -9,6 +11,7 @@ from memory.profile import (
 
 
 def _valid_profile_data() -> dict[str, object]:
+    """Provide the valid profile data fixture used by these tests."""
     return {
         "schema_version": 1,
         "user_name": "Ying",
@@ -20,6 +23,7 @@ def _valid_profile_data() -> dict[str, object]:
 
 
 def _legacy_profile_data() -> dict[str, object]:
+    """Provide the legacy profile data fixture used by these tests."""
     return {
         "user_name": "Ying",
         "assistant_name": "Elysia",
@@ -29,6 +33,7 @@ def _legacy_profile_data() -> dict[str, object]:
 
 
 def test_validate_profile_accepts_valid_profile() -> None:
+    """Verify that validate profile accepts valid profile."""
     profile_data = _valid_profile_data()
 
     profile = validate_profile(profile_data)
@@ -37,6 +42,7 @@ def test_validate_profile_accepts_valid_profile() -> None:
 
 
 def test_validate_profile_rejects_non_object() -> None:
+    """Verify that validate profile rejects non object."""
     with pytest.raises(
         ValueError,
         match=r"Profile must be a JSON object\.",
@@ -45,6 +51,7 @@ def test_validate_profile_rejects_non_object() -> None:
 
 
 def test_validate_profile_rejects_missing_field() -> None:
+    """Verify that validate profile rejects missing field."""
     profile_data = _valid_profile_data()
     del profile_data["project"]
 
@@ -56,6 +63,7 @@ def test_validate_profile_rejects_missing_field() -> None:
 
 
 def test_validate_profile_rejects_unknown_field() -> None:
+    """Verify that validate profile rejects unknown field."""
     profile_data = _valid_profile_data()
     profile_data["unexpected"] = True
 
@@ -67,6 +75,7 @@ def test_validate_profile_rejects_unknown_field() -> None:
 
 
 def test_validate_profile_rejects_unsupported_version() -> None:
+    """Verify that validate profile rejects unsupported version."""
     profile_data = _valid_profile_data()
     profile_data["schema_version"] = 2
 
@@ -132,6 +141,7 @@ def test_validate_profile_rejects_invalid_field_values(
     invalid_value: object,
     expected_message: str,
 ) -> None:
+    """Verify that validate profile rejects invalid field values."""
     profile_data = _valid_profile_data()
     profile_data[field_name] = invalid_value
 
@@ -143,6 +153,7 @@ def test_validate_profile_rejects_invalid_field_values(
 
 
 def test_migrate_profile_adds_version_and_launch_count() -> None:
+    """Verify that migrate profile adds version and launch count."""
     legacy_profile = _legacy_profile_data()
 
     migrated_profile = migrate_profile(legacy_profile)
@@ -156,6 +167,7 @@ def test_migrate_profile_adds_version_and_launch_count() -> None:
 
 
 def test_migrate_profile_preserves_existing_launch_count() -> None:
+    """Verify that migrate profile preserves existing launch count."""
     legacy_profile = _legacy_profile_data()
     legacy_profile["launch_count"] = 7
 
@@ -166,6 +178,7 @@ def test_migrate_profile_preserves_existing_launch_count() -> None:
 
 
 def test_migrate_profile_does_not_hide_unknown_fields() -> None:
+    """Verify that migrate profile does not hide unknown fields."""
     legacy_profile = _legacy_profile_data()
     legacy_profile["unexpected"] = True
 

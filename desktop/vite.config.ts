@@ -1,3 +1,5 @@
+/** Configure Vite's React renderer build with paths that also work inside Electron. */
+
 import react from '@vitejs/plugin-react'
 import { defineConfig } from 'vite'
 
