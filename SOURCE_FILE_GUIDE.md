@@ -102,7 +102,7 @@ start.create_data_portability_service()
 | `config/__init__.py` | 配置包的稳定公开导出。 | `start.py`、`desktop_backend.py`、测试 |
 | `config/settings.py` | 从安全默认值和根目录 `.env` 创建不可变 `AppSettings`；除 Chat/Ollama/Memory 与 STT 闭集外，还限制 GPT-SoVITS 本地评估开关、请求/探测超时和确定性 Seed。 | `start.py`、Model Adapter、Memory、Recovery、Faster-Whisper 与 TTS Composition |
 | `config/desktop_settings.py` | Desktop Settings Store；迁移旧五字段文档并对八个公开字段做 allowlist、Revision CAS、Desired/Active Restart Diff、线程/进程锁、原子替换和损坏隔离。 | `desktop_backend.py`、Settings UI、`workspace/settings/global.json` |
-| `config/voice_profiles.example.json` | 只含原创占位内容的本地 Voice Profile Schema 示例；开发者复制到被忽略的 Workspace 后再填写有权使用的资产。 | `workspace/settings/voice-profiles.json`、`voice/profiles.py` |
+| `config/voice_profiles.example.json` | 只含原创占位内容的严格 Voice Profile Schema v2 示例；每个资产声明都要求相对 `path`、实际 `bytes` 和小写 `sha256`，示例数字与 Hash 必须替换。 | `workspace/settings/voice-profiles.json`、`voice/profiles.py` |
 
 ## 6. Python 核心协调层：`core/`
 
@@ -210,7 +210,7 @@ ChatSession.project_id
 | `voice/transcription_jobs.py` | 用固定 Daemon Worker、有界队列、Deadline、唯一终态和结果保留上限包装同步 Transcriber；取消/超时后保留物理容量直到 Native Call 返回，并丢弃迟到结果。 | `desktop_backend.py`、`voice/transcription.py`；不把 PCM、路径或底层异常放进 Snapshot |
 | `voice/synthesis.py` | 定义引擎无关的 `SpeechSynthesizer` Protocol、严格请求/结果与稳定错误；对最大 32 MiB 的 PCM WAV、Ogg Opus 和受支持 ADTS AAC 子集完整检查 Container/Transport Framing，但不虚构 Codec 可解码保证。 | GPT-SoVITS Adapter、Local Synthesis Service、Fake 单元测试；未来播放器仍须处理 Decoder Failure |
 | `voice/gpt_sovits.py` | 把领域请求映射到 GPT-SoVITS `/tts`；只允许 Loopback IP（`localhost` 先规范化）、禁用环境代理/Redirect/Retry，要求声明长度的 Identity WAV/AAC 响应，并以 `/openapi.json` 做脱敏可用性探测。 | 外部本地 GPT-SoVITS Runtime；不会切换远端进程的全局权重，也不会把 `service_binding_unverified` 冒充成 `ready` |
-| `voice/profiles.py` | 严格读取被忽略的 JSON Catalog，把 Profile、情绪、准确参考文本/语言和相对资产路径解析到固定模型根；实施 `verified` 与显式 Opt-in 的 `local-evaluation-only` 权利标签。 | `config/voice_profiles.example.json`、`models/weights/gpt-sovits/`、Synthesis Service |
+| `voice/profiles.py` | 严格读取 Schema v2 JSON Catalog，把 Profile、情绪、准确参考文本/语言和带长度、SHA-256 的资产声明解析到固定模型根；拒绝旧版字符串路径、Windows 路径别名和矛盾身份，并实施 `verified` 与显式 Opt-in 的 `local-evaluation-only` 权利标签。读取声明本身不声称文件或进程已验证。 | `config/voice_profiles.example.json`、`models/weights/gpt-sovits/`、Synthesis Service |
 | `voice/synthesis_service.py` | TTS 的惰性 Composition Root；每次调用重载 Catalog，按逻辑 Profile/情绪构造 Adapter 请求，且服务构造本身不触碰磁盘或网络。 | `config/settings.py`、Profile Catalog、GPT-SoVITS Adapter、Smoke CLI |
 
 `voice/capture.py` 是单句 PCM 验证边界，详见本文“Voice Capture、本地 STT 与本地 TTS”部分。STT 由 `voice/transcription_jobs.py` 接入 Python Desktop Backend，Electron/React 已消费最终的 PCM-free Transcript。TTS 是另一条 Python-only 边界：目前只连接本地 Smoke CLI，不经过 `desktop_backend.py`、Desktop Protocol、Electron 或 React。
@@ -462,8 +462,8 @@ explicit Start microphone
 | 文件 | 当前职责 | 关键边界 |
 | --- | --- | --- |
 | `config/settings.py` | 默认关闭本地评估，并限制 HTTP 请求/探测超时与 Seed。 | 环境值不提供任意 URL 或路径 |
-| `workspace/settings/voice-profiles.json` | 本机 Catalog：声明 Base URL、权重、参考片段、准确文本/语言、速度、格式和权利状态。 | 被 Git 忽略；Windows 路径也使用 `/` 分隔的相对路径 |
-| `voice/profiles.py` | 将逻辑 Profile/情绪解析为固定根下的完整配置。 | 拒绝逃逸路径、远端 URL、未知字段与未获 Opt-in 的本地评估素材 |
+| `workspace/settings/voice-profiles.json` | 本机 Schema v2 Catalog：声明 Base URL、权重、参考片段、准确文本/语言、速度、格式、权利状态，以及每项资产的实际长度与 SHA-256。 | 被 Git 忽略；Windows 路径也使用 `/` 分隔的相对路径；旧版字符串路径不会自动降级接受 |
+| `voice/profiles.py` | 将逻辑 Profile/情绪解析为固定根下的不可变资产声明与外部 Adapter 配置。 | 拒绝逃逸路径、Windows 别名、矛盾身份、远端 URL、未知字段与未获 Opt-in 的本地评估素材；解析 Catalog 不等同于验证文件 |
 | `voice/synthesis_service.py` | 惰性加载 Catalog 并创建一次 Adapter 调用。 | 构造服务不访问磁盘或网络；文字 Chat 不依赖 TTS 在线 |
 | `voice/gpt_sovits.py` | 探测 `/openapi.json` 并 POST `/tts`，按剩余 Body Deadline 收取有界结果。 | 仅 Loopback IP；不信任代理，不自动重试/重定向或切换全局权重；拒绝无 Content-Length、压缩或 Transfer-Encoding；非流式配置仅 WAV/AAC |
 | `voice/synthesis.py` | 验证请求与最大 32 MiB 编码结果的完整 Transport Framing。 | PCM WAV、Ogg Opus、受支持 ADTS AAC 子集通过结构验证；不声称已做 Codec Decode |

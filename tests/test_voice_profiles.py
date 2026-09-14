@@ -4,15 +4,21 @@ from __future__ import annotations
 
 from copy import deepcopy
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Callable
 
 import pytest
 
 from voice import (
+    SYNTHESIS_MAX_AUDIO_BYTES,
+    VOICE_PROFILE_ASSET_MAX_BYTES,
     VOICE_PROFILE_CATALOG_MAX_BYTES,
     VOICE_PROFILE_CATALOG_MAX_PROFILES,
+    VOICE_PROFILE_CATALOG_SCHEMA_VERSION,
     JsonVoiceProfileCatalog,
+    LocalVoiceAssetDeclaration,
+    LocalVoiceProfile,
+    LocalVoiceReference,
     SynthesisUnavailableError,
     VoiceProfileCatalogUnavailableError,
     VoiceProfileCatalogValidationError,
@@ -23,12 +29,26 @@ JsonDocument = dict[str, object]
 DocumentMutation = Callable[[JsonDocument], None]
 
 
+def _asset(
+    path: object,
+    *,
+    size_bytes: object = 123,
+    sha256: object = "a" * 64,
+) -> JsonDocument:
+    """Build one asset-shaped value, including malformed test variants."""
+
+    return {"path": path, "bytes": size_bytes, "sha256": sha256}
+
+
 def _reference(emotion: str = "neutral") -> JsonDocument:
     """Build one strict synthetic reference entry without third-party material."""
 
     return {
         "emotion": emotion,
-        "audio": f"sample/references/{emotion}.wav",
+        "audio": _asset(
+            f"sample/references/{emotion}.wav",
+            sha256="b" * 64,
+        ),
         "prompt_text": f"Original {emotion} reference sentence.",
         "prompt_language": "en",
     }
@@ -48,8 +68,8 @@ def _profile(
         "profile_id": profile_id,
         "display_name": f"Voice {profile_id}",
         "base_url": base_url,
-        "gpt_weights": gpt_weights,
-        "sovits_weights": sovits_weights,
+        "gpt_weights": _asset(gpt_weights, sha256="c" * 64),
+        "sovits_weights": _asset(sovits_weights, sha256="d" * 64),
         "speed_factor": 1.0,
         "audio_format": "wav",
         "rights_status": rights_status,
@@ -58,11 +78,11 @@ def _profile(
 
 
 def _document(*profiles: JsonDocument) -> JsonDocument:
-    """Build a schema-v1 catalog with the first profile as its default."""
+    """Build a schema-v2 catalog with the first profile as its default."""
 
     selected = list(profiles) if profiles else [_profile()]
     return {
-        "schema_version": 1,
+        "schema_version": VOICE_PROFILE_CATALOG_SCHEMA_VERSION,
         "default_profile_id": selected[0]["profile_id"],
         "profiles": selected,
     }
@@ -128,6 +148,7 @@ def test_catalog_resolves_default_profile_and_exact_emotion(tmp_path: Path) -> N
 
     neutral = catalog.resolve("default", "neutral")
     happy = catalog.resolve("sample-one", "happy")
+    selection = catalog.resolve_selection("sample-one", "neutral")
 
     assert neutral.base_url == "http://127.0.0.1:9880"
     assert neutral.gpt_weights_path == (
@@ -144,6 +165,14 @@ def test_catalog_resolves_default_profile_and_exact_emotion(tmp_path: Path) -> N
     assert happy.prompt_language == "en"
     assert happy.speed_factor == 1.0
     assert happy.audio_format == "wav"
+    assert selection.gpt_weights.relative_path.as_posix() == (
+        "sample/weights/voice.ckpt"
+    )
+    assert selection.gpt_weights.size_bytes == 123
+    assert selection.gpt_weights.sha256 == "c" * 64
+    assert selection.reference_audio.sha256 == "b" * 64
+    assert selection.prompt_text not in repr(selection)
+    assert selection.gpt_weights.relative_path.as_posix() not in repr(selection)
 
 
 def test_catalog_summaries_do_not_expose_sensitive_configuration(
@@ -216,7 +245,10 @@ def test_profiles_with_same_endpoint_may_share_one_model_pair(
     second["references"] = [
         {
             **_reference(),
-            "audio": "sample/references/alternate.wav",
+            "audio": _asset(
+                "sample/references/alternate.wav",
+                sha256="e" * 64,
+            ),
             "prompt_text": "Another original neutral sentence.",
         }
     ]
@@ -276,7 +308,7 @@ def _add_unknown_root_field(document: JsonDocument) -> None:
 def _set_wrong_schema_version(document: JsonDocument) -> None:
     """Replace the supported catalog schema version."""
 
-    document["schema_version"] = 2
+    document["schema_version"] = 1
 
 
 def _set_missing_default_profile(document: JsonDocument) -> None:
@@ -353,12 +385,29 @@ def test_catalog_rejects_missing_unknown_or_ambiguous_fields(
         ("display_name", " leading-space"),
         ("display_name", "control\x01name"),
         ("base_url", "http://example.com:9880"),
-        ("gpt_weights", "../outside.ckpt"),
-        ("gpt_weights", "C:/outside.ckpt"),
-        ("gpt_weights", "folder\\voice.ckpt"),
-        ("gpt_weights", "folder//voice.ckpt"),
-        ("gpt_weights", "folder/./voice.ckpt"),
-        ("sovits_weights", "/outside.pth"),
+        ("gpt_weights", _asset("../outside.ckpt")),
+        ("gpt_weights", _asset("C:/outside.ckpt")),
+        ("gpt_weights", _asset("folder\\voice.ckpt")),
+        ("gpt_weights", _asset("folder//voice.ckpt")),
+        ("gpt_weights", _asset("folder/./voice.ckpt")),
+        ("gpt_weights", _asset("folder/voice.ckpt.")),
+        ("gpt_weights", _asset("folder/voice.ckpt ")),
+        ("gpt_weights", _asset("folder/CON.ckpt")),
+        ("gpt_weights", _asset("folder/COM1.ckpt")),
+        ("gpt_weights", _asset("folder/CONIN$.ckpt")),
+        ("gpt_weights", _asset("folder/CONOUT$.ckpt")),
+        ("gpt_weights", _asset("folder/CLOCK$.ckpt")),
+        ("gpt_weights", _asset("folder/COM¹.ckpt")),
+        ("gpt_weights", _asset("folder/LPT³.ckpt")),
+        ("gpt_weights", _asset("folder/bad?.ckpt")),
+        ("gpt_weights", _asset("folder/bad*.ckpt")),
+        ("gpt_weights", _asset("folder/bad|name.ckpt")),
+        ("gpt_weights", _asset("folder/bad<name.ckpt")),
+        ("gpt_weights", _asset("folder/bad>name.ckpt")),
+        ("gpt_weights", _asset('folder/bad"name.ckpt')),
+        ("gpt_weights", _asset(f"folder/{'a' * 256}.ckpt")),
+        ("gpt_weights", _asset("folder/e\u0301.ckpt")),
+        ("sovits_weights", _asset("/outside.pth")),
         ("speed_factor", 0.49),
         ("speed_factor", float("inf")),
         ("speed_factor", True),
@@ -382,15 +431,187 @@ def test_catalog_rejects_invalid_profile_values(
 
 
 @pytest.mark.parametrize(
+    "declaration",
+    [
+        "sample/weights/legacy.ckpt",
+        {},
+        {"path": "sample/weights/voice.ckpt", "bytes": 123},
+        {
+            **_asset("sample/weights/voice.ckpt"),
+            "unexpected": True,
+        },
+        _asset("sample/weights/voice.ckpt", size_bytes=0),
+        _asset("sample/weights/voice.ckpt", size_bytes=-1),
+        _asset("sample/weights/voice.ckpt", size_bytes=True),
+        _asset("sample/weights/voice.ckpt", size_bytes=1.5),
+        _asset(
+            "sample/weights/voice.ckpt",
+            size_bytes=VOICE_PROFILE_ASSET_MAX_BYTES + 1,
+        ),
+        _asset("sample/weights/voice.ckpt", sha256="A" * 64),
+        _asset("sample/weights/voice.ckpt", sha256="a" * 63),
+        _asset("sample/weights/voice.ckpt", sha256="g" * 64),
+    ],
+)
+def test_catalog_rejects_malformed_asset_declarations(
+    tmp_path: Path,
+    declaration: object,
+) -> None:
+    """Require exact length and lowercase digest metadata with no v1 fallback."""
+
+    document = _document()
+    _profile_values(document)["gpt_weights"] = declaration
+
+    with pytest.raises(VoiceProfileCatalogValidationError, match="invalid"):
+        _load(tmp_path, document)
+
+
+@pytest.mark.parametrize(
+    "size_bytes",
+    [1, 11, SYNTHESIS_MAX_AUDIO_BYTES + 1],
+)
+def test_catalog_rejects_impossible_reference_audio_lengths(
+    tmp_path: Path,
+    size_bytes: int,
+) -> None:
+    """Keep a reference declaration within the bounded WAV transport envelope."""
+
+    document = _document()
+    _reference_values(document)["audio"] = _asset(
+        "sample/references/neutral.wav",
+        size_bytes=size_bytes,
+    )
+
+    with pytest.raises(VoiceProfileCatalogValidationError, match="invalid"):
+        _load(tmp_path, document)
+
+
+def test_catalog_rejects_casefolded_asset_aliases(tmp_path: Path) -> None:
+    """Reject declarations that Windows would resolve to one ambiguous name."""
+
+    first = _profile("first")
+    second = _profile(
+        "second",
+        base_url="http://127.0.0.1:9881",
+        gpt_weights="SAMPLE/weights/VOICE.ckpt",
+    )
+
+    with pytest.raises(VoiceProfileCatalogValidationError, match="invalid"):
+        _load(tmp_path, _document(first, second))
+
+
+def test_catalog_rejects_conflicting_identity_for_one_asset_path(
+    tmp_path: Path,
+) -> None:
+    """Prevent one candidate path from carrying two claimed content identities."""
+
+    first = _profile("first")
+    second = _profile("second", base_url="http://127.0.0.1:9881")
+    second["gpt_weights"] = _asset(
+        "sample/weights/voice.ckpt",
+        sha256="e" * 64,
+    )
+
+    with pytest.raises(VoiceProfileCatalogValidationError, match="invalid"):
+        _load(tmp_path, _document(first, second))
+
+
+@pytest.mark.parametrize("field_name", ["prompt_text", "prompt_language"])
+def test_catalog_rejects_conflicting_context_for_one_reference_audio(
+    tmp_path: Path,
+    field_name: str,
+) -> None:
+    """Bind an exact recording to only one transcript and language pair."""
+
+    first = _profile("first")
+    second = _profile("second", base_url="http://127.0.0.1:9881")
+    references = second["references"]
+    assert isinstance(references, list)
+    reference = references[0]
+    assert isinstance(reference, dict)
+    reference[field_name] = (
+        "Different exact transcript."
+        if field_name == "prompt_text"
+        else "zh"
+    )
+
+    with pytest.raises(VoiceProfileCatalogValidationError, match="invalid"):
+        _load(tmp_path, _document(first, second))
+
+
+def test_direct_catalog_construction_rejects_a_foreign_asset_root(
+    tmp_path: Path,
+) -> None:
+    """Keep public constructors from bypassing the catalog's fixed root."""
+
+    expected_root = (tmp_path / "expected").resolve()
+    foreign_root = (tmp_path / "foreign").resolve()
+    expected_root.mkdir()
+    foreign_root.mkdir()
+    profile = LocalVoiceProfile(
+        profile_id="sample",
+        display_name="Sample",
+        base_url="http://127.0.0.1:9880",
+        gpt_weights=LocalVoiceAssetDeclaration(
+            asset_root=foreign_root,
+            relative_path=PurePosixPath("voice.ckpt"),
+            size_bytes=1,
+            sha256="a" * 64,
+        ),
+        sovits_weights=LocalVoiceAssetDeclaration(
+            asset_root=expected_root,
+            relative_path=PurePosixPath("voice.pth"),
+            size_bytes=1,
+            sha256="b" * 64,
+        ),
+        speed_factor=1.0,
+        audio_format="wav",
+        rights_status="verified",
+        references=(
+            LocalVoiceReference(
+                emotion="neutral",
+                audio=LocalVoiceAssetDeclaration(
+                    asset_root=expected_root,
+                    relative_path=PurePosixPath("neutral.wav"),
+                    size_bytes=44,
+                    sha256="c" * 64,
+                ),
+                prompt_text="Original reference sentence.",
+                prompt_language="en",
+            ),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="share the catalog asset root"):
+        JsonVoiceProfileCatalog(
+            expected_root,
+            (profile,),
+            default_profile_id="sample",
+        )
+
+
+def test_direct_asset_construction_rejects_a_dotdot_root(tmp_path: Path) -> None:
+    """Apply the lexical root invariant outside the strict JSON load path."""
+
+    with pytest.raises(ValueError, match="declaration is invalid"):
+        LocalVoiceAssetDeclaration(
+            asset_root=tmp_path / "safe" / ".." / "outside",
+            relative_path=PurePosixPath("voice.ckpt"),
+            size_bytes=1,
+            sha256="a" * 64,
+        )
+
+
+@pytest.mark.parametrize(
     ("field_name", "value"),
     [
         ("emotion", "Happy"),
         ("emotion", "../escape"),
-        ("audio", "../outside.wav"),
-        ("audio", "C:/outside.wav"),
-        ("audio", "folder\\reference.wav"),
-        ("audio", "folder//reference.wav"),
-        ("audio", "sample/reference.mp3"),
+        ("audio", _asset("../outside.wav")),
+        ("audio", _asset("C:/outside.wav")),
+        ("audio", _asset("folder\\reference.wav")),
+        ("audio", _asset("folder//reference.wav")),
+        ("audio", _asset("sample/reference.mp3")),
         ("prompt_text", ""),
         ("prompt_text", "\ufeff \n"),
         ("prompt_text", "\u200b\u2060"),
@@ -424,7 +645,7 @@ def test_catalog_rejects_empty_or_excessive_profile_collections(
     """Bound catalog work before constructing nested profile objects."""
 
     document: JsonDocument = {
-        "schema_version": 1,
+        "schema_version": VOICE_PROFILE_CATALOG_SCHEMA_VERSION,
         "default_profile_id": "0",
         "profiles": profiles,
     }
@@ -457,8 +678,9 @@ def test_loader_rejects_duplicate_json_keys_and_nonstandard_constants(
     asset_root.mkdir()
     catalog_path = tmp_path / "voice-profiles.json"
     for raw in (
-        '{"schema_version":1,"schema_version":1,"default_profile_id":"x","profiles":[]}',
-        '{"schema_version":1,"default_profile_id":"x","profiles":NaN}',
+        '{"schema_version":2,"schema_version":2,"default_profile_id":"x","profiles":[]}',
+        '{"schema_version":2,"default_profile_id":"x","profiles":[{"bytes":1,"bytes":1}]}',
+        '{"schema_version":2,"default_profile_id":"x","profiles":NaN}',
     ):
         catalog_path.write_text(raw, encoding="utf-8")
         with pytest.raises(VoiceProfileCatalogValidationError, match="invalid"):
@@ -504,6 +726,48 @@ def test_loader_requires_absolute_catalog_and_asset_paths(tmp_path: Path) -> Non
             (tmp_path / "catalog.json").resolve(),
             Path("relative-assets"),
         )
+    with pytest.raises(VoiceProfileCatalogValidationError, match="invalid"):
+        JsonVoiceProfileCatalog.load(
+            (tmp_path / "catalog.json").resolve(),
+            tmp_path / "nested" / ".." / "assets",
+        )
+
+
+def test_loader_preserves_a_lexical_asset_root_for_later_reparse_checks(
+    tmp_path: Path,
+) -> None:
+    """Do not erase a root link before the managed verifier can reject it."""
+
+    target = tmp_path / "actual-assets"
+    target.mkdir()
+    linked_root = tmp_path / "linked-assets"
+    try:
+        linked_root.symlink_to(target, target_is_directory=True)
+    except (NotImplementedError, OSError) as error:
+        pytest.skip(f"Directory symlinks are unavailable: {type(error).__name__}")
+    catalog_path = tmp_path / "voice-profiles.json"
+    _write_catalog(catalog_path, _document())
+
+    catalog = JsonVoiceProfileCatalog.load(
+        catalog_path.resolve(),
+        linked_root,
+    )
+
+    assert catalog.resolve_selection(
+        "default",
+        "neutral",
+    ).gpt_weights.asset_root == linked_root
+
+
+def test_catalog_rejects_v1_without_a_legacy_fallback(tmp_path: Path) -> None:
+    """Require an explicit identity-bearing migration from every v1 catalog."""
+
+    document = _document()
+    document["schema_version"] = 1
+    _profile_values(document)["gpt_weights"] = "sample/weights/voice.ckpt"
+
+    with pytest.raises(VoiceProfileCatalogValidationError, match="invalid"):
+        _load(tmp_path, document)
 
 
 def test_tracked_example_is_valid_without_shipping_assets(tmp_path: Path) -> None:

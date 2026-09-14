@@ -133,12 +133,27 @@ To test local speech synthesis, separately provide a GPT-SoVITS runtime,
 checkpoints, and reference audio that you have the right to use. Copy
 `config\voice_profiles.example.json` to the ignored
 `workspace\settings\voice-profiles.json`, then replace the example Profile
-with real local relative paths, exact reference text, and the correct language.
-Catalog asset paths use `/` even on Windows. Weights and reference audio must
-remain under the ignored `models\weights\gpt-sovits\` directory. After checking
-those local contents, set `GPT_SOVITS_ALLOW_LOCAL_EVALUATION=True` in `.env`.
-The base installation neither downloads nor starts GPT-SoVITS and never commits
-or packages these assets.
+with exact reference text and language, plus each asset's real relative `path`,
+exact byte length in `bytes`, and 64-character lowercase `sha256`. The example
+lengths and hashes are placeholders and must not be reused for real assets. The
+catalog accepts strict schema v2 only and does not fall back to legacy string
+paths. Asset paths use `/` even on Windows, and weights and reference audio must
+remain under the ignored `models\weights\gpt-sovits\` directory. Catalog parsing
+validates declarations only; it does not attest files or the external service,
+whose loopback HTTP adapter remains `service_binding_unverified`. After checking
+the local contents, set `GPT_SOVITS_ALLOW_LOCAL_EVALUATION=True` in `.env`. The
+base installation neither downloads nor starts GPT-SoVITS and never commits or
+packages these assets.
+
+For a manual migration from legacy string paths, CMD can report each exact
+length and SHA-256 without modifying the file. Lowercase any `A-F` emitted by
+`certutil` before placing the digest in JSON. Use `%%I` instead of `%I` inside a
+`.bat` file:
+
+```bat
+for %I in ("models\weights\gpt-sovits\sample-voice\weights\sample.ckpt") do @echo bytes=%~zI
+certutil -hashfile "models\weights\gpt-sovits\sample-voice\weights\sample.ckpt" SHA256
+```
 
 ### 3. Prepare a Local Model
 

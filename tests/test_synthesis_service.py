@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from hashlib import sha256
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from io import BytesIO
 import json
@@ -32,6 +33,16 @@ def _wav_bytes() -> bytes:
         wav_file.setframerate(24_000)
         wav_file.writeframes(b"\x01\x00" * 24)
     return output.getvalue()
+
+
+def _asset_declaration(path: str, content: bytes) -> dict[str, object]:
+    """Describe synthetic content with the same identity fields as production."""
+
+    return {
+        "path": path,
+        "bytes": len(content),
+        "sha256": sha256(content).hexdigest(),
+    }
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -96,26 +107,38 @@ def _install_local_config(
     references = profile_root / "references"
     weights.mkdir(parents=True, exist_ok=True)
     references.mkdir(parents=True, exist_ok=True)
-    (weights / "voice.ckpt").write_bytes(b"fake-gpt")
-    (weights / "voice.pth").write_bytes(b"fake-sovits")
-    (references / "neutral.wav").write_bytes(_wav_bytes())
+    gpt_content = b"fake-gpt"
+    sovits_content = b"fake-sovits"
+    reference_content = _wav_bytes()
+    (weights / "voice.ckpt").write_bytes(gpt_content)
+    (weights / "voice.pth").write_bytes(sovits_content)
+    (references / "neutral.wav").write_bytes(reference_content)
     document = {
-        "schema_version": 1,
+        "schema_version": 2,
         "default_profile_id": "sample",
         "profiles": [
             {
                 "profile_id": "sample",
                 "display_name": "Synthetic test voice",
                 "base_url": base_url,
-                "gpt_weights": "sample/weights/voice.ckpt",
-                "sovits_weights": "sample/weights/voice.pth",
+                "gpt_weights": _asset_declaration(
+                    "sample/weights/voice.ckpt",
+                    gpt_content,
+                ),
+                "sovits_weights": _asset_declaration(
+                    "sample/weights/voice.pth",
+                    sovits_content,
+                ),
                 "speed_factor": 1.0,
                 "audio_format": "wav",
                 "rights_status": rights_status,
                 "references": [
                     {
                         "emotion": "neutral",
-                        "audio": "sample/references/neutral.wav",
+                        "audio": _asset_declaration(
+                            "sample/references/neutral.wav",
+                            reference_content,
+                        ),
                         "prompt_text": "Original test reference sentence.",
                         "prompt_language": "en",
                     }
