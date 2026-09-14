@@ -87,6 +87,16 @@ const MAX_TIMED_OUT_VOICE_CAPTURE_REQUEST_IDS = 32
 const SHUTDOWN_TIMEOUT_MS = 30_000
 const RESTART_TIMEOUT_MS = HANDSHAKE_TIMEOUT_MS + INITIALIZE_TIMEOUT_MS + 5_000
 
+// Node process and stream errors commonly embed executable paths, user names,
+// or native diagnostics. Renderer-facing failures therefore use fixed text.
+const BACKEND_ENVIRONMENT_MISSING_MESSAGE =
+  'Python environment was not found.'
+const BACKEND_ENTRY_POINT_MISSING_MESSAGE =
+  'Desktop Backend was not found.'
+const BACKEND_PROCESS_FAILURE_MESSAGE =
+  'Python Backend process could not be started.'
+const BACKEND_INPUT_FAILURE_MESSAGE = 'Python Backend input failed.'
+
 interface PendingRequest {
   method: ProtocolMethod
   chatId?: string
@@ -281,16 +291,12 @@ export class BackendProcess {
     )
 
     if (!existsSync(pythonExecutable)) {
-      this.fail(
-        `Python environment was not found: ${pythonExecutable}`,
-      )
+      this.fail(BACKEND_ENVIRONMENT_MISSING_MESSAGE)
       return
     }
 
     if (!existsSync(bridgeScript)) {
-      this.fail(
-        `Desktop Backend was not found: ${bridgeScript}`,
-      )
+      this.fail(BACKEND_ENTRY_POINT_MISSING_MESSAGE)
       return
     }
 
@@ -345,14 +351,15 @@ export class BackendProcess {
       this.handleProtocolLine(line)
     })
 
-    child.stderr.on('data', (chunk: string) => {
-      // Retain only a short diagnostic; detailed traces remain in logs/app.log.
-      this.lastDiagnostic = chunk.trim().slice(-400)
+    child.stderr.on('data', () => {
+      // Python owns detailed diagnostics in logs/app.log. Stderr may contain
+      // model paths or native-library details, so it must never reach Renderer.
+      this.lastDiagnostic = 'Python Backend reported an internal diagnostic.'
     })
 
-    child.once('error', (error) => {
+    child.once('error', () => {
       if (this.child === child) {
-        const message = `Python Backend process failed: ${error.message}`
+        const message = BACKEND_PROCESS_FAILURE_MESSAGE
         this.rejectPendingActionPromises(message)
         this.clearChild(child)
         this.fail(message)
@@ -363,11 +370,9 @@ export class BackendProcess {
       this.handleExit(child, code, signal)
     })
 
-    child.stdin.on('error', (error) => {
+    child.stdin.on('error', () => {
       if (this.child === child && !this.expectedExit) {
-        this.protocolFailure(
-          `Python Backend input failed: ${error.message}`,
-        )
+        this.protocolFailure(BACKEND_INPUT_FAILURE_MESSAGE)
       }
     })
 
@@ -1190,13 +1195,10 @@ export class BackendProcess {
     })
     try {
       child.stdin.write(wireRequest)
-    } catch (error: unknown) {
+    } catch {
       this.pendingRequests.delete(requestId)
-      const message = error instanceof Error
-        ? error.message
-        : 'Unknown Backend input error.'
-      this.protocolFailure(`Could not write to Python Backend: ${message}`)
-      throw new Error('Could not write to the Python Backend.', { cause: error })
+      this.protocolFailure(BACKEND_INPUT_FAILURE_MESSAGE)
+      throw new Error('Could not write to the Python Backend.')
     }
     return requestId
   }

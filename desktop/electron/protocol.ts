@@ -40,6 +40,7 @@ export const VOICE_CAPTURE_MAX_SAMPLES = 480_000
 export const VOICE_CAPTURE_MIN_SPEECH_SAMPLES = 3_200
 export const VOICE_CAPTURE_MAX_SESSION_ID_LENGTH = 128
 export const VOICE_CAPTURE_MAX_BASE64_CHARACTERS = 1_280_000
+export const VOICE_TRANSCRIPTION_MAX_TEXT_CODE_POINTS = 4_096
 export const MAX_ATTACHMENT_FILE_COUNT = 10
 export const MAX_ATTACHMENT_FILE_NAME_LENGTH = 255
 export const MAX_ATTACHMENT_MEDIA_TYPE_LENGTH = 255
@@ -231,6 +232,11 @@ export interface VoiceCaptureCompleteParams extends VoiceCaptureMetadata {
   pcmBase64: string
 }
 
+export interface VoiceTranscriptionStartParams
+  extends VoiceCaptureCompleteParams {
+  language: 'auto' | 'zh' | 'en'
+}
+
 export interface AttachmentScope {
   kind: 'chat' | 'project'
   id: string
@@ -274,6 +280,7 @@ export interface RequestParamsByMethod {
   'voice.settings.get': Record<string, never>
   'voice.settings.update': VoiceSettingsUpdateParams
   'voice.capture.complete': VoiceCaptureCompleteParams
+  'voice.transcription.start': VoiceTranscriptionStartParams
   'attachment.list': AttachmentListParams
   'attachment.add': AttachmentAddParams
   'attachment.remove': AttachmentRemoveParams
@@ -480,6 +487,15 @@ export interface VoiceCaptureResult extends VoiceCaptureMetadata {
   durationMs: number
   speechDurationMs: number
   sha256Hex: string
+}
+
+export interface VoiceTranscriptionResult {
+  kind: 'voice.transcription'
+  sessionId: string
+  chatId: string
+  text: string
+  language: 'zh' | 'en'
+  languageProbability: number
 }
 
 export interface AttachmentItem {
@@ -1296,7 +1312,14 @@ function parseVoiceCaptureMetadata(
 export function parseVoiceCaptureCompleteParams(
   value: unknown,
 ): VoiceCaptureCompleteParams {
-  const context = 'voice.capture.complete params'
+  return parseVoicePcmParams(value, 'voice.capture.complete params')
+}
+
+function parseVoicePcmParams(
+  value: unknown,
+  context: string,
+  additionalFields: string[] = [],
+): VoiceCaptureCompleteParams {
   const params = asRecord(value, context)
   requireFields(
     params,
@@ -1310,6 +1333,7 @@ export function parseVoiceCaptureCompleteParams(
       'speechStartSample',
       'speechEndSample',
       'pcmBase64',
+      ...additionalFields,
     ],
     context,
   )
@@ -1335,6 +1359,23 @@ export function parseVoiceCaptureCompleteParams(
     )
   }
   return { ...metadata, pcmBase64 }
+}
+
+/** Validate one long-running local transcription request and language hint. */
+export function parseVoiceTranscriptionStartParams(
+  value: unknown,
+): VoiceTranscriptionStartParams {
+  const context = 'voice.transcription.start params'
+  const params = asRecord(value, context)
+  const capture = parseVoicePcmParams(params, context, ['language'])
+  const language = readString(params, 'language', context, { maximum: 4 })
+  if (language !== 'auto' && language !== 'zh' && language !== 'en') {
+    return fail(
+      'protocol.invalid_params',
+      `${context}.language must be auto, zh, or en.`,
+    )
+  }
+  return { ...capture, language }
 }
 
 function parseAttachmentScope(
@@ -1591,6 +1632,12 @@ export function parseClientRequest(value: unknown): ClientRequest {
     return {
       type: 'request', protocol, id, method,
       params: parseVoiceCaptureCompleteParams(request.params),
+    }
+  }
+  if (method === 'voice.transcription.start') {
+    return {
+      type: 'request', protocol, id, method,
+      params: parseVoiceTranscriptionStartParams(request.params),
     }
   }
   if (method === 'attachment.list') {
@@ -2738,6 +2785,77 @@ export function parseVoiceCaptureResult(
   }
 }
 
+/** Parse a bounded final transcript without accepting PCM or engine details. */
+export function parseVoiceTranscriptionResult(
+  value: unknown,
+): VoiceTranscriptionResult {
+  const context = 'voice transcription result'
+  const result = asRecord(value, context)
+  requireFields(
+    result,
+    [
+      'kind',
+      'sessionId',
+      'chatId',
+      'text',
+      'language',
+      'languageProbability',
+    ],
+    context,
+  )
+  if (result.kind !== 'voice.transcription') {
+    return fail(
+      'protocol.invalid_message',
+      `${context}.kind must be 'voice.transcription'.`,
+    )
+  }
+  const sessionId = readString(result, 'sessionId', context, {
+    maximum: VOICE_CAPTURE_MAX_SESSION_ID_LENGTH,
+  })
+  if (!VOICE_SESSION_ID_PATTERN.test(sessionId)) {
+    return fail(
+      'protocol.invalid_message',
+      `${context}.sessionId must use the voice_<id> format.`,
+    )
+  }
+  const text = readString(result, 'text', context, {
+    maximum: VOICE_TRANSCRIPTION_MAX_TEXT_CODE_POINTS,
+  })
+  if (!hasNonBlankCodePoint(text)) {
+    return fail(
+      'protocol.invalid_message',
+      `${context}.text cannot be blank.`,
+    )
+  }
+  const language = readString(result, 'language', context, { maximum: 2 })
+  if (language !== 'zh' && language !== 'en') {
+    return fail(
+      'protocol.invalid_message',
+      `${context}.language must be zh or en.`,
+    )
+  }
+  const languageProbability = result.languageProbability
+  if (
+    typeof languageProbability !== 'number'
+    || !Number.isFinite(languageProbability)
+    || languageProbability < 0
+    || languageProbability > 1
+  ) {
+    return fail(
+      'protocol.invalid_message',
+      `${context}.languageProbability must be finite and between 0 and 1.`,
+    )
+  }
+  return {
+    kind: 'voice.transcription',
+    sessionId,
+    chatId: readIdentifier(result, 'chatId', context),
+    text,
+    language,
+    languageProbability,
+  }
+}
+
 function validateSuccessResult(value: unknown): Record<string, unknown> {
   const result = asRecord(value, 'response.result')
   if (result.kind === 'voice.settings') {
@@ -2746,6 +2864,10 @@ function validateSuccessResult(value: unknown): Record<string, unknown> {
   }
   if (result.kind === 'voice.capture') {
     parseVoiceCaptureResult(result)
+    return result
+  }
+  if (result.kind === 'voice.transcription') {
+    parseVoiceTranscriptionResult(result)
     return result
   }
   if (Object.hasOwn(result, 'protocol')) {

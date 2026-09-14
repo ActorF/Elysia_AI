@@ -50,7 +50,7 @@
 | Attachments / Sources | ✅ 基础可用 | 仅安全存储与元数据；尚不读取、解析、Embedding 或 RAG |
 | Audio Devices | ✅ 可用 | 麦克风/扬声器选择、Windows 权限、输入电平与输出音调测试 |
 | 单句录音与本地 VAD | ✅ 可用 | 显式启动、16 kHz mono `s16le`、临时验证；不生成 Chat Turn |
-| STT / Faster-Whisper | 🚧 开发中 | 领域契约与离线 Adapter 已完成；可选 Runtime、本地模型、后台任务、协议和 UI 尚未接通 |
+| STT / Faster-Whisper | 🚧 开发中 | 领域契约、离线 Adapter、有界后台任务、双端协议和 Python Backend 已接通；Runtime、本地模型与 UI 尚未接通 |
 | GPT-SoVITS / TTS | ⏳ 计划中 | 本地权重尚未接入运行时代码 |
 | 连续语音与打断 | ⏳ 计划中 | 尚无完整 `LISTENING → THINKING → SPEAKING` 会话 |
 | 文件解析与本地 RAG | ⏳ 计划中 | 尚无 Loader、Chunking、Vector Store 或引用回答 |
@@ -210,7 +210,8 @@ DEBUG=False
 - 已实现麦克风/扬声器枚举、设备偏好、Windows 麦克风权限状态、短暂输入电平与输出音调测试。
 - 有界单句采集只在用户点击 **Start microphone** 后开始；Renderer 本地 downmix、重采样并运行本地 VAD。
 - 有效片段固定为 16 kHz、mono、signed 16-bit little-endian PCM；Python 只返回格式、时长和 SHA-256 等安全收据。
-- 当前 Capture 链不会保存录音、调用 Brain、创建 Chat 消息或执行 TTS。Python 已有只接受明确本地目录、不使用模型别名触发权重下载的 Faster-Whisper Adapter，但它尚未接入 Desktop Backend；本机也尚未安装可选 STT Runtime 或本地模型。
+- 当前 Voice UI 仍只调用安全 Receipt，不会保存录音、调用 Brain、创建 Chat 消息或执行 TTS。Python Backend 另有 `voice.transcription.start` 长任务：同一份验证后 PCM 只提交一次，由有界 Worker 调用只接受明确本地目录的 Faster-Whisper Adapter，并通过 Progress、Cancel、Timeout 和 PCM-free Result 返回最终文字。它与 Chat 生成互斥；取消或超时后，无法强杀的 Native Inference 会继续占用容量直至返回，其迟到结果会被丢弃。
+- 本机尚未安装可选 STT Runtime 或本地 Faster-Whisper 模型，Electron/React 也尚未暴露可编辑 Transcript 流程，所以当前界面仍不会显示识别文字。
 - 本机可选的 GPT-SoVITS 权重仍未接入。来源和使用限制见 [MODEL_LICENSE.md](./MODEL_LICENSE.md)。
 
 ---
@@ -323,7 +324,7 @@ cd /d D:\Elysia_AI\desktop
 
 ### 为什么 Voice 页面没有转写或回复？
 
-这是当前边界。设备测试与单句采集用于验证权限、PCM 和 VAD 生命周期；Faster-Whisper 的引擎契约与离线 Adapter 已完成并用 Fake Runtime 测试，但后台任务、Desktop Protocol、Transcript UI、本机依赖和本地模型尚未接通。因此界面仍不会转写、回复或创建 Chat Turn。
+这是当前前端边界。设备测试与单句采集用于验证权限、PCM 和 VAD 生命周期；Faster-Whisper 的引擎契约、离线 Adapter、有界后台任务、双端 Desktop Protocol 与 Python Backend 已完成并用 Fake Runtime 测试，但 Electron/React Transcript API 与 UI、本机依赖和本地模型尚未接通。因此界面仍不会转写、回复或创建 Chat Turn。
 
 ### 为什么 Project Sources 不能回答文件内容？
 
@@ -337,7 +338,7 @@ cd /d D:\Elysia_AI\desktop
 - `workspace/` 和 `logs/` 不进入 Git；请把它们视为私人数据，也不要随调试包公开。
 - `.env` 被 Git 忽略，但仍不应放入不受信任的同步目录。
 - 文件源路径不会返回给 React；附件公开状态只包含最小安全元数据。
-- 音频测试不会保存录音。有界采集的 PCM 只在校验所需的短暂生命周期内存在，不进入 Chat 或 Memory。
+- 音频测试不会保存录音。有界采集的 PCM 只在校验或转写所需的短暂生命周期内存在，不进入 Chat 或 Memory；协议结果不包含 PCM、模型路径或 Native Error。
 - 删除源码或构建产物时不要误删 `workspace/`；需要迁移数据时应使用 Recovery Service 生成的受校验导出。
 
 ---

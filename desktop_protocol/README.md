@@ -32,7 +32,8 @@ Version 1 defines strict request, response, error, stream, progress,
 permission, event, cancel, and permission-decision shapes. The current runtime
 advertises `chat.stream`, `chat.retry`, `request.cancel`, `stream`, `progress`,
 `event`, `chat.sessions`, `project.management`, `settings.management`,
-`attachment.management`, `voice.settings`, and `voice.capture`.
+`attachment.management`, `voice.settings`, `voice.capture`, and the optional
+`voice.transcription` capability.
 Both new-turn and retry generation reuse the `chat.reply` stream.
 Cancellation succeeds only before generation claims its atomic commit gate, so
 a successful Stop response guarantees that the interrupted turn is not saved.
@@ -63,7 +64,26 @@ canonical Base64 PCM. Python validates that transient payload and returns only
 the session and Chat IDs, format metadata, total and speech durations, and a
 SHA-256 digest; PCM is never echoed in the response. This operation does not
 persist audio, invoke the Brain, or create a Chat Turn. Speech-to-text, TTS, and
-continuous voice conversation remain future work.
+continuous voice conversation remain outside this receipt method.
+
+`voice.transcription.start` is the separate long-running speech-to-text
+request. It reuses the exact fixed-format capture fields, adds an `auto`, `zh`,
+or `en` language hint, and carries each PCM payload exactly once. Python admits
+the request to a fixed-size bounded worker before emitting
+`voice.transcription.started` and progress. Its terminal response contains only
+the original Voice session and Chat IDs, bounded final text, resolved `zh` or
+`en` language, and a finite language probability. It never contains PCM, a
+model path, or native-library diagnostics.
+
+Transcription and Chat generation are mutually exclusive because the first
+local implementation must not overcommit CPU/GPU model resources. Cancellation
+and timeout are immediate logical terminal states. Python cannot safely kill a
+thread executing native inference, so that physical worker remains occupied
+until the call returns; the late result is discarded and new STT or Chat work
+continues to receive a busy response during that drain. Shutdown closes
+admission and suppresses callbacks that lose the shutdown race. This protocol
+surface is implemented in Python, while the current Renderer still uses only
+the receipt method and does not yet expose editable transcripts.
 
 `attachment.list`, `attachment.add`, and `attachment.remove` operate on one
 exact Chat or Project scope. Native source paths are accepted only across the

@@ -15,6 +15,7 @@ from desktop_protocol import (
     PROTOCOL_NAME,
     PROTOCOL_VERSION,
     VOICE_CAPTURE_MAX_BASE64_CHARACTERS,
+    VOICE_TRANSCRIPTION_MAX_TEXT_CODE_POINTS,
     ProtocolValidationError,
     build_error_response,
     build_event,
@@ -496,6 +497,124 @@ def test_voice_capture_result_rejects_pcm_or_other_extra_fields() -> None:
         parse_server_message(message)
 
 
+def _voice_transcription_request() -> JsonObject:
+    """Provide the shared one-shot transcription request fixture."""
+
+    sample = next(
+        cast(JsonObject, candidate)
+        for candidate in _fixtures()["validClientMessages"]
+        if cast(JsonObject, candidate)["name"]
+        == "voice transcription start request"
+    )
+    return cast(JsonObject, deepcopy(sample["message"]))
+
+
+def _voice_transcription_response() -> JsonObject:
+    """Provide the shared final PCM-free transcription response fixture."""
+
+    sample = next(
+        cast(JsonObject, candidate)
+        for candidate in _fixtures()["validServerMessages"]
+        if cast(JsonObject, candidate)["name"]
+        == "voice transcription response"
+    )
+    return cast(JsonObject, deepcopy(sample["message"]))
+
+
+def test_voice_transcription_request_reuses_pcm_contract_once() -> None:
+    """Accept one capture plus language without a separate receipt round trip."""
+
+    request = _voice_transcription_request()
+    parsed = parse_client_request(request)
+    params = cast(JsonObject, parsed["params"])
+
+    assert parsed["method"] == "voice.transcription.start"
+    assert params["language"] == "auto"
+    assert len(base64.b64decode(cast(str, params["pcmBase64"]))) == 6_400
+
+
+@pytest.mark.parametrize("language", ["", "fr", "ZH", None, True])
+def test_voice_transcription_request_rejects_unknown_language(
+    language: object,
+) -> None:
+    """Keep speech recognition limited to automatic, Chinese, or English."""
+
+    request = _voice_transcription_request()
+    cast(JsonObject, request["params"])["language"] = language
+
+    with pytest.raises(ProtocolValidationError, match="language"):
+        parse_client_request(request)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("pcmBase64", "AB=="), ("speechEndSample", 3_199)],
+)
+def test_voice_transcription_request_rejects_invalid_capture_fields(
+    field: str,
+    value: object,
+) -> None:
+    """Prove transcription reuses canonical PCM and speech-window checks."""
+
+    request = _voice_transcription_request()
+    cast(JsonObject, request["params"])[field] = value
+
+    with pytest.raises(ProtocolValidationError):
+        parse_client_request(request)
+
+
+def test_voice_transcription_result_is_bounded_and_pcm_free() -> None:
+    """Accept final text while rejecting any need to echo its source audio."""
+
+    message = _voice_transcription_response()
+    parsed = parse_server_message(message)
+    result = cast(JsonObject, parsed["result"])
+
+    assert result["text"] == "你好，世界。"
+    assert result["language"] == "zh"
+    assert "pcmBase64" not in result
+    assert "modelPath" not in result
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("text", ""),
+        ("text", "\ufeff \t\n"),
+        ("text", "x" * (VOICE_TRANSCRIPTION_MAX_TEXT_CODE_POINTS + 1)),
+        ("language", "auto"),
+        ("language", "fr"),
+        ("languageProbability", True),
+        ("languageProbability", float("nan")),
+        ("languageProbability", float("inf")),
+        ("languageProbability", 10**1_000),
+        ("languageProbability", -0.01),
+        ("languageProbability", 1.01),
+    ],
+)
+def test_voice_transcription_result_rejects_invalid_output(
+    field: str,
+    value: object,
+) -> None:
+    """Reject unsafe engine output before Electron can place it in a draft."""
+
+    message = _voice_transcription_response()
+    cast(JsonObject, message["result"])[field] = value
+
+    with pytest.raises(ProtocolValidationError):
+        parse_server_message(message)
+
+
+def test_voice_transcription_result_rejects_private_extra_fields() -> None:
+    """Prevent audio, model paths, or native diagnostics crossing the wire."""
+
+    message = _voice_transcription_response()
+    cast(JsonObject, message["result"])["modelPath"] = "D:/private/model"
+
+    with pytest.raises(ProtocolValidationError, match="supported result"):
+        parse_server_message(message)
+
+
 def test_machine_readable_schema_covers_every_protocol_message_kind() -> None:
     """Verify that machine readable schema covers every protocol message kind."""
     schema = cast(JsonObject, json.loads(SCHEMA_PATH.read_text("utf-8")))
@@ -533,6 +652,7 @@ def test_machine_readable_schema_covers_every_protocol_message_kind() -> None:
         "voiceSettingsGetRequest",
         "voiceSettingsUpdateRequest",
         "voiceCaptureCompleteRequest",
+        "voiceTranscriptionStartRequest",
         "cancelRequest",
         "permissionResponseRequest",
         "shutdownRequest",
@@ -555,6 +675,8 @@ def test_machine_readable_schema_covers_every_protocol_message_kind() -> None:
         "voiceSettingsStateResult",
         "voiceCaptureCompleteParams",
         "voiceCaptureResult",
+        "voiceTranscriptionStartParams",
+        "voiceTranscriptionResult",
         "voiceSessionIdentifier",
         "audioDeviceId",
         "nullableAudioDeviceId",
@@ -569,6 +691,20 @@ def test_machine_readable_schema_covers_every_protocol_message_kind() -> None:
         "aligned to 320-sample frames" in invariant
         for invariant in runtime_invariants
     )
+    assert any(
+        "voice.transcription.start sampleCount and speech markers" in invariant
+        for invariant in runtime_invariants
+    )
+    assert any(
+        "voice.transcription.start pcmBase64 is strict canonical Base64"
+        in invariant
+        for invariant in runtime_invariants
+    )
+    assert any(
+        "voice.transcription result text follows the protocol non-blank"
+        in invariant
+        for invariant in runtime_invariants
+    )
 
     settings_values = cast(JsonObject, definitions["settingsValues"])
     properties = cast(JsonObject, settings_values["properties"])
@@ -580,6 +716,20 @@ def test_machine_readable_schema_covers_every_protocol_message_kind() -> None:
         "dataImportMaxBytes",
     }
     assert settings_values["additionalProperties"] is False
+
+    transcription_result = cast(
+        JsonObject,
+        definitions["voiceTranscriptionResult"],
+    )
+    transcription_properties = cast(
+        JsonObject,
+        transcription_result["properties"],
+    )
+    transcript_text = cast(JsonObject, transcription_properties["text"])
+    assert (
+        transcript_text["maxLength"]
+        == VOICE_TRANSCRIPTION_MAX_TEXT_CODE_POINTS
+    )
 
 
 def _project_state_response() -> JsonObject:

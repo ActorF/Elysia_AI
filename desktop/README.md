@@ -13,6 +13,9 @@ attachments, Project source storage, semantic design tokens, system/light/dark
 themes, keyboard and screen-reader navigation, durable per-Chat drafts,
 renderer-refresh stream recovery, and consistent loading, empty, error,
 offline, and fatal states.
+The Python side now also accepts a separate long-running transcription request
+through a bounded Faster-Whisper worker, but the Electron/React API and editable
+transcript surface are deliberately not connected yet.
 Electron is frozen as the production
 shell. The Tauri source and toolchain were removed after the comparison; the
 rationale, recorded measurements, and revisit gates are in
@@ -81,10 +84,10 @@ Electron starts `D:\Elysia_AI\.venv\Scripts\python.exe`, runs
   final message. The compact character panel is also modal, traps focus, and
   has its own close control.
 - Projects support persisted metadata, instructions, workspace binding, Chat
-  assignment, archive, and restore. Speech recognition, speech output, Work
-  permissions, and later file processing controls remain read-only until their
-  service boundaries exist. The bounded Voice capture does not yet perform
-  speech recognition or create a Chat Turn.
+  assignment, archive, and restore. The Python speech-recognition boundary now
+  exists, but its Electron/React API is not exposed; speech output, Work
+  permissions, and later file processing controls also remain unavailable. The
+  current bounded Voice UI therefore does not transcribe or create a Chat Turn.
 
 ## Manual Voice capture smoke test
 

@@ -50,7 +50,7 @@
 | Attachments / Sources | ✅ Foundation available | Safe storage and metadata only; no content reading, parsing, Embedding, or RAG |
 | Audio Devices | ✅ Available | Microphone/speaker selection, Windows permission state, input level, and output tone tests |
 | One-utterance recording and local VAD | ✅ Available | Explicit start, 16 kHz mono `s16le`, transient validation; no Chat Turn |
-| STT / Faster-Whisper | 🚧 In development | Domain contract and offline adapter are complete; optional runtime, local model, worker, protocol, and UI are not connected |
+| STT / Faster-Whisper | 🚧 In development | Domain contract, offline adapter, bounded worker, matching Python/TypeScript protocol, and Python Backend are connected; runtime, local model, and UI are not |
 | GPT-SoVITS / TTS | ⏳ Planned | Local weights are not connected to runtime code |
 | Continuous voice and barge-in | ⏳ Planned | No complete `LISTENING → THINKING → SPEAKING` session yet |
 | File parsing and local RAG | ⏳ Planned | No Loaders, Chunking, Vector Store, or cited answers |
@@ -210,7 +210,8 @@ The current application connects only to local Ollama and does not require a clo
 - Microphone/speaker enumeration, saved device preferences, Windows microphone permission state, short input-level tests, and output-tone tests are implemented.
 - Bounded one-utterance capture starts only after **Start microphone** is pressed. The Renderer performs local downmixing, resampling, and local VAD.
 - A valid segment uses 16 kHz mono signed 16-bit little-endian PCM. Python returns only safe receipt data such as format, duration, and SHA-256.
-- The current capture path does not persist recordings, invoke the Brain, create a Chat message, or perform TTS. Python now has a Faster-Whisper adapter that accepts only an explicit local directory and never resolves a model alias into a weight download, but it is not connected to the Desktop Backend; the optional STT runtime and a local model are also not installed on this machine yet.
+- The current Voice UI still uses only the safe receipt path; it does not persist recordings, invoke the Brain, create a Chat message, or perform TTS. Python also exposes a long-running `voice.transcription.start` job: the validated PCM is submitted exactly once, a bounded worker calls a Faster-Whisper adapter that accepts only an explicit local directory, and the final text returns through progress, cancellation, timeout, and a PCM-free result. STT and Chat generation are mutually exclusive. When native inference cannot be killed after cancellation or timeout, it retains capacity until it returns and its late result is discarded.
+- The optional STT runtime and local Faster-Whisper model are not installed on this machine, and Electron/React does not yet expose the editable transcript flow, so the current UI still shows no recognized text.
 - Optional local GPT-SoVITS weights are not connected yet. See [MODEL_LICENSE.md](./MODEL_LICENSE.md) for provenance and restrictions.
 
 ---
@@ -323,7 +324,7 @@ Confirm that:
 
 ### Why does the Voice page not transcribe or reply?
 
-That remains the current UI boundary. Device tests and one-utterance capture validate permissions, PCM, and the VAD lifecycle. The engine-independent contract and offline Faster-Whisper adapter are implemented and tested with a fake runtime, but the worker, Desktop Protocol, transcript UI, local dependencies, and local model are not connected. The UI therefore still cannot transcribe, reply, or create a Chat Turn.
+That remains the current frontend boundary. Device tests and one-utterance capture validate permissions, PCM, and the VAD lifecycle. The engine-independent contract, offline Faster-Whisper adapter, bounded worker, matching Python/TypeScript Desktop Protocol, and Python Backend are implemented and tested with a fake runtime, but the Electron/React transcript API and UI, local dependencies, and local model are not connected. The UI therefore still cannot transcribe, reply, or create a Chat Turn.
 
 ### Why can Project Sources not answer from file contents?
 
@@ -337,7 +338,7 @@ Files are currently stored safely and represented by metadata only. Loaders, Chu
 - `workspace/` and `logs/` are excluded from Git. Treat both as private and do not include them in public diagnostic archives.
 - `.env` is ignored by Git but should still stay outside untrusted synchronization locations.
 - Original attachment filesystem paths are not returned to React. Public attachment state contains only minimal safe metadata.
-- Audio tests do not retain recordings. Bounded-capture PCM exists only for the transient validation lifecycle and does not enter Chat or Memory.
+- Audio tests do not retain recordings. Bounded-capture PCM exists only for the transient validation or transcription lifecycle and does not enter Chat or Memory; protocol results contain no PCM, model path, or native error.
 - Do not remove `workspace/` while cleaning source or build output. Use validated Recovery Service exports when moving data.
 
 ---

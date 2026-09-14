@@ -11,6 +11,7 @@ from io import BytesIO, StringIO, TextIOWrapper
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event, Timer
+from time import monotonic
 from typing import Any, cast
 from unittest.mock import patch
 
@@ -52,6 +53,7 @@ from desktop_backend import (
     SERVER_NAME,
     SERVER_VERSION,
     DesktopBackend,
+    TranscriptionRunnerFactory,
     _configure_protocol_streams,
     _extract_model_names,
 )
@@ -73,6 +75,14 @@ from projects import (
 )
 from voice import (
     JsonVoiceSettingsRepository,
+    Transcriber,
+    TranscriptionJobCallback,
+    TranscriptionJobRunner,
+    TranscriptionJobRunnerConfig,
+    TranscriptionJobSnapshot,
+    TranscriptionRequest,
+    TranscriptionResult,
+    TranscriptionUnavailableError,
     VoiceSettingsService,
     create_voice_settings_service,
 )
@@ -436,6 +446,114 @@ class FakeBrain:
 
 JsonObject = dict[str, Any]
 SESSION_TOKEN = "0123456789abcdef0123456789abcdef"
+
+
+class _ControlledTranscriber:
+    """Hold one deterministic STT outcome behind test-controlled events."""
+
+    def __init__(self, outcome: TranscriptionResult | Exception) -> None:
+        """Store the outcome and expose inference lifecycle observations."""
+
+        self.outcome = outcome
+        self.entered = Event()
+        self.release = Event()
+        self.finished = Event()
+        self.requests: list[TranscriptionRequest] = []
+
+    def transcribe(
+        self,
+        request: TranscriptionRequest,
+    ) -> TranscriptionResult:
+        """Wait for test release, then return or raise the configured outcome."""
+
+        self.requests.append(request)
+        self.entered.set()
+        try:
+            if not self.release.wait(2.0):
+                raise RuntimeError("Test did not release transcription.")
+            if isinstance(self.outcome, Exception):
+                raise self.outcome
+            return self.outcome
+        finally:
+            self.finished.set()
+
+
+def _transcription_runner_factory(
+    transcriber: Transcriber,
+    *,
+    terminal_event: Event | None = None,
+    timeout_seconds: float = 1.0,
+) -> tuple[TranscriptionRunnerFactory, list[TranscriptionJobRunner]]:
+    """Return an injectable real runner factory and its created instances."""
+
+    runners: list[TranscriptionJobRunner] = []
+
+    def _factory(
+        callback: TranscriptionJobCallback,
+    ) -> TranscriptionJobRunner:
+        """Create one bounded test runner around the supplied Transcriber."""
+
+        def _observe_terminal(snapshot: TranscriptionJobSnapshot) -> None:
+            """Signal only after Backend terminal handling has returned."""
+
+            try:
+                callback(snapshot)
+            finally:
+                if terminal_event is not None:
+                    terminal_event.set()
+
+        runner = TranscriptionJobRunner(
+            transcriber,
+            config=TranscriptionJobRunnerConfig(
+                max_concurrent_jobs=1,
+                max_queued_jobs=0,
+                default_timeout_seconds=timeout_seconds,
+            ),
+            on_terminal=_observe_terminal,
+        )
+        runners.append(runner)
+        return runner
+
+    return _factory, runners
+
+
+def _initialized_backend(
+    tmp_path: Path,
+    transcription_runner_factory: TranscriptionRunnerFactory,
+) -> tuple[DesktopBackend, FakeBrain, StringIO]:
+    """Create and initialize one directly driven Backend for async tests."""
+
+    fake_brain = FakeBrain()
+    output_stream = StringIO()
+    backend = DesktopBackend(
+        brain_factory=lambda: cast(Brain, fake_brain),
+        model_loader=lambda: (fake_brain.model_name,),
+        settings_validator=lambda: None,
+        settings_repository=_desktop_settings_repository(
+            tmp_path / "global.json"
+        ),
+        voice_settings_service=create_voice_settings_service(tmp_path),
+        transcription_runner_factory=transcription_runner_factory,
+        attachment_store=JsonAttachmentStore(
+            tmp_path / "attachments",
+            max_file_bytes=1_024 * 1_024,
+        ),
+        input_stream=StringIO(),
+        output_stream=output_stream,
+        expected_session_token=SESSION_TOKEN,
+    )
+    assert backend._handle_line(json.dumps(_handshake_request()))
+    assert backend._handle_line(json.dumps(_initialize_request()))
+    return backend, fake_brain, output_stream
+
+
+def _output_messages(output_stream: StringIO) -> list[JsonObject]:
+    """Parse every complete Backend frame currently held by a test stream."""
+
+    return [
+        cast(JsonObject, json.loads(line))
+        for line in output_stream.getvalue().splitlines()
+    ]
 
 
 def _request(
@@ -2337,6 +2455,559 @@ def test_voice_capture_is_rejected_while_chat_generation_is_active() -> None:
     assert brain.stream_calls == [
         (str(fake_brain.chat.chat_id), "Keep working")
     ]
+
+
+def test_voice_transcription_is_lazy_ordered_and_pcm_free(
+    tmp_path: Path,
+) -> None:
+    """Emit an ordered final transcript without echoing transient audio."""
+
+    terminal = Event()
+    transcriber = _ControlledTranscriber(
+        TranscriptionResult(
+            text="你好，世界。",
+            language="zh",
+            language_probability=0.875,
+        )
+    )
+    transcriber.release.set()
+    factory, runners = _transcription_runner_factory(
+        transcriber,
+        terminal_event=terminal,
+    )
+    backend, fake_brain, output_stream = _initialized_backend(
+        tmp_path,
+        factory,
+    )
+    assert runners == []
+    params = {
+        **_voice_capture_params(str(fake_brain.chat.chat_id)),
+        "language": "auto",
+    }
+    encoded_pcm = cast(str, params["pcmBase64"])
+
+    try:
+        assert backend._handle_line(
+            json.dumps(
+                _request(
+                    "voice-transcription-success",
+                    "voice.transcription.start",
+                    params,
+                )
+            )
+        )
+        assert terminal.wait(2.0)
+
+        messages = _output_messages(output_stream)
+        related = [
+            message
+            for message in messages
+            if message.get("requestId") == "voice-transcription-success"
+            or message.get("id") == "voice-transcription-success"
+        ]
+        assert [
+            (
+                message["type"],
+                message.get("event")
+                or message.get("operation")
+                or "response",
+            )
+            for message in related
+        ] == [
+            ("event", "voice.transcription.started"),
+            ("progress", "voice.transcribe"),
+            ("progress", "voice.transcribe"),
+            ("event", "voice.transcription.completed"),
+            ("response", "response"),
+        ]
+        assert _success_result(
+            messages,
+            "voice-transcription-success",
+        ) == {
+            "kind": "voice.transcription",
+            "sessionId": "voice_backend_fixture",
+            "chatId": str(fake_brain.chat.chat_id),
+            "text": "你好，世界。",
+            "language": "zh",
+            "languageProbability": 0.875,
+        }
+        assert len(runners) == 1
+        assert len(transcriber.requests) == 1
+        assert transcriber.requests[0].language == "auto"
+        assert encoded_pcm not in output_stream.getvalue()
+        assert "pcmBase64" not in output_stream.getvalue()
+        assert "modelPath" not in output_stream.getvalue()
+        assert "voice.transcription" in SERVER_CAPABILITIES
+    finally:
+        backend._prepare_transcription_shutdown()
+
+
+def test_voice_transcription_failure_hides_adapter_details(
+    tmp_path: Path,
+) -> None:
+    """Map an unavailable adapter to a fixed Renderer-safe failure."""
+
+    private_detail = "D:/Users/private/model and raw PCM diagnostics"
+    terminal = Event()
+    transcriber = _ControlledTranscriber(
+        TranscriptionUnavailableError(private_detail)
+    )
+    transcriber.release.set()
+    factory, _runners = _transcription_runner_factory(
+        transcriber,
+        terminal_event=terminal,
+    )
+    backend, fake_brain, output_stream = _initialized_backend(
+        tmp_path,
+        factory,
+    )
+    params = {
+        **_voice_capture_params(str(fake_brain.chat.chat_id)),
+        "language": "en",
+    }
+
+    try:
+        assert backend._handle_line(
+            json.dumps(
+                _request(
+                    "voice-transcription-unavailable",
+                    "voice.transcription.start",
+                    params,
+                )
+            )
+        )
+        assert terminal.wait(2.0)
+        messages = _output_messages(output_stream)
+
+        assert _error(messages, "voice-transcription-unavailable") == {
+            "code": "voice.transcription.unavailable",
+            "message": "Local voice transcription is unavailable.",
+            "retryable": False,
+        }
+        assert any(
+            message.get("event") == "voice.transcription.failed"
+            for message in messages
+        )
+        assert private_detail not in output_stream.getvalue()
+        assert cast(str, params["pcmBase64"]) not in output_stream.getvalue()
+    finally:
+        backend._prepare_transcription_shutdown()
+
+
+def test_active_chat_generation_rejects_transcription_before_runner_creation(
+    tmp_path: Path,
+) -> None:
+    """Keep Chat and STT mutually exclusive without allocating idle workers."""
+
+    transcriber = _ControlledTranscriber(
+        TranscriptionResult(
+            text="unused",
+            language="en",
+            language_probability=1.0,
+        )
+    )
+    factory, runners = _transcription_runner_factory(transcriber)
+    backend, fake_brain, output_stream = _initialized_backend(
+        tmp_path,
+        factory,
+    )
+    active_task = desktop_backend_module._GenerationTask(
+        request_id="active-chat",
+        chat_id=fake_brain.chat.chat_id,
+        method="chat.stream",
+    )
+    backend._generation_task = active_task
+    params = {
+        **_voice_capture_params(str(fake_brain.chat.chat_id)),
+        "language": "auto",
+    }
+
+    try:
+        assert backend._handle_line(
+            json.dumps(
+                _request(
+                    "voice-during-chat",
+                    "voice.transcription.start",
+                    params,
+                )
+            )
+        )
+        assert _error(
+            _output_messages(output_stream),
+            "voice-during-chat",
+        ) == {
+            "code": "voice.transcription.busy",
+            "message": "Local voice transcription is already busy.",
+            "retryable": True,
+        }
+        assert runners == []
+        assert cast(str, params["pcmBase64"]) not in output_stream.getvalue()
+    finally:
+        active_task.finish()
+        backend._generation_task = None
+        transcriber.release.set()
+        backend._prepare_transcription_shutdown()
+
+
+def test_cancelled_transcription_blocks_work_until_native_inference_drains(
+    tmp_path: Path,
+) -> None:
+    """Cancel promptly while preserving physical STT exclusion until return."""
+
+    terminal = Event()
+    transcriber = _ControlledTranscriber(
+        TranscriptionResult(
+            text="late result",
+            language="en",
+            language_probability=0.75,
+        )
+    )
+    factory, runners = _transcription_runner_factory(
+        transcriber,
+        terminal_event=terminal,
+    )
+    backend, fake_brain, output_stream = _initialized_backend(
+        tmp_path,
+        factory,
+    )
+    chat_id = str(fake_brain.chat.chat_id)
+    params = {**_voice_capture_params(chat_id), "language": "en"}
+
+    try:
+        assert backend._handle_line(
+            json.dumps(
+                _request(
+                    "voice-cancel-target",
+                    "voice.transcription.start",
+                    params,
+                )
+            )
+        )
+        assert transcriber.entered.wait(2.0)
+        assert backend._handle_line(
+            json.dumps(
+                _request(
+                    "voice-cancel-command",
+                    "request.cancel",
+                    {"requestId": "voice-cancel-target"},
+                )
+            )
+        )
+        assert terminal.wait(2.0)
+        runner = runners[0]
+        assert backend._transcription_task is None
+        assert runner.get_status().occupied_slots == 1
+
+        assert backend._handle_line(
+            json.dumps(
+                _request(
+                    "capture-during-drain",
+                    "voice.capture.complete",
+                    _voice_capture_params(chat_id),
+                )
+            )
+        )
+        assert backend._handle_line(
+            json.dumps(
+                _request(
+                    "chat-during-drain",
+                    "chat.stream",
+                    {"chatId": chat_id, "message": "Do not overlap"},
+                )
+            )
+        )
+        messages = _output_messages(output_stream)
+        assert _error(messages, "voice-cancel-target")["code"] == (
+            "request.cancelled"
+        )
+        assert _success_result(messages, "voice-cancel-command") == {
+            "stopped": True,
+        }
+        target_index = next(
+            index
+            for index, message in enumerate(messages)
+            if message.get("id") == "voice-cancel-target"
+        )
+        cancel_index = next(
+            index
+            for index, message in enumerate(messages)
+            if message.get("id") == "voice-cancel-command"
+        )
+        assert target_index < cancel_index
+        assert _error(messages, "capture-during-drain")["code"] == (
+            "voice.capture.busy"
+        )
+        assert _error(messages, "chat-during-drain") == {
+            "code": "chat.busy",
+            "message": (
+                "Wait for local voice transcription before generating a reply."
+            ),
+            "retryable": False,
+        }
+
+        output_before_native_return = output_stream.getvalue()
+        transcriber.release.set()
+        assert transcriber.finished.wait(2.0)
+        assert runner.shutdown(wait=True, timeout_seconds=1.0)
+        assert output_stream.getvalue() == output_before_native_return
+
+        assert backend._handle_line(
+            json.dumps(
+                _request(
+                    "capture-after-drain",
+                    "voice.capture.complete",
+                    _voice_capture_params(chat_id),
+                )
+            )
+        )
+        assert _success_result(
+            _output_messages(output_stream),
+            "capture-after-drain",
+        )["kind"] == "voice.capture"
+    finally:
+        transcriber.release.set()
+        backend._prepare_transcription_shutdown()
+
+
+def test_timed_out_transcription_keeps_stt_capacity_until_native_return(
+    tmp_path: Path,
+) -> None:
+    """Publish timeout once and reject replacement STT while work drains."""
+
+    terminal = Event()
+    transcriber = _ControlledTranscriber(
+        TranscriptionResult(
+            text="too late",
+            language="en",
+            language_probability=0.5,
+        )
+    )
+    factory, runners = _transcription_runner_factory(
+        transcriber,
+        terminal_event=terminal,
+        timeout_seconds=0.05,
+    )
+    backend, fake_brain, output_stream = _initialized_backend(
+        tmp_path,
+        factory,
+    )
+    chat_id = str(fake_brain.chat.chat_id)
+    params = {**_voice_capture_params(chat_id), "language": "auto"}
+
+    try:
+        assert backend._handle_line(
+            json.dumps(
+                _request(
+                    "voice-timeout-target",
+                    "voice.transcription.start",
+                    params,
+                )
+            )
+        )
+        assert transcriber.entered.wait(2.0)
+        assert terminal.wait(2.0)
+        runner = runners[0]
+        assert runner.get_status().occupied_slots == 1
+
+        assert backend._handle_line(
+            json.dumps(
+                _request(
+                    "voice-during-timeout-drain",
+                    "voice.transcription.start",
+                    params,
+                )
+            )
+        )
+        messages = _output_messages(output_stream)
+        assert _error(messages, "voice-timeout-target") == {
+            "code": "voice.transcription.timeout",
+            "message": "Local voice transcription timed out.",
+            "retryable": True,
+        }
+        assert any(
+            message.get("event") == "voice.transcription.timed_out"
+            for message in messages
+        )
+        assert _error(messages, "voice-during-timeout-drain") == {
+            "code": "voice.transcription.busy",
+            "message": "Local voice transcription is already busy.",
+            "retryable": True,
+        }
+        assert len(transcriber.requests) == 1
+
+        output_before_native_return = output_stream.getvalue()
+        transcriber.release.set()
+        assert transcriber.finished.wait(2.0)
+        assert runner.shutdown(wait=True, timeout_seconds=1.0)
+        assert output_stream.getvalue() == output_before_native_return
+    finally:
+        transcriber.release.set()
+        backend._prepare_transcription_shutdown()
+
+
+def test_shutdown_suppresses_a_completed_job_waiting_to_enter_its_callback(
+    tmp_path: Path,
+) -> None:
+    """Let shutdown win after native success but before terminal emission."""
+
+    callback_waiting = Event()
+    release_callback = Event()
+    callback_finished = Event()
+    transcriber = _ControlledTranscriber(
+        TranscriptionResult(
+            text="must stay private after shutdown",
+            language="en",
+            language_probability=1.0,
+        )
+    )
+    transcriber.release.set()
+    runners: list[TranscriptionJobRunner] = []
+
+    def _factory(
+        callback: TranscriptionJobCallback,
+    ) -> TranscriptionJobRunner:
+        """Delay Backend callback entry after the runner reaches success."""
+
+        def _delay_terminal(snapshot: TranscriptionJobSnapshot) -> None:
+            """Expose the exact native-complete/shutdown race to the test."""
+
+            callback_waiting.set()
+            assert release_callback.wait(2.0)
+            try:
+                callback(snapshot)
+            finally:
+                callback_finished.set()
+
+        runner = TranscriptionJobRunner(
+            transcriber,
+            config=TranscriptionJobRunnerConfig(
+                max_concurrent_jobs=1,
+                max_queued_jobs=0,
+                default_timeout_seconds=1.0,
+            ),
+            on_terminal=_delay_terminal,
+        )
+        runners.append(runner)
+        return runner
+
+    backend, fake_brain, output_stream = _initialized_backend(
+        tmp_path,
+        _factory,
+    )
+    params = {
+        **_voice_capture_params(str(fake_brain.chat.chat_id)),
+        "language": "auto",
+    }
+
+    try:
+        assert backend._handle_line(
+            json.dumps(
+                _request(
+                    "voice-completed-before-shutdown",
+                    "voice.transcription.start",
+                    params,
+                )
+            )
+        )
+        assert callback_waiting.wait(2.0)
+        output_before_shutdown = output_stream.getvalue()
+
+        backend._prepare_transcription_shutdown()
+        release_callback.set()
+        assert callback_finished.wait(2.0)
+        assert output_stream.getvalue() == output_before_shutdown
+        assert not any(
+            message.get("id") == "voice-completed-before-shutdown"
+            for message in _output_messages(output_stream)
+        )
+        assert runners[0].shutdown(wait=True, timeout_seconds=1.0)
+    finally:
+        release_callback.set()
+        backend._prepare_transcription_shutdown()
+
+
+@pytest.mark.parametrize("termination", ["shutdown", "eof"])
+def test_transcription_shutdown_is_bounded_and_suppresses_late_output(
+    tmp_path: Path,
+    termination: str,
+) -> None:
+    """Return promptly and never emit STT terminal frames after teardown."""
+
+    terminal = Event()
+    transcriber = _ControlledTranscriber(
+        TranscriptionResult(
+            text="late private transcript",
+            language="en",
+            language_probability=0.5,
+        )
+    )
+    factory, runners = _transcription_runner_factory(
+        transcriber,
+        terminal_event=terminal,
+    )
+    fake_brain = FakeBrain()
+    chat_id = str(fake_brain.chat.chat_id)
+    params = {**_voice_capture_params(chat_id), "language": "auto"}
+
+    def _request_lines() -> Generator[str, None, None]:
+        """End input or request shutdown while native STT remains blocked."""
+
+        for request in (
+            _handshake_request(),
+            _initialize_request(),
+            _request(
+                "voice-shutdown-target",
+                "voice.transcription.start",
+                params,
+            ),
+        ):
+            yield f"{json.dumps(request)}\n"
+        assert transcriber.entered.wait(2.0)
+        if termination == "shutdown":
+            yield f"{json.dumps(_request('shutdown-stt', 'shutdown', {}))}\n"
+
+    output_stream = StringIO()
+    backend = DesktopBackend(
+        brain_factory=lambda: cast(Brain, fake_brain),
+        model_loader=lambda: (fake_brain.model_name,),
+        settings_validator=lambda: None,
+        settings_repository=_desktop_settings_repository(
+            tmp_path / "global.json"
+        ),
+        voice_settings_service=create_voice_settings_service(tmp_path),
+        transcription_runner_factory=factory,
+        attachment_store=JsonAttachmentStore(
+            tmp_path / "attachments",
+            max_file_bytes=1_024 * 1_024,
+        ),
+        input_stream=cast(TextIOWrapper, _request_lines()),
+        output_stream=output_stream,
+        expected_session_token=SESSION_TOKEN,
+    )
+
+    started_at = monotonic()
+    backend.run()
+    elapsed = monotonic() - started_at
+    assert elapsed < 0.5
+    assert terminal.is_set()
+    messages = _output_messages(output_stream)
+    assert not any(
+        message.get("id") == "voice-shutdown-target"
+        for message in messages
+    )
+    if termination == "shutdown":
+        assert _success_result(messages, "shutdown-stt") == {"stopped": True}
+    else:
+        assert not any(
+            message.get("id") == "shutdown-stt"
+            for message in messages
+        )
+
+    output_at_shutdown = output_stream.getvalue()
+    transcriber.release.set()
+    assert transcriber.finished.wait(2.0)
+    assert runners[0].shutdown(wait=True, timeout_seconds=1.0)
+    assert output_stream.getvalue() == output_at_shutdown
 
 
 def test_voice_settings_round_trip_before_brain_initialization(

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import math
 import ntpath
 import re
 import unicodedata
@@ -38,6 +39,7 @@ VOICE_CAPTURE_MAX_SAMPLES: Final = 480_000
 VOICE_CAPTURE_MIN_SPEECH_SAMPLES: Final = 3_200
 VOICE_CAPTURE_MAX_SESSION_ID_LENGTH: Final = 128
 VOICE_CAPTURE_MAX_BASE64_CHARACTERS: Final = 1_280_000
+VOICE_TRANSCRIPTION_MAX_TEXT_CODE_POINTS: Final = 4_096
 MAX_MEMORY_SETTING: Final = 10_000_000
 MAX_DATA_IMPORT_BYTES: Final = 2_147_483_647
 MAX_PROTOCOL_FRAME_BYTES: Final = 16_777_216
@@ -106,6 +108,7 @@ ProtocolMethod = Literal[
     "voice.settings.get",
     "voice.settings.update",
     "voice.capture.complete",
+    "voice.transcription.start",
     "request.cancel",
     "permission.respond",
     "shutdown",
@@ -137,6 +140,7 @@ SUPPORTED_METHODS: Final[tuple[ProtocolMethod, ...]] = (
     "voice.settings.get",
     "voice.settings.update",
     "voice.capture.complete",
+    "voice.transcription.start",
     "request.cancel",
     "permission.respond",
     "shutdown",
@@ -365,6 +369,12 @@ class VoiceCaptureCompleteParams(VoiceCaptureMetadata):
     pcmBase64: str
 
 
+class VoiceTranscriptionStartParams(VoiceCaptureCompleteParams):
+    """Start one bounded transcription from the supplied transient PCM."""
+
+    language: Literal["auto", "zh", "en"]
+
+
 class ClientRequest(TypedDict):
     """Represent one request sent from Electron to Python."""
 
@@ -587,6 +597,17 @@ class VoiceCaptureResult(VoiceCaptureMetadata):
     durationMs: int
     speechDurationMs: int
     sha256Hex: str
+
+
+class VoiceTranscriptionResult(TypedDict):
+    """Return one final transcript without PCM, model paths, or native errors."""
+
+    kind: Literal["voice.transcription"]
+    sessionId: str
+    chatId: str
+    text: str
+    language: Literal["zh", "en"]
+    languageProbability: float
 
 
 ServerMessage = (
@@ -1439,8 +1460,14 @@ def _validate_voice_capture_metadata(
         )
 
 
-def _validate_voice_capture_complete_params(params: JsonObject) -> None:
-    context = "voice.capture.complete params"
+def _validate_voice_pcm_params(
+    params: JsonObject,
+    *,
+    context: str,
+    additional_fields: set[str] | None = None,
+) -> None:
+    """Validate one exact fixed-format PCM payload shared by Voice methods."""
+
     _require_fields(
         params,
         {
@@ -1453,7 +1480,7 @@ def _validate_voice_capture_complete_params(params: JsonObject) -> None:
             "speechStartSample",
             "speechEndSample",
             "pcmBase64",
-        },
+        } | (additional_fields or set()),
         context,
     )
     _validate_voice_capture_metadata(
@@ -1486,6 +1513,37 @@ def _validate_voice_capture_complete_params(params: JsonObject) -> None:
         raise ProtocolValidationError(
             "protocol.invalid_params",
             f"{context}.pcmBase64 decoded length must equal sampleCount * 2.",
+        )
+
+
+def _validate_voice_capture_complete_params(params: JsonObject) -> None:
+    """Validate the legacy receipt-only Voice capture request."""
+
+    _validate_voice_pcm_params(
+        params,
+        context="voice.capture.complete params",
+    )
+
+
+def _validate_voice_transcription_start_params(params: JsonObject) -> None:
+    """Validate one language-scoped PCM request before background work."""
+
+    context = "voice.transcription.start params"
+    _validate_voice_pcm_params(
+        params,
+        context=context,
+        additional_fields={"language"},
+    )
+    language = _require_string(
+        params,
+        "language",
+        context,
+        maximum=4,
+    )
+    if language not in {"auto", "zh", "en"}:
+        raise ProtocolValidationError(
+            "protocol.invalid_params",
+            f"{context}.language must be auto, zh, or en.",
         )
 
 
@@ -1573,6 +1631,8 @@ def parse_client_request(value: object) -> ClientRequest:
         _validate_voice_settings_update_params(params)
     elif method == "voice.capture.complete":
         _validate_voice_capture_complete_params(params)
+    elif method == "voice.transcription.start":
+        _validate_voice_transcription_start_params(params)
     elif method == "request.cancel":
         _validate_cancel_params(params)
     elif method == "permission.respond":
@@ -2111,6 +2171,16 @@ def _validate_success_result(result: JsonObject) -> None:
     }:
         _validate_voice_capture_result(result)
         return
+    if fields == {
+        "kind",
+        "sessionId",
+        "chatId",
+        "text",
+        "language",
+        "languageProbability",
+    }:
+        _validate_voice_transcription_result(result)
+        return
     if fields == {"stopped"} and result["stopped"] is True:
         return
     raise ProtocolValidationError(
@@ -2289,6 +2359,61 @@ def _validate_voice_capture_result(
             f"{context}.sha256Hex must be a lowercase SHA-256 digest.",
         )
     return cast(VoiceCaptureResult, result)
+
+
+def _validate_voice_transcription_result(
+    result: JsonObject,
+) -> VoiceTranscriptionResult:
+    """Validate one bounded final transcript and its safe correlation fields."""
+
+    context = "voice transcription result"
+    if result.get("kind") != "voice.transcription":
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.kind must be 'voice.transcription'.",
+        )
+    session_id = _require_string(
+        result,
+        "sessionId",
+        context,
+        maximum=VOICE_CAPTURE_MAX_SESSION_ID_LENGTH,
+    )
+    if _VOICE_SESSION_ID_PATTERN.fullmatch(session_id) is None:
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.sessionId must use the voice_<id> format.",
+        )
+    _require_identifier(result, "chatId", context)
+    _require_non_blank_string(
+        result,
+        "text",
+        context,
+        maximum=VOICE_TRANSCRIPTION_MAX_TEXT_CODE_POINTS,
+        error_code="protocol.invalid_message",
+    )
+    language = _require_string(result, "language", context, maximum=2)
+    if language not in {"zh", "en"}:
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.language must be zh or en.",
+        )
+    probability = result.get("languageProbability")
+    if (
+        isinstance(probability, bool)
+        or not isinstance(probability, (int, float))
+        # JSON integers are unbounded in Python; math.isfinite would convert a
+        # huge integer to float and raise instead of producing a protocol error.
+        or (
+            isinstance(probability, float)
+            and not math.isfinite(probability)
+        )
+        or not 0.0 <= probability <= 1.0
+    ):
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.languageProbability must be finite and between 0 and 1.",
+        )
+    return cast(VoiceTranscriptionResult, result)
 
 
 def _validate_response(message: JsonObject) -> ServerMessage:

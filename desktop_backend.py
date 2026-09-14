@@ -84,6 +84,19 @@ from desktop_protocol import (
 )
 from start import create_brain, validate_settings
 from voice import (
+    FasterWhisperConfig,
+    FasterWhisperTranscriber,
+    TranscriptionJobCallback,
+    TranscriptionJobCapacityError,
+    TranscriptionJobClosedError,
+    TranscriptionJobConflictError,
+    TranscriptionJobNotFoundError,
+    TranscriptionJobRunner,
+    TranscriptionJobRunnerConfig,
+    TranscriptionJobSnapshot,
+    TranscriptionLanguage,
+    TranscriptionRequest,
+    TranscriptionValidationError,
     VOICE_CAPTURE_CHANNEL_COUNT,
     VOICE_CAPTURE_SAMPLE_FORMAT,
     VoiceCapture,
@@ -102,6 +115,10 @@ JsonObject = dict[str, Any]
 BrainFactory = Callable[[], Brain]
 ModelLoader = Callable[[], tuple[str, ...]]
 SettingsValidator = Callable[[], None]
+TranscriptionRunnerFactory = Callable[
+    [TranscriptionJobCallback],
+    TranscriptionJobRunner,
+]
 
 SERVER_NAME = "elysia-python"
 SERVER_VERSION = "0.1.0"
@@ -114,6 +131,7 @@ SERVER_CAPABILITIES = (
     "settings.management",
     "voice.settings",
     "voice.capture",
+    "voice.transcription",
     "attachment.management",
     "stream",
     "progress",
@@ -123,6 +141,7 @@ MAX_REQUEST_ID_LENGTH = 128
 MAX_ERROR_MESSAGE_LENGTH = 4096
 MAX_RECENT_REQUEST_IDS = 4096
 GENERATION_SHUTDOWN_TIMEOUT_SECONDS = 2.0
+TRANSCRIPTION_TIMEOUT_SECONDS = 120.0
 
 
 class _GenerationState(Enum):
@@ -182,6 +201,15 @@ class _GenerationTask:
 
         with self._lock:
             return self.state
+
+
+@dataclass(frozen=True, slots=True)
+class _TranscriptionTask:
+    """Correlate one admitted transcript without retaining its source PCM."""
+
+    request_id: str
+    session_id: str
+    chat_id: ChatId
 
 
 def _configure_protocol_streams(*streams: TextIO) -> None:
@@ -246,6 +274,39 @@ def discover_ollama_models(
     return _extract_model_names(payload, runtime_settings.model_name)
 
 
+def _create_transcription_runner(
+    settings: AppSettings,
+    on_terminal: TranscriptionJobCallback,
+) -> TranscriptionJobRunner:
+    """Build the offline STT boundary only after the first transcript request.
+
+    An explicit local directory prevents Faster-Whisper from interpreting a
+    model alias as permission to download weights. Construction remains light:
+    the optional package and model are probed and loaded by the worker only
+    when it processes the admitted capture.
+    """
+
+    model_path = (
+        settings.base_dir
+        / "models"
+        / "weights"
+        / "faster-whisper"
+        / "small"
+    ).resolve()
+    transcriber = FasterWhisperTranscriber(
+        FasterWhisperConfig(model_path=model_path, device="auto")
+    )
+    return TranscriptionJobRunner(
+        transcriber,
+        config=TranscriptionJobRunnerConfig(
+            max_concurrent_jobs=1,
+            max_queued_jobs=0,
+            default_timeout_seconds=TRANSCRIPTION_TIMEOUT_SECONDS,
+        ),
+        on_terminal=on_terminal,
+    )
+
+
 class DesktopBackend:
     """Translate the desktop protocol into existing Brain operations."""
 
@@ -257,6 +318,7 @@ class DesktopBackend:
         settings_validator: SettingsValidator = validate_settings,
         settings_repository: DesktopSettingsRepository | None = None,
         voice_settings_service: VoiceSettingsService | None = None,
+        transcription_runner_factory: TranscriptionRunnerFactory | None = None,
         attachment_store: JsonAttachmentStore | None = None,
         input_stream: TextIO = sys.stdin,
         output_stream: TextIO = sys.stdout,
@@ -305,6 +367,17 @@ class DesktopBackend:
                 for warning in (self._settings_warning, override_warning)
                 if warning is not None
             )
+        runtime_settings = self._runtime_settings
+        self._transcription_runner_factory = (
+            (
+                lambda callback: _create_transcription_runner(
+                    runtime_settings,
+                    callback,
+                )
+            )
+            if transcription_runner_factory is None
+            else transcription_runner_factory
+        )
         self._input_stream = input_stream
         self._output_stream = output_stream
         self._expected_session_token = (
@@ -322,6 +395,13 @@ class DesktopBackend:
         self._state_lock = RLock()
         self._output_lock = Lock()
         self._generation_task: _GenerationTask | None = None
+        self._transcription_runner: TranscriptionJobRunner | None = None
+        self._transcription_task: _TranscriptionTask | None = None
+        # This gate linearizes terminal output against shutdown. A callback
+        # that already owns it may finish before the shutdown response; one
+        # arriving after closure observes the flag and emits nothing.
+        self._transcription_lifecycle_lock = RLock()
+        self._transcription_closing = False
 
     def _active_chat_snapshot(self) -> ChatSession | None:
         """Read the active Chat under the worker coordination lock."""
@@ -353,6 +433,11 @@ class DesktopBackend:
             if not self._handle_line(line):
                 return
 
+        # Electron has disappeared once stdin closes, so transcription output
+        # has no valid consumer. Close admission immediately and suppress every
+        # callback that loses the EOF race; daemon workers may drain native I/O
+        # without delaying process teardown.
+        self._prepare_transcription_shutdown()
         # A finite test/input stream may end immediately after starting a
         # generation. Give a healthy worker time to finish; if it is blocked,
         # request cancellation so stdin closure cannot strand the process.
@@ -410,6 +495,7 @@ class DesktopBackend:
             if method == "handshake":
                 self._handshake(request_id, request)
             elif method == "shutdown":
+                self._prepare_transcription_shutdown()
                 self._prepare_generation_shutdown()
                 self._emit_response(request_id, {"stopped": True})
                 return False
@@ -435,6 +521,8 @@ class DesktopBackend:
                 )
             elif method == "voice.capture.complete":
                 self._complete_voice_capture(request_id, params)
+            elif method == "voice.transcription.start":
+                self._start_voice_transcription(request_id, params)
             elif method == "chat.stream":
                 self._start_chat_stream(request_id, params)
             elif method == "chat.retry":
@@ -516,6 +604,26 @@ class DesktopBackend:
             )
         except VoiceCaptureValidationError as error:
             self._emit_error(request_id, "voice.capture.invalid", str(error))
+        except TranscriptionJobCapacityError:
+            self._emit_error(
+                request_id,
+                "voice.transcription.busy",
+                "Local voice transcription is already busy.",
+                retryable=True,
+            )
+        except TranscriptionJobConflictError:
+            self._emit_error(
+                request_id,
+                "voice.transcription.busy",
+                "Local voice transcription is already busy.",
+                retryable=True,
+            )
+        except TranscriptionJobClosedError:
+            self._emit_error(
+                request_id,
+                "voice.transcription.unavailable",
+                "Local voice transcription is unavailable.",
+            )
         except ChatBusyError as error:
             self._emit_error(request_id, "chat.busy", str(error))
         except ChatRetryTargetError as error:
@@ -547,24 +655,46 @@ class DesktopBackend:
         except ProjectNotFoundError as error:
             self._emit_error(request_id, "project.not_found", str(error))
         except Exception:
-            logger.exception(
-                "Desktop request failed: method=%s request_id=%s.",
-                method,
-                request_id,
-            )
+            if method == "voice.transcription.start":
+                # This boundary can fail while constructing optional native
+                # dependencies. Do not place an exception or model path on
+                # stderr because Electron owns that child-process stream.
+                logger.error(
+                    "Desktop transcription request failed: request_id=%s.",
+                    request_id,
+                )
+            else:
+                logger.exception(
+                    "Desktop request failed: method=%s request_id=%s.",
+                    method,
+                    request_id,
+                )
             self._emit_error(
                 request_id,
                 (
                     "chat.failed"
                     if method in {"chat.stream", "chat.retry"}
-                    else "backend.request_failed"
+                    else (
+                        "voice.transcription.failed"
+                        if method == "voice.transcription.start"
+                        else "backend.request_failed"
+                    )
                 ),
                 (
                     "Chat request failed in the local Backend."
                     if method in {"chat.stream", "chat.retry"}
-                    else "Desktop Backend request failed."
+                    else (
+                        "Local voice transcription failed."
+                        if method == "voice.transcription.start"
+                        else "Desktop Backend request failed."
+                    )
                 ),
-                retryable=method in {"chat.stream", "chat.retry"},
+                retryable=method
+                in {
+                    "chat.stream",
+                    "chat.retry",
+                    "voice.transcription.start",
+                },
             )
 
         return True
@@ -860,6 +990,291 @@ class DesktopBackend:
             self._voice_settings_state_result(snapshot),
         )
 
+    def _transcription_capacity_reserved_locked(self) -> bool:
+        """Return whether logical or uninterruptible STT work owns capacity.
+
+        Callers hold ``_state_lock`` so a new Chat or capture cannot slip
+        between this check and its own reservation. The runner count matters
+        after cancellation or timeout because native inference may still be
+        draining even though the request already received a terminal result.
+        """
+
+        if self._transcription_task is not None:
+            return True
+        runner = self._transcription_runner
+        return (
+            runner is not None
+            and runner.get_status().occupied_slots > 0
+        )
+
+    def _get_transcription_runner_locked(self) -> TranscriptionJobRunner:
+        """Create the optional local STT worker pool on first use only."""
+
+        if self._transcription_closing:
+            raise TranscriptionJobClosedError(
+                "The transcription boundary is closing."
+            )
+        runner = self._transcription_runner
+        if runner is None:
+            runner = self._transcription_runner_factory(
+                self._on_transcription_terminal
+            )
+            if not isinstance(runner, TranscriptionJobRunner):
+                raise TypeError(
+                    "transcription_runner_factory returned an invalid runner."
+                )
+            self._transcription_runner = runner
+        return runner
+
+    @staticmethod
+    def _transcription_request_from_params(
+        params: JsonObject,
+    ) -> TranscriptionRequest:
+        """Decode validated wire PCM once and convert it to the STT domain.
+
+        Domain failures are deliberately replaced with a fixed protocol error:
+        request audio and adapter diagnostics must never be reflected to the
+        Renderer through an exception message.
+        """
+
+        try:
+            if (
+                params["channelCount"] != VOICE_CAPTURE_CHANNEL_COUNT
+                or params["sampleFormat"] != VOICE_CAPTURE_SAMPLE_FORMAT
+            ):
+                raise VoiceCaptureValidationError(
+                    "Voice capture PCM format is invalid."
+                )
+            capture = VoiceCapture.from_base64(
+                session_id=cast(str, params["sessionId"]),
+                pcm_s16le_base64=cast(str, params["pcmBase64"]),
+                sample_rate_hz=cast(int, params["sampleRateHz"]),
+                sample_count=cast(int, params["sampleCount"]),
+                speech_start_sample=cast(int, params["speechStartSample"]),
+                speech_end_sample=cast(int, params["speechEndSample"]),
+            )
+            return TranscriptionRequest(
+                capture=capture,
+                language=cast(TranscriptionLanguage, params["language"]),
+            )
+        except (VoiceCaptureValidationError, TranscriptionValidationError):
+            raise ProtocolValidationError(
+                "voice.transcription.invalid",
+                "Voice transcription audio is invalid.",
+            ) from None
+
+    def _start_voice_transcription(
+        self,
+        request_id: str,
+        params: JsonObject,
+    ) -> None:
+        """Admit one asynchronous transcript without retaining wire Base64."""
+
+        active_chat = self._active_chat_snapshot()
+        if active_chat is None:
+            raise ProtocolValidationError(
+                "protocol.not_initialized",
+                "Backend must be initialized before this request.",
+            )
+        raw_chat_id = cast(str, params["chatId"])
+        if raw_chat_id != str(active_chat.chat_id):
+            raise ProtocolValidationError(
+                "voice.transcription.chat_mismatch",
+                "Voice transcription no longer belongs to the active Chat.",
+            )
+
+        transcription_request = self._transcription_request_from_params(params)
+        task = _TranscriptionTask(
+            request_id=request_id,
+            session_id=transcription_request.capture.session_id,
+            chat_id=ChatId(raw_chat_id),
+        )
+        with self._state_lock:
+            generation = self._generation_task
+            if generation is not None and not generation.done.is_set():
+                raise TranscriptionJobCapacityError(
+                    "Chat generation currently owns local model capacity."
+                )
+            if self._transcription_capacity_reserved_locked():
+                raise TranscriptionJobCapacityError(
+                    "Local voice transcription is already busy."
+                )
+            runner = self._get_transcription_runner_locked()
+            self._transcription_task = task
+
+        try:
+            runner.submit(
+                request_id,
+                transcription_request,
+                on_admitted=lambda snapshot: self._emit_transcription_started(
+                    task,
+                    snapshot,
+                ),
+            )
+        except BaseException:
+            # Admission can fail before the runner owns the PCM. Clearing this
+            # correlation reservation restores Chat/capture availability while
+            # leaving the scheduler responsible for any accepted native work.
+            with self._state_lock:
+                if self._transcription_task is task:
+                    self._transcription_task = None
+            raise
+
+    def _emit_transcription_started(
+        self,
+        task: _TranscriptionTask,
+        snapshot: TranscriptionJobSnapshot,
+    ) -> None:
+        """Publish started frames before a fast worker can publish completion."""
+
+        if snapshot.job_id != task.request_id:
+            raise RuntimeError("Transcription admission returned the wrong job.")
+        with self._transcription_lifecycle_lock:
+            if self._transcription_closing:
+                raise TranscriptionJobClosedError(
+                    "The transcription boundary is closing."
+                )
+            self._emit_event(
+                "voice.transcription.started",
+                request_id=task.request_id,
+                data={
+                    "sessionId": task.session_id,
+                    "chatId": str(task.chat_id),
+                },
+            )
+            self._emit_progress(
+                task.request_id,
+                "voice.transcribe",
+                0,
+                total=1,
+                message="Transcribing audio",
+            )
+
+    def _on_transcription_terminal(
+        self,
+        snapshot: TranscriptionJobSnapshot,
+    ) -> None:
+        """Emit exactly one safe terminal sequence unless shutdown won."""
+
+        with self._transcription_lifecycle_lock:
+            with self._state_lock:
+                task = self._transcription_task
+                runner = self._transcription_runner
+            if task is None or task.request_id != snapshot.job_id:
+                return
+
+            try:
+                if not self._transcription_closing:
+                    self._emit_transcription_terminal(task, snapshot)
+            finally:
+                # Clear correlation only after terminal output, keeping the
+                # Backend busy until the Renderer can observe the final frame.
+                with self._state_lock:
+                    if self._transcription_task is task:
+                        self._transcription_task = None
+                if runner is not None:
+                    try:
+                        runner.forget(snapshot.job_id)
+                    except (
+                        TranscriptionJobNotFoundError,
+                        TranscriptionJobConflictError,
+                    ):
+                        logger.error(
+                            "Could not forget terminal transcription: request_id=%s.",
+                            snapshot.job_id,
+                        )
+
+    def _emit_transcription_terminal(
+        self,
+        task: _TranscriptionTask,
+        snapshot: TranscriptionJobSnapshot,
+    ) -> None:
+        """Map scheduler terminal state to bounded protocol events and response."""
+
+        correlation = {
+            "sessionId": task.session_id,
+            "chatId": str(task.chat_id),
+        }
+        if snapshot.state == "succeeded" and snapshot.result is not None:
+            result = snapshot.result
+            self._emit_progress(
+                task.request_id,
+                "voice.transcribe",
+                1,
+                total=1,
+                message=None,
+            )
+            self._emit_event(
+                "voice.transcription.completed",
+                request_id=task.request_id,
+                data=correlation,
+            )
+            self._emit_response(
+                task.request_id,
+                {
+                    "kind": "voice.transcription",
+                    **correlation,
+                    "text": result.text,
+                    "language": result.language,
+                    "languageProbability": result.language_probability,
+                },
+            )
+            return
+
+        if snapshot.state == "cancelled":
+            self._emit_event(
+                "voice.transcription.cancelled",
+                request_id=task.request_id,
+                data=correlation,
+            )
+            self._emit_error(
+                task.request_id,
+                "request.cancelled",
+                "Voice transcription was cancelled.",
+            )
+            return
+
+        if snapshot.state == "timed_out":
+            self._emit_event(
+                "voice.transcription.timed_out",
+                request_id=task.request_id,
+                data=correlation,
+            )
+            self._emit_error(
+                task.request_id,
+                "voice.transcription.timeout",
+                "Local voice transcription timed out.",
+                retryable=True,
+            )
+            return
+
+        failure_code = (
+            None if snapshot.failure is None else snapshot.failure.code
+        )
+        if failure_code == "invalid_request":
+            code = "voice.transcription.invalid"
+            message = "Voice transcription request was rejected."
+            retryable = False
+        elif failure_code == "unavailable":
+            code = "voice.transcription.unavailable"
+            message = "Local voice transcription is unavailable."
+            retryable = False
+        else:
+            code = "voice.transcription.failed"
+            message = "Local voice transcription failed."
+            retryable = True
+        self._emit_event(
+            "voice.transcription.failed",
+            request_id=task.request_id,
+            data=correlation,
+        )
+        self._emit_error(
+            task.request_id,
+            code,
+            message,
+            retryable=retryable,
+        )
+
     def _complete_voice_capture(
         self,
         request_id: str,
@@ -884,6 +1299,11 @@ class DesktopBackend:
                 raise ProtocolValidationError(
                     "voice.capture.busy",
                     "Wait for the current reply before submitting voice input.",
+                )
+            if self._transcription_capacity_reserved_locked():
+                raise ProtocolValidationError(
+                    "voice.capture.busy",
+                    "Wait for local transcription before submitting voice input.",
                 )
 
         capture = VoiceCapture.from_base64(
@@ -1659,6 +2079,10 @@ class DesktopBackend:
                 raise ChatBusyError(
                     "Another desktop Chat generation is already active."
                 )
+            if self._transcription_capacity_reserved_locked():
+                raise ChatBusyError(
+                    "Wait for local voice transcription before generating a reply."
+                )
             if active_chat is None:
                 raise RuntimeError("Backend is not initialized.")
             if raw_chat_id != str(active_chat.chat_id):
@@ -1852,22 +2276,45 @@ class DesktopBackend:
         request_id: str,
         params: JsonObject,
     ) -> None:
-        """Cancel one matching generation before it claims commit."""
+        """Cancel one matching Chat or transcription before its final boundary."""
 
         target_request_id = cast(str, params["requestId"])
         with self._state_lock:
-            task = self._generation_task
-            stopped = (
-                task is not None
-                and task.request_id == target_request_id
-                and task.request_cancel()
+            generation = self._generation_task
+            generation_stopped = (
+                generation is not None
+                and generation.request_id == target_request_id
+                and generation.request_cancel()
             )
-        if not stopped:
-            raise ProtocolValidationError(
-                "request.not_cancellable",
-                "No matching cancellable Backend request is active.",
-            )
-        self._emit_response(request_id, {"stopped": True})
+        if generation_stopped:
+            self._emit_response(request_id, {"stopped": True})
+            return
+
+        # Serialize cancellation against a naturally completing callback. If
+        # cancellation wins, the runner invokes the target terminal callback
+        # re-entrantly before this command acknowledgement. If completion won,
+        # its entire terminal sequence is already visible before rejection.
+        with self._transcription_lifecycle_lock:
+            with self._state_lock:
+                transcription = self._transcription_task
+                runner = self._transcription_runner
+            if (
+                transcription is not None
+                and transcription.request_id == target_request_id
+                and runner is not None
+            ):
+                try:
+                    snapshot = runner.cancel(target_request_id)
+                except TranscriptionJobNotFoundError:
+                    snapshot = None
+                if snapshot is not None and snapshot.state == "cancelled":
+                    self._emit_response(request_id, {"stopped": True})
+                    return
+
+        raise ProtocolValidationError(
+            "request.not_cancellable",
+            "No matching cancellable Backend request is active.",
+        )
 
     def _wait_for_generation(self, timeout: float | None = None) -> bool:
         """Wait for the current generation, if any, without holding locks."""
@@ -1898,6 +2345,23 @@ class DesktopBackend:
 
         if task.state_snapshot() is _GenerationState.COMMITTING:
             task.done.wait()
+
+    def _prepare_transcription_shutdown(self) -> None:
+        """Suppress future STT frames and close workers without joining native I/O.
+
+        The lifecycle lock makes the shutdown response a strict output boundary:
+        a terminal callback already emitting finishes first, while every later
+        callback sees ``_transcription_closing``. Running native inference is
+        logically cancelled and left only on daemon workers, so an uncooperative
+        optional library cannot block Electron teardown.
+        """
+
+        with self._transcription_lifecycle_lock:
+            self._transcription_closing = True
+            with self._state_lock:
+                runner = self._transcription_runner
+            if runner is not None:
+                runner.shutdown(wait=False, cancel_pending=True)
 
     def _emit_response(
         self,

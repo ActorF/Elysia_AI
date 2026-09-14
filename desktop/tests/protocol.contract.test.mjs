@@ -2,7 +2,8 @@
 
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
-import { readFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import { pathToFileURL } from 'node:url'
@@ -19,6 +20,7 @@ import {
   PROTOCOL_VERSION,
   MAX_PROTOCOL_FRAME_BYTES,
   VOICE_CAPTURE_MAX_BASE64_CHARACTERS,
+  VOICE_TRANSCRIPTION_MAX_TEXT_CODE_POINTS,
   ProtocolValidationError,
   createRequest,
   hasNonBlankCodePoint,
@@ -33,6 +35,8 @@ import {
   parseServerMessage,
   parseVoiceCaptureCompleteParams,
   parseVoiceCaptureResult,
+  parseVoiceTranscriptionResult,
+  parseVoiceTranscriptionStartParams,
   trimProtocolBlankCharacters,
 } from '../dist-electron/protocol.js'
 
@@ -84,6 +88,30 @@ test('JSON Schema declares bounded frame-aligned Voice capture', () => {
   ))
   assert.ok(schema['x-elysia-runtimeInvariants'].some(
     (invariant) => invariant.includes('aligned to 320-sample frames'),
+  ))
+})
+
+test('JSON Schema declares the transcription runtime invariants', () => {
+  const invariants = schema['x-elysia-runtimeInvariants']
+
+  assert.equal(
+    schema.$defs.voiceTranscriptionResult.properties.text.maxLength,
+    VOICE_TRANSCRIPTION_MAX_TEXT_CODE_POINTS,
+  )
+  assert.ok(invariants.some(
+    (invariant) => invariant.includes(
+      'voice.transcription.start sampleCount and speech markers',
+    ),
+  ))
+  assert.ok(invariants.some(
+    (invariant) => invariant.includes(
+      'voice.transcription.start pcmBase64 is strict canonical Base64',
+    ),
+  ))
+  assert.ok(invariants.some(
+    (invariant) => invariant.includes(
+      'voice.transcription result text follows the protocol non-blank',
+    ),
   ))
 })
 
@@ -623,6 +651,101 @@ test('TypeScript rejects Voice result PCM and other extra fields', () => {
   )
 })
 
+function voiceTranscriptionRequest() {
+  const sample = fixtures.validClientMessages.find(
+    (candidate) => candidate.name === 'voice transcription start request',
+  )
+  assert.ok(sample)
+  return structuredClone(sample.message)
+}
+
+function voiceTranscriptionResponse() {
+  const sample = fixtures.validServerMessages.find(
+    (candidate) => candidate.name === 'voice transcription response',
+  )
+  assert.ok(sample)
+  return structuredClone(sample.message)
+}
+
+test('TypeScript accepts one-shot Voice transcription PCM and language', () => {
+  const request = voiceTranscriptionRequest()
+  const params = parseVoiceTranscriptionStartParams(request.params)
+
+  assert.equal(params.language, 'auto')
+  assert.equal(Buffer.from(params.pcmBase64, 'base64').byteLength, 6_400)
+  assert.deepEqual(
+    createRequest(
+      'voice-transcription-builder',
+      'voice.transcription.start',
+      params,
+    ).params,
+    params,
+  )
+})
+
+for (const language of ['', 'fr', 'ZH', null, true]) {
+  test(`TypeScript rejects Voice transcription language: ${String(language)}`, () => {
+    const request = voiceTranscriptionRequest()
+    request.params.language = language
+
+    assert.throws(() => parseClientRequest(request), ProtocolValidationError)
+  })
+}
+
+for (const [field, value] of [
+  ['pcmBase64', 'AB=='],
+  ['speechEndSample', 3_199],
+]) {
+  test(`TypeScript rejects invalid Voice transcription capture ${field}`, () => {
+    const request = voiceTranscriptionRequest()
+    request.params[field] = value
+
+    assert.throws(() => parseClientRequest(request), ProtocolValidationError)
+  })
+}
+
+test('TypeScript parses a bounded Voice transcript without PCM', () => {
+  const message = voiceTranscriptionResponse()
+  const result = parseVoiceTranscriptionResult(message.result)
+
+  assert.equal(result.text, '你好，世界。')
+  assert.equal(result.language, 'zh')
+  assert.equal(Object.hasOwn(result, 'pcmBase64'), false)
+  assert.equal(Object.hasOwn(result, 'modelPath'), false)
+})
+
+for (const [field, value] of [
+  ['text', ''],
+  ['text', '\ufeff \t\n'],
+  ['text', 'x'.repeat(VOICE_TRANSCRIPTION_MAX_TEXT_CODE_POINTS + 1)],
+  ['language', 'auto'],
+  ['language', 'fr'],
+  ['languageProbability', Number.NaN],
+  ['languageProbability', Number.POSITIVE_INFINITY],
+  ['languageProbability', -0.01],
+  ['languageProbability', 1.01],
+]) {
+  test(`TypeScript rejects invalid Voice transcript ${field}`, () => {
+    const message = voiceTranscriptionResponse()
+    message.result[field] = value
+
+    assert.throws(
+      () => parseVoiceTranscriptionResult(message.result),
+      ProtocolValidationError,
+    )
+  })
+}
+
+test('TypeScript rejects private Voice transcription fields', () => {
+  const message = voiceTranscriptionResponse()
+  message.result.modelPath = 'D:/private/model'
+
+  assert.throws(
+    () => parseVoiceTranscriptionResult(message.result),
+    ProtocolValidationError,
+  )
+})
+
 for (const invalidState of [
   'active-absent',
   'active-mismatch',
@@ -1098,11 +1221,12 @@ test('Backend releases deferred success when cancellation is rejected', async ()
 })
 
 test('Backend rolls back pending generation when stdin write throws', () => {
+  const privateDiagnostic = 'D:/private/python.exe write EOF'
   const backend = new BackendProcess('.', () => undefined)
   backend.child = {
     stdin: {
       writable: true,
-      write: () => { throw new Error('write EOF') },
+      write: () => { throw new Error(privateDiagnostic) },
     },
     kill: () => undefined,
   }
@@ -1126,6 +1250,11 @@ test('Backend rolls back pending generation when stdin write throws', () => {
   )
   assert.equal(backend.pendingRequests.size, 0)
   assert.equal(backend.getSnapshot().status, 'error')
+  assert.equal(
+    backend.getSnapshot().error,
+    'Python Backend input failed.',
+  )
+  assert.doesNotMatch(backend.getSnapshot().error, /private|python\.exe/u)
 })
 
 test('Backend protocol failure rejects pending renderer actions before exit', async () => {
@@ -2303,6 +2432,161 @@ test('Backend stop rejects all pending renderer actions', async () => {
   assert.equal(voicePending.timeout, undefined)
   child.emit('exit', 0, null)
   await stopping
+})
+
+test('Backend replaces child stderr with a fixed renderer-safe diagnostic', async () => {
+  const projectRoot = await mkdtemp(path.join(tmpdir(), 'elysia-stderr-test-'))
+  const bridgePath = path.join(projectRoot, 'desktop_backend.py')
+  const previousPython = process.env.ELYSIA_PYTHON
+  let resolveError
+  const reachedError = new Promise((resolve) => {
+    resolveError = resolve
+  })
+  const backend = new BackendProcess(projectRoot, (event) => {
+    if (event.type === 'snapshot' && event.snapshot.status === 'error') {
+      resolveError(event.snapshot)
+    }
+  })
+
+  try {
+    // Node accepts an arbitrary main-file extension. This tiny child avoids a
+    // Python dependency while exercising the real spawn/stderr/exit boundary.
+    await writeFile(
+      bridgePath,
+      "process.stdin.resume(); process.stderr.write('D:/private/model native crash\\n'); setTimeout(() => process.exit(1), 25);\n",
+      'utf8',
+    )
+    process.env.ELYSIA_PYTHON = process.execPath
+    backend.start()
+    let diagnosticTimeout
+    const timeoutOutcome = new Promise((resolve) => {
+      diagnosticTimeout = setTimeout(
+        () => resolve({ status: 'timeout' }),
+        2_000,
+      )
+    })
+    const outcome = await Promise.race([
+      reachedError,
+      timeoutOutcome,
+    ])
+    clearTimeout(diagnosticTimeout)
+
+    assert.equal(outcome.status, 'error')
+    assert.equal(
+      outcome.error,
+      'Python Backend reported an internal diagnostic.',
+    )
+    assert.doesNotMatch(outcome.error, /private|model|native crash/u)
+  } finally {
+    if (previousPython === undefined) {
+      delete process.env.ELYSIA_PYTHON
+    } else {
+      process.env.ELYSIA_PYTHON = previousPython
+    }
+    await backend.stop()
+    await rm(projectRoot, { recursive: true, force: true })
+  }
+})
+
+test('Backend replaces child process errors with a fixed diagnostic', async () => {
+  const projectRoot = await mkdtemp(path.join(tmpdir(), 'elysia-spawn-test-'))
+  const bridgePath = path.join(projectRoot, 'desktop_backend.py')
+  const previousPython = process.env.ELYSIA_PYTHON
+  const backend = new BackendProcess(projectRoot, () => undefined)
+  let child
+
+  try {
+    // A live disposable child lets the test trigger the installed error
+    // listener without relying on platform-specific spawn failure wording.
+    await writeFile(
+      bridgePath,
+      'process.stdin.resume();\n',
+      'utf8',
+    )
+    process.env.ELYSIA_PYTHON = process.execPath
+    backend.start()
+    child = backend.child
+    assert.ok(child)
+    const exited = new Promise((resolve) => child.once('exit', resolve))
+
+    child.emit(
+      'error',
+      new Error('spawn D:/private/python.exe EACCES'),
+    )
+
+    assert.equal(backend.getSnapshot().status, 'error')
+    assert.equal(
+      backend.getSnapshot().error,
+      'Python Backend process could not be started.',
+    )
+    assert.doesNotMatch(
+      backend.getSnapshot().error,
+      /private|python\.exe|EACCES/u,
+    )
+    child.kill()
+    await exited
+    child = undefined
+  } finally {
+    if (previousPython === undefined) {
+      delete process.env.ELYSIA_PYTHON
+    } else {
+      process.env.ELYSIA_PYTHON = previousPython
+    }
+    if (child !== undefined) {
+      child.kill()
+    }
+    await backend.stop()
+    await rm(projectRoot, { recursive: true, force: true })
+  }
+})
+
+test('Backend replaces child stdin errors with a fixed diagnostic', async () => {
+  const projectRoot = await mkdtemp(path.join(tmpdir(), 'elysia-stdin-test-'))
+  const bridgePath = path.join(projectRoot, 'desktop_backend.py')
+  const previousPython = process.env.ELYSIA_PYTHON
+  const backend = new BackendProcess(projectRoot, () => undefined)
+  let child
+
+  try {
+    await writeFile(
+      bridgePath,
+      'process.stdin.resume();\n',
+      'utf8',
+    )
+    process.env.ELYSIA_PYTHON = process.execPath
+    backend.start()
+    child = backend.child
+    assert.ok(child)
+    const exited = new Promise((resolve) => child.once('exit', resolve))
+
+    child.stdin.emit(
+      'error',
+      new Error('write D:/private/python-pipe EPIPE'),
+    )
+
+    assert.equal(backend.getSnapshot().status, 'error')
+    assert.equal(
+      backend.getSnapshot().error,
+      'Python Backend input failed.',
+    )
+    assert.doesNotMatch(
+      backend.getSnapshot().error,
+      /private|python-pipe|EPIPE/u,
+    )
+    await exited
+    child = undefined
+  } finally {
+    if (previousPython === undefined) {
+      delete process.env.ELYSIA_PYTHON
+    } else {
+      process.env.ELYSIA_PYTHON = previousPython
+    }
+    if (child !== undefined) {
+      child.kill()
+    }
+    await backend.stop()
+    await rm(projectRoot, { recursive: true, force: true })
+  }
 })
 
 test('renderer source policy accepts only the exact development document', () => {
