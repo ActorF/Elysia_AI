@@ -20,7 +20,7 @@
 
 > [!IMPORTANT]
 >
-> This project is currently a **development preview**, not a ready-to-install release. The desktop shell still depends on the source checkout, its Python environment, Ollama, and local models. Bounded one-utterance STT is connected, but its optional runtime and model are not included in the base install. TTS, continuous voice, RAG, the Work Agent, Live2D, and production installation are not complete.
+> This project is currently a **development preview**, not a ready-to-install release. The desktop shell still depends on the source checkout, its Python environment, Ollama, and local models. Bounded one-utterance STT is connected, and the Python one-shot TTS contract, Voice Profile catalog, loopback-only GPT-SoVITS adapter, and smoke verification are implemented; neither optional runtime nor either model is included in the base install. Desktop TTS transport/playback, continuous voice, RAG, the Work Agent, Live2D, and production installation are not complete.
 
 ---
 
@@ -33,6 +33,7 @@
 - 🛡️ **Strict Desktop Boundary** — Sandboxed Renderer, narrow Preload API, origin checks, and authenticated NDJSON Protocol v1
 - 📎 **Safe Attachment Surface** — Select, drop, preview, remove, and recover Chat or Project files; content is not parsed or indexed yet
 - 🎙️ **Local One-Utterance STT** — Explicit capture runs through local VAD and Faster-Whisper; final text can be edited before entering a Chat draft
+- 🔊 **Local One-Shot Synthesis Foundation** — Python selects a Voice Profile/emotion, calls loopback-only GPT-SoVITS, and validates bounded encoded audio
 - 💾 **Recovery First** — Local JSON storage, legacy migration, quarantine, atomic writes, and import/export services
 - ♿ **Desktop Usability** — Themes, keyboard navigation, focus management, Windows scaling, Chinese IME, and offline/error recovery
 
@@ -51,7 +52,7 @@
 | Audio Devices | ✅ Available | Microphone/speaker selection, Windows permission state, input level, and output tone tests |
 | One-utterance recording and local VAD | ✅ Available | Explicit start, 16 kHz mono `s16le`, transient processing; no automatic Chat Turn |
 | STT / Faster-Whisper | ✅ Foundation available | Electron/React and local final transcripts are connected; optional dependencies and a local model must be installed separately |
-| GPT-SoVITS / TTS | ⏳ Planned | Local weights are not connected to runtime code |
+| GPT-SoVITS / TTS | ✅ Foundation available | Python one-shot synthesis, Profiles, readiness, and real smoke verification are complete; Desktop Protocol and playback are not connected |
 | Continuous voice and barge-in | ⏳ Planned | No complete `LISTENING → THINKING → SPEAKING` session yet |
 | File parsing and local RAG | ⏳ Planned | No Loaders, Chunking, Vector Store, or cited answers |
 | Work Agent and tool permissions | ⏳ Planned | No tool execution, desktop control, Internet, or Vision workflow |
@@ -71,6 +72,8 @@ flowchart LR
     P --> B[Brain]
     B --> O[Ollama]
     B --> D[(local workspace data)]
+    P -. optional one-shot synthesis .-> T[Python TTS service / smoke CLI]
+    T -->|loopback-only /tts| G[external GPT-SoVITS runtime]
     E --> H[native file and audio boundary]
 ```
 
@@ -125,6 +128,17 @@ Place a complete Faster-Whisper model directory at
 Supported names are `tiny`, `base`, `small`, `medium`, `large-v3`, and `turbo`.
 Elysia opens only the selected local directory and never downloads a model
 automatically. Model weights must not be committed to Git.
+
+To test local speech synthesis, separately provide a GPT-SoVITS runtime,
+checkpoints, and reference audio that you have the right to use. Copy
+`config\voice_profiles.example.json` to the ignored
+`workspace\settings\voice-profiles.json`, then replace the example Profile
+with real local relative paths, exact reference text, and the correct language.
+Catalog asset paths use `/` even on Windows. Weights and reference audio must
+remain under the ignored `models\weights\gpt-sovits\` directory. After checking
+those local contents, set `GPT_SOVITS_ALLOW_LOCAL_EVALUATION=True` in `.env`.
+The base installation neither downloads nor starts GPT-SoVITS and never commits
+or packages these assets.
 
 ### 3. Prepare a Local Model
 
@@ -188,13 +202,21 @@ DATA_IMPORT_MAX_BYTES=16777216
 TRANSCRIPTION_MODEL=small
 TRANSCRIPTION_DEVICE=auto
 TRANSCRIPTION_LANGUAGE=auto
+GPT_SOVITS_ALLOW_LOCAL_EVALUATION=False
+GPT_SOVITS_REQUEST_TIMEOUT_SECONDS=120
+GPT_SOVITS_PROBE_TIMEOUT_SECONDS=1
+GPT_SOVITS_DETERMINISTIC_SEED=42
 LOG_LEVEL=INFO
 DEBUG=False
 ```
 
 Desktop **Settings** can update the Chat model, Ollama origin, Memory limits, file import size, and the local transcription model, device, and default language. These public values use an independent revision and are written to `workspace/settings/global.json`. Transcription models are `tiny` / `base` / `small` / `medium` / `large-v3` / `turbo`; devices are `auto` / `cuda` / `cpu`; languages are `auto` / `zh` / `en`. The Backend must restart before these changes become active. Theme selection remains in this device's Renderer Storage and applies immediately.
 
-The current application connects only to local Ollama and does not require a cloud API key. Never commit future secrets, tokens, or private configuration.
+The current application connects only to local Ollama and an explicitly
+configured loopback GPT-SoVITS service; it does not require a cloud API key.
+`GPT_SOVITS_ALLOW_LOCAL_EVALUATION` is disabled by default. Enable it only
+after confirming the rights status and local paths in your Voice Profile.
+Never commit future secrets, tokens, private prompts, or private configuration.
 
 ---
 
@@ -226,10 +248,12 @@ The current application connects only to local Ollama and does not require a clo
 - Bounded one-utterance capture starts only after **Start microphone** is pressed. The Renderer performs local downmixing, resampling, and local VAD.
 - A valid segment uses 16 kHz mono signed 16-bit little-endian PCM. Each PCM payload is submitted once and remains transient; the final protocol result contains no audio, model path, or native error.
 - Electron/React connects `voice.transcription.start` to the Voice page. When Faster-Whisper returns a bounded final transcript, the user can edit it and explicitly choose **Use transcript in message**. If a Chat draft already exists, **Append transcript to message** preserves that draft first. This updates the draft only; it never sends a message or creates a Chat Turn automatically.
-- This slice returns final text only. Real-time partial transcripts are explicitly deferred to the future continuous-voice session. TTS, automatic replies, and the `LISTENING → THINKING → SPEAKING` loop are not complete.
+- This STT slice returns final text only. Real-time partial transcripts are explicitly deferred to the future continuous-voice session. The Python TTS foundation is independently complete, but automatic replies, desktop playback, and the `LISTENING → THINKING → SPEAKING` loop are not complete.
 - Settings and Voice display only sanitized enum-based readiness. A missing model, missing optional dependencies, unavailable CUDA, or initialization failure produces safe recovery guidance without exposing local paths, underlying exceptions, or native diagnostics; `auto` can use the safe CPU fallback.
 - A real local CPU-runtime/model transcription smoke path has been verified. This documentation does not claim a successful real-GPU validation. Automated coverage also exercises the fake runtime, cancellation, timeout, native draining, and late-result disposal.
-- Optional local GPT-SoVITS weights are not connected yet. See [MODEL_LICENSE.md](./MODEL_LICENSE.md) for provenance and restrictions.
+- Python now provides an engine-independent synthesis contract, a strict local Voice Profile catalog, a lazy composition root, and a GPT-SoVITS `/tts` adapter that permits only `127.0.0.1` / `localhost`. The adapter ignores environment proxies, rejects redirects, does not automatically retry synthesis, and validates WAV/Ogg/AAC results up to 32 MiB.
+- Real local acceptance synthesized the same fixed Chinese smoke sentence twice for each of `neutral`, `happy`, and `sad`; all six calls returned valid WAV audio. With the service stopped, the smoke command returned the stable `service_unreachable` code, and the full text-Chat regression still passed. `service_binding_unverified` means the service is online but its upstream API cannot attest that the catalog-declared weights are loaded; it is not an identity guarantee for those weights.
+- This TTS path is available only to Python/CLI code. It is not yet connected to Desktop Protocol, the Renderer, a sentence queue, or audio playback. Profiles, the runtime, weights, and reference audio remain in ignored local directories. See [MODEL_LICENSE.md](./MODEL_LICENSE.md) for provenance and restrictions.
 
 ---
 
@@ -243,6 +267,32 @@ cd /d D:\Elysia_AI
 .venv\Scripts\python.exe -m pytest -q
 .venv\Scripts\python.exe -m mypy agent attachments chats config core desktop_protocol memory models projects recovery scripts tools ui voice desktop_backend.py start.py
 ```
+
+After starting a separately installed loopback GPT-SoVITS service and
+configuring a local Profile, use this fixed-text, privacy-preserving CMD smoke
+test. Each selected emotion synthesizes the same sentence twice:
+
+```bat
+cd /d D:\Elysia_AI
+.venv\Scripts\python.exe scripts\smoke_gpt_sovits.py --profile default --emotion neutral --emotion happy --emotion sad
+```
+
+Successful output contains only a readiness code, format, byte count, duration,
+and SHA-256 digest; if the service is stopped it emits
+`{"error":"service_unreachable"}` and returns a nonzero exit code. The smoke
+command does not write audio to disk. The ignored v2 runtime used for current
+local acceptance can be started in another CMD window with its local
+configuration and stopped with `Ctrl+C`:
+
+```bat
+cd /d D:\Elysia_AI\models\cache\GPT-SoVITS-v2-240821
+runtime\python.exe -X utf8 api_v2.py -c GPT_SoVITS\configs\tts_infer_elysia.yaml -a 127.0.0.1 -p 9880
+```
+
+That directory and YAML describe one local acceptance environment and are not
+in the repository. Other developers must use a runtime and Profile they have
+verified themselves; this command does not imply that any model asset may be
+redistributed.
 
 ### Desktop
 
@@ -305,13 +355,14 @@ Elysia_AI/
 ├── projects/           # Project domain, repositories, and Chat relationship service
 ├── recovery/           # Import, export, migration, and corruption quarantine
 ├── tests/              # Python tests
-├── voice/              # Audio devices, PCM validation, local STT adapter, and bounded jobs
+├── voice/              # Audio devices and PCM/STT plus Python-only local TTS contracts, Profiles, and adapter
 ├── workspace/          # Ignored runtime user data; do not remove during source cleanup
 ├── desktop_backend.py  # Electron-to-Python process entry point
 └── start.py            # Console entry point and composition root
 ```
 
-`logs/`, `.env`, `.venv/`, `workspace/`, Ollama blobs/manifests, and `models/weights/` are ignored by Git.
+`logs/`, `.env`, `.venv/`, `workspace/`, Ollama blobs/manifests,
+`models/cache/`, and `models/weights/` are ignored by Git.
 
 ---
 
@@ -343,6 +394,14 @@ Confirm that:
 
 Install the optional runtime from `requirements-stt.txt`, place the selected complete model directory at `models\weights\faster-whisper\<model>\`, then choose the model, `auto` / `cuda` / `cpu` device, and `auto` / `zh` / `en` language under **Settings → Speech recognition**. Save and restart the Backend. The Voice page reports a safe, specific recovery action when something is missing. A final transcript still does not reply or create a Chat Turn automatically: review or edit it, explicitly place it in the Composer, and then send it.
 
+### Why can Python synthesize speech while the desktop still cannot play it?
+
+The implemented boundary is engine-independent Python one-shot synthesis plus
+a real-runtime smoke test. Desktop Protocol does not yet define synthesis
+requests or safe audio transport, and Electron/React do not yet provide a
+sentence queue, cache, player, or cancellation flow. Use the CLI smoke above
+for now; an online `/tts` service does not mean desktop Voice is complete.
+
 ### Why can Project Sources not answer from file contents?
 
 Files are currently stored safely and represented by metadata only. Loaders, Chunking, Embeddings, a Vector Store, retrieval, and cited answers remain planned work.
@@ -356,6 +415,8 @@ Files are currently stored safely and represented by metadata only. Loaders, Chu
 - `.env` is ignored by Git but should still stay outside untrusted synchronization locations.
 - Original attachment filesystem paths are not returned to React. Public attachment state contains only minimal safe metadata.
 - Audio tests do not retain recordings. Bounded-capture PCM exists only for the transient validation or transcription lifecycle and does not enter Chat or Memory; protocol results contain no PCM, model path, or native error.
+- The TTS adapter accepts only loopback services. Its smoke command emits only irreversible digests and audio metadata and does not save synthesized audio. Voice Profiles, exact reference text, weight paths, and reference audio remain in ignored local configuration/model directories and do not currently cross Desktop Protocol.
+- Elysia's smoke output is sanitized, but the external GPT-SoVITS runtime may print target text, reference text, and local paths in its own console or logs. Treat those upstream logs as private local data and never include them in a public diagnostic bundle.
 - Do not remove `workspace/` while cleaning source or build output. Use validated Recovery Service exports when moving data.
 
 ---

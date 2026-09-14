@@ -109,6 +109,35 @@ does not send a message automatically. No partial recognized text crosses the
 wire in this slice. Real-time partial transcripts remain part of future
 continuous Voice rather than this bounded final-result contract.
 
+Local speech synthesis deliberately remains outside Desktop Protocol v1. The
+Python layer now has an engine-independent one-shot request/result contract, a
+strict local Voice Profile/emotion catalog, sanitized readiness, and a
+loopback-only GPT-SoVITS `/tts` adapter. The retained smoke path synthesizes the
+same fixed sentence twice per selected emotion and has passed a real
+multi-emotion run; it also returns the stable `service_unreachable` reason when
+the runtime is stopped. `service_binding_unverified` means only that the local
+API is reachable and structurally compatible—the upstream API cannot attest
+that the catalog-declared weights are currently loaded.
+
+Version 1 therefore advertises no synthesis capability and defines no TTS
+request, response, event, audio-byte transport, playback, queueing, or
+cancellation shape. No synthesized audio enters Electron or React. The Voice
+Profile catalog remains under the Git-ignored `workspace/settings/` tree, while
+the separately installed runtime, checkpoints, and reference audio remain in
+ignored local runtime/model directories. They are not protocol fixtures,
+repository content, or packaged dependencies. Desktop playback and a
+continuous `LISTENING → THINKING → SPEAKING` session require a future explicit
+protocol extension rather than being inferred from Python readiness.
+
+The Python `SynthesisResult` permits at most 32 MiB of validated encoded audio,
+while one Protocol v1 NDJSON frame is capped at 16 MiB; Base64 would expand the
+payload by roughly another third. A future desktop extension therefore must not
+place arbitrary synthesized bytes directly in the existing JSON frame. It must
+first define a bounded temporary-file token, a bounded binary stream, or an
+equivalent trusted delivery primitive with ownership, expiry, cancellation, and
+cleanup rules. Base URL, checkpoint/reference paths, and exact reference prompt
+must remain inside the Python/local-service boundary regardless of that choice.
+
 `attachment.list`, `attachment.add`, and `attachment.remove` operate on one
 exact Chat or Project scope. Native source paths are accepted only across the
 authenticated Electron-main-to-Python boundary and are never returned in a

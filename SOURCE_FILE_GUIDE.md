@@ -67,13 +67,17 @@ start.create_data_portability_service()
 | `.github/workflows/tests.yml` | GitHub Actions 入口；先检查双端源码文档覆盖，再在 Ubuntu 运行 Python pytest/mypy 和 Desktop lint/typecheck/protocol/UI/build，在 Windows 解析 PowerShell 源码并运行原生 Attachment Bridge 测试。 | `scripts/check_python_documentation.py`、`desktop/package.json`、Python/Desktop 测试 |
 | `.gitignore` | 排除 `.venv`、Cache、日志、构建产物、私人 `workspace`、`.env` 和模型权重。 | Git 工作树与本地运行数据边界 |
 | `AGENTS.md` | 全仓库源码注释规范；要求文件说明、公开 API 文档、复杂算法/设计/边界原因和具体 TODO/FIXME，并禁止逐行复述普通语句。 | 所有后续源码修改、双端文档覆盖检查、Code Review |
+| `mypy.ini` | 固定 Python 静态类型检查路径规则；只排除被忽略的 `models/cache/` 外部 Runtime，不能误排其他名为 cache 的源码。 | 本地 mypy、GitHub Actions、第三方 Runtime 边界 |
+| `pytest.ini` | 把自动发现根固定为 `tests/`，防止被忽略的第三方 Runtime 自带测试污染项目验收。 | pytest、本地 `models/cache/` |
 | `README.md` | 中文项目首页；描述功能状态、架构、CMD 启动、测试、隐私和当前限制。 | 新用户入口；链接 Desktop/Protocol/ADR 文档 |
 | `README.en.md` | 与中文 README 对应的英文首页。 | 对外英文说明；应与 `README.md` 同步维护 |
 | `MODEL_LICENSE.md` | 说明角色语料、GPT-SoVITS 权重、参考音频等来源与权利边界；不是源码许可证。 | `data/characters/`、本地 `models/weights/`、发行边界 |
 | `SOURCE_FILE_GUIDE.md` | 当前这份逐文件源码导览；记录文件职责、调用边界、测试映射和新人阅读顺序。 | 全仓库源码、配置、文档与测试 |
 | `requirements.txt` | 固定基础 Python Runtime、LangChain Ollama、pytest、mypy、jsonschema 等依赖版本；不强制安装本地 STT Native Runtime。 | `.venv`、CI、`start.py`、`desktop_backend.py` |
 | `requirements-stt.txt` | 固定可选的 Faster-Whisper 与 NumPy 版本；只在需要本地单句转写时叠加安装，不包含或下载模型权重。 | `voice/faster_whisper.py`、本地 `.venv`、`models/weights/faster-whisper/<model>` |
+| `scripts/__init__.py` | 把维护脚本标记为可导入 Package，使 Smoke CLI 能同时按模块与文件路径测试。 | `scripts/smoke_gpt_sovits.py`、测试 |
 | `scripts/check_python_documentation.py` | 用标准库 AST 检查所有受维护 Python 文件的 module、public class、public function/method docstring 覆盖。 | `AGENTS.md`、GitHub Actions、Python 开发验证 |
+| `scripts/smoke_gpt_sovits.py` | 用固定中文句子对每个所选情绪重复两次本地合成，只输出 Readiness、格式、大小、时长和 SHA-256；不接受任意文本，也不保存音频。 | `voice/synthesis_service.py`、`.env`、被忽略的 Voice Profile Catalog |
 | `start.py` | Python Composition Root 和 Console 入口；创建 Settings、Model、Memory、Repositories、Migrator、Services、Brain 和日志。 | 几乎所有 Python 生产包；`ui/console.py`、`desktop_backend.py` |
 | `desktop_backend.py` | Electron 启动的 Python NDJSON 进程；完成会话令牌握手、初始化、方法路由、Streaming、Cancel、错误映射和安全关闭；从 Active Settings 构造本地模型路径，惰性创建有界 STT Runner，并让 Chat/Settings 写入与物理占用中的转写互斥。 | `desktop_protocol/`、`start.py`、Chat/Project/Attachment/Voice 服务 |
 | `docs/decisions/0001-desktop-shell.md` | Electron 与 Tauri 选型 ADR；记录测量方法、能力差距、风险、最终选择和重访门槛。 | `desktop/benchmarks/measure-shell.ps1`、Desktop 技术决策 |
@@ -96,8 +100,9 @@ start.create_data_portability_service()
 | 文件 | 实际用途 | 主要连接 |
 | --- | --- | --- |
 | `config/__init__.py` | 配置包的稳定公开导出。 | `start.py`、`desktop_backend.py`、测试 |
-| `config/settings.py` | 从安全默认值和根目录 `.env` 创建不可变 `AppSettings`；除 Chat/Ollama/Memory 设置外，严格解析 STT 模型 `tiny|base|small|medium|large-v3|turbo`、设备 `auto|cuda|cpu` 和语言 `auto|zh|en`。 | `start.py`、Model Adapter、Memory、Recovery、Faster-Whisper 配置 |
+| `config/settings.py` | 从安全默认值和根目录 `.env` 创建不可变 `AppSettings`；除 Chat/Ollama/Memory 与 STT 闭集外，还限制 GPT-SoVITS 本地评估开关、请求/探测超时和确定性 Seed。 | `start.py`、Model Adapter、Memory、Recovery、Faster-Whisper 与 TTS Composition |
 | `config/desktop_settings.py` | Desktop Settings Store；迁移旧五字段文档并对八个公开字段做 allowlist、Revision CAS、Desired/Active Restart Diff、线程/进程锁、原子替换和损坏隔离。 | `desktop_backend.py`、Settings UI、`workspace/settings/global.json` |
+| `config/voice_profiles.example.json` | 只含原创占位内容的本地 Voice Profile Schema 示例；开发者复制到被忽略的 Workspace 后再填写有权使用的资产。 | `workspace/settings/voice-profiles.json`、`voice/profiles.py` |
 
 ## 6. Python 核心协调层：`core/`
 
@@ -203,8 +208,12 @@ ChatSession.project_id
 | `voice/service.py` | 提供硬件无关的设备偏好读取和更新；Python 不直接打开麦克风。 | Desktop Backend、Voice Repository |
 | `voice/transcription.py` | 定义与具体识别引擎解耦的 Transcriber Protocol、请求、最终结果、语言范围和稳定错误。 | 复用 `VoiceCapture`；连接 Faster-Whisper Adapter、后台任务和 Desktop Backend |
 | `voice/transcription_jobs.py` | 用固定 Daemon Worker、有界队列、Deadline、唯一终态和结果保留上限包装同步 Transcriber；取消/超时后保留物理容量直到 Native Call 返回，并丢弃迟到结果。 | `desktop_backend.py`、`voice/transcription.py`；不把 PCM、路径或底层异常放进 Snapshot |
+| `voice/synthesis.py` | 定义引擎无关的 `SpeechSynthesizer` Protocol、严格请求/结果、稳定错误与最大 32 MiB WAV/Ogg/AAC 容器验证。 | GPT-SoVITS Adapter、Local Synthesis Service、Fake 单元测试 |
+| `voice/gpt_sovits.py` | 把领域请求映射到 GPT-SoVITS `/tts`；只允许 Loopback、禁用环境代理/Redirect/Retry、流式限制响应，并以 `/openapi.json` 做脱敏可用性探测。 | 外部本地 GPT-SoVITS Runtime；不会切换远端进程的全局权重 |
+| `voice/profiles.py` | 严格读取被忽略的 JSON Catalog，把 Profile、情绪、准确参考文本/语言和相对资产路径解析到固定模型根；实施 `verified` 与显式 Opt-in 的 `local-evaluation-only` 权利标签。 | `config/voice_profiles.example.json`、`models/weights/gpt-sovits/`、Synthesis Service |
+| `voice/synthesis_service.py` | TTS 的惰性 Composition Root；每次调用重载 Catalog，按逻辑 Profile/情绪构造 Adapter 请求，且服务构造本身不触碰磁盘或网络。 | `config/settings.py`、Profile Catalog、GPT-SoVITS Adapter、Smoke CLI |
 
-`voice/capture.py` 是单句 PCM 验证边界，详见本文“Voice Capture 与本地 STT 实现”部分。`voice/transcription.py` 保持为不导入第三方引擎的领域契约；具体 Adapter 位于 `voice/faster_whisper.py`，并由 `voice/transcription_jobs.py` 接入 Python Desktop Backend。Adapter 只接受完整本地模型目录，不会根据模型别名隐式下载权重。Electron/React 已消费最终的 PCM-free Transcript：用户先编辑，再显式放入或追加到 Composer 草稿。实时 Partial Transcript 仍属于未来持续语音，而不是当前单句协议。
+`voice/capture.py` 是单句 PCM 验证边界，详见本文“Voice Capture、本地 STT 与本地 TTS”部分。STT 由 `voice/transcription_jobs.py` 接入 Python Desktop Backend，Electron/React 已消费最终的 PCM-free Transcript。TTS 是另一条 Python-only 边界：目前只连接本地 Smoke CLI，不经过 `desktop_backend.py`、Desktop Protocol、Electron 或 React。
 
 ## 13. Console UI：`ui/`
 
@@ -225,7 +234,7 @@ ChatSession.project_id
 | `desktop/vite.config.ts` | 配置 React Plugin、固定开发端口和生产相对资源路径。 | `npm run dev`、`npm run build:renderer` |
 | `desktop/eslint.config.js` | ESLint Flat Config；启用 JS、TypeScript、React Hooks 和 React Refresh 规则。 | `npm run lint` |
 | `desktop/playwright.config.ts` | 配置 Electron UI 测试目录、单 Worker、Timeout 和失败产物路径。 | `npm run test:ui`、`desktop/tests/ui/` |
-| `desktop/scripts/check-documentation.mjs` | 从仓库根目录检查 JS/TS/JSX 文件说明及公开 callable JSDoc、PowerShell 脚本/模块 Help，以及 CSS/HTML/HTM 文件说明；排除依赖、构建产物与缓存。 | `npm run docs:check`、`AGENTS.md`、GitHub Actions |
+| `desktop/scripts/check-documentation.mjs` | 从仓库根目录检查 JS/TS/JSX 文件说明及公开 callable JSDoc、PowerShell 脚本/模块 Help，以及 CSS/HTML/HTM 文件说明；精确排除被忽略的 `models/cache/` 外部 Runtime，但不会误排其他名为 cache 的受维护源码。 | `npm run docs:check`、`AGENTS.md`、GitHub Actions |
 | `desktop/tsconfig.json` | TypeScript Solution Root，引用 Renderer 与 Node/Vite 配置。 | `npm run typecheck`、Renderer Build |
 | `desktop/tsconfig.app.json` | React Renderer 的 DOM/ES/JSX/Strict TypeScript 配置；不直接 Emit。 | `desktop/src/`、Vite |
 | `desktop/tsconfig.node.json` | `vite.config.ts` 的 NodeNext TypeScript 配置。 | Vite Config Type Check |
@@ -324,6 +333,7 @@ Project Memory 页面目前仍是明确 Placeholder。Project Source 只安全�
 
 | 文件 | 实际用途 | 主要连接 |
 | --- | --- | --- |
+| `desktop/tests/check-documentation.test.mjs` | 验证源码发现会排除精确的 `models/cache/`，同时继续扫描 `core/cache/` 等受维护目录。 | Documentation Checker、`npm run test:contract` |
 | `desktop/tests/protocol.contract.test.mjs` | 在 Node 中测试编译后的 Protocol Helpers 和 BackendProcess；覆盖双端 Fixture、STT exact Status/敏感字段拒绝、Request 关联、互斥、Cancel/Draining Race、PCM 不保留、Stream、URL 与 Permission Policy。 | `dist-electron`、Schema/Fixtures；使用 Fake Child，不启动真实 Python |
 | `desktop/tests/ui/electron-main.cjs` | Playwright 专用 Electron Main；加载生产 Renderer Build，保持 Sandbox/Context Isolation，但不启动生产 Backend。 | UI Test、Mock Preload、`dist/index.html` |
 | `desktop/tests/ui/mock-preload.cjs` | UI 测试专用 `elysiaDesktop` Fake；除 Canonical 状态外模拟 STT 开始/终态/取消、Readiness、延迟、失败、Reload 和 Race。 | App Shell UI Tests；不会进入生产包 |
@@ -349,6 +359,7 @@ Project Memory 页面目前仍是明确 Placeholder。Project Source 只安全�
 | `tests/test_desktop_settings.py` | Desktop Settings 八字段 Validation、旧 Schema Migration、Desired/Active Restart Diff、Revision CAS、锁和 Quarantine。 |
 | `tests/test_faster_whisper.py` | 不安装 Native Runtime 或模型也能验证离线 Adapter、设备降级、PCM、惰性结果、错误脱敏和边界。 |
 | `tests/test_file_manager.py` | 基础文本文件操作。 |
+| `tests/test_gpt_sovits.py` | Loopback URL、HTTP 请求映射、代理/Redirect/Retry 禁止、Readiness、响应上限、容器与错误脱敏。 |
 | `tests/test_json_store.py` | 早期通用 JSON Store。 |
 | `tests/test_langchain_ollama_chat_model.py` | 生产 LangChain Ollama Adapter。 |
 | `tests/test_legacy_conversation_migration.py` | Legacy Backup、幂等性、语义前缀和失败回滚。 |
@@ -364,19 +375,24 @@ Project Memory 页面目前仍是明确 Placeholder。Project Source 只安全�
 | `tests/test_project_repository.py` | Project Persistence、排序、Archive 和 Corruption。 |
 | `tests/test_project_service.py` | Project–Chat 关系、删除策略、Rollback 和 Busy Guard。 |
 | `tests/test_prompts.py` | Elysia 人格规则和 JSON 数据边界。 |
+| `tests/test_python_documentation_check.py` | 文档扫描只排除精确的 `models/cache/`，不会把其他同名源码目录误排。 |
 | `tests/test_scoped_memory_integration.py` | 跨 Chat/Project Memory 隔离和同 Key 覆盖。 |
 | `tests/test_settings.py` | `.env`、STT 闭集配置/安全回退、默认值和基础 AppSettings。 |
 | `tests/test_short_term_memory.py` | Token Budget 和完整 Turn 淘汰。 |
+| `tests/test_smoke_gpt_sovits.py` | Smoke CLI 的固定文本、重复/多情绪、缓冲成功输出、格式摘要和闭集错误码。 |
 | `tests/test_stage5_acceptance.py` | Stage 5 端到端验收：多 Project/Chat、Memory 隔离、重启和完整 Export/Import。 |
 | `tests/test_start.py` | Composition Root、Migration 和配置限制。 |
+| `tests/test_synthesis_service.py` | 惰性构造、Catalog 重载、Profile/情绪映射、权利 Opt-in 与离线错误。 |
 | `tests/test_voice_capture.py` | Python 单句 PCM Capture Contract、Canonical Base64、Markers、边界和收据。 |
 | `tests/test_voice_settings.py` | Audio Device Preferences、CAS、锁和损坏恢复。 |
+| `tests/test_voice_profiles.py` | Voice Profile Schema、路径固定、准确 Prompt/语言、情绪选择与权利状态。 |
+| `tests/test_voice_synthesis.py` | 引擎无关 TTS 请求/结果、不可变性、音频上限、WAV/Ogg/AAC 验证和错误层级。 |
 | `tests/test_voice_transcription.py` | 引擎无关的转写请求、最终结果、语言、置信度、不可变性和错误层级。 |
 | `tests/test_voice_transcription_jobs.py` | 有界后台转写的 Admission、Worker/Queue Capacity、Cancel/Timeout Race、Native Draining、迟到结果丢弃、Retention 和 Shutdown。 |
 
-## 25. Voice Capture 与本地 STT 实现
+## 25. Voice Capture、本地 STT 与本地 TTS
 
-当前 Voice 是“显式单句采集 → 本地最终转写 → 人工确认进入草稿”的有界流程。它不是持续监听，也不会把识别结果直接发给 Brain。理解这一功能时要把 Capture、Python STT 和 Renderer Handoff 三个边界连起来看。
+当前桌面 Voice 是“显式单句采集 → 本地最终转写 → 人工确认进入草稿”的有界流程。Python 另有独立的单次 TTS 基础，但尚未接入桌面。它们都不是持续会话；理解这一层时要分别看 Capture/STT/Renderer Handoff 与 Python TTS 两条数据流。
 
 ### Capture 核心文件
 
@@ -439,7 +455,37 @@ explicit Start microphone
 
 每份 PCM 只跨协议一次，不进入 Chat、Memory 或长期文件。用户取消、关闭 Voice 或切换上下文后，迟到结果不能回填草稿。Cancel 或 Timeout 只结束用户可见任务；Python 无法安全终止正在 Native Library 内运行的线程，因此 Runner 会继续占用物理容量直到调用返回并丢弃迟到结果。在排空期间，新 STT、Chat 与冲突配置写入会收到 Busy。
 
-当前只传递最终文字；实时 Partial Transcript、TTS、自动回复与连续 Voice Conversation 明确留给后续工作。Fake Runtime 自动化覆盖设备选择、降级和竞态，另有一次真实 CPU Runtime/模型 Smoke 验证；这里不声称 CUDA 已通过真实 GPU 验证。
+当前桌面协议只传递最终文字；实时 Partial Transcript、TTS 音频传输/播放、自动回复与连续 Voice Conversation 明确留给后续工作。Fake Runtime 自动化覆盖设备选择、降级和竞态，另有一次真实 CPU STT Runtime/模型 Smoke 验证；这里不声称 STT CUDA 已通过真实 GPU 验证。
+
+### Python-only GPT-SoVITS 单次合成
+
+| 文件 | 当前职责 | 关键边界 |
+| --- | --- | --- |
+| `config/settings.py` | 默认关闭本地评估，并限制 HTTP 请求/探测超时与 Seed。 | 环境值不提供任意 URL 或路径 |
+| `workspace/settings/voice-profiles.json` | 本机 Catalog：声明 Base URL、权重、参考片段、准确文本/语言、速度、格式和权利状态。 | 被 Git 忽略；Windows 路径也使用 `/` 分隔的相对路径 |
+| `voice/profiles.py` | 将逻辑 Profile/情绪解析为固定根下的完整配置。 | 拒绝逃逸路径、远端 URL、未知字段与未获 Opt-in 的本地评估素材 |
+| `voice/synthesis_service.py` | 惰性加载 Catalog 并创建一次 Adapter 调用。 | 构造服务不访问磁盘或网络；文字 Chat 不依赖 TTS 在线 |
+| `voice/gpt_sovits.py` | 探测 `/openapi.json` 并 POST `/tts`，流式收取有界结果。 | 仅 Loopback；不信任代理，不自动重试/重定向或切换全局权重 |
+| `voice/synthesis.py` | 验证请求与最大 32 MiB 编码音频结果。 | 无效/空/超大 WAV、Ogg 或 AAC 不进入下游 |
+| `scripts/smoke_gpt_sovits.py` | 每个情绪对固定句子合成两次并输出安全摘要。 | 不写音频、不回显 Prompt/路径/异常原文 |
+
+完整连接关系：
+
+```text
+config/settings.py
+  + workspace/settings/voice-profiles.json
+  + models/weights/gpt-sovits/
+  → JsonVoiceProfileCatalog
+  → LocalSpeechSynthesisService
+  → GptSovitsSynthesizer
+  → GET loopback /openapi.json
+  → POST loopback /tts
+  → validated SynthesisResult
+  → scripts/smoke_gpt_sovits.py
+  → safe metadata only
+```
+
+真实本机 Smoke 已对同一中文文本的 `neutral`、`happy`、`sad` 各运行两次，六次都得到有效 WAV；重复要求是“每次都有效”，并不承诺编码字节完全相同。Runtime 停止后返回稳定的 `service_unreachable`，文字 Chat 测试仍通过。正常探测只报告 `available / service_binding_unverified`，因为 `/openapi.json` 能证明兼容服务在线，却不能证明外部进程实际加载了 Catalog 声明的权重。这条链目前不经过 `desktop_backend.py`、Electron、Preload 或 React。
 
 ## 26. 哪些文件不应被当成源码垃圾
 
@@ -472,6 +518,7 @@ logs/                  排错日志
 models/blobs/          本地模型数据
 models/manifests/      本地模型清单
 models/weights/        本地 Faster-Whisper、GPT-SoVITS 等权重/参考音频
+models/cache/          解压的可选外部 Runtime 与下载/推理缓存；可重建但体积大
 docs/02-ROADMAP.md     被 Git 忽略的本地项目路线图
 ```
 
@@ -549,7 +596,7 @@ Renderer intent
 
 不要向 Renderer 暴露任意 IPC、原生路径、Node API 或 Python 进程句柄。
 
-### 修改本地 Voice / STT
+### 修改本地 Voice / STT / TTS
 
 ```text
 config/settings.py + config/desktop_settings.py
@@ -563,6 +610,18 @@ config/settings.py + config/desktop_settings.py
 ```
 
 如果只是增加模型权重或可选 Runtime，不要把它提交进源码：依赖版本进入 `requirements-stt.txt`，完整模型只放在被忽略的 `models/weights/faster-whisper/<model>`。任何新的 Runtime Error 必须先映射为稳定枚举，不能把路径、底层异常或 Native 对象直接送给 Renderer。
+
+Python TTS 改动从另一条尚未接桌面的链开始：
+
+```text
+config/settings.py + config/voice_profiles.example.json
+→ voice/synthesis.py + voice/profiles.py
+→ voice/gpt_sovits.py + voice/synthesis_service.py
+→ scripts/smoke_gpt_sovits.py
+→ 对应 Python tests
+```
+
+只有开始实现桌面播放时，才继续修改 Protocol、Electron、Preload 与 React。外部 GPT-SoVITS Runtime 放在被忽略的 `models/cache/`，权重/参考音频放在 `models/weights/gpt-sovits/`；不得把本机 Catalog、准确 Prompt、资产或 Runtime 混进源码提交。
 
 ## 28. 推荐的新成员阅读顺序
 
@@ -603,6 +662,7 @@ config/settings.py + config/desktop_settings.py
 - Electron 管可信本机能力。
 - React 只管理显示和短暂状态。
 - 单句 STT 只返回 Final Transcript；进入 Composer 和发送消息是两个独立、显式动作。
+- Python 单次 TTS 已能验证本地合成，但 Desktop Protocol、句子队列和播放器尚未连接。
 - Streaming Overlay 不等于已保存消息。
 - `ChatSession.project_id` 是 Project–Chat 关系的唯一真相。
 - 所有 Memory 使用前都必须经过 Scope 过滤。

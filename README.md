@@ -20,7 +20,7 @@
 
 > [!IMPORTANT]
 >
-> 本项目目前是 **开发预览**，不是下载即用的正式发行版。桌面壳仍依赖源码目录中的 Python 环境、Ollama 和本地模型；有界单句 STT 已接通，但其可选 Runtime 与模型不随基础安装提供。TTS、连续语音、RAG、Work Agent、Live2D 与正式安装体验尚未完成。
+> 本项目目前是 **开发预览**，不是下载即用的正式发行版。桌面壳仍依赖源码目录中的 Python 环境、Ollama 和本地模型；有界单句 STT 已接通，Python 侧的单次 TTS Protocol、Voice Profile、GPT-SoVITS Loopback Adapter 与 Smoke 验证也已完成，但两者的可选 Runtime 和模型均不随基础安装提供。桌面 TTS 传输/播放、连续语音、RAG、Work Agent、Live2D 与正式安装体验尚未完成。
 
 ---
 
@@ -33,6 +33,7 @@
 - 🛡️ **严格桌面边界** — Renderer 沙箱、受限 Preload、来源校验与认证 NDJSON Protocol v1
 - 📎 **安全附件表面** — Chat 与 Project 文件可选择、拖放、预览、移除和恢复；文件内容尚不解析或索引
 - 🎙️ **本地单句转写** — 显式采集经过本地 VAD 与 Faster-Whisper，最终文字可编辑后放入 Chat 草稿
+- 🔊 **本地单次合成基础** — Python 可按 Voice Profile/情绪调用仅限 Loopback 的 GPT-SoVITS，并验证有界编码音频
 - 💾 **恢复优先** — 本地 JSON 存储、旧会话迁移、损坏隔离、原子写入以及导入/导出服务
 - ♿ **桌面可用性** — 主题、键盘导航、焦点管理、Windows 缩放、中文 IME 与离线/错误恢复
 
@@ -51,7 +52,7 @@
 | Audio Devices | ✅ 可用 | 麦克风/扬声器选择、Windows 权限、输入电平与输出音调测试 |
 | 单句录音与本地 VAD | ✅ 可用 | 显式启动、16 kHz mono `s16le`、临时处理；不会自动生成 Chat Turn |
 | STT / Faster-Whisper | ✅ 基础可用 | Electron/React 与本地 Final Transcript 已接通；需另装可选依赖并放置本地模型 |
-| GPT-SoVITS / TTS | ⏳ 计划中 | 本地权重尚未接入运行时代码 |
+| GPT-SoVITS / TTS | ✅ 基础可用 | Python 单次合成、Profile、Readiness 与真实 Smoke 已完成；尚未接入 Desktop Protocol 或播放 |
 | 连续语音与打断 | ⏳ 计划中 | 尚无完整 `LISTENING → THINKING → SPEAKING` 会话 |
 | 文件解析与本地 RAG | ⏳ 计划中 | 尚无 Loader、Chunking、Vector Store 或引用回答 |
 | Work Agent 与工具权限 | ⏳ 计划中 | 尚无工具执行、桌面控制、Internet 或 Vision 工作流 |
@@ -71,6 +72,8 @@ flowchart LR
     P --> B[Brain]
     B --> O[Ollama]
     B --> D[(workspace 本地数据)]
+    P -. 可选单次合成 .-> T[Python TTS Service / Smoke CLI]
+    T -->|仅 Loopback /tts| G[外部 GPT-SoVITS Runtime]
     E --> H[原生文件与音频边界]
 ```
 
@@ -124,6 +127,8 @@ py -3.14 -m venv .venv
 `models\weights\faster-whisper\<model>\`；默认 `<model>` 是 `small`。
 可选名称为 `tiny`、`base`、`small`、`medium`、`large-v3`、`turbo`。
 Elysia 只打开所选本地目录，不会自动下载模型，模型权重也不得提交到 Git。
+
+如需测试本地语音合成，请另行准备你有权使用的 GPT-SoVITS Runtime、Checkpoint 和参考音频。把 `config\voice_profiles.example.json` 复制为被忽略的 `workspace\settings\voice-profiles.json`，再把示例 Profile 改为真实的本地相对路径、准确参考文本与语言；Catalog 内的资产路径在 Windows 上也使用 `/`，权重和参考音频只能位于被忽略的 `models\weights\gpt-sovits\` 下。确认这些本机内容后，在 `.env` 设置 `GPT_SOVITS_ALLOW_LOCAL_EVALUATION=True`。基础安装不会下载或启动 GPT-SoVITS，也不会把这些素材提交或打包。
 
 ### 3. 准备本地模型
 
@@ -187,13 +192,17 @@ DATA_IMPORT_MAX_BYTES=16777216
 TRANSCRIPTION_MODEL=small
 TRANSCRIPTION_DEVICE=auto
 TRANSCRIPTION_LANGUAGE=auto
+GPT_SOVITS_ALLOW_LOCAL_EVALUATION=False
+GPT_SOVITS_REQUEST_TIMEOUT_SECONDS=120
+GPT_SOVITS_PROBE_TIMEOUT_SECONDS=1
+GPT_SOVITS_DETERMINISTIC_SEED=42
 LOG_LEVEL=INFO
 DEBUG=False
 ```
 
 桌面端 **Settings** 允许修改 Chat 模型、Ollama Origin、Memory 限额、文件导入大小，以及本地转写模型、设备和默认语言；这些公开设置使用独立 revision 并写入 `workspace/settings/global.json`。转写模型可选 `tiny` / `base` / `small` / `medium` / `large-v3` / `turbo`，设备可选 `auto` / `cuda` / `cpu`，语言可选 `auto` / `zh` / `en`。Backend 重启后才会采用这些修改；主题则保存在当前设备的 Renderer Storage 中并立即生效。
 
-本项目当前只连接本地 Ollama，不要求云端 API Key。不要把未来的密钥、Token 或私人配置提交到仓库。
+本项目当前只连接本地 Ollama 与明确配置的 Loopback GPT-SoVITS，不要求云端 API Key。`GPT_SOVITS_ALLOW_LOCAL_EVALUATION` 默认关闭；只有在你确认本地 Voice Profile 的权利与路径后才应显式开启。不要把未来的密钥、Token、私人 Prompt 或私人配置提交到仓库。
 
 ---
 
@@ -225,10 +234,12 @@ DEBUG=False
 - 有界单句采集只在用户点击 **Start microphone** 后开始；Renderer 本地 downmix、重采样并运行本地 VAD。
 - 有效片段固定为 16 kHz、mono、signed 16-bit little-endian PCM；同一份 PCM 只提交一次并保持临时，最终协议结果不含音频、模型路径或 Native Error。
 - Electron/React 已把 `voice.transcription.start` 接到 Voice 页面。Faster-Whisper 返回有界 Final Transcript 后，用户可以先编辑，再显式选择 **Use transcript in message**；若 Chat 已有草稿，则使用 **Append transcript to message**，原草稿会保留在前。该操作只更新草稿，不会自动发送消息或创建 Chat Turn。
-- 当前只返回最终文字；实时 Partial Transcript 明确留给后续持续语音会话。TTS、自动回复和 `LISTENING → THINKING → SPEAKING` 循环尚未完成。
+- 当前 STT 只返回最终文字；实时 Partial Transcript 明确留给后续持续语音会话。Python TTS 基础已独立完成，但自动回复、桌面播放和 `LISTENING → THINKING → SPEAKING` 循环尚未完成。
 - Settings 与 Voice 页面只显示经过枚举净化的就绪状态。缺模型、缺可选依赖、CUDA 不可用或初始化失败时会给出可操作步骤，不显示本地路径、底层异常或 Native 诊断；`auto` 可以选择安全的 CPU 回退。
 - 已完成一次真实 CPU Runtime/模型的本地转写 Smoke 验证；CUDA 成功路径尚未在本文声称为实机验证。自动化测试同时覆盖 Fake Runtime、Cancel、Timeout、Native Draining 和迟到结果丢弃。
-- 本机可选的 GPT-SoVITS 权重仍未接入。来源和使用限制见 [MODEL_LICENSE.md](./MODEL_LICENSE.md)。
+- Python 已提供引擎无关的合成 Contract、本地 Voice Profile Catalog、惰性 Composition Root 和仅允许 `127.0.0.1` / `localhost` 的 GPT-SoVITS `/tts` Adapter；它禁用环境代理、Redirect 和自动重试，并验证最大 32 MiB 的 WAV/Ogg/AAC 结果。
+- 本机真实验收使用同一固定中文测试句，对 `neutral`、`happy`、`sad` 各连续合成两次，六次均得到有效 WAV；停掉服务后 Smoke 返回稳定的 `service_unreachable`，完整文字 Chat 回归仍通过。`service_binding_unverified` 表示服务在线但上游 API 不能证明当前加载的是 Catalog 所声明的权重，不是对权重身份的背书。
+- 这条 TTS 路径目前只供 Python/CLI 使用，尚未加入 Desktop Protocol、Renderer、句子队列或音频播放。Profile 配置、Runtime、权重和参考音频均留在被 Git 忽略的本机目录；来源和使用限制见 [MODEL_LICENSE.md](./MODEL_LICENSE.md)。
 
 ---
 
@@ -242,6 +253,22 @@ cd /d D:\Elysia_AI
 .venv\Scripts\python.exe -m pytest -q
 .venv\Scripts\python.exe -m mypy agent attachments chats config core desktop_protocol memory models projects recovery scripts tools ui voice desktop_backend.py start.py
 ```
+
+已单独启动 Loopback GPT-SoVITS 并完成本地 Profile 配置后，可用固定、不会回显参考文本或路径的 Smoke 命令验证单次合成；每个情绪会合成同一句话两次：
+
+```bat
+cd /d D:\Elysia_AI
+.venv\Scripts\python.exe scripts\smoke_gpt_sovits.py --profile default --emotion neutral --emotion happy --emotion sad
+```
+
+成功输出只含 Readiness Code、格式、字节数、时长与 SHA-256；服务未启动时输出 `{"error":"service_unreachable"}` 并返回非零退出码。Smoke 不会把音频写入磁盘。当前本机被忽略的 v2 Runtime 可在另一个 CMD 窗口按其本地配置启动，并用 `Ctrl+C` 停止：
+
+```bat
+cd /d D:\Elysia_AI\models\cache\GPT-SoVITS-v2-240821
+runtime\python.exe -X utf8 api_v2.py -c GPT_SoVITS\configs\tts_infer_elysia.yaml -a 127.0.0.1 -p 9880
+```
+
+该具体目录和 YAML 只是本机验收环境，不在仓库中；其他开发者应使用自己核验过的 Runtime 与 Profile，不能从这个命令推断模型素材可再分发。
 
 ### Desktop
 
@@ -304,13 +331,13 @@ Elysia_AI/
 ├── projects/           # Project Domain、Repository 与 Chat 关系服务
 ├── recovery/           # 导入、导出、迁移与损坏隔离
 ├── tests/              # Python 测试
-├── voice/              # 音频设备、PCM 校验、本地 STT Adapter 与有界任务
+├── voice/              # 音频设备、PCM/STT，以及 Python-only 本地 TTS Contract、Profile 与 Adapter
 ├── workspace/          # 运行时用户数据，被 Git 忽略；清理源码时不要删除
 ├── desktop_backend.py  # Electron ↔ Python 进程入口
 └── start.py            # Console 入口与服务组合根
 ```
 
-`logs/`、`.env`、`.venv/`、`workspace/`、Ollama blobs/manifests 与 `models/weights/` 都被 Git 忽略。
+`logs/`、`.env`、`.venv/`、`workspace/`、Ollama blobs/manifests、`models/cache/` 与 `models/weights/` 都被 Git 忽略。
 
 ---
 
@@ -342,6 +369,10 @@ cd /d D:\Elysia_AI\desktop
 
 先用 `requirements-stt.txt` 安装可选 Runtime，把所选模型的完整本地目录放到 `models\weights\faster-whisper\<model>\`，再到 **Settings → Speech recognition** 选择模型、`auto` / `cuda` / `cpu` 设备和 `auto` / `zh` / `en` 语言，保存并重启 Backend。Voice 页面会显示安全的具体恢复提示。Final Transcript 仍不会自动回复或创建 Chat Turn；请先检查/编辑，再显式放入 Composer 并发送。
 
+### 为什么 Python 已能合成语音，桌面端却还不会播放？
+
+当前完成的是与引擎隔离的 Python 单次合成边界和真实 Runtime Smoke。Desktop Protocol 尚未定义合成请求或安全音频传输，Electron/React 也还没有句子队列、缓存、播放器或取消逻辑；这些属于下一步工作。请先用上面的 CLI 验证，不要把一个在线的 `/tts` 服务误认为桌面 Voice 已完成。
+
 ### 为什么 Project Sources 不能回答文件内容？
 
 目前文件只被安全地保存并显示元数据，Loader、Chunking、Embedding、Vector Store、Retriever 与引用回答仍在后续计划中。
@@ -355,6 +386,8 @@ cd /d D:\Elysia_AI\desktop
 - `.env` 被 Git 忽略，但仍不应放入不受信任的同步目录。
 - 文件源路径不会返回给 React；附件公开状态只包含最小安全元数据。
 - 音频测试不会保存录音。有界采集的 PCM 只在校验或转写所需的短暂生命周期内存在，不进入 Chat 或 Memory；协议结果不包含 PCM、模型路径或 Native Error。
+- TTS Adapter 只允许 Loopback 服务；Smoke 只输出不可逆摘要和音频元数据，不保存合成音频。Voice Profile、准确参考文本、权重路径和参考音频保留在被忽略的本地配置/模型目录，当前不会穿过 Desktop Protocol。
+- Elysia 的 Smoke 输出已经脱敏，但外部 GPT-SoVITS Runtime 自己的控制台或日志可能显示目标文本、参考文本与本地路径；这些上游日志也应视为私人本机数据，不要随调试包公开。
 - 删除源码或构建产物时不要误删 `workspace/`；需要迁移数据时应使用 Recovery Service 生成的受校验导出。
 
 ---

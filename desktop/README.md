@@ -16,7 +16,12 @@ attachments, Project source storage, semantic design tokens, system/light/dark
 themes, keyboard and screen-reader navigation, durable per-Chat drafts,
 renderer-refresh stream recovery, and consistent loading, empty, error,
 offline, and fatal states. This Voice slice exposes final text only; real-time
-partial transcripts, TTS, and continuous conversation remain future work.
+partial transcripts and continuous conversation remain future work. Separately,
+Python now has one-shot TTS contracts, a strict ignored local Voice Profile
+catalog, readiness reporting, and a loopback-only GPT-SoVITS adapter with
+repeated/multi-emotion smoke coverage. That foundation is Python/CLI-only:
+Desktop Protocol, Electron/React transport, playback, and continuous speech are
+not connected.
 Electron is frozen as the production
 shell. The Tauri source and toolchain were removed after the comparison; the
 rationale, recorded measurements, and revisit gates are in
@@ -31,6 +36,12 @@ Prerequisites:
 - Local STT additionally requires `requirements-stt.txt` and a complete model
   directory at `models/weights/faster-whisper/<model>`; neither is installed or
   downloaded automatically.
+- Optional Python-only synthesis requires a separately installed GPT-SoVITS
+  runtime, checkpoints/reference audio under the ignored
+  `models/weights/gpt-sovits/` tree, and an ignored
+  `workspace/settings/voice-profiles.json` catalog. None is downloaded,
+  committed, or packaged by this project, and none is required to run the
+  current desktop UI.
 - Run all npm commands from the `desktop` directory.
 
 Start Vite in the first terminal:
@@ -111,8 +122,9 @@ Git-ignored and must not be committed or packaged with the application.
   final message. The compact character panel is also modal, traps focus, and
   has its own close control.
 - Projects support persisted metadata, instructions, workspace binding, Chat
-  assignment, archive, and restore. Speech output, continuous Voice, Work
-  permissions, and later file-processing controls remain unavailable.
+  assignment, archive, and restore. Although Python/CLI one-shot synthesis is
+  available, desktop speech output, continuous Voice, Work permissions, and
+  later file-processing controls remain unavailable.
 
 ## Manual local transcription smoke test
 
@@ -145,6 +157,35 @@ while silent for about 10 seconds, once with **Cancel capture**, and once with
 generic progress, not partial recognized text. Stop immediately if Windows
 reports that microphone access is denied.
 
+## Manual local synthesis smoke test
+
+This test exercises only the Python synthesis boundary; it does not make the
+desktop speak. Prepare a GPT-SoVITS runtime and assets that you have the right
+to use, copy `config\voice_profiles.example.json` to the ignored
+`workspace\settings\voice-profiles.json`, and replace the example values with
+accurate local relative paths, reference text, and language. The adapter
+accepts only loopback HTTP endpoints and resolves model/reference assets only
+under `models\weights\gpt-sovits\`.
+
+If the Profile is marked `local-evaluation-only`, leave
+`GPT_SOVITS_ALLOW_LOCAL_EVALUATION=False` until you have explicitly confirmed
+its rights status and paths; then opt in locally without committing `.env`.
+After starting the configured runtime, run from CMD:
+
+```bat
+cd /d D:\Elysia_AI
+.venv\Scripts\python.exe scripts\smoke_gpt_sovits.py --profile default --emotion neutral --emotion happy --emotion sad
+```
+
+The command synthesizes one fixed Chinese sentence twice per emotion and keeps
+the audio in memory. Success output contains only readiness, format, byte
+count, duration, and SHA-256 metadata. `service_binding_unverified` means the
+loopback API is reachable but cannot attest that the catalog-declared weights
+are loaded; it must not be read as model-identity verification. Stopping the
+runtime must produce the stable `service_unreachable` error. See the root
+[`README.en.md`](../README.en.md) for the current acceptance-runtime CMD example
+and the full configuration boundary.
+
 ## Verification
 
 ```bat
@@ -160,6 +201,8 @@ npm run package
 
 `npm run package` creates an unpacked desktop build in `desktop\out`.
 On Windows, `npm run make` additionally creates an unsigned NSIS installer.
+Neither output contains the GPT-SoVITS runtime, Voice Profile catalog, model
+weights, or reference audio.
 
 The application PNG and Windows ICO are derived from the official *Honkai
 Impact 3rd* Elysia signet at the project owner's express direction for this
@@ -212,6 +255,12 @@ method, results, capability gaps, and limitations.
 - Python and TypeScript validate the same samples in
   `desktop_protocol/fixtures/v1.samples.json`.
 - Python delegates persistence and streaming to the existing Stage 5 Brain.
+- The Python GPT-SoVITS adapter is deliberately outside the desktop protocol:
+  it permits only loopback HTTP, ignores environment proxies, rejects
+  redirects, uses bounded requests/responses, and reports sanitized readiness.
+  Its ignored catalog maps logical Profile/emotion identifiers to local assets;
+  private paths, prompts, weights, reference audio, and synthesized bytes do not
+  currently cross Electron or React.
 - Settings accepts an exact non-sensitive allowlist, including the closed STT
   model/device/language enums, uses optimistic revisions
   and atomic replacement, and remains repairable after Backend initialization

@@ -21,14 +21,15 @@ This document records the known provenance, local handling rules, and current au
 | Location / 路径 | Repository status / 仓库状态 | Current treatment / 当前处理方式 |
 | --- | --- | --- |
 | `models/weights/gpt-sovits/elysia-v2/` | Ignored and currently outside the Git index / 已忽略且当前不在 Git Index 中 | Local-only GPT-SoVITS weights and reference audio; every package/release must independently verify exclusion / 本地 GPT-SoVITS 权重与参考音频；每次打包和发布都须独立确认排除 |
+| `models/cache/GPT-SoVITS-v2-240821/` | Ignored local external runtime / 被忽略的本地外部 Runtime | Extracted upstream Windows evaluation package and local inference YAML; not Elysia AI source and never part of Git, releases, installers, or containers / 解压后的上游 Windows 评估包和本机推理 YAML；不属于 Elysia AI 源码，也不进入 Git、Release、安装包或容器 |
 | `models/blobs/` and `models/manifests/` | Ignored and currently outside the Git index / 已忽略且当前不在 Git Index 中 | Ollama-managed local models; each upstream model has its own terms / Ollama 管理的本地模型，各自遵循上游条款 |
 | `models/cache/faster-whisper/` and `models/weights/faster-whisper/` | Ignored and currently outside the Git index / 已忽略且当前不在 Git Index 中 | Local speech-recognition models only; the adapter requires an explicit complete directory and never bundles or implicitly downloads weights / 仅存本地的语音识别模型；Adapter 要求明确、完整的目录，不打包也不隐式下载权重 |
 | `data/characters/elysia_character_reference_zh.md` | Tracked / 已跟踪 | Character background and quotations requiring separate source review / 需要单独审查来源的角色背景与语录 |
 | `desktop/public/elysia-icon.png` and `desktop/assets/elysia-icon.ico` | Tracked third-party branding / 已跟踪的第三方品牌素材 | Derived from an official *Honkai Impact 3rd* Elysia signet and included at the project owner's express direction for this unofficial, non-commercial fan project; © HoYoverse / miHoYo, excluded from every source-code license, no endorsement implied, and removable on rights-holder request / 由《崩坏3》爱莉希雅官方刻印制作，并按项目所有者明确决定用于本非官方、非商业粉丝项目；© HoYoverse / miHoYo，不属于任何源码许可证，不代表官方背书，权利人要求时应移除 |
 
-The current runtime does **not** yet load the local GPT-SoVITS weights. They are retained only as a future local integration candidate.
+Elysia AI now has an opt-in Python-only adapter that can send one request to a separately started loopback GPT-SoVITS service. A real local evaluation loaded the selected Elysia GPT/SoVITS checkpoints and returned valid repeated audio. This proves only technical interoperability on that machine: Desktop transport/playback is not connected, production readiness is not established, and the asset authorization gaps below remain unchanged. The upstream API cannot attest which checkpoints the external process actually loaded, so Elysia reports `service_binding_unverified` rather than claiming a verified model identity.
 
-当前运行时代码**尚未加载**本地 GPT-SoVITS 权重；这些文件只是未来本地接入的候选素材。
+Elysia AI 现已提供默认关闭、仅限 Python 的 Adapter，可向单独启动的 Loopback GPT-SoVITS 服务发送一次合成请求。本机真实评估加载了所选 Elysia GPT/SoVITS Checkpoint，并反复返回有效音频。这只证明该机器上的技术互操作：Desktop 传输/播放尚未接通，也不代表生产就绪，更不会消除下述素材授权缺口。上游 API 无法证明外部进程实际加载了哪些 Checkpoint，因此 Elysia 只报告 `service_binding_unverified`，不会声称模型身份已经核验。
 
 ---
 
@@ -62,9 +63,21 @@ The `README.txt` supplied with the local pack identifies the following parties a
 - **Integration tutorial / 整合包教程**: `BV12g4y1m7Uw`
 - **Upstream software / 上游软件**: [RVC-Boss/GPT-SoVITS](https://github.com/RVC-Boss/GPT-SoVITS)
 
-The local directory contains `.ckpt` and `.pth` model weights, `.wav` reference clips, and the accompanying notice. The description on the linked Bilibili page closely matches that notice, but no recorded digest proves that the local files are the exact published version. The page also carries a no-unauthorized-repost statement.
+The local directory contains `.ckpt` and `.pth` model weights, `.wav` reference clips, and the accompanying notice. The description on the linked Bilibili page closely matches that notice, and the following digests identify exactly what the 2026-09-14 technical evaluation used. The publisher did not provide matching authoritative digests, however, so these hashes do **not** prove that the local files are the exact published version, establish permission, or establish the publisher's authority. The page also carries a no-unauthorized-repost statement.
 
-本地目录包含 `.ckpt` 与 `.pth` 模型权重、`.wav` 参考音频和随附说明。上述 Bilibili 发布页的简介与随附说明高度吻合，但目前没有已记录的文件摘要能够证明本地文件就是该页面发布的精确版本；页面同时标有“未经作者授权，禁止转载”。
+本地目录包含 `.ckpt` 与 `.pth` 模型权重、`.wav` 参考音频和随附说明。上述 Bilibili 发布页的简介与随附说明高度吻合；下列摘要只固定 2026-09-14 技术评估实际使用的本地文件。发布者没有提供可对应核验的权威摘要，因此这些 Hash **不能**证明本地文件就是发布页中的精确版本，也不能证明授权或发布者拥有相应权利。页面同时标有“未经作者授权，禁止转载”。
+
+| Local evaluation selection / 本地评估选择 | Bytes | SHA-256 | Technical metadata / 技术元数据 |
+| --- | ---: | --- | --- |
+| Selected GPT v2 checkpoint / 所选 GPT v2 Checkpoint | 155,312,566 | `C73957C7815EA36A345678DF6DDEDA9FFD2B03498D17802BF54502414C9D887B` | `【GPT2.0】Elysia-e20.ckpt`; technical candidate only / 仅为技术候选 |
+| Selected SoVITS v2 checkpoint / 所选 SoVITS v2 Checkpoint | 85,007,488 | `D095458023374D2BB7B657FF622A010504F8825B7188AB0582B91EF6412CD9CE` | `【GPT2.0】Elysia_e24_s13080.pth`; technical candidate only / 仅为技术候选 |
+| `neutral` reference / 中性参考 | 476,676 | `4FF61FE9F385450154B2C460EB0DEF5EE15013480CC17FDD235DBEB20A4E34B8` | WAV PCM, 44.1 kHz, mono, 16-bit, 238,316 frames, 5.403991 s |
+| `happy` reference / 开心参考 | 411,672 | `C42EEE79E91B847FF5E54E4B5F7C46751CD0CDB3E18223373F385A67A42D277E` | WAV PCM, 44.1 kHz, mono, 16-bit, 205,814 frames, 4.666984 s |
+| `sad` reference / 悲伤参考 | 481,438 | `999730EB7DAA2F41A87DF7AA1D56748A8408DE7A8B45180785BE6C7EC98A8A01` | WAV PCM, 44.1 kHz, mono, 16-bit, 240,697 frames, 5.457982 s |
+
+Choosing a higher epoch/step file for this acceptance run is not a claim that it has the best quality, verified provenance, or authorization. Exact reference filenames and prompt text remain only in the ignored local catalog because they may themselves disclose copyrighted dialogue and local paths.
+
+本次验收选择较高 Epoch/Step 文件，不代表其音质最佳、来源已经核实或已经获得授权。参考音频的完整文件名和准确 Prompt 文本只保留在被忽略的本机 Catalog 中，因为它们本身可能暴露受版权保护的台词和本地路径。
 
 The `models/weights/` ignore rule keeps these files outside the current Git index, but `.gitignore` alone cannot prevent forced adds, historical inclusion, or accidental copying by packaging scripts. Every release must verify its actual file list.
 
@@ -113,9 +126,13 @@ The upstream GPT-SoVITS source repository publishes its software under the [MIT 
 
 GPT-SoVITS 上游仓库以 [MIT License](https://github.com/RVC-Boss/GPT-SoVITS/blob/main/LICENSE) 发布其软件。该软件许可证只适用于其覆盖的上游代码，**不会自动授权**第三方 Checkpoint、训练数据、参考音频、角色 IP 或声音表演。
 
-Elysia AI does not currently vendor the GPT-SoVITS runtime or claim that the local model pack is MIT-licensed.
+For the 2026-09-14 Windows acceptance run, the maintainer explicitly downloaded the upstream-linked [`GPT-SoVITS-v2-240821.7z`](https://huggingface.co/lj1995/GPT-SoVITS-windows-package/blob/42b55dd0c41f0d23218f8f7c1e9e0636a0e386e8/GPT-SoVITS-v2-240821.7z) at repository revision `42b55dd0c41f0d23218f8f7c1e9e0636a0e386e8`. The remote file size is 5,744,891,255 bytes and its verified SHA-256 is `9D9BA79DE6ACA0CF28A3635CCB1DBBB08B6AEF362C4352E32FAD99BB49E3000A`. It was extracted under ignored `models/cache/GPT-SoVITS-v2-240821/`; the downloaded archive was deleted after hash verification and extraction. The local Runtime loaded v2 on CUDA in half precision for the smoke run.
 
-Elysia AI 当前没有把 GPT-SoVITS Runtime 纳入仓库，也不声称本地模型包采用 MIT 许可证。
+2026-09-14 的 Windows 验收由维护者显式下载上游链接的 [`GPT-SoVITS-v2-240821.7z`](https://huggingface.co/lj1995/GPT-SoVITS-windows-package/blob/42b55dd0c41f0d23218f8f7c1e9e0636a0e386e8/GPT-SoVITS-v2-240821.7z)，固定仓库 Revision 为 `42b55dd0c41f0d23218f8f7c1e9e0636a0e386e8`。远端文件大小为 5,744,891,255 bytes，已验证 SHA-256 为 `9D9BA79DE6ACA0CF28A3635CCB1DBBB08B6AEF362C4352E32FAD99BB49E3000A`。它解压到被忽略的 `models/cache/GPT-SoVITS-v2-240821/`；下载压缩包在 Hash 与解压验证后已经删除。本机 Runtime 在 Smoke 中以 CUDA Half Precision 加载 v2。
+
+The extracted package includes an MIT `LICENSE` naming RVC-Boss, but that license covers only software to which it validly applies. It must not be extended to every bundled dependency or pretrained model, nor to the Elysia checkpoints, training data, reference audio, character IP, recordings, or performances. Elysia AI does not vendor this Runtime and does not claim that the package as a whole—or the local Elysia voice pack—is MIT-licensed. The extracted Runtime, local inference YAML, model weights, and reference audio stay ignored and outside Git, releases, installers, and containers.
+
+解压包内包含署名 RVC-Boss 的 MIT `LICENSE`，但该许可证只覆盖其能够合法适用的软件，不能扩大到包内每个依赖或预训练模型，也不能覆盖 Elysia Checkpoint、训练数据、参考音频、角色 IP、录音或表演。Elysia AI 不把该 Runtime 纳入仓库，也不声称整份整合包或本地 Elysia 声音包采用 MIT 许可证。解压 Runtime、本机推理 YAML、模型权重与参考音频继续被忽略，不进入 Git、Release、安装包或容器。
 
 ---
 
@@ -161,8 +178,8 @@ Contributors and maintainers must:
 
 贡献者与维护者必须：
 
-1. keep `models/weights/`, `models/blobs/`, and `models/manifests/` ignored and local;<br>
-   保持 `models/weights/`、`models/blobs/` 与 `models/manifests/` 被忽略并仅存本机；
+1. keep `models/cache/`, `models/weights/`, `models/blobs/`, and `models/manifests/` ignored and local, and inspect every actual release file list because ignore rules do not prevent forced adds or packaging copies;<br>
+   保持 `models/cache/`、`models/weights/`、`models/blobs/` 与 `models/manifests/` 被忽略并仅存本机；由于 Ignore Rule 不能阻止强制添加或打包复制，每次都须检查实际发行文件清单；
 2. review every new model, dataset, reference clip, image, font, and character corpus before use;<br>
    使用前审查每个新增模型、数据集、参考音频、图片、字体与角色语料；
 3. record the creator, original URL, version or digest, applicable terms, and permission evidence;<br>
