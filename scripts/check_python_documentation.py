@@ -30,6 +30,7 @@ _EXCLUDED_DIRECTORIES = frozenset(
         "workspace",
     }
 )
+_EXCLUDED_RELATIVE_DIRECTORIES = frozenset({Path("models") / "cache"})
 _PYTHON_SOURCE_SUFFIXES = frozenset({".py", ".pyi", ".pyw"})
 
 
@@ -46,11 +47,14 @@ def _iter_python_files(root: Path) -> Iterable[Path]:
     """Yield maintained Python sources while pruning generated/runtime trees."""
 
     for directory, child_directories, file_names in root.walk(top_down=True):
+        relative_directory = directory.relative_to(root)
         child_directories[:] = [
             name
             for name in child_directories
             if name not in _EXCLUDED_DIRECTORIES
             and not name.startswith((".test-tmp", "pytest-cache-files-"))
+            and relative_directory / name
+            not in _EXCLUDED_RELATIVE_DIRECTORIES
         ]
         for file_name in file_names:
             path = directory / file_name
