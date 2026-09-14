@@ -347,6 +347,7 @@ def test_voice_rejects_incorrect_asset_types(
     [
         ("prompt_text", ""),
         ("prompt_text", "\ufeff \n"),
+        ("prompt_text", "contains\x00nul"),
         ("prompt_language", "auto"),
         ("prompt_language", "ja"),
         ("speed_factor", 0.49),

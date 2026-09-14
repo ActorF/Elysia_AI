@@ -205,6 +205,7 @@ class GptSovitsVoice:
         if (
             not isinstance(self.prompt_text, str)
             or len(self.prompt_text) > SYNTHESIS_MAX_TEXT_CODE_POINTS
+            or "\x00" in self.prompt_text
             or not _contains_prompt_text(self.prompt_text)
         ):
             raise ValueError(

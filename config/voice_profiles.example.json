@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "default_profile_id": "sample-voice",
+  "profiles": [
+    {
+      "profile_id": "sample-voice",
+      "display_name": "Sample local voice",
+      "base_url": "http://127.0.0.1:9880",
+      "gpt_weights": "sample-voice/weights/sample.ckpt",
+      "sovits_weights": "sample-voice/weights/sample.pth",
+      "speed_factor": 1.0,
+      "audio_format": "wav",
+      "rights_status": "local-evaluation-only",
+      "references": [
+        {
+          "emotion": "neutral",
+          "audio": "sample-voice/references/neutral.wav",
+          "prompt_text": "This is an original example reference sentence.",
+          "prompt_language": "en"
+        },
+        {
+          "emotion": "happy",
+          "audio": "sample-voice/references/happy.wav",
+          "prompt_text": "This original example sounds cheerful and bright.",
+          "prompt_language": "en"
+        }
+      ]
+    }
+  ]
+}
