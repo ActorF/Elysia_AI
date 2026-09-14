@@ -20,7 +20,7 @@
 
 > [!IMPORTANT]
 >
-> 本项目目前是 **开发预览**，不是下载即用的正式发行版。桌面壳仍依赖源码目录中的 Python 环境、Ollama 和本地模型；STT、TTS、连续语音、RAG、Work Agent、Live2D 与正式安装体验尚未完成。
+> 本项目目前是 **开发预览**，不是下载即用的正式发行版。桌面壳仍依赖源码目录中的 Python 环境、Ollama 和本地模型；有界单句 STT 已接通，但其可选 Runtime 与模型不随基础安装提供。TTS、连续语音、RAG、Work Agent、Live2D 与正式安装体验尚未完成。
 
 ---
 
@@ -32,7 +32,7 @@
 - 🧠 **分范围记忆** — 为 Global、Project、Chat 提供独立边界，并保留长期记忆、摘要与人工确认流程
 - 🛡️ **严格桌面边界** — Renderer 沙箱、受限 Preload、来源校验与认证 NDJSON Protocol v1
 - 📎 **安全附件表面** — Chat 与 Project 文件可选择、拖放、预览、移除和恢复；文件内容尚不解析或索引
-- 🎙️ **本地音频基础** — 已有设备选择、权限状态、短暂硬件测试，以及有界单句 PCM/VAD 采集
+- 🎙️ **本地单句转写** — 显式采集经过本地 VAD 与 Faster-Whisper，最终文字可编辑后放入 Chat 草稿
 - 💾 **恢复优先** — 本地 JSON 存储、旧会话迁移、损坏隔离、原子写入以及导入/导出服务
 - ♿ **桌面可用性** — 主题、键盘导航、焦点管理、Windows 缩放、中文 IME 与离线/错误恢复
 
@@ -46,11 +46,11 @@
 | Chat History | ✅ 可用 | 多会话、置顶、归档、恢复、删除与独立草稿 |
 | Project | ✅ 可用 | 元数据、Instructions、Workspace 绑定和 Chat 归属 |
 | Memory Core | ✅ 可用 | Global / Project / Chat Scope、检索、摘要与长期记忆基础 |
-| Settings | ✅ 可用 | 模型、Ollama Origin、Memory 限额、文件大小和主题 |
+| Settings | ✅ 可用 | Chat 模型、Ollama Origin、Memory/文件限额、主题，以及 STT 模型、设备和默认语言 |
 | Attachments / Sources | ✅ 基础可用 | 仅安全存储与元数据；尚不读取、解析、Embedding 或 RAG |
 | Audio Devices | ✅ 可用 | 麦克风/扬声器选择、Windows 权限、输入电平与输出音调测试 |
-| 单句录音与本地 VAD | ✅ 可用 | 显式启动、16 kHz mono `s16le`、临时验证；不生成 Chat Turn |
-| STT / Faster-Whisper | 🚧 开发中 | 领域契约、离线 Adapter、有界后台任务、双端协议和 Python Backend 已接通；Runtime、本地模型与 UI 尚未接通 |
+| 单句录音与本地 VAD | ✅ 可用 | 显式启动、16 kHz mono `s16le`、临时处理；不会自动生成 Chat Turn |
+| STT / Faster-Whisper | ✅ 基础可用 | Electron/React 与本地 Final Transcript 已接通；需另装可选依赖并放置本地模型 |
 | GPT-SoVITS / TTS | ⏳ 计划中 | 本地权重尚未接入运行时代码 |
 | 连续语音与打断 | ⏳ 计划中 | 尚无完整 `LISTENING → THINKING → SPEAKING` 会话 |
 | 文件解析与本地 RAG | ⏳ 计划中 | 尚无 Loader、Chunking、Vector Store 或引用回答 |
@@ -114,6 +114,17 @@ py -3.14 -m venv .venv
 .venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
+如需本地语音转写，再安装独立的可选依赖：
+
+```bat
+.venv\Scripts\python.exe -m pip install -r requirements-stt.txt
+```
+
+把完整的 Faster-Whisper 模型目录放在
+`models\weights\faster-whisper\<model>\`；默认 `<model>` 是 `small`。
+可选名称为 `tiny`、`base`、`small`、`medium`、`large-v3`、`turbo`。
+Elysia 只打开所选本地目录，不会自动下载模型，模型权重也不得提交到 Git。
+
 ### 3. 准备本地模型
 
 默认模型是 `qwen3.5:9b`：
@@ -173,11 +184,14 @@ OLLAMA_HOST=http://localhost:11434
 SHORT_TERM_MEMORY_TOKEN_BUDGET=2048
 MEMORY_RETRIEVAL_LIMIT=5
 DATA_IMPORT_MAX_BYTES=16777216
+TRANSCRIPTION_MODEL=small
+TRANSCRIPTION_DEVICE=auto
+TRANSCRIPTION_LANGUAGE=auto
 LOG_LEVEL=INFO
 DEBUG=False
 ```
 
-桌面端 **Settings** 允许修改模型、Ollama Origin、Memory 限额与文件导入大小；这些公开设置使用独立 revision 并写入 `workspace/settings/global.json`。主题保存在当前设备的 Renderer Storage 中。
+桌面端 **Settings** 允许修改 Chat 模型、Ollama Origin、Memory 限额、文件导入大小，以及本地转写模型、设备和默认语言；这些公开设置使用独立 revision 并写入 `workspace/settings/global.json`。转写模型可选 `tiny` / `base` / `small` / `medium` / `large-v3` / `turbo`，设备可选 `auto` / `cuda` / `cpu`，语言可选 `auto` / `zh` / `en`。Backend 重启后才会采用这些修改；主题则保存在当前设备的 Renderer Storage 中并立即生效。
 
 本项目当前只连接本地 Ollama，不要求云端 API Key。不要把未来的密钥、Token 或私人配置提交到仓库。
 
@@ -209,9 +223,11 @@ DEBUG=False
 
 - 已实现麦克风/扬声器枚举、设备偏好、Windows 麦克风权限状态、短暂输入电平与输出音调测试。
 - 有界单句采集只在用户点击 **Start microphone** 后开始；Renderer 本地 downmix、重采样并运行本地 VAD。
-- 有效片段固定为 16 kHz、mono、signed 16-bit little-endian PCM；Python 只返回格式、时长和 SHA-256 等安全收据。
-- 当前 Voice UI 仍只调用安全 Receipt，不会保存录音、调用 Brain、创建 Chat 消息或执行 TTS。Python Backend 另有 `voice.transcription.start` 长任务：同一份验证后 PCM 只提交一次，由有界 Worker 调用只接受明确本地目录的 Faster-Whisper Adapter，并通过 Progress、Cancel、Timeout 和 PCM-free Result 返回最终文字。它与 Chat 生成互斥；取消或超时后，无法强杀的 Native Inference 会继续占用容量直至返回，其迟到结果会被丢弃。
-- 本机尚未安装可选 STT Runtime 或本地 Faster-Whisper 模型，Electron/React 也尚未暴露可编辑 Transcript 流程，所以当前界面仍不会显示识别文字。
+- 有效片段固定为 16 kHz、mono、signed 16-bit little-endian PCM；同一份 PCM 只提交一次并保持临时，最终协议结果不含音频、模型路径或 Native Error。
+- Electron/React 已把 `voice.transcription.start` 接到 Voice 页面。Faster-Whisper 返回有界 Final Transcript 后，用户可以先编辑，再显式选择 **Use transcript in message**；若 Chat 已有草稿，则使用 **Append transcript to message**，原草稿会保留在前。该操作只更新草稿，不会自动发送消息或创建 Chat Turn。
+- 当前只返回最终文字；实时 Partial Transcript 明确留给后续持续语音会话。TTS、自动回复和 `LISTENING → THINKING → SPEAKING` 循环尚未完成。
+- Settings 与 Voice 页面只显示经过枚举净化的就绪状态。缺模型、缺可选依赖、CUDA 不可用或初始化失败时会给出可操作步骤，不显示本地路径、底层异常或 Native 诊断；`auto` 可以选择安全的 CPU 回退。
+- 已完成一次真实 CPU Runtime/模型的本地转写 Smoke 验证；CUDA 成功路径尚未在本文声称为实机验证。自动化测试同时覆盖 Fake Runtime、Cancel、Timeout、Native Draining 和迟到结果丢弃。
 - 本机可选的 GPT-SoVITS 权重仍未接入。来源和使用限制见 [MODEL_LICENSE.md](./MODEL_LICENSE.md)。
 
 ---
@@ -288,7 +304,7 @@ Elysia_AI/
 ├── projects/           # Project Domain、Repository 与 Chat 关系服务
 ├── recovery/           # 导入、导出、迁移与损坏隔离
 ├── tests/              # Python 测试
-├── voice/              # 音频设备设置与有界 PCM 校验基础
+├── voice/              # 音频设备、PCM 校验、本地 STT Adapter 与有界任务
 ├── workspace/          # 运行时用户数据，被 Git 忽略；清理源码时不要删除
 ├── desktop_backend.py  # Electron ↔ Python 进程入口
 └── start.py            # Console 入口与服务组合根
@@ -322,9 +338,9 @@ cd /d D:\Elysia_AI\desktop
 4. 配置的模型已经通过 `ollama pull <model>` 安装。
 5. `logs\app.log` 与 Electron 终端中没有新的启动错误。
 
-### 为什么 Voice 页面没有转写或回复？
+### 为什么 Voice 页面显示本地转写不可用？
 
-这是当前前端边界。设备测试与单句采集用于验证权限、PCM 和 VAD 生命周期；Faster-Whisper 的引擎契约、离线 Adapter、有界后台任务、双端 Desktop Protocol 与 Python Backend 已完成并用 Fake Runtime 测试，但 Electron/React Transcript API 与 UI、本机依赖和本地模型尚未接通。因此界面仍不会转写、回复或创建 Chat Turn。
+先用 `requirements-stt.txt` 安装可选 Runtime，把所选模型的完整本地目录放到 `models\weights\faster-whisper\<model>\`，再到 **Settings → Speech recognition** 选择模型、`auto` / `cuda` / `cpu` 设备和 `auto` / `zh` / `en` 语言，保存并重启 Backend。Voice 页面会显示安全的具体恢复提示。Final Transcript 仍不会自动回复或创建 Chat Turn；请先检查/编辑，再显式放入 Composer 并发送。
 
 ### 为什么 Project Sources 不能回答文件内容？
 

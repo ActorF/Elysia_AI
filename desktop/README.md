@@ -7,15 +7,16 @@ microphone and speaker selection, native permission status, and bounded input
 and output tests without retaining audio. The bounded capture slice adds
 explicit one-utterance recording: the renderer downmixes and resamples input to
 16 kHz mono `s16le`, and local VAD submits only valid speech transiently for
-Python contract validation. The renderer also has persistent Chat and Project
+local Faster-Whisper transcription. A bounded final transcript returns through
+Electron to an editable review surface; the user must explicitly place it in
+the current Chat composer, where it replaces an empty draft or is appended
+after existing draft text. The renderer also has persistent Chat and Project
 surfaces, resilient streamed message actions, revisioned Settings, Chat
 attachments, Project source storage, semantic design tokens, system/light/dark
 themes, keyboard and screen-reader navigation, durable per-Chat drafts,
 renderer-refresh stream recovery, and consistent loading, empty, error,
-offline, and fatal states.
-The Python side now also accepts a separate long-running transcription request
-through a bounded Faster-Whisper worker, but the Electron/React API and editable
-transcript surface are deliberately not connected yet.
+offline, and fatal states. This Voice slice exposes final text only; real-time
+partial transcripts, TTS, and continuous conversation remain future work.
 Electron is frozen as the production
 shell. The Tauri source and toolchain were removed after the comparison; the
 rationale, recorded measurements, and revisit gates are in
@@ -27,6 +28,9 @@ Prerequisites:
 
 - The repository Python virtual environment exists at `.venv`.
 - Ollama is running and the model configured in the root `.env` is installed.
+- Local STT additionally requires `requirements-stt.txt` and a complete model
+  directory at `models/weights/faster-whisper/<model>`; neither is installed or
+  downloaded automatically.
 - Run all npm commands from the `desktop` directory.
 
 Start Vite in the first terminal:
@@ -46,12 +50,26 @@ npm run electron:dev
 Electron starts `D:\Elysia_AI\.venv\Scripts\python.exe`, runs
 `desktop_backend.py`, and stops that child process when the app quits.
 
+To enable the default `small` speech model on CPU, install the optional runtime
+from the repository root and place the model before starting Electron:
+
+```bat
+cd /d D:\Elysia_AI
+.venv\Scripts\python.exe -m pip install -r requirements-stt.txt
+```
+
+The model must be a complete local Faster-Whisper directory at
+`models\weights\faster-whisper\small\`. Other selectable directories are
+`tiny`, `base`, `medium`, `large-v3`, and `turbo`. These weight directories are
+Git-ignored and must not be committed or packaged with the application.
+
 ## Interface
 
 - Open **Settings** or press `Ctrl+,` to manage the default Ollama model and
-  origin, Memory limits, file import size, and appearance. Backend values are
-  atomically stored in `workspace/settings/global.json`; appearance remains in
-  this device's renderer storage and applies immediately.
+  origin, Memory limits, file import size, local STT model/device/language, and
+  appearance. Backend values are atomically stored in
+  `workspace/settings/global.json` and apply after a Backend restart;
+  appearance remains in this device's renderer storage and applies immediately.
 - The Voice section selects a system-default or exact microphone and speaker,
   reports Windows microphone access, and runs short local tests. Desired opaque
   device IDs are stored separately in `workspace/settings/audio-device.json`;
@@ -61,11 +79,20 @@ Electron starts `D:\Elysia_AI\.venv\Scripts\python.exe`, runs
   without requesting microphone access. Only **Start microphone** begins one
   bounded capture. The renderer downmixes and resamples input, and local VAD
   waits for valid speech before sending temporary 16 kHz mono `s16le` PCM to
-  Python. A successful validation shows **Speech captured** and **Validated
-  locally** metadata; it does not add a message to Chat history.
+  Python once. A successful recognition displays an editable **Final
+  transcript**. **Use transcript in message** places it in an empty composer;
+  **Append transcript to message** preserves existing draft text first. Neither
+  action sends the message or adds a Chat-history Turn automatically.
 - Settings shows Global defaults beside the active Project's inheritance and
-  the active Chat's pinned model. Backend-backed changes clearly request a
-  restart before they are reported as active.
+  the active Chat's pinned model. Speech recognition selects
+  `tiny` / `base` / `small` / `medium` / `large-v3` / `turbo`,
+  `auto` / `cuda` / `cpu`, and `auto` / `zh` / `en`. Backend-backed changes
+  clearly request a restart before they are reported as active.
+- Voice and Settings translate sanitized readiness enums into recovery actions.
+  Missing optional dependencies or a model, unavailable CUDA, and initialization
+  failures never expose model paths, native exception text, or library details
+  to React. `auto` may fall back to CPU; a real CPU transcription smoke path has
+  passed, while this guide makes no claim of successful real-GPU validation.
 - Press `Ctrl+K` to open Chat search, `Escape` to close the current surface,
   and `Ctrl+B` to show or hide navigation.
 - Enter sends a message; Shift+Enter inserts a new line. IME composition is
@@ -84,12 +111,10 @@ Electron starts `D:\Elysia_AI\.venv\Scripts\python.exe`, runs
   final message. The compact character panel is also modal, traps focus, and
   has its own close control.
 - Projects support persisted metadata, instructions, workspace binding, Chat
-  assignment, archive, and restore. The Python speech-recognition boundary now
-  exists, but its Electron/React API is not exposed; speech output, Work
-  permissions, and later file processing controls also remain unavailable. The
-  current bounded Voice UI therefore does not transcribe or create a Chat Turn.
+  assignment, archive, and restore. Speech output, continuous Voice, Work
+  permissions, and later file-processing controls remain unavailable.
 
-## Manual Voice capture smoke test
+## Manual local transcription smoke test
 
 Use two Command Prompt windows, not PowerShell. Start Vite in the first:
 
@@ -105,12 +130,20 @@ cd /d D:\Elysia_AI\desktop
 npm run electron:dev
 ```
 
-Open a Chat, choose **Start voice**, then choose **Start microphone**. Speak and
-pause for about 0.6 seconds. Confirm that the page reports **Speech captured**
-and **Validated locally**, shows only accepted metadata, and has not added a
-Chat-history message. Repeat once while staying silent for about 10 seconds,
-and once using **Cancel capture**; neither path should add a message. Stop the
-test immediately if Windows reports that microphone access is denied.
+Install `requirements-stt.txt`, place a complete model in the matching
+`models\weights\faster-whisper\<model>\` directory, then select that model and
+**CPU only** under **Settings → Speech recognition**. Save and restart the
+Backend. Open a Chat, enter a short draft if you want to exercise append, choose
+**Start voice**, and then choose **Start microphone**. Speak and pause for about
+0.6 seconds.
+
+Confirm that an editable **Final transcript** appears. Change its text, choose
+**Use transcript in message** or **Append transcript to message**, and confirm
+that the Composer contains the edited text without sending it. Repeat once
+while silent for about 10 seconds, once with **Cancel capture**, and once with
+**Cancel transcription**; none may add a Chat-history Turn. The page shows only
+generic progress, not partial recognized text. Stop immediately if Windows
+reports that microphone access is denied.
 
 ## Verification
 
@@ -179,7 +212,8 @@ method, results, capability gaps, and limitations.
 - Python and TypeScript validate the same samples in
   `desktop_protocol/fixtures/v1.samples.json`.
 - Python delegates persistence and streaming to the existing Stage 5 Brain.
-- Settings accepts an exact non-sensitive allowlist, uses optimistic revisions
+- Settings accepts an exact non-sensitive allowlist, including the closed STT
+  model/device/language enums, uses optimistic revisions
   and atomic replacement, and remains repairable after Backend initialization
   rejects a saved model or Ollama origin.
 - Audio-device preferences use an independent optimistic revision and remain
@@ -189,9 +223,10 @@ method, results, capability gaps, and limitations.
   Microphone and speaker-selection permissions are limited to the trusted main
   renderer. Opening the Voice page does not request microphone access; capture
   begins only from the user's explicit control. Bounded VAD discards silence
-  and short input, and accepted PCM exists only until Python returns safe
-  metadata, duration, and SHA-256. Neither process persists it or creates a Chat
-  Turn in this slice.
+  and short input, and accepted PCM exists only during the correlated local
+  transcription request. The final result contains bounded text and safe
+  language metadata, never PCM, model paths, or native diagnostics. Neither
+  process persists audio or creates a Chat Turn automatically.
 - Native selection and drop paths remain inside the trusted preload/Electron
   boundary. Python copies validated regular files into opaque, scope-specific
   storage, and protocol responses expose only safe metadata and attachment IDs.

@@ -40,18 +40,31 @@ a successful Stop response guarantees that the interrupted turn is not saved.
 Backend permission prompts retain their stable schema but are not yet
 advertised as an active capability.
 
-`settings.get` and `settings.update` expose one exact five-field public
-allowlist with optimistic revision checks. API keys, tokens, passwords, base
-paths, environment data, and arbitrary extension fields are rejected. The
-authenticated Settings methods remain available when Brain initialization
-fails so the desktop can repair an invalid saved model or Ollama origin.
+`settings.get` and `settings.update` expose one exact eight-field public
+allowlist with optimistic revision checks: Chat model, Ollama origin, two
+Memory limits, import byte limit, transcription model, transcription device,
+and transcription language. The STT fields are closed enums:
+`tiny|base|small|medium|large-v3|turbo`, `auto|cuda|cpu`, and `auto|zh|en`.
+Saved changes are reported separately from active values and take effect after
+Backend restart. API keys, tokens, passwords, base paths, environment data,
+and arbitrary extension fields are rejected. Authenticated Settings reads
+remain available when Brain initialization fails or STT is active so the
+desktop can diagnose state; configuration mutations are rejected while a
+transcription is active or physically draining.
 
 `voice.settings.get` and `voice.settings.update` persist only the desired
 opaque microphone and speaker IDs, with `null` meaning the current system
-default. They use independent optimistic revisions and remain available when
-Brain initialization fails or Chat generation is active. Device labels,
-Windows permission state, live availability, and audio samples never cross
-this Python protocol boundary; Electron owns those transient hardware details.
+default. Their response additionally includes an exact, read-only
+`transcriptionStatus`: `unavailable|available|ready`, selected model, requested
+device, resolved `cuda|cpu|null`, closed compute type, and a closed reason code.
+Model paths, native messages, exception objects, and arbitrary extra fields are
+rejected. Electron/React maps missing-model, missing-dependency, runtime-probe,
+device, CUDA, and initialization reason codes to safe recovery actions. The
+methods use independent optimistic revisions and reads remain available when
+Brain initialization fails, Chat generation is active, or STT is active;
+device-setting mutations are rejected during STT. Device labels, Windows
+permission state, live availability, and audio samples never cross this Python
+protocol boundary; Electron owns those transient hardware details.
 
 `voice.capture.complete` is an intentionally narrow bridge for one bounded
 utterance. It is reachable only after the user explicitly starts microphone
@@ -75,15 +88,26 @@ the original Voice session and Chat IDs, bounded final text, resolved `zh` or
 `en` language, and a finite language probability. It never contains PCM, a
 model path, or native-library diagnostics.
 
+The active configuration maps the selected model name only to
+`models/weights/faster-whisper/<model>` and requires a complete local model.
+The adapter uses local-only loading and never treats a protocol or Settings
+model name as permission to download weights. The optional Python runtime is
+declared separately in `requirements-stt.txt`; neither dependencies nor model
+weights are part of this protocol or its fixtures.
+
 Transcription and Chat generation are mutually exclusive because the first
 local implementation must not overcommit CPU/GPU model resources. Cancellation
 and timeout are immediate logical terminal states. Python cannot safely kill a
 thread executing native inference, so that physical worker remains occupied
 until the call returns; the late result is discarded and new STT or Chat work
 continues to receive a busy response during that drain. Shutdown closes
-admission and suppresses callbacks that lose the shutdown race. This protocol
-surface is implemented in Python, while the current Renderer still uses only
-the receipt method and does not yet expose editable transcripts.
+admission and suppresses callbacks that lose the shutdown race. Electron now
+correlates this optional capability to the originating Voice session and Chat,
+then exposes only the final sanitized transcript to React. React lets the user
+edit it and explicitly place or append it into the current Composer draft; it
+does not send a message automatically. No partial recognized text crosses the
+wire in this slice. Real-time partial transcripts remain part of future
+continuous Voice rather than this bounded final-result contract.
 
 `attachment.list`, `attachment.add`, and `attachment.remove` operate on one
 exact Chat or Project scope. Native source paths are accepted only across the

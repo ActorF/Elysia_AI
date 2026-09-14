@@ -20,7 +20,7 @@
 
 > [!IMPORTANT]
 >
-> This project is currently a **development preview**, not a ready-to-install release. The desktop shell still depends on the source checkout, its Python environment, Ollama, and a local model. STT, TTS, continuous voice, RAG, the Work Agent, Live2D, and production installation are not complete.
+> This project is currently a **development preview**, not a ready-to-install release. The desktop shell still depends on the source checkout, its Python environment, Ollama, and local models. Bounded one-utterance STT is connected, but its optional runtime and model are not included in the base install. TTS, continuous voice, RAG, the Work Agent, Live2D, and production installation are not complete.
 
 ---
 
@@ -32,7 +32,7 @@
 - 🧠 **Scoped Memory** — Keeps Global, Project, and Chat boundaries distinct, with long-term memory, summaries, and confirmation flows
 - 🛡️ **Strict Desktop Boundary** — Sandboxed Renderer, narrow Preload API, origin checks, and authenticated NDJSON Protocol v1
 - 📎 **Safe Attachment Surface** — Select, drop, preview, remove, and recover Chat or Project files; content is not parsed or indexed yet
-- 🎙️ **Local Audio Foundation** — Device selection, permission state, short hardware tests, and bounded one-utterance PCM/VAD capture are available
+- 🎙️ **Local One-Utterance STT** — Explicit capture runs through local VAD and Faster-Whisper; final text can be edited before entering a Chat draft
 - 💾 **Recovery First** — Local JSON storage, legacy migration, quarantine, atomic writes, and import/export services
 - ♿ **Desktop Usability** — Themes, keyboard navigation, focus management, Windows scaling, Chinese IME, and offline/error recovery
 
@@ -46,11 +46,11 @@
 | Chat History | ✅ Available | Multiple sessions, pin, archive, restore, delete, and per-Chat drafts |
 | Project | ✅ Available | Metadata, Instructions, Workspace binding, and Chat ownership |
 | Memory Core | ✅ Available | Global / Project / Chat scopes, retrieval, summaries, and long-term memory foundation |
-| Settings | ✅ Available | Model, Ollama origin, Memory limits, file size, and theme |
+| Settings | ✅ Available | Chat model, Ollama origin, Memory/file limits, theme, and STT model, device, and default language |
 | Attachments / Sources | ✅ Foundation available | Safe storage and metadata only; no content reading, parsing, Embedding, or RAG |
 | Audio Devices | ✅ Available | Microphone/speaker selection, Windows permission state, input level, and output tone tests |
-| One-utterance recording and local VAD | ✅ Available | Explicit start, 16 kHz mono `s16le`, transient validation; no Chat Turn |
-| STT / Faster-Whisper | 🚧 In development | Domain contract, offline adapter, bounded worker, matching Python/TypeScript protocol, and Python Backend are connected; runtime, local model, and UI are not |
+| One-utterance recording and local VAD | ✅ Available | Explicit start, 16 kHz mono `s16le`, transient processing; no automatic Chat Turn |
+| STT / Faster-Whisper | ✅ Foundation available | Electron/React and local final transcripts are connected; optional dependencies and a local model must be installed separately |
 | GPT-SoVITS / TTS | ⏳ Planned | Local weights are not connected to runtime code |
 | Continuous voice and barge-in | ⏳ Planned | No complete `LISTENING → THINKING → SPEAKING` session yet |
 | File parsing and local RAG | ⏳ Planned | No Loaders, Chunking, Vector Store, or cited answers |
@@ -114,6 +114,18 @@ py -3.14 -m venv .venv
 .venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
+To enable local speech recognition, install the separate optional dependencies:
+
+```bat
+.venv\Scripts\python.exe -m pip install -r requirements-stt.txt
+```
+
+Place a complete Faster-Whisper model directory at
+`models\weights\faster-whisper\<model>\`; the default `<model>` is `small`.
+Supported names are `tiny`, `base`, `small`, `medium`, `large-v3`, and `turbo`.
+Elysia opens only the selected local directory and never downloads a model
+automatically. Model weights must not be committed to Git.
+
 ### 3. Prepare a Local Model
 
 The default model is `qwen3.5:9b`:
@@ -173,11 +185,14 @@ OLLAMA_HOST=http://localhost:11434
 SHORT_TERM_MEMORY_TOKEN_BUDGET=2048
 MEMORY_RETRIEVAL_LIMIT=5
 DATA_IMPORT_MAX_BYTES=16777216
+TRANSCRIPTION_MODEL=small
+TRANSCRIPTION_DEVICE=auto
+TRANSCRIPTION_LANGUAGE=auto
 LOG_LEVEL=INFO
 DEBUG=False
 ```
 
-Desktop **Settings** can update the model, Ollama origin, Memory limits, and file import size. These public values use an independent revision and are written to `workspace/settings/global.json`. Theme selection remains in this device's Renderer Storage.
+Desktop **Settings** can update the Chat model, Ollama origin, Memory limits, file import size, and the local transcription model, device, and default language. These public values use an independent revision and are written to `workspace/settings/global.json`. Transcription models are `tiny` / `base` / `small` / `medium` / `large-v3` / `turbo`; devices are `auto` / `cuda` / `cpu`; languages are `auto` / `zh` / `en`. The Backend must restart before these changes become active. Theme selection remains in this device's Renderer Storage and applies immediately.
 
 The current application connects only to local Ollama and does not require a cloud API key. Never commit future secrets, tokens, or private configuration.
 
@@ -209,9 +224,11 @@ The current application connects only to local Ollama and does not require a clo
 
 - Microphone/speaker enumeration, saved device preferences, Windows microphone permission state, short input-level tests, and output-tone tests are implemented.
 - Bounded one-utterance capture starts only after **Start microphone** is pressed. The Renderer performs local downmixing, resampling, and local VAD.
-- A valid segment uses 16 kHz mono signed 16-bit little-endian PCM. Python returns only safe receipt data such as format, duration, and SHA-256.
-- The current Voice UI still uses only the safe receipt path; it does not persist recordings, invoke the Brain, create a Chat message, or perform TTS. Python also exposes a long-running `voice.transcription.start` job: the validated PCM is submitted exactly once, a bounded worker calls a Faster-Whisper adapter that accepts only an explicit local directory, and the final text returns through progress, cancellation, timeout, and a PCM-free result. STT and Chat generation are mutually exclusive. When native inference cannot be killed after cancellation or timeout, it retains capacity until it returns and its late result is discarded.
-- The optional STT runtime and local Faster-Whisper model are not installed on this machine, and Electron/React does not yet expose the editable transcript flow, so the current UI still shows no recognized text.
+- A valid segment uses 16 kHz mono signed 16-bit little-endian PCM. Each PCM payload is submitted once and remains transient; the final protocol result contains no audio, model path, or native error.
+- Electron/React connects `voice.transcription.start` to the Voice page. When Faster-Whisper returns a bounded final transcript, the user can edit it and explicitly choose **Use transcript in message**. If a Chat draft already exists, **Append transcript to message** preserves that draft first. This updates the draft only; it never sends a message or creates a Chat Turn automatically.
+- This slice returns final text only. Real-time partial transcripts are explicitly deferred to the future continuous-voice session. TTS, automatic replies, and the `LISTENING → THINKING → SPEAKING` loop are not complete.
+- Settings and Voice display only sanitized enum-based readiness. A missing model, missing optional dependencies, unavailable CUDA, or initialization failure produces safe recovery guidance without exposing local paths, underlying exceptions, or native diagnostics; `auto` can use the safe CPU fallback.
+- A real local CPU-runtime/model transcription smoke path has been verified. This documentation does not claim a successful real-GPU validation. Automated coverage also exercises the fake runtime, cancellation, timeout, native draining, and late-result disposal.
 - Optional local GPT-SoVITS weights are not connected yet. See [MODEL_LICENSE.md](./MODEL_LICENSE.md) for provenance and restrictions.
 
 ---
@@ -288,7 +305,7 @@ Elysia_AI/
 ├── projects/           # Project domain, repositories, and Chat relationship service
 ├── recovery/           # Import, export, migration, and corruption quarantine
 ├── tests/              # Python tests
-├── voice/              # Audio-device settings and bounded PCM validation foundation
+├── voice/              # Audio devices, PCM validation, local STT adapter, and bounded jobs
 ├── workspace/          # Ignored runtime user data; do not remove during source cleanup
 ├── desktop_backend.py  # Electron-to-Python process entry point
 └── start.py            # Console entry point and composition root
@@ -322,9 +339,9 @@ Confirm that:
 4. The configured model has been installed with `ollama pull <model>`.
 5. `logs\app.log` and the Electron terminal show no new startup error.
 
-### Why does the Voice page not transcribe or reply?
+### Why does the Voice page report that local transcription is unavailable?
 
-That remains the current frontend boundary. Device tests and one-utterance capture validate permissions, PCM, and the VAD lifecycle. The engine-independent contract, offline Faster-Whisper adapter, bounded worker, matching Python/TypeScript Desktop Protocol, and Python Backend are implemented and tested with a fake runtime, but the Electron/React transcript API and UI, local dependencies, and local model are not connected. The UI therefore still cannot transcribe, reply, or create a Chat Turn.
+Install the optional runtime from `requirements-stt.txt`, place the selected complete model directory at `models\weights\faster-whisper\<model>\`, then choose the model, `auto` / `cuda` / `cpu` device, and `auto` / `zh` / `en` language under **Settings → Speech recognition**. Save and restart the Backend. The Voice page reports a safe, specific recovery action when something is missing. A final transcript still does not reply or create a Chat Turn automatically: review or edit it, explicitly place it in the Composer, and then send it.
 
 ### Why can Project Sources not answer from file contents?
 

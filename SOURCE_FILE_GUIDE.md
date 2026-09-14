@@ -71,10 +71,11 @@ start.create_data_portability_service()
 | `README.en.md` | 与中文 README 对应的英文首页。 | 对外英文说明；应与 `README.md` 同步维护 |
 | `MODEL_LICENSE.md` | 说明角色语料、GPT-SoVITS 权重、参考音频等来源与权利边界；不是源码许可证。 | `data/characters/`、本地 `models/weights/`、发行边界 |
 | `SOURCE_FILE_GUIDE.md` | 当前这份逐文件源码导览；记录文件职责、调用边界、测试映射和新人阅读顺序。 | 全仓库源码、配置、文档与测试 |
-| `requirements.txt` | 固定 Python Runtime、LangChain Ollama、pytest、mypy、jsonschema 等依赖版本。 | `.venv`、CI、`start.py`、`desktop_backend.py` |
+| `requirements.txt` | 固定基础 Python Runtime、LangChain Ollama、pytest、mypy、jsonschema 等依赖版本；不强制安装本地 STT Native Runtime。 | `.venv`、CI、`start.py`、`desktop_backend.py` |
+| `requirements-stt.txt` | 固定可选的 Faster-Whisper 与 NumPy 版本；只在需要本地单句转写时叠加安装，不包含或下载模型权重。 | `voice/faster_whisper.py`、本地 `.venv`、`models/weights/faster-whisper/<model>` |
 | `scripts/check_python_documentation.py` | 用标准库 AST 检查所有受维护 Python 文件的 module、public class、public function/method docstring 覆盖。 | `AGENTS.md`、GitHub Actions、Python 开发验证 |
 | `start.py` | Python Composition Root 和 Console 入口；创建 Settings、Model、Memory、Repositories、Migrator、Services、Brain 和日志。 | 几乎所有 Python 生产包；`ui/console.py`、`desktop_backend.py` |
-| `desktop_backend.py` | Electron 启动的 Python NDJSON 进程；完成会话令牌握手、初始化、方法路由、Streaming、Cancel、错误映射和安全关闭；惰性创建有界 STT Runner，并让 Chat 与物理占用中的转写互斥。 | `desktop_protocol/`、`start.py`、Chat/Project/Attachment/Voice 服务 |
+| `desktop_backend.py` | Electron 启动的 Python NDJSON 进程；完成会话令牌握手、初始化、方法路由、Streaming、Cancel、错误映射和安全关闭；从 Active Settings 构造本地模型路径，惰性创建有界 STT Runner，并让 Chat/Settings 写入与物理占用中的转写互斥。 | `desktop_protocol/`、`start.py`、Chat/Project/Attachment/Voice 服务 |
 | `docs/decisions/0001-desktop-shell.md` | Electron 与 Tauri 选型 ADR；记录测量方法、能力差距、风险、最终选择和重访门槛。 | `desktop/benchmarks/measure-shell.ps1`、Desktop 技术决策 |
 | `data/characters/elysia_character_reference_zh.md` | 爱莉希雅背景、语录和转写参考资料；当前 Runtime 不会自动将它注入每次 Prompt。 | 人工角色研究；受 `MODEL_LICENSE.md` 的来源/授权提醒约束 |
 
@@ -95,8 +96,8 @@ start.create_data_portability_service()
 | 文件 | 实际用途 | 主要连接 |
 | --- | --- | --- |
 | `config/__init__.py` | 配置包的稳定公开导出。 | `start.py`、`desktop_backend.py`、测试 |
-| `config/settings.py` | 从安全默认值和根目录 `.env` 创建不可变 `AppSettings`；校验模型、Ollama Origin、Memory 限额、Import 大小和路径。 | `start.py`、Model Adapter、Memory、Recovery |
-| `config/desktop_settings.py` | Stage 6 Desktop Settings Store；对可编辑字段做 allowlist、Revision CAS、线程/进程锁、原子替换和损坏隔离。 | `desktop_backend.py`、Settings UI、`workspace/settings/global.json` |
+| `config/settings.py` | 从安全默认值和根目录 `.env` 创建不可变 `AppSettings`；除 Chat/Ollama/Memory 设置外，严格解析 STT 模型 `tiny|base|small|medium|large-v3|turbo`、设备 `auto|cuda|cpu` 和语言 `auto|zh|en`。 | `start.py`、Model Adapter、Memory、Recovery、Faster-Whisper 配置 |
+| `config/desktop_settings.py` | Desktop Settings Store；迁移旧五字段文档并对八个公开字段做 allowlist、Revision CAS、Desired/Active Restart Diff、线程/进程锁、原子替换和损坏隔离。 | `desktop_backend.py`、Settings UI、`workspace/settings/global.json` |
 
 ## 6. Python 核心协调层：`core/`
 
@@ -197,13 +198,13 @@ ChatSession.project_id
 | `voice/__init__.py` | Voice Package 的稳定公共 API。 | Desktop Backend、测试 |
 | `voice/domain.py` | 定义输入/输出设备的 opaque ID 偏好和 Voice Settings Snapshot。 | Voice Service/Storage、Protocol |
 | `voice/exceptions.py` | 定义 Voice Settings 和当前 Capture Validation 错误。 | Voice Service/Storage、Desktop Backend |
-| `voice/faster_whisper.py` | 实现离线优先的 Faster-Whisper Adapter、轻量能力状态、设备/Compute Policy、一次性 CUDA 初始化降级、PCM float32 转换和返回错误脱敏。 | 复用 Transcription Contract；由后台 Runner 调用；可选 Native Runtime 与本地模型 |
+| `voice/faster_whisper.py` | 实现离线优先的 Faster-Whisper Adapter、严格本地模型完整性检查、净化后的就绪状态、设备/Compute Policy、一次性 CUDA 初始化降级、PCM float32 转换和返回错误脱敏；只接受明确的绝对本地目录，不按别名下载。 | `desktop_backend.py` 把闭集名称映射到 `models/weights/faster-whisper/<model>`；由后台 Runner 调用 |
 | `voice/storage.py` | 对 `audio-device.json` 执行 Revision CAS、线程/进程锁、原子替换和损坏隔离。 | Voice Service、`workspace/settings/audio-device.json` |
 | `voice/service.py` | 提供硬件无关的设备偏好读取和更新；Python 不直接打开麦克风。 | Desktop Backend、Voice Repository |
 | `voice/transcription.py` | 定义与具体识别引擎解耦的 Transcriber Protocol、请求、最终结果、语言范围和稳定错误。 | 复用 `VoiceCapture`；连接 Faster-Whisper Adapter、后台任务和 Desktop Backend |
 | `voice/transcription_jobs.py` | 用固定 Daemon Worker、有界队列、Deadline、唯一终态和结果保留上限包装同步 Transcriber；取消/超时后保留物理容量直到 Native Call 返回，并丢弃迟到结果。 | `desktop_backend.py`、`voice/transcription.py`；不把 PCM、路径或底层异常放进 Snapshot |
 
-`voice/capture.py` 是单句 PCM 验证边界，详见本文“Voice Capture 实现”部分。`voice/transcription.py` 保持为不导入第三方引擎的领域契约；具体 Adapter 位于 `voice/faster_whisper.py`，并由 `voice/transcription_jobs.py` 接入 Python Desktop Backend。Adapter 只接受完整本地模型目录，不会根据模型别名隐式下载权重。Electron/React 目前仍只调用 Capture Receipt，尚未暴露可编辑 Transcript。
+`voice/capture.py` 是单句 PCM 验证边界，详见本文“Voice Capture 与本地 STT 实现”部分。`voice/transcription.py` 保持为不导入第三方引擎的领域契约；具体 Adapter 位于 `voice/faster_whisper.py`，并由 `voice/transcription_jobs.py` 接入 Python Desktop Backend。Adapter 只接受完整本地模型目录，不会根据模型别名隐式下载权重。Electron/React 已消费最终的 PCM-free Transcript：用户先编辑，再显式放入或追加到 Composer 草稿。实时 Partial Transcript 仍属于未来持续语音，而不是当前单句协议。
 
 ## 13. Console UI：`ui/`
 
@@ -217,7 +218,7 @@ ChatSession.project_id
 | 文件 | 实际用途 | 主要连接 |
 | --- | --- | --- |
 | `desktop/.gitignore` | 排除 `node_modules`、`dist`、日志和常见本地编辑器文件；`dist-electron`、`out` 与 Playwright 输出由根 `.gitignore` 负责。 | npm/Vite/Electron/Playwright 生成物 |
-| `desktop/README.md` | Desktop 开发指南；双 CMD 启动、架构边界、手工测试、验证和打包说明。 | 根 README、Protocol README、npm scripts |
+| `desktop/README.md` | Desktop 开发指南；双 CMD 启动、本地 STT 可选安装/模型目录、Final Transcript 手工测试、架构边界、验证和打包说明。 | 根 README、Protocol README、npm scripts、`requirements-stt.txt` |
 | `desktop/package.json` | npm 项目入口、React/Electron 依赖、开发/文档审计/测试/构建/打包脚本和 electron-builder 配置。 | 所有 Desktop 工具链 |
 | `desktop/package-lock.json` | 固定完整 npm 依赖图和下载完整性，使 `npm ci` 与 CI 可复现；不要手工编辑。 | npm、GitHub Actions、安全审计 |
 | `desktop/index.html` | Vite Renderer HTML 入口；定义 CSP、favicon、viewport、theme-color 和 `#root`。 | `desktop/src/main.tsx`、Vite、Electron Window |
@@ -237,11 +238,11 @@ ChatSession.project_id
 
 | 文件 | 实际用途 | 主要连接 |
 | --- | --- | --- |
-| `desktop/electron/contracts.ts` | 定义 Renderer 可见的最小 Desktop API、Backend Snapshot/Event、Chat/Project/Settings/Attachment/Voice 类型；不是 Python 原始 Wire Schema。 | Preload、Main、React、Mock Preload |
-| `desktop/electron/preload.cts` | 用 `contextBridge` 暴露固定 `window.elysiaDesktop`；每个方法映射固定 IPC，不暴露 `ipcRenderer`、Node、`fs` 或进程句柄。 | React、Electron Main |
-| `desktop/electron/main.ts` | Electron 主进程；创建带品牌图标的窗口/托盘，验证 Sender、参数、路径和权限，注册 IPC，控制导航与应用关闭。 | Preload、BackendProcess、原生 Dialog/Clipboard/Audio、`public/elysia-icon.png` |
-| `desktop/electron/backend-process.ts` | Python 子进程 Owner 和 Protocol State Machine；管理 Session Token、Handshake、Initialize、Request Map、Timeout、Stream、Cancel、Snapshot 与 Shutdown；Python stderr 只转成固定提示，不向 Renderer 暴露原文。 | Main、`desktop_backend.py`、`protocol.ts` |
-| `desktop/electron/protocol.ts` | TypeScript 端 Protocol v1 类型、Builder、Parser 和严格 Runtime Validation；覆盖一次性 Voice Transcription 输入与 PCM-free 结果，不把静态类型当安全边界。 | BackendProcess、共享 Schema/Fixtures、Contract Tests |
+| `desktop/electron/contracts.ts` | 定义 Renderer 可见的最小 Desktop API、Backend Snapshot/Event、Chat/Project/Settings/Attachment/Voice 类型；Voice 只暴露开始/取消、相关 Final/Error Event 与净化后的转写状态，不是 Python 原始 Wire Schema。 | Preload、Main、React、Mock Preload |
+| `desktop/electron/preload.cts` | 用 `contextBridge` 暴露固定 `window.elysiaDesktop`；把一次性 STT 开始/取消映射到固定 IPC，并把净化 Event 转交 Renderer，不暴露 `ipcRenderer`、Node、`fs` 或进程句柄。 | React、Electron Main |
+| `desktop/electron/main.ts` | Electron 主进程；创建带品牌图标的窗口/托盘，验证 Sender、Settings/STT 参数、请求 ID、路径和权限，注册固定 IPC，控制导航与应用关闭。 | Preload、BackendProcess、原生 Dialog/Clipboard/Audio、`public/elysia-icon.png` |
+| `desktop/electron/backend-process.ts` | Python 子进程 Owner 和 Protocol State Machine；除 Handshake/Stream/Cancel 外，关联 STT Request/Session/Chat、拒绝并发生成与配置写入、净化 Progress/Error、丢弃 PCM Metadata，并只向 Renderer 发 Final/Error；Python stderr 不原样暴露。 | Main、`desktop_backend.py`、`protocol.ts` |
+| `desktop/electron/protocol.ts` | TypeScript 端 Protocol v1 类型、Builder、Parser 和严格 Runtime Validation；覆盖 STT 配置枚举、exact Readiness Status、一次性 Voice Transcription 输入与 PCM-free Final Result，不把静态类型当安全边界。 | BackendProcess、共享 Schema/Fixtures、Contract Tests |
 | `desktop/electron/protocol-text.ts` | 定义跨 Python/TypeScript 一致的 Unicode Code Point 长度、Blank Set 和 Trim 规则。 | `protocol.ts`、Python Contracts |
 | `desktop/electron/renderer-source.ts` | 只允许准确的 Vite Root 或打包 `dist/index.html` 作为可信 Renderer 来源。 | Main、Permission Policy、测试 |
 | `desktop/electron/audio-permission.ts` | 只为可信主窗口和主 Frame 放行 audio-only microphone 或 speaker selection。 | Main 的 Chromium Permission Handler |
@@ -253,7 +254,7 @@ ChatSession.project_id
 | --- | --- | --- |
 | `desktop/src/main.tsx` | 初始化 React Root、StrictMode、ThemeProvider 和 ErrorBoundary；初始 Paint 后通知 Electron。 | `index.html`、`App.tsx`、Preload API |
 | `desktop/src/AppErrorBoundary.tsx` | 捕获 React Render Error，显示可恢复错误并把焦点移动到错误区域。 | `main.tsx` |
-| `desktop/src/App.tsx` | Renderer 总协调器；管理 Backend Snapshot、Canonical Chat/Project、Streaming Overlay、Draft、Retry、Attachments、Settings、Voice 和页面状态。 | 所有 React Feature、`window.elysiaDesktop` |
+| `desktop/src/App.tsx` | Renderer 总协调器；除 Canonical State、Draft、Retry、Attachments 与 Settings 外，还关联单句 Capture/STT Event，处理取消/迟到竞态，并把用户编辑后的 Final Transcript 显式写入当前 Chat 草稿。 | 所有 React Feature、`window.elysiaDesktop` |
 | `desktop/src/App.css` | App Shell、Chat、Dialog、Settings、Voice、Responsive、High Zoom 和 Forced Colors 样式。 | `App.tsx`、Design Tokens |
 | `desktop/src/desktop-api.d.ts` | 扩展 Browser `Window` 类型，声明可选 `elysiaDesktop`；不会实际创建 API。 | TypeScript、Preload Contracts |
 
@@ -290,10 +291,11 @@ Project Memory 页面目前仍是明确 Placeholder。Project Source 只安全�
 
 | 文件 | 实际用途 | 主要连接 |
 | --- | --- | --- |
-| `desktop/src/settings/SettingsView.tsx` | 编辑模型、Ollama Origin、Short-Term Budget、Retrieval Limit、Import 大小；显示配置所有权、重启提示、主题和隐私边界。 | App、Desktop Settings Backend、ThemeProvider |
+| `desktop/src/settings/SettingsView.tsx` | 编辑 Chat/Ollama/Memory/Import 设置，以及 STT 模型、`auto|cuda|cpu` 设备和 `auto|zh|en` 默认语言；显示 Desired/Active、净化后的就绪状态、重启提示、主题和隐私边界。 | App、Desktop Settings/Voice Backend、ThemeProvider、`transcription-readiness.ts` |
 | `desktop/src/settings/VoiceSettingsSection.tsx` | 设备偏好 UI；枚举麦克风/扬声器、保存 opaque ID、显示权限、刷新设备、运行短暂输入电平和输出音调测试。 | `audio-devices.ts`、Voice Desktop API |
 | `desktop/src/voice/audio-devices.ts` | Stage 7 设备 Controller；构造时不请求权限，管理 enumerate、8 秒麦克风 Level Test、800 ms Speaker Tone、Race 和 Cleanup。 | VoiceSettingsSection、Browser MediaDevices/AudioContext |
-| `desktop/src/voice/CallPreview.tsx` | 全窗口 Voice 页面；当前正在扩展一次性录音状态，但不应宣称 STT/TTS 或连续通话已完成。 | App、当前 Capture Controller、Voice Backend API |
+| `desktop/src/voice/CallPreview.tsx` | 全窗口单句 Voice 页面；显示采集/转写/取消状态和可编辑 Final Transcript，要求用户显式放入或追加到 Composer；不显示 Partial Transcript，也不自动发送。 | App、Capture Controller、Voice Backend API |
+| `desktop/src/voice/transcription-readiness.ts` | 把 Python/Electron 的闭合集合 STT Status/Reason 转成 Settings 与 Voice 共用的安全、可操作提示；绝不渲染模型路径或 Native Error。 | `App.tsx`、`SettingsView.tsx`、`electron/protocol.ts` |
 
 ## 21. Character、Design System 与 Theme
 
@@ -311,9 +313,9 @@ Project Memory 页面目前仍是明确 Placeholder。Project Source 只安全�
 | 文件 | 实际用途 | 主要连接 |
 | --- | --- | --- |
 | `desktop_protocol/README.md` | 人类可读 Protocol v1 文档；说明 Handshake、Capabilities、Streaming、Cancel、Settings、Attachment、Voice Capture/Transcription 和安全不变量。 | Python/TypeScript 实现和测试 |
-| `desktop_protocol/schema/v1.schema.json` | Draft 2020-12 JSON Schema；描述所有 Client/Server Frame 和可机器表达的限制。 | Shared Fixtures、Python/Node Contract Tests |
-| `desktop_protocol/fixtures/v1.samples.json` | Python 与 TypeScript 同时读取的 Valid/Invalid Conformance Samples。 | `contracts.py`、`protocol.ts`、两端测试 |
-| `desktop_protocol/contracts.py` | Python 端 TypedDict、严格 Parser、Runtime Validator 和 Response/Error/Stream/Event Builder。 | `desktop_backend.py`、Schema/Fixtures、Python Tests |
+| `desktop_protocol/schema/v1.schema.json` | Draft 2020-12 JSON Schema；描述所有 Client/Server Frame，并约束 STT 设置枚举、Readiness exact object、PCM/Final Result 和跨字段状态不变量。 | Shared Fixtures、Python/Node Contract Tests |
+| `desktop_protocol/fixtures/v1.samples.json` | Python 与 TypeScript 同时读取的 Valid/Invalid Conformance Samples；包含 STT Settings Desired/Active、可用/不可用状态和敏感额外字段拒绝样本。 | `contracts.py`、`protocol.ts`、两端测试 |
+| `desktop_protocol/contracts.py` | Python 端 TypedDict、严格 Parser、Runtime Validator 和 Response/Error/Stream/Event Builder；序列化安全 STT Status，拒绝路径、Native Message 与扩展字段。 | `desktop_backend.py`、Schema/Fixtures、Python Tests |
 | `desktop_protocol/__init__.py` | 汇出协议常量、类型、Parser 和 Builder。 | Desktop Backend、测试 |
 
 协议的 Python 与 TypeScript Parser 都是手写的，Schema 不是代码生成器。因此修改协议时必须同步维护两端和共享 Fixtures。
@@ -322,10 +324,10 @@ Project Memory 页面目前仍是明确 Placeholder。Project Source 只安全�
 
 | 文件 | 实际用途 | 主要连接 |
 | --- | --- | --- |
-| `desktop/tests/protocol.contract.test.mjs` | 在 Node 中测试编译后的 Protocol Helpers 和 BackendProcess；覆盖双端 Fixture、Stream Sequence、Cancel Race、Snapshot、URL 与 Permission Policy。 | `dist-electron`、Schema/Fixtures；使用 Fake Child，不启动真实 Python |
+| `desktop/tests/protocol.contract.test.mjs` | 在 Node 中测试编译后的 Protocol Helpers 和 BackendProcess；覆盖双端 Fixture、STT exact Status/敏感字段拒绝、Request 关联、互斥、Cancel/Draining Race、PCM 不保留、Stream、URL 与 Permission Policy。 | `dist-electron`、Schema/Fixtures；使用 Fake Child，不启动真实 Python |
 | `desktop/tests/ui/electron-main.cjs` | Playwright 专用 Electron Main；加载生产 Renderer Build，保持 Sandbox/Context Isolation，但不启动生产 Backend。 | UI Test、Mock Preload、`dist/index.html` |
-| `desktop/tests/ui/mock-preload.cjs` | UI 测试专用 `elysiaDesktop` Fake；维护 Canonical Mock Chat/Project/Settings/Attachment 状态，并可模拟延迟、失败、Reload 和 Race。 | App Shell UI Tests；不会进入生产包 |
-| `desktop/tests/ui/app-shell.spec.ts` | Playwright 启动真实 Electron Renderer，覆盖 Chat、Project、Settings、Voice、Attachments、Markdown、Stop/Retry、Reload、IME、Focus 和响应式行为。 | Production React Build + Mock Backend |
+| `desktop/tests/ui/mock-preload.cjs` | UI 测试专用 `elysiaDesktop` Fake；除 Canonical 状态外模拟 STT 开始/终态/取消、Readiness、延迟、失败、Reload 和 Race。 | App Shell UI Tests；不会进入生产包 |
+| `desktop/tests/ui/app-shell.spec.ts` | Playwright 启动真实 Electron Renderer，覆盖 Chat/Project/Settings/Voice；STT 回归包括编辑、显式放入/追加草稿、取消迟到结果、Close、Fresh Retry 与安全 Readiness。 | Production React Build + Mock Backend |
 
 ## 24. Python 测试：`tests/`
 
@@ -342,9 +344,9 @@ Project Memory 页面目前仍是明确 Placeholder。Project Source 只安全�
 | `tests/test_conversation_summarization.py` | Model Summarizer、严格结构和增量摘要。 |
 | `tests/test_conversation_summary.py` | Stage 4 旧 Summary Schema 与存储。 |
 | `tests/test_data_portability.py` | Bundle Export/Import、Hash、路径、Conflict、Quarantine 和 Rollback。 |
-| `tests/test_desktop_backend.py` | Python Bridge 的 Handshake、Routing、Streaming、Cancel、Chat/Project/Settings/Attachment，以及 STT Admission、互斥、终态与 Shutdown Race。 |
-| `tests/test_desktop_protocol.py` | Python Protocol Parser/Builder 与共享 Fixture Contract。 |
-| `tests/test_desktop_settings.py` | Desktop Settings Validation、Revision CAS、锁和 Quarantine。 |
+| `tests/test_desktop_backend.py` | Python Bridge 的 Handshake、Routing、Streaming、Cancel、Chat/Project/Settings/Attachment，以及 STT Readiness、Admission、配置写互斥、终态与 Shutdown Race。 |
+| `tests/test_desktop_protocol.py` | Python Protocol Parser/Builder 与共享 Fixture Contract；覆盖 STT 设置/状态的 exact shape 与脱敏边界。 |
+| `tests/test_desktop_settings.py` | Desktop Settings 八字段 Validation、旧 Schema Migration、Desired/Active Restart Diff、Revision CAS、锁和 Quarantine。 |
 | `tests/test_faster_whisper.py` | 不安装 Native Runtime 或模型也能验证离线 Adapter、设备降级、PCM、惰性结果、错误脱敏和边界。 |
 | `tests/test_file_manager.py` | 基础文本文件操作。 |
 | `tests/test_json_store.py` | 早期通用 JSON Store。 |
@@ -363,7 +365,7 @@ Project Memory 页面目前仍是明确 Placeholder。Project Source 只安全�
 | `tests/test_project_service.py` | Project–Chat 关系、删除策略、Rollback 和 Busy Guard。 |
 | `tests/test_prompts.py` | Elysia 人格规则和 JSON 数据边界。 |
 | `tests/test_scoped_memory_integration.py` | 跨 Chat/Project Memory 隔离和同 Key 覆盖。 |
-| `tests/test_settings.py` | `.env`、默认值和基础 AppSettings。 |
+| `tests/test_settings.py` | `.env`、STT 闭集配置/安全回退、默认值和基础 AppSettings。 |
 | `tests/test_short_term_memory.py` | Token Budget 和完整 Turn 淘汰。 |
 | `tests/test_stage5_acceptance.py` | Stage 5 端到端验收：多 Project/Chat、Memory 隔离、重启和完整 Export/Import。 |
 | `tests/test_start.py` | Composition Root、Migration 和配置限制。 |
@@ -372,86 +374,72 @@ Project Memory 页面目前仍是明确 Placeholder。Project Source 只安全�
 | `tests/test_voice_transcription.py` | 引擎无关的转写请求、最终结果、语言、置信度、不可变性和错误层级。 |
 | `tests/test_voice_transcription_jobs.py` | 有界后台转写的 Admission、Worker/Queue Capacity、Cancel/Timeout Race、Native Draining、迟到结果丢弃、Retention 和 Shutdown。 |
 
-## 25. Voice Capture 实现
+## 25. Voice Capture 与本地 STT 实现
 
-这个有界功能由 5 个核心文件和 24 个跨层集成文件组成。它们共同实现显式单句录音、16 kHz PCM、VAD、可信协议校验与安全 Receipt，不应被误解成彼此独立的功能。
+当前 Voice 是“显式单句采集 → 本地最终转写 → 人工确认进入草稿”的有界流程。它不是持续监听，也不会把识别结果直接发给 Brain。理解这一功能时要把 Capture、Python STT 和 Renderer Handoff 三个边界连起来看。
 
-### 5 个核心文件
+### Capture 核心文件
 
 | 文件 | 当前职责 | 完成边界 |
 | --- | --- | --- |
-| `desktop/src/voice/audio-capture.ts` | 获取显式授权的单次麦克风输入；Downmix、流式重采样到 16 kHz、PCM16 Frame、生命周期和清理。 | 不执行 STT，不持久化录音 |
-| `desktop/src/voice/voice-activity-detector.ts` | 对 20 ms PCM Frame 做有界 VAD、Pre-roll、No-speech/Maximum Timeout 和尾静音结束判断。 | 只是保守 VAD，不识别文字 |
+| `desktop/src/voice/audio-capture.ts` | 获取显式授权的单次麦克风输入；Downmix、流式重采样到 16 kHz、PCM16 Frame、生命周期和清理。 | 自身不识别文字，不持久化录音 |
+| `desktop/src/voice/voice-activity-detector.ts` | 对 20 ms PCM Frame 做有界 VAD、Pre-roll、No-speech/Maximum Timeout 和尾静音结束判断。 | 只是保守 VAD，不产生 Partial Transcript |
 | `desktop/tests/voice-capture.test.mjs` | 测试 Capture/VAD 时序、静音、固定音调、噪音、Speech-like Signal 和 Cleanup。 | Renderer Voice 单元回归 |
 | `voice/capture.py` | 在可信 Python 边界验证 canonical Base64、16 kHz mono s16le、Frame Alignment、时长、Markers 和 SHA-256。 | 不打开麦克风，不调用 Brain |
 | `tests/test_voice_capture.py` | 测试 Python PCM Capture Contract。 | Python Voice 单元回归 |
 
-### 24 个跨层集成文件
+`voice.capture.complete` 仍是独立的安全 Receipt Primitive：它只返回格式、时长和 Digest，不执行 STT。当前 Voice 页面在 VAD 完成后改走下面的 `voice.transcription.start` 流程。
+
+### 本地 STT 配置与 Python 核心
+
+| 文件 | 当前职责 | 关键边界 |
+| --- | --- | --- |
+| `requirements-stt.txt` | 可选安装 Faster-Whisper 与 NumPy。 | 不属于基础依赖，不包含模型 |
+| `config/settings.py` | 定义 STT 模型、设备、语言的闭集默认值和 `.env` Bootstrap。 | 非法别名回退，不能触发下载 |
+| `config/desktop_settings.py` | 持久化 STT Desired/Active 值并计算 Restart Diff。 | 正常已初始化会话需重启；Brain 尚未建立时的修复会立即采用并重建空闲 STT Runtime |
+| `voice/transcription.py` | 定义不依赖具体引擎的请求、Final Result、语言和稳定错误。 | 只允许有界最终文本 |
+| `voice/faster_whisper.py` | 从明确本地目录加载、选择设备/Compute、执行转写并生成净化 Status/Error。 | 不下载模型，不返回路径或 Native Error |
+| `voice/transcription_jobs.py` | 固定 Worker/Queue、Deadline、Cancel、唯一终态、Native Draining 和迟到结果丢弃。 | 逻辑取消后仍保留物理容量直到 Native Call 返回 |
+| `desktop_backend.py` | 从 Active Settings 组装 Adapter/Runner，执行 Admission、Chat/Settings 互斥和 Protocol 终态。 | Python 是 Native Draining 的最终 Busy Gate |
+
+可选模型名称是 `tiny`、`base`、`small`、`medium`、`large-v3`、`turbo`；每个名称只映射到 `models/weights/faster-whisper/<model>`。设备是 `auto`、`cuda`、`cpu`，默认语言是 `auto`、`zh`、`en`。缺模型、缺依赖、Runtime Probe、CUDA 或初始化失败只形成闭集 Reason，不允许把模型路径、异常消息或 Native 对象穿过协议。
+
+### Electron 与 Renderer Final Transcript Handoff
+
+| 文件 | 当前职责 | 关键边界 |
+| --- | --- | --- |
+| `desktop/electron/protocol.ts` | 严格解析 STT Settings、Readiness、一次性 PCM 请求和 PCM-free Final Result。 | 拒绝 Extra/Path/Message/Native 字段和不一致状态 |
+| `desktop/electron/backend-process.ts` | 关联 Request/Session/Chat，处理 Progress、Cancel Race 和终态，并在 STT 活跃时阻止冲突写入。 | Pending Metadata 不保留 PCM |
+| `desktop/electron/main.ts` | 校验 Renderer STT 参数与 Cancel Request ID，映射固定 IPC。 | 不接受任意 Channel 或任意设备/模型值 |
+| `desktop/electron/preload.cts` | 暴露 `beginVoiceTranscription` / `stopVoiceTranscription` 与安全 Event Subscription。 | 不暴露原始 `ipcRenderer` |
+| `desktop/electron/contracts.ts` | 声明 Renderer 可见的开始确认、Final/Error Event 和净化 Status。 | Final Event 不包含 PCM 或 Native Diagnostic |
+| `desktop/src/App.tsx` | 管理 Capture/STT Operation Token、Request 关联、取消/关闭/导航竞态和 Final Transcript 到草稿的原子 Handoff。 | 迟到结果不能污染其他 Chat |
+| `desktop/src/voice/CallPreview.tsx` | 显示并允许编辑 Final Transcript；按钮根据现有草稿选择 Use 或 Append。 | 不自动发送，不显示实时 Partial |
+| `desktop/src/voice/transcription-readiness.ts` | 把闭集 Status/Reason 转成一致的恢复步骤。 | UI 不渲染底层路径或错误原文 |
+| `desktop/src/settings/SettingsView.tsx` | 编辑 STT 模型/设备/语言并显示 Active 值、Readiness 和 Restart 提示。 | 保存值与当前生效值明确分离 |
+
+完整连接关系：
 
 ```text
-desktop/README.md
-desktop/electron/backend-process.ts
-desktop/electron/contracts.ts
-desktop/electron/main.ts
-desktop/electron/preload.cts
-desktop/electron/protocol.ts
-desktop/package.json
-desktop/src/App.css
-desktop/src/App.tsx
-desktop/src/chat/Composer.tsx
-desktop/src/voice/CallPreview.tsx
-desktop/tests/protocol.contract.test.mjs
-desktop/tests/ui/app-shell.spec.ts
-desktop/tests/ui/mock-preload.cjs
-desktop_backend.py
-desktop_protocol/README.md
-desktop_protocol/__init__.py
-desktop_protocol/contracts.py
-desktop_protocol/fixtures/v1.samples.json
-desktop_protocol/schema/v1.schema.json
-tests/test_desktop_backend.py
-tests/test_desktop_protocol.py
-voice/__init__.py
-voice/exceptions.py
-```
-
-这些修改负责把 Capture 从 React 连接到 Preload、Electron Main、BackendProcess、双端 Protocol、Python Backend 和测试；它们不是 24 个彼此独立的新功能。
-
-连接关系：
-
-```text
-getUserMedia
+explicit Start microphone
+  → getUserMedia
   → audio-capture.ts
   → voice-activity-detector.ts
-  → Preload / Electron / Protocol
-  → desktop_backend.py
-  → voice/capture.py
-  → 安全 Receipt
-```
-
-这条链目前不会：
-
-- 创建 Chat Turn；
-- 调用 Brain；
-- 执行 STT；
-- 执行 TTS；
-- 开始连续 Voice Conversation；
-- 将 PCM 保存为长期文件。
-
-下一层的 `voice/transcription.py` 定义如何把验证后的 `VoiceCapture` 表达成转写请求，以及如何返回有界、非空的最终文本；`voice/faster_whisper.py` 在纯 Fake Runtime 下验证本地模型、设备选择、初始化降级和最终文本；`voice/transcription_jobs.py` 与 `voice.transcription.start` 已把它们接到 Python Desktop Backend。每份 PCM 只跨协议一次，最终结果只含相关 ID、文字、解析后的语言和置信度。Electron/React 的调用 API 与可编辑 Transcript UI 仍未接入，所以当前录音页面仍只显示 Receipt。
-
-Python STT 连接关系：
-
-```text
-validated PCM + language
+  → beginVoiceTranscription (Preload / Electron)
   → voice.transcription.start
-  → desktop_backend.py admission / Chat mutual exclusion
+  → desktop_backend.py admission / mutual exclusion
   → TranscriptionJobRunner
-  → FasterWhisperTranscriber (explicit local model directory)
-  → bounded PCM-free transcript result
+  → FasterWhisperTranscriber
+  → correlated, bounded PCM-free final result
+  → editable CallPreview transcript
+  → explicit Use / Append
+  → current Chat's durable Composer draft
+  → user sends separately
 ```
 
-Cancel 或 Timeout 只结束用户可见任务；Python 无法安全终止正在 Native Library 内运行的线程。Runner 因此继续占用该物理容量，直到调用返回后丢弃迟到结果。在排空期间，新 STT 与 Chat 都会收到 Busy，而 Shutdown 会关闭 Admission 并抑制迟到 Protocol Frame。
+每份 PCM 只跨协议一次，不进入 Chat、Memory 或长期文件。用户取消、关闭 Voice 或切换上下文后，迟到结果不能回填草稿。Cancel 或 Timeout 只结束用户可见任务；Python 无法安全终止正在 Native Library 内运行的线程，因此 Runner 会继续占用物理容量直到调用返回并丢弃迟到结果。在排空期间，新 STT、Chat 与冲突配置写入会收到 Busy。
+
+当前只传递最终文字；实时 Partial Transcript、TTS、自动回复与连续 Voice Conversation 明确留给后续工作。Fake Runtime 自动化覆盖设备选择、降级和竞态，另有一次真实 CPU Runtime/模型 Smoke 验证；这里不声称 CUDA 已通过真实 GPU 验证。
 
 ## 26. 哪些文件不应被当成源码垃圾
 
@@ -483,7 +471,7 @@ logs/                  排错日志
 .venv/                 Python 环境；可重建，但删除后程序不能启动
 models/blobs/          本地模型数据
 models/manifests/      本地模型清单
-models/weights/        本地 GPT-SoVITS 等权重/参考音频
+models/weights/        本地 Faster-Whisper、GPT-SoVITS 等权重/参考音频
 docs/02-ROADMAP.md     被 Git 忽略的本地项目路线图
 ```
 
@@ -561,6 +549,21 @@ Renderer intent
 
 不要向 Renderer 暴露任意 IPC、原生路径、Node API 或 Python 进程句柄。
 
+### 修改本地 Voice / STT
+
+```text
+config/settings.py + config/desktop_settings.py
+→ voice/transcription.py
+→ voice/faster_whisper.py + voice/transcription_jobs.py
+→ desktop_backend.py
+→ 双端 Protocol / Fixtures
+→ Electron contracts / BackendProcess / Preload / Main
+→ App.tsx / CallPreview.tsx / transcription-readiness.ts
+→ Python Contract/Runner Tests + Desktop Contract/UI Tests
+```
+
+如果只是增加模型权重或可选 Runtime，不要把它提交进源码：依赖版本进入 `requirements-stt.txt`，完整模型只放在被忽略的 `models/weights/faster-whisper/<model>`。任何新的 Runtime Error 必须先映射为稳定枚举，不能把路径、底层异常或 Native 对象直接送给 Renderer。
+
 ## 28. 推荐的新成员阅读顺序
 
 准备修改源码的人应在项目首页之后先阅读 `AGENTS.md`，再按下面的架构顺序进入实现。
@@ -599,6 +602,7 @@ Renderer intent
 - Python 是持久化事实来源。
 - Electron 管可信本机能力。
 - React 只管理显示和短暂状态。
+- 单句 STT 只返回 Final Transcript；进入 Composer 和发送消息是两个独立、显式动作。
 - Streaming Overlay 不等于已保存消息。
 - `ChatSession.project_id` 是 Project–Chat 关系的唯一真相。
 - 所有 Memory 使用前都必须经过 Scope 过滤。
