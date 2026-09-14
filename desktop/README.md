@@ -164,8 +164,9 @@ desktop speak. Prepare a GPT-SoVITS runtime and assets that you have the right
 to use, copy `config\voice_profiles.example.json` to the ignored
 `workspace\settings\voice-profiles.json`, and replace the example values with
 accurate local relative paths, reference text, and language. The adapter
-accepts only loopback HTTP endpoints and resolves model/reference assets only
-under `models\weights\gpt-sovits\`.
+accepts only loopback-IP HTTP origins (`localhost` is normalized to
+`127.0.0.1` before I/O), supports WAV/AAC for this non-streaming API, and
+resolves model/reference assets only under `models\weights\gpt-sovits\`.
 
 If the Profile is marked `local-evaluation-only`, leave
 `GPT_SOVITS_ALLOW_LOCAL_EVALUATION=False` until you have explicitly confirmed
@@ -179,7 +180,8 @@ cd /d D:\Elysia_AI
 
 The command synthesizes one fixed Chinese sentence twice per emotion and keeps
 the audio in memory. Success output contains only readiness, format, byte
-count, duration, and SHA-256 metadata. `service_binding_unverified` means the
+count, duration, and SHA-256 metadata; the digest can fingerprint known bytes
+and is not anonymization. `service_binding_unverified` means the
 loopback API is reachable but cannot attest that the catalog-declared weights
 are loaded; it must not be read as model-identity verification. Stopping the
 runtime must produce the stable `service_unreachable` error. See the root
@@ -256,8 +258,10 @@ method, results, capability gaps, and limitations.
   `desktop_protocol/fixtures/v1.samples.json`.
 - Python delegates persistence and streaming to the existing Stage 5 Brain.
 - The Python GPT-SoVITS adapter is deliberately outside the desktop protocol:
-  it permits only loopback HTTP, ignores environment proxies, rejects
-  redirects, uses bounded requests/responses, and reports sanitized readiness.
+  it permits only loopback-IP HTTP, ignores environment proxies, rejects
+  redirects and retries, and accepts only bounded, length-declared identity
+  WAV/AAC responses. Stream reads shrink their socket timeout to the remaining
+  body deadline; unsupported transfer shapes fail closed. Readiness is sanitized.
   Its ignored catalog maps logical Profile/emotion identifiers to local assets;
   private paths, prompts, weights, reference audio, and synthesized bytes do not
   currently cross Electron or React.

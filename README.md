@@ -72,8 +72,8 @@ flowchart LR
     P --> B[Brain]
     B --> O[Ollama]
     B --> D[(workspace 本地数据)]
-    P -. 可选单次合成 .-> T[Python TTS Service / Smoke CLI]
-    T -->|仅 Loopback /tts| G[外部 GPT-SoVITS Runtime]
+    C[Python CLI / Library] -. 显式单次合成 .-> T[Python TTS Service]
+    T -->|Loopback IP /tts| G[外部 GPT-SoVITS Runtime]
     E --> H[原生文件与音频边界]
 ```
 
@@ -202,7 +202,7 @@ DEBUG=False
 
 桌面端 **Settings** 允许修改 Chat 模型、Ollama Origin、Memory 限额、文件导入大小，以及本地转写模型、设备和默认语言；这些公开设置使用独立 revision 并写入 `workspace/settings/global.json`。转写模型可选 `tiny` / `base` / `small` / `medium` / `large-v3` / `turbo`，设备可选 `auto` / `cuda` / `cpu`，语言可选 `auto` / `zh` / `en`。Backend 重启后才会采用这些修改；主题则保存在当前设备的 Renderer Storage 中并立即生效。
 
-本项目当前只连接本地 Ollama 与明确配置的 Loopback GPT-SoVITS，不要求云端 API Key。`GPT_SOVITS_ALLOW_LOCAL_EVALUATION` 默认关闭；只有在你确认本地 Voice Profile 的权利与路径后才应显式开启。不要把未来的密钥、Token、私人 Prompt 或私人配置提交到仓库。
+桌面应用当前只连接本地 Ollama，不要求云端 API Key。另一个独立、可选的 Python TTS CLI 只会在用户准备配置并显式运行后连接 Loopback GPT-SoVITS；它尚未接入桌面 Backend。`GPT_SOVITS_ALLOW_LOCAL_EVALUATION` 默认关闭；只有在你确认本地 Voice Profile 的权利与路径后才应显式开启。不要把未来的密钥、Token、私人 Prompt 或私人配置提交到仓库。
 
 ---
 
@@ -237,7 +237,7 @@ DEBUG=False
 - 当前 STT 只返回最终文字；实时 Partial Transcript 明确留给后续持续语音会话。Python TTS 基础已独立完成，但自动回复、桌面播放和 `LISTENING → THINKING → SPEAKING` 循环尚未完成。
 - Settings 与 Voice 页面只显示经过枚举净化的就绪状态。缺模型、缺可选依赖、CUDA 不可用或初始化失败时会给出可操作步骤，不显示本地路径、底层异常或 Native 诊断；`auto` 可以选择安全的 CPU 回退。
 - 已完成一次真实 CPU Runtime/模型的本地转写 Smoke 验证；CUDA 成功路径尚未在本文声称为实机验证。自动化测试同时覆盖 Fake Runtime、Cancel、Timeout、Native Draining 和迟到结果丢弃。
-- Python 已提供引擎无关的合成 Contract、本地 Voice Profile Catalog、惰性 Composition Root 和仅允许 `127.0.0.1` / `localhost` 的 GPT-SoVITS `/tts` Adapter；它禁用环境代理、Redirect 和自动重试，并验证最大 32 MiB 的 WAV/Ogg/AAC 结果。
+- Python 已提供引擎无关的合成 Contract、本地 Voice Profile Catalog、惰性 Composition Root 和只接受 Loopback IP Origin 的 GPT-SoVITS `/tts` Adapter；`localhost` 会先规范化为 `127.0.0.1`。通用 Contract 对最大 32 MiB 的 PCM WAV、Ogg Opus 与受支持 ADTS AAC 子集执行完整 Container/Transport Framing 检查，不冒充 Codec 解码；当前非流式 GPT-SoVITS Adapter 只配置 WAV/AAC，并要求有界、声明 `Content-Length`、非压缩且非 `Transfer-Encoding` 的响应。
 - 本机真实验收使用同一固定中文测试句，对 `neutral`、`happy`、`sad` 各连续合成两次，六次均得到有效 WAV；停掉服务后 Smoke 返回稳定的 `service_unreachable`，完整文字 Chat 回归仍通过。`service_binding_unverified` 表示服务在线但上游 API 不能证明当前加载的是 Catalog 所声明的权重，不是对权重身份的背书。
 - 这条 TTS 路径目前只供 Python/CLI 使用，尚未加入 Desktop Protocol、Renderer、句子队列或音频播放。Profile 配置、Runtime、权重和参考音频均留在被 Git 忽略的本机目录；来源和使用限制见 [MODEL_LICENSE.md](./MODEL_LICENSE.md)。
 
@@ -300,7 +300,7 @@ npm run package
 
 | 层级 | 技术 |
 | --- | --- |
-| AI Runtime | Ollama + `langchain-ollama` |
+| AI Runtime | Ollama + `langchain-ollama`；可选外部 Loopback GPT-SoVITS Runtime |
 | Python Core | Python 3.14、typed domain/service/repository boundaries |
 | Desktop Runtime | Node.js 24 + Electron 43 |
 | Renderer | React 19 + TypeScript 6 + Vite 8 |
@@ -386,7 +386,7 @@ cd /d D:\Elysia_AI\desktop
 - `.env` 被 Git 忽略，但仍不应放入不受信任的同步目录。
 - 文件源路径不会返回给 React；附件公开状态只包含最小安全元数据。
 - 音频测试不会保存录音。有界采集的 PCM 只在校验或转写所需的短暂生命周期内存在，不进入 Chat 或 Memory；协议结果不包含 PCM、模型路径或 Native Error。
-- TTS Adapter 只允许 Loopback 服务；Smoke 只输出不可逆摘要和音频元数据，不保存合成音频。Voice Profile、准确参考文本、权重路径和参考音频保留在被忽略的本地配置/模型目录，当前不会穿过 Desktop Protocol。
+- TTS Adapter 只允许 Loopback 服务；Smoke 只输出 SHA-256 摘要和音频元数据，不保存合成音频。摘要可用于识别已知字节，并不是匿名化或加密保护。Voice Profile、准确参考文本、权重路径和参考音频保留在被忽略的本地配置/模型目录，当前不会穿过 Desktop Protocol。
 - Elysia 的 Smoke 输出已经脱敏，但外部 GPT-SoVITS Runtime 自己的控制台或日志可能显示目标文本、参考文本与本地路径；这些上游日志也应视为私人本机数据，不要随调试包公开。
 - 删除源码或构建产物时不要误删 `workspace/`；需要迁移数据时应使用 Recovery Service 生成的受校验导出。
 

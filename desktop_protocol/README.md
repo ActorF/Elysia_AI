@@ -129,10 +129,15 @@ repository content, or packaged dependencies. Desktop playback and a
 continuous `LISTENING → THINKING → SPEAKING` session require a future explicit
 protocol extension rather than being inferred from Python readiness.
 
-The Python `SynthesisResult` permits at most 32 MiB of validated encoded audio,
-while one Protocol v1 NDJSON frame is capped at 16 MiB; Base64 would expand the
-payload by roughly another third. A future desktop extension therefore must not
-place arbitrary synthesized bytes directly in the existing JSON frame. It must
+The Python `SynthesisResult` permits at most 32 MiB of encoded audio with
+complete supported container/transport framing; it does not claim that a codec
+decoder will accept the payload. The current non-streaming GPT-SoVITS adapter
+configures WAV/AAC only, while the general Python contract also understands a
+bounded Ogg Opus shape. A playback layer must handle decoder rejection. By
+comparison, one Protocol v1 NDJSON frame is capped at 16 MiB; Base64 would
+expand the payload by roughly another third. A future desktop extension
+therefore must not place arbitrary synthesized bytes directly in the existing
+JSON frame. It must
 first define a bounded temporary-file token, a bounded binary stream, or an
 equivalent trusted delivery primitive with ownership, expiry, cancellation, and
 cleanup rules. Base URL, checkpoint/reference paths, and exact reference prompt

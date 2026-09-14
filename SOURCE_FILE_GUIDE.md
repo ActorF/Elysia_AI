@@ -208,8 +208,8 @@ ChatSession.project_id
 | `voice/service.py` | 提供硬件无关的设备偏好读取和更新；Python 不直接打开麦克风。 | Desktop Backend、Voice Repository |
 | `voice/transcription.py` | 定义与具体识别引擎解耦的 Transcriber Protocol、请求、最终结果、语言范围和稳定错误。 | 复用 `VoiceCapture`；连接 Faster-Whisper Adapter、后台任务和 Desktop Backend |
 | `voice/transcription_jobs.py` | 用固定 Daemon Worker、有界队列、Deadline、唯一终态和结果保留上限包装同步 Transcriber；取消/超时后保留物理容量直到 Native Call 返回，并丢弃迟到结果。 | `desktop_backend.py`、`voice/transcription.py`；不把 PCM、路径或底层异常放进 Snapshot |
-| `voice/synthesis.py` | 定义引擎无关的 `SpeechSynthesizer` Protocol、严格请求/结果、稳定错误与最大 32 MiB WAV/Ogg/AAC 容器验证。 | GPT-SoVITS Adapter、Local Synthesis Service、Fake 单元测试 |
-| `voice/gpt_sovits.py` | 把领域请求映射到 GPT-SoVITS `/tts`；只允许 Loopback、禁用环境代理/Redirect/Retry、流式限制响应，并以 `/openapi.json` 做脱敏可用性探测。 | 外部本地 GPT-SoVITS Runtime；不会切换远端进程的全局权重 |
+| `voice/synthesis.py` | 定义引擎无关的 `SpeechSynthesizer` Protocol、严格请求/结果与稳定错误；对最大 32 MiB 的 PCM WAV、Ogg Opus 和受支持 ADTS AAC 子集完整检查 Container/Transport Framing，但不虚构 Codec 可解码保证。 | GPT-SoVITS Adapter、Local Synthesis Service、Fake 单元测试；未来播放器仍须处理 Decoder Failure |
+| `voice/gpt_sovits.py` | 把领域请求映射到 GPT-SoVITS `/tts`；只允许 Loopback IP（`localhost` 先规范化）、禁用环境代理/Redirect/Retry，要求声明长度的 Identity WAV/AAC 响应，并以 `/openapi.json` 做脱敏可用性探测。 | 外部本地 GPT-SoVITS Runtime；不会切换远端进程的全局权重，也不会把 `service_binding_unverified` 冒充成 `ready` |
 | `voice/profiles.py` | 严格读取被忽略的 JSON Catalog，把 Profile、情绪、准确参考文本/语言和相对资产路径解析到固定模型根；实施 `verified` 与显式 Opt-in 的 `local-evaluation-only` 权利标签。 | `config/voice_profiles.example.json`、`models/weights/gpt-sovits/`、Synthesis Service |
 | `voice/synthesis_service.py` | TTS 的惰性 Composition Root；每次调用重载 Catalog，按逻辑 Profile/情绪构造 Adapter 请求，且服务构造本身不触碰磁盘或网络。 | `config/settings.py`、Profile Catalog、GPT-SoVITS Adapter、Smoke CLI |
 
@@ -359,7 +359,7 @@ Project Memory 页面目前仍是明确 Placeholder。Project Source 只安全�
 | `tests/test_desktop_settings.py` | Desktop Settings 八字段 Validation、旧 Schema Migration、Desired/Active Restart Diff、Revision CAS、锁和 Quarantine。 |
 | `tests/test_faster_whisper.py` | 不安装 Native Runtime 或模型也能验证离线 Adapter、设备降级、PCM、惰性结果、错误脱敏和边界。 |
 | `tests/test_file_manager.py` | 基础文本文件操作。 |
-| `tests/test_gpt_sovits.py` | Loopback URL、HTTP 请求映射、代理/Redirect/Retry 禁止、Readiness、响应上限、容器与错误脱敏。 |
+| `tests/test_gpt_sovits.py` | Loopback URL 规范化、HTTP 请求映射、代理/Redirect/Retry/Transfer-Encoding 禁止、Content-Length、慢速 Body Deadline、Readiness、响应上限、格式与错误脱敏。 |
 | `tests/test_json_store.py` | 早期通用 JSON Store。 |
 | `tests/test_langchain_ollama_chat_model.py` | 生产 LangChain Ollama Adapter。 |
 | `tests/test_legacy_conversation_migration.py` | Legacy Backup、幂等性、语义前缀和失败回滚。 |
@@ -377,7 +377,7 @@ Project Memory 页面目前仍是明确 Placeholder。Project Source 只安全�
 | `tests/test_prompts.py` | Elysia 人格规则和 JSON 数据边界。 |
 | `tests/test_python_documentation_check.py` | 文档扫描只排除精确的 `models/cache/`，不会把其他同名源码目录误排。 |
 | `tests/test_scoped_memory_integration.py` | 跨 Chat/Project Memory 隔离和同 Key 覆盖。 |
-| `tests/test_settings.py` | `.env`、STT 闭集配置/安全回退、默认值和基础 AppSettings。 |
+| `tests/test_settings.py` | `.env`、STT 闭集配置/安全回退、GPT-SoVITS 本地评估 Opt-in、请求/探测 Timeout、Seed、默认值和基础 AppSettings。 |
 | `tests/test_short_term_memory.py` | Token Budget 和完整 Turn 淘汰。 |
 | `tests/test_smoke_gpt_sovits.py` | Smoke CLI 的固定文本、重复/多情绪、缓冲成功输出、格式摘要和闭集错误码。 |
 | `tests/test_stage5_acceptance.py` | Stage 5 端到端验收：多 Project/Chat、Memory 隔离、重启和完整 Export/Import。 |
@@ -386,7 +386,7 @@ Project Memory 页面目前仍是明确 Placeholder。Project Source 只安全�
 | `tests/test_voice_capture.py` | Python 单句 PCM Capture Contract、Canonical Base64、Markers、边界和收据。 |
 | `tests/test_voice_settings.py` | Audio Device Preferences、CAS、锁和损坏恢复。 |
 | `tests/test_voice_profiles.py` | Voice Profile Schema、路径固定、准确 Prompt/语言、情绪选择与权利状态。 |
-| `tests/test_voice_synthesis.py` | 引擎无关 TTS 请求/结果、不可变性、音频上限、WAV/Ogg/AAC 验证和错误层级。 |
+| `tests/test_voice_synthesis.py` | 引擎无关 TTS 请求/结果、不可变性、不可发声 Unicode、音频上限、PCM WAV/Ogg Opus/ADTS AAC Framing 与错误层级。 |
 | `tests/test_voice_transcription.py` | 引擎无关的转写请求、最终结果、语言、置信度、不可变性和错误层级。 |
 | `tests/test_voice_transcription_jobs.py` | 有界后台转写的 Admission、Worker/Queue Capacity、Cancel/Timeout Race、Native Draining、迟到结果丢弃、Retention 和 Shutdown。 |
 
@@ -465,8 +465,8 @@ explicit Start microphone
 | `workspace/settings/voice-profiles.json` | 本机 Catalog：声明 Base URL、权重、参考片段、准确文本/语言、速度、格式和权利状态。 | 被 Git 忽略；Windows 路径也使用 `/` 分隔的相对路径 |
 | `voice/profiles.py` | 将逻辑 Profile/情绪解析为固定根下的完整配置。 | 拒绝逃逸路径、远端 URL、未知字段与未获 Opt-in 的本地评估素材 |
 | `voice/synthesis_service.py` | 惰性加载 Catalog 并创建一次 Adapter 调用。 | 构造服务不访问磁盘或网络；文字 Chat 不依赖 TTS 在线 |
-| `voice/gpt_sovits.py` | 探测 `/openapi.json` 并 POST `/tts`，流式收取有界结果。 | 仅 Loopback；不信任代理，不自动重试/重定向或切换全局权重 |
-| `voice/synthesis.py` | 验证请求与最大 32 MiB 编码音频结果。 | 无效/空/超大 WAV、Ogg 或 AAC 不进入下游 |
+| `voice/gpt_sovits.py` | 探测 `/openapi.json` 并 POST `/tts`，按剩余 Body Deadline 收取有界结果。 | 仅 Loopback IP；不信任代理，不自动重试/重定向或切换全局权重；拒绝无 Content-Length、压缩或 Transfer-Encoding；非流式配置仅 WAV/AAC |
+| `voice/synthesis.py` | 验证请求与最大 32 MiB 编码结果的完整 Transport Framing。 | PCM WAV、Ogg Opus、受支持 ADTS AAC 子集通过结构验证；不声称已做 Codec Decode |
 | `scripts/smoke_gpt_sovits.py` | 每个情绪对固定句子合成两次并输出安全摘要。 | 不写音频、不回显 Prompt/路径/异常原文 |
 
 完整连接关系：
@@ -480,12 +480,12 @@ config/settings.py
   → GptSovitsSynthesizer
   → GET loopback /openapi.json
   → POST loopback /tts
-  → validated SynthesisResult
+  → transport-framed SynthesisResult
   → scripts/smoke_gpt_sovits.py
   → safe metadata only
 ```
 
-真实本机 Smoke 已对同一中文文本的 `neutral`、`happy`、`sad` 各运行两次，六次都得到有效 WAV；重复要求是“每次都有效”，并不承诺编码字节完全相同。Runtime 停止后返回稳定的 `service_unreachable`，文字 Chat 测试仍通过。正常探测只报告 `available / service_binding_unverified`，因为 `/openapi.json` 能证明兼容服务在线，却不能证明外部进程实际加载了 Catalog 声明的权重。这条链目前不经过 `desktop_backend.py`、Electron、Preload 或 React。
+真实本机 Smoke 已对同一中文文本的 `neutral`、`happy`、`sad` 各运行两次，六次都得到有效 WAV；重复要求是“每次都有效”，并不承诺编码字节完全相同。Runtime 停止后返回稳定的 `service_unreachable`，文字 Chat 测试仍通过。正常探测只报告 `available / service_binding_unverified`，因为 `/openapi.json` 能证明兼容服务在线，却不能证明外部进程实际加载了 Catalog 声明的权重。Catalog 中的 GPT/SoVITS 路径因此是独立 Runtime 的预期部署配置，不是身份 Attestation；只有未来由 Elysia 控制、固定权重且能证明同一服务实例的 Wrapper 才可以把状态提升为 `ready`。这条链目前不经过 `desktop_backend.py`、Electron、Preload 或 React。
 
 ## 26. 哪些文件不应被当成源码垃圾
 

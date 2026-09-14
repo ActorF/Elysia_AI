@@ -72,8 +72,8 @@ flowchart LR
     P --> B[Brain]
     B --> O[Ollama]
     B --> D[(local workspace data)]
-    P -. optional one-shot synthesis .-> T[Python TTS service / smoke CLI]
-    T -->|loopback-only /tts| G[external GPT-SoVITS runtime]
+    C[Python CLI / library] -. explicit one-shot synthesis .-> T[Python TTS service]
+    T -->|loopback IP /tts| G[external GPT-SoVITS runtime]
     E --> H[native file and audio boundary]
 ```
 
@@ -212,8 +212,10 @@ DEBUG=False
 
 Desktop **Settings** can update the Chat model, Ollama origin, Memory limits, file import size, and the local transcription model, device, and default language. These public values use an independent revision and are written to `workspace/settings/global.json`. Transcription models are `tiny` / `base` / `small` / `medium` / `large-v3` / `turbo`; devices are `auto` / `cuda` / `cpu`; languages are `auto` / `zh` / `en`. The Backend must restart before these changes become active. Theme selection remains in this device's Renderer Storage and applies immediately.
 
-The current application connects only to local Ollama and an explicitly
-configured loopback GPT-SoVITS service; it does not require a cloud API key.
+The desktop application currently connects only to local Ollama and does not
+require a cloud API key. A separate optional Python TTS CLI connects to a
+configured loopback GPT-SoVITS service only after the user prepares its local
+configuration and runs it explicitly; that path is not part of Desktop Backend.
 `GPT_SOVITS_ALLOW_LOCAL_EVALUATION` is disabled by default. Enable it only
 after confirming the rights status and local paths in your Voice Profile.
 Never commit future secrets, tokens, private prompts, or private configuration.
@@ -251,7 +253,7 @@ Never commit future secrets, tokens, private prompts, or private configuration.
 - This STT slice returns final text only. Real-time partial transcripts are explicitly deferred to the future continuous-voice session. The Python TTS foundation is independently complete, but automatic replies, desktop playback, and the `LISTENING → THINKING → SPEAKING` loop are not complete.
 - Settings and Voice display only sanitized enum-based readiness. A missing model, missing optional dependencies, unavailable CUDA, or initialization failure produces safe recovery guidance without exposing local paths, underlying exceptions, or native diagnostics; `auto` can use the safe CPU fallback.
 - A real local CPU-runtime/model transcription smoke path has been verified. This documentation does not claim a successful real-GPU validation. Automated coverage also exercises the fake runtime, cancellation, timeout, native draining, and late-result disposal.
-- Python now provides an engine-independent synthesis contract, a strict local Voice Profile catalog, a lazy composition root, and a GPT-SoVITS `/tts` adapter that permits only `127.0.0.1` / `localhost`. The adapter ignores environment proxies, rejects redirects, does not automatically retry synthesis, and validates WAV/Ogg/AAC results up to 32 MiB.
+- Python now provides an engine-independent synthesis contract, a strict local Voice Profile catalog, a lazy composition root, and a GPT-SoVITS `/tts` adapter that accepts only loopback-IP origins; `localhost` is canonicalized to `127.0.0.1` before I/O. The general contract performs complete container/transport-framing checks, up to 32 MiB, for PCM WAV, Ogg Opus, and a supported ADTS AAC subset without claiming codec decodability. The current non-streaming GPT-SoVITS adapter configures only WAV/AAC and requires a bounded, `Content-Length`-declared, uncompressed, non-`Transfer-Encoding` response.
 - Real local acceptance synthesized the same fixed Chinese smoke sentence twice for each of `neutral`, `happy`, and `sad`; all six calls returned valid WAV audio. With the service stopped, the smoke command returned the stable `service_unreachable` code, and the full text-Chat regression still passed. `service_binding_unverified` means the service is online but its upstream API cannot attest that the catalog-declared weights are loaded; it is not an identity guarantee for those weights.
 - This TTS path is available only to Python/CLI code. It is not yet connected to Desktop Protocol, the Renderer, a sentence queue, or audio playback. Profiles, the runtime, weights, and reference audio remain in ignored local directories. See [MODEL_LICENSE.md](./MODEL_LICENSE.md) for provenance and restrictions.
 
@@ -324,7 +326,7 @@ The unpacked output is written to `desktop\out\win-unpacked`. `npm run make` can
 
 | Layer | Technologies |
 | --- | --- |
-| AI Runtime | Ollama + `langchain-ollama` |
+| AI Runtime | Ollama + `langchain-ollama`; optional external loopback GPT-SoVITS runtime |
 | Python Core | Python 3.14, typed domain/service/repository boundaries |
 | Desktop Runtime | Node.js 24 + Electron 43 |
 | Renderer | React 19 + TypeScript 6 + Vite 8 |
@@ -415,7 +417,7 @@ Files are currently stored safely and represented by metadata only. Loaders, Chu
 - `.env` is ignored by Git but should still stay outside untrusted synchronization locations.
 - Original attachment filesystem paths are not returned to React. Public attachment state contains only minimal safe metadata.
 - Audio tests do not retain recordings. Bounded-capture PCM exists only for the transient validation or transcription lifecycle and does not enter Chat or Memory; protocol results contain no PCM, model path, or native error.
-- The TTS adapter accepts only loopback services. Its smoke command emits only irreversible digests and audio metadata and does not save synthesized audio. Voice Profiles, exact reference text, weight paths, and reference audio remain in ignored local configuration/model directories and do not currently cross Desktop Protocol.
+- The TTS adapter accepts only loopback services. Its smoke command emits only SHA-256 digests and audio metadata and does not save synthesized audio. A digest can fingerprint known bytes; it is not anonymization or encryption. Voice Profiles, exact reference text, weight paths, and reference audio remain in ignored local configuration/model directories and do not currently cross Desktop Protocol.
 - Elysia's smoke output is sanitized, but the external GPT-SoVITS runtime may print target text, reference text, and local paths in its own console or logs. Treat those upstream logs as private local data and never include them in a public diagnostic bundle.
 - Do not remove `workspace/` while cleaning source or build output. Use validated Recovery Service exports when moving data.
 
