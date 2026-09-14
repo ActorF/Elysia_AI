@@ -50,7 +50,7 @@
 | Attachments / Sources | ✅ Foundation available | Safe storage and metadata only; no content reading, parsing, Embedding, or RAG |
 | Audio Devices | ✅ Available | Microphone/speaker selection, Windows permission state, input level, and output tone tests |
 | One-utterance recording and local VAD | ✅ Available | Explicit start, 16 kHz mono `s16le`, transient validation; no Chat Turn |
-| STT / Faster-Whisper | ⏳ Planned | Audio is not converted to text yet |
+| STT / Faster-Whisper | 🚧 In development | Domain contract and offline adapter are complete; optional runtime, local model, worker, protocol, and UI are not connected |
 | GPT-SoVITS / TTS | ⏳ Planned | Local weights are not connected to runtime code |
 | Continuous voice and barge-in | ⏳ Planned | No complete `LISTENING → THINKING → SPEAKING` session yet |
 | File parsing and local RAG | ⏳ Planned | No Loaders, Chunking, Vector Store, or cited answers |
@@ -210,7 +210,7 @@ The current application connects only to local Ollama and does not require a clo
 - Microphone/speaker enumeration, saved device preferences, Windows microphone permission state, short input-level tests, and output-tone tests are implemented.
 - Bounded one-utterance capture starts only after **Start microphone** is pressed. The Renderer performs local downmixing, resampling, and local VAD.
 - A valid segment uses 16 kHz mono signed 16-bit little-endian PCM. Python returns only safe receipt data such as format, duration, and SHA-256.
-- The current slice does not persist recordings, invoke the Brain, create a Chat message, perform STT, or perform TTS.
+- The current capture path does not persist recordings, invoke the Brain, create a Chat message, or perform TTS. Python now has a Faster-Whisper adapter that accepts only an explicit local directory and never resolves a model alias into a weight download, but it is not connected to the Desktop Backend; the optional STT runtime and a local model are also not installed on this machine yet.
 - Optional local GPT-SoVITS weights are not connected yet. See [MODEL_LICENSE.md](./MODEL_LICENSE.md) for provenance and restrictions.
 
 ---
@@ -323,7 +323,7 @@ Confirm that:
 
 ### Why does the Voice page not transcribe or reply?
 
-That is the current boundary. Device tests and one-utterance capture validate permissions, PCM, and VAD lifecycle only. STT, TTS, continuous calls, and Voice-created Chat Turns are not implemented.
+That remains the current UI boundary. Device tests and one-utterance capture validate permissions, PCM, and the VAD lifecycle. The engine-independent contract and offline Faster-Whisper adapter are implemented and tested with a fake runtime, but the worker, Desktop Protocol, transcript UI, local dependencies, and local model are not connected. The UI therefore still cannot transcribe, reply, or create a Chat Turn.
 
 ### Why can Project Sources not answer from file contents?
 
@@ -344,7 +344,7 @@ Files are currently stored safely and represented by metadata only. Loaders, Chu
 
 ## ⚠️ Model, Character, and Asset Notice
 
-Local GPT-SoVITS weights, reference audio, Ollama models, and caches are not Elysia AI source code; the current Git index and package file lists do not include them. See [MODEL_LICENSE.md](./MODEL_LICENSE.md) for provenance, restrictions, and facts still requiring verification.
+Local Faster-Whisper models, GPT-SoVITS weights, reference audio, Ollama models, and caches are not Elysia AI source code; the current Git index and package file lists do not include them. See [MODEL_LICENSE.md](./MODEL_LICENSE.md) for provenance, restrictions, and facts still requiring verification.
 
 In particular, the local model-pack note does not provide complete, verifiable redistribution permission. Do not commit the weights or reference audio, upload them to a Release, or include them in an installer.
 

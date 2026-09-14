@@ -50,7 +50,7 @@
 | Attachments / Sources | ✅ 基础可用 | 仅安全存储与元数据；尚不读取、解析、Embedding 或 RAG |
 | Audio Devices | ✅ 可用 | 麦克风/扬声器选择、Windows 权限、输入电平与输出音调测试 |
 | 单句录音与本地 VAD | ✅ 可用 | 显式启动、16 kHz mono `s16le`、临时验证；不生成 Chat Turn |
-| STT / Faster-Whisper | ⏳ 计划中 | 尚未把语音转换为文字 |
+| STT / Faster-Whisper | 🚧 开发中 | 领域契约与离线 Adapter 已完成；可选 Runtime、本地模型、后台任务、协议和 UI 尚未接通 |
 | GPT-SoVITS / TTS | ⏳ 计划中 | 本地权重尚未接入运行时代码 |
 | 连续语音与打断 | ⏳ 计划中 | 尚无完整 `LISTENING → THINKING → SPEAKING` 会话 |
 | 文件解析与本地 RAG | ⏳ 计划中 | 尚无 Loader、Chunking、Vector Store 或引用回答 |
@@ -210,7 +210,7 @@ DEBUG=False
 - 已实现麦克风/扬声器枚举、设备偏好、Windows 麦克风权限状态、短暂输入电平与输出音调测试。
 - 有界单句采集只在用户点击 **Start microphone** 后开始；Renderer 本地 downmix、重采样并运行本地 VAD。
 - 有效片段固定为 16 kHz、mono、signed 16-bit little-endian PCM；Python 只返回格式、时长和 SHA-256 等安全收据。
-- 当前不会保存录音、不会调用 Brain、不会创建 Chat 消息，也不会进行 STT 或 TTS。
+- 当前 Capture 链不会保存录音、调用 Brain、创建 Chat 消息或执行 TTS。Python 已有只接受明确本地目录、不使用模型别名触发权重下载的 Faster-Whisper Adapter，但它尚未接入 Desktop Backend；本机也尚未安装可选 STT Runtime 或本地模型。
 - 本机可选的 GPT-SoVITS 权重仍未接入。来源和使用限制见 [MODEL_LICENSE.md](./MODEL_LICENSE.md)。
 
 ---
@@ -323,7 +323,7 @@ cd /d D:\Elysia_AI\desktop
 
 ### 为什么 Voice 页面没有转写或回复？
 
-这是当前边界。设备测试与单句采集用于验证权限、PCM 和 VAD 生命周期；STT、TTS、连续通话和语音生成 Chat Turn 尚未实现。
+这是当前边界。设备测试与单句采集用于验证权限、PCM 和 VAD 生命周期；Faster-Whisper 的引擎契约与离线 Adapter 已完成并用 Fake Runtime 测试，但后台任务、Desktop Protocol、Transcript UI、本机依赖和本地模型尚未接通。因此界面仍不会转写、回复或创建 Chat Turn。
 
 ### 为什么 Project Sources 不能回答文件内容？
 
@@ -344,7 +344,7 @@ cd /d D:\Elysia_AI\desktop
 
 ## ⚠️ 模型、角色与素材说明
 
-本地 GPT-SoVITS 权重、参考音频、Ollama 模型和缓存不属于 Elysia AI 源码；当前 Git Index 与打包文件清单不包含这些文件。详细来源、限制与待核验事项见 [MODEL_LICENSE.md](./MODEL_LICENSE.md)。
+本地 Faster-Whisper 模型、GPT-SoVITS 权重、参考音频、Ollama 模型和缓存不属于 Elysia AI 源码；当前 Git Index 与打包文件清单不包含这些文件。详细来源、限制与待核验事项见 [MODEL_LICENSE.md](./MODEL_LICENSE.md)。
 
 尤其需要注意：本地模型包的说明没有提供可核验的完整再分发授权，因此不得把权重或参考音频提交到本仓库、上传到 Release，或打进安装包。
 

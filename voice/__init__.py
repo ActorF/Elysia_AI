@@ -26,6 +26,17 @@ from .exceptions import (
     VoiceSettingsStorageError,
     VoiceSettingsValidationError,
 )
+from .faster_whisper import (
+    FasterWhisperComputeType,
+    FasterWhisperConfig,
+    FasterWhisperRequestedDevice,
+    FasterWhisperResolvedDevice,
+    FasterWhisperStatus,
+    FasterWhisperStatusReason,
+    FasterWhisperStatusState,
+    FasterWhisperTranscriber,
+    RuntimeCapabilities,
+)
 from .service import VoiceSettingsService, create_voice_settings_service
 from .storage import (
     MAX_JSON_SAFE_INTEGER,
@@ -61,7 +72,16 @@ __all__ = [
     "VOICE_CAPTURE_SAMPLE_RATE_HZ",
     "VOICE_SETTINGS_SCHEMA_VERSION",
     "AudioDevicePreferences",
+    "FasterWhisperComputeType",
+    "FasterWhisperConfig",
+    "FasterWhisperRequestedDevice",
+    "FasterWhisperResolvedDevice",
+    "FasterWhisperStatus",
+    "FasterWhisperStatusReason",
+    "FasterWhisperStatusState",
+    "FasterWhisperTranscriber",
     "JsonVoiceSettingsRepository",
+    "RuntimeCapabilities",
     "TranscriptLanguage",
     "Transcriber",
     "TranscriptionError",

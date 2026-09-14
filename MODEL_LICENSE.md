@@ -22,12 +22,29 @@ This document records the known provenance, local handling rules, and current au
 | --- | --- | --- |
 | `models/weights/gpt-sovits/elysia-v2/` | Ignored and currently outside the Git index / 已忽略且当前不在 Git Index 中 | Local-only GPT-SoVITS weights and reference audio; every package/release must independently verify exclusion / 本地 GPT-SoVITS 权重与参考音频；每次打包和发布都须独立确认排除 |
 | `models/blobs/` and `models/manifests/` | Ignored and currently outside the Git index / 已忽略且当前不在 Git Index 中 | Ollama-managed local models; each upstream model has its own terms / Ollama 管理的本地模型，各自遵循上游条款 |
+| `models/cache/faster-whisper/` and `models/weights/faster-whisper/` | Ignored and currently outside the Git index / 已忽略且当前不在 Git Index 中 | Local speech-recognition models only; the adapter requires an explicit complete directory and never bundles or implicitly downloads weights / 仅存本地的语音识别模型；Adapter 要求明确、完整的目录，不打包也不隐式下载权重 |
 | `data/characters/elysia_character_reference_zh.md` | Tracked / 已跟踪 | Character background and quotations requiring separate source review / 需要单独审查来源的角色背景与语录 |
 | `desktop/public/elysia-icon.png` and `desktop/assets/elysia-icon.ico` | Tracked third-party branding / 已跟踪的第三方品牌素材 | Derived from an official *Honkai Impact 3rd* Elysia signet and included at the project owner's express direction for this unofficial, non-commercial fan project; © HoYoverse / miHoYo, excluded from every source-code license, no endorsement implied, and removable on rights-holder request / 由《崩坏3》爱莉希雅官方刻印制作，并按项目所有者明确决定用于本非官方、非商业粉丝项目；© HoYoverse / miHoYo，不属于任何源码许可证，不代表官方背书，权利人要求时应移除 |
 
 The current runtime does **not** yet load the local GPT-SoVITS weights. They are retained only as a future local integration candidate.
 
 当前运行时代码**尚未加载**本地 GPT-SoVITS 权重；这些文件只是未来本地接入的候选素材。
+
+---
+
+## Faster-Whisper Software and Model Boundary / Faster-Whisper 软件与模型边界
+
+The optional adapter targets [SYSTRAN/faster-whisper](https://github.com/SYSTRAN/faster-whisper) and keeps its imports out of the base text-Chat runtime. The upstream Faster-Whisper source is published under the [MIT License](https://github.com/SYSTRAN/faster-whisper/blob/master/LICENSE). That software license covers the upstream code, not arbitrary recordings, transcripts, converted models, or any unrelated character and voice assets.
+
+可选 Adapter 面向 [SYSTRAN/faster-whisper](https://github.com/SYSTRAN/faster-whisper)，其第三方 Import 不会进入基础文字 Chat Runtime。Faster-Whisper 上游源码采用 [MIT License](https://github.com/SYSTRAN/faster-whisper/blob/master/LICENSE)；该软件许可证只覆盖相应上游代码，不会自动覆盖任意录音、转写文本、转换模型或无关的角色与声音素材。
+
+The first recommended local evaluation candidate is the multilingual [`Systran/faster-whisper-small`](https://huggingface.co/Systran/faster-whisper-small) model, whose current model card labels it MIT. No model has been added to this repository or installer. Before a model is installed for repeatable use, its exact repository, revision, digest, model-card terms, and included license files must be recorded; future changes to the upstream card must not be assumed to retroactively describe an unpinned local copy.
+
+首个建议的本地评估候选是多语言 [`Systran/faster-whisper-small`](https://huggingface.co/Systran/faster-whisper-small)，其当前 Model Card 标注为 MIT。本仓库和安装包均未加入该模型。模型进入可重复使用前，必须记录准确仓库、Revision、摘要、Model Card 条款和随附许可证；不得假设上游页面未来的修改会自动适用于未固定版本的本地副本。
+
+The adapter accepts only an explicit absolute local model directory containing the runtime configuration, model binary, and tokenizer. It passes `local_files_only=True`, rejects Git LFS pointer files, and never resolves a model alias into a hidden weight download. Model installation remains a separate user-triggered operation, and every package/release must verify that local weights and caches remain excluded. Future Desktop wiring must additionally enforce the application's network policy around the third-party runtime itself.
+
+Adapter 只接受明确的绝对本地模型目录，并要求其中存在 Runtime 配置、模型二进制与 Tokenizer；它会传入 `local_files_only=True`、拒绝 Git LFS Pointer，且不会把模型别名解析为隐藏的权重下载。模型安装仍是独立的用户触发操作，每次打包和发布都必须核对本地权重与缓存仍被排除；未来接入 Desktop 时还必须在第三方 Runtime 周围执行应用本身的联网策略。
 
 ---
 

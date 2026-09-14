@@ -196,11 +196,12 @@ ChatSession.project_id
 | `voice/__init__.py` | Voice Package 的稳定公共 API。 | Desktop Backend、测试 |
 | `voice/domain.py` | 定义输入/输出设备的 opaque ID 偏好和 Voice Settings Snapshot。 | Voice Service/Storage、Protocol |
 | `voice/exceptions.py` | 定义 Voice Settings 和当前 Capture Validation 错误。 | Voice Service/Storage、Desktop Backend |
+| `voice/faster_whisper.py` | 实现离线优先的 Faster-Whisper Adapter、轻量能力状态、设备/Compute Policy、一次性 CUDA 初始化降级、PCM float32 转换和返回错误脱敏。 | 复用 Transcription Contract；可选 Native Runtime 与本地模型；尚未接入 Desktop Backend |
 | `voice/storage.py` | 对 `audio-device.json` 执行 Revision CAS、线程/进程锁、原子替换和损坏隔离。 | Voice Service、`workspace/settings/audio-device.json` |
 | `voice/service.py` | 提供硬件无关的设备偏好读取和更新；Python 不直接打开麦克风。 | Desktop Backend、Voice Repository |
 | `voice/transcription.py` | 定义与具体识别引擎解耦的 Transcriber Protocol、请求、最终结果、语言范围和稳定错误。 | 复用 `VoiceCapture`；供后续 Faster-Whisper Adapter 与后台任务实现 |
 
-`voice/capture.py` 是单句 PCM 验证边界，详见本文“Voice Capture 实现”部分。`voice/transcription.py` 目前只是可独立测试的领域契约：它不会导入 Faster-Whisper、加载或下载模型，也尚未连接 Desktop Protocol、后台任务或 Voice UI。
+`voice/capture.py` 是单句 PCM 验证边界，详见本文“Voice Capture 实现”部分。`voice/transcription.py` 保持为不导入第三方引擎的领域契约；具体 Adapter 位于 `voice/faster_whisper.py`，但尚未连接 Desktop Protocol、后台任务或 Voice UI。Adapter 只接受完整本地模型目录，不会根据模型别名隐式下载权重。
 
 ## 13. Console UI：`ui/`
 
@@ -342,6 +343,7 @@ Project Memory 页面目前仍是明确 Placeholder。Project Source 只安全�
 | `tests/test_desktop_backend.py` | Python Bridge 的 Handshake、Routing、Streaming、Cancel、Chat/Project/Settings/Attachment/Voice。 |
 | `tests/test_desktop_protocol.py` | Python Protocol Parser/Builder 与共享 Fixture Contract。 |
 | `tests/test_desktop_settings.py` | Desktop Settings Validation、Revision CAS、锁和 Quarantine。 |
+| `tests/test_faster_whisper.py` | 不安装 Native Runtime 或模型也能验证离线 Adapter、设备降级、PCM、惰性结果、错误脱敏和边界。 |
 | `tests/test_file_manager.py` | 基础文本文件操作。 |
 | `tests/test_json_store.py` | 早期通用 JSON Store。 |
 | `tests/test_langchain_ollama_chat_model.py` | 生产 LangChain Ollama Adapter。 |
@@ -433,7 +435,7 @@ getUserMedia
 - 开始连续 Voice Conversation；
 - 将 PCM 保存为长期文件。
 
-下一层的 `voice/transcription.py` 已定义如何把验证后的 `VoiceCapture` 表达成转写请求，以及如何返回有界、非空的最终文本。它仍保持未接线状态；只有后续 Adapter、后台任务、Protocol 与 UI 完成后，Capture 才会真正产生可编辑 Transcript。
+下一层的 `voice/transcription.py` 已定义如何把验证后的 `VoiceCapture` 表达成转写请求，以及如何返回有界、非空的最终文本；`voice/faster_whisper.py` 已能在纯 Fake Runtime 下验证本地模型、设备选择、初始化降级和最终文本。两者仍未接入现有 Capture 链；只有后台任务、Protocol 与 UI 完成后，录音才会真正产生可编辑 Transcript。
 
 ## 26. 哪些文件不应被当成源码垃圾
 
