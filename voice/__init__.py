@@ -37,6 +37,13 @@ from .faster_whisper import (
     FasterWhisperTranscriber,
     RuntimeCapabilities,
 )
+from .gpt_sovits import (
+    GptSovitsConfig,
+    GptSovitsPromptLanguage,
+    GptSovitsSynthesizer,
+    GptSovitsVoice,
+    GptSovitsVoiceResolver,
+)
 from .service import VoiceSettingsService, create_voice_settings_service
 from .storage import (
     MAX_JSON_SAFE_INTEGER,
@@ -128,6 +135,11 @@ __all__ = [
     "FasterWhisperStatusReason",
     "FasterWhisperStatusState",
     "FasterWhisperTranscriber",
+    "GptSovitsConfig",
+    "GptSovitsPromptLanguage",
+    "GptSovitsSynthesizer",
+    "GptSovitsVoice",
+    "GptSovitsVoiceResolver",
     "JsonVoiceSettingsRepository",
     "RuntimeCapabilities",
     "SpeechSynthesizer",
