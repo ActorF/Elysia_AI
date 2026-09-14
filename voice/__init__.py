@@ -40,6 +40,9 @@ from .faster_whisper import (
 from .gpt_sovits import (
     GptSovitsConfig,
     GptSovitsPromptLanguage,
+    GptSovitsStatus,
+    GptSovitsStatusReason,
+    GptSovitsStatusState,
     GptSovitsSynthesizer,
     GptSovitsVoice,
     GptSovitsVoiceResolver,
@@ -115,6 +118,11 @@ from .synthesis import (
     SynthesisUnavailableError,
     SynthesisValidationError,
 )
+from .synthesis_service import (
+    LocalSpeechSynthesisService,
+    LocalSpeechSynthesisStatus,
+    create_local_speech_synthesis_service,
+)
 
 __all__ = [
     "MAX_AUDIO_DEVICE_ID_LENGTH",
@@ -155,6 +163,9 @@ __all__ = [
     "FasterWhisperTranscriber",
     "GptSovitsConfig",
     "GptSovitsPromptLanguage",
+    "GptSovitsStatus",
+    "GptSovitsStatusReason",
+    "GptSovitsStatusState",
     "GptSovitsSynthesizer",
     "GptSovitsVoice",
     "GptSovitsVoiceResolver",
@@ -164,6 +175,8 @@ __all__ = [
     "LocalVoiceProfileSummary",
     "LocalVoiceReference",
     "LocalVoiceRightsStatus",
+    "LocalSpeechSynthesisService",
+    "LocalSpeechSynthesisStatus",
     "RuntimeCapabilities",
     "SpeechSynthesizer",
     "SynthesisAudioFormat",
@@ -210,6 +223,7 @@ __all__ = [
     "VoiceSettingsStorageError",
     "VoiceSettingsValidationError",
     "create_voice_settings_service",
+    "create_local_speech_synthesis_service",
     "validate_audio_device_id",
     "voice_settings_file_lock",
 ]

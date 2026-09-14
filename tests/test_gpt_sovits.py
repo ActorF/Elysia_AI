@@ -16,6 +16,7 @@ import pytest
 
 from voice import (
     GptSovitsConfig,
+    GptSovitsStatus,
     GptSovitsSynthesizer,
     GptSovitsVoice,
     SynthesisFailedError,
@@ -61,6 +62,14 @@ class _ServerState:
         self.delay_seconds = 0.0
         self.paths: list[str] = []
         self.payloads: list[object] = []
+        self.get_paths: list[str] = []
+        self.openapi_status = 200
+        self.openapi_content_type = "application/json"
+        self.openapi_content_encoding: str | None = None
+        self.openapi_content_length: str | None = None
+        self.openapi_body = json.dumps(
+            {"openapi": "3.1.0", "paths": {"/tts": {"post": {}}}}
+        ).encode("utf-8")
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -93,6 +102,28 @@ class _Handler(BaseHTTPRequestHandler):
             self.send_header("Location", self.server.state.location)
         self.end_headers()
         self.wfile.write(self.server.state.body)
+
+    def do_GET(self) -> None:  # noqa: N802
+        """Return a configurable OpenAPI document for readiness probes."""
+
+        self.server.state.get_paths.append(self.path)
+        self.send_response(self.server.state.openapi_status)
+        self.send_header(
+            "Content-Type",
+            self.server.state.openapi_content_type,
+        )
+        if self.server.state.openapi_content_encoding is not None:
+            self.send_header(
+                "Content-Encoding",
+                self.server.state.openapi_content_encoding,
+            )
+        if self.server.state.openapi_content_length is not None:
+            self.send_header(
+                "Content-Length",
+                self.server.state.openapi_content_length,
+            )
+        self.end_headers()
+        self.wfile.write(self.server.state.openapi_body)
 
     def log_message(self, format: str, *args: object) -> None:
         """Suppress the standard HTTP server's stderr output during tests."""
@@ -142,6 +173,15 @@ class _Resolver:
 
         self.calls.append((profile_id, emotion))
         return self.voice
+
+
+class _RejectingResolver:
+    """Model a catalog that cannot resolve the requested logical selection."""
+
+    def resolve(self, profile_id: str, emotion: str) -> GptSovitsVoice:
+        """Raise the same sanitized domain error as the real catalog."""
+
+        raise SynthesisUnavailableError("selection unavailable")
 
 
 def _assets(root: Path) -> tuple[Path, Path, Path]:
@@ -388,6 +428,10 @@ def test_voice_rejects_invalid_reference_and_output_configuration(
         ("request_timeout_seconds", 301.0),
         ("request_timeout_seconds", float("nan")),
         ("request_timeout_seconds", True),
+        ("probe_timeout_seconds", 0.0),
+        ("probe_timeout_seconds", 10.01),
+        ("probe_timeout_seconds", float("nan")),
+        ("probe_timeout_seconds", True),
         ("deterministic_seed", -1),
         ("deterministic_seed", 2_147_483_648),
         ("deterministic_seed", True),
@@ -406,6 +450,7 @@ def test_config_rejects_unsafe_values(
     values: dict[str, object] = {
         "asset_root": tmp_path.resolve(),
         "request_timeout_seconds": 1.0,
+        "probe_timeout_seconds": 1.0,
         "deterministic_seed": 42,
         "max_response_bytes": 32 * 1024 * 1024,
     }
@@ -626,3 +671,124 @@ def test_chunked_response_cannot_exceed_configured_byte_limit(
     assert str(raised.value) == (
         "Local speech synthesis service returned invalid audio."
     )
+
+
+def test_status_reports_available_without_claiming_model_binding(
+    tmp_path: Path,
+) -> None:
+    """Recognize the API surface while reserving ready for trusted attestation."""
+
+    state = _ServerState()
+    with _serve(state) as base_url:
+        adapter, _ = _adapter(tmp_path, _voice(tmp_path, base_url))
+        status = adapter.get_status()
+
+    assert status == GptSovitsStatus(
+        state="available",
+        reason="service_binding_unverified",
+    )
+    assert state.get_paths == ["/openapi.json"]
+    assert state.paths == []
+
+
+def test_status_distinguishes_selection_assets_and_offline_service(
+    tmp_path: Path,
+) -> None:
+    """Return closed sanitized reasons without generating probe audio."""
+
+    online_state = _ServerState()
+    with _serve(online_state) as base_url:
+        voice = _voice(tmp_path, base_url)
+        adapter, _ = _adapter(tmp_path, voice)
+        voice.reference_audio_path.unlink()
+        missing_assets = adapter.get_status()
+
+    missing_selection = GptSovitsSynthesizer(
+        GptSovitsConfig(
+            asset_root=tmp_path.resolve(),
+            request_timeout_seconds=1.0,
+        ),
+        _RejectingResolver(),
+    ).get_status(profile_id="missing")
+
+    offline_voice = _voice(tmp_path, "http://127.0.0.1:1")
+    offline, _ = _adapter(tmp_path, offline_voice)
+    service_offline = offline.get_status()
+
+    assert missing_selection == GptSovitsStatus(
+        "unavailable",
+        "selection_unavailable",
+    )
+    assert missing_assets == GptSovitsStatus("unavailable", "assets_unavailable")
+    assert service_offline == GptSovitsStatus(
+        "unavailable",
+        "service_unreachable",
+    )
+
+
+@pytest.mark.parametrize(
+    ("status_code", "content_type", "encoding", "body", "length"),
+    [
+        (404, "application/json", None, b"{}", None),
+        (200, "text/html", None, b"{}", None),
+        (200, "application/json", "gzip", b"{}", None),
+        (200, "application/json", None, b"not-json", None),
+        (200, "application/json", None, b"[]", None),
+        (200, "application/json", None, b'{"paths":{}}', None),
+        (
+            200,
+            "application/json",
+            None,
+            b'{"paths":{"/tts":{"get":{}}}}',
+            None,
+        ),
+        (200, "application/json", None, b"{}", "0"),
+        (200, "application/json", None, b"{}", "not-a-number"),
+        (200, "application/json", None, b"", str(512 * 1024 + 1)),
+    ],
+)
+def test_status_rejects_invalid_or_ambiguous_service_api(
+    tmp_path: Path,
+    status_code: int,
+    content_type: str,
+    encoding: str | None,
+    body: bytes,
+    length: str | None,
+) -> None:
+    """Require the exact bounded POST API shape without exposing its response."""
+
+    state = _ServerState()
+    state.openapi_status = status_code
+    state.openapi_content_type = content_type
+    state.openapi_content_encoding = encoding
+    state.openapi_body = body
+    state.openapi_content_length = length
+    with _serve(state) as base_url:
+        adapter, _ = _adapter(tmp_path, _voice(tmp_path, base_url))
+        status = adapter.get_status()
+
+    assert status == GptSovitsStatus("unavailable", "invalid_service")
+
+
+@pytest.mark.parametrize(
+    ("state", "reason"),
+    [
+        ("unavailable", None),
+        ("unavailable", "service_binding_unverified"),
+        ("available", None),
+        ("available", "service_unreachable"),
+        ("ready", "service_binding_unverified"),
+        ("unknown", None),
+    ],
+)
+def test_status_rejects_inconsistent_state_reason_combinations(
+    state: object,
+    reason: object,
+) -> None:
+    """Keep future protocol serialization on one exact readiness vocabulary."""
+
+    with pytest.raises(ValueError, match="status|Status|reason|binding"):
+        GptSovitsStatus(
+            state=state,  # type: ignore[arg-type]
+            reason=reason,  # type: ignore[arg-type]
+        )

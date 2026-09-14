@@ -2,6 +2,7 @@
 
 import os
 from dataclasses import dataclass
+import math
 from pathlib import Path
 from typing import Final, Literal, TypeAlias, cast
 
@@ -13,6 +14,9 @@ DEFAULT_MEMORY_RETRIEVAL_LIMIT = 5
 DEFAULT_DATA_IMPORT_MAX_BYTES = 16 * 1024 * 1024
 DEFAULT_MODEL_NAME = "qwen3.5:9b"
 DEFAULT_OLLAMA_HOST = "http://localhost:11434"
+DEFAULT_GPT_SOVITS_REQUEST_TIMEOUT_SECONDS = 120.0
+DEFAULT_GPT_SOVITS_PROBE_TIMEOUT_SECONDS = 1.0
+DEFAULT_GPT_SOVITS_DETERMINISTIC_SEED = 42
 
 TranscriptionModel: TypeAlias = Literal[
     "tiny",
@@ -67,6 +71,16 @@ class AppSettings:
     transcription_language: TranscriptionLanguage = (
         DEFAULT_TRANSCRIPTION_LANGUAGE
     )
+    gpt_sovits_allow_local_evaluation: bool = False
+    gpt_sovits_request_timeout_seconds: float = (
+        DEFAULT_GPT_SOVITS_REQUEST_TIMEOUT_SECONDS
+    )
+    gpt_sovits_probe_timeout_seconds: float = (
+        DEFAULT_GPT_SOVITS_PROBE_TIMEOUT_SECONDS
+    )
+    gpt_sovits_deterministic_seed: int = (
+        DEFAULT_GPT_SOVITS_DETERMINISTIC_SEED
+    )
 
 
 def parse_bool(value: str) -> bool:
@@ -91,6 +105,16 @@ def parse_int(value: str, default: int) -> int:
         return int(value)
     except ValueError:
         return default
+
+
+def parse_float(value: str, default: float) -> float:
+    """Parse one finite float without making a malformed ``.env`` unloadable."""
+
+    try:
+        parsed = float(value)
+    except ValueError:
+        return default
+    return parsed if math.isfinite(parsed) else default
 
 
 def parse_choice(value: str, allowed: tuple[str, ...], default: str) -> str:
@@ -173,6 +197,38 @@ TRANSCRIPTION_LANGUAGE = cast(
         DEFAULT_TRANSCRIPTION_LANGUAGE,
     ),
 )
+GPT_SOVITS_ALLOW_LOCAL_EVALUATION = parse_bool(
+    os.getenv("GPT_SOVITS_ALLOW_LOCAL_EVALUATION", "False")
+)
+GPT_SOVITS_REQUEST_TIMEOUT_SECONDS = parse_float(
+    os.getenv(
+        "GPT_SOVITS_REQUEST_TIMEOUT_SECONDS",
+        str(DEFAULT_GPT_SOVITS_REQUEST_TIMEOUT_SECONDS),
+    ),
+    DEFAULT_GPT_SOVITS_REQUEST_TIMEOUT_SECONDS,
+)
+if not 0.1 <= GPT_SOVITS_REQUEST_TIMEOUT_SECONDS <= 300.0:
+    GPT_SOVITS_REQUEST_TIMEOUT_SECONDS = (
+        DEFAULT_GPT_SOVITS_REQUEST_TIMEOUT_SECONDS
+    )
+GPT_SOVITS_PROBE_TIMEOUT_SECONDS = parse_float(
+    os.getenv(
+        "GPT_SOVITS_PROBE_TIMEOUT_SECONDS",
+        str(DEFAULT_GPT_SOVITS_PROBE_TIMEOUT_SECONDS),
+    ),
+    DEFAULT_GPT_SOVITS_PROBE_TIMEOUT_SECONDS,
+)
+if not 0.1 <= GPT_SOVITS_PROBE_TIMEOUT_SECONDS <= 10.0:
+    GPT_SOVITS_PROBE_TIMEOUT_SECONDS = DEFAULT_GPT_SOVITS_PROBE_TIMEOUT_SECONDS
+GPT_SOVITS_DETERMINISTIC_SEED = parse_int(
+    os.getenv(
+        "GPT_SOVITS_DETERMINISTIC_SEED",
+        str(DEFAULT_GPT_SOVITS_DETERMINISTIC_SEED),
+    ),
+    DEFAULT_GPT_SOVITS_DETERMINISTIC_SEED,
+)
+if not 0 <= GPT_SOVITS_DETERMINISTIC_SEED <= 2_147_483_647:
+    GPT_SOVITS_DETERMINISTIC_SEED = DEFAULT_GPT_SOVITS_DETERMINISTIC_SEED
 
 # Export one settings object for the composition root and application services.
 SETTINGS = AppSettings(
@@ -189,4 +245,8 @@ SETTINGS = AppSettings(
     transcription_model=TRANSCRIPTION_MODEL,
     transcription_device=TRANSCRIPTION_DEVICE,
     transcription_language=TRANSCRIPTION_LANGUAGE,
+    gpt_sovits_allow_local_evaluation=GPT_SOVITS_ALLOW_LOCAL_EVALUATION,
+    gpt_sovits_request_timeout_seconds=GPT_SOVITS_REQUEST_TIMEOUT_SECONDS,
+    gpt_sovits_probe_timeout_seconds=GPT_SOVITS_PROBE_TIMEOUT_SECONDS,
+    gpt_sovits_deterministic_seed=GPT_SOVITS_DETERMINISTIC_SEED,
 )

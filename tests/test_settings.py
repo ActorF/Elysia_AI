@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 import start
-from config.settings import AppSettings, parse_bool, parse_choice
+from config.settings import AppSettings, parse_bool, parse_choice, parse_float
 from core import ConfigurationError
 
 
@@ -61,6 +61,19 @@ def test_parse_choice_normalizes_allowlisted_values_and_rejects_aliases() -> Non
 
     assert parse_choice(" MEDIUM ", allowed, "small") == "medium"
     assert parse_choice("../remote-model", allowed, "small") == "small"
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [("1", 1.0), (" 0.25 ", 0.25), ("invalid", 2.0), ("NaN", 2.0)],
+)
+def test_parse_float_accepts_finite_values_and_falls_back_safely(
+    value: str,
+    expected: float,
+) -> None:
+    """Keep optional local runtime settings finite when ``.env`` is malformed."""
+
+    assert parse_float(value, 2.0) == expected
 
 
 def test_validate_settings_accepts_valid_settings(

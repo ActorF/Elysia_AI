@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from ipaddress import ip_address
+import json
 import math
 from pathlib import Path
 from threading import Lock
@@ -23,6 +24,7 @@ from .synthesis import (
     SYNTHESIS_MAX_TEXT_CODE_POINTS,
     SYNTHESIS_MIN_SPEED_FACTOR,
     SynthesisAudioFormat,
+    SynthesisError,
     SynthesisFailedError,
     SynthesisRequest,
     SynthesisResult,
@@ -32,6 +34,20 @@ from .synthesis import (
 
 
 GptSovitsPromptLanguage: TypeAlias = Literal["zh", "en"]
+GptSovitsStatusState: TypeAlias = Literal[
+    "unavailable",
+    "available",
+    "ready",
+]
+GptSovitsStatusReason: TypeAlias = Literal[
+    "catalog_missing",
+    "catalog_invalid",
+    "selection_unavailable",
+    "assets_unavailable",
+    "service_unreachable",
+    "invalid_service",
+    "service_binding_unverified",
+]
 
 _PROMPT_LANGUAGES: Final = ("zh", "en")
 _AUDIO_FORMATS: Final = ("wav", "ogg", "aac")
@@ -62,6 +78,16 @@ _ASSETS_UNAVAILABLE_MESSAGE: Final = (
 )
 _GIT_LFS_POINTER_PREFIX: Final = (
     b"version https://git-lfs.github.com/spec/v1"
+)
+_OPENAPI_MAX_BYTES: Final = 512 * 1024
+_STATUS_STATES: Final = ("unavailable", "available", "ready")
+_UNAVAILABLE_STATUS_REASONS: Final = (
+    "catalog_missing",
+    "catalog_invalid",
+    "selection_unavailable",
+    "assets_unavailable",
+    "service_unreachable",
+    "invalid_service",
 )
 
 
@@ -127,6 +153,7 @@ class GptSovitsConfig:
 
     asset_root: Path
     request_timeout_seconds: float = 120.0
+    probe_timeout_seconds: float = 1.0
     deterministic_seed: int = 42
     max_response_bytes: int = SYNTHESIS_MAX_AUDIO_BYTES
 
@@ -146,6 +173,15 @@ class GptSovitsConfig:
             raise ValueError(
                 "GPT-SoVITS request_timeout_seconds must be a finite float "
                 "between 0.1 and 300.0."
+            )
+        if (
+            not isinstance(self.probe_timeout_seconds, float)
+            or not math.isfinite(self.probe_timeout_seconds)
+            or not 0.1 <= self.probe_timeout_seconds <= 10.0
+        ):
+            raise ValueError(
+                "GPT-SoVITS probe_timeout_seconds must be a finite float "
+                "between 0.1 and 10.0."
             )
         if (
             not _is_strict_integer(self.deterministic_seed)
@@ -235,6 +271,38 @@ class GptSovitsVoice:
             raise ValueError("GPT-SoVITS audio_format must be wav, ogg, or aac.")
 
 
+@dataclass(frozen=True, slots=True)
+class GptSovitsStatus:
+    """Expose sanitized adapter readiness without paths or service details.
+
+    The upstream API cannot attest which weights its process loaded. A valid
+    OpenAPI surface is therefore only ``available`` with
+    ``service_binding_unverified``; ``ready`` is reserved for a future trusted
+    launcher or attestation boundary that proves the endpoint/model binding.
+    """
+
+    state: GptSovitsStatusState
+    reason: GptSovitsStatusReason | None
+
+    def __post_init__(self) -> None:
+        """Enforce strict state/reason combinations for later protocol use."""
+
+        if self.state not in _STATUS_STATES:
+            raise ValueError("GPT-SoVITS status state is invalid.")
+        if self.state == "unavailable" and self.reason not in (
+            _UNAVAILABLE_STATUS_REASONS
+        ):
+            raise ValueError("Unavailable GPT-SoVITS status needs a failure reason.")
+        if self.state == "available" and self.reason != (
+            "service_binding_unverified"
+        ):
+            raise ValueError(
+                "Available GPT-SoVITS status must identify unverified binding."
+            )
+        if self.state == "ready" and self.reason is not None:
+            raise ValueError("Ready GPT-SoVITS status must not include a reason.")
+
+
 class GptSovitsVoiceResolver(Protocol):
     """Resolve logical profile and emotion identifiers to trusted local data."""
 
@@ -309,6 +377,32 @@ class GptSovitsSynthesizer:
             # Domain validation details are useful in tests but must not expose
             # arbitrary native/service response data to later UI boundaries.
             raise SynthesisFailedError(_INVALID_AUDIO_MESSAGE) from error
+
+    def get_status(
+        self,
+        *,
+        profile_id: str = "default",
+        emotion: str = "neutral",
+    ) -> GptSovitsStatus:
+        """Probe assets and the API shape without performing synthesis."""
+
+        try:
+            voice = self._voice_resolver.resolve(profile_id, emotion)
+            if not isinstance(voice, GptSovitsVoice):
+                raise SynthesisUnavailableError("invalid voice resolver result")
+        except (SynthesisError, TypeError, ValueError):
+            return GptSovitsStatus("unavailable", "selection_unavailable")
+        try:
+            self._verify_local_assets(voice)
+        except SynthesisUnavailableError:
+            return GptSovitsStatus("unavailable", "assets_unavailable")
+        try:
+            self._probe_openapi(f"{voice.base_url}/openapi.json")
+        except SynthesisUnavailableError:
+            return GptSovitsStatus("unavailable", "service_unreachable")
+        except SynthesisFailedError:
+            return GptSovitsStatus("unavailable", "invalid_service")
+        return GptSovitsStatus("available", "service_binding_unverified")
 
     def _verify_local_assets(self, voice: GptSovitsVoice) -> Path:
         """Resolve symlinks and keep every configured asset under one root."""
@@ -420,6 +514,80 @@ class GptSovitsSynthesizer:
                 _SERVICE_UNAVAILABLE_MESSAGE
             ) from error
         except SynthesisFailedError:
+            raise
+        except RequestException as error:
+            raise SynthesisFailedError(_SERVICE_REQUEST_MESSAGE) from error
+
+    def _probe_openapi(self, url: str) -> None:
+        """Require a bounded local OpenAPI document containing POST ``/tts``."""
+
+        try:
+            with requests.Session() as session:
+                session.trust_env = False
+                response = session.get(
+                    url,
+                    timeout=self._config.probe_timeout_seconds,
+                    allow_redirects=False,
+                    stream=True,
+                )
+                try:
+                    if response.status_code != 200:
+                        raise SynthesisFailedError(_SERVICE_REQUEST_MESSAGE)
+                    content_type = response.headers.get(
+                        "Content-Type",
+                        "",
+                    ).split(";", 1)[0].strip().lower()
+                    if content_type not in (
+                        "application/json",
+                        "application/openapi+json",
+                    ):
+                        raise SynthesisFailedError(_SERVICE_REQUEST_MESSAGE)
+                    content_encoding = response.headers.get(
+                        "Content-Encoding",
+                        "identity",
+                    ).strip().lower()
+                    if content_encoding not in ("", "identity"):
+                        raise SynthesisFailedError(_SERVICE_REQUEST_MESSAGE)
+                    declared = response.headers.get("Content-Length")
+                    if declared is not None:
+                        try:
+                            declared_bytes = int(declared)
+                        except ValueError as error:
+                            raise SynthesisFailedError(
+                                _SERVICE_REQUEST_MESSAGE
+                            ) from error
+                        if not 1 <= declared_bytes <= _OPENAPI_MAX_BYTES:
+                            raise SynthesisFailedError(_SERVICE_REQUEST_MESSAGE)
+                    chunks: list[bytes] = []
+                    total_bytes = 0
+                    for chunk in response.iter_content(chunk_size=64 * 1024):
+                        if not chunk:
+                            continue
+                        total_bytes += len(chunk)
+                        if total_bytes > _OPENAPI_MAX_BYTES:
+                            raise SynthesisFailedError(_SERVICE_REQUEST_MESSAGE)
+                        chunks.append(chunk)
+                    document: object = json.loads(b"".join(chunks))
+                    if not isinstance(document, dict):
+                        raise SynthesisFailedError(_SERVICE_REQUEST_MESSAGE)
+                    paths = document.get("paths")
+                    if not isinstance(paths, dict):
+                        raise SynthesisFailedError(_SERVICE_REQUEST_MESSAGE)
+                    tts_path = paths.get("/tts")
+                    if not isinstance(tts_path, dict) or not isinstance(
+                        tts_path.get("post"),
+                        dict,
+                    ):
+                        raise SynthesisFailedError(_SERVICE_REQUEST_MESSAGE)
+                except (UnicodeError, ValueError, RecursionError) as error:
+                    raise SynthesisFailedError(_SERVICE_REQUEST_MESSAGE) from error
+                finally:
+                    response.close()
+        except (RequestsConnectionError, Timeout) as error:
+            raise SynthesisUnavailableError(
+                _SERVICE_UNAVAILABLE_MESSAGE
+            ) from error
+        except SynthesisError:
             raise
         except RequestException as error:
             raise SynthesisFailedError(_SERVICE_REQUEST_MESSAGE) from error
