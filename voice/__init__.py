@@ -1,4 +1,4 @@
-"""Public Voice settings and bounded PCM capture-domain API."""
+"""Public Voice settings, bounded capture, and transcription-domain API."""
 
 from .capture import (
     VOICE_CAPTURE_BYTES_PER_SAMPLE,
@@ -33,10 +33,23 @@ from .storage import (
     JsonVoiceSettingsRepository,
     voice_settings_file_lock,
 )
+from .transcription import (
+    TRANSCRIPTION_MAX_TEXT_CODE_POINTS,
+    TranscriptLanguage,
+    Transcriber,
+    TranscriptionError,
+    TranscriptionFailedError,
+    TranscriptionLanguage,
+    TranscriptionRequest,
+    TranscriptionResult,
+    TranscriptionUnavailableError,
+    TranscriptionValidationError,
+)
 
 __all__ = [
     "MAX_AUDIO_DEVICE_ID_LENGTH",
     "MAX_JSON_SAFE_INTEGER",
+    "TRANSCRIPTION_MAX_TEXT_CODE_POINTS",
     "VOICE_CAPTURE_BYTES_PER_SAMPLE",
     "VOICE_CAPTURE_CHANNEL_COUNT",
     "VOICE_CAPTURE_FRAME_DURATION_MS",
@@ -49,6 +62,15 @@ __all__ = [
     "VOICE_SETTINGS_SCHEMA_VERSION",
     "AudioDevicePreferences",
     "JsonVoiceSettingsRepository",
+    "TranscriptLanguage",
+    "Transcriber",
+    "TranscriptionError",
+    "TranscriptionFailedError",
+    "TranscriptionLanguage",
+    "TranscriptionRequest",
+    "TranscriptionResult",
+    "TranscriptionUnavailableError",
+    "TranscriptionValidationError",
     "VoiceCapture",
     "VoiceCaptureValidationError",
     "VoiceSettingsConflictError",

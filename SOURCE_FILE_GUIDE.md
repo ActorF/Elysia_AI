@@ -198,8 +198,9 @@ ChatSession.project_id
 | `voice/exceptions.py` | 定义 Voice Settings 和当前 Capture Validation 错误。 | Voice Service/Storage、Desktop Backend |
 | `voice/storage.py` | 对 `audio-device.json` 执行 Revision CAS、线程/进程锁、原子替换和损坏隔离。 | Voice Service、`workspace/settings/audio-device.json` |
 | `voice/service.py` | 提供硬件无关的设备偏好读取和更新；Python 不直接打开麦克风。 | Desktop Backend、Voice Repository |
+| `voice/transcription.py` | 定义与具体识别引擎解耦的 Transcriber Protocol、请求、最终结果、语言范围和稳定错误。 | 复用 `VoiceCapture`；供后续 Faster-Whisper Adapter 与后台任务实现 |
 
-`voice/capture.py` 是单句 PCM 验证边界，详见本文“Voice Capture 实现”部分。
+`voice/capture.py` 是单句 PCM 验证边界，详见本文“Voice Capture 实现”部分。`voice/transcription.py` 目前只是可独立测试的领域契约：它不会导入 Faster-Whisper、加载或下载模型，也尚未连接 Desktop Protocol、后台任务或 Voice UI。
 
 ## 13. Console UI：`ui/`
 
@@ -362,7 +363,9 @@ Project Memory 页面目前仍是明确 Placeholder。Project Source 只安全�
 | `tests/test_short_term_memory.py` | Token Budget 和完整 Turn 淘汰。 |
 | `tests/test_stage5_acceptance.py` | Stage 5 端到端验收：多 Project/Chat、Memory 隔离、重启和完整 Export/Import。 |
 | `tests/test_start.py` | Composition Root、Migration 和配置限制。 |
+| `tests/test_voice_capture.py` | Python 单句 PCM Capture Contract、Canonical Base64、Markers、边界和收据。 |
 | `tests/test_voice_settings.py` | Audio Device Preferences、CAS、锁和损坏恢复。 |
+| `tests/test_voice_transcription.py` | 引擎无关的转写请求、最终结果、语言、置信度、不可变性和错误层级。 |
 
 ## 25. Voice Capture 实现
 
@@ -429,6 +432,8 @@ getUserMedia
 - 执行 TTS；
 - 开始连续 Voice Conversation；
 - 将 PCM 保存为长期文件。
+
+下一层的 `voice/transcription.py` 已定义如何把验证后的 `VoiceCapture` 表达成转写请求，以及如何返回有界、非空的最终文本。它仍保持未接线状态；只有后续 Adapter、后台任务、Protocol 与 UI 完成后，Capture 才会真正产生可编辑 Transcript。
 
 ## 26. 哪些文件不应被当成源码垃圾
 
