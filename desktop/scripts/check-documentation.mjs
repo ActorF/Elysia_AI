@@ -39,23 +39,27 @@ const excludedDirectories = new Set([
   'tmp',
   'workspace',
 ])
+const excludedRelativeDirectories = new Set(['models/cache'])
 
-/** Return whether a directory contains generated, cached, or temporary content. */
-function isExcludedDirectory(name) {
+/** Return whether a directory contains generated, cached, or external runtime content. */
+function isExcludedDirectory(directory, scanRoot) {
+  const name = path.basename(directory)
+  const relativeDirectory = path.relative(scanRoot, directory).replaceAll('\\', '/')
   return (
     excludedDirectories.has(name) ||
+    excludedRelativeDirectories.has(relativeDirectory) ||
     name.startsWith('.test-tmp') ||
     name.startsWith('pytest-cache-files-')
   )
 }
 
 /** Return all maintained files whose extension is in the requested set. */
-function collectFiles(directory, extensions) {
+export function collectFiles(directory, extensions, scanRoot = directory) {
   const files = []
   for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
-    if (entry.isDirectory() && isExcludedDirectory(entry.name)) continue
     const entryPath = path.join(directory, entry.name)
-    if (entry.isDirectory()) files.push(...collectFiles(entryPath, extensions))
+    if (entry.isDirectory() && isExcludedDirectory(entryPath, scanRoot)) continue
+    if (entry.isDirectory()) files.push(...collectFiles(entryPath, extensions, scanRoot))
     else if (extensions.has(path.extname(entry.name).toLowerCase())) files.push(entryPath)
   }
   return files
@@ -526,4 +530,4 @@ function main() {
   )
 }
 
-main()
+if (path.resolve(process.argv[1] ?? '') === fileURLToPath(import.meta.url)) main()
