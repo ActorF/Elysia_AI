@@ -5,11 +5,13 @@ point of view, but they run at very different speeds.  A streaming segmenter
 extracts natural utterances without changing the canonical Chat reply, while a
 single daemon worker serializes expensive synthesis behind a bounded FIFO.
 
-Cancellation is logical because Python cannot safely kill a thread blocked in
-native or HTTP inference.  A cancelled running sentence therefore keeps its
-capacity slot until the Synthesizer returns, and its late audio is discarded.
-This mirrors the transcription boundary and prevents repeated cancellation
-from creating hidden, unbounded work.
+Cancellation is always logical at the queue boundary because Python cannot
+safely kill a thread blocked in native or HTTP inference.  A factory-issued
+managed lease additionally receives a per-operation token and may terminate
+its owned child process.  The running sentence still keeps its capacity slot
+until the Synthesizer call returns, and any late audio is discarded.  This
+prevents cancellation from creating hidden work or a stale abort from killing
+the following sentence.
 """
 
 from __future__ import annotations
@@ -53,7 +55,7 @@ SPEECH_QUEUE_MAX_CACHE_BYTES: Final = 128 * 1024 * 1024
 SPEECH_QUEUE_MAX_RETAINED_TURNS: Final = 4_096
 SPEECH_QUEUE_MAX_SHUTDOWN_SECONDS: Final = 300.0
 
-SpeechBindingTrust: TypeAlias = Literal["external-unverified"]
+SpeechBindingTrust: TypeAlias = Literal["external-unverified", "elysia-owned"]
 SpeechQueueFailureCode: TypeAlias = Literal[
     "invalid_request",
     "unavailable",
@@ -69,6 +71,8 @@ _SOFT_BREAKS: Final = frozenset("，,；;：:\n\t ")
 _SAFE_IDENTIFIER_PATTERN: Final = re.compile(
     r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}"
 )
+_OPERATION_TOKEN_PATTERN: Final = re.compile(r"[0-9a-f]{64}")
+_MANAGED_BINDING_SEAL: Final = object()
 _INVALID_REQUEST_MESSAGE: Final = "The speech sentence was rejected."
 _UNAVAILABLE_MESSAGE: Final = "Local speech synthesis is unavailable."
 _FAILED_MESSAGE: Final = "Local speech synthesis failed."
@@ -95,7 +99,7 @@ def _require_safe_identifier(value: object, label: str) -> str:
 
 
 def _validate_shutdown_timeout(value: object) -> float:
-    """Return a finite shared worker-join timeout."""
+    """Return a finite timeout shared by every daemon join."""
 
     if (
         isinstance(value, bool)
@@ -108,6 +112,19 @@ def _validate_shutdown_timeout(value: object) -> float:
             "timeout_seconds must be finite and greater than zero, up to 300."
         )
     return float(value)
+
+
+def _require_operation_token(value: object) -> str:
+    """Accept only queue-generated 256-bit operation identifiers."""
+
+    if (
+        not isinstance(value, str)
+        or _OPERATION_TOKEN_PATTERN.fullmatch(value) is None
+    ):
+        raise SpeechQueueValidationError(
+            "operation_token must be 64 lowercase hexadecimal characters."
+        )
+    return value
 
 
 class SpeechQueueError(Exception):
@@ -308,16 +325,47 @@ class StreamingSentenceSegmenter:
         self._buffer, self._next_sequence, self._finished = checkpoint
 
 
+class _ManagedSynthesisRuntimeLease(Protocol):
+    """Expose the minimal token-aware managed-runtime operation boundary."""
+
+    @property
+    def cache_eligible(self) -> bool:
+        """Return whether a complete immutable runtime manifest was verified."""
+        ...
+
+    def synthesize(
+        self,
+        text: str,
+        language: SynthesisLanguage,
+        operation_token: str,
+    ) -> SynthesisResult:
+        """Synthesize one sentence under an exact cancellable operation token."""
+        ...
+
+    def abort(self, operation_token: str) -> bool:
+        """Cancel the supplied queue token before or during physical work.
+
+        The runtime must tombstone a token that the queue has published but
+        that has not yet reached runtime-active registration.  A later
+        ``synthesize`` call for that token must then fail closed before writing
+        a protocol frame or starting inference.  Tokens for already-settled
+        operations remain harmless stale no-ops.
+        """
+        ...
+
+
 @dataclass(frozen=True, slots=True, init=False)
 class SpeechSynthesisBindingLease:
-    """Freeze request-level voice fields for an unverified external speech turn.
+    """Freeze request-level voice fields for one speech turn.
 
     ``binding_trust`` describes model-identity evidence, not reachability.  An
     ordinary upstream GPT-SoVITS endpoint must use ``external-unverified`` even
-    when synthesis succeeds.  A later managed-runtime lease will implement its
-    own attested type; this general constructor deliberately cannot manufacture
-    an ``elysia-owned`` claim from caller-supplied strings. The external engine
-    may still mutate behind its endpoint, so this lease is never cache-eligible.
+    when synthesis succeeds.  The public constructor deliberately cannot
+    manufacture an ``elysia-owned`` claim from caller-supplied strings.  The
+    external engine may still mutate behind its endpoint, so that lease is
+    never cache-eligible. Managed leases are created only by the private factory
+    below, which also prevents application code from supplying an abort callback
+    or cache flag.
     """
 
     lease_id: str
@@ -326,7 +374,12 @@ class SpeechSynthesisBindingLease:
     emotion: str
     language: SynthesisLanguage
     binding_trust: SpeechBindingTrust
-    _synthesizer: SpeechSynthesizer = field(repr=False, compare=False)
+    _synthesizer: SpeechSynthesizer | None = field(repr=False, compare=False)
+    _managed_runtime_lease: _ManagedSynthesisRuntimeLease | None = field(
+        repr=False,
+        compare=False,
+    )
+    _binding_seal: object | None = field(repr=False, compare=False)
 
     def __init__(
         self,
@@ -337,7 +390,7 @@ class SpeechSynthesisBindingLease:
         profile_id: str = "default",
         emotion: str = "neutral",
         language: SynthesisLanguage = "auto",
-        binding_trust: SpeechBindingTrust = "external-unverified",
+        binding_trust: Literal["external-unverified"] = "external-unverified",
     ) -> None:
         """Validate and retain one immutable adapter/selection snapshot."""
 
@@ -368,24 +421,128 @@ class SpeechSynthesisBindingLease:
         object.__setattr__(self, "language", selection.language)
         object.__setattr__(self, "binding_trust", binding_trust)
         object.__setattr__(self, "_synthesizer", synthesizer)
+        object.__setattr__(self, "_managed_runtime_lease", None)
+        object.__setattr__(self, "_binding_seal", None)
 
     @property
     def binding_verified(self) -> bool:
-        """Return false because a general external lease cannot attest weights."""
+        """Return whether the private managed-runtime factory issued this lease."""
+
+        return self._binding_seal is _MANAGED_BINDING_SEAL
+
+    @property
+    def cache_eligible(self) -> bool:
+        """Keep audio caching disabled until a complete manifest is attested.
+
+        Binding verification alone proves only that Elysia owns the process and
+        selected assets.  It does not yet cover every executable dependency, so
+        neither managed nor external leases may reuse synthesized audio.
+        """
 
         return False
 
-    def synthesize(self, text: str) -> SynthesisResult:
-        """Synthesize text using only this lease's frozen logical selection."""
+    def synthesize(
+        self,
+        text: str,
+        operation_token: str,
+    ) -> SynthesisResult:
+        """Synthesize text using the frozen selection and operation token."""
 
-        return self._synthesizer.synthesize(
-            SynthesisRequest(
-                text=text,
-                language=self.language,
-                profile_id=self.profile_id,
-                emotion=self.emotion,
-            )
+        token = _require_operation_token(operation_token)
+        request = SynthesisRequest(
+            text=text,
+            language=self.language,
+            profile_id=self.profile_id,
+            emotion=self.emotion,
         )
+        if self._binding_seal is _MANAGED_BINDING_SEAL:
+            runtime_lease = self._managed_runtime_lease
+            if runtime_lease is None:
+                raise RuntimeError("Managed synthesis binding is unavailable.")
+            return runtime_lease.synthesize(
+                request.text,
+                request.language,
+                token,
+            )
+        synthesizer = self._synthesizer
+        if synthesizer is None:
+            raise RuntimeError("External synthesis binding is unavailable.")
+        return synthesizer.synthesize(request)
+
+    def abort(self, operation_token: str) -> bool:
+        """Abort a matching managed operation or no-op for external engines."""
+
+        token = _require_operation_token(operation_token)
+        if self._binding_seal is not _MANAGED_BINDING_SEAL:
+            # An ordinary HTTP/native adapter has no trustworthy operation
+            # identity.  Pretending it was interrupted would permit hidden
+            # work to accumulate after repeated cancellation.
+            return False
+        runtime_lease = self._managed_runtime_lease
+        if runtime_lease is None:
+            return False
+        return runtime_lease.abort(token)
+
+
+def _create_managed_synthesis_binding_lease(
+    *,
+    lease_id: str,
+    cache_identity: str,
+    runtime_lease: _ManagedSynthesisRuntimeLease,
+    profile_id: str = "default",
+    emotion: str = "neutral",
+    language: SynthesisLanguage = "auto",
+) -> SpeechSynthesisBindingLease:
+    """Issue one owned binding after the managed runtime completes attestation.
+
+    The function is intentionally private and returns the same final concrete
+    type admitted by the queue.  Public construction, subclassing, and caller
+    supplied trust strings therefore cannot manufacture the private seal.  As
+    with all Python privacy, hostile code already executing inside this process
+    is outside this boundary; native isolation is provided by the managed Job.
+    """
+
+    _require_safe_identifier(lease_id, "lease_id")
+    _require_safe_identifier(cache_identity, "cache_identity")
+    try:
+        selection = SynthesisRequest(
+            text="validation",
+            language=language,
+            profile_id=profile_id,
+            emotion=emotion,
+        )
+    except SynthesisValidationError as error:
+        raise SpeechQueueValidationError(
+            "The synthesis lease selection is invalid."
+        ) from error
+    try:
+        synthesize = getattr(runtime_lease, "synthesize", None)
+        abort = getattr(runtime_lease, "abort", None)
+        cache_eligible = getattr(runtime_lease, "cache_eligible", None)
+    except BaseException:
+        raise TypeError(
+            "runtime_lease must implement the non-cacheable managed contract."
+        ) from None
+    if (
+        not callable(synthesize)
+        or not callable(abort)
+        or cache_eligible is not False
+    ):
+        raise TypeError(
+            "runtime_lease must implement the non-cacheable managed contract."
+        )
+
+    lease = object.__new__(SpeechSynthesisBindingLease)
+    object.__setattr__(lease, "lease_id", lease_id)
+    object.__setattr__(lease, "cache_identity", cache_identity)
+    object.__setattr__(lease, "profile_id", selection.profile_id)
+    object.__setattr__(lease, "emotion", selection.emotion)
+    object.__setattr__(lease, "language", selection.language)
+    object.__setattr__(lease, "binding_trust", "elysia-owned")
+    object.__setattr__(lease, "_synthesizer", None)
+    object.__setattr__(lease, "_managed_runtime_lease", runtime_lease)
+    object.__setattr__(lease, "_binding_seal", _MANAGED_BINDING_SEAL)
+    return lease
 
 
 @dataclass(frozen=True, slots=True)
@@ -577,6 +734,7 @@ class _TurnRecord:
     delivery_in_progress: _Notification | None = None
     pending_notifications: int = 0
     producer_operations: int = 0
+    running_operation_token: str | None = field(default=None, repr=False)
 
 
 @dataclass(slots=True)
@@ -586,6 +744,15 @@ class _SentenceJob:
     turn: _TurnRecord
     sentence: SpeechSentence | None
     delivery_reserved_bytes: int | None = None
+    operation_token: str | None = field(default=None, repr=False)
+
+
+@dataclass(slots=True)
+class _AbortRequest:
+    """Retain one bounded managed abort until the fixed dispatcher runs it."""
+
+    lease: SpeechSynthesisBindingLease = field(repr=False)
+    operation_token: str = field(repr=False)
 
 
 @dataclass(slots=True)
@@ -667,24 +834,27 @@ class SpeechSynthesisQueue:
     """Run sentence synthesis on one bounded FIFO daemon worker.
 
     One worker preserves playback order and respects GPT-SoVITS's process-wide
-    model state.  Admission never blocks: if text generation outruns the fixed
-    capacity, speech fails closed while the caller may continue the canonical
-    text stream. Each native call first reserves one delivery event and the
-    maximum valid audio size; that reservation shrinks to the actual payload
-    and remains charged through callback completion. Successful audio is cached
-    only for an attested owned lease; an external unverified engine may
-    hot-switch weights and is never cached. Cache keys use a lease-scoped keyed
-    digest so raw reply text is not retained.
+    model state.  A separate fixed daemon dispatches shutdown aborts so
+    ``wait=False`` never invokes managed process control synchronously.
+    Admission never blocks: if text generation outruns the fixed capacity,
+    speech fails closed while the caller may continue the canonical text
+    stream. Each native call first reserves one delivery event and the maximum
+    valid audio size; that reservation shrinks to the actual payload and remains
+    charged through callback completion. Audio can be cached only when a
+    factory-issued lease explicitly declares complete-manifest eligibility;
+    current external and managed bindings both remain ineligible. Cache keys
+    use a lease-scoped keyed digest so raw reply text is not retained.
     """
 
     def __init__(self, config: SpeechQueueConfig | None = None) -> None:
-        """Start one worker and allocate bounded empty state."""
+        """Start fixed synthesis, delivery, and abort daemons."""
 
         if config is not None and not isinstance(config, SpeechQueueConfig):
             raise TypeError("config must be a SpeechQueueConfig.")
         self._config = config or SpeechQueueConfig()
         self._condition = Condition(Lock())
         self._queue: deque[_SentenceJob] = deque()
+        self._abort_requests: deque[_AbortRequest] = deque()
         self._notifications: deque[_Notification] = deque()
         self._turns: dict[str, _TurnRecord] = {}
         self._retained_order: deque[str] = deque()
@@ -694,6 +864,7 @@ class SpeechSynthesisQueue:
         self._pending_delivery_bytes = 0
         self._closed = False
         self._shutdown_prepared = False
+        self._abort_callbacks_in_progress = 0
         self._cache_secret = secrets.token_bytes(32)
         self._cache: OrderedDict[tuple[str, str], SynthesisResult] = OrderedDict()
         self._cache_bytes = 0
@@ -707,8 +878,14 @@ class SpeechSynthesisQueue:
             name="elysia-speech-delivery",
             daemon=True,
         )
+        self._aborter = Thread(
+            target=self._aborter_loop,
+            name="elysia-speech-abort",
+            daemon=True,
+        )
         self._worker.start()
         self._notifier.start()
+        self._aborter.start()
 
     def start_turn(
         self,
@@ -721,7 +898,10 @@ class SpeechSynthesisQueue:
         """Create one streamed speech turn without performing synthesis."""
 
         _require_safe_identifier(turn_id, "turn_id")
-        if not isinstance(lease, SpeechSynthesisBindingLease):
+        if type(lease) is not SpeechSynthesisBindingLease:
+            # Exact-type admission makes the private issuance seal meaningful:
+            # a subclass cannot override trust or cache properties and then
+            # enter the scheduler as if the managed factory had attested it.
             raise TypeError("lease must be a SpeechSynthesisBindingLease.")
         if not callable(callback):
             raise TypeError("callback must be callable.")
@@ -768,11 +948,11 @@ class SpeechSynthesisQueue:
             if record is None:
                 raise SpeechTurnStateError("The speech turn is unknown.")
         if (
-            current_thread() in (self._worker, self._notifier)
+            current_thread() in (self._worker, self._notifier, self._aborter)
             and not record.terminal.is_set()
         ):
-            # Neither daemon may block waiting for a terminal whose progress
-            # requires that same daemon to finish its current work/callback.
+            # No internal daemon may block waiting for a terminal whose progress
+            # requires that same daemon to finish its current operation.
             return False
         return record.terminal.wait(timeout_seconds)
 
@@ -831,7 +1011,7 @@ class SpeechSynthesisQueue:
         cancel_pending: bool = True,
         timeout_seconds: float | None = None,
     ) -> bool:
-        """Close admission, optionally cancel turns, and join the worker safely."""
+        """Close admission, optionally cancel turns, and join all daemons."""
 
         if not isinstance(wait, bool) or not isinstance(cancel_pending, bool):
             raise TypeError("wait and cancel_pending must be booleans.")
@@ -844,6 +1024,7 @@ class SpeechSynthesisQueue:
             if timeout_seconds is None
             else _validate_shutdown_timeout(timeout_seconds)
         )
+        deadline = None if timeout is None else monotonic() + timeout
         records: tuple[_TurnRecord, ...] = ()
         with self._condition:
             self._closed = True
@@ -859,17 +1040,31 @@ class SpeechSynthesisQueue:
             # Joining below provides the optional wait and shared timeout.
             # Cancellation itself stays non-blocking so wait=False is truthful
             # and a blocked callback cannot consume the timeout before joins.
-            self._cancel_turn(record, wait_for_delivery=False)
+            self._cancel_turn(
+                record,
+                wait_for_delivery=False,
+                defer_abort=True,
+            )
         with self._condition:
             self._shutdown_prepared = True
             self._condition.notify_all()
-        caller_is_internal = current_thread() in (self._worker, self._notifier)
-        # An internal callback cannot join either daemon safely: the peer may
-        # require this thread to publish or release its current delivery credit.
+        caller_is_internal = current_thread() in (
+            self._worker,
+            self._notifier,
+            self._aborter,
+        )
+        # An internal callback cannot join the daemon set safely: a peer may
+        # require this thread to publish, abort, or release current capacity.
         # Initiate shutdown and let an external owner perform any blocking join.
         if caller_is_internal:
             return False
-        deadline = None if timeout is None else monotonic() + timeout
+        if wait:
+            remaining = (
+                None
+                if deadline is None
+                else max(0.0, deadline - monotonic())
+            )
+            self._aborter.join(remaining)
         if wait:
             remaining = (
                 None
@@ -884,7 +1079,11 @@ class SpeechSynthesisQueue:
                 else max(0.0, deadline - monotonic())
             )
             self._notifier.join(remaining)
-        return not self._worker.is_alive() and not self._notifier.is_alive()
+        return (
+            not self._worker.is_alive()
+            and not self._notifier.is_alive()
+            and not self._aborter.is_alive()
+        )
 
     def _begin_producer_operation(self, record: _TurnRecord) -> None:
         """Reserve one producer operation before touching streamed text."""
@@ -951,9 +1150,11 @@ class SpeechSynthesisQueue:
         record: _TurnRecord,
         *,
         wait_for_delivery: bool = True,
+        defer_abort: bool = False,
     ) -> bool:
-        """Cancel every event that has not crossed the callback boundary."""
+        """Cancel undelivered events and invoke or enqueue a lock-free abort."""
 
+        abort_target: tuple[SpeechSynthesisBindingLease, str] | None = None
         with self._condition:
             if record.terminal_published or record.cancelled:
                 return False
@@ -985,6 +1186,17 @@ class SpeechSynthesisQueue:
             record.completed += removed
             self._occupied_slots -= removed
             winning_notification = record.delivery_in_progress
+            if (
+                record.lease is not None
+                and record.running_operation_token is not None
+            ):
+                abort_target = (
+                    record.lease,
+                    record.running_operation_token,
+                )
+                if defer_abort:
+                    self._enqueue_abort_locked(*abort_target)
+                    abort_target = None
 
             # Establish terminal ownership before any wait. A concurrent
             # non-blocking shutdown may otherwise let the notifier exit after
@@ -993,10 +1205,19 @@ class SpeechSynthesisQueue:
             if terminal is not None:
                 self._enqueue_notification_locked(record, terminal)
 
-            # Mark cancellation before waiting. This prevents the notifier from
-            # starting another stale clip while an external caller waits for a
-            # callback that already crossed the delivery boundary. Re-entrant
-            # cancellation from that callback must not wait on itself.
+            # Notify before invoking an adapter.  Managed abort may close a
+            # pipe that wakes the synthesis worker, while a test or future
+            # adapter may safely re-enter a read-only queue method.
+            self._condition.notify_all()
+
+        if abort_target is not None:
+            self._abort_safely(*abort_target)
+
+        with self._condition:
+            # Marking cancellation before the lock-free abort prevents the
+            # notifier from starting another stale clip.  Wait only for the
+            # exact callback that had already crossed the delivery boundary;
+            # the cancelled terminal may start while this caller returns.
             while (
                 wait_for_delivery
                 and winning_notification is not None
@@ -1040,6 +1261,55 @@ class SpeechSynthesisQueue:
                 )
                 del job
                 continue
+
+            try:
+                # Entropy is requested only after a concrete job owns worker
+                # and delivery capacity.  A platform RNG failure becomes one
+                # ordinary sanitized sentence failure rather than terminating
+                # the sole scheduler daemon.
+                operation_token = _require_operation_token(
+                    secrets.token_hex(32)
+                )
+            except BaseException:
+                self._finish_job(
+                    job,
+                    sequence=sentence.sequence,
+                    result=None,
+                    failure=SpeechQueueFailure(
+                        job.turn.turn_id,
+                        sentence.sequence,
+                        "internal_error",
+                        _INTERNAL_MESSAGE,
+                    ),
+                    cache_hit=False,
+                )
+                del sentence
+                del job
+                continue
+
+            with self._condition:
+                if job.turn.cancelled:
+                    should_synthesize = False
+                else:
+                    if job.turn.running_operation_token is not None:
+                        raise RuntimeError(
+                            "A speech turn already owns a running operation token."
+                        )
+                    job.operation_token = operation_token
+                    job.turn.running_operation_token = operation_token
+                    should_synthesize = True
+
+            if not should_synthesize:
+                self._finish_job(
+                    job,
+                    sequence=sentence.sequence,
+                    result=None,
+                    failure=None,
+                    cache_hit=False,
+                )
+                del sentence
+                del job
+                continue
             self._execute_job(job, sentence)
             # Do not retain streamed reply text in an idle worker frame.
             del sentence
@@ -1058,12 +1328,15 @@ class SpeechSynthesisQueue:
         failure: SpeechQueueFailure | None = None
         cache_hit = False
         try:
+            operation_token = job.operation_token
+            if operation_token is None:
+                raise RuntimeError("Speech operation token was not assigned.")
             lease = record.lease
             if lease is None:
                 raise RuntimeError("Speech binding lease was already released.")
             # External services are never stable enough to cache, so avoid
             # deriving even a transient text digest for an unverified lease.
-            if lease.binding_verified:
+            if lease.cache_eligible:
                 cache_key = self._cache_key(lease, sentence.text)
                 with self._condition:
                     cached = self._cache.get(cache_key)
@@ -1073,7 +1346,7 @@ class SpeechSynthesisQueue:
                         cache_hit = True
 
             if result is None:
-                candidate = lease.synthesize(sentence.text)
+                candidate = lease.synthesize(sentence.text, operation_token)
                 if not isinstance(candidate, SynthesisResult):
                     raise TypeError("Speech Synthesizer returned an invalid result.")
                 result = candidate
@@ -1107,6 +1380,14 @@ class SpeechSynthesisQueue:
 
         with self._condition:
             record = job.turn
+            operation_token = job.operation_token
+            if operation_token is None:
+                if record.running_operation_token is not None:
+                    raise RuntimeError("Speech operation token accounting diverged.")
+            elif record.running_operation_token != operation_token:
+                raise RuntimeError("Speech operation token accounting diverged.")
+            record.running_operation_token = None
+            job.operation_token = None
             record.running -= 1
             record.completed += 1
             self._occupied_slots -= 1
@@ -1214,6 +1495,53 @@ class SpeechSynthesisQueue:
         notification.delivery_reserved_bytes = 0
         notification.is_delivery_clip = False
 
+    def _enqueue_abort_locked(
+        self,
+        lease: SpeechSynthesisBindingLease,
+        operation_token: str,
+    ) -> None:
+        """Queue one shutdown abort under the active-turn resource bound."""
+
+        outstanding = (
+            len(self._abort_requests) + self._abort_callbacks_in_progress
+        )
+        if outstanding >= self._config.max_active_turns:
+            # Deferred aborts are issued only after admission closes, and each
+            # admitted turn can contribute at most one running operation.  A
+            # breach is therefore an internal accounting defect, not pressure
+            # that may silently drop a physical cancellation request.
+            raise RuntimeError("Speech abort request accounting overflowed.")
+        self._abort_requests.append(_AbortRequest(lease, operation_token))
+        self._condition.notify_all()
+
+    def _aborter_loop(self) -> None:
+        """Dispatch bounded shutdown aborts without blocking their caller."""
+
+        while True:
+            with self._condition:
+                while not self._abort_requests:
+                    if (
+                        self._closed
+                        and self._shutdown_prepared
+                        and self._occupied_slots == 0
+                    ):
+                        return
+                    self._condition.wait()
+                request = self._abort_requests.popleft()
+                self._abort_callbacks_in_progress += 1
+            try:
+                self._abort_safely(
+                    request.lease,
+                    request.operation_token,
+                )
+            finally:
+                with self._condition:
+                    self._abort_callbacks_in_progress -= 1
+                    self._condition.notify_all()
+            # Do not let the fixed dispatcher's idle frame pin an old managed
+            # runtime or its per-operation cancellation capability.
+            del request
+
     def _notifier_loop(self) -> None:
         """Deliver ordered callbacks without holding any internal queue lock."""
 
@@ -1312,6 +1640,7 @@ class SpeechSynthesisQueue:
         if (
             not record.terminal_published
             or record.running > 0
+            or record.running_operation_token is not None
             or record.pending_notifications > 0
             or record.producer_operations > 0
             or record.retained
@@ -1324,6 +1653,7 @@ class SpeechSynthesisQueue:
         record.lease = None
         record.callback = _discard_speech_queue_event
         record.segmenter = StreamingSentenceSegmenter()
+        record.running_operation_token = None
         self._retained_order.append(record.turn_id)
         while len(self._retained_order) > self._config.max_retained_turns:
             expired_id = self._retained_order.popleft()
@@ -1399,6 +1729,21 @@ class SpeechSynthesisQueue:
         return SpeechQueueFailure(
             turn_id, sequence, "internal_error", _INTERNAL_MESSAGE
         )
+
+    @staticmethod
+    def _abort_safely(
+        lease: SpeechSynthesisBindingLease,
+        operation_token: str,
+    ) -> None:
+        """Invoke managed abort outside queue locks without retaining details."""
+
+        try:
+            lease.abort(operation_token)
+        except BaseException:
+            # Cancellation is already authoritative at the queue boundary.
+            # Abort is a best-effort physical acceleration and its private
+            # process/path details must not replace or decorate that terminal.
+            return
 
     @staticmethod
     def _notify(callback: SpeechQueueCallback, event: SpeechQueueEvent) -> None:

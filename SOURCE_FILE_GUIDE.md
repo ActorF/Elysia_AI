@@ -215,6 +215,7 @@ ChatSession.project_id
 | `voice/gpt_sovits.py` | 把领域请求映射到 GPT-SoVITS `/tts`；只允许 Loopback IP（`localhost` 先规范化）、禁用环境代理/Redirect/Retry，要求声明长度的 Identity WAV/AAC 响应，并以 `/openapi.json` 做脱敏可用性探测。 | 外部本地 GPT-SoVITS Runtime；不会切换远端进程的全局权重，也不会把 `service_binding_unverified` 冒充成 `ready` |
 | `voice/profiles.py` | 严格读取 Schema v2 JSON Catalog，把 Profile、情绪、准确参考文本/语言和带长度、SHA-256 的资产声明解析到固定模型根；拒绝旧版字符串路径、Windows 路径别名和矛盾身份，并实施 `verified` 与显式 Opt-in 的 `local-evaluation-only` 权利标签。读取声明本身不声称文件或进程已验证。 | `config/voice_profiles.example.json`、`models/weights/gpt-sovits/`、Synthesis Service |
 | `voice/synthesis_service.py` | TTS 的惰性 Composition Root；每次调用重载 Catalog，按逻辑 Profile/情绪构造 Adapter 请求，且服务构造本身不触碰磁盘或网络。 | `config/settings.py`、Profile Catalog、GPT-SoVITS Adapter、Smoke CLI |
+| `voice/speech_queue.py` | 把模型流式文本按自然标点或安全长度切句，并用单一 FIFO Worker、固定有界容量和独立 Delivery/Abort Daemon 保持合成与通知顺序。每个物理合成都绑定一次性 Token；取消会丢弃迟到音频，受管 Runtime 还必须在推理登记前记住提前到达的取消。外部绑定和当前不完整 Manifest 的受管绑定都禁止缓存。 | `Brain.stream_chat()` 的后续 Voice 编排层、`voice/synthesis.py`、受管 GPT-SoVITS Lease；不修改或替代最终持久化的 Assistant 原文 |
 
 `voice/capture.py` 是单句 PCM 验证边界，详见本文“Voice Capture、本地 STT 与本地 TTS”部分。STT 由 `voice/transcription_jobs.py` 接入 Python Desktop Backend，Electron/React 已消费最终的 PCM-free Transcript。TTS 是另一条 Python-only 边界：目前只连接本地 Smoke CLI，不经过 `desktop_backend.py`、Desktop Protocol、Electron 或 React。
 
@@ -386,6 +387,7 @@ Project Memory 页面目前仍是明确 Placeholder。Project Source 只安全�
 | `tests/test_gpt_sovits_protocol.py` | 受管 TTS 私有 Pipe 的二进制帧、Canonical Metadata、长度先验、Partial I/O、截断/坏帧脱敏、不可变性与 Python 3.9 语法兼容。 |
 | `tests/test_gpt_sovits_worker.py` | 用 Fake Engine 验证受管 Worker 的 INIT/READY/SYNTHESIZE/STOP 状态机、Challenge/单调 ID、资产与 Runtime Manifest 重算、上游 Config Fallback、Reference 复用、全零 Sentinel、不恢复热重载、单 Yield PCM WAV、坏 Pipe Poison、错误脱敏和 Python 3.9 兼容；不加载真实模型。 |
 | `tests/test_windows_managed_process.py` | 在 Windows 真正启动隔离 Python 子进程，验证 Argument Quoting、封闭环境、HANDLE Allowlist、Suspended→Job→Resume、根/孙进程整树终止、并发关闭、失败所有权重试、UTF-16 上限、幂等生命周期和秘密脱敏；不加载真实语音模型。 |
+| `tests/test_speech_queue.py` | 验证流式自然分句、FIFO、有界 Work/Delivery/Cache 记账、失败跳过、取消 Callback Boundary、每句唯一 Operation Token、提前取消 Tombstone 契约、固定 Abort Dispatcher、Shutdown Deadline、迟到音频丢弃和秘密脱敏；使用 Fake Runtime，不加载真实模型。 |
 | `tests/test_stage5_acceptance.py` | Stage 5 端到端验收：多 Project/Chat、Memory 隔离、重启和完整 Export/Import。 |
 | `tests/test_start.py` | Composition Root、Migration 和配置限制。 |
 | `tests/test_synthesis_service.py` | 惰性构造、Catalog 重载、Profile/情绪映射、权利 Opt-in 与离线错误。 |
