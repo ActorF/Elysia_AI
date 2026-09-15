@@ -78,6 +78,7 @@ start.create_data_portability_service()
 | `scripts/__init__.py` | 把维护脚本标记为可导入 Package，使 Smoke CLI 能同时按模块与文件路径测试。 | `scripts/smoke_gpt_sovits.py`、测试 |
 | `scripts/check_python_documentation.py` | 用标准库 AST 检查所有受维护 Python 文件的 module、public class、public function/method docstring 覆盖。 | `AGENTS.md`、GitHub Actions、Python 开发验证 |
 | `scripts/gpt_sovits_protocol.py` | 定义主 Python 3.14 与隔离 GPT-SoVITS Python 3.9 共用的固定宽度二进制帧；严格限制消息类型、Canonical JSON Metadata、Request ID 和 32 MiB 原始 Payload，错误与 repr 不暴露内容。 | 后续受管 Worker/Parent Pipe；不导入 `voice` 或上游 `tools`，避免运行时版本和包名冲突 |
+| `scripts/gpt_sovits_worker.py` | 在隔离 Python 3.9 进程中验证 Voice 资产和 Runtime 一致性锚点，固定加载一组 GPT-SoVITS v2 权重与 Reference，拒绝 Config Fallback、热切换、全零错误音频和多 Yield，并通过私有二进制 Pipe 返回完整 PCM WAV。`READY` 只证明本次受管进程观察到同一 Binding；上层仍须持有防写/防替换文件 Guard 后才可签发 Verified Lease。 | `scripts/gpt_sovits_protocol.py`、后续 Managed Parent Wrapper、被忽略的本地 GPT-SoVITS Runtime；不经过外部 HTTP API |
 | `scripts/smoke_gpt_sovits.py` | 用固定中文句子对每个所选情绪重复两次本地合成，只输出 Readiness、格式、大小、时长和 SHA-256；不接受任意文本，也不保存音频。 | `voice/synthesis_service.py`、`.env`、被忽略的 Voice Profile Catalog |
 | `start.py` | Python Composition Root 和 Console 入口；创建 Settings、Model、Memory、Repositories、Migrator、Services、Brain 和日志。 | 几乎所有 Python 生产包；`ui/console.py`、`desktop_backend.py` |
 | `desktop_backend.py` | Electron 启动的 Python NDJSON 进程；完成会话令牌握手、初始化、方法路由、Streaming、Cancel、错误映射和安全关闭；从 Active Settings 构造本地模型路径，惰性创建有界 STT Runner，并让 Chat/Settings 写入与物理占用中的转写互斥。 | `desktop_protocol/`、`start.py`、Chat/Project/Attachment/Voice 服务 |
@@ -382,6 +383,7 @@ Project Memory 页面目前仍是明确 Placeholder。Project Source 只安全�
 | `tests/test_short_term_memory.py` | Token Budget 和完整 Turn 淘汰。 |
 | `tests/test_smoke_gpt_sovits.py` | Smoke CLI 的固定文本、重复/多情绪、缓冲成功输出、格式摘要和闭集错误码。 |
 | `tests/test_gpt_sovits_protocol.py` | 受管 TTS 私有 Pipe 的二进制帧、Canonical Metadata、长度先验、Partial I/O、截断/坏帧脱敏、不可变性与 Python 3.9 语法兼容。 |
+| `tests/test_gpt_sovits_worker.py` | 用 Fake Engine 验证受管 Worker 的 INIT/READY/SYNTHESIZE/STOP 状态机、Challenge/单调 ID、资产与 Runtime Manifest 重算、上游 Config Fallback、Reference 复用、全零 Sentinel、不恢复热重载、单 Yield PCM WAV、坏 Pipe Poison、错误脱敏和 Python 3.9 兼容；不加载真实模型。 |
 | `tests/test_stage5_acceptance.py` | Stage 5 端到端验收：多 Project/Chat、Memory 隔离、重启和完整 Export/Import。 |
 | `tests/test_start.py` | Composition Root、Migration 和配置限制。 |
 | `tests/test_synthesis_service.py` | 惰性构造、Catalog 重载、Profile/情绪映射、权利 Opt-in 与离线错误。 |
