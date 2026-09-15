@@ -330,8 +330,9 @@ Project Memory 页面目前仍是明确 Placeholder。Project Source 只安全�
 | `desktop_protocol/README.md` | 人类可读 Protocol v1 文档；说明 Handshake、Capabilities、Streaming、Cancel、Settings、Attachment、Voice Capture/Transcription 和安全不变量。 | Python/TypeScript 实现和测试 |
 | `desktop_protocol/schema/v1.schema.json` | Draft 2020-12 JSON Schema；描述所有 Client/Server Frame，并约束 STT 设置枚举、Readiness exact object、PCM/Final Result 和跨字段状态不变量。 | Shared Fixtures、Python/Node Contract Tests |
 | `desktop_protocol/fixtures/v1.samples.json` | Python 与 TypeScript 同时读取的 Valid/Invalid Conformance Samples；包含 STT Settings Desired/Active、可用/不可用状态和敏感额外字段拒绝样本。 | `contracts.py`、`protocol.ts`、两端测试 |
+| `desktop_protocol/audio_channel.py` | 用固定 84-byte Header 和独立 fd3 匿名 Pipe 传送最多 8 MiB、120 秒的 canonical 32 kHz mono PCM16 WAV；生成不重复 Correlation Token、SHA-256 和安全 Metadata，验证 OS Pipe 类型与去继承，强制单一待发送 Frame、Partial-write Poison，并让 Close 不等待阻塞 Writer。 | 后续 `desktop_backend.py` Speech Queue Callback、Electron Main 二进制 Parser；Electron 停止时须先 drain/关闭读端，原始音频不进入 NDJSON 或 React |
 | `desktop_protocol/contracts.py` | Python 端 TypedDict、严格 Parser、Runtime Validator 和 Response/Error/Stream/Event Builder；序列化安全 STT Status，拒绝路径、Native Message 与扩展字段。 | `desktop_backend.py`、Schema/Fixtures、Python Tests |
-| `desktop_protocol/__init__.py` | 汇出协议常量、类型、Parser 和 Builder。 | Desktop Backend、测试 |
+| `desktop_protocol/__init__.py` | 汇出 NDJSON 协议与私有音频通道的常量、类型、Parser、Builder 和 Writer。 | Desktop Backend、测试 |
 
 协议的 Python 与 TypeScript Parser 都是手写的，Schema 不是代码生成器。因此修改协议时必须同步维护两端和共享 Fixtures。
 
@@ -361,6 +362,7 @@ Project Memory 页面目前仍是明确 Placeholder。Project Source 只安全�
 | `tests/test_conversation_summary.py` | Stage 4 旧 Summary Schema 与存储。 |
 | `tests/test_data_portability.py` | Bundle Export/Import、Hash、路径、Conflict、Quarantine 和 Rollback。 |
 | `tests/test_desktop_backend.py` | Python Bridge 的 Handshake、Routing、Streaming、Cancel、Chat/Project/Settings/Attachment，以及 STT Readiness、Admission、配置写互斥、终态与 Shutdown Race。 |
+| `tests/test_desktop_audio_channel.py` | 验证 fd3 固定所有权、OS Pipe 类型与去继承、84-byte Header、Token/Digest、无歧义桌面 PCM WAV、8 MiB/120 秒上限、Partial Write、单待发 Frame、反射篡改、Poison、非阻塞 Close 和错误脱敏。 |
 | `tests/test_desktop_protocol.py` | Python Protocol Parser/Builder 与共享 Fixture Contract；覆盖 STT 设置/状态的 exact shape 与脱敏边界。 |
 | `tests/test_desktop_settings.py` | Desktop Settings 八字段 Validation、旧 Schema Migration、Desired/Active Restart Diff、Revision CAS、锁和 Quarantine。 |
 | `tests/test_faster_whisper.py` | 不安装 Native Runtime 或模型也能验证离线 Adapter、设备降级、PCM、惰性结果、错误脱敏和边界。 |

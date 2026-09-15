@@ -1,4 +1,24 @@
-"""Expose the versioned Electron-to-Python desktop protocol."""
+"""Expose the versioned Electron-to-Python desktop control and audio protocols."""
+
+from .audio_channel import (
+    AUDIO_CHANNEL_BITS_PER_SAMPLE,
+    AUDIO_CHANNEL_CHANNEL_COUNT,
+    AUDIO_CHANNEL_FD,
+    AUDIO_CHANNEL_FORMAT_PCM_WAV,
+    AUDIO_CHANNEL_HEADER_BYTES,
+    AUDIO_CHANNEL_MAGIC,
+    AUDIO_CHANNEL_MAX_DURATION_SECONDS,
+    AUDIO_CHANNEL_MAX_WAV_BYTES,
+    AUDIO_CHANNEL_MEDIA_TYPE,
+    AUDIO_CHANNEL_SAMPLE_RATE_HZ,
+    AUDIO_CHANNEL_VERSION,
+    AudioChannelError,
+    AudioChannelIOError,
+    AudioChannelStateError,
+    AudioChannelValidationError,
+    AudioChannelWriter,
+    PreparedAudioFrame,
+)
 
 from .contracts import (
     MAX_AUDIO_DEVICE_ID_LENGTH,
@@ -46,6 +66,17 @@ from .contracts import (
 )
 
 __all__ = [
+    "AUDIO_CHANNEL_BITS_PER_SAMPLE",
+    "AUDIO_CHANNEL_CHANNEL_COUNT",
+    "AUDIO_CHANNEL_FD",
+    "AUDIO_CHANNEL_FORMAT_PCM_WAV",
+    "AUDIO_CHANNEL_HEADER_BYTES",
+    "AUDIO_CHANNEL_MAGIC",
+    "AUDIO_CHANNEL_MAX_DURATION_SECONDS",
+    "AUDIO_CHANNEL_MAX_WAV_BYTES",
+    "AUDIO_CHANNEL_MEDIA_TYPE",
+    "AUDIO_CHANNEL_SAMPLE_RATE_HZ",
+    "AUDIO_CHANNEL_VERSION",
     "MAX_AUDIO_DEVICE_ID_LENGTH",
     "MAX_MESSAGE_LENGTH",
     "MAX_PROTOCOL_FRAME_BYTES",
@@ -64,9 +95,15 @@ __all__ = [
     "VOICE_CAPTURE_SAMPLE_RATE_HZ",
     "VOICE_TRANSCRIPTION_MAX_TEXT_CODE_POINTS",
     "ClientRequest",
+    "AudioChannelError",
+    "AudioChannelIOError",
+    "AudioChannelStateError",
+    "AudioChannelValidationError",
+    "AudioChannelWriter",
     "ErrorResponse",
     "EventMessage",
     "PermissionMessage",
+    "PreparedAudioFrame",
     "ProgressMessage",
     "ProtocolMethod",
     "ProtocolValidationError",
