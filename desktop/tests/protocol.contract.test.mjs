@@ -5,10 +5,12 @@ import { EventEmitter } from 'node:events'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
+import { PassThrough } from 'node:stream'
 import test from 'node:test'
 import { pathToFileURL } from 'node:url'
 
 import { BackendProcess } from '../dist-electron/backend-process.js'
+import { BoundedNdjsonReader } from '../dist-electron/bounded-ndjson.js'
 import {
   allowAudioPermissionCheck,
   allowAudioPermissionRequest,
@@ -57,6 +59,102 @@ test('TypeScript uses the frame limit declared by the JSON Schema', () => {
     MAX_PROTOCOL_FRAME_BYTES,
     schema['x-elysia-frameMaxBytes'],
   )
+})
+
+test('bounded NDJSON reader accepts fragmented UTF-8 and CRLF', async () => {
+  const input = new PassThrough()
+  const lines = []
+  const failures = []
+  const encoded = Buffer.from('é\r\nok\n', 'utf8')
+  new BoundedNdjsonReader(
+    input,
+    4,
+    (line) => lines.push(line),
+    (failure) => failures.push(failure),
+  )
+  const ended = new Promise((resolve) => input.once('end', resolve))
+
+  input.write(encoded.subarray(0, 1))
+  input.write(encoded.subarray(1, 3))
+  input.end(encoded.subarray(3))
+  await ended
+
+  assert.deepEqual(lines, ['é', 'ok'])
+  assert.deepEqual(failures, [])
+  for (const event of ['data', 'end', 'close', 'error']) {
+    assert.equal(input.listenerCount(event), 0)
+  }
+})
+
+test('bounded NDJSON reader accepts the exact byte limit with CRLF', async () => {
+  const input = new PassThrough()
+  const lines = []
+  const failures = []
+  new BoundedNdjsonReader(
+    input,
+    4,
+    (line) => lines.push(line),
+    (failure) => failures.push(failure),
+  )
+  const ended = new Promise((resolve) => input.once('end', resolve))
+
+  input.end(Buffer.from('1234\r\n'))
+  await ended
+
+  assert.deepEqual(lines, ['1234'])
+  assert.deepEqual(failures, [])
+})
+
+test('bounded NDJSON reader rejects an oversized unterminated frame immediately', () => {
+  const input = new PassThrough()
+  const failures = []
+  new BoundedNdjsonReader(
+    input,
+    4,
+    () => assert.fail('An oversized frame must not be delivered.'),
+    (failure) => failures.push(failure),
+  )
+
+  input.write(Buffer.from('12345'))
+
+  assert.deepEqual(failures, ['frame-too-large'])
+  for (const event of ['data', 'end', 'close', 'error']) {
+    assert.equal(input.listenerCount(event), 0)
+  }
+  input.destroy()
+})
+
+test('bounded NDJSON reader rejects malformed UTF-8 without replacement', () => {
+  const input = new PassThrough()
+  const failures = []
+  new BoundedNdjsonReader(
+    input,
+    4,
+    () => assert.fail('Malformed UTF-8 must not be delivered.'),
+    (failure) => failures.push(failure),
+  )
+
+  input.write(Buffer.from([0xC3, 0x28, 0x0A]))
+
+  assert.deepEqual(failures, ['invalid-utf8'])
+  input.destroy()
+})
+
+test('bounded NDJSON reader rejects a final frame without newline', async () => {
+  const input = new PassThrough()
+  const failures = []
+  new BoundedNdjsonReader(
+    input,
+    16,
+    () => assert.fail('A truncated frame must not be delivered.'),
+    (failure) => failures.push(failure),
+  )
+  const ended = new Promise((resolve) => input.once('end', resolve))
+
+  input.end(Buffer.from('{"ok":true}'))
+  await ended
+
+  assert.deepEqual(failures, ['truncated-frame'])
 })
 
 test('JSON Schema declares the exact public settings surface', () => {
@@ -3127,7 +3225,7 @@ test('Backend stop rejects all pending renderer actions', async () => {
   )
   await assert.rejects(voicePromise, /stopping before the action completed/)
   assert.equal(voicePending.timeout, undefined)
-  child.emit('exit', 0, null)
+  child.emit('close', 0, null)
   await stopping
 })
 
@@ -3280,6 +3378,54 @@ test('Backend replaces child stdin errors with a fixed diagnostic', async () => 
     }
     if (child !== undefined) {
       child.kill()
+    }
+    await backend.stop()
+    await rm(projectRoot, { recursive: true, force: true })
+  }
+})
+
+test('Backend rejects child stdout truncated before its newline', async () => {
+  const projectRoot = await mkdtemp(path.join(tmpdir(), 'elysia-stdout-test-'))
+  const bridgePath = path.join(projectRoot, 'desktop_backend.py')
+  const previousPython = process.env.ELYSIA_PYTHON
+  let resolveError
+  const reachedError = new Promise((resolve) => {
+    resolveError = resolve
+  })
+  const backend = new BackendProcess(projectRoot, (event) => {
+    if (event.type === 'snapshot' && event.snapshot.status === 'error') {
+      resolveError(event.snapshot)
+    }
+  })
+
+  try {
+    await writeFile(
+      bridgePath,
+      "process.stdin.resume(); process.stdout.write('{\\\"type\\\":\\\"response\\\"}', () => process.exit(0));\n",
+      'utf8',
+    )
+    process.env.ELYSIA_PYTHON = process.execPath
+    backend.start()
+    let diagnosticTimeout
+    const timeoutOutcome = new Promise((resolve) => {
+      diagnosticTimeout = setTimeout(
+        () => resolve({ status: 'timeout' }),
+        2_000,
+      )
+    })
+    const outcome = await Promise.race([reachedError, timeoutOutcome])
+    clearTimeout(diagnosticTimeout)
+
+    assert.equal(outcome.status, 'error')
+    assert.equal(
+      outcome.error,
+      'Invalid Backend protocol frame: Backend output ended before its newline delimiter.',
+    )
+  } finally {
+    if (previousPython === undefined) {
+      delete process.env.ELYSIA_PYTHON
+    } else {
+      process.env.ELYSIA_PYTHON = previousPython
     }
     await backend.stop()
     await rm(projectRoot, { recursive: true, force: true })

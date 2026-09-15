@@ -302,7 +302,7 @@ def test_stream_chat_yields_chunks_and_saves_complete_turn(
         brain.stream_chat(chat.chat_id, "  Hello, Elysia!  ")
     )
 
-    assert chunks == ["Hello", " ", "Ying!"]
+    assert chunks == ["Hello", " Ying!"]
 
     received_messages = chat_model.received_messages
 
@@ -319,6 +319,49 @@ def test_stream_chat_yields_chunks_and_saves_complete_turn(
     assert messages[0].content == "Hello, Elysia!"
     assert messages[1].role == "assistant"
     assert messages[1].content == "Hello Ying!"
+
+
+def test_stream_chat_exposes_exactly_the_canonical_persisted_reply(
+    tmp_path: Path,
+) -> None:
+    """Keep streamed, returned, and stored text identical across chunk edges."""
+
+    raw_chunks = [
+        " \t\n\u00a0",
+        "  Hello",
+        " ",
+        "\t",
+        "world  ",
+        "\r\n\u2003",
+    ]
+    chat_model = FakeChatModel(
+        "Unused reply",
+        stream_chunks=raw_chunks,
+    )
+    brain, _memory, chat = _active_brain(tmp_path, chat_model)
+
+    emitted = "".join(brain.stream_chat(chat.chat_id, "Question"))
+    persisted = brain.get_chat(chat.chat_id).messages[-1].content
+
+    assert emitted == "".join(raw_chunks).strip()
+    assert persisted == emitted
+
+
+def test_stream_chat_rejects_an_all_whitespace_model_stream(
+    tmp_path: Path,
+) -> None:
+    """Reject a stream whose canonical form is empty without persisting it."""
+
+    chat_model = FakeChatModel(
+        "Unused reply",
+        stream_chunks=["  ", "\t\n", ""],
+    )
+    brain, _memory, chat = _active_brain(tmp_path, chat_model)
+
+    with pytest.raises(ValueError, match=r"Model reply cannot be empty\."):
+        list(brain.stream_chat(chat.chat_id, "Question"))
+
+    assert brain.get_chat(chat.chat_id).messages == ()
 
 
 def test_stream_chat_uses_metadata_only_and_commits_attachment(
@@ -421,6 +464,33 @@ def test_stream_retry_atomically_replaces_the_persisted_tail(
         message["content"] != "Original answer"
         for message in chat_model.received_messages
     )
+
+
+def test_stream_retry_uses_the_same_canonical_text_for_output_and_storage(
+    tmp_path: Path,
+) -> None:
+    """Apply outer-whitespace normalization identically during retry."""
+
+    raw_chunks = [" \n", "Replacement ", " answer", "\t "]
+    chat_model = FakeChatModel(
+        "Original answer",
+        stream_chunks=raw_chunks,
+    )
+    brain, _memory, chat = _active_brain(tmp_path, chat_model)
+    brain.chat(chat.chat_id, "Original question")
+    original_user, original_assistant = brain.get_chat(chat.chat_id).messages
+
+    emitted = "".join(
+        brain.stream_retry(
+            chat.chat_id,
+            original_user.message_id,
+            original_assistant.message_id,
+        )
+    )
+    persisted = brain.get_chat(chat.chat_id).messages[-1].content
+
+    assert emitted == "".join(raw_chunks).strip()
+    assert persisted == emitted
 
 
 def test_stream_retry_without_edit_reuses_the_original_user_text(
@@ -812,7 +882,7 @@ def test_stream_chat_saves_complete_short_term_turn(
         brain.stream_chat(chat.chat_id, "Hello, Elysia!")
     )
 
-    assert chunks == ["Hello", " ", "Ying!"]
+    assert chunks == ["Hello", " Ying!"]
     assert short_term_memory.get_turns() == []
     assert [
         message.content

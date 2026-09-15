@@ -748,13 +748,22 @@ class Brain:
         *,
         should_cancel: Callable[[], bool] | None,
     ) -> Generator[str, None, str]:
-        """Yield model chunks while retaining one all-or-nothing reply."""
+        """Yield and return one identical, outer-whitespace-free reply.
+
+        Leading whitespace can be discarded immediately. Whitespace at the
+        current stream tail is held until a later non-whitespace character
+        proves it is internal; a natural end discards that tail. This online
+        normalization preserves the old ``raw_reply.strip()`` result without
+        ever exposing text that persistence would later remove.
+        """
 
         if self._chat_model is None:
             raise RuntimeError("Chat model is not connected.")
 
         self._raise_if_generation_cancelled(should_cancel)
         reply_chunks: list[str] = []
+        pending_trailing_chunks: list[str] = []
+        reply_started = False
         stream_source = self._chat_model.stream_reply(chat_messages)
         self._raise_if_generation_cancelled(should_cancel)
         model_stream: Iterator[str] = iter(stream_source)
@@ -768,8 +777,26 @@ class Brain:
                 # A cancellation requested while ``next`` was blocked wins
                 # before the newly returned chunk becomes externally visible.
                 self._raise_if_generation_cancelled(should_cancel)
-                reply_chunks.append(chunk)
-                yield chunk
+                canonical_chunk = chunk
+                if not reply_started:
+                    canonical_chunk = canonical_chunk.lstrip()
+                    if not canonical_chunk:
+                        continue
+                    reply_started = True
+
+                without_trailing = canonical_chunk.rstrip()
+                trailing = canonical_chunk[len(without_trailing):]
+                if without_trailing:
+                    if pending_trailing_chunks:
+                        without_trailing = (
+                            "".join(pending_trailing_chunks)
+                            + without_trailing
+                        )
+                        pending_trailing_chunks.clear()
+                    reply_chunks.append(without_trailing)
+                    yield without_trailing
+                if trailing:
+                    pending_trailing_chunks.append(trailing)
         finally:
             close_stream = getattr(model_stream, "close", None)
             if callable(close_stream):
@@ -781,7 +808,7 @@ class Brain:
                     logger.exception("Chat model stream cleanup failed.")
 
         self._raise_if_generation_cancelled(should_cancel)
-        reply = "".join(reply_chunks).strip()
+        reply = "".join(reply_chunks)
         if not reply:
             raise ValueError("Model reply cannot be empty.")
         return reply

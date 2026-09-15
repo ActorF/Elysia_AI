@@ -12,10 +12,6 @@ import {
 import { randomBytes, randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import path from 'node:path'
-import {
-  createInterface,
-  type Interface as ReadlineInterface,
-} from 'node:readline'
 
 import type {
   ArchiveChatRequest,
@@ -44,6 +40,10 @@ import type {
   VoiceCaptureRequest,
   VoiceTranscriptionRequest,
 } from './contracts.js'
+import {
+  BoundedNdjsonReader,
+  type BoundedNdjsonFailure,
+} from './bounded-ndjson.js'
 import {
   MAX_ATTACHMENT_FILE_COUNT,
   MAX_IDENTIFIER_LENGTH,
@@ -98,6 +98,14 @@ const BACKEND_ENTRY_POINT_MISSING_MESSAGE =
 const BACKEND_PROCESS_FAILURE_MESSAGE =
   'Python Backend process could not be started.'
 const BACKEND_INPUT_FAILURE_MESSAGE = 'Python Backend input failed.'
+
+const BACKEND_OUTPUT_FAILURE_MESSAGES: Record<BoundedNdjsonFailure, string> = {
+  'frame-too-large': 'Python Backend emitted an oversized frame.',
+  'invalid-utf8': 'Invalid Backend protocol frame: Backend output is not valid UTF-8.',
+  'truncated-frame': 'Invalid Backend protocol frame: Backend output ended before its newline delimiter.',
+  'stream-failed': 'Python Backend output failed.',
+  'non-binary-chunk': 'Python Backend output was not delivered as bytes.',
+}
 
 const VOICE_TRANSCRIPTION_FAILURES = {
   'protocol.not_initialized': {
@@ -288,7 +296,7 @@ const ATTACHMENT_MUTATION_METHODS = new Set<ProtocolMethod>([
  */
 export class BackendProcess {
   private child: ChildProcessWithoutNullStreams | null = null
-  private lineReader: ReadlineInterface | null = null
+  private protocolReader: BoundedNdjsonReader | null = null
   private handshakeRequestId: string | null = null
   private initializeRequestId: string | null = null
   private handshakeTimeout: ReturnType<typeof setTimeout> | null = null
@@ -420,16 +428,25 @@ export class BackendProcess {
     )
 
     this.child = child
-    child.stdout.setEncoding('utf8')
     child.stderr.setEncoding('utf8')
 
-    this.lineReader = createInterface({
-      input: child.stdout,
-      crlfDelay: Infinity,
-    })
-    this.lineReader.on('line', (line) => {
-      this.handleProtocolLine(line)
-    })
+    // Decode only after a byte-counted newline is found. Node's readline
+    // buffers an unterminated line without a ceiling, which would let a broken
+    // or compromised Backend exhaust Electron before protocol validation.
+    this.protocolReader = new BoundedNdjsonReader(
+      child.stdout,
+      MAX_PROTOCOL_FRAME_BYTES,
+      (line) => {
+        if (this.child === child) {
+          this.handleProtocolLine(line)
+        }
+      },
+      (failure) => {
+        if (this.child === child) {
+          this.protocolFailure(BACKEND_OUTPUT_FAILURE_MESSAGES[failure])
+        }
+      },
+    )
 
     child.stderr.on('data', () => {
       // Python owns detailed diagnostics in logs/app.log. Stderr may contain
@@ -446,7 +463,10 @@ export class BackendProcess {
       }
     })
 
-    child.once('exit', (code, signal) => {
+    // ChildProcess `close` follows stdout EOF, whereas `exit` can arrive while
+    // pipe bytes are still draining. Waiting for `close` lets the bounded
+    // reader validate the final delimiter instead of discarding a tail frame.
+    child.once('close', (code, signal) => {
       this.handleExit(child, code, signal)
     })
 
@@ -679,7 +699,7 @@ export class BackendProcess {
         finish()
       }, SHUTDOWN_TIMEOUT_MS)
 
-      child.once('exit', finish)
+      child.once('close', finish)
     })
 
     if (this.child === child) {
@@ -2098,8 +2118,8 @@ export class BackendProcess {
       return
     }
 
-    this.lineReader?.close()
-    this.lineReader = null
+    this.protocolReader?.dispose()
+    this.protocolReader = null
     this.child = null
     this.handshakeRequestId = null
     this.initializeRequestId = null
@@ -2236,6 +2256,10 @@ export class BackendProcess {
   private protocolFailure(message: string): void {
     this.lastDiagnostic = message
     this.fail(message)
+    // Stop consuming immediately even if several frames arrived in one stdout
+    // chunk. The first invalid sequence is terminal and later bytes are no
+    // longer authenticated protocol input.
+    this.protocolReader?.dispose()
     const child = this.child
     if (child !== null) {
       child.kill()

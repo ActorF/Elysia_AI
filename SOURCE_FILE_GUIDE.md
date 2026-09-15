@@ -118,7 +118,7 @@ start.create_data_portability_service()
 | `core/model_memory_extractor.py` | 调用模型提取待用户确认的 Memory Candidate；严格解析 JSON、验证和去重，不自动保存。 | `core/brain.py`、`memory/extraction.py`、Long-Term Memory |
 | `core/model_conversation_summarizer.py` | 调用模型生成 facts、decisions、action items、unresolved questions；支持增量摘要。 | `core/brain.py`、`memory/summarization.py`、`ChatSummary` |
 | `core/active_conversation.py` | 管理 per-Chat Busy Guard、不可变快照、完整 Turn/Summary Commit 和并发修改检测；后来扩展 Chat actions、Retry 与 Attachment Commit。 | `core/brain.py`、Chat/Project Repository |
-| `core/brain.py` | 应用用例总协调器；组织 Chat/Project API、上下文重建、Scoped Retrieval、Prompt、模型调用、Streaming、Cancel、Retry、Summary 和 Memory。 | Core、Chat、Project、Memory、Model、Desktop Backend/Console |
+| `core/brain.py` | 应用用例总协调器；组织 Chat/Project API、上下文重建、Scoped Retrieval、Prompt、模型调用、Streaming、Cancel、Retry、Summary 和 Memory。流式回复在线去除首尾空白并延迟当前尾空白，保证已发 Chunk 拼接值与最终持久化文本完全一致。 | Core、Chat、Project、Memory、Model、Desktop Backend/Console |
 | `core/exceptions.py` | 定义配置、模型、Busy、Cancel、Retry、Model Mismatch、生成期间状态变化等稳定错误。 | `core/brain.py`、`desktop_backend.py`、Console、测试 |
 
 ## 7. Chat 领域与持久化：`chats/`
@@ -255,7 +255,8 @@ ChatSession.project_id
 | `desktop/electron/contracts.ts` | 定义 Renderer 可见的最小 Desktop API、Backend Snapshot/Event、Chat/Project/Settings/Attachment/Voice 类型；Voice 只暴露开始/取消、相关 Final/Error Event 与净化后的转写状态，不是 Python 原始 Wire Schema。 | Preload、Main、React、Mock Preload |
 | `desktop/electron/preload.cts` | 用 `contextBridge` 暴露固定 `window.elysiaDesktop`；把一次性 STT 开始/取消映射到固定 IPC，并把净化 Event 转交 Renderer，不暴露 `ipcRenderer`、Node、`fs` 或进程句柄。 | React、Electron Main |
 | `desktop/electron/main.ts` | Electron 主进程；创建带品牌图标的窗口/托盘，验证 Sender、Settings/STT 参数、请求 ID、路径和权限，注册固定 IPC，控制导航与应用关闭。 | Preload、BackendProcess、原生 Dialog/Clipboard/Audio、`public/elysia-icon.png` |
-| `desktop/electron/backend-process.ts` | Python 子进程 Owner 和 Protocol State Machine；除 Handshake/Stream/Cancel 外，关联 STT Request/Session/Chat、拒绝并发生成与配置写入、净化 Progress/Error、丢弃 PCM Metadata，并只向 Renderer 发 Final/Error；Python stderr 不原样暴露。 | Main、`desktop_backend.py`、`protocol.ts` |
+| `desktop/electron/bounded-ndjson.ts` | 用固定上限 Buffer 增量切分 Python stdout；按原始字节限制 Frame，接受 CRLF，严格拒绝坏 UTF-8、未换行截断和超限无换行数据，并在终态移除全部 Stream Listener。 | `desktop/electron/backend-process.ts`、Protocol Contract Tests |
+| `desktop/electron/backend-process.ts` | Python 子进程 Owner 和 Protocol State Machine；通过有界二进制 NDJSON Reader 在解码前限制 stdout，除 Handshake/Stream/Cancel 外，关联 STT Request/Session/Chat、拒绝并发生成与配置写入、净化 Progress/Error、丢弃 PCM Metadata，并只向 Renderer 发 Final/Error；Python stderr 不原样暴露。 | Main、`desktop_backend.py`、`protocol.ts`、`bounded-ndjson.ts` |
 | `desktop/electron/protocol.ts` | TypeScript 端 Protocol v1 类型、Builder、Parser 和严格 Runtime Validation；覆盖 STT 配置枚举、exact Readiness Status、一次性 Voice Transcription 输入与 PCM-free Final Result，不把静态类型当安全边界。 | BackendProcess、共享 Schema/Fixtures、Contract Tests |
 | `desktop/electron/protocol-text.ts` | 定义跨 Python/TypeScript 一致的 Unicode Code Point 长度、Blank Set 和 Trim 规则。 | `protocol.ts`、Python Contracts |
 | `desktop/electron/renderer-source.ts` | 只允许准确的 Vite Root 或打包 `dist/index.html` 作为可信 Renderer 来源。 | Main、Permission Policy、测试 |
@@ -339,7 +340,7 @@ Project Memory 页面目前仍是明确 Placeholder。Project Source 只安全�
 | 文件 | 实际用途 | 主要连接 |
 | --- | --- | --- |
 | `desktop/tests/check-documentation.test.mjs` | 验证源码发现会排除精确的 `models/cache/`，同时继续扫描 `core/cache/` 等受维护目录。 | Documentation Checker、`npm run test:contract` |
-| `desktop/tests/protocol.contract.test.mjs` | 在 Node 中测试编译后的 Protocol Helpers 和 BackendProcess；覆盖双端 Fixture、STT exact Status/敏感字段拒绝、Request 关联、互斥、Cancel/Draining Race、PCM 不保留、Stream、URL 与 Permission Policy。 | `dist-electron`、Schema/Fixtures；使用 Fake Child，不启动真实 Python |
+| `desktop/tests/protocol.contract.test.mjs` | 在 Node 中测试编译后的 Protocol Helpers 和 BackendProcess；覆盖双端 Fixture、有界 NDJSON 的分段 UTF-8/CRLF/精确边界/超限/截断、STT exact Status/敏感字段拒绝、Request 关联、互斥、Cancel/Draining Race、PCM 不保留、Stream、URL 与 Permission Policy。 | `dist-electron`、Schema/Fixtures；使用 Fake Child 与一次性本地 Node Child，不启动真实 Python |
 | `desktop/tests/ui/electron-main.cjs` | Playwright 专用 Electron Main；加载生产 Renderer Build，保持 Sandbox/Context Isolation，但不启动生产 Backend。 | UI Test、Mock Preload、`dist/index.html` |
 | `desktop/tests/ui/mock-preload.cjs` | UI 测试专用 `elysiaDesktop` Fake；除 Canonical 状态外模拟 STT 开始/终态/取消、Readiness、延迟、失败、Reload 和 Race。 | App Shell UI Tests；不会进入生产包 |
 | `desktop/tests/ui/app-shell.spec.ts` | Playwright 启动真实 Electron Renderer，覆盖 Chat/Project/Settings/Voice；STT 回归包括编辑、显式放入/追加草稿、取消迟到结果、Close、Fresh Retry 与安全 Readiness。 | Production React Build + Mock Backend |
@@ -352,7 +353,7 @@ Project Memory 页面目前仍是明确 Placeholder。Project Source 只安全�
 | `tests/test_active_conversation_integration.py` | Brain 的多 Chat 上下文、Scoped Memory 和失败隔离。 |
 | `tests/test_active_conversation_service.py` | Busy Token、快照、Turn/Summary Commit、Retry 和 Chat actions。 |
 | `tests/test_attachment_service.py` | Attachment Store 生命周期、Manifest、锁、恢复和文件系统安全。 |
-| `tests/test_brain.py` | Brain 的 Chat、Streaming、Memory、Summary、Retry、Cancel 和 Attachment 协调。 |
+| `tests/test_brain.py` | Brain 的 Chat、Canonical Streaming、跨 Chunk 空白、Memory、Summary、Retry、Cancel 和 Attachment 协调。 |
 | `tests/test_chat_domain.py` | Chat、Message、Summary、Attachment Metadata、ID 和不变量。 |
 | `tests/test_chat_repository.py` | Index/Detail、CRUD、原子失败、重启和 Index Recovery。 |
 | `tests/test_console.py` | Console Commands、Streaming 和 Session 行为。 |
