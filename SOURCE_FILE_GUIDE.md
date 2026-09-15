@@ -206,6 +206,7 @@ ChatSession.project_id
 | `voice/domain.py` | 定义输入/输出设备的 opaque ID 偏好和 Voice Settings Snapshot。 | Voice Service/Storage、Protocol |
 | `voice/exceptions.py` | 定义 Voice Settings 和当前 Capture Validation 错误。 | Voice Service/Storage、Desktop Backend |
 | `voice/faster_whisper.py` | 实现离线优先的 Faster-Whisper Adapter、严格本地模型完整性检查、净化后的就绪状态、设备/Compute Policy、一次性 CUDA 初始化降级、PCM float32 转换和返回错误脱敏；只接受明确的绝对本地目录，不按别名下载。 | `desktop_backend.py` 把闭集名称映射到 `models/weights/faster-whisper/<model>`；由后台 Runner 调用 |
+| `voice/_windows_managed_process.py` | 用 Win32 `CreateProcessW` 的 Suspended 启动、精确 HANDLE Allowlist 与 Kill-on-close Job Object 建立受管语音子进程边界；只有完成 Job 绑定才恢复主线程，关闭/取消会终止包括 FFmpeg 在内的整棵进程树。并发 Teardown 共享单一有界结果，命令、环境、路径和原生 HANDLE 不进入 repr 或错误。 | 后续 Managed GPT-SoVITS Parent Wrapper；只在 Windows 执行，非 Windows 可安全导入并返回稳定不可用状态 |
 | `voice/storage.py` | 对 `audio-device.json` 执行 Revision CAS、线程/进程锁、原子替换和损坏隔离。 | Voice Service、`workspace/settings/audio-device.json` |
 | `voice/service.py` | 提供硬件无关的设备偏好读取和更新；Python 不直接打开麦克风。 | Desktop Backend、Voice Repository |
 | `voice/transcription.py` | 定义与具体识别引擎解耦的 Transcriber Protocol、请求、最终结果、语言范围和稳定错误。 | 复用 `VoiceCapture`；连接 Faster-Whisper Adapter、后台任务和 Desktop Backend |
@@ -384,6 +385,7 @@ Project Memory 页面目前仍是明确 Placeholder。Project Source 只安全�
 | `tests/test_smoke_gpt_sovits.py` | Smoke CLI 的固定文本、重复/多情绪、缓冲成功输出、格式摘要和闭集错误码。 |
 | `tests/test_gpt_sovits_protocol.py` | 受管 TTS 私有 Pipe 的二进制帧、Canonical Metadata、长度先验、Partial I/O、截断/坏帧脱敏、不可变性与 Python 3.9 语法兼容。 |
 | `tests/test_gpt_sovits_worker.py` | 用 Fake Engine 验证受管 Worker 的 INIT/READY/SYNTHESIZE/STOP 状态机、Challenge/单调 ID、资产与 Runtime Manifest 重算、上游 Config Fallback、Reference 复用、全零 Sentinel、不恢复热重载、单 Yield PCM WAV、坏 Pipe Poison、错误脱敏和 Python 3.9 兼容；不加载真实模型。 |
+| `tests/test_windows_managed_process.py` | 在 Windows 真正启动隔离 Python 子进程，验证 Argument Quoting、封闭环境、HANDLE Allowlist、Suspended→Job→Resume、根/孙进程整树终止、并发关闭、失败所有权重试、UTF-16 上限、幂等生命周期和秘密脱敏；不加载真实语音模型。 |
 | `tests/test_stage5_acceptance.py` | Stage 5 端到端验收：多 Project/Chat、Memory 隔离、重启和完整 Export/Import。 |
 | `tests/test_start.py` | Composition Root、Migration 和配置限制。 |
 | `tests/test_synthesis_service.py` | 惰性构造、Catalog 重载、Profile/情绪映射、权利 Opt-in 与离线错误。 |
