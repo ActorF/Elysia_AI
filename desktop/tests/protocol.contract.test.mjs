@@ -21,6 +21,9 @@ import {
   PROTOCOL_NAME,
   PROTOCOL_VERSION,
   MAX_PROTOCOL_FRAME_BYTES,
+  VOICE_SPEECH_MAX_SEQUENCE,
+  VOICE_SPEECH_MAX_WAV_BYTES,
+  VOICE_SPEECH_MIN_WAV_BYTES,
   VOICE_CAPTURE_MAX_BASE64_CHARACTERS,
   VOICE_TRANSCRIPTION_MAX_TEXT_CODE_POINTS,
   ProtocolValidationError,
@@ -232,6 +235,30 @@ test('JSON Schema declares the transcription runtime invariants', () => {
     status.properties.model.enum,
     ['tiny', 'base', 'small', 'medium', 'large-v3', 'turbo'],
   )
+})
+
+test('JSON Schema and TypeScript share bounded speech clip metadata', () => {
+  const clipBranch = schema.$defs.event.oneOf.find(
+    (branch) => branch.properties.event.const === 'voice.speech.clip',
+  )
+  assert.ok(clipBranch)
+  assert.equal(
+    clipBranch.properties.data.properties.sequence.maximum,
+    VOICE_SPEECH_MAX_SEQUENCE,
+  )
+  assert.equal(
+    clipBranch.properties.data.properties.byteLength.minimum,
+    VOICE_SPEECH_MIN_WAV_BYTES,
+  )
+  assert.equal(
+    clipBranch.properties.data.properties.byteLength.maximum,
+    VOICE_SPEECH_MAX_WAV_BYTES,
+  )
+  assert.ok(schema['x-elysia-runtimeInvariants'].some(
+    (invariant) => invariant.includes(
+      'voice.speech.clip metadata exactly matches the next private binary frame',
+    ),
+  ))
 })
 
 for (const sample of fixtures.validClientMessages) {
@@ -1239,6 +1266,144 @@ function responseFrame(reply) {
     id: 'chat-state-1',
     ok: true,
     result: { chatId: 'chat_fixture', reply },
+  })
+}
+
+function eventFrame(requestId, event, data) {
+  return JSON.stringify({
+    type: 'event',
+    protocol: fixtures.protocol,
+    event,
+    requestId,
+    data,
+  })
+}
+
+for (const method of ['chat.stream', 'chat.retry']) {
+  test(`Backend accepts Chat lifecycle for matching ${method}`, () => {
+    const { backend, events } = createPendingChat(method)
+
+    backend.handleProtocolLine(eventFrame(
+      'chat-state-1',
+      'chat.started',
+      { chatId: 'chat_fixture' },
+    ))
+
+    assert.deepEqual(events.at(-1), {
+      type: 'protocol-event',
+      name: 'chat.started',
+      requestId: 'chat-state-1',
+      data: { chatId: 'chat_fixture' },
+    })
+  })
+}
+
+for (const [name, method, expectedChatId, receivedChatId] of [
+  ['non-generation method', 'settings.get', undefined, 'chat_fixture'],
+  ['different Chat', 'chat.stream', 'chat_fixture', 'chat_other'],
+]) {
+  test(`Backend rejects Chat lifecycle with ${name}`, () => {
+    let killCount = 0
+    const backend = new BackendProcess('.', () => undefined)
+    backend.child = {
+      kill: () => {
+        killCount += 1
+        return true
+      },
+    }
+    backend.pendingRequests.set('chat-event-1', {
+      method,
+      ...(expectedChatId === undefined ? {} : { chatId: expectedChatId }),
+      nextSequence: 0,
+      streamCompleted: false,
+      streamedReply: '',
+      streamedLength: 0,
+    })
+
+    backend.handleProtocolLine(eventFrame(
+      'chat-event-1',
+      'chat.completed',
+      { chatId: receivedChatId },
+    ))
+
+    assert.equal(killCount, 1)
+    assert.equal(backend.getSnapshot().status, 'error')
+    assert.match(
+      backend.getSnapshot().error,
+      /Chat lifecycle event is invalid/,
+    )
+  })
+}
+
+for (const [event, data] of [
+  [
+    'voice.speech.clip',
+    {
+      chatId: 'chat_fixture',
+      clipToken: 'a'.repeat(64),
+      sequence: 0,
+      byteLength: 46,
+      sha256: 'b'.repeat(64),
+      mediaType: 'audio/wav',
+    },
+  ],
+  [
+    'voice.speech.failure',
+    {
+      chatId: 'chat_fixture',
+      sequence: 0,
+      code: 'synthesis_failed',
+    },
+  ],
+  [
+    'voice.speech.terminal',
+    {
+      chatId: 'chat_fixture',
+      state: 'completed',
+      submittedSentences: 1,
+      completedSentences: 1,
+      failedSentences: 0,
+    },
+  ],
+]) {
+  test(`Backend fails closed on unwired ${event}`, () => {
+    const forwarded = []
+    let killCount = 0
+    const backend = new BackendProcess('.', (message) => {
+      if (message.type === 'protocol-event') {
+        forwarded.push(message)
+      }
+    })
+    backend.child = {
+      kill: () => {
+        killCount += 1
+        return true
+      },
+    }
+    // Even a matching Chat generation cannot authorize speech metadata before
+    // the fd3 owner and frame pairing are integrated.
+    backend.pendingRequests.set('speech-event-1', {
+      method: 'chat.stream',
+      chatId: 'chat_fixture',
+      nextSequence: 0,
+      streamCompleted: false,
+      streamedReply: '',
+      streamedLength: 0,
+    })
+
+    backend.handleProtocolLine(eventFrame(
+      'speech-event-1',
+      event,
+      data,
+    ))
+
+    assert.equal(killCount, 1)
+    assert.equal(backend.getSnapshot().status, 'error')
+    assert.match(
+      backend.getSnapshot().error,
+      /speech event arrived before audio delivery was enabled/,
+    )
+    assert.deepEqual(forwarded, [])
   })
 }
 

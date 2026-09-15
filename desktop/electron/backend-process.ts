@@ -2044,17 +2044,54 @@ export class BackendProcess {
   }
 
   private handleBackendEvent(message: ProtocolEventMessage): void {
-    if (
-      message.requestId !== null
-      && !this.pendingRequests.has(message.requestId)
-    ) {
+    if (!this.pendingRequests.has(message.requestId)) {
       this.protocolFailure('Backend event has no matching request.')
       return
     }
-    if (message.event.startsWith('voice.transcription.')) {
-      const pending = message.requestId === null
-        ? undefined
-        : this.pendingRequests.get(message.requestId)
+    if (
+      message.event === 'voice.speech.clip'
+      || message.event === 'voice.speech.failure'
+      || message.event === 'voice.speech.terminal'
+    ) {
+      // Control metadata is not useful without its private fd3 frame and ACK
+      // state. Until that owner is wired here, forwarding any speech event
+      // would let a Backend create an unpaired or misleading Renderer state.
+      this.protocolFailure(
+        'Backend speech event arrived before audio delivery was enabled.',
+      )
+      return
+    }
+    if (
+      message.event === 'chat.started'
+      || message.event === 'chat.completed'
+      || message.event === 'chat.cancelled'
+    ) {
+      const pending = this.pendingRequests.get(message.requestId)
+      if (
+        !CHAT_GENERATION_METHODS.has(pending?.method ?? 'shutdown')
+        || pending?.chatId === undefined
+        || Object.keys(message.data).length !== 1
+        || message.data.chatId !== pending.chatId
+      ) {
+        this.protocolFailure('Backend Chat lifecycle event is invalid.')
+        return
+      }
+      this.emitToRenderer({
+        type: 'protocol-event',
+        name: message.event,
+        requestId: message.requestId,
+        data: { ...message.data },
+      })
+      return
+    }
+    if (
+      message.event === 'voice.transcription.started'
+      || message.event === 'voice.transcription.completed'
+      || message.event === 'voice.transcription.cancelled'
+      || message.event === 'voice.transcription.timed_out'
+      || message.event === 'voice.transcription.failed'
+    ) {
+      const pending = this.pendingRequests.get(message.requestId)
       const expected = pending?.voiceTranscriptionRequest
       if (
         !VOICE_TRANSCRIPTION_LIFECYCLE_EVENTS.has(message.event)
@@ -2067,17 +2104,12 @@ export class BackendProcess {
         this.protocolFailure(
           'Backend Voice transcription event is invalid.',
         )
+        return
       }
       // Final renderer state comes only from the validated terminal response.
       // Swallowing Python lifecycle events avoids forwarding arbitrary data.
       return
     }
-    this.emitToRenderer({
-      type: 'protocol-event',
-      name: message.event,
-      requestId: message.requestId,
-      data: { ...message.data },
-    })
   }
 
   private handleExit(

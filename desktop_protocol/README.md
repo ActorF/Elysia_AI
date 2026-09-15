@@ -135,13 +135,27 @@ decoder will accept the payload. The current non-streaming GPT-SoVITS adapter
 configures WAV/AAC only, while the general Python contract also understands a
 bounded Ogg Opus shape. A playback layer must handle decoder rejection. By
 comparison, one Protocol v1 NDJSON frame is capped at 16 MiB; Base64 would
-expand the payload by roughly another third. A future desktop extension
-therefore must not place arbitrary synthesized bytes directly in the existing
-JSON frame. It must
-first define a bounded temporary-file token, a bounded binary stream, or an
-equivalent trusted delivery primitive with ownership, expiry, cancellation, and
-cleanup rules. Base URL, checkpoint/reference paths, and exact reference prompt
-must remain inside the Python/local-service boundary regardless of that choice.
+expand the payload by roughly another third. The reserved Desktop delivery
+design assigns synthesized audio to a separate inherited binary pipe at child
+descriptor 3. Its fixed header will contain an opaque 256-bit clip token,
+uint32 sentence sequence, bounded byte length, and SHA-256 digest; the payload
+will be an exact 32 kHz mono PCM16 WAV no larger than 8 MiB. The standalone
+Electron reader can validate that framing incrementally and admit at most one
+unacknowledged frame, so JSON parsing need never hold arbitrary audio and slow
+playback can apply bounded backpressure.
+
+The correlated `voice.speech.clip`, `voice.speech.failure`, and
+`voice.speech.terminal` events are closed shapes. Clip metadata must match the
+next binary frame before playback; failures expose only a stable enum; terminal
+counters describe completion or cancellation. These events cannot carry source
+text, Base64 audio, paths, profile/reference details, cache state, or native
+diagnostics. Chat and transcription lifecycle events are closed and
+request-correlated for the same reason. The capability remains unadvertised
+until the managed synthesizer, fd3 owner, binary reader, and playback lifecycle
+are wired together. Until then, Electron terminates the Backend connection on
+every `voice.speech.*` event rather than forwarding unpaired metadata. Base URL,
+checkpoint/reference paths, and the exact reference prompt remain inside the
+Python/local-service boundary.
 
 `attachment.list`, `attachment.add`, and `attachment.remove` operate on one
 exact Chat or Project scope. Native source paths are accepted only across the

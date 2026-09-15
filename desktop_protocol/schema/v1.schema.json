@@ -34,7 +34,10 @@
     "voice.transcription.start sampleCount and speech markers obey the same frame alignment, bounds, and minimum speech span as voice.capture.complete",
     "voice.transcription.start pcmBase64 is strict canonical Base64 whose decoded byte length equals sampleCount * 2",
     "voice.transcription result text follows the protocol non-blank code-point definition",
-    "voice.transcription results contain no PCM, model path, or native error detail"
+    "voice.transcription results contain no PCM, model path, or native error detail",
+    "voice.speech.clip metadata exactly matches the next private binary frame before playback",
+    "voice.speech events contain no source text, model path, profile, cache state, or native error detail",
+    "voice.speech.terminal satisfies failedSentences <= completedSentences <= submittedSentences and completed state has equal completed/submitted counts"
   ],
   "oneOf": [
     { "$ref": "#/$defs/handshakeRequest" },
@@ -1703,21 +1706,166 @@
       "additionalProperties": false
     },
     "event": {
-      "type": "object",
-      "properties": {
-        "type": { "const": "event" },
-        "protocol": { "$ref": "#/$defs/protocol" },
-        "event": { "$ref": "#/$defs/identifier" },
-        "requestId": {
-          "oneOf": [
-            { "$ref": "#/$defs/identifier" },
-            { "type": "null" }
-          ]
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": { "const": "event" },
+            "protocol": { "$ref": "#/$defs/protocol" },
+            "event": {
+              "enum": ["chat.started", "chat.completed", "chat.cancelled"]
+            },
+            "requestId": { "$ref": "#/$defs/identifier" },
+            "data": {
+              "type": "object",
+              "properties": {
+                "chatId": { "$ref": "#/$defs/identifier" }
+              },
+              "required": ["chatId"],
+              "additionalProperties": false
+            }
+          },
+          "required": ["type", "protocol", "event", "requestId", "data"],
+          "additionalProperties": false
         },
-        "data": { "type": "object" }
-      },
-      "required": ["type", "protocol", "event", "requestId", "data"],
-      "additionalProperties": false
+        {
+          "type": "object",
+          "properties": {
+            "type": { "const": "event" },
+            "protocol": { "$ref": "#/$defs/protocol" },
+            "event": {
+              "enum": [
+                "voice.transcription.started",
+                "voice.transcription.completed",
+                "voice.transcription.cancelled",
+                "voice.transcription.timed_out",
+                "voice.transcription.failed"
+              ]
+            },
+            "requestId": { "$ref": "#/$defs/identifier" },
+            "data": {
+              "type": "object",
+              "properties": {
+                "sessionId": { "$ref": "#/$defs/voiceSessionIdentifier" },
+                "chatId": { "$ref": "#/$defs/identifier" }
+              },
+              "required": ["sessionId", "chatId"],
+              "additionalProperties": false
+            }
+          },
+          "required": ["type", "protocol", "event", "requestId", "data"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": { "const": "event" },
+            "protocol": { "$ref": "#/$defs/protocol" },
+            "event": { "const": "voice.speech.clip" },
+            "requestId": { "$ref": "#/$defs/identifier" },
+            "data": {
+              "type": "object",
+              "properties": {
+                "chatId": { "$ref": "#/$defs/identifier" },
+                "clipToken": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                },
+                "sequence": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 4294967295
+                },
+                "byteLength": {
+                  "type": "integer",
+                  "minimum": 46,
+                  "maximum": 8388608
+                },
+                "sha256": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                },
+                "mediaType": { "const": "audio/wav" }
+              },
+              "required": [
+                "chatId", "clipToken", "sequence", "byteLength",
+                "sha256", "mediaType"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": ["type", "protocol", "event", "requestId", "data"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": { "const": "event" },
+            "protocol": { "$ref": "#/$defs/protocol" },
+            "event": { "const": "voice.speech.failure" },
+            "requestId": { "$ref": "#/$defs/identifier" },
+            "data": {
+              "type": "object",
+              "properties": {
+                "chatId": { "$ref": "#/$defs/identifier" },
+                "sequence": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 4294967295
+                },
+                "code": {
+                  "enum": [
+                    "invalid_request", "unavailable",
+                    "synthesis_failed", "internal_error"
+                  ]
+                }
+              },
+              "required": ["chatId", "sequence", "code"],
+              "additionalProperties": false
+            }
+          },
+          "required": ["type", "protocol", "event", "requestId", "data"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": { "const": "event" },
+            "protocol": { "$ref": "#/$defs/protocol" },
+            "event": { "const": "voice.speech.terminal" },
+            "requestId": { "$ref": "#/$defs/identifier" },
+            "data": {
+              "type": "object",
+              "properties": {
+                "chatId": { "$ref": "#/$defs/identifier" },
+                "state": { "enum": ["completed", "cancelled"] },
+                "submittedSentences": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "completedSentences": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "failedSentences": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                }
+              },
+              "required": [
+                "chatId", "state", "submittedSentences",
+                "completedSentences", "failedSentences"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": ["type", "protocol", "event", "requestId", "data"],
+          "additionalProperties": false
+        }
+      ]
     }
   }
 }

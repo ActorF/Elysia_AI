@@ -3974,10 +3974,10 @@ def test_model_names_are_unique_and_keep_the_active_model_first() -> None:
     assert models == ("active:latest", "other:latest")
 
 
-def test_protocol_output_is_ascii_safe_for_non_ascii_text(
+def test_backend_emits_ascii_only_ndjson(
     tmp_path: Path,
 ) -> None:
-    """Verify that protocol output is ascii safe for non ascii text."""
+    """Keep non-ASCII event data escaped while preserving its round trip."""
     output_stream = StringIO()
     backend = DesktopBackend(
         settings_repository=_desktop_settings_repository(
@@ -3988,15 +3988,17 @@ def test_protocol_output_is_ascii_safe_for_non_ascii_text(
 
     backend._emit(
         build_event(
-            "test.message",
-            {"message": "你好呀"},
-            request_id=None,
+            "chat.completed",
+            {"chatId": "你好呀"},
+            request_id="request-ascii",
         )
     )
 
     wire_message = output_stream.getvalue()
     wire_message.encode("ascii")
-    assert json.loads(wire_message)["data"] == {"message": "你好呀"}
+    decoded = json.loads(wire_message)
+    assert decoded["requestId"] == "request-ascii"
+    assert decoded["data"] == {"chatId": "你好呀"}
 
 
 def test_protocol_streams_are_reconfigured_to_utf8() -> None:

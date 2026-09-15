@@ -41,6 +41,19 @@ export const VOICE_CAPTURE_MIN_SPEECH_SAMPLES = 3_200
 export const VOICE_CAPTURE_MAX_SESSION_ID_LENGTH = 128
 export const VOICE_CAPTURE_MAX_BASE64_CHARACTERS = 1_280_000
 export const VOICE_TRANSCRIPTION_MAX_TEXT_CODE_POINTS = 4_096
+export const VOICE_SPEECH_MIN_WAV_BYTES = 46
+export const VOICE_SPEECH_MAX_WAV_BYTES = 8 * 1024 * 1024
+export const VOICE_SPEECH_MAX_SEQUENCE = 0xffff_ffff
+export const VOICE_SPEECH_FAILURE_CODES = [
+  'invalid_request',
+  'unavailable',
+  'synthesis_failed',
+  'internal_error',
+] as const
+export const VOICE_SPEECH_TERMINAL_STATES = [
+  'completed',
+  'cancelled',
+] as const
 export const TRANSCRIPTION_MODELS = [
   'tiny',
   'base',
@@ -405,13 +418,84 @@ export interface PermissionMessage {
   scopes: string[]
 }
 
-export interface ProtocolEventMessage {
+export type VoiceSpeechFailureCode = typeof VOICE_SPEECH_FAILURE_CODES[number]
+export type VoiceSpeechTerminalState = typeof VOICE_SPEECH_TERMINAL_STATES[number]
+
+export type ChatLifecycleEventName =
+  | 'chat.started'
+  | 'chat.completed'
+  | 'chat.cancelled'
+
+export type VoiceTranscriptionLifecycleEventName =
+  | 'voice.transcription.started'
+  | 'voice.transcription.completed'
+  | 'voice.transcription.cancelled'
+  | 'voice.transcription.timed_out'
+  | 'voice.transcription.failed'
+
+export interface ChatLifecycleEventMessage {
   type: 'event'
   protocol: ProtocolDescriptor
-  event: string
-  requestId: string | null
-  data: Record<string, unknown>
+  event: ChatLifecycleEventName
+  requestId: string
+  data: { chatId: string }
 }
+
+export interface VoiceTranscriptionLifecycleEventMessage {
+  type: 'event'
+  protocol: ProtocolDescriptor
+  event: VoiceTranscriptionLifecycleEventName
+  requestId: string
+  data: { sessionId: string; chatId: string }
+}
+
+export interface VoiceSpeechClipEventMessage {
+  type: 'event'
+  protocol: ProtocolDescriptor
+  event: 'voice.speech.clip'
+  requestId: string
+  data: {
+    chatId: string
+    clipToken: string
+    sequence: number
+    byteLength: number
+    sha256: string
+    mediaType: 'audio/wav'
+  }
+}
+
+export interface VoiceSpeechFailureEventMessage {
+  type: 'event'
+  protocol: ProtocolDescriptor
+  event: 'voice.speech.failure'
+  requestId: string
+  data: {
+    chatId: string
+    sequence: number
+    code: VoiceSpeechFailureCode
+  }
+}
+
+export interface VoiceSpeechTerminalEventMessage {
+  type: 'event'
+  protocol: ProtocolDescriptor
+  event: 'voice.speech.terminal'
+  requestId: string
+  data: {
+    chatId: string
+    state: VoiceSpeechTerminalState
+    submittedSentences: number
+    completedSentences: number
+    failedSentences: number
+  }
+}
+
+export type ProtocolEventMessage =
+  | ChatLifecycleEventMessage
+  | VoiceTranscriptionLifecycleEventMessage
+  | VoiceSpeechClipEventMessage
+  | VoiceSpeechFailureEventMessage
+  | VoiceSpeechTerminalEventMessage
 
 export type ServerMessage =
   | SuccessResponse
@@ -1998,6 +2082,183 @@ function parsePermission(
   }
 }
 
+function parseChatLifecycleEventData(
+  value: unknown,
+): { chatId: string } {
+  const context = 'chat lifecycle event.data'
+  const data = asRecord(value, context)
+  requireFields(data, ['chatId'], context)
+  return { chatId: readIdentifier(data, 'chatId', context) }
+}
+
+function parseTranscriptionLifecycleEventData(
+  value: unknown,
+): { sessionId: string; chatId: string } {
+  const context = 'voice transcription lifecycle event.data'
+  const data = asRecord(value, context)
+  requireFields(data, ['sessionId', 'chatId'], context)
+  const sessionId = readString(data, 'sessionId', context, {
+    maximum: VOICE_CAPTURE_MAX_SESSION_ID_LENGTH,
+  })
+  if (!VOICE_SESSION_ID_PATTERN.test(sessionId)) {
+    return fail(
+      'protocol.invalid_message',
+      `${context}.sessionId must use the voice_<id> format.`,
+    )
+  }
+  return {
+    sessionId,
+    chatId: readIdentifier(data, 'chatId', context),
+  }
+}
+
+function readSpeechSequence(
+  data: Record<string, unknown>,
+  context: string,
+): number {
+  const sequence = readInteger(data, 'sequence', context)
+  if (sequence < 0 || sequence > VOICE_SPEECH_MAX_SEQUENCE) {
+    return fail(
+      'protocol.invalid_message',
+      `${context}.sequence is outside the binary frame range.`,
+    )
+  }
+  return sequence
+}
+
+function readLowercaseSha256(
+  data: Record<string, unknown>,
+  key: 'clipToken' | 'sha256',
+  context: string,
+): string {
+  const value = readString(data, key, context, { maximum: 64 })
+  if (!/^[0-9a-f]{64}$/u.test(value)) {
+    return fail(
+      'protocol.invalid_message',
+      `${context}.${key} must be a lowercase 256-bit hexadecimal value.`,
+    )
+  }
+  return value
+}
+
+function parseVoiceSpeechClipEventData(
+  value: unknown,
+): VoiceSpeechClipEventMessage['data'] {
+  const context = 'voice.speech.clip event.data'
+  const data = asRecord(value, context)
+  requireFields(
+    data,
+    [
+      'chatId',
+      'clipToken',
+      'sequence',
+      'byteLength',
+      'sha256',
+      'mediaType',
+    ],
+    context,
+  )
+  const byteLength = readInteger(data, 'byteLength', context)
+  if (
+    byteLength < VOICE_SPEECH_MIN_WAV_BYTES
+    || byteLength > VOICE_SPEECH_MAX_WAV_BYTES
+  ) {
+    return fail(
+      'protocol.invalid_message',
+      `${context}.byteLength is outside the bounded WAV range.`,
+    )
+  }
+  if (data.mediaType !== 'audio/wav') {
+    return fail(
+      'protocol.invalid_message',
+      `${context}.mediaType must be audio/wav.`,
+    )
+  }
+  return {
+    chatId: readIdentifier(data, 'chatId', context),
+    clipToken: readLowercaseSha256(data, 'clipToken', context),
+    sequence: readSpeechSequence(data, context),
+    byteLength,
+    sha256: readLowercaseSha256(data, 'sha256', context),
+    mediaType: 'audio/wav',
+  }
+}
+
+function parseVoiceSpeechFailureEventData(
+  value: unknown,
+): VoiceSpeechFailureEventMessage['data'] {
+  const context = 'voice.speech.failure event.data'
+  const data = asRecord(value, context)
+  requireFields(data, ['chatId', 'sequence', 'code'], context)
+  return {
+    chatId: readIdentifier(data, 'chatId', context),
+    sequence: readSpeechSequence(data, context),
+    code: readStringLiteral(
+      data,
+      'code',
+      context,
+      VOICE_SPEECH_FAILURE_CODES,
+    ),
+  }
+}
+
+function parseVoiceSpeechTerminalEventData(
+  value: unknown,
+): VoiceSpeechTerminalEventMessage['data'] {
+  const context = 'voice.speech.terminal event.data'
+  const data = asRecord(value, context)
+  requireFields(
+    data,
+    [
+      'chatId',
+      'state',
+      'submittedSentences',
+      'completedSentences',
+      'failedSentences',
+    ],
+    context,
+  )
+  const state = readStringLiteral(
+    data,
+    'state',
+    context,
+    VOICE_SPEECH_TERMINAL_STATES,
+  )
+  const submittedSentences = readInteger(
+    data,
+    'submittedSentences',
+    context,
+  )
+  const completedSentences = readInteger(
+    data,
+    'completedSentences',
+    context,
+  )
+  const failedSentences = readInteger(
+    data,
+    'failedSentences',
+    context,
+  )
+  if (
+    failedSentences < 0
+    || failedSentences > completedSentences
+    || completedSentences > submittedSentences
+    || (state === 'completed' && completedSentences !== submittedSentences)
+  ) {
+    return fail(
+      'protocol.invalid_message',
+      `${context} counters are inconsistent.`,
+    )
+  }
+  return {
+    chatId: readIdentifier(data, 'chatId', context),
+    state,
+    submittedSentences,
+    completedSentences,
+    failedSentences,
+  }
+}
+
 function parseEvent(
   message: Record<string, unknown>,
   protocol: ProtocolDescriptor,
@@ -2007,15 +2268,64 @@ function parseEvent(
     ['type', 'protocol', 'event', 'requestId', 'data'],
     'event',
   )
-  return {
-    type: 'event',
-    protocol,
-    event: readIdentifier(message, 'event', 'event'),
-    requestId: message.requestId === null
-      ? null
-      : readIdentifier(message, 'requestId', 'event'),
-    data: asRecord(message.data, 'event.data'),
+  const event = readIdentifier(message, 'event', 'event')
+  const requestId = readIdentifier(message, 'requestId', 'event')
+  if (
+    event === 'chat.started'
+    || event === 'chat.completed'
+    || event === 'chat.cancelled'
+  ) {
+    return {
+      type: 'event',
+      protocol,
+      event,
+      requestId,
+      data: parseChatLifecycleEventData(message.data),
+    }
   }
+  if (
+    event === 'voice.transcription.started'
+    || event === 'voice.transcription.completed'
+    || event === 'voice.transcription.cancelled'
+    || event === 'voice.transcription.timed_out'
+    || event === 'voice.transcription.failed'
+  ) {
+    return {
+      type: 'event',
+      protocol,
+      event,
+      requestId,
+      data: parseTranscriptionLifecycleEventData(message.data),
+    }
+  }
+  if (event === 'voice.speech.clip') {
+    return {
+      type: 'event',
+      protocol,
+      event,
+      requestId,
+      data: parseVoiceSpeechClipEventData(message.data),
+    }
+  }
+  if (event === 'voice.speech.failure') {
+    return {
+      type: 'event',
+      protocol,
+      event,
+      requestId,
+      data: parseVoiceSpeechFailureEventData(message.data),
+    }
+  }
+  if (event === 'voice.speech.terminal') {
+    return {
+      type: 'event',
+      protocol,
+      event,
+      requestId,
+      data: parseVoiceSpeechTerminalEventData(message.data),
+    }
+  }
+  return fail('protocol.invalid_message', 'event.event is unsupported.')
 }
 
 /** Parse one untrusted Backend line into the protocol's response/stream/event union. */

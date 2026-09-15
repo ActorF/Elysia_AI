@@ -257,8 +257,8 @@ ChatSession.project_id
 | `desktop/electron/main.ts` | Electron 主进程；创建带品牌图标的窗口/托盘，验证 Sender、Settings/STT 参数、请求 ID、路径和权限，注册固定 IPC，控制导航与应用关闭。 | Preload、BackendProcess、原生 Dialog/Clipboard/Audio、`public/elysia-icon.png` |
 | `desktop/electron/bounded-ndjson.ts` | 用固定上限 Buffer 增量切分 Python stdout；按原始字节限制 Frame，接受 CRLF，严格拒绝坏 UTF-8、未换行截断和超限无换行数据，并在终态移除全部 Stream Listener。 | `desktop/electron/backend-process.ts`、Protocol Contract Tests |
 | `desktop/electron/speech-audio-channel.ts` | 增量解析独立 Pipe 上的固定 84-byte `audio.binary.v1` Frame；在 Payload 分配前限制 8 MiB，流式校验 SHA-256，只接受精确 32 kHz mono PCM16 WAV 与 120 秒上限，并以单 Frame ACK/Discard、Pause 和 `unshift` 保持顺序、背压及有界内存。任何坏 Header、Token、Hash、WAV、截断或 ACK 都会终止 Reader，但 Reader 不销毁 Owner Stream。 | 后续 `desktop/electron/backend-process.ts` fd3 Owner 与私有 Electron 播放器；原始 WAV 不进入 NDJSON、Preload Public API 或 React |
-| `desktop/electron/backend-process.ts` | Python 子进程 Owner 和 Protocol State Machine；通过有界二进制 NDJSON Reader 在解码前限制 stdout，除 Handshake/Stream/Cancel 外，关联 STT Request/Session/Chat、拒绝并发生成与配置写入、净化 Progress/Error、丢弃 PCM Metadata，并只向 Renderer 发 Final/Error；Python stderr 不原样暴露。 | Main、`desktop_backend.py`、`protocol.ts`、`bounded-ndjson.ts` |
-| `desktop/electron/protocol.ts` | TypeScript 端 Protocol v1 类型、Builder、Parser 和严格 Runtime Validation；覆盖 STT 配置枚举、exact Readiness Status、一次性 Voice Transcription 输入与 PCM-free Final Result，不把静态类型当安全边界。 | BackendProcess、共享 Schema/Fixtures、Contract Tests |
+| `desktop/electron/backend-process.ts` | Python 子进程 Owner 和 Protocol State Machine；通过有界二进制 NDJSON Reader 在解码前限制 stdout，关联 Chat/STT Request 与封闭 Lifecycle Event、拒绝并发生成与配置写入、净化 Progress/Error、丢弃 PCM Metadata，并只向 Renderer 发受限 Final/Error；Python stderr 不原样暴露。 | Main、`desktop_backend.py`、`protocol.ts`、`bounded-ndjson.ts` |
+| `desktop/electron/protocol.ts` | TypeScript 端 Protocol v1 类型、Builder、Parser 和严格 Runtime Validation；除 STT exact 状态与一次性 PCM 请求外，还封闭验证 Speech Clip/Failure/Terminal 的 Request、Token、uint32 Sequence、8 MiB WAV Metadata、失败枚举和终态计数，不把静态类型当安全边界。 | BackendProcess、共享 Schema/Fixtures、Contract Tests、私有二进制音频 Reader |
 | `desktop/electron/protocol-text.ts` | 定义跨 Python/TypeScript 一致的 Unicode Code Point 长度、Blank Set 和 Trim 规则。 | `protocol.ts`、Python Contracts |
 | `desktop/electron/renderer-source.ts` | 只允许准确的 Vite Root 或打包 `dist/index.html` 作为可信 Renderer 来源。 | Main、Permission Policy、测试 |
 | `desktop/electron/audio-permission.ts` | 只为可信主窗口和主 Frame 放行 audio-only microphone 或 speaker selection。 | Main 的 Chromium Permission Handler |
@@ -328,12 +328,12 @@ Project Memory 页面目前仍是明确 Placeholder。Project Source 只安全�
 
 | 文件 | 实际用途 | 主要连接 |
 | --- | --- | --- |
-| `desktop_protocol/README.md` | 人类可读 Protocol v1 文档；说明 Handshake、Capabilities、Streaming、Cancel、Settings、Attachment、Voice Capture/Transcription 和安全不变量。 | Python/TypeScript 实现和测试 |
-| `desktop_protocol/schema/v1.schema.json` | Draft 2020-12 JSON Schema；描述所有 Client/Server Frame，并约束 STT 设置枚举、Readiness exact object、PCM/Final Result 和跨字段状态不变量。 | Shared Fixtures、Python/Node Contract Tests |
-| `desktop_protocol/fixtures/v1.samples.json` | Python 与 TypeScript 同时读取的 Valid/Invalid Conformance Samples；包含 STT Settings Desired/Active、可用/不可用状态和敏感额外字段拒绝样本。 | `contracts.py`、`protocol.ts`、两端测试 |
+| `desktop_protocol/README.md` | 人类可读 Protocol v1 文档；说明 Handshake、Capabilities、Streaming、Cancel、Settings、Attachment、Voice Capture/Transcription，以及 fd3 Speech Audio Frame 与封闭控制事件的不变量。 | Python/TypeScript 实现和测试 |
+| `desktop_protocol/schema/v1.schema.json` | Draft 2020-12 JSON Schema；描述所有 Client/Server Frame，并约束 STT 状态、PCM/Final Result，以及 Speech Clip/Failure/Terminal 的 exact payload、uint32/8 MiB 边界和安全枚举。 | Shared Fixtures、Python/Node Contract Tests |
+| `desktop_protocol/fixtures/v1.samples.json` | Python 与 TypeScript 同时读取的 Valid/Invalid Conformance Samples；包含 STT 状态以及 Speech Clip/Failure/Terminal 的合法样本、未知 Event、路径/错误详情泄露和计数不一致拒绝样本。 | `contracts.py`、`protocol.ts`、两端测试 |
 | `desktop_protocol/audio_channel.py` | 用固定 84-byte Header 和独立 fd3 匿名 Pipe 传送最多 8 MiB、120 秒的 canonical 32 kHz mono PCM16 WAV；生成不重复 Correlation Token、SHA-256 和安全 Metadata，验证 OS Pipe 类型与去继承，强制单一待发送 Frame、Partial-write Poison，并让 Close 不等待阻塞 Writer。 | 后续 `desktop_backend.py` Speech Queue Callback、Electron Main 二进制 Parser；Electron 停止时须先 drain/关闭读端，原始音频不进入 NDJSON 或 React |
-| `desktop_protocol/contracts.py` | Python 端 TypedDict、严格 Parser、Runtime Validator 和 Response/Error/Stream/Event Builder；序列化安全 STT Status，拒绝路径、Native Message 与扩展字段。 | `desktop_backend.py`、Schema/Fixtures、Python Tests |
-| `desktop_protocol/__init__.py` | 汇出 NDJSON 协议与私有音频通道的常量、类型、Parser、Builder 和 Writer。 | Desktop Backend、测试 |
+| `desktop_protocol/contracts.py` | Python 端 TypedDict、严格 Parser、Runtime Validator 和 Builder；只接受已知且 Request-correlated 的 Chat/STT/Speech Event，并严格约束 Speech Token、Digest、Sequence、WAV 长度、失败枚举与终态计数，拒绝路径、文本、Native Message 与扩展字段。 | `desktop_backend.py`、Schema/Fixtures、Python Tests |
+| `desktop_protocol/__init__.py` | 汇出 NDJSON 协议、封闭 Speech Event 边界与私有音频通道的常量、类型、Parser、Builder 和 Writer。 | Desktop Backend、测试 |
 
 协议的 Python 与 TypeScript Parser 都是手写的，Schema 不是代码生成器。因此修改协议时必须同步维护两端和共享 Fixtures。
 
@@ -366,6 +366,7 @@ Project Memory 页面目前仍是明确 Placeholder。Project Source 只安全�
 | `tests/test_desktop_backend.py` | Python Bridge 的 Handshake、Routing、Streaming、Cancel、Chat/Project/Settings/Attachment，以及 STT Readiness、Admission、配置写互斥、终态与 Shutdown Race。 |
 | `tests/test_desktop_audio_channel.py` | 验证 fd3 固定所有权、OS Pipe 类型与去继承、84-byte Header、Token/Digest、无歧义桌面 PCM WAV、8 MiB/120 秒上限、Partial Write、单待发 Frame、反射篡改、Poison、非阻塞 Close 和错误脱敏。 |
 | `tests/test_desktop_protocol.py` | Python Protocol Parser/Builder 与共享 Fixture Contract；覆盖 STT 设置/状态的 exact shape 与脱敏边界。 |
+| `tests/test_desktop_speech_protocol.py` | 验证 Speech Clip/Failure/Terminal Event Builder、二进制 Metadata 上下界、固定失败码、终态计数关系、Request 关联、未知 Event/私有字段拒绝，以及 Schema 与 Runtime 常量一致。 |
 | `tests/test_desktop_settings.py` | Desktop Settings 八字段 Validation、旧 Schema Migration、Desired/Active Restart Diff、Revision CAS、锁和 Quarantine。 |
 | `tests/test_faster_whisper.py` | 不安装 Native Runtime 或模型也能验证离线 Adapter、设备降级、PCM、惰性结果、错误脱敏和边界。 |
 | `tests/test_file_manager.py` | 基础文本文件操作。 |

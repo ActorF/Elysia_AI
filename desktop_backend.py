@@ -75,6 +75,7 @@ from desktop_protocol import (
     PROTOCOL_NAME,
     PROTOCOL_VERSION,
     ClientRequest,
+    ProtocolEventName,
     ProtocolValidationError,
     ServerMessage,
     build_error_response,
@@ -2484,7 +2485,7 @@ class DesktopBackend:
 
     def _emit_event(
         self,
-        event: str,
+        event: ProtocolEventName,
         *,
         request_id: str,
         data: JsonObject,

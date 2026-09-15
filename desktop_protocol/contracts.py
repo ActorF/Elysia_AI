@@ -14,7 +14,7 @@ import math
 import ntpath
 import re
 import unicodedata
-from typing import Any, Final, Literal, NotRequired, TypedDict, cast
+from typing import Any, Final, Literal, NotRequired, TypeAlias, TypedDict, cast
 from urllib.parse import urlsplit
 
 from attachments.domain import validate_file_name, validate_media_type
@@ -40,6 +40,9 @@ VOICE_CAPTURE_MIN_SPEECH_SAMPLES: Final = 3_200
 VOICE_CAPTURE_MAX_SESSION_ID_LENGTH: Final = 128
 VOICE_CAPTURE_MAX_BASE64_CHARACTERS: Final = 1_280_000
 VOICE_TRANSCRIPTION_MAX_TEXT_CODE_POINTS: Final = 4_096
+VOICE_SPEECH_MIN_WAV_BYTES: Final = 46
+VOICE_SPEECH_MAX_WAV_BYTES: Final = 8 * 1024 * 1024
+VOICE_SPEECH_MAX_SEQUENCE: Final = (1 << 32) - 1
 MAX_MEMORY_SETTING: Final = 10_000_000
 MAX_DATA_IMPORT_BYTES: Final = 2_147_483_647
 MAX_PROTOCOL_FRAME_BYTES: Final = 16_777_216
@@ -108,10 +111,64 @@ _VOICE_SESSION_ID_PATTERN: Final = re.compile(r"^voice_[A-Za-z0-9_-]+$")
 _ATTACHMENT_ID_PATTERN: Final = re.compile(
     r"^attachment_[A-Za-z0-9_-]+$"
 )
+_LOWERCASE_SHA256_PATTERN: Final = re.compile(r"^[0-9a-f]{64}$")
 _RESERVED_AUDIO_DEVICE_IDS: Final = frozenset({
     "default",
     "communications",
 })
+
+ProtocolEventName: TypeAlias = Literal[
+    "chat.started",
+    "chat.completed",
+    "chat.cancelled",
+    "voice.transcription.started",
+    "voice.transcription.completed",
+    "voice.transcription.cancelled",
+    "voice.transcription.timed_out",
+    "voice.transcription.failed",
+    "voice.speech.clip",
+    "voice.speech.failure",
+    "voice.speech.terminal",
+]
+VoiceSpeechFailureCode: TypeAlias = Literal[
+    "invalid_request",
+    "unavailable",
+    "synthesis_failed",
+    "internal_error",
+]
+VoiceSpeechTerminalState: TypeAlias = Literal["completed", "cancelled"]
+
+_CHAT_LIFECYCLE_EVENTS: Final = frozenset({
+    "chat.started",
+    "chat.completed",
+    "chat.cancelled",
+})
+_TRANSCRIPTION_LIFECYCLE_EVENTS: Final = frozenset({
+    "voice.transcription.started",
+    "voice.transcription.completed",
+    "voice.transcription.cancelled",
+    "voice.transcription.timed_out",
+    "voice.transcription.failed",
+})
+_VOICE_SPEECH_FAILURE_CODES: Final = frozenset({
+    "invalid_request",
+    "unavailable",
+    "synthesis_failed",
+    "internal_error",
+})
+_VOICE_SPEECH_TERMINAL_STATES: Final = frozenset({
+    "completed",
+    "cancelled",
+})
+_PROTOCOL_EVENT_NAMES: Final = (
+    _CHAT_LIFECYCLE_EVENTS
+    | _TRANSCRIPTION_LIFECYCLE_EVENTS
+    | frozenset({
+        "voice.speech.clip",
+        "voice.speech.failure",
+        "voice.speech.terminal",
+    })
+)
 
 ProtocolMethod = Literal[
     "handshake",
@@ -492,12 +549,12 @@ class PermissionMessage(TypedDict):
 
 
 class EventMessage(TypedDict):
-    """Publish a typed asynchronous Backend event."""
+    """Publish one closed, request-correlated asynchronous Backend event."""
 
     type: Literal["event"]
     protocol: ProtocolDescriptor
-    event: str
-    requestId: str | None
+    event: ProtocolEventName
+    requestId: str
     data: JsonObject
 
 
@@ -2784,21 +2841,180 @@ def _validate_permission(message: JsonObject) -> PermissionMessage:
     return cast(PermissionMessage, message)
 
 
+def _validate_chat_lifecycle_event_data(data: JsonObject) -> None:
+    """Accept only the Chat identifier needed to correlate lifecycle UI."""
+
+    context = "chat lifecycle event.data"
+    _require_fields(data, {"chatId"}, context)
+    _require_identifier(data, "chatId", context)
+
+
+def _validate_transcription_lifecycle_event_data(data: JsonObject) -> None:
+    """Keep transcription lifecycle events free of PCM and native details."""
+
+    context = "voice transcription lifecycle event.data"
+    _require_fields(data, {"sessionId", "chatId"}, context)
+    session_id = _require_string(
+        data,
+        "sessionId",
+        context,
+        maximum=VOICE_CAPTURE_MAX_SESSION_ID_LENGTH,
+    )
+    if _VOICE_SESSION_ID_PATTERN.fullmatch(session_id) is None:
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.sessionId must use the voice_<id> format.",
+        )
+    _require_identifier(data, "chatId", context)
+
+
+def _validate_voice_speech_clip_event_data(data: JsonObject) -> None:
+    """Validate metadata that must exactly match one private binary frame."""
+
+    context = "voice.speech.clip event.data"
+    _require_fields(
+        data,
+        {
+            "chatId",
+            "clipToken",
+            "sequence",
+            "byteLength",
+            "sha256",
+            "mediaType",
+        },
+        context,
+    )
+    _require_identifier(data, "chatId", context)
+    clip_token = _require_string(
+        data,
+        "clipToken",
+        context,
+        maximum=64,
+    )
+    sha256_hex = _require_string(
+        data,
+        "sha256",
+        context,
+        maximum=64,
+    )
+    if (
+        _LOWERCASE_SHA256_PATTERN.fullmatch(clip_token) is None
+        or _LOWERCASE_SHA256_PATTERN.fullmatch(sha256_hex) is None
+    ):
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context} tokens must be lowercase 256-bit hexadecimal values.",
+        )
+    sequence = _require_integer(data, "sequence", context)
+    if not 0 <= sequence <= VOICE_SPEECH_MAX_SEQUENCE:
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.sequence is outside the binary frame range.",
+        )
+    byte_length = _require_integer(data, "byteLength", context)
+    if not (
+        VOICE_SPEECH_MIN_WAV_BYTES
+        <= byte_length
+        <= VOICE_SPEECH_MAX_WAV_BYTES
+    ):
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.byteLength is outside the bounded WAV range.",
+        )
+    media_type = _require_string(data, "mediaType", context, maximum=9)
+    if media_type != "audio/wav":
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.mediaType must be audio/wav.",
+        )
+
+
+def _validate_voice_speech_failure_event_data(data: JsonObject) -> None:
+    """Accept one sanitized per-sentence failure without diagnostic text."""
+
+    context = "voice.speech.failure event.data"
+    _require_fields(data, {"chatId", "sequence", "code"}, context)
+    _require_identifier(data, "chatId", context)
+    sequence = _require_integer(data, "sequence", context)
+    if not 0 <= sequence <= VOICE_SPEECH_MAX_SEQUENCE:
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.sequence is outside the binary frame range.",
+        )
+    code = _require_string(data, "code", context, maximum=16)
+    if code not in _VOICE_SPEECH_FAILURE_CODES:
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.code is unsupported.",
+        )
+
+
+def _validate_voice_speech_terminal_event_data(data: JsonObject) -> None:
+    """Validate final queue counters and their cancellation semantics."""
+
+    context = "voice.speech.terminal event.data"
+    _require_fields(
+        data,
+        {
+            "chatId",
+            "state",
+            "submittedSentences",
+            "completedSentences",
+            "failedSentences",
+        },
+        context,
+    )
+    _require_identifier(data, "chatId", context)
+    state = _require_string(data, "state", context, maximum=9)
+    if state not in _VOICE_SPEECH_TERMINAL_STATES:
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.state is unsupported.",
+        )
+    submitted = _require_integer(data, "submittedSentences", context)
+    completed = _require_integer(data, "completedSentences", context)
+    failed = _require_integer(data, "failedSentences", context)
+    if (
+        not 0 <= failed <= completed <= submitted
+        or (state == "completed" and completed != submitted)
+    ):
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context} counters are inconsistent.",
+        )
+
+
 def _validate_event(message: JsonObject) -> EventMessage:
+    """Dispatch one event to its exact path-free payload validator."""
+
     _require_fields(
         message,
         {"type", "protocol", "event", "requestId", "data"},
         "event",
     )
-    _require_string(
+    event = _require_string(
         message,
         "event",
         "event",
         maximum=MAX_IDENTIFIER_LENGTH,
     )
-    if message.get("requestId") is not None:
-        _require_identifier(message, "requestId", "event")
-    _as_object(message["data"], "event.data")
+    if event not in _PROTOCOL_EVENT_NAMES:
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            "event.event is unsupported.",
+        )
+    _require_identifier(message, "requestId", "event")
+    data = _as_object(message["data"], "event.data")
+    if event in _CHAT_LIFECYCLE_EVENTS:
+        _validate_chat_lifecycle_event_data(data)
+    elif event in _TRANSCRIPTION_LIFECYCLE_EVENTS:
+        _validate_transcription_lifecycle_event_data(data)
+    elif event == "voice.speech.clip":
+        _validate_voice_speech_clip_event_data(data)
+    elif event == "voice.speech.failure":
+        _validate_voice_speech_failure_event_data(data)
+    else:
+        _validate_voice_speech_terminal_event_data(data)
     return cast(EventMessage, message)
 
 
@@ -2979,12 +3195,12 @@ def build_permission(
 
 
 def build_event(
-    event: str,
+    event: ProtocolEventName,
     data: JsonObject,
     *,
-    request_id: str | None,
+    request_id: str,
 ) -> EventMessage:
-    """Build one asynchronous Backend event."""
+    """Build one exact request-correlated asynchronous Backend event."""
 
     return cast(
         EventMessage,

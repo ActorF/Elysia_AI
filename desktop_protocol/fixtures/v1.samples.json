@@ -923,6 +923,53 @@
         "requestId": "chat-1",
         "data": { "chatId": "chat_fixture" }
       }
+    },
+    {
+      "name": "voice speech clip event",
+      "message": {
+        "type": "event",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "event": "voice.speech.clip",
+        "requestId": "chat-voice-1",
+        "data": {
+          "chatId": "chat_fixture",
+          "clipToken": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "sequence": 0,
+          "byteLength": 32044,
+          "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "mediaType": "audio/wav"
+        }
+      }
+    },
+    {
+      "name": "voice speech failure event",
+      "message": {
+        "type": "event",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "event": "voice.speech.failure",
+        "requestId": "chat-voice-1",
+        "data": {
+          "chatId": "chat_fixture",
+          "sequence": 1,
+          "code": "synthesis_failed"
+        }
+      }
+    },
+    {
+      "name": "voice speech terminal event",
+      "message": {
+        "type": "event",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "event": "voice.speech.terminal",
+        "requestId": "chat-voice-1",
+        "data": {
+          "chatId": "chat_fixture",
+          "state": "completed",
+          "submittedSentences": 2,
+          "completedSentences": 2,
+          "failedSentences": 1
+        }
+      }
     }
   ],
   "invalidClientMessages": [
@@ -1485,6 +1532,66 @@
         "requestId": "chat-1",
         "data": {},
         "extra": true
+      }
+    },
+    {
+      "name": "unknown event name",
+      "message": {
+        "type": "event",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "event": "voice.private.diagnostic",
+        "requestId": "chat-1",
+        "data": {}
+      }
+    },
+    {
+      "name": "voice speech clip exposes a private path",
+      "message": {
+        "type": "event",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "event": "voice.speech.clip",
+        "requestId": "chat-voice-1",
+        "data": {
+          "chatId": "chat_fixture",
+          "clipToken": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "sequence": 0,
+          "byteLength": 32044,
+          "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "mediaType": "audio/wav",
+          "path": "D:\\private\\speech.wav"
+        }
+      }
+    },
+    {
+      "name": "voice speech failure exposes diagnostic text",
+      "message": {
+        "type": "event",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "event": "voice.speech.failure",
+        "requestId": "chat-voice-1",
+        "data": {
+          "chatId": "chat_fixture",
+          "sequence": 1,
+          "code": "internal_error",
+          "message": "D:/private/model failed"
+        }
+      }
+    },
+    {
+      "name": "voice speech terminal has inconsistent counters",
+      "runtimeOnly": true,
+      "message": {
+        "type": "event",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "event": "voice.speech.terminal",
+        "requestId": "chat-voice-1",
+        "data": {
+          "chatId": "chat_fixture",
+          "state": "completed",
+          "submittedSentences": 2,
+          "completedSentences": 1,
+          "failedSentences": 0
+        }
       }
     },
     {
