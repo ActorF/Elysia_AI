@@ -657,6 +657,7 @@ class DesktopSpeechCoordinator:
     def _mark_unavailable(self) -> None:
         """Disable a failed optional speech path while preserving text Chat."""
 
+        undelivered: _TurnRecord | None = None
         with self._lock:
             if self._state in ("unavailable", "closed"):
                 return
@@ -669,11 +670,18 @@ class DesktopSpeechCoordinator:
                 active.cancelled = True
                 active.buffered_chunks.clear()
                 active.buffered_code_points = 0
+                if active.delegate is None:
+                    # Bootstrap can fail on either side of start_turn's state
+                    # check. Retire pre-queue work in both schedules so the
+                    # observable lifecycle never depends on thread timing.
+                    undelivered = active
             queue, self._queue = self._queue, None
             runtime, self._runtime = self._runtime, None
             writer, self._audio_writer = self._audio_writer, None
             self._binding = None
         self._release_optional_resources(writer, queue, runtime)
+        if undelivered is not None:
+            self._emit_undelivered_cancel(undelivered)
         logger.error("Optional managed desktop speech became unavailable.")
 
 

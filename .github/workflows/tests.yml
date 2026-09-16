@@ -31,9 +31,9 @@ jobs:
       - name: Run tests
         run: python -m pytest -v
 
-      - name: Run Python type checks
+      - name: Run Windows-targeted Python type checks
         run: >-
-          python -m mypy
+          python -m mypy --platform win32
           agent attachments chats config core desktop_protocol memory models projects recovery
           scripts tools ui voice desktop_backend.py desktop_speech.py start.py
 

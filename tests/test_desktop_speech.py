@@ -753,14 +753,30 @@ def test_bootstrap_failure_closes_only_optional_speech(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Set unavailable and close fd3 without emitting private failure details."""
+    """Close fd3 and retire startup work without private failure details."""
 
     stream = _RecordingStream()
-    events: list[object] = []
+    events: list[tuple[str, str, dict[str, Any]]] = []
+    runtime_started = Event()
+    allow_runtime_failure = Event()
+    terminal = Event()
+
+    def _record_event(
+        name: str,
+        request_id: str,
+        data: dict[str, Any],
+    ) -> None:
+        """Capture the timing-independent sanitized bootstrap outcome."""
+
+        events.append((name, request_id, data))
+        if name == "voice.speech.terminal":
+            terminal.set()
 
     def _fail_runtime(_config: object) -> object:
-        """Raise a path-bearing native error that must stay out of protocol."""
+        """Fail after the test has registered startup work with the coordinator."""
 
+        runtime_started.set()
+        assert allow_runtime_failure.wait(2.0)
         raise OSError(r"D:\private\runtime\missing.dll")
 
     monkeypatch.setattr(
@@ -771,19 +787,40 @@ def test_bootstrap_failure_closes_only_optional_speech(
     coordinator = DesktopSpeechCoordinator(
         _config(tmp_path),
         AudioChannelWriter(stream),  # type: ignore[arg-type]
-        lambda *event: events.append(event),
+        _record_event,
     )
     turn = coordinator.start_turn("request-failure", "chat-failure")
+    assert runtime_started.wait(1.0)
     turn.feed("Text still succeeds.")
     turn.finish()
+    allow_runtime_failure.set()
 
     assert coordinator.wait_until_settled(1.0)
+    assert terminal.wait(1.0)
     assert coordinator.get_status().state == "unavailable"
     assert coordinator.get_status().available is False
     assert stream.closed
     assert bytes(stream.buffer) == b""
-    assert events == []
+    assert events == [
+        (
+            "voice.speech.terminal",
+            "request-failure",
+            {
+                "chatId": "chat-failure",
+                "state": "cancelled",
+                "submittedSentences": 0,
+                "completedSentences": 0,
+                "failedSentences": 0,
+            },
+        )
+    ]
+    assert "private" not in repr(events)
     coordinator.shutdown()
+    coordinator.shutdown()
+    turn.feed("Late text cannot reopen a retired turn.")
+    turn.finish()
+    assert not turn.cancel()
+    assert len(events) == 1
     assert coordinator.get_status().state == "closed"
 
 

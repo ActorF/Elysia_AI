@@ -45,6 +45,11 @@ from voice.profiles import (
 )
 
 
+pytestmark = pytest.mark.skipif(
+    os.name != "nt",
+    reason="The managed parent runtime requires native Windows path and handle semantics.",
+)
+
 _CHALLENGE = "b" * 64
 _VOLUME_ROOT = Path("\\\\?\\Volume{11111111-1111-1111-1111-111111111111}\\")
 
