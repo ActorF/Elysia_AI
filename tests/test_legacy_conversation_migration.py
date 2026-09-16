@@ -166,6 +166,123 @@ def test_migration_is_idempotent(tmp_path: Path) -> None:
     assert len(repository.list_chats()) == 1
 
 
+def test_deleted_migrated_chat_remains_deleted_on_restart(tmp_path: Path) -> None:
+    """Treat a valid marker as a tombstone after permanent Chat deletion."""
+
+    write_legacy_conversation(tmp_path)
+    migrator, repository = create_migrator(tmp_path)
+    first = migrator.migrate()
+    assert first.chat_id is not None
+    migrator.delete_chat(first.chat_id)
+
+    repeated = migrator.migrate()
+
+    assert repeated.status == "already_migrated"
+    assert repeated.chat_id is None
+    assert repeated.message_count == 2
+    assert repository.list_chats(include_archived=True) == ()
+
+
+def test_version_one_marker_remains_readable(tmp_path: Path) -> None:
+    """Accept an existing marker written before explicit deletion tombstones."""
+
+    write_legacy_conversation(tmp_path)
+    migrator, repository = create_migrator(tmp_path)
+    first = migrator.migrate()
+    state_path = (
+        tmp_path
+        / "workspace"
+        / "migrations"
+        / "legacy_conversation_v1.json"
+    )
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["schema_version"] = 1
+    del state["chat_deleted"]
+    write_json(state_path, state)
+
+    repeated = migrator.migrate()
+
+    assert repeated.status == "already_migrated"
+    assert repeated.chat_id == first.chat_id
+    assert len(repository.list_chats(include_archived=True)) == 1
+
+
+def test_missing_migrated_chat_without_tombstone_still_fails_closed(
+    tmp_path: Path,
+) -> None:
+    """Reject storage loss that has no durable evidence of user deletion."""
+
+    write_legacy_conversation(tmp_path)
+    migrator, repository = create_migrator(tmp_path)
+    first = migrator.migrate()
+    assert first.chat_id is not None
+    repository.delete_chat(first.chat_id)
+
+    with pytest.raises(
+        LegacyMigrationError,
+        match="Legacy Chat is missing",
+    ):
+        migrator.migrate()
+
+
+def test_deleted_marker_rejects_invalid_migrated_chat_id(
+    tmp_path: Path,
+) -> None:
+    """Reject a tombstone that cannot identify a real migrated Chat."""
+
+    write_legacy_conversation(tmp_path)
+    migrator, _repository = create_migrator(tmp_path)
+    migrator.migrate()
+    state_path = (
+        tmp_path
+        / "workspace"
+        / "migrations"
+        / "legacy_conversation_v1.json"
+    )
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["chat_id"] = "../../not-a-chat"
+    state["chat_deleted"] = True
+    write_json(state_path, state)
+
+    with pytest.raises(
+        LegacyMigrationError,
+        match="Migration state is invalid",
+    ):
+        migrator.migrate()
+
+
+def test_tombstone_write_failure_restores_deleted_chat(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Roll back deletion if its durable intent record cannot be committed."""
+
+    write_legacy_conversation(tmp_path)
+    migrator, repository = create_migrator(tmp_path)
+    first = migrator.migrate()
+    assert first.chat_id is not None
+    original_session = repository.get_chat(first.chat_id)
+
+    def fail_tombstone_write(_path: Path, _data: object) -> None:
+        """Model an atomic marker write that fails before replacement."""
+
+        raise OSError("simulated tombstone write failure")
+
+    monkeypatch.setattr(
+        migration_module,
+        "atomic_write_json",
+        fail_tombstone_write,
+    )
+
+    with pytest.raises(
+        LegacyMigrationError,
+        match="Chat was restored",
+    ):
+        migrator.delete_chat(first.chat_id)
+
+    assert repository.get_chat(first.chat_id) == original_session
+
+
 def test_migration_allows_new_messages_after_legacy_prefix(
     tmp_path: Path,
 ) -> None:

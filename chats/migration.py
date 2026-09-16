@@ -29,12 +29,13 @@ from .exceptions import (
 from .legacy import (
     LegacyConversationFormatError,
     chat_messages_match_legacy_prefix,
+    is_legacy_migration_chat_id,
     legacy_conversation_messages_from_data,
 )
 from .repository import ChatRepository
 from .storage import atomic_write_json, read_json_object
 
-LEGACY_MIGRATION_SCHEMA_VERSION: Final[Literal[1]] = 1
+LEGACY_MIGRATION_SCHEMA_VERSION: Final[Literal[2]] = 2
 _LEGACY_TIMESTAMP_FORMAT: Final = "%Y-%m-%d %H:%M:%S"
 
 
@@ -143,6 +144,82 @@ class LegacyConversationMigrator:
             chat_id=session.chat_id,
             message_count=len(session.messages),
         )
+
+    def delete_chat(self, chat_id: ChatId) -> None:
+        """Delete one Chat and persist an explicit legacy deletion tombstone.
+
+        Ordinary Chats delegate directly to the repository. For the Chat named
+        by a migration marker, the detail and index are deleted first and the
+        version-two marker is committed last. If that final atomic write fails,
+        the complete Chat is restored so a missing target is never mistaken for
+        an intentional deletion without durable evidence.
+        """
+
+        state = self._load_state()
+        if state is None or state.get("chat_id") != str(chat_id):
+            self._chat_repository.delete_chat(chat_id)
+            return
+
+        session = self._chat_repository.get_chat(chat_id)
+        self._chat_repository.delete_chat(chat_id)
+        tombstone = dict(state)
+        tombstone["schema_version"] = LEGACY_MIGRATION_SCHEMA_VERSION
+        tombstone["chat_deleted"] = True
+        try:
+            atomic_write_json(self._state_file, tombstone)
+        except Exception as state_error:
+            try:
+                self._chat_repository.restore_chat(session)
+            except Exception as rollback_error:
+                raise LegacyMigrationError(
+                    "Legacy Chat deletion failed to save its tombstone and "
+                    "could not restore the Chat."
+                ) from rollback_error
+            raise LegacyMigrationError(
+                "Legacy Chat deletion could not save its tombstone; the Chat "
+                "was restored."
+            ) from state_error
+
+    def restore_chat(self, session: ChatSession) -> None:
+        """Restore one Chat and reverse its legacy deletion tombstone.
+
+        Project cascade deletion uses this operation as its compensating
+        transaction when deleting the owning Project fails. Ordinary Chats
+        delegate directly to the repository. A migrated Chat is restored
+        first and its tombstone is cleared last; if that marker write fails,
+        the restored Chat is removed again so persisted state remains
+        self-consistent and a later startup cannot misread the outcome.
+        """
+
+        state = self._load_state()
+        is_deleted_legacy_chat = (
+            state is not None
+            and state.get("chat_id") == str(session.chat_id)
+            and state.get("chat_deleted") is True
+        )
+        if not is_deleted_legacy_chat:
+            self._chat_repository.restore_chat(session)
+            return
+
+        assert state is not None
+        self._chat_repository.restore_chat(session)
+        restored_state = dict(state)
+        restored_state["schema_version"] = LEGACY_MIGRATION_SCHEMA_VERSION
+        restored_state["chat_deleted"] = False
+        try:
+            atomic_write_json(self._state_file, restored_state)
+        except Exception as state_error:
+            try:
+                self._chat_repository.delete_chat(session.chat_id)
+            except Exception as rollback_error:
+                raise LegacyMigrationError(
+                    "Legacy Chat rollback restored the Chat but could not "
+                    "clear its tombstone or remove the inconsistent Chat."
+                ) from rollback_error
+            raise LegacyMigrationError(
+                "Legacy Chat rollback could not clear its tombstone; the "
+                "restored Chat was removed again."
+            ) from state_error
 
     def _read_bytes(self, file_path: Path) -> bytes:
         try:
@@ -272,7 +349,19 @@ class LegacyConversationMigrator:
             "schema_version", "source_sha256", "backup_path", "chat_id",
             "message_count", "migrated_at", "sources",
         }
-        if set(state) != required or state["schema_version"] != 1:
+        schema_version = state.get("schema_version")
+        if type(schema_version) is int and schema_version == 2:
+            required.add("chat_deleted")
+        if (
+            set(state) != required
+            or type(schema_version) is not int
+            or schema_version not in (1, 2)
+            or not is_legacy_migration_chat_id(state.get("chat_id"))
+            or (
+                schema_version == 2
+                and not isinstance(state["chat_deleted"], bool)
+            )
+        ):
             raise LegacyMigrationError("Migration state is invalid.")
         return state
 
@@ -298,13 +387,26 @@ class LegacyConversationMigrator:
         if not isinstance(chat_id_value, str):
             raise LegacyMigrationError("Migration state chat_id is invalid.")
         chat_id = ChatId(chat_id_value)
+        message_count = len(source_messages)
         try:
             session = self._chat_repository.get_chat(chat_id)
         except ChatNotFoundError as error:
+            if state.get("chat_deleted") is not True:
+                # A missing file or index entry is not enough evidence of user
+                # intent. Only the deletion path may write the explicit marker.
+                raise LegacyMigrationError(
+                    "Migration state exists but its Legacy Chat is missing."
+                ) from error
+            return LegacyMigrationResult(
+                status="already_migrated",
+                chat_id=None,
+                message_count=message_count,
+            )
+        if state.get("chat_deleted") is True:
             raise LegacyMigrationError(
-                "Migration state exists but its Legacy Chat is missing."
-            ) from error
-        message_count = len(source_messages)
+                "Migration state marks a Legacy Chat deleted, but it still "
+                "exists."
+            )
         if not chat_messages_match_legacy_prefix(
             session.messages,
             source_messages,
@@ -334,6 +436,7 @@ class LegacyConversationMigrator:
     ) -> dict[str, object]:
         return {
             "schema_version": LEGACY_MIGRATION_SCHEMA_VERSION,
+            "chat_deleted": False,
             "source_sha256": digest,
             "backup_path": str(backup_file),
             "chat_id": str(session.chat_id),

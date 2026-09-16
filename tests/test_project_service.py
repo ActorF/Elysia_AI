@@ -367,6 +367,28 @@ def test_cascade_rolls_back_deleted_chats_when_project_delete_fails(
     )
 
 
+def test_cascade_lifecycle_callbacks_must_be_configured_as_a_pair(
+    tmp_path: Path,
+) -> None:
+    """Reject one-sided lifecycle hooks that cannot roll back safely."""
+
+    projects = JsonProjectRepository(tmp_path / "data" / "projects")
+    chats = JsonChatRepository(tmp_path / "data" / "chats")
+
+    with pytest.raises(TypeError, match="must be provided together"):
+        ProjectChatService(
+            projects,
+            chats,
+            chat_deleter=chats.delete_chat,
+        )
+    with pytest.raises(TypeError, match="must be provided together"):
+        ProjectChatService(
+            projects,
+            chats,
+            chat_restorer=chats.restore_chat,
+        )
+
+
 def test_invalid_deletion_policy_is_rejected_before_changes(
     tmp_path: Path,
 ) -> None:

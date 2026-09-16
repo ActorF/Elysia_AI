@@ -675,6 +675,200 @@ def test_full_restore_rebases_legacy_backup_to_target_workspace(
     assert repeated.chat_id == migration.chat_id
 
 
+def test_full_restore_preserves_deleted_legacy_chat_tombstone(
+    tmp_path: Path,
+) -> None:
+    """Round-trip a completed migration without resurrecting its deleted Chat."""
+
+    source_dir = tmp_path / "source"
+    source_service, source_chats, _ = service_for(source_dir)
+    write_json(
+        source_dir
+        / "workspace"
+        / "conversations"
+        / "conversation.json",
+        {"messages": [{
+            "timestamp": "2026-08-01 12:00:00",
+            "speaker": "User",
+            "message": "Legacy message that was later deleted",
+        }]},
+    )
+    migration = LegacyConversationMigrator(
+        base_dir=source_dir,
+        chat_repository=source_chats,
+        model_name="qwen3.5:9b",
+        clock=lambda: BASE_TIME,
+    ).migrate()
+    assert migration.chat_id is not None
+    LegacyConversationMigrator(
+        base_dir=source_dir,
+        chat_repository=source_chats,
+        model_name="qwen3.5:9b",
+        clock=lambda: BASE_TIME,
+    ).delete_chat(migration.chat_id)
+    export_file = tmp_path / "all.json"
+    source_service.export_all_user_data(export_file)
+    target_dir = tmp_path / "target"
+    target_service, target_chats, _ = service_for(target_dir)
+
+    restored = target_service.import_bundle(export_file)
+    repeated = LegacyConversationMigrator(
+        base_dir=target_dir,
+        chat_repository=target_chats,
+        model_name="qwen3.5:9b",
+        clock=lambda: BASE_TIME,
+    ).migrate()
+
+    assert restored.chat_ids == ()
+    assert target_chats.list_chats(include_archived=True) == ()
+    assert repeated.status == "already_migrated"
+    assert repeated.chat_id is None
+    assert repeated.message_count == 1
+
+
+def test_full_restore_rejects_changed_source_behind_legacy_tombstone(
+    tmp_path: Path,
+) -> None:
+    """Reject a tombstone whose exported source differs from its backup."""
+
+    source_dir = tmp_path / "source"
+    source_service, source_chats, _ = service_for(source_dir)
+    write_json(
+        source_dir
+        / "workspace"
+        / "conversations"
+        / "conversation.json",
+        {"messages": [{
+            "timestamp": "2026-08-01 12:00:00",
+            "speaker": "User",
+            "message": "Original legacy message",
+        }]},
+    )
+    migration = LegacyConversationMigrator(
+        base_dir=source_dir,
+        chat_repository=source_chats,
+        model_name="qwen3.5:9b",
+        clock=lambda: BASE_TIME,
+    ).migrate()
+    assert migration.chat_id is not None
+    LegacyConversationMigrator(
+        base_dir=source_dir,
+        chat_repository=source_chats,
+        model_name="qwen3.5:9b",
+        clock=lambda: BASE_TIME,
+    ).delete_chat(migration.chat_id)
+    export_file = tmp_path / "all.json"
+    source_service.export_all_user_data(export_file)
+    bundle = json.loads(export_file.read_text(encoding="utf-8"))
+    bundle["payload"]["workspace_files"][
+        "conversations/conversation.json"
+    ]["messages"][0]["message"] = "Changed after deletion"
+    bundle["payload_sha256"] = source_service._payload_digest(
+        bundle["payload"]
+    )
+    write_json(export_file, bundle)
+    target_service, target_chats, _ = service_for(tmp_path / "target")
+
+    with pytest.raises(
+        ImportValidationError,
+        match="source does not match its backup",
+    ):
+        target_service.import_bundle(export_file)
+
+    assert target_chats.list_chats(include_archived=True) == ()
+
+
+def test_full_restore_rejects_invalid_legacy_tombstone_chat_id(
+    tmp_path: Path,
+) -> None:
+    """Reject a tombstone that names no valid deterministic migrated Chat."""
+
+    source_dir = tmp_path / "source"
+    source_service, source_chats, _ = service_for(source_dir)
+    write_json(
+        source_dir
+        / "workspace"
+        / "conversations"
+        / "conversation.json",
+        {"messages": [{
+            "timestamp": "2026-08-01 12:00:00",
+            "speaker": "User",
+            "message": "Original legacy message",
+        }]},
+    )
+    migration = LegacyConversationMigrator(
+        base_dir=source_dir,
+        chat_repository=source_chats,
+        model_name="qwen3.5:9b",
+        clock=lambda: BASE_TIME,
+    ).migrate()
+    assert migration.chat_id is not None
+    LegacyConversationMigrator(
+        base_dir=source_dir,
+        chat_repository=source_chats,
+        model_name="qwen3.5:9b",
+        clock=lambda: BASE_TIME,
+    ).delete_chat(migration.chat_id)
+    export_file = tmp_path / "all.json"
+    source_service.export_all_user_data(export_file)
+    bundle = json.loads(export_file.read_text(encoding="utf-8"))
+    bundle["payload"]["workspace_files"][
+        "migrations/legacy_conversation_v1.json"
+    ]["chat_id"] = "../../not-a-chat"
+    bundle["payload_sha256"] = source_service._payload_digest(
+        bundle["payload"]
+    )
+    write_json(export_file, bundle)
+    target_service, target_chats, _ = service_for(tmp_path / "target")
+
+    with pytest.raises(
+        ImportValidationError,
+        match="chat_id is invalid",
+    ):
+        target_service.import_bundle(export_file)
+
+    assert target_chats.list_chats(include_archived=True) == ()
+
+
+def test_full_restore_rejects_missing_legacy_chat_without_tombstone(
+    tmp_path: Path,
+) -> None:
+    """Reject a truncated bundle that omits a live migrated Chat."""
+
+    source_dir = tmp_path / "source"
+    source_service, source_chats, _ = service_for(source_dir)
+    write_json(
+        source_dir
+        / "workspace"
+        / "conversations"
+        / "conversation.json",
+        {"messages": [{
+            "timestamp": "2026-08-01 12:00:00",
+            "speaker": "User",
+            "message": "Legacy message that must remain referenced",
+        }]},
+    )
+    migration = LegacyConversationMigrator(
+        base_dir=source_dir,
+        chat_repository=source_chats,
+        model_name="qwen3.5:9b",
+        clock=lambda: BASE_TIME,
+    ).migrate()
+    assert migration.chat_id is not None
+    source_chats.delete_chat(migration.chat_id)
+    export_file = tmp_path / "all.json"
+    source_service.export_all_user_data(export_file)
+    target_service, target_chats, _ = service_for(tmp_path / "target")
+
+    with pytest.raises(
+        ImportValidationError,
+        match="does not match its exported Chat",
+    ):
+        target_service.import_bundle(export_file)
+
+    assert target_chats.list_chats(include_archived=True) == ()
+
+
 @pytest.mark.parametrize(
     "changed_field",
     ["role", "content", "created_at"],

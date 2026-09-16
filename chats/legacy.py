@@ -1,5 +1,6 @@
 """Convert and compare the legacy conversation message format."""
 
+import re
 from collections.abc import Sequence
 from datetime import datetime, timezone
 from typing import Final
@@ -7,10 +8,20 @@ from typing import Final
 from .domain import ChatMessage, ChatMessageRole, create_chat_message
 
 _LEGACY_TIMESTAMP_FORMAT: Final = "%Y-%m-%d %H:%M:%S"
+_LEGACY_MIGRATION_CHAT_ID = re.compile(r"^chat_legacy_[0-9a-f]{24}$")
 
 
 class LegacyConversationFormatError(ValueError):
     """Report invalid data in the pre-Chat conversation format."""
+
+
+def is_legacy_migration_chat_id(value: object) -> bool:
+    """Return whether a value is a deterministic migrated-Chat ID."""
+
+    return (
+        isinstance(value, str)
+        and _LEGACY_MIGRATION_CHAT_ID.fullmatch(value) is not None
+    )
 
 
 def legacy_conversation_messages_from_data(

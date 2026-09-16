@@ -32,6 +32,7 @@ from config.desktop_settings import (
 from chats.legacy import (
     LegacyConversationFormatError,
     chat_messages_match_legacy_prefix,
+    is_legacy_migration_chat_id,
     legacy_conversation_messages_from_data,
 )
 from memory.conversation_summary import (
@@ -966,27 +967,34 @@ class DataPortabilityService:
     def _validate_legacy_migration_state(self, data: JsonObject) -> None:
         """Validate the complete legacy migration commit-marker schema."""
 
-        self._require_exact_fields(
-            data,
-            {
-                "schema_version",
-                "source_sha256",
-                "backup_path",
-                "chat_id",
-                "message_count",
-                "migrated_at",
-                "sources",
-            },
-            "legacy migration state",
-        )
-        state_version = data["schema_version"]
+        state_version = data.get("schema_version")
         if (
             not isinstance(state_version, int)
             or isinstance(state_version, bool)
-            or state_version != 1
+            or state_version not in (1, 2)
         ):
             raise ImportValidationError(
                 "Legacy migration state version is unsupported."
+            )
+        required_fields = {
+            "schema_version",
+            "source_sha256",
+            "backup_path",
+            "chat_id",
+            "message_count",
+            "migrated_at",
+            "sources",
+        }
+        if state_version == 2:
+            required_fields.add("chat_deleted")
+        self._require_exact_fields(
+            data,
+            required_fields,
+            "legacy migration state",
+        )
+        if state_version == 2 and not isinstance(data["chat_deleted"], bool):
+            raise ImportValidationError(
+                "Legacy migration deletion state is invalid."
             )
         source_digest = data["source_sha256"]
         if (
@@ -1002,6 +1010,10 @@ class DataPortabilityService:
                 raise ImportValidationError(
                     f"Legacy migration {field_name} is invalid."
                 )
+        if not is_legacy_migration_chat_id(data["chat_id"]):
+            raise ImportValidationError(
+                "Legacy migration chat_id is invalid."
+            )
         self._parse_aware_timestamp(
             cast(str, data["migrated_at"]),
             "migrated_at",
@@ -1124,7 +1136,9 @@ class DataPortabilityService:
         """Cross-check migration state, backup content, and imported Chat.
 
         This prevents an individually valid set of files from claiming that a
-        different Chat was produced by the exported legacy conversation.
+        different Chat was produced by the exported legacy conversation. A
+        missing matching Chat is valid only when a version-two marker carries
+        the explicit tombstone written by the permanent deletion transaction.
         """
 
         state = workspace_files.get(
@@ -1145,18 +1159,50 @@ class DataPortabilityService:
             raise ImportValidationError(
                 "Legacy migration backup is not a valid conversation."
             ) from error
+        current_source = workspace_files.get(
+            "conversations/conversation.json"
+        )
+        if current_source is not None:
+            try:
+                current_messages = legacy_conversation_messages_from_data(
+                    current_source
+                )
+            except LegacyConversationFormatError as error:
+                raise ImportValidationError(
+                    "Legacy migration source is not a valid conversation."
+                ) from error
+            # Import rebases the byte digest because restored JSON formatting
+            # can differ. Semantic equality with the immutable backup prevents
+            # that compatibility step from blessing changed source content.
+            if (
+                len(current_messages) != len(source_messages)
+                or not chat_messages_match_legacy_prefix(
+                    current_messages,
+                    source_messages,
+                )
+            ):
+                raise ImportValidationError(
+                    "Legacy migration source does not match its backup."
+                )
         matching = [
             session
             for session in sessions
             if str(session.chat_id) == chat_id
         ]
-        if (
-            message_count != len(source_messages)
-            or len(matching) != 1
-            or not chat_messages_match_legacy_prefix(
-                matching[0].messages,
-                source_messages,
+        chat_deleted = state.get("chat_deleted") is True
+        if message_count != len(source_messages) or len(matching) > 1:
+            raise ImportValidationError(
+                "Legacy migration state does not match its exported Chat."
             )
+        if chat_deleted:
+            if matching:
+                raise ImportValidationError(
+                    "Legacy migration state does not match its exported Chat."
+                )
+            return
+        if len(matching) != 1 or not chat_messages_match_legacy_prefix(
+            matching[0].messages,
+            source_messages,
         ):
             raise ImportValidationError(
                 "Legacy migration state does not match its exported Chat."

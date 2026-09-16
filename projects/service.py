@@ -28,6 +28,8 @@ from .repository import ProjectRepository
 
 ProjectDeletionPolicy = Literal["restrict", "detach", "cascade"]
 ChatBusyPredicate = Callable[[ChatId], bool]
+ChatDeleter = Callable[[ChatId], None]
+ChatRestorer = Callable[[ChatSession], None]
 Clock = Callable[[], datetime]
 
 
@@ -53,13 +55,33 @@ class ProjectChatService:
         *,
         is_chat_busy: ChatBusyPredicate = _chat_is_never_busy,
         clock: Clock = _default_clock,
+        chat_deleter: ChatDeleter | None = None,
+        chat_restorer: ChatRestorer | None = None,
     ) -> None:
-        """Receive repositories and the process-local Chat busy predicate."""
+        """Receive repositories and reversible Chat lifecycle operations."""
 
         self._project_repository = project_repository
         self._chat_repository = chat_repository
         self._is_chat_busy = is_chat_busy
         self._clock = clock
+        if (chat_deleter is None) != (chat_restorer is None):
+            raise TypeError(
+                "chat_deleter and chat_restorer must be provided together."
+            )
+        if chat_deleter is not None and not callable(chat_deleter):
+            raise TypeError("chat_deleter must be callable when provided.")
+        if chat_restorer is not None and not callable(chat_restorer):
+            raise TypeError("chat_restorer must be callable when provided.")
+        self._chat_deleter = (
+            chat_repository.delete_chat
+            if chat_deleter is None
+            else chat_deleter
+        )
+        self._chat_restorer = (
+            chat_repository.restore_chat
+            if chat_restorer is None
+            else chat_restorer
+        )
 
     def create_project(
         self,
@@ -462,7 +484,10 @@ class ProjectChatService:
 
         try:
             for chat in linked_chats:
-                self._chat_repository.delete_chat(chat.chat_id)
+                # The injected lifecycle boundary can persist deletion intent
+                # that lives outside the Chat repository, such as the legacy
+                # migration tombstone required for safe future startups.
+                self._chat_deleter(chat.chat_id)
                 deleted_chats.append(chat)
 
             self._project_repository.delete_project(project_id)
@@ -494,7 +519,7 @@ class ProjectChatService:
 
         for chat in deleted_chats:
             try:
-                self._chat_repository.restore_chat(chat)
+                self._chat_restorer(chat)
             except ChatRepositoryError as rollback_error:
                 raise ProjectRelationshipRollbackError(
                     "Could not roll back cascade-deleted Chats."

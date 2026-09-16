@@ -154,22 +154,26 @@ def create_brain(settings: AppSettings | None = None) -> Brain:
     chat_repository = JsonChatRepository(
         runtime_settings.base_dir / "workspace" / "chats"
     )
-    LegacyConversationMigrator(
+    legacy_migrator = LegacyConversationMigrator(
         base_dir=runtime_settings.base_dir,
         chat_repository=chat_repository,
         model_name=runtime_settings.model_name,
-    ).migrate()
+    )
+    legacy_migrator.migrate()
     project_repository = JsonProjectRepository(
         runtime_settings.base_dir / "workspace" / "projects"
     )
     active_conversation_service = ActiveConversationService(
         chat_repository,
         project_repository,
+        chat_deleter=legacy_migrator.delete_chat,
     )
     project_service = ProjectChatService(
         project_repository,
         chat_repository,
         is_chat_busy=active_conversation_service.is_chat_busy,
+        chat_deleter=legacy_migrator.delete_chat,
+        chat_restorer=legacy_migrator.restore_chat,
     )
 
     return Brain(

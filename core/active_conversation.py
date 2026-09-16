@@ -29,6 +29,7 @@ from .exceptions import (
 )
 
 Clock = Callable[[], datetime]
+ChatDeleter = Callable[[ChatId], None]
 
 
 def _default_clock() -> datetime:
@@ -63,12 +64,20 @@ class ActiveConversationService:
         project_repository: ProjectRepository,
         *,
         clock: Clock = _default_clock,
+        chat_deleter: ChatDeleter | None = None,
     ) -> None:
-        """Inject repositories and initialize per-Chat in-process state."""
+        """Inject repositories, deletion policy, and per-Chat process state."""
 
         self._chat_repository = chat_repository
         self._project_repository = project_repository
         self._clock = clock
+        if chat_deleter is not None and not callable(chat_deleter):
+            raise TypeError("chat_deleter must be callable when provided.")
+        self._chat_deleter = (
+            chat_repository.delete_chat
+            if chat_deleter is None
+            else chat_deleter
+        )
         self._state_lock = Lock()
         # Chat details are independent, but every commit also updates the one
         # shared lightweight index. Serialize that short persistence phase
@@ -202,7 +211,7 @@ class ActiveConversationService:
         """
 
         with self._guard_idle_chat_action(chat_id):
-            self._chat_repository.delete_chat(chat_id)
+            self._chat_deleter(chat_id)
 
     @contextmanager
     def _guard_idle_chat_action(self, chat_id: ChatId) -> Iterator[None]:

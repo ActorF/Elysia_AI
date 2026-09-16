@@ -835,9 +835,20 @@ def test_slow_delivery_cannot_create_an_unbounded_audio_backlog() -> None:
     try:
         turn.feed("One. Two. Three. Four. Five. Six. ")
         assert first_clip_entered.wait(1.0)
+
+        def _delivery_backlog_is_fully_reserved() -> bool:
+            """Observe one stable status after both synthesis workers go idle."""
+
+            status = queue.get_status()
+            return (
+                status.pending_delivery_events == 2
+                and status.queued_sentences == 4
+                and status.running_sentences == 0
+                and status.occupied_slots == 4
+            )
+
         _wait_until(
-            lambda: queue.get_status().pending_delivery_events == 2
-            and queue.get_status().queued_sentences == 4
+            _delivery_backlog_is_fully_reserved
         )
 
         for index in range(4):
@@ -1477,6 +1488,7 @@ def test_cancel_nowait_does_not_join_a_crossed_delivery_callback() -> None:
     )
     turn.feed("Already crossing. Later work is stale. ")
     assert clip_entered.wait(1.0)
+    _wait_until(lambda: queue.get_status().pending_delivery_clips == 2)
 
     def cancel() -> None:
         """Record that the non-blocking cancellation returned immediately."""
@@ -1540,12 +1552,16 @@ def test_clip_callback_can_cancel_remaining_delivery_reentrantly() -> None:
     events: list[object] = []
     cancel_results: list[bool] = []
     turn_holder: list[SpeechTurn] = []
+    first_clip_entered = Event()
+    allow_first_clip = Event()
 
     def callback(event: object) -> None:
         """Cancel from the first clip while running on the notifier thread."""
 
         events.append(event)
         if isinstance(event, SpeechQueueClip):
+            first_clip_entered.set()
+            assert allow_first_clip.wait(2.0)
             cancel_results.append(turn_holder[0].cancel())
 
     queue = SpeechSynthesisQueue()
@@ -1557,6 +1573,9 @@ def test_clip_callback_can_cancel_remaining_delivery_reentrantly() -> None:
     turn_holder.append(turn)
     try:
         turn.feed("First. Suppress this. ")
+        assert first_clip_entered.wait(1.0)
+        _wait_until(lambda: queue.get_status().pending_delivery_clips == 2)
+        allow_first_clip.set()
         _wait_until(
             lambda: any(isinstance(item, SpeechTurnTerminal) for item in events)
         )
@@ -1570,6 +1589,7 @@ def test_clip_callback_can_cancel_remaining_delivery_reentrantly() -> None:
         assert status.pending_delivery_events == 0
         assert status.pending_delivery_clips == 0
     finally:
+        allow_first_clip.set()
         queue.shutdown(timeout_seconds=2.0)
 
 

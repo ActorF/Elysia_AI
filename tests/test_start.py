@@ -17,7 +17,11 @@ from memory import (
     MemoryRetriever,
     ShortTermMemory,
 )
-from projects import ProjectChatService
+from projects import (
+    ProjectChatService,
+    ProjectRelationshipError,
+    ProjectStorageError,
+)
 from recovery import DataPortabilityService
 
 
@@ -289,6 +293,181 @@ def test_create_brain_migrates_legacy_conversation_once(
         "Legacy question",
         "Legacy answer",
     ]
+
+
+def test_create_brain_records_permanent_legacy_chat_deletion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Keep a deleted migrated Chat absent across a fresh composition root."""
+
+    legacy_file = (
+        tmp_path
+        / "workspace"
+        / "conversations"
+        / "conversation.json"
+    )
+    legacy_file.parent.mkdir(parents=True)
+    legacy_file.write_text(
+        json.dumps({"messages": [{
+            "timestamp": "2026-08-01 12:00:00",
+            "speaker": "User",
+            "message": "Delete this migrated Chat",
+        }]}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        start,
+        "SETTINGS",
+        replace(start.SETTINGS, base_dir=tmp_path),
+    )
+    monkeypatch.setattr(
+        start,
+        "LangChainOllamaChatModel",
+        FakeStartupChatModel,
+    )
+    first_brain = start.create_brain()
+    migrated = first_brain.list_chats()[0]
+
+    first_brain.delete_chat(migrated.chat_id)
+    second_brain = start.create_brain()
+
+    assert second_brain.list_chats(include_archived=True) == ()
+    state = json.loads(
+        (
+            tmp_path
+            / "workspace"
+            / "migrations"
+            / "legacy_conversation_v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert state["schema_version"] == 2
+    assert state["chat_deleted"] is True
+
+
+def test_create_brain_records_project_cascade_legacy_chat_deletion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Keep a migrated Chat deleted when its owning Project is cascaded."""
+
+    legacy_file = (
+        tmp_path
+        / "workspace"
+        / "conversations"
+        / "conversation.json"
+    )
+    legacy_file.parent.mkdir(parents=True)
+    legacy_file.write_text(
+        json.dumps({"messages": [{
+            "timestamp": "2026-08-01 12:00:00",
+            "speaker": "User",
+            "message": "Delete this Chat with its Project",
+        }]}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        start,
+        "SETTINGS",
+        replace(start.SETTINGS, base_dir=tmp_path),
+    )
+    monkeypatch.setattr(
+        start,
+        "LangChainOllamaChatModel",
+        FakeStartupChatModel,
+    )
+    first_brain = start.create_brain()
+    migrated = first_brain.list_chats()[0]
+    project = first_brain.create_project(name="Delete everything")
+    first_brain.move_chat(migrated.chat_id, project.project_id)
+    project_service = first_brain._project_service
+    assert isinstance(project_service, ProjectChatService)
+
+    project_service.delete_project(project.project_id, policy="cascade")
+    second_brain = start.create_brain()
+
+    assert second_brain.list_chats(include_archived=True) == ()
+    state = json.loads(
+        (
+            tmp_path
+            / "workspace"
+            / "migrations"
+            / "legacy_conversation_v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert state["chat_deleted"] is True
+
+
+def test_project_cascade_failure_restores_legacy_chat_and_marker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reverse both Chat deletion and its tombstone when cascade fails."""
+
+    legacy_file = (
+        tmp_path
+        / "workspace"
+        / "conversations"
+        / "conversation.json"
+    )
+    legacy_file.parent.mkdir(parents=True)
+    legacy_file.write_text(
+        json.dumps({"messages": [{
+            "timestamp": "2026-08-01 12:00:00",
+            "speaker": "User",
+            "message": "Restore me if Project deletion fails",
+        }]}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        start,
+        "SETTINGS",
+        replace(start.SETTINGS, base_dir=tmp_path),
+    )
+    monkeypatch.setattr(
+        start,
+        "LangChainOllamaChatModel",
+        FakeStartupChatModel,
+    )
+    first_brain = start.create_brain()
+    migrated = first_brain.list_chats()[0]
+    project = first_brain.create_project(name="Rollback cascade")
+    assigned = first_brain.move_chat(
+        migrated.chat_id,
+        project.project_id,
+    )
+    project_service = first_brain._project_service
+    assert isinstance(project_service, ProjectChatService)
+
+    def fail_project_delete(_project_id: object) -> None:
+        """Fail after the Chat lifecycle transaction has started."""
+
+        raise ProjectStorageError("simulated Project deletion failure")
+
+    monkeypatch.setattr(
+        project_service._project_repository,
+        "delete_project",
+        fail_project_delete,
+    )
+
+    with pytest.raises(ProjectRelationshipError):
+        project_service.delete_project(
+            project.project_id,
+            policy="cascade",
+        )
+
+    assert first_brain.get_chat(migrated.chat_id) == assigned
+    state = json.loads(
+        (
+            tmp_path
+            / "workspace"
+            / "migrations"
+            / "legacy_conversation_v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert state["chat_deleted"] is False
+    second_brain = start.create_brain()
+    assert second_brain.get_chat(migrated.chat_id) == assigned
 
 
 def test_create_data_portability_service_uses_configured_limit(
