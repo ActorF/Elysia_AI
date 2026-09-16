@@ -1,9 +1,11 @@
-/** Verify bounded binary speech framing and explicit delivery backpressure. */
+/** Verify bounded speech framing, playback ownership, and delivery backpressure. */
 
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { PassThrough } from 'node:stream'
 import test from 'node:test'
+import { fileURLToPath } from 'node:url'
 
 import {
   SPEECH_AUDIO_HEADER_BYTES,
@@ -13,6 +15,10 @@ import {
   SpeechAudioChannelReader,
   SpeechAudioChannelStateError,
 } from '../dist-electron/speech-audio-channel.js'
+import {
+  SpeechDeliveryCoordinator,
+  TrustedSpeechPlaybackError,
+} from '../dist-electron/speech-delivery.js'
 
 const TOKEN_PREFIX = Buffer.alloc(24, 0x5a)
 
@@ -100,6 +106,95 @@ function immediate() {
 function assertReaderListenersRemoved(input) {
   for (const event of ['data', 'end', 'close', 'error']) {
     assert.equal(input.listenerCount(event), 0, `${event} listener leaked`)
+  }
+}
+
+function clipEvent(source, {
+  chatId = 'chat_main',
+  requestId = 'request_main',
+  sequence = 0,
+} = {}) {
+  return {
+    type: 'event',
+    protocol: { name: 'elysia.desktop', version: 1 },
+    event: 'voice.speech.clip',
+    requestId,
+    data: {
+      chatId,
+      clipToken: source.tokenHex,
+      sequence,
+      byteLength: source.wav.length,
+      sha256: source.digestHex,
+      mediaType: 'audio/wav',
+    },
+  }
+}
+
+function failureEvent(sequence, {
+  chatId = 'chat_main',
+  requestId = 'request_main',
+} = {}) {
+  return {
+    type: 'event',
+    protocol: { name: 'elysia.desktop', version: 1 },
+    event: 'voice.speech.failure',
+    requestId,
+    data: { chatId, sequence, code: 'synthesis_failed' },
+  }
+}
+
+function terminalEvent({
+  chatId = 'chat_main',
+  completedSentences,
+  failedSentences = 0,
+  requestId = 'request_main',
+  state = 'completed',
+  submittedSentences = completedSentences,
+}) {
+  return {
+    type: 'event',
+    protocol: { name: 'elysia.desktop', version: 1 },
+    event: 'voice.speech.terminal',
+    requestId,
+    data: {
+      chatId,
+      state,
+      submittedSentences,
+      completedSentences,
+      failedSentences,
+    },
+  }
+}
+
+class DeferredPlayback {
+  constructor() {
+    this.calls = []
+    this.pending = []
+    this.cancelCalls = 0
+  }
+
+  play(clip) {
+    this.calls.push(clip)
+    return new Promise((resolve, reject) => {
+      this.pending.push({ resolve, reject })
+    })
+  }
+
+  resolve(index = 0) {
+    this.pending[index].resolve()
+  }
+
+  reject(reason = 'clip-failed', index = 0) {
+    this.pending[index].reject(new TrustedSpeechPlaybackError(reason))
+  }
+
+  cancel() {
+    this.cancelCalls += 1
+    const current = this.pending.find((pending) => !pending.settled)
+    if (current !== undefined) {
+      current.settled = true
+      current.reject(new TrustedSpeechPlaybackError('clip-failed'))
+    }
   }
 }
 
@@ -682,4 +777,445 @@ test('dispose removes only reader listeners and does not destroy its stream', ()
   assert.equal(input.isPaused(), true)
   input.off('error', ownerListener)
   input.destroy()
+})
+
+test('delivery pairs metadata before fd3 and ACKs only after playback ends', async () => {
+  const input = new PassThrough()
+  const source = encodedFrame({ counter: 0, sequence: 0 })
+  const playback = new DeferredPlayback()
+  const failures = []
+  const statuses = []
+  const delivery = new SpeechDeliveryCoordinator(
+    input,
+    playback,
+    (failure) => failures.push(failure),
+    (status) => statuses.push(status),
+  )
+  delivery.startTurn('request_main', 'chat_main')
+
+  delivery.acceptEvent(clipEvent(source))
+  input.write(source.bytes)
+
+  assert.equal(playback.calls.length, 1)
+  assert.equal(input.isPaused(), true)
+  assert.deepEqual(statuses.map((status) => status.kind), ['playing'])
+
+  playback.resolve()
+  await immediate()
+
+  assert.equal(input.isPaused(), false)
+  assert.deepEqual(statuses.map((status) => status.kind), ['playing', 'played'])
+  assert.deepEqual(failures, [])
+  delivery.dispose()
+  input.destroy()
+})
+
+test('delivery pairs fd3 before metadata and starts before Chat completion', () => {
+  const input = new PassThrough()
+  const source = encodedFrame({ counter: 0, sequence: 0 })
+  const playback = new DeferredPlayback()
+  const delivery = new SpeechDeliveryCoordinator(
+    input,
+    playback,
+    (failure) => assert.fail(`unexpected delivery failure: ${failure}`),
+  )
+  delivery.startTurn('request_main', 'chat_main')
+
+  input.write(source.bytes)
+  assert.equal(playback.calls.length, 0)
+  delivery.acceptEvent(clipEvent(source))
+
+  // No Chat stream terminal or response is needed to start the first clip.
+  assert.equal(playback.calls.length, 1)
+  assert.equal(playback.calls[0].requestId, 'request_main')
+  assert.equal(playback.calls[0].chatId, 'chat_main')
+  assert.equal(Object.hasOwn(playback.calls[0], 'clipToken'), false)
+  assert.equal(Object.hasOwn(playback.calls[0], 'sha256'), false)
+  delivery.dispose()
+  input.destroy()
+})
+
+for (const [name, mutate] of [
+  ['request', (event) => { event.requestId = 'request_forged' }],
+  ['turn', (event) => { event.data.chatId = 'chat_forged' }],
+  ['sequence', (event) => { event.data.sequence += 1 }],
+  ['token', (event) => { event.data.clipToken = 'f'.repeat(64) }],
+  ['byte length', (event) => { event.data.byteLength += 2 }],
+  ['SHA-256', (event) => { event.data.sha256 = 'f'.repeat(64) }],
+]) {
+  test(`delivery fails closed on ${name} mismatch`, () => {
+    const input = new PassThrough()
+    const source = encodedFrame({ counter: 0, sequence: 0 })
+    const playback = new DeferredPlayback()
+    const failures = []
+    const delivery = new SpeechDeliveryCoordinator(
+      input,
+      playback,
+      (failure) => failures.push(failure),
+    )
+    delivery.startTurn('request_main', 'chat_main')
+    const event = clipEvent(source)
+    mutate(event)
+
+    delivery.acceptEvent(event)
+    input.write(source.bytes)
+
+    assert.equal(playback.calls.length, 0)
+    assert.equal(failures.length, 1)
+    assert.equal(input.isPaused(), true)
+    assertReaderListenersRemoved(input)
+    delivery.dispose()
+    input.destroy()
+  })
+}
+
+test('one active frame backpressures the next frame until its playback ACK', async () => {
+  const input = new PassThrough({ highWaterMark: 64 })
+  const first = encodedFrame({ counter: 0, sequence: 0 })
+  const second = encodedFrame({ counter: 1, sequence: 1 })
+  const playback = new DeferredPlayback()
+  const delivery = new SpeechDeliveryCoordinator(
+    input,
+    playback,
+    (failure) => assert.fail(`unexpected delivery failure: ${failure}`),
+  )
+  delivery.startTurn('request_main', 'chat_main')
+  delivery.acceptEvent(clipEvent(first, { sequence: 0 }))
+  input.write(first.bytes)
+  delivery.acceptEvent(clipEvent(second, { sequence: 1 }))
+
+  const acceptedWithoutBackpressure = input.write(second.bytes)
+  await immediate()
+  assert.equal(acceptedWithoutBackpressure, false)
+  assert.deepEqual(playback.calls.map((clip) => clip.sequence), [0])
+
+  playback.resolve(0)
+  await immediate()
+
+  assert.deepEqual(playback.calls.map((clip) => clip.sequence), [0, 1])
+  assert.equal(input.isPaused(), true)
+  playback.resolve(1)
+  await immediate()
+  delivery.dispose()
+  input.destroy()
+})
+
+test('multiple short frames may buffer metadata while playback owns one frame', async () => {
+  const input = new PassThrough()
+  const frames = [0, 1, 2].map((sequence) => ({
+    sequence,
+    frame: encodedFrame({
+      counter: sequence,
+      sequence,
+    }),
+  }))
+  const playback = new DeferredPlayback()
+  const failures = []
+  const delivery = new SpeechDeliveryCoordinator(
+    input,
+    playback,
+    (failure) => failures.push(failure),
+  )
+  delivery.startTurn('request_main', 'chat_main')
+
+  for (const { frame, sequence } of frames) {
+    delivery.acceptEvent(clipEvent(frame, { sequence }))
+    input.write(frame.bytes)
+  }
+  await immediate()
+  assert.deepEqual(playback.calls.map((clip) => clip.sequence), [0])
+  assert.deepEqual(failures, [])
+
+  for (let index = 0; index < frames.length; index += 1) {
+    playback.resolve(index)
+    await immediate()
+  }
+  assert.deepEqual(playback.calls.map((clip) => clip.sequence), [0, 1, 2])
+  assert.deepEqual(failures, [])
+  delivery.dispose()
+  input.destroy()
+})
+
+test('sentence failure is skipped while later audio retains sequence order', async () => {
+  const input = new PassThrough()
+  const source = encodedFrame({ counter: 0, sequence: 1 })
+  const playback = new DeferredPlayback()
+  const statuses = []
+  const delivery = new SpeechDeliveryCoordinator(
+    input,
+    playback,
+    (failure) => assert.fail(`unexpected delivery failure: ${failure}`),
+    (status) => statuses.push(status),
+  )
+  delivery.startTurn('request_main', 'chat_main')
+
+  delivery.acceptEvent(failureEvent(0))
+  delivery.acceptEvent(clipEvent(source, { sequence: 1 }))
+  input.write(source.bytes)
+  playback.resolve()
+  await immediate()
+  delivery.acceptEvent(terminalEvent({
+    completedSentences: 2,
+    failedSentences: 1,
+  }))
+
+  assert.deepEqual(
+    statuses.map((status) => [status.kind, status.sequence]),
+    [
+      ['skipped', 0],
+      ['playing', 1],
+      ['played', 1],
+      ['terminal', undefined],
+    ],
+  )
+  delivery.dispose()
+  input.destroy()
+})
+
+test('cancelled terminal accepts only a possible suppressed outcome suffix', async () => {
+  const input = new PassThrough()
+  const source = encodedFrame({ counter: 0, sequence: 0 })
+  const playback = new DeferredPlayback()
+  const failures = []
+  const statuses = []
+  const delivery = new SpeechDeliveryCoordinator(
+    input,
+    playback,
+    (failure) => failures.push(failure),
+    (status) => statuses.push(status),
+  )
+  delivery.startTurn('request_main', 'chat_main')
+  delivery.acceptEvent(clipEvent(source))
+  input.write(source.bytes)
+  playback.resolve()
+  await immediate()
+
+  delivery.acceptEvent(terminalEvent({
+    state: 'cancelled',
+    submittedSentences: 3,
+    completedSentences: 3,
+    failedSentences: 1,
+  }))
+  assert.deepEqual(failures, [])
+  assert.equal(statuses.at(-1)?.kind, 'terminal')
+  delivery.dispose()
+  input.destroy()
+
+  const invalidInput = new PassThrough()
+  const invalidPlayback = new DeferredPlayback()
+  const invalidFailures = []
+  const invalidDelivery = new SpeechDeliveryCoordinator(
+    invalidInput,
+    invalidPlayback,
+    (failure) => invalidFailures.push(failure),
+  )
+  invalidDelivery.startTurn('request_main', 'chat_main')
+  invalidDelivery.acceptEvent(clipEvent(source))
+  invalidInput.write(source.bytes)
+  invalidPlayback.resolve()
+  await immediate()
+  invalidDelivery.acceptEvent(terminalEvent({
+    state: 'cancelled',
+    submittedSentences: 1,
+    completedSentences: 1,
+    failedSentences: 1,
+  }))
+
+  assert.deepEqual(invalidFailures, ['sequence-mismatch'])
+  invalidDelivery.dispose()
+  invalidInput.destroy()
+})
+
+test('new turn cancels stale playback and discards it before replacement', async () => {
+  const input = new PassThrough()
+  const oldFrame = encodedFrame({ counter: 0, sequence: 0 })
+  const newFrame = encodedFrame({ counter: 1, sequence: 0 })
+  const playback = new DeferredPlayback()
+  const delivery = new SpeechDeliveryCoordinator(
+    input,
+    playback,
+    (failure) => assert.fail(`unexpected delivery failure: ${failure}`),
+  )
+  delivery.startTurn('request_old', 'chat_main')
+  delivery.acceptEvent(clipEvent(oldFrame, {
+    requestId: 'request_old',
+  }))
+  input.write(oldFrame.bytes)
+
+  delivery.startTurn('request_new', 'chat_main')
+  await immediate()
+  assert.equal(playback.cancelCalls, 1)
+  delivery.acceptEvent(clipEvent(newFrame, {
+    requestId: 'request_new',
+  }))
+  input.write(newFrame.bytes)
+  await immediate()
+
+  assert.deepEqual(
+    playback.calls.map((clip) => clip.requestId),
+    ['request_old', 'request_new'],
+  )
+  delivery.dispose()
+  input.destroy()
+})
+
+test('pre-ready cancellation terminals retire repeated replacements', () => {
+  const input = new PassThrough()
+  const playback = new DeferredPlayback()
+  const failures = []
+  const statuses = []
+  const delivery = new SpeechDeliveryCoordinator(
+    input,
+    playback,
+    (failure) => failures.push(failure),
+    (status) => statuses.push(status),
+  )
+
+  delivery.startTurn('request_0', 'chat_0')
+  for (let index = 1; index <= 6; index += 1) {
+    delivery.startTurn(`request_${index}`, `chat_${index}`)
+    delivery.acceptEvent(terminalEvent({
+      chatId: `chat_${index - 1}`,
+      completedSentences: 0,
+      requestId: `request_${index - 1}`,
+      state: 'cancelled',
+      submittedSentences: 0,
+    }))
+  }
+  delivery.acceptEvent(terminalEvent({
+    chatId: 'chat_6',
+    completedSentences: 0,
+    requestId: 'request_6',
+    state: 'cancelled',
+    submittedSentences: 0,
+  }))
+
+  assert.deepEqual(failures, [])
+  assert.deepEqual(
+    statuses.map((status) => status.requestId),
+    Array.from({ length: 7 }, (_unused, index) => `request_${index}`),
+  )
+  assert.equal(statuses.every((status) => (
+    status.kind === 'terminal' && status.state === 'cancelled'
+  )), true)
+  delivery.dispose()
+  input.destroy()
+})
+
+test('trusted playback disconnect is terminal and never advances fd3', async () => {
+  const input = new PassThrough()
+  const source = encodedFrame({ counter: 0, sequence: 0 })
+  const playback = new DeferredPlayback()
+  const failures = []
+  const delivery = new SpeechDeliveryCoordinator(
+    input,
+    playback,
+    (failure) => failures.push(failure),
+  )
+  delivery.startTurn('request_main', 'chat_main')
+  delivery.acceptEvent(clipEvent(source))
+  input.write(source.bytes)
+
+  playback.reject('disconnected')
+  await immediate()
+
+  assert.deepEqual(failures, ['playback-disconnected'])
+  assert.equal(input.isPaused(), true)
+  assertReaderListenersRemoved(input)
+  delivery.dispose()
+  input.destroy()
+})
+
+test('delivery cleanup cancels playback and removes every fd3 listener', () => {
+  const input = new PassThrough()
+  const source = encodedFrame({ counter: 0, sequence: 0 })
+  const playback = new DeferredPlayback()
+  const delivery = new SpeechDeliveryCoordinator(
+    input,
+    playback,
+    () => assert.fail('cleanup must not report a protocol failure'),
+  )
+  delivery.startTurn('request_main', 'chat_main')
+  delivery.acceptEvent(clipEvent(source))
+  input.write(source.bytes)
+
+  delivery.dispose()
+  delivery.dispose()
+
+  assert.equal(playback.cancelCalls, 1)
+  assert.equal(input.isPaused(), true)
+  assertReaderListenersRemoved(input)
+  input.destroy()
+})
+
+test('clean fd3 EOF disables speech without failing healthy text delivery', async () => {
+  const input = new PassThrough()
+  const playback = new DeferredPlayback()
+  const failures = []
+  let unavailable = 0
+  const delivery = new SpeechDeliveryCoordinator(
+    input,
+    playback,
+    (failure) => failures.push(failure),
+    () => {},
+    () => { unavailable += 1 },
+  )
+  input.end()
+  await immediate()
+
+  delivery.startTurn('request_after_clean_eof', 'chat_main')
+
+  assert.equal(unavailable, 1)
+  assert.deepEqual(failures, [])
+  assert.equal(playback.calls.length, 0)
+  assertReaderListenersRemoved(input)
+  delivery.dispose()
+})
+
+test('trusted playback owner direct contract suite passes', () => {
+  const ownerTestPath = fileURLToPath(
+    new URL('./speech-playback-owner.test.mjs', import.meta.url),
+  )
+  const result = spawnSync(
+    process.execPath,
+    [
+      '--experimental-test-module-mocks',
+      '--test',
+      ownerTestPath,
+    ],
+    {
+      encoding: 'utf8',
+      timeout: 10_000,
+      windowsHide: true,
+    },
+  )
+  assert.equal(
+    result.status,
+    0,
+    [result.error?.message, result.stdout, result.stderr]
+      .filter(Boolean)
+      .join('\n'),
+  )
+})
+
+test('preload speech routing direct contract suite passes', () => {
+  const preloadTestPath = fileURLToPath(
+    new URL('./preload-speech-playback.test.cjs', import.meta.url),
+  )
+  const result = spawnSync(
+    process.execPath,
+    ['--test', preloadTestPath],
+    {
+      encoding: 'utf8',
+      timeout: 10_000,
+      windowsHide: true,
+    },
+  )
+  assert.equal(
+    result.status,
+    0,
+    [result.error?.message, result.stdout, result.stderr]
+      .filter(Boolean)
+      .join('\n'),
+  )
 })

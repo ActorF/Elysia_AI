@@ -68,6 +68,7 @@ from desktop_protocol import (
     build_event,
     build_request,
 )
+from desktop_speech import DesktopSpeechCoordinator
 from projects import (
     Project,
     ProjectArchivedError,
@@ -454,6 +455,106 @@ JsonObject = dict[str, Any]
 SESSION_TOKEN = "0123456789abcdef0123456789abcdef"
 
 
+class _RecordingSpeechTurn:
+    """Record one optional speech copy and expose deterministic failure modes."""
+
+    def __init__(
+        self,
+        *,
+        fail_feed: bool = False,
+        fail_finish: bool = False,
+        fail_cancel: bool = False,
+        finish_probe: Callable[[], bool] | None = None,
+    ) -> None:
+        """Initialize exact chunk logs and one terminal observation gate."""
+
+        self.fail_feed = fail_feed
+        self.fail_finish = fail_finish
+        self.fail_cancel = fail_cancel
+        self.finish_probe = finish_probe
+        self.chunks: list[str] = []
+        self.finish_calls = 0
+        self.cancel_calls = 0
+        self.finished_after_commit: bool | None = None
+        self.terminal = Event()
+
+    def feed(self, chunk: str) -> None:
+        """Record a canonical Brain chunk before an optional fake failure."""
+
+        self.chunks.append(chunk)
+        if self.fail_feed:
+            raise RuntimeError("private speech feed detail")
+
+    def finish(self) -> None:
+        """Record natural generator exhaustion before an optional failure."""
+
+        self.finish_calls += 1
+        if self.finish_probe is not None:
+            self.finished_after_commit = self.finish_probe()
+        self.terminal.set()
+        if self.fail_finish:
+            raise RuntimeError("private speech finish detail")
+
+    def cancel(self) -> bool:
+        """Record stale-audio suppression before an optional failure."""
+
+        self.cancel_calls += 1
+        self.terminal.set()
+        if self.fail_cancel:
+            raise RuntimeError("private speech cancel detail")
+        return True
+
+
+class _RecordingSpeechCoordinator:
+    """Provide one structural coordinator double for Backend ownership tests."""
+
+    def __init__(
+        self,
+        turn: _RecordingSpeechTurn,
+        *,
+        fail_start: bool = False,
+        fail_start_turn: bool = False,
+        fail_shutdown: bool = False,
+        on_shutdown: Callable[[], None] | None = None,
+    ) -> None:
+        """Retain the one turn returned for every deterministic test request."""
+
+        self.turn = turn
+        self.fail_start = fail_start
+        self.fail_start_turn = fail_start_turn
+        self.fail_shutdown = fail_shutdown
+        self.on_shutdown = on_shutdown
+        self.start_calls = 0
+        self.start_turn_calls: list[tuple[str, str]] = []
+        self.shutdown_calls = 0
+        self.turn_started = Event()
+
+    def start(self) -> None:
+        """Record lazy service startup after successful Brain initialization."""
+
+        self.start_calls += 1
+        if self.fail_start:
+            raise RuntimeError("private speech start detail")
+
+    def start_turn(self, request_id: str, chat_id: str) -> _RecordingSpeechTurn:
+        """Correlate one generation and return its independent speech copy."""
+
+        self.start_turn_calls.append((request_id, chat_id))
+        self.turn_started.set()
+        if self.fail_start_turn:
+            raise RuntimeError("private speech turn detail")
+        return self.turn
+
+    def shutdown(self) -> None:
+        """Record exclusive speech-owner shutdown."""
+
+        self.shutdown_calls += 1
+        if self.on_shutdown is not None:
+            self.on_shutdown()
+        if self.fail_shutdown:
+            raise RuntimeError("private speech shutdown detail")
+
+
 class _ControlledTranscriber:
     """Hold one deterministic STT outcome behind test-controlled events."""
 
@@ -692,6 +793,7 @@ def _run_bridge(
     settings_repository: DesktopSettingsRepository | None = None,
     voice_settings_service: VoiceSettingsService | None = None,
     attachment_store: JsonAttachmentStore | None = None,
+    speech_coordinator: DesktopSpeechCoordinator | None = None,
 ) -> tuple[FakeBrain, list[JsonObject]]:
     """Provide the run bridge fixture used by these tests."""
     active_brain = fake_brain if fake_brain is not None else FakeBrain()
@@ -719,6 +821,7 @@ def _run_bridge(
             settings_repository=repository,
             voice_settings_service=active_voice_settings,
             attachment_store=attachment_store,
+            speech_coordinator=speech_coordinator,
             input_stream=input_stream,
             output_stream=output_stream,
             expected_session_token=expected_session_token,
@@ -729,6 +832,67 @@ def _run_bridge(
         for line in output_stream.getvalue().splitlines()
     ]
     return active_brain, messages
+
+
+def _run_bridge_with_speech(
+    turn: _RecordingSpeechTurn,
+    *,
+    fake_brain: FakeBrain | None = None,
+    coordinator: _RecordingSpeechCoordinator | None = None,
+    wait_for_terminal: bool = True,
+) -> tuple[FakeBrain, list[JsonObject], _RecordingSpeechCoordinator]:
+    """Keep stdin alive through the selected deterministic speech boundary."""
+
+    active_brain = fake_brain if fake_brain is not None else FakeBrain()
+    active_coordinator = (
+        coordinator
+        if coordinator is not None
+        else _RecordingSpeechCoordinator(turn)
+    )
+
+    def _request_lines() -> Generator[str, None, None]:
+        """End input only after the optional speech copy reaches a terminal."""
+
+        chat_id = str(active_brain.chat.chat_id)
+        for request in (
+            _handshake_request(),
+            _initialize_request(),
+            _request(
+                "chat-with-speech",
+                "chat.stream",
+                {"chatId": chat_id, "message": "你好呀"},
+            ),
+        ):
+            yield f"{json.dumps(request)}\n"
+        assert active_coordinator.turn_started.wait(2.0)
+        if wait_for_terminal:
+            assert turn.terminal.wait(2.0)
+
+    output_stream = StringIO()
+    with TemporaryDirectory(prefix="elysia-speech-backend-test-") as temp_dir:
+        DesktopBackend(
+            brain_factory=lambda: cast(Brain, active_brain),
+            model_loader=lambda: (active_brain.model_name,),
+            settings_validator=lambda: None,
+            settings_repository=_desktop_settings_repository(
+                Path(temp_dir) / "global.json"
+            ),
+            voice_settings_service=create_voice_settings_service(
+                Path(temp_dir)
+            ),
+            speech_coordinator=cast(
+                DesktopSpeechCoordinator,
+                active_coordinator,
+            ),
+            input_stream=cast(TextIOWrapper, _request_lines()),
+            output_stream=output_stream,
+            expected_session_token=SESSION_TOKEN,
+        ).run()
+    messages = [
+        cast(JsonObject, json.loads(line))
+        for line in output_stream.getvalue().splitlines()
+    ]
+    return active_brain, messages, active_coordinator
 
 
 def _run_bridge_with_bootstrap_settings(
@@ -888,6 +1052,183 @@ def test_bridge_initializes_and_streams_one_real_brain_turn() -> None:
         for message in persisted.messages
     ] == ["你好呀", "你好呀"]
     assert "chat.sessions" in SERVER_CAPABILITIES
+
+
+def test_bridge_copies_exact_chunks_and_finishes_only_after_commit() -> None:
+    """Keep canonical persistence exact while independently finalizing speech."""
+
+    brain = FakeBrain()
+
+    def _assistant_reply_is_committed() -> bool:
+        """Observe persistence at the exact speech-finish call boundary."""
+
+        messages = brain.get_chat(brain.chat.chat_id).messages
+        return bool(messages) and messages[-1].content == "你好呀"
+
+    turn = _RecordingSpeechTurn(finish_probe=_assistant_reply_is_committed)
+    brain, messages, coordinator = _run_bridge_with_speech(
+        turn,
+        fake_brain=brain,
+    )
+    chat_id = str(brain.chat.chat_id)
+
+    assert coordinator.start_calls == 1
+    assert coordinator.start_turn_calls == [("chat-with-speech", chat_id)]
+    assert coordinator.shutdown_calls == 1
+    assert turn.chunks == ["你好", "呀"]
+    assert turn.finish_calls == 1
+    assert turn.cancel_calls == 0
+    assert turn.finished_after_commit is True
+    persisted = brain.get_chat(brain.chat.chat_id)
+    assert persisted.messages[-1].content == "你好呀"
+    assert _success_result(messages, "chat-with-speech") == {
+        "chatId": chat_id,
+        "reply": "你好呀",
+    }
+    assert "voice.speech" in SERVER_CAPABILITIES
+
+
+@pytest.mark.parametrize(
+    ("fail_feed", "fail_finish", "fail_cancel"),
+    [
+        (True, False, False),
+        (True, False, True),
+        (False, True, False),
+    ],
+)
+def test_optional_speech_failures_never_fail_or_rewrite_text_chat(
+    fail_feed: bool,
+    fail_finish: bool,
+    fail_cancel: bool,
+) -> None:
+    """Contain every adapter failure after copying the canonical Brain stream."""
+
+    turn = _RecordingSpeechTurn(
+        fail_feed=fail_feed,
+        fail_finish=fail_finish,
+        fail_cancel=fail_cancel,
+    )
+    brain, messages, _coordinator = _run_bridge_with_speech(turn)
+    wire = json.dumps(messages)
+
+    assert _success_result(messages, "chat-with-speech")["reply"] == "你好呀"
+    assert brain.get_chat(brain.chat.chat_id).messages[-1].content == "你好呀"
+    assert "private speech" not in wire
+    assert not any(
+        message.get("type") == "response"
+        and message.get("id") == "chat-with-speech"
+        and message.get("ok") is False
+        for message in messages
+    )
+    if fail_feed:
+        assert turn.finish_calls == 0
+        assert turn.cancel_calls >= 1
+    else:
+        assert turn.finish_calls == 1
+        assert turn.cancel_calls == 1
+
+
+def test_speech_start_and_shutdown_failures_do_not_fail_initialization() -> None:
+    """Keep optional adapter lifecycle failures outside canonical startup."""
+
+    turn = _RecordingSpeechTurn()
+    coordinator = _RecordingSpeechCoordinator(
+        turn,
+        fail_start=True,
+        fail_shutdown=True,
+    )
+
+    _brain, messages = _run_bridge(
+        lambda _chat_id: [_handshake_request(), _initialize_request()],
+        speech_coordinator=cast(DesktopSpeechCoordinator, coordinator),
+    )
+    wire = json.dumps(messages)
+
+    assert _success_result(messages, "initialize-1")["modelName"] == "test-model"
+    assert coordinator.start_calls == 1
+    assert coordinator.shutdown_calls == 1
+    assert "private speech" not in wire
+
+
+def test_speech_turn_start_failure_does_not_fail_text_generation() -> None:
+    """Complete and persist Chat when optional per-turn admission raises."""
+
+    turn = _RecordingSpeechTurn()
+    coordinator = _RecordingSpeechCoordinator(turn, fail_start_turn=True)
+
+    brain, messages, coordinator = _run_bridge_with_speech(
+        turn,
+        coordinator=coordinator,
+        wait_for_terminal=False,
+    )
+    wire = json.dumps(messages)
+
+    assert _success_result(messages, "chat-with-speech")["reply"] == "你好呀"
+    assert brain.get_chat(brain.chat.chat_id).messages[-1].content == "你好呀"
+    assert coordinator.start_turn_calls == [
+        ("chat-with-speech", str(brain.chat.chat_id))
+    ]
+    assert coordinator.shutdown_calls == 1
+    assert "private speech" not in wire
+
+
+@pytest.mark.parametrize("termination", ["shutdown", "eof"])
+def test_speech_shutdown_boundary_suppresses_callback_and_late_output(
+    tmp_path: Path,
+    termination: str,
+) -> None:
+    """Publish no speech event once shutdown or stdin EOF claims output."""
+
+    turn = _RecordingSpeechTurn()
+    coordinator = _RecordingSpeechCoordinator(turn)
+    fake_brain = FakeBrain()
+    requests = [_handshake_request(), _initialize_request()]
+    if termination == "shutdown":
+        requests.append(_request("shutdown-speech", "shutdown", {}))
+    output_stream = StringIO()
+    backend = DesktopBackend(
+        brain_factory=lambda: cast(Brain, fake_brain),
+        model_loader=lambda: (fake_brain.model_name,),
+        settings_validator=lambda: None,
+        settings_repository=_desktop_settings_repository(
+            tmp_path / "global.json"
+        ),
+        voice_settings_service=create_voice_settings_service(tmp_path),
+        speech_coordinator=cast(DesktopSpeechCoordinator, coordinator),
+        input_stream=StringIO(
+            "".join(f"{json.dumps(request)}\n" for request in requests)
+        ),
+        output_stream=output_stream,
+        expected_session_token=SESSION_TOKEN,
+    )
+    late_data = {
+        "chatId": str(fake_brain.chat.chat_id),
+        "sequence": 0,
+        "code": "synthesis_failed",
+    }
+    coordinator.on_shutdown = lambda: backend._emit_speech_event(
+        "voice.speech.failure",
+        "late-speech",
+        late_data,
+    )
+
+    backend.run()
+    output_at_shutdown = output_stream.getvalue()
+    backend._emit_speech_event(
+        "voice.speech.failure",
+        "later-speech",
+        late_data,
+    )
+    messages = _output_messages(output_stream)
+
+    assert coordinator.shutdown_calls == 1
+    assert output_stream.getvalue() == output_at_shutdown
+    assert not any(
+        message.get("requestId") in {"late-speech", "later-speech"}
+        for message in messages
+    )
+    if termination == "shutdown":
+        assert _success_result(messages, "shutdown-speech") == {"stopped": True}
 
 
 @pytest.mark.skipif(
@@ -1243,6 +1584,8 @@ def test_cancel_success_prevents_partial_turn_persistence() -> None:
             )
 
     fake_brain = CancellableBrain()
+    speech_turn = _RecordingSpeechTurn(fail_cancel=True)
+    speech_coordinator = _RecordingSpeechCoordinator(speech_turn)
     _, messages = _run_bridge(
         lambda chat_id: [
             _handshake_request(),
@@ -1262,6 +1605,10 @@ def test_cancel_success_prevents_partial_turn_persistence() -> None:
             ),
         ],
         fake_brain=fake_brain,
+        speech_coordinator=cast(
+            DesktopSpeechCoordinator,
+            speech_coordinator,
+        ),
     )
 
     assert _success_result(messages, "cancel-1") == {"stopped": True}
@@ -1283,6 +1630,8 @@ def test_cancel_success_prevents_partial_turn_persistence() -> None:
         for message in messages
     )
     assert fake_brain.get_chat(fake_brain.chat.chat_id).messages == ()
+    assert speech_turn.cancel_calls == 1
+    assert speech_turn.finish_calls == 0
 
 
 def test_chat_list_does_not_block_the_cancel_request_reader(

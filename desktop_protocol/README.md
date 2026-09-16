@@ -33,7 +33,7 @@ permission, event, cancel, and permission-decision shapes. The current runtime
 advertises `chat.stream`, `chat.retry`, `request.cancel`, `stream`, `progress`,
 `event`, `chat.sessions`, `project.management`, `settings.management`,
 `attachment.management`, `voice.settings`, `voice.capture`, and the optional
-`voice.transcription` capability.
+`voice.transcription` and `voice.speech` capabilities.
 Both new-turn and retry generation reuse the `chat.reply` stream.
 Cancellation succeeds only before generation claims its atomic commit gate, so
 a successful Stop response guarantees that the interrupted turn is not saved.
@@ -109,40 +109,42 @@ does not send a message automatically. No partial recognized text crosses the
 wire in this slice. Real-time partial transcripts remain part of future
 continuous Voice rather than this bounded final-result contract.
 
-Local speech synthesis deliberately remains outside Desktop Protocol v1. The
-Python layer now has an engine-independent one-shot request/result contract, a
-strict local Voice Profile/emotion catalog, sanitized readiness, and a
-loopback-only GPT-SoVITS `/tts` adapter. The retained smoke path synthesizes the
-same fixed sentence twice per selected emotion and has passed a real
-multi-emotion run; it also returns the stable `service_unreachable` reason when
-the runtime is stopped. `service_binding_unverified` means only that the local
-API is reachable and structurally compatible—the upstream API cannot attest
-that the catalog-declared weights are currently loaded.
+Desktop Protocol v1 now advertises the optional `voice.speech` capability, but
+it deliberately defines no public TTS request or response. During an accepted
+`chat.reply` stream, Python gives the speech path a copy of each text chunk;
+the canonical Chat stream and final persisted Assistant text remain owned by
+the existing Chat transaction. Natural-boundary sentences enter one bounded
+FIFO queue, and cancellation, replacement, or synthesis failure cannot turn a
+partial spoken copy into a committed Chat message.
 
-Version 1 therefore advertises no synthesis capability and defines no TTS
-request, response, event, audio-byte transport, playback, queueing, or
-cancellation shape. No synthesized audio enters Electron or React. The Voice
-Profile catalog remains under the Git-ignored `workspace/settings/` tree, while
-the separately installed runtime, checkpoints, and reference audio remain in
-ignored local runtime/model directories. They are not protocol fixtures,
-repository content, or packaged dependencies. Desktop playback and a
-continuous `LISTENING → THINKING → SPEAKING` session require a future explicit
-protocol extension rather than being inferred from Python readiness.
+The independent loopback GPT-SoVITS `/tts` adapter and fixed-text smoke remain
+separate Python-only diagnostics. `service_binding_unverified` there means only
+that the external API is reachable and structurally compatible—the upstream
+API cannot attest which catalog-declared weights its process loaded. Desktop
+speech instead owns one guarded local worker lease and binds it to one resolved
+Voice Profile selection. The partial runtime manifest proves consistency
+between that parent and worker, not complete third-party provenance, so this
+managed path also does not claim a supply-chain-verified model identity or
+enable synthesized-audio caching.
 
-The Python `SynthesisResult` permits at most 32 MiB of encoded audio with
-complete supported container/transport framing; it does not claim that a codec
-decoder will accept the payload. The current non-streaming GPT-SoVITS adapter
-configures WAV/AAC only, while the general Python contract also understands a
-bounded Ogg Opus shape. A playback layer must handle decoder rejection. By
-comparison, one Protocol v1 NDJSON frame is capped at 16 MiB; Base64 would
-expand the payload by roughly another third. The reserved Desktop delivery
-design assigns synthesized audio to a separate inherited binary pipe at child
-descriptor 3. Its fixed header will contain an opaque 256-bit clip token,
-uint32 sentence sequence, bounded byte length, and SHA-256 digest; the payload
-will be an exact 32 kHz mono PCM16 WAV no larger than 8 MiB. The standalone
-Electron reader can validate that framing incrementally and admit at most one
-unacknowledged frame, so JSON parsing need never hold arbitrary audio and slow
-playback can apply bounded backpressure.
+The Voice Profile catalog remains under the Git-ignored
+`workspace/settings/` tree, while the separately installed runtime,
+checkpoints, and reference audio remain in ignored local runtime/model
+directories. They are not protocol fixtures, repository content, or packaged
+dependencies. This sentence-playback slice also does not define the future
+continuous `LISTENING → THINKING → SPEAKING` Voice Session state machine.
+
+The general Python `SynthesisResult` permits at most 32 MiB of encoded audio
+with complete supported container framing; it still does not promise that a
+codec decoder will accept every otherwise valid payload. Desktop delivery is
+narrower: the managed worker must return an exact 32 kHz mono PCM16 WAV no
+larger than 8 MiB. Because one Protocol v1 NDJSON frame is capped at 16 MiB and
+Base64 would expand audio further, Python sends each accepted clip through the
+separate inherited binary pipe at child descriptor 3. Its fixed header carries
+an opaque 256-bit clip token, uint32 sentence sequence, bounded byte length,
+and SHA-256 digest. Electron Main validates that framing incrementally and
+admits at most one unacknowledged frame, so JSON parsing never holds audio and
+slow playback applies bounded backpressure.
 
 The correlated `voice.speech.clip`, `voice.speech.failure`, and
 `voice.speech.terminal` events are closed shapes. Clip metadata must match the
@@ -150,12 +152,14 @@ next binary frame before playback; failures expose only a stable enum; terminal
 counters describe completion or cancellation. These events cannot carry source
 text, Base64 audio, paths, profile/reference details, cache state, or native
 diagnostics. Chat and transcription lifecycle events are closed and
-request-correlated for the same reason. The capability remains unadvertised
-until the managed synthesizer, fd3 owner, binary reader, and playback lifecycle
-are wired together. Until then, Electron terminates the Backend connection on
-every `voice.speech.*` event rather than forwarding unpaired metadata. Base URL,
-checkpoint/reference paths, and the exact reference prompt remain inside the
-Python/local-service boundary.
+request-correlated for the same reason. Electron Main pairs exact metadata with
+the next fd3 frame and forwards the validated WAV plus an opaque playback
+identity over private Main-to-Preload IPC; React never receives a WAV, token,
+digest, model path, reference path, or exact prompt. Preload resolves the selected output device,
+decodes and starts one clip, reports its closed outcome, and fail-closes on
+sink, decode, lifecycle, or correlation failure. Window replacement and
+shutdown release stale playback ownership without making text Chat depend on
+optional speech.
 
 `attachment.list`, `attachment.add`, and `attachment.remove` operate on one
 exact Chat or Project scope. Native source paths are accepted only across the

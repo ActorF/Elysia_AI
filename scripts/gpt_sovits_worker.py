@@ -2,8 +2,9 @@
 
 The worker speaks only the bounded binary protocol in the sibling
 ``gpt_sovits_protocol.py`` module.  It verifies every selected asset again in
-the runtime process, binds the verified identities to one challenge, loads one
-immutable GPT-SoVITS v2 engine, and emits complete mono PCM WAV responses.
+the runtime process, binds the checked identities to one challenge, loads one
+fixed-configuration GPT-SoVITS v2 engine, and emits complete mono PCM WAV
+responses.
 
 READY proves a live Elysia-owned process observed the declared assets and
 runtime consistency anchors; it is not a third-party supply-chain signature.
@@ -25,18 +26,75 @@ import hmac
 import importlib
 import importlib.util
 import json
+import ntpath
 import os
 from pathlib import Path
 import re
 import stat
 import struct
+import subprocess
 import sys
-from typing import Any, BinaryIO, Callable, Dict, Iterator, Optional, Protocol, Tuple
+import threading
+import time
+from typing import Any, BinaryIO, Callable, Dict, Iterator, List, Optional, Protocol, Tuple
 
 
-_SCRIPT_PATH = Path(__file__).resolve(strict=True)
+def _is_lexical_windows_path(value: object) -> bool:
+    r"""Recognize drive and ``\\?\Volume`` paths on bundled Python 3.9.
+
+    Its older :mod:`pathlib` splits a Volume-GUID anchor as ``\\?\`` and
+    consequently reports ``is_absolute() == False``.  ``ntpath`` still applies
+    Windows namespace rules correctly, so all trust decisions use it while
+    ``Path`` remains only a convenient immutable spelling/join wrapper.
+    """
+
+    return (
+        type(value) is str
+        and bool(value)
+        and "\x00" not in value
+        and len(value) <= 32_767
+        and ntpath.isabs(value)
+        and ntpath.normpath(value) == value
+    )
+
+
+def _is_lexical_runtime_path(value: object) -> bool:
+    """Accept production Windows paths and native absolute paths in CI tests.
+
+    The managed worker runs only on Windows, where the stricter ``ntpath``
+    branch is authoritative. Supporting a normalized POSIX path on non-Windows
+    keeps the standard-library state machine and manifest tests executable in
+    the repository's Ubuntu CI without weakening the production host check.
+    """
+
+    if _is_lexical_windows_path(value):
+        return True
+    return (
+        os.name != "nt"
+        and type(value) is str
+        and bool(value)
+        and "\x00" not in value
+        and len(value) <= 32_767
+        and os.path.isabs(value)
+        and os.path.normpath(value) == value
+    )
+
+
+def _require_lexical_module_path(value: str) -> Path:
+    r"""Keep an absolute module spelling without collapsing a Volume-GUID path.
+
+    ``Path.resolve`` can translate ``\\?\Volume{GUID}`` back to a mutable drive
+    letter.  The parent intentionally launches this file through the stable
+    spelling exported by its held file guard, so the worker must preserve it.
+    """
+
+    if not _is_lexical_runtime_path(value):
+        raise ImportError("The managed speech worker path is invalid.")
+    return Path(value)
+
+
+_SCRIPT_PATH = _require_lexical_module_path(__file__)
 _SCRIPTS_DIR = _SCRIPT_PATH.parent
-_PROJECT_DIR = _SCRIPTS_DIR.parent
 _PROTOCOL_PATH = _SCRIPTS_DIR / "gpt_sovits_protocol.py"
 _PROTOCOL_MODULE_NAME = "_elysia_gpt_sovits_protocol_v1"
 
@@ -48,7 +106,7 @@ def _load_sibling_protocol() -> Any:
     if existing is not None:
         return existing
     try:
-        candidate = _PROTOCOL_PATH.resolve(strict=True)
+        candidate = _PROTOCOL_PATH
         if candidate.parent != _SCRIPTS_DIR or not candidate.is_file():
             raise ImportError
         specification = importlib.util.spec_from_file_location(
@@ -80,6 +138,15 @@ _MAX_AUDIO_BYTES = int(_protocol.PROTOCOL_MAX_PAYLOAD_BYTES)
 _SCHEMA_VERSION = 1
 _CHALLENGE_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
 _SHA256_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
+_VOLUME_GUID_DRIVE_PATTERN = re.compile(
+    r"\\\\\?\\Volume\{[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
+    r"[0-9a-f]{4}-[0-9a-f]{12}\}\Z",
+    re.IGNORECASE,
+)
+_MAPPED_DRIVE_PATTERN = re.compile(r"[D-Z]:", re.IGNORECASE)
+_NATIVE_FIXED_VOLUME_PATTERN = re.compile(
+    r"\\Device\\HarddiskVolume[1-9][0-9]*\Z", re.IGNORECASE
+)
 _INIT_FIELDS = frozenset(
     {
         "schema",
@@ -118,6 +185,15 @@ _MAX_ASSET_BYTES = 8 * 1024 * 1024 * 1024
 _MIN_SAMPLE_RATE = 8000
 _MAX_SAMPLE_RATE = 192000
 _HASH_CHUNK_BYTES = 1024 * 1024
+# The managed adapter is deliberately v2-only.  Pinning its 32 kHz reference
+# contract prevents the upstream helper from becoming a generic file decoder.
+_REFERENCE_SAMPLE_RATE = 32000
+_MAX_REFERENCE_SECONDS = 12
+_MAX_DECODED_REFERENCE_BYTES = (
+    _REFERENCE_SAMPLE_RATE * _MAX_REFERENCE_SECONDS * 4
+)
+_FFMPEG_TIMEOUT_SECONDS = 30.0
+_FFMPEG_REAP_TIMEOUT_SECONDS = 5.0
 _FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 _BINDING_DOMAIN = b"ELYTTS-BINDING-V1\0"
 _RUNTIME_MANIFEST_DOMAIN = b"ELYTTS-RUNTIME-MANIFEST-V1\0"
@@ -125,18 +201,26 @@ _BASE_BERT_PATH = (
     "GPT_SoVITS/pretrained_models/chinese-roberta-wwm-ext-large"
 )
 _BASE_HUBERT_PATH = "GPT_SoVITS/pretrained_models/chinese-hubert-base"
-_RUNTIME_MANIFEST_RELATIVE_FILES = (
-    ("runtime-python", "runtime/python.exe"),
-    ("ffmpeg", "ffmpeg.exe"),
-    ("tts-entry", "GPT_SoVITS/TTS_infer_pack/TTS.py"),
-    ("audio-loader", "tools/my_utils.py"),
-    ("bert-config", _BASE_BERT_PATH + "/config.json"),
-    ("bert-model", _BASE_BERT_PATH + "/pytorch_model.bin"),
-    ("bert-tokenizer", _BASE_BERT_PATH + "/tokenizer.json"),
-    ("hubert-config", _BASE_HUBERT_PATH + "/config.json"),
-    ("hubert-preprocessor", _BASE_HUBERT_PATH + "/preprocessor_config.json"),
-    ("hubert-model", _BASE_HUBERT_PATH + "/pytorch_model.bin"),
+_RUNTIME_MANIFEST_RELATIVE_FILES = tuple(
+    _protocol.MANAGED_RUNTIME_MANIFEST_RELATIVE_FILES
 )
+_BOOTSTRAP_SYS_PATH_RELATIVE_ENTRIES = tuple(
+    _protocol.MANAGED_RUNTIME_IMPORT_RELATIVE_ENTRIES
+)
+
+
+def _runtime_child_path(root: Path, relative: str) -> Path:
+    """Join an internal relative path without mixing Windows separators in CI.
+
+    On Ubuntu, :class:`Path` treats a Windows Volume-GUID or mapped-drive
+    spelling as an ordinary POSIX filename and would append ``/``.  Production
+    trust checks require the exact Windows spelling, so ``ntpath`` owns those
+    joins while native CI paths continue to use the host implementation.
+    """
+
+    if _is_lexical_windows_path(str(root)):
+        return Path(ntpath.join(str(root), *relative.split("/")))
+    return root / Path(relative)
 
 
 class _Engine(Protocol):
@@ -174,6 +258,7 @@ class _WorkerConfig:
     device: str
     runtime_manifest_digest: str
     binding_sha256: str
+    import_root: Optional[Path] = None
 
 
 class _WorkerFailure(Exception):
@@ -226,18 +311,9 @@ def _require_sha256(value: object) -> str:
 def _require_absolute_path(value: object) -> Path:
     """Return one bounded, lexical absolute path without resolving links."""
 
-    if (
-        type(value) is not str
-        or not value
-        or "\x00" in value
-        or len(value) > 32767
-        or os.path.normpath(value) != value
-    ):
+    if type(value) is not str or not _is_lexical_runtime_path(value):
         raise _WorkerFailure("protocol_invalid")
-    path = Path(value)
-    if not path.is_absolute():
-        raise _WorkerFailure("protocol_invalid")
-    return path
+    return Path(value)
 
 
 def _require_text(value: object, *, maximum: int) -> str:
@@ -310,31 +386,66 @@ def _require_safe_path_tree(path: Path, *, leaf_is_file: bool) -> os.stat_result
     """Reject link/reparse traversal and require the expected final node type."""
 
     try:
-        current = Path(path.anchor)
-        parts = path.parts[1:] if path.anchor else path.parts
-        leaf_info = None  # type: Optional[os.stat_result]
+        rendered = str(path)
+        if not _is_lexical_runtime_path(rendered):
+            raise OSError
+        if os.name != "nt" and not _is_lexical_windows_path(rendered):
+            posix_current = Path(path.anchor)
+            posix_parts = path.parts[1:] if path.anchor else path.parts
+            posix_leaf_info = None  # type: Optional[os.stat_result]
+            for index, part in enumerate(posix_parts):
+                posix_current = posix_current / part
+                info = os.lstat(str(posix_current))
+                final = index == len(posix_parts) - 1
+                if stat.S_ISLNK(info.st_mode) or _is_reparse(info):
+                    raise OSError
+                if final and leaf_is_file:
+                    if not stat.S_ISREG(info.st_mode):
+                        raise OSError
+                    posix_leaf_info = info
+                elif not stat.S_ISDIR(info.st_mode):
+                    raise OSError
+            if posix_leaf_info is None:
+                info = os.lstat(rendered)
+                if (
+                    stat.S_ISLNK(info.st_mode)
+                    or _is_reparse(info)
+                    or (leaf_is_file and not stat.S_ISREG(info.st_mode))
+                    or (not leaf_is_file and not stat.S_ISDIR(info.st_mode))
+                ):
+                    raise OSError
+                posix_leaf_info = info
+            return posix_leaf_info
+        drive, tail = ntpath.splitdrive(rendered)
+        if not drive or not tail.startswith("\\"):
+            raise OSError
+        parts = tuple(part for part in tail.split("\\") if part)
+        if not parts:
+            raise OSError
+        windows_current = drive + "\\"
+        windows_leaf_info = None  # type: Optional[os.stat_result]
         for index, part in enumerate(parts):
-            current = current / part
-            info = os.lstat(str(current))
+            windows_current = ntpath.join(windows_current, part)
+            info = os.lstat(windows_current)
             final = index == len(parts) - 1
             if stat.S_ISLNK(info.st_mode) or _is_reparse(info):
                 raise OSError
             if final and leaf_is_file:
                 if not stat.S_ISREG(info.st_mode):
                     raise OSError
-                leaf_info = info
+                windows_leaf_info = info
             elif not stat.S_ISDIR(info.st_mode):
                 raise OSError
-        if leaf_info is None:
-            info = os.lstat(str(path))
+        if windows_leaf_info is None:
+            info = os.lstat(rendered)
             if stat.S_ISLNK(info.st_mode) or _is_reparse(info):
                 raise OSError
             if leaf_is_file and not stat.S_ISREG(info.st_mode):
                 raise OSError
             if not leaf_is_file and not stat.S_ISDIR(info.st_mode):
                 raise OSError
-            leaf_info = info
-        return leaf_info
+            windows_leaf_info = info
+        return windows_leaf_info
     except (OSError, RuntimeError, ValueError):
         raise _WorkerFailure("binding_failed") from None
 
@@ -461,30 +572,44 @@ def _hash_manifest_file(path: Path) -> Tuple[int, str]:
                 pass
 
 
-def compute_runtime_manifest_digest(runtime_root: Path) -> str:
-    """Attest the closed runtime anchors used by the managed speech worker.
+def compute_runtime_manifest_digest(
+    runtime_root: Path,
+    *,
+    worker_path: Optional[Path] = None,
+    protocol_path: Optional[Path] = None,
+) -> str:
+    """Measure the partial consistency anchors used by the managed worker.
 
     The digest identifies content by stable logical roles, never by deployment
     paths.  It covers the worker/protocol sources plus the executable, FFmpeg,
-    upstream entry points, and both fixed base models.  The parent computes the
-    same value before launch; the worker recomputes it before importing any
-    upstream code so a caller cannot turn an arbitrary 64-hex string into a
-    READY attestation.
+    upstream entry points, and both fixed base models.  A guarded parent passes
+    explicit Volume-GUID worker/protocol paths; the worker defaults to its own
+    already-stable ``__file__`` spelling.  Both therefore hash the same pinned
+    objects without resolving them through a mutable drive-letter namespace.
+    It intentionally does not claim to enumerate every Python/native dependency
+    in the much larger extracted distribution.
     """
 
-    if (
-        not isinstance(runtime_root, Path)
-        or not runtime_root.is_absolute()
-        or os.path.normpath(str(runtime_root)) != str(runtime_root)
+    if not isinstance(runtime_root, Path) or not _is_lexical_runtime_path(
+        str(runtime_root)
     ):
         raise _WorkerFailure("binding_failed")
     _require_safe_path_tree(runtime_root, leaf_is_file=False)
+    selected_worker = _SCRIPT_PATH if worker_path is None else worker_path
+    selected_protocol = _PROTOCOL_PATH if protocol_path is None else protocol_path
+    for selected in (selected_worker, selected_protocol):
+        if not isinstance(selected, Path) or not _is_lexical_runtime_path(
+            str(selected)
+        ):
+            raise _WorkerFailure("binding_failed")
+    if selected_worker.with_name("gpt_sovits_protocol.py") != selected_protocol:
+        raise _WorkerFailure("binding_failed")
     entries = []
     manifest_paths = (
-        ("elysia-worker", _SCRIPT_PATH),
-        ("elysia-protocol", _PROTOCOL_PATH),
+        ("elysia-worker", selected_worker),
+        ("elysia-protocol", selected_protocol),
     ) + tuple(
-        (role, runtime_root / Path(relative_path))
+        (role, _runtime_child_path(runtime_root, relative_path))
         for role, relative_path in _RUNTIME_MANIFEST_RELATIVE_FILES
     )
     for role, path in manifest_paths:
@@ -503,7 +628,7 @@ def compute_runtime_manifest_digest(runtime_root: Path) -> str:
 
 
 def _canonical_binding(config: _WorkerConfig) -> bytes:
-    """Encode the stable verified configuration used for process attestation."""
+    """Encode checked configuration for the parent/worker READY handshake."""
 
     def asset_value(asset: _AssetDescriptor) -> Dict[str, object]:
         """Convert one verified descriptor into canonical binding fields."""
@@ -602,38 +727,376 @@ def _parse_init(metadata: object) -> _WorkerConfig:
     )
 
 
-def _normalized_sys_path(entry: str) -> Optional[Path]:
-    """Resolve one import entry for security cleanup without surfacing errors."""
+def _query_dos_device(name: str) -> Tuple[str, ...]:
+    """Return every native target currently stacked below one DOS name."""
+
+    if os.name != "nt" or type(name) is not str or not name:
+        raise _WorkerFailure("engine_failed")
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.QueryDosDeviceW.argtypes = [
+            wintypes.LPCWSTR,
+            wintypes.LPWSTR,
+            wintypes.DWORD,
+        ]
+        kernel32.QueryDosDeviceW.restype = wintypes.DWORD
+        capacity = 32_768
+        buffer = ctypes.create_unicode_buffer(capacity)
+        count = int(kernel32.QueryDosDeviceW(name, buffer, capacity))
+        if count <= 0 or count >= capacity:
+            raise OSError
+        values = tuple(
+            entry
+            for entry in "".join(buffer[:count]).split("\x00")
+            if entry
+        )
+        if not values:
+            raise OSError
+        return values
+    except _WorkerFailure:
+        raise
+    except BaseException:
+        raise _WorkerFailure("engine_failed") from None
+
+
+def _require_mapped_import_root(value: object, runtime_root: Path) -> Path:
+    """Bind one DOS-compatible import root to INIT's fixed Volume-GUID root.
+
+    CPython 3.9 can open ordinary files through a Volume-GUID path but its
+    extension loader rejects that namespace.  The parent therefore owns a
+    temporary DOS alias.  Comparing both QueryDosDevice targets here prevents
+    a different drive or SUBST path from becoming the source of native code.
+    """
+
+    if (
+        type(value) is not str
+        or not value
+        or "\x00" in value
+        or len(value) > 32_767
+        or ntpath.normpath(value) != value
+    ):
+        raise _WorkerFailure("engine_failed")
+    mapped_drive, mapped_tail = ntpath.splitdrive(value)
+    stable_drive, stable_tail = ntpath.splitdrive(str(runtime_root))
+    if (
+        _MAPPED_DRIVE_PATTERN.fullmatch(mapped_drive) is None
+        or _VOLUME_GUID_DRIVE_PATTERN.fullmatch(stable_drive) is None
+        or not mapped_tail.startswith("\\")
+        or not stable_tail.startswith("\\")
+        or ntpath.normcase(mapped_tail) != ntpath.normcase(stable_tail)
+    ):
+        raise _WorkerFailure("engine_failed")
+    stable_targets = _query_dos_device(stable_drive[4:])
+    mapped_targets = _query_dos_device(mapped_drive)
+    if (
+        len(stable_targets) != 1
+        or _NATIVE_FIXED_VOLUME_PATTERN.fullmatch(stable_targets[0]) is None
+        or mapped_targets != stable_targets
+    ):
+        raise _WorkerFailure("engine_failed")
+    return Path(value)
+
+
+def _attach_import_root(
+    config: _WorkerConfig, import_root: Optional[Path]
+) -> _WorkerConfig:
+    """Copy one process argument into the private immutable worker config."""
+
+    if import_root is None:
+        return config
+    if type(import_root) is not type(Path()):
+        raise _WorkerFailure("engine_failed")
+    mapped = _require_mapped_import_root(str(import_root), config.runtime_root)
+    return _WorkerConfig(
+        config.challenge,
+        config.runtime_root,
+        config.gpt_weights,
+        config.sovits_weights,
+        config.reference_audio,
+        config.prompt_text,
+        config.prompt_language,
+        config.speed_milli,
+        config.seed,
+        config.device,
+        config.runtime_manifest_digest,
+        config.binding_sha256,
+        mapped,
+    )
+
+
+def _closed_bootstrap_sys_path(import_root: Path) -> Tuple[str, ...]:
+    """Validate the exact non-executable runtime paths from the shared contract.
+
+    The copied interpreter directory holds launch-only DLL copies and must
+    never become a Python module search location.  Accepting only the shared
+    runtime entries makes the DOS alias a compatibility spelling without
+    admitting bootstrap files, inherited paths, or executable ``.pth`` hooks.
+    """
+
+    if type(import_root) is not type(Path()):
+        raise _WorkerFailure("engine_failed")
+    expected = tuple(
+        str(_runtime_child_path(import_root, relative))
+        for relative in _BOOTSTRAP_SYS_PATH_RELATIVE_ENTRIES
+    )
+    if tuple(sys.path) != expected:
+        raise _WorkerFailure("engine_failed")
+    return expected
+
+
+def _device_volume_path(path: Path) -> str:
+    r"""Translate a guarded ``\\?\Volume`` path for ``CreateProcessW``.
+
+    CPython and ordinary file APIs accept the extended ``\\?`` namespace, but
+    Windows process creation rejects a Volume-GUID executable in that spelling.
+    The equivalent ``\\.\Volume`` device spelling identifies the same guarded
+    volume without falling back to a mutable drive-letter mapping.
+    """
+
+    if not isinstance(path, Path):
+        raise _WorkerFailure("engine_failed")
+    rendered = str(path)
+    if not _is_lexical_windows_path(rendered):
+        raise _WorkerFailure("engine_failed")
+    drive, tail = ntpath.splitdrive(rendered)
+    if (
+        _VOLUME_GUID_DRIVE_PATTERN.fullmatch(drive) is None
+        or not tail.startswith("\\")
+    ):
+        raise _WorkerFailure("engine_failed")
+    return "\\\\.\\" + rendered[4:]
+
+
+def _reap_decoder_process(process: subprocess.Popen) -> None:
+    """Best-effort kill and reap a failed decoder without exposing its paths."""
 
     try:
-        return Path(entry or os.getcwd()).resolve(strict=False)
-    except (OSError, RuntimeError, ValueError):
-        return None
+        running = process.poll() is None
+    except BaseException:
+        running = True
+    if running:
+        try:
+            process.kill()
+        except BaseException:
+            pass
+    try:
+        process.wait(timeout=_FFMPEG_REAP_TIMEOUT_SECONDS)
+    except BaseException:
+        pass
 
 
-def _prepare_upstream_import(runtime_root: Path) -> None:
+def _decode_reference_audio(
+    ffmpeg_path: Path,
+    reference_path: Path,
+    sample_rate: int,
+) -> bytes:
+    """Decode one bound reference to bounded mono float32 PCM bytes.
+
+    A dedicated reader caps memory before waiting for the child.  If FFmpeg
+    exceeds the cap its pipe fills, the reader returns at cap-plus-one, and the
+    worker kills the child immediately.  This avoids ``communicate`` collecting
+    attacker-controlled output without a bound while still draining normal
+    output concurrently with the process.
+    """
+
+    if (
+        not isinstance(ffmpeg_path, Path)
+        or not isinstance(reference_path, Path)
+        or type(sample_rate) is not int
+        or sample_rate != _REFERENCE_SAMPLE_RATE
+        or not _is_lexical_windows_path(str(reference_path))
+    ):
+        raise _WorkerFailure("engine_failed")
+    executable = _device_volume_path(ffmpeg_path)
+    command = (
+        executable,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-nostdin",
+        "-threads",
+        "0",
+        "-protocol_whitelist",
+        "file",
+        "-f",
+        "wav",
+        "-i",
+        str(reference_path),
+        "-vn",
+        "-sn",
+        "-dn",
+        "-t",
+        str(_MAX_REFERENCE_SECONDS),
+        "-f",
+        "f32le",
+        "-acodec",
+        "pcm_f32le",
+        "-ac",
+        "1",
+        "-ar",
+        str(sample_rate),
+        "-fs",
+        str(_MAX_DECODED_REFERENCE_BYTES),
+        "pipe:1",
+    )
+    process = None  # type: Optional[subprocess.Popen]
+    output = []  # type: List[bytes]
+    read_errors = []  # type: List[BaseException]
+    reader = None  # type: Optional[threading.Thread]
+    stdout = None  # type: Any
+    try:
+        process = subprocess.Popen(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            shell=False,
+            close_fds=True,
+        )
+        stdout = process.stdout
+        if stdout is None:
+            raise RuntimeError
+
+        def read_bounded_output() -> None:
+            """Read through EOF or one byte beyond the accepted PCM limit."""
+
+            try:
+                output.append(stdout.read(_MAX_DECODED_REFERENCE_BYTES + 1))
+            except BaseException as error:
+                read_errors.append(error)
+
+        started = time.monotonic()
+        reader = threading.Thread(
+            target=read_bounded_output,
+            name="elysia-ffmpeg-output",
+            daemon=True,
+        )
+        reader.start()
+        reader.join(_FFMPEG_TIMEOUT_SECONDS)
+        if reader.is_alive() or read_errors or len(output) != 1:
+            raise RuntimeError
+        remaining = _FFMPEG_TIMEOUT_SECONDS - (time.monotonic() - started)
+        if remaining <= 0:
+            raise RuntimeError
+        return_code = process.wait(timeout=remaining)
+        decoded = output[0]
+        if (
+            type(return_code) is not int
+            or return_code != 0
+            or not 4 <= len(decoded) <= _MAX_DECODED_REFERENCE_BYTES
+            or len(decoded) % 4 != 0
+        ):
+            raise RuntimeError
+        return decoded
+    except _WorkerFailure:
+        raise
+    except BaseException:
+        raise _WorkerFailure("engine_failed") from None
+    finally:
+        if process is not None:
+            _reap_decoder_process(process)
+        if stdout is not None:
+            try:
+                stdout.close()
+            except BaseException:
+                pass
+        if reader is not None and reader.is_alive():
+            reader.join(_FFMPEG_REAP_TIMEOUT_SECONDS)
+
+
+def _make_guarded_load_audio(config: _WorkerConfig, numpy_module: object) -> Callable:
+    """Build the sole upstream decoder bound to INIT's path and v2 rate."""
+
+    expected_reference = str(config.reference_audio.path)
+    ffmpeg_path = _runtime_child_path(config.runtime_root, "ffmpeg.exe")
+    frombuffer = getattr(numpy_module, "frombuffer", None)
+    float32 = getattr(numpy_module, "float32", None)
+    if not callable(frombuffer) or float32 is None:
+        raise _WorkerFailure("engine_failed")
+
+    def load_audio(path: object, sample_rate: object) -> object:
+        """Decode only the exact reference declared by this worker's INIT."""
+
+        if (
+            type(path) is not str
+            or path != expected_reference
+            or type(sample_rate) is not int
+            or sample_rate != _REFERENCE_SAMPLE_RATE
+        ):
+            raise _WorkerFailure("engine_failed")
+        decoded = _decode_reference_audio(
+            ffmpeg_path,
+            config.reference_audio.path,
+            sample_rate,
+        )
+        try:
+            values = frombuffer(decoded, float32)
+            flatten = getattr(values, "flatten", None)
+            if not callable(flatten):
+                raise TypeError
+            return flatten()
+        except _WorkerFailure:
+            raise
+        except BaseException:
+            raise _WorkerFailure("engine_failed") from None
+
+    return load_audio
+
+
+def _install_guarded_audio_loader(
+    config: _WorkerConfig, import_root: Path
+) -> None:
+    """Replace only upstream's decoder before TTS captures its function."""
+
+    try:
+        module = importlib.import_module("tools.my_utils")
+        expected_module_path = str(
+            _runtime_child_path(import_root, "tools/my_utils.py")
+        )
+        if getattr(module, "__file__", None) != expected_module_path:
+            raise TypeError
+        numpy_module = getattr(module, "np")
+        setattr(module, "load_audio", _make_guarded_load_audio(config, numpy_module))
+    except _WorkerFailure:
+        raise
+    except BaseException:
+        raise _WorkerFailure("engine_failed") from None
+
+
+def _reconfigure_silenced_text_streams() -> None:
+    """Make discarded upstream logs encoding-total without reopening output."""
+
+    try:
+        for stream in (sys.stdout, sys.stderr):
+            reconfigure = getattr(stream, "reconfigure", None)
+            if not callable(reconfigure):
+                raise RuntimeError
+            reconfigure(encoding="utf-8", errors="replace")
+    except BaseException:
+        raise _WorkerFailure("engine_failed") from None
+
+
+def _prepare_upstream_import(runtime_root: Path, import_root: Path) -> Path:
     """Isolate upstream imports and silence all non-protocol OS output.
 
     GPT-SoVITS imports a top-level package named ``tools``.  Removing the
-    Elysia scripts/project entries and stale ambiguous modules before inserting
-    the runtime directories guarantees that its own package wins.  ``dup2`` is
-    deliberately performed before importing torch/GPT-SoVITS; the executable
-    entry point has already duplicated the response pipe to an independent
-    unbuffered handle.
+    Elysia script/project paths and rebuilding from the validated runtime
+    list guarantees that its own package wins. Native imports use the parent's
+    verified temporary DOS alias; asset verification and FFmpeg continue to
+    use fixed Volume-GUID paths. ``dup2`` is deliberately performed before
+    importing torch/GPT-SoVITS; the executable entry point has already
+    duplicated the response pipe to an independent unbuffered handle.
     """
 
-    cleaned = []
-    for entry in sys.path:
-        normalized = _normalized_sys_path(entry)
-        if normalized in (_SCRIPTS_DIR, _PROJECT_DIR):
-            continue
-        cleaned.append(entry)
-    runtime_package_root = runtime_root / "GPT_SoVITS"
-    sys.path[:] = [str(runtime_root), str(runtime_package_root)] + [
-        entry
-        for entry in cleaned
-        if _normalized_sys_path(entry) not in (runtime_root, runtime_package_root)
-    ]
+    mapped_root = _require_mapped_import_root(str(import_root), runtime_root)
+    bootstrap_entries = _closed_bootstrap_sys_path(mapped_root)
+    runtime_package_root = _runtime_child_path(mapped_root, "GPT_SoVITS")
+    sys.path[:] = [str(mapped_root), str(runtime_package_root)] + list(
+        bootstrap_entries
+    )
     ambiguous_roots = (
         "tools",
         "AR",
@@ -652,21 +1115,42 @@ def _prepare_upstream_import(runtime_root: Path) -> None:
             os.dup2(null_descriptor, 2)
         finally:
             os.close(null_descriptor)
-        os.chdir(str(runtime_root))
+        # Redirecting descriptors alone does not change TextIOWrapper's
+        # inherited code page. Upstream prints Chinese asset names before its
+        # first model read; forcing UTF-8 prevents an otherwise invisible
+        # UnicodeEncodeError while ``errors=replace`` also closes the door on
+        # malformed surrogate text reaching the worker state machine.
+        _reconfigure_silenced_text_streams()
+        # Upstream's locale helper calls ``relpath(__file__)`` at import time.
+        # Its module and CWD must therefore use the same verified DOS alias;
+        # mixing the alias with a Volume-GUID CWD raises a cross-drive error.
+        # Stable asset paths remain Volume-GUID based, and the alias is checked
+        # again after engine/reference initialization before READY is emitted.
+        os.chdir(str(mapped_root))
     except (OSError, RuntimeError, ValueError):
         raise _WorkerFailure("engine_failed") from None
+    return mapped_root
 
 
-def _load_upstream_api(runtime_root: Path) -> Tuple[object, object]:
-    """Import the pinned GPT-SoVITS TTS classes after process isolation."""
+def _load_upstream_api(config: _WorkerConfig) -> Tuple[object, object]:
+    """Install the bound decoder, then import pinned GPT-SoVITS classes."""
 
-    _prepare_upstream_import(runtime_root)
+    if config.import_root is None:
+        raise _WorkerFailure("engine_failed")
+    import_root = _prepare_upstream_import(
+        config.runtime_root, config.import_root
+    )
     try:
+        # TTS imports ``load_audio`` into its own module namespace.  Replacing
+        # only the runtime-owned helper first confines the override to this
+        # disposable worker and avoids process-wide subprocess monkeypatching.
+        _install_guarded_audio_loader(config, import_root)
         module = importlib.import_module("GPT_SoVITS.TTS_infer_pack.TTS")
         config_class = getattr(module, "TTS_Config")
         tts_class = getattr(module, "TTS")
         if not callable(config_class) or not callable(tts_class):
             raise TypeError
+        _require_mapped_import_root(str(import_root), config.runtime_root)
         return config_class, tts_class
     except BaseException:
         raise _WorkerFailure("engine_failed") from None
@@ -687,20 +1171,28 @@ class _ProductionEngine:
     """Adapt the pinned upstream TTS object to the worker's narrow contract."""
 
     _config: _WorkerConfig
-    _loader: Callable[[Path], Tuple[object, object]] = _load_upstream_api
+    _loader: Callable[[_WorkerConfig], Tuple[object, object]] = _load_upstream_api
 
     def __post_init__(self) -> None:
         """Load one v2 model/reference and permanently disable hot reloads."""
 
         self._tts = None  # type: Any
         try:
-            config_class, tts_class = self._loader(self._config.runtime_root)
+            config_class, tts_class = self._loader(self._config)
             setattr(config_class, "save_configs", _disabled_save_configs)
             config_value = {
                 "version": "v2",
                 "custom": {
-                    "bert_base_path": str(self._config.runtime_root / _BASE_BERT_PATH),
-                    "cnhuhbert_base_path": str(self._config.runtime_root / _BASE_HUBERT_PATH),
+                    "bert_base_path": str(
+                        _runtime_child_path(
+                            self._config.runtime_root, _BASE_BERT_PATH
+                        )
+                    ),
+                    "cnhuhbert_base_path": str(
+                        _runtime_child_path(
+                            self._config.runtime_root, _BASE_HUBERT_PATH
+                        )
+                    ),
                     "device": self._config.device,
                     "is_half": self._config.device == "cuda",
                     "t2s_weights_path": str(self._config.gpt_weights.path),
@@ -711,10 +1203,14 @@ class _ProductionEngine:
             memory_config = config_class(config_value)  # type: ignore[operator]
             expected_config = {
                 "bert_base_path": str(
-                    self._config.runtime_root / _BASE_BERT_PATH
+                    _runtime_child_path(
+                        self._config.runtime_root, _BASE_BERT_PATH
+                    )
                 ),
                 "cnhuhbert_base_path": str(
-                    self._config.runtime_root / _BASE_HUBERT_PATH
+                    _runtime_child_path(
+                        self._config.runtime_root, _BASE_HUBERT_PATH
+                    )
                 ),
                 "device": self._config.device,
                 "is_half": self._config.device == "cuda",
@@ -752,6 +1248,16 @@ class _ProductionEngine:
                 self._config.reference_audio,
             ):
                 _verify_asset(asset)
+            if self._loader is _load_upstream_api:
+                if self._config.import_root is None:
+                    raise RuntimeError
+                # Native dependencies are imported lazily throughout upstream
+                # construction. Rechecking the mapping after model/reference
+                # setup brackets that whole load window before READY. Injected
+                # test loaders never establish or claim this production proof.
+                _require_mapped_import_root(
+                    str(self._config.import_root), self._config.runtime_root
+                )
             # Upstream's exception recovery normally reloads weights.  Once the
             # READY digest is issued that behavior would silently invalidate
             # attestation, so any recovery path must poison this process.
@@ -966,14 +1472,17 @@ def run_worker(
     request_stream: BinaryIO,
     response_stream: BinaryIO,
     engine_factory: Callable[[_WorkerConfig], _Engine] = _create_production_engine,
+    import_root: Optional[Path] = None,
 ) -> int:
     """Serve one strict INIT-to-STOP worker session.
 
     ``request_stream`` and ``response_stream`` must be distinct binary streams;
-    production uses duplicated unbuffered OS handles.  Any framing, schema,
-    challenge, identity, inference, or output failure emits at most one stable
-    code-only ERROR and poisons the session.  The function returns zero only
-    after the engine closes and a STOPPED frame is written successfully.
+    production uses duplicated unbuffered OS handles and supplies its verified
+    DOS-compatible import root separately from INIT's stable asset namespace.
+    Any framing, schema, challenge, identity, inference, or output failure
+    emits at most one stable code-only ERROR and poisons the session. The
+    function returns zero only after the engine closes and a STOPPED frame is
+    written successfully.
     """
 
     engine = None  # type: Optional[_Engine]
@@ -987,7 +1496,7 @@ def run_worker(
             raise _WorkerFailure("protocol_invalid") from None
         if first.kind is not FrameKind.INIT:
             raise _WorkerFailure("protocol_invalid")
-        config = _parse_init(first.metadata)
+        config = _attach_import_root(_parse_init(first.metadata), import_root)
         try:
             candidate = engine_factory(config)
             if not callable(getattr(candidate, "synthesize", None)) or not callable(
@@ -1078,18 +1587,25 @@ def run_worker(
 
 
 def _main() -> int:
-    """Duplicate protocol descriptors before upstream output is silenced."""
+    """Validate the sole launch argument and duplicate protocol descriptors."""
 
     request_descriptor = -1
     response_descriptor = -1
     try:
+        if len(sys.argv) != 2:
+            raise _WorkerFailure("engine_failed")
+        import_root = Path(sys.argv[1])
         request_descriptor = os.dup(sys.stdin.fileno())
         response_descriptor = os.dup(sys.stdout.fileno())
         with os.fdopen(request_descriptor, "rb", buffering=0) as request_stream:
             request_descriptor = -1
             with os.fdopen(response_descriptor, "wb", buffering=0) as response_stream:
                 response_descriptor = -1
-                return run_worker(request_stream, response_stream)
+                return run_worker(
+                    request_stream,
+                    response_stream,
+                    import_root=import_root,
+                )
     except BaseException:
         return 1
     finally:

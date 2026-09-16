@@ -333,6 +333,11 @@ class _ManagedSynthesisRuntimeLease(Protocol):
         """Return whether a complete immutable runtime manifest was verified."""
         ...
 
+    @property
+    def poisoned(self) -> bool:
+        """Return whether this worker generation can never accept more work."""
+        ...
+
     def synthesize(
         self,
         text: str,
@@ -379,6 +384,12 @@ class SpeechSynthesisBindingLease:
         repr=False,
         compare=False,
     )
+    _on_invalidated: Callable[[], None] | None = field(
+        repr=False,
+        compare=False,
+    )
+    _invalidation_lock: Lock = field(repr=False, compare=False)
+    _invalidation_notified: bool = field(repr=False, compare=False)
     _binding_seal: object | None = field(repr=False, compare=False)
 
     def __init__(
@@ -422,6 +433,9 @@ class SpeechSynthesisBindingLease:
         object.__setattr__(self, "binding_trust", binding_trust)
         object.__setattr__(self, "_synthesizer", synthesizer)
         object.__setattr__(self, "_managed_runtime_lease", None)
+        object.__setattr__(self, "_on_invalidated", None)
+        object.__setattr__(self, "_invalidation_lock", Lock())
+        object.__setattr__(self, "_invalidation_notified", False)
         object.__setattr__(self, "_binding_seal", None)
 
     @property
@@ -459,11 +473,17 @@ class SpeechSynthesisBindingLease:
             runtime_lease = self._managed_runtime_lease
             if runtime_lease is None:
                 raise RuntimeError("Managed synthesis binding is unavailable.")
-            return runtime_lease.synthesize(
-                request.text,
-                request.language,
-                token,
-            )
+            try:
+                return runtime_lease.synthesize(
+                    request.text,
+                    request.language,
+                    token,
+                )
+            finally:
+                # Native protocol failures permanently poison this exact worker
+                # generation. Tell its owner before the generic queue turns the
+                # private exception into an ordinary per-sentence failure.
+                self._notify_if_invalidated(runtime_lease)
         synthesizer = self._synthesizer
         if synthesizer is None:
             raise RuntimeError("External synthesis binding is unavailable.")
@@ -481,7 +501,39 @@ class SpeechSynthesisBindingLease:
         runtime_lease = self._managed_runtime_lease
         if runtime_lease is None:
             return False
-        return runtime_lease.abort(token)
+        try:
+            return runtime_lease.abort(token)
+        finally:
+            # A pre-start tombstone keeps the lease healthy, while aborting an
+            # active native call poisons it. The runtime's immutable state is
+            # the distinction; the historical Boolean return covers both.
+            self._notify_if_invalidated(runtime_lease)
+
+    def _notify_if_invalidated(
+        self,
+        runtime_lease: _ManagedSynthesisRuntimeLease,
+    ) -> None:
+        """Tell the exclusive owner when a managed generation becomes unusable."""
+
+        try:
+            poisoned = runtime_lease.poisoned
+        except BaseException:
+            poisoned = True
+        if poisoned is False:
+            return
+        callback = self._on_invalidated
+        if callback is None:
+            return
+        with self._invalidation_lock:
+            if self._invalidation_notified:
+                return
+            object.__setattr__(self, "_invalidation_notified", True)
+        try:
+            callback()
+        except BaseException:
+            # Queue cancellation and failure mapping remain authoritative even
+            # if the calling application owner cannot complete optional cleanup.
+            return
 
 
 def _create_managed_synthesis_binding_lease(
@@ -492,6 +544,7 @@ def _create_managed_synthesis_binding_lease(
     profile_id: str = "default",
     emotion: str = "neutral",
     language: SynthesisLanguage = "auto",
+    on_invalidated: Callable[[], None] | None = None,
 ) -> SpeechSynthesisBindingLease:
     """Issue one owned binding after the managed runtime completes attestation.
 
@@ -519,6 +572,7 @@ def _create_managed_synthesis_binding_lease(
         synthesize = getattr(runtime_lease, "synthesize", None)
         abort = getattr(runtime_lease, "abort", None)
         cache_eligible = getattr(runtime_lease, "cache_eligible", None)
+        poisoned = getattr(runtime_lease, "poisoned", None)
     except BaseException:
         raise TypeError(
             "runtime_lease must implement the non-cacheable managed contract."
@@ -527,10 +581,13 @@ def _create_managed_synthesis_binding_lease(
         not callable(synthesize)
         or not callable(abort)
         or cache_eligible is not False
+        or poisoned is not False
     ):
         raise TypeError(
             "runtime_lease must implement the non-cacheable managed contract."
         )
+    if on_invalidated is not None and not callable(on_invalidated):
+        raise TypeError("on_invalidated must be callable when provided.")
 
     lease = object.__new__(SpeechSynthesisBindingLease)
     object.__setattr__(lease, "lease_id", lease_id)
@@ -541,6 +598,9 @@ def _create_managed_synthesis_binding_lease(
     object.__setattr__(lease, "binding_trust", "elysia-owned")
     object.__setattr__(lease, "_synthesizer", None)
     object.__setattr__(lease, "_managed_runtime_lease", runtime_lease)
+    object.__setattr__(lease, "_on_invalidated", on_invalidated)
+    object.__setattr__(lease, "_invalidation_lock", Lock())
+    object.__setattr__(lease, "_invalidation_notified", False)
     object.__setattr__(lease, "_binding_seal", _MANAGED_BINDING_SEAL)
     return lease
 
@@ -712,6 +772,10 @@ class SpeechTurn(Protocol):
         """Cancel queued work and suppress audio from a running sentence."""
         ...
 
+    def cancel_nowait(self) -> bool:
+        """Mark stale work cancelled without waiting on delivery or native I/O."""
+        ...
+
 
 @dataclass(slots=True)
 class _TurnRecord:
@@ -828,6 +892,21 @@ class _SpeechTurnHandle:
         # racing here is still atomic because submission rechecks cancelled
         # state under the queue condition and restores its parser checkpoint.
         return self._queue._cancel_turn(self._record)
+
+    def cancel_nowait(self) -> bool:
+        """Cancel logically and delegate native abort to the fixed daemon.
+
+        A delivery callback that already crossed the notifier boundary may
+        still return later. Consumers choosing this method must independently
+        mark the turn stale before calling it, so that callback cannot become
+        audible or mutate a replacement turn.
+        """
+
+        return self._queue._cancel_turn(
+            self._record,
+            wait_for_delivery=False,
+            defer_abort=True,
+        )
 
 
 class SpeechSynthesisQueue:
@@ -1752,6 +1831,6 @@ class SpeechSynthesisQueue:
         try:
             callback(event)
         except BaseException:
-            # A future protocol/file sink is an isolation boundary. It can
+            # The current protocol/file sink is an isolation boundary. It can
             # report its own failure, but cannot reduce physical worker count.
             return

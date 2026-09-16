@@ -1407,6 +1407,96 @@ for (const [event, data] of [
   })
 }
 
+test('Backend keeps wired speech correlation after Chat text completes', () => {
+  const accepted = []
+  const forwarded = []
+  const backend = new BackendProcess('.', (message) => forwarded.push(message))
+  backend.snapshot = {
+    revision: 1,
+    status: 'ready',
+    capabilities: ['chat.stream', 'voice.speech'],
+    models: ['qwen3.5:9b'],
+    modelName: 'qwen3.5:9b',
+    chatId: 'chat_fixture',
+    chatTitle: 'Elysia Chat',
+  }
+  backend.speechDelivery = {
+    acceptEvent: (message) => accepted.push(message),
+  }
+
+  // The text request is deliberately absent: speech may drain after the
+  // terminal Chat response has already removed it from pendingRequests.
+  backend.handleProtocolLine(eventFrame(
+    'speech-after-chat-1',
+    'voice.speech.clip',
+    {
+      chatId: 'chat_fixture',
+      clipToken: 'a'.repeat(64),
+      sequence: 0,
+      byteLength: 46,
+      sha256: 'b'.repeat(64),
+      mediaType: 'audio/wav',
+    },
+  ))
+
+  assert.equal(accepted.length, 1)
+  assert.equal(accepted[0].requestId, 'speech-after-chat-1')
+  assert.deepEqual(forwarded, [])
+  assert.equal(backend.getSnapshot().status, 'ready')
+})
+
+test('Backend registers speech turns only when capability is advertised', () => {
+  const writes = []
+  const starts = []
+  const backend = new BackendProcess('.', () => undefined)
+  backend.child = {
+    stdin: {
+      writable: true,
+      write: (value) => writes.push(value),
+    },
+  }
+  backend.snapshot = {
+    revision: 1,
+    status: 'ready',
+    capabilities: ['chat.stream', 'voice.speech'],
+    models: ['qwen3.5:9b'],
+    modelName: 'qwen3.5:9b',
+    chatId: 'chat_fixture',
+    chatTitle: 'Elysia Chat',
+  }
+  backend.speechDelivery = {
+    startTurn: (requestId, chatId) => starts.push({ requestId, chatId }),
+  }
+
+  const { requestId } = backend.beginChat({
+    chatId: 'chat_fixture',
+    message: 'Speak this reply.',
+    attachmentIds: [],
+  })
+
+  assert.deepEqual(starts, [{ requestId, chatId: 'chat_fixture' }])
+  assert.equal(JSON.parse(writes.at(-1)).id, requestId)
+
+  const ungatedStarts = []
+  const ungatedBackend = new BackendProcess('.', () => undefined)
+  ungatedBackend.child = {
+    stdin: { writable: true, write: () => true },
+  }
+  ungatedBackend.snapshot = {
+    ...backend.snapshot,
+    capabilities: ['chat.stream'],
+  }
+  ungatedBackend.speechDelivery = {
+    startTurn: (...parameters) => ungatedStarts.push(parameters),
+  }
+  ungatedBackend.beginChat({
+    chatId: 'chat_fixture',
+    message: 'Text only.',
+    attachmentIds: [],
+  })
+  assert.deepEqual(ungatedStarts, [])
+})
+
 test('Backend state machine accepts one ordered matching Chat stream', () => {
   const { backend, events } = createPendingChat()
 
@@ -3467,6 +3557,8 @@ test('Backend replaces child process errors with a fixed diagnostic', async () =
     backend.start()
     child = backend.child
     assert.ok(child)
+    assert.ok(child.stdio[3])
+    assert.equal(backend.speechAudioInput, child.stdio[3])
     const exited = new Promise((resolve) => child.once('exit', resolve))
 
     child.emit(

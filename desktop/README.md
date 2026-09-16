@@ -16,12 +16,15 @@ attachments, Project source storage, semantic design tokens, system/light/dark
 themes, keyboard and screen-reader navigation, durable per-Chat drafts,
 renderer-refresh stream recovery, and consistent loading, empty, error,
 offline, and fatal states. This Voice slice exposes final text only; real-time
-partial transcripts and continuous conversation remain future work. Separately,
-Python now has one-shot TTS contracts, a strict ignored local Voice Profile
-catalog, readiness reporting, and a loopback-only GPT-SoVITS adapter with
-repeated/multi-emotion smoke coverage. That foundation is Python/CLI-only:
-Desktop Protocol, Electron/React transport, playback, and continuous speech are
-not connected.
+partial transcripts and continuous conversation remain future work. Ordinary
+Chat replies now copy exact Brain chunks into a bounded sentence queue backed
+by one managed local GPT-SoVITS worker. Correlation metadata crosses NDJSON,
+while validated PCM WAV uses private fd3 framing and preload-owned Web Audio.
+Preload routes every reply clip to the saved speaker selection before decoding;
+a missing selected device fails that clip instead of falling back to another
+speaker. React never receives the audio or private voice configuration. The independent
+loopback-only Python adapter and repeated/multi-emotion smoke remain available
+for diagnostics.
 Electron is frozen as the production
 shell. The Tauri source and toolchain were removed after the comparison; the
 rationale, recorded measurements, and revisit gates are in
@@ -36,12 +39,12 @@ Prerequisites:
 - Local STT additionally requires `requirements-stt.txt` and a complete model
   directory at `models/weights/faster-whisper/<model>`; neither is installed or
   downloaded automatically.
-- Optional Python-only synthesis requires a separately installed GPT-SoVITS
+- Optional desktop reply playback and Python synthesis require a separately installed GPT-SoVITS
   runtime, checkpoints/reference audio under the ignored
   `models/weights/gpt-sovits/` tree, and an ignored
   `workspace/settings/voice-profiles.json` catalog. None is downloaded,
   committed, or packaged by this project, and none is required to run the
-  current desktop UI.
+  text-only desktop UI.
 - Run all npm commands from the `desktop` directory.
 
 Start Vite in the first terminal:
@@ -122,9 +125,10 @@ Git-ignored and must not be committed or packaged with the application.
   final message. The compact character panel is also modal, traps focus, and
   has its own close control.
 - Projects support persisted metadata, instructions, workspace binding, Chat
-  assignment, archive, and restore. Although Python/CLI one-shot synthesis is
-  available, desktop speech output, continuous Voice, Work permissions, and
-  later file-processing controls remain unavailable.
+  assignment, archive, and restore. Managed sentence playback is available for
+  ordinary Chat replies when its ignored local runtime and Profile are valid;
+  continuous Voice, natural barge-in, Work permissions, and later
+  file-processing controls remain unavailable.
 
 ## Manual local transcription smoke test
 
@@ -157,11 +161,10 @@ while silent for about 10 seconds, once with **Cancel capture**, and once with
 generic progress, not partial recognized text. Stop immediately if Windows
 reports that microphone access is denied.
 
-## Manual local synthesis smoke test
+## Manual local synthesis and playback smoke tests
 
-This test exercises only the Python synthesis boundary; it does not make the
-desktop speak. Prepare a GPT-SoVITS runtime and assets that you have the right
-to use, copy `config\voice_profiles.example.json` to the ignored
+Prepare a GPT-SoVITS runtime and assets that you have the right to use, copy
+`config\voice_profiles.example.json` to the ignored
 `workspace\settings\voice-profiles.json`, and replace the example values with
 accurate local relative paths, reference text, and language. The adapter
 accepts only loopback-IP HTTP origins (`localhost` is normalized to
@@ -171,7 +174,18 @@ resolves model/reference assets only under `models\weights\gpt-sovits\`.
 If the Profile is marked `local-evaluation-only`, leave
 `GPT_SOVITS_ALLOW_LOCAL_EVALUATION=False` until you have explicitly confirmed
 its rights status and paths; then opt in locally without committing `.env`.
-After starting the configured runtime, run from CMD:
+For desktop playback, keep the loopback API stopped: Electron's Python Backend
+starts the worker itself from `models\cache\GPT-SoVITS-v2-240821`. Launch the
+desktop normally, send a Chat message that produces several sentences, and
+confirm that each reply sentence plays once in order while the exact text is
+still persisted. Closing the window and exiting must stop the current clip and
+release the Backend and managed worker; after restarting the app, a new Chat
+reply must be playable again. Reloading discards the current clip; after the
+replacement private playback owner registers, later replies must play again.
+Text Chat remains usable throughout either lifecycle.
+
+For the independent loopback adapter smoke, start the configured API and run
+from CMD:
 
 ```bat
 cd /d D:\Elysia_AI
@@ -257,14 +271,18 @@ method, results, capability gaps, and limitations.
 - Python and TypeScript validate the same samples in
   `desktop_protocol/fixtures/v1.samples.json`.
 - Python delegates persistence and streaming to the existing Stage 5 Brain.
-- The Python GPT-SoVITS adapter is deliberately outside the desktop protocol:
-  it permits only loopback-IP HTTP, ignores environment proxies, rejects
-  redirects and retries, and accepts only bounded, length-declared identity
-  WAV/AAC responses. Stream reads shrink their socket timeout to the remaining
-  body deadline; unsupported transfer shapes fail closed. Readiness is sanitized.
-  Its ignored catalog maps logical Profile/emotion identifiers to local assets;
-  private paths, prompts, weights, reference audio, and synthesized bytes do not
-  currently cross Electron or React.
+- The independent Python GPT-SoVITS adapter remains outside the desktop
+  protocol: it permits only loopback-IP HTTP, ignores environment proxies,
+  rejects redirects and retries, and accepts only bounded, length-declared
+  identity WAV/AAC responses. Desktop reply playback instead owns one guarded
+  local worker, a bounded FIFO, and an inherited fd3 binary pipe. Main and
+  Preload validate the canonical WAV before Web Audio playback; the IPC is not
+  part of public `DesktopApi`. Private paths, prompts, weights, reference audio,
+  tokens, hashes, and synthesized bytes never enter React. The managed
+  saved output-device selection is applied before each Web Audio decode; an
+  unavailable explicit sink skips that clip instead of leaking it through the
+  system default speaker. The managed runtime's current partial manifest proves launch consistency, not complete
+  supply-chain provenance, so desktop speech caching remains disabled.
 - Settings accepts an exact non-sensitive allowlist, including the closed STT
   model/device/language enums, uses optimistic revisions
   and atomic replacement, and remains repairable after Backend initialization

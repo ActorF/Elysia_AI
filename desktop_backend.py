@@ -70,6 +70,8 @@ from projects import (
     ProjectNotFoundError,
 )
 from desktop_protocol import (
+    AudioChannelError,
+    AudioChannelWriter,
     MAX_MESSAGE_LENGTH,
     MAX_PROTOCOL_FRAME_BYTES,
     PROTOCOL_NAME,
@@ -84,6 +86,11 @@ from desktop_protocol import (
     build_stream_chunk,
     build_success_response,
     parse_client_request,
+)
+from desktop_speech import (
+    DesktopSpeechConfig,
+    DesktopSpeechCoordinator,
+    DesktopSpeechTurn,
 )
 from start import create_brain, validate_settings
 from voice import (
@@ -136,6 +143,7 @@ SERVER_CAPABILITIES = (
     "voice.settings",
     "voice.capture",
     "voice.transcription",
+    "voice.speech",
     "attachment.management",
     "stream",
     "progress",
@@ -167,16 +175,29 @@ class _GenerationTask:
     state: _GenerationState = _GenerationState.RUNNING
     done: Event = field(default_factory=Event)
     thread: Thread | None = None
+    speech_turn: DesktopSpeechTurn | None = field(default=None, repr=False)
     _lock: Lock = field(default_factory=Lock, repr=False)
 
     def request_cancel(self) -> bool:
-        """Request cancellation only while commit can still be prevented."""
+        """Request cancellation and suppress the matching speech copy."""
 
+        speech_turn: DesktopSpeechTurn | None = None
         with self._lock:
             if self.state is _GenerationState.RUNNING:
                 self.state = _GenerationState.CANCEL_REQUESTED
-                return True
-            return self.state is _GenerationState.CANCEL_REQUESTED
+                speech_turn, self.speech_turn = self.speech_turn, None
+                accepted = True
+            else:
+                accepted = self.state is _GenerationState.CANCEL_REQUESTED
+        if speech_turn is not None:
+            try:
+                speech_turn.cancel()
+            except BaseException:
+                # Speech is an optional copy of the canonical text stream.  A
+                # broken adapter must not turn a successful cancellation into
+                # a protocol failure or keep the text worker alive.
+                logger.error("Desktop speech cancellation failed.")
+        return accepted
 
     def should_cancel(self) -> bool:
         """Return whether the worker must stop before yielding or committing."""
@@ -192,6 +213,70 @@ class _GenerationTask:
                 return False
             self.state = _GenerationState.COMMITTING
             return True
+
+    def attach_speech_turn(self, speech_turn: DesktopSpeechTurn) -> None:
+        """Attach one optional turn unless cancellation already won the race."""
+
+        if not isinstance(speech_turn, DesktopSpeechTurn):
+            raise TypeError("speech_turn must implement DesktopSpeechTurn.")
+        with self._lock:
+            if self.state is _GenerationState.RUNNING:
+                self.speech_turn = speech_turn
+                cancel_now = False
+            else:
+                cancel_now = True
+        if cancel_now:
+            try:
+                speech_turn.cancel()
+            except BaseException:
+                logger.error("Desktop speech cancellation failed.")
+
+    def feed_speech(self, chunk: str) -> None:
+        """Copy one Brain chunk to speech without transferring text ownership."""
+
+        with self._lock:
+            speech_turn = self.speech_turn
+        if speech_turn is not None:
+            try:
+                speech_turn.feed(chunk)
+            except BaseException:
+                # Detach only the same turn: cancellation may already have
+                # installed no replacement, but this check documents and
+                # preserves that ownership boundary.
+                with self._lock:
+                    if self.speech_turn is speech_turn:
+                        self.speech_turn = None
+                try:
+                    speech_turn.cancel()
+                except BaseException:
+                    pass
+                logger.error("Desktop speech input failed; text Chat continues.")
+
+    def finish_speech(self) -> None:
+        """Flush speech after the canonical Assistant reply has committed."""
+
+        with self._lock:
+            speech_turn, self.speech_turn = self.speech_turn, None
+        if speech_turn is not None:
+            try:
+                speech_turn.finish()
+            except BaseException:
+                try:
+                    speech_turn.cancel()
+                except BaseException:
+                    pass
+                logger.error("Desktop speech finalization failed.")
+
+    def cancel_speech(self) -> None:
+        """Discard queued or late audio when generation has no valid reply."""
+
+        with self._lock:
+            speech_turn, self.speech_turn = self.speech_turn, None
+        if speech_turn is not None:
+            try:
+                speech_turn.cancel()
+            except BaseException:
+                logger.error("Desktop speech cancellation failed.")
 
     def finish(self) -> None:
         """Publish terminal state to shutdown and serialized readers."""
@@ -339,6 +424,8 @@ class DesktopBackend:
         voice_settings_service: VoiceSettingsService | None = None,
         transcription_runner_factory: TranscriptionRunnerFactory | None = None,
         attachment_store: JsonAttachmentStore | None = None,
+        audio_writer: AudioChannelWriter | None = None,
+        speech_coordinator: DesktopSpeechCoordinator | None = None,
         input_stream: TextIO = sys.stdin,
         output_stream: TextIO = sys.stdout,
         expected_session_token: str | None = None,
@@ -386,6 +473,10 @@ class DesktopBackend:
                 for warning in (self._settings_warning, override_warning)
                 if warning is not None
             )
+        if audio_writer is not None and speech_coordinator is not None:
+            raise TypeError(
+                "audio_writer and speech_coordinator are mutually exclusive."
+            )
         self._transcription_runner_factory = transcription_runner_factory
         self._input_stream = input_stream
         self._output_stream = output_stream
@@ -403,6 +494,13 @@ class DesktopBackend:
         self._request_id_order: deque[str] = deque()
         self._state_lock = RLock()
         self._output_lock = Lock()
+        self._speech_coordinator = speech_coordinator
+        if self._speech_coordinator is None and audio_writer is not None:
+            self._speech_coordinator = DesktopSpeechCoordinator(
+                DesktopSpeechConfig.from_app_settings(self._runtime_settings),
+                audio_writer,
+                self._emit_speech_event,
+            )
         self._generation_task: _GenerationTask | None = None
         self._transcription_runner: TranscriptionJobRunner | None = None
         self._transcription_transcriber: FasterWhisperTranscriber | None = None
@@ -412,6 +510,11 @@ class DesktopBackend:
         # arriving after closure observes the flag and emits nothing.
         self._transcription_lifecycle_lock = RLock()
         self._transcription_closing = False
+        # Speech callbacks originate on a queue daemon. This gate gives the
+        # shutdown response/EOF a strict output boundary without joining that
+        # daemon or optional native inference.
+        self._speech_lifecycle_lock = RLock()
+        self._speech_closing = False
 
     def _active_chat_snapshot(self) -> ChatSession | None:
         """Read the active Chat under the worker coordination lock."""
@@ -448,6 +551,7 @@ class DesktopBackend:
         # callback that loses the EOF race; daemon workers may drain native I/O
         # without delaying process teardown.
         self._prepare_transcription_shutdown()
+        self._prepare_speech_shutdown()
         # A finite test/input stream may end immediately after starting a
         # generation. Give a healthy worker time to finish; if it is blocked,
         # request cancellation so stdin closure cannot strand the process.
@@ -506,6 +610,7 @@ class DesktopBackend:
                 self._handshake(request_id, request)
             elif method == "shutdown":
                 self._prepare_transcription_shutdown()
+                self._prepare_speech_shutdown()
                 self._prepare_generation_shutdown()
                 self._emit_response(request_id, {"stopped": True})
                 return False
@@ -812,6 +917,14 @@ class DesktopBackend:
             self._brain = brain
             self._set_active_chat(active_chat)
             self._active_project_id = active_chat.project_id
+            if self._speech_coordinator is not None:
+                try:
+                    self._speech_coordinator.start()
+                except BaseException:
+                    logger.error(
+                        "Optional desktop speech could not start; text Chat continues."
+                    )
+                    self._prepare_speech_shutdown()
             self._emit_progress(
                 request_id,
                 "backend.initialize",
@@ -2245,8 +2358,24 @@ class DesktopBackend:
         reply_length = 0
         sequence = 0
         raw_chat_id = str(task.chat_id)
+        speech_finished = False
 
         try:
+            if self._speech_coordinator is not None:
+                try:
+                    task.attach_speech_turn(
+                        self._speech_coordinator.start_turn(
+                            task.request_id,
+                            raw_chat_id,
+                        )
+                    )
+                except Exception:
+                    # Optional speech must never delay, cancel, or replace the
+                    # canonical text generation path.
+                    logger.error(
+                        "Desktop speech turn could not start: request_id=%s.",
+                        task.request_id,
+                    )
             for chunk in run(brain, task):
                 if not chunk:
                     continue
@@ -2265,6 +2394,7 @@ class DesktopBackend:
                         done=False,
                     )
                 )
+                task.feed_speech(chunk)
                 sequence += 1
 
             reply = "".join(reply_chunks)
@@ -2273,6 +2403,11 @@ class DesktopBackend:
                     "chat.empty_reply",
                     "The local model returned an empty reply.",
                 )
+
+            # Natural generator exhaustion means Brain has crossed its commit
+            # boundary. Only now may the final unterminated speech tail play.
+            task.finish_speech()
+            speech_finished = True
 
             try:
                 refreshed_chat = brain.get_chat(task.chat_id)
@@ -2360,6 +2495,8 @@ class DesktopBackend:
                 retryable=True,
             )
         finally:
+            if not speech_finished:
+                task.cancel_speech()
             self._finish_generation_task(task)
 
     def _cancel_request(
@@ -2454,6 +2591,24 @@ class DesktopBackend:
             if runner is not None:
                 runner.shutdown(wait=False, cancel_pending=True)
 
+    def _prepare_speech_shutdown(self) -> None:
+        """Linearize speech output, then release process and pipe owners."""
+
+        with self._speech_lifecycle_lock:
+            self._speech_closing = True
+            coordinator, self._speech_coordinator = self._speech_coordinator, None
+            if coordinator is not None:
+                # Queue/notifier shutdown is intentionally non-joining, so the
+                # output gate cannot wait on a callback trying to re-enter it.
+                # Native owner cleanup may wait only for its bounded stop limit.
+                try:
+                    coordinator.shutdown()
+                except BaseException:
+                    # Speech is optional and has already lost admission.  A
+                    # broken adapter must not suppress the shutdown response
+                    # or turn clean stdin EOF into a Backend failure.
+                    logger.error("Optional desktop speech shutdown failed.")
+
     def _emit_response(
         self,
         request_id: str,
@@ -2493,6 +2648,19 @@ class DesktopBackend:
         """Write one streaming event linked to its request."""
 
         self._emit(build_event(event, data, request_id=request_id))
+
+    def _emit_speech_event(
+        self,
+        event: ProtocolEventName,
+        request_id: str,
+        data: JsonObject,
+    ) -> None:
+        """Publish speech only before shutdown claims its output boundary."""
+
+        with self._speech_lifecycle_lock:
+            if self._speech_closing:
+                return
+            self._emit_event(event, request_id=request_id, data=data)
 
     def _emit_progress(
         self,
@@ -2545,7 +2713,14 @@ def main() -> None:
         sys.stdout,
         sys.stderr,
     )
-    DesktopBackend().run()
+    audio_writer: AudioChannelWriter | None = None
+    try:
+        audio_writer = AudioChannelWriter.from_inherited_fd3()
+    except AudioChannelError:
+        # Direct Python/console launches legitimately have no fd3 capability.
+        # Text Chat remains fully usable and no arbitrary descriptor is used.
+        logger.error("Desktop speech audio channel is unavailable.")
+    DesktopBackend(audio_writer=audio_writer).run()
 
 
 if __name__ == "__main__":

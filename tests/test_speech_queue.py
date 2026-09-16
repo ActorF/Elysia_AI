@@ -130,6 +130,12 @@ class _ManagedSequenceLease:
 
         return False
 
+    @property
+    def poisoned(self) -> bool:
+        """Keep ordinary scripted calls reusable across sentence failures."""
+
+        return False
+
     def synthesize(
         self,
         text: str,
@@ -181,6 +187,12 @@ class _BlockingManagedLease:
 
         return False
 
+    @property
+    def poisoned(self) -> bool:
+        """Leave lifecycle poisoning to dedicated integration fakes."""
+
+        return False
+
     def synthesize(
         self,
         text: str,
@@ -229,6 +241,12 @@ class _StaleAwareManagedLease:
     @property
     def cache_eligible(self) -> bool:
         """Keep both operations outside the audio cache."""
+
+        return False
+
+    @property
+    def poisoned(self) -> bool:
+        """Model token ordering independently from generation lifetime."""
 
         return False
 
@@ -287,6 +305,12 @@ class _PreStartAbortManagedLease:
     @property
     def cache_eligible(self) -> bool:
         """Keep pre-start cancellation independent of audio caching."""
+
+        return False
+
+    @property
+    def poisoned(self) -> bool:
+        """Confirm a pre-start tombstone does not invalidate the worker."""
 
         return False
 
@@ -366,6 +390,43 @@ class _CacheClaimingManagedLease(_ManagedSequenceLease):
         return True
 
 
+class _PoisoningManagedLease(_ManagedSequenceLease):
+    """Expose explicit terminal invalidation for binding callback tests."""
+
+    def __init__(self, *, poison_during_synthesis: bool = False) -> None:
+        """Start healthy and optionally fail while executing synthesis."""
+
+        super().__init__()
+        self._poisoned = False
+        self._poison_during_synthesis = poison_during_synthesis
+
+    @property
+    def poisoned(self) -> bool:
+        """Return whether this fake generation became permanently unusable."""
+
+        return self._poisoned
+
+    def synthesize(
+        self,
+        text: str,
+        language: str,
+        operation_token: str,
+    ) -> SynthesisResult:
+        """Poison and fail when requested, otherwise use the scripted result."""
+
+        if self._poison_during_synthesis:
+            self._poisoned = True
+            raise KeyboardInterrupt("private-managed-poison")
+        return super().synthesize(text, language, operation_token)
+
+    def abort(self, operation_token: str) -> bool:
+        """Poison this generation as a matching active abort would."""
+
+        self.abort_tokens.append(operation_token)
+        self._poisoned = True
+        return True
+
+
 class _TerminalObserver:
     """Expose terminal delivery without retaining event payloads in a list."""
 
@@ -405,6 +466,7 @@ def _managed_lease(
     lease_id: str = "managed-lease-one",
     cache_identity: str = "managed-binding-one",
     language: str = "zh",
+    on_invalidated: Callable[[], None] | None = None,
 ) -> SpeechSynthesisBindingLease:
     """Issue one private-factory lease around a model-free managed fake."""
 
@@ -415,6 +477,7 @@ def _managed_lease(
         profile_id="elysia-v2",
         emotion="neutral",
         language=language,  # type: ignore[arg-type]
+        on_invalidated=on_invalidated,
     )
 
 
@@ -599,6 +662,47 @@ def test_private_factory_issues_owned_non_cacheable_binding() -> None:
     assert runtime.calls == [("Hello", "en", token)]
     assert runtime.abort_tokens == [token]
     assert token not in repr(lease)
+
+
+def test_managed_binding_notifies_once_only_after_generation_poison() -> None:
+    """Distinguish a healthy tombstone from permanent managed invalidation."""
+
+    notifications: list[str] = []
+    tombstone_runtime = _PreStartAbortManagedLease()
+    tombstone_binding = _managed_lease(
+        tombstone_runtime,
+        on_invalidated=lambda: notifications.append("tombstone"),
+    )
+
+    assert tombstone_binding.abort("d" * 64)
+    assert notifications == []
+
+    poisoned_runtime = _PoisoningManagedLease()
+    poisoned_binding = _managed_lease(
+        poisoned_runtime,
+        lease_id="managed-poisoned-abort",
+        on_invalidated=lambda: notifications.append("poisoned"),
+    )
+    assert poisoned_binding.abort("e" * 64)
+    assert poisoned_binding.abort("f" * 64)
+    assert notifications == ["poisoned"]
+
+
+def test_managed_binding_notifies_when_synthesis_poisons_generation() -> None:
+    """Surface spontaneous native invalidation before queue failure mapping."""
+
+    notifications: list[str] = []
+    runtime = _PoisoningManagedLease(poison_during_synthesis=True)
+    binding = _managed_lease(
+        runtime,
+        on_invalidated=lambda: notifications.append("poisoned"),
+    )
+
+    with pytest.raises(KeyboardInterrupt, match="private-managed-poison"):
+        binding.synthesize("Hello", "a" * 64)
+    binding.abort("b" * 64)
+
+    assert notifications == ["poisoned"]
 
 
 def test_private_factory_rejects_a_runtime_cache_claim() -> None:
@@ -1345,6 +1449,59 @@ def test_finish_cannot_publish_terminal_before_final_clip_callback() -> None:
         )
     finally:
         release_clip.set()
+        queue.shutdown(timeout_seconds=2.0)
+
+
+def test_cancel_nowait_does_not_join_a_crossed_delivery_callback() -> None:
+    """Return after logical cancellation while an older callback still owns data."""
+
+    clip_entered = Event()
+    release_clip = Event()
+    cancel_returned = Event()
+    events: list[object] = []
+    results: list[bool] = []
+
+    def callback(event: object) -> None:
+        """Hold the exact clip that crossed the callback boundary first."""
+
+        if isinstance(event, SpeechQueueClip):
+            clip_entered.set()
+            assert release_clip.wait(2.0)
+        events.append(event)
+
+    queue = SpeechSynthesisQueue()
+    turn = queue.start_turn(
+        "turn-cancel-nowait",
+        _lease(_SequenceSynthesizer()),
+        callback,
+    )
+    turn.feed("Already crossing. Later work is stale. ")
+    assert clip_entered.wait(1.0)
+
+    def cancel() -> None:
+        """Record that the non-blocking cancellation returned immediately."""
+
+        results.append(turn.cancel_nowait())
+        cancel_returned.set()
+
+    thread = Thread(target=cancel)
+    thread.start()
+    try:
+        assert cancel_returned.wait(0.2)
+        assert results == [True]
+        assert events == []
+        release_clip.set()
+        thread.join(1.0)
+        _wait_until(
+            lambda: any(isinstance(event, SpeechTurnTerminal) for event in events)
+        )
+        assert isinstance(events[0], SpeechQueueClip)
+        assert events[-1] == SpeechTurnTerminal(
+            "turn-cancel-nowait", "cancelled", 2, 2, 0
+        )
+    finally:
+        release_clip.set()
+        thread.join(1.0)
         queue.shutdown(timeout_seconds=2.0)
 
 

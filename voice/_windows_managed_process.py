@@ -23,7 +23,7 @@ import ntpath
 import os
 import subprocess
 from threading import Condition, Lock, RLock
-from time import monotonic
+from time import monotonic, sleep
 from typing import Any, Dict, Sequence, Tuple
 
 
@@ -38,8 +38,10 @@ _CREATE_NO_WINDOW = 0x08000000
 _STARTF_USESTDHANDLES = 0x00000100
 _PROC_THREAD_ATTRIBUTE_HANDLE_LIST = 0x00020002
 _DUPLICATE_SAME_ACCESS = 0x00000002
+_JOB_OBJECT_BASIC_ACCOUNTING_INFORMATION_CLASS = 1
 _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS = 9
 _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
+_JOB_ACCOUNTING_POLL_INTERVAL_SECONDS = 0.01
 _WAIT_OBJECT_0 = 0x00000000
 _WAIT_TIMEOUT = 0x00000102
 _WAIT_FAILED = 0xFFFFFFFF
@@ -141,6 +143,21 @@ class _JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
     ]
 
 
+class _JOBOBJECT_BASIC_ACCOUNTING_INFORMATION(ctypes.Structure):
+    """Describe cumulative and active process counts for one Job object."""
+
+    _fields_ = [
+        ("TotalUserTime", ctypes.c_longlong),
+        ("TotalKernelTime", ctypes.c_longlong),
+        ("ThisPeriodTotalUserTime", ctypes.c_longlong),
+        ("ThisPeriodTotalKernelTime", ctypes.c_longlong),
+        ("TotalPageFaultCount", wintypes.DWORD),
+        ("TotalProcesses", wintypes.DWORD),
+        ("ActiveProcesses", wintypes.DWORD),
+        ("TotalTerminatedProcesses", wintypes.DWORD),
+    ]
+
+
 class _IO_COUNTERS(ctypes.Structure):
     """Mirror the accounting fields required by extended Job Object limits."""
 
@@ -213,6 +230,14 @@ if _IS_WINDOWS:
         wintypes.DWORD,
     ]
     _kernel32.SetInformationJobObject.restype = wintypes.BOOL
+    _kernel32.QueryInformationJobObject.argtypes = [
+        _HANDLE,
+        ctypes.c_int,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    _kernel32.QueryInformationJobObject.restype = wintypes.BOOL
     _kernel32.CreateProcessW.argtypes = [
         wintypes.LPCWSTR,
         wintypes.LPWSTR,
@@ -461,6 +486,59 @@ def _observe_process(handle: int, timeout_seconds: float) -> Tuple[bool, int | N
     return True, int(exit_code.value)
 
 
+def _query_active_job_processes(handle: int) -> int:
+    """Return the Job's authoritative active-process count.
+
+    Root-process signalling alone cannot prove that descendants created inside
+    the Job have terminated.  Accounting information is therefore the release
+    gate for the Job handle that enforces kill-on-close containment.
+    """
+
+    _require_windows()
+    assert _kernel32 is not None
+    accounting = _JOBOBJECT_BASIC_ACCOUNTING_INFORMATION()
+    returned_length = wintypes.DWORD()
+    expected_length = ctypes.sizeof(accounting)
+    if not _kernel32.QueryInformationJobObject(
+        _HANDLE(handle),
+        _JOB_OBJECT_BASIC_ACCOUNTING_INFORMATION_CLASS,
+        ctypes.byref(accounting),
+        expected_length,
+        ctypes.byref(returned_length),
+    ):
+        raise WindowsManagedProcessControlError(
+            "The managed process Job could not be observed."
+        ) from None
+    active_processes = int(accounting.ActiveProcesses)
+    total_processes = int(accounting.TotalProcesses)
+    if (
+        int(returned_length.value) != expected_length
+        or active_processes > total_processes
+    ):
+        # An incomplete or internally inconsistent native snapshot cannot be
+        # used to prove that closing the containment handle is safe.
+        raise WindowsManagedProcessControlError(
+            "The managed process Job returned invalid accounting information."
+        ) from None
+    return active_processes
+
+
+def _wait_for_job_empty(handle: int, deadline: float) -> bool:
+    """Poll Job accounting until no process remains or ``deadline`` expires."""
+
+    while True:
+        if _query_active_job_processes(handle) == 0:
+            return True
+        remaining = deadline - monotonic()
+        if remaining <= 0.0:
+            return False
+        sleep(min(_JOB_ACCOUNTING_POLL_INTERVAL_SECONDS, remaining))
+        if monotonic() >= deadline:
+            # Return conservatively rather than issuing a native query after
+            # the caller's teardown deadline has expired.
+            return False
+
+
 class _TeardownAttempt:
     """Hold one immutable eventual result shared by concurrent teardown callers."""
 
@@ -646,27 +724,37 @@ class WindowsManagedProcess:
         Each successfully closed handle is removed from the returned ownership
         set immediately.  A rare native failure therefore leaves the exact
         remaining handle available for a later explicit retry instead of either
-        double-closing it or falsely publishing a completed teardown.
+        double-closing it or falsely publishing a completed teardown.  The Job
+        remains owned until accounting proves that the entire process tree has
+        no active process; a signalled root alone is not a tree-termination
+        guarantee. External process-object handles may receive their signalled
+        state just after the Job's authoritative active count reaches zero.
         """
 
+        deadline = monotonic() + timeout_seconds
         failed = False
         remaining_job = job_handle
         remaining_thread = thread_handle
         remaining_process = process_handle
+        termination_requested = job_handle == 0
+        job_empty = job_handle == 0
+        root_exited = process_handle == 0
+        exit_code: int | None = None
+
         if job_handle:
             try:
                 assert _kernel32 is not None
-                # Closing the configured Job is the tree-kill guarantee;
-                # TerminateJobObject merely asks Windows to begin it promptly.
-                _kernel32.TerminateJobObject(
-                    _HANDLE(job_handle), wintypes.UINT(_TERMINATE_EXIT_CODE)
+                termination_requested = bool(
+                    _kernel32.TerminateJobObject(
+                        _HANDLE(job_handle),
+                        wintypes.UINT(_TERMINATE_EXIT_CODE),
+                    )
                 )
-                if _close_handle(job_handle):
-                    remaining_job = 0
-                else:
+                if not termination_requested:
                     failed = True
             except BaseException:
                 failed = True
+
         if thread_handle:
             try:
                 if _close_handle(thread_handle):
@@ -676,15 +764,22 @@ class WindowsManagedProcess:
             except BaseException:
                 failed = True
 
-        exited = process_handle == 0
-        exit_code: int | None = None
-        if process_handle:
+        if job_handle and termination_requested:
             try:
-                exited, exit_code = _observe_process(
-                    process_handle, timeout_seconds
+                job_empty = _wait_for_job_empty(job_handle, deadline)
+            except BaseException:
+                failed = True
+
+        if process_handle and job_empty:
+            try:
+                root_exited, exit_code = _observe_process(
+                    process_handle,
+                    max(0.0, deadline - monotonic()),
                 )
             except BaseException:
                 failed = True
+
+        if process_handle and root_exited:
             try:
                 if _close_handle(process_handle):
                     remaining_process = 0
@@ -692,8 +787,20 @@ class WindowsManagedProcess:
                     failed = True
             except BaseException:
                 failed = True
+
+        if job_handle and job_empty and root_exited and not failed:
+            try:
+                # The Job is the last handle released: its kill-on-close policy
+                # remains the containment backstop for every earlier ambiguity.
+                if _close_handle(job_handle):
+                    remaining_job = 0
+                else:
+                    failed = True
+            except BaseException:
+                failed = True
+
         return _TeardownResult(
-            exited=exited,
+            exited=job_empty and root_exited,
             exit_code=exit_code,
             failed=failed,
             process_handle=remaining_process,
@@ -797,20 +904,19 @@ class WindowsManagedProcess:
                 return None
             if self._process_handle == 0:
                 return None
-            try:
-                wait_handle = _duplicate_handle(
-                    self._process_handle, inheritable=False
-                )
-            except WindowsManagedProcessError:
-                raise WindowsManagedProcessControlError(
-                    "The managed process could not be observed."
-                ) from None
+            observation_owner, cleanup_quarantine = (
+                _duplicate_observation_handle(self._process_handle)
+            )
 
         remaining = max(0.0, deadline - monotonic())
         try:
-            exited, exit_code = _observe_process(wait_handle, remaining)
+            exited, exit_code = _observe_process(
+                observation_owner._handle, remaining
+            )
         finally:
-            _close_handle(wait_handle)
+            _release_observation_handle(
+                observation_owner, cleanup_quarantine
+            )
         if not exited:
             return None
         self._record_exit(exit_code)
@@ -829,18 +935,17 @@ class WindowsManagedProcess:
                 return True
             if self._process_handle == 0:
                 return False
-            try:
-                wait_handle = _duplicate_handle(
-                    self._process_handle, inheritable=False
-                )
-            except WindowsManagedProcessError:
-                raise WindowsManagedProcessControlError(
-                    "The managed process could not be observed."
-                ) from None
+            observation_owner, cleanup_quarantine = (
+                _duplicate_observation_handle(self._process_handle)
+            )
         try:
-            exited, exit_code = _observe_process(wait_handle, 0.0)
+            exited, exit_code = _observe_process(
+                observation_owner._handle, 0.0
+            )
         finally:
-            _close_handle(wait_handle)
+            _release_observation_handle(
+                observation_owner, cleanup_quarantine
+            )
         self._record_exit(exit_code)
         return not exited
 
@@ -866,6 +971,312 @@ class WindowsManagedProcess:
         return self._teardown(timeout_seconds)
 
 
+class _SingleHandleOwner:
+    """Keep one temporary duplicate reachable until native close succeeds."""
+
+    __slots__ = ("_handle", "_lock")
+
+    def __init__(self) -> None:
+        """Preallocate an empty slot before native duplication can succeed."""
+
+        self._handle = 0
+        self._lock = Lock()
+
+    def _close(self) -> bool:
+        """Release the handle once, retaining it after any ambiguous result."""
+
+        with self._lock:
+            if self._handle == 0:
+                return True
+            try:
+                closed = _close_handle(self._handle)
+            except BaseException:
+                return False
+            if closed:
+                self._handle = 0
+            return closed
+
+
+class _LaunchCleanupOwner:
+    """Own every native resource until a launch transaction commits.
+
+    A child remains suspended while its parent-side inherited duplicates are
+    closed.  On any earlier failure this owner terminates either the assigned
+    Job tree or the still-uncontained root and only releases core handles after
+    native observations prove that the corresponding processes have exited.
+    """
+
+    __slots__ = (
+        "_assigned",
+        "_inherited_handles",
+        "_job_handle",
+        "_lock",
+        "_managed_process",
+        "_process_handle",
+        "_process_information",
+        "_thread_handle",
+    )
+
+    def __init__(self) -> None:
+        """Create an empty owner before the first fallible native operation."""
+
+        self._assigned = False
+        # Fixed slots avoid allocating list growth after DuplicateHandle has
+        # returned a new native resource but before ownership is published.
+        self._inherited_handles: list[int] = [0, 0, 0]
+        self._job_handle = 0
+        self._lock = Lock()
+        self._managed_process: WindowsManagedProcess | None = None
+        self._process_handle = 0
+        self._process_information: _PROCESS_INFORMATION | None = None
+        self._thread_handle = 0
+
+    def _mark_assigned(self) -> None:
+        """Record that the Job, rather than the root alone, owns termination."""
+
+        self._assigned = True
+
+    def _transfer_to_managed(self, process_id: int) -> WindowsManagedProcess:
+        """Construct and adopt the managed owner before the child may run."""
+
+        managed = WindowsManagedProcess(
+            process_handle=self._process_handle,
+            thread_handle=self._thread_handle,
+            job_handle=self._job_handle,
+            process_id=process_id,
+        )
+        self._managed_process = managed
+
+        self._process_handle = 0
+        self._thread_handle = 0
+        self._job_handle = 0
+        return managed
+
+    def _close_inherited_locked(self) -> bool:
+        """Close each inherited duplicate while preserving every failed slot."""
+
+        all_closed = True
+        for index, handle in enumerate(self._inherited_handles):
+            if handle == 0:
+                continue
+            try:
+                closed = _close_handle(handle)
+            except BaseException:
+                closed = False
+            if closed:
+                self._inherited_handles[index] = 0
+            else:
+                all_closed = False
+        return all_closed
+
+    def _close_inherited(self) -> bool:
+        """Close parent duplicates before the suspended child may run."""
+
+        with self._lock:
+            return self._close_inherited_locked()
+
+    @staticmethod
+    def _close_one(handle: int) -> bool:
+        """Close one handle while converting exceptions into retained ownership."""
+
+        try:
+            return _close_handle(handle)
+        except BaseException:
+            return False
+
+    def _salvage_process_information_locked(self) -> None:
+        """Adopt CreateProcess outputs retained across an interrupted transfer."""
+
+        process_information = self._process_information
+        if process_information is None:
+            return
+        if process_information.hProcess:
+            process_handle = _handle_value(process_information.hProcess)
+            if self._process_handle == 0:
+                self._process_handle = process_handle
+            elif self._process_handle != process_handle:
+                raise WindowsManagedProcessControlError(
+                    "The managed process returned ambiguous process ownership."
+                ) from None
+            process_information.hProcess = None
+        if process_information.hThread:
+            thread_handle = _handle_value(process_information.hThread)
+            if self._thread_handle == 0:
+                self._thread_handle = thread_handle
+            elif self._thread_handle != thread_handle:
+                raise WindowsManagedProcessControlError(
+                    "The managed process returned ambiguous thread ownership."
+                ) from None
+            process_information.hThread = None
+        if not process_information.hProcess and not process_information.hThread:
+            self._process_information = None
+
+    def _close(self) -> bool:
+        """Terminate owned work and retain each resource lacking a safe proof."""
+
+        with self._lock:
+            deadline = monotonic() + 5.0
+            try:
+                self._salvage_process_information_locked()
+            except BaseException:
+                # Keeping the ctypes result structure is itself exact ownership;
+                # a later retry may complete the ordinary integer conversion.
+                pass
+            if self._managed_process is not None:
+                try:
+                    managed_closed = self._managed_process.close(
+                        max(0.0, deadline - monotonic())
+                    )
+                except BaseException:
+                    managed_closed = False
+                if managed_closed:
+                    self._managed_process = None
+
+            root_exited = self._process_handle == 0
+            job_empty = not self._assigned
+
+            if self._process_handle:
+                if self._assigned and self._job_handle:
+                    try:
+                        assert _kernel32 is not None
+                        _kernel32.TerminateJobObject(
+                            _HANDLE(self._job_handle),
+                            wintypes.UINT(_TERMINATE_EXIT_CODE),
+                        )
+                    except BaseException:
+                        pass
+                elif not self._assigned:
+                    try:
+                        assert _kernel32 is not None
+                        _kernel32.TerminateProcess(
+                            _HANDLE(self._process_handle),
+                            wintypes.UINT(_TERMINATE_EXIT_CODE),
+                        )
+                    except BaseException:
+                        pass
+
+            if self._assigned and self._job_handle:
+                try:
+                    job_empty = _wait_for_job_empty(
+                        self._job_handle, deadline
+                    )
+                except BaseException:
+                    job_empty = False
+
+            if self._process_handle and (
+                not self._assigned or job_empty
+            ):
+                try:
+                    root_exited, _exit_code = _observe_process(
+                        self._process_handle,
+                        max(0.0, deadline - monotonic()),
+                    )
+                except BaseException:
+                    root_exited = False
+
+            # An uncontained suspended root must keep both of its core handles
+            # until death is proven; otherwise no exact owner could retry the
+            # failed termination transaction.
+            if root_exited and self._thread_handle:
+                if self._close_one(self._thread_handle):
+                    self._thread_handle = 0
+            if root_exited and self._process_handle:
+                if self._close_one(self._process_handle):
+                    self._process_handle = 0
+
+            if self._job_handle:
+                may_release_job = not self._assigned or (
+                    job_empty and root_exited
+                )
+                if may_release_job and self._close_one(self._job_handle):
+                    self._job_handle = 0
+
+            self._close_inherited_locked()
+            return not (
+                self._managed_process is not None
+                or self._process_information is not None
+                or self._process_handle
+                or self._thread_handle
+                or self._job_handle
+                or any(self._inherited_handles)
+            )
+
+
+class _CleanupQuarantine:
+    """Strongly retain ambiguous native owners and permanently stop new work."""
+
+    __slots__ = ("_lock", "_owners", "_poisoned")
+
+    def __init__(self) -> None:
+        """Create one initially healthy process-wide cleanup boundary."""
+
+        self._lock = RLock()
+        self._owners: list[_SingleHandleOwner | _LaunchCleanupOwner] = []
+        self._poisoned = False
+
+    def _retain(
+        self, owner: _SingleHandleOwner | _LaunchCleanupOwner
+    ) -> None:
+        """Latch failure and keep the exact owner alive for safe later retry."""
+
+        with self._lock:
+            self._owners.append(owner)
+            self._poisoned = True
+
+    def _retry(self) -> bool:
+        """Retry retained cleanup without clearing the production safety latch."""
+
+        with self._lock:
+            remaining: list[_SingleHandleOwner | _LaunchCleanupOwner] = []
+            for owner in self._owners:
+                try:
+                    if not owner._close():
+                        remaining.append(owner)
+                except BaseException:
+                    remaining.append(owner)
+            self._owners = remaining
+            return not remaining
+
+
+_CLEANUP_QUARANTINE = _CleanupQuarantine()
+
+
+def _duplicate_observation_handle(
+    source_handle: int,
+) -> Tuple[_SingleHandleOwner, _CleanupQuarantine]:
+    """Duplicate a process handle only while the cleanup boundary is healthy."""
+
+    cleanup_quarantine = _CLEANUP_QUARANTINE
+    owner = _SingleHandleOwner()
+    with cleanup_quarantine._lock:
+        if cleanup_quarantine._poisoned:
+            raise WindowsManagedProcessControlError(
+                "The managed process observation boundary is unavailable."
+            ) from None
+        try:
+            duplicate = _duplicate_handle(source_handle, inheritable=False)
+        except WindowsManagedProcessError:
+            raise WindowsManagedProcessControlError(
+                "The managed process could not be observed."
+            ) from None
+        owner._handle = duplicate
+        return owner, cleanup_quarantine
+
+
+def _release_observation_handle(
+    owner: _SingleHandleOwner,
+    cleanup_quarantine: _CleanupQuarantine,
+) -> None:
+    """Close an observation duplicate or quarantine its exact owner."""
+
+    if owner._close():
+        return
+    cleanup_quarantine._retain(owner)
+    raise WindowsManagedProcessControlError(
+        "The managed process observation handle could not be closed safely."
+    ) from None
+
+
 def launch_windows_managed_process(
     argv: Sequence[str],
     *,
@@ -883,8 +1294,10 @@ def launch_windows_managed_process(
     inheritable duplicates are the only handles placed in the child attribute
     list and are closed in the parent before this function returns.
 
-    Any failure before ``ResumeThread`` terminates the suspended process and
-    releases every temporary handle, so no uncontained executable can run.
+    Every parent-side inheritable duplicate is confirmed closed before
+    ``ResumeThread``.  A cleanup ambiguity retains its exact native owner and
+    permanently fails this process boundary closed, so no uncontained child or
+    unowned handle can be accumulated by later launch attempts.
     """
 
     _require_windows()
@@ -902,19 +1315,36 @@ def launch_windows_managed_process(
         _validate_native_handle(stderr_handle),
     )
 
-    inherited_handles: list[int] = []
+    creation_owner = _LaunchCleanupOwner()
     attribute_list: ctypes.c_void_p | None = None
     attribute_initialized = False
-    job_handle = 0
+    pending_inherited_handle = 0
+    pending_job_handle = 0
     process_information = _PROCESS_INFORMATION()
-    child_created = False
-    child_assigned = False
+    cleanup_quarantine = _CLEANUP_QUARANTINE
+    managed_ready_for_return = False
     _PROCESS_CREATION_LOCK.acquire()
     try:
-        for source_handle in source_handles:
-            inherited_handles.append(
-                _duplicate_handle(source_handle, inheritable=True)
+        cleanup_quarantine._lock.acquire()
+    except BaseException:
+        # Do not strand the process-wide creation gate if lock acquisition is
+        # interrupted before the native launch transaction has begun.
+        _PROCESS_CREATION_LOCK.release()
+        raise
+    try:
+        if cleanup_quarantine._poisoned:
+            raise WindowsManagedProcessLaunchError(
+                "The managed process cleanup boundary is unavailable."
+            ) from None
+
+        for index, source_handle in enumerate(source_handles):
+            pending_inherited_handle = _duplicate_handle(
+                source_handle, inheritable=True
             )
+            creation_owner._inherited_handles[index] = (
+                pending_inherited_handle
+            )
+            pending_inherited_handle = 0
 
         attribute_size = _SIZE_T()
         _kernel32.InitializeProcThreadAttributeList(
@@ -934,9 +1364,14 @@ def launch_windows_managed_process(
             )
         attribute_initialized = True
 
-        handle_array_type = _HANDLE * len(inherited_handles)
+        handle_array_type = _HANDLE * len(
+            creation_owner._inherited_handles
+        )
         handle_array = handle_array_type(
-            *(_HANDLE(value) for value in inherited_handles)
+            *(
+                _HANDLE(value)
+                for value in creation_owner._inherited_handles
+            )
         )
         if not _kernel32.UpdateProcThreadAttribute(
             attribute_list,
@@ -952,17 +1387,19 @@ def launch_windows_managed_process(
             )
 
         job = _kernel32.CreateJobObjectW(None, None)
-        job_handle = _handle_value(job)
-        if job_handle == 0:
+        pending_job_handle = _handle_value(job)
+        if pending_job_handle == 0:
             raise WindowsManagedProcessLaunchError(
                 "The managed process Job could not be created."
             )
+        creation_owner._job_handle = pending_job_handle
+        pending_job_handle = 0
         limits = _JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
         limits.BasicLimitInformation.LimitFlags = (
             _JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
         )
         if not _kernel32.SetInformationJobObject(
-            _HANDLE(job_handle),
+            _HANDLE(creation_owner._job_handle),
             _JOB_OBJECT_EXTENDED_LIMIT_INFORMATION_CLASS,
             ctypes.byref(limits),
             ctypes.sizeof(limits),
@@ -974,9 +1411,15 @@ def launch_windows_managed_process(
         startup = _STARTUPINFOEXW()
         startup.StartupInfo.cb = ctypes.sizeof(_STARTUPINFOEXW)
         startup.StartupInfo.dwFlags = _STARTF_USESTDHANDLES
-        startup.StartupInfo.hStdInput = _HANDLE(inherited_handles[0])
-        startup.StartupInfo.hStdOutput = _HANDLE(inherited_handles[1])
-        startup.StartupInfo.hStdError = _HANDLE(inherited_handles[2])
+        startup.StartupInfo.hStdInput = _HANDLE(
+            creation_owner._inherited_handles[0]
+        )
+        startup.StartupInfo.hStdOutput = _HANDLE(
+            creation_owner._inherited_handles[1]
+        )
+        startup.StartupInfo.hStdError = _HANDLE(
+            creation_owner._inherited_handles[2]
+        )
         startup.lpAttributeList = attribute_list
         command_buffer = ctypes.create_unicode_buffer(command_line)
         environment_buffer = ctypes.create_unicode_buffer(environment_block)
@@ -987,6 +1430,7 @@ def launch_windows_managed_process(
             | _CREATE_NO_WINDOW
         )
         executable = frozen_argv[0]
+        creation_owner._process_information = process_information
         if not _kernel32.CreateProcessW(
             executable,
             command_buffer,
@@ -1004,28 +1448,51 @@ def launch_windows_managed_process(
             raise WindowsManagedProcessLaunchError(
                 "The managed process could not be created."
             )
-        child_created = True
+        creation_owner._process_handle = _handle_value(
+            process_information.hProcess
+        )
+        creation_owner._thread_handle = _handle_value(
+            process_information.hThread
+        )
+        process_information.hProcess = None
+        process_information.hThread = None
+        creation_owner._process_information = None
         if not _kernel32.AssignProcessToJobObject(
-            _HANDLE(job_handle), process_information.hProcess
+            _HANDLE(creation_owner._job_handle),
+            _HANDLE(creation_owner._process_handle),
         ):
             raise WindowsManagedProcessLaunchError(
                 "The managed process could not be contained."
             )
-        child_assigned = True
-        if _kernel32.ResumeThread(process_information.hThread) == 0xFFFFFFFF:
+        creation_owner._mark_assigned()
+
+        # The attribute list and its inheritable duplicates are parent-only
+        # launch machinery.  Releasing them while the child is still suspended
+        # prevents both an EOF-extending pipe leak and a later inheritance race.
+        if attribute_initialized and attribute_list is not None:
+            _kernel32.DeleteProcThreadAttributeList(attribute_list)
+            attribute_initialized = False
+            attribute_list = None
+        if not creation_owner._close_inherited():
+            raise WindowsManagedProcessLaunchError(
+                "The managed process parent handles could not be closed safely."
+            )
+
+        thread_handle = creation_owner._thread_handle
+        managed = creation_owner._transfer_to_managed(
+            int(process_information.dwProcessId)
+        )
+        if (
+            _kernel32.ResumeThread(_HANDLE(thread_handle))
+            == 0xFFFFFFFF
+        ):
             raise WindowsManagedProcessLaunchError(
                 "The managed process could not be started."
             )
-
-        managed = WindowsManagedProcess(
-            process_handle=_handle_value(process_information.hProcess),
-            thread_handle=_handle_value(process_information.hThread),
-            job_handle=job_handle,
-            process_id=int(process_information.dwProcessId),
-        )
-        process_information.hProcess = None
-        process_information.hThread = None
-        job_handle = 0
+        # Keep the launch owner as an additional strong reference until the
+        # return path has released both global gates in ``finally``.  No
+        # fallible cleanup helper may run after the child becomes runnable.
+        managed_ready_for_return = True
         return managed
     except WindowsManagedProcessError:
         raise
@@ -1034,30 +1501,58 @@ def launch_windows_managed_process(
             "The managed process launch transaction failed."
         ) from None
     finally:
+        cleanup_ambiguous = False
         try:
-            if child_created:
-                if child_assigned and job_handle:
-                    _kernel32.TerminateJobObject(
-                        _HANDLE(job_handle), wintypes.UINT(_TERMINATE_EXIT_CODE)
-                    )
-                elif process_information.hProcess:
-                    _kernel32.TerminateProcess(
-                        process_information.hProcess,
-                        wintypes.UINT(_TERMINATE_EXIT_CODE),
-                    )
-                if process_information.hProcess:
-                    _kernel32.WaitForSingleObject(
-                        process_information.hProcess, wintypes.DWORD(5_000)
-                    )
-            if process_information.hThread:
-                _close_handle(_handle_value(process_information.hThread))
-            if process_information.hProcess:
-                _close_handle(_handle_value(process_information.hProcess))
-            if job_handle:
-                _close_handle(job_handle)
-            if attribute_initialized and attribute_list is not None:
-                _kernel32.DeleteProcThreadAttributeList(attribute_list)
-            for inherited_handle in inherited_handles:
-                _close_handle(inherited_handle)
+            if not managed_ready_for_return:
+                # Preserve native results if an asynchronous exception lands
+                # between acquisition and its ordinary Python assignment.
+                if pending_inherited_handle:
+                    if (
+                        pending_inherited_handle
+                        in creation_owner._inherited_handles
+                    ):
+                        pending_inherited_handle = 0
+                    else:
+                        for index, handle in enumerate(
+                            creation_owner._inherited_handles
+                        ):
+                            if handle == 0:
+                                creation_owner._inherited_handles[index] = (
+                                    pending_inherited_handle
+                                )
+                                pending_inherited_handle = 0
+                                break
+                if pending_inherited_handle:
+                    pending_owner = _SingleHandleOwner()
+                    pending_owner._handle = pending_inherited_handle
+                    cleanup_quarantine._retain(pending_owner)
+                    cleanup_ambiguous = True
+                    pending_inherited_handle = 0
+                if pending_job_handle:
+                    if creation_owner._job_handle == 0:
+                        creation_owner._job_handle = pending_job_handle
+                    elif creation_owner._job_handle != pending_job_handle:
+                        pending_owner = _SingleHandleOwner()
+                        pending_owner._handle = pending_job_handle
+                        cleanup_quarantine._retain(pending_owner)
+                        cleanup_ambiguous = True
+                    pending_job_handle = 0
+                if attribute_initialized and attribute_list is not None:
+                    try:
+                        _kernel32.DeleteProcThreadAttributeList(attribute_list)
+                    except BaseException:
+                        cleanup_ambiguous = True
+                try:
+                    owner_closed = creation_owner._close()
+                except BaseException:
+                    owner_closed = False
+                if not owner_closed:
+                    cleanup_quarantine._retain(creation_owner)
+                    cleanup_ambiguous = True
         finally:
+            cleanup_quarantine._lock.release()
             _PROCESS_CREATION_LOCK.release()
+        if cleanup_ambiguous:
+            raise WindowsManagedProcessLaunchError(
+                "The managed process launch transaction could not be cleaned safely."
+            ) from None

@@ -27,7 +27,7 @@ desktop_backend.py
     ├── DesktopSettingsRepository
     ├── VoiceSettingsService
     ├── TranscriptionJobRunner → FasterWhisperTranscriber
-    └── initialize
+    ├── initialize
         ├── start.create_brain()
         │   ├── Brain
         │   ├── ActiveConversationService
@@ -37,6 +37,11 @@ desktop_backend.py
         │   ├── Legacy Migration
         │   └── Ollama model adapter
         └── JsonAttachmentStore + owner reconciliation
+    └── optional speech copy
+        └── desktop_speech.py
+            └── sentence queue → managed worker → PCM WAV
+                ├── voice.speech.* metadata over authenticated NDJSON
+                └── matching fd3 frame → Electron delivery → Preload Web Audio
 
 start.create_data_portability_service()
     └── 独立 Recovery API；当前没有接入 Desktop Protocol/UI
@@ -64,7 +69,7 @@ start.create_data_portability_service()
 
 | 文件 | 实际用途 | 主要连接 |
 | --- | --- | --- |
-| `.github/workflows/tests.yml` | GitHub Actions 入口；先检查双端源码文档覆盖，再在 Ubuntu 运行 Python pytest/mypy 和 Desktop lint/typecheck/protocol/UI/build，在 Windows 解析 PowerShell 源码并运行原生 Attachment Bridge 测试。 | `scripts/check_python_documentation.py`、`desktop/package.json`、Python/Desktop 测试 |
+| `.github/workflows/tests.yml` | GitHub Actions 入口；先检查双端源码文档覆盖，再在 Ubuntu 运行 Python pytest/mypy 和 Desktop lint/typecheck/protocol/UI/build，在 Windows 解析 PowerShell 源码并运行原生 Attachment Bridge、文件 Guard、受管进程和不加载真实模型的 Runtime 边界测试。 | `scripts/check_python_documentation.py`、`desktop/package.json`、Python/Desktop 测试 |
 | `.gitignore` | 排除 `.venv`、Cache、日志、构建产物、私人 `workspace`、`.env` 和模型权重。 | Git 工作树与本地运行数据边界 |
 | `AGENTS.md` | 全仓库源码注释规范；要求文件说明、公开 API 文档、复杂算法/设计/边界原因和具体 TODO/FIXME，并禁止逐行复述普通语句。 | 所有后续源码修改、双端文档覆盖检查、Code Review |
 | `mypy.ini` | 固定 Python 静态类型检查路径规则；只排除被忽略的 `models/cache/` 外部 Runtime，不能误排其他名为 cache 的源码。 | 本地 mypy、GitHub Actions、第三方 Runtime 边界 |
@@ -77,11 +82,12 @@ start.create_data_portability_service()
 | `requirements-stt.txt` | 固定可选的 Faster-Whisper 与 NumPy 版本；只在需要本地单句转写时叠加安装，不包含或下载模型权重。 | `voice/faster_whisper.py`、本地 `.venv`、`models/weights/faster-whisper/<model>` |
 | `scripts/__init__.py` | 把维护脚本标记为可导入 Package，使 Smoke CLI 能同时按模块与文件路径测试。 | `scripts/smoke_gpt_sovits.py`、测试 |
 | `scripts/check_python_documentation.py` | 用标准库 AST 检查所有受维护 Python 文件的 module、public class、public function/method docstring 覆盖。 | `AGENTS.md`、GitHub Actions、Python 开发验证 |
-| `scripts/gpt_sovits_protocol.py` | 定义主 Python 3.14 与隔离 GPT-SoVITS Python 3.9 共用的固定宽度二进制帧；严格限制消息类型、Canonical JSON Metadata、Request ID 和 32 MiB 原始 Payload，错误与 repr 不暴露内容。 | 后续受管 Worker/Parent Pipe；不导入 `voice` 或上游 `tools`，避免运行时版本和包名冲突 |
-| `scripts/gpt_sovits_worker.py` | 在隔离 Python 3.9 进程中验证 Voice 资产和 Runtime 一致性锚点，固定加载一组 GPT-SoVITS v2 权重与 Reference，拒绝 Config Fallback、热切换、全零错误音频和多 Yield，并通过私有二进制 Pipe 返回完整 PCM WAV。`READY` 只证明本次受管进程观察到同一 Binding；上层仍须持有防写/防替换文件 Guard 后才可签发 Verified Lease。 | `scripts/gpt_sovits_protocol.py`、后续 Managed Parent Wrapper、被忽略的本地 GPT-SoVITS Runtime；不经过外部 HTTP API |
+| `scripts/gpt_sovits_protocol.py` | 定义主 Python 3.14 与隔离 GPT-SoVITS Python 3.9 共用的固定宽度二进制帧，以及两端共用且有序的 Runtime Manifest 与封闭 Import Path 清单；严格限制消息类型、Canonical JSON Metadata、Request ID 和 32 MiB 原始 Payload，错误与 repr 不暴露内容。 | 受管 Worker/Parent Pipe；不导入 `voice` 或上游 `tools`，避免运行时版本、Manifest 顺序和包名冲突 |
+| `scripts/gpt_sovits_worker.py` | 在隔离 Python 3.9 进程中按父进程传入的稳定 Volume-GUID 路径重算 Voice 资产和部分 Runtime 一致性锚点，固定加载一组 GPT-SoVITS v2 权重与 Reference，拒绝 Config Fallback、热切换、全零错误音频和多 Yield，并通过私有二进制 Pipe 返回完整 PCM WAV。`READY` 只证明父子进程本次观察到同一组已声明内容，不是第三方 Runtime 的完整供应链证明；上层持续持有每个已检查文件的防写/防替换 Guard。 | `scripts/gpt_sovits_protocol.py`、`voice/managed_gpt_sovits.py`、被忽略的本地 GPT-SoVITS Runtime；不经过外部 HTTP API |
 | `scripts/smoke_gpt_sovits.py` | 用固定中文句子对每个所选情绪重复两次本地合成，只输出 Readiness、格式、大小、时长和 SHA-256；不接受任意文本，也不保存音频。 | `voice/synthesis_service.py`、`.env`、被忽略的 Voice Profile Catalog |
 | `start.py` | Python Composition Root 和 Console 入口；创建 Settings、Model、Memory、Repositories、Migrator、Services、Brain 和日志。 | 几乎所有 Python 生产包；`ui/console.py`、`desktop_backend.py` |
-| `desktop_backend.py` | Electron 启动的 Python NDJSON 进程；完成会话令牌握手、初始化、方法路由、Streaming、Cancel、错误映射和安全关闭；从 Active Settings 构造本地模型路径，惰性创建有界 STT Runner，并让 Chat/Settings 写入与物理占用中的转写互斥。 | `desktop_protocol/`、`start.py`、Chat/Project/Attachment/Voice 服务 |
+| `desktop_backend.py` | Electron 启动的 Python NDJSON 进程；完成会话令牌握手、初始化、方法路由、Streaming、Cancel、错误映射和安全关闭；从 Active Settings 构造本地模型路径，惰性创建有界 STT Runner，并把同一份 Brain Chunk 旁路复制给可选 Speech Turn。Speech 的启动、Feed、Finish、Cancel 或交付失败均不能改变 Canonical Assistant 文本及其持久化结果。 | `desktop_protocol/`、`desktop_speech.py`、`start.py`、Chat/Project/Attachment/Voice 服务 |
+| `desktop_speech.py` | 桌面语音 Composition Root；后台获取固定 `default/neutral` 的 Managed GPT-SoVITS Lease，在启动期间只缓存一个有界 Turn，随后接入既有自然分句/FIFO Queue。它先经 NDJSON 发精确 Clip Metadata，再向私有 fd3 写匹配 WAV；取消、Runtime/Queue/Pipe 失败或退出只关闭可选 Speech 路径，不阻塞文字 Chat。 | `desktop_backend.py`、`voice/managed_gpt_sovits.py`、`voice/speech_queue.py`、`desktop_protocol/audio_channel.py` |
 | `docs/decisions/0001-desktop-shell.md` | Electron 与 Tauri 选型 ADR；记录测量方法、能力差距、风险、最终选择和重访门槛。 | `desktop/benchmarks/measure-shell.ps1`、Desktop 技术决策 |
 | `data/characters/elysia_character_reference_zh.md` | 爱莉希雅背景、语录和转写参考资料；当前 Runtime 不会自动将它注入每次 Prompt。 | 人工角色研究；受 `MODEL_LICENSE.md` 的来源/授权提醒约束 |
 
@@ -206,19 +212,20 @@ ChatSession.project_id
 | `voice/domain.py` | 定义输入/输出设备的 opaque ID 偏好和 Voice Settings Snapshot。 | Voice Service/Storage、Protocol |
 | `voice/exceptions.py` | 定义 Voice Settings 和当前 Capture Validation 错误。 | Voice Service/Storage、Desktop Backend |
 | `voice/faster_whisper.py` | 实现离线优先的 Faster-Whisper Adapter、严格本地模型完整性检查、净化后的就绪状态、设备/Compute Policy、一次性 CUDA 初始化降级、PCM float32 转换和返回错误脱敏；只接受明确的绝对本地目录，不按别名下载。 | `desktop_backend.py` 把闭集名称映射到 `models/weights/faster-whisper/<model>`；由后台 Runner 调用 |
+| `voice/managed_gpt_sovits.py` | 按需启动并独占一个 Windows GPT-SoVITS Worker Lease：严格核验 Catalog 来源与 Config 快照，持有全部所选 Voice 资产和已声明 Runtime Anchor 的文件 Guard，以稳定 Volume-GUID 路径完成 Manifest/INIT/资产绑定，并只为 CPython Native Import 建立逐次核验的临时 DOS 映射。Bootstrap 封印后的目录 HANDLE 可检测既有 `FILE_ADD_FILE` 句柄并配合 DACL 阻止普通后续写入，但不能撤销封印前已打开的 `WRITE_DAC`；这里明确假设 Lease 启动时第三方 Runtime 及同一 Windows 用户下的进程可信，不声称完整依赖来源认证。Queue 层的 `binding_verified` 只表示该 Binding 由 Elysia 私有 Factory 围绕受管 Lease 签发，不表示完整第三方依赖 Provenance，因此缓存仍禁用。所有 Cleanup Lock/Condition 与复合 Owner 都在 `CreateProcessW` 前建立；最终 Cleanup Gate 检查、Launch 与无分配 Adoption 原子排序。Production Worker 从 Launch 前直到完整 Cleanup 持有全局单 Owner Token，因此并发启动、失败到清理的空档以及 Pending Cleanup 都不能放行第二个 Worker。清理先证明 Job 整树终止，以子句柄关闭唤醒阻塞 Pipe，再关闭父 Pipe、Guard、Bootstrap 文件和映射；任何模糊所有权都会整体隔离并全局 Fail-closed。 | `voice/_windows_file_guard.py`、`voice/_windows_managed_process.py`、`scripts/gpt_sovits_protocol.py`、`scripts/gpt_sovits_worker.py`、`desktop_speech.py` |
 | `voice/_windows_file_guard.py` | 用 Win32 目录/文件 HANDLE 原子锁定并核验一组只读本地文件，拒绝 Reparse Point、别名、盘符映射变化和声明不符；从已持有的叶文件 HANDLE 生成稳定的 Volume-GUID 路径，供受封闭的受管运行时在盘符发生 ABA 重映射后仍只重开原卷文件。关闭失败会保留明确所有权并阻止新的 Acquisition，不会泄漏路径、Hash 或 HANDLE。 | Managed GPT-SoVITS Parent Wrapper；只在 Windows 执行，非 Windows 可安全导入并返回稳定不可用状态 |
-| `voice/_windows_managed_process.py` | 用 Win32 `CreateProcessW` 的 Suspended 启动、精确 HANDLE Allowlist 与 Kill-on-close Job Object 建立受管语音子进程边界；只有完成 Job 绑定才恢复主线程，关闭/取消会终止包括 FFmpeg 在内的整棵进程树。并发 Teardown 共享单一有界结果，命令、环境、路径和原生 HANDLE 不进入 repr 或错误。 | 后续 Managed GPT-SoVITS Parent Wrapper；只在 Windows 执行，非 Windows 可安全导入并返回稳定不可用状态 |
+| `voice/_windows_managed_process.py` | 用 Win32 `CreateProcessW` 的 Suspended 启动、精确 HANDLE Allowlist 与 Kill-on-close Job Object 建立受管语音子进程边界；只有完成 Job 绑定才恢复主线程，关闭/取消会终止包括 FFmpeg 在内的整棵进程树，并以 Job Accounting 的 `ActiveProcesses == 0` 作为释放 Job HANDLE 和报告成功的必要证明。并发 Teardown 共享单一有界结果，命令、环境、路径和原生 HANDLE 不进入 repr 或错误。 | 当前 `voice/managed_gpt_sovits.py` Parent Wrapper；只在 Windows 执行，非 Windows 可安全导入并返回稳定不可用状态 |
 | `voice/storage.py` | 对 `audio-device.json` 执行 Revision CAS、线程/进程锁、原子替换和损坏隔离。 | Voice Service、`workspace/settings/audio-device.json` |
 | `voice/service.py` | 提供硬件无关的设备偏好读取和更新；Python 不直接打开麦克风。 | Desktop Backend、Voice Repository |
 | `voice/transcription.py` | 定义与具体识别引擎解耦的 Transcriber Protocol、请求、最终结果、语言范围和稳定错误。 | 复用 `VoiceCapture`；连接 Faster-Whisper Adapter、后台任务和 Desktop Backend |
 | `voice/transcription_jobs.py` | 用固定 Daemon Worker、有界队列、Deadline、唯一终态和结果保留上限包装同步 Transcriber；取消/超时后保留物理容量直到 Native Call 返回，并丢弃迟到结果。 | `desktop_backend.py`、`voice/transcription.py`；不把 PCM、路径或底层异常放进 Snapshot |
-| `voice/synthesis.py` | 定义引擎无关的 `SpeechSynthesizer` Protocol、严格请求/结果与稳定错误；对最大 32 MiB 的 PCM WAV、Ogg Opus 和受支持 ADTS AAC 子集完整检查 Container/Transport Framing，但不虚构 Codec 可解码保证。 | GPT-SoVITS Adapter、Local Synthesis Service、Fake 单元测试；未来播放器仍须处理 Decoder Failure |
+| `voice/synthesis.py` | 定义引擎无关的 `SpeechSynthesizer` Protocol、严格请求/结果与稳定错误；对最大 32 MiB 的 PCM WAV、Ogg Opus 和受支持 ADTS AAC 子集完整检查 Container/Transport Framing，但不虚构 Codec 可解码保证。 | GPT-SoVITS Adapter、Local Synthesis Service、Fake 单元测试；下游播放层仍须处理 Decoder Failure |
 | `voice/gpt_sovits.py` | 把领域请求映射到 GPT-SoVITS `/tts`；只允许 Loopback IP（`localhost` 先规范化）、禁用环境代理/Redirect/Retry，要求声明长度的 Identity WAV/AAC 响应，并以 `/openapi.json` 做脱敏可用性探测。 | 外部本地 GPT-SoVITS Runtime；不会切换远端进程的全局权重，也不会把 `service_binding_unverified` 冒充成 `ready` |
 | `voice/profiles.py` | 严格读取 Schema v2 JSON Catalog，把 Profile、情绪、准确参考文本/语言和带长度、SHA-256 的资产声明解析到固定模型根；拒绝旧版字符串路径、Windows 路径别名和矛盾身份，并实施 `verified` 与显式 Opt-in 的 `local-evaluation-only` 权利标签。读取声明本身不声称文件或进程已验证。 | `config/voice_profiles.example.json`、`models/weights/gpt-sovits/`、Synthesis Service |
 | `voice/synthesis_service.py` | TTS 的惰性 Composition Root；每次调用重载 Catalog，按逻辑 Profile/情绪构造 Adapter 请求，且服务构造本身不触碰磁盘或网络。 | `config/settings.py`、Profile Catalog、GPT-SoVITS Adapter、Smoke CLI |
-| `voice/speech_queue.py` | 把模型流式文本按自然标点或安全长度切句，并用单一 FIFO Worker、固定有界容量和独立 Delivery/Abort Daemon 保持合成与通知顺序。每个物理合成都绑定一次性 Token；取消会丢弃迟到音频，受管 Runtime 还必须在推理登记前记住提前到达的取消。外部绑定和当前不完整 Manifest 的受管绑定都禁止缓存。 | `Brain.stream_chat()` 的后续 Voice 编排层、`voice/synthesis.py`、受管 GPT-SoVITS Lease；不修改或替代最终持久化的 Assistant 原文 |
+| `voice/speech_queue.py` | 把模型流式文本按自然标点或安全长度切句，并用单一 FIFO Worker、固定有界容量和独立 Delivery/Abort Daemon 保持合成与通知顺序。每个物理合成都绑定一次性 Token；取消会丢弃迟到音频，受管 Runtime 还必须在推理登记前记住提前到达的取消。外部绑定和当前不完整 Manifest 的受管绑定都禁止缓存。 | 当前 `desktop_speech.py` Voice 编排层、`voice/synthesis.py`、受管 GPT-SoVITS Lease；不修改或替代最终持久化的 Assistant 原文 |
 
-`voice/capture.py` 是单句 PCM 验证边界，详见本文“Voice Capture、本地 STT 与本地 TTS”部分。STT 由 `voice/transcription_jobs.py` 接入 Python Desktop Backend，Electron/React 已消费最终的 PCM-free Transcript。TTS 是另一条 Python-only 边界：目前只连接本地 Smoke CLI，不经过 `desktop_backend.py`、Desktop Protocol、Electron 或 React。
+`voice/capture.py` 是单句 PCM 验证边界，详见本文“Voice Capture、本地 STT 与本地 TTS”部分。STT 由 `voice/transcription_jobs.py` 接入 Python Desktop Backend，Electron/React 消费最终的 PCM-free Transcript。TTS 同时保留外部 HTTP Smoke 链和桌面受管 Worker 链；后者由 `desktop_speech.py` 旁路接收 Brain Chunk，经私有 fd3 与 Preload Web Audio 播放，但不向 React 暴露原始音频。
 
 ## 13. Console UI：`ui/`
 
@@ -253,11 +260,13 @@ ChatSession.project_id
 | 文件 | 实际用途 | 主要连接 |
 | --- | --- | --- |
 | `desktop/electron/contracts.ts` | 定义 Renderer 可见的最小 Desktop API、Backend Snapshot/Event、Chat/Project/Settings/Attachment/Voice 类型；Voice 只暴露开始/取消、相关 Final/Error Event 与净化后的转写状态，不是 Python 原始 Wire Schema。 | Preload、Main、React、Mock Preload |
-| `desktop/electron/preload.cts` | 用 `contextBridge` 暴露固定 `window.elysiaDesktop`；把一次性 STT 开始/取消映射到固定 IPC，并把净化 Event 转交 Renderer，不暴露 `ipcRenderer`、Node、`fs` 或进程句柄。 | React、Electron Main |
-| `desktop/electron/main.ts` | Electron 主进程；创建带品牌图标的窗口/托盘，验证 Sender、Settings/STT 参数、请求 ID、路径和权限，注册固定 IPC，控制导航与应用关闭。 | Preload、BackendProcess、原生 Dialog/Clipboard/Audio、`public/elysia-icon.png` |
+| `desktop/electron/preload.cts` | 用 `contextBridge` 暴露固定 `window.elysiaDesktop`；把一次性 STT 开始/取消映射到固定 IPC，并把净化 Event 转交 Renderer。私有、未导出的 Web Audio Owner 只接受 Main 发来的 Canonical 32 kHz mono PCM16 WAV，先应用已保存的 Output Sink，再 Decode；指定设备路由失败时绝不回退到默认扬声器。播放结束或失败后只回送一次性 opaque Settlement；React API 不接触 WAV、Token、Hash、`ipcRenderer`、Node、`fs` 或进程句柄。 | React、Electron Main、`speech-playback-owner.ts` |
+| `desktop/electron/main.ts` | Electron 主进程；创建带品牌图标的窗口/托盘，验证 Sender、Settings/STT 参数、请求 ID、路径和权限，注册固定 IPC，控制导航与应用关闭，并把私有 Preload Speech Playback Owner 注入 BackendProcess。 | Preload、BackendProcess、原生 Dialog/Clipboard/Audio、`speech-playback-owner.ts`、`public/elysia-icon.png` |
 | `desktop/electron/bounded-ndjson.ts` | 用固定上限 Buffer 增量切分 Python stdout；按原始字节限制 Frame，接受 CRLF，严格拒绝坏 UTF-8、未换行截断和超限无换行数据，并在终态移除全部 Stream Listener。 | `desktop/electron/backend-process.ts`、Protocol Contract Tests |
-| `desktop/electron/speech-audio-channel.ts` | 增量解析独立 Pipe 上的固定 84-byte `audio.binary.v1` Frame；在 Payload 分配前限制 8 MiB，流式校验 SHA-256，只接受精确 32 kHz mono PCM16 WAV 与 120 秒上限，并以单 Frame ACK/Discard、Pause 和 `unshift` 保持顺序、背压及有界内存。任何坏 Header、Token、Hash、WAV、截断或 ACK 都会终止 Reader，但 Reader 不销毁 Owner Stream。 | 后续 `desktop/electron/backend-process.ts` fd3 Owner 与私有 Electron 播放器；原始 WAV 不进入 NDJSON、Preload Public API 或 React |
-| `desktop/electron/backend-process.ts` | Python 子进程 Owner 和 Protocol State Machine；通过有界二进制 NDJSON Reader 在解码前限制 stdout，关联 Chat/STT Request 与封闭 Lifecycle Event、拒绝并发生成与配置写入、净化 Progress/Error、丢弃 PCM Metadata，并只向 Renderer 发受限 Final/Error；Python stderr 不原样暴露。 | Main、`desktop_backend.py`、`protocol.ts`、`bounded-ndjson.ts` |
+| `desktop/electron/speech-audio-channel.ts` | 增量解析独立 Pipe 上的固定 84-byte `audio.binary.v1` Frame；在 Payload 分配前限制 8 MiB，流式校验 SHA-256，只接受精确 32 kHz mono PCM16 WAV 与 120 秒上限，并以单 Frame ACK/Discard、Pause 和 `unshift` 保持顺序、背压及有界内存。任何坏 Header、Token、Hash、WAV、截断或 ACK 都会终止 Reader；无待处理 Frame 的干净 EOF 会单独通知 Owner。 | `speech-delivery.ts`、`backend-process.ts` fd3 Owner；Reader 不自行销毁 Owner Stream，原始 WAV 不进入 NDJSON 或 React |
+| `desktop/electron/speech-delivery.ts` | 在 Electron Main 内关联可以任意先后抵达的 NDJSON Clip Metadata 与 fd3 Binary Frame，逐项核验 Request/Chat/Sequence/Token/长度/格式/Hash，并且每次只允许一个未确认 Frame。失败句子按序跳过；Terminal、取消、迟到结果、播放器失败和 Pipe EOF 都以有界状态收敛。 | `backend-process.ts`、`speech-audio-channel.ts`、`speech-playback-owner.ts`；对 React 只可生成无 Token/Hash/音频的安全状态 |
+| `desktop/electron/speech-playback-owner.ts` | Main 到可信 Preload 的单 Clip 播放 Owner；生成一次性 UUID、验证 Settlement 只能来自所属窗口 Main Frame，以 130 秒上限处理播放、取消、窗口销毁和跨文档断连，并保留所有尚未精确结算的 Retired ID 来隔离迟到 ACK（数量受 In-flight 上限约束）。稳定路由可在 macOS 窗口关闭与重建之间替换具体 Owner，而页面内锚点跳转不会误中断播放。 | `main.ts`、`preload.cts`、`speech-delivery.ts`；固定私有 IPC Channel 不进入 `DesktopApi` |
+| `desktop/electron/backend-process.ts` | Python 子进程 Owner 和 Protocol State Machine；通过有界 NDJSON Reader 限制 stdout，关联 Chat/STT Request 与封闭 Lifecycle Event，并为子进程建立独立 fd3 Speech Pipe。Speech Metadata 只交给 Main 内 Delivery Coordinator，WAV 只交给可信 Preload；Speech Pipe 关闭或损坏会禁用本次可选语音而不破坏文字 Chat。Python stderr 不原样暴露。 | Main、`desktop_backend.py`、`protocol.ts`、`bounded-ndjson.ts`、`speech-delivery.ts` |
 | `desktop/electron/protocol.ts` | TypeScript 端 Protocol v1 类型、Builder、Parser 和严格 Runtime Validation；除 STT exact 状态与一次性 PCM 请求外，还封闭验证 Speech Clip/Failure/Terminal 的 Request、Token、uint32 Sequence、8 MiB WAV Metadata、失败枚举和终态计数，不把静态类型当安全边界。 | BackendProcess、共享 Schema/Fixtures、Contract Tests、私有二进制音频 Reader |
 | `desktop/electron/protocol-text.ts` | 定义跨 Python/TypeScript 一致的 Unicode Code Point 长度、Blank Set 和 Trim 规则。 | `protocol.ts`、Python Contracts |
 | `desktop/electron/renderer-source.ts` | 只允许准确的 Vite Root 或打包 `dist/index.html` 作为可信 Renderer 来源。 | Main、Permission Policy、测试 |
@@ -331,7 +340,7 @@ Project Memory 页面目前仍是明确 Placeholder。Project Source 只安全�
 | `desktop_protocol/README.md` | 人类可读 Protocol v1 文档；说明 Handshake、Capabilities、Streaming、Cancel、Settings、Attachment、Voice Capture/Transcription，以及 fd3 Speech Audio Frame 与封闭控制事件的不变量。 | Python/TypeScript 实现和测试 |
 | `desktop_protocol/schema/v1.schema.json` | Draft 2020-12 JSON Schema；描述所有 Client/Server Frame，并约束 STT 状态、PCM/Final Result，以及 Speech Clip/Failure/Terminal 的 exact payload、uint32/8 MiB 边界和安全枚举。 | Shared Fixtures、Python/Node Contract Tests |
 | `desktop_protocol/fixtures/v1.samples.json` | Python 与 TypeScript 同时读取的 Valid/Invalid Conformance Samples；包含 STT 状态以及 Speech Clip/Failure/Terminal 的合法样本、未知 Event、路径/错误详情泄露和计数不一致拒绝样本。 | `contracts.py`、`protocol.ts`、两端测试 |
-| `desktop_protocol/audio_channel.py` | 用固定 84-byte Header 和独立 fd3 匿名 Pipe 传送最多 8 MiB、120 秒的 canonical 32 kHz mono PCM16 WAV；生成不重复 Correlation Token、SHA-256 和安全 Metadata，验证 OS Pipe 类型与去继承，强制单一待发送 Frame、Partial-write Poison，并让 Close 不等待阻塞 Writer。 | 后续 `desktop_backend.py` Speech Queue Callback、Electron Main 二进制 Parser；Electron 停止时须先 drain/关闭读端，原始音频不进入 NDJSON 或 React |
+| `desktop_protocol/audio_channel.py` | 用固定 84-byte Header 和独立 fd3 匿名 Pipe 传送最多 8 MiB、120 秒的 canonical 32 kHz mono PCM16 WAV；生成不重复 Correlation Token、SHA-256 和安全 Metadata，验证 OS Pipe 类型与去继承，强制单一待发送 Frame、Partial-write Poison，并让 Close 不等待阻塞 Writer。 | 当前 `desktop_speech.py` Queue Callback、Electron `speech-audio-channel.ts` Reader 与 `speech-delivery.ts` Parser；Electron 停止时须先 drain/关闭读端，原始音频不进入 NDJSON 或 React |
 | `desktop_protocol/contracts.py` | Python 端 TypedDict、严格 Parser、Runtime Validator 和 Builder；只接受已知且 Request-correlated 的 Chat/STT/Speech Event，并严格约束 Speech Token、Digest、Sequence、WAV 长度、失败枚举与终态计数，拒绝路径、文本、Native Message 与扩展字段。 | `desktop_backend.py`、Schema/Fixtures、Python Tests |
 | `desktop_protocol/__init__.py` | 汇出 NDJSON 协议、封闭 Speech Event 边界与私有音频通道的常量、类型、Parser、Builder 和 Writer。 | Desktop Backend、测试 |
 
@@ -342,8 +351,10 @@ Project Memory 页面目前仍是明确 Placeholder。Project Source 只安全�
 | 文件 | 实际用途 | 主要连接 |
 | --- | --- | --- |
 | `desktop/tests/check-documentation.test.mjs` | 验证源码发现会排除精确的 `models/cache/`，同时继续扫描 `core/cache/` 等受维护目录。 | Documentation Checker、`npm run test:contract` |
-| `desktop/tests/protocol.contract.test.mjs` | 在 Node 中测试编译后的 Protocol Helpers 和 BackendProcess；覆盖双端 Fixture、有界 NDJSON 的分段 UTF-8/CRLF/精确边界/超限/截断、STT exact Status/敏感字段拒绝、Request 关联、互斥、Cancel/Draining Race、PCM 不保留、Stream、URL 与 Permission Policy。 | `dist-electron`、Schema/Fixtures；使用 Fake Child 与一次性本地 Node Child，不启动真实 Python |
-| `desktop/tests/speech-audio-channel.test.mjs` | 直接测试 Electron 二进制音频 Reader 的每个分片边界、Coalesced 多帧、ACK/Discard 背压、EOF 截断、长度先验、Header/Token/Hash、Canonical WAV、120 秒限制、错误脱敏、重复或错误 ACK 和 Listener 清理。 | `desktop/electron/speech-audio-channel.ts` 编译产物；使用内存 Pipe，不启动 Python、Electron UI 或真实模型 |
+| `desktop/tests/protocol.contract.test.mjs` | 在 Node 中测试编译后的 Protocol Helpers 和 BackendProcess；覆盖双端 Fixture、有界 NDJSON 的分段 UTF-8/CRLF/精确边界/超限/截断、STT exact Status/敏感字段拒绝、Request 关联、互斥、Cancel/Draining Race、Speech Capability/fd3 生命周期、Metadata 不向 Renderer 转发、Stream、URL 与 Permission Policy。 | `dist-electron`、Schema/Fixtures；使用 Fake Child 与一次性本地 Node Child，不启动真实 Python |
+| `desktop/tests/speech-audio-channel.test.mjs` | 直接测试 Electron 二进制音频 Reader 与 Delivery Coordinator；覆盖每个分片边界、Coalesced Frame、ACK/Discard 背压、EOF 截断/干净关闭、长度先验、Header/Token/Hash、Canonical WAV、Metadata 任意到达顺序、FIFO、失败跳过、取消/迟到 Settlement、Terminal 计数、播放器断连、错误脱敏和 Listener 清理。 | `speech-audio-channel.ts` 与 `speech-delivery.ts` 编译产物；使用内存 Pipe 和 Fake Playback，不启动 Python、Electron UI 或真实模型 |
+| `desktop/tests/preload-speech-playback.test.cjs` | 在隔离 Node 进程中加载生产 Preload，验证指定/默认 Output Sink 都在 Decode 和 Start 前完成、路由失败不回退、Settings 查询期间取消不会播放，以及私有音频能力未暴露给 React。 | `preload.cts` 编译产物、Fake Electron IPC 与 Fake Web Audio |
+| `desktop/tests/speech-playback-owner.test.mjs` | 直接验证 Main 所有的私有 Playback Owner；覆盖一次性 Settlement、所属 Main Frame、取消迟到回复、窗口替换、Renderer 崩溃、跨文档导航、空闲 Owner 退役和 Listener 清理。 | `speech-playback-owner.ts` 编译产物与 Electron Module Mock |
 | `desktop/tests/ui/electron-main.cjs` | Playwright 专用 Electron Main；加载生产 Renderer Build，保持 Sandbox/Context Isolation，但不启动生产 Backend。 | UI Test、Mock Preload、`dist/index.html` |
 | `desktop/tests/ui/mock-preload.cjs` | UI 测试专用 `elysiaDesktop` Fake；除 Canonical 状态外模拟 STT 开始/终态/取消、Readiness、延迟、失败、Reload 和 Race。 | App Shell UI Tests；不会进入生产包 |
 | `desktop/tests/ui/app-shell.spec.ts` | Playwright 启动真实 Electron Renderer，覆盖 Chat/Project/Settings/Voice；STT 回归包括编辑、显式放入/追加草稿、取消迟到结果、Close、Fresh Retry 与安全 Readiness。 | Production React Build + Mock Backend |
@@ -363,10 +374,11 @@ Project Memory 页面目前仍是明确 Placeholder。Project Source 只安全�
 | `tests/test_conversation_summarization.py` | Model Summarizer、严格结构和增量摘要。 |
 | `tests/test_conversation_summary.py` | Stage 4 旧 Summary Schema 与存储。 |
 | `tests/test_data_portability.py` | Bundle Export/Import、Hash、路径、Conflict、Quarantine 和 Rollback。 |
-| `tests/test_desktop_backend.py` | Python Bridge 的 Handshake、Routing、Streaming、Cancel、Chat/Project/Settings/Attachment，以及 STT Readiness、Admission、配置写互斥、终态与 Shutdown Race。 |
+| `tests/test_desktop_backend.py` | Python Bridge 的 Handshake、Routing、Streaming、Cancel、Chat/Project/Settings/Attachment，以及 STT Readiness、Admission、配置写互斥、终态与 Shutdown Race；同时证明传给 Speech 的 Chunk 与 Canonical Stream 完全一致，且 Speech Feed/Finish/Cancel 的任意失败不会改变文字终态或持久化回复。 |
 | `tests/test_desktop_audio_channel.py` | 验证 fd3 固定所有权、OS Pipe 类型与去继承、84-byte Header、Token/Digest、无歧义桌面 PCM WAV、8 MiB/120 秒上限、Partial Write、单待发 Frame、反射篡改、Poison、非阻塞 Close 和错误脱敏。 |
 | `tests/test_desktop_protocol.py` | Python Protocol Parser/Builder 与共享 Fixture Contract；覆盖 STT 设置/状态的 exact shape 与脱敏边界。 |
 | `tests/test_desktop_speech_protocol.py` | 验证 Speech Clip/Failure/Terminal Event Builder、二进制 Metadata 上下界、固定失败码、终态计数关系、Request 关联、未知 Event/私有字段拒绝，以及 Schema 与 Runtime 常量一致。 |
+| `tests/test_desktop_speech.py` | 用真实 Sentence Queue 与 AudioChannelWriter、Fake Managed Runtime 验证后台启动期间的有界 Chunk 转移、自然分句/FIFO、Metadata 先于 Binary、取消后丢弃迟到音频、主动取消或自发 Worker Poison 后整条语音路径只失效一次且不重试、Bootstrap 失败只关闭语音，以及退出不等待被阻塞的 Electron 回调。 |
 | `tests/test_desktop_settings.py` | Desktop Settings 八字段 Validation、旧 Schema Migration、Desired/Active Restart Diff、Revision CAS、锁和 Quarantine。 |
 | `tests/test_faster_whisper.py` | 不安装 Native Runtime 或模型也能验证离线 Adapter、设备降级、PCM、惰性结果、错误脱敏和边界。 |
 | `tests/test_file_manager.py` | 基础文本文件操作。 |
@@ -392,9 +404,10 @@ Project Memory 页面目前仍是明确 Placeholder。Project Source 只安全�
 | `tests/test_short_term_memory.py` | Token Budget 和完整 Turn 淘汰。 |
 | `tests/test_smoke_gpt_sovits.py` | Smoke CLI 的固定文本、重复/多情绪、缓冲成功输出、格式摘要和闭集错误码。 |
 | `tests/test_gpt_sovits_protocol.py` | 受管 TTS 私有 Pipe 的二进制帧、Canonical Metadata、长度先验、Partial I/O、截断/坏帧脱敏、不可变性与 Python 3.9 语法兼容。 |
-| `tests/test_gpt_sovits_worker.py` | 用 Fake Engine 验证受管 Worker 的 INIT/READY/SYNTHESIZE/STOP 状态机、Challenge/单调 ID、资产与 Runtime Manifest 重算、上游 Config Fallback、Reference 复用、全零 Sentinel、不恢复热重载、单 Yield PCM WAV、坏 Pipe Poison、错误脱敏和 Python 3.9 兼容；不加载真实模型。 |
+| `tests/test_gpt_sovits_worker.py` | 用 Fake Engine 验证受管 Worker 的 INIT/READY/SYNTHESIZE/STOP 状态机、Challenge/单调 ID、稳定 Worker/Protocol/Runtime/资产路径与 Manifest 重算、上游 Config Fallback、Reference 复用、静音 Text Stream 的 UTF-8 加固、全零 Sentinel、不恢复热重载、单 Yield PCM WAV、坏 Pipe Poison、错误脱敏和 Python 3.9 兼容；不加载真实模型。 |
+| `tests/test_managed_gpt_sovits.py` | 用 Fake Transport/Process/Guard 验证 Parent 的严格 Config/Catalog 来源、Volume-GUID 路径布局、双重 Manifest/Binding、READY/AUDIO/STOP、64 位 Token、提前取消 Tombstone、Active Abort、并发 Close、超时/协议失败 Poison、Process-first 阻塞 Pipe 唤醒、Owner/Thread 构造失败、Process+Transport+Guard 精确隔离、Bootstrap 部分创建回滚及封印前目录写句柄检测；不启动真实模型。 |
 | `tests/test_windows_file_guard.py` | 在 Windows 验证声明核验、目录/叶文件共享锁、Reparse/Hard-link/Case/8.3/SUBST/UNC 拒绝、盘符映射 ABA 检测、Volume-GUID 稳定重开、严格私有 Accessor、并发关闭，以及 Snapshot/类型/Hash/构造/关闭异常下的 HANDLE 回滚与延迟所有权；不加载真实模型。 |
-| `tests/test_windows_managed_process.py` | 在 Windows 真正启动隔离 Python 子进程，验证 Argument Quoting、封闭环境、HANDLE Allowlist、Suspended→Job→Resume、根/孙进程整树终止、并发关闭、失败所有权重试、UTF-16 上限、幂等生命周期和秘密脱敏；不加载真实语音模型。 |
+| `tests/test_windows_managed_process.py` | 在 Windows 真正启动隔离 Python 子进程，验证 Argument Quoting、封闭环境、HANDLE Allowlist、Suspended→Job→Resume、`terminate()` 返回前 Job 已无活动根/孙进程、外部 Process Object 的有界回收、Job Accounting/等待/关闭故障的所有权重试、UTF-16 上限、幂等生命周期和秘密脱敏；不加载真实语音模型。 |
 | `tests/test_speech_queue.py` | 验证流式自然分句、FIFO、有界 Work/Delivery/Cache 记账、失败跳过、取消 Callback Boundary、每句唯一 Operation Token、提前取消 Tombstone 契约、固定 Abort Dispatcher、Shutdown Deadline、迟到音频丢弃和秘密脱敏；使用 Fake Runtime，不加载真实模型。 |
 | `tests/test_stage5_acceptance.py` | Stage 5 端到端验收：多 Project/Chat、Memory 隔离、重启和完整 Export/Import。 |
 | `tests/test_start.py` | Composition Root、Migration 和配置限制。 |
@@ -408,7 +421,7 @@ Project Memory 页面目前仍是明确 Placeholder。Project Source 只安全�
 
 ## 25. Voice Capture、本地 STT 与本地 TTS
 
-当前桌面 Voice 是“显式单句采集 → 本地最终转写 → 人工确认进入草稿”的有界流程。Python 另有独立的单次 TTS 基础，但尚未接入桌面。它们都不是持续会话；理解这一层时要分别看 Capture/STT/Renderer Handoff 与 Python TTS 两条数据流。
+当前桌面输入仍是“显式单句采集 → 本地最终转写 → 人工确认进入草稿”的有界流程；输出则已把流式 Assistant Chunk 旁路分句并接入受管本地 TTS 播放。它们仍不是持续语音会话；理解这一层时要分别看 Capture/STT/Renderer Handoff、外部 HTTP Smoke 与受管桌面 TTS 三条数据流。
 
 ### Capture 核心文件
 
@@ -471,9 +484,9 @@ explicit Start microphone
 
 每份 PCM 只跨协议一次，不进入 Chat、Memory 或长期文件。用户取消、关闭 Voice 或切换上下文后，迟到结果不能回填草稿。Cancel 或 Timeout 只结束用户可见任务；Python 无法安全终止正在 Native Library 内运行的线程，因此 Runner 会继续占用物理容量直到调用返回并丢弃迟到结果。在排空期间，新 STT、Chat 与冲突配置写入会收到 Busy。
 
-当前桌面协议只传递最终文字；实时 Partial Transcript、TTS 音频传输/播放、自动回复与连续 Voice Conversation 明确留给后续工作。Fake Runtime 自动化覆盖设备选择、降级和竞态，另有一次真实 CPU STT Runtime/模型 Smoke 验证；这里不声称 STT CUDA 已通过真实 GPU 验证。
+当前 STT 桌面协议仍只传递最终文字，不提供实时 Partial Transcript。TTS 已有独立于 STT PCM 和 NDJSON 的私有播放链，但自动连续 Voice Conversation 与用户说话时打断播放仍属于后续工作。Fake Runtime 自动化覆盖设备选择、降级和竞态，另有一次真实 CPU STT Runtime/模型 Smoke 验证；这里不声称 STT CUDA 已通过真实 GPU 验证。
 
-### Python-only GPT-SoVITS 单次合成
+### GPT-SoVITS 单次合成与受管桌面播放
 
 | 文件 | 当前职责 | 关键边界 |
 | --- | --- | --- |
@@ -484,8 +497,13 @@ explicit Start microphone
 | `voice/gpt_sovits.py` | 探测 `/openapi.json` 并 POST `/tts`，按剩余 Body Deadline 收取有界结果。 | 仅 Loopback IP；不信任代理，不自动重试/重定向或切换全局权重；拒绝无 Content-Length、压缩或 Transfer-Encoding；非流式配置仅 WAV/AAC |
 | `voice/synthesis.py` | 验证请求与最大 32 MiB 编码结果的完整 Transport Framing。 | PCM WAV、Ogg Opus、受支持 ADTS AAC 子集通过结构验证；不声称已做 Codec Decode |
 | `scripts/smoke_gpt_sovits.py` | 每个情绪对固定句子合成两次并输出安全摘要。 | 不写音频、不回显 Prompt/路径/异常原文 |
+| `voice/managed_gpt_sovits.py` | 独占启动固定 Python 3.9 Worker、核验所选声明并提供可取消的 Lease。 | 第三方 Runtime 与同一 Windows 用户进程在 Lease 开始时属于信任范围；部分 Manifest 不是完整供应链证明，缓存保持禁用 |
+| `voice/speech_queue.py` | 从模型 Chunk 自然分句并以有界 FIFO 合成、交付、跳过失败和取消迟到结果。 | 队列只持有 Speech 副本，不修改 Brain 的最终 Assistant 文本 |
+| `desktop_speech.py` | 把 Managed Lease、Sentence Queue、NDJSON Metadata 与 fd3 WAV 组合起来。 | 可选 Speech 故障只禁用语音；文字 Chat 继续完成 |
+| `desktop/electron/speech-delivery.ts` | 在 Main 内严格配对 Metadata/Frame，并等待可信播放结束后才 ACK 下一帧。 | WAV、Token 与 Hash 不进入 React API |
+| `desktop/electron/speech-playback-owner.ts` + `preload.cts` | 以私有 IPC 把单个 WAV 交给 Preload Web Audio，处理 Decode、结束、取消、超时、跨文档导航和窗口替换。 | Settlement 只接受所属窗口 Main Frame；同文档锚点不破坏 Owner，Renderer 业务代码看不到音频 |
 
-完整连接关系：
+外部 HTTP Smoke 连接关系：
 
 ```text
 config/settings.py
@@ -501,7 +519,27 @@ config/settings.py
   → safe metadata only
 ```
 
-真实本机 Smoke 已对同一中文文本的 `neutral`、`happy`、`sad` 各运行两次，六次都得到有效 WAV；重复要求是“每次都有效”，并不承诺编码字节完全相同。Runtime 停止后返回稳定的 `service_unreachable`，文字 Chat 测试仍通过。正常探测只报告 `available / service_binding_unverified`，因为 `/openapi.json` 能证明兼容服务在线，却不能证明外部进程实际加载了 Catalog 声明的权重。Catalog 中的 GPT/SoVITS 路径因此是独立 Runtime 的预期部署配置，不是身份 Attestation；只有未来由 Elysia 控制、固定权重且能证明同一服务实例的 Wrapper 才可以把状态提升为 `ready`。这条链目前不经过 `desktop_backend.py`、Electron、Preload 或 React。
+真实本机 Smoke 已对同一中文文本的 `neutral`、`happy`、`sad` 各运行两次，六次都得到有效 WAV；重复要求是“每次都有效”，并不承诺编码字节完全相同。Runtime 停止后返回稳定的 `service_unreachable`，文字 Chat 测试仍通过。外部 HTTP 探测仍只报告 `available / service_binding_unverified`，因为 `/openapi.json` 不能证明服务实际加载了 Catalog 声明的权重；它与桌面受管 Worker 是两条不同边界。
+
+桌面受管播放连接关系：
+
+```text
+Brain.stream_chat() canonical chunks and commit
+  → desktop_backend.py optional speech copy
+  → desktop_speech.py
+  → voice/speech_queue.py natural segmentation / bounded FIFO
+  → voice/managed_gpt_sovits.py fixed worker lease
+  → scripts/gpt_sovits_worker.py
+  → PCM WAV
+  ├─ voice.speech.* metadata over authenticated NDJSON
+  └─ matching binary frame over inherited fd3
+       → Electron SpeechDeliveryCoordinator
+       → private Main-to-Preload playback IPC
+       → Web Audio decode / playback / settlement
+       → ACK or discard fd3 frame
+```
+
+受管路径固定了 Profile/情绪、Worker、权重声明和进程/管道生命周期，并持续 Guard 已声明的资产与 Runtime Anchor；它没有逐一认证第三方 Runtime 的六万多个依赖，也无法撤销同一用户在封印前已经取得的 `WRITE_DAC`。因此当前威胁模型明确信任 Lease 开始时的本地第三方 Runtime 与同一 Windows 用户进程。Queue 层 `binding_verified=True` 仅证明 Elysia 私有 Factory 签发了围绕该受管 Lease 的 Binding，不是完整依赖来源认证，也不会使语音缓存获得资格。若未来需要抵御恶意同用户进程，应改用由 Installer/SYSTEM 所有的只读 Runtime，或独立受限身份/AppContainer 与经过批准的完整签名 Manifest。
 
 ## 26. 哪些文件不应被当成源码垃圾
 
@@ -579,6 +617,22 @@ tests/test_desktop_backend.py
 desktop/tests/protocol.contract.test.mjs
 ```
 
+若改动 Speech 控制事件或 fd3 二进制帧，还必须同步检查：
+
+```text
+desktop_protocol/audio_channel.py
+desktop_speech.py
+desktop/electron/speech-audio-channel.ts
+desktop/electron/speech-delivery.ts
+desktop/electron/speech-playback-owner.ts
+desktop/electron/preload.cts
+tests/test_desktop_speech_protocol.py
+tests/test_desktop_audio_channel.py
+desktop/tests/speech-audio-channel.test.mjs
+desktop/tests/speech-playback-owner.test.mjs
+desktop/tests/preload-speech-playback.test.cjs
+```
+
 Renderer API 也变化时，再同步：
 
 ```text
@@ -615,6 +669,7 @@ Renderer intent
 ### 修改本地 Voice / STT / TTS
 
 ```text
+STT:
 config/settings.py + config/desktop_settings.py
 → voice/transcription.py
 → voice/faster_whisper.py + voice/transcription_jobs.py
@@ -623,11 +678,21 @@ config/settings.py + config/desktop_settings.py
 → Electron contracts / BackendProcess / Preload / Main
 → App.tsx / CallPreview.tsx / transcription-readiness.ts
 → Python Contract/Runner Tests + Desktop Contract/UI Tests
+
+TTS:
+config/settings.py + config/voice_profiles.example.json
+→ voice/synthesis.py + voice/profiles.py
+→ voice/gpt_sovits.py + voice/synthesis_service.py + scripts/smoke_gpt_sovits.py
+→ voice/managed_gpt_sovits.py + scripts/gpt_sovits_worker.py
+→ voice/speech_queue.py + desktop_speech.py + desktop_backend.py
+→ 双端 Speech Protocol / fd3 Audio Channel
+→ Electron BackendProcess / SpeechDelivery / PlaybackOwner / Preload
+→ Python 与 Desktop Contract Tests
 ```
 
 如果只是增加模型权重或可选 Runtime，不要把它提交进源码：依赖版本进入 `requirements-stt.txt`，完整模型只放在被忽略的 `models/weights/faster-whisper/<model>`。任何新的 Runtime Error 必须先映射为稳定枚举，不能把路径、底层异常或 Native 对象直接送给 Renderer。
 
-Python TTS 改动从另一条尚未接桌面的链开始：
+只修改外部 HTTP 单次合成时，仍可从较短链开始：
 
 ```text
 config/settings.py + config/voice_profiles.example.json
@@ -637,7 +702,7 @@ config/settings.py + config/voice_profiles.example.json
 → 对应 Python tests
 ```
 
-只有开始实现桌面播放时，才继续修改 Protocol、Electron、Preload 与 React。外部 GPT-SoVITS Runtime 放在被忽略的 `models/cache/`，权重/参考音频放在 `models/weights/gpt-sovits/`；不得把本机 Catalog、准确 Prompt、资产或 Runtime 混进源码提交。
+改动桌面播放必须继续检查 Managed Wrapper、Sentence Queue、Speech Protocol、fd3 Reader、Delivery Coordinator、Playback Owner 和 Preload；当前不需要 React 接触音频。外部 GPT-SoVITS Runtime 放在被忽略的 `models/cache/`，权重/参考音频放在 `models/weights/gpt-sovits/`；不得把本机 Catalog、准确 Prompt、资产或 Runtime 混进源码提交。
 
 ## 28. 推荐的新成员阅读顺序
 
@@ -664,9 +729,15 @@ config/settings.py + config/voice_profiles.example.json
 19. `desktop/electron/main.ts`
 20. `desktop/electron/backend-process.ts`
 21. `desktop_backend.py`
-22. `desktop/src/App.tsx`
-23. 具体 Feature Component
-24. 对应测试
+22. `desktop_speech.py`
+23. `voice/speech_queue.py`
+24. `voice/managed_gpt_sovits.py` 与 `scripts/gpt_sovits_worker.py`
+25. `desktop_protocol/audio_channel.py`
+26. `desktop/electron/speech-delivery.ts`
+27. `desktop/electron/speech-playback-owner.ts`
+28. `desktop/src/App.tsx`
+29. 具体 Feature Component
+30. 对应测试
 
 读完后应形成以下心智模型：
 
@@ -678,7 +749,7 @@ config/settings.py + config/voice_profiles.example.json
 - Electron 管可信本机能力。
 - React 只管理显示和短暂状态。
 - 单句 STT 只返回 Final Transcript；进入 Composer 和发送消息是两个独立、显式动作。
-- Python 单次 TTS 已能验证本地合成，但 Desktop Protocol、句子队列和播放器尚未连接。
+- Python 单次 TTS 与受管桌面分句播放已经连接；React 不接触 WAV，完整 Voice Session 与 Barge-in 仍未实现。
 - Streaming Overlay 不等于已保存消息。
 - `ChatSession.project_id` 是 Project–Chat 关系的唯一真相。
 - 所有 Memory 使用前都必须经过 Scope 过滤。

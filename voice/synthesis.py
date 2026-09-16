@@ -495,7 +495,7 @@ def _has_complete_adts_aac(audio: bytes) -> bool:
     unprotected seven-byte header, an explicit channel configuration, and one
     raw-data block per frame. CRC-protected, PCE-configured, or multi-block
     streams require deeper parsing and fail closed. Payload bytes remain opaque;
-    only the later playback decoder can decide whether compressed data decodes.
+    only a downstream playback decoder can decide whether compressed data decodes.
     """
 
     offset = 0
@@ -612,7 +612,7 @@ class SynthesisResult:
 
     Validation detects malformed/truncated containers before bytes cross a
     process boundary. It intentionally does not promise codec decodability;
-    the future playback layer must still handle a decoder rejecting payloads.
+    the downstream playback layer must still handle a decoder rejecting payloads.
     """
 
     audio: bytes

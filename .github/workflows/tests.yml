@@ -35,9 +35,9 @@ jobs:
         run: >-
           python -m mypy
           agent attachments chats config core desktop_protocol memory models projects recovery
-          scripts tools ui voice desktop_backend.py start.py
+          scripts tools ui voice desktop_backend.py desktop_speech.py start.py
 
-  windows-attachment-integration:
+  windows-native-integration:
     runs-on: windows-latest
 
     defaults:
@@ -80,10 +80,13 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt
 
-      - name: Run Windows attachment bridge integration
+      - name: Run Windows attachment and managed runtime integration
         run: >-
           python -m pytest -v
           tests/test_desktop_backend.py::test_attachment_add_returns_only_safe_canonical_metadata
+          tests/test_windows_file_guard.py
+          tests/test_windows_managed_process.py
+          tests/test_managed_gpt_sovits.py
 
   desktop:
     runs-on: ubuntu-latest

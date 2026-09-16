@@ -82,9 +82,9 @@ class LocalSpeechSynthesisService:
             deterministic_seed=deterministic_seed,
         )
         self._allow_local_evaluation = allow_local_evaluation
-        # The later sentence queue will own richer scheduling. A service-level
-        # lock is sufficient here and also covers catalog reload plus adapter
-        # construction, whose per-instance lock alone would not serialize calls.
+        # This independent loopback/smoke path does not use the managed Desktop
+        # sentence queue. A service-level lock also covers catalog reload plus
+        # adapter construction, whose per-instance lock would not serialize calls.
         self._lock = RLock()
 
     def get_status(

@@ -369,7 +369,7 @@ def test_result_rejects_empty_or_truncated_audio(
     audio: bytes,
     audio_format: str,
 ) -> None:
-    """Reject magic-only and truncated responses before later playback."""
+    """Reject magic-only and truncated responses before downstream playback."""
 
     with pytest.raises(SynthesisValidationError, match="audio|encoded audio"):
         SynthesisResult(
@@ -559,7 +559,7 @@ def test_result_rejects_audio_above_the_memory_limit() -> None:
 
 @pytest.mark.parametrize("audio_format", ["raw", "mp3", "", None, True])
 def test_result_rejects_unsupported_audio_formats(audio_format: object) -> None:
-    """Keep later playback code on the three explicitly supported containers."""
+    """Keep downstream playback on the three explicitly supported containers."""
 
     with pytest.raises(SynthesisValidationError, match="audio_format"):
         SynthesisResult(
@@ -647,7 +647,7 @@ def test_plain_class_structurally_satisfies_synthesizer_protocol() -> None:
 def test_specific_failures_share_one_stable_base_error(
     error_type: type[SynthesisError],
 ) -> None:
-    """Let future orchestration catch all synthesis failures at one boundary."""
+    """Let current orchestration catch all synthesis failures at one boundary."""
 
     error = error_type("safe public explanation")
 

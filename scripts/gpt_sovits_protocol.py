@@ -28,6 +28,76 @@ PROTOCOL_MAX_JSON_DEPTH = 32
 PROTOCOL_MAX_JSON_INTEGER = 9_007_199_254_740_991
 PROTOCOL_MAX_REQUEST_ID = (1 << 64) - 1
 
+# Parent and Python 3.9 worker hash this tuple in order. Keeping it beside the
+# shared wire contract prevents two independently edited manifests from making
+# every otherwise-valid READY handshake fail.
+MANAGED_RUNTIME_MANIFEST_RELATIVE_FILES = (
+    ("runtime-python", "runtime/python.exe"),
+    ("runtime-python-dll", "runtime/python39.dll"),
+    ("runtime-python-abi-dll", "runtime/python3.dll"),
+    ("runtime-python-path", "runtime/python39._pth"),
+    ("runtime-stdlib-zip", "runtime/python39.zip"),
+    ("runtime-vcruntime", "runtime/vcruntime140.dll"),
+    ("runtime-vcruntime-1", "runtime/vcruntime140_1.dll"),
+    ("runtime-libffi", "runtime/libffi-7.dll"),
+    ("runtime-libcrypto", "runtime/libcrypto-1_1.dll"),
+    ("runtime-libssl", "runtime/libssl-1_1.dll"),
+    ("runtime-sqlite", "runtime/sqlite3.dll"),
+    ("runtime-tcl", "runtime/tcl86t.dll"),
+    ("runtime-tk", "runtime/tk86t.dll"),
+    ("runtime-hashlib-extension", "runtime/_hashlib.pyd"),
+    ("runtime-ssl-extension", "runtime/_ssl.pyd"),
+    ("runtime-sqlite-extension", "runtime/_sqlite3.pyd"),
+    ("runtime-ctypes-extension", "runtime/_ctypes.pyd"),
+    ("runtime-socket-extension", "runtime/_socket.pyd"),
+    ("runtime-select-extension", "runtime/select.pyd"),
+    ("runtime-unicode-extension", "runtime/unicodedata.pyd"),
+    ("ffmpeg", "ffmpeg.exe"),
+    ("tts-entry", "GPT_SoVITS/TTS_infer_pack/TTS.py"),
+    ("audio-loader", "tools/my_utils.py"),
+    (
+        "bert-config",
+        "GPT_SoVITS/pretrained_models/chinese-roberta-wwm-ext-large/config.json",
+    ),
+    (
+        "bert-model",
+        "GPT_SoVITS/pretrained_models/chinese-roberta-wwm-ext-large/"
+        "pytorch_model.bin",
+    ),
+    (
+        "bert-tokenizer",
+        "GPT_SoVITS/pretrained_models/chinese-roberta-wwm-ext-large/"
+        "tokenizer.json",
+    ),
+    (
+        "hubert-config",
+        "GPT_SoVITS/pretrained_models/chinese-hubert-base/config.json",
+    ),
+    (
+        "hubert-preprocessor",
+        "GPT_SoVITS/pretrained_models/chinese-hubert-base/"
+        "preprocessor_config.json",
+    ),
+    (
+        "hubert-model",
+        "GPT_SoVITS/pretrained_models/chinese-hubert-base/pytorch_model.bin",
+    ),
+)
+
+# The copied interpreter and worker must agree on the complete closed sys.path
+# spelling. Every entry is rendered below one separately verified DOS alias;
+# no inherited, relative, or executable .pth entry is allowed.
+MANAGED_RUNTIME_IMPORT_RELATIVE_ENTRIES = (
+    "runtime/python39.zip",
+    "runtime",
+    "runtime/Lib/site-packages",
+    "runtime/Lib/site-packages/ffmpy-0.0.3-py3.9.egg",
+    "runtime/Lib/site-packages/future-0.18.2-py3.9.egg",
+    "runtime/Lib/site-packages/win32",
+    "runtime/Lib/site-packages/win32/lib",
+    "runtime/Lib/site-packages/Pythonwin",
+)
+
 _HEADER = struct.Struct(">8sBBHIIQ")
 _NO_METADATA = object()
 _INVALID_MESSAGE = "GPT-SoVITS protocol frame is invalid."
@@ -448,6 +518,8 @@ def write_frame(stream: BinaryIO, frame: ProtocolFrame) -> None:
 
 __all__ = [
     "FrameKind",
+    "MANAGED_RUNTIME_IMPORT_RELATIVE_ENTRIES",
+    "MANAGED_RUNTIME_MANIFEST_RELATIVE_FILES",
     "PROTOCOL_HEADER_SIZE",
     "PROTOCOL_MAGIC",
     "PROTOCOL_MAX_JSON_DEPTH",

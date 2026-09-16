@@ -10,7 +10,7 @@ from pathlib import Path
 import sys
 from threading import Event, Lock, Thread
 from time import monotonic, sleep
-from typing import Dict, Tuple
+from typing import Any, Dict, Tuple
 
 import pytest
 
@@ -19,6 +19,7 @@ from voice._windows_managed_process import (
     WindowsManagedProcess,
     WindowsManagedProcessControlError,
     WindowsManagedProcessError,
+    WindowsManagedProcessLaunchError,
     WindowsManagedProcessValidationError,
     launch_windows_managed_process,
 )
@@ -260,7 +261,7 @@ def test_handle_list_excludes_an_unrelated_inheritable_handle() -> None:
 
 
 def test_terminate_kills_the_root_and_its_grandchild() -> None:
-    """Close the Job as one unit so helper descendants cannot survive."""
+    """Return only after the Job is inactive, then reap both process objects."""
 
     script = (
         "import os, subprocess, sys, time; "
@@ -279,13 +280,24 @@ def test_terminate_kills_the_root_and_its_grandchild() -> None:
 
     try:
         assert process.terminate(5.0) is True
-        assert _wait_and_close_native_process(root_handle, 5_000) == _WAIT_OBJECT_0
+        # The root is observed directly before teardown succeeds. Transfer
+        # each external handle to the closing helper before the call so an
+        # assertion failure cannot make the outer cleanup close it twice.
+        owned_root_handle = root_handle
         root_handle = 0
         assert (
-            _wait_and_close_native_process(grandchild_handle, 5_000)
+            _wait_and_close_native_process(owned_root_handle, 0)
             == _WAIT_OBJECT_0
         )
+        # ActiveProcesses==0 is the Job's no-more-user-code boundary. Windows
+        # can publish the separately held descendant process object's signal a
+        # moment later, so reap that already-inactive object within a bound.
+        owned_grandchild_handle = grandchild_handle
         grandchild_handle = 0
+        assert (
+            _wait_and_close_native_process(owned_grandchild_handle, 5_000)
+            == _WAIT_OBJECT_0
+        )
         assert process.is_alive() is False
         assert process.close() is True
     finally:
@@ -435,6 +447,619 @@ def test_failed_handle_close_keeps_exact_ownership_for_retry(
     finally:
         process.close(timeout_seconds=0.0)
         os.close(output_fd)
+
+
+def test_failed_job_accounting_query_keeps_containment_for_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Retain Job and root handles when tree-termination proof is unavailable."""
+
+    process, output_fd = _launch_python("import time; time.sleep(60)")
+    job_handle = process._job_handle
+    process_handle = process._process_handle
+    original_query = managed_process_module._query_active_job_processes
+    failed_once = False
+
+    def fail_first_query(handle: int) -> int:
+        """Inject one ambiguous native accounting failure without losing ownership."""
+
+        nonlocal failed_once
+        if handle == job_handle and not failed_once:
+            failed_once = True
+            raise WindowsManagedProcessControlError("injected accounting failure")
+        return original_query(handle)
+
+    monkeypatch.setattr(
+        managed_process_module, "_query_active_job_processes", fail_first_query
+    )
+    try:
+        with pytest.raises(WindowsManagedProcessControlError):
+            process.terminate(2.0)
+        assert failed_once is True
+        assert process.closed is False
+        assert process._job_handle == job_handle
+        assert process._process_handle == process_handle
+        assert process._thread_handle == 0
+        assert process.close(2.0) is True
+        assert process.closed is True
+    finally:
+        process.close(timeout_seconds=0.0)
+        os.close(output_fd)
+
+
+def test_ambiguous_root_wait_keeps_containment_for_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Retain Job and root handles when their native exit observations disagree."""
+
+    process, output_fd = _launch_python("import time; time.sleep(60)")
+    job_handle = process._job_handle
+    process_handle = process._process_handle
+    original_observe = managed_process_module._observe_process
+    failed_once = False
+
+    def fail_first_observation(
+        handle: int, timeout_seconds: float
+    ) -> Tuple[bool, int | None]:
+        """Inject one root wait failure after Job accounting reports an empty tree."""
+
+        nonlocal failed_once
+        if handle == process_handle and not failed_once:
+            failed_once = True
+            raise WindowsManagedProcessControlError("injected wait failure")
+        return original_observe(handle, timeout_seconds)
+
+    monkeypatch.setattr(
+        managed_process_module, "_observe_process", fail_first_observation
+    )
+    try:
+        with pytest.raises(WindowsManagedProcessControlError):
+            process.terminate(2.0)
+        assert failed_once is True
+        assert process.closed is False
+        assert process._job_handle == job_handle
+        assert process._process_handle == process_handle
+        assert process._thread_handle == 0
+        assert process.close(2.0) is True
+        assert process.closed is True
+    finally:
+        process.close(timeout_seconds=0.0)
+        os.close(output_fd)
+
+
+@pytest.mark.parametrize("operation", ["wait", "is_alive"])
+@pytest.mark.parametrize("close_failure", ["false", "raise"])
+def test_observation_close_failure_quarantines_exact_duplicate(
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+    close_failure: str,
+) -> None:
+    """Retain a failed observation duplicate and block every later duplicate."""
+
+    cleanup_quarantine = managed_process_module._CleanupQuarantine()
+    monkeypatch.setattr(
+        managed_process_module,
+        "_CLEANUP_QUARANTINE",
+        cleanup_quarantine,
+    )
+    process, output_fd = _launch_python("import time; time.sleep(60)")
+    original_duplicate = managed_process_module._duplicate_handle
+    original_close_handle = managed_process_module._close_handle
+    captured_handle = 0
+    duplicate_calls = 0
+
+    def capture_observation_duplicate(
+        handle: int, *, inheritable: bool
+    ) -> int:
+        """Record the exact non-inheritable duplicate created by observation."""
+
+        nonlocal captured_handle, duplicate_calls
+        duplicate = original_duplicate(handle, inheritable=inheritable)
+        if not inheritable:
+            captured_handle = duplicate
+            duplicate_calls += 1
+        return duplicate
+
+    def fail_observation_close(handle: int) -> bool:
+        """Leave the captured duplicate open while all other closes remain real."""
+
+        if handle == captured_handle:
+            if close_failure == "raise":
+                raise RuntimeError("injected private close failure")
+            return False
+        return original_close_handle(handle)
+
+    monkeypatch.setattr(
+        managed_process_module,
+        "_duplicate_handle",
+        capture_observation_duplicate,
+    )
+    monkeypatch.setattr(
+        managed_process_module, "_close_handle", fail_observation_close
+    )
+    try:
+        with pytest.raises(WindowsManagedProcessControlError):
+            if operation == "wait":
+                process.wait(0.0)
+            else:
+                process.is_alive()
+
+        assert captured_handle != 0
+        assert duplicate_calls == 1
+        assert cleanup_quarantine._poisoned is True
+        assert len(cleanup_quarantine._owners) == 1
+        retained_owner = cleanup_quarantine._owners[0]
+        assert isinstance(retained_owner, managed_process_module._SingleHandleOwner)
+        assert retained_owner._handle == captured_handle
+
+        with pytest.raises(WindowsManagedProcessControlError):
+            if operation == "wait":
+                process.wait(0.0)
+            else:
+                process.is_alive()
+        assert duplicate_calls == 1
+
+        monkeypatch.setattr(
+            managed_process_module, "_close_handle", original_close_handle
+        )
+        assert cleanup_quarantine._retry() is True
+        assert cleanup_quarantine._owners == []
+        assert retained_owner._handle == 0
+    finally:
+        monkeypatch.setattr(
+            managed_process_module, "_close_handle", original_close_handle
+        )
+        cleanup_quarantine._retry()
+        process.close(timeout_seconds=2.0)
+        os.close(output_fd)
+
+
+def test_uncontained_launch_cleanup_failure_retains_both_child_handles(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Keep a suspended unassigned child reachable and poison later launches."""
+
+    assert managed_process_module._kernel32 is not None
+    cleanup_quarantine = managed_process_module._CleanupQuarantine()
+    monkeypatch.setattr(
+        managed_process_module,
+        "_CLEANUP_QUARANTINE",
+        cleanup_quarantine,
+    )
+    original_owner_close = managed_process_module._LaunchCleanupOwner._close
+    original_terminate_process = managed_process_module._kernel32.TerminateProcess
+    original_observe = managed_process_module._observe_process
+    original_create_process = managed_process_module._kernel32.CreateProcessW
+    captured_owner: managed_process_module._LaunchCleanupOwner | None = None
+    captured_process = 0
+    captured_thread = 0
+    create_calls = 0
+
+    def capture_cleanup_owner(
+        owner: managed_process_module._LaunchCleanupOwner,
+    ) -> bool:
+        """Record the exact owner before its injected cleanup attempt begins."""
+
+        nonlocal captured_owner, captured_process, captured_thread
+        if captured_owner is None:
+            captured_owner = owner
+            captured_process = owner._process_handle
+            captured_thread = owner._thread_handle
+        return original_owner_close(owner)
+
+    def reject_assignment(_job: object, _process: object) -> bool:
+        """Force cleanup to use the uncontained-root transaction."""
+
+        return False
+
+    def reject_termination(_process: object, _exit_code: object) -> bool:
+        """Leave the suspended root alive so its exact owner must be retained."""
+
+        return False
+
+    def report_root_alive(
+        handle: int, _timeout_seconds: float
+    ) -> Tuple[bool, int | None]:
+        """Return an immediate timeout for the injected uncontained root."""
+
+        if handle == captured_process:
+            return False, None
+        return original_observe(handle, _timeout_seconds)
+
+    def count_create_process(*arguments: object) -> object:
+        """Prove the poisoned retry is rejected before native process creation."""
+
+        nonlocal create_calls
+        create_calls += 1
+        return original_create_process(*arguments)
+
+    monkeypatch.setattr(
+        managed_process_module._LaunchCleanupOwner,
+        "_close",
+        capture_cleanup_owner,
+    )
+    monkeypatch.setattr(
+        managed_process_module._kernel32,
+        "AssignProcessToJobObject",
+        reject_assignment,
+    )
+    monkeypatch.setattr(
+        managed_process_module._kernel32,
+        "TerminateProcess",
+        reject_termination,
+    )
+    monkeypatch.setattr(
+        managed_process_module, "_observe_process", report_root_alive
+    )
+    try:
+        with pytest.raises(WindowsManagedProcessLaunchError):
+            _launch_python("import time; time.sleep(60)")
+
+        assert cleanup_quarantine._poisoned is True
+        assert len(cleanup_quarantine._owners) == 1
+        retained_owner = cleanup_quarantine._owners[0]
+        assert isinstance(retained_owner, managed_process_module._LaunchCleanupOwner)
+        assert retained_owner is captured_owner
+        assert retained_owner._assigned is False
+        assert retained_owner._process_handle == captured_process
+        assert retained_owner._thread_handle == captured_thread
+
+        monkeypatch.setattr(
+            managed_process_module._kernel32,
+            "CreateProcessW",
+            count_create_process,
+        )
+        with pytest.raises(WindowsManagedProcessLaunchError):
+            _launch_python("pass")
+        assert create_calls == 0
+
+        monkeypatch.setattr(
+            managed_process_module._kernel32,
+            "TerminateProcess",
+            original_terminate_process,
+        )
+        monkeypatch.setattr(
+            managed_process_module, "_observe_process", original_observe
+        )
+        assert cleanup_quarantine._retry() is True
+        assert cleanup_quarantine._owners == []
+        assert retained_owner._process_handle == 0
+        assert retained_owner._thread_handle == 0
+    finally:
+        monkeypatch.setattr(
+            managed_process_module._kernel32,
+            "TerminateProcess",
+            original_terminate_process,
+        )
+        monkeypatch.setattr(
+            managed_process_module, "_observe_process", original_observe
+        )
+        cleanup_quarantine._retry()
+
+
+def test_create_process_result_is_salvaged_after_conversion_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Retain CreateProcess handles when Python adoption is interrupted."""
+
+    assert managed_process_module._kernel32 is not None
+    cleanup_quarantine = managed_process_module._CleanupQuarantine()
+    monkeypatch.setattr(
+        managed_process_module,
+        "_CLEANUP_QUARANTINE",
+        cleanup_quarantine,
+    )
+    original_create_process = managed_process_module._kernel32.CreateProcessW
+    original_handle_value = managed_process_module._handle_value
+    original_terminate_process = managed_process_module._kernel32.TerminateProcess
+    original_observe = managed_process_module._observe_process
+    captured_process = 0
+    conversion_failed = False
+
+    def capture_create_process(*arguments: Any) -> object:
+        """Capture the exact output handle while preserving native creation."""
+
+        nonlocal captured_process
+        created = original_create_process(*arguments)
+        if created:
+            process_information = ctypes.cast(
+                arguments[-1],
+                ctypes.POINTER(managed_process_module._PROCESS_INFORMATION),
+            ).contents
+            captured_process = original_handle_value(
+                process_information.hProcess
+            )
+        return created
+
+    def interrupt_first_process_conversion(handle: object) -> int:
+        """Raise once between CreateProcess success and ordinary adoption."""
+
+        nonlocal conversion_failed
+        value = original_handle_value(handle)
+        if value == captured_process and not conversion_failed:
+            conversion_failed = True
+            raise MemoryError("injected process-handle conversion failure")
+        return value
+
+    def reject_termination(_process: object, _exit_code: object) -> bool:
+        """Keep the salvaged suspended process owned for exact inspection."""
+
+        return False
+
+    def report_root_alive(
+        handle: int, _timeout_seconds: float
+    ) -> Tuple[bool, int | None]:
+        """Return an immediate timeout only for the salvaged process handle."""
+
+        if handle == captured_process:
+            return False, None
+        return original_observe(handle, _timeout_seconds)
+
+    monkeypatch.setattr(
+        managed_process_module._kernel32,
+        "CreateProcessW",
+        capture_create_process,
+    )
+    monkeypatch.setattr(
+        managed_process_module,
+        "_handle_value",
+        interrupt_first_process_conversion,
+    )
+    monkeypatch.setattr(
+        managed_process_module._kernel32,
+        "TerminateProcess",
+        reject_termination,
+    )
+    monkeypatch.setattr(
+        managed_process_module, "_observe_process", report_root_alive
+    )
+    try:
+        with pytest.raises(WindowsManagedProcessLaunchError):
+            _launch_python("import time; time.sleep(60)")
+
+        assert conversion_failed is True
+        assert captured_process != 0
+        assert len(cleanup_quarantine._owners) == 1
+        retained_owner = cleanup_quarantine._owners[0]
+        assert isinstance(retained_owner, managed_process_module._LaunchCleanupOwner)
+        assert retained_owner._process_information is None
+        assert retained_owner._process_handle == captured_process
+        assert retained_owner._thread_handle != 0
+
+        monkeypatch.setattr(
+            managed_process_module,
+            "_handle_value",
+            original_handle_value,
+        )
+        monkeypatch.setattr(
+            managed_process_module._kernel32,
+            "TerminateProcess",
+            original_terminate_process,
+        )
+        monkeypatch.setattr(
+            managed_process_module, "_observe_process", original_observe
+        )
+        assert cleanup_quarantine._retry() is True
+        assert cleanup_quarantine._owners == []
+    finally:
+        monkeypatch.setattr(
+            managed_process_module,
+            "_handle_value",
+            original_handle_value,
+        )
+        monkeypatch.setattr(
+            managed_process_module._kernel32,
+            "TerminateProcess",
+            original_terminate_process,
+        )
+        monkeypatch.setattr(
+            managed_process_module, "_observe_process", original_observe
+        )
+        cleanup_quarantine._retry()
+
+
+def test_inherited_close_failure_prevents_resume_and_retains_exact_handle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Do not run a child while a parent inheritable duplicate remains open."""
+
+    assert managed_process_module._kernel32 is not None
+    cleanup_quarantine = managed_process_module._CleanupQuarantine()
+    monkeypatch.setattr(
+        managed_process_module,
+        "_CLEANUP_QUARANTINE",
+        cleanup_quarantine,
+    )
+    original_duplicate = managed_process_module._duplicate_handle
+    original_close_handle = managed_process_module._close_handle
+    original_resume = managed_process_module._kernel32.ResumeThread
+    inherited_handles: list[int] = []
+    resume_calls = 0
+
+    def capture_inherited_duplicate(
+        handle: int, *, inheritable: bool
+    ) -> int:
+        """Record each launch-only duplicate without changing its semantics."""
+
+        duplicate = original_duplicate(handle, inheritable=inheritable)
+        if inheritable:
+            inherited_handles.append(duplicate)
+        return duplicate
+
+    def fail_selected_inherited_close(handle: int) -> bool:
+        """Persistently refuse closure of one exact parent duplicate."""
+
+        if inherited_handles and handle == inherited_handles[0]:
+            return False
+        return original_close_handle(handle)
+
+    def count_resume(thread_handle: object) -> object:
+        """Record any unsafe attempt to run the incompletely cleaned child."""
+
+        nonlocal resume_calls
+        resume_calls += 1
+        return original_resume(thread_handle)
+
+    monkeypatch.setattr(
+        managed_process_module,
+        "_duplicate_handle",
+        capture_inherited_duplicate,
+    )
+    monkeypatch.setattr(
+        managed_process_module, "_close_handle", fail_selected_inherited_close
+    )
+    monkeypatch.setattr(
+        managed_process_module._kernel32, "ResumeThread", count_resume
+    )
+    try:
+        with pytest.raises(WindowsManagedProcessLaunchError):
+            _launch_python("import time; time.sleep(60)")
+
+        assert len(inherited_handles) == 3
+        assert resume_calls == 0
+        assert cleanup_quarantine._poisoned is True
+        assert len(cleanup_quarantine._owners) == 1
+        retained_owner = cleanup_quarantine._owners[0]
+        assert isinstance(retained_owner, managed_process_module._LaunchCleanupOwner)
+        assert retained_owner._inherited_handles[0] == inherited_handles[0]
+        assert retained_owner._process_handle == 0
+        assert retained_owner._thread_handle == 0
+        assert retained_owner._job_handle == 0
+
+        monkeypatch.setattr(
+            managed_process_module, "_close_handle", original_close_handle
+        )
+        assert cleanup_quarantine._retry() is True
+        assert cleanup_quarantine._owners == []
+        assert retained_owner._inherited_handles == [0, 0, 0]
+    finally:
+        monkeypatch.setattr(
+            managed_process_module, "_close_handle", original_close_handle
+        )
+        cleanup_quarantine._retry()
+
+
+def test_managed_owner_is_constructed_before_resume_and_retained_on_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Keep a constructor failure suspended and retain ambiguous Job cleanup."""
+
+    assert managed_process_module._kernel32 is not None
+    cleanup_quarantine = managed_process_module._CleanupQuarantine()
+    monkeypatch.setattr(
+        managed_process_module,
+        "_CLEANUP_QUARANTINE",
+        cleanup_quarantine,
+    )
+    original_wait_for_job_empty = managed_process_module._wait_for_job_empty
+    original_resume = managed_process_module._kernel32.ResumeThread
+    constructor_calls = 0
+    resume_calls = 0
+
+    def reject_managed_construction(**_arguments: object) -> None:
+        """Fail the last Python allocation that must precede ResumeThread."""
+
+        nonlocal constructor_calls
+        constructor_calls += 1
+        raise MemoryError("injected constructor failure")
+
+    def hide_job_completion(_handle: int, _deadline: float) -> bool:
+        """Force exact core ownership into quarantine after Job termination."""
+
+        return False
+
+    def count_resume(thread_handle: object) -> object:
+        """Record any child resume that occurs before managed ownership exists."""
+
+        nonlocal resume_calls
+        resume_calls += 1
+        return original_resume(thread_handle)
+
+    monkeypatch.setattr(
+        managed_process_module,
+        "WindowsManagedProcess",
+        reject_managed_construction,
+    )
+    monkeypatch.setattr(
+        managed_process_module,
+        "_wait_for_job_empty",
+        hide_job_completion,
+    )
+    monkeypatch.setattr(
+        managed_process_module._kernel32, "ResumeThread", count_resume
+    )
+    try:
+        with pytest.raises(WindowsManagedProcessLaunchError):
+            _launch_python("import time; time.sleep(60)")
+
+        assert constructor_calls == 1
+        assert resume_calls == 0
+        assert cleanup_quarantine._poisoned is True
+        assert len(cleanup_quarantine._owners) == 1
+        retained_owner = cleanup_quarantine._owners[0]
+        assert isinstance(retained_owner, managed_process_module._LaunchCleanupOwner)
+        assert retained_owner._assigned is True
+        assert retained_owner._managed_process is None
+        assert retained_owner._process_handle != 0
+        assert retained_owner._thread_handle != 0
+        assert retained_owner._job_handle != 0
+
+        monkeypatch.setattr(
+            managed_process_module,
+            "_wait_for_job_empty",
+            original_wait_for_job_empty,
+        )
+        assert cleanup_quarantine._retry() is True
+        assert cleanup_quarantine._owners == []
+    finally:
+        monkeypatch.setattr(
+            managed_process_module,
+            "_wait_for_job_empty",
+            original_wait_for_job_empty,
+        )
+        cleanup_quarantine._retry()
+
+
+def test_successful_launch_skips_fallible_cleanup_after_resume(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Return the managed owner without invoking launch cleanup after Resume."""
+
+    cleanup_quarantine = managed_process_module._CleanupQuarantine()
+    monkeypatch.setattr(
+        managed_process_module,
+        "_CLEANUP_QUARANTINE",
+        cleanup_quarantine,
+    )
+    close_calls = 0
+
+    def reject_launch_owner_close(
+        _owner: managed_process_module._LaunchCleanupOwner,
+    ) -> bool:
+        """Make any post-Resume launch-owner cleanup fail the regression."""
+
+        nonlocal close_calls
+        close_calls += 1
+        raise RuntimeError("launch owner cleanup must not run after resume")
+
+    monkeypatch.setattr(
+        managed_process_module._LaunchCleanupOwner,
+        "_close",
+        reject_launch_owner_close,
+    )
+    process, output_fd = _launch_python("print('ready', flush=True)")
+    try:
+        assert close_calls == 0
+        assert cleanup_quarantine._poisoned is False
+        assert process.wait(5.0) == 0
+        output_fd_to_read = output_fd
+        output_fd = -1
+        assert _read_all(output_fd_to_read).strip() == b"ready"
+        assert process.close(2.0) is True
+    finally:
+        process.close(timeout_seconds=0.0)
+        if output_fd >= 0:
+            os.close(output_fd)
 
 
 def test_managed_launches_serialize_the_temporary_inheritable_window(

@@ -122,6 +122,7 @@ export class SpeechAudioChannelReader {
     private readonly input: Readable,
     private readonly onFrame: (frame: SpeechAudioFrame) => void,
     private readonly onFailure: (failure: SpeechAudioChannelFailure) => void,
+    private readonly onCleanEnd: () => void = () => {},
   ) {
     input.on('data', this.handleData)
     input.once('end', this.handleEnd)
@@ -242,6 +243,7 @@ export class SpeechAudioChannelReader {
       return
     }
     this.dispose()
+    this.reportCleanEnd()
   }
 
   private readonly handleClose = (): void => {
@@ -406,6 +408,7 @@ export class SpeechAudioChannelReader {
     this.pending = null
     if (this.sourceEnded) {
       this.dispose()
+      this.reportCleanEnd()
       return
     }
     this.input.resume()
@@ -424,6 +427,14 @@ export class SpeechAudioChannelReader {
     this.input.off('end', this.handleEnd)
     this.input.off('close', this.handleClose)
     this.input.off('error', this.handleError)
+  }
+
+  private reportCleanEnd(): void {
+    try {
+      this.onCleanEnd()
+    } catch {
+      this.onFailure('consumer-failed')
+    }
   }
 
   private fail(failure: SpeechAudioChannelFailure): void {

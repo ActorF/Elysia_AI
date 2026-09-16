@@ -29,6 +29,10 @@ import {
 } from './audio-permission.js'
 import { parseSafeExternalUrl } from './external-url.js'
 import {
+  PreloadSpeechPlaybackOwner,
+  ReplaceableSpeechPlaybackOwner,
+} from './speech-playback-owner.js'
+import {
   MAX_IDENTIFIER_LENGTH,
   MAX_ATTACHMENT_FILE_COUNT,
   MAX_ATTACHMENT_SOURCE_PATH_LENGTH,
@@ -84,6 +88,8 @@ const TRAY_ICON_DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAA
 
 let mainWindow: BrowserWindow | null = null
 let backendProcess: BackendProcess | null = null
+let speechPlaybackOwner: PreloadSpeechPlaybackOwner | null = null
+const speechPlaybackRouter = new ReplaceableSpeechPlaybackOwner()
 let tray: Tray | null = null
 let characterPanelOpen = false
 let collapsedWindowPlacement: {
@@ -106,6 +112,24 @@ function revealMainWindow(): void {
   if (mainWindow !== null && !mainWindow.isDestroyed()) {
     mainWindow.show()
   }
+}
+
+function installSpeechPlaybackOwner(window: BrowserWindow): void {
+  if (speechPlaybackOwner !== null) {
+    return
+  }
+  const owner = new PreloadSpeechPlaybackOwner(
+    window,
+    (disconnectedOwner) => {
+      if (speechPlaybackOwner !== disconnectedOwner) {
+        return
+      }
+      speechPlaybackOwner = null
+      speechPlaybackRouter.replace(null)
+    },
+  )
+  speechPlaybackOwner = owner
+  speechPlaybackRouter.replace(owner)
 }
 
 function resolveProjectRoot(): string {
@@ -767,6 +791,7 @@ function registerIpcHandlers(): void {
     'window:renderer-ready',
     (event): void => {
       assertTrustedSender(event)
+      installSpeechPlaybackOwner(requireMainWindow())
       revealMainWindow()
     },
   )
@@ -1349,6 +1374,12 @@ function createMainWindow(): void {
   })
   mainWindow.on('closed', () => {
     clearRendererReadyTimer()
+    const closingOwner = speechPlaybackOwner
+    speechPlaybackOwner = null
+    // Detach before disposal so an in-flight expected window-close rejection
+    // becomes a skipped clip instead of poisoning the child-owned fd3 stream.
+    speechPlaybackRouter.replace(null)
+    closingOwner?.dispose()
     mainWindow = null
   })
 
@@ -1386,11 +1417,12 @@ if (!hasSingleInstanceLock) {
     })
     configureAudioPermissions()
     registerIpcHandlers()
+    createMainWindow()
     backendProcess = new BackendProcess(
       resolveProjectRoot(),
       broadcastBackendEvent,
+      speechPlaybackRouter,
     )
-    createMainWindow()
     createTray()
     backendProcess.start()
 
@@ -1415,6 +1447,10 @@ if (!hasSingleInstanceLock) {
     event.preventDefault()
     shutdownStarted = true
     void backendProcess.stop().finally(() => {
+      const closingOwner = speechPlaybackOwner
+      speechPlaybackOwner = null
+      speechPlaybackRouter.replace(null)
+      closingOwner?.dispose()
       tray?.destroy()
       tray = null
       app.quit()

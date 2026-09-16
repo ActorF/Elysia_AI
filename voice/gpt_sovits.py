@@ -466,9 +466,9 @@ class GptSovitsSynthesizer:
             raise TypeError("voice_resolver must provide resolve().")
         self._config = config
         self._voice_resolver = voice_resolver
-        # GPT-SoVITS inference is expensive and upstream service concurrency is
-        # not an application contract. Serializing calls avoids non-deterministic
-        # GPU pressure until the later sentence queue owns scheduling explicitly.
+        # This loopback/smoke adapter is independent from the managed Desktop
+        # sentence queue. Serializing its calls avoids nondeterministic GPU
+        # pressure because upstream service concurrency is not a contract.
         self._request_lock = Lock()
 
     def synthesize(self, request: SynthesisRequest) -> SynthesisResult:

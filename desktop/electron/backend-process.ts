@@ -12,6 +12,7 @@ import {
 import { randomBytes, randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import path from 'node:path'
+import { Readable } from 'node:stream'
 
 import type {
   ArchiveChatRequest,
@@ -44,6 +45,10 @@ import {
   BoundedNdjsonReader,
   type BoundedNdjsonFailure,
 } from './bounded-ndjson.js'
+import {
+  SpeechDeliveryCoordinator,
+  type TrustedSpeechPlaybackOwner,
+} from './speech-delivery.js'
 import {
   MAX_ATTACHMENT_FILE_COUNT,
   MAX_IDENTIFIER_LENGTH,
@@ -98,6 +103,8 @@ const BACKEND_ENTRY_POINT_MISSING_MESSAGE =
 const BACKEND_PROCESS_FAILURE_MESSAGE =
   'Python Backend process could not be started.'
 const BACKEND_INPUT_FAILURE_MESSAGE = 'Python Backend input failed.'
+const BACKEND_SPEECH_FAILURE_MESSAGE =
+  'Backend speech event arrived before audio delivery was enabled.'
 
 const BACKEND_OUTPUT_FAILURE_MESSAGES: Record<BoundedNdjsonFailure, string> = {
   'frame-too-large': 'Python Backend emitted an oversized frame.',
@@ -297,6 +304,9 @@ const ATTACHMENT_MUTATION_METHODS = new Set<ProtocolMethod>([
 export class BackendProcess {
   private child: ChildProcessWithoutNullStreams | null = null
   private protocolReader: BoundedNdjsonReader | null = null
+  private speechDelivery: SpeechDeliveryCoordinator | null = null
+  private speechAudioInput: Readable | null = null
+  private speechDeliveryDisabled = false
   private handshakeRequestId: string | null = null
   private initializeRequestId: string | null = null
   private handshakeTimeout: ReturnType<typeof setTimeout> | null = null
@@ -325,6 +335,7 @@ export class BackendProcess {
   constructor(
     private readonly projectRoot: string,
     private readonly emitToRenderer: EventSink,
+    private readonly speechPlayback: TrustedSpeechPlaybackOwner,
   ) {}
 
   /** Return an immutable renderer snapshot including the active generation ID. */
@@ -393,6 +404,8 @@ export class BackendProcess {
     const sessionToken = randomBytes(32).toString('base64url')
     this.pendingRequests.clear()
     this.timedOutVoiceCaptureRequestIds.clear()
+    this.disposeSpeechDelivery()
+    this.speechDeliveryDisabled = false
     this.updateSnapshot({
       status: 'starting',
       protocolName: undefined,
@@ -422,13 +435,38 @@ export class BackendProcess {
             ? {}
             : { ELYSIA_MODEL_OVERRIDE: modelName }),
         },
-        stdio: ['pipe', 'pipe', 'pipe'],
+        // fd3 is a dedicated binary-only channel. Keeping it out of stdout
+        // prevents WAV bytes from ever entering NDJSON or renderer events.
+        stdio: ['pipe', 'pipe', 'pipe', 'pipe'],
         windowsHide: true,
       },
-    )
+    ) as ChildProcessWithoutNullStreams
 
     this.child = child
     child.stderr.setEncoding('utf8')
+    const audioInput = child.stdio[3]
+    if (!(audioInput instanceof Readable)) {
+      child.kill()
+      this.clearChild(child)
+      this.fail(BACKEND_SPEECH_FAILURE_MESSAGE)
+      return
+    }
+    this.speechAudioInput = audioInput
+    this.speechDelivery = new SpeechDeliveryCoordinator(
+      audioInput,
+      this.speechPlayback,
+      () => {
+        if (this.child === child && !this.expectedExit) {
+          this.disableSpeechDelivery()
+        }
+      },
+      undefined,
+      () => {
+        if (this.child === child) {
+          this.disableSpeechDelivery()
+        }
+      },
+    )
 
     // Decode only after a byte-counted newline is found. Node's readline
     // buffers an unterminated line without a ceiling, which would let a broken
@@ -547,18 +585,23 @@ export class BackendProcess {
     }
     const message = trimProtocolBlankCharacters(request.message)
 
-    return {
-      requestId: this.sendRequest('chat.stream', {
-        chatId: request.chatId,
-        message,
-        attachmentIds: [...request.attachmentIds],
-      }, request.chatId, {
-        generation: {
-          kind: 'send',
-          userText: message,
-        },
-      }),
+    const requestId = this.sendRequest('chat.stream', {
+      chatId: request.chatId,
+      message,
+      attachmentIds: [...request.attachmentIds],
+    }, request.chatId, {
+      generation: {
+        kind: 'send',
+        userText: message,
+      },
+    })
+    if (
+      this.snapshot.capabilities.includes('voice.speech')
+      && !this.speechDeliveryDisabled
+    ) {
+      this.speechDelivery?.startTurn(requestId, request.chatId)
     }
+    return { requestId }
   }
 
   /** Restart with an installed model and restore the prior Chat when possible. */
@@ -657,6 +700,7 @@ export class BackendProcess {
     )
     const child = this.child
     if (child === null) {
+      this.disposeSpeechDelivery()
       this.updateSnapshot({
         status: 'stopped',
         protocolName: undefined,
@@ -673,6 +717,11 @@ export class BackendProcess {
       'Python Backend is stopping before the action completed.',
     )
     this.expectedExit = true
+    // The child may already have crossed its speech callback boundary. Mark
+    // delivery unavailable before closing fd3 so any late correlation-only
+    // metadata is discarded during the expected shutdown instead of turning
+    // a healthy text teardown into a protocol failure.
+    this.disableSpeechDelivery()
     this.updateSnapshot({
       status: 'stopping',
       error: undefined,
@@ -767,26 +816,31 @@ export class BackendProcess {
       throw new Error('Retry message is invalid.')
     }
 
-    return {
-      requestId: this.sendRequest(
-        'chat.retry',
-        {
-          chatId: request.chatId,
+    const requestId = this.sendRequest(
+      'chat.retry',
+      {
+        chatId: request.chatId,
+        userMessageId: request.userMessageId,
+        assistantMessageId: request.assistantMessageId,
+        ...(message === undefined ? {} : { message }),
+      },
+      request.chatId,
+      {
+        generation: {
+          kind: 'retry',
+          ...(message === undefined ? {} : { userText: message }),
           userMessageId: request.userMessageId,
           assistantMessageId: request.assistantMessageId,
-          ...(message === undefined ? {} : { message }),
         },
-        request.chatId,
-        {
-          generation: {
-            kind: 'retry',
-            ...(message === undefined ? {} : { userText: message }),
-            userMessageId: request.userMessageId,
-            assistantMessageId: request.assistantMessageId,
-          },
-        },
-      ),
+      },
+    )
+    if (
+      this.snapshot.capabilities.includes('voice.speech')
+      && !this.speechDeliveryDisabled
+    ) {
+      this.speechDelivery?.startTurn(requestId, request.chatId)
     }
+    return { requestId }
   }
 
   /** Ask Python to stop one currently tracked generation request. */
@@ -833,6 +887,10 @@ export class BackendProcess {
       return Promise.reject(
         new Error(`A stop request for this ${actionName} is already in progress.`),
       )
+    }
+
+    if (CHAT_GENERATION_METHODS.has(target.method)) {
+      this.speechDelivery?.cancelTurn(requestId)
     }
 
     return new Promise<void>((resolve, reject) => {
@@ -1586,6 +1644,7 @@ export class BackendProcess {
         CHAT_GENERATION_METHODS.has(pending.method)
         && pending.chatId !== undefined
       ) {
+        this.speechDelivery?.cancelTurn(message.id)
         this.emitToRenderer({
           type: 'chat-error',
           requestId: message.id,
@@ -2044,21 +2103,35 @@ export class BackendProcess {
   }
 
   private handleBackendEvent(message: ProtocolEventMessage): void {
-    if (!this.pendingRequests.has(message.requestId)) {
-      this.protocolFailure('Backend event has no matching request.')
-      return
-    }
     if (
       message.event === 'voice.speech.clip'
       || message.event === 'voice.speech.failure'
       || message.event === 'voice.speech.terminal'
     ) {
-      // Control metadata is not useful without its private fd3 frame and ACK
-      // state. Until that owner is wired here, forwarding any speech event
-      // would let a Backend create an unpaired or misleading Renderer state.
-      this.protocolFailure(
-        'Backend speech event arrived before audio delivery was enabled.',
-      )
+      const delivery = this.speechDelivery
+      if (
+        this.speechDeliveryDisabled
+        && this.snapshot.capabilities.includes('voice.speech')
+      ) {
+        // A closed or poisoned fd3 disables speech for this child. Continue
+        // text Chat while discarding all later correlation-only speech events.
+        return
+      }
+      if (
+        delivery === null
+        || !this.snapshot.capabilities.includes('voice.speech')
+      ) {
+        this.protocolFailure(BACKEND_SPEECH_FAILURE_MESSAGE)
+        return
+      }
+      // Speech metadata remains in Electron main. The coordinator forwards WAV
+      // bytes only to preload-owned playback and releases fd3 only after that
+      // trusted owner settles, including when Chat text has already completed.
+      delivery.acceptEvent(message)
+      return
+    }
+    if (!this.pendingRequests.has(message.requestId)) {
+      this.protocolFailure('Backend event has no matching request.')
       return
     }
     if (
@@ -2075,6 +2148,9 @@ export class BackendProcess {
       ) {
         this.protocolFailure('Backend Chat lifecycle event is invalid.')
         return
+      }
+      if (message.event === 'chat.cancelled') {
+        this.speechDelivery?.cancelTurn(message.requestId)
       }
       this.emitToRenderer({
         type: 'protocol-event',
@@ -2145,6 +2221,27 @@ export class BackendProcess {
     this.fail(reason)
   }
 
+  private disableSpeechDelivery(): void {
+    if (this.speechDeliveryDisabled) {
+      return
+    }
+    this.speechDeliveryDisabled = true
+    this.disposeSpeechDelivery()
+  }
+
+  private disposeSpeechDelivery(): void {
+    const delivery = this.speechDelivery
+    const audioInput = this.speechAudioInput
+    this.speechDelivery = null
+    this.speechAudioInput = null
+    delivery?.dispose()
+    if (audioInput !== null && !audioInput.destroyed) {
+      // Closing the read end releases a Python writer blocked behind playback
+      // backpressure before shutdown waits on the child process.
+      audioInput.destroy()
+    }
+  }
+
   private clearChild(child: ChildProcessWithoutNullStreams): void {
     if (this.child !== child) {
       return
@@ -2152,6 +2249,7 @@ export class BackendProcess {
 
     this.protocolReader?.dispose()
     this.protocolReader = null
+    this.disposeSpeechDelivery()
     this.child = null
     this.handshakeRequestId = null
     this.initializeRequestId = null
@@ -2288,6 +2386,7 @@ export class BackendProcess {
   private protocolFailure(message: string): void {
     this.lastDiagnostic = message
     this.fail(message)
+    this.disposeSpeechDelivery()
     // Stop consuming immediately even if several frames arrived in one stdout
     // chunk. The first invalid sequence is terminal and later bytes are no
     // longer authenticated protocol input.

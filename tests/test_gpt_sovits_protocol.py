@@ -12,6 +12,8 @@ import pytest
 
 from scripts.gpt_sovits_protocol import (
     FrameKind,
+    MANAGED_RUNTIME_IMPORT_RELATIVE_ENTRIES,
+    MANAGED_RUNTIME_MANIFEST_RELATIVE_FILES,
     PROTOCOL_HEADER_SIZE,
     PROTOCOL_MAGIC,
     PROTOCOL_MAX_JSON_DEPTH,
@@ -30,6 +32,25 @@ from scripts.gpt_sovits_protocol import (
 
 
 _HEADER = struct.Struct(">8sBBHIIQ")
+
+
+def test_managed_runtime_layout_contract_is_ordered_and_closed() -> None:
+    """Keep parent and worker deployment identities on one immutable source."""
+
+    roles = tuple(role for role, _path in MANAGED_RUNTIME_MANIFEST_RELATIVE_FILES)
+    paths = tuple(path for _role, path in MANAGED_RUNTIME_MANIFEST_RELATIVE_FILES)
+
+    assert type(MANAGED_RUNTIME_MANIFEST_RELATIVE_FILES) is tuple
+    assert type(MANAGED_RUNTIME_IMPORT_RELATIVE_ENTRIES) is tuple
+    assert len(roles) == len(set(roles))
+    assert len(paths) == len(set(paths))
+    assert roles[0] == "runtime-python"
+    assert "runtime/_sqlite3.pyd" in paths
+    assert MANAGED_RUNTIME_IMPORT_RELATIVE_ENTRIES[:2] == (
+        "runtime/python39.zip",
+        "runtime",
+    )
+    assert all("\\" not in path and not path.startswith("/") for path in paths)
 
 
 def _header(
