@@ -47,6 +47,7 @@ import {
 } from './bounded-ndjson.js'
 import {
   SpeechDeliveryCoordinator,
+  type SpeechDeliveryStatus,
   type TrustedSpeechPlaybackOwner,
 } from './speech-delivery.js'
 import {
@@ -371,7 +372,11 @@ export class BackendProcess {
         } satisfies ActiveChatGeneration
     return {
       ...this.snapshot,
-      capabilities: [...this.snapshot.capabilities],
+      capabilities: this.speechDeliveryDisabled
+        ? this.snapshot.capabilities.filter(
+            (capability) => capability !== 'voice.speech',
+          )
+        : [...this.snapshot.capabilities],
       models: [...this.snapshot.models],
       ...(activeGeneration === undefined ? {} : { activeGeneration }),
     }
@@ -460,7 +465,11 @@ export class BackendProcess {
           this.disableSpeechDelivery()
         }
       },
-      undefined,
+      (status) => {
+        if (this.child === child) {
+          this.emitSpeechDeliveryStatus(status)
+        }
+      },
       () => {
         if (this.child === child) {
           this.disableSpeechDelivery()
@@ -850,6 +859,16 @@ export class BackendProcess {
       CHAT_GENERATION_METHODS,
       'generation',
     )
+  }
+
+  /** Stop trusted speech playback independently of Chat request lifetime. */
+  stopSpeechPlayback(requestId: string): void {
+    this.speechDelivery?.cancelTurn(requestId)
+  }
+
+  /** Stop the current trusted speech turn after renderer ownership is reset. */
+  stopCurrentSpeechPlayback(): void {
+    this.speechDelivery?.cancelCurrentTurn()
   }
 
   /** Ask Python to stop one currently tracked transcription request. */
@@ -2227,6 +2246,29 @@ export class BackendProcess {
     }
     this.speechDeliveryDisabled = true
     this.disposeSpeechDelivery()
+    // Keep the negotiated capability internally so later private metadata is
+    // discarded, while immediately telling Renderer not to await playback.
+    this.updateSnapshot({})
+  }
+
+  private emitSpeechDeliveryStatus(status: SpeechDeliveryStatus): void {
+    if (status.kind === 'terminal') {
+      this.emitToRenderer({
+        type: 'voice-speech-status',
+        kind: status.kind,
+        requestId: status.requestId,
+        chatId: status.chatId,
+        state: status.state,
+      })
+      return
+    }
+    this.emitToRenderer({
+      type: 'voice-speech-status',
+      kind: status.kind,
+      requestId: status.requestId,
+      chatId: status.chatId,
+      sequence: status.sequence,
+    })
   }
 
   private disposeSpeechDelivery(): void {

@@ -402,6 +402,12 @@ const desktopApi: DesktopApi = {
       requestId,
     ) as Promise<void>,
 
+  stopSpeechPlayback: (requestId: string) =>
+    ipcRenderer.invoke(
+      'voice:stop-speech-playback',
+      requestId,
+    ) as Promise<void>,
+
   copyText: (text: string) =>
     ipcRenderer.invoke(
       'desktop:copy-text',

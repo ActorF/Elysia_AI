@@ -69,6 +69,12 @@ import {
 } from './voice/audio-devices.ts'
 import { describeTranscriptionReadiness } from './voice/transcription-readiness.ts'
 import type { CompletedVoiceSegment } from './voice/voice-activity-detector.ts'
+import {
+  VoiceSessionController,
+  type VoiceSessionCancellation,
+  type VoiceSessionOwner,
+  type VoiceSessionSnapshot,
+} from './voice/voice-session-controller.ts'
 
 const COMPACT_SHELL_QUERY = '(max-width: 52rem)'
 const CHAT_DRAFTS_STORAGE_KEY = 'elysia.chat-drafts.v1'
@@ -152,10 +158,9 @@ interface PersistedRetryEditDraft {
  * cancelRequested defers cancellation until that request ID becomes known.
  * This ref deliberately contains identifiers and flags only, never PCM/Base64.
  */
-interface VoiceTranscriptionOperation {
+interface VoiceTranscriptionOperation extends VoiceSessionOwner {
   token: number
   sessionId: string
-  chatId: string
   requestId: string | null
   cancelRequested: boolean
   cancelSent: boolean
@@ -517,6 +522,47 @@ interface InFlightTurn {
   phase: GenerationPhase
 }
 
+interface ChatSendIntent {
+  readonly source: 'composer' | 'voice'
+  readonly operationId: string
+  readonly chatId: string
+  readonly projectId: string | null
+  readonly message: string
+  readonly attachmentItems: AttachmentItem[]
+  readonly consumeComposerDraft: boolean
+}
+
+type VoiceSpeechStatusEvent = Extract<
+  BackendEvent,
+  { readonly type: 'voice-speech-status' }
+>
+
+interface PendingVoiceSpeechStatusBuffer {
+  readonly epoch: number
+  readonly operationId: string
+  readonly events: VoiceSpeechStatusEvent[]
+  overflowed: boolean
+}
+
+interface ManagedSpeechTurn {
+  readonly operationId: string
+  readonly chatId: string
+  readonly projectId: string | null
+  requestId: string | null
+  stopRequested: boolean
+  readonly stoppedRequestIds: Set<string>
+}
+
+const MAX_PENDING_VOICE_SPEECH_EVENTS = 64
+
+function ownerFromVoiceSession(
+  snapshot: VoiceSessionSnapshot,
+): VoiceSessionOwner | null {
+  return snapshot.active && snapshot.binding !== null
+    ? { ...snapshot.binding, epoch: snapshot.epoch }
+    : null
+}
+
 interface AttachmentActivity {
   adding: boolean
   error: string | null
@@ -735,8 +781,15 @@ function App() {
   )
   const [voiceTranscription, setVoiceTranscription]
     = useState<VoiceTranscriptionState | null>(null)
+  const [voiceSessionController] = useState(
+    () => new VoiceSessionController(),
+  )
+  const [voiceSession, setVoiceSession] = useState(
+    () => voiceSessionController.getSnapshot(),
+  )
   const [voiceCaptureSubmissionError, setVoiceCaptureSubmissionError]
     = useState<string | null>(null)
+  const [voiceSpeechWarning, setVoiceSpeechWarning] = useState<string | null>(null)
   const [showArchived, setShowArchived] = useState(false)
   const [draftsByChat, setDraftsByChat] = useState<Record<string, string>>(
     loadChatDrafts,
@@ -767,6 +820,7 @@ function App() {
   const [compactShell, setCompactShell] = useState(isCompactShell)
   const [sidebarOpen, setSidebarOpen] = useState(() => !isCompactShell())
   const activeChatIdRef = useRef<string | undefined>(snapshot.chatId)
+  const activeChatProjectIdRef = useRef<string | null>(null)
   const activeViewRef = useRef<AppView>('chat')
   const pendingChatSendRef = useRef<PersistedPendingChatSend | null>(
     pendingChatSend,
@@ -810,6 +864,9 @@ function App() {
   const streamingRef = useRef(false)
   const generationReconcilePendingRef = useRef(false)
   const inFlightTurnRef = useRef<InFlightTurn | null>(null)
+  const pendingVoiceSpeechStatusRef
+    = useRef<PendingVoiceSpeechStatusBuffer | null>(null)
+  const managedSpeechTurnRef = useRef<ManagedSpeechTurn | null>(null)
   const panelOperationRef = useRef(0)
   const panelCommittedOpenRef = useRef(false)
   const panelTargetOpenRef = useRef(false)
@@ -830,6 +887,7 @@ function App() {
   }, [draftsByChat])
 
   const activeChatId = chatState?.activeChat.chatId
+  const activeChatProjectId = chatState?.activeChat.projectId ?? null
   const activeChatScope = useMemo<AttachmentScope>(() => ({
     kind: 'chat',
     id: activeChatId ?? 'chat_unavailable',
@@ -980,7 +1038,133 @@ function App() {
       })
   }, [desktopApi])
 
-  const discardVoiceOperation = useCallback((): void => {
+  const beginManagedSpeechTurn = useCallback((
+    operationId: string,
+    chatId: string,
+    projectId: string | null,
+    enabled: boolean,
+  ): void => {
+    managedSpeechTurnRef.current = enabled
+      ? {
+          operationId,
+          chatId,
+          projectId,
+          requestId: null,
+          stopRequested: false,
+          stoppedRequestIds: new Set<string>(),
+        }
+      : null
+  }, [])
+
+  const stopManagedSpeechRequest = useCallback(async (
+    turn: ManagedSpeechTurn,
+    requestId: string,
+  ): Promise<boolean> => {
+    if (turn.stoppedRequestIds.has(requestId)) {
+      return true
+    }
+    if (desktopApi === undefined) {
+      return false
+    }
+    turn.stoppedRequestIds.add(requestId)
+    try {
+      await desktopApi.stopSpeechPlayback(requestId)
+      return true
+    } catch {
+      // A transient bridge failure remains retryable at the next ownership
+      // boundary; do not claim that playback stopped when it may still run.
+      turn.stoppedRequestIds.delete(requestId)
+      return false
+    }
+  }, [desktopApi])
+
+  const acknowledgeManagedSpeechTurn = useCallback((
+    operationId: string,
+    requestId: string,
+  ): boolean => {
+    const turn = managedSpeechTurnRef.current
+    if (
+      turn === null
+      || turn.operationId !== operationId
+      || (turn.requestId !== null && turn.requestId !== requestId)
+    ) {
+      return false
+    }
+    turn.requestId = requestId
+    if (turn.stopRequested) {
+      void stopManagedSpeechRequest(turn, requestId)
+    }
+    return true
+  }, [stopManagedSpeechRequest])
+
+  const requestManagedSpeechStop = useCallback((
+    operationId: string,
+    requestId: string | null,
+  ): void => {
+    const turn = managedSpeechTurnRef.current
+    if (turn !== null && turn.operationId === operationId) {
+      turn.stopRequested = true
+      const knownRequestId = requestId ?? turn.requestId
+      if (knownRequestId !== null) {
+        void stopManagedSpeechRequest(turn, knownRequestId)
+      }
+      return
+    }
+    if (requestId !== null && desktopApi !== undefined) {
+      void desktopApi.stopSpeechPlayback(requestId).catch(() => undefined)
+    }
+  }, [desktopApi, stopManagedSpeechRequest])
+
+  const stopManagedSpeechForBoundary = useCallback(async (): Promise<boolean> => {
+    const turn = managedSpeechTurnRef.current
+    if (turn === null) {
+      return true
+    }
+    turn.stopRequested = true
+    if (turn.requestId === null) {
+      return false
+    }
+    return stopManagedSpeechRequest(turn, turn.requestId)
+  }, [stopManagedSpeechRequest])
+
+  const observeManagedSpeechStatus = useCallback((
+    event: VoiceSpeechStatusEvent,
+  ): void => {
+    const turn = managedSpeechTurnRef.current
+    if (turn === null || turn.chatId !== event.chatId) {
+      return
+    }
+    if (
+      event.kind === 'terminal'
+      && turn.requestId === event.requestId
+    ) {
+      managedSpeechTurnRef.current = null
+      return
+    }
+    if (
+      turn.stopRequested
+      && (turn.requestId === null || turn.requestId === event.requestId)
+    ) {
+      // Hang-up may precede the invoke acknowledgement. A validated speech
+      // status can safely stop audio immediately, but it never establishes
+      // controller ownership; the later Chat acknowledgement must still match.
+      void stopManagedSpeechRequest(turn, event.requestId)
+    }
+  }, [stopManagedSpeechRequest])
+
+  const clearManagedSpeechTurn = useCallback((
+    operationId: string,
+  ): void => {
+    if (managedSpeechTurnRef.current?.operationId === operationId) {
+      managedSpeechTurnRef.current = null
+    }
+  }, [])
+
+  const clearVoiceOperation = useCallback((
+    cancellation: VoiceSessionCancellation,
+  ): void => {
+    pendingVoiceSpeechStatusRef.current = null
+    setVoiceSpeechWarning(null)
     const operation = voiceTranscriptionOperationRef.current
     ++voiceCaptureOperationRef.current
     if (operation !== null && !operation.terminal) {
@@ -988,18 +1172,209 @@ function App() {
     } else {
       voiceTranscriptionOperationRef.current = null
     }
+    if (cancellation.chatOperationId !== null) {
+      requestManagedSpeechStop(
+        cancellation.chatOperationId,
+        cancellation.chatRequestId,
+      )
+    }
     setVoiceTranscription(null)
-  }, [cancelVoiceTranscription])
+  }, [cancelVoiceTranscription, requestManagedSpeechStop])
+
+  const discardVoiceOperation = useCallback((): void => {
+    clearVoiceOperation(voiceSessionController.cancel())
+  }, [clearVoiceOperation, voiceSessionController])
+
+  const hangUpVoiceSession = useCallback((): void => {
+    clearVoiceOperation(voiceSessionController.hangUp())
+  }, [clearVoiceOperation, voiceSessionController])
+
+  const settleVoiceTurnUiIfNeeded = useCallback((): void => {
+    const session = voiceSessionController.getSnapshot()
+    if (session.phase !== 'idle' || session.lastTurn === null) {
+      return
+    }
+    ++voiceCaptureOperationRef.current
+    voiceTranscriptionOperationRef.current = null
+    setVoiceTranscription(null)
+    setVoiceCapture(EMPTY_AUDIO_CAPTURE_SNAPSHOT)
+    setVoiceCaptureSubmissionError(null)
+  }, [voiceSessionController])
+
+  const acceptVoiceSpeechStatus = useCallback((
+    event: VoiceSpeechStatusEvent,
+  ): boolean => {
+    const session = voiceSessionController.getSnapshot()
+    const owner = ownerFromVoiceSession(session)
+    if (
+      owner === null
+      || session.chatOperationId === null
+      || session.chatRequestId === null
+      || session.chatRequestId !== event.requestId
+    ) {
+      return false
+    }
+    const accepted = event.kind === 'terminal'
+      ? voiceSessionController.acceptSpeechStatus({
+          ...owner,
+          operationId: session.chatOperationId,
+          requestId: event.requestId,
+          chatId: event.chatId,
+          kind: 'terminal',
+          state: event.state,
+        })
+      : voiceSessionController.acceptSpeechStatus({
+          ...owner,
+          operationId: session.chatOperationId,
+          requestId: event.requestId,
+          chatId: event.chatId,
+          kind: event.kind,
+          sequence: event.sequence,
+        })
+    if (accepted) {
+      settleVoiceTurnUiIfNeeded()
+    }
+    return accepted
+  }, [settleVoiceTurnUiIfNeeded, voiceSessionController])
+
+  const flushPendingVoiceSpeechStatus = useCallback((
+    owner: VoiceSessionOwner,
+    operationId: string,
+    requestId: string,
+  ): void => {
+    const pending = pendingVoiceSpeechStatusRef.current
+    pendingVoiceSpeechStatusRef.current = null
+    if (
+      pending === null
+      || pending.epoch !== owner.epoch
+      || pending.operationId !== operationId
+    ) {
+      return
+    }
+    if (pending.overflowed) {
+      if (voiceSessionController.acceptSpeechUnavailable({
+        ...owner,
+        operationId,
+      })) {
+        void desktopApi?.stopSpeechPlayback(requestId).catch(() => undefined)
+        settleVoiceTurnUiIfNeeded()
+      }
+      return
+    }
+    for (const event of pending.events) {
+      if (event.requestId === requestId) {
+        acceptVoiceSpeechStatus(event)
+      }
+    }
+  }, [
+    acceptVoiceSpeechStatus,
+    desktopApi,
+    settleVoiceTurnUiIfNeeded,
+    voiceSessionController,
+  ])
+
+  const routeVoiceSpeechStatus = useCallback((
+    event: VoiceSpeechStatusEvent,
+  ): void => {
+    const session = voiceSessionController.getSnapshot()
+    const owner = ownerFromVoiceSession(session)
+    if (owner === null || session.chatOperationId === null) {
+      return
+    }
+    if (session.chatRequestId !== null) {
+      // Chat progress can establish the request ID before the invoke promise
+      // resolves. Drain older statuses first so `played` cannot overtake its
+      // buffered `playing` event in that interleaving.
+      flushPendingVoiceSpeechStatus(
+        owner,
+        session.chatOperationId,
+        session.chatRequestId,
+      )
+      acceptVoiceSpeechStatus(event)
+      return
+    }
+
+    let pending = pendingVoiceSpeechStatusRef.current
+    if (
+      pending === null
+      || pending.epoch !== owner.epoch
+      || pending.operationId !== session.chatOperationId
+    ) {
+      pending = {
+        epoch: owner.epoch,
+        operationId: session.chatOperationId,
+        events: [],
+        overflowed: false,
+      }
+      pendingVoiceSpeechStatusRef.current = pending
+    }
+    if (pending.overflowed) {
+      return
+    }
+    if (pending.events.length >= MAX_PENDING_VOICE_SPEECH_EVENTS) {
+      // A normal IPC acknowledgement races only a handful of events. Treat a
+      // larger burst as unavailable speech instead of retaining unbounded data
+      // or letting an event choose ownership for the pending Chat turn.
+      pending.events.length = 0
+      pending.overflowed = true
+      return
+    }
+    pending.events.push(event)
+  }, [
+    acceptVoiceSpeechStatus,
+    flushPendingVoiceSpeechStatus,
+    voiceSessionController,
+  ])
+
+  const reconcileVoiceSpeechCapability = useCallback((
+    backendSnapshot: BackendSnapshot,
+  ): void => {
+    if (backendSnapshot.capabilities.includes('voice.speech')) {
+      return
+    }
+    managedSpeechTurnRef.current = null
+    const session = voiceSessionController.getSnapshot()
+    const owner = ownerFromVoiceSession(session)
+    if (
+      owner === null
+      || session.chatOperationId === null
+      || !session.speechExpected
+    ) {
+      return
+    }
+    if (voiceSessionController.acceptSpeechUnavailable({
+      ...owner,
+      operationId: session.chatOperationId,
+    })) {
+      pendingVoiceSpeechStatusRef.current = null
+      setVoiceSpeechWarning(
+        'Speech playback became unavailable. The text reply will continue safely.'
+      )
+      settleVoiceTurnUiIfNeeded()
+    }
+  }, [settleVoiceTurnUiIfNeeded, voiceSessionController])
 
   const closeCallPreview = useCallback((): void => {
-    discardVoiceOperation()
+    hangUpVoiceSession()
     void audioCaptureControllerRef.current?.cancel()
     setVoiceCaptureSubmissionError(null)
+    setVoiceSpeechWarning(null)
     setCallPreviewOpen(false)
     window.requestAnimationFrame(() => {
       callButtonRef.current?.focus()
     })
-  }, [discardVoiceOperation])
+  }, [hangUpVoiceSession])
+
+  useEffect(() => {
+    const unsubscribe = voiceSessionController.subscribe(setVoiceSession)
+    setVoiceSession(voiceSessionController.getSnapshot())
+    return () => {
+      unsubscribe()
+      // React StrictMode deliberately replays effect cleanup and setup in
+      // development. The controller belongs to component state, so disposing
+      // it here would poison the same instance before the replayed setup.
+    }
+  }, [voiceSessionController])
 
   useEffect(() => {
     const controller = new AudioDeviceController()
@@ -1037,11 +1412,18 @@ function App() {
     // its own safety timeout.
     ++microphoneActionOperationRef.current
     audioDeviceControllerRef.current?.stopAll()
-    discardVoiceOperation()
+    void stopManagedSpeechForBoundary()
+    hangUpVoiceSession()
     void audioCaptureControllerRef.current?.cancel()
     setVoiceCaptureSubmissionError(null)
     setCallPreviewOpen(false)
-  }, [activeChatId, activeView, discardVoiceOperation])
+  }, [
+    activeChatId,
+    activeChatProjectId,
+    activeView,
+    hangUpVoiceSession,
+    stopManagedSpeechForBoundary,
+  ])
 
   useEffect(() => {
     if (snapshot.status === 'ready' && !generationBusy) {
@@ -1054,15 +1436,29 @@ function App() {
         void controller.cancel()
       }
     }
-    // A final/error result is already PCM-free and no longer owns Backend
-    // capacity. Preserve it across a disconnect so the user can still recover
-    // edited text into this Chat's durable draft; navigation remains the hard
-    // privacy boundary handled by the separate active-view effect above.
-    if (voiceTranscriptionOperationRef.current?.terminal) {
+    const voicePhase = voiceSessionController.getSnapshot().phase
+    // A reviewed transcript is already PCM-free and can survive a disconnect.
+    // A Voice-originated Chat turn may coexist with its own generation while
+    // Backend failure still invalidates that turn through the branch below.
+    if (
+      voiceTranscriptionOperationRef.current?.terminal
+      && (
+        voicePhase === 'transcribing'
+        || (
+          snapshot.status === 'ready'
+          && (voicePhase === 'thinking' || voicePhase === 'speaking')
+        )
+      )
+    ) {
       return
     }
     discardVoiceOperation()
-  }, [discardVoiceOperation, generationBusy, snapshot.status])
+  }, [
+    discardVoiceOperation,
+    generationBusy,
+    snapshot.status,
+    voiceSessionController,
+  ])
 
   const acceptSnapshot = useCallback((nextSnapshot: BackendSnapshot): boolean => {
     if (nextSnapshot.revision < acceptedSnapshotRevisionRef.current) {
@@ -1112,6 +1508,7 @@ function App() {
       )
     }
     activeChatIdRef.current = nextState.activeChat.chatId
+    activeChatProjectIdRef.current = nextState.activeChat.projectId
     setChatState(nextState)
     setMessages(presentChatMessages(nextState.activeChat))
   }, [])
@@ -1821,11 +2218,25 @@ function App() {
       generationSummary?.messageCount ?? 0,
       knownChatMessageCountsRef.current.get(activeGeneration.chatId) ?? 0,
     )
+    const resumedOperationId = `resumed:${activeGeneration.requestId}`
+    // Snapshot reconciliation must rebuild speech ownership as well as the
+    // visible Chat turn. Otherwise a Renderer state reset could leave trusted
+    // playback running after text completes with no boundary able to stop it.
+    beginManagedSpeechTurn(
+      resumedOperationId,
+      activeGeneration.chatId,
+      activeChat?.projectId ?? generationSummary?.projectId ?? null,
+      snapshot.capabilities.includes('voice.speech'),
+    )
+    acknowledgeManagedSpeechTurn(
+      resumedOperationId,
+      activeGeneration.requestId,
+    )
 
     updateInFlightTurn(() => ({
       attachments: [],
       baseMessageCount,
-      operationId: `resumed:${activeGeneration.requestId}`,
+      operationId: resumedOperationId,
       requestId: activeGeneration.requestId,
       chatId: activeGeneration.chatId,
       kind: activeGeneration.kind,
@@ -1844,8 +2255,11 @@ function App() {
     setStreaming(true)
   }, [
     acceptChatState,
+    acknowledgeManagedSpeechTurn,
+    beginManagedSpeechTurn,
     chatState,
     desktopApi,
+    snapshot.capabilities,
     snapshot.activeGeneration,
     snapshot.status,
     updateInFlightTurn,
@@ -2249,6 +2663,7 @@ function App() {
         if (!acceptSnapshot(nextSnapshot)) {
           return
         }
+        reconcileVoiceSpeechCapability(nextSnapshot)
         if (
           nextSnapshot.status !== 'ready'
           && generationIsBusy(inFlightTurnRef.current)
@@ -2277,6 +2692,7 @@ function App() {
         if (!acceptSnapshot(event.snapshot)) {
           return
         }
+        reconcileVoiceSpeechCapability(event.snapshot)
         if (
           event.snapshot.status !== 'ready'
           && generationIsBusy(inFlightTurnRef.current)
@@ -2298,11 +2714,34 @@ function App() {
           || operation.sessionId !== event.sessionId
           || operation.chatId !== event.chatId
           || activeChatIdRef.current !== event.chatId
+          || activeChatProjectIdRef.current !== operation.projectId
           || (
             operation.requestId !== null
             && operation.requestId !== event.requestId
           )
         ) {
+          return
+        }
+        const accepted = operation.cancelRequested
+          ? voiceSessionController.acceptTranscriptionFailure({
+              epoch: operation.epoch,
+              chatId: operation.chatId,
+              projectId: operation.projectId,
+              captureSessionId: event.sessionId,
+              requestId: event.requestId,
+              outcome: 'cancelled',
+            })
+          : voiceSessionController.acceptTranscriptionFinal({
+              epoch: operation.epoch,
+              chatId: operation.chatId,
+              projectId: operation.projectId,
+              captureSessionId: event.sessionId,
+              requestId: event.requestId,
+              text: event.text,
+              language: event.language,
+              languageProbability: event.languageProbability,
+            })
+        if (!accepted) {
           return
         }
         operation.requestId = event.requestId
@@ -2334,6 +2773,7 @@ function App() {
           || operation.sessionId !== event.sessionId
           || operation.chatId !== event.chatId
           || activeChatIdRef.current !== event.chatId
+          || activeChatProjectIdRef.current !== operation.projectId
           || (
             operation.requestId !== null
             && operation.requestId !== event.requestId
@@ -2341,10 +2781,20 @@ function App() {
         ) {
           return
         }
-        operation.requestId = event.requestId
-        operation.terminal = true
         const cancelled = operation.cancelRequested
           || event.code === 'request.cancelled'
+        if (!voiceSessionController.acceptTranscriptionFailure({
+          epoch: operation.epoch,
+          chatId: operation.chatId,
+          projectId: operation.projectId,
+          captureSessionId: event.sessionId,
+          requestId: event.requestId,
+          outcome: cancelled ? 'cancelled' : 'failed',
+        })) {
+          return
+        }
+        operation.requestId = event.requestId
+        operation.terminal = true
         setVoiceCaptureSubmissionError(null)
         setVoiceTranscription({
           token: operation.token,
@@ -2361,6 +2811,12 @@ function App() {
         return
       }
 
+      if (event.type === 'voice-speech-status') {
+        observeManagedSpeechStatus(event)
+        routeVoiceSpeechStatus(event)
+        return
+      }
+
       if (event.type === 'chat-chunk') {
         const currentTurn = inFlightTurnRef.current
         if (
@@ -2373,6 +2829,19 @@ function App() {
           || !generationIsBusy(currentTurn)
         ) {
           return
+        }
+        acknowledgeManagedSpeechTurn(currentTurn.operationId, event.requestId)
+        const voiceSession = voiceSessionController.getSnapshot()
+        const voiceOwner = ownerFromVoiceSession(voiceSession)
+        if (
+          voiceOwner !== null
+          && voiceSession.chatOperationId === currentTurn.operationId
+        ) {
+          voiceSessionController.acceptChatProgress({
+            ...voiceOwner,
+            operationId: currentTurn.operationId,
+            requestId: event.requestId,
+          })
         }
         const operationId = currentTurn.operationId
         updateInFlightTurn((current) => current?.operationId === operationId
@@ -2400,6 +2869,26 @@ function App() {
             currentTurn.requestId === null
             || event.requestId === currentTurn.requestId
           )
+        if (currentTurnMatches) {
+          acknowledgeManagedSpeechTurn(
+            currentTurn.operationId,
+            event.requestId,
+          )
+          const voiceSession = voiceSessionController.getSnapshot()
+          const voiceOwner = ownerFromVoiceSession(voiceSession)
+          if (
+            voiceOwner !== null
+            && voiceSession.chatOperationId === currentTurn.operationId
+            && voiceSessionController.acceptChatTerminal({
+              ...voiceOwner,
+              operationId: currentTurn.operationId,
+              requestId: event.requestId,
+              outcome: 'completed',
+            })
+          ) {
+            settleVoiceTurnUiIfNeeded()
+          }
+        }
         const pendingSendMatches = pendingSend !== null
           && event.chatId === pendingSend.chatId
           && event.requestId === pendingSend.requestId
@@ -2459,6 +2948,7 @@ function App() {
         ) {
           return
         }
+        acknowledgeManagedSpeechTurn(currentTurn.operationId, event.requestId)
         const operationId = currentTurn.operationId
         updateInFlightTurn((current) => current?.operationId === operationId
           ? {
@@ -2534,9 +3024,36 @@ function App() {
         ) {
           return
         }
+        const voiceSession = voiceSessionController.getSnapshot()
+        const voiceOwner = ownerFromVoiceSession(voiceSession)
+        const voiceTurnSettled = (
+          voiceOwner !== null
+          && voiceSession.chatOperationId === currentTurn.operationId
+          && voiceSessionController.acceptChatTerminal({
+            ...voiceOwner,
+            operationId: currentTurn.operationId,
+            requestId: event.requestId,
+            outcome: event.code === 'request.cancelled'
+              ? 'cancelled'
+              : 'failed',
+          })
+        )
+        if (voiceTurnSettled) {
+          requestManagedSpeechStop(
+            currentTurn.operationId,
+            event.requestId,
+          )
+        }
+        clearManagedSpeechTurn(currentTurn.operationId)
+        let sendDraftRecovered = false
         if (currentTurn.kind === 'send') {
-          if (!restorePendingChatSend({ operationId: currentTurn.operationId })) {
-            restorePendingChatSend({ requestId: event.requestId })
+          sendDraftRecovered = restorePendingChatSend({
+            operationId: currentTurn.operationId,
+          })
+          if (!sendDraftRecovered) {
+            sendDraftRecovered = restorePendingChatSend({
+              requestId: event.requestId,
+            })
           }
         } else {
           if (!restoreRetryEditDraft({ operationId: currentTurn.operationId })) {
@@ -2544,6 +3061,20 @@ function App() {
           }
         }
         const cancelled = event.code === 'request.cancelled'
+        if (voiceTurnSettled) {
+          settleVoiceTurnUiIfNeeded()
+          setVoiceCaptureSubmissionError(sendDraftRecovered
+            ? (
+                cancelled
+                  ? 'The Voice reply was cancelled. Your transcript was restored to the Chat draft.'
+                  : `${event.message} Your transcript was restored to the Chat draft.`
+              )
+            : (
+                cancelled
+                  ? 'The Voice reply was cancelled.'
+                  : event.message
+              ))
+        }
         const operationId = currentTurn.operationId
         updateInFlightTurn((current) => current?.operationId === operationId
           ? {
@@ -2577,6 +3108,7 @@ function App() {
             || operation.token !== voiceCaptureOperationRef.current
             || operation.requestId !== event.requestId
             || operation.chatId !== activeChatIdRef.current
+            || operation.projectId !== activeChatProjectIdRef.current
           ) {
             return
           }
@@ -2622,16 +3154,24 @@ function App() {
   }, [
     acceptChatState,
     acceptSnapshot,
+    acknowledgeManagedSpeechTurn,
     clearPendingChatSend,
     clearRetryEditDraft,
+    clearManagedSpeechTurn,
     desktopApi,
     interruptInFlightTurn,
     loadAttachments,
     markGenerationSettled,
+    observeManagedSpeechStatus,
+    requestManagedSpeechStop,
     requestProjectRefresh,
+    reconcileVoiceSpeechCapability,
+    routeVoiceSpeechStatus,
     restorePendingChatSend,
     restoreRetryEditDraft,
+    settleVoiceTurnUiIfNeeded,
     updateInFlightTurn,
+    voiceSessionController,
   ])
 
   useEffect(() => {
@@ -2850,29 +3390,35 @@ function App() {
     })
   }
 
-  async function sendMessage(): Promise<void> {
-    const message = trimProtocolBlankCharacters(draft)
-    const chatId = chatState?.activeChat.chatId
-    const attachmentItems = activeChatAttachments?.attachments ?? []
+  function beginChatSend(intent: ChatSendIntent): Promise<string> | null {
+    const api = desktopApi
+    const message = trimProtocolBlankCharacters(intent.message)
+    const { chatId, operationId } = intent
+    const attachmentItems = intent.attachmentItems
     const attachmentIds = attachmentItems.map((item) => item.attachmentId)
     const generationRecoveryBlocked = pendingChatSendRef.current !== null
       || retryEditDraftRef.current !== null
       || generationReconcilePendingRef.current
     if (
-      desktopApi === undefined
-      || chatId === undefined
+      api === undefined
+      || snapshot.status !== 'ready'
+      || snapshot.chatId !== chatId
+      || activeChatIdRef.current !== chatId
+      || activeChatProjectIdRef.current !== intent.projectId
+      || chatState?.activeChat.chatId !== chatId
+      || chatState.activeChat.projectId !== intent.projectId
+      || (intent.source === 'voice' && attachmentIds.length > 0)
       || (!message && attachmentIds.length === 0)
-      || streaming
+      || streamingRef.current
       || modelSelectionPendingRef.current
       || retryPendingRef.current
       || generationRecoveryBlocked
       || activeChatAttachmentActivity.adding
       || activeChatAttachmentActivity.removingIds.length > 0
     ) {
-      return
+      return null
     }
 
-    const operationId = crypto.randomUUID()
     const baseMessageCount = Math.max(
       chatState?.activeChat.messageCount ?? messages.length,
       knownChatMessageCountsRef.current.get(chatId) ?? 0,
@@ -2887,13 +3433,15 @@ function App() {
         'The message could not be protected in local storage, so it was not sent. '
         + 'Free some disk space and try again.',
       ))
-      return
+      return null
     }
-    updateChatDrafts((current) => {
-      const next = { ...current }
-      delete next[chatId]
-      return next
-    })
+    if (intent.consumeComposerDraft) {
+      updateChatDrafts((current) => {
+        const next = { ...current }
+        delete next[chatId]
+        return next
+      })
+    }
     setNotice(null)
     streamingRef.current = true
     setStreaming(true)
@@ -2911,63 +3459,95 @@ function App() {
       originalAssistantText: '',
       phase: 'starting',
     }))
+    beginManagedSpeechTurn(
+      operationId,
+      chatId,
+      intent.projectId,
+      snapshot.capabilities.includes('voice.speech'),
+    )
 
-    try {
-      const { requestId } = await desktopApi.sendMessage({
-        chatId,
-        message,
-        attachmentIds,
-      })
-      const sentIds = new Set(attachmentIds)
-      setAttachmentStates((current) => {
-        const currentState = current[activeChatAttachmentKey]
-        if (currentState === undefined) {
-          return current
+    return (async (): Promise<string> => {
+      try {
+        const { requestId } = await api.sendMessage({
+          chatId,
+          message,
+          attachmentIds,
+        })
+        acknowledgeManagedSpeechTurn(operationId, requestId)
+        const sentIds = new Set(attachmentIds)
+        setAttachmentStates((current) => {
+          const currentState = current[activeChatAttachmentKey]
+          if (currentState === undefined) {
+            return current
+          }
+          return {
+            ...current,
+            [activeChatAttachmentKey]: {
+              ...currentState,
+              attachments: currentState.attachments.filter(
+                (attachment) => !sentIds.has(attachment.attachmentId),
+              ),
+            },
+          }
+        })
+        void loadAttachments({ kind: 'chat', id: chatId })
+        const pendingSend = pendingChatSendRef.current
+        if (pendingSend?.operationId === operationId) {
+          replacePendingChatSend({ ...pendingSend, requestId })
         }
-        return {
-          ...current,
-          [activeChatAttachmentKey]: {
-            ...currentState,
-            attachments: currentState.attachments.filter(
-              (attachment) => !sentIds.has(attachment.attachmentId),
-            ),
-          },
+        updateInFlightTurn((current) => {
+          if (current?.operationId !== operationId) {
+            return current
+          }
+          if (current.requestId !== null && current.requestId !== requestId) {
+            return { ...current, phase: 'error' }
+          }
+          return {
+            ...current,
+            requestId,
+            assistantMessageId: `assistant-${requestId}`,
+          }
+        })
+        return requestId
+      } catch (error: unknown) {
+        const normalized = error instanceof Error
+          ? error
+          : new Error('Could not send the message.')
+        if (inFlightTurnRef.current?.operationId === operationId) {
+          clearManagedSpeechTurn(operationId)
+          updateInFlightTurn((current) => current?.operationId === operationId
+            ? null
+            : current)
+          if (intent.source === 'voice') {
+            clearPendingChatSend({ operationId })
+          } else {
+            restorePendingChatSend({ operationId })
+          }
+          streamingRef.current = false
+          setStreaming(false)
+          setNotice(errorNotice(normalized.message))
+          void requestProjectRefresh()
         }
-      })
-      void loadAttachments(activeChatScope)
-      const pendingSend = pendingChatSendRef.current
-      if (pendingSend?.operationId === operationId) {
-        replacePendingChatSend({ ...pendingSend, requestId })
+        throw normalized
       }
-      updateInFlightTurn((current) => {
-        if (current?.operationId !== operationId) {
-          return current
-        }
-        if (current.requestId !== null && current.requestId !== requestId) {
-          return { ...current, phase: 'error' }
-        }
-        return {
-          ...current,
-          requestId,
-          assistantMessageId: `assistant-${requestId}`,
-        }
-      })
-    } catch (error) {
-      if (inFlightTurnRef.current?.operationId === operationId) {
-        updateInFlightTurn((current) => current?.operationId === operationId
-          ? null
-          : current)
-        restorePendingChatSend({ operationId })
-        streamingRef.current = false
-        setStreaming(false)
-        setNotice(errorNotice(
-          error instanceof Error
-            ? error.message
-            : 'Could not send the message.',
-        ))
-        void requestProjectRefresh()
-      }
+    })()
+  }
+
+  function sendMessage(): void {
+    const activeChat = chatState?.activeChat
+    if (activeChat === undefined) {
+      return
     }
+    const sending = beginChatSend({
+      source: 'composer',
+      operationId: crypto.randomUUID(),
+      chatId: activeChat.chatId,
+      projectId: activeChat.projectId,
+      message: draft,
+      attachmentItems: activeChatAttachments?.attachments ?? [],
+      consumeComposerDraft: true,
+    })
+    void sending?.catch(() => undefined)
   }
 
   function retryMessage(
@@ -3048,10 +3628,17 @@ function App() {
       originalAssistantText: pair.assistantText,
       phase: 'starting',
     }))
+    beginManagedSpeechTurn(
+      operationId,
+      pair.chatId,
+      activeChatProjectIdRef.current,
+      snapshot.capabilities.includes('voice.speech'),
+    )
 
     void (async (): Promise<void> => {
       try {
         const { requestId } = await desktopApi.retryMessage(request)
+        acknowledgeManagedSpeechTurn(operationId, requestId)
         const currentEdit = retryEditDraftRef.current
         if (currentEdit?.operationId === operationId) {
           replaceRetryEditDraft({ ...currentEdit, requestId })
@@ -3067,6 +3654,7 @@ function App() {
         })
       } catch (error) {
         if (inFlightTurnRef.current?.operationId === operationId) {
+          clearManagedSpeechTurn(operationId)
           restoreRetryEditDraft({ operationId })
           updateInFlightTurn((current) => current?.operationId === operationId
             ? { ...current, phase: 'error' }
@@ -3589,21 +4177,35 @@ function App() {
     segment: CompletedVoiceSegment,
   ): Promise<void> {
     const token = voiceCaptureOperationRef.current
-    const chatId = activeChatIdRef.current
+    const session = voiceSessionController.getSnapshot()
+    const owner = ownerFromVoiceSession(session)
     if (
       desktopApi === undefined
-      || chatId === undefined
+      || owner === null
+      || session.phase !== 'listening'
+      || session.captureSessionId !== segment.sessionId
+      || activeChatIdRef.current !== owner.chatId
+      || activeChatProjectIdRef.current !== owner.projectId
       || snapshot.status !== 'ready'
       || !snapshot.capabilities.includes('voice.transcription')
+      || !voiceSessionController.acceptCaptureComplete({
+        ...owner,
+        captureSessionId: segment.sessionId,
+      })
     ) {
       segment.pcm.fill(0)
       return
+    }
+    const captureOwner = {
+      ...owner,
+      captureSessionId: segment.sessionId,
     }
 
     let pcmBase64: string
     try {
       pcmBase64 = encodePcm16LittleEndian(segment.pcm)
     } catch (error: unknown) {
+      voiceSessionController.rejectTranscriptionStart(captureOwner)
       if (token === voiceCaptureOperationRef.current) {
         setVoiceCaptureSubmissionError(
           error instanceof Error
@@ -3617,7 +4219,8 @@ function App() {
     }
     if (
       token !== voiceCaptureOperationRef.current
-      || activeChatIdRef.current !== chatId
+      || activeChatIdRef.current !== owner.chatId
+      || activeChatProjectIdRef.current !== owner.projectId
     ) {
       return
     }
@@ -3626,7 +4229,7 @@ function App() {
     const operation: VoiceTranscriptionOperation = {
       token,
       sessionId: segment.sessionId,
-      chatId,
+      ...owner,
       requestId: null,
       cancelRequested: false,
       cancelSent: false,
@@ -3636,7 +4239,7 @@ function App() {
     setVoiceTranscription({
       token,
       sessionId: segment.sessionId,
-      chatId,
+      chatId: owner.chatId,
       requestId: null,
       phase: 'starting',
       text: '',
@@ -3650,7 +4253,7 @@ function App() {
       try {
         starting = desktopApi.beginVoiceTranscription({
           sessionId: segment.sessionId,
-          chatId,
+          chatId: owner.chatId,
           sampleRateHz: segment.sampleRate,
           channelCount: segment.channelCount,
           sampleFormat: segment.sampleFormat,
@@ -3666,11 +4269,20 @@ function App() {
         pcmBase64 = ''
       }
       const { requestId } = await starting
-      if (
-        operation.requestId !== null
-        && operation.requestId !== requestId
-      ) {
+      if (!voiceSessionController.acknowledgeTranscription({
+        ...captureOwner,
+        requestId,
+      })) {
         operation.cancelRequested = true
+        const cancellation = voiceSessionController.cancel()
+        if (
+          cancellation.transcriptionRequestId !== null
+          && cancellation.transcriptionRequestId !== requestId
+        ) {
+          void desktopApi.stopVoiceTranscription(
+            cancellation.transcriptionRequestId,
+          ).catch(() => undefined)
+        }
         // A mismatched acknowledgement breaks the renderer's correlation
         // boundary. Cancel that unexpected request directly so neither the
         // already-observed terminal result nor this orphan can affect Chat.
@@ -3699,7 +4311,8 @@ function App() {
         operation.cancelRequested
         || operation.token !== voiceCaptureOperationRef.current
         || voiceTranscriptionOperationRef.current !== operation
-        || activeChatIdRef.current !== chatId
+        || activeChatIdRef.current !== owner.chatId
+        || activeChatProjectIdRef.current !== owner.projectId
       ) {
         cancelVoiceTranscription(operation, false)
         return
@@ -3712,10 +4325,12 @@ function App() {
         operation.token !== voiceCaptureOperationRef.current
         || voiceTranscriptionOperationRef.current !== operation
         || operation.terminal
-        || activeChatIdRef.current !== chatId
+        || activeChatIdRef.current !== owner.chatId
+        || activeChatProjectIdRef.current !== owner.projectId
       ) {
         return
       }
+      voiceSessionController.rejectTranscriptionStart(captureOwner)
       operation.terminal = true
       setVoiceTranscription((current) => current?.token === operation.token
         ? {
@@ -3738,11 +4353,16 @@ function App() {
     const controller = audioCaptureControllerRef.current
     const deviceController = audioDeviceControllerRef.current
     const chatId = activeChatIdRef.current
+    const projectId = activeChatProjectIdRef.current
+    const boundSession = voiceSessionController.getSnapshot()
     if (
       controller === null
       || deviceController === null
       || desktopApi === undefined
       || chatId === undefined
+      || !boundSession.active
+      || boundSession.binding?.chatId !== chatId
+      || boundSession.binding.projectId !== projectId
       || voiceCaptureDisabledReason !== null
     ) {
       setVoiceCaptureSubmissionError(
@@ -3756,9 +4376,11 @@ function App() {
     const actionIsCurrent = (): boolean => (
       operation === voiceCaptureOperationRef.current
       && activeChatIdRef.current === chatId
+      && activeChatProjectIdRef.current === projectId
       && audioCaptureControllerRef.current === controller
     )
     setVoiceCapture(EMPTY_AUDIO_CAPTURE_SNAPSHOT)
+    setVoiceSpeechWarning(null)
     setVoiceCaptureSubmissionError(null)
     ++microphoneActionOperationRef.current
     deviceController.stopAll()
@@ -3799,6 +4421,14 @@ function App() {
       await controller.start(effectiveDeviceId)
       if (!actionIsCurrent()) {
         await controller.cancel()
+        return
+      }
+      const capture = controller.getSnapshot()
+      if (
+        capture.sessionId !== null
+        && (capture.status === 'waiting' || capture.status === 'speaking')
+      ) {
+        voiceSessionController.startListening(capture.sessionId)
       }
     } catch (error: unknown) {
       if (!actionIsCurrent()) {
@@ -3925,12 +4555,94 @@ function App() {
     ) {
       return
     }
+    try {
+      voiceSessionController.updateTranscript(value)
+    } catch (error: unknown) {
+      setVoiceCaptureSubmissionError(
+        error instanceof Error
+          ? error.message
+          : 'The final transcript could not be updated.',
+      )
+      return
+    }
     setVoiceCaptureSubmissionError(null)
     setVoiceTranscription((current) => (
       current?.token === operation.token && current.phase === 'final'
         ? { ...current, text: value }
         : current
     ))
+  }
+
+  function sendVoiceTranscript(): void {
+    const operation = voiceTranscriptionOperationRef.current
+    const transcriptState = voiceTranscription
+    if (
+      operation === null
+      || transcriptState === null
+      || transcriptState.phase !== 'final'
+      || !operation.terminal
+      || operation.token !== voiceCaptureOperationRef.current
+      || transcriptState.token !== operation.token
+      || activeChatIdRef.current !== operation.chatId
+      || activeChatProjectIdRef.current !== operation.projectId
+    ) {
+      return
+    }
+    const transcript = trimProtocolBlankCharacters(transcriptState.text)
+    if (!hasNonBlankCodePoint(transcript)) {
+      setVoiceCaptureSubmissionError('Final transcript cannot be blank.')
+      return
+    }
+
+    const operationId = crypto.randomUUID()
+    try {
+      voiceSessionController.updateTranscript(transcript)
+      const confirmed = voiceSessionController.confirmTranscript(
+        operationId,
+        snapshot.capabilities.includes('voice.speech'),
+      )
+      const sending = beginChatSend({
+        source: 'voice',
+        operationId,
+        chatId: confirmed.chatId,
+        projectId: confirmed.projectId,
+        message: confirmed.text,
+        attachmentItems: [],
+        consumeComposerDraft: false,
+      })
+      if (sending === null) {
+        voiceSessionController.rejectChatStart(confirmed, operationId)
+        setVoiceCaptureSubmissionError(
+          'Wait for the current Chat action to finish, then send the transcript again.',
+        )
+        return
+      }
+      setVoiceCaptureSubmissionError(null)
+      void sending
+        .then((requestId) => {
+          if (!voiceSessionController.acknowledgeChatRequest({
+            ...confirmed,
+            requestId,
+          })) {
+            pendingVoiceSpeechStatusRef.current = null
+            requestManagedSpeechStop(operationId, requestId)
+            return
+          }
+          flushPendingVoiceSpeechStatus(confirmed, operationId, requestId)
+        })
+        .catch(() => {
+          voiceSessionController.rejectChatStart(confirmed, operationId)
+          setVoiceCaptureSubmissionError(
+            'The transcript was not sent. Review it and try again.',
+          )
+        })
+    } catch (error: unknown) {
+      setVoiceCaptureSubmissionError(
+        error instanceof Error
+          ? error.message
+          : 'The final transcript could not be sent.',
+      )
+    }
   }
 
   function useVoiceTranscriptInMessage(): void {
@@ -3944,6 +4656,7 @@ function App() {
       || operation.token !== voiceCaptureOperationRef.current
       || transcriptState.token !== operation.token
       || activeChatIdRef.current !== operation.chatId
+      || activeChatProjectIdRef.current !== operation.projectId
     ) {
       return
     }
@@ -3979,9 +4692,7 @@ function App() {
     }
 
     updateChatDrafts(() => nextDrafts)
-    ++voiceCaptureOperationRef.current
-    voiceTranscriptionOperationRef.current = null
-    setVoiceTranscription(null)
+    hangUpVoiceSession()
     setVoiceCaptureSubmissionError(null)
     setCallPreviewOpen(false)
     focusChatComposer()
@@ -3991,10 +4702,24 @@ function App() {
     if (panelOpen || panelTargetOpenRef.current) {
       await setCharacterPanelVisibility(false)
     }
+    const chatId = activeChatIdRef.current
+    const projectId = activeChatProjectIdRef.current
+    if (chatId === undefined) {
+      setNotice(errorNotice('Wait for the active Chat to finish loading.'))
+      return
+    }
+    if (!await stopManagedSpeechForBoundary()) {
+      setNotice(infoNotice(
+        'Wait for the current local speech request to start, then open Voice again.',
+      ))
+      return
+    }
     ++microphoneActionOperationRef.current
     audioDeviceControllerRef.current?.stopAll()
-    discardVoiceOperation()
+    hangUpVoiceSession()
+    voiceSessionController.bind({ chatId, projectId })
     setVoiceCapture(EMPTY_AUDIO_CAPTURE_SNAPSHOT)
+    setVoiceSpeechWarning(null)
     setVoiceCaptureSubmissionError(null)
     setCallPreviewOpen(true)
     if (
@@ -4016,12 +4741,15 @@ function App() {
         captureDisabledReason={voiceCaptureDisabledReason}
         composerHasDraft={hasNonBlankCodePoint(draft)}
         modelName={snapshot.modelName}
+        sessionPhase={voiceSession.phase}
+        speechWarning={voiceSpeechWarning}
         transcription={voiceTranscription}
         submissionError={voiceCaptureSubmissionError}
         onCaptionsChange={() => {
           setCaptionsEnabled((enabled) => !enabled)
         }}
         onClose={closeCallPreview}
+        onSendTranscript={sendVoiceTranscript}
         onTranscriptChange={updateVoiceTranscript}
         onToggleCapture={() => { void toggleVoiceCapture() }}
         onUseTranscript={useVoiceTranscriptInMessage}

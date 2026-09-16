@@ -1,6 +1,6 @@
 /**
- * Present one bounded microphone capture, local final-transcript review, and
- * an explicit handoff into the current Chat composer without continuous audio.
+ * Present one bounded Voice Session, local final-transcript review, and
+ * explicit choices to send through Chat or hand text to the Chat composer.
  */
 
 import { useEffect, useRef } from 'react'
@@ -8,6 +8,7 @@ import { useEffect, useRef } from 'react'
 import { hasNonBlankCodePoint } from '../../electron/protocol-text.js'
 import { Icon } from '../design-system/Icon.tsx'
 import type { AudioCaptureSnapshot } from './audio-capture.ts'
+import type { VoiceSessionPhase } from './voice-session-controller.ts'
 
 /** Renderer-only phases for one bounded local transcription review. */
 export type VoiceTranscriptionPhase =
@@ -34,10 +35,13 @@ interface CallPreviewProps {
   captureDisabledReason: string | null
   composerHasDraft: boolean
   modelName?: string
+  sessionPhase: VoiceSessionPhase
+  speechWarning: string | null
   transcription: VoiceTranscriptionView | null
   submissionError: string | null
   onCaptionsChange(): void
   onClose(): void
+  onSendTranscript(): void
   onTranscriptChange(value: string): void
   onToggleCapture(): void
   onUseTranscript(): void
@@ -49,11 +53,18 @@ function captureIsActive(status: AudioCaptureSnapshot['status']): boolean {
 
 function captureStateLabel(
   capture: AudioCaptureSnapshot,
+  sessionPhase: VoiceSessionPhase,
   transcription: VoiceTranscriptionView | null,
   submissionError: string | null,
 ): string {
   if (submissionError !== null) {
     return 'Voice action failed'
+  }
+  if (sessionPhase === 'thinking') {
+    return 'Elysia is thinking'
+  }
+  if (sessionPhase === 'speaking') {
+    return 'Elysia is speaking'
   }
   if (transcription !== null) {
     switch (transcription.phase) {
@@ -94,11 +105,18 @@ function captureStateLabel(
 function captureDescription(
   capture: AudioCaptureSnapshot,
   captureDisabledReason: string | null,
+  sessionPhase: VoiceSessionPhase,
   transcription: VoiceTranscriptionView | null,
   submissionError: string | null,
 ): string {
   if (submissionError !== null) {
     return submissionError
+  }
+  if (sessionPhase === 'thinking') {
+    return 'The reviewed transcript is using the normal Chat reply path.'
+  }
+  if (sessionPhase === 'speaking') {
+    return 'Trusted desktop playback is speaking the reply. The microphone remains off.'
   }
   if (transcription !== null) {
     if (transcription.phase === 'starting') {
@@ -111,7 +129,7 @@ function captureDescription(
       return 'Stopping this transcription and discarding any result that arrives late.'
     }
     if (transcription.phase === 'final') {
-      return 'Review the final transcript. It enters Chat only after you place it in the composer and send it.'
+      return 'Review the final transcript, then send it now or place it in the Chat composer.'
     }
     if (transcription.phase === 'cancelled') {
       return 'The transcript was discarded. Record again when the local speech engine is ready.'
@@ -151,10 +169,13 @@ export function CallPreview({
   captureDisabledReason,
   composerHasDraft,
   modelName,
+  sessionPhase,
+  speechWarning,
   transcription,
   submissionError,
   onCaptionsChange,
   onClose,
+  onSendTranscript,
   onTranscriptChange,
   onToggleCapture,
   onUseTranscript,
@@ -162,6 +183,8 @@ export function CallPreview({
   const microphoneButtonRef = useRef<HTMLButtonElement | null>(null)
   const closeButtonRef = useRef<HTMLButtonElement | null>(null)
   const active = captureIsActive(capture.status)
+  const sessionReplyActive = sessionPhase === 'thinking'
+    || sessionPhase === 'speaking'
   const transcriptionPending = transcription !== null && (
     transcription.phase === 'starting'
     || transcription.phase === 'transcribing'
@@ -169,7 +192,8 @@ export function CallPreview({
   )
   const transcriptionRetryBlocked = transcription?.phase === 'error'
     && !transcription.retryable
-  const microphoneDisabled = transcription?.phase === 'cancelling'
+  const microphoneDisabled = sessionReplyActive
+    || transcription?.phase === 'cancelling'
     || transcriptionRetryBlocked
     || (
       !active
@@ -181,6 +205,10 @@ export function CallPreview({
     || transcription?.phase === 'cancelled'
     || transcription?.phase === 'error') {
     stateClass = 'error'
+  } else if (sessionPhase === 'speaking') {
+    stateClass = 'speaking'
+  } else if (sessionPhase === 'thinking') {
+    stateClass = 'waiting'
   } else if (
     transcription?.phase === 'starting'
     || transcription?.phase === 'cancelling'
@@ -193,12 +221,14 @@ export function CallPreview({
   }
   const stateLabel = captureStateLabel(
     capture,
+    sessionPhase,
     transcription,
     submissionError,
   )
   const description = captureDescription(
     capture,
     captureDisabledReason,
+    sessionPhase,
     transcription,
     submissionError,
   )
@@ -209,7 +239,9 @@ export function CallPreview({
     || capture.error !== null
     || transcription?.phase === 'error'
   let microphoneLabel = 'Record again'
-  if (active) {
+  if (sessionReplyActive) {
+    microphoneLabel = 'Microphone unavailable'
+  } else if (active) {
     microphoneLabel = 'Cancel capture'
   } else if (transcriptionPending) {
     microphoneLabel = 'Cancel transcription'
@@ -228,7 +260,11 @@ export function CallPreview({
   }, [])
 
   return (
-    <main className="call-page" aria-label="Voice capture">
+    <main
+      className="call-page"
+      aria-label="Voice capture"
+      aria-busy={active || transcriptionPending || sessionReplyActive}
+    >
       <header className="call-header">
         <div>
           <span className="eyebrow">Local voice capture</span>
@@ -241,7 +277,11 @@ export function CallPreview({
 
       <section className="call-stage" aria-label="Voice capture stage">
         <div
-          className={'call-aura' + (capture.status === 'speaking' ? ' speaking' : '')}
+          className={'call-aura' + (
+            capture.status === 'speaking' || sessionPhase === 'speaking'
+              ? ' speaking'
+              : ''
+          )}
           aria-hidden="true"
         />
         <div
@@ -262,19 +302,35 @@ export function CallPreview({
           <span className="call-state-dot" />
           {stateLabel}
         </div>
-        {!transcriptReady && (captionsEnabled || actionHasError) && (
-          <p
-            className="call-caption"
-            role={actionHasError ? 'alert' : undefined}
-          >
-            {description}
-          </p>
+        {!transcriptReady && (
+          (captionsEnabled || actionHasError) || speechWarning !== null
+        ) && (
+          <div className="call-caption-stack">
+            {(captionsEnabled || actionHasError) && (
+              <p
+                className="call-caption"
+                role={actionHasError ? 'alert' : undefined}
+              >
+                {description}
+              </p>
+            )}
+            {speechWarning !== null && (
+              <p className="call-caption" role="status">
+                {speechWarning}
+              </p>
+            )}
+          </div>
         )}
         {transcriptReady && (
           <section
             className="call-transcript"
             aria-labelledby="voice-transcript-heading"
           >
+            {speechWarning !== null && (
+              <p className="call-transcript-warning" role="status">
+                {speechWarning}
+              </p>
+            )}
             <div className="call-transcript-heading">
               <label id="voice-transcript-heading" htmlFor="voice-transcript">
                 Final transcript
@@ -294,6 +350,7 @@ export function CallPreview({
               maxLength={4_096}
               value={transcription.text}
               onChange={(event) => { onTranscriptChange(event.target.value) }}
+              readOnly={sessionReplyActive}
               rows={4}
               autoFocus
             />
@@ -304,14 +361,24 @@ export function CallPreview({
             )}
             <div className="call-transcript-actions">
               <p>
-                {composerHasDraft
+                {sessionReplyActive
+                  ? 'This transcript is already being handled by the current Voice Session.'
+                  : composerHasDraft
                   ? 'Your existing Chat draft will be kept before this transcript.'
-                  : 'This does not send a message automatically.'}
+                  : 'Send now or place the transcript in the Chat composer.'}
               </p>
               <button
                 type="button"
                 className="primary-button"
-                disabled={!transcriptCanBeUsed}
+                disabled={!transcriptCanBeUsed || sessionReplyActive}
+                onClick={onSendTranscript}
+              >
+                Send transcript
+              </button>
+              <button
+                type="button"
+                className="secondary-button"
+                disabled={!transcriptCanBeUsed || sessionReplyActive}
                 onClick={onUseTranscript}
               >
                 {composerHasDraft
@@ -342,6 +409,8 @@ export function CallPreview({
           aria-pressed={active || transcriptionPending}
           title={active
             ? 'Cancel and discard this capture'
+            : sessionReplyActive
+              ? 'Wait for the current Voice Session reply to finish'
             : transcriptionPending
               ? 'Cancel and discard this transcription'
               : transcriptionRetryBlocked

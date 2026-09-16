@@ -8,21 +8,27 @@ and output tests without retaining audio. The bounded capture slice adds
 explicit one-utterance recording: the renderer downmixes and resamples input to
 16 kHz mono `s16le`, and local VAD submits only valid speech transiently for
 local Faster-Whisper transcription. A bounded final transcript returns through
-Electron to an editable review surface; the user must explicitly place it in
-the current Chat composer, where it replaces an empty draft or is appended
-after existing draft text. The renderer also has persistent Chat and Project
+Electron to an editable review surface. The user can explicitly send it
+through the current Chat's normal durable path or place it in the Composer,
+where it replaces an empty draft or is appended after existing draft text. A
+renderer-local controller binds the exact Chat and optional Project and owns
+the closed `IDLE → LISTENING → TRANSCRIBING → THINKING → SPEAKING → IDLE`
+lifecycle without owning audio bytes. The renderer also has persistent Chat and Project
 surfaces, resilient streamed message actions, revisioned Settings, Chat
 attachments, Project source storage, semantic design tokens, system/light/dark
 themes, keyboard and screen-reader navigation, durable per-Chat drafts,
 renderer-refresh stream recovery, and consistent loading, empty, error,
-offline, and fatal states. This Voice slice exposes final text only; real-time
-partial transcripts and continuous conversation remain future work. Ordinary
+offline, and fatal states. This Voice slice exposes final text only; automatic
+submission, automatic re-listening, real-time partial transcripts, and natural
+barge-in remain future work. Ordinary
 Chat replies now copy exact Brain chunks into a bounded sentence queue backed
 by one managed local GPT-SoVITS worker. Correlation metadata crosses NDJSON,
 while validated PCM WAV uses private fd3 framing and preload-owned Web Audio.
 Preload routes every reply clip to the saved speaker selection before decoding;
 a missing selected device fails that clip instead of falling back to another
-speaker. React never receives the audio or private voice configuration. The independent
+speaker. React never receives the audio or private voice configuration; it
+sees only closed, sanitized playback status used to present `SPEAKING` and to
+settle the exact Voice turn. The independent
 loopback-only Python adapter and repeated/multi-emotion smoke remain available
 for diagnostics.
 Electron is frozen as the production
@@ -90,13 +96,20 @@ Git-ignored and must not be committed or packaged with the application.
   device labels, permission state, availability, and test audio never enter
   Python.
 - In a Chat, **Start voice** and the phone button open the Voice capture page
-  without requesting microphone access. Only **Start microphone** begins one
-  bounded capture. The renderer downmixes and resamples input, and local VAD
-  waits for valid speech before sending temporary 16 kHz mono `s16le` PCM to
-  Python once. A successful recognition displays an editable **Final
-  transcript**. **Use transcript in message** places it in an empty composer;
-  **Append transcript to message** preserves existing draft text first. Neither
-  action sends the message or adds a Chat-history Turn automatically.
+  and binds the Session to the exact active Chat and optional Project without
+  requesting microphone access. Only **Start microphone** begins one bounded
+  capture. The renderer downmixes and resamples input, and local VAD waits for
+  valid speech before sending temporary 16 kHz mono `s16le` PCM to Python once.
+  A successful recognition displays an editable **Final transcript**. **Send
+  transcript** explicitly submits it through the normal durable Chat path;
+  **Use transcript in message** or **Append transcript to message** only updates
+  the existing Composer draft. Direct Voice submission preserves that draft
+  and does not attach files staged in the Composer.
+- The Voice surface presents the closed `IDLE → LISTENING → TRANSCRIBING →
+  THINKING → SPEAKING → IDLE` lifecycle as ready, capture/transcription
+  progress, **Elysia is thinking**, and **Elysia is speaking**. Thinking and
+  speaking disable capture. The Session returns to idle only after Chat and
+  optional playback both finish, and it never starts another capture by itself.
 - Settings shows Global defaults beside the active Project's inheritance and
   the active Chat's pinned model. Speech recognition selects
   `tiny` / `base` / `small` / `medium` / `large-v3` / `turbo`,
@@ -127,10 +140,10 @@ Git-ignored and must not be committed or packaged with the application.
 - Projects support persisted metadata, instructions, workspace binding, Chat
   assignment, archive, and restore. Managed sentence playback is available for
   ordinary Chat replies when its ignored local runtime and Profile are valid;
-  continuous Voice, natural barge-in, Work permissions, and later
+  hands-free Voice continuation, natural barge-in, Work permissions, and later
   file-processing controls remain unavailable.
 
-## Manual local transcription smoke test
+## Manual bounded Voice Session smoke test
 
 Use two Command Prompt windows, not PowerShell. Start Vite in the first:
 
@@ -153,13 +166,24 @@ Backend. Open a Chat, enter a short draft if you want to exercise append, choose
 **Start voice**, and then choose **Start microphone**. Speak and pause for about
 0.6 seconds.
 
-Confirm that an editable **Final transcript** appears. Change its text, choose
-**Use transcript in message** or **Append transcript to message**, and confirm
-that the Composer contains the edited text without sending it. Repeat once
-while silent for about 10 seconds, once with **Cancel capture**, and once with
-**Cancel transcription**; none may add a Chat-history Turn. The page shows only
-generic progress, not partial recognized text. Stop immediately if Windows
-reports that microphone access is denied.
+Confirm that an editable **Final transcript** appears and that no request is
+sent before an explicit action. First choose **Use transcript in message** or
+**Append transcript to message**, and confirm that the Composer contains the
+edited text without sending it. Repeat the capture, edit the result, and choose
+**Send transcript**. The surface must show **Elysia is thinking**, the message
+and streamed reply must appear in the same bound Chat, and any existing
+Composer draft and staged attachment must remain unchanged. With
+`voice.speech`, the surface must show **Elysia is speaking** and return to
+**Ready to listen** only after both Chat and playback finish. Without that
+capability, text must still finish and return the Session to idle.
+
+Repeat once while silent for about 10 seconds, once with **Cancel capture**,
+and once with **Cancel transcription**; none may add a Chat-history Turn.
+Close Voice during playback and confirm that playback for that request stops
+without a late status reopening the Session. Switching Chat or Project must
+also invalidate the previous Voice Session. The page shows only generic
+progress, not partial recognized text. Stop immediately if Windows reports
+that microphone access is denied.
 
 ## Manual local synthesis and playback smoke tests
 
@@ -276,9 +300,13 @@ method, results, capability gaps, and limitations.
   rejects redirects and retries, and accepts only bounded, length-declared
   identity WAV/AAC responses. Desktop reply playback instead owns one guarded
   local worker, a bounded FIFO, and an inherited fd3 binary pipe. Main and
-  Preload validate the canonical WAV before Web Audio playback; the IPC is not
-  part of public `DesktopApi`. Private paths, prompts, weights, reference audio,
-  tokens, hashes, and synthesized bytes never enter React. The managed
+  Preload validate the canonical WAV before Web Audio playback; that private
+  byte-delivery IPC is not part of public `DesktopApi`. Renderer receives only
+  request ID, Chat ID, closed `playing|played|skipped` plus sequence, or terminal
+  `completed|cancelled` status. WAV bytes, clip tokens, hashes, text, paths,
+  prompts, diagnostics, and native errors never enter React. A validated,
+  request-ID-scoped `stopSpeechPlayback` method permits hang-up after Chat text
+  ownership has ended. The managed
   saved output-device selection is applied before each Web Audio decode; an
   unavailable explicit sink skips that clip instead of leaking it through the
   system default speaker. The managed runtime's current partial manifest proves launch consistency, not complete
@@ -297,7 +325,9 @@ method, results, capability gaps, and limitations.
   and short input, and accepted PCM exists only during the correlated local
   transcription request. The final result contains bounded text and safe
   language metadata, never PCM, model paths, or native diagnostics. Neither
-  process persists audio or creates a Chat Turn automatically.
+  process persists audio. Capture and transcription alone never create a Chat
+  Turn; only the user's explicit **Send transcript** confirmation enters the
+  existing Chat path.
 - Native selection and drop paths remain inside the trusted preload/Electron
   boundary. Python copies validated regular files into opaque, scope-specific
   storage, and protocol responses expose only safe metadata and attachment IDs.

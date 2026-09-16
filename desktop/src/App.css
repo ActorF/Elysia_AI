@@ -2976,14 +2976,26 @@ kbd {
   background: var(--color-danger);
 }
 
-.call-caption {
+.call-caption-stack {
   position: absolute;
   right: 15%;
   bottom: var(--space-5);
   left: 15%;
+  display: grid;
+  gap: var(--space-2);
+}
+
+.call-caption {
   margin: 0;
   color: var(--color-text-secondary);
   text-align: center;
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-normal);
+}
+
+.call-transcript-warning {
+  margin: 0;
+  color: var(--color-warning);
   font-size: var(--font-size-sm);
   line-height: var(--line-height-normal);
 }

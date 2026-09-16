@@ -725,6 +725,7 @@ const desktopApi = {
 
   sendMessage: async (request) => {
     record('sendMessage', [request])
+    await waitForChatAction()
     if (nextSendError !== null) {
       const message = nextSendError
       nextSendError = null
@@ -804,6 +805,10 @@ const desktopApi = {
         },
       }
     }
+  },
+
+  stopSpeechPlayback: async (requestId) => {
+    record('stopSpeechPlayback', [requestId])
   },
 
   copyText: async (text) => {

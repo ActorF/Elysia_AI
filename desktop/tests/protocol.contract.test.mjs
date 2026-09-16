@@ -1497,6 +1497,94 @@ test('Backend registers speech turns only when capability is advertised', () => 
   assert.deepEqual(ungatedStarts, [])
 })
 
+test('Backend forwards only renderer-safe speech status metadata', () => {
+  const events = []
+  const backend = new BackendProcess('.', (event) => events.push(event))
+
+  backend.emitSpeechDeliveryStatus({
+    kind: 'playing',
+    requestId: 'speech-request-1',
+    chatId: 'chat_fixture',
+    sequence: 0,
+  })
+  backend.emitSpeechDeliveryStatus({
+    kind: 'terminal',
+    requestId: 'speech-request-1',
+    chatId: 'chat_fixture',
+    state: 'completed',
+  })
+
+  assert.deepEqual(events, [
+    {
+      type: 'voice-speech-status',
+      kind: 'playing',
+      requestId: 'speech-request-1',
+      chatId: 'chat_fixture',
+      sequence: 0,
+    },
+    {
+      type: 'voice-speech-status',
+      kind: 'terminal',
+      requestId: 'speech-request-1',
+      chatId: 'chat_fixture',
+      state: 'completed',
+    },
+  ])
+  assert.doesNotMatch(
+    JSON.stringify(events),
+    /wav|clipToken|sha256|text|path|diagnostic/iu,
+  )
+})
+
+test('Backend can stop speech after Chat text ownership has ended', () => {
+  const cancelled = []
+  const backend = new BackendProcess('.', () => undefined)
+  backend.speechDelivery = {
+    cancelTurn: (requestId) => cancelled.push(requestId),
+  }
+
+  backend.stopSpeechPlayback('speech-after-chat-1')
+
+  assert.deepEqual(cancelled, ['speech-after-chat-1'])
+})
+
+test('Backend can retire current speech when Renderer ownership resets', () => {
+  let cancelled = 0
+  const backend = new BackendProcess('.', () => undefined)
+  backend.speechDelivery = {
+    cancelCurrentTurn: () => { cancelled += 1 },
+  }
+
+  backend.stopCurrentSpeechPlayback()
+
+  assert.equal(cancelled, 1)
+})
+
+test('Backend removes unavailable speech from renderer capabilities', () => {
+  const events = []
+  let disposed = 0
+  const backend = new BackendProcess('.', (event) => events.push(event))
+  backend.snapshot = {
+    revision: 1,
+    status: 'ready',
+    capabilities: ['chat.stream', 'voice.speech'],
+    models: ['qwen3.5:9b'],
+    modelName: 'qwen3.5:9b',
+    chatId: 'chat_fixture',
+    chatTitle: 'Elysia Chat',
+  }
+  backend.speechDelivery = {
+    dispose: () => { disposed += 1 },
+  }
+
+  backend.disableSpeechDelivery()
+
+  assert.equal(disposed, 1)
+  assert.deepEqual(backend.snapshot.capabilities, ['chat.stream', 'voice.speech'])
+  assert.deepEqual(backend.getSnapshot().capabilities, ['chat.stream'])
+  assert.deepEqual(events.at(-1).snapshot.capabilities, ['chat.stream'])
+})
+
 test('Backend state machine accepts one ordered matching Chat stream', () => {
   const { backend, events } = createPendingChat()
 

@@ -791,6 +791,10 @@ function registerIpcHandlers(): void {
     'window:renderer-ready',
     (event): void => {
       assertTrustedSender(event)
+      // Navigation destroys every renderer-held correlation identifier. Retire
+      // the trusted turn before the replacement preload can capture or play so
+      // an old reply cannot speak inside a newly loaded Voice Session.
+      requireBackend().stopCurrentSpeechPlayback()
       installSpeechPlaybackOwner(requireMainWindow())
       revealMainWindow()
     },
@@ -924,6 +928,14 @@ function registerIpcHandlers(): void {
       return requireBackend().stopGeneration(
         parseBackendRequestId(requestId),
       )
+    },
+  )
+
+  ipcMain.handle(
+    'voice:stop-speech-playback',
+    (event, requestId: unknown): void => {
+      assertTrustedSender(event)
+      requireBackend().stopSpeechPlayback(parseBackendRequestId(requestId))
     },
   )
 

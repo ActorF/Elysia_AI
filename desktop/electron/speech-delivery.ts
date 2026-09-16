@@ -79,7 +79,9 @@ interface TurnState {
   readonly requestId: string
   readonly chatId: string
   nextSequence: number
+  nextStatusSequence: number
   failureCount: number
+  readonly pendingFailureSequences: Set<number>
   stale: boolean
   terminal: VoiceSpeechTerminalEventMessage | null
 }
@@ -155,7 +157,9 @@ export class SpeechDeliveryCoordinator {
       requestId,
       chatId,
       nextSequence: 0,
+      nextStatusSequence: 0,
       failureCount: 0,
+      pendingFailureSequences: new Set<number>(),
       stale: false,
       terminal: null,
     })
@@ -168,6 +172,18 @@ export class SpeechDeliveryCoordinator {
       return
     }
     this.makeTurnStale(requestId)
+  }
+
+  /** Cancel the current turn when renderer navigation erased its request ID. */
+  cancelCurrentTurn(): void {
+    if (
+      this.disposed
+      || this.failed
+      || this.currentRequestId === null
+    ) {
+      return
+    }
+    this.makeTurnStale(this.currentRequestId)
   }
 
   /** Accept one already schema-validated speech event from the NDJSON pipe. */
@@ -277,18 +293,24 @@ export class SpeechDeliveryCoordinator {
     message: VoiceSpeechFailureEventMessage,
     turn: TurnState,
   ): void {
-    if (message.data.sequence !== turn.nextSequence) {
-      this.fail('sequence-mismatch')
+    if (
+      message.data.sequence !== turn.nextSequence
+      || turn.pendingFailureSequences.size >= MAX_PENDING_CLIP_METADATA
+    ) {
+      this.fail(
+        message.data.sequence !== turn.nextSequence
+          ? 'sequence-mismatch'
+          : 'delivery-state-invalid',
+      )
       return
     }
     turn.nextSequence += 1
     turn.failureCount += 1
-    this.emitStatus({
-      kind: 'skipped',
-      requestId: message.requestId,
-      chatId: turn.chatId,
-      sequence: message.data.sequence,
-    })
+    // stdout may announce a later synthesis failure while fd3 is still waiting
+    // to deliver an earlier clip. Hold only those bounded sequence numbers so
+    // Renderer always observes one monotonically ordered speech lifecycle.
+    turn.pendingFailureSequences.add(message.data.sequence)
+    this.flushPendingFailureStatuses(turn)
   }
 
   private acceptTerminal(
@@ -329,8 +351,18 @@ export class SpeechDeliveryCoordinator {
       return
     }
     const turn = this.turns.get(metadata.requestId)
-    if (turn === undefined || !frameMatchesMetadata(frame, metadata)) {
-      this.fail(turn === undefined ? 'turn-mismatch' : 'metadata-mismatch')
+    if (
+      turn === undefined
+      || !frameMatchesMetadata(frame, metadata)
+      || frame.sequence !== turn.nextStatusSequence
+    ) {
+      this.fail(
+        turn === undefined
+          ? 'turn-mismatch'
+          : !frameMatchesMetadata(frame, metadata)
+            ? 'metadata-mismatch'
+            : 'sequence-mismatch',
+      )
       return
     }
     this.pendingFrame = null
@@ -407,14 +439,42 @@ export class SpeechDeliveryCoordinator {
     if (this.disposed || this.failed) {
       return
     }
+    if (delivery.frame.sequence !== delivery.turn.nextStatusSequence) {
+      this.fail('sequence-mismatch')
+      return
+    }
     this.emitStatus({
       kind: played ? 'played' : 'skipped',
       requestId: delivery.metadata.requestId,
       chatId: delivery.turn.chatId,
       sequence: delivery.frame.sequence,
     })
+    if (this.disposed || this.failed) {
+      return
+    }
+    delivery.turn.nextStatusSequence += 1
+    this.flushPendingFailureStatuses(delivery.turn)
     this.finalizeTurnIfDrained(delivery.turn)
     this.pairPending()
+  }
+
+  private flushPendingFailureStatuses(turn: TurnState): void {
+    while (
+      !this.disposed
+      && !this.failed
+      && turn.pendingFailureSequences.delete(turn.nextStatusSequence)
+    ) {
+      const sequence = turn.nextStatusSequence
+      this.emitStatus({
+        kind: 'skipped',
+        requestId: turn.requestId,
+        chatId: turn.chatId,
+        sequence,
+      })
+      if (!this.disposed && !this.failed) {
+        turn.nextStatusSequence += 1
+      }
+    }
   }
 
   private makeTurnStale(requestId: string): void {
@@ -443,10 +503,15 @@ export class SpeechDeliveryCoordinator {
     if (this.turns.get(turn.requestId) !== turn) {
       return
     }
+    this.flushPendingFailureStatuses(turn)
+    if (this.disposed || this.failed) {
+      return
+    }
     const terminal = turn.terminal
     if (
       terminal === null
       || this.active?.turn === turn
+      || turn.pendingFailureSequences.size > 0
       || this.pendingMetadata.some(
         (metadata) => metadata.requestId === turn.requestId,
       )

@@ -972,6 +972,68 @@ test('sentence failure is skipped while later audio retains sequence order', asy
   input.destroy()
 })
 
+test('later sentence failure waits for earlier fd3 playback status', async () => {
+  const input = new PassThrough()
+  const source = encodedFrame({ counter: 0, sequence: 0 })
+  const playback = new DeferredPlayback()
+  const statuses = []
+  const delivery = new SpeechDeliveryCoordinator(
+    input,
+    playback,
+    (failure) => assert.fail(`unexpected delivery failure: ${failure}`),
+    (status) => statuses.push(status),
+  )
+  delivery.startTurn('request_main', 'chat_main')
+
+  delivery.acceptEvent(clipEvent(source, { sequence: 0 }))
+  delivery.acceptEvent(failureEvent(1))
+  assert.deepEqual(statuses, [])
+  input.write(source.bytes)
+  assert.deepEqual(
+    statuses.map((status) => [status.kind, status.sequence]),
+    [['playing', 0]],
+  )
+
+  playback.resolve()
+  await immediate()
+  delivery.acceptEvent(terminalEvent({
+    completedSentences: 2,
+    failedSentences: 1,
+  }))
+  assert.deepEqual(
+    statuses.map((status) => [status.kind, status.sequence]),
+    [
+      ['playing', 0],
+      ['played', 0],
+      ['skipped', 1],
+      ['terminal', undefined],
+    ],
+  )
+  delivery.dispose()
+  input.destroy()
+})
+
+test('renderer reset cancels the current speech turn without a leaked ID', async () => {
+  const input = new PassThrough()
+  const source = encodedFrame({ counter: 0, sequence: 0 })
+  const playback = new DeferredPlayback()
+  const delivery = new SpeechDeliveryCoordinator(
+    input,
+    playback,
+    (failure) => assert.fail(`unexpected delivery failure: ${failure}`),
+  )
+  delivery.startTurn('request_main', 'chat_main')
+  delivery.acceptEvent(clipEvent(source))
+  input.write(source.bytes)
+
+  delivery.cancelCurrentTurn()
+  await immediate()
+
+  assert.equal(playback.cancelCalls, 1)
+  delivery.dispose()
+  input.destroy()
+})
+
 test('cancelled terminal accepts only a possible suppressed outcome suffix', async () => {
   const input = new PassThrough()
   const source = encodedFrame({ counter: 0, sequence: 0 })

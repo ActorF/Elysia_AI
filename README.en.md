@@ -20,7 +20,7 @@
 
 > [!IMPORTANT]
 >
-> This project is currently a **development preview**, not a ready-to-install release. The desktop shell still depends on the source checkout, its Python environment, Ollama, and local models. Bounded one-utterance STT is connected, and Chat replies now use a managed GPT-SoVITS sentence queue and private Electron playback path. Optional voice runtimes, models, and reference audio are not included in the base install; continuous voice sessions, natural interruption, RAG, the Work Agent, Live2D, and production installation are not complete.
+> This project is currently a **development preview**, not a ready-to-install release. The desktop shell still depends on the source checkout, its Python environment, Ollama, and local models. Bounded one-utterance STT, an explicitly confirmed Voice Session, and managed GPT-SoVITS reply playback are connected. Optional voice runtimes, models, and reference audio are not included in the base install; hands-free continuation, natural interruption, RAG, the Work Agent, Live2D, and production installation are not complete.
 
 ---
 
@@ -32,7 +32,7 @@
 - 🧠 **Scoped Memory** — Keeps Global, Project, and Chat boundaries distinct, with long-term memory, summaries, and confirmation flows
 - 🛡️ **Strict Desktop Boundary** — Sandboxed Renderer, narrow Preload API, origin checks, and authenticated NDJSON Protocol v1
 - 📎 **Safe Attachment Surface** — Select, drop, preview, remove, and recover Chat or Project files; content is not parsed or indexed yet
-- 🎙️ **Local One-Utterance STT** — Explicit capture runs through local VAD and Faster-Whisper; final text can be edited before entering a Chat draft
+- 🎙️ **Local Voice Session** — Explicit capture runs through local VAD and Faster-Whisper; final text can be edited before direct Chat submission or draft handoff
 - 🔊 **Local Reply Playback** — Python queues naturally segmented replies through managed GPT-SoVITS, while trusted Electron Preload plays doubly validated PCM WAV in order
 - 💾 **Recovery First** — Local JSON storage, legacy migration, quarantine, atomic writes, and import/export services
 - ♿ **Desktop Usability** — Themes, keyboard navigation, focus management, Windows scaling, Chinese IME, and offline/error recovery
@@ -52,8 +52,9 @@
 | Audio Devices | ✅ Available | Microphone/speaker selection, Windows permission state, input level, and output tone tests |
 | One-utterance recording and local VAD | ✅ Available | Explicit start, 16 kHz mono `s16le`, transient processing; no automatic Chat Turn |
 | STT / Faster-Whisper | ✅ Foundation available | Electron/React and local final transcripts are connected; optional dependencies and a local model must be installed separately |
+| Bounded Voice Session | ✅ Available | Closed `IDLE → LISTENING → TRANSCRIBING → THINKING → SPEAKING → IDLE` lifecycle, exact Chat/Project binding, and explicit transcript confirmation |
 | GPT-SoVITS / TTS | ✅ Foundation available | Chat segmentation, a managed local worker, bounded queue, private fd3 transport, and Electron playback are connected; local runtime, Profile, weights, and reference audio are required |
-| Continuous voice and barge-in | ⏳ Planned | No complete `LISTENING → THINKING → SPEAKING` session yet |
+| Hands-free continuation and barge-in | ⏳ Planned | No automatic re-listening after a reply and no speech-driven interruption while thinking or playing audio |
 | File parsing and local RAG | ⏳ Planned | No Loaders, Chunking, Vector Store, or cited answers |
 | Work Agent and tool permissions | ⏳ Planned | No tool execution, desktop control, Internet, or Vision workflow |
 | Live2D / desktop pet | ⏳ Planned | The application currently has UI and a character placeholder only |
@@ -269,13 +270,17 @@ Never commit future secrets, tokens, private prompts, or private configuration.
 - Microphone/speaker enumeration, saved device preferences, Windows microphone permission state, short input-level tests, and output-tone tests are implemented.
 - Bounded one-utterance capture starts only after **Start microphone** is pressed. The Renderer performs local downmixing, resampling, and local VAD.
 - A valid segment uses 16 kHz mono signed 16-bit little-endian PCM. Each PCM payload is submitted once and remains transient; the final protocol result contains no audio, model path, or native error.
-- Electron/React connects `voice.transcription.start` to the Voice page. When Faster-Whisper returns a bounded final transcript, the user can edit it and explicitly choose **Use transcript in message**. If a Chat draft already exists, **Append transcript to message** preserves that draft first. This updates the draft only; it never sends a message or creates a Chat Turn automatically.
-- This STT slice returns final text only. Real-time partial transcripts are explicitly deferred to the future continuous-voice session. Ordinary Chat replies can now be segmented and played automatically, but the continuous `LISTENING → THINKING → SPEAKING` session and true barge-in are not complete.
+- The Voice surface follows a closed `IDLE → LISTENING → TRANSCRIBING → THINKING → SPEAKING → IDLE` lifecycle. A final transcript remains in `TRANSCRIBING` for review and editing; only the explicit **Send transcript** action enters `THINKING`.
+- **Send transcript** reuses the same durable Chat send path as the text Composer; there is no Voice-specific Brain path. The user turn, streamed reply, persistence, summaries, and scoped Memory all belong to the exact Chat and optional Project bound when Voice was opened. Text and Voice turns can alternate in the same Chat history.
+- **Use transcript in message** and **Append transcript to message** remain draft-only alternatives. Direct Voice submission neither consumes an existing Composer draft nor attaches files staged in the Composer.
+- Playback moves the Session into `SPEAKING`. Chat completion and trusted playback completion may arrive in either order, and the Session returns to `IDLE` only after both sides drain. If `voice.speech` is unavailable or becomes unavailable, text Chat still completes and the Session does not wait indefinitely for optional playback.
+- Session epoch, Chat ID, optional Project ID, capture/STT IDs, Chat operation/request IDs, and ordered speech sequence must all match. Cancel, hang-up, navigation, and Chat/Project changes invalidate late or cross-context events.
+- This STT path still returns final text only. Real-time partial transcripts, automatic submission, automatic re-listening, and natural barge-in are not implemented; the microphone stays off while Elysia is thinking or speaking. Closing Voice can stop playback for a known request, but that is not speech-driven interruption.
 - Settings and Voice display only sanitized enum-based readiness. A missing model, missing optional dependencies, unavailable CUDA, or initialization failure produces safe recovery guidance without exposing local paths, underlying exceptions, or native diagnostics; `auto` can use the safe CPU fallback.
 - A real local CPU-runtime/model transcription smoke path has been verified. This documentation does not claim a successful real-GPU validation. Automated coverage also exercises the fake runtime, cancellation, timeout, native draining, and late-result disposal.
 - Python now provides an engine-independent synthesis contract, a strict local Voice Profile catalog, a lazy composition root, and a GPT-SoVITS `/tts` adapter that accepts only loopback-IP origins; `localhost` is canonicalized to `127.0.0.1` before I/O. The general contract performs complete container/transport-framing checks, up to 32 MiB, for PCM WAV, Ogg Opus, and a supported ADTS AAC subset without claiming codec decodability. The current non-streaming GPT-SoVITS adapter configures only WAV/AAC and requires a bounded, `Content-Length`-declared, uncompressed, non-`Transfer-Encoding` response.
 - Real local acceptance synthesized the same fixed Chinese smoke sentence twice for each of `neutral`, `happy`, and `sad`; all six calls returned valid WAV audio. With the service stopped, the smoke command returned the stable `service_unreachable` code, and the full text-Chat regression still passed. `service_binding_unverified` means the service is online but its upstream API cannot attest that the catalog-declared weights are loaded; it is not an identity guarantee for those weights.
-- The desktop path copies exact chunks from `Brain.stream_chat()` and segments only at natural punctuation or a bounded length. One managed worker consumes a bounded FIFO. NDJSON carries correlation metadata only; PCM WAV travels over separate fd3 into Electron Main and then through IPC that is absent from public `DesktopApi` to Preload Web Audio. Every clip applies the saved speaker selection first; an unavailable explicit device skips that clip instead of silently falling back to another speaker. React never receives WAV bytes, tokens, hashes, exact prompts, or local asset paths. Profiles, the runtime, weights, and reference audio remain in ignored local directories. See [MODEL_LICENSE.md](./MODEL_LICENSE.md) for provenance and restrictions.
+- The desktop path copies exact chunks from `Brain.stream_chat()` and segments only at natural punctuation or a bounded length. One managed worker consumes a bounded FIFO. NDJSON carries correlation metadata only; PCM WAV travels over separate fd3 into Electron Main and then through IPC that is absent from public `DesktopApi` to Preload Web Audio. Every clip applies the saved speaker selection first; an unavailable explicit device skips that clip instead of silently falling back to another speaker. React receives only Request/Chat, `playing|played|skipped` plus sequence, or terminal `completed|cancelled` status; it never receives WAV bytes, tokens, hashes, reply text, exact prompts, diagnostics, or local asset paths. Request-scoped playback cancellation is validated by trusted Main. Profiles, the runtime, weights, and reference audio remain in ignored local directories. See [MODEL_LICENSE.md](./MODEL_LICENSE.md) for provenance and restrictions.
 
 ---
 
@@ -415,7 +420,7 @@ Confirm that:
 
 ### Why does the Voice page report that local transcription is unavailable?
 
-Install the optional runtime from `requirements-stt.txt`, place the selected complete model directory at `models\weights\faster-whisper\<model>\`, then choose the model, `auto` / `cuda` / `cpu` device, and `auto` / `zh` / `en` language under **Settings → Speech recognition**. Save and restart the Backend. The Voice page reports a safe, specific recovery action when something is missing. A final transcript still does not reply or create a Chat Turn automatically: review or edit it, explicitly place it in the Composer, and then send it.
+Install the optional runtime from `requirements-stt.txt`, place the selected complete model directory at `models\weights\faster-whisper\<model>\`, then choose the model, `auto` / `cuda` / `cpu` device, and `auto` / `zh` / `en` language under **Settings → Speech recognition**. Save and restart the Backend. The Voice page reports a safe, specific recovery action when something is missing. A final transcript is never sent before user confirmation: review or edit it, then choose **Send transcript** to use the current Chat's normal send, persistence, Memory, and reply path, or choose **Use/Append transcript in message** to place text in the Composer for further editing.
 
 ### Why might the desktop still have no speech?
 
@@ -424,9 +429,9 @@ local GPT-SoVITS runtime, a strict Voice Profile, hash-matching weights and
 reference audio, and explicit `GPT_SOVITS_ALLOW_LOCAL_EVALUATION` opt-in. A
 sentence-level synthesis, decoding, or playback failure skips the affected
 sentence; speech is disabled only when a channel or lifecycle failure makes
-safe continuation impossible, while text Chat keeps working. This is bounded
-sentence playback for ordinary Chat replies, not a continuous Voice Session
-or natural barge-in.
+safe continuation impossible, while text Chat keeps working. A bounded,
+explicitly confirmed Voice Session is connected; hands-free continuation,
+real-time partial transcripts, and natural barge-in are not.
 
 ### Why can Project Sources not answer from file contents?
 

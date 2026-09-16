@@ -324,6 +324,20 @@ export type BackendEvent =
       retryable: boolean
     }
   | {
+      type: 'voice-speech-status'
+      kind: 'playing' | 'played' | 'skipped'
+      requestId: string
+      chatId: string
+      sequence: number
+    }
+  | {
+      type: 'voice-speech-status'
+      kind: 'terminal'
+      requestId: string
+      chatId: string
+      state: 'completed' | 'cancelled'
+    }
+  | {
       type: 'permission'
       requestId: string | null
       permissionId: string
@@ -384,6 +398,8 @@ export interface DesktopApi {
   retryMessage(request: RetryChatRequest): Promise<{ requestId: string }>
   /** Ask the Backend to stop the named in-flight generation. */
   stopGeneration(requestId: string): Promise<void>
+  /** Stop trusted playback for one Chat request, even after text completes. */
+  stopSpeechPlayback(requestId: string): Promise<void>
   /** Copy validated plain text through the native clipboard boundary. */
   copyText(text: string): Promise<void>
   /** Open a validated uncredentialed HTTP(S) URL with the operating system. */

@@ -2382,6 +2382,524 @@ test('reviews and edits a transcript before an explicit Chat send', async () => 
   })
 })
 
+test('sends a reviewed transcript through Chat and follows trusted speech status', async () => {
+  await installAudioMock()
+  await page.evaluate(() => {
+    ;(window as TestWindow).elysiaDesktopTest.setAttachmentState({
+      scope: { kind: 'chat', id: 'chat-test' },
+      attachments: [{
+        attachmentId: 'attachment_voice_isolation',
+        fileName: 'keep-for-text-message.md',
+        mediaType: 'text/markdown',
+        sizeBytes: 512,
+        status: 'ready',
+      }],
+      maxFileBytes: 16_777_216,
+      maxFileCount: 10,
+    })
+  })
+  await emitSnapshot(readySnapshot({
+    capabilities: [
+      'chat.stream',
+      'voice.settings',
+      'voice.capture',
+      'voice.transcription',
+      'voice.speech',
+    ],
+  }))
+  const composer = page.getByLabel('Message Elysia')
+  await composer.fill('Keep this typed draft')
+  await expect(page.getByText('keep-for-text-message.md', { exact: true }))
+    .toBeVisible()
+  await setVoiceTranscriptionDelay(true)
+  await setNextVoiceTranscriptionResult({
+    text: 'Send this reviewed voice turn',
+    language: 'en',
+    languageProbability: 0.99,
+  })
+  await clearCalls()
+
+  await page.getByRole('button', { name: 'Start voice' }).click()
+  await page.getByRole('button', { name: 'Start microphone' }).click()
+  await emitSpeechFrames(0.08, 10)
+  await emitAudioFrames(0, 30)
+  expect(await releaseNextVoiceTranscription()).toBe(true)
+  const transcript = page.getByRole('textbox', { name: 'Final transcript' })
+  await expect(transcript).toHaveValue('Send this reviewed voice turn')
+  expect((await getCalls()).some((call) => call.method === 'sendMessage'))
+    .toBe(false)
+
+  await page.evaluate(() => {
+    ;(window as TestWindow).elysiaDesktopTest.setChatActionDelay(true)
+  })
+  await page.getByRole('button', { name: 'Send transcript' }).click()
+  await expect.poll(async () => (
+    (await getCalls()).filter((call) => call.method === 'sendMessage').length
+  )).toBe(1)
+  const send = (await getCalls()).find(
+    (call) => call.method === 'sendMessage',
+  )
+  expect(send?.args).toEqual([{
+    chatId: 'chat-test',
+    message: 'Send this reviewed voice turn',
+    attachmentIds: [],
+  }])
+  await expect(page.getByText('Elysia is thinking', { exact: true }))
+    .toBeVisible()
+  await expect(transcript).not.toBeEditable()
+
+  await emitEvent({
+    type: 'voice-speech-status',
+    kind: 'playing',
+    requestId: 'wrong-request',
+    chatId: 'chat-test',
+    sequence: 0,
+  })
+  await expect(page.getByText('Elysia is thinking', { exact: true }))
+    .toBeVisible()
+  await emitEvent({
+    type: 'voice-speech-status',
+    kind: 'playing',
+    requestId: 'test-request-1',
+    chatId: 'chat-test',
+    sequence: 0,
+  })
+  await expect(page.getByText('Elysia is thinking', { exact: true }))
+    .toBeVisible()
+  await emitEvent({
+    type: 'chat-chunk',
+    requestId: 'test-request-1',
+    chatId: 'chat-test',
+    chunk: 'The local reply started.',
+  })
+  await emitEvent({
+    type: 'voice-speech-status',
+    kind: 'played',
+    requestId: 'test-request-1',
+    chatId: 'chat-test',
+    sequence: 0,
+  })
+  await expect(page.getByText('Elysia is thinking', { exact: true }))
+    .toBeVisible()
+  await expect.poll(() => page.evaluate(() => (
+    (window as TestWindow).elysiaDesktopTest.getPendingChatActionCount()
+  ))).toBe(1)
+  await page.evaluate(() => {
+    const control = (window as TestWindow).elysiaDesktopTest
+    control.releaseNextChatAction()
+    control.setChatActionDelay(false)
+  })
+  await expect(page.getByText('Elysia is thinking', { exact: true }))
+    .toBeVisible()
+  await emitEvent({
+    type: 'voice-speech-status',
+    kind: 'terminal',
+    requestId: 'test-request-1',
+    chatId: 'chat-test',
+    state: 'completed',
+  })
+  await emitEvent({
+    type: 'chat-complete',
+    requestId: 'test-request-1',
+    chatId: 'chat-test',
+    reply: 'Trusted local speech finished.',
+  })
+  await expect(page.getByText('Ready to listen', { exact: true })).toBeVisible()
+  await expect(page.getByLabel('Final transcript')).toHaveCount(0)
+
+  await page.getByRole('button', { name: 'Close voice' }).click()
+  await expect(composer).toHaveValue('Keep this typed draft')
+  await expect(page.getByText('keep-for-text-message.md', { exact: true }))
+    .toBeVisible()
+  await expect(page.getByText('Trusted local speech finished.', { exact: true }))
+    .toBeVisible()
+})
+
+test('hangs up trusted playback and rejects late speech status', async () => {
+  await installAudioMock()
+  await emitSnapshot(readySnapshot({
+    capabilities: [
+      'chat.stream',
+      'voice.settings',
+      'voice.capture',
+      'voice.transcription',
+      'voice.speech',
+    ],
+  }))
+  await setVoiceTranscriptionDelay(true)
+  await setNextVoiceTranscriptionResult({
+    text: 'Hang up this spoken reply',
+    language: 'en',
+    languageProbability: 0.98,
+  })
+  await clearCalls()
+
+  await page.getByRole('button', { name: 'Start voice' }).click()
+  await page.getByRole('button', { name: 'Start microphone' }).click()
+  await emitSpeechFrames(0.08, 10)
+  await emitAudioFrames(0, 30)
+  expect(await releaseNextVoiceTranscription()).toBe(true)
+  await page.evaluate(() => {
+    ;(window as TestWindow).elysiaDesktopTest.setChatActionDelay(true)
+  })
+  await page.getByRole('button', { name: 'Send transcript' }).click()
+  await expect.poll(async () => (
+    (await getCalls()).filter((call) => call.method === 'sendMessage').length
+  )).toBe(1)
+  await expect.poll(() => page.evaluate(() => (
+    (window as TestWindow).elysiaDesktopTest.getPendingChatActionCount()
+  ))).toBe(1)
+
+  // Closing Voice before the invoke acknowledgement must still stop the first
+  // trusted playback event without allowing that event to choose ownership.
+  await page.getByRole('button', { name: 'Close voice' }).click()
+  await expect(page.getByRole('main', { name: 'Voice capture' })).toHaveCount(0)
+  await emitEvent({
+    type: 'voice-speech-status',
+    kind: 'playing',
+    requestId: 'test-request-1',
+    chatId: 'chat-test',
+    sequence: 0,
+  })
+  await expect.poll(async () => (
+    (await getCalls()).filter(
+      (call) => call.method === 'stopSpeechPlayback',
+    ).length
+  )).toBe(1)
+  expect((await getCalls()).find(
+    (call) => call.method === 'stopSpeechPlayback',
+  )?.args).toEqual(['test-request-1'])
+  await page.evaluate(() => {
+    const control = (window as TestWindow).elysiaDesktopTest
+    control.releaseNextChatAction()
+    control.setChatActionDelay(false)
+  })
+
+  await emitEvents([
+    {
+      type: 'voice-speech-status',
+      kind: 'played',
+      requestId: 'test-request-1',
+      chatId: 'chat-test',
+      sequence: 0,
+    },
+    {
+      type: 'voice-speech-status',
+      kind: 'terminal',
+      requestId: 'test-request-1',
+      chatId: 'chat-test',
+      state: 'completed',
+    },
+    {
+      type: 'chat-complete',
+      requestId: 'test-request-1',
+      chatId: 'chat-test',
+      reply: 'The text reply still completed safely.',
+    },
+  ])
+  await expect(page.getByText(
+    'The text reply still completed safely.',
+    { exact: true },
+  )).toBeVisible()
+  expect((await getCalls()).filter(
+    (call) => call.method === 'stopSpeechPlayback',
+  )).toHaveLength(1)
+})
+
+test('stops Composer speech before opening a new Voice Session', async () => {
+  await emitSnapshot(readySnapshot({
+    capabilities: [
+      'chat.stream',
+      'voice.settings',
+      'voice.capture',
+      'voice.transcription',
+      'voice.speech',
+    ],
+  }))
+  await clearCalls()
+
+  const composer = page.getByLabel('Message Elysia')
+  await composer.fill('Read this ordinary Chat reply')
+  await composer.press('Enter')
+  await expect.poll(async () => (
+    (await getCalls()).filter((call) => call.method === 'sendMessage').length
+  )).toBe(1)
+  await emitEvent({
+    type: 'voice-speech-status',
+    kind: 'playing',
+    requestId: 'test-request-1',
+    chatId: 'chat-test',
+    sequence: 0,
+  })
+  await emitEvent({
+    type: 'chat-complete',
+    requestId: 'test-request-1',
+    chatId: 'chat-test',
+    reply: 'The text finished before its speech playback.',
+  })
+
+  await page.getByRole('button', { name: 'Start voice' }).click()
+  await expect(page.getByRole('main', { name: 'Voice capture' })).toBeVisible()
+  await expect.poll(async () => (
+    (await getCalls()).filter(
+      (call) => call.method === 'stopSpeechPlayback',
+    ).length
+  )).toBe(1)
+  expect((await getCalls()).find(
+    (call) => call.method === 'stopSpeechPlayback',
+  )?.args).toEqual(['test-request-1'])
+})
+
+test('stops active speech when its owning Chat changes', async () => {
+  const source = chatSummary('chat-speech-source', 'Speech Source')
+  const destination = chatSummary('chat-speech-destination', 'Speech Destination')
+  await setChatState({
+    activeChat: { ...source, messages: [] },
+    chats: [source, destination],
+  })
+  await emitSnapshot(readySnapshot({
+    chatId: source.chatId,
+    chatTitle: source.title,
+    capabilities: ['chat.stream', 'voice.speech'],
+  }))
+  await clearCalls()
+
+  const composer = page.getByLabel('Message Elysia')
+  await composer.fill('Speak only inside the source Chat')
+  await composer.press('Enter')
+  await expect.poll(async () => (
+    (await getCalls()).filter((call) => call.method === 'sendMessage').length
+  )).toBe(1)
+  await emitEvent({
+    type: 'voice-speech-status',
+    kind: 'playing',
+    requestId: 'test-request-1',
+    chatId: source.chatId,
+    sequence: 0,
+  })
+  await emitEvent({
+    type: 'chat-complete',
+    requestId: 'test-request-1',
+    chatId: source.chatId,
+    reply: 'Source text is complete.',
+  })
+
+  await page.getByRole('button', {
+    name: `Open chat ${destination.title}`,
+  }).click()
+  await expect(page.locator('#chat-title')).toHaveText(destination.title)
+  await expect.poll(async () => (
+    (await getCalls()).filter(
+      (call) => call.method === 'stopSpeechPlayback',
+    ).length
+  )).toBe(1)
+  expect((await getCalls()).find(
+    (call) => call.method === 'stopSpeechPlayback',
+  )?.args).toEqual(['test-request-1'])
+})
+
+test('settles a Voice Chat turn when speech capability is unavailable', async () => {
+  await installAudioMock()
+  await openVoiceCapturePage()
+  await setVoiceTranscriptionDelay(true)
+  await setNextVoiceTranscriptionResult({
+    text: 'Complete as a text-only Voice turn',
+    language: 'en',
+    languageProbability: 0.97,
+  })
+  await clearCalls()
+
+  await page.getByRole('button', { name: 'Start microphone' }).click()
+  await emitSpeechFrames(0.08, 10)
+  await emitAudioFrames(0, 30)
+  expect(await releaseNextVoiceTranscription()).toBe(true)
+  await page.getByRole('button', { name: 'Send transcript' }).click()
+  await expect(page.getByText('Elysia is thinking', { exact: true }))
+    .toBeVisible()
+  await emitEvent({
+    type: 'chat-complete',
+    requestId: 'test-request-1',
+    chatId: 'chat-test',
+    reply: 'Text-only completion is ready.',
+  })
+
+  await expect(page.getByText('Ready to listen', { exact: true })).toBeVisible()
+  await expect(page.getByLabel('Final transcript')).toHaveCount(0)
+  expect((await getCalls()).some(
+    (call) => call.method === 'stopSpeechPlayback',
+  )).toBe(false)
+})
+
+test('continues Voice as text when speech capability disappears mid-turn', async () => {
+  await installAudioMock()
+  await emitSnapshot(readySnapshot({
+    capabilities: [
+      'chat.stream',
+      'voice.settings',
+      'voice.capture',
+      'voice.transcription',
+      'voice.speech',
+    ],
+  }))
+  await setVoiceTranscriptionDelay(true)
+  await setNextVoiceTranscriptionResult({
+    text: 'Keep the reply visible if speech disappears',
+    language: 'en',
+    languageProbability: 0.97,
+  })
+  await clearCalls()
+
+  await page.getByRole('button', { name: 'Start voice' }).click()
+  await page.getByRole('button', { name: 'Start microphone' }).click()
+  await emitSpeechFrames(0.08, 10)
+  await emitAudioFrames(0, 30)
+  expect(await releaseNextVoiceTranscription()).toBe(true)
+  await page.getByRole('button', { name: 'Send transcript' }).click()
+  await expect(page.getByText('Elysia is thinking', { exact: true }))
+    .toBeVisible()
+
+  await emitSnapshot(readySnapshot({
+    revision: 2,
+    capabilities: [
+      'chat.stream',
+      'voice.settings',
+      'voice.capture',
+      'voice.transcription',
+    ],
+  }))
+  await expect(page.getByText(
+    'Speech playback became unavailable. The text reply will continue safely.',
+    { exact: true },
+  )).toBeVisible()
+  await emitEvent({
+    type: 'chat-complete',
+    requestId: 'test-request-1',
+    chatId: 'chat-test',
+    reply: 'The safe text reply completed.',
+  })
+
+  await expect(page.getByText('Ready to listen', { exact: true })).toBeVisible()
+  await expect(page.getByText(
+    'Speech playback became unavailable. The text reply will continue safely.',
+    { exact: true },
+  )).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Start microphone' })).toBeEnabled()
+})
+
+test('recovers a rejected Voice send without duplicating its transcript', async () => {
+  await installAudioMock()
+  await emitSnapshot(readySnapshot({
+    capabilities: [
+      'chat.stream',
+      'voice.settings',
+      'voice.capture',
+      'voice.transcription',
+      'voice.speech',
+    ],
+  }))
+  const composer = page.getByLabel('Message Elysia')
+  await composer.fill('Keep this typed draft only')
+  await setVoiceTranscriptionDelay(true)
+  await setNextVoiceTranscriptionResult({
+    text: 'Retry this Voice transcript once',
+    language: 'en',
+    languageProbability: 0.98,
+  })
+  await clearCalls()
+
+  await page.getByRole('button', { name: 'Start voice' }).click()
+  await page.getByRole('button', { name: 'Start microphone' }).click()
+  await emitSpeechFrames(0.08, 10)
+  await emitAudioFrames(0, 30)
+  expect(await releaseNextVoiceTranscription()).toBe(true)
+  const transcript = page.getByRole('textbox', { name: 'Final transcript' })
+  await expect(transcript).toHaveValue('Retry this Voice transcript once')
+  await page.evaluate(() => {
+    const control = (window as TestWindow).elysiaDesktopTest
+    control.failNextSend('The Voice request could not start.')
+    control.setChatActionDelay(true)
+  })
+  await page.getByRole('button', { name: 'Send transcript' }).click()
+  await expect.poll(() => page.evaluate(() => (
+    (window as TestWindow).elysiaDesktopTest.getPendingChatActionCount()
+  ))).toBe(1)
+
+  await emitSnapshot(readySnapshot({
+    revision: 2,
+    capabilities: [
+      'chat.stream',
+      'voice.settings',
+      'voice.capture',
+      'voice.transcription',
+    ],
+  }))
+  await page.evaluate(() => {
+    const control = (window as TestWindow).elysiaDesktopTest
+    control.releaseNextChatAction()
+    control.setChatActionDelay(false)
+  })
+
+  await expect(page.getByText('Voice action failed', { exact: true }))
+    .toBeVisible()
+  await expect(transcript).toBeEditable()
+  await expect(transcript).toHaveValue('Retry this Voice transcript once')
+  await expect(page.getByRole('alert')).toContainText(
+    'The transcript was not sent. Review it and try again.',
+  )
+  await expect.poll(() => page.evaluate(() => (
+    window.localStorage.getItem('elysia.pending-chat-send.v1')
+  ))).toBeNull()
+
+  await page.getByRole('button', { name: 'Send transcript' }).click()
+  await expect.poll(async () => (
+    (await getCalls()).filter((call) => call.method === 'sendMessage').length
+  )).toBe(2)
+  await emitEvent({
+    type: 'chat-complete',
+    requestId: 'test-request-1',
+    chatId: 'chat-test',
+    reply: 'The retried Voice turn completed.',
+  })
+  await expect(page.getByText('Ready to listen', { exact: true })).toBeVisible()
+  await page.getByRole('button', { name: 'Close voice' }).click()
+  await expect(composer).toHaveValue('Keep this typed draft only')
+})
+
+test('shows a Voice Chat failure before returning its transcript to the draft', async () => {
+  await installAudioMock()
+  await openVoiceCapturePage()
+  await setVoiceTranscriptionDelay(true)
+  await setNextVoiceTranscriptionResult({
+    text: 'Recover this failed Voice turn',
+    language: 'en',
+    languageProbability: 0.97,
+  })
+  await clearCalls()
+
+  await page.getByRole('button', { name: 'Start microphone' }).click()
+  await emitSpeechFrames(0.08, 10)
+  await emitAudioFrames(0, 30)
+  expect(await releaseNextVoiceTranscription()).toBe(true)
+  await page.getByRole('button', { name: 'Send transcript' }).click()
+  await emitEvent({
+    type: 'chat-error',
+    requestId: 'test-request-1',
+    chatId: 'chat-test',
+    code: 'generation.failed',
+    message: 'The local reply failed safely.',
+    retryable: true,
+  })
+
+  await expect(page.getByText('Voice action failed', { exact: true }))
+    .toBeVisible()
+  await expect(page.getByRole('alert')).toContainText(
+    'The local reply failed safely. Your transcript was restored to the Chat draft.',
+  )
+  await page.getByRole('button', { name: 'Close voice' }).click()
+  await expect(page.getByLabel('Message Elysia'))
+    .toHaveValue('Recover this failed Voice turn')
+})
+
 test('safely appends a reviewed transcript after an existing draft', async () => {
   await installAudioMock()
   await emitSnapshot(readySnapshot({
@@ -5190,7 +5708,15 @@ test('keeps Chat drafts and canonical history across renderer reload', async () 
 })
 
 test('resumes an Electron-owned stream after renderer reload', async () => {
-  await emitSnapshot(readySnapshot())
+  await emitSnapshot(readySnapshot({
+    capabilities: [
+      'chat.stream',
+      'voice.settings',
+      'voice.capture',
+      'voice.transcription',
+      'voice.speech',
+    ],
+  }))
   const composer = page.getByLabel('Message Elysia')
   await composer.fill('Continue safely after refresh')
   await composer.press('Enter')
@@ -5220,6 +5746,14 @@ test('resumes an Electron-owned stream after renderer reload', async () => {
   const reply = page.getByLabel('Message from Elysia').last()
   await expect(reply).toContainText('First half')
   await expect(page.getByRole('button', { name: 'Stop generation' })).toBeVisible()
+  await clearCalls()
+  await emitEvent({
+    type: 'voice-speech-status',
+    kind: 'playing',
+    requestId: 'test-request-1',
+    chatId: 'chat-test',
+    sequence: 0,
+  })
   await emitEvent({
     type: 'chat-chunk',
     requestId: 'test-request-1',
@@ -5242,6 +5776,18 @@ test('resumes an Electron-owned stream after renderer reload', async () => {
   await expect.poll(() => page.evaluate(() => (
     window.localStorage.getItem('elysia.pending-chat-send.v1')
   ))).toBeNull()
+
+  await page.getByRole('button', { name: 'Start voice' }).click()
+  await expect(page.getByRole('main', { name: 'Voice capture' })).toBeVisible()
+  await expect.poll(async () => (
+    (await getCalls()).filter(
+      (call) => call.method === 'stopSpeechPlayback',
+    ).length
+  )).toBe(1)
+  expect((await getCalls()).find(
+    (call) => call.method === 'stopSpeechPlayback',
+  )?.args).toEqual(['test-request-1'])
+  await page.getByRole('button', { name: 'Close voice' }).click()
 
   await emitSnapshot(readySnapshot({
     activeGeneration: {

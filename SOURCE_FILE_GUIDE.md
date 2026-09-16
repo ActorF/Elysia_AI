@@ -239,7 +239,7 @@ ChatSession.project_id
 | 文件 | 实际用途 | 主要连接 |
 | --- | --- | --- |
 | `desktop/.gitignore` | 排除 `node_modules`、`dist`、日志和常见本地编辑器文件；`dist-electron`、`out` 与 Playwright 输出由根 `.gitignore` 负责。 | npm/Vite/Electron/Playwright 生成物 |
-| `desktop/README.md` | Desktop 开发指南；双 CMD 启动、本地 STT 可选安装/模型目录、Final Transcript 手工测试、架构边界、验证和打包说明。 | 根 README、Protocol README、npm scripts、`requirements-stt.txt` |
+| `desktop/README.md` | Desktop 开发指南；双 CMD 启动、本地 STT 可选安装/模型目录、有界 Voice Session 手工测试、架构边界、验证和打包说明。 | 根 README、Protocol README、npm scripts、`requirements-stt.txt` |
 | `desktop/package.json` | npm 项目入口、React/Electron 依赖、开发/文档审计/测试/构建/打包脚本和 electron-builder 配置。 | 所有 Desktop 工具链 |
 | `desktop/package-lock.json` | 固定完整 npm 依赖图和下载完整性，使 `npm ci` 与 CI 可复现；不要手工编辑。 | npm、GitHub Actions、安全审计 |
 | `desktop/index.html` | Vite Renderer HTML 入口；定义 CSP、favicon、viewport、theme-color 和 `#root`。 | `desktop/src/main.tsx`、Vite、Electron Window |
@@ -259,14 +259,14 @@ ChatSession.project_id
 
 | 文件 | 实际用途 | 主要连接 |
 | --- | --- | --- |
-| `desktop/electron/contracts.ts` | 定义 Renderer 可见的最小 Desktop API、Backend Snapshot/Event、Chat/Project/Settings/Attachment/Voice 类型；Voice 只暴露开始/取消、相关 Final/Error Event 与净化后的转写状态，不是 Python 原始 Wire Schema。 | Preload、Main、React、Mock Preload |
-| `desktop/electron/preload.cts` | 用 `contextBridge` 暴露固定 `window.elysiaDesktop`；把一次性 STT 开始/取消映射到固定 IPC，并把净化 Event 转交 Renderer。私有、未导出的 Web Audio Owner 只接受 Main 发来的 Canonical 32 kHz mono PCM16 WAV，先应用已保存的 Output Sink，再 Decode；指定设备路由失败时绝不回退到默认扬声器。播放结束或失败后只回送一次性 opaque Settlement；React API 不接触 WAV、Token、Hash、`ipcRenderer`、Node、`fs` 或进程句柄。 | React、Electron Main、`speech-playback-owner.ts` |
-| `desktop/electron/main.ts` | Electron 主进程；创建带品牌图标的窗口/托盘，验证 Sender、Settings/STT 参数、请求 ID、路径和权限，注册固定 IPC，控制导航与应用关闭，并把私有 Preload Speech Playback Owner 注入 BackendProcess。 | Preload、BackendProcess、原生 Dialog/Clipboard/Audio、`speech-playback-owner.ts`、`public/elysia-icon.png` |
+| `desktop/electron/contracts.ts` | 定义 Renderer 可见的最小 Desktop API、Backend Snapshot/Event、Chat/Project/Settings/Attachment/Voice 类型；除 STT 开始/取消与 Final/Error 外，只为 Voice Session 暴露闭集的安全 Speech Status 和按 Chat Request ID 停止播放的方法，不是 Python 原始 Wire Schema。 | Preload、Main、React、Mock Preload；状态不含 WAV、Token、Hash、文本、路径或诊断 |
+| `desktop/electron/preload.cts` | 用 `contextBridge` 暴露固定 `window.elysiaDesktop`；把一次性 STT 开始/取消和按 Request ID 停止播放映射到固定 IPC，并把净化 Event 转交 Renderer。私有、未导出的 Web Audio Owner 只接受 Main 发来的 Canonical 32 kHz mono PCM16 WAV，先应用已保存的 Output Sink，再 Decode；指定设备路由失败时绝不回退到默认扬声器。播放结束或失败后只回送一次性 opaque Settlement；React API 不接触 WAV、Token、Hash、`ipcRenderer`、Node、`fs` 或进程句柄。 | React、Electron Main、`speech-playback-owner.ts` |
+| `desktop/electron/main.ts` | Electron 主进程；创建带品牌图标的窗口/托盘，验证 Sender、Settings/STT 参数、播放停止 Request ID、路径和权限，注册固定 IPC，控制导航与应用关闭，并把私有 Preload Speech Playback Owner 注入 BackendProcess。 | Preload、BackendProcess、原生 Dialog/Clipboard/Audio、`speech-playback-owner.ts`、`public/elysia-icon.png` |
 | `desktop/electron/bounded-ndjson.ts` | 用固定上限 Buffer 增量切分 Python stdout；按原始字节限制 Frame，接受 CRLF，严格拒绝坏 UTF-8、未换行截断和超限无换行数据，并在终态移除全部 Stream Listener。 | `desktop/electron/backend-process.ts`、Protocol Contract Tests |
 | `desktop/electron/speech-audio-channel.ts` | 增量解析独立 Pipe 上的固定 84-byte `audio.binary.v1` Frame；在 Payload 分配前限制 8 MiB，流式校验 SHA-256，只接受精确 32 kHz mono PCM16 WAV 与 120 秒上限，并以单 Frame ACK/Discard、Pause 和 `unshift` 保持顺序、背压及有界内存。任何坏 Header、Token、Hash、WAV、截断或 ACK 都会终止 Reader；无待处理 Frame 的干净 EOF 会单独通知 Owner。 | `speech-delivery.ts`、`backend-process.ts` fd3 Owner；Reader 不自行销毁 Owner Stream，原始 WAV 不进入 NDJSON 或 React |
 | `desktop/electron/speech-delivery.ts` | 在 Electron Main 内关联可以任意先后抵达的 NDJSON Clip Metadata 与 fd3 Binary Frame，逐项核验 Request/Chat/Sequence/Token/长度/格式/Hash，并且每次只允许一个未确认 Frame。失败句子按序跳过；Terminal、取消、迟到结果、播放器失败和 Pipe EOF 都以有界状态收敛。 | `backend-process.ts`、`speech-audio-channel.ts`、`speech-playback-owner.ts`；对 React 只可生成无 Token/Hash/音频的安全状态 |
 | `desktop/electron/speech-playback-owner.ts` | Main 到可信 Preload 的单 Clip 播放 Owner；生成一次性 UUID、验证 Settlement 只能来自所属窗口 Main Frame，以 130 秒上限处理播放、取消、窗口销毁和跨文档断连，并保留所有尚未精确结算的 Retired ID 来隔离迟到 ACK（数量受 In-flight 上限约束）。稳定路由可在 macOS 窗口关闭与重建之间替换具体 Owner，而页面内锚点跳转不会误中断播放。 | `main.ts`、`preload.cts`、`speech-delivery.ts`；固定私有 IPC Channel 不进入 `DesktopApi` |
-| `desktop/electron/backend-process.ts` | Python 子进程 Owner 和 Protocol State Machine；通过有界 NDJSON Reader 限制 stdout，关联 Chat/STT Request 与封闭 Lifecycle Event，并为子进程建立独立 fd3 Speech Pipe。Speech Metadata 只交给 Main 内 Delivery Coordinator，WAV 只交给可信 Preload；Speech Pipe 关闭或损坏会禁用本次可选语音而不破坏文字 Chat。Python stderr 不原样暴露。 | Main、`desktop_backend.py`、`protocol.ts`、`bounded-ndjson.ts`、`speech-delivery.ts` |
+| `desktop/electron/backend-process.ts` | Python 子进程 Owner 和 Protocol State Machine；通过有界 NDJSON Reader 限制 stdout，关联 Chat/STT Request 与封闭 Lifecycle Event，并为子进程建立独立 fd3 Speech Pipe。Speech Metadata 只交给 Main 内 Delivery Coordinator，WAV 只交给可信 Preload；Renderer 只收到 Request/Chat、闭集状态和有序 Sequence。Speech Pipe 关闭或损坏会立即移除 Renderer 的 `voice.speech` capability，不破坏文字 Chat，也不会让 Voice Session 无限等待。Python stderr 不原样暴露。 | Main、`desktop_backend.py`、`protocol.ts`、`bounded-ndjson.ts`、`speech-delivery.ts` |
 | `desktop/electron/protocol.ts` | TypeScript 端 Protocol v1 类型、Builder、Parser 和严格 Runtime Validation；除 STT exact 状态与一次性 PCM 请求外，还封闭验证 Speech Clip/Failure/Terminal 的 Request、Token、uint32 Sequence、8 MiB WAV Metadata、失败枚举和终态计数，不把静态类型当安全边界。 | BackendProcess、共享 Schema/Fixtures、Contract Tests、私有二进制音频 Reader |
 | `desktop/electron/protocol-text.ts` | 定义跨 Python/TypeScript 一致的 Unicode Code Point 长度、Blank Set 和 Trim 规则。 | `protocol.ts`、Python Contracts |
 | `desktop/electron/renderer-source.ts` | 只允许准确的 Vite Root 或打包 `dist/index.html` 作为可信 Renderer 来源。 | Main、Permission Policy、测试 |
@@ -279,7 +279,7 @@ ChatSession.project_id
 | --- | --- | --- |
 | `desktop/src/main.tsx` | 初始化 React Root、StrictMode、ThemeProvider 和 ErrorBoundary；初始 Paint 后通知 Electron。 | `index.html`、`App.tsx`、Preload API |
 | `desktop/src/AppErrorBoundary.tsx` | 捕获 React Render Error，显示可恢复错误并把焦点移动到错误区域。 | `main.tsx` |
-| `desktop/src/App.tsx` | Renderer 总协调器；除 Canonical State、Draft、Retry、Attachments 与 Settings 外，还关联单句 Capture/STT Event，处理取消/迟到竞态，并把用户编辑后的 Final Transcript 显式写入当前 Chat 草稿。 | 所有 React Feature、`window.elysiaDesktop` |
+| `desktop/src/App.tsx` | Renderer 总协调器；除 Canonical State、Draft、Retry、Attachments 与 Settings 外，还把 Capture、STT、Voice Session Controller、Canonical Chat Send 与安全 Speech Status 串起来。用户可以显式发送 Final Transcript，或只把它写入当前 Chat 草稿。 | 所有 React Feature、`window.elysiaDesktop`；Voice 与文字复用同一发送/恢复/持久化路径，直接 Voice Send 不消费 Composer Draft 或 Attachment |
 | `desktop/src/App.css` | App Shell、Chat、Dialog、Settings、Voice、Responsive、High Zoom 和 Forced Colors 样式。 | `App.tsx`、Design Tokens |
 | `desktop/src/desktop-api.d.ts` | 扩展 Browser `Window` 类型，声明可选 `elysiaDesktop`；不会实际创建 API。 | TypeScript、Preload Contracts |
 
@@ -319,7 +319,8 @@ Project Memory 页面目前仍是明确 Placeholder。Project Source 只安全�
 | `desktop/src/settings/SettingsView.tsx` | 编辑 Chat/Ollama/Memory/Import 设置，以及 STT 模型、`auto|cuda|cpu` 设备和 `auto|zh|en` 默认语言；显示 Desired/Active、净化后的就绪状态、重启提示、主题和隐私边界。 | App、Desktop Settings/Voice Backend、ThemeProvider、`transcription-readiness.ts` |
 | `desktop/src/settings/VoiceSettingsSection.tsx` | 设备偏好 UI；枚举麦克风/扬声器、保存 opaque ID、显示权限、刷新设备、运行短暂输入电平和输出音调测试。 | `audio-devices.ts`、Voice Desktop API |
 | `desktop/src/voice/audio-devices.ts` | Stage 7 设备 Controller；构造时不请求权限，管理 enumerate、8 秒麦克风 Level Test、800 ms Speaker Tone、Race 和 Cleanup。 | VoiceSettingsSection、Browser MediaDevices/AudioContext |
-| `desktop/src/voice/CallPreview.tsx` | 全窗口单句 Voice 页面；显示采集/转写/取消状态和可编辑 Final Transcript，要求用户显式放入或追加到 Composer；不显示 Partial Transcript，也不自动发送。 | App、Capture Controller、Voice Backend API |
+| `desktop/src/voice/voice-session-controller.ts` | Renderer-local 的封闭五状态 Voice Session Controller；只保存有界 ID、Final Transcript 和安全终态，不拥有 PCM、播放器或持久化。 | 以 epoch、Chat、Project、Capture/STT、Chat Operation/Request 和 Speech Sequence 拒绝迟到、跨会话及乱序事件；把已确认 Transcript 交给现有 Chat 路径 |
+| `desktop/src/voice/CallPreview.tsx` | 全窗口有界 Voice 页面；显示五状态、可编辑 Final Transcript、显式 Send 与 Use/Append 草稿操作；Thinking/Speaking 期间锁定 Transcript 和麦克风。 | App、Capture Controller、Voice Session Controller；不显示 Partial Transcript，不自动提交或自动重新监听 |
 | `desktop/src/voice/transcription-readiness.ts` | 把 Python/Electron 的闭合集合 STT Status/Reason 转成 Settings 与 Voice 共用的安全、可操作提示；绝不渲染模型路径或 Native Error。 | `App.tsx`、`SettingsView.tsx`、`electron/protocol.ts` |
 
 ## 21. Character、Design System 与 Theme
@@ -351,13 +352,14 @@ Project Memory 页面目前仍是明确 Placeholder。Project Source 只安全�
 | 文件 | 实际用途 | 主要连接 |
 | --- | --- | --- |
 | `desktop/tests/check-documentation.test.mjs` | 验证源码发现会排除精确的 `models/cache/`，同时继续扫描 `core/cache/` 等受维护目录。 | Documentation Checker、`npm run test:contract` |
-| `desktop/tests/protocol.contract.test.mjs` | 在 Node 中测试编译后的 Protocol Helpers 和 BackendProcess；覆盖双端 Fixture、有界 NDJSON 的分段 UTF-8/CRLF/精确边界/超限/截断、STT exact Status/敏感字段拒绝、Request 关联、互斥、Cancel/Draining Race、Speech Capability/fd3 生命周期、Metadata 不向 Renderer 转发、Stream、URL 与 Permission Policy。 | `dist-electron`、Schema/Fixtures；使用 Fake Child 与一次性本地 Node Child，不启动真实 Python |
+| `desktop/tests/protocol.contract.test.mjs` | 在 Node 中测试编译后的 Protocol Helpers 和 BackendProcess；覆盖双端 Fixture、有界 NDJSON、STT exact Status、Request 关联、Cancel/Draining Race、Speech Capability/fd3 生命周期，以及 Renderer-safe Speech Status 字段白名单、Chat 文本结束后的播放停止和语音失效时立即移除 capability。 | `dist-electron`、Schema/Fixtures；使用 Fake Child 与一次性本地 Node Child，不启动真实 Python |
+| `desktop/tests/voice-session-controller.test.mjs` | 覆盖五状态、显式确认、Chat/播放终态任意顺序、无 Speech Capability、Terminal-before-ACK、取消/Hang-up、跨 Chat/Project、迟到与乱序事件。 | 纯 Controller 测试，不启动 Electron、Python、模型或真实音频 |
 | `desktop/tests/speech-audio-channel.test.mjs` | 直接测试 Electron 二进制音频 Reader 与 Delivery Coordinator；覆盖每个分片边界、Coalesced Frame、ACK/Discard 背压、EOF 截断/干净关闭、长度先验、Header/Token/Hash、Canonical WAV、Metadata 任意到达顺序、FIFO、失败跳过、取消/迟到 Settlement、Terminal 计数、播放器断连、错误脱敏和 Listener 清理。 | `speech-audio-channel.ts` 与 `speech-delivery.ts` 编译产物；使用内存 Pipe 和 Fake Playback，不启动 Python、Electron UI 或真实模型 |
 | `desktop/tests/preload-speech-playback.test.cjs` | 在隔离 Node 进程中加载生产 Preload，验证指定/默认 Output Sink 都在 Decode 和 Start 前完成、路由失败不回退、Settings 查询期间取消不会播放，以及私有音频能力未暴露给 React。 | `preload.cts` 编译产物、Fake Electron IPC 与 Fake Web Audio |
 | `desktop/tests/speech-playback-owner.test.mjs` | 直接验证 Main 所有的私有 Playback Owner；覆盖一次性 Settlement、所属 Main Frame、取消迟到回复、窗口替换、Renderer 崩溃、跨文档导航、空闲 Owner 退役和 Listener 清理。 | `speech-playback-owner.ts` 编译产物与 Electron Module Mock |
 | `desktop/tests/ui/electron-main.cjs` | Playwright 专用 Electron Main；加载生产 Renderer Build，保持 Sandbox/Context Isolation，但不启动生产 Backend。 | UI Test、Mock Preload、`dist/index.html` |
-| `desktop/tests/ui/mock-preload.cjs` | UI 测试专用 `elysiaDesktop` Fake；除 Canonical 状态外模拟 STT 开始/终态/取消、Readiness、延迟、失败、Reload 和 Race。 | App Shell UI Tests；不会进入生产包 |
-| `desktop/tests/ui/app-shell.spec.ts` | Playwright 启动真实 Electron Renderer，覆盖 Chat/Project/Settings/Voice；STT 回归包括编辑、显式放入/追加草稿、取消迟到结果、Close、Fresh Retry 与安全 Readiness。 | Production React Build + Mock Backend |
+| `desktop/tests/ui/mock-preload.cjs` | UI 测试专用 `elysiaDesktop` Fake；除 Canonical 状态外模拟 STT 开始/终态/取消、Speech Status、按 Request 停止播放、Readiness、延迟、失败、Reload 和 Race。 | App Shell UI Tests；不会进入生产包 |
+| `desktop/tests/ui/app-shell.spec.ts` | Playwright 启动真实 Electron Renderer，覆盖 Chat/Project/Settings/Voice；Voice 回归包括编辑、显式 Send、Use/Append 草稿、Canonical Chat、Thinking/Speaking、无 Speech Capability、取消迟到结果、Close、Fresh Retry 与安全 Readiness。 | Production React Build + Mock Backend |
 
 ## 24. Python 测试：`tests/`
 
@@ -419,9 +421,9 @@ Project Memory 页面目前仍是明确 Placeholder。Project Source 只安全�
 | `tests/test_voice_transcription.py` | 引擎无关的转写请求、最终结果、语言、置信度、不可变性和错误层级。 |
 | `tests/test_voice_transcription_jobs.py` | 有界后台转写的 Admission、Worker/Queue Capacity、Cancel/Timeout Race、Native Draining、迟到结果丢弃、Retention 和 Shutdown。 |
 
-## 25. Voice Capture、本地 STT 与本地 TTS
+## 25. Voice Session、Capture、本地 STT 与本地 TTS
 
-当前桌面输入仍是“显式单句采集 → 本地最终转写 → 人工确认进入草稿”的有界流程；输出则已把流式 Assistant Chunk 旁路分句并接入受管本地 TTS 播放。它们仍不是持续语音会话；理解这一层时要分别看 Capture/STT/Renderer Handoff、外部 HTTP Smoke 与受管桌面 TTS 三条数据流。
+当前桌面已把显式单句采集、Final STT、人工确认、Canonical Chat、受管 TTS 和可信播放状态组合为一个有界 Voice Session。它不是第二套对话系统：Transcript 只有在用户点击 **Send transcript** 后才进入现有 Chat，之后的 Brain、Persistence、Summary、Memory 和回复播放都沿用正常路径。尚未实现的是 Partial Transcript、自动提交、回复后自动监听和自然 Barge-in。
 
 ### Capture 核心文件
 
@@ -449,27 +451,33 @@ Project Memory 页面目前仍是明确 Placeholder。Project Source 只安全�
 
 可选模型名称是 `tiny`、`base`、`small`、`medium`、`large-v3`、`turbo`；每个名称只映射到 `models/weights/faster-whisper/<model>`。设备是 `auto`、`cuda`、`cpu`，默认语言是 `auto`、`zh`、`en`。缺模型、缺依赖、Runtime Probe、CUDA 或初始化失败只形成闭集 Reason，不允许把模型路径、异常消息或 Native 对象穿过协议。
 
-### Electron 与 Renderer Final Transcript Handoff
+### Electron、Renderer 与 Voice Session Handoff
 
 | 文件 | 当前职责 | 关键边界 |
 | --- | --- | --- |
 | `desktop/electron/protocol.ts` | 严格解析 STT Settings、Readiness、一次性 PCM 请求和 PCM-free Final Result。 | 拒绝 Extra/Path/Message/Native 字段和不一致状态 |
-| `desktop/electron/backend-process.ts` | 关联 Request/Session/Chat，处理 Progress、Cancel Race 和终态，并在 STT 活跃时阻止冲突写入。 | Pending Metadata 不保留 PCM |
-| `desktop/electron/main.ts` | 校验 Renderer STT 参数与 Cancel Request ID，映射固定 IPC。 | 不接受任意 Channel 或任意设备/模型值 |
-| `desktop/electron/preload.cts` | 暴露 `beginVoiceTranscription` / `stopVoiceTranscription` 与安全 Event Subscription。 | 不暴露原始 `ipcRenderer` |
-| `desktop/electron/contracts.ts` | 声明 Renderer 可见的开始确认、Final/Error Event 和净化 Status。 | Final Event 不包含 PCM 或 Native Diagnostic |
-| `desktop/src/App.tsx` | 管理 Capture/STT Operation Token、Request 关联、取消/关闭/导航竞态和 Final Transcript 到草稿的原子 Handoff。 | 迟到结果不能污染其他 Chat |
-| `desktop/src/voice/CallPreview.tsx` | 显示并允许编辑 Final Transcript；按钮根据现有草稿选择 Use 或 Append。 | 不自动发送，不显示实时 Partial |
+| `desktop/electron/backend-process.ts` | 关联 Request/Session/Chat，处理 Progress、Cancel Race 和终态，并把 Delivery Coordinator 的闭集播放状态转成 Renderer-safe Event。 | Pending Metadata 不保留 PCM；语音失效时移除 `voice.speech`，文字 Chat 继续 |
+| `desktop/electron/main.ts` | 校验 Renderer STT 参数、Cancel Request ID 与播放停止 Request ID，映射固定 IPC。 | 不接受任意 Channel 或任意设备/模型值 |
+| `desktop/electron/preload.cts` | 暴露 `beginVoiceTranscription` / `stopVoiceTranscription` / `stopSpeechPlayback` 与安全 Event Subscription。 | 私有 WAV IPC 与原始 `ipcRenderer` 不暴露给 React |
+| `desktop/electron/contracts.ts` | 声明 Renderer 可见的开始确认、Final/Error，以及只含 Request/Chat、闭集 Kind、Sequence 或 Terminal State 的安全播放状态。 | 不包含 PCM、Token、Hash、文本、路径或 Native Diagnostic |
+| `desktop/src/voice/voice-session-controller.ts` | 管理 `IDLE → LISTENING → TRANSCRIBING → THINKING → SPEAKING → IDLE`，并以 exact owner 接受异步事件。 | 只持有有界 ID、Final Transcript 与安全终态，不拥有 PCM、Chat 持久化或播放器 |
+| `desktop/src/App.tsx` | 把 Capture/STT、Controller、Canonical Chat Send 与播放状态关联；Final Transcript 可显式 Send 或进入草稿。 | Voice 打开时固定 Chat/Project；迟到、跨上下文或乱序事件不能污染当前 Session |
+| `desktop/src/voice/CallPreview.tsx` | 显示并允许编辑 Final Transcript；提供显式 Send 与 Use/Append，并显示 Thinking/Speaking。 | 不显示实时 Partial，不自动提交、自动重新监听或开放思考/播放期间的麦克风 |
 | `desktop/src/voice/transcription-readiness.ts` | 把闭集 Status/Reason 转成一致的恢复步骤。 | UI 不渲染底层路径或错误原文 |
 | `desktop/src/settings/SettingsView.tsx` | 编辑 STT 模型/设备/语言并显示 Active 值、Readiness 和 Restart 提示。 | 保存值与当前生效值明确分离 |
 
 完整连接关系：
 
 ```text
+open Voice
+  → bind exact chat_id + optional project_id + epoch
+  → IDLE
 explicit Start microphone
+  → LISTENING
   → getUserMedia
   → audio-capture.ts
   → voice-activity-detector.ts
+  → TRANSCRIBING
   → beginVoiceTranscription (Preload / Electron)
   → voice.transcription.start
   → desktop_backend.py admission / mutual exclusion
@@ -477,14 +485,26 @@ explicit Start microphone
   → FasterWhisperTranscriber
   → correlated, bounded PCM-free final result
   → editable CallPreview transcript
-  → explicit Use / Append
-  → current Chat's durable Composer draft
-  → user sends separately
+  ├─ explicit Use / Append
+  │    → current Chat's durable Composer draft only
+  └─ explicit Send transcript
+       → existing durable Chat send path
+       → THINKING
+       → Brain / persistence / Summary / scoped Memory
+       → streamed Chat reply
+       ├─ text-only or unavailable speech
+       │    → IDLE after Chat terminal
+       └─ trusted playing status
+            → SPEAKING
+            → wait for both Chat terminal and speech terminal
+            → IDLE
 ```
 
-每份 PCM 只跨协议一次，不进入 Chat、Memory 或长期文件。用户取消、关闭 Voice 或切换上下文后，迟到结果不能回填草稿。Cancel 或 Timeout 只结束用户可见任务；Python 无法安全终止正在 Native Library 内运行的线程，因此 Runner 会继续占用物理容量直到调用返回并丢弃迟到结果。在排空期间，新 STT、Chat 与冲突配置写入会收到 Busy。
+每份 PCM 只跨协议一次，不进入 Chat、Memory 或长期文件。Final Transcript 停留在 `TRANSCRIBING` 等待人工检查；Capture/STT 本身不会创建 Chat Turn。直接 Send 与文字 Composer 复用同一个 Durable Pending Send、Backend Request、Brain 和持久化路径，但不会消费已有 Composer Draft，也不会把暂存 Attachment 附加到这次 Voice Turn。
 
-当前 STT 桌面协议仍只传递最终文字，不提供实时 Partial Transcript。TTS 已有独立于 STT PCM 和 NDJSON 的私有播放链，但自动连续 Voice Conversation 与用户说话时打断播放仍属于后续工作。Fake Runtime 自动化覆盖设备选择、降级和竞态，另有一次真实 CPU STT Runtime/模型 Smoke 验证；这里不声称 STT CUDA 已通过真实 GPU 验证。
+Controller 以 epoch、Chat ID、可选 Project ID、Capture/STT ID、Chat Operation/Request ID 和 Speech Sequence 做 fail-closed 关联。用户取消、关闭 Voice、导航或切换 Chat/Project 后，迟到结果不会回填草稿或改变新 Session。Chat 终态与 Speech 终态可以任意先后到达；只有两侧都排空才回到 `IDLE`。若 `voice.speech` 未协商或运行中失效，Controller 把可选播放视为已排空，文字回复仍正常结束。
+
+Cancel 或 Timeout 只结束用户可见的 STT 任务；Python 无法安全终止正在 Native Library 内运行的线程，因此 Runner 会继续占用物理容量直到调用返回并丢弃迟到结果。在排空期间，新 STT、Chat 与冲突配置写入会收到 Busy。当前 STT 桌面协议仍只传递 Final Transcript，不提供实时 Partial Transcript。Session 也不会自动提交、回复后自动监听，或在用户说话时执行 Barge-in；思考和播放期间麦克风保持关闭。Fake Runtime 自动化覆盖设备选择、降级和竞态，另有一次真实 CPU STT Runtime/模型 Smoke 验证；这里不声称 STT CUDA 已通过真实 GPU 验证。
 
 ### GPT-SoVITS 单次合成与受管桌面播放
 
@@ -500,8 +520,8 @@ explicit Start microphone
 | `voice/managed_gpt_sovits.py` | 独占启动固定 Python 3.9 Worker、核验所选声明并提供可取消的 Lease。 | 第三方 Runtime 与同一 Windows 用户进程在 Lease 开始时属于信任范围；部分 Manifest 不是完整供应链证明，缓存保持禁用 |
 | `voice/speech_queue.py` | 从模型 Chunk 自然分句并以有界 FIFO 合成、交付、跳过失败和取消迟到结果。 | 队列只持有 Speech 副本，不修改 Brain 的最终 Assistant 文本 |
 | `desktop_speech.py` | 把 Managed Lease、Sentence Queue、NDJSON Metadata 与 fd3 WAV 组合起来。 | 可选 Speech 故障只禁用语音；文字 Chat 继续完成 |
-| `desktop/electron/speech-delivery.ts` | 在 Main 内严格配对 Metadata/Frame，并等待可信播放结束后才 ACK 下一帧。 | WAV、Token 与 Hash 不进入 React API |
-| `desktop/electron/speech-playback-owner.ts` + `preload.cts` | 以私有 IPC 把单个 WAV 交给 Preload Web Audio，处理 Decode、结束、取消、超时、跨文档导航和窗口替换。 | Settlement 只接受所属窗口 Main Frame；同文档锚点不破坏 Owner，Renderer 业务代码看不到音频 |
+| `desktop/electron/speech-delivery.ts` | 在 Main 内严格配对 Metadata/Frame，等待可信播放结束后才 ACK 下一帧，并产生最小的 `playing|played|skipped|terminal` 状态。 | Renderer 状态只含 Request/Chat/Sequence 或闭集终态；WAV、Token 与 Hash 不进入 React API |
+| `desktop/electron/speech-playback-owner.ts` + `preload.cts` | 以私有 IPC 把单个 WAV 交给 Preload Web Audio，处理 Decode、结束、取消、超时、跨文档导航和窗口替换；公开桥只提供按 Chat Request ID 停止播放。 | Settlement 只接受所属窗口 Main Frame；同文档锚点不破坏 Owner，Renderer 业务代码看不到音频 |
 
 外部 HTTP Smoke 连接关系：
 
@@ -534,9 +554,11 @@ Brain.stream_chat() canonical chunks and commit
   ├─ voice.speech.* metadata over authenticated NDJSON
   └─ matching binary frame over inherited fd3
        → Electron SpeechDeliveryCoordinator
-       → private Main-to-Preload playback IPC
-       → Web Audio decode / playback / settlement
-       → ACK or discard fd3 frame
+       ├─ private Main-to-Preload playback IPC
+       │    → Web Audio decode / playback / settlement
+       │    → ACK or discard fd3 frame
+       └─ sanitized status
+            → VoiceSessionController THINKING / SPEAKING / IDLE
 ```
 
 受管路径固定了 Profile/情绪、Worker、权重声明和进程/管道生命周期，并持续 Guard 已声明的资产与 Runtime Anchor；它没有逐一认证第三方 Runtime 的六万多个依赖，也无法撤销同一用户在封印前已经取得的 `WRITE_DAC`。因此当前威胁模型明确信任 Lease 开始时的本地第三方 Runtime 与同一 Windows 用户进程。Queue 层 `binding_verified=True` 仅证明 Elysia 私有 Factory 签发了围绕该受管 Lease 的 Binding，不是完整依赖来源认证，也不会使语音缓存获得资格。若未来需要抵御恶意同用户进程，应改用由 Installer/SYSTEM 所有的只读 Runtime，或独立受限身份/AppContainer 与经过批准的完整签名 Manifest。
@@ -676,8 +698,10 @@ config/settings.py + config/desktop_settings.py
 → desktop_backend.py
 → 双端 Protocol / Fixtures
 → Electron contracts / BackendProcess / Preload / Main
+→ voice-session-controller.ts
 → App.tsx / CallPreview.tsx / transcription-readiness.ts
-→ Python Contract/Runner Tests + Desktop Contract/UI Tests
+→ Python Contract/Runner Tests + voice-session-controller.test.mjs
+→ Desktop Protocol/UI Tests
 
 TTS:
 config/settings.py + config/voice_profiles.example.json
@@ -702,7 +726,7 @@ config/settings.py + config/voice_profiles.example.json
 → 对应 Python tests
 ```
 
-改动桌面播放必须继续检查 Managed Wrapper、Sentence Queue、Speech Protocol、fd3 Reader、Delivery Coordinator、Playback Owner 和 Preload；当前不需要 React 接触音频。外部 GPT-SoVITS Runtime 放在被忽略的 `models/cache/`，权重/参考音频放在 `models/weights/gpt-sovits/`；不得把本机 Catalog、准确 Prompt、资产或 Runtime 混进源码提交。
+改动桌面播放必须继续检查 Managed Wrapper、Sentence Queue、Speech Protocol、fd3 Reader、Delivery Coordinator、Playback Owner、Preload、安全 Renderer Status、Voice Session Controller 和按 Request ID 的停止路径；React 只需要最小状态，不能接触音频。外部 GPT-SoVITS Runtime 放在被忽略的 `models/cache/`，权重/参考音频放在 `models/weights/gpt-sovits/`；不得把本机 Catalog、准确 Prompt、资产或 Runtime 混进源码提交。
 
 ## 28. 推荐的新成员阅读顺序
 
@@ -735,9 +759,11 @@ config/settings.py + config/voice_profiles.example.json
 25. `desktop_protocol/audio_channel.py`
 26. `desktop/electron/speech-delivery.ts`
 27. `desktop/electron/speech-playback-owner.ts`
-28. `desktop/src/App.tsx`
-29. 具体 Feature Component
-30. 对应测试
+28. `desktop/src/voice/audio-capture.ts` 与 `desktop/src/voice/voice-activity-detector.ts`
+29. `desktop/src/voice/voice-session-controller.ts`
+30. `desktop/src/App.tsx`
+31. `desktop/src/voice/CallPreview.tsx` 与其他具体 Feature Component
+32. 对应测试，尤其是 `desktop/tests/voice-session-controller.test.mjs`
 
 读完后应形成以下心智模型：
 
@@ -748,8 +774,8 @@ config/settings.py + config/voice_profiles.example.json
 - Python 是持久化事实来源。
 - Electron 管可信本机能力。
 - React 只管理显示和短暂状态。
-- 单句 STT 只返回 Final Transcript；进入 Composer 和发送消息是两个独立、显式动作。
-- Python 单次 TTS 与受管桌面分句播放已经连接；React 不接触 WAV，完整 Voice Session 与 Barge-in 仍未实现。
+- 单句 STT 只返回 Final Transcript；进入 Composer 与显式 **Send transcript** 是两个不同选择，任何 Chat Turn 都必须经过用户确认。
+- 有界 Voice Session 已连接 Canonical Chat 与受管播放；React 只看到安全播放状态，不接触 WAV。Partial Transcript、自动重新监听与 Barge-in 仍未实现。
 - Streaming Overlay 不等于已保存消息。
 - `ChatSession.project_id` 是 Project–Chat 关系的唯一真相。
 - 所有 Memory 使用前都必须经过 Scope 过滤。
