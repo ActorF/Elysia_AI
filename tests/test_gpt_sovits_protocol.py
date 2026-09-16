@@ -14,6 +14,7 @@ from scripts.gpt_sovits_protocol import (
     FrameKind,
     MANAGED_RUNTIME_IMPORT_RELATIVE_ENTRIES,
     MANAGED_RUNTIME_MANIFEST_RELATIVE_FILES,
+    MANAGED_RUNTIME_NLTK_DATA_RELATIVE_DIRECTORY,
     PROTOCOL_HEADER_SIZE,
     PROTOCOL_MAGIC,
     PROTOCOL_MAX_JSON_DEPTH,
@@ -46,6 +47,16 @@ def test_managed_runtime_layout_contract_is_ordered_and_closed() -> None:
     assert len(paths) == len(set(paths))
     assert roles[0] == "runtime-python"
     assert "runtime/_sqlite3.pyd" in paths
+    assert MANAGED_RUNTIME_NLTK_DATA_RELATIVE_DIRECTORY == "runtime/nltk_data"
+    assert {
+        "runtime/nltk_data/corpora/cmudict.zip",
+        "runtime/nltk_data/corpora/cmudict/cmudict",
+        "runtime/nltk_data/taggers/averaged_perceptron_tagger.zip",
+        (
+            "runtime/nltk_data/taggers/averaged_perceptron_tagger/"
+            "averaged_perceptron_tagger.pickle"
+        ),
+    }.issubset(paths)
     assert MANAGED_RUNTIME_IMPORT_RELATIVE_ENTRIES[:2] == (
         "runtime/python39.zip",
         "runtime",

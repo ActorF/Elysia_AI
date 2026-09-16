@@ -984,7 +984,7 @@ def test_guarded_load_audio_accepts_only_bound_reference_contract(
 def test_upstream_loader_installs_decoder_before_tts_import(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Ensure TTS captures the worker-local override, not upstream FFmpeg PATH."""
+    """Install guarded NLTK/audio dependencies before importing upstream TTS."""
 
     config = _stable_worker_config()
     numpy_module = _FakeNumpy()
@@ -997,6 +997,19 @@ def test_upstream_loader_installs_decoder_before_tts_import(
         load_audio=original,
         np=numpy_module,
     )
+    nltk_paths = ["C:\\untrusted-user-data"]
+    nltk_module = SimpleNamespace(
+        __file__=ntpath.join(
+            str(config.import_root),
+            "runtime",
+            "lib",
+            "site-packages",
+            "nltk",
+            "data.py",
+        ),
+        path=nltk_paths,
+    )
+    monkeypatch.setenv("NLTK_DATA", "C:\\untrusted-user-data")
 
     class FakeConfig:
         """Provide a callable class marker for the import boundary."""
@@ -1011,6 +1024,8 @@ def test_upstream_loader_installs_decoder_before_tts_import(
         """Return fake upstream modules while recording import order."""
 
         imports.append(name)
+        if name == "nltk.data":
+            return nltk_module
         if name == "tools.my_utils":
             return my_utils
         if name == "GPT_SoVITS.TTS_infer_pack.TTS":
@@ -1028,10 +1043,55 @@ def test_upstream_loader_installs_decoder_before_tts_import(
         "_require_mapped_import_root",
         lambda value, _root: Path(value),
     )
+    monkeypatch.setattr(
+        worker,
+        "_require_safe_path_tree",
+        lambda _path, *, leaf_is_file: SimpleNamespace()
+        if leaf_is_file is False
+        else pytest.fail("unexpected file validation"),
+    )
     monkeypatch.setattr(worker.importlib, "import_module", fake_import)
 
     assert worker._load_upstream_api(config) == (FakeConfig, FakeTTS)
-    assert imports == ["tools.my_utils", "GPT_SoVITS.TTS_infer_pack.TTS"]
+    assert imports == [
+        "nltk.data",
+        "tools.my_utils",
+        "GPT_SoVITS.TTS_infer_pack.TTS",
+    ]
+    assert nltk_paths == [
+        ntpath.join(str(config.import_root), "runtime", "nltk_data")
+    ]
+    assert worker.os.environ["NLTK_DATA"] == nltk_paths[0]
+
+
+def test_guarded_nltk_data_rejects_a_shadow_package(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fail closed when an earlier import root supplies a different NLTK."""
+
+    import_root = Path("Q:\\runtime")
+    shadow = SimpleNamespace(
+        __file__="Q:\\runtime\\nltk\\data.py",
+        path=[],
+    )
+    monkeypatch.setenv("NLTK_DATA", "C:\\untrusted-user-data")
+    monkeypatch.setattr(
+        worker,
+        "_require_safe_path_tree",
+        lambda _path, *, leaf_is_file: SimpleNamespace()
+        if leaf_is_file is False
+        else pytest.fail("unexpected file validation"),
+    )
+    monkeypatch.setattr(
+        worker.importlib,
+        "import_module",
+        lambda name: shadow if name == "nltk.data" else pytest.fail(name),
+    )
+
+    with pytest.raises(worker._WorkerFailure) as raised:
+        worker._install_guarded_nltk_data(import_root)
+
+    assert raised.value.code == "engine_failed"
 
 
 def test_reference_decoder_uses_stable_absolute_ffmpeg_and_closed_subprocess(

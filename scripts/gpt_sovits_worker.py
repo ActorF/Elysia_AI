@@ -204,6 +204,10 @@ _BASE_HUBERT_PATH = "GPT_SoVITS/pretrained_models/chinese-hubert-base"
 _RUNTIME_MANIFEST_RELATIVE_FILES = tuple(
     _protocol.MANAGED_RUNTIME_MANIFEST_RELATIVE_FILES
 )
+_NLTK_DATA_RELATIVE_DIRECTORY = str(
+    _protocol.MANAGED_RUNTIME_NLTK_DATA_RELATIVE_DIRECTORY
+)
+_NLTK_DATA_MODULE_RELATIVE_FILE = "runtime/Lib/site-packages/nltk/data.py"
 _BOOTSTRAP_SYS_PATH_RELATIVE_ENTRIES = tuple(
     _protocol.MANAGED_RUNTIME_IMPORT_RELATIVE_ENTRIES
 )
@@ -221,6 +225,20 @@ def _runtime_child_path(root: Path, relative: str) -> Path:
     if _is_lexical_windows_path(str(root)):
         return Path(ntpath.join(str(root), *relative.split("/")))
     return root / Path(relative)
+
+
+def _same_lexical_path(value: object, expected: str) -> bool:
+    """Compare one import-reported path using the host namespace's case rules."""
+
+    if type(value) is not str or not value or "\x00" in value:
+        return False
+    if _is_lexical_windows_path(expected):
+        return ntpath.normcase(ntpath.normpath(value)) == ntpath.normcase(
+            ntpath.normpath(expected)
+        )
+    return os.path.normcase(os.path.normpath(value)) == os.path.normcase(
+        os.path.normpath(expected)
+    )
 
 
 class _Engine(Protocol):
@@ -582,12 +600,12 @@ def compute_runtime_manifest_digest(
 
     The digest identifies content by stable logical roles, never by deployment
     paths.  It covers the worker/protocol sources plus the executable, FFmpeg,
-    upstream entry points, and both fixed base models.  A guarded parent passes
-    explicit Volume-GUID worker/protocol paths; the worker defaults to its own
-    already-stable ``__file__`` spelling.  Both therefore hash the same pinned
-    objects without resolving them through a mutable drive-letter namespace.
-    It intentionally does not claim to enumerate every Python/native dependency
-    in the much larger extracted distribution.
+    upstream entry points, English pronunciation/tagger data, and both fixed
+    base models. A guarded parent passes explicit Volume-GUID worker/protocol
+    paths; the worker defaults to its own already-stable ``__file__`` spelling.
+    Both therefore hash the same pinned objects without resolving them through
+    a mutable drive-letter namespace. It intentionally does not claim to
+    enumerate every Python/native dependency in the larger distribution.
     """
 
     if not isinstance(runtime_root, Path) or not _is_lexical_runtime_path(
@@ -1132,8 +1150,46 @@ def _prepare_upstream_import(runtime_root: Path, import_root: Path) -> Path:
     return mapped_root
 
 
+def _install_guarded_nltk_data(import_root: Path) -> None:
+    """Restrict NLTK to the attested pronunciation data in this runtime.
+
+    The managed interpreter is copied below ``runtime/.elysia-managed-*`` so
+    NLTK's prefix-derived defaults miss the sibling ``runtime/nltk_data``
+    directory. Replacing, rather than extending, its search list also prevents
+    a user profile or drive-root corpus from changing speech after READY.
+    """
+
+    try:
+        data_root = _runtime_child_path(
+            import_root, _NLTK_DATA_RELATIVE_DIRECTORY
+        )
+        _require_safe_path_tree(data_root, leaf_is_file=False)
+        # Some NLTK helpers consult the environment after package import. Keep
+        # that compatibility view bound to the same trusted directory, then
+        # replace the in-memory list to remove every fallback root.
+        os.environ["NLTK_DATA"] = str(data_root)
+        data_module = importlib.import_module("nltk.data")
+        expected_module_path = str(
+            _runtime_child_path(import_root, _NLTK_DATA_MODULE_RELATIVE_FILE)
+        )
+        if not _same_lexical_path(
+            getattr(data_module, "__file__", None), expected_module_path
+        ):
+            raise TypeError
+        search_paths = getattr(data_module, "path")
+        if type(search_paths) is not list:
+            raise TypeError
+        search_paths[:] = [str(data_root)]
+        if search_paths != [str(data_root)]:
+            raise TypeError
+    except _WorkerFailure:
+        raise
+    except BaseException:
+        raise _WorkerFailure("engine_failed") from None
+
+
 def _load_upstream_api(config: _WorkerConfig) -> Tuple[object, object]:
-    """Install the bound decoder, then import pinned GPT-SoVITS classes."""
+    """Install bound data/decoder dependencies, then import GPT-SoVITS."""
 
     if config.import_root is None:
         raise _WorkerFailure("engine_failed")
@@ -1141,6 +1197,7 @@ def _load_upstream_api(config: _WorkerConfig) -> Tuple[object, object]:
         config.runtime_root, config.import_root
     )
     try:
+        _install_guarded_nltk_data(import_root)
         # TTS imports ``load_audio`` into its own module namespace.  Replacing
         # only the runtime-owned helper first confines the override to this
         # disposable worker and avoids process-wide subprocess monkeypatching.

@@ -28,6 +28,11 @@ PROTOCOL_MAX_JSON_DEPTH = 32
 PROTOCOL_MAX_JSON_INTEGER = 9_007_199_254_740_991
 PROTOCOL_MAX_REQUEST_ID = (1 << 64) - 1
 
+# NLTK normally searches user profiles and drive-root data directories.  The
+# managed worker instead binds it to this runtime-owned directory so English
+# pronunciation never depends on mutable machine-global downloads.
+MANAGED_RUNTIME_NLTK_DATA_RELATIVE_DIRECTORY = "runtime/nltk_data"
+
 # Parent and Python 3.9 worker hash this tuple in order. Keeping it beside the
 # shared wire contract prevents two independently edited manifests from making
 # every otherwise-valid READY handshake fail.
@@ -52,6 +57,23 @@ MANAGED_RUNTIME_MANIFEST_RELATIVE_FILES = (
     ("runtime-socket-extension", "runtime/_socket.pyd"),
     ("runtime-select-extension", "runtime/select.pyd"),
     ("runtime-unicode-extension", "runtime/unicodedata.pyd"),
+    (
+        "nltk-cmudict-archive",
+        "runtime/nltk_data/corpora/cmudict.zip",
+    ),
+    (
+        "nltk-cmudict-dictionary",
+        "runtime/nltk_data/corpora/cmudict/cmudict",
+    ),
+    (
+        "nltk-pos-tagger-archive",
+        "runtime/nltk_data/taggers/averaged_perceptron_tagger.zip",
+    ),
+    (
+        "nltk-pos-tagger-model",
+        "runtime/nltk_data/taggers/averaged_perceptron_tagger/"
+        "averaged_perceptron_tagger.pickle",
+    ),
     ("ffmpeg", "ffmpeg.exe"),
     ("tts-entry", "GPT_SoVITS/TTS_infer_pack/TTS.py"),
     ("audio-loader", "tools/my_utils.py"),
@@ -520,6 +542,7 @@ __all__ = [
     "FrameKind",
     "MANAGED_RUNTIME_IMPORT_RELATIVE_ENTRIES",
     "MANAGED_RUNTIME_MANIFEST_RELATIVE_FILES",
+    "MANAGED_RUNTIME_NLTK_DATA_RELATIVE_DIRECTORY",
     "PROTOCOL_HEADER_SIZE",
     "PROTOCOL_MAGIC",
     "PROTOCOL_MAX_JSON_DEPTH",
