@@ -32,6 +32,31 @@ export type AudioCaptureStatus =
   | 'cancelled'
   | 'error'
 
+/** Distinguish ordinary one-shot recording from continuous interruption watch. */
+export type AudioCapturePurpose = 'utterance' | 'barge-in'
+
+/**
+ * Select capture behavior. Barge-in callers supply the exact identifier before
+ * capture so cancellation ownership can be installed atomically.
+ */
+export type AudioCaptureStartOptions =
+  | {
+      readonly purpose?: 'utterance'
+      readonly sessionId?: never
+    }
+  | {
+      readonly purpose: 'barge-in'
+      readonly sessionId: string
+    }
+
+/** Metadata-only proof that one protected barge-in capture confirmed speech. */
+export interface AudioCaptureSpeechConfirmation {
+  readonly purpose: 'barge-in'
+  readonly sessionId: string
+  readonly deviceId: string | null
+  readonly voicedSampleCount: number
+}
+
 /** Immutable, PCM-free metadata suitable for a UI subscription. */
 export interface AudioCaptureSnapshot {
   readonly status: AudioCaptureStatus
@@ -69,19 +94,27 @@ export interface AudioCaptureControllerOptions {
   /** Create an opaque identifier that safely correlates one transient capture. */
   readonly createSessionId?: () => string
   /** Create isolated VAD state for the newly allocated capture session. */
-  readonly createDetector?: (sessionId: string) => VoiceActivityDetector
+  readonly createDetector?: (
+    sessionId: string,
+    purpose: AudioCapturePurpose,
+  ) => VoiceActivityDetector
   /** Schedule a bounded-capture deadline through an injectable clock. */
   readonly scheduleTimeout?: (callback: () => void, delay: number) => number
   /** Cancel a previously scheduled deadline during every cleanup path. */
   readonly cancelTimeout?: (handle: number) => void
   /** Receives sole ownership of completed PCM; the controller never retains it. */
   readonly onComplete?: (segment: CompletedVoiceSegment) => void
+  /** Receive one metadata-only barge-in confirmation before PCM completes. */
+  readonly onSpeechConfirmed?: (
+    confirmation: AudioCaptureSpeechConfirmation,
+  ) => void
 }
 
 interface CaptureResources {
   readonly operation: number
   readonly sessionId: string
   readonly deviceId: string | null
+  readonly purpose: AudioCapturePurpose
   stream: MediaStream | null
   track: MediaStreamTrack | null
   endedListener: (() => void) | null
@@ -143,6 +176,36 @@ function safeDeviceId(deviceId: string | null): boolean {
   )
 }
 
+function safeSessionId(sessionId: string): boolean {
+  return sessionId.length > 0
+    && sessionId.length <= MAX_SESSION_ID_LENGTH
+    && VOICE_SESSION_ID_PATTERN.test(sessionId)
+}
+
+function microphoneConstraints(
+  deviceId: string | null,
+  purpose: AudioCapturePurpose,
+): MediaTrackConstraints {
+  return {
+    ...(deviceId === null ? {} : { deviceId: { exact: deviceId } }),
+    channelCount: { ideal: 1 },
+    ...(purpose === 'barge-in'
+      ? { echoCancellation: { exact: true } }
+      : {}),
+  }
+}
+
+function echoCancellationIsVerified(track: MediaStreamTrack): boolean {
+  if (typeof track.getSettings !== 'function') {
+    return false
+  }
+  try {
+    return track.getSettings().echoCancellation === true
+  } catch {
+    return false
+  }
+}
+
 function errorName(error: unknown): string {
   if (
     typeof error === 'object'
@@ -155,7 +218,24 @@ function errorName(error: unknown): string {
   return ''
 }
 
-function captureError(error: unknown): AudioDeviceError {
+function captureError(
+  error: unknown,
+  purpose: AudioCapturePurpose = 'utterance',
+): AudioDeviceError {
+  if (
+    purpose === 'barge-in'
+    && (
+      errorName(error) === 'EchoCancellationUnavailableError'
+      || errorName(error) === 'OverconstrainedError'
+      || errorName(error) === 'ConstraintNotSatisfiedError'
+    )
+  ) {
+    return {
+      code: 'device-start-failed',
+      message: 'Barge-in requires microphone echo cancellation that can be verified.',
+      retryable: false,
+    }
+  }
   switch (errorName(error)) {
     case 'NotAllowedError':
     case 'SecurityError':
@@ -295,17 +375,24 @@ function monoInput(buffer: AudioBuffer): Float32Array {
 }
 
 /**
- * Capture one local utterance. Only onComplete receives PCM, once, after VAD
- * has proven that the segment contains the minimum amount of voiced audio.
+ * Own either one ordinary utterance or one continuous barge-in monitor.
+ * Only onComplete receives PCM, once, after VAD has proven that the segment
+ * contains the minimum amount of voiced audio.
  */
 export class AudioCaptureController {
   private readonly mediaDevices: MediaDevices | null
   private readonly createContext: () => AudioContext
   private readonly createSessionId: () => string
-  private readonly createDetector: (sessionId: string) => VoiceActivityDetector
+  private readonly createDetector: (
+    sessionId: string,
+    purpose: AudioCapturePurpose,
+  ) => VoiceActivityDetector
   private readonly scheduleTimeout: (callback: () => void, delay: number) => number
   private readonly cancelTimeout: (handle: number) => void
   private readonly onComplete: (segment: CompletedVoiceSegment) => void
+  private readonly onSpeechConfirmed: (
+    confirmation: AudioCaptureSpeechConfirmation,
+  ) => void
   private readonly listeners = new Set<AudioCaptureListener>()
   private current = cloneSnapshot(initialSnapshot)
   private operation = 0
@@ -319,7 +406,12 @@ export class AudioCaptureController {
     this.createContext = options.createAudioContext ?? defaultAudioContext
     this.createSessionId = options.createSessionId ?? defaultSessionId
     this.createDetector = options.createDetector
-      ?? ((sessionId) => new AdaptiveEnergyVoiceActivityDetector(sessionId))
+      ?? ((sessionId, purpose) => new AdaptiveEnergyVoiceActivityDetector(
+        sessionId,
+        purpose === 'barge-in'
+          ? { noSpeechTimeoutSampleCount: null }
+          : {},
+      ))
     this.scheduleTimeout = options.scheduleTimeout ?? ((callback, delay) => (
       globalThis.setTimeout(callback, delay)
     ))
@@ -327,6 +419,7 @@ export class AudioCaptureController {
       globalThis.clearTimeout(handle)
     })
     this.onComplete = options.onComplete ?? (() => undefined)
+    this.onSpeechConfirmed = options.onSpeechConfirmed ?? (() => undefined)
   }
 
   /** Return isolated state metadata; PCM is never retained in a snapshot. */
@@ -345,11 +438,21 @@ export class AudioCaptureController {
     }
   }
 
-  /** Start a fresh one-utterance capture on an exact device or system default. */
-  async start(deviceId: string | null): Promise<void> {
+  /**
+   * Start capture on an exact device or system default.
+   *
+   * Ordinary capture remains one-shot with an internal identifier. Barge-in is
+   * continuous while waiting, requires a caller-owned identifier, and starts
+   * only when the browser proves that echo cancellation is active.
+   */
+  async start(
+    deviceId: string | null,
+    options: AudioCaptureStartOptions = {},
+  ): Promise<void> {
     if (this.disposed) {
       return
     }
+    const purpose = options.purpose ?? 'utterance'
     const operation = ++this.operation
     const previous = this.takeResources()
     await this.disposeResources(previous)
@@ -375,24 +478,23 @@ export class AudioCaptureController {
 
     let sessionId: string
     try {
-      sessionId = this.createSessionId()
-      if (
-        !sessionId
-        || sessionId.length > MAX_SESSION_ID_LENGTH
-        || !VOICE_SESSION_ID_PATTERN.test(sessionId)
-      ) {
+      sessionId = options.purpose === 'barge-in'
+        ? options.sessionId
+        : this.createSessionId()
+      if (!safeSessionId(sessionId)) {
         throw new Error(
           'Voice capture requires a voice_<id> session identifier.',
         )
       }
     } catch (error: unknown) {
-      this.setError(captureError(error), null, deviceId)
+      this.setError(captureError(error, purpose), null, deviceId)
       return
     }
     const resources: CaptureResources = {
       operation,
       sessionId,
       deviceId,
+      purpose,
       stream: null,
       track: null,
       endedListener: null,
@@ -423,12 +525,7 @@ export class AudioCaptureController {
 
     try {
       const stream = await this.mediaDevices.getUserMedia({
-        audio: deviceId === null
-          ? { channelCount: { ideal: 1 } }
-          : {
-              deviceId: { exact: deviceId },
-              channelCount: { ideal: 1 },
-            },
+        audio: microphoneConstraints(deviceId, purpose),
         video: false,
       })
       if (!this.resourcesAreCurrent(resources)) {
@@ -441,6 +538,13 @@ export class AudioCaptureController {
         throw new Error('Microphone stream contains no audio track.')
       }
       resources.track = track
+      if (purpose === 'barge-in' && !echoCancellationIsVerified(track)) {
+        // VAD cannot distinguish loud application playback from a nearby user.
+        // Failing closed here prevents Elysia from interrupting itself.
+        const error = new Error('Verified echo cancellation is unavailable.')
+        error.name = 'EchoCancellationUnavailableError'
+        throw error
+      }
       const endedListener = (): void => {
         if (this.resourcesAreCurrent(resources)) {
           this.failCurrentCapture({
@@ -455,7 +559,7 @@ export class AudioCaptureController {
 
       const context = this.createContext()
       resources.context = context
-      resources.detector = this.createDetector(sessionId)
+      resources.detector = this.createDetector(sessionId, purpose)
       resources.resampler = new StreamingLinearResampler(context.sampleRate)
       const source = context.createMediaStreamSource(stream)
       resources.source = source
@@ -483,16 +587,18 @@ export class AudioCaptureController {
         await this.abandonResources(resources)
         return
       }
-      resources.noSpeechTimeout = this.scheduleTimeout(() => {
-        if (this.resourcesAreCurrent(resources)) {
-          this.finishWithoutSpeech(resources)
-        }
-      }, NO_SPEECH_TIMEOUT_MS)
+      if (purpose === 'utterance') {
+        resources.noSpeechTimeout = this.scheduleTimeout(() => {
+          if (this.resourcesAreCurrent(resources)) {
+            this.finishWithoutSpeech(resources)
+          }
+        }, NO_SPEECH_TIMEOUT_MS)
+      }
       this.update({ status: 'waiting' })
     } catch (error: unknown) {
       await this.abandonResources(resources)
       if (!this.disposed && operation === this.operation) {
-        this.setError(captureError(error), sessionId, deviceId)
+        this.setError(captureError(error, purpose), sessionId, deviceId)
       }
     }
   }
@@ -585,7 +691,7 @@ export class AudioCaptureController {
       this.consumePcm(resources, floatToPcm16(resampled))
     } catch (error: unknown) {
       if (this.resourcesAreCurrent(resources)) {
-        this.failCurrentCapture(captureError(error), resources)
+        this.failCurrentCapture(captureError(error, resources.purpose), resources)
       }
     }
   }
@@ -616,6 +722,31 @@ export class AudioCaptureController {
           }
         }, MAXIMUM_UTTERANCE_TIMEOUT_MS)
       }
+      if (
+        (result.state === 'speaking' || result.segment !== null)
+        && !resources.speechConfirmed
+        && result.voicedSampleCount >= VOICE_MINIMUM_SPEECH_SAMPLE_COUNT
+      ) {
+        resources.speechConfirmed = true
+        this.clearNoSpeechTimeout(resources)
+        if (resources.purpose === 'barge-in') {
+          try {
+            this.onSpeechConfirmed({
+              purpose: 'barge-in',
+              sessionId: resources.sessionId,
+              deviceId: resources.deviceId,
+              voicedSampleCount: result.voicedSampleCount,
+            })
+          } catch {
+            // A cancellation adapter cannot take microphone ownership or make
+            // a verified utterance unsafe; the final PCM path remains intact.
+          }
+        }
+        if (!this.resourcesAreCurrent(resources)) {
+          combined.fill(0)
+          return
+        }
+      }
       if (result.segment !== null) {
         combined.fill(0)
         this.completeCurrentCapture(result.segment, resources)
@@ -628,14 +759,6 @@ export class AudioCaptureController {
       }
       if (result.event === 'short-speech-rejected') {
         this.clearMaximumUtteranceTimeout(resources)
-      }
-      if (
-        result.state === 'speaking'
-        && !resources.speechConfirmed
-        && result.voicedSampleCount >= VOICE_MINIMUM_SPEECH_SAMPLE_COUNT
-      ) {
-        resources.speechConfirmed = true
-        this.clearNoSpeechTimeout(resources)
       }
       this.updateFromVoiceActivity(result)
     }

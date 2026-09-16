@@ -246,6 +246,12 @@ export interface CancelParams {
   reason?: string
 }
 
+/** Identify one managed speech turn without relying on current UI state. */
+export interface VoiceSpeechCancelParams {
+  requestId: string
+  chatId: string
+}
+
 export interface PermissionResponseParams {
   permissionId: string
   granted: boolean
@@ -346,6 +352,7 @@ export interface RequestParamsByMethod {
   'voice.settings.update': VoiceSettingsUpdateParams
   'voice.capture.complete': VoiceCaptureCompleteParams
   'voice.transcription.start': VoiceTranscriptionStartParams
+  'voice.speech.cancel': VoiceSpeechCancelParams
   'attachment.list': AttachmentListParams
   'attachment.add': AttachmentAddParams
   'attachment.remove': AttachmentRemoveParams
@@ -643,6 +650,14 @@ export interface VoiceTranscriptionResult {
   text: string
   language: 'zh' | 'en'
   languageProbability: number
+}
+
+/** Echo exact speech ownership and whether that work was still active. */
+export interface VoiceSpeechCancellationResult {
+  kind: 'voice.speech.cancel'
+  requestId: string
+  chatId: string
+  stopped: boolean
 }
 
 export interface AttachmentItem {
@@ -1215,6 +1230,19 @@ function parseCancelParams(value: unknown): CancelParams {
   return {
     requestId: readIdentifier(params, 'requestId', 'request.cancel params'),
     ...(reason === undefined ? {} : { reason }),
+  }
+}
+
+/** Validate the exact Chat and request ownership for managed speech cancellation. */
+export function parseVoiceSpeechCancelParams(
+  value: unknown,
+): VoiceSpeechCancelParams {
+  const context = 'voice.speech.cancel params'
+  const params = asRecord(value, context)
+  requireFields(params, ['requestId', 'chatId'], context)
+  return {
+    requestId: readIdentifier(params, 'requestId', context),
+    chatId: readIdentifier(params, 'chatId', context),
   }
 }
 
@@ -1839,6 +1867,12 @@ export function parseClientRequest(value: unknown): ClientRequest {
     return {
       type: 'request', protocol, id, method,
       params: parseVoiceTranscriptionStartParams(request.params),
+    }
+  }
+  if (method === 'voice.speech.cancel') {
+    return {
+      type: 'request', protocol, id, method,
+      params: parseVoiceSpeechCancelParams(request.params),
     }
   }
   if (method === 'attachment.list') {
@@ -3403,8 +3437,33 @@ export function parseVoiceTranscriptionResult(
   }
 }
 
+/** Parse the exact, idempotent result of managed speech cancellation. */
+export function parseVoiceSpeechCancellationResult(
+  value: unknown,
+): VoiceSpeechCancellationResult {
+  const context = 'voice speech cancellation result'
+  const result = asRecord(value, context)
+  requireFields(result, ['kind', 'requestId', 'chatId', 'stopped'], context)
+  if (result.kind !== 'voice.speech.cancel') {
+    return fail(
+      'protocol.invalid_message',
+      `${context}.kind must be 'voice.speech.cancel'.`,
+    )
+  }
+  return {
+    kind: 'voice.speech.cancel',
+    requestId: readIdentifier(result, 'requestId', context),
+    chatId: readIdentifier(result, 'chatId', context),
+    stopped: readBoolean(result, 'stopped', context),
+  }
+}
+
 function validateSuccessResult(value: unknown): Record<string, unknown> {
   const result = asRecord(value, 'response.result')
+  if (result.kind === 'voice.speech.cancel') {
+    parseVoiceSpeechCancellationResult(result)
+    return result
+  }
   if (result.kind === 'voice.settings') {
     parseVoiceSettingsStateResult(result)
     return result

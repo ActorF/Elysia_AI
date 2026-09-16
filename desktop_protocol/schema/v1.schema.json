@@ -35,6 +35,7 @@
     "voice.transcription.start pcmBase64 is strict canonical Base64 whose decoded byte length equals sampleCount * 2",
     "voice.transcription result text follows the protocol non-blank code-point definition",
     "voice.transcription results contain no PCM, model path, or native error detail",
+    "voice.speech.cancel targets one managed speech turn by the exact requestId and chatId pair",
     "voice.speech.clip metadata exactly matches the next private binary frame before playback",
     "voice.speech events contain no source text, model path, profile, cache state, or native error detail",
     "voice.speech.terminal satisfies failedSentences <= completedSentences <= submittedSentences and completed state has equal completed/submitted counts"
@@ -67,6 +68,7 @@
     { "$ref": "#/$defs/voiceSettingsUpdateRequest" },
     { "$ref": "#/$defs/voiceCaptureCompleteRequest" },
     { "$ref": "#/$defs/voiceTranscriptionStartRequest" },
+    { "$ref": "#/$defs/voiceSpeechCancelRequest" },
     { "$ref": "#/$defs/cancelRequest" },
     { "$ref": "#/$defs/permissionResponseRequest" },
     { "$ref": "#/$defs/shutdownRequest" },
@@ -151,6 +153,7 @@
             "voice.settings.update",
             "voice.capture.complete",
             "voice.transcription.start",
+            "voice.speech.cancel",
             "request.cancel",
             "permission.respond",
             "shutdown"
@@ -637,6 +640,15 @@
       "required": ["requestId"],
       "additionalProperties": false
     },
+    "voiceSpeechCancelParams": {
+      "type": "object",
+      "properties": {
+        "requestId": { "$ref": "#/$defs/identifier" },
+        "chatId": { "$ref": "#/$defs/identifier" }
+      },
+      "required": ["requestId", "chatId"],
+      "additionalProperties": false
+    },
     "permissionResponseParams": {
       "type": "object",
       "properties": {
@@ -943,6 +955,17 @@
           "properties": {
             "method": { "const": "voice.transcription.start" },
             "params": { "$ref": "#/$defs/voiceTranscriptionStartParams" }
+          }
+        }
+      ]
+    },
+    "voiceSpeechCancelRequest": {
+      "allOf": [
+        { "$ref": "#/$defs/requestEnvelope" },
+        {
+          "properties": {
+            "method": { "const": "voice.speech.cancel" },
+            "params": { "$ref": "#/$defs/voiceSpeechCancelParams" }
           }
         }
       ]
@@ -1562,6 +1585,17 @@
       ],
       "additionalProperties": false
     },
+    "voiceSpeechCancelResult": {
+      "type": "object",
+      "properties": {
+        "kind": { "const": "voice.speech.cancel" },
+        "requestId": { "$ref": "#/$defs/identifier" },
+        "chatId": { "$ref": "#/$defs/identifier" },
+        "stopped": { "type": "boolean" }
+      },
+      "required": ["kind", "requestId", "chatId", "stopped"],
+      "additionalProperties": false
+    },
     "shutdownResult": {
       "type": "object",
       "properties": { "stopped": { "const": true } },
@@ -1587,6 +1621,7 @@
             { "$ref": "#/$defs/voiceSettingsStateResult" },
             { "$ref": "#/$defs/voiceCaptureResult" },
             { "$ref": "#/$defs/voiceTranscriptionResult" },
+            { "$ref": "#/$defs/voiceSpeechCancelResult" },
             { "$ref": "#/$defs/shutdownResult" }
           ]
         }

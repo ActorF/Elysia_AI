@@ -167,12 +167,27 @@ test('modulated multi-frequency speech-like input still completes normally', () 
   assert.ok(completed.segment.sampleCount <= VOICE_MAXIMUM_BUFFER_SAMPLE_COUNT)
 })
 
-function captureHarness({ detector, onComplete = () => undefined, failGraph = false }) {
+function captureHarness({
+  detector,
+  onComplete = () => undefined,
+  onSpeechConfirmed = () => undefined,
+  failGraph = false,
+  echoCancellation,
+  exposeTrackSettings = true,
+  generatedSessionId = 'voice_cleanup',
+}) {
   let stopped = 0
+  let sessionIdCreations = 0
+  let requestedConstraints = null
+  const scheduledTimeouts = []
+  const detectorCreations = []
   const track = {
     addEventListener() {},
     removeEventListener() {},
     stop() { stopped += 1 },
+    ...(exposeTrackSettings
+      ? { getSettings: () => ({ echoCancellation }) }
+      : {}),
   }
   const stream = {
     getAudioTracks: () => [track],
@@ -207,15 +222,72 @@ function captureHarness({ detector, onComplete = () => undefined, failGraph = fa
     },
   }
   const controller = new AudioCaptureController({
-    mediaDevices: { getUserMedia: async () => stream },
+    mediaDevices: {
+      getUserMedia: async (constraints) => {
+        requestedConstraints = constraints
+        return stream
+      },
+    },
     createAudioContext: () => context,
-    createSessionId: () => 'voice_cleanup',
-    createDetector: () => detector,
-    scheduleTimeout: () => 1,
+    createSessionId: () => {
+      sessionIdCreations += 1
+      return generatedSessionId
+    },
+    createDetector: (sessionId, purpose) => {
+      detectorCreations.push({ sessionId, purpose })
+      return detector
+    },
+    scheduleTimeout: (_callback, delay) => {
+      scheduledTimeouts.push(delay)
+      return scheduledTimeouts.length
+    },
     cancelTimeout: () => undefined,
     onComplete,
+    onSpeechConfirmed,
   })
-  return { controller, stopped: () => stopped }
+  return {
+    controller,
+    detectorCreations,
+    processor,
+    requestedConstraints: () => requestedConstraints,
+    scheduledTimeouts,
+    sessionIdCreations: () => sessionIdCreations,
+    stopped: () => stopped,
+  }
+}
+
+function detectorSnapshot(overrides = {}) {
+  return {
+    state: 'waiting',
+    energy: 0,
+    noiseFloor: 0.004,
+    processedSampleCount: 0,
+    bufferedSampleCount: 0,
+    voicedSampleCount: 0,
+    event: 'none',
+    segment: null,
+    ...overrides,
+  }
+}
+
+function emitAudioProcess(processor) {
+  const input = new Float32Array(960)
+  input.fill(0.08)
+  const output = new Float32Array(960)
+  assert.equal(typeof processor.onaudioprocess, 'function')
+  processor.onaudioprocess({
+    inputBuffer: {
+      numberOfChannels: 1,
+      length: input.length,
+      getChannelData: () => input,
+    },
+    outputBuffer: {
+      numberOfChannels: 1,
+      length: output.length,
+      getChannelData: () => output,
+    },
+  })
+  assert.equal(output.every((sample) => sample === 0), true)
 }
 
 test('capture graph setup failure cancels its detector during cleanup', async () => {
@@ -267,4 +339,214 @@ test('a throwing completion callback cannot leave orphaned PCM', async () => {
   await harness.controller.stop()
   assert.deepEqual([...pcm], [0, 0, 0, 0])
   assert.equal(harness.controller.getSnapshot().status, 'completed')
+})
+
+test('continuous VAD monitoring has no sample-based idle deadline', () => {
+  const detector = new AdaptiveEnergyVoiceActivityDetector(
+    'voice_continuous',
+    { noSpeechTimeoutSampleCount: null },
+  )
+  let result = null
+  const frameCount = framesFor(VOICE_NO_SPEECH_TIMEOUT_SAMPLE_COUNT) + 25
+  for (let index = 0; index < frameCount; index += 1) {
+    result = detector.processFrame(new Int16Array(VOICE_FRAME_SAMPLE_COUNT))
+  }
+  assert.equal(result?.event, 'none')
+  assert.equal(result?.state, 'waiting')
+  detector.cancel()
+})
+
+test('barge-in capture requires its exact caller-owned session identifier', async () => {
+  const detector = {
+    getSnapshot: () => ({
+      processedSampleCount: 0,
+      bufferedSampleCount: 0,
+      voicedSampleCount: 0,
+    }),
+    processFrame: () => detectorSnapshot(),
+    stop: () => null,
+    cancel: () => undefined,
+  }
+  const harness = captureHarness({ detector, echoCancellation: true })
+
+  await harness.controller.start(null, {
+    purpose: 'barge-in',
+    sessionId: 'not-a-voice-session',
+  })
+
+  assert.equal(harness.controller.getSnapshot().status, 'error')
+  assert.equal(harness.requestedConstraints(), null)
+  assert.equal(harness.sessionIdCreations(), 0)
+})
+
+test('barge-in capture requests and verifies mandatory echo cancellation', async () => {
+  const detector = {
+    getSnapshot: () => ({
+      processedSampleCount: 0,
+      bufferedSampleCount: 0,
+      voicedSampleCount: 0,
+    }),
+    processFrame: () => detectorSnapshot(),
+    stop: () => null,
+    cancel: () => undefined,
+  }
+  const harness = captureHarness({ detector, echoCancellation: false })
+
+  await harness.controller.start('microphone-id', {
+    purpose: 'barge-in',
+    sessionId: 'voice_echo_guard',
+  })
+
+  assert.deepEqual(harness.requestedConstraints(), {
+    audio: {
+      deviceId: { exact: 'microphone-id' },
+      channelCount: { ideal: 1 },
+      echoCancellation: { exact: true },
+    },
+    video: false,
+  })
+  assert.equal(harness.controller.getSnapshot().status, 'error')
+  assert.match(
+    harness.controller.getSnapshot().error?.message ?? '',
+    /echo cancellation/u,
+  )
+  assert.equal(harness.stopped(), 1)
+  assert.equal(harness.detectorCreations.length, 0)
+})
+
+test('barge-in capture fails closed when track settings cannot prove AEC', async () => {
+  const detector = {
+    getSnapshot: () => ({
+      processedSampleCount: 0,
+      bufferedSampleCount: 0,
+      voicedSampleCount: 0,
+    }),
+    processFrame: () => detectorSnapshot(),
+    stop: () => null,
+    cancel: () => undefined,
+  }
+  const harness = captureHarness({
+    detector,
+    echoCancellation: true,
+    exposeTrackSettings: false,
+  })
+
+  await harness.controller.start(null, {
+    purpose: 'barge-in',
+    sessionId: 'voice_aec_unreported',
+  })
+
+  assert.equal(harness.controller.getSnapshot().status, 'error')
+  assert.equal(harness.stopped(), 1)
+  assert.equal(harness.detectorCreations.length, 0)
+})
+
+test('ordinary capture keeps generated ownership and its idle timeout', async () => {
+  const detector = {
+    getSnapshot: () => ({
+      processedSampleCount: 0,
+      bufferedSampleCount: 0,
+      voicedSampleCount: 0,
+    }),
+    processFrame: () => detectorSnapshot(),
+    stop: () => null,
+    cancel: () => undefined,
+  }
+  const harness = captureHarness({
+    detector,
+    generatedSessionId: 'voice_ordinary',
+  })
+
+  await harness.controller.start(null)
+
+  assert.deepEqual(harness.requestedConstraints(), {
+    audio: { channelCount: { ideal: 1 } },
+    video: false,
+  })
+  assert.equal(harness.controller.getSnapshot().status, 'waiting')
+  assert.equal(harness.sessionIdCreations(), 1)
+  assert.deepEqual(harness.detectorCreations, [{
+    sessionId: 'voice_ordinary',
+    purpose: 'utterance',
+  }])
+  assert.deepEqual(harness.scheduledTimeouts, [10_000])
+  await harness.controller.cancel()
+})
+
+test('verified barge-in waits continuously and confirms speech once before PCM', async () => {
+  const callbackOrder = []
+  let processedFrames = 0
+  const pcm = new Int16Array(VOICE_MINIMUM_SPEECH_SAMPLE_COUNT)
+  const segment = {
+    sessionId: 'voice_barge_in',
+    sampleRate: VOICE_SAMPLE_RATE,
+    channelCount: 1,
+    sampleFormat: 's16le',
+    sampleCount: pcm.length,
+    speechStartSample: 0,
+    speechEndSample: pcm.length,
+    pcm,
+  }
+  const detector = {
+    getSnapshot: () => ({
+      processedSampleCount: processedFrames * VOICE_FRAME_SAMPLE_COUNT,
+      bufferedSampleCount: processedFrames * VOICE_FRAME_SAMPLE_COUNT,
+      voicedSampleCount: VOICE_MINIMUM_SPEECH_SAMPLE_COUNT,
+    }),
+    processFrame: () => {
+      processedFrames += 1
+      if (processedFrames === 1) {
+        return detectorSnapshot({
+          state: 'speaking',
+          event: 'speech-started',
+          processedSampleCount: VOICE_FRAME_SAMPLE_COUNT,
+          bufferedSampleCount: VOICE_FRAME_SAMPLE_COUNT,
+          voicedSampleCount: VOICE_MINIMUM_SPEECH_SAMPLE_COUNT,
+        })
+      }
+      return detectorSnapshot({
+        state: 'complete',
+        event: 'speech-completed',
+        processedSampleCount: processedFrames * VOICE_FRAME_SAMPLE_COUNT,
+        bufferedSampleCount: segment.sampleCount,
+        voicedSampleCount: VOICE_MINIMUM_SPEECH_SAMPLE_COUNT,
+        segment,
+      })
+    },
+    stop: () => null,
+    cancel: () => undefined,
+  }
+  const harness = captureHarness({
+    detector,
+    echoCancellation: true,
+    onSpeechConfirmed: (confirmation) => {
+      callbackOrder.push(`confirmed:${confirmation.sessionId}`)
+    },
+    onComplete: (completed) => {
+      callbackOrder.push(`completed:${completed.sessionId}`)
+    },
+  })
+
+  await harness.controller.start(null, {
+    purpose: 'barge-in',
+    sessionId: 'voice_barge_in',
+  })
+
+  assert.equal(harness.controller.getSnapshot().status, 'waiting')
+  assert.deepEqual(harness.scheduledTimeouts, [])
+  assert.deepEqual(harness.detectorCreations, [{
+    sessionId: 'voice_barge_in',
+    purpose: 'barge-in',
+  }])
+  assert.equal(harness.sessionIdCreations(), 0)
+
+  emitAudioProcess(harness.processor)
+  emitAudioProcess(harness.processor)
+
+  assert.deepEqual(callbackOrder, [
+    'confirmed:voice_barge_in',
+    'completed:voice_barge_in',
+  ])
+  assert.equal(harness.controller.getSnapshot().status, 'completed')
+  assert.equal(harness.stopped(), 1)
 })

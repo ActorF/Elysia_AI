@@ -253,6 +253,15 @@ function record(method, args = []) {
   nextCallSequence += 1
 }
 
+/** Keep mock persistence behind the same request-and-Chat ownership boundary. */
+function eventOwnsGeneration(event) {
+  const pending = pendingGenerations.get(event.requestId)
+  return pending?.request.chatId === event.chatId || (
+    snapshot.activeGeneration?.requestId === event.requestId
+    && snapshot.activeGeneration.chatId === event.chatId
+  )
+}
+
 function synchronizeChatState() {
   if (snapshot.chatId === undefined) {
     return
@@ -807,8 +816,8 @@ const desktopApi = {
     }
   },
 
-  stopSpeechPlayback: async (requestId) => {
-    record('stopSpeechPlayback', [requestId])
+  stopSpeechPlayback: async (requestId, chatId) => {
+    record('stopSpeechPlayback', [requestId, chatId])
   },
 
   copyText: async (text) => {
@@ -1289,6 +1298,7 @@ const testControl = {
     if (
       nextEvent.type === 'chat-chunk'
       && snapshot.activeGeneration?.requestId === nextEvent.requestId
+      && snapshot.activeGeneration.chatId === nextEvent.chatId
     ) {
       snapshot = {
         ...snapshot,
@@ -1298,7 +1308,10 @@ const testControl = {
         },
       }
     }
-    if (nextEvent.type === 'chat-complete') {
+    if (
+      nextEvent.type === 'chat-complete'
+      && eventOwnsGeneration(nextEvent)
+    ) {
       const createdAt = '2026-08-25T12:01:00+00:00'
       const generation = pendingGenerations.get(nextEvent.requestId)
       let messages = messagesForChat(nextEvent.chatId)
@@ -1367,7 +1380,10 @@ const testControl = {
         delete snapshot.activeGeneration
       }
     }
-    if (nextEvent.type === 'chat-error') {
+    if (
+      nextEvent.type === 'chat-error'
+      && eventOwnsGeneration(nextEvent)
+    ) {
       const generation = pendingGenerations.get(nextEvent.requestId)
       if (generation?.kind === 'send' && generation.attachments?.length > 0) {
         const scope = { kind: 'chat', id: nextEvent.chatId }

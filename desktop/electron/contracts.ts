@@ -398,8 +398,8 @@ export interface DesktopApi {
   retryMessage(request: RetryChatRequest): Promise<{ requestId: string }>
   /** Ask the Backend to stop the named in-flight generation. */
   stopGeneration(requestId: string): Promise<void>
-  /** Stop trusted playback for one Chat request, even after text completes. */
-  stopSpeechPlayback(requestId: string): Promise<void>
+  /** Stop exact trusted and Python speech work, even after Chat text completes. */
+  stopSpeechPlayback(requestId: string, chatId: string): Promise<void>
   /** Copy validated plain text through the native clipboard boundary. */
   copyText(text: string): Promise<void>
   /** Open a validated uncredentialed HTTP(S) URL with the operating system. */

@@ -533,7 +533,10 @@ def test_cancellation_suppresses_late_native_audio(
     turn.feed("Do not play this.")
     turn.finish()
     assert synthesizer.started.wait(1.0)
-    assert turn.cancel()
+    assert not coordinator.cancel_turn("request-other", "chat-cancel")
+    assert not coordinator.cancel_turn("request-cancel", "chat-other")
+    assert coordinator.cancel_turn("request-cancel", "chat-cancel")
+    assert not coordinator.cancel_turn("request-cancel", "chat-cancel")
     synthesizer.release.set()
     assert terminal.wait(2.0)
 
@@ -550,6 +553,58 @@ def test_cancellation_suppresses_late_native_audio(
             },
         )
     ]
+    coordinator.shutdown()
+
+
+def test_terminal_claim_wins_exact_cancel_race_without_staling_settled_work(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Return false once terminal delivery owns the turn, even if its sink blocks."""
+
+    runtime = _FakeRuntime()
+    synthesizer = _SequenceSynthesizer()
+    _install_fake_bootstrap(monkeypatch, runtime, synthesizer)
+    stream = _RecordingStream()
+    terminal_entered = Event()
+    release_terminal = Event()
+    terminal_done = Event()
+    events: list[tuple[str, str, dict[str, Any]]] = []
+
+    def _record_event(
+        name: str,
+        request_id: str,
+        data: dict[str, Any],
+    ) -> None:
+        """Hold terminal publication after the coordinator claims settlement."""
+
+        events.append((name, request_id, data))
+        if name == "voice.speech.terminal":
+            terminal_entered.set()
+            assert release_terminal.wait(2.0)
+            terminal_done.set()
+
+    coordinator = DesktopSpeechCoordinator(
+        _config(tmp_path),
+        AudioChannelWriter(stream),  # type: ignore[arg-type]
+        _record_event,
+    )
+    turn = coordinator.start_turn("request-terminal", "chat-terminal")
+    assert coordinator.wait_until_settled(1.0)
+    turn.feed("Finish before the stop request.")
+    turn.finish()
+    assert terminal_entered.wait(2.0)
+
+    assert not coordinator.cancel_turn("request-terminal", "chat-terminal")
+    assert not turn.cancel()
+    release_terminal.set()
+    assert terminal_done.wait(2.0)
+    assert events[-1][0:2] == (
+        "voice.speech.terminal",
+        "request-terminal",
+    )
+    assert events[-1][2]["state"] == "completed"
+
     coordinator.shutdown()
 
 

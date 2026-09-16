@@ -67,6 +67,7 @@ import {
   parseProjectStateResult,
   parseSettingsStateResult,
   parseVoiceCaptureResult,
+  parseVoiceSpeechCancellationResult,
   parseVoiceSettingsStateResult,
   parseVoiceTranscriptionResult,
   parseServerMessage,
@@ -204,6 +205,12 @@ interface PendingRequest {
   cancelTargetId?: string
   resolveCancellation?: () => void
   rejectCancellation?: (error: Error) => void
+  resolveSpeechCancellation?: () => void
+  rejectSpeechCancellation?: (error: Error) => void
+  speechCancellationTarget?: {
+    requestId: string
+    chatId: string
+  }
   cancelAccepted?: boolean
   deferredTargetResponse?: SuccessResponse | ErrorResponse
   timeout?: ReturnType<typeof setTimeout>
@@ -861,9 +868,44 @@ export class BackendProcess {
     )
   }
 
-  /** Stop trusted speech playback independently of Chat request lifetime. */
-  stopSpeechPlayback(requestId: string): void {
-    this.speechDelivery?.cancelTurn(requestId)
+  /** Stop one exact local and Python speech turn after Chat text has settled. */
+  stopSpeechPlayback(requestId: string, chatId: string): Promise<void> {
+    // Stale the trusted playback owner before crossing the asynchronous Python
+    // boundary so a WAV frame already in Electron cannot begin after barge-in.
+    this.speechDelivery?.cancelOwnedTurn(requestId, chatId)
+    if (
+      this.snapshot.status !== 'ready'
+      || !this.snapshot.capabilities.includes('voice.speech')
+      || !this.snapshot.capabilities.includes('voice.speech.cancel')
+    ) {
+      return Promise.reject(
+        new Error('Managed speech cancellation is not available.'),
+      )
+    }
+    return new Promise<void>((resolve, reject) => {
+      const cancellationId = this.sendRequest(
+        'voice.speech.cancel',
+        { requestId, chatId },
+        undefined,
+        {
+          resolveSpeechCancellation: resolve,
+          rejectSpeechCancellation: reject,
+          speechCancellationTarget: { requestId, chatId },
+        },
+      )
+      const pending = this.pendingRequests.get(cancellationId)
+      if (pending !== undefined) {
+        pending.timeout = setTimeout(() => {
+          if (this.pendingRequests.get(cancellationId) !== pending) {
+            return
+          }
+          this.pendingRequests.delete(cancellationId)
+          const error = new Error('Managed speech stop request timed out.')
+          pending.rejectSpeechCancellation?.(error)
+          this.protocolFailure(error.message)
+        }, CANCEL_ACK_TIMEOUT_MS)
+      }
+    })
   }
 
   /** Stop the current trusted speech turn after renderer ownership is reset. */
@@ -1470,6 +1512,9 @@ export class BackendProcess {
       | 'cancelTargetId'
       | 'resolveCancellation'
       | 'rejectCancellation'
+      | 'resolveSpeechCancellation'
+      | 'rejectSpeechCancellation'
+      | 'speechCancellationTarget'
       | 'generation'
     > = {},
   ): string {
@@ -1611,6 +1656,8 @@ export class BackendProcess {
         parseVoiceCaptureResult(message.result)
       } else if (VOICE_TRANSCRIPTION_METHODS.has(pending.method)) {
         parseVoiceTranscriptionResult(message.result)
+      } else if (pending.method === 'voice.speech.cancel') {
+        parseVoiceSpeechCancellationResult(message.result)
       } else if (ATTACHMENT_METHODS.has(pending.method)) {
         parseAttachmentStateResult(message.result)
       } else if (CHAT_GENERATION_METHODS.has(pending.method)) {
@@ -1714,6 +1761,9 @@ export class BackendProcess {
           this.handleResponse(pending.deferredTargetResponse)
         }
       }
+      if (pending.method === 'voice.speech.cancel') {
+        pending.rejectSpeechCancellation?.(new Error(message.error.message))
+      }
       return
     }
 
@@ -1740,6 +1790,15 @@ export class BackendProcess {
       ) {
         this.protocolFailure(
           'Python Backend handshake is missing required capabilities.',
+        )
+        return
+      }
+      if (
+        result.capabilities.includes('voice.speech')
+        && !result.capabilities.includes('voice.speech.cancel')
+      ) {
+        this.protocolFailure(
+          'Python Backend speech capability is missing exact cancellation.',
         )
         return
       }
@@ -2010,6 +2069,27 @@ export class BackendProcess {
       if (deferredResponse !== undefined) {
         this.handleResponse(deferredResponse)
       }
+      return
+    }
+
+    if (pending.method === 'voice.speech.cancel') {
+      // `false` is a successful idempotent race: Python had already reached a
+      // terminal state or the exact Chat/request pair was no longer active.
+      const result = parseVoiceSpeechCancellationResult(message.result)
+      const target = pending.speechCancellationTarget
+      if (
+        target === undefined
+        || result.requestId !== target.requestId
+        || result.chatId !== target.chatId
+      ) {
+        const error = new Error(
+          'Managed speech stop response does not match its request.',
+        )
+        pending.rejectSpeechCancellation?.(error)
+        this.protocolFailure(error.message)
+        return
+      }
+      pending.resolveSpeechCancellation?.()
       return
     }
 
@@ -2333,6 +2413,9 @@ export class BackendProcess {
       pending.rejectCancellation?.(
         new Error('Python Backend stopped before generation was cancelled.'),
       )
+      pending.rejectSpeechCancellation?.(
+        new Error('Python Backend stopped before speech was cancelled.'),
+      )
     }
     this.pendingRequests.clear()
   }
@@ -2353,6 +2436,7 @@ export class BackendProcess {
       pending.rejectVoiceCapture?.(error)
       pending.rejectAttachmentState?.(error)
       pending.rejectCancellation?.(error)
+      pending.rejectSpeechCancellation?.(error)
       pending.resolveChatState = undefined
       pending.rejectChatState = undefined
       pending.resolveProjectState = undefined
@@ -2367,6 +2451,8 @@ export class BackendProcess {
       pending.rejectAttachmentState = undefined
       pending.resolveCancellation = undefined
       pending.rejectCancellation = undefined
+      pending.resolveSpeechCancellation = undefined
+      pending.rejectSpeechCancellation = undefined
     }
   }
 

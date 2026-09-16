@@ -61,6 +61,7 @@ export interface VoiceSessionSnapshot {
   readonly transcriptionRequestId: string | null
   readonly chatOperationId: string | null
   readonly chatRequestId: string | null
+  readonly interruptionCaptureSessionId: string | null
   readonly transcript: VoiceSessionTranscript | null
   readonly chatTerminal: VoiceChatTerminalOutcome | null
   readonly speechExpected: boolean
@@ -120,6 +121,12 @@ export interface VoiceChatRequestOwner extends VoiceSessionOwner {
 /** Terminal metadata from the normal Chat generation path. */
 export interface VoiceChatTerminal extends VoiceChatRequestOwner {
   readonly outcome: VoiceChatTerminalOutcome
+}
+
+/** Identify the passive capture that may interrupt one exact Chat operation. */
+export interface VoiceInterruptionCapture extends VoiceSessionOwner {
+  readonly operationId: string
+  readonly captureSessionId: string
 }
 
 /** Report loss of speech delivery before a request acknowledgement is known. */
@@ -196,6 +203,7 @@ export class VoiceSessionController {
   private transcription: TranscriptionOwnership | null = null
   private transcript: VoiceSessionTranscript | null = null
   private chatTurn: ChatTurnOwnership | null = null
+  private interruptionCaptureSessionId: string | null = null
   private lastTurn: VoiceSessionTurnResult | null = null
   private retiredTranscription: RetiredAcknowledgement | null = null
   private retiredChatTurn: RetiredAcknowledgement | null = null
@@ -214,6 +222,7 @@ export class VoiceSessionController {
       transcriptionRequestId: this.transcription?.requestId ?? null,
       chatOperationId: turn?.operationId ?? null,
       chatRequestId: turn?.requestId ?? null,
+      interruptionCaptureSessionId: this.interruptionCaptureSessionId,
       transcript: this.transcript === null ? null : { ...this.transcript },
       chatTerminal: turn?.chatTerminal ?? null,
       speechExpected: turn?.speechExpected ?? false,
@@ -698,6 +707,99 @@ export class VoiceSessionController {
     return true
   }
 
+  /**
+   * Arm one echo-cancelled capture against the exact active Chat operation.
+   *
+   * Arming does not interrupt anything: it only records which capture may
+   * later prove sustained user speech. This two-step boundary prevents ambient
+   * noise, microphone startup, or a stale capture callback from cancelling a
+   * durable Chat turn.
+   */
+  armInterruption(event: VoiceInterruptionCapture): boolean {
+    this.assertUsable()
+    if (
+      !CAPTURE_SESSION_PATTERN.test(event.captureSessionId)
+      || codePointLength(event.captureSessionId) > MAX_IDENTIFIER_CODE_POINTS
+    ) {
+      throw new TypeError('Voice interruption capture identifier is invalid.')
+    }
+    const turn = this.chatTurn
+    if (
+      !this.ownerMatches(event)
+      || (this.phase !== 'thinking' && this.phase !== 'speaking')
+      || turn === null
+      || turn.operationId !== event.operationId
+      || (
+        this.interruptionCaptureSessionId !== null
+        && this.interruptionCaptureSessionId !== event.captureSessionId
+      )
+    ) {
+      return false
+    }
+    if (this.interruptionCaptureSessionId === event.captureSessionId) {
+      return true
+    }
+    this.interruptionCaptureSessionId = event.captureSessionId
+    this.publish()
+    return true
+  }
+
+  /** Disarm an exact passive capture that failed or was cancelled before speech. */
+  rejectInterruptionStart(event: VoiceInterruptionCapture): boolean {
+    if (
+      !this.ownerMatches(event)
+      || (this.phase !== 'thinking' && this.phase !== 'speaking')
+      || this.chatTurn?.operationId !== event.operationId
+      || this.interruptionCaptureSessionId !== event.captureSessionId
+    ) {
+      return false
+    }
+    this.interruptionCaptureSessionId = null
+    this.publish()
+    return true
+  }
+
+  /**
+   * Accept confirmed user speech, retire the old turn, and continue listening.
+   *
+   * The returned cancellation belongs to the previous epoch. Callers use its
+   * exact Chat and speech identifiers to stop external work, while every late
+   * callback from that turn is rejected after the epoch advances.
+   */
+  acceptInterruption(
+    event: VoiceInterruptionCapture,
+  ): VoiceSessionCancellation | null {
+    this.assertUsable()
+    const turn = this.chatTurn
+    if (
+      !this.ownerMatches(event)
+      || (this.phase !== 'thinking' && this.phase !== 'speaking')
+      || turn === null
+      || turn.operationId !== event.operationId
+      || this.interruptionCaptureSessionId !== event.captureSessionId
+    ) {
+      return null
+    }
+    const cancellation = this.cancellation()
+    const lastTurn: VoiceSessionTurnResult = {
+      outcome: 'cancelled',
+      speechPlayed: turn.speechPlayed,
+      skippedSpeechCount: turn.skippedSpeechCount,
+    }
+    this.advanceEpoch()
+    this.phase = 'listening'
+    this.captureSessionId = event.captureSessionId
+    this.transcription = null
+    this.transcript = null
+    this.chatTurn = null
+    this.interruptionCaptureSessionId = null
+    this.lastTurn = lastTurn
+    this.retiredTranscription = null
+    this.retiredChatTurn = null
+    this.publish()
+    return cancellation
+  }
+
   /** Cancel current work, keep the binding, and invalidate every late result. */
   cancel(): VoiceSessionCancellation {
     this.assertUsable()
@@ -815,6 +917,7 @@ export class VoiceSessionController {
     this.transcription = null
     this.transcript = null
     this.chatTurn = null
+    this.interruptionCaptureSessionId = null
   }
 
   private owner(): VoiceSessionOwner {

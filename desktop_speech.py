@@ -298,6 +298,32 @@ class DesktopSpeechCoordinator:
                 self._emit_undelivered_cancel(record)
             return _DesktopSpeechTurnHandle(self, record)
 
+    def cancel_turn(self, request_id: str, chat_id: str) -> bool:
+        """Cancel only the exact active speech turn named by both identifiers.
+
+        ``False`` is a successful idempotent outcome when the turn is already
+        cancelled or terminal, or when either identifier is stale. Serializing
+        the ownership check with ``start_turn`` prevents a late interruption
+        from cancelling a replacement turn that reused neither full key.
+        """
+
+        if type(request_id) is not str or type(chat_id) is not str:
+            raise TypeError("request_id and chat_id must be strings.")
+        with self._turn_transition_lock:
+            with self._lock:
+                record = self._active_turn
+                if (
+                    record is None
+                    or record.request_id != request_id
+                    or record.chat_id != chat_id
+                ):
+                    return False
+                claimed, delegate = self._claim_turn_cancellation_locked(record)
+            if not claimed:
+                return False
+            self._finish_turn_cancellation(record, delegate)
+            return True
+
     def wait_until_settled(self, timeout_seconds: float | None = None) -> bool:
         """Wait for ready/unavailable/closed state for tests and diagnostics."""
 
@@ -558,19 +584,38 @@ class DesktopSpeechCoordinator:
         """
 
         with self._lock:
-            if record.cancelled:
-                return False
-            record.cancelled = True
-            record.buffered_chunks.clear()
-            record.buffered_code_points = 0
-            if self._active_turn is record:
-                self._active_turn = None
-            delegate = record.delegate
+            claimed, delegate = self._claim_turn_cancellation_locked(record)
+        if not claimed:
+            return False
+        self._finish_turn_cancellation(record, delegate)
+        return True
+
+    def _claim_turn_cancellation_locked(
+        self,
+        record: _TurnRecord,
+    ) -> tuple[bool, SpeechTurn | None]:
+        """Linearize cancellation against terminal delivery under ``_lock``."""
+
+        if record.cancelled or record.terminal_emitted:
+            return False, None
+        record.cancelled = True
+        record.buffered_chunks.clear()
+        record.buffered_code_points = 0
+        if self._active_turn is record:
+            self._active_turn = None
+        return True, record.delegate
+
+    def _finish_turn_cancellation(
+        self,
+        record: _TurnRecord,
+        delegate: SpeechTurn | None,
+    ) -> None:
+        """Complete a claimed cancellation without holding coordinator locks."""
+
         if delegate is not None:
             self._cancel_delegate(delegate)
         else:
             self._emit_undelivered_cancel(record)
-        return True
 
     def _emit_undelivered_cancel(self, record: _TurnRecord) -> None:
         """Retire one turn that never acquired a queue-owned terminal event."""
@@ -637,6 +682,17 @@ class DesktopSpeechCoordinator:
                 return
             if not isinstance(event, SpeechTurnTerminal):
                 raise TypeError("Speech queue emitted an unknown event.")
+            with self._lock:
+                if record.terminal_emitted:
+                    raise RuntimeError(
+                        "Speech turn emitted duplicate terminal state."
+                    )
+                # Claim terminality before calling the external sink so an
+                # exact cancel racing that callback has one deterministic
+                # winner and can never report that it stopped settled work.
+                record.terminal_emitted = True
+                if self._active_turn is record:
+                    self._active_turn = None
             self._event_sink(
                 "voice.speech.terminal",
                 record.request_id,
@@ -648,9 +704,6 @@ class DesktopSpeechCoordinator:
                     "failedSentences": event.failed_sentences,
                 },
             )
-            with self._lock:
-                if self._active_turn is record:
-                    self._active_turn = None
         except BaseException:
             self._mark_unavailable()
 

@@ -198,6 +198,7 @@ ProtocolMethod = Literal[
     "voice.settings.update",
     "voice.capture.complete",
     "voice.transcription.start",
+    "voice.speech.cancel",
     "request.cancel",
     "permission.respond",
     "shutdown",
@@ -230,6 +231,7 @@ SUPPORTED_METHODS: Final[tuple[ProtocolMethod, ...]] = (
     "voice.settings.update",
     "voice.capture.complete",
     "voice.transcription.start",
+    "voice.speech.cancel",
     "request.cancel",
     "permission.respond",
     "shutdown",
@@ -405,6 +407,22 @@ class CancelParams(TypedDict, total=False):
 
     requestId: str
     reason: str
+
+
+class VoiceSpeechCancelParams(TypedDict):
+    """Identify one exact Chat-owned speech turn to make stale."""
+
+    requestId: str
+    chatId: str
+
+
+class VoiceSpeechCancelResult(TypedDict):
+    """Echo the exact speech owner and whether cancellation won its race."""
+
+    kind: Literal["voice.speech.cancel"]
+    requestId: str
+    chatId: str
+    stopped: bool
 
 
 class PermissionResponseParams(TypedDict):
@@ -1333,6 +1351,15 @@ def _validate_cancel_params(params: JsonObject) -> None:
         )
 
 
+def _validate_voice_speech_cancel_params(params: JsonObject) -> None:
+    """Require both halves of the speech turn's exact ownership key."""
+
+    context = "voice.speech.cancel params"
+    _require_fields(params, {"requestId", "chatId"}, context)
+    _require_identifier(params, "requestId", context)
+    _require_identifier(params, "chatId", context)
+
+
 def _validate_permission_response_params(params: JsonObject) -> None:
     _require_fields(
         params,
@@ -1791,6 +1818,8 @@ def parse_client_request(value: object) -> ClientRequest:
         _validate_voice_capture_complete_params(params)
     elif method == "voice.transcription.start":
         _validate_voice_transcription_start_params(params)
+    elif method == "voice.speech.cancel":
+        _validate_voice_speech_cancel_params(params)
     elif method == "request.cancel":
         _validate_cancel_params(params)
     elif method == "permission.respond":
@@ -2340,6 +2369,9 @@ def _validate_success_result(result: JsonObject) -> None:
     }:
         _validate_voice_transcription_result(result)
         return
+    if fields == {"kind", "requestId", "chatId", "stopped"}:
+        _validate_voice_speech_cancel_result(result)
+        return
     if fields == {"stopped"} and result["stopped"] is True:
         return
     raise ProtocolValidationError(
@@ -2692,6 +2724,23 @@ def _validate_voice_transcription_result(
             f"{context}.languageProbability must be finite and between 0 and 1.",
         )
     return cast(VoiceTranscriptionResult, result)
+
+
+def _validate_voice_speech_cancel_result(
+    result: JsonObject,
+) -> VoiceSpeechCancelResult:
+    """Validate an idempotent result without confusing shutdown success."""
+
+    context = "voice speech cancel result"
+    if result.get("kind") != "voice.speech.cancel":
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.kind is unsupported.",
+        )
+    _require_identifier(result, "requestId", context)
+    _require_identifier(result, "chatId", context)
+    _require_boolean(result, "stopped", context)
+    return cast(VoiceSpeechCancelResult, result)
 
 
 def _validate_response(message: JsonObject) -> ServerMessage:

@@ -76,6 +76,11 @@ export interface VoiceActivityDetectorOptions {
   readonly noiseAdaptationRate?: number
   /** Initial normalized ambient estimate before quiet frames are observed. */
   readonly initialNoiseFloor?: number
+  /**
+   * Samples allowed while waiting for speech, or `null` for an explicitly
+   * owner-bounded continuous monitor such as barge-in capture.
+   */
+  readonly noSpeechTimeoutSampleCount?: number | null
 }
 
 const DEFAULT_MINIMUM_VOICE_ENERGY = 0.012
@@ -149,6 +154,13 @@ function boundedUnitInterval(value: number, name: string): number {
 function positiveFinite(value: number, name: string): number {
   if (!Number.isFinite(value) || value <= 0) {
     throw new RangeError(`${name} must be a positive finite number.`)
+  }
+  return value
+}
+
+function positiveSafeInteger(value: number, name: string): number {
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new RangeError(`${name} must be a positive safe integer.`)
   }
   return value
 }
@@ -308,6 +320,7 @@ export class AdaptiveEnergyVoiceActivityDetector {
   private readonly minimumVoiceEnergy: number
   private readonly voiceToNoiseRatio: number
   private readonly noiseAdaptationRate: number
+  private readonly noSpeechTimeoutSampleCount: number | null
   private state: VoiceActivityState = 'waiting'
   private energy = 0
   private noiseFloor: number
@@ -347,6 +360,13 @@ export class AdaptiveEnergyVoiceActivityDetector {
       options.initialNoiseFloor ?? DEFAULT_INITIAL_NOISE_FLOOR,
       'initialNoiseFloor',
     )
+    this.noSpeechTimeoutSampleCount = options.noSpeechTimeoutSampleCount === null
+      ? null
+      : positiveSafeInteger(
+          options.noSpeechTimeoutSampleCount
+            ?? VOICE_NO_SPEECH_TIMEOUT_SAMPLE_COUNT,
+          'noSpeechTimeoutSampleCount',
+        )
   }
 
   /** Return immutable metadata without exposing retained PCM frames. */
@@ -469,8 +489,8 @@ export class AdaptiveEnergyVoiceActivityDetector {
 
   private waitingResult(): VoiceActivityResult {
     if (
-      this.processedSampleCount
-      >= VOICE_NO_SPEECH_TIMEOUT_SAMPLE_COUNT
+      this.noSpeechTimeoutSampleCount !== null
+      && this.processedSampleCount >= this.noSpeechTimeoutSampleCount
     ) {
       this.state = 'timed-out'
       this.discardAudio()

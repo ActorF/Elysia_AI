@@ -375,6 +375,46 @@ test('TypeScript request builder produces the versioned envelope', () => {
   )
 })
 
+test('TypeScript validates exact managed speech cancellation ownership', () => {
+  assert.deepEqual(
+    createRequest('speech-cancel-1', 'voice.speech.cancel', {
+      requestId: 'chat-request-1',
+      chatId: 'chat_fixture',
+    }).params,
+    {
+      requestId: 'chat-request-1',
+      chatId: 'chat_fixture',
+    },
+  )
+  for (const params of [
+    { requestId: 'chat-request-1' },
+    { requestId: 'chat-request-1', chatId: 'chat_fixture', broad: true },
+  ]) {
+    assert.throws(
+      () => parseClientRequest({
+        type: 'request',
+        protocol: fixtures.protocol,
+        id: 'speech-cancel-invalid',
+        method: 'voice.speech.cancel',
+        params,
+      }),
+      ProtocolValidationError,
+    )
+  }
+  assert.equal(parseServerMessage({
+    type: 'response',
+    protocol: fixtures.protocol,
+    id: 'speech-cancel-1',
+    ok: true,
+    result: {
+      kind: 'voice.speech.cancel',
+      requestId: 'chat-request-1',
+      chatId: 'chat_fixture',
+      stopped: false,
+    },
+  }).result.stopped, false)
+})
+
 test('TypeScript validates revisioned settings requests without secrets', () => {
   assert.deepEqual(
     createRequest('settings-get-1', 'settings.get', {}).params,
@@ -1536,16 +1576,61 @@ test('Backend forwards only renderer-safe speech status metadata', () => {
   )
 })
 
-test('Backend can stop speech after Chat text ownership has ended', () => {
+test('Backend stops exact speech locally before awaiting Python ownership', async () => {
+  const writes = []
   const cancelled = []
   const backend = new BackendProcess('.', () => undefined)
+  backend.child = {
+    stdin: {
+      writable: true,
+      write: (value) => writes.push(value),
+    },
+  }
+  backend.snapshot = {
+    revision: 1,
+    status: 'ready',
+    capabilities: ['voice.speech', 'voice.speech.cancel'],
+    models: ['qwen3.5:9b'],
+    modelName: 'qwen3.5:9b',
+    chatId: 'chat_fixture',
+    chatTitle: 'Elysia Chat',
+  }
   backend.speechDelivery = {
-    cancelTurn: (requestId) => cancelled.push(requestId),
+    cancelOwnedTurn: (requestId, chatId) => {
+      cancelled.push({ requestId, chatId })
+      return true
+    },
   }
 
-  backend.stopSpeechPlayback('speech-after-chat-1')
+  const stopping = backend.stopSpeechPlayback(
+    'speech-after-chat-1',
+    'chat_fixture',
+  )
+  const request = JSON.parse(writes.at(-1))
 
-  assert.deepEqual(cancelled, ['speech-after-chat-1'])
+  assert.deepEqual(cancelled, [{
+    requestId: 'speech-after-chat-1',
+    chatId: 'chat_fixture',
+  }])
+  assert.equal(request.method, 'voice.speech.cancel')
+  assert.deepEqual(request.params, {
+    requestId: 'speech-after-chat-1',
+    chatId: 'chat_fixture',
+  })
+  backend.handleProtocolLine(JSON.stringify({
+    type: 'response',
+    protocol: fixtures.protocol,
+    id: request.id,
+    ok: true,
+    result: {
+      kind: 'voice.speech.cancel',
+      requestId: 'speech-after-chat-1',
+      chatId: 'chat_fixture',
+      stopped: false,
+    },
+  }))
+  await stopping
+  assert.equal(backend.getSnapshot().status, 'ready')
 })
 
 test('Backend can retire current speech when Renderer ownership resets', () => {

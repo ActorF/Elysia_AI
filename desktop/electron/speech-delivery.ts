@@ -174,6 +174,27 @@ export class SpeechDeliveryCoordinator {
     this.makeTurnStale(requestId)
   }
 
+  /**
+   * Mark one externally requested turn stale only when both owner fields match.
+   *
+   * Renderer-originated speech control carries a Chat ID as a second ownership
+   * discriminator. Keeping that check beside the tracked turn prevents a
+   * correct request ID paired with stale UI state from silencing local audio;
+   * internal Backend paths that already proved the pending request may continue
+   * to use `cancelTurn`.
+   */
+  cancelOwnedTurn(requestId: string, chatId: string): boolean {
+    if (this.disposed || this.failed) {
+      return false
+    }
+    const turn = this.turns.get(requestId)
+    if (turn === undefined || turn.chatId !== chatId) {
+      return false
+    }
+    this.makeTurnStale(requestId)
+    return true
+  }
+
   /** Cancel the current turn when renderer navigation erased its request ID. */
   cancelCurrentTurn(): void {
     if (

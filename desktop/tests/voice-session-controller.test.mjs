@@ -149,6 +149,7 @@ test('runs the five phases and accepts STT and Chat acknowledgements after event
     transcriptionRequestId: null,
     chatOperationId: null,
     chatRequestId: null,
+    interruptionCaptureSessionId: null,
     transcript: null,
     chatTerminal: null,
     speechExpected: false,
@@ -377,6 +378,123 @@ test('cancel and hang-up invalidate late events and remain idempotent', () => {
     chatOperationId: null,
     chatRequestId: null,
   })
+})
+
+test('arms and disarms only the exact passive interruption capture', () => {
+  const controller = createBoundController()
+  const { owner, operationId } = reachThinkingTurn(controller)
+  const interruption = {
+    ...owner,
+    operationId,
+    captureSessionId: 'voice_interruption_exact',
+  }
+
+  assert.equal(controller.armInterruption({
+    ...interruption,
+    operationId: 'chat_operation_wrong',
+  }), false)
+  assert.equal(controller.armInterruption({
+    ...interruption,
+    epoch: owner.epoch + 1,
+  }), false)
+  assert.equal(controller.armInterruption(interruption), true)
+  assert.equal(controller.armInterruption(interruption), true)
+  assert.equal(
+    controller.getSnapshot().interruptionCaptureSessionId,
+    interruption.captureSessionId,
+  )
+  assert.equal(controller.armInterruption({
+    ...interruption,
+    captureSessionId: 'voice_interruption_other',
+  }), false)
+  assert.equal(controller.rejectInterruptionStart({
+    ...interruption,
+    captureSessionId: 'voice_interruption_other',
+  }), false)
+  assert.equal(controller.rejectInterruptionStart(interruption), true)
+  assert.equal(controller.getSnapshot().interruptionCaptureSessionId, null)
+  assert.equal(controller.rejectInterruptionStart(interruption), false)
+  assert.equal(controller.armInterruption(interruption), true)
+})
+
+test('interrupts a pre-acknowledgement Chat turn without admitting late callbacks', () => {
+  const controller = createBoundController()
+  const { owner, operationId, requestId } = reachThinkingTurn(controller, {
+    acknowledgeChat: false,
+  })
+  const interruption = {
+    ...owner,
+    operationId,
+    captureSessionId: 'voice_interruption_pre_ack',
+  }
+  assert.equal(controller.armInterruption(interruption), true)
+
+  assert.deepEqual(controller.acceptInterruption(interruption), {
+    owner,
+    captureSessionId: null,
+    transcriptionRequestId: null,
+    chatOperationId: operationId,
+    chatRequestId: null,
+  })
+  const nextOwner = currentOwner(controller)
+  assert.deepEqual(controller.getSnapshot().lastTurn, {
+    outcome: 'cancelled',
+    speechPlayed: false,
+    skippedSpeechCount: 0,
+  })
+  assert.equal(controller.getSnapshot().phase, 'listening')
+  assert.equal(
+    controller.getSnapshot().captureSessionId,
+    interruption.captureSessionId,
+  )
+  assert.equal(controller.getSnapshot().interruptionCaptureSessionId, null)
+
+  const lateChatOwner = { ...owner, operationId, requestId }
+  assert.equal(controller.acknowledgeChatRequest(lateChatOwner), false)
+  assert.equal(controller.acceptChatTerminal({
+    ...lateChatOwner,
+    outcome: 'cancelled',
+  }), false)
+  assert.equal(controller.acceptSpeechStatus({
+    ...lateChatOwner,
+    kind: 'playing',
+    sequence: 0,
+  }), false)
+  assert.equal(controller.acceptCaptureComplete({
+    ...nextOwner,
+    captureSessionId: interruption.captureSessionId,
+  }), true)
+})
+
+test('interrupts speaking while returning exact Chat cancellation ownership', () => {
+  const controller = createBoundController()
+  const { owner, chatOwner, operationId } = reachThinkingTurn(controller)
+  const interruption = {
+    ...owner,
+    operationId,
+    captureSessionId: 'voice_interruption_speaking',
+  }
+  assert.equal(controller.armInterruption(interruption), true)
+  assert.equal(controller.acceptSpeechStatus({
+    ...chatOwner,
+    kind: 'playing',
+    sequence: 0,
+  }), true)
+  assert.equal(controller.getSnapshot().phase, 'speaking')
+
+  assert.deepEqual(controller.acceptInterruption(interruption), {
+    owner,
+    captureSessionId: null,
+    transcriptionRequestId: null,
+    chatOperationId: operationId,
+    chatRequestId: chatOwner.requestId,
+  })
+  assert.deepEqual(controller.getSnapshot().lastTurn, {
+    outcome: 'cancelled',
+    speechPlayed: true,
+    skippedSpeechCount: 0,
+  })
+  assert.equal(controller.acceptInterruption(interruption), null)
 })
 
 test('rejects illegal transitions, wrong owners, and out-of-order speech', () => {

@@ -702,6 +702,59 @@ def test_voice_transcription_request_rejects_invalid_capture_fields(
         parse_client_request(request)
 
 
+def test_voice_speech_cancel_requires_one_exact_request_and_chat_key() -> None:
+    """Accept only the two identifiers needed to stop the owned speech turn."""
+
+    request: JsonObject = {
+        "type": "request",
+        "protocol": {"name": PROTOCOL_NAME, "version": PROTOCOL_VERSION},
+        "id": "speech-cancel-command",
+        "method": "voice.speech.cancel",
+        "params": {
+            "requestId": "chat-generation-request",
+            "chatId": "chat_voice",
+        },
+    }
+
+    parsed = parse_client_request(request)
+    assert parsed["method"] == "voice.speech.cancel"
+    assert parsed["params"] == {
+        "requestId": "chat-generation-request",
+        "chatId": "chat_voice",
+    }
+
+    for invalid_params in (
+        {"requestId": "chat-generation-request"},
+        {"chatId": "chat_voice"},
+        {"requestId": "", "chatId": "chat_voice"},
+        {
+            "requestId": "chat-generation-request",
+            "chatId": "chat_voice",
+            "reason": "must not cross this narrow boundary",
+        },
+    ):
+        invalid = deepcopy(request)
+        invalid["params"] = invalid_params
+        with pytest.raises(ProtocolValidationError):
+            parse_client_request(invalid)
+
+
+def test_voice_speech_cancel_result_distinguishes_a_lost_terminal_race() -> None:
+    """Allow stopped false only with its explicit echoed speech owner."""
+
+    result = {
+        "kind": "voice.speech.cancel",
+        "requestId": "chat-generation-request",
+        "chatId": "chat_voice",
+        "stopped": False,
+    }
+    response = build_success_response("speech-cancel-command", result)
+    assert parse_server_message(response)["result"] == result
+
+    with pytest.raises(ProtocolValidationError):
+        build_success_response("ambiguous-stop-command", {"stopped": False})
+
+
 def test_voice_transcription_result_is_bounded_and_pcm_free() -> None:
     """Accept final text while rejecting any need to echo its source audio."""
 

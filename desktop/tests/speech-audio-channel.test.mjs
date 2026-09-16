@@ -1034,6 +1034,35 @@ test('renderer reset cancels the current speech turn without a leaked ID', async
   input.destroy()
 })
 
+test('renderer speech cancellation requires the exact Request and Chat pair', async () => {
+  const input = new PassThrough()
+  const source = encodedFrame({ counter: 0, sequence: 0 })
+  const playback = new DeferredPlayback()
+  const delivery = new SpeechDeliveryCoordinator(
+    input,
+    playback,
+    (failure) => assert.fail(`unexpected delivery failure: ${failure}`),
+  )
+  delivery.startTurn('request_main', 'chat_main')
+  delivery.acceptEvent(clipEvent(source))
+  input.write(source.bytes)
+
+  assert.equal(
+    delivery.cancelOwnedTurn('request_main', 'chat_stale'),
+    false,
+  )
+  assert.equal(playback.cancelCalls, 0)
+  assert.equal(
+    delivery.cancelOwnedTurn('request_main', 'chat_main'),
+    true,
+  )
+  await immediate()
+  assert.equal(playback.cancelCalls, 1)
+
+  delivery.dispose()
+  input.destroy()
+})
+
 test('cancelled terminal accepts only a possible suppressed outcome suffix', async () => {
   const input = new PassThrough()
   const source = encodedFrame({ counter: 0, sequence: 0 })

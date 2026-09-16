@@ -18,9 +18,15 @@ surfaces, resilient streamed message actions, revisioned Settings, Chat
 attachments, Project source storage, semantic design tokens, system/light/dark
 themes, keyboard and screen-reader navigation, durable per-Chat drafts,
 renderer-refresh stream recovery, and consistent loading, empty, error,
-offline, and fatal states. This Voice slice exposes final text only; automatic
-submission, automatic re-listening, real-time partial transcripts, and natural
-barge-in remain future work. Ordinary
+offline, and fatal states. This Voice slice still exposes final transcripts
+only and requires explicit submission. After that submission, a dedicated
+reply-time monitor can accept sustained user speech while the turn is thinking
+or speaking. It requires WebRTC echo cancellation both as an exact constraint
+and as a verified track setting; otherwise it fails closed and the reply
+continues. Confirmed speech stops exact playback and managed synthesis, requests
+exact Chat cancellation, advances the Voice epoch, and continues the new
+capture in `LISTENING`. Automatic re-listening after a normally completed reply
+and real-time partial transcripts remain future work. Ordinary
 Chat replies now copy exact Brain chunks into a bounded sentence queue backed
 by one managed local GPT-SoVITS worker. Correlation metadata crosses NDJSON,
 while validated PCM WAV uses private fd3 framing and preload-owned Web Audio.
@@ -104,12 +110,16 @@ Git-ignored and must not be committed or packaged with the application.
   transcript** explicitly submits it through the normal durable Chat path;
   **Use transcript in message** or **Append transcript to message** only updates
   the existing Composer draft. Direct Voice submission preserves that draft
-  and does not attach files staged in the Composer.
+  and does not attach files staged in the Composer. Only after this explicit
+  Voice submission may the app open a reply-time interruption monitor.
 - The Voice surface presents the closed `IDLE → LISTENING → TRANSCRIBING →
   THINKING → SPEAKING → IDLE` lifecycle as ready, capture/transcription
-  progress, **Elysia is thinking**, and **Elysia is speaking**. Thinking and
-  speaking disable capture. The Session returns to idle only after Chat and
-  optional playback both finish, and it never starts another capture by itself.
+  progress, **Elysia is thinking**, and **Elysia is speaking**. During a sent
+  Voice reply it also presents **Listening for interruption** and
+  **Interrupting Elysia**. Confirmed sustained speech rolls the controller to a
+  new epoch and `LISTENING`; old-epoch callbacks cannot reopen or settle the new
+  turn. A normal reply still returns to idle only after Chat and optional
+  playback both finish, and it does not start another capture by itself.
 - Settings shows Global defaults beside the active Project's inheritance and
   the active Chat's pinned model. Speech recognition selects
   `tiny` / `base` / `small` / `medium` / `large-v3` / `turbo`,
@@ -140,10 +150,11 @@ Git-ignored and must not be committed or packaged with the application.
 - Projects support persisted metadata, instructions, workspace binding, Chat
   assignment, archive, and restore. Managed sentence playback is available for
   ordinary Chat replies when its ignored local runtime and Profile are valid;
-  hands-free Voice continuation, natural barge-in, Work permissions, and later
+  reply-time barge-in is available when verified echo cancellation starts.
+  Hands-free continuation after a normal reply, Work permissions, and later
   file-processing controls remain unavailable.
 
-## Manual bounded Voice Session smoke test
+## Manual bounded Voice Session and barge-in smoke test
 
 Use two Command Prompt windows, not PowerShell. Start Vite in the first:
 
@@ -176,6 +187,18 @@ Composer draft and staged attachment must remain unchanged. With
 `voice.speech`, the surface must show **Elysia is speaking** and return to
 **Ready to listen** only after both Chat and playback finish. Without that
 capability, text must still finish and return the Session to idle.
+
+For barge-in, send another reviewed Voice transcript and speak a sustained
+phrase while the UI shows either **Elysia is thinking** or **Elysia is
+speaking**. With verified WebRTC echo cancellation, the surface must show
+**Listening for interruption**, then **Interrupting Elysia**, stop only that
+reply's playback/TTS and Chat stream, and continue the new utterance in
+`LISTENING`. Review and explicitly send the resulting Final Transcript; it is
+not submitted automatically. If the browser cannot verify echo cancellation,
+the monitor must release the microphone, show a safe warning, and allow the
+current reply to continue. This is a manual acceptance checklist; this guide
+does not claim that it has already passed across real microphone, speaker, and
+room-echo combinations.
 
 Repeat once while silent for about 10 seconds, once with **Cancel capture**,
 and once with **Cancel transcription**; none may add a Chat-history Turn.
@@ -305,8 +328,10 @@ method, results, capability gaps, and limitations.
   request ID, Chat ID, closed `playing|played|skipped` plus sequence, or terminal
   `completed|cancelled` status. WAV bytes, clip tokens, hashes, text, paths,
   prompts, diagnostics, and native errors never enter React. A validated,
-  request-ID-scoped `stopSpeechPlayback` method permits hang-up after Chat text
-  ownership has ended. The managed
+  exact Request-ID-and-Chat-ID `stopSpeechPlayback` method permits hang-up or
+  barge-in after Chat text ownership has ended. On confirmed interruption the
+  Renderer also cancels the exact Chat request; duplicate, late, and mismatched
+  ownership cannot stop another turn. The managed
   saved output-device selection is applied before each Web Audio decode; an
   unavailable explicit sink skips that clip instead of leaking it through the
   system default speaker. The managed runtime's current partial manifest proves launch consistency, not complete
@@ -321,13 +346,17 @@ method, results, capability gaps, and limitations.
   immediate resource cleanup when a test, capture, or visible context ends.
   Microphone and speaker-selection permissions are limited to the trusted main
   renderer. Opening the Voice page does not request microphone access; capture
-  begins only from the user's explicit control. Bounded VAD discards silence
-  and short input, and accepted PCM exists only during the correlated local
-  transcription request. The final result contains bounded text and safe
-  language metadata, never PCM, model paths, or native diagnostics. Neither
-  process persists audio. Capture and transcription alone never create a Chat
-  Turn; only the user's explicit **Send transcript** confirmation enters the
-  existing Chat path.
+  begins only from the user's explicit control. After **Send transcript**, the
+  reply-time monitor requires verified WebRTC echo cancellation and sustained
+  local VAD; inability to verify the track fails closed instead of risking a
+  self-interruption. Accepted PCM exists only during the correlated local
+  transcription request. If an interrupted utterance must wait for the old Chat
+  terminal, its bounded PCM remains in memory for no more than 10 seconds and
+  is wiped on timeout, hang-up, Voice close, Chat/Project switch, or another
+  privacy boundary. The final result contains bounded text and safe language
+  metadata, never PCM, model paths, or native diagnostics. Neither process
+  persists audio. Capture and transcription alone never create a Chat Turn;
+  each Final Transcript still requires the user's explicit send confirmation.
 - Native selection and drop paths remain inside the trusted preload/Electron
   boundary. Python copies validated regular files into opaque, scope-specific
   storage, and protocol responses expose only safe metadata and attachment IDs.

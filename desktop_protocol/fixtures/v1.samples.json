@@ -387,6 +387,19 @@
       }
     },
     {
+      "name": "managed speech cancellation request",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "voice-speech-cancel-1",
+        "method": "voice.speech.cancel",
+        "params": {
+          "requestId": "chat-voice-1",
+          "chatId": "chat_fixture"
+        }
+      }
+    },
+    {
       "name": "permission response request",
       "message": {
         "type": "request",
@@ -433,6 +446,8 @@
             "chat.stream",
             "chat.retry",
             "request.cancel",
+            "voice.speech",
+            "voice.speech.cancel",
             "project.management",
             "stream",
             "progress",
@@ -831,6 +846,36 @@
       }
     },
     {
+      "name": "managed speech cancellation response",
+      "message": {
+        "type": "response",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "voice-speech-cancel-1",
+        "ok": true,
+        "result": {
+          "kind": "voice.speech.cancel",
+          "requestId": "chat-voice-1",
+          "chatId": "chat_fixture",
+          "stopped": true
+        }
+      }
+    },
+    {
+      "name": "managed speech cancellation terminal race response",
+      "message": {
+        "type": "response",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "voice-speech-cancel-2",
+        "ok": true,
+        "result": {
+          "kind": "voice.speech.cancel",
+          "requestId": "chat-voice-complete",
+          "chatId": "chat_fixture",
+          "stopped": false
+        }
+      }
+    },
+    {
       "name": "shutdown response",
       "message": {
         "type": "response",
@@ -1013,6 +1058,16 @@
         "id": "unknown-1",
         "method": "memory.write",
         "params": {}
+      }
+    },
+    {
+      "name": "managed speech cancellation missing Chat ownership",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "voice-speech-cancel-invalid-1",
+        "method": "voice.speech.cancel",
+        "params": { "requestId": "chat-voice-1" }
       }
     },
     {
@@ -1366,6 +1421,20 @@
         "id": "unknown-result-1",
         "ok": true,
         "result": { "ready": true }
+      }
+    },
+    {
+      "name": "managed speech cancellation result missing Chat ownership",
+      "message": {
+        "type": "response",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "voice-speech-cancel-invalid-1",
+        "ok": true,
+        "result": {
+          "kind": "voice.speech.cancel",
+          "requestId": "chat-voice-1",
+          "stopped": true
+        }
       }
     },
     {

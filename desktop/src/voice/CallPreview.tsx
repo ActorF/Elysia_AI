@@ -29,11 +29,18 @@ export interface VoiceTranscriptionView {
   retryable: boolean
 }
 
+/**
+ * Describe whether reply-time capture is safely monitoring for an interruption
+ * or has confirmed speech and is cancelling the previous reply.
+ */
+export type VoiceInterruptionUiState = 'monitoring' | 'cancelling' | null
+
 interface CallPreviewProps {
   captionsEnabled: boolean
   capture: AudioCaptureSnapshot
   captureDisabledReason: string | null
   composerHasDraft: boolean
+  interruptionState: VoiceInterruptionUiState
   modelName?: string
   sessionPhase: VoiceSessionPhase
   speechWarning: string | null
@@ -53,12 +60,22 @@ function captureIsActive(status: AudioCaptureSnapshot['status']): boolean {
 
 function captureStateLabel(
   capture: AudioCaptureSnapshot,
+  interruptionState: VoiceInterruptionUiState,
   sessionPhase: VoiceSessionPhase,
   transcription: VoiceTranscriptionView | null,
   submissionError: string | null,
 ): string {
   if (submissionError !== null) {
     return 'Voice action failed'
+  }
+  if (capture.error !== null || capture.status === 'error') {
+    return 'Microphone unavailable'
+  }
+  if (interruptionState === 'cancelling') {
+    return 'Interrupting Elysia'
+  }
+  if (interruptionState === 'monitoring') {
+    return 'Listening for interruption'
   }
   if (sessionPhase === 'thinking') {
     return 'Elysia is thinking'
@@ -93,8 +110,6 @@ function captureStateLabel(
       return 'No speech detected'
     case 'cancelled':
       return 'Capture cancelled'
-    case 'error':
-      return 'Microphone unavailable'
     case 'completed':
       return 'Preparing capture'
     default:
@@ -105,12 +120,22 @@ function captureStateLabel(
 function captureDescription(
   capture: AudioCaptureSnapshot,
   captureDisabledReason: string | null,
+  interruptionState: VoiceInterruptionUiState,
   sessionPhase: VoiceSessionPhase,
   transcription: VoiceTranscriptionView | null,
   submissionError: string | null,
 ): string {
   if (submissionError !== null) {
     return submissionError
+  }
+  if (capture.error !== null) {
+    return capture.error.message
+  }
+  if (interruptionState === 'cancelling') {
+    return 'The previous reply is stopping. Keep speaking; this new utterance remains temporary until local transcription begins.'
+  }
+  if (interruptionState === 'monitoring') {
+    return 'Verified echo cancellation filters application playback before sustained-speech detection listens for your interruption.'
   }
   if (sessionPhase === 'thinking') {
     return 'The reviewed transcript is using the normal Chat reply path.'
@@ -137,9 +162,6 @@ function captureDescription(
     if (transcription.error !== null) {
       return transcription.error
     }
-  }
-  if (capture.error !== null) {
-    return capture.error.message
   }
   if (capture.status === 'starting') {
     return 'Waiting for the selected microphone and local audio graph.'
@@ -168,6 +190,7 @@ export function CallPreview({
   capture,
   captureDisabledReason,
   composerHasDraft,
+  interruptionState,
   modelName,
   sessionPhase,
   speechWarning,
@@ -183,6 +206,7 @@ export function CallPreview({
   const microphoneButtonRef = useRef<HTMLButtonElement | null>(null)
   const closeButtonRef = useRef<HTMLButtonElement | null>(null)
   const active = captureIsActive(capture.status)
+  const interruptionActive = interruptionState !== null
   const sessionReplyActive = sessionPhase === 'thinking'
     || sessionPhase === 'speaking'
   const transcriptionPending = transcription !== null && (
@@ -192,7 +216,8 @@ export function CallPreview({
   )
   const transcriptionRetryBlocked = transcription?.phase === 'error'
     && !transcription.retryable
-  const microphoneDisabled = sessionReplyActive
+  const microphoneDisabled = interruptionActive
+    || sessionReplyActive
     || transcription?.phase === 'cancelling'
     || transcriptionRetryBlocked
     || (
@@ -205,6 +230,10 @@ export function CallPreview({
     || transcription?.phase === 'cancelled'
     || transcription?.phase === 'error') {
     stateClass = 'error'
+  } else if (interruptionState === 'cancelling') {
+    stateClass = 'speaking'
+  } else if (interruptionState === 'monitoring') {
+    stateClass = capture.status === 'speaking' ? 'speaking' : 'waiting'
   } else if (sessionPhase === 'speaking') {
     stateClass = 'speaking'
   } else if (sessionPhase === 'thinking') {
@@ -221,6 +250,7 @@ export function CallPreview({
   }
   const stateLabel = captureStateLabel(
     capture,
+    interruptionState,
     sessionPhase,
     transcription,
     submissionError,
@@ -228,6 +258,7 @@ export function CallPreview({
   const description = captureDescription(
     capture,
     captureDisabledReason,
+    interruptionState,
     sessionPhase,
     transcription,
     submissionError,
@@ -239,7 +270,11 @@ export function CallPreview({
     || capture.error !== null
     || transcription?.phase === 'error'
   let microphoneLabel = 'Record again'
-  if (sessionReplyActive) {
+  if (interruptionState === 'cancelling') {
+    microphoneLabel = 'Keep speaking'
+  } else if (interruptionState === 'monitoring') {
+    microphoneLabel = 'Listening for interruption'
+  } else if (sessionReplyActive) {
     microphoneLabel = 'Microphone unavailable'
   } else if (active) {
     microphoneLabel = 'Cancel capture'
@@ -263,7 +298,7 @@ export function CallPreview({
     <main
       className="call-page"
       aria-label="Voice capture"
-      aria-busy={active || transcriptionPending || sessionReplyActive}
+      aria-busy={active || transcriptionPending || sessionReplyActive || interruptionActive}
     >
       <header className="call-header">
         <div>
@@ -278,7 +313,9 @@ export function CallPreview({
       <section className="call-stage" aria-label="Voice capture stage">
         <div
           className={'call-aura' + (
-            capture.status === 'speaking' || sessionPhase === 'speaking'
+            capture.status === 'speaking'
+              || sessionPhase === 'speaking'
+              || interruptionState === 'cancelling'
               ? ' speaking'
               : ''
           )}
@@ -303,10 +340,11 @@ export function CallPreview({
           {stateLabel}
         </div>
         {!transcriptReady && (
-          (captionsEnabled || actionHasError) || speechWarning !== null
+          (captionsEnabled || actionHasError || interruptionActive)
+            || speechWarning !== null
         ) && (
           <div className="call-caption-stack">
-            {(captionsEnabled || actionHasError) && (
+            {(captionsEnabled || actionHasError || interruptionActive) && (
               <p
                 className="call-caption"
                 role={actionHasError ? 'alert' : undefined}
@@ -403,11 +441,17 @@ export function CallPreview({
         <button
           ref={microphoneButtonRef}
           type="button"
-          className={'call-control microphone' + (active ? ' active' : '')}
+          className={'call-control microphone' + (
+            active || interruptionActive ? ' active' : ''
+          )}
           disabled={microphoneDisabled}
           onClick={onToggleCapture}
-          aria-pressed={active || transcriptionPending}
-          title={active
+          aria-pressed={active || transcriptionPending || interruptionActive}
+          title={interruptionState === 'cancelling'
+            ? 'Keep speaking while the previous reply stops; close voice to stop the microphone'
+            : interruptionState === 'monitoring'
+              ? 'Verified echo cancellation is listening for an interruption; close voice to stop'
+              : active
             ? 'Cancel and discard this capture'
             : sessionReplyActive
               ? 'Wait for the current Voice Session reply to finish'

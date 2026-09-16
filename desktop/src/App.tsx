@@ -57,10 +57,12 @@ import { Sidebar, type AppView } from './shell/Sidebar.tsx'
 import { useTheme } from './theme/ThemeProvider.tsx'
 import {
   CallPreview,
+  type VoiceInterruptionUiState,
   type VoiceTranscriptionView,
 } from './voice/CallPreview.tsx'
 import {
   AudioCaptureController,
+  type AudioCaptureSpeechConfirmation,
   type AudioCaptureSnapshot,
 } from './voice/audio-capture.ts'
 import {
@@ -71,6 +73,7 @@ import { describeTranscriptionReadiness } from './voice/transcription-readiness.
 import type { CompletedVoiceSegment } from './voice/voice-activity-detector.ts'
 import {
   VoiceSessionController,
+  type VoiceInterruptionCapture,
   type VoiceSessionCancellation,
   type VoiceSessionOwner,
   type VoiceSessionSnapshot,
@@ -553,7 +556,24 @@ interface ManagedSpeechTurn {
   readonly stoppedRequestIds: Set<string>
 }
 
+/**
+ * Retain only correlation metadata while an accepted interruption waits for
+ * the old Chat terminal. The capture has already moved to a new controller
+ * epoch, so these old-epoch fields can cancel only the turn that was heard.
+ */
+interface PendingVoiceInterruption extends VoiceInterruptionCapture {
+  requestId: string | null
+  cancellationSent: boolean
+  abandoned: boolean
+  retentionTimeout: number | null
+  terminal: {
+    requestId: string
+    outcome: 'cancelled' | 'completed' | 'failed'
+  } | null
+}
+
 const MAX_PENDING_VOICE_SPEECH_EVENTS = 64
+const MAX_VOICE_INTERRUPTION_PCM_RETENTION_MS = 10_000
 
 function ownerFromVoiceSession(
   snapshot: VoiceSessionSnapshot,
@@ -790,6 +810,8 @@ function App() {
   const [voiceCaptureSubmissionError, setVoiceCaptureSubmissionError]
     = useState<string | null>(null)
   const [voiceSpeechWarning, setVoiceSpeechWarning] = useState<string | null>(null)
+  const [voiceInterruptionState, setVoiceInterruptionState]
+    = useState<VoiceInterruptionUiState>(null)
   const [showArchived, setShowArchived] = useState(false)
   const [draftsByChat, setDraftsByChat] = useState<Record<string, string>>(
     loadChatDrafts,
@@ -850,6 +872,24 @@ function App() {
   const voiceCaptureCompleteRef = useRef<(segment: CompletedVoiceSegment) => void>(
     () => undefined,
   )
+  const voiceSpeechConfirmedRef
+    = useRef<(confirmation: AudioCaptureSpeechConfirmation) => void>(
+      () => undefined,
+    )
+  const armedVoiceInterruptionRef = useRef<VoiceInterruptionCapture | null>(null)
+  const pendingVoiceInterruptionRef
+    = useRef<PendingVoiceInterruption | null>(null)
+  const pendingVoiceInterruptionSegmentRef
+    = useRef<CompletedVoiceSegment | null>(null)
+  const flushPendingVoiceInterruptionSegmentRef = useRef<() => void>(
+    () => undefined,
+  )
+  const settleVoiceInterruptionTerminalRef = useRef<(
+    operationId: string,
+    chatId: string,
+    requestId: string,
+    outcome: 'cancelled' | 'completed' | 'failed',
+  ) => boolean>(() => false)
   const voiceCaptureOperationRef = useRef(0)
   const voiceTranscriptionOperationRef
     = useRef<VoiceTranscriptionOperation | null>(null)
@@ -871,6 +911,35 @@ function App() {
   const panelCommittedOpenRef = useRef(false)
   const panelTargetOpenRef = useRef(false)
   const panelQueueRef = useRef<Promise<void>>(Promise.resolve())
+
+  const discardPendingVoiceInterruptionSegment = useCallback((): void => {
+    const segment = pendingVoiceInterruptionSegmentRef.current
+    pendingVoiceInterruptionSegmentRef.current = null
+    // The old generation can outlive a short utterance. Any PCM held across
+    // that bounded race must still be wiped on navigation, hang-up, or error.
+    segment?.pcm.fill(0)
+  }, [])
+
+  const clearVoiceInterruptionTracking = useCallback((
+    preservePendingCancellation = true,
+  ): void => {
+    armedVoiceInterruptionRef.current = null
+    const pending = pendingVoiceInterruptionRef.current
+    if (pending !== null) {
+      if (pending.retentionTimeout !== null) {
+        window.clearTimeout(pending.retentionTimeout)
+        pending.retentionTimeout = null
+      }
+      // Keep only the old turn's identifiers until a pre-ACK interruption can
+      // learn its request ID and cancel it. The closed surface retains no PCM.
+      pending.abandoned = true
+      if (!preservePendingCancellation) {
+        pendingVoiceInterruptionRef.current = null
+      }
+    }
+    setVoiceInterruptionState(null)
+    discardPendingVoiceInterruptionSegment()
+  }, [discardPendingVoiceInterruptionSegment])
 
   const updateChatDrafts = useCallback((
     update: (current: Record<string, string>) => Record<string, string>,
@@ -1068,7 +1137,7 @@ function App() {
     }
     turn.stoppedRequestIds.add(requestId)
     try {
-      await desktopApi.stopSpeechPlayback(requestId)
+      await desktopApi.stopSpeechPlayback(requestId, turn.chatId)
       return true
     } catch {
       // A transient bridge failure remains retryable at the next ownership
@@ -1099,10 +1168,15 @@ function App() {
 
   const requestManagedSpeechStop = useCallback((
     operationId: string,
+    chatId: string,
     requestId: string | null,
   ): void => {
     const turn = managedSpeechTurnRef.current
-    if (turn !== null && turn.operationId === operationId) {
+    if (
+      turn !== null
+      && turn.operationId === operationId
+      && turn.chatId === chatId
+    ) {
       turn.stopRequested = true
       const knownRequestId = requestId ?? turn.requestId
       if (knownRequestId !== null) {
@@ -1111,9 +1185,173 @@ function App() {
       return
     }
     if (requestId !== null && desktopApi !== undefined) {
-      void desktopApi.stopSpeechPlayback(requestId).catch(() => undefined)
+      void desktopApi.stopSpeechPlayback(requestId, chatId).catch(() => undefined)
     }
   }, [desktopApi, stopManagedSpeechRequest])
+
+  const requestVoiceInterruptionCancellation = useCallback((
+    operationId: string,
+    chatId: string,
+    requestId: string,
+  ): boolean => {
+    const interruption = pendingVoiceInterruptionRef.current
+    if (
+      interruption === null
+      || interruption.operationId !== operationId
+      || interruption.chatId !== chatId
+      || (
+        interruption.requestId !== null
+        && interruption.requestId !== requestId
+      )
+    ) {
+      return false
+    }
+    interruption.requestId = requestId
+    requestManagedSpeechStop(operationId, chatId, requestId)
+    if (interruption.terminal?.requestId === requestId) {
+      settleVoiceInterruptionTerminalRef.current(
+        operationId,
+        chatId,
+        requestId,
+        interruption.terminal.outcome,
+      )
+      return true
+    }
+    if (interruption.cancellationSent) {
+      return true
+    }
+    if (desktopApi === undefined) {
+      if (!interruption.abandoned) {
+        setVoiceSpeechWarning(
+          'The previous reply could not be stopped because the Desktop bridge is unavailable.',
+        )
+      }
+      return true
+    }
+
+    interruption.cancellationSent = true
+    if (!interruption.abandoned) {
+      setVoiceInterruptionState('cancelling')
+    }
+    const inFlightTurn = inFlightTurnRef.current
+    if (
+      inFlightTurn?.operationId === operationId
+      && inFlightTurn.chatId === chatId
+    ) {
+      const stoppingTurn: InFlightTurn = {
+        ...inFlightTurn,
+        requestId,
+        phase: 'stopping',
+      }
+      inFlightTurnRef.current = stoppingTurn
+      setInFlightTurn(stoppingTurn)
+    }
+    void desktopApi.stopGeneration(requestId).catch((error: unknown) => {
+      const current = pendingVoiceInterruptionRef.current
+      if (
+        current !== interruption
+        || current.requestId !== requestId
+      ) {
+        return
+      }
+      // request.cancel is idempotent, so a later correlated event may retry an
+      // uncertain bridge failure without ever targeting a different turn.
+      current.cancellationSent = false
+      if (!current.abandoned) {
+        setVoiceSpeechWarning(
+          error instanceof Error
+            ? `The previous reply has not stopped yet: ${error.message}`
+            : 'The previous reply has not stopped yet. Keep speaking while cancellation retries.',
+        )
+      }
+    })
+    return true
+  }, [desktopApi, requestManagedSpeechStop])
+
+  const settleVoiceInterruptionTerminal = useCallback((
+    operationId: string,
+    chatId: string,
+    requestId: string,
+    outcome: 'cancelled' | 'completed' | 'failed',
+  ): boolean => {
+    const interruption = pendingVoiceInterruptionRef.current
+    if (
+      interruption === null
+      || interruption.operationId !== operationId
+      || interruption.chatId !== chatId
+      || (
+        interruption.requestId !== null
+        && interruption.requestId !== requestId
+      )
+    ) {
+      return false
+    }
+    interruption.requestId = requestId
+    if (interruption.retentionTimeout !== null) {
+      window.clearTimeout(interruption.retentionTimeout)
+      interruption.retentionTimeout = null
+    }
+    pendingVoiceInterruptionRef.current = null
+    armedVoiceInterruptionRef.current = null
+    setVoiceInterruptionState(null)
+    if (!interruption.abandoned) {
+      setVoiceSpeechWarning(
+        outcome === 'cancelled'
+          ? 'The previous reply was cancelled. Keep speaking to finish your next message.'
+          : outcome === 'completed'
+            ? 'The previous reply finished before cancellation won. Its complete text was kept; keep speaking for your next message.'
+            : 'The previous reply ended with an error. Keep speaking to finish your next message.',
+      )
+      flushPendingVoiceInterruptionSegmentRef.current()
+    } else {
+      discardPendingVoiceInterruptionSegment()
+    }
+    return true
+  }, [discardPendingVoiceInterruptionSegment])
+
+  settleVoiceInterruptionTerminalRef.current = settleVoiceInterruptionTerminal
+
+  const observeVoiceInterruptionTerminal = useCallback((
+    chatId: string,
+    requestId: string,
+    outcome: 'cancelled' | 'completed' | 'failed',
+    operationId: string | null,
+  ): boolean => {
+    const interruption = pendingVoiceInterruptionRef.current
+    if (interruption === null || interruption.chatId !== chatId) {
+      return false
+    }
+    if (
+      interruption.requestId !== null
+      && interruption.requestId !== requestId
+    ) {
+      return false
+    }
+    const managedTurn = managedSpeechTurnRef.current
+    const operationMatches = operationId === interruption.operationId
+      || (
+        managedTurn?.operationId === interruption.operationId
+        && managedTurn.chatId === chatId
+        && (
+          managedTurn.requestId === null
+          || managedTurn.requestId === requestId
+        )
+      )
+    if (interruption.requestId === null && !operationMatches) {
+      // A terminal can beat both the send acknowledgement and local in-flight
+      // recovery. Buffer only its identifiers; the later exact ACK must match
+      // before it is allowed to release or discard the replacement utterance.
+      interruption.terminal = { requestId, outcome }
+      return true
+    }
+    acknowledgeManagedSpeechTurn(interruption.operationId, requestId)
+    return settleVoiceInterruptionTerminal(
+      interruption.operationId,
+      chatId,
+      requestId,
+      outcome,
+    )
+  }, [acknowledgeManagedSpeechTurn, settleVoiceInterruptionTerminal])
 
   const stopManagedSpeechForBoundary = useCallback(async (): Promise<boolean> => {
     const turn = managedSpeechTurnRef.current
@@ -1164,6 +1402,7 @@ function App() {
     cancellation: VoiceSessionCancellation,
   ): void => {
     pendingVoiceSpeechStatusRef.current = null
+    clearVoiceInterruptionTracking()
     setVoiceSpeechWarning(null)
     const operation = voiceTranscriptionOperationRef.current
     ++voiceCaptureOperationRef.current
@@ -1172,14 +1411,22 @@ function App() {
     } else {
       voiceTranscriptionOperationRef.current = null
     }
-    if (cancellation.chatOperationId !== null) {
+    if (
+      cancellation.owner !== null
+      && cancellation.chatOperationId !== null
+    ) {
       requestManagedSpeechStop(
         cancellation.chatOperationId,
+        cancellation.owner.chatId,
         cancellation.chatRequestId,
       )
     }
     setVoiceTranscription(null)
-  }, [cancelVoiceTranscription, requestManagedSpeechStop])
+  }, [
+    cancelVoiceTranscription,
+    clearVoiceInterruptionTracking,
+    requestManagedSpeechStop,
+  ])
 
   const discardVoiceOperation = useCallback((): void => {
     clearVoiceOperation(voiceSessionController.cancel())
@@ -1196,10 +1443,12 @@ function App() {
     }
     ++voiceCaptureOperationRef.current
     voiceTranscriptionOperationRef.current = null
+    clearVoiceInterruptionTracking()
+    void audioCaptureControllerRef.current?.cancel()
     setVoiceTranscription(null)
     setVoiceCapture(EMPTY_AUDIO_CAPTURE_SNAPSHOT)
     setVoiceCaptureSubmissionError(null)
-  }, [voiceSessionController])
+  }, [clearVoiceInterruptionTracking, voiceSessionController])
 
   const acceptVoiceSpeechStatus = useCallback((
     event: VoiceSpeechStatusEvent,
@@ -1256,7 +1505,10 @@ function App() {
         ...owner,
         operationId,
       })) {
-        void desktopApi?.stopSpeechPlayback(requestId).catch(() => undefined)
+        void desktopApi?.stopSpeechPlayback(
+          requestId,
+          owner.chatId,
+        ).catch(() => undefined)
         settleVoiceTurnUiIfNeeded()
       }
       return
@@ -1394,17 +1646,21 @@ function App() {
       onComplete: (segment) => {
         voiceCaptureCompleteRef.current(segment)
       },
+      onSpeechConfirmed: (confirmation) => {
+        voiceSpeechConfirmedRef.current(confirmation)
+      },
     })
     audioCaptureControllerRef.current = controller
     const unsubscribe = controller.subscribe(setVoiceCapture)
     return () => {
       unsubscribe()
+      clearVoiceInterruptionTracking(false)
       void controller.dispose()
       if (audioCaptureControllerRef.current === controller) {
         audioCaptureControllerRef.current = null
       }
     }
-  }, [])
+  }, [clearVoiceInterruptionTracking])
 
   useEffect(() => {
     // A short test belongs to the visible Chat or Settings surface. Switching
@@ -1430,13 +1686,37 @@ function App() {
       return
     }
     const controller = audioCaptureControllerRef.current
+    const voiceSnapshot = voiceSessionController.getSnapshot()
     if (controller !== null) {
-      const status = controller.getSnapshot().status
+      const capture = controller.getSnapshot()
+      const status = capture.status
+      const armedInterruption = armedVoiceInterruptionRef.current
+      const pendingInterruption = pendingVoiceInterruptionRef.current
+      const preservesReplyTimeCapture = snapshot.status === 'ready'
+        && generationBusy
+        && capture.sessionId !== null
+        && (
+          (
+            armedInterruption !== null
+            && armedInterruption.captureSessionId === capture.sessionId
+            && voiceSnapshot.interruptionCaptureSessionId === capture.sessionId
+            && (voiceSnapshot.phase === 'thinking' || voiceSnapshot.phase === 'speaking')
+          )
+          || (
+            pendingInterruption !== null
+            && pendingInterruption.captureSessionId === capture.sessionId
+            && voiceSnapshot.phase === 'listening'
+            && voiceSnapshot.captureSessionId === capture.sessionId
+          )
+        )
+      if (preservesReplyTimeCapture) {
+        return
+      }
       if (status === 'starting' || status === 'waiting' || status === 'speaking') {
         void controller.cancel()
       }
     }
-    const voicePhase = voiceSessionController.getSnapshot().phase
+    const voicePhase = voiceSnapshot.phase
     // A reviewed transcript is already PCM-free and can survive a disconnect.
     // A Voice-originated Chat turn may coexist with its own generation while
     // Backend failure still invalidates that turn through the branch below.
@@ -1452,8 +1732,15 @@ function App() {
     ) {
       return
     }
+    if (snapshot.status !== 'ready') {
+      // A disconnected Backend cannot emit the exact terminal needed by a
+      // pre-ACK tombstone. Drop metadata as well as PCM so recovery cannot
+      // poison a future, unrelated capture.
+      clearVoiceInterruptionTracking(false)
+    }
     discardVoiceOperation()
   }, [
+    clearVoiceInterruptionTracking,
     discardVoiceOperation,
     generationBusy,
     snapshot.status,
@@ -2831,6 +3118,15 @@ function App() {
           return
         }
         acknowledgeManagedSpeechTurn(currentTurn.operationId, event.requestId)
+        if (requestVoiceInterruptionCancellation(
+          currentTurn.operationId,
+          currentTurn.chatId,
+          event.requestId,
+        )) {
+          // After confirmed speech, old chunks stay transient and hidden. The
+          // Backend terminal decides whether zero or one complete pair exists.
+          return
+        }
         const voiceSession = voiceSessionController.getSnapshot()
         const voiceOwner = ownerFromVoiceSession(voiceSession)
         if (
@@ -2869,6 +3165,12 @@ function App() {
             currentTurn.requestId === null
             || event.requestId === currentTurn.requestId
           )
+        observeVoiceInterruptionTerminal(
+          event.chatId,
+          event.requestId,
+          'completed',
+          currentTurnMatches ? currentTurn.operationId : null,
+        )
         if (currentTurnMatches) {
           acknowledgeManagedSpeechTurn(
             currentTurn.operationId,
@@ -3001,6 +3303,47 @@ function App() {
       if (event.type === 'chat-error') {
         markGenerationSettled(event.requestId)
         const currentTurn = inFlightTurnRef.current
+        const currentTurnMatches = currentTurn !== null
+          && event.chatId === currentTurn.chatId
+          && (
+            currentTurn.requestId === null
+            || event.requestId === currentTurn.requestId
+          )
+        const pendingInterruption = pendingVoiceInterruptionRef.current
+        const interruptionTerminal = observeVoiceInterruptionTerminal(
+          event.chatId,
+          event.requestId,
+          event.code === 'request.cancelled' ? 'cancelled' : 'failed',
+          currentTurnMatches ? currentTurn.operationId : null,
+        )
+        if (interruptionTerminal && pendingInterruption !== null) {
+          requestManagedSpeechStop(
+            pendingInterruption.operationId,
+            pendingInterruption.chatId,
+            event.requestId,
+          )
+          clearManagedSpeechTurn(pendingInterruption.operationId)
+          if (!clearPendingChatSend({
+            operationId: pendingInterruption.operationId,
+          })) {
+            clearPendingChatSend({ requestId: event.requestId })
+          }
+          updateInFlightTurn((current) => (
+            current?.operationId === pendingInterruption.operationId
+              ? null
+              : current
+          ))
+          streamingRef.current = false
+          setStreaming(false)
+          if (event.chatId === activeChatIdRef.current) {
+            setNotice(event.code === 'request.cancelled'
+              ? infoNotice('Elysia was interrupted. No partial reply was saved.')
+              : errorNotice(event.message))
+            void loadAttachments({ kind: 'chat', id: event.chatId })
+          }
+          void requestProjectRefresh()
+          return
+        }
         if (currentTurn === null) {
           restorePendingChatSend({ requestId: event.requestId })
           restoreRetryEditDraft({ requestId: event.requestId })
@@ -3013,6 +3356,9 @@ function App() {
             void loadAttachments({ kind: 'chat', id: event.chatId })
           }
           void requestProjectRefresh()
+          return
+        }
+        if (!currentTurnMatches) {
           return
         }
         if (
@@ -3041,6 +3387,7 @@ function App() {
         if (voiceTurnSettled) {
           requestManagedSpeechStop(
             currentTurn.operationId,
+            currentTurn.chatId,
             event.requestId,
           )
         }
@@ -3162,8 +3509,10 @@ function App() {
     interruptInFlightTurn,
     loadAttachments,
     markGenerationSettled,
+    observeVoiceInterruptionTerminal,
     observeManagedSpeechStatus,
     requestManagedSpeechStop,
+    requestVoiceInterruptionCancellation,
     requestProjectRefresh,
     reconcileVoiceSpeechCapability,
     routeVoiceSpeechStatus,
@@ -3474,6 +3823,7 @@ function App() {
           attachmentIds,
         })
         acknowledgeManagedSpeechTurn(operationId, requestId)
+        requestVoiceInterruptionCancellation(operationId, chatId, requestId)
         const sentIds = new Set(attachmentIds)
         setAttachmentStates((current) => {
           const currentState = current[activeChatAttachmentKey]
@@ -4345,8 +4695,219 @@ function App() {
     }
   }
 
+  flushPendingVoiceInterruptionSegmentRef.current = (): void => {
+    const segment = pendingVoiceInterruptionSegmentRef.current
+    pendingVoiceInterruptionSegmentRef.current = null
+    if (segment !== null) {
+      void submitCompletedVoiceCapture(segment)
+    }
+  }
+
   voiceCaptureCompleteRef.current = (segment): void => {
+    const interruption = pendingVoiceInterruptionRef.current
+    if (
+      interruption !== null
+      && interruption.captureSessionId === segment.sessionId
+    ) {
+      if (interruption.abandoned) {
+        segment.pcm.fill(0)
+        return
+      }
+      // The Backend serializes STT behind the cancelling Chat request. Retain
+      // this one bounded segment only until that exact request emits terminal;
+      // context cleanup wipes it instead of allowing cross-Chat submission.
+      discardPendingVoiceInterruptionSegment()
+      pendingVoiceInterruptionSegmentRef.current = segment
+      if (interruption.retentionTimeout !== null) {
+        window.clearTimeout(interruption.retentionTimeout)
+      }
+      interruption.retentionTimeout = window.setTimeout(() => {
+        const current = pendingVoiceInterruptionRef.current
+        if (
+          current !== interruption
+          || pendingVoiceInterruptionSegmentRef.current !== segment
+        ) {
+          return
+        }
+        current.retentionTimeout = null
+        current.abandoned = true
+        discardPendingVoiceInterruptionSegment()
+        setVoiceInterruptionState(null)
+        ++voiceCaptureOperationRef.current
+        voiceTranscriptionOperationRef.current = null
+        setVoiceTranscription(null)
+        const session = voiceSessionController.getSnapshot()
+        if (
+          session.phase === 'listening'
+          && session.captureSessionId === current.captureSessionId
+        ) {
+          voiceSessionController.cancel()
+        }
+        void audioCaptureControllerRef.current?.cancel()
+        setVoiceCaptureSubmissionError(
+          'The previous reply did not stop in time, so the temporary interruption audio was discarded. Nothing was sent.',
+        )
+      }, MAX_VOICE_INTERRUPTION_PCM_RETENTION_MS)
+      setVoiceSpeechWarning(
+        'Your next message is ready. Waiting for the previous reply to stop before local transcription.',
+      )
+      return
+    }
     void submitCompletedVoiceCapture(segment)
+  }
+
+  voiceSpeechConfirmedRef.current = (confirmation): void => {
+    const interruption = armedVoiceInterruptionRef.current
+    if (
+      interruption === null
+      || confirmation.purpose !== 'barge-in'
+      || confirmation.sessionId !== interruption.captureSessionId
+    ) {
+      return
+    }
+    const interruptedSession = voiceSessionController.getSnapshot()
+    const chatAlreadyCompleted = interruptedSession.chatTerminal === 'completed'
+    const cancellation = voiceSessionController.acceptInterruption(interruption)
+    if (
+      cancellation === null
+      || cancellation.owner === null
+      || cancellation.chatOperationId !== interruption.operationId
+    ) {
+      return
+    }
+
+    armedVoiceInterruptionRef.current = null
+    ++voiceCaptureOperationRef.current
+    voiceTranscriptionOperationRef.current = null
+    setVoiceTranscription(null)
+    pendingVoiceSpeechStatusRef.current = null
+    pendingVoiceInterruptionRef.current = {
+      ...interruption,
+      requestId: cancellation.chatRequestId,
+      cancellationSent: false,
+      abandoned: false,
+      retentionTimeout: null,
+      terminal: null,
+    }
+    setVoiceInterruptionState('cancelling')
+    setVoiceCaptureSubmissionError(null)
+    setVoiceSpeechWarning(
+      'Interrupting the previous reply. Keep speaking to finish your next message.',
+    )
+    requestManagedSpeechStop(
+      interruption.operationId,
+      interruption.chatId,
+      cancellation.chatRequestId,
+    )
+    if (chatAlreadyCompleted && cancellation.chatRequestId !== null) {
+      // Text commit already won before the user spoke. There is no future Chat
+      // terminal to await; stop exact playback and admit the new utterance now.
+      settleVoiceInterruptionTerminal(
+        interruption.operationId,
+        interruption.chatId,
+        cancellation.chatRequestId,
+        'completed',
+      )
+      return
+    }
+    if (cancellation.chatRequestId !== null) {
+      requestVoiceInterruptionCancellation(
+        interruption.operationId,
+        interruption.chatId,
+        cancellation.chatRequestId,
+      )
+    }
+  }
+
+  async function startVoiceInterruptionMonitor(
+    owner: VoiceSessionOwner,
+    operationId: string,
+  ): Promise<void> {
+    const controller = audioCaptureControllerRef.current
+    const deviceController = audioDeviceControllerRef.current
+    if (
+      controller === null
+      || deviceController === null
+      || desktopApi === undefined
+      || snapshot.status !== 'ready'
+      || !snapshot.capabilities.includes('voice.capture')
+      || !snapshot.capabilities.includes('voice.transcription')
+    ) {
+      return
+    }
+
+    const captureSessionId = `voice_${crypto.randomUUID()}`
+    const interruption: VoiceInterruptionCapture = {
+      ...owner,
+      operationId,
+      captureSessionId,
+    }
+    if (!voiceSessionController.armInterruption(interruption)) {
+      return
+    }
+    armedVoiceInterruptionRef.current = interruption
+    setVoiceInterruptionState('monitoring')
+    setVoiceCaptureSubmissionError(null)
+
+    const availableInputs = deviceController.getSnapshot().inputs
+    const savedDeviceId = voiceSettingsState?.inputDeviceId ?? null
+    const effectiveDeviceId = savedDeviceId !== null
+      && availableInputs.some((device) => device.deviceId === savedDeviceId)
+      ? savedDeviceId
+      : null
+    ++microphoneActionOperationRef.current
+    deviceController.stopAll()
+
+    const actionIsCurrent = (): boolean => (
+      armedVoiceInterruptionRef.current === interruption
+      && activeChatIdRef.current === interruption.chatId
+      && activeChatProjectIdRef.current === interruption.projectId
+      && audioCaptureControllerRef.current === controller
+    )
+    try {
+      await controller.start(effectiveDeviceId, {
+        purpose: 'barge-in',
+        sessionId: captureSessionId,
+      })
+      if (!actionIsCurrent()) {
+        const acceptedDuringStart = pendingVoiceInterruptionRef.current
+        if (
+          acceptedDuringStart?.captureSessionId !== captureSessionId
+          || controller.getSnapshot().sessionId !== captureSessionId
+        ) {
+          await controller.cancel()
+        }
+        return
+      }
+      const capture = controller.getSnapshot()
+      if (
+        capture.sessionId === captureSessionId
+        && (capture.status === 'waiting' || capture.status === 'speaking')
+      ) {
+        return
+      }
+      voiceSessionController.rejectInterruptionStart(interruption)
+      armedVoiceInterruptionRef.current = null
+      setVoiceInterruptionState(null)
+      setVoiceCapture(EMPTY_AUDIO_CAPTURE_SNAPSHOT)
+      setVoiceSpeechWarning(
+        capture.error?.message
+        ?? 'Barge-in is unavailable because verified echo cancellation could not start. The reply will continue safely.',
+      )
+    } catch (error: unknown) {
+      if (!actionIsCurrent()) {
+        return
+      }
+      voiceSessionController.rejectInterruptionStart(interruption)
+      armedVoiceInterruptionRef.current = null
+      setVoiceInterruptionState(null)
+      setVoiceCapture(EMPTY_AUDIO_CAPTURE_SNAPSHOT)
+      setVoiceSpeechWarning(
+        error instanceof Error
+          ? `Barge-in is unavailable: ${error.message}`
+          : 'Barge-in is unavailable because verified echo cancellation could not start. The reply will continue safely.',
+      )
+    }
   }
 
   async function startVoiceCapture(): Promise<void> {
@@ -4618,20 +5179,51 @@ function App() {
         return
       }
       setVoiceCaptureSubmissionError(null)
+      void startVoiceInterruptionMonitor(confirmed, operationId)
       void sending
         .then((requestId) => {
+          requestVoiceInterruptionCancellation(
+            operationId,
+            confirmed.chatId,
+            requestId,
+          )
           if (!voiceSessionController.acknowledgeChatRequest({
             ...confirmed,
             requestId,
           })) {
             pendingVoiceSpeechStatusRef.current = null
-            requestManagedSpeechStop(operationId, requestId)
+            requestManagedSpeechStop(
+              operationId,
+              confirmed.chatId,
+              requestId,
+            )
             return
           }
           flushPendingVoiceSpeechStatus(confirmed, operationId, requestId)
         })
         .catch(() => {
           voiceSessionController.rejectChatStart(confirmed, operationId)
+          const interruption = pendingVoiceInterruptionRef.current
+          if (
+            interruption?.operationId === operationId
+            && interruption.chatId === confirmed.chatId
+          ) {
+            if (interruption.retentionTimeout !== null) {
+              window.clearTimeout(interruption.retentionTimeout)
+              interruption.retentionTimeout = null
+            }
+            pendingVoiceInterruptionRef.current = null
+            setVoiceInterruptionState(null)
+            setVoiceSpeechWarning(
+              'The previous reply did not start. Keep speaking to finish your next message.',
+            )
+            if (interruption.abandoned) {
+              discardPendingVoiceInterruptionSegment()
+            } else {
+              flushPendingVoiceInterruptionSegmentRef.current()
+            }
+          }
+          settleVoiceTurnUiIfNeeded()
           setVoiceCaptureSubmissionError(
             'The transcript was not sent. Review it and try again.',
           )
@@ -4741,6 +5333,7 @@ function App() {
         captureDisabledReason={voiceCaptureDisabledReason}
         composerHasDraft={hasNonBlankCodePoint(draft)}
         modelName={snapshot.modelName}
+        interruptionState={voiceInterruptionState}
         sessionPhase={voiceSession.phase}
         speechWarning={voiceSpeechWarning}
         transcription={voiceTranscription}

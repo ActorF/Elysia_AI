@@ -144,6 +144,7 @@ SERVER_CAPABILITIES = (
     "voice.capture",
     "voice.transcription",
     "voice.speech",
+    "voice.speech.cancel",
     "attachment.management",
     "stream",
     "progress",
@@ -638,6 +639,8 @@ class DesktopBackend:
                 self._complete_voice_capture(request_id, params)
             elif method == "voice.transcription.start":
                 self._start_voice_transcription(request_id, params)
+            elif method == "voice.speech.cancel":
+                self._cancel_speech_turn(request_id, params)
             elif method == "chat.stream":
                 self._start_chat_stream(request_id, params)
             elif method == "chat.retry":
@@ -2542,6 +2545,58 @@ class DesktopBackend:
         raise ProtocolValidationError(
             "request.not_cancellable",
             "No matching cancellable Backend request is active.",
+        )
+
+    def _cancel_speech_turn(
+        self,
+        request_id: str,
+        params: JsonObject,
+    ) -> None:
+        """Make one exact speech turn stale without changing its Chat result.
+
+        A false result is deliberately successful: the same interruption may
+        race a natural terminal event, generation cancellation, or an earlier
+        identical speech stop. Matching both identifiers prevents any of those
+        stale retries from reaching a replacement turn.
+        """
+
+        target_request_id = cast(str, params["requestId"])
+        target_chat_id = cast(str, params["chatId"])
+        try:
+            with self._speech_lifecycle_lock:
+                coordinator = self._speech_coordinator
+                stopped = (
+                    False
+                    if self._speech_closing or coordinator is None
+                    else coordinator.cancel_turn(
+                        target_request_id,
+                        target_chat_id,
+                    )
+                )
+        except BaseException:
+            # Speech cancellation is optional infrastructure, but claiming it
+            # succeeded could leave native synthesis running. Fail closed and
+            # expose only a stable error rather than adapter diagnostics.
+            logger.error(
+                "Desktop speech stop failed: request_id=%s.",
+                target_request_id,
+            )
+            self._prepare_speech_shutdown()
+            self._emit_error(
+                request_id,
+                "voice.speech.cancel_failed",
+                "Local speech could not be cancelled.",
+            )
+            return
+
+        self._emit_response(
+            request_id,
+            {
+                "kind": "voice.speech.cancel",
+                "requestId": target_request_id,
+                "chatId": target_chat_id,
+                "stopped": stopped,
+            },
         )
 
     def _wait_for_generation(self, timeout: float | None = None) -> bool:

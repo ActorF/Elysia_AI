@@ -526,8 +526,10 @@ class _RecordingSpeechCoordinator:
         self.on_shutdown = on_shutdown
         self.start_calls = 0
         self.start_turn_calls: list[tuple[str, str]] = []
+        self.cancel_turn_calls: list[tuple[str, str]] = []
         self.shutdown_calls = 0
         self.turn_started = Event()
+        self._active_turn_key: tuple[str, str] | None = None
 
     def start(self) -> None:
         """Record lazy service startup after successful Brain initialization."""
@@ -543,7 +545,17 @@ class _RecordingSpeechCoordinator:
         self.turn_started.set()
         if self.fail_start_turn:
             raise RuntimeError("private speech turn detail")
+        self._active_turn_key = (request_id, chat_id)
         return self.turn
+
+    def cancel_turn(self, request_id: str, chat_id: str) -> bool:
+        """Cancel only the exact active fake turn and make retries harmless."""
+
+        self.cancel_turn_calls.append((request_id, chat_id))
+        if self._active_turn_key != (request_id, chat_id):
+            return False
+        self._active_turn_key = None
+        return self.turn.cancel()
 
     def shutdown(self) -> None:
         """Record exclusive speech-owner shutdown."""
@@ -1170,6 +1182,197 @@ def test_speech_turn_start_failure_does_not_fail_text_generation() -> None:
     ]
     assert coordinator.shutdown_calls == 1
     assert "private speech" not in wire
+
+
+def test_exact_speech_cancel_is_independent_of_running_chat_generation(
+    tmp_path: Path,
+) -> None:
+    """Stop only matching audio while the same Chat request still completes."""
+
+    generation_started = Event()
+    release_generation = Event()
+
+    class BlockingBrain(FakeBrain):
+        """Hold model work after speech admission so stop requests can race it."""
+
+        def stream_chat(
+            self,
+            chat_id: object,
+            message: str,
+            *,
+            attachments: tuple[AttachmentMetadata, ...] = (),
+            should_cancel: Callable[[], bool] | None = None,
+            begin_commit: Callable[[], bool] | None = None,
+        ) -> Generator[str, None, None]:
+            """Wait for exact speech-only stops, then commit the normal reply."""
+
+            generation_started.set()
+            assert release_generation.wait(2.0)
+            yield from super().stream_chat(
+                chat_id,
+                message,
+                attachments=attachments,
+                should_cancel=should_cancel,
+                begin_commit=begin_commit,
+            )
+
+    brain = BlockingBrain()
+    turn = _RecordingSpeechTurn()
+    coordinator = _RecordingSpeechCoordinator(turn)
+
+    def _request_lines() -> Generator[str, None, None]:
+        """Exercise wrong, exact, and repeated ownership keys before release."""
+
+        chat_id = str(brain.chat.chat_id)
+        for request in (
+            _handshake_request(),
+            _initialize_request(),
+            _request(
+                "chat-speech-running",
+                "chat.stream",
+                {"chatId": chat_id, "message": "Keep the text reply"},
+            ),
+        ):
+            yield f"{json.dumps(request)}\n"
+        assert coordinator.turn_started.wait(2.0)
+        assert generation_started.wait(2.0)
+        for request in (
+            _request(
+                "speech-wrong-request",
+                "voice.speech.cancel",
+                {"requestId": "other-generation", "chatId": chat_id},
+            ),
+            _request(
+                "speech-wrong-chat",
+                "voice.speech.cancel",
+                {
+                    "requestId": "chat-speech-running",
+                    "chatId": "chat_other",
+                },
+            ),
+            _request(
+                "speech-exact",
+                "voice.speech.cancel",
+                {"requestId": "chat-speech-running", "chatId": chat_id},
+            ),
+            _request(
+                "speech-repeat",
+                "voice.speech.cancel",
+                {"requestId": "chat-speech-running", "chatId": chat_id},
+            ),
+        ):
+            yield f"{json.dumps(request)}\n"
+        release_generation.set()
+
+    output_stream = StringIO()
+    DesktopBackend(
+        brain_factory=lambda: cast(Brain, brain),
+        model_loader=lambda: (brain.model_name,),
+        settings_validator=lambda: None,
+        settings_repository=_desktop_settings_repository(
+            tmp_path / "global.json"
+        ),
+        voice_settings_service=create_voice_settings_service(tmp_path),
+        speech_coordinator=cast(DesktopSpeechCoordinator, coordinator),
+        input_stream=cast(TextIOWrapper, _request_lines()),
+        output_stream=output_stream,
+        expected_session_token=SESSION_TOKEN,
+    ).run()
+    messages = _output_messages(output_stream)
+
+    assert _success_result(messages, "speech-wrong-request") == {
+        "kind": "voice.speech.cancel",
+        "requestId": "other-generation",
+        "chatId": str(brain.chat.chat_id),
+        "stopped": False,
+    }
+    assert _success_result(messages, "speech-wrong-chat") == {
+        "kind": "voice.speech.cancel",
+        "requestId": "chat-speech-running",
+        "chatId": "chat_other",
+        "stopped": False,
+    }
+    assert _success_result(messages, "speech-exact") == {
+        "kind": "voice.speech.cancel",
+        "requestId": "chat-speech-running",
+        "chatId": str(brain.chat.chat_id),
+        "stopped": True,
+    }
+    assert _success_result(messages, "speech-repeat") == {
+        "kind": "voice.speech.cancel",
+        "requestId": "chat-speech-running",
+        "chatId": str(brain.chat.chat_id),
+        "stopped": False,
+    }
+    assert _success_result(messages, "chat-speech-running")["reply"] == "你好呀"
+    assert turn.cancel_calls == 1
+    assert brain.get_chat(brain.chat.chat_id).messages[-1].content == "你好呀"
+
+
+def test_post_commit_speech_cancel_reaches_detached_queue_turn(
+    tmp_path: Path,
+) -> None:
+    """Cancel queued speech after Chat commit detached its generation handle."""
+
+    brain = FakeBrain()
+    turn = _RecordingSpeechTurn()
+    coordinator = _RecordingSpeechCoordinator(turn)
+
+    def _request_lines() -> Generator[str, None, None]:
+        """Wait for post-commit speech finalization before issuing its stop."""
+
+        chat_id = str(brain.chat.chat_id)
+        for request in (
+            _handshake_request(),
+            _initialize_request(),
+            _request(
+                "chat-speech-committed",
+                "chat.stream",
+                {"chatId": chat_id, "message": "Commit this full turn"},
+            ),
+        ):
+            yield f"{json.dumps(request)}\n"
+        assert turn.terminal.wait(2.0)
+        yield f"{json.dumps(_request(
+            'speech-after-commit',
+            'voice.speech.cancel',
+            {
+                'requestId': 'chat-speech-committed',
+                'chatId': chat_id,
+            },
+        ))}\n"
+
+    output_stream = StringIO()
+    DesktopBackend(
+        brain_factory=lambda: cast(Brain, brain),
+        model_loader=lambda: (brain.model_name,),
+        settings_validator=lambda: None,
+        settings_repository=_desktop_settings_repository(
+            tmp_path / "global.json"
+        ),
+        voice_settings_service=create_voice_settings_service(tmp_path),
+        speech_coordinator=cast(DesktopSpeechCoordinator, coordinator),
+        input_stream=cast(TextIOWrapper, _request_lines()),
+        output_stream=output_stream,
+        expected_session_token=SESSION_TOKEN,
+    ).run()
+    messages = _output_messages(output_stream)
+
+    assert _success_result(messages, "chat-speech-committed")["reply"] == "你好呀"
+    assert _success_result(messages, "speech-after-commit") == {
+        "kind": "voice.speech.cancel",
+        "requestId": "chat-speech-committed",
+        "chatId": str(brain.chat.chat_id),
+        "stopped": True,
+    }
+    persisted = brain.get_chat(brain.chat.chat_id).messages
+    assert [message.content for message in persisted[-2:]] == [
+        "Commit this full turn",
+        "你好呀",
+    ]
+    assert coordinator.cancel_turn_calls == [
+        ("chat-speech-committed", str(brain.chat.chat_id))
+    ]
 
 
 @pytest.mark.parametrize("termination", ["shutdown", "eof"])

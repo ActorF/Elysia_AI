@@ -33,7 +33,7 @@ permission, event, cancel, and permission-decision shapes. The current runtime
 advertises `chat.stream`, `chat.retry`, `request.cancel`, `stream`, `progress`,
 `event`, `chat.sessions`, `project.management`, `settings.management`,
 `attachment.management`, `voice.settings`, `voice.capture`, and the optional
-`voice.transcription` and `voice.speech` capabilities.
+`voice.transcription`, `voice.speech`, and `voice.speech.cancel` capabilities.
 Both new-turn and retry generation reuse the `chat.reply` stream.
 Cancellation succeeds only before generation claims its atomic commit gate, so
 a successful Stop response guarantees that the interrupted turn is not saved.
@@ -109,13 +109,25 @@ does not send a message automatically. No partial recognized text crosses the
 wire in this slice. Real-time partial transcripts remain part of future
 continuous Voice rather than this bounded final-result contract.
 
-Desktop Protocol v1 now advertises the optional `voice.speech` capability, but
-it deliberately defines no public TTS request or response. During an accepted
-`chat.reply` stream, Python gives the speech path a copy of each text chunk;
-the canonical Chat stream and final persisted Assistant text remain owned by
-the existing Chat transaction. Natural-boundary sentences enter one bounded
-FIFO queue, and cancellation, replacement, or synthesis failure cannot turn a
-partial spoken copy into a committed Chat message.
+Desktop Protocol v1 advertises the optional `voice.speech` capability, but it
+deliberately defines no public request that can synthesize arbitrary text.
+During an accepted `chat.reply` stream, Python gives the speech path a copy of
+each text chunk; the canonical Chat stream and final persisted Assistant text
+remain owned by the existing Chat transaction. Natural-boundary sentences
+enter one bounded FIFO queue, and cancellation, replacement, or synthesis
+failure cannot turn a partial spoken copy into a committed Chat message.
+
+`voice.speech.cancel` is the narrow authenticated control operation paired with
+that managed path. Its request carries both the originating Chat request ID and
+Chat ID so an old renderer event cannot stop a newer turn that happens to share
+UI state. Its response echoes that exact ownership pair with
+`kind: "voice.speech.cancel"` and a Boolean `stopped`. `true` means the matching
+managed speech coordinator was still active and accepted cancellation; `false`
+is an idempotent outcome when the turn already reached a terminal state, was
+already cancelled, or no longer owns both identifiers. The false result is not
+an error and never broadens cancellation to another turn. Generic
+`request.cancel` and `shutdown` keep their existing bare `{ "stopped": true }`
+result, which cannot be confused with this ownership-bearing response.
 
 The independent loopback GPT-SoVITS `/tts` adapter and fixed-text smoke remain
 separate Python-only diagnostics. `service_binding_unverified` there means only

@@ -933,9 +933,12 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle(
     'voice:stop-speech-playback',
-    (event, requestId: unknown): void => {
+    (event, requestId: unknown, chatId: unknown) => {
       assertTrustedSender(event)
-      requireBackend().stopSpeechPlayback(parseBackendRequestId(requestId))
+      return requireBackend().stopSpeechPlayback(
+        parseBackendRequestId(requestId),
+        parseChatId(chatId),
+      )
     },
   )
 
