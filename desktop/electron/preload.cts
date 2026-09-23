@@ -61,10 +61,17 @@ interface TrustedAudioBufferSource {
   stop(): void
 }
 
+interface TrustedGainNode {
+  readonly gain: { value: number }
+  connect(destination: unknown): void
+  disconnect(): void
+}
+
 interface TrustedAudioContext {
   readonly destination: unknown
   close(): Promise<void>
   createBufferSource(): TrustedAudioBufferSource
+  createGain(): TrustedGainNode
   decodeAudioData(bytes: ArrayBuffer): Promise<TrustedAudioBuffer>
   resume(): Promise<void>
   setSinkId?(sinkId: string): Promise<void>
@@ -77,6 +84,7 @@ interface TrustedAudioContextConstructor {
 interface TrustedPlayback {
   readonly context: TrustedAudioContext
   readonly playbackId: string
+  gain: TrustedGainNode | null
   source: TrustedAudioBufferSource | null
 }
 
@@ -160,7 +168,7 @@ function isCanonicalTrustedWav(bytes: Uint8Array): boolean {
 async function routeTrustedSpeechOutput(
   context: TrustedAudioContext,
   playback: TrustedPlayback,
-): Promise<void> {
+): Promise<number> {
   const settingsValue = await ipcRenderer.invoke('voice:settings-get') as unknown
   if (
     typeof settingsValue !== 'object'
@@ -190,16 +198,51 @@ async function routeTrustedSpeechOutput(
   if (trustedPlayback !== playback) {
     throw new Error('Trusted speech playback is no longer current.')
   }
+  const globalSettingsValue = await ipcRenderer.invoke('settings:get') as unknown
+  if (
+    typeof globalSettingsValue !== 'object'
+    || globalSettingsValue === null
+    || Array.isArray(globalSettingsValue)
+    || !Object.hasOwn(globalSettingsValue, 'activeSettings')
+  ) {
+    throw new Error('Trusted speech volume settings were rejected.')
+  }
+  const activeSettings = (
+    globalSettingsValue as Record<string, unknown>
+  ).activeSettings
+  if (
+    typeof activeSettings !== 'object'
+    || activeSettings === null
+    || Array.isArray(activeSettings)
+    || !Object.hasOwn(activeSettings, 'speechVolumePercent')
+  ) {
+    throw new Error('Trusted speech volume settings were rejected.')
+  }
+  const speechVolumePercent = (
+    activeSettings as Record<string, unknown>
+  ).speechVolumePercent
+  if (
+    typeof speechVolumePercent !== 'number'
+    || !Number.isSafeInteger(speechVolumePercent)
+    || speechVolumePercent < 0
+    || speechVolumePercent > 100
+  ) {
+    throw new Error('Trusted speech volume settings were rejected.')
+  }
+  if (trustedPlayback !== playback) {
+    throw new Error('Trusted speech playback is no longer current.')
+  }
   if (context.setSinkId === undefined) {
     if (outputDeviceId !== null) {
       throw new Error('Trusted speech output routing is unavailable.')
     }
-    return
+    return speechVolumePercent / 100
   }
   await context.setSinkId(outputDeviceId ?? '')
   if (trustedPlayback !== playback) {
     throw new Error('Trusted speech playback is no longer current.')
   }
+  return speechVolumePercent / 100
 }
 
 function settleTrustedPlayback(
@@ -212,6 +255,11 @@ function settleTrustedPlayback(
   trustedPlayback = null
   try {
     playback.source?.disconnect()
+  } catch {
+    // The result is already fixed; native cleanup details are not observable.
+  }
+  try {
+    playback.gain?.disconnect()
   } catch {
     // The result is already fixed; native cleanup details are not observable.
   }
@@ -260,6 +308,7 @@ ipcRenderer.on(
     const playback: TrustedPlayback = {
       context,
       playbackId: metadata.playbackId,
+      gain: null,
       source: null,
     }
     trustedPlayback = playback
@@ -267,7 +316,7 @@ ipcRenderer.on(
     void (async (): Promise<void> => {
       try {
         await context.resume()
-        await routeTrustedSpeechOutput(context, playback)
+        const volume = await routeTrustedSpeechOutput(context, playback)
         const audio = await context.decodeAudioData(ownedBytes)
         if (
           trustedPlayback !== playback
@@ -280,9 +329,13 @@ ipcRenderer.on(
           throw new Error('Trusted speech decode was rejected.')
         }
         const source = context.createBufferSource()
+        const gain = context.createGain()
         playback.source = source
+        playback.gain = gain
         source.buffer = audio
-        source.connect(context.destination)
+        gain.gain.value = volume
+        source.connect(gain)
+        gain.connect(context.destination)
         source.onended = () => settleTrustedPlayback(playback, 'played')
         source.start()
       } catch {

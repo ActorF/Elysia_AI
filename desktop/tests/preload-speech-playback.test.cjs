@@ -14,12 +14,15 @@ const PLAYBACK_IDS = [
   '00000000-0000-4000-8000-000000000002',
   '00000000-0000-4000-8000-000000000003',
   '00000000-0000-4000-8000-000000000004',
+  '00000000-0000-4000-8000-000000000005',
+  '00000000-0000-4000-8000-000000000006',
 ]
 
 const operations = []
 const settlements = []
 const contexts = []
 let outputDeviceId = 'private-headphones'
+let speechVolumePercent = 100
 let rejectSinkSelection = false
 let settingsResolver = null
 
@@ -31,14 +34,20 @@ class FakeIpcRenderer extends EventEmitter {
 
   /** Return the current canonical voice settings selection. */
   invoke(channel) {
-    assert.equal(channel, 'voice:settings-get')
-    operations.push('settings')
-    if (settingsResolver !== null) {
-      return new Promise((resolve) => {
-        settingsResolver = () => resolve({ outputDeviceId })
-      })
+    if (channel === 'voice:settings-get') {
+      operations.push('settings')
+      if (settingsResolver !== null) {
+        return new Promise((resolve) => {
+          settingsResolver = () => resolve({ outputDeviceId })
+        })
+      }
+      return Promise.resolve({ outputDeviceId })
     }
-    return Promise.resolve({ outputDeviceId })
+    assert.equal(channel, 'settings:get')
+    operations.push('global-settings')
+    return Promise.resolve({
+      activeSettings: { speechVolumePercent },
+    })
   }
 }
 
@@ -72,11 +81,29 @@ class FakeBufferSource {
   }
 }
 
+class FakeGainNode {
+  /** Create a private gain stage whose value can be asserted after routing. */
+  constructor() {
+    this.gain = { value: -1 }
+  }
+
+  /** Record the final gain-to-destination connection. */
+  connect() {
+    operations.push('gain-connect')
+  }
+
+  /** Record gain cleanup with the source and AudioContext. */
+  disconnect() {
+    operations.push('gain-disconnect')
+  }
+}
+
 class FakeAudioContext {
   /** Create an isolated context and destination for one private clip. */
   constructor(options) {
     assert.deepEqual(options, { sampleRate: 32_000 })
     this.destination = Object.freeze({ kind: 'destination' })
+    this.gain = null
     this.source = null
     contexts.push(this)
   }
@@ -92,6 +119,13 @@ class FakeAudioContext {
     operations.push('create-source')
     this.source = new FakeBufferSource()
     return this.source
+  }
+
+  /** Return the owned gain stage used for validated speech volume. */
+  createGain() {
+    operations.push('create-gain')
+    this.gain = new FakeGainNode()
+    return this.gain
   }
 
   /** Return the canonical mono 32 kHz shape accepted by Preload. */
@@ -197,12 +231,18 @@ test('selected output is routed before decode and playback', async () => {
   assert.deepEqual(operations.slice(0, 7), [
     'resume',
     'settings',
+    'global-settings',
     'sink:private-headphones',
     'decode',
     'create-source',
+    'create-gain',
+  ])
+  assert.deepEqual(operations.slice(7, 10), [
     'connect',
+    'gain-connect',
     'start',
   ])
+  assert.equal(contexts.at(-1).gain.gain.value, 1)
   assert.deepEqual(settlements, [])
   contexts.at(-1).source.onended()
   assert.deepEqual(settlements, [{
@@ -220,6 +260,7 @@ test('sink-selection failure never falls back to the default output', async () =
   assert.deepEqual(operations, [
     'resume',
     'settings',
+    'global-settings',
     'sink:private-headphones',
     'close',
   ])
@@ -253,6 +294,7 @@ test('cancellation during settings lookup cannot start stale audio', async () =>
   ipcRenderer.emit(CANCEL_CHANNEL, {}, PLAYBACK_IDS[3])
   const resolveSettings = settingsResolver
   assert.equal(typeof resolveSettings, 'function')
+  settingsResolver = null
   resolveSettings()
   await immediate()
 
@@ -262,4 +304,35 @@ test('cancellation during settings lookup cannot start stale audio', async () =>
     playbackId: PLAYBACK_IDS[3],
     status: 'failed',
   }])
+})
+
+test('validated speech volume is applied through a private gain stage', async () => {
+  resetObservations()
+  speechVolumePercent = 35
+  emitPlayback(PLAYBACK_IDS[4])
+  await immediate()
+
+  assert.equal(contexts.at(-1).gain.gain.value, 0.35)
+  assert.ok(operations.indexOf('create-gain') < operations.indexOf('start'))
+  contexts.at(-1).source.onended()
+  assert.deepEqual(settlements, [{
+    playbackId: PLAYBACK_IDS[4],
+    status: 'played',
+  }])
+  speechVolumePercent = 100
+})
+
+test('invalid speech volume fails closed before decode or playback', async () => {
+  resetObservations()
+  speechVolumePercent = 101
+  emitPlayback(PLAYBACK_IDS[5])
+  await immediate()
+
+  assert.equal(operations.includes('decode'), false)
+  assert.equal(operations.includes('start'), false)
+  assert.deepEqual(settlements, [{
+    playbackId: PLAYBACK_IDS[5],
+    status: 'failed',
+  }])
+  speechVolumePercent = 100
 })

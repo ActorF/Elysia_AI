@@ -247,10 +247,10 @@ export function VoiceSettingsSection({
   }
 
   return (
-    <section className="settings-section" aria-labelledby="voice-settings-heading">
+    <section className="settings-section" aria-labelledby="audio-device-settings-heading">
       <div className="settings-section-heading voice-settings-heading">
         <div>
-          <h2 id="voice-settings-heading">Voice</h2>
+          <h2 id="audio-device-settings-heading">Audio devices</h2>
           <p>Select device-local defaults and run short tests before starting a voice capture.</p>
         </div>
         <button

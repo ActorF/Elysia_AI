@@ -127,6 +127,21 @@ def _require_operation_token(value: object) -> str:
     return value
 
 
+def _contains_speech_sentence_anchor(value: str) -> bool:
+    """Require a letter or number before spending one managed inference slot.
+
+    The engine-independent synthesis contract deliberately permits Unicode
+    symbols because some adapters can pronounce them.  GPT-SoVITS, however,
+    may reject a sentence made only from decorative glyphs such as ``♪`` or
+    emoji such as ``✨`` and poison its single managed worker.  The streaming
+    segmenter is the managed desktop speech boundary, so it drops only those
+    standalone symbol fragments while preserving the canonical Chat text and
+    every symbol attached to ordinary words or numbers.
+    """
+
+    return any(character.isalnum() for character in value)
+
+
 class SpeechQueueError(Exception):
     """Base class for stable sentence-queue failures."""
 
@@ -260,6 +275,11 @@ class StreamingSentenceSegmenter:
                 break
             candidate = self._buffer[:split_at]
             self._buffer = self._buffer[split_at:]
+            if not _contains_speech_sentence_anchor(candidate):
+                # Natural punctuation can leave a following decorative glyph
+                # in its own newline-delimited fragment.  It has no dependable
+                # pronunciation and must not poison the one managed worker.
+                continue
             try:
                 sentence = SpeechSentence(self._next_sequence, candidate)
             except SpeechQueueValidationError:

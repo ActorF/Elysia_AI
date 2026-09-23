@@ -561,6 +561,44 @@ def test_segmenter_drops_only_non_speakable_final_tail() -> None:
         segmenter.feed("late")
 
 
+@pytest.mark.parametrize("symbol", ["♪", "✨"])
+def test_segmenter_drops_standalone_decorative_symbols(symbol: str) -> None:
+    """Keep symbol-only model flourishes away from managed GPT-SoVITS."""
+
+    segmenter = StreamingSentenceSegmenter()
+
+    assert segmenter.feed(f"{symbol}\nNext sentence.") == ()
+    assert segmenter.finish() == (
+        segmenter_sentence(0, "Next sentence."),
+    )
+
+
+def test_segmenter_preserves_symbols_attached_to_spoken_text() -> None:
+    """Retain exact decorative text when a letter anchors pronunciation."""
+
+    segmenter = StreamingSentenceSegmenter()
+
+    assert segmenter.feed("爱莉希雅♪\n下一句。") == (
+        segmenter_sentence(0, "爱莉希雅♪\n"),
+    )
+    assert segmenter.finish() == (
+        segmenter_sentence(1, "下一句。"),
+    )
+
+
+def test_segmenter_keeps_numeric_boundaries_while_dropping_symbol_tails() -> None:
+    """Treat numbers as speech while preserving punctuation-only filtering."""
+
+    segmenter = StreamingSentenceSegmenter()
+
+    assert segmenter.feed("？！  \n123！✨\n尾句。") == (
+        segmenter_sentence(0, "123！"),
+    )
+    assert segmenter.finish() == (
+        segmenter_sentence(1, "尾句。"),
+    )
+
+
 def test_segmenter_rejects_oversized_chunk_before_mutating_state() -> None:
     """Prevent one protocol frame from constructing an attacker-sized batch."""
 

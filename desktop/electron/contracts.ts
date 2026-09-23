@@ -202,6 +202,7 @@ export interface AttachmentSelectionResult {
   state: AttachmentState | null
 }
 
+/** Renderer-safe global settings, including persisted Voice behavior choices. */
 export type DesktopSettingsValues = SettingsValues
 export type DesktopSettingsState = SettingsStateResult
 

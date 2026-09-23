@@ -172,6 +172,13 @@ test('JSON Schema declares the exact public settings surface', () => {
       'transcriptionModel',
       'transcriptionDevice',
       'transcriptionLanguage',
+      'autoReadAloud',
+      'speechRatePercent',
+      'speechVolumePercent',
+      'voiceProfileId',
+      'captionsEnabled',
+      'transcriptReviewMode',
+      'automaticRelisten',
     ],
   )
   assert.equal(schema.$defs.settingsValues.additionalProperties, false)
@@ -323,7 +330,29 @@ for (const sample of fixtures.validServerMessages) {
         'transcriptionModel',
         'transcriptionDevice',
         'transcriptionLanguage',
+        'speechRatePercent',
+        'voiceProfileId',
       ])
+      assert.deepEqual(
+        {
+          autoReadAloud: result.settings.autoReadAloud,
+          speechRatePercent: result.settings.speechRatePercent,
+          speechVolumePercent: result.settings.speechVolumePercent,
+          voiceProfileId: result.settings.voiceProfileId,
+          captionsEnabled: result.settings.captionsEnabled,
+          transcriptReviewMode: result.settings.transcriptReviewMode,
+          automaticRelisten: result.settings.automaticRelisten,
+        },
+        {
+          autoReadAloud: false,
+          speechRatePercent: 120,
+          speechVolumePercent: 75,
+          voiceProfileId: 'elysia',
+          captionsEnabled: true,
+          transcriptReviewMode: 'manual',
+          automaticRelisten: true,
+        },
+      )
       assert.equal(result.scopes.project.projectId, 'project_fixture')
       assert.equal(result.scopes.project.modelName, null)
       assert.equal(result.scopes.chat.chatId, 'chat_fixture')
@@ -429,6 +458,13 @@ test('TypeScript validates revisioned settings requests without secrets', () => 
     transcriptionModel: 'small',
     transcriptionDevice: 'auto',
     transcriptionLanguage: 'auto',
+    autoReadAloud: true,
+    speechRatePercent: 100,
+    speechVolumePercent: 100,
+    voiceProfileId: 'default',
+    captionsEnabled: true,
+    transcriptReviewMode: 'manual',
+    automaticRelisten: false,
   }
   assert.deepEqual(
     createRequest('settings-update-1', 'settings.update', {

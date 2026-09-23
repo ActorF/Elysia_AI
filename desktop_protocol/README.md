@@ -40,17 +40,28 @@ a successful Stop response guarantees that the interrupted turn is not saved.
 Backend permission prompts retain their stable schema but are not yet
 advertised as an active capability.
 
-`settings.get` and `settings.update` expose one exact eight-field public
-allowlist with optimistic revision checks: Chat model, Ollama origin, two
-Memory limits, import byte limit, transcription model, transcription device,
-and transcription language. The STT fields are closed enums:
-`tiny|base|small|medium|large-v3|turbo`, `auto|cuda|cpu`, and `auto|zh|en`.
-Saved changes are reported separately from active values and take effect after
-Backend restart. API keys, tokens, passwords, base paths, environment data,
-and arbitrary extension fields are rejected. Authenticated Settings reads
-remain available when Brain initialization fails or STT is active so the
-desktop can diagnose state; configuration mutations are rejected while a
-transcription is active or physically draining.
+`settings.get` and `settings.update` expose one exact public allowlist with
+optimistic revision checks: Chat model, Ollama origin, two Memory limits,
+import byte limit, transcription model/device/language, automatic read-aloud,
+speech rate and volume percentages, a logical Voice Profile ID, captions,
+manual Transcript review, and automatic re-listening. The STT fields are
+closed enums: `tiny|base|small|medium|large-v3|turbo`, `auto|cuda|cpu`, and
+`auto|zh|en`. Speech rate is an integer from 50 through 200, volume is an
+integer from 0 through 100, and Voice Profile IDs use the bounded logical
+`[a-z0-9][a-z0-9._-]{0,63}` form rather than a filesystem path. Transcript
+review accepts only `manual`, preserving the rule that recognition never sends
+a Chat message without explicit review.
+
+Saved changes are reported separately from active values. Model/runtime/STT
+changes, speech rate, and Voice Profile selection may be listed in
+`restartFields`; automatic read-aloud, volume, captions, manual review, and
+automatic re-listening are live preferences and are never valid restart field
+names. API keys, tokens, passwords, base paths, environment data, arbitrary
+extension fields, live microphone state, Transcript content, and current Voice
+session state are rejected. Authenticated Settings reads remain available when
+Brain initialization fails or STT is active so the desktop can diagnose state;
+configuration mutations are rejected while a transcription is active or
+physically draining.
 
 `voice.settings.get` and `voice.settings.update` persist only the desired
 opaque microphone and speaker IDs, with `null` meaning the current system

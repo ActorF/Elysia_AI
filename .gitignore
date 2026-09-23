@@ -51,6 +51,7 @@ models/blobs/
 models/manifests/
 models/weights/
 models/cache/
+models/metadata/
 *.gguf
 *.safetensors
 *.bin

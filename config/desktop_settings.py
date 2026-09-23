@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import time
 from collections.abc import Callable, Iterator
@@ -23,14 +24,22 @@ from typing import BinaryIO, Final, cast
 from urllib.parse import urlsplit
 
 from .settings import (
+    DEFAULT_AUTO_READ_ALOUD,
+    DEFAULT_AUTOMATIC_RELISTEN,
+    DEFAULT_CAPTIONS_ENABLED,
     DEFAULT_DATA_IMPORT_MAX_BYTES,
     DEFAULT_MEMORY_RETRIEVAL_LIMIT,
     DEFAULT_MODEL_NAME,
     DEFAULT_OLLAMA_HOST,
     DEFAULT_SHORT_TERM_MEMORY_TOKEN_BUDGET,
+    DEFAULT_SPEECH_RATE_PERCENT,
+    DEFAULT_SPEECH_VOLUME_PERCENT,
+    DEFAULT_TRANSCRIPT_REVIEW_MODE,
     DEFAULT_TRANSCRIPTION_DEVICE,
     DEFAULT_TRANSCRIPTION_LANGUAGE,
     DEFAULT_TRANSCRIPTION_MODEL,
+    DEFAULT_VOICE_PROFILE_ID,
+    TRANSCRIPT_REVIEW_MODES,
     TRANSCRIPTION_DEVICES,
     TRANSCRIPTION_LANGUAGES,
     TRANSCRIPTION_MODELS,
@@ -38,14 +47,21 @@ from .settings import (
     TranscriptionDevice,
     TranscriptionLanguage,
     TranscriptionModel,
+    TranscriptReviewMode,
 )
 
-DESKTOP_SETTINGS_SCHEMA_VERSION: Final = 2
+DESKTOP_SETTINGS_SCHEMA_VERSION: Final = 3
 _LEGACY_DESKTOP_SETTINGS_SCHEMA_VERSION: Final = 1
+_PREVIOUS_DESKTOP_SETTINGS_SCHEMA_VERSION: Final = 2
 MAX_MODEL_NAME_LENGTH: Final = 200
 MAX_OLLAMA_HOST_LENGTH: Final = 2_048
 MAX_MEMORY_SETTING: Final = 10_000_000
 MAX_DATA_IMPORT_BYTES: Final = 2_147_483_647
+MIN_SPEECH_RATE_PERCENT: Final = 50
+MAX_SPEECH_RATE_PERCENT: Final = 200
+MIN_SPEECH_VOLUME_PERCENT: Final = 0
+MAX_SPEECH_VOLUME_PERCENT: Final = 100
+MAX_VOICE_PROFILE_ID_LENGTH: Final = 64
 MAX_JSON_SAFE_INTEGER: Final = 9_007_199_254_740_991
 _FILE_LOCK_TIMEOUT_SECONDS: Final = 5.0
 
@@ -62,12 +78,23 @@ _LEGACY_SETTINGS_FIELDS: Final = frozenset({
     "memory_retrieval_limit",
     "data_import_max_bytes",
 })
-_SETTINGS_FIELDS: Final = frozenset({
+_VERSION_TWO_SETTINGS_FIELDS: Final = frozenset({
     *_LEGACY_SETTINGS_FIELDS,
     "transcription_model",
     "transcription_device",
     "transcription_language",
 })
+_SETTINGS_FIELDS: Final = frozenset({
+    *_VERSION_TWO_SETTINGS_FIELDS,
+    "auto_read_aloud",
+    "speech_rate_percent",
+    "speech_volume_percent",
+    "voice_profile_id",
+    "captions_enabled",
+    "transcript_review_mode",
+    "automatic_relisten",
+})
+_VOICE_PROFILE_ID_PATTERN: Final = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
 _PATH_LOCKS_GUARD = Lock()
 _PATH_LOCKS: dict[Path, RLock] = {}
 
@@ -183,6 +210,15 @@ class EditableDesktopSettings:
     transcription_language: TranscriptionLanguage = (
         DEFAULT_TRANSCRIPTION_LANGUAGE
     )
+    auto_read_aloud: bool = DEFAULT_AUTO_READ_ALOUD
+    speech_rate_percent: int = DEFAULT_SPEECH_RATE_PERCENT
+    speech_volume_percent: int = DEFAULT_SPEECH_VOLUME_PERCENT
+    voice_profile_id: str = DEFAULT_VOICE_PROFILE_ID
+    captions_enabled: bool = DEFAULT_CAPTIONS_ENABLED
+    transcript_review_mode: TranscriptReviewMode = (
+        DEFAULT_TRANSCRIPT_REVIEW_MODE
+    )
+    automatic_relisten: bool = DEFAULT_AUTOMATIC_RELISTEN
 
     def __post_init__(self) -> None:
         """Normalize nothing implicitly and reject every invalid field."""
@@ -207,6 +243,23 @@ class EditableDesktopSettings:
         validate_transcription_model(self.transcription_model)
         validate_transcription_device(self.transcription_device)
         validate_transcription_language(self.transcription_language)
+        validate_boolean(self.auto_read_aloud, "auto_read_aloud")
+        _validate_integer_range(
+            self.speech_rate_percent,
+            "speech_rate_percent",
+            minimum=MIN_SPEECH_RATE_PERCENT,
+            maximum=MAX_SPEECH_RATE_PERCENT,
+        )
+        _validate_integer_range(
+            self.speech_volume_percent,
+            "speech_volume_percent",
+            minimum=MIN_SPEECH_VOLUME_PERCENT,
+            maximum=MAX_SPEECH_VOLUME_PERCENT,
+        )
+        validate_voice_profile_id(self.voice_profile_id)
+        validate_boolean(self.captions_enabled, "captions_enabled")
+        validate_transcript_review_mode(self.transcript_review_mode)
+        validate_boolean(self.automatic_relisten, "automatic_relisten")
 
 
 @dataclass(frozen=True, slots=True)
@@ -238,6 +291,36 @@ def _validate_positive_integer(
         raise DesktopSettingsValidationError(
             f"{field_name} must be an integer between 1 and {maximum}."
         )
+
+
+def _validate_integer_range(
+    value: object,
+    field_name: str,
+    *,
+    minimum: int,
+    maximum: int,
+) -> int:
+    """Return one real integer inside an inclusive settings range."""
+
+    if (
+        not isinstance(value, int)
+        or isinstance(value, bool)
+        or not minimum <= value <= maximum
+    ):
+        raise DesktopSettingsValidationError(
+            f"{field_name} must be an integer between {minimum} and {maximum}."
+        )
+    return value
+
+
+def validate_boolean(value: object, field_name: str) -> bool:
+    """Return a settings Boolean without accepting integer lookalikes."""
+
+    if not isinstance(value, bool):
+        raise DesktopSettingsValidationError(
+            f"{field_name} must be a Boolean."
+        )
+    return value
 
 
 def validate_model_name(value: object) -> str:
@@ -326,6 +409,30 @@ def validate_transcription_language(value: object) -> TranscriptionLanguage:
     return cast(TranscriptionLanguage, value)
 
 
+def validate_voice_profile_id(value: object) -> str:
+    """Return one bounded logical voice ID without accepting paths or labels."""
+
+    if (
+        not isinstance(value, str)
+        or len(value) > MAX_VOICE_PROFILE_ID_LENGTH
+        or _VOICE_PROFILE_ID_PATTERN.fullmatch(value) is None
+    ):
+        raise DesktopSettingsValidationError(
+            "voice_profile_id must be a bounded lowercase logical identifier."
+        )
+    return value
+
+
+def validate_transcript_review_mode(value: object) -> TranscriptReviewMode:
+    """Keep transcript submission behind the supported manual-review policy."""
+
+    if not isinstance(value, str) or value not in TRANSCRIPT_REVIEW_MODES:
+        raise DesktopSettingsValidationError(
+            "transcript_review_mode must be manual."
+        )
+    return cast(TranscriptReviewMode, value)
+
+
 def editable_from_app_settings(
     settings: AppSettings,
 ) -> EditableDesktopSettings:
@@ -347,6 +454,34 @@ def editable_from_app_settings(
         ),
         transcription_language=validate_transcription_language(
             settings.transcription_language
+        ),
+        auto_read_aloud=validate_boolean(
+            settings.auto_read_aloud,
+            "auto_read_aloud",
+        ),
+        speech_rate_percent=_validate_integer_range(
+            settings.speech_rate_percent,
+            "speech_rate_percent",
+            minimum=MIN_SPEECH_RATE_PERCENT,
+            maximum=MAX_SPEECH_RATE_PERCENT,
+        ),
+        speech_volume_percent=_validate_integer_range(
+            settings.speech_volume_percent,
+            "speech_volume_percent",
+            minimum=MIN_SPEECH_VOLUME_PERCENT,
+            maximum=MAX_SPEECH_VOLUME_PERCENT,
+        ),
+        voice_profile_id=validate_voice_profile_id(settings.voice_profile_id),
+        captions_enabled=validate_boolean(
+            settings.captions_enabled,
+            "captions_enabled",
+        ),
+        transcript_review_mode=validate_transcript_review_mode(
+            settings.transcript_review_mode
+        ),
+        automatic_relisten=validate_boolean(
+            settings.automatic_relisten,
+            "automatic_relisten",
         ),
     )
 
@@ -382,6 +517,19 @@ def desktop_defaults_from_app_settings(
         )
     except DesktopSettingsValidationError:
         transcription_language = DEFAULT_TRANSCRIPTION_LANGUAGE
+    try:
+        voice_profile_id = validate_voice_profile_id(settings.voice_profile_id)
+    except DesktopSettingsValidationError:
+        voice_profile_id = DEFAULT_VOICE_PROFILE_ID
+    try:
+        transcript_review_mode = validate_transcript_review_mode(
+            settings.transcript_review_mode
+        )
+    except DesktopSettingsValidationError:
+        transcript_review_mode = cast(
+            TranscriptReviewMode,
+            DEFAULT_TRANSCRIPT_REVIEW_MODE,
+        )
 
     def positive_or_default(value: object, default: int, maximum: int) -> int:
         try:
@@ -389,6 +537,29 @@ def desktop_defaults_from_app_settings(
         except DesktopSettingsValidationError:
             return default
         return cast(int, value)
+
+    def bounded_or_default(
+        value: object,
+        default: int,
+        minimum: int,
+        maximum: int,
+    ) -> int:
+        """Recover one malformed bounded bootstrap integer to its safe default."""
+
+        try:
+            return _validate_integer_range(
+                value,
+                "value",
+                minimum=minimum,
+                maximum=maximum,
+            )
+        except DesktopSettingsValidationError:
+            return default
+
+    def boolean_or_default(value: object, default: bool) -> bool:
+        """Recover one malformed bootstrap Boolean to its safe default."""
+
+        return value if isinstance(value, bool) else default
 
     return EditableDesktopSettings(
         model_name=model_name,
@@ -411,6 +582,32 @@ def desktop_defaults_from_app_settings(
         transcription_model=transcription_model,
         transcription_device=transcription_device,
         transcription_language=transcription_language,
+        auto_read_aloud=boolean_or_default(
+            settings.auto_read_aloud,
+            DEFAULT_AUTO_READ_ALOUD,
+        ),
+        speech_rate_percent=bounded_or_default(
+            settings.speech_rate_percent,
+            DEFAULT_SPEECH_RATE_PERCENT,
+            MIN_SPEECH_RATE_PERCENT,
+            MAX_SPEECH_RATE_PERCENT,
+        ),
+        speech_volume_percent=bounded_or_default(
+            settings.speech_volume_percent,
+            DEFAULT_SPEECH_VOLUME_PERCENT,
+            MIN_SPEECH_VOLUME_PERCENT,
+            MAX_SPEECH_VOLUME_PERCENT,
+        ),
+        voice_profile_id=voice_profile_id,
+        captions_enabled=boolean_or_default(
+            settings.captions_enabled,
+            DEFAULT_CAPTIONS_ENABLED,
+        ),
+        transcript_review_mode=transcript_review_mode,
+        automatic_relisten=boolean_or_default(
+            settings.automatic_relisten,
+            DEFAULT_AUTOMATIC_RELISTEN,
+        ),
     )
 
 
@@ -437,6 +634,34 @@ def apply_editable_settings(
         transcription_model=values.transcription_model,
         transcription_device=values.transcription_device,
         transcription_language=values.transcription_language,
+        auto_read_aloud=values.auto_read_aloud,
+        speech_rate_percent=values.speech_rate_percent,
+        speech_volume_percent=values.speech_volume_percent,
+        voice_profile_id=values.voice_profile_id,
+        captions_enabled=values.captions_enabled,
+        transcript_review_mode=values.transcript_review_mode,
+        automatic_relisten=values.automatic_relisten,
+    )
+
+
+def apply_live_editable_settings(
+    base: AppSettings,
+    values: EditableDesktopSettings,
+) -> AppSettings:
+    """Apply only preferences whose contracts do not require backend restart.
+
+    Model, transcription, profile, and synthesis-rate changes keep their old
+    active values until restart. Renderer/session policy and playback volume
+    are safe to adopt between admitted Chat and transcription operations.
+    """
+
+    return replace(
+        base,
+        auto_read_aloud=values.auto_read_aloud,
+        speech_volume_percent=values.speech_volume_percent,
+        captions_enabled=values.captions_enabled,
+        transcript_review_mode=values.transcript_review_mode,
+        automatic_relisten=values.automatic_relisten,
     )
 
 
@@ -444,7 +669,11 @@ def changed_setting_names(
     desired: EditableDesktopSettings,
     active: EditableDesktopSettings,
 ) -> tuple[str, ...]:
-    """Return stable camel-case UI field names whose runtime values differ."""
+    """Return stable UI names for differing restart-bound settings only.
+
+    Live voice preferences are deliberately absent because the Backend merges
+    them into its active snapshot immediately after a successful save.
+    """
 
     fields = (
         ("modelName", desired.model_name, active.model_name),
@@ -478,6 +707,16 @@ def changed_setting_names(
             "transcriptionLanguage",
             desired.transcription_language,
             active.transcription_language,
+        ),
+        (
+            "speechRatePercent",
+            desired.speech_rate_percent,
+            active.speech_rate_percent,
+        ),
+        (
+            "voiceProfileId",
+            desired.voice_profile_id,
+            active.voice_profile_id,
         ),
     )
     return tuple(name for name, wanted, current in fields if wanted != current)
@@ -570,6 +809,7 @@ class DesktopSettingsRepository:
         schema_version = value.get("schema_version")
         if schema_version not in {
             _LEGACY_DESKTOP_SETTINGS_SCHEMA_VERSION,
+            _PREVIOUS_DESKTOP_SETTINGS_SCHEMA_VERSION,
             DESKTOP_SETTINGS_SCHEMA_VERSION,
         }:
             raise DesktopSettingsValidationError(
@@ -597,11 +837,12 @@ class DesktopSettingsRepository:
                 "Saved settings timestamp is invalid."
             )
         raw_settings = value.get("settings")
-        expected_fields = (
-            _LEGACY_SETTINGS_FIELDS
-            if schema_version == _LEGACY_DESKTOP_SETTINGS_SCHEMA_VERSION
-            else _SETTINGS_FIELDS
-        )
+        if schema_version == _LEGACY_DESKTOP_SETTINGS_SCHEMA_VERSION:
+            expected_fields = _LEGACY_SETTINGS_FIELDS
+        elif schema_version == _PREVIOUS_DESKTOP_SETTINGS_SCHEMA_VERSION:
+            expected_fields = _VERSION_TWO_SETTINGS_FIELDS
+        else:
+            expected_fields = _SETTINGS_FIELDS
         if (
             not isinstance(raw_settings, dict)
             or set(raw_settings) != expected_fields
@@ -609,9 +850,10 @@ class DesktopSettingsRepository:
             raise DesktopSettingsValidationError(
                 "Saved settings values have invalid fields."
             )
-        # Version 1 predates local-transcription choices. Supplying the fixed
-        # safe defaults in memory preserves the user's existing file and CAS
-        # revision; the next real edit writes the complete version 2 document.
+        # Older versions are expanded only in memory so their CAS revision and
+        # bytes remain stable. The next real edit writes a complete v3 document.
+        # Version 1 predates local transcription; both v1 and v2 predate the
+        # portable voice-behavior preferences introduced here.
         transcription_model = (
             DEFAULT_TRANSCRIPTION_MODEL
             if schema_version == _LEGACY_DESKTOP_SETTINGS_SCHEMA_VERSION
@@ -626,6 +868,42 @@ class DesktopSettingsRepository:
             DEFAULT_TRANSCRIPTION_LANGUAGE
             if schema_version == _LEGACY_DESKTOP_SETTINGS_SCHEMA_VERSION
             else raw_settings.get("transcription_language")
+        )
+        has_voice_preferences = schema_version == DESKTOP_SETTINGS_SCHEMA_VERSION
+        auto_read_aloud = (
+            raw_settings.get("auto_read_aloud")
+            if has_voice_preferences
+            else DEFAULT_AUTO_READ_ALOUD
+        )
+        speech_rate_percent = (
+            raw_settings.get("speech_rate_percent")
+            if has_voice_preferences
+            else DEFAULT_SPEECH_RATE_PERCENT
+        )
+        speech_volume_percent = (
+            raw_settings.get("speech_volume_percent")
+            if has_voice_preferences
+            else DEFAULT_SPEECH_VOLUME_PERCENT
+        )
+        voice_profile_id = (
+            raw_settings.get("voice_profile_id")
+            if has_voice_preferences
+            else DEFAULT_VOICE_PROFILE_ID
+        )
+        captions_enabled = (
+            raw_settings.get("captions_enabled")
+            if has_voice_preferences
+            else DEFAULT_CAPTIONS_ENABLED
+        )
+        transcript_review_mode = (
+            raw_settings.get("transcript_review_mode")
+            if has_voice_preferences
+            else DEFAULT_TRANSCRIPT_REVIEW_MODE
+        )
+        automatic_relisten = (
+            raw_settings.get("automatic_relisten")
+            if has_voice_preferences
+            else DEFAULT_AUTOMATIC_RELISTEN
         )
         values = EditableDesktopSettings(
             model_name=cast(str, raw_settings.get("model_name")),
@@ -654,6 +932,16 @@ class DesktopSettingsRepository:
                 TranscriptionLanguage,
                 transcription_language,
             ),
+            auto_read_aloud=cast(bool, auto_read_aloud),
+            speech_rate_percent=cast(int, speech_rate_percent),
+            speech_volume_percent=cast(int, speech_volume_percent),
+            voice_profile_id=cast(str, voice_profile_id),
+            captions_enabled=cast(bool, captions_enabled),
+            transcript_review_mode=cast(
+                TranscriptReviewMode,
+                transcript_review_mode,
+            ),
+            automatic_relisten=cast(bool, automatic_relisten),
         )
         return DesktopSettingsSnapshot(
             cast(int, revision),
@@ -681,6 +969,17 @@ class DesktopSettingsRepository:
                 "transcription_language": (
                     snapshot.values.transcription_language
                 ),
+                "auto_read_aloud": snapshot.values.auto_read_aloud,
+                "speech_rate_percent": snapshot.values.speech_rate_percent,
+                "speech_volume_percent": (
+                    snapshot.values.speech_volume_percent
+                ),
+                "voice_profile_id": snapshot.values.voice_profile_id,
+                "captions_enabled": snapshot.values.captions_enabled,
+                "transcript_review_mode": (
+                    snapshot.values.transcript_review_mode
+                ),
+                "automatic_relisten": snapshot.values.automatic_relisten,
             },
         }
 

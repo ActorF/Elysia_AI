@@ -100,6 +100,112 @@ def test_python_rejects_every_shared_invalid_server_sample(
         parse_server_message(sample["message"])
 
 
+def _settings_update_request() -> JsonObject:
+    """Return an isolated canonical Settings update request fixture."""
+
+    sample = next(
+        cast(JsonObject, candidate)
+        for candidate in _fixtures()["validClientMessages"]
+        if cast(JsonObject, candidate)["name"] == "settings update request"
+    )
+    return cast(JsonObject, deepcopy(sample["message"]))
+
+
+@pytest.mark.parametrize(
+    ("field_name", "invalid_value"),
+    [
+        ("autoReadAloud", 1),
+        ("speechRatePercent", 49),
+        ("speechRatePercent", 201),
+        ("speechRatePercent", 100.5),
+        ("speechVolumePercent", -1),
+        ("speechVolumePercent", 101),
+        ("speechVolumePercent", False),
+        ("voiceProfileId", "Uppercase"),
+        ("voiceProfileId", "../escape"),
+        ("voiceProfileId", "x" * 65),
+        ("captionsEnabled", "yes"),
+        ("transcriptReviewMode", "automatic"),
+        ("automaticRelisten", 1),
+    ],
+)
+def test_voice_behavior_settings_runtime_and_schema_reject_invalid_values(
+    field_name: str,
+    invalid_value: object,
+) -> None:
+    """Keep bounded Voice preferences identical in Python and JSON Schema."""
+
+    request = _settings_update_request()
+    params = cast(JsonObject, request["params"])
+    settings = cast(JsonObject, params["settings"])
+    settings[field_name] = invalid_value
+
+    with pytest.raises(ProtocolValidationError):
+        parse_client_request(deepcopy(request))
+    schema = cast(JsonObject, json.loads(SCHEMA_PATH.read_text("utf-8")))
+    assert not Draft202012Validator(schema).is_valid(request)
+
+
+@pytest.mark.parametrize(
+    ("speech_rate", "speech_volume", "profile_id"),
+    [
+        (50, 0, "0"),
+        (200, 100, "a" + "." * 63),
+    ],
+)
+def test_voice_behavior_settings_runtime_and_schema_accept_boundaries(
+    speech_rate: int,
+    speech_volume: int,
+    profile_id: str,
+) -> None:
+    """Accept each closed numeric and logical-ID boundary without coercion."""
+
+    request = _settings_update_request()
+    params = cast(JsonObject, request["params"])
+    settings = cast(JsonObject, params["settings"])
+    settings.update(
+        speechRatePercent=speech_rate,
+        speechVolumePercent=speech_volume,
+        voiceProfileId=profile_id,
+    )
+
+    parsed = parse_client_request(deepcopy(request))
+    assert cast(JsonObject, parsed["params"])["settings"] == settings
+    schema = cast(JsonObject, json.loads(SCHEMA_PATH.read_text("utf-8")))
+    Draft202012Validator(schema).validate(request)
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    [
+        "autoReadAloud",
+        "speechVolumePercent",
+        "captionsEnabled",
+        "transcriptReviewMode",
+        "automaticRelisten",
+    ],
+)
+def test_live_voice_preferences_cannot_claim_backend_restart(
+    field_name: str,
+) -> None:
+    """Keep renderer-live preferences out of the restart-only field list."""
+
+    sample = next(
+        cast(JsonObject, candidate)
+        for candidate in _fixtures()["validServerMessages"]
+        if cast(JsonObject, candidate)["name"] == "settings state response"
+    )
+    response = cast(JsonObject, deepcopy(sample["message"]))
+    result = cast(JsonObject, response["result"])
+    result["restartRequired"] = True
+    result["restartFields"] = [field_name]
+
+    with pytest.raises(ProtocolValidationError, match="restartFields"):
+        parse_server_message(deepcopy(response))
+    schema = cast(JsonObject, json.loads(SCHEMA_PATH.read_text("utf-8")))
+    assert not Draft202012Validator(schema).is_valid(response)
+
+
 def test_all_server_message_builders_round_trip_through_the_parser() -> None:
     """Verify that all server message builders round trip through the parser."""
     messages = [
@@ -913,6 +1019,13 @@ def test_machine_readable_schema_covers_every_protocol_message_kind() -> None:
         "transcriptionModel",
         "transcriptionDevice",
         "transcriptionLanguage",
+        "autoReadAloud",
+        "speechRatePercent",
+        "speechVolumePercent",
+        "voiceProfileId",
+        "captionsEnabled",
+        "transcriptReviewMode",
+        "automaticRelisten",
     }
     assert "transcriptionStatus" in definitions
     assert settings_values["additionalProperties"] is False

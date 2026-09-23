@@ -42,6 +42,12 @@ import {
   MAX_MESSAGE_LENGTH,
   MAX_OLLAMA_HOST_LENGTH,
   MAX_SETTINGS_MODEL_NAME_LENGTH,
+  MAX_SPEECH_RATE_PERCENT,
+  MAX_SPEECH_VOLUME_PERCENT,
+  MAX_VOICE_PROFILE_ID_LENGTH,
+  MIN_SPEECH_RATE_PERCENT,
+  MIN_SPEECH_VOLUME_PERCENT,
+  TRANSCRIPT_REVIEW_MODES,
   TRANSCRIPTION_DEVICES,
   TRANSCRIPTION_LANGUAGES,
   TRANSCRIPTION_MODELS,
@@ -589,6 +595,11 @@ function parseThemePreference(value: unknown): DesktopThemePreference {
   throw new Error('Desktop theme preference is invalid.')
 }
 
+/**
+ * Revalidate the exact non-sensitive Settings surface at the IPC boundary.
+ * Renderer types are not trusted, so the main process repeats every range and
+ * closed-vocabulary check before a request can reach the Python Backend.
+ */
 function parseUpdateDesktopSettingsRequest(
   value: unknown,
 ): UpdateDesktopSettingsRequest {
@@ -614,6 +625,13 @@ function parseUpdateDesktopSettingsRequest(
       'transcriptionModel',
       'transcriptionDevice',
       'transcriptionLanguage',
+      'autoReadAloud',
+      'speechRatePercent',
+      'speechVolumePercent',
+      'voiceProfileId',
+      'captionsEnabled',
+      'transcriptReviewMode',
+      'automaticRelisten',
     ],
     'Settings values',
   )
@@ -683,6 +701,37 @@ function parseUpdateDesktopSettingsRequest(
     }
     return candidate as Allowed[number]
   }
+  const parseBoundedInteger = (
+    field: 'speechRatePercent' | 'speechVolumePercent',
+    minimum: number,
+    maximum: number,
+  ): number => {
+    const candidate = settings[field]
+    if (
+      !Number.isSafeInteger(candidate)
+      || (candidate as number) < minimum
+      || (candidate as number) > maximum
+    ) {
+      throw new Error('Voice numeric Settings value is invalid.')
+    }
+    return candidate as number
+  }
+  const parseBoolean = (
+    field: 'autoReadAloud' | 'captionsEnabled' | 'automaticRelisten',
+  ): boolean => {
+    const candidate = settings[field]
+    if (typeof candidate !== 'boolean') {
+      throw new Error('Voice boolean Settings value is invalid.')
+    }
+    return candidate
+  }
+  if (
+    typeof settings.voiceProfileId !== 'string'
+    || codePointLength(settings.voiceProfileId) > MAX_VOICE_PROFILE_ID_LENGTH
+    || !/^[a-z0-9][a-z0-9._-]{0,63}$/u.test(settings.voiceProfileId)
+  ) {
+    throw new Error('Voice Profile id is invalid.')
+  }
   return {
     expectedRevision: request.expectedRevision as number,
     settings: {
@@ -717,6 +766,25 @@ function parseUpdateDesktopSettingsRequest(
         TRANSCRIPTION_LANGUAGES,
         'Transcription language',
       ),
+      autoReadAloud: parseBoolean('autoReadAloud'),
+      speechRatePercent: parseBoundedInteger(
+        'speechRatePercent',
+        MIN_SPEECH_RATE_PERCENT,
+        MAX_SPEECH_RATE_PERCENT,
+      ),
+      speechVolumePercent: parseBoundedInteger(
+        'speechVolumePercent',
+        MIN_SPEECH_VOLUME_PERCENT,
+        MAX_SPEECH_VOLUME_PERCENT,
+      ),
+      voiceProfileId: settings.voiceProfileId,
+      captionsEnabled: parseBoolean('captionsEnabled'),
+      transcriptReviewMode: parseClosedSetting(
+        settings.transcriptReviewMode,
+        TRANSCRIPT_REVIEW_MODES,
+        'Transcript review mode',
+      ),
+      automaticRelisten: parseBoolean('automaticRelisten'),
     },
   }
 }

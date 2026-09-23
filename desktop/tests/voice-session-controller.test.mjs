@@ -158,7 +158,10 @@ test('runs the five phases and accepts STT and Chat acknowledgements after event
     speechPlayed: false,
     skippedSpeechCount: 0,
     lastTurn: {
+      completionId: 1,
       outcome: 'completed',
+      speechExpected: true,
+      speechTerminal: 'completed',
       speechPlayed: true,
       skippedSpeechCount: 0,
     },
@@ -186,7 +189,10 @@ test('settles when speech ends first and every synthesis item was skipped', () =
   }), true)
   assert.equal(controller.getSnapshot().phase, 'idle')
   assert.deepEqual(controller.getSnapshot().lastTurn, {
+    completionId: 1,
     outcome: 'completed',
+    speechExpected: true,
+    speechTerminal: 'completed',
     speechPlayed: false,
     skippedSpeechCount: 1,
   })
@@ -211,10 +217,88 @@ test('text-only confirmation completes without waiting for speech', () => {
   }), true)
   assert.equal(controller.getSnapshot().phase, 'idle')
   assert.deepEqual(controller.getSnapshot().lastTurn, {
+    completionId: 1,
     outcome: 'completed',
+    speechExpected: false,
+    speechTerminal: 'completed',
     speechPlayed: false,
     skippedSpeechCount: 0,
   })
+})
+
+test('claims each clean post-reply continuation exactly once', () => {
+  const controller = createBoundController()
+  const { chatOwner } = reachThinkingTurn(controller, {
+    speechExpected: false,
+  })
+  assert.equal(controller.acceptChatTerminal({
+    ...chatOwner,
+    outcome: 'completed',
+  }), true)
+  const completionId = controller.getSnapshot().lastTurn?.completionId
+  assert.equal(typeof completionId, 'number')
+
+  assert.equal(
+    controller.startContinuationListening(
+      completionId + 1,
+      'voice_continuation_stale',
+    ),
+    null,
+  )
+  const owner = controller.startContinuationListening(
+    completionId,
+    'voice_continuation_exact',
+  )
+  assert.deepEqual(owner, currentOwner(controller))
+  assert.equal(controller.getSnapshot().phase, 'listening')
+  assert.equal(controller.getSnapshot().lastTurn, null)
+  assert.equal(
+    controller.startContinuationListening(
+      completionId,
+      'voice_continuation_duplicate',
+    ),
+    null,
+  )
+})
+
+test('never continues after cancelled speech or a failed Chat turn', () => {
+  const speechController = createBoundController()
+  const speechTurn = reachThinkingTurn(speechController)
+  assert.equal(speechController.acceptSpeechUnavailable({
+    ...speechTurn.owner,
+    operationId: speechTurn.operationId,
+  }), true)
+  assert.equal(speechController.acceptChatTerminal({
+    ...speechTurn.chatOwner,
+    outcome: 'completed',
+  }), true)
+  const speechCompletion = speechController.getSnapshot().lastTurn
+  assert.equal(speechCompletion?.speechTerminal, 'cancelled')
+  assert.equal(
+    speechController.startContinuationListening(
+      speechCompletion.completionId,
+      'voice_continuation_cancelled_speech',
+    ),
+    null,
+  )
+
+  const chatController = createBoundController()
+  const failedTurn = reachThinkingTurn(chatController, {
+    speechExpected: false,
+  })
+  assert.equal(chatController.acceptChatTerminal({
+    ...failedTurn.chatOwner,
+    outcome: 'failed',
+  }), true)
+  const failedCompletion = chatController.getSnapshot().lastTurn
+  assert.equal(failedCompletion?.outcome, 'failed')
+  assert.equal(
+    chatController.startContinuationListening(
+      failedCompletion.completionId,
+      'voice_continuation_failed_chat',
+    ),
+    null,
+  )
 })
 
 test('speech capability loss before Chat acknowledgement cannot strand a turn', () => {
@@ -438,7 +522,10 @@ test('interrupts a pre-acknowledgement Chat turn without admitting late callback
   })
   const nextOwner = currentOwner(controller)
   assert.deepEqual(controller.getSnapshot().lastTurn, {
+    completionId: 1,
     outcome: 'cancelled',
+    speechExpected: true,
+    speechTerminal: null,
     speechPlayed: false,
     skippedSpeechCount: 0,
   })
@@ -490,7 +577,10 @@ test('interrupts speaking while returning exact Chat cancellation ownership', ()
     chatRequestId: chatOwner.requestId,
   })
   assert.deepEqual(controller.getSnapshot().lastTurn, {
+    completionId: 1,
     outcome: 'cancelled',
+    speechExpected: true,
+    speechTerminal: null,
     speechPlayed: true,
     skippedSpeechCount: 0,
   })

@@ -21,6 +21,8 @@
     "each Project chatCount equals all matching Chats in projectStateResult.chatState.chats",
     "settingsStateResult.restartRequired is true exactly when restartFields is non-empty",
     "transcriptionModel is an allowlisted directory name resolved only beneath models/weights/faster-whisper",
+    "voiceProfileId is a bounded logical identifier and never a filesystem path",
+    "transcriptReviewMode remains manual so recognition never sends a Chat message without explicit user review",
     "transcriptionStatus requested and resolved devices, compute type, state, and fallback reason are semantically consistent",
     "stream sequences are contiguous per request and have exactly one terminal chunk",
     "the terminal response reply exactly equals the concatenated stream chunks",
@@ -497,7 +499,27 @@
           "enum": ["tiny", "base", "small", "medium", "large-v3", "turbo"]
         },
         "transcriptionDevice": { "enum": ["auto", "cuda", "cpu"] },
-        "transcriptionLanguage": { "enum": ["auto", "zh", "en"] }
+        "transcriptionLanguage": { "enum": ["auto", "zh", "en"] },
+        "autoReadAloud": { "type": "boolean" },
+        "speechRatePercent": {
+          "type": "integer",
+          "minimum": 50,
+          "maximum": 200
+        },
+        "speechVolumePercent": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "voiceProfileId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
+        },
+        "captionsEnabled": { "type": "boolean" },
+        "transcriptReviewMode": { "const": "manual" },
+        "automaticRelisten": { "type": "boolean" }
       },
       "required": [
         "modelName",
@@ -507,7 +529,14 @@
         "dataImportMaxBytes",
         "transcriptionModel",
         "transcriptionDevice",
-        "transcriptionLanguage"
+        "transcriptionLanguage",
+        "autoReadAloud",
+        "speechRatePercent",
+        "speechVolumePercent",
+        "voiceProfileId",
+        "captionsEnabled",
+        "transcriptReviewMode",
+        "automaticRelisten"
       ],
       "additionalProperties": false
     },
@@ -1351,10 +1380,12 @@
               "dataImportMaxBytes",
               "transcriptionModel",
               "transcriptionDevice",
-              "transcriptionLanguage"
+              "transcriptionLanguage",
+              "speechRatePercent",
+              "voiceProfileId"
             ]
           },
-          "maxItems": 8,
+          "maxItems": 10,
           "uniqueItems": true
         },
         "scopes": { "$ref": "#/$defs/settingsScopes" },

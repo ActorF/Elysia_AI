@@ -25,14 +25,20 @@ or speaking. It requires WebRTC echo cancellation both as an exact constraint
 and as a verified track setting; otherwise it fails closed and the reply
 continues. Confirmed speech stops exact playback and managed synthesis, requests
 exact Chat cancellation, advances the Voice epoch, and continues the new
-capture in `LISTENING`. Automatic re-listening after a normally completed reply
-and real-time partial transcripts remain future work. Ordinary
+capture in `LISTENING`. An opt-in automatic-relisten policy can begin the next
+bounded capture only after the exact Chat turn and any expected speech playback
+finish normally. Its visible Session control can disable that behavior
+immediately, and every resulting transcript still waits for manual review;
+failures, cancellation, mute, hang-up, and context changes never silently
+reopen the microphone. Real-time partial transcripts remain future work. Ordinary
 Chat replies now copy exact Brain chunks into a bounded sentence queue backed
 by one managed local GPT-SoVITS worker. Correlation metadata crosses NDJSON,
 while validated PCM WAV uses private fd3 framing and preload-owned Web Audio.
-Preload routes every reply clip to the saved speaker selection before decoding;
-a missing selected device fails that clip instead of falling back to another
-speaker. React never receives the audio or private voice configuration; it
+For every admitted reply clip, the trusted preload reads and validates the
+active speech volume, routes to the saved speaker selection, and applies a Web
+Audio gain before playback. A missing selected device fails that clip instead
+of falling back to another speaker, while zero volume intentionally silences
+playback without disabling synthesis. React never receives the audio or private voice configuration; it
 sees only closed, sanitized playback status used to present `SPEAKING` and to
 settle the exact Voice turn. The independent
 loopback-only Python adapter and repeated/multi-emotion smoke remain available
@@ -94,8 +100,10 @@ Git-ignored and must not be committed or packaged with the application.
 - Open **Settings** or press `Ctrl+,` to manage the default Ollama model and
   origin, Memory limits, file import size, local STT model/device/language, and
   appearance. Backend values are atomically stored in
-  `workspace/settings/global.json` and apply after a Backend restart;
-  appearance remains in this device's renderer storage and applies immediately.
+  `workspace/settings/global.json`; each control identifies whether a saved
+  value is live or waits for a Backend restart. Appearance remains in this
+  device's renderer storage and applies immediately. If Voice contains a
+  non-empty Final transcript, `Ctrl+,` asks before discarding it.
 - The Voice section selects a system-default or exact microphone and speaker,
   reports Windows microphone access, and runs short local tests. Desired opaque
   device IDs are stored separately in `workspace/settings/audio-device.json`;
@@ -112,14 +120,27 @@ Git-ignored and must not be committed or packaged with the application.
   the existing Composer draft. Direct Voice submission preserves that draft
   and does not attach files staged in the Composer. Only after this explicit
   Voice submission may the app open a reply-time interruption monitor.
-- The Voice surface presents the closed `IDLE → LISTENING → TRANSCRIBING →
-  THINKING → SPEAKING → IDLE` lifecycle as ready, capture/transcription
-  progress, **Elysia is thinking**, and **Elysia is speaking**. During a sent
-  Voice reply it also presents **Listening for interruption** and
-  **Interrupting Elysia**. Confirmed sustained speech rolls the controller to a
-  new epoch and `LISTENING`; old-epoch callbacks cannot reopen or settle the new
-  turn. A normal reply still returns to idle only after Chat and optional
-  playback both finish, and it does not start another capture by itself.
+- The Voice header shows the bound model and a live Session timer. Separate
+  lifecycle and microphone-status regions announce ready, opening, listening,
+  speech detected, transcription, **Elysia is thinking**, **Elysia is
+  speaking**, interruption, cancellation, and safe failure states. Assistant
+  captions are visible only when enabled and can be hidden or shown from the
+  Session without changing their saved global default.
+- **Mute** immediately ends and discards a live capture or held interruption
+  PCM and disarms reply monitoring; it does not cancel an already-running text
+  reply, and unmuting never opens the microphone by itself. **Hang up** or
+  `Escape` releases the Voice Session's capture, transcription, monitoring, and
+  exact managed playback, while an already-running Chat reply may continue on
+  the Chat page. **Audio settings** follows the same cleanup boundary before it
+  opens the device controls. Leaving through any of these paths asks first when
+  a non-empty Final transcript would be lost.
+- The visible **Auto-continue** control mirrors the saved automatic-relisten
+  default when Voice opens and can be turned off during the Session. When it is
+  on, a normal reply returns to capture only after both the exact Chat request
+  and any expected speech finish successfully. Cancellation, failure,
+  interruption, mute, hang-up, or a Chat/Project change invalidates the pending
+  continuation. The next Final transcript is still editable and is never sent
+  automatically.
 - Settings shows Global defaults beside the active Project's inheritance and
   the active Chat's pinned model. Speech recognition selects
   `tiny` / `base` / `small` / `medium` / `large-v3` / `turbo`,
@@ -151,10 +172,34 @@ Git-ignored and must not be committed or packaged with the application.
   assignment, archive, and restore. Managed sentence playback is available for
   ordinary Chat replies when its ignored local runtime and Profile are valid;
   reply-time barge-in is available when verified echo cancellation starts.
-  Hands-free continuation after a normal reply, Work permissions, and later
-  file-processing controls remain unavailable.
+  Work permissions and later file-processing controls remain unavailable.
 
-## Manual bounded Voice Session and barge-in smoke test
+### Global Voice behavior settings
+
+The seven Voice behavior values are stored with the other global Backend
+settings. **Live after Save** means that a newly admitted operation observes the
+saved value without restarting the Backend; it does not mean that Save can
+rewrite work already in flight. Exactly five settings are live and two require
+a restart:
+
+| Settings control (`global.json` field) | Default | Valid value | Apply boundary | Contract |
+| --- | --- | --- | --- | --- |
+| **Read replies aloud** (`autoReadAloud`) | On | On / Off | Live after Save | Off preserves text replies but does not start new managed speech. |
+| **Speech rate (%)** (`speechRatePercent`) | 100 | 50–200 | **Backend restart required** | The active synthesis rate remains unchanged until restart. |
+| **Speech volume (%)** (`speechVolumePercent`) | 100 | 0–100 | Live after Save | Trusted preload applies the active value to each admitted clip; 0 silences playback without disabling synthesis. |
+| **Voice profile** (`voiceProfileId`) | `default` | Configured logical Profile ID | **Backend restart required** | The active Profile remains unchanged until restart. |
+| **Call captions** (`captionsEnabled`) | Show | Show / Hide | Live after Save | Supplies the default for newly opened Voice Sessions; the Session control remains available. |
+| **Transcript review** (`transcriptReviewMode`) | `manual` | `manual` only | Live invariant | The disabled selector documents the enforced policy: recognition never sends without explicit review. |
+| **Continue listening after replies** (`automaticRelisten`) | Off | On / Off | Live after Save | A clean Voice reply may open one new bounded capture, but its transcript still requires manual review. |
+
+## Manual Voice UI and real-device acceptance checklist
+
+On 2026-09-22, the project owner explicitly waived this manual device matrix as
+a requirement for closing the Voice UI and Settings delivery. The rows below
+remain marked pending as an honest record that the human observations were not
+performed; they are optional future validation and must not be represented as
+passed. The production-chain and automated evidence recorded later in this
+section is the accepted engineering gate for this delivery.
 
 Use two Command Prompt windows, not PowerShell. Start Vite in the first:
 
@@ -174,39 +219,92 @@ Install `requirements-stt.txt`, place a complete model in the matching
 `models\weights\faster-whisper\<model>\` directory, then select that model and
 **CPU only** under **Settings → Speech recognition**. Save and restart the
 Backend. Open a Chat, enter a short draft if you want to exercise append, choose
-**Start voice**, and then choose **Start microphone**. Speak and pause for about
-0.6 seconds.
+**Start voice**, and use the rows below as the test script.
 
-Confirm that an editable **Final transcript** appears and that no request is
-sent before an explicit action. First choose **Use transcript in message** or
-**Append transcript to message**, and confirm that the Composer contains the
-edited text without sending it. Repeat the capture, edit the result, and choose
-**Send transcript**. The surface must show **Elysia is thinking**, the message
-and streamed reply must appear in the same bound Chat, and any existing
-Composer draft and staged attachment must remain unchanged. With
-`voice.speech`, the surface must show **Elysia is speaking** and return to
-**Ready to listen** only after both Chat and playback finish. Without that
-capability, text must still finish and return the Session to idle.
+These rows state expected behavior, not completed results. Every result is
+deliberately **Pending — manual run required** until a tester observes it on the
+target Windows microphone, speaker, room, and installed local models. Stop
+immediately if Windows reports that microphone access is denied.
 
-For barge-in, send another reviewed Voice transcript and speak a sustained
-phrase while the UI shows either **Elysia is thinking** or **Elysia is
-speaking**. With verified WebRTC echo cancellation, the surface must show
-**Listening for interruption**, then **Interrupting Elysia**, stop only that
-reply's playback/TTS and Chat stream, and continue the new utterance in
-`LISTENING`. Review and explicitly send the resulting Final Transcript; it is
-not submitted automatically. If the browser cannot verify echo cancellation,
-the monitor must release the microphone, show a safe warning, and allow the
-current reply to continue. This is a manual acceptance checklist; this guide
-does not claim that it has already passed across real microphone, speaker, and
-room-echo combinations.
+| Exercise | Expected result | Result |
+| --- | --- | --- |
+| Open Voice without starting capture. | The exact Chat/Project and model are bound, the Session timer advances, primary status is ready, microphone status is off, and no permission prompt appears merely from opening Voice. | Pending — manual run required |
+| Choose **Start microphone**, speak, and pause for about 0.6 seconds. | Status progresses through opening, listening/speech detected, and transcription. One editable **Final transcript** appears; no Chat request is sent and no partial recognition text is exposed. | Pending — manual run required |
+| Edit the result, then choose **Use transcript in message** or **Append transcript to message**. | The Composer is updated without sending. Append preserves existing draft text. Repeat the capture and choose **Send transcript**: the message uses the normal durable path in the bound Chat while the pre-existing Composer draft and staged files remain unchanged. | Pending — manual run required |
+| Observe a reviewed, submitted turn with captions shown and then hidden. | Primary status progresses through thinking and, when speech is expected, speaking; microphone status is announced separately. Assistant caption text follows its visible toggle. The Session settles only after the Chat terminal and expected speech terminal both arrive. | Pending — manual run required |
+| Press **Mute** during a normal capture and again during reply-time/held interruption capture. | The microphone closes, admitted or held PCM is discarded, monitoring is disarmed, and no transcript or Chat Turn is created from discarded audio. A running text reply is not cancelled. Unmute does not reopen capture by itself. | Pending — manual run required |
+| Turn **Auto-continue** on and complete a reviewed Voice turn normally. | After the exact Chat and any expected speech finish, one new bounded capture starts. The button remains visible; turning it off stops an automatically owned capture. Its transcript still waits for manual review. | Pending — manual run required |
+| Repeat with Auto-continue on, then mute, cancel, interrupt, hang up, change Chat/Project, or cause Chat/speech failure before clean completion. | No stale callback or pending continuation reopens the microphone. | Pending — manual run required |
+| Leave a non-empty Final transcript and try `Ctrl+,`, **Audio settings**, **Hang up**, and `Escape`. | Each route warns before data loss. Cancel keeps the review text and Session; confirming performs the requested cleanup/navigation without sending the transcript. | Pending — manual run required |
+| Open **Audio settings** from Voice, then run the microphone and speaker tests. | Voice capture, transcription, monitoring, and exact playback are released before the device page opens. The chosen opaque device remains selected after Save; cancelling a device picker is a no-op. | Pending — manual run required |
+| Submit a reviewed turn and speak a sustained phrase while thinking or speaking on hardware whose track reports echo cancellation enabled. | The UI shows interruption listening and then interruption, stops only that exact Chat stream and speech owner, rolls to a new listening epoch, and rejects late callbacks from the old epoch. The new Final transcript is not sent automatically. | Pending — manual run required |
+| Repeat where WebRTC echo cancellation cannot be verified. | Monitoring fails closed, releases its microphone, shows a safe warning, and permits the current reply to continue. | Pending — manual run required |
+| Repeat interruption attempts in quiet, speaker-echo, and headset conditions, recording trial count, false triggers, and observed interruption delay. | Verified AEC must not let Elysia's own playback trigger interruption; sustained user speech should interrupt without cancelling another turn. Record the measurements instead of replacing them with an automated simulation. | Pending — manual run required |
+| Stay silent for about 10 seconds, then separately try **Cancel capture** and **Cancel transcription**. | Each path returns to a safe terminal state and creates no Chat-history Turn. | Pending — manual run required |
+| Close Voice during managed playback, then switch Chat or Project in a separate run. | Exact playback and Voice-owned audio stop; the old Session cannot be reopened by late events. A text reply already in progress may continue in its Chat. | Pending — manual run required |
+| Keep one Voice Session open for a recorded duration and complete several capture, reply, mute, and interruption cycles before hanging up. | Resource use remains bounded, the Windows microphone indicator turns off after hang-up, no background capture or playback remains, and opening a fresh Session still works. | Pending — manual run required |
+| Enable Windows Narrator or another screen reader and exercise capture, transcription, thinking/speaking, mute, cancellation, one recoverable error, and hang-up. | Controls have understandable names and focus order; primary lifecycle and microphone status are announced separately without contradictory or repeated status floods. | Pending — manual run required |
+| Save each of the five live settings, exercising a newly admitted operation after every Save. | Read-aloud, per-clip volume, caption default, enforced manual review, and automatic relisten reflect the saved value without a Backend restart. Volume 0 is silent while the text reply still completes. | Pending — manual run required |
+| Save a different speech rate and Voice Profile without restarting, then restart the Backend. | Both controls report restart-required; active behavior stays at the old values before restart and changes only after a successful restart. | Pending — manual run required |
 
-Repeat once while silent for about 10 seconds, once with **Cancel capture**,
-and once with **Cancel transcription**; none may add a Chat-history Turn.
-Close Voice during playback and confirm that playback for that request stops
-without a late status reopening the Session. Switching Chat or Project must
-also invalidate the previous Voice Session. The page shows only generic
-progress, not partial recognized text. Stop immediately if Windows reports
-that microphone access is denied.
+For every real-device run, record the following fields together with the table
+results. A generic “passed” without this environment information is not enough
+to close the hardware acceptance gate.
+
+| Acceptance record field | Recorded value |
+| --- | --- |
+| Date and tested Git commit | Pending — manual run required |
+| Windows version | Pending — manual run required |
+| Microphone and connection type | Pending — manual run required |
+| Speaker/headset and connection type | Pending — manual run required |
+| Room and echo condition | Pending — manual run required |
+| Ollama model, STT model/device, and Voice Profile | Pending — manual run required |
+| Session duration and completed Voice-turn count | Pending — manual run required |
+| Interruption trials, successful interruptions, false triggers, and observed delay | Pending — manual run required |
+| Screen reader and result | Pending — manual run required |
+
+### 2026-09-22 pre-acceptance engineering evidence
+
+The following local checks exercise real hardware and production components,
+but do **not** replace the pending human observations in the tables above:
+
+- Windows 11 Pro `10.0.26200.9457` exposed `Microphone (HECATE G1500 BAR)`
+  as the default capture endpoint and `Speakers (Realtek(R) Audio)` as the
+  default multimedia output. A two-second DirectShow capture reached 44.1 kHz
+  stereo input with a `-30.3 dB` mean and `-10.9 dB` peak; audio was sent to a
+  null sink and was not saved. Earlier production Electron captures of 2.240,
+  1.480, and 1.780 seconds also completed local Chinese transcription.
+- A production Electron diagnostic completed the real
+  Renderer → Electron → Python Backend → Ollama → managed GPT-SoVITS → private
+  fd3 → trusted preload Web Audio route. Main received the private `played`
+  settlement after Renderer reported `playing` then `played`, the speech turn
+  ended `completed`, Backend remained `ready`, and the `voice.speech`
+  capability remained present. This proves successful decode and natural Web
+  Audio completion; it does not claim that a person confirmed loudness or
+  subjective audio quality in the room.
+- The managed `elysia-v2` neutral CUDA worker and `qwen3.5:9b` were exercised
+  concurrently. The voice lease became ready in 38.53 seconds, the Ollama
+  request completed by 55.81 seconds, and one in-memory 254,764-byte canonical
+  WAV completed by 58.73 seconds. No diagnostic audio was persisted.
+- Historical failures were traced to model replies containing standalone
+  decorative fragments such as `♪` and `✨`. The canonical Chat text remains
+  untouched, while the speech-only segmenter now skips a candidate unless it
+  contains a Unicode letter or number. Text such as `爱莉希雅♪` and `123！`
+  remains intact; focused regression tests cover both retained and skipped
+  forms.
+- A post-fix production regression made the local model return exactly
+  `语音分段回归测试成功。\n♪`. The real application emitted and played only
+  speech sequence `0` for the Chinese sentence (162,604 bytes), emitted no
+  second symbol-only sequence, settled playback as `played`, and finished
+  `playing → played → terminal(completed)` while Backend stayed ready with
+  `voice.speech` available. The diagnostic Chat and temporary harness were
+  removed after the bounded run.
+
+Room/headset echo trials, human-observed interruption latency and false-trigger
+counts, an extended Voice Session, subjective speaker output, and Narrator were
+not run. They remain optional future observations after the project owner
+waived them as a delivery-closing gate; this engineering evidence must not be
+rewritten as though those human checks passed.
 
 ## Manual local synthesis and playback smoke tests
 
@@ -223,13 +321,18 @@ If the Profile is marked `local-evaluation-only`, leave
 its rights status and paths; then opt in locally without committing `.env`.
 For desktop playback, keep the loopback API stopped: Electron's Python Backend
 starts the worker itself from `models\cache\GPT-SoVITS-v2-240821`. Launch the
-desktop normally, send a Chat message that produces several sentences, and
-confirm that each reply sentence plays once in order while the exact text is
-still persisted. Closing the window and exiting must stop the current clip and
-release the Backend and managed worker; after restarting the app, a new Chat
-reply must be playable again. Reloading discards the current clip; after the
-replacement private playback owner registers, later replies must play again.
-Text Chat remains usable throughout either lifecycle.
+desktop normally with **Read replies aloud** on, send a Chat message that
+produces several sentences, and confirm that each reply sentence plays once in
+order while the exact text is still persisted. Save several volume values and
+admit a new clip after each Save: the trusted preload must apply the current
+percentage to that clip, including silence at 0, without exposing its WAV bytes
+to React or disabling synthesis. Closing the window and exiting must stop the
+current clip and release the Backend and managed worker; after restarting the
+app, a new Chat reply must be playable again. Reloading discards the current
+clip; after the replacement private playback owner registers, later replies
+must play again. Text Chat remains usable throughout either lifecycle. These
+are manual expectations and do not assert that a physical speaker run has
+already passed.
 
 For the independent loopback adapter smoke, start the configured API and run
 from CMD:
@@ -332,14 +435,19 @@ method, results, capability gaps, and limitations.
   barge-in after Chat text ownership has ended. On confirmed interruption the
   Renderer also cancels the exact Chat request; duplicate, late, and mismatched
   ownership cannot stop another turn. The managed
-  saved output-device selection is applied before each Web Audio decode; an
-  unavailable explicit sink skips that clip instead of leaking it through the
-  system default speaker. The managed runtime's current partial manifest proves launch consistency, not complete
+  saved output-device selection and the current validated 0–100 speech-volume
+  percentage are applied inside trusted preload for every admitted clip. A Web
+  Audio gain node enforces the per-clip volume; zero remains an intentional
+  silent playback, and an unavailable explicit sink skips that clip instead of
+  leaking it through the system default speaker. The managed runtime's current partial manifest proves launch consistency, not complete
   supply-chain provenance, so desktop speech caching remains disabled.
 - Settings accepts an exact non-sensitive allowlist, including the closed STT
-  model/device/language enums, uses optimistic revisions
-  and atomic replacement, and remains repairable after Backend initialization
-  rejects a saved model or Ollama origin.
+  model/device/language enums and seven Voice behavior fields, uses optimistic
+  revisions and atomic replacement, and remains repairable after Backend
+  initialization rejects a saved model or Ollama origin. Read-aloud, volume,
+  captions, the manual-review invariant, and automatic relisten are adopted
+  between admitted operations after Save; synthesis rate and Voice Profile keep
+  their prior active values until a Backend restart.
 - Audio-device preferences use an independent optimistic revision and remain
   repairable while Chat generation is active or Brain initialization has
   failed. Electron owns hardware enumeration, Windows permission state, and
@@ -357,6 +465,10 @@ method, results, capability gaps, and limitations.
   metadata, never PCM, model paths, or native diagnostics. Neither process
   persists audio. Capture and transcription alone never create a Chat Turn;
   each Final Transcript still requires the user's explicit send confirmation.
+  Automatic relisten is a visible, disableable Session policy, not an
+  auto-submit mode: it admits a new capture only after a clean exact-turn
+  completion, and mute, failure, cancellation, hang-up, or context replacement
+  invalidates its ownership before the microphone can reopen.
 - Native selection and drop paths remain inside the trusted preload/Electron
   boundary. Python copies validated regular files into opaque, scope-specific
   storage, and protocol responses expose only safe metadata and attachment IDs.

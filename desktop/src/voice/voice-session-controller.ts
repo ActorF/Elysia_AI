@@ -46,7 +46,10 @@ export interface VoiceSessionTranscript {
 
 /** Summary of the most recently settled Voice-originated Chat turn. */
 export interface VoiceSessionTurnResult {
+  readonly completionId: number
   readonly outcome: VoiceChatTerminalOutcome
+  readonly speechExpected: boolean
+  readonly speechTerminal: VoiceSpeechTerminalState | null
   readonly speechPlayed: boolean
   readonly skippedSpeechCount: number
 }
@@ -205,6 +208,7 @@ export class VoiceSessionController {
   private chatTurn: ChatTurnOwnership | null = null
   private interruptionCaptureSessionId: string | null = null
   private lastTurn: VoiceSessionTurnResult | null = null
+  private nextCompletionId = 1
   private retiredTranscription: RetiredAcknowledgement | null = null
   private retiredChatTurn: RetiredAcknowledgement | null = null
   private readonly listeners = new Set<VoiceSessionListener>()
@@ -275,6 +279,51 @@ export class VoiceSessionController {
   startListening(captureSessionId: string): VoiceSessionOwner {
     this.assertUsable()
     this.requireActivePhase('idle', 'start listening')
+    if (
+      !CAPTURE_SESSION_PATTERN.test(captureSessionId)
+      || codePointLength(captureSessionId) > MAX_IDENTIFIER_CODE_POINTS
+    ) {
+      throw new TypeError('Voice capture session identifier is invalid.')
+    }
+    this.captureSessionId = captureSessionId
+    this.transcription = null
+    this.transcript = null
+    this.chatTurn = null
+    this.lastTurn = null
+    this.phase = 'listening'
+    this.publish()
+    return this.owner()
+  }
+
+  /**
+   * Start one post-reply capture only for the exact clean completion observed.
+   *
+   * React may replay effects and terminal events may race in either order, so
+   * the completion identifier is consumed atomically with the transition. A
+   * stale, duplicate, failed, cancelled, or speech-undrained completion is an
+   * expected no-op rather than a user-facing transition error.
+   */
+  startContinuationListening(
+    expectedCompletionId: number,
+    captureSessionId: string,
+  ): VoiceSessionOwner | null {
+    this.assertUsable()
+    const completion = this.lastTurn
+    if (
+      !this.active
+      || this.phase !== 'idle'
+      || !Number.isSafeInteger(expectedCompletionId)
+      || expectedCompletionId <= 0
+      || completion === null
+      || completion.completionId !== expectedCompletionId
+      || completion.outcome !== 'completed'
+      || (
+        completion.speechExpected
+        && completion.speechTerminal !== 'completed'
+      )
+    ) {
+      return null
+    }
     if (
       !CAPTURE_SESSION_PATTERN.test(captureSessionId)
       || codePointLength(captureSessionId) > MAX_IDENTIFIER_CODE_POINTS
@@ -782,7 +831,10 @@ export class VoiceSessionController {
     }
     const cancellation = this.cancellation()
     const lastTurn: VoiceSessionTurnResult = {
+      completionId: this.allocateCompletionId(),
       outcome: 'cancelled',
+      speechExpected: turn.speechExpected,
+      speechTerminal: turn.speechTerminal,
       speechPlayed: turn.speechPlayed,
       skippedSpeechCount: turn.skippedSpeechCount,
     }
@@ -893,7 +945,10 @@ export class VoiceSessionController {
       }
     }
     this.lastTurn = {
+      completionId: this.allocateCompletionId(),
       outcome,
+      speechExpected: turn.speechExpected,
+      speechTerminal: turn.speechTerminal,
       speechPlayed: turn.speechPlayed,
       skippedSpeechCount: turn.skippedSpeechCount,
     }
@@ -918,6 +973,12 @@ export class VoiceSessionController {
     this.transcript = null
     this.chatTurn = null
     this.interruptionCaptureSessionId = null
+  }
+
+  private allocateCompletionId(): number {
+    const completionId = this.nextCompletionId
+    this.nextCompletionId += 1
+    return completionId
   }
 
   private owner(): VoiceSessionOwner {

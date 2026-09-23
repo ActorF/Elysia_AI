@@ -60,6 +60,13 @@ function defaultSettingsState() {
     transcriptionModel: 'small',
     transcriptionDevice: 'auto',
     transcriptionLanguage: 'auto',
+    autoReadAloud: true,
+    speechRatePercent: 100,
+    speechVolumePercent: 100,
+    voiceProfileId: 'default',
+    captionsEnabled: true,
+    transcriptReviewMode: 'manual',
+    automaticRelisten: false,
   }
   return {
     revision: 0,
@@ -602,8 +609,28 @@ const desktopApi = {
     if (request.expectedRevision !== settingsState.revision) {
       throw new Error('Settings changed elsewhere. Reload them before saving.')
     }
-    const changed = Object.keys(request.settings).filter(
-      (field) => request.settings[field] !== settingsState.activeSettings[field],
+    const restartBoundFields = [
+      'modelName',
+      'ollamaHost',
+      'shortTermMemoryTokenBudget',
+      'memoryRetrievalLimit',
+      'dataImportMaxBytes',
+      'transcriptionModel',
+      'transcriptionDevice',
+      'transcriptionLanguage',
+      'speechRatePercent',
+      'voiceProfileId',
+    ]
+    const activeSettings = {
+      ...settingsState.activeSettings,
+      autoReadAloud: request.settings.autoReadAloud,
+      speechVolumePercent: request.settings.speechVolumePercent,
+      captionsEnabled: request.settings.captionsEnabled,
+      transcriptReviewMode: request.settings.transcriptReviewMode,
+      automaticRelisten: request.settings.automaticRelisten,
+    }
+    const restartFields = restartBoundFields.filter(
+      (field) => request.settings[field] !== activeSettings[field],
     )
     const same = JSON.stringify(request.settings) === JSON.stringify(
       settingsState.settings,
@@ -615,8 +642,9 @@ const desktopApi = {
         ? settingsState.updatedAt
         : '2026-08-25T13:30:00+00:00',
       settings: clone(request.settings),
-      restartRequired: changed.length > 0,
-      restartFields: changed,
+      activeSettings,
+      restartRequired: restartFields.length > 0,
+      restartFields,
       warning: null,
     }
     return settingsResult()

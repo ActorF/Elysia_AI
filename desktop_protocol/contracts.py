@@ -28,6 +28,7 @@ MAX_PROJECT_NAME_LENGTH: Final = 200
 MAX_WORKSPACE_PATH_LENGTH: Final = 32_767
 MAX_SETTINGS_MODEL_NAME_LENGTH: Final = 200
 MAX_OLLAMA_HOST_LENGTH: Final = 2_048
+_MAX_VOICE_PROFILE_ID_LENGTH: Final = 64
 MAX_AUDIO_DEVICE_ID_LENGTH: Final = 2_048
 VOICE_CAPTURE_SAMPLE_RATE_HZ: Final = 16_000
 VOICE_CAPTURE_CHANNEL_COUNT: Final = 1
@@ -112,6 +113,9 @@ _ATTACHMENT_ID_PATTERN: Final = re.compile(
     r"^attachment_[A-Za-z0-9_-]+$"
 )
 _LOWERCASE_SHA256_PATTERN: Final = re.compile(r"^[0-9a-f]{64}$")
+_VOICE_PROFILE_ID_PATTERN: Final = re.compile(
+    r"^[a-z0-9][a-z0-9._-]{0,63}$"
+)
 _RESERVED_AUDIO_DEVICE_IDS: Final = frozenset({
     "default",
     "communications",
@@ -450,6 +454,13 @@ class DesktopSettingsValues(TypedDict):
     ]
     transcriptionDevice: Literal["auto", "cuda", "cpu"]
     transcriptionLanguage: Literal["auto", "zh", "en"]
+    autoReadAloud: bool
+    speechRatePercent: int
+    speechVolumePercent: int
+    voiceProfileId: str
+    captionsEnabled: bool
+    transcriptReviewMode: Literal["manual"]
+    automaticRelisten: bool
 
 
 class SettingsUpdateParams(TypedDict):
@@ -1392,6 +1403,13 @@ def _validate_settings_values(
             "transcriptionModel",
             "transcriptionDevice",
             "transcriptionLanguage",
+            "autoReadAloud",
+            "speechRatePercent",
+            "speechVolumePercent",
+            "voiceProfileId",
+            "captionsEnabled",
+            "transcriptReviewMode",
+            "automaticRelisten",
         },
         context,
     )
@@ -1494,6 +1512,46 @@ def _validate_settings_values(
             error_code,
             f"{context}.transcriptionLanguage is unsupported.",
         )
+    for key in (
+        "autoReadAloud",
+        "captionsEnabled",
+        "automaticRelisten",
+    ):
+        _require_boolean(settings, key, context)
+    speech_rate = _require_integer(settings, "speechRatePercent", context)
+    if not 50 <= speech_rate <= 200:
+        raise ProtocolValidationError(
+            error_code,
+            f"{context}.speechRatePercent is outside its supported range.",
+        )
+    speech_volume = _require_integer(settings, "speechVolumePercent", context)
+    if not 0 <= speech_volume <= 100:
+        raise ProtocolValidationError(
+            error_code,
+            f"{context}.speechVolumePercent is outside its supported range.",
+        )
+    voice_profile_id = _require_string(
+        settings,
+        "voiceProfileId",
+        context,
+        maximum=_MAX_VOICE_PROFILE_ID_LENGTH,
+    )
+    if _VOICE_PROFILE_ID_PATTERN.fullmatch(voice_profile_id) is None:
+        raise ProtocolValidationError(
+            error_code,
+            f"{context}.voiceProfileId must be a bounded logical identifier.",
+        )
+    transcript_review_mode = _require_string(
+        settings,
+        "transcriptReviewMode",
+        context,
+        maximum=6,
+    )
+    if transcript_review_mode != "manual":
+        raise ProtocolValidationError(
+            error_code,
+            f"{context}.transcriptReviewMode is unsupported.",
+        )
     return cast(DesktopSettingsValues, settings)
 
 
@@ -1516,6 +1574,13 @@ def _validate_settings_update_params(params: JsonObject) -> None:
         "transcriptionModel",
         "transcriptionDevice",
         "transcriptionLanguage",
+        "autoReadAloud",
+        "speechRatePercent",
+        "speechVolumePercent",
+        "voiceProfileId",
+        "captionsEnabled",
+        "transcriptReviewMode",
+        "automaticRelisten",
     }:
         raise ProtocolValidationError(
             "protocol.invalid_params",
@@ -2413,6 +2478,8 @@ def _validate_settings_state_result(
         "transcriptionModel",
         "transcriptionDevice",
         "transcriptionLanguage",
+        "speechRatePercent",
+        "voiceProfileId",
     }
     if (
         not isinstance(restart_fields, list)

@@ -20,7 +20,7 @@
 
 > [!IMPORTANT]
 >
-> This project is currently a **development preview**, not a ready-to-install release. The desktop shell still depends on the source checkout, its Python environment, Ollama, and local models. Bounded one-utterance STT, an explicitly confirmed Voice Session, managed GPT-SoVITS reply playback, and safe barge-in while a reply is thinking or speaking are connected. Optional voice runtimes, models, and reference audio are not included in the base install; hands-free re-listening after a normal reply, real-time partial transcripts, RAG, the Work Agent, Live2D, and production installation are not complete.
+> This project is currently a **development preview**, not a ready-to-install release. The desktop shell still depends on the source checkout, its Python environment, Ollama, and local models. Bounded one-utterance STT, an explicitly confirmed Voice Session, managed GPT-SoVITS reply playback, safe barge-in while a reply is thinking or speaking, and optional re-listening after a normal reply are connected. Automatic re-listening is off by default, visible and disableable on the call surface, and every final transcript still requires review and an explicit send. Optional voice runtimes, models, and reference audio are not included in the base install; real-time partial transcripts, RAG, the Work Agent, Live2D, and production installation are not complete. The real microphone/speaker, room-echo, and long-call human matrix was not run and the project owner explicitly waived it as a closing gate for this delivery, so the project does not claim those observations passed.
 
 ---
 
@@ -47,7 +47,7 @@
 | Chat History | ✅ Available | Multiple sessions, pin, archive, restore, delete, and per-Chat drafts |
 | Project | ✅ Available | Metadata, Instructions, Workspace binding, and Chat ownership |
 | Memory Core | ✅ Available | Global / Project / Chat scopes, retrieval, summaries, and long-term memory foundation |
-| Settings | ✅ Available | Chat model, Ollama origin, Memory/file limits, theme, and STT model, device, and default language |
+| Settings | ✅ Available | Chat/Ollama/Memory/file/STT settings, theme, and automatic read-aloud, rate, volume, Voice Profile, captions, manual transcript review, and automatic re-listening |
 | Attachments / Sources | ✅ Foundation available | Safe storage and metadata only; no content reading, parsing, Embedding, or RAG |
 | Audio Devices | ✅ Available | Microphone/speaker selection, Windows permission state, input level, and output tone tests |
 | One-utterance recording and local VAD | ✅ Available | Explicit start, 16 kHz mono `s16le`, transient processing; no automatic Chat Turn |
@@ -55,7 +55,7 @@
 | Bounded Voice Session | ✅ Available | Closed `IDLE → LISTENING → TRANSCRIBING → THINKING → SPEAKING → IDLE` lifecycle, exact Chat/Project binding, and explicit transcript confirmation |
 | GPT-SoVITS / TTS | ✅ Foundation available | Chat segmentation, a managed local worker, bounded queue, private fd3 transport, and Electron playback are connected; local runtime, Profile, weights, and reference audio are required |
 | Barge-in / speech interruption | ✅ Available | Enabled only for the reply to an explicitly sent Voice turn; requires verified WebRTC echo cancellation and sustained-speech confirmation, then cancels that exact turn |
-| Hands-free continuation | ⏳ Planned | A normally completed reply does not automatically start listening again; the next final transcript still requires review and explicit submission |
+| Automatic re-listening | ✅ Available | A visible switch can listen again after a safely completed reply; it is off by default and never auto-sends a final transcript |
 | File parsing and local RAG | ⏳ Planned | No Loaders, Chunking, Vector Store, or cited answers |
 | Work Agent and tool permissions | ⏳ Planned | No tool execution, desktop control, Internet, or Vision workflow |
 | Live2D / desktop pet | ⏳ Planned | The application currently has UI and a character placeholder only |
@@ -88,7 +88,7 @@ flowchart LR
 - **React remains sandboxed**: `contextIsolation: true`, `nodeIntegration: false`, and `sandbox: true`; the Renderer cannot directly read Node, Python, Chat, Memory, or native source paths.
 - **Both sides validate the protocol**: TypeScript and Python consume matching JSON Schema/fixture constraints and negotiate the version, capabilities, and a random session token before use.
 - **Local data is recoverable**: important JSON uses strict schemas, revisions, atomic replacement, and corruption quarantine; cancellation does not save an incomplete formal reply.
-- **Side effects require an explicit action**: opening Voice does not request microphone access. Only after the user starts capture and sends a reviewed transcript may the app monitor for an interruption during that reply. Selecting an attachment does not parse it, and binding a Project Workspace does not execute tools.
+- **Side effects require an explicit action**: opening Voice does not request microphone access, and the user must start the first capture. Only after the user sends a reviewed transcript may the app monitor for an interruption during that reply. A normally completed reply starts another bounded capture only when the user explicitly enables the visible automatic re-listening control, and recognized text is still never sent automatically. Selecting an attachment does not parse it, and binding a Project Workspace does not execute tools.
 
 See the [Desktop development guide](./desktop/README.md), [Protocol v1](./desktop_protocol/README.md), and [Electron shell decision](./docs/decisions/0001-desktop-shell.md) for implementation details.
 
@@ -231,7 +231,9 @@ LOG_LEVEL=INFO
 DEBUG=False
 ```
 
-Desktop **Settings** can update the Chat model, Ollama origin, Memory limits, file import size, and the local transcription model, device, and default language. These public values use an independent revision and are written to `workspace/settings/global.json`. Transcription models are `tiny` / `base` / `small` / `medium` / `large-v3` / `turbo`; devices are `auto` / `cuda` / `cpu`; languages are `auto` / `zh` / `en`. The Backend must restart before these changes become active. Theme selection remains in this device's Renderer Storage and applies immediately.
+Desktop **Settings** can update the Chat model, Ollama origin, Memory limits, file import size, and the local transcription model, device, and default language. These public values use an independent revision and are written to `workspace/settings/global.json`. Transcription models are `tiny` / `base` / `small` / `medium` / `large-v3` / `turbo`; devices are `auto` / `cuda` / `cpu`; languages are `auto` / `zh` / `en`.
+
+The same global settings contain seven Voice fields: automatic read-aloud, 50–200% speech rate, 0–100% volume, a bounded logical Voice Profile ID, captions, transcript review mode, and automatic re-listening. Five are live preferences: automatic read-aloud, volume, captions, the review mode—which currently accepts only `manual`—and automatic re-listening. Speech rate and Voice Profile are the two restart-bound Voice fields and remain separated as saved versus active values until the Backend restarts. Model, Ollama, Memory/file-limit, and STT runtime changes continue to follow their existing restart boundary; theme remains in this device's Renderer Storage and applies immediately.
 
 The desktop application does not require a cloud API key. Text Chat connects
 only to local Ollama; optional desktop TTS is started by Python Backend as a
@@ -279,12 +281,13 @@ Never commit future secrets, tokens, private prompts, or private configuration.
 - Barge-in VAD requires sustained speech to reach its confirmation threshold. Once user speech is confirmed, the trusted boundary stops local playback first, cancels pending or running speech for the exact `{requestId, chatId}`, and requests cancellation of the exact Chat/LLM stream. Duplicate, late, or wrongly owned requests cannot stop another turn.
 - Session epoch, Chat ID, optional Project ID, capture/STT IDs, Chat operation/request IDs, and ordered speech sequence must all match. Accepting an interruption advances the epoch and carries the confirmed capture into a new `LISTENING` phase. Late events from the old turn, plus events after hang-up, navigation, or a Chat/Project change, are rejected.
 - Chat keeps its transactional commit gate: if cancellation wins before commit, no partial Assistant message is persisted. If a complete commit wins first, its complete text remains and only playback still owned by that turn is stopped. If the next utterance finishes capture before the old Chat reaches terminal, its PCM remains in memory for at most 10 seconds; timeout, hang-up, context changes, and other privacy boundaries overwrite and discard it without sending or persistence.
-- Voice UI presents `Listening for interruption`, `Interrupting Elysia`, and the new `LISTENING` phase, but STT still returns final text only. There are no real-time partial transcripts, automatic submission, or automatic re-listening after a normally completed reply; a transcript captured after interruption also requires review and explicit submission.
+- Voice UI separately presents Listening, Transcribing, Thinking, Speaking, Monitoring, Interrupting, Cancelled, and Error states, together with a timer, captions, mute, hang-up, and an audio-device entry. STT still returns final text only, with no real-time partial transcript or automatic submission. Ordinary captures, captures after an interruption, and captures started by automatic re-listening all require review and an explicit send.
+- Automatic re-listening is off by default and is controlled by both the saved Settings default and a visible call-surface switch. When enabled, it starts another bounded capture only after Chat completes normally and any expected read-aloud also finishes safely. Muting, hanging up, closing Voice, switching Chat or Project, disabling the switch, losing a required capability or device, or reaching a failed or cancelled terminal pauses or exits the loop.
 - Settings and Voice display only sanitized enum-based readiness. A missing model, missing optional dependencies, unavailable CUDA, or initialization failure produces safe recovery guidance without exposing local paths, underlying exceptions, or native diagnostics; `auto` can use the safe CPU fallback.
 - A real local CPU-runtime/model transcription smoke path has been verified. This documentation does not claim a successful real-GPU validation. Automated coverage also exercises the fake runtime, cancellation, timeout, native draining, and late-result disposal.
 - Python now provides an engine-independent synthesis contract, a strict local Voice Profile catalog, a lazy composition root, and a GPT-SoVITS `/tts` adapter that accepts only loopback-IP origins; `localhost` is canonicalized to `127.0.0.1` before I/O. The general contract performs complete container/transport-framing checks, up to 32 MiB, for PCM WAV, Ogg Opus, and a supported ADTS AAC subset without claiming codec decodability. The current non-streaming GPT-SoVITS adapter configures only WAV/AAC and requires a bounded, `Content-Length`-declared, uncompressed, non-`Transfer-Encoding` response.
 - Real local acceptance synthesized the same fixed Chinese smoke sentence twice for each of `neutral`, `happy`, and `sad`; all six calls returned valid WAV audio. With the service stopped, the smoke command returned the stable `service_unreachable` code, and the full text-Chat regression still passed. `service_binding_unverified` means the service is online but its upstream API cannot attest that the catalog-declared weights are loaded; it is not an identity guarantee for those weights.
-- The desktop path copies exact chunks from `Brain.stream_chat()` and segments only at natural punctuation or a bounded length. One managed worker consumes a bounded FIFO. NDJSON carries correlation metadata only; PCM WAV travels over separate fd3 into Electron Main and then through IPC that is absent from public `DesktopApi` to Preload Web Audio. Every clip applies the saved speaker selection first; an unavailable explicit device skips that clip instead of silently falling back to another speaker. React receives only Request/Chat, `playing|played|skipped` plus sequence, or terminal `completed|cancelled` status; it never receives WAV bytes, tokens, hashes, reply text, exact prompts, diagnostics, or local asset paths. Playback cancellation for the exact Request ID and Chat ID is validated by trusted Main. Profiles, the runtime, weights, and reference audio remain in ignored local directories. See [MODEL_LICENSE.md](./MODEL_LICENSE.md) for provenance and restrictions.
+- The desktop path copies exact chunks from `Brain.stream_chat()` and segments only at natural punctuation or a bounded length. One managed worker consumes a bounded FIFO. NDJSON carries correlation metadata only; PCM WAV travels over separate fd3 into Electron Main and then through IPC that is absent from public `DesktopApi` to Preload Web Audio. Every clip applies the saved speaker selection and current volume through a GainNode. An unavailable explicit device skips that clip instead of silently falling back to another speaker; zero volume silences the clip without disabling synthesis. React receives only Request/Chat, `playing|played|skipped` plus sequence, or terminal `completed|cancelled` status; it never receives WAV bytes, tokens, hashes, reply text, exact prompts, diagnostics, or local asset paths. Playback cancellation for the exact Request ID and Chat ID is validated by trusted Main. Profiles, the runtime, weights, and reference audio remain in ignored local directories. See [MODEL_LICENSE.md](./MODEL_LICENSE.md) for provenance and restrictions.
 
 ---
 
@@ -437,8 +440,11 @@ safe continuation impossible, while text Chat keeps working. A bounded,
 explicitly confirmed Voice Session and reply-time barge-in are connected.
 Barge-in additionally requires the browser to enable and verify WebRTC echo
 cancellation; otherwise monitoring stops safely and the reply continues.
-Hands-free re-listening after a normal reply, real-time partial transcripts,
-and systematic real-device/room-echo acceptance remain incomplete.
+Optional re-listening after a normal reply is connected and never sends its
+recognized text automatically. Real-time partial transcripts remain future
+work. The systematic real-device, room-echo, and long-call human matrix was not
+run and the project owner explicitly waived it as this delivery's closing gate;
+that waiver is not a claim that those observations passed.
 
 ### Why can Project Sources not answer from file contents?
 

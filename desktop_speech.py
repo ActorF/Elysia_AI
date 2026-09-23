@@ -10,9 +10,10 @@ matching PCM WAV bytes through its inherited private pipe.
 from __future__ import annotations
 
 import logging
+import re
 import secrets
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from threading import Event, Lock, RLock, Thread
 from typing import Any, Final, Literal, Protocol, TypeAlias, runtime_checkable
@@ -52,11 +53,13 @@ DesktopSpeechEventSink: TypeAlias = Callable[
 ]
 
 _PENDING_TEXT_MAX_CODE_POINTS: Final = 4_096
-_DEFAULT_PROFILE_ID: Final = "default"
 _DEFAULT_EMOTION: Final = "neutral"
 _DEFAULT_LANGUAGE: Final = "auto"
 _LEASE_ID: Final = "desktop-managed-lease"
 _CACHE_IDENTITY: Final = "desktop-managed-voice"
+_VOICE_PROFILE_ID_PATTERN: Final = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
+_MIN_SPEECH_RATE_PERCENT: Final = 50
+_MAX_SPEECH_RATE_PERCENT: Final = 200
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -67,6 +70,8 @@ class DesktopSpeechConfig:
     worker_script: Path
     catalog_path: Path
     asset_root: Path
+    voice_profile_id: str
+    speech_rate_percent: int
     allow_local_evaluation: bool
     deterministic_seed: int
     synthesis_timeout_seconds: float
@@ -87,6 +92,8 @@ class DesktopSpeechConfig:
                 base_dir / "workspace" / "settings" / "voice-profiles.json"
             ),
             asset_root=base_dir / "models" / "weights" / "gpt-sovits",
+            voice_profile_id=settings.voice_profile_id,
+            speech_rate_percent=settings.speech_rate_percent,
             allow_local_evaluation=settings.gpt_sovits_allow_local_evaluation,
             deterministic_seed=settings.gpt_sovits_deterministic_seed,
             synthesis_timeout_seconds=(
@@ -105,6 +112,20 @@ class DesktopSpeechConfig:
         )
         if any(not isinstance(path, Path) or not path.is_absolute() for path in paths):
             raise ValueError("Desktop speech paths must be absolute Path values.")
+        if (
+            not isinstance(self.voice_profile_id, str)
+            or _VOICE_PROFILE_ID_PATTERN.fullmatch(self.voice_profile_id) is None
+        ):
+            raise ValueError(
+                "voice_profile_id must be a bounded lowercase logical identifier."
+            )
+        if (
+            type(self.speech_rate_percent) is not int
+            or not _MIN_SPEECH_RATE_PERCENT
+            <= self.speech_rate_percent
+            <= _MAX_SPEECH_RATE_PERCENT
+        ):
+            raise ValueError("speech_rate_percent is outside the safe range.")
         if type(self.allow_local_evaluation) is not bool:
             raise TypeError("allow_local_evaluation must be a Boolean.")
         if (
@@ -412,8 +433,16 @@ class DesktopSpeechCoordinator:
                 allow_local_evaluation=self._config.allow_local_evaluation,
             )
             selection = catalog.resolve_selection(
-                _DEFAULT_PROFILE_ID,
+                self._config.voice_profile_id,
                 _DEFAULT_EMOTION,
+            )
+            # The persisted percentage is an absolute user-facing playback
+            # rate. Replacing the catalog default avoids compounding two rate
+            # multipliers, which could exceed the worker's validated 0.5-2.0
+            # boundary even though both inputs were independently valid.
+            selection = replace(
+                selection,
+                speed_factor=self._config.speech_rate_percent / 100.0,
             )
             runtime_lease = runtime.acquire_lease(selection)
             binding = _create_managed_synthesis_binding_lease(

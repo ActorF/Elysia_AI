@@ -12,7 +12,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Event, Timer
 from time import monotonic
-from typing import Any, cast
+from typing import Any, TextIO, cast
 from unittest.mock import patch
 
 import pytest
@@ -62,6 +62,7 @@ from desktop_backend import (
     _extract_model_names,
 )
 from desktop_protocol import (
+    AudioChannelWriter,
     PROTOCOL_NAME,
     PROTOCOL_VERSION,
     ProtocolMethod,
@@ -769,6 +770,13 @@ def _desktop_settings_values(
     transcription_model: str = DEFAULT_TRANSCRIPTION_MODEL,
     transcription_device: str = DEFAULT_TRANSCRIPTION_DEVICE,
     transcription_language: str = DEFAULT_TRANSCRIPTION_LANGUAGE,
+    auto_read_aloud: bool = True,
+    speech_rate_percent: int = 100,
+    speech_volume_percent: int = 100,
+    voice_profile_id: str = "default",
+    captions_enabled: bool = True,
+    transcript_review_mode: str = "manual",
+    automatic_relisten: bool = False,
 ) -> JsonObject:
     """Provide the desktop settings values fixture used by these tests."""
     return {
@@ -780,6 +788,13 @@ def _desktop_settings_values(
         "transcriptionModel": transcription_model,
         "transcriptionDevice": transcription_device,
         "transcriptionLanguage": transcription_language,
+        "autoReadAloud": auto_read_aloud,
+        "speechRatePercent": speech_rate_percent,
+        "speechVolumePercent": speech_volume_percent,
+        "voiceProfileId": voice_profile_id,
+        "captionsEnabled": captions_enabled,
+        "transcriptReviewMode": transcript_review_mode,
+        "automaticRelisten": automatic_relisten,
     }
 
 
@@ -805,15 +820,71 @@ def _run_bridge(
     settings_repository: DesktopSettingsRepository | None = None,
     voice_settings_service: VoiceSettingsService | None = None,
     attachment_store: JsonAttachmentStore | None = None,
+    audio_writer: AudioChannelWriter | None = None,
     speech_coordinator: DesktopSpeechCoordinator | None = None,
+    wait_for_speech_terminal_request_id: str | None = None,
 ) -> tuple[FakeBrain, list[JsonObject]]:
     """Provide the run bridge fixture used by these tests."""
     active_brain = fake_brain if fake_brain is not None else FakeBrain()
     lines = build_lines(str(active_brain.chat.chat_id))
-    input_stream = StringIO(
-        "".join(f"{json.dumps(line)}\n" for line in lines)
-    )
-    output_stream = StringIO()
+    terminal_seen = Event()
+    initialization_responses = {
+        cast(str, line["id"]): Event()
+        for line in lines
+        if line.get("method") == "initialize"
+    }
+
+    class TerminalAwareOutput(StringIO):
+        """Wake a finite input stream only after its target speech terminal."""
+
+        def write(self, value: str) -> int:
+            """Record output and signal when one complete terminal frame arrives."""
+
+            written = super().write(value)
+            try:
+                message = cast(JsonObject, json.loads(value))
+            except json.JSONDecodeError:
+                message = {}
+            if message.get("type") == "response":
+                response_id = message.get("id")
+                if isinstance(response_id, str):
+                    initialization_event = initialization_responses.get(response_id)
+                    if initialization_event is not None:
+                        initialization_event.set()
+            target = wait_for_speech_terminal_request_id
+            if (
+                target is not None
+                and '"event":"voice.speech.terminal"' in value
+                and f'"requestId":"{target}"' in value
+            ):
+                terminal_seen.set()
+            return written
+
+    output_stream = TerminalAwareOutput()
+    if (
+        wait_for_speech_terminal_request_id is None
+        and not initialization_responses
+    ):
+        input_stream: TextIO = StringIO(
+            "".join(f"{json.dumps(line)}\n" for line in lines)
+        )
+    else:
+        def _request_lines() -> Generator[str, None, None]:
+            """Mirror Renderer ordering and keep input alive through terminals."""
+
+            for line in lines:
+                yield f"{json.dumps(line)}\n"
+                if line.get("method") == "initialize":
+                    # Renderer cannot send initialized-only actions until the
+                    # asynchronous initialize response resolves. Waiting here
+                    # prevents slower test hosts from turning that product
+                    # ordering into a protocol.not_initialized race.
+                    request_id = cast(str, line["id"])
+                    assert initialization_responses[request_id].wait(2.0)
+            if wait_for_speech_terminal_request_id is not None:
+                assert terminal_seen.wait(2.0)
+
+        input_stream = cast(TextIO, _request_lines())
 
     with TemporaryDirectory(prefix="elysia-settings-test-") as temp_dir:
         repository = settings_repository
@@ -833,6 +904,7 @@ def _run_bridge(
             settings_repository=repository,
             voice_settings_service=active_voice_settings,
             attachment_store=attachment_store,
+            audio_writer=audio_writer,
             speech_coordinator=speech_coordinator,
             input_stream=input_stream,
             output_stream=output_stream,
@@ -1100,6 +1172,216 @@ def test_bridge_copies_exact_chunks_and_finishes_only_after_commit() -> None:
     assert "voice.speech" in SERVER_CAPABILITIES
 
 
+def test_auto_read_aloud_disabled_skips_the_next_speech_turn(
+    tmp_path: Path,
+) -> None:
+    """Apply the live preference and keep the following Chat turn text-only."""
+
+    repository = _desktop_settings_repository(tmp_path / "global.json")
+    turn = _RecordingSpeechTurn()
+    coordinator = _RecordingSpeechCoordinator(turn)
+
+    brain, messages = _run_bridge(
+        lambda chat_id: [
+            _handshake_request(),
+            _initialize_request(),
+            _request(
+                "disable-auto-read",
+                "settings.update",
+                {
+                    "expectedRevision": 0,
+                    "settings": _desktop_settings_values(
+                        auto_read_aloud=False,
+                    ),
+                },
+            ),
+            _request(
+                "chat-without-speech",
+                "chat.stream",
+                {"chatId": chat_id, "message": "Text only"},
+            ),
+        ],
+        settings_repository=repository,
+        speech_coordinator=cast(DesktopSpeechCoordinator, coordinator),
+        wait_for_speech_terminal_request_id="chat-without-speech",
+    )
+
+    updated = _success_result(messages, "disable-auto-read")
+    assert updated["activeSettings"]["autoReadAloud"] is False
+    assert updated["restartRequired"] is False
+    assert _success_result(messages, "chat-without-speech")["reply"] == "你好呀"
+    assert brain.get_chat(brain.chat.chat_id).messages[-1].content == "你好呀"
+    assert coordinator.start_calls == 1
+    assert coordinator.start_turn_calls == []
+    assert turn.chunks == []
+    terminal = next(
+        message
+        for message in messages
+        if message.get("type") == "event"
+        and message.get("event") == "voice.speech.terminal"
+        and message.get("requestId") == "chat-without-speech"
+    )
+    assert terminal["data"] == {
+        "chatId": str(brain.chat.chat_id),
+        "state": "completed",
+        "submittedSentences": 0,
+        "completedSentences": 0,
+        "failedSentences": 0,
+    }
+
+
+def test_suppressed_speech_emits_one_cancelled_terminal_on_failure(
+    tmp_path: Path,
+) -> None:
+    """Retire Electron speech ownership exactly once when text generation fails."""
+
+    class FailingBrain(FakeBrain):
+        """Raise before commit so the zero-work speech terminal is cancelled."""
+
+        def stream_chat(
+            self,
+            chat_id: object,
+            message: str,
+            *,
+            attachments: tuple[AttachmentMetadata, ...] = (),
+            should_cancel: Callable[[], bool] | None = None,
+            begin_commit: Callable[[], bool] | None = None,
+        ) -> Generator[str, None, None]:
+            """Fail the canonical generation without yielding a reply chunk."""
+
+            del chat_id, message, attachments, should_cancel, begin_commit
+            raise RuntimeError("private model failure")
+            yield ""  # pragma: no cover - preserves the generator contract
+
+    coordinator = _RecordingSpeechCoordinator(_RecordingSpeechTurn())
+    _brain, messages = _run_bridge(
+        lambda chat_id: [
+            _handshake_request(),
+            _initialize_request(),
+            _request(
+                "disable-auto-read-failure",
+                "settings.update",
+                {
+                    "expectedRevision": 0,
+                    "settings": _desktop_settings_values(
+                        auto_read_aloud=False,
+                    ),
+                },
+            ),
+            _request(
+                "chat-suppressed-failure",
+                "chat.stream",
+                {"chatId": chat_id, "message": "Fail safely"},
+            ),
+        ],
+        fake_brain=FailingBrain(),
+        settings_repository=_desktop_settings_repository(
+            tmp_path / "global.json"
+        ),
+        speech_coordinator=cast(DesktopSpeechCoordinator, coordinator),
+        wait_for_speech_terminal_request_id="chat-suppressed-failure",
+    )
+
+    terminals = [
+        message
+        for message in messages
+        if message.get("type") == "event"
+        and message.get("event") == "voice.speech.terminal"
+        and message.get("requestId") == "chat-suppressed-failure"
+    ]
+    assert len(terminals) == 1
+    assert terminals[0]["data"] == {
+        "chatId": str(_brain.chat.chat_id),
+        "state": "cancelled",
+        "submittedSentences": 0,
+        "completedSentences": 0,
+        "failedSentences": 0,
+    }
+    assert _error(messages, "chat-suppressed-failure")["code"] == "chat.failed"
+
+
+def test_suppressed_speech_emits_one_cancelled_terminal_on_user_stop(
+    tmp_path: Path,
+) -> None:
+    """Retire a text-only speech owner when explicit cancellation wins."""
+
+    class CancellableBrain(FakeBrain):
+        """Hold a partial model reply until the request cancellation flag wins."""
+
+        def stream_chat(
+            self,
+            chat_id: object,
+            message: str,
+            *,
+            attachments: tuple[AttachmentMetadata, ...] = (),
+            should_cancel: Callable[[], bool] | None = None,
+            begin_commit: Callable[[], bool] | None = None,
+        ) -> Generator[str, None, None]:
+            """Yield transient text, then stop without crossing commit."""
+
+            del chat_id, message, attachments, begin_commit
+            yield "partial"
+            while should_cancel is None or not should_cancel():
+                Event().wait(0.001)
+            raise GenerationCancelledError("Chat generation was cancelled.")
+
+    coordinator = _RecordingSpeechCoordinator(_RecordingSpeechTurn())
+    brain, messages = _run_bridge(
+        lambda chat_id: [
+            _handshake_request(),
+            _initialize_request(),
+            _request(
+                "disable-auto-read-cancel",
+                "settings.update",
+                {
+                    "expectedRevision": 0,
+                    "settings": _desktop_settings_values(
+                        auto_read_aloud=False,
+                    ),
+                },
+            ),
+            _request(
+                "chat-suppressed-cancel",
+                "chat.stream",
+                {"chatId": chat_id, "message": "Stop this"},
+            ),
+            _request(
+                "cancel-suppressed-chat",
+                "request.cancel",
+                {
+                    "requestId": "chat-suppressed-cancel",
+                    "reason": "User stopped",
+                },
+            ),
+        ],
+        fake_brain=CancellableBrain(),
+        settings_repository=_desktop_settings_repository(
+            tmp_path / "global.json"
+        ),
+        speech_coordinator=cast(DesktopSpeechCoordinator, coordinator),
+        wait_for_speech_terminal_request_id="chat-suppressed-cancel",
+    )
+
+    assert _success_result(messages, "cancel-suppressed-chat") == {
+        "stopped": True
+    }
+    terminals = [
+        message
+        for message in messages
+        if message.get("type") == "event"
+        and message.get("event") == "voice.speech.terminal"
+        and message.get("requestId") == "chat-suppressed-cancel"
+    ]
+    assert len(terminals) == 1
+    assert terminals[0]["data"] == {
+        "chatId": str(brain.chat.chat_id),
+        "state": "cancelled",
+        "submittedSentences": 0,
+        "completedSentences": 0,
+        "failedSentences": 0,
+    }
+
+
 @pytest.mark.parametrize(
     ("fail_feed", "fail_finish", "fail_cancel"),
     [
@@ -1168,10 +1450,18 @@ def test_speech_turn_start_failure_does_not_fail_text_generation() -> None:
     turn = _RecordingSpeechTurn()
     coordinator = _RecordingSpeechCoordinator(turn, fail_start_turn=True)
 
-    brain, messages, coordinator = _run_bridge_with_speech(
-        turn,
-        coordinator=coordinator,
-        wait_for_terminal=False,
+    brain, messages = _run_bridge(
+        lambda chat_id: [
+            _handshake_request(),
+            _initialize_request(),
+            _request(
+                "chat-with-speech",
+                "chat.stream",
+                {"chatId": chat_id, "message": "你好呀"},
+            ),
+        ],
+        speech_coordinator=cast(DesktopSpeechCoordinator, coordinator),
+        wait_for_speech_terminal_request_id="chat-with-speech",
     )
     wire = json.dumps(messages)
 
@@ -1182,6 +1472,21 @@ def test_speech_turn_start_failure_does_not_fail_text_generation() -> None:
     ]
     assert coordinator.shutdown_calls == 1
     assert "private speech" not in wire
+    terminals = [
+        message
+        for message in messages
+        if message.get("type") == "event"
+        and message.get("event") == "voice.speech.terminal"
+        and message.get("requestId") == "chat-with-speech"
+    ]
+    assert len(terminals) == 1
+    assert terminals[0]["data"] == {
+        "chatId": str(brain.chat.chat_id),
+        "state": "cancelled",
+        "submittedSentences": 0,
+        "completedSentences": 0,
+        "failedSentences": 0,
+    }
 
 
 def test_exact_speech_cancel_is_independent_of_running_chat_generation(
@@ -2860,6 +3165,12 @@ def test_settings_can_be_read_and_repaired_before_initialize(
         transcription_model="medium",
         transcription_device="cuda",
         transcription_language="zh",
+        auto_read_aloud=False,
+        speech_rate_percent=150,
+        speech_volume_percent=25,
+        voice_profile_id="elysia",
+        captions_enabled=False,
+        automatic_relisten=True,
     )
 
     _, messages = _run_bridge(
@@ -2894,6 +3205,97 @@ def test_settings_can_be_read_and_repaired_before_initialize(
     assert repaired["restartFields"] == []
     assert repository.load().values.model_name == "second-model"
     assert "settings.management" in SERVER_CAPABILITIES
+
+
+def test_preinitialize_voice_settings_configure_the_lazy_speech_runtime(
+    tmp_path: Path,
+) -> None:
+    """Construct managed speech from repaired profile and rate at initialize."""
+
+    observed_configs: list[Any] = []
+
+    class RecordingCoordinator:
+        """Capture the lazy speech configuration without opening native models."""
+
+        def __init__(self, config: Any, *_boundaries: object) -> None:
+            """Record the exact config selected at the composition boundary."""
+
+            observed_configs.append(config)
+
+        def start(self) -> None:
+            """Accept initialization without starting a worker."""
+
+        def shutdown(self) -> None:
+            """Accept bridge cleanup after the finite request stream ends."""
+
+    changed = _desktop_settings_values(
+        speech_rate_percent=135,
+        voice_profile_id="elysia-v2",
+    )
+    with patch.object(
+        desktop_backend_module,
+        "DesktopSpeechCoordinator",
+        RecordingCoordinator,
+    ):
+        _brain, messages = _run_bridge(
+            lambda _chat_id: [
+                _handshake_request(),
+                _request(
+                    "settings-speech-repair",
+                    "settings.update",
+                    {"expectedRevision": 0, "settings": changed},
+                ),
+                _initialize_request(),
+            ],
+            settings_repository=_desktop_settings_repository(
+                tmp_path / "global.json"
+            ),
+            audio_writer=cast(AudioChannelWriter, object()),
+        )
+
+    repaired = _success_result(messages, "settings-speech-repair")
+    assert repaired["activeSettings"] == changed
+    assert repaired["restartRequired"] is False
+    assert len(observed_configs) == 1
+    assert observed_configs[0].speech_rate_percent == 135
+    assert observed_configs[0].voice_profile_id == "elysia-v2"
+
+
+def test_preinitialize_injected_speech_runtime_keeps_restart_bound_values(
+    tmp_path: Path,
+) -> None:
+    """Do not claim that an already-constructed coordinator changed profile."""
+
+    coordinator = _RecordingSpeechCoordinator(_RecordingSpeechTurn())
+    changed = _desktop_settings_values(
+        speech_rate_percent=135,
+        voice_profile_id="elysia-v2",
+    )
+    _brain, messages = _run_bridge(
+        lambda _chat_id: [
+            _handshake_request(),
+            _request(
+                "settings-injected-speech",
+                "settings.update",
+                {"expectedRevision": 0, "settings": changed},
+            ),
+            _initialize_request(),
+        ],
+        settings_repository=_desktop_settings_repository(
+            tmp_path / "global.json"
+        ),
+        speech_coordinator=cast(DesktopSpeechCoordinator, coordinator),
+    )
+
+    repaired = _success_result(messages, "settings-injected-speech")
+    assert repaired["settings"] == changed
+    assert repaired["activeSettings"] == _desktop_settings_values()
+    assert repaired["restartRequired"] is True
+    assert repaired["restartFields"] == [
+        "speechRatePercent",
+        "voiceProfileId",
+    ]
+    assert coordinator.start_calls == 1
 
 
 def test_preinitialize_transcription_settings_rebuild_readiness_config(
@@ -4174,6 +4576,13 @@ def test_invalid_bootstrap_uses_safe_defaults_and_still_initializes(
         "transcriptionModel": DEFAULT_TRANSCRIPTION_MODEL,
         "transcriptionDevice": DEFAULT_TRANSCRIPTION_DEVICE,
         "transcriptionLanguage": DEFAULT_TRANSCRIPTION_LANGUAGE,
+        "autoReadAloud": True,
+        "speechRatePercent": 100,
+        "speechVolumePercent": 100,
+        "voiceProfileId": "default",
+        "captionsEnabled": True,
+        "transcriptReviewMode": "manual",
+        "automaticRelisten": False,
     }
     initialized = _success_result(messages, "initialize-1")
     assert initialized["modelName"] == DEFAULT_MODEL_NAME
@@ -4248,6 +4657,12 @@ def test_settings_update_reports_restart_fields_and_active_scopes(
         transcription_model="medium",
         transcription_device="cuda",
         transcription_language="zh",
+        auto_read_aloud=False,
+        speech_rate_percent=150,
+        speech_volume_percent=25,
+        voice_profile_id="elysia",
+        captions_enabled=False,
+        automatic_relisten=True,
     )
 
     _, messages = _run_bridge(
@@ -4267,7 +4682,12 @@ def test_settings_update_reports_restart_fields_and_active_scopes(
     result = _success_result(messages, "settings-after")
     assert result["revision"] == 1
     assert result["settings"] == changed
-    assert result["activeSettings"] == _desktop_settings_values()
+    assert result["activeSettings"] == _desktop_settings_values(
+        auto_read_aloud=False,
+        speech_volume_percent=25,
+        captions_enabled=False,
+        automatic_relisten=True,
+    )
     assert result["restartRequired"] is True
     assert result["restartFields"] == [
         "modelName",
@@ -4278,6 +4698,8 @@ def test_settings_update_reports_restart_fields_and_active_scopes(
         "transcriptionModel",
         "transcriptionDevice",
         "transcriptionLanguage",
+        "speechRatePercent",
+        "voiceProfileId",
     ]
     assert result["scopes"]["project"] == {
         "projectId": str(project.project_id),

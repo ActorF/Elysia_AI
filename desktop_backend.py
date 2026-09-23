@@ -14,12 +14,12 @@ import secrets
 import sys
 from collections import deque
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from io import TextIOWrapper
 from pathlib import Path
 from threading import Event, Lock, RLock, Thread
-from typing import Any, TextIO, cast
+from typing import Any, Literal, TextIO, cast
 from urllib.request import Request, urlopen
 
 from attachments import (
@@ -50,6 +50,7 @@ from config.desktop_settings import (
     DesktopSettingsSnapshot,
     EditableDesktopSettings,
     apply_editable_settings,
+    apply_live_editable_settings,
     changed_setting_names,
     create_desktop_settings_repository,
     editable_from_app_settings,
@@ -496,12 +497,11 @@ class DesktopBackend:
         self._state_lock = RLock()
         self._output_lock = Lock()
         self._speech_coordinator = speech_coordinator
-        if self._speech_coordinator is None and audio_writer is not None:
-            self._speech_coordinator = DesktopSpeechCoordinator(
-                DesktopSpeechConfig.from_app_settings(self._runtime_settings),
-                audio_writer,
-                self._emit_speech_event,
-            )
+        # Keep the private pipe owner dormant until initialize so a valid
+        # pre-initialize settings repair can still select the actual profile
+        # and synthesis rate used by the first runtime. Injected coordinators
+        # are already constructed and therefore remain restart-bound.
+        self._speech_audio_writer = audio_writer
         self._generation_task: _GenerationTask | None = None
         self._transcription_runner: TranscriptionJobRunner | None = None
         self._transcription_transcriber: FasterWhisperTranscriber | None = None
@@ -920,14 +920,27 @@ class DesktopBackend:
             self._brain = brain
             self._set_active_chat(active_chat)
             self._active_project_id = active_chat.project_id
-            if self._speech_coordinator is not None:
-                try:
-                    self._speech_coordinator.start()
-                except BaseException:
-                    logger.error(
-                        "Optional desktop speech could not start; text Chat continues."
+            try:
+                if (
+                    self._speech_coordinator is None
+                    and self._speech_audio_writer is not None
+                ):
+                    coordinator = DesktopSpeechCoordinator(
+                        DesktopSpeechConfig.from_app_settings(
+                            self._runtime_settings
+                        ),
+                        self._speech_audio_writer,
+                        self._emit_speech_event,
                     )
-                    self._prepare_speech_shutdown()
+                    self._speech_coordinator = coordinator
+                    self._speech_audio_writer = None
+                if self._speech_coordinator is not None:
+                    self._speech_coordinator.start()
+            except BaseException:
+                logger.error(
+                    "Optional desktop speech could not start; text Chat continues."
+                )
+                self._prepare_speech_shutdown()
             self._emit_progress(
                 request_id,
                 "backend.initialize",
@@ -963,6 +976,13 @@ class DesktopBackend:
             "transcriptionModel": values.transcription_model,
             "transcriptionDevice": values.transcription_device,
             "transcriptionLanguage": values.transcription_language,
+            "autoReadAloud": values.auto_read_aloud,
+            "speechRatePercent": values.speech_rate_percent,
+            "speechVolumePercent": values.speech_volume_percent,
+            "voiceProfileId": values.voice_profile_id,
+            "captionsEnabled": values.captions_enabled,
+            "transcriptReviewMode": values.transcript_review_mode,
+            "automaticRelisten": values.automatic_relisten,
         }
 
     def _load_desired_settings(self) -> DesktopSettingsSnapshot:
@@ -1067,6 +1087,16 @@ class DesktopBackend:
                 transcription_model=cast(Any, raw["transcriptionModel"]),
                 transcription_device=cast(Any, raw["transcriptionDevice"]),
                 transcription_language=cast(Any, raw["transcriptionLanguage"]),
+                auto_read_aloud=cast(bool, raw["autoReadAloud"]),
+                speech_rate_percent=cast(int, raw["speechRatePercent"]),
+                speech_volume_percent=cast(int, raw["speechVolumePercent"]),
+                voice_profile_id=cast(str, raw["voiceProfileId"]),
+                captions_enabled=cast(bool, raw["captionsEnabled"]),
+                transcript_review_mode=cast(
+                    Any,
+                    raw["transcriptReviewMode"],
+                ),
+                automatic_relisten=cast(bool, raw["automaticRelisten"]),
             )
             saved = self._settings_repository.save(
                 values,
@@ -1079,11 +1109,24 @@ class DesktopBackend:
             # adopt repaired settings without requiring another child process.
             if self._brain is None:
                 previous_runtime = self._runtime_settings
-                self._runtime_settings = apply_editable_settings(
+                next_runtime = apply_editable_settings(
                     SETTINGS,
                     saved.values,
                     model_override=os.environ.get("ELYSIA_MODEL_OVERRIDE"),
                 )
+                if self._speech_coordinator is not None:
+                    # An injected coordinator is already bound to its startup
+                    # profile and rate even though Brain has not initialized.
+                    # Reporting those two fields as active would make a later
+                    # initialize silently use settings different from the UI.
+                    next_runtime = replace(
+                        next_runtime,
+                        speech_rate_percent=(
+                            previous_runtime.speech_rate_percent
+                        ),
+                        voice_profile_id=previous_runtime.voice_profile_id,
+                    )
+                self._runtime_settings = next_runtime
                 if (
                     previous_runtime.transcription_model
                     != self._runtime_settings.transcription_model
@@ -1093,6 +1136,14 @@ class DesktopBackend:
                     != self._runtime_settings.transcription_language
                 ):
                     self._reset_transcription_runtime_locked()
+            else:
+                # Session policy and renderer playback preferences are safe to
+                # adopt between admitted operations. Synthesis profile/rate and
+                # the established model/STT fields remain restart-bound.
+                self._runtime_settings = apply_live_editable_settings(
+                    self._runtime_settings,
+                    saved.values,
+                )
 
         self._emit_response(request_id, self._settings_state_result())
 
@@ -2362,19 +2413,34 @@ class DesktopBackend:
         sequence = 0
         raw_chat_id = str(task.chat_id)
         speech_finished = False
+        speech_coordinator = self._speech_coordinator
+        # Electron registers this turn before either speech transport answers.
+        # If Python cannot attach a managed turn, a zero-work terminal must
+        # retire that exact owner instead of letting repeated failures exhaust
+        # Electron's bounded delivery map.
+        zero_work_terminal_pending = speech_coordinator is not None
+        zero_work_terminal_emitted = False
+        zero_work_success_state: Literal["completed", "cancelled"] = "completed"
 
         try:
-            if self._speech_coordinator is not None:
+            if (
+                speech_coordinator is not None
+                and self._runtime_settings.auto_read_aloud
+            ):
                 try:
                     task.attach_speech_turn(
-                        self._speech_coordinator.start_turn(
+                        speech_coordinator.start_turn(
                             task.request_id,
                             raw_chat_id,
                         )
                     )
+                    zero_work_terminal_pending = False
                 except Exception:
                     # Optional speech must never delay, cancel, or replace the
-                    # canonical text generation path.
+                    # canonical text generation path. Report a cancelled
+                    # speech terminal so automatic relisten cannot mistake
+                    # failed admission for a clean spoken reply.
+                    zero_work_success_state = "cancelled"
                     logger.error(
                         "Desktop speech turn could not start: request_id=%s.",
                         task.request_id,
@@ -2411,6 +2477,13 @@ class DesktopBackend:
             # boundary. Only now may the final unterminated speech tail play.
             task.finish_speech()
             speech_finished = True
+            if zero_work_terminal_pending:
+                self._emit_zero_work_speech_terminal(
+                    task.request_id,
+                    raw_chat_id,
+                    state=zero_work_success_state,
+                )
+                zero_work_terminal_emitted = True
 
             try:
                 refreshed_chat = brain.get_chat(task.chat_id)
@@ -2500,6 +2573,15 @@ class DesktopBackend:
         finally:
             if not speech_finished:
                 task.cancel_speech()
+                if (
+                    zero_work_terminal_pending
+                    and not zero_work_terminal_emitted
+                ):
+                    self._emit_zero_work_speech_terminal(
+                        task.request_id,
+                        raw_chat_id,
+                        state="cancelled",
+                    )
             self._finish_generation_task(task)
 
     def _cancel_request(
@@ -2652,6 +2734,10 @@ class DesktopBackend:
         with self._speech_lifecycle_lock:
             self._speech_closing = True
             coordinator, self._speech_coordinator = self._speech_coordinator, None
+            audio_writer, self._speech_audio_writer = (
+                self._speech_audio_writer,
+                None,
+            )
             if coordinator is not None:
                 # Queue/notifier shutdown is intentionally non-joining, so the
                 # output gate cannot wait on a callback trying to re-enter it.
@@ -2663,6 +2749,13 @@ class DesktopBackend:
                     # broken adapter must not suppress the shutdown response
                     # or turn clean stdin EOF into a Backend failure.
                     logger.error("Optional desktop speech shutdown failed.")
+            elif audio_writer is not None:
+                # Shutdown can precede initialize. In that case no coordinator
+                # exists yet to release the inherited private pipe owner.
+                try:
+                    audio_writer.close()
+                except BaseException:
+                    logger.error("Optional desktop speech channel shutdown failed.")
 
     def _emit_response(
         self,
@@ -2716,6 +2809,43 @@ class DesktopBackend:
             if self._speech_closing:
                 return
             self._emit_event(event, request_id=request_id, data=data)
+
+    def _emit_zero_work_speech_terminal(
+        self,
+        request_id: str,
+        chat_id: str,
+        *,
+        state: Literal["completed", "cancelled"],
+    ) -> None:
+        """Close Electron's correlated turn when no speech turn was attached.
+
+        Electron claims optional speech ownership as soon as Chat is admitted,
+        before it can know whether the live preference suppresses audio or the
+        optional coordinator will reject per-turn admission. A zero-sentence
+        terminal preserves that fixed protocol boundary without synthesizing
+        or exposing audio and prevents an undrained owner.
+        """
+
+        try:
+            self._emit_speech_event(
+                "voice.speech.terminal",
+                request_id,
+                {
+                    "chatId": chat_id,
+                    "state": state,
+                    "submittedSentences": 0,
+                    "completedSentences": 0,
+                    "failedSentences": 0,
+                },
+            )
+        except Exception:
+            # Optional playback accounting cannot turn a committed text reply
+            # into a failed Chat request when the output channel is closing.
+            logger.exception(
+                "Zero-work desktop speech terminal could not be emitted: "
+                "request_id=%s.",
+                request_id,
+            )
 
     def _emit_progress(
         self,

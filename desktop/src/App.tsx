@@ -839,6 +839,12 @@ function App() {
   const [notice, setNotice] = useState<ChatNotice | null>(null)
   const [callPreviewOpen, setCallPreviewOpen] = useState(false)
   const [captionsEnabled, setCaptionsEnabled] = useState(true)
+  const [automaticRelistenEnabled, setAutomaticRelistenEnabled]
+    = useState(false)
+  const [voiceMicrophoneMuted, setVoiceMicrophoneMuted] = useState(false)
+  const [voiceSessionStartedAtMs, setVoiceSessionStartedAtMs]
+    = useState<number | undefined>(undefined)
+  const [voiceAssistantCaption, setVoiceAssistantCaption] = useState('')
   const [compactShell, setCompactShell] = useState(isCompactShell)
   const [sidebarOpen, setSidebarOpen] = useState(() => !isCompactShell())
   const activeChatIdRef = useRef<string | undefined>(snapshot.chatId)
@@ -872,6 +878,9 @@ function App() {
   const voiceCaptureCompleteRef = useRef<(segment: CompletedVoiceSegment) => void>(
     () => undefined,
   )
+  const startVoiceContinuationRef = useRef<(completionId: number) => void>(
+    () => undefined,
+  )
   const voiceSpeechConfirmedRef
     = useRef<(confirmation: AudioCaptureSpeechConfirmation) => void>(
       () => undefined,
@@ -896,6 +905,12 @@ function App() {
   const voiceTranscriptionLanguageRef
     = useRef<DesktopSettingsValues['transcriptionLanguage']>('auto')
   const microphoneActionOperationRef = useRef(0)
+  const callPreviewOpenRef = useRef(false)
+  const automaticRelistenEnabledRef = useRef(false)
+  const voiceMicrophoneMutedRef = useRef(false)
+  const automaticRelistenAttemptRef = useRef(0)
+  const automaticRelistenCaptureSessionIdRef = useRef<string | null>(null)
+  const handledVoiceCompletionIdRef = useRef<number | null>(null)
   const projectRefreshNeededRef = useRef(false)
   const projectRefreshPromiseRef = useRef<Promise<void> | null>(null)
   const attachmentOperationsRef = useRef(new Map<string, number>())
@@ -1006,6 +1021,8 @@ function App() {
   const activeGeneration = generationBusy
     && inFlightTurn?.chatId === activeChatId
   const stopPending = activeGeneration && inFlightTurn?.phase === 'stopping'
+  const managedSpeechEnabled = snapshot.capabilities.includes('voice.speech')
+    && settingsState?.activeSettings.autoReadAloud !== false
   const transcriptionReadiness = voiceSettingsState === null
     ? null
     : describeTranscriptionReadiness(voiceSettingsState.transcriptionStatus)
@@ -1442,6 +1459,7 @@ function App() {
       return
     }
     ++voiceCaptureOperationRef.current
+    automaticRelistenCaptureSessionIdRef.current = null
     voiceTranscriptionOperationRef.current = null
     clearVoiceInterruptionTracking()
     void audioCaptureControllerRef.current?.cancel()
@@ -1606,16 +1624,34 @@ function App() {
     }
   }, [settleVoiceTurnUiIfNeeded, voiceSessionController])
 
-  const closeCallPreview = useCallback((): void => {
+  const closeCallPreview = useCallback((): boolean => {
+    const currentSession = voiceSessionController.getSnapshot()
+    if (
+      currentSession.phase === 'transcribing'
+      && voiceTranscription?.phase === 'final'
+      && hasNonBlankCodePoint(voiceTranscription.text)
+      && !window.confirm(
+        'Discard this reviewed transcript and close Voice?',
+      )
+    ) {
+      return false
+    }
+    callPreviewOpenRef.current = false
+    automaticRelistenAttemptRef.current += 1
+    automaticRelistenCaptureSessionIdRef.current = null
     hangUpVoiceSession()
     void audioCaptureControllerRef.current?.cancel()
     setVoiceCaptureSubmissionError(null)
     setVoiceSpeechWarning(null)
+    voiceMicrophoneMutedRef.current = false
+    setVoiceMicrophoneMuted(false)
+    setVoiceAssistantCaption('')
     setCallPreviewOpen(false)
     window.requestAnimationFrame(() => {
       callButtonRef.current?.focus()
     })
-  }, [hangUpVoiceSession])
+    return true
+  }, [hangUpVoiceSession, voiceSessionController, voiceTranscription])
 
   useEffect(() => {
     const unsubscribe = voiceSessionController.subscribe(setVoiceSession)
@@ -1627,6 +1663,77 @@ function App() {
       // it here would poison the same instance before the replayed setup.
     }
   }, [voiceSessionController])
+
+  useEffect(() => {
+    callPreviewOpenRef.current = callPreviewOpen
+  }, [callPreviewOpen])
+
+  useEffect(() => {
+    automaticRelistenEnabledRef.current = automaticRelistenEnabled
+  }, [automaticRelistenEnabled])
+
+  useEffect(() => {
+    voiceMicrophoneMutedRef.current = voiceMicrophoneMuted
+  }, [voiceMicrophoneMuted])
+
+  useEffect(() => {
+    const completion = voiceSession.lastTurn
+    if (
+      completion === null
+      || handledVoiceCompletionIdRef.current === completion.completionId
+    ) {
+      return
+    }
+
+    const binding = voiceSession.binding
+    const permanentlyPaused = (
+      !callPreviewOpen
+      || !automaticRelistenEnabled
+      || voiceMicrophoneMuted
+      || snapshot.status !== 'ready'
+      || !snapshot.capabilities.includes('voice.capture')
+      || !snapshot.capabilities.includes('voice.transcription')
+      || binding === null
+      || binding.chatId !== activeChatId
+      || binding.projectId !== activeChatProjectId
+      || completion.outcome !== 'completed'
+      || (
+        completion.speechExpected
+        && completion.speechTerminal !== 'completed'
+      )
+    )
+    if (permanentlyPaused) {
+      // A terminal is never replayed after a privacy boundary or later toggle.
+      // Users must explicitly start the microphone again after such a pause.
+      handledVoiceCompletionIdRef.current = completion.completionId
+      return
+    }
+    if (
+      generationBusy
+      || voiceTranscription !== null
+      || voiceCapture.status !== 'idle'
+    ) {
+      // React state from Chat/STT/audio cleanup can trail the controller by one
+      // render. Wait for those exact resources instead of consuming the turn.
+      return
+    }
+
+    handledVoiceCompletionIdRef.current = completion.completionId
+    startVoiceContinuationRef.current(completion.completionId)
+  }, [
+    activeChatId,
+    activeChatProjectId,
+    automaticRelistenEnabled,
+    callPreviewOpen,
+    generationBusy,
+    snapshot.capabilities,
+    snapshot.status,
+    voiceCapture.status,
+    voiceMicrophoneMuted,
+    voiceSession.binding,
+    voiceSession.lastTurn,
+    voiceTranscription,
+  ])
 
   useEffect(() => {
     const controller = new AudioDeviceController()
@@ -1667,6 +1774,8 @@ function App() {
     // context is an immediate privacy boundary even though every test also has
     // its own safety timeout.
     ++microphoneActionOperationRef.current
+    callPreviewOpenRef.current = false
+    automaticRelistenAttemptRef.current += 1
     audioDeviceControllerRef.current?.stopAll()
     void stopManagedSpeechForBoundary()
     hangUpVoiceSession()
@@ -2513,7 +2622,7 @@ function App() {
       resumedOperationId,
       activeGeneration.chatId,
       activeChat?.projectId ?? generationSummary?.projectId ?? null,
-      snapshot.capabilities.includes('voice.speech'),
+      managedSpeechEnabled,
     )
     acknowledgeManagedSpeechTurn(
       resumedOperationId,
@@ -2546,7 +2655,7 @@ function App() {
     beginManagedSpeechTurn,
     chatState,
     desktopApi,
-    snapshot.capabilities,
+    managedSpeechEnabled,
     snapshot.activeGeneration,
     snapshot.status,
     updateInFlightTurn,
@@ -3133,6 +3242,7 @@ function App() {
           voiceOwner !== null
           && voiceSession.chatOperationId === currentTurn.operationId
         ) {
+          setVoiceAssistantCaption((current) => current + event.chunk)
           voiceSessionController.acceptChatProgress({
             ...voiceOwner,
             operationId: currentTurn.operationId,
@@ -3178,6 +3288,12 @@ function App() {
           )
           const voiceSession = voiceSessionController.getSnapshot()
           const voiceOwner = ownerFromVoiceSession(voiceSession)
+          if (
+            voiceOwner !== null
+            && voiceSession.chatOperationId === currentTurn.operationId
+          ) {
+            setVoiceAssistantCaption(event.reply)
+          }
           if (
             voiceOwner !== null
             && voiceSession.chatOperationId === currentTurn.operationId
@@ -3559,6 +3675,9 @@ function App() {
       }
       if (modifier && event.key === ',') {
         event.preventDefault()
+        if (callPreviewOpen && !closeCallPreview()) {
+          return
+        }
         activeViewRef.current = 'settings'
         setActiveView('settings')
         setSearchOpen(false)
@@ -3812,7 +3931,7 @@ function App() {
       operationId,
       chatId,
       intent.projectId,
-      snapshot.capabilities.includes('voice.speech'),
+      managedSpeechEnabled,
     )
 
     return (async (): Promise<string> => {
@@ -3982,7 +4101,7 @@ function App() {
       operationId,
       pair.chatId,
       activeChatProjectIdRef.current,
-      snapshot.capabilities.includes('voice.speech'),
+      managedSpeechEnabled,
     )
 
     void (async (): Promise<void> => {
@@ -4829,6 +4948,7 @@ function App() {
       controller === null
       || deviceController === null
       || desktopApi === undefined
+      || voiceMicrophoneMutedRef.current
       || snapshot.status !== 'ready'
       || !snapshot.capabilities.includes('voice.capture')
       || !snapshot.capabilities.includes('voice.transcription')
@@ -4860,6 +4980,7 @@ function App() {
 
     const actionIsCurrent = (): boolean => (
       armedVoiceInterruptionRef.current === interruption
+      && !voiceMicrophoneMutedRef.current
       && activeChatIdRef.current === interruption.chatId
       && activeChatProjectIdRef.current === interruption.projectId
       && audioCaptureControllerRef.current === controller
@@ -4910,7 +5031,9 @@ function App() {
     }
   }
 
-  async function startVoiceCapture(): Promise<void> {
+  async function startVoiceCapture(
+    continuationCompletionId: number | null = null,
+  ): Promise<void> {
     const controller = audioCaptureControllerRef.current
     const deviceController = audioDeviceControllerRef.current
     const chatId = activeChatIdRef.current
@@ -4921,21 +5044,40 @@ function App() {
       || deviceController === null
       || desktopApi === undefined
       || chatId === undefined
+      || !callPreviewOpenRef.current
+      || voiceMicrophoneMutedRef.current
       || !boundSession.active
       || boundSession.binding?.chatId !== chatId
       || boundSession.binding.projectId !== projectId
       || voiceCaptureDisabledReason !== null
     ) {
       setVoiceCaptureSubmissionError(
-        voiceCaptureDisabledReason ?? 'Voice capture controls are not ready yet.',
+        voiceMicrophoneMutedRef.current
+          ? 'Unmute the microphone before starting a capture.'
+          : voiceCaptureDisabledReason
+            ?? 'Voice capture controls are not ready yet.',
       )
       return
     }
 
-    discardVoiceOperation()
+    const automaticAttempt = automaticRelistenAttemptRef.current + 1
+    automaticRelistenAttemptRef.current = automaticAttempt
+    if (continuationCompletionId === null) {
+      automaticRelistenCaptureSessionIdRef.current = null
+      discardVoiceOperation()
+    } else {
+      ++voiceCaptureOperationRef.current
+    }
     const operation = voiceCaptureOperationRef.current
     const actionIsCurrent = (): boolean => (
       operation === voiceCaptureOperationRef.current
+      && automaticAttempt === automaticRelistenAttemptRef.current
+      && callPreviewOpenRef.current
+      && !voiceMicrophoneMutedRef.current
+      && (
+        continuationCompletionId === null
+        || automaticRelistenEnabledRef.current
+      )
       && activeChatIdRef.current === chatId
       && activeChatProjectIdRef.current === projectId
       && audioCaptureControllerRef.current === controller
@@ -4975,8 +5117,15 @@ function App() {
       }
       const savedDeviceId = savedState.inputDeviceId
       const availableInputs = deviceController.getSnapshot().inputs
+      const savedDeviceIsAvailable = savedDeviceId === null
+        || availableInputs.some((device) => device.deviceId === savedDeviceId)
+      if (continuationCompletionId !== null && !savedDeviceIsAvailable) {
+        throw new Error(
+          'Automatic listening paused because the saved microphone is unavailable. Choose a microphone or start listening manually.',
+        )
+      }
       const effectiveDeviceId = savedDeviceId !== null
-        && availableInputs.some((device) => device.deviceId === savedDeviceId)
+        && savedDeviceIsAvailable
         ? savedDeviceId
         : null
       await controller.start(effectiveDeviceId)
@@ -4989,7 +5138,19 @@ function App() {
         capture.sessionId !== null
         && (capture.status === 'waiting' || capture.status === 'speaking')
       ) {
-        voiceSessionController.startListening(capture.sessionId)
+        if (continuationCompletionId === null) {
+          voiceSessionController.startListening(capture.sessionId)
+        } else if (
+          voiceSessionController.startContinuationListening(
+            continuationCompletionId,
+            capture.sessionId,
+          ) === null
+        ) {
+          await controller.cancel()
+          setVoiceCapture(EMPTY_AUDIO_CAPTURE_SNAPSHOT)
+        } else {
+          automaticRelistenCaptureSessionIdRef.current = capture.sessionId
+        }
       }
     } catch (error: unknown) {
       if (!actionIsCurrent()) {
@@ -5001,6 +5162,12 @@ function App() {
           : 'Voice capture could not start.',
       )
     }
+  }
+
+  // The terminal-state effect calls the latest render logic without making a
+  // fresh function identity retrigger or duplicate one completion attempt.
+  startVoiceContinuationRef.current = (completionId): void => {
+    void startVoiceCapture(completionId)
   }
 
   async function toggleVoiceCapture(): Promise<void> {
@@ -5032,6 +5199,80 @@ function App() {
       return
     }
     await startVoiceCapture()
+  }
+
+  function updateAutomaticRelisten(enabled: boolean): void {
+    automaticRelistenEnabledRef.current = enabled
+    automaticRelistenAttemptRef.current += 1
+    setAutomaticRelistenEnabled(enabled)
+    if (enabled) {
+      return
+    }
+
+    const automaticCaptureSessionId
+      = automaticRelistenCaptureSessionIdRef.current
+    const capture = audioCaptureControllerRef.current?.getSnapshot()
+    const currentCompletionId = voiceSessionController.getSnapshot()
+      .lastTurn?.completionId
+    if (currentCompletionId !== undefined) {
+      handledVoiceCompletionIdRef.current = currentCompletionId
+    }
+    if (
+      automaticCaptureSessionId !== null
+      && capture?.sessionId === automaticCaptureSessionId
+      && (
+        capture.status === 'starting'
+        || capture.status === 'waiting'
+        || capture.status === 'speaking'
+      )
+    ) {
+      automaticRelistenCaptureSessionIdRef.current = null
+      discardVoiceOperation()
+      void audioCaptureControllerRef.current?.cancel()
+      setVoiceCapture(EMPTY_AUDIO_CAPTURE_SNAPSHOT)
+    }
+  }
+
+  function updateVoiceMicrophoneMuted(muted: boolean): void {
+    voiceMicrophoneMutedRef.current = muted
+    automaticRelistenAttemptRef.current += 1
+    setVoiceMicrophoneMuted(muted)
+    if (!muted) {
+      return
+    }
+
+    const currentSession = voiceSessionController.getSnapshot()
+    if (currentSession.lastTurn !== null) {
+      handledVoiceCompletionIdRef.current = currentSession.lastTurn.completionId
+    }
+    const interruption = armedVoiceInterruptionRef.current
+    if (interruption !== null) {
+      voiceSessionController.rejectInterruptionStart(interruption)
+    }
+    const capture = audioCaptureControllerRef.current?.getSnapshot()
+    if (currentSession.phase === 'listening') {
+      // Muting is a privacy boundary for both live capture and completed PCM
+      // held while an interrupted reply reaches its exact terminal. Cancelling
+      // the session marks that held segment abandoned and wipes it before a
+      // late terminal could release it into local transcription.
+      automaticRelistenCaptureSessionIdRef.current = null
+      discardVoiceOperation()
+      setVoiceCapture(EMPTY_AUDIO_CAPTURE_SNAPSHOT)
+    } else {
+      clearVoiceInterruptionTracking()
+    }
+    if (
+      capture !== undefined
+      && (
+        capture.status === 'starting'
+        || capture.status === 'waiting'
+        || capture.status === 'speaking'
+      )
+    ) {
+      automaticRelistenCaptureSessionIdRef.current = null
+      void audioCaptureControllerRef.current?.cancel()
+      setVoiceCapture(EMPTY_AUDIO_CAPTURE_SNAPSHOT)
+    }
   }
 
   async function verifyMicrophone(): Promise<void> {
@@ -5157,10 +5398,11 @@ function App() {
 
     const operationId = crypto.randomUUID()
     try {
+      setVoiceAssistantCaption('')
       voiceSessionController.updateTranscript(transcript)
       const confirmed = voiceSessionController.confirmTranscript(
         operationId,
-        snapshot.capabilities.includes('voice.speech'),
+        managedSpeechEnabled,
       )
       const sending = beginChatSend({
         source: 'voice',
@@ -5284,10 +5526,23 @@ function App() {
     }
 
     updateChatDrafts(() => nextDrafts)
+    callPreviewOpenRef.current = false
+    automaticRelistenAttemptRef.current += 1
+    automaticRelistenCaptureSessionIdRef.current = null
     hangUpVoiceSession()
     setVoiceCaptureSubmissionError(null)
+    setVoiceAssistantCaption('')
     setCallPreviewOpen(false)
     focusChatComposer()
+  }
+
+  function openVoiceAudioSettings(): void {
+    if (!closeCallPreview()) {
+      return
+    }
+    if (navigate('settings')) {
+      focusAfterRender('#audio-device-settings-heading', '#settings-title')
+    }
   }
 
   async function openCallPreview(): Promise<void> {
@@ -5306,13 +5561,50 @@ function App() {
       ))
       return
     }
+    if (
+      activeChatIdRef.current !== chatId
+      || activeChatProjectIdRef.current !== projectId
+    ) {
+      return
+    }
+
+    let activeVoicePreferences = settingsState?.activeSettings ?? null
+    if (desktopApi !== undefined && snapshot.status === 'ready') {
+      try {
+        const freshSettings = await desktopApi.getSettings()
+        if (
+          activeChatIdRef.current !== chatId
+          || activeChatProjectIdRef.current !== projectId
+        ) {
+          return
+        }
+        setSettingsState(freshSettings)
+        activeVoicePreferences = freshSettings.activeSettings
+      } catch {
+        // Voice remains usable with conservative defaults when the optional
+        // preference refresh races a Backend transition.
+      }
+    }
     ++microphoneActionOperationRef.current
+    automaticRelistenAttemptRef.current += 1
+    automaticRelistenCaptureSessionIdRef.current = null
+    handledVoiceCompletionIdRef.current = null
     audioDeviceControllerRef.current?.stopAll()
     hangUpVoiceSession()
     voiceSessionController.bind({ chatId, projectId })
     setVoiceCapture(EMPTY_AUDIO_CAPTURE_SNAPSHOT)
     setVoiceSpeechWarning(null)
     setVoiceCaptureSubmissionError(null)
+    voiceMicrophoneMutedRef.current = false
+    setVoiceMicrophoneMuted(false)
+    const nextAutomaticRelisten = activeVoicePreferences?.automaticRelisten
+      ?? false
+    automaticRelistenEnabledRef.current = nextAutomaticRelisten
+    setAutomaticRelistenEnabled(nextAutomaticRelisten)
+    setCaptionsEnabled(activeVoicePreferences?.captionsEnabled ?? true)
+    setVoiceSessionStartedAtMs(Date.now())
+    setVoiceAssistantCaption('')
+    callPreviewOpenRef.current = true
     setCallPreviewOpen(true)
     if (
       desktopApi !== undefined
@@ -5328,12 +5620,16 @@ function App() {
   if (callPreviewOpen) {
     return (
       <CallPreview
+        assistantCaption={voiceAssistantCaption}
+        autoContinueEnabled={automaticRelistenEnabled}
         captionsEnabled={captionsEnabled}
         capture={voiceCapture}
         captureDisabledReason={voiceCaptureDisabledReason}
         composerHasDraft={hasNonBlankCodePoint(draft)}
         modelName={snapshot.modelName}
         interruptionState={voiceInterruptionState}
+        microphoneMuted={voiceMicrophoneMuted}
+        sessionStartedAtMs={voiceSessionStartedAtMs}
         sessionPhase={voiceSession.phase}
         speechWarning={voiceSpeechWarning}
         transcription={voiceTranscription}
@@ -5341,7 +5637,10 @@ function App() {
         onCaptionsChange={() => {
           setCaptionsEnabled((enabled) => !enabled)
         }}
+        onAutoContinueChange={updateAutomaticRelisten}
         onClose={closeCallPreview}
+        onMicrophoneMutedChange={updateVoiceMicrophoneMuted}
+        onOpenAudioSettings={openVoiceAudioSettings}
         onSendTranscript={sendVoiceTranscript}
         onTranscriptChange={updateVoiceTranscript}
         onToggleCapture={() => { void toggleVoiceCapture() }}

@@ -29,6 +29,11 @@ export const MAX_SETTINGS_MODEL_NAME_LENGTH = 200
 export const MAX_OLLAMA_HOST_LENGTH = 2_048
 export const MAX_MEMORY_SETTING = 10_000_000
 export const MAX_DATA_IMPORT_BYTES = 2_147_483_647
+export const MIN_SPEECH_RATE_PERCENT = 50
+export const MAX_SPEECH_RATE_PERCENT = 200
+export const MIN_SPEECH_VOLUME_PERCENT = 0
+export const MAX_SPEECH_VOLUME_PERCENT = 100
+export const MAX_VOICE_PROFILE_ID_LENGTH = 64
 export const MAX_AUDIO_DEVICE_ID_LENGTH = 2_048
 export const VOICE_CAPTURE_SAMPLE_RATE_HZ = 16_000 as const
 export const VOICE_CAPTURE_CHANNEL_COUNT = 1 as const
@@ -64,6 +69,7 @@ export const TRANSCRIPTION_MODELS = [
 ] as const
 export const TRANSCRIPTION_DEVICES = ['auto', 'cuda', 'cpu'] as const
 export const TRANSCRIPTION_LANGUAGES = ['auto', 'zh', 'en'] as const
+export const TRANSCRIPT_REVIEW_MODES = ['manual'] as const
 const TRANSCRIPTION_STATUS_STATES = [
   'unavailable',
   'available',
@@ -103,6 +109,7 @@ const MAX_SESSION_TOKEN_LENGTH = 512
 const PROJECT_ID_PATTERN = /^project_[A-Za-z0-9_-]+$/
 const CHAT_ID_PATTERN = /^chat_[A-Za-z0-9_-]+$/
 const VOICE_SESSION_ID_PATTERN = /^voice_[A-Za-z0-9_-]+$/
+const VOICE_PROFILE_ID_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/u
 const ATTACHMENT_ID_PATTERN = /^attachment_[A-Za-z0-9_-]+$/
 const CANONICAL_BASE64_PATTERN = (
   /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u
@@ -266,6 +273,10 @@ export type TranscriptionDevice = typeof TRANSCRIPTION_DEVICES[number]
 /** Persisted recognition-language preference used when a capture has no override. */
 export type TranscriptionLanguage = typeof TRANSCRIPTION_LANGUAGES[number]
 
+/** Closed transcript policy that keeps recognition behind explicit review. */
+export type TranscriptReviewMode = typeof TRANSCRIPT_REVIEW_MODES[number]
+
+/** Complete non-sensitive global settings exchanged with the Python Backend. */
 export interface SettingsValues {
   modelName: string
   ollamaHost: string
@@ -275,6 +286,13 @@ export interface SettingsValues {
   transcriptionModel: TranscriptionModel
   transcriptionDevice: TranscriptionDevice
   transcriptionLanguage: TranscriptionLanguage
+  autoReadAloud: boolean
+  speechRatePercent: number
+  speechVolumePercent: number
+  voiceProfileId: string
+  captionsEnabled: boolean
+  transcriptReviewMode: TranscriptReviewMode
+  automaticRelisten: boolean
 }
 
 export interface SettingsUpdateParams {
@@ -1282,6 +1300,13 @@ function parseSettingsValues(
       'transcriptionModel',
       'transcriptionDevice',
       'transcriptionLanguage',
+      'autoReadAloud',
+      'speechRatePercent',
+      'speechVolumePercent',
+      'voiceProfileId',
+      'captionsEnabled',
+      'transcriptReviewMode',
+      'automaticRelisten',
     ],
     context,
   )
@@ -1343,6 +1368,43 @@ function parseSettingsValues(
     }
     return number
   }
+  const readBoundedInteger = (
+    key: 'speechRatePercent' | 'speechVolumePercent',
+    minimum: number,
+    maximum: number,
+  ): number => {
+    const raw = settings[key]
+    if (!Number.isSafeInteger(raw)) {
+      return fail(
+        errorCode,
+        `${context}.${key} must be a safe JSON integer.`,
+      )
+    }
+    const number = raw as number
+    if (number < minimum || number > maximum) {
+      return fail(errorCode, `${context}.${key} is outside its supported range.`)
+    }
+    return number
+  }
+  const readSettingsBoolean = (
+    key: 'autoReadAloud' | 'captionsEnabled' | 'automaticRelisten',
+  ): boolean => {
+    const raw = settings[key]
+    return typeof raw === 'boolean'
+      ? raw
+      : fail(errorCode, `${context}.${key} must be a boolean.`)
+  }
+  const voiceProfileId = settings.voiceProfileId
+  if (
+    typeof voiceProfileId !== 'string'
+    || codePointLength(voiceProfileId) > MAX_VOICE_PROFILE_ID_LENGTH
+    || !VOICE_PROFILE_ID_PATTERN.test(voiceProfileId)
+  ) {
+    return fail(
+      errorCode,
+      `${context}.voiceProfileId must be a bounded logical identifier.`,
+    )
+  }
   return {
     modelName,
     ollamaHost: ollamaHost.endsWith('/')
@@ -1381,6 +1443,27 @@ function parseSettingsValues(
       TRANSCRIPTION_LANGUAGES,
       errorCode,
     ),
+    autoReadAloud: readSettingsBoolean('autoReadAloud'),
+    speechRatePercent: readBoundedInteger(
+      'speechRatePercent',
+      MIN_SPEECH_RATE_PERCENT,
+      MAX_SPEECH_RATE_PERCENT,
+    ),
+    speechVolumePercent: readBoundedInteger(
+      'speechVolumePercent',
+      MIN_SPEECH_VOLUME_PERCENT,
+      MAX_SPEECH_VOLUME_PERCENT,
+    ),
+    voiceProfileId,
+    captionsEnabled: readSettingsBoolean('captionsEnabled'),
+    transcriptReviewMode: readStringLiteral(
+      settings,
+      'transcriptReviewMode',
+      context,
+      TRANSCRIPT_REVIEW_MODES,
+      errorCode,
+    ),
+    automaticRelisten: readSettingsBoolean('automaticRelisten'),
   }
 }
 
@@ -3037,6 +3120,8 @@ export function parseSettingsStateResult(
     'transcriptionModel',
     'transcriptionDevice',
     'transcriptionLanguage',
+    'speechRatePercent',
+    'voiceProfileId',
   ] as const
   if (
     !Array.isArray(result.restartFields)

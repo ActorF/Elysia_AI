@@ -2869,6 +2869,25 @@ kbd {
   font-size: var(--font-size-xl);
 }
 
+.call-header-meta {
+  display: flex;
+  min-width: 0;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.call-duration {
+  min-width: 4.25rem;
+  padding: var(--space-2) var(--space-3);
+  color: var(--color-text-primary);
+  text-align: center;
+  background: color-mix(in srgb, var(--color-text-primary) 4%, transparent);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-xs);
+  font-variant-numeric: tabular-nums;
+}
+
 .call-model {
   max-width: 18rem;
   padding: var(--space-2) var(--space-3);
@@ -2911,6 +2930,11 @@ kbd {
   animation-duration: 1.2s;
 }
 
+.call-aura.interrupting {
+  border-color: color-mix(in srgb, var(--color-warning) 44%, transparent);
+  animation-duration: 0.8s;
+}
+
 .call-portrait {
   width: min(19.375rem, 42vw);
   height: min(27.5rem, 56vh);
@@ -2938,9 +2962,20 @@ kbd {
   height: 45%;
 }
 
-.call-state {
+.call-status-cluster {
   position: absolute;
+  z-index: 2;
   top: var(--space-6);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+  justify-content: center;
+  width: min(100% - var(--space-6), 44rem);
+}
+
+.call-state,
+.call-microphone-state {
   display: flex;
   gap: var(--space-2);
   align-items: center;
@@ -2953,6 +2988,11 @@ kbd {
   backdrop-filter: blur(1rem);
 }
 
+.call-microphone-state svg {
+  width: 0.875rem;
+  height: 0.875rem;
+}
+
 .call-state-dot {
   width: 0.4375rem;
   height: 0.4375rem;
@@ -2960,29 +3000,72 @@ kbd {
   border-radius: var(--radius-full);
 }
 
-.call-state.starting .call-state-dot,
-.call-state.waiting .call-state-dot {
+.call-state.listening .call-state-dot,
+.call-state.transcribing .call-state-dot,
+.call-state.thinking .call-state-dot {
   background: var(--color-info);
   animation: pulse 1.4s var(--motion-easing-standard) infinite;
 }
 
 .call-state.speaking .call-state-dot,
-.call-state.completed .call-state-dot {
+.call-state.reviewing .call-state-dot {
   background: var(--color-success);
 }
 
-.call-state.error .call-state-dot,
-.call-state.no-speech .call-state-dot {
+.call-state.interrupting .call-state-dot {
+  background: var(--color-warning);
+  animation: pulse 0.8s var(--motion-easing-standard) infinite;
+}
+
+.call-state.cancelled .call-state-dot {
+  background: var(--color-warning);
+}
+
+.call-state.error .call-state-dot {
   background: var(--color-danger);
 }
 
-.call-caption-stack {
+.call-microphone-state.active,
+.call-microphone-state.monitoring {
+  color: var(--color-text-primary);
+  border-color: color-mix(in srgb, var(--color-info) 44%, var(--color-border));
+}
+
+.call-microphone-state.muted {
+  color: var(--color-warning);
+  border-color: color-mix(in srgb, var(--color-warning) 50%, var(--color-border));
+}
+
+.call-microphone-state.unavailable {
+  color: var(--color-danger);
+  border-color: color-mix(in srgb, var(--color-danger) 50%, var(--color-border));
+}
+
+.call-stage-overlays {
   position: absolute;
-  right: 15%;
-  bottom: var(--space-5);
-  left: 15%;
+  z-index: 3;
+  top: 5.25rem;
+  right: 50%;
+  bottom: var(--space-4);
+  display: grid;
+  align-content: end;
+  gap: var(--space-3);
+  width: min(42rem, calc(100% - var(--space-8)));
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  transform: translateX(50%);
+  scrollbar-gutter: stable;
+}
+
+.call-caption-stack {
   display: grid;
   gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: color-mix(in srgb, var(--color-bg-canvas) 72%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-border) 72%, transparent);
+  border-radius: var(--radius-lg);
+  backdrop-filter: blur(1rem);
 }
 
 .call-caption {
@@ -2993,29 +3076,57 @@ kbd {
   line-height: var(--line-height-normal);
 }
 
-.call-transcript-warning {
+.call-live-captions {
+  display: grid;
+  gap: var(--space-2);
+  max-height: min(13rem, 32vh);
+  padding: var(--space-3) var(--space-4);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  color: var(--color-text-primary);
+  background: color-mix(in srgb, var(--color-bg-raised) 94%, transparent);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-floating);
+  backdrop-filter: blur(1rem);
+}
+
+.call-live-captions-heading {
+  display: flex;
+  gap: var(--space-3);
+  align-items: center;
+  justify-content: space-between;
+}
+
+.call-live-captions h2,
+.call-live-captions p {
   margin: 0;
-  color: var(--color-warning);
+}
+
+.call-live-captions h2 {
   font-size: var(--font-size-sm);
-  line-height: var(--line-height-normal);
+}
+
+.call-live-captions-heading span {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.call-live-captions p {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: var(--font-size-sm);
+  line-height: var(--line-height-relaxed);
 }
 
 .call-transcript {
-  position: absolute;
-  z-index: 1;
-  right: 50%;
-  bottom: var(--space-5);
   display: grid;
   gap: var(--space-3);
-  width: min(40rem, calc(100% - var(--space-8)));
-  max-height: calc(100% - var(--space-8));
   padding: var(--space-4);
-  overflow-y: auto;
   background: color-mix(in srgb, var(--color-bg-raised) 92%, transparent);
   border: 1px solid var(--color-border-strong);
   border-radius: var(--radius-xl);
   box-shadow: var(--shadow-floating);
-  transform: translateX(50%);
   backdrop-filter: blur(1rem);
 }
 
@@ -3034,7 +3145,8 @@ kbd {
 }
 
 .call-transcript-heading span,
-.call-transcript-actions p {
+.call-transcript-actions p,
+.call-transcript-review-note {
   margin: 0;
   color: var(--color-text-muted);
   font-size: var(--font-size-xs);
@@ -3066,23 +3178,32 @@ kbd {
   max-width: 27rem;
 }
 
-.call-transcript .call-transcript-error {
-  margin: 0;
-  color: var(--color-danger);
-  font-size: var(--font-size-xs);
-  line-height: var(--line-height-normal);
-}
-
 .call-transcript-actions button {
   flex: 0 0 auto;
 }
 
-.call-controls {
+.call-footer {
   z-index: var(--z-index-sticky);
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-5);
+  background: linear-gradient(180deg, transparent, color-mix(in srgb, var(--color-bg-canvas) 90%, transparent));
+}
+
+.call-controls {
+  display: flex;
+  flex-wrap: wrap;
   justify-content: center;
   gap: var(--space-3);
-  padding: var(--space-5);
-  background: linear-gradient(180deg, transparent, color-mix(in srgb, var(--color-bg-canvas) 90%, transparent));
+}
+
+.call-end-note {
+  max-width: 46rem;
+  margin: 0 auto;
+  color: var(--color-text-muted);
+  text-align: center;
+  font-size: var(--font-size-xs);
+  line-height: var(--line-height-normal);
 }
 
 .call-control {
@@ -3117,6 +3238,11 @@ kbd {
   color: var(--color-text-inverse);
   background: var(--color-danger);
   border-color: transparent;
+}
+
+.call-control.mute.active {
+  color: var(--color-warning);
+  border-color: color-mix(in srgb, var(--color-warning) 50%, var(--color-border));
 }
 
 .call-control:disabled {
@@ -3451,9 +3577,30 @@ kbd {
     padding-inline: var(--space-4);
   }
 
+  .call-header-meta {
+    flex: 0 1 auto;
+  }
+
+  .call-model {
+    max-width: 9rem;
+  }
+
+  .call-status-cluster {
+    top: var(--space-3);
+  }
+
+  .call-stage-overlays {
+    top: 4.5rem;
+    width: calc(100% - var(--space-6));
+  }
+
+  .call-footer {
+    padding: var(--space-3);
+  }
+
   .call-controls {
     gap: var(--space-2);
-    padding: var(--space-3);
+    padding: 0;
   }
 
   .call-transcript {
@@ -3509,6 +3656,16 @@ kbd {
     grid-column: 2;
     justify-self: start;
   }
+
+  .call-header .eyebrow,
+  .call-model {
+    display: none;
+  }
+
+  .call-live-captions,
+  .call-transcript {
+    padding: var(--space-3);
+  }
 }
 
 @media (max-height: 40rem) {
@@ -3536,6 +3693,18 @@ kbd {
 
   .character-portrait {
     height: 13rem;
+  }
+
+  .call-stage-overlays {
+    top: 4rem;
+  }
+
+  .call-footer {
+    padding-block: var(--space-2);
+  }
+
+  .call-end-note {
+    display: none;
   }
 }
 
@@ -3583,6 +3752,36 @@ kbd {
   .composer-tools {
     flex-basis: auto;
   }
+
+  .call-header {
+    min-height: 3.75rem;
+  }
+
+  .call-header h1 {
+    margin: 0;
+    font-size: var(--font-size-lg);
+  }
+
+  .call-duration {
+    padding-block: var(--space-1);
+  }
+
+  .call-status-cluster {
+    top: var(--space-1);
+  }
+
+  .call-stage-overlays {
+    top: 3.5rem;
+    bottom: var(--space-2);
+  }
+
+  .call-caption-stack {
+    padding-block: var(--space-1);
+  }
+
+  .call-control {
+    min-height: 2.5rem;
+  }
 }
 
 @media (forced-colors: active) {
@@ -3592,6 +3791,36 @@ kbd {
   .send-button,
   .call-control.hangup {
     border: 1px solid ButtonText;
+  }
+
+  .call-state,
+  .call-microphone-state,
+  .call-caption-stack,
+  .call-live-captions,
+  .call-transcript,
+  .call-control {
+    border: 1px solid CanvasText;
+  }
+
+  .call-state.interrupting,
+  .call-state.cancelled,
+  .call-microphone-state.muted {
+    color: Mark;
+  }
+
+  .call-state.error,
+  .call-microphone-state.unavailable {
+    color: LinkText;
+  }
+
+  .call-state-dot {
+    background: currentColor;
+  }
+
+  .call-control.active,
+  .call-control.microphone.active {
+    color: HighlightText;
+    background: Highlight;
   }
 
   .attachment-surface,

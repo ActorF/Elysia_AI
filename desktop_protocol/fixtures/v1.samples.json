@@ -293,7 +293,14 @@
             "dataImportMaxBytes": 33554432,
             "transcriptionModel": "small",
             "transcriptionDevice": "auto",
-            "transcriptionLanguage": "auto"
+            "transcriptionLanguage": "auto",
+            "autoReadAloud": true,
+            "speechRatePercent": 100,
+            "speechVolumePercent": 100,
+            "voiceProfileId": "default",
+            "captionsEnabled": true,
+            "transcriptReviewMode": "manual",
+            "automaticRelisten": false
           }
         }
       }
@@ -678,7 +685,14 @@
             "dataImportMaxBytes": 33554432,
             "transcriptionModel": "medium",
             "transcriptionDevice": "cuda",
-            "transcriptionLanguage": "zh"
+            "transcriptionLanguage": "zh",
+            "autoReadAloud": false,
+            "speechRatePercent": 120,
+            "speechVolumePercent": 75,
+            "voiceProfileId": "elysia",
+            "captionsEnabled": true,
+            "transcriptReviewMode": "manual",
+            "automaticRelisten": true
           },
           "activeSettings": {
             "modelName": "qwen3.5:9b",
@@ -688,7 +702,14 @@
             "dataImportMaxBytes": 16777216,
             "transcriptionModel": "small",
             "transcriptionDevice": "auto",
-            "transcriptionLanguage": "auto"
+            "transcriptionLanguage": "auto",
+            "autoReadAloud": false,
+            "speechRatePercent": 100,
+            "speechVolumePercent": 75,
+            "voiceProfileId": "default",
+            "captionsEnabled": true,
+            "transcriptReviewMode": "manual",
+            "automaticRelisten": true
           },
           "restartRequired": true,
           "restartFields": [
@@ -699,7 +720,9 @@
             "dataImportMaxBytes",
             "transcriptionModel",
             "transcriptionDevice",
-            "transcriptionLanguage"
+            "transcriptionLanguage",
+            "speechRatePercent",
+            "voiceProfileId"
           ],
           "scopes": {
             "project": {
@@ -736,7 +759,14 @@
             "dataImportMaxBytes": 16777216,
             "transcriptionModel": "small",
             "transcriptionDevice": "auto",
-            "transcriptionLanguage": "auto"
+            "transcriptionLanguage": "auto",
+            "autoReadAloud": true,
+            "speechRatePercent": 100,
+            "speechVolumePercent": 100,
+            "voiceProfileId": "default",
+            "captionsEnabled": true,
+            "transcriptReviewMode": "manual",
+            "automaticRelisten": false
           },
           "activeSettings": {
             "modelName": "qwen3.5:9b",
@@ -746,7 +776,14 @@
             "dataImportMaxBytes": 16777216,
             "transcriptionModel": "small",
             "transcriptionDevice": "auto",
-            "transcriptionLanguage": "auto"
+            "transcriptionLanguage": "auto",
+            "autoReadAloud": true,
+            "speechRatePercent": 100,
+            "speechVolumePercent": 100,
+            "voiceProfileId": "default",
+            "captionsEnabled": true,
+            "transcriptReviewMode": "manual",
+            "automaticRelisten": false
           },
           "restartRequired": false,
           "restartFields": [],
@@ -1203,6 +1240,13 @@
             "transcriptionModel": "small",
             "transcriptionDevice": "auto",
             "transcriptionLanguage": "auto",
+            "autoReadAloud": true,
+            "speechRatePercent": 100,
+            "speechVolumePercent": 100,
+            "voiceProfileId": "default",
+            "captionsEnabled": true,
+            "transcriptReviewMode": "manual",
+            "automaticRelisten": false,
             "apiKey": "must-not-cross-the-wire"
           }
         }
@@ -1225,7 +1269,14 @@
             "dataImportMaxBytes": 16777216,
             "transcriptionModel": "small",
             "transcriptionDevice": "auto",
-            "transcriptionLanguage": "auto"
+            "transcriptionLanguage": "auto",
+            "autoReadAloud": true,
+            "speechRatePercent": 100,
+            "speechVolumePercent": 100,
+            "voiceProfileId": "default",
+            "captionsEnabled": true,
+            "transcriptReviewMode": "manual",
+            "automaticRelisten": false
           }
         }
       }
@@ -1247,7 +1298,14 @@
             "dataImportMaxBytes": 16777216,
             "transcriptionModel": "small",
             "transcriptionDevice": "auto",
-            "transcriptionLanguage": "auto"
+            "transcriptionLanguage": "auto",
+            "autoReadAloud": true,
+            "speechRatePercent": 100,
+            "speechVolumePercent": 100,
+            "voiceProfileId": "default",
+            "captionsEnabled": true,
+            "transcriptReviewMode": "manual",
+            "automaticRelisten": false
           }
         }
       }
@@ -1269,7 +1327,43 @@
             "dataImportMaxBytes": 16777216,
             "transcriptionModel": "small",
             "transcriptionDevice": "auto",
-            "transcriptionLanguage": "auto"
+            "transcriptionLanguage": "auto",
+            "autoReadAloud": true,
+            "speechRatePercent": 100,
+            "speechVolumePercent": 100,
+            "voiceProfileId": "default",
+            "captionsEnabled": true,
+            "transcriptReviewMode": "manual",
+            "automaticRelisten": false
+          }
+        }
+      }
+    },
+    {
+      "name": "settings update rejects Voice Profile path",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "settings-update-invalid-5",
+        "method": "settings.update",
+        "params": {
+          "expectedRevision": 0,
+          "settings": {
+            "modelName": "qwen3.5:9b",
+            "ollamaHost": "http://127.0.0.1:11434",
+            "shortTermMemoryTokenBudget": 2048,
+            "memoryRetrievalLimit": 5,
+            "dataImportMaxBytes": 16777216,
+            "transcriptionModel": "small",
+            "transcriptionDevice": "auto",
+            "transcriptionLanguage": "auto",
+            "autoReadAloud": true,
+            "speechRatePercent": 100,
+            "speechVolumePercent": 100,
+            "voiceProfileId": "../private/profile",
+            "captionsEnabled": true,
+            "transcriptReviewMode": "manual",
+            "automaticRelisten": false
           }
         }
       }
@@ -1682,6 +1776,13 @@
             "transcriptionModel": "small",
             "transcriptionDevice": "auto",
             "transcriptionLanguage": "auto",
+            "autoReadAloud": true,
+            "speechRatePercent": 100,
+            "speechVolumePercent": 100,
+            "voiceProfileId": "default",
+            "captionsEnabled": true,
+            "transcriptReviewMode": "manual",
+            "automaticRelisten": false,
             "password": "must-not-cross-the-wire"
           },
           "activeSettings": {
@@ -1692,7 +1793,14 @@
             "dataImportMaxBytes": 16777216,
             "transcriptionModel": "small",
             "transcriptionDevice": "auto",
-            "transcriptionLanguage": "auto"
+            "transcriptionLanguage": "auto",
+            "autoReadAloud": true,
+            "speechRatePercent": 100,
+            "speechVolumePercent": 100,
+            "voiceProfileId": "default",
+            "captionsEnabled": true,
+            "transcriptReviewMode": "manual",
+            "automaticRelisten": false
           },
           "restartRequired": false,
           "restartFields": [],
@@ -1719,7 +1827,14 @@
             "dataImportMaxBytes": 16777216,
             "transcriptionModel": "small",
             "transcriptionDevice": "auto",
-            "transcriptionLanguage": "auto"
+            "transcriptionLanguage": "auto",
+            "autoReadAloud": true,
+            "speechRatePercent": 100,
+            "speechVolumePercent": 100,
+            "voiceProfileId": "default",
+            "captionsEnabled": true,
+            "transcriptReviewMode": "manual",
+            "automaticRelisten": false
           },
           "activeSettings": {
             "modelName": "qwen3.5:9b",
@@ -1729,7 +1844,14 @@
             "dataImportMaxBytes": 16777216,
             "transcriptionModel": "small",
             "transcriptionDevice": "auto",
-            "transcriptionLanguage": "auto"
+            "transcriptionLanguage": "auto",
+            "autoReadAloud": true,
+            "speechRatePercent": 100,
+            "speechVolumePercent": 100,
+            "voiceProfileId": "default",
+            "captionsEnabled": true,
+            "transcriptReviewMode": "manual",
+            "automaticRelisten": false
           },
           "restartRequired": false,
           "restartFields": ["modelName"],

@@ -9,14 +9,15 @@ from __future__ import annotations
 
 import hashlib
 import struct
+from dataclasses import dataclass
 from pathlib import Path
 from threading import Event, Lock, Thread
-from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
 
 import desktop_speech as desktop_speech_module
+from config.settings import AppSettings
 from desktop_protocol import (
     AUDIO_CHANNEL_HEADER_BYTES,
     AUDIO_CHANNEL_MAGIC,
@@ -327,10 +328,28 @@ class _FakeCatalog:
         """Return only the safe identity fields needed by the binding factory."""
 
         self.calls.append((profile_id, emotion))
-        return SimpleNamespace(profile_id="elysia-test", emotion="neutral")
+        return _FakeSelection(
+            profile_id="elysia-test",
+            emotion="neutral",
+            speed_factor=1.0,
+        )
 
 
-def _config(tmp_path: Path) -> DesktopSpeechConfig:
+@dataclass(frozen=True, slots=True)
+class _FakeSelection:
+    """Expose the immutable fields changed or read during bootstrap."""
+
+    profile_id: str
+    emotion: str
+    speed_factor: float
+
+
+def _config(
+    tmp_path: Path,
+    *,
+    voice_profile_id: str = "default",
+    speech_rate_percent: int = 100,
+) -> DesktopSpeechConfig:
     """Return absolute private paths that require no files in unit tests."""
 
     return DesktopSpeechConfig(
@@ -338,10 +357,96 @@ def _config(tmp_path: Path) -> DesktopSpeechConfig:
         worker_script=(tmp_path / "worker.py").resolve(),
         catalog_path=(tmp_path / "catalog.json").resolve(),
         asset_root=(tmp_path / "assets").resolve(),
+        voice_profile_id=voice_profile_id,
+        speech_rate_percent=speech_rate_percent,
         allow_local_evaluation=True,
         deterministic_seed=123,
         synthesis_timeout_seconds=5.0,
     )
+
+
+def test_config_derives_restart_bound_voice_preferences(
+    tmp_path: Path,
+) -> None:
+    """Carry the active startup profile and rate into managed speech policy."""
+
+    settings = AppSettings(
+        base_dir=tmp_path,
+        model_name="model",
+        log_level="INFO",
+        debug=False,
+        ollama_host="http://127.0.0.1:11434",
+        voice_profile_id="elysia-v2",
+        speech_rate_percent=135,
+    )
+
+    config = DesktopSpeechConfig.from_app_settings(settings)
+
+    assert config.voice_profile_id == "elysia-v2"
+    assert config.speech_rate_percent == 135
+
+
+@pytest.mark.parametrize(
+    ("voice_profile_id", "speech_rate_percent"),
+    [
+        ("../escape", 100),
+        ("Uppercase", 100),
+        ("default", 49),
+        ("default", 201),
+        ("default", True),
+    ],
+)
+def test_config_rejects_invalid_voice_preferences(
+    tmp_path: Path,
+    voice_profile_id: str,
+    speech_rate_percent: object,
+) -> None:
+    """Reject path-like profile IDs and rates outside the worker contract."""
+
+    with pytest.raises(ValueError):
+        DesktopSpeechConfig(
+            runtime_root=(tmp_path / "runtime").resolve(),
+            worker_script=(tmp_path / "worker.py").resolve(),
+            catalog_path=(tmp_path / "catalog.json").resolve(),
+            asset_root=(tmp_path / "assets").resolve(),
+            voice_profile_id=voice_profile_id,
+            speech_rate_percent=cast(int, speech_rate_percent),
+            allow_local_evaluation=True,
+            deterministic_seed=123,
+            synthesis_timeout_seconds=5.0,
+        )
+
+
+def test_bootstrap_applies_configured_profile_and_absolute_rate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Acquire the chosen profile with the exact persisted rate percentage."""
+
+    runtime = _FakeRuntime()
+    synthesizer = _SequenceSynthesizer()
+    catalog = _install_fake_bootstrap(monkeypatch, runtime, synthesizer)
+    stream = _RecordingStream()
+    coordinator = DesktopSpeechCoordinator(
+        _config(
+            tmp_path,
+            voice_profile_id="elysia-v2",
+            speech_rate_percent=135,
+        ),
+        AudioChannelWriter(stream),  # type: ignore[arg-type]
+        lambda *_event: None,
+    )
+
+    coordinator.start()
+    assert coordinator.wait_until_settled(1.0)
+    assert coordinator.get_status().state == "ready"
+    assert catalog.calls == [("elysia-v2", "neutral")]
+    assert len(runtime.acquired) == 1
+    selection = cast(_FakeSelection, runtime.acquired[0])
+    assert selection.profile_id == "elysia-test"
+    assert selection.speed_factor == 1.35
+
+    coordinator.shutdown()
 
 
 def _install_fake_bootstrap(

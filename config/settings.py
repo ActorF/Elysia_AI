@@ -17,6 +17,12 @@ DEFAULT_OLLAMA_HOST = "http://localhost:11434"
 DEFAULT_GPT_SOVITS_REQUEST_TIMEOUT_SECONDS = 120.0
 DEFAULT_GPT_SOVITS_PROBE_TIMEOUT_SECONDS = 1.0
 DEFAULT_GPT_SOVITS_DETERMINISTIC_SEED = 42
+DEFAULT_AUTO_READ_ALOUD = True
+DEFAULT_SPEECH_RATE_PERCENT = 100
+DEFAULT_SPEECH_VOLUME_PERCENT = 100
+DEFAULT_VOICE_PROFILE_ID = "default"
+DEFAULT_CAPTIONS_ENABLED = True
+DEFAULT_AUTOMATIC_RELISTEN = False
 
 TranscriptionModel: TypeAlias = Literal[
     "tiny",
@@ -28,10 +34,12 @@ TranscriptionModel: TypeAlias = Literal[
 ]
 TranscriptionDevice: TypeAlias = Literal["auto", "cuda", "cpu"]
 TranscriptionLanguage: TypeAlias = Literal["auto", "zh", "en"]
+TranscriptReviewMode: TypeAlias = Literal["manual"]
 
 DEFAULT_TRANSCRIPTION_MODEL: Final[TranscriptionModel] = "small"
 DEFAULT_TRANSCRIPTION_DEVICE: Final[TranscriptionDevice] = "auto"
 DEFAULT_TRANSCRIPTION_LANGUAGE: Final[TranscriptionLanguage] = "auto"
+DEFAULT_TRANSCRIPT_REVIEW_MODE: Final[TranscriptReviewMode] = "manual"
 
 TRANSCRIPTION_MODELS: Final = (
     "tiny",
@@ -43,6 +51,7 @@ TRANSCRIPTION_MODELS: Final = (
 )
 TRANSCRIPTION_DEVICES: Final = ("auto", "cuda", "cpu")
 TRANSCRIPTION_LANGUAGES: Final = ("auto", "zh", "en")
+TRANSCRIPT_REVIEW_MODES: Final = ("manual",)
 
 
 @dataclass(frozen=True)
@@ -71,6 +80,15 @@ class AppSettings:
     transcription_language: TranscriptionLanguage = (
         DEFAULT_TRANSCRIPTION_LANGUAGE
     )
+    auto_read_aloud: bool = DEFAULT_AUTO_READ_ALOUD
+    speech_rate_percent: int = DEFAULT_SPEECH_RATE_PERCENT
+    speech_volume_percent: int = DEFAULT_SPEECH_VOLUME_PERCENT
+    voice_profile_id: str = DEFAULT_VOICE_PROFILE_ID
+    captions_enabled: bool = DEFAULT_CAPTIONS_ENABLED
+    transcript_review_mode: TranscriptReviewMode = (
+        DEFAULT_TRANSCRIPT_REVIEW_MODE
+    )
+    automatic_relisten: bool = DEFAULT_AUTOMATIC_RELISTEN
     gpt_sovits_allow_local_evaluation: bool = False
     gpt_sovits_request_timeout_seconds: float = (
         DEFAULT_GPT_SOVITS_REQUEST_TIMEOUT_SECONDS
@@ -197,6 +215,39 @@ TRANSCRIPTION_LANGUAGE = cast(
         DEFAULT_TRANSCRIPTION_LANGUAGE,
     ),
 )
+AUTO_READ_ALOUD = parse_bool(
+    os.getenv("AUTO_READ_ALOUD", str(DEFAULT_AUTO_READ_ALOUD))
+)
+SPEECH_RATE_PERCENT = parse_int(
+    os.getenv("SPEECH_RATE_PERCENT", str(DEFAULT_SPEECH_RATE_PERCENT)),
+    DEFAULT_SPEECH_RATE_PERCENT,
+)
+if not 50 <= SPEECH_RATE_PERCENT <= 200:
+    SPEECH_RATE_PERCENT = DEFAULT_SPEECH_RATE_PERCENT
+SPEECH_VOLUME_PERCENT = parse_int(
+    os.getenv("SPEECH_VOLUME_PERCENT", str(DEFAULT_SPEECH_VOLUME_PERCENT)),
+    DEFAULT_SPEECH_VOLUME_PERCENT,
+)
+if not 0 <= SPEECH_VOLUME_PERCENT <= 100:
+    SPEECH_VOLUME_PERCENT = DEFAULT_SPEECH_VOLUME_PERCENT
+VOICE_PROFILE_ID = os.getenv("VOICE_PROFILE_ID", DEFAULT_VOICE_PROFILE_ID)
+CAPTIONS_ENABLED = parse_bool(
+    os.getenv("CAPTIONS_ENABLED", str(DEFAULT_CAPTIONS_ENABLED))
+)
+TRANSCRIPT_REVIEW_MODE = cast(
+    TranscriptReviewMode,
+    parse_choice(
+        os.getenv(
+            "TRANSCRIPT_REVIEW_MODE",
+            DEFAULT_TRANSCRIPT_REVIEW_MODE,
+        ),
+        TRANSCRIPT_REVIEW_MODES,
+        DEFAULT_TRANSCRIPT_REVIEW_MODE,
+    ),
+)
+AUTOMATIC_RELISTEN = parse_bool(
+    os.getenv("AUTOMATIC_RELISTEN", str(DEFAULT_AUTOMATIC_RELISTEN))
+)
 GPT_SOVITS_ALLOW_LOCAL_EVALUATION = parse_bool(
     os.getenv("GPT_SOVITS_ALLOW_LOCAL_EVALUATION", "False")
 )
@@ -245,6 +296,13 @@ SETTINGS = AppSettings(
     transcription_model=TRANSCRIPTION_MODEL,
     transcription_device=TRANSCRIPTION_DEVICE,
     transcription_language=TRANSCRIPTION_LANGUAGE,
+    auto_read_aloud=AUTO_READ_ALOUD,
+    speech_rate_percent=SPEECH_RATE_PERCENT,
+    speech_volume_percent=SPEECH_VOLUME_PERCENT,
+    voice_profile_id=VOICE_PROFILE_ID,
+    captions_enabled=CAPTIONS_ENABLED,
+    transcript_review_mode=TRANSCRIPT_REVIEW_MODE,
+    automatic_relisten=AUTOMATIC_RELISTEN,
     gpt_sovits_allow_local_evaluation=GPT_SOVITS_ALLOW_LOCAL_EVALUATION,
     gpt_sovits_request_timeout_seconds=GPT_SOVITS_REQUEST_TIMEOUT_SECONDS,
     gpt_sovits_probe_timeout_seconds=GPT_SOVITS_PROBE_TIMEOUT_SECONDS,

@@ -89,6 +89,13 @@ interface SettingsDraft {
   transcriptionModel: DesktopSettingsValues['transcriptionModel']
   transcriptionDevice: DesktopSettingsValues['transcriptionDevice']
   transcriptionLanguage: DesktopSettingsValues['transcriptionLanguage']
+  autoReadAloud: boolean
+  speechRatePercent: string
+  speechVolumePercent: string
+  voiceProfileId: string
+  captionsEnabled: boolean
+  transcriptReviewMode: DesktopSettingsValues['transcriptReviewMode']
+  automaticRelisten: boolean
 }
 
 type SettingsValidationErrors = Partial<Record<keyof SettingsDraft, string>>
@@ -132,6 +139,7 @@ const transcriptionLanguages: readonly SettingsDraft['transcriptionLanguage'][] 
   'zh',
   'en',
 ]
+const voiceProfileIdPattern = /^[a-z0-9][a-z0-9._-]{0,63}$/u
 
 const restartLabels: Record<keyof DesktopSettingsValues, string> = {
   modelName: 'default model',
@@ -142,6 +150,13 @@ const restartLabels: Record<keyof DesktopSettingsValues, string> = {
   transcriptionModel: 'speech-recognition model',
   transcriptionDevice: 'speech-recognition device',
   transcriptionLanguage: 'speech-recognition language',
+  autoReadAloud: 'automatic read-aloud',
+  speechRatePercent: 'speech rate',
+  speechVolumePercent: 'speech volume',
+  voiceProfileId: 'voice profile',
+  captionsEnabled: 'Voice captions',
+  transcriptReviewMode: 'transcript review policy',
+  automaticRelisten: 'automatic continued listening',
 }
 
 function draftFromValues(values: DesktopSettingsValues): SettingsDraft {
@@ -154,6 +169,13 @@ function draftFromValues(values: DesktopSettingsValues): SettingsDraft {
     transcriptionModel: values.transcriptionModel,
     transcriptionDevice: values.transcriptionDevice,
     transcriptionLanguage: values.transcriptionLanguage,
+    autoReadAloud: values.autoReadAloud,
+    speechRatePercent: String(values.speechRatePercent),
+    speechVolumePercent: String(values.speechVolumePercent),
+    voiceProfileId: values.voiceProfileId,
+    captionsEnabled: values.captionsEnabled,
+    transcriptReviewMode: values.transcriptReviewMode,
+    automaticRelisten: values.automaticRelisten,
   }
 }
 
@@ -171,6 +193,13 @@ function draftEqualsValues(
     && draft.transcriptionModel === values.transcriptionModel
     && draft.transcriptionDevice === values.transcriptionDevice
     && draft.transcriptionLanguage === values.transcriptionLanguage
+    && draft.autoReadAloud === values.autoReadAloud
+    && draft.speechRatePercent === String(values.speechRatePercent)
+    && draft.speechVolumePercent === String(values.speechVolumePercent)
+    && draft.voiceProfileId === values.voiceProfileId
+    && draft.captionsEnabled === values.captionsEnabled
+    && draft.transcriptReviewMode === values.transcriptReviewMode
+    && draft.automaticRelisten === values.automaticRelisten
   )
 }
 
@@ -183,6 +212,22 @@ function positiveInteger(
   }
   const parsed = Number(value)
   return Number.isSafeInteger(parsed) && parsed <= maximum ? parsed : null
+}
+
+function boundedInteger(
+  value: string,
+  minimum: number,
+  maximum: number,
+): number | null {
+  if (!/^(?:0|[1-9]\d*)$/u.test(value)) {
+    return null
+  }
+  const parsed = Number(value)
+  return Number.isSafeInteger(parsed)
+    && parsed >= minimum
+    && parsed <= maximum
+    ? parsed
+    : null
 }
 
 function validateDraft(draft: SettingsDraft): SettingsValidationErrors {
@@ -230,6 +275,18 @@ function validateDraft(draft: SettingsDraft): SettingsValidationErrors {
   }
   if (!transcriptionLanguages.includes(draft.transcriptionLanguage)) {
     errors.transcriptionLanguage = 'Choose automatic, Chinese, or English recognition.'
+  }
+  if (boundedInteger(draft.speechRatePercent, 50, 200) === null) {
+    errors.speechRatePercent = 'Speech rate must be a whole percentage from 50 to 200.'
+  }
+  if (boundedInteger(draft.speechVolumePercent, 0, 100) === null) {
+    errors.speechVolumePercent = 'Speech volume must be a whole percentage from 0 to 100.'
+  }
+  if (!voiceProfileIdPattern.test(draft.voiceProfileId)) {
+    errors.voiceProfileId = 'Use 1–64 lowercase letters, numbers, periods, underscores, or hyphens; start with a letter or number.'
+  }
+  if (draft.transcriptReviewMode !== 'manual') {
+    errors.transcriptReviewMode = 'Voice transcripts must remain in manual review mode.'
   }
   return errors
 }
@@ -286,7 +343,7 @@ function AppearanceSettings({
   )
 }
 
-/** Render nine settings areas with independent global and device-local drafts. */
+/** Render global settings alongside an independently persisted device draft. */
 export function SettingsView({
   themePreference,
   resolvedTheme,
@@ -382,6 +439,13 @@ export function SettingsView({
       transcriptionModel: draft.transcriptionModel,
       transcriptionDevice: draft.transcriptionDevice,
       transcriptionLanguage: draft.transcriptionLanguage,
+      autoReadAloud: draft.autoReadAloud,
+      speechRatePercent: Number(draft.speechRatePercent),
+      speechVolumePercent: Number(draft.speechVolumePercent),
+      voiceProfileId: draft.voiceProfileId,
+      captionsEnabled: draft.captionsEnabled,
+      transcriptReviewMode: draft.transcriptReviewMode,
+      automaticRelisten: draft.automaticRelisten,
     })
   }
 
@@ -810,6 +874,201 @@ export function SettingsView({
                     {validationErrors.memoryRetrievalLimit}
                   </small>
                 )}
+              </label>
+            </div>
+          </section>
+
+          <section
+            className="settings-section"
+            aria-labelledby="voice-behavior-settings-heading"
+          >
+            <div className="settings-section-heading">
+              <h2 id="voice-behavior-settings-heading">Voice behavior</h2>
+              <p>
+                Control local speech playback and Voice-call assistance. Device
+                choices remain separate below because they belong to this PC.
+              </p>
+            </div>
+            <div className="settings-field-grid">
+              <label className="settings-field">
+                <span>Read replies aloud</span>
+                <select
+                  value={String(draft.autoReadAloud)}
+                  onChange={(event) => {
+                    updateDraft('autoReadAloud', event.target.value === 'true')
+                  }}
+                  disabled={backendFieldsDisabled}
+                  aria-describedby={`${backendFieldId}-auto-read-aloud-help`}
+                >
+                  <option value="true">On</option>
+                  <option value="false">Off</option>
+                </select>
+                <small id={`${backendFieldId}-auto-read-aloud-help`}>
+                  Applies after saving. Turning this off keeps text replies but
+                  does not synthesize new spoken replies.
+                </small>
+              </label>
+
+              <label className="settings-field">
+                <span>Speech rate (%)</span>
+                <input
+                  type="number"
+                  min="50"
+                  max="200"
+                  step="1"
+                  value={draft.speechRatePercent}
+                  onChange={(event) => {
+                    updateDraft('speechRatePercent', event.target.value)
+                  }}
+                  disabled={backendFieldsDisabled}
+                  aria-invalid={validationErrors.speechRatePercent !== undefined}
+                  aria-describedby={[
+                    `${backendFieldId}-speech-rate-help`,
+                    validationErrors.speechRatePercent === undefined
+                      ? null
+                      : `${backendFieldId}-speech-rate-error`,
+                  ].filter(Boolean).join(' ')}
+                  aria-errormessage={validationErrors.speechRatePercent === undefined
+                    ? undefined
+                    : `${backendFieldId}-speech-rate-error`}
+                />
+                <small id={`${backendFieldId}-speech-rate-help`}>
+                  Active: {settingsState.activeSettings.speechRatePercent}%.
+                  Enter 50–200; saved changes apply after a Backend restart.
+                </small>
+                {validationErrors.speechRatePercent !== undefined && (
+                  <small
+                    className="settings-field-error"
+                    id={`${backendFieldId}-speech-rate-error`}
+                  >
+                    {validationErrors.speechRatePercent}
+                  </small>
+                )}
+              </label>
+
+              <label className="settings-field">
+                <span>Speech volume (%)</span>
+                <input
+                  type="number"
+                  min="0"
+                  max="100"
+                  step="1"
+                  value={draft.speechVolumePercent}
+                  onChange={(event) => {
+                    updateDraft('speechVolumePercent', event.target.value)
+                  }}
+                  disabled={backendFieldsDisabled}
+                  aria-invalid={validationErrors.speechVolumePercent !== undefined}
+                  aria-describedby={[
+                    `${backendFieldId}-speech-volume-help`,
+                    validationErrors.speechVolumePercent === undefined
+                      ? null
+                      : `${backendFieldId}-speech-volume-error`,
+                  ].filter(Boolean).join(' ')}
+                  aria-errormessage={validationErrors.speechVolumePercent === undefined
+                    ? undefined
+                    : `${backendFieldId}-speech-volume-error`}
+                />
+                <small id={`${backendFieldId}-speech-volume-help`}>
+                  Applies to managed speech after saving. Zero keeps synthesis
+                  enabled while silencing playback.
+                </small>
+                {validationErrors.speechVolumePercent !== undefined && (
+                  <small
+                    className="settings-field-error"
+                    id={`${backendFieldId}-speech-volume-error`}
+                  >
+                    {validationErrors.speechVolumePercent}
+                  </small>
+                )}
+              </label>
+
+              <label className="settings-field">
+                <span>Voice profile</span>
+                <input
+                  type="text"
+                  value={draft.voiceProfileId}
+                  onChange={(event) => {
+                    updateDraft('voiceProfileId', event.target.value)
+                  }}
+                  disabled={backendFieldsDisabled}
+                  spellCheck={false}
+                  autoComplete="off"
+                  maxLength={64}
+                  aria-invalid={validationErrors.voiceProfileId !== undefined}
+                  aria-describedby={[
+                    `${backendFieldId}-voice-profile-help`,
+                    validationErrors.voiceProfileId === undefined
+                      ? null
+                      : `${backendFieldId}-voice-profile-error`,
+                  ].filter(Boolean).join(' ')}
+                  aria-errormessage={validationErrors.voiceProfileId === undefined
+                    ? undefined
+                    : `${backendFieldId}-voice-profile-error`}
+                />
+                <small id={`${backendFieldId}-voice-profile-help`}>
+                  Active: {settingsState.activeSettings.voiceProfileId}. Use a
+                  configured logical profile ID; saved changes apply after restart.
+                </small>
+                {validationErrors.voiceProfileId !== undefined && (
+                  <small
+                    className="settings-field-error"
+                    id={`${backendFieldId}-voice-profile-error`}
+                  >
+                    {validationErrors.voiceProfileId}
+                  </small>
+                )}
+              </label>
+
+              <label className="settings-field">
+                <span>Call captions</span>
+                <select
+                  value={String(draft.captionsEnabled)}
+                  onChange={(event) => {
+                    updateDraft('captionsEnabled', event.target.value === 'true')
+                  }}
+                  disabled={backendFieldsDisabled}
+                  aria-describedby={`${backendFieldId}-captions-help`}
+                >
+                  <option value="true">Show captions</option>
+                  <option value="false">Hide captions</option>
+                </select>
+                <small id={`${backendFieldId}-captions-help`}>
+                  Controls assistant captions in Voice calls after saving.
+                </small>
+              </label>
+
+              <label className="settings-field">
+                <span>Transcript review</span>
+                <select
+                  value={draft.transcriptReviewMode}
+                  disabled
+                  aria-describedby={`${backendFieldId}-transcript-review-help`}
+                >
+                  <option value="manual">Manual review before send</option>
+                </select>
+                <small id={`${backendFieldId}-transcript-review-help`}>
+                  Recognition never sends a Chat message without your explicit review.
+                </small>
+              </label>
+
+              <label className="settings-field">
+                <span>Continue listening after replies</span>
+                <select
+                  value={String(draft.automaticRelisten)}
+                  onChange={(event) => {
+                    updateDraft('automaticRelisten', event.target.value === 'true')
+                  }}
+                  disabled={backendFieldsDisabled}
+                  aria-describedby={`${backendFieldId}-automatic-relisten-help`}
+                >
+                  <option value="false">Off</option>
+                  <option value="true">On</option>
+                </select>
+                <small id={`${backendFieldId}-automatic-relisten-help`}>
+                  Starts another local capture only after an explicitly started
+                  Voice turn finishes. Every transcript still requires review.
+                </small>
               </label>
             </div>
           </section>
