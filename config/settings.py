@@ -37,7 +37,10 @@ TranscriptionLanguage: TypeAlias = Literal["auto", "zh", "en"]
 TranscriptReviewMode: TypeAlias = Literal["manual"]
 
 DEFAULT_TRANSCRIPTION_MODEL: Final[TranscriptionModel] = "small"
-DEFAULT_TRANSCRIPTION_DEVICE: Final[TranscriptionDevice] = "auto"
+# CPU is the conservative desktop default so Ollama and GPT-SoVITS can share
+# bounded GPU headroom. Users with measured capacity may still opt in to
+# ``auto`` or ``cuda`` through the existing allowlisted setting.
+DEFAULT_TRANSCRIPTION_DEVICE: Final[TranscriptionDevice] = "cpu"
 DEFAULT_TRANSCRIPTION_LANGUAGE: Final[TranscriptionLanguage] = "auto"
 DEFAULT_TRANSCRIPT_REVIEW_MODE: Final[TranscriptReviewMode] = "manual"
 

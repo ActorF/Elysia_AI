@@ -203,7 +203,7 @@ SHORT_TERM_MEMORY_TOKEN_BUDGET=2048
 MEMORY_RETRIEVAL_LIMIT=5
 DATA_IMPORT_MAX_BYTES=16777216
 TRANSCRIPTION_MODEL=small
-TRANSCRIPTION_DEVICE=auto
+TRANSCRIPTION_DEVICE=cpu
 TRANSCRIPTION_LANGUAGE=auto
 GPT_SOVITS_ALLOW_LOCAL_EVALUATION=False
 GPT_SOVITS_REQUEST_TIMEOUT_SECONDS=120
@@ -213,7 +213,7 @@ LOG_LEVEL=INFO
 DEBUG=False
 ```
 
-桌面端 **Settings** 允许修改 Chat 模型、Ollama Origin、Memory 限额、文件导入大小，以及本地转写模型、设备和默认语言；这些公开设置使用独立 revision 并写入 `workspace/settings/global.json`。转写模型可选 `tiny` / `base` / `small` / `medium` / `large-v3` / `turbo`，设备可选 `auto` / `cuda` / `cpu`，语言可选 `auto` / `zh` / `en`。
+桌面端 **Settings** 允许修改 Chat 模型、Ollama Origin、Memory 限额、文件导入大小，以及本地转写模型、设备和默认语言；这些公开设置使用独立 revision 并写入 `workspace/settings/global.json`。转写模型可选 `tiny` / `base` / `small` / `medium` / `large-v3` / `turbo`，设备可选 `auto` / `cuda` / `cpu`，语言可选 `auto` / `zh` / `en`。默认使用 `cpu`，为同时驻留的 Ollama 与 GPT-SoVITS 保留 GPU 显存；只有在目标机器完成三组件资源基准后才建议显式改为 `auto` 或 `cuda`。
 
 同一份全局设置还包含七个语音字段：自动朗读、50–200% 语速、0–100% 音量、受限的逻辑 Voice Profile ID、字幕、Transcript 审核模式和自动续听。其中自动朗读、音量、字幕、只允许 `manual` 的审核模式以及自动续听共五项是 live preference；语速和 Voice Profile 两项进入 `restartFields`，在 Backend 重启前保持 Saved/Active 分离。其余模型、Ollama、Memory/文件限额与 STT Runtime 设置也继续遵守既有重启边界；主题保存在当前设备的 Renderer Storage 中并立即生效。
 
@@ -260,6 +260,7 @@ DEBUG=False
 - 自动续听默认关闭，并同时受 Settings 默认值和通话页可见开关控制。开启后，只有 Chat 正常完成且预期的朗读也安全结束，程序才会开始下一次有界采集；静音、挂断、关闭 Voice、切换 Chat/Project、关闭该开关、能力或设备不可用，以及失败或取消终态都会暂停或退出循环。
 - Settings 与 Voice 页面只显示经过枚举净化的就绪状态。缺模型、缺可选依赖、CUDA 不可用或初始化失败时会给出可操作步骤，不显示本地路径、底层异常或 Native 诊断；`auto` 可以选择安全的 CPU 回退。
 - 已完成一次真实 CPU Runtime/模型的本地转写 Smoke 验证；CUDA 成功路径尚未在本文声称为实机验证。自动化测试同时覆盖 Fake Runtime、Cancel、Timeout、Native Draining 和迟到结果丢弃。
+- 2026-09-23 的三组件实机基准让 `qwen3.5:9b` 与受管 GPT-SoVITS 并行使用 RTX 4070 SUPER，并在两者驻留时用 CPU Faster-Whisper 转写；观察到全局峰值 9,824 / 12,282 MiB。完整测量、清理证据、限制与重测条件见 [Voice Performance, Safety, and Rights Acceptance](./docs/03-VOICE-PERFORMANCE-SAFETY-RIGHTS.md)。
 - Python 已提供引擎无关的合成 Contract、本地 Voice Profile Catalog、惰性 Composition Root 和只接受 Loopback IP Origin 的 GPT-SoVITS `/tts` Adapter；`localhost` 会先规范化为 `127.0.0.1`。通用 Contract 对最大 32 MiB 的 PCM WAV、Ogg Opus 与受支持 ADTS AAC 子集执行完整 Container/Transport Framing 检查，不冒充 Codec 解码；当前非流式 GPT-SoVITS Adapter 只配置 WAV/AAC，并要求有界、声明 `Content-Length`、非压缩且非 `Transfer-Encoding` 的响应。
 - 本机真实验收使用同一固定中文测试句，对 `neutral`、`happy`、`sad` 各连续合成两次，六次均得到有效 WAV；停掉服务后 Smoke 返回稳定的 `service_unreachable`，完整文字 Chat 回归仍通过。`service_binding_unverified` 表示服务在线但上游 API 不能证明当前加载的是 Catalog 所声明的权重，不是对权重身份的背书。
 - 桌面路径从 `Brain.stream_chat()` 复制准确文本块，在自然标点或长度上限处分句；有界 FIFO 只允许一个受管 Worker 合成。NDJSON 只承载关联 Metadata，PCM WAV 通过独立 fd3 进入 Electron Main，再由不属于公开 `DesktopApi` 的私有 IPC 送到 Preload Web Audio；每个片段会应用已保存的扬声器选择和当前音量，通过 GainNode 控制增益。指定设备不可用时跳过该片段，不会悄悄回退到其他扬声器；音量为 0 时只静音该片段，不会关闭合成。React 只收到 Request/Chat、`playing|played|skipped` 加 Sequence 或 `completed|cancelled` 终态，不接触 WAV、Token、Hash、文本、准确 Prompt、诊断或本机资产路径；以准确 Request ID 与 Chat ID 停止播放也必须经过可信 Main 校验。Profile 配置、Runtime、权重和参考音频均留在被 Git 忽略的本机目录；来源和使用限制见 [MODEL_LICENSE.md](./MODEL_LICENSE.md)。
@@ -273,6 +274,7 @@ DEBUG=False
 ```bat
 cd /d D:\Elysia_AI
 .venv\Scripts\python.exe scripts\check_python_documentation.py
+.venv\Scripts\python.exe scripts\check_distribution_assets.py
 .venv\Scripts\python.exe -m pytest -q
 .venv\Scripts\python.exe -m mypy agent attachments chats config core desktop_protocol memory models projects recovery scripts tools ui voice desktop_backend.py desktop_speech.py start.py
 ```
@@ -293,6 +295,15 @@ runtime\python.exe -X utf8 api_v2.py -c GPT_SoVITS\configs\tts_infer_elysia.yaml
 
 该具体目录和 YAML 只是本机验收环境，不在仓库中；其他开发者应使用自己核验过的 Runtime 与 Profile，不能从这个命令推断模型素材可再分发。
 
+在 Ollama、被忽略的 Faster-Whisper 模型、受管 GPT-SoVITS Runtime 与已经完成权利审查但仍只限本机评估的 Voice Profile 都准备好，并显式启用 `GPT_SOVITS_ALLOW_LOCAL_EVALUATION=True` 后，可以运行三组件多周期资源基准：
+
+```bat
+cd /d D:\Elysia_AI
+.venv\Scripts\python.exe scripts\benchmark_voice_pipeline.py --cycles 3
+```
+
+基准会并发执行 Ollama Streaming 与受管 TTS，再在两者仍驻留时使用 CPU Faster-Whisper 转写内存中的合成 WAV。输出 JSON 只包含延迟、Ollama `/api/ps` 的模型显存值和 `nvidia-smi` 全局采样；不会保存或输出音频、测试文本、转写内容或本机路径。Windows WDDM 下进程级显存通常不可用，因此全局 GPU 峰值可能包含桌面和其他进程负载；运行前应关闭无关 GPU 工作，并在目标机器上重复足够周期。当前验收结果见 [完整记录](./docs/03-VOICE-PERFORMANCE-SAFETY-RIGHTS.md)。
+
 ### Desktop
 
 ```bat
@@ -306,16 +317,20 @@ npm run build
 npm audit --audit-level=high
 ```
 
-`npm test` 会依次执行共享协议测试和 Electron Renderer UI 测试。GitHub Actions 在 Ubuntu 上运行 Python 与 Desktop 检查，并额外在 Windows 上运行原生附件桥接、文件守卫，以及不加载本地模型的受管 GPT-SoVITS 进程/Runtime 边界测试；真实 Runtime/模型验收仍需在配置完整的本机执行。
+`npm test` 会依次执行共享协议测试和 Electron Renderer UI 测试。GitHub Actions 在 Ubuntu 上运行 Python 与 Desktop 检查，并额外在 Windows 上运行原生附件桥接、文件守卫、不加载真实模型的受管 GPT-SoVITS 进程/Runtime 边界测试，以及真实 Unpacked Package + ASAR 分发审计；真实 Runtime/模型验收仍需在配置完整的本机执行。
 
 ### 本地打包烟雾测试
 
 ```bat
 cd /d D:\Elysia_AI\desktop
 npm run package
+npx --no-install asar list out\win-unpacked\resources\app.asar > "%TEMP%\elysia-asar-listing.txt"
+cd /d D:\Elysia_AI
+.venv\Scripts\python.exe scripts\check_distribution_assets.py --unpacked-tree desktop\out\win-unpacked --asar-listing "%TEMP%\elysia-asar-listing.txt"
+del "%TEMP%\elysia-asar-listing.txt"
 ```
 
-输出位于 `desktop\out\win-unpacked`。`npm run make` 可以生成未签名的 NSIS Installer，但当前产物不包含 Python、Ollama 或模型，不能视为独立发行版。
+输出位于 `desktop\out\win-unpacked`。审计会同时检查真实 Unpacked Tree 和 ASAR 清单，并拒绝模型权重、音频、Runtime/User Data、压缩包或链接逃逸；它必须在每次发布产物前运行。`npm run make` 可以生成未签名的 NSIS Installer，但当前产物不包含 Python、Ollama 或模型，不能视为独立发行版。
 
 ---
 
@@ -395,7 +410,7 @@ cd /d D:\Elysia_AI\desktop
 
 ### 为什么桌面端仍可能没有语音？
 
-桌面回复朗读已经接通，但它是可选能力：必须存在完整本机 GPT-SoVITS Runtime、严格 Voice Profile、匹配 Hash 的权重与参考音频，并显式开启 `GPT_SOVITS_ALLOW_LOCAL_EVALUATION`。若单句合成、解码或播放失败，受影响句子会被跳过；只有无法安全继续的通道或生命周期故障才会停用语音，文字 Chat 始终继续工作。有界、人工确认的 Voice Session、回复期间 Barge-in 和正常回复后的可选自动续听均已接通；Barge-in 还要求浏览器能启用并证实 WebRTC Echo Cancellation，否则会安全关闭监听并继续回复。自动续听不会自动发送识别文本。实时 Partial Transcript 尚未完成；真实设备、房间回声和长通话人工矩阵未执行，并由项目负责人明确豁免为当前交付的关闭门槛，不代表这些观察已经通过。
+桌面回复朗读已经接通，但它是可选能力：必须存在完整本机 GPT-SoVITS Runtime、严格 Voice Profile、匹配 Hash 的权重与参考音频，并显式开启 `GPT_SOVITS_ALLOW_LOCAL_EVALUATION`。若单句合成、解码或播放失败，受影响句子会被跳过；只有无法安全继续的通道或生命周期故障才会停用语音，文字 Chat 始终继续工作。有界、人工确认的 Voice Session、回复期间 Barge-in 和正常回复后的可选自动续听均已接通；Barge-in 还要求浏览器能启用并证实 WebRTC Echo Cancellation，否则会安全关闭监听并继续回复。自动续听不会自动发送识别文本。实时 Partial Transcript 尚未完成；256 轮 Python STT、256 轮 Speech Queue 与 200 轮 Renderer Voice Soak 已证明程序内 Owner 会清空，但真实设备、房间回声和多小时人类通话矩阵未执行，并由项目负责人明确豁免为当前交付的关闭门槛，不代表这些人工观察已经通过。
 
 ### 为什么 Project Sources 不能回答文件内容？
 
@@ -432,7 +447,7 @@ cd /d D:\Elysia_AI\desktop
 
 Elysia AI 是非官方粉丝开发项目，与 HoYoverse / miHoYo **没有隶属、合作、赞助或背书关系**。《崩坏3》、爱莉希雅以及相关角色、剧情、美术、声音、表演、名称与商标的权利归各自权利人所有。本项目不会也不能授予这些第三方内容的权利。
 
-请根据所在地区与具体用途查阅最新的 [HoYoverse Fan-made Content 帮助说明](https://support.hoyoverse.com/hc/en-us/articles/51005649400729-What-are-the-guidelines-for-creating-and-selling-fan-made-content) 和 [《Honkai Impact 3rd》素材与同人创作指南](https://www.hoyolab.com/article/1463874)。后者明确说明其适用范围不包含中国大陆简体中文版，不能把它当作所有地区的统一授权。
+2026-09-23 已重新核对 [HoYoverse Fan-made Content 帮助说明](https://support.hoyoverse.com/hc/en-us/articles/51005649400729-What-are-the-guidelines-for-creating-and-selling-fan-made-content)；它当前链接的特定产品同人指南，以及此前记录的[《Honkai Impact 3rd》素材与同人创作指南](https://www.hoyolab.com/article/1463874)，都不是本地声音模型、录音或表演权的再分发许可。具体授权缺口与处理决定见 [MODEL_LICENSE.md](./MODEL_LICENSE.md)。
 
 本仓库目前 **没有根级源代码 `LICENSE` 文件**。因此，仓库可见或可克隆不代表已获得复制、修改、再分发或商用源代码的通用许可。若项目所有者之后选择软件许可证，应单独添加正式 `LICENSE`，并明确排除角色 IP、角色语料、模型权重、参考音频以及其他第三方资产。
 

@@ -1,6 +1,6 @@
 # Model & Voice Asset Notice / 模型与语音素材说明
 
-> Last reviewed / 最近核对：2026-09-14
+> Last reviewed / 最近核对：2026-09-23
 
 ## Purpose and Status / 用途与性质
 
@@ -118,6 +118,16 @@ Before any future distribution, the maintainer must obtain and retain permission
 
 未来如需分发，维护者必须取得并保留能够明确覆盖具体素材版本、再分发、修改、署名、商业范围以及相关声音表演权的许可记录。
 
+### Current authorization decision / 当前授权决定
+
+The `default` Elysia Voice Profile remains classified as `local-evaluation-only`. The source note, matching publication page, exact local digests, and named contributors recorded above are provenance evidence, but they are not a redistribution grant. The local opt-in flag enables a technical evaluation only; it cannot change that rights status. Until adequate permission is retained, the checkpoints and reference recordings must remain outside Git, releases, installers, containers, mirrors, and shared diagnostic archives.
+
+`default` 爱莉希雅 Voice Profile 继续归类为 `local-evaluation-only`。上文记录的随附说明、内容吻合的发布页、本地文件精确摘要和署名主体属于来源证据，但不构成再分发授权。本机 Opt-in 开关只允许技术评估，不能改变素材的权利状态。在留存充分许可之前，Checkpoint 与参考录音必须继续排除在 Git、Release、安装包、Container、镜像和共享诊断压缩包之外。
+
+This repository enforces that decision with `scripts/check_distribution_assets.py`. CI audits the Git index, freezes the complete reviewed Electron Builder configuration, builds the Windows package, and scans both the unpacked tree and its `asar list` capture. Release preparation must repeat the artifact scan for the exact candidate being published. The checker is a preventive engineering control, not a legal conclusion.
+
+本仓库通过 `scripts/check_distribution_assets.py` 执行上述决定。CI 会检查 Git Index、冻结完整且已审查的 Electron Builder 配置、构建 Windows Package，并同时扫描 Unpacked Tree 与 `asar list` 清单；准备发行时仍必须对实际候选产物重复该扫描。该检查器是预防性工程控制，不是法律结论。
+
 ---
 
 ## GPT-SoVITS Software Boundary / GPT-SoVITS 软件边界
@@ -162,9 +172,9 @@ Elysia AI is an unofficial fan-development project. It is not affiliated with, e
 
 Elysia AI 是非官方粉丝开发项目，与 HoYoverse / 米哈游以及上述模型、声音贡献者没有隶属、合作、赞助或背书关系。
 
-HoYoverse's current [fan-made content help article](https://support.hoyoverse.com/hc/en-us/articles/51005649400729-What-are-the-guidelines-for-creating-and-selling-fan-made-content) links creators to its current general program. The separately published [Honkai Impact 3rd material usage and fanwork guidelines](https://www.hoyolab.com/article/1463874) contain specific conditions for audio and fan content and expressly state that they do not apply to the Simplified Chinese edition released in mainland China.
+On 2026-09-23, the current [HoYoverse fan-made content help article](https://support.hoyoverse.com/hc/en-us/articles/51005649400729-What-are-the-guidelines-for-creating-and-selling-fan-made-content), shown by HoYoverse as updated on 2025-10-13, was rechecked. Its linked program is a product-specific fan-creation guide, not permission to redistribute this *Honkai Impact 3rd* voice pack. The previously recorded [Honkai Impact 3rd material usage and fanwork guidelines](https://www.hoyolab.com/article/1463874) remain a boundary reference rather than a model, recording, or performance license. Neither source supplies the missing permission identified above.
 
-HoYoverse 当前的[同人内容帮助说明](https://support.hoyoverse.com/hc/en-us/articles/51005649400729-What-are-the-guidelines-for-creating-and-selling-fan-made-content)会链接到其现行通用计划；另行发布的[《Honkai Impact 3rd》素材与同人创作指南](https://www.hoyolab.com/article/1463874)对音频和同人内容有具体条件，并明确说明不适用于中国大陆发行的简体中文版本。
+2026-09-23 已重新核对 HoYoverse 当前的[同人内容帮助说明](https://support.hoyoverse.com/hc/en-us/articles/51005649400729-What-are-the-guidelines-for-creating-and-selling-fan-made-content)；HoYoverse 页面显示其更新于 2025-10-13。该页链接的是特定产品的同人创作指南，并不是再分发本《Honkai Impact 3rd》声音包的许可。此前记录的[《Honkai Impact 3rd》素材与同人创作指南](https://www.hoyolab.com/article/1463874)仍只作为边界参考，不是模型、录音或表演权许可；两者都没有补足上文所述授权缺口。
 
 Users must verify the latest rules that apply to their region, source material, and intended use. This document is not a substitute for that verification or for direct permission from the relevant rights holders.
 
@@ -188,6 +198,21 @@ Contributors and maintainers must:
    除非书面许可明确允许，否则把第三方素材排除在源码许可和安装包之外；
 5. remove an asset promptly if its provenance or permission is disputed and cannot be resolved.<br>
    若素材来源或授权发生争议且无法核实，应及时移除。
+
+Before publishing any artifact, run both the repository policy check and an artifact scan, replacing the example path with the actual output directory:
+
+发布任何产物前，必须同时运行仓库策略检查与产物扫描，并把示例路径替换为真实输出目录：
+
+```bat
+cd /d D:\Elysia_AI
+.venv\Scripts\python.exe scripts\check_distribution_assets.py
+cd desktop
+npm run package
+npx --no-install asar list out\win-unpacked\resources\app.asar > "%TEMP%\elysia-asar-listing.txt"
+cd ..
+.venv\Scripts\python.exe scripts\check_distribution_assets.py --unpacked-tree desktop\out\win-unpacked --asar-listing "%TEMP%\elysia-asar-listing.txt"
+del "%TEMP%\elysia-asar-listing.txt"
+```
 
 ---
 

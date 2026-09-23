@@ -3344,7 +3344,7 @@ def test_preinitialize_transcription_settings_rebuild_readiness_config(
         "medium",
     ]
     assert [settings.transcription_device for settings in observed_settings] == [
-        "auto",
+        "cpu",
         "cpu",
     ]
     repaired = _success_result(messages, "settings-stt-repair")
@@ -3724,7 +3724,7 @@ def test_voice_readiness_uses_the_same_adapter_as_default_transcription(
 ) -> None:
     """Report the production adapter's available-to-ready transition safely."""
 
-    transcriber = _StatusTranscriber()
+    transcriber = _StatusTranscriber(fallback_from_cuda=False)
     fake_brain = FakeBrain()
     output_stream = StringIO()
     with patch.object(
@@ -3776,10 +3776,10 @@ def test_voice_readiness_uses_the_same_adapter_as_default_transcription(
         assert before["transcriptionStatus"] == {
             "state": "available",
             "model": "small",
-            "requestedDevice": "auto",
+            "requestedDevice": "cpu",
             "resolvedDevice": "cpu",
             "computeType": "int8",
-            "reason": "cuda_unavailable",
+            "reason": None,
         }
         assert after["transcriptionStatus"] == {
             **before["transcriptionStatus"],
@@ -4334,7 +4334,7 @@ def test_voice_settings_round_trip_before_brain_initialization(
         "warning": None,
     }
     assert transcription_status["model"] == "small"
-    assert transcription_status["requestedDevice"] == "auto"
+    assert transcription_status["requestedDevice"] == "cpu"
     assert set(transcription_status) == {
         "state",
         "model",

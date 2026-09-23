@@ -771,3 +771,43 @@ def test_job_lookup_identity_and_deadline_inputs_are_validated() -> None:
     finally:
         transcriber.release.set()
         runner.shutdown()
+
+
+def test_long_session_soak_releases_every_transcription_resource() -> None:
+    """Drain 256 mixed outcomes without retaining PCM, text, or worker slots."""
+
+    cycle_count = 256
+    outcomes: list[object] = [
+        (
+            TranscriptionFailedError("private soak failure")
+            if index % 11 == 0
+            else _RESULT
+        )
+        for index in range(cycle_count)
+    ]
+    transcriber = _SequenceTranscriber(outcomes)
+    runner = TranscriptionJobRunner(
+        transcriber,
+        config=_config(queued=0, retained=4),
+    )
+    try:
+        for index in range(cycle_count):
+            job_id = f"job-soak-{index}"
+            runner.submit(job_id, _request(f"soak{index}"))
+            snapshot = runner.wait(job_id, 1.0)
+            expected_state = "failed" if index % 11 == 0 else "succeeded"
+            assert snapshot.state == expected_state
+            runner.forget(job_id)
+
+            status = runner.get_status()
+            assert status.running_jobs == 0
+            assert status.queued_jobs == 0
+            assert status.occupied_slots == 0
+            assert status.retained_jobs == 0
+
+        assert transcriber.calls == cycle_count
+        assert runner.shutdown(timeout_seconds=2.0)
+        assert runner.get_status().closed is True
+        assert all(not worker.is_alive() for worker in runner._workers)
+    finally:
+        runner.shutdown(timeout_seconds=2.0)

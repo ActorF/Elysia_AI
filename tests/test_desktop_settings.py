@@ -162,7 +162,7 @@ def test_save_and_reload_round_trip_the_complete_allowlist(
             "speech_rate_percent": 125,
             "speech_volume_percent": 42,
             "transcript_review_mode": "manual",
-            "transcription_device": "auto",
+            "transcription_device": "cpu",
             "transcription_language": "auto",
             "transcription_model": "small",
             "voice_profile_id": "elysia",
@@ -497,7 +497,7 @@ def test_version_one_settings_load_without_quarantine_and_upgrade_on_edit(
 
     assert loaded.revision == 7
     assert loaded.values.transcription_model == "small"
-    assert loaded.values.transcription_device == "auto"
+    assert loaded.values.transcription_device == "cpu"
     assert loaded.values.transcription_language == "auto"
     assert loaded.values.auto_read_aloud is True
     assert loaded.values.speech_rate_percent == 100

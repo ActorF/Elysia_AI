@@ -28,6 +28,9 @@ jobs:
       - name: Check Python documentation coverage
         run: python scripts/check_python_documentation.py
 
+      - name: Check distribution asset boundary
+        run: python scripts/check_distribution_assets.py
+
       - name: Run tests
         run: python -m pytest -v
 
@@ -87,6 +90,31 @@ jobs:
           tests/test_windows_file_guard.py
           tests/test_windows_managed_process.py
           tests/test_managed_gpt_sovits.py
+
+      - name: Set up Node.js for package audit
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Install desktop dependencies
+        working-directory: desktop
+        run: npm ci
+
+      - name: Build unpacked Windows package
+        working-directory: desktop
+        run: npm run package
+
+      - name: Capture ASAR file listing
+        working-directory: desktop
+        run: npx --no-install asar list out\win-unpacked\resources\app.asar > "%RUNNER_TEMP%\elysia-asar-listing.txt"
+
+      - name: Audit packaged distribution assets
+        run: >-
+          python scripts\check_distribution_assets.py
+          --unpacked-tree desktop\out\win-unpacked
+          --asar-listing "%RUNNER_TEMP%\elysia-asar-listing.txt"
 
   desktop:
     runs-on: ubuntu-latest

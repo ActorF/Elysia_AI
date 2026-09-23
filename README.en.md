@@ -221,7 +221,7 @@ SHORT_TERM_MEMORY_TOKEN_BUDGET=2048
 MEMORY_RETRIEVAL_LIMIT=5
 DATA_IMPORT_MAX_BYTES=16777216
 TRANSCRIPTION_MODEL=small
-TRANSCRIPTION_DEVICE=auto
+TRANSCRIPTION_DEVICE=cpu
 TRANSCRIPTION_LANGUAGE=auto
 GPT_SOVITS_ALLOW_LOCAL_EVALUATION=False
 GPT_SOVITS_REQUEST_TIMEOUT_SECONDS=120
@@ -231,7 +231,7 @@ LOG_LEVEL=INFO
 DEBUG=False
 ```
 
-Desktop **Settings** can update the Chat model, Ollama origin, Memory limits, file import size, and the local transcription model, device, and default language. These public values use an independent revision and are written to `workspace/settings/global.json`. Transcription models are `tiny` / `base` / `small` / `medium` / `large-v3` / `turbo`; devices are `auto` / `cuda` / `cpu`; languages are `auto` / `zh` / `en`.
+Desktop **Settings** can update the Chat model, Ollama origin, Memory limits, file import size, and the local transcription model, device, and default language. These public values use an independent revision and are written to `workspace/settings/global.json`. Transcription models are `tiny` / `base` / `small` / `medium` / `large-v3` / `turbo`; devices are `auto` / `cuda` / `cpu`; languages are `auto` / `zh` / `en`. The default device is `cpu`, preserving GPU headroom for co-resident Ollama and GPT-SoVITS; opt in to `auto` or `cuda` only after measuring the three-component workload on the target machine.
 
 The same global settings contain seven Voice fields: automatic read-aloud, 50–200% speech rate, 0–100% volume, a bounded logical Voice Profile ID, captions, transcript review mode, and automatic re-listening. Five are live preferences: automatic read-aloud, volume, captions, the review mode—which currently accepts only `manual`—and automatic re-listening. Speech rate and Voice Profile are the two restart-bound Voice fields and remain separated as saved versus active values until the Backend restarts. Model, Ollama, Memory/file-limit, and STT runtime changes continue to follow their existing restart boundary; theme remains in this device's Renderer Storage and applies immediately.
 
@@ -285,6 +285,7 @@ Never commit future secrets, tokens, private prompts, or private configuration.
 - Automatic re-listening is off by default and is controlled by both the saved Settings default and a visible call-surface switch. When enabled, it starts another bounded capture only after Chat completes normally and any expected read-aloud also finishes safely. Muting, hanging up, closing Voice, switching Chat or Project, disabling the switch, losing a required capability or device, or reaching a failed or cancelled terminal pauses or exits the loop.
 - Settings and Voice display only sanitized enum-based readiness. A missing model, missing optional dependencies, unavailable CUDA, or initialization failure produces safe recovery guidance without exposing local paths, underlying exceptions, or native diagnostics; `auto` can use the safe CPU fallback.
 - A real local CPU-runtime/model transcription smoke path has been verified. This documentation does not claim a successful real-GPU validation. Automated coverage also exercises the fake runtime, cancellation, timeout, native draining, and late-result disposal.
+- On 2026-09-23, the three-component acceptance benchmark overlapped `qwen3.5:9b` and managed GPT-SoVITS on an RTX 4070 SUPER while CPU Faster-Whisper transcribed with both GPU models resident; observed global usage peaked at 9,824 / 12,282 MiB. See [Voice Performance, Safety, and Rights Acceptance](./docs/03-VOICE-PERFORMANCE-SAFETY-RIGHTS.md) for measurements, cleanup evidence, limitations, and revisit triggers.
 - Python now provides an engine-independent synthesis contract, a strict local Voice Profile catalog, a lazy composition root, and a GPT-SoVITS `/tts` adapter that accepts only loopback-IP origins; `localhost` is canonicalized to `127.0.0.1` before I/O. The general contract performs complete container/transport-framing checks, up to 32 MiB, for PCM WAV, Ogg Opus, and a supported ADTS AAC subset without claiming codec decodability. The current non-streaming GPT-SoVITS adapter configures only WAV/AAC and requires a bounded, `Content-Length`-declared, uncompressed, non-`Transfer-Encoding` response.
 - Real local acceptance synthesized the same fixed Chinese smoke sentence twice for each of `neutral`, `happy`, and `sad`; all six calls returned valid WAV audio. With the service stopped, the smoke command returned the stable `service_unreachable` code, and the full text-Chat regression still passed. `service_binding_unverified` means the service is online but its upstream API cannot attest that the catalog-declared weights are loaded; it is not an identity guarantee for those weights.
 - The desktop path copies exact chunks from `Brain.stream_chat()` and segments only at natural punctuation or a bounded length. One managed worker consumes a bounded FIFO. NDJSON carries correlation metadata only; PCM WAV travels over separate fd3 into Electron Main and then through IPC that is absent from public `DesktopApi` to Preload Web Audio. Every clip applies the saved speaker selection and current volume through a GainNode. An unavailable explicit device skips that clip instead of silently falling back to another speaker; zero volume silences the clip without disabling synthesis. React receives only Request/Chat, `playing|played|skipped` plus sequence, or terminal `completed|cancelled` status; it never receives WAV bytes, tokens, hashes, reply text, exact prompts, diagnostics, or local asset paths. Playback cancellation for the exact Request ID and Chat ID is validated by trusted Main. Profiles, the runtime, weights, and reference audio remain in ignored local directories. See [MODEL_LICENSE.md](./MODEL_LICENSE.md) for provenance and restrictions.
@@ -298,6 +299,7 @@ Never commit future secrets, tokens, private prompts, or private configuration.
 ```bat
 cd /d D:\Elysia_AI
 .venv\Scripts\python.exe scripts\check_python_documentation.py
+.venv\Scripts\python.exe scripts\check_distribution_assets.py
 .venv\Scripts\python.exe -m pytest -q
 .venv\Scripts\python.exe -m mypy agent attachments chats config core desktop_protocol memory models projects recovery scripts tools ui voice desktop_backend.py desktop_speech.py start.py
 ```
@@ -328,6 +330,25 @@ in the repository. Other developers must use a runtime and Profile they have
 verified themselves; this command does not imply that any model asset may be
 redistributed.
 
+After Ollama, the ignored Faster-Whisper model, the managed GPT-SoVITS runtime,
+and a rights-reviewed but still local-evaluation-only Voice Profile are ready, explicitly set
+`GPT_SOVITS_ALLOW_LOCAL_EVALUATION=True` and run the multi-cycle
+three-component resource benchmark:
+
+```bat
+cd /d D:\Elysia_AI
+.venv\Scripts\python.exe scripts\benchmark_voice_pipeline.py --cycles 3
+```
+
+The benchmark overlaps Ollama streaming with managed TTS, then uses CPU
+Faster-Whisper on the in-memory synthesized WAV while both GPU services remain
+resident. Its JSON contains only latency, Ollama `/api/ps` model VRAM, and
+global `nvidia-smi` samples; it neither saves nor emits audio, test text,
+transcripts, or local paths. Per-process VRAM is normally unavailable under
+Windows WDDM, so the global peak may include desktop and unrelated process
+load. Close unrelated GPU work and repeat enough cycles on the target machine.
+The current acceptance result is in the [full record](./docs/03-VOICE-PERFORMANCE-SAFETY-RIGHTS.md).
+
 ### Desktop
 
 ```bat
@@ -341,16 +362,20 @@ npm run build
 npm audit --audit-level=high
 ```
 
-`npm test` runs the shared protocol suite followed by the Electron Renderer UI suite. GitHub Actions runs Python and Desktop checks on Ubuntu, plus native attachment bridge, file-guard, and model-free managed GPT-SoVITS process/runtime boundary tests on Windows. Acceptance against the real local Runtime and model remains a configured-machine check.
+`npm test` runs the shared protocol suite followed by the Electron Renderer UI suite. GitHub Actions runs Python and Desktop checks on Ubuntu, plus native attachment bridge, file-guard, model-free managed GPT-SoVITS process/runtime boundary tests, and a real unpacked-package + ASAR distribution audit on Windows. Acceptance against the real local Runtime and model remains a configured-machine check.
 
 ### Local Packaging Smoke Test
 
 ```bat
 cd /d D:\Elysia_AI\desktop
 npm run package
+npx --no-install asar list out\win-unpacked\resources\app.asar > "%TEMP%\elysia-asar-listing.txt"
+cd /d D:\Elysia_AI
+.venv\Scripts\python.exe scripts\check_distribution_assets.py --unpacked-tree desktop\out\win-unpacked --asar-listing "%TEMP%\elysia-asar-listing.txt"
+del "%TEMP%\elysia-asar-listing.txt"
 ```
 
-The unpacked output is written to `desktop\out\win-unpacked`. `npm run make` can generate an unsigned NSIS installer, but the current artifact does not include Python, Ollama, or models and is not a standalone release.
+The unpacked output is written to `desktop\out\win-unpacked`. The audit scans both the real unpacked tree and its ASAR listing, rejecting model weights, audio, runtime/user data, archives, and link escapes; run it before publishing every artifact. `npm run make` can generate an unsigned NSIS installer, but the current artifact does not include Python, Ollama, or models and is not a standalone release.
 
 ---
 
@@ -442,8 +467,9 @@ Barge-in additionally requires the browser to enable and verify WebRTC echo
 cancellation; otherwise monitoring stops safely and the reply continues.
 Optional re-listening after a normal reply is connected and never sends its
 recognized text automatically. Real-time partial transcripts remain future
-work. The systematic real-device, room-echo, and long-call human matrix was not
-run and the project owner explicitly waived it as this delivery's closing gate;
+work. The 256-cycle Python STT, 256-turn speech-queue, and 200-turn Renderer
+Voice soaks prove that program-owned state drains. The systematic real-device,
+room-echo, and multi-hour human-call matrix was not run and the project owner explicitly waived it as this delivery's closing gate;
 that waiver is not a claim that those observations passed.
 
 ### Why can Project Sources not answer from file contents?
@@ -481,7 +507,7 @@ The project owner has expressly selected the official *Honkai Impact 3rd* Elysia
 
 Elysia AI is an unofficial fan-development project and is **not affiliated with, endorsed by, sponsored by, or partnered with HoYoverse / miHoYo**. *Honkai Impact 3rd*, Elysia, and the related characters, story, artwork, voices, performances, names, and trademarks belong to their respective rights holders. This project does not and cannot grant rights to that third-party material.
 
-Review the current [HoYoverse fan-made content help article](https://support.hoyoverse.com/hc/en-us/articles/51005649400729-What-are-the-guidelines-for-creating-and-selling-fan-made-content) and the [Honkai Impact 3rd material usage and fanwork guidelines](https://www.hoyolab.com/article/1463874) for your region and intended use. The latter expressly states that it does not apply to the Simplified Chinese edition released in mainland China and must not be treated as a universal authorization.
+The current [HoYoverse fan-made content help article](https://support.hoyoverse.com/hc/en-us/articles/51005649400729-What-are-the-guidelines-for-creating-and-selling-fan-made-content) was rechecked on 2026-09-23. Its currently linked product-specific fan guide, and the previously recorded [Honkai Impact 3rd material usage and fanwork guidelines](https://www.hoyolab.com/article/1463874), are not redistribution permission for the local voice model, recordings, or performance rights. See [MODEL_LICENSE.md](./MODEL_LICENSE.md) for the exact authorization gap and current decision.
 
 This repository currently has **no root source-code `LICENSE` file**. Repository visibility or clone access therefore does not grant a general right to copy, modify, redistribute, or commercially use the source. If the owner later chooses a software license, it should be added as a separate `LICENSE` and expressly exclude character IP, character corpora, model weights, reference audio, and other third-party assets.
 

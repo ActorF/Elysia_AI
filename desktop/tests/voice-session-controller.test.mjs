@@ -692,3 +692,104 @@ test('dispose rejects future actions and ignores asynchronous results', () => {
     captureSessionId: 'voice_capture_dispose',
   }), false)
 })
+
+test('drains two hundred voice turns without retaining an asynchronous owner', () => {
+  const controller = createBoundController()
+  const cycleCount = 200
+
+  for (let index = 0; index < cycleCount; index += 1) {
+    const owner = currentOwner(controller)
+    const captureSessionId = `voice_soak_${index}`
+    const transcriptionRequestId = `stt_soak_${index}`
+    const operationId = `chat_operation_soak_${index}`
+    const chatRequestId = `chat_request_soak_${index}`
+    const speechExpected = index % 2 === 0
+
+    controller.startListening(captureSessionId)
+    assert.equal(controller.acceptCaptureComplete({
+      ...owner,
+      captureSessionId,
+    }), true)
+    assert.equal(controller.acknowledgeTranscription({
+      ...owner,
+      captureSessionId,
+      requestId: transcriptionRequestId,
+    }), true)
+    assert.equal(controller.acceptTranscriptionFinal({
+      ...owner,
+      captureSessionId,
+      requestId: transcriptionRequestId,
+      text: `Soak transcript ${index}.`,
+      language: 'en',
+      languageProbability: 1,
+    }), true)
+    controller.confirmTranscript(operationId, speechExpected)
+    const chatOwner = {
+      ...owner,
+      operationId,
+      requestId: chatRequestId,
+    }
+    assert.equal(controller.acknowledgeChatRequest(chatOwner), true)
+
+    if (speechExpected) {
+      assert.equal(controller.acceptSpeechStatus({
+        ...chatOwner,
+        kind: 'playing',
+        sequence: 0,
+      }), true)
+      if (index % 4 === 0) {
+        assert.equal(controller.acceptChatTerminal({
+          ...chatOwner,
+          outcome: 'completed',
+        }), true)
+      }
+      assert.equal(controller.acceptSpeechStatus({
+        ...chatOwner,
+        kind: 'played',
+        sequence: 0,
+      }), true)
+      assert.equal(controller.acceptSpeechStatus({
+        ...chatOwner,
+        kind: 'terminal',
+        state: 'completed',
+      }), true)
+      if (index % 4 !== 0) {
+        assert.equal(controller.acceptChatTerminal({
+          ...chatOwner,
+          outcome: 'completed',
+        }), true)
+      }
+    } else {
+      assert.equal(controller.acceptChatTerminal({
+        ...chatOwner,
+        outcome: 'completed',
+      }), true)
+    }
+
+    const snapshot = controller.getSnapshot()
+    assert.equal(snapshot.phase, 'idle')
+    assert.equal(snapshot.captureSessionId, null)
+    assert.equal(snapshot.transcriptionRequestId, null)
+    assert.equal(snapshot.chatOperationId, null)
+    assert.equal(snapshot.chatRequestId, null)
+    assert.equal(snapshot.interruptionCaptureSessionId, null)
+    assert.equal(snapshot.transcript, null)
+    assert.equal(snapshot.activeSpeechSequence, null)
+    assert.equal(
+      JSON.stringify(snapshot).toLowerCase().includes('pcm'),
+      false,
+    )
+    assert.equal(controller.acceptChatTerminal({
+      ...chatOwner,
+      outcome: 'completed',
+    }), false)
+  }
+
+  const finalCompletionId = controller.getSnapshot().lastTurn?.completionId
+  assert.equal(finalCompletionId, cycleCount)
+  controller.hangUp()
+  const closed = controller.getSnapshot()
+  assert.equal(closed.active, false)
+  assert.equal(closed.binding, null)
+  assert.equal(closed.phase, 'idle')
+})

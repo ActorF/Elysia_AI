@@ -144,8 +144,10 @@ Git-ignored and must not be committed or packaged with the application.
 - Settings shows Global defaults beside the active Project's inheritance and
   the active Chat's pinned model. Speech recognition selects
   `tiny` / `base` / `small` / `medium` / `large-v3` / `turbo`,
-  `auto` / `cuda` / `cpu`, and `auto` / `zh` / `en`. Backend-backed changes
-  clearly request a restart before they are reported as active.
+  `auto` / `cuda` / `cpu`, and `auto` / `zh` / `en`. `cpu` is the default so
+  co-resident Ollama and GPT-SoVITS retain bounded GPU headroom; measured hosts
+  may explicitly opt in to `auto` or `cuda`. Backend-backed changes clearly
+  request a restart before they are reported as active.
 - Voice and Settings translate sanitized readiness enums into recovery actions.
   Missing optional dependencies or a model, unavailable CUDA, and initialization
   failures never expose model paths, native exception text, or library details
@@ -306,6 +308,23 @@ not run. They remain optional future observations after the project owner
 waived them as a delivery-closing gate; this engineering evidence must not be
 rewritten as though those human checks passed.
 
+### 2026-09-23 performance, cleanup, and distribution acceptance
+
+The final three-component benchmark overlapped `qwen3.5:9b` with the managed
+GPT-SoVITS worker on an RTX 4070 SUPER and then ran CPU Faster-Whisper while
+both GPU models remained resident. Global GPU use peaked at 9,824 of 12,282
+MiB. Three-cycle p50 values were 0.260 seconds to Ollama's first token, 1.291
+seconds for 4.06 seconds of synthesized audio, and 1.193 seconds for CPU STT.
+
+Automated soak coverage drains 256 transcription cycles, 256 completed or
+cancelled speech turns, and 200 Renderer Voice turns to zero owned jobs,
+credits, callbacks, buffers, and active IDs. This is lifecycle evidence, not a
+claim that the pending multi-hour human/device row above was performed.
+
+The complete method, per-cycle measurements, Ollama residency explanation,
+rights decision, package audit, limitations, and revisit triggers are in
+[`docs/03-VOICE-PERFORMANCE-SAFETY-RIGHTS.md`](../docs/03-VOICE-PERFORMANCE-SAFETY-RIGHTS.md).
+
 ## Manual local synthesis and playback smoke tests
 
 Prepare a GPT-SoVITS runtime and assets that you have the right to use, copy
@@ -363,11 +382,16 @@ npm run test:ui
 npm run build
 npm audit --audit-level=high
 npm run package
+npx --no-install asar list out\win-unpacked\resources\app.asar > "%TEMP%\elysia-asar-listing.txt"
+cd /d D:\Elysia_AI
+.venv\Scripts\python.exe scripts\check_distribution_assets.py --unpacked-tree desktop\out\win-unpacked --asar-listing "%TEMP%\elysia-asar-listing.txt"
+del "%TEMP%\elysia-asar-listing.txt"
 ```
 
 `npm run package` creates an unpacked desktop build in `desktop\out`.
 On Windows, `npm run make` additionally creates an unsigned NSIS installer.
-Neither output contains the GPT-SoVITS runtime, Voice Profile catalog, model
+The final audit scans the actual package tree and its ASAR listing; neither
+accepted output contains the GPT-SoVITS runtime, Voice Profile catalog, model
 weights, or reference audio.
 
 The application PNG and Windows ICO are derived from the official *Honkai

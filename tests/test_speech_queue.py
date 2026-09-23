@@ -2373,3 +2373,53 @@ def test_callback_shutdown_does_not_join_delivery_dependent_worker() -> None:
         assert isinstance(events[-1], SpeechTurnTerminal)
     finally:
         queue.shutdown(timeout_seconds=2.0)
+
+
+def test_long_session_soak_releases_every_speech_resource() -> None:
+    """Drain 256 completed or cancelled turns without retaining live credit."""
+
+    cycle_count = 256
+    synthesizer = _SequenceSynthesizer()
+    queue = SpeechSynthesisQueue(
+        SpeechQueueConfig(max_retained_turns=4)
+    )
+    try:
+        for index in range(cycle_count):
+            turn_id = f"turn-soak-{index}"
+            events: list[object] = []
+            turn = queue.start_turn(
+                turn_id,
+                _lease(synthesizer, lease_id=f"lease-soak-{index}"),
+                events.append,
+            )
+            if index % 7 == 0:
+                assert turn.cancel()
+            else:
+                turn.feed(f"Bounded soak sentence {index}. ")
+                turn.finish()
+
+            assert queue.wait_turn(turn_id, 1.0)
+            assert isinstance(events[-1], SpeechTurnTerminal)
+            expected_state = "cancelled" if index % 7 == 0 else "completed"
+            assert events[-1].state == expected_state
+            queue.forget_turn(turn_id)
+
+            status = queue.get_status()
+            assert status.active_turns == 0
+            assert status.retained_turns == 0
+            assert status.running_sentences == 0
+            assert status.queued_sentences == 0
+            assert status.occupied_slots == 0
+            assert status.pending_notifications == 0
+            assert status.pending_delivery_events == 0
+            assert status.pending_delivery_clips == 0
+            assert status.pending_delivery_bytes == 0
+            assert status.delivery_callbacks_in_progress == 0
+
+        assert queue.shutdown(timeout_seconds=2.0)
+        assert queue.get_status().closed is True
+        assert not queue._worker.is_alive()
+        assert not queue._notifier.is_alive()
+        assert not queue._aborter.is_alive()
+    finally:
+        queue.shutdown(timeout_seconds=2.0)
