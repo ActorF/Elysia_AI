@@ -4,7 +4,7 @@ import base64
 import hashlib
 import json
 import sys
-from collections.abc import Callable, Generator
+from collections.abc import Callable, Generator, Iterable
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from io import BytesIO, StringIO, TextIOWrapper
@@ -24,6 +24,7 @@ from attachments import (
     JsonAttachmentStore,
 )
 from chats import (
+    AttachmentId,
     AttachmentMetadata,
     ChatId,
     ChatNotFoundError,
@@ -454,6 +455,42 @@ class FakeBrain:
 
 JsonObject = dict[str, Any]
 SESSION_TOKEN = "0123456789abcdef0123456789abcdef"
+
+
+class _RecordingStartupAttachmentStore:
+    """Record startup storage calls for tests that do not exercise file I/O."""
+
+    def __init__(self) -> None:
+        """Initialize an ordered call log."""
+
+        self.calls: list[tuple[object, ...]] = []
+
+    def reconcile_owners(
+        self,
+        *,
+        chat_ids: Iterable[str],
+        project_ids: Iterable[str],
+    ) -> None:
+        """Record the canonical owner snapshot consumed at startup."""
+
+        self.calls.append(("owners", tuple(chat_ids), tuple(project_ids)))
+
+    def reconcile(
+        self,
+        scope: AttachmentScope,
+        referenced_ids: Iterable[str],
+    ) -> object:
+        """Record one surviving owner's canonical attachment references."""
+
+        self.calls.append(
+            (
+                "reconcile",
+                scope.kind,
+                scope.id,
+                tuple(referenced_ids),
+            )
+        )
+        return object()
 
 
 class _RecordingSpeechTurn:
@@ -1739,6 +1776,289 @@ def test_speech_shutdown_boundary_suppresses_callback_and_late_output(
         assert _success_result(messages, "shutdown-speech") == {"stopped": True}
 
 
+def test_initialize_reconciles_all_chat_references_after_owner_scopes() -> None:
+    """Reconcile active and archived Chats after the canonical owner pass."""
+
+    fake_brain = FakeBrain()
+    active_attachment = create_attachment_metadata(
+        file_name="active.txt",
+        media_type="text/plain",
+        size_bytes=6,
+    )
+    active_message = create_chat_message(
+        role="user",
+        content="Active",
+        attachments=(active_attachment,),
+        created_at=fake_brain.chat.created_at + timedelta(seconds=1),
+    )
+    active_chat = replace(
+        fake_brain.chat,
+        messages=(active_message,),
+        updated_at=active_message.created_at,
+    )
+    fake_brain.chat = active_chat
+    fake_brain.add_chat(active_chat)
+
+    archived_chat = create_chat_session(
+        title="Archived",
+        mode="chat",
+        model_name=fake_brain.model_name,
+    )
+    archived_attachment = create_attachment_metadata(
+        file_name="archived.txt",
+        media_type="text/plain",
+        size_bytes=8,
+    )
+    archived_message = create_chat_message(
+        role="user",
+        content="Archived",
+        attachments=(archived_attachment,),
+        created_at=archived_chat.created_at + timedelta(seconds=1),
+    )
+    archived_chat = replace(
+        archived_chat,
+        messages=(archived_message,),
+        updated_at=archived_message.created_at,
+        is_archived=True,
+    )
+    fake_brain.add_chat(archived_chat)
+    project = create_project(name="Sources only")
+    fake_brain.add_project(project)
+
+    store = _RecordingStartupAttachmentStore()
+    _brain, messages = _run_bridge(
+        lambda _chat_id: [_handshake_request(), _initialize_request()],
+        fake_brain=fake_brain,
+        attachment_store=cast(JsonAttachmentStore, store),
+    )
+
+    assert _success_result(messages, "initialize-1")["chatId"] == str(
+        active_chat.chat_id
+    )
+    assert store.calls == [
+        (
+            "owners",
+            (str(active_chat.chat_id), str(archived_chat.chat_id)),
+            (str(project.project_id),),
+        ),
+        (
+            "reconcile",
+            "chat",
+            str(active_chat.chat_id),
+            (str(active_attachment.attachment_id),),
+        ),
+        (
+            "reconcile",
+            "chat",
+            str(archived_chat.chat_id),
+            (str(archived_attachment.attachment_id),),
+        ),
+        (
+            "reconcile",
+            "project",
+            str(project.project_id),
+            (),
+        ),
+    ]
+
+
+def test_initialize_repairs_persisted_references_including_archived_chat(
+    tmp_path: Path,
+) -> None:
+    """Repair interrupted active and archived Chat commits during startup."""
+
+    fake_brain = FakeBrain()
+    storage_root = tmp_path / "attachments"
+    store = JsonAttachmentStore(storage_root, max_file_bytes=1_024)
+
+    active_scope = AttachmentScope(
+        kind="chat",
+        id=str(fake_brain.chat.chat_id),
+    )
+    active_source = tmp_path / "active.txt"
+    active_source.write_text("active", encoding="utf-8")
+    active_item = store.stage_files(
+        active_scope,
+        (active_source.resolve(),),
+    ).attachments[0]
+    store.claim_chat(active_scope, (active_item.attachment_id,))
+    active_message = create_chat_message(
+        role="user",
+        content="Active attachment",
+        attachments=(
+            AttachmentMetadata(
+                attachment_id=AttachmentId(active_item.attachment_id),
+                file_name=active_item.file_name,
+                media_type=active_item.media_type,
+                size_bytes=active_item.size_bytes,
+            ),
+        ),
+        created_at=fake_brain.chat.created_at + timedelta(seconds=1),
+    )
+    active_chat = replace(
+        fake_brain.chat,
+        messages=(active_message,),
+        updated_at=active_message.created_at,
+    )
+    fake_brain.chat = active_chat
+    fake_brain.add_chat(active_chat)
+
+    archived_chat = create_chat_session(
+        title="Archived attachment",
+        mode="chat",
+        model_name=fake_brain.model_name,
+    )
+    archived_scope = AttachmentScope(
+        kind="chat",
+        id=str(archived_chat.chat_id),
+    )
+    archived_source = tmp_path / "archived.txt"
+    archived_source.write_text("archived", encoding="utf-8")
+    orphan_source = tmp_path / "orphan.txt"
+    orphan_source.write_text("orphan", encoding="utf-8")
+    archived_items = store.stage_files(
+        archived_scope,
+        (archived_source.resolve(), orphan_source.resolve()),
+    ).attachments
+    archived_item, orphan_item = archived_items
+    store.claim_chat(
+        archived_scope,
+        (archived_item.attachment_id, orphan_item.attachment_id),
+    )
+    store.mark_committed(archived_scope, (orphan_item.attachment_id,))
+    archived_message = create_chat_message(
+        role="user",
+        content="Archived attachment",
+        attachments=(
+            AttachmentMetadata(
+                attachment_id=AttachmentId(archived_item.attachment_id),
+                file_name=archived_item.file_name,
+                media_type=archived_item.media_type,
+                size_bytes=archived_item.size_bytes,
+            ),
+        ),
+        created_at=archived_chat.created_at + timedelta(seconds=1),
+    )
+    archived_chat = replace(
+        archived_chat,
+        messages=(archived_message,),
+        updated_at=archived_message.created_at,
+        is_archived=True,
+    )
+    fake_brain.add_chat(archived_chat)
+
+    _brain, messages = _run_bridge(
+        lambda _chat_id: [_handshake_request(), _initialize_request()],
+        fake_brain=fake_brain,
+        attachment_store=store,
+    )
+
+    assert _success_result(messages, "initialize-1")["chatId"] == str(
+        active_chat.chat_id
+    )
+    for scope, expected_id in (
+        (active_scope, active_item.attachment_id),
+        (archived_scope, archived_item.attachment_id),
+    ):
+        manifest = json.loads(
+            (
+                storage_root
+                / scope.kind
+                / scope.id
+                / "manifest.json"
+            ).read_text(encoding="utf-8")
+        )
+        assert [
+            (item["attachment_id"], item["status"])
+            for item in manifest["items"]
+        ] == [(expected_id, "committed")]
+        assert [
+            path.name
+            for path in (
+                storage_root / scope.kind / scope.id / "originals"
+            ).glob("*.blob")
+        ] == [f"{manifest['items'][0]['file_id']}.blob"]
+
+
+def test_initialize_reclaims_crash_left_project_originals(
+    tmp_path: Path,
+) -> None:
+    """Reconcile valid Project scopes even without message references."""
+
+    fake_brain = FakeBrain()
+    project = create_project(name="Recovered sources")
+    fake_brain.add_project(project)
+    storage_root = tmp_path / "attachments"
+    store = JsonAttachmentStore(storage_root, max_file_bytes=1_024)
+    originals = (
+        storage_root
+        / "project"
+        / str(project.project_id)
+        / "originals"
+    )
+    originals.mkdir(parents=True)
+    digest = hashlib.sha256(b"crash-left bytes").hexdigest()
+    orphan = originals / f"file_{digest}.blob"
+    orphan.write_bytes(b"crash-left bytes")
+
+    _brain, messages = _run_bridge(
+        lambda _chat_id: [_handshake_request(), _initialize_request()],
+        fake_brain=fake_brain,
+        attachment_store=store,
+    )
+
+    assert _success_result(messages, "initialize-1")["chatId"] == str(
+        fake_brain.chat.chat_id
+    )
+    assert not orphan.exists()
+
+
+def test_initialize_fails_closed_when_existing_chat_storage_is_corrupt(
+    tmp_path: Path,
+) -> None:
+    """Keep the Backend uninitialized when startup reconciliation is unsafe."""
+
+    fake_brain = FakeBrain()
+    storage_root = tmp_path / "attachments"
+    store = JsonAttachmentStore(storage_root, max_file_bytes=1_024)
+    scope = AttachmentScope(kind="chat", id=str(fake_brain.chat.chat_id))
+    source = tmp_path / "corrupt.txt"
+    source.write_text("expected", encoding="utf-8")
+    store.stage_files(scope, (source.resolve(),))
+    file_id = store.list_file_records(scope)[0].file_id
+    original = (
+        storage_root
+        / scope.kind
+        / scope.id
+        / "originals"
+        / f"{file_id}.blob"
+    )
+    original.write_bytes(b"tampered")
+
+    _brain, messages = _run_bridge(
+        lambda _chat_id: [
+            _handshake_request(),
+            _initialize_request(),
+            _request(
+                "chat-list-after-failed-initialize",
+                "chat.list",
+                {"includeArchived": True},
+            ),
+        ],
+        fake_brain=fake_brain,
+        attachment_store=store,
+    )
+
+    assert _error(messages, "initialize-1")["code"] == (
+        "attachment.storage_failed"
+    )
+    assert _error(
+        messages,
+        "chat-list-after-failed-initialize",
+    )["code"] == "protocol.not_initialized"
+    assert str(original) not in json.dumps(messages)
+
+
 @pytest.mark.skipif(
     sys.platform != "win32",
     reason="attachment.add accepts only native Windows drive-absolute paths",
@@ -1868,10 +2188,10 @@ def test_generation_terminal_response_waits_for_attachment_reconciliation(
         scope: AttachmentScope,
         referenced_ids: tuple[str, ...] = (),
     ) -> object:
-        """Block the first reconciliation until the test inspects response order."""
+        """Block post-generation reconciliation after startup has completed."""
         nonlocal reconcile_calls
         reconcile_calls += 1
-        if reconcile_calls == 1:
+        if reconcile_calls == 2:
             reconcile_started.set()
             assert release_reconcile.wait(2.0)
         return real_reconcile(scope, referenced_ids)
@@ -2636,6 +2956,7 @@ def test_chat_list_serializes_metadata_messages_and_attachments() -> None:
         is_archived=True,
     )
     fake_brain.add_chat(archived_chat)
+    attachment_store = _RecordingStartupAttachmentStore()
 
     _, messages = _run_bridge(
         lambda _chat_id: [
@@ -2653,6 +2974,7 @@ def test_chat_list_serializes_metadata_messages_and_attachments() -> None:
             ),
         ],
         fake_brain=fake_brain,
+        attachment_store=cast(JsonAttachmentStore, attachment_store),
     )
 
     visible_result = _success_result(messages, "visible-list")

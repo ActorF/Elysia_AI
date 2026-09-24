@@ -125,17 +125,40 @@ def test_stage_persists_only_safe_metadata_and_an_opaque_blob(tmp_path: Path) ->
     manifest_text = _manifest_path(tmp_path, scope).read_text(encoding="utf-8")
     manifest = json.loads(manifest_text)
     assert str(source) not in manifest_text
-    assert set(manifest) == {"schema_version", "scope", "items"}
+    assert set(manifest) == {
+        "schema_version",
+        "scope",
+        "items",
+        "derived",
+    }
+    assert manifest["schema_version"] == 2
+    assert manifest["derived"] == []
     assert set(manifest["items"][0]) == {
+        "record_schema_version",
         "attachment_id",
+        "file_id",
         "file_name",
         "media_type",
         "size_bytes",
         "sha256",
+        "origin",
+        "imported_at",
+        "link_file_name",
+        "link_media_type",
+        "linked_at",
+        "role",
         "status",
     }
-    blobs = _blob_files(tmp_path, scope, "drafts")
-    assert [blob.name for blob in blobs] == [f"{item.attachment_id}.blob"]
+    records = store.list_file_records(scope)
+    ownerships = store.list_file_ownerships(scope)
+    assert len(records) == 1
+    assert records[0].file_id == f"file_{records[0].sha256}"
+    assert ownerships[0].link_id == item.attachment_id
+    assert ownerships[0].file_id == records[0].file_id
+    assert ownerships[0].role == "chat_attachment"
+    assert all("path" not in field for field in manifest["items"][0])
+    blobs = _blob_files(tmp_path, scope, "originals")
+    assert [blob.name for blob in blobs] == [f"{records[0].file_id}.blob"]
     assert blobs[0].read_bytes() == b"local context"
 
     store.close()
@@ -192,7 +215,7 @@ def test_equal_content_is_deduplicated_within_one_scope(tmp_path: Path) -> None:
 
     assert len(state.attachments) == 1
     assert repeated == state
-    assert len(_blob_files(tmp_path, scope, "drafts")) == 1
+    assert len(_blob_files(tmp_path, scope, "originals")) == 1
 
 
 def test_smaller_restart_limit_keeps_existing_drafts_visible(
@@ -243,7 +266,7 @@ def test_batch_failure_rolls_back_every_new_blob_and_manifest_change(
         store.stage_files(scope, [valid, oversized])
 
     assert store.list_state(scope).attachments == ()
-    assert _blob_files(tmp_path, scope, "drafts") == ()
+    assert _blob_files(tmp_path, scope, "originals") == ()
 
 
 def test_manifest_replace_failure_rolls_back_a_staged_batch(
@@ -270,7 +293,7 @@ def test_manifest_replace_failure_rolls_back_a_staged_batch(
     with pytest.raises(AttachmentStorageError, match="manifest"):
         store.stage_files(scope, [source])
 
-    assert _blob_files(tmp_path, scope, "drafts") == ()
+    assert _blob_files(tmp_path, scope, "originals") == ()
     assert not _manifest_path(tmp_path, scope).exists()
 
 
@@ -310,7 +333,7 @@ def test_directory_relative_path_and_internal_blob_are_rejected(tmp_path: Path) 
     scope = _chat_scope()
     source = _source(tmp_path, "first.txt", b"content")
     state = store.stage_files(scope, [source])
-    internal_blob = _blob_files(tmp_path, scope, "drafts")[0]
+    internal_blob = _blob_files(tmp_path, scope, "originals")[0]
 
     with pytest.raises(AttachmentValidationError, match="path is invalid"):
         store.stage_files(scope, [Path("relative.txt")])
@@ -322,6 +345,25 @@ def test_directory_relative_path_and_internal_blob_are_rejected(tmp_path: Path) 
         store.stage_files(scope, [internal_blob])
 
     assert store.list_state(scope) == state
+
+
+def test_external_hard_link_to_internal_storage_is_rejected(
+    tmp_path: Path,
+) -> None:
+    """Prevent inode aliases from bypassing the internal-path boundary."""
+
+    store = _store(tmp_path)
+    internal = tmp_path / "workspace" / "attachments" / "private.txt"
+    internal.write_bytes(b"private storage")
+    external = tmp_path / "incoming" / "hard-link.txt"
+    external.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.link(internal, external)
+    except OSError:
+        pytest.skip("This host does not allow test hard links.")
+
+    with pytest.raises(AttachmentValidationError, match="regular local"):
+        store.stage_files(_chat_scope("hard-link"), [external.resolve()])
 
 
 def test_symlink_source_is_rejected_without_leaking_its_path(tmp_path: Path) -> None:
@@ -376,8 +418,54 @@ def test_source_change_during_copy_rolls_back_the_temporary_file(
     with pytest.raises(AttachmentValidationError, match="changed"):
         store.stage_files(scope, [source])
 
-    drafts = _manifest_path(tmp_path, scope).parent / "drafts"
-    assert not drafts.exists() or tuple(drafts.iterdir()) == ()
+    originals = _manifest_path(tmp_path, scope).parent / "originals"
+    assert not originals.exists() or tuple(originals.iterdir()) == ()
+
+
+def test_source_swap_after_path_validation_is_rejected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reject a different file substituted between path validation and open."""
+
+    store = _store(tmp_path)
+    scope = _chat_scope("source-swap")
+    source = _source(tmp_path, "approved.txt", b"approved bytes")
+    replacement = _source(tmp_path, "replacement.txt", b"replacement bytes")
+    real_open = attachment_store.os.open
+    normalized_source = os.path.normcase(os.path.abspath(source))
+    swapped = False
+
+    def swap_before_open(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        flags: int,
+        *args: object,
+        **kwargs: object,
+    ) -> int:
+        """Replace only the approved source immediately before its descriptor opens."""
+
+        nonlocal swapped
+        normalized_path = os.path.normcase(
+            os.path.abspath(os.fsdecode(path))
+        )
+        if not swapped and normalized_path == normalized_source:
+            replacement.replace(source)
+            swapped = True
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(attachment_store.os, "open", swap_before_open)
+
+    with pytest.raises(
+        AttachmentValidationError,
+        match="changed after path validation",
+    ) as error:
+        store.stage_files(scope, [source])
+
+    assert swapped is True
+    assert str(source) not in str(error.value)
+    manifest = _manifest_path(tmp_path, scope)
+    assert not manifest.exists()
+    assert _blob_files(tmp_path, scope, "originals") == ()
 
 
 def test_remove_is_scope_isolated_and_rejects_claimed_items(tmp_path: Path) -> None:
@@ -404,7 +492,7 @@ def test_remove_is_scope_isolated_and_rejects_claimed_items(tmp_path: Path) -> N
     restarted = _store(tmp_path)
     assert restarted.list_state(first_scope).attachments == (item,)
     assert restarted.remove(first_scope, item.attachment_id).attachments == ()
-    assert _blob_files(tmp_path, first_scope, "drafts") == ()
+    assert _blob_files(tmp_path, first_scope, "originals") == ()
 
 
 def test_live_store_lock_prevents_a_second_backend_releasing_claims(
@@ -466,15 +554,39 @@ def test_chat_commit_removes_draft_state_but_keeps_referenced_blob(
 
     assert committed_state.attachments == ()
     assert _blob_files(tmp_path, scope, "drafts") == ()
-    committed = _blob_files(tmp_path, scope, "committed")
-    assert [path.name for path in committed] == [f"{item.attachment_id}.blob"]
+    originals = _blob_files(tmp_path, scope, "originals")
+    assert len(originals) == 1
 
     store.close()
     restarted = _store(tmp_path)
     assert restarted.list_state(scope, [item.attachment_id]).attachments == ()
-    assert len(_blob_files(tmp_path, scope, "committed")) == 1
+    assert len(_blob_files(tmp_path, scope, "originals")) == 1
     restarted.reconcile(scope, ())
-    assert _blob_files(tmp_path, scope, "committed") == ()
+    assert _blob_files(tmp_path, scope, "originals") == ()
+
+
+def test_empty_claim_release_does_not_reconcile_away_committed_history(
+    tmp_path: Path,
+) -> None:
+    """Keep canonical history intact when there are no claims to release."""
+
+    store = _store(tmp_path)
+    scope = _chat_scope("empty-release")
+    item = store.stage_files(
+        scope,
+        [_source(tmp_path, "history.txt", b"history")],
+    ).attachments[0]
+    store.claim_chat(scope, [item.attachment_id])
+    store.mark_committed(scope, [item.attachment_id])
+    original = _blob_files(tmp_path, scope, "originals")[0]
+
+    state = store.release_chat_claims(scope, ())
+
+    assert state.attachments == ()
+    assert [
+        link.link_id for link in store.list_file_ownerships(scope)
+    ] == [item.attachment_id]
+    assert original.read_bytes() == b"history"
 
 
 def test_chat_commit_rolls_blob_back_when_manifest_replace_fails(
@@ -505,10 +617,11 @@ def test_chat_commit_rolls_blob_back_when_manifest_replace_fails(
     with pytest.raises(AttachmentStorageError, match="manifest"):
         store.mark_committed(scope, [item.attachment_id])
 
-    assert [path.name for path in _blob_files(tmp_path, scope, "drafts")] == [
-        f"{item.attachment_id}.blob"
-    ]
-    assert _blob_files(tmp_path, scope, "committed") == ()
+    assert len(_blob_files(tmp_path, scope, "originals")) == 1
+    stored_items = json.loads(
+        _manifest_path(tmp_path, scope).read_text(encoding="utf-8")
+    )["items"]
+    assert stored_items[0]["status"] == "claimed"
 
 
 def test_interrupted_chat_commit_is_repaired_from_canonical_references(
@@ -521,10 +634,7 @@ def test_interrupted_chat_commit_is_repaired_from_canonical_references(
         scope,
         [_source(tmp_path, "context.md", b"context")],
     ).attachments[0]
-    draft = _blob_files(tmp_path, scope, "drafts")[0]
-    committed_dir = _manifest_path(tmp_path, scope).parent / "committed"
-    committed_dir.mkdir(exist_ok=True)
-    os.replace(draft, committed_dir / draft.name)
+    store.claim_chat(scope, [item.attachment_id])
 
     state = store.reconcile(scope, [item.attachment_id])
 
@@ -535,7 +645,7 @@ def test_interrupted_chat_commit_is_repaired_from_canonical_references(
     assert len(stored_items) == 1
     assert stored_items[0]["attachment_id"] == item.attachment_id
     assert stored_items[0]["status"] == "committed"
-    assert len(_blob_files(tmp_path, scope, "committed")) == 1
+    assert len(_blob_files(tmp_path, scope, "originals")) == 1
 
 
 def test_reconcile_verifies_committed_blob_integrity(tmp_path: Path) -> None:
@@ -548,8 +658,8 @@ def test_reconcile_verifies_committed_blob_integrity(tmp_path: Path) -> None:
     ).attachments[0]
     store.claim_chat(scope, [item.attachment_id])
     store.mark_committed(scope, [item.attachment_id])
-    committed = _blob_files(tmp_path, scope, "committed")[0]
-    committed.write_bytes(b"tampered")
+    original = _blob_files(tmp_path, scope, "originals")[0]
+    original.write_bytes(b"tampered")
 
     with pytest.raises(AttachmentStorageError, match="integrity"):
         store.reconcile(scope, [item.attachment_id])
@@ -599,15 +709,19 @@ def test_reconcile_removes_temporary_and_orphan_files(tmp_path: Path) -> None:
     scope_root = _manifest_path(tmp_path, scope).parent
     drafts = scope_root / "drafts"
     committed = scope_root / "committed"
+    originals = scope_root / "originals"
     drafts.mkdir(parents=True)
     committed.mkdir()
-    (drafts / ".upload-crash.tmp").write_bytes(b"partial")
+    originals.mkdir()
+    (drafts / ".upload-abcdefgh.tmp").write_bytes(b"partial")
     (drafts / "attachment_orphan.blob").write_bytes(b"orphan")
     (committed / "attachment_orphan2.blob").write_bytes(b"orphan")
+    (originals / f"file_{'a' * 64}.blob").write_bytes(b"orphan")
 
     assert store.reconcile(scope, ()).attachments == ()
     assert tuple(drafts.iterdir()) == ()
     assert tuple(committed.iterdir()) == ()
+    assert tuple(originals.iterdir()) == ()
 
 
 def test_corrupt_blob_is_reported_with_a_stable_path_free_error(tmp_path: Path) -> None:
@@ -618,7 +732,7 @@ def test_corrupt_blob_is_reported_with_a_stable_path_free_error(tmp_path: Path) 
         scope,
         [_source(tmp_path, "notes.txt", b"expected")],
     )
-    blob = _blob_files(tmp_path, scope, "drafts")[0]
+    blob = _blob_files(tmp_path, scope, "originals")[0]
     blob.write_bytes(b"changed")
 
     with pytest.raises(AttachmentStorageError, match="integrity") as error:
@@ -730,3 +844,51 @@ def test_startup_restores_ambiguous_delete_then_reconciles_owner(
     owner_deleted = _store(tmp_path)
     owner_deleted.reconcile_owners(chat_ids=(), project_ids=())
     assert not scope_root.exists()
+
+
+def test_startup_purges_an_exact_committed_delete_tombstone(
+    tmp_path: Path,
+) -> None:
+    """Purge only a committed deletion directory with the complete grammar."""
+
+    store = _store(tmp_path)
+    scope = _chat_scope("committed-delete")
+    store.stage_files(
+        scope,
+        [_source(tmp_path, "notes.txt", b"notes")],
+    )
+    scope_root = _manifest_path(tmp_path, scope).parent
+    tombstone = scope_root.with_name(
+        f".{scope.id}.delete-{'c' * 32}.tmp"
+    )
+    os.replace(scope_root, tombstone)
+    store.close()
+
+    restarted = _store(tmp_path)
+
+    assert not tombstone.exists()
+    restarted.close()
+
+
+def test_startup_rejects_unknown_hidden_tmp_without_deleting_it(
+    tmp_path: Path,
+) -> None:
+    """Fail closed instead of treating an arbitrary hidden tmp as a deletion."""
+
+    store = _store(tmp_path)
+    store.close()
+    unknown = (
+        tmp_path
+        / "workspace"
+        / "attachments"
+        / "chat"
+        / ".not-a-delete.tmp"
+    )
+    unknown.mkdir(parents=True)
+    sentinel = unknown / "keep.txt"
+    sentinel.write_bytes(b"must remain")
+
+    with pytest.raises(AttachmentStorageError, match="unknown hidden entry"):
+        _store(tmp_path)
+
+    assert sentinel.read_bytes() == b"must remain"

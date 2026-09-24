@@ -38,7 +38,8 @@ desktop_backend.py
         │   ├── Memory / MemoryRetriever
         │   ├── Legacy Migration
         │   └── Ollama model adapter
-        └── JsonAttachmentStore + owner reconciliation
+        └── AttachmentService → AttachmentRepository → JsonAttachmentStore
+            └── owner/reference reconciliation + verified file access
     └── optional speech copy
         └── desktop_speech.py
             └── sentence queue → managed worker → PCM WAV
@@ -94,6 +95,7 @@ start.create_data_portability_service()
 | `desktop_speech.py` | 桌面语音 Composition Root；后台按 Active `voiceProfileId` 与固定 `neutral` 情绪获取 Managed GPT-SoVITS Lease，并把 Active `speechRatePercent` 作为绝对 `0.5–2.0` Speed Factor 使用。在启动期间只缓存一个有界 Turn，随后接入既有自然分句/FIFO Queue；先经 NDJSON 发精确 Clip Metadata，再向私有 fd3 写匹配 WAV。取消、Runtime/Queue/Pipe 失败或退出只关闭可选 Speech 路径，不阻塞文字 Chat。 | `desktop_backend.py`、`voice/managed_gpt_sovits.py`、`voice/speech_queue.py`、`desktop_protocol/audio_channel.py` |
 | `docs/decisions/0001-desktop-shell.md` | Electron 与 Tauri 选型 ADR；记录测量方法、能力差距、风险、最终选择和重访门槛。 | `desktop/benchmarks/measure-shell.ps1`、Desktop 技术决策 |
 | `docs/03-VOICE-PERFORMANCE-SAFETY-RIGHTS.md` | 记录最终三组件实机测量、CPU STT 资源策略、长会话自动化清理证据、Voice Rights 决定、分发门禁和重测条件。 | Module 9 验收、`MODEL_LICENSE.md`、Benchmark/Soak/Package Audit |
+| `docs/04-FILE-METADATA-STORAGE.md` | 记录版本化 File Metadata、Scope-local Content-addressed Storage、Ownership/Derived 关系、Manifest v2、迁移、验证读取、删除回滚、Renderer 隐私边界和当前非目标。 | `attachments/`、Desktop Backend、后续 Document Loaders |
 | `data/characters/elysia_character_reference_zh.md` | 爱莉希雅背景、语录和转写参考资料；当前 Runtime 不会自动将它注入每次 Prompt。 | 人工角色研究；受 `MODEL_LICENSE.md` 的来源/授权提醒约束 |
 
 本机还存在被 Git 忽略的 `docs/02-ROADMAP.md`。它是当前 Stage/Module 规划来源，但新的 Git Clone 不会自动得到它，因此不能作为唯一公共文档。
@@ -203,11 +205,13 @@ ChatSession.project_id
 | 文件 | 实际用途 | 主要连接 |
 | --- | --- | --- |
 | `attachments/__init__.py` | Attachment Package 的稳定公共 API。 | Desktop Backend、Brain、测试 |
-| `attachments/domain.py` | 定义不包含真实路径的 AttachmentScope、AttachmentItem 和 AttachmentState。 | Store、Protocol、Renderer-safe State |
-| `attachments/exceptions.py` | 定义稳定、不会泄漏本地路径的 Attachment 错误。 | Store、Desktop Backend |
-| `attachments/store.py` | 安全 Blob/Manifest Store；Scope 隔离、扩展名/大小/数量限制、SHA-256、去重、Draft/Claim/Commit、进程锁、崩溃对账和路径防护。 | Electron 文件选择、Desktop Backend、Chat Message Commit |
+| `attachments/domain.py` | 定义不包含真实路径的 AttachmentScope、AttachmentItem/State，以及版本化 OriginalFileMetadata、FileOwnership 和 DerivedFileRelation；强制 File ID/Hash、UTC 时间、来源闭集及 Chat/Project Role 对应关系。 | Repository、Service、Store、Protocol、Renderer-safe State |
+| `attachments/exceptions.py` | 定义稳定、不会泄漏本地路径的 Attachment 验证、冲突、未找到、存储和导入取消错误。 | Store、Desktop Backend |
+| `attachments/repository.py` | 定义 AttachmentRepository Protocol；统一既有 Draft/Claim/Commit 生命周期、Owner 对账、版本化 File Metadata、Derived 关系、Scope-bound Verified Read 和单/多 Owner 删除事务。 | `attachments/service.py`、`attachments/store.py`、测试替身 |
+| `attachments/service.py` | Application Service；把真实路径限制在受信 Import 边界，以 Scope + opaque File ID 提供验证读取，并协调 Chat、Project 与 linked Chats 的 Owner-aware 删除。 | Desktop Backend、AttachmentRepository、后续可信 Loader |
+| `attachments/store.py` | Manifest v2 与 Scope-local Content-addressed Blob Store；按内容 Hash 在单一 Scope 内去重，保存 Original/Ownership/Derived 关系，并实现 v1 原子迁移、Descriptor-pinned Copy/Read、取消回滚、进程锁、启动恢复、Owner/Reference 对账和多 Scope 删除 Tombstone。 | Electron 文件选择、AttachmentService、Desktop Backend、Chat Message Commit、后续 Document Loaders |
 
-当前 Attachment 只进行安全存储与 Metadata 管理，不解析文件内容，也没有 Chunking、Embedding、Vector Store 或 RAG。
+当前 Attachment 已完成安全原始文件存储、版本化 Metadata/Ownership、Derived 关系登记和可信 Backend 读取边界。它仍不解析文件内容，也不生成 Derived Bytes、Chunk、Embedding、Vector Store、Retriever、Citation 或 RAG；这些属于后续 Stage 8 Modules。
 
 ## 12. Voice Python 层：`voice/`
 
@@ -376,6 +380,9 @@ Project Memory 页面目前仍是明确 Placeholder。Project Source 只安全�
 | `tests/test_active_conversation_integration.py` | Brain 的多 Chat 上下文、Scoped Memory 和失败隔离。 |
 | `tests/test_active_conversation_service.py` | Busy Token、快照、Turn/Summary Commit、Retry 和 Chat actions。 |
 | `tests/test_attachment_service.py` | Attachment Store 生命周期、Manifest、锁、恢复和文件系统安全。 |
+| `tests/test_attachment_file_domain.py` | 版本化 Original/Ownership/Derived Domain 值、内容稳定 File ID、UTC 时间、安全名称、Scope/Role 对应和路径字段禁入。 |
+| `tests/test_attachment_application_service.py` | AttachmentService 的 Repository Delegation、Scope-bound Verified Read、Derived 登记以及 Chat/Project 多 Owner 删除回滚边界。 |
+| `tests/test_file_metadata_store.py` | Manifest v2、v1 Migration、Scope-local 去重、路径隐私、Derived 级联、取消清理、跨 Scope 删除、Verified Read 完整性和未知 Schema Fail-closed。 |
 | `tests/test_brain.py` | Brain 的 Chat、Canonical Streaming、跨 Chunk 空白、Memory、Summary、Retry、Cancel 和 Attachment 协调。 |
 | `tests/test_chat_domain.py` | Chat、Message、Summary、Attachment Metadata、ID 和不变量。 |
 | `tests/test_chat_repository.py` | Index/Detail、CRUD、原子失败、重启和 Index Recovery。 |

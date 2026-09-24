@@ -73,6 +73,23 @@ _SAFE_WORKSPACE_ROOTS: Final = frozenset({
     "migrations",
     "settings",
 })
+_ATTACHMENT_SCOPE_ENTRIES: Final = frozenset({
+    "manifest.json",
+    "originals",
+    "drafts",
+    "committed",
+})
+_ATTACHMENT_MANIFEST_V1_FIELDS: Final = frozenset({
+    "schema_version",
+    "scope",
+    "items",
+})
+_ATTACHMENT_MANIFEST_V2_FIELDS: Final = frozenset({
+    "schema_version",
+    "scope",
+    "items",
+    "derived",
+})
 _SAFE_FILE_NAME = re.compile(r"[^A-Za-z0-9_.-]+")
 _SAFE_PATH_PART = re.compile(r"^[A-Za-z0-9_.-]+$")
 
@@ -295,7 +312,7 @@ class DataPortabilityService:
                 self._require_empty_project_attachment_scope(scope_root)
             except ExportValidationError:
                 raise
-            except (OSError, ValueError) as error:
+            except (OSError, RecursionError, ValueError) as error:
                 raise ExportValidationError(
                     "Project attachment storage could not be verified for export."
                 ) from error
@@ -310,9 +327,11 @@ class DataPortabilityService:
             error_type=ExportValidationError,
             message="Project attachment storage cannot traverse redirected paths.",
         )
-        allowed = {"manifest.json", "drafts", "committed"}
         for entry in tuple(scope_root.iterdir()):
-            if entry.name not in allowed or self._path_is_redirected(entry):
+            if (
+                entry.name not in _ATTACHMENT_SCOPE_ENTRIES
+                or self._path_is_redirected(entry)
+            ):
                 raise ExportValidationError(
                     "Project attachment storage has an unsafe layout."
                 )
@@ -326,16 +345,9 @@ class DataPortabilityService:
                     parse_constant=self._reject_json_constant,
                     object_pairs_hook=self._reject_duplicate_keys,
                 )
-                if (
-                    not isinstance(raw, dict)
-                    or set(raw) != {"schema_version", "scope", "items"}
-                    or raw.get("schema_version") != 1
-                    or raw.get("scope") != {
-                        "kind": "project",
-                        "id": scope_root.name,
-                    }
-                    or not isinstance(raw.get("items"), list)
-                    or raw["items"]
+                if not self._project_attachment_manifest_is_empty(
+                    raw,
+                    scope_id=scope_root.name,
                 ):
                     raise ExportValidationError(
                         "Projects with local files cannot be exported until "
@@ -352,6 +364,43 @@ class DataPortabilityService:
                     "Projects with local files cannot be exported until "
                     "the portable bundle format includes their file bytes."
                 )
+
+    @staticmethod
+    def _project_attachment_manifest_is_empty(
+        raw: object,
+        *,
+        scope_id: str,
+    ) -> bool:
+        """Recognize only known, strictly empty attachment manifests.
+
+        Version one remains readable so an empty legacy scope does not block
+        portability before attachment-store migration runs. Version two adds
+        derived-file relationships, which must also be empty: exporting those
+        records without their bytes would create a misleading partial backup.
+        Unknown versions and extra fields fail closed rather than guessing at
+        future storage semantics.
+        """
+
+        if not isinstance(raw, dict):
+            return False
+        schema_version = raw.get("schema_version")
+        if type(schema_version) is not int:
+            return False
+        if raw.get("scope") != {"kind": "project", "id": scope_id}:
+            return False
+        items = raw.get("items")
+        if not isinstance(items, list) or items:
+            return False
+        if schema_version == 1:
+            return set(raw) == _ATTACHMENT_MANIFEST_V1_FIELDS
+        if schema_version == 2:
+            derived = raw.get("derived")
+            return (
+                set(raw) == _ATTACHMENT_MANIFEST_V2_FIELDS
+                and isinstance(derived, list)
+                and not derived
+            )
+        return False
 
     def _write_bundle(
         self,

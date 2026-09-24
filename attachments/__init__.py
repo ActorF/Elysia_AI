@@ -1,23 +1,37 @@
 """Safe local attachment metadata and storage services."""
 
 from .domain import (
+    FILE_METADATA_SCHEMA_VERSION,
+    MAX_DERIVATION_KIND_LENGTH,
     MAX_FILE_NAME_LENGTH,
     MAX_JSON_SAFE_INTEGER,
     MAX_MEDIA_TYPE_LENGTH,
+    MAX_PRODUCER_VERSION_LENGTH,
     MAX_SOURCE_PATH_LENGTH,
     AttachmentItem,
     AttachmentScope,
     AttachmentScopeKind,
     AttachmentState,
     AttachmentStatus,
+    DerivedFileRelation,
+    FileOrigin,
+    FileOwnership,
+    FileOwnershipRole,
+    OriginalFileMetadata,
+    file_id_from_sha256,
+    validate_file_id,
+    validate_sha256,
 )
 from .exceptions import (
     AttachmentConflictError,
     AttachmentError,
+    AttachmentImportCancelledError,
     AttachmentNotFoundError,
     AttachmentStorageError,
     AttachmentValidationError,
 )
+from .repository import AttachmentRepository
+from .service import AttachmentService
 from .store import (
     ALLOWED_ATTACHMENT_EXTENSIONS,
     DEFAULT_MAX_FILE_COUNT,
@@ -27,12 +41,16 @@ from .store import (
 __all__ = [
     "ALLOWED_ATTACHMENT_EXTENSIONS",
     "DEFAULT_MAX_FILE_COUNT",
+    "FILE_METADATA_SCHEMA_VERSION",
+    "MAX_DERIVATION_KIND_LENGTH",
     "MAX_FILE_NAME_LENGTH",
     "MAX_JSON_SAFE_INTEGER",
     "MAX_MEDIA_TYPE_LENGTH",
+    "MAX_PRODUCER_VERSION_LENGTH",
     "MAX_SOURCE_PATH_LENGTH",
     "AttachmentConflictError",
     "AttachmentError",
+    "AttachmentImportCancelledError",
     "AttachmentItem",
     "AttachmentNotFoundError",
     "AttachmentScope",
@@ -41,5 +59,15 @@ __all__ = [
     "AttachmentStatus",
     "AttachmentStorageError",
     "AttachmentValidationError",
+    "AttachmentRepository",
+    "AttachmentService",
+    "DerivedFileRelation",
+    "FileOrigin",
+    "FileOwnership",
+    "FileOwnershipRole",
     "JsonAttachmentStore",
+    "OriginalFileMetadata",
+    "file_id_from_sha256",
+    "validate_file_id",
+    "validate_sha256",
 ]

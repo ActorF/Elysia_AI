@@ -8,37 +8,55 @@ import os
 import re
 import stat as stat_module
 import sys
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
+from datetime import datetime, timezone
 from pathlib import Path
-from tempfile import mkstemp
+from tempfile import SpooledTemporaryFile, mkstemp
 from threading import RLock
-from typing import Final, Literal, cast
+from typing import BinaryIO, Final, Literal, cast
 from uuid import uuid4
 
 from .domain import (
+    FILE_METADATA_SCHEMA_VERSION,
     MAX_JSON_SAFE_INTEGER,
     MAX_SOURCE_PATH_LENGTH,
     AttachmentItem,
     AttachmentScope,
     AttachmentState,
+    DerivedFileRelation,
+    FileOrigin,
+    FileOwnership,
+    OriginalFileMetadata,
+    file_id_from_sha256,
     validate_attachment_id,
+    validate_file_id,
     validate_file_name,
     validate_media_type,
+    validate_sha256,
 )
 from .exceptions import (
     AttachmentConflictError,
+    AttachmentImportCancelledError,
     AttachmentNotFoundError,
     AttachmentStorageError,
     AttachmentValidationError,
 )
 
 DEFAULT_MAX_FILE_COUNT: Final = 10
-ATTACHMENT_MANIFEST_SCHEMA_VERSION: Final = 1
+ATTACHMENT_MANIFEST_SCHEMA_VERSION: Final = 2
+LEGACY_ATTACHMENT_MANIFEST_SCHEMA_VERSION: Final = 1
 _COPY_BUFFER_BYTES: Final = 1024 * 1024
-_HASH_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+_MAX_MANIFEST_BYTES: Final = 16 * 1024 * 1024
+_MAX_STORED_FILE_BYTES: Final = 2_147_483_647
+_VERIFIED_MEMORY_BYTES: Final = 8 * 1024 * 1024
 _BLOB_SUFFIX: Final = ".blob"
 _PROCESS_LOCK_FILE_NAME: Final = ".backend.lock"
+_SCOPE_KINDS: Final[tuple[Literal["chat", "project"], ...]] = (
+    "chat",
+    "project",
+)
 
 # An extension is only a routing hint in this release: file content is stored,
 # never parsed or executed. Stage 8 loaders will perform format-level checks.
@@ -78,32 +96,53 @@ _ManifestStatus = Literal["ready", "claimed", "committed"]
 _PENDING_DELETE_PATTERN = re.compile(
     r"^\.(?P<scope_id>[A-Za-z0-9_-]+)\.delete-[0-9a-f]{32}\.pending$"
 )
+_COMMITTED_DELETE_PATTERN = re.compile(
+    r"^\.(?P<scope_id>[A-Za-z0-9_-]+)\.delete-[0-9a-f]{32}\.tmp$"
+)
+# ``tempfile.mkstemp`` currently emits eight characters from this alphabet.
+# Keeping that grammar closed prevents startup recovery from deleting an
+# unrelated future-format file merely because its name happens to end in
+# ``.tmp``.
+_TEMPORARY_TOKEN_PATTERN: Final = r"[a-z0-9_]{8}"
+_MANIFEST_TEMP_PATTERN = re.compile(
+    rf"^\.manifest\.json\.{_TEMPORARY_TOKEN_PATTERN}\.tmp$"
+)
+_UPLOAD_TEMP_PATTERN = re.compile(
+    rf"^\.upload-{_TEMPORARY_TOKEN_PATTERN}\.tmp$"
+)
 
 
 @dataclass(frozen=True, slots=True)
 class _ManifestItem:
+    """Persist one ownership link plus immutable canonical content metadata."""
+
+    record_schema_version: Literal[1]
     attachment_id: str
+    file_id: str
     file_name: str
     media_type: str
     size_bytes: int
     sha256: str
+    origin: FileOrigin
+    imported_at: datetime
+    link_file_name: str
+    link_media_type: str
+    linked_at: datetime
+    role: Literal["chat_attachment", "project_source"]
     status: _ManifestStatus = "ready"
 
     def __post_init__(self) -> None:
+        OriginalFileMetadata(
+            schema_version=self.record_schema_version,
+            file_id=self.file_id,
+            sha256=self.sha256,
+            file_name=self.file_name,
+            media_type=self.media_type,
+            size_bytes=self.size_bytes,
+            origin=self.origin,
+            imported_at=self.imported_at,
+        )
         validate_attachment_id(self.attachment_id)
-        validate_file_name(self.file_name)
-        validate_media_type(self.media_type)
-        if (
-            not isinstance(self.size_bytes, int)
-            or isinstance(self.size_bytes, bool)
-            or self.size_bytes <= 0
-            or self.size_bytes > MAX_JSON_SAFE_INTEGER
-        ):
-            raise ValueError("Stored attachment size is invalid.")
-        if not isinstance(self.sha256, str) or _HASH_PATTERN.fullmatch(
-            self.sha256
-        ) is None:
-            raise ValueError("Stored attachment digest is invalid.")
         if self.status not in ("ready", "claimed", "committed"):
             raise ValueError("Stored attachment status is invalid.")
 
@@ -112,19 +151,67 @@ class _ManifestItem:
 
         return AttachmentItem(
             attachment_id=self.attachment_id,
+            file_name=self.link_file_name,
+            media_type=self.link_media_type,
+            size_bytes=self.size_bytes,
+        )
+
+    def to_original(self) -> OriginalFileMetadata:
+        """Return path-free immutable metadata for this content object."""
+
+        return OriginalFileMetadata(
+            schema_version=self.record_schema_version,
+            file_id=self.file_id,
+            sha256=self.sha256,
             file_name=self.file_name,
             media_type=self.media_type,
             size_bytes=self.size_bytes,
+            origin=self.origin,
+            imported_at=self.imported_at,
+        )
+
+    def to_ownership(self, scope: AttachmentScope) -> FileOwnership:
+        """Return the explicit Chat Attachment or Project Source link."""
+
+        return FileOwnership(
+            schema_version=self.record_schema_version,
+            link_id=self.attachment_id,
+            file_id=self.file_id,
+            file_name=self.link_file_name,
+            media_type=self.link_media_type,
+            imported_at=self.linked_at,
+            scope=scope,
+            role=self.role,
         )
 
 
 @dataclass(frozen=True, slots=True)
 class _CopiedCandidate:
     temporary_path: Path
+    file_id: str
     file_name: str
     media_type: str
     size_bytes: int
     sha256: str
+    origin: FileOrigin
+    imported_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class _ManifestDocument:
+    """Keep ownership links and future derived relations in one commit."""
+
+    items: tuple[_ManifestItem, ...]
+    derived: tuple[DerivedFileRelation, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class _ValidatedSource:
+    """Pin the filesystem identity approved by source-path validation."""
+
+    path: Path
+    device: int
+    inode: int
 
 
 class JsonAttachmentStore:
@@ -140,16 +227,22 @@ class JsonAttachmentStore:
         base_dir: Path,
         max_file_bytes: int,
         max_file_count: int = DEFAULT_MAX_FILE_COUNT,
+        *,
+        clock: Callable[[], datetime] | None = None,
     ) -> None:
-        for value, field_name in (
-            (max_file_bytes, "max_file_bytes"),
-            (max_file_count, "max_file_count"),
+        for value, field_name, maximum in (
+            (
+                max_file_bytes,
+                "max_file_bytes",
+                _MAX_STORED_FILE_BYTES,
+            ),
+            (max_file_count, "max_file_count", MAX_JSON_SAFE_INTEGER),
         ):
             if (
                 not isinstance(value, int)
                 or isinstance(value, bool)
                 or value <= 0
-                or value > MAX_JSON_SAFE_INTEGER
+                or value > maximum
             ):
                 raise ValueError(
                     f"{field_name} must be a positive JSON-safe integer."
@@ -157,12 +250,20 @@ class JsonAttachmentStore:
         self._base_dir = Path(base_dir).absolute()
         self._max_file_bytes = max_file_bytes
         self._max_file_count = max_file_count
+        self._clock: Callable[[], datetime] = (
+            (lambda: datetime.now(timezone.utc))
+            if clock is None
+            else clock
+        )
+        if not callable(self._clock):
+            raise TypeError("clock must be callable.")
         self._lock = RLock()
         self._process_lock_fd: int | None = None
         self._prepare_base_directory()
         self._acquire_process_lock()
         try:
             self._clean_startup_temporary_entries()
+            self._migrate_legacy_manifests()
             self._release_startup_claims()
         except BaseException:
             self.close()
@@ -215,11 +316,126 @@ class JsonAttachmentStore:
                 release_claims=False,
             )
 
+    def list_file_records(
+        self,
+        scope: AttachmentScope,
+    ) -> tuple[OriginalFileMetadata, ...]:
+        """List each content object once without exposing its storage path."""
+
+        self._require_scope(scope)
+        with self._lock:
+            document = self._load_manifest_document(scope)
+            by_file_id: dict[str, OriginalFileMetadata] = {}
+            for item in document.items:
+                by_file_id.setdefault(item.file_id, item.to_original())
+            return tuple(by_file_id.values())
+
+    def list_file_ownerships(
+        self,
+        scope: AttachmentScope,
+    ) -> tuple[FileOwnership, ...]:
+        """List explicit Chat Attachment or Project Source ownership links."""
+
+        self._require_scope(scope)
+        with self._lock:
+            return tuple(
+                item.to_ownership(scope)
+                for item in self._load_manifest_document(scope).items
+            )
+
+    def list_derived_relations(
+        self,
+        scope: AttachmentScope,
+    ) -> tuple[DerivedFileRelation, ...]:
+        """List path-free derived-data relationships for one owner scope."""
+
+        self._require_scope(scope)
+        with self._lock:
+            return self._load_manifest_document(scope).derived
+
+    def register_derived_relation(
+        self,
+        scope: AttachmentScope,
+        relation: DerivedFileRelation,
+    ) -> None:
+        """Persist one unique derived-to-original relation without content I/O.
+
+        This Module stores only the relationship. Document loaders create the
+        derived bytes in a later Module, through a separate bounded writer.
+        """
+
+        self._require_scope(scope)
+        if not isinstance(relation, DerivedFileRelation):
+            raise AttachmentValidationError(
+                "Derived file relationship is invalid."
+            )
+        if relation.scope != scope:
+            raise AttachmentValidationError(
+                "Derived file relationship does not match its owner scope."
+            )
+        with self._lock:
+            document = self._load_manifest_document(scope)
+            original_ids = {item.file_id for item in document.items}
+            if relation.original_file_id not in original_ids:
+                raise AttachmentNotFoundError(
+                    "Derived file relationship has no original in this scope."
+                )
+            if any(
+                existing.derived_file_id == relation.derived_file_id
+                for existing in document.derived
+            ):
+                if relation in document.derived:
+                    return
+                raise AttachmentConflictError(
+                    "Derived file identifier is already related in this scope."
+                )
+            self._write_manifest(
+                scope,
+                document.items,
+                derived=(*document.derived, relation),
+            )
+
+    @contextmanager
+    def open_verified_file(
+        self,
+        scope: AttachmentScope,
+        file_id: str,
+    ) -> Iterator[BinaryIO]:
+        """Yield a verified original by owner scope and opaque content ID."""
+
+        self._require_scope(scope)
+        try:
+            safe_file_id = validate_file_id(file_id)
+        except ValueError as error:
+            raise AttachmentValidationError("File identifier is invalid.") from error
+        with self._lock:
+            document = self._load_manifest_document(scope)
+            item = next(
+                (
+                    candidate
+                    for candidate in document.items
+                    if candidate.file_id == safe_file_id
+                ),
+                None,
+            )
+            if item is None:
+                raise AttachmentNotFoundError(
+                    "File does not exist in this owner scope."
+                )
+            with self._verified_blob_stream(
+                self._original_blob_path(scope, safe_file_id),
+                item,
+            ) as stream:
+                yield stream
+
     def stage_files(
         self,
         scope: AttachmentScope,
         source_paths: Sequence[Path],
         referenced_ids: Iterable[str] = (),
+        *,
+        origin: FileOrigin = "local_import",
+        cancel_requested: Callable[[], bool] | None = None,
     ) -> AttachmentState:
         """Atomically add a batch, deduplicating equal content in the scope.
 
@@ -241,6 +457,12 @@ class JsonAttachmentStore:
             raise AttachmentValidationError(
                 "Too many files were selected for one attachment batch."
             )
+        if origin not in ("local_import", "legacy_migration", "generated"):
+            raise AttachmentValidationError("File origin is invalid.")
+        if cancel_requested is not None and not callable(cancel_requested):
+            raise AttachmentValidationError(
+                "File import cancellation callback is invalid."
+            )
 
         with self._lock:
             self._reconcile_locked(
@@ -248,22 +470,27 @@ class JsonAttachmentStore:
                 referenced_ids,
                 release_claims=False,
             )
-            items = list(self._load_manifest(scope))
-            digest_index = {
-                (item.sha256, item.size_bytes): item
+            document = self._load_manifest_document(scope)
+            items = list(document.items)
+            active_file_ids = {
+                item.file_id
                 for item in items
                 if item.status != "committed"
             }
+            stored_file_ids = {item.file_id for item in items}
             new_blob_paths: list[Path] = []
             candidates: list[_CopiedCandidate] = []
             try:
                 for source_path in paths:
-                    candidate = self._copy_candidate(scope, source_path)
-                    candidates.append(candidate)
-                    duplicate = digest_index.get(
-                        (candidate.sha256, candidate.size_bytes)
+                    self._raise_if_import_cancelled(cancel_requested)
+                    candidate = self._copy_candidate(
+                        scope,
+                        source_path,
+                        origin=origin,
+                        cancel_requested=cancel_requested,
                     )
-                    if duplicate is not None:
+                    candidates.append(candidate)
+                    if candidate.file_id in active_file_ids:
                         self._unlink_required(candidate.temporary_path)
                         candidates.remove(candidate)
                         continue
@@ -275,26 +502,81 @@ class JsonAttachmentStore:
                             "This attachment scope has reached its file limit."
                         )
                     attachment_id = f"attachment_{uuid4().hex}"
-                    final_path = self._draft_blob_path(scope, attachment_id)
-                    if final_path.exists() or final_path.is_symlink():
-                        raise AttachmentConflictError(
-                            "A generated attachment identifier already exists."
+                    final_path = self._original_blob_path(
+                        scope,
+                        candidate.file_id,
+                    )
+                    canonical_original: _ManifestItem | None = None
+                    if candidate.file_id in stored_file_ids:
+                        existing = next(
+                            item
+                            for item in items
+                            if item.file_id == candidate.file_id
                         )
-                    os.replace(candidate.temporary_path, final_path)
+                        self._verify_blob(final_path, existing)
+                        self._unlink_required(candidate.temporary_path)
+                        canonical_original = existing
+                    elif final_path.exists() or final_path.is_symlink():
+                        # A complete content object may remain after a crash
+                        # between publication and manifest commit. Verify and
+                        # reuse it instead of multiplying identical bytes.
+                        probe = self._candidate_manifest_item(
+                            scope,
+                            attachment_id,
+                            candidate,
+                        )
+                        self._verify_blob(final_path, probe)
+                        self._unlink_required(candidate.temporary_path)
+                        new_blob_paths.append(final_path)
+                    else:
+                        os.replace(candidate.temporary_path, final_path)
+                        new_blob_paths.append(final_path)
                     candidates.remove(candidate)
-                    new_blob_paths.append(final_path)
                     item = _ManifestItem(
+                        record_schema_version=FILE_METADATA_SCHEMA_VERSION,
                         attachment_id=attachment_id,
-                        file_name=candidate.file_name,
-                        media_type=candidate.media_type,
+                        file_id=candidate.file_id,
+                        file_name=(
+                            candidate.file_name
+                            if canonical_original is None
+                            else canonical_original.file_name
+                        ),
+                        media_type=(
+                            candidate.media_type
+                            if canonical_original is None
+                            else canonical_original.media_type
+                        ),
                         size_bytes=candidate.size_bytes,
                         sha256=candidate.sha256,
+                        origin=(
+                            candidate.origin
+                            if canonical_original is None
+                            else canonical_original.origin
+                        ),
+                        imported_at=(
+                            candidate.imported_at
+                            if canonical_original is None
+                            else canonical_original.imported_at
+                        ),
+                        link_file_name=candidate.file_name,
+                        link_media_type=candidate.media_type,
+                        linked_at=candidate.imported_at,
+                        role=self._role_for_scope(scope),
                     )
                     items.append(item)
-                    digest_index[(item.sha256, item.size_bytes)] = item
+                    active_file_ids.add(item.file_id)
+                    stored_file_ids.add(item.file_id)
 
-                self._write_manifest(scope, items)
-            except (AttachmentValidationError, AttachmentConflictError):
+                self._raise_if_import_cancelled(cancel_requested)
+                self._write_manifest(
+                    scope,
+                    items,
+                    derived=document.derived,
+                )
+            except (
+                AttachmentValidationError,
+                AttachmentConflictError,
+            ):
                 self._roll_back_stage(candidates, new_blob_paths)
                 raise
             except Exception as error:
@@ -321,7 +603,8 @@ class JsonAttachmentStore:
                 "Attachment identifier is invalid."
             ) from error
         with self._lock:
-            items = list(self._load_manifest(scope))
+            document = self._load_manifest_document(scope)
+            items = list(document.items)
             item = next(
                 (entry for entry in items if entry.attachment_id == safe_id),
                 None,
@@ -334,19 +617,25 @@ class JsonAttachmentStore:
                 raise AttachmentConflictError(
                     "Attachment is already in use by a Chat request."
                 )
-            blob_path = self._draft_blob_path(scope, safe_id)
-            tombstone = blob_path.with_name(
-                f".{safe_id}.remove-{uuid4().hex}.tmp"
+            remaining = [entry for entry in items if entry is not item]
+            remaining_file_ids = {entry.file_id for entry in remaining}
+            remaining_derived = tuple(
+                relation
+                for relation in document.derived
+                if relation.original_file_id in remaining_file_ids
             )
+            blob_path = self._original_blob_path(scope, item.file_id)
             try:
-                os.replace(blob_path, tombstone)
-                remaining = [entry for entry in items if entry is not item]
-                try:
-                    self._write_manifest(scope, remaining)
-                except Exception:
-                    os.replace(tombstone, blob_path)
-                    raise
-                self._unlink_required(tombstone)
+                # The manifest is the ownership commit boundary. Publishing it
+                # before deleting bytes means a crash can leave only a safe
+                # orphan, never a live record whose sole content disappeared.
+                self._write_manifest(
+                    scope,
+                    remaining,
+                    derived=remaining_derived,
+                )
+                if item.file_id not in remaining_file_ids:
+                    self._best_effort_unlink(blob_path)
             except AttachmentStorageError:
                 raise
             except OSError as error:
@@ -367,7 +656,8 @@ class JsonAttachmentStore:
         if not safe_ids:
             return ()
         with self._lock:
-            items = list(self._load_manifest(scope))
+            document = self._load_manifest_document(scope)
+            items = list(document.items)
             by_id = {item.attachment_id: item for item in items}
             selected: list[_ManifestItem] = []
             for attachment_id in safe_ids:
@@ -388,7 +678,11 @@ class JsonAttachmentStore:
                 else item
                 for item in items
             ]
-            self._write_manifest(scope, updated)
+            self._write_manifest(
+                scope,
+                updated,
+                derived=document.derived,
+            )
             return tuple(item.to_public() for item in selected)
 
     def release_chat_claims(
@@ -400,10 +694,11 @@ class JsonAttachmentStore:
 
         self._require_chat_scope(scope)
         safe_ids = set(self._validated_id_tuple(attachment_ids))
-        if not safe_ids:
-            return self.list_state(scope)
         with self._lock:
-            items = list(self._load_manifest(scope))
+            document = self._load_manifest_document(scope)
+            if not safe_ids:
+                return self._state(scope, document.items)
+            items = list(document.items)
             updated = [
                 replace(item, status="ready")
                 if item.attachment_id in safe_ids and item.status == "claimed"
@@ -411,7 +706,11 @@ class JsonAttachmentStore:
                 for item in items
             ]
             if updated != items:
-                self._write_manifest(scope, updated)
+                self._write_manifest(
+                    scope,
+                    updated,
+                    derived=document.derived,
+                )
             return self._state(scope, updated)
 
     def mark_committed(
@@ -419,19 +718,20 @@ class JsonAttachmentStore:
         scope: AttachmentScope,
         attachment_ids: Iterable[str],
     ) -> AttachmentState:
-        """Finalize claimed Chat blobs; Project items remain available.
+        """Finalize claimed Chat links; Project Sources remain available.
 
-        Chat blobs move before the manifest is published. A manifest failure
-        reverses those moves, while reconciliation uses persisted message
-        references to finish a transition interrupted by process termination.
+        Original bytes are immutable and content-addressed, so committing a
+        Chat changes only the ownership-link state. This avoids a blob move
+        race and lets a later message reuse the same original safely.
         """
 
         self._require_scope(scope)
         safe_ids = self._validated_id_tuple(attachment_ids)
-        if not safe_ids:
-            return self._state(scope, self._load_manifest(scope))
         with self._lock:
-            items = list(self._load_manifest(scope))
+            document = self._load_manifest_document(scope)
+            if not safe_ids:
+                return self._state(scope, document.items)
+            items = list(document.items)
             by_id = {item.attachment_id: item for item in items}
             for attachment_id in safe_ids:
                 item = by_id.get(attachment_id)
@@ -445,44 +745,18 @@ class JsonAttachmentStore:
                     )
             if scope.kind == "project":
                 return self._state(scope, items)
-
-            moved: list[tuple[Path, Path]] = []
-            try:
-                for attachment_id in safe_ids:
-                    source = self._draft_blob_path(scope, attachment_id)
-                    destination = self._committed_blob_path(
-                        scope,
-                        attachment_id,
-                    )
-                    if destination.exists() or destination.is_symlink():
-                        raise AttachmentConflictError(
-                            "Committed attachment data already exists."
-                        )
-                    destination.parent.mkdir(parents=True, exist_ok=True)
-                    os.replace(source, destination)
-                    moved.append((source, destination))
-                committed_ids = set(safe_ids)
-                remaining = [
-                    replace(item, status="committed")
-                    if item.attachment_id in committed_ids
-                    else item
-                    for item in items
-                ]
-                try:
-                    self._write_manifest(scope, remaining)
-                except Exception:
-                    self._restore_moves(moved)
-                    raise
-            except AttachmentConflictError:
-                self._restore_moves(moved)
-                raise
-            except AttachmentStorageError:
-                raise
-            except OSError as error:
-                self._restore_moves(moved)
-                raise AttachmentStorageError(
-                    "Chat attachments could not be committed safely."
-                ) from error
+            committed_ids = set(safe_ids)
+            remaining = [
+                replace(item, status="committed")
+                if item.attachment_id in committed_ids
+                else item
+                for item in items
+            ]
+            self._write_manifest(
+                scope,
+                remaining,
+                derived=document.derived,
+            )
             return self._state(scope, remaining)
 
     def delete_scope(self, scope: AttachmentScope) -> None:
@@ -517,38 +791,66 @@ class JsonAttachmentStore:
         cleanup removes, never a visible unreferenced attachment namespace.
         """
 
-        self._require_scope(scope)
-        if not callable(delete_owner):
+        self.delete_scopes_with((scope,), delete_owner)
+
+    def delete_scopes_with(
+        self,
+        scopes: Sequence[AttachmentScope],
+        delete_owners: Callable[[], None],
+    ) -> None:
+        """Hide several scopes, delete their owners, and roll back together.
+
+        A Project cascade can own both its Project Source namespace and every
+        linked Chat namespace. Hiding all of them before the owner callback
+        prevents a partial deletion from permanently discarding one Chat's
+        files while the canonical Project transaction rolls back.
+        """
+
+        if isinstance(scopes, (str, bytes)) or not scopes:
+            raise AttachmentValidationError(
+                "Attachment owner scopes must be a non-empty sequence."
+            )
+        canonical_scopes = tuple(scopes)
+        for scope in canonical_scopes:
+            self._require_scope(scope)
+        if len(canonical_scopes) != len(set(canonical_scopes)):
+            raise AttachmentValidationError(
+                "Attachment owner scopes must be unique."
+            )
+        if not callable(delete_owners):
             raise AttachmentValidationError(
                 "Attachment owner deletion callback is invalid."
             )
+
         with self._lock:
-            scope_root = self._scope_root(scope, create=False)
-            tombstone: Path | None = None
-            if scope_root.exists() or scope_root.is_symlink():
-                self._require_safe_directory(scope_root)
-                operation_id = uuid4().hex
-                tombstone = scope_root.with_name(
-                    f".{scope.id}.delete-{operation_id}.pending"
-                )
-                try:
-                    os.replace(scope_root, tombstone)
-                except OSError as error:
-                    raise AttachmentStorageError(
-                        "Attachment scope could not be prepared for deletion."
-                    ) from error
+            hidden: list[tuple[AttachmentScope, Path, Path, str]] = []
             try:
-                delete_owner()
+                for scope in canonical_scopes:
+                    scope_root = self._scope_root(scope, create=False)
+                    if not scope_root.exists() and not scope_root.is_symlink():
+                        continue
+                    self._require_safe_directory(scope_root)
+                    operation_id = uuid4().hex
+                    tombstone = scope_root.with_name(
+                        f".{scope.id}.delete-{operation_id}.pending"
+                    )
+                    os.replace(scope_root, tombstone)
+                    hidden.append(
+                        (scope, scope_root, tombstone, operation_id)
+                    )
+            except (OSError, AttachmentStorageError) as error:
+                self._restore_hidden_scopes(hidden)
+                raise AttachmentStorageError(
+                    "Attachment scopes could not be prepared for deletion."
+                ) from error
+
+            try:
+                delete_owners()
             except Exception:
-                if tombstone is not None:
-                    try:
-                        os.replace(tombstone, scope_root)
-                    except OSError as restore_error:
-                        raise AttachmentStorageError(
-                            "Attachment deletion rollback failed."
-                        ) from restore_error
+                self._restore_hidden_scopes(hidden)
                 raise
-            if tombstone is not None:
+
+            for scope, _scope_root, tombstone, operation_id in hidden:
                 try:
                     committed_tombstone = tombstone.with_name(
                         f".{scope.id}.delete-{operation_id}.tmp"
@@ -556,10 +858,9 @@ class JsonAttachmentStore:
                     os.replace(tombstone, committed_tombstone)
                     self._purge_scope_tree(committed_tombstone)
                 except (OSError, AttachmentStorageError):
-                    # Once the owner is deleted, a hidden tombstone is no
-                    # longer live data. Startup either restores an ambiguous
-                    # pending rename for owner reconciliation or removes a
-                    # committed .tmp tombstone deterministically.
+                    # Owner deletion already committed. A hidden pending entry
+                    # is conservatively restored on startup and then removed
+                    # by owner reconciliation; a committed entry is purged.
                     pass
 
     def reconcile(
@@ -641,8 +942,16 @@ class JsonAttachmentStore:
 
         self._require_scope(scope)
         references = set(self._validated_id_tuple(referenced_ids))
+        scope_root = self._scope_root(scope, create=False)
+        if not scope_root.exists() and not scope_root.is_symlink():
+            if references:
+                raise AttachmentStorageError(
+                    "Referenced attachment metadata is missing from storage."
+                )
+            return self._state(scope, ())
         self._clean_scope_temporary_files(scope)
-        items = list(self._load_manifest(scope))
+        document = self._load_manifest_document(scope)
+        items = list(document.items)
         reconciled: list[_ManifestItem] = []
         manifest_ids = {item.attachment_id for item in items}
         missing_metadata = references - manifest_ids
@@ -652,98 +961,63 @@ class JsonAttachmentStore:
             )
 
         for item in items:
-            draft = self._draft_blob_path(scope, item.attachment_id)
-            committed = self._committed_blob_path(scope, item.attachment_id)
             if scope.kind == "chat" and item.attachment_id in references:
-                self._finish_referenced_transition(item, draft, committed)
                 reconciled.append(replace(item, status="committed"))
                 continue
             if item.status == "committed":
-                if draft.exists() or draft.is_symlink():
-                    self._unlink_required(draft)
-                if committed.exists() or committed.is_symlink():
-                    self._unlink_required(committed)
                 continue
-            self._restore_uncommitted_transition(draft, committed)
-            if not draft.exists() or draft.is_symlink():
-                if draft.is_symlink():
-                    self._unlink_required(draft)
-                continue
-            self._verify_blob(draft, item)
             reconciled.append(
                 replace(item, status="ready")
                 if release_claims and item.status == "claimed"
                 else item
             )
 
-        self._remove_orphan_blobs(
-            self._drafts_directory(scope),
-            {item.attachment_id for item in reconciled},
-        )
-        committed_references = {
-            item.attachment_id
-            for item in reconciled
-            if item.status == "committed"
-        }
-        self._remove_orphan_blobs(
-            self._committed_directory(scope),
-            committed_references,
-        )
-        self._write_manifest(scope, reconciled)
-        return self._state(scope, reconciled)
-
-    def _finish_referenced_transition(
-        self,
-        item: _ManifestItem,
-        draft: Path,
-        committed: Path,
-    ) -> None:
-        """Leave one verified committed copy for a referenced Chat item."""
-
-        if draft.exists() and committed.exists():
-            self._verify_blob(draft, item)
-            self._verify_blob(committed, item)
-            self._unlink_required(draft)
-        elif draft.exists():
-            self._verify_blob(draft, item)
-            committed.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                os.replace(draft, committed)
-            except OSError as error:
-                raise AttachmentStorageError(
-                    "Referenced attachment data could not be finalized."
-                ) from error
-        elif committed.exists():
-            self._verify_blob(committed, item)
-        else:
-            raise AttachmentStorageError(
-                "Referenced attachment data is missing from storage."
+        retained_file_ids = {item.file_id for item in reconciled}
+        by_file_id: dict[str, _ManifestItem] = {}
+        for item in reconciled:
+            by_file_id.setdefault(item.file_id, item)
+        for file_id, item in by_file_id.items():
+            self._verify_blob(
+                self._original_blob_path(scope, file_id),
+                item,
             )
-
-    def _restore_uncommitted_transition(
-        self,
-        draft: Path,
-        committed: Path,
-    ) -> None:
-        """Restore an unreferenced interrupted move to its draft location."""
-
-        if committed.exists() and draft.exists():
-            self._unlink_required(committed)
-        elif committed.exists():
-            draft.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                os.replace(committed, draft)
-            except OSError as error:
-                raise AttachmentStorageError(
-                    "Interrupted attachment state could not be recovered."
-                ) from error
+        retained_derived = tuple(
+            relation
+            for relation in document.derived
+            if relation.original_file_id in retained_file_ids
+        )
+        if (
+            tuple(reconciled) != document.items
+            or retained_derived != document.derived
+        ):
+            self._write_manifest(
+                scope,
+                reconciled,
+                derived=retained_derived,
+            )
+        # Cleanup follows the metadata commit. A crash can therefore leave an
+        # unreferenced object for the next reconciliation, but cannot remove
+        # the only bytes still named by the durable manifest.
+        for legacy_directory in (
+            scope_root / "drafts",
+            scope_root / "committed",
+        ):
+            self._remove_orphan_blobs(legacy_directory, set())
+        self._remove_orphan_blobs(
+            self._originals_directory(scope),
+            retained_file_ids,
+        )
+        return self._state(scope, reconciled)
 
     def _copy_candidate(
         self,
         scope: AttachmentScope,
         source_path: Path,
+        *,
+        origin: FileOrigin,
+        cancel_requested: Callable[[], bool] | None,
     ) -> _CopiedCandidate:
-        """Copy and hash one stable regular source into scoped temporary data.
+        """Copy and hash one stable source into scoped original-file staging.
 
         The descriptor is opened without following links where supported, and
         its identity, size, and modification time are compared before and
@@ -751,7 +1025,8 @@ class JsonAttachmentStore:
         that grows after the initial stat call.
         """
 
-        source = self._validate_source_path(source_path)
+        validated_source = self._validate_source_path(source_path)
+        source = validated_source.path
         file_name = source.name
         extension = source.suffix.casefold()
         media_type = ALLOWED_ATTACHMENT_EXTENSIONS.get(extension)
@@ -759,10 +1034,9 @@ class JsonAttachmentStore:
             raise AttachmentValidationError(
                 "The selected file type is not supported."
             )
-        drafts = self._drafts_directory(scope)
-        drafts.mkdir(parents=True, exist_ok=True)
+        originals = self._originals_directory(scope)
         descriptor, temporary_name = mkstemp(
-            dir=drafts,
+            dir=originals,
             prefix=".upload-",
             suffix=".tmp",
         )
@@ -775,6 +1049,16 @@ class JsonAttachmentStore:
             source_descriptor = os.open(source, flags)
             before = os.fstat(source_descriptor)
             self._require_regular_stat(before)
+            if (before.st_dev, before.st_ino) != (
+                validated_source.device,
+                validated_source.inode,
+            ):
+                # A pathname can be replaced after its components pass the
+                # reparse checks. Pinning the approved identity prevents that
+                # race from substituting a different local or internal file.
+                raise AttachmentValidationError(
+                    "The selected file changed after path validation."
+                )
             if before.st_size <= 0:
                 raise AttachmentValidationError(
                     "Empty files cannot be attached."
@@ -790,6 +1074,7 @@ class JsonAttachmentStore:
                 with os.fdopen(descriptor, "wb") as output_file:
                     descriptor = -1
                     while True:
+                        self._raise_if_import_cancelled(cancel_requested)
                         chunk = input_file.read(_COPY_BUFFER_BYTES)
                         if not chunk:
                             break
@@ -812,14 +1097,19 @@ class JsonAttachmentStore:
                 raise AttachmentValidationError(
                     "The selected file changed while it was being copied."
                 )
+            imported_at = self._utc_now()
+            sha256 = digest.hexdigest()
             return _CopiedCandidate(
                 temporary_path=temporary_path,
+                file_id=file_id_from_sha256(sha256),
                 file_name=file_name,
                 media_type=media_type,
                 size_bytes=copied,
-                sha256=digest.hexdigest(),
+                sha256=sha256,
+                origin=origin,
+                imported_at=imported_at,
             )
-        except AttachmentValidationError:
+        except (AttachmentValidationError, AttachmentImportCancelledError):
             self._best_effort_unlink(temporary_path)
             raise
         except (OSError, ValueError) as error:
@@ -833,8 +1123,8 @@ class JsonAttachmentStore:
             if source_descriptor != -1:
                 os.close(source_descriptor)
 
-    def _validate_source_path(self, source_path: Path) -> Path:
-        """Reject redirected, UNC, internal, or non-regular sources."""
+    def _validate_source_path(self, source_path: Path) -> _ValidatedSource:
+        """Validate one source path and pin its approved file identity."""
 
         source = Path(source_path)
         raw_text = str(source)
@@ -868,7 +1158,11 @@ class JsonAttachmentStore:
                     "Internal application files cannot be attached."
                 )
             validate_file_name(source.name)
-            return resolved
+            return _ValidatedSource(
+                path=resolved,
+                device=details.st_dev,
+                inode=details.st_ino,
+            )
         except AttachmentValidationError:
             raise
         except (OSError, RuntimeError, ValueError) as error:
@@ -877,65 +1171,108 @@ class JsonAttachmentStore:
             ) from error
 
     def _load_manifest(self, scope: AttachmentScope) -> tuple[_ManifestItem, ...]:
-        """Load a strict manifest whose transitions can be reconciled uniquely.
+        """Compatibility helper returning ownership links from Manifest v2."""
 
-        Exact fields, unique IDs, and unique active digests keep recovery and
-        content deduplication unambiguous after an interrupted operation.
-        """
+        return self._load_manifest_document(scope).items
 
-        manifest_path = self._manifest_path(scope)
+    def _load_manifest_document(
+        self,
+        scope: AttachmentScope,
+    ) -> _ManifestDocument:
+        """Load, validate, and when necessary atomically migrate one manifest."""
+
+        manifest_path = self._manifest_path(scope, create=False)
         if not manifest_path.exists() and not manifest_path.is_symlink():
-            return ()
-        if manifest_path.is_symlink():
-            raise AttachmentStorageError(
-                "Attachment manifest is not a safe regular file."
-            )
+            return _ManifestDocument(items=())
         try:
-            with manifest_path.open("r", encoding="utf-8") as stream:
-                raw: object = json.load(
-                    stream,
-                    object_pairs_hook=self._reject_duplicate_keys,
-                    parse_constant=self._reject_json_constant,
+            raw, details = self._read_manifest_json(manifest_path)
+            if not isinstance(raw, dict):
+                raise ValueError("manifest document")
+            version = raw.get("schema_version")
+            if type(version) is not int:
+                raise ValueError("manifest schema version")
+            self._require_manifest_scope(raw.get("scope"), scope)
+            if version == LEGACY_ATTACHMENT_MANIFEST_SCHEMA_VERSION:
+                if set(raw) != {"schema_version", "scope", "items"}:
+                    raise ValueError("legacy manifest fields")
+                raw_items = raw.get("items")
+                if not isinstance(raw_items, list):
+                    raise ValueError("legacy manifest items")
+                imported_at = datetime.fromtimestamp(
+                    details.st_mtime,
+                    timezone.utc,
                 )
-            if not isinstance(raw, dict) or set(raw) != {
+                parsed_legacy_items = tuple(
+                    self._legacy_manifest_item_from_value(
+                        value,
+                        scope=scope,
+                        imported_at=imported_at,
+                    )
+                    for value in raw_items
+                )
+                canonical_by_file_id: dict[str, _ManifestItem] = {}
+                normalized_legacy_items: list[_ManifestItem] = []
+                for item in parsed_legacy_items:
+                    canonical = canonical_by_file_id.setdefault(
+                        item.file_id,
+                        item,
+                    )
+                    if (
+                        item.sha256 != canonical.sha256
+                        or item.size_bytes != canonical.size_bytes
+                    ):
+                        raise ValueError("legacy content metadata mismatch")
+                    normalized_legacy_items.append(
+                        replace(
+                            item,
+                            file_name=canonical.file_name,
+                            media_type=canonical.media_type,
+                            origin=canonical.origin,
+                            imported_at=canonical.imported_at,
+                        )
+                    )
+                legacy_items = tuple(normalized_legacy_items)
+                self._validate_manifest_records(
+                    scope,
+                    legacy_items,
+                    (),
+                )
+                self._migrate_legacy_scope(scope, legacy_items)
+                return self._load_manifest_document(scope)
+            if version != ATTACHMENT_MANIFEST_SCHEMA_VERSION or set(raw) != {
                 "schema_version",
                 "scope",
                 "items",
+                "derived",
             }:
-                raise ValueError("manifest fields")
-            if raw["schema_version"] != ATTACHMENT_MANIFEST_SCHEMA_VERSION:
-                raise ValueError("manifest version")
-            raw_scope = raw["scope"]
-            if (
-                not isinstance(raw_scope, dict)
-                or set(raw_scope) != {"kind", "id"}
-                or raw_scope["kind"] != scope.kind
-                or raw_scope["id"] != scope.id
+                raise ValueError("manifest fields or version")
+            raw_items = raw.get("items")
+            raw_derived = raw.get("derived")
+            if not isinstance(raw_items, list) or not isinstance(
+                raw_derived,
+                list,
             ):
-                raise ValueError("manifest scope")
-            raw_items = raw["items"]
-            if not isinstance(raw_items, list):
-                raise ValueError("manifest items")
-            items = tuple(self._manifest_item_from_value(value) for value in raw_items)
-            ids = [item.attachment_id for item in items]
-            draft_digests = [
-                (item.sha256, item.size_bytes)
-                for item in items
-                if item.status != "committed"
-            ]
-            if (
-                len(ids) != len(set(ids))
-                or len(draft_digests) != len(set(draft_digests))
-            ):
-                raise ValueError("manifest duplicates")
-            if sum(item.status != "committed" for item in items) > (
-                self._max_file_count
-            ):
-                raise ValueError("manifest count")
-            return items
+                raise ValueError("manifest records")
+            items = tuple(
+                self._manifest_item_from_value(value)
+                for value in raw_items
+            )
+            derived = tuple(
+                self._derived_relation_from_value(value)
+                for value in raw_derived
+            )
+            self._validate_manifest_records(scope, items, derived)
+            return _ManifestDocument(items=items, derived=derived)
         except AttachmentStorageError:
             raise
-        except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as error:
+        except (
+            OSError,
+            UnicodeError,
+            json.JSONDecodeError,
+            RecursionError,
+            TypeError,
+            ValueError,
+        ) as error:
             raise AttachmentStorageError(
                 "Attachment manifest is unreadable or invalid."
             ) from error
@@ -944,30 +1281,50 @@ class JsonAttachmentStore:
         self,
         scope: AttachmentScope,
         items: Sequence[_ManifestItem],
+        *,
+        derived: Sequence[DerivedFileRelation] = (),
     ) -> None:
-        manifest_path = self._manifest_path(scope)
+        canonical_items = tuple(items)
+        canonical_derived = tuple(derived)
+        self._validate_manifest_records(
+            scope,
+            canonical_items,
+            canonical_derived,
+        )
+        manifest_path = self._manifest_path(scope, create=True)
         manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        document = {
+            "schema_version": ATTACHMENT_MANIFEST_SCHEMA_VERSION,
+            "scope": {"kind": scope.kind, "id": scope.id},
+            "items": [
+                self._manifest_item_to_data(item)
+                for item in canonical_items
+            ],
+            "derived": [
+                self._derived_relation_to_data(relation)
+                for relation in canonical_derived
+            ],
+        }
+        payload = (
+            json.dumps(document, ensure_ascii=False, indent=2) + "\n"
+        ).encode("utf-8")
+        if len(payload) > _MAX_MANIFEST_BYTES:
+            raise AttachmentStorageError(
+                "Attachment manifest exceeds its safe storage limit."
+            )
         descriptor, temporary_name = mkstemp(
             dir=manifest_path.parent,
             prefix=f".{manifest_path.name}.",
             suffix=".tmp",
         )
         temporary_path = Path(temporary_name)
-        document = {
-            "schema_version": ATTACHMENT_MANIFEST_SCHEMA_VERSION,
-            "scope": {"kind": scope.kind, "id": scope.id},
-            "items": [self._manifest_item_to_data(item) for item in items],
-        }
         try:
             with os.fdopen(
                 descriptor,
-                "w",
-                encoding="utf-8",
-                newline="\n",
+                "wb",
             ) as stream:
                 descriptor = -1
-                json.dump(document, stream, ensure_ascii=False, indent=2)
-                stream.write("\n")
+                stream.write(payload)
                 stream.flush()
                 os.fsync(stream.fileno())
             os.replace(temporary_path, manifest_path)
@@ -982,6 +1339,75 @@ class JsonAttachmentStore:
 
     def _manifest_item_from_value(self, value: object) -> _ManifestItem:
         if not isinstance(value, dict) or set(value) != {
+            "record_schema_version",
+            "attachment_id",
+            "file_id",
+            "file_name",
+            "media_type",
+            "size_bytes",
+            "sha256",
+            "origin",
+            "imported_at",
+            "link_file_name",
+            "link_media_type",
+            "linked_at",
+            "role",
+            "status",
+        }:
+            raise ValueError("manifest item fields")
+        return _ManifestItem(
+            record_schema_version=cast(Literal[1], value["record_schema_version"]),
+            attachment_id=cast(str, value["attachment_id"]),
+            file_id=cast(str, value["file_id"]),
+            file_name=cast(str, value["file_name"]),
+            media_type=cast(str, value["media_type"]),
+            size_bytes=cast(int, value["size_bytes"]),
+            sha256=cast(str, value["sha256"]),
+            origin=cast(FileOrigin, value["origin"]),
+            imported_at=self._timestamp_from_value(value["imported_at"]),
+            link_file_name=cast(str, value["link_file_name"]),
+            link_media_type=cast(str, value["link_media_type"]),
+            linked_at=self._timestamp_from_value(value["linked_at"]),
+            role=cast(
+                Literal["chat_attachment", "project_source"],
+                value["role"],
+            ),
+            status=cast(_ManifestStatus, value["status"]),
+        )
+
+    @staticmethod
+    def _manifest_item_to_data(item: _ManifestItem) -> dict[str, object]:
+        return {
+            "record_schema_version": item.record_schema_version,
+            "attachment_id": item.attachment_id,
+            "file_id": item.file_id,
+            "file_name": item.file_name,
+            "media_type": item.media_type,
+            "size_bytes": item.size_bytes,
+            "sha256": item.sha256,
+            "origin": item.origin,
+            "imported_at": JsonAttachmentStore._timestamp_to_value(
+                item.imported_at
+            ),
+            "link_file_name": item.link_file_name,
+            "link_media_type": item.link_media_type,
+            "linked_at": JsonAttachmentStore._timestamp_to_value(
+                item.linked_at
+            ),
+            "role": item.role,
+            "status": item.status,
+        }
+
+    def _legacy_manifest_item_from_value(
+        self,
+        value: object,
+        *,
+        scope: AttachmentScope,
+        imported_at: datetime,
+    ) -> _ManifestItem:
+        """Convert one strict v1 record without inventing its original path."""
+
+        if not isinstance(value, dict) or set(value) != {
             "attachment_id",
             "file_name",
             "media_type",
@@ -989,61 +1415,480 @@ class JsonAttachmentStore:
             "sha256",
             "status",
         }:
-            raise ValueError("manifest item fields")
+            raise ValueError("legacy manifest item fields")
+        sha256 = validate_sha256(value["sha256"])
         return _ManifestItem(
+            record_schema_version=FILE_METADATA_SCHEMA_VERSION,
             attachment_id=cast(str, value["attachment_id"]),
+            file_id=file_id_from_sha256(sha256),
             file_name=cast(str, value["file_name"]),
             media_type=cast(str, value["media_type"]),
             size_bytes=cast(int, value["size_bytes"]),
-            sha256=cast(str, value["sha256"]),
+            sha256=sha256,
+            origin="legacy_migration",
+            imported_at=imported_at,
+            link_file_name=cast(str, value["file_name"]),
+            link_media_type=cast(str, value["media_type"]),
+            linked_at=imported_at,
+            role=self._role_for_scope(scope),
             status=cast(_ManifestStatus, value["status"]),
         )
 
+    def _derived_relation_from_value(
+        self,
+        value: object,
+    ) -> DerivedFileRelation:
+        """Parse one exact path-free derived relationship record."""
+
+        if not isinstance(value, dict) or set(value) != {
+            "record_schema_version",
+            "original_file_id",
+            "derived_file_id",
+            "scope",
+            "derivation_kind",
+            "producer_version",
+            "created_at",
+        }:
+            raise ValueError("derived relation fields")
+        raw_scope = value["scope"]
+        if not isinstance(raw_scope, dict) or set(raw_scope) != {"kind", "id"}:
+            raise ValueError("derived relation scope")
+        return DerivedFileRelation(
+            schema_version=cast(Literal[1], value["record_schema_version"]),
+            original_file_id=cast(str, value["original_file_id"]),
+            derived_file_id=cast(str, value["derived_file_id"]),
+            scope=AttachmentScope(
+                kind=cast(Literal["chat", "project"], raw_scope["kind"]),
+                id=cast(str, raw_scope["id"]),
+            ),
+            derivation_kind=cast(str, value["derivation_kind"]),
+            producer_version=cast(str, value["producer_version"]),
+            created_at=self._timestamp_from_value(value["created_at"]),
+        )
+
     @staticmethod
-    def _manifest_item_to_data(item: _ManifestItem) -> dict[str, object]:
+    def _derived_relation_to_data(
+        relation: DerivedFileRelation,
+    ) -> dict[str, object]:
+        """Serialize one derived relationship without a storage path."""
+
         return {
-            "attachment_id": item.attachment_id,
-            "file_name": item.file_name,
-            "media_type": item.media_type,
-            "size_bytes": item.size_bytes,
-            "sha256": item.sha256,
-            "status": item.status,
+            "record_schema_version": relation.schema_version,
+            "original_file_id": relation.original_file_id,
+            "derived_file_id": relation.derived_file_id,
+            "scope": {
+                "kind": relation.scope.kind,
+                "id": relation.scope.id,
+            },
+            "derivation_kind": relation.derivation_kind,
+            "producer_version": relation.producer_version,
+            "created_at": JsonAttachmentStore._timestamp_to_value(
+                relation.created_at
+            ),
         }
 
-    def _verify_blob(self, path: Path, item: _ManifestItem) -> None:
-        """Verify regular-file identity, byte count, and digest from storage."""
+    @staticmethod
+    def _require_manifest_scope(
+        value: object,
+        scope: AttachmentScope,
+    ) -> None:
+        """Require a manifest to name exactly its containing owner scope."""
 
+        if (
+            not isinstance(value, dict)
+            or set(value) != {"kind", "id"}
+            or value.get("kind") != scope.kind
+            or value.get("id") != scope.id
+        ):
+            raise ValueError("manifest scope")
+
+    def _validate_manifest_records(
+        self,
+        scope: AttachmentScope,
+        items: Sequence[_ManifestItem],
+        derived: Sequence[DerivedFileRelation],
+    ) -> None:
+        """Enforce unique links, bounded drafts, and same-scope derivations."""
+
+        ids = [item.attachment_id for item in items]
+        if len(ids) != len(set(ids)):
+            raise ValueError("manifest duplicates")
+        if sum(item.status != "committed" for item in items) > (
+            self._max_file_count
+        ):
+            raise ValueError("manifest count")
+        expected_role = self._role_for_scope(scope)
+        original_ids = {item.file_id for item in items}
+        canonical_originals: dict[str, OriginalFileMetadata] = {}
+        for item in items:
+            if item.role != expected_role:
+                raise ValueError("manifest ownership role")
+            original = item.to_original()
+            existing_original = canonical_originals.setdefault(
+                item.file_id,
+                original,
+            )
+            if existing_original != original:
+                raise ValueError("manifest original metadata mismatch")
+            item.to_ownership(scope)
+        derived_ids = [relation.derived_file_id for relation in derived]
+        if len(derived_ids) != len(set(derived_ids)):
+            raise ValueError("derived relation duplicates")
+        for relation in derived:
+            if (
+                relation.scope != scope
+                or relation.original_file_id not in original_ids
+            ):
+                raise ValueError("derived relation ownership")
+
+    def _migrate_legacy_manifests(self) -> None:
+        """Eagerly migrate every existing v1 scope while the lease is held."""
+
+        for kind_value in _SCOPE_KINDS:
+            kind_root = self._kind_root(kind_value, create=False)
+            if not kind_root.exists() and not kind_root.is_symlink():
+                continue
+            for scope_root in tuple(kind_root.iterdir()):
+                if scope_root.name.startswith("."):
+                    raise AttachmentStorageError(
+                        "Attachment storage contains an unrecovered hidden entry."
+                    )
+                self._require_safe_directory(scope_root)
+                try:
+                    scope = AttachmentScope(
+                        kind=kind_value,
+                        id=scope_root.name,
+                    )
+                except ValueError as error:
+                    raise AttachmentStorageError(
+                        "Attachment storage contains an invalid scope."
+                    ) from error
+                self._load_manifest_document(scope)
+
+    def _migrate_legacy_scope(
+        self,
+        scope: AttachmentScope,
+        items: Sequence[_ManifestItem],
+    ) -> None:
+        """Move v1 blobs into content-addressed originals and publish v2.
+
+        Existing v1 paths are removed only after the v2 manifest commits. A
+        crash after moving one blob is restartable because the verified target
+        is accepted when its legacy source is absent; an ordinary exception
+        restores every move before returning.
+        """
+
+        moved: list[tuple[Path, Path]] = []
+        legacy_paths: set[Path] = set()
+        originals = self._originals_directory(scope)
         try:
-            details = path.lstat()
-            if path.is_symlink() or self._stat_is_reparse(details):
-                raise AttachmentStorageError(
-                    "Stored attachment data is not a safe regular file."
+            for item in items:
+                candidates = (
+                    self._legacy_draft_blob_path(scope, item.attachment_id),
+                    self._legacy_committed_blob_path(
+                        scope,
+                        item.attachment_id,
+                    ),
                 )
-            try:
-                self._require_regular_stat(details)
-            except AttachmentValidationError as error:
+                existing = [
+                    path
+                    for path in candidates
+                    if path.exists() or path.is_symlink()
+                ]
+                legacy_paths.update(existing)
+                target = originals / f"{item.file_id}{_BLOB_SUFFIX}"
+                if target.exists() or target.is_symlink():
+                    self._verify_blob(target, item)
+                elif existing:
+                    source = existing[0]
+                    self._verify_blob(source, item)
+                    os.replace(source, target)
+                    moved.append((source, target))
+                    # Verification must follow the rename: another process can
+                    # swap the source pathname after the first descriptor
+                    # closes but before the filesystem move executes.
+                    self._verify_blob(target, item)
+                else:
+                    raise AttachmentStorageError(
+                        "Legacy attachment data is missing from storage."
+                    )
+                for duplicate in existing[1:]:
+                    self._verify_blob(duplicate, item)
+            self._write_manifest(scope, items, derived=())
+        except Exception:
+            self._restore_moves(moved)
+            raise
+        for path in legacy_paths:
+            self._best_effort_unlink(path)
+
+    @staticmethod
+    def _timestamp_to_value(value: datetime) -> str:
+        """Serialize one validated UTC timestamp in canonical Z form."""
+
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("timestamp must be timezone-aware")
+        return value.astimezone(timezone.utc).isoformat().replace(
+            "+00:00",
+            "Z",
+        )
+
+    @staticmethod
+    def _timestamp_from_value(value: object) -> datetime:
+        """Parse one canonical UTC timestamp and reject local/naive values."""
+
+        if not isinstance(value, str) or not value.endswith("Z"):
+            raise ValueError("timestamp must use UTC Z form")
+        parsed = datetime.fromisoformat(f"{value[:-1]}+00:00")
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            raise ValueError("timestamp must be timezone-aware")
+        return parsed.astimezone(timezone.utc)
+
+    def _utc_now(self) -> datetime:
+        """Read the injected clock and normalize it to timezone-aware UTC."""
+
+        value = self._clock()
+        if (
+            not isinstance(value, datetime)
+            or value.tzinfo is None
+            or value.utcoffset() is None
+        ):
+            raise AttachmentStorageError(
+                "Attachment storage clock must return an aware datetime."
+            )
+        return value.astimezone(timezone.utc)
+
+    @staticmethod
+    def _role_for_scope(
+        scope: AttachmentScope,
+    ) -> Literal["chat_attachment", "project_source"]:
+        """Map the closed Scope kind to its explicit ownership role."""
+
+        return (
+            "chat_attachment"
+            if scope.kind == "chat"
+            else "project_source"
+        )
+
+    def _candidate_manifest_item(
+        self,
+        scope: AttachmentScope,
+        attachment_id: str,
+        candidate: _CopiedCandidate,
+    ) -> _ManifestItem:
+        """Build a temporary record used to verify crash-left originals."""
+
+        return _ManifestItem(
+            record_schema_version=FILE_METADATA_SCHEMA_VERSION,
+            attachment_id=attachment_id,
+            file_id=candidate.file_id,
+            file_name=candidate.file_name,
+            media_type=candidate.media_type,
+            size_bytes=candidate.size_bytes,
+            sha256=candidate.sha256,
+            origin=candidate.origin,
+            imported_at=candidate.imported_at,
+            link_file_name=candidate.file_name,
+            link_media_type=candidate.media_type,
+            linked_at=candidate.imported_at,
+            role=self._role_for_scope(scope),
+        )
+
+    @staticmethod
+    def _raise_if_import_cancelled(
+        cancel_requested: Callable[[], bool] | None,
+    ) -> None:
+        """Stop only before manifest commit so cancellation is unambiguous."""
+
+        if cancel_requested is not None and cancel_requested():
+            raise AttachmentImportCancelledError(
+                "File import was cancelled before it committed."
+            )
+
+    def _verify_blob(self, path: Path, item: _ManifestItem) -> None:
+        """Verify one immutable content object through its pinned descriptor."""
+
+        with self._verified_blob_stream(path, item):
+            return
+
+    @contextmanager
+    def _verified_blob_stream(
+        self,
+        path: Path,
+        item: _ManifestItem,
+    ) -> Iterator[BinaryIO]:
+        """Yield verified immutable bytes without a post-check mutation race.
+
+        Hashing a descriptor and then returning that same descriptor would let
+        another process overwrite it after verification. A bounded spooled
+        snapshot preserves files imported under an older, higher user setting
+        without retaining large payloads in memory.
+        """
+
+        descriptor = -1
+        stream: BinaryIO | None = None
+        verified = cast(
+            BinaryIO,
+            SpooledTemporaryFile(
+                max_size=_VERIFIED_MEMORY_BYTES,
+                mode="w+b",
+            ),
+        )
+        try:
+            linked = self._require_safe_regular_file(
+                path,
+                "Stored attachment data is not a safe regular file.",
+            )
+            flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
+            flags |= getattr(os, "O_NOFOLLOW", 0)
+            descriptor = os.open(path, flags)
+            opened = os.fstat(descriptor)
+            self._require_regular_storage_stat(opened)
+            if (
+                opened.st_dev != linked.st_dev
+                or opened.st_ino != linked.st_ino
+            ):
                 raise AttachmentStorageError(
-                    "Stored attachment data is not a safe regular file."
-                ) from error
-            digest = hashlib.sha256()
-            size = 0
-            with path.open("rb") as stream:
-                while True:
-                    chunk = stream.read(_COPY_BUFFER_BYTES)
-                    if not chunk:
-                        break
-                    size += len(chunk)
-                    digest.update(chunk)
-            if size != item.size_bytes or digest.hexdigest() != item.sha256:
+                    "Stored attachment data changed while it was opened."
+                )
+            if (
+                opened.st_size != item.size_bytes
+                or opened.st_size > _MAX_STORED_FILE_BYTES
+            ):
                 raise AttachmentStorageError(
                     "Stored attachment data failed integrity validation."
                 )
+            stream = os.fdopen(descriptor, "rb")
+            descriptor = -1
+            digest = hashlib.sha256()
+            size = 0
+            while True:
+                chunk = stream.read(_COPY_BUFFER_BYTES)
+                if not chunk:
+                    break
+                size += len(chunk)
+                digest.update(chunk)
+                verified.write(chunk)
+            after = os.fstat(stream.fileno())
+            self._require_regular_storage_stat(after)
+            if (
+                after.st_dev != opened.st_dev
+                or after.st_ino != opened.st_ino
+                or after.st_size != opened.st_size
+                or after.st_mtime_ns != opened.st_mtime_ns
+                or size != item.size_bytes
+                or digest.hexdigest() != item.sha256
+            ):
+                raise AttachmentStorageError(
+                    "Stored attachment data failed integrity validation."
+                )
+            stream.close()
+            stream = None
+            verified.seek(0)
+            yield verified
         except AttachmentStorageError:
             raise
         except (OSError, ValueError) as error:
             raise AttachmentStorageError(
                 "Stored attachment data could not be verified."
             ) from error
+        finally:
+            if stream is not None:
+                stream.close()
+            verified.close()
+            if descriptor != -1:
+                os.close(descriptor)
+
+    def _read_manifest_json(
+        self,
+        path: Path,
+    ) -> tuple[object, os.stat_result]:
+        """Parse one bounded manifest through a stable, non-linked descriptor.
+
+        A crash or accidental workspace mutation can replace a path between
+        separate validation and open operations. Pinning the file identity and
+        rechecking its metadata after parsing makes that change fail closed.
+        """
+
+        descriptor = -1
+        try:
+            linked = self._require_safe_regular_file(
+                path,
+                "Attachment manifest is not a safe regular file.",
+            )
+            flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
+            flags |= getattr(os, "O_NOFOLLOW", 0)
+            descriptor = os.open(path, flags)
+            opened = os.fstat(descriptor)
+            self._require_regular_storage_stat(opened)
+            if (
+                opened.st_dev != linked.st_dev
+                or opened.st_ino != linked.st_ino
+                or opened.st_size > _MAX_MANIFEST_BYTES
+            ):
+                raise AttachmentStorageError(
+                    "Attachment manifest changed while it was opened."
+                )
+            with os.fdopen(descriptor, "rb") as stream:
+                descriptor = -1
+                payload = stream.read(_MAX_MANIFEST_BYTES + 1)
+                after = os.fstat(stream.fileno())
+            if len(payload) > _MAX_MANIFEST_BYTES:
+                raise AttachmentStorageError(
+                    "Attachment manifest exceeds its safe storage limit."
+                )
+            raw: object = json.loads(
+                payload.decode("utf-8"),
+                object_pairs_hook=self._reject_duplicate_keys,
+                parse_constant=self._reject_json_constant,
+            )
+            self._require_regular_storage_stat(after)
+            if (
+                after.st_dev != opened.st_dev
+                or after.st_ino != opened.st_ino
+                or after.st_size != opened.st_size
+                or after.st_mtime_ns != opened.st_mtime_ns
+            ):
+                raise AttachmentStorageError(
+                    "Attachment manifest changed while it was read."
+                )
+            return raw, opened
+        finally:
+            if descriptor != -1:
+                os.close(descriptor)
+
+    @classmethod
+    def _require_safe_regular_file(
+        cls,
+        path: Path,
+        message: str,
+    ) -> os.stat_result:
+        """Reject redirects, special files, and externally linked artifacts."""
+
+        try:
+            details = path.lstat()
+        except OSError as error:
+            raise AttachmentStorageError(message) from error
+        if (
+            stat_module.S_ISLNK(details.st_mode)
+            or cls._stat_is_reparse(details)
+            or not stat_module.S_ISREG(details.st_mode)
+            or details.st_nlink != 1
+        ):
+            raise AttachmentStorageError(message)
+        return details
+
+    @classmethod
+    def _require_regular_storage_stat(cls, details: os.stat_result) -> None:
+        """Validate descriptor metadata for a managed immutable artifact."""
+
+        if (
+            not stat_module.S_ISREG(details.st_mode)
+            or cls._stat_is_reparse(details)
+            or details.st_nlink != 1
+        ):
+            raise AttachmentStorageError(
+                "Stored attachment data is not a safe regular file."
+            )
 
     def _remove_orphan_blobs(
         self,
@@ -1061,18 +1906,26 @@ class JsonAttachmentStore:
             ) from error
         for entry in entries:
             if entry.name.endswith(".tmp"):
+                if _UPLOAD_TEMP_PATTERN.fullmatch(entry.name) is None:
+                    raise AttachmentStorageError(
+                        "Attachment storage contains an unknown temporary entry."
+                    )
+                self._require_safe_regular_file(
+                    entry,
+                    "Attachment storage contains an unsafe temporary entry.",
+                )
                 self._unlink_required(entry)
                 continue
-            attachment_id = (
+            file_id = (
                 entry.name[: -len(_BLOB_SUFFIX)]
                 if entry.name.endswith(_BLOB_SUFFIX)
                 else ""
             )
-            if attachment_id not in retained_ids:
-                if entry.is_dir() and not entry.is_symlink():
-                    raise AttachmentStorageError(
-                        "Attachment storage contains an unexpected directory."
-                    )
+            if file_id not in retained_ids:
+                self._require_safe_regular_file(
+                    entry,
+                    "Attachment storage contains an unsafe original entry.",
+                )
                 self._unlink_required(entry)
 
     def _state(
@@ -1302,8 +2155,18 @@ class JsonAttachmentStore:
             self._require_safe_directory(root)
         return root
 
-    def _manifest_path(self, scope: AttachmentScope) -> Path:
-        return self._scope_root(scope) / "manifest.json"
+    def _manifest_path(
+        self,
+        scope: AttachmentScope,
+        *,
+        create: bool = True,
+    ) -> Path:
+        return self._scope_root(scope, create=create) / "manifest.json"
+
+    def _originals_directory(self, scope: AttachmentScope) -> Path:
+        """Return the scope-local content-addressed original directory."""
+
+        return self._scoped_data_directory(scope, "originals")
 
     def _drafts_directory(self, scope: AttachmentScope) -> Path:
         return self._scoped_data_directory(scope, "drafts")
@@ -1314,7 +2177,7 @@ class JsonAttachmentStore:
     def _scoped_data_directory(
         self,
         scope: AttachmentScope,
-        name: Literal["drafts", "committed"],
+        name: Literal["originals", "drafts", "committed"],
     ) -> Path:
         directory = self._scope_root(scope) / name
         try:
@@ -1328,17 +2191,48 @@ class JsonAttachmentStore:
             ) from error
         return directory
 
-    def _draft_blob_path(self, scope: AttachmentScope, attachment_id: str) -> Path:
+    def _original_blob_path(
+        self,
+        scope: AttachmentScope,
+        file_id: str,
+    ) -> Path:
+        validate_file_id(file_id)
+        return self._originals_directory(scope) / f"{file_id}{_BLOB_SUFFIX}"
+
+    def _legacy_draft_blob_path(
+        self,
+        scope: AttachmentScope,
+        attachment_id: str,
+    ) -> Path:
         validate_attachment_id(attachment_id)
         return self._drafts_directory(scope) / f"{attachment_id}{_BLOB_SUFFIX}"
 
-    def _committed_blob_path(
+    def _legacy_committed_blob_path(
         self,
         scope: AttachmentScope,
         attachment_id: str,
     ) -> Path:
         validate_attachment_id(attachment_id)
         return self._committed_directory(scope) / f"{attachment_id}{_BLOB_SUFFIX}"
+
+    # These private aliases keep fault-injection tests and interrupted v1
+    # recovery helpers readable while all v2 operations use ``originals``.
+    _draft_blob_path = _legacy_draft_blob_path
+    _committed_blob_path = _legacy_committed_blob_path
+
+    @staticmethod
+    def _delete_tombstone_scope(
+        kind: Literal["chat", "project"],
+        scope_id: str,
+    ) -> AttachmentScope:
+        """Validate that a deletion tombstone belongs under its kind root."""
+
+        try:
+            return AttachmentScope(kind=kind, id=scope_id)
+        except ValueError as error:
+            raise AttachmentStorageError(
+                "Attachment storage contains an invalid deletion tombstone."
+            ) from error
 
     def _clean_startup_temporary_entries(self) -> None:
         """Resolve deletion tombstones conservatively after an interrupted run.
@@ -1350,16 +2244,19 @@ class JsonAttachmentStore:
         """
 
         try:
-            for kind in ("chat", "project"):
-                kind_value = cast(Literal["chat", "project"], kind)
+            for kind_value in _SCOPE_KINDS:
                 kind_root = self._kind_root(kind_value, create=False)
                 if not kind_root.exists() and not kind_root.is_symlink():
                     continue
                 for scope_entry in tuple(kind_root.iterdir()):
-                    if (
-                        scope_entry.name.startswith(".")
-                        and scope_entry.name.endswith(".tmp")
-                    ):
+                    committed_match = _COMMITTED_DELETE_PATTERN.fullmatch(
+                        scope_entry.name
+                    )
+                    if committed_match is not None:
+                        self._delete_tombstone_scope(
+                            kind_value,
+                            committed_match.group("scope_id"),
+                        )
                         self._require_safe_directory(scope_entry)
                         self._purge_scope_tree(scope_entry)
                         continue
@@ -1368,9 +2265,9 @@ class JsonAttachmentStore:
                     )
                     if pending_match is not None:
                         self._require_safe_directory(scope_entry)
-                        scope = AttachmentScope(
-                            kind=kind_value,
-                            id=pending_match.group("scope_id"),
+                        scope = self._delete_tombstone_scope(
+                            kind_value,
+                            pending_match.group("scope_id"),
                         )
                         destination = kind_root / scope.id
                         if destination.exists() or destination.is_symlink():
@@ -1402,8 +2299,7 @@ class JsonAttachmentStore:
         """Release claims that cannot survive a Backend process restart."""
 
         try:
-            for kind in ("chat", "project"):
-                kind_value = cast(Literal["chat", "project"], kind)
+            for kind_value in _SCOPE_KINDS:
                 kind_root = self._kind_root(kind_value, create=False)
                 if not kind_root.exists() and not kind_root.is_symlink():
                     continue
@@ -1422,16 +2318,20 @@ class JsonAttachmentStore:
                         raise AttachmentStorageError(
                             "Attachment storage contains an invalid scope."
                         ) from error
-                    items = self._load_manifest(scope)
-                    if any(item.status == "claimed" for item in items):
+                    document = self._load_manifest_document(scope)
+                    if any(
+                        item.status == "claimed"
+                        for item in document.items
+                    ):
                         self._write_manifest(
                             scope,
                             [
                                 replace(item, status="ready")
                                 if item.status == "claimed"
                                 else item
-                                for item in items
+                                for item in document.items
                             ],
+                            derived=document.derived,
                         )
         except AttachmentStorageError:
             raise
@@ -1444,14 +2344,16 @@ class JsonAttachmentStore:
         root = self._scope_root(scope)
         self._clean_flat_temporary_files(
             root,
-            allowed_directories={"drafts", "committed"},
+            allowed_directories={"originals", "drafts", "committed"},
+            temporary_pattern=_MANIFEST_TEMP_PATTERN,
         )
-        for name in ("drafts", "committed"):
+        for name in ("originals", "drafts", "committed"):
             directory = root / name
             if directory.exists() or directory.is_symlink():
                 self._clean_flat_temporary_files(
                     directory,
                     allowed_directories=set(),
+                    temporary_pattern=_UPLOAD_TEMP_PATTERN,
                 )
 
     def _clean_flat_temporary_files(
@@ -1459,7 +2361,15 @@ class JsonAttachmentStore:
         directory: Path,
         *,
         allowed_directories: set[str],
+        temporary_pattern: re.Pattern[str],
     ) -> None:
+        """Remove only temporary files reserved by this store version.
+
+        Unknown ``.tmp`` or hidden files may belong to a future schema. They
+        are preserved and make startup fail closed so an older Backend cannot
+        mutate storage whose recovery rules it does not understand.
+        """
+
         self._require_safe_directory(directory)
         for entry in tuple(directory.iterdir()):
             details = entry.lstat()
@@ -1478,8 +2388,13 @@ class JsonAttachmentStore:
                 raise AttachmentStorageError(
                     "Attachment storage contains an unsafe entry."
                 )
-            if entry.name.endswith(".tmp"):
+            if temporary_pattern.fullmatch(entry.name) is not None:
                 self._unlink_required(entry)
+                continue
+            if entry.name.startswith(".") or entry.name.endswith(".tmp"):
+                raise AttachmentStorageError(
+                    "Attachment storage contains an unknown temporary entry."
+                )
 
     def _purge_scope_tree(self, root: Path) -> None:
         """Delete one flat validated scope without following redirected paths."""
@@ -1493,7 +2408,11 @@ class JsonAttachmentStore:
                         "Attachment deletion encountered a redirected entry."
                     )
                 if stat_module.S_ISDIR(details.st_mode):
-                    if entry.name not in {"drafts", "committed"}:
+                    if entry.name not in {
+                        "originals",
+                        "drafts",
+                        "committed",
+                    }:
                         raise AttachmentStorageError(
                             "Attachment deletion encountered an unexpected directory."
                         )
@@ -1568,6 +2487,7 @@ class JsonAttachmentStore:
         if (
             not stat_module.S_ISREG(details.st_mode)
             or JsonAttachmentStore._stat_is_reparse(details)
+            or details.st_nlink != 1
         ):
             raise AttachmentValidationError(
                 "Only regular local files can be attached."
@@ -1623,6 +2543,30 @@ class JsonAttachmentStore:
             self._best_effort_unlink(candidate.temporary_path)
         for path in blob_paths:
             self._best_effort_unlink(path)
+
+    @staticmethod
+    def _restore_hidden_scopes(
+        hidden: Sequence[tuple[AttachmentScope, Path, Path, str]],
+    ) -> None:
+        """Restore every prepared owner scope before reporting any failure."""
+
+        first_error: BaseException | None = None
+        for _scope, scope_root, tombstone, _operation_id in reversed(hidden):
+            try:
+                if tombstone.exists() or tombstone.is_symlink():
+                    JsonAttachmentStore._require_safe_directory(tombstone)
+                    if scope_root.exists() or scope_root.is_symlink():
+                        raise AttachmentStorageError(
+                            "Attachment deletion rollback found a live conflict."
+                        )
+                    os.replace(tombstone, scope_root)
+            except (OSError, AttachmentStorageError) as error:
+                if first_error is None:
+                    first_error = error
+        if first_error is not None:
+            raise AttachmentStorageError(
+                "Attachment deletion rollback failed."
+            ) from first_error
 
     @staticmethod
     def _restore_moves(moves: Sequence[tuple[Path, Path]]) -> None:

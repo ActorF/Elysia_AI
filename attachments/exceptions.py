@@ -17,5 +17,9 @@ class AttachmentConflictError(AttachmentError):
     """Raised when an attachment cannot change in its current state."""
 
 
+class AttachmentImportCancelledError(AttachmentConflictError):
+    """Raised when cancellation wins before a file-import commit boundary."""
+
+
 class AttachmentStorageError(AttachmentError):
     """Raised when local attachment data cannot be stored safely."""

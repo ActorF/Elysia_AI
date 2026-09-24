@@ -1006,10 +1006,111 @@ def test_project_export_refuses_to_omit_local_project_files(
     assert not (tmp_path / "project.json").exists()
 
 
-def test_project_export_fails_closed_on_nested_attachment_layout(
+@pytest.mark.parametrize("schema_version", (1, 2))
+def test_project_export_accepts_known_empty_attachment_manifests(
+    tmp_path: Path,
+    schema_version: int,
+) -> None:
+    """Permit strict empty legacy and current attachment scope layouts."""
+
+    service, _chats, projects = service_for(tmp_path)
+    project = projects.create_project(name=f"Empty schema {schema_version}")
+    scope_root = (
+        tmp_path
+        / "workspace"
+        / "attachments"
+        / "project"
+        / str(project.project_id)
+    )
+    for directory_name in ("originals", "drafts", "committed"):
+        (scope_root / directory_name).mkdir(parents=True, exist_ok=True)
+    manifest: dict[str, object] = {
+        "schema_version": schema_version,
+        "scope": {"kind": "project", "id": str(project.project_id)},
+        "items": [],
+    }
+    if schema_version == 2:
+        manifest["derived"] = []
+    write_json(scope_root / "manifest.json", manifest)
+    destination = tmp_path / f"empty-schema-{schema_version}.json"
+
+    service.export_project(project.project_id, destination)
+
+    assert destination.is_file()
+
+
+def test_project_export_rejects_nonempty_derived_file_metadata(
     tmp_path: Path,
 ) -> None:
-    """Verify that project export fails closed on nested attachment layout."""
+    """Reject v2 derived records because their file bytes are not portable."""
+
+    service, _chats, projects = service_for(tmp_path)
+    project = projects.create_project(name="Derived local data")
+    scope_root = (
+        tmp_path
+        / "workspace"
+        / "attachments"
+        / "project"
+        / str(project.project_id)
+    )
+    write_json(
+        scope_root / "manifest.json",
+        {
+            "schema_version": 2,
+            "scope": {"kind": "project", "id": str(project.project_id)},
+            "items": [],
+            "derived": [{"derived_file_id": "derived_example"}],
+        },
+    )
+
+    with pytest.raises(ExportValidationError, match="file bytes"):
+        service.export_project(
+            project.project_id,
+            tmp_path / "derived-project.json",
+        )
+
+    assert not (tmp_path / "derived-project.json").exists()
+
+
+def test_project_export_rejects_unknown_attachment_manifest_schema(
+    tmp_path: Path,
+) -> None:
+    """Fail closed when a future manifest could carry unknown local data."""
+
+    service, _chats, projects = service_for(tmp_path)
+    project = projects.create_project(name="Future attachment schema")
+    scope_root = (
+        tmp_path
+        / "workspace"
+        / "attachments"
+        / "project"
+        / str(project.project_id)
+    )
+    write_json(
+        scope_root / "manifest.json",
+        {
+            "schema_version": 3,
+            "scope": {"kind": "project", "id": str(project.project_id)},
+            "items": [],
+            "derived": [],
+        },
+    )
+
+    with pytest.raises(ExportValidationError, match="file bytes"):
+        service.export_project(
+            project.project_id,
+            tmp_path / "future-project.json",
+        )
+
+    assert not (tmp_path / "future-project.json").exists()
+
+
+@pytest.mark.parametrize("storage_directory", ("drafts", "originals"))
+def test_project_export_fails_closed_on_nested_attachment_layout(
+    tmp_path: Path,
+    storage_directory: str,
+) -> None:
+    """Reject local bytes in either legacy or current storage directories."""
     service, _chats, projects = service_for(tmp_path)
     project = projects.create_project(name="Nested local sources")
     nested = (
@@ -1018,7 +1119,7 @@ def test_project_export_fails_closed_on_nested_attachment_layout(
         / "attachments"
         / "project"
         / str(project.project_id)
-        / "drafts"
+        / storage_directory
         / "nested"
     )
     nested.mkdir(parents=True)

@@ -25,7 +25,9 @@ from urllib.request import Request, urlopen
 from attachments import (
     AttachmentConflictError,
     AttachmentNotFoundError,
+    AttachmentRepository,
     AttachmentScope,
+    AttachmentService,
     AttachmentState,
     AttachmentStorageError,
     AttachmentValidationError,
@@ -425,7 +427,7 @@ class DesktopBackend:
         settings_repository: DesktopSettingsRepository | None = None,
         voice_settings_service: VoiceSettingsService | None = None,
         transcription_runner_factory: TranscriptionRunnerFactory | None = None,
-        attachment_store: JsonAttachmentStore | None = None,
+        attachment_store: AttachmentRepository | AttachmentService | None = None,
         audio_writer: AudioChannelWriter | None = None,
         speech_coordinator: DesktopSpeechCoordinator | None = None,
         input_stream: TextIO = sys.stdin,
@@ -452,7 +454,15 @@ class DesktopBackend:
             if voice_settings_service is None
             else voice_settings_service
         )
-        self._attachment_store = attachment_store
+        self._attachment_store = (
+            None
+            if attachment_store is None
+            else (
+                attachment_store
+                if isinstance(attachment_store, AttachmentService)
+                else AttachmentService(attachment_store)
+            )
+        )
         initial_settings = self._settings_repository.load()
         self._settings_warning = initial_settings.warning
         self._desired_settings = initial_settings
@@ -898,24 +908,45 @@ class DesktopBackend:
                 else self._brain_factory()
             )
             if self._attachment_store is None:
-                self._attachment_store = JsonAttachmentStore(
-                    self._runtime_settings.base_dir
-                    / "workspace"
-                    / "attachments",
-                    max_file_bytes=(
-                        self._runtime_settings.data_import_max_bytes
-                    ),
+                self._attachment_store = AttachmentService(
+                    JsonAttachmentStore(
+                        self._runtime_settings.base_dir
+                        / "workspace"
+                        / "attachments",
+                        max_file_bytes=(
+                            self._runtime_settings.data_import_max_bytes
+                        ),
+                    )
                 )
+            chat_metadata = brain.list_chats(include_archived=True)
+            project_metadata = brain.list_projects(include_archived=True)
             self._attachment_store.reconcile_owners(
-                chat_ids=(
-                    str(chat.chat_id)
-                    for chat in brain.list_chats(include_archived=True)
+                chat_ids=tuple(
+                    str(chat.chat_id) for chat in chat_metadata
                 ),
-                project_ids=(
-                    str(project.project_id)
-                    for project in brain.list_projects(include_archived=True)
+                project_ids=tuple(
+                    str(project.project_id) for project in project_metadata
                 ),
             )
+            # Owner existence and message references are separate authorities:
+            # the first pass removes scopes for deleted owners, while the Chat
+            # pass repairs lifecycle state from persisted messages. Projects do
+            # not have message references, but still reconcile with an empty set
+            # so crash-left originals and legacy leftovers are reclaimed.
+            for metadata in chat_metadata:
+                chat = brain.get_chat(metadata.chat_id)
+                self._attachment_store.reconcile(
+                    AttachmentScope(kind="chat", id=str(chat.chat_id)),
+                    self._chat_attachment_references(chat),
+                )
+            for project_metadata_item in project_metadata:
+                self._attachment_store.reconcile(
+                    AttachmentScope(
+                        kind="project",
+                        id=str(project_metadata_item.project_id),
+                    ),
+                    (),
+                )
             active_chat = self._resolve_active_chat(brain)
             self._brain = brain
             self._set_active_chat(active_chat)
@@ -1667,8 +1698,8 @@ class DesktopBackend:
         ]
         return result
 
-    def _require_attachment_store(self) -> JsonAttachmentStore:
-        """Return the initialized private attachment storage boundary."""
+    def _require_attachment_store(self) -> AttachmentService:
+        """Return the initialized path-private attachment application service."""
 
         if self._attachment_store is None:
             raise RuntimeError("Attachment storage is not initialized.")
@@ -1708,6 +1739,12 @@ class DesktopBackend:
                 "chat.archived",
                 "Archived Chats cannot change local attachments.",
             )
+        return self._chat_attachment_references(chat)
+
+    @staticmethod
+    def _chat_attachment_references(chat: ChatSession) -> tuple[str, ...]:
+        """Return attachment IDs owned by canonical persisted messages."""
+
         return tuple(
             str(attachment.attachment_id)
             for message in chat.messages
@@ -1942,7 +1979,7 @@ class DesktopBackend:
 
         chat_id = ChatId(cast(str, params["chatId"]))
         was_active = chat_id == active_chat.chat_id
-        self._require_attachment_store().delete_scope_with(
+        self._require_attachment_store().delete_owner(
             AttachmentScope(kind="chat", id=str(chat_id)),
             lambda: brain.delete_chat(chat_id),
         )
