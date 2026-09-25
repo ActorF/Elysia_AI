@@ -168,7 +168,7 @@ An in-process lock serializes operations, and the store holds one exclusive proc
 
 ## 7. Verified Backend reads
 
-Trusted future loaders call `open_verified_file(scope, file_id)` instead of receiving a path.
+`documents.DocumentLoaderService`—not the individual format adapters—calls its injected repository's `open_verified_file(scope, file_id)` instead of giving a loader a path. It closes that verified-read context after building the bounded immutable byte snapshot, then dispatches the snapshot to the selected text, PDF, or DOCX adapter.
 
 The repository:
 
@@ -265,7 +265,7 @@ npm run docs:check
 
 ## 12. Explicit non-goals and next work
 
-This baseline does not claim any of the following:
+The storage baseline itself does not claim any of the following:
 
 - file-signature or format-level parsing;
 - TXT, Markdown, PDF, DOCX, CSV, or source-code loaders;
@@ -277,4 +277,4 @@ This baseline does not claim any of the following:
 - grounded answers, citation rendering, or RAG UI; or
 - a global deduplicated blob pool.
 
-The next step is Stage 8 Module 2: trusted, bounded Document Loaders that consume `open_verified_file()` and produce explicit versioned outputs without weakening the Scope or Renderer privacy boundary.
+The trusted, bounded `DocumentLoaderService` is now implemented as a separate layer in `documents/`; it consumes `open_verified_file()`, passes only verified bytes to path-free format adapters, and produces explicit versioned outputs without weakening the Scope or Renderer privacy boundary. Its completed format and security contract is documented in `docs/05-DOCUMENT-LOADERS.md`. Cleaning, chunking, embeddings, retrieval, citations, and RAG remain later layers rather than responsibilities of this storage package.

@@ -2,7 +2,7 @@
 
 这份文档用于帮助第一次接触 Elysia AI 的开发者理解：每个受版本控制的文件负责什么、它与哪些层连接，以及修改某项功能时应该从哪里开始。
 
-> 当前架构边界：Python 是 Chat、Project、Memory、Attachment 和持久化状态的事实来源；Electron Main 是本地进程、文件路径和硬件权限的可信边界；Preload 只暴露固定能力；React Renderer 只负责显示和临时交互状态。
+> 当前架构边界：Python 是 Chat、Project、Memory、Attachment、Document Loading 和持久化状态的事实来源；Electron Main 是本地进程、文件路径和硬件权限的可信边界；Preload 只暴露固定能力；React Renderer 只负责显示和临时交互状态。
 
 ## 1. 先看完整连接图
 
@@ -46,6 +46,10 @@ desktop_backend.py
                 ├── voice.speech.* metadata over authenticated NDJSON
                 └── matching fd3 frame → Electron delivery → Preload Web Audio
 
+documents.DocumentLoaderService（已实现的独立 Library，尚未由 start.py / desktop_backend.py 构造）
+    ├── AttachmentService.open_verified_file(scope, opaque file_id)
+    └── verified immutable bytes → text / PDF / DOCX loaders
+
 start.create_data_portability_service()
     └── 独立 Recovery API；当前没有接入 Desktop Protocol/UI
 ```
@@ -81,7 +85,7 @@ start.create_data_portability_service()
 | `README.en.md` | 与中文 README 对应的英文首页。 | 对外英文说明；应与 `README.md` 同步维护 |
 | `MODEL_LICENSE.md` | 说明角色语料、GPT-SoVITS 权重、参考音频等来源、当前 `local-evaluation-only` 决定与权利边界；不是源码许可证。 | `data/characters/`、本地 `models/weights/`、发行边界 |
 | `SOURCE_FILE_GUIDE.md` | 当前这份逐文件源码导览；记录文件职责、调用边界、测试映射和新人阅读顺序。 | 全仓库源码、配置、文档与测试 |
-| `requirements.txt` | 固定基础 Python Runtime、LangChain Ollama、pytest、mypy、jsonschema 等依赖版本；不强制安装本地 STT Native Runtime。 | `.venv`、CI、`start.py`、`desktop_backend.py` |
+| `requirements.txt` | 固定基础 Python Runtime、LangChain Ollama、pypdf、pytest、mypy、jsonschema 等依赖版本；不强制安装本地 STT Native Runtime。 | `.venv`、CI、`start.py`、`desktop_backend.py`、`documents/pdf.py` |
 | `requirements-stt.txt` | 固定可选的 Faster-Whisper 与 NumPy 版本；只在需要本地单句转写时叠加安装，不包含或下载模型权重。 | `voice/faster_whisper.py`、本地 `.venv`、`models/weights/faster-whisper/<model>` |
 | `scripts/__init__.py` | 把维护脚本标记为可导入 Package，使 Smoke CLI 能同时按模块与文件路径测试。 | `scripts/smoke_gpt_sovits.py`、测试 |
 | `scripts/benchmark_voice_pipeline.py` | Windows 三组件资源基准；以固定内容并发测量 Ollama Streaming 与受管 GPT-SoVITS，随后在模型驻留时执行 CPU Faster-Whisper；只输出脱敏数值，限制总墙钟、响应大小和 GPU 采样，并在失败时独立清理所有自有 Owner。 | `config.SETTINGS`、`desktop_speech.py`、Managed GPT-SoVITS、Faster-Whisper、Ollama、`nvidia-smi` |
@@ -96,6 +100,7 @@ start.create_data_portability_service()
 | `docs/decisions/0001-desktop-shell.md` | Electron 与 Tauri 选型 ADR；记录测量方法、能力差距、风险、最终选择和重访门槛。 | `desktop/benchmarks/measure-shell.ps1`、Desktop 技术决策 |
 | `docs/03-VOICE-PERFORMANCE-SAFETY-RIGHTS.md` | 记录最终三组件实机测量、CPU STT 资源策略、长会话自动化清理证据、Voice Rights 决定、分发门禁和重测条件。 | Module 9 验收、`MODEL_LICENSE.md`、Benchmark/Soak/Package Audit |
 | `docs/04-FILE-METADATA-STORAGE.md` | 记录版本化 File Metadata、Scope-local Content-addressed Storage、Ownership/Derived 关系、Manifest v2、迁移、验证读取、删除回滚、Renderer 隐私边界和当前非目标。 | `attachments/`、Desktop Backend、后续 Document Loaders |
+| `docs/05-DOCUMENT-LOADERS.md` | 记录可信 Document Loader 的格式矩阵、路径隐私、Scope 授权、结构模型、资源预算、PDF/DOCX Parser 边界、稳定错误、测试和当前非目标。 | `documents/`、`attachments/`、后续 Cleaning/Chunking |
 | `data/characters/elysia_character_reference_zh.md` | 爱莉希雅背景、语录和转写参考资料；当前 Runtime 不会自动将它注入每次 Prompt。 | 人工角色研究；受 `MODEL_LICENSE.md` 的来源/授权提醒约束 |
 
 本机还存在被 Git 忽略的 `docs/02-ROADMAP.md`。它是当前 Stage/Module 规划来源，但新的 Git Clone 不会自动得到它，因此不能作为唯一公共文档。
@@ -211,9 +216,35 @@ ChatSession.project_id
 | `attachments/service.py` | Application Service；把真实路径限制在受信 Import 边界，以 Scope + opaque File ID 提供验证读取，并协调 Chat、Project 与 linked Chats 的 Owner-aware 删除。 | Desktop Backend、AttachmentRepository、后续可信 Loader |
 | `attachments/store.py` | Manifest v2 与 Scope-local Content-addressed Blob Store；按内容 Hash 在单一 Scope 内去重，保存 Original/Ownership/Derived 关系，并实现 v1 原子迁移、Descriptor-pinned Copy/Read、取消回滚、进程锁、启动恢复、Owner/Reference 对账和多 Scope 删除 Tombstone。 | Electron 文件选择、AttachmentService、Desktop Backend、Chat Message Commit、后续 Document Loaders |
 
-当前 Attachment 已完成安全原始文件存储、版本化 Metadata/Ownership、Derived 关系登记和可信 Backend 读取边界。它仍不解析文件内容，也不生成 Derived Bytes、Chunk、Embedding、Vector Store、Retriever、Citation 或 RAG；这些属于后续 Stage 8 Modules。
+当前 Attachment 已完成安全原始文件存储、版本化 Metadata/Ownership、Derived 关系登记和可信 Backend 读取边界。Attachment Package 本身仍不解析内容；新的 `documents.DocumentLoaderService` 通过 `open_verified_file()` 取得 Scope-bound Verified Snapshot，关闭读取 Context 后才把无路径 Bytes 交给格式 Loader 提取原始结构。Derived Bytes、Chunk、Embedding、Vector Store、Retriever、Citation 和 RAG 仍属于后续工作。
 
-## 12. Voice Python 层：`voice/`
+## 12. Document Loaders：`documents/`
+
+| 文件 | 实际用途 | 主要连接 |
+| --- | --- | --- |
+| `documents/__init__.py` | Document Package 的稳定公共 API；导出领域值、错误、Adapter Protocol 与 Application Service。 | 后续 Cleaning/Chunking、测试、未来 Composition Root |
+| `documents/domain.py` | 定义不含路径的 `DocumentSource`、Title、Ragged Table、Ordered Block、`LoadedDocument` 和输入/展开/文字/结构资源预算；复核页码、Ordinal、标题来源和累计输出。 | 所有 Loader、Service、后续 Chunker |
+| `documents/exceptions.py` | 定义稳定的 Validation、Not Found、Unsupported Format、Unsupported Feature、Empty、Encrypted、Corrupt、Read 与 Unexpected Loader 错误，以及公开 `DocumentLimitError` 基类下的 Size/Content Limit 子类。 | Service、Loader、未来 Protocol Error Mapping |
+| `documents/protocol.py` | 定义按精确 `(suffix, media_type)` 路由的 Path-private Loader Protocol，以及稳定 Loader ID/Version Contract。 | Service、各格式 Adapter、测试替身 |
+| `documents/service.py` | 以 `scope + ownership link_id` 解析 Link-specific Metadata 和 Canonical File Record，经 `open_verified_file()` 有界读取不可变快照，关闭文件 Context 后再选择 Loader，并复核 Source、Limits 与 Producer Version 未被 Adapter 篡改。 | `attachments/service.py`、所有 Loader、后续 Document Pipeline |
+| `documents/text.py` | 严格解码 UTF-8/BOM-declared UTF-16；以常量级行游标提取 TXT Paragraph、Markdown ATX/多行 Setext/Fence/Table，以本地状态机解析严格 CSV，并把常见源码保留为 Code Block。它不执行、渲染、联网或解析外部资源。 | `DocumentLoaderService`、Domain、文本测试 |
+| `documents/pdf.py` | 使用固定版本 pypdf 的 Strict Reader 和请求局部资源配置；在 Operation Graph 物化前限制 Content Token，按实际调用累计 Page/Form Bytes、Operation 与 Invocation，并以累计 Visitor/Child Guard 在重复或嵌套 Form 物化超限文字前早停。缺失或 Null `/Contents` 作为真实空页；保留 Embedded Title、Page Count 与每个非空页的一基页码 Raw Text，不猜测 Table/Layout/OCR。 | `requirements.txt`、Service、二进制 Loader 测试 |
+| `documents/docx.py` | 在构造 `ZipFile` 前核对 EOCD/Zip64 并逐条扫描真实 Central Directory；在所有已解析的选定 XML Part 间累计 XML/MC Token/Namespace 资源；Main、可选 Styles 与可选 Core 必须分别经过 Relationship 和精确 Content Type 授权，未授权的固定路径诱饵会被忽略。它按 Part 使用 Namespace-level Profile，以持久化增量状态执行 `AlternateContent`、Ignorable、ProcessContent 与 MustUnderstand；DrawingML、Office Math/OMML、VML/旧 Shape 作为 Opaque Subtree 跳过，但不算 MCE understood。它还拒绝路径别名、加密、外部 Main Relationship、DTD/Entity、未知 Encoding 与 Macro Main Part，并以单次增量 Table 遍历按正文顺序提取 Title/Heading/Paragraph/Table。 | Service、Domain、二进制 Loader 测试 |
+
+完整边界是：
+
+```text
+AttachmentScope + ownership link_id
+  → DocumentLoaderService
+  → AttachmentService.open_verified_file(scope, opaque file_id)
+  → bounded immutable bytes; verified-file context closes
+  → exact suffix + MIME adapter
+  → versioned, path-free LoadedDocument
+```
+
+此处输出仍是 Raw Structure，不是可检索 Chunk。当前没有新增 Desktop Protocol/React Endpoint，也不会把本机路径、Parser 原始异常或 Attachment Blob 暴露给 Renderer。完整格式和安全说明见 `docs/05-DOCUMENT-LOADERS.md`。
+
+## 13. Voice Python 层：`voice/`
 
 | 文件 | 实际用途 | 主要连接 |
 | --- | --- | --- |
@@ -236,14 +267,14 @@ ChatSession.project_id
 
 `voice/capture.py` 是单句 PCM 验证边界，详见本文“Voice Capture、本地 STT 与本地 TTS”部分。STT 由 `voice/transcription_jobs.py` 接入 Python Desktop Backend，Electron/React 消费最终的 PCM-free Transcript。TTS 同时保留外部 HTTP Smoke 链和桌面受管 Worker 链；后者由 `desktop_speech.py` 旁路接收 Brain Chunk，经私有 fd3 与 Preload Web Audio 播放，但不向 React 暴露原始音频。
 
-## 13. Console UI：`ui/`
+## 14. Console UI：`ui/`
 
 | 文件 | 实际用途 | 主要连接 |
 | --- | --- | --- |
 | `ui/__init__.py` | Console UI 的稳定公开导出。 | `start.py` |
 | `ui/console.py` | 旧 Console Client；恢复/创建默认 Chat、流式输出、`/memory`、`/summarize`、候选记忆确认和退出。 | Brain、Memory；没有完整 Desktop Chat/Project 管理能力 |
 
-## 14. Desktop 工程根目录：`desktop/`
+## 15. Desktop 工程根目录：`desktop/`
 
 | 文件 | 实际用途 | 主要连接 |
 | --- | --- | --- |
@@ -264,7 +295,7 @@ ChatSession.project_id
 | `desktop/assets/elysia-icon.ico` | 同一官方刻印的多尺寸 Windows ICO 构建资源；不属于源码许可。 | `package.json`、electron-builder、Windows EXE/Installer、`MODEL_LICENSE.md` |
 | `desktop/benchmarks/measure-shell.ps1` | Electron/Tauri 决策时使用的 Windows 启动、内存、进程树和正常退出 Benchmark。 | Desktop ADR；不参与正常启动 |
 
-## 15. Electron 可信边界：`desktop/electron/`
+## 16. Electron 可信边界：`desktop/electron/`
 
 | 文件 | 实际用途 | 主要连接 |
 | --- | --- | --- |
@@ -282,7 +313,7 @@ ChatSession.project_id
 | `desktop/electron/audio-permission.ts` | 只为可信主窗口和主 Frame 放行 audio-only microphone 或 speaker selection。 | Main 的 Chromium Permission Handler |
 | `desktop/electron/external-url.ts` | 只接受无 Credentials 的 HTTP/HTTPS URL，拒绝危险 Scheme、空白、NUL 和无 Host URL。 | Main、Markdown Link、系统浏览器 |
 
-## 16. React Renderer 总入口：`desktop/src/`
+## 17. React Renderer 总入口：`desktop/src/`
 
 | 文件 | 实际用途 | 主要连接 |
 | --- | --- | --- |
@@ -294,7 +325,7 @@ ChatSession.project_id
 
 `App.tsx` 的 LocalStorage 只保存 UI 恢复数据，例如 Chat Draft、Pending Send 和 Retry Draft。Python 返回的 Chat/Project 仍然是 Canonical State。
 
-## 17. React Shell：`desktop/src/shell/`
+## 18. React Shell：`desktop/src/shell/`
 
 | 文件 | 实际用途 | 主要连接 |
 | --- | --- | --- |
@@ -302,7 +333,7 @@ ChatSession.project_id
 | `desktop/src/shell/Sidebar.tsx` | 显示新的 Elysia 品牌图标、主导航和 Chat History；支持搜索、Create/Open、Rename、Pin、Archive/Restore、Delete 和批量操作。 | App callbacks、Backend Canonical Chat List、`public/elysia-icon.png` |
 | `desktop/src/shell/ChatActionDialog.tsx` | Rename、Archive、Delete 等 Chat 操作的可复用 `<dialog>` 和表单/焦点逻辑。 | Sidebar、App mutation callbacks |
 
-## 18. React Chat：`desktop/src/chat/`
+## 19. React Chat：`desktop/src/chat/`
 
 | 文件 | 实际用途 | 主要连接 |
 | --- | --- | --- |
@@ -311,7 +342,7 @@ ChatSession.project_id
 | `desktop/src/chat/MessageView.tsx` | User 消息以纯文本显示；Assistant 使用安全 GFM；禁止 Raw HTML/外部图片，支持复制、Regenerate、Edit and retry 和 Attachment Chips。 | App callbacks、Electron External URL/Clipboard |
 | `desktop/src/chat/types.ts` | 定义只供 Renderer 展示的 Message/Streaming/Retry/Notice 类型；不是持久化 Schema。 | App、ChatView、MessageView |
 
-## 19. React Project 与 Attachment：`desktop/src/projects/`、`desktop/src/attachments/`
+## 20. React Project 与 Attachment：`desktop/src/projects/`、`desktop/src/attachments/`
 
 | 文件 | 实际用途 | 主要连接 |
 | --- | --- | --- |
@@ -321,7 +352,7 @@ ChatSession.project_id
 
 Project Memory 页面目前仍是明确 Placeholder。Project Source 只安全保存文件，还不会理解文件内容。
 
-## 20. React Settings 与 Voice：`desktop/src/settings/`、`desktop/src/voice/`
+## 21. React Settings 与 Voice：`desktop/src/settings/`、`desktop/src/voice/`
 
 | 文件 | 实际用途 | 主要连接 |
 | --- | --- | --- |
@@ -333,7 +364,7 @@ Project Memory 页面目前仍是明确 Placeholder。Project Source 只安全�
 | `desktop/src/voice/CallPreview.tsx` | 全窗口有界 Voice 页面；分别显示主生命周期与麦克风状态、Session 计时、Assistant Captions、可编辑 Final Transcript，以及 Captions、Mute、Audio Settings、Capture、Auto-continue、Close Voice 控件。 | App、`voice-ui-state.ts`、Capture Controller、Voice Session Controller；不显示实时 Partial，也不会自动提交 Transcript；自动续听必须由设置/控件显式启用并由 App 的安全条件放行 |
 | `desktop/src/voice/transcription-readiness.ts` | 把 Python/Electron 的闭合集合 STT Status/Reason 转成 Settings 与 Voice 共用的安全、可操作提示；绝不渲染模型路径或 Native Error。 | `App.tsx`、`SettingsView.tsx`、`electron/protocol.ts` |
 
-## 21. Character、Design System 与 Theme
+## 22. Character、Design System 与 Theme
 
 | 文件 | 实际用途 | 主要连接 |
 | --- | --- | --- |
@@ -344,7 +375,7 @@ Project Memory 页面目前仍是明确 Placeholder。Project Source 只安全�
 | `desktop/src/design-system/Feedback.tsx` | 可复用 LoadingState、EmptyState、InlineAlert 和状态 Action。 | Chat/Project/Settings/Voice 页面 |
 | `desktop/src/theme/ThemeProvider.tsx` | 管理 System/Light/Dark Theme、`elysia.theme` LocalStorage、Media Query 和 Electron Native Background 同步。 | `main.tsx`、SettingsView、Main IPC |
 
-## 22. Desktop Protocol：`desktop_protocol/`
+## 23. Desktop Protocol：`desktop_protocol/`
 
 | 文件 | 实际用途 | 主要连接 |
 | --- | --- | --- |
@@ -357,7 +388,7 @@ Project Memory 页面目前仍是明确 Placeholder。Project Source 只安全�
 
 协议的 Python 与 TypeScript Parser 都是手写的，Schema 不是代码生成器。因此修改协议时必须同步维护两端和共享 Fixtures。
 
-## 23. Desktop 测试：`desktop/tests/`
+## 24. Desktop 测试：`desktop/tests/`
 
 | 文件 | 实际用途 | 主要连接 |
 | --- | --- | --- |
@@ -372,7 +403,7 @@ Project Memory 页面目前仍是明确 Placeholder。Project Source 只安全�
 | `desktop/tests/ui/mock-preload.cjs` | UI 测试专用 `elysiaDesktop` Fake；除 Canonical 状态外模拟扩展后的 Global Voice 行为设置、STT 开始/终态/取消、Speech Status、按 Request 停止播放、Readiness、延迟、失败、Reload 和 Race。 | App Shell UI Tests；不会进入生产包 |
 | `desktop/tests/ui/app-shell.spec.ts` | Playwright 启动真实 Electron Renderer，覆盖 Chat/Project/Settings/Voice；Voice 回归包括行为设置、主/麦克风双状态、计时/字幕/静音、编辑、显式 Send、Use/Append 草稿、安全自动续听与中断边界、Canonical Chat、Thinking/Speaking、无 Speech Capability、取消迟到结果、Close、Fresh Retry 与安全 Readiness。 | Production React Build + Mock Backend；不等同于真实麦克风、扬声器、GPU 或模型矩阵 |
 
-## 24. Python 测试：`tests/`
+## 25. Python 测试：`tests/`
 
 | 文件 | 实际用途 |
 | --- | --- |
@@ -382,6 +413,10 @@ Project Memory 页面目前仍是明确 Placeholder。Project Source 只安全�
 | `tests/test_attachment_service.py` | Attachment Store 生命周期、Manifest、锁、恢复和文件系统安全。 |
 | `tests/test_attachment_file_domain.py` | 版本化 Original/Ownership/Derived Domain 值、内容稳定 File ID、UTC 时间、安全名称、Scope/Role 对应和路径字段禁入。 |
 | `tests/test_attachment_application_service.py` | AttachmentService 的 Repository Delegation、Scope-bound Verified Read、Derived 登记以及 Chat/Project 多 Owner 删除回滚边界。 |
+| `tests/test_document_domain.py` | Document Source、Title、Block/Table Union、PDF Page、连续 Ordinal，以及 Source/Expansion/Text/Structure 全部累计预算。 |
+| `tests/test_document_loader_service.py` | Document Service 的真实 Attachment Store 集成、Scope 隔离、Link-specific Metadata、Verified Read、Route 冲突、Size Preflight 与恶意 Adapter 输出拒绝。 |
+| `tests/test_document_text_loaders.py` | TXT/Markdown/CSV/源码的严格 Encoding、Unicode 行边界、多行 Setext、结构保留、Route、Malformed Input、预算和峰值内存边界。 |
+| `tests/test_document_binary_loaders.py` | PDF/DOCX 的标题/页码/正文/表格、Null Content、重复/嵌套 Form、Form 错误提升、CMap/CID/Type3 字体语义预算、映射前文字早停、Inline Image、EOCD/Zip64、MCE、分部 Namespace Profile、Relationship + Content Type Part 授权、固定路径诱饵与 Opaque Drawing/Math，以及加密、损坏、不支持能力、外部关系、路径别名和资源预算边界。 |
 | `tests/test_file_metadata_store.py` | Manifest v2、v1 Migration、Scope-local 去重、路径隐私、Derived 级联、取消清理、跨 Scope 删除、Verified Read 完整性和未知 Schema Fail-closed。 |
 | `tests/test_brain.py` | Brain 的 Chat、Canonical Streaming、跨 Chunk 空白、Memory、Summary、Retry、Cancel 和 Attachment 协调。 |
 | `tests/test_chat_domain.py` | Chat、Message、Summary、Attachment Metadata、ID 和不变量。 |
@@ -437,7 +472,7 @@ Project Memory 页面目前仍是明确 Placeholder。Project Source 只安全�
 | `tests/test_voice_pipeline_benchmark.py` | 以 Fake Monitor/Pipeline/HTTP 验证三组件并发顺序、脱敏 JSON、WAV→CPU Capture、失败清理、Loopback、硬 Deadline、固定分块 NDJSON、未终止帧和 `/api/ps` 大小边界；不加载真实模型。 |
 | `tests/test_voice_transcription_jobs.py` | 有界后台转写的 Admission、Worker/Queue Capacity、Cancel/Timeout Race、Native Draining、迟到结果丢弃、Retention、Shutdown，以及 256 轮成功/失败后零 Job/Worker Owner。 |
 
-## 25. Voice Session、Capture、本地 STT 与本地 TTS
+## 26. Voice Session、Capture、本地 STT 与本地 TTS
 
 当前桌面已把显式单句采集、Final STT、人工确认、Canonical Chat、受管 TTS、可信播放状态、安全 Barge-in 和可选自动续听组合为一个有界 Voice Session。它不是第二套对话系统：Transcript 只有在用户点击 **Send transcript** 后才进入现有 Chat，之后的 Brain、Persistence、Summary、Memory 和回复播放都沿用正常路径。尚未实现的是 Partial Transcript 与自动提交；Python 256 轮与 Renderer 200 轮 Soak 已验证程序内 Owner 清理，但真实设备、房间回声和多小时人类通话仍未声称完成。
 
@@ -580,7 +615,7 @@ Brain.stream_chat() canonical chunks and commit
 
 受管路径固定了 Profile/情绪、Worker、权重声明和进程/管道生命周期，并持续 Guard 已声明的资产与 Runtime Anchor；它没有逐一认证第三方 Runtime 的六万多个依赖，也无法撤销同一用户在封印前已经取得的 `WRITE_DAC`。因此当前威胁模型明确信任 Lease 开始时的本地第三方 Runtime 与同一 Windows 用户进程。Queue 层 `binding_verified=True` 仅证明 Elysia 私有 Factory 签发了围绕该受管 Lease 的 Binding，不是完整依赖来源认证，也不会使语音缓存获得资格。若未来需要抵御恶意同用户进程，应改用由 Installer/SYSTEM 所有的只读 Runtime，或独立受限身份/AppContainer 与经过批准的完整签名 Manifest。
 
-## 26. 哪些文件不应被当成源码垃圾
+## 27. 哪些文件不应被当成源码垃圾
 
 ### 工具生成，但应被 Git 跟踪
 
@@ -615,7 +650,7 @@ models/cache/          解压的可选外部 Runtime 与下载/推理缓存；�
 docs/02-ROADMAP.md     被 Git 忽略的本地项目路线图
 ```
 
-## 27. 修改功能时从哪里开始
+## 28. 修改功能时从哪里开始
 
 ### 修改 Chat 或 Project 业务规则
 
@@ -639,6 +674,20 @@ memory/scope.py or long_term_memory.py
 ```
 
 任何读取 Project/Chat Memory 的新功能，都不能绕过 Scope Context。
+
+### 修改 Document Loader 或增加格式
+
+```text
+documents/domain.py（结构或预算改变时）
+→ documents/protocol.py
+→ 对应 format adapter
+→ documents/service.py（路由或授权改变时）
+→ tests/test_document_domain.py
+→ 对应 loader tests + service integration tests
+→ docs/05-DOCUMENT-LOADERS.md
+```
+
+新格式必须先定义精确 Extension + MIME Route、内容 Signature、资源预算与稳定错误；Loader 只能消费 `open_verified_file()` 产生的 Bytes，不能接受或重开本机路径。若未来暴露给桌面，再单独设计最小 Protocol 与 Renderer-safe DTO，不能直接序列化 Parser 对象或底层异常。
 
 ### 修改 Protocol
 
@@ -745,7 +794,7 @@ config/settings.py + config/voice_profiles.example.json
 
 改动桌面播放必须继续检查 Managed Wrapper、Sentence Queue、Speech Protocol、fd3 Reader、Delivery Coordinator、Playback Owner、Preload、安全 Renderer Status、Voice Session Controller 和按 Request ID 的停止路径；React 只需要最小状态，不能接触音频。外部 GPT-SoVITS Runtime 放在被忽略的 `models/cache/`，权重/参考音频放在 `models/weights/gpt-sovits/`；不得把本机 Catalog、准确 Prompt、资产或 Runtime 混进源码提交。
 
-## 28. 推荐的新成员阅读顺序
+## 29. 推荐的新成员阅读顺序
 
 准备修改源码的人应在项目首页之后先阅读 `AGENTS.md`，再按下面的架构顺序进入实现。
 
@@ -764,24 +813,30 @@ config/settings.py + config/voice_profiles.example.json
 13. `core/brain.py`
 14. `chats/migration.py`
 15. `recovery/service.py`
-16. `desktop_protocol/README.md`
-17. `desktop/electron/contracts.ts`
-18. `desktop/electron/preload.cts`
-19. `desktop/electron/main.ts`
-20. `desktop/electron/backend-process.ts`
-21. `desktop_backend.py`
-22. `desktop_speech.py`
-23. `voice/speech_queue.py`
-24. `voice/managed_gpt_sovits.py` 与 `scripts/gpt_sovits_worker.py`
-25. `desktop_protocol/audio_channel.py`
-26. `desktop/electron/speech-delivery.ts`
-27. `desktop/electron/speech-playback-owner.ts`
-28. `desktop/src/voice/audio-capture.ts` 与 `desktop/src/voice/voice-activity-detector.ts`
-29. `desktop/src/voice/voice-session-controller.ts`
-30. `desktop/src/voice/voice-ui-state.ts`
-31. `desktop/src/App.tsx`
-32. `desktop/src/voice/CallPreview.tsx` 与其他具体 Feature Component
-33. 对应测试，尤其是 `desktop/tests/voice-session-controller.test.mjs` 与 `desktop/tests/voice-ui-state.test.mjs`
+16. `attachments/domain.py`
+17. `attachments/service.py` 与 `attachments/store.py`
+18. `documents/domain.py` 与 `documents/protocol.py`
+19. `documents/service.py`
+20. `documents/text.py`、`documents/pdf.py` 与 `documents/docx.py`
+21. `docs/05-DOCUMENT-LOADERS.md`
+22. `desktop_protocol/README.md`
+23. `desktop/electron/contracts.ts`
+24. `desktop/electron/preload.cts`
+25. `desktop/electron/main.ts`
+26. `desktop/electron/backend-process.ts`
+27. `desktop_backend.py`
+28. `desktop_speech.py`
+29. `voice/speech_queue.py`
+30. `voice/managed_gpt_sovits.py` 与 `scripts/gpt_sovits_worker.py`
+31. `desktop_protocol/audio_channel.py`
+32. `desktop/electron/speech-delivery.ts`
+33. `desktop/electron/speech-playback-owner.ts`
+34. `desktop/src/voice/audio-capture.ts` 与 `desktop/src/voice/voice-activity-detector.ts`
+35. `desktop/src/voice/voice-session-controller.ts`
+36. `desktop/src/voice/voice-ui-state.ts`
+37. `desktop/src/App.tsx`
+38. `desktop/src/voice/CallPreview.tsx` 与其他具体 Feature Component
+39. 对应测试，尤其是 Document Loader、`desktop/tests/voice-session-controller.test.mjs` 与 `desktop/tests/voice-ui-state.test.mjs`
 
 读完后应形成以下心智模型：
 
@@ -797,3 +852,4 @@ config/settings.py + config/voice_profiles.example.json
 - Streaming Overlay 不等于已保存消息。
 - `ChatSession.project_id` 是 Project–Chat 关系的唯一真相。
 - 所有 Memory 使用前都必须经过 Scope 过滤。
+- `DocumentLoaderService` 只能通过 `open_verified_file()` 读取 Scope-authorized Verified Bytes；格式 Loader 只收到关闭读取 Context 后的无路径快照，输出是 Raw Structure，不是 Chunk、Index 或 RAG 事实。

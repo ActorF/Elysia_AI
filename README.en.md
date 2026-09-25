@@ -31,7 +31,7 @@
 - 📁 **Project Workspaces** — Store Instructions, bind a Workspace, archive Projects, and manage Chat assignment between Projects and the unassigned area
 - 🧠 **Scoped Memory** — Keeps Global, Project, and Chat boundaries distinct, with long-term memory, summaries, and confirmation flows
 - 🛡️ **Strict Desktop Boundary** — Sandboxed Renderer, narrow Preload API, origin checks, and authenticated NDJSON Protocol v1
-- 📎 **Safe Attachment Surface** — Select, drop, preview, remove, and recover Chat or Project files; content is not parsed or indexed yet
+- 📎 **Safe Attachments and Document-Loading Foundation** — Select, drop, preview, remove, and recover Chat or Project files; a standalone Python loader library can extract bounded raw structure from TXT, Markdown, CSV, common source text, PDF, and DOCX through verified reads, but it is not yet wired into the production composition root, indexing, or file-question UI
 - 🎙️ **Local Voice Session** — Explicit capture runs through local VAD and Faster-Whisper; reviewed final text can be sent, then naturally interrupt the reply while it thinks or speaks
 - 🔊 **Local Reply Playback** — Python queues naturally segmented replies through managed GPT-SoVITS, while trusted Electron Preload plays doubly validated PCM WAV in order
 - 💾 **Recovery First** — Local JSON storage, legacy migration, quarantine, atomic writes, and import/export services
@@ -48,7 +48,7 @@
 | Project | ✅ Available | Metadata, Instructions, Workspace binding, and Chat ownership |
 | Memory Core | ✅ Available | Global / Project / Chat scopes, retrieval, summaries, and long-term memory foundation |
 | Settings | ✅ Available | Chat/Ollama/Memory/file/STT settings, theme, and automatic read-aloud, rate, volume, Voice Profile, captions, manual transcript review, and automatic re-listening |
-| Attachments / Sources | ✅ Foundation available | Safe storage and metadata only; no content reading, parsing, Embedding, or RAG |
+| Attachments / Sources | ✅ Storage and Loader foundation | Scope-bound storage, versioned metadata, verified reads, and raw TXT/Markdown/CSV/source/PDF/DOCX loading; no Chunking, Embedding, or RAG yet |
 | Audio Devices | ✅ Available | Microphone/speaker selection, Windows permission state, input level, and output tone tests |
 | One-utterance recording and local VAD | ✅ Available | Explicit start, 16 kHz mono `s16le`, transient processing; no automatic Chat Turn |
 | STT / Faster-Whisper | ✅ Foundation available | Electron/React and local final transcripts are connected; optional dependencies and a local model must be installed separately |
@@ -56,7 +56,7 @@
 | GPT-SoVITS / TTS | ✅ Foundation available | Chat segmentation, a managed local worker, bounded queue, private fd3 transport, and Electron playback are connected; local runtime, Profile, weights, and reference audio are required |
 | Barge-in / speech interruption | ✅ Available | Enabled only for the reply to an explicitly sent Voice turn; requires verified WebRTC echo cancellation and sustained-speech confirmation, then cancels that exact turn |
 | Automatic re-listening | ✅ Available | A visible switch can listen again after a safely completed reply; it is off by default and never auto-sends a final transcript |
-| File parsing and local RAG | ⏳ Planned | No Loaders, Chunking, Vector Store, or cited answers |
+| File parsing and local RAG | 🚧 Loader library complete | The standalone loader library is complete; production composition-root wiring, Cleaning/Chunking, Vector Store, Retriever, cited answers, and a desktop question surface remain planned |
 | Work Agent and tool permissions | ⏳ Planned | No tool execution, desktop control, Internet, or Vision workflow |
 | Live2D / desktop pet | ⏳ Planned | The application currently has UI and a character placeholder only |
 | Standalone installation and updates | ⏳ Planned | Current packages do not bundle Python, Ollama, or models and are unsigned |
@@ -260,7 +260,7 @@ Never commit future secrets, tokens, private prompts, or private configuration.
 - A Project can store a name, Instructions, an optional model, a Workspace binding, and archive state.
 - Chats can move between Projects and the unassigned area.
 - Filesystem paths from native file selection and drag-and-drop remain inside the trusted Preload/Electron boundary. React receives only opaque IDs, safe filenames, media types, and sizes.
-- Sources/Attachments currently provide local storage and lifecycle handling only. They do not read content or feed a RAG pipeline.
+- Sources/Attachments provide local storage and lifecycle handling. A standalone Python Document Loader library can consume only Scope-bound verified reads and produce bounded raw structure, but it is not connected to the production composition root, Cleaning/Chunking, Embedding, RAG, or a Renderer file-question flow.
 
 ### 🧠 Memory and Recovery
 
@@ -301,7 +301,7 @@ cd /d D:\Elysia_AI
 .venv\Scripts\python.exe scripts\check_python_documentation.py
 .venv\Scripts\python.exe scripts\check_distribution_assets.py
 .venv\Scripts\python.exe -m pytest -q
-.venv\Scripts\python.exe -m mypy agent attachments chats config core desktop_protocol memory models projects recovery scripts tools ui voice desktop_backend.py desktop_speech.py start.py
+.venv\Scripts\python.exe -m mypy agent attachments documents chats config core desktop_protocol memory models projects recovery scripts tools ui voice desktop_backend.py desktop_speech.py start.py
 ```
 
 After starting a separately installed loopback GPT-SoVITS service and
@@ -409,6 +409,7 @@ Elysia_AI/
 │   ├── src/            # React Renderer
 │   └── tests/          # Protocol and real Electron UI tests
 ├── desktop_protocol/   # Shared schema, fixtures, and Python/TypeScript validators
+├── documents/          # Path-private TXT/Markdown/CSV/source/PDF/DOCX loaders
 ├── memory/             # Profile, summaries, long-term memory, and scopes
 ├── models/             # Python namespace; local model weight directories are ignored
 ├── projects/           # Project domain, repositories, and Chat relationship service
@@ -474,7 +475,7 @@ that waiver is not a claim that those observations passed.
 
 ### Why can Project Sources not answer from file contents?
 
-Files are currently stored safely and represented by metadata only. Loaders, Chunking, Embeddings, a Vector Store, retrieval, and cited answers remain planned work.
+The desktop currently stores files and displays only safe metadata. A standalone Python loader library can now extract bounded raw structure from TXT, Markdown, CSV, common source text, PDF, and DOCX through verified reads, but it is not yet wired into the production composition root. Cleaning/Chunking, Embeddings, a Vector Store, retrieval, cited answers, and their Desktop Protocol/UI are also incomplete, so Chat cannot use that content to answer questions yet.
 
 ---
 
@@ -521,7 +522,7 @@ This section and [MODEL_LICENSE.md](./MODEL_LICENSE.md) are factual boundary not
 - **Local Elysia GPT-SoVITS v2 model pack**: the included note identifies `TinyLight微光小明` as model publisher and `花儿不哭` as integration-pack provider
 - **Character voice performance**: the local note identifies the CV as Yan Ning (宴宁); related voice and performance rights do not belong to this project
 - **GPT-SoVITS**: [RVC-Boss/GPT-SoVITS](https://github.com/RVC-Boss/GPT-SoVITS)
-- **Core toolchain**: Ollama, Python, Electron, React, TypeScript, Vite, Playwright, pytest, and mypy
+- **Core toolchain**: Ollama, Python, pypdf, Electron, React, TypeScript, Vite, Playwright, pytest, and mypy
 
 If any provenance, credit, or rights statement is incorrect, please request a correction through a GitHub Issue or the repository maintainer. Until a fact is verified, the relevant asset should remain local and undistributed.
 

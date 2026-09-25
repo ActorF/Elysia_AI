@@ -31,7 +31,7 @@
 - 📁 **Project 工作空间** — 支持 Instructions、Workspace 绑定、归档以及 Chat 的归属与移动
 - 🧠 **分范围记忆** — 为 Global、Project、Chat 提供独立边界，并保留长期记忆、摘要与人工确认流程
 - 🛡️ **严格桌面边界** — Renderer 沙箱、受限 Preload、来源校验与认证 NDJSON Protocol v1
-- 📎 **安全附件表面** — Chat 与 Project 文件可选择、拖放、预览、移除和恢复；文件内容尚不解析或索引
+- 📎 **安全附件与文档加载基础** — Chat 与 Project 文件可选择、拖放、预览、移除和恢复；独立 Python Loader 库已能从验证读取流有界解析 TXT、Markdown、CSV、常见源码、PDF 与 DOCX，但尚未接入生产 Composition Root、索引或问答 UI
 - 🎙️ **本地 Voice Session** — 显式采集经过本地 VAD 与 Faster-Whisper；Final Transcript 可编辑，发送后可在思考或朗读期间自然打断
 - 🔊 **本地回复朗读** — Python 按自然断句排队调用受管 GPT-SoVITS，Electron 在可信 Preload 中按序播放经过双重校验的 PCM WAV
 - 💾 **恢复优先** — 本地 JSON 存储、旧会话迁移、损坏隔离、原子写入以及导入/导出服务
@@ -48,7 +48,7 @@
 | Project | ✅ 可用 | 元数据、Instructions、Workspace 绑定和 Chat 归属 |
 | Memory Core | ✅ 可用 | Global / Project / Chat Scope、检索、摘要与长期记忆基础 |
 | Settings | ✅ 可用 | Chat/Ollama/Memory/文件/STT、主题，以及自动朗读、语速、音量、Voice Profile、字幕、人工 Transcript 审核和自动续听 |
-| Attachments / Sources | ✅ 基础可用 | 仅安全存储与元数据；尚不读取、解析、Embedding 或 RAG |
+| Attachments / Sources | ✅ 存储与 Loader 基础可用 | Scope-bound 安全存储、版本化元数据、验证读取，以及 TXT/Markdown/CSV/源码/PDF/DOCX 原始结构加载；尚无 Chunking、Embedding 或 RAG |
 | Audio Devices | ✅ 可用 | 麦克风/扬声器选择、Windows 权限、输入电平与输出音调测试 |
 | 单句录音与本地 VAD | ✅ 可用 | 显式启动、16 kHz mono `s16le`、临时处理；不会自动生成 Chat Turn |
 | STT / Faster-Whisper | ✅ 基础可用 | Electron/React 与本地 Final Transcript 已接通；需另装可选依赖并放置本地模型 |
@@ -56,7 +56,7 @@
 | GPT-SoVITS / TTS | ✅ 基础可用 | Chat 串流分句、受管本机 Worker、有界队列、私有 fd3 传输与 Electron 播放已接通；需本机 Runtime、Profile、权重和参考音频 |
 | Barge-in / 语音打断 | ✅ 可用 | 仅在显式发送的 Voice Turn 回复期间启用；要求经过验证的 WebRTC 回声消除与持续语音确认，并精确取消该 Turn |
 | 自动续听 | ✅ 可用 | 可见开关可在正常回复安全结束后再次监听；默认关闭，Final Transcript 不会自动发送 |
-| 文件解析与本地 RAG | ⏳ 计划中 | 尚无 Loader、Chunking、Vector Store 或引用回答 |
+| 文件解析与本地 RAG | 🚧 Loader 库已完成 | 独立 Loader 库已完成；生产 Composition Root 接线、Cleaning/Chunking、Vector Store、Retriever、引用回答和桌面问答入口仍在计划中 |
 | Work Agent 与工具权限 | ⏳ 计划中 | 尚无工具执行、桌面控制、Internet 或 Vision 工作流 |
 | Live2D / 桌宠 | ⏳ 计划中 | 当前只有桌面应用 UI 与占位角色区域 |
 | 独立安装与更新 | ⏳ 计划中 | 当前打包结果不内置 Python、Ollama 或模型，也未签名 |
@@ -235,7 +235,7 @@ DEBUG=False
 - Project 可保存名称、Instructions、可选模型、Workspace 绑定和归档状态。
 - Chat 可以在 Project 与未分配区域之间移动。
 - 文件选择与拖放路径只在可信 Preload/Electron 边界处理；React 只看到 opaque ID、安全文件名、媒体类型和大小。
-- 当前 Sources/Attachments 只负责本地安全存储与生命周期，不会读取文件内容，也不会自动发送给 RAG。
+- Sources/Attachments 负责本地安全存储与生命周期；独立的 Python Document Loader 库只能通过 Scope-bound 验证读取解析原始结构。它尚未接入生产 Composition Root、Cleaning/Chunking、Embedding、RAG 或 Renderer 文件问答。
 
 ### 🧠 Memory 与恢复
 
@@ -276,7 +276,7 @@ cd /d D:\Elysia_AI
 .venv\Scripts\python.exe scripts\check_python_documentation.py
 .venv\Scripts\python.exe scripts\check_distribution_assets.py
 .venv\Scripts\python.exe -m pytest -q
-.venv\Scripts\python.exe -m mypy agent attachments chats config core desktop_protocol memory models projects recovery scripts tools ui voice desktop_backend.py desktop_speech.py start.py
+.venv\Scripts\python.exe -m mypy agent attachments documents chats config core desktop_protocol memory models projects recovery scripts tools ui voice desktop_backend.py desktop_speech.py start.py
 ```
 
 已单独启动 Loopback GPT-SoVITS 并完成本地 Profile 配置后，可用固定、不会回显参考文本或路径的 Smoke 命令验证单次合成；每个情绪会合成同一句话两次：
@@ -364,6 +364,7 @@ Elysia_AI/
 │   ├── src/            # React Renderer
 │   └── tests/          # Protocol 与真实 Electron UI 测试
 ├── desktop_protocol/   # Python/TypeScript 共用的 Schema、Fixture 与校验器
+├── documents/          # Path-private TXT/Markdown/CSV/源码/PDF/DOCX Loader
 ├── memory/             # Profile、Summary、Long-term Memory 与 Scope
 ├── models/             # Python namespace；本地模型权重目录被 Git 忽略
 ├── projects/           # Project Domain、Repository 与 Chat 关系服务
@@ -414,7 +415,7 @@ cd /d D:\Elysia_AI\desktop
 
 ### 为什么 Project Sources 不能回答文件内容？
 
-目前文件只被安全地保存并显示元数据，Loader、Chunking、Embedding、Vector Store、Retriever 与引用回答仍在后续计划中。
+目前桌面 UI 只保存文件并显示安全元数据。独立 Python Loader 库已能从验证读取流提取 TXT、Markdown、CSV、常见源码、PDF 与 DOCX 的有界原始结构，但它尚未接入生产 Composition Root；Cleaning/Chunking、Embedding、Vector Store、Retriever、引用回答及其 Desktop Protocol/UI 也尚未完成，所以 Chat 还不能使用这些内容回答问题。
 
 ---
 
@@ -461,7 +462,7 @@ Elysia AI 是非官方粉丝开发项目，与 HoYoverse / miHoYo **没有隶属
 - **本地 Elysia GPT-SoVITS v2 模型包**：模型发布标注为 `TinyLight微光小明`，整合包提供者标注为 `花儿不哭`
 - **角色配音表演**：本地模型说明标注 CV 为宴宁；相关声音与表演权利不属于本项目
 - **GPT-SoVITS**：[RVC-Boss/GPT-SoVITS](https://github.com/RVC-Boss/GPT-SoVITS)
-- **核心工具链**：Ollama、Python、Electron、React、TypeScript、Vite、Playwright、pytest 与 mypy
+- **核心工具链**：Ollama、Python、pypdf、Electron、React、TypeScript、Vite、Playwright、pytest 与 mypy
 
 如来源、署名或权利说明存在错误，请通过 GitHub Issue 或仓库维护渠道提出更正；在事实核实前，相关资产应继续保持本地、非分发状态。
 

@@ -58,8 +58,9 @@ _SCOPE_KINDS: Final[tuple[Literal["chat", "project"], ...]] = (
     "project",
 )
 
-# An extension is only a routing hint in this release: file content is stored,
-# never parsed or executed. Stage 8 loaders will perform format-level checks.
+# Storage still treats extensions only as closed routing hints and never parses
+# or executes content. The separate ``documents`` layer rechecks the exact
+# suffix/MIME pair and signature after a Scope-authorized verified read.
 ALLOWED_ATTACHMENT_EXTENSIONS: Final[dict[str, str]] = {
     ".css": "text/css",
     ".csv": "text/csv",
@@ -360,8 +361,9 @@ class JsonAttachmentStore:
     ) -> None:
         """Persist one unique derived-to-original relation without content I/O.
 
-        This Module stores only the relationship. Document loaders create the
-        derived bytes in a later Module, through a separate bounded writer.
+        This store records only the relationship. Raw document loaders return
+        in-memory structure; a later cleaning/chunking pipeline will publish
+        derived bytes through a separate bounded writer.
         """
 
         self._require_scope(scope)
