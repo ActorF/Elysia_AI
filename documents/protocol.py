@@ -1,9 +1,17 @@
-"""Define the path-private adapter contract for document format loaders."""
+"""Define path-private loader, cleaner, and chunker adapter contracts."""
 
 from __future__ import annotations
 
 from typing import Protocol, TypeAlias
 
+from attachments.domain import AttachmentScope
+
+from .chunking import ChunkedDocument, DocumentChunkingPolicy
+from .cleaning import (
+    CleanedDocument,
+    DocumentCleaningPolicy,
+    DocumentProcessingLimits,
+)
 from .domain import DocumentLoadLimits, DocumentSource, LoadedDocument
 
 
@@ -43,5 +51,78 @@ class DocumentLoader(Protocol):
         limits: DocumentLoadLimits,
     ) -> LoadedDocument:
         """Parse one verified byte snapshot or raise a typed DocumentError."""
+
+        ...
+
+
+class DocumentSourceLoader(Protocol):
+    """Resolve one owned attachment link into validated loaded structure."""
+
+    def load(
+        self,
+        scope: AttachmentScope,
+        link_id: str,
+    ) -> LoadedDocument:
+        """Load one exact ownership link or raise a typed DocumentError."""
+
+        ...
+
+
+class DocumentCleaner(Protocol):
+    """Convert loaded structure into a versioned lossless piece table."""
+
+    @property
+    def cleaner_id(self) -> str:
+        """Return the stable lowercase identity of this cleaner."""
+
+        ...
+
+    @property
+    def cleaner_version(self) -> str:
+        """Return the version governing cleaning behavior and identity."""
+
+        ...
+
+    @property
+    def policy(self) -> DocumentCleaningPolicy:
+        """Return the exact output-affecting cleaning policy."""
+
+        ...
+
+    @property
+    def limits(self) -> DocumentProcessingLimits:
+        """Return the resource ceilings enforced by this cleaner."""
+
+        ...
+
+    def clean(self, document: LoadedDocument) -> CleanedDocument:
+        """Clean one loaded document or raise a typed DocumentError."""
+
+        ...
+
+
+class DocumentChunker(Protocol):
+    """Derive deterministic bounded chunks from one cleaned document."""
+
+    @property
+    def chunker_id(self) -> str:
+        """Return the stable lowercase identity of this chunker."""
+
+        ...
+
+    @property
+    def chunker_version(self) -> str:
+        """Return the version governing boundaries, mappings, and IDs."""
+
+        ...
+
+    @property
+    def policy(self) -> DocumentChunkingPolicy:
+        """Return the exact output-affecting chunking policy."""
+
+        ...
+
+    def chunk(self, document: CleanedDocument) -> ChunkedDocument:
+        """Chunk one cleaned document or raise a typed DocumentError."""
 
         ...

@@ -31,7 +31,7 @@
 - 📁 **Project 工作空间** — 支持 Instructions、Workspace 绑定、归档以及 Chat 的归属与移动
 - 🧠 **分范围记忆** — 为 Global、Project、Chat 提供独立边界，并保留长期记忆、摘要与人工确认流程
 - 🛡️ **严格桌面边界** — Renderer 沙箱、受限 Preload、来源校验与认证 NDJSON Protocol v1
-- 📎 **安全附件与文档加载基础** — Chat 与 Project 文件可选择、拖放、预览、移除和恢复；独立 Python Loader 库已能从验证读取流有界解析 TXT、Markdown、CSV、常见源码、PDF 与 DOCX，但尚未接入生产 Composition Root、索引或问答 UI
+- 📎 **安全附件与文档处理基础** — Chat 与 Project 文件可选择、拖放、预览、移除和恢复；独立 Python Library 已能从验证读取流有界加载 TXT、Markdown、CSV、常见源码、PDF 与 DOCX，并执行保守清洗和带来源映射的确定性分块，但尚未接入生产 Composition Root、索引或问答 UI
 - 🎙️ **本地 Voice Session** — 显式采集经过本地 VAD 与 Faster-Whisper；Final Transcript 可编辑，发送后可在思考或朗读期间自然打断
 - 🔊 **本地回复朗读** — Python 按自然断句排队调用受管 GPT-SoVITS，Electron 在可信 Preload 中按序播放经过双重校验的 PCM WAV
 - 💾 **恢复优先** — 本地 JSON 存储、旧会话迁移、损坏隔离、原子写入以及导入/导出服务
@@ -48,7 +48,7 @@
 | Project | ✅ 可用 | 元数据、Instructions、Workspace 绑定和 Chat 归属 |
 | Memory Core | ✅ 可用 | Global / Project / Chat Scope、检索、摘要与长期记忆基础 |
 | Settings | ✅ 可用 | Chat/Ollama/Memory/文件/STT、主题，以及自动朗读、语速、音量、Voice Profile、字幕、人工 Transcript 审核和自动续听 |
-| Attachments / Sources | ✅ 存储与 Loader 基础可用 | Scope-bound 安全存储、版本化元数据、验证读取，以及 TXT/Markdown/CSV/源码/PDF/DOCX 原始结构加载；尚无 Chunking、Embedding 或 RAG |
+| Attachments / Sources | ✅ 存储与文档处理基础可用 | Scope-bound 安全存储、版本化元数据、验证读取、原始结构加载，以及保守 Cleaning 与可重复 Chunking；尚无 Embedding 或 RAG |
 | Audio Devices | ✅ 可用 | 麦克风/扬声器选择、Windows 权限、输入电平与输出音调测试 |
 | 单句录音与本地 VAD | ✅ 可用 | 显式启动、16 kHz mono `s16le`、临时处理；不会自动生成 Chat Turn |
 | STT / Faster-Whisper | ✅ 基础可用 | Electron/React 与本地 Final Transcript 已接通；需另装可选依赖并放置本地模型 |
@@ -56,7 +56,7 @@
 | GPT-SoVITS / TTS | ✅ 基础可用 | Chat 串流分句、受管本机 Worker、有界队列、私有 fd3 传输与 Electron 播放已接通；需本机 Runtime、Profile、权重和参考音频 |
 | Barge-in / 语音打断 | ✅ 可用 | 仅在显式发送的 Voice Turn 回复期间启用；要求经过验证的 WebRTC 回声消除与持续语音确认，并精确取消该 Turn |
 | 自动续听 | ✅ 可用 | 可见开关可在正常回复安全结束后再次监听；默认关闭，Final Transcript 不会自动发送 |
-| 文件解析与本地 RAG | 🚧 Loader 库已完成 | 独立 Loader 库已完成；生产 Composition Root 接线、Cleaning/Chunking、Vector Store、Retriever、引用回答和桌面问答入口仍在计划中 |
+| 文件解析与本地 RAG | 🚧 加载/清洗/分块库已完成 | 独立 Python Library 已能产生版本化、Scope-aware 且带 Page/Block/Cell/Offset 映射的 Chunk；生产 Composition Root 接线、Embedding、Vector Store、Retriever、引用回答和桌面问答入口仍在计划中 |
 | Work Agent 与工具权限 | ⏳ 计划中 | 尚无工具执行、桌面控制、Internet 或 Vision 工作流 |
 | Live2D / 桌宠 | ⏳ 计划中 | 当前只有桌面应用 UI 与占位角色区域 |
 | 独立安装与更新 | ⏳ 计划中 | 当前打包结果不内置 Python、Ollama 或模型，也未签名 |
@@ -81,6 +81,11 @@ flowchart LR
     C[Python CLI / Library] -. 显式单次合成 .-> T[Python TTS Service]
     T -->|Loopback IP /tts| G[外部 GPT-SoVITS Runtime]
     E --> H[原生文件与音频边界]
+    A[Scope + Ownership Link] -. 独立 Python Library .-> S[Document Processing Service]
+    S --> L[Verified Document Loader]
+    L --> N[Conservative Cleaner]
+    N --> K[Versioned Chunks + Provenance]
+    K --> V[Exact Lineage + Mapping Validation]
 ```
 
 - **Python 是业务事实来源**：Chat、Project、Memory、附件状态和持久化由 Python Domain/Service/Repository 管理。
@@ -88,9 +93,10 @@ flowchart LR
 - **React 保持沙箱化**：`contextIsolation: true`、`nodeIntegration: false`、`sandbox: true`；Renderer 不能直接读取 Node、Python、Chat、Memory 或本地源路径。
 - **协议双端校验**：TypeScript 与 Python 使用同一组 JSON Schema/fixture 约束，连接前完成版本、能力与随机会话令牌握手。
 - **本地数据可恢复**：关键 JSON 使用严格 Schema、revision、原子替换和损坏隔离；生成取消不会保存残缺的正式回复。
+- **文档派生保持可验证**：独立 Python Pipeline 从无路径 `LoadedDocument` 保守清洗并生成版本化 Chunk，再独立复核 Piece-table、Fingerprint/Lineage 与 Source Mapping；Offset 只指向 Loaded Block/Page/Cell，当前结果尚未持久化或接入 RAG。
 - **副作用必须显式**：打开 Voice 页面不会请求麦克风；首次采集必须由用户主动开始。用户发送审核后的 Transcript 后，程序才可在该回复期间监听打断；只有用户明确开启可见的自动续听开关，正常完成的回复才会开始下一次有界采集，而且识别结果仍不会自动发送。选择附件不会自动读取内容，Project 的 Workspace 绑定也不会自动执行工具。
 
-更多实现细节见 [Desktop 开发指南](./desktop/README.md)、[Protocol v1](./desktop_protocol/README.md) 与 [Electron Shell 决策记录](./docs/decisions/0001-desktop-shell.md)。
+更多实现细节见 [Desktop 开发指南](./desktop/README.md)、[Protocol v1](./desktop_protocol/README.md)、[Document Cleaning and Chunking](./docs/06-DOCUMENT-CLEANING-CHUNKING.md) 与 [Electron Shell 决策记录](./docs/decisions/0001-desktop-shell.md)。
 
 ---
 
@@ -235,7 +241,7 @@ DEBUG=False
 - Project 可保存名称、Instructions、可选模型、Workspace 绑定和归档状态。
 - Chat 可以在 Project 与未分配区域之间移动。
 - 文件选择与拖放路径只在可信 Preload/Electron 边界处理；React 只看到 opaque ID、安全文件名、媒体类型和大小。
-- Sources/Attachments 负责本地安全存储与生命周期；独立的 Python Document Loader 库只能通过 Scope-bound 验证读取解析原始结构。它尚未接入生产 Composition Root、Cleaning/Chunking、Embedding、RAG 或 Renderer 文件问答。
+- Sources/Attachments 负责本地安全存储与生命周期；独立 Python Document Library 只能通过 Scope-bound 验证读取加载原始结构，再以保守、版本化的纯转换生成带来源映射的 Chunk。它尚未接入生产 Composition Root、Embedding、Vector Store、Retriever、Citation 或 Renderer 文件问答。
 
 ### 🧠 Memory 与恢复
 
@@ -364,7 +370,7 @@ Elysia_AI/
 │   ├── src/            # React Renderer
 │   └── tests/          # Protocol 与真实 Electron UI 测试
 ├── desktop_protocol/   # Python/TypeScript 共用的 Schema、Fixture 与校验器
-├── documents/          # Path-private TXT/Markdown/CSV/源码/PDF/DOCX Loader
+├── documents/          # Path-private 文档 Loader、保守 Cleaner 与确定性 Chunker
 ├── memory/             # Profile、Summary、Long-term Memory 与 Scope
 ├── models/             # Python namespace；本地模型权重目录被 Git 忽略
 ├── projects/           # Project Domain、Repository 与 Chat 关系服务
@@ -415,7 +421,7 @@ cd /d D:\Elysia_AI\desktop
 
 ### 为什么 Project Sources 不能回答文件内容？
 
-目前桌面 UI 只保存文件并显示安全元数据。独立 Python Loader 库已能从验证读取流提取 TXT、Markdown、CSV、常见源码、PDF 与 DOCX 的有界原始结构，但它尚未接入生产 Composition Root；Cleaning/Chunking、Embedding、Vector Store、Retriever、引用回答及其 Desktop Protocol/UI 也尚未完成，所以 Chat 还不能使用这些内容回答问题。
+目前桌面 UI 只保存文件并显示安全元数据。独立 Python Library 已能从验证读取流提取 TXT、Markdown、CSV、常见源码、PDF 与 DOCX 的有界原始结构，并完成保守 Cleaning 与可重复 Chunking；但这条链尚未接入生产 Composition Root，也没有 Embedding、Vector Store、Retriever、引用回答及其 Desktop Protocol/UI，所以 Chat 仍不能使用这些内容回答问题。
 
 ---
 

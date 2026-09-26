@@ -1,12 +1,12 @@
-"""Define stable, path-free failures for trusted document loading."""
+"""Define stable, path-free failures for trusted document processing."""
 
 
 class DocumentError(Exception):
-    """Base class for failures exposed by the document-loading boundary."""
+    """Base class for failures exposed by document processing boundaries."""
 
 
 class DocumentValidationError(DocumentError):
-    """Report an invalid request, domain value, or loader result."""
+    """Report an invalid request, domain value, or adapter result."""
 
 
 class DocumentNotFoundError(DocumentError):
@@ -51,3 +51,7 @@ class DocumentReadError(DocumentError):
 
 class DocumentLoadFailedError(DocumentError):
     """Report an unexpected failure inside an otherwise selected loader."""
+
+
+class DocumentProcessingFailedError(DocumentError):
+    """Report an unexpected failure inside cleaning, chunking, or orchestration."""

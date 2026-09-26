@@ -2,7 +2,7 @@
 
 这份文档用于帮助第一次接触 Elysia AI 的开发者理解：每个受版本控制的文件负责什么、它与哪些层连接，以及修改某项功能时应该从哪里开始。
 
-> 当前架构边界：Python 是 Chat、Project、Memory、Attachment、Document Loading 和持久化状态的事实来源；Electron Main 是本地进程、文件路径和硬件权限的可信边界；Preload 只暴露固定能力；React Renderer 只负责显示和临时交互状态。
+> 当前架构边界：Python 是 Chat、Project、Memory、Attachment、Document Loading/Processing 和持久化状态的事实来源；Electron Main 是本地进程、文件路径和硬件权限的可信边界；Preload 只暴露固定能力；React Renderer 只负责显示和临时交互状态。
 
 ## 1. 先看完整连接图
 
@@ -46,9 +46,16 @@ desktop_backend.py
                 ├── voice.speech.* metadata over authenticated NDJSON
                 └── matching fd3 frame → Electron delivery → Preload Web Audio
 
-documents.DocumentLoaderService（已实现的独立 Library，尚未由 start.py / desktop_backend.py 构造）
-    ├── AttachmentService.open_verified_file(scope, opaque file_id)
-    └── verified immutable bytes → text / PDF / DOCX loaders
+documents.DocumentProcessingService（已实现的独立 Library，尚未由 start.py / desktop_backend.py 构造）
+    ├── DocumentLoaderService
+    │   ├── AttachmentService.open_verified_file(scope, opaque file_id)
+    │   └── verified immutable bytes → text / PDF / DOCX loaders
+    └── path-free LoadedDocument
+        → ConservativeDocumentCleaner
+        → StructureAwareDocumentChunker
+        → validate exact piece table, lineage, mappings, and projections
+        → versioned chunks + Page/Block/Cell/Offset mappings
+          （仍无持久化、Embedding、Retriever 或桌面接线）
 
 start.create_data_portability_service()
     └── 独立 Recovery API；当前没有接入 Desktop Protocol/UI
@@ -100,7 +107,8 @@ start.create_data_portability_service()
 | `docs/decisions/0001-desktop-shell.md` | Electron 与 Tauri 选型 ADR；记录测量方法、能力差距、风险、最终选择和重访门槛。 | `desktop/benchmarks/measure-shell.ps1`、Desktop 技术决策 |
 | `docs/03-VOICE-PERFORMANCE-SAFETY-RIGHTS.md` | 记录最终三组件实机测量、CPU STT 资源策略、长会话自动化清理证据、Voice Rights 决定、分发门禁和重测条件。 | Module 9 验收、`MODEL_LICENSE.md`、Benchmark/Soak/Package Audit |
 | `docs/04-FILE-METADATA-STORAGE.md` | 记录版本化 File Metadata、Scope-local Content-addressed Storage、Ownership/Derived 关系、Manifest v2、迁移、验证读取、删除回滚、Renderer 隐私边界和当前非目标。 | `attachments/`、Desktop Backend、后续 Document Loaders |
-| `docs/05-DOCUMENT-LOADERS.md` | 记录可信 Document Loader 的格式矩阵、路径隐私、Scope 授权、结构模型、资源预算、PDF/DOCX Parser 边界、稳定错误、测试和当前非目标。 | `documents/`、`attachments/`、后续 Cleaning/Chunking |
+| `docs/05-DOCUMENT-LOADERS.md` | 记录可信 Document Loader 的格式矩阵、路径隐私、Scope 授权、结构模型、资源预算、PDF/DOCX Parser 边界、稳定错误、测试和当前非目标。 | `documents/`、`attachments/`、下游 Cleaning/Chunking |
+| `docs/06-DOCUMENT-CLEANING-CHUNKING.md` | 记录纯、版本化且保守的 Cleaning、严格重复 PDF 页眉证据、LoadedDocument Code-point Provenance、结构/Code/Table JSONL Chunking、资源预算、确定性失效和当前非目标。 | `documents/cleaning.py`、`documents/chunking.py`、后续 Embedding/Vector Store |
 | `data/characters/elysia_character_reference_zh.md` | 爱莉希雅背景、语录和转写参考资料；当前 Runtime 不会自动将它注入每次 Prompt。 | 人工角色研究；受 `MODEL_LICENSE.md` 的来源/授权提醒约束 |
 
 本机还存在被 Git 忽略的 `docs/02-ROADMAP.md`。它是当前 Stage/Module 规划来源，但新的 Git Clone 不会自动得到它，因此不能作为唯一公共文档。
@@ -216,33 +224,41 @@ ChatSession.project_id
 | `attachments/service.py` | Application Service；把真实路径限制在受信 Import 边界，以 Scope + opaque File ID 提供验证读取，并协调 Chat、Project 与 linked Chats 的 Owner-aware 删除。 | Desktop Backend、AttachmentRepository、后续可信 Loader |
 | `attachments/store.py` | Manifest v2 与 Scope-local Content-addressed Blob Store；按内容 Hash 在单一 Scope 内去重，保存 Original/Ownership/Derived 关系，并实现 v1 原子迁移、Descriptor-pinned Copy/Read、取消回滚、进程锁、启动恢复、Owner/Reference 对账和多 Scope 删除 Tombstone。 | Electron 文件选择、AttachmentService、Desktop Backend、Chat Message Commit、后续 Document Loaders |
 
-当前 Attachment 已完成安全原始文件存储、版本化 Metadata/Ownership、Derived 关系登记和可信 Backend 读取边界。Attachment Package 本身仍不解析内容；新的 `documents.DocumentLoaderService` 通过 `open_verified_file()` 取得 Scope-bound Verified Snapshot，关闭读取 Context 后才把无路径 Bytes 交给格式 Loader 提取原始结构。Derived Bytes、Chunk、Embedding、Vector Store、Retriever、Citation 和 RAG 仍属于后续工作。
+当前 Attachment 已完成安全原始文件存储、版本化 Metadata/Ownership、Derived 关系登记和可信 Backend 读取边界。Attachment Package 本身仍不解析内容；`documents.DocumentLoaderService` 通过 `open_verified_file()` 取得 Scope-bound Verified Snapshot，关闭读取 Context 后才把无路径 Bytes 交给格式 Loader 提取原始结构。独立 Document Library 现在还能在内存中保守清洗并生成版本化 Chunk；Derived Bytes/Chunk 的 Manifest 持久化、Embedding、Vector Store、Retriever、Citation 和生产 RAG 接线仍属于后续工作。
 
-## 12. Document Loaders：`documents/`
+## 12. Document Loaders and Processing：`documents/`
 
 | 文件 | 实际用途 | 主要连接 |
 | --- | --- | --- |
-| `documents/__init__.py` | Document Package 的稳定公共 API；导出领域值、错误、Adapter Protocol 与 Application Service。 | 后续 Cleaning/Chunking、测试、未来 Composition Root |
-| `documents/domain.py` | 定义不含路径的 `DocumentSource`、Title、Ragged Table、Ordered Block、`LoadedDocument` 和输入/展开/文字/结构资源预算；复核页码、Ordinal、标题来源和累计输出。 | 所有 Loader、Service、后续 Chunker |
-| `documents/exceptions.py` | 定义稳定的 Validation、Not Found、Unsupported Format、Unsupported Feature、Empty、Encrypted、Corrupt、Read 与 Unexpected Loader 错误，以及公开 `DocumentLimitError` 基类下的 Size/Content Limit 子类。 | Service、Loader、未来 Protocol Error Mapping |
-| `documents/protocol.py` | 定义按精确 `(suffix, media_type)` 路由的 Path-private Loader Protocol，以及稳定 Loader ID/Version Contract。 | Service、各格式 Adapter、测试替身 |
-| `documents/service.py` | 以 `scope + ownership link_id` 解析 Link-specific Metadata 和 Canonical File Record，经 `open_verified_file()` 有界读取不可变快照，关闭文件 Context 后再选择 Loader，并复核 Source、Limits 与 Producer Version 未被 Adapter 篡改。 | `attachments/service.py`、所有 Loader、后续 Document Pipeline |
+| `documents/__init__.py` | Document Package 的稳定公共 API；导出 Loaded/Cleaned/Chunked 领域值、错误、Producer Contract 与 Application Service。 | Loader/Cleaner/Chunker、测试、未来 Composition Root |
+| `documents/domain.py` | 定义不含路径的 `DocumentSource`、Title、Ragged Table、Ordered Block、`LoadedDocument` 和输入/展开/文字/结构资源预算；复核页码、Ordinal、标题来源和累计输出。 | 所有 Loader、Service、Cleaner |
+| `documents/exceptions.py` | 定义稳定的 Validation、Not Found、Unsupported Format/Feature、Empty、Encrypted、Corrupt、Read、Unexpected Loader/Processing 错误，以及公开 `DocumentLimitError` 基类下的 Size/Content Limit 子类。 | Service、Loader、Cleaner/Chunker、未来 Protocol Error Mapping |
+| `documents/protocol.py` | 定义按精确 `(suffix, media_type)` 路由的 Path-private Format Loader、Scope-bound Source Loader、Cleaner 与 Chunker Protocol，以及稳定 Producer ID/Version/Policy Contract。 | Loader Service、Processing Pipeline、各 Adapter 与测试替身 |
+| `documents/service.py` | 以 `scope + ownership link_id` 解析 Link-specific Metadata 和 Canonical File Record，经 `open_verified_file()` 有界读取不可变快照，关闭文件 Context 后再选择 Loader，并复核 Source、Limits 与 Producer Version 未被 Adapter 篡改。 | `attachments/service.py`、所有 Loader、`DocumentProcessingService` |
 | `documents/text.py` | 严格解码 UTF-8/BOM-declared UTF-16；以常量级行游标提取 TXT Paragraph、Markdown ATX/多行 Setext/Fence/Table，以本地状态机解析严格 CSV，并把常见源码保留为 Code Block。它不执行、渲染、联网或解析外部资源。 | `DocumentLoaderService`、Domain、文本测试 |
 | `documents/pdf.py` | 使用固定版本 pypdf 的 Strict Reader 和请求局部资源配置；在 Operation Graph 物化前限制 Content Token，按实际调用累计 Page/Form Bytes、Operation 与 Invocation，并以累计 Visitor/Child Guard 在重复或嵌套 Form 物化超限文字前早停。缺失或 Null `/Contents` 作为真实空页；保留 Embedded Title、Page Count 与每个非空页的一基页码 Raw Text，不猜测 Table/Layout/OCR。 | `requirements.txt`、Service、二进制 Loader 测试 |
 | `documents/docx.py` | 在构造 `ZipFile` 前核对 EOCD/Zip64 并逐条扫描真实 Central Directory；在所有已解析的选定 XML Part 间累计 XML/MC Token/Namespace 资源；Main、可选 Styles 与可选 Core 必须分别经过 Relationship 和精确 Content Type 授权，未授权的固定路径诱饵会被忽略。它按 Part 使用 Namespace-level Profile，以持久化增量状态执行 `AlternateContent`、Ignorable、ProcessContent 与 MustUnderstand；DrawingML、Office Math/OMML、VML/旧 Shape 作为 Opaque Subtree 跳过，但不算 MCE understood。它还拒绝路径别名、加密、外部 Main Relationship、DTD/Entity、未知 Encoding 与 Macro Main Part，并以单次增量 Table 遍历按正文顺序提取 Title/Heading/Paragraph/Table。 | Service、Domain、二进制 Loader 测试 |
+| `documents/cleaning.py` | 定义 Loaded Provenance、Text/Table Source Span、Cleaned Blocks、审计 Omission 与 Processing Limits；纯 Cleaner 除逐页完全证明的短 PDF 首行外逐 Code Point 保留 Loader 输出，并用 Canonical SHA-256 记录 Document/Cleaning Identity。 | `LoadedDocument`、Chunker、Cleaning 测试、后续派生数据生命周期 |
+| `documents/chunking.py` | 定义 Chunk、Chunk-local Mapping 与 `ChunkedDocument`；按 Title/Heading/Paragraph、Page、逻辑行、固定句末和 Code-point 上限生成零重叠 Prose/Code Chunk，并把 Ragged Table 投影为版本化 JSONL；完整 Lineage 决定 Derivation Fingerprint 与 Chunk ID。 | Cleaner、Chunking 测试、后续 Embedding/Vector Store |
+| `documents/pipeline.py` | 默认组合 Source Loader、保守 Cleaner 与结构 Chunker，为每个 Adapter 重建隔离快照，并把其返回值视为不可信：逐项复核请求 Scope/Ownership、Producer/Policy/Limits、Piece-table 对每个 Loaded Block 的完整分区、Canonical Fingerprint、Chunk Lineage，以及 Text/Table Mapping 对来源和 JSONL Projection 的完整重建。 | `DocumentLoaderService`、Cleaner/Chunker Protocol、Pipeline 测试、未来 Composition Root；最终返回图也与 Adapter 持有对象隔离 |
 
 完整边界是：
 
 ```text
 AttachmentScope + ownership link_id
-  → DocumentLoaderService
-  → AttachmentService.open_verified_file(scope, opaque file_id)
-  → bounded immutable bytes; verified-file context closes
-  → exact suffix + MIME adapter
-  → versioned, path-free LoadedDocument
+  → DocumentProcessingService
+      → DocumentLoaderService
+      → AttachmentService.open_verified_file(scope, opaque file_id)
+      → bounded immutable bytes; verified-file context closes
+      → exact suffix + MIME adapter
+      → versioned, path-free LoadedDocument
+      → conservative, lossless-by-default Cleaner
+      → versioned structure/code/table Chunker
+      → exact reconstruction + lineage/mapping verification
+  → in-memory ChunkedDocument + source mappings
 ```
 
-此处输出仍是 Raw Structure，不是可检索 Chunk。当前没有新增 Desktop Protocol/React Endpoint，也不会把本机路径、Parser 原始异常或 Attachment Blob 暴露给 Renderer。完整格式和安全说明见 `docs/05-DOCUMENT-LOADERS.md`。
+Loader 输出仍是 Raw Structure；后续纯转换已经能生成可重复的内存 Chunk，但这些 Chunk 还没有持久化、Embedding、Vector Index 或 Retriever，因此不是可检索的 RAG 事实。当前没有新增 Desktop Protocol/React Endpoint，也不会把本机路径、Parser 原始异常或 Attachment Blob 暴露给 Renderer。加载边界见 `docs/05-DOCUMENT-LOADERS.md`，清洗/分块边界见 `docs/06-DOCUMENT-CLEANING-CHUNKING.md`。
 
 ## 13. Voice Python 层：`voice/`
 
@@ -417,6 +433,9 @@ Project Memory 页面目前仍是明确 Placeholder。Project Source 只安全�
 | `tests/test_document_loader_service.py` | Document Service 的真实 Attachment Store 集成、Scope 隔离、Link-specific Metadata、Verified Read、Route 冲突、Size Preflight 与恶意 Adapter 输出拒绝。 |
 | `tests/test_document_text_loaders.py` | TXT/Markdown/CSV/源码的严格 Encoding、Unicode 行边界、多行 Setext、结构保留、Route、Malformed Input、预算和峰值内存边界。 |
 | `tests/test_document_binary_loaders.py` | PDF/DOCX 的标题/页码/正文/表格、Null Content、重复/嵌套 Form、Form 错误提升、CMap/CID/Type3 字体语义预算、映射前文字早停、Inline Image、EOCD/Zip64、MCE、分部 Namespace Profile、Relationship + Content Type Part 授权、固定路径诱饵与 Opaque Drawing/Math，以及加密、损坏、不支持能力、外部关系、路径别名和资源预算边界。 |
+| `tests/test_document_cleaning.py` | Cleaner 对 CRLF/Unicode/代码空白/Ragged Table 的逐值保留、严格 PDF 页眉 All-or-nothing 证据、准确 Span/Omission、Scope/Loader/Policy Fingerprint 失效与 Processing Budget。 |
+| `tests/test_document_chunking.py` | Prose/Heading/Page/Code 边界、Table JSONL Escape、Chunk-local 到 Block/Cell Offset 映射、确定性 ID/Version 失效、Mapping/Chunk/总输出预算与稳定错误。 |
+| `tests/test_document_processing_pipeline.py` | 默认 Load → Clean → Chunk 组合，以及恶意 Source Loader/Cleaner/Chunker 对 Ownership、Piece-table、Fingerprint、Lineage、Mapping/Projection 的篡改拒绝、资源错误保留和未知异常脱敏。 |
 | `tests/test_file_metadata_store.py` | Manifest v2、v1 Migration、Scope-local 去重、路径隐私、Derived 级联、取消清理、跨 Scope 删除、Verified Read 完整性和未知 Schema Fail-closed。 |
 | `tests/test_brain.py` | Brain 的 Chat、Canonical Streaming、跨 Chunk 空白、Memory、Summary、Retry、Cancel 和 Attachment 协调。 |
 | `tests/test_chat_domain.py` | Chat、Message、Summary、Attachment Metadata、ID 和不变量。 |
@@ -689,6 +708,20 @@ documents/domain.py（结构或预算改变时）
 
 新格式必须先定义精确 Extension + MIME Route、内容 Signature、资源预算与稳定错误；Loader 只能消费 `open_verified_file()` 产生的 Bytes，不能接受或重开本机路径。若未来暴露给桌面，再单独设计最小 Protocol 与 Renderer-safe DTO，不能直接序列化 Parser 对象或底层异常。
 
+### 修改 Document Cleaning 或 Chunking
+
+```text
+documents/cleaning.py（Loaded Provenance、Span、Omission、Cleaner Policy/Version）
+→ documents/chunking.py（Boundary、Projection、Mapping、Chunker Policy/Version）
+→ documents/protocol.py 与 documents/pipeline.py（Adapter/端到端复核改变时）
+→ tests/test_document_cleaning.py
+→ tests/test_document_chunking.py
+→ tests/test_document_processing_pipeline.py
+→ docs/06-DOCUMENT-CLEANING-CHUNKING.md
+```
+
+任何会改变保留文字、Table Projection、Chunk Boundary、Source Mapping 或 ID Preimage 的修改，都必须显式更新相应 Producer Version/Policy，并验证旧 Derivation 不会被误当成新结果。Offset 始终相对 `LoadedDocument` Unicode Code Points；不能把它改写成原始 Byte、PDF Glyph 或 DOCX XML Offset。新增持久化或桌面接线时，还必须单独定义 Scope-filtered Derived Relation、重建/删除传播、最小 Protocol DTO 与 Renderer 隐私边界。
+
 ### 修改 Protocol
 
 至少同步检查：
@@ -818,25 +851,26 @@ config/settings.py + config/voice_profiles.example.json
 18. `documents/domain.py` 与 `documents/protocol.py`
 19. `documents/service.py`
 20. `documents/text.py`、`documents/pdf.py` 与 `documents/docx.py`
-21. `docs/05-DOCUMENT-LOADERS.md`
-22. `desktop_protocol/README.md`
-23. `desktop/electron/contracts.ts`
-24. `desktop/electron/preload.cts`
-25. `desktop/electron/main.ts`
-26. `desktop/electron/backend-process.ts`
-27. `desktop_backend.py`
-28. `desktop_speech.py`
-29. `voice/speech_queue.py`
-30. `voice/managed_gpt_sovits.py` 与 `scripts/gpt_sovits_worker.py`
-31. `desktop_protocol/audio_channel.py`
-32. `desktop/electron/speech-delivery.ts`
-33. `desktop/electron/speech-playback-owner.ts`
-34. `desktop/src/voice/audio-capture.ts` 与 `desktop/src/voice/voice-activity-detector.ts`
-35. `desktop/src/voice/voice-session-controller.ts`
-36. `desktop/src/voice/voice-ui-state.ts`
-37. `desktop/src/App.tsx`
-38. `desktop/src/voice/CallPreview.tsx` 与其他具体 Feature Component
-39. 对应测试，尤其是 Document Loader、`desktop/tests/voice-session-controller.test.mjs` 与 `desktop/tests/voice-ui-state.test.mjs`
+21. `documents/cleaning.py`、`documents/chunking.py` 与 `documents/pipeline.py`
+22. `docs/05-DOCUMENT-LOADERS.md` 与 `docs/06-DOCUMENT-CLEANING-CHUNKING.md`
+23. `desktop_protocol/README.md`
+24. `desktop/electron/contracts.ts`
+25. `desktop/electron/preload.cts`
+26. `desktop/electron/main.ts`
+27. `desktop/electron/backend-process.ts`
+28. `desktop_backend.py`
+29. `desktop_speech.py`
+30. `voice/speech_queue.py`
+31. `voice/managed_gpt_sovits.py` 与 `scripts/gpt_sovits_worker.py`
+32. `desktop_protocol/audio_channel.py`
+33. `desktop/electron/speech-delivery.ts`
+34. `desktop/electron/speech-playback-owner.ts`
+35. `desktop/src/voice/audio-capture.ts` 与 `desktop/src/voice/voice-activity-detector.ts`
+36. `desktop/src/voice/voice-session-controller.ts`
+37. `desktop/src/voice/voice-ui-state.ts`
+38. `desktop/src/App.tsx`
+39. `desktop/src/voice/CallPreview.tsx` 与其他具体 Feature Component
+40. 对应测试，尤其是 Document Loading/Processing、`desktop/tests/voice-session-controller.test.mjs` 与 `desktop/tests/voice-ui-state.test.mjs`
 
 读完后应形成以下心智模型：
 
@@ -852,4 +886,4 @@ config/settings.py + config/voice_profiles.example.json
 - Streaming Overlay 不等于已保存消息。
 - `ChatSession.project_id` 是 Project–Chat 关系的唯一真相。
 - 所有 Memory 使用前都必须经过 Scope 过滤。
-- `DocumentLoaderService` 只能通过 `open_verified_file()` 读取 Scope-authorized Verified Bytes；格式 Loader 只收到关闭读取 Context 后的无路径快照，输出是 Raw Structure，不是 Chunk、Index 或 RAG 事实。
+- `DocumentLoaderService` 只能通过 `open_verified_file()` 读取 Scope-authorized Verified Bytes；格式 Loader 只收到关闭读取 Context 后的无路径快照。`DocumentProcessingService` 组合纯 Cleaner/Chunker，并在发布版本化内存 Chunk 前独立复核 Piece-table、Fingerprint/Lineage 与 LoadedDocument Source Mapping；当前没有持久化、Embedding、Index、Retriever 或生产 RAG 接线。
