@@ -46,7 +46,7 @@ exact AttachmentScope
   ✗ no Agentic RAG, tool calls, ANN, remote fallback, or bundled reranker
 ```
 
-`DocumentRetriever` 是同步 Library Service。它不选择哪些 Project Sources 对当前 Chat 可见；未来生产 Composition Root 必须先依据经过验证的 Chat/Project 关系构造准确 Scope 和 Generation Allowlist。它也不把 `RetrievalHit` 注入 Prompt；Grounded Answer、有限上下文选择、Citation Rendering 和“资料不足”的用户可见答复属于 Module 6。
+`DocumentRetriever` 是同步 Library Service。它不选择哪些 Project Sources 对当前 Chat 可见；未来生产 Composition Root 必须先依据经过验证的 Chat/Project 关系构造准确 Scope 和 Generation Allowlist。它也不把 `RetrievalHit` 注入 Prompt；这些下游职责现由独立 [Grounded Answers and Citations](./09-GROUNDED-ANSWERS-CITATIONS.md) Library 承担，但尚未接入生产或桌面层。
 
 ## 3. Query Identity 与显式 Generation Allowlist
 
@@ -154,7 +154,7 @@ Reranker 不能返回新 ID、漏项、重复项、改写文字、改变 Evidenc
 1. Allowlist 为空，或 File/Media Filter 证明没有 Eligible Generation；此时不会触发任何外部依赖。
 2. Corpus 有效，但没有 Candidate 达到 `minimum_cosine_similarity`；此时结果携带 Embedding Identity，但 `candidate_count=0`、`hits=()`。
 
-缺失、过期、损坏、超预算或模型不匹配不是“资料不足”，而是 typed failure。Module 6 必须把真正的空结果作为“不依据文档回答”的信号，而不能让模型编造 Citation；但本模块自身不生成这段用户可见答复。
+缺失、过期、损坏、超预算或模型不匹配不是“资料不足”，而是 typed failure。下游 Grounding Library 已把真正的空结果处理为“不依据文档回答”的确定性信号，并且不会在空命中时调用 Generator；但 Retriever 本身不生成用户可见答复。
 
 ## 8. 资源预算
 
@@ -211,11 +211,11 @@ npm run docs:check
 
 当前模块不提供：
 
-- Grounded Answer Generation、Prompt Composition、Citation Selection/Rendering、来源事实/概括/推断标签或 Prompt-injection Isolation；这些属于 Module 6；
+- Grounded Answer Generation、Prompt Composition、Citation Selection/Rendering、来源事实/概括/推断标签或 Prompt-injection Isolation；这些已由下游独立 Grounding Library 实现，仍不属于 Retriever；
 - Project Sources 到 Project Chat 的授权与生产接线；这属于 Module 7；
 - Attachment Derived Relation、自动索引、替换/删除传播、Progress、Cancel、Retry 与 Crash Recovery；这些属于 Module 8；
 - Sources/索引状态/引用跳转 UI、Desktop Protocol 或 React 文件问答入口；这些属于 Module 9；
 - ANN、Hybrid/BM25 Search、Semantic Deduplication、Diversity/Recency Boost、Cross-scope Union、Agentic RAG 或 Tool Planning；
 - 内建 Reranker Adapter、Reranker 模型/权重、远程 Reranking Fallback、模型下载或新的素材/模型许可。
 
-下一模块是 Grounded Answer and Citations：只从有界 `RetrievalHit` 构造有限上下文，在资料不足时拒绝基于文档编造，并把文件名、页码或准确片段定位显示给用户。在 Module 6–9 的 Composition Root、授权、生命周期、Protocol 与 UI 都完成前，不能声称桌面 Chat 已能检索、回答或引用用户文件。
+下游 [Grounded Answers and Citations](./09-GROUNDED-ANSWERS-CITATIONS.md) 已能只从有界 `RetrievalHit` 完整前缀构造有限上下文，在 Retriever 空命中时不调用 Generator，并把 Generator 选择的 opaque Citation 解析为可信文件名、页码和准确位置。已有 Context 时 Generator 仍可返回结构化 `insufficient_evidence`。接下来仍需完成 Project Sources 授权、知识生命周期、生产 Generator/Composition Root、Protocol 与 UI；在这些边界完成前，不能声称桌面 Chat 已能检索、回答或引用用户文件。

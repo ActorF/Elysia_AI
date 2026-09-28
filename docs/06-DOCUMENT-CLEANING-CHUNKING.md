@@ -223,8 +223,8 @@ npm run docs:check
 - 模糊 Boilerplate Detection、语言改写、拼写修复、OCR 或视觉 Layout Reconstruction；
 - Tokenizer-aware、Embedding-aware、Overlap 或 Query-specific Chunking；
 - Derived Chunk 的磁盘持久化、Attachment Manifest 登记、Job Progress、Cancel 或 Crash Recovery；
-- Embedding Model、Vector Store 或 Retrieval 不是本纯派生模块的职责；这些能力已在下游独立 Library 中实现，但 Citation 与 Grounded Answer 仍未实现；
+- Embedding、Vector Store、Retrieval 与 Grounded Answer/Citation 不是本纯派生模块的职责；这些能力已在下游独立 Library 中实现，但生产接线仍未完成；
 - Prompt Injection Detection/Isolation；
 - `start.py` / `desktop_backend.py` 生产接线、Desktop Protocol、React Preview 或“向文件提问”UI。
 
-Local Embeddings and Vector Store 已完成固定 Model/Space Identity、精确 Chunk Lineage、Scope 过滤、原子替换/重建与失效拒绝，详见 [Module 4 文档](./07-LOCAL-EMBEDDINGS-VECTOR-STORE.md)；Retriever 已完成显式 Generation Allowlist、有界 Cosine Top-K、Filter、Exact Deduplication 和可选 Fail-closed Reranker，详见 [Module 5 文档](./08-RETRIEVER-RERANKING.md)。下一步是 Grounded Answer/Citation Contract 以及之后的生产接线。在这些边界完成前，不能声称 Project Sources 已可被桌面 Chat 检索、引用或用于回答。
+Local Embeddings/Vector Store 与 Retriever/Reranker 已分别完成，详见 [Local Embeddings and Vector Store](./07-LOCAL-EMBEDDINGS-VECTOR-STORE.md) 和 [Retriever and Reranking](./08-RETRIEVER-RERANKING.md)；有限 Prompt、三类结构化陈述和可信 Citation 也已在 [Grounded Answers and Citations](./09-GROUNDED-ANSWERS-CITATIONS.md) 中作为独立 Library 完成。生产 Generator、Project Sources 授权、生命周期和桌面接线完成前，仍不能声称 Project Sources 已可被桌面 Chat 检索、引用或用于回答。

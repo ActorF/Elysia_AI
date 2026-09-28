@@ -213,4 +213,4 @@ Embedding/Vector Store 模块本身不提供：
 - Attachment Derived Relation 持久化、自动增量索引、删除传播、Job Queue、Progress、Cancel、Retry 或 Crash Recovery；
 - 模型下载、Ollama 进程启动、自动选模型或 Remote Embedding Fallback。
 
-下游 Retrieval/Reranking Contract 已完成 Identity-bearing Query、显式 Generation Allowlist、有界单事务暴力 Cosine Top-K、精确 Filter、阈值、去重 Evidence 和可选不可信 Reranker，详见 [Retriever and Reranking](./08-RETRIEVER-RERANKING.md)。下一步是 Grounded Answer/Citation Contract；在 Composition Root、Project Sources 授权、生命周期和桌面协议/UI 完成前，本地 SQLite 里存在 Vector 或 Retriever 仍不意味着 Project Sources 可以被 Chat 查询或引用。
+下游 Retrieval/Reranking Contract 已完成 Identity-bearing Query、显式 Generation Allowlist、有界单事务 Cosine Top-K、精确 Filter、阈值、去重 Evidence 和可选不可信 Reranker，详见 [Retriever and Reranking](./08-RETRIEVER-RERANKING.md)；有限 Prompt、结构化 Grounded Answer 与可信 Citation 见 [Grounded Answers and Citations](./09-GROUNDED-ANSWERS-CITATIONS.md)。在生产 Generator、Composition Root、Project Sources 授权、生命周期和桌面协议/UI 完成前，本地 SQLite 里存在 Vector 或 Grounding Library 仍不意味着 Project Sources 可以被 Chat 查询或引用。

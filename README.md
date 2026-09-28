@@ -31,7 +31,7 @@
 - 📁 **Project 工作空间** — 支持 Instructions、Workspace 绑定、归档以及 Chat 的归属与移动
 - 🧠 **分范围记忆** — 为 Global、Project、Chat 提供独立边界，并保留长期记忆、摘要与人工确认流程
 - 🛡️ **严格桌面边界** — Renderer 沙箱、受限 Preload、来源校验与认证 NDJSON Protocol v1
-- 📎 **安全附件与文档处理基础** — Chat 与 Project 文件可选择、拖放、预览、移除和恢复；独立 Python Library 已能有界加载、保守清洗、确定性分块、建立 Scope-safe SQLite 索引，并在显式授权的 Generation 上执行有界 Top-K、Filter、去重和可选 Reranking；该链尚未接入生产 Composition Root、回答/Citation 或文件问答 UI
+- 📎 **安全附件与文档处理基础** — Chat 与 Project 文件可选择、拖放、预览、移除和恢复；独立 Python Library 已能有界加载、清洗、分块、索引和检索，并从完整命中前缀构造有限 Prompt、验证结构化回答、发布可信文件名/页码/片段位置 Citation；该链尚未接入生产 Composition Root、真实回答生成 Adapter 或文件问答 UI
 - 🎙️ **本地 Voice Session** — 显式采集经过本地 VAD 与 Faster-Whisper；Final Transcript 可编辑，发送后可在思考或朗读期间自然打断
 - 🔊 **本地回复朗读** — Python 按自然断句排队调用受管 GPT-SoVITS，Electron 在可信 Preload 中按序播放经过双重校验的 PCM WAV
 - 💾 **恢复优先** — 本地 JSON 存储、旧会话迁移、损坏隔离、原子写入以及导入/导出服务
@@ -56,7 +56,7 @@
 | GPT-SoVITS / TTS | ✅ 基础可用 | Chat 串流分句、受管本机 Worker、有界队列、私有 fd3 传输与 Electron 播放已接通；需本机 Runtime、Profile、权重和参考音频 |
 | Barge-in / 语音打断 | ✅ 可用 | 仅在显式发送的 Voice Turn 回复期间启用；要求经过验证的 WebRTC 回声消除与持续语音确认，并精确取消该 Turn |
 | 自动续听 | ✅ 可用 | 可见开关可在正常回复安全结束后再次监听；默认关闭，Final Transcript 不会自动发送 |
-| 文件解析与本地 RAG | 🚧 Retriever Library 已完成 | 独立 Python Library 已有版本化 Chunk Lineage、固定本地 Embedding 空间、Scope-safe SQLite 索引，以及有界余弦 Top-K、Metadata Filter、Exact Deduplication 和可选 Fail-closed Reranker Contract；Grounded Answer/Citation、生产 Composition Root 与桌面问答入口仍在计划中 |
+| 文件解析与本地 RAG | 🚧 Grounded Answer Library 已完成 | 独立 Python Library 已有版本化 Chunk Lineage、固定本地 Embedding 空间、Scope-safe SQLite 索引、有界 Retriever/Reranker，以及非流式结构化 Grounded Answer/Citation Contract；尚未提供生产 Generator Adapter、Composition Root 或桌面问答入口 |
 | Work Agent 与工具权限 | ⏳ 计划中 | 尚无工具执行、桌面控制、Internet 或 Vision 工作流 |
 | Live2D / 桌宠 | ⏳ 计划中 | 当前只有桌面应用 UI 与占位角色区域 |
 | 独立安装与更新 | ⏳ 计划中 | 当前打包结果不内置 Python、Ollama 或模型，也未签名 |
@@ -89,6 +89,7 @@ flowchart LR
     V --> X[Pinned Local Embedding Space]
     X --> Z[(Scope-safe SQLite Index)]
     Z --> Y[Bounded Retriever + Optional Reranker]
+    Y --> J[Bounded Grounded Answer + Trusted Citations]
 ```
 
 - **Python 是业务事实来源**：Chat、Project、Memory、附件状态和持久化由 Python Domain/Service/Repository 管理。
@@ -96,10 +97,10 @@ flowchart LR
 - **React 保持沙箱化**：`contextIsolation: true`、`nodeIntegration: false`、`sandbox: true`；Renderer 不能直接读取 Node、Python、Chat、Memory 或本地源路径。
 - **协议双端校验**：TypeScript 与 Python 使用同一组 JSON Schema/fixture 约束，连接前完成版本、能力与随机会话令牌握手。
 - **本地数据可恢复**：关键 JSON 使用严格 Schema、revision、原子替换和损坏隔离；生成取消不会保存残缺的正式回复。
-- **文档派生与检索保持可验证**：独立 Python Pipeline 从无路径 `LoadedDocument` 生成版本化 Chunk，复核 Piece-table、Fingerprint/Lineage 与 Source Mapping，再把精确 Chunk Lineage 绑定到固定本地 Embedding 空间和 Scope-safe SQLite 索引。下游 Retriever 只搜索调用方显式授权的准确 Generation，在单事务中执行有界余弦 Top-K、精确 Filter/去重与可选 Fail-closed Reranking。这些能力仍是未接入桌面 Chat 的独立 Library，不包含 Grounded Answer 或 Citation Rendering。
+- **文档派生、检索与回答保持可验证**：独立 Python Pipeline 从无路径 `LoadedDocument` 生成版本化 Chunk，复核 Piece-table、Fingerprint/Lineage 与 Source Mapping，再把精确 Chunk Lineage 绑定到固定本地 Embedding 空间和 Scope-safe SQLite 索引。Retriever 只搜索显式授权的准确 Generation；`GroundedAnswerService` 再选择完整命中的有界前缀，把问题和片段作为不可信 JSON Data 交给同步结构化 Generator，并只发布能解析到可信 Evidence 的陈述与 Citation。结构闭包不能证明模型概括或推断在语义上必然正确，且该 Library 仍未接入桌面 Chat。
 - **副作用必须显式**：打开 Voice 页面不会请求麦克风；首次采集必须由用户主动开始。用户发送审核后的 Transcript 后，程序才可在该回复期间监听打断；只有用户明确开启可见的自动续听开关，正常完成的回复才会开始下一次有界采集，而且识别结果仍不会自动发送。选择附件不会自动读取内容，Project 的 Workspace 绑定也不会自动执行工具。
 
-更多实现细节见 [Desktop 开发指南](./desktop/README.md)、[Protocol v1](./desktop_protocol/README.md)、[Document Cleaning and Chunking](./docs/06-DOCUMENT-CLEANING-CHUNKING.md)、[Local Embeddings and Vector Store](./docs/07-LOCAL-EMBEDDINGS-VECTOR-STORE.md)、[Retriever and Reranking](./docs/08-RETRIEVER-RERANKING.md) 与 [Electron Shell 决策记录](./docs/decisions/0001-desktop-shell.md)。
+更多实现细节见 [Desktop 开发指南](./desktop/README.md)、[Protocol v1](./desktop_protocol/README.md)、[Document Cleaning and Chunking](./docs/06-DOCUMENT-CLEANING-CHUNKING.md)、[Local Embeddings and Vector Store](./docs/07-LOCAL-EMBEDDINGS-VECTOR-STORE.md)、[Retriever and Reranking](./docs/08-RETRIEVER-RERANKING.md)、[Grounded Answers and Citations](./docs/09-GROUNDED-ANSWERS-CITATIONS.md) 与 [Electron Shell 决策记录](./docs/decisions/0001-desktop-shell.md)。
 
 ---
 
@@ -250,7 +251,7 @@ DEBUG=False
 - Project 可保存名称、Instructions、可选模型、Workspace 绑定和归档状态。
 - Chat 可以在 Project 与未分配区域之间移动。
 - 文件选择与拖放路径只在可信 Preload/Electron 边界处理；React 只看到 opaque ID、安全文件名、媒体类型和大小。
-- Sources/Attachments 负责本地安全存储与生命周期；独立 Python Document Library 只能通过 Scope-bound 验证读取生成带来源映射的 Chunk，再以版本化本地 Embedding 和精确 Project/Chat 过滤的 SQLite Store 建立索引。Retriever 只在调用方提供准确 Scope 与 `ExpectedDocumentGeneration` Allowlist 后执行有界搜索，并保留进入原始 Candidate Pool 的完整 Evidence；该 Library 尚未接入生产 Composition Root、Grounded Answer/Citation 或 Renderer 文件问答。
+- Sources/Attachments 负责本地安全存储与生命周期；独立 Python Document Library 只能通过 Scope-bound 验证读取生成带来源映射的 Chunk，再以版本化本地 Embedding 和精确 Project/Chat 过滤的 SQLite Store 建立索引。Retriever 只在调用方提供准确 Scope 与 `ExpectedDocumentGeneration` Allowlist 后执行有界搜索；Grounded Answer 层固定拥有同一次检索与生成操作，空命中不调用模型，回答中的文件名、页码和 Block/Cell/Offset 都从可信 Evidence 构造。生产 Generator、Composition Root、Project Source 发现授权和 Renderer 文件问答仍未接入。
 
 ### 🧠 Memory 与恢复
 
@@ -379,7 +380,7 @@ Elysia_AI/
 │   ├── src/            # React Renderer
 │   └── tests/          # Protocol 与真实 Electron UI 测试
 ├── desktop_protocol/   # Python/TypeScript 共用的 Schema、Fixture 与校验器
-├── documents/          # Path-private 文档派生、本地 Embedding 与 Scope-safe SQLite 索引
+├── documents/          # Path-private 文档派生、索引、检索与 Grounded Answer/Citation
 ├── memory/             # Profile、Summary、Long-term Memory 与 Scope
 ├── models/             # Python namespace；本地模型权重目录被 Git 忽略
 ├── projects/           # Project Domain、Repository 与 Chat 关系服务
@@ -430,7 +431,7 @@ cd /d D:\Elysia_AI\desktop
 
 ### 为什么 Project Sources 不能回答文件内容？
 
-目前桌面 UI 只保存文件并显示安全元数据。独立 Python Library 已能从验证读取流提取有界原始结构，完成 Cleaning/Chunking，调用严格 Loopback Ollama Adapter 生成版本化 Embedding，写入 Scope-safe SQLite 索引，并在显式 Generation Allowlist 上执行有界余弦 Top-K、Filter、Exact Deduplication 和可选 Fail-closed Reranking。但这条链尚未接入生产 Composition Root，也没有 Grounded Answer/Citation 及其 Desktop Protocol/UI，所以 Chat 仍不能使用这些内容回答问题。
+目前桌面 UI 只保存文件并显示安全元数据。独立 Python Library 已能完成验证读取、Cleaning/Chunking、固定空间 Embedding、Scope-safe SQLite 索引、有界 Retrieval/Reranking，并由 `GroundedAnswerService` 从完整命中前缀构造有限 Prompt、验证三类结构化陈述和可信 Citation。它目前没有生产 Grounded Generator Adapter，也尚未接入 Composition Root、Project Sources 授权、Desktop Protocol 或 UI，所以现有 Chat 仍不能使用这些内容回答问题。
 
 ---
 

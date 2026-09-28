@@ -31,7 +31,7 @@
 - 📁 **Project Workspaces** — Store Instructions, bind a Workspace, archive Projects, and manage Chat assignment between Projects and the unassigned area
 - 🧠 **Scoped Memory** — Keeps Global, Project, and Chat boundaries distinct, with long-term memory, summaries, and confirmation flows
 - 🛡️ **Strict Desktop Boundary** — Sandboxed Renderer, narrow Preload API, origin checks, and authenticated NDJSON Protocol v1
-- 📎 **Safe Attachments and Document-Processing Foundation** — Select, drop, preview, remove, and recover Chat or Project files; a standalone Python library can perform bounded loading, conservative cleaning, deterministic chunking, Scope-safe SQLite indexing, and bounded Top-K/filtering/deduplication with an optional reranking contract over explicitly authorized generations, but that path is not yet wired into the production composition root, answers/citations, or file-question UI
+- 📎 **Safe Attachments and Document-Processing Foundation** — Select, drop, preview, remove, and recover Chat or Project files; a standalone Python library performs bounded loading, conservative cleaning, deterministic chunking, Scope-safe SQLite indexing, bounded retrieval/reranking, and strict grounded-answer/citation validation over explicitly authorized generations, but that path is not yet wired into the production composition root or file-question UI
 - 🎙️ **Local Voice Session** — Explicit capture runs through local VAD and Faster-Whisper; reviewed final text can be sent, then naturally interrupt the reply while it thinks or speaks
 - 🔊 **Local Reply Playback** — Python queues naturally segmented replies through managed GPT-SoVITS, while trusted Electron Preload plays doubly validated PCM WAV in order
 - 💾 **Recovery First** — Local JSON storage, legacy migration, quarantine, atomic writes, and import/export services
@@ -48,7 +48,7 @@
 | Project | ✅ Available | Metadata, Instructions, Workspace binding, and Chat ownership |
 | Memory Core | ✅ Available | Global / Project / Chat scopes, retrieval, summaries, and long-term memory foundation |
 | Settings | ✅ Available | Chat/Ollama/Memory/file/STT settings, theme, and automatic read-aloud, rate, volume, Voice Profile, captions, manual transcript review, and automatic re-listening |
-| Attachments / Sources | ✅ Storage and standalone processing foundation | Scope-bound storage, verified reads, loading/Cleaning/Chunking, pinned-space Embedding/SQLite indexing, and a retrieval library over an explicit generation allowlist; not yet connected to desktop Chat or complete RAG |
+| Attachments / Sources | ✅ Storage and standalone processing foundation | Scope-bound storage, verified reads, loading/Cleaning/Chunking, pinned-space Embedding/SQLite indexing, bounded retrieval, and a structured grounded-answer/citation library; not yet connected to desktop Chat |
 | Audio Devices | ✅ Available | Microphone/speaker selection, Windows permission state, input level, and output tone tests |
 | One-utterance recording and local VAD | ✅ Available | Explicit start, 16 kHz mono `s16le`, transient processing; no automatic Chat Turn |
 | STT / Faster-Whisper | ✅ Foundation available | Electron/React and local final transcripts are connected; optional dependencies and a local model must be installed separately |
@@ -56,7 +56,7 @@
 | GPT-SoVITS / TTS | ✅ Foundation available | Chat segmentation, a managed local worker, bounded queue, private fd3 transport, and Electron playback are connected; local runtime, Profile, weights, and reference audio are required |
 | Barge-in / speech interruption | ✅ Available | Enabled only for the reply to an explicitly sent Voice turn; requires verified WebRTC echo cancellation and sustained-speech confirmation, then cancels that exact turn |
 | Automatic re-listening | ✅ Available | A visible switch can listen again after a safely completed reply; it is off by default and never auto-sends a final transcript |
-| File parsing and local RAG | 🚧 Retriever library complete | The standalone Python library now has versioned chunk lineage, a pinned local embedding space, a Scope-safe SQLite index, bounded cosine Top-K, metadata filters, exact deduplication, and an optional fail-closed reranker contract; grounded answers/citations, production composition-root wiring, and a desktop question surface remain planned |
+| File parsing and local RAG | 🚧 Grounded-answer library complete | The standalone Python library now adds bounded whole-passage prompt context, strict non-streaming structured statements, truthful empty-evidence refusal, and trusted file/page/location citations to the existing index and retriever; a production generator adapter, composition-root wiring, Project Sources authorization, and a desktop question surface remain planned |
 | Work Agent and tool permissions | ⏳ Planned | No tool execution, desktop control, Internet, or Vision workflow |
 | Live2D / desktop pet | ⏳ Planned | The application currently has UI and a character placeholder only |
 | Standalone installation and updates | ⏳ Planned | Current packages do not bundle Python, Ollama, or models and are unsigned |
@@ -96,10 +96,10 @@ flowchart LR
 - **React remains sandboxed**: `contextIsolation: true`, `nodeIntegration: false`, and `sandbox: true`; the Renderer cannot directly read Node, Python, Chat, Memory, or native source paths.
 - **Both sides validate the protocol**: TypeScript and Python consume matching JSON Schema/fixture constraints and negotiate the version, capabilities, and a random session token before use.
 - **Local data is recoverable**: important JSON uses strict schemas, revisions, atomic replacement, and corruption quarantine; cancellation does not save an incomplete formal reply.
-- **Document derivation and retrieval remain verifiable**: a standalone Python pipeline produces versioned chunks from path-free `LoadedDocument` values, verifies their piece table, fingerprints/lineage, and source mappings, then binds exact chunk lineage to a pinned local embedding space and a Scope-safe SQLite index. A downstream retriever searches only explicitly authorized exact generations and performs bounded single-transaction cosine Top-K, exact filtering/deduplication, and optional fail-closed reranking. These capabilities remain a standalone library not connected to desktop Chat and do not include grounded-answer generation or citation rendering.
+- **Document derivation, retrieval, and grounded answers remain verifiable**: a standalone Python pipeline produces versioned chunks from path-free `LoadedDocument` values, verifies their piece table, fingerprints/lineage, and source mappings, then binds exact chunk lineage to a pinned local embedding space and a Scope-safe SQLite index. A downstream retriever searches only explicitly authorized exact generations; `GroundedAnswerService` selects a bounded prefix of whole hits, treats questions and passages as untrusted JSON data, and publishes only structured statements whose opaque citation IDs resolve to trusted evidence. This library is not connected to desktop Chat and still lacks a production generator adapter and citation UI.
 - **Side effects require an explicit action**: opening Voice does not request microphone access, and the user must start the first capture. Only after the user sends a reviewed transcript may the app monitor for an interruption during that reply. A normally completed reply starts another bounded capture only when the user explicitly enables the visible automatic re-listening control, and recognized text is still never sent automatically. Selecting an attachment does not parse it, and binding a Project Workspace does not execute tools.
 
-See the [Desktop development guide](./desktop/README.md), [Protocol v1](./desktop_protocol/README.md), [Document Cleaning and Chunking](./docs/06-DOCUMENT-CLEANING-CHUNKING.md), [Local Embeddings and Vector Store](./docs/07-LOCAL-EMBEDDINGS-VECTOR-STORE.md), [Retriever and Reranking](./docs/08-RETRIEVER-RERANKING.md), and [Electron shell decision](./docs/decisions/0001-desktop-shell.md) for implementation details.
+See the [Desktop development guide](./desktop/README.md), [Protocol v1](./desktop_protocol/README.md), [Document Cleaning and Chunking](./docs/06-DOCUMENT-CLEANING-CHUNKING.md), [Local Embeddings and Vector Store](./docs/07-LOCAL-EMBEDDINGS-VECTOR-STORE.md), [Retriever and Reranking](./docs/08-RETRIEVER-RERANKING.md), [Grounded Answers and Citations](./docs/09-GROUNDED-ANSWERS-CITATIONS.md), and [Electron shell decision](./docs/decisions/0001-desktop-shell.md) for implementation details.
 
 ---
 
@@ -275,7 +275,7 @@ Never commit future secrets, tokens, private prompts, or private configuration.
 - A Project can store a name, Instructions, an optional model, a Workspace binding, and archive state.
 - Chats can move between Projects and the unassigned area.
 - Filesystem paths from native file selection and drag-and-drop remain inside the trusted Preload/Electron boundary. React receives only opaque IDs, safe filenames, media types, and sizes.
-- Sources/Attachments provide local storage and lifecycle handling. A standalone Python Document library can consume only Scope-bound verified reads, produce provenance-mapped chunks, then index them with versioned local Embeddings and a SQLite store that applies exact Project/Chat filters. Its retriever accepts only an exact scope and an explicit `ExpectedDocumentGeneration` allowlist, performs bounded search, and preserves complete evidence for entries admitted to the raw candidate pool. It is not connected to the production composition root, grounded answers/citations, or a Renderer file-question flow.
+- Sources/Attachments provide local storage and lifecycle handling. A standalone Python Document library consumes only Scope-bound verified reads, produces provenance-mapped chunks, indexes them with versioned local Embeddings and exact Project/Chat SQLite filters, retrieves only an explicit `ExpectedDocumentGeneration` allowlist, and validates structured grounded answers with trusted citations. It is not connected to the production composition root, a real answer-generator adapter, Project Source discovery, or a Renderer file-question flow.
 
 ### 🧠 Memory and Recovery
 
@@ -424,7 +424,7 @@ Elysia_AI/
 │   ├── src/            # React Renderer
 │   └── tests/          # Protocol and real Electron UI tests
 ├── desktop_protocol/   # Shared schema, fixtures, and Python/TypeScript validators
-├── documents/          # Path-private derivation, local embeddings, and Scope-safe SQLite indexing
+├── documents/          # Path-private derivation, indexing, retrieval, and grounded citations
 ├── memory/             # Profile, summaries, long-term memory, and scopes
 ├── models/             # Python namespace; local model weight directories are ignored
 ├── projects/           # Project domain, repositories, and Chat relationship service
@@ -490,7 +490,7 @@ that waiver is not a claim that those observations passed.
 
 ### Why can Project Sources not answer from file contents?
 
-The desktop currently stores files and displays only safe metadata. A standalone Python library can now extract bounded raw structure through verified reads, perform Cleaning/Chunking, call a strict loopback Ollama adapter for versioned Embeddings, write a Scope-safe SQLite index, and run bounded cosine Top-K, exact filters/deduplication, and optional fail-closed reranking over an explicit generation allowlist. That path is not wired into the production composition root, and grounded answers/citations plus their Desktop Protocol/UI are still absent, so Chat still cannot use that content to answer questions.
+The desktop currently stores files and displays only safe metadata. A standalone Python library can now extract bounded raw structure through verified reads, perform Cleaning/Chunking, call a strict loopback Ollama adapter for versioned Embeddings, write a Scope-safe SQLite index, run bounded retrieval/reranking over an explicit generation allowlist, and validate non-streaming structured grounded answers plus trusted citations. A real grounded-answer generator adapter, production composition-root wiring, Project Sources authorization, Desktop Protocol, and UI are still absent, so Chat still cannot use that content to answer questions.
 
 ---
 
