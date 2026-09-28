@@ -6,6 +6,7 @@ from dataclasses import replace
 import hashlib
 import math
 import struct
+import traceback
 from typing import Callable
 
 import pytest
@@ -32,12 +33,15 @@ from documents.embedding import (
     DEFAULT_EMBEDDING_MODEL_TAG,
     DEFAULT_EMBEDDING_NORMALIZATION,
     DEFAULT_EMBEDDING_PROVIDER,
+    DEFAULT_EMBEDDING_MAX_INPUT_CODE_POINTS,
     DOCUMENT_EMBEDDING_TEMPLATE_VERSION,
+    EMBEDDED_QUERY_SCHEMA_VERSION,
     EMBEDDED_DOCUMENT_SCHEMA_VERSION,
     EMBEDDING_SCHEMA_VERSION,
     QUERY_EMBEDDING_PREFIX,
     QUERY_EMBEDDING_TEMPLATE_VERSION,
     DocumentEmbeddingService,
+    EmbeddedQuery,
     EmbeddedDocument,
     EmbeddingBatch,
     EmbeddingBatchPolicy,
@@ -359,15 +363,18 @@ def test_document_embedding_uses_fixed_batches_without_partial_publication() -> 
         DocumentEmbeddingService(_SecondBatchFailure()).embed_document(document)
 
 
-def test_query_embedding_uses_fixed_template_and_returns_no_text() -> None:
-    """Apply one versioned query instruction without publishing query content."""
+def test_query_embedding_binds_identity_without_publishing_query_text() -> None:
+    """Bind the fixed query instruction to its complete semantic vector space."""
 
     embedder = _FakeEmbedder()
     result = DocumentEmbeddingService(embedder).embed_query("保留原样 e\u0301 ")
 
-    assert isinstance(result, EmbeddingVector)
-    assert result.item_id == "query"
-    assert len(result.values) == DEFAULT_EMBEDDING_DIMENSION
+    assert isinstance(result, EmbeddedQuery)
+    assert result.schema_version == EMBEDDED_QUERY_SCHEMA_VERSION
+    assert result.identity == embedder.current_identity
+    assert result.policy == embedder.current_policy
+    assert result.vector.item_id == "query"
+    assert len(result.vector.values) == DEFAULT_EMBEDDING_DIMENSION
     assert embedder.requests[0].purpose == "query"
     assert embedder.requests[0].items[0].text == (
         f"{QUERY_EMBEDDING_PREFIX}保留原样 e\u0301 "
@@ -375,18 +382,80 @@ def test_query_embedding_uses_fixed_template_and_returns_no_text() -> None:
     assert not hasattr(result, "text")
 
 
+def test_query_embedding_rejects_adapter_owned_identity_scalar_alias() -> None:
+    """Keep adapter-defined string behavior out of a published query identity."""
+
+    class _StringAlias(str):
+        """Represent a hostile scalar subclass retained by loose validators."""
+
+    identity = _identity()
+    object.__setattr__(identity, "provider", _StringAlias(identity.provider))
+
+    with pytest.raises(EmbeddingValidationError, match="invalid identity"):
+        DocumentEmbeddingService(
+            _FakeEmbedder(identity=identity)
+        ).embed_query("bounded query")
+
+
 def test_query_and_request_limits_fail_before_adapter_inference() -> None:
     """Bound effective template text, item count, and aggregate code points."""
 
     embedder = _FakeEmbedder()
     service = DocumentEmbeddingService(embedder)
-    with pytest.raises(EmbeddingLimitError, match="code-point"):
-        service.embed_query("x" * 2_000)
+    maximum_query_code_points = (
+        DEFAULT_EMBEDDING_MAX_INPUT_CODE_POINTS - len(QUERY_EMBEDDING_PREFIX)
+    )
+    for text in (
+        "x" * (maximum_query_code_points + 1),
+        " " * (maximum_query_code_points + 1),
+    ):
+        with pytest.raises(EmbeddingLimitError, match="code-point"):
+            service.embed_query(text)
     assert embedder.requests == []
 
     item = EmbeddingInput(item_id="item", text="x" * 2_000)
     with pytest.raises(EmbeddingLimitError, match="batch item"):
         EmbeddingRequest(purpose="document", items=(item,) * 17)
+
+
+def test_query_embedding_rejects_string_subclasses_before_formatting() -> None:
+    """Keep caller-defined string formatting behavior outside the service."""
+
+    class _QueryAlias(str):
+        """Represent a hostile public-input scalar subclass."""
+
+    embedder = _FakeEmbedder()
+    with pytest.raises(EmbeddingValidationError, match="meaningful text"):
+        DocumentEmbeddingService(embedder).embed_query(_QueryAlias("query"))
+    assert embedder.requests == []
+
+
+def test_service_rejects_mutated_oversized_vector_shape() -> None:
+    """Reject adapter-expanded vectors before traversing their values."""
+
+    def forged(
+        request: EmbeddingRequest,
+        identity: EmbeddingModelIdentity,
+        policy: EmbeddingBatchPolicy,
+    ) -> EmbeddingBatch:
+        """Replace one valid frozen vector with an over-dimensional tuple."""
+
+        vector = EmbeddingVector(
+            item_id=request.items[0].item_id,
+            values=_one_hot(request.items[0].item_id, identity.dimension),
+        )
+        batch = _forged_batch(request, identity, policy, (vector,))
+        object.__setattr__(
+            vector,
+            "values",
+            (1.0,) + (0.0,) * identity.dimension,
+        )
+        return batch
+
+    with pytest.raises(EmbeddingValidationError, match="dimension"):
+        DocumentEmbeddingService(
+            _FakeEmbedder(result_factory=forged)
+        ).embed_query("query")
 
 
 @pytest.mark.parametrize(
@@ -608,9 +677,32 @@ def test_unknown_adapter_failure_is_sanitized() -> None:
         DocumentEmbeddingService(embedder).embed_document(_chunked(private))
 
     message = str(captured.value)
+    rendered = "".join(traceback.format_exception(captured.value))
     assert private not in message
     assert "model.bin" not in message
+    assert private not in rendered
+    assert "model.bin" not in rendered
+    assert captured.value.__cause__ is None
+    assert captured.value.__suppress_context__ is True
     assert message == "Document embedding failed without a safe typed result."
+
+
+def test_unknown_query_adapter_failure_is_sanitized() -> None:
+    """Remove adapter diagnostics from a public query failure traceback."""
+
+    private = "PRIVATE_QUERY_DIAGNOSTIC_XYZ"
+    embedder = _FakeEmbedder(failure=RuntimeError(private))
+
+    with pytest.raises(EmbeddingFailedError) as captured:
+        DocumentEmbeddingService(embedder).embed_query("safe query")
+
+    rendered = "".join(traceback.format_exception(captured.value))
+    assert private not in rendered
+    assert captured.value.__cause__ is None
+    assert captured.value.__suppress_context__ is True
+    assert str(captured.value) == (
+        "Query embedding failed without a safe typed result."
+    )
 
 
 @pytest.mark.parametrize(

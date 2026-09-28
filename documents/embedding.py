@@ -38,6 +38,7 @@ from .domain import DocumentLoadLimits, DocumentSource, DocumentTitle
 
 EMBEDDING_SCHEMA_VERSION: Final[Literal[1]] = 1
 EMBEDDED_DOCUMENT_SCHEMA_VERSION: Final[Literal[1]] = 1
+EMBEDDED_QUERY_SCHEMA_VERSION: Final[Literal[1]] = 1
 DEFAULT_EMBEDDING_PROVIDER: Final = "ollama"
 DEFAULT_EMBEDDING_ADAPTER_ID: Final = "ollama-http"
 DEFAULT_EMBEDDING_ADAPTER_VERSION: Final = "1.0.0"
@@ -746,6 +747,53 @@ class EmbeddedDocument:
             _unit_vector(chunk.vector, self.identity.dimension)
 
 
+@dataclass(frozen=True, slots=True)
+class EmbeddedQuery:
+    """Publish one transient query vector with its exact vector-space identity.
+
+    A bare vector can prove its dimension and norm but cannot prove which model,
+    prompt template, or normalization contract produced it.  Retrieval therefore
+    carries the complete identity and batch policy beside the vector so a store
+    can reject a same-shaped query from an incompatible semantic space.
+    """
+
+    schema_version: Literal[1]
+    identity: EmbeddingModelIdentity
+    policy: EmbeddingBatchPolicy
+    vector: EmbeddingVector
+
+    def __post_init__(self) -> None:
+        """Require one canonical unit query without retaining its source text."""
+
+        if (
+            type(self.schema_version) is not int
+            or self.schema_version != EMBEDDED_QUERY_SCHEMA_VERSION
+        ):
+            raise EmbeddingValidationError(
+                "Unsupported embedded-query schema version."
+            )
+        if type(self.identity) is not EmbeddingModelIdentity:
+            raise EmbeddingValidationError(
+                "Embedded query identity is invalid."
+            )
+        if type(self.policy) is not EmbeddingBatchPolicy:
+            raise EmbeddingValidationError("Embedded query policy is invalid.")
+        if type(self.vector) is not EmbeddingVector:
+            raise EmbeddingValidationError("Embedded query vector is invalid.")
+        if self.vector.item_id != "query":
+            raise EmbeddingValidationError(
+                "Embedded query vector must use the query item identity."
+            )
+        canonical = _unit_vector(
+            self.vector.values,
+            self.identity.dimension,
+        )
+        if canonical != self.vector.values:
+            raise EmbeddingValidationError(
+                "Embedded query vector must use canonical float32 values."
+            )
+
+
 def _snapshot_scope(scope: AttachmentScope) -> AttachmentScope:
     """Copy one attachment scope through its public constructor."""
 
@@ -899,37 +947,67 @@ def _snapshot_chunked_document(document: ChunkedDocument) -> ChunkedDocument:
 def _snapshot_identity(identity: object) -> EmbeddingModelIdentity:
     """Copy and revalidate every vector-space identity field."""
 
-    if not isinstance(identity, EmbeddingModelIdentity):
+    if type(identity) is not EmbeddingModelIdentity:
+        raise EmbeddingValidationError(
+            "Embedding adapter exposed an invalid identity."
+        )
+    try:
+        fields = (
+            identity.provider,
+            identity.adapter_id,
+            identity.adapter_version,
+            identity.model_tag,
+            identity.model_digest,
+            identity.dimension,
+            identity.normalization,
+            identity.document_template_version,
+            identity.query_template_version,
+            identity.embedding_space_id,
+        )
+    except AttributeError:
+        raise EmbeddingValidationError(
+            "Embedding adapter exposed an invalid identity."
+        ) from None
+    if (
+        not all(type(value) is str for value in fields[:5])
+        or type(fields[5]) is not int
+        or not all(type(value) is str for value in fields[6:])
+    ):
         raise EmbeddingValidationError(
             "Embedding adapter exposed an invalid identity."
         )
     return EmbeddingModelIdentity(
-        provider=identity.provider,
-        adapter_id=identity.adapter_id,
-        adapter_version=identity.adapter_version,
-        model_tag=identity.model_tag,
-        model_digest=identity.model_digest,
-        dimension=identity.dimension,
-        normalization=identity.normalization,
-        document_template_version=identity.document_template_version,
-        query_template_version=identity.query_template_version,
-        embedding_space_id=identity.embedding_space_id,
+        provider=fields[0],
+        adapter_id=fields[1],
+        adapter_version=fields[2],
+        model_tag=fields[3],
+        model_digest=fields[4],
+        dimension=fields[5],
+        normalization=fields[6],
+        document_template_version=fields[7],
+        query_template_version=fields[8],
+        embedding_space_id=fields[9],
     )
 
 
 def _snapshot_policy(policy: object) -> EmbeddingBatchPolicy:
     """Copy and revalidate the fixed v1 batch policy."""
 
-    if not isinstance(policy, EmbeddingBatchPolicy):
+    if type(policy) is not EmbeddingBatchPolicy:
         raise EmbeddingValidationError(
             "Embedding adapter exposed an invalid batch policy."
         )
-    return EmbeddingBatchPolicy(
-        max_batch_items=policy.max_batch_items,
-        max_input_code_points=policy.max_input_code_points,
-        max_batch_code_points=policy.max_batch_code_points,
-        truncate=policy.truncate,
-    )
+    try:
+        return EmbeddingBatchPolicy(
+            max_batch_items=policy.max_batch_items,
+            max_input_code_points=policy.max_input_code_points,
+            max_batch_code_points=policy.max_batch_code_points,
+            truncate=policy.truncate,
+        )
+    except AttributeError:
+        raise EmbeddingValidationError(
+            "Embedding adapter exposed an invalid batch policy."
+        ) from None
 
 
 def _validate_service_identity(identity: EmbeddingModelIdentity) -> None:
@@ -1047,20 +1125,35 @@ class DocumentEmbeddingService:
             )
         except EmbeddingError:
             raise
-        except (MemoryError, RecursionError) as error:
+        except (MemoryError, RecursionError):
             raise EmbeddingLimitError(
                 "Document embedding exceeded a safe resource limit."
-            ) from error
-        except Exception as error:
+            ) from None
+        except Exception:
             raise EmbeddingFailedError(
                 "Document embedding failed without a safe typed result."
-            ) from error
+            ) from None
 
-    def embed_query(self, text: str) -> EmbeddingVector:
-        """Embed one transient query under the fixed versioned instruction."""
+    def embed_query(self, text: str) -> EmbeddedQuery:
+        """Embed one transient query and bind it to the exact model identity."""
 
         try:
-            if not isinstance(text, str) or not any(
+            if type(text) is not str or not text:
+                raise EmbeddingValidationError(
+                    "Embedding query must contain meaningful text."
+                )
+            maximum_query_code_points = (
+                DEFAULT_EMBEDDING_MAX_INPUT_CODE_POINTS
+                - len(QUERY_EMBEDDING_PREFIX)
+            )
+            if len(text) > maximum_query_code_points:
+                # Check the caller-owned string before scanning or prefixing it;
+                # otherwise an oversized query could force unbounded work and
+                # a second allocation before EmbeddingInput rejects it.
+                raise EmbeddingLimitError(
+                    "Embedding query exceeds the code-point limit."
+                )
+            if not any(
                 not (character.isspace() or character == "\ufeff")
                 for character in text
             ):
@@ -1078,17 +1171,22 @@ class DocumentEmbeddingService:
             vectors = self._run_batch(request, identity, policy)
             canonical = _unit_vector(vectors[0].values, identity.dimension)
             self._require_adapter_unchanged(identity, policy)
-            return EmbeddingVector(item_id="query", values=canonical)
+            return EmbeddedQuery(
+                schema_version=EMBEDDED_QUERY_SCHEMA_VERSION,
+                identity=_snapshot_identity(identity),
+                policy=_snapshot_policy(policy),
+                vector=EmbeddingVector(item_id="query", values=canonical),
+            )
         except EmbeddingError:
             raise
-        except (MemoryError, RecursionError) as error:
+        except (MemoryError, RecursionError):
             raise EmbeddingLimitError(
                 "Query embedding exceeded a safe resource limit."
-            ) from error
-        except Exception as error:
+            ) from None
+        except Exception:
             raise EmbeddingFailedError(
                 "Query embedding failed without a safe typed result."
-            ) from error
+            ) from None
 
     def _run_batch(
         self,
@@ -1139,8 +1237,18 @@ class DocumentEmbeddingService:
                 type(vector) is not EmbeddingVector
                 or type(vector.item_id) is not str
                 or type(vector.values) is not tuple
-                or not all(type(value) is float for value in vector.values)
             ):
+                raise EmbeddingValidationError(
+                    "Embedding adapter returned an invalid vector."
+                )
+            # Frozen result values can be replaced by adapter code.  The O(1)
+            # dimension check must precede traversal of that tuple.
+            if len(vector.values) != identity.dimension:
+                raise EmbeddingValidationError(
+                    "Embedding vector dimension does not match its model "
+                    "identity."
+                )
+            if not all(type(value) is float for value in vector.values):
                 raise EmbeddingValidationError(
                     "Embedding adapter returned an invalid vector."
                 )

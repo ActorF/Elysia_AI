@@ -716,6 +716,36 @@ def test_schema_creation_failure_rolls_back_every_ddl_statement(
     SQLiteVectorStore(database, identity)
 
 
+def test_initialization_rejects_an_empty_utf16_database(tmp_path: Path) -> None:
+    """Refuse an empty database whose text byte lengths are not the v1 format."""
+
+    database = tmp_path / "utf16-empty.sqlite3"
+    connection = sqlite3.connect(database)
+    try:
+        connection.execute("PRAGMA encoding = 'UTF-16le'")
+        # Creating then dropping the first table fixes SQLite's file encoding
+        # while returning the catalog to the only state the Store may adopt.
+        connection.execute("CREATE TABLE encoding_probe (value TEXT)")
+        connection.execute("DROP TABLE encoding_probe")
+        connection.commit()
+        assert connection.execute("PRAGMA encoding").fetchone()[0] == (
+            "UTF-16le"
+        )
+    finally:
+        connection.close()
+
+    with pytest.raises(DocumentCorruptError, match="encoding is unsupported"):
+        SQLiteVectorStore(database, _identity())
+
+    connection = sqlite3.connect(database)
+    try:
+        assert connection.execute(
+            "SELECT name FROM sqlite_schema"
+        ).fetchall() == []
+    finally:
+        connection.close()
+
+
 def test_hostile_same_column_schema_without_constraints_fails_closed(
     tmp_path: Path,
 ) -> None:

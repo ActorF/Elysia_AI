@@ -1,11 +1,11 @@
 """Persist scope-isolated document embeddings in a bounded SQLite store.
 
-The store is deliberately a persistence boundary rather than a retriever.  It
-keeps the complete validated chunk lineage, citation mappings, and fixed-width
-little-endian float32 vectors needed by later retrieval work, but it does not
-rank vectors or accept unscoped reads.  Every document replacement and scoped
-rebuild is one SQLite transaction so a failure cannot expose a mixed embedding
-generation.
+The store is deliberately a persistence boundary rather than a complete
+retriever.  It keeps validated chunk lineage and fixed-width float32 vectors,
+and exposes one mechanical exact-scope cosine candidate scan.  Query policy,
+deduplication, optional reranking, and final evidence publication remain in the
+retrieval service.  Every write and cross-document scan uses one transaction so
+a failure cannot expose a mixed embedding generation.
 """
 
 from __future__ import annotations
@@ -27,6 +27,7 @@ from typing import Any, Final, Literal, NoReturn, cast
 from attachments.domain import (
     MAX_JSON_SAFE_INTEGER,
     AttachmentScope,
+    AttachmentScopeKind,
     validate_attachment_id,
 )
 
@@ -53,9 +54,11 @@ from .domain import (
 from .embedding import (
     EMBEDDING_UNIT_NORM_TOLERANCE,
     EMBEDDED_DOCUMENT_SCHEMA_VERSION,
+    EmbeddedQuery,
     EmbeddingBatchPolicy,
     EmbeddingError,
     EmbeddingModelIdentity,
+    EmbeddingVector,
     EmbeddedChunk,
     EmbeddedDocument,
 )
@@ -65,6 +68,13 @@ from .exceptions import (
     DocumentError,
     DocumentProcessingFailedError,
     DocumentValidationError,
+)
+from .retrieval import (
+    ExpectedDocumentGeneration,
+    RetrievalLimits,
+    RetrievalMetadataFilter,
+    RetrievalPolicy,
+    StoredRetrievalCandidate,
 )
 
 
@@ -264,6 +274,10 @@ class VectorStoreStaleError(DocumentError):
     """Report that stored vectors do not match the requested derivation."""
 
 
+class VectorStoreIncompleteError(DocumentError):
+    """Report that an explicitly required document generation is absent."""
+
+
 class VectorStoreModelMismatchError(DocumentError):
     """Report that a database belongs to another embedding space."""
 
@@ -272,14 +286,36 @@ class VectorStorePersistenceError(DocumentError):
     """Report a path-private SQLite open, transaction, or write failure."""
 
 
+def _read_exact_slots(
+    value: object,
+    expected_type: type[object],
+    field_names: tuple[str, ...],
+    error_message: str,
+) -> tuple[Any, ...]:
+    """Read bounded slots and contain deleted frozen-dataclass fields."""
+
+    if type(value) is not expected_type:
+        raise DocumentValidationError(error_message)
+    try:
+        return tuple(getattr(value, field_name) for field_name in field_names)
+    except AttributeError:
+        # Frozen dataclasses can still be corrupted through object.__delattr__;
+        # public persistence boundaries must keep that inside typed failures.
+        raise DocumentValidationError(error_message) from None
+
+
 @dataclass(frozen=True, slots=True)
 class VectorStoreLimits:
-    """Bound persistent document graphs and every public list operation."""
+    """Bound persistent graphs plus every public list and search operation."""
 
     max_records_per_document: int = 10_000
     max_list_records: int = 1_000
     max_rebuild_documents: int = 1_000
     max_rebuild_records: int = 100_000
+    max_search_documents: int = 128
+    max_search_records: int = 10_000
+    max_search_results: int = 64
+    max_search_payload_bytes: int = 128 * 1024 * 1024
     max_lineage_json_bytes: int = 256 * 1024
     max_chunk_json_bytes: int = 2 * 1024 * 1024
     max_document_metadata_bytes: int = 256 * 1024 * 1024
@@ -308,6 +344,10 @@ class VectorStoreLimits:
             raise DocumentValidationError(
                 "max_rebuild_documents cannot exceed max_rebuild_records."
             )
+        if self.max_search_results > self.max_search_records:
+            raise DocumentValidationError(
+                "max_search_results cannot exceed max_search_records."
+            )
         if self.max_database_bytes < 512:
             raise DocumentValidationError(
                 "max_database_bytes cannot be smaller than one SQLite page."
@@ -329,6 +369,10 @@ def _snapshot_limits(value: object) -> VectorStoreLimits:
             max_list_records=value.max_list_records,
             max_rebuild_documents=value.max_rebuild_documents,
             max_rebuild_records=value.max_rebuild_records,
+            max_search_documents=value.max_search_documents,
+            max_search_records=value.max_search_records,
+            max_search_results=value.max_search_results,
+            max_search_payload_bytes=value.max_search_payload_bytes,
             max_lineage_json_bytes=value.max_lineage_json_bytes,
             max_chunk_json_bytes=value.max_chunk_json_bytes,
             max_document_metadata_bytes=value.max_document_metadata_bytes,
@@ -343,13 +387,22 @@ def _snapshot_limits(value: object) -> VectorStoreLimits:
 def _require_scope(value: object) -> AttachmentScope:
     """Return one exact validated Chat or Project scope."""
 
-    if not isinstance(value, AttachmentScope):
+    kind, scope_id = _read_exact_slots(
+        value,
+        AttachmentScope,
+        ("kind", "id"),
+        "scope must be AttachmentScope.",
+    )
+    if type(kind) is not str or type(scope_id) is not str:
         raise DocumentValidationError("scope must be AttachmentScope.")
     # Rebuilding the immutable value rejects object-graph tampering performed
     # through ``object.__setattr__`` by an injected caller.
     try:
-        return AttachmentScope(kind=value.kind, id=value.id)
-    except (TypeError, ValueError) as error:
+        return AttachmentScope(
+            kind=cast(AttachmentScopeKind, kind),
+            id=scope_id,
+        )
+    except (AttributeError, TypeError, ValueError) as error:
         raise DocumentValidationError("scope is invalid.") from error
 
 
@@ -1501,6 +1554,7 @@ class _StoredDocumentMetadata:
     record_count: int
     total_chunk_code_points: int
     total_source_mappings: int
+    lineage_json_bytes: int
 
 
 class SQLiteVectorStore:
@@ -1561,6 +1615,813 @@ class SQLiteVectorStore:
         """Return the exact persistence and public-read resource ceilings."""
 
         return _snapshot_limits(self._limits)
+
+    def search_scope(
+        self,
+        *,
+        scope: AttachmentScope,
+        query: EmbeddedQuery,
+        expected_documents: tuple[ExpectedDocumentGeneration, ...],
+        metadata_filter: RetrievalMetadataFilter,
+        policy: RetrievalPolicy,
+        limits: RetrievalLimits,
+    ) -> tuple[StoredRetrievalCandidate, ...]:
+        """Return bounded cosine candidates from one exact-scope snapshot.
+
+        Every expected generation is an authorization and freshness claim from
+        the caller.  Headers and records are therefore authenticated together
+        inside one read transaction; a missing, stale, corrupt, or over-budget
+        generation aborts the complete search instead of publishing a partial
+        Top-K that could be mistaken for an exhaustive result.
+        """
+
+        canonical_scope = _require_scope(scope)
+        canonical_query = self._snapshot_search_query(query)
+        canonical_limits = self._snapshot_search_limits(limits)
+        if type(expected_documents) is tuple and len(expected_documents) > min(
+            canonical_limits.max_documents,
+            self._limits.max_search_documents,
+        ):
+            # Reject the outer graph before copying attacker-controlled nested
+            # source values; otherwise the validation pass itself could exceed
+            # the corpus budget it is supposed to enforce.
+            raise DocumentContentLimitError(
+                "Vector search exceeds the document limit."
+            )
+        canonical_documents = self._snapshot_search_documents(
+            canonical_scope,
+            expected_documents,
+        )
+        canonical_filter = self._snapshot_search_filter(
+            metadata_filter,
+            canonical_limits.max_filter_values,
+        )
+        canonical_policy = self._snapshot_search_policy(policy)
+        if not canonical_documents:
+            return ()
+        if len(canonical_documents) > min(
+            canonical_limits.max_documents,
+            self._limits.max_search_documents,
+        ):
+            raise DocumentContentLimitError(
+                "Vector search exceeds the document limit."
+            )
+        if canonical_policy.candidate_k > self._limits.max_search_results:
+            raise DocumentContentLimitError(
+                "Vector search exceeds the result limit."
+            )
+
+        # Sorting the allowlist makes output independent of caller order and
+        # lets the record stream prove contiguous generations deterministically.
+        ordered_documents = tuple(
+            sorted(
+                canonical_documents,
+                key=lambda item: item.source.link_id,
+            )
+        )
+        expected_by_link = {
+            item.source.link_id: item for item in ordered_documents
+        }
+        link_ids = tuple(expected_by_link)
+        placeholders = ",".join("?" for _ in link_ids)
+
+        with self._lock:
+            connection = self._open_validated_connection()
+            operation_failed = True
+            deadline_exceeded = False
+            deadline = monotonic() + self._timeout_seconds
+
+            def _interrupt_search_after_deadline() -> int:
+                """Interrupt SQLite work after the bounded search deadline."""
+
+                nonlocal deadline_exceeded
+                deadline_exceeded = monotonic() >= deadline
+                return 1 if deadline_exceeded else 0
+
+            progress_installed = False
+            try:
+                connection.set_progress_handler(
+                    _interrupt_search_after_deadline,
+                    _SQLITE_PROGRESS_INSTRUCTION_INTERVAL,
+                )
+                progress_installed = True
+                connection.execute("BEGIN")
+                header_size_cursor = connection.execute(
+                    f"""
+                    SELECT link_id,
+                           CASE
+                             WHEN typeof(lineage_json) = 'text'
+                             THEN length(CAST(lineage_json AS BLOB))
+                           END AS lineage_size
+                    FROM vector_documents
+                    WHERE scope_kind = ? AND scope_id = ?
+                      AND link_id IN ({placeholders})
+                    ORDER BY link_id
+                    LIMIT ?
+                    """,
+                    (
+                        canonical_scope.kind,
+                        canonical_scope.id,
+                        *link_ids,
+                        len(link_ids) + 1,
+                    ),
+                )
+                scanned_payload_bytes = 0
+                lineage_sizes: dict[str, int] = {}
+                while True:
+                    self._require_search_time(deadline)
+                    row = header_size_cursor.fetchone()
+                    if row is None:
+                        break
+                    link_id = row["link_id"]
+                    lineage_size = row["lineage_size"]
+                    if (
+                        not isinstance(link_id, str)
+                        or link_id not in expected_by_link
+                        or link_id in lineage_sizes
+                        or type(lineage_size) is not int
+                        or lineage_size < 0
+                        or lineage_size
+                        > self._limits.max_lineage_json_bytes
+                    ):
+                        raise DocumentCorruptError(
+                            "Stored vector lineage size is invalid."
+                        )
+                    scanned_payload_bytes += lineage_size
+                    if scanned_payload_bytes > min(
+                        canonical_limits.max_scanned_payload_bytes,
+                        self._limits.max_search_payload_bytes,
+                    ):
+                        # The size-only pass prevents SQLite from transferring
+                        # an over-budget lineage value into Python first.
+                        raise DocumentContentLimitError(
+                            "Vector search exceeds the payload limit."
+                        )
+                    lineage_sizes[link_id] = lineage_size
+                if len(lineage_sizes) != len(expected_by_link):
+                    raise VectorStoreIncompleteError(
+                        "A required vector generation is not indexed."
+                    )
+
+                header_cursor = connection.execute(
+                    f"""
+                    SELECT link_id,
+                           CASE
+                             WHEN typeof(derivation_fingerprint) = 'text'
+                              AND length(CAST(derivation_fingerprint AS BLOB)) = 64
+                             THEN derivation_fingerprint
+                           END AS derivation_fingerprint,
+                           CASE
+                             WHEN typeof(embedding_space_id) = 'text'
+                              AND length(CAST(embedding_space_id AS BLOB)) = 64
+                             THEN embedding_space_id
+                           END AS embedding_space_id,
+                           CASE
+                             WHEN typeof(lineage_json) = 'text'
+                             THEN lineage_json
+                           END AS lineage_json,
+                           CASE
+                             WHEN typeof(lineage_checksum) = 'text'
+                              AND length(CAST(lineage_checksum AS BLOB)) = 64
+                             THEN lineage_checksum
+                           END AS lineage_checksum,
+                           CASE
+                             WHEN typeof(record_count) = 'integer'
+                             THEN record_count
+                           END AS record_count
+                    FROM vector_documents
+                    WHERE scope_kind = ? AND scope_id = ?
+                      AND link_id IN ({placeholders})
+                    ORDER BY link_id
+                    LIMIT ?
+                    """,
+                    (
+                        canonical_scope.kind,
+                        canonical_scope.id,
+                        *link_ids,
+                        len(link_ids) + 1,
+                    ),
+                )
+                metadata_by_link: dict[str, _StoredDocumentMetadata] = {}
+                scanned_records = 0
+                declared_source_mappings = 0
+                while True:
+                    self._require_search_time(deadline)
+                    row = header_cursor.fetchone()
+                    if row is None:
+                        break
+                    link_id = row["link_id"]
+                    if (
+                        not isinstance(link_id, str)
+                        or link_id not in expected_by_link
+                        or link_id in metadata_by_link
+                    ):
+                        raise DocumentCorruptError(
+                            "Stored vector search headers are inconsistent."
+                        )
+                    expectation = expected_by_link[link_id]
+                    metadata = self._decode_expected_document_metadata_row(
+                        row,
+                        canonical_scope,
+                        link_id,
+                        expectation.derivation_fingerprint,
+                        canonical_query.identity.embedding_space_id,
+                    )
+                    if (
+                        metadata.chunked_document.provenance.source
+                        != expectation.source
+                    ):
+                        raise VectorStoreStaleError(
+                            "Stored vectors do not match the requested source."
+                        )
+                    if metadata.lineage_json_bytes != lineage_sizes[link_id]:
+                        raise DocumentCorruptError(
+                            "Stored vector lineage size is inconsistent."
+                        )
+                    metadata_by_link[link_id] = metadata
+                    scanned_records += metadata.record_count
+                    declared_source_mappings += (
+                        metadata.total_source_mappings
+                    )
+                    if scanned_records > min(
+                        canonical_limits.max_scanned_records,
+                        self._limits.max_search_records,
+                    ):
+                        raise DocumentContentLimitError(
+                            "Vector search exceeds the record limit."
+                        )
+                    if declared_source_mappings > (
+                        canonical_limits.max_source_mappings
+                    ):
+                        raise DocumentContentLimitError(
+                            "Vector search exceeds the source-mapping limit."
+                        )
+                if len(metadata_by_link) != len(expected_by_link):
+                    raise VectorStoreIncompleteError(
+                        "A required vector generation is not indexed."
+                    )
+
+                record_size_cursor = connection.execute(
+                    f"""
+                    SELECT link_id,
+                           CASE
+                             WHEN typeof(chunk_json) = 'text'
+                             THEN length(CAST(chunk_json AS BLOB))
+                           END AS chunk_size,
+                           CASE
+                             WHEN typeof(vector_blob) = 'blob'
+                             THEN length(vector_blob)
+                           END AS vector_size
+                    FROM vector_records
+                    WHERE scope_kind = ? AND scope_id = ?
+                      AND link_id IN ({placeholders})
+                    ORDER BY link_id, ordinal
+                    LIMIT ?
+                    """,
+                    (
+                        canonical_scope.kind,
+                        canonical_scope.id,
+                        *link_ids,
+                        scanned_records + 1,
+                    ),
+                )
+                sized_record_counts = dict.fromkeys(link_ids, 0)
+                while True:
+                    self._require_search_time(deadline)
+                    row = record_size_cursor.fetchone()
+                    if row is None:
+                        break
+                    link_id = row["link_id"]
+                    chunk_size = row["chunk_size"]
+                    vector_size = row["vector_size"]
+                    if (
+                        not isinstance(link_id, str)
+                        or link_id not in metadata_by_link
+                        or type(chunk_size) is not int
+                        or chunk_size < 0
+                        or chunk_size > self._limits.max_chunk_json_bytes
+                        or type(vector_size) is not int
+                        or vector_size != self._dimensions * 4
+                    ):
+                        raise DocumentCorruptError(
+                            "Stored vector record size is invalid."
+                        )
+                    sized_record_counts[link_id] += 1
+                    scanned_payload_bytes += chunk_size + vector_size
+                    if scanned_payload_bytes > min(
+                        canonical_limits.max_scanned_payload_bytes,
+                        self._limits.max_search_payload_bytes,
+                    ):
+                        # As with headers, reject from scalar sizes before the
+                        # full JSON/BLOB columns cross into Python memory.
+                        raise DocumentContentLimitError(
+                            "Vector search exceeds the payload limit."
+                        )
+                if any(
+                    sized_record_counts[link_id]
+                    != metadata_by_link[link_id].record_count
+                    for link_id in link_ids
+                ):
+                    raise DocumentCorruptError(
+                        "Stored vector generation is incomplete."
+                    )
+
+                record_cursor = connection.execute(
+                    f"""
+                    SELECT link_id,
+                           CASE WHEN typeof(ordinal) = 'integer'
+                                THEN ordinal END AS ordinal,
+                           CASE
+                             WHEN typeof(chunk_id) = 'text'
+                              AND length(CAST(chunk_id AS BLOB)) = 70
+                             THEN chunk_id
+                           END AS chunk_id,
+                           CASE
+                             WHEN typeof(embedding_id) = 'text'
+                              AND length(CAST(embedding_id AS BLOB)) = 74
+                             THEN embedding_id
+                           END AS embedding_id,
+                           CASE
+                             WHEN typeof(chunk_json) = 'text'
+                             THEN chunk_json
+                           END AS chunk_json,
+                           CASE
+                             WHEN typeof(chunk_checksum) = 'text'
+                              AND length(CAST(chunk_checksum AS BLOB)) = 64
+                             THEN chunk_checksum
+                           END AS chunk_checksum,
+                           CASE
+                             WHEN typeof(vector_blob) = 'blob'
+                             THEN vector_blob
+                           END AS vector_blob,
+                           CASE
+                             WHEN typeof(vector_checksum) = 'text'
+                              AND length(CAST(vector_checksum AS BLOB)) = 64
+                             THEN vector_checksum
+                           END AS vector_checksum
+                    FROM vector_records
+                    WHERE scope_kind = ? AND scope_id = ?
+                      AND link_id IN ({placeholders})
+                    ORDER BY link_id, ordinal
+                    LIMIT ?
+                    """,
+                    (
+                        canonical_scope.kind,
+                        canonical_scope.id,
+                        *link_ids,
+                        scanned_records + 1,
+                    ),
+                )
+                actual_counts = dict.fromkeys(link_ids, 0)
+                actual_code_points = dict.fromkeys(link_ids, 0)
+                actual_mappings = dict.fromkeys(link_ids, 0)
+                total_mappings = 0
+                candidate_text_code_points = 0
+                candidates: list[StoredRetrievalCandidate] = []
+                while True:
+                    self._require_search_time(deadline)
+                    row = record_cursor.fetchone()
+                    if row is None:
+                        break
+                    link_id = row["link_id"]
+                    if not isinstance(link_id, str) or link_id not in (
+                        metadata_by_link
+                    ):
+                        raise DocumentCorruptError(
+                            "Stored vector search records are inconsistent."
+                        )
+                    metadata = metadata_by_link[link_id]
+                    expected_ordinal = actual_counts[link_id]
+                    if (
+                        expected_ordinal >= metadata.record_count
+                        or row["ordinal"] != expected_ordinal
+                    ):
+                        raise DocumentCorruptError(
+                            "Stored vector generation is incomplete."
+                        )
+                    self._stored_record_sizes(row)
+                    chunk = self._decode_record(
+                        row,
+                        metadata,
+                        maximum_mappings=(
+                            canonical_limits.max_source_mappings
+                            - total_mappings
+                        ),
+                    )
+                    actual_counts[link_id] += 1
+                    actual_code_points[link_id] += len(chunk.text)
+                    mapping_count = len(chunk.source_mappings)
+                    actual_mappings[link_id] += mapping_count
+                    total_mappings += mapping_count
+                    if total_mappings > canonical_limits.max_source_mappings:
+                        raise DocumentContentLimitError(
+                            "Vector search exceeds the source-mapping limit."
+                        )
+                    source = metadata.chunked_document.provenance.source
+                    if not self._matches_search_filter(
+                        source,
+                        chunk,
+                        canonical_filter,
+                    ):
+                        continue
+                    raw_score = math.fsum(
+                        left * right
+                        for left, right in zip(
+                            canonical_query.vector.values,
+                            chunk.vector,
+                            strict=True,
+                        )
+                    )
+                    score_tolerance = EMBEDDING_UNIT_NORM_TOLERANCE * 3
+                    if (
+                        not math.isfinite(raw_score)
+                        or raw_score < -1.0 - score_tolerance
+                        or raw_score > 1.0 + score_tolerance
+                    ):
+                        raise DocumentCorruptError(
+                            "Stored vector produced an invalid cosine score."
+                        )
+                    score = round(max(-1.0, min(1.0, raw_score)), 8)
+                    if score == 0.0:
+                        score = 0.0
+                    if score < canonical_policy.minimum_cosine_similarity:
+                        continue
+                    candidate = StoredRetrievalCandidate(
+                        source=source,
+                        derivation_fingerprint=(
+                            metadata.derivation_fingerprint
+                        ),
+                        embedding_space_id=metadata.embedding_space_id,
+                        embedding_id=chunk.embedding_id,
+                        chunk_id=chunk.chunk_id,
+                        ordinal=chunk.ordinal,
+                        kind=chunk.kind,
+                        text=chunk.text,
+                        page_number=chunk.page_number,
+                        source_mappings=chunk.source_mappings,
+                        cosine_similarity=score,
+                    )
+                    candidate_text_code_points += self._retain_search_candidate(
+                        candidates,
+                        candidate,
+                        canonical_policy.candidate_k,
+                    )
+                    if candidate_text_code_points > (
+                        canonical_limits.max_candidate_text_code_points
+                    ):
+                        raise DocumentContentLimitError(
+                            "Vector search exceeds the candidate-text limit."
+                        )
+
+                for link_id, metadata in metadata_by_link.items():
+                    if (
+                        actual_counts[link_id] != metadata.record_count
+                        or actual_code_points[link_id]
+                        != metadata.total_chunk_code_points
+                        or actual_mappings[link_id]
+                        != metadata.total_source_mappings
+                    ):
+                        raise DocumentCorruptError(
+                            "Stored vector generation is incomplete."
+                        )
+                self._require_search_time(deadline)
+                result = tuple(
+                    sorted(candidates, key=self._search_candidate_order_key)
+                )
+                self._validate_database_resource_limits(connection)
+                self._require_search_time(deadline)
+                connection.commit()
+                operation_failed = False
+                return result
+            except DocumentError:
+                self._rollback_quietly(connection)
+                raise
+            except sqlite3.Error:
+                self._rollback_quietly(connection)
+                if deadline_exceeded:
+                    raise DocumentContentLimitError(
+                        "Vector search exceeded its time limit."
+                    ) from None
+                raise VectorStorePersistenceError(
+                    "Vector-store search failed."
+                ) from None
+            finally:
+                progress_removal_failed = False
+                if progress_installed:
+                    try:
+                        connection.set_progress_handler(None, 0)
+                    except sqlite3.Error:
+                        progress_removal_failed = not operation_failed
+                self._close_connection(
+                    connection,
+                    suppress_errors=(
+                        operation_failed or progress_removal_failed
+                    ),
+                )
+                if progress_removal_failed:
+                    raise VectorStorePersistenceError(
+                        "Vector-store search could not be bounded."
+                    ) from None
+
+    def _snapshot_search_query(self, query: object) -> EmbeddedQuery:
+        """Copy an identity-bearing canonical query through strict domains."""
+
+        schema_version, raw_identity, raw_policy, raw_vector = _read_exact_slots(
+            query,
+            EmbeddedQuery,
+            ("schema_version", "identity", "policy", "vector"),
+            "Vector search query is invalid.",
+        )
+        if (
+            type(raw_identity) is not EmbeddingModelIdentity
+            or type(raw_policy) is not EmbeddingBatchPolicy
+            or type(raw_vector) is not EmbeddingVector
+        ):
+            raise DocumentValidationError("Vector search query is invalid.")
+        identity = self._snapshot_identity(raw_identity)
+        if identity != self._model_identity:
+            raise VectorStoreModelMismatchError(
+                "Vector store uses a different embedding model identity."
+            )
+        item_id, values = _read_exact_slots(
+            raw_vector,
+            EmbeddingVector,
+            ("item_id", "values"),
+            "Vector search query is invalid.",
+        )
+        policy_fields = _read_exact_slots(
+            raw_policy,
+            EmbeddingBatchPolicy,
+            (
+                "max_batch_items",
+                "max_input_code_points",
+                "max_batch_code_points",
+                "truncate",
+            ),
+            "Vector search query is invalid.",
+        )
+        if (
+            type(item_id) is not str
+            or type(values) is not tuple
+            or len(values) != identity.dimension
+        ):
+            raise DocumentValidationError("Vector search query is invalid.")
+        # Validate the bounded dimension before iterating adapter-controlled
+        # values so a mutated frozen query cannot create unbounded validation.
+        if not all(type(value) is float for value in values):
+            raise DocumentValidationError("Vector search query is invalid.")
+        try:
+            return EmbeddedQuery(
+                schema_version=schema_version,
+                identity=identity,
+                policy=EmbeddingBatchPolicy(
+                    max_batch_items=policy_fields[0],
+                    max_input_code_points=policy_fields[1],
+                    max_batch_code_points=policy_fields[2],
+                    truncate=policy_fields[3],
+                ),
+                vector=EmbeddingVector(
+                    item_id=item_id,
+                    values=tuple(values),
+                ),
+            )
+        except (AttributeError, EmbeddingError, TypeError, ValueError) as error:
+            raise DocumentValidationError(
+                "Vector search query is invalid."
+            ) from error
+
+    def _snapshot_search_documents(
+        self,
+        scope: AttachmentScope,
+        documents: object,
+    ) -> tuple[ExpectedDocumentGeneration, ...]:
+        """Copy the exact authorized generation allowlist and reject aliases."""
+
+        if type(documents) is not tuple:
+            raise DocumentValidationError(
+                "Vector search documents must be a tuple."
+            )
+        copied: list[ExpectedDocumentGeneration] = []
+        seen_links: set[str] = set()
+        for document in documents:
+            source, derivation_fingerprint = _read_exact_slots(
+                document,
+                ExpectedDocumentGeneration,
+                ("source", "derivation_fingerprint"),
+                "Vector search document expectation is invalid.",
+            )
+            if type(source) is not DocumentSource:
+                raise DocumentValidationError(
+                    "Vector search document expectation is invalid."
+                )
+            source_fields = _read_exact_slots(
+                source,
+                DocumentSource,
+                (
+                    "scope",
+                    "link_id",
+                    "file_id",
+                    "file_name",
+                    "media_type",
+                    "size_bytes",
+                ),
+                "Vector search document expectation is invalid.",
+            )
+            if (
+                type(source_fields[0]) is not AttachmentScope
+                or not all(type(value) is str for value in source_fields[1:5])
+                or type(source_fields[5]) is not int
+                or type(derivation_fingerprint) is not str
+            ):
+                raise DocumentValidationError(
+                    "Vector search document expectation is invalid."
+                )
+            try:
+                source_snapshot = DocumentSource(
+                    scope=_require_scope(source_fields[0]),
+                    link_id=source_fields[1],
+                    file_id=source_fields[2],
+                    file_name=source_fields[3],
+                    media_type=source_fields[4],
+                    size_bytes=source_fields[5],
+                )
+                generation = ExpectedDocumentGeneration(
+                    source=source_snapshot,
+                    derivation_fingerprint=derivation_fingerprint,
+                )
+            except (AttributeError, DocumentError, TypeError, ValueError) as error:
+                raise DocumentValidationError(
+                    "Vector search document expectation is invalid."
+                ) from error
+            if source_snapshot.scope != scope:
+                raise DocumentValidationError(
+                    "Vector search document crosses the requested scope."
+                )
+            if source_snapshot.link_id in seen_links:
+                raise DocumentValidationError(
+                    "Vector search documents contain a duplicate link."
+                )
+            seen_links.add(source_snapshot.link_id)
+            copied.append(generation)
+        return tuple(copied)
+
+    @staticmethod
+    def _snapshot_search_filter(
+        value: object,
+        max_filter_values: int,
+    ) -> RetrievalMetadataFilter:
+        """Copy a closed filter only after enforcing its caller budget."""
+
+        file_ids, media_types, chunk_kinds, page_numbers = _read_exact_slots(
+            value,
+            RetrievalMetadataFilter,
+            ("file_ids", "media_types", "chunk_kinds", "page_numbers"),
+            "Vector search filter is invalid.",
+        )
+        values = (file_ids, media_types, chunk_kinds, page_numbers)
+        if not all(type(items) is tuple for items in values):
+            raise DocumentValidationError("Vector search filter is invalid.")
+        if sum(len(items) for items in values) > max_filter_values:
+            raise DocumentContentLimitError(
+                "Vector search exceeds the metadata-filter limit."
+            )
+        try:
+            return RetrievalMetadataFilter(
+                file_ids=file_ids,
+                media_types=media_types,
+                chunk_kinds=chunk_kinds,
+                page_numbers=page_numbers,
+            )
+        except (AttributeError, DocumentError, TypeError, ValueError) as error:
+            raise DocumentValidationError(
+                "Vector search filter is invalid."
+            ) from error
+
+    @staticmethod
+    def _snapshot_search_policy(value: object) -> RetrievalPolicy:
+        """Copy the deterministic candidate and threshold policy."""
+
+        top_k, candidate_k, minimum_similarity = _read_exact_slots(
+            value,
+            RetrievalPolicy,
+            ("top_k", "candidate_k", "minimum_cosine_similarity"),
+            "Vector search policy is invalid.",
+        )
+        try:
+            return RetrievalPolicy(
+                top_k=top_k,
+                candidate_k=candidate_k,
+                minimum_cosine_similarity=minimum_similarity,
+            )
+        except (AttributeError, DocumentError, TypeError, ValueError) as error:
+            raise DocumentValidationError(
+                "Vector search policy is invalid."
+            ) from error
+
+    @staticmethod
+    def _snapshot_search_limits(value: object) -> RetrievalLimits:
+        """Copy every retrieval resource ceiling before opening SQLite."""
+
+        limit_fields = _read_exact_slots(
+            value,
+            RetrievalLimits,
+            (
+                "max_query_code_points",
+                "max_documents",
+                "max_filter_values",
+                "max_scanned_records",
+                "max_scanned_payload_bytes",
+                "max_candidate_text_code_points",
+                "max_source_mappings",
+            ),
+            "Vector search limits are invalid.",
+        )
+        try:
+            return RetrievalLimits(
+                max_query_code_points=limit_fields[0],
+                max_documents=limit_fields[1],
+                max_filter_values=limit_fields[2],
+                max_scanned_records=limit_fields[3],
+                max_scanned_payload_bytes=limit_fields[4],
+                max_candidate_text_code_points=limit_fields[5],
+                max_source_mappings=limit_fields[6],
+            )
+        except (AttributeError, DocumentError, TypeError, ValueError) as error:
+            raise DocumentValidationError(
+                "Vector search limits are invalid."
+            ) from error
+
+    @staticmethod
+    def _matches_search_filter(
+        source: DocumentSource,
+        chunk: EmbeddedChunk,
+        metadata_filter: RetrievalMetadataFilter,
+    ) -> bool:
+        """Apply exact AND-across-fields retrieval metadata filters."""
+
+        return (
+            (not metadata_filter.file_ids or source.file_id in metadata_filter.file_ids)
+            and (
+                not metadata_filter.media_types
+                or source.media_type in metadata_filter.media_types
+            )
+            and (
+                not metadata_filter.chunk_kinds
+                or chunk.kind in metadata_filter.chunk_kinds
+            )
+            and (
+                not metadata_filter.page_numbers
+                or chunk.page_number in metadata_filter.page_numbers
+            )
+        )
+
+    @staticmethod
+    def _search_candidate_order_key(
+        candidate: StoredRetrievalCandidate,
+    ) -> tuple[float, str, int, str]:
+        """Return the portable cosine-descending candidate order."""
+
+        return (
+            -candidate.cosine_similarity,
+            candidate.source.link_id,
+            candidate.ordinal,
+            candidate.chunk_id,
+        )
+
+    @classmethod
+    def _retain_search_candidate(
+        cls,
+        candidates: list[StoredRetrievalCandidate],
+        candidate: StoredRetrievalCandidate,
+        limit: int,
+    ) -> int:
+        """Keep a fixed Top-K buffer and return its text-size delta."""
+
+        if len(candidates) < limit:
+            candidates.append(candidate)
+            return len(candidate.text)
+        worst_index = max(
+            range(len(candidates)),
+            key=lambda index: cls._search_candidate_order_key(
+                candidates[index]
+            ),
+        )
+        if cls._search_candidate_order_key(candidate) < (
+            cls._search_candidate_order_key(candidates[worst_index])
+        ):
+            replaced_text_size = len(candidates[worst_index].text)
+            candidates[worst_index] = candidate
+            return len(candidate.text) - replaced_text_size
+        return 0
+
+    @staticmethod
+    def _require_search_time(deadline: float) -> None:
+        """Stop Python-side decoding once the deterministic time budget ends."""
+
+        if monotonic() >= deadline:
+            raise DocumentContentLimitError(
+                "Vector search exceeded its time limit."
+            )
 
     def replace_document(
         self,
@@ -1950,24 +2811,45 @@ class SQLiteVectorStore:
     ) -> EmbeddingModelIdentity:
         """Reconstruct an identity so mutated frozen objects cannot pass."""
 
-        if not isinstance(identity, EmbeddingModelIdentity):
+        identity_fields = _read_exact_slots(
+            identity,
+            EmbeddingModelIdentity,
+            (
+                "provider",
+                "adapter_id",
+                "adapter_version",
+                "model_tag",
+                "model_digest",
+                "dimension",
+                "normalization",
+                "document_template_version",
+                "query_template_version",
+                "embedding_space_id",
+            ),
+            "model_identity must be EmbeddingModelIdentity.",
+        )
+        if (
+            not all(type(value) is str for value in identity_fields[:5])
+            or type(identity_fields[5]) is not int
+            or not all(type(value) is str for value in identity_fields[6:])
+        ):
             raise DocumentValidationError(
                 "model_identity must be EmbeddingModelIdentity."
             )
         try:
             return EmbeddingModelIdentity(
-                provider=identity.provider,
-                adapter_id=identity.adapter_id,
-                adapter_version=identity.adapter_version,
-                model_tag=identity.model_tag,
-                model_digest=identity.model_digest,
-                dimension=identity.dimension,
-                normalization=identity.normalization,
-                document_template_version=identity.document_template_version,
-                query_template_version=identity.query_template_version,
-                embedding_space_id=identity.embedding_space_id,
+                provider=identity_fields[0],
+                adapter_id=identity_fields[1],
+                adapter_version=identity_fields[2],
+                model_tag=identity_fields[3],
+                model_digest=identity_fields[4],
+                dimension=identity_fields[5],
+                normalization=identity_fields[6],
+                document_template_version=identity_fields[7],
+                query_template_version=identity_fields[8],
+                embedding_space_id=identity_fields[9],
             )
-        except (EmbeddingError, TypeError, ValueError) as error:
+        except (AttributeError, EmbeddingError, TypeError, ValueError) as error:
             raise DocumentValidationError(
                 "Embedding model identity is invalid."
             ) from error
@@ -2523,6 +3405,7 @@ class SQLiteVectorStore:
         """Create only a truly empty store, then validate its complete state."""
 
         self._validate_database_resource_limits(connection)
+        self._validate_database_encoding(connection)
         schema_objects = self._read_schema_objects(connection)
         version = self._read_pragma_integer(connection, "user_version")
         application_id = self._read_pragma_integer(
@@ -2542,6 +3425,7 @@ class SQLiteVectorStore:
         """Validate one reopened store plus both resource-boundary samples."""
 
         self._validate_database_resource_limits(connection)
+        self._validate_database_encoding(connection)
         self._validate_schema(connection)
         self._validate_database_identity(connection)
         self._validate_database_resource_limits(connection)
@@ -2564,6 +3448,19 @@ class SQLiteVectorStore:
                 "Vector-store schema metadata is invalid."
             )
         return cast(int, row[0])
+
+    @staticmethod
+    def _validate_database_encoding(connection: sqlite3.Connection) -> None:
+        """Require UTF-8 so fixed encoded-length checks have one meaning."""
+
+        row = connection.execute("PRAGMA encoding").fetchone()
+        if row is None or type(row[0]) is not str or row[0] != "UTF-8":
+            # SQLite fixes a database's text encoding when its schema is first
+            # created.  Adopting an empty UTF-16 file would make ASCII digest
+            # byte lengths differ from the v1 search integrity contract.
+            raise DocumentCorruptError(
+                "Vector-store database encoding is unsupported."
+            )
 
     @staticmethod
     def _read_schema_objects(
@@ -2955,6 +3852,50 @@ class SQLiteVectorStore:
         ).fetchone()
         if row is None:
             return None
+        metadata = self._decode_expected_document_metadata_row(
+            row,
+            scope,
+            link_id,
+            expected_derivation_fingerprint,
+            expected_embedding_space_id,
+        )
+        ordinal_rows = connection.execute(
+            """
+            SELECT ordinal
+            FROM vector_records
+            WHERE scope_kind = ? AND scope_id = ? AND link_id = ?
+            ORDER BY ordinal
+            LIMIT ?
+            """,
+            (
+                scope.kind,
+                scope.id,
+                link_id,
+                self._limits.max_records_per_document + 1,
+            ),
+        ).fetchall()
+        ordinals = tuple(row["ordinal"] for row in ordinal_rows)
+        if ordinals != tuple(range(metadata.record_count)):
+            raise DocumentCorruptError(
+                "Stored vector generation is incomplete."
+            )
+        return metadata
+
+    def _decode_expected_document_metadata_row(
+        self,
+        row: sqlite3.Row,
+        scope: AttachmentScope,
+        link_id: str,
+        expected_derivation_fingerprint: str,
+        expected_embedding_space_id: str,
+    ) -> _StoredDocumentMetadata:
+        """Validate one selected header without issuing another SQL query.
+
+        The split lets batch retrieval validate all headers and all records in
+        two streaming queries under one SQLite snapshot.  Existing point reads
+        call this same decoder and then retain their explicit ordinal check.
+        """
+
         derivation = row["derivation_fingerprint"]
         embedding_space_id = row["embedding_space_id"]
         if (
@@ -3054,26 +3995,6 @@ class SQLiteVectorStore:
             raise DocumentCorruptError(
                 "Stored vector lineage totals are invalid."
             )
-        ordinal_rows = connection.execute(
-            """
-            SELECT ordinal
-            FROM vector_records
-            WHERE scope_kind = ? AND scope_id = ? AND link_id = ?
-            ORDER BY ordinal
-            LIMIT ?
-            """,
-            (
-                scope.kind,
-                scope.id,
-                link_id,
-                self._limits.max_records_per_document + 1,
-            ),
-        ).fetchall()
-        ordinals = tuple(row["ordinal"] for row in ordinal_rows)
-        if ordinals != tuple(range(record_count)):
-            raise DocumentCorruptError(
-                "Stored vector generation is incomplete."
-            )
         return _StoredDocumentMetadata(
             chunked_document=header_document,
             policy=policy,
@@ -3082,14 +4003,17 @@ class SQLiteVectorStore:
             record_count=record_count,
             total_chunk_code_points=total_chunk_code_points,
             total_source_mappings=total_source_mappings,
+            lineage_json_bytes=len(lineage_bytes),
         )
 
     def _decode_record(
         self,
         row: sqlite3.Row,
         metadata: _StoredDocumentMetadata,
+        *,
+        maximum_mappings: int | None = None,
     ) -> EmbeddedChunk:
-        """Validate checksums, JSON, IDs, mappings, and one vector row."""
+        """Validate one row before exceeding an optional mapping allowance."""
 
         ordinal = row["ordinal"]
         chunk_id = row["chunk_id"]
@@ -3125,11 +4049,16 @@ class SQLiteVectorStore:
             field_name="chunk",
         )
         header = metadata.chunked_document
+        mapping_limit = header.limits.max_source_mappings_per_chunk
+        if maximum_mappings is not None:
+            if type(maximum_mappings) is not int or maximum_mappings < 0:
+                raise DocumentContentLimitError(
+                    "Vector record mapping allowance is invalid."
+                )
+            mapping_limit = min(mapping_limit, maximum_mappings)
         chunk = _parse_chunk(
             chunk_data,
-            maximum_mappings=(
-                header.limits.max_source_mappings_per_chunk
-            ),
+            maximum_mappings=mapping_limit,
             maximum_text_code_points=header.policy.max_chunk_code_points,
         )
         document_format = header.provenance.document_format

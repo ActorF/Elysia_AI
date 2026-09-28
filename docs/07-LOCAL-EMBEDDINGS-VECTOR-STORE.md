@@ -1,6 +1,6 @@
 # Local Embeddings and Vector Store：本地向量与 Scope-safe 索引
 
-本文记录 Elysia AI 在 `ChunkedDocument` 之后的独立 Python Embedding 与索引边界。当前实现使用固定的本地 Ollama 模型空间，把每个向量绑定到精确 Chunk Lineage，并由标准库 SQLite 按 Chat/Project Scope 存储。它仍未接入 `start.py`、`desktop_backend.py`、Desktop Protocol 或 React；存在本地索引 Library **不等于** 桌面 Chat 已能使用附件。
+本文记录 Elysia AI 在 `ChunkedDocument` 之后的独立 Python Embedding 与索引边界。当前实现使用固定的本地 Ollama 模型空间，把每个向量绑定到精确 Chunk Lineage，并由标准库 SQLite 按 Chat/Project Scope 存储。下游 [Retriever and Reranking](./08-RETRIEVER-RERANKING.md) 已作为独立 Python Library 完成，但整条链仍未接入 `start.py`、`desktop_backend.py`、Desktop Protocol 或 React；存在本地索引与检索 Library **不等于** 桌面 Chat 已能使用附件。
 
 ## 1. 完成范围与设计原则
 
@@ -28,14 +28,18 @@ AttachmentScope + ownership link_id
       exact Scope + link + derivation + embedding-space validation
       → atomic document generation replacement
 
-  ✗ no Top-K or cosine retrieval
-  ✗ no reranking or semantic deduplication
+  → downstream DocumentRetriever
+      explicit generation allowlist + exact metadata filters
+      → one-transaction bounded cosine Top-K
+      → exact deduplication + optional fail-closed reranker
+
+  ✗ this indexing stage performs no retrieval or reranking itself
   ✗ no Citation, Prompt composition, or grounded answer generation
   ✗ no production composition-root, Desktop Protocol, or Renderer wiring
   ✗ no background lifecycle, retry, progress, cancellation, or cleanup jobs
 ```
 
-`documents/indexing.py` 提供同步 Application Service 来组合已实现的 Processing、Embedding 和 Store 边界；它不会因为 Attachment 新增、更新或删除就自动运行。未来生产接线必须另行定义 Derived Relation、任务所有权、崩溃恢复、删除传播和用户可见状态，不能把当前同步 Library 冒充为完整生命周期。
+`documents/indexing.py` 提供同步 Application Service 来组合已实现的 Processing、Embedding 和 Store 边界；它不会因为 Attachment 新增、更新或删除就自动运行。`documents/retrieval.py` 已能在调用方提供准确 Scope 与 `ExpectedDocumentGeneration` Allowlist 后消费 Store，但不会替 Indexing Service 决定哪些 Source 可读。未来生产接线仍必须另行定义 Derived Relation、任务所有权、崩溃恢复、删除传播和用户可见状态，不能把当前同步 Library 冒充为完整生命周期。
 
 ## 3. 固定模型 Artifact 与运行时边界
 
@@ -117,7 +121,7 @@ Vector Bytes 不进入 Embedding ID，但受独立 Checksum 保护。这使“�
 
 ## 7. SQLite Store 与 Scope 安全
 
-`SQLiteVectorStore` 只使用 Python 标准库 `sqlite3`。每个 Database 在创建时永久绑定一个 `embedding_space_id`、完整 `EmbeddingModelIdentity`、Dimension 和 `float32-le-v1` Encoding；用另一模型、Manifest、Template 或维度打开会 Fail Closed，不会自动迁移或混用向量。
+`SQLiteVectorStore` 只使用 Python 标准库 `sqlite3`。每个 Database 必须使用 SQLite `UTF-8` Text Encoding，并在创建时永久绑定一个 `embedding_space_id`、完整 `EmbeddingModelIdentity`、Dimension 和 `float32-le-v1` Vector Encoding；预先存在的 UTF-16 Database 会 Fail Closed。用另一模型、Manifest、Template 或维度打开也不会自动迁移或混用向量。
 
 初次建库把全部 Allowlisted DDL、Model Identity Metadata、Application ID 和 User Version 放在同一 `BEGIN IMMEDIATE` 事务中；中途失败不会留下部分初始化 Schema。
 
@@ -131,7 +135,7 @@ Vector Bytes 不进入 Embedding ID，但受独立 Checksum 保护。这使“�
 | `rebuild` | 在单个事务中原子替换一个精确 Scope 的全部文档集合 |
 | `model_identity` / `limits` | 以只读快照公布该 Database 绑定的完整模型空间和当前资源上限 |
 
-Scope 过滤使用精确 `(scope_kind, scope_id)`，不执行 Prefix、Wildcard、跨 Project 共享或“当前 Chat 猜测”。Chat 与 Project 是两个不可互换的 Scope Kind；即使 ID Text 相同，也不是同一索引分区。当前 Store 不实现“Project Chat 可读 Project Sources”之类上层授权规则；未来 Retriever 必须由已验证的 Chat/Project Context 显式构造允许的精确 Scope 查询。
+Scope 过滤使用精确 `(scope_kind, scope_id)`，不执行 Prefix、Wildcard、跨 Project 共享或“当前 Chat 猜测”。Chat 与 Project 是两个不可互换的 Scope Kind；即使 ID Text 相同，也不是同一索引分区。当前 Store 不实现“Project Chat 可读 Project Sources”之类上层授权规则；已实现的 Retriever 要求调用方从经过验证的 Chat/Project Context 显式构造允许的准确 Scope 与 Generation Allowlist，不能自行扩大权限。
 
 Store 保存两类完整性证据：向量以固定长度 Little-endian Float32 BLOB 及 SHA-256 存储；Lineage 和 Chunk Metadata 使用固定 Shape 的 Canonical JSON 及独立 SHA-256。Lineage Checksum 还覆盖总记录数、总 Chunk Code Points 和总 Mapping 数。读取时会在有界查询、页级累计预算和验证时限内重新解析 Domain 对象，并核对这些总量、Ordinal、ID、Checksum、Vector Length/Finite Values 与完整 Lineage，而不是直接把 SQLite Row 当作安全对象。
 
@@ -158,6 +162,10 @@ Database Path 必须是由可信 Composition Root 提供的绝对路径。Store 
 | 单次 Scope Rebuild Documents | `1,000` |
 | 单次 Scope Rebuild Records | `100,000` |
 | Indexing Service 单次 Scope Rebuild Chunks | `100,000` |
+| 单次 Search Documents | `128` |
+| 单次 Search Records | `10,000` |
+| 单次 Search Results | `64` |
+| 单次 Search Header/Chunk/Vector Payload | `128 MiB` |
 | 每文档 Canonical Lineage JSON | `256 KiB` |
 | 每个 Chunk Canonical JSON | `2 MiB` |
 | 每文档全部 Metadata | `256 MiB` |
@@ -177,10 +185,12 @@ Embedding 的 16/2,000/32,000 预算在调用 Adapter 前检查；Indexing Servi
 | `documents/ollama_embedding.py` | 严格 Loopback Ollama HTTP Adapter、本地 Artifact 身份核对、有界 JSON 请求/响应与错误脱敏 |
 | `documents/vector_store.py` | Scope-safe SQLite Schema、Canonical Lineage/Chunk Serialization、Float32 BLOB、原子替换/重建、稳定失效与损坏拒绝 |
 | `documents/indexing.py` | 同步组合 Processing → Embedding → Store；不负责后台生命周期或桌面接线 |
+| `documents/retrieval.py` | 下游显式 Generation Allowlist、单事务 Cosine Top-K、Metadata Filter、Exact Dedup 与可选 Reranker；详见 Module 5 文档 |
 | `tests/test_document_embedding.py` | Identity/Template/Batch、恶意 Adapter、Lineage、单位向量、Float32 Checksum 与预算 |
 | `tests/test_ollama_embedding.py` | Loopback URL、Batch 前后 Full Manifest 身份、HTTP/JSON 边界、数量/维度和脱敏错误 |
 | `tests/test_document_vector_store.py` | Add/Update/List/Filter/Delete/Rebuild、Scope 隔离、事务回滚、Stale/Space 拒绝、Schema/JSON/BLOB/Checksum 损坏 |
 | `tests/test_document_indexing.py` | 组合顺序、精确 Scope/Link/Lineage 传递、替换/重建语义与稳定错误 |
+| `tests/test_document_retrieval.py` | Store Search 的完整 Generation 验证、Scope/Filter/阈值/Top-K、去重 Evidence、稳定 Tie 和可选 Reranker 边界 |
 
 单元测试不需要真实 Ollama 或模型：
 
@@ -194,13 +204,13 @@ npm run docs:check
 
 ## 11. 明确非目标与下一步
 
-当前模块不提供：
+Embedding/Vector Store 模块本身不提供：
 
-- Top-K、Cosine/Dot-product/ANN Retrieval 或 Query-time Scope Union；
-- Reranking、Semantic Deduplication、Diversity/Recency Scoring 或相似度阈值；
+- Retriever 的 Corpus 授权、Top-K Policy、Metadata Filter、Deduplication 或 Reranker 决策；下游独立 Library 已实现有界暴力 Cosine Top-K、Exact Deduplication 与可选 Fail-closed Reranker，但不是本索引模块的职责；
+- ANN、Hybrid/BM25 Search、Semantic Deduplication、Diversity/Recency Scoring 或 Query-time Scope Union；
 - Citation Selection、Prompt Composition、Prompt-injection Isolation 或 Grounded Answer Generation；
 - `start.py` / `desktop_backend.py` Composition-root Wiring、Desktop Protocol、React 文档预览/问答 UI；
 - Attachment Derived Relation 持久化、自动增量索引、删除传播、Job Queue、Progress、Cancel、Retry 或 Crash Recovery；
 - 模型下载、Ollama 进程启动、自动选模型或 Remote Embedding Fallback。
 
-下一模块是 Retrieval：在已验证的 Query Embedding 与精确 Chat/Project Scope 上实现有界 Top-K/余弦搜索，再对 Reranking、Deduplication 和 Citation Candidate 建立独立版本合同。在 Retrieval、Composition Root 和桌面协议完成前，本地 SQLite 里存在 Vector 仍不意味着 Project Sources 可以被 Chat 查询或引用。
+下游 Retrieval/Reranking Contract 已完成 Identity-bearing Query、显式 Generation Allowlist、有界单事务暴力 Cosine Top-K、精确 Filter、阈值、去重 Evidence 和可选不可信 Reranker，详见 [Retriever and Reranking](./08-RETRIEVER-RERANKING.md)。下一步是 Grounded Answer/Citation Contract；在 Composition Root、Project Sources 授权、生命周期和桌面协议/UI 完成前，本地 SQLite 里存在 Vector 或 Retriever 仍不意味着 Project Sources 可以被 Chat 查询或引用。

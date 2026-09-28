@@ -31,7 +31,7 @@
 - 📁 **Project 工作空间** — 支持 Instructions、Workspace 绑定、归档以及 Chat 的归属与移动
 - 🧠 **分范围记忆** — 为 Global、Project、Chat 提供独立边界，并保留长期记忆、摘要与人工确认流程
 - 🛡️ **严格桌面边界** — Renderer 沙箱、受限 Preload、来源校验与认证 NDJSON Protocol v1
-- 📎 **安全附件与文档处理基础** — Chat 与 Project 文件可选择、拖放、预览、移除和恢复；独立 Python Library 已能有界加载、保守清洗、确定性分块，并通过固定的本地 Ollama Embedding 空间建立 Scope-safe SQLite 索引；该链尚未接入生产 Composition Root、Retriever 或文件问答 UI
+- 📎 **安全附件与文档处理基础** — Chat 与 Project 文件可选择、拖放、预览、移除和恢复；独立 Python Library 已能有界加载、保守清洗、确定性分块、建立 Scope-safe SQLite 索引，并在显式授权的 Generation 上执行有界 Top-K、Filter、去重和可选 Reranking；该链尚未接入生产 Composition Root、回答/Citation 或文件问答 UI
 - 🎙️ **本地 Voice Session** — 显式采集经过本地 VAD 与 Faster-Whisper；Final Transcript 可编辑，发送后可在思考或朗读期间自然打断
 - 🔊 **本地回复朗读** — Python 按自然断句排队调用受管 GPT-SoVITS，Electron 在可信 Preload 中按序播放经过双重校验的 PCM WAV
 - 💾 **恢复优先** — 本地 JSON 存储、旧会话迁移、损坏隔离、原子写入以及导入/导出服务
@@ -48,7 +48,7 @@
 | Project | ✅ 可用 | 元数据、Instructions、Workspace 绑定和 Chat 归属 |
 | Memory Core | ✅ 可用 | Global / Project / Chat Scope、检索、摘要与长期记忆基础 |
 | Settings | ✅ 可用 | Chat/Ollama/Memory/文件/STT、主题，以及自动朗读、语速、音量、Voice Profile、字幕、人工 Transcript 审核和自动续听 |
-| Attachments / Sources | ✅ 存储与独立索引基础可用 | Scope-bound 文件存储、验证读取、加载/Cleaning/Chunking，以及固定模型空间的本地 Embedding 与 SQLite 索引库；尚未接入桌面 Chat 或 RAG |
+| Attachments / Sources | ✅ 存储与独立处理基础可用 | Scope-bound 文件存储、验证读取、加载/Cleaning/Chunking、固定模型空间的 Embedding/SQLite 索引，以及显式 Generation Allowlist 下的检索库；尚未接入桌面 Chat 或完整 RAG |
 | Audio Devices | ✅ 可用 | 麦克风/扬声器选择、Windows 权限、输入电平与输出音调测试 |
 | 单句录音与本地 VAD | ✅ 可用 | 显式启动、16 kHz mono `s16le`、临时处理；不会自动生成 Chat Turn |
 | STT / Faster-Whisper | ✅ 基础可用 | Electron/React 与本地 Final Transcript 已接通；需另装可选依赖并放置本地模型 |
@@ -56,7 +56,7 @@
 | GPT-SoVITS / TTS | ✅ 基础可用 | Chat 串流分句、受管本机 Worker、有界队列、私有 fd3 传输与 Electron 播放已接通；需本机 Runtime、Profile、权重和参考音频 |
 | Barge-in / 语音打断 | ✅ 可用 | 仅在显式发送的 Voice Turn 回复期间启用；要求经过验证的 WebRTC 回声消除与持续语音确认，并精确取消该 Turn |
 | 自动续听 | ✅ 可用 | 可见开关可在正常回复安全结束后再次监听；默认关闭，Final Transcript 不会自动发送 |
-| 文件解析与本地 RAG | 🚧 Embedding/索引 Library 已完成 | 独立 Python Library 已有版本化 Chunk Lineage、固定本地 Embedding 空间和 Scope-safe SQLite 索引；Top-K/余弦检索、Reranking、引用回答、生产 Composition Root 与桌面问答入口仍在计划中 |
+| 文件解析与本地 RAG | 🚧 Retriever Library 已完成 | 独立 Python Library 已有版本化 Chunk Lineage、固定本地 Embedding 空间、Scope-safe SQLite 索引，以及有界余弦 Top-K、Metadata Filter、Exact Deduplication 和可选 Fail-closed Reranker Contract；Grounded Answer/Citation、生产 Composition Root 与桌面问答入口仍在计划中 |
 | Work Agent 与工具权限 | ⏳ 计划中 | 尚无工具执行、桌面控制、Internet 或 Vision 工作流 |
 | Live2D / 桌宠 | ⏳ 计划中 | 当前只有桌面应用 UI 与占位角色区域 |
 | 独立安装与更新 | ⏳ 计划中 | 当前打包结果不内置 Python、Ollama 或模型，也未签名 |
@@ -88,6 +88,7 @@ flowchart LR
     K --> V[Exact Lineage + Mapping Validation]
     V --> X[Pinned Local Embedding Space]
     X --> Z[(Scope-safe SQLite Index)]
+    Z --> Y[Bounded Retriever + Optional Reranker]
 ```
 
 - **Python 是业务事实来源**：Chat、Project、Memory、附件状态和持久化由 Python Domain/Service/Repository 管理。
@@ -95,10 +96,10 @@ flowchart LR
 - **React 保持沙箱化**：`contextIsolation: true`、`nodeIntegration: false`、`sandbox: true`；Renderer 不能直接读取 Node、Python、Chat、Memory 或本地源路径。
 - **协议双端校验**：TypeScript 与 Python 使用同一组 JSON Schema/fixture 约束，连接前完成版本、能力与随机会话令牌握手。
 - **本地数据可恢复**：关键 JSON 使用严格 Schema、revision、原子替换和损坏隔离；生成取消不会保存残缺的正式回复。
-- **文档派生保持可验证**：独立 Python Pipeline 从无路径 `LoadedDocument` 生成版本化 Chunk，复核 Piece-table、Fingerprint/Lineage 与 Source Mapping，再把精确 Chunk Lineage 绑定到固定本地 Embedding 空间和 Scope-safe SQLite 索引。这些能力仍是未接入桌面 Chat 的独立 Library，不包含检索或回答生成。
+- **文档派生与检索保持可验证**：独立 Python Pipeline 从无路径 `LoadedDocument` 生成版本化 Chunk，复核 Piece-table、Fingerprint/Lineage 与 Source Mapping，再把精确 Chunk Lineage 绑定到固定本地 Embedding 空间和 Scope-safe SQLite 索引。下游 Retriever 只搜索调用方显式授权的准确 Generation，在单事务中执行有界余弦 Top-K、精确 Filter/去重与可选 Fail-closed Reranking。这些能力仍是未接入桌面 Chat 的独立 Library，不包含 Grounded Answer 或 Citation Rendering。
 - **副作用必须显式**：打开 Voice 页面不会请求麦克风；首次采集必须由用户主动开始。用户发送审核后的 Transcript 后，程序才可在该回复期间监听打断；只有用户明确开启可见的自动续听开关，正常完成的回复才会开始下一次有界采集，而且识别结果仍不会自动发送。选择附件不会自动读取内容，Project 的 Workspace 绑定也不会自动执行工具。
 
-更多实现细节见 [Desktop 开发指南](./desktop/README.md)、[Protocol v1](./desktop_protocol/README.md)、[Document Cleaning and Chunking](./docs/06-DOCUMENT-CLEANING-CHUNKING.md)、[Local Embeddings and Vector Store](./docs/07-LOCAL-EMBEDDINGS-VECTOR-STORE.md) 与 [Electron Shell 决策记录](./docs/decisions/0001-desktop-shell.md)。
+更多实现细节见 [Desktop 开发指南](./desktop/README.md)、[Protocol v1](./desktop_protocol/README.md)、[Document Cleaning and Chunking](./docs/06-DOCUMENT-CLEANING-CHUNKING.md)、[Local Embeddings and Vector Store](./docs/07-LOCAL-EMBEDDINGS-VECTOR-STORE.md)、[Retriever and Reranking](./docs/08-RETRIEVER-RERANKING.md) 与 [Electron Shell 决策记录](./docs/decisions/0001-desktop-shell.md)。
 
 ---
 
@@ -249,7 +250,7 @@ DEBUG=False
 - Project 可保存名称、Instructions、可选模型、Workspace 绑定和归档状态。
 - Chat 可以在 Project 与未分配区域之间移动。
 - 文件选择与拖放路径只在可信 Preload/Electron 边界处理；React 只看到 opaque ID、安全文件名、媒体类型和大小。
-- Sources/Attachments 负责本地安全存储与生命周期；独立 Python Document Library 只能通过 Scope-bound 验证读取生成带来源映射的 Chunk，再以版本化本地 Embedding 和精确 Project/Chat 过滤的 SQLite Store 建立索引。该 Library 尚未接入生产 Composition Root、Retriever、Citation 或 Renderer 文件问答。
+- Sources/Attachments 负责本地安全存储与生命周期；独立 Python Document Library 只能通过 Scope-bound 验证读取生成带来源映射的 Chunk，再以版本化本地 Embedding 和精确 Project/Chat 过滤的 SQLite Store 建立索引。Retriever 只在调用方提供准确 Scope 与 `ExpectedDocumentGeneration` Allowlist 后执行有界搜索，并保留进入原始 Candidate Pool 的完整 Evidence；该 Library 尚未接入生产 Composition Root、Grounded Answer/Citation 或 Renderer 文件问答。
 
 ### 🧠 Memory 与恢复
 
@@ -429,7 +430,7 @@ cd /d D:\Elysia_AI\desktop
 
 ### 为什么 Project Sources 不能回答文件内容？
 
-目前桌面 UI 只保存文件并显示安全元数据。独立 Python Library 已能从验证读取流提取有界原始结构，完成 Cleaning/Chunking，调用严格 Loopback Ollama Adapter 生成版本化 Embedding，并写入 Scope-safe SQLite 索引。但这条链尚未接入生产 Composition Root，也没有 Top-K/余弦检索、Reranking、引用回答及其 Desktop Protocol/UI，所以 Chat 仍不能使用这些内容回答问题。
+目前桌面 UI 只保存文件并显示安全元数据。独立 Python Library 已能从验证读取流提取有界原始结构，完成 Cleaning/Chunking，调用严格 Loopback Ollama Adapter 生成版本化 Embedding，写入 Scope-safe SQLite 索引，并在显式 Generation Allowlist 上执行有界余弦 Top-K、Filter、Exact Deduplication 和可选 Fail-closed Reranking。但这条链尚未接入生产 Composition Root，也没有 Grounded Answer/Citation 及其 Desktop Protocol/UI，所以 Chat 仍不能使用这些内容回答问题。
 
 ---
 

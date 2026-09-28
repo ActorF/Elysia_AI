@@ -1,6 +1,6 @@
 # Model & Voice Asset Notice / 模型与语音素材说明
 
-> Last reviewed / 最近核对：2026-09-26
+> Last reviewed / 最近核对：2026-09-28
 
 ## Purpose and Status / 用途与性质
 
@@ -84,6 +84,10 @@ ollama pull qwen3-embedding:0.6b
 This model is not required for basic text Chat. Neither the application nor its tests trigger `ollama pull`; model blobs and manifests remain in Ollama-managed, ignored local storage and must stay out of Git, releases, installers, containers, and diagnostic archives.
 
 基础文字 Chat 不需要该模型。应用与测试都不会触发 `ollama pull`；模型 Blob 与 Manifest 继续保留在 Ollama 管理、被 Git 忽略的本地存储中，不得进入 Git、Release、安装包、Container 或诊断归档。
+
+The document-retrieval library defines an optional reranker protocol, but this repository currently bundles, downloads, or selects no reranker model. Enabling a future implementation requires a separate identity, license, provenance, local-storage, and distribution review; it must not reuse this Qwen embedding entry as authorization for another artifact.
+
+文档检索库定义了可选的 Reranker Protocol，但本仓库目前没有打包、下载或选定任何 Reranker 模型。未来启用具体实现前，必须另行审查其身份、许可证、来源、本地存储与分发边界；不得把本节 Qwen Embedding 的记录视为其他 Artifact 的授权。
 
 ---
 
