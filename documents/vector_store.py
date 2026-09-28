@@ -257,6 +257,7 @@ _MAX_EXPECTED_INDEX_COLUMNS: Final = max(
 )
 _DATABASE_SIDECAR_SUFFIXES: Final = ("", "-journal", "-wal", "-shm")
 _SQLITE_PROGRESS_INSTRUCTION_INTERVAL: Final = 1_000
+_MAX_STORED_JSON_NESTING: Final = 128
 
 
 class VectorStoreStaleError(DocumentError):
@@ -413,6 +414,39 @@ def _strict_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
     return result
 
 
+def _require_bounded_json_nesting(value: str, field_name: str) -> None:
+    """Reject excessive container depth before the platform JSON decoder.
+
+    CPython's JSON implementations have differed in whether extremely deep
+    arrays fail with ``RecursionError`` or decode successfully.  A small
+    string-aware pre-scan gives persisted metadata one portable allocation
+    boundary while leaving complete syntax validation to ``json.loads``.
+    """
+
+    depth = 0
+    in_string = False
+    escaped = False
+    for character in value:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            continue
+        if character == '"':
+            in_string = True
+        elif character in "[{":
+            depth += 1
+            if depth > _MAX_STORED_JSON_NESTING:
+                raise DocumentCorruptError(
+                    f"Stored {field_name} metadata is invalid."
+                )
+        elif character in "]}" and depth > 0:
+            depth -= 1
+
+
 def _decode_json_object(
     value: object,
     *,
@@ -435,6 +469,7 @@ def _decode_json_object(
         raise DocumentCorruptError(
             f"Stored {field_name} metadata exceeds its limit."
         )
+    _require_bounded_json_nesting(value, field_name)
     try:
         decoded = json.loads(value, object_pairs_hook=_strict_object)
     except (

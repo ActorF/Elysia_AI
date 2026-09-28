@@ -162,6 +162,7 @@ Database Path 必须是由可信 Composition Root 提供的绝对路径。Store 
 | 每个 Chunk Canonical JSON | `2 MiB` |
 | 每文档全部 Metadata | `256 MiB` |
 | 每文档全部 Vector Bytes | `64 MiB` |
+| 持久化 Canonical JSON Container Nesting | `128` 层 |
 | Database + Journal/WAL/SHM 物理总字节 | `2 GiB` |
 | SQLite 逻辑 Page Count | `524,288` |
 | Schema/Integrity Validation | Store Timeout，默认 `5` 秒 |
