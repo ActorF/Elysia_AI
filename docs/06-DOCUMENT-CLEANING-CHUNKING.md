@@ -1,6 +1,6 @@
 # Document Cleaning and Chunking：保守清洗与可重复分块
 
-本文记录 Elysia AI 在 `LoadedDocument` 之后、Embedding 之前的纯 Python 派生边界。当前实现把可信 Loader 的有界原始结构转换为带完整来源映射的 `CleanedDocument` 与 `ChunkedDocument`；它不会读取文件、写入索引、调用模型、生成 Embedding，也尚未接入生产 Composition Root、Desktop Protocol 或 React 文件问答入口。
+本文记录 Elysia AI 在 `LoadedDocument` 之后、Embedding 之前的纯 Python 派生边界。当前实现把可信 Loader 的有界原始结构转换为带完整来源映射的 `CleanedDocument` 与 `ChunkedDocument`；这一纯派生层自身不会读取文件、写入索引、调用模型或生成 Embedding。下游 [Local Embeddings and Vector Store](./07-LOCAL-EMBEDDINGS-VECTOR-STORE.md) 已作为独立 Library 完成，但整条文档链仍未接入生产 Composition Root、Desktop Protocol 或 React 文件问答入口。
 
 ## 1. 完成范围与设计原则
 
@@ -28,15 +28,18 @@ Scope + ownership link_id
   → ChunkedDocument
       deterministic IDs + Page/Block/Cell/Offset mappings
 
-  ✗ no derived-file persistence
-  ✗ no Embedding or Vector Store
+  → downstream DocumentEmbeddingService + SQLiteVectorStore
+      pinned local embedding space + exact Scope/Link generations
+
+  ✗ this pure stage performs no model call or index write
+  ✗ no Attachment Derived Relation or automatic lifecycle jobs
   ✗ no Retriever, Citation, Prompt injection defense, or Chat wiring
   ✗ no Desktop Protocol or Renderer endpoint
 ```
 
 `DocumentProcessingService` 默认组合 `ConservativeDocumentCleaner` 与 `StructureAwareDocumentChunker`，也允许注入实现 `DocumentSourceLoader`、`DocumentCleaner`、`DocumentChunker` Protocol 的测试或替代 Adapter。Loader 仍是唯一读取 Attachment Bytes 的组件；Cleaner 和 Chunker 只接收重新构造且彼此隔离的领域快照，不接收真实路径、文件句柄或 Parser 对象。
 
-Pipeline 不信任注入 Adapter 的返回值。原始请求、Loader 权威结果、Cleaner 输入、Cleaned 权威结果、Chunker 输入与最终发布结果分别使用递归重建的快照；即使 Adapter 绕过 Frozen Dataclass 修改自己持有的嵌套 Scope、Source、Table、Policy、Limits、Span 或 Chunk，也不能反向改写已经验证的 Lineage。Pipeline 还会独立复核请求的 Scope/Ownership、Loader Result 类型、Cleaner Producer/Policy/Limits、Piece-table 的逐 Block 完整分区、Cleaned Fingerprints、Chunk Lineage/Policy、Mapping 顺序与 Bounds、每段 Text Mapping 的准确来源文字，以及全部 Table Chunk 能否完整重建 Canonical JSONL Projection。验证成功后才发布与 Adapter 对象图隔离的 `ChunkedDocument`。当前结果只存在于调用者内存中；Attachment Manifest 的 Derived Relation、索引写入、删除传播和重新索引任务仍由后续模块实现。
+Pipeline 不信任注入 Adapter 的返回值。原始请求、Loader 权威结果、Cleaner 输入、Cleaned 权威结果、Chunker 输入与最终发布结果分别使用递归重建的快照；即使 Adapter 绕过 Frozen Dataclass 修改自己持有的嵌套 Scope、Source、Table、Policy、Limits、Span 或 Chunk，也不能反向改写已经验证的 Lineage。Pipeline 还会独立复核请求的 Scope/Ownership、Loader Result 类型、Cleaner Producer/Policy/Limits、Piece-table 的逐 Block 完整分区、Cleaned Fingerprints、Chunk Lineage/Policy、Mapping 顺序与 Bounds、每段 Text Mapping 的准确来源文字，以及全部 Table Chunk 能否完整重建 Canonical JSONL Projection。验证成功后才发布与 Adapter 对象图隔离的 `ChunkedDocument`。这一 Service 仍只返回内存结果；独立 `DocumentIndexingService` 已可继续生成 Embedding 并把完整 Lineage 写入 Scope-safe SQLite Store。Attachment Manifest 的 Derived Relation、删除传播、自动重新索引和任务崩溃恢复仍未实现。
 
 ## 3. 坐标与来源语义
 
@@ -149,14 +152,14 @@ Projection 规则固定为：
 
 每个 `chunk_id` 再绑定 Derivation Fingerprint、Chunk Ordinal/Kind/Text/Page 与完整 Source Mappings，格式为 `chunk_<64 lowercase hex>`。同一输入与配置会逐字得到相同 Chunk 和 ID；Source Scope 或 Ownership Link 不同，即使 Bytes 相同，也不会共享身份。
 
-未来持久化层必须把以下任一变化视为缓存失效并从可信 Original 重新 Load/Clean/Chunk，而不是沿用旧 ID：
+任何持久化消费者都必须把以下任一变化视为缓存失效并从可信 Original 重新 Load/Clean/Chunk，而不是沿用旧 ID：
 
 - Loaded Schema、Loader ID/Version、Parser 行为或 Load Policy 改变；
 - Cleaner ID/Version、Cleaning Policy 或 Cleaner 输出改变；
 - Chunked Schema、Chunker ID/Version、Chunking Policy、Table Projection 或 Processing Limits 改变；
 - Source Scope/Link/File Identity、Metadata、Title/Page 或文档内容改变。
 
-当前模块只定义可验证的派生身份，不写 Manifest Derived Relation，也不执行自动 Reindex/Delete Propagation。后续 Vector Store 必须保存完整 Lineage，并以 `derivation_fingerprint` 不匹配作为拒绝旧索引的条件。
+当前 Cleaning/Chunking 模块只定义可验证的派生身份，不写 Manifest Derived Relation，也不执行自动 Reindex/Delete Propagation。已实现的 `SQLiteVectorStore` 保存完整 Lineage，并在读取时以 `derivation_fingerprint` 不匹配作为稳定 Stale Error；它不会自动决定何时重建。
 
 ## 7. 资源预算
 
@@ -210,15 +213,15 @@ cd desktop
 npm run docs:check
 ```
 
-## 10. 明确非目标与下一步
+## 10. 明确非目标与下游边界
 
 当前模块不提供：
 
 - 模糊 Boilerplate Detection、语言改写、拼写修复、OCR 或视觉 Layout Reconstruction；
 - Tokenizer-aware、Embedding-aware、Overlap 或 Query-specific Chunking；
 - Derived Chunk 的磁盘持久化、Attachment Manifest 登记、Job Progress、Cancel 或 Crash Recovery；
-- Embedding Model、Vector Store、Scope-filtered Retrieval、Reranking、Citation 或 Grounded Answer；
+- Embedding Model 或 Vector Store 不是本纯派生模块的职责；二者已在下游独立 Library 中实现，但 Scope-filtered Retrieval、Reranking、Citation 与 Grounded Answer 仍未实现；
 - Prompt Injection Detection/Isolation；
 - `start.py` / `desktop_backend.py` 生产接线、Desktop Protocol、React Preview 或“向文件提问”UI。
 
-下一步是 Local Embeddings and Vector Store：固定本地 Embedding Model/Version/Dimension，把 Scope 与完整 Chunk Lineage 作为强制 Metadata，并实现新增、更新、过滤、删除与可验证重建。在这一步完成之前，`ChunkedDocument` 只是独立 Python Library 的可重复中间结果，不能声称 Project Sources 已可检索或可回答。
+Local Embeddings and Vector Store 已完成固定 Model/Space Identity、精确 Chunk Lineage、Scope 过滤、原子替换/重建与失效拒绝，详见 [Module 4 文档](./07-LOCAL-EMBEDDINGS-VECTOR-STORE.md)。下一步是 Retrieval/Reranking/Citation Contract 以及之后的生产接线。在这些边界完成前，不能声称 Project Sources 已可被桌面 Chat 检索、引用或用于回答。

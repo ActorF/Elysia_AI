@@ -31,7 +31,7 @@
 - 📁 **Project Workspaces** — Store Instructions, bind a Workspace, archive Projects, and manage Chat assignment between Projects and the unassigned area
 - 🧠 **Scoped Memory** — Keeps Global, Project, and Chat boundaries distinct, with long-term memory, summaries, and confirmation flows
 - 🛡️ **Strict Desktop Boundary** — Sandboxed Renderer, narrow Preload API, origin checks, and authenticated NDJSON Protocol v1
-- 📎 **Safe Attachments and Document-Processing Foundation** — Select, drop, preview, remove, and recover Chat or Project files; a standalone Python library can load bounded TXT, Markdown, CSV, common source text, PDF, and DOCX structure through verified reads, then apply conservative cleaning and deterministic provenance-mapped chunking, but it is not yet wired into the production composition root, indexing, or file-question UI
+- 📎 **Safe Attachments and Document-Processing Foundation** — Select, drop, preview, remove, and recover Chat or Project files; a standalone Python library can perform bounded loading, conservative cleaning, deterministic chunking, and Scope-safe SQLite indexing through a pinned local Ollama embedding space, but that path is not yet wired into the production composition root, retrieval, or file-question UI
 - 🎙️ **Local Voice Session** — Explicit capture runs through local VAD and Faster-Whisper; reviewed final text can be sent, then naturally interrupt the reply while it thinks or speaks
 - 🔊 **Local Reply Playback** — Python queues naturally segmented replies through managed GPT-SoVITS, while trusted Electron Preload plays doubly validated PCM WAV in order
 - 💾 **Recovery First** — Local JSON storage, legacy migration, quarantine, atomic writes, and import/export services
@@ -48,7 +48,7 @@
 | Project | ✅ Available | Metadata, Instructions, Workspace binding, and Chat ownership |
 | Memory Core | ✅ Available | Global / Project / Chat scopes, retrieval, summaries, and long-term memory foundation |
 | Settings | ✅ Available | Chat/Ollama/Memory/file/STT settings, theme, and automatic read-aloud, rate, volume, Voice Profile, captions, manual transcript review, and automatic re-listening |
-| Attachments / Sources | ✅ Storage and document-processing foundation | Scope-bound storage, versioned metadata, verified reads, raw-structure loading, conservative Cleaning, and repeatable Chunking; no Embedding or RAG yet |
+| Attachments / Sources | ✅ Storage and standalone indexing foundation | Scope-bound file storage, verified reads, loading/Cleaning/Chunking, and a local Embedding plus SQLite indexing library with a pinned model space; not yet connected to desktop Chat or RAG |
 | Audio Devices | ✅ Available | Microphone/speaker selection, Windows permission state, input level, and output tone tests |
 | One-utterance recording and local VAD | ✅ Available | Explicit start, 16 kHz mono `s16le`, transient processing; no automatic Chat Turn |
 | STT / Faster-Whisper | ✅ Foundation available | Electron/React and local final transcripts are connected; optional dependencies and a local model must be installed separately |
@@ -56,7 +56,7 @@
 | GPT-SoVITS / TTS | ✅ Foundation available | Chat segmentation, a managed local worker, bounded queue, private fd3 transport, and Electron playback are connected; local runtime, Profile, weights, and reference audio are required |
 | Barge-in / speech interruption | ✅ Available | Enabled only for the reply to an explicitly sent Voice turn; requires verified WebRTC echo cancellation and sustained-speech confirmation, then cancels that exact turn |
 | Automatic re-listening | ✅ Available | A visible switch can listen again after a safely completed reply; it is off by default and never auto-sends a final transcript |
-| File parsing and local RAG | 🚧 Loading/cleaning/chunking library complete | The standalone Python library can produce versioned, scope-aware chunks with Page/Block/Cell/Offset mappings; production composition-root wiring, Embeddings, a Vector Store, a Retriever, cited answers, and a desktop question surface remain planned |
+| File parsing and local RAG | 🚧 Embedding/indexing library complete | The standalone Python library now has versioned chunk lineage, a pinned local embedding space, and a Scope-safe SQLite index; Top-K/cosine retrieval, reranking, cited answers, production composition-root wiring, and a desktop question surface remain planned |
 | Work Agent and tool permissions | ⏳ Planned | No tool execution, desktop control, Internet, or Vision workflow |
 | Live2D / desktop pet | ⏳ Planned | The application currently has UI and a character placeholder only |
 | Standalone installation and updates | ⏳ Planned | Current packages do not bundle Python, Ollama, or models and are unsigned |
@@ -86,6 +86,8 @@ flowchart LR
     L --> N[Conservative cleaner]
     N --> K[Versioned chunks + provenance]
     K --> V[Exact lineage + mapping validation]
+    V --> X[Pinned local embedding space]
+    X --> Z[(Scope-safe SQLite index)]
 ```
 
 - **Python is the application source of truth**: Chat, Project, Memory, attachment state, and persistence are managed through Python domain/service/repository boundaries.
@@ -93,10 +95,10 @@ flowchart LR
 - **React remains sandboxed**: `contextIsolation: true`, `nodeIntegration: false`, and `sandbox: true`; the Renderer cannot directly read Node, Python, Chat, Memory, or native source paths.
 - **Both sides validate the protocol**: TypeScript and Python consume matching JSON Schema/fixture constraints and negotiate the version, capabilities, and a random session token before use.
 - **Local data is recoverable**: important JSON uses strict schemas, revisions, atomic replacement, and corruption quarantine; cancellation does not save an incomplete formal reply.
-- **Document derivation remains verifiable**: a standalone Python pipeline conservatively cleans path-free `LoadedDocument` values, produces versioned chunks, then independently verifies the piece table, fingerprints/lineage, and source mappings; offsets refer only to loaded Blocks/Pages/Cells, and the results are not yet persisted or connected to RAG.
+- **Document derivation remains verifiable**: a standalone Python pipeline produces versioned chunks from path-free `LoadedDocument` values, verifies their piece table, fingerprints/lineage, and source mappings, then binds exact chunk lineage to a pinned local embedding space and a Scope-safe SQLite index. These capabilities remain a standalone library not connected to desktop Chat and do not include retrieval or answer generation.
 - **Side effects require an explicit action**: opening Voice does not request microphone access, and the user must start the first capture. Only after the user sends a reviewed transcript may the app monitor for an interruption during that reply. A normally completed reply starts another bounded capture only when the user explicitly enables the visible automatic re-listening control, and recognized text is still never sent automatically. Selecting an attachment does not parse it, and binding a Project Workspace does not execute tools.
 
-See the [Desktop development guide](./desktop/README.md), [Protocol v1](./desktop_protocol/README.md), [Document Cleaning and Chunking](./docs/06-DOCUMENT-CLEANING-CHUNKING.md), and [Electron shell decision](./docs/decisions/0001-desktop-shell.md) for implementation details.
+See the [Desktop development guide](./desktop/README.md), [Protocol v1](./desktop_protocol/README.md), [Document Cleaning and Chunking](./docs/06-DOCUMENT-CLEANING-CHUNKING.md), [Local Embeddings and Vector Store](./docs/07-LOCAL-EMBEDDINGS-VECTOR-STORE.md), and [Electron shell decision](./docs/decisions/0001-desktop-shell.md) for implementation details.
 
 ---
 
@@ -176,6 +178,12 @@ ollama pull qwen3.5:9b
 ```
 
 Before starting the desktop, make sure Ollama is running and `http://localhost:11434` is reachable. Ollama manages its model weights locally; they are not supplied by this repository.
+
+Optional: install the pinned embedding model only when developing or testing the standalone document embedding/indexing library. Basic text Chat does not require it, and the application never downloads it automatically:
+
+```bat
+ollama pull qwen3-embedding:0.6b
+```
 
 ### 4. Install Desktop Dependencies
 
@@ -266,7 +274,7 @@ Never commit future secrets, tokens, private prompts, or private configuration.
 - A Project can store a name, Instructions, an optional model, a Workspace binding, and archive state.
 - Chats can move between Projects and the unassigned area.
 - Filesystem paths from native file selection and drag-and-drop remain inside the trusted Preload/Electron boundary. React receives only opaque IDs, safe filenames, media types, and sizes.
-- Sources/Attachments provide local storage and lifecycle handling. A standalone Python Document library can consume only Scope-bound verified reads, load bounded raw structure, and apply pure, versioned conservative cleaning and provenance-mapped chunking. It is not connected to the production composition root, Embeddings, a Vector Store, a Retriever, Citations, or a Renderer file-question flow.
+- Sources/Attachments provide local storage and lifecycle handling. A standalone Python Document library can consume only Scope-bound verified reads, produce provenance-mapped chunks, then index them with versioned local Embeddings and a SQLite store that applies exact Project/Chat filters. It is not connected to the production composition root, a Retriever, Citations, or a Renderer file-question flow.
 
 ### 🧠 Memory and Recovery
 
@@ -415,7 +423,7 @@ Elysia_AI/
 │   ├── src/            # React Renderer
 │   └── tests/          # Protocol and real Electron UI tests
 ├── desktop_protocol/   # Shared schema, fixtures, and Python/TypeScript validators
-├── documents/          # Path-private loaders, conservative cleaner, and deterministic chunker
+├── documents/          # Path-private derivation, local embeddings, and Scope-safe SQLite indexing
 ├── memory/             # Profile, summaries, long-term memory, and scopes
 ├── models/             # Python namespace; local model weight directories are ignored
 ├── projects/           # Project domain, repositories, and Chat relationship service
@@ -481,7 +489,7 @@ that waiver is not a claim that those observations passed.
 
 ### Why can Project Sources not answer from file contents?
 
-The desktop currently stores files and displays only safe metadata. A standalone Python library can now extract bounded raw structure from TXT, Markdown, CSV, common source text, PDF, and DOCX through verified reads, then apply conservative Cleaning and repeatable Chunking. That pipeline is not wired into the production composition root, and Embeddings, a Vector Store, retrieval, cited answers, and their Desktop Protocol/UI are still absent, so Chat still cannot use that content to answer questions.
+The desktop currently stores files and displays only safe metadata. A standalone Python library can now extract bounded raw structure through verified reads, perform Cleaning/Chunking, call a strict loopback Ollama adapter for versioned Embeddings, and write a Scope-safe SQLite index. That path is not wired into the production composition root, and Top-K/cosine retrieval, reranking, cited answers, and their Desktop Protocol/UI are still absent, so Chat still cannot use that content to answer questions.
 
 ---
 

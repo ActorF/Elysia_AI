@@ -1,6 +1,6 @@
 # Model & Voice Asset Notice / 模型与语音素材说明
 
-> Last reviewed / 最近核对：2026-09-23
+> Last reviewed / 最近核对：2026-09-26
 
 ## Purpose and Status / 用途与性质
 
@@ -22,7 +22,7 @@ This document records the known provenance, local handling rules, and current au
 | --- | --- | --- |
 | `models/weights/gpt-sovits/elysia-v2/` | Ignored and currently outside the Git index / 已忽略且当前不在 Git Index 中 | Local-only GPT-SoVITS weights and reference audio; every package/release must independently verify exclusion / 本地 GPT-SoVITS 权重与参考音频；每次打包和发布都须独立确认排除 |
 | `models/cache/GPT-SoVITS-v2-240821/` | Ignored local external runtime / 被忽略的本地外部 Runtime | Extracted upstream Windows evaluation package and local inference YAML; not Elysia AI source and never part of Git, releases, installers, or containers / 解压后的上游 Windows 评估包和本机推理 YAML；不属于 Elysia AI 源码，也不进入 Git、Release、安装包或容器 |
-| `models/blobs/` and `models/manifests/` | Ignored and currently outside the Git index / 已忽略且当前不在 Git Index 中 | Ollama-managed local models; each upstream model has its own terms / Ollama 管理的本地模型，各自遵循上游条款 |
+| `models/blobs/` and `models/manifests/` | Ignored and currently outside the Git index / 已忽略且当前不在 Git Index 中 | Ollama-managed local models; the document-index library pins `qwen3-embedding:0.6b`, but the repository does not download or redistribute it, and each upstream model has its own terms / Ollama 管理的本地模型；文档索引库固定 `qwen3-embedding:0.6b`，但本仓库不下载或再分发它，各上游模型仍各自遵循其条款 |
 | `models/cache/faster-whisper/` and `models/weights/faster-whisper/` | Ignored and currently outside the Git index / 已忽略且当前不在 Git Index 中 | Local speech-recognition models only; the adapter requires an explicit complete directory and never bundles or implicitly downloads weights / 仅存本地的语音识别模型；Adapter 要求明确、完整的目录，不打包也不隐式下载权重 |
 | `data/characters/elysia_character_reference_zh.md` | Tracked / 已跟踪 | Character background and quotations requiring separate source review / 需要单独审查来源的角色背景与语录 |
 | `desktop/public/elysia-icon.png` and `desktop/assets/elysia-icon.ico` | Tracked third-party branding / 已跟踪的第三方品牌素材 | Derived from an official *Honkai Impact 3rd* Elysia signet and included at the project owner's express direction for this unofficial, non-commercial fan project; © HoYoverse / miHoYo, excluded from every source-code license, no endorsement implied, and removable on rights-holder request / 由《崩坏3》爱莉希雅官方刻印制作，并按项目所有者明确决定用于本非官方、非商业粉丝项目；© HoYoverse / miHoYo，不属于任何源码许可证，不代表官方背书，权利人要求时应移除 |
@@ -46,6 +46,44 @@ The first recommended local evaluation candidate is the multilingual [`Systran/f
 The adapter accepts only an explicit absolute local model directory containing the runtime configuration, model binary, and tokenizer. It passes `local_files_only=True`, rejects Git LFS pointer files, and never resolves a model alias into a hidden weight download. Desktop Settings map a closed model-name allowlist to that directory and do not expose a path or download action. Model installation remains a separate user-triggered operation, and every package/release must verify that local weights and caches remain excluded.
 
 Adapter 只接受明确的绝对本地模型目录，并要求其中存在 Runtime 配置、模型二进制与 Tokenizer；它会传入 `local_files_only=True`、拒绝 Git LFS Pointer，且不会把模型别名解析为隐藏的权重下载。Desktop Settings 只会把闭集模型名称映射到这个目录，不暴露路径或下载动作。模型安装仍是独立的用户触发操作，每次打包和发布都必须核对本地权重与缓存仍被排除。
+
+---
+
+## Qwen3 Embedding via Ollama / 通过 Ollama 使用 Qwen3 Embedding
+
+The standalone document-index library is fixed to the Ollama tag `qwen3-embedding:0.6b`. The [official Ollama library page](https://ollama.com/library/qwen3-embedding) is the public display source for the model family, available tags, and high-level size/context information. The full manifest digest below records the exact registry response reviewed for this implementation on 2026-09-25; it is an identity anchor for that response, not a promise that a mutable registry tag will remain unchanged. The following values identify the exact artifact contract accepted by the current implementation; they do not place the artifact in this repository:
+
+独立文档索引库固定使用 Ollama Tag `qwen3-embedding:0.6b`。[Ollama 官方 Library 页](https://ollama.com/library/qwen3-embedding)是模型系列、可用 Tag 和高层 Size/Context 信息的公开展示来源。下文完整 Manifest Digest 记录了本实现于 2026-09-25 审查的精确 Registry Response；它是该次响应的身份锚点，不承诺可变 Registry Tag 今后永远不变。下列值标识当前实现所接受的精确 Artifact Contract，不代表该 Artifact 已进入本仓库：
+
+| Field / 字段 | Pinned value / 固定值 |
+| --- | --- |
+| Ollama tag / Ollama Tag | `qwen3-embedding:0.6b` |
+| Full manifest SHA-256 / 完整 Manifest SHA-256 | `ac6da0dfba84a81fdbfbaf330198c33cd77c4cdfc53e8bc50eb581914a15621d` |
+| Model-layer SHA-256 / 模型 Layer SHA-256 | `06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439` |
+| Model-layer size / 模型 Layer 大小 | `639,150,592` bytes |
+| Quantization / 量化 | `Q8_0` |
+| Embedding dimensions / Embedding 维度 | `1,024` |
+| Upstream capability summary / 上游能力概述 | 32K context; 100+ natural and programming languages / 32K Context；100+ 自然语言与编程语言 |
+
+The [upstream Qwen3-Embedding-0.6B model card](https://huggingface.co/Qwen/Qwen3-Embedding-0.6B) labels the upstream Qwen model Apache-2.0 and states the 32K, multilingual, and code capabilities summarized above. That Apache-2.0 statement applies to the upstream model as described by its model card. It must not be read as a blanket license for the Ollama runtime, every layer or metadata object in the quantized Ollama manifest, unrelated dependencies, or any other Elysia AI asset.
+
+[Qwen3-Embedding-0.6B 上游 Model Card](https://huggingface.co/Qwen/Qwen3-Embedding-0.6B) 把上游 Qwen 模型标注为 Apache-2.0，并声明上表概述的 32K、多语言和代码能力。该 Apache-2.0 说明只适用于 Model Card 所描述的上游模型；不得把它解释为对 Ollama Runtime、量化 Ollama Manifest 中每个 Layer 或 Metadata Object、无关依赖，或 Elysia AI 其他素材的概括授权。
+
+The manifest and model-layer digests, byte size, and `Q8_0` label are technical provenance anchors for the exact Ollama quantized artifact expected by this version. Unless an authoritative publisher or quantizer record is separately retained, these observations do not by themselves prove who produced every manifest component, establish a complete supply chain, or grant redistribution rights. At runtime the adapter verifies the exact tag and full manifest digest before and after each batch; the model-layer digest, size, and quantization are documented provenance beneath that manifest, not fields independently re-attested through another Ollama API. The implementation does not download, mirror, bundle, commit, or redistribute the artifact.
+
+Manifest 与模型 Layer 摘要、Byte 大小和 `Q8_0` 标记，只是当前版本期待的精确 Ollama 量化 Artifact 的技术来源锚点。除非另行留存权威发布者或量化者记录，这些观察本身不能证明每个 Manifest 组件由谁制作，不能建立完整供应链，也不授予再分发权。运行时 Adapter 会在每个 Batch 前后验证精确 Tag 与完整 Manifest Digest；Model-layer Digest、Size 与 Quantization 是该 Manifest 之下的文档化 Provenance，不是通过另一 Ollama API 独立重新证明的字段。实现不下载、镜像、打包、提交或再分发该 Artifact。
+
+Installation is an explicit, optional local action:
+
+安装必须是用户显式执行的可选本地操作：
+
+```bat
+ollama pull qwen3-embedding:0.6b
+```
+
+This model is not required for basic text Chat. Neither the application nor its tests trigger `ollama pull`; model blobs and manifests remain in Ollama-managed, ignored local storage and must stay out of Git, releases, installers, containers, and diagnostic archives.
+
+基础文字 Chat 不需要该模型。应用与测试都不会触发 `ollama pull`；模型 Blob 与 Manifest 继续保留在 Ollama 管理、被 Git 忽略的本地存储中，不得进入 Git、Release、安装包、Container 或诊断归档。
 
 ---
 

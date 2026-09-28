@@ -1,6 +1,6 @@
 # Document Loaders：可信文件读取与有界结构提取
 
-本文记录 Elysia AI 的文档加载边界。它把 Stage 8 已保存的原始 Attachment 转换成稳定、可测试的原始文档结构；Loader 本身不会清洗、切块、生成 Embedding、建立 Vector Store、检索或生成 Citation。其下游保守 Cleaning/Chunking Contract 已完成，详见 [Document Cleaning and Chunking](./06-DOCUMENT-CLEANING-CHUNKING.md)。
+本文记录 Elysia AI 的文档加载边界。它把 Stage 8 已保存的原始 Attachment 转换成稳定、可测试的原始文档结构；Loader 本身不会清洗、切块、生成 Embedding、建立 Vector Store、检索或生成 Citation。其下游保守 [Cleaning/Chunking](./06-DOCUMENT-CLEANING-CHUNKING.md) 与 [Local Embeddings/Vector Store](./07-LOCAL-EMBEDDINGS-VECTOR-STORE.md) Contract 已作为独立 Python Library 完成；Retriever、Citation 和生产接线仍未完成。
 
 ## 1. 完成范围
 
@@ -37,7 +37,7 @@ Renderer / caller supplies Scope + ownership link_id
 
 Loader 从不接收本机路径，也不会用文件名重新打开文件。唯一的选择键是已经通过 Scope 授权的 Ownership；共享内容即使有相同 File ID，不同 Chat/Project 仍必须通过各自的 `link_id` 和 Scope。解析发生在验证读取 Context 关闭之后，因此第三方 Parser 不会持有 Attachment Store 的句柄。
 
-本模块目前是独立 Python Library，尚未由 `start.py` / `desktop_backend.py` 的生产 Composition Root 构造，也未新增 Desktop Protocol 或 React API。下游 Cleaning/Chunking 已能在内存中产生版本化 Chunk；只有在 Embedding、索引、检索与 Citation Contract 稳定后，才应把最小安全结果暴露给桌面层。
+本模块目前是独立 Python Library，尚未由 `start.py` / `desktop_backend.py` 的生产 Composition Root 构造，也未新增 Desktop Protocol 或 React API。下游 Cleaning/Chunking 已能产生版本化 Chunk，Embedding/SQLite Store 也已能在固定模型空间中持久化 Scope-safe Vector Generation；但尚无 Top-K/余弦检索、Reranking、Citation 或 Prompt Composition，因此仍不能向桌面层暴露“向文件提问”能力。
 
 ## 3. 稳定领域模型
 
@@ -175,8 +175,8 @@ DOCX Loader 直接读取内存中的 OPC ZIP，不把成员解压到磁盘：
 - Normalization、Boilerplate Removal 或语言清洗；
 - Stable Chunk ID、Overlap 或 Token-aware Chunking；
 - Derived File 持久化；
-- Embedding、Vector Store、Retriever、Citation 或 Prompt Injection Defense；
+- Embedding、Vector Store、Retriever、Citation 或 Prompt Injection Defense；其中 Embedding/Vector Store 已由下游独立 Library 实现，仍不是 Loader 的职责；
 - OCR、复杂 PDF Layout、Spreadsheet、Presentation 或旧 Office Binary Format；
 - Renderer Preview 或“向 Chat 提问此文件”的 UI。
 
-版本化 Cleaning/Chunking Contract、可重现 Chunk Identity 与 Page/Block/Cell/Offset Source Location 已在 [Document Cleaning and Chunking](./06-DOCUMENT-CLEANING-CHUNKING.md) 中完成。下一步是在任何检索接线前建立 Local Embeddings and Vector Store；持久化层仍需登记 Derived Relation，并实现版本变化、替换和删除时的重建与传播规则。
+版本化 Cleaning/Chunking Contract、可重现 Chunk Identity 与 Page/Block/Cell/Offset Source Location 已在 [Document Cleaning and Chunking](./06-DOCUMENT-CLEANING-CHUNKING.md) 中完成；固定 Model/Space Identity、本地 Ollama Adapter 和 Scope-safe SQLite 索引见 [Local Embeddings and Vector Store](./07-LOCAL-EMBEDDINGS-VECTOR-STORE.md)。下一步是有界 Retrieval/Reranking/Citation Contract。生产持久化生命周期仍需登记 Attachment Derived Relation，并实现版本变化、替换和删除时的任务、重建与传播规则。

@@ -2,7 +2,7 @@
 
 这份文档用于帮助第一次接触 Elysia AI 的开发者理解：每个受版本控制的文件负责什么、它与哪些层连接，以及修改某项功能时应该从哪里开始。
 
-> 当前架构边界：Python 是 Chat、Project、Memory、Attachment、Document Loading/Processing 和持久化状态的事实来源；Electron Main 是本地进程、文件路径和硬件权限的可信边界；Preload 只暴露固定能力；React Renderer 只负责显示和临时交互状态。
+> 当前架构边界：Python 是 Chat、Project、Memory、Attachment、Document Loading/Processing/Embedding 和持久化状态的事实来源；Electron Main 是本地进程、文件路径和硬件权限的可信边界；Preload 只暴露固定能力；React Renderer 只负责显示和临时交互状态。
 
 ## 1. 先看完整连接图
 
@@ -55,7 +55,10 @@ documents.DocumentProcessingService（已实现的独立 Library，尚未由 sta
         → StructureAwareDocumentChunker
         → validate exact piece table, lineage, mappings, and projections
         → versioned chunks + Page/Block/Cell/Offset mappings
-          （仍无持久化、Embedding、Retriever 或桌面接线）
+        → DocumentEmbeddingService → strict loopback Ollama adapter
+        → versioned 1024-d unit vectors + exact chunk lineage
+        → SQLiteVectorStore（exact Project/Chat scope + atomic generations）
+          （仍无 Top-K/Reranking/Retriever、Citation 或桌面接线）
 
 start.create_data_portability_service()
     └── 独立 Recovery API；当前没有接入 Desktop Protocol/UI
@@ -90,7 +93,7 @@ start.create_data_portability_service()
 | `pytest.ini` | 把自动发现根固定为 `tests/`，防止被忽略的第三方 Runtime 自带测试污染项目验收。 | pytest、本地 `models/cache/` |
 | `README.md` | 中文项目首页；描述功能状态、架构、CMD 启动、测试、隐私和当前限制。 | 新用户入口；链接 Desktop/Protocol/ADR 文档 |
 | `README.en.md` | 与中文 README 对应的英文首页。 | 对外英文说明；应与 `README.md` 同步维护 |
-| `MODEL_LICENSE.md` | 说明角色语料、GPT-SoVITS 权重、参考音频等来源、当前 `local-evaluation-only` 决定与权利边界；不是源码许可证。 | `data/characters/`、本地 `models/weights/`、发行边界 |
+| `MODEL_LICENSE.md` | 说明固定 Qwen3 Embedding Ollama Artifact、角色语料、GPT-SoVITS 权重、参考音频等来源、当前运行/分发决定与权利边界；不是源码许可证。 | `documents/ollama_embedding.py`、`data/characters/`、本地 Ollama Storage 与 `models/weights/`、发行边界 |
 | `SOURCE_FILE_GUIDE.md` | 当前这份逐文件源码导览；记录文件职责、调用边界、测试映射和新人阅读顺序。 | 全仓库源码、配置、文档与测试 |
 | `requirements.txt` | 固定基础 Python Runtime、LangChain Ollama、pypdf、pytest、mypy、jsonschema 等依赖版本；不强制安装本地 STT Native Runtime。 | `.venv`、CI、`start.py`、`desktop_backend.py`、`documents/pdf.py` |
 | `requirements-stt.txt` | 固定可选的 Faster-Whisper 与 NumPy 版本；只在需要本地单句转写时叠加安装，不包含或下载模型权重。 | `voice/faster_whisper.py`、本地 `.venv`、`models/weights/faster-whisper/<model>` |
@@ -109,6 +112,7 @@ start.create_data_portability_service()
 | `docs/04-FILE-METADATA-STORAGE.md` | 记录版本化 File Metadata、Scope-local Content-addressed Storage、Ownership/Derived 关系、Manifest v2、迁移、验证读取、删除回滚、Renderer 隐私边界和当前非目标。 | `attachments/`、Desktop Backend、后续 Document Loaders |
 | `docs/05-DOCUMENT-LOADERS.md` | 记录可信 Document Loader 的格式矩阵、路径隐私、Scope 授权、结构模型、资源预算、PDF/DOCX Parser 边界、稳定错误、测试和当前非目标。 | `documents/`、`attachments/`、下游 Cleaning/Chunking |
 | `docs/06-DOCUMENT-CLEANING-CHUNKING.md` | 记录纯、版本化且保守的 Cleaning、严格重复 PDF 页眉证据、LoadedDocument Code-point Provenance、结构/Code/Table JSONL Chunking、资源预算、确定性失效和当前非目标。 | `documents/cleaning.py`、`documents/chunking.py`、后续 Embedding/Vector Store |
+| `docs/07-LOCAL-EMBEDDINGS-VECTOR-STORE.md` | 记录固定 Ollama Embedding Artifact/Space、Batch/Template Policy、严格 Loopback Adapter、Chunk Lineage/Float32 Checksum、Scope-safe SQLite 事务索引、损坏/失效拒绝和当前非目标。 | `documents/embedding.py`、`documents/ollama_embedding.py`、`documents/vector_store.py`、`documents/indexing.py`、`MODEL_LICENSE.md` |
 | `data/characters/elysia_character_reference_zh.md` | 爱莉希雅背景、语录和转写参考资料；当前 Runtime 不会自动将它注入每次 Prompt。 | 人工角色研究；受 `MODEL_LICENSE.md` 的来源/授权提醒约束 |
 
 本机还存在被 Git 忽略的 `docs/02-ROADMAP.md`。它是当前 Stage/Module 规划来源，但新的 Git Clone 不会自动得到它，因此不能作为唯一公共文档。
@@ -224,13 +228,13 @@ ChatSession.project_id
 | `attachments/service.py` | Application Service；把真实路径限制在受信 Import 边界，以 Scope + opaque File ID 提供验证读取，并协调 Chat、Project 与 linked Chats 的 Owner-aware 删除。 | Desktop Backend、AttachmentRepository、后续可信 Loader |
 | `attachments/store.py` | Manifest v2 与 Scope-local Content-addressed Blob Store；按内容 Hash 在单一 Scope 内去重，保存 Original/Ownership/Derived 关系，并实现 v1 原子迁移、Descriptor-pinned Copy/Read、取消回滚、进程锁、启动恢复、Owner/Reference 对账和多 Scope 删除 Tombstone。 | Electron 文件选择、AttachmentService、Desktop Backend、Chat Message Commit、后续 Document Loaders |
 
-当前 Attachment 已完成安全原始文件存储、版本化 Metadata/Ownership、Derived 关系登记和可信 Backend 读取边界。Attachment Package 本身仍不解析内容；`documents.DocumentLoaderService` 通过 `open_verified_file()` 取得 Scope-bound Verified Snapshot，关闭读取 Context 后才把无路径 Bytes 交给格式 Loader 提取原始结构。独立 Document Library 现在还能在内存中保守清洗并生成版本化 Chunk；Derived Bytes/Chunk 的 Manifest 持久化、Embedding、Vector Store、Retriever、Citation 和生产 RAG 接线仍属于后续工作。
+当前 Attachment 已完成安全原始文件存储、版本化 Metadata/Ownership、Derived 关系登记和可信 Backend 读取边界。Attachment Package 本身仍不解析内容；`documents.DocumentLoaderService` 通过 `open_verified_file()` 取得 Scope-bound Verified Snapshot，关闭读取 Context 后才把无路径 Bytes 交给格式 Loader 提取原始结构。独立 Document Library 现在还能保守清洗、生成版本化 Chunk，并把精确 Lineage 绑定到固定本地 Embedding 空间和 Scope-safe SQLite 索引。Derived Relation 的 Attachment Manifest 持久化、自动生命周期、Retriever、Citation 和生产 RAG 接线仍属于后续工作。
 
-## 12. Document Loaders and Processing：`documents/`
+## 12. Document Loading, Processing, Embedding and Indexing：`documents/`
 
 | 文件 | 实际用途 | 主要连接 |
 | --- | --- | --- |
-| `documents/__init__.py` | Document Package 的稳定公共 API；导出 Loaded/Cleaned/Chunked 领域值、错误、Producer Contract 与 Application Service。 | Loader/Cleaner/Chunker、测试、未来 Composition Root |
+| `documents/__init__.py` | Document Package 的稳定公共 API；导出 Loaded/Cleaned/Chunked/Embedded 领域值、错误、Producer/Embedding Contract、`DocumentEmbeddingService`、`OllamaEmbeddingAdapter`、`DocumentIndexingService` 与 `SQLiteVectorStore`。 | Loader/Cleaner/Chunker/Embedding/Indexing、测试、未来 Composition Root |
 | `documents/domain.py` | 定义不含路径的 `DocumentSource`、Title、Ragged Table、Ordered Block、`LoadedDocument` 和输入/展开/文字/结构资源预算；复核页码、Ordinal、标题来源和累计输出。 | 所有 Loader、Service、Cleaner |
 | `documents/exceptions.py` | 定义稳定的 Validation、Not Found、Unsupported Format/Feature、Empty、Encrypted、Corrupt、Read、Unexpected Loader/Processing 错误，以及公开 `DocumentLimitError` 基类下的 Size/Content Limit 子类。 | Service、Loader、Cleaner/Chunker、未来 Protocol Error Mapping |
 | `documents/protocol.py` | 定义按精确 `(suffix, media_type)` 路由的 Path-private Format Loader、Scope-bound Source Loader、Cleaner 与 Chunker Protocol，以及稳定 Producer ID/Version/Policy Contract。 | Loader Service、Processing Pipeline、各 Adapter 与测试替身 |
@@ -241,6 +245,10 @@ ChatSession.project_id
 | `documents/cleaning.py` | 定义 Loaded Provenance、Text/Table Source Span、Cleaned Blocks、审计 Omission 与 Processing Limits；纯 Cleaner 除逐页完全证明的短 PDF 首行外逐 Code Point 保留 Loader 输出，并用 Canonical SHA-256 记录 Document/Cleaning Identity。 | `LoadedDocument`、Chunker、Cleaning 测试、后续派生数据生命周期 |
 | `documents/chunking.py` | 定义 Chunk、Chunk-local Mapping 与 `ChunkedDocument`；按 Title/Heading/Paragraph、Page、逻辑行、固定句末和 Code-point 上限生成零重叠 Prose/Code Chunk，并把 Ragged Table 投影为版本化 JSONL；完整 Lineage 决定 Derivation Fingerprint 与 Chunk ID。 | Cleaner、Chunking 测试、后续 Embedding/Vector Store |
 | `documents/pipeline.py` | 默认组合 Source Loader、保守 Cleaner 与结构 Chunker，为每个 Adapter 重建隔离快照，并把其返回值视为不可信：逐项复核请求 Scope/Ownership、Producer/Policy/Limits、Piece-table 对每个 Loaded Block 的完整分区、Canonical Fingerprint、Chunk Lineage，以及 Text/Table Mapping 对来源和 JSONL Projection 的完整重建。 | `DocumentLoaderService`、Cleaner/Chunker Protocol、Pipeline 测试、未来 Composition Root；最终返回图也与 Adapter 持有对象隔离 |
+| `documents/embedding.py` | 定义版本化 Model/Embedding-space Identity、固定 Batch/Length/Template Policy、`TextEmbedder` Protocol、`EmbeddedChunk`/`EmbeddedDocument` 和 `DocumentEmbeddingService`；Space Fingerprint 直接绑定实际 Batch Policy、Document Input Mode 与精确 Query Prefix，不只依赖人工 Version Bump。它保留完整 Chunk Lineage，按 `EmbeddingModelIdentity.dimension` 验证单位向量，并生成 Canonical Float32-le Checksum。内建 Ollama Identity 固定为 1,024 维，通用 Service 不硬编码该维度。 | `ChunkedDocument`、Ollama Adapter、Vector Store、Embedding 测试 |
+| `documents/ollama_embedding.py` | 严格的 Loopback Ollama HTTP Adapter；在每个 Batch 前后通过精确 Tag + Full Manifest Digest 拒绝 Mutable-alias Race，禁用 Proxy/Redirect/Retry/Truncation，并以精确 JSON Content Type、Duplicate-key/Non-finite 拒绝、Raw `read1` Byte Cap 和剩余 Socket Deadline 限制响应。失败脱敏为稳定 Embedding Error。Model-layer Digest/Size/Q8_0 是该 Manifest 的文档化 Provenance，不是 Adapter 单独从 API 再证明的字段。 | 本地 Ollama `/api/tags` 与 `/api/embed`、`documents/embedding.py`；不下载或启动模型 |
+| `documents/vector_store.py` | 使用标准库 SQLite 持久化一个固定 Embedding Space；Canonical JSON + SHA-256 保存完整 Lineage/Mapping，Float32-le BLOB + SHA-256 保存向量，并以精确 Chat/Project Scope 实现原子 Replace/List/Get/Delete/Rebuild、Stale/Model 拒绝与 Schema/Corruption Fail-closed。Schema 还精确复核 Table DDL、PK/UNIQUE/FK，并拒绝未知 Trigger/View/显式 Index。 | `EmbeddedDocument`、`EmbeddingModelIdentity`、Indexing Service、Vector Store 测试；不实现 Top-K/余弦检索 |
+| `documents/indexing.py` | 同步组合 Processing → Embedding → SQLite Store，并保持请求 Scope/Ownership Link 与结果 Lineage 一致。 | Document Processing/Embedding/Vector Store、Indexing 测试、未来 Composition Root；不包含后台 Job 或 Desktop 接线 |
 
 完整边界是：
 
@@ -255,10 +263,15 @@ AttachmentScope + ownership link_id
       → conservative, lossless-by-default Cleaner
       → versioned structure/code/table Chunker
       → exact reconstruction + lineage/mapping verification
-  → in-memory ChunkedDocument + source mappings
+  → ChunkedDocument + source mappings
+      → DocumentEmbeddingService
+      → strict loopback Ollama adapter + pinned embedding space
+      → EmbeddedDocument + float32-le checksums
+      → SQLiteVectorStore
+      → exact Scope/Link filtering + atomic generation replacement
 ```
 
-Loader 输出仍是 Raw Structure；后续纯转换已经能生成可重复的内存 Chunk，但这些 Chunk 还没有持久化、Embedding、Vector Index 或 Retriever，因此不是可检索的 RAG 事实。当前没有新增 Desktop Protocol/React Endpoint，也不会把本机路径、Parser 原始异常或 Attachment Blob 暴露给 Renderer。加载边界见 `docs/05-DOCUMENT-LOADERS.md`，清洗/分块边界见 `docs/06-DOCUMENT-CLEANING-CHUNKING.md`。
+Loader 输出仍是 Raw Structure；后续纯转换可以生成可重复 Chunk，独立 Embedding/Store 又可以在固定语义空间中持久化 Scope-safe Vector Generation。但当前没有 Top-K/余弦检索、Reranking、Citation 或 Prompt Composition，也没有 Desktop Protocol/React Endpoint，因此这些 Vector 还不是桌面 Chat 可查询的 RAG 事实。库不会把本机附件路径、Parser/Ollama/SQLite 原始异常或 Attachment Blob 暴露给 Renderer。加载边界见 `docs/05-DOCUMENT-LOADERS.md`，清洗/分块边界见 `docs/06-DOCUMENT-CLEANING-CHUNKING.md`，Embedding/索引边界见 `docs/07-LOCAL-EMBEDDINGS-VECTOR-STORE.md`。
 
 ## 13. Voice Python 层：`voice/`
 
@@ -436,6 +449,10 @@ Project Memory 页面目前仍是明确 Placeholder。Project Source 只安全�
 | `tests/test_document_cleaning.py` | Cleaner 对 CRLF/Unicode/代码空白/Ragged Table 的逐值保留、严格 PDF 页眉 All-or-nothing 证据、准确 Span/Omission、Scope/Loader/Policy Fingerprint 失效与 Processing Budget。 |
 | `tests/test_document_chunking.py` | Prose/Heading/Page/Code 边界、Table JSONL Escape、Chunk-local 到 Block/Cell Offset 映射、确定性 ID/Version 失效、Mapping/Chunk/总输出预算与稳定错误。 |
 | `tests/test_document_processing_pipeline.py` | 默认 Load → Clean → Chunk 组合，以及恶意 Source Loader/Cleaner/Chunker 对 Ownership、Piece-table、Fingerprint、Lineage、Mapping/Projection 的篡改拒绝、资源错误保留和未知异常脱敏。 |
+| `tests/test_document_embedding.py` | Embedding Model/Space/Template/Batch 身份、Document/Query Input、恶意 Adapter 返回、Chunk Lineage、Identity-defined 维度与单位向量、Float32-le Checksum、确定性 ID 和预算。 |
+| `tests/test_ollama_embedding.py` | Ollama Loopback URL、代理/Redirect/Retry 禁止、Batch 前后固定 Full Manifest Digest 核对、精确 Content Type、Duplicate JSON Member/UTF-8/Non-finite 拒绝、Raw Body Byte/Wall-clock Deadline、向量数量/维度和脱敏错误。 |
+| `tests/test_document_vector_store.py` | SQLite Add/Update/List/Get/Delete/Rebuild、精确 Chat/Project Scope 隔离、原子替换/回滚、Stale/Space 拒绝、精确 DDL/Constraint/Trigger/View/Index 与 JSON/BLOB/Checksum 损坏、资源预算。 |
+| `tests/test_document_indexing.py` | Processing → Embedding → Store 同步组合的 Scope/Link/Lineage 传递、替换/重建语义、失败保留与错误边界。 |
 | `tests/test_file_metadata_store.py` | Manifest v2、v1 Migration、Scope-local 去重、路径隐私、Derived 级联、取消清理、跨 Scope 删除、Verified Read 完整性和未知 Schema Fail-closed。 |
 | `tests/test_brain.py` | Brain 的 Chat、Canonical Streaming、跨 Chunk 空白、Memory、Summary、Retry、Cancel 和 Attachment 协调。 |
 | `tests/test_chat_domain.py` | Chat、Message、Summary、Attachment Metadata、ID 和不变量。 |
@@ -722,6 +739,23 @@ documents/cleaning.py（Loaded Provenance、Span、Omission、Cleaner Policy/Ver
 
 任何会改变保留文字、Table Projection、Chunk Boundary、Source Mapping 或 ID Preimage 的修改，都必须显式更新相应 Producer Version/Policy，并验证旧 Derivation 不会被误当成新结果。Offset 始终相对 `LoadedDocument` Unicode Code Points；不能把它改写成原始 Byte、PDF Glyph 或 DOCX XML Offset。新增持久化或桌面接线时，还必须单独定义 Scope-filtered Derived Relation、重建/删除传播、最小 Protocol DTO 与 Renderer 隐私边界。
 
+### 修改 Local Embedding 或 Vector Store
+
+```text
+documents/embedding.py（Model/Space/Template/Batch Identity 与 Lineage）
+→ documents/ollama_embedding.py（Artifact 声明与 Loopback HTTP 边界）
+→ documents/vector_store.py（Schema、Scope、Transaction、Canonical Encoding）
+→ documents/indexing.py（组合顺序或失败语义改变时）
+→ tests/test_document_embedding.py
+→ tests/test_ollama_embedding.py
+→ tests/test_document_vector_store.py
+→ tests/test_document_indexing.py
+→ docs/07-LOCAL-EMBEDDINGS-VECTOR-STORE.md
+→ MODEL_LICENSE.md（Model Artifact、Digest、Quantization 或条款改变时）
+```
+
+Model Tag 不能单独代表向量空间；Manifest Digest、Adapter/Template Version、Dimension 与 Normalization 都必须参与身份。任何会改变 Model Input 或 Vector Meaning 的修改都必须创建新 `embedding_space_id` 并拒绝旧 Store；不得通过默认 Truncation、隐式 Normalization 或手工改 Digest 来兼容。每个读写操作仍必须提供精确 Chat/Project `AttachmentScope` 和 Ownership Link；上层 Retriever 不能用 SQL Wildcard 取代经验证的 Scope Context。
+
 ### 修改 Protocol
 
 至少同步检查：
@@ -852,25 +886,27 @@ config/settings.py + config/voice_profiles.example.json
 19. `documents/service.py`
 20. `documents/text.py`、`documents/pdf.py` 与 `documents/docx.py`
 21. `documents/cleaning.py`、`documents/chunking.py` 与 `documents/pipeline.py`
-22. `docs/05-DOCUMENT-LOADERS.md` 与 `docs/06-DOCUMENT-CLEANING-CHUNKING.md`
-23. `desktop_protocol/README.md`
-24. `desktop/electron/contracts.ts`
-25. `desktop/electron/preload.cts`
-26. `desktop/electron/main.ts`
-27. `desktop/electron/backend-process.ts`
-28. `desktop_backend.py`
-29. `desktop_speech.py`
-30. `voice/speech_queue.py`
-31. `voice/managed_gpt_sovits.py` 与 `scripts/gpt_sovits_worker.py`
-32. `desktop_protocol/audio_channel.py`
-33. `desktop/electron/speech-delivery.ts`
-34. `desktop/electron/speech-playback-owner.ts`
-35. `desktop/src/voice/audio-capture.ts` 与 `desktop/src/voice/voice-activity-detector.ts`
-36. `desktop/src/voice/voice-session-controller.ts`
-37. `desktop/src/voice/voice-ui-state.ts`
-38. `desktop/src/App.tsx`
-39. `desktop/src/voice/CallPreview.tsx` 与其他具体 Feature Component
-40. 对应测试，尤其是 Document Loading/Processing、`desktop/tests/voice-session-controller.test.mjs` 与 `desktop/tests/voice-ui-state.test.mjs`
+22. `documents/embedding.py` 与 `documents/ollama_embedding.py`
+23. `documents/vector_store.py` 与 `documents/indexing.py`
+24. `docs/05-DOCUMENT-LOADERS.md`、`docs/06-DOCUMENT-CLEANING-CHUNKING.md` 与 `docs/07-LOCAL-EMBEDDINGS-VECTOR-STORE.md`
+25. `desktop_protocol/README.md`
+26. `desktop/electron/contracts.ts`
+27. `desktop/electron/preload.cts`
+28. `desktop/electron/main.ts`
+29. `desktop/electron/backend-process.ts`
+30. `desktop_backend.py`
+31. `desktop_speech.py`
+32. `voice/speech_queue.py`
+33. `voice/managed_gpt_sovits.py` 与 `scripts/gpt_sovits_worker.py`
+34. `desktop_protocol/audio_channel.py`
+35. `desktop/electron/speech-delivery.ts`
+36. `desktop/electron/speech-playback-owner.ts`
+37. `desktop/src/voice/audio-capture.ts` 与 `desktop/src/voice/voice-activity-detector.ts`
+38. `desktop/src/voice/voice-session-controller.ts`
+39. `desktop/src/voice/voice-ui-state.ts`
+40. `desktop/src/App.tsx`
+41. `desktop/src/voice/CallPreview.tsx` 与其他具体 Feature Component
+42. 对应测试，尤其是 Document Loading/Processing/Embedding/Indexing、`desktop/tests/voice-session-controller.test.mjs` 与 `desktop/tests/voice-ui-state.test.mjs`
 
 读完后应形成以下心智模型：
 
@@ -886,4 +922,4 @@ config/settings.py + config/voice_profiles.example.json
 - Streaming Overlay 不等于已保存消息。
 - `ChatSession.project_id` 是 Project–Chat 关系的唯一真相。
 - 所有 Memory 使用前都必须经过 Scope 过滤。
-- `DocumentLoaderService` 只能通过 `open_verified_file()` 读取 Scope-authorized Verified Bytes；格式 Loader 只收到关闭读取 Context 后的无路径快照。`DocumentProcessingService` 组合纯 Cleaner/Chunker，并在发布版本化内存 Chunk 前独立复核 Piece-table、Fingerprint/Lineage 与 LoadedDocument Source Mapping；当前没有持久化、Embedding、Index、Retriever 或生产 RAG 接线。
+- `DocumentLoaderService` 只能通过 `open_verified_file()` 读取 Scope-authorized Verified Bytes；格式 Loader 只收到关闭读取 Context 后的无路径快照。`DocumentProcessingService` 组合纯 Cleaner/Chunker 并复核 Piece-table、Fingerprint/Lineage 与 LoadedDocument Source Mapping；`DocumentEmbeddingService` 把精确 Chunk Lineage 绑定到固定的本地 Ollama 向量空间，`SQLiteVectorStore` 再以精确 Chat/Project Scope 和原子 Generation 持久化它。当前仍没有 Top-K/Reranking/Retriever、Citation、生命周期 Job 或生产 RAG/桌面接线。
