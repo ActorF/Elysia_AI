@@ -227,4 +227,4 @@ npm run docs:check
 - Prompt Injection Detection/Isolation；
 - `start.py` / `desktop_backend.py` 生产接线、Desktop Protocol、React Preview 或“向文件提问”UI。
 
-Local Embeddings/Vector Store 与 Retriever/Reranker 已分别完成，详见 [Local Embeddings and Vector Store](./07-LOCAL-EMBEDDINGS-VECTOR-STORE.md) 和 [Retriever and Reranking](./08-RETRIEVER-RERANKING.md)；有限 Prompt、三类结构化陈述和可信 Citation 也已在 [Grounded Answers and Citations](./09-GROUNDED-ANSWERS-CITATIONS.md) 中作为独立 Library 完成。生产 Generator、Project Sources 授权、生命周期和桌面接线完成前，仍不能声称 Project Sources 已可被桌面 Chat 检索、引用或用于回答。
+Local Embeddings/Vector Store 与 Retriever/Reranker 已分别完成，详见 [Local Embeddings and Vector Store](./07-LOCAL-EMBEDDINGS-VECTOR-STORE.md) 和 [Retriever and Reranking](./08-RETRIEVER-RERANKING.md)；有限 Prompt、三类结构化陈述和可信 Citation 也已在 [Grounded Answers and Citations](./09-GROUNDED-ANSWERS-CITATIONS.md) 中作为独立 Library 完成，Chat-derived 授权与共享语义见 [Project Sources](./10-PROJECT-SOURCES.md)。生产 Generator、知识生命周期和桌面接线完成前，仍不能声称 Project Sources 已可被桌面 Chat 检索、引用或用于回答。

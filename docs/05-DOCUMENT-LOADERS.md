@@ -37,7 +37,7 @@ Renderer / caller supplies Scope + ownership link_id
 
 Loader 从不接收本机路径，也不会用文件名重新打开文件。唯一的选择键是已经通过 Scope 授权的 Ownership；共享内容即使有相同 File ID，不同 Chat/Project 仍必须通过各自的 `link_id` 和 Scope。解析发生在验证读取 Context 关闭之后，因此第三方 Parser 不会持有 Attachment Store 的句柄。
 
-本模块目前是独立 Python Library，尚未由 `start.py` / `desktop_backend.py` 的生产 Composition Root 构造，也未新增 Desktop Protocol 或 React API。下游 Cleaning/Chunking、Embedding/SQLite Store、Retriever/Reranker 与结构化 Grounded Answer/Citation Library 均已完成；但仍无生产 Generator、Project Sources 授权或桌面接线，因此不能向桌面层暴露“向文件提问”能力。
+本模块目前是独立 Python Library，尚未由 `start.py` / `desktop_backend.py` 的生产 Composition Root 构造，也未新增 Desktop Protocol 或 React API。下游 Cleaning/Chunking、Embedding/SQLite Store、Retriever/Reranker、结构化 Grounded Answer/Citation 与 [Project Sources](./10-PROJECT-SOURCES.md) 授权 Library 均已完成；但仍无生产 Generator、知识生命周期或桌面接线，因此不能向桌面层暴露“向文件提问”能力。
 
 ## 3. 稳定领域模型
 

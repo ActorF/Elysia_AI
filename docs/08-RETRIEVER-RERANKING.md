@@ -46,7 +46,7 @@ exact AttachmentScope
   ✗ no Agentic RAG, tool calls, ANN, remote fallback, or bundled reranker
 ```
 
-`DocumentRetriever` 是同步 Library Service。它不选择哪些 Project Sources 对当前 Chat 可见；未来生产 Composition Root 必须先依据经过验证的 Chat/Project 关系构造准确 Scope 和 Generation Allowlist。它也不把 `RetrievalHit` 注入 Prompt；这些下游职责现由独立 [Grounded Answers and Citations](./09-GROUNDED-ANSWERS-CITATIONS.md) Library 承担，但尚未接入生产或桌面层。
+`DocumentRetriever` 是同步 Library Service。它不选择哪些 Project Sources 对当前 Chat 可见；下游 [Project Sources](./10-PROJECT-SOURCES.md) 已依据经过验证的 Chat/Project 关系与显式 catalog 构造准确 Scope 和 Generation Allowlist。它也不把 `RetrievalHit` 注入 Prompt；这些下游职责由独立 [Grounded Answers and Citations](./09-GROUNDED-ANSWERS-CITATIONS.md) Library 承担，但整条链仍未接入生产或桌面层。
 
 ## 3. Query Identity 与显式 Generation Allowlist
 
@@ -212,10 +212,10 @@ npm run docs:check
 当前模块不提供：
 
 - Grounded Answer Generation、Prompt Composition、Citation Selection/Rendering、来源事实/概括/推断标签或 Prompt-injection Isolation；这些已由下游独立 Grounding Library 实现，仍不属于 Retriever；
-- Project Sources 到 Project Chat 的授权与生产接线；这属于 Module 7；
+- Project Sources 到 Project Chat 的生产接线；授权 Library 已在 Module 7 完成；
 - Attachment Derived Relation、自动索引、替换/删除传播、Progress、Cancel、Retry 与 Crash Recovery；这些属于 Module 8；
 - Sources/索引状态/引用跳转 UI、Desktop Protocol 或 React 文件问答入口；这些属于 Module 9；
 - ANN、Hybrid/BM25 Search、Semantic Deduplication、Diversity/Recency Boost、Cross-scope Union、Agentic RAG 或 Tool Planning；
 - 内建 Reranker Adapter、Reranker 模型/权重、远程 Reranking Fallback、模型下载或新的素材/模型许可。
 
-下游 [Grounded Answers and Citations](./09-GROUNDED-ANSWERS-CITATIONS.md) 已能只从有界 `RetrievalHit` 完整前缀构造有限上下文，在 Retriever 空命中时不调用 Generator，并把 Generator 选择的 opaque Citation 解析为可信文件名、页码和准确位置。已有 Context 时 Generator 仍可返回结构化 `insufficient_evidence`。接下来仍需完成 Project Sources 授权、知识生命周期、生产 Generator/Composition Root、Protocol 与 UI；在这些边界完成前，不能声称桌面 Chat 已能检索、回答或引用用户文件。
+下游 [Grounded Answers and Citations](./09-GROUNDED-ANSWERS-CITATIONS.md) 已能只从有界 `RetrievalHit` 完整前缀构造有限上下文，在 Retriever 空命中时不调用 Generator，并把 Generator 选择的 opaque Citation 解析为可信文件名、页码和准确位置；[Project Sources](./10-PROJECT-SOURCES.md) 已在其上建立 Chat-derived 授权、共享语义和安全 Instructions。接下来仍需完成知识生命周期、生产 Generator/Composition Root、Protocol 与 UI；在这些边界完成前，不能声称桌面 Chat 已能检索、回答或引用用户文件。

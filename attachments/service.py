@@ -13,6 +13,7 @@ from .domain import (
     AttachmentState,
     DerivedFileRelation,
     FileOrigin,
+    FileCatalogSnapshot,
     FileOwnership,
     OriginalFileMetadata,
     validate_file_id,
@@ -170,6 +171,40 @@ class AttachmentService:
         """List path-free attachment or source links in one owner scope."""
 
         return self._repository.list_file_ownerships(scope)
+
+    def snapshot_files(self, scope: AttachmentScope) -> FileCatalogSnapshot:
+        """Return one atomic path-free file authorization snapshot."""
+
+        return self._repository.snapshot_files(scope)
+
+    def snapshot_file(
+        self,
+        scope: AttachmentScope,
+        attachment_id: str,
+    ) -> FileCatalogSnapshot:
+        """Return one atomic path-free ownership/original snapshot."""
+
+        return self._repository.snapshot_file(scope, attachment_id)
+
+    def _promote_chat_attachment(
+        self,
+        chat_scope: AttachmentScope,
+        project_scope: AttachmentScope,
+        attachment_id: str,
+    ) -> FileOwnership:
+        """Expose the internal copy primitive to an authority coordinator.
+
+        Callers must first prove the Chat owns the committed attachment and is
+        canonically assigned to the target Project.  Keeping this method
+        private prevents the generic Attachment service from becoming an
+        authorization bypass.
+        """
+
+        return self._repository._promote_chat_attachment(
+            chat_scope,
+            project_scope,
+            attachment_id,
+        )
 
     def list_derived_relations(
         self,

@@ -19,6 +19,7 @@ from typing import BinaryIO, Final, Literal, cast
 from uuid import uuid4
 
 from .domain import (
+    FILE_CATALOG_SNAPSHOT_SCHEMA_VERSION,
     FILE_METADATA_SCHEMA_VERSION,
     MAX_JSON_SAFE_INTEGER,
     MAX_SOURCE_PATH_LENGTH,
@@ -26,6 +27,7 @@ from .domain import (
     AttachmentScope,
     AttachmentState,
     DerivedFileRelation,
+    FileCatalogSnapshot,
     FileOrigin,
     FileOwnership,
     OriginalFileMetadata,
@@ -343,6 +345,208 @@ class JsonAttachmentStore:
                 item.to_ownership(scope)
                 for item in self._load_manifest_document(scope).items
             )
+
+    def snapshot_files(self, scope: AttachmentScope) -> FileCatalogSnapshot:
+        """Return originals and ownership links from one manifest read."""
+
+        self._require_scope(scope)
+        with self._lock:
+            document = self._load_manifest_document(scope)
+            originals_by_id: dict[str, OriginalFileMetadata] = {}
+            for item in document.items:
+                originals_by_id.setdefault(item.file_id, item.to_original())
+            return FileCatalogSnapshot(
+                schema_version=FILE_CATALOG_SNAPSHOT_SCHEMA_VERSION,
+                scope=scope,
+                originals=tuple(originals_by_id.values()),
+                ownerships=tuple(
+                    item.to_ownership(scope) for item in document.items
+                ),
+            )
+
+    def snapshot_file(
+        self,
+        scope: AttachmentScope,
+        attachment_id: str,
+    ) -> FileCatalogSnapshot:
+        """Return one exact ownership without scanning it into a public list.
+
+        Long-lived Chats may retain more committed history attachments than a
+        bounded full-catalog consumer accepts. Promotion needs only the one
+        canonical link, so this atomic projection avoids making old history a
+        denial of service while preserving same-read original metadata.
+        """
+
+        self._require_scope(scope)
+        try:
+            safe_id = validate_attachment_id(attachment_id)
+        except ValueError as error:
+            raise AttachmentValidationError(
+                "Attachment identifier is invalid."
+            ) from error
+        with self._lock:
+            document = self._load_manifest_document(scope)
+            item = next(
+                (
+                    candidate
+                    for candidate in document.items
+                    if candidate.attachment_id == safe_id
+                ),
+                None,
+            )
+            if item is None:
+                raise AttachmentNotFoundError(
+                    "Attachment does not exist in this scope."
+                )
+            return FileCatalogSnapshot(
+                schema_version=FILE_CATALOG_SNAPSHOT_SCHEMA_VERSION,
+                scope=scope,
+                originals=(item.to_original(),),
+                ownerships=(item.to_ownership(scope),),
+            )
+
+    def _promote_chat_attachment(
+        self,
+        chat_scope: AttachmentScope,
+        project_scope: AttachmentScope,
+        attachment_id: str,
+    ) -> FileOwnership:
+        """Copy one committed Chat attachment into a Project Source scope.
+
+        Promotion creates a new ownership link and preserves the original Chat
+        link.  The target manifest is the commit point, so an interrupted copy
+        can leave at most an unreferenced content-addressed blob reclaimed by
+        normal reconciliation; it can never publish a link with missing bytes.
+        """
+
+        self._require_chat_scope(chat_scope)
+        self._require_scope(project_scope)
+        if project_scope.kind != "project":
+            raise AttachmentValidationError(
+                "Attachment promotion requires a Project target."
+            )
+        try:
+            safe_id = validate_attachment_id(attachment_id)
+        except ValueError as error:
+            raise AttachmentValidationError(
+                "Attachment identifier is invalid."
+            ) from error
+
+        with self._lock:
+            source_document = self._load_manifest_document(chat_scope)
+            source = next(
+                (
+                    item
+                    for item in source_document.items
+                    if item.attachment_id == safe_id
+                ),
+                None,
+            )
+            if source is None:
+                raise AttachmentNotFoundError(
+                    "Attachment does not exist in this Chat."
+                )
+            # A ready or claimed draft is not yet part of canonical Chat
+            # history.  Requiring committed ownership prevents an explicit
+            # promotion click from racing message submission or cancellation.
+            if source.status != "committed":
+                raise AttachmentConflictError(
+                    "Only a committed Chat attachment can be promoted."
+                )
+
+            target_document = self._load_manifest_document(project_scope)
+            existing = next(
+                (
+                    item
+                    for item in target_document.items
+                    if item.file_id == source.file_id
+                ),
+                None,
+            )
+            if existing is not None:
+                self._verify_blob(
+                    self._original_blob_path(project_scope, existing.file_id),
+                    existing,
+                )
+                return existing.to_ownership(project_scope)
+            if len(target_document.items) >= self._max_file_count:
+                raise AttachmentValidationError(
+                    "This Project Source scope has reached its file limit."
+                )
+
+            target_path = self._original_blob_path(
+                project_scope,
+                source.file_id,
+            )
+            source_path = self._original_blob_path(chat_scope, source.file_id)
+            descriptor, temporary_name = mkstemp(
+                dir=target_path.parent,
+                prefix=".upload-",
+                suffix=".tmp",
+            )
+            temporary_path = Path(temporary_name)
+            published = False
+            try:
+                digest = hashlib.sha256()
+                copied = 0
+                with self._verified_blob_stream(source_path, source) as input_file:
+                    with os.fdopen(descriptor, "wb") as output_file:
+                        descriptor = -1
+                        while True:
+                            chunk = input_file.read(_COPY_BUFFER_BYTES)
+                            if not chunk:
+                                break
+                            output_file.write(chunk)
+                            digest.update(chunk)
+                            copied += len(chunk)
+                        output_file.flush()
+                        os.fsync(output_file.fileno())
+                if copied != source.size_bytes or digest.hexdigest() != source.sha256:
+                    raise AttachmentStorageError(
+                        "Promoted attachment data failed integrity validation."
+                    )
+                if target_path.exists() or target_path.is_symlink():
+                    self._verify_blob(target_path, source)
+                    self._unlink_required(temporary_path)
+                else:
+                    os.replace(temporary_path, target_path)
+                    published = True
+                    self._verify_blob(target_path, source)
+
+                linked_at = self._utc_now()
+                promoted = replace(
+                    source,
+                    attachment_id=f"attachment_{uuid4().hex}",
+                    linked_at=linked_at,
+                    role="project_source",
+                    status="ready",
+                )
+                # Build and validate the public return value before committing
+                # the manifest.  Once the manifest replace succeeds, no later
+                # return-value construction failure may delete its live blob.
+                promoted_ownership = promoted.to_ownership(project_scope)
+                self._write_manifest(
+                    project_scope,
+                    (*target_document.items, promoted),
+                    derived=target_document.derived,
+                )
+                return promoted_ownership
+            except (AttachmentValidationError, AttachmentConflictError):
+                if published:
+                    self._best_effort_unlink(target_path)
+                raise
+            except Exception as error:
+                if published:
+                    self._best_effort_unlink(target_path)
+                if isinstance(error, AttachmentStorageError):
+                    raise
+                raise AttachmentStorageError(
+                    "The Chat attachment could not be promoted safely."
+                ) from error
+            finally:
+                if descriptor != -1:
+                    os.close(descriptor)
+                self._best_effort_unlink(temporary_path)
 
     def list_derived_relations(
         self,

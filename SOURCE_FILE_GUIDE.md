@@ -63,7 +63,13 @@ documents.DocumentProcessingService（已实现的独立 Library，尚未由 sta
           → exact metadata filters + dedup evidence + optional reranker
         → GroundedAnswerService（完整命中前缀 + 不可信 JSON Data）
           → structured statements + trusted filename/page/location citations
-          （仍无生产 Generator、Project Sources 授权、生命周期或桌面接线）
+
+project_sources.ProjectSourceAnswerService（已实现的独立授权 Library）
+    ├── canonical Chat → active Project → exact Project AttachmentScope
+    ├── atomic FileCatalogSnapshot + explicit ProjectSourceSnapshot
+    ├── complete current Generation allowlist + bounded Instructions
+    └── GroundedAnswerService → post-answer authority revalidation
+        （仍无生产 Generator、知识生命周期或桌面接线）
 
 start.create_data_portability_service()
     └── 独立 Recovery API；当前没有接入 Desktop Protocol/UI
@@ -120,6 +126,7 @@ start.create_data_portability_service()
 | `docs/07-LOCAL-EMBEDDINGS-VECTOR-STORE.md` | 记录固定 Ollama Embedding Artifact/Space、Batch/Template Policy、严格 Loopback Adapter、Chunk Lineage/Float32 Checksum、Scope-safe SQLite 事务索引、损坏/失效拒绝和当前非目标。 | `documents/embedding.py`、`documents/ollama_embedding.py`、`documents/vector_store.py`、`documents/indexing.py`、`MODEL_LICENSE.md` |
 | `docs/08-RETRIEVER-RERANKING.md` | 记录 Identity-bearing Query、显式 Expected Generation Allowlist、单事务暴力 Cosine Top-K、闭集 Metadata Filter、阈值、Exact Deduplication、多来源 Evidence、可选不可信 Reranker、预算/错误和当前非目标。 | `documents/retrieval.py`、`documents/embedding.py`、`documents/vector_store.py`、Retrieval 测试 |
 | `docs/09-GROUNDED-ANSWERS-CITATIONS.md` | 记录一次性 Retrieve→Generate 所有权、完整命中前缀、Prompt Data 隔离、三类结构化 Statement、可信 Citation/Location、资源预算、错误闭集和语义能力边界。 | `documents/grounding.py`、`documents/retrieval.py`、Grounding 测试 |
+| `docs/10-PROJECT-SOURCES.md` | 记录 Chat-derived Project Scope 授权、原子 ownership snapshot、显式 Generation catalog、CAS、同 Project 共享、Chat Attachment 隔离/提升、安全 Instructions、操作租约和当前非目标。 | `project_sources/`、`attachments/`、`documents/grounding.py`、Project Source 测试 |
 | `data/characters/elysia_character_reference_zh.md` | 爱莉希雅背景、语录和转写参考资料；当前 Runtime 不会自动将它注入每次 Prompt。 | 人工角色研究；受 `MODEL_LICENSE.md` 的来源/授权提醒约束 |
 
 本机还存在被 Git 忽略的 `docs/02-ROADMAP.md`。它是当前 Stage/Module 规划来源，但新的 Git Clone 不会自动得到它，因此不能作为唯一公共文档。
@@ -229,13 +236,13 @@ ChatSession.project_id
 | 文件 | 实际用途 | 主要连接 |
 | --- | --- | --- |
 | `attachments/__init__.py` | Attachment Package 的稳定公共 API。 | Desktop Backend、Brain、测试 |
-| `attachments/domain.py` | 定义不包含真实路径的 AttachmentScope、AttachmentItem/State，以及版本化 OriginalFileMetadata、FileOwnership 和 DerivedFileRelation；强制 File ID/Hash、UTC 时间、来源闭集及 Chat/Project Role 对应关系。 | Repository、Service、Store、Protocol、Renderer-safe State |
+| `attachments/domain.py` | 定义不包含真实路径的 AttachmentScope、AttachmentItem/State，以及版本化 OriginalFileMetadata、FileOwnership、DerivedFileRelation 和原子 FileCatalogSnapshot；强制 File ID/Hash、UTC 时间、来源闭集、Chat/Project Role 对应关系及完整 ownership fingerprint。 | Repository、Service、Store、Protocol、Project Source authorization、Renderer-safe State |
 | `attachments/exceptions.py` | 定义稳定、不会泄漏本地路径的 Attachment 验证、冲突、未找到、存储和导入取消错误。 | Store、Desktop Backend |
-| `attachments/repository.py` | 定义 AttachmentRepository Protocol；统一既有 Draft/Claim/Commit 生命周期、Owner 对账、版本化 File Metadata、Derived 关系、Scope-bound Verified Read 和单/多 Owner 删除事务。 | `attachments/service.py`、`attachments/store.py`、测试替身 |
-| `attachments/service.py` | Application Service；把真实路径限制在受信 Import 边界，以 Scope + opaque File ID 提供验证读取，并协调 Chat、Project 与 linked Chats 的 Owner-aware 删除。 | Desktop Backend、AttachmentRepository、后续可信 Loader |
-| `attachments/store.py` | Manifest v2 与 Scope-local Content-addressed Blob Store；按内容 Hash 在单一 Scope 内去重，保存 Original/Ownership/Derived 关系，并实现 v1 原子迁移、Descriptor-pinned Copy/Read、取消回滚、进程锁、启动恢复、Owner/Reference 对账和多 Scope 删除 Tombstone。 | Electron 文件选择、AttachmentService、Desktop Backend、Chat Message Commit、后续 Document Loaders |
+| `attachments/repository.py` | 定义 AttachmentRepository Protocol；统一 Draft/Claim/Commit 生命周期、Owner 对账、版本化 File Metadata、Derived 关系、Scope-bound Verified Read、完整或单 link 的单次 Manifest authorization snapshot、内部显式 Chat→Project copy primitive 和单/多 Owner 删除事务。 | `attachments/service.py`、`attachments/store.py`、Project Sources、测试替身 |
+| `attachments/service.py` | Application Service；把真实路径限制在受信 Import 边界，以 Scope + opaque File ID 提供验证读取，暴露完整或单 link 的原子 file snapshot，并只向 canonical authority coordinator 提供私有 committed Chat Attachment copy primitive。 | Desktop Backend、AttachmentRepository、Project Sources、可信 Loader |
+| `attachments/store.py` | Manifest v2 与 Scope-local Content-addressed Blob Store；按内容 Hash 在单一 Scope 内去重，保存 Original/Ownership/Derived 关系，并实现 v1 原子迁移、Descriptor-pinned Copy/Read、取消回滚、进程锁、启动恢复、Owner/Reference 对账、多 Scope 删除 Tombstone，以及经 Hash/Size 复核且 manifest-last commit 的显式跨 Scope copy。 | Electron 文件选择、AttachmentService、Desktop Backend、Chat Message Commit、Project Sources、Document Loaders |
 
-当前 Attachment 已完成安全原始文件存储、版本化 Metadata/Ownership、Derived 关系登记和可信 Backend 读取边界。Attachment Package 本身仍不解析内容；`documents.DocumentLoaderService` 通过 `open_verified_file()` 取得 Scope-bound Verified Snapshot，关闭读取 Context 后才把无路径 Bytes 交给格式 Loader 提取原始结构。独立 Document Library 还能保守清洗、生成版本化 Chunk，把精确 Lineage 绑定到固定本地 Embedding 空间和 Scope-safe SQLite 索引，在准确 Scope + Generation Allowlist 上有界检索，并从完整命中前缀构造有限 Prompt 与可信 Citation。Derived Relation 的自动生命周期、生产 Generator/Composition Root、Project Sources 授权和桌面文件问答仍属于后续工作。
+当前 Attachment 已完成安全原始文件存储、版本化 Metadata/Ownership、Derived 关系登记、原子授权快照和可信 Backend 读取边界。Attachment Package 本身仍不解析内容；`documents.DocumentLoaderService` 通过 `open_verified_file()` 取得 Scope-bound Verified Snapshot，关闭读取 Context 后才把无路径 Bytes 交给格式 Loader 提取原始结构。独立 Document Library 还能保守清洗、生成版本化 Chunk，把精确 Lineage 绑定到固定本地 Embedding 空间和 Scope-safe SQLite 索引，在准确 Scope + Generation Allowlist 上有界检索，并从完整命中前缀构造有限 Prompt 与可信 Citation；`project_sources` 再从 canonical Chat→Project、完整 ownership snapshot 和显式 catalog 派生该 Allowlist。Derived Relation 的自动生命周期、生产 Generator/Composition Root、知识生命周期和桌面文件问答仍属于后续工作。
 
 ## 12. Document Loading, Processing, Embedding, Retrieval and Grounding：`documents/`
 
@@ -257,7 +264,7 @@ ChatSession.project_id
 | `documents/vector_store.py` | 使用标准库 SQLite 持久化一个固定 Embedding Space；Canonical JSON + SHA-256 保存完整 Lineage/Mapping，Float32-le BLOB + SHA-256 保存向量，并以精确 Chat/Project Scope 实现原子 Replace/List/Get/Delete/Rebuild、Stale/Model 拒绝与 Schema/Corruption Fail-closed。`search_scope()` 还在单个读事务中验证显式 Allowlist 的全部 Generation/Record，按单位向量 Dot Product 暴力计算有界 Cosine Candidate Pool；Schema 继续精确复核 Table DDL、PK/UNIQUE/FK 并拒绝未知 Trigger/View/显式 Index。 | `EmbeddedDocument`、`EmbeddedQuery`、Indexing/Retrieval Service、Vector Store/Retrieval 测试 |
 | `documents/indexing.py` | 同步组合 Processing → Embedding → SQLite Store，并保持请求 Scope/Ownership Link 与结果 Lineage 一致。 | Document Processing/Embedding/Vector Store、Indexing 测试、未来 Composition Root；不包含后台 Job 或 Desktop 接线 |
 | `documents/retrieval.py` | 定义 Expected Generation、Filter/Policy/Limits、Hit/Evidence/Result、Reranker Identity/Request/Batch 与稳定错误；`DocumentRetriever` 只搜索准确 Scope + Allowlist，执行阈值、确定性 Top-K、准确 `(kind, text)` 去重，并把可选 Reranker 当作必须返回完整闭合评分的非可信 Adapter。 | `DocumentEmbeddingService`、`SQLiteVectorStore`、`GroundedAnswerService`、Retrieval 测试；自身不生成答案或 Citation UI |
-| `documents/grounding.py` | 定义 Grounded Answer Limits、同步非流式 Generator Identity/Request/Protocol、`source_fact`/`model_summary`/`inference` Statement、可信 Citation 与 Text/Table Location；`GroundedAnswerService` 固定拥有同一次 Retrieve→Generate，选取完整命中前缀，把问题、片段和 opaque Citation ID 作为不可信 Canonical JSON Data，并对模型输出的严格 JSON、Fingerprint 和引用闭包 Fail Closed。 | `DocumentRetriever`、未来生产 Generator Adapter/Composition Root、Grounding 测试；不发现 Project Sources、不持久化、不接 Desktop/UI |
+| `documents/grounding.py` | 定义 Grounded Answer Limits、同步非流式 Generator Identity/Request/Protocol、`source_fact`/`model_summary`/`inference` Statement、可信 Citation 与 Text/Table Location，以及 fingerprint-bound GroundedAnswerPreferences；`GroundedAnswerService` 固定拥有同一次 Retrieve→Generate，先验证 exact corpus，再让 structured preference 只重排已经相关的 Hit，把问题、片段、style guidance 和 opaque Citation ID 作为不可信 Canonical JSON Data，并对模型输出的严格 JSON、Fingerprint 和引用闭包 Fail Closed。 | `DocumentRetriever`、`project_sources`、未来生产 Generator Adapter/Composition Root、Grounding 测试；自身不发现 Project Sources、不持久化、不接 Desktop/UI |
 
 完整边界是：
 
@@ -285,9 +292,26 @@ AttachmentScope + ownership link_id
       → GroundedAnswerService
       → bounded whole-hit prompt context + structured generator request
       → labeled statements + trusted file/page/block/cell/offset citations
+  → ProjectSourceAnswerService
+      → canonical Chat→Project authority + operation lease
+      → atomic ownership snapshot + explicit generation catalog
+      → exact Project Scope/allowlist + bounded non-authorizing preferences
+      → GroundedAnswerService + post-answer revalidation
 ```
 
-Loader 输出仍是 Raw Structure；后续纯转换生成可重复 Chunk，独立 Embedding/Store 在固定语义空间持久化 Scope-safe Vector Generation。Retriever 只接受显式授权的准确 Generation，在一致快照内执行有界搜索、Filter、阈值、去重和可选 Fail-closed Reranking。Grounding 层不接受调用方任意拼接的 `(query, result)`，而是在同一调用内检索、选择完整命中前缀、构造两消息 Prompt，再把模型只能选择的 Citation ID 解析回可信文件名、页码及位置；空 Hits 不调用 Generator。该结构能证明引用属于本次上下文，不能机械证明模型概括/推断的语义蕴含。当前仍没有生产 Generator Adapter、Project Sources 授权、生命周期或 Desktop Protocol/React Endpoint，因此桌面 Chat 仍不可查询文件。边界文档依次见 `docs/05-DOCUMENT-LOADERS.md`、`docs/06-DOCUMENT-CLEANING-CHUNKING.md`、`docs/07-LOCAL-EMBEDDINGS-VECTOR-STORE.md`、`docs/08-RETRIEVER-RERANKING.md` 与 `docs/09-GROUNDED-ANSWERS-CITATIONS.md`。
+Loader 输出仍是 Raw Structure；后续纯转换生成可重复 Chunk，独立 Embedding/Store 在固定语义空间持久化 Scope-safe Vector Generation。Retriever 只接受显式授权的准确 Generation，在一致快照内执行有界搜索、Filter、阈值、去重和可选 Fail-closed Reranking。Grounding 层不接受调用方任意拼接的 `(query, result)`，而是在同一调用内检索、选择完整命中前缀、构造两消息 Prompt，再把模型只能选择的 Citation ID 解析回可信文件名、页码及位置；空 Hits 不调用 Generator。Project Source 层只从 canonical Chat→Project、原子 ownership snapshot 与显式 catalog 派生 Scope/Generation，完整操作持有租约并在发布前复核。该结构能证明引用属于本次授权上下文，不能机械证明模型概括/推断的语义蕴含。当前仍没有生产 Generator Adapter、知识生命周期或 Desktop Protocol/React Endpoint，因此桌面 Chat 仍不可查询文件。边界文档依次见 `docs/05-DOCUMENT-LOADERS.md`、`docs/06-DOCUMENT-CLEANING-CHUNKING.md`、`docs/07-LOCAL-EMBEDDINGS-VECTOR-STORE.md`、`docs/08-RETRIEVER-RERANKING.md`、`docs/09-GROUNDED-ANSWERS-CITATIONS.md` 与 `docs/10-PROJECT-SOURCES.md`。
+
+## 12A. Project Source Authorization：`project_sources/`
+
+| 文件 | 实际用途 | 主要连接 |
+| --- | --- | --- |
+| `project_sources/__init__.py` | Project Source Package 的稳定公共 API；集中导出 schema 常量、domain、错误、Repository/Lease/Instruction Protocol、保守 Operation Coordinator 与 Answer Service。 | 后续 Composition Root、测试 |
+| `project_sources/domain.py` | 定义版本化 ProjectSourceGeneration、结构化且不扩权的 ProjectSourceInstructions、CAS ProjectSourceSnapshot 与 Chat/Project-bound ProjectSourceAnswer；fingerprint 同时绑定 exact ownership catalog、完整 Generation、index profile、Instructions、Revision 和 UTC publish time。 | Repository、Answer Service、Grounding |
+| `project_sources/exceptions.py` | 定义 Validation、Authorization、Conflict、Stale、Not Found、Storage 与 Data Corruption 的稳定脱敏错误闭集。 | Repository、Service、未来 Protocol mapping |
+| `project_sources/repository.py` | 定义 ProjectSourceRepository，并以严格 exact-schema JSON、duplicate-key rejection、有界 descriptor read、安全目录/文件核验、跨进程锁、fsync、atomic replace、Revision CAS 与 deletion tombstone 持久化完整 Project catalog；不会从 Vector row 反向授权旧 Generation。 | `project_sources/service.py`、Module 8 lifecycle、测试 |
+| `project_sources/service.py` | 只接受 chat_id/query，从 canonical active Chat→Project 派生 exact Project Scope，验证原子 Attachment snapshot、完整 current-profile catalog 与 bounded preferences，在操作 lease 内调用 GroundedAnswerService 并最终复核所有 authority；另提供 canonical Chat-history + committed-only 的显式 Chat Attachment promotion，但不伪造索引 Generation。非文档路由不会污染文本 corpus。 | Chats、Projects、Attachments、Documents、后续生产 Composition Root |
+
+这一层是授权组合，不是新的 Document Pipeline。它不会扫描 Chat Attachment、按 Hash 猜测权限、执行 Cross-scope Union，或让自由文本 Instructions 生成 link ID。合法空 Project 可以得到 empty corpus；存在可索引 Source 但 catalog 缺失/过期/部分时必须 Fail Closed。完整设计、写入顺序、并发合同和非目标见 `docs/10-PROJECT-SOURCES.md`。
 
 ## 13. Voice Python 层：`voice/`
 
@@ -395,7 +419,7 @@ Loader 输出仍是 Raw Structure；后续纯转换生成可重复 Chunk，独�
 | `desktop/src/projects/ProjectView.css` | Project Split View、List/Detail、Tabs、Cards、Workspace、Dialog 和响应式布局。 | ProjectView、Design Tokens |
 | `desktop/src/attachments/AttachmentSurface.tsx` | Chat/Project 共用的 Scope-bound Attachment UI；处理 Picker、Drag/Drop、Metadata、Remove、Pending/Error 和焦点恢复。 | App/Desktop API、Composer、ProjectView |
 
-Project Memory 页面目前仍是明确 Placeholder。Project Source 只安全保存文件，还不会理解文件内容。
+Project Memory 页面目前仍是明确 Placeholder。当前 Desktop Project Sources 页面只安全保存文件；独立 Python 授权与 RAG Library 尚未接入该界面，因此桌面应用还不会理解文件内容。
 
 ## 21. React Settings 与 Voice：`desktop/src/settings/`、`desktop/src/voice/`
 
@@ -470,7 +494,7 @@ Project Memory 页面目前仍是明确 Placeholder。Project Source 只安全�
 | `tests/test_document_vector_store.py` | SQLite Add/Update/List/Get/Delete/Rebuild、精确 Chat/Project Scope 隔离、原子替换/回滚、Stale/Space 拒绝、精确 DDL/Constraint/Trigger/View/Index 与 JSON/BLOB/Checksum 损坏、资源预算。 |
 | `tests/test_document_indexing.py` | Processing → Embedding → Store 同步组合的 Scope/Link/Lineage 传递、替换/重建语义、失败保留与错误边界。 |
 | `tests/test_document_retrieval.py` | 真实 SQLite 单事务暴力 Cosine Top-K、Threshold、精确 Scope/Generation Allowlist、闭集 Metadata Filter、Missing/Stale 全搜索失败、准确 `(kind, text)` 去重与多来源 Evidence、稳定 Tie、空 Corpus 短路、可选 Reranker Fail-closed、Embedding Space Mismatch 和 Path/Vector 隐私。 |
-| `tests/test_document_grounding.py` | Retrieve→Generate 单次所有权、空证据零模型调用、完整排名前缀、三类 Statement、PDF/Text/Table Location、多 Evidence、Prompt Injection Data 隔离、严格 JSON/Fingerprint/Citation 闭包、变异 Adapter、预算和异常脱敏。 |
+| `tests/test_document_grounding.py` | Retrieve→Generate 单次所有权、空证据零模型调用、完整排名前缀、三类 Statement、PDF/Text/Table Location、多 Evidence、Prompt Injection Data 隔离、严格 JSON/Fingerprint/Citation 闭包、变异 Adapter、预算和异常脱敏；并验证 structured source preference 只重排已相关 Hit、style guidance 保持为不可信 Data。 |
 | `tests/test_file_metadata_store.py` | Manifest v2、v1 Migration、Scope-local 去重、路径隐私、Derived 级联、取消清理、跨 Scope 删除、Verified Read 完整性和未知 Schema Fail-closed。 |
 | `tests/test_brain.py` | Brain 的 Chat、Canonical Streaming、跨 Chunk 空白、Memory、Summary、Retry、Cancel 和 Attachment 协调。 |
 | `tests/test_chat_domain.py` | Chat、Message、Summary、Attachment Metadata、ID 和不变量。 |
@@ -503,6 +527,7 @@ Project Memory 页面目前仍是明确 Placeholder。Project Source 只安全�
 | `tests/test_project_domain.py` | Project、Settings、WorkspaceBinding 不变量。 |
 | `tests/test_project_repository.py` | Project Persistence、排序、Archive 和 Corruption。 |
 | `tests/test_project_service.py` | Project–Chat 关系、删除策略、Rollback 和 Busy Guard。 |
+| `tests/test_project_sources.py` | Project Source catalog 跨线程实例/真实 spawn process CAS、tombstone、Instructions fingerprint 与持久化；同 Project 多 Chat 共享、跨 Project/Archived Owner 拒绝、Chat Attachment 隔离与 canonical-history committed-only promotion、相同 bytes/不同 metadata 冲突、文档路由过滤、完整 current-profile corpus、Instructions 子集约束和生成后 authority revalidation。 |
 | `tests/test_prompts.py` | Elysia 人格规则和 JSON 数据边界。 |
 | `tests/test_python_documentation_check.py` | 文档扫描只排除精确的 `models/cache/`，不会把其他同名源码目录误排。 |
 | `tests/test_scoped_memory_integration.py` | 跨 Chat/Project Memory 隔离和同 Key 覆盖。 |
@@ -787,7 +812,7 @@ documents/embedding.py（EmbeddedQuery Identity/Policy 改变时）
 → docs/08-RETRIEVER-RERANKING.md
 ```
 
-Retriever 只能消费由上层验证后显式提供的准确 Scope 与 `ExpectedDocumentGeneration` Allowlist；不能自行枚举 Scope、推断 Project-to-Chat 权限或把缺失/过期 Generation 当作空结果。任何更改 Query Template、阈值、Tie-break、Dedup Key、Reranker Score Semantics、Input Shape 或 Truncation Policy 的行为都必须作为版本化 Contract 处理。配置了 Reranker 后必须完整成功或 Fail Closed，不能静默回退成另一种排序。下游 Grounded Answer/Citation Library 已独立完成；生产 Generator、Project Sources 授权、生命周期和 UI 仍要在后续模块分别接线。
+Retriever 只能消费由上层验证后显式提供的准确 Scope 与 `ExpectedDocumentGeneration` Allowlist；不能自行枚举 Scope、推断 Project-to-Chat 权限或把缺失/过期 Generation 当作空结果。任何更改 Query Template、阈值、Tie-break、Dedup Key、Reranker Score Semantics、Input Shape 或 Truncation Policy 的行为都必须作为版本化 Contract 处理。配置了 Reranker 后必须完整成功或 Fail Closed，不能静默回退成另一种排序。下游 Grounded Answer/Citation 与 Project Source authorization Library 均已独立完成；生产 Generator、知识生命周期和 UI 仍要在后续模块接线。
 
 ### 修改 Grounded Answer 或 Citation Contract
 
@@ -799,7 +824,25 @@ documents/retrieval.py（Hit/Evidence/Mapping 改变时）
 → docs/09-GROUNDED-ANSWERS-CITATIONS.md
 ```
 
-`GroundedAnswerService` 必须继续拥有同一次检索与至多一次非流式生成，不能公开接受任意 Query + `RetrievalResult` 配对。片段只能按排名选择完整前缀；文件名、页码和位置只能从检索 Evidence 构造，不能信任模型返回。新增 Statement 类型、Prompt 字段、Citation ID 域、预算、截断或输出 Schema 都属于版本化 Contract 变化。Project Sources 授权、索引生命周期、真实 Generator Adapter、Brain/Protocol/UI 接线分别留给后续边界。
+`GroundedAnswerService` 必须继续拥有同一次检索与至多一次非流式生成，不能公开接受任意 Query + `RetrievalResult` 配对。Preference 只能在完整 Retrieval validation 后重排已相关 Hit；片段只能选择完整前缀，文件名、页码和位置只能从检索 Evidence 构造，不能信任模型返回。新增 Statement 类型、Prompt/Preference 字段、Citation ID 域、预算、截断或输出 Schema 都属于版本化 Contract 变化。Project Source 授权由 `project_sources` 组合；索引生命周期、真实 Generator Adapter、Brain/Protocol/UI 接线仍留给后续边界。
+
+### 修改 Project Source Authorization 或 Catalog
+
+```text
+attachments/domain.py、repository.py、service.py、store.py
+→ documents/service.py（受支持文档路由改变时）
+→ documents/grounding.py（Instructions/Preference 合同改变时）
+→ project_sources/domain.py
+→ project_sources/repository.py
+→ project_sources/service.py
+→ project_sources/__init__.py
+→ tests/test_file_metadata_store.py
+→ tests/test_document_grounding.py
+→ tests/test_project_sources.py
+→ docs/10-PROJECT-SOURCES.md
+```
+
+回答入口不能接受 caller-provided Project ID、Scope 或 Generation Allowlist；它们必须从 canonical Chat→Project、原子 ownership snapshot 与显式 catalog 派生。Catalog CAS 必须覆盖完整跨进程 read/compare/write，删除必须保留单调 tombstone 防止 ABA。结构化 preferred link IDs 必须是当前 catalog 的子集，自由文本 Instructions 只能作为有界、不可信 style data。Chat Attachment promotion 必须同时证明 canonical Chat history ownership 与 committed Manifest 状态，且只能通过持有 authority lease 的 Project Source coordinator 调用。
 
 ### 修改 Protocol
 
@@ -935,25 +978,26 @@ config/settings.py + config/voice_profiles.example.json
 23. `documents/vector_store.py` 与 `documents/indexing.py`
 24. `documents/retrieval.py`
 25. `documents/grounding.py`
-26. `docs/05-DOCUMENT-LOADERS.md`、`docs/06-DOCUMENT-CLEANING-CHUNKING.md`、`docs/07-LOCAL-EMBEDDINGS-VECTOR-STORE.md`、`docs/08-RETRIEVER-RERANKING.md` 与 `docs/09-GROUNDED-ANSWERS-CITATIONS.md`
-27. `desktop_protocol/README.md`
-28. `desktop/electron/contracts.ts`
-29. `desktop/electron/preload.cts`
-30. `desktop/electron/main.ts`
-31. `desktop/electron/backend-process.ts`
-32. `desktop_backend.py`
-33. `desktop_speech.py`
-34. `voice/speech_queue.py`
-35. `voice/managed_gpt_sovits.py` 与 `scripts/gpt_sovits_worker.py`
-36. `desktop_protocol/audio_channel.py`
-37. `desktop/electron/speech-delivery.ts`
-38. `desktop/electron/speech-playback-owner.ts`
-39. `desktop/src/voice/audio-capture.ts` 与 `desktop/src/voice/voice-activity-detector.ts`
-40. `desktop/src/voice/voice-session-controller.ts`
-41. `desktop/src/voice/voice-ui-state.ts`
-42. `desktop/src/App.tsx`
-43. `desktop/src/voice/CallPreview.tsx` 与其他具体 Feature Component
-44. 对应测试，尤其是 Document Loading/Processing/Embedding/Indexing/Retrieval/Grounding、`desktop/tests/voice-session-controller.test.mjs` 与 `desktop/tests/voice-ui-state.test.mjs`
+26. `project_sources/domain.py`、`project_sources/repository.py` 与 `project_sources/service.py`
+27. `docs/05-DOCUMENT-LOADERS.md`、`docs/06-DOCUMENT-CLEANING-CHUNKING.md`、`docs/07-LOCAL-EMBEDDINGS-VECTOR-STORE.md`、`docs/08-RETRIEVER-RERANKING.md`、`docs/09-GROUNDED-ANSWERS-CITATIONS.md` 与 `docs/10-PROJECT-SOURCES.md`
+28. `desktop_protocol/README.md`
+29. `desktop/electron/contracts.ts`
+30. `desktop/electron/preload.cts`
+31. `desktop/electron/main.ts`
+32. `desktop/electron/backend-process.ts`
+33. `desktop_backend.py`
+34. `desktop_speech.py`
+35. `voice/speech_queue.py`
+36. `voice/managed_gpt_sovits.py` 与 `scripts/gpt_sovits_worker.py`
+37. `desktop_protocol/audio_channel.py`
+38. `desktop/electron/speech-delivery.ts`
+39. `desktop/electron/speech-playback-owner.ts`
+40. `desktop/src/voice/audio-capture.ts` 与 `desktop/src/voice/voice-activity-detector.ts`
+41. `desktop/src/voice/voice-session-controller.ts`
+42. `desktop/src/voice/voice-ui-state.ts`
+43. `desktop/src/App.tsx`
+44. `desktop/src/voice/CallPreview.tsx` 与其他具体 Feature Component
+45. 对应测试，尤其是 Document Loading/Processing/Embedding/Indexing/Retrieval/Grounding、Project Sources、`desktop/tests/voice-session-controller.test.mjs` 与 `desktop/tests/voice-ui-state.test.mjs`
 
 读完后应形成以下心智模型：
 
@@ -969,4 +1013,4 @@ config/settings.py + config/voice_profiles.example.json
 - Streaming Overlay 不等于已保存消息。
 - `ChatSession.project_id` 是 Project–Chat 关系的唯一真相。
 - 所有 Memory 使用前都必须经过 Scope 过滤。
-- `DocumentLoaderService` 只能通过 `open_verified_file()` 读取 Scope-authorized Verified Bytes；格式 Loader 只收到关闭读取 Context 后的无路径快照。`DocumentProcessingService` 组合纯 Cleaner/Chunker 并复核 Piece-table、Fingerprint/Lineage 与 LoadedDocument Source Mapping；`DocumentEmbeddingService` 把精确 Chunk Lineage 绑定到固定本地 Ollama 向量空间，`SQLiteVectorStore` 再以精确 Chat/Project Scope 和原子 Generation 持久化它。`DocumentRetriever` 只搜索显式 `ExpectedDocumentGeneration` Allowlist，在单事务中验证并计算有界 Cosine Top-K，保留去重 Evidence；`GroundedAnswerService` 再从完整命中前缀生成结构化陈述并只发布解析到可信 Evidence 的 Citation。当前仍没有生产 Generator、Project Sources 授权、生命周期 Job 或生产 RAG/桌面接线。
+- `DocumentLoaderService` 只能通过 `open_verified_file()` 读取 Scope-authorized Verified Bytes；格式 Loader 只收到关闭读取 Context 后的无路径快照。`DocumentProcessingService` 组合纯 Cleaner/Chunker 并复核 Piece-table、Fingerprint/Lineage 与 LoadedDocument Source Mapping；`DocumentEmbeddingService` 把精确 Chunk Lineage 绑定到固定本地 Ollama 向量空间，`SQLiteVectorStore` 再以精确 Chat/Project Scope 和原子 Generation 持久化它。`ProjectSourceAnswerService` 从 canonical Chat→Project、原子 ownership snapshot 和显式 current-profile catalog 派生唯一允许的 Project Generation；`DocumentRetriever` 只搜索该 Allowlist，在单事务中验证并计算有界 Cosine Top-K，保留去重 Evidence；`GroundedAnswerService` 再从完整命中前缀生成结构化陈述并只发布解析到可信 Evidence 的 Citation。当前仍没有生产 Generator、知识生命周期 Job 或生产 RAG/桌面接线。

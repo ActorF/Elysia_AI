@@ -1,5 +1,7 @@
 """Public, path-independent values for the attachment surface."""
 
+import hashlib
+import json
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -17,6 +19,8 @@ MAX_MEDIA_TYPE_LENGTH: Final = 255
 MAX_SOURCE_PATH_LENGTH: Final = 32_767
 MAX_JSON_SAFE_INTEGER: Final = 9_007_199_254_740_991
 FILE_METADATA_SCHEMA_VERSION: Final[Literal[1]] = 1
+FILE_CATALOG_SNAPSHOT_SCHEMA_VERSION: Final[Literal[1]] = 1
+MAX_FILE_CATALOG_ITEMS: Final = 1_000
 MAX_DERIVATION_KIND_LENGTH: Final = 64
 MAX_PRODUCER_VERSION_LENGTH: Final = 128
 
@@ -294,6 +298,127 @@ class FileOwnership:
         if self.role != expected_role:
             raise ValueError("File ownership role does not match its scope.")
         _validate_utc_timestamp(self.imported_at, "imported_at")
+
+
+def _catalog_snapshot_fingerprint(
+    scope: AttachmentScope,
+    originals: tuple[OriginalFileMetadata, ...],
+    ownerships: tuple[FileOwnership, ...],
+) -> str:
+    """Hash one complete path-free ownership snapshot deterministically."""
+
+    payload = {
+        "fingerprint_domain": "elysia.attachment-file-catalog.v1",
+        "schema_version": FILE_CATALOG_SNAPSHOT_SCHEMA_VERSION,
+        "scope": {"kind": scope.kind, "id": scope.id},
+        "originals": [
+            {
+                "schema_version": item.schema_version,
+                "file_id": item.file_id,
+                "sha256": item.sha256,
+                "file_name": item.file_name,
+                "media_type": item.media_type,
+                "size_bytes": item.size_bytes,
+                "origin": item.origin,
+                "imported_at": item.imported_at.isoformat(),
+            }
+            for item in originals
+        ],
+        "ownerships": [
+            {
+                "schema_version": item.schema_version,
+                "link_id": item.link_id,
+                "file_id": item.file_id,
+                "file_name": item.file_name,
+                "media_type": item.media_type,
+                "scope": {"kind": item.scope.kind, "id": item.scope.id},
+                "role": item.role,
+                "imported_at": item.imported_at.isoformat(),
+            }
+            for item in ownerships
+        ],
+    }
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
+class FileCatalogSnapshot:
+    """Publish one atomic path-free view of originals and ownership links.
+
+    Consumers that authorize document generations need the link metadata and
+    immutable original size from the same manifest read.  Separate listing
+    calls could observe different revisions while a Project Source changes.
+    The fingerprint binds the complete canonical view for downstream catalog
+    freshness checks without exposing a storage path.
+    """
+
+    schema_version: Literal[1]
+    scope: AttachmentScope
+    originals: tuple[OriginalFileMetadata, ...]
+    ownerships: tuple[FileOwnership, ...]
+    snapshot_fingerprint: str = ""
+
+    def __post_init__(self) -> None:
+        """Canonicalize order and prove every ownership has one original."""
+
+        if (
+            type(self.schema_version) is not int
+            or self.schema_version != FILE_CATALOG_SNAPSHOT_SCHEMA_VERSION
+        ):
+            raise ValueError("Unsupported file catalog snapshot schema version.")
+        if type(self.scope) is not AttachmentScope:
+            raise ValueError("File catalog snapshot scope is invalid.")
+        if type(self.originals) is not tuple:
+            raise ValueError("File catalog originals are invalid.")
+        if type(self.ownerships) is not tuple:
+            raise ValueError("File catalog ownerships are invalid.")
+        # Count checks precede nested traversal so an oversized hostile
+        # adapter value cannot consume work merely while proving it is too big.
+        if (
+            len(self.originals) > MAX_FILE_CATALOG_ITEMS
+            or len(self.ownerships) > MAX_FILE_CATALOG_ITEMS
+        ):
+            raise ValueError("File catalog snapshot exceeds its safe limit.")
+        if not all(
+            type(item) is OriginalFileMetadata for item in self.originals
+        ):
+            raise ValueError("File catalog originals are invalid.")
+        if not all(type(item) is FileOwnership for item in self.ownerships):
+            raise ValueError("File catalog ownerships are invalid.")
+
+        originals = tuple(sorted(self.originals, key=lambda item: item.file_id))
+        ownerships = tuple(sorted(self.ownerships, key=lambda item: item.link_id))
+        original_ids = tuple(item.file_id for item in originals)
+        link_ids = tuple(item.link_id for item in ownerships)
+        if len(set(original_ids)) != len(original_ids):
+            raise ValueError("File catalog contains duplicate originals.")
+        if len(set(link_ids)) != len(link_ids):
+            raise ValueError("File catalog contains duplicate ownership links.")
+        if any(item.scope != self.scope for item in ownerships):
+            raise ValueError("File catalog ownership crosses its snapshot scope.")
+        original_by_id = {item.file_id: item for item in originals}
+        if any(item.file_id not in original_by_id for item in ownerships):
+            raise ValueError("File catalog ownership has no immutable original.")
+        if set(original_ids) != {item.file_id for item in ownerships}:
+            raise ValueError("File catalog contains an unowned original.")
+
+        expected = _catalog_snapshot_fingerprint(
+            self.scope,
+            originals,
+            ownerships,
+        )
+        if self.snapshot_fingerprint and self.snapshot_fingerprint != expected:
+            raise ValueError("File catalog snapshot fingerprint does not match.")
+        object.__setattr__(self, "originals", originals)
+        object.__setattr__(self, "ownerships", ownerships)
+        object.__setattr__(self, "snapshot_fingerprint", expected)
 
 
 @dataclass(frozen=True, slots=True)

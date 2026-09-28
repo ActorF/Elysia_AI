@@ -135,7 +135,7 @@ Vector Bytes 不进入 Embedding ID，但受独立 Checksum 保护。这使“�
 | `rebuild` | 在单个事务中原子替换一个精确 Scope 的全部文档集合 |
 | `model_identity` / `limits` | 以只读快照公布该 Database 绑定的完整模型空间和当前资源上限 |
 
-Scope 过滤使用精确 `(scope_kind, scope_id)`，不执行 Prefix、Wildcard、跨 Project 共享或“当前 Chat 猜测”。Chat 与 Project 是两个不可互换的 Scope Kind；即使 ID Text 相同，也不是同一索引分区。当前 Store 不实现“Project Chat 可读 Project Sources”之类上层授权规则；已实现的 Retriever 要求调用方从经过验证的 Chat/Project Context 显式构造允许的准确 Scope 与 Generation Allowlist，不能自行扩大权限。
+Scope 过滤使用精确 `(scope_kind, scope_id)`，不执行 Prefix、Wildcard、跨 Project 共享或“当前 Chat 猜测”。Chat 与 Project 是两个不可互换的 Scope Kind；即使 ID Text 相同，也不是同一索引分区。Store 不实现“Project Chat 可读 Project Sources”之类上层授权规则；下游 [Project Sources](./10-PROJECT-SOURCES.md) 从 canonical Chat/Project Context 与显式 catalog 构造允许的准确 Scope 和 Generation Allowlist，Retriever 本身仍不能自行扩大权限。
 
 Store 保存两类完整性证据：向量以固定长度 Little-endian Float32 BLOB 及 SHA-256 存储；Lineage 和 Chunk Metadata 使用固定 Shape 的 Canonical JSON 及独立 SHA-256。Lineage Checksum 还覆盖总记录数、总 Chunk Code Points 和总 Mapping 数。读取时会在有界查询、页级累计预算和验证时限内重新解析 Domain 对象，并核对这些总量、Ordinal、ID、Checksum、Vector Length/Finite Values 与完整 Lineage，而不是直接把 SQLite Row 当作安全对象。
 
@@ -213,4 +213,4 @@ Embedding/Vector Store 模块本身不提供：
 - Attachment Derived Relation 持久化、自动增量索引、删除传播、Job Queue、Progress、Cancel、Retry 或 Crash Recovery；
 - 模型下载、Ollama 进程启动、自动选模型或 Remote Embedding Fallback。
 
-下游 Retrieval/Reranking Contract 已完成 Identity-bearing Query、显式 Generation Allowlist、有界单事务 Cosine Top-K、精确 Filter、阈值、去重 Evidence 和可选不可信 Reranker，详见 [Retriever and Reranking](./08-RETRIEVER-RERANKING.md)；有限 Prompt、结构化 Grounded Answer 与可信 Citation 见 [Grounded Answers and Citations](./09-GROUNDED-ANSWERS-CITATIONS.md)。在生产 Generator、Composition Root、Project Sources 授权、生命周期和桌面协议/UI 完成前，本地 SQLite 里存在 Vector 或 Grounding Library 仍不意味着 Project Sources 可以被 Chat 查询或引用。
+下游 Retrieval/Reranking Contract 已完成 Identity-bearing Query、显式 Generation Allowlist、有界单事务 Cosine Top-K、精确 Filter、阈值、去重 Evidence 和可选不可信 Reranker，详见 [Retriever and Reranking](./08-RETRIEVER-RERANKING.md)；有限 Prompt、结构化 Grounded Answer 与可信 Citation 见 [Grounded Answers and Citations](./09-GROUNDED-ANSWERS-CITATIONS.md)，Chat-derived 授权与共享语义见 [Project Sources](./10-PROJECT-SOURCES.md)。在生产 Generator、Composition Root、生命周期和桌面协议/UI 完成前，本地 SQLite 里存在 Vector、Grounding 或授权 Library 仍不意味着 Project Sources 可以被 Chat 查询或引用。

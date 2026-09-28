@@ -2,7 +2,7 @@
 
 本文记录 Elysia AI 在 [Retriever and Reranking](./08-RETRIEVER-RERANKING.md) 之后的独立 Grounded Answer Library 边界。当前 `documents/grounding.py` 在一次同步调用中固定执行“准确 Scope 检索 → 完整片段选择 → 单次结构化生成 → 本地引用重建”，从而避免调用方把一个问题与另一个问题的检索结果错误配对。
 
-该模块已经定义严格的 Domain、Prompt、Generator Protocol、Response Validation、Citation Location 和稳定错误，但仓库目前**没有真实 `GroundedAnswerGenerator` Adapter、没有捆绑回答模型，也没有接入 `Brain`、`start.py`、`desktop_backend.py`、Desktop Protocol 或 React**。存在 `GroundedAnswerService` 不等于桌面 Chat 已经可以向附件或 Project Sources 提问。
+该模块已经定义严格的 Domain、Prompt、Generator Protocol、Response Validation、Citation Location 和稳定错误；下游 [Project Sources](./10-PROJECT-SOURCES.md) 也已建立 Chat-derived Project 授权、共享语义和安全 Instructions。但仓库目前**没有真实 `GroundedAnswerGenerator` Adapter、没有捆绑回答模型，也没有接入 `Brain`、`start.py`、`desktop_backend.py`、Desktop Protocol 或 React**。存在这些独立 Library 不等于桌面 Chat 已经可以向附件或 Project Sources 提问。
 
 ## 1. 完成范围与核心原则
 
@@ -10,7 +10,7 @@
 
 1. **固定 Two-Step RAG**：`GroundedAnswerService.answer()` 对一个 Query 精确调用 Retriever 一次，并最多调用 Generator 一次；不存在自主规划、工具循环、追加检索或隐式回退。
 2. **显式授权不扩权**：调用方继续提供准确 `AttachmentScope` 与 `ExpectedDocumentGeneration` Tuple。Service 不发现文件、不合并 Scope，也不把 Chat Attachment 自动升级成 Project Source。
-3. **完整片段上下文**：只从已经验证的 `RetrievalResult.hits` 按排名选择稳定前缀。片段不会为了塞进 Prompt 而截断；最高排名片段都无法完整放入预算时会返回 Limit Failure，而不是伪装成“没有资料”。
+3. **完整片段上下文**：只从已经验证的 `RetrievalResult.hits` 按安全来源 preference + 原检索排名的稳定顺序选择前缀。片段不会为了塞进 Prompt 而截断；最高优先级片段都无法完整放入预算时会返回 Limit Failure，而不是伪装成“没有资料”。
 4. **闭集 Citation**：Generator 只能引用 Prompt 中给出的 opaque Citation ID；文件名、页码和位置由 Service 从经过验证的 `RetrievalEvidence` 重建，不能由模型提供或修改。
 5. **结构化回答**：回答只由带类型、带 Citation 的 `GroundedStatement` 组成，不存在一段无法与 Claims 对齐的额外自由文本答案。
 6. **正常拒答与故障分离**：真正的空检索或模型基于已有片段作出的保守拒答使用 `insufficient_evidence`；过期索引、损坏数据、模型不匹配、资源超限或坏 Generator 输出仍然是 Typed Failure。
@@ -22,6 +22,7 @@
 exact AttachmentScope
   + exact query
   + ExpectedDocumentGeneration allowlist
+  + bounded non-authorizing GroundedAnswerPreferences
   + retrieval filter / policy / limits
   + grounded-answer limits
   → GroundedAnswerService.answer()
@@ -31,7 +32,8 @@ exact AttachmentScope
           yes → deterministic insufficient_evidence
                  no generator identity lookup or generation
           no  → rebuild scope/source/hit/evidence/mapping snapshots
-              → select stable prefix of whole ranked hits
+              → apply authorized source preference to validated hits
+              → select stable prefix of whole prioritized hits
               → derive passage IDs and per-occurrence citation IDs
               → fixed trusted system message
                 + canonical untrusted JSON data message
@@ -64,6 +66,7 @@ answer(
     query: str,
     expected_documents: tuple[ExpectedDocumentGeneration, ...],
     *,
+    preferences: GroundedAnswerPreferences | None = None,
     metadata_filter: RetrievalMetadataFilter = RetrievalMetadataFilter(),
     retrieval_policy: RetrievalPolicy = RetrievalPolicy(),
     retrieval_limits: RetrievalLimits = RetrievalLimits(),
@@ -71,7 +74,7 @@ answer(
 ) -> GroundedAnswerResult
 ```
 
-`GroundedPassageRetriever` 与 Module 5 Retriever 保持同一调用合同。Service 会先重建 Scope、Allowlist、Filter、Policy 与 Limits 的独立快照，再把另一组脱离主请求对象的快照交给注入的 Retriever。返回结果还会重新绑定到原始 Scope、Policy、Filter 和授权 Generation；越过授权边界的 Source、Derivation、Mapping 或 Hit 不会进入 Prompt。
+`GroundedPassageRetriever` 与 Module 5 Retriever 保持同一调用合同。Service 会先重建 Scope、Allowlist、Preferences、Filter、Policy 与 Limits 的独立快照，并先证明每个 preferred link ID 都属于准确 Allowlist，再把另一组脱离主请求对象的快照交给注入的 Retriever。返回结果还会重新绑定到原始 Scope、Policy、Filter 和授权 Generation；越过授权边界的 Source、Derivation、Mapping 或 Hit 不会进入 Prompt。
 
 ### 3.2 `GroundedAnswerGenerator`
 
@@ -95,7 +98,7 @@ Identity 固定 `provider`、`adapter_id`、`adapter_version`、`model_tag`、`m
 - 显式 `max_response_utf8_bytes`；
 - 显式 `max_statements`、单条/累计 Statement Code Points 与单条 Citation 数量上限。
 
-这些设置与完整 Prompt、Allowlist 和 Identity 一起进入 Request Fingerprint；同一 Prompt 只要任一输出上限改变，就不再是同一个生成合同。它们使执行合同可预测，但不能把概率模型的语义输出提升为逐字节确定性保证。
+这些设置与完整 Prompt、Allowlist、Preferences Fingerprint 和 Identity 一起进入 v2 Request Fingerprint；同一 Prompt 只要任一输出上限或 Preference 改变，就不再是同一个生成合同。它们使执行合同可预测，但不能把概率模型的语义输出提升为逐字节确定性保证。
 
 `GroundedAnswerGenerator` 只是依赖注入 Protocol。`provider`、Policy Flag、Fingerprint 或 `model_digest` **都不能证明 Transport 位于本机，也不能阻止一个恶意实现把 Query/Passage 外发**。当前仓库没有生产 Adapter，因此当前 Library 不执行网络请求；后续 Adapter 必须单独强制可信本地 Transport/Host、禁用 Proxy/Redirect/Retry、设置完整 Body 前的 Byte Cap 与 Deadline，把上述 Policy 落实为真实动态 Structured-output Schema，并验证实际模型 Digest。`model_tag` 只允许不含路径分隔符的公开显示标签，原生模型路径不得进入 Identity 或 Result。
 
@@ -109,15 +112,20 @@ Request 是 `frozen=True, slots=True, repr=False` 的值对象，包含：
 - 恰好两条 Prompt Message：一条 `system`、一条 `user`；
 - 非空、无重复的 Citation ID Allowlist；
 - 固定 Generator Policy；
+- `preferences_fingerprint`；
 - `request_fingerprint`。
 
-Fingerprint 绑定 Generator Identity、Prompt Template、完整有序 Prompt、Citation Allowlist 与 Policy。为解决 Digest 自身出现在 JSON Envelope 中的循环依赖，计算时只把 Envelope 的 `request_fingerprint` 字段替换为固定 64 个零；Question、Passage、Citation ID 和其他所有字节仍被绑定。Request 构造器随后要求 Envelope 内字段与派生出的最终 Fingerprint 完全相等，Generator Response 也必须原样回显它。
+v2 Fingerprint Domain 绑定 Generator Identity、Prompt Template、完整有序 Prompt、Citation Allowlist、Preferences Fingerprint 与 Policy。为解决 Digest 自身出现在 JSON Envelope 中的循环依赖，计算时只把 Envelope 的 `request_fingerprint` 字段替换为固定 64 个零；Question、Preference、Passage、Citation ID 和其他所有字节仍被绑定。Request 构造器随后要求 Envelope 内字段与派生出的最终 Fingerprint 完全相等，Generator Response 也必须原样回显它。
+
+### 3.4 `GroundedAnswerPreferences`
+
+Preferences 绑定准确 Scope、有序且唯一的 preferred source link IDs、closed `default|concise|balanced|detailed` answer style、可空 style guidance 与 canonical fingerprint。Preferred IDs 数量不能超过 Retrieval document 上限，并必须在任何检索调用前被证明属于 `expected_documents`；style guidance 最多 8,000 code points 与 32,000 UTF-8 bytes。超限、Scope 错配、未知 link 或 fingerprint 错配都是 Typed Failure，不会截断、降级或静默忽略。
 
 ## 4. 有界上下文选择
 
-`RetrievalResult.hits` 已由 Retriever 排序、阈值过滤并按准确 `(kind, text)` 去重。Grounding 层不重新搜索，也不从隐藏的 `candidate_count` 补取片段。
+`RetrievalResult.hits` 已由 Retriever 排序、阈值过滤并按准确 `(kind, text)` 去重。Grounding 层不重新搜索，也不从隐藏的 `candidate_count` 补取片段。只有在完整 Retrieval Result 通过 Scope、Generation、Filter、阈值与 Reranker 合同复核后，结构化 `preferred_source_link_ids` 才按每个 Hit 最优授权 Evidence 的 preference tier 做稳定重排；同 tier 保留原 Retrieval rank，未返回或被阈值拒绝的证据永远不会复活。去重 Hit 内的 Evidence/Citation 也按同一授权 preference 稳定排序。
 
-Service 按 Hit 顺序构造一个**完整片段的稳定前缀**，同时检查：
+Service 按上述已验证顺序构造一个**完整片段的稳定前缀**，同时检查：
 
 - Passage 数；
 - Passage Text Code Points 总数；
@@ -201,12 +209,13 @@ Prompt 永远只有两条消息：
 1. 固定的 Trusted System Policy；
 2. Canonical JSON User Message。
 
-System Policy 要求回答 JSON 的 Question Field，但 Question 只能选择所需内容，不能覆盖 Grounding Policy；Passage 中的 Markup、Code、URL 和看似命令的文字都只是数据，不能执行或改变策略。Generator 还被禁止使用外部知识、工具、文件、命令或网络。任何不可信值都不会插值进 System Message。
+System Policy 要求回答 JSON 的 Question Field，但 Question 只能选择所需内容，不能覆盖 Grounding Policy；Passage 中的 Markup、Code、URL 和看似命令的文字都只是数据，不能执行或改变策略。`answer_preferences` 同样是不可信数据，只能影响语言、长度、组织、语气，以及已经授权且相关的 Passage 顺序。System Policy 明确说明 Passage 已按 validated preference + retrieval rank 排序：证据同等支持时优先较早 Passage，但不得隐藏或矛盾后续相关证据。Generator 还被禁止使用外部知识、工具、文件、命令或网络。任何不可信值都不会插值进 System Message。
 
 User JSON 只包含：
 
 - Schema Version 与 Request Fingerprint；
 - Question；
+- `answer_preferences`：closed `answer_style`、可空且有界的 `style_guidance`，以及精确 `preferences_fingerprint`；
 - 有序 Passage ID、Kind 和完整 Text；
 - 每个 Passage 对应的一个或多个 opaque Citation ID。
 
@@ -325,15 +334,16 @@ Citation Excerpt 与安全文件名本身仍是用户文档数据，只应在当
 
 ### Module 7：Project Sources
 
-当前模块不负责：
+Grounding 层本身仍不发现 Project Sources；调用它的底层 API 继续要求准确 Scope 与 Generation Allowlist。下游 [Project Sources](./10-PROJECT-SOURCES.md) 已新增独立授权组合层：
 
-- 从 Project 自动发现或授权 Sources；
-- 让多个 Project Chat 共享 Source；
-- 把 Chat Attachment 自动升级成 Project Source；
-- 使用 Project Instructions 定义来源优先级或回答风格；
-- 合并 Chat Scope 与 Project Scope，或执行 Cross-scope Union。
+- 只从 canonical Chat→Project 关系派生 Scope；
+- 让同一 Project 的多个 Chat 共享一个完整 Generation catalog；
+- 保持 Chat Attachment 默认隔离，并只允许显式 committed-file promotion；
+- 把 catalog 中持久化的 structured preferred sources 与 closed answer style 绑定到 snapshot fingerprint，并把 Project 自由文本 Instructions 作为 fingerprint-bound untrusted style guidance；
+- 让结构化 preferred source 只重排已经通过 Retrieval 的授权 Hit；
+- 在持有操作 lease 的前提下，于生成后复核 authority、ownership、catalog 与 preferences。
 
-调用方现在必须显式提供一个准确 Scope 和 Generation Allowlist。
+它不修改 Grounding 的单 Scope 原则，也不执行 Cross-scope Union。
 
 ### Module 8：Knowledge Lifecycle
 
@@ -359,4 +369,4 @@ Stale 或 Missing Generation 继续由 Retriever Fail Closed。
 
 此外，本模块不提供 Agentic RAG、Tool Call、Hybrid/BM25/ANN Search、第二模型语义 Verifier、远程 Generator Fallback、模型下载、真实 Generator Adapter 或新的模型素材许可。
 
-下一步必须先由 Module 7 建立 Project Source 授权与共享语义，再由 Module 8 完成知识生命周期，最后由 Module 9 建立生产接线、严格 Desktop DTO、可访问 UI 与真实文档回归。在这些边界完成前，不能声称桌面 Chat 已能安全地回答或引用用户文件。
+下一步由 Module 8 完成知识生命周期，再由 Module 9 建立生产接线、严格 Desktop DTO、可访问 UI 与真实文档回归。在这些边界完成前，不能声称桌面 Chat 已能安全地回答或引用用户文件。

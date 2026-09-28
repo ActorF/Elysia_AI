@@ -117,6 +117,22 @@ class DocumentLoaderService:
 
         return frozenset(self._routes)
 
+    @classmethod
+    def default_supported_routes(cls) -> frozenset[DocumentRoute]:
+        """Return the closed routes used by the default trusted loaders.
+
+        Authorization and lifecycle layers use this exact set to distinguish
+        document Sources from other attachment formats before any index job is
+        scheduled.  Custom loader compositions must publish their own route
+        set instead of assuming these defaults.
+        """
+
+        return frozenset(
+            route
+            for loader in cls._default_loaders()
+            for route in loader.routes
+        )
+
     def load(
         self,
         scope: AttachmentScope,

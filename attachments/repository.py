@@ -13,6 +13,7 @@ from .domain import (
     AttachmentState,
     DerivedFileRelation,
     FileOrigin,
+    FileCatalogSnapshot,
     FileOwnership,
     OriginalFileMetadata,
 )
@@ -151,6 +152,36 @@ class AttachmentRepository(Protocol):
         scope: AttachmentScope,
     ) -> tuple[FileOwnership, ...]:
         """List path-free ownership links in one validated scope."""
+
+        ...
+
+    def snapshot_files(self, scope: AttachmentScope) -> FileCatalogSnapshot:
+        """Return originals and ownership links from one manifest revision."""
+
+        ...
+
+    def snapshot_file(
+        self,
+        scope: AttachmentScope,
+        attachment_id: str,
+    ) -> FileCatalogSnapshot:
+        """Return one exact ownership and original from one manifest read."""
+
+        ...
+
+    def _promote_chat_attachment(
+        self,
+        chat_scope: AttachmentScope,
+        project_scope: AttachmentScope,
+        attachment_id: str,
+    ) -> FileOwnership:
+        """Copy one committed Chat attachment for an authorizing coordinator.
+
+        This primitive cannot prove the Chat belongs to the target Project, so
+        it intentionally stays outside the public Attachment API.  Only a
+        coordinator that resolves the canonical Chat-to-Project relationship
+        may call it.
+        """
 
         ...
 
