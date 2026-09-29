@@ -10,6 +10,7 @@ import pytest
 
 import attachments.store as attachment_store
 from attachments import (
+    AttachmentConflictError,
     AttachmentImportCancelledError,
     AttachmentNotFoundError,
     AttachmentScope,
@@ -606,6 +607,142 @@ def test_derived_relation_persists_and_cascades_with_last_owner_link(
 
     assert restarted.list_derived_relations(scope) == ()
     assert restarted.list_file_records(scope) == ()
+
+
+def test_guarded_project_source_removal_commits_manifest_before_cleanup(
+    tmp_path: Path,
+) -> None:
+    """Remove one exact source and return the newly committed catalog view."""
+
+    store = _store(tmp_path)
+    scope = _scope("project", "guarded-remove")
+    store.stage_files(
+        scope,
+        (
+            _source(tmp_path, "first.md", b"first source"),
+            _source(tmp_path, "second.md", b"second source"),
+        ),
+    )
+    before = store.snapshot_files(scope)
+    target = next(
+        item for item in before.ownerships if item.file_name == "first.md"
+    )
+    relation = DerivedFileRelation(
+        schema_version=1,
+        original_file_id=target.file_id,
+        derived_file_id=(
+            f"file_{hashlib.sha256(b'first preview').hexdigest()}"
+        ),
+        scope=scope,
+        derivation_kind="preview",
+        producer_version="loader-1.0",
+        created_at=_NOW,
+    )
+    store.register_derived_relation(scope, relation)
+    original_blob = (
+        _scope_root(tmp_path, scope)
+        / "originals"
+        / f"{target.file_id}.blob"
+    )
+
+    after = store.remove_project_source(
+        scope,
+        target.link_id,
+        before.snapshot_fingerprint,
+    )
+
+    assert after == store.snapshot_files(scope)
+    assert tuple(item.file_name for item in after.ownerships) == ("second.md",)
+    assert store.list_derived_relations(scope) == ()
+    assert not original_blob.exists()
+
+
+def test_guarded_project_source_removal_rejects_stale_or_wrong_scope(
+    tmp_path: Path,
+) -> None:
+    """Fail before mutation for a stale catalog, Chat scope, or absent link."""
+
+    store = _store(tmp_path)
+    scope = _scope("project", "guarded-conflict")
+    first = store.stage_files(
+        scope,
+        (_source(tmp_path, "first.txt", b"first"),),
+    ).attachments[0]
+    stale = store.snapshot_files(scope)
+    store.stage_files(
+        scope,
+        (_source(tmp_path, "second.txt", b"second"),),
+    )
+    current = store.snapshot_files(scope)
+
+    with pytest.raises(AttachmentConflictError, match="changed"):
+        store.remove_project_source(
+            scope,
+            first.attachment_id,
+            stale.snapshot_fingerprint,
+        )
+    assert store.snapshot_files(scope) == current
+
+    with pytest.raises(AttachmentNotFoundError, match="does not exist"):
+        store.remove_project_source(
+            scope,
+            "attachment_absent",
+            current.snapshot_fingerprint,
+        )
+    with pytest.raises(AttachmentValidationError, match="Project scope"):
+        store.remove_project_source(
+            _scope("chat", "guarded-conflict"),
+            first.attachment_id,
+            current.snapshot_fingerprint,
+        )
+    assert store.snapshot_files(scope) == current
+
+
+def test_guarded_project_source_manifest_failure_preserves_live_bytes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Keep ownership and original bytes when manifest removal cannot commit."""
+
+    store = _store(tmp_path)
+    scope = _scope("project", "guarded-rollback")
+    item = store.stage_files(
+        scope,
+        (_source(tmp_path, "source.txt", b"source"),),
+    ).attachments[0]
+    before = store.snapshot_files(scope)
+    blob = (
+        _scope_root(tmp_path, scope)
+        / "originals"
+        / f"{before.originals[0].file_id}.blob"
+    )
+    real_replace = attachment_store.os.replace
+
+    def fail_manifest_replace(
+        source: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        destination: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+    ) -> None:
+        """Fail only the authoritative manifest replacement."""
+
+        if os.path.basename(os.fsdecode(destination)) == "manifest.json":
+            raise OSError("simulated manifest failure")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(
+        attachment_store.os,
+        "replace",
+        fail_manifest_replace,
+    )
+
+    with pytest.raises(AttachmentStorageError, match="manifest"):
+        store.remove_project_source(
+            scope,
+            item.attachment_id,
+            before.snapshot_fingerprint,
+        )
+
+    assert store.snapshot_files(scope) == before
+    assert blob.read_bytes() == b"source"
 
 
 def test_import_cancellation_rolls_back_metadata_originals_and_temps(

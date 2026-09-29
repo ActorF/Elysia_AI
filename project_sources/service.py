@@ -20,8 +20,6 @@ from attachments import (
     AttachmentValidationError,
     FileCatalogSnapshot,
     FileOwnership,
-    MAX_FILE_CATALOG_ITEMS,
-    OriginalFileMetadata,
 )
 from attachments.domain import validate_attachment_id
 from chats import (
@@ -65,6 +63,11 @@ from .domain import (
     ProjectSourceGeneration,
     ProjectSourceInstructions,
     ProjectSourceSnapshot,
+)
+from .catalog import (
+    select_indexable_file_catalog as _select_indexable_file_catalog,
+    snapshot_file_catalog as _snapshot_file_catalog,
+    sources_from_catalog as _sources_from_catalog,
 )
 from .exceptions import (
     ProjectSourceAuthorizationError,
@@ -191,140 +194,6 @@ class _AuthoritySnapshot:
     project_updated_at: datetime
     default_model_name: str | None
     custom_instructions: str | None
-
-
-def _snapshot_file_catalog(value: object) -> FileCatalogSnapshot:
-    """Detach one atomic attachment catalog from an injected repository."""
-
-    if type(value) is not FileCatalogSnapshot:
-        raise ProjectSourceValidationError(
-            "Project Source ownership snapshot is invalid."
-        )
-    if (
-        type(value.originals) is not tuple
-        or type(value.ownerships) is not tuple
-        or len(value.originals) > MAX_FILE_CATALOG_ITEMS
-        or len(value.ownerships) > MAX_FILE_CATALOG_ITEMS
-    ):
-        raise ProjectSourceValidationError(
-            "Project Source ownership snapshot exceeds its safe limit."
-        )
-    try:
-        scope = AttachmentScope(kind=value.scope.kind, id=value.scope.id)
-        originals = tuple(
-            OriginalFileMetadata(
-                schema_version=item.schema_version,
-                file_id=item.file_id,
-                sha256=item.sha256,
-                file_name=item.file_name,
-                media_type=item.media_type,
-                size_bytes=item.size_bytes,
-                origin=item.origin,
-                imported_at=item.imported_at,
-            )
-            for item in value.originals
-        )
-        ownerships = tuple(
-            FileOwnership(
-                schema_version=item.schema_version,
-                link_id=item.link_id,
-                file_id=item.file_id,
-                file_name=item.file_name,
-                media_type=item.media_type,
-                scope=AttachmentScope(
-                    kind=item.scope.kind,
-                    id=item.scope.id,
-                ),
-                role=item.role,
-                imported_at=item.imported_at,
-            )
-            for item in value.ownerships
-        )
-        return FileCatalogSnapshot(
-            schema_version=value.schema_version,
-            scope=scope,
-            originals=originals,
-            ownerships=ownerships,
-            snapshot_fingerprint=value.snapshot_fingerprint,
-        )
-    except (AttributeError, TypeError, ValueError) as error:
-        raise ProjectSourceValidationError(
-            "Project Source ownership snapshot is invalid."
-        ) from error
-
-
-def _sources_from_catalog(
-    catalog: FileCatalogSnapshot,
-    scope: AttachmentScope,
-) -> tuple[DocumentSource, ...]:
-    """Build exact Project sources from one atomic ownership snapshot."""
-
-    if catalog.scope != scope or scope.kind != "project":
-        raise ProjectSourceAuthorizationError(
-            "Project Source ownership crosses the authorized Project."
-        )
-    originals = {item.file_id: item for item in catalog.originals}
-    sources: list[DocumentSource] = []
-    for ownership in catalog.ownerships:
-        if ownership.role != "project_source" or ownership.scope != scope:
-            raise ProjectSourceAuthorizationError(
-                "Project Source ownership is not authorized."
-            )
-        original = originals.get(ownership.file_id)
-        if original is None:
-            raise ProjectSourceValidationError(
-                "Project Source ownership has no immutable original."
-            )
-        sources.append(
-            DocumentSource(
-                scope=scope,
-                link_id=ownership.link_id,
-                file_id=ownership.file_id,
-                file_name=ownership.file_name,
-                media_type=ownership.media_type,
-                size_bytes=original.size_bytes,
-            )
-        )
-    return tuple(sorted(sources, key=lambda source: source.link_id))
-
-
-def _select_indexable_file_catalog(
-    catalog: FileCatalogSnapshot,
-    supported_routes: frozenset[DocumentRoute],
-) -> FileCatalogSnapshot:
-    """Select only ownerships accepted by the configured document pipeline.
-
-    Project attachment storage also supports images for current UI and future
-    vision work.  Those files must not make the text-document corpus
-    permanently stale merely because no trusted loader can index them.
-    """
-
-    ownerships = tuple(
-        ownership
-        for ownership in catalog.ownerships
-        if (
-            PurePath(ownership.file_name).suffix.casefold(),
-            ownership.media_type,
-        )
-        in supported_routes
-    )
-    selected_file_ids = {ownership.file_id for ownership in ownerships}
-    originals = tuple(
-        original
-        for original in catalog.originals
-        if original.file_id in selected_file_ids
-    )
-    try:
-        return FileCatalogSnapshot(
-            schema_version=catalog.schema_version,
-            scope=catalog.scope,
-            originals=originals,
-            ownerships=ownerships,
-        )
-    except (TypeError, ValueError) as error:
-        raise ProjectSourceValidationError(
-            "Indexable Project Source ownership is invalid."
-        ) from error
 
 
 def _snapshot_grounded_result(value: object) -> GroundedAnswerResult:

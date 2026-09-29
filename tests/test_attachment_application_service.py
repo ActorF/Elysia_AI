@@ -16,6 +16,7 @@ from attachments import (
     AttachmentService,
     AttachmentValidationError,
     DerivedFileRelation,
+    FileCatalogSnapshot,
     FileOwnership,
     OriginalFileMetadata,
 )
@@ -49,6 +50,7 @@ class _FakeRepository:
         self.multi_delete_scopes: tuple[AttachmentScope, ...] = ()
         self.rollback_observed = False
         self.registered_relation: DerivedFileRelation | None = None
+        self.project_source_removal: tuple[AttachmentScope, str, str] | None = None
         self.record = _file_record()
         self.ownership = FileOwnership(
             schema_version=FILE_METADATA_SCHEMA_VERSION,
@@ -118,6 +120,26 @@ class _FakeRepository:
 
         assert scope == relation.scope
         self.registered_relation = relation
+
+    def remove_project_source(
+        self,
+        scope: AttachmentScope,
+        link_id: str,
+        expected_snapshot_fingerprint: str,
+    ) -> FileCatalogSnapshot:
+        """Record one guarded Project Source removal request."""
+
+        self.project_source_removal = (
+            scope,
+            link_id,
+            expected_snapshot_fingerprint,
+        )
+        return FileCatalogSnapshot(
+            schema_version=1,
+            scope=scope,
+            originals=(),
+            ownerships=(),
+        )
 
     def open_verified_file(
         self,
@@ -210,6 +232,29 @@ def test_service_rejects_scalar_sources_and_invalid_relations_at_boundary() -> N
             scope,
             cast(DerivedFileRelation, object()),
         )
+
+
+def test_service_delegates_guarded_project_source_removal() -> None:
+    """Pass the exact scope, link, and catalog guard to the repository."""
+
+    repository = _FakeRepository()
+    service = _service(repository)
+    scope = AttachmentScope(kind="project", id="project_notes")
+    fingerprint = "e" * 64
+
+    result = service.remove_project_source(
+        scope,
+        "attachment_notes",
+        fingerprint,
+    )
+
+    assert result.scope == scope
+    assert result.ownerships == ()
+    assert repository.project_source_removal == (
+        scope,
+        "attachment_notes",
+        fingerprint,
+    )
 
 
 def test_chat_owner_failure_is_left_inside_repository_rollback_boundary() -> None:

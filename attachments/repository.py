@@ -70,6 +70,16 @@ class AttachmentRepository(Protocol):
 
         ...
 
+    def remove_project_source(
+        self,
+        scope: AttachmentScope,
+        link_id: str,
+        expected_snapshot_fingerprint: str,
+    ) -> FileCatalogSnapshot:
+        """Remove one exact Project Source from an expected catalog snapshot."""
+
+        ...
+
     def claim_chat(
         self,
         scope: AttachmentScope,

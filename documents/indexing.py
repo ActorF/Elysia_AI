@@ -127,7 +127,7 @@ def _require_embedded_lineage(
 ) -> EmbeddedDocument:
     """Require embedding output to preserve the exact verified chunk graph."""
 
-    if not isinstance(document, EmbeddedDocument):
+    if type(document) is not EmbeddedDocument:
         raise DocumentValidationError(
             "Document embedder returned an invalid embedded result."
         )
@@ -139,6 +139,43 @@ def _require_embedded_lineage(
     ):
         raise DocumentValidationError(
             "Document embedder changed the verified chunk lineage."
+        )
+    return document
+
+
+def _require_embedded_scope(
+    document: object,
+    scope: AttachmentScope,
+) -> EmbeddedDocument:
+    """Reject non-canonical embedded values or a cross-scope commit attempt.
+
+    The commit boundary is intentionally callable independently from
+    preparation so a lifecycle coordinator can revalidate authority between
+    the two operations.  It therefore cannot trust that the embedded value
+    came from this service, even when the persistence adapter would perform
+    its own validation later.
+    """
+
+    if type(document) is not EmbeddedDocument:
+        raise DocumentValidationError(
+            "document must be an exact EmbeddedDocument value."
+        )
+    try:
+        source = document.source
+        chunked_source = document.chunked_document.provenance.source
+    except (AttributeError, TypeError) as error:
+        raise DocumentValidationError(
+            "Embedded document lineage is invalid."
+        ) from error
+    if (
+        _snapshot_scope(source.scope) != scope
+        or _snapshot_scope(chunked_source.scope) != scope
+        or chunked_source != source
+        or _validate_link_id(source.link_id) != source.link_id
+        or _validate_link_id(chunked_source.link_id) != source.link_id
+    ):
+        raise DocumentValidationError(
+            "Embedded document scope does not match the requested scope."
         )
     return document
 
@@ -173,6 +210,22 @@ class DocumentIndexingService:
     ) -> EmbeddedDocument:
         """Create and atomically replace one exact ownership-link generation."""
 
+        embedded = self.prepare_document(scope, link_id)
+        self.commit_document(scope, embedded)
+        return embedded
+
+    def prepare_document(
+        self,
+        scope: AttachmentScope,
+        link_id: str,
+    ) -> EmbeddedDocument:
+        """Prepare one complete generation without mutating the vector store.
+
+        Keeping inference separate from persistence gives lifecycle callers a
+        safe cancellation and authority-revalidation point before any vector
+        generation is replaced.
+        """
+
         try:
             canonical_scope = _snapshot_scope(scope)
             canonical_link_id = _validate_link_id(link_id)
@@ -188,10 +241,6 @@ class DocumentIndexingService:
                 self._embedder.embed_document(chunked),
                 chunked,
             )
-            self._store.replace_document(
-                _snapshot_scope(canonical_scope),
-                embedded,
-            )
             return embedded
         except (DocumentError, EmbeddingError):
             raise
@@ -202,6 +251,41 @@ class DocumentIndexingService:
         except Exception as error:
             # Adapters may raise arbitrary implementation exceptions.  The
             # public boundary must not leak paths, source text, or model data.
+            raise DocumentProcessingFailedError(
+                "Document indexing failed without a safe typed result."
+            ) from error
+
+    def commit_document(
+        self,
+        scope: AttachmentScope,
+        document: EmbeddedDocument,
+    ) -> None:
+        """Atomically persist one exact embedded generation in its own scope.
+
+        This method performs no processing or embedding.  Callers must treat
+        it as the mutation boundary and revalidate external ownership or
+        cancellation immediately before invoking it.
+        """
+
+        try:
+            canonical_scope = _snapshot_scope(scope)
+            canonical_document = _require_embedded_scope(
+                document,
+                canonical_scope,
+            )
+            self._store.replace_document(
+                _snapshot_scope(canonical_scope),
+                canonical_document,
+            )
+        except (DocumentError, EmbeddingError):
+            raise
+        except (MemoryError, RecursionError) as error:
+            raise DocumentContentLimitError(
+                "Document indexing exceeded a safe resource limit."
+            ) from error
+        except Exception as error:
+            # Persistence adapters are untrusted at this boundary.  Keep
+            # source text, local paths, and model diagnostics out of callers.
             raise DocumentProcessingFailedError(
                 "Document indexing failed without a safe typed result."
             ) from error

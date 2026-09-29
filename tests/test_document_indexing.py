@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -239,6 +240,83 @@ def test_index_document_persists_only_a_complete_matching_generation() -> None:
     assert store.replace_calls == [(scope, result)]
 
 
+def test_prepare_document_finishes_embedding_without_store_mutation() -> None:
+    """Expose a cancellation boundary after inference but before persistence."""
+
+    scope = AttachmentScope("project", "project_prepare")
+    link_id = "attachment_prepare"
+    source = _chunked(scope, link_id)
+    processor = _Processor({link_id: source})
+    store = _RecordingStore()
+    service = _service(processor, store)
+
+    result = service.prepare_document(scope, link_id)
+
+    assert result.chunked_document == source
+    assert processor.calls == [(scope, link_id)]
+    assert store.replace_calls == []
+
+
+def test_commit_document_requires_exact_type_and_matching_scope() -> None:
+    """Reject untrusted or cross-owner prepared values before store mutation."""
+
+    scope = AttachmentScope("project", "project_commit")
+    link_id = "attachment_commit"
+    store = _RecordingStore()
+    service = _service(_Processor({link_id: _chunked(scope, link_id)}), store)
+    prepared = service.prepare_document(scope, link_id)
+
+    with pytest.raises(DocumentValidationError, match="exact EmbeddedDocument"):
+        service.commit_document(scope, cast(EmbeddedDocument, object()))
+    with pytest.raises(DocumentValidationError, match="scope"):
+        service.commit_document(
+            AttachmentScope("project", "project_foreign"),
+            prepared,
+        )
+
+    assert store.replace_calls == []
+
+    service.commit_document(scope, prepared)
+
+    assert store.replace_calls == [(scope, prepared)]
+
+
+def test_index_document_delegates_prepare_before_commit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Keep the convenience operation ordered through both public boundaries."""
+
+    scope = AttachmentScope("chat", "chat_delegate")
+    link_id = "attachment_delegate"
+    prepared = DocumentEmbeddingService(_UnitTextEmbedder()).embed_document(
+        _chunked(scope, link_id)
+    )
+    service = _service(_Processor({}), _RecordingStore())
+    calls: list[tuple[str, object]] = []
+
+    def _prepare(
+        requested_scope: AttachmentScope,
+        requested_link_id: str,
+    ) -> EmbeddedDocument:
+        calls.append(("prepare", (requested_scope, requested_link_id)))
+        return prepared
+
+    def _commit(
+        requested_scope: AttachmentScope,
+        document: EmbeddedDocument,
+    ) -> None:
+        calls.append(("commit", (requested_scope, document)))
+
+    monkeypatch.setattr(service, "prepare_document", _prepare)
+    monkeypatch.setattr(service, "commit_document", _commit)
+
+    assert service.index_document(scope, link_id) is prepared
+    assert calls == [
+        ("prepare", (scope, link_id)),
+        ("commit", (scope, prepared)),
+    ]
+
+
 def test_index_document_round_trips_through_the_real_sqlite_store(
     tmp_path: Path,
 ) -> None:
@@ -410,6 +488,37 @@ def test_unexpected_adapter_failure_is_sanitized_without_a_store_write() -> None
 
     with pytest.raises(DocumentProcessingFailedError) as caught:
         _service(processor, store).index_document(scope, link_id)
+
+    assert secret not in str(caught.value)
+    assert isinstance(caught.value.__cause__, RuntimeError)
+    assert store.replace_calls == []
+
+
+def test_unexpected_commit_failure_remains_sanitized_through_index_document(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Preserve the existing closed error contract after splitting commit."""
+
+    scope = AttachmentScope("chat", "chat_commit_failure")
+    link_id = "attachment_commit_failure"
+    secret = r"C:\private\vector-store.sqlite3"
+    store = _RecordingStore()
+    service = _service(
+        _Processor({link_id: _chunked(scope, link_id)}),
+        store,
+    )
+
+    def _fail_commit(
+        requested_scope: AttachmentScope,
+        document: EmbeddedDocument,
+    ) -> None:
+        del requested_scope, document
+        raise RuntimeError(secret)
+
+    monkeypatch.setattr(store, "replace_document", _fail_commit)
+
+    with pytest.raises(DocumentProcessingFailedError) as caught:
+        service.index_document(scope, link_id)
 
     assert secret not in str(caught.value)
     assert isinstance(caught.value.__cause__, RuntimeError)

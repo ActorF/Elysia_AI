@@ -46,6 +46,7 @@ from project_sources import (
     PROJECT_SOURCE_GENERATION_SCHEMA_VERSION,
     PROJECT_SOURCE_INSTRUCTIONS_SCHEMA_VERSION,
     PROJECT_SOURCE_SNAPSHOT_SCHEMA_VERSION,
+    CatalogEntrySnapshot,
     JsonProjectSourceRepository,
     ProjectSourceAnswerService,
     ProjectSourceAuthorizationError,
@@ -55,6 +56,9 @@ from project_sources import (
     ProjectSourceSnapshot,
     ProjectSourceStaleError,
     ProjectSourceStorageError,
+    select_indexable_file_catalog,
+    snapshot_file_catalog,
+    sources_from_catalog,
 )
 from projects import Project, ProjectSettings, create_project
 
@@ -372,6 +376,34 @@ def _service(
     )
 
 
+def test_shared_catalog_projection_filters_only_supported_document_routes(
+    tmp_path: Path,
+) -> None:
+    """Give answering and lifecycle code one identical corpus projection."""
+
+    project = create_project(name="Projection")
+    _chats, scope = _owners(project, "Projection Chat")
+    store = JsonAttachmentStore(tmp_path / "files", 1_000_000)
+    attachments = AttachmentService(store)
+    text = tmp_path / "notes.txt"
+    image = tmp_path / "reference.png"
+    text.write_text("trusted text", encoding="utf-8")
+    image.write_bytes(b"image bytes")
+    attachments.stage_files(scope, (text, image))
+
+    detached = snapshot_file_catalog(attachments.snapshot_files(scope))
+    selected = select_indexable_file_catalog(
+        detached,
+        frozenset({(".txt", "text/plain")}),
+    )
+    sources = sources_from_catalog(selected, scope)
+
+    assert tuple(source.file_name for source in sources) == ("notes.txt",)
+    assert selected.snapshot_fingerprint != detached.snapshot_fingerprint
+    assert sources[0].scope == scope
+    store.close()
+
+
 def test_catalog_repository_persists_and_enforces_cas(
     tmp_path: Path,
 ) -> None:
@@ -401,7 +433,15 @@ def test_catalog_repository_persists_and_enforces_cas(
     )
     repository = JsonProjectSourceRepository(tmp_path / "catalog")
 
+    assert repository.read_entry(scope) == CatalogEntrySnapshot(
+        revision=0,
+        snapshot=None,
+    )
     assert repository.save_snapshot(snapshot, expected_revision=0) == snapshot
+    assert repository.read_entry(scope) == CatalogEntrySnapshot(
+        revision=1,
+        snapshot=snapshot,
+    )
     assert JsonProjectSourceRepository(
         tmp_path / "catalog"
     ).get_snapshot(scope) == snapshot
@@ -414,6 +454,10 @@ def test_catalog_repository_persists_and_enforces_cas(
         expected_revision=1,
     )
     assert tombstone_revision == 2
+    assert repository.read_entry(scope) == CatalogEntrySnapshot(
+        revision=2,
+        snapshot=None,
+    )
     assert repository.get_revision(scope) == 2
     assert repository.list_snapshots() == ()
     with pytest.raises(ProjectSourceConflictError):
@@ -426,6 +470,10 @@ def test_catalog_repository_persists_and_enforces_cas(
         recreated,
         expected_revision=2,
     ) == recreated
+    assert repository.read_entry(scope) == CatalogEntrySnapshot(
+        revision=3,
+        snapshot=recreated,
+    )
     attachment_store.close()
 
 

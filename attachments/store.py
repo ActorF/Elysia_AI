@@ -850,6 +850,111 @@ class JsonAttachmentStore:
                 ) from error
             return self._state(scope, remaining)
 
+    def remove_project_source(
+        self,
+        scope: AttachmentScope,
+        link_id: str,
+        expected_snapshot_fingerprint: str,
+    ) -> FileCatalogSnapshot:
+        """Remove one exact Project Source after a catalog-fingerprint guard.
+
+        The manifest remains the ownership commit boundary: it is replaced
+        before an unshared original blob is reclaimed.  A crash can therefore
+        leave only an unreachable blob, never a live ownership whose bytes were
+        deleted.  The expected fingerprint prevents a delayed lifecycle job
+        from deleting a link after any other ownership mutation.
+        """
+
+        self._require_scope(scope)
+        if scope.kind != "project":
+            raise AttachmentValidationError(
+                "Project Source removal requires a Project scope."
+            )
+        try:
+            safe_id = validate_attachment_id(link_id)
+            expected_fingerprint = validate_sha256(
+                expected_snapshot_fingerprint
+            )
+        except (TypeError, ValueError) as error:
+            raise AttachmentValidationError(
+                "Project Source removal identity is invalid."
+            ) from error
+
+        with self._lock:
+            document = self._load_manifest_document(scope)
+            item = next(
+                (
+                    entry
+                    for entry in document.items
+                    if entry.attachment_id == safe_id
+                ),
+                None,
+            )
+            if item is None:
+                raise AttachmentNotFoundError(
+                    "Project Source does not exist in this scope."
+                )
+            ownership = item.to_ownership(scope)
+            if ownership.role != "project_source" or ownership.scope != scope:
+                raise AttachmentValidationError(
+                    "Ownership link is not an exact Project Source."
+                )
+
+            originals_by_id: dict[str, OriginalFileMetadata] = {}
+            for existing in document.items:
+                originals_by_id.setdefault(
+                    existing.file_id,
+                    existing.to_original(),
+                )
+            current_snapshot = FileCatalogSnapshot(
+                schema_version=FILE_CATALOG_SNAPSHOT_SCHEMA_VERSION,
+                scope=scope,
+                originals=tuple(originals_by_id.values()),
+                ownerships=tuple(
+                    existing.to_ownership(scope)
+                    for existing in document.items
+                ),
+            )
+            if current_snapshot.snapshot_fingerprint != expected_fingerprint:
+                raise AttachmentConflictError(
+                    "Project Source catalog changed before removal."
+                )
+
+            remaining = tuple(
+                existing for existing in document.items if existing is not item
+            )
+            remaining_file_ids = {
+                existing.file_id for existing in remaining
+            }
+            remaining_derived = tuple(
+                relation
+                for relation in document.derived
+                if relation.original_file_id in remaining_file_ids
+            )
+            remaining_originals: dict[str, OriginalFileMetadata] = {}
+            for existing in remaining:
+                remaining_originals.setdefault(
+                    existing.file_id,
+                    existing.to_original(),
+                )
+            result = FileCatalogSnapshot(
+                schema_version=FILE_CATALOG_SNAPSHOT_SCHEMA_VERSION,
+                scope=scope,
+                originals=tuple(remaining_originals.values()),
+                ownerships=tuple(
+                    existing.to_ownership(scope) for existing in remaining
+                ),
+            )
+            blob_path = self._original_blob_path(scope, item.file_id)
+            self._write_manifest(
+                scope,
+                remaining,
+                derived=remaining_derived,
+            )
+            if item.file_id not in remaining_file_ids:
+                self._best_effort_unlink(blob_path)
+            return result
+
     def claim_chat(
         self,
         scope: AttachmentScope,

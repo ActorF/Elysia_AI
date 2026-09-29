@@ -37,7 +37,7 @@ jobs:
       - name: Run Windows-targeted Python type checks
         run: >-
           python -m mypy --platform win32
-          agent attachments chats config core desktop_protocol documents memory models project_sources projects recovery
+          agent attachments chats config core desktop_protocol documents knowledge_lifecycle memory models project_sources projects recovery
           scripts tools ui voice desktop_backend.py desktop_speech.py start.py
 
   windows-native-integration:

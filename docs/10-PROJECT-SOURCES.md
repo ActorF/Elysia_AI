@@ -1,8 +1,8 @@
 # Project Sources：显式授权、共享语义与安全 Instructions
 
-本文记录 Elysia AI 在 [Grounded Answers and Citations](./09-GROUNDED-ANSWERS-CITATIONS.md) 之后新增的 Project Source Library 边界。它解决的是“当前 Chat 到底可以使用哪个 Project corpus”这一授权问题，而不是索引任务、生产模型接线或桌面 UI。
+本文记录 Elysia AI 在 [Grounded Answers and Citations](./09-GROUNDED-ANSWERS-CITATIONS.md) 之后新增的 Project Source Library 边界。它解决的是“当前 Chat 到底可以使用哪个 Project corpus”这一授权问题；索引任务、可恢复写入和删除传播由独立的 [Knowledge Lifecycle](./11-KNOWLEDGE-LIFECYCLE.md) 组合，生产模型接线与桌面 UI 仍不属于本层。
 
-当前实现位于 `project_sources/`，并扩展了 `attachments/` 与 `documents/grounding.py`。它仍是独立 Python Library：仓库尚未提供真实 `GroundedAnswerGenerator` Adapter，也未把该服务接入 `Brain`、`start.py`、`desktop_backend.py`、Desktop Protocol 或 React。因此，本模块完成不代表当前桌面 Chat 已经能够向 Project 文件提问。
+当前实现位于 `project_sources/`，并扩展了 `attachments/` 与 `documents/grounding.py`。授权层和 `knowledge_lifecycle/` 目前仍是独立 Python Library：仓库尚未提供真实 `GroundedAnswerGenerator` Adapter，也未把它们接入 `Brain`、`start.py`、`desktop_backend.py`、Desktop Protocol 或 React。因此，这些后端模块完成不代表当前桌面 Chat 已经能够向 Project 文件提问。
 
 ## 1. 完成范围
 
@@ -12,7 +12,7 @@
 2. **同 Project 共享**：属于同一 Project 的多个 Chat 解析到同一个 `AttachmentScope(kind="project", id=project_id)`，因此共享同一份 Project Source catalog；其他 Project、未分配 Chat、Archived Chat 或 Archived Project 均无法读取。
 3. **完整 corpus，Fail Closed**：Project 有 Source 时，catalog 必须完整覆盖当前 ownership snapshot，而且每个 Generation 必须使用当前 index-profile fingerprint。缺失、部分、过期、跨 Scope 或损坏 catalog 都是 Typed Failure，不能伪装成空证据。
 4. **Chat Attachment 默认隔离**：Chat Scope 不会被扫描、合并或回退为 Project Scope。即使两个 Scope 中的文件内容完全相同，也必须拥有各自独立的 ownership link。
-5. **显式 promotion primitive**：用户明确选择后，只能把同时存在于 canonical Chat history、处于 committed 状态且有受信 Document Loader route 的 Chat Attachment 复制为新的 Project ownership。原 Chat ownership 保留；该操作不会伪造索引 Generation，必须等待后续生命周期服务完成索引与 catalog 发布。
+5. **显式 promotion primitive**：用户明确选择后，只能把同时存在于 canonical Chat history、处于 committed 状态且有受信 Document Loader route 的 Chat Attachment 复制为新的 Project ownership。原 Chat ownership 保留；该操作不会伪造索引 Generation，必须再由 Knowledge Lifecycle 完成索引与 catalog 发布。
 6. **安全 Project Instructions**：catalog 持久化结构化 preferred link IDs 与 closed answer style；自由文本 Instructions 只作为有界、不可信的 style guidance。Preference 只重排已经通过检索、阈值与 Reranker 验证的 Hit，不能引入来源、复活低相关证据或绕过 Citation。
 7. **操作租约合同与默认协调器**：完整 resolve→retrieve→generate→revalidate 操作要求持有 `ProjectSourceOperationLease`。Library 提供保守的进程内 `ProjectSourceOperationCoordinator`；生产 Composition Root 仍必须让同一实例同时包住 Chat 移动、Project 归档/Instructions 修改、Source 变更和 catalog 发布。
 
@@ -83,16 +83,17 @@ Vector row 只能证明某个索引记录存在，不能证明当前 Chat 仍被
 - 绑定当前 catalog 的 `ProjectSourceInstructions`，包含有序 preferred link IDs 与 closed answer style；
 - 覆盖以上字段的 snapshot fingerprint。
 
-`JsonProjectSourceRepository` 使用严格 JSON Schema、duplicate-key rejection、16 MiB descriptor-bounded read、父目录 symlink/reparse 检查、固定文件 identity 复核、同目录临时文件、`fsync` 与 `os.replace` 原子替换。共享的进程内锁与 sidecar OS file lock 覆盖完整 read→compare→write transaction，因此同一 catalog 的多个 Repository 实例或进程不能同时通过旧 Revision。新增、更新和撤销都必须提供期望 Revision：
+`JsonProjectSourceRepository` 使用严格 JSON Schema、duplicate-key rejection、16 MiB descriptor-bounded read、父目录 symlink/reparse 检查、固定文件 identity 复核、同目录临时文件、`fsync` 与 `os.replace` 原子替换。Catalog schema v2 让 live entry 与 tombstone 都持久保留结构化 Instructions；旧 schema v1 live entry 从 snapshot 迁移 policy，旧 tombstone 则迁移为安全默认 policy。共享的进程内锁与 sidecar OS file lock 覆盖完整 read→compare→write transaction，因此同一 catalog 的多个 Repository 实例或进程不能同时通过旧 Revision。新增、更新和撤销都必须提供期望 Revision：
 
 ```text
 create: expected_revision=0, new revision=1
 update: expected_revision=N, new revision=N+1
+revoke-before-first-publish: expected_revision=0, tombstone revision=1
 delete: expected_revision=N, tombstone revision=N+1
 recreate: expected_revision=N+1, new revision=N+2
 ```
 
-删除保留单调 tombstone，而不是把 Revision 重置为零。这会阻止持有旧 Revision 的延迟 writer 在删除并重建后通过 ABA 覆盖新的 catalog lineage。
+删除保留单调、policy-bearing tombstone，而不是把 Revision 重置为零。这会阻止持有旧 Revision 的延迟 writer 在删除并重建后通过 ABA 覆盖新的 catalog lineage，也让显式撤销后的 answer style / preferred order 不依赖有界操作日志。即使 Project 只有尚未索引的 ownership、从未发布过 live catalog，显式 revoke 也会以 `expected_revision=0` CAS 创建 revision 1 tombstone；后续只有显式 rebuild 可以恢复授权。
 
 Catalog 缺失时只有两种结果：
 
@@ -139,7 +140,7 @@ Archived owner 不是只读 owner：Archived Chat 与 Archived Project 都不能
 9. 对相同内容与 metadata 重复调用时返回既有 Project ownership；若相同 bytes 已用不同 metadata 存在，则返回 conflict 而不是伪装成功；
 10. 不复制旧 Derived relation，也不发布虚假 Generation。
 
-Promotion 后 catalog 与 ownership 暂时不匹配是安全状态：回答会明确失败为 stale，直到 Module 8 完成 Processing、Embedding、Vector replacement 与 catalog CAS publish。
+Promotion 后 catalog 与 ownership 暂时不匹配是安全状态：回答会明确失败为 stale，直到调用 Knowledge Lifecycle 的 add/reindex/rebuild 路径完成 Processing、Embedding、Vector replacement 与 catalog CAS publish。
 
 ## 7. Project Instructions 与来源优先级
 
@@ -201,7 +202,7 @@ Library 仍会在生成后再次加载并比较：
 
 ## 9. 安全写入顺序
 
-Module 8 实现生命周期时必须遵循以下顺序。
+`knowledge_lifecycle/` 已按以下顺序组合跨 Store saga；完整状态、取消、恢复、替换、删除和导出语义见 [Knowledge Lifecycle](./11-KNOWLEDGE-LIFECYCLE.md)。
 
 新增或重新索引：
 
@@ -260,8 +261,6 @@ CAS revoke catalog record first
 
 本模块没有实现：
 
-- Background index job、进度、取消、Retry 或 Crash Recovery；
-- add/replace/reindex/revoke/delete 的完整传播清理；
 - 生产 `GroundedAnswerGenerator`；
 - `Brain` / `start.py` / Desktop Backend Composition Root；
 - Desktop Protocol DTO、React Project Sources 状态与 Citation UI；
@@ -269,4 +268,4 @@ CAS revoke catalog record first
 - Preview、page/block/cell 跳转；
 - 真实 PDF/DOCX Desktop end-to-end 回归。
 
-下一步是 **Knowledge Lifecycle**：把 Attachment、Processing、Embedding、SQLite Generation 与 Project Source catalog 按安全顺序组成可恢复任务。完成该步骤后，仍需 Knowledge UI and Testing 才能声称桌面 Chat 已经端到端支持文件问答。
+Project-only 的 add/replace/reindex/rebuild/revoke/delete、持久操作日志、取消与 Crash Recovery 已由 [Knowledge Lifecycle](./11-KNOWLEDGE-LIFECYCLE.md) 独立实现。下一步仍是生产 Generator、Composition Root、Desktop Protocol、Knowledge UI and Testing；在这些接线完成前，不能声称桌面 Chat 已经端到端支持文件问答。

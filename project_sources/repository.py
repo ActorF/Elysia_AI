@@ -27,6 +27,7 @@ from documents import (
 
 from .domain import (
     PROJECT_SOURCE_GENERATION_SCHEMA_VERSION,
+    PROJECT_SOURCE_INSTRUCTIONS_SCHEMA_VERSION,
     PROJECT_SOURCE_SNAPSHOT_SCHEMA_VERSION,
     ProjectSourceGeneration,
     ProjectSourceInstructions,
@@ -41,7 +42,8 @@ from .exceptions import (
 )
 
 
-PROJECT_SOURCE_CATALOG_SCHEMA_VERSION: Final[Literal[1]] = 1
+PROJECT_SOURCE_CATALOG_SCHEMA_VERSION: Final[Literal[2]] = 2
+_LEGACY_PROJECT_SOURCE_CATALOG_SCHEMA_VERSION: Final[Literal[1]] = 1
 _CATALOG_FILE_NAME: Final = "project_sources.json"
 _CATALOG_LOCK_FILE_NAME: Final = ".project_sources.lock"
 _MAX_CATALOG_BYTES: Final = 16 * 1024 * 1024
@@ -49,6 +51,66 @@ _MAX_CATALOG_ENTRIES: Final = 10_000
 _FILE_LOCK_TIMEOUT_SECONDS: Final = 2.0
 _PATH_LOCKS_GUARD = Lock()
 _PATH_LOCKS: dict[Path, RLock] = {}
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class CatalogEntrySnapshot:
+    """Expose one atomic live-catalog or tombstone observation.
+
+    Revision zero means the Project has never had a catalog entry.  A positive
+    revision with no snapshot is a durable revocation tombstone, so lifecycle
+    recovery can distinguish it from a never-published Project without racing
+    separate revision and snapshot reads.
+    """
+
+    revision: int
+    snapshot: ProjectSourceSnapshot | None
+    instructions: ProjectSourceInstructions
+
+    def __init__(
+        self,
+        revision: int,
+        snapshot: ProjectSourceSnapshot | None,
+        instructions: ProjectSourceInstructions | None = None,
+    ) -> None:
+        """Resolve retained policy from a live snapshot or explicit tombstone."""
+
+        resolved = (
+            snapshot.instructions
+            if instructions is None and snapshot is not None
+            else (
+                ProjectSourceInstructions(
+                    schema_version=PROJECT_SOURCE_INSTRUCTIONS_SCHEMA_VERSION
+                )
+                if instructions is None
+                else instructions
+            )
+        )
+        object.__setattr__(self, "revision", revision)
+        object.__setattr__(self, "snapshot", snapshot)
+        object.__setattr__(self, "instructions", resolved)
+        self.__post_init__()
+
+    def __post_init__(self) -> None:
+        """Require a non-negative revision coherent with any live snapshot."""
+
+        if type(self.revision) is not int or self.revision < 0:
+            raise ProjectSourceValidationError(
+                "Project Source catalog entry revision is invalid."
+            )
+        if type(self.instructions) is not ProjectSourceInstructions:
+            raise ProjectSourceValidationError(
+                "Project Source catalog entry instructions are invalid."
+            )
+        if self.snapshot is not None and (
+            type(self.snapshot) is not ProjectSourceSnapshot
+            or self.revision == 0
+            or self.snapshot.revision != self.revision
+            or self.snapshot.instructions != self.instructions
+        ):
+            raise ProjectSourceValidationError(
+                "Project Source catalog entry snapshot is inconsistent."
+            )
 
 
 def _thread_lock_for(path: Path) -> RLock:
@@ -218,6 +280,11 @@ class ProjectSourceRepository(Protocol):
 
         ...
 
+    def read_entry(self, scope: AttachmentScope) -> CatalogEntrySnapshot:
+        """Read one live snapshot or tombstone under a single repository lock."""
+
+        ...
+
     def list_snapshots(self) -> tuple[ProjectSourceSnapshot, ...]:
         """Return every catalog snapshot in deterministic Project order."""
 
@@ -243,8 +310,9 @@ class ProjectSourceRepository(Protocol):
         scope: AttachmentScope,
         *,
         expected_revision: int,
+        instructions: ProjectSourceInstructions | None = None,
     ) -> int:
-        """Revoke one exact catalog revision and return its tombstone revision."""
+        """CAS-publish a tombstone while retaining non-authorizing policy."""
 
         ...
 
@@ -534,11 +602,12 @@ def _snapshot_from_value(value: object) -> ProjectSourceSnapshot:
 
 @dataclass(frozen=True, slots=True)
 class _CatalogEntry:
-    """Retain one monotonic live snapshot or deletion tombstone."""
+    """Retain one monotonic live snapshot or policy-bearing tombstone."""
 
     scope: AttachmentScope
     revision: int
     snapshot: ProjectSourceSnapshot | None
+    instructions: ProjectSourceInstructions
 
     def __post_init__(self) -> None:
         """Require an exact Project scope and a coherent live revision."""
@@ -551,10 +620,15 @@ class _CatalogEntry:
             raise ProjectSourceDataCorruptionError(
                 "Stored Project Source catalog entry revision is invalid."
             )
+        if type(self.instructions) is not ProjectSourceInstructions:
+            raise ProjectSourceDataCorruptionError(
+                "Stored Project Source catalog instructions are invalid."
+            )
         if self.snapshot is not None and (
             type(self.snapshot) is not ProjectSourceSnapshot
             or self.snapshot.scope != self.scope
             or self.snapshot.revision != self.revision
+            or self.snapshot.instructions != self.instructions
         ):
             raise ProjectSourceDataCorruptionError(
                 "Stored Project Source catalog entry is inconsistent."
@@ -570,15 +644,20 @@ def _entry_to_data(entry: _CatalogEntry) -> dict[str, object]:
         "snapshot": (
             None if entry.snapshot is None else _snapshot_to_data(entry.snapshot)
         ),
+        "instructions": _instructions_to_data(entry.instructions),
     }
 
 
-def _entry_from_value(value: object) -> _CatalogEntry:
-    """Rebuild one exact catalog entry without erasing tombstone epochs."""
+def _entry_from_value(value: object, *, schema_version: int) -> _CatalogEntry:
+    """Rebuild one exact entry, migrating legacy policy-less tombstones."""
 
     data = _exact_object(
         value,
-        {"scope", "revision", "snapshot"},
+        (
+            {"scope", "revision", "snapshot"}
+            if schema_version == _LEGACY_PROJECT_SOURCE_CATALOG_SCHEMA_VERSION
+            else {"scope", "revision", "snapshot", "instructions"}
+        ),
         "Project Source catalog entry",
     )
     raw_scope = _exact_object(data["scope"], {"kind", "id"}, "entry scope")
@@ -595,10 +674,23 @@ def _entry_from_value(value: object) -> _CatalogEntry:
             if data["snapshot"] is None
             else _snapshot_from_value(data["snapshot"])
         )
+        instructions = (
+            snapshot.instructions
+            if snapshot is not None
+            else (
+                ProjectSourceInstructions(
+                    schema_version=PROJECT_SOURCE_INSTRUCTIONS_SCHEMA_VERSION
+                )
+                if schema_version
+                == _LEGACY_PROJECT_SOURCE_CATALOG_SCHEMA_VERSION
+                else _instructions_from_value(data["instructions"])
+            )
+        )
         return _CatalogEntry(
             scope=scope,
             revision=_exact_integer(data["revision"], "entry revision"),
             snapshot=snapshot,
+            instructions=instructions,
         )
     except ProjectSourceDataCorruptionError:
         raise
@@ -620,14 +712,30 @@ class JsonProjectSourceRepository:
     def get_snapshot(self, scope: AttachmentScope) -> ProjectSourceSnapshot:
         """Return one exact Project snapshot or a stable not-found failure."""
 
-        canonical_scope = self._require_project_scope(scope)
-        with _catalog_file_lock(self._catalog_file):
-            for entry in self._load_entries():
-                if entry.scope == canonical_scope and entry.snapshot is not None:
-                    return entry.snapshot
+        entry = self.read_entry(scope)
+        if entry.snapshot is not None:
+            return entry.snapshot
         raise ProjectSourceNotFoundError(
             "Project Source catalog has not been published."
         )
+
+    def read_entry(self, scope: AttachmentScope) -> CatalogEntrySnapshot:
+        """Read one coherent live snapshot, tombstone, or absent entry."""
+
+        canonical_scope = self._require_project_scope(scope)
+        with _catalog_file_lock(self._catalog_file):
+            for entry in self._load_entries():
+                if entry.scope == canonical_scope:
+                    return CatalogEntrySnapshot(
+                        revision=entry.revision,
+                        snapshot=(
+                            None
+                            if entry.snapshot is None
+                            else self._snapshot_copy(entry.snapshot)
+                        ),
+                        instructions=self._instructions_copy(entry.instructions),
+                    )
+        return CatalogEntrySnapshot(revision=0, snapshot=None)
 
     def list_snapshots(self) -> tuple[ProjectSourceSnapshot, ...]:
         """Return every validated snapshot sorted by stable Project ID."""
@@ -642,12 +750,7 @@ class JsonProjectSourceRepository:
     def get_revision(self, scope: AttachmentScope) -> int:
         """Return a live/tombstone revision so recreation cannot suffer ABA."""
 
-        canonical_scope = self._require_project_scope(scope)
-        with _catalog_file_lock(self._catalog_file):
-            for entry in self._load_entries():
-                if entry.scope == canonical_scope:
-                    return entry.revision
-        return 0
+        return self.read_entry(scope).revision
 
     def save_snapshot(
         self,
@@ -685,6 +788,7 @@ class JsonProjectSourceRepository:
                 scope=canonical.scope,
                 revision=canonical.revision,
                 snapshot=canonical,
+                instructions=canonical.instructions,
             )
             if position is None:
                 entries.append(replacement)
@@ -698,14 +802,20 @@ class JsonProjectSourceRepository:
         scope: AttachmentScope,
         *,
         expected_revision: int,
+        instructions: ProjectSourceInstructions | None = None,
     ) -> int:
-        """Revoke one exact revision and retain a monotonic ABA tombstone."""
+        """CAS-publish a policy-bearing tombstone, including from absence."""
 
         canonical_scope = self._require_project_scope(scope)
-        if type(expected_revision) is not int or expected_revision <= 0:
+        if type(expected_revision) is not int or expected_revision < 0:
             raise ProjectSourceValidationError(
-                "expected_revision must be a positive integer."
+                "expected_revision must be a non-negative integer."
             )
+        canonical_instructions = (
+            None
+            if instructions is None
+            else self._instructions_copy(instructions)
+        )
         with _catalog_file_lock(self._catalog_file):
             entries = list(self._load_entries())
             position = next(
@@ -716,20 +826,33 @@ class JsonProjectSourceRepository:
                 ),
                 None,
             )
-            if position is None or entries[position].snapshot is None:
-                raise ProjectSourceNotFoundError(
-                    "Project Source catalog has not been published."
-                )
-            if entries[position].revision != expected_revision:
+            current_revision = 0 if position is None else entries[position].revision
+            if current_revision != expected_revision:
                 raise ProjectSourceConflictError(
                     "Project Source catalog revision changed."
                 )
+            retained_instructions = (
+                canonical_instructions
+                if canonical_instructions is not None
+                else (
+                    ProjectSourceInstructions(
+                        schema_version=PROJECT_SOURCE_INSTRUCTIONS_SCHEMA_VERSION
+                    )
+                    if position is None
+                    else entries[position].instructions
+                )
+            )
             tombstone_revision = expected_revision + 1
-            entries[position] = _CatalogEntry(
+            replacement = _CatalogEntry(
                 scope=canonical_scope,
                 revision=tombstone_revision,
                 snapshot=None,
+                instructions=retained_instructions,
             )
+            if position is None:
+                entries.append(replacement)
+            else:
+                entries[position] = replacement
             self._write_entries(tuple(entries))
             return tombstone_revision
 
@@ -777,6 +900,32 @@ class JsonProjectSourceRepository:
         ):
             raise ProjectSourceValidationError(
                 "Project Source snapshot is invalid."
+            ) from None
+
+    @staticmethod
+    def _instructions_copy(
+        instructions: object,
+    ) -> ProjectSourceInstructions:
+        """Detach one public instruction policy through strict JSON values."""
+
+        if type(instructions) is not ProjectSourceInstructions:
+            raise ProjectSourceValidationError(
+                "Project Source instructions are invalid."
+            )
+        try:
+            return _instructions_from_value(_instructions_to_data(instructions))
+        except (MemoryError, RecursionError):
+            raise ProjectSourceValidationError(
+                "Project Source instructions exceed a safe resource limit."
+            ) from None
+        except (
+            ProjectSourceDataCorruptionError,
+            ProjectSourceValidationError,
+            TypeError,
+            ValueError,
+        ):
+            raise ProjectSourceValidationError(
+                "Project Source instructions are invalid."
             ) from None
 
     def _read_catalog_bytes(self) -> bytes | None:
@@ -864,9 +1013,13 @@ class JsonProjectSourceRepository:
             {"schema_version", "entries"},
             "Project Source catalog",
         )
-        if _exact_integer(root["schema_version"], "catalog schema version") != (
-            PROJECT_SOURCE_CATALOG_SCHEMA_VERSION
-        ):
+        schema_version = _exact_integer(
+            root["schema_version"], "catalog schema version"
+        )
+        if schema_version not in {
+            _LEGACY_PROJECT_SOURCE_CATALOG_SCHEMA_VERSION,
+            PROJECT_SOURCE_CATALOG_SCHEMA_VERSION,
+        }:
             raise ProjectSourceDataCorruptionError(
                 "Stored Project Source catalog version is unsupported."
             )
@@ -877,7 +1030,10 @@ class JsonProjectSourceRepository:
             raise ProjectSourceDataCorruptionError(
                 "Stored Project Source catalog entries are invalid."
             )
-        entries = tuple(_entry_from_value(item) for item in raw_entries)
+        entries = tuple(
+            _entry_from_value(item, schema_version=schema_version)
+            for item in raw_entries
+        )
         scope_ids = tuple(entry.scope.id for entry in entries)
         if len(set(scope_ids)) != len(scope_ids):
             raise ProjectSourceDataCorruptionError(

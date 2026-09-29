@@ -101,6 +101,20 @@ class AttachmentService:
 
         return self._repository.remove(scope, attachment_id)
 
+    def remove_project_source(
+        self,
+        scope: AttachmentScope,
+        link_id: str,
+        expected_snapshot_fingerprint: str,
+    ) -> FileCatalogSnapshot:
+        """Remove one Project Source only from the exact expected catalog."""
+
+        return self._repository.remove_project_source(
+            scope,
+            link_id,
+            expected_snapshot_fingerprint,
+        )
+
     def claim_chat(
         self,
         scope: AttachmentScope,

@@ -1,5 +1,11 @@
 """Public Project Source catalogs, authorization, and answer composition."""
 
+from .catalog import (
+    select_indexable_file_catalog,
+    snapshot_file_catalog,
+    sources_from_catalog,
+)
+
 from .domain import (
     PROJECT_SOURCE_ANSWER_SCHEMA_VERSION,
     PROJECT_SOURCE_GENERATION_SCHEMA_VERSION,
@@ -22,6 +28,7 @@ from .exceptions import (
 )
 from .repository import (
     PROJECT_SOURCE_CATALOG_SCHEMA_VERSION,
+    CatalogEntrySnapshot,
     JsonProjectSourceRepository,
     ProjectSourceRepository,
 )
@@ -39,6 +46,7 @@ __all__ = [
     "PROJECT_SOURCE_GENERATION_SCHEMA_VERSION",
     "PROJECT_SOURCE_INSTRUCTIONS_SCHEMA_VERSION",
     "PROJECT_SOURCE_SNAPSHOT_SCHEMA_VERSION",
+    "CatalogEntrySnapshot",
     "JsonProjectSourceRepository",
     "ProjectSettingsInstructionProvider",
     "ProjectSourceAnswer",
@@ -58,4 +66,7 @@ __all__ = [
     "ProjectSourceStaleError",
     "ProjectSourceStorageError",
     "ProjectSourceValidationError",
+    "select_indexable_file_catalog",
+    "snapshot_file_catalog",
+    "sources_from_catalog",
 ]
