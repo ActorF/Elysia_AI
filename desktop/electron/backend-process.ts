@@ -627,6 +627,16 @@ export class BackendProcess {
     }
   }
 
+  /**
+   * Report whether managed speech is still queued, playing, or draining.
+   *
+   * This Main-only boolean deliberately outlives the Chat response and exposes
+   * no spoken content or correlation metadata to Renderer-facing snapshots.
+   */
+  hasActiveSpeechTurn(): boolean {
+    return this.speechDelivery?.hasActiveTurn() === true
+  }
+
   /** Spawn the Backend and begin its authenticated handshake and initialization. */
   start(modelName?: string): void {
     if (this.child !== null) {

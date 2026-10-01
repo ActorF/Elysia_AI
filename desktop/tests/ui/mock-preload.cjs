@@ -98,6 +98,17 @@ function defaultDesktopPetState() {
   }
 }
 
+function defaultPresenceNotificationState() {
+  return {
+    revision: 0,
+    updatedAt: null,
+    completionNotifications: false,
+    reminderFrequency: 'off',
+    runtime: 'available',
+    warning: null,
+  }
+}
+
 function defaultVoiceSettingsState() {
   return {
     kind: 'voice.settings',
@@ -264,10 +275,12 @@ let chatState = defaultChatState()
 let projectState = defaultProjectState()
 let settingsState = defaultSettingsState()
 let desktopPetState = defaultDesktopPetState()
+let presenceNotificationState = defaultPresenceNotificationState()
 let voiceSettingsState = defaultVoiceSettingsState()
 let microphonePermissionStatus = 'granted'
 let nextSettingsError = null
 let nextDesktopPetUpdateError = null
+let nextPresenceNotificationUpdateError = null
 let nextVoiceSettingsError = null
 let nextVoiceCaptureError = null
 let nextVoiceTranscriptionError = null
@@ -309,6 +322,7 @@ let nextVoiceTranscriptionTerminalBeforeAcknowledgement = false
 const backendListeners = new Set()
 const desktopPetStateListeners = new Set()
 const desktopPetOpenChatListeners = new Set()
+const presenceNotificationStateListeners = new Set()
 
 const reloadState = takeReloadState()
 if (reloadState !== null) {
@@ -318,6 +332,10 @@ if (reloadState !== null) {
   settingsState = clone(reloadState.settingsState)
   desktopPetState = clone(
     reloadState.desktopPetState ?? defaultDesktopPetState(),
+  )
+  presenceNotificationState = clone(
+    reloadState.presenceNotificationState
+      ?? defaultPresenceNotificationState(),
   )
   voiceSettingsState = clone(
     reloadState.voiceSettingsState ?? defaultVoiceSettingsState(),
@@ -692,6 +710,47 @@ const desktopApi = {
   resetDesktopPetPosition: async () => {
     record('resetDesktopPetPosition')
     return clone(desktopPetState)
+  },
+
+  getPresenceNotificationState: async () => {
+    record('getPresenceNotificationState')
+    return clone(presenceNotificationState)
+  },
+
+  updatePresenceNotifications: async (request) => {
+    record('updatePresenceNotifications', [request])
+    if (nextPresenceNotificationUpdateError !== null) {
+      const message = nextPresenceNotificationUpdateError
+      nextPresenceNotificationUpdateError = null
+      throw new Error(message)
+    }
+    if (request.expectedRevision !== presenceNotificationState.revision) {
+      throw new Error(
+        'Notification preferences changed elsewhere. Reload before saving.',
+      )
+    }
+    const same = request.completionNotifications
+        === presenceNotificationState.completionNotifications
+      && request.reminderFrequency
+        === presenceNotificationState.reminderFrequency
+    presenceNotificationState = {
+      ...presenceNotificationState,
+      revision: same
+        ? presenceNotificationState.revision
+        : presenceNotificationState.revision + 1,
+      updatedAt: same
+        ? presenceNotificationState.updatedAt
+        : '2026-10-01T12:00:00.000Z',
+      completionNotifications: request.completionNotifications,
+      reminderFrequency: request.reminderFrequency,
+      runtime: 'available',
+      warning: null,
+    }
+    return clone(presenceNotificationState)
+  },
+
+  setPresenceVoiceActive: async (active) => {
+    record('setPresenceVoiceActive', [active])
   },
 
   getSnapshot: async () => {
@@ -1530,6 +1589,15 @@ const desktopApi = {
     }
   },
 
+  onPresenceNotificationStateChanged: (listener) => {
+    record('onPresenceNotificationStateChanged.subscribe')
+    presenceNotificationStateListeners.add(listener)
+    return () => {
+      presenceNotificationStateListeners.delete(listener)
+      record('onPresenceNotificationStateChanged.unsubscribe')
+    }
+  },
+
   onBackendEvent: (listener) => {
     record('onBackendEvent.subscribe')
     backendListeners.add(listener)
@@ -1554,10 +1622,12 @@ const testControl = {
     projectState = defaultProjectState()
     settingsState = defaultSettingsState()
     desktopPetState = defaultDesktopPetState()
+    presenceNotificationState = defaultPresenceNotificationState()
     voiceSettingsState = defaultVoiceSettingsState()
     microphonePermissionStatus = 'granted'
     nextSettingsError = null
     nextDesktopPetUpdateError = null
+    nextPresenceNotificationUpdateError = null
     nextVoiceSettingsError = null
     nextVoiceCaptureError = null
     nextVoiceTranscriptionError = null
@@ -1626,6 +1696,10 @@ const testControl = {
     desktopPetState = clone(nextDesktopPetState)
   },
 
+  setPresenceNotificationState: (nextState) => {
+    presenceNotificationState = clone(nextState)
+  },
+
   setVoiceSettingsState: (nextVoiceSettingsState) => {
     voiceSettingsState = clone(nextVoiceSettingsState)
   },
@@ -1640,6 +1714,10 @@ const testControl = {
 
   failNextDesktopPetUpdate: (message) => {
     nextDesktopPetUpdateError = message
+  },
+
+  failNextPresenceNotificationUpdate: (message) => {
+    nextPresenceNotificationUpdateError = message
   },
 
   failNextVoiceSettingsUpdate: (message) => {
@@ -1805,6 +1883,13 @@ const testControl = {
     }
   },
 
+  emitPresenceNotificationState: (state) => {
+    presenceNotificationState = clone(state)
+    for (const listener of presenceNotificationStateListeners) {
+      listener(clone(presenceNotificationState))
+    }
+  },
+
   emitDesktopPetOpenChatRequested: () => {
     for (const listener of desktopPetOpenChatListeners) {
       listener()
@@ -1929,6 +2014,7 @@ const testControl = {
       projectState,
       settingsState,
       desktopPetState,
+      presenceNotificationState,
       voiceSettingsState,
       microphonePermissionStatus,
       chatMessages: [...chatMessages.entries()],

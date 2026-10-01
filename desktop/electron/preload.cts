@@ -40,6 +40,10 @@ import type {
   DesktopPetState,
   UpdateDesktopPetRequest,
 } from './desktop-pet-contracts.js'
+import type {
+  PresenceNotificationState,
+  UpdatePresenceNotificationRequest,
+} from './presence-notification-contracts.js'
 import {
   advanceSpeechMouthEnvelope,
   CLOSED_SPEECH_MOUTH_ENVELOPE,
@@ -611,6 +615,23 @@ const desktopApi: DesktopApi = {
       'desktop-pet:reset-position',
     ) as Promise<DesktopPetState>,
 
+  getPresenceNotificationState: () =>
+    ipcRenderer.invoke(
+      'presence-notifications:get-state',
+    ) as Promise<PresenceNotificationState>,
+
+  updatePresenceNotifications: (request: UpdatePresenceNotificationRequest) =>
+    ipcRenderer.invoke(
+      'presence-notifications:update',
+      request,
+    ) as Promise<PresenceNotificationState>,
+
+  setPresenceVoiceActive: (active: boolean) =>
+    ipcRenderer.invoke(
+      'presence-notifications:set-voice-active',
+      active,
+    ) as Promise<void>,
+
   getSnapshot: () =>
     ipcRenderer.invoke(
       'backend:get-snapshot',
@@ -954,6 +975,25 @@ const desktopApi: DesktopApi = {
     ipcRenderer.on('desktop-pet:open-chat-requested', handler)
     return () => {
       ipcRenderer.removeListener('desktop-pet:open-chat-requested', handler)
+    }
+  },
+
+  onPresenceNotificationStateChanged: (
+    listener: (state: PresenceNotificationState) => void,
+  ) => {
+    const handler = (
+      _event: Electron.IpcRendererEvent,
+      state: PresenceNotificationState,
+    ): void => {
+      listener(state)
+    }
+
+    ipcRenderer.on('presence-notifications:state-changed', handler)
+    return () => {
+      ipcRenderer.removeListener(
+        'presence-notifications:state-changed',
+        handler,
+      )
     }
   },
 

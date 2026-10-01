@@ -2138,14 +2138,18 @@ svg {
 .appearance-subheading p,
 .desktop-pet-note,
 .desktop-pet-warning,
-.desktop-pet-error {
+.desktop-pet-error,
+.presence-notification-note,
+.presence-notification-warning,
+.presence-notification-error {
   margin: var(--space-1) 0 0;
   font-size: var(--font-size-xs);
   line-height: var(--line-height-normal);
 }
 
 .appearance-subheading p,
-.desktop-pet-note {
+.desktop-pet-note,
+.presence-notification-note {
   color: var(--color-text-muted);
 }
 
@@ -2160,6 +2164,20 @@ svg {
   align-items: center;
   justify-content: space-between;
   margin-top: var(--space-3);
+}
+
+.presence-notification-status {
+  display: flex;
+  gap: var(--space-3);
+  align-items: center;
+  justify-content: space-between;
+  margin-top: var(--space-3);
+}
+
+.presence-notification-status p {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-xs);
 }
 
 .desktop-pet-status p {
@@ -2180,7 +2198,15 @@ svg {
   color: var(--color-warning);
 }
 
+.presence-notification-warning {
+  color: var(--color-warning);
+}
+
 .desktop-pet-error {
+  color: var(--color-danger);
+}
+
+.presence-notification-error {
   color: var(--color-danger);
 }
 
@@ -3631,7 +3657,8 @@ kbd {
 }
 
 @media (max-width: 42rem) {
-  .desktop-pet-status {
+  .desktop-pet-status,
+  .presence-notification-status {
     flex-direction: column;
     align-items: flex-start;
   }

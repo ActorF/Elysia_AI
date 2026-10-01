@@ -20,7 +20,7 @@
 
 > [!IMPORTANT]
 >
-> 本项目目前是 **开发预览**，不是下载即用的正式发行版。桌面壳仍依赖源码目录中的 Python 环境、Ollama 和本地模型；Project Sources 管理、本地文件问答与可信引用、有界单句 STT、显式确认的 Voice Session、受管 GPT-SoVITS 分句播放、思考/朗读期间的安全 Barge-in，以及正常回复后的可选自动续听已经接通。文件问答必须由用户在 Project Chat 中明确开启；自动续听默认关闭、在通话页可见且可随时关闭，每轮 Final Transcript 仍需人工检查并明确发送。封闭的 Character State API 已把 Chat、Voice 与 Knowledge 生命周期映射到审核的应用内角色图集；真实 Web Audio 播放振幅以不高于 20 Hz 的 RMS 采样驱动 `closed / small / medium / wide` 四档嘴型，用户限定的 `neutral / happy / sad` 同时选择 TTS 参考与静态表情。模型不能下发任意情绪、路径或动画指令；Still 与 Windows Reduced Motion 始终禁用嘴型动画。可选静态桌宠也已接入，但默认关闭；它使用独立透明窗口和最小 Preload，不是 Live2D，也不连接 Backend、网络或文件系统。可选语音 Runtime、模型和参考音频均不随基础安装提供，实时 Partial Transcript、Work Agent、Live2D 与正式安装体验尚未完成。真实麦克风/扬声器、房间回声和长通话人工矩阵未执行，项目负责人已明确豁免其作为当前交付的关闭门槛，因此本项目不声称这些人工观察已经通过。
+> 本项目目前是 **开发预览**，不是下载即用的正式发行版。桌面壳仍依赖源码目录中的 Python 环境、Ollama 和本地模型；Project Sources 管理、本地文件问答与可信引用、有界单句 STT、显式确认的 Voice Session、受管 GPT-SoVITS 分句播放、思考/朗读期间的安全 Barge-in，以及正常回复后的可选自动续听已经接通。文件问答必须由用户在 Project Chat 中明确开启；自动续听默认关闭、在通话页可见且可随时关闭，每轮 Final Transcript 仍需人工检查并明确发送。封闭的 Character State API 已把 Chat、Voice 与 Knowledge 生命周期映射到审核的应用内角色图集；真实 Web Audio 播放振幅以不高于 20 Hz 的 RMS 采样驱动 `closed / small / medium / wide` 四档嘴型，用户限定的 `neutral / happy / sad` 同时选择 TTS 参考与静态表情。模型不能下发任意情绪、路径或动画指令；Still 与 Windows Reduced Motion 始终禁用嘴型动画。可选静态桌宠以及固定文案的系统通知均已接入，但两者默认关闭；通知允许独立开启回复完成提示，并可另选 Daily / Weekly 中性提醒，也可一键全部关闭。提醒的调度与投递只在 Elysia 已运行时发生，不建立后台服务、开机自启、连续打卡或模型生成的主动消息。可选语音 Runtime、模型和参考音频均不随基础安装提供，实时 Partial Transcript、Work Agent、Live2D 与正式安装体验尚未完成。真实麦克风/扬声器、房间回声和长通话人工矩阵未执行，项目负责人已明确豁免其作为当前交付的关闭门槛，因此本项目不声称这些人工观察已经通过。
 
 ---
 
@@ -37,6 +37,7 @@
 - 🎭 **角色状态 API** — 将 Chat、Voice 与 Knowledge 生命周期归一为封闭语义状态，并为未来 Work/Approval 保留闭集；角色组件不直接操作动画文件
 - 🌸 **应用内角色** — 主界面与 Voice 共用审核图集；七态映射、用户限定情绪、真实播放 RMS 四档嘴型、Still/Reduced Motion 和 `speech → expression → state → portrait → text` 回退均不影响 Chat 或 Voice
 - 🌷 **可选静态桌宠** — 默认关闭；独立透明置顶窗口可拖动、隐藏或从托盘恢复，点击角色会回到主 Chat，且不新增 Backend、网络或文件系统能力
+- 🔕 **可选 Presence 与系统通知** — 回复完成通知和 Daily / Weekly 中性提醒均默认关闭、静音且可完全停用；固定文案不包含对话、Project 或文件内容
 - 💾 **恢复优先** — 本地 JSON 存储、旧会话迁移、损坏隔离、原子写入以及导入/导出服务
 - ♿ **桌面可用性** — 主题、键盘导航、焦点管理、Windows 缩放、中文 IME 与离线/错误恢复
 
@@ -62,6 +63,7 @@
 | Character State API | ✅ 可用 | 封闭的 `idle / listening / thinking / speaking / working / waiting_approval / error` 合同；Chat、Voice 与 Knowledge 已接入，审批状态保留给后续真实 Work/Approval 流程 |
 | 应用内角色 | ✅ 可用 | 七种语义状态、三种用户限定静态表情和真实播放 RMS 四档嘴型映射到固定审核图集；Still/Reduced Motion 禁止嘴型动画，可关闭面板与五级回退均已接入 |
 | 可选静态桌宠 | ✅ 可用 | 默认 `disabled`；`hidden` 保留选择但销毁独立 Renderer，`visible` 创建透明置顶可拖动窗口；托盘提供显示/隐藏、临时鼠标穿透、位置重置和禁用 |
+| Presence 与系统通知 | ✅ 可用 | 回复完成通知默认 Off；中性提醒只允许 Off / Daily / Weekly，前台、Voice 或忙碌时不弹出且不补发；无云推送、后台服务、行为追踪或模型生成通知 |
 | 文件解析与本地 RAG | ✅ 基础可用 | 版本化 Chunk Lineage、固定本地 Embedding 空间、Scope-safe SQLite 索引、有界 Retriever/Reranker、loopback-only Grounded Generator、同 Project 多 Chat 共享且跨 Project fail-closed；Chat 需显式开启 **Use Project Sources**，证据不足不会生成无引用回答 |
 | Work Agent 与工具权限 | ⏳ 计划中 | 尚无工具执行、桌面控制、Internet 或 Vision 工作流 |
 | Live2D | ⏳ 计划中 | 当前应用内角色与独立桌宠都是静态 2D 表面；尚未接入分层 Live2D/Cubism 模型或音素级口型 |
@@ -85,6 +87,7 @@ flowchart LR
     M -->|私有 fd3 PCM WAV| E
     E -->|私有 IPC| W[Preload Web Audio]
     E -->|独立最小 IPC| DP[静态桌宠 Renderer]
+    E -->|固定静音文案| NO[操作系统通知]
     C[Python CLI / Library] -. 显式单次合成 .-> T[Python TTS Service]
     T -->|Loopback IP /tts| G[外部 GPT-SoVITS Runtime]
     E --> H[原生文件与音频边界]
@@ -110,6 +113,7 @@ flowchart LR
 - **Electron 是可信桌面边界**：它拥有 Python 子进程、原生文件选择、硬件权限与窗口生命周期。
 - **React 保持沙箱化**：`contextIsolation: true`、`nodeIntegration: false`、`sandbox: true`；Renderer 不能直接读取 Node、Python、Chat、Memory 或本地源路径。
 - **桌宠能力独立且默认关闭**：Main 独占偏好、窗口和显示器坐标；桌宠 Renderer 使用单独入口和最小 Preload，只能报告就绪、隐藏自己或打开主 Chat，不能访问 Backend、网络、文件系统、任意 IPC 或主 Renderer API。
+- **Presence 与通知默认全关**：Main 独占严格、revisioned 的设备偏好、计时器和原生通知对象；Renderer 不能提交标题、正文、链接、声音、Urgency 或任意计划。回复完成只观察经过最终一致性验证的 `chat-complete`，提醒按 24 小时或 7 天从明确选择时重新计时；到期周期会先保存处理锚点，再仅在窗口不存在、隐藏或最小化且 Backend 空闲时投递。窗口仍可见，或 Chat、Voice、完整受管朗读生命周期（包括合成空档和最终播放排空）、Knowledge 忙碌时只消费该周期；退出会停止计时器与投递，不会伪造新的已处理周期。
 - **协议双端校验**：TypeScript 与 Python 使用同一组 JSON Schema/fixture 约束，连接前完成版本、能力与随机会话令牌握手。
 - **本地数据可恢复**：关键 JSON 使用严格 Schema、revision、原子替换和损坏隔离；生成取消不会保存残缺的正式回复。
 - **文档派生、授权、检索与回答保持可验证**：生产 Python Pipeline 从无路径 `LoadedDocument` 生成版本化 Chunk，复核 Piece-table、Fingerprint/Lineage 与 Source Mapping，再把精确 Chunk Lineage 绑定到固定本地 Embedding 空间和 Scope-safe SQLite 索引。Project-only Knowledge Lifecycle 用路径私有 journal 协调 add/replace/reindex/rebuild/revoke/delete：新 Generation 最后发布 catalog，破坏性操作先 tombstone 再清理。`ProjectSourceAnswerService` 只从 canonical Chat→Project 关系、原子 ownership snapshot 与显式 catalog 派生准确 Generation；Retriever 只搜索该闭集。`GroundedAnswerService` 再选择完整命中的有界前缀，把问题、片段与 style guidance 作为不可信 JSON Data 交给固定 digest、loopback-only 的同步结构化 Generator，并只发布能解析到可信 Evidence 的陈述与 Citation。Assistant 文本和 proof 原子保存，桌面可展开安全来源与页/块/单元格定位；结构闭包仍不能证明模型概括或推断在语义上必然正确。
@@ -304,6 +308,13 @@ DEBUG=False
 - 点击角色只会显示并聚焦主窗口、进入主 Chat；关闭按钮会切换到 `hidden`。托盘可显示/隐藏、禁用、重试失败窗口，以及临时开启鼠标穿透；Settings 在失败状态也提供显式重试。鼠标穿透不会持久化；选择 Hidden 后即使主窗口已关闭，进程和托盘仍会保留为恢复入口，只有 Off 才恢复“最后窗口关闭即退出”的行为。
 - 桌宠使用自己的 HTML 入口、Sandbox 和最小 Preload。其公开 API 只有 `ready / hide / openMainChat`，没有 Backend、Chat 数据、网络、文件系统、Node、原始 IPC、语音或主 Renderer 能力；导航、新窗口和权限请求也会被拒绝。
 - 偏好由 Main 保存在 Electron `userData` 下的独立严格 JSON 中，采用 16 KiB 读取上限、revision CAS 和同目录临时文件同步后原子替换；Settings、托盘、桌宠控制、位置重置与拖动保存共用一条变更队列，显示器 ID 与坐标从不返回 Renderer。缺失或损坏的偏好安全回退到 `disabled`；Preload 失败或 10 秒内未 ready 的隐藏窗口会被销毁并进入净化后的 `failed` 状态。退出会先排空已接纳的偏好写入，再保存最终位置，整个可选持久化序列最多等待 2 秒。该失败可从 Settings 或托盘重试，不影响主 Chat、Voice 或 Backend。
+
+### 🔕 Presence 与系统通知
+
+- Settings 中的 **Reply completion notifications** 与 **Neutral presence reminders** 属于 Electron Main 本机偏好，不依赖 Python Backend 设置，也不要求重启。两项默认值分别为 Off 与 Off；提醒频率闭集只有 Off、Daily 和 Weekly，**Turn all off** 会用一次 revisioned 更新完整停用两项能力。
+- 回复提示只在用户发起的 Chat 或 Retry 已通过完整流与最终回复一致性校验、主窗口不受注意且没有 Voice 页面、尚未排空的受管朗读或 Knowledge 工作时显示。取消、错误、流式片段、语音转写、Knowledge 进度都不会触发；通知正文固定为本地文案，绝不包含 Prompt、Reply、Chat/Project 名称、文件名、Memory 或模型输出。
+- 中性提醒从启用或改频率时重新计算完整 24 小时 / 7 天间隔，只在 Elysia 已运行、主窗口不存在、隐藏或最小化、Backend Ready 且没有 Chat、Voice、尚未排空的受管朗读或 Knowledge 工作时显示。到期时若因窗口仍可见或这些活动仍忙而被抑制，该周期会安全记为已处理，不会在稍后隐藏窗口或恢复空闲后追补；退出期间不会运行提醒任务。通知固定静音、用固定 ID/Group 保持全局至多一个，点击只显示并聚焦 Elysia。
+- 严格 16 KiB JSON 只保存选择、revision、更新时间和 Main 私有的最后处理周期；损坏文件 Fail Closed 到全部关闭。Renderer 的 Web Notification 权限仍被拒绝，公开 Preload 只允许读取、完整 CAS 更新、状态订阅和一个只用于抑制通知投递的 Voice-active 布尔值；没有任意 `notify(title, body)` 能力，也不注册后台任务、自启动、云推送、连续打卡或参与度追踪。
 
 ---
 

@@ -223,6 +223,17 @@ interface DesktopPetState {
   warning: string | null
 }
 
+type PresenceReminderFrequency = 'off' | 'daily' | 'weekly'
+
+interface PresenceNotificationState {
+  revision: number
+  updatedAt: string | null
+  completionNotifications: boolean
+  reminderFrequency: PresenceReminderFrequency
+  runtime: 'available' | 'unsupported' | 'failed'
+  warning: string | null
+}
+
 interface VoiceSettingsState {
   kind: 'voice.settings'
   revision: number
@@ -272,6 +283,7 @@ interface RendererTestControl {
   emitBackendEvent(event: unknown): void
   emitDesktopPetOpenChatRequested(): void
   emitDesktopPetState(state: DesktopPetState): void
+  emitPresenceNotificationState(state: PresenceNotificationState): void
   getPendingChatActionCount(): number
   getPendingChatListCount(): number
   getPendingCharacterPanelChangeCount(): number
@@ -300,11 +312,13 @@ interface RendererTestControl {
   setChatState(state: ChatSessionState): void
   setProjectState(state: ProjectState): void
   setDesktopPetState(state: DesktopPetState): void
+  setPresenceNotificationState(state: PresenceNotificationState): void
   setSettingsState(state: DesktopSettingsState): void
   setVoiceSettingsState(state: VoiceSettingsState): void
   setMicrophonePermissionStatus(status: MicrophonePermissionStatus): void
   failNextRestart(message: string): void
   failNextDesktopPetUpdate(message: string): void
+  failNextPresenceNotificationUpdate(message: string): void
   failNextSettingsUpdate(message: string): void
   failNextVoiceSettingsUpdate(message: string): void
   failNextVoiceCapture(message: string): void
@@ -451,6 +465,24 @@ async function setDesktopPetState(state: DesktopPetState): Promise<void> {
 async function emitDesktopPetState(state: DesktopPetState): Promise<void> {
   await page.evaluate((nextState) => {
     ;(window as TestWindow).elysiaDesktopTest.emitDesktopPetState(nextState)
+  }, state)
+}
+
+async function setPresenceNotificationState(
+  state: PresenceNotificationState,
+): Promise<void> {
+  await page.evaluate((nextState) => {
+    ;(window as TestWindow).elysiaDesktopTest
+      .setPresenceNotificationState(nextState)
+  }, state)
+}
+
+async function emitPresenceNotificationState(
+  state: PresenceNotificationState,
+): Promise<void> {
+  await page.evaluate((nextState) => {
+    ;(window as TestWindow).elysiaDesktopTest
+      .emitPresenceNotificationState(nextState)
   }, state)
 }
 
@@ -1014,6 +1046,15 @@ async function failNextDesktopPetUpdate(message: string): Promise<void> {
   }, message)
 }
 
+async function failNextPresenceNotificationUpdate(
+  message: string,
+): Promise<void> {
+  await page.evaluate((nextMessage) => {
+    ;(window as TestWindow).elysiaDesktopTest
+      .failNextPresenceNotificationUpdate(nextMessage)
+  }, message)
+}
+
 async function setVoiceTranscriptionDelay(delayed: boolean): Promise<void> {
   await page.evaluate((nextDelayed) => {
     ;(window as TestWindow).elysiaDesktopTest
@@ -1221,6 +1262,20 @@ function desktopPetState(
     updatedAt: null,
     mode: 'disabled',
     runtime: 'absent',
+    warning: null,
+    ...overrides,
+  }
+}
+
+function presenceNotificationState(
+  overrides: Partial<PresenceNotificationState> = {},
+): PresenceNotificationState {
+  return {
+    revision: 0,
+    updatedAt: null,
+    completionNotifications: false,
+    reminderFrequency: 'off',
+    runtime: 'available',
     warning: null,
     ...overrides,
   }
@@ -2076,6 +2131,7 @@ test('shows all Settings areas, ownership scopes, and no secret controls', async
     'Work',
     'Privacy',
     'Appearance',
+    'Presence & notifications',
   ])
 
   const scopes = page.locator('[aria-label="Settings scopes"]')
@@ -2240,6 +2296,132 @@ test('returns to Chat when the Desktop Pet requests the main surface', async () 
   await expect(page.getByRole('heading', { name: 'Settings', exact: true }))
     .toHaveCount(0)
   await expect(page.getByLabel('Message Elysia')).toBeFocused()
+})
+
+test('keeps optional native notifications off until exact user choices', async () => {
+  await openSettings()
+
+  const completion = page.getByRole('combobox', {
+    name: 'Reply completion notifications',
+  })
+  const reminders = page.getByRole('combobox', {
+    name: 'Neutral presence reminders',
+  })
+  const turnAllOff = page.getByRole('button', { name: 'Turn all off' })
+
+  await expect(completion).toHaveValue('false')
+  await expect(reminders).toHaveValue('off')
+  await expect(turnAllOff).toBeDisabled()
+  await expect(page.getByText(
+    'Native notification runtime: available.',
+  )).toBeVisible()
+  await expect(page.getByText(/Reply text, prompts,/u)).toBeVisible()
+  await expect(page.getByText(/never start a message, microphone capture/u))
+    .toBeVisible()
+  await clearCalls()
+
+  await completion.selectOption('true')
+  await expect(completion).toHaveValue('true')
+  await reminders.selectOption('daily')
+  await expect(reminders).toHaveValue('daily')
+  await reminders.selectOption('weekly')
+  await expect(reminders).toHaveValue('weekly')
+  await turnAllOff.click()
+  await expect(completion).toHaveValue('false')
+  await expect(reminders).toHaveValue('off')
+  await expect(turnAllOff).toBeDisabled()
+
+  const calls = await getCalls()
+  expect(calls.filter(
+    (call) => call.method === 'updatePresenceNotifications',
+  ).map((call) => call.args)).toEqual([
+    [{
+      expectedRevision: 0,
+      completionNotifications: true,
+      reminderFrequency: 'off',
+    }],
+    [{
+      expectedRevision: 1,
+      completionNotifications: true,
+      reminderFrequency: 'daily',
+    }],
+    [{
+      expectedRevision: 2,
+      completionNotifications: true,
+      reminderFrequency: 'weekly',
+    }],
+    [{
+      expectedRevision: 3,
+      completionNotifications: false,
+      reminderFrequency: 'off',
+    }],
+  ])
+})
+
+test('recovers canonical notification preferences after an update fails', async () => {
+  await openSettings()
+  await emitPresenceNotificationState(presenceNotificationState({
+    revision: 7,
+    updatedAt: '2026-10-01T12:07:00.000Z',
+    completionNotifications: true,
+    reminderFrequency: 'daily',
+  }))
+  const completion = page.getByRole('combobox', {
+    name: 'Reply completion notifications',
+  })
+  const reminders = page.getByRole('combobox', {
+    name: 'Neutral presence reminders',
+  })
+  await expect(completion).toHaveValue('true')
+  await expect(reminders).toHaveValue('daily')
+
+  await setPresenceNotificationState(presenceNotificationState({
+    revision: 8,
+    updatedAt: '2026-10-01T12:08:00.000Z',
+    completionNotifications: false,
+    reminderFrequency: 'weekly',
+  }))
+  const failure = 'Native notification preferences are temporarily unavailable.'
+  await failNextPresenceNotificationUpdate(failure)
+  await clearCalls()
+
+  await completion.selectOption('false')
+  await expect(page.getByRole('alert')).toHaveText(failure)
+  await expect(completion).toHaveValue('false')
+  await expect(reminders).toHaveValue('weekly')
+
+  const calls = await getCalls()
+  expect(calls.filter((call) => (
+    call.method === 'updatePresenceNotifications'
+    || call.method === 'getPresenceNotificationState'
+  )).map((call) => ({ method: call.method, args: call.args }))).toEqual([
+    {
+      method: 'updatePresenceNotifications',
+      args: [{
+        expectedRevision: 7,
+        completionNotifications: false,
+        reminderFrequency: 'daily',
+      }],
+    },
+    { method: 'getPresenceNotificationState', args: [] },
+  ])
+})
+
+test('shows sanitized unsupported notification runtime from Main', async () => {
+  await openSettings()
+  await emitPresenceNotificationState(presenceNotificationState({
+    runtime: 'unsupported',
+    warning: 'System notifications are not supported on this device. Chat, Voice, and Work remain available.',
+  }))
+
+  await expect(page.getByText(
+    'Native notification runtime: unsupported.',
+  )).toBeVisible()
+  await expect(page.getByText(/Chat, Voice, and Work remain available/u))
+    .toBeVisible()
+  await expect(page.getByRole('combobox', {
+    name: 'Reply completion notifications',
+  })).toBeEnabled()
 })
 
 test('saves exact audio devices and restores them in a replacement window', async () => {

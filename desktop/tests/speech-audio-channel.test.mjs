@@ -810,6 +810,40 @@ test('delivery pairs metadata before fd3 and ACKs only after playback ends', asy
   input.destroy()
 })
 
+test('managed speech stays active through terminal until playback drains', async () => {
+  const input = new PassThrough()
+  const source = encodedFrame({ counter: 0, sequence: 0 })
+  const playback = new DeferredPlayback()
+  const statuses = []
+  const delivery = new SpeechDeliveryCoordinator(
+    input,
+    playback,
+    (failure) => assert.fail(`unexpected delivery failure: ${failure}`),
+    (status) => statuses.push(status),
+  )
+
+  assert.equal(delivery.hasActiveTurn(), false)
+  delivery.startTurn('request_main', 'chat_main')
+  assert.equal(delivery.hasActiveTurn(), true)
+  delivery.acceptEvent(clipEvent(source))
+  input.write(source.bytes)
+  delivery.acceptEvent(terminalEvent({ completedSentences: 1 }))
+
+  assert.equal(delivery.hasActiveTurn(), true)
+  assert.deepEqual(statuses.map((status) => status.kind), ['playing'])
+
+  playback.resolve()
+  await immediate()
+
+  assert.equal(delivery.hasActiveTurn(), false)
+  assert.deepEqual(
+    statuses.map((status) => status.kind),
+    ['playing', 'played', 'terminal'],
+  )
+  delivery.dispose()
+  input.destroy()
+})
+
 test('delivery pairs fd3 before metadata and starts before Chat completion', () => {
   const input = new PassThrough()
   const source = encodedFrame({ counter: 0, sequence: 0 })

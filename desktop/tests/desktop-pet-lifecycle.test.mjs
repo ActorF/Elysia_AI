@@ -5,6 +5,7 @@ import test from 'node:test'
 
 import {
   DesktopPetReadyDeadline,
+  drainDesktopPetAndIndependentPersistenceWithin,
   drainDesktopPetPersistenceWithin,
   sequenceDesktopPetMutation,
   settleDesktopPetOperationWithin,
@@ -78,6 +79,32 @@ test('shutdown drains admitted reset before its final placement flush', async ()
 
   assert.equal(await drain, true)
   assert.deepEqual(events, ['reset', 'flush'])
+})
+
+test('independent shutdown writes cannot starve the final pet placement', async () => {
+  let releasePetWrite
+  const events = []
+  const petWrite = new Promise((resolve) => {
+    releasePetWrite = () => {
+      events.push('pet-write')
+      resolve()
+    }
+  })
+  const stuckIndependentWrite = new Promise(() => {})
+  const drain = drainDesktopPetAndIndependentPersistenceWithin(
+    [petWrite],
+    async () => { events.push('pet-flush') },
+    [stuckIndependentWrite],
+    30,
+  )
+
+  await Promise.resolve()
+  assert.deepEqual(events, [])
+  releasePetWrite()
+  await wait(5)
+
+  assert.deepEqual(events, ['pet-write', 'pet-flush'])
+  assert.equal(await drain, false)
 })
 
 test('programmatic default placement is ignored until the user moves it', () => {

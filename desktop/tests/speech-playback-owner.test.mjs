@@ -150,7 +150,9 @@ test('replaceable owner skips a closed-window gap and resumes playback', async (
 
 test('settlement accepts only the owning WebContents main frame', async () => {
   const { owner, window } = createOwner()
+  assert.equal(owner.hasActivePlayback(), false)
   const operation = owner.play(speechClip(7))
+  assert.equal(owner.hasActivePlayback(), true)
   const playbackId = playbackIdOf(window)
   try {
     const forgedSender = new FakeWebContents()
@@ -167,6 +169,7 @@ test('settlement accepts only the owning WebContents main frame', async () => {
 
     emitSettlement(window, { playbackId, status: 'played' })
     await operation
+    assert.equal(owner.hasActivePlayback(), false)
     assert.equal(
       window.webContents.sent.some(([channel]) => channel === CANCEL_CHANNEL),
       false,

@@ -131,6 +131,18 @@ export class SpeechDeliveryCoordinator {
     )
   }
 
+  /**
+   * Report whether any authenticated speech turn still awaits terminal drain.
+   *
+   * The turn remains active across synthesis gaps and after Chat text completes;
+   * it retires only after its terminal event and all admitted clips have settled.
+   * Exposing only this boolean lets Main suppress optional presence notices
+   * without exposing speech bytes, text, or correlation identifiers.
+   */
+  hasActiveTurn(): boolean {
+    return this.turns.size > 0
+  }
+
   /** Register a Chat generation before either speech transport can answer. */
   startTurn(requestId: string, chatId: string): void {
     if (this.channelClosed) {

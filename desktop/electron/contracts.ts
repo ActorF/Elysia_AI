@@ -14,6 +14,10 @@ import type {
   DesktopPetState,
   UpdateDesktopPetRequest,
 } from './desktop-pet-contracts.js'
+import type {
+  PresenceNotificationState,
+  UpdatePresenceNotificationRequest,
+} from './presence-notification-contracts.js'
 
 export type BackendStatus =
   | 'starting'
@@ -538,6 +542,14 @@ export interface DesktopApi {
   ): Promise<DesktopPetState>
   /** Move the next visible Desktop Pet to a safe primary-display position. */
   resetDesktopPetPosition(): Promise<DesktopPetState>
+  /** Return Main-owned, default-off native notification preferences. */
+  getPresenceNotificationState(): Promise<PresenceNotificationState>
+  /** Persist both closed notification choices with revision checking. */
+  updatePresenceNotifications(
+    request: UpdatePresenceNotificationRequest,
+  ): Promise<PresenceNotificationState>
+  /** Report only whether the trusted Renderer currently owns a Voice Session. */
+  setPresenceVoiceActive(active: boolean): Promise<void>
   /** Return the current Python Backend lifecycle and capability snapshot. */
   getSnapshot(): Promise<BackendSnapshot>
   /** Restart the Python Backend and return its resulting snapshot. */
@@ -670,6 +682,10 @@ export interface DesktopApi {
   ): () => void
   /** Subscribe to requests that the ordinary application navigate to Chat. */
   onDesktopPetOpenChatRequested(listener: () => void): () => void
+  /** Subscribe to canonical native notification preference/runtime changes. */
+  onPresenceNotificationStateChanged(
+    listener: (state: PresenceNotificationState) => void,
+  ): () => void
   /** Subscribe to validated Backend events and return an unsubscribe callback. */
   onBackendEvent(listener: (event: BackendEvent) => void): () => void
 }

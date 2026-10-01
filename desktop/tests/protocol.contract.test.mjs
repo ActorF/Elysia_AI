@@ -11,6 +11,7 @@ import { pathToFileURL } from 'node:url'
 
 import { BackendProcess } from '../dist-electron/backend-process.js'
 import { BoundedNdjsonReader } from '../dist-electron/bounded-ndjson.js'
+import { SpeechDeliveryCoordinator } from '../dist-electron/speech-delivery.js'
 import {
   allowAudioPermissionCheck,
   allowAudioPermissionRequest,
@@ -1857,6 +1858,57 @@ test('Backend keeps wired speech correlation after Chat text completes', () => {
   assert.equal(accepted[0].requestId, 'speech-after-chat-1')
   assert.deepEqual(forwarded, [])
   assert.equal(backend.getSnapshot().status, 'ready')
+})
+
+test('Backend stays speech-busy when Chat response precedes speech terminal', () => {
+  const input = new PassThrough()
+  const delivery = new SpeechDeliveryCoordinator(
+    input,
+    {
+      play: () => Promise.resolve(),
+      cancel: () => {},
+    },
+    (failure) => assert.fail(`unexpected delivery failure: ${failure}`),
+  )
+  const { backend, events } = createPendingChat()
+  backend.snapshot = {
+    revision: 1,
+    status: 'ready',
+    capabilities: ['chat.stream', 'voice.speech'],
+    models: ['qwen3.5:9b'],
+    modelName: 'qwen3.5:9b',
+    chatId: 'chat_fixture',
+    chatTitle: 'Elysia Chat',
+  }
+  backend.speechDelivery = delivery
+  delivery.startTurn('chat-state-1', 'chat_fixture')
+
+  try {
+    backend.handleProtocolLine(streamFrame(0, 'Spoken later', false))
+    backend.handleProtocolLine(streamFrame(1, '', true))
+    backend.handleProtocolLine(responseFrame('Spoken later'))
+
+    assert.equal(events.at(-1)?.type, 'chat-complete')
+    assert.equal(backend.getSnapshot().activeGeneration, undefined)
+    assert.equal(backend.hasActiveSpeechTurn(), true)
+
+    backend.handleProtocolLine(eventFrame(
+      'chat-state-1',
+      'voice.speech.terminal',
+      {
+        chatId: 'chat_fixture',
+        state: 'completed',
+        submittedSentences: 0,
+        completedSentences: 0,
+        failedSentences: 0,
+      },
+    ))
+
+    assert.equal(backend.hasActiveSpeechTurn(), false)
+  } finally {
+    delivery.dispose()
+    input.destroy()
+  }
 })
 
 test('Backend registers speech turns only when capability is advertised', () => {

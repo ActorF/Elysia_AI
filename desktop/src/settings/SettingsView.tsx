@@ -1,4 +1,4 @@
-/** Render persisted global settings and honest Project/Chat scope summaries. */
+/** Render Backend, renderer-local, and Main-local settings with honest scopes. */
 
 import {
   useId,
@@ -18,6 +18,10 @@ import type {
   DesktopPetMode,
   DesktopPetState,
 } from '../../electron/desktop-pet-contracts.ts'
+import type {
+  PresenceNotificationState,
+  PresenceReminderFrequency,
+} from '../../electron/presence-notification-contracts.ts'
 import { codePointLength } from '../../electron/protocol-text.js'
 import type {
   CharacterPerformanceMode,
@@ -43,6 +47,9 @@ export interface SettingsViewProps {
   desktopPetState: DesktopPetState | null
   desktopPetPending: boolean
   desktopPetError: string | null
+  presenceNotificationState: PresenceNotificationState | null
+  presenceNotificationPending: boolean
+  presenceNotificationError: string | null
   settingsState: DesktopSettingsState | null
   models: string[]
   loading: boolean
@@ -66,6 +73,11 @@ export interface SettingsViewProps {
   onDesktopPetModeChange(mode: DesktopPetMode): Promise<void>
   /** Restore the Desktop Pet to a safe primary-display position. */
   onResetDesktopPetPosition(): Promise<void>
+  /** Persist both Main-owned notification choices as one revisioned update. */
+  onPresenceNotificationChange(
+    completionNotifications: boolean,
+    reminderFrequency: PresenceReminderFrequency,
+  ): Promise<void>
   /** Persist validated global Desktop settings. */
   onSave(settings: DesktopSettingsValues): Promise<void>
   /** Reload canonical global settings and discard the current draft. */
@@ -556,6 +568,113 @@ function AppearanceSettings({
   )
 }
 
+function PresenceNotificationSettings({
+  state,
+  pending,
+  error,
+  onChange,
+}: {
+  state: PresenceNotificationState | null
+  pending: boolean
+  error: string | null
+  onChange(
+    completionNotifications: boolean,
+    reminderFrequency: PresenceReminderFrequency,
+  ): Promise<void>
+}) {
+  const sectionId = useId()
+  const completionNotifications = state?.completionNotifications ?? false
+  const reminderFrequency = state?.reminderFrequency ?? 'off'
+  const disabled = pending || state === null
+  return (
+    <section
+      className="settings-section"
+      aria-labelledby={`${sectionId}-heading`}
+    >
+      <div className="settings-section-heading">
+        <h2 id={`${sectionId}-heading`}>Presence &amp; notifications</h2>
+        <p>Optional native notices belong to this device and are off by default.</p>
+      </div>
+      <div className="settings-field-grid">
+        <label className="settings-field">
+          <span>Reply completion notifications</span>
+          <select
+            value={String(completionNotifications)}
+            disabled={disabled}
+            onChange={(event) => {
+              void onChange(
+                event.target.value === 'true',
+                reminderFrequency,
+              )
+            }}
+            aria-describedby={`${sectionId}-completion-help`}
+          >
+            <option value="false">Off</option>
+            <option value="true">On</option>
+          </select>
+          <small id={`${sectionId}-completion-help`}>
+            When On, one generic notice appears only after a reply you started
+            finishes while Elysia is in the background. Reply text, prompts,
+            Chat or Project names, and file names are never included.
+          </small>
+        </label>
+        <label className="settings-field">
+          <span>Neutral presence reminders</span>
+          <select
+            value={reminderFrequency}
+            disabled={disabled}
+            onChange={(event) => {
+              void onChange(
+                completionNotifications,
+                event.target.value as PresenceReminderFrequency,
+              )
+            }}
+            aria-describedby={`${sectionId}-reminder-help`}
+          >
+            <option value="off">Off</option>
+            <option value="daily">At most once a day</option>
+            <option value="weekly">At most once a week</option>
+          </select>
+          <small id={`${sectionId}-reminder-help`}>
+            Reminders run only while Elysia is already open, stay quiet during
+            active Chat, Voice, or Knowledge work, and never catch up after downtime.
+          </small>
+        </label>
+      </div>
+      <div className="presence-notification-status">
+        <p role="status" aria-live="polite">
+          {state === null
+            ? 'Loading notification preferences…'
+            : `Native notification runtime: ${state.runtime}.`}
+        </p>
+        <button
+          type="button"
+          className="secondary-button"
+          disabled={
+            disabled
+            || (!completionNotifications && reminderFrequency === 'off')
+          }
+          onClick={() => { void onChange(false, 'off') }}
+        >
+          {pending ? 'Applying…' : 'Turn all off'}
+        </button>
+      </div>
+      <p className="presence-notification-note">
+        Notifications are silent and never start a message, microphone capture,
+        background service, or engagement streak. Clicking one only opens Elysia.
+      </p>
+      {state?.warning !== null && state?.warning !== undefined && (
+        <p className="presence-notification-warning" role="status">
+          {state.warning}
+        </p>
+      )}
+      {error !== null && (
+        <p className="presence-notification-error" role="alert">{error}</p>
+      )}
+    </section>
+  )
+}
+
 /** Render global settings alongside an independently persisted device draft. */
 export function SettingsView({
   themePreference,
@@ -565,6 +684,9 @@ export function SettingsView({
   desktopPetState,
   desktopPetPending,
   desktopPetError,
+  presenceNotificationState,
+  presenceNotificationPending,
+  presenceNotificationError,
   settingsState,
   models,
   loading,
@@ -582,6 +704,7 @@ export function SettingsView({
   onCharacterPerformanceChange,
   onDesktopPetModeChange,
   onResetDesktopPetPosition,
+  onPresenceNotificationChange,
   onSave,
   onReload,
   onRestart,
@@ -753,6 +876,12 @@ export function SettingsView({
             onDesktopPetModeChange={onDesktopPetModeChange}
             onResetDesktopPetPosition={onResetDesktopPetPosition}
           />
+          <PresenceNotificationSettings
+            state={presenceNotificationState}
+            pending={presenceNotificationPending}
+            error={presenceNotificationError}
+            onChange={onPresenceNotificationChange}
+          />
           {voiceSection}
         </form>
       ) : settingsState === null || draft === null ? (
@@ -779,6 +908,12 @@ export function SettingsView({
             onCharacterPerformanceChange={onCharacterPerformanceChange}
             onDesktopPetModeChange={onDesktopPetModeChange}
             onResetDesktopPetPosition={onResetDesktopPetPosition}
+          />
+          <PresenceNotificationSettings
+            state={presenceNotificationState}
+            pending={presenceNotificationPending}
+            error={presenceNotificationError}
+            onChange={onPresenceNotificationChange}
           />
           {voiceSection}
         </form>
@@ -1437,6 +1572,13 @@ export function SettingsView({
             onResetDesktopPetPosition={onResetDesktopPetPosition}
           />
 
+          <PresenceNotificationSettings
+            state={presenceNotificationState}
+            pending={presenceNotificationPending}
+            error={presenceNotificationError}
+            onChange={onPresenceNotificationChange}
+          />
+
           <footer className="settings-save-bar">
             <div>
               <strong>{globalDirty ? 'Unsaved global changes' : 'Global settings are up to date'}</strong>
@@ -1444,7 +1586,7 @@ export function SettingsView({
                 {generationBusy
                   ? 'Wait for the current reply before saving. '
                   : ''}
-                Appearance is saved separately and applies immediately.
+                Appearance and notification choices are saved separately and apply immediately.
               </span>
             </div>
             <div className="settings-save-actions">

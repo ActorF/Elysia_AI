@@ -41,6 +41,10 @@ import type {
   DesktopPetMode,
   DesktopPetState,
 } from '../electron/desktop-pet-contracts.ts'
+import type {
+  PresenceNotificationState,
+  PresenceReminderFrequency,
+} from '../electron/presence-notification-contracts.ts'
 import {
   hasNonBlankCodePoint,
   trimProtocolBlankCharacters,
@@ -835,6 +839,12 @@ function App() {
   const [desktopPetState, setDesktopPetState] = useState<DesktopPetState | null>(null)
   const [desktopPetPending, setDesktopPetPending] = useState(false)
   const [desktopPetError, setDesktopPetError] = useState<string | null>(null)
+  const [presenceNotificationState, setPresenceNotificationState]
+    = useState<PresenceNotificationState | null>(null)
+  const [presenceNotificationPending, setPresenceNotificationPending]
+    = useState(false)
+  const [presenceNotificationError, setPresenceNotificationError]
+    = useState<string | null>(null)
   const [voiceSettingsState, setVoiceSettingsState] = useState<VoiceSettingsState | null>(null)
   const [voiceSettingsLoading, setVoiceSettingsLoading] = useState(false)
   const [voiceSettingsPending, setVoiceSettingsPending] = useState(false)
@@ -931,6 +941,7 @@ function App() {
   const settingsDirtyRef = useRef(false)
   const settingsLoadOperationRef = useRef(0)
   const desktopPetOperationRef = useRef(0)
+  const presenceNotificationOperationRef = useRef(0)
   const voiceSettingsLoadOperationRef = useRef(0)
   const voiceSettingsPendingRef = useRef(false)
   const audioDeviceControllerRef = useRef<AudioDeviceController | null>(null)
@@ -2191,6 +2202,35 @@ function App() {
     }
   }, [desktopApi])
 
+  const loadPresenceNotificationState = useCallback(async (): Promise<void> => {
+    if (desktopApi === undefined) {
+      setPresenceNotificationError('Notification controls are unavailable.')
+      return
+    }
+    const operationId = presenceNotificationOperationRef.current + 1
+    presenceNotificationOperationRef.current = operationId
+    setPresenceNotificationPending(true)
+    setPresenceNotificationError(null)
+    try {
+      const nextState = await desktopApi.getPresenceNotificationState()
+      if (operationId === presenceNotificationOperationRef.current) {
+        setPresenceNotificationState(nextState)
+      }
+    } catch (error) {
+      if (operationId === presenceNotificationOperationRef.current) {
+        setPresenceNotificationError(
+          error instanceof Error
+            ? error.message
+            : 'Could not load notification settings.',
+        )
+      }
+    } finally {
+      if (operationId === presenceNotificationOperationRef.current) {
+        setPresenceNotificationPending(false)
+      }
+    }
+  }, [desktopApi])
+
   const loadSettings = useCallback(async (): Promise<void> => {
     if (desktopApi === undefined) {
       setSettingsError('Desktop Settings API is unavailable.')
@@ -2265,6 +2305,38 @@ function App() {
     return unsubscribe
   }, [desktopApi, loadDesktopPetState])
 
+  useEffect(() => {
+    if (desktopApi === undefined) {
+      return
+    }
+    const unsubscribe = desktopApi.onPresenceNotificationStateChanged(
+      (nextState) => {
+        presenceNotificationOperationRef.current += 1
+        setPresenceNotificationState(nextState)
+        setPresenceNotificationPending(false)
+        setPresenceNotificationError(null)
+      },
+    )
+    queueMicrotask(() => {
+      void loadPresenceNotificationState()
+    })
+    return unsubscribe
+  }, [desktopApi, loadPresenceNotificationState])
+
+  useEffect(() => {
+    if (desktopApi === undefined) {
+      return
+    }
+    // This closed signal only suppresses proactive notices. Main resets it on
+    // navigation or renderer loss, so a crashed call surface cannot stay busy.
+    void desktopApi.setPresenceVoiceActive(callPreviewOpen).catch(() => {})
+    return () => {
+      if (callPreviewOpen) {
+        void desktopApi.setPresenceVoiceActive(false).catch(() => {})
+      }
+    }
+  }, [callPreviewOpen, desktopApi])
+
   const changeDesktopPetMode = useCallback(async (
     mode: DesktopPetMode,
   ): Promise<void> => {
@@ -2309,6 +2381,57 @@ function App() {
       }
     }
   }, [desktopApi, desktopPetPending, desktopPetState])
+
+  const changePresenceNotifications = useCallback(async (
+    completionNotifications: boolean,
+    reminderFrequency: PresenceReminderFrequency,
+  ): Promise<void> => {
+    if (
+      desktopApi === undefined
+      || presenceNotificationState === null
+      || presenceNotificationPending
+    ) {
+      return
+    }
+    const operationId = presenceNotificationOperationRef.current + 1
+    presenceNotificationOperationRef.current = operationId
+    setPresenceNotificationPending(true)
+    setPresenceNotificationError(null)
+    try {
+      const nextState = await desktopApi.updatePresenceNotifications({
+        expectedRevision: presenceNotificationState.revision,
+        completionNotifications,
+        reminderFrequency,
+      })
+      if (operationId === presenceNotificationOperationRef.current) {
+        setPresenceNotificationState(nextState)
+      }
+    } catch (error) {
+      if (operationId === presenceNotificationOperationRef.current) {
+        setPresenceNotificationError(
+          error instanceof Error
+            ? error.message
+            : 'Could not update notification settings.',
+        )
+        try {
+          const recoveredState = await desktopApi.getPresenceNotificationState()
+          if (operationId === presenceNotificationOperationRef.current) {
+            setPresenceNotificationState(recoveredState)
+          }
+        } catch {
+          // Preserve the last canonical snapshot when recovery also fails.
+        }
+      }
+    } finally {
+      if (operationId === presenceNotificationOperationRef.current) {
+        setPresenceNotificationPending(false)
+      }
+    }
+  }, [
+    desktopApi,
+    presenceNotificationPending,
+    presenceNotificationState,
+  ])
 
   const resetDesktopPetPosition = useCallback(async (): Promise<void> => {
     if (desktopApi === undefined || desktopPetPending) {
@@ -6588,6 +6711,9 @@ function App() {
         desktopPetState={desktopPetState}
         desktopPetPending={desktopPetPending}
         desktopPetError={desktopPetError}
+        presenceNotificationState={presenceNotificationState}
+        presenceNotificationPending={presenceNotificationPending}
+        presenceNotificationError={presenceNotificationError}
         settingsState={settingsState}
         models={modelOptions}
         loading={settingsLoading}
@@ -6605,6 +6731,7 @@ function App() {
         onCharacterPerformanceChange={setCharacterPerformancePreference}
         onDesktopPetModeChange={changeDesktopPetMode}
         onResetDesktopPetPosition={resetDesktopPetPosition}
+        onPresenceNotificationChange={changePresenceNotifications}
         onSave={saveSettings}
         onReload={() => {
           setSettingsRestartError(null)

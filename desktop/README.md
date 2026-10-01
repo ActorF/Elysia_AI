@@ -82,6 +82,17 @@ the tray, and opens the ordinary main Chat when clicked. Its separate
 sandboxed entry receives only `ready`, `hide`, and `openMainChat` through a
 minimal Preload; it has no Backend, network, filesystem, Node, audio, or main
 Renderer capability. This is a bounded static 2D surface, not Live2D.
+Stage 13 Presence and Notifications is also Main-owned and fully off by
+default. Settings can independently enable fixed-copy reply-ready notices and
+select a neutral Daily / Weekly reminder, then disable both with one action.
+Main creates silent operating-system notifications only from reviewed local
+copy; the Renderer cannot supply titles, bodies, links, sounds, urgency, or
+arbitrary schedules. Reminder timers run only while Elysia is already open,
+stay quiet while the main window is still visible or Chat, Voice, an undrained
+managed reply speech turn, or Knowledge is busy, and consume a suppressed interval instead of
+catching up later. There is
+no background task, startup entry, cloud push, engagement streak, or behavior
+tracking.
 Electron is frozen as the production
 shell. The Tauri source and toolchain were removed after the comparison; the
 rationale, recorded measurements, and revisit gates are in
@@ -202,6 +213,30 @@ Git-ignored and must not be committed or packaged with the application.
   Renderer that never reports ready is destroyed after a 10-second deadline;
   shutdown drains admitted writes before its final position snapshot, with the
   complete optional persistence sequence bounded to two seconds.
+- **Presence & notifications** is a separate immediate Settings section owned
+  by Electron Main. **Reply completion notifications** and **Neutral presence
+  reminders** both default to Off; reminder frequency accepts only Off, Daily,
+  or Weekly, and **Turn all off** replaces both choices in one revision-checked
+  update. These settings neither depend on Python readiness nor require a
+  Backend restart.
+- Reply completion observes only a validated terminal `chat-complete` for a
+  user-started Chat or Retry, requires the main window to be unattended, and is
+  suppressed while Voice, an undrained managed speech turn, or Knowledge work is active.
+  The native notification is silent and uses exactly `Elysia` / `Your local
+  reply is ready.` It never includes reply text, prompts, Chat or Project names,
+  filenames, Memory, or model output. Cancellation, errors, streaming chunks,
+  transcription, and Knowledge progress do not create notices.
+- Neutral reminders use a complete 24-hour or seven-day interval anchored when
+  the preference is enabled or changed. Delivery requires Elysia to be running,
+  the main window to be absent, hidden, or minimized, the Backend to be ready,
+  and Chat, Voice, managed speech (including synthesis gaps and final playback
+  drain), and Knowledge work to be idle. A due
+  cycle suppressed by a still-visible window or busy activity is recorded as
+  handled instead of appearing after the window is later hidden or the activity
+  becomes idle; no reminder task runs while Elysia is closed. Their exact silent
+  copy is `Elysia` / `Open
+  Elysia whenever you are ready.` Clicking either notice only reveals and
+  focuses the ordinary main window.
 - **Mute** immediately ends and discards a live capture or held interruption
   PCM and disarms reply monitoring; it does not cancel an already-running text
   reply, and unmuting never opens the microphone by itself. **Hang up** or
@@ -535,7 +570,9 @@ Renderer reload and Project switches, trusted receipt settlement, Project
 isolation, archived read-only behavior, explicit grounded intent, and citation
 accessibility. The contract suite also runs `character-state.test.mjs`,
 `character-presentation.test.mjs`, `speech-mouth.test.mjs`, and
-`desktop-pet-lifecycle.test.mjs` and `desktop-pet-preferences.test.mjs`.
+`desktop-pet-lifecycle.test.mjs`, `desktop-pet-preferences.test.mjs`,
+`presence-native-notification.test.mjs`, and
+`presence-notification-preferences.test.mjs`.
 Desktop Pet coverage verifies ready/shutdown deadlines, the shared cross-entry
 mutation queue, Hidden tray residency and Disabled exit, programmatic-position
 suppression, the strict update schema, default-off and corrupt-file behavior,
@@ -545,9 +582,19 @@ unsigned-hash display-ID DIP clamping. Renderer source-policy
 tests prove that the main and pet HTML entries cannot borrow each other's IPC
 authority. `desktop-pet-preload.test.cjs` loads the production dedicated
 Preload in isolation and proves that only its frozen three-method API and fixed
-channels exist. The UI suite verifies revisioned Desktop Pet Settings,
-failure/reload recovery, explicit failed-state retry, the request to return to
-main Chat, current-Chat/Project
+channels exist. Presence notification contract coverage verifies the exact
+three-field update, fully-off defaults, strict 16 KiB persistence, fail-closed
+invalid storage, revision conflicts, no-op and frequency re-anchoring behavior,
+atomic replacement failure, private handled-cycle state, clock rollback and
+long-timer bounds, opt-in delivery, unattended-window checks, Voice and Backend
+busy suppression, and shutdown behavior. Native-slot tests separately verify
+completion priority, Windows timeout retention/removal, late callback isolation,
+replacement, explicit close, and sanitized delivery failure. The UI suite
+verifies revisioned
+notification controls, **Turn all off**, failure recovery, and sanitized
+unsupported runtime alongside revisioned Desktop Pet Settings, failure/reload
+recovery, explicit failed-state retry, the request to return to main Chat,
+current-Chat/Project
 scoping, Voice projection, Backend failure,
 closed state/emotion/speech atlas cues, performance preference/Reduced Motion,
 and the speech → expression → state → portrait → accessible-text fallback
@@ -595,6 +642,32 @@ method, results, capability gaps, and limitations.
   420×560 DIP; Hidden and Disabled destroy the renderer rather than retaining
   an invisible page. These are resource bounds, not a promise of a fixed RAM
   measurement.
+- Presence notification persistence is also Main-only and capped at 16 KiB.
+  Missing or invalid storage fails closed to reply notifications Off and
+  reminder frequency Off; exact-schema updates use optimistic revisions,
+  same-path serialization, and same-directory atomic replacement. The last
+  handled reminder timestamp remains private to Main and records cadence, not
+  engagement.
+- Native notification content is fixed in Main, marked `silent`, and limited to
+  one fixed-ID/group global notice. Main retains a Windows timed-out handle so
+  the next notice, **Turn all off**, or shutdown can remove its Action Center
+  entry; replaced handles are detached so late click/failed callbacks are inert.
+  React can select only a boolean and the closed `off / daily / weekly` cadence;
+  it cannot submit notification copy, a native
+  action, link, sound, urgency, or schedule. Renderer notification permission
+  remains denied, and native failures publish only sanitized
+  `unsupported / failed` state without interrupting Chat, Voice, Work, or the
+  Python Backend.
+- Presence reminders use an unreferenced in-process timer and register no
+  background task or startup entry. Main suppresses them while the window is
+  visible or Voice/Backend/an undrained managed speech turn is active, records a
+  suppressed due cycle as handled, and closes outstanding notifications during
+  shutdown. Admitted preference and cadence-anchor writes use a parallel
+  bounded drain so they cannot consume the Desktop Pet's ordered final-position
+  save window before process exit. The only
+  Renderer activity signal is a trusted boolean indicating whether the visible
+  Voice Session is open; it suppresses both optional notification kinds and
+  carries no transcript, audio, prompt, or model data.
 - Electron validates the exact renderer origin and top frame before handling
   any desktop IPC.
 - Electron admits only one application instance, and Python holds an exclusive

@@ -1,5 +1,8 @@
 /**
- * Own the Windows window, local permissions, tray, and Python child process.
+ * Own Electron windows, native permissions/notifications, the tray, and Python.
+ *
+ * Renderer requests enter through fixed IPC capabilities; optional native
+ * surfaces fail independently so they cannot destabilize core Backend work.
  */
 
 import {
@@ -7,12 +10,15 @@ import {
   BrowserWindow,
   clipboard,
   dialog,
+  type Event as ElectronEvent,
   ipcMain,
   type IpcMainInvokeEvent,
   Menu,
   type MenuItemConstructorOptions,
   nativeImage,
   nativeTheme,
+  Notification,
+  type NotificationCloseEventParams,
   screen,
   session,
   shell,
@@ -44,11 +50,33 @@ import {
 } from './desktop-pet-contracts.js'
 import {
   DesktopPetReadyDeadline,
-  drainDesktopPetPersistenceWithin,
+  drainDesktopPetAndIndependentPersistenceWithin,
   sequenceDesktopPetMutation,
   shouldQuitAfterAllDesktopWindowsClose,
   shouldPersistDesktopPetPlacement,
 } from './desktop-pet-lifecycle.js'
+import {
+  parseUpdatePresenceNotificationRequest,
+  type PresenceNotificationRuntime,
+  type PresenceNotificationState,
+} from './presence-notification-contracts.js'
+import {
+  ManagedPresenceNativeNotification,
+  type PresenceNativeNotificationCallbacks,
+  type PresenceNativeNotificationHandle,
+  type PresenceNativeNotificationKind,
+} from './presence-native-notification.js'
+import {
+  nextPresenceReminderDelayMs,
+  type PresenceNotificationActivity,
+  shouldDeliverCompletionNotification,
+  shouldDeliverPresenceReminder,
+} from './presence-notification-policy.js'
+import {
+  type LoadedPresenceNotificationPreferences,
+  PresenceNotificationPreferencesConflictError,
+  PresenceNotificationPreferencesRepository,
+} from './presence-notification-preferences.js'
 import {
   PreloadSpeechPlaybackOwner,
   ReplaceableSpeechPlaybackOwner,
@@ -118,6 +146,16 @@ const DESKTOP_PET_POSITION_SAVE_DELAY_MS = 300
 const DESKTOP_PET_RUNTIME_WARNING = (
   'The Desktop Pet could not be displayed. Retry it from Settings or the tray.'
 )
+const PRESENCE_NOTIFICATION_UNSUPPORTED_WARNING = (
+  'System notifications are not supported on this device. Chat, Voice, and Work remain available.'
+)
+const PRESENCE_NOTIFICATION_RUNTIME_WARNING = (
+  'System notifications could not be delivered. They remain stopped until you retry a setting or restart Elysia.'
+)
+const PRESENCE_NOTIFICATION_ID = 'elysia-presence'
+const PRESENCE_NOTIFICATION_GROUP_ID = 'elysia-presence'
+const PRESENCE_NOTIFICATION_MAX_TIMER_DELAY_MS = 2_147_000_000
+const PRESENCE_NOTIFICATION_MAX_COMPLETION_IDS = 256
 const MAX_CHAT_TITLE_LENGTH = 200
 const MAX_PROJECT_NAME_LENGTH = 200
 const MAX_WORKSPACE_PATH_LENGTH = 32_767
@@ -134,6 +172,22 @@ const speechPlaybackRouter = new ReplaceableSpeechPlaybackOwner()
 let tray: Tray | null = null
 let desktopPetRepository: DesktopPetPreferencesRepository | null = null
 let desktopPetPreferences: LoadedDesktopPetPreferences | null = null
+let presenceNotificationRepository:
+  PresenceNotificationPreferencesRepository | null = null
+let presenceNotificationPreferences:
+  LoadedPresenceNotificationPreferences | null = null
+let presenceNotificationRuntime: PresenceNotificationRuntime = 'unsupported'
+let presenceNotificationRuntimeWarning: string | null = null
+let presenceReminderTimer: ReturnType<typeof setTimeout> | null = null
+let presenceReminderSchedulingStarted = false
+let presenceVoiceSessionActive = false
+let presenceNotificationMutationEpoch = 0
+let presenceNotificationUpdatesInFlight = 0
+let presenceReminderConsumptionInFlight = false
+const presenceNotificationPersistenceOperations = new Set<Promise<unknown>>()
+let nativePresenceNotificationManager:
+  ManagedPresenceNativeNotification | null = null
+const notifiedCompletionRequestIds = new Set<string>()
 let desktopPetClickThrough = false
 let desktopPetPositionTimer: ReturnType<typeof setTimeout> | null = null
 const desktopPetReadyDeadline = new DesktopPetReadyDeadline()
@@ -181,6 +235,399 @@ function requireDesktopPetRepository(): DesktopPetPreferencesRepository {
     throw new Error('Desktop Pet preferences are not available.')
   }
   return desktopPetRepository
+}
+
+function requirePresenceNotificationPreferences():
+LoadedPresenceNotificationPreferences {
+  if (presenceNotificationPreferences === null) {
+    throw new Error('Notification preferences are not available.')
+  }
+  return presenceNotificationPreferences
+}
+
+function requirePresenceNotificationRepository():
+PresenceNotificationPreferencesRepository {
+  if (presenceNotificationRepository === null) {
+    throw new Error('Notification preferences are not available.')
+  }
+  return presenceNotificationRepository
+}
+
+function createFixedPresenceNotificationHandle(
+  kind: PresenceNativeNotificationKind,
+  callbacks: PresenceNativeNotificationCallbacks,
+): PresenceNativeNotificationHandle {
+  const notification = new Notification({
+    id: PRESENCE_NOTIFICATION_ID,
+    groupId: PRESENCE_NOTIFICATION_GROUP_ID,
+    title: 'Elysia',
+    body: kind === 'completion'
+      ? 'Your local reply is ready.'
+      : 'Open Elysia whenever you are ready.',
+    icon: resolveApplicationIconPath(),
+    silent: true,
+    timeoutType: 'default',
+    urgency: 'low',
+  })
+  const clicked = (): void => { callbacks.clicked() }
+  const closed = (
+    details: ElectronEvent<NotificationCloseEventParams>,
+  ): void => { callbacks.closed(details.reason) }
+  const failed = (): void => { callbacks.failed() }
+  notification.on('click', clicked)
+  notification.on('close', closed)
+  notification.on('failed', failed)
+  return Object.freeze({
+    show: (): void => { notification.show() },
+    close: (): void => { notification.close() },
+    detach: (): void => {
+      notification.off('click', clicked)
+      notification.off('close', closed)
+      notification.off('failed', failed)
+    },
+  })
+}
+
+function requireNativePresenceNotificationManager():
+ManagedPresenceNativeNotification {
+  if (nativePresenceNotificationManager === null) {
+    nativePresenceNotificationManager = new ManagedPresenceNativeNotification(
+      createFixedPresenceNotificationHandle,
+      showOrCreateMainWindow,
+      failPresenceNotificationRuntime,
+    )
+  }
+  return nativePresenceNotificationManager
+}
+
+function currentPresenceNotificationState(): PresenceNotificationState {
+  const persisted = requirePresenceNotificationPreferences().state
+  return Object.freeze({
+    ...persisted,
+    runtime: presenceNotificationRuntime,
+    warning: persisted.warning ?? presenceNotificationRuntimeWarning,
+  })
+}
+
+function publishPresenceNotificationState(): void {
+  if (mainWindow !== null && !mainWindow.isDestroyed()) {
+    try {
+      mainWindow.webContents.send(
+        'presence-notifications:state-changed',
+        currentPresenceNotificationState(),
+      )
+    } catch {
+      // Optional Settings state cannot disturb Chat during renderer teardown.
+    }
+  }
+}
+
+function clearPresenceReminderTimer(): void {
+  if (presenceReminderTimer !== null) {
+    clearTimeout(presenceReminderTimer)
+    presenceReminderTimer = null
+  }
+}
+
+function closeNativePresenceNotification(
+  kind: 'completion' | 'reminder',
+): void {
+  nativePresenceNotificationManager?.close(kind)
+}
+
+function closeAllNativePresenceNotifications(): void {
+  nativePresenceNotificationManager?.close()
+}
+
+function failPresenceNotificationRuntime(): void {
+  presenceNotificationRuntime = 'failed'
+  presenceNotificationRuntimeWarning = PRESENCE_NOTIFICATION_RUNTIME_WARNING
+  clearPresenceReminderTimer()
+  closeAllNativePresenceNotifications()
+  publishPresenceNotificationState()
+}
+
+function presenceNotificationActivity(): PresenceNotificationActivity {
+  const currentWindow = mainWindow
+  try {
+    const windowExists = currentWindow !== null && !currentWindow.isDestroyed()
+    const snapshot = backendProcess?.getSnapshot()
+    return Object.freeze({
+      shutdownStarted,
+      windowExists,
+      windowVisible: windowExists
+        && currentWindow.isVisible()
+        && !currentWindow.isMinimized(),
+      windowMinimized: windowExists && currentWindow.isMinimized(),
+      windowFocused: windowExists && currentWindow.isFocused(),
+      backendReady: snapshot?.status === 'ready',
+      backendBusy: presenceVoiceSessionActive
+        || backendProcess?.hasActiveSpeechTurn() === true
+        || speechPlaybackOwner?.hasActivePlayback() === true
+        || snapshot?.activeGeneration !== undefined
+        || snapshot?.activeKnowledgeOperation !== undefined,
+    })
+  } catch {
+    // Native window probes can race teardown. Treat an uncertain application as
+    // attentive and busy so optional notifications always fail closed.
+    return Object.freeze({
+      shutdownStarted,
+      windowExists: true,
+      windowVisible: true,
+      windowMinimized: false,
+      windowFocused: true,
+      backendReady: false,
+      backendBusy: true,
+    })
+  }
+}
+
+function showFixedPresenceNotification(
+  kind: 'completion' | 'reminder',
+): boolean {
+  if (
+    shutdownStarted
+    || presenceNotificationRuntime !== 'available'
+  ) {
+    return false
+  }
+  try {
+    if (!Notification.isSupported()) {
+      presenceNotificationRuntime = 'unsupported'
+      presenceNotificationRuntimeWarning = (
+        PRESENCE_NOTIFICATION_UNSUPPORTED_WARNING
+      )
+      clearPresenceReminderTimer()
+      closeAllNativePresenceNotifications()
+      publishPresenceNotificationState()
+      return false
+    }
+    return requireNativePresenceNotificationManager().show(kind)
+  } catch {
+    failPresenceNotificationRuntime()
+    return false
+  }
+}
+
+function rememberCompletionNotification(requestId: string): boolean {
+  if (notifiedCompletionRequestIds.has(requestId)) {
+    return false
+  }
+  notifiedCompletionRequestIds.add(requestId)
+  while (
+    notifiedCompletionRequestIds.size
+    > PRESENCE_NOTIFICATION_MAX_COMPLETION_IDS
+  ) {
+    const oldest = notifiedCompletionRequestIds.values().next().value
+    if (typeof oldest !== 'string') {
+      break
+    }
+    notifiedCompletionRequestIds.delete(oldest)
+  }
+  return true
+}
+
+function maybeShowCompletionNotification(event: BackendEvent): void {
+  if (
+    event.type !== 'chat-complete'
+    || presenceNotificationPreferences === null
+    || !rememberCompletionNotification(event.requestId)
+    || presenceNotificationUpdatesInFlight > 0
+    || !shouldDeliverCompletionNotification(
+      currentPresenceNotificationState(),
+      presenceNotificationActivity(),
+    )
+  ) {
+    return
+  }
+  showFixedPresenceNotification('completion')
+}
+
+function trackPresenceNotificationPersistence<Result>(
+  operation: Promise<Result>,
+): Promise<Result> {
+  const observed: Promise<unknown> = operation
+  presenceNotificationPersistenceOperations.add(observed)
+  const finish = (): void => {
+    presenceNotificationPersistenceOperations.delete(observed)
+  }
+  // Observe both branches while preserving the original Promise for IPC.
+  void operation.then(finish, finish)
+  return operation
+}
+
+async function consumeDuePresenceReminder(): Promise<void> {
+  presenceReminderTimer = null
+  if (presenceReminderConsumptionInFlight) {
+    return
+  }
+  presenceReminderConsumptionInFlight = true
+  try {
+    if (
+      shutdownStarted
+      || presenceNotificationUpdatesInFlight > 0
+      || presenceNotificationPreferences === null
+      || presenceNotificationRuntime !== 'available'
+    ) {
+      return
+    }
+    const current = presenceNotificationPreferences
+    const mutationEpoch = presenceNotificationMutationEpoch
+    const frequency = current.state.reminderFrequency
+    if (frequency === 'off') {
+      return
+    }
+    const remaining = nextPresenceReminderDelayMs(
+      frequency,
+      current.lastReminderHandledAt,
+      current.state.updatedAt,
+      Date.now(),
+    )
+    if (remaining === null || remaining > 0) {
+      return
+    }
+    const expectedAnchor = current.lastReminderHandledAt
+    if (expectedAnchor === null) {
+      failPresenceNotificationRuntime()
+      return
+    }
+
+    let recorded: LoadedPresenceNotificationPreferences
+    try {
+      recorded = await requirePresenceNotificationRepository()
+        .recordReminderHandled(
+          current.state.revision,
+          frequency,
+          expectedAnchor,
+          presenceNotificationRuntime,
+        )
+    } catch (error) {
+      if (error instanceof PresenceNotificationPreferencesConflictError) {
+        presenceNotificationPreferences = await requirePresenceNotificationRepository()
+          .load(presenceNotificationRuntime)
+        return
+      }
+      failPresenceNotificationRuntime()
+      return
+    }
+    presenceNotificationPreferences = recorded
+    if (
+      mutationEpoch === presenceNotificationMutationEpoch
+      && presenceNotificationUpdatesInFlight === 0
+      && shouldDeliverPresenceReminder(
+        currentPresenceNotificationState(),
+        presenceNotificationActivity(),
+        true,
+      )
+    ) {
+      showFixedPresenceNotification('reminder')
+    }
+  } finally {
+    presenceReminderConsumptionInFlight = false
+    schedulePresenceReminder()
+  }
+}
+
+function schedulePresenceReminder(): void {
+  clearPresenceReminderTimer()
+  if (
+    !presenceReminderSchedulingStarted
+    || shutdownStarted
+    || presenceNotificationUpdatesInFlight > 0
+    || presenceReminderConsumptionInFlight
+    || presenceNotificationPreferences === null
+    || presenceNotificationRuntime !== 'available'
+  ) {
+    return
+  }
+  const current = presenceNotificationPreferences
+  const delay = nextPresenceReminderDelayMs(
+    current.state.reminderFrequency,
+    current.lastReminderHandledAt,
+    current.state.updatedAt,
+    Date.now(),
+  )
+  if (delay === null) {
+    return
+  }
+  presenceReminderTimer = setTimeout(() => {
+    const operation = trackPresenceNotificationPersistence(
+      consumeDuePresenceReminder(),
+    )
+    void operation.catch(() => { failPresenceNotificationRuntime() })
+  }, Math.min(delay, PRESENCE_NOTIFICATION_MAX_TIMER_DELAY_MS))
+  // Optional reminders must never keep the desktop process alive by themselves.
+  presenceReminderTimer.unref?.()
+}
+
+function refreshPresenceNotificationRuntime(): void {
+  try {
+    if (Notification.isSupported()) {
+      presenceNotificationRuntime = 'available'
+      presenceNotificationRuntimeWarning = null
+    } else {
+      presenceNotificationRuntime = 'unsupported'
+      presenceNotificationRuntimeWarning = (
+        PRESENCE_NOTIFICATION_UNSUPPORTED_WARNING
+      )
+    }
+  } catch {
+    presenceNotificationRuntime = 'failed'
+    presenceNotificationRuntimeWarning = PRESENCE_NOTIFICATION_RUNTIME_WARNING
+  }
+  if (presenceNotificationRuntime !== 'available') {
+    clearPresenceReminderTimer()
+    closeAllNativePresenceNotifications()
+  }
+}
+
+function updatePresenceNotificationPreferences(
+  request: unknown,
+): Promise<PresenceNotificationState> {
+  if (shutdownStarted) {
+    return Promise.reject(new Error('Elysia is shutting down.'))
+  }
+  const parsed = parseUpdatePresenceNotificationRequest(request)
+  // Any admitted Settings change suppresses a cadence delivery that was
+  // awaiting disk I/O under an older preference snapshot.
+  presenceNotificationMutationEpoch += 1
+  presenceNotificationUpdatesInFlight += 1
+  clearPresenceReminderTimer()
+  if (!parsed.completionNotifications) {
+    closeNativePresenceNotification('completion')
+  }
+  // Any explicit cadence choice retires a toast produced by the previous
+  // schedule; otherwise a Daily notice could remain after switching to Weekly.
+  closeNativePresenceNotification('reminder')
+  const operation = (async (): Promise<PresenceNotificationState> => {
+    try {
+      presenceNotificationPreferences = await requirePresenceNotificationRepository()
+        .update(parsed, presenceNotificationRuntime)
+      // Native failure is retried only after a valid preference write or no-op
+      // succeeds; malformed, conflicting, or failed writes cannot re-enable it.
+      refreshPresenceNotificationRuntime()
+      const state = currentPresenceNotificationState()
+      if (!state.completionNotifications) {
+        closeNativePresenceNotification('completion')
+      }
+      publishPresenceNotificationState()
+      return state
+    } catch (error) {
+      // A failed Settings write must not revive the older enabled intent in
+      // this process. The next valid retry or restart re-probes native support.
+      failPresenceNotificationRuntime()
+      throw error
+    } finally {
+      presenceNotificationUpdatesInFlight = Math.max(
+        0,
+        presenceNotificationUpdatesInFlight - 1,
+      )
+      if (presenceNotificationUpdatesInFlight === 0) {
+        schedulePresenceReminder()
+      }
+    }
+  })()
+  return trackPresenceNotificationPersistence(operation)
 }
 
 function maybeQuitAfterDesktopPetModeSettles(): void {
@@ -1502,6 +1949,17 @@ function broadcastBackendEvent(event: BackendEvent): void {
   ) {
     mainWindow.webContents.send('backend:event', event)
   }
+  // Deliver the core event first. Every native probe then stays behind a full
+  // failure boundary so an optional notice cannot become a protocol failure.
+  try {
+    maybeShowCompletionNotification(event)
+  } catch {
+    try {
+      failPresenceNotificationRuntime()
+    } catch {
+      // Chat delivery above remains authoritative during native teardown.
+    }
+  }
 }
 
 function requireBackend(): BackendProcess {
@@ -1529,6 +1987,9 @@ function registerIpcHandlers(): void {
       requireBackend().stopCurrentSpeechPlayback()
       installSpeechPlaybackOwner(requireMainWindow())
       mainRendererReady = true
+      presenceVoiceSessionActive = false
+      presenceReminderSchedulingStarted = true
+      schedulePresenceReminder()
       revealMainWindow()
       deliverPendingDesktopPetChatRequest()
     },
@@ -1570,6 +2031,33 @@ function registerIpcHandlers(): void {
         resetDesktopPetPosition,
         false,
       )
+    },
+  )
+
+  ipcMain.handle(
+    'presence-notifications:get-state',
+    (event): PresenceNotificationState => {
+      assertTrustedSender(event)
+      return currentPresenceNotificationState()
+    },
+  )
+
+  ipcMain.handle(
+    'presence-notifications:update',
+    (event, request: unknown) => {
+      assertTrustedSender(event)
+      return updatePresenceNotificationPreferences(request)
+    },
+  )
+
+  ipcMain.handle(
+    'presence-notifications:set-voice-active',
+    (event, active: unknown): void => {
+      assertTrustedSender(event)
+      if (typeof active !== 'boolean') {
+        throw new Error('Voice presence state is invalid.')
+      }
+      presenceVoiceSessionActive = active
     },
   )
 
@@ -2484,13 +2972,16 @@ function createMainWindow(): void {
   )
   mainWindow.webContents.on('did-start-loading', () => {
     mainRendererReady = false
+    presenceVoiceSessionActive = false
   })
   mainWindow.webContents.on('render-process-gone', () => {
+    presenceVoiceSessionActive = false
     revealMainWindow()
   })
   mainWindow.on('closed', () => {
     clearRendererReadyTimer()
     mainRendererReady = false
+    presenceVoiceSessionActive = false
     const closingOwner = speechPlaybackOwner
     speechPlaybackOwner = null
     // Detach before disposal so an in-flight expected window-close rejection
@@ -2521,10 +3012,21 @@ if (!hasSingleInstanceLock) {
   })
 
   void app.whenReady().then(async () => {
+    if (process.platform === 'win32') {
+      app.setAppUserModelId('ai.elysia.desktop')
+    }
     desktopPetRepository = new DesktopPetPreferencesRepository(
       path.join(app.getPath('userData'), 'desktop-pet.json'),
     )
     desktopPetPreferences = await desktopPetRepository.load('absent')
+    refreshPresenceNotificationRuntime()
+    presenceNotificationRepository = (
+      new PresenceNotificationPreferencesRepository(
+        path.join(app.getPath('userData'), 'presence-notifications.json'),
+      )
+    )
+    presenceNotificationPreferences = await presenceNotificationRepository
+      .load(presenceNotificationRuntime)
     nativeTheme.on('updated', () => {
       if (mainWindow !== null && !mainWindow.isDestroyed()) {
         mainWindow.setBackgroundColor(nativeBackgroundColor())
@@ -2563,11 +3065,17 @@ if (!hasSingleInstanceLock) {
     event.preventDefault()
     shutdownStarted = true
     mainWindow?.hide()
+    presenceReminderSchedulingStarted = false
+    presenceVoiceSessionActive = false
+    clearPresenceReminderTimer()
+    closeAllNativePresenceNotifications()
     clearDesktopPetPositionTimer()
-    const persistenceFlush = drainDesktopPetPersistenceWithin(
-      [...desktopPetPersistenceOperations],
-      persistDesktopPetPlacement,
-    )
+    const optionalPersistenceFlush =
+      drainDesktopPetAndIndependentPersistenceWithin(
+        [...desktopPetPersistenceOperations],
+        persistDesktopPetPlacement,
+        [...presenceNotificationPersistenceOperations],
+      )
     desktopPetReadyDeadline.clear()
     desktopPetClickThrough = false
     if (desktopPetWindow !== null && !desktopPetWindow.isDestroyed()) {
@@ -2585,7 +3093,7 @@ if (!hasSingleInstanceLock) {
       : backendProcess.stop()
     void Promise.allSettled([
       stopBackend,
-      persistenceFlush,
+      optionalPersistenceFlush,
     ]).finally(() => {
       const petWindow = desktopPetWindow
       desktopPetWindow = null

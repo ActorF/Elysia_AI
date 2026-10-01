@@ -112,6 +112,34 @@ export function drainDesktopPetPersistenceWithin(
 }
 
 /**
+ * Drain pet persistence beside unrelated optional writes within one deadline.
+ *
+ * Pet mutations must still precede the final placement snapshot, but an
+ * independent subsystem must not consume that ordering window. Starting two
+ * bounded drains together preserves pet order while keeping total shutdown
+ * delay at one timeout instead of adding the subsystem deadlines serially.
+ */
+export async function drainDesktopPetAndIndependentPersistenceWithin(
+  pendingPetOperations: readonly Promise<unknown>[],
+  finalPetFlush: () => Promise<unknown>,
+  independentOperations: readonly Promise<unknown>[],
+  timeoutMs = DESKTOP_PET_SHUTDOWN_SAVE_TIMEOUT_MS,
+): Promise<boolean> {
+  const [petCompleted, independentCompleted] = await Promise.all([
+    drainDesktopPetPersistenceWithin(
+      pendingPetOperations,
+      finalPetFlush,
+      timeoutMs,
+    ),
+    settleDesktopPetOperationWithin(
+      Promise.allSettled(independentOperations),
+      timeoutMs,
+    ),
+  ])
+  return petCompleted && independentCompleted
+}
+
+/**
  * Await a best-effort operation without allowing it to block shutdown forever.
  *
  * Both fulfillment and rejection count as settled because callers deliberately

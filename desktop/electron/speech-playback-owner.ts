@@ -114,6 +114,11 @@ export class PreloadSpeechPlaybackOwner implements TrustedSpeechPlaybackOwner {
     window.webContents.on('did-start-navigation', this.handleNavigation)
   }
 
+  /** Report only whether this trusted window currently owns one playing clip. */
+  hasActivePlayback(): boolean {
+    return this.pending !== null
+  }
+
   /** Send owned WAV bytes to preload and resolve only after audio ends. */
   play(clip: TrustedSpeechClip): Promise<void> {
     if (
