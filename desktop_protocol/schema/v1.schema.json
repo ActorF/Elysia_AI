@@ -614,6 +614,7 @@
           "maxLength": 64,
           "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
         },
+        "voiceEmotion": { "enum": ["neutral", "happy", "sad"] },
         "captionsEnabled": { "type": "boolean" },
         "transcriptReviewMode": { "const": "manual" },
         "automaticRelisten": { "type": "boolean" }
@@ -631,6 +632,7 @@
         "speechRatePercent",
         "speechVolumePercent",
         "voiceProfileId",
+        "voiceEmotion",
         "captionsEnabled",
         "transcriptReviewMode",
         "automaticRelisten"
@@ -2016,10 +2018,11 @@
               "transcriptionDevice",
               "transcriptionLanguage",
               "speechRatePercent",
-              "voiceProfileId"
+              "voiceProfileId",
+              "voiceEmotion"
             ]
           },
-          "maxItems": 10,
+          "maxItems": 11,
           "uniqueItems": true
         },
         "scopes": { "$ref": "#/$defs/settingsScopes" },

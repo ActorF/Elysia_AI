@@ -59,11 +59,19 @@ The Stage 13 Character State API is renderer-local and closed over `idle`,
 `listening`, `thinking`, `speaking`, `working`, `waiting_approval`, and `error`.
 It projects current-Chat generation, current-Project Knowledge activity, Voice's
 primary lifecycle, and Backend failure into the Character Panel and call page.
-The contract adds no IPC and never selects an animation file. A separate closed
-presentation registry maps those states to the first seven cells of one pinned
-reviewed atlas, while `waiting_approval` has no producer until a real
-Work/Approval workflow exists. Character motion is renderer-local, supports
-Animated and Still choices, and always yields to OS Reduced Motion.
+The contract adds no IPC and never selects an animation file. Separate closed
+registries map those states and the user-controlled `neutral / happy / sad`
+emotion setting to reviewed atlas cells; the same active emotion selects the
+local TTS reference and the static expression after a Backend restart. The
+model cannot submit an emotion, path, cell, or animation command. During real
+Web Audio playback, trusted Preload samples RMS at no more than 20 Hz and
+quantizes it into `closed / small / medium / wide` mouth cues. Raw waveform
+samples and continuous envelopes stay outside React. Animated mode consumes
+those cues; Still and OS Reduced Motion never start mouth animation. Assets
+fall back in the order speech → expression → state → portrait → accessible
+text. This amplitude visualization is neither phoneme-level lip sync nor
+Live2D. `waiting_approval` still has no producer until a real Work/Approval
+workflow exists.
 Electron is frozen as the production
 shell. The Tauri source and toolchain were removed after the comparison; the
 rationale, recorded measurements, and revisit gates are in
@@ -150,12 +158,16 @@ Git-ignored and must not be committed or packaged with the application.
   captions are visible only when enabled and can be hidden or shown from the
   Session without changing their saved global default.
 - The optional Character Panel and Voice portrait consume the same semantic
-  Character State contract. A closed registry maps each state to one reviewed
-  atlas cell, expression token, and whole-character action token. It cannot
-  load arbitrary paths or accept model-selected animation names. Settings
-  persists Animated / Still on this device; OS Reduced Motion
-  disables character animation, while state images and accessible text remain.
-  The surface does not load Live2D, perform lip sync, write Chat state, or
+  Character State contract. Closed registries map each state and the active
+  `neutral / happy / sad` user setting to reviewed cells; no model output can
+  select an emotion, path, cell, or animation name. During real speech output,
+  trusted Preload applies the active gain, samples Web Audio RMS no faster than
+  20 Hz, and publishes only `closed / small / medium / wide` visual cues. The
+  static emotion uses the same active value as the TTS reference. Settings
+  persists Animated / Still on this device; Still and OS Reduced Motion disable
+  mouth animation. Visual failures follow speech → expression → state →
+  portrait → accessible text without affecting Chat or Voice. The surface
+  does not load Live2D, claim phoneme-level lip sync, write Chat state, or
   create a new Backend capability.
 - **Mute** immediately ends and discards a live capture or held interruption
   PCM and disarms reply monitoring; it does not cancel an already-running text
@@ -229,11 +241,11 @@ Git-ignored and must not be committed or packaged with the application.
 
 ### Global Voice behavior settings
 
-The seven Voice behavior values are stored with the other global Backend
+The eight Voice behavior values are stored with the other global Backend
 settings. **Live after Save** means that a newly admitted operation observes the
 saved value without restarting the Backend; it does not mean that Save can
-rewrite work already in flight. Exactly five settings are live and two require
-a restart:
+rewrite work already in flight. Exactly five settings are live and three
+require a restart:
 
 | Settings control (`global.json` field) | Default | Valid value | Apply boundary | Contract |
 | --- | --- | --- | --- | --- |
@@ -241,6 +253,7 @@ a restart:
 | **Speech rate (%)** (`speechRatePercent`) | 100 | 50–200 | **Backend restart required** | The active synthesis rate remains unchanged until restart. |
 | **Speech volume (%)** (`speechVolumePercent`) | 100 | 0–100 | Live after Save | Trusted preload applies the active value to each admitted clip; 0 silences playback without disabling synthesis. |
 | **Voice profile** (`voiceProfileId`) | `default` | Configured logical Profile ID | **Backend restart required** | The active Profile remains unchanged until restart. |
+| **Voice emotion** (`voiceEmotion`) | `neutral` | `neutral` / `happy` / `sad` | **Backend restart required** | The same active closed value selects the local TTS reference and reviewed static expression; model output cannot override it. |
 | **Call captions** (`captionsEnabled`) | Show | Show / Hide | Live after Save | Supplies the default for newly opened Voice Sessions; the Session control remains available. |
 | **Transcript review** (`transcriptReviewMode`) | `manual` | `manual` only | Live invariant | The disabled selector documents the enforced policy: recognition never sends without explicit review. |
 | **Continue listening after replies** (`automaticRelisten`) | Off | On / Off | Live after Save | A clean Voice reply may open one new bounded capture, but its transcript still requires manual review. |
@@ -298,7 +311,7 @@ immediately if Windows reports that microphone access is denied.
 | Keep one Voice Session open for a recorded duration and complete several capture, reply, mute, and interruption cycles before hanging up. | Resource use remains bounded, the Windows microphone indicator turns off after hang-up, no background capture or playback remains, and opening a fresh Session still works. | Pending — manual run required |
 | Enable Windows Narrator or another screen reader and exercise capture, transcription, thinking/speaking, mute, cancellation, one recoverable error, and hang-up. | Controls have understandable names and focus order; primary lifecycle and microphone status are announced separately without contradictory or repeated status floods. | Pending — manual run required |
 | Save each of the five live settings, exercising a newly admitted operation after every Save. | Read-aloud, per-clip volume, caption default, enforced manual review, and automatic relisten reflect the saved value without a Backend restart. Volume 0 is silent while the text reply still completes. | Pending — manual run required |
-| Save a different speech rate and Voice Profile without restarting, then restart the Backend. | Both controls report restart-required; active behavior stays at the old values before restart and changes only after a successful restart. | Pending — manual run required |
+| Save a different speech rate, Voice Profile, and Voice Emotion without restarting, then restart the Backend. | All three controls report restart-required; active behavior stays at the old values before restart. After a successful restart, the closed emotion changes both the TTS reference choice and reviewed static expression. | Pending — manual run required |
 
 For every real-device run, record the following fields together with the table
 results. A generic “passed” without this environment information is not enough
@@ -311,7 +324,7 @@ to close the hardware acceptance gate.
 | Microphone and connection type | Pending — manual run required |
 | Speaker/headset and connection type | Pending — manual run required |
 | Room and echo condition | Pending — manual run required |
-| Ollama model, STT model/device, and Voice Profile | Pending — manual run required |
+| Ollama model, STT model/device, Voice Profile, and Voice Emotion | Pending — manual run required |
 | Session duration and completed Voice-turn count | Pending — manual run required |
 | Interruption trials, successful interruptions, false triggers, and observed delay | Pending — manual run required |
 | Screen reader and result | Pending — manual run required |
@@ -436,19 +449,24 @@ npm run package
 npx --no-install asar list out\win-unpacked\resources\app.asar > "%TEMP%\elysia-asar-listing.txt"
 if exist "%TEMP%\elysia-portrait.png" del /f /q "%TEMP%\elysia-portrait.png"
 if exist "%TEMP%\elysia-state-atlas.png" del /f /q "%TEMP%\elysia-state-atlas.png"
+if exist "%TEMP%\elysia-expression-atlas.png" del /f /q "%TEMP%\elysia-expression-atlas.png"
+if exist "%TEMP%\elysia-speech-atlas.png" del /f /q "%TEMP%\elysia-speech-atlas.png"
 pushd "%TEMP%"
 call "D:\Elysia_AI\desktop\node_modules\.bin\asar.cmd" extract-file "D:\Elysia_AI\desktop\out\win-unpacked\resources\app.asar" "dist\character\elysia-portrait.png"
 call "D:\Elysia_AI\desktop\node_modules\.bin\asar.cmd" extract-file "D:\Elysia_AI\desktop\out\win-unpacked\resources\app.asar" "dist\character\elysia-state-atlas.png"
+call "D:\Elysia_AI\desktop\node_modules\.bin\asar.cmd" extract-file "D:\Elysia_AI\desktop\out\win-unpacked\resources\app.asar" "dist\character\elysia-expression-atlas.png"
+call "D:\Elysia_AI\desktop\node_modules\.bin\asar.cmd" extract-file "D:\Elysia_AI\desktop\out\win-unpacked\resources\app.asar" "dist\character\elysia-speech-atlas.png"
 popd
 cd /d D:\Elysia_AI
-.venv\Scripts\python.exe scripts\check_distribution_assets.py --unpacked-tree desktop\out\win-unpacked --asar-listing "%TEMP%\elysia-asar-listing.txt" --extracted-asar-portrait "%TEMP%\elysia-portrait.png" --extracted-asar-character-atlas "%TEMP%\elysia-state-atlas.png"
-del /f /q "%TEMP%\elysia-asar-listing.txt" "%TEMP%\elysia-portrait.png" "%TEMP%\elysia-state-atlas.png"
+.venv\Scripts\python.exe scripts\check_distribution_assets.py --unpacked-tree desktop\out\win-unpacked --asar-listing "%TEMP%\elysia-asar-listing.txt" --extracted-asar-portrait "%TEMP%\elysia-portrait.png" --extracted-asar-character-atlas "%TEMP%\elysia-state-atlas.png" --extracted-asar-expression-atlas "%TEMP%\elysia-expression-atlas.png" --extracted-asar-speech-atlas "%TEMP%\elysia-speech-atlas.png"
+del /f /q "%TEMP%\elysia-asar-listing.txt" "%TEMP%\elysia-portrait.png" "%TEMP%\elysia-state-atlas.png" "%TEMP%\elysia-expression-atlas.png" "%TEMP%\elysia-speech-atlas.png"
 ```
 
 `npm run package` creates an unpacked desktop build in `desktop\out`.
 On Windows, `npm run make` additionally creates an unsigned NSIS installer.
 The final audit scans the actual package tree and its ASAR listing, then verifies
-the bytes extracted from the required portrait and state-atlas paths. Neither
+the bytes extracted from the required portrait, state, expression, and speech
+atlas paths. Neither
 accepted output contains the GPT-SoVITS runtime, Voice Profile catalog, model
 weights, or reference audio.
 
@@ -458,12 +476,16 @@ unofficial, non-commercial fan project. They are third-party assets, are not
 covered by any source-code license, and do not imply HoYoverse / miHoYo
 endorsement. See the root `MODEL_LICENSE.md` before publishing a build.
 
-The packaged portrait fallback and state atlas are reviewed generated fan
-artwork, not source-code-licensed assets. The distribution audit pins both by
-exact path, byte length, SHA-256, ASAR cardinality, and extracted bytes. The
-state atlas is a static 4×2 RGB sheet: only its first seven cells participate
-in the closed Character State contract, and the eighth success cell is not a
-new runtime state.
+The packaged portrait fallback plus state, expression, and speech atlases are
+reviewed generated fan artwork, not source-code-licensed assets. The
+distribution audit pins all four by exact path, byte length, SHA-256, ASAR
+cardinality, and extracted bytes. The state atlas is a static 4×2 RGB sheet:
+only its first seven cells participate in the closed Character State contract,
+and the eighth success cell is not a new runtime state. The expression atlas
+admits only the user-controlled `neutral / happy / sad` mapping. Runtime speech
+uses only the first four cells of the facial atlas's first band as
+`closed / small / medium / wide` amplitude cues; it does not interpret the
+remaining review cells as detected phonemes.
 
 `npm run docs:check` enforces file-purpose comments plus public class,
 function, class-method, and exported interface-method documentation. The
@@ -474,11 +496,12 @@ semantic why/how requirements remain part of review under the root
 UI tests, including Knowledge method/event races, export ownership across
 Renderer reload and Project switches, trusted receipt settlement, Project
 isolation, archived read-only behavior, explicit grounded intent, and citation
-accessibility. The contract suite also runs `character-state.test.mjs` and
-`character-presentation.test.mjs`, while the UI suite verifies current-
-Chat/Project scoping, Voice projection, Backend failure, atlas-cell cues,
-performance preference/Reduced Motion, and the atlas → portrait → accessible
-text fallback chain.
+accessibility. The contract suite also runs `character-state.test.mjs`,
+`character-presentation.test.mjs`, and `speech-mouth.test.mjs`, while the UI
+suite verifies current-Chat/Project scoping, Voice projection, Backend failure,
+closed state/emotion/speech atlas cues, performance preference/Reduced Motion,
+and the speech → expression → state → portrait → accessible-text fallback
+chain.
 `npm run test:ui` can be used independently while working on layout.
 The UI suite loads the production renderer through a dedicated sandboxed test
 preload; its mock Backend and control surface are never included by the
@@ -550,15 +573,22 @@ method, results, capability gaps, and limitations.
   percentage are applied inside trusted preload for every admitted clip. A Web
   Audio gain node enforces the per-clip volume; zero remains an intentional
   silent playback, and an unavailable explicit sink skips that clip instead of
-  leaking it through the system default speaker. The managed runtime's current partial manifest proves launch consistency, not complete
+  leaking it through the system default speaker. For Animated speaking artwork,
+  the same trusted graph samples the actual post-selection playback at no more
+  than 20 Hz and reduces RMS to a four-value mouth cue; raw samples, continuous
+  levels, and arbitrary animation selectors never cross into React. Still and
+  Reduced Motion keep the cue closed. The managed runtime's current partial manifest proves launch consistency, not complete
   supply-chain provenance, so desktop speech caching remains disabled.
 - Settings accepts an exact non-sensitive allowlist, including the closed STT
-  model/device/language enums and seven Voice behavior fields, uses optimistic
+  model/device/language enums and eight Voice behavior fields, uses optimistic
   revisions and atomic replacement, and remains repairable after Backend
   initialization rejects a saved model or Ollama origin. Read-aloud, volume,
   captions, the manual-review invariant, and automatic relisten are adopted
-  between admitted operations after Save; synthesis rate and Voice Profile keep
-  their prior active values until a Backend restart.
+  between admitted operations after Save; synthesis rate, Voice Profile, and
+  the closed `neutral / happy / sad` Voice Emotion keep their prior active
+  values until a Backend restart. The active emotion controls both the TTS
+  reference choice and reviewed static expression; model output has no field
+  that can select arbitrary character animation.
 - Audio-device preferences use an independent optimistic revision and remain
   repairable while Chat generation is active or Brain initialization has
   failed. Electron owns hardware enumeration, Windows permission state, and

@@ -5,7 +5,14 @@ from pathlib import Path
 import pytest
 
 import start
-from config.settings import AppSettings, parse_bool, parse_choice, parse_float
+from config.settings import (
+    DEFAULT_VOICE_EMOTION,
+    VOICE_EMOTIONS,
+    AppSettings,
+    parse_bool,
+    parse_choice,
+    parse_float,
+)
 from core import ConfigurationError
 
 
@@ -61,6 +68,19 @@ def test_parse_choice_normalizes_allowlisted_values_and_rejects_aliases() -> Non
 
     assert parse_choice(" MEDIUM ", allowed, "small") == "medium"
     assert parse_choice("../remote-model", allowed, "small") == "small"
+
+
+def test_voice_emotion_defaults_and_environment_choice_are_bounded(
+    tmp_path: Path,
+) -> None:
+    """Keep voice synthesis emotion on the closed supported vocabulary."""
+
+    assert make_settings(tmp_path).voice_emotion == DEFAULT_VOICE_EMOTION
+    assert parse_choice(" SAD ", VOICE_EMOTIONS, DEFAULT_VOICE_EMOTION) == "sad"
+    assert (
+        parse_choice("excited", VOICE_EMOTIONS, DEFAULT_VOICE_EMOTION)
+        == DEFAULT_VOICE_EMOTION
+    )
 
 
 @pytest.mark.parametrize(

@@ -9,6 +9,7 @@ const test = require('node:test')
 const PLAY_CHANNEL = 'elysia:trusted-speech-play:v1'
 const CANCEL_CHANNEL = 'elysia:trusted-speech-cancel:v1'
 const SETTLED_CHANNEL = 'elysia:trusted-speech-settled:v1'
+const VISUAL_REFRESH_EVENT = 'elysia:character-visual-refresh'
 const PLAYBACK_IDS = [
   '00000000-0000-4000-8000-000000000001',
   '00000000-0000-4000-8000-000000000002',
@@ -16,6 +17,9 @@ const PLAYBACK_IDS = [
   '00000000-0000-4000-8000-000000000004',
   '00000000-0000-4000-8000-000000000005',
   '00000000-0000-4000-8000-000000000006',
+  '00000000-0000-4000-8000-000000000007',
+  '00000000-0000-4000-8000-000000000008',
+  '00000000-0000-4000-8000-000000000009',
 ]
 
 const operations = []
@@ -25,6 +29,50 @@ let outputDeviceId = 'private-headphones'
 let speechVolumePercent = 100
 let rejectSinkSelection = false
 let settingsResolver = null
+let analyserAmplitude = 0
+let characterVisible = true
+let visualFailure = null
+let visualRefreshListener = null
+
+const rootDatasetState = {
+  characterMouth: 'closed',
+  characterPerformance: 'animated',
+  characterPerformancePreference: 'animated',
+  characterSpeechActive: 'false',
+}
+const rootDataset = new Proxy(rootDatasetState, {
+  get(target, property) {
+    if (visualFailure === 'dataset-read') {
+      throw new Error('renderer dataset read failed')
+    }
+    return Reflect.get(target, property)
+  },
+  set(target, property, value) {
+    if (visualFailure === 'dataset-write') {
+      throw new Error('renderer dataset write failed')
+    }
+    return Reflect.set(target, property, value)
+  },
+})
+const visualDocument = {
+  get documentElement() {
+    if (visualFailure === 'document') {
+      throw new Error('renderer document access failed')
+    }
+    return { dataset: rootDataset }
+  },
+  querySelector() {
+    if (visualFailure === 'query') {
+      throw new Error('renderer query failed')
+    }
+    return characterVisible ? Object.freeze({ kind: 'character' }) : null
+  },
+}
+globalThis.document = visualDocument
+globalThis.addEventListener = (type, listener) => {
+  if (type === VISUAL_REFRESH_EVENT) visualRefreshListener = listener
+}
+globalThis.window = globalThis
 
 class FakeIpcRenderer extends EventEmitter {
   /** Record private settlement without forwarding it outside this test. */
@@ -98,6 +146,33 @@ class FakeGainNode {
   }
 }
 
+class FakeAnalyserNode {
+  /** Create the private time-domain sampler used only by Preload. */
+  constructor() {
+    this.fftSize = 0
+  }
+
+  /** Record the analyser-to-gain edge in the trusted graph. */
+  connect() {
+    operations.push('analyser-connect')
+  }
+
+  /** Record analyser cleanup at every terminal playback boundary. */
+  disconnect() {
+    operations.push('analyser-disconnect')
+  }
+
+  /** Fill one private frame with a deterministic centered waveform. */
+  getByteTimeDomainData(samples) {
+    operations.push('sample')
+    const offset = Math.round(analyserAmplitude * 127)
+    samples.fill(128)
+    for (let index = 0; index < samples.length; index += 1) {
+      samples[index] = 128 + (index % 2 === 0 ? offset : -offset)
+    }
+  }
+}
+
 class FakeAudioContext {
   /** Create an isolated context and destination for one private clip. */
   constructor(options) {
@@ -119,6 +194,13 @@ class FakeAudioContext {
     operations.push('create-source')
     this.source = new FakeBufferSource()
     return this.source
+  }
+
+  /** Return the analyser which never exposes waveform bytes to React. */
+  createAnalyser() {
+    operations.push('create-analyser')
+    this.analyser = new FakeAnalyserNode()
+    return this.analyser
   }
 
   /** Return the owned gain stage used for validated speech volume. */
@@ -217,9 +299,29 @@ function immediate() {
   return new Promise((resolve) => setImmediate(resolve))
 }
 
+function waitForVisualSample() {
+  return new Promise((resolve) => setTimeout(resolve, 70))
+}
+
+function refreshCharacterVisual() {
+  assert.equal(typeof visualRefreshListener, 'function')
+  visualRefreshListener()
+}
+
+function sampleCount() {
+  return operations.filter((operation) => operation === 'sample').length
+}
+
 function resetObservations() {
   operations.length = 0
   settlements.length = 0
+  analyserAmplitude = 0
+  characterVisible = true
+  visualFailure = null
+  rootDatasetState.characterMouth = 'closed'
+  rootDatasetState.characterPerformance = 'animated'
+  rootDatasetState.characterPerformancePreference = 'animated'
+  rootDatasetState.characterSpeechActive = 'false'
 }
 
 test('selected output is routed before decode and playback', async () => {
@@ -235,13 +337,15 @@ test('selected output is routed before decode and playback', async () => {
     'sink:private-headphones',
     'decode',
     'create-source',
+    'create-analyser',
+  ])
+  assert.deepEqual(operations.slice(7, 11), [
     'create-gain',
-  ])
-  assert.deepEqual(operations.slice(7, 10), [
     'connect',
+    'analyser-connect',
     'gain-connect',
-    'start',
   ])
+  assert.equal(operations[11], 'start')
   assert.equal(contexts.at(-1).gain.gain.value, 1)
   assert.deepEqual(settlements, [])
   contexts.at(-1).source.onended()
@@ -251,10 +355,119 @@ test('selected output is routed before decode and playback', async () => {
   }])
 })
 
+test('actual analyser samples drive only bounded visual dataset cues', async () => {
+  resetObservations()
+  analyserAmplitude = 0.3
+  emitPlayback(PLAYBACK_IDS[1])
+  await immediate()
+
+  assert.equal(rootDataset.characterSpeechActive, 'true')
+  assert.equal(rootDataset.characterMouth, 'closed')
+  await waitForVisualSample()
+  assert.equal(rootDatasetState.characterMouth, 'wide')
+  assert.equal(Object.hasOwn(exposedApis[0].api, 'speechVisual'), false)
+
+  contexts.at(-1).source.onended()
+  assert.equal(rootDatasetState.characterSpeechActive, 'false')
+  assert.equal(rootDatasetState.characterMouth, 'closed')
+  analyserAmplitude = 0
+})
+
+test('zero output volume keeps every sampled mouth frame closed', async () => {
+  resetObservations()
+  analyserAmplitude = 0.7
+  speechVolumePercent = 0
+  emitPlayback(PLAYBACK_IDS[6])
+  await immediate()
+  await waitForVisualSample()
+  await waitForVisualSample()
+
+  assert.ok(sampleCount() >= 2)
+  assert.equal(rootDatasetState.characterSpeechActive, 'true')
+  assert.equal(rootDatasetState.characterMouth, 'closed')
+  contexts.at(-1).source.onended()
+  assert.deepEqual(settlements, [{
+    playbackId: PLAYBACK_IDS[6],
+    status: 'played',
+  }])
+  speechVolumePercent = 100
+})
+
+test('still, reduced-motion, and hidden character surfaces are not sampled', async () => {
+  resetObservations()
+  analyserAmplitude = 0.7
+  emitPlayback(PLAYBACK_IDS[7])
+  await immediate()
+
+  rootDatasetState.characterPerformancePreference = 'still'
+  rootDatasetState.characterPerformance = 'still'
+  refreshCharacterVisual()
+  await waitForVisualSample()
+  assert.equal(sampleCount(), 0)
+
+  rootDatasetState.characterPerformancePreference = 'animated'
+  rootDatasetState.characterPerformance = 'still'
+  refreshCharacterVisual()
+  await waitForVisualSample()
+  assert.equal(sampleCount(), 0)
+
+  rootDatasetState.characterPerformance = 'animated'
+  characterVisible = false
+  refreshCharacterVisual()
+  await waitForVisualSample()
+  assert.equal(sampleCount(), 0)
+  assert.equal(rootDatasetState.characterSpeechActive, 'true')
+  assert.equal(rootDatasetState.characterMouth, 'closed')
+
+  contexts.at(-1).source.onended()
+  assert.deepEqual(settlements, [{
+    playbackId: PLAYBACK_IDS[7],
+    status: 'played',
+  }])
+})
+
+test('renderer visual exceptions cannot fail audio or suppress settlement', async () => {
+  resetObservations()
+  analyserAmplitude = 0.7
+  visualFailure = 'document'
+  emitPlayback(PLAYBACK_IDS[8])
+  await immediate()
+
+  assert.equal(operations.includes('start'), true)
+  assert.deepEqual(settlements, [])
+
+  visualFailure = 'query'
+  assert.doesNotThrow(refreshCharacterVisual)
+  await waitForVisualSample()
+  assert.equal(sampleCount(), 0)
+
+  visualFailure = 'dataset-read'
+  assert.doesNotThrow(refreshCharacterVisual)
+  await waitForVisualSample()
+  assert.equal(sampleCount(), 0)
+
+  visualFailure = 'dataset-write'
+  assert.doesNotThrow(refreshCharacterVisual)
+  await waitForVisualSample()
+  assert.ok(sampleCount() >= 1)
+  assert.doesNotThrow(() => contexts.at(-1).source.onended())
+  assert.deepEqual(settlements, [{
+    playbackId: PLAYBACK_IDS[8],
+    status: 'played',
+  }])
+  assert.equal(operations.includes('analyser-disconnect'), true)
+  assert.equal(operations.includes('close'), true)
+
+  visualFailure = null
+  refreshCharacterVisual()
+  assert.equal(rootDatasetState.characterSpeechActive, 'false')
+  assert.equal(rootDatasetState.characterMouth, 'closed')
+})
+
 test('sink-selection failure never falls back to the default output', async () => {
   resetObservations()
   rejectSinkSelection = true
-  emitPlayback(PLAYBACK_IDS[1])
+  emitPlayback(PLAYBACK_IDS[2])
   await immediate()
 
   assert.deepEqual(operations, [
@@ -265,7 +478,7 @@ test('sink-selection failure never falls back to the default output', async () =
     'close',
   ])
   assert.deepEqual(settlements, [{
-    playbackId: PLAYBACK_IDS[1],
+    playbackId: PLAYBACK_IDS[2],
     status: 'failed',
   }])
   rejectSinkSelection = false
@@ -274,13 +487,13 @@ test('sink-selection failure never falls back to the default output', async () =
 test('null selection deliberately routes to the system default sink', async () => {
   resetObservations()
   outputDeviceId = null
-  emitPlayback(PLAYBACK_IDS[2])
+  emitPlayback(PLAYBACK_IDS[3])
   await immediate()
 
   assert.ok(operations.indexOf('sink:') < operations.indexOf('start'))
   contexts.at(-1).source.onended()
   assert.deepEqual(settlements, [{
-    playbackId: PLAYBACK_IDS[2],
+    playbackId: PLAYBACK_IDS[3],
     status: 'played',
   }])
   outputDeviceId = 'private-headphones'
@@ -289,9 +502,9 @@ test('null selection deliberately routes to the system default sink', async () =
 test('cancellation during settings lookup cannot start stale audio', async () => {
   resetObservations()
   settingsResolver = () => {}
-  emitPlayback(PLAYBACK_IDS[3])
+  emitPlayback(PLAYBACK_IDS[4])
   await immediate()
-  ipcRenderer.emit(CANCEL_CHANNEL, {}, PLAYBACK_IDS[3])
+  ipcRenderer.emit(CANCEL_CHANNEL, {}, PLAYBACK_IDS[4])
   const resolveSettings = settingsResolver
   assert.equal(typeof resolveSettings, 'function')
   settingsResolver = null
@@ -301,7 +514,7 @@ test('cancellation during settings lookup cannot start stale audio', async () =>
   assert.equal(operations.includes('decode'), false)
   assert.equal(operations.includes('start'), false)
   assert.deepEqual(settlements, [{
-    playbackId: PLAYBACK_IDS[3],
+    playbackId: PLAYBACK_IDS[4],
     status: 'failed',
   }])
 })
@@ -309,14 +522,14 @@ test('cancellation during settings lookup cannot start stale audio', async () =>
 test('validated speech volume is applied through a private gain stage', async () => {
   resetObservations()
   speechVolumePercent = 35
-  emitPlayback(PLAYBACK_IDS[4])
+  emitPlayback(PLAYBACK_IDS[5])
   await immediate()
 
   assert.equal(contexts.at(-1).gain.gain.value, 0.35)
   assert.ok(operations.indexOf('create-gain') < operations.indexOf('start'))
   contexts.at(-1).source.onended()
   assert.deepEqual(settlements, [{
-    playbackId: PLAYBACK_IDS[4],
+    playbackId: PLAYBACK_IDS[5],
     status: 'played',
   }])
   speechVolumePercent = 100
@@ -325,13 +538,13 @@ test('validated speech volume is applied through a private gain stage', async ()
 test('invalid speech volume fails closed before decode or playback', async () => {
   resetObservations()
   speechVolumePercent = 101
-  emitPlayback(PLAYBACK_IDS[5])
+  emitPlayback('00000000-0000-4000-8000-00000000000a')
   await immediate()
 
   assert.equal(operations.includes('decode'), false)
   assert.equal(operations.includes('start'), false)
   assert.deepEqual(settlements, [{
-    playbackId: PLAYBACK_IDS[5],
+    playbackId: '00000000-0000-4000-8000-00000000000a',
     status: 'failed',
   }])
   speechVolumePercent = 100

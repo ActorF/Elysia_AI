@@ -179,6 +179,7 @@ test('JSON Schema declares the exact public settings surface', () => {
       'speechRatePercent',
       'speechVolumePercent',
       'voiceProfileId',
+      'voiceEmotion',
       'captionsEnabled',
       'transcriptReviewMode',
       'automaticRelisten',
@@ -335,6 +336,7 @@ for (const sample of fixtures.validServerMessages) {
         'transcriptionLanguage',
         'speechRatePercent',
         'voiceProfileId',
+        'voiceEmotion',
       ])
       assert.deepEqual(
         {
@@ -342,6 +344,7 @@ for (const sample of fixtures.validServerMessages) {
           speechRatePercent: result.settings.speechRatePercent,
           speechVolumePercent: result.settings.speechVolumePercent,
           voiceProfileId: result.settings.voiceProfileId,
+          voiceEmotion: result.settings.voiceEmotion,
           captionsEnabled: result.settings.captionsEnabled,
           transcriptReviewMode: result.settings.transcriptReviewMode,
           automaticRelisten: result.settings.automaticRelisten,
@@ -351,6 +354,7 @@ for (const sample of fixtures.validServerMessages) {
           speechRatePercent: 120,
           speechVolumePercent: 75,
           voiceProfileId: 'elysia',
+          voiceEmotion: 'happy',
           captionsEnabled: true,
           transcriptReviewMode: 'manual',
           automaticRelisten: true,
@@ -465,6 +469,7 @@ test('TypeScript validates revisioned settings requests without secrets', () => 
     speechRatePercent: 100,
     speechVolumePercent: 100,
     voiceProfileId: 'default',
+    voiceEmotion: 'neutral',
     captionsEnabled: true,
     transcriptReviewMode: 'manual',
     automaticRelisten: false,
@@ -499,6 +504,7 @@ test('TypeScript validates revisioned settings requests without secrets', () => 
     ['transcriptionModel', 'D:/private/model'],
     ['transcriptionDevice', 'directml'],
     ['transcriptionLanguage', 'fr'],
+    ['voiceEmotion', 'excited-animation'],
   ]) {
     assert.throws(
       () => parseClientRequest({

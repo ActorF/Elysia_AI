@@ -35,6 +35,7 @@ TranscriptionModel: TypeAlias = Literal[
 TranscriptionDevice: TypeAlias = Literal["auto", "cuda", "cpu"]
 TranscriptionLanguage: TypeAlias = Literal["auto", "zh", "en"]
 TranscriptReviewMode: TypeAlias = Literal["manual"]
+VoiceEmotion: TypeAlias = Literal["neutral", "happy", "sad"]
 
 DEFAULT_TRANSCRIPTION_MODEL: Final[TranscriptionModel] = "small"
 # CPU is the conservative desktop default so Ollama and GPT-SoVITS can share
@@ -43,6 +44,7 @@ DEFAULT_TRANSCRIPTION_MODEL: Final[TranscriptionModel] = "small"
 DEFAULT_TRANSCRIPTION_DEVICE: Final[TranscriptionDevice] = "cpu"
 DEFAULT_TRANSCRIPTION_LANGUAGE: Final[TranscriptionLanguage] = "auto"
 DEFAULT_TRANSCRIPT_REVIEW_MODE: Final[TranscriptReviewMode] = "manual"
+DEFAULT_VOICE_EMOTION: Final[VoiceEmotion] = "neutral"
 
 TRANSCRIPTION_MODELS: Final = (
     "tiny",
@@ -55,6 +57,11 @@ TRANSCRIPTION_MODELS: Final = (
 TRANSCRIPTION_DEVICES: Final = ("auto", "cuda", "cpu")
 TRANSCRIPTION_LANGUAGES: Final = ("auto", "zh", "en")
 TRANSCRIPT_REVIEW_MODES: Final = ("manual",)
+VOICE_EMOTIONS: Final[tuple[VoiceEmotion, ...]] = (
+    "neutral",
+    "happy",
+    "sad",
+)
 
 
 @dataclass(frozen=True)
@@ -87,6 +94,7 @@ class AppSettings:
     speech_rate_percent: int = DEFAULT_SPEECH_RATE_PERCENT
     speech_volume_percent: int = DEFAULT_SPEECH_VOLUME_PERCENT
     voice_profile_id: str = DEFAULT_VOICE_PROFILE_ID
+    voice_emotion: VoiceEmotion = DEFAULT_VOICE_EMOTION
     captions_enabled: bool = DEFAULT_CAPTIONS_ENABLED
     transcript_review_mode: TranscriptReviewMode = (
         DEFAULT_TRANSCRIPT_REVIEW_MODE
@@ -234,6 +242,14 @@ SPEECH_VOLUME_PERCENT = parse_int(
 if not 0 <= SPEECH_VOLUME_PERCENT <= 100:
     SPEECH_VOLUME_PERCENT = DEFAULT_SPEECH_VOLUME_PERCENT
 VOICE_PROFILE_ID = os.getenv("VOICE_PROFILE_ID", DEFAULT_VOICE_PROFILE_ID)
+VOICE_EMOTION = cast(
+    VoiceEmotion,
+    parse_choice(
+        os.getenv("VOICE_EMOTION", DEFAULT_VOICE_EMOTION),
+        VOICE_EMOTIONS,
+        DEFAULT_VOICE_EMOTION,
+    ),
+)
 CAPTIONS_ENABLED = parse_bool(
     os.getenv("CAPTIONS_ENABLED", str(DEFAULT_CAPTIONS_ENABLED))
 )
@@ -303,6 +319,7 @@ SETTINGS = AppSettings(
     speech_rate_percent=SPEECH_RATE_PERCENT,
     speech_volume_percent=SPEECH_VOLUME_PERCENT,
     voice_profile_id=VOICE_PROFILE_ID,
+    voice_emotion=VOICE_EMOTION,
     captions_enabled=CAPTIONS_ENABLED,
     transcript_review_mode=TRANSCRIPT_REVIEW_MODE,
     automatic_relisten=AUTOMATIC_RELISTEN,

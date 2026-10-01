@@ -36,6 +36,11 @@ import type {
   VoiceSettingsState,
   VoiceTranscriptionRequest,
 } from './contracts.js'
+import {
+  advanceSpeechMouthEnvelope,
+  CLOSED_SPEECH_MOUTH_ENVELOPE,
+  type SpeechMouthEnvelope,
+} from './speech-mouth.js'
 
 const MAX_DROPPED_ATTACHMENT_FILES = 10
 const TRUSTED_SPEECH_PLAY_CHANNEL = 'elysia:trusted-speech-play:v1'
@@ -45,6 +50,8 @@ const TRUSTED_SPEECH_MAX_WAV_BYTES = 8 * 1024 * 1024
 const TRUSTED_SPEECH_SAMPLE_RATE_HZ = 32_000
 const TRUSTED_SPEECH_MAX_DURATION_SECONDS = 120
 const TRUSTED_SPEECH_MAX_OUTPUT_DEVICE_ID_CODE_POINTS = 2_048
+const TRUSTED_SPEECH_MOUTH_INTERVAL_MS = 50
+const CHARACTER_VISUAL_REFRESH_EVENT = 'elysia:character-visual-refresh'
 const TRUSTED_PLAYBACK_ID_PATTERN = (
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u
 )
@@ -70,9 +77,17 @@ interface TrustedGainNode {
   disconnect(): void
 }
 
+interface TrustedAnalyserNode {
+  fftSize: number
+  connect(destination: unknown): void
+  disconnect(): void
+  getByteTimeDomainData(samples: Uint8Array): void
+}
+
 interface TrustedAudioContext {
   readonly destination: unknown
   close(): Promise<void>
+  createAnalyser(): TrustedAnalyserNode
   createBufferSource(): TrustedAudioBufferSource
   createGain(): TrustedGainNode
   decodeAudioData(bytes: ArrayBuffer): Promise<TrustedAudioBuffer>
@@ -85,13 +100,179 @@ interface TrustedAudioContextConstructor {
 }
 
 interface TrustedPlayback {
+  analyser: TrustedAnalyserNode | null
   readonly context: TrustedAudioContext
+  envelope: SpeechMouthEnvelope
   readonly playbackId: string
   gain: TrustedGainNode | null
+  mouthSamples: Uint8Array | null
+  mouthTimer: ReturnType<typeof setTimeout> | null
+  outputGain: number
   source: TrustedAudioBufferSource | null
+  started: boolean
+}
+
+interface TrustedVisualDocument {
+  readonly documentElement: {
+    readonly dataset: Record<string, string | undefined>
+  } | null
+  querySelector(selector: string): unknown
 }
 
 let trustedPlayback: TrustedPlayback | null = null
+
+function trustedVisualDocument(): TrustedVisualDocument | null {
+  try {
+    const visualGlobal = globalThis as unknown as {
+      document?: TrustedVisualDocument
+    }
+    return visualGlobal.document ?? null
+  } catch {
+    // Renderer-owned DOM access is optional decoration. A revoked or unusual
+    // document proxy must never escape into the trusted audio state machine.
+    return null
+  }
+}
+
+function publishTrustedSpeechVisual(
+  playback: TrustedPlayback | null,
+  active: boolean,
+): void {
+  try {
+    const visualDocument = trustedVisualDocument()
+    const root = visualDocument?.documentElement
+    if (root === null || root === undefined) {
+      return
+    }
+    root.dataset.characterSpeechActive = active ? 'true' : 'false'
+    root.dataset.characterMouth = active && playback !== null
+      ? playback.envelope.cue
+      : 'closed'
+  } catch {
+    // Dataset publication is a best-effort visual sink. Treat hostile DOM
+    // accessors exactly like a missing character surface and keep audio live.
+  }
+}
+
+function characterSpeechVisualIsVisible(): boolean {
+  try {
+    const visualDocument = trustedVisualDocument()
+    const root = visualDocument?.documentElement
+    if (visualDocument === null || root === null || root === undefined) {
+      return false
+    }
+    return root.dataset.characterPerformance === 'animated'
+      && visualDocument.querySelector(
+        '.character-artwork[data-character-state="speaking"]'
+        + '[data-character-performance="animated"]'
+        + '[data-character-asset="speech-atlas"]',
+      ) !== null
+  } catch {
+    // Visibility uncertainty fails visually closed. Sampling is unnecessary
+    // when Preload cannot prove that an animated speaking surface is present.
+    return false
+  }
+}
+
+function stopTrustedSpeechMouthSampling(
+  playback: TrustedPlayback,
+  active: boolean,
+): void {
+  const timer = playback.mouthTimer
+  playback.mouthTimer = null
+  if (timer !== null) {
+    try {
+      clearTimeout(timer)
+    } catch {
+      // Timer cleanup is best effort after the visual sampler is disowned.
+    }
+  }
+  playback.envelope = CLOSED_SPEECH_MOUTH_ENVELOPE
+  publishTrustedSpeechVisual(playback, active)
+}
+
+function scheduleTrustedSpeechMouthSample(playback: TrustedPlayback): void {
+  if (
+    trustedPlayback !== playback
+    || !playback.started
+    || playback.analyser === null
+    || playback.mouthSamples === null
+    || !characterSpeechVisualIsVisible()
+  ) {
+    stopTrustedSpeechMouthSampling(
+      playback,
+      trustedPlayback === playback && playback.started,
+    )
+    return
+  }
+  if (playback.mouthTimer !== null) {
+    return
+  }
+  try {
+    playback.mouthTimer = setTimeout(() => {
+      playback.mouthTimer = null
+      if (
+        trustedPlayback !== playback
+        || !playback.started
+        || playback.analyser === null
+        || playback.mouthSamples === null
+        || !characterSpeechVisualIsVisible()
+      ) {
+        stopTrustedSpeechMouthSampling(
+          playback,
+          trustedPlayback === playback && playback.started,
+        )
+        return
+      }
+      try {
+        playback.analyser.getByteTimeDomainData(playback.mouthSamples)
+        playback.envelope = advanceSpeechMouthEnvelope(
+          playback.mouthSamples,
+          playback.outputGain,
+          playback.envelope,
+        )
+        publishTrustedSpeechVisual(playback, true)
+      } catch {
+        // Visual analysis is optional: an analyser failure closes the mouth
+        // without interrupting or rerouting the trusted audio itself.
+        stopTrustedSpeechMouthSampling(playback, true)
+        return
+      }
+      scheduleTrustedSpeechMouthSample(playback)
+    }, TRUSTED_SPEECH_MOUTH_INTERVAL_MS)
+  } catch {
+    // An unavailable scheduler disables only visual sampling. The already
+    // connected Web Audio graph and its terminal event remain authoritative.
+    stopTrustedSpeechMouthSampling(playback, true)
+  }
+}
+
+function refreshTrustedSpeechMouthSampling(): void {
+  const playback = trustedPlayback
+  if (playback === null || !playback.started) {
+    publishTrustedSpeechVisual(null, false)
+    return
+  }
+  if (!characterSpeechVisualIsVisible()) {
+    stopTrustedSpeechMouthSampling(playback, true)
+    return
+  }
+  scheduleTrustedSpeechMouthSample(playback)
+}
+
+try {
+  const trustedVisualGlobal = globalThis as unknown as {
+    addEventListener?: (type: string, listener: () => void) => void
+  }
+  trustedVisualGlobal.addEventListener?.(
+    CHARACTER_VISUAL_REFRESH_EVENT,
+    refreshTrustedSpeechMouthSampling,
+  )
+} catch {
+  // Custom-event registration is an optional renderer optimization. Initial
+  // visibility and terminal playback handling remain functional without it.
+}
+publishTrustedSpeechVisual(null, false)
 
 function trustedAudioContextConstructor(): TrustedAudioContextConstructor | null {
   const audioGlobal = globalThis as unknown as {
@@ -255,11 +436,19 @@ function settleTrustedPlayback(
   if (trustedPlayback !== playback) {
     return
   }
+  // Fix terminal ownership before touching optional visual state so no DOM
+  // behavior can make a completed clip current again or suppress settlement.
   trustedPlayback = null
+  stopTrustedSpeechMouthSampling(playback, false)
   try {
     playback.source?.disconnect()
   } catch {
     // The result is already fixed; native cleanup details are not observable.
+  }
+  try {
+    playback.analyser?.disconnect()
+  } catch {
+    // Visual analysis cleanup cannot change the already-fixed audio result.
   }
   try {
     playback.gain?.disconnect()
@@ -309,10 +498,16 @@ ipcRenderer.on(
       return
     }
     const playback: TrustedPlayback = {
+      analyser: null,
       context,
+      envelope: CLOSED_SPEECH_MOUTH_ENVELOPE,
       playbackId: metadata.playbackId,
       gain: null,
+      mouthSamples: null,
+      mouthTimer: null,
+      outputGain: 0,
       source: null,
+      started: false,
     }
     trustedPlayback = playback
     const ownedBytes = Uint8Array.from(bytes).buffer as ArrayBuffer
@@ -332,17 +527,33 @@ ipcRenderer.on(
           throw new Error('Trusted speech decode was rejected.')
         }
         const source = context.createBufferSource()
+        const analyser = context.createAnalyser()
         const gain = context.createGain()
         playback.source = source
+        playback.analyser = analyser
         playback.gain = gain
+        playback.mouthSamples = new Uint8Array(128)
+        playback.outputGain = volume
         source.buffer = audio
+        analyser.fftSize = 256
         gain.gain.value = volume
-        source.connect(gain)
+        source.connect(analyser)
+        analyser.connect(gain)
         gain.connect(context.destination)
         source.onended = () => settleTrustedPlayback(playback, 'played')
         source.start()
+        playback.started = true
       } catch {
         settleTrustedPlayback(playback, 'failed')
+        return
+      }
+      try {
+        publishTrustedSpeechVisual(playback, true)
+        refreshTrustedSpeechMouthSampling()
+      } catch {
+        // This outer boundary keeps future visual changes from revising a
+        // source that Web Audio has already started successfully.
+        stopTrustedSpeechMouthSampling(playback, true)
       }
     })()
   },

@@ -75,6 +75,27 @@ test('uses one order-independent priority for simultaneous activity', () => {
   )
 })
 
+test('keeps application presence speaking for the owned playback interval', () => {
+  assert.equal(deriveApplicationCharacterState({
+    backendStatus: 'ready',
+    chatActivity: 'idle',
+    chatMode: 'chat',
+    knowledgeActive: false,
+    knowledgeError: false,
+    speechPlaying: true,
+    waitingApproval: false,
+  }).state, 'speaking')
+  assert.equal(deriveApplicationCharacterState({
+    backendStatus: 'error',
+    chatActivity: 'idle',
+    chatMode: 'chat',
+    knowledgeActive: false,
+    knowledgeError: false,
+    speechPlaying: true,
+    waitingApproval: false,
+  }).state, 'error')
+})
+
 test('keeps errors and approval visible above application activity', () => {
   assert.equal(deriveApplicationCharacterState({
     backendStatus: 'error',

@@ -20,6 +20,7 @@ from .desktop_settings import (
     validate_transcription_device,
     validate_transcription_language,
     validate_transcription_model,
+    validate_voice_emotion,
 )
 from .settings import (
     AppSettings,
@@ -27,6 +28,7 @@ from .settings import (
     TranscriptionDevice,
     TranscriptionLanguage,
     TranscriptionModel,
+    VoiceEmotion,
 )
 
 __all__ = [
@@ -42,6 +44,7 @@ __all__ = [
     "TranscriptionDevice",
     "TranscriptionLanguage",
     "TranscriptionModel",
+    "VoiceEmotion",
     "apply_editable_settings",
     "changed_setting_names",
     "create_desktop_settings_repository",
@@ -55,4 +58,5 @@ __all__ = [
     "validate_transcription_device",
     "validate_transcription_language",
     "validate_transcription_model",
+    "validate_voice_emotion",
 ]

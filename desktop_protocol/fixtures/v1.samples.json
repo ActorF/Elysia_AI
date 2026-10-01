@@ -411,6 +411,7 @@
             "speechRatePercent": 100,
             "speechVolumePercent": 100,
             "voiceProfileId": "default",
+            "voiceEmotion": "neutral",
             "captionsEnabled": true,
             "transcriptReviewMode": "manual",
             "automaticRelisten": false
@@ -890,6 +891,7 @@
             "speechRatePercent": 120,
             "speechVolumePercent": 75,
             "voiceProfileId": "elysia",
+            "voiceEmotion": "happy",
             "captionsEnabled": true,
             "transcriptReviewMode": "manual",
             "automaticRelisten": true
@@ -907,6 +909,7 @@
             "speechRatePercent": 100,
             "speechVolumePercent": 75,
             "voiceProfileId": "default",
+            "voiceEmotion": "neutral",
             "captionsEnabled": true,
             "transcriptReviewMode": "manual",
             "automaticRelisten": true
@@ -922,7 +925,8 @@
             "transcriptionDevice",
             "transcriptionLanguage",
             "speechRatePercent",
-            "voiceProfileId"
+            "voiceProfileId",
+            "voiceEmotion"
           ],
           "scopes": {
             "project": {
@@ -964,6 +968,7 @@
             "speechRatePercent": 100,
             "speechVolumePercent": 100,
             "voiceProfileId": "default",
+            "voiceEmotion": "neutral",
             "captionsEnabled": true,
             "transcriptReviewMode": "manual",
             "automaticRelisten": false
@@ -981,6 +986,7 @@
             "speechRatePercent": 100,
             "speechVolumePercent": 100,
             "voiceProfileId": "default",
+            "voiceEmotion": "neutral",
             "captionsEnabled": true,
             "transcriptReviewMode": "manual",
             "automaticRelisten": false
@@ -1523,6 +1529,7 @@
             "speechRatePercent": 100,
             "speechVolumePercent": 100,
             "voiceProfileId": "default",
+            "voiceEmotion": "neutral",
             "captionsEnabled": true,
             "transcriptReviewMode": "manual",
             "automaticRelisten": false,
@@ -1553,6 +1560,7 @@
             "speechRatePercent": 100,
             "speechVolumePercent": 100,
             "voiceProfileId": "default",
+            "voiceEmotion": "neutral",
             "captionsEnabled": true,
             "transcriptReviewMode": "manual",
             "automaticRelisten": false
@@ -1582,6 +1590,7 @@
             "speechRatePercent": 100,
             "speechVolumePercent": 100,
             "voiceProfileId": "default",
+            "voiceEmotion": "neutral",
             "captionsEnabled": true,
             "transcriptReviewMode": "manual",
             "automaticRelisten": false
@@ -1611,6 +1620,7 @@
             "speechRatePercent": 100,
             "speechVolumePercent": 100,
             "voiceProfileId": "default",
+            "voiceEmotion": "neutral",
             "captionsEnabled": true,
             "transcriptReviewMode": "manual",
             "automaticRelisten": false
@@ -1640,6 +1650,37 @@
             "speechRatePercent": 100,
             "speechVolumePercent": 100,
             "voiceProfileId": "../private/profile",
+            "voiceEmotion": "neutral",
+            "captionsEnabled": true,
+            "transcriptReviewMode": "manual",
+            "automaticRelisten": false
+          }
+        }
+      }
+    },
+    {
+      "name": "settings update rejects arbitrary Voice emotion",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "settings-update-invalid-6",
+        "method": "settings.update",
+        "params": {
+          "expectedRevision": 0,
+          "settings": {
+            "modelName": "qwen3.5:9b",
+            "ollamaHost": "http://127.0.0.1:11434",
+            "shortTermMemoryTokenBudget": 2048,
+            "memoryRetrievalLimit": 5,
+            "dataImportMaxBytes": 16777216,
+            "transcriptionModel": "small",
+            "transcriptionDevice": "auto",
+            "transcriptionLanguage": "auto",
+            "autoReadAloud": true,
+            "speechRatePercent": 100,
+            "speechVolumePercent": 100,
+            "voiceProfileId": "default",
+            "voiceEmotion": "excited-animation",
             "captionsEnabled": true,
             "transcriptReviewMode": "manual",
             "automaticRelisten": false
@@ -2207,6 +2248,7 @@
             "speechRatePercent": 100,
             "speechVolumePercent": 100,
             "voiceProfileId": "default",
+            "voiceEmotion": "neutral",
             "captionsEnabled": true,
             "transcriptReviewMode": "manual",
             "automaticRelisten": false,
@@ -2225,6 +2267,7 @@
             "speechRatePercent": 100,
             "speechVolumePercent": 100,
             "voiceProfileId": "default",
+            "voiceEmotion": "neutral",
             "captionsEnabled": true,
             "transcriptReviewMode": "manual",
             "automaticRelisten": false
@@ -2259,6 +2302,7 @@
             "speechRatePercent": 100,
             "speechVolumePercent": 100,
             "voiceProfileId": "default",
+            "voiceEmotion": "neutral",
             "captionsEnabled": true,
             "transcriptReviewMode": "manual",
             "automaticRelisten": false
@@ -2276,6 +2320,7 @@
             "speechRatePercent": 100,
             "speechVolumePercent": 100,
             "voiceProfileId": "default",
+            "voiceEmotion": "neutral",
             "captionsEnabled": true,
             "transcriptReviewMode": "manual",
             "automaticRelisten": false

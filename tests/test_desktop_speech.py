@@ -348,6 +348,7 @@ def _config(
     tmp_path: Path,
     *,
     voice_profile_id: str = "default",
+    voice_emotion: str = "neutral",
     speech_rate_percent: int = 100,
 ) -> DesktopSpeechConfig:
     """Return absolute private paths that require no files in unit tests."""
@@ -358,6 +359,7 @@ def _config(
         catalog_path=(tmp_path / "catalog.json").resolve(),
         asset_root=(tmp_path / "assets").resolve(),
         voice_profile_id=voice_profile_id,
+        voice_emotion=cast(Any, voice_emotion),
         speech_rate_percent=speech_rate_percent,
         allow_local_evaluation=True,
         deterministic_seed=123,
@@ -377,12 +379,14 @@ def test_config_derives_restart_bound_voice_preferences(
         debug=False,
         ollama_host="http://127.0.0.1:11434",
         voice_profile_id="elysia-v2",
+        voice_emotion="sad",
         speech_rate_percent=135,
     )
 
     config = DesktopSpeechConfig.from_app_settings(settings)
 
     assert config.voice_profile_id == "elysia-v2"
+    assert config.voice_emotion == "sad"
     assert config.speech_rate_percent == 135
 
 
@@ -410,11 +414,23 @@ def test_config_rejects_invalid_voice_preferences(
             catalog_path=(tmp_path / "catalog.json").resolve(),
             asset_root=(tmp_path / "assets").resolve(),
             voice_profile_id=voice_profile_id,
+            voice_emotion="neutral",
             speech_rate_percent=cast(int, speech_rate_percent),
             allow_local_evaluation=True,
             deterministic_seed=123,
             synthesis_timeout_seconds=5.0,
         )
+
+
+@pytest.mark.parametrize("voice_emotion", ["", "excited", "HAPPY", 1])
+def test_config_rejects_emotions_outside_the_closed_set(
+    tmp_path: Path,
+    voice_emotion: object,
+) -> None:
+    """Reject arbitrary emotion commands before resolving local voice assets."""
+
+    with pytest.raises(ValueError, match="voice_emotion"):
+        _config(tmp_path, voice_emotion=cast(str, voice_emotion))
 
 
 def test_bootstrap_applies_configured_profile_and_absolute_rate(
@@ -431,6 +447,7 @@ def test_bootstrap_applies_configured_profile_and_absolute_rate(
         _config(
             tmp_path,
             voice_profile_id="elysia-v2",
+            voice_emotion="happy",
             speech_rate_percent=135,
         ),
         AudioChannelWriter(stream),  # type: ignore[arg-type]
@@ -440,7 +457,7 @@ def test_bootstrap_applies_configured_profile_and_absolute_rate(
     coordinator.start()
     assert coordinator.wait_until_settled(1.0)
     assert coordinator.get_status().state == "ready"
-    assert catalog.calls == [("elysia-v2", "neutral")]
+    assert catalog.calls == [("elysia-v2", "happy")]
     assert len(runtime.acquired) == 1
     selection = cast(_FakeSelection, runtime.acquired[0])
     assert selection.profile_id == "elysia-test"

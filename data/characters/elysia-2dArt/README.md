@@ -2,7 +2,7 @@
 
 本目录是 2026-10-01 根据项目所有者的十条逐图复审制作并继续逐格修正的最终审阅包。反馈编号严格对应 01 至 10。内容整合完成后，项目所有者要求删除旧的 v1 与 v2 目录；本目录现为唯一保留版本。
 
-这些文件目前是角色视觉和产品界面的候选审阅稿，不会自动替换应用资源。它们也不是已经切片、绑定或可直接发布的 Live2D/Cubism 工程。
+这些文件是角色视觉和产品界面的最终审阅母版。Stage 13 运行时明确选择 `02-activity-states.png`、`03-expression-atlas.png` 与 `04-facial-rig-atlas.png` 的逐字节副本；其余文件仍只用于审阅，不会自动替换应用资源。整套素材都不是已经分层绑定或可直接发布的 Live2D/Cubism 工程。
 
 ## 十条反馈与 v3 处理结果
 
@@ -179,7 +179,17 @@ ImageGen 输出仍包含 255 个 alpha 等级，透明区附近存在视觉上�
 
 ## 应用内运行时选片
 
-Stage 13 Module 3 选择 `02-activity-states.png` 作为应用内角色状态图集，并把同一字节复制到 `desktop/public/character/elysia-state-atlas.png`。运行时不重新编码、不执行 AI 重绘，也不把整套审阅包复制进安装包；Vite/ASAR 只携带这一个 1536×1024 RGB 图集和原有的静态立绘回退。
+Stage 13 Module 3 与 Module 4 选择以下三张审核母版，并把同一字节复制到 Desktop Public Assets。运行时不重新编码、不执行 AI 重绘，也不把整套审阅包复制进安装包；Vite/ASAR 只携带这三个运行时图集和原有的静态立绘回退。
+
+| 审阅母版 | 运行时副本 | 字节数 | SHA-256 | 运行时用途 |
+| --- | --- | ---: | --- | --- |
+| `02-activity-states.png` | `desktop/public/character/elysia-state-atlas.png` | 2,303,963 | `54EB2525673C2A849819BE10EB88EB2F670EB1911E86FD154E69B578CBB4C25C` | 七个封闭 Character State |
+| `03-expression-atlas.png` | `desktop/public/character/elysia-expression-atlas.png` | 2,500,647 | `FBF7A515B2651B3A881CF9B838A5605C316BEFD0B174DDE046780D8E441D7F93` | 用户限定的三种静态情绪 |
+| `04-facial-rig-atlas.png` | `desktop/public/character/elysia-speech-atlas.png` | 2,054,767 | `21BF4496ACC4417D491FF0163C9EE1D38593E376CA25A3D452FD393C6157F9AB` | 真实播放振幅的四档嘴型 |
+
+分发门禁同时固定每个运行时副本的仓库路径、长度、SHA-256、ASAR 精确路径、唯一条目数与抽取字节，避免未审核替换继承本次结论。
+
+### 02 — Character State 运行时映射
 
 运行时按固定 4×2 网格裁切，单格逻辑尺寸为 384×512，映射如下：
 
@@ -195,7 +205,25 @@ Stage 13 Module 3 选择 `02-activity-states.png` 作为应用内角色状态图
 
 第 8 格（列 3、行 1）的 Success/celebration 不属于当前封闭 Character State，运行时明确不使用。图集由 `character-presentation.ts` 的穷尽映射选择；Chat、Voice、Knowledge 与未来 Work/Approval producer 只能提供语义状态，不能提供路径、格号或任意动画名称。
 
-运行时副本仍为 **2,303,963 字节**，SHA-256 为 **`54EB2525673C2A849819BE10EB88EB2F670EB1911E86FD154E69B578CBB4C25C`**。分发门禁同时固定仓库路径、ASAR 精确路径与抽取字节。若图集加载失败，UI 会回退到原审核立绘；两张图都失败时显示可访问文本 fallback，Chat 与 Voice 控件保持可用。
+### 03 — 用户限定静态表情
+
+Settings 的 Voice Emotion 只接受 `neutral`、`happy` 与 `sad`。Backend 成功重启后，同一个 Active 值既选择本地 GPT-SoVITS 参考，也选择审核静态表情；模型回复没有情绪、文件路径、图集格号或动画名称字段，不能覆盖用户选择。运行时映射为：
+
+| Voice Emotion | 列 | 行 | 审核表情 |
+| --- | ---: | ---: | --- |
+| `neutral` | 0 | 0 | Soft smile |
+| `happy` | 1 | 1 | Happy |
+| `sad` | 2 | 1 | Gentle sad |
+
+### 04 — 真实播放振幅嘴型
+
+运行时只使用 04 第一带的前四格，依次作为 `closed`、`small`、`medium` 与 `wide`。可信 Preload 从正在输出的真实 Web Audio 时域样本计算 RMS，在当前播放 Gain 生效后进行平滑和迟滞量化，并以 50 ms 计时器调度，因此最多更新 20 次/秒。原始样本与连续包络不会进入 React；DOM 只收到四值提示。音量为 0 时嘴型保持 `closed`，视觉分析失败也只关闭嘴型，不中断声音。
+
+这套实现是**振幅驱动**，不会识别 A/E/I/O/U 音素。04 中其余嘴型、眼型和眉型仍是审阅参考，不应被描述为运行时音素绑定、Live2D 或 Cubism Rig。只有角色处于 `speaking` 且生效性能模式为 Animated 时才采样；Still 与系统 Reduced Motion 一律禁止嘴型动画，并显示用户选择的静态表情。
+
+### 回退与功能隔离
+
+图片失败时按 `speech → expression → state → portrait → accessible text` 顺序回退。任何图集失败、角色面板关闭或静态性能模式都不会阻止 Chat、Voice、Knowledge 或声音播放。
 
 ## 审计结论与仍需注意的地方
 
@@ -205,7 +233,7 @@ Stage 13 Module 3 选择 `02-activity-states.png` 作为应用内角色状态图
 - 04 第一带头饰顶部安全距离偏小，但没有被裁切或碰到边界。
 - 02 第 6 格两手已完全分开，中间保留浅色背景间隙。
 - 08 是视觉切层指南，不代表已经完成锚点、网格、变形器、物理参数或嘴型绑定。
-- `02-activity-states.png` 是已逐格审核的例外：运行时有意保留其不透明 RGB 背景，并以整张固定图集由 CSS 定点裁切。其余候选图若未来要作为独立透明 Sprite、Live2D 部件或其他新运行时素材进入安装包，仍须先完成统一锚点、真实透明切片、最终绘师修整，以及新的来源与分发审核。
+- `02-activity-states.png`、`03-expression-atlas.png` 与 `04-facial-rig-atlas.png` 是已逐格审核并由分发门禁固定的运行时例外：它们有意保留不透明 RGB 背景，并以整张固定图集由 CSS 定点裁切。其余候选图若未来要作为独立透明 Sprite、Live2D 部件或其他新运行时素材进入安装包，仍须先完成统一锚点、真实透明切片、最终绘师修整，以及新的来源与分发审核。
 
 ## 参考来源
 

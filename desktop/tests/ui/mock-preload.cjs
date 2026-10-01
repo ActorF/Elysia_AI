@@ -64,6 +64,7 @@ function defaultSettingsState() {
     speechRatePercent: 100,
     speechVolumePercent: 100,
     voiceProfileId: 'default',
+    voiceEmotion: 'neutral',
     captionsEnabled: true,
     transcriptReviewMode: 'manual',
     automaticRelisten: false,

@@ -1376,6 +1376,7 @@ def _desktop_settings_values(
     speech_rate_percent: int = 100,
     speech_volume_percent: int = 100,
     voice_profile_id: str = "default",
+    voice_emotion: str = "neutral",
     captions_enabled: bool = True,
     transcript_review_mode: str = "manual",
     automatic_relisten: bool = False,
@@ -1394,6 +1395,7 @@ def _desktop_settings_values(
         "speechRatePercent": speech_rate_percent,
         "speechVolumePercent": speech_volume_percent,
         "voiceProfileId": voice_profile_id,
+        "voiceEmotion": voice_emotion,
         "captionsEnabled": captions_enabled,
         "transcriptReviewMode": transcript_review_mode,
         "automaticRelisten": automatic_relisten,
@@ -4118,6 +4120,7 @@ def test_preinitialize_voice_settings_configure_the_lazy_speech_runtime(
     changed = _desktop_settings_values(
         speech_rate_percent=135,
         voice_profile_id="elysia-v2",
+        voice_emotion="happy",
     )
     with patch.object(
         desktop_backend_module,
@@ -4146,6 +4149,7 @@ def test_preinitialize_voice_settings_configure_the_lazy_speech_runtime(
     assert len(observed_configs) == 1
     assert observed_configs[0].speech_rate_percent == 135
     assert observed_configs[0].voice_profile_id == "elysia-v2"
+    assert observed_configs[0].voice_emotion == "happy"
 
 
 def test_preinitialize_injected_speech_runtime_keeps_restart_bound_values(
@@ -4157,6 +4161,7 @@ def test_preinitialize_injected_speech_runtime_keeps_restart_bound_values(
     changed = _desktop_settings_values(
         speech_rate_percent=135,
         voice_profile_id="elysia-v2",
+        voice_emotion="sad",
     )
     _brain, messages = _run_bridge(
         lambda _chat_id: [
@@ -4181,6 +4186,7 @@ def test_preinitialize_injected_speech_runtime_keeps_restart_bound_values(
     assert repaired["restartFields"] == [
         "speechRatePercent",
         "voiceProfileId",
+        "voiceEmotion",
     ]
     assert coordinator.start_calls == 1
 
@@ -5467,6 +5473,7 @@ def test_invalid_bootstrap_uses_safe_defaults_and_still_initializes(
         "speechRatePercent": 100,
         "speechVolumePercent": 100,
         "voiceProfileId": "default",
+        "voiceEmotion": "neutral",
         "captionsEnabled": True,
         "transcriptReviewMode": "manual",
         "automaticRelisten": False,
@@ -5548,6 +5555,7 @@ def test_settings_update_reports_restart_fields_and_active_scopes(
         speech_rate_percent=150,
         speech_volume_percent=25,
         voice_profile_id="elysia",
+        voice_emotion="sad",
         captions_enabled=False,
         automatic_relisten=True,
     )
@@ -5587,6 +5595,7 @@ def test_settings_update_reports_restart_fields_and_active_scopes(
         "transcriptionLanguage",
         "speechRatePercent",
         "voiceProfileId",
+        "voiceEmotion",
     ]
     assert result["scopes"]["project"] == {
         "projectId": str(project.project_id),

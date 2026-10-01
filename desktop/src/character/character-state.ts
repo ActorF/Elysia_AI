@@ -31,6 +31,8 @@ export interface ApplicationCharacterStateInput {
   readonly chatMode: 'chat' | 'work'
   readonly knowledgeActive: boolean
   readonly knowledgeError: boolean
+  /** Current managed playback; omitted legacy callers are treated as silent. */
+  readonly speechPlaying?: boolean
   readonly waitingApproval: boolean
 }
 
@@ -126,6 +128,7 @@ export function deriveApplicationCharacterState(
   return resolveCharacterState([
     backendFailed || activityFailed ? 'error' : 'idle',
     input.waitingApproval ? 'waiting_approval' : 'idle',
+    input.speechPlaying ? 'speaking' : 'idle',
     chatState,
     input.knowledgeActive ? 'working' : 'idle',
   ])

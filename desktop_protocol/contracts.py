@@ -134,6 +134,7 @@ MAX_KNOWLEDGE_SOURCES: Final = 128
 _VOICE_PROFILE_ID_PATTERN: Final = re.compile(
     r"^[a-z0-9][a-z0-9._-]{0,63}$"
 )
+_VOICE_EMOTIONS: Final = frozenset({"neutral", "happy", "sad"})
 _RESERVED_AUDIO_DEVICE_IDS: Final = frozenset({
     "default",
     "communications",
@@ -531,6 +532,7 @@ class DesktopSettingsValues(TypedDict):
     speechRatePercent: int
     speechVolumePercent: int
     voiceProfileId: str
+    voiceEmotion: Literal["neutral", "happy", "sad"]
     captionsEnabled: bool
     transcriptReviewMode: Literal["manual"]
     automaticRelisten: bool
@@ -1701,6 +1703,7 @@ def _validate_settings_values(
             "speechRatePercent",
             "speechVolumePercent",
             "voiceProfileId",
+            "voiceEmotion",
             "captionsEnabled",
             "transcriptReviewMode",
             "automaticRelisten",
@@ -1835,6 +1838,17 @@ def _validate_settings_values(
             error_code,
             f"{context}.voiceProfileId must be a bounded logical identifier.",
         )
+    voice_emotion = _require_string(
+        settings,
+        "voiceEmotion",
+        context,
+        maximum=7,
+    )
+    if voice_emotion not in _VOICE_EMOTIONS:
+        raise ProtocolValidationError(
+            error_code,
+            f"{context}.voiceEmotion is unsupported.",
+        )
     transcript_review_mode = _require_string(
         settings,
         "transcriptReviewMode",
@@ -1872,6 +1886,7 @@ def _validate_settings_update_params(params: JsonObject) -> None:
         "speechRatePercent",
         "speechVolumePercent",
         "voiceProfileId",
+        "voiceEmotion",
         "captionsEnabled",
         "transcriptReviewMode",
         "automaticRelisten",
@@ -3469,6 +3484,7 @@ def _validate_settings_state_result(
         "transcriptionLanguage",
         "speechRatePercent",
         "voiceProfileId",
+        "voiceEmotion",
     }
     if (
         not isinstance(restart_fields, list)

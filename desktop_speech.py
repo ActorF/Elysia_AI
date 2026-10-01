@@ -18,7 +18,7 @@ from pathlib import Path
 from threading import Event, Lock, RLock, Thread
 from typing import Any, Final, Literal, Protocol, TypeAlias, runtime_checkable
 
-from config.settings import AppSettings
+from config.settings import AppSettings, VOICE_EMOTIONS, VoiceEmotion
 from desktop_protocol import AudioChannelWriter, ProtocolEventName
 from voice.managed_gpt_sovits import (
     ManagedGptSovitsConfig,
@@ -53,7 +53,6 @@ DesktopSpeechEventSink: TypeAlias = Callable[
 ]
 
 _PENDING_TEXT_MAX_CODE_POINTS: Final = 4_096
-_DEFAULT_EMOTION: Final = "neutral"
 _DEFAULT_LANGUAGE: Final = "auto"
 _LEASE_ID: Final = "desktop-managed-lease"
 _CACHE_IDENTITY: Final = "desktop-managed-voice"
@@ -71,6 +70,7 @@ class DesktopSpeechConfig:
     catalog_path: Path
     asset_root: Path
     voice_profile_id: str
+    voice_emotion: VoiceEmotion
     speech_rate_percent: int
     allow_local_evaluation: bool
     deterministic_seed: int
@@ -93,6 +93,7 @@ class DesktopSpeechConfig:
             ),
             asset_root=base_dir / "models" / "weights" / "gpt-sovits",
             voice_profile_id=settings.voice_profile_id,
+            voice_emotion=settings.voice_emotion,
             speech_rate_percent=settings.speech_rate_percent,
             allow_local_evaluation=settings.gpt_sovits_allow_local_evaluation,
             deterministic_seed=settings.gpt_sovits_deterministic_seed,
@@ -119,6 +120,8 @@ class DesktopSpeechConfig:
             raise ValueError(
                 "voice_profile_id must be a bounded lowercase logical identifier."
             )
+        if self.voice_emotion not in VOICE_EMOTIONS:
+            raise ValueError("voice_emotion must be neutral, happy, or sad.")
         if (
             type(self.speech_rate_percent) is not int
             or not _MIN_SPEECH_RATE_PERCENT
@@ -434,7 +437,7 @@ class DesktopSpeechCoordinator:
             )
             selection = catalog.resolve_selection(
                 self._config.voice_profile_id,
-                _DEFAULT_EMOTION,
+                self._config.voice_emotion,
             )
             # The persisted percentage is an absolute user-facing playback
             # rate. Replacing the catalog default avoids compounding two rate

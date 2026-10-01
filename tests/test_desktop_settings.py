@@ -66,6 +66,7 @@ def _changed_values(tmp_path: Path) -> EditableDesktopSettings:
         speech_rate_percent=125,
         speech_volume_percent=42,
         voice_profile_id="elysia",
+        voice_emotion="happy",
         captions_enabled=False,
         automatic_relisten=True,
     )
@@ -96,6 +97,7 @@ def _settings_document(
             "speech_rate_percent": values.speech_rate_percent,
             "speech_volume_percent": values.speech_volume_percent,
             "voice_profile_id": values.voice_profile_id,
+            "voice_emotion": values.voice_emotion,
             "captions_enabled": values.captions_enabled,
             "transcript_review_mode": values.transcript_review_mode,
             "automatic_relisten": values.automatic_relisten,
@@ -165,6 +167,7 @@ def test_save_and_reload_round_trip_the_complete_allowlist(
             "transcription_device": "cpu",
             "transcription_language": "auto",
             "transcription_model": "small",
+            "voice_emotion": "happy",
             "voice_profile_id": "elysia",
         },
         "updated_at": SAVED_AT.isoformat(),
@@ -329,6 +332,7 @@ def test_unknown_or_sensitive_persisted_fields_are_quarantined(
             "speech_rate_percent": 100,
             "speech_volume_percent": 100,
             "voice_profile_id": "default",
+            "voice_emotion": "neutral",
             "captions_enabled": True,
             "transcript_review_mode": "manual",
             "automatic_relisten": False,
@@ -456,6 +460,7 @@ def test_runtime_settings_apply_desired_values_and_explicit_model_override(
     assert runtime.speech_rate_percent == 125
     assert runtime.speech_volume_percent == 42
     assert runtime.voice_profile_id == "elysia"
+    assert runtime.voice_emotion == "happy"
     assert runtime.captions_enabled is False
     assert runtime.transcript_review_mode == "manual"
     assert runtime.automatic_relisten is True
@@ -484,6 +489,7 @@ def test_version_one_settings_load_without_quarantine_and_upgrade_on_edit(
         "speech_rate_percent",
         "speech_volume_percent",
         "voice_profile_id",
+        "voice_emotion",
         "captions_enabled",
         "transcript_review_mode",
         "automatic_relisten",
@@ -503,6 +509,7 @@ def test_version_one_settings_load_without_quarantine_and_upgrade_on_edit(
     assert loaded.values.speech_rate_percent == 100
     assert loaded.values.speech_volume_percent == 100
     assert loaded.values.voice_profile_id == "default"
+    assert loaded.values.voice_emotion == "neutral"
     assert loaded.values.captions_enabled is True
     assert loaded.values.transcript_review_mode == "manual"
     assert loaded.values.automatic_relisten is False
@@ -534,6 +541,7 @@ def test_version_two_settings_load_with_voice_defaults_and_upgrade_on_edit(
         "speech_rate_percent",
         "speech_volume_percent",
         "voice_profile_id",
+        "voice_emotion",
         "captions_enabled",
         "transcript_review_mode",
         "automatic_relisten",
@@ -550,6 +558,7 @@ def test_version_two_settings_load_with_voice_defaults_and_upgrade_on_edit(
     assert loaded.values.speech_rate_percent == 100
     assert loaded.values.speech_volume_percent == 100
     assert loaded.values.voice_profile_id == "default"
+    assert loaded.values.voice_emotion == "neutral"
     assert loaded.values.captions_enabled is True
     assert loaded.values.transcript_review_mode == "manual"
     assert loaded.values.automatic_relisten is False
@@ -563,6 +572,38 @@ def test_version_two_settings_load_with_voice_defaults_and_upgrade_on_edit(
     assert saved.revision == 5
     assert upgraded["schema_version"] == DESKTOP_SETTINGS_SCHEMA_VERSION
     assert upgraded["settings"]["speech_volume_percent"] == 65
+
+
+def test_version_three_settings_load_with_neutral_emotion_and_upgrade_on_edit(
+    tmp_path: Path,
+) -> None:
+    """Expand v3 with neutral emotion without rewriting it before an edit."""
+
+    repository = _repository(tmp_path)
+    document = _settings_document(_changed_values(tmp_path), revision=9)
+    document["schema_version"] = 3
+    raw_settings = document["settings"]
+    assert isinstance(raw_settings, dict)
+    del raw_settings["voice_emotion"]
+    repository.path.parent.mkdir(parents=True)
+    original = json.dumps(document).encode("utf-8")
+    repository.path.write_bytes(original)
+
+    loaded = repository.load()
+
+    assert loaded.revision == 9
+    assert loaded.values.voice_profile_id == "elysia"
+    assert loaded.values.voice_emotion == "neutral"
+    assert repository.path.read_bytes() == original
+
+    saved = repository.save(
+        replace(loaded.values, voice_emotion="sad"),
+        expected_revision=9,
+    )
+    upgraded = json.loads(repository.path.read_text(encoding="utf-8"))
+    assert saved.revision == 10
+    assert upgraded["schema_version"] == DESKTOP_SETTINGS_SCHEMA_VERSION
+    assert upgraded["settings"]["voice_emotion"] == "sad"
 
 
 @pytest.mark.parametrize(
@@ -594,6 +635,8 @@ def test_transcription_choices_reject_values_outside_the_allowlist(
         ("speech_volume_percent", 101),
         ("voice_profile_id", "../voice"),
         ("voice_profile_id", "Elysia"),
+        ("voice_emotion", "excited"),
+        ("voice_emotion", "HAPPY"),
         ("captions_enabled", "true"),
         ("transcript_review_mode", "automatic"),
         ("automatic_relisten", 0),
@@ -622,6 +665,7 @@ def test_live_voice_preferences_apply_without_creating_restart_fields(
         speech_rate_percent=150,
         speech_volume_percent=25,
         voice_profile_id="elysia",
+        voice_emotion="sad",
         captions_enabled=False,
         automatic_relisten=True,
     )
@@ -635,7 +679,9 @@ def test_live_voice_preferences_apply_without_creating_restart_fields(
     assert active_values.automatic_relisten is True
     assert active_values.speech_rate_percent == 100
     assert active_values.voice_profile_id == "default"
+    assert active_values.voice_emotion == "neutral"
     assert changed_setting_names(desired, active_values) == (
         "speechRatePercent",
         "voiceProfileId",
+        "voiceEmotion",
     )

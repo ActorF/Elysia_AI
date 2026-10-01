@@ -2,7 +2,7 @@
 
 这份文档用于帮助第一次接触 Elysia AI 的开发者理解：每个受版本控制的文件负责什么、它与哪些层连接，以及修改某项功能时应该从哪里开始。
 
-> 当前架构边界：Python 是 Chat、Project、Memory、Attachment、Document Loading/Processing/Embedding/Retrieval、Project Source 授权、Knowledge Lifecycle 与结构化 Citation 持久化状态的事实来源；Electron Main 是本地进程、文件路径和硬件权限的可信边界；Preload 只暴露固定能力；React Renderer 只负责显示和临时交互状态。Project Sources 管理与显式启用的 grounded Chat 已接入同一生产桌面链路。Character State API 是 Renderer-local 的封闭语义投影：它只消费已验证的 Chat、Voice 与 Knowledge 生命周期，不成为新的 Python Canonical State，也不新增 IPC 或动画文件控制能力。
+> 当前架构边界：Python 是 Chat、Project、Memory、Attachment、Document Loading/Processing/Embedding/Retrieval、Project Source 授权、Knowledge Lifecycle 与结构化 Citation 持久化状态的事实来源；Electron Main 是本地进程、文件路径和硬件权限的可信边界；Preload 只暴露固定能力；React Renderer 只负责显示和临时交互状态。Project Sources 管理与显式启用的 grounded Chat 已接入同一生产桌面链路。Character State API 是 Renderer-local 的封闭语义投影：它只消费已验证的 Chat、Voice 与 Knowledge 生命周期，不成为新的 Python Canonical State，也不新增 IPC 或任意动画文件控制能力。用户限定的 `neutral / happy / sad` 同时控制 TTS 参考与静态表情；可信 Preload 只从真实 Web Audio RMS 推导四档嘴型，不把原始样本或连续振幅交给 React。
 
 ## 1. 先看完整连接图
 
@@ -11,7 +11,7 @@ React Component
     │ callback / local UI state
     ▼
 desktop/src/App.tsx
-    ├── character/character-state.ts → CharacterArtwork.tsx / CharacterPanel.tsx / CallPreview.tsx
+    ├── character-state.ts + character-emotion.ts + character-presentation.ts → CharacterArtwork.tsx / CharacterPanel.tsx / CallPreview.tsx
     ├── voice-ui-state.ts → CallPreview.tsx（主生命周期、麦克风状态、计时）
     └── SettingsView.tsx（Desired / Active Voice 行为设置）
     │ window.elysiaDesktop
@@ -118,20 +118,20 @@ start.create_data_portability_service()
 
 | 文件 | 实际用途 | 主要连接 |
 | --- | --- | --- |
-| `.github/workflows/tests.yml` | GitHub Actions 入口；先检查双端源码文档与分发边界，再在 Ubuntu 运行 Python pytest/mypy 和 Desktop lint/typecheck/protocol/UI/build，在 Windows 运行原生集成、构建真实 Unpacked Package、扫描 Package Tree/ASAR 清单，并抽取审核立绘与角色状态图集验证真实打包字节。 | `scripts/check_python_documentation.py`、`scripts/check_distribution_assets.py`、`desktop/package.json`、Python/Desktop 测试 |
+| `.github/workflows/tests.yml` | GitHub Actions 入口；先检查双端源码文档与分发边界，再在 Ubuntu 运行 Python pytest/mypy 和 Desktop lint/typecheck/protocol/UI/build，在 Windows 运行原生集成、构建真实 Unpacked Package、扫描 Package Tree/ASAR 清单，并抽取审核立绘、状态、表情与嘴型图集验证真实打包字节。 | `scripts/check_python_documentation.py`、`scripts/check_distribution_assets.py`、`desktop/package.json`、Python/Desktop 测试 |
 | `.gitignore` | 排除 `.venv`、Cache、日志、构建产物、私人 `workspace`、`.env` 和模型权重。 | Git 工作树与本地运行数据边界 |
 | `AGENTS.md` | 全仓库源码注释规范；要求文件说明、公开 API 文档、复杂算法/设计/边界原因和具体 TODO/FIXME，并禁止逐行复述普通语句。 | 所有后续源码修改、双端文档覆盖检查、Code Review |
 | `mypy.ini` | 固定 Python 静态类型检查路径规则；只排除被忽略的 `models/cache/` 外部 Runtime，不能误排其他名为 cache 的源码。 | 本地 mypy、GitHub Actions、第三方 Runtime 边界 |
 | `pytest.ini` | 把自动发现根固定为 `tests/`，防止被忽略的第三方 Runtime 自带测试污染项目验收。 | pytest、本地 `models/cache/` |
 | `README.md` | 中文项目首页；描述功能状态、架构、CMD 启动、测试、隐私和当前限制。 | 新用户入口；链接 Desktop/Protocol/ADR 文档 |
 | `README.en.md` | 与中文 README 对应的英文首页。 | 对外英文说明；应与 `README.md` 同步维护 |
-| `MODEL_LICENSE.md` | 说明固定 Qwen3 Embedding Ollama Artifact、角色语料、GPT-SoVITS 权重、参考音频等来源、当前运行/分发决定与权利边界；不是源码许可证。 | `documents/ollama_embedding.py`、`data/characters/`、本地 Ollama Storage 与 `models/weights/`、发行边界 |
+| `MODEL_LICENSE.md` | 说明固定 Qwen3 Embedding Ollama Artifact、角色语料、GPT-SoVITS 权重、参考音频，以及应用内立绘/状态/表情/嘴型图集的来源、Hash、当前运行/分发决定与权利边界；不是源码许可证。 | `documents/ollama_embedding.py`、`data/characters/`、本地 Ollama Storage 与 `models/weights/`、发行边界 |
 | `SOURCE_FILE_GUIDE.md` | 当前这份逐文件源码导览；记录文件职责、调用边界、测试映射和新人阅读顺序。 | 全仓库源码、配置、文档与测试 |
 | `requirements.txt` | 固定基础 Python Runtime、LangChain Ollama、pypdf、pytest、mypy、jsonschema 等依赖版本；不强制安装本地 STT Native Runtime。 | `.venv`、CI、`start.py`、`desktop_backend.py`、`documents/pdf.py` |
 | `requirements-stt.txt` | 固定可选的 Faster-Whisper 与 NumPy 版本；只在需要本地单句转写时叠加安装，不包含或下载模型权重。 | `voice/faster_whisper.py`、本地 `.venv`、`models/weights/faster-whisper/<model>` |
 | `scripts/__init__.py` | 把维护脚本标记为可导入 Package，使 Smoke CLI 能同时按模块与文件路径测试。 | `scripts/smoke_gpt_sovits.py`、测试 |
 | `scripts/benchmark_voice_pipeline.py` | Windows 三组件资源基准；以固定内容并发测量 Ollama Streaming 与受管 GPT-SoVITS，随后在模型驻留时执行 CPU Faster-Whisper；只输出脱敏数值，限制总墙钟、响应大小和 GPU 采样，并在失败时独立清理所有自有 Owner。 | `config.SETTINGS`、`desktop_speech.py`、Managed GPT-SoVITS、Faster-Whisper、Ollama、`nvidia-smi` |
-| `scripts/check_distribution_assets.py` | 分发门禁；审计 Git Index 的模型/音频/Runtime/User Data/Archive，以路径、字节长度和 SHA-256 固定已审核的公开素材，冻结完整 Electron Builder 配置，并可扫描真实 Unpacked Tree 与 ASAR 清单；ASAR 审计要求立绘和角色状态图集各恰好一次，并验证从同一包抽取的实际字节；对 Case、Unicode Alias、Link/Junction、素材替换和配置逃逸 Fail Closed。 | `MODEL_LICENSE.md`、GitHub Actions、`desktop/package.json`、每次发行产物 |
+| `scripts/check_distribution_assets.py` | 分发门禁；审计 Git Index 的模型/音频/Runtime/User Data/Archive，以路径、字节长度和 SHA-256 固定已审核的公开素材，冻结完整 Electron Builder 配置，并可扫描真实 Unpacked Tree 与 ASAR 清单；ASAR 审计要求立绘、状态、表情与嘴型图集各恰好一次，并验证从同一包抽取的实际字节；对 Case、Unicode Alias、Link/Junction、素材替换和配置逃逸 Fail Closed。 | `MODEL_LICENSE.md`、GitHub Actions、`desktop/package.json`、每次发行产物 |
 | `scripts/check_python_documentation.py` | 用标准库 AST 检查所有受维护 Python 文件的 module、public class、public function/method docstring 覆盖。 | `AGENTS.md`、GitHub Actions、Python 开发验证 |
 | `scripts/gpt_sovits_protocol.py` | 定义主 Python 3.14 与隔离 GPT-SoVITS Python 3.9 共用的固定宽度二进制帧，以及两端共用且有序的 Runtime Manifest 与封闭 Import Path 清单；严格限制消息类型、Canonical JSON Metadata、Request ID 和 32 MiB 原始 Payload，错误与 repr 不暴露内容。 | 受管 Worker/Parent Pipe；不导入 `voice` 或上游 `tools`，避免运行时版本、Manifest 顺序和包名冲突 |
 | `scripts/gpt_sovits_worker.py` | 在隔离 Python 3.9 进程中按父进程传入的稳定 Volume-GUID 路径重算 Voice 资产和部分 Runtime 一致性锚点，固定加载一组 GPT-SoVITS v2 权重与 Reference，拒绝 Config Fallback、热切换、全零错误音频和多 Yield，并通过私有二进制 Pipe 返回完整 PCM WAV。`READY` 只证明父子进程本次观察到同一组已声明内容，不是第三方 Runtime 的完整供应链证明；上层持续持有每个已检查文件的防写/防替换 Guard。 | `scripts/gpt_sovits_protocol.py`、`voice/managed_gpt_sovits.py`、被忽略的本地 GPT-SoVITS Runtime；不经过外部 HTTP API |
@@ -139,7 +139,7 @@ start.create_data_portability_service()
 | `start.py` | Python Composition Root 和 Console 入口；创建 Settings、Model、Memory、Repositories、Migrator、Services、Brain 和日志。 | 几乎所有 Python 生产包；`ui/console.py`、`desktop_backend.py` |
 | `desktop_backend.py` | Electron 启动的 Python NDJSON 进程；完成会话令牌握手、初始化、方法路由、Streaming、Cancel、错误映射和安全关闭。除 Chat/Project/Settings/Attachment/STT/Speech 外，它还组合 Project Sources runtime、在全局 Knowledge admission 下用后台 worker 执行显式 lifecycle mutation/recovery 或 verified export、异步清理身份匹配的 export temp、发布安全 operation/receipt DTO，并把显式 grounded Chat 接入同一 generation commit gate。 | `desktop_protocol/`、`desktop_knowledge.py`、`desktop_speech.py`、`start.py`、Chat/Project/Attachment/Voice 服务 |
 | `desktop_knowledge.py` | 生产知识 Composition Root；共享 Project/Chat/Source repositories 与 operation lease，组合 Loader→Cleaner→Chunker→Embedding→SQLite→Retriever→Grounded Answer、Lifecycle 与 verified export，配置 app-private export cleanup-intent directory，并计算绑定全部输出规则的 index profile。构造不访问 Ollama、外部 export destination 或索引任务。 | `desktop_backend.py`、`documents/`、`project_sources/`、`knowledge_lifecycle/`、`workspace/knowledge/` |
-| `desktop_speech.py` | 桌面语音 Composition Root；后台按 Active `voiceProfileId` 与固定 `neutral` 情绪获取 Managed GPT-SoVITS Lease，并把 Active `speechRatePercent` 作为绝对 `0.5–2.0` Speed Factor 使用。在启动期间只缓存一个有界 Turn，随后接入既有自然分句/FIFO Queue；先经 NDJSON 发精确 Clip Metadata，再向私有 fd3 写匹配 WAV。取消、Runtime/Queue/Pipe 失败或退出只关闭可选 Speech 路径，不阻塞文字 Chat。 | `desktop_backend.py`、`voice/managed_gpt_sovits.py`、`voice/speech_queue.py`、`desktop_protocol/audio_channel.py` |
+| `desktop_speech.py` | 桌面语音 Composition Root；后台按 Active `voiceProfileId` 与闭集 `voiceEmotion` 获取 Managed GPT-SoVITS Lease，并把 Active `speechRatePercent` 作为绝对 `0.5–2.0` Speed Factor 使用。在启动期间只缓存一个有界 Turn，随后接入既有自然分句/FIFO Queue；先经 NDJSON 发精确 Clip Metadata，再向私有 fd3 写匹配 WAV。取消、Runtime/Queue/Pipe 失败或退出只关闭可选 Speech 路径，不阻塞文字 Chat。 | `desktop_backend.py`、`voice/managed_gpt_sovits.py`、`voice/speech_queue.py`、`desktop_protocol/audio_channel.py` |
 | `docs/decisions/0001-desktop-shell.md` | Electron 与 Tauri 选型 ADR；记录测量方法、能力差距、风险、最终选择和重访门槛。 | `desktop/benchmarks/measure-shell.ps1`、Desktop 技术决策 |
 | `docs/03-VOICE-PERFORMANCE-SAFETY-RIGHTS.md` | 记录最终三组件实机测量、CPU STT 资源策略、长会话自动化清理证据、Voice Rights 决定、分发门禁和重测条件。 | Module 9 验收、`MODEL_LICENSE.md`、Benchmark/Soak/Package Audit |
 | `docs/04-FILE-METADATA-STORAGE.md` | 记录版本化 File Metadata、Scope-local Content-addressed Storage、Ownership/Derived 关系、Manifest v2、迁移、验证读取、删除回滚、Renderer 隐私边界和当前非目标。 | `attachments/`、Desktop Backend、后续 Document Loaders |
@@ -152,6 +152,7 @@ start.create_data_portability_service()
 | `docs/11-KNOWLEDGE-LIFECYCLE.md` | 记录 Project-only 持久 saga journal、完整 state/phase、add/reindex/rebuild 发布顺序、whole-Project revoke、copy-on-write replace、tombstone-first delete、取消/恢复/幂等，以及不入 journal 的 verified export/cleanup intent 与 Preview/Cache cleanup 预留。 | `knowledge_lifecycle/`、`attachments/`、`documents/indexing.py`、`project_sources/` |
 | `docs/12-KNOWLEDGE-UI-TESTING.md` | 记录生产 Composition Root、loopback Generator、grounded Chat 持久化、Desktop methods/events、全局 Knowledge lease、跨 reload 的 export snapshot/terminal、Project Sources/Citation UI、真实 PDF/DOCX fixtures 与 Stage 8 自动化验收边界。 | `desktop_knowledge.py`、`desktop_backend.py`、Protocol/Electron/React、真实文档回归 |
 | `data/characters/elysia_character_reference_zh.md` | 爱莉希雅背景、语录和转写参考资料；当前 Runtime 不会自动将它注入每次 Prompt。 | 人工角色研究；受 `MODEL_LICENSE.md` 的来源/授权提醒约束 |
+| `data/characters/elysia-2dArt/README.md`、`PROMPTS.md` 与 18 张 PNG | 记录最终 2D 审阅包、逐格修复、生成参考与 Hash；02/03/04 分别有逐字节相同的状态、表情和嘴型运行时副本，其余图只作审阅资料。 | CharacterArtwork、分发门禁、`MODEL_LICENSE.md`；不是 Live2D/Cubism 工程 |
 
 本机还存在被 Git 忽略的 `docs/02-ROADMAP.md`。它是当前 Stage/Module 规划来源，但新的 Git Clone 不会自动得到它，因此不能作为唯一公共文档。
 
@@ -170,8 +171,8 @@ start.create_data_portability_service()
 | 文件 | 实际用途 | 主要连接 |
 | --- | --- | --- |
 | `config/__init__.py` | 配置包的稳定公开导出。 | `start.py`、`desktop_backend.py`、测试 |
-| `config/settings.py` | 从安全默认值和根目录 `.env` 创建不可变 `AppSettings`；除 Chat/Ollama/Memory 与 STT 闭集外，还定义自动朗读、语速、播放音量、逻辑 Voice Profile、字幕、人工 Transcript Review 和安全自动续听的默认值，并限制 GPT-SoVITS 本地评估开关、请求/探测超时和确定性 Seed。 | `start.py`、Model Adapter、Memory、Recovery、Faster-Whisper 与 TTS Composition |
-| `config/desktop_settings.py` | Desktop Settings Store；把旧 Schema v1/v2 文档内存迁移到 v3，并对十五个公开字段做 allowlist、Revision CAS、Desired/Active Restart Diff、线程/进程锁、原子替换和损坏隔离。`speechRatePercent` 与 `voiceProfileId` 属于重启生效设置；自动朗读、播放音量、字幕、人工 Review 和自动续听可实时生效。 | `desktop_backend.py`、Settings UI、`workspace/settings/global.json` |
+| `config/settings.py` | 从安全默认值和根目录 `.env` 创建不可变 `AppSettings`；除 Chat/Ollama/Memory 与 STT 闭集外，还定义自动朗读、语速、播放音量、逻辑 Voice Profile、`neutral` / `happy` / `sad` 语音情绪、字幕、人工 Transcript Review 和安全自动续听的默认值，并限制 GPT-SoVITS 本地评估开关、请求/探测超时和确定性 Seed。 | `start.py`、Model Adapter、Memory、Recovery、Faster-Whisper 与 TTS Composition |
+| `config/desktop_settings.py` | Desktop Settings Store；把旧 Schema v1/v2/v3 文档内存迁移到 v4，并对十六个公开字段做 allowlist、Revision CAS、Desired/Active Restart Diff、线程/进程锁、原子替换和损坏隔离。`speechRatePercent`、`voiceProfileId` 与 `voiceEmotion` 属于重启生效设置；自动朗读、播放音量、字幕、人工 Review 和自动续听可实时生效。 | `desktop_backend.py`、Settings UI、`workspace/settings/global.json` |
 | `config/voice_profiles.example.json` | 只含原创占位内容的严格 Voice Profile Schema v2 示例；每个资产声明都要求相对 `path`、实际 `bytes` 和小写 `sha256`，示例数字与 Hash 必须替换。 | `workspace/settings/voice-profiles.json`、`voice/profiles.py` |
 
 ## 6. Python 核心协调层：`core/`
@@ -403,19 +404,22 @@ Loader 输出仍是 Raw Structure；后续纯转换生成可重复 Chunk，Embed
 | `desktop/assets/elysia-icon.ico` | 同一官方刻印的多尺寸 Windows ICO 构建资源；不属于源码许可。 | `package.json`、electron-builder、Windows EXE/Installer、`MODEL_LICENSE.md` |
 | `desktop/public/character/elysia-portrait.png` | 使用 OpenAI 内置图像生成工具、参考项目所有者直接提供的三张图片与本机素材集的一张立绘生成的应用内角色图；审核版本由路径、2,223,154 字节和 SHA-256 固定，不属于源码许可。 | Character UI、Vite Public Assets、`scripts/check_distribution_assets.py`、`MODEL_LICENSE.md` |
 | `desktop/public/character/elysia-state-atlas.png` | 与 `data/characters/elysia-2dArt/02-activity-states.png` 逐字节相同的 4×2 RGB 运行时图集；前七格映射封闭 Character State，第八格 success 不使用；2,303,963 字节与 SHA-256 由分发门禁固定，不属于源码许可。 | CharacterArtwork、Vite/ASAR、`character-presentation.ts`、`scripts/check_distribution_assets.py`、`MODEL_LICENSE.md` |
+| `desktop/public/character/elysia-expression-atlas.png` | 与 `data/characters/elysia-2dArt/03-expression-atlas.png` 逐字节相同的 5×4 RGB 运行时图集；只有用户限定的 `neutral / happy / sad` 映射可选审核格；2,500,647 字节与 SHA-256 由分发门禁固定，不属于源码许可。 | CharacterArtwork、Vite/ASAR、`character-emotion.ts`、`character-presentation.ts`、`MODEL_LICENSE.md` |
+| `desktop/public/character/elysia-speech-atlas.png` | 与 `data/characters/elysia-2dArt/04-facial-rig-atlas.png` 逐字节相同的 RGB 运行时图集；只使用第一带前四格作为 `closed / small / medium / wide` RMS 振幅提示，不声称音素或 Live2D；2,054,767 字节与 SHA-256 由分发门禁固定。 | CharacterArtwork、Preload DOM 提示、Vite/ASAR、`speech-mouth.ts`、`MODEL_LICENSE.md` |
 | `desktop/benchmarks/measure-shell.ps1` | Electron/Tauri 决策时使用的 Windows 启动、内存、进程树和正常退出 Benchmark。 | Desktop ADR；不参与正常启动 |
 
 ## 16. Electron 可信边界：`desktop/electron/`
 
 | 文件 | 实际用途 | 主要连接 |
 | --- | --- | --- |
-| `desktop/electron/contracts.ts` | 定义 Renderer 可见的最小 Desktop API、Backend Snapshot/Event、Chat/Project/Settings/Attachment/Knowledge/Voice 类型；Snapshot 还携带 Electron 跨 Renderer reload 持有的准确 Chat generation 与 lifecycle/export Knowledge request ownership，export 以不可取消 owner 表示；独立 `knowledge-export-settled` 只含关联 ID 与安全 receipt。全局 Settings 类型包含七项 Voice 行为偏好。它不是 Python 原始 Wire Schema。 | Preload、Main、React、Mock Preload；状态不含 WAV、Token、Hash、正文、native path、export destination 或诊断 |
-| `desktop/electron/preload.cts` | 用 `contextBridge` 暴露固定 `window.elysiaDesktop`；把 Knowledge list/mutation/export/cancel、一次性 STT 开始/取消和按 Request ID 停止播放映射到固定 IPC，并把净化 Event 转交 Renderer。私有、未导出的 Web Audio Owner 只接受 Main 发来的 Canonical 32 kHz mono PCM16 WAV；它为每个 Clip 读取当前 Active `speechVolumePercent`，严格验证后通过 GainNode 调节音量，并在 Decode/Start 前应用已保存的 Output Sink。无效音量或指定设备路由失败会 Fail Closed，绝不回退到默认扬声器。播放结束或失败后只回送一次性 opaque Settlement；React API 不接触 WAV、Token、Hash、`ipcRenderer`、Node、`fs` 或进程句柄。 | React、Electron Main、`speech-playback-owner.ts`、Global Settings、Project Sources |
+| `desktop/electron/contracts.ts` | 定义 Renderer 可见的最小 Desktop API、Backend Snapshot/Event、Chat/Project/Settings/Attachment/Knowledge/Voice 类型；Snapshot 还携带 Electron 跨 Renderer reload 持有的准确 Chat generation 与 lifecycle/export Knowledge request ownership，export 以不可取消 owner 表示；独立 `knowledge-export-settled` 只含关联 ID 与安全 receipt。全局 Settings 类型包含八项 Voice 行为偏好。它不是 Python 原始 Wire Schema。 | Preload、Main、React、Mock Preload；状态不含 WAV、Token、Hash、正文、native path、export destination 或诊断 |
+| `desktop/electron/preload.cts` | 用 `contextBridge` 暴露固定 `window.elysiaDesktop`；把 Knowledge list/mutation/export/cancel、一次性 STT 开始/取消和按 Request ID 停止播放映射到固定 IPC，并把净化 Event 转交 Renderer。私有、未导出的 Web Audio Owner 只接受 Main 发来的 Canonical 32 kHz mono PCM16 WAV；它为每个 Clip 读取当前 Active `speechVolumePercent`，严格验证后通过 GainNode 调节音量，并在 Decode/Start 前应用已保存的 Output Sink。Animated speaking Artwork 可从同一实际播放图以最多 20 Hz 读取时域样本，把应用 Gain 后的 RMS 经平滑/迟滞量化为四档 DOM 提示；Still/Reduced Motion、不可见角色或视觉失败都保持 `closed` 且不打断声音。无效音量或指定设备路由失败会 Fail Closed，绝不回退到默认扬声器。播放结束或失败后只回送一次性 opaque Settlement；React API 不接触 WAV、原始样本、连续包络、Token、Hash、`ipcRenderer`、Node、`fs` 或进程句柄。 | React、Electron Main、`speech-playback-owner.ts`、`speech-mouth.ts`、Global Settings、Project Sources |
 | `desktop/electron/main.ts` | Electron 主进程；创建带品牌图标的窗口/托盘，验证 Sender、Knowledge/Settings/STT 参数、播放停止 Request ID、路径和权限，注册固定 IPC，通过原生 open/save dialog 把路径只交给受信 BackendProcess，并在 export terminal 前以对话框前认证的 Source 文件名、media type 和大小复核路径私有 receipt；同时控制导航/关闭并把私有 Preload Speech Playback Owner 注入 BackendProcess。 | Preload、BackendProcess、原生 Dialog/Clipboard/Audio、`speech-playback-owner.ts`、`public/elysia-icon.png` |
 | `desktop/electron/bounded-ndjson.ts` | 用固定上限 Buffer 增量切分 Python stdout；按原始字节限制 Frame，接受 CRLF，严格拒绝坏 UTF-8、未换行截断和超限无换行数据，并在终态移除全部 Stream Listener。 | `desktop/electron/backend-process.ts`、Protocol Contract Tests |
 | `desktop/electron/speech-audio-channel.ts` | 增量解析独立 Pipe 上的固定 84-byte `audio.binary.v1` Frame；在 Payload 分配前限制 8 MiB，流式校验 SHA-256，只接受精确 32 kHz mono PCM16 WAV 与 120 秒上限，并以单 Frame ACK/Discard、Pause 和 `unshift` 保持顺序、背压及有界内存。任何坏 Header、Token、Hash、WAV、截断或 ACK 都会终止 Reader；无待处理 Frame 的干净 EOF 会单独通知 Owner。 | `speech-delivery.ts`、`backend-process.ts` fd3 Owner；Reader 不自行销毁 Owner Stream，原始 WAV 不进入 NDJSON 或 React |
 | `desktop/electron/speech-delivery.ts` | 在 Electron Main 内关联可以任意先后抵达的 NDJSON Clip Metadata 与 fd3 Binary Frame，逐项核验 Request/Chat/Sequence/Token/长度/格式/Hash，并且每次只允许一个未确认 Frame。失败句子按序跳过；Terminal、取消、迟到结果、播放器失败和 Pipe EOF 都以有界状态收敛。 | `backend-process.ts`、`speech-audio-channel.ts`、`speech-playback-owner.ts`；对 React 只可生成无 Token/Hash/音频的安全状态 |
 | `desktop/electron/speech-playback-owner.ts` | Main 到可信 Preload 的单 Clip 播放 Owner；生成一次性 UUID、验证 Settlement 只能来自所属窗口 Main Frame，以 130 秒上限处理播放、取消、窗口销毁和跨文档断连，并保留所有尚未精确结算的 Retired ID 来隔离迟到 ACK（数量受 In-flight 上限约束）。稳定路由可在 macOS 窗口关闭与重建之间替换具体 Owner，而页面内锚点跳转不会误中断播放。 | `main.ts`、`preload.cts`、`speech-delivery.ts`；固定私有 IPC Channel 不进入 `DesktopApi` |
+| `desktop/electron/speech-mouth.ts` | 纯函数计算无符号 Web Audio 时域样本的 RMS，在实际 Output Gain 后用快攻慢释平滑和分离进/退阈值，严格量化为 `closed / small / medium / wide`；无效输入或 0 音量视觉 Fail Closed。 | `preload.cts`、`speech-mouth.test.mjs`；不识别音素、不接收模型文本、不拥有播放 |
 | `desktop/electron/backend-process.ts` | Python 子进程 Owner 和 Protocol State Machine；通过有界 NDJSON Reader 限制 stdout，关联 Chat/STT/Knowledge Request 与封闭 Lifecycle Event，并为子进程建立独立 fd3 Speech Pipe。它在全局 lease 下串行化 Knowledge lifecycle/export 与 grounded ownership，验证 Project/Source/operation/expected export receipt correlation，把 active lifecycle/export owner 推入跨 Renderer reload 的 snapshot，并只在 authoritative response 后发布 state settled 或路径私有 `knowledge-export-settled`。Export 不可由 Renderer Stop。Speech Metadata 只交给 Main 内 Delivery Coordinator，WAV 只交给可信 Preload；Python stderr 不原样暴露。 | Main、`desktop_backend.py`、`protocol.ts`、`bounded-ndjson.ts`、`speech-delivery.ts` |
 | `desktop/electron/protocol.ts` | TypeScript 端 Protocol v1 类型、Builder、Parser 和严格 Runtime Validation；除 Voice/Settings 外还封闭验证 Knowledge method/state/operation/export 与 grounded proof，复核 Project/Citation ID 闭包、answered context 和逐字 `source_fact` Evidence，不把静态类型当安全边界。 | BackendProcess、共享 Schema/Fixtures、Contract Tests、私有二进制音频 Reader |
 | `desktop/electron/protocol-text.ts` | 定义跨 Python/TypeScript 一致的 Unicode Code Point 长度、Blank Set 和 Trim 规则。 | `protocol.ts`、Python Contracts |
@@ -429,8 +433,8 @@ Loader 输出仍是 Raw Structure；后续纯转换生成可重复 Chunk，Embed
 | --- | --- | --- |
 | `desktop/src/main.tsx` | 初始化 React Root、StrictMode、ThemeProvider、CharacterPerformanceProvider 和 ErrorBoundary；初始 Paint 后通知 Electron。 | `index.html`、`App.tsx`、Preload API |
 | `desktop/src/AppErrorBoundary.tsx` | 捕获 React Render Error，显示可恢复错误并把焦点移动到错误区域。 | `main.tsx` |
-| `desktop/src/App.tsx` | Renderer 总协调器；除 Canonical State、Draft、Retry、Attachments、Settings 与 Voice 外，还按 Project 隔离 Knowledge state/request/error，从 Electron snapshot 恢复 lifecycle/export owner，以全局 busy 阻止跨 Project 冲突写入，处理 changed/completed/export-settled/error correlation 与迟到 snapshot tombstone，把显式 `Use Project Sources` 意图传给文字、Retry 与 Voice Send，并把 Backend、Chat 与 Knowledge 暂态投影为封闭 Character State。 | 所有 React Feature、`window.elysiaDesktop`；Canonical state 仍由 Python 返回，Renderer 只保存暂态且不把角色状态写回 Chat |
-| `desktop/src/App.css` | App Shell、Chat、Dialog、Settings、Voice 行为表单、角色图集裁切与低频整体动效、主/次状态、计时、字幕、静音与 Call Controls，以及 Reduced Motion、Responsive、High Zoom 和 Forced Colors 样式。 | `App.tsx`、`CharacterArtwork.tsx`、`SettingsView.tsx`、`CallPreview.tsx`、Design Tokens |
+| `desktop/src/App.tsx` | Renderer 总协调器；除 Canonical State、Draft、Retry、Attachments、Settings 与 Voice 外，还按 Project 隔离 Knowledge state/request/error，从 Electron snapshot 恢复 lifecycle/export owner，以全局 busy 阻止跨 Project 冲突写入，处理 changed/completed/export-settled/error correlation 与迟到 snapshot tombstone，把显式 `Use Project Sources` 意图传给文字、Retry 与 Voice Send，并把 Backend、Chat 与 Knowledge 暂态投影为封闭 Character State；把 Active `voiceEmotion` 严格收窄后交给主界面和 Voice Artwork。 | 所有 React Feature、`window.elysiaDesktop`；Canonical state 仍由 Python 返回，Renderer 只保存暂态且不把角色状态或表情写回 Chat |
+| `desktop/src/App.css` | App Shell、Chat、Dialog、Settings、Voice 行为表单、状态/表情/嘴型图集裁切、四档 DOM 嘴型提示与低频整体动效、主/次状态、计时、字幕、静音与 Call Controls，以及 Reduced Motion、Responsive、High Zoom 和 Forced Colors 样式。 | `App.tsx`、`CharacterArtwork.tsx`、`SettingsView.tsx`、`CallPreview.tsx`、Preload document dataset、Design Tokens |
 | `desktop/src/desktop-api.d.ts` | 扩展 Browser `Window` 类型，声明可选 `elysiaDesktop`；不会实际创建 API。 | TypeScript、Preload Contracts |
 
 `App.tsx` 的 LocalStorage 只保存 UI 恢复数据，例如 Chat Draft、Pending Send 和 Retry Draft。Python 返回的 Chat/Project 仍然是 Canonical State。
@@ -468,12 +472,12 @@ Project Memory 页面目前仍是明确 Placeholder。Project Sources 已使用�
 
 | 文件 | 实际用途 | 主要连接 |
 | --- | --- | --- |
-| `desktop/src/settings/SettingsView.tsx` | 编辑 Chat/Ollama/Memory/Import 设置、STT 模型/设备/默认语言，以及自动朗读、50–200% 语速、0–100% 播放音量、逻辑 Voice Profile、字幕、固定人工 Transcript Review 和自动续听；逐项验证输入并显示 Desired/Active、净化后的就绪状态、重启提示、主题、Animated/Still 角色性能和隐私边界。 | App、Desktop Settings/Voice Backend、ThemeProvider、CharacterPerformanceProvider、`transcription-readiness.ts`；设备偏好仍由 `VoiceSettingsSection.tsx` 单独保存 |
+| `desktop/src/settings/SettingsView.tsx` | 编辑 Chat/Ollama/Memory/Import 设置、STT 模型/设备/默认语言，以及自动朗读、50–200% 语速、0–100% 播放音量、逻辑 Voice Profile、`neutral / happy / sad` Voice Emotion、字幕、固定人工 Transcript Review 和自动续听；逐项验证输入并显示 Desired/Active、净化后的就绪状态、重启提示、主题、Animated/Still 角色性能和隐私边界。Voice Emotion 在重启后同时控制 TTS 参考与审核静态表情。 | App、Desktop Settings/Voice Backend、ThemeProvider、CharacterPerformanceProvider、`character-emotion.ts`、`transcription-readiness.ts`；设备偏好仍由 `VoiceSettingsSection.tsx` 单独保存 |
 | `desktop/src/settings/VoiceSettingsSection.tsx` | 设备偏好 UI；枚举麦克风/扬声器、保存 opaque ID、显示权限、刷新设备、运行短暂输入电平和输出音调测试。 | `audio-devices.ts`、Voice Desktop API |
 | `desktop/src/voice/audio-devices.ts` | Stage 7 设备 Controller；构造时不请求权限，管理 enumerate、8 秒麦克风 Level Test、800 ms Speaker Tone、Race 和 Cleanup。 | VoiceSettingsSection、Browser MediaDevices/AudioContext |
 | `desktop/src/voice/voice-session-controller.ts` | Renderer-local 的封闭五状态 Voice Session Controller；只保存有界 ID、Final Transcript、安全终态和单调 `completionId`，不拥有 PCM、播放器或持久化。一次性 `startContinuationListening` 只消费同一成功 Turn 的干净完成记录，并拒绝重复、过期、取消或 Speech 未排空的续听。 | 以 epoch、Chat、Project、Capture/STT、Chat Operation/Request 和 Speech Sequence 拒绝迟到、跨会话及乱序事件；把已确认 Transcript 交给现有 Chat 路径 |
 | `desktop/src/voice/voice-ui-state.ts` | 纯函数推导 Voice 页面展示状态：把主会话生命周期与麦克风 Active/Monitoring/Muted/Unavailable 分离，并格式化有界 Session 计时。Reply-time Monitoring 不会覆盖 Thinking/Speaking，Confirmed Barge-in 才进入 Interrupting；其主生命周期是 Character State 的输入之一，但仍不拥有角色状态。 | `CallPreview.tsx`、`audio-capture.ts`、`voice-session-controller.ts`、`voice-ui-state.test.mjs` |
-| `desktop/src/voice/CallPreview.tsx` | 全窗口有界 Voice 页面；分别显示主生命周期与麦克风状态、Session 计时、Assistant Captions、可编辑 Final Transcript，以及 Captions、Mute、Audio Settings、Capture、Auto-continue、Close Voice 控件，并复用状态驱动 CharacterArtwork 及其有界动效消费同一 Character State 合同。 | App、`voice-ui-state.ts`、`character-state.ts`、Capture Controller、Voice Session Controller；不显示实时 Partial，也不会自动提交 Transcript；自动续听必须由设置/控件显式启用并由 App 的安全条件放行 |
+| `desktop/src/voice/CallPreview.tsx` | 全窗口有界 Voice 页面；分别显示主生命周期与麦克风状态、Session 计时、Assistant Captions、可编辑 Final Transcript，以及 Captions、Mute、Audio Settings、Capture、Auto-continue、Close Voice 控件，并复用 CharacterArtwork 消费同一 Character State 与 Active Voice Emotion。 | App、`voice-ui-state.ts`、`character-state.ts`、`character-emotion.ts`、Capture Controller、Voice Session Controller；不显示实时 Partial，也不会自动提交 Transcript；嘴型由可信 Preload 的真实播放 RMS 驱动，自动续听必须由设置/控件显式启用并由 App 的安全条件放行 |
 | `desktop/src/voice/transcription-readiness.ts` | 把 Python/Electron 的闭合集合 STT Status/Reason 转成 Settings 与 Voice 共用的安全、可操作提示；绝不渲染模型路径或 Native Error。 | `App.tsx`、`SettingsView.tsx`、`electron/protocol.ts` |
 
 ## 22. Character、Design System 与 Theme
@@ -481,10 +485,11 @@ Project Memory 页面目前仍是明确 Placeholder。Project Sources 已使用�
 | 文件 | 实际用途 | 主要连接 |
 | --- | --- | --- |
 | `desktop/src/character/character-state.ts` | 定义 `idle/listening/thinking/speaking/working/waiting_approval/error` 闭集、确定性优先级与纯推导函数；只输出语义状态和可访问文案，不引用图片、Live2D 参数或动画文件。 | `App.tsx`、CharacterArtwork、CharacterPanel、CallPreview、纯状态测试 |
-| `desktop/src/character/character-presentation.ts` | 以穷尽 `Record<CharacterState, CharacterPresentation>` 把七态映射到审核图集格、闭集表情 token 与闭集整体动作 token；不接受 URL、模型文本或任意 CSS class，第八格 success 明确不进入合同。 | CharacterArtwork、`elysia-state-atlas.png`、纯 presentation 测试 |
+| `desktop/src/character/character-emotion.ts` | 定义唯一允许的 `neutral / happy / sad` 情绪闭集，并把未知 Settings/Protocol 值安全回退为 `neutral`；不接受模型生成的任意情绪或视觉选择器。 | App、Settings、`character-presentation.ts`、CharacterArtwork、纯 presentation 测试 |
+| `desktop/src/character/character-presentation.ts` | 以穷尽 Record 把七态映射到状态图集格与闭集整体动作，并把三种用户情绪映射到审核静态表情格；不接受 URL、模型文本、任意格号或 CSS class，第八格 success 明确不进入状态合同。 | CharacterArtwork、`elysia-state-atlas.png`、`elysia-expression-atlas.png`、纯 presentation 测试 |
 | `desktop/src/character/character-performance.ts` | 定义 renderer-local 的 `animated/still` 偏好与生效模式、严格持久值解析和系统 Reduced Motion 优先规则。 | CharacterPerformanceProvider、SettingsView、纯 presentation 测试 |
 | `desktop/src/character/CharacterPerformanceProvider.tsx` | 从 `elysia.characterPerformance` 安全读取/保存角色性能偏好，监听 Reduced Motion 与跨窗口 Storage Event，并把生效模式同时提供给 React 和 document dataset。 | `main.tsx`、App、SettingsView、CharacterArtwork |
-| `desktop/src/character/CharacterArtwork.tsx` | 根据封闭 presentation registry 裁切审核状态图集、暴露 state/expression/action/performance metadata，并执行 atlas → 原审核立绘 → 可访问文本的双层失败回退；不拥有 Chat、Voice 或 Work 生命周期。 | CharacterPanel、CallPreview、两张 `public/character` 图片、CharacterPerformanceProvider |
+| `desktop/src/character/CharacterArtwork.tsx` | 根据封闭 presentation registry 裁切审核状态、静态表情和嘴型图集，只在 `speaking + animated` 暴露受信 Preload 可消费的嘴型表面；Still/Reduced Motion 使用静态情绪。图片失败按 speech → expression → state → 原审核立绘 → 可访问文本回退；不拥有 Chat、Voice、音频采样或 Work 生命周期。 | CharacterPanel、CallPreview、四张 `public/character` 图片、CharacterPerformanceProvider、Preload DOM Observer |
 | `desktop/src/character/CharacterPanel.tsx` | 显示当前 Chat、模型、独立 Backend 连接状态、状态驱动角色图和可访问 Character State live status；保持只读、可关闭，不写 Chat/Memory，也不是 Live2D。 | AppShell、Backend Snapshot、CharacterArtwork、`character-state.ts` |
 | `desktop/src/design-system/tokens.css` | 集中定义颜色、字体、Spacing、Radius、Shadow 和 Motion Semantic Tokens。 | 全部 UI CSS、Light/Dark/Forced Colors |
 | `desktop/src/design-system/global.css` | 导入 Tokens，并提供 Reset、字体、Root、表单、Focus、Selection、Scrollbar 和 Accessibility Defaults。 | `main.tsx`、整个 Renderer |
@@ -516,13 +521,14 @@ Character State API 目前是 Renderer 内部合同，不属于 `desktop_protoco
 | `desktop/tests/voice-session-controller.test.mjs` | 覆盖五状态、显式确认、Chat/播放终态任意顺序、无 Speech Capability、Terminal-before-ACK、取消/Hang-up、跨 Chat/Project、迟到与乱序事件、一次性安全续听，以及 200 轮 Speech/Text 交替后零异步 Owner 的 Soak。 | 纯 Controller 测试，不启动 Electron、Python、模型或真实音频 |
 | `desktop/tests/voice-ui-state.test.mjs` | 覆盖主回复生命周期与被动麦克风监控的优先级、监控失败、Confirmed Barge-in、取消/转写错误、静音、人工 Review 状态和有界 Session 时钟格式。 | `voice-ui-state.ts` 的纯状态测试，不启动 React、Electron、麦克风或模型 |
 | `desktop/tests/character-state.test.mjs` | 覆盖全部闭集状态、确定性优先级、Backend/Chat/Knowledge facts、保留的 work-mode/approval 输入与 Voice 映射。 | `character-state.ts` 纯状态测试；不启动 React、Electron 或模型 |
-| `desktop/tests/character-presentation.test.mjs` | 覆盖七态到前七个唯一图集格、封闭 expression/action token、success 排除、严格性能偏好解析和 Reduced Motion 优先。 | `character-presentation.ts`、`character-performance.ts`；不启动 React、Electron 或模型 |
+| `desktop/tests/character-presentation.test.mjs` | 覆盖七态到前七个唯一状态格、三种闭集情绪到审核表情格、未知情绪回退、success 排除、严格性能偏好解析和 Reduced Motion 优先。 | `character-emotion.ts`、`character-presentation.ts`、`character-performance.ts`；不启动 React、Electron 或模型 |
+| `desktop/tests/speech-mouth.test.mjs` | 覆盖 RMS、实际 Output Gain、四档量化、Attack/Release、迟滞、防抖、0 音量与无效输入闭嘴回退。 | `speech-mouth.ts` 纯函数；不启动 Web Audio、React、Electron 或模型 |
 | `desktop/tests/speech-audio-channel.test.mjs` | 直接测试 Electron 二进制音频 Reader 与 Delivery Coordinator；覆盖每个分片边界、Coalesced Frame、ACK/Discard 背压、EOF 截断/干净关闭、长度先验、Header/Token/Hash、Canonical WAV、Metadata 任意到达顺序、FIFO、失败跳过、取消/迟到 Settlement、Terminal 计数、播放器断连、错误脱敏和 Listener 清理。 | `speech-audio-channel.ts` 与 `speech-delivery.ts` 编译产物；使用内存 Pipe 和 Fake Playback，不启动 Python、Electron UI 或真实模型 |
-| `desktop/tests/preload-speech-playback.test.cjs` | 在隔离 Node 进程中加载生产 Preload，验证指定/默认 Output Sink 都在 Decode 和 Start 前完成、路由失败不回退、Settings 查询期间取消不会播放、Active `speechVolumePercent` 经 GainNode 应用、无效音量 Fail Closed，以及私有音频能力未暴露给 React。 | `preload.cts` 编译产物、Fake Electron IPC 与 Fake Web Audio |
+| `desktop/tests/preload-speech-playback.test.cjs` | 在隔离 Node 进程中加载生产 Preload，验证指定/默认 Output Sink 都在 Decode 和 Start 前完成、路由失败不回退、Settings 查询期间取消不会播放、Active `speechVolumePercent` 经 GainNode 应用、无效音量 Fail Closed，以及只在可见 Animated speaking 表面最多 20 Hz 发布四档嘴型、终态闭嘴且原始音频能力未暴露给 React。 | `preload.cts` 编译产物、Fake Electron IPC 与 Fake Web Audio |
 | `desktop/tests/speech-playback-owner.test.mjs` | 直接验证 Main 所有的私有 Playback Owner；覆盖一次性 Settlement、所属 Main Frame、取消迟到回复、窗口替换、Renderer 崩溃、跨文档导航、空闲 Owner 退役和 Listener 清理。 | `speech-playback-owner.ts` 编译产物与 Electron Module Mock |
 | `desktop/tests/ui/electron-main.cjs` | Playwright 专用 Electron Main；加载生产 Renderer Build，保持 Sandbox/Context Isolation，但不启动生产 Backend。 | UI Test、Mock Preload、`dist/index.html` |
 | `desktop/tests/ui/mock-preload.cjs` | UI 测试专用 `elysiaDesktop` Fake；除 Canonical Chat/Project/Voice 外模拟 Knowledge list/mutation/progress/completion/error/cancel、延迟 export、active snapshot、`knowledge-export-settled`、grounded history、Project 隔离、失败、Reload 和 Race。 | App Shell UI Tests；不会进入生产包 |
-| `desktop/tests/ui/app-shell.spec.ts` | Playwright 启动真实 Electron Renderer，覆盖 Chat/Project/Settings/Voice/Knowledge；验证 Project Sources actions、归档只读、状态隔离、export 跨 reload/Project switch 的全局 busy 与 terminal tombstone、terminal-before-ACK、Citation 键盘交互、显式 knowledge toggle、Character Panel/Voice 状态图集、性能偏好/Reduced Motion、双层图片失败回退，以及既有 Voice Session 边界。 | Production React Build + Mock Backend；不等同于真实模型、GPU、麦克风或扬声器矩阵 |
+| `desktop/tests/ui/app-shell.spec.ts` | Playwright 启动真实 Electron Renderer，覆盖 Chat/Project/Settings/Voice/Knowledge；验证 Project Sources actions、归档只读、状态隔离、export 跨 reload/Project switch 的全局 busy 与 terminal tombstone、terminal-before-ACK、Citation 键盘交互、显式 knowledge toggle、Character Panel/Voice 状态/情绪/嘴型图集、Still/Reduced Motion、`speech → expression → state → portrait → text` 图片回退，以及既有 Voice Session 边界。 | Production React Build + Mock Backend；不等同于真实模型、GPU、麦克风或扬声器矩阵 |
 
 ## 25. Python 测试：`tests/`
 
@@ -558,14 +564,14 @@ Character State API 目前是 Renderer 内部合同，不属于 `desktop_protoco
 | `tests/test_conversation_summarization.py` | Model Summarizer、严格结构和增量摘要。 |
 | `tests/test_conversation_summary.py` | Stage 4 旧 Summary Schema 与存储。 |
 | `tests/test_data_portability.py` | Bundle Export/Import、Hash、路径、Conflict、Quarantine 和 Rollback。 |
-| `tests/test_distribution_assets.py` | 覆盖 Git Force-add、Case/NFKC Alias、模型/音频/Archive、完整 Builder Shape、继承/Hook/App Root/Platform Files 逃逸、立绘与状态图集的仓库/ASAR 字节固定，以及 Unpacked/ASAR 与当前真实仓库。 |
+| `tests/test_distribution_assets.py` | 覆盖 Git Force-add、Case/NFKC Alias、模型/音频/Archive、完整 Builder Shape、继承/Hook/App Root/Platform Files 逃逸、立绘与状态/表情/嘴型图集的仓库/ASAR 字节固定，以及 Unpacked/ASAR 与当前真实仓库。 |
 | `tests/test_desktop_backend.py` | Python Bridge 的 Handshake、Routing、Streaming、Cancel、Chat/Project/Settings/Attachment、Knowledge、STT 与可选 Speech 集成；覆盖 grounded routing/persistence、Knowledge worker/admission、Project mutation race、durable cancel ACK、explicit recovery、非阻塞 export cleanup、typed error mapping 与 shutdown/runtime ownership，并继续证明 Speech 失败不会改变文字终态或持久化回复。 |
 | `tests/test_desktop_knowledge.py` | 生产知识 Factory 共享 Chat/Project/Source authority、operation lease 和持久 Store；复核构造阶段零 HTTP/零索引、profile 与路径无关但绑定 route/chunking 合同，并拒绝远程 Ollama Origin。 |
 | `tests/test_desktop_audio_channel.py` | 验证 fd3 固定所有权、OS Pipe 类型与去继承、84-byte Header、Token/Digest、无歧义桌面 PCM WAV、8 MiB/120 秒上限、Partial Write、单待发 Frame、反射篡改、Poison、非阻塞 Close 和错误脱敏。 |
-| `tests/test_desktop_protocol.py` | Python Protocol Parser/Builder 与共享 Fixture Contract；覆盖 Knowledge method/result/event、grounded history/use intent、Schema v3 Voice 行为设置、STT 设置/状态的 exact shape 与脱敏边界。 |
+| `tests/test_desktop_protocol.py` | Python Protocol Parser/Builder 与共享 Fixture Contract；覆盖 Knowledge method/result/event、grounded history/use intent、Schema v4 Voice 行为设置（含情绪闭集）、STT 设置/状态的 exact shape 与脱敏边界。 |
 | `tests/test_desktop_speech_protocol.py` | 验证 Speech Clip/Failure/Terminal Event Builder、二进制 Metadata 上下界、固定失败码、终态计数关系、Request 关联、未知 Event/私有字段拒绝，以及 Schema 与 Runtime 常量一致。 |
-| `tests/test_desktop_speech.py` | 用真实 Sentence Queue 与 AudioChannelWriter、Fake Managed Runtime 验证 Active `voiceProfileId`/`speechRatePercent` 的配置、解析和绝对 Rate 映射，以及后台启动期间的有界 Chunk 转移、自然分句/FIFO、Metadata 先于 Binary、取消后丢弃迟到音频、主动取消或自发 Worker Poison 后整条语音路径只失效一次且不重试、Bootstrap 失败只关闭语音、Terminal Exactly-once 和退出清理。 |
-| `tests/test_desktop_settings.py` | Desktop Settings 十五字段 Validation、Schema v1/v2 到 v3 Migration、Voice 行为字段的 Live/Restart 分类、Desired/Active Restart Diff、Revision CAS、锁和 Quarantine。 |
+| `tests/test_desktop_speech.py` | 用真实 Sentence Queue 与 AudioChannelWriter、Fake Managed Runtime 验证 Active `voiceProfileId`/`voiceEmotion`/`speechRatePercent` 的配置、解析、闭集情绪选择和绝对 Rate 映射，以及后台启动期间的有界 Chunk 转移、自然分句/FIFO、Metadata 先于 Binary、取消后丢弃迟到音频、主动取消或自发 Worker Poison 后整条语音路径只失效一次且不重试、Bootstrap 失败只关闭语音、Terminal Exactly-once 和退出清理。 |
+| `tests/test_desktop_settings.py` | Desktop Settings 十六字段 Validation、Schema v1/v2/v3 到 v4 Migration、Voice 行为字段的 Live/Restart 分类、Desired/Active Restart Diff、Revision CAS、锁和 Quarantine。 |
 | `tests/test_faster_whisper.py` | 不安装 Native Runtime 或模型也能验证离线 Adapter、设备降级、PCM、惰性结果、错误脱敏和边界。 |
 | `tests/test_file_manager.py` | 基础文本文件操作。 |
 | `tests/test_gpt_sovits.py` | Loopback URL 规范化、HTTP 请求映射、代理/Redirect/Retry/Transfer-Encoding 禁止、Content-Length、慢速 Body Deadline、Readiness、响应上限、格式与错误脱敏。 |
@@ -589,7 +595,7 @@ Character State API 目前是 Renderer 内部合同，不属于 `desktop_protoco
 | `tests/test_prompts.py` | Elysia 人格规则和 JSON 数据边界。 |
 | `tests/test_python_documentation_check.py` | 文档扫描只排除精确的 `models/cache/`，不会把其他同名源码目录误排。 |
 | `tests/test_scoped_memory_integration.py` | 跨 Chat/Project Memory 隔离和同 Key 覆盖。 |
-| `tests/test_settings.py` | `.env`、STT 闭集配置/安全回退、GPT-SoVITS 本地评估 Opt-in、请求/探测 Timeout、Seed、默认值和基础 AppSettings。 |
+| `tests/test_settings.py` | `.env`、STT 与语音情绪闭集配置/安全回退、GPT-SoVITS 本地评估 Opt-in、请求/探测 Timeout、Seed、默认值和基础 AppSettings。 |
 | `tests/test_short_term_memory.py` | Token Budget 和完整 Turn 淘汰。 |
 | `tests/test_smoke_gpt_sovits.py` | Smoke CLI 的固定文本、重复/多情绪、缓冲成功输出、格式摘要和闭集错误码。 |
 | `tests/test_gpt_sovits_protocol.py` | 受管 TTS 私有 Pipe 的二进制帧、Canonical Metadata、长度先验、Partial I/O、截断/坏帧脱敏、不可变性与 Python 3.9 语法兼容。 |
@@ -630,8 +636,8 @@ Character State API 目前是 Renderer 内部合同，不属于 `desktop_protoco
 | 文件 | 当前职责 | 关键边界 |
 | --- | --- | --- |
 | `requirements-stt.txt` | 可选安装 Faster-Whisper 与 NumPy。 | 不属于基础依赖，不包含模型 |
-| `config/settings.py` | 定义 STT 模型、设备、语言的闭集默认值和 `.env` Bootstrap。 | 非法别名回退，不能触发下载 |
-| `config/desktop_settings.py` | 持久化 STT 与七项 Voice 行为的 Desired/Active 值并计算 Restart Diff。 | Profile/Rate 与 STT Runtime 设置需重启；自动朗读、音量、字幕、人工 Review 和自动续听实时生效；初始化前修复会被首次 Runtime 组合采用 |
+| `config/settings.py` | 定义 STT 模型、设备、语言和语音情绪的闭集默认值与 `.env` Bootstrap。 | 非法别名回退，不能触发下载或任意情绪指令 |
+| `config/desktop_settings.py` | 持久化 STT 与八项 Voice 行为的 Desired/Active 值并计算 Restart Diff。 | Profile/Rate/Emotion 与 STT Runtime 设置需重启；自动朗读、音量、字幕、人工 Review 和自动续听实时生效；初始化前修复会被首次 Runtime 组合采用 |
 | `voice/transcription.py` | 定义不依赖具体引擎的请求、Final Result、语言和稳定错误。 | 只允许有界最终文本 |
 | `voice/faster_whisper.py` | 从明确本地目录加载、选择设备/Compute、执行转写并生成净化 Status/Error。 | 不下载模型，不返回路径或 Native Error |
 | `voice/transcription_jobs.py` | 固定 Worker/Queue、Deadline、Cancel、唯一终态、Native Draining 和迟到结果丢弃。 | 逻辑取消后仍保留物理容量直到 Native Call 返回 |
@@ -643,17 +649,17 @@ Character State API 目前是 Renderer 内部合同，不属于 `desktop_protoco
 
 | 文件 | 当前职责 | 关键边界 |
 | --- | --- | --- |
-| `desktop/electron/protocol.ts` | 严格解析 Schema v3 Voice 行为设置、STT Readiness、一次性 PCM 请求和 PCM-free Final Result。 | 拒绝 Extra/Path/Message/Native 字段、不一致状态和越界行为值 |
+| `desktop/electron/protocol.ts` | 严格解析 Schema v4 Voice 行为设置（含 `neutral / happy / sad`）、STT Readiness、一次性 PCM 请求和 PCM-free Final Result。 | 拒绝 Extra/Path/Message/Native 字段、不一致状态、越界行为值和任意动画选择器 |
 | `desktop/electron/backend-process.ts` | 关联 Request/Session/Chat，处理 Progress、Cancel Race 和终态，并把 Delivery Coordinator 的闭集播放状态转成 Renderer-safe Event。 | Pending Metadata 不保留 PCM；语音失效时移除 `voice.speech`，文字 Chat 继续 |
 | `desktop/electron/main.ts` | 校验 Renderer 的 Voice 行为/STT 参数、Cancel Request ID 与播放停止 Request ID，映射固定 IPC。 | 不接受任意 Channel 或任意设备、模型、Profile/Rate/Volume 值 |
-| `desktop/electron/preload.cts` | 暴露 `beginVoiceTranscription` / `stopVoiceTranscription` / `stopSpeechPlayback` 与安全 Event Subscription；私有播放 Owner 按每个 Clip 的 Active Volume 建立 GainNode。 | 私有 WAV IPC 与原始 `ipcRenderer` 不暴露给 React；无效音量或指定 Sink 失败时不播放 |
+| `desktop/electron/preload.cts` | 暴露 `beginVoiceTranscription` / `stopVoiceTranscription` / `stopSpeechPlayback` 与安全 Event Subscription；私有播放 Owner 按每个 Clip 的 Active Volume 建立 GainNode，并只为可见 Animated speaking Artwork 以最多 20 Hz 发布四档 RMS 嘴型。 | 私有 WAV IPC、波形样本、连续包络与原始 `ipcRenderer` 不暴露给 React；无效音量或指定 Sink 失败时不播放，视觉失败只闭嘴 |
 | `desktop/electron/contracts.ts` | 声明 Renderer 可见的 Voice 行为设置、开始确认、Final/Error，以及只含 Request/Chat、闭集 Kind、Sequence 或 Terminal State 的安全播放状态。 | 不包含 PCM、Token、Hash、文本、路径或 Native Diagnostic |
 | `desktop/src/voice/voice-session-controller.ts` | 管理 `IDLE → LISTENING → TRANSCRIBING → THINKING → SPEAKING → IDLE`，以 exact owner 接受异步事件，并用单调完成 ID 保护一次性续听。 | 只持有有界 ID、Final Transcript 与安全终态，不拥有 PCM、Chat 持久化或播放器 |
 | `desktop/src/voice/voice-ui-state.ts` | 分离推导主回复生命周期与麦克风/中断监控状态，并格式化 Session 计时。 | 纯展示状态，不拥有捕获、转写、Chat 或播放资源；主生命周期作为 Character State 输入 |
 | `desktop/src/App.tsx` | 把 Capture/STT、Controller、Canonical Chat Send、播放状态、字幕、静音、Reply-time Interruption、安全自动续听与当前 Chat/Project-scoped Character State 关联；Final Transcript 可显式 Send 或进入草稿。 | Voice 打开时固定 Chat/Project；迟到、跨上下文或乱序事件不能污染当前 Session；自动续听不自动发送 Transcript |
-| `desktop/src/voice/CallPreview.tsx` | 显示主/麦克风双状态、计时、Assistant Captions 和可编辑 Final Transcript；提供 Send、Use/Append、Mute、Audio Settings、Auto-continue 与 Close Voice，并把主生命周期与 Backend failure 交给共享 Character State 推导。 | 复用状态驱动 CharacterArtwork 及其有界动效；不显示实时 Partial，不自动提交；自动续听必须显式启用并由 App/Controller 放行 |
+| `desktop/src/voice/CallPreview.tsx` | 显示主/麦克风双状态、计时、Assistant Captions 和可编辑 Final Transcript；提供 Send、Use/Append、Mute、Audio Settings、Auto-continue 与 Close Voice，并把主生命周期、Backend failure 与 Active Voice Emotion 交给共享 Character Artwork。 | 复用状态/情绪驱动 CharacterArtwork；不显示实时 Partial，不自动提交；嘴型来自可信 Preload，自动续听必须显式启用并由 App/Controller 放行 |
 | `desktop/src/voice/transcription-readiness.ts` | 把闭集 Status/Reason 转成一致的恢复步骤。 | UI 不渲染底层路径或错误原文 |
-| `desktop/src/settings/SettingsView.tsx` | 编辑 STT 与七项 Voice 行为设置，并显示 Active 值、Readiness 和 Restart 提示。 | 保存值与当前生效值明确分离；设备 ID 仍属于独立 Voice Settings Store |
+| `desktop/src/settings/SettingsView.tsx` | 编辑 STT 与八项 Voice 行为设置，包括 `neutral / happy / sad` Voice Emotion，并显示 Active 值、Readiness 和 Restart 提示。 | 保存值与当前生效值明确分离；Rate、Profile、Emotion 重启生效，设备 ID 仍属于独立 Voice Settings Store |
 
 完整连接关系：
 
@@ -710,7 +716,7 @@ Cancel 或 Timeout 只结束用户可见的 STT 任务；Python 无法安全终�
 | `voice/speech_queue.py` | 从模型 Chunk 自然分句，跳过无文字/数字锚点的纯装饰片段，并以有界 FIFO 合成、交付、跳过失败和取消迟到结果。 | 队列只持有 Speech 副本，不修改 Brain 的最终 Assistant 文本 |
 | `desktop_speech.py` | 把 Managed Lease、Sentence Queue、NDJSON Metadata 与 fd3 WAV 组合起来。 | 可选 Speech 故障只禁用语音；文字 Chat 继续完成 |
 | `desktop/electron/speech-delivery.ts` | 在 Main 内严格配对 Metadata/Frame，等待可信播放结束后才 ACK 下一帧，并产生最小的 `playing|played|skipped|terminal` 状态。 | Renderer 状态只含 Request/Chat/Sequence 或闭集终态；WAV、Token 与 Hash 不进入 React API |
-| `desktop/electron/speech-playback-owner.ts` + `preload.cts` | 以私有 IPC 把单个 WAV 交给 Preload Web Audio，处理 Decode、结束、取消、超时、跨文档导航和窗口替换；公开桥只提供按 Chat Request ID 停止播放。 | Settlement 只接受所属窗口 Main Frame；同文档锚点不破坏 Owner，Renderer 业务代码看不到音频 |
+| `desktop/electron/speech-playback-owner.ts` + `preload.cts` + `speech-mouth.ts` | 以私有 IPC 把单个 WAV 交给 Preload Web Audio，处理 Decode、结束、取消、超时、跨文档导航和窗口替换；对实际输出做最多 20 Hz RMS 四档嘴型量化，公开桥只提供按 Chat Request ID 停止播放。 | Settlement 只接受所属窗口 Main Frame；同文档锚点不破坏 Owner，Renderer 业务代码看不到音频/样本/连续包络，Still/Reduced Motion 不动画嘴型 |
 
 外部 HTTP Smoke 连接关系：
 

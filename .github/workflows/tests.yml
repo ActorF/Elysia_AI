@@ -114,9 +114,13 @@ jobs:
         run: |
           if exist "%RUNNER_TEMP%\elysia-portrait.png" del /f /q "%RUNNER_TEMP%\elysia-portrait.png"
           if exist "%RUNNER_TEMP%\elysia-state-atlas.png" del /f /q "%RUNNER_TEMP%\elysia-state-atlas.png"
+          if exist "%RUNNER_TEMP%\elysia-expression-atlas.png" del /f /q "%RUNNER_TEMP%\elysia-expression-atlas.png"
+          if exist "%RUNNER_TEMP%\elysia-speech-atlas.png" del /f /q "%RUNNER_TEMP%\elysia-speech-atlas.png"
           cd /d "%RUNNER_TEMP%"
           call "%GITHUB_WORKSPACE%\desktop\node_modules\.bin\asar.cmd" extract-file "%GITHUB_WORKSPACE%\desktop\out\win-unpacked\resources\app.asar" "dist\character\elysia-portrait.png"
           call "%GITHUB_WORKSPACE%\desktop\node_modules\.bin\asar.cmd" extract-file "%GITHUB_WORKSPACE%\desktop\out\win-unpacked\resources\app.asar" "dist\character\elysia-state-atlas.png"
+          call "%GITHUB_WORKSPACE%\desktop\node_modules\.bin\asar.cmd" extract-file "%GITHUB_WORKSPACE%\desktop\out\win-unpacked\resources\app.asar" "dist\character\elysia-expression-atlas.png"
+          call "%GITHUB_WORKSPACE%\desktop\node_modules\.bin\asar.cmd" extract-file "%GITHUB_WORKSPACE%\desktop\out\win-unpacked\resources\app.asar" "dist\character\elysia-speech-atlas.png"
 
       - name: Audit packaged distribution assets
         run: >-
@@ -125,6 +129,8 @@ jobs:
           --asar-listing "%RUNNER_TEMP%\elysia-asar-listing.txt"
           --extracted-asar-portrait "%RUNNER_TEMP%\elysia-portrait.png"
           --extracted-asar-character-atlas "%RUNNER_TEMP%\elysia-state-atlas.png"
+          --extracted-asar-expression-atlas "%RUNNER_TEMP%\elysia-expression-atlas.png"
+          --extracted-asar-speech-atlas "%RUNNER_TEMP%\elysia-speech-atlas.png"
 
   desktop:
     runs-on: ubuntu-latest

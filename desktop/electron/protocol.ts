@@ -70,6 +70,7 @@ export const TRANSCRIPTION_MODELS = [
 export const TRANSCRIPTION_DEVICES = ['auto', 'cuda', 'cpu'] as const
 export const TRANSCRIPTION_LANGUAGES = ['auto', 'zh', 'en'] as const
 export const TRANSCRIPT_REVIEW_MODES = ['manual'] as const
+export const VOICE_EMOTIONS = ['neutral', 'happy', 'sad'] as const
 const TRANSCRIPTION_STATUS_STATES = [
   'unavailable',
   'available',
@@ -293,6 +294,9 @@ export type TranscriptionLanguage = typeof TRANSCRIPTION_LANGUAGES[number]
 /** Closed transcript policy that keeps recognition behind explicit review. */
 export type TranscriptReviewMode = typeof TRANSCRIPT_REVIEW_MODES[number]
 
+/** Closed emotional reference selected for managed local speech. */
+export type VoiceEmotion = typeof VOICE_EMOTIONS[number]
+
 /** Complete non-sensitive global settings exchanged with the Python Backend. */
 export interface SettingsValues {
   modelName: string
@@ -307,6 +311,7 @@ export interface SettingsValues {
   speechRatePercent: number
   speechVolumePercent: number
   voiceProfileId: string
+  voiceEmotion: VoiceEmotion
   captionsEnabled: boolean
   transcriptReviewMode: TranscriptReviewMode
   automaticRelisten: boolean
@@ -1532,6 +1537,7 @@ function parseSettingsValues(
       'speechRatePercent',
       'speechVolumePercent',
       'voiceProfileId',
+      'voiceEmotion',
       'captionsEnabled',
       'transcriptReviewMode',
       'automaticRelisten',
@@ -1683,6 +1689,13 @@ function parseSettingsValues(
       MAX_SPEECH_VOLUME_PERCENT,
     ),
     voiceProfileId,
+    voiceEmotion: readStringLiteral(
+      settings,
+      'voiceEmotion',
+      context,
+      VOICE_EMOTIONS,
+      errorCode,
+    ),
     captionsEnabled: readSettingsBoolean('captionsEnabled'),
     transcriptReviewMode: readStringLiteral(
       settings,
@@ -4189,6 +4202,7 @@ export function parseSettingsStateResult(
     'transcriptionLanguage',
     'speechRatePercent',
     'voiceProfileId',
+    'voiceEmotion',
   ] as const
   if (
     !Array.isArray(result.restartFields)

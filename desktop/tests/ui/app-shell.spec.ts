@@ -184,6 +184,7 @@ interface DesktopSettingsValues {
   speechRatePercent: number
   speechVolumePercent: number
   voiceProfileId: string
+  voiceEmotion: 'neutral' | 'happy' | 'sad'
   captionsEnabled: boolean
   transcriptReviewMode: 'manual'
   automaticRelisten: boolean
@@ -1142,6 +1143,7 @@ function desktopSettingsState(
     speechRatePercent: 100,
     speechVolumePercent: 100,
     voiceProfileId: 'default',
+    voiceEmotion: 'neutral',
     captionsEnabled: true,
     transcriptReviewMode: 'manual',
     automaticRelisten: false,
@@ -4271,6 +4273,7 @@ test('saves exact global Settings and restarts the Backend to apply them', async
     speechRatePercent: 125,
     speechVolumePercent: 42,
     voiceProfileId: 'elysia',
+    voiceEmotion: 'happy',
     captionsEnabled: false,
     transcriptReviewMode: 'manual',
     automaticRelisten: true,
@@ -4297,6 +4300,7 @@ test('saves exact global Settings and restarts the Backend to apply them', async
   await page.getByLabel('Speech rate (%)').fill('125')
   await page.getByLabel('Speech volume (%)').fill('42')
   await page.getByLabel('Voice profile').fill('elysia')
+  await page.getByLabel('Voice emotion').selectOption('happy')
   await page.getByLabel('Call captions').selectOption('false')
   await expect(page.getByLabel('Transcript review')).toBeDisabled()
   await page.getByLabel('Continue listening after replies').selectOption('true')
@@ -4350,6 +4354,7 @@ test('applies live Voice behavior choices without requiring a restart', async ()
       speechRatePercent: 100,
       speechVolumePercent: 35,
       voiceProfileId: 'default',
+      voiceEmotion: 'neutral',
       captionsEnabled: false,
       transcriptReviewMode: 'manual',
       automaticRelisten: true,
@@ -4497,6 +4502,7 @@ test('blocks restart for a dirty draft and locks Backend fields while restarting
     speechRatePercent: 100,
     speechVolumePercent: 100,
     voiceProfileId: 'default',
+    voiceEmotion: 'neutral',
     captionsEnabled: true,
     transcriptReviewMode: 'manual',
     automaticRelisten: false,
@@ -4759,6 +4765,7 @@ test('keeps Settings save controls reachable at compact high zoom', async () => 
       speechRatePercent: 100,
       speechVolumePercent: 100,
       voiceProfileId: 'default',
+      voiceEmotion: 'neutral',
       captionsEnabled: true,
       transcriptReviewMode: 'manual',
       automaticRelisten: false,
@@ -7538,6 +7545,149 @@ test('projects Chat activity and failure through the shared character state', as
   await expect(artwork).toHaveAttribute('data-character-action', 'alert')
   await expect(captionState).toHaveText('Needs attention')
   await expect(panel.locator('.soft-status')).toHaveText('Ready')
+})
+
+test('uses only the active closed emotion to select a reviewed expression', async () => {
+  const initialSettings = desktopSettingsState()
+  const happySettings: DesktopSettingsValues = {
+    ...initialSettings.settings,
+    voiceEmotion: 'happy',
+  }
+  await setSettingsState({
+    ...initialSettings,
+    settings: happySettings,
+    activeSettings: happySettings,
+  })
+  await openSettings()
+  await expect(page.getByLabel('Voice emotion')).toHaveValue('happy')
+  await page.getByRole('button', { name: 'Back to chat' }).click()
+  await page.getByRole('button', { name: 'Expand Elysia panel' }).click()
+
+  const artwork = page.locator('.character-panel .character-artwork')
+  await expect(artwork).toHaveAttribute('data-character-emotion', 'happy')
+  await expect(artwork).toHaveAttribute('data-character-expression', 'happy')
+  await expect(artwork).toHaveAttribute(
+    'data-character-asset',
+    'expression-atlas',
+  )
+  await expect(artwork.getByRole('img', { name: 'Elysia happy expression' }))
+    .toHaveAttribute('src', './character/elysia-expression-atlas.png')
+})
+
+test('keeps the Chat character speaking for exact managed playback', async () => {
+  await emitSnapshot(readySnapshot({
+    capabilities: ['chat.stream', 'voice.speech'],
+  }))
+  await page.getByRole('button', { name: 'Expand Elysia panel' }).click()
+  const panel = page.locator('.character-panel')
+  const artwork = panel.locator('.character-artwork')
+  const composer = page.getByLabel('Message Elysia')
+
+  await composer.fill('Show trusted playback.')
+  await composer.press('Enter')
+  await expect.poll(async () => (
+    (await getCalls()).filter((call) => call.method === 'sendMessage').length
+  )).toBe(1)
+  await emitEvent({
+    type: 'voice-speech-status',
+    kind: 'playing',
+    requestId: 'test-request-1',
+    chatId: 'chat-test',
+    sequence: 0,
+  })
+  await expect(panel).toHaveAttribute('data-character-state', 'speaking')
+  await expect(artwork).toHaveAttribute('data-character-state', 'speaking')
+  await expect(artwork).toHaveAttribute('data-character-asset', 'speech-atlas')
+  await expect(artwork.getByRole('img')).toHaveAttribute(
+    'src',
+    './character/elysia-speech-atlas.png',
+  )
+  await artwork.locator('.character-artwork-speech-atlas').evaluate(
+    (element) => {
+      ;(element as HTMLImageElement).src = 'file:///missing-speech-atlas.png'
+    },
+  )
+  await expect(artwork).toHaveAttribute(
+    'data-character-asset',
+    'expression-atlas',
+  )
+  await artwork.locator('.character-artwork-expression-atlas').evaluate((element) => {
+    ;(element as HTMLImageElement).src = 'file:///missing-expression-atlas.png'
+  })
+  await expect(artwork).toHaveAttribute('data-character-asset', 'atlas')
+
+  await emitEvent({
+    type: 'voice-speech-status',
+    kind: 'played',
+    requestId: 'test-request-1',
+    chatId: 'chat-test',
+    sequence: 0,
+  })
+  await expect(panel).toHaveAttribute('data-character-state', 'thinking')
+  await emitEvent({
+    type: 'chat-complete',
+    requestId: 'test-request-1',
+    chatId: 'chat-test',
+    reply: 'Trusted playback finished.',
+  })
+  await expect(panel).toHaveAttribute('data-character-state', 'idle')
+})
+
+test('does not revive playback that completed before the Chat acknowledgement', async () => {
+  await emitSnapshot(readySnapshot({
+    capabilities: ['chat.stream', 'voice.speech'],
+  }))
+  await page.getByRole('button', { name: 'Expand Elysia panel' }).click()
+  await page.evaluate(() => {
+    ;(window as TestWindow).elysiaDesktopTest.setChatActionDelay(true)
+  })
+
+  const panel = page.locator('.character-panel')
+  const composer = page.getByLabel('Message Elysia')
+  await composer.fill('Complete speech before acknowledgement.')
+  await composer.press('Enter')
+  await expect.poll(() => page.evaluate(() => (
+    (window as TestWindow).elysiaDesktopTest.getPendingChatActionCount()
+  ))).toBe(1)
+  await emitEvents([
+    {
+      type: 'voice-speech-status',
+      kind: 'playing',
+      requestId: 'test-request-1',
+      chatId: 'chat-test',
+      sequence: 0,
+    },
+    {
+      type: 'voice-speech-status',
+      kind: 'terminal',
+      requestId: 'test-request-1',
+      chatId: 'chat-test',
+      state: 'completed',
+    },
+  ])
+  await expect(panel).not.toHaveAttribute('data-character-state', 'speaking')
+
+  await page.evaluate(() => {
+    const control = (window as TestWindow).elysiaDesktopTest
+    control.releaseNextChatAction()
+    control.setChatActionDelay(false)
+  })
+  await expect(panel).toHaveAttribute('data-character-state', 'thinking')
+  await emitEvent({
+    type: 'voice-speech-status',
+    kind: 'playing',
+    requestId: 'test-request-1',
+    chatId: 'chat-test',
+    sequence: 1,
+  })
+  await expect(panel).toHaveAttribute('data-character-state', 'thinking')
+  await emitEvent({
+    type: 'chat-complete',
+    requestId: 'test-request-1',
+    chatId: 'chat-test',
+    reply: 'The early playback stayed closed.',
+  })
+  await expect(panel).toHaveAttribute('data-character-state', 'idle')
 })
 
 test('scopes Work and Knowledge character activity to the current Project Chat', async () => {

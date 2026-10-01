@@ -110,6 +110,7 @@ interface SettingsDraft {
   speechRatePercent: string
   speechVolumePercent: string
   voiceProfileId: string
+  voiceEmotion: DesktopSettingsValues['voiceEmotion']
   captionsEnabled: boolean
   transcriptReviewMode: DesktopSettingsValues['transcriptReviewMode']
   automaticRelisten: boolean
@@ -172,6 +173,11 @@ const transcriptionLanguages: readonly SettingsDraft['transcriptionLanguage'][] 
   'en',
 ]
 const voiceProfileIdPattern = /^[a-z0-9][a-z0-9._-]{0,63}$/u
+const voiceEmotions: readonly SettingsDraft['voiceEmotion'][] = [
+  'neutral',
+  'happy',
+  'sad',
+]
 
 const restartLabels: Record<keyof DesktopSettingsValues, string> = {
   modelName: 'default model',
@@ -186,6 +192,7 @@ const restartLabels: Record<keyof DesktopSettingsValues, string> = {
   speechRatePercent: 'speech rate',
   speechVolumePercent: 'speech volume',
   voiceProfileId: 'voice profile',
+  voiceEmotion: 'voice emotion',
   captionsEnabled: 'Voice captions',
   transcriptReviewMode: 'transcript review policy',
   automaticRelisten: 'automatic continued listening',
@@ -205,6 +212,7 @@ function draftFromValues(values: DesktopSettingsValues): SettingsDraft {
     speechRatePercent: String(values.speechRatePercent),
     speechVolumePercent: String(values.speechVolumePercent),
     voiceProfileId: values.voiceProfileId,
+    voiceEmotion: values.voiceEmotion,
     captionsEnabled: values.captionsEnabled,
     transcriptReviewMode: values.transcriptReviewMode,
     automaticRelisten: values.automaticRelisten,
@@ -229,6 +237,7 @@ function draftEqualsValues(
     && draft.speechRatePercent === String(values.speechRatePercent)
     && draft.speechVolumePercent === String(values.speechVolumePercent)
     && draft.voiceProfileId === values.voiceProfileId
+    && draft.voiceEmotion === values.voiceEmotion
     && draft.captionsEnabled === values.captionsEnabled
     && draft.transcriptReviewMode === values.transcriptReviewMode
     && draft.automaticRelisten === values.automaticRelisten
@@ -316,6 +325,9 @@ function validateDraft(draft: SettingsDraft): SettingsValidationErrors {
   }
   if (!voiceProfileIdPattern.test(draft.voiceProfileId)) {
     errors.voiceProfileId = 'Use 1–64 lowercase letters, numbers, periods, underscores, or hyphens; start with a letter or number.'
+  }
+  if (!voiceEmotions.includes(draft.voiceEmotion)) {
+    errors.voiceEmotion = 'Choose neutral, happy, or sad.'
   }
   if (draft.transcriptReviewMode !== 'manual') {
     errors.transcriptReviewMode = 'Voice transcripts must remain in manual review mode.'
@@ -517,6 +529,7 @@ export function SettingsView({
       speechRatePercent: Number(draft.speechRatePercent),
       speechVolumePercent: Number(draft.speechVolumePercent),
       voiceProfileId: draft.voiceProfileId,
+      voiceEmotion: draft.voiceEmotion,
       captionsEnabled: draft.captionsEnabled,
       transcriptReviewMode: draft.transcriptReviewMode,
       automaticRelisten: draft.automaticRelisten,
@@ -1096,6 +1109,52 @@ export function SettingsView({
                     id={`${backendFieldId}-voice-profile-error`}
                   >
                     {validationErrors.voiceProfileId}
+                  </small>
+                )}
+              </label>
+
+              <label className="settings-field">
+                <span>Voice emotion</span>
+                <select
+                  value={draft.voiceEmotion}
+                  onChange={(event) => {
+                    const value = event.target.value
+                    if (voiceEmotions.includes(
+                      value as SettingsDraft['voiceEmotion'],
+                    )) {
+                      updateDraft(
+                        'voiceEmotion',
+                        value as SettingsDraft['voiceEmotion'],
+                      )
+                    }
+                  }}
+                  disabled={backendFieldsDisabled}
+                  aria-invalid={validationErrors.voiceEmotion !== undefined}
+                  aria-describedby={[
+                    `${backendFieldId}-voice-emotion-help`,
+                    validationErrors.voiceEmotion === undefined
+                      ? null
+                      : `${backendFieldId}-voice-emotion-error`,
+                  ].filter(Boolean).join(' ')}
+                  aria-errormessage={validationErrors.voiceEmotion === undefined
+                    ? undefined
+                    : `${backendFieldId}-voice-emotion-error`}
+                >
+                  <option value="neutral">Neutral</option>
+                  <option value="happy">Happy</option>
+                  <option value="sad">Sad</option>
+                </select>
+                <small id={`${backendFieldId}-voice-emotion-help`}>
+                  Active: {settingsState.activeSettings.voiceEmotion}. This
+                  closed choice selects both the local reference voice and the
+                  reviewed character expression after a Backend restart.
+                </small>
+                {validationErrors.voiceEmotion !== undefined && (
+                  <small
+                    className="settings-field-error"
+                    id={`${backendFieldId}-voice-emotion-error`}
+                  >
+                    {validationErrors.voiceEmotion}
                   </small>
                 )}
               </label>

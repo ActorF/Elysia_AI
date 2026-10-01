@@ -128,9 +128,23 @@ _REVIEWED_CHARACTER_ATLAS_SIZE: Final = 2_303_963
 _REVIEWED_CHARACTER_ATLAS_SHA256: Final = (
     "54eb2525673c2a849819be10eb88eb2f670eb1911e86fd154e69b578cbb4c25c"
 )
+_REVIEWED_EXPRESSION_ATLAS_SIZE: Final = 2_500_647
+_REVIEWED_EXPRESSION_ATLAS_SHA256: Final = (
+    "fbf7a515b2651b3a881cf9b838a5605c316befd0b174dde046780d8e441d7f93"
+)
+_REVIEWED_SPEECH_ATLAS_SIZE: Final = 2_054_767
+_REVIEWED_SPEECH_ATLAS_SHA256: Final = (
+    "21bf4496acc4417d491ff0163c9ee1d38593e376ca25a3d452fd393c6157f9ab"
+)
 _REVIEWED_ASAR_PORTRAIT_PATH: Final = "dist/character/elysia-portrait.png"
 _REVIEWED_ASAR_CHARACTER_ATLAS_PATH: Final = (
     "dist/character/elysia-state-atlas.png"
+)
+_REVIEWED_ASAR_EXPRESSION_ATLAS_PATH: Final = (
+    "dist/character/elysia-expression-atlas.png"
+)
+_REVIEWED_ASAR_SPEECH_ATLAS_PATH: Final = (
+    "dist/character/elysia-speech-atlas.png"
 )
 _REVIEWED_DISTRIBUTION_ASSETS: Final[dict[str, tuple[int, str]]] = {
     "desktop/public/character/elysia-portrait.png": (
@@ -141,6 +155,14 @@ _REVIEWED_DISTRIBUTION_ASSETS: Final[dict[str, tuple[int, str]]] = {
         _REVIEWED_CHARACTER_ATLAS_SIZE,
         _REVIEWED_CHARACTER_ATLAS_SHA256,
     ),
+    "desktop/public/character/elysia-expression-atlas.png": (
+        _REVIEWED_EXPRESSION_ATLAS_SIZE,
+        _REVIEWED_EXPRESSION_ATLAS_SHA256,
+    ),
+    "desktop/public/character/elysia-speech-atlas.png": (
+        _REVIEWED_SPEECH_ATLAS_SIZE,
+        _REVIEWED_SPEECH_ATLAS_SHA256,
+    ),
 }
 _REVIEWED_ASAR_ASSETS: Final[dict[str, tuple[int, str]]] = {
     _REVIEWED_ASAR_PORTRAIT_PATH: (
@@ -150,6 +172,14 @@ _REVIEWED_ASAR_ASSETS: Final[dict[str, tuple[int, str]]] = {
     _REVIEWED_ASAR_CHARACTER_ATLAS_PATH: (
         _REVIEWED_CHARACTER_ATLAS_SIZE,
         _REVIEWED_CHARACTER_ATLAS_SHA256,
+    ),
+    _REVIEWED_ASAR_EXPRESSION_ATLAS_PATH: (
+        _REVIEWED_EXPRESSION_ATLAS_SIZE,
+        _REVIEWED_EXPRESSION_ATLAS_SHA256,
+    ),
+    _REVIEWED_ASAR_SPEECH_ATLAS_PATH: (
+        _REVIEWED_SPEECH_ATLAS_SIZE,
+        _REVIEWED_SPEECH_ATLAS_SHA256,
     ),
 }
 
@@ -473,6 +503,34 @@ def audit_extracted_asar_character_atlas(
     )
 
 
+def audit_extracted_asar_expression_atlas(
+    extracted_atlas: Path,
+) -> tuple[DistributionProblem, ...]:
+    """Authenticate the expression-atlas bytes extracted from the ASAR."""
+
+    return _audit_exact_asset(
+        extracted_atlas,
+        source="asar-reviewed-asset",
+        logical_path=_REVIEWED_ASAR_EXPRESSION_ATLAS_PATH,
+        expected_size=_REVIEWED_EXPRESSION_ATLAS_SIZE,
+        expected_digest=_REVIEWED_EXPRESSION_ATLAS_SHA256,
+    )
+
+
+def audit_extracted_asar_speech_atlas(
+    extracted_atlas: Path,
+) -> tuple[DistributionProblem, ...]:
+    """Authenticate the speech-atlas bytes extracted from the packaged ASAR."""
+
+    return _audit_exact_asset(
+        extracted_atlas,
+        source="asar-reviewed-asset",
+        logical_path=_REVIEWED_ASAR_SPEECH_ATLAS_PATH,
+        expected_size=_REVIEWED_SPEECH_ATLAS_SIZE,
+        expected_digest=_REVIEWED_SPEECH_ATLAS_SHA256,
+    )
+
+
 def _load_package_json(package_path: Path) -> Mapping[str, object]:
     """Load bounded strict JSON for the Electron package declaration."""
 
@@ -693,6 +751,8 @@ def audit_repository(
     asar_listing: Path | None = None,
     extracted_asar_portrait: Path | None = None,
     extracted_asar_character_atlas: Path | None = None,
+    extracted_asar_expression_atlas: Path | None = None,
+    extracted_asar_speech_atlas: Path | None = None,
 ) -> tuple[DistributionProblem, ...]:
     """Run the required repository checks plus any requested artifact scans."""
 
@@ -700,12 +760,14 @@ def audit_repository(
         asar_listing,
         extracted_asar_portrait,
         extracted_asar_character_atlas,
+        extracted_asar_expression_atlas,
+        extracted_asar_speech_atlas,
     )
     if any(value is not None for value in package_inputs) and any(
         value is None for value in package_inputs
     ):
         raise DistributionAuditError(
-            "ASAR listing and both extracted reviewed character assets must be "
+            "ASAR listing and all extracted reviewed character assets must be "
             "audited together."
         )
 
@@ -732,6 +794,16 @@ def audit_repository(
             audit_extracted_asar_character_atlas(
                 extracted_asar_character_atlas
             )
+        )
+    if extracted_asar_expression_atlas is not None:
+        problems.extend(
+            audit_extracted_asar_expression_atlas(
+                extracted_asar_expression_atlas
+            )
+        )
+    if extracted_asar_speech_atlas is not None:
+        problems.extend(
+            audit_extracted_asar_speech_atlas(extracted_asar_speech_atlas)
         )
     return tuple(problems)
 
@@ -777,6 +849,23 @@ def _parse_arguments(arguments: Sequence[str] | None) -> argparse.Namespace:
             "by --asar-listing."
         ),
     )
+    parser.add_argument(
+        "--extracted-asar-expression-atlas",
+        type=Path,
+        help=(
+            "Expression atlas extracted from "
+            "dist/character/elysia-expression-atlas.png in the same ASAR "
+            "represented by --asar-listing."
+        ),
+    )
+    parser.add_argument(
+        "--extracted-asar-speech-atlas",
+        type=Path,
+        help=(
+            "Speech atlas extracted from dist/character/elysia-speech-atlas.png "
+            "in the same ASAR represented by --asar-listing."
+        ),
+    )
     return parser.parse_args(arguments)
 
 
@@ -793,6 +882,10 @@ def main(arguments: Sequence[str] | None = None) -> int:
             extracted_asar_character_atlas=(
                 options.extracted_asar_character_atlas
             ),
+            extracted_asar_expression_atlas=(
+                options.extracted_asar_expression_atlas
+            ),
+            extracted_asar_speech_atlas=options.extracted_asar_speech_atlas,
         )
     except DistributionAuditError as error:
         print(f"Distribution asset check failed: {error}")
@@ -809,6 +902,8 @@ def main(arguments: Sequence[str] | None = None) -> int:
         + int(options.asar_listing is not None)
         + int(options.extracted_asar_portrait is not None)
         + int(options.extracted_asar_character_atlas is not None)
+        + int(options.extracted_asar_expression_atlas is not None)
+        + int(options.extracted_asar_speech_atlas is not None)
     )
     print(
         "Distribution asset check passed: Git index, reviewed public assets, "

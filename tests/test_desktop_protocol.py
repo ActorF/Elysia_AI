@@ -181,6 +181,9 @@ def test_every_source_fact_citation_requires_the_exact_fact() -> None:
         ("voiceProfileId", "Uppercase"),
         ("voiceProfileId", "../escape"),
         ("voiceProfileId", "x" * 65),
+        ("voiceEmotion", "excited"),
+        ("voiceEmotion", "HAPPY"),
+        ("voiceEmotion", 1),
         ("captionsEnabled", "yes"),
         ("transcriptReviewMode", "automatic"),
         ("automaticRelisten", 1),
@@ -204,16 +207,18 @@ def test_voice_behavior_settings_runtime_and_schema_reject_invalid_values(
 
 
 @pytest.mark.parametrize(
-    ("speech_rate", "speech_volume", "profile_id"),
+    ("speech_rate", "speech_volume", "profile_id", "voice_emotion"),
     [
-        (50, 0, "0"),
-        (200, 100, "a" + "." * 63),
+        (50, 0, "0", "neutral"),
+        (200, 100, "a" + "." * 63, "happy"),
+        (100, 50, "default", "sad"),
     ],
 )
 def test_voice_behavior_settings_runtime_and_schema_accept_boundaries(
     speech_rate: int,
     speech_volume: int,
     profile_id: str,
+    voice_emotion: str,
 ) -> None:
     """Accept each closed numeric and logical-ID boundary without coercion."""
 
@@ -224,6 +229,7 @@ def test_voice_behavior_settings_runtime_and_schema_accept_boundaries(
         speechRatePercent=speech_rate,
         speechVolumePercent=speech_volume,
         voiceProfileId=profile_id,
+        voiceEmotion=voice_emotion,
     )
 
     parsed = parse_client_request(deepcopy(request))
@@ -1081,6 +1087,7 @@ def test_machine_readable_schema_covers_every_protocol_message_kind() -> None:
         "speechRatePercent",
         "speechVolumePercent",
         "voiceProfileId",
+        "voiceEmotion",
         "captionsEnabled",
         "transcriptReviewMode",
         "automaticRelisten",

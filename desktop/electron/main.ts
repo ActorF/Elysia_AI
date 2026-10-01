@@ -51,6 +51,7 @@ import {
   TRANSCRIPTION_DEVICES,
   TRANSCRIPTION_LANGUAGES,
   TRANSCRIPTION_MODELS,
+  VOICE_EMOTIONS,
   codePointLength,
   hasNonBlankCodePoint,
   parseVoiceCaptureCompleteParams,
@@ -722,6 +723,7 @@ function parseUpdateDesktopSettingsRequest(
       'speechRatePercent',
       'speechVolumePercent',
       'voiceProfileId',
+      'voiceEmotion',
       'captionsEnabled',
       'transcriptReviewMode',
       'automaticRelisten',
@@ -871,6 +873,11 @@ function parseUpdateDesktopSettingsRequest(
         MAX_SPEECH_VOLUME_PERCENT,
       ),
       voiceProfileId: settings.voiceProfileId,
+      voiceEmotion: parseClosedSetting(
+        settings.voiceEmotion,
+        VOICE_EMOTIONS,
+        'Voice emotion',
+      ),
       captionsEnabled: parseBoolean('captionsEnabled'),
       transcriptReviewMode: parseClosedSetting(
         settings.transcriptReviewMode,

@@ -61,7 +61,7 @@ from config.desktop_settings import (
     validate_transcription_device,
     validate_transcription_model,
 )
-from config.settings import AppSettings, SETTINGS
+from config.settings import AppSettings, SETTINGS, VoiceEmotion
 from core import (
     Brain,
     ChatBusyError,
@@ -1247,6 +1247,7 @@ class DesktopBackend:
             "speechRatePercent": values.speech_rate_percent,
             "speechVolumePercent": values.speech_volume_percent,
             "voiceProfileId": values.voice_profile_id,
+            "voiceEmotion": values.voice_emotion,
             "captionsEnabled": values.captions_enabled,
             "transcriptReviewMode": values.transcript_review_mode,
             "automaticRelisten": values.automatic_relisten,
@@ -1366,6 +1367,7 @@ class DesktopBackend:
                 speech_rate_percent=cast(int, raw["speechRatePercent"]),
                 speech_volume_percent=cast(int, raw["speechVolumePercent"]),
                 voice_profile_id=cast(str, raw["voiceProfileId"]),
+                voice_emotion=cast(VoiceEmotion, raw["voiceEmotion"]),
                 captions_enabled=cast(bool, raw["captionsEnabled"]),
                 transcript_review_mode=cast(
                     Any,
@@ -1400,6 +1402,7 @@ class DesktopBackend:
                             previous_runtime.speech_rate_percent
                         ),
                         voice_profile_id=previous_runtime.voice_profile_id,
+                        voice_emotion=previous_runtime.voice_emotion,
                     )
                 self._runtime_settings = next_runtime
                 if (

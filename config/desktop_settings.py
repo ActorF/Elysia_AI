@@ -38,21 +38,25 @@ from .settings import (
     DEFAULT_TRANSCRIPTION_DEVICE,
     DEFAULT_TRANSCRIPTION_LANGUAGE,
     DEFAULT_TRANSCRIPTION_MODEL,
+    DEFAULT_VOICE_EMOTION,
     DEFAULT_VOICE_PROFILE_ID,
     TRANSCRIPT_REVIEW_MODES,
     TRANSCRIPTION_DEVICES,
     TRANSCRIPTION_LANGUAGES,
     TRANSCRIPTION_MODELS,
+    VOICE_EMOTIONS,
     AppSettings,
     TranscriptionDevice,
     TranscriptionLanguage,
     TranscriptionModel,
     TranscriptReviewMode,
+    VoiceEmotion,
 )
 
-DESKTOP_SETTINGS_SCHEMA_VERSION: Final = 3
+DESKTOP_SETTINGS_SCHEMA_VERSION: Final = 4
 _LEGACY_DESKTOP_SETTINGS_SCHEMA_VERSION: Final = 1
 _PREVIOUS_DESKTOP_SETTINGS_SCHEMA_VERSION: Final = 2
+_PORTABLE_VOICE_SETTINGS_SCHEMA_VERSION: Final = 3
 MAX_MODEL_NAME_LENGTH: Final = 200
 MAX_OLLAMA_HOST_LENGTH: Final = 2_048
 MAX_MEMORY_SETTING: Final = 10_000_000
@@ -84,7 +88,7 @@ _VERSION_TWO_SETTINGS_FIELDS: Final = frozenset({
     "transcription_device",
     "transcription_language",
 })
-_SETTINGS_FIELDS: Final = frozenset({
+_VERSION_THREE_SETTINGS_FIELDS: Final = frozenset({
     *_VERSION_TWO_SETTINGS_FIELDS,
     "auto_read_aloud",
     "speech_rate_percent",
@@ -93,6 +97,10 @@ _SETTINGS_FIELDS: Final = frozenset({
     "captions_enabled",
     "transcript_review_mode",
     "automatic_relisten",
+})
+_SETTINGS_FIELDS: Final = frozenset({
+    *_VERSION_THREE_SETTINGS_FIELDS,
+    "voice_emotion",
 })
 _VOICE_PROFILE_ID_PATTERN: Final = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
 _PATH_LOCKS_GUARD = Lock()
@@ -214,6 +222,7 @@ class EditableDesktopSettings:
     speech_rate_percent: int = DEFAULT_SPEECH_RATE_PERCENT
     speech_volume_percent: int = DEFAULT_SPEECH_VOLUME_PERCENT
     voice_profile_id: str = DEFAULT_VOICE_PROFILE_ID
+    voice_emotion: VoiceEmotion = DEFAULT_VOICE_EMOTION
     captions_enabled: bool = DEFAULT_CAPTIONS_ENABLED
     transcript_review_mode: TranscriptReviewMode = (
         DEFAULT_TRANSCRIPT_REVIEW_MODE
@@ -257,6 +266,7 @@ class EditableDesktopSettings:
             maximum=MAX_SPEECH_VOLUME_PERCENT,
         )
         validate_voice_profile_id(self.voice_profile_id)
+        validate_voice_emotion(self.voice_emotion)
         validate_boolean(self.captions_enabled, "captions_enabled")
         validate_transcript_review_mode(self.transcript_review_mode)
         validate_boolean(self.automatic_relisten, "automatic_relisten")
@@ -423,6 +433,16 @@ def validate_voice_profile_id(value: object) -> str:
     return value
 
 
+def validate_voice_emotion(value: object) -> VoiceEmotion:
+    """Return one visual/synthesis emotion from the fixed safe allowlist."""
+
+    if not isinstance(value, str) or value not in VOICE_EMOTIONS:
+        raise DesktopSettingsValidationError(
+            "voice_emotion must be neutral, happy, or sad."
+        )
+    return cast(VoiceEmotion, value)
+
+
 def validate_transcript_review_mode(value: object) -> TranscriptReviewMode:
     """Keep transcript submission behind the supported manual-review policy."""
 
@@ -472,6 +492,7 @@ def editable_from_app_settings(
             maximum=MAX_SPEECH_VOLUME_PERCENT,
         ),
         voice_profile_id=validate_voice_profile_id(settings.voice_profile_id),
+        voice_emotion=validate_voice_emotion(settings.voice_emotion),
         captions_enabled=validate_boolean(
             settings.captions_enabled,
             "captions_enabled",
@@ -521,6 +542,10 @@ def desktop_defaults_from_app_settings(
         voice_profile_id = validate_voice_profile_id(settings.voice_profile_id)
     except DesktopSettingsValidationError:
         voice_profile_id = DEFAULT_VOICE_PROFILE_ID
+    try:
+        voice_emotion = validate_voice_emotion(settings.voice_emotion)
+    except DesktopSettingsValidationError:
+        voice_emotion = cast(VoiceEmotion, DEFAULT_VOICE_EMOTION)
     try:
         transcript_review_mode = validate_transcript_review_mode(
             settings.transcript_review_mode
@@ -599,6 +624,7 @@ def desktop_defaults_from_app_settings(
             MAX_SPEECH_VOLUME_PERCENT,
         ),
         voice_profile_id=voice_profile_id,
+        voice_emotion=voice_emotion,
         captions_enabled=boolean_or_default(
             settings.captions_enabled,
             DEFAULT_CAPTIONS_ENABLED,
@@ -638,6 +664,7 @@ def apply_editable_settings(
         speech_rate_percent=values.speech_rate_percent,
         speech_volume_percent=values.speech_volume_percent,
         voice_profile_id=values.voice_profile_id,
+        voice_emotion=values.voice_emotion,
         captions_enabled=values.captions_enabled,
         transcript_review_mode=values.transcript_review_mode,
         automatic_relisten=values.automatic_relisten,
@@ -650,9 +677,9 @@ def apply_live_editable_settings(
 ) -> AppSettings:
     """Apply only preferences whose contracts do not require backend restart.
 
-    Model, transcription, profile, and synthesis-rate changes keep their old
-    active values until restart. Renderer/session policy and playback volume
-    are safe to adopt between admitted Chat and transcription operations.
+    Model, transcription, profile, synthesis-rate, and emotion changes keep
+    their old active values until restart. Renderer/session policy and playback
+    volume are safe to adopt between admitted Chat and transcription operations.
     """
 
     return replace(
@@ -671,8 +698,8 @@ def changed_setting_names(
 ) -> tuple[str, ...]:
     """Return stable UI names for differing restart-bound settings only.
 
-    Live voice preferences are deliberately absent because the Backend merges
-    them into its active snapshot immediately after a successful save.
+    Live-safe voice preferences are deliberately absent because the Backend
+    merges them into its active snapshot immediately after a successful save.
     """
 
     fields = (
@@ -717,6 +744,11 @@ def changed_setting_names(
             "voiceProfileId",
             desired.voice_profile_id,
             active.voice_profile_id,
+        ),
+        (
+            "voiceEmotion",
+            desired.voice_emotion,
+            active.voice_emotion,
         ),
     )
     return tuple(name for name, wanted, current in fields if wanted != current)
@@ -810,6 +842,7 @@ class DesktopSettingsRepository:
         if schema_version not in {
             _LEGACY_DESKTOP_SETTINGS_SCHEMA_VERSION,
             _PREVIOUS_DESKTOP_SETTINGS_SCHEMA_VERSION,
+            _PORTABLE_VOICE_SETTINGS_SCHEMA_VERSION,
             DESKTOP_SETTINGS_SCHEMA_VERSION,
         }:
             raise DesktopSettingsValidationError(
@@ -841,6 +874,8 @@ class DesktopSettingsRepository:
             expected_fields = _LEGACY_SETTINGS_FIELDS
         elif schema_version == _PREVIOUS_DESKTOP_SETTINGS_SCHEMA_VERSION:
             expected_fields = _VERSION_TWO_SETTINGS_FIELDS
+        elif schema_version == _PORTABLE_VOICE_SETTINGS_SCHEMA_VERSION:
+            expected_fields = _VERSION_THREE_SETTINGS_FIELDS
         else:
             expected_fields = _SETTINGS_FIELDS
         if (
@@ -851,9 +886,9 @@ class DesktopSettingsRepository:
                 "Saved settings values have invalid fields."
             )
         # Older versions are expanded only in memory so their CAS revision and
-        # bytes remain stable. The next real edit writes a complete v3 document.
+        # bytes remain stable. The next real edit writes a complete v4 document.
         # Version 1 predates local transcription; both v1 and v2 predate the
-        # portable voice-behavior preferences introduced here.
+        # portable voice-behavior preferences, while v3 predates emotion.
         transcription_model = (
             DEFAULT_TRANSCRIPTION_MODEL
             if schema_version == _LEGACY_DESKTOP_SETTINGS_SCHEMA_VERSION
@@ -869,7 +904,10 @@ class DesktopSettingsRepository:
             if schema_version == _LEGACY_DESKTOP_SETTINGS_SCHEMA_VERSION
             else raw_settings.get("transcription_language")
         )
-        has_voice_preferences = schema_version == DESKTOP_SETTINGS_SCHEMA_VERSION
+        has_voice_preferences = schema_version in {
+            _PORTABLE_VOICE_SETTINGS_SCHEMA_VERSION,
+            DESKTOP_SETTINGS_SCHEMA_VERSION,
+        }
         auto_read_aloud = (
             raw_settings.get("auto_read_aloud")
             if has_voice_preferences
@@ -889,6 +927,11 @@ class DesktopSettingsRepository:
             raw_settings.get("voice_profile_id")
             if has_voice_preferences
             else DEFAULT_VOICE_PROFILE_ID
+        )
+        voice_emotion = (
+            raw_settings.get("voice_emotion")
+            if schema_version == DESKTOP_SETTINGS_SCHEMA_VERSION
+            else DEFAULT_VOICE_EMOTION
         )
         captions_enabled = (
             raw_settings.get("captions_enabled")
@@ -936,6 +979,7 @@ class DesktopSettingsRepository:
             speech_rate_percent=cast(int, speech_rate_percent),
             speech_volume_percent=cast(int, speech_volume_percent),
             voice_profile_id=cast(str, voice_profile_id),
+            voice_emotion=cast(VoiceEmotion, voice_emotion),
             captions_enabled=cast(bool, captions_enabled),
             transcript_review_mode=cast(
                 TranscriptReviewMode,
@@ -975,6 +1019,7 @@ class DesktopSettingsRepository:
                     snapshot.values.speech_volume_percent
                 ),
                 "voice_profile_id": snapshot.values.voice_profile_id,
+                "voice_emotion": snapshot.values.voice_emotion,
                 "captions_enabled": snapshot.values.captions_enabled,
                 "transcript_review_mode": (
                     snapshot.values.transcript_review_mode

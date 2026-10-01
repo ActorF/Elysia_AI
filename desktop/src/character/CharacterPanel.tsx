@@ -6,11 +6,13 @@
 import type { BackendSnapshot } from '../../electron/contracts.ts'
 import { Icon } from '../design-system/Icon.tsx'
 import { CharacterArtwork } from './CharacterArtwork.tsx'
+import type { CharacterEmotion } from './character-emotion.ts'
 import type { CharacterStateSnapshot } from './character-state.ts'
 
 interface CharacterPanelProps {
   chatTitle: string
   characterState: CharacterStateSnapshot
+  emotion: CharacterEmotion
   modal: boolean
   pending: boolean
   snapshot: BackendSnapshot
@@ -21,6 +23,7 @@ interface CharacterPanelProps {
 export function CharacterPanel({
   chatTitle,
   characterState,
+  emotion,
   modal,
   pending,
   snapshot,
@@ -62,6 +65,7 @@ export function CharacterPanel({
       <div className="character-card">
         <CharacterArtwork
           className="character-portrait"
+          emotion={emotion}
           state={characterState.state}
         />
         <div

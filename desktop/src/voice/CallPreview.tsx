@@ -8,6 +8,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { BackendStatus } from '../../electron/contracts.ts'
 import { hasNonBlankCodePoint } from '../../electron/protocol-text.js'
 import { CharacterArtwork } from '../character/CharacterArtwork.tsx'
+import type { CharacterEmotion } from '../character/character-emotion.ts'
 import { deriveVoiceCharacterState } from '../character/character-state.ts'
 import { Icon } from '../design-system/Icon.tsx'
 import type { AudioCaptureSnapshot } from './audio-capture.ts'
@@ -35,6 +36,8 @@ export interface CallPreviewProps {
   captionsEnabled: boolean
   /** Current Backend lifecycle used to surface connection loss consistently. */
   backendStatus: BackendStatus
+  /** Validated user-selected emotion shared by speech and character visuals. */
+  characterEmotion: CharacterEmotion
   /** Current PCM-free microphone capture telemetry. */
   capture: AudioCaptureSnapshot
   /** Human-readable reason a new capture cannot begin. */
@@ -84,6 +87,7 @@ export function CallPreview({
   assistantCaption = null,
   autoContinueEnabled = false,
   backendStatus,
+  characterEmotion,
   captionsEnabled,
   capture,
   captureDisabledReason,
@@ -234,6 +238,7 @@ export function CallPreview({
         />
         <CharacterArtwork
           className="character-portrait call-portrait"
+          emotion={characterEmotion}
           state={characterState.state}
         />
         <div

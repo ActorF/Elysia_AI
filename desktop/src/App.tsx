@@ -44,6 +44,7 @@ import {
 import './App.css'
 import { CharacterPanel } from './character/CharacterPanel.tsx'
 import { useCharacterPerformance } from './character/CharacterPerformanceProvider.tsx'
+import { resolveCharacterEmotion } from './character/character-emotion.ts'
 import { deriveApplicationCharacterState } from './character/character-state.ts'
 import { ChatView } from './chat/ChatView.tsx'
 import type {
@@ -562,8 +563,19 @@ interface ManagedSpeechTurn {
   readonly chatId: string
   readonly projectId: string | null
   requestId: string | null
+  readonly pendingVisualEvents: VoiceSpeechStatusEvent[]
+  /** Monotonic clip sequences permit constant-space stale-event rejection. */
+  highestSettledVisualSequence: number
   stopRequested: boolean
   readonly stoppedRequestIds: Set<string>
+  visualTerminalReceived: boolean
+}
+
+interface ManagedSpeechPlayback {
+  readonly operationId: string
+  readonly requestId: string
+  readonly chatId: string
+  readonly sequence: number
 }
 
 /**
@@ -857,6 +869,8 @@ function App() {
   const [streaming, setStreaming] = useState(false)
   const [generationReconcilePending, setGenerationReconcilePending] = useState(false)
   const [inFlightTurn, setInFlightTurn] = useState<InFlightTurn | null>(null)
+  const [managedSpeechPlayback, setManagedSpeechPlayback]
+    = useState<ManagedSpeechPlayback | null>(null)
   const [modelSelectionPending, setModelSelectionPending] = useState(false)
   const [retryPending, setRetryPending] = useState(false)
   const [attachmentStates, setAttachmentStates] = useState<
@@ -1083,6 +1097,9 @@ function App() {
     && inFlightTurn?.chatId === activeChatId
   const activeChatGenerationFailed = inFlightTurn?.chatId === activeChatId
     && inFlightTurn?.phase === 'error'
+  const characterEmotion = resolveCharacterEmotion(
+    settingsState?.activeSettings.voiceEmotion,
+  )
   const characterState = deriveApplicationCharacterState({
     backendStatus: snapshot.status,
     chatActivity: activeChatGenerationFailed
@@ -1093,6 +1110,7 @@ function App() {
     chatMode: chatState?.activeChat.mode ?? 'chat',
     knowledgeActive: activeChatKnowledgeBusy,
     knowledgeError: activeChatKnowledgeActivity.error !== null,
+    speechPlaying: managedSpeechPlayback?.chatId === activeChatId,
     // Stage 13 has no approval producer yet. Keeping the input explicit makes
     // the future workflow opt in instead of inferring approval from UI text.
     waitingApproval: false,
@@ -1207,16 +1225,65 @@ function App() {
     projectId: string | null,
     enabled: boolean,
   ): void => {
+    setManagedSpeechPlayback(null)
     managedSpeechTurnRef.current = enabled
       ? {
           operationId,
           chatId,
           projectId,
           requestId: null,
+          pendingVisualEvents: [],
+          highestSettledVisualSequence: -1,
           stopRequested: false,
           stoppedRequestIds: new Set<string>(),
+          visualTerminalReceived: false,
         }
       : null
+  }, [])
+
+  const applyManagedSpeechVisualStatus = useCallback((
+    turn: ManagedSpeechTurn,
+    event: VoiceSpeechStatusEvent,
+  ): void => {
+    if (turn.requestId === null || turn.requestId !== event.requestId) {
+      return
+    }
+    if (event.kind === 'terminal') {
+      turn.visualTerminalReceived = true
+    } else if (event.kind === 'played' || event.kind === 'skipped') {
+      turn.highestSettledVisualSequence = Math.max(
+        turn.highestSettledVisualSequence,
+        event.sequence,
+      )
+    }
+    setManagedSpeechPlayback((current) => {
+      if (event.kind === 'playing') {
+        if (
+          turn.visualTerminalReceived
+          || event.sequence <= turn.highestSettledVisualSequence
+        ) {
+          // Duplicate or reordered status events cannot reopen a mouth frame
+          // whose exact clip or whole turn has already settled.
+          return current
+        }
+        return {
+          operationId: turn.operationId,
+          requestId: event.requestId,
+          chatId: event.chatId,
+          sequence: event.sequence,
+        }
+      }
+      if (current === null || current.operationId !== turn.operationId) {
+        return current
+      }
+      if (event.kind === 'terminal') {
+        return null
+      }
+      return current.requestId === event.requestId
+        && current.sequence === event.sequence
+        ? null
+        : current
+    })
   }, [])
 
   const stopManagedSpeechRequest = useCallback(async (
@@ -1254,11 +1321,25 @@ function App() {
       return false
     }
     turn.requestId = requestId
-    if (turn.stopRequested) {
+    let terminalReceived = false
+    for (const event of turn.pendingVisualEvents) {
+      if (event.requestId === requestId) {
+        applyManagedSpeechVisualStatus(turn, event)
+        terminalReceived ||= event.kind === 'terminal'
+      }
+    }
+    turn.pendingVisualEvents.length = 0
+    if (turn.stopRequested && !terminalReceived) {
       void stopManagedSpeechRequest(turn, requestId)
     }
+    if (terminalReceived && managedSpeechTurnRef.current === turn) {
+      // A complete playback can race the Chat acknowledgement. Retire the
+      // controller only after the exact request ID proves those buffered
+      // visual events belonged to this turn.
+      managedSpeechTurnRef.current = null
+    }
     return true
-  }, [stopManagedSpeechRequest])
+  }, [applyManagedSpeechVisualStatus, stopManagedSpeechRequest])
 
   const requestManagedSpeechStop = useCallback((
     operationId: string,
@@ -1272,6 +1353,9 @@ function App() {
       && turn.chatId === chatId
     ) {
       turn.stopRequested = true
+      setManagedSpeechPlayback((current) => (
+        current?.operationId === operationId ? null : current
+      ))
       const knownRequestId = requestId ?? turn.requestId
       if (knownRequestId !== null) {
         void stopManagedSpeechRequest(turn, knownRequestId)
@@ -1453,6 +1537,9 @@ function App() {
       return true
     }
     turn.stopRequested = true
+    setManagedSpeechPlayback((current) => (
+      current?.operationId === turn.operationId ? null : current
+    ))
     if (turn.requestId === null) {
       return false
     }
@@ -1465,6 +1552,18 @@ function App() {
     const turn = managedSpeechTurnRef.current
     if (turn === null || turn.chatId !== event.chatId) {
       return
+    }
+    if (turn.requestId === null) {
+      if (turn.pendingVisualEvents.length < MAX_PENDING_VOICE_SPEECH_EVENTS) {
+        turn.pendingVisualEvents.push(event)
+      } else {
+        // An acknowledgement races only a small status burst. Overflow cannot
+        // establish visual ownership, so fail the optional visual state closed.
+        turn.pendingVisualEvents.length = 0
+        setManagedSpeechPlayback(null)
+      }
+    } else if (turn.requestId === event.requestId) {
+      applyManagedSpeechVisualStatus(turn, event)
     }
     if (
       event.kind === 'terminal'
@@ -1482,13 +1581,16 @@ function App() {
       // controller ownership; the later Chat acknowledgement must still match.
       void stopManagedSpeechRequest(turn, event.requestId)
     }
-  }, [stopManagedSpeechRequest])
+  }, [applyManagedSpeechVisualStatus, stopManagedSpeechRequest])
 
   const clearManagedSpeechTurn = useCallback((
     operationId: string,
   ): void => {
     if (managedSpeechTurnRef.current?.operationId === operationId) {
       managedSpeechTurnRef.current = null
+      setManagedSpeechPlayback((current) => (
+        current?.operationId === operationId ? null : current
+      ))
     }
   }, [])
 
@@ -1680,6 +1782,7 @@ function App() {
       return
     }
     managedSpeechTurnRef.current = null
+    setManagedSpeechPlayback(null)
     const session = voiceSessionController.getSnapshot()
     const owner = ownerFromVoiceSession(session)
     if (
@@ -6296,6 +6399,7 @@ function App() {
         autoContinueEnabled={automaticRelistenEnabled}
         backendStatus={snapshot.status}
         captionsEnabled={captionsEnabled}
+        characterEmotion={characterEmotion}
         capture={voiceCapture}
         captureDisabledReason={voiceCaptureDisabledReason}
         composerHasDraft={hasNonBlankCodePoint(draft)}
@@ -6640,6 +6744,7 @@ function App() {
               <CharacterPanel
                 chatTitle={displayedChat}
                 characterState={characterState}
+                emotion={characterEmotion}
                 modal={compactShell}
                 pending={panelTransitionPending}
                 snapshot={snapshot}

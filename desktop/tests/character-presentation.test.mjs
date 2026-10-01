@@ -4,8 +4,13 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+  getCharacterEmotionPresentation,
   getCharacterPresentation,
 } from '../src/character/character-presentation.ts'
+import {
+  isCharacterEmotion,
+  resolveCharacterEmotion,
+} from '../src/character/character-emotion.ts'
 import {
   isCharacterPerformancePreference,
   resolveCharacterPerformance,
@@ -69,6 +74,21 @@ test('exposes only closed semantic presentation tokens', () => {
       'atlasRow',
       'expression',
     ])
+  }
+})
+
+test('maps three strict emotions to distinct reviewed expression cells', () => {
+  const emotions = ['neutral', 'happy', 'sad']
+  const cells = emotions.map((emotion) => {
+    const presentation = getCharacterEmotionPresentation(emotion)
+    return `${presentation.atlasColumn}:${presentation.atlasRow}`
+  })
+
+  assert.deepEqual(cells, ['0:0', '1:1', '2:1'])
+  assert.equal(new Set(cells).size, emotions.length)
+  for (const invalid of [null, '', 'Happy', '../happy', 'playful', {}, 1]) {
+    assert.equal(isCharacterEmotion(invalid), false)
+    assert.equal(resolveCharacterEmotion(invalid), 'neutral')
   }
 })
 
