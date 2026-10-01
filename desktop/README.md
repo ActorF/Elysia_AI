@@ -72,6 +72,16 @@ fall back in the order speech → expression → state → portrait → accessib
 text. This amplitude visualization is neither phoneme-level lip sync nor
 Live2D. `waiting_approval` still has no producer until a real Work/Approval
 workflow exists.
+Stage 13 also provides an optional static Desktop Pet that is disabled by
+default. Electron Main owns its strict `disabled / hidden / visible`
+preference, private display placement, and at most one transparent,
+always-on-top native window. `hidden` destroys the dedicated Renderer instead
+of merely making it invisible. The pet reuses the reviewed
+`elysia-portrait.png`, can be dragged or temporarily made click-through from
+the tray, and opens the ordinary main Chat when clicked. Its separate
+sandboxed entry receives only `ready`, `hide`, and `openMainChat` through a
+minimal Preload; it has no Backend, network, filesystem, Node, audio, or main
+Renderer capability. This is a bounded static 2D surface, not Live2D.
 Electron is frozen as the production
 shell. The Tauri source and toolchain were removed after the comparison; the
 rationale, recorded measurements, and revisit gates are in
@@ -130,7 +140,7 @@ Git-ignored and must not be committed or packaged with the application.
 
 - Open **Settings** or press `Ctrl+,` to manage the default Ollama model and
   origin, Memory limits, file import size, local STT model/device/language, and
-  appearance. Backend values are atomically stored in
+  appearance, including the optional Desktop Pet. Backend values are atomically stored in
   `workspace/settings/global.json`; each control identifies whether a saved
   value is live or waits for a Backend restart. Appearance remains in this
   device's renderer storage and applies immediately. If Voice contains a
@@ -169,6 +179,29 @@ Git-ignored and must not be committed or packaged with the application.
   portrait → accessible text without affecting Chat or Voice. The surface
   does not load Live2D, claim phoneme-level lip sync, write Chat state, or
   create a new Backend capability.
+- Desktop Pet settings are separate from Backend settings and default to
+  **Off** (`disabled`). **Hidden** keeps the opt-in while destroying the pet
+  Renderer and native window; **Visible** creates one transparent, frameless,
+  always-on-top 320×480 DIP nominal window. Its drag handle moves the window,
+  its close control selects Hidden, and clicking the portrait reveals and
+  focuses the main Chat. The tray can show or hide it, temporarily enable
+  mouse click-through, reset its position, disable it, or retry a failed
+  renderer; Settings also exposes an explicit retry for the failed state.
+  Click-through is not persisted. Hidden keeps the process and tray resident
+  after the main window closes, while Off restores the normal Windows/Linux
+  last-window exit behavior.
+- Main stores Desktop Pet intent in a strict revisioned JSON document under
+  Electron `userData`; Settings, tray, pet controls, reset, and drag saves use
+  one mutation queue, while native display ID and DIP coordinates never enter
+  either Renderer. Position restoration clamps the window to current work
+  areas across negative-coordinate and mixed-scale displays without applying
+  Electron's `scaleFactor` twice. Display topology/metric changes reclamp the
+  window. A missing or invalid preference fails closed to `disabled`, while a
+  load/crash failure becomes a sanitized recoverable `failed` runtime state
+  without affecting Chat, Voice, or the Python Backend. A missing Preload or
+  Renderer that never reports ready is destroyed after a 10-second deadline;
+  shutdown drains admitted writes before its final position snapshot, with the
+  complete optional persistence sequence bounded to two seconds.
 - **Mute** immediately ends and discards a live capture or held interruption
   PCM and disarms reply monitoring; it does not cancel an already-running text
   reply, and unmuting never opens the microphone by itself. **Hang up** or
@@ -486,6 +519,10 @@ admits only the user-controlled `neutral / happy / sad` mapping. Runtime speech
 uses only the first four cells of the facial atlas's first band as
 `closed / small / medium / wide` amplitude cues; it does not interpret the
 remaining review cells as detected phonemes.
+The Desktop Pet reuses the already reviewed and pinned portrait; it introduces
+no additional character image or implied license. The larger Desktop Pet pose
+review sheet remains repository review material and is not loaded by this
+static window.
 
 `npm run docs:check` enforces file-purpose comments plus public class,
 function, class-method, and exported interface-method documentation. The
@@ -497,8 +534,21 @@ UI tests, including Knowledge method/event races, export ownership across
 Renderer reload and Project switches, trusted receipt settlement, Project
 isolation, archived read-only behavior, explicit grounded intent, and citation
 accessibility. The contract suite also runs `character-state.test.mjs`,
-`character-presentation.test.mjs`, and `speech-mouth.test.mjs`, while the UI
-suite verifies current-Chat/Project scoping, Voice projection, Backend failure,
+`character-presentation.test.mjs`, `speech-mouth.test.mjs`, and
+`desktop-pet-lifecycle.test.mjs` and `desktop-pet-preferences.test.mjs`.
+Desktop Pet coverage verifies ready/shutdown deadlines, the shared cross-entry
+mutation queue, Hidden tray residency and Disabled exit, programmatic-position
+suppression, the strict update schema, default-off and corrupt-file behavior,
+revision CAS, atomic replace failure, Main-private placement, resource bounds,
+and mixed-scale, negative-coordinate, removed-display, and Windows
+unsigned-hash display-ID DIP clamping. Renderer source-policy
+tests prove that the main and pet HTML entries cannot borrow each other's IPC
+authority. `desktop-pet-preload.test.cjs` loads the production dedicated
+Preload in isolation and proves that only its frozen three-method API and fixed
+channels exist. The UI suite verifies revisioned Desktop Pet Settings,
+failure/reload recovery, explicit failed-state retry, the request to return to
+main Chat, current-Chat/Project
+scoping, Voice projection, Backend failure,
 closed state/emotion/speech atlas cues, performance preference/Reduced Motion,
 and the speech → expression → state → portrait → accessible-text fallback
 chain.
@@ -531,6 +581,20 @@ method, results, capability gaps, and limitations.
 
 - React cannot access Node.js, Python, Chat files, or Memory files directly.
 - The sandboxed preload exposes only the methods in `electron/contracts.ts`.
+- The Desktop Pet is a second, exact renderer entry with a separate sandboxed
+  Preload. Its frozen API contains only `ready`, `hide`, and `openMainChat`;
+  Electron validates its exact top frame and window owner for every call. It
+  cannot obtain the main `DesktopApi`, Backend state, raw IPC, network,
+  filesystem, Node, microphone, speaker-selection, or arbitrary navigation
+  capability.
+- Desktop Pet persistence is Main-only: the exact JSON schema is capped at
+  16 KiB, mode changes use optimistic revisions and same-directory atomic
+  replacement, and native placement is excluded from public state. Invalid
+  storage defaults to Off. The nominal 320×480 DIP window is clamped to each
+  current display work area and the general geometry contract caps it at
+  420×560 DIP; Hidden and Disabled destroy the renderer rather than retaining
+  an invisible page. These are resource bounds, not a promise of a fixed RAM
+  measurement.
 - Electron validates the exact renderer origin and top frame before handling
   any desktop IPC.
 - Electron admits only one application instance, and Python holds an exclusive

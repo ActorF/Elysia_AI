@@ -37,6 +37,10 @@ import type {
   UpdateProjectRequest,
   VoiceSettingsState,
 } from '../electron/contracts.ts'
+import type {
+  DesktopPetMode,
+  DesktopPetState,
+} from '../electron/desktop-pet-contracts.ts'
 import {
   hasNonBlankCodePoint,
   trimProtocolBlankCharacters,
@@ -828,6 +832,9 @@ function App() {
   const [settingsMutationPending, setSettingsMutationPending] = useState(false)
   const [settingsError, setSettingsError] = useState<string | null>(null)
   const [settingsRestartError, setSettingsRestartError] = useState<string | null>(null)
+  const [desktopPetState, setDesktopPetState] = useState<DesktopPetState | null>(null)
+  const [desktopPetPending, setDesktopPetPending] = useState(false)
+  const [desktopPetError, setDesktopPetError] = useState<string | null>(null)
   const [voiceSettingsState, setVoiceSettingsState] = useState<VoiceSettingsState | null>(null)
   const [voiceSettingsLoading, setVoiceSettingsLoading] = useState(false)
   const [voiceSettingsPending, setVoiceSettingsPending] = useState(false)
@@ -923,6 +930,7 @@ function App() {
   const projectMutationPendingRef = useRef(false)
   const settingsDirtyRef = useRef(false)
   const settingsLoadOperationRef = useRef(0)
+  const desktopPetOperationRef = useRef(0)
   const voiceSettingsLoadOperationRef = useRef(0)
   const voiceSettingsPendingRef = useRef(false)
   const audioDeviceControllerRef = useRef<AudioDeviceController | null>(null)
@@ -2154,6 +2162,35 @@ function App() {
     acceptChatState(nextState.chatState)
   }, [acceptChatState])
 
+  const loadDesktopPetState = useCallback(async (): Promise<void> => {
+    if (desktopApi === undefined) {
+      setDesktopPetError('Desktop Pet controls are unavailable.')
+      return
+    }
+    const operationId = desktopPetOperationRef.current + 1
+    desktopPetOperationRef.current = operationId
+    setDesktopPetPending(true)
+    setDesktopPetError(null)
+    try {
+      const nextState = await desktopApi.getDesktopPetState()
+      if (operationId === desktopPetOperationRef.current) {
+        setDesktopPetState(nextState)
+      }
+    } catch (error) {
+      if (operationId === desktopPetOperationRef.current) {
+        setDesktopPetError(
+          error instanceof Error
+            ? error.message
+            : 'Could not load Desktop Pet settings.',
+        )
+      }
+    } finally {
+      if (operationId === desktopPetOperationRef.current) {
+        setDesktopPetPending(false)
+      }
+    }
+  }, [desktopApi])
+
   const loadSettings = useCallback(async (): Promise<void> => {
     if (desktopApi === undefined) {
       setSettingsError('Desktop Settings API is unavailable.')
@@ -2211,6 +2248,95 @@ function App() {
       }
     }
   }, [desktopApi])
+
+  useEffect(() => {
+    if (desktopApi === undefined) {
+      return
+    }
+    const unsubscribe = desktopApi.onDesktopPetStateChanged((nextState) => {
+      desktopPetOperationRef.current += 1
+      setDesktopPetState(nextState)
+      setDesktopPetPending(false)
+      setDesktopPetError(null)
+    })
+    queueMicrotask(() => {
+      void loadDesktopPetState()
+    })
+    return unsubscribe
+  }, [desktopApi, loadDesktopPetState])
+
+  const changeDesktopPetMode = useCallback(async (
+    mode: DesktopPetMode,
+  ): Promise<void> => {
+    if (
+      desktopApi === undefined
+      || desktopPetState === null
+      || desktopPetPending
+    ) {
+      return
+    }
+    const operationId = desktopPetOperationRef.current + 1
+    desktopPetOperationRef.current = operationId
+    setDesktopPetPending(true)
+    setDesktopPetError(null)
+    try {
+      const nextState = await desktopApi.updateDesktopPet({
+        expectedRevision: desktopPetState.revision,
+        mode,
+      })
+      if (operationId === desktopPetOperationRef.current) {
+        setDesktopPetState(nextState)
+      }
+    } catch (error) {
+      if (operationId === desktopPetOperationRef.current) {
+        setDesktopPetError(
+          error instanceof Error
+            ? error.message
+            : 'Could not update Desktop Pet settings.',
+        )
+        try {
+          const recoveredState = await desktopApi.getDesktopPetState()
+          if (operationId === desktopPetOperationRef.current) {
+            setDesktopPetState(recoveredState)
+          }
+        } catch {
+          // Preserve the last canonical snapshot when a recovery read fails.
+        }
+      }
+    } finally {
+      if (operationId === desktopPetOperationRef.current) {
+        setDesktopPetPending(false)
+      }
+    }
+  }, [desktopApi, desktopPetPending, desktopPetState])
+
+  const resetDesktopPetPosition = useCallback(async (): Promise<void> => {
+    if (desktopApi === undefined || desktopPetPending) {
+      return
+    }
+    const operationId = desktopPetOperationRef.current + 1
+    desktopPetOperationRef.current = operationId
+    setDesktopPetPending(true)
+    setDesktopPetError(null)
+    try {
+      const nextState = await desktopApi.resetDesktopPetPosition()
+      if (operationId === desktopPetOperationRef.current) {
+        setDesktopPetState(nextState)
+      }
+    } catch (error) {
+      if (operationId === desktopPetOperationRef.current) {
+        setDesktopPetError(
+          error instanceof Error
+            ? error.message
+            : 'Could not reset the Desktop Pet position.',
+        )
+      }
+    } finally {
+      if (operationId === desktopPetOperationRef.current) {
+        setDesktopPetPending(false)
+      }
+    }
+  }, [desktopApi, desktopPetPending])
 
   const refreshAudioDevices = useCallback(async (): Promise<void> => {
     await audioDeviceControllerRef.current?.refreshDevices()
@@ -3517,6 +3643,31 @@ function App() {
   const toggleCharacterPanel = useCallback((): Promise<void> => (
     setCharacterPanelVisibility(!panelTargetOpenRef.current)
   ), [setCharacterPanelVisibility])
+
+  useEffect(() => desktopApi?.onDesktopPetOpenChatRequested(() => {
+    if (callPreviewOpenRef.current && !closeCallPreview()) {
+      return
+    }
+    if (!mayLeaveSettings('chat', settingsDirtyRef.current)) {
+      return
+    }
+    activeViewRef.current = 'chat'
+    setActiveView('chat')
+    setSearchOpen(false)
+    setSearchQuery('')
+    if (panelTargetOpenRef.current) {
+      void setCharacterPanelVisibility(false)
+    }
+    if (compactShell) {
+      setSidebarOpen(false)
+    }
+    focusChatComposer()
+  }), [
+    closeCallPreview,
+    compactShell,
+    desktopApi,
+    setCharacterPanelVisibility,
+  ])
 
   useEffect(() => {
     if (desktopApi === undefined || snapshot.status !== 'ready') {
@@ -6434,6 +6585,9 @@ function App() {
         resolvedTheme={resolvedTheme}
         characterPerformancePreference={characterPerformancePreference}
         resolvedCharacterPerformance={resolvedCharacterPerformance}
+        desktopPetState={desktopPetState}
+        desktopPetPending={desktopPetPending}
+        desktopPetError={desktopPetError}
         settingsState={settingsState}
         models={modelOptions}
         loading={settingsLoading}
@@ -6449,6 +6603,8 @@ function App() {
         voiceError={voiceSettingsError}
         onThemeChange={setTheme}
         onCharacterPerformanceChange={setCharacterPerformancePreference}
+        onDesktopPetModeChange={changeDesktopPetMode}
+        onResetDesktopPetPosition={resetDesktopPetPosition}
         onSave={saveSettings}
         onReload={() => {
           setSettingsRestartError(null)

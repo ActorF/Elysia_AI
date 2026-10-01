@@ -1,0 +1,64 @@
+<!doctype html>
+<!-- Hosts the isolated, low-privilege renderer for the optional Elysia desktop pet. -->
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'none'; font-src 'none'; object-src 'none'; frame-src 'none'; child-src 'none'; worker-src 'none'; media-src 'none'; manifest-src 'none'; base-uri 'none'; form-action 'none'"
+    />
+    <link rel="stylesheet" href="/src/desktop-pet.css" />
+    <title>Elysia Desktop Pet</title>
+  </head>
+  <body>
+    <main class="desktop-pet" aria-label="Elysia desktop pet">
+      <header class="desktop-pet-toolbar">
+        <div
+          class="desktop-pet-drag-handle"
+          title="Drag to move Elysia"
+        >
+          <span aria-hidden="true"></span>
+          <span class="sr-only">Drag to move Elysia</span>
+        </div>
+        <button
+          class="desktop-pet-hide"
+          id="desktop-pet-hide"
+          type="button"
+          aria-label="Hide Elysia desktop pet"
+          title="Hide Elysia"
+        >
+          <span aria-hidden="true">&#x2212;</span>
+        </button>
+      </header>
+
+      <button
+        class="desktop-pet-character"
+        id="desktop-pet-open-main"
+        type="button"
+        aria-label="Open Elysia Chat"
+        title="Open Elysia Chat"
+      >
+        <img
+          id="desktop-pet-portrait"
+          src="./character/elysia-portrait.png"
+          alt=""
+          draggable="false"
+        />
+        <span
+          class="desktop-pet-image-fallback"
+          id="desktop-pet-image-fallback"
+          aria-hidden="true"
+          hidden
+        >
+          <span class="desktop-pet-fallback-mark" aria-hidden="true">&#x2661;</span>
+          <span>Elysia</span>
+        </span>
+      </button>
+
+      <p class="sr-only" id="desktop-pet-status" role="status"></p>
+    </main>
+    <script type="module" src="/src/desktop-pet-main.ts"></script>
+  </body>
+</html>

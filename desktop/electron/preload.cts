@@ -36,6 +36,10 @@ import type {
   VoiceSettingsState,
   VoiceTranscriptionRequest,
 } from './contracts.js'
+import type {
+  DesktopPetState,
+  UpdateDesktopPetRequest,
+} from './desktop-pet-contracts.js'
 import {
   advanceSpeechMouthEnvelope,
   CLOSED_SPEECH_MOUTH_ENVELOPE,
@@ -591,6 +595,22 @@ const desktopApi: DesktopApi = {
       theme,
     ) as Promise<void>,
 
+  getDesktopPetState: () =>
+    ipcRenderer.invoke(
+      'desktop-pet:get-state',
+    ) as Promise<DesktopPetState>,
+
+  updateDesktopPet: (request: UpdateDesktopPetRequest) =>
+    ipcRenderer.invoke(
+      'desktop-pet:update',
+      request,
+    ) as Promise<DesktopPetState>,
+
+  resetDesktopPetPosition: () =>
+    ipcRenderer.invoke(
+      'desktop-pet:reset-position',
+    ) as Promise<DesktopPetState>,
+
   getSnapshot: () =>
     ipcRenderer.invoke(
       'backend:get-snapshot',
@@ -909,6 +929,33 @@ const desktopApi: DesktopApi = {
       'window:set-character-panel',
       open,
     ) as Promise<void>,
+
+  onDesktopPetStateChanged: (
+    listener: (state: DesktopPetState) => void,
+  ) => {
+    const handler = (
+      _event: Electron.IpcRendererEvent,
+      state: DesktopPetState,
+    ): void => {
+      listener(state)
+    }
+
+    ipcRenderer.on('desktop-pet:state-changed', handler)
+    return () => {
+      ipcRenderer.removeListener('desktop-pet:state-changed', handler)
+    }
+  },
+
+  onDesktopPetOpenChatRequested: (listener: () => void) => {
+    const handler = (): void => {
+      listener()
+    }
+
+    ipcRenderer.on('desktop-pet:open-chat-requested', handler)
+    return () => {
+      ipcRenderer.removeListener('desktop-pet:open-chat-requested', handler)
+    }
+  },
 
   onBackendEvent: (
     listener: (event: BackendEvent) => void,

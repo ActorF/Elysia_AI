@@ -2125,6 +2125,65 @@ svg {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.appearance-subheading {
+  margin-top: var(--space-6);
+}
+
+.appearance-subheading h3 {
+  margin: 0;
+  color: var(--color-text-primary);
+  font-size: var(--font-size-md);
+}
+
+.appearance-subheading p,
+.desktop-pet-note,
+.desktop-pet-warning,
+.desktop-pet-error {
+  margin: var(--space-1) 0 0;
+  font-size: var(--font-size-xs);
+  line-height: var(--line-height-normal);
+}
+
+.appearance-subheading p,
+.desktop-pet-note {
+  color: var(--color-text-muted);
+}
+
+.desktop-pet-options:disabled .theme-option {
+  cursor: wait;
+  opacity: 0.7;
+}
+
+.desktop-pet-status {
+  display: flex;
+  gap: var(--space-3);
+  align-items: center;
+  justify-content: space-between;
+  margin-top: var(--space-3);
+}
+
+.desktop-pet-status p {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-xs);
+}
+
+.desktop-pet-actions {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  justify-content: flex-end;
+}
+
+.desktop-pet-warning {
+  color: var(--color-warning);
+}
+
+.desktop-pet-error {
+  color: var(--color-danger);
+}
+
 .theme-option {
   position: relative;
   display: grid;
@@ -3572,6 +3631,15 @@ kbd {
 }
 
 @media (max-width: 42rem) {
+  .desktop-pet-status {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .desktop-pet-actions {
+    justify-content: flex-start;
+  }
+
   .topbar {
     min-height: 3.75rem;
     padding-inline: var(--space-4);

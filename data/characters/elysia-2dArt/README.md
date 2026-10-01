@@ -2,7 +2,7 @@
 
 本目录是 2026-10-01 根据项目所有者的十条逐图复审制作并继续逐格修正的最终审阅包。反馈编号严格对应 01 至 10。内容整合完成后，项目所有者要求删除旧的 v1 与 v2 目录；本目录现为唯一保留版本。
 
-这些文件是角色视觉和产品界面的最终审阅母版。Stage 13 运行时明确选择 `02-activity-states.png`、`03-expression-atlas.png` 与 `04-facial-rig-atlas.png` 的逐字节副本；其余文件仍只用于审阅，不会自动替换应用资源。整套素材都不是已经分层绑定或可直接发布的 Live2D/Cubism 工程。
+这些文件是角色视觉和产品界面的最终审阅母版。Stage 13 运行时明确选择 `02-activity-states.png`、`03-expression-atlas.png` 与 `04-facial-rig-atlas.png` 的逐字节副本；可选静态桌宠另行复用既有审核立绘，不加载本目录的 07 姿势总览。其余文件仍只用于审阅，不会自动替换应用资源。整套素材都不是已经分层绑定或可直接发布的 Live2D/Cubism 工程。
 
 ## 十条反馈与 v3 处理结果
 
@@ -220,6 +220,12 @@ Settings 的 Voice Emotion 只接受 `neutral`、`happy` 与 `sad`。Backend 成
 运行时只使用 04 第一带的前四格，依次作为 `closed`、`small`、`medium` 与 `wide`。可信 Preload 从正在输出的真实 Web Audio 时域样本计算 RMS，在当前播放 Gain 生效后进行平滑和迟滞量化，并以 50 ms 计时器调度，因此最多更新 20 次/秒。原始样本与连续包络不会进入 React；DOM 只收到四值提示。音量为 0 时嘴型保持 `closed`，视觉分析失败也只关闭嘴型，不中断声音。
 
 这套实现是**振幅驱动**，不会识别 A/E/I/O/U 音素。04 中其余嘴型、眼型和眉型仍是审阅参考，不应被描述为运行时音素绑定、Live2D 或 Cubism Rig。只有角色处于 `speaking` 且生效性能模式为 Animated 时才采样；Still 与系统 Reduced Motion 一律禁止嘴型动画，并显示用户选择的静态表情。
+
+### 可选静态 Desktop Pet
+
+Stage 13 Module 5 的独立桌宠**没有**把 `07-desktop-pet-key-poses.png` 或其四条 row strip 当作运行时 Sprite Sheet。当前窗口只复用已经审核、固定并随应用分发的 `desktop/public/character/elysia-portrait.png`，因此不会为桌宠新增一份角色图片、重新编码本目录素材，或让未选中的审阅图进入安装包。
+
+该桌宠是透明窗口中的静态 2D 立绘，不是 Live2D/Cubism、分层 Rig、帧动画、嘴型同步或自主角色 Agent。它默认关闭；`hidden` 会销毁独立 Renderer 释放其资源，`visible` 才加载立绘。桌宠专用 Preload 只有就绪、隐藏和打开主 Chat 三个能力，无法读取本目录、其他本机文件、Backend、网络或主 Renderer 数据。若以后要把 07 的关键姿势变成真正运行时资源，仍须先完成逐格透明切片/锚点、独立来源与权利复核、摘要固定、分发门禁和新的有界动画设计，不能把当前审阅总览直接当成已发布资产。
 
 ### 回退与功能隔离
 

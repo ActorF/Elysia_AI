@@ -1,0 +1,171 @@
+/** Style the isolated desktop-pet renderer as a transparent, static surface. */
+
+:root {
+  color: #fff7fc;
+  background: transparent;
+  font-family: "Segoe UI", sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: transparent;
+}
+
+body,
+button {
+  font: inherit;
+}
+
+button {
+  color: inherit;
+}
+
+button:focus-visible {
+  outline: 3px solid #ffffff;
+  outline-offset: 3px;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+.desktop-pet {
+  position: relative;
+  display: grid;
+  grid-template-rows: 2.25rem minmax(0, 1fr);
+  width: 100%;
+  height: 100%;
+  padding: 0.35rem;
+  overflow: hidden;
+  user-select: none;
+}
+
+.desktop-pet-toolbar {
+  position: relative;
+  z-index: 2;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 2rem;
+  align-items: center;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.desktop-pet-drag-handle {
+  display: grid;
+  width: min(5.25rem, 55%);
+  height: 1.45rem;
+  place-items: center;
+  justify-self: center;
+  cursor: grab;
+  background: rgb(38 22 39 / 78%);
+  border: 1px solid rgb(255 199 229 / 58%);
+  border-radius: 999px;
+  box-shadow: 0 0.2rem 0.65rem rgb(22 8 24 / 28%);
+  -webkit-app-region: drag;
+}
+
+.desktop-pet-drag-handle > span[aria-hidden="true"] {
+  width: 2rem;
+  height: 0.2rem;
+  background: rgb(255 225 241 / 82%);
+  border-radius: 999px;
+}
+
+.desktop-pet-hide,
+.desktop-pet-character {
+  border: 0;
+  -webkit-app-region: no-drag;
+}
+
+.desktop-pet-hide {
+  display: grid;
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  place-items: center;
+  cursor: pointer;
+  background: rgb(38 22 39 / 78%);
+  border: 1px solid rgb(255 199 229 / 58%);
+  border-radius: 999px;
+  box-shadow: 0 0.2rem 0.65rem rgb(22 8 24 / 28%);
+}
+
+.desktop-pet-hide:hover {
+  background: rgb(93 48 74 / 90%);
+}
+
+.desktop-pet-hide:disabled,
+.desktop-pet-character:disabled {
+  cursor: wait;
+}
+
+.desktop-pet-character {
+  position: relative;
+  display: block;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  cursor: pointer;
+  background: transparent;
+  filter: drop-shadow(0 0.55rem 0.75rem rgb(22 8 24 / 42%));
+}
+
+.desktop-pet-character > img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  object-position: 50% 100%;
+  pointer-events: none;
+}
+
+.desktop-pet-image-fallback {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  place-content: center;
+  gap: 0.4rem;
+  color: #fff7fc;
+  background: rgb(53 30 50 / 92%);
+  border: 1px solid rgb(255 199 229 / 58%);
+}
+
+.desktop-pet-fallback-mark {
+  font-size: 3rem;
+  line-height: 1;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+  clip-path: inset(50%);
+}
+
+@media (forced-colors: active) {
+  .desktop-pet-drag-handle,
+  .desktop-pet-hide,
+  .desktop-pet-image-fallback {
+    color: ButtonText;
+    background: ButtonFace;
+    border-color: ButtonText;
+    forced-color-adjust: none;
+  }
+}

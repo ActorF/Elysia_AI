@@ -213,6 +213,16 @@ interface DesktopSettingsState {
   warning: string | null
 }
 
+type DesktopPetMode = 'disabled' | 'hidden' | 'visible'
+
+interface DesktopPetState {
+  revision: number
+  updatedAt: string | null
+  mode: DesktopPetMode
+  runtime: 'absent' | 'loading' | 'visible' | 'failed'
+  warning: string | null
+}
+
 interface VoiceSettingsState {
   kind: 'voice.settings'
   revision: number
@@ -260,6 +270,8 @@ interface CallRecord {
 interface RendererTestControl {
   clearCalls(): void
   emitBackendEvent(event: unknown): void
+  emitDesktopPetOpenChatRequested(): void
+  emitDesktopPetState(state: DesktopPetState): void
   getPendingChatActionCount(): number
   getPendingChatListCount(): number
   getPendingCharacterPanelChangeCount(): number
@@ -287,10 +299,12 @@ interface RendererTestControl {
   setNextVoiceTranscriptionTerminalBeforeAcknowledgement(): void
   setChatState(state: ChatSessionState): void
   setProjectState(state: ProjectState): void
+  setDesktopPetState(state: DesktopPetState): void
   setSettingsState(state: DesktopSettingsState): void
   setVoiceSettingsState(state: VoiceSettingsState): void
   setMicrophonePermissionStatus(status: MicrophonePermissionStatus): void
   failNextRestart(message: string): void
+  failNextDesktopPetUpdate(message: string): void
   failNextSettingsUpdate(message: string): void
   failNextVoiceSettingsUpdate(message: string): void
   failNextVoiceCapture(message: string): void
@@ -426,6 +440,25 @@ async function setSettingsState(
   await page.evaluate((nextState) => {
     ;(window as TestWindow).elysiaDesktopTest.setSettingsState(nextState)
   }, state)
+}
+
+async function setDesktopPetState(state: DesktopPetState): Promise<void> {
+  await page.evaluate((nextState) => {
+    ;(window as TestWindow).elysiaDesktopTest.setDesktopPetState(nextState)
+  }, state)
+}
+
+async function emitDesktopPetState(state: DesktopPetState): Promise<void> {
+  await page.evaluate((nextState) => {
+    ;(window as TestWindow).elysiaDesktopTest.emitDesktopPetState(nextState)
+  }, state)
+}
+
+async function emitDesktopPetOpenChatRequested(): Promise<void> {
+  await page.evaluate(() => {
+    ;(window as TestWindow).elysiaDesktopTest
+      .emitDesktopPetOpenChatRequested()
+  })
 }
 
 async function setVoiceSettingsState(
@@ -974,6 +1007,13 @@ async function failNextSettingsUpdate(message: string): Promise<void> {
   }, message)
 }
 
+async function failNextDesktopPetUpdate(message: string): Promise<void> {
+  await page.evaluate((nextMessage) => {
+    ;(window as TestWindow).elysiaDesktopTest
+      .failNextDesktopPetUpdate(nextMessage)
+  }, message)
+}
+
 async function setVoiceTranscriptionDelay(delayed: boolean): Promise<void> {
   await page.evaluate((nextDelayed) => {
     ;(window as TestWindow).elysiaDesktopTest
@@ -1170,6 +1210,19 @@ function desktopSettingsState(
     ...overrides,
     settings,
     activeSettings: overrides.activeSettings ?? { ...settings },
+  }
+}
+
+function desktopPetState(
+  overrides: Partial<DesktopPetState> = {},
+): DesktopPetState {
+  return {
+    revision: 0,
+    updatedAt: null,
+    mode: 'disabled',
+    runtime: 'absent',
+    warning: null,
+    ...overrides,
   }
 }
 
@@ -2049,6 +2102,144 @@ test('shows all Settings areas, ownership scopes, and no secret controls', async
   )
   await expect(page.locator('.settings-view input[type="password"]'))
     .toHaveCount(0)
+})
+
+test('manages the optional Desktop Pet with revisioned immediate controls', async () => {
+  await openSettings()
+
+  const controls = page.getByRole('group', {
+    name: 'Desktop Pet visibility',
+  })
+  const off = controls.getByRole('radio', { name: /^Off/ })
+  const hidden = controls.getByRole('radio', { name: /^Hidden/ })
+  const visible = controls.getByRole('radio', { name: /^Visible/ })
+  const resetPosition = page.getByRole('button', { name: 'Reset position' })
+
+  await expect(off).toBeChecked()
+  await expect(page.getByText(
+    'Preference: disabled. Native window: absent.',
+  )).toBeVisible()
+  await clearCalls()
+
+  await controls.getByText('Visible', { exact: true }).click()
+  await expect(visible).toBeChecked()
+  await expect(page.getByText(
+    'Preference: visible. Native window: visible.',
+  )).toBeVisible()
+
+  await resetPosition.click()
+  await expect(resetPosition).toBeEnabled()
+
+  await controls.getByText('Hidden', { exact: true }).click()
+  await expect(hidden).toBeChecked()
+  await expect(page.getByText(
+    'Preference: hidden. Native window: absent.',
+  )).toBeVisible()
+
+  await controls.getByText('Off', { exact: true }).click()
+  await expect(off).toBeChecked()
+  await expect(page.getByText(
+    'Preference: disabled. Native window: absent.',
+  )).toBeVisible()
+
+  const calls = await getCalls()
+  expect(calls.filter((call) => call.method === 'updateDesktopPet').map(
+    (call) => call.args,
+  )).toEqual([
+    [{ expectedRevision: 0, mode: 'visible' }],
+    [{ expectedRevision: 1, mode: 'hidden' }],
+    [{ expectedRevision: 2, mode: 'disabled' }],
+  ])
+  expect(calls.filter(
+    (call) => call.method === 'resetDesktopPetPosition',
+  )).toHaveLength(1)
+})
+
+test('recovers canonical Desktop Pet state after an update fails', async () => {
+  await openSettings()
+  const visibleState = desktopPetState({
+    revision: 7,
+    updatedAt: '2026-10-01T12:07:00.000Z',
+    mode: 'visible',
+    runtime: 'visible',
+  })
+  await emitDesktopPetState(visibleState)
+
+  const controls = page.getByRole('group', {
+    name: 'Desktop Pet visibility',
+  })
+  await expect(controls.getByRole('radio', { name: /^Visible/ })).toBeChecked()
+
+  await setDesktopPetState(desktopPetState({
+    revision: 8,
+    updatedAt: '2026-10-01T12:08:00.000Z',
+    mode: 'hidden',
+    runtime: 'absent',
+  }))
+  const failure = 'Desktop Pet storage is temporarily unavailable.'
+  await failNextDesktopPetUpdate(failure)
+  await clearCalls()
+
+  await controls.getByText('Off', { exact: true }).click()
+  await expect(page.getByRole('alert')).toHaveText(failure)
+  await expect(controls.getByRole('radio', { name: /^Hidden/ })).toBeChecked()
+  await expect(page.getByText(
+    'Preference: hidden. Native window: absent.',
+  )).toBeVisible()
+
+  const calls = await getCalls()
+  expect(calls.filter((call) => (
+    call.method === 'updateDesktopPet'
+    || call.method === 'getDesktopPetState'
+  )).map((call) => ({ method: call.method, args: call.args }))).toEqual([
+    {
+      method: 'updateDesktopPet',
+      args: [{ expectedRevision: 7, mode: 'disabled' }],
+    },
+    { method: 'getDesktopPetState', args: [] },
+  ])
+})
+
+test('retries a failed visible Desktop Pet from Settings', async () => {
+  await openSettings()
+  await emitDesktopPetState(desktopPetState({
+    revision: 9,
+    updatedAt: '2026-10-01T12:09:00.000Z',
+    mode: 'visible',
+    runtime: 'failed',
+    warning: 'The Desktop Pet could not be displayed.',
+  }))
+  await clearCalls()
+
+  const retry = page.getByRole('button', { name: 'Retry Desktop Pet' })
+  await expect(retry).toBeVisible()
+  await retry.click()
+
+  await expect(page.getByText(
+    'Preference: visible. Native window: visible.',
+  )).toBeVisible()
+  await expect(retry).toHaveCount(0)
+  const calls = await getCalls()
+  expect(calls.filter((call) => call.method === 'updateDesktopPet').map(
+    (call) => call.args,
+  )).toEqual([[{ expectedRevision: 9, mode: 'visible' }]])
+})
+
+test('returns to Chat when the Desktop Pet requests the main surface', async () => {
+  await openSettings()
+  await expect.poll(async () => (
+    (await getCalls()).some(
+      (call) => call.method === 'onDesktopPetOpenChatRequested.subscribe',
+    )
+  )).toBe(true)
+
+  await emitDesktopPetOpenChatRequested()
+
+  await expect(page.getByRole('heading', { name: 'Talk with Elysia' }))
+    .toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Settings', exact: true }))
+    .toHaveCount(0)
+  await expect(page.getByLabel('Message Elysia')).toBeFocused()
 })
 
 test('saves exact audio devices and restores them in a replacement window', async () => {

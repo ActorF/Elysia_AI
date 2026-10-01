@@ -20,7 +20,7 @@
 
 > [!IMPORTANT]
 >
-> 本项目目前是 **开发预览**，不是下载即用的正式发行版。桌面壳仍依赖源码目录中的 Python 环境、Ollama 和本地模型；Project Sources 管理、本地文件问答与可信引用、有界单句 STT、显式确认的 Voice Session、受管 GPT-SoVITS 分句播放、思考/朗读期间的安全 Barge-in，以及正常回复后的可选自动续听已经接通。文件问答必须由用户在 Project Chat 中明确开启；自动续听默认关闭、在通话页可见且可随时关闭，每轮 Final Transcript 仍需人工检查并明确发送。封闭的 Character State API 已把 Chat、Voice 与 Knowledge 生命周期映射到审核的应用内角色图集；真实 Web Audio 播放振幅以不高于 20 Hz 的 RMS 采样驱动 `closed / small / medium / wide` 四档嘴型，用户限定的 `neutral / happy / sad` 同时选择 TTS 参考与静态表情。模型不能下发任意情绪、路径或动画指令；Still 与 Windows Reduced Motion 始终禁用嘴型动画。可选语音 Runtime、模型和参考音频均不随基础安装提供，实时 Partial Transcript、Work Agent、Live2D 与正式安装体验尚未完成。真实麦克风/扬声器、房间回声和长通话人工矩阵未执行，项目负责人已明确豁免其作为当前交付的关闭门槛，因此本项目不声称这些人工观察已经通过。
+> 本项目目前是 **开发预览**，不是下载即用的正式发行版。桌面壳仍依赖源码目录中的 Python 环境、Ollama 和本地模型；Project Sources 管理、本地文件问答与可信引用、有界单句 STT、显式确认的 Voice Session、受管 GPT-SoVITS 分句播放、思考/朗读期间的安全 Barge-in，以及正常回复后的可选自动续听已经接通。文件问答必须由用户在 Project Chat 中明确开启；自动续听默认关闭、在通话页可见且可随时关闭，每轮 Final Transcript 仍需人工检查并明确发送。封闭的 Character State API 已把 Chat、Voice 与 Knowledge 生命周期映射到审核的应用内角色图集；真实 Web Audio 播放振幅以不高于 20 Hz 的 RMS 采样驱动 `closed / small / medium / wide` 四档嘴型，用户限定的 `neutral / happy / sad` 同时选择 TTS 参考与静态表情。模型不能下发任意情绪、路径或动画指令；Still 与 Windows Reduced Motion 始终禁用嘴型动画。可选静态桌宠也已接入，但默认关闭；它使用独立透明窗口和最小 Preload，不是 Live2D，也不连接 Backend、网络或文件系统。可选语音 Runtime、模型和参考音频均不随基础安装提供，实时 Partial Transcript、Work Agent、Live2D 与正式安装体验尚未完成。真实麦克风/扬声器、房间回声和长通话人工矩阵未执行，项目负责人已明确豁免其作为当前交付的关闭门槛，因此本项目不声称这些人工观察已经通过。
 
 ---
 
@@ -36,6 +36,7 @@
 - 🔊 **本地回复朗读** — Python 按自然断句排队调用受管 GPT-SoVITS，Electron 在可信 Preload 中按序播放经过双重校验的 PCM WAV
 - 🎭 **角色状态 API** — 将 Chat、Voice 与 Knowledge 生命周期归一为封闭语义状态，并为未来 Work/Approval 保留闭集；角色组件不直接操作动画文件
 - 🌸 **应用内角色** — 主界面与 Voice 共用审核图集；七态映射、用户限定情绪、真实播放 RMS 四档嘴型、Still/Reduced Motion 和 `speech → expression → state → portrait → text` 回退均不影响 Chat 或 Voice
+- 🌷 **可选静态桌宠** — 默认关闭；独立透明置顶窗口可拖动、隐藏或从托盘恢复，点击角色会回到主 Chat，且不新增 Backend、网络或文件系统能力
 - 💾 **恢复优先** — 本地 JSON 存储、旧会话迁移、损坏隔离、原子写入以及导入/导出服务
 - ♿ **桌面可用性** — 主题、键盘导航、焦点管理、Windows 缩放、中文 IME 与离线/错误恢复
 
@@ -60,9 +61,10 @@
 | 自动续听 | ✅ 可用 | 可见开关可在正常回复安全结束后再次监听；默认关闭，Final Transcript 不会自动发送 |
 | Character State API | ✅ 可用 | 封闭的 `idle / listening / thinking / speaking / working / waiting_approval / error` 合同；Chat、Voice 与 Knowledge 已接入，审批状态保留给后续真实 Work/Approval 流程 |
 | 应用内角色 | ✅ 可用 | 七种语义状态、三种用户限定静态表情和真实播放 RMS 四档嘴型映射到固定审核图集；Still/Reduced Motion 禁止嘴型动画，可关闭面板与五级回退均已接入 |
+| 可选静态桌宠 | ✅ 可用 | 默认 `disabled`；`hidden` 保留选择但销毁独立 Renderer，`visible` 创建透明置顶可拖动窗口；托盘提供显示/隐藏、临时鼠标穿透、位置重置和禁用 |
 | 文件解析与本地 RAG | ✅ 基础可用 | 版本化 Chunk Lineage、固定本地 Embedding 空间、Scope-safe SQLite 索引、有界 Retriever/Reranker、loopback-only Grounded Generator、同 Project 多 Chat 共享且跨 Project fail-closed；Chat 需显式开启 **Use Project Sources**，证据不足不会生成无引用回答 |
 | Work Agent 与工具权限 | ⏳ 计划中 | 尚无工具执行、桌面控制、Internet 或 Vision 工作流 |
-| Live2D / 桌宠 | ⏳ 计划中 | 已有状态、静态表情和振幅驱动嘴型的应用内 2D 图集；尚未接入 Live2D 模型、音素级口型或独立桌宠窗口 |
+| Live2D | ⏳ 计划中 | 当前应用内角色与独立桌宠都是静态 2D 表面；尚未接入分层 Live2D/Cubism 模型或音素级口型 |
 | 独立安装与更新 | ⏳ 计划中 | 当前打包结果不内置 Python、Ollama 或模型，也未签名 |
 
 `✅ 可用` 表示核心流程已经实现；`🚧 开发中` 表示代码已进入集成或验收，但不应视为稳定能力；`⏳ 计划中` 表示当前界面或路线中可能已有入口，底层服务仍未完成。
@@ -82,6 +84,7 @@ flowchart LR
     Q --> M[受管 GPT-SoVITS Worker]
     M -->|私有 fd3 PCM WAV| E
     E -->|私有 IPC| W[Preload Web Audio]
+    E -->|独立最小 IPC| DP[静态桌宠 Renderer]
     C[Python CLI / Library] -. 显式单次合成 .-> T[Python TTS Service]
     T -->|Loopback IP /tts| G[外部 GPT-SoVITS Runtime]
     E --> H[原生文件与音频边界]
@@ -106,6 +109,7 @@ flowchart LR
 - **Python 是业务事实来源**：Chat、Project、Memory、附件状态和持久化由 Python Domain/Service/Repository 管理。
 - **Electron 是可信桌面边界**：它拥有 Python 子进程、原生文件选择、硬件权限与窗口生命周期。
 - **React 保持沙箱化**：`contextIsolation: true`、`nodeIntegration: false`、`sandbox: true`；Renderer 不能直接读取 Node、Python、Chat、Memory 或本地源路径。
+- **桌宠能力独立且默认关闭**：Main 独占偏好、窗口和显示器坐标；桌宠 Renderer 使用单独入口和最小 Preload，只能报告就绪、隐藏自己或打开主 Chat，不能访问 Backend、网络、文件系统、任意 IPC 或主 Renderer API。
 - **协议双端校验**：TypeScript 与 Python 使用同一组 JSON Schema/fixture 约束，连接前完成版本、能力与随机会话令牌握手。
 - **本地数据可恢复**：关键 JSON 使用严格 Schema、revision、原子替换和损坏隔离；生成取消不会保存残缺的正式回复。
 - **文档派生、授权、检索与回答保持可验证**：生产 Python Pipeline 从无路径 `LoadedDocument` 生成版本化 Chunk，复核 Piece-table、Fingerprint/Lineage 与 Source Mapping，再把精确 Chunk Lineage 绑定到固定本地 Embedding 空间和 Scope-safe SQLite 索引。Project-only Knowledge Lifecycle 用路径私有 journal 协调 add/replace/reindex/rebuild/revoke/delete：新 Generation 最后发布 catalog，破坏性操作先 tombstone 再清理。`ProjectSourceAnswerService` 只从 canonical Chat→Project 关系、原子 ownership snapshot 与显式 catalog 派生准确 Generation；Retriever 只搜索该闭集。`GroundedAnswerService` 再选择完整命中的有界前缀，把问题、片段与 style guidance 作为不可信 JSON Data 交给固定 digest、loopback-only 的同步结构化 Generator，并只发布能解析到可信 Evidence 的陈述与 Citation。Assistant 文本和 proof 原子保存，桌面可展开安全来源与页/块/单元格定位；结构闭包仍不能证明模型概括或推断在语义上必然正确。
@@ -291,6 +295,15 @@ DEBUG=False
 - Python 已提供引擎无关的合成 Contract、本地 Voice Profile Catalog、惰性 Composition Root 和只接受 Loopback IP Origin 的 GPT-SoVITS `/tts` Adapter；`localhost` 会先规范化为 `127.0.0.1`。通用 Contract 对最大 32 MiB 的 PCM WAV、Ogg Opus 与受支持 ADTS AAC 子集执行完整 Container/Transport Framing 检查，不冒充 Codec 解码；当前非流式 GPT-SoVITS Adapter 只配置 WAV/AAC，并要求有界、声明 `Content-Length`、非压缩且非 `Transfer-Encoding` 的响应。
 - 本机真实验收使用同一固定中文测试句，对 `neutral`、`happy`、`sad` 各连续合成两次，六次均得到有效 WAV；停掉服务后 Smoke 返回稳定的 `service_unreachable`，完整文字 Chat 回归仍通过。`service_binding_unverified` 表示服务在线但上游 API 不能证明当前加载的是 Catalog 所声明的权重，不是对权重身份的背书。
 - 桌面路径从 `Brain.stream_chat()` 复制准确文本块，在自然标点或长度上限处分句；有界 FIFO 只允许一个受管 Worker 合成。NDJSON 只承载关联 Metadata，PCM WAV 通过独立 fd3 进入 Electron Main，再由不属于公开 `DesktopApi` 的私有 IPC 送到 Preload Web Audio；每个片段会应用已保存的扬声器选择和当前音量，通过 GainNode 控制增益。指定设备不可用时跳过该片段，不会悄悄回退到其他扬声器；音量为 0 时只静音该片段，不会关闭合成。可信 Preload 对实际播放波形做不高于 20 Hz 的 RMS 采样、平滑与迟滞量化，只向 DOM 发布 `closed / small / medium / wide` 四档视觉提示；原始样本和连续包络不会进入 React。这是振幅驱动嘴型，不是音素识别或 Live2D。用户在 Settings 选择的 `neutral / happy / sad` 是唯一允许的 Voice Emotion；成功重启后，同一 Active 值同时选择 GPT-SoVITS 参考与审核静态表情，模型不能提交任意情绪、路径、图集格或动画命令。Still 与系统 Reduced Motion 不启动嘴型采样。React 只收到 Request/Chat、`playing|played|skipped` 加 Sequence 或 `completed|cancelled` 终态，不接触 WAV、Token、Hash、文本、准确 Prompt、诊断或本机资产路径；以准确 Request ID 与 Chat ID 停止播放也必须经过可信 Main 校验。Profile 配置、Runtime、权重和参考音频均留在被 Git 忽略的本机目录；来源和使用限制见 [MODEL_LICENSE.md](./MODEL_LICENSE.md)。
+
+### 🌷 可选桌宠
+
+- 桌宠默认是 `disabled`，不会在首次启动时创建额外窗口。Settings 的 `disabled / hidden / visible` 是完整闭集：`hidden` 保留用户选择但立即销毁桌宠 Renderer 释放其资源，`visible` 才创建窗口。
+- 当前实现是复用审核 `elysia-portrait.png` 的**静态 2D** 表面，不使用 `07-desktop-pet-key-poses.png`，也不是 Live2D/Cubism、分层 Rig、嘴型同步或自主 Agent。
+- Electron Main 只允许一个透明、无边框、置顶、可拖动的桌宠窗口。名义尺寸为 320×480 DIP，并在显示器工作区较小时缩小；纯几何函数按当前多显示器 DIP 工作区恢复和钳制位置，不把 `scaleFactor` 重复乘入坐标。显示器移除、分辨率或缩放变化后会重新钳制，Settings 和托盘均可重置位置。
+- 点击角色只会显示并聚焦主窗口、进入主 Chat；关闭按钮会切换到 `hidden`。托盘可显示/隐藏、禁用、重试失败窗口，以及临时开启鼠标穿透；Settings 在失败状态也提供显式重试。鼠标穿透不会持久化；选择 Hidden 后即使主窗口已关闭，进程和托盘仍会保留为恢复入口，只有 Off 才恢复“最后窗口关闭即退出”的行为。
+- 桌宠使用自己的 HTML 入口、Sandbox 和最小 Preload。其公开 API 只有 `ready / hide / openMainChat`，没有 Backend、Chat 数据、网络、文件系统、Node、原始 IPC、语音或主 Renderer 能力；导航、新窗口和权限请求也会被拒绝。
+- 偏好由 Main 保存在 Electron `userData` 下的独立严格 JSON 中，采用 16 KiB 读取上限、revision CAS 和同目录临时文件同步后原子替换；Settings、托盘、桌宠控制、位置重置与拖动保存共用一条变更队列，显示器 ID 与坐标从不返回 Renderer。缺失或损坏的偏好安全回退到 `disabled`；Preload 失败或 10 秒内未 ready 的隐藏窗口会被销毁并进入净化后的 `failed` 状态。退出会先排空已接纳的偏好写入，再保存最终位置，整个可选持久化序列最多等待 2 秒。该失败可从 Settings 或托盘重试，不影响主 Chat、Voice 或 Backend。
 
 ---
 

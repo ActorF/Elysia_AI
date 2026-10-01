@@ -88,6 +88,16 @@ function defaultSettingsState() {
   }
 }
 
+function defaultDesktopPetState() {
+  return {
+    revision: 0,
+    updatedAt: null,
+    mode: 'disabled',
+    runtime: 'absent',
+    warning: null,
+  }
+}
+
 function defaultVoiceSettingsState() {
   return {
     kind: 'voice.settings',
@@ -253,9 +263,11 @@ let snapshot = clone(initialSnapshot)
 let chatState = defaultChatState()
 let projectState = defaultProjectState()
 let settingsState = defaultSettingsState()
+let desktopPetState = defaultDesktopPetState()
 let voiceSettingsState = defaultVoiceSettingsState()
 let microphonePermissionStatus = 'granted'
 let nextSettingsError = null
+let nextDesktopPetUpdateError = null
 let nextVoiceSettingsError = null
 let nextVoiceCaptureError = null
 let nextVoiceTranscriptionError = null
@@ -295,6 +307,8 @@ let pendingVoiceTranscriptions = []
 let nextVoiceTranscriptionNumber = 1
 let nextVoiceTranscriptionTerminalBeforeAcknowledgement = false
 const backendListeners = new Set()
+const desktopPetStateListeners = new Set()
+const desktopPetOpenChatListeners = new Set()
 
 const reloadState = takeReloadState()
 if (reloadState !== null) {
@@ -302,6 +316,9 @@ if (reloadState !== null) {
   chatState = clone(reloadState.chatState)
   projectState = clone(reloadState.projectState)
   settingsState = clone(reloadState.settingsState)
+  desktopPetState = clone(
+    reloadState.desktopPetState ?? defaultDesktopPetState(),
+  )
   voiceSettingsState = clone(
     reloadState.voiceSettingsState ?? defaultVoiceSettingsState(),
   )
@@ -637,6 +654,44 @@ const desktopApi = {
 
   setThemePreference: async (theme) => {
     record('setThemePreference', [theme])
+  },
+
+  getDesktopPetState: async () => {
+    record('getDesktopPetState')
+    return clone(desktopPetState)
+  },
+
+  updateDesktopPet: async (request) => {
+    record('updateDesktopPet', [request])
+    if (nextDesktopPetUpdateError !== null) {
+      const message = nextDesktopPetUpdateError
+      nextDesktopPetUpdateError = null
+      throw new Error(message)
+    }
+    if (request.expectedRevision !== desktopPetState.revision) {
+      throw new Error(
+        'Desktop pet preferences changed elsewhere. Reload before saving.',
+      )
+    }
+    const same = request.mode === desktopPetState.mode
+    desktopPetState = {
+      ...desktopPetState,
+      revision: same
+        ? desktopPetState.revision
+        : desktopPetState.revision + 1,
+      updatedAt: same
+        ? desktopPetState.updatedAt
+        : '2026-10-01T12:00:00.000Z',
+      mode: request.mode,
+      runtime: request.mode === 'visible' ? 'visible' : 'absent',
+      warning: null,
+    }
+    return clone(desktopPetState)
+  },
+
+  resetDesktopPetPosition: async () => {
+    record('resetDesktopPetPosition')
+    return clone(desktopPetState)
   },
 
   getSnapshot: async () => {
@@ -1457,6 +1512,24 @@ const desktopApi = {
     }
   },
 
+  onDesktopPetStateChanged: (listener) => {
+    record('onDesktopPetStateChanged.subscribe')
+    desktopPetStateListeners.add(listener)
+    return () => {
+      desktopPetStateListeners.delete(listener)
+      record('onDesktopPetStateChanged.unsubscribe')
+    }
+  },
+
+  onDesktopPetOpenChatRequested: (listener) => {
+    record('onDesktopPetOpenChatRequested.subscribe')
+    desktopPetOpenChatListeners.add(listener)
+    return () => {
+      desktopPetOpenChatListeners.delete(listener)
+      record('onDesktopPetOpenChatRequested.unsubscribe')
+    }
+  },
+
   onBackendEvent: (listener) => {
     record('onBackendEvent.subscribe')
     backendListeners.add(listener)
@@ -1480,9 +1553,11 @@ const testControl = {
     chatState = defaultChatState()
     projectState = defaultProjectState()
     settingsState = defaultSettingsState()
+    desktopPetState = defaultDesktopPetState()
     voiceSettingsState = defaultVoiceSettingsState()
     microphonePermissionStatus = 'granted'
     nextSettingsError = null
+    nextDesktopPetUpdateError = null
     nextVoiceSettingsError = null
     nextVoiceCaptureError = null
     nextVoiceTranscriptionError = null
@@ -1547,6 +1622,10 @@ const testControl = {
     settingsState = clone(nextSettingsState)
   },
 
+  setDesktopPetState: (nextDesktopPetState) => {
+    desktopPetState = clone(nextDesktopPetState)
+  },
+
   setVoiceSettingsState: (nextVoiceSettingsState) => {
     voiceSettingsState = clone(nextVoiceSettingsState)
   },
@@ -1557,6 +1636,10 @@ const testControl = {
 
   failNextSettingsUpdate: (message) => {
     nextSettingsError = message
+  },
+
+  failNextDesktopPetUpdate: (message) => {
+    nextDesktopPetUpdateError = message
   },
 
   failNextVoiceSettingsUpdate: (message) => {
@@ -1715,6 +1798,19 @@ const testControl = {
     }
   },
 
+  emitDesktopPetState: (state) => {
+    desktopPetState = clone(state)
+    for (const listener of desktopPetStateListeners) {
+      listener(clone(desktopPetState))
+    }
+  },
+
+  emitDesktopPetOpenChatRequested: () => {
+    for (const listener of desktopPetOpenChatListeners) {
+      listener()
+    }
+  },
+
   setSelectedFiles: (files) => {
     selectedFiles = clone(files)
   },
@@ -1832,6 +1928,7 @@ const testControl = {
       chatState,
       projectState,
       settingsState,
+      desktopPetState,
       voiceSettingsState,
       microphonePermissionStatus,
       chatMessages: [...chatMessages.entries()],

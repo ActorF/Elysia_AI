@@ -12,6 +12,24 @@ from scripts import check_distribution_assets
 
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+_REQUIRED_ASAR_LISTING_ENTRIES = (
+    "\\dist\\character\\elysia-portrait.png",
+    "\\dist\\character\\elysia-state-atlas.png",
+    "\\dist\\character\\elysia-expression-atlas.png",
+    "\\dist\\character\\elysia-speech-atlas.png",
+    "\\dist\\pet.html",
+    "\\dist-electron\\desktop-pet-preload.cjs",
+)
+
+
+def _required_asar_entries(*, excluding: str | None = None) -> list[str]:
+    """Return the complete critical-entry fixture except one focused target."""
+
+    return [
+        entry
+        for entry in _REQUIRED_ASAR_LISTING_ENTRIES
+        if entry.lstrip("\\").replace("\\", "/") != excluding
+    ]
 
 
 def _write_package(path: Path, build: object) -> None:
@@ -570,13 +588,12 @@ def test_asar_listing_rejects_unicode_paths_and_concealed_archives(
 
     listing = tmp_path / "asar-listing.txt"
     listing.write_text(
-        "\\dist\\index.html\n"
-        "\\dist\\character\\elysia-portrait.png\n"
-        "\\dist\\character\\elysia-state-atlas.png\n"
-        "\\dist\\character\\elysia-expression-atlas.png\n"
-        "\\dist\\character\\elysia-speech-atlas.png\n"
-        "\\ＭＯＤＥＬＳ\\ＷＥＩＧＨＴＳ\\voice.ckpt\n"
-        "\\dist\\assets\\voice-pack.zip\n",
+        "\n".join([
+            "\\dist\\index.html",
+            *_required_asar_entries(),
+            "\\ＭＯＤＥＬＳ\\ＷＥＩＧＨＴＳ\\voice.ckpt",
+            "\\dist\\assets\\voice-pack.zip",
+        ]) + "\n",
         encoding="utf-8",
     )
 
@@ -627,9 +644,9 @@ def test_asar_listing_requires_exactly_one_reviewed_portrait(
     listing.write_text(
         "\n".join([
             "\\dist\\index.html",
-            "\\dist\\character\\elysia-state-atlas.png",
-            "\\dist\\character\\elysia-expression-atlas.png",
-            "\\dist\\character\\elysia-speech-atlas.png",
+            *_required_asar_entries(
+                excluding="dist/character/elysia-portrait.png"
+            ),
             *portrait_entries,
         ]) + "\n",
         encoding="utf-8",
@@ -677,9 +694,9 @@ def test_asar_listing_requires_exactly_one_reviewed_state_atlas(
     listing.write_text(
         "\n".join([
             "\\dist\\index.html",
-            "\\dist\\character\\elysia-portrait.png",
-            "\\dist\\character\\elysia-expression-atlas.png",
-            "\\dist\\character\\elysia-speech-atlas.png",
+            *_required_asar_entries(
+                excluding="dist/character/elysia-state-atlas.png"
+            ),
             *atlas_entries,
         ]) + "\n",
         encoding="utf-8",
@@ -745,15 +762,11 @@ def test_asar_listing_requires_each_reviewed_face_atlas_once(
 ) -> None:
     """Reject missing or aliased expression and speech atlas entries."""
 
+    logical_path = f"dist/character/{logical_name}"
     baseline = [
         "\\dist\\index.html",
-        "\\dist\\character\\elysia-portrait.png",
-        "\\dist\\character\\elysia-state-atlas.png",
+        *_required_asar_entries(excluding=logical_path),
     ]
-    if logical_name != "elysia-expression-atlas.png":
-        baseline.append("\\dist\\character\\elysia-expression-atlas.png")
-    if logical_name != "elysia-speech-atlas.png":
-        baseline.append("\\dist\\character\\elysia-speech-atlas.png")
     listing = tmp_path / "asar-listing.txt"
     listing.write_text(
         "\n".join([*baseline, *entries]) + "\n",
@@ -764,6 +777,85 @@ def test_asar_listing_requires_each_reviewed_face_atlas_once(
 
     assert len(problems) == 1
     assert problems[0].path == f"dist/character/{logical_name}"
+    assert f"found {expected_exact} exact" in problems[0].message
+    assert f"{expected_normalized} normalized" in problems[0].message
+
+
+@pytest.mark.parametrize(
+    ("logical_path", "entries", "expected_exact", "expected_normalized"),
+    [
+        ("dist/pet.html", [], 0, 0),
+        (
+            "dist/pet.html",
+            ["\\dist\\pet.html", "\\dist\\pet.html"],
+            2,
+            2,
+        ),
+        (
+            "dist/pet.html",
+            ["\\dist\\pet.html", "\\DIST\\PET.HTML"],
+            1,
+            2,
+        ),
+        (
+            "dist/pet.html",
+            ["\\dist\\pet.html", "\\ｄｉｓｔ\\ｐｅｔ．ｈｔｍｌ"],
+            1,
+            2,
+        ),
+        ("dist-electron/desktop-pet-preload.cjs", [], 0, 0),
+        (
+            "dist-electron/desktop-pet-preload.cjs",
+            [
+                "\\dist-electron\\desktop-pet-preload.cjs",
+                "\\dist-electron\\desktop-pet-preload.cjs",
+            ],
+            2,
+            2,
+        ),
+        (
+            "dist-electron/desktop-pet-preload.cjs",
+            [
+                "\\dist-electron\\desktop-pet-preload.cjs",
+                "\\DIST-ELECTRON\\DESKTOP-PET-PRELOAD.CJS",
+            ],
+            1,
+            2,
+        ),
+        (
+            "dist-electron/desktop-pet-preload.cjs",
+            [
+                "\\dist-electron\\desktop-pet-preload.cjs",
+                "\\ｄｉｓｔ－ｅｌｅｃｔｒｏｎ\\ｄｅｓｋｔｏｐ－ｐｅｔ－ｐｒｅｌｏａｄ．ｃｊｓ",
+            ],
+            1,
+            2,
+        ),
+    ],
+)
+def test_asar_listing_requires_each_desktop_pet_entry_once(
+    tmp_path: Path,
+    logical_path: str,
+    entries: list[str],
+    expected_exact: int,
+    expected_normalized: int,
+) -> None:
+    """Reject missing, duplicate, case-aliased, or Unicode-aliased pet entries."""
+
+    listing = tmp_path / "asar-listing.txt"
+    listing.write_text(
+        "\n".join([
+            "\\dist\\index.html",
+            *_required_asar_entries(excluding=logical_path),
+            *entries,
+        ]) + "\n",
+        encoding="utf-8",
+    )
+
+    problems = check_distribution_assets.audit_asar_listing(listing)
+
+    assert len(problems) == 1
+    assert problems[0].path == logical_path
     assert f"found {expected_exact} exact" in problems[0].message
     assert f"{expected_normalized} normalized" in problems[0].message
 

@@ -14,6 +14,10 @@ import type {
   MicrophonePermissionStatus,
   VoiceSettingsState,
 } from '../../electron/contracts.ts'
+import type {
+  DesktopPetMode,
+  DesktopPetState,
+} from '../../electron/desktop-pet-contracts.ts'
 import { codePointLength } from '../../electron/protocol-text.js'
 import type {
   CharacterPerformanceMode,
@@ -36,6 +40,9 @@ export interface SettingsViewProps {
   resolvedTheme: ResolvedTheme
   characterPerformancePreference: CharacterPerformancePreference
   resolvedCharacterPerformance: CharacterPerformanceMode
+  desktopPetState: DesktopPetState | null
+  desktopPetPending: boolean
+  desktopPetError: string | null
   settingsState: DesktopSettingsState | null
   models: string[]
   loading: boolean
@@ -55,6 +62,10 @@ export interface SettingsViewProps {
   onCharacterPerformanceChange(
     preference: CharacterPerformancePreference,
   ): void
+  /** Persist one closed Desktop Pet visibility mode immediately. */
+  onDesktopPetModeChange(mode: DesktopPetMode): Promise<void>
+  /** Restore the Desktop Pet to a safe primary-display position. */
+  onResetDesktopPetPosition(): Promise<void>
   /** Persist validated global Desktop settings. */
   onSave(settings: DesktopSettingsValues): Promise<void>
   /** Reload canonical global settings and discard the current draft. */
@@ -92,6 +103,13 @@ interface ThemeOption {
 
 interface CharacterPerformanceOption {
   value: CharacterPerformancePreference
+  label: string
+  description: string
+  icon: IconName
+}
+
+interface DesktopPetOption {
+  value: DesktopPetMode
   label: string
   description: string
   icon: IconName
@@ -151,6 +169,27 @@ const characterPerformanceOptions: readonly CharacterPerformanceOption[] = [
     label: 'Still',
     description: 'Keep state expressions but disable character animation.',
     icon: 'stop',
+  },
+]
+
+const desktopPetOptions: readonly DesktopPetOption[] = [
+  {
+    value: 'disabled',
+    label: 'Off',
+    description: 'Do not create a Desktop Pet window.',
+    icon: 'stop',
+  },
+  {
+    value: 'hidden',
+    label: 'Hidden',
+    description: 'Keep the opt-in, but release the Pet window and its resources.',
+    icon: 'archive',
+  },
+  {
+    value: 'visible',
+    label: 'Visible',
+    description: 'Show one static, always-on-top 2D Pet window.',
+    icon: 'sparkles',
   },
 ]
 
@@ -340,18 +379,29 @@ function AppearanceSettings({
   resolvedTheme,
   characterPerformancePreference,
   resolvedCharacterPerformance,
+  desktopPetState,
+  desktopPetPending,
+  desktopPetError,
   onThemeChange,
   onCharacterPerformanceChange,
+  onDesktopPetModeChange,
+  onResetDesktopPetPosition,
 }: Pick<
   SettingsViewProps,
   | 'themePreference'
   | 'resolvedTheme'
   | 'characterPerformancePreference'
   | 'resolvedCharacterPerformance'
+  | 'desktopPetState'
+  | 'desktopPetPending'
+  | 'desktopPetError'
   | 'onThemeChange'
   | 'onCharacterPerformanceChange'
+  | 'onDesktopPetModeChange'
+  | 'onResetDesktopPetPosition'
 >) {
   const themeGroupId = useId()
+  const desktopPetMode = desktopPetState?.mode ?? 'disabled'
   return (
     <section className="settings-section" aria-labelledby={`${themeGroupId}-heading`}>
       <div className="settings-section-heading">
@@ -418,6 +468,86 @@ function AppearanceSettings({
           )
         })}
       </fieldset>
+      <div className="appearance-subheading">
+        <h3>Desktop Pet</h3>
+        <p>
+          Optional static 2D companion. The main Chat remains the complete way to use Elysia.
+        </p>
+      </div>
+      <fieldset
+        className="theme-options desktop-pet-options"
+        disabled={desktopPetPending || desktopPetState === null}
+        aria-describedby={`${themeGroupId}-desktop-pet-note`}
+      >
+        <legend className="visually-hidden">Desktop Pet visibility</legend>
+        {desktopPetOptions.map((option) => {
+          const optionId = `${themeGroupId}-desktop-pet-${option.value}`
+          const descriptionId = `${optionId}-description`
+          return (
+            <label
+              key={option.value}
+              className={`theme-option${desktopPetMode === option.value ? ' selected' : ''}`}
+              htmlFor={optionId}
+            >
+              <input
+                id={optionId}
+                type="radio"
+                name={`${themeGroupId}-desktop-pet`}
+                value={option.value}
+                checked={desktopPetMode === option.value}
+                onChange={() => { void onDesktopPetModeChange(option.value) }}
+                aria-describedby={descriptionId}
+              />
+              <Icon name={option.icon} className="theme-option-icon" />
+              <span className="theme-option-copy">
+                <strong>{option.label}</strong>
+                <span id={descriptionId}>{option.description}</span>
+              </span>
+              <span className="theme-option-indicator" aria-hidden="true" />
+            </label>
+          )
+        })}
+      </fieldset>
+      <div className="desktop-pet-status" id={`${themeGroupId}-desktop-pet-note`}>
+        <p role="status" aria-live="polite">
+          {desktopPetState === null
+            ? 'Loading the Desktop Pet preference…'
+            : `Preference: ${desktopPetState.mode}. Native window: ${desktopPetState.runtime}.`}
+        </p>
+        <div className="desktop-pet-actions">
+          {desktopPetState?.mode === 'visible'
+            && desktopPetState.runtime === 'failed' && (
+            <button
+              type="button"
+              className="secondary-button"
+              disabled={desktopPetPending}
+              onClick={() => { void onDesktopPetModeChange('visible') }}
+            >
+              {desktopPetPending ? 'Retrying…' : 'Retry Desktop Pet'}
+            </button>
+          )}
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={desktopPetPending || desktopPetState === null}
+            onClick={() => { void onResetDesktopPetPosition() }}
+          >
+            {desktopPetPending ? 'Applying…' : 'Reset position'}
+          </button>
+        </div>
+      </div>
+      <p className="desktop-pet-note">
+        Hidden destroys the Pet renderer to release resources. Use the tray menu to restore it,
+        temporarily enable click-through, or recover it after a display change.
+      </p>
+      {desktopPetState?.warning !== null && desktopPetState?.warning !== undefined && (
+        <p className="desktop-pet-warning" role="status">
+          {desktopPetState.warning}
+        </p>
+      )}
+      {desktopPetError !== null && (
+        <p className="desktop-pet-error" role="alert">{desktopPetError}</p>
+      )}
       <p className="resolved-theme" role="status" aria-live="polite">
         Elysia is rendered in {resolvedTheme.toLowerCase()} mode with{' '}
         {resolvedCharacterPerformance} character motion.
@@ -432,6 +562,9 @@ export function SettingsView({
   resolvedTheme,
   characterPerformancePreference,
   resolvedCharacterPerformance,
+  desktopPetState,
+  desktopPetPending,
+  desktopPetError,
   settingsState,
   models,
   loading,
@@ -447,6 +580,8 @@ export function SettingsView({
   voiceError,
   onThemeChange,
   onCharacterPerformanceChange,
+  onDesktopPetModeChange,
+  onResetDesktopPetPosition,
   onSave,
   onReload,
   onRestart,
@@ -610,8 +745,13 @@ export function SettingsView({
             resolvedTheme={resolvedTheme}
             characterPerformancePreference={characterPerformancePreference}
             resolvedCharacterPerformance={resolvedCharacterPerformance}
+            desktopPetState={desktopPetState}
+            desktopPetPending={desktopPetPending}
+            desktopPetError={desktopPetError}
             onThemeChange={onThemeChange}
             onCharacterPerformanceChange={onCharacterPerformanceChange}
+            onDesktopPetModeChange={onDesktopPetModeChange}
+            onResetDesktopPetPosition={onResetDesktopPetPosition}
           />
           {voiceSection}
         </form>
@@ -632,8 +772,13 @@ export function SettingsView({
             resolvedTheme={resolvedTheme}
             characterPerformancePreference={characterPerformancePreference}
             resolvedCharacterPerformance={resolvedCharacterPerformance}
+            desktopPetState={desktopPetState}
+            desktopPetPending={desktopPetPending}
+            desktopPetError={desktopPetError}
             onThemeChange={onThemeChange}
             onCharacterPerformanceChange={onCharacterPerformanceChange}
+            onDesktopPetModeChange={onDesktopPetModeChange}
+            onResetDesktopPetPosition={onResetDesktopPetPosition}
           />
           {voiceSection}
         </form>
@@ -1283,8 +1428,13 @@ export function SettingsView({
             resolvedTheme={resolvedTheme}
             characterPerformancePreference={characterPerformancePreference}
             resolvedCharacterPerformance={resolvedCharacterPerformance}
+            desktopPetState={desktopPetState}
+            desktopPetPending={desktopPetPending}
+            desktopPetError={desktopPetError}
             onThemeChange={onThemeChange}
             onCharacterPerformanceChange={onCharacterPerformanceChange}
+            onDesktopPetModeChange={onDesktopPetModeChange}
+            onResetDesktopPetPosition={onResetDesktopPetPosition}
           />
 
           <footer className="settings-save-bar">

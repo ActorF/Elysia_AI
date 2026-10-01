@@ -10,13 +10,34 @@ export interface RendererSourcePolicy {
   platform: NodeJS.Platform
 }
 
-/** Check that an IPC caller is exactly the configured development or packaged renderer. */
-export function isTrustedRendererUrl(
+/** One exact packaged filename and development path accepted for a renderer. */
+export interface RendererEntryPoint {
+  developmentPath: string
+  packagedFileName: string
+}
+
+/**
+ * Check an IPC caller against one exact renderer entry point.
+ *
+ * Main and Desktop Pet have different capability surfaces. Requiring the
+ * exact HTML file and development pathname prevents either renderer from
+ * borrowing the other's IPC authority merely because both share an origin.
+ */
+export function isTrustedRendererEntryUrl(
   rawUrl: string,
   policy: RendererSourcePolicy,
+  entryPoint: RendererEntryPoint,
 ): boolean {
   try {
     const url = new URL(rawUrl)
+    if (
+      url.username !== ''
+      || url.password !== ''
+      || url.search !== ''
+      || url.hash !== ''
+    ) {
+      return false
+    }
 
     if (policy.isPackaged) {
       if (url.protocol !== 'file:') {
@@ -25,7 +46,7 @@ export function isTrustedRendererUrl(
 
       const actualPath = path.normalize(fileURLToPath(url))
       const expectedPath = path.normalize(
-        path.join(policy.appPath, 'dist', 'index.html'),
+        path.join(policy.appPath, 'dist', entryPoint.packagedFileName),
       )
       return policy.platform === 'win32'
         ? actualPath.toLowerCase() === expectedPath.toLowerCase()
@@ -35,11 +56,20 @@ export function isTrustedRendererUrl(
     const developmentUrl = new URL(policy.developmentUrl)
     return (
       url.origin === developmentUrl.origin
-      && url.pathname === '/'
-      && url.username === ''
-      && url.password === ''
+      && url.pathname === entryPoint.developmentPath
     )
   } catch {
     return false
   }
+}
+
+/** Check that an IPC caller is exactly the ordinary main renderer. */
+export function isTrustedRendererUrl(
+  rawUrl: string,
+  policy: RendererSourcePolicy,
+): boolean {
+  return isTrustedRendererEntryUrl(rawUrl, policy, {
+    developmentPath: '/',
+    packagedFileName: 'index.html',
+  })
 }

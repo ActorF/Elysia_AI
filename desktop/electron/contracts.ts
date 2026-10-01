@@ -10,6 +10,10 @@ import type {
   SettingsValues,
   VoiceTranscriptionStatus,
 } from './protocol.js'
+import type {
+  DesktopPetState,
+  UpdateDesktopPetRequest,
+} from './desktop-pet-contracts.js'
 
 export type BackendStatus =
   | 'starting'
@@ -526,6 +530,14 @@ export interface DesktopApi {
   rendererReady(): Promise<void>
   /** Keep native window chrome aligned with the renderer's saved appearance. */
   setThemePreference(theme: DesktopThemePreference): Promise<void>
+  /** Return Electron-owned Desktop Pet intent and bounded runtime status. */
+  getDesktopPetState(): Promise<DesktopPetState>
+  /** Persist one revision-checked Desktop Pet visibility choice. */
+  updateDesktopPet(
+    request: UpdateDesktopPetRequest,
+  ): Promise<DesktopPetState>
+  /** Move the next visible Desktop Pet to a safe primary-display position. */
+  resetDesktopPetPosition(): Promise<DesktopPetState>
   /** Return the current Python Backend lifecycle and capability snapshot. */
   getSnapshot(): Promise<BackendSnapshot>
   /** Restart the Python Backend and return its resulting snapshot. */
@@ -652,6 +664,12 @@ export interface DesktopApi {
   ): Promise<KnowledgeExportResult | null>
   /** Expand or restore the native window for the character panel. */
   setCharacterPanelOpen(open: boolean): Promise<void>
+  /** Subscribe to canonical Desktop Pet changes from Settings or the tray. */
+  onDesktopPetStateChanged(
+    listener: (state: DesktopPetState) => void,
+  ): () => void
+  /** Subscribe to requests that the ordinary application navigate to Chat. */
+  onDesktopPetOpenChatRequested(listener: () => void): () => void
   /** Subscribe to validated Backend events and return an unsubscribe callback. */
   onBackendEvent(listener: (event: BackendEvent) => void): () => void
 }

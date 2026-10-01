@@ -182,6 +182,11 @@ _REVIEWED_ASAR_ASSETS: Final[dict[str, tuple[int, str]]] = {
         _REVIEWED_SPEECH_ATLAS_SHA256,
     ),
 }
+_REQUIRED_ASAR_ENTRY_PATHS: Final = (
+    *_REVIEWED_ASAR_ASSETS,
+    "dist/pet.html",
+    "dist-electron/desktop-pet-preload.cjs",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -696,7 +701,7 @@ def audit_unpacked_tree(unpacked_root: Path) -> tuple[DistributionProblem, ...]:
 
 
 def audit_asar_listing(listing_path: Path) -> tuple[DistributionProblem, ...]:
-    """Audit a bounded ASAR listing and require every reviewed asset once."""
+    """Audit a bounded ASAR listing and require critical entries exactly once."""
 
     try:
         if not listing_path.is_file() or listing_path.stat().st_size > _MAX_ASAR_LISTING_BYTES:
@@ -713,7 +718,7 @@ def audit_asar_listing(listing_path: Path) -> tuple[DistributionProblem, ...]:
     # cardinality.  Slash direction and one archive-root marker vary by host,
     # but case and Unicode spelling remain exact so aliases cannot satisfy the
     # reviewed path contract.
-    for expected_path in _REVIEWED_ASAR_ASSETS:
+    for expected_path in _REQUIRED_ASAR_ENTRY_PATHS:
         expected_components = _normalize_distribution_path(expected_path)
         exact_count = 0
         alias_count = 0
@@ -735,7 +740,7 @@ def audit_asar_listing(listing_path: Path) -> tuple[DistributionProblem, ...]:
                 DistributionProblem(
                     "asar-listing",
                     expected_path,
-                    "reviewed asset must appear exactly once in the ASAR "
+                    "required package entry must appear exactly once in the ASAR "
                     "listing without case or Unicode aliases "
                     f"(found {exact_count} exact, "
                     f"{alias_count} normalized)",

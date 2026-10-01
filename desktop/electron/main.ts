@@ -10,6 +10,7 @@ import {
   ipcMain,
   type IpcMainInvokeEvent,
   Menu,
+  type MenuItemConstructorOptions,
   nativeImage,
   nativeTheme,
   screen,
@@ -28,6 +29,26 @@ import {
   allowAudioPermissionRequest,
 } from './audio-permission.js'
 import { parseSafeExternalUrl } from './external-url.js'
+import {
+  DESKTOP_PET_MAX_HEIGHT_DIP,
+  DESKTOP_PET_MAX_WIDTH_DIP,
+  DesktopPetPreferencesRepository,
+  type DesktopPetDisplayGeometry,
+  type DesktopPetPlacement,
+  type LoadedDesktopPetPreferences,
+  resolveDesktopPetBounds,
+} from './desktop-pet-preferences.js'
+import {
+  type DesktopPetState,
+  parseUpdateDesktopPetRequest,
+} from './desktop-pet-contracts.js'
+import {
+  DesktopPetReadyDeadline,
+  drainDesktopPetPersistenceWithin,
+  sequenceDesktopPetMutation,
+  shouldQuitAfterAllDesktopWindowsClose,
+  shouldPersistDesktopPetPlacement,
+} from './desktop-pet-lifecycle.js'
 import {
   PreloadSpeechPlaybackOwner,
   ReplaceableSpeechPlaybackOwner,
@@ -58,7 +79,10 @@ import {
   parseVoiceTranscriptionStartParams,
   trimProtocolBlankCharacters,
 } from './protocol.js'
-import { isTrustedRendererUrl as matchesRendererSource } from './renderer-source.js'
+import {
+  isTrustedRendererEntryUrl,
+  isTrustedRendererUrl as matchesRendererSource,
+} from './renderer-source.js'
 import type {
   ArchiveChatRequest,
   ArchiveProjectRequest,
@@ -88,6 +112,12 @@ const moduleDirectory = path.dirname(
 const DEVELOPMENT_URL = 'http://localhost:5173'
 const CHARACTER_PANEL_WIDTH = 324
 const RENDERER_READY_TIMEOUT_MS = 10_000
+const DESKTOP_PET_WIDTH_DIP = 320
+const DESKTOP_PET_HEIGHT_DIP = 480
+const DESKTOP_PET_POSITION_SAVE_DELAY_MS = 300
+const DESKTOP_PET_RUNTIME_WARNING = (
+  'The Desktop Pet could not be displayed. Retry it from Settings or the tray.'
+)
 const MAX_CHAT_TITLE_LENGTH = 200
 const MAX_PROJECT_NAME_LENGTH = 200
 const MAX_WORKSPACE_PATH_LENGTH = 32_767
@@ -97,10 +127,22 @@ const BACKEND_REQUEST_ID_PATTERN = (
 const TRAY_ICON_DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAANsSURBVFhH1ZdJTBNhFMc5esPM2PkGL9WEEC9EExpjwgWNRI0XYyHRiyFCggcXpBRK9cBBo0IQ022IB1QE0YMh8SBHE7eiLGXvhqAnjy4cTLw8876ZNtP3TWtnggdf8juUeX3/t833lYqK/9UUSTnEZNZghvpsq7lcLlWR1QtMZlNMVqEEcSazAKtke2gMR1ZZ6d7JZNanSOyXhVhJqt3V9zFxGrNs01urfqOBy+Xh8AjwxHexMzT2X41JrMVJ1Tlq99UC/PwN9Qfrjb+xPqpR1FCcBrRDzd4aCPXf4wlgF/Cz8WyIagmGbTdX3nGyHSY7H8Bzg/D5OxA87YNexOuDgLeL0+PtgtvtN2Dm5TQXpjwdGQfPfg/gIlPNvOHC0Jmj+OfQLGyGZmEjNAefQnOwHpqHbHgeMuEEpMMJSIUXIBlZgLXIIqxGFuHLiw3YSn3nwuszGWg5ey4fD4tzuXYfoNrcsEW0nVi1HfGVyBKsRJchM5bmCWjXh4URMUmdpNr6e26xdJiAXfHl6DIsRVdgK/sDfE09YgKyCkIX+OFh4YgzN4s/843mZ450e/0cP9LUzeni9MDN9lvQWHdciMmRmEYSwBNMdMSFM1eO4tTHEZL6NS+un3YWTrLKt93cdqya+jglPwb9YhEdkFBrf8HMJ3yjJduOMy/adkruhFTkqlPCQwOceTkLtxhdhYXoKiSia9BZZPEoilTVYSSAt5zokEvAjvg8TyAgxLHGOJ6xFeJDHWy5HfG5aBKulp9AwHgD+K1n4aDCUOtAgfiYf1yYOYJtx8pR/KinzB2QWAtPwDiCRQdZ5ctmrhzFqY9TcPmNF5HvwSZ1QDABc9uxcurjBDx13W73jnwCVvcAgq+aeebYdurjCHof4KEgOMkqDLYNFizcI/8TYeZIB6cXrjTrXOYE4YjnhBATwVe/IAE0zIo64tIV2/bZWBJmYin4GEvBh1gaprU0xLUMvNcy8E7LwlstC5eag4I4k9QE1eZm1YXH/nHH4m+0dbhokYBl9Tmjt+JA213H4q95AtdI9eQWtDJFUidyX2isO2Zr5thyBCtH8cOFOxAv2Pxihk7mJLaJON66VKuk4VltEcg+EtPKqtzK9F/J6ishaBkoEkuWXDg7hoFwLFa/G0XYVP6c/xdm/Dcc0EdUQIPdVv8BMyc76Y4zJXMAAAAASUVORK5CYII='
 
 let mainWindow: BrowserWindow | null = null
+let desktopPetWindow: BrowserWindow | null = null
 let backendProcess: BackendProcess | null = null
 let speechPlaybackOwner: PreloadSpeechPlaybackOwner | null = null
 const speechPlaybackRouter = new ReplaceableSpeechPlaybackOwner()
 let tray: Tray | null = null
+let desktopPetRepository: DesktopPetPreferencesRepository | null = null
+let desktopPetPreferences: LoadedDesktopPetPreferences | null = null
+let desktopPetClickThrough = false
+let desktopPetPositionTimer: ReturnType<typeof setTimeout> | null = null
+const desktopPetReadyDeadline = new DesktopPetReadyDeadline()
+let desktopPetIgnoredPlacement: DesktopPetPlacement | null = null
+let desktopPetMutationRequest: Promise<unknown> | null = null
+const desktopPetPersistenceOperations = new Set<Promise<unknown>>()
+const desktopPetModeOperations = new Set<Promise<unknown>>()
+let mainRendererReady = false
+let pendingDesktopPetChatRequest = false
 let characterPanelOpen = false
 let collapsedWindowPlacement: {
   x: number
@@ -120,8 +162,495 @@ function clearRendererReadyTimer(): void {
 function revealMainWindow(): void {
   clearRendererReadyTimer()
   if (mainWindow !== null && !mainWindow.isDestroyed()) {
+    if (mainWindow.isMinimized()) {
+      mainWindow.restore()
+    }
     mainWindow.show()
   }
+}
+
+function requireDesktopPetPreferences(): LoadedDesktopPetPreferences {
+  if (desktopPetPreferences === null) {
+    throw new Error('Desktop Pet preferences are not available.')
+  }
+  return desktopPetPreferences
+}
+
+function requireDesktopPetRepository(): DesktopPetPreferencesRepository {
+  if (desktopPetRepository === null) {
+    throw new Error('Desktop Pet preferences are not available.')
+  }
+  return desktopPetRepository
+}
+
+function maybeQuitAfterDesktopPetModeSettles(): void {
+  if (
+    BrowserWindow.getAllWindows().length === 0
+    && shouldQuitAfterAllDesktopWindowsClose(
+      process.platform,
+      shutdownStarted,
+      desktopPetPreferences?.state.mode ?? null,
+      desktopPetModeOperations.size > 0,
+    )
+  ) {
+    // ``window-all-closed`` does not fire again when a tray-only Hidden state
+    // changes to Disabled, so the completed write must re-evaluate exit here.
+    app.quit()
+  }
+}
+
+function trackDesktopPetPersistence<Result>(
+  operation: Promise<Result>,
+  modeWrite: boolean,
+): Promise<Result> {
+  const observed: Promise<unknown> = operation
+  desktopPetPersistenceOperations.add(observed)
+  if (modeWrite) {
+    desktopPetModeOperations.add(observed)
+  }
+  const finish = (): void => {
+    desktopPetPersistenceOperations.delete(observed)
+    if (modeWrite) {
+      desktopPetModeOperations.delete(observed)
+      maybeQuitAfterDesktopPetModeSettles()
+    }
+  }
+  // Register both branches so rejected optional writes never become unhandled
+  // while shutdown still gets a bounded snapshot of every in-flight write.
+  void operation.then(finish, finish)
+  return operation
+}
+
+function enqueueDesktopPetMutation<Result>(
+  operation: () => Promise<Result>,
+  modeWrite: boolean,
+): Promise<Result> {
+  if (shutdownStarted) {
+    return Promise.reject(new Error('Elysia is shutting down.'))
+  }
+  // Settings, tray, pet-window controls, resets, and delayed drag saves all
+  // mutate the same file and in-memory snapshot. One queue preserves admission
+  // order across those entry points rather than merely serializing file rename.
+  const queued = sequenceDesktopPetMutation(
+    desktopPetMutationRequest,
+    operation,
+  )
+  desktopPetMutationRequest = queued
+  const tracked = trackDesktopPetPersistence(queued, modeWrite)
+  const release = (): void => {
+    if (desktopPetMutationRequest === queued) {
+      desktopPetMutationRequest = null
+    }
+  }
+  void queued.then(release, release)
+  return tracked
+}
+
+function publishDesktopPetState(): void {
+  if (
+    mainWindow !== null
+    && !mainWindow.isDestroyed()
+    && desktopPetPreferences !== null
+  ) {
+    mainWindow.webContents.send(
+      'desktop-pet:state-changed',
+      desktopPetPreferences.state,
+    )
+  }
+  refreshTrayMenu()
+}
+
+function replaceDesktopPetRuntime(
+  runtime: DesktopPetState['runtime'],
+  warning: string | null = desktopPetPreferences?.state.warning ?? null,
+): void {
+  const current = requireDesktopPetPreferences()
+  if (
+    current.state.runtime === runtime
+    && current.state.warning === warning
+  ) {
+    return
+  }
+  desktopPetPreferences = Object.freeze({
+    state: Object.freeze({
+      ...current.state,
+      runtime,
+      warning,
+    }),
+    placement: current.placement,
+  })
+  publishDesktopPetState()
+}
+
+function desktopPetDisplays(): DesktopPetDisplayGeometry[] {
+  const primaryId = screen.getPrimaryDisplay().id
+  return screen.getAllDisplays().map((display) => ({
+    id: display.id,
+    primary: display.id === primaryId,
+    scaleFactor: display.scaleFactor,
+    workArea: display.workArea,
+  }))
+}
+
+function resolvedDesktopPetBounds(
+  placement: DesktopPetPlacement | null,
+) {
+  return resolveDesktopPetBounds(
+    placement,
+    desktopPetDisplays(),
+    {
+      width: DESKTOP_PET_WIDTH_DIP,
+      height: DESKTOP_PET_HEIGHT_DIP,
+    },
+  )
+}
+
+function clearDesktopPetPositionTimer(): void {
+  if (desktopPetPositionTimer !== null) {
+    clearTimeout(desktopPetPositionTimer)
+    desktopPetPositionTimer = null
+  }
+}
+
+function currentDesktopPetPlacement(): DesktopPetPlacement | null {
+  const window = desktopPetWindow
+  if (window === null || window.isDestroyed()) {
+    return null
+  }
+  const bounds = window.getBounds()
+  return {
+    displayId: screen.getDisplayMatching(bounds).id,
+    x: bounds.x,
+    y: bounds.y,
+  }
+}
+
+async function persistDesktopPetPlacement(): Promise<void> {
+  clearDesktopPetPositionTimer()
+  const placement = currentDesktopPetPlacement()
+  if (
+    desktopPetPreferences === null
+    || !shouldPersistDesktopPetPlacement(
+      placement,
+      desktopPetIgnoredPlacement,
+    )
+  ) {
+    return
+  }
+  desktopPetIgnoredPlacement = null
+  try {
+    await requireDesktopPetRepository().savePlacement(placement)
+    const current = requireDesktopPetPreferences()
+    desktopPetPreferences = Object.freeze({
+      state: current.state,
+      placement: Object.freeze(placement),
+    })
+  } catch {
+    if (shutdownStarted) {
+      return
+    }
+    replaceDesktopPetRuntime(
+      requireDesktopPetPreferences().state.runtime,
+      'The Desktop Pet position could not be saved.',
+    )
+  }
+}
+
+function scheduleDesktopPetPlacementSave(): void {
+  if (shutdownStarted) {
+    return
+  }
+  clearDesktopPetPositionTimer()
+  desktopPetPositionTimer = setTimeout(() => {
+    desktopPetPositionTimer = null
+    void enqueueDesktopPetMutation(persistDesktopPetPlacement, false)
+  }, DESKTOP_PET_POSITION_SAVE_DELAY_MS)
+  desktopPetPositionTimer.unref()
+}
+
+function setDesktopPetClickThrough(enabled: boolean): void {
+  if (shutdownStarted) {
+    return
+  }
+  const window = desktopPetWindow
+  desktopPetClickThrough = enabled
+    && window !== null
+    && !window.isDestroyed()
+    && requireDesktopPetPreferences().state.runtime === 'visible'
+  if (window !== null && !window.isDestroyed()) {
+    // Click-through deliberately has no forwarded mouse stream. The tray is
+    // the durable escape hatch, and avoiding forwarded motion bounds idle work.
+    window.setIgnoreMouseEvents(desktopPetClickThrough)
+  }
+  refreshTrayMenu()
+}
+
+function failDesktopPetWindow(window: BrowserWindow): void {
+  if (desktopPetWindow !== window) {
+    return
+  }
+  desktopPetWindow = null
+  desktopPetClickThrough = false
+  desktopPetReadyDeadline.clear()
+  desktopPetIgnoredPlacement = null
+  clearDesktopPetPositionTimer()
+  if (!window.isDestroyed()) {
+    window.destroy()
+  }
+  replaceDesktopPetRuntime('failed', DESKTOP_PET_RUNTIME_WARNING)
+}
+
+function createDesktopPetWindow(): void {
+  const preferences = requireDesktopPetPreferences()
+  if (
+    shutdownStarted
+    || preferences.state.mode !== 'visible'
+    || (desktopPetWindow !== null && !desktopPetWindow.isDestroyed())
+  ) {
+    return
+  }
+  const bounds = resolvedDesktopPetBounds(preferences.placement)
+  if (bounds === null) {
+    replaceDesktopPetRuntime('failed', DESKTOP_PET_RUNTIME_WARNING)
+    return
+  }
+
+  desktopPetClickThrough = false
+  replaceDesktopPetRuntime('loading', null)
+  let window: BrowserWindow
+  try {
+    window = new BrowserWindow({
+      ...bounds,
+      minWidth: Math.min(bounds.width, DESKTOP_PET_WIDTH_DIP),
+      minHeight: Math.min(bounds.height, DESKTOP_PET_HEIGHT_DIP),
+      maxWidth: Math.min(bounds.width, DESKTOP_PET_MAX_WIDTH_DIP),
+      maxHeight: Math.min(bounds.height, DESKTOP_PET_MAX_HEIGHT_DIP),
+      title: 'Elysia Desktop Pet',
+      icon: resolveApplicationIconPath(),
+      transparent: true,
+      backgroundColor: '#00000000',
+      frame: false,
+      show: false,
+      alwaysOnTop: true,
+      skipTaskbar: true,
+      resizable: false,
+      maximizable: false,
+      minimizable: false,
+      fullscreenable: false,
+      autoHideMenuBar: true,
+      webPreferences: {
+        preload: path.join(moduleDirectory, 'desktop-pet-preload.cjs'),
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: true,
+        spellcheck: false,
+        backgroundThrottling: true,
+        devTools: !app.isPackaged,
+        navigateOnDragDrop: false,
+        partition: 'elysia-desktop-pet',
+      },
+    })
+  } catch {
+    // Native construction can fail before a BrowserWindow exists. Collapse
+    // that synchronous edge into the same retryable state as load failures.
+    replaceDesktopPetRuntime('failed', DESKTOP_PET_RUNTIME_WARNING)
+    return
+  }
+  desktopPetWindow = window
+  try {
+    desktopPetIgnoredPlacement = preferences.placement === null
+      ? currentDesktopPetPlacement()
+      : null
+    window.setAlwaysOnTop(true, 'floating')
+    window.setMenu(null)
+    window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+    window.webContents.on('will-attach-webview', (event) => {
+      event.preventDefault()
+    })
+    window.webContents.on('will-navigate', (event, targetUrl) => {
+      if (!isTrustedDesktopPetRendererUrl(targetUrl)) {
+        event.preventDefault()
+      }
+    })
+    window.webContents.session.setPermissionCheckHandler(() => false)
+    window.webContents.session.setPermissionRequestHandler(
+      (_webContents, _permission, callback) => {
+        callback(false)
+      },
+    )
+    window.webContents.on(
+      'did-fail-load',
+      (_event, _code, _description, _url, isMainFrame) => {
+        if (isMainFrame) {
+          failDesktopPetWindow(window)
+        }
+      },
+    )
+    window.webContents.on('preload-error', () => {
+      failDesktopPetWindow(window)
+    })
+    window.webContents.on('render-process-gone', () => {
+      failDesktopPetWindow(window)
+    })
+    window.on('move', scheduleDesktopPetPlacementSave)
+    window.on('close', (event) => {
+      if (
+        desktopPetWindow === window
+        && !shutdownStarted
+        && desktopPetPreferences?.state.mode === 'visible'
+      ) {
+        // Alt+F4 is a user hide request, not evidence that the renderer failed.
+        event.preventDefault()
+        void requestDesktopPetMode('hidden')
+      }
+    })
+    window.on('closed', () => {
+      if (desktopPetWindow !== window) {
+        return
+      }
+      desktopPetWindow = null
+      desktopPetClickThrough = false
+      desktopPetReadyDeadline.clear()
+      desktopPetIgnoredPlacement = null
+      clearDesktopPetPositionTimer()
+      const mode = desktopPetPreferences?.state.mode
+      if (mode === 'visible' && !shutdownStarted) {
+        replaceDesktopPetRuntime('failed', DESKTOP_PET_RUNTIME_WARNING)
+      }
+    })
+
+    desktopPetReadyDeadline.arm(() => {
+      failDesktopPetWindow(window)
+    })
+
+    const load = app.isPackaged
+      ? window.loadFile(path.join(app.getAppPath(), 'dist', 'pet.html'))
+      : window.loadURL(`${DEVELOPMENT_URL}/pet.html`)
+    void load.catch(() => {
+      failDesktopPetWindow(window)
+    })
+  } catch {
+    // Native setup is synchronous and can fail after construction. Destroy the
+    // partial window so no invisible WebContents survives in loading state.
+    failDesktopPetWindow(window)
+  }
+}
+
+function reconcileDesktopPetWindow(): void {
+  const preferences = requireDesktopPetPreferences()
+  if (preferences.state.mode !== 'visible') {
+    const window = desktopPetWindow
+    desktopPetWindow = null
+    desktopPetClickThrough = false
+    desktopPetReadyDeadline.clear()
+    desktopPetIgnoredPlacement = null
+    clearDesktopPetPositionTimer()
+    if (window !== null && !window.isDestroyed()) {
+      window.destroy()
+    }
+    replaceDesktopPetRuntime('absent')
+    return
+  }
+  createDesktopPetWindow()
+}
+
+async function updateDesktopPetPreferences(
+  requestValue: unknown,
+): Promise<DesktopPetState> {
+  const request = parseUpdateDesktopPetRequest(requestValue)
+  const current = requireDesktopPetPreferences()
+  if (request.mode !== 'visible' && current.state.mode === 'visible') {
+    await persistDesktopPetPlacement()
+  }
+  desktopPetPreferences = await requireDesktopPetRepository().update(
+    request,
+    current.state.runtime,
+  )
+  // Reconcile before publishing so Renderer and tray never observe a
+  // persisted mode paired with the previous mode's native runtime.
+  reconcileDesktopPetWindow()
+  publishDesktopPetState()
+  return requireDesktopPetPreferences().state
+}
+
+async function resetDesktopPetPosition(): Promise<DesktopPetState> {
+  clearDesktopPetPositionTimer()
+  await requireDesktopPetRepository().savePlacement(null)
+  const current = requireDesktopPetPreferences()
+  desktopPetPreferences = Object.freeze({
+    state: current.state,
+    placement: null,
+  })
+  const window = desktopPetWindow
+  const bounds = resolvedDesktopPetBounds(null)
+  if (window !== null && !window.isDestroyed() && bounds !== null) {
+    desktopPetIgnoredPlacement = {
+      displayId: screen.getDisplayMatching(bounds).id,
+      x: bounds.x,
+      y: bounds.y,
+    }
+    window.setBounds(bounds, false)
+  }
+  return requireDesktopPetPreferences().state
+}
+
+function deliverPendingDesktopPetChatRequest(): void {
+  if (
+    !pendingDesktopPetChatRequest
+    || !mainRendererReady
+    || mainWindow === null
+    || mainWindow.isDestroyed()
+  ) {
+    return
+  }
+  pendingDesktopPetChatRequest = false
+  mainWindow.webContents.send('desktop-pet:open-chat-requested')
+}
+
+function showOrCreateMainWindow(): void {
+  if (shutdownStarted) {
+    return
+  }
+  if (mainWindow === null || mainWindow.isDestroyed()) {
+    createMainWindow()
+    return
+  }
+  revealMainWindow()
+  mainWindow.focus()
+  deliverPendingDesktopPetChatRequest()
+}
+
+function openMainChatFromDesktopPet(): void {
+  if (shutdownStarted) {
+    return
+  }
+  pendingDesktopPetChatRequest = true
+  showOrCreateMainWindow()
+}
+
+function repositionDesktopPetOnCurrentDisplays(): void {
+  const window = desktopPetWindow
+  if (window === null || window.isDestroyed()) {
+    return
+  }
+  const currentPlacement = currentDesktopPetPlacement()
+  const usesDefaultPlacement = desktopPetPreferences?.placement === null
+  const bounds = resolvedDesktopPetBounds(
+    usesDefaultPlacement ? null : currentPlacement,
+  )
+  if (bounds === null) {
+    failDesktopPetWindow(window)
+    return
+  }
+  if (usesDefaultPlacement) {
+    desktopPetIgnoredPlacement = {
+      displayId: screen.getDisplayMatching(bounds).id,
+      x: bounds.x,
+      y: bounds.y,
+    }
+  }
+  window.setBounds(bounds, false)
+  scheduleDesktopPetPlacementSave()
 }
 
 function installSpeechPlaybackOwner(window: BrowserWindow): void {
@@ -173,6 +702,23 @@ function isTrustedRendererUrl(rawUrl: string): boolean {
   })
 }
 
+/** Keep the pet's three commands isolated from the ordinary renderer origin. */
+function isTrustedDesktopPetRendererUrl(rawUrl: string): boolean {
+  return isTrustedRendererEntryUrl(
+    rawUrl,
+    {
+      appPath: app.getAppPath(),
+      developmentUrl: DEVELOPMENT_URL,
+      isPackaged: app.isPackaged,
+      platform: process.platform,
+    },
+    {
+      developmentPath: '/pet.html',
+      packagedFileName: 'pet.html',
+    },
+  )
+}
+
 function assertTrustedSender(event: IpcMainInvokeEvent): void {
   const senderFrame = event.senderFrame
   const mainFrame = event.sender.mainFrame
@@ -187,6 +733,24 @@ function assertTrustedSender(event: IpcMainInvokeEvent): void {
     || !isTrustedRendererUrl(senderFrame.url)
   ) {
     throw new Error('Desktop IPC rejected an untrusted renderer.')
+  }
+}
+
+/** Bind every pet command to its exact top-level WebContents and entry file. */
+function assertTrustedDesktopPetSender(event: IpcMainInvokeEvent): void {
+  const senderFrame = event.senderFrame
+  const mainFrame = event.sender.mainFrame
+
+  if (
+    desktopPetWindow === null
+    || event.sender !== desktopPetWindow.webContents
+    || senderFrame === null
+    || senderFrame.parent !== null
+    || senderFrame.processId !== mainFrame.processId
+    || senderFrame.routingId !== mainFrame.routingId
+    || !isTrustedDesktopPetRendererUrl(senderFrame.url)
+  ) {
+    throw new Error('Desktop Pet IPC rejected an untrusted renderer.')
   }
 }
 
@@ -964,7 +1528,9 @@ function registerIpcHandlers(): void {
       // an old reply cannot speak inside a newly loaded Voice Session.
       requireBackend().stopCurrentSpeechPlayback()
       installSpeechPlaybackOwner(requireMainWindow())
+      mainRendererReady = true
       revealMainWindow()
+      deliverPendingDesktopPetChatRequest()
     },
   )
 
@@ -974,6 +1540,70 @@ function registerIpcHandlers(): void {
       assertTrustedSender(event)
       nativeTheme.themeSource = parseThemePreference(value)
       requireMainWindow().setBackgroundColor(nativeBackgroundColor())
+    },
+  )
+
+  ipcMain.handle(
+    'desktop-pet:get-state',
+    (event): DesktopPetState => {
+      assertTrustedSender(event)
+      return requireDesktopPetPreferences().state
+    },
+  )
+
+  ipcMain.handle(
+    'desktop-pet:update',
+    (event, request: unknown) => {
+      assertTrustedSender(event)
+      return enqueueDesktopPetMutation(
+        () => updateDesktopPetPreferences(request),
+        true,
+      )
+    },
+  )
+
+  ipcMain.handle(
+    'desktop-pet:reset-position',
+    (event) => {
+      assertTrustedSender(event)
+      return enqueueDesktopPetMutation(
+        resetDesktopPetPosition,
+        false,
+      )
+    },
+  )
+
+  ipcMain.handle(
+    'desktop-pet:ready',
+    (event): void => {
+      assertTrustedDesktopPetSender(event)
+      const window = desktopPetWindow
+      if (
+        window === null
+        || window.isDestroyed()
+        || requireDesktopPetPreferences().state.mode !== 'visible'
+      ) {
+        return
+      }
+      desktopPetReadyDeadline.clear()
+      window.showInactive()
+      replaceDesktopPetRuntime('visible', null)
+    },
+  )
+
+  ipcMain.handle(
+    'desktop-pet:hide',
+    (event) => {
+      assertTrustedDesktopPetSender(event)
+      return requestDesktopPetMode('hidden').then(() => undefined)
+    },
+  )
+
+  ipcMain.handle(
+    'desktop-pet:open-main-chat',
+    (event): void => {
+      assertTrustedDesktopPetSender(event)
+      openMainChatFromDesktopPet()
     },
   )
 
@@ -1684,6 +2314,115 @@ function configureAudioPermissions(): void {
   )
 }
 
+function reportDesktopPetModeFailure(): void {
+  if (shutdownStarted || desktopPetPreferences === null) {
+    return
+  }
+  replaceDesktopPetRuntime(
+    desktopPetPreferences.state.runtime,
+    'The Desktop Pet setting could not be saved.',
+  )
+}
+
+function requestDesktopPetMode(
+  mode: DesktopPetState['mode'],
+): Promise<DesktopPetState> {
+  if (shutdownStarted) {
+    return Promise.reject(new Error('Elysia is shutting down.'))
+  }
+  // Tray clicks, the pet Hide button, and Alt+F4 can arrive in the same event
+  // turn. Serialize them so a successful first CAS cannot make the duplicate
+  // request look like a persistence failure.
+  const execute = async (): Promise<DesktopPetState> => {
+    const current = requireDesktopPetPreferences().state
+    if (
+      current.mode === mode
+      && !(mode === 'visible' && current.runtime === 'failed')
+    ) {
+      return current
+    }
+    // Requests admitted before shutdown retain their place in the serialized
+    // queue; the bounded quit drain preserves the user's latest explicit mode.
+    return updateDesktopPetPreferences({
+      expectedRevision: current.revision,
+      mode,
+    })
+  }
+  const operation = enqueueDesktopPetMutation(
+    execute,
+    true,
+  )
+  void operation.then(
+    () => undefined,
+    () => {
+      reportDesktopPetModeFailure()
+    },
+  )
+  return operation
+}
+
+function refreshTrayMenu(): void {
+  if (tray === null) {
+    return
+  }
+  const state = desktopPetPreferences?.state
+  const petVisible = state?.mode === 'visible'
+    && (state.runtime === 'loading' || state.runtime === 'visible')
+  const petFailed = state?.mode === 'visible' && state.runtime === 'failed'
+  const petToggleLabel = petVisible
+    ? 'Hide Desktop Pet'
+    : petFailed
+      ? 'Retry Desktop Pet'
+      : 'Show Desktop Pet'
+  const template: MenuItemConstructorOptions[] = [
+    {
+      label: 'Show Elysia',
+      click: showOrCreateMainWindow,
+    },
+    { type: 'separator' },
+    {
+      label: petToggleLabel,
+      click: () => {
+        void requestDesktopPetMode(petVisible ? 'hidden' : 'visible')
+      },
+    },
+    {
+      label: 'Mouse click-through',
+      type: 'checkbox',
+      checked: desktopPetClickThrough,
+      enabled: state?.runtime === 'visible',
+      click: (menuItem) => {
+        setDesktopPetClickThrough(menuItem.checked)
+      },
+    },
+    {
+      label: 'Reset Desktop Pet position',
+      enabled: state?.mode !== 'disabled',
+      click: () => {
+        void enqueueDesktopPetMutation(
+          resetDesktopPetPosition,
+          false,
+        ).catch(reportDesktopPetModeFailure)
+      },
+    },
+    {
+      label: 'Disable Desktop Pet',
+      enabled: state?.mode !== 'disabled',
+      click: () => {
+        void requestDesktopPetMode('disabled')
+      },
+    },
+    { type: 'separator' },
+    {
+      label: 'Quit',
+      click: () => {
+        app.quit()
+      },
+    },
+  ]
+  tray.setContextMenu(Menu.buildFromTemplate(template))
+}
+
 function createTray(): void {
   const brandedImage = nativeImage.createFromPath(
     resolveApplicationIconPath(),
@@ -1698,29 +2437,13 @@ function createTray(): void {
 
   tray = new Tray(image.resize({ width: 16, height: 16 }))
   tray.setToolTip('Elysia')
-  tray.setContextMenu(
-    Menu.buildFromTemplate([
-      {
-        label: 'Show Elysia',
-        click: () => {
-          requireMainWindow().show()
-        },
-      },
-      {
-        label: 'Quit',
-        click: () => {
-          app.quit()
-        },
-      },
-    ]),
-  )
-  tray.on('double-click', () => {
-    requireMainWindow().show()
-  })
+  refreshTrayMenu()
+  tray.on('double-click', showOrCreateMainWindow)
 }
 
 function createMainWindow(): void {
   const primaryWorkArea = screen.getPrimaryDisplay().workArea
+  mainRendererReady = false
   mainWindow = new BrowserWindow({
     width: Math.min(1180, primaryWorkArea.width),
     height: Math.min(780, primaryWorkArea.height),
@@ -1759,11 +2482,15 @@ function createMainWindow(): void {
       }
     },
   )
+  mainWindow.webContents.on('did-start-loading', () => {
+    mainRendererReady = false
+  })
   mainWindow.webContents.on('render-process-gone', () => {
     revealMainWindow()
   })
   mainWindow.on('closed', () => {
     clearRendererReadyTimer()
+    mainRendererReady = false
     const closingOwner = speechPlaybackOwner
     speechPlaybackOwner = null
     // Detach before disposal so an in-flight expected window-close rejection
@@ -1790,21 +2517,25 @@ if (!hasSingleInstanceLock) {
   app.quit()
 } else {
   app.on('second-instance', () => {
-    if (mainWindow !== null && !mainWindow.isDestroyed()) {
-      if (mainWindow.isMinimized()) {
-        mainWindow.restore()
-      }
-      mainWindow.show()
-      mainWindow.focus()
-    }
+    showOrCreateMainWindow()
   })
 
-  void app.whenReady().then(() => {
+  void app.whenReady().then(async () => {
+    desktopPetRepository = new DesktopPetPreferencesRepository(
+      path.join(app.getPath('userData'), 'desktop-pet.json'),
+    )
+    desktopPetPreferences = await desktopPetRepository.load('absent')
     nativeTheme.on('updated', () => {
       if (mainWindow !== null && !mainWindow.isDestroyed()) {
         mainWindow.setBackgroundColor(nativeBackgroundColor())
       }
     })
+    const handleDisplayChange = (): void => {
+      repositionDesktopPetOnCurrentDisplays()
+    }
+    screen.on('display-added', handleDisplayChange)
+    screen.on('display-removed', handleDisplayChange)
+    screen.on('display-metrics-changed', handleDisplayChange)
     configureAudioPermissions()
     registerIpcHandlers()
     createMainWindow()
@@ -1814,41 +2545,69 @@ if (!hasSingleInstanceLock) {
       speechPlaybackRouter,
     )
     createTray()
+    reconcileDesktopPetWindow()
     backendProcess.start()
 
     app.on('activate', () => {
-      if (BrowserWindow.getAllWindows().length === 0) {
-        createMainWindow()
-      } else {
-        mainWindow?.show()
-      }
+      showOrCreateMainWindow()
     })
+  }).catch(() => {
+    app.quit()
   })
 
   app.on('before-quit', (event) => {
-    if (
-      shutdownStarted
-      || backendProcess === null
-      || backendProcess.getSnapshot().status === 'stopped'
-    ) {
+    if (shutdownStarted) {
       return
     }
 
     event.preventDefault()
     shutdownStarted = true
-    void backendProcess.stop().finally(() => {
+    mainWindow?.hide()
+    clearDesktopPetPositionTimer()
+    const persistenceFlush = drainDesktopPetPersistenceWithin(
+      [...desktopPetPersistenceOperations],
+      persistDesktopPetPlacement,
+    )
+    desktopPetReadyDeadline.clear()
+    desktopPetClickThrough = false
+    if (desktopPetWindow !== null && !desktopPetWindow.isDestroyed()) {
+      // Hide immediately but keep the native bounds available until admitted
+      // reset/mode writes and the ordered final placement snapshot have settled.
+      desktopPetWindow.hide()
+    }
+    tray?.destroy()
+    tray = null
+    const stopBackend = (
+      backendProcess === null
+      || backendProcess.getSnapshot().status === 'stopped'
+    )
+      ? Promise.resolve()
+      : backendProcess.stop()
+    void Promise.allSettled([
+      stopBackend,
+      persistenceFlush,
+    ]).finally(() => {
+      const petWindow = desktopPetWindow
+      desktopPetWindow = null
+      desktopPetIgnoredPlacement = null
+      if (petWindow !== null && !petWindow.isDestroyed()) {
+        petWindow.destroy()
+      }
       const closingOwner = speechPlaybackOwner
       speechPlaybackOwner = null
       speechPlaybackRouter.replace(null)
       closingOwner?.dispose()
-      tray?.destroy()
-      tray = null
       app.quit()
     })
   })
 
   app.on('window-all-closed', () => {
-    if (process.platform !== 'darwin') {
+    if (shouldQuitAfterAllDesktopWindowsClose(
+      process.platform,
+      shutdownStarted,
+      desktopPetPreferences?.state.mode ?? null,
+      desktopPetModeOperations.size > 0,
+    )) {
       app.quit()
     }
   })
