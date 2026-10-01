@@ -43,6 +43,7 @@ import {
 } from '../electron/protocol-text.js'
 import './App.css'
 import { CharacterPanel } from './character/CharacterPanel.tsx'
+import { useCharacterPerformance } from './character/CharacterPerformanceProvider.tsx'
 import { deriveApplicationCharacterState } from './character/character-state.ts'
 import { ChatView } from './chat/ChatView.tsx'
 import type {
@@ -788,6 +789,11 @@ function PlaceholderView({
 function App() {
   const desktopApi = window.elysiaDesktop
   const { theme, resolvedTheme, setTheme } = useTheme()
+  const {
+    preference: characterPerformancePreference,
+    resolvedMode: resolvedCharacterPerformance,
+    setPreference: setCharacterPerformancePreference,
+  } = useCharacterPerformance()
   const [snapshot, setSnapshot] = useState<BackendSnapshot>(() => (
     desktopApi === undefined
       ? {
@@ -6322,6 +6328,8 @@ function App() {
       <SettingsView
         themePreference={theme}
         resolvedTheme={resolvedTheme}
+        characterPerformancePreference={characterPerformancePreference}
+        resolvedCharacterPerformance={resolvedCharacterPerformance}
         settingsState={settingsState}
         models={modelOptions}
         loading={settingsLoading}
@@ -6336,6 +6344,7 @@ function App() {
         voicePending={voiceSettingsPending}
         voiceError={voiceSettingsError}
         onThemeChange={setTheme}
+        onCharacterPerformanceChange={setCharacterPerformancePreference}
         onSave={saveSettings}
         onReload={() => {
           setSettingsRestartError(null)

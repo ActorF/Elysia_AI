@@ -2121,6 +2121,10 @@ svg {
   border: 0;
 }
 
+.character-performance-options {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .theme-option {
   position: relative;
   display: grid;
@@ -2726,12 +2730,72 @@ kbd {
   );
 }
 
+.character-artwork {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  container-type: size;
+}
+
+.character-artwork-frame {
+  position: relative;
+  flex: 0 0 auto;
+  width: min(100cqw, calc(100cqh * 0.75));
+  height: min(100cqh, calc(100cqw * 1.333333));
+  overflow: hidden;
+  aspect-ratio: 3 / 4;
+  transform-origin: 50% 74%;
+}
+
 .character-artwork-image {
   display: block;
+}
+
+.character-artwork-atlas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 400%;
+  max-width: none;
+  height: 200%;
+  transform: translate(
+    calc(var(--character-atlas-column) * -25%),
+    calc(var(--character-atlas-row) * -50%)
+  );
+}
+
+.character-artwork-static {
   width: 100%;
   height: 100%;
   object-fit: cover;
   object-position: 50% 25%;
+}
+
+.character-artwork[data-character-performance="animated"][data-character-action="resting"]
+  .character-artwork-frame {
+  animation: character-resting 5.6s ease-in-out infinite;
+}
+
+.character-artwork[data-character-performance="animated"][data-character-action="listening"]
+  .character-artwork-frame {
+  animation: character-listening 2.8s ease-in-out infinite;
+}
+
+.character-artwork[data-character-performance="animated"][data-character-action="thinking"]
+  .character-artwork-frame,
+.character-artwork[data-character-performance="animated"][data-character-action="working"]
+  .character-artwork-frame {
+  animation: character-focused 4.2s ease-in-out infinite;
+}
+
+.character-artwork[data-character-performance="animated"][data-character-action="speaking"]
+  .character-artwork-frame {
+  animation: character-speaking 1.6s ease-in-out infinite;
+}
+
+.character-artwork[data-character-performance="still"] .character-artwork-frame {
+  animation: none;
+  transform: none;
 }
 
 .character-artwork-fallback {
@@ -2921,7 +2985,7 @@ kbd {
   box-shadow: 0 1.5rem 5rem color-mix(in srgb, var(--color-bg-canvas) 62%, transparent);
 }
 
-.call-portrait .character-artwork-image {
+.call-portrait .character-artwork-static {
   object-fit: cover;
   object-position: 50% 34%;
 }
@@ -3302,6 +3366,37 @@ kbd {
   50% {
     opacity: 1;
     transform: scale(1.03);
+  }
+}
+
+@keyframes character-resting {
+  0%,
+  100% { transform: translateY(0) scale(1); }
+  50% { transform: translateY(-0.15rem) scale(1.006); }
+}
+
+@keyframes character-listening {
+  0%,
+  100% { transform: translateY(0) rotate(0); }
+  50% { transform: translateY(-0.18rem) rotate(-0.35deg); }
+}
+
+@keyframes character-focused {
+  0%,
+  100% { transform: translateY(0); }
+  50% { transform: translateY(-0.22rem); }
+}
+
+@keyframes character-speaking {
+  0%,
+  100% { transform: scale(1); }
+  50% { transform: scale(1.012); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .character-artwork .character-artwork-frame {
+    animation: none !important;
+    transform: none !important;
   }
 }
 
@@ -3763,6 +3858,11 @@ kbd {
   .call-live-captions,
   .call-transcript,
   .call-control {
+    border: 1px solid CanvasText;
+  }
+
+  .character-artwork-frame,
+  .character-artwork-fallback {
     border: 1px solid CanvasText;
   }
 

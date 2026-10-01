@@ -124,11 +124,32 @@ _REVIEWED_PORTRAIT_SIZE: Final = 2_223_154
 _REVIEWED_PORTRAIT_SHA256: Final = (
     "359c2620ac5286cc6c77d533e5c53d1b63fd0fe08fdf42f5952136b7c5bcafb2"
 )
+_REVIEWED_CHARACTER_ATLAS_SIZE: Final = 2_303_963
+_REVIEWED_CHARACTER_ATLAS_SHA256: Final = (
+    "54eb2525673c2a849819be10eb88eb2f670eb1911e86fd154e69b578cbb4c25c"
+)
 _REVIEWED_ASAR_PORTRAIT_PATH: Final = "dist/character/elysia-portrait.png"
+_REVIEWED_ASAR_CHARACTER_ATLAS_PATH: Final = (
+    "dist/character/elysia-state-atlas.png"
+)
 _REVIEWED_DISTRIBUTION_ASSETS: Final[dict[str, tuple[int, str]]] = {
     "desktop/public/character/elysia-portrait.png": (
         _REVIEWED_PORTRAIT_SIZE,
         _REVIEWED_PORTRAIT_SHA256,
+    ),
+    "desktop/public/character/elysia-state-atlas.png": (
+        _REVIEWED_CHARACTER_ATLAS_SIZE,
+        _REVIEWED_CHARACTER_ATLAS_SHA256,
+    ),
+}
+_REVIEWED_ASAR_ASSETS: Final[dict[str, tuple[int, str]]] = {
+    _REVIEWED_ASAR_PORTRAIT_PATH: (
+        _REVIEWED_PORTRAIT_SIZE,
+        _REVIEWED_PORTRAIT_SHA256,
+    ),
+    _REVIEWED_ASAR_CHARACTER_ATLAS_PATH: (
+        _REVIEWED_CHARACTER_ATLAS_SIZE,
+        _REVIEWED_CHARACTER_ATLAS_SHA256,
     ),
 }
 
@@ -438,6 +459,20 @@ def audit_extracted_asar_portrait(
     )
 
 
+def audit_extracted_asar_character_atlas(
+    extracted_atlas: Path,
+) -> tuple[DistributionProblem, ...]:
+    """Authenticate the state-atlas bytes extracted from the packaged ASAR."""
+
+    return _audit_exact_asset(
+        extracted_atlas,
+        source="asar-reviewed-asset",
+        logical_path=_REVIEWED_ASAR_CHARACTER_ATLAS_PATH,
+        expected_size=_REVIEWED_CHARACTER_ATLAS_SIZE,
+        expected_digest=_REVIEWED_CHARACTER_ATLAS_SHA256,
+    )
+
+
 def _load_package_json(package_path: Path) -> Mapping[str, object]:
     """Load bounded strict JSON for the Electron package declaration."""
 
@@ -603,7 +638,7 @@ def audit_unpacked_tree(unpacked_root: Path) -> tuple[DistributionProblem, ...]:
 
 
 def audit_asar_listing(listing_path: Path) -> tuple[DistributionProblem, ...]:
-    """Audit a bounded ASAR listing and require one exact portrait entry."""
+    """Audit a bounded ASAR listing and require every reviewed asset once."""
 
     try:
         if not listing_path.is_file() or listing_path.stat().st_size > _MAX_ASAR_LISTING_BYTES:
@@ -620,35 +655,34 @@ def audit_asar_listing(listing_path: Path) -> tuple[DistributionProblem, ...]:
     # cardinality.  Slash direction and one archive-root marker vary by host,
     # but case and Unicode spelling remain exact so aliases cannot satisfy the
     # reviewed path contract.
-    expected_components = _normalize_distribution_path(
-        _REVIEWED_ASAR_PORTRAIT_PATH
-    )
-    exact_portrait_count = 0
-    portrait_alias_count = 0
-    for path in paths:
-        portable_path = path.replace("\\", "/")
-        if portable_path.startswith("/"):
-            portable_path = portable_path[1:]
-        if portable_path == _REVIEWED_ASAR_PORTRAIT_PATH:
-            exact_portrait_count += 1
-        try:
-            if _normalize_distribution_path(path) == expected_components:
-                portrait_alias_count += 1
-        except DistributionAuditError:
-            # The generic path audit already reports malformed entries; they
-            # cannot count toward the reviewed portrait contract.
-            continue
-    if exact_portrait_count != 1 or portrait_alias_count != 1:
-        problems.append(
-            DistributionProblem(
-                "asar-listing",
-                _REVIEWED_ASAR_PORTRAIT_PATH,
-                "reviewed portrait must appear exactly once in the ASAR "
-                "listing without case or Unicode aliases "
-                f"(found {exact_portrait_count} exact, "
-                f"{portrait_alias_count} normalized)",
+    for expected_path in _REVIEWED_ASAR_ASSETS:
+        expected_components = _normalize_distribution_path(expected_path)
+        exact_count = 0
+        alias_count = 0
+        for path in paths:
+            portable_path = path.replace("\\", "/")
+            if portable_path.startswith("/"):
+                portable_path = portable_path[1:]
+            if portable_path == expected_path:
+                exact_count += 1
+            try:
+                if _normalize_distribution_path(path) == expected_components:
+                    alias_count += 1
+            except DistributionAuditError:
+                # The generic path audit already reports malformed entries;
+                # they cannot count toward a reviewed-asset contract.
+                continue
+        if exact_count != 1 or alias_count != 1:
+            problems.append(
+                DistributionProblem(
+                    "asar-listing",
+                    expected_path,
+                    "reviewed asset must appear exactly once in the ASAR "
+                    "listing without case or Unicode aliases "
+                    f"(found {exact_count} exact, "
+                    f"{alias_count} normalized)",
+                )
             )
-        )
     return tuple(problems)
 
 
@@ -658,12 +692,21 @@ def audit_repository(
     unpacked_root: Path | None = None,
     asar_listing: Path | None = None,
     extracted_asar_portrait: Path | None = None,
+    extracted_asar_character_atlas: Path | None = None,
 ) -> tuple[DistributionProblem, ...]:
     """Run the required repository checks plus any requested artifact scans."""
 
-    if (asar_listing is None) != (extracted_asar_portrait is None):
+    package_inputs = (
+        asar_listing,
+        extracted_asar_portrait,
+        extracted_asar_character_atlas,
+    )
+    if any(value is not None for value in package_inputs) and any(
+        value is None for value in package_inputs
+    ):
         raise DistributionAuditError(
-            "ASAR listing and extracted reviewed portrait must be audited together."
+            "ASAR listing and both extracted reviewed character assets must be "
+            "audited together."
         )
 
     root = repository_root.resolve()
@@ -681,6 +724,14 @@ def audit_repository(
             # Do not resolve this path before the regular-file check: resolving
             # would hide a symlink supplied in place of the extracted payload.
             audit_extracted_asar_portrait(extracted_asar_portrait)
+        )
+    if extracted_asar_character_atlas is not None:
+        problems.extend(
+            # Preserve the link itself for the regular-file check, matching the
+            # portrait boundary above.
+            audit_extracted_asar_character_atlas(
+                extracted_asar_character_atlas
+            )
         )
     return tuple(problems)
 
@@ -717,6 +768,15 @@ def _parse_arguments(arguments: Sequence[str] | None) -> argparse.Namespace:
             "same ASAR represented by --asar-listing."
         ),
     )
+    parser.add_argument(
+        "--extracted-asar-character-atlas",
+        type=Path,
+        help=(
+            "State atlas extracted from "
+            "dist/character/elysia-state-atlas.png in the same ASAR represented "
+            "by --asar-listing."
+        ),
+    )
     return parser.parse_args(arguments)
 
 
@@ -730,6 +790,9 @@ def main(arguments: Sequence[str] | None = None) -> int:
             unpacked_root=options.unpacked_tree,
             asar_listing=options.asar_listing,
             extracted_asar_portrait=options.extracted_asar_portrait,
+            extracted_asar_character_atlas=(
+                options.extracted_asar_character_atlas
+            ),
         )
     except DistributionAuditError as error:
         print(f"Distribution asset check failed: {error}")
@@ -745,6 +808,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
         int(options.unpacked_tree is not None)
         + int(options.asar_listing is not None)
         + int(options.extracted_asar_portrait is not None)
+        + int(options.extracted_asar_character_atlas is not None)
     )
     print(
         "Distribution asset check passed: Git index, reviewed public assets, "

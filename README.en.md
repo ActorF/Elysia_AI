@@ -20,7 +20,7 @@
 
 > [!IMPORTANT]
 >
-> This project is currently a **development preview**, not a ready-to-install release. The desktop shell still depends on the source checkout, its Python environment, Ollama, and local models. Project Source management, local document answers with trusted citations, bounded one-utterance STT, an explicitly confirmed Voice Session, managed GPT-SoVITS reply playback, safe barge-in while a reply is thinking or speaking, and optional re-listening after a normal reply are connected. Document answers remain an explicit per-Project-Chat choice. Automatic re-listening is off by default, visible and disableable on the call surface, and every final transcript still requires review and an explicit send. A closed Character State API now maps Chat, Voice, and Knowledge lifecycles onto the static character surfaces. Optional voice runtimes, models, and reference audio are not included in the base install; real-time partial transcripts, the Work Agent, Live2D, and production installation are not complete. The real microphone/speaker, room-echo, and long-call human matrix was not run and the project owner explicitly waived it as a closing gate for this delivery, so the project does not claim those observations passed.
+> This project is currently a **development preview**, not a ready-to-install release. The desktop shell still depends on the source checkout, its Python environment, Ollama, and local models. Project Source management, local document answers with trusted citations, bounded one-utterance STT, an explicitly confirmed Voice Session, managed GPT-SoVITS reply playback, safe barge-in while a reply is thinking or speaking, and optional re-listening after a normal reply are connected. Document answers remain an explicit per-Project-Chat choice. Automatic re-listening is off by default, visible and disableable on the call surface, and every final transcript still requires review and an explicit send. A closed Character State API now maps Chat, Voice, and Knowledge lifecycles onto a reviewed in-app state atlas; character motion can be Animated or Still, and Windows Reduced Motion always takes priority. Optional voice runtimes, models, and reference audio are not included in the base install; real-time partial transcripts, the Work Agent, Live2D, and production installation are not complete. The real microphone/speaker, room-echo, and long-call human matrix was not run and the project owner explicitly waived it as a closing gate for this delivery, so the project does not claim those observations passed.
 
 ---
 
@@ -35,6 +35,7 @@
 - 🎙️ **Local Voice Session** — Explicit capture runs through local VAD and Faster-Whisper; reviewed final text can be sent, then naturally interrupt the reply while it thinks or speaks
 - 🔊 **Local Reply Playback** — Python queues naturally segmented replies through managed GPT-SoVITS, while trusted Electron Preload plays doubly validated PCM WAV in order
 - 🎭 **Character State API** — Normalizes Chat, Voice, and Knowledge lifecycles into a closed semantic state set while reserving states for future Work/Approval flows; character components never select animation files directly
+- 🌸 **In-app Character** — Main Chat and Voice share a reviewed state atlas with seven visual states, bounded whole-character motion, Still/Reduced Motion, and two-stage image fallback
 - 💾 **Recovery First** — Local JSON storage, legacy migration, quarantine, atomic writes, and import/export services
 - ♿ **Desktop Usability** — Themes, keyboard navigation, focus management, Windows scaling, Chinese IME, and offline/error recovery
 
@@ -48,7 +49,7 @@
 | Chat History | ✅ Available | Multiple sessions, pin, archive, restore, delete, and per-Chat drafts |
 | Project | ✅ Available | Metadata, Instructions, Workspace binding, and Chat ownership |
 | Memory Core | ✅ Available | Global / Project / Chat scopes, retrieval, summaries, and long-term memory foundation |
-| Settings | ✅ Available | Chat/Ollama/Memory/file/STT settings, theme, and automatic read-aloud, rate, volume, Voice Profile, captions, manual transcript review, and automatic re-listening |
+| Settings | ✅ Available | Chat/Ollama/Memory/file/STT settings, theme, character performance, and automatic read-aloud, rate, volume, Voice Profile, captions, manual transcript review, and automatic re-listening |
 | Attachments / Sources | ✅ Available | Scope-bound storage and a Project Sources UI; lifecycle mutations expose progress, bounded cooperative cancellation, and explicit recovery; verified-original export shares the global Knowledge lease but has no journal entry or Renderer Stop |
 | Audio Devices | ✅ Available | Microphone/speaker selection, Windows permission state, input level, and output tone tests |
 | One-utterance recording and local VAD | ✅ Available | Explicit start, 16 kHz mono `s16le`, transient processing; no automatic Chat Turn |
@@ -58,9 +59,10 @@
 | Barge-in / speech interruption | ✅ Available | Enabled only for the reply to an explicitly sent Voice turn; requires verified WebRTC echo cancellation and sustained-speech confirmation, then cancels that exact turn |
 | Automatic re-listening | ✅ Available | A visible switch can listen again after a safely completed reply; it is off by default and never auto-sends a final transcript |
 | Character State API | ✅ Available | Closed `idle / listening / thinking / speaking / working / waiting_approval / error` contract; Chat, Voice, and Knowledge are connected, while approval remains reserved for a future real Work/Approval flow |
+| In-app Character | ✅ Available | Seven semantic states map to one pinned reviewed atlas; Animated / Still, OS Reduced Motion, a closable panel, and image fallbacks are connected |
 | File parsing and local RAG | ✅ Baseline available | Versioned lineage, a pinned local embedding space, Scope-safe SQLite indexing, bounded retrieval/reranking, a loopback-only grounded generator, same-Project sharing, and cross-Project fail-closed authorization are wired into Desktop Chat; users must explicitly enable **Use Project Sources** |
 | Work Agent and tool permissions | ⏳ Planned | No tool execution, desktop control, Internet, or Vision workflow |
-| Live2D / desktop pet | ⏳ Planned | Reviewed static artwork and the Character State API exist; no Live2D model, lip sync, or independent pet window is connected |
+| Live2D / desktop pet | ⏳ Planned | A state-driven in-app 2D atlas exists; no Live2D model, lip sync, or independent pet window is connected |
 | Standalone installation and updates | ⏳ Planned | Current packages do not bundle Python, Ollama, or models and are unsigned |
 
 `✅ Available` means the core flow is implemented. `🚧 In development` means code is undergoing integration or acceptance testing and should not be treated as stable. `⏳ Planned` means an entry may already appear in the UI or roadmap while the backing service remains incomplete.
@@ -396,15 +398,17 @@ cd /d D:\Elysia_AI\desktop
 npm run package
 npx --no-install asar list out\win-unpacked\resources\app.asar > "%TEMP%\elysia-asar-listing.txt"
 if exist "%TEMP%\elysia-portrait.png" del /f /q "%TEMP%\elysia-portrait.png"
+if exist "%TEMP%\elysia-state-atlas.png" del /f /q "%TEMP%\elysia-state-atlas.png"
 pushd "%TEMP%"
 call "D:\Elysia_AI\desktop\node_modules\.bin\asar.cmd" extract-file "D:\Elysia_AI\desktop\out\win-unpacked\resources\app.asar" "dist\character\elysia-portrait.png"
+call "D:\Elysia_AI\desktop\node_modules\.bin\asar.cmd" extract-file "D:\Elysia_AI\desktop\out\win-unpacked\resources\app.asar" "dist\character\elysia-state-atlas.png"
 popd
 cd /d D:\Elysia_AI
-.venv\Scripts\python.exe scripts\check_distribution_assets.py --unpacked-tree desktop\out\win-unpacked --asar-listing "%TEMP%\elysia-asar-listing.txt" --extracted-asar-portrait "%TEMP%\elysia-portrait.png"
-del /f /q "%TEMP%\elysia-asar-listing.txt" "%TEMP%\elysia-portrait.png"
+.venv\Scripts\python.exe scripts\check_distribution_assets.py --unpacked-tree desktop\out\win-unpacked --asar-listing "%TEMP%\elysia-asar-listing.txt" --extracted-asar-portrait "%TEMP%\elysia-portrait.png" --extracted-asar-character-atlas "%TEMP%\elysia-state-atlas.png"
+del /f /q "%TEMP%\elysia-asar-listing.txt" "%TEMP%\elysia-portrait.png" "%TEMP%\elysia-state-atlas.png"
 ```
 
-The unpacked output is written to `desktop\out\win-unpacked`. The audit scans the real unpacked tree, the ASAR listing, and the portrait extracted from the exact path in that same ASAR. The portrait must appear exactly once and its packaged bytes must match the pinned length and SHA-256. The audit also rejects model weights, audio, runtime/user data, archives, and link escapes; run it before publishing every artifact. `npm run make` can generate an unsigned NSIS installer, but the current artifact does not include Python, Ollama, or models and is not a standalone release.
+The unpacked output is written to `desktop\out\win-unpacked`. The audit scans the real unpacked tree, the ASAR listing, and both character images extracted from exact paths in that same ASAR. Each asset must appear exactly once and its packaged bytes must match its pinned length and SHA-256. The audit also rejects model weights, audio, runtime/user data, archives, and link escapes; run it before publishing every artifact. `npm run make` can generate an unsigned NSIS installer, but the current artifact does not include Python, Ollama, or models and is not a standalone release.
 
 ---
 
@@ -533,7 +537,7 @@ In particular, the local model-pack note does not provide complete, verifiable r
 
 The project owner has expressly selected the official *Honkai Impact 3rd* Elysia signet as public branding for this unofficial, non-commercial fan project. The PNG/ICO is outside any source-code license and remains the property of HoYoverse / miHoYo; this project claims no endorsement and will respond to a rights-holder removal request.
 
-The in-app Elysia portrait was generated with OpenAI's built-in image-generation tool from three references supplied directly by the project owner and one pre-existing portrait in the owner's local asset collection. The four references are not included in the repository or installer; the reviewed PNG is pinned by exact path, byte length, and SHA-256 in the distribution gate, and the real ASAR must contain that path exactly once and pass an extracted-byte verification. The portrait is likewise outside the source-code license and is used only in this unofficial, non-commercial fan project. The underlying Elysia and *Honkai Impact 3rd* character IP remains with HoYoverse / miHoYo and other applicable rights holders; no endorsement is implied, and the project will respond to a valid removal request. See [MODEL_LICENSE.md](./MODEL_LICENSE.md) for the complete record.
+The in-app Elysia portrait and seven-state atlas were generated with OpenAI's built-in image-generation tool from Elysia references supplied by the project owner. External original references are not included in the repository or installer; the reviewed earlier portrait remains tracked and packaged as both a secondary atlas reference and the runtime fallback. Every reviewed runtime PNG is pinned by exact path, byte length, and SHA-256 in the distribution gate, and the real ASAR must contain each path exactly once and pass extracted-byte verification. These images are outside the source-code license and are used only in this unofficial, non-commercial fan project. The underlying Elysia and *Honkai Impact 3rd* character IP remains with HoYoverse / miHoYo and other applicable rights holders; no endorsement is implied, and the project will respond to a valid removal request. See [MODEL_LICENSE.md](./MODEL_LICENSE.md) for the complete record.
 
 ---
 

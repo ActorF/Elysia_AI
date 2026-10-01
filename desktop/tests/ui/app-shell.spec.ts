@@ -1399,6 +1399,18 @@ async function readThemeState(): Promise<{
   }))
 }
 
+async function readCharacterPerformanceState(): Promise<{
+  preference?: string
+  resolved?: string
+  stored: string | null
+}> {
+  return page.evaluate(() => ({
+    preference: document.documentElement.dataset.characterPerformancePreference,
+    resolved: document.documentElement.dataset.characterPerformance,
+    stored: window.localStorage.getItem('elysia.characterPerformance'),
+  }))
+}
+
 test.beforeEach(async () => {
   electronApp = await electron.launch({
     args: [electronMainPath],
@@ -1909,6 +1921,69 @@ test('persists system, light, and dark theme choices', async () => {
     'system',
     'dark',
   ]))
+})
+
+test('persists character performance and honors reduced motion', async () => {
+  await page.emulateMedia({ reducedMotion: 'no-preference' })
+  await openSettings()
+  await expect.poll(readCharacterPerformanceState).toEqual({
+    preference: 'animated',
+    resolved: 'animated',
+    stored: null,
+  })
+
+  await page.getByText('Still', { exact: true }).click()
+  await expect(page.getByRole('radio', { name: /^Still/ })).toBeChecked()
+  await expect.poll(readCharacterPerformanceState).toEqual({
+    preference: 'still',
+    resolved: 'still',
+    stored: 'still',
+  })
+
+  await page.getByRole('button', { name: 'Back to chat' }).click()
+  await page.getByRole('button', { name: 'Expand Elysia panel' }).click()
+  const artwork = page.locator('.character-panel .character-artwork')
+  await expect(artwork).toHaveAttribute('data-character-performance', 'still')
+  await expect.poll(() => artwork.locator('.character-artwork-frame').evaluate(
+    (element) => window.getComputedStyle(element).animationName,
+  )).toBe('none')
+
+  await page.locator('.character-panel').getByRole('button', {
+    name: 'Close Elysia character panel',
+  }).click()
+  await pressControlShortcut(',')
+  await page.getByText('Animated', { exact: true }).click()
+  await expect.poll(readCharacterPerformanceState).toEqual({
+    preference: 'animated',
+    resolved: 'animated',
+    stored: 'animated',
+  })
+  await page.getByRole('button', { name: 'Back to chat' }).click()
+  await page.getByRole('button', { name: 'Expand Elysia panel' }).click()
+  await expect.poll(() => artwork.locator('.character-artwork-frame').evaluate(
+    (element) => window.getComputedStyle(element).animationName,
+  )).toBe('character-resting')
+
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  await expect.poll(readCharacterPerformanceState).toEqual({
+    preference: 'animated',
+    resolved: 'still',
+    stored: 'animated',
+  })
+  await expect(artwork).toHaveAttribute('data-character-performance', 'still')
+  await expect.poll(() => artwork.locator('.character-artwork-frame').evaluate(
+    (element) => window.getComputedStyle(element).animationName,
+  )).toBe('none')
+
+  await page.locator('.character-panel').getByRole('button', {
+    name: 'Close Elysia character panel',
+  }).click()
+  const composer = page.getByLabel('Message Elysia')
+  await composer.fill('Character motion is optional.')
+  await composer.press('Enter')
+  await expect.poll(async () => (
+    (await getCalls()).filter((call) => call.method === 'sendMessage').length
+  )).toBe(1)
 })
 
 test('shows all Settings areas, ownership scopes, and no secret controls', async () => {
@@ -7343,7 +7418,7 @@ test('keeps global shortcuts inside native modal boundaries', async () => {
   })).toBeFocused()
 })
 
-test('shares one decoded Elysia portrait without disturbing Chat', async () => {
+test('shares one decoded Elysia state atlas without disturbing Chat', async () => {
   await emitSnapshot(readySnapshot({
     capabilities: [
       'chat.stream',
@@ -7371,7 +7446,13 @@ test('shares one decoded Elysia portrait without disturbing Chat', async () => {
   const panelSource = await panelImage.evaluate(
     (element) => (element as HTMLImageElement).currentSrc,
   )
-  expect(panelSource).toContain('/character/elysia-portrait.png')
+  expect(panelSource).toContain('/character/elysia-state-atlas.png')
+  await expect(panel.locator('.character-artwork'))
+    .toHaveAttribute('data-character-asset', 'atlas')
+  await expect(panel.locator('.character-artwork'))
+    .toHaveAttribute('data-character-expression', 'soft-smile')
+  await expect(panel.locator('.character-artwork'))
+    .toHaveAttribute('data-character-action', 'resting')
   await expect(page.getByText('Character artwork', { exact: true }))
     .toHaveCount(0)
   await expect(page.getByText(
@@ -7402,6 +7483,12 @@ test('shares one decoded Elysia portrait without disturbing Chat', async () => {
   await expect.poll(() => callImage.evaluate(
     (element) => (element as HTMLImageElement).currentSrc,
   )).toBe(panelSource)
+  await expect.poll(() => call.locator('.character-artwork-frame').evaluate(
+    (element) => {
+      const bounds = element.getBoundingClientRect()
+      return Math.abs((bounds.width / bounds.height) - 0.75)
+    },
+  )).toBeLessThan(0.005)
   await expect(call.getByText('Character artwork', { exact: true }))
     .toHaveCount(0)
   await call.getByRole('button', { name: 'Close voice' }).click()
@@ -7425,6 +7512,8 @@ test('projects Chat activity and failure through the shared character state', as
   const composer = page.getByLabel('Message Elysia')
   await expect(panel).toHaveAttribute('data-character-state', 'idle')
   await expect(artwork).toHaveAttribute('data-character-state', 'idle')
+  await expect(artwork).toHaveAttribute('data-character-expression', 'soft-smile')
+  await expect(artwork).toHaveAttribute('data-character-action', 'resting')
   await expect(captionState).toHaveText('Ready')
   await expect(panel.locator('.soft-status')).toHaveText('Ready')
 
@@ -7432,6 +7521,8 @@ test('projects Chat activity and failure through the shared character state', as
   await composer.press('Enter')
   await expect(panel).toHaveAttribute('data-character-state', 'thinking')
   await expect(artwork).toHaveAttribute('data-character-state', 'thinking')
+  await expect(artwork).toHaveAttribute('data-character-expression', 'focused')
+  await expect(artwork).toHaveAttribute('data-character-action', 'thinking')
   await expect(captionState).toHaveText('Thinking')
   await emitEvent({
     type: 'chat-error',
@@ -7443,6 +7534,8 @@ test('projects Chat activity and failure through the shared character state', as
   })
   await expect(panel).toHaveAttribute('data-character-state', 'error')
   await expect(artwork).toHaveAttribute('data-character-state', 'error')
+  await expect(artwork).toHaveAttribute('data-character-expression', 'concerned')
+  await expect(artwork).toHaveAttribute('data-character-action', 'alert')
   await expect(captionState).toHaveText('Needs attention')
   await expect(panel.locator('.soft-status')).toHaveText('Ready')
 })
@@ -7477,6 +7570,8 @@ test('scopes Work and Knowledge character activity to the current Project Chat',
   await composer.press('Enter')
   await expect(panel).toHaveAttribute('data-character-state', 'working')
   await expect(artwork).toHaveAttribute('data-character-state', 'working')
+  await expect(artwork).toHaveAttribute('data-character-expression', 'focused')
+  await expect(artwork).toHaveAttribute('data-character-action', 'working')
   await expect(captionState).toHaveText('Working')
   await emitEvent({
     type: 'chat-complete',
@@ -7564,6 +7659,8 @@ test('projects Voice listening without letting device state choose artwork', asy
   await page.getByRole('button', { name: 'Start microphone' }).click()
   await expect(call).toHaveAttribute('data-character-state', 'listening')
   await expect(artwork).toHaveAttribute('data-character-state', 'listening')
+  await expect(artwork).toHaveAttribute('data-character-expression', 'attentive')
+  await expect(artwork).toHaveAttribute('data-character-action', 'listening')
   await expect(page.getByText('Listening for speech', { exact: true }))
     .toBeVisible()
 
@@ -7572,7 +7669,7 @@ test('projects Voice listening without letting device state choose artwork', asy
   await expect(artwork).toHaveAttribute('data-character-state', 'idle')
 })
 
-test('keeps character and Voice controls usable when portrait loading fails', async () => {
+test('keeps character and Voice controls usable through both image fallbacks', async () => {
   await emitSnapshot(readySnapshot({
     capabilities: [
       'chat.stream',
@@ -7588,12 +7685,25 @@ test('keeps character and Voice controls usable when portrait loading fails', as
     exact: true,
   })
   await panelImage.evaluate((element) => {
+    ;(element as HTMLImageElement).src = 'file:///missing-panel-atlas.png'
+  })
+  const panelArtwork = panel.locator('.character-artwork')
+  await expect(panelArtwork).toHaveAttribute('data-character-asset', 'portrait')
+  const panelPortrait = panel.getByRole('img', {
+    name: 'Elysia character portrait',
+    exact: true,
+  })
+  await expect.poll(() => panelPortrait.evaluate(
+    (element) => (element as HTMLImageElement).currentSrc,
+  )).toContain('/character/elysia-portrait.png')
+  await panelPortrait.evaluate((element) => {
     ;(element as HTMLImageElement).src = 'file:///missing-panel-portrait.png'
   })
   await expect(panel.getByRole('img', {
     name: 'Elysia character portrait unavailable',
   })).toBeVisible()
-  await expect(panel.locator('.character-artwork'))
+  await expect(panelArtwork).toHaveAttribute('data-character-asset', 'unavailable')
+  await expect(panelArtwork)
     .toHaveAttribute('data-character-state', 'idle')
   await expect(panelImage).toHaveCount(0)
 
@@ -7612,11 +7722,21 @@ test('keeps character and Voice controls usable when portrait loading fails', as
     exact: true,
   })
   await callImage.evaluate((element) => {
+    ;(element as HTMLImageElement).src = 'file:///missing-call-atlas.png'
+  })
+  const callArtwork = call.locator('.character-artwork')
+  await expect(callArtwork).toHaveAttribute('data-character-asset', 'portrait')
+  const callPortrait = call.getByRole('img', {
+    name: 'Elysia character portrait',
+    exact: true,
+  })
+  await callPortrait.evaluate((element) => {
     ;(element as HTMLImageElement).src = 'file:///missing-call-portrait.png'
   })
   await expect(call.getByRole('img', {
     name: 'Elysia character portrait unavailable',
   })).toBeVisible()
+  await expect(callArtwork).toHaveAttribute('data-character-asset', 'unavailable')
   await expect(callImage).toHaveCount(0)
   await expect(call.getByRole('button', { name: 'Start microphone' }))
     .toBeEnabled()

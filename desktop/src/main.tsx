@@ -5,6 +5,7 @@ import { flushSync } from 'react-dom'
 import { createRoot } from 'react-dom/client'
 import App from './App.tsx'
 import { AppErrorBoundary } from './AppErrorBoundary.tsx'
+import { CharacterPerformanceProvider } from './character/CharacterPerformanceProvider.tsx'
 import './design-system/global.css'
 import {
   initializeDocumentTheme,
@@ -27,9 +28,11 @@ async function renderApp(): Promise<void> {
     root.render(
       <StrictMode>
         <ThemeProvider>
-          <AppErrorBoundary>
-            <App />
-          </AppErrorBoundary>
+          <CharacterPerformanceProvider>
+            <AppErrorBoundary>
+              <App />
+            </AppErrorBoundary>
+          </CharacterPerformanceProvider>
         </ThemeProvider>
       </StrictMode>,
     )

@@ -59,9 +59,11 @@ The Stage 13 Character State API is renderer-local and closed over `idle`,
 `listening`, `thinking`, `speaking`, `working`, `waiting_approval`, and `error`.
 It projects current-Chat generation, current-Project Knowledge activity, Voice's
 primary lifecycle, and Backend failure into the Character Panel and call page.
-The contract adds no IPC and never selects an animation file; the current
-surface keeps one static portrait, while `waiting_approval` has no producer
-until a real Work/Approval workflow exists.
+The contract adds no IPC and never selects an animation file. A separate closed
+presentation registry maps those states to the first seven cells of one pinned
+reviewed atlas, while `waiting_approval` has no producer until a real
+Work/Approval workflow exists. Character motion is renderer-local, supports
+Animated and Still choices, and always yields to OS Reduced Motion.
 Electron is frozen as the production
 shell. The Tauri source and toolchain were removed after the comparison; the
 rationale, recorded measurements, and revisit gates are in
@@ -148,9 +150,13 @@ Git-ignored and must not be committed or packaged with the application.
   captions are visible only when enabled and can be hidden or shown from the
   Session without changing their saved global default.
 - The optional Character Panel and Voice portrait consume the same semantic
-  Character State contract. State changes update accessible text and
-  `data-character-state` only; they do not switch the packaged static portrait,
-  load Live2D, write Chat state, or create a new Backend capability.
+  Character State contract. A closed registry maps each state to one reviewed
+  atlas cell, expression token, and whole-character action token. It cannot
+  load arbitrary paths or accept model-selected animation names. Settings
+  persists Animated / Still on this device; OS Reduced Motion
+  disables character animation, while state images and accessible text remain.
+  The surface does not load Live2D, perform lip sync, write Chat state, or
+  create a new Backend capability.
 - **Mute** immediately ends and discards a live capture or held interruption
   PCM and disarms reply monitoring; it does not cancel an already-running text
   reply, and unmuting never opens the microphone by itself. **Hang up** or
@@ -429,26 +435,35 @@ npm audit --audit-level=high
 npm run package
 npx --no-install asar list out\win-unpacked\resources\app.asar > "%TEMP%\elysia-asar-listing.txt"
 if exist "%TEMP%\elysia-portrait.png" del /f /q "%TEMP%\elysia-portrait.png"
+if exist "%TEMP%\elysia-state-atlas.png" del /f /q "%TEMP%\elysia-state-atlas.png"
 pushd "%TEMP%"
 call "D:\Elysia_AI\desktop\node_modules\.bin\asar.cmd" extract-file "D:\Elysia_AI\desktop\out\win-unpacked\resources\app.asar" "dist\character\elysia-portrait.png"
+call "D:\Elysia_AI\desktop\node_modules\.bin\asar.cmd" extract-file "D:\Elysia_AI\desktop\out\win-unpacked\resources\app.asar" "dist\character\elysia-state-atlas.png"
 popd
 cd /d D:\Elysia_AI
-.venv\Scripts\python.exe scripts\check_distribution_assets.py --unpacked-tree desktop\out\win-unpacked --asar-listing "%TEMP%\elysia-asar-listing.txt" --extracted-asar-portrait "%TEMP%\elysia-portrait.png"
-del /f /q "%TEMP%\elysia-asar-listing.txt" "%TEMP%\elysia-portrait.png"
+.venv\Scripts\python.exe scripts\check_distribution_assets.py --unpacked-tree desktop\out\win-unpacked --asar-listing "%TEMP%\elysia-asar-listing.txt" --extracted-asar-portrait "%TEMP%\elysia-portrait.png" --extracted-asar-character-atlas "%TEMP%\elysia-state-atlas.png"
+del /f /q "%TEMP%\elysia-asar-listing.txt" "%TEMP%\elysia-portrait.png" "%TEMP%\elysia-state-atlas.png"
 ```
 
 `npm run package` creates an unpacked desktop build in `desktop\out`.
 On Windows, `npm run make` additionally creates an unsigned NSIS installer.
 The final audit scans the actual package tree and its ASAR listing, then verifies
-the bytes extracted from the ASAR's one required portrait path. Neither accepted
-output contains the GPT-SoVITS runtime, Voice Profile catalog, model weights, or
-reference audio.
+the bytes extracted from the required portrait and state-atlas paths. Neither
+accepted output contains the GPT-SoVITS runtime, Voice Profile catalog, model
+weights, or reference audio.
 
 The application PNG and Windows ICO are derived from the official *Honkai
 Impact 3rd* Elysia signet at the project owner's express direction for this
 unofficial, non-commercial fan project. They are third-party assets, are not
 covered by any source-code license, and do not imply HoYoverse / miHoYo
 endorsement. See the root `MODEL_LICENSE.md` before publishing a build.
+
+The packaged portrait fallback and state atlas are reviewed generated fan
+artwork, not source-code-licensed assets. The distribution audit pins both by
+exact path, byte length, SHA-256, ASAR cardinality, and extracted bytes. The
+state atlas is a static 4×2 RGB sheet: only its first seven cells participate
+in the closed Character State contract, and the eighth success cell is not a
+new runtime state.
 
 `npm run docs:check` enforces file-purpose comments plus public class,
 function, class-method, and exported interface-method documentation. The
@@ -459,9 +474,11 @@ semantic why/how requirements remain part of review under the root
 UI tests, including Knowledge method/event races, export ownership across
 Renderer reload and Project switches, trusted receipt settlement, Project
 isolation, archived read-only behavior, explicit grounded intent, and citation
-accessibility. The contract suite also runs `character-state.test.mjs`, while
-the UI suite verifies current-Chat/Project scoping, Voice projection, Backend
-failure, and the static portrait fallback.
+accessibility. The contract suite also runs `character-state.test.mjs` and
+`character-presentation.test.mjs`, while the UI suite verifies current-
+Chat/Project scoping, Voice projection, Backend failure, atlas-cell cues,
+performance preference/Reduced Motion, and the atlas → portrait → accessible
+text fallback chain.
 `npm run test:ui` can be used independently while working on layout.
 The UI suite loads the production renderer through a dedicated sandboxed test
 preload; its mock Backend and control surface are never included by the

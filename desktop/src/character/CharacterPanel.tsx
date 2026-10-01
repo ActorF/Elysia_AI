@@ -64,7 +64,12 @@ export function CharacterPanel({
           className="character-portrait"
           state={characterState.state}
         />
-        <div className="character-caption">
+        <div
+          className="character-caption"
+          role="status"
+          aria-live="polite"
+          aria-atomic="true"
+        >
           <strong>{characterState.label}</strong>
           <span>{characterState.description}</span>
         </div>

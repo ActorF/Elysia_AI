@@ -177,6 +177,26 @@ ImageGen 输出仍包含 255 个 alpha 等级，透明区附近存在视觉上�
 
 最终文件的 alpha 只有 0 和 255 两种值；保留的不透明面积约为 44.97%。它适合作为清晰部件边界参考，但仍不是实际分层的 PSD 或 Live2D 工程。
 
+## 应用内运行时选片
+
+Stage 13 Module 3 选择 `02-activity-states.png` 作为应用内角色状态图集，并把同一字节复制到 `desktop/public/character/elysia-state-atlas.png`。运行时不重新编码、不执行 AI 重绘，也不把整套审阅包复制进安装包；Vite/ASAR 只携带这一个 1536×1024 RGB 图集和原有的静态立绘回退。
+
+运行时按固定 4×2 网格裁切，单格逻辑尺寸为 384×512，映射如下：
+
+| Character State | 列 | 行 | 视觉含义 |
+| --- | ---: | ---: | --- |
+| `idle` | 0 | 0 | Soft smile / resting |
+| `listening` | 1 | 0 | Attentive / listening |
+| `thinking` | 2 | 0 | Focused / thinking |
+| `speaking` | 3 | 0 | Speaking smile / speaking |
+| `working` | 0 | 1 | Focused / working |
+| `waiting_approval` | 1 | 1 | Patient / waiting |
+| `error` | 2 | 1 | Concerned / alert |
+
+第 8 格（列 3、行 1）的 Success/celebration 不属于当前封闭 Character State，运行时明确不使用。图集由 `character-presentation.ts` 的穷尽映射选择；Chat、Voice、Knowledge 与未来 Work/Approval producer 只能提供语义状态，不能提供路径、格号或任意动画名称。
+
+运行时副本仍为 **2,303,963 字节**，SHA-256 为 **`54EB2525673C2A849819BE10EB88EB2F670EB1911E86FD154E69B578CBB4C25C`**。分发门禁同时固定仓库路径、ASAR 精确路径与抽取字节。若图集加载失败，UI 会回退到原审核立绘；两张图都失败时显示可访问文本 fallback，Chat 与 Voice 控件保持可用。
+
 ## 审计结论与仍需注意的地方
 
 - 所有完整展开的可见手都能辨认一个拇指和四个手指；未发现明确的三指、四指、六指、融合掌或左右装备互换。
@@ -185,7 +205,7 @@ ImageGen 输出仍包含 255 个 alpha 等级，透明区附近存在视觉上�
 - 04 第一带头饰顶部安全距离偏小，但没有被裁切或碰到边界。
 - 02 第 6 格两手已完全分开，中间保留浅色背景间隙。
 - 08 是视觉切层指南，不代表已经完成锚点、网格、变形器、物理参数或嘴型绑定。
-- AI 生成图在真正进入安装包之前仍应经过逐格人工选片、统一锚点、真实透明切片和最终绘师修整。
+- `02-activity-states.png` 是已逐格审核的例外：运行时有意保留其不透明 RGB 背景，并以整张固定图集由 CSS 定点裁切。其余候选图若未来要作为独立透明 Sprite、Live2D 部件或其他新运行时素材进入安装包，仍须先完成统一锚点、真实透明切片、最终绘师修整，以及新的来源与分发审核。
 
 ## 参考来源
 

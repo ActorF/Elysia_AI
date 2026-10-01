@@ -1,4 +1,4 @@
-"""Test Git and Electron distribution boundaries for local voice assets."""
+"""Test Git and Electron distribution boundaries for reviewed local assets."""
 
 from __future__ import annotations
 
@@ -93,6 +93,7 @@ def test_maintained_source_and_brand_assets_are_allowed() -> None:
             "desktop/public/elysia-icon.png",
             "desktop/assets/elysia-icon.ico",
             "desktop/public/character/elysia-portrait.png",
+            "desktop/public/character/elysia-state-atlas.png",
         ],
         source="synthetic-index",
     )
@@ -122,12 +123,64 @@ def _copy_reviewed_portrait(destination_root: Path) -> Path:
     return destination
 
 
-def test_reviewed_character_portrait_matches_exact_contract(tmp_path: Path) -> None:
-    """Accept only the generated portrait bytes covered by the asset review."""
+def _copy_reviewed_atlas(destination_root: Path) -> Path:
+    """Copy the approved state atlas into one isolated audit fixture."""
 
-    _copy_reviewed_portrait(tmp_path)
+    source = (
+        _REPOSITORY_ROOT
+        / "desktop"
+        / "public"
+        / "character"
+        / "elysia-state-atlas.png"
+    )
+    destination = (
+        destination_root
+        / "desktop"
+        / "public"
+        / "character"
+        / "elysia-state-atlas.png"
+    )
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source, destination)
+    return destination
+
+
+def _copy_reviewed_character_assets(destination_root: Path) -> tuple[Path, Path]:
+    """Copy every required character asset into an isolated audit fixture."""
+
+    return (
+        _copy_reviewed_portrait(destination_root),
+        _copy_reviewed_atlas(destination_root),
+    )
+
+
+def test_reviewed_character_portrait_matches_exact_contract(tmp_path: Path) -> None:
+    """Accept only character bytes covered by the distribution review."""
+
+    _copy_reviewed_character_assets(tmp_path)
 
     assert check_distribution_assets.audit_reviewed_assets(tmp_path) == ()
+
+
+def test_runtime_state_atlas_is_the_reviewed_source_without_reencoding() -> None:
+    """Keep the packaged atlas byte-identical to the accepted review image."""
+
+    source = (
+        _REPOSITORY_ROOT
+        / "data"
+        / "characters"
+        / "elysia-2dArt"
+        / "02-activity-states.png"
+    )
+    runtime = (
+        _REPOSITORY_ROOT
+        / "desktop"
+        / "public"
+        / "character"
+        / "elysia-state-atlas.png"
+    )
+
+    assert source.read_bytes() == runtime.read_bytes()
 
 
 def test_reviewed_character_portrait_content_mutation_is_rejected(
@@ -135,7 +188,7 @@ def test_reviewed_character_portrait_content_mutation_is_rejected(
 ) -> None:
     """Reject a same-length replacement that would evade a size-only check."""
 
-    portrait = _copy_reviewed_portrait(tmp_path)
+    portrait, _atlas = _copy_reviewed_character_assets(tmp_path)
     with portrait.open("r+b") as portrait_stream:
         first_byte = portrait_stream.read(1)
         portrait_stream.seek(0)
@@ -152,7 +205,7 @@ def test_reviewed_character_portrait_length_mutation_is_rejected(
 ) -> None:
     """Reject truncation even though the reviewed path and format still match."""
 
-    portrait = _copy_reviewed_portrait(tmp_path)
+    portrait, _atlas = _copy_reviewed_character_assets(tmp_path)
     with portrait.open("r+b") as portrait_stream:
         portrait_stream.truncate(portrait.stat().st_size - 1)
 
@@ -161,13 +214,23 @@ def test_reviewed_character_portrait_length_mutation_is_rejected(
     assert any("byte length" in problem.message for problem in problems)
 
 
-def test_reviewed_character_portrait_is_required_at_exact_path(tmp_path: Path) -> None:
-    """Fail closed when the approved distributable portrait is absent."""
+@pytest.mark.parametrize(
+    "missing_name",
+    ["elysia-portrait.png", "elysia-state-atlas.png"],
+)
+def test_reviewed_character_assets_are_required_at_exact_paths(
+    tmp_path: Path,
+    missing_name: str,
+) -> None:
+    """Fail closed when either approved distributable image is absent."""
 
+    portrait, atlas = _copy_reviewed_character_assets(tmp_path)
+    missing = portrait if missing_name == portrait.name else atlas
+    missing.unlink()
     problems = check_distribution_assets.audit_reviewed_assets(tmp_path)
 
     assert len(problems) == 1
-    assert problems[0].path == "desktop/public/character/elysia-portrait.png"
+    assert problems[0].path == f"desktop/public/character/{missing_name}"
     assert "missing, linked, or unreadable" in problems[0].message
 
 
@@ -193,6 +256,40 @@ def test_extracted_asar_portrait_mutation_is_rejected(tmp_path: Path) -> None:
 
     assert len(problems) == 1
     assert problems[0].path == "dist/character/elysia-portrait.png"
+    assert "SHA-256" in problems[0].message
+
+
+def test_extracted_asar_character_atlas_matches_exact_contract(
+    tmp_path: Path,
+) -> None:
+    """Accept the reviewed state atlas after extraction from an ASAR package."""
+
+    atlas = _copy_reviewed_atlas(tmp_path)
+
+    assert (
+        check_distribution_assets.audit_extracted_asar_character_atlas(atlas)
+        == ()
+    )
+
+
+def test_extracted_asar_character_atlas_mutation_is_rejected(
+    tmp_path: Path,
+) -> None:
+    """Reject packaged state-atlas bytes that differ from the review."""
+
+    atlas = _copy_reviewed_atlas(tmp_path)
+    with atlas.open("r+b") as atlas_stream:
+        atlas_stream.seek(2048)
+        original_byte = atlas_stream.read(1)
+        atlas_stream.seek(2048)
+        atlas_stream.write(bytes((original_byte[0] ^ 0xFF,)))
+
+    problems = check_distribution_assets.audit_extracted_asar_character_atlas(
+        atlas
+    )
+
+    assert len(problems) == 1
+    assert problems[0].path == "dist/character/elysia-state-atlas.png"
     assert "SHA-256" in problems[0].message
 
 
@@ -322,6 +419,7 @@ def test_asar_listing_rejects_unicode_paths_and_concealed_archives(
     listing.write_text(
         "\\dist\\index.html\n"
         "\\dist\\character\\elysia-portrait.png\n"
+        "\\dist\\character\\elysia-state-atlas.png\n"
         "\\ＭＯＤＥＬＳ\\ＷＥＩＧＨＴＳ\\voice.ckpt\n"
         "\\dist\\assets\\voice-pack.zip\n",
         encoding="utf-8",
@@ -372,7 +470,11 @@ def test_asar_listing_requires_exactly_one_reviewed_portrait(
 
     listing = tmp_path / "asar-listing.txt"
     listing.write_text(
-        "\n".join(["\\dist\\index.html", *portrait_entries]) + "\n",
+        "\n".join([
+            "\\dist\\index.html",
+            "\\dist\\character\\elysia-state-atlas.png",
+            *portrait_entries,
+        ]) + "\n",
         encoding="utf-8",
     )
 
@@ -384,13 +486,62 @@ def test_asar_listing_requires_exactly_one_reviewed_portrait(
     assert f"{expected_normalized} normalized" in problems[0].message
 
 
-def test_repository_requires_asar_listing_and_extracted_portrait_together(
+@pytest.mark.parametrize(
+    ("atlas_entries", "expected_exact", "expected_normalized"),
+    [
+        ([], 0, 0),
+        (
+            [
+                "\\dist\\character\\elysia-state-atlas.png",
+                "\\dist\\character\\elysia-state-atlas.png",
+            ],
+            2,
+            2,
+        ),
+        (
+            [
+                "\\dist\\character\\elysia-state-atlas.png",
+                "\\DIST\\CHARACTER\\ELYSIA-STATE-ATLAS.PNG",
+            ],
+            1,
+            2,
+        ),
+    ],
+)
+def test_asar_listing_requires_exactly_one_reviewed_state_atlas(
+    tmp_path: Path,
+    atlas_entries: list[str],
+    expected_exact: int,
+    expected_normalized: int,
+) -> None:
+    """Reject missing or duplicate state-atlas entries in the ASAR index."""
+
+    listing = tmp_path / "asar-listing.txt"
+    listing.write_text(
+        "\n".join([
+            "\\dist\\index.html",
+            "\\dist\\character\\elysia-portrait.png",
+            *atlas_entries,
+        ]) + "\n",
+        encoding="utf-8",
+    )
+
+    problems = check_distribution_assets.audit_asar_listing(listing)
+
+    assert len(problems) == 1
+    assert problems[0].path == "dist/character/elysia-state-atlas.png"
+    assert f"found {expected_exact} exact" in problems[0].message
+    assert f"{expected_normalized} normalized" in problems[0].message
+
+
+def test_repository_requires_all_packaged_character_proofs_together(
     tmp_path: Path,
 ) -> None:
-    """Prevent a package audit from silently omitting either integrity proof."""
+    """Prevent a package audit from omitting any character integrity proof."""
 
     listing = tmp_path / "asar-listing.txt"
     portrait = tmp_path / "elysia-portrait.png"
+    atlas = tmp_path / "elysia-state-atlas.png"
 
     with pytest.raises(check_distribution_assets.DistributionAuditError):
         check_distribution_assets.audit_repository(
@@ -402,9 +553,48 @@ def test_repository_requires_asar_listing_and_extracted_portrait_together(
             _REPOSITORY_ROOT,
             extracted_asar_portrait=portrait,
         )
+    with pytest.raises(check_distribution_assets.DistributionAuditError):
+        check_distribution_assets.audit_repository(
+            _REPOSITORY_ROOT,
+            asar_listing=listing,
+            extracted_asar_portrait=portrait,
+        )
+    with pytest.raises(check_distribution_assets.DistributionAuditError):
+        check_distribution_assets.audit_repository(
+            _REPOSITORY_ROOT,
+            asar_listing=listing,
+            extracted_asar_character_atlas=atlas,
+        )
 
 
 def test_current_repository_passes_required_distribution_checks() -> None:
     """Keep the real Git index and Electron package declaration within policy."""
 
     assert check_distribution_assets.audit_repository(_REPOSITORY_ROOT) == ()
+
+
+def test_cli_success_counts_both_extracted_character_assets(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Keep the CLI summary aligned with every accepted artifact proof."""
+
+    monkeypatch.setattr(
+        check_distribution_assets,
+        "audit_repository",
+        lambda *args, **kwargs: (),
+    )
+
+    status = check_distribution_assets.main([
+        "--unpacked-tree",
+        "unpacked",
+        "--asar-listing",
+        "listing.txt",
+        "--extracted-asar-portrait",
+        "portrait.png",
+        "--extracted-asar-character-atlas",
+        "atlas.png",
+    ])
+
+    assert status == 0
+    assert "4 optional artifact input(s)" in capsys.readouterr().out

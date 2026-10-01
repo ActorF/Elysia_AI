@@ -133,15 +133,17 @@ cd desktop
 npm run package
 npx --no-install asar list out\win-unpacked\resources\app.asar > "%TEMP%\elysia-asar-listing.txt"
 if exist "%TEMP%\elysia-portrait.png" del /f /q "%TEMP%\elysia-portrait.png"
+if exist "%TEMP%\elysia-state-atlas.png" del /f /q "%TEMP%\elysia-state-atlas.png"
 pushd "%TEMP%"
 call "D:\Elysia_AI\desktop\node_modules\.bin\asar.cmd" extract-file "D:\Elysia_AI\desktop\out\win-unpacked\resources\app.asar" "dist\character\elysia-portrait.png"
+call "D:\Elysia_AI\desktop\node_modules\.bin\asar.cmd" extract-file "D:\Elysia_AI\desktop\out\win-unpacked\resources\app.asar" "dist\character\elysia-state-atlas.png"
 popd
 cd ..
-.venv\Scripts\python.exe scripts\check_distribution_assets.py --unpacked-tree desktop\out\win-unpacked --asar-listing "%TEMP%\elysia-asar-listing.txt" --extracted-asar-portrait "%TEMP%\elysia-portrait.png"
-del /f /q "%TEMP%\elysia-asar-listing.txt" "%TEMP%\elysia-portrait.png"
+.venv\Scripts\python.exe scripts\check_distribution_assets.py --unpacked-tree desktop\out\win-unpacked --asar-listing "%TEMP%\elysia-asar-listing.txt" --extracted-asar-portrait "%TEMP%\elysia-portrait.png" --extracted-asar-character-atlas "%TEMP%\elysia-state-atlas.png"
+del /f /q "%TEMP%\elysia-asar-listing.txt" "%TEMP%\elysia-portrait.png" "%TEMP%\elysia-state-atlas.png"
 ```
 
-The checker rejects forbidden Git paths/extensions and freezes the complete reviewed Electron Builder configuration. This prevents inherited configuration, platform-specific `files`, alternate app roots, hooks, custom Electron distributions, NSIS scripts, `extraResources`, `extraFiles`, and `asarUnpack` from silently expanding package input. GitHub Actions also builds the unpacked Windows application, captures the real ASAR listing, requires exactly one reviewed portrait entry, extracts that entry from the same archive, and checks its actual size and SHA-256. The current Git index and local `desktop\out\win-unpacked` scan pass with no local model or reference-audio assets included.
+The checker rejects forbidden Git paths/extensions and freezes the complete reviewed Electron Builder configuration. This prevents inherited configuration, platform-specific `files`, alternate app roots, hooks, custom Electron distributions, NSIS scripts, `extraResources`, `extraFiles`, and `asarUnpack` from silently expanding package input. GitHub Actions also builds the unpacked Windows application, captures the real ASAR listing, requires exactly one reviewed portrait and one reviewed state-atlas entry, extracts both entries from the same archive, and checks each asset's actual size and SHA-256. The current Git index and local `desktop\out\win-unpacked` scan pass with no local model or reference-audio assets included.
 
 This gate is defense in depth, not proof of ownership. Reviewers must still examine newly introduced data, generated bundles, and third-party dependencies.
 

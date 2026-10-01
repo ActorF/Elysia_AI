@@ -15,6 +15,10 @@ import type {
   VoiceSettingsState,
 } from '../../electron/contracts.ts'
 import { codePointLength } from '../../electron/protocol-text.js'
+import type {
+  CharacterPerformanceMode,
+  CharacterPerformancePreference,
+} from '../character/character-performance.ts'
 import { InlineAlert, LoadingState } from '../design-system/Feedback'
 import { Icon, type IconName } from '../design-system/Icon'
 import type { AudioDeviceSnapshot } from '../voice/audio-devices.ts'
@@ -30,6 +34,8 @@ export type ResolvedTheme = Exclude<ThemePreference, 'system'>
 export interface SettingsViewProps {
   themePreference: ThemePreference
   resolvedTheme: ResolvedTheme
+  characterPerformancePreference: CharacterPerformancePreference
+  resolvedCharacterPerformance: CharacterPerformanceMode
   settingsState: DesktopSettingsState | null
   models: string[]
   loading: boolean
@@ -45,6 +51,10 @@ export interface SettingsViewProps {
   voiceError: string | null
   /** Apply the selected renderer and native-chrome theme preference. */
   onThemeChange(theme: ThemePreference): void
+  /** Apply the selected renderer-local character performance preference. */
+  onCharacterPerformanceChange(
+    preference: CharacterPerformancePreference,
+  ): void
   /** Persist validated global Desktop settings. */
   onSave(settings: DesktopSettingsValues): Promise<void>
   /** Reload canonical global settings and discard the current draft. */
@@ -75,6 +85,13 @@ export interface SettingsViewProps {
 
 interface ThemeOption {
   value: ThemePreference
+  label: string
+  description: string
+  icon: IconName
+}
+
+interface CharacterPerformanceOption {
+  value: CharacterPerformancePreference
   label: string
   description: string
   icon: IconName
@@ -118,6 +135,21 @@ const themeOptions: readonly ThemeOption[] = [
     label: 'Dark',
     description: 'Use the dark Elysia palette on this device.',
     icon: 'moon',
+  },
+]
+
+const characterPerformanceOptions: readonly CharacterPerformanceOption[] = [
+  {
+    value: 'animated',
+    label: 'Animated',
+    description: 'Use bounded motion unless Windows requests reduced motion.',
+    icon: 'sparkles',
+  },
+  {
+    value: 'still',
+    label: 'Still',
+    description: 'Keep state expressions but disable character animation.',
+    icon: 'stop',
   },
 ]
 
@@ -294,17 +326,25 @@ function validateDraft(draft: SettingsDraft): SettingsValidationErrors {
 function AppearanceSettings({
   themePreference,
   resolvedTheme,
+  characterPerformancePreference,
+  resolvedCharacterPerformance,
   onThemeChange,
+  onCharacterPerformanceChange,
 }: Pick<
   SettingsViewProps,
-  'themePreference' | 'resolvedTheme' | 'onThemeChange'
+  | 'themePreference'
+  | 'resolvedTheme'
+  | 'characterPerformancePreference'
+  | 'resolvedCharacterPerformance'
+  | 'onThemeChange'
+  | 'onCharacterPerformanceChange'
 >) {
   const themeGroupId = useId()
   return (
     <section className="settings-section" aria-labelledby={`${themeGroupId}-heading`}>
       <div className="settings-section-heading">
         <h2 id={`${themeGroupId}-heading`}>Appearance</h2>
-        <p>Theme changes apply immediately and remain on this device.</p>
+        <p>Theme and character performance apply immediately on this device.</p>
       </div>
       <fieldset className="theme-options">
         <legend className="visually-hidden">Color theme</legend>
@@ -336,8 +376,39 @@ function AppearanceSettings({
           )
         })}
       </fieldset>
+      <fieldset className="theme-options character-performance-options">
+        <legend className="visually-hidden">Character performance</legend>
+        {characterPerformanceOptions.map((option) => {
+          const optionId = `${themeGroupId}-character-${option.value}`
+          const descriptionId = `${optionId}-description`
+          return (
+            <label
+              key={option.value}
+              className={`theme-option${characterPerformancePreference === option.value ? ' selected' : ''}`}
+              htmlFor={optionId}
+            >
+              <input
+                id={optionId}
+                type="radio"
+                name={`${themeGroupId}-character-performance`}
+                value={option.value}
+                checked={characterPerformancePreference === option.value}
+                onChange={() => { onCharacterPerformanceChange(option.value) }}
+                aria-describedby={descriptionId}
+              />
+              <Icon name={option.icon} className="theme-option-icon" />
+              <span className="theme-option-copy">
+                <strong>{option.label}</strong>
+                <span id={descriptionId}>{option.description}</span>
+              </span>
+              <span className="theme-option-indicator" aria-hidden="true" />
+            </label>
+          )
+        })}
+      </fieldset>
       <p className="resolved-theme" role="status" aria-live="polite">
-        Elysia is currently rendered in {resolvedTheme.toLowerCase()} mode.
+        Elysia is rendered in {resolvedTheme.toLowerCase()} mode with{' '}
+        {resolvedCharacterPerformance} character motion.
       </p>
     </section>
   )
@@ -347,6 +418,8 @@ function AppearanceSettings({
 export function SettingsView({
   themePreference,
   resolvedTheme,
+  characterPerformancePreference,
+  resolvedCharacterPerformance,
   settingsState,
   models,
   loading,
@@ -361,6 +434,7 @@ export function SettingsView({
   voicePending,
   voiceError,
   onThemeChange,
+  onCharacterPerformanceChange,
   onSave,
   onReload,
   onRestart,
@@ -521,7 +595,10 @@ export function SettingsView({
           <AppearanceSettings
             themePreference={themePreference}
             resolvedTheme={resolvedTheme}
+            characterPerformancePreference={characterPerformancePreference}
+            resolvedCharacterPerformance={resolvedCharacterPerformance}
             onThemeChange={onThemeChange}
+            onCharacterPerformanceChange={onCharacterPerformanceChange}
           />
           {voiceSection}
         </form>
@@ -540,7 +617,10 @@ export function SettingsView({
           <AppearanceSettings
             themePreference={themePreference}
             resolvedTheme={resolvedTheme}
+            characterPerformancePreference={characterPerformancePreference}
+            resolvedCharacterPerformance={resolvedCharacterPerformance}
             onThemeChange={onThemeChange}
+            onCharacterPerformanceChange={onCharacterPerformanceChange}
           />
           {voiceSection}
         </form>
@@ -1142,7 +1222,10 @@ export function SettingsView({
           <AppearanceSettings
             themePreference={themePreference}
             resolvedTheme={resolvedTheme}
+            characterPerformancePreference={characterPerformancePreference}
+            resolvedCharacterPerformance={resolvedCharacterPerformance}
             onThemeChange={onThemeChange}
+            onCharacterPerformanceChange={onCharacterPerformanceChange}
           />
 
           <footer className="settings-save-bar">
