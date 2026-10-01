@@ -41,6 +41,7 @@ import type {
   DesktopPetMode,
   DesktopPetState,
 } from '../electron/desktop-pet-contracts.ts'
+import type { DataStorageViewState } from '../electron/data-storage-contracts.ts'
 import type {
   PresenceNotificationState,
   PresenceReminderFrequency,
@@ -64,7 +65,10 @@ import type {
 import { EmptyState, InlineAlert } from './design-system/Feedback.tsx'
 import { Icon } from './design-system/Icon.tsx'
 import { ProjectView } from './projects/ProjectView.tsx'
-import { SettingsView } from './settings/SettingsView.tsx'
+import {
+  SettingsView,
+  type DataStorageAction,
+} from './settings/SettingsView.tsx'
 import type { VoiceSettingsDraft } from './settings/VoiceSettingsSection.tsx'
 import { AppShell } from './shell/AppShell.tsx'
 import { Sidebar, type AppView } from './shell/Sidebar.tsx'
@@ -836,6 +840,12 @@ function App() {
   const [settingsMutationPending, setSettingsMutationPending] = useState(false)
   const [settingsError, setSettingsError] = useState<string | null>(null)
   const [settingsRestartError, setSettingsRestartError] = useState<string | null>(null)
+  const [dataStorageState, setDataStorageState]
+    = useState<DataStorageViewState | null>(null)
+  const [dataStorageLoading, setDataStorageLoading] = useState(false)
+  const [dataStorageAction, setDataStorageAction]
+    = useState<DataStorageAction | null>(null)
+  const [dataStorageError, setDataStorageError] = useState<string | null>(null)
   const [desktopPetState, setDesktopPetState] = useState<DesktopPetState | null>(null)
   const [desktopPetPending, setDesktopPetPending] = useState(false)
   const [desktopPetError, setDesktopPetError] = useState<string | null>(null)
@@ -940,6 +950,8 @@ function App() {
   const projectMutationPendingRef = useRef(false)
   const settingsDirtyRef = useRef(false)
   const settingsLoadOperationRef = useRef(0)
+  const dataStorageOperationRef = useRef(0)
+  const dataStoragePendingRef = useRef(false)
   const desktopPetOperationRef = useRef(0)
   const presenceNotificationOperationRef = useRef(0)
   const voiceSettingsLoadOperationRef = useRef(0)
@@ -2260,6 +2272,131 @@ function App() {
     }
   }, [desktopApi])
 
+  const loadDataStorageState = useCallback(async (): Promise<void> => {
+    if (desktopApi === undefined) {
+      setDataStorageError('Data storage controls are unavailable.')
+      return
+    }
+    if (dataStoragePendingRef.current) {
+      return
+    }
+    const operationId = dataStorageOperationRef.current + 1
+    dataStorageOperationRef.current = operationId
+    setDataStorageLoading(true)
+    setDataStorageError(null)
+    try {
+      const nextState = await desktopApi.getDataStorageState()
+      if (operationId === dataStorageOperationRef.current) {
+        setDataStorageState(nextState)
+      }
+    } catch (error) {
+      if (operationId === dataStorageOperationRef.current) {
+        setDataStorageError(
+          error instanceof Error
+            ? error.message
+            : 'Could not load managed storage information.',
+        )
+      }
+    } finally {
+      if (operationId === dataStorageOperationRef.current) {
+        setDataStorageLoading(false)
+      }
+    }
+  }, [desktopApi])
+
+  const runDataStorageAction = useCallback(async (
+    action: DataStorageAction,
+    operation: () => Promise<DataStorageViewState | void>,
+    fallbackError: string,
+  ): Promise<void> => {
+    if (dataStoragePendingRef.current) {
+      return
+    }
+    dataStoragePendingRef.current = true
+    const operationId = dataStorageOperationRef.current + 1
+    dataStorageOperationRef.current = operationId
+    setDataStorageAction(action)
+    setDataStorageError(null)
+    try {
+      const nextState = await operation()
+      if (
+        operationId === dataStorageOperationRef.current
+        && nextState !== undefined
+      ) {
+        setDataStorageState(nextState)
+      }
+    } catch (error) {
+      if (operationId === dataStorageOperationRef.current) {
+        setDataStorageError(
+          error instanceof Error ? error.message : fallbackError,
+        )
+      }
+    } finally {
+      dataStoragePendingRef.current = false
+      setDataStorageAction(null)
+    }
+  }, [])
+
+  const refreshDataStorage = useCallback(async (): Promise<void> => {
+    if (desktopApi === undefined) {
+      setDataStorageError('Data storage controls are unavailable.')
+      return
+    }
+    await runDataStorageAction(
+      'refreshing',
+      () => desktopApi.refreshDataStorageUsage(),
+      'Could not refresh managed storage usage.',
+    )
+  }, [desktopApi, runDataStorageAction])
+
+  const moveDataDirectory = useCallback(async (): Promise<void> => {
+    if (desktopApi === undefined || dataStorageState === null) {
+      setDataStorageError('Load the active data directory before moving it.')
+      return
+    }
+    await runDataStorageAction(
+      'moving',
+      () => desktopApi.chooseAndMoveDataDirectory(
+        dataStorageState.state.revision,
+      ),
+      'Could not move the managed data directory.',
+    )
+  }, [dataStorageState, desktopApi, runDataStorageAction])
+
+  const clearTemporaryData = useCallback(async (): Promise<void> => {
+    const inventory = dataStorageState?.inventory ?? null
+    if (
+      desktopApi === undefined
+      || dataStorageState === null
+      || inventory === null
+      || inventory.revision !== dataStorageState.state.revision
+      || inventory.rootId !== dataStorageState.state.rootId
+    ) {
+      setDataStorageError('Refresh storage usage before clearing temporary data.')
+      return
+    }
+    await runDataStorageAction(
+      'cleaning',
+      () => desktopApi.clearTemporaryData(
+        dataStorageState.state.revision,
+        inventory.token,
+      ),
+      'Could not clear temporary audio, cache, and logs.',
+    )
+  }, [dataStorageState, desktopApi, runDataStorageAction])
+
+  const openDataDirectory = useCallback(async (): Promise<void> => {
+    if (desktopApi === undefined || dataStorageState === null) {
+      setDataStorageError('Load the active data directory before opening it.')
+      return
+    }
+    await runDataStorageAction(
+      'opening',
+      () => desktopApi.openDataDirectory(),
+      'Could not open the managed data directory.',
+    )
+  }, [dataStorageState, desktopApi, runDataStorageAction])
+
   const loadVoiceSettings = useCallback(async (): Promise<void> => {
     if (desktopApi === undefined) {
       setVoiceSettingsError('Desktop Voice Settings API is unavailable.')
@@ -2857,6 +2994,21 @@ function App() {
     snapshot.activeKnowledgeOperation,
     snapshot.status,
   ])
+
+  useEffect(() => {
+    if (activeView !== 'settings' || desktopApi === undefined) {
+      return
+    }
+    let active = true
+    queueMicrotask(() => {
+      if (active) {
+        void loadDataStorageState()
+      }
+    })
+    return () => {
+      active = false
+    }
+  }, [activeView, desktopApi, loadDataStorageState])
 
   const acceptKnowledgeState = useCallback((
     expectedProjectId: string,
@@ -6714,6 +6866,10 @@ function App() {
         presenceNotificationState={presenceNotificationState}
         presenceNotificationPending={presenceNotificationPending}
         presenceNotificationError={presenceNotificationError}
+        dataStorageState={dataStorageState}
+        dataStorageLoading={dataStorageLoading}
+        dataStorageAction={dataStorageAction}
+        dataStorageError={dataStorageError}
         settingsState={settingsState}
         models={modelOptions}
         loading={settingsLoading}
@@ -6732,6 +6888,10 @@ function App() {
         onDesktopPetModeChange={changeDesktopPetMode}
         onResetDesktopPetPosition={resetDesktopPetPosition}
         onPresenceNotificationChange={changePresenceNotifications}
+        onRefreshDataStorage={refreshDataStorage}
+        onMoveDataDirectory={moveDataDirectory}
+        onClearTemporaryData={clearTemporaryData}
+        onOpenDataDirectory={openDataDirectory}
         onSave={saveSettings}
         onReload={() => {
           setSettingsRestartError(null)

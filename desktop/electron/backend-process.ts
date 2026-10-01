@@ -548,6 +548,7 @@ export class BackendProcess {
     chatId: string
     modelName: string
   } | null = null
+  private dataRoot: string | undefined
   private snapshot: BackendSnapshot = {
     revision: 0,
     status: 'stopped',
@@ -559,7 +560,10 @@ export class BackendProcess {
     private readonly projectRoot: string,
     private readonly emitToRenderer: EventSink,
     private readonly speechPlayback: TrustedSpeechPlaybackOwner,
-  ) {}
+    dataRoot?: string,
+  ) {
+    this.dataRoot = this.validateDataRoot(dataRoot)
+  }
 
   /** Return an immutable renderer snapshot including the active generation ID. */
   getSnapshot(): BackendSnapshot {
@@ -637,6 +641,14 @@ export class BackendProcess {
     return this.speechDelivery?.hasActiveTurn() === true
   }
 
+  /** Report whether data maintenance would interrupt an admitted operation. */
+  hasActiveMaintenanceWork(): boolean {
+    return this.restartInProgress
+      || this.restartCompletion !== null
+      || this.pendingRequests.size > 0
+      || this.hasActiveSpeechTurn()
+  }
+
   /** Spawn the Backend and begin its authenticated handshake and initialization. */
   start(modelName?: string): void {
     if (this.child !== null) {
@@ -679,22 +691,33 @@ export class BackendProcess {
       error: undefined,
     })
 
+    const childEnvironment: NodeJS.ProcessEnv = {
+      ...process.env,
+      // The desktop protocol is UTF-8 on every Windows locale. Without these
+      // overrides Python may inherit a legacy console code page.
+      PYTHONIOENCODING: 'utf-8',
+      PYTHONUTF8: '1',
+      ELYSIA_DESKTOP_SESSION_TOKEN: sessionToken,
+      ...(this.dataRoot === undefined
+        ? {}
+        : { ELYSIA_DATA_ROOT: this.dataRoot }),
+      ...(modelName === undefined
+        ? {}
+        : { ELYSIA_MODEL_OVERRIDE: modelName }),
+    }
+    if (this.dataRoot === undefined) {
+      // An ambient shell variable is not an authority for a child owned by
+      // Electron. Development without an explicit root intentionally keeps
+      // Python's source-compatible fallback instead.
+      delete childEnvironment.ELYSIA_DATA_ROOT
+    }
+
     const child = spawn(
       pythonExecutable,
       [bridgeScript],
       {
         cwd: this.projectRoot,
-        env: {
-          ...process.env,
-          // The desktop protocol is UTF-8 on every Windows locale. Without
-          // these overrides Python may inherit a legacy console code page.
-          PYTHONIOENCODING: 'utf-8',
-          PYTHONUTF8: '1',
-          ELYSIA_DESKTOP_SESSION_TOKEN: sessionToken,
-          ...(modelName === undefined
-            ? {}
-            : { ELYSIA_MODEL_OVERRIDE: modelName }),
-        },
+        env: childEnvironment,
         // fd3 is a dedicated binary-only channel. Keeping it out of stdout
         // prevents WAV bytes from ever entering NDJSON or renderer events.
         stdio: ['pipe', 'pipe', 'pipe', 'pipe'],
@@ -885,6 +908,43 @@ export class BackendProcess {
 
   /** Restart the Backend without changing its selected model. */
   async restart(): Promise<BackendSnapshot> {
+    return this.performRestart()
+  }
+
+  /** Restart against one Main-authorized absolute private-data root. */
+  async restartWithDataRoot(dataRoot: string): Promise<BackendSnapshot> {
+    const nextDataRoot = this.validateDataRoot(dataRoot)
+    if (nextDataRoot === undefined) {
+      throw new Error('Python Backend data root is required.')
+    }
+    const previousDataRoot = this.dataRoot
+    this.dataRoot = nextDataRoot
+    try {
+      return await this.performRestart()
+    } catch (error) {
+      // Main may roll the storage transaction back and retry the old root.
+      // Keeping the previous authority here prevents a later ordinary restart
+      // from silently reopening a failed relocation destination.
+      this.dataRoot = previousDataRoot
+      throw error
+    }
+  }
+
+  /**
+   * Restart against the root already made authoritative by stable Main state.
+   *
+   * Unlike a tentative move probe, a failed restart must not restore the prior
+   * in-memory path: rollback has already committed its old pointer, and every
+   * later ordinary restart must continue using that durable authority.
+   */
+  async restartWithAuthoritativeDataRoot(
+    dataRoot: string,
+  ): Promise<BackendSnapshot> {
+    const authoritativeDataRoot = this.validateDataRoot(dataRoot)
+    if (authoritativeDataRoot === undefined) {
+      throw new Error('Python Backend data root is required.')
+    }
+    this.dataRoot = authoritativeDataRoot
     return this.performRestart()
   }
 
@@ -1645,6 +1705,21 @@ export class BackendProcess {
       // a reloaded renderer and every Project surface remain safely blocked.
       this.updateSnapshot({})
     })
+  }
+
+  private validateDataRoot(dataRoot: string | undefined): string | undefined {
+    if (dataRoot === undefined) {
+      return undefined
+    }
+    if (
+      typeof dataRoot !== 'string'
+      || dataRoot.length === 0
+      || dataRoot.includes('\0')
+      || !path.isAbsolute(dataRoot)
+    ) {
+      throw new Error('Python Backend data root must be an absolute path.')
+    }
+    return path.normalize(dataRoot)
   }
 
   private resolvePythonExecutable(): string {

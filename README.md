@@ -248,7 +248,7 @@ LOG_LEVEL=INFO
 DEBUG=False
 ```
 
-桌面端 **Settings** 允许修改 Chat 模型、Ollama Origin、Memory 限额、文件导入大小，以及本地转写模型、设备和默认语言；这些公开设置使用独立 revision 并写入 `workspace/settings/global.json`。转写模型可选 `tiny` / `base` / `small` / `medium` / `large-v3` / `turbo`，设备可选 `auto` / `cuda` / `cpu`，语言可选 `auto` / `zh` / `en`。默认使用 `cpu`，为同时驻留的 Ollama 与 GPT-SoVITS 保留 GPU 显存；只有在目标机器完成三组件资源基准后才建议显式改为 `auto` 或 `cuda`。
+桌面端 **Settings** 允许修改 Chat 模型、Ollama Origin、Memory 限额、文件导入大小，以及本地转写模型、设备和默认语言；这些公开设置使用独立 revision 并写入当前数据根下的 `workspace/settings/global.json`。转写模型可选 `tiny` / `base` / `small` / `medium` / `large-v3` / `turbo`，设备可选 `auto` / `cuda` / `cpu`，语言可选 `auto` / `zh` / `en`。默认使用 `cpu`，为同时驻留的 Ollama 与 GPT-SoVITS 保留 GPU 显存；只有在目标机器完成三组件资源基准后才建议显式改为 `auto` 或 `cuda`。
 
 同一份全局设置还包含八个语音字段：自动朗读、50–200% 语速、0–100% 音量、受限的逻辑 Voice Profile ID、`neutral / happy / sad` Voice Emotion、字幕、Transcript 审核模式和自动续听。其中自动朗读、音量、字幕、只允许 `manual` 的审核模式以及自动续听共五项是 live preference；语速、Voice Profile 与 Voice Emotion 三项进入 `restartFields`，在 Backend 重启前保持 Saved/Active 分离。成功重启后，同一 Active Emotion 同时选择本地 TTS 参考与审核静态表情。其余模型、Ollama、Memory/文件限额与 STT Runtime 设置也继续遵守既有重启边界；主题保存在当前设备的 Renderer Storage 中并立即生效。
 
@@ -404,7 +404,7 @@ del /f /q "%TEMP%\elysia-asar-listing.txt" "%TEMP%\elysia-portrait.png" "%TEMP%\
 | Desktop Runtime | Node.js 24 + Electron 43 |
 | Renderer | React 19 + TypeScript 6 + Vite 8 |
 | Local Protocol | authenticated NDJSON Protocol v1 + JSON Schema |
-| Persistence | revisioned/atomic local JSON under `workspace/` |
+| Persistence | 可移动的版本化数据根；原子 JSON、SQLite 索引与私有附件 Blob |
 | Python Quality | AST 文档覆盖检查 + pytest 9 + mypy 2 |
 | Desktop Quality | 源码文档覆盖检查 + ESLint 10 + Playwright 1.62 + TypeScript compiler |
 | Packaging | electron-builder + unsigned NSIS development artifact |
@@ -417,7 +417,7 @@ del /f /q "%TEMP%\elysia-asar-listing.txt" "%TEMP%\elysia-portrait.png" "%TEMP%\
 Elysia_AI/
 ├── attachments/        # Chat / Project 范围的本地附件存储边界
 ├── chats/              # Chat Domain、序列化、Repository 与迁移
-├── config/             # 环境默认值与可持久化桌面设置
+├── config/             # 环境默认值、ProductionDataLayout 与桌面设置
 ├── core/               # Brain、Ollama Adapter、Prompt 与 Active Conversation
 ├── data/characters/    # 角色参考语料；不属于源码许可范围
 ├── desktop/
@@ -434,13 +434,13 @@ Elysia_AI/
 ├── recovery/           # 导入、导出、迁移与损坏隔离
 ├── tests/              # Python 测试
 ├── voice/              # 音频设备、PCM/STT、TTS Contract/Profile、分句队列与受管 Runtime
-├── workspace/          # 运行时用户数据，被 Git 忽略；清理源码时不要删除
+├── workspace/          # 仅 Console/旧开发布局；Desktop 首次运行会安全复制
 ├── desktop_backend.py  # Electron ↔ Python 进程入口
 ├── desktop_speech.py   # 桌面语音分句、受管合成与二进制交付协调器
 └── start.py            # Console 入口与服务组合根
 ```
 
-`logs/`、`.env`、`.venv/`、`workspace/`、Ollama blobs/manifests、`models/cache/` 与 `models/weights/` 都被 Git 忽略。
+`logs/`、`.env`、`.venv/`、旧开发用 `workspace/`、Ollama blobs/manifests、`models/cache/` 与 `models/weights/` 都被 Git 忽略。Desktop 的正式数据根默认位于 Electron `userData/data`，可在 **Settings → Data & storage** 查看、移动、统计容量，并只清理应用自有的临时音频、Cache 与 Log；无法安全删除的旧副本会跨重启显示为 Recovery Copy，等待人工核对。精确布局和失败回滚规则见 [Production Data Layout](./docs/13-PRODUCTION-DATA-LAYOUT.md)。
 
 ---
 
@@ -466,7 +466,7 @@ cd /d D:\Elysia_AI\desktop
 2. `.venv\Scripts\python.exe` 存在且依赖已安装。
 3. Ollama 正在运行，Settings 中的 Origin 可访问。
 4. 配置的模型已经通过 `ollama pull <model>` 安装。
-5. `logs\app.log` 与 Electron 终端中没有新的启动错误。
+5. **Settings → Data & storage** 所示目录内的 `logs\app.log` 与 Electron 终端中没有新的启动错误；Console 模式仍使用仓库内 `logs\app.log`。
 
 ### 为什么 Voice 页面显示本地转写不可用？
 
@@ -484,14 +484,14 @@ cd /d D:\Elysia_AI\desktop
 
 ## 🔐 本地数据与隐私
 
-- Chat、Project、Memory、Attachments、Settings 与迁移状态保存在 `workspace/`。
-- `workspace/` 和 `logs/` 不进入 Git；请把它们视为私人数据，也不要随调试包公开。
+- Desktop 的 Chat、Project、Memory、Attachments、Sources、Knowledge 索引、Settings、恢复与迁移状态保存在 Main 选择的版本化数据根；Console 与旧开发模式在未注入独立根时仍兼容仓库内 `workspace/`。
+- 正式数据根、旧 `workspace/` 和 `logs/` 都不进入 Git；请把它们视为私人数据，也不要随调试包公开。
 - `.env` 被 Git 忽略，但仍不应放入不受信任的同步目录。
 - 文件源路径不会返回给 React；附件公开状态只包含最小安全元数据。
 - 音频测试不会保存录音。有界采集的 PCM 只在校验或转写所需的短暂生命周期内存在，不进入 Chat 或 Memory；协议结果不包含 PCM、模型路径或 Native Error。打断后的新 PCM 若需等待旧 Chat 终态，最多保留 10 秒，并会在超时、挂断、切换 Chat/Project、关闭 Voice 或其他隐私边界被覆盖和丢弃。
 - 独立 TTS Adapter 只允许 Loopback 服务；Smoke 只输出 SHA-256 摘要和音频元数据，不保存合成音频。桌面受管路径不会使用 HTTP，且只把最小关联 Metadata 和经过校验的 WAV 送入 Electron；Voice Profile、准确参考文本、权重路径和参考音频不会进入 Desktop Protocol 或 React。当前局部 Manifest 只证明同一次启动所见文件一致，不是完整供应链证明，因此桌面缓存保持关闭，Runtime 与同一 Windows 用户在租约启动时仍属于信任范围。
 - Elysia 的 Smoke 输出已经脱敏，但外部 GPT-SoVITS Runtime 自己的控制台或日志可能显示目标文本、参考文本与本地路径；这些上游日志也应视为私人本机数据，不要随调试包公开。
-- 删除源码或构建产物时不要误删 `workspace/`；需要迁移数据时应使用 Recovery Service 生成的受校验导出。
+- 不要在清理源码时删除旧 `workspace/`。目录移动使用 Settings 中由 Main 独占的离线、校验和可回滚流程；它不是备份。现有 Recovery Service 导出只覆盖部分 Domain JSON，不能冒充完整数据根备份。
 
 ---
 

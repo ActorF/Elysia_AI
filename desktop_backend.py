@@ -533,7 +533,7 @@ class DesktopBackend:
             else settings_repository
         )
         self._voice_settings_service = (
-            create_voice_settings_service(SETTINGS.base_dir)
+            create_voice_settings_service(SETTINGS.data_layout.root)
             if voice_settings_service is None
             else voice_settings_service
         )
@@ -1083,9 +1083,7 @@ class DesktopBackend:
             if self._attachment_store is None:
                 self._attachment_store = AttachmentService(
                     JsonAttachmentStore(
-                        self._runtime_settings.base_dir
-                        / "workspace"
-                        / "attachments",
+                        self._runtime_settings.data_layout.attachments,
                         max_file_bytes=(
                             self._runtime_settings.data_import_max_bytes
                         ),

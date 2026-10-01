@@ -83,13 +83,14 @@ class DesktopSpeechConfig:
         if not isinstance(settings, AppSettings):
             raise TypeError("settings must be an AppSettings instance.")
         base_dir = settings.base_dir.resolve()
+        data_layout = settings.data_layout
         return cls(
             runtime_root=(
                 base_dir / "models" / "cache" / "GPT-SoVITS-v2-240821"
             ),
             worker_script=base_dir / "scripts" / "gpt_sovits_worker.py",
             catalog_path=(
-                base_dir / "workspace" / "settings" / "voice-profiles.json"
+                data_layout.settings / "voice-profiles.json"
             ),
             asset_root=base_dir / "models" / "weights" / "gpt-sovits",
             voice_profile_id=settings.voice_profile_id,

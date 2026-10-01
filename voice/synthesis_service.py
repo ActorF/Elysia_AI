@@ -60,20 +60,31 @@ class LocalSpeechSynthesisService:
         self,
         base_dir: Path,
         *,
+        data_root: Path | None = None,
         allow_local_evaluation: bool = False,
         request_timeout_seconds: float = 120.0,
         probe_timeout_seconds: float = 1.0,
         deterministic_seed: int = 42,
     ) -> None:
-        """Derive fixed local paths and validate bounded runtime configuration."""
+        """Derive separate asset/catalog paths and validate runtime limits.
+
+        ``base_dir`` remains the replaceable resource root for model weights.
+        Desktop callers provide ``data_root`` for the movable private catalog;
+        omitting it preserves the source-compatible developer layout.
+        """
 
         if not isinstance(base_dir, Path) or not base_dir.is_absolute():
             raise ValueError("base_dir must be an absolute Path.")
+        if data_root is not None and (
+            not isinstance(data_root, Path) or not data_root.is_absolute()
+        ):
+            raise ValueError("data_root must be an absolute Path when supplied.")
         if not isinstance(allow_local_evaluation, bool):
             raise TypeError("allow_local_evaluation must be a Boolean.")
         self._asset_root = base_dir / "models" / "weights" / "gpt-sovits"
+        catalog_root = base_dir if data_root is None else data_root
         self._catalog_path = (
-            base_dir / "workspace" / "settings" / "voice-profiles.json"
+            catalog_root / "workspace" / "settings" / "voice-profiles.json"
         )
         self._config = GptSovitsConfig(
             asset_root=self._asset_root,
@@ -158,15 +169,17 @@ class LocalSpeechSynthesisService:
 def create_local_speech_synthesis_service(
     base_dir: Path,
     *,
+    data_root: Path | None = None,
     allow_local_evaluation: bool = False,
     request_timeout_seconds: float = 120.0,
     probe_timeout_seconds: float = 1.0,
     deterministic_seed: int = 42,
 ) -> LocalSpeechSynthesisService:
-    """Create the lazy production service from immutable application settings."""
+    """Create the lazy service with independent resource and private roots."""
 
     return LocalSpeechSynthesisService(
         base_dir,
+        data_root=data_root,
         allow_local_evaluation=allow_local_evaluation,
         request_timeout_seconds=request_timeout_seconds,
         probe_timeout_seconds=probe_timeout_seconds,

@@ -1096,10 +1096,10 @@ def _validate_positive_or_zero_revision(value: object) -> None:
 def create_desktop_settings_repository(
     base: AppSettings,
 ) -> DesktopSettingsRepository:
-    """Create the production repository under ignored local workspace data."""
+    """Create the production repository under the movable settings root."""
 
     return DesktopSettingsRepository(
-        base.base_dir / "workspace" / "settings" / "global.json",
+        base.data_layout.settings / "global.json",
         desktop_defaults_from_app_settings(base),
     )
 

@@ -266,7 +266,7 @@ LOG_LEVEL=INFO
 DEBUG=False
 ```
 
-Desktop **Settings** can update the Chat model, Ollama origin, Memory limits, file import size, and the local transcription model, device, and default language. These public values use an independent revision and are written to `workspace/settings/global.json`. Transcription models are `tiny` / `base` / `small` / `medium` / `large-v3` / `turbo`; devices are `auto` / `cuda` / `cpu`; languages are `auto` / `zh` / `en`. The default device is `cpu`, preserving GPU headroom for co-resident Ollama and GPT-SoVITS; opt in to `auto` or `cuda` only after measuring the three-component workload on the target machine.
+Desktop **Settings** can update the Chat model, Ollama origin, Memory limits, file import size, and the local transcription model, device, and default language. These public values use an independent revision and are written to `workspace/settings/global.json` below the active data root. Transcription models are `tiny` / `base` / `small` / `medium` / `large-v3` / `turbo`; devices are `auto` / `cuda` / `cpu`; languages are `auto` / `zh` / `en`. The default device is `cpu`, preserving GPU headroom for co-resident Ollama and GPT-SoVITS; opt in to `auto` or `cuda` only after measuring the three-component workload on the target machine.
 
 The same global settings contain eight Voice fields: automatic read-aloud, 50–200% speech rate, 0–100% volume, a bounded logical Voice Profile ID, the `neutral / happy / sad` Voice Emotion, captions, transcript review mode, and automatic re-listening. Five are live preferences: automatic read-aloud, volume, captions, the review mode—which currently accepts only `manual`—and automatic re-listening. Speech rate, Voice Profile, and Voice Emotion are the three restart-bound Voice fields and remain separated as saved versus active values until the Backend restarts. After a successful restart, the same active emotion selects both the local TTS reference and reviewed static expression. Model, Ollama, Memory/file-limit, and STT runtime changes continue to follow their existing restart boundary; theme remains in this device's Renderer Storage and applies immediately.
 
@@ -449,7 +449,7 @@ The unpacked output is written to `desktop\out\win-unpacked`. The audit scans th
 | Desktop Runtime | Node.js 24 + Electron 43 |
 | Renderer | React 19 + TypeScript 6 + Vite 8 |
 | Local Protocol | authenticated NDJSON Protocol v1 + JSON Schema |
-| Persistence | revisioned/atomic local JSON under `workspace/` |
+| Persistence | movable versioned data root with atomic JSON, SQLite indexes, and private attachment blobs |
 | Python Quality | AST documentation coverage + pytest 9 + mypy 2 |
 | Desktop Quality | source-documentation coverage + ESLint 10 + Playwright 1.62 + TypeScript compiler |
 | Packaging | electron-builder + unsigned NSIS development artifact |
@@ -462,7 +462,7 @@ The unpacked output is written to `desktop\out\win-unpacked`. The audit scans th
 Elysia_AI/
 ├── attachments/        # Scope-isolated local attachments for Chats and Projects
 ├── chats/              # Chat domain, serialization, repositories, and migration
-├── config/             # Environment defaults and persisted desktop settings
+├── config/             # Environment defaults, ProductionDataLayout, and desktop settings
 ├── core/               # Brain, Ollama adapter, prompts, and active conversations
 ├── data/characters/    # Character reference corpus; outside source-code licensing
 ├── desktop/
@@ -479,14 +479,21 @@ Elysia_AI/
 ├── recovery/           # Import, export, migration, and corruption quarantine
 ├── tests/              # Python tests
 ├── voice/              # Audio devices, PCM/STT, TTS contracts/Profiles, sentence queue, and managed runtime
-├── workspace/          # Ignored runtime user data; do not remove during source cleanup
+├── workspace/          # Console/legacy development layout; Desktop copies it safely once
 ├── desktop_backend.py  # Electron-to-Python process entry point
 ├── desktop_speech.py   # Sentence splitting, managed synthesis, and binary-delivery coordinator
 └── start.py            # Console entry point and composition root
 ```
 
-`logs/`, `.env`, `.venv/`, `workspace/`, Ollama blobs/manifests,
-`models/cache/`, and `models/weights/` are ignored by Git.
+`logs/`, `.env`, `.venv/`, the legacy development `workspace/`, Ollama
+blobs/manifests, `models/cache/`, and `models/weights/` are ignored by Git.
+Desktop's production root defaults to Electron `userData/data`. **Settings →
+Data & storage** can display and move it, measure its categories, and clear only
+application-owned temporary audio, Cache, and Logs. An old copy that cannot be
+deleted safely remains discoverable across restarts as a Recovery Copy for
+manual review. See [Production Data
+Layout](./docs/13-PRODUCTION-DATA-LAYOUT.md) for the exact tree and rollback
+rules.
 
 ---
 
@@ -512,7 +519,7 @@ Confirm that:
 2. `.venv\Scripts\python.exe` exists and dependencies are installed.
 3. Ollama is running and the configured Settings origin is reachable.
 4. The configured model has been installed with `ollama pull <model>`.
-5. `logs\app.log` and the Electron terminal show no new startup error.
+5. `logs\app.log` below the directory shown by **Settings → Data & storage** and the Electron terminal show no new startup error; Console mode still uses the repository-local `logs\app.log`.
 
 ### Why does the Voice page report that local transcription is unavailable?
 
@@ -544,14 +551,14 @@ Use **Add sources** on the Project page and wait until each source is **Ready**.
 
 ## 🔐 Local Data and Privacy
 
-- Chats, Projects, Memory, Attachments, Settings, and migration state are stored under `workspace/`.
-- `workspace/` and `logs/` are excluded from Git. Treat both as private and do not include them in public diagnostic archives.
+- Desktop stores Chats, Projects, Memory, Attachments, Sources, Knowledge indexes, Settings, recovery, and migration state under the versioned root selected by Main. Console and legacy development runs keep the repository `workspace/` fallback only when no separate root is injected.
+- The production root, legacy `workspace/`, and `logs/` are excluded from Git. Treat them as private and do not include them in public diagnostic archives.
 - `.env` is ignored by Git but should still stay outside untrusted synchronization locations.
 - Original attachment filesystem paths are not returned to React. Public attachment state contains only minimal safe metadata.
 - Audio tests do not retain recordings. Bounded-capture PCM exists only for the transient validation or transcription lifecycle and does not enter Chat or Memory; protocol results contain no PCM, model path, or native error. A post-interruption utterance waiting for the old Chat terminal is retained for at most 10 seconds and is overwritten and discarded on timeout, hang-up, Chat/Project change, Voice close, or another privacy boundary.
 - The separate TTS adapter accepts only loopback services. Its smoke command emits only SHA-256 digests and audio metadata and does not save synthesized audio. Desktop managed playback uses no HTTP and sends only minimal correlation metadata plus validated WAV into Electron; Voice Profiles, exact reference text, weight paths, and reference audio never enter Desktop Protocol or React. The current partial manifest proves consistency only for files observed during one launch, not complete supply-chain provenance, so desktop caching remains disabled and the runtime plus same Windows user remain inside the lease-start trust boundary.
 - Elysia's smoke output is sanitized, but the external GPT-SoVITS runtime may print target text, reference text, and local paths in its own console or logs. Treat those upstream logs as private local data and never include them in a public diagnostic bundle.
-- Do not remove `workspace/` while cleaning source or build output. Use validated Recovery Service exports when moving data.
+- Do not remove the legacy `workspace/` while cleaning source. Use Settings' Main-owned, offline, verified, rollback-capable directory move; it is not a backup. The current Recovery Service export contains only part of the domain JSON and must not be represented as a complete data-root backup.
 
 ---
 

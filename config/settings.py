@@ -8,6 +8,8 @@ from typing import Final, Literal, TypeAlias, cast
 
 from dotenv import load_dotenv
 
+from .data_layout import ProductionDataLayout
+
 
 DEFAULT_SHORT_TERM_MEMORY_TOKEN_BUDGET = 2048
 DEFAULT_MEMORY_RETRIEVAL_LIMIT = 5
@@ -110,6 +112,19 @@ class AppSettings:
     gpt_sovits_deterministic_seed: int = (
         DEFAULT_GPT_SOVITS_DETERMINISTIC_SEED
     )
+    data_root: Path | None = None
+
+    @property
+    def data_layout(self) -> ProductionDataLayout:
+        """Return the movable user-data layout for this settings snapshot.
+
+        Tests and the console keep their historical ``base_dir`` behavior when
+        no separate root is supplied. Electron always supplies an absolute
+        root, which separates upgradeable program files from private data.
+        """
+
+        root = self.base_dir if self.data_root is None else self.data_root
+        return ProductionDataLayout(root.absolute())
 
 
 def parse_bool(value: str) -> bool:
@@ -165,6 +180,26 @@ ENV_FILE = BASE_DIR / ".env"
 
 # Load optional local overrides before reading individual environment values.
 load_dotenv(ENV_FILE)
+
+
+def parse_data_root(value: str | None) -> Path | None:
+    """Accept only a non-empty absolute data root from the process owner.
+
+    Electron Main injects this value after resolving its persisted location.
+    Absence preserves the source-compatible console layout. An explicitly
+    malformed value fails closed so a packaged process cannot silently write
+    private data beside replaceable application resources.
+    """
+
+    if value is None:
+        return None
+    normalized = value.strip()
+    if not normalized or "\x00" in normalized:
+        raise ValueError("ELYSIA_DATA_ROOT must be a non-empty absolute path.")
+    candidate = Path(normalized)
+    if not candidate.is_absolute():
+        raise ValueError("ELYSIA_DATA_ROOT must be a non-empty absolute path.")
+    return candidate
 
 MODEL_NAME = os.getenv(
     "MODEL_NAME",
@@ -299,6 +334,7 @@ GPT_SOVITS_DETERMINISTIC_SEED = parse_int(
 )
 if not 0 <= GPT_SOVITS_DETERMINISTIC_SEED <= 2_147_483_647:
     GPT_SOVITS_DETERMINISTIC_SEED = DEFAULT_GPT_SOVITS_DETERMINISTIC_SEED
+DATA_ROOT = parse_data_root(os.getenv("ELYSIA_DATA_ROOT"))
 
 # Export one settings object for the composition root and application services.
 SETTINGS = AppSettings(
@@ -327,4 +363,5 @@ SETTINGS = AppSettings(
     gpt_sovits_request_timeout_seconds=GPT_SOVITS_REQUEST_TIMEOUT_SECONDS,
     gpt_sovits_probe_timeout_seconds=GPT_SOVITS_PROBE_TIMEOUT_SECONDS,
     gpt_sovits_deterministic_seed=GPT_SOVITS_DETERMINISTIC_SEED,
+    data_root=DATA_ROOT,
 )

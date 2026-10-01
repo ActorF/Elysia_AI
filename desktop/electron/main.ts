@@ -31,6 +31,16 @@ import { fileURLToPath } from 'node:url'
 
 import { BackendProcess } from './backend-process.js'
 import {
+  DATA_STORAGE_CLEANABLE_CATEGORIES,
+  type DataStorageBusyPhase,
+  type DataStorageCleanupResult,
+  type DataStorageInventory,
+  type DataStorageMoveTransaction,
+  type DataStorageState,
+  type DataStorageViewState,
+} from './data-storage-contracts.js'
+import { ElectronDataStorage } from './data-storage.js'
+import {
   allowAudioPermissionCheck,
   allowAudioPermissionRequest,
 } from './audio-permission.js'
@@ -167,6 +177,12 @@ const TRAY_ICON_DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAA
 let mainWindow: BrowserWindow | null = null
 let desktopPetWindow: BrowserWindow | null = null
 let backendProcess: BackendProcess | null = null
+let dataStorage: ElectronDataStorage | null = null
+let dataStorageState: DataStorageState | null = null
+let dataStorageInventory: DataStorageInventory | null = null
+let dataStorageBusyPhase: DataStorageBusyPhase = 'initializing'
+let dataStorageWarning: string | null = null
+let dataStorageOperation: Promise<unknown> | null = null
 let speechPlaybackOwner: PreloadSpeechPlaybackOwner | null = null
 const speechPlaybackRouter = new ReplaceableSpeechPlaybackOwner()
 let tray: Tray | null = null
@@ -1969,6 +1985,411 @@ function requireBackend(): BackendProcess {
   return backendProcess
 }
 
+function requireDataStorage(): ElectronDataStorage {
+  if (dataStorage === null) {
+    throw new Error('Managed data storage is not available.')
+  }
+  return dataStorage
+}
+
+function requireDataStorageState(): DataStorageState {
+  if (dataStorageState === null) {
+    throw new Error('Managed data storage is not available.')
+  }
+  return dataStorageState
+}
+
+function parseDataStorageRevision(value: unknown): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 0) {
+    throw new Error('Data storage revision is invalid.')
+  }
+  return value as number
+}
+
+function parseDataStorageScanToken(value: unknown): string {
+  if (
+    typeof value !== 'string'
+    || value.length === 0
+    || value.length > 128
+    || /\p{Cc}/u.test(value)
+  ) {
+    throw new Error('Data storage scan token is invalid.')
+  }
+  return value
+}
+
+function joinDataStorageWarnings(
+  ...warnings: Array<string | null | undefined>
+): string | null {
+  const unique = [...new Set(warnings.filter(
+    (warning): warning is string => warning !== null && warning !== undefined,
+  ))]
+  return unique.length === 0 ? null : unique.join(' ')
+}
+
+/**
+ * Return one Renderer-safe snapshot without exposing move transactions beyond
+ * the already-displayed active root. Stale inventory is withheld because its
+ * cleanup token belongs to a different root revision.
+ */
+function currentDataStorageView(): DataStorageViewState {
+  const state = requireDataStorageState()
+  const inventory = (
+    dataStorageInventory !== null
+    && dataStorageInventory.revision === state.revision
+    && dataStorageInventory.rootId === state.rootId
+  )
+    ? dataStorageInventory
+    : null
+  return Object.freeze({
+    state: Object.freeze({
+      revision: state.revision,
+      rootId: state.rootId,
+      activeDataRoot: state.activeDataRoot,
+      movePending: state.pendingMove !== null,
+      retainedRoots: state.retainedRoots,
+    }),
+    inventory,
+    busyPhase: dataStorageBusyPhase,
+    warning: dataStorageWarning,
+  })
+}
+
+async function refreshDataStorageInventory(): Promise<void> {
+  dataStorageInventory = await requireDataStorage().scan()
+}
+
+/**
+ * Admit exactly one native storage mutation or scan at a time.
+ *
+ * Renderer requests are rejected rather than queued: a queued native picker
+ * could otherwise act on a revision the user no longer sees.
+ */
+async function runDataStorageOperation(
+  phase: Exclude<DataStorageBusyPhase, 'idle' | 'initializing'>,
+  operation: () => Promise<void>,
+): Promise<DataStorageViewState> {
+  if (shutdownStarted) {
+    throw new Error('Elysia is shutting down.')
+  }
+  if (dataStorageOperation !== null) {
+    throw new Error('Another data storage action is already running.')
+  }
+  dataStorageBusyPhase = phase
+  const running = operation()
+  dataStorageOperation = running
+  try {
+    await running
+  } finally {
+    if (dataStorageOperation === running) {
+      dataStorageOperation = null
+      dataStorageBusyPhase = 'idle'
+    }
+  }
+  // Construct the response only after the operation releases its busy phase;
+  // otherwise Settings would retain a completed phase and stay disabled.
+  return currentDataStorageView()
+}
+
+function assertBackendCanPauseForDataMaintenance(): void {
+  const backend = requireBackend()
+  if (backend.hasActiveMaintenanceWork()) {
+    throw new Error(
+      'Finish the active Chat, Voice, or Project Source action first.',
+    )
+  }
+  const status = backend.getSnapshot().status
+  if (status !== 'ready' && status !== 'stopped' && status !== 'error') {
+    throw new Error('Wait for the Python Backend to finish changing state.')
+  }
+}
+
+function assertDataStorageIdleForBackendRestart(): void {
+  if (dataStorageOperation !== null) {
+    throw new Error('Wait for the data storage action to finish.')
+  }
+}
+
+async function chooseAndMoveDataDirectory(
+  revisionValue: unknown,
+): Promise<DataStorageViewState> {
+  const expectedRevision = parseDataStorageRevision(revisionValue)
+  return runDataStorageOperation('moving', async () => {
+    const current = requireDataStorageState()
+    if (current.revision !== expectedRevision) {
+      throw new Error('Data storage changed. Refresh Settings and try again.')
+    }
+    const backend = requireBackend()
+    if (backend.getSnapshot().status !== 'ready') {
+      throw new Error('The Python Backend must be ready before moving data.')
+    }
+    assertBackendCanPauseForDataMaintenance()
+    const selection = await dialog.showOpenDialog(
+      requireMainWindow(),
+      {
+        title: 'Choose an empty folder for Elysia data',
+        properties: ['openDirectory', 'createDirectory', 'dontAddToRecent'],
+      },
+    )
+    if (selection.canceled || selection.filePaths.length === 0) {
+      return
+    }
+    const confirmation = await dialog.showMessageBox(
+      requireMainWindow(),
+      {
+        type: 'warning',
+        title: 'Move Elysia data?',
+        message: 'Elysia will pause while it verifies and moves private data.',
+        detail: (
+          'Choose Move only if the selected folder is empty and remains '
+          + 'available. The current copy is kept until the Backend is ready.'
+        ),
+        buttons: ['Move', 'Cancel'],
+        defaultId: 1,
+        cancelId: 1,
+        noLink: true,
+      },
+    )
+    if (confirmation.response !== 0) {
+      return
+    }
+
+    // The native dialogs are asynchronous; activity admitted while they were
+    // open must be observed before stopping Python or touching SQLite files.
+    if (requireDataStorageState().revision !== expectedRevision) {
+      throw new Error('Data storage changed. Refresh Settings and try again.')
+    }
+    assertBackendCanPauseForDataMaintenance()
+    let transaction: DataStorageMoveTransaction | null = null
+    let backendStopped = false
+    try {
+      await backend.stop()
+      backendStopped = true
+      transaction = await requireDataStorage().prepareMove(
+        selection.filePaths[0]!,
+        expectedRevision,
+      )
+      dataStorageInventory = null
+      await backend.restartWithDataRoot(transaction.destinationRoot)
+      backendStopped = false
+      const committed = await requireDataStorage().commitMove(transaction)
+      dataStorageState = committed.state
+      dataStorageWarning = committed.warning
+      try {
+        await refreshDataStorageInventory()
+      } catch {
+        dataStorageInventory = null
+        dataStorageWarning = joinDataStorageWarnings(
+          dataStorageWarning,
+          'The data move completed, but capacity could not be measured.',
+        )
+      }
+    } catch (error) {
+      if (transaction !== null) {
+        let rolledBack
+        try {
+          rolledBack = await requireDataStorage().rollbackMove(transaction)
+        } catch {
+          dataStorageInventory = null
+          try {
+            dataStorageState = (
+              await requireDataStorage().initialize()
+            ).state
+          } catch {
+            // Keep the last trusted in-memory state if even readback fails.
+          }
+          dataStorageWarning = (
+            'The interrupted data move requires recovery before another '
+            + 'storage action can run.'
+          )
+          throw new Error(dataStorageWarning)
+        }
+        dataStorageState = rolledBack.state
+        dataStorageInventory = null
+        dataStorageWarning = joinDataStorageWarnings(
+          'The data move was rolled back.',
+          rolledBack.warning,
+        )
+        try {
+          await backend.restartWithAuthoritativeDataRoot(
+            transaction.previousRoot,
+          )
+          backendStopped = false
+        } catch {
+          throw new Error(
+            'The data move was rolled back, but the Python Backend could not restart.',
+          )
+        }
+      } else if (backendStopped) {
+        try {
+          await backend.restart()
+          backendStopped = false
+        } catch {
+          throw new Error(
+            'The data move did not start, and the Python Backend could not restart.',
+          )
+        }
+        try {
+          const recoveredState = await requireDataStorage().initialize()
+          dataStorageState = recoveredState.state
+          dataStorageWarning = joinDataStorageWarnings(
+            dataStorageWarning,
+            recoveredState.warning,
+          )
+        } catch {
+          dataStorageWarning = joinDataStorageWarnings(
+            dataStorageWarning,
+            'A failed move left recovery state that will be checked next launch.',
+          )
+        }
+      }
+      throw error
+    }
+  })
+}
+
+async function clearTemporaryData(
+  revisionValue: unknown,
+  tokenValue: unknown,
+): Promise<DataStorageViewState> {
+  const expectedRevision = parseDataStorageRevision(revisionValue)
+  const requestedToken = parseDataStorageScanToken(tokenValue)
+  return runDataStorageOperation('cleaning', async () => {
+    const current = requireDataStorageState()
+    const inventory = dataStorageInventory
+    if (
+      current.revision !== expectedRevision
+      || inventory === null
+      || inventory.revision !== current.revision
+      || inventory.rootId !== current.rootId
+      || inventory.token !== requestedToken
+    ) {
+      throw new Error(
+        'Storage usage changed. Refresh before clearing temporary data.',
+      )
+    }
+    const confirmation = await dialog.showMessageBox(
+      requireMainWindow(),
+      {
+        type: 'warning',
+        title: 'Clear temporary Elysia data?',
+        message: 'Delete temporary audio, application cache, and local logs?',
+        detail: (
+          'Chats, Projects, Memory, attachments, Sources, indexes, models, '
+          + 'and external files are not part of this cleanup.'
+        ),
+        buttons: ['Clear temporary data', 'Cancel'],
+        defaultId: 1,
+        cancelId: 1,
+        noLink: true,
+      },
+    )
+    if (confirmation.response !== 0) {
+      return
+    }
+
+    assertBackendCanPauseForDataMaintenance()
+    const backend = requireBackend()
+    const shouldRestart = backend.getSnapshot().status === 'ready'
+    let backendStopped = false
+    let cleaned: DataStorageCleanupResult
+    try {
+      if (shouldRestart) {
+        await backend.stop()
+        backendStopped = true
+      }
+      // Stopping Python may append a final log record. Rescan from Main after
+      // handles close, while retaining the renderer's original one-use grant
+      // as authorization for this exact revision and confirmation.
+      const stableInventory = await requireDataStorage().scan()
+      dataStorageInventory = stableInventory
+      cleaned = await requireDataStorage().cleanup({
+        expectedRevision,
+        token: stableInventory.token,
+        categories: DATA_STORAGE_CLEANABLE_CATEGORIES,
+      })
+    } catch (error) {
+      if (backendStopped) {
+        try {
+          await backend.restart()
+          backendStopped = false
+        } catch {
+          throw new Error(
+            'Temporary cleanup stopped safely, but the Python Backend could not restart.',
+          )
+        }
+      }
+      throw error
+    }
+
+    // Cleanup's bootstrap revision is the commit point. Backend restart and
+    // capacity refresh happen afterward and must not make Renderer believe the
+    // already-completed deletion failed or invite a stale-token retry.
+    dataStorageState = cleaned.state
+    dataStorageInventory = null
+    let completionWarning = cleaned.warning
+    if (shouldRestart) {
+      try {
+        await backend.restart()
+      } catch {
+        completionWarning = joinDataStorageWarnings(
+          completionWarning,
+          'Temporary data was cleared, but the Python Backend could not restart.',
+        )
+      }
+    }
+    try {
+      await refreshDataStorageInventory()
+    } catch {
+      completionWarning = joinDataStorageWarnings(
+        completionWarning,
+        'Temporary data was cleared, but capacity could not be measured.',
+      )
+    }
+    dataStorageWarning = completionWarning
+  })
+}
+
+async function openDataDirectory(): Promise<void> {
+  const result = await shell.openPath(
+    requireDataStorageState().activeDataRoot,
+  )
+  if (result !== '') {
+    throw new Error('The active data directory could not be opened.')
+  }
+}
+
+/**
+ * Restore the stable pointer before Python starts and conservatively unwind a
+ * move interrupted before Main observed Backend readiness.
+ */
+async function initializeManagedDataStorage(
+  projectRoot: string,
+): Promise<string> {
+  dataStorageBusyPhase = 'initializing'
+  const manager = new ElectronDataStorage({
+    userDataDirectory: app.getPath('userData'),
+    legacyProjectRoot: projectRoot,
+  })
+  dataStorage = manager
+  const initialized = await manager.initialize()
+  dataStorageState = initialized.state
+  dataStorageWarning = initialized.warning
+  if (initialized.state.pendingMove !== null) {
+    const rolledBack = await manager.rollbackMove(
+      initialized.state.pendingMove,
+    )
+    dataStorageState = rolledBack.state
+    dataStorageWarning = joinDataStorageWarnings(
+      'An interrupted data move was rolled back safely.',
+      rolledBack.warning,
+    )
+  }
+  dataStorageInventory = await manager.scan()
+  dataStorageBusyPhase = 'idle'
+  return requireDataStorageState().activeDataRoot
+}
+
 function requireMainWindow(): BrowserWindow {
   if (mainWindow === null || mainWindow.isDestroyed()) {
     throw new Error('Main window is not available.')
@@ -2363,7 +2784,55 @@ function registerIpcHandlers(): void {
     'backend:restart',
     async (event) => {
       assertTrustedSender(event)
+      assertDataStorageIdleForBackendRestart()
       return requireBackend().restart()
+    },
+  )
+
+  ipcMain.handle(
+    'data-storage:get-state',
+    (event): DataStorageViewState => {
+      assertTrustedSender(event)
+      return currentDataStorageView()
+    },
+  )
+
+  ipcMain.handle(
+    'data-storage:refresh-usage',
+    (event): Promise<DataStorageViewState> => {
+      assertTrustedSender(event)
+      return runDataStorageOperation(
+        'scanning',
+        refreshDataStorageInventory,
+      )
+    },
+  )
+
+  ipcMain.handle(
+    'data-storage:choose-and-move',
+    (event, expectedRevision: unknown): Promise<DataStorageViewState> => {
+      assertTrustedSender(event)
+      return chooseAndMoveDataDirectory(expectedRevision)
+    },
+  )
+
+  ipcMain.handle(
+    'data-storage:clear-temporary',
+    (
+      event,
+      expectedRevision: unknown,
+      scanToken: unknown,
+    ): Promise<DataStorageViewState> => {
+      assertTrustedSender(event)
+      return clearTemporaryData(expectedRevision, scanToken)
+    },
+  )
+
+  ipcMain.handle(
+    'data-storage:open-directory',
+    (event): Promise<void> => {
+      assertTrustedSender(event)
+      return openDataDirectory()
     },
   )
 
@@ -2378,6 +2847,7 @@ function registerIpcHandlers(): void {
       ) {
         throw new Error('Model name is invalid.')
       }
+      assertDataStorageIdleForBackendRestart()
       return requireBackend().restartWithModel(modelName)
     },
   )
@@ -3015,6 +3485,8 @@ if (!hasSingleInstanceLock) {
     if (process.platform === 'win32') {
       app.setAppUserModelId('ai.elysia.desktop')
     }
+    const projectRoot = resolveProjectRoot()
+    const activeDataRoot = await initializeManagedDataStorage(projectRoot)
     desktopPetRepository = new DesktopPetPreferencesRepository(
       path.join(app.getPath('userData'), 'desktop-pet.json'),
     )
@@ -3039,13 +3511,14 @@ if (!hasSingleInstanceLock) {
     screen.on('display-removed', handleDisplayChange)
     screen.on('display-metrics-changed', handleDisplayChange)
     configureAudioPermissions()
-    registerIpcHandlers()
-    createMainWindow()
     backendProcess = new BackendProcess(
-      resolveProjectRoot(),
+      projectRoot,
       broadcastBackendEvent,
       speechPlaybackRouter,
+      activeDataRoot,
     )
+    registerIpcHandlers()
+    createMainWindow()
     createTray()
     reconcileDesktopPetWindow()
     backendProcess.start()
@@ -3053,7 +3526,14 @@ if (!hasSingleInstanceLock) {
     app.on('activate', () => {
       showOrCreateMainWindow()
     })
-  }).catch(() => {
+  }).catch((error: unknown) => {
+    const detail = error instanceof Error && error.message.trim() !== ''
+      ? error.message
+      : 'The startup boundary returned an unknown error.'
+    dialog.showErrorBox(
+      'Elysia could not start',
+      `${detail}\n\nIf Elysia data is on another drive, reconnect it and start Elysia again.`,
+    )
     app.quit()
   })
 
@@ -3085,12 +3565,20 @@ if (!hasSingleInstanceLock) {
     }
     tray?.destroy()
     tray = null
-    const stopBackend = (
-      backendProcess === null
-      || backendProcess.getSnapshot().status === 'stopped'
-    )
+    // A move may be between verified pointer publication and rollback/commit.
+    // Let that exact transaction settle before shutting Python down so quit
+    // cannot manufacture an ambiguous pending state.
+    const finishDataStorage = dataStorageOperation === null
       ? Promise.resolve()
-      : backendProcess.stop()
+      : dataStorageOperation.then(() => undefined, () => undefined)
+    const stopBackend = finishDataStorage.then(async () => {
+      if (
+        backendProcess !== null
+        && backendProcess.getSnapshot().status !== 'stopped'
+      ) {
+        await backendProcess.stop()
+      }
+    })
     void Promise.allSettled([
       stopBackend,
       optionalPersistenceFlush,

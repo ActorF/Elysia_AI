@@ -225,15 +225,15 @@ def create_desktop_knowledge_runtime(
     if not isinstance(settings.base_dir, Path):
         raise TypeError("settings.base_dir must be Path.")
 
-    base_dir = settings.base_dir.absolute()
-    workspace = base_dir / "workspace"
-    knowledge_directory = workspace / "knowledge"
+    layout = settings.data_layout
+    workspace = layout.workspace
+    knowledge_directory = layout.knowledge
 
     # These exact instances are shared across services; independently created
     # repositories can point at the same files, but sharing makes authorization
     # and test inspection explicit and avoids accidental path drift.
-    chat_repository = JsonChatRepository(workspace / "chats")
-    project_repository = JsonProjectRepository(workspace / "projects")
+    chat_repository = JsonChatRepository(layout.chats)
+    project_repository = JsonProjectRepository(layout.projects)
     source_repository = JsonProjectSourceRepository(
         knowledge_directory / "project-sources"
     )

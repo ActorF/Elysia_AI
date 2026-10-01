@@ -67,6 +67,7 @@ def _create_service() -> LocalSpeechSynthesisService:
 
     return create_local_speech_synthesis_service(
         SETTINGS.base_dir,
+        data_root=SETTINGS.data_layout.root,
         allow_local_evaluation=(
             SETTINGS.gpt_sovits_allow_local_evaluation
         ),

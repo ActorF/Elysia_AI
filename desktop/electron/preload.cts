@@ -40,6 +40,7 @@ import type {
   DesktopPetState,
   UpdateDesktopPetRequest,
 } from './desktop-pet-contracts.js'
+import type { DataStorageViewState } from './data-storage-contracts.js'
 import type {
   PresenceNotificationState,
   UpdatePresenceNotificationRequest,
@@ -641,6 +642,37 @@ const desktopApi: DesktopApi = {
     ipcRenderer.invoke(
       'backend:restart',
     ) as Promise<BackendSnapshot>,
+
+  getDataStorageState: () =>
+    ipcRenderer.invoke(
+      'data-storage:get-state',
+    ) as Promise<DataStorageViewState>,
+
+  refreshDataStorageUsage: () =>
+    ipcRenderer.invoke(
+      'data-storage:refresh-usage',
+    ) as Promise<DataStorageViewState>,
+
+  chooseAndMoveDataDirectory: (expectedRevision: number) =>
+    ipcRenderer.invoke(
+      'data-storage:choose-and-move',
+      expectedRevision,
+    ) as Promise<DataStorageViewState>,
+
+  clearTemporaryData: (
+    expectedRevision: number,
+    scanToken: string,
+  ) =>
+    ipcRenderer.invoke(
+      'data-storage:clear-temporary',
+      expectedRevision,
+      scanToken,
+    ) as Promise<DataStorageViewState>,
+
+  openDataDirectory: () =>
+    ipcRenderer.invoke(
+      'data-storage:open-directory',
+    ) as Promise<void>,
 
   getSettings: () =>
     ipcRenderer.invoke(

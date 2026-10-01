@@ -33,7 +33,7 @@ from projects import JsonProjectRepository, ProjectChatService
 from recovery import DataPortabilityError, DataPortabilityService
 from ui import run_console_session
 
-LOG_DIR = SETTINGS.base_dir / "logs"
+LOG_DIR = SETTINGS.data_layout.logs
 LOG_FILE = LOG_DIR / "app.log"
 
 # Logging is configured at the process boundary before services are created.
@@ -98,13 +98,14 @@ def create_data_portability_service(
     """Compose the Stage 5 import, export, and recovery boundary."""
 
     runtime_settings = SETTINGS if settings is None else settings
+    layout = runtime_settings.data_layout
     return DataPortabilityService(
-        base_dir=runtime_settings.base_dir,
+        base_dir=layout.root,
         chat_repository=JsonChatRepository(
-            runtime_settings.base_dir / "workspace" / "chats"
+            layout.chats
         ),
         project_repository=JsonProjectRepository(
-            runtime_settings.base_dir / "workspace" / "projects"
+            layout.projects
         ),
         max_import_bytes=runtime_settings.data_import_max_bytes,
     )
@@ -118,9 +119,10 @@ def create_brain(settings: AppSettings | None = None) -> Brain:
     """
 
     runtime_settings = SETTINGS if settings is None else settings
+    layout = runtime_settings.data_layout
 
     elysia_memory = Memory(
-        runtime_settings.base_dir
+        layout.root
     )
 
     short_term_memory = ShortTermMemory(
@@ -152,16 +154,16 @@ def create_brain(settings: AppSettings | None = None) -> Brain:
     # Chats and Projects live in ignored runtime storage. Their repository
     # paths remain infrastructure details owned by the composition root.
     chat_repository = JsonChatRepository(
-        runtime_settings.base_dir / "workspace" / "chats"
+        layout.chats
     )
     legacy_migrator = LegacyConversationMigrator(
-        base_dir=runtime_settings.base_dir,
+        base_dir=layout.root,
         chat_repository=chat_repository,
         model_name=runtime_settings.model_name,
     )
     legacy_migrator.migrate()
     project_repository = JsonProjectRepository(
-        runtime_settings.base_dir / "workspace" / "projects"
+        layout.projects
     )
     active_conversation_service = ActiveConversationService(
         chat_repository,

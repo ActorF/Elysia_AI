@@ -18,6 +18,12 @@ import type {
   DesktopPetMode,
   DesktopPetState,
 } from '../../electron/desktop-pet-contracts.ts'
+import {
+  DATA_STORAGE_CATEGORIES,
+  DATA_STORAGE_CLEANABLE_CATEGORIES,
+  type DataStorageCategory,
+  type DataStorageViewState,
+} from '../../electron/data-storage-contracts.js'
 import type {
   PresenceNotificationState,
   PresenceReminderFrequency,
@@ -39,6 +45,13 @@ import { describeTranscriptionReadiness } from '../voice/transcription-readiness
 export type ThemePreference = 'system' | 'light' | 'dark'
 export type ResolvedTheme = Exclude<ThemePreference, 'system'>
 
+/** Identify the one Main-owned storage action currently awaited by Settings. */
+export type DataStorageAction =
+  | 'refreshing'
+  | 'moving'
+  | 'cleaning'
+  | 'opening'
+
 export interface SettingsViewProps {
   themePreference: ThemePreference
   resolvedTheme: ResolvedTheme
@@ -50,6 +63,10 @@ export interface SettingsViewProps {
   presenceNotificationState: PresenceNotificationState | null
   presenceNotificationPending: boolean
   presenceNotificationError: string | null
+  dataStorageState: DataStorageViewState | null
+  dataStorageLoading: boolean
+  dataStorageAction: DataStorageAction | null
+  dataStorageError: string | null
   settingsState: DesktopSettingsState | null
   models: string[]
   loading: boolean
@@ -78,6 +95,14 @@ export interface SettingsViewProps {
     completionNotifications: boolean,
     reminderFrequency: PresenceReminderFrequency,
   ): Promise<void>
+  /** Rescan managed categories and the active volume without changing data. */
+  onRefreshDataStorage(): Promise<void>
+  /** Let Main choose, verify, and activate a replacement data directory. */
+  onMoveDataDirectory(): Promise<void>
+  /** Ask Main to confirm and clear only audio, cache, and log data. */
+  onClearTemporaryData(): Promise<void>
+  /** Open the active data directory through the native shell. */
+  onOpenDataDirectory(): Promise<void>
   /** Persist validated global Desktop settings. */
   onSave(settings: DesktopSettingsValues): Promise<void>
   /** Reload canonical global settings and discard the current draft. */
@@ -675,6 +700,251 @@ function PresenceNotificationSettings({
   )
 }
 
+const DATA_STORAGE_CATEGORY_LABELS: Readonly<Record<DataStorageCategory, string>> = {
+  config: 'Configuration',
+  chats: 'Chats',
+  projects: 'Projects',
+  memory: 'Memory',
+  sources: 'Sources',
+  indexes: 'Indexes',
+  audio: 'Temporary audio',
+  cache: 'Cache',
+  logs: 'Logs',
+  other: 'Other managed data',
+}
+
+const DATA_STORAGE_CLEANABLE_CATEGORY_SET: ReadonlySet<DataStorageCategory>
+  = new Set<DataStorageCategory>(DATA_STORAGE_CLEANABLE_CATEGORIES)
+
+/** Format a byte count without implying precision absent from the latest scan. */
+function formatDataStorageBytes(value: number | null): string {
+  if (value === null || !Number.isFinite(value) || value < 0) {
+    return 'Unavailable'
+  }
+  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'] as const
+  let amount = value
+  let unitIndex = 0
+  while (amount >= 1024 && unitIndex < units.length - 1) {
+    amount /= 1024
+    unitIndex += 1
+  }
+  const fractionDigits = unitIndex === 0 || amount >= 100 ? 0 : 1
+  return `${amount.toFixed(fractionDigits)} ${units[unitIndex]}`
+}
+
+function DataStorageSettings({
+  state,
+  loading,
+  action,
+  error,
+  onRefresh,
+  onMove,
+  onClear,
+  onOpen,
+}: {
+  state: DataStorageViewState | null
+  loading: boolean
+  action: DataStorageAction | null
+  error: string | null
+  onRefresh(): Promise<void>
+  onMove(): Promise<void>
+  onClear(): Promise<void>
+  onOpen(): Promise<void>
+}) {
+  const sectionId = useId()
+  const inventory = state?.inventory ?? null
+  const inventoryIsCurrent = state !== null
+    && inventory !== null
+    && inventory.revision === state.state.revision
+    && inventory.rootId === state.state.rootId
+  const usageByCategory = new Map(
+    inventory?.categories.map((usage) => [usage.category, usage]) ?? [],
+  )
+  const mainBusy = state !== null && state.busyPhase !== 'idle'
+  const busy = loading || action !== null || mainBusy
+  const measuredAt = inventory === null
+    ? null
+    : new Date(inventory.measuredAt)
+  const measuredAtLabel = measuredAt !== null
+    && !Number.isNaN(measuredAt.getTime())
+    ? measuredAt.toLocaleString()
+    : inventory?.measuredAt ?? null
+  const clearEnabled = inventoryIsCurrent
+    && inventory.reclaimableBytes > 0
+    && !busy
+
+  return (
+    <section
+      className="settings-section data-storage-settings"
+      aria-labelledby={`${sectionId}-heading`}
+    >
+      <div className="settings-section-heading">
+        <h2 id={`${sectionId}-heading`}>Data &amp; storage</h2>
+        <p>
+          Inspect the Main-managed data root, move it safely, or reclaim only
+          disposable local files.
+        </p>
+      </div>
+
+      {state === null ? (
+        <p className="data-storage-unavailable" role="status" aria-live="polite">
+          {loading
+            ? 'Loading the managed data location and capacity…'
+            : 'Managed storage information is not available yet.'}
+        </p>
+      ) : (
+        <>
+          <div className="data-storage-location">
+            <span>Active data directory</span>
+            <code>{state.state.activeDataRoot}</code>
+          </div>
+
+          {state.state.retainedRoots.length > 0 && (
+            <div className="data-storage-recovery" role="status">
+              <strong>Recovery copies retained</strong>
+              <p>
+                Elysia did not delete these locations because their contents
+                changed or could not be verified. Review them manually; generic
+                temporary-data cleanup never removes recovery copies.
+              </p>
+              <ul>
+                {state.state.retainedRoots.map((root) => (
+                  <li key={root}><code>{root}</code></li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          <dl className="data-storage-summary" aria-label="Storage summary">
+            <div>
+              <dt>Managed data</dt>
+              <dd>{formatDataStorageBytes(inventory?.totalBytes ?? null)}</dd>
+            </div>
+            <div>
+              <dt>Free on volume</dt>
+              <dd>{formatDataStorageBytes(inventory?.freeBytes ?? null)}</dd>
+            </div>
+            <div>
+              <dt>Reclaimable</dt>
+              <dd>{formatDataStorageBytes(inventory?.reclaimableBytes ?? null)}</dd>
+            </div>
+          </dl>
+
+          <ul className="data-storage-category-list" aria-label="Managed data categories">
+            {DATA_STORAGE_CATEGORIES.map((category) => {
+              const usage = usageByCategory.get(category)
+              const cleanable = DATA_STORAGE_CLEANABLE_CATEGORY_SET.has(category)
+              return (
+                <li key={category}>
+                  <div>
+                    <strong>{DATA_STORAGE_CATEGORY_LABELS[category]}</strong>
+                    <span className={cleanable
+                      ? 'data-storage-category-kind temporary'
+                      : 'data-storage-category-kind durable'}
+                    >
+                      {cleanable ? 'Temporary' : 'Durable'}
+                    </span>
+                  </div>
+                  <span>
+                    {formatDataStorageBytes(usage?.bytes ?? null)} ·{' '}
+                    {usage === undefined
+                      ? 'files unavailable'
+                      : `${usage.fileCount.toLocaleString()} ${usage.fileCount === 1 ? 'file' : 'files'}`}
+                  </span>
+                </li>
+              )
+            })}
+          </ul>
+
+          <p className="data-storage-measurement" role="status" aria-live="polite">
+            {measuredAtLabel === null
+              ? 'Capacity has not been measured yet.'
+              : <>Measured <time dateTime={inventory?.measuredAt}>{measuredAtLabel}</time>.</>}
+            {inventory !== null && ` ${inventory.fileCount.toLocaleString()} managed files.`}
+          </p>
+          {inventory?.blockedEntries !== undefined && inventory.blockedEntries > 0 && (
+            <p className="data-storage-warning" role="status">
+              {inventory.blockedEntries.toLocaleString()} filesystem entries could not be measured.
+            </p>
+          )}
+          {inventory?.truncated === true && (
+            <p className="data-storage-warning" role="status">
+              The bounded capacity scan stopped early, so these totals are partial.
+            </p>
+          )}
+          {inventory?.warning !== null && inventory?.warning !== undefined && (
+            <p className="data-storage-warning" role="status">{inventory.warning}</p>
+          )}
+          {state.warning !== null && (
+            <p className="data-storage-warning" role="status">{state.warning}</p>
+          )}
+          {state.state.movePending && (
+            <p className="data-storage-warning" role="status">
+              A data-directory move is waiting for Backend verification. Main will
+              retain the previous root until the transaction settles.
+            </p>
+          )}
+        </>
+      )}
+
+      <div className="data-storage-actions">
+        <button
+          type="button"
+          className="secondary-button"
+          disabled={busy}
+          onClick={() => { void onRefresh() }}
+        >
+          {action === 'refreshing' || state?.busyPhase === 'scanning'
+            ? 'Refreshing…'
+            : 'Refresh usage'}
+        </button>
+        <button
+          type="button"
+          className="secondary-button"
+          disabled={busy || state === null}
+          onClick={() => { void onMove() }}
+        >
+          {action === 'moving' || state?.busyPhase === 'moving'
+            ? 'Moving…'
+            : 'Change data directory'}
+        </button>
+        <button
+          type="button"
+          className="secondary-button"
+          disabled={busy || state === null}
+          onClick={() => { void onOpen() }}
+        >
+          {action === 'opening' ? 'Opening…' : 'Open data directory'}
+        </button>
+        <button
+          type="button"
+          className="secondary-button danger-action"
+          disabled={!clearEnabled}
+          onClick={() => { void onClear() }}
+        >
+          {action === 'cleaning' || state?.busyPhase === 'cleaning'
+            ? 'Clearing…'
+            : 'Clear temporary data'}
+        </button>
+      </div>
+      <p className="data-storage-cleanup-note">
+        Clear temporary data asks Main to show a native confirmation and remove
+        only temporary audio, cache, and logs from this exact scan. Configuration,
+        Chats, Projects, Memory, Sources, indexes, and other managed data are never
+        deleted here.
+      </p>
+      {mainBusy && (
+        <p className="data-storage-measurement" role="status" aria-live="polite">
+          Main is {state.busyPhase} managed storage.
+        </p>
+      )}
+      {error !== null && (
+        <p className="data-storage-error" role="alert">{error}</p>
+      )}
+    </section>
+  )
+}
+
 /** Render global settings alongside an independently persisted device draft. */
 export function SettingsView({
   themePreference,
@@ -687,6 +957,10 @@ export function SettingsView({
   presenceNotificationState,
   presenceNotificationPending,
   presenceNotificationError,
+  dataStorageState,
+  dataStorageLoading,
+  dataStorageAction,
+  dataStorageError,
   settingsState,
   models,
   loading,
@@ -705,6 +979,10 @@ export function SettingsView({
   onDesktopPetModeChange,
   onResetDesktopPetPosition,
   onPresenceNotificationChange,
+  onRefreshDataStorage,
+  onMoveDataDirectory,
+  onClearTemporaryData,
+  onOpenDataDirectory,
   onSave,
   onReload,
   onRestart,
@@ -834,6 +1112,19 @@ export function SettingsView({
       onOpenMicrophonePrivacySettings={onOpenMicrophonePrivacySettings}
     />
   )
+  const dataStorageSection = (
+    <DataStorageSettings
+      key="data-storage-settings"
+      state={dataStorageState}
+      loading={dataStorageLoading}
+      action={dataStorageAction}
+      error={dataStorageError}
+      onRefresh={onRefreshDataStorage}
+      onMove={onMoveDataDirectory}
+      onClear={onClearTemporaryData}
+      onOpen={onOpenDataDirectory}
+    />
+  )
 
   return (
     <main className="settings-view">
@@ -863,6 +1154,7 @@ export function SettingsView({
             title="Loading settings"
             description="Reading the local settings snapshot."
           />
+          {dataStorageSection}
           <AppearanceSettings
             themePreference={themePreference}
             resolvedTheme={resolvedTheme}
@@ -896,6 +1188,7 @@ export function SettingsView({
           >
             {error ?? 'The local Backend has not returned Settings yet.'}
           </InlineAlert>
+          {dataStorageSection}
           <AppearanceSettings
             themePreference={themePreference}
             resolvedTheme={resolvedTheme}
@@ -1535,6 +1828,8 @@ export function SettingsView({
               )}
             </label>
           </section>
+
+          {dataStorageSection}
 
           <section className="settings-section" aria-labelledby="work-settings-heading">
             <div className="settings-section-heading">

@@ -14,6 +14,7 @@ import type {
   DesktopPetState,
   UpdateDesktopPetRequest,
 } from './desktop-pet-contracts.js'
+import type { DataStorageViewState } from './data-storage-contracts.js'
 import type {
   PresenceNotificationState,
   UpdatePresenceNotificationRequest,
@@ -554,6 +555,21 @@ export interface DesktopApi {
   getSnapshot(): Promise<BackendSnapshot>
   /** Restart the Python Backend and return its resulting snapshot. */
   restartBackend(): Promise<BackendSnapshot>
+  /** Return Main-owned data-location and latest capacity information. */
+  getDataStorageState(): Promise<DataStorageViewState>
+  /** Rescan only the closed managed-data categories and host volume. */
+  refreshDataStorageUsage(): Promise<DataStorageViewState>
+  /** Choose a native destination and move the revision-matched data root. */
+  chooseAndMoveDataDirectory(
+    expectedRevision: number,
+  ): Promise<DataStorageViewState>
+  /** Clear only Main-owned temporary categories from one exact scan. */
+  clearTemporaryData(
+    expectedRevision: number,
+    scanToken: string,
+  ): Promise<DataStorageViewState>
+  /** Open the active data root without exposing filesystem primitives. */
+  openDataDirectory(): Promise<void>
   /** Load the canonical persisted Desktop settings state. */
   getSettings(): Promise<DesktopSettingsState>
   /** Validate and persist a revision-aware Desktop settings update. */

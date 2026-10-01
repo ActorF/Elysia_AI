@@ -97,9 +97,10 @@ def _install_local_config(
     base_dir: Path,
     base_url: str,
     *,
+    data_root: Path | None = None,
     rights_status: str = "verified",
 ) -> None:
-    """Create synthetic ignored-style assets and their device-local catalog."""
+    """Create synthetic resource assets and a device-local private catalog."""
 
     asset_root = base_dir / "models" / "weights" / "gpt-sovits"
     profile_root = asset_root / "sample"
@@ -146,7 +147,10 @@ def _install_local_config(
             }
         ],
     }
-    catalog_path = base_dir / "workspace" / "settings" / "voice-profiles.json"
+    catalog_root = base_dir if data_root is None else data_root
+    catalog_path = (
+        catalog_root / "workspace" / "settings" / "voice-profiles.json"
+    )
     catalog_path.parent.mkdir(parents=True, exist_ok=True)
     catalog_path.write_text(
         json.dumps(document, ensure_ascii=False),
@@ -231,6 +235,30 @@ def test_online_service_reports_available_but_binding_unverified(
     )
     assert status.profiles[0].profile_id == "sample"
     assert status.profiles[0].is_default is True
+
+
+def test_service_separates_replaceable_assets_from_movable_catalog(
+    tmp_path: Path,
+) -> None:
+    """Read weights from resources while keeping private setup in data root."""
+
+    resource_root = (tmp_path / "resources").resolve()
+    data_root = (tmp_path / "private-data").resolve()
+    with _serve() as base_url:
+        _install_local_config(
+            resource_root,
+            base_url,
+            data_root=data_root,
+        )
+        service = create_local_speech_synthesis_service(
+            resource_root,
+            data_root=data_root,
+        )
+        status = service.get_status()
+
+    assert status.adapter.reason == "service_binding_unverified"
+    assert not (resource_root / "workspace").exists()
+    assert not (data_root / "models").exists()
 
 
 def test_offline_service_preserves_safe_profile_choices(tmp_path: Path) -> None:
@@ -324,6 +352,7 @@ def test_synthesis_maps_missing_and_invalid_catalogs_to_stable_errors(
     ("field_name", "value"),
     [
         ("base_dir", Path("relative")),
+        ("data_root", Path("relative")),
         ("allow_local_evaluation", "yes"),
         ("request_timeout_seconds", 0.0),
         ("probe_timeout_seconds", 11.0),
@@ -339,6 +368,7 @@ def test_factory_rejects_invalid_runtime_configuration(
 
     values: dict[str, object] = {
         "base_dir": tmp_path.resolve(),
+        "data_root": None,
         "allow_local_evaluation": False,
         "request_timeout_seconds": 120.0,
         "probe_timeout_seconds": 1.0,

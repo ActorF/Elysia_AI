@@ -55,7 +55,7 @@ class VoiceSettingsService:
 
 
 def create_voice_settings_service(base_dir: Path) -> VoiceSettingsService:
-    """Create the production service in ignored device-local workspace data."""
+    """Create the production service below an absolute private-data root."""
 
     repository = JsonVoiceSettingsRepository(
         Path(base_dir) / "workspace" / "settings" / "audio-device.json"

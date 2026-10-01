@@ -1,4 +1,5 @@
 """Application configuration package for Elysia AI."""
+from .data_layout import ProductionDataLayout
 from .desktop_settings import (
     DesktopSettingsConflictError,
     DesktopSettingsError,
@@ -40,6 +41,7 @@ __all__ = [
     "DesktopSettingsStorageError",
     "DesktopSettingsValidationError",
     "EditableDesktopSettings",
+    "ProductionDataLayout",
     "SETTINGS",
     "TranscriptionDevice",
     "TranscriptionLanguage",

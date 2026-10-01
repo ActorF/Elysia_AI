@@ -114,6 +114,7 @@ def test_create_service_uses_all_application_tts_settings(
     captured: dict[str, object] = {}
     settings = SimpleNamespace(
         base_dir=tmp_path,
+        data_layout=SimpleNamespace(root=tmp_path / "private-data"),
         gpt_sovits_allow_local_evaluation=True,
         gpt_sovits_request_timeout_seconds=45.0,
         gpt_sovits_probe_timeout_seconds=2.0,
@@ -141,6 +142,7 @@ def test_create_service_uses_all_application_tts_settings(
 
     assert captured == {
         "base_dir": tmp_path,
+        "data_root": tmp_path / "private-data",
         "allow_local_evaluation": True,
         "request_timeout_seconds": 45.0,
         "probe_timeout_seconds": 2.0,

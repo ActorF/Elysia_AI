@@ -12,6 +12,8 @@ import {
 } from '@playwright/test'
 import { _electron as electron } from 'playwright'
 
+import type { DataStorageViewState } from '../../electron/data-storage-contracts.ts'
+
 type BackendStatus =
   | 'starting'
   | 'handshaking'
@@ -314,6 +316,7 @@ interface RendererTestControl {
   setDesktopPetState(state: DesktopPetState): void
   setPresenceNotificationState(state: PresenceNotificationState): void
   setSettingsState(state: DesktopSettingsState): void
+  setDataStorageState(state: DataStorageViewState): void
   setVoiceSettingsState(state: VoiceSettingsState): void
   setMicrophonePermissionStatus(status: MicrophonePermissionStatus): void
   failNextRestart(message: string): void
@@ -453,6 +456,14 @@ async function setSettingsState(
 ): Promise<void> {
   await page.evaluate((nextState) => {
     ;(window as TestWindow).elysiaDesktopTest.setSettingsState(nextState)
+  }, state)
+}
+
+async function setDataStorageState(
+  state: DataStorageViewState,
+): Promise<void> {
+  await page.evaluate((nextState) => {
+    ;(window as TestWindow).elysiaDesktopTest.setDataStorageState(nextState)
   }, state)
 }
 
@@ -1276,6 +1287,50 @@ function presenceNotificationState(
     completionNotifications: false,
     reminderFrequency: 'off',
     runtime: 'available',
+    warning: null,
+    ...overrides,
+  }
+}
+
+function dataStorageViewState(
+  overrides: Partial<DataStorageViewState> = {},
+): DataStorageViewState {
+  const activeDataRoot = 'C:\\Users\\Actor\\AppData\\Roaming\\Elysia\\data'
+  return {
+    state: {
+      revision: 2,
+      rootId: 'root-default',
+      activeDataRoot,
+      movePending: false,
+      retainedRoots: [],
+    },
+    inventory: {
+      revision: 2,
+      rootId: 'root-default',
+      activeDataRoot,
+      token: 'scan-2',
+      categories: [
+        { category: 'config', bytes: 1024, fileCount: 1, entryCount: 1 },
+        { category: 'chats', bytes: 4096, fileCount: 2, entryCount: 2 },
+        { category: 'projects', bytes: 2048, fileCount: 1, entryCount: 1 },
+        { category: 'memory', bytes: 3072, fileCount: 3, entryCount: 3 },
+        { category: 'sources', bytes: 8192, fileCount: 4, entryCount: 4 },
+        { category: 'indexes', bytes: 4096, fileCount: 5, entryCount: 5 },
+        { category: 'audio', bytes: 2048, fileCount: 2, entryCount: 2 },
+        { category: 'cache', bytes: 1024, fileCount: 1, entryCount: 1 },
+        { category: 'logs', bytes: 512, fileCount: 1, entryCount: 1 },
+        { category: 'other', bytes: 256, fileCount: 1, entryCount: 1 },
+      ],
+      totalBytes: 26368,
+      fileCount: 21,
+      blockedEntries: 0,
+      truncated: false,
+      freeBytes: 34359738368,
+      reclaimableBytes: 3584,
+      measuredAt: '2026-10-01T12:00:00.000Z',
+      warning: null,
+    },
+    busyPhase: 'idle',
     warning: null,
     ...overrides,
   }
@@ -2128,6 +2183,7 @@ test('shows all Settings areas, ownership scopes, and no secret controls', async
     'Voice behavior',
     'Audio devices',
     'Files',
+    'Data & storage',
     'Work',
     'Privacy',
     'Appearance',
@@ -2158,6 +2214,128 @@ test('shows all Settings areas, ownership scopes, and no secret controls', async
   )
   await expect(page.locator('.settings-view input[type="password"]'))
     .toHaveCount(0)
+})
+
+test('shows closed storage categories and invokes only Main-owned actions', async () => {
+  const initialStorage = dataStorageViewState()
+  await setDataStorageState({
+    ...initialStorage,
+    state: {
+      ...initialStorage.state,
+      retainedRoots: ['D:\\Elysia Recovery'],
+    },
+    inventory: initialStorage.inventory === null
+      ? null
+      : {
+          ...initialStorage.inventory,
+          blockedEntries: 2,
+          warning: 'One legacy item is reported under Other managed data.',
+        },
+  })
+  await openSettings()
+
+  const storage = page.locator('.data-storage-settings')
+  await expect(storage.getByRole('heading', { name: 'Data & storage' }))
+    .toBeVisible()
+  await expect(storage.getByText(
+    'C:\\Users\\Actor\\AppData\\Roaming\\Elysia\\data',
+    { exact: true },
+  )).toBeVisible()
+  await expect(storage.getByText('Recovery copies retained', { exact: true }))
+    .toBeVisible()
+  await expect(storage.getByText('D:\\Elysia Recovery', { exact: true }))
+    .toBeVisible()
+  await expect(storage.getByText('25.8 KiB', { exact: true })).toBeVisible()
+  await expect(storage.getByText('32.0 GiB', { exact: true })).toBeVisible()
+  await expect(storage.getByText('3.5 KiB', { exact: true })).toBeVisible()
+  await expect(storage.locator('.data-storage-category-list strong')).toHaveText([
+    'Configuration',
+    'Chats',
+    'Projects',
+    'Memory',
+    'Sources',
+    'Indexes',
+    'Temporary audio',
+    'Cache',
+    'Logs',
+    'Other managed data',
+  ])
+  await expect(storage.getByText('Durable', { exact: true })).toHaveCount(7)
+  await expect(storage.getByText('Temporary', { exact: true })).toHaveCount(3)
+  await expect(storage).toContainText('2 filesystem entries could not be measured.')
+  await expect(storage).toContainText(
+    'One legacy item is reported under Other managed data.',
+  )
+  await expect(storage).toContainText(
+    'remove only temporary audio, cache, and logs from this exact scan',
+  )
+
+  await clearCalls()
+  await storage.getByRole('button', { name: 'Refresh usage' }).click()
+  await expect.poll(async () => (
+    (await getCalls()).filter(
+      (call) => call.method === 'refreshDataStorageUsage',
+    ).length
+  )).toBe(1)
+
+  await storage.getByRole('button', { name: 'Clear temporary data' }).click()
+  await expect.poll(async () => (
+    (await getCalls()).find(
+      (call) => call.method === 'clearTemporaryData',
+    )?.args
+  )).toEqual([2, 'scan-refreshed'])
+  await expect(storage.getByRole('button', { name: 'Clear temporary data' }))
+    .toBeDisabled()
+
+  await storage.getByRole('button', { name: 'Change data directory' }).click()
+  await expect.poll(async () => (
+    (await getCalls()).find(
+      (call) => call.method === 'chooseAndMoveDataDirectory',
+    )?.args
+  )).toEqual([2])
+  await expect(storage.getByText('D:\\ElysiaData', { exact: true })).toBeVisible()
+
+  await storage.getByRole('button', { name: 'Open data directory' }).click()
+  await expect.poll(async () => (
+    (await getCalls()).filter(
+      (call) => call.method === 'openDataDirectory',
+    ).length
+  )).toBe(1)
+})
+
+test('keeps storage visible without Backend settings and disables busy mutations', async () => {
+  await setDataStorageState(dataStorageViewState({
+    inventory: null,
+    busyPhase: 'moving',
+    warning: 'A retained data copy needs review.',
+  }))
+  await emitSnapshot({
+    revision: 3,
+    status: 'stopped',
+    capabilities: [],
+    models: [],
+  })
+  await pressControlShortcut(',')
+
+  await expect(page.getByRole('heading', { name: 'Settings', exact: true }))
+    .toBeVisible()
+  await expect(page.getByText('Settings are unavailable', { exact: true }))
+    .toBeVisible()
+  const storage = page.locator('.data-storage-settings')
+  await expect(storage.getByRole('heading', { name: 'Data & storage' }))
+    .toBeVisible()
+  await expect(storage.getByText(
+    'C:\\Users\\Actor\\AppData\\Roaming\\Elysia\\data',
+    { exact: true },
+  )).toBeVisible()
+  await expect(storage).toContainText('Main is moving managed storage.')
+  await expect(storage).toContainText('A retained data copy needs review.')
+  await expect(storage.getByRole('button', { name: 'Refresh usage' }))
+    .toBeDisabled()
+  await expect(storage.getByRole('button', { name: 'Moving…' }))
+    .toBeDisabled()
+  await expect(storage.getByRole('button', { name: 'Clear temporary data' }))
+    .toBeDisabled()
 })
 
 test('manages the optional Desktop Pet with revisioned immediate controls', async () => {

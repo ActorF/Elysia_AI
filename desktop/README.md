@@ -112,7 +112,7 @@ Prerequisites:
 - Optional desktop reply playback and Python synthesis require a separately installed GPT-SoVITS
   runtime, checkpoints/reference audio under the ignored
   `models/weights/gpt-sovits/` tree, and an ignored
-  `workspace/settings/voice-profiles.json` catalog. None is downloaded,
+  `workspace/settings/voice-profiles.json` catalog below the active data root. None is downloaded,
   committed, or packaged by this project, and none is required to run the
   text-only desktop UI.
 - Run all npm commands from the `desktop` directory.
@@ -152,13 +152,23 @@ Git-ignored and must not be committed or packaged with the application.
 - Open **Settings** or press `Ctrl+,` to manage the default Ollama model and
   origin, Memory limits, file import size, local STT model/device/language, and
   appearance, including the optional Desktop Pet. Backend values are atomically stored in
-  `workspace/settings/global.json`; each control identifies whether a saved
+  `workspace/settings/global.json` below the active data root; each control identifies whether a saved
   value is live or waits for a Backend restart. Appearance remains in this
   device's renderer storage and applies immediately. If Voice contains a
   non-empty Final transcript, `Ctrl+,` asks before discarding it.
+- **Data & storage** remains available even when Python is stopped. Electron
+  Main shows the active versioned data root and a bounded category scan, uses a
+  native picker for an empty move destination, verifies a staged copy before
+  restarting Python there, and rolls back to the old root if readiness fails.
+  Generic cleanup is limited to application-owned temporary audio, Cache, and
+  Logs; Chats, Projects, Memory, Settings, Sources, indexes, models, and
+  external Ollama data have no raw delete action. Old or failed-move copies that
+  cannot pass exact deletion checks are journaled and shown across restarts as
+  Recovery Copies for manual review. See
+  [`docs/13-PRODUCTION-DATA-LAYOUT.md`](../docs/13-PRODUCTION-DATA-LAYOUT.md).
 - The Voice section selects a system-default or exact microphone and speaker,
   reports Windows microphone access, and runs short local tests. Desired opaque
-  device IDs are stored separately in `workspace/settings/audio-device.json`;
+  device IDs are stored separately in active-root `workspace/settings/audio-device.json`;
   device labels, permission state, availability, and test audio never enter
   Python.
 - In a Chat, **Start voice** and the phone button open the Voice capture page

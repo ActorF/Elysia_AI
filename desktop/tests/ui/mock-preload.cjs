@@ -88,6 +88,47 @@ function defaultSettingsState() {
   }
 }
 
+function defaultDataStorageState() {
+  const activeDataRoot = 'C:\\Users\\Actor\\AppData\\Roaming\\Elysia\\data'
+  return {
+    state: {
+      revision: 2,
+      rootId: 'root-default',
+      activeDataRoot,
+      movePending: false,
+      retainedRoots: [],
+    },
+    inventory: {
+      revision: 2,
+      rootId: 'root-default',
+      activeDataRoot,
+      token: 'scan-2',
+      categories: [
+        { category: 'config', bytes: 1024, fileCount: 1, entryCount: 1 },
+        { category: 'chats', bytes: 4096, fileCount: 2, entryCount: 2 },
+        { category: 'projects', bytes: 2048, fileCount: 1, entryCount: 1 },
+        { category: 'memory', bytes: 3072, fileCount: 3, entryCount: 3 },
+        { category: 'sources', bytes: 8192, fileCount: 4, entryCount: 4 },
+        { category: 'indexes', bytes: 4096, fileCount: 5, entryCount: 5 },
+        { category: 'audio', bytes: 2048, fileCount: 2, entryCount: 2 },
+        { category: 'cache', bytes: 1024, fileCount: 1, entryCount: 1 },
+        { category: 'logs', bytes: 512, fileCount: 1, entryCount: 1 },
+        { category: 'other', bytes: 256, fileCount: 1, entryCount: 1 },
+      ],
+      totalBytes: 26368,
+      fileCount: 21,
+      blockedEntries: 0,
+      truncated: false,
+      freeBytes: 34359738368,
+      reclaimableBytes: 3584,
+      measuredAt: '2026-10-01T12:00:00.000Z',
+      warning: null,
+    },
+    busyPhase: 'idle',
+    warning: null,
+  }
+}
+
 function defaultDesktopPetState() {
   return {
     revision: 0,
@@ -274,6 +315,7 @@ let snapshot = clone(initialSnapshot)
 let chatState = defaultChatState()
 let projectState = defaultProjectState()
 let settingsState = defaultSettingsState()
+let dataStorageState = defaultDataStorageState()
 let desktopPetState = defaultDesktopPetState()
 let presenceNotificationState = defaultPresenceNotificationState()
 let voiceSettingsState = defaultVoiceSettingsState()
@@ -330,6 +372,9 @@ if (reloadState !== null) {
   chatState = clone(reloadState.chatState)
   projectState = clone(reloadState.projectState)
   settingsState = clone(reloadState.settingsState)
+  dataStorageState = clone(
+    reloadState.dataStorageState ?? defaultDataStorageState(),
+  )
   desktopPetState = clone(
     reloadState.desktopPetState ?? defaultDesktopPetState(),
   )
@@ -778,6 +823,98 @@ const desktopApi = {
       modelName: settingsState.settings.modelName,
     }
     return clone(snapshot)
+  },
+
+  getDataStorageState: async () => {
+    record('getDataStorageState')
+    return clone(dataStorageState)
+  },
+
+  refreshDataStorageUsage: async () => {
+    record('refreshDataStorageUsage')
+    if (dataStorageState.inventory !== null) {
+      dataStorageState = {
+        ...dataStorageState,
+        inventory: {
+          ...dataStorageState.inventory,
+          token: 'scan-refreshed',
+          measuredAt: '2026-10-01T12:05:00.000Z',
+        },
+        busyPhase: 'idle',
+      }
+    }
+    return clone(dataStorageState)
+  },
+
+  chooseAndMoveDataDirectory: async (expectedRevision) => {
+    record('chooseAndMoveDataDirectory', [expectedRevision])
+    if (expectedRevision !== dataStorageState.state.revision) {
+      throw new Error('Data storage changed elsewhere. Refresh before moving it.')
+    }
+    const activeDataRoot = 'D:\\ElysiaData'
+    const revision = dataStorageState.state.revision + 1
+    dataStorageState = {
+      state: {
+        revision,
+        rootId: 'root-moved',
+        activeDataRoot,
+        movePending: false,
+        retainedRoots: dataStorageState.state.retainedRoots,
+      },
+      inventory: dataStorageState.inventory === null
+        ? null
+        : {
+            ...dataStorageState.inventory,
+            revision,
+            rootId: 'root-moved',
+            activeDataRoot,
+            token: 'scan-moved',
+            measuredAt: '2026-10-01T12:10:00.000Z',
+          },
+      busyPhase: 'idle',
+      warning: null,
+    }
+    return clone(dataStorageState)
+  },
+
+  clearTemporaryData: async (expectedRevision, scanToken) => {
+    record('clearTemporaryData', [expectedRevision, scanToken])
+    const inventory = dataStorageState.inventory
+    if (
+      expectedRevision !== dataStorageState.state.revision
+      || inventory === null
+      || scanToken !== inventory.token
+    ) {
+      throw new Error('Storage usage changed. Refresh before clearing temporary data.')
+    }
+    const cleanableCategories = new Set(['audio', 'cache', 'logs'])
+    const deletedFileCount = inventory.categories.reduce((total, usage) => (
+      cleanableCategories.has(usage.category)
+        ? total + usage.fileCount
+        : total
+    ), 0)
+    dataStorageState = {
+      ...dataStorageState,
+      inventory: {
+        ...inventory,
+        token: 'scan-cleaned',
+        categories: inventory.categories.map((usage) => (
+          cleanableCategories.has(usage.category)
+            ? { ...usage, bytes: 0, fileCount: 0, entryCount: 0 }
+            : usage
+        )),
+        totalBytes: inventory.totalBytes - inventory.reclaimableBytes,
+        fileCount: inventory.fileCount - deletedFileCount,
+        reclaimableBytes: 0,
+        measuredAt: '2026-10-01T12:15:00.000Z',
+      },
+      busyPhase: 'idle',
+    }
+    return clone(dataStorageState)
+  },
+
+  openDataDirectory: async () => {
+    record('openDataDirectory')
   },
 
   getSettings: async () => {
@@ -1621,6 +1758,7 @@ const testControl = {
     chatState = defaultChatState()
     projectState = defaultProjectState()
     settingsState = defaultSettingsState()
+    dataStorageState = defaultDataStorageState()
     desktopPetState = defaultDesktopPetState()
     presenceNotificationState = defaultPresenceNotificationState()
     voiceSettingsState = defaultVoiceSettingsState()
@@ -1690,6 +1828,10 @@ const testControl = {
 
   setSettingsState: (nextSettingsState) => {
     settingsState = clone(nextSettingsState)
+  },
+
+  setDataStorageState: (nextDataStorageState) => {
+    dataStorageState = clone(nextDataStorageState)
   },
 
   setDesktopPetState: (nextDesktopPetState) => {
@@ -2013,6 +2155,7 @@ const testControl = {
       chatState,
       projectState,
       settingsState,
+      dataStorageState,
       desktopPetState,
       presenceNotificationState,
       voiceSettingsState,
