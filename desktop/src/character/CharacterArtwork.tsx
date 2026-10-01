@@ -1,23 +1,27 @@
 /**
  * Render the shared static Elysia portrait with an accessible failure state.
- * The image is presentation-only and never participates in Chat or Voice state.
+ * Semantic state is exposed as metadata and never selects or switches the
+ * fixed image or any motion.
  */
 
 import { useState } from 'react'
 
+import type { CharacterState } from './character-state.ts'
+
 interface CharacterArtworkProps {
   className?: string
+  state: CharacterState
 }
 
-/** Display the packaged Elysia portrait, replacing a failed image without exposing a broken control. */
-export function CharacterArtwork({ className }: CharacterArtworkProps) {
+/** Display the packaged portrait and preserve semantic state when image loading fails. */
+export function CharacterArtwork({ className, state }: CharacterArtworkProps) {
   const [imageUnavailable, setImageUnavailable] = useState(false)
   const classes = ['character-artwork', className]
     .filter((value): value is string => value !== undefined && value.length > 0)
     .join(' ')
 
   return (
-    <div className={classes}>
+    <div className={classes} data-character-state={state}>
       {imageUnavailable ? (
         <div
           className="character-artwork-fallback"

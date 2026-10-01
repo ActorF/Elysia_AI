@@ -2563,6 +2563,8 @@ test('sends a reviewed transcript through Chat and follows trusted speech status
   await clearCalls()
 
   await page.getByRole('button', { name: 'Start voice' }).click()
+  const call = page.getByRole('main', { name: 'Voice capture' })
+  const characterArtwork = call.locator('.character-artwork')
   await page.getByRole('button', { name: 'Start microphone' }).click()
   await emitSpeechFrames(0.08, 10)
   await emitAudioFrames(0, 30)
@@ -2591,6 +2593,11 @@ test('sends a reviewed transcript through Chat and follows trusted speech status
   await expect(page.locator('.call-microphone-state'))
     .toHaveText('Monitoring interruptions')
   await expect(page.locator('.call-state')).toHaveText('Elysia is thinking')
+  await expect(call).toHaveAttribute('data-character-state', 'thinking')
+  await expect(characterArtwork).toHaveAttribute(
+    'data-character-state',
+    'thinking',
+  )
   await expect(transcript).not.toBeEditable()
 
   await emitEvent({
@@ -2631,6 +2638,11 @@ test('sends a reviewed transcript through Chat and follows trusted speech status
     control.setChatActionDelay(false)
   })
   await expect(page.locator('.call-state')).toHaveText('Elysia is speaking')
+  await expect(call).toHaveAttribute('data-character-state', 'speaking')
+  await expect(characterArtwork).toHaveAttribute(
+    'data-character-state',
+    'speaking',
+  )
   await emitEvent({
     type: 'voice-speech-status',
     kind: 'played',
@@ -2655,6 +2667,8 @@ test('sends a reviewed transcript through Chat and follows trusted speech status
     reply: 'Trusted local speech finished.',
   })
   await expect(page.getByText('Ready to listen', { exact: true })).toBeVisible()
+  await expect(call).toHaveAttribute('data-character-state', 'idle')
+  await expect(characterArtwork).toHaveAttribute('data-character-state', 'idle')
   await expect(page.getByLabel('Final transcript')).toHaveCount(0)
 
   await page.getByRole('button', { name: 'Close voice' }).click()
@@ -3697,6 +3711,10 @@ test('shows a Voice Chat failure before returning its transcript to the draft', 
 
   await expect(page.getByText('Voice action failed', { exact: true }))
     .toBeVisible()
+  const call = page.getByRole('main', { name: 'Voice capture' })
+  await expect(call).toHaveAttribute('data-character-state', 'error')
+  await expect(call.locator('.character-artwork'))
+    .toHaveAttribute('data-character-state', 'error')
   await expect(page.getByRole('alert')).toContainText(
     'The local reply failed safely. Your transcript was restored to the Chat draft.',
   )
@@ -3851,6 +3869,8 @@ test('retains a final transcript across Backend failure and recovery', async () 
   await emitAudioFrames(0, 30)
   expect(await releaseNextVoiceTranscription()).toBe(true)
   const transcript = page.getByRole('textbox', { name: 'Final transcript' })
+  const call = page.getByRole('main', { name: 'Voice capture' })
+  const artwork = call.locator('.character-artwork')
   await transcript.fill('Edited transcript survives Backend restart')
 
   await emitSnapshot({
@@ -3867,6 +3887,8 @@ test('retains a final transcript across Backend failure and recovery', async () 
     .toHaveValue('Edited transcript survives Backend restart')
   await expect(page.getByText('Transcript ready', { exact: true }))
     .toBeVisible()
+  await expect(call).toHaveAttribute('data-character-state', 'error')
+  await expect(artwork).toHaveAttribute('data-character-state', 'error')
 
   await emitSnapshot(readySnapshot({
     revision: 3,
@@ -3879,6 +3901,8 @@ test('retains a final transcript across Backend failure and recovery', async () 
   }))
   await expect(transcript)
     .toHaveValue('Edited transcript survives Backend restart')
+  await expect(call).toHaveAttribute('data-character-state', 'idle')
+  await expect(artwork).toHaveAttribute('data-character-state', 'idle')
   await page.getByRole('button', { name: 'Use transcript in message' }).click()
   await expect(page.getByLabel('Message Elysia'))
     .toHaveValue('Edited transcript survives Backend restart')
@@ -7334,6 +7358,7 @@ test('shares one decoded Elysia portrait without disturbing Chat', async () => {
 
   await page.getByRole('button', { name: 'Expand Elysia panel' }).click()
   const panel = page.locator('.character-panel')
+  await expect(panel).toHaveAttribute('data-character-state', 'idle')
   const panelImage = panel.getByRole('img', {
     name: 'Elysia character portrait',
     exact: true,
@@ -7364,6 +7389,7 @@ test('shares one decoded Elysia portrait without disturbing Chat', async () => {
 
   await page.getByRole('button', { name: 'Start voice' }).click()
   const call = page.getByRole('main', { name: 'Voice capture' })
+  await expect(call).toHaveAttribute('data-character-state', 'idle')
   const callImage = call.getByRole('img', {
     name: 'Elysia character portrait',
     exact: true,
@@ -7390,6 +7416,162 @@ test('shares one decoded Elysia portrait without disturbing Chat', async () => {
   )).toBe(1)
 })
 
+test('projects Chat activity and failure through the shared character state', async () => {
+  await emitSnapshot(readySnapshot())
+  await page.getByRole('button', { name: 'Expand Elysia panel' }).click()
+  const panel = page.locator('.character-panel')
+  const artwork = panel.locator('.character-artwork')
+  const captionState = panel.locator('.character-caption > strong')
+  const composer = page.getByLabel('Message Elysia')
+  await expect(panel).toHaveAttribute('data-character-state', 'idle')
+  await expect(artwork).toHaveAttribute('data-character-state', 'idle')
+  await expect(captionState).toHaveText('Ready')
+  await expect(panel.locator('.soft-status')).toHaveText('Ready')
+
+  await composer.fill('Show the conversational state.')
+  await composer.press('Enter')
+  await expect(panel).toHaveAttribute('data-character-state', 'thinking')
+  await expect(artwork).toHaveAttribute('data-character-state', 'thinking')
+  await expect(captionState).toHaveText('Thinking')
+  await emitEvent({
+    type: 'chat-error',
+    requestId: 'test-request-1',
+    chatId: 'chat-test',
+    code: 'generation.failed',
+    message: 'The character state test failed safely.',
+    retryable: true,
+  })
+  await expect(panel).toHaveAttribute('data-character-state', 'error')
+  await expect(artwork).toHaveAttribute('data-character-state', 'error')
+  await expect(captionState).toHaveText('Needs attention')
+  await expect(panel.locator('.soft-status')).toHaveText('Ready')
+})
+
+test('scopes Work and Knowledge character activity to the current Project Chat', async () => {
+  const project = projectSummary('project-character-state', 'Character State')
+  const workChat = chatSummary('chat-character-state', 'Character Work', {
+    mode: 'work',
+    projectId: project.projectId,
+  })
+  await setProjectState({
+    activeProject: { ...project, chatCount: 1 },
+    projects: [{ ...project, chatCount: 1 }],
+    chatState: {
+      activeChat: { ...workChat, messages: [] },
+      chats: [workChat],
+    },
+  })
+  await emitSnapshot(readySnapshot({
+    capabilities: ['chat.stream', 'knowledge.management'],
+    chatId: workChat.chatId,
+    chatTitle: workChat.title,
+  }))
+  await expect(page.locator('#chat-title')).toHaveText(workChat.title)
+  await page.getByRole('button', { name: 'Expand Elysia panel' }).click()
+  const panel = page.locator('.character-panel')
+  const artwork = panel.locator('.character-artwork')
+  const captionState = panel.locator('.character-caption > strong')
+
+  const composer = page.getByLabel('Message Elysia')
+  await composer.fill('Show the Work state.')
+  await composer.press('Enter')
+  await expect(panel).toHaveAttribute('data-character-state', 'working')
+  await expect(artwork).toHaveAttribute('data-character-state', 'working')
+  await expect(captionState).toHaveText('Working')
+  await emitEvent({
+    type: 'chat-complete',
+    requestId: 'test-request-1',
+    chatId: workChat.chatId,
+    reply: 'The Work state is complete.',
+  })
+  await expect(panel).toHaveAttribute('data-character-state', 'idle')
+
+  await emitSnapshot(readySnapshot({
+    revision: 2,
+    capabilities: ['chat.stream', 'knowledge.management'],
+    chatId: workChat.chatId,
+    chatTitle: workChat.title,
+    activeKnowledgeOperation: {
+      requestId: 'knowledge-other-project',
+      projectId: 'project-other-character-state',
+      cancellable: true,
+    },
+  }))
+  await expect(panel).toHaveAttribute('data-character-state', 'idle')
+  await expect(artwork).toHaveAttribute('data-character-state', 'idle')
+
+  await emitSnapshot(readySnapshot({
+    revision: 3,
+    capabilities: ['chat.stream', 'knowledge.management'],
+    chatId: workChat.chatId,
+    chatTitle: workChat.title,
+    activeKnowledgeOperation: {
+      requestId: 'knowledge-current-project',
+      projectId: project.projectId,
+      cancellable: true,
+    },
+  }))
+  await expect(panel).toHaveAttribute('data-character-state', 'working')
+  await expect(artwork).toHaveAttribute('data-character-state', 'working')
+  await expect(captionState).toHaveText('Working')
+  await emitEvent({
+    type: 'knowledge-operation-error',
+    requestId: 'knowledge-current-project',
+    projectId: project.projectId,
+    code: 'knowledge.operation_failed',
+    message: 'The Project source operation failed safely.',
+    retryable: true,
+  })
+  await expect(panel).toHaveAttribute('data-character-state', 'error')
+  await expect(artwork).toHaveAttribute('data-character-state', 'error')
+  await expect(captionState).toHaveText('Needs attention')
+})
+
+test('keeps a background Chat generation out of the visible character state', async () => {
+  await emitSnapshot(readySnapshot({
+    activeGeneration: {
+      requestId: 'background-character-generation',
+      chatId: 'chat-background-character',
+      kind: 'send',
+      userText: 'Background work',
+      reply: '',
+      stopping: false,
+    },
+  }))
+  await page.getByRole('button', { name: 'Expand Elysia panel' }).click()
+  const panel = page.locator('.character-panel')
+  await expect(panel).toHaveAttribute('data-character-state', 'idle')
+  await expect(panel.locator('.character-artwork'))
+    .toHaveAttribute('data-character-state', 'idle')
+})
+
+test('projects Voice listening without letting device state choose artwork', async () => {
+  await installAudioMock()
+  await emitSnapshot(readySnapshot({
+    capabilities: [
+      'chat.stream',
+      'voice.settings',
+      'voice.capture',
+      'voice.transcription',
+    ],
+  }))
+  await page.getByRole('button', { name: 'Start voice' }).click()
+  const call = page.getByRole('main', { name: 'Voice capture' })
+  const artwork = call.locator('.character-artwork')
+  await expect(call).toHaveAttribute('data-character-state', 'idle')
+  await expect(artwork).toHaveAttribute('data-character-state', 'idle')
+
+  await page.getByRole('button', { name: 'Start microphone' }).click()
+  await expect(call).toHaveAttribute('data-character-state', 'listening')
+  await expect(artwork).toHaveAttribute('data-character-state', 'listening')
+  await expect(page.getByText('Listening for speech', { exact: true }))
+    .toBeVisible()
+
+  await page.getByRole('button', { name: 'Cancel capture' }).click()
+  await expect(call).toHaveAttribute('data-character-state', 'idle')
+  await expect(artwork).toHaveAttribute('data-character-state', 'idle')
+})
+
 test('keeps character and Voice controls usable when portrait loading fails', async () => {
   await emitSnapshot(readySnapshot({
     capabilities: [
@@ -7411,6 +7593,8 @@ test('keeps character and Voice controls usable when portrait loading fails', as
   await expect(panel.getByRole('img', {
     name: 'Elysia character portrait unavailable',
   })).toBeVisible()
+  await expect(panel.locator('.character-artwork'))
+    .toHaveAttribute('data-character-state', 'idle')
   await expect(panelImage).toHaveCount(0)
 
   const closePanel = panel.getByRole('button', {

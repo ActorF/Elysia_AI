@@ -5,8 +5,10 @@
 
 import { useEffect, useRef, useState } from 'react'
 
+import type { BackendStatus } from '../../electron/contracts.ts'
 import { hasNonBlankCodePoint } from '../../electron/protocol-text.js'
 import { CharacterArtwork } from '../character/CharacterArtwork.tsx'
+import { deriveVoiceCharacterState } from '../character/character-state.ts'
 import { Icon } from '../design-system/Icon.tsx'
 import type { AudioCaptureSnapshot } from './audio-capture.ts'
 import type { VoiceSessionPhase } from './voice-session-controller.ts'
@@ -31,6 +33,8 @@ export interface CallPreviewProps {
   assistantCaption?: string | null
   /** Whether the user has chosen to see assistant captions. */
   captionsEnabled: boolean
+  /** Current Backend lifecycle used to surface connection loss consistently. */
+  backendStatus: BackendStatus
   /** Current PCM-free microphone capture telemetry. */
   capture: AudioCaptureSnapshot
   /** Human-readable reason a new capture cannot begin. */
@@ -79,6 +83,7 @@ export interface CallPreviewProps {
 export function CallPreview({
   assistantCaption = null,
   autoContinueEnabled = false,
+  backendStatus,
   captionsEnabled,
   capture,
   captureDisabledReason,
@@ -142,6 +147,10 @@ export function CallPreview({
     submissionError,
     transcription,
   })
+  const characterState = deriveVoiceCharacterState(
+    presentation.primaryState,
+    backendStatus,
+  )
   const transcriptReady = transcription?.phase === 'final'
   const transcriptCanBeUsed = transcriptReady
     && hasNonBlankCodePoint(transcription.text)
@@ -190,6 +199,7 @@ export function CallPreview({
     <main
       className="call-page"
       aria-label="Voice capture"
+      data-character-state={characterState.state}
     >
       <header className="call-header">
         <div>
@@ -222,7 +232,10 @@ export function CallPreview({
           )}
           aria-hidden="true"
         />
-        <CharacterArtwork className="character-portrait call-portrait" />
+        <CharacterArtwork
+          className="character-portrait call-portrait"
+          state={characterState.state}
+        />
         <div
           className="call-status-cluster"
         >

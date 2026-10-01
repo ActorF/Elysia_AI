@@ -1,14 +1,16 @@
 /**
- * Present optional character context derived from the current Backend snapshot.
+ * Present optional character context from Backend and renderer lifecycle facts.
  * This view is read-only and never mutates Chat, Memory, or model state.
  */
 
 import type { BackendSnapshot } from '../../electron/contracts.ts'
 import { Icon } from '../design-system/Icon.tsx'
 import { CharacterArtwork } from './CharacterArtwork.tsx'
+import type { CharacterStateSnapshot } from './character-state.ts'
 
 interface CharacterPanelProps {
   chatTitle: string
+  characterState: CharacterStateSnapshot
   modal: boolean
   pending: boolean
   snapshot: BackendSnapshot
@@ -18,6 +20,7 @@ interface CharacterPanelProps {
 /** Render Elysia's collapsible presence panel for the active conversation. */
 export function CharacterPanel({
   chatTitle,
+  characterState,
   modal,
   pending,
   snapshot,
@@ -26,6 +29,7 @@ export function CharacterPanel({
   return (
     <aside
       className="character-panel"
+      data-character-state={characterState.state}
       id="character-panel"
       aria-labelledby="character-panel-title"
       aria-modal={modal ? true : undefined}
@@ -56,10 +60,13 @@ export function CharacterPanel({
       </div>
 
       <div className="character-card">
-        <CharacterArtwork className="character-portrait" />
+        <CharacterArtwork
+          className="character-portrait"
+          state={characterState.state}
+        />
         <div className="character-caption">
-          <strong>Pink fairy at your side</strong>
-          <span>Elysia's portrait accompanies your local conversations.</span>
+          <strong>{characterState.label}</strong>
+          <span>{characterState.description}</span>
         </div>
       </div>
 

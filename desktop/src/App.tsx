@@ -43,6 +43,7 @@ import {
 } from '../electron/protocol-text.js'
 import './App.css'
 import { CharacterPanel } from './character/CharacterPanel.tsx'
+import { deriveApplicationCharacterState } from './character/character-state.ts'
 import { ChatView } from './chat/ChatView.tsx'
 import type {
   ChatMessage,
@@ -1035,6 +1036,9 @@ function App() {
   const activeProjectKnowledgeActivity = activeProjectId === undefined
     ? idleProjectKnowledgeActivity
     : knowledgeActivities[activeProjectId] ?? idleProjectKnowledgeActivity
+  const activeChatKnowledgeActivity = activeChatProjectId === null
+    ? idleProjectKnowledgeActivity
+    : knowledgeActivities[activeChatProjectId] ?? idleProjectKnowledgeActivity
   const knowledgeManagementAvailable = snapshot.capabilities.includes(
     'knowledge.management',
   )
@@ -1065,8 +1069,28 @@ function App() {
       generationBusy
       && inFlightTurn?.useProjectKnowledge === true
     )
+  const activeChatKnowledgeBusy = activeChatProjectId !== null && (
+    snapshot.activeKnowledgeOperation?.projectId === activeChatProjectId
+    || activeChatKnowledgeActivity.activeRequestId !== null
+  )
   const activeGeneration = generationBusy
     && inFlightTurn?.chatId === activeChatId
+  const activeChatGenerationFailed = inFlightTurn?.chatId === activeChatId
+    && inFlightTurn?.phase === 'error'
+  const characterState = deriveApplicationCharacterState({
+    backendStatus: snapshot.status,
+    chatActivity: activeChatGenerationFailed
+      ? 'error'
+      : activeGeneration
+        ? 'generating'
+        : 'idle',
+    chatMode: chatState?.activeChat.mode ?? 'chat',
+    knowledgeActive: activeChatKnowledgeBusy,
+    knowledgeError: activeChatKnowledgeActivity.error !== null,
+    // Stage 13 has no approval producer yet. Keeping the input explicit makes
+    // the future workflow opt in instead of inferring approval from UI text.
+    waitingApproval: false,
+  })
   const stopPending = activeGeneration && inFlightTurn?.phase === 'stopping'
   const managedSpeechEnabled = snapshot.capabilities.includes('voice.speech')
     && settingsState?.activeSettings.autoReadAloud !== false
@@ -6264,6 +6288,7 @@ function App() {
       <CallPreview
         assistantCaption={voiceAssistantCaption}
         autoContinueEnabled={automaticRelistenEnabled}
+        backendStatus={snapshot.status}
         captionsEnabled={captionsEnabled}
         capture={voiceCapture}
         captureDisabledReason={voiceCaptureDisabledReason}
@@ -6605,6 +6630,7 @@ function App() {
           ? (
               <CharacterPanel
                 chatTitle={displayedChat}
+                characterState={characterState}
                 modal={compactShell}
                 pending={panelTransitionPending}
                 snapshot={snapshot}

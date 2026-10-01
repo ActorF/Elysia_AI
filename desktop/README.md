@@ -55,6 +55,13 @@ the Chat, or archiving the Project resets it. Python derives the exact corpus fr
 relationship, persists structured proof with the Assistant message, and React
 shows statement kinds plus path-free citation details. No workspace directory
 is scanned or imported automatically.
+The Stage 13 Character State API is renderer-local and closed over `idle`,
+`listening`, `thinking`, `speaking`, `working`, `waiting_approval`, and `error`.
+It projects current-Chat generation, current-Project Knowledge activity, Voice's
+primary lifecycle, and Backend failure into the Character Panel and call page.
+The contract adds no IPC and never selects an animation file; the current
+surface keeps one static portrait, while `waiting_approval` has no producer
+until a real Work/Approval workflow exists.
 Electron is frozen as the production
 shell. The Tauri source and toolchain were removed after the comparison; the
 rationale, recorded measurements, and revisit gates are in
@@ -140,6 +147,10 @@ Git-ignored and must not be committed or packaged with the application.
   speaking**, interruption, cancellation, and safe failure states. Assistant
   captions are visible only when enabled and can be hidden or shown from the
   Session without changing their saved global default.
+- The optional Character Panel and Voice portrait consume the same semantic
+  Character State contract. State changes update accessible text and
+  `data-character-state` only; they do not switch the packaged static portrait,
+  load Live2D, write Chat state, or create a new Backend capability.
 - **Mute** immediately ends and discards a live capture or held interruption
   PCM and disarms reply monitoring; it does not cancel an already-running text
   reply, and unmuting never opens the microphone by itself. **Hang up** or
@@ -448,7 +459,9 @@ semantic why/how requirements remain part of review under the root
 UI tests, including Knowledge method/event races, export ownership across
 Renderer reload and Project switches, trusted receipt settlement, Project
 isolation, archived read-only behavior, explicit grounded intent, and citation
-accessibility.
+accessibility. The contract suite also runs `character-state.test.mjs`, while
+the UI suite verifies current-Chat/Project scoping, Voice projection, Backend
+failure, and the static portrait fallback.
 `npm run test:ui` can be used independently while working on layout.
 The UI suite loads the production renderer through a dedicated sandboxed test
 preload; its mock Backend and control surface are never included by the
