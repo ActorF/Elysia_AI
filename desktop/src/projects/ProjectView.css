@@ -497,10 +497,8 @@
   gap: var(--space-4);
 }
 
-.project-sources-card .attachment-surface {
+.project-sources-card .knowledge-panel {
   width: 100%;
-  max-width: none;
-  margin: 0;
 }
 
 .project-settings {

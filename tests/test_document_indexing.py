@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
+from threading import Event
 from typing import cast
 
 import pytest
@@ -37,6 +38,7 @@ from documents.embedding import (
 from documents.exceptions import (
     DocumentContentLimitError,
     DocumentNotFoundError,
+    DocumentOperationCancelledError,
     DocumentProcessingFailedError,
     DocumentValidationError,
 )
@@ -254,6 +256,63 @@ def test_prepare_document_finishes_embedding_without_store_mutation() -> None:
 
     assert result.chunked_document == source
     assert processor.calls == [(scope, link_id)]
+    assert store.replace_calls == []
+
+
+def test_prepare_propagates_cancel_into_processing_before_embedding() -> None:
+    """Stop after a processing boundary that raises the shared Event."""
+
+    scope = AttachmentScope("project", "project_cancel_prepare")
+    link_id = "attachment_cancel_prepare"
+    source = _chunked(scope, link_id)
+    cancelled = Event()
+
+    class _CancellingProcessor:
+        """Raise cancellation after proving the callback reached processing."""
+
+        def process(
+            self,
+            requested_scope: AttachmentScope,
+            requested_link_id: str,
+            *,
+            cancel_requested: Callable[[], bool] | None = None,
+        ) -> ChunkedDocument:
+            """Set the Event and return the valid result for the outer gate."""
+
+            assert requested_scope == scope
+            assert requested_link_id == link_id
+            assert cancel_requested is not None
+            cancelled.set()
+            return source
+
+    class _NeverEmbedder:
+        """Fail if indexing admits embedding after cancellation is visible."""
+
+        def embed_document(
+            self,
+            document: ChunkedDocument,
+            *,
+            cancel_requested: Callable[[], bool] | None = None,
+        ) -> EmbeddedDocument:
+            """Reject an unexpected embedding call after cancellation."""
+
+            del document, cancel_requested
+            raise AssertionError("Embedding must not start after cancellation.")
+
+    store = _RecordingStore()
+    service = DocumentIndexingService(
+        _CancellingProcessor(),
+        _NeverEmbedder(),
+        store,
+    )
+
+    with pytest.raises(DocumentOperationCancelledError, match="cancelled"):
+        service.prepare_document(
+            scope,
+            link_id,
+            cancel_requested=cancelled.is_set,
+        )
+
     assert store.replace_calls == []
 
 

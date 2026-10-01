@@ -36,6 +36,8 @@ from attachments import (
 from chats import (
     AttachmentId,
     AttachmentMetadata,
+    ChatGroundedAnswer,
+    ChatGroundedTableLocation,
     ChatId,
     ChatMessageId,
     ChatNotFoundError,
@@ -65,6 +67,36 @@ from core import (
     ChatBusyError,
     ChatRetryTargetError,
     GenerationCancelledError,
+)
+from desktop_knowledge import (
+    DesktopKnowledgeRuntime,
+    create_desktop_knowledge_runtime,
+)
+from documents import (
+    DocumentError,
+    GroundedAnswerError,
+    GroundedAnswerUnavailableError,
+    RetrievalUnavailableError,
+)
+from knowledge_lifecycle import (
+    KnowledgeExportCancelledError,
+    KnowledgeLifecycleConflictError,
+    KnowledgeLifecycleError,
+    KnowledgeLifecycleNotFoundError,
+    KnowledgeLifecycleRecoveryError,
+    KnowledgeLifecycleStorageError,
+    KnowledgeLifecycleValidationError,
+    KnowledgeOperationSnapshot,
+    KnowledgeSourceView,
+)
+from project_sources import (
+    ProjectSourceAuthorizationError,
+    ProjectSourceConflictError,
+    ProjectSourceError,
+    ProjectSourceNotFoundError,
+    ProjectSourceStaleError,
+    ProjectSourceStorageError,
+    ProjectSourceValidationError,
 )
 from projects import (
     Project,
@@ -133,6 +165,10 @@ TranscriptionRunnerFactory = Callable[
     [TranscriptionJobCallback],
     TranscriptionJobRunner,
 ]
+KnowledgeRuntimeFactory = Callable[
+    [AppSettings, AttachmentService],
+    DesktopKnowledgeRuntime,
+]
 
 SERVER_NAME = "elysia-python"
 SERVER_VERSION = "0.1.0"
@@ -149,6 +185,7 @@ SERVER_CAPABILITIES = (
     "voice.speech",
     "voice.speech.cancel",
     "attachment.management",
+    "knowledge.management",
     "stream",
     "progress",
     "event",
@@ -176,6 +213,8 @@ class _GenerationTask:
     request_id: str
     chat_id: ChatId
     method: str
+    uses_project_knowledge: bool = False
+    knowledge_runtime_owner: object | None = field(default=None, repr=False)
     state: _GenerationState = _GenerationState.RUNNING
     done: Event = field(default_factory=Event)
     thread: Thread | None = None
@@ -305,6 +344,49 @@ class _TranscriptionTask:
     chat_id: ChatId
 
 
+@dataclass(slots=True)
+class _KnowledgeTask:
+    """Track one cancellable Project Source lifecycle worker."""
+
+    request_id: str
+    project_id: ProjectId
+    method: str
+    initial_operation_ids: frozenset[str] = field(default_factory=frozenset)
+    runtime_owner: object | None = field(default=None, repr=False)
+    monitor_runtime_owner: object | None = field(default=None, repr=False)
+    cancel_requested: Event = field(default_factory=Event, repr=False)
+    monitor_stop: Event = field(default_factory=Event, repr=False)
+    done: Event = field(default_factory=Event, repr=False)
+    thread: Thread | None = field(default=None, repr=False)
+
+    def request_cancel(self) -> bool:
+        """Request cooperative cancellation until the worker is terminal."""
+
+        # Recovery resumes pre-existing durable operations, while export is a
+        # one-shot native-dialog action rather than a journaled UI operation.
+        # Neither exposes a Renderer Stop control, so do not accept a protocol
+        # cancellation that the caller cannot correlate to durable state.
+        if self.method in {"knowledge.recover", "knowledge.source.export"}:
+            return False
+        if self.done.is_set():
+            return False
+        self.cancel_requested.set()
+        return True
+
+    def request_shutdown_cancel(self) -> bool:
+        """Cancel work that can safely clean up during Backend shutdown."""
+
+        if self.method == "knowledge.recover" or self.done.is_set():
+            return False
+        self.cancel_requested.set()
+        return True
+
+    def should_cancel(self) -> bool:
+        """Return whether the lifecycle service should durably cancel."""
+
+        return self.cancel_requested.is_set()
+
+
 def _configure_protocol_streams(*streams: TextIO) -> None:
     """Use UTF-8 for the Electron protocol on every Windows locale."""
 
@@ -428,6 +510,7 @@ class DesktopBackend:
         voice_settings_service: VoiceSettingsService | None = None,
         transcription_runner_factory: TranscriptionRunnerFactory | None = None,
         attachment_store: AttachmentRepository | AttachmentService | None = None,
+        knowledge_runtime_factory: KnowledgeRuntimeFactory | None = None,
         audio_writer: AudioChannelWriter | None = None,
         speech_coordinator: DesktopSpeechCoordinator | None = None,
         input_stream: TextIO = sys.stdin,
@@ -490,6 +573,7 @@ class DesktopBackend:
                 "audio_writer and speech_coordinator are mutually exclusive."
             )
         self._transcription_runner_factory = transcription_runner_factory
+        self._knowledge_runtime_factory = knowledge_runtime_factory
         self._input_stream = input_stream
         self._output_stream = output_stream
         self._expected_session_token = (
@@ -513,6 +597,15 @@ class DesktopBackend:
         # are already constructed and therefore remain restart-bound.
         self._speech_audio_writer = audio_writer
         self._generation_task: _GenerationTask | None = None
+        self._knowledge_runtime: DesktopKnowledgeRuntime | None = None
+        self._knowledge_task: _KnowledgeTask | None = None
+        # Knowledge workers can outlive a bounded shutdown wait while a local
+        # model or filesystem adapter drains.  This gate makes the shutdown
+        # response/EOF a strict output boundary and prevents closing runtime
+        # resources underneath a worker that still owns them.
+        self._knowledge_lifecycle_lock = RLock()
+        self._knowledge_closing = False
+        self._knowledge_runtime_owners: set[object] = set()
         self._transcription_runner: TranscriptionJobRunner | None = None
         self._transcription_transcriber: FasterWhisperTranscriber | None = None
         self._transcription_task: _TranscriptionTask | None = None
@@ -563,6 +656,7 @@ class DesktopBackend:
         # without delaying process teardown.
         self._prepare_transcription_shutdown()
         self._prepare_speech_shutdown()
+        self._prepare_knowledge_shutdown()
         # A finite test/input stream may end immediately after starting a
         # generation. Give a healthy worker time to finish; if it is blocked,
         # request cancellation so stdin closure cannot strand the process.
@@ -623,6 +717,7 @@ class DesktopBackend:
                 self._prepare_transcription_shutdown()
                 self._prepare_speech_shutdown()
                 self._prepare_generation_shutdown()
+                self._prepare_knowledge_shutdown()
                 self._emit_response(request_id, {"stopped": True})
                 return False
             elif not self._authenticated:
@@ -689,6 +784,24 @@ class DesktopBackend:
                 self._archive_project(request_id, params)
             elif method == "project.chat.move":
                 self._move_project_chat(request_id, params)
+            elif method == "knowledge.list":
+                self._list_project_knowledge(request_id, params)
+            elif method == "knowledge.source.add":
+                self._start_knowledge_operation(request_id, params, method)
+            elif method == "knowledge.source.replace":
+                self._start_knowledge_operation(request_id, params, method)
+            elif method == "knowledge.source.reindex":
+                self._start_knowledge_operation(request_id, params, method)
+            elif method == "knowledge.source.delete":
+                self._start_knowledge_operation(request_id, params, method)
+            elif method == "knowledge.project.rebuild":
+                self._start_knowledge_operation(request_id, params, method)
+            elif method == "knowledge.project.revoke":
+                self._start_knowledge_operation(request_id, params, method)
+            elif method == "knowledge.recover":
+                self._start_knowledge_operation(request_id, params, method)
+            elif method == "knowledge.source.export":
+                self._export_project_source(request_id, params)
             elif method == "request.cancel":
                 self._cancel_request(request_id, params)
             elif method == "permission.respond":
@@ -782,6 +895,66 @@ class DesktopBackend:
             self._emit_error(request_id, "project.archived", str(error))
         except ProjectNotFoundError as error:
             self._emit_error(request_id, "project.not_found", str(error))
+        except KnowledgeLifecycleValidationError as error:
+            self._emit_error(request_id, "knowledge.invalid", str(error))
+        except KnowledgeLifecycleNotFoundError as error:
+            self._emit_error(request_id, "knowledge.not_found", str(error))
+        except KnowledgeLifecycleConflictError as error:
+            self._emit_error(
+                request_id,
+                "knowledge.conflict",
+                str(error),
+                retryable=True,
+            )
+        except KnowledgeLifecycleRecoveryError as error:
+            self._emit_error(
+                request_id,
+                "knowledge.recovery_required",
+                str(error),
+                retryable=True,
+            )
+        except KnowledgeLifecycleStorageError as error:
+            self._emit_error(
+                request_id,
+                "knowledge.storage_failed",
+                str(error),
+                retryable=True,
+            )
+        except KnowledgeLifecycleError as error:
+            self._emit_error(request_id, "knowledge.failed", str(error))
+        except ProjectSourceAuthorizationError as error:
+            self._emit_error(
+                request_id,
+                "knowledge.unauthorized",
+                str(error),
+            )
+        except ProjectSourceNotFoundError as error:
+            self._emit_error(request_id, "knowledge.not_found", str(error))
+        except ProjectSourceStaleError as error:
+            self._emit_error(
+                request_id,
+                "knowledge.stale",
+                str(error),
+                retryable=True,
+            )
+        except ProjectSourceConflictError as error:
+            self._emit_error(
+                request_id,
+                "knowledge.conflict",
+                str(error),
+                retryable=True,
+            )
+        except ProjectSourceValidationError as error:
+            self._emit_error(request_id, "knowledge.invalid", str(error))
+        except ProjectSourceStorageError as error:
+            self._emit_error(
+                request_id,
+                "knowledge.storage_failed",
+                str(error),
+                retryable=True,
+            )
+        except ProjectSourceError as error:
+            self._emit_error(request_id, "knowledge.failed", str(error))
         except Exception:
             if method == "voice.transcription.start":
                 # This boundary can fail while constructing optional native
@@ -947,6 +1120,25 @@ class DesktopBackend:
                     ),
                     (),
                 )
+            if self._knowledge_runtime is None and (
+                self._uses_default_brain_factory
+                or self._knowledge_runtime_factory is not None
+            ):
+                runtime_factory = (
+                    create_desktop_knowledge_runtime
+                    if self._knowledge_runtime_factory is None
+                    else self._knowledge_runtime_factory
+                )
+                knowledge_runtime = runtime_factory(
+                    self._runtime_settings,
+                    self._attachment_store,
+                )
+                self._knowledge_runtime = knowledge_runtime
+                self._start_export_recovery(knowledge_runtime)
+                # Project index recovery can repeat embedding work and must
+                # remain explicit. Export recovery is different: it only
+                # removes identity-pinned crash leftovers and runs on its own
+                # daemon so initialize never waits for an external volume.
             active_chat = self._resolve_active_chat(brain)
             self._brain = brain
             self._set_active_chat(active_chat)
@@ -989,6 +1181,50 @@ class DesktopBackend:
                 "chatTitle": active_chat.title,
             },
         )
+
+    def _start_export_recovery(self, runtime: DesktopKnowledgeRuntime) -> None:
+        """Schedule identity-safe export cleanup without delaying startup.
+
+        Export destinations can live on unavailable or unusually slow
+        removable volumes. The recovery service fails closed against its
+        durable identities, while this daemon isolates that bounded cleanup
+        from the single-threaded protocol dispatcher. It emits no protocol
+        frames, so a late finish cannot cross the shutdown output boundary.
+        """
+
+        recover = getattr(runtime.export, "recover_pending_exports", None)
+        if not callable(recover):
+            # Narrow injected runtimes from older integrations may implement
+            # export only; absence is not a reason to fail Backend startup.
+            return
+        runtime_owner = self._acquire_knowledge_runtime_owner()
+
+        def _recover() -> None:
+            """Run private cleanup without exposing destination paths in logs."""
+
+            try:
+                recover()
+            except Exception:
+                logger.error("Pending Knowledge export cleanup failed.")
+            finally:
+                # Shutdown must not close the shared runtime while this daemon
+                # still owns its export service.  Finishing the final owner
+                # retries delayed close without making shutdown wait on an
+                # unavailable removable volume.
+                self._release_knowledge_runtime_owner(runtime_owner)
+
+        try:
+            worker = Thread(
+                target=_recover,
+                name="elysia-knowledge-export-recovery",
+                daemon=True,
+            )
+            worker.start()
+        except Exception:
+            # Startup cleanup is best-effort; the durable intent remains for
+            # the next launch if the process cannot allocate another thread.
+            self._release_knowledge_runtime_owner(runtime_owner)
+            logger.error("Pending Knowledge export cleanup could not start.")
 
     @staticmethod
     def _serialize_settings_values(
@@ -1091,6 +1327,14 @@ class DesktopBackend:
                 raise ProtocolValidationError(
                     "settings.busy",
                     "Wait for the current reply before changing settings.",
+                )
+            if (
+                self._knowledge_task is not None
+                and not self._knowledge_task.done.is_set()
+            ):
+                raise ProtocolValidationError(
+                    "settings.busy",
+                    "Wait for Project Sources before changing settings.",
                 )
             if self._transcription_capacity_reserved_locked():
                 # Logical cancellation can finish before uninterruptible native
@@ -1678,8 +1922,10 @@ class DesktopBackend:
         """Serialize an active Chat with complete messages and attachments."""
 
         result = cls._serialize_chat_summary(chat)
-        result["messages"] = [
-            {
+        result["messages"] = []
+        serialized_messages = cast(list[JsonObject], result["messages"])
+        for message in chat.messages:
+            serialized: JsonObject = {
                 "messageId": str(message.message_id),
                 "role": message.role,
                 "content": message.content,
@@ -1694,9 +1940,74 @@ class DesktopBackend:
                     for attachment in message.attachments
                 ],
             }
-            for message in chat.messages
-        ]
+            if message.grounded_answer is not None:
+                serialized["groundedAnswer"] = (
+                    cls._serialize_grounded_answer(
+                        message.grounded_answer
+                    )
+                )
+            serialized_messages.append(serialized)
         return result
+
+    @staticmethod
+    def _serialize_grounded_answer(answer: ChatGroundedAnswer) -> JsonObject:
+        """Map persisted proof to the exact path-private renderer contract."""
+
+        return {
+            "status": answer.status,
+            "contextPassageCount": answer.context_passage_count,
+            "statements": [
+                {
+                    "statementId": statement.statement_id,
+                    "kind": statement.kind,
+                    "text": statement.text,
+                    "citationIds": list(statement.citation_ids),
+                }
+                for statement in answer.statements
+            ],
+            "citations": [
+                {
+                    "citationId": citation.citation_id,
+                    "kind": citation.kind,
+                    "excerpt": citation.excerpt,
+                    "fileName": citation.file_name,
+                    "mediaType": citation.media_type,
+                    "pageNumber": citation.page_number,
+                    "locations": [
+                        {
+                            "kind": (
+                                "table"
+                                if isinstance(
+                                    location,
+                                    ChatGroundedTableLocation,
+                                )
+                                else "text"
+                            ),
+                            "blockOrdinal": location.block_ordinal,
+                            "sourceStartCodePoint": (
+                                location.source_start_code_point
+                            ),
+                            "sourceEndCodePoint": (
+                                location.source_end_code_point
+                            ),
+                            **(
+                                {
+                                    "rowIndex": location.row_index,
+                                    "columnIndex": location.column_index,
+                                }
+                                if isinstance(
+                                    location,
+                                    ChatGroundedTableLocation,
+                                )
+                                else {}
+                            ),
+                        }
+                        for location in citation.locations
+                    ],
+                }
+                for citation in answer.citations
+            ],
+        }
 
     def _require_attachment_store(self) -> AttachmentService:
         """Return the initialized path-private attachment application service."""
@@ -1782,6 +2093,11 @@ class DesktopBackend:
         """Reconcile and list one exact Chat or Project namespace."""
 
         scope = self._attachment_scope_from_params(params)
+        if scope.kind == "project":
+            raise ProtocolValidationError(
+                "knowledge.required",
+                "Project files are managed through Project Sources.",
+            )
         references = self._attachment_references(
             scope,
             require_writable=False,
@@ -1803,6 +2119,11 @@ class DesktopBackend:
         """Atomically copy trusted native files into one local namespace."""
 
         scope = self._attachment_scope_from_params(params)
+        if scope.kind == "project":
+            raise ProtocolValidationError(
+                "knowledge.required",
+                "Project files are managed through Project Sources.",
+            )
         references = self._attachment_references(scope)
         source_paths = tuple(
             Path(path)
@@ -1826,6 +2147,11 @@ class DesktopBackend:
         """Remove one ready item only from its exact canonical namespace."""
 
         scope = self._attachment_scope_from_params(params)
+        if scope.kind == "project":
+            raise ProtocolValidationError(
+                "knowledge.required",
+                "Project files are managed through Project Sources.",
+            )
         self._attachment_references(scope)
         state = self._require_attachment_store().remove(
             scope,
@@ -2118,6 +2444,7 @@ class DesktopBackend:
 
         if self._brain is None:
             raise RuntimeError("Backend is not initialized.")
+        self._reject_project_mutation_during_knowledge()
 
         project_id = ProjectId(cast(str, params["projectId"]))
         self._brain.update_project(
@@ -2140,6 +2467,7 @@ class DesktopBackend:
 
         if self._brain is None:
             raise RuntimeError("Backend is not initialized.")
+        self._reject_project_mutation_during_knowledge()
 
         project_id = ProjectId(cast(str, params["projectId"]))
         workspace_path = cast(str | None, params["workspacePath"])
@@ -2155,6 +2483,7 @@ class DesktopBackend:
 
         if self._brain is None:
             raise RuntimeError("Backend is not initialized.")
+        self._reject_project_mutation_during_knowledge()
 
         project_id = ProjectId(cast(str, params["projectId"]))
         if cast(bool, params["archived"]):
@@ -2173,6 +2502,7 @@ class DesktopBackend:
 
         if self._brain is None:
             raise RuntimeError("Backend is not initialized.")
+        self._reject_project_mutation_during_knowledge()
 
         raw_project_id = cast(str | None, params["projectId"])
         self._brain.move_chat(
@@ -2187,6 +2517,754 @@ class DesktopBackend:
             self._active_project_id = ProjectId(raw_project_id)
         self._emit_project_response(request_id)
 
+    def _reject_project_mutation_during_knowledge(self) -> None:
+        """Keep Project authority stable while Knowledge work owns it.
+
+        Lifecycle operations validate Project activity before entering their
+        shared coordinator and may spend substantial time indexing afterward.
+        Grounded generation similarly derives its corpus and Instructions from
+        canonical Project state before it enters the shared read lease. Desktop
+        Project writes do not participate in that coordinator, so rejecting
+        them here prevents archive, instruction, workspace, or Chat membership
+        changes from invalidating either authority snapshot in flight.
+        """
+
+        with self._state_lock:
+            task = self._knowledge_task
+            generation = self._generation_task
+            if (
+                task is not None
+                and not task.done.is_set()
+            ) or (
+                generation is not None
+                and generation.uses_project_knowledge
+                and not generation.done.is_set()
+            ):
+                raise ProtocolValidationError(
+                    "knowledge.busy",
+                    "Wait for the active Project Source work.",
+                )
+
+    def _require_knowledge_runtime(self) -> DesktopKnowledgeRuntime:
+        """Return the initialized trusted Project Source composition root."""
+
+        if self._knowledge_runtime is None:
+            raise ProtocolValidationError(
+                "knowledge.unavailable",
+                "Project Sources are unavailable in this Backend runtime.",
+            )
+        return self._knowledge_runtime
+
+    def _acquire_knowledge_runtime_owner(self) -> object:
+        """Pin the shared runtime for one admitted asynchronous consumer.
+
+        Registration and shutdown admission share the lifecycle lock.  An
+        owner that linearizes first may finish in the background; once closing
+        wins, no later daemon can retain or reacquire the runtime.
+        """
+
+        with self._knowledge_lifecycle_lock:
+            if self._knowledge_closing or self._knowledge_runtime is None:
+                raise ProtocolValidationError(
+                    "knowledge.unavailable",
+                    "Project Sources are shutting down.",
+                )
+            owner = object()
+            self._knowledge_runtime_owners.add(owner)
+            return owner
+
+    def _release_knowledge_runtime_owner(self, owner: object) -> None:
+        """Release one exact runtime owner and retry any delayed close."""
+
+        with self._knowledge_lifecycle_lock:
+            if owner not in self._knowledge_runtime_owners:
+                logger.error("Project Source runtime owner was already released.")
+                return
+            self._knowledge_runtime_owners.remove(owner)
+        self._close_knowledge_runtime_after_shutdown()
+
+    @staticmethod
+    def _serialize_knowledge_source(source: KnowledgeSourceView) -> JsonObject:
+        """Publish one source without its internal file identity or hashes."""
+
+        return {
+            "sourceId": source.source.link_id,
+            "fileName": source.source.file_name,
+            "mediaType": source.source.media_type,
+            "sizeBytes": source.source.size_bytes,
+            "state": source.state,
+            "publishedAt": (
+                None
+                if source.published_at is None
+                else source.published_at.isoformat()
+            ),
+            "operationId": (
+                None
+                if source.operation_id is None
+                else str(source.operation_id)
+            ),
+        }
+
+    @staticmethod
+    def _serialize_knowledge_operation(
+        operation: KnowledgeOperationSnapshot,
+    ) -> JsonObject:
+        """Publish one durable checkpoint through the sanitized wire shape."""
+
+        return {
+            "operationId": str(operation.operation_id),
+            "projectId": operation.scope.id,
+            "kind": operation.kind,
+            "state": operation.state,
+            "phase": operation.phase,
+            "progressPercent": operation.progress_percent,
+            "attempt": operation.attempt,
+            "createdAt": operation.created_at.isoformat(),
+            "updatedAt": operation.updated_at.isoformat(),
+            "errorCode": operation.error_code,
+            "targetSourceId": operation.target_link_id,
+            "stagedSourceId": operation.staged_link_id,
+        }
+
+    def _knowledge_state_result(
+        self,
+        project_id: ProjectId,
+    ) -> JsonObject:
+        """Return current source health and durable operation history."""
+
+        runtime = self._require_knowledge_runtime()
+        return {
+            "kind": "knowledge.state",
+            "projectId": str(project_id),
+            "sources": [
+                self._serialize_knowledge_source(source)
+                for source in runtime.lifecycle.list_project_sources(
+                    project_id
+                )
+            ],
+            "operations": [
+                self._serialize_knowledge_operation(operation)
+                for operation in runtime.lifecycle.list_operations(project_id)
+            ],
+        }
+
+    def _list_project_knowledge(
+        self,
+        request_id: str,
+        params: JsonObject,
+    ) -> None:
+        """List one exact Project corpus without exposing private storage."""
+
+        project_id = ProjectId(cast(str, params["projectId"]))
+        if self._brain is None:
+            raise RuntimeError("Backend is not initialized.")
+        self._reject_concurrent_grounded_generation()
+        with self._state_lock:
+            if (
+                self._knowledge_task is not None
+                and not self._knowledge_task.done.is_set()
+            ):
+                raise ProtocolValidationError(
+                    "knowledge.busy",
+                    "Wait for the active Project Source operation.",
+                )
+        self._brain.get_project(project_id)
+        self._emit_response(
+            request_id,
+            self._knowledge_state_result(project_id),
+        )
+
+    def _reject_concurrent_grounded_generation(self) -> None:
+        """Keep Knowledge control reads off a lease owned by grounded Chat.
+
+        Protocol requests are dispatched serially, so this preflight closes
+        the only race before a synchronous catalog/journal read.  Without it,
+        ``knowledge.list`` or mutation admission could wait on the grounded
+        answer's coordinator lease in the stdin thread and make that same Chat
+        impossible to cancel.
+        """
+
+        with self._state_lock:
+            generation = self._generation_task
+            if (
+                generation is not None
+                and generation.uses_project_knowledge
+                and not generation.done.is_set()
+            ):
+                raise ProtocolValidationError(
+                    "knowledge.busy",
+                    "Wait for the active Project knowledge answer.",
+                )
+
+    def _start_knowledge_operation(
+        self,
+        request_id: str,
+        params: JsonObject,
+        method: str,
+    ) -> None:
+        """Admit one background lifecycle operation so cancel stays responsive."""
+
+        runtime = self._require_knowledge_runtime()
+        project_id = ProjectId(cast(str, params["projectId"]))
+        if self._brain is None:
+            raise RuntimeError("Backend is not initialized.")
+        self._brain.get_project(project_id)
+        self._reject_concurrent_grounded_generation()
+        with self._knowledge_lifecycle_lock:
+            if self._knowledge_closing:
+                raise ProtocolValidationError(
+                    "knowledge.unavailable",
+                    "Project Sources are shutting down.",
+                )
+        with self._state_lock:
+            existing = self._knowledge_task
+            if existing is not None and not existing.done.is_set():
+                raise ProtocolValidationError(
+                    "knowledge.busy",
+                    "Another Project Source operation is already active.",
+                )
+            runtime_owner = self._acquire_knowledge_runtime_owner()
+            monitor_runtime_owner: object | None = None
+            try:
+                monitor_runtime_owner = self._acquire_knowledge_runtime_owner()
+                task = _KnowledgeTask(
+                    request_id=request_id,
+                    project_id=project_id,
+                    method=method,
+                    initial_operation_ids=frozenset(
+                        str(operation.operation_id)
+                        for operation in runtime.lifecycle.list_operations(
+                            project_id
+                        )
+                    ),
+                    runtime_owner=runtime_owner,
+                    monitor_runtime_owner=monitor_runtime_owner,
+                )
+            except Exception:
+                if monitor_runtime_owner is not None:
+                    self._release_knowledge_runtime_owner(
+                        monitor_runtime_owner
+                    )
+                self._release_knowledge_runtime_owner(runtime_owner)
+                raise
+            self._knowledge_task = task
+        try:
+            worker = Thread(
+                target=self._run_knowledge_operation,
+                args=(task, dict(params)),
+                name=f"elysia-{method}-{request_id}",
+                daemon=True,
+            )
+            task.thread = worker
+            worker.start()
+        except Exception:
+            task.done.set()
+            with self._state_lock:
+                if self._knowledge_task is task:
+                    self._knowledge_task = None
+            if task.monitor_runtime_owner is not None:
+                monitor_runtime_owner = task.monitor_runtime_owner
+                task.monitor_runtime_owner = None
+                self._release_knowledge_runtime_owner(monitor_runtime_owner)
+            if task.runtime_owner is not None:
+                runtime_owner = task.runtime_owner
+                task.runtime_owner = None
+                self._release_knowledge_runtime_owner(runtime_owner)
+            raise
+
+    def _emit_knowledge_output(
+        self,
+        emit: Callable[[], None],
+    ) -> bool:
+        """Publish one Knowledge frame only before shutdown owns output."""
+
+        with self._knowledge_lifecycle_lock:
+            if self._knowledge_closing:
+                return False
+            emit()
+            return True
+
+    def _settle_knowledge_task(self, task: _KnowledgeTask) -> None:
+        """Release mutation admission and runtime ownership before terminal I/O."""
+
+        with self._state_lock:
+            task.done.set()
+            if self._knowledge_task is task:
+                self._knowledge_task = None
+        runtime_owner = task.runtime_owner
+        task.runtime_owner = None
+        if runtime_owner is not None:
+            self._release_knowledge_runtime_owner(runtime_owner)
+
+    def _emit_knowledge_operation_event(
+        self,
+        task: _KnowledgeTask,
+        event: Literal[
+            "knowledge.operation.changed",
+            "knowledge.operation.completed",
+        ],
+        operation: KnowledgeOperationSnapshot,
+    ) -> None:
+        """Publish one path-private lifecycle snapshot before shutdown."""
+
+        self._emit_knowledge_output(
+            lambda: self._emit_event(
+                event,
+                request_id=task.request_id,
+                data={
+                    "projectId": str(task.project_id),
+                    "operation": self._serialize_knowledge_operation(
+                        operation
+                    ),
+                },
+            )
+        )
+
+    def _stop_knowledge_monitor(
+        self,
+        task: _KnowledgeTask,
+        monitor: Thread | None,
+    ) -> None:
+        """Drain the advisory monitor before any terminal request frame."""
+
+        task.monitor_stop.set()
+        if monitor is not None:
+            # This join runs only inside the daemon lifecycle worker. Shutdown
+            # waits on ``task.done`` with its own finite timeout, so draining
+            # here can preserve release-before-terminal ordering without ever
+            # blocking the protocol dispatcher or process teardown.
+            monitor.join()
+
+    def _monitor_knowledge_operation(self, task: _KnowledgeTask) -> None:
+        """Publish journal revisions while the lifecycle worker is running."""
+
+        try:
+            revisions: dict[str, int] = {}
+            while not task.monitor_stop.wait(0.1):
+                operations = self._require_knowledge_runtime().lifecycle.list_operations(
+                    task.project_id
+                )
+                for operation in operations:
+                    if task.monitor_stop.is_set():
+                        return
+                    operation_id = str(operation.operation_id)
+                    if operation_id in task.initial_operation_ids:
+                        continue
+                    if revisions.get(operation_id) == operation.journal_revision:
+                        continue
+                    revisions[operation_id] = operation.journal_revision
+                    self._emit_knowledge_operation_event(
+                        task,
+                        "knowledge.operation.changed",
+                        operation,
+                    )
+        except Exception:
+            # Monitoring is advisory; the lifecycle result and durable journal
+            # remain authoritative if a read races replacement.
+            logger.exception(
+                "Project Source progress monitor failed: request_id=%s.",
+                task.request_id,
+            )
+        finally:
+            runtime_owner = task.monitor_runtime_owner
+            task.monitor_runtime_owner = None
+            if runtime_owner is not None:
+                self._release_knowledge_runtime_owner(runtime_owner)
+
+    def _execute_knowledge_operation(
+        self,
+        task: _KnowledgeTask,
+        params: JsonObject,
+    ) -> tuple[KnowledgeOperationSnapshot, ...]:
+        """Invoke the exact lifecycle method selected by the closed protocol."""
+
+        lifecycle = self._require_knowledge_runtime().lifecycle
+        cancel = task.should_cancel
+        source_id = cast(str | None, params.get("sourceId"))
+        if task.method == "knowledge.source.add":
+            results: list[KnowledgeOperationSnapshot] = []
+            for raw_path in cast(list[str], params["sourcePaths"]):
+                result = lifecycle.add_project_source(
+                    task.project_id,
+                    Path(raw_path),
+                    cancel_requested=cancel,
+                )
+                results.append(result)
+                if result.state == "cancelled":
+                    break
+            return tuple(results)
+        if task.method == "knowledge.source.replace":
+            return (
+                lifecycle.replace_project_source(
+                    task.project_id,
+                    cast(str, source_id),
+                    Path(cast(str, params["sourcePath"])),
+                    cancel_requested=cancel,
+                ),
+            )
+        if task.method == "knowledge.source.reindex":
+            return (
+                lifecycle.reindex_project_source(
+                    task.project_id,
+                    cast(str, source_id),
+                    cancel_requested=cancel,
+                ),
+            )
+        if task.method == "knowledge.source.delete":
+            return (
+                lifecycle.delete_project_source(
+                    task.project_id,
+                    cast(str, source_id),
+                    cancel_requested=cancel,
+                ),
+            )
+        if task.method == "knowledge.project.rebuild":
+            return (
+                lifecycle.rebuild_project_sources(
+                    task.project_id,
+                    cancel_requested=cancel,
+                ),
+            )
+        if task.method == "knowledge.project.revoke":
+            return (
+                lifecycle.revoke_project_sources(
+                    task.project_id,
+                    cancel_requested=cancel,
+                ),
+            )
+        if task.method == "knowledge.recover":
+            return lifecycle.recover_pending(task.project_id)
+        raise ProtocolValidationError(
+            "protocol.method_not_found",
+            "Unknown Project Source operation.",
+        )
+
+    def _run_knowledge_operation(
+        self,
+        task: _KnowledgeTask,
+        params: JsonObject,
+    ) -> None:
+        """Run one lifecycle saga and emit safe correlated terminal frames."""
+
+        monitor: Thread | None = None
+        try:
+            monitor_thread = Thread(
+                target=self._monitor_knowledge_operation,
+                args=(task,),
+                name=f"elysia-knowledge-monitor-{task.request_id}",
+                daemon=True,
+            )
+            monitor = monitor_thread
+            monitor_thread.start()
+        except Exception:
+            # Journal monitoring is advisory. Release its separately admitted
+            # runtime owner and let the authoritative operation continue.
+            monitor = None
+            runtime_owner = task.monitor_runtime_owner
+            task.monitor_runtime_owner = None
+            if runtime_owner is not None:
+                self._release_knowledge_runtime_owner(runtime_owner)
+            logger.error(
+                "Project Source progress monitor could not start: request_id=%s.",
+                task.request_id,
+            )
+        terminal_error: tuple[str, str, bool] | None = None
+        terminal_result: JsonObject | None = None
+        try:
+            self._emit_knowledge_output(
+                lambda: self._emit_progress(
+                    task.request_id,
+                    "knowledge.lifecycle",
+                    0,
+                    total=100,
+                    message="Updating Project Sources",
+                )
+            )
+            results = self._execute_knowledge_operation(task, params)
+            cancelled = any(
+                operation.state == "cancelled" for operation in results
+            )
+            state_result = (
+                None
+                if any(
+                    operation.state != "succeeded"
+                    for operation in results
+                )
+                else self._knowledge_state_result(task.project_id)
+            )
+            # Stop future polls before publishing the authoritative operation
+            # snapshots. The daemon worker drains an in-flight read in
+            # ``finally`` before it releases admission and emits terminal
+            # output; shutdown itself remains bounded by its outer Event wait.
+            task.monitor_stop.set()
+            for operation in results:
+                self._emit_knowledge_operation_event(
+                    task,
+                    (
+                        "knowledge.operation.completed"
+                        if operation.state
+                        in {"succeeded", "cancelled", "failed"}
+                        else "knowledge.operation.changed"
+                    ),
+                    operation,
+                )
+            if cancelled:
+                terminal_error = (
+                    "request.cancelled",
+                    "Project Source operation was cancelled.",
+                    False,
+                )
+            elif any(
+                operation.state
+                in {"running", "cancel_requested", "recovery_required"}
+                for operation in results
+            ):
+                terminal_error = (
+                    "knowledge.recovery_required",
+                    "Project Source recovery still requires attention.",
+                    True,
+                )
+            elif any(operation.state == "failed" for operation in results):
+                terminal_error = (
+                    "knowledge.failed",
+                    "Project Source operation failed safely.",
+                    True,
+                )
+            else:
+                self._emit_knowledge_output(
+                    lambda: self._emit_progress(
+                        task.request_id,
+                        "knowledge.lifecycle",
+                        100,
+                        total=100,
+                        message=None,
+                    )
+                )
+                assert state_result is not None
+                terminal_result = state_result
+        except KnowledgeLifecycleValidationError as error:
+            self._emit_latest_knowledge_terminals(task)
+            terminal_error = ("knowledge.invalid", str(error), False)
+        except KnowledgeLifecycleNotFoundError as error:
+            self._emit_latest_knowledge_terminals(task)
+            terminal_error = ("knowledge.not_found", str(error), False)
+        except KnowledgeLifecycleConflictError as error:
+            self._emit_latest_knowledge_terminals(task)
+            terminal_error = ("knowledge.conflict", str(error), True)
+        except KnowledgeLifecycleRecoveryError as error:
+            self._emit_latest_knowledge_terminals(task)
+            terminal_error = (
+                "knowledge.recovery_required",
+                str(error),
+                True,
+            )
+        except KnowledgeLifecycleStorageError as error:
+            self._emit_latest_knowledge_terminals(task)
+            terminal_error = (
+                "knowledge.storage_failed",
+                str(error),
+                True,
+            )
+        except Exception:
+            self._emit_latest_knowledge_terminals(task)
+            logger.exception(
+                "Project Source operation failed: method=%s request_id=%s.",
+                task.method,
+                task.request_id,
+            )
+            terminal_error = (
+                "knowledge.failed",
+                "Project Source operation failed safely.",
+                True,
+            )
+        finally:
+            self._stop_knowledge_monitor(task, monitor)
+            self._settle_knowledge_task(task)
+
+        if terminal_error is not None:
+            code, message, retryable = terminal_error
+            self._emit_knowledge_output(
+                lambda: self._emit_error(
+                    task.request_id,
+                    code,
+                    message,
+                    retryable=retryable,
+                )
+            )
+        elif terminal_result is not None:
+            self._emit_knowledge_output(
+                lambda: self._emit_response(
+                    task.request_id,
+                    terminal_result,
+                )
+            )
+
+    def _emit_latest_knowledge_terminals(
+        self,
+        task: _KnowledgeTask,
+    ) -> None:
+        """Publish durable failure/recovery checkpoints before async errors."""
+
+        try:
+            lifecycle = self._require_knowledge_runtime().lifecycle
+            for operation in lifecycle.list_operations(task.project_id):
+                if str(operation.operation_id) in task.initial_operation_ids:
+                    continue
+                self._emit_knowledge_operation_event(
+                    task,
+                    (
+                        "knowledge.operation.completed"
+                        if operation.state
+                        in {"succeeded", "cancelled", "failed"}
+                        else "knowledge.operation.changed"
+                    ),
+                    operation,
+                )
+        except Exception:
+            logger.exception(
+                "Project Source terminal checkpoint could not be emitted: "
+                "request_id=%s.",
+                task.request_id,
+            )
+
+    def _export_project_source(
+        self,
+        request_id: str,
+        params: JsonObject,
+    ) -> None:
+        """Start verified export without blocking cancel or shutdown input."""
+
+        self._require_knowledge_runtime()
+        project_id = ProjectId(cast(str, params["projectId"]))
+        if self._brain is None:
+            raise RuntimeError("Backend is not initialized.")
+        self._brain.get_project(project_id)
+        self._reject_concurrent_grounded_generation()
+        with self._knowledge_lifecycle_lock:
+            if self._knowledge_closing:
+                raise ProtocolValidationError(
+                    "knowledge.unavailable",
+                    "Project Sources are shutting down.",
+                )
+        with self._state_lock:
+            existing = self._knowledge_task
+            if existing is not None and not existing.done.is_set():
+                raise ProtocolValidationError(
+                    "knowledge.busy",
+                    "Another Project Source operation is already active.",
+                )
+            runtime_owner = self._acquire_knowledge_runtime_owner()
+            task = _KnowledgeTask(
+                request_id=request_id,
+                project_id=project_id,
+                method="knowledge.source.export",
+                runtime_owner=runtime_owner,
+            )
+            self._knowledge_task = task
+        try:
+            worker = Thread(
+                target=self._run_knowledge_export,
+                args=(task, dict(params)),
+                name=f"elysia-knowledge-export-{request_id}",
+                daemon=True,
+            )
+            task.thread = worker
+            worker.start()
+        except Exception:
+            task.done.set()
+            with self._state_lock:
+                if self._knowledge_task is task:
+                    self._knowledge_task = None
+            if task.runtime_owner is not None:
+                runtime_owner = task.runtime_owner
+                task.runtime_owner = None
+                self._release_knowledge_runtime_owner(runtime_owner)
+            raise
+
+    def _run_knowledge_export(
+        self,
+        task: _KnowledgeTask,
+        params: JsonObject,
+    ) -> None:
+        """Copy one verified original and publish one correlated safe result."""
+
+        terminal_error: tuple[str, str, bool] | None = None
+        terminal_result: JsonObject | None = None
+        try:
+            self._emit_knowledge_output(
+                lambda: self._emit_progress(
+                    task.request_id,
+                    "knowledge.export",
+                    0,
+                    total=1,
+                    message="Exporting verified original",
+                )
+            )
+            result = self._require_knowledge_runtime().export.export_original(
+                task.project_id,
+                cast(str, params["sourceId"]),
+                Path(cast(str, params["destination"])),
+                overwrite=cast(bool, params["overwrite"]),
+                should_cancel=task.should_cancel,
+            )
+            payload: JsonObject = {
+                "kind": "knowledge.export",
+                "fileName": result.file_name,
+                "mediaType": result.media_type,
+                "bytesWritten": result.bytes_written,
+            }
+            self._emit_knowledge_output(
+                lambda: self._emit_progress(
+                    task.request_id,
+                    "knowledge.export",
+                    1,
+                    total=1,
+                    message=None,
+                )
+            )
+            terminal_result = payload
+        except KnowledgeExportCancelledError as error:
+            terminal_error = ("request.cancelled", str(error), False)
+        except KnowledgeLifecycleValidationError as error:
+            terminal_error = ("knowledge.invalid", str(error), False)
+        except KnowledgeLifecycleNotFoundError as error:
+            terminal_error = ("knowledge.not_found", str(error), False)
+        except KnowledgeLifecycleConflictError as error:
+            terminal_error = ("knowledge.conflict", str(error), True)
+        except KnowledgeLifecycleStorageError as error:
+            terminal_error = (
+                "knowledge.storage_failed",
+                str(error),
+                True,
+            )
+        except Exception:
+            logger.exception(
+                "Project Source export failed: request_id=%s.",
+                task.request_id,
+            )
+            terminal_error = (
+                "knowledge.failed",
+                "Project Source export failed safely.",
+                True,
+            )
+        finally:
+            self._settle_knowledge_task(task)
+
+        if terminal_error is not None:
+            code, message, retryable = terminal_error
+            self._emit_knowledge_output(
+                lambda: self._emit_error(
+                    task.request_id,
+                    code,
+                    message,
+                    retryable=retryable,
+                )
+            )
+        elif terminal_result is not None:
+            self._emit_knowledge_output(
+                lambda: self._emit_response(task.request_id, terminal_result)
+            )
+
     def _start_chat_stream(
         self,
         request_id: str,
@@ -2195,6 +3273,10 @@ class DesktopBackend:
         """Start one cancellable new-turn generation worker."""
 
         raw_message = cast(str, params["message"])
+        use_project_knowledge = cast(
+            bool,
+            params.get("useProjectKnowledge", False),
+        )
         attachment_ids = tuple(
             cast(list[str], params.get("attachmentIds", []))
         )
@@ -2210,7 +3292,21 @@ class DesktopBackend:
                 attachment_ids,
             )
             run: Callable[[Brain, _GenerationTask], Iterable[str]]
-            if attachment_records:
+            if use_project_knowledge:
+                answerer = self._require_knowledge_runtime().answers.answer
+                run = (
+                    lambda active_brain, active_task: (
+                        active_brain.stream_grounded_chat(
+                            active_task.chat_id,
+                            raw_message,
+                            answerer,
+                            attachments=attachment_records,
+                            should_cancel=active_task.should_cancel,
+                            begin_commit=active_task.begin_commit,
+                        )
+                    )
+                )
+            elif attachment_records:
                 run = lambda active_brain, active_task: active_brain.stream_chat(
                     active_task.chat_id,
                     raw_message,
@@ -2309,6 +3405,10 @@ class DesktopBackend:
         with self._state_lock:
             if self._generation_task is task:
                 self._generation_task = None
+        runtime_owner = task.knowledge_runtime_owner
+        task.knowledge_runtime_owner = None
+        if runtime_owner is not None:
+            self._release_knowledge_runtime_owner(runtime_owner)
 
     def _start_chat_retry(
         self,
@@ -2322,17 +3422,37 @@ class DesktopBackend:
             cast(str, params["assistantMessageId"])
         )
         message = cast(str | None, params.get("message"))
+        use_project_knowledge = cast(
+            bool,
+            params.get("useProjectKnowledge", False),
+        )
         self._start_generation(
             request_id,
             params,
             method="chat.retry",
-            run=lambda brain, task: brain.stream_retry(
-                task.chat_id,
-                user_message_id,
-                assistant_message_id,
-                message,
-                should_cancel=task.should_cancel,
-                begin_commit=task.begin_commit,
+            run=(
+                (
+                    lambda brain, task: brain.stream_grounded_retry(
+                        task.chat_id,
+                        user_message_id,
+                        assistant_message_id,
+                        self._require_knowledge_runtime().answers.answer,
+                        message,
+                        should_cancel=task.should_cancel,
+                        begin_commit=task.begin_commit,
+                    )
+                )
+                if use_project_knowledge
+                else (
+                    lambda brain, task: brain.stream_retry(
+                        task.chat_id,
+                        user_message_id,
+                        assistant_message_id,
+                        message,
+                        should_cancel=task.should_cancel,
+                        begin_commit=task.begin_commit,
+                    )
+                )
             ),
         )
 
@@ -2367,6 +3487,10 @@ class DesktopBackend:
 
         brain = self._brain
         raw_chat_id = cast(str, params["chatId"])
+        uses_project_knowledge = cast(
+            bool,
+            params.get("useProjectKnowledge", False),
+        )
         with self._state_lock:
             active_chat = self._active_chat
             existing = self._generation_task
@@ -2385,12 +3509,31 @@ class DesktopBackend:
                     "chat.not_active",
                     "chatId is not the active desktop Chat.",
                 )
+            if uses_project_knowledge and active_chat.project_id is None:
+                raise ProtocolValidationError(
+                    "knowledge.unauthorized",
+                    "Project Sources require an active Project Chat.",
+                )
 
             task = _GenerationTask(
                 request_id=request_id,
                 chat_id=ChatId(raw_chat_id),
                 method=method,
+                uses_project_knowledge=uses_project_knowledge,
             )
+            if (
+                task.uses_project_knowledge
+                and self._knowledge_task is not None
+                and not self._knowledge_task.done.is_set()
+            ):
+                raise ProtocolValidationError(
+                    "knowledge.busy",
+                    "Wait for the active Project Source operation.",
+                )
+            if task.uses_project_knowledge:
+                task.knowledge_runtime_owner = (
+                    self._acquire_knowledge_runtime_owner()
+                )
             self._generation_task = task
 
         return brain, task
@@ -2436,6 +3579,10 @@ class DesktopBackend:
         with self._state_lock:
             if self._generation_task is task:
                 self._generation_task = None
+        runtime_owner = task.knowledge_runtime_owner
+        task.knowledge_runtime_owner = None
+        if runtime_owner is not None:
+            self._release_knowledge_runtime_owner(runtime_owner)
 
     def _run_generation(
         self,
@@ -2594,6 +3741,86 @@ class DesktopBackend:
         except ChatNotFoundError as error:
             self._finish_generation_task(task)
             self._emit_error(task.request_id, "chat.not_found", str(error))
+        except GroundedAnswerUnavailableError as error:
+            self._finish_generation_task(task)
+            self._emit_error(
+                task.request_id,
+                "knowledge.model_unavailable",
+                str(error),
+                retryable=True,
+            )
+        except RetrievalUnavailableError as error:
+            self._finish_generation_task(task)
+            self._emit_error(
+                task.request_id,
+                "knowledge.model_unavailable",
+                str(error),
+                retryable=True,
+            )
+        except ProjectSourceAuthorizationError as error:
+            self._finish_generation_task(task)
+            self._emit_error(
+                task.request_id,
+                "knowledge.unauthorized",
+                str(error),
+            )
+        except ProjectSourceNotFoundError as error:
+            self._finish_generation_task(task)
+            self._emit_error(
+                task.request_id,
+                "knowledge.not_found",
+                str(error),
+            )
+        except ProjectSourceStaleError as error:
+            self._finish_generation_task(task)
+            self._emit_error(
+                task.request_id,
+                "knowledge.stale",
+                str(error),
+                retryable=True,
+            )
+        except ProjectSourceConflictError as error:
+            self._finish_generation_task(task)
+            self._emit_error(
+                task.request_id,
+                "knowledge.conflict",
+                str(error),
+                retryable=True,
+            )
+        except ProjectSourceValidationError as error:
+            self._finish_generation_task(task)
+            self._emit_error(
+                task.request_id,
+                "knowledge.invalid",
+                str(error),
+            )
+        except ProjectSourceStorageError as error:
+            self._finish_generation_task(task)
+            self._emit_error(
+                task.request_id,
+                "knowledge.storage_failed",
+                str(error),
+                retryable=True,
+            )
+        except (ProjectSourceError, GroundedAnswerError) as error:
+            self._finish_generation_task(task)
+            self._emit_error(
+                task.request_id,
+                "knowledge.answer_failed",
+                str(error),
+                retryable=True,
+            )
+        except DocumentError as error:
+            # Retrieval and vector failures are already normalized to stable,
+            # path-free Document errors by the grounding boundary. Preserve
+            # that typed Knowledge failure instead of misreporting Chat I/O.
+            self._finish_generation_task(task)
+            self._emit_error(
+                task.request_id,
+                "knowledge.answer_failed",
+                str(error),
+                retryable=True,
+            )
         except Exception:
             logger.exception(
                 "Desktop generation failed: method=%s request_id=%s.",
@@ -2626,7 +3853,7 @@ class DesktopBackend:
         request_id: str,
         params: JsonObject,
     ) -> None:
-        """Cancel one matching Chat or transcription before its final boundary."""
+        """Cancel one matching Chat, Knowledge, or transcription request."""
 
         target_request_id = cast(str, params["requestId"])
         with self._state_lock:
@@ -2638,6 +3865,32 @@ class DesktopBackend:
             )
         if generation_stopped:
             self._emit_response(request_id, {"stopped": True})
+            return
+
+        with self._state_lock:
+            knowledge = self._knowledge_task
+            knowledge_stopped = (
+                knowledge is not None
+                and knowledge.request_id == target_request_id
+                and knowledge.request_cancel()
+            )
+        if knowledge_stopped:
+            # A volatile Event is enough to wake the in-process worker but not
+            # enough to survive a crash. A separate waiter keeps stdin
+            # responsive and acknowledges only after the journal contains the
+            # intent or the target has already reached a terminal checkpoint.
+            runtime_owner = self._acquire_knowledge_runtime_owner()
+            try:
+                waiter = Thread(
+                    target=self._acknowledge_knowledge_cancellation,
+                    args=(request_id, knowledge, runtime_owner),
+                    name=f"elysia-knowledge-cancel-{request_id}",
+                    daemon=True,
+                )
+                waiter.start()
+            except Exception:
+                self._release_knowledge_runtime_owner(runtime_owner)
+                raise
             return
 
         # Serialize cancellation against a naturally completing callback. If
@@ -2665,6 +3918,100 @@ class DesktopBackend:
             "request.not_cancellable",
             "No matching cancellable Backend request is active.",
         )
+
+    def _acknowledge_knowledge_cancellation(
+        self,
+        cancel_request_id: str,
+        task: _KnowledgeTask,
+        runtime_owner: object,
+    ) -> None:
+        """Persist one cancellation intent before acknowledging its request.
+
+        Lifecycle operations create their durable journal entry inside the
+        background worker, so a user can cancel in the narrow interval before
+        that entry exists. Polling the bounded path-private journal off the
+        stdin thread closes that admission race. Natural terminal completion
+        may still win; in that case no cancellation intent remains to persist,
+        but the completed target is already crash-safe.
+        """
+
+        try:
+            lifecycle = self._require_knowledge_runtime().lifecycle
+            while True:
+                operations = tuple(
+                    operation
+                    for operation in lifecycle.list_operations(task.project_id)
+                    if str(operation.operation_id)
+                    not in task.initial_operation_ids
+                )
+                for operation in operations:
+                    if operation.state in {
+                        "cancel_requested",
+                        "cancelled",
+                    }:
+                        self._emit_knowledge_output(
+                            lambda: self._emit_response(
+                                cancel_request_id,
+                                {"stopped": True},
+                            )
+                        )
+                        return
+                    if operation.state in {
+                        "running",
+                        "recovery_required",
+                    }:
+                        try:
+                            persisted = lifecycle.request_cancel(
+                                operation.operation_id
+                            )
+                        except KnowledgeLifecycleConflictError:
+                            # The worker may have committed a terminal state
+                            # after this snapshot. Re-read it rather than
+                            # misreporting that natural race as storage loss.
+                            continue
+                        if persisted.state == "cancel_requested":
+                            self._emit_knowledge_output(
+                                lambda: self._emit_response(
+                                    cancel_request_id,
+                                    {"stopped": True},
+                                )
+                            )
+                            return
+                if task.done.wait(0.02):
+                    # Completion won before cancellation reached a mutable
+                    # checkpoint. The target's own terminal response is
+                    # durable and Electron already handles this accepted race.
+                    self._emit_knowledge_output(
+                        lambda: self._emit_response(
+                            cancel_request_id,
+                            {"stopped": True},
+                        )
+                    )
+                    return
+        except KnowledgeLifecycleError:
+            self._emit_knowledge_output(
+                lambda: self._emit_error(
+                    cancel_request_id,
+                    "knowledge.storage_failed",
+                    "Project Source cancellation could not be persisted.",
+                    retryable=True,
+                )
+            )
+        except Exception:
+            logger.exception(
+                "Project Source cancellation persistence failed: request_id=%s.",
+                cancel_request_id,
+            )
+            self._emit_knowledge_output(
+                lambda: self._emit_error(
+                    cancel_request_id,
+                    "knowledge.storage_failed",
+                    "Project Source cancellation could not be persisted.",
+                    retryable=True,
+                )
+            )
+        finally:
+            self._release_knowledge_runtime_owner(runtime_owner)
 
     def _cancel_speech_turn(
         self,
@@ -2747,6 +4094,49 @@ class DesktopBackend:
 
         if task.state_snapshot() is _GenerationState.COMMITTING:
             task.done.wait()
+
+    def _prepare_knowledge_shutdown(self) -> None:
+        """Close admission, request safe cancellation, and drain boundedly.
+
+        A model or filesystem call may ignore the cooperative request. In that
+        case its daemon worker retains runtime ownership until it returns, but
+        the lifecycle gate suppresses every late frame after shutdown/EOF.
+        """
+
+        with self._knowledge_lifecycle_lock:
+            self._knowledge_closing = True
+        with self._state_lock:
+            task = self._knowledge_task
+        if task is not None:
+            task.request_shutdown_cancel()
+            task.done.wait(GENERATION_SHUTDOWN_TIMEOUT_SECONDS)
+        self._close_knowledge_runtime_after_shutdown()
+
+    def _close_knowledge_runtime_after_shutdown(self) -> None:
+        """Release the runtime only after its last worker relinquishes it."""
+
+        with self._state_lock:
+            task = self._knowledge_task
+            generation = self._generation_task
+        if task is not None and not task.done.is_set():
+            return
+        if (
+            generation is not None
+            and generation.uses_project_knowledge
+            and not generation.done.is_set()
+        ):
+            return
+        with self._knowledge_lifecycle_lock:
+            if not self._knowledge_closing:
+                return
+            if self._knowledge_runtime_owners:
+                return
+            runtime, self._knowledge_runtime = self._knowledge_runtime, None
+        if runtime is not None:
+            try:
+                runtime.close()
+            except Exception:
+                logger.exception("Project Source runtime cleanup failed.")
 
     def _prepare_transcription_shutdown(self) -> None:
         """Suppress future STT frames and close workers without joining native I/O.

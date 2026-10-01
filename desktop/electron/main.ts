@@ -69,6 +69,9 @@ import type {
   CreateChatRequest,
   CreateProjectRequest,
   DesktopThemePreference,
+  KnowledgeExportResult,
+  KnowledgeOperationReceipt,
+  KnowledgeState,
   MoveChatToProjectRequest,
   PinChatRequest,
   RenameChatRequest,
@@ -195,8 +198,17 @@ function parseChatRequest(value: unknown): ChatRequest {
     throw new Error('Chat request must be an object.')
   }
   const request = value as Record<string, unknown>
+  const allowedFields = new Set([
+    'chatId',
+    'message',
+    'attachmentIds',
+    'useProjectKnowledge',
+  ])
   if (
-    Object.keys(request).length !== 3
+    !['chatId', 'message', 'attachmentIds'].every((field) => (
+      Object.hasOwn(request, field)
+    ))
+    || Object.keys(request).some((field) => !allowedFields.has(field))
     || typeof request.chatId !== 'string'
     || codePointLength(request.chatId) < 1
     || codePointLength(request.chatId) > MAX_IDENTIFIER_LENGTH
@@ -204,6 +216,10 @@ function parseChatRequest(value: unknown): ChatRequest {
     || codePointLength(request.message) > MAX_MESSAGE_LENGTH
     || !Array.isArray(request.attachmentIds)
     || request.attachmentIds.length > MAX_ATTACHMENT_FILE_COUNT
+    || (
+      Object.hasOwn(request, 'useProjectKnowledge')
+      && typeof request.useProjectKnowledge !== 'boolean'
+    )
   ) {
     throw new Error('Chat request is invalid.')
   }
@@ -228,6 +244,9 @@ function parseChatRequest(value: unknown): ChatRequest {
     chatId: request.chatId,
     message: request.message,
     attachmentIds: attachmentIds as string[],
+    ...(Object.hasOwn(request, 'useProjectKnowledge')
+      ? { useProjectKnowledge: request.useProjectKnowledge === true }
+      : {}),
   }
 }
 
@@ -245,7 +264,11 @@ function parseRetryChatRequest(value: unknown): RetryChatRequest {
     'userMessageId',
     'assistantMessageId',
   ]
-  const allowedFields = new Set([...requiredFields, 'message'])
+  const allowedFields = new Set([
+    ...requiredFields,
+    'message',
+    'useProjectKnowledge',
+  ])
   if (
     requiredFields.some((field) => !Object.hasOwn(request, field))
     || Object.keys(request).some((field) => !allowedFields.has(field))
@@ -265,12 +288,21 @@ function parseRetryChatRequest(value: unknown): RetryChatRequest {
   ) {
     throw new Error('Retry Chat message is invalid.')
   }
+  if (
+    Object.hasOwn(request, 'useProjectKnowledge')
+    && typeof request.useProjectKnowledge !== 'boolean'
+  ) {
+    throw new Error('Retry Chat knowledge selection is invalid.')
+  }
   return {
     chatId: parseChatId(request.chatId),
     userMessageId: parseChatId(request.userMessageId),
     assistantMessageId: parseChatId(request.assistantMessageId),
     ...(hasMessage
       ? { message: trimProtocolBlankCharacters(message as string) }
+      : {}),
+    ...(Object.hasOwn(request, 'useProjectKnowledge')
+      ? { useProjectKnowledge: request.useProjectKnowledge === true }
       : {}),
   }
 }
@@ -329,6 +361,17 @@ function parseProjectId(value: unknown): string {
   return value
 }
 
+function parseKnowledgeProjectId(value: unknown): string {
+  if (
+    typeof value !== 'string'
+    || !/^project_[A-Za-z0-9_-]+$/u.test(value)
+    || codePointLength(value) > MAX_IDENTIFIER_LENGTH
+  ) {
+    throw new Error('Knowledge Project id is invalid.')
+  }
+  return value
+}
+
 function parseAttachmentScope(value: unknown): AttachmentScope {
   const scope = parseObject(
     value,
@@ -359,6 +402,21 @@ function parseAttachmentId(value: unknown): string {
     throw new Error('Attachment id is invalid.')
   }
   return value
+}
+
+function parseKnowledgeSourceRequest(value: unknown): {
+  projectId: string
+  sourceId: string
+} {
+  const request = parseObject(
+    value,
+    ['projectId', 'sourceId'],
+    'Knowledge Source request',
+  )
+  return {
+    projectId: parseKnowledgeProjectId(request.projectId),
+    sourceId: parseAttachmentId(request.sourceId),
+  }
 }
 
 function parseAttachmentSourcePaths(value: unknown): string[] {
@@ -426,6 +484,41 @@ async function validateAttachmentSourcePaths(value: unknown): Promise<string[]> 
     }
   }))
   return sourcePaths
+}
+
+async function validateKnowledgeExportDestination(value: unknown): Promise<{
+  destination: string
+  overwrite: boolean
+}> {
+  const destination = parseAttachmentSourcePaths([value])[0]
+  if (destination === undefined) {
+    throw new Error('Knowledge export destination is invalid.')
+  }
+  try {
+    const metadata = await lstat(destination)
+    if (!metadata.isFile() || metadata.isSymbolicLink()) {
+      throw new Error('Knowledge export destination must be a regular file.')
+    }
+    return { destination, overwrite: true }
+  } catch (error) {
+    if (
+      typeof error === 'object'
+      && error !== null
+      && 'code' in error
+      && error.code === 'ENOENT'
+    ) {
+      return { destination, overwrite: false }
+    }
+    if (
+      error instanceof Error
+      && error.message === 'Knowledge export destination must be a regular file.'
+    ) {
+      throw error
+    }
+    throw new Error('Knowledge export destination could not be inspected.', {
+      cause: error,
+    })
+  }
 }
 
 function parseProjectName(value: unknown): string {
@@ -1243,6 +1336,213 @@ function registerIpcHandlers(): void {
         parseAttachmentScope(request.scope),
         parseAttachmentId(request.attachmentId),
       )
+    },
+  )
+
+  ipcMain.handle(
+    'knowledge:list',
+    (event, projectId: unknown): Promise<KnowledgeState> => {
+      assertTrustedSender(event)
+      return requireBackend().listProjectKnowledge(
+        parseKnowledgeProjectId(projectId),
+      )
+    },
+  )
+
+  ipcMain.handle(
+    'knowledge:choose-sources',
+    async (
+      event,
+      projectId: unknown,
+    ): Promise<KnowledgeOperationReceipt | null> => {
+      assertTrustedSender(event)
+      const parsedProjectId = parseKnowledgeProjectId(projectId)
+      const result = await dialog.showOpenDialog(
+        requireMainWindow(),
+        {
+          title: 'Add sources to this Project',
+          properties: ['openFile', 'multiSelections', 'dontAddToRecent'],
+          filters: [
+            {
+              name: 'Supported documents',
+              extensions: [
+                'txt', 'md', 'markdown', 'pdf', 'csv', 'json', 'docx',
+                'css', 'htm', 'html', 'ini', 'js', 'jsx', 'py', 'sql',
+                'toml', 'ts', 'tsx', 'xml', 'yaml', 'yml',
+              ],
+            },
+          ],
+        },
+      )
+      if (result.canceled || result.filePaths.length === 0) {
+        return null
+      }
+      const sourcePaths = await validateAttachmentSourcePaths(
+        result.filePaths,
+      )
+      return requireBackend().beginAddProjectSources(
+        parsedProjectId,
+        sourcePaths,
+      )
+    },
+  )
+
+  ipcMain.handle(
+    'knowledge:replace-source',
+    async (
+      event,
+      value: unknown,
+    ): Promise<KnowledgeOperationReceipt | null> => {
+      assertTrustedSender(event)
+      const request = parseKnowledgeSourceRequest(value)
+      const result = await dialog.showOpenDialog(
+        requireMainWindow(),
+        {
+          title: 'Choose a replacement source',
+          properties: ['openFile', 'dontAddToRecent'],
+          filters: [
+            {
+              name: 'Supported documents',
+              extensions: [
+                'txt', 'md', 'markdown', 'pdf', 'csv', 'json', 'docx',
+                'css', 'htm', 'html', 'ini', 'js', 'jsx', 'py', 'sql',
+                'toml', 'ts', 'tsx', 'xml', 'yaml', 'yml',
+              ],
+            },
+          ],
+        },
+      )
+      if (result.canceled || result.filePaths.length === 0) {
+        return null
+      }
+      const [sourcePath] = await validateAttachmentSourcePaths(
+        result.filePaths,
+      )
+      if (sourcePath === undefined) {
+        throw new Error('Replacement source selection is invalid.')
+      }
+      return requireBackend().beginReplaceProjectSource(
+        request.projectId,
+        request.sourceId,
+        sourcePath,
+      )
+    },
+  )
+
+  ipcMain.handle(
+    'knowledge:reindex-source',
+    (event, value: unknown): KnowledgeOperationReceipt => {
+      assertTrustedSender(event)
+      const request = parseKnowledgeSourceRequest(value)
+      return requireBackend().beginReindexProjectSource(
+        request.projectId,
+        request.sourceId,
+      )
+    },
+  )
+
+  ipcMain.handle(
+    'knowledge:delete-source',
+    (event, value: unknown): KnowledgeOperationReceipt => {
+      assertTrustedSender(event)
+      const request = parseKnowledgeSourceRequest(value)
+      return requireBackend().beginDeleteProjectSource(
+        request.projectId,
+        request.sourceId,
+      )
+    },
+  )
+
+  ipcMain.handle(
+    'knowledge:rebuild',
+    (event, projectId: unknown): KnowledgeOperationReceipt => {
+      assertTrustedSender(event)
+      return requireBackend().beginRebuildProjectKnowledge(
+        parseKnowledgeProjectId(projectId),
+      )
+    },
+  )
+
+  ipcMain.handle(
+    'knowledge:revoke',
+    (event, projectId: unknown): KnowledgeOperationReceipt => {
+      assertTrustedSender(event)
+      return requireBackend().beginRevokeProjectKnowledge(
+        parseKnowledgeProjectId(projectId),
+      )
+    },
+  )
+
+  ipcMain.handle(
+    'knowledge:recover',
+    (event, projectId: unknown): KnowledgeOperationReceipt => {
+      assertTrustedSender(event)
+      return requireBackend().beginRecoverProjectKnowledge(
+        parseKnowledgeProjectId(projectId),
+      )
+    },
+  )
+
+  ipcMain.handle(
+    'knowledge:stop-operation',
+    (event, requestId: unknown): Promise<void> => {
+      assertTrustedSender(event)
+      return requireBackend().stopKnowledgeOperation(
+        parseBackendRequestId(requestId),
+      )
+    },
+  )
+
+  ipcMain.handle(
+    'knowledge:export-source',
+    async (
+      event,
+      value: unknown,
+    ): Promise<KnowledgeExportResult | null> => {
+      assertTrustedSender(event)
+      const request = parseKnowledgeSourceRequest(value)
+      const state = await requireBackend().listProjectKnowledge(
+        request.projectId,
+      )
+      const source = state.sources.find(
+        (candidate) => candidate.sourceId === request.sourceId,
+      )
+      if (source === undefined) {
+        throw new Error('Knowledge Source no longer exists.')
+      }
+      const result = await dialog.showSaveDialog(
+        requireMainWindow(),
+        {
+          title: 'Export original Project source',
+          defaultPath: source.fileName,
+          properties: ['dontAddToRecent', 'showOverwriteConfirmation'],
+        },
+      )
+      if (result.canceled || result.filePath === undefined) {
+        return null
+      }
+      const destination = await validateKnowledgeExportDestination(
+        result.filePath,
+      )
+      const exported = await requireBackend().exportProjectSource(
+        request.projectId,
+        request.sourceId,
+        destination.destination,
+        destination.overwrite,
+        {
+          fileName: source.fileName,
+          mediaType: source.mediaType,
+          bytesWritten: source.sizeBytes,
+        },
+      )
+      if (
+        exported.fileName !== source.fileName
+        || exported.mediaType !== source.mediaType
+        || exported.bytesWritten !== source.sizeBytes
+      ) {
+        throw new Error('Knowledge export receipt does not match its Source.')
+      }
+      return exported
     },
   )
 

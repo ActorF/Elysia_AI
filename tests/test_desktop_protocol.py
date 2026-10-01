@@ -111,6 +111,63 @@ def _settings_update_request() -> JsonObject:
     return cast(JsonObject, deepcopy(sample["message"]))
 
 
+def _grounded_chat_state_response() -> JsonObject:
+    """Return an isolated Chat state response carrying grounded proof."""
+
+    sample = next(
+        cast(JsonObject, candidate)
+        for candidate in _fixtures()["validServerMessages"]
+        if cast(JsonObject, candidate)["name"] == "chat state response"
+    )
+    return cast(JsonObject, deepcopy(sample["message"]))
+
+
+def _grounded_answer(response: JsonObject) -> JsonObject:
+    """Return the grounded proof from the canonical Assistant message."""
+
+    result = cast(JsonObject, response["result"])
+    active_chat = cast(JsonObject, result["activeChat"])
+    messages = cast(list[JsonObject], active_chat["messages"])
+    assistant = next(
+        message for message in messages if message["role"] == "assistant"
+    )
+    return cast(JsonObject, assistant["groundedAnswer"])
+
+
+def test_answered_grounded_history_requires_selected_context() -> None:
+    """Reject answered proof that claims it selected no source passage."""
+
+    response = _grounded_chat_state_response()
+    _grounded_answer(response)["contextPassageCount"] = 0
+
+    with pytest.raises(ProtocolValidationError, match="selected evidence"):
+        parse_server_message(response)
+    schema = cast(JsonObject, json.loads(SCHEMA_PATH.read_text("utf-8")))
+    assert not Draft202012Validator(schema).is_valid(response)
+
+
+def test_every_source_fact_citation_requires_the_exact_fact() -> None:
+    """Reject one source fact when any cited excerpt lacks its exact text."""
+
+    response = _grounded_chat_state_response()
+    answer = _grounded_answer(response)
+    statements = cast(list[JsonObject], answer["statements"])
+    citations = cast(list[JsonObject], answer["citations"])
+    statement = statements[0]
+    citation_ids = cast(list[str], statement["citationIds"])
+    mismatching_citation_id = "citation_" + ("b" * 64)
+    citation_ids.append(mismatching_citation_id)
+    mismatching_citation = cast(JsonObject, deepcopy(citations[0]))
+    mismatching_citation["citationId"] = mismatching_citation_id
+    mismatching_citation["excerpt"] = (
+        "This second excerpt contains only a paraphrase."
+    )
+    citations.append(mismatching_citation)
+
+    with pytest.raises(ProtocolValidationError, match="exact cited excerpts"):
+        parse_server_message(response)
+
+
 @pytest.mark.parametrize(
     ("field_name", "invalid_value"),
     [
@@ -700,7 +757,7 @@ def test_voice_capture_result_contains_only_safe_exact_metadata() -> None:
     """Verify that voice capture result contains only safe exact metadata."""
     message = _voice_capture_response()
 
-    parsed = parse_server_message(message)
+    parsed = cast(JsonObject, parse_server_message(message))
     result = cast(JsonObject, parsed["result"])
 
     assert result["kind"] == "voice.capture"
@@ -855,7 +912,8 @@ def test_voice_speech_cancel_result_distinguishes_a_lost_terminal_race() -> None
         "stopped": False,
     }
     response = build_success_response("speech-cancel-command", result)
-    assert parse_server_message(response)["result"] == result
+    parsed = cast(JsonObject, parse_server_message(response))
+    assert parsed["result"] == result
 
     with pytest.raises(ProtocolValidationError):
         build_success_response("ambiguous-stop-command", {"stopped": False})
@@ -865,7 +923,7 @@ def test_voice_transcription_result_is_bounded_and_pcm_free() -> None:
     """Accept final text while rejecting any need to echo its source audio."""
 
     message = _voice_transcription_response()
-    parsed = parse_server_message(message)
+    parsed = cast(JsonObject, parse_server_message(message))
     result = cast(JsonObject, parsed["result"])
 
     assert result["text"] == "你好，世界。"
@@ -1115,3 +1173,42 @@ def test_json_schema_validates_the_shared_structural_samples() -> None:
         if sample.get("runtimeOnly") is True:
             continue
         assert not validator.is_valid(sample["message"]), sample["name"]
+
+
+def test_knowledge_completed_event_requires_a_terminal_operation() -> None:
+    """Reject a completed label for a recovery checkpoint still needing work."""
+
+    data: JsonObject = {
+        "projectId": "project_protocol_knowledge",
+        "operation": {
+            "operationId": "knowledge_" + ("a" * 32),
+            "projectId": "project_protocol_knowledge",
+            "kind": "reindex",
+            "state": "recovery_required",
+            "phase": "indexing",
+            "progressPercent": 50,
+            "attempt": 2,
+            "createdAt": "2026-09-29T12:00:00+00:00",
+            "updatedAt": "2026-09-29T12:00:00+00:00",
+            "errorCode": "recovery_required",
+            "targetSourceId": "attachment_protocol_knowledge",
+            "stagedSourceId": None,
+        },
+    }
+
+    changed = build_event(
+        "knowledge.operation.changed",
+        data,
+        request_id="knowledge-event-changed",
+    )
+
+    assert changed["event"] == "knowledge.operation.changed"
+    with pytest.raises(
+        ProtocolValidationError,
+        match="does not match its lifecycle event",
+    ):
+        build_event(
+            "knowledge.operation.completed",
+            data,
+            request_id="knowledge-event-completed",
+        )

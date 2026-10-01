@@ -1,0 +1,3 @@
+# Document assets are binary even when a platform-level Git rule installs a text converter.
+*.pdf binary
+*.docx binary

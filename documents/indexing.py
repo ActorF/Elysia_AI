@@ -9,6 +9,7 @@ or model failure from deleting the last usable index.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Final, Protocol
 
 from attachments.domain import AttachmentScope, validate_attachment_id
@@ -18,6 +19,7 @@ from .embedding import EmbeddedDocument, EmbeddingError
 from .exceptions import (
     DocumentContentLimitError,
     DocumentError,
+    DocumentOperationCancelledError,
     DocumentProcessingFailedError,
     DocumentValidationError,
 )
@@ -34,6 +36,8 @@ class _DocumentProcessor(Protocol):
         self,
         scope: AttachmentScope,
         link_id: str,
+        *,
+        cancel_requested: Callable[[], bool] | None = None,
     ) -> ChunkedDocument:
         """Return one validated chunk derivation for an ownership link."""
 
@@ -43,7 +47,12 @@ class _DocumentProcessor(Protocol):
 class _DocumentEmbedder(Protocol):
     """Describe the complete-document embedding boundary used here."""
 
-    def embed_document(self, document: ChunkedDocument) -> EmbeddedDocument:
+    def embed_document(
+        self,
+        document: ChunkedDocument,
+        *,
+        cancel_requested: Callable[[], bool] | None = None,
+    ) -> EmbeddedDocument:
         """Embed every exact chunk without persisting a partial result."""
 
         ...
@@ -100,6 +109,17 @@ def _validate_link_id(link_id: object) -> str:
         raise DocumentValidationError(
             "link_id must be a valid opaque attachment identifier."
         ) from error
+
+
+def _raise_if_indexing_cancelled(
+    cancel_requested: Callable[[], bool] | None,
+) -> None:
+    """Stop inference work before the atomic vector-store mutation boundary."""
+
+    if cancel_requested is not None and cancel_requested():
+        raise DocumentOperationCancelledError(
+            "Document indexing was cancelled before commit."
+        )
 
 
 def _require_chunk_owner(
@@ -207,10 +227,21 @@ class DocumentIndexingService:
         self,
         scope: AttachmentScope,
         link_id: str,
+        *,
+        cancel_requested: Callable[[], bool] | None = None,
     ) -> EmbeddedDocument:
-        """Create and atomically replace one exact ownership-link generation."""
+        """Create and atomically replace one cancellable source generation."""
 
-        embedded = self.prepare_document(scope, link_id)
+        embedded = (
+            self.prepare_document(scope, link_id)
+            if cancel_requested is None
+            else self.prepare_document(
+                scope,
+                link_id,
+                cancel_requested=cancel_requested,
+            )
+        )
+        _raise_if_indexing_cancelled(cancel_requested)
         self.commit_document(scope, embedded)
         return embedded
 
@@ -218,6 +249,8 @@ class DocumentIndexingService:
         self,
         scope: AttachmentScope,
         link_id: str,
+        *,
+        cancel_requested: Callable[[], bool] | None = None,
     ) -> EmbeddedDocument:
         """Prepare one complete generation without mutating the vector store.
 
@@ -227,20 +260,42 @@ class DocumentIndexingService:
         """
 
         try:
+            if cancel_requested is not None and not callable(cancel_requested):
+                raise DocumentValidationError(
+                    "cancel_requested must be callable or None."
+                )
+            _raise_if_indexing_cancelled(cancel_requested)
             canonical_scope = _snapshot_scope(scope)
             canonical_link_id = _validate_link_id(link_id)
-            chunked = _require_chunk_owner(
-                self._processor.process(
-                    _snapshot_scope(canonical_scope),
+            processor_scope = _snapshot_scope(canonical_scope)
+            processed = (
+                self._processor.process(processor_scope, canonical_link_id)
+                if cancel_requested is None
+                else self._processor.process(
+                    processor_scope,
                     canonical_link_id,
-                ),
+                    cancel_requested=cancel_requested,
+                )
+            )
+            chunked = _require_chunk_owner(
+                processed,
                 canonical_scope,
                 canonical_link_id,
             )
+            _raise_if_indexing_cancelled(cancel_requested)
+            embedding = (
+                self._embedder.embed_document(chunked)
+                if cancel_requested is None
+                else self._embedder.embed_document(
+                    chunked,
+                    cancel_requested=cancel_requested,
+                )
+            )
             embedded = _require_embedded_lineage(
-                self._embedder.embed_document(chunked),
+                embedding,
                 chunked,
             )
+            _raise_if_indexing_cancelled(cancel_requested)
             return embedded
         except (DocumentError, EmbeddingError):
             raise
@@ -294,10 +349,17 @@ class DocumentIndexingService:
         self,
         scope: AttachmentScope,
         link_ids: tuple[str, ...],
+        *,
+        cancel_requested: Callable[[], bool] | None = None,
     ) -> tuple[EmbeddedDocument, ...]:
-        """Prepare then atomically replace one scope's complete index set."""
+        """Prepare a cancellable corpus, then replace it in one transaction."""
 
         try:
+            if cancel_requested is not None and not callable(cancel_requested):
+                raise DocumentValidationError(
+                    "cancel_requested must be callable or None."
+                )
+            _raise_if_indexing_cancelled(cancel_requested)
             canonical_scope = _snapshot_scope(scope)
             if not isinstance(link_ids, tuple) or not all(
                 isinstance(link_id, str) for link_id in link_ids
@@ -326,11 +388,19 @@ class DocumentIndexingService:
             prepared: list[EmbeddedDocument] = []
             total_chunks = 0
             for link_id in canonical_links:
-                chunked = _require_chunk_owner(
-                    self._processor.process(
-                        _snapshot_scope(canonical_scope),
+                _raise_if_indexing_cancelled(cancel_requested)
+                processor_scope = _snapshot_scope(canonical_scope)
+                processed = (
+                    self._processor.process(processor_scope, link_id)
+                    if cancel_requested is None
+                    else self._processor.process(
+                        processor_scope,
                         link_id,
-                    ),
+                        cancel_requested=cancel_requested,
+                    )
+                )
+                chunked = _require_chunk_owner(
+                    processed,
                     canonical_scope,
                     link_id,
                 )
@@ -339,13 +409,24 @@ class DocumentIndexingService:
                     raise DocumentContentLimitError(
                         "Document rebuild exceeds its aggregate chunk limit."
                     )
+                _raise_if_indexing_cancelled(cancel_requested)
+                embedding = (
+                    self._embedder.embed_document(chunked)
+                    if cancel_requested is None
+                    else self._embedder.embed_document(
+                        chunked,
+                        cancel_requested=cancel_requested,
+                    )
+                )
                 prepared.append(
                     _require_embedded_lineage(
-                        self._embedder.embed_document(chunked),
+                        embedding,
                         chunked,
                     )
                 )
+                _raise_if_indexing_cancelled(cancel_requested)
             result = tuple(prepared)
+            _raise_if_indexing_cancelled(cancel_requested)
             self._store.rebuild(_snapshot_scope(canonical_scope), result)
             return result
         except (DocumentError, EmbeddingError):

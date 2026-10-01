@@ -32,8 +32,9 @@ Version 1 defines strict request, response, error, stream, progress,
 permission, event, cancel, and permission-decision shapes. The current runtime
 advertises `chat.stream`, `chat.retry`, `request.cancel`, `stream`, `progress`,
 `event`, `chat.sessions`, `project.management`, `settings.management`,
-`attachment.management`, `voice.settings`, `voice.capture`, and the optional
-`voice.transcription`, `voice.speech`, and `voice.speech.cancel` capabilities.
+`attachment.management`, `knowledge.management`, `voice.settings`,
+`voice.capture`, and the optional `voice.transcription`, `voice.speech`, and
+`voice.speech.cancel` capabilities.
 Both new-turn and retry generation reuse the `chat.reply` stream.
 Cancellation succeeds only before generation claims its atomic commit gate, so
 a successful Stop response guarantees that the interrupted turn is not saved.
@@ -154,8 +155,10 @@ The Voice Profile catalog remains under the Git-ignored
 `workspace/settings/` tree, while the separately installed runtime,
 checkpoints, and reference audio remain in ignored local runtime/model
 directories. They are not protocol fixtures, repository content, or packaged
-dependencies. This sentence-playback slice also does not define the future
-continuous `LISTENING → THINKING → SPEAKING` Voice Session state machine.
+dependencies. Protocol v1 deliberately does not encode the renderer-local
+`LISTENING → THINKING → SPEAKING` Voice Session state machine; React owns that
+already-implemented UI lifecycle while this wire contract carries only its
+bounded operations and terminal facts.
 
 The general Python `SynthesisResult` permits at most 32 MiB of encoded audio
 with complete supported container framing; it still does not promise that a
@@ -194,8 +197,60 @@ older, larger limit remains visible and removable after the limit is lowered.
 `chat.stream.attachmentIds`
 claims only ready items in that Chat; cancellation restores the draft, while
 a successful Chat commit reconciles the blob to the persisted message. File
-contents are stored locally but are not read, parsed, or indexed in this
-protocol milestone.
+contents on this attachment route remain message data and are not implicitly
+parsed, indexed, or promoted into a Project corpus.
+
+`knowledge.management` is the separate Project-only document path. Its exact
+methods are `knowledge.list`, `knowledge.source.add`,
+`knowledge.source.replace`, `knowledge.source.reindex`,
+`knowledge.source.delete`, `knowledge.project.rebuild`,
+`knowledge.project.revoke`, `knowledge.recover`, and
+`knowledge.source.export`. Add and replace accept native source paths only from
+authenticated Electron Main; export accepts only the destination selected by
+the native save dialog. Those paths never appear in responses, events, Chat
+history, or the renderer API.
+
+Knowledge list results expose at most the closed source states `ready`,
+`unindexed`, `stale`, `revoked`, and `processing`, plus bounded durable
+operation snapshots. Long lifecycle mutations run outside the protocol reader
+and emit request-correlated progress followed by
+`knowledge.operation.changed` or the terminal-only
+`knowledge.operation.completed`. Cooperative `request.cancel` can stop
+cancellable lifecycle work before the safe commit boundary. Recovery and
+verified export do not report a fake cancellation success when they cannot be
+interrupted; the public React Stop action is not enabled for either operation.
+
+Verified export is a separate background task under the same conservative
+global Knowledge lease. It does not enter the lifecycle journal or emit a fake
+lifecycle checkpoint. Its terminal response is a path-free
+`knowledge.export` receipt containing only the safe file name, media type, and
+written byte count; the native destination never appears in a response, event,
+snapshot, Chat history, or Renderer API. Electron pins the Source metadata
+authenticated before the Save dialog and accepts export success only when that
+receipt matches it exactly.
+
+A Backend admits only one public lifecycle/export task at a time. The shared
+Python coordinator excludes a concurrent grounded answer, while a separate
+Backend admission guard rejects Project-authority writes for the same global
+policy. Electron mirrors that lease before sending work so a list, second
+export, lifecycle mutation, or grounded request is not queued behind the owner.
+Once an export request is pending, the renderer-facing
+`BackendSnapshot.activeKnowledgeOperation` preserves its exact request and
+Project ownership across Renderer reloads with `cancellable: false`.
+After the validated wire response releases the lease, Electron emits a
+correlated, path-free `knowledge-export-settled` Renderer event; typed failures
+use the existing correlated Knowledge error event. These are Electron
+`BackendEvent` contracts, not additional Python wire events. Archived Projects
+remain read-only.
+
+`chat.stream` and `chat.retry` accept the optional Boolean
+`useProjectKnowledge`. Omission or `false` preserves the ordinary Chat path;
+`true` authorizes only the corpus derived from that Chat's canonical active
+Project relationship. Assistant history may contain a closed `groundedAnswer`
+object with status, bounded statement kinds, exact citation closure, safe file
+metadata, excerpts, and text/table locations. Python and TypeScript reject
+grounded proof on non-Assistant messages and reject paths, hashes, vectors,
+prompts, native messages, unknown fields, or inconsistent operation states.
 
 String limits are measured in Unicode code points and each UTF-8 NDJSON frame
 is capped at 16,777,216 bytes, including leading and trailing JSON whitespace.

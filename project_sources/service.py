@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import PurePath
 import re
 from threading import RLock
-from typing import Iterator, Protocol, cast
+from typing import Protocol, cast
 
 from attachments import (
     AttachmentError,
@@ -36,6 +37,7 @@ from documents import (
     DocumentSource,
     DocumentError,
     DocumentLoaderService,
+    DocumentOperationCancelledError,
     DocumentRoute,
     ExpectedDocumentGeneration,
     GroundedAnswerError,
@@ -82,6 +84,17 @@ from .repository import ProjectSourceRepository
 
 
 _DIGEST_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _raise_if_answer_cancelled(
+    should_cancel: Callable[[], bool] | None,
+) -> None:
+    """Stop before authority reuse or answer publication after cancellation."""
+
+    if should_cancel is not None and should_cancel():
+        raise DocumentOperationCancelledError(
+            "Project Source answer was cancelled before publication."
+        )
 
 
 class ProjectSourceOperationLease(Protocol):
@@ -425,9 +438,15 @@ class ProjectSourceAnswerService:
         retrieval_policy: RetrievalPolicy = RetrievalPolicy(),
         retrieval_limits: RetrievalLimits = RetrievalLimits(),
         answer_limits: GroundedAnswerLimits = GroundedAnswerLimits(),
+        should_cancel: Callable[[], bool] | None = None,
     ) -> ProjectSourceAnswer:
-        """Answer from the complete current Project corpus or fail closed."""
+        """Answer from the current corpus unless cooperative cancellation wins."""
 
+        if should_cancel is not None and not callable(should_cancel):
+            raise ProjectSourceValidationError(
+                "should_cancel must be callable or None."
+            )
+        _raise_if_answer_cancelled(should_cancel)
         canonical_chat_id = self._validate_chat_id(chat_id)
         try:
             lease = self._operation_lease.hold(canonical_chat_id)
@@ -437,6 +456,7 @@ class ProjectSourceAnswerService:
             ) from None
         try:
             with lease:
+                _raise_if_answer_cancelled(should_cancel)
                 chat, project, authority, scope = self._load_authority(
                     canonical_chat_id
                 )
@@ -459,18 +479,34 @@ class ProjectSourceAnswerService:
                 expected_documents = tuple(
                     item.generation for item in catalog.sources
                 )
+                _raise_if_answer_cancelled(should_cancel)
                 answer = _snapshot_grounded_result(
-                    self._grounded_answer_service.answer(
-                        scope,
-                        query,
-                        expected_documents,
-                        preferences=preferences,
-                        metadata_filter=metadata_filter,
-                        retrieval_policy=retrieval_policy,
-                        retrieval_limits=retrieval_limits,
-                        answer_limits=answer_limits,
+                    (
+                        self._grounded_answer_service.answer(
+                            scope,
+                            query,
+                            expected_documents,
+                            preferences=preferences,
+                            metadata_filter=metadata_filter,
+                            retrieval_policy=retrieval_policy,
+                            retrieval_limits=retrieval_limits,
+                            answer_limits=answer_limits,
+                        )
+                        if should_cancel is None
+                        else self._grounded_answer_service.answer(
+                            scope,
+                            query,
+                            expected_documents,
+                            preferences=preferences,
+                            metadata_filter=metadata_filter,
+                            retrieval_policy=retrieval_policy,
+                            retrieval_limits=retrieval_limits,
+                            answer_limits=answer_limits,
+                            cancel_requested=should_cancel,
+                        )
                     )
                 )
+                _raise_if_answer_cancelled(should_cancel)
                 if answer.scope != scope:
                     raise ProjectSourceValidationError(
                         "Grounded answer changed the authorized Project scope."
@@ -482,6 +518,7 @@ class ProjectSourceAnswerService:
                     catalog,
                     preferences,
                 )
+                _raise_if_answer_cancelled(should_cancel)
                 return ProjectSourceAnswer(
                     schema_version=PROJECT_SOURCE_ANSWER_SCHEMA_VERSION,
                     chat_id=chat.chat_id,

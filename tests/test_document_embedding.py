@@ -6,6 +6,7 @@ from dataclasses import replace
 import hashlib
 import math
 import struct
+from threading import Event
 import traceback
 from typing import Callable
 
@@ -55,6 +56,7 @@ from documents.embedding import (
     EmbeddingValidationError,
     EmbeddingVector,
 )
+from documents.exceptions import DocumentOperationCancelledError
 
 
 _FILE_ID = f"file_{'a' * 64}"
@@ -242,6 +244,23 @@ def _forged_empty_batch(
     batch = _forged_batch(request, identity, policy, (vector,))
     object.__setattr__(batch, "vectors", ())
     return batch
+
+
+def test_document_embedding_cancels_between_bounded_batches() -> None:
+    """Discard a completed batch when cancellation wins before the next one."""
+
+    cancelled = Event()
+    adapter = _FakeEmbedder(
+        mutate_metadata=lambda _adapter: cancelled.set(),
+    )
+
+    with pytest.raises(DocumentOperationCancelledError, match="cancelled"):
+        DocumentEmbeddingService(adapter).embed_document(
+            _many_chunks(17),
+            cancel_requested=cancelled.is_set,
+        )
+
+    assert len(adapter.requests) == 1
 
 
 def test_identity_and_embedding_ids_are_canonical_and_versioned() -> None:

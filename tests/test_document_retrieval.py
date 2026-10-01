@@ -8,10 +8,12 @@ filtering, deduplication, and provenance paths remain in use.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import fields, is_dataclass, replace
 import hashlib
 from pathlib import Path
 import sqlite3
+from threading import Event
 import traceback
 from typing import Literal
 
@@ -66,6 +68,7 @@ from documents.retrieval import (
 from documents.exceptions import (
     DocumentContentLimitError,
     DocumentCorruptError,
+    DocumentOperationCancelledError,
     DocumentValidationError,
 )
 from documents.vector_store import SQLiteVectorStore
@@ -513,6 +516,53 @@ def test_real_sqlite_retrieval_applies_cosine_top_k_and_threshold(
     )
     assert tuple(hit.text for hit in strict.hits) == ("Best evidence",)
     assert strict.candidate_count == 1
+
+
+def test_retrieval_cancels_after_query_embedding_before_store_access() -> None:
+    """Discard a query vector when an Event wins during its model batch."""
+
+    identity = _identity()
+    service = DocumentEmbeddingService(
+        _ControlledEmbeddingAdapter(identity, {"Evidence": (1.0, 0.0)})
+    )
+    scope = _scope("cancel-query")
+    document = _embedded_document(
+        service,
+        scope,
+        link_id="attachment_cancel_query",
+        text="Evidence",
+    )
+    embedded_query = service.embed_query("question")
+    cancelled = Event()
+
+    class _CancellingQueryEmbedder:
+        """Expose the propagated callback and set its shared Event in-flight."""
+
+        def embed_query(
+            self,
+            text: str,
+            *,
+            cancel_requested: Callable[[], bool] | None = None,
+        ) -> EmbeddedQuery:
+            """Return a valid vector after making cancellation observable."""
+
+            assert text == "question"
+            assert cancel_requested is not None
+            cancelled.set()
+            return embedded_query
+
+    store = _NeverCalledStore()
+    retriever = DocumentRetriever(_CancellingQueryEmbedder(), store)
+
+    with pytest.raises(DocumentOperationCancelledError, match="cancelled"):
+        retriever.retrieve(
+            scope,
+            "question",
+            (_expected(document),),
+            cancel_requested=cancelled.is_set,
+        )
+
+    assert store.calls == 0
 
 
 def test_retrieval_enforces_exact_scope_and_explicit_document_allowlist(

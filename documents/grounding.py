@@ -19,6 +19,7 @@ desktop rendering belongs to this library boundary.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 import hashlib
 import json
@@ -39,7 +40,7 @@ from .chunking import ChunkSourceMapping, DocumentChunk, DocumentChunkKind
 from .cleaning import DocumentTableCellSpan, DocumentTextSpan
 from .domain import DocumentSource
 from .embedding import DEFAULT_EMBEDDING_MAX_INPUT_CODE_POINTS
-from .exceptions import DocumentError
+from .exceptions import DocumentError, DocumentOperationCancelledError
 from .retrieval import (
     MAX_RETRIEVAL_CANDIDATE_K,
     MAX_RETRIEVAL_DOCUMENTS,
@@ -123,6 +124,17 @@ _REQUEST_FINGERPRINT_DOMAIN: Final = "elysia.grounded-answer-request.v2"
 _PASSAGE_ID_DOMAIN: Final = "elysia.grounded-passage.v1"
 _CITATION_ID_DOMAIN: Final = "elysia.grounded-citation.v1"
 _PREFERENCES_FINGERPRINT_DOMAIN: Final = "elysia.grounded-preferences.v1"
+
+
+def _raise_if_answer_cancelled(
+    cancel_requested: Callable[[], bool] | None,
+) -> None:
+    """Stop between retrieval and generation without publishing an answer."""
+
+    if cancel_requested is not None and cancel_requested():
+        raise DocumentOperationCancelledError(
+            "Grounded answer generation was cancelled before publication."
+        )
 
 # This trusted policy is deliberately constant and separated from the user JSON
 # envelope.  Document text and file names can contain instruction-like strings,
@@ -1235,6 +1247,7 @@ class GroundedPassageRetriever(Protocol):
         metadata_filter: RetrievalMetadataFilter = RetrievalMetadataFilter(),
         policy: RetrievalPolicy = RetrievalPolicy(),
         limits: RetrievalLimits = RetrievalLimits(),
+        cancel_requested: Callable[[], bool] | None = None,
     ) -> RetrievalResult:
         """Return bounded ranked passages or a typed retrieval failure."""
 
@@ -1250,7 +1263,12 @@ class GroundedAnswerGenerator(Protocol):
 
         ...
 
-    def generate(self, request: GroundedAnswerRequest) -> str:
+    def generate(
+        self,
+        request: GroundedAnswerRequest,
+        *,
+        cancel_requested: Callable[[], bool] | None = None,
+    ) -> str:
         """Return strict JSON for exactly one request or raise a typed error."""
 
         ...
@@ -2820,6 +2838,10 @@ def _parse_generator_response(
 def _raise_generator_error(error: BaseException) -> NoReturn:
     """Replace dependency diagnostics with stable content-free failures."""
 
+    if isinstance(error, DocumentOperationCancelledError):
+        raise DocumentOperationCancelledError(
+            "Grounded answer generation was cancelled before publication."
+        ) from None
     if isinstance(error, GroundedAnswerUnavailableError):
         raise GroundedAnswerUnavailableError(
             "The local grounded-answer generator is unavailable."
@@ -2868,6 +2890,7 @@ class GroundedAnswerService:
         retrieval_policy: RetrievalPolicy = RetrievalPolicy(),
         retrieval_limits: RetrievalLimits = RetrievalLimits(),
         answer_limits: GroundedAnswerLimits = GroundedAnswerLimits(),
+        cancel_requested: Callable[[], bool] | None = None,
     ) -> GroundedAnswerResult:
         """Return a cited structured answer or a truthful evidence refusal.
 
@@ -2877,6 +2900,11 @@ class GroundedAnswerService:
         as failures rather than being disguised as insufficient evidence.
         """
 
+        if cancel_requested is not None and not callable(cancel_requested):
+            raise GroundedAnswerValidationError(
+                "cancel_requested must be callable or None."
+            )
+        _raise_if_answer_cancelled(cancel_requested)
         canonical_scope = _snapshot_scope(scope)
         canonical_preferences = _snapshot_preferences(
             GroundedAnswerPreferences(
@@ -2952,14 +2980,29 @@ class GroundedAnswerService:
         call_policy = _snapshot_retrieval_policy(canonical_policy)
         call_limits = _snapshot_retrieval_limits(canonical_retrieval_limits)
         try:
-            raw_result = self._retriever.retrieve(
-                call_scope,
-                canonical_query,
-                call_documents,
-                metadata_filter=call_filter,
-                policy=call_policy,
-                limits=call_limits,
+            raw_result = (
+                self._retriever.retrieve(
+                    call_scope,
+                    canonical_query,
+                    call_documents,
+                    metadata_filter=call_filter,
+                    policy=call_policy,
+                    limits=call_limits,
+                )
+                if cancel_requested is None
+                else self._retriever.retrieve(
+                    call_scope,
+                    canonical_query,
+                    call_documents,
+                    metadata_filter=call_filter,
+                    policy=call_policy,
+                    limits=call_limits,
+                    cancel_requested=cancel_requested,
+                )
             )
+            _raise_if_answer_cancelled(cancel_requested)
+        except DocumentOperationCancelledError:
+            raise
         except RetrievalValidationError:
             raise RetrievalValidationError(
                 "The document retrieval request or result is invalid."
@@ -3016,6 +3059,7 @@ class GroundedAnswerService:
                 "The document retriever returned no safe result."
             ) from None
         if not result.hits:
+            _raise_if_answer_cancelled(cancel_requested)
             return GroundedAnswerResult(
                 schema_version=GROUNDED_ANSWER_SCHEMA_VERSION,
                 scope=_snapshot_scope(canonical_scope),
@@ -3036,6 +3080,7 @@ class GroundedAnswerService:
             canonical_answer_limits,
             canonical_preferences,
         )
+        _raise_if_answer_cancelled(cancel_requested)
         try:
             identity = _snapshot_identity(self._generator.identity)
         except (MemoryError, RecursionError):
@@ -3131,7 +3176,16 @@ class GroundedAnswerService:
             )
         call_request = _snapshot_request(request)
         try:
-            raw_response = self._generator.generate(call_request)
+            _raise_if_answer_cancelled(cancel_requested)
+            raw_response = (
+                self._generator.generate(call_request)
+                if cancel_requested is None
+                else self._generator.generate(
+                    call_request,
+                    cancel_requested=cancel_requested,
+                )
+            )
+            _raise_if_answer_cancelled(cancel_requested)
         except Exception as error:
             _raise_generator_error(error)
         try:
@@ -3173,6 +3227,7 @@ class GroundedAnswerService:
             request,
             passage_by_citation,
         )
+        _raise_if_answer_cancelled(cancel_requested)
         if status == "insufficient_evidence":
             return GroundedAnswerResult(
                 schema_version=GROUNDED_ANSWER_SCHEMA_VERSION,

@@ -1,8 +1,8 @@
 # Project Sources：显式授权、共享语义与安全 Instructions
 
-本文记录 Elysia AI 在 [Grounded Answers and Citations](./09-GROUNDED-ANSWERS-CITATIONS.md) 之后新增的 Project Source Library 边界。它解决的是“当前 Chat 到底可以使用哪个 Project corpus”这一授权问题；索引任务、可恢复写入和删除传播由独立的 [Knowledge Lifecycle](./11-KNOWLEDGE-LIFECYCLE.md) 组合，生产模型接线与桌面 UI 仍不属于本层。
+本文记录 Elysia AI 在 [Grounded Answers and Citations](./09-GROUNDED-ANSWERS-CITATIONS.md) 之后新增的 Project Source Library 边界。它解决的是“当前 Chat 到底可以使用哪个 Project corpus”这一授权问题；索引任务、可恢复写入和删除传播由独立的 [Knowledge Lifecycle](./11-KNOWLEDGE-LIFECYCLE.md) 组合。生产模型、桌面协议与 UI 仍不属于 `project_sources` Package 自身的责任，但仓库现已通过 [Knowledge UI and Testing](./12-KNOWLEDGE-UI-TESTING.md) 所述的集成层接通这些边界。
 
-当前实现位于 `project_sources/`，并扩展了 `attachments/` 与 `documents/grounding.py`。授权层和 `knowledge_lifecycle/` 目前仍是独立 Python Library：仓库尚未提供真实 `GroundedAnswerGenerator` Adapter，也未把它们接入 `Brain`、`start.py`、`desktop_backend.py`、Desktop Protocol 或 React。因此，这些后端模块完成不代表当前桌面 Chat 已经能够向 Project 文件提问。
+当前实现位于 `project_sources/`，并扩展了 `attachments/` 与 `documents/grounding.py`。`desktop_knowledge.py` 使用同一个 `ProjectSourceOperationCoordinator` 组合 Answer、Lifecycle 和 Export；`desktop_backend.py` 再把它们接入 Brain、Desktop Protocol 与 Electron/React。桌面 Chat 只能对准确 Project 中用户显式添加、完整发布且当前 profile 匹配的 Sources 提问，并且必须逐次显式开启 **Use Project Sources**。
 
 ## 1. 完成范围
 
@@ -14,7 +14,7 @@
 4. **Chat Attachment 默认隔离**：Chat Scope 不会被扫描、合并或回退为 Project Scope。即使两个 Scope 中的文件内容完全相同，也必须拥有各自独立的 ownership link。
 5. **显式 promotion primitive**：用户明确选择后，只能把同时存在于 canonical Chat history、处于 committed 状态且有受信 Document Loader route 的 Chat Attachment 复制为新的 Project ownership。原 Chat ownership 保留；该操作不会伪造索引 Generation，必须再由 Knowledge Lifecycle 完成索引与 catalog 发布。
 6. **安全 Project Instructions**：catalog 持久化结构化 preferred link IDs 与 closed answer style；自由文本 Instructions 只作为有界、不可信的 style guidance。Preference 只重排已经通过检索、阈值与 Reranker 验证的 Hit，不能引入来源、复活低相关证据或绕过 Citation。
-7. **操作租约合同与默认协调器**：完整 resolve→retrieve→generate→revalidate 操作要求持有 `ProjectSourceOperationLease`。Library 提供保守的进程内 `ProjectSourceOperationCoordinator`；生产 Composition Root 仍必须让同一实例同时包住 Chat 移动、Project 归档/Instructions 修改、Source 变更和 catalog 发布。
+7. **操作租约合同与默认协调器**：完整 resolve→retrieve→generate→revalidate 操作要求持有 `ProjectSourceOperationLease`。Library 提供保守的进程内 `ProjectSourceOperationCoordinator`；生产 Desktop Composition Root 现已让 Answer、Lifecycle 与 Export 共享同一实例。任何新增的 Chat 移动、Project 归档/Instructions 修改或 Source mutation 路径仍必须进入同一权威协调边界。
 
 ## 2. 权威数据流
 
@@ -169,7 +169,7 @@ Preference 应用发生在 Retriever 已完成以下检查之后：
 
 因此来源优先级只重排已经合法、已经相关的 Hit。它不能降低阈值、加入被过滤来源、恢复未返回片段或改变 Citation 闭集。Prompt template v2 把 style 和 preferences fingerprint 放入 canonical untrusted envelope；Request fingerprint 同时绑定完整 Prompt 与 preference fingerprint。
 
-Style guidance 的硬上限为 8,000 code points 和 32,000 UTF-8 bytes。现有 Project 设置允许保存更长的 Instructions，因此 Project Source answer 会在检索和生成前返回清晰的 Typed Limit Failure，不进行静默截断；未来 UI 应在编辑时显示这个回答边界。
+Style guidance 的硬上限为 8,000 code points 和 32,000 UTF-8 bytes。现有 Project 设置允许保存更长的 Instructions，因此 Project Source answer 会在检索和生成前返回清晰的 Typed Limit Failure，不进行静默截断。当前 Project editor 仍允许这类更长的通用 Instructions；它没有把 Grounded Answer 上限误表达为 Project 持久化上限。
 
 ## 8. 并发与最终复核
 
@@ -181,7 +181,7 @@ check Chat belongs to Project A
 → old answer publishes citations from A
 ```
 
-因此 Service 要求 context-manager lease 覆盖整个操作。`ProjectSourceOperationCoordinator` 提供可直接共享的保守全局进程内 `RLock`，但本模块尚未提供生产 Composition Root；后续接线必须让以下 mutation 使用同一个协调器实例：
+因此 Service 要求 context-manager lease 覆盖整个操作。`ProjectSourceOperationCoordinator` 提供可直接共享的保守全局进程内 `RLock`。`desktop_knowledge.py` 现已把 Project Source answer、Lifecycle 和 verified export 放在同一个协调器实例下；其他可改变权威的 mutation 也不得建立并行旁路：
 
 - Chat 移入或移出 Project；
 - Chat/Project archive；
@@ -198,7 +198,7 @@ Library 仍会在生成后再次加载并比较：
 - catalog snapshot fingerprint；
 - 完整 preferences value。
 
-二次复核用于检测错误 adapter 或未来不完整接线；它不能替代生产共享租约。若任何权威值改变，答案被丢弃并返回 conflict。
+二次复核用于检测错误 adapter、集成缺陷或运行期权威变化；它不能替代生产共享租约。若任何权威值改变，答案被丢弃并返回 conflict。
 
 ## 9. 安全写入顺序
 
@@ -257,15 +257,8 @@ CAS revoke catalog record first
 
 `tests/test_document_grounding.py` 另外覆盖 preference 只能重排已验证 Hit、恶意 style guidance 保持为不可信 JSON、指纹随配置改变，以及未知 preferred link 在检索前失败。
 
-## 12. 当前非目标与下一步
+## 12. 层内非目标与当前生产接线
 
-本模块没有实现：
+`project_sources` 层仍然不自己实现 Generator、Lifecycle worker、Desktop DTO/UI 或 Chat 持久化；这是责任分层，不是仓库缺口。生产 `OllamaGroundedAnswerAdapter`、`desktop_knowledge.py` Composition Root、Brain/Chat proof 持久化、Desktop Protocol/Electron 和 React Project Sources/Citation UI 已经接通。Project-only 的 add/replace/reindex/rebuild/revoke/delete、持久操作日志、取消与 Crash Recovery 由 [Knowledge Lifecycle](./11-KNOWLEDGE-LIFECYCLE.md) 实现。
 
-- 生产 `GroundedAnswerGenerator`；
-- `Brain` / `start.py` / Desktop Backend Composition Root；
-- Desktop Protocol DTO、React Project Sources 状态与 Citation UI；
-- Answer/Statement/Citation 的 Chat Message 持久化；
-- Preview、page/block/cell 跳转；
-- 真实 PDF/DOCX Desktop end-to-end 回归。
-
-Project-only 的 add/replace/reindex/rebuild/revoke/delete、持久操作日志、取消与 Crash Recovery 已由 [Knowledge Lifecycle](./11-KNOWLEDGE-LIFECYCLE.md) 独立实现。下一步仍是生产 Generator、Composition Root、Desktop Protocol、Knowledge UI and Testing；在这些接线完成前，不能声称桌面 Chat 已经端到端支持文件问答。
+仍未实现的是文件 Preview、打开原文后的 page/block/cell 定位跳转、后台目录扫描、自动导入与跨 Project 搜索。真实 PDF/DOCX fixtures 已经过生产 Loader/Processing/Retrieval 自动化回归，但模型部分使用确定性测试 Adapter，不声称每个本机 Ollama/GPU 组合的真实桌面质量已验收。

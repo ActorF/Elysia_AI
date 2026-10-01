@@ -8,6 +8,7 @@ publishing scope-aware vectors.  It performs no persistence or network I/O.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 import hashlib
 import json
@@ -34,6 +35,7 @@ from .cleaning import (
     LoadedDocumentProvenance,
 )
 from .domain import DocumentLoadLimits, DocumentSource, DocumentTitle
+from .exceptions import DocumentOperationCancelledError
 
 
 EMBEDDING_SCHEMA_VERSION: Final[Literal[1]] = 1
@@ -74,6 +76,17 @@ _CHUNK_ID_PATTERN: Final = re.compile(r"^chunk_[0-9a-f]{64}$")
 _EMBEDDING_ID_PATTERN: Final = re.compile(r"^embedding_[0-9a-f]{64}$")
 _SPACE_FINGERPRINT_DOMAIN: Final = "elysia.embedding-space.v1"
 _EMBEDDING_ID_DOMAIN: Final = "elysia.chunk-embedding.v1"
+
+
+def _raise_if_embedding_cancelled(
+    cancel_requested: Callable[[], bool] | None,
+) -> None:
+    """Stop between bounded model batches before publishing partial vectors."""
+
+    if cancel_requested is not None and cancel_requested():
+        raise DocumentOperationCancelledError(
+            "Document embedding was cancelled before commit."
+        )
 
 
 class EmbeddingError(Exception):
@@ -1059,14 +1072,24 @@ class DocumentEmbeddingService:
         except EmbeddingError as error:
             _raise_sanitized_adapter_error(error)
 
-    def embed_document(self, document: ChunkedDocument) -> EmbeddedDocument:
-        """Embed every exact chunk in bounded batches and preserve provenance."""
+    def embed_document(
+        self,
+        document: ChunkedDocument,
+        *,
+        cancel_requested: Callable[[], bool] | None = None,
+    ) -> EmbeddedDocument:
+        """Embed exact chunks in bounded, cooperatively cancellable batches."""
 
         try:
             if not isinstance(document, ChunkedDocument):
                 raise EmbeddingValidationError(
                     "document must be a validated ChunkedDocument."
                 )
+            if cancel_requested is not None and not callable(cancel_requested):
+                raise EmbeddingValidationError(
+                    "cancel_requested must be callable or None."
+                )
+            _raise_if_embedding_cancelled(cancel_requested)
             snapshot = _snapshot_chunked_document(document)
             identity = self._adapter_identity()
             policy = self._adapter_policy()
@@ -1074,6 +1097,7 @@ class DocumentEmbeddingService:
 
             published: list[EmbeddedChunk] = []
             for start in range(0, len(snapshot.chunks), policy.max_batch_items):
+                _raise_if_embedding_cancelled(cancel_requested)
                 chunk_batch = snapshot.chunks[
                     start : start + policy.max_batch_items
                 ]
@@ -1084,7 +1108,13 @@ class DocumentEmbeddingService:
                         for chunk in chunk_batch
                     ),
                 )
-                vectors = self._run_batch(request, identity, policy)
+                vectors = self._run_batch(
+                    request,
+                    identity,
+                    policy,
+                    cancel_requested=cancel_requested,
+                )
+                _raise_if_embedding_cancelled(cancel_requested)
                 for chunk, vector in zip(chunk_batch, vectors, strict=True):
                     canonical = _unit_vector(vector.values, identity.dimension)
                     published.append(
@@ -1113,6 +1143,7 @@ class DocumentEmbeddingService:
                     )
 
             self._require_adapter_unchanged(identity, policy)
+            _raise_if_embedding_cancelled(cancel_requested)
             return EmbeddedDocument(
                 schema_version=EMBEDDED_DOCUMENT_SCHEMA_VERSION,
                 chunked_schema_version=snapshot.schema_version,
@@ -1123,7 +1154,7 @@ class DocumentEmbeddingService:
                 chunked_document=_snapshot_chunked_document(snapshot),
                 chunks=tuple(published),
             )
-        except EmbeddingError:
+        except (EmbeddingError, DocumentOperationCancelledError):
             raise
         except (MemoryError, RecursionError):
             raise EmbeddingLimitError(
@@ -1134,14 +1165,24 @@ class DocumentEmbeddingService:
                 "Document embedding failed without a safe typed result."
             ) from None
 
-    def embed_query(self, text: str) -> EmbeddedQuery:
-        """Embed one transient query and bind it to the exact model identity."""
+    def embed_query(
+        self,
+        text: str,
+        *,
+        cancel_requested: Callable[[], bool] | None = None,
+    ) -> EmbeddedQuery:
+        """Embed one cancellable query and bind it to the exact model identity."""
 
         try:
             if type(text) is not str or not text:
                 raise EmbeddingValidationError(
                     "Embedding query must contain meaningful text."
                 )
+            if cancel_requested is not None and not callable(cancel_requested):
+                raise EmbeddingValidationError(
+                    "cancel_requested must be callable or None."
+                )
+            _raise_if_embedding_cancelled(cancel_requested)
             maximum_query_code_points = (
                 DEFAULT_EMBEDDING_MAX_INPUT_CODE_POINTS
                 - len(QUERY_EMBEDDING_PREFIX)
@@ -1168,7 +1209,13 @@ class DocumentEmbeddingService:
                 purpose="query",
                 items=(EmbeddingInput(item_id="query", text=prepared),),
             )
-            vectors = self._run_batch(request, identity, policy)
+            vectors = self._run_batch(
+                request,
+                identity,
+                policy,
+                cancel_requested=cancel_requested,
+            )
+            _raise_if_embedding_cancelled(cancel_requested)
             canonical = _unit_vector(vectors[0].values, identity.dimension)
             self._require_adapter_unchanged(identity, policy)
             return EmbeddedQuery(
@@ -1177,7 +1224,7 @@ class DocumentEmbeddingService:
                 policy=_snapshot_policy(policy),
                 vector=EmbeddingVector(item_id="query", values=canonical),
             )
-        except EmbeddingError:
+        except (EmbeddingError, DocumentOperationCancelledError):
             raise
         except (MemoryError, RecursionError):
             raise EmbeddingLimitError(
@@ -1193,11 +1240,15 @@ class DocumentEmbeddingService:
         request: EmbeddingRequest,
         identity: EmbeddingModelIdentity,
         policy: EmbeddingBatchPolicy,
+        *,
+        cancel_requested: Callable[[], bool] | None = None,
     ) -> tuple[EmbeddingVector, ...]:
-        """Call one adapter batch and verify all result associations."""
+        """Call one adapter batch with cancellation gates on both sides."""
 
+        _raise_if_embedding_cancelled(cancel_requested)
         self._require_adapter_unchanged(identity, policy)
         result = self._call_adapter(request)
+        _raise_if_embedding_cancelled(cancel_requested)
         self._require_adapter_unchanged(identity, policy)
         if type(result) is not EmbeddingBatch:
             raise EmbeddingValidationError(

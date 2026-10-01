@@ -2,7 +2,7 @@
 
 本文记录 Elysia AI 在 Scope-safe SQLite Vector Store 之后、Grounded Answer 之前的独立 Python 检索边界。当前实现把一个有身份的 Query Embedding 与调用方显式授权的文档 Generation 放进同一精确 Chat/Project Scope，在单个 SQLite 读事务中执行有界暴力余弦 Top-K，再做严格的原文去重和可选 Reranking。它只发布带完整来源证据的候选片段，**不会生成答案，也不会在证据不足时补造来源**。
 
-这一能力仍未接入 `start.py`、`desktop_backend.py`、Desktop Protocol 或 React。存在 `DocumentRetriever` Library **不等于** 用户现在可以在桌面 Chat 中向附件或 Project Sources 提问。
+这一能力已由 `desktop_knowledge.py` 组合进 `desktop_backend.py`、Desktop Protocol 与 React 的显式 Project Source 工作流。`DocumentRetriever` Library 本身仍不授予权限：只有当前 Project Chat 明确启用知识、且其 Source 已完成索引时，生产层才构造精确 Allowlist 并执行 Grounded Chat。
 
 ## 1. 完成范围与设计原则
 
@@ -40,13 +40,13 @@ exact AttachmentScope
       → deterministic Top-K RetrievalResult
 
   ✗ no answer generation, prompt composition, or citation rendering
-  ✗ no production composition-root, Desktop Protocol, or React wiring
-  ✗ no Project-to-Chat Source authorization discovery
-  ✗ no automatic index lifecycle, reindex, delete propagation, or jobs
+  → production composition-root supplies exact Project-to-Chat authorization
+  → Project Source lifecycle owns explicit index, reindex, delete, and recovery operations
+  → Desktop Protocol + React expose explicit source and grounded-chat controls
   ✗ no Agentic RAG, tool calls, ANN, remote fallback, or bundled reranker
 ```
 
-`DocumentRetriever` 是同步 Library Service。它不选择哪些 Project Sources 对当前 Chat 可见；下游 [Project Sources](./10-PROJECT-SOURCES.md) 已依据经过验证的 Chat/Project 关系与显式 catalog 构造准确 Scope 和 Generation Allowlist。它也不把 `RetrievalHit` 注入 Prompt；这些下游职责由独立 [Grounded Answers and Citations](./09-GROUNDED-ANSWERS-CITATIONS.md) Library 承担，但整条链仍未接入生产或桌面层。
+`DocumentRetriever` 是同步 Library Service。它不选择哪些 Project Sources 对当前 Chat 可见；生产 [Project Sources](./10-PROJECT-SOURCES.md) 边界依据经过验证的 Chat/Project 关系与显式 catalog 构造准确 Scope 和 Generation Allowlist。它也不把 `RetrievalHit` 注入 Prompt；独立 [Grounded Answers and Citations](./09-GROUNDED-ANSWERS-CITATIONS.md) Library 承担该职责，并由桌面 Composition Root 注入生产 Chat 流。
 
 ## 3. Query Identity 与显式 Generation Allowlist
 
@@ -212,10 +212,10 @@ npm run docs:check
 当前模块不提供：
 
 - Grounded Answer Generation、Prompt Composition、Citation Selection/Rendering、来源事实/概括/推断标签或 Prompt-injection Isolation；这些已由下游独立 Grounding Library 实现，仍不属于 Retriever；
-- Project Sources 到 Project Chat 的生产接线；授权 Library 已在 Module 7 完成；
-- Attachment Derived Relation、自动索引、替换/删除传播、Progress、Cancel、Retry 与 Crash Recovery；这些属于 Module 8；
-- Sources/索引状态/引用跳转 UI、Desktop Protocol 或 React 文件问答入口；这些属于 Module 9；
+- Project Sources 到 Project Chat 的生产接线；它由上层授权与桌面 Composition Root 提供；
+- Attachment Derived Relation 与自动索引；上层知识生命周期提供显式 replace/delete、Progress、协作取消、durable checkpoint 与显式 Recover，但没有目录监听或长期自动 Job Queue；
+- Sources/索引状态、Desktop Protocol、React 文件问答入口和可展开 Citation 详情；桌面层尚不提供源文件 Preview 或 page/block/cell 原文跳转；
 - ANN、Hybrid/BM25 Search、Semantic Deduplication、Diversity/Recency Boost、Cross-scope Union、Agentic RAG 或 Tool Planning；
 - 内建 Reranker Adapter、Reranker 模型/权重、远程 Reranking Fallback、模型下载或新的素材/模型许可。
 
-下游 [Grounded Answers and Citations](./09-GROUNDED-ANSWERS-CITATIONS.md) 已能只从有界 `RetrievalHit` 完整前缀构造有限上下文，在 Retriever 空命中时不调用 Generator，并把 Generator 选择的 opaque Citation 解析为可信文件名、页码和准确位置；[Project Sources](./10-PROJECT-SOURCES.md) 已在其上建立 Chat-derived 授权、共享语义和安全 Instructions。接下来仍需完成知识生命周期、生产 Generator/Composition Root、Protocol 与 UI；在这些边界完成前，不能声称桌面 Chat 已能检索、回答或引用用户文件。
+下游 [Grounded Answers and Citations](./09-GROUNDED-ANSWERS-CITATIONS.md) 只从有界 `RetrievalHit` 完整前缀构造有限上下文，在 Retriever 空命中时不调用 Generator，并把 Generator 选择的 opaque Citation 解析为可信文件名、页码和准确位置；[Project Sources](./10-PROJECT-SOURCES.md) 在其上建立 Chat-derived 授权、共享语义和安全 Instructions。生产知识生命周期、Composition Root、Protocol 与 UI 只把明确授权且索引就绪的 Source 接入 Grounded Chat。

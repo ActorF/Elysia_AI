@@ -2,7 +2,7 @@
 
 这份文档用于帮助第一次接触 Elysia AI 的开发者理解：每个受版本控制的文件负责什么、它与哪些层连接，以及修改某项功能时应该从哪里开始。
 
-> 当前架构边界：Python 是 Chat、Project、Memory、Attachment、Document Loading/Processing/Embedding/Retrieval、Project Source 授权与 Knowledge Lifecycle 持久化状态的事实来源；Electron Main 是本地进程、文件路径和硬件权限的可信边界；Preload 只暴露固定能力；React Renderer 只负责显示和临时交互状态。Knowledge Lifecycle 目前仍是独立后端 Library，尚未接入桌面链路。
+> 当前架构边界：Python 是 Chat、Project、Memory、Attachment、Document Loading/Processing/Embedding/Retrieval、Project Source 授权、Knowledge Lifecycle 与结构化 Citation 持久化状态的事实来源；Electron Main 是本地进程、文件路径和硬件权限的可信边界；Preload 只暴露固定能力；React Renderer 只负责显示和临时交互状态。Project Sources 管理与显式启用的 grounded Chat 已接入同一生产桌面链路。
 
 ## 1. 先看完整连接图
 
@@ -38,15 +38,20 @@ desktop_backend.py
         │   ├── Memory / MemoryRetriever
         │   ├── Legacy Migration
         │   └── Ollama model adapter
-        └── AttachmentService → AttachmentRepository → JsonAttachmentStore
-            └── owner/reference reconciliation + verified file access
+        ├── AttachmentService → AttachmentRepository → JsonAttachmentStore
+        │   └── owner/reference reconciliation + verified file access
+        └── desktop_knowledge.create_desktop_knowledge_runtime()
+            ├── KnowledgeLifecycleService + KnowledgeExportService
+            ├── ProjectSourceAnswerService + shared operation lease
+            ├── Document processing / embedding / retrieval
+            └── digest-pinned loopback Ollama grounded generator
     └── optional speech copy
         └── desktop_speech.py
             └── sentence queue → managed worker → PCM WAV
                 ├── voice.speech.* metadata over authenticated NDJSON
                 └── matching fd3 frame → Electron delivery → Preload Web Audio
 
-documents.DocumentProcessingService（已实现的独立 Library，尚未由 start.py / desktop_backend.py 构造）
+desktop_knowledge.DesktopKnowledgeRuntime（由 desktop_backend.py 延迟构造）
     ├── DocumentLoaderService
     │   ├── AttachmentService.open_verified_file(scope, opaque file_id)
     │   └── verified immutable bytes → text / PDF / DOCX loaders
@@ -64,19 +69,27 @@ documents.DocumentProcessingService（已实现的独立 Library，尚未由 sta
         → GroundedAnswerService（完整命中前缀 + 不可信 JSON Data）
           → structured statements + trusted filename/page/location citations
 
-project_sources.ProjectSourceAnswerService（已实现的独立授权 Library）
+project_sources.ProjectSourceAnswerService（生产授权与回答边界）
     ├── canonical Chat → active Project → exact Project AttachmentScope
     ├── atomic FileCatalogSnapshot + explicit ProjectSourceSnapshot
     ├── complete current Generation allowlist + bounded Instructions
     └── GroundedAnswerService → post-answer authority revalidation
 
-knowledge_lifecycle.KnowledgeLifecycleService（已实现的 Project-only saga Library）
-    ├── durable JSON operation journal + revision CAS + recovery
-    ├── add / reindex / rebuild → vector commit → catalog publish last
-    ├── replace / delete → whole-catalog tombstone → cleanup → republish
-    ├── whole-Project revoke + source/operation views + verified export
-    └── explicit preview/cache cleanup protocol
-        （仍无生产 Generator、Composition Root、Protocol 或 React 接线）
+knowledge_lifecycle（生产 Project-only 生命周期与导出边界）
+    ├── KnowledgeLifecycleService
+    │   ├── durable JSON operation journal + revision CAS + recovery
+    │   ├── add / reindex / rebuild → vector commit → catalog publish last
+    │   ├── replace / delete → whole-catalog tombstone → cleanup → republish
+    │   └── whole-Project revoke + source/operation views + preview/cache cleanup protocol
+    └── KnowledgeExportService
+        └── verified original export + private crash-cleanup intent（不进入 saga journal）
+
+desktop_protocol + Electron + React
+    ├── knowledge.list/add/replace/reindex/delete/rebuild/revoke/recover/export
+    ├── request-correlated progress / cancel / lifecycle settled / export settled / safe error
+    ├── global Knowledge lease + lifecycle/export snapshot ownership across reload
+    ├── ProjectSourcesPanel（状态、恢复、归档只读）
+    └── explicit Use Project Sources → grounded Chat proof + Citation UI
 
 start.create_data_portability_service()
     └── 独立 Recovery API；当前没有接入 Desktop Protocol/UI
@@ -123,7 +136,8 @@ start.create_data_portability_service()
 | `scripts/gpt_sovits_worker.py` | 在隔离 Python 3.9 进程中按父进程传入的稳定 Volume-GUID 路径重算 Voice 资产和部分 Runtime 一致性锚点，固定加载一组 GPT-SoVITS v2 权重与 Reference，拒绝 Config Fallback、热切换、全零错误音频和多 Yield，并通过私有二进制 Pipe 返回完整 PCM WAV。`READY` 只证明父子进程本次观察到同一组已声明内容，不是第三方 Runtime 的完整供应链证明；上层持续持有每个已检查文件的防写/防替换 Guard。 | `scripts/gpt_sovits_protocol.py`、`voice/managed_gpt_sovits.py`、被忽略的本地 GPT-SoVITS Runtime；不经过外部 HTTP API |
 | `scripts/smoke_gpt_sovits.py` | 用固定中文句子对每个所选情绪重复两次本地合成，只输出 Readiness、格式、大小、时长和 SHA-256；不接受任意文本，也不保存音频。 | `voice/synthesis_service.py`、`.env`、被忽略的 Voice Profile Catalog |
 | `start.py` | Python Composition Root 和 Console 入口；创建 Settings、Model、Memory、Repositories、Migrator、Services、Brain 和日志。 | 几乎所有 Python 生产包；`ui/console.py`、`desktop_backend.py` |
-| `desktop_backend.py` | Electron 启动的 Python NDJSON 进程；完成会话令牌握手、初始化、方法路由、Streaming、Cancel、错误映射和安全关闭；从 Active Settings 构造本地模型路径，惰性创建有界 STT Runner，并在初始化时才用已修复的 Active Voice Profile/Rate 接管预先打开的 Speech Pipe。`autoReadAloud=false`、Speech Admission 失败、生成取消或错误都会发出与 Chat Request 严格关联的零句 Terminal，避免 Electron 留下未排空的播放 Owner；Speech 的启动、Feed、Finish、Cancel 或交付失败均不能改变 Canonical Assistant 文本及其持久化结果。 | `desktop_protocol/`、`desktop_speech.py`、`start.py`、Chat/Project/Attachment/Voice 服务 |
+| `desktop_backend.py` | Electron 启动的 Python NDJSON 进程；完成会话令牌握手、初始化、方法路由、Streaming、Cancel、错误映射和安全关闭。除 Chat/Project/Settings/Attachment/STT/Speech 外，它还组合 Project Sources runtime、在全局 Knowledge admission 下用后台 worker 执行显式 lifecycle mutation/recovery 或 verified export、异步清理身份匹配的 export temp、发布安全 operation/receipt DTO，并把显式 grounded Chat 接入同一 generation commit gate。 | `desktop_protocol/`、`desktop_knowledge.py`、`desktop_speech.py`、`start.py`、Chat/Project/Attachment/Voice 服务 |
+| `desktop_knowledge.py` | 生产知识 Composition Root；共享 Project/Chat/Source repositories 与 operation lease，组合 Loader→Cleaner→Chunker→Embedding→SQLite→Retriever→Grounded Answer、Lifecycle 与 verified export，配置 app-private export cleanup-intent directory，并计算绑定全部输出规则的 index profile。构造不访问 Ollama、外部 export destination 或索引任务。 | `desktop_backend.py`、`documents/`、`project_sources/`、`knowledge_lifecycle/`、`workspace/knowledge/` |
 | `desktop_speech.py` | 桌面语音 Composition Root；后台按 Active `voiceProfileId` 与固定 `neutral` 情绪获取 Managed GPT-SoVITS Lease，并把 Active `speechRatePercent` 作为绝对 `0.5–2.0` Speed Factor 使用。在启动期间只缓存一个有界 Turn，随后接入既有自然分句/FIFO Queue；先经 NDJSON 发精确 Clip Metadata，再向私有 fd3 写匹配 WAV。取消、Runtime/Queue/Pipe 失败或退出只关闭可选 Speech 路径，不阻塞文字 Chat。 | `desktop_backend.py`、`voice/managed_gpt_sovits.py`、`voice/speech_queue.py`、`desktop_protocol/audio_channel.py` |
 | `docs/decisions/0001-desktop-shell.md` | Electron 与 Tauri 选型 ADR；记录测量方法、能力差距、风险、最终选择和重访门槛。 | `desktop/benchmarks/measure-shell.ps1`、Desktop 技术决策 |
 | `docs/03-VOICE-PERFORMANCE-SAFETY-RIGHTS.md` | 记录最终三组件实机测量、CPU STT 资源策略、长会话自动化清理证据、Voice Rights 决定、分发门禁和重测条件。 | Module 9 验收、`MODEL_LICENSE.md`、Benchmark/Soak/Package Audit |
@@ -134,7 +148,8 @@ start.create_data_portability_service()
 | `docs/08-RETRIEVER-RERANKING.md` | 记录 Identity-bearing Query、显式 Expected Generation Allowlist、单事务暴力 Cosine Top-K、闭集 Metadata Filter、阈值、Exact Deduplication、多来源 Evidence、可选不可信 Reranker、预算/错误和当前非目标。 | `documents/retrieval.py`、`documents/embedding.py`、`documents/vector_store.py`、Retrieval 测试 |
 | `docs/09-GROUNDED-ANSWERS-CITATIONS.md` | 记录一次性 Retrieve→Generate 所有权、完整命中前缀、Prompt Data 隔离、三类结构化 Statement、可信 Citation/Location、资源预算、错误闭集和语义能力边界。 | `documents/grounding.py`、`documents/retrieval.py`、Grounding 测试 |
 | `docs/10-PROJECT-SOURCES.md` | 记录 Chat-derived Project Scope 授权、原子 ownership snapshot、显式 Generation catalog、CAS、同 Project 共享、Chat Attachment 隔离/提升、安全 Instructions、操作租约和当前非目标。 | `project_sources/`、`attachments/`、`documents/grounding.py`、Project Source 测试 |
-| `docs/11-KNOWLEDGE-LIFECYCLE.md` | 记录 Project-only 持久 saga journal、完整 state/phase、add/reindex/rebuild 发布顺序、whole-Project revoke、copy-on-write replace、tombstone-first delete、取消/恢复/幂等、view/export 与 Preview/Cache cleanup 预留。 | `knowledge_lifecycle/`、`attachments/`、`documents/indexing.py`、`project_sources/` |
+| `docs/11-KNOWLEDGE-LIFECYCLE.md` | 记录 Project-only 持久 saga journal、完整 state/phase、add/reindex/rebuild 发布顺序、whole-Project revoke、copy-on-write replace、tombstone-first delete、取消/恢复/幂等，以及不入 journal 的 verified export/cleanup intent 与 Preview/Cache cleanup 预留。 | `knowledge_lifecycle/`、`attachments/`、`documents/indexing.py`、`project_sources/` |
+| `docs/12-KNOWLEDGE-UI-TESTING.md` | 记录生产 Composition Root、loopback Generator、grounded Chat 持久化、Desktop methods/events、全局 Knowledge lease、跨 reload 的 export snapshot/terminal、Project Sources/Citation UI、真实 PDF/DOCX fixtures 与 Stage 8 自动化验收边界。 | `desktop_knowledge.py`、`desktop_backend.py`、Protocol/Electron/React、真实文档回归 |
 | `data/characters/elysia_character_reference_zh.md` | 爱莉希雅背景、语录和转写参考资料；当前 Runtime 不会自动将它注入每次 Prompt。 | 人工角色研究；受 `MODEL_LICENSE.md` 的来源/授权提醒约束 |
 
 本机还存在被 Git 忽略的 `docs/02-ROADMAP.md`。它是当前 Stage/Module 规划来源，但新的 Git Clone 不会自动得到它，因此不能作为唯一公共文档。
@@ -170,7 +185,7 @@ start.create_data_portability_service()
 | `core/model_memory_extractor.py` | 调用模型提取待用户确认的 Memory Candidate；严格解析 JSON、验证和去重，不自动保存。 | `core/brain.py`、`memory/extraction.py`、Long-Term Memory |
 | `core/model_conversation_summarizer.py` | 调用模型生成 facts、decisions、action items、unresolved questions；支持增量摘要。 | `core/brain.py`、`memory/summarization.py`、`ChatSummary` |
 | `core/active_conversation.py` | 管理 per-Chat Busy Guard、不可变快照、完整 Turn/Summary Commit 和并发修改检测；后来扩展 Chat actions、Retry 与 Attachment Commit。 | `core/brain.py`、Chat/Project Repository |
-| `core/brain.py` | 应用用例总协调器；组织 Chat/Project API、上下文重建、Scoped Retrieval、Prompt、模型调用、Streaming、Cancel、Retry、Summary 和 Memory。流式回复在线去除首尾空白并延迟当前尾空白，保证已发 Chunk 拼接值与最终持久化文本完全一致。 | Core、Chat、Project、Memory、Model、Desktop Backend/Console |
+| `core/brain.py` | 应用用例总协调器；组织 Chat/Project API、上下文重建、Scoped Retrieval、Prompt、模型调用、Streaming、Cancel、Retry、Summary 和 Memory。普通流式回复保证已发 Chunk 拼接值与最终持久化文本完全一致；grounded new-turn/retry 则在同一 generation commit gate 内调用 Project Source answer，并把格式化文本与结构化 proof 原子保存。 | Core、Chat、Project、Memory、Model、Project Sources、Desktop Backend/Console |
 | `core/exceptions.py` | 定义配置、模型、Busy、Cancel、Retry、Model Mismatch、生成期间状态变化等稳定错误。 | `core/brain.py`、`desktop_backend.py`、Console、测试 |
 
 ## 7. Chat 领域与持久化：`chats/`
@@ -178,9 +193,9 @@ start.create_data_portability_service()
 | 文件 | 实际用途 | 主要连接 |
 | --- | --- | --- |
 | `chats/__init__.py` | Chat Package 的稳定公共 API。 | `start.py`、Brain、Project/Recovery、测试 |
-| `chats/domain.py` | 定义 ChatSession、ChatSessionMeta、ChatMessage、ChatSummary、AttachmentMetadata、稳定 ID 和全部不变量。 | Serialization、Repositories、Brain、Protocol 转换 |
+| `chats/domain.py` | 定义 ChatSession、ChatSessionMeta、ChatMessage、ChatSummary、AttachmentMetadata、稳定 ID 和全部不变量；Assistant Message 可选携带闭合的 Grounded Answer/Statement/Citation/Text-or-Table Location proof，其他 role 不可携带。 | Serialization、Repositories、Brain、Protocol 转换 |
 | `chats/exceptions.py` | 定义 Not Found、Already Exists、Storage、Corruption 和 Migration 错误。 | Repository、Migrator、Recovery、入口错误映射 |
-| `chats/serialization.py` | 严格转换 Chat Domain 与 JSON；处理 UTC 时间、Schema、Message、Summary、Attachment 和 Index Metadata。 | `chats/repository.py`、Recovery、测试 |
+| `chats/serialization.py` | 严格转换 Chat Domain 与 JSON；处理 UTC 时间、Schema、Message、Summary、Attachment、Grounded proof 和 Index Metadata，并继续接受不含可选 proof 字段的旧 Chat 文件。 | `chats/repository.py`、Recovery、测试 |
 | `chats/storage.py` | Chat Store 的原子 UTF-8 JSON I/O：同目录临时文件、flush、fsync、`os.replace` 和失败清理。 | `chats/repository.py`、`chats/migration.py` |
 | `chats/repository.py` | `ChatRepository` Protocol 与 JSON 实现；管理轻量 Index、独立 Session、CRUD、Pin/Archive、回滚和 Index 重建。 | ActiveConversation、Project Service、Migration、Recovery |
 | `chats/migration.py` | 把 Stage 4 单一 Conversation 安全迁移为 `Legacy Conversation`；保存原始 Backup 和 Migration State。 | `chats/legacy.py`、Chat Repository、`start.py` |
@@ -250,15 +265,15 @@ ChatSession.project_id
 | `attachments/service.py` | Application Service；把真实路径限制在受信 Import 边界，以 Scope + opaque File ID 提供验证读取，暴露完整或单 link 的原子 file snapshot，只向 canonical authority coordinator 提供私有 committed Chat Attachment copy primitive，并为生命周期层暴露只接受 Project Scope 的准确 `project_source` removal。 | Desktop Backend、AttachmentRepository、Project Sources、Knowledge Lifecycle、可信 Loader |
 | `attachments/store.py` | Manifest v2 与 Scope-local Content-addressed Blob Store；按内容 Hash 在单一 Scope 内去重，保存 Original/Ownership/Derived 关系，并实现 v1 原子迁移、Descriptor-pinned Copy/Read、取消回滚、进程锁、启动恢复、Owner/Reference 对账、多 Scope 删除 Tombstone、经 Hash/Size 复核且 manifest-last commit 的显式跨 Scope copy，以及锁内 snapshot-fingerprint/role 复核且 Manifest-first commit 的单 Project Source removal。 | Electron 文件选择、AttachmentService、Desktop Backend、Chat Message Commit、Project Sources、Knowledge Lifecycle、Document Loaders |
 
-当前 Attachment 已完成安全原始文件存储、版本化 Metadata/Ownership、Derived 关系登记、原子授权快照和可信 Backend 读取边界。Attachment Package 本身仍不解析内容；`documents.DocumentLoaderService` 通过 `open_verified_file()` 取得 Scope-bound Verified Snapshot，关闭读取 Context 后才把无路径 Bytes 交给格式 Loader 提取原始结构。独立 Document Library 还能保守清洗、生成版本化 Chunk，把精确 Lineage 绑定到固定本地 Embedding 空间和 Scope-safe SQLite 索引，在准确 Scope + Generation Allowlist 上有界检索，并从完整命中前缀构造有限 Prompt 与可信 Citation；`project_sources` 再从 canonical Chat→Project、完整 ownership snapshot 和显式 catalog 派生该 Allowlist。`knowledge_lifecycle` 已把 Project-only add/replace/reindex/rebuild/revoke/delete 组成可恢复 saga；生产 Generator/Composition Root、Desktop Protocol 与桌面文件问答仍属于后续工作。
+当前 Attachment 已完成安全原始文件存储、版本化 Metadata/Ownership、Derived 关系登记、原子授权快照和可信 Backend 读取边界。Attachment Package 本身仍不解析内容；`documents.DocumentLoaderService` 通过 `open_verified_file()` 取得 Scope-bound Verified Snapshot，关闭读取 Context 后才把无路径 Bytes 交给格式 Loader 提取原始结构。生产 Document Pipeline 再保守清洗、生成版本化 Chunk，把精确 Lineage 绑定到固定本地 Embedding 空间和 Scope-safe SQLite 索引，在准确 Scope + Generation Allowlist 上有界检索，并从完整命中前缀构造有限 Prompt 与可信 Citation；`project_sources` 从 canonical Chat→Project、完整 ownership snapshot 和显式 catalog 派生该 Allowlist，`knowledge_lifecycle` 把 Project-only add/replace/reindex/rebuild/revoke/delete 组成可恢复 saga。整条链已由 `desktop_knowledge.py`、Protocol 和 React 接入显式选择的 Project Chat。
 
 ## 12. Document Loading, Processing, Embedding, Retrieval and Grounding：`documents/`
 
 | 文件 | 实际用途 | 主要连接 |
 | --- | --- | --- |
-| `documents/__init__.py` | Document Package 的稳定公共 API；导出 Loaded/Cleaned/Chunked/Embedded/Retrieval/Grounded Answer 领域值、错误、Producer/Embedding/Reranker/Generator Contract，以及各同步 Library Service。 | Loader/Cleaner/Chunker/Embedding/Indexing/Retrieval/Grounding、测试、未来 Composition Root |
+| `documents/__init__.py` | Document Package 的稳定公共 API；导出 Loaded/Cleaned/Chunked/Embedded/Retrieval/Grounded Answer 领域值、错误、Producer/Embedding/Reranker/Generator Contract，以及各同步 Service 与生产 Ollama Adapter。 | Loader/Cleaner/Chunker/Embedding/Indexing/Retrieval/Grounding、Desktop Knowledge、测试 |
 | `documents/domain.py` | 定义不含路径的 `DocumentSource`、Title、Ragged Table、Ordered Block、`LoadedDocument` 和输入/展开/文字/结构资源预算；复核页码、Ordinal、标题来源和累计输出。 | 所有 Loader、Service、Cleaner |
-| `documents/exceptions.py` | 定义稳定的 Validation、Not Found、Unsupported Format/Feature、Empty、Encrypted、Corrupt、Read、Unexpected Loader/Processing 错误，以及公开 `DocumentLimitError` 基类下的 Size/Content Limit 子类。 | Service、Loader、Cleaner/Chunker、未来 Protocol Error Mapping |
+| `documents/exceptions.py` | 定义稳定的 Validation、Not Found、Unsupported Format/Feature、Empty、Encrypted、Corrupt、Read、Unexpected Loader/Processing 错误，以及公开 `DocumentLimitError` 基类下的 Size/Content Limit 子类。 | Service、Loader、Cleaner/Chunker、Desktop Knowledge 稳定错误映射 |
 | `documents/protocol.py` | 定义按精确 `(suffix, media_type)` 路由的 Path-private Format Loader、Scope-bound Source Loader、Cleaner 与 Chunker Protocol，以及稳定 Producer ID/Version/Policy Contract。 | Loader Service、Processing Pipeline、各 Adapter 与测试替身 |
 | `documents/service.py` | 以 `scope + ownership link_id` 解析 Link-specific Metadata 和 Canonical File Record，经 `open_verified_file()` 有界读取不可变快照，关闭文件 Context 后再选择 Loader，并复核 Source、Limits 与 Producer Version 未被 Adapter 篡改。 | `attachments/service.py`、所有 Loader、`DocumentProcessingService` |
 | `documents/text.py` | 严格解码 UTF-8/BOM-declared UTF-16；以常量级行游标提取 TXT Paragraph、Markdown ATX/多行 Setext/Fence/Table，以本地状态机解析严格 CSV，并把常见源码保留为 Code Block。它不执行、渲染、联网或解析外部资源。 | `DocumentLoaderService`、Domain、文本测试 |
@@ -266,13 +281,14 @@ ChatSession.project_id
 | `documents/docx.py` | 在构造 `ZipFile` 前核对 EOCD/Zip64 并逐条扫描真实 Central Directory；在所有已解析的选定 XML Part 间累计 XML/MC Token/Namespace 资源；Main、可选 Styles 与可选 Core 必须分别经过 Relationship 和精确 Content Type 授权，未授权的固定路径诱饵会被忽略。它按 Part 使用 Namespace-level Profile，以持久化增量状态执行 `AlternateContent`、Ignorable、ProcessContent 与 MustUnderstand；DrawingML、Office Math/OMML、VML/旧 Shape 作为 Opaque Subtree 跳过，但不算 MCE understood。它还拒绝路径别名、加密、外部 Main Relationship、DTD/Entity、未知 Encoding 与 Macro Main Part，并以单次增量 Table 遍历按正文顺序提取 Title/Heading/Paragraph/Table。 | Service、Domain、二进制 Loader 测试 |
 | `documents/cleaning.py` | 定义 Loaded Provenance、Text/Table Source Span、Cleaned Blocks、审计 Omission 与 Processing Limits；纯 Cleaner 除逐页完全证明的短 PDF 首行外逐 Code Point 保留 Loader 输出，并用 Canonical SHA-256 记录 Document/Cleaning Identity。 | `LoadedDocument`、Chunker、Cleaning 测试、后续派生数据生命周期 |
 | `documents/chunking.py` | 定义 Chunk、Chunk-local Mapping 与 `ChunkedDocument`；按 Title/Heading/Paragraph、Page、逻辑行、固定句末和 Code-point 上限生成零重叠 Prose/Code Chunk，并把 Ragged Table 投影为版本化 JSONL；完整 Lineage 决定 Derivation Fingerprint 与 Chunk ID。 | Cleaner、Chunking 测试、后续 Embedding/Vector Store |
-| `documents/pipeline.py` | 默认组合 Source Loader、保守 Cleaner 与结构 Chunker，为每个 Adapter 重建隔离快照，并把其返回值视为不可信：逐项复核请求 Scope/Ownership、Producer/Policy/Limits、Piece-table 对每个 Loaded Block 的完整分区、Canonical Fingerprint、Chunk Lineage，以及 Text/Table Mapping 对来源和 JSONL Projection 的完整重建。 | `DocumentLoaderService`、Cleaner/Chunker Protocol、Pipeline 测试、未来 Composition Root；最终返回图也与 Adapter 持有对象隔离 |
+| `documents/pipeline.py` | 默认组合 Source Loader、保守 Cleaner 与结构 Chunker，为每个 Adapter 重建隔离快照，并把其返回值视为不可信：逐项复核请求 Scope/Ownership、Producer/Policy/Limits、Piece-table 对每个 Loaded Block 的完整分区、Canonical Fingerprint、Chunk Lineage，以及 Text/Table Mapping 对来源和 JSONL Projection 的完整重建。 | `DocumentLoaderService`、Cleaner/Chunker Protocol、`desktop_knowledge.py`、Pipeline 测试；最终返回图也与 Adapter 持有对象隔离 |
 | `documents/embedding.py` | 定义版本化 Model/Embedding-space Identity、固定 Batch/Length/Template Policy、`TextEmbedder` Protocol、`EmbeddedChunk`/`EmbeddedDocument`/`EmbeddedQuery` 和 `DocumentEmbeddingService`；Space Fingerprint 直接绑定实际 Batch Policy、Document Input Mode 与精确 Query Prefix，不只依赖人工 Version Bump。它保留完整 Chunk Lineage，按 `EmbeddingModelIdentity.dimension` 验证单位向量，并生成 Canonical Float32-le Checksum。Query 同时发布完整 Space/Policy/Canonical Vector，避免 Retriever 接受身份不明的裸向量。内建 Ollama Identity 固定为 1,024 维，通用 Service 不硬编码该维度。 | `ChunkedDocument`、Ollama Adapter、Vector Store/Retriever、Embedding 测试 |
 | `documents/ollama_embedding.py` | 严格的 Loopback Ollama HTTP Adapter；在每个 Batch 前后通过精确 Tag + Full Manifest Digest 拒绝 Mutable-alias Race，禁用 Proxy/Redirect/Retry/Truncation，并以精确 JSON Content Type、Duplicate-key/Non-finite 拒绝、Raw `read1` Byte Cap 和剩余 Socket Deadline 限制响应。失败脱敏为稳定 Embedding Error。Model-layer Digest/Size/Q8_0 是该 Manifest 的文档化 Provenance，不是 Adapter 单独从 API 再证明的字段。 | 本地 Ollama `/api/tags` 与 `/api/embed`、`documents/embedding.py`；不下载或启动模型 |
+| `documents/ollama_grounding.py` | 生产 Structured Grounded Answer Adapter；只接受规范化 loopback HTTP Origin，在生成前后固定完整模型 digest，禁用 Proxy/Redirect/Retry/Tools/Thinking/Streaming/Truncation，固定 JSON + temperature 0，并对 body/deadline/Content-Type/UTF-8/JSON 执行有界验证和错误脱敏。 | 本地 Ollama `/api/tags` 与 `/api/chat`、`GroundedAnswerService`、`desktop_knowledge.py`；不下载或启动模型 |
 | `documents/vector_store.py` | 使用标准库 SQLite 持久化一个固定 Embedding Space；Canonical JSON + SHA-256 保存完整 Lineage/Mapping，Float32-le BLOB + SHA-256 保存向量，并以精确 Chat/Project Scope 实现原子 Replace/List/Get/Delete/Rebuild、Stale/Model 拒绝与 Schema/Corruption Fail-closed。`search_scope()` 还在单个读事务中验证显式 Allowlist 的全部 Generation/Record，按单位向量 Dot Product 暴力计算有界 Cosine Candidate Pool；Schema 继续精确复核 Table DDL、PK/UNIQUE/FK 并拒绝未知 Trigger/View/显式 Index。 | `EmbeddedDocument`、`EmbeddedQuery`、Indexing/Retrieval Service、Vector Store/Retrieval 测试 |
-| `documents/indexing.py` | 同步组合 Processing → Embedding → SQLite Store，并保持请求 Scope/Ownership Link 与结果 Lineage 一致；把无 Store mutation 的 `prepare_document()`、原子单 Generation `commit_document()`、整 Scope `rebuild_scope()` 与幂等 `delete_document()` 作为 Knowledge Lifecycle 的安全提交边界。 | Document Processing/Embedding/Vector Store、Knowledge Lifecycle、Indexing 测试、未来 Composition Root；不包含后台调度器或 Desktop 接线 |
+| `documents/indexing.py` | 同步组合 Processing → Embedding → SQLite Store，并保持请求 Scope/Ownership Link 与结果 Lineage 一致；把无 Store mutation 的 `prepare_document()`、原子单 Generation `commit_document()`、整 Scope `rebuild_scope()` 与幂等 `delete_document()` 作为 Knowledge Lifecycle 的安全提交边界。 | Document Processing/Embedding/Vector Store、Knowledge Lifecycle、Desktop Knowledge、Indexing 测试 |
 | `documents/retrieval.py` | 定义 Expected Generation、Filter/Policy/Limits、Hit/Evidence/Result、Reranker Identity/Request/Batch 与稳定错误；`DocumentRetriever` 只搜索准确 Scope + Allowlist，执行阈值、确定性 Top-K、准确 `(kind, text)` 去重，并把可选 Reranker 当作必须返回完整闭合评分的非可信 Adapter。 | `DocumentEmbeddingService`、`SQLiteVectorStore`、`GroundedAnswerService`、Retrieval 测试；自身不生成答案或 Citation UI |
-| `documents/grounding.py` | 定义 Grounded Answer Limits、同步非流式 Generator Identity/Request/Protocol、`source_fact`/`model_summary`/`inference` Statement、可信 Citation 与 Text/Table Location，以及 fingerprint-bound GroundedAnswerPreferences；`GroundedAnswerService` 固定拥有同一次 Retrieve→Generate，先验证 exact corpus，再让 structured preference 只重排已经相关的 Hit，把问题、片段、style guidance 和 opaque Citation ID 作为不可信 Canonical JSON Data，并对模型输出的严格 JSON、Fingerprint 和引用闭包 Fail Closed。 | `DocumentRetriever`、`project_sources`、未来生产 Generator Adapter/Composition Root、Grounding 测试；自身不发现 Project Sources、不持久化、不接 Desktop/UI |
+| `documents/grounding.py` | 定义 Grounded Answer Limits、同步非流式 Generator Identity/Request/Protocol、`source_fact`/`model_summary`/`inference` Statement、可信 Citation 与 Text/Table Location，以及 fingerprint-bound GroundedAnswerPreferences；`GroundedAnswerService` 固定拥有同一次 Retrieve→Generate，先验证 exact corpus，再让 structured preference 只重排已经相关的 Hit，把问题、片段、style guidance 和 opaque Citation ID 作为不可信 Canonical JSON Data，并对模型输出的严格 JSON、Fingerprint 和引用闭包 Fail Closed。 | `DocumentRetriever`、`project_sources`、Ollama Grounding Adapter、Desktop Knowledge、Grounding 测试 |
 
 完整边界是：
 
@@ -307,18 +323,18 @@ AttachmentScope + ownership link_id
       → GroundedAnswerService + post-answer revalidation
 ```
 
-Loader 输出仍是 Raw Structure；后续纯转换生成可重复 Chunk，独立 Embedding/Store 在固定语义空间持久化 Scope-safe Vector Generation。Retriever 只接受显式授权的准确 Generation，在一致快照内执行有界搜索、Filter、阈值、去重和可选 Fail-closed Reranking。Grounding 层不接受调用方任意拼接的 `(query, result)`，而是在同一调用内检索、选择完整命中前缀、构造两消息 Prompt，再把模型只能选择的 Citation ID 解析回可信文件名、页码及位置；空 Hits 不调用 Generator。Project Source 层只从 canonical Chat→Project、原子 ownership snapshot 与显式 catalog 派生 Scope/Generation，完整操作持有租约并在发布前复核。Knowledge Lifecycle 再以 durable journal 协调 Vector 与 catalog 的安全发布/撤销/清理。该结构能证明引用属于本次授权上下文，不能机械证明模型概括/推断的语义蕴含。当前仍没有生产 Generator Adapter 或 Desktop Composition Root/Protocol/React Endpoint，因此桌面 Chat 仍不可查询文件。边界文档依次见 `docs/05-DOCUMENT-LOADERS.md`、`docs/06-DOCUMENT-CLEANING-CHUNKING.md`、`docs/07-LOCAL-EMBEDDINGS-VECTOR-STORE.md`、`docs/08-RETRIEVER-RERANKING.md`、`docs/09-GROUNDED-ANSWERS-CITATIONS.md`、`docs/10-PROJECT-SOURCES.md` 与 `docs/11-KNOWLEDGE-LIFECYCLE.md`。
+Loader 输出仍是 Raw Structure；后续纯转换生成可重复 Chunk，Embedding/Store 在固定语义空间持久化 Scope-safe Vector Generation。Retriever 只接受显式授权的准确 Generation，在一致快照内执行有界搜索、Filter、阈值、去重和可选 Fail-closed Reranking。Grounding 层不接受调用方任意拼接的 `(query, result)`，而是在同一调用内检索、选择完整命中前缀、构造两消息 Prompt，再把模型只能选择的 Citation ID 解析回可信文件名、页码及位置；空 Hits 不调用 Generator。Project Source 层只从 canonical Chat→Project、原子 ownership snapshot 与显式 catalog 派生 Scope/Generation，完整操作持有租约并在发布前复核。Knowledge Lifecycle 再以 durable journal 协调 Vector 与 catalog 的安全发布/撤销/清理。`desktop_knowledge.py` 共享这些 repositories 与 lease，Brain 把回答文本和 proof 原子保存，Renderer 只显示安全 Citation。该结构能证明引用属于本次授权上下文，不能机械证明模型概括/推断的语义蕴含。完整桌面接线和验收见 `docs/12-KNOWLEDGE-UI-TESTING.md`。
 
 ## 12A. Project Source Authorization：`project_sources/`
 
 | 文件 | 实际用途 | 主要连接 |
 | --- | --- | --- |
-| `project_sources/__init__.py` | Project Source Package 的稳定公共 API；集中导出 schema 常量、domain、错误、canonical catalog helpers、Repository/Lease/Instruction Protocol、保守 Operation Coordinator 与 Answer Service。 | Knowledge Lifecycle、后续 Composition Root、测试 |
+| `project_sources/__init__.py` | Project Source Package 的稳定公共 API；集中导出 schema 常量、domain、错误、canonical catalog helpers、Repository/Lease/Instruction Protocol、保守 Operation Coordinator 与 Answer Service。 | Knowledge Lifecycle、Desktop Knowledge Composition Root、测试 |
 | `project_sources/catalog.py` | 把 Attachment 返回值隔离为准确 `FileCatalogSnapshot`，按受信 Document route 选择可索引 `project_source` ownership，并从完整 Project catalog 派生 canonical `DocumentSource` tuple；不负责授权发布。 | Project Source Answer/Promotion、Knowledge Lifecycle |
 | `project_sources/domain.py` | 定义版本化 ProjectSourceGeneration、结构化且不扩权的 ProjectSourceInstructions、CAS ProjectSourceSnapshot 与 Chat/Project-bound ProjectSourceAnswer；fingerprint 同时绑定 exact ownership catalog、完整 Generation、index profile、Instructions、Revision 和 UTC publish time。 | Repository、Answer Service、Grounding |
-| `project_sources/exceptions.py` | 定义 Validation、Authorization、Conflict、Stale、Not Found、Storage 与 Data Corruption 的稳定脱敏错误闭集。 | Repository、Service、未来 Protocol mapping |
+| `project_sources/exceptions.py` | 定义 Validation、Authorization、Conflict、Stale、Not Found、Storage 与 Data Corruption 的稳定脱敏错误闭集。 | Repository、Service、Desktop Backend Protocol mapping |
 | `project_sources/repository.py` | 定义 ProjectSourceRepository，并以严格 exact-schema JSON、duplicate-key rejection、有界 descriptor read、安全目录/文件核验、跨进程锁、fsync、atomic replace、Revision CAS 与 deletion tombstone 持久化完整 Project catalog；`read_entry()` 在一次锁内返回一致的 `(revision, snapshot | None)`，不会从 Vector row 反向授权旧 Generation。 | `project_sources/service.py`、Knowledge Lifecycle、测试 |
-| `project_sources/service.py` | 只接受 chat_id/query，从 canonical active Chat→Project 派生 exact Project Scope，验证原子 Attachment snapshot、完整 current-profile catalog 与 bounded preferences，在操作 lease 内调用 GroundedAnswerService 并最终复核所有 authority；另提供 canonical Chat-history + committed-only 的显式 Chat Attachment promotion，但不伪造索引 Generation。非文档路由不会污染文本 corpus。 | Chats、Projects、Attachments、Documents、后续生产 Composition Root |
+| `project_sources/service.py` | 只接受 chat_id/query，从 canonical active Chat→Project 派生 exact Project Scope，验证原子 Attachment snapshot、完整 current-profile catalog 与 bounded preferences，在操作 lease 内调用 GroundedAnswerService 并最终复核所有 authority；另提供 canonical Chat-history + committed-only 的显式 Chat Attachment promotion，但不伪造索引 Generation。非文档路由不会污染文本 corpus。 | Chats、Projects、Attachments、Documents、`desktop_knowledge.py` |
 
 这一层是授权组合，不是新的 Document Pipeline。它不会扫描 Chat Attachment、按 Hash 猜测权限、执行 Cross-scope Union，或让自由文本 Instructions 生成 link ID。合法空 Project 可以得到 empty corpus；存在可索引 Source 但 catalog 缺失/过期/部分时必须 Fail Closed。完整设计、写入顺序、并发合同和非目标见 `docs/10-PROJECT-SOURCES.md`。
 
@@ -326,14 +342,14 @@ Loader 输出仍是 Raw Structure；后续纯转换生成可重复 Chunk，独�
 
 | 文件 | 实际用途 | 主要连接 |
 | --- | --- | --- |
-| `knowledge_lifecycle/__init__.py` | Lifecycle Package 的稳定公共 API；导出 durable operation domain/repository、错误、Project Source view、artifact-cleanup boundary、Service 与 verified-original Export Service。 | 后续 Composition Root、测试 |
-| `knowledge_lifecycle/domain.py` | 定义 opaque operation ID、`add/replace/reindex/rebuild/revoke/delete` kind、完整 state/phase 闭集和路径私有 `KnowledgeOperationSnapshot`；限制单调 Revision/Progress/Attempt、UTC 时间、fingerprint 与闭集错误码，不允许路径、正文、Vector 或 traceback。 | Repository、Service、未来安全 Protocol DTO |
-| `knowledge_lifecycle/exceptions.py` | 定义 Validation、Not Found、Conflict、Storage、Data Corruption 与 Recovery 的稳定脱敏错误闭集；取消使用 durable operation state 表达。 | Repository、Service、Export、未来 Protocol mapping |
-| `knowledge_lifecycle/repository.py` | 以最多 2,048 entries / 4 MiB 的严格 JSON journal 持久化 saga checkpoint；进程内锁 + sidecar OS lock 覆盖完整 transaction，descriptor-bounded read、identity 复核、fsync、atomic replace 与 exact next-revision CAS 防止并发丢失。 | `KnowledgeLifecycleService`、`workspace/` 下未来生产存储目录 |
+| `knowledge_lifecycle/__init__.py` | Lifecycle Package 的稳定公共 API；导出 durable operation domain/repository、错误、Project Source view、artifact-cleanup boundary、Service 与 verified-original Export Service。 | Desktop Knowledge Composition Root、测试 |
+| `knowledge_lifecycle/domain.py` | 定义 opaque operation ID、`add/replace/reindex/rebuild/revoke/delete` kind、完整 state/phase 闭集和路径私有 `KnowledgeOperationSnapshot`；限制单调 Revision/Progress/Attempt、UTC 时间、fingerprint 与闭集错误码，不允许路径、正文、Vector 或 traceback。 | Repository、Service、Desktop Knowledge Protocol DTO |
+| `knowledge_lifecycle/exceptions.py` | 定义 Validation、Not Found、Conflict、Storage、Data Corruption 与 Recovery 的稳定脱敏错误闭集；取消使用 durable operation state 表达。 | Repository、Service、Export、Desktop Backend Protocol mapping |
+| `knowledge_lifecycle/repository.py` | 以最多 2,048 entries / 4 MiB 的严格 JSON journal 持久化 saga checkpoint；进程内锁 + sidecar OS lock 覆盖完整 transaction，descriptor-bounded read、identity 复核、fsync、atomic replace 与 exact next-revision CAS 防止并发丢失。 | `KnowledgeLifecycleService`、`workspace/knowledge/operations/` 生产存储目录 |
 | `knowledge_lifecycle/service.py` | 只接受 active Project；在共享 mutation lease 下执行 add/reindex/rebuild 的 Vector-first/catalog-last 发布、whole-Project revoke、copy-on-write replace、tombstone-first delete、取消、最多八次 crash recovery、状态 view 和显式 Preview/Cache cleanup。Catalog 始终是唯一授权面；whole-Project revoke 后只有显式 rebuild 能恢复授权，删除仍可在保留 tombstone 的同时清理目标。 | Projects、Attachments、`documents/indexing.py`、Project Source catalog/repository |
-| `knowledge_lifecycle/export.py` | 在 mutation lease 下验证 exact `project_source` ownership 与 original bytes，拒绝重定向目标路径，流式复制并复核 declared size，再以 create-if-absent hard link 或 `os.replace` 原子发布；不导出 Vector/Prompt/Journal/Internal ID。 | Projects、Attachment verified reads、未来 native Save dialog |
+| `knowledge_lifecycle/export.py` | 在 mutation lease 下验证 exact `project_source` ownership 与 original bytes；复制前原子持久化 temp/parent 稳定身份，逐块支持协作取消，发布前复核 ownership 与路径身份，再以 create-if-absent hard link 或 `os.replace` 原子发布。后台 crash recovery 只删除名称、父链和身份全部匹配的遗留 temp，损坏/路径替换 Fail Closed；不导出 Vector/Prompt/Journal/Internal ID。 | Projects、Attachment verified reads、Desktop Knowledge、Electron native Save dialog 与 `knowledge.source.export` |
 
-这一层是跨 Store 的 durable saga，不是假想的全局事务。新 Vector 在完整 catalog CAS publish 前没有权限；replace/delete 先 tombstone 整个 Project catalog，再幂等清理并发布剩余 corpus。当前没有独立 Preview/Cache 实体，因此组合方必须显式传入 `NoStoredKnowledgeArtifacts`；未来新增 artifact repository 时必须替换该 adapter。完整顺序、取消/恢复与 Module 9 非目标见 `docs/11-KNOWLEDGE-LIFECYCLE.md`。
+其中 `KnowledgeLifecycleService` 是跨 Store 的 durable saga，不是假想的全局事务。新 Vector 在完整 catalog CAS publish 前没有权限；replace/delete 先 tombstone 整个 Project catalog，再幂等清理并发布剩余 corpus。`KnowledgeExportService` 共用全局 operation lease，但不进入 saga journal，只以身份固定的私有 cleanup intent 恢复未发布 temp。当前没有独立 Preview/Cache 实体，因此生产 `desktop_knowledge.py` 显式传入 `NoStoredKnowledgeArtifacts`；未来新增 artifact repository 时必须替换该 adapter。完整顺序、取消/恢复与桌面集成状态见 `docs/11-KNOWLEDGE-LIFECYCLE.md`。
 
 ## 13. Voice Python 层：`voice/`
 
@@ -390,15 +406,15 @@ Loader 输出仍是 Raw Structure；后续纯转换生成可重复 Chunk，独�
 
 | 文件 | 实际用途 | 主要连接 |
 | --- | --- | --- |
-| `desktop/electron/contracts.ts` | 定义 Renderer 可见的最小 Desktop API、Backend Snapshot/Event、Chat/Project/Settings/Attachment/Voice 类型；全局 Settings 类型包含七项 Voice 行为偏好。除 STT 开始/取消与 Final/Error 外，只为 Voice Session 暴露闭集的安全 Speech Status 和按 Chat Request ID 停止播放的方法，不是 Python 原始 Wire Schema。 | Preload、Main、React、Mock Preload；状态不含 WAV、Token、Hash、文本、路径或诊断 |
-| `desktop/electron/preload.cts` | 用 `contextBridge` 暴露固定 `window.elysiaDesktop`；把一次性 STT 开始/取消和按 Request ID 停止播放映射到固定 IPC，并把净化 Event 转交 Renderer。私有、未导出的 Web Audio Owner 只接受 Main 发来的 Canonical 32 kHz mono PCM16 WAV；它为每个 Clip 读取当前 Active `speechVolumePercent`，严格验证后通过 GainNode 调节音量，并在 Decode/Start 前应用已保存的 Output Sink。无效音量或指定设备路由失败会 Fail Closed，绝不回退到默认扬声器。播放结束或失败后只回送一次性 opaque Settlement；React API 不接触 WAV、Token、Hash、`ipcRenderer`、Node、`fs` 或进程句柄。 | React、Electron Main、`speech-playback-owner.ts`、Global Settings |
-| `desktop/electron/main.ts` | Electron 主进程；创建带品牌图标的窗口/托盘，验证 Sender、含 Voice 行为字段的 Settings/STT 参数、播放停止 Request ID、路径和权限，注册固定 IPC，控制导航与应用关闭，并把私有 Preload Speech Playback Owner 注入 BackendProcess。 | Preload、BackendProcess、原生 Dialog/Clipboard/Audio、`speech-playback-owner.ts`、`public/elysia-icon.png` |
+| `desktop/electron/contracts.ts` | 定义 Renderer 可见的最小 Desktop API、Backend Snapshot/Event、Chat/Project/Settings/Attachment/Knowledge/Voice 类型；Snapshot 还携带 Electron 跨 Renderer reload 持有的准确 Chat generation 与 lifecycle/export Knowledge request ownership，export 以不可取消 owner 表示；独立 `knowledge-export-settled` 只含关联 ID 与安全 receipt。全局 Settings 类型包含七项 Voice 行为偏好。它不是 Python 原始 Wire Schema。 | Preload、Main、React、Mock Preload；状态不含 WAV、Token、Hash、正文、native path、export destination 或诊断 |
+| `desktop/electron/preload.cts` | 用 `contextBridge` 暴露固定 `window.elysiaDesktop`；把 Knowledge list/mutation/export/cancel、一次性 STT 开始/取消和按 Request ID 停止播放映射到固定 IPC，并把净化 Event 转交 Renderer。私有、未导出的 Web Audio Owner 只接受 Main 发来的 Canonical 32 kHz mono PCM16 WAV；它为每个 Clip 读取当前 Active `speechVolumePercent`，严格验证后通过 GainNode 调节音量，并在 Decode/Start 前应用已保存的 Output Sink。无效音量或指定设备路由失败会 Fail Closed，绝不回退到默认扬声器。播放结束或失败后只回送一次性 opaque Settlement；React API 不接触 WAV、Token、Hash、`ipcRenderer`、Node、`fs` 或进程句柄。 | React、Electron Main、`speech-playback-owner.ts`、Global Settings、Project Sources |
+| `desktop/electron/main.ts` | Electron 主进程；创建带品牌图标的窗口/托盘，验证 Sender、Knowledge/Settings/STT 参数、播放停止 Request ID、路径和权限，注册固定 IPC，通过原生 open/save dialog 把路径只交给受信 BackendProcess，并在 export terminal 前以对话框前认证的 Source 文件名、media type 和大小复核路径私有 receipt；同时控制导航/关闭并把私有 Preload Speech Playback Owner 注入 BackendProcess。 | Preload、BackendProcess、原生 Dialog/Clipboard/Audio、`speech-playback-owner.ts`、`public/elysia-icon.png` |
 | `desktop/electron/bounded-ndjson.ts` | 用固定上限 Buffer 增量切分 Python stdout；按原始字节限制 Frame，接受 CRLF，严格拒绝坏 UTF-8、未换行截断和超限无换行数据，并在终态移除全部 Stream Listener。 | `desktop/electron/backend-process.ts`、Protocol Contract Tests |
 | `desktop/electron/speech-audio-channel.ts` | 增量解析独立 Pipe 上的固定 84-byte `audio.binary.v1` Frame；在 Payload 分配前限制 8 MiB，流式校验 SHA-256，只接受精确 32 kHz mono PCM16 WAV 与 120 秒上限，并以单 Frame ACK/Discard、Pause 和 `unshift` 保持顺序、背压及有界内存。任何坏 Header、Token、Hash、WAV、截断或 ACK 都会终止 Reader；无待处理 Frame 的干净 EOF 会单独通知 Owner。 | `speech-delivery.ts`、`backend-process.ts` fd3 Owner；Reader 不自行销毁 Owner Stream，原始 WAV 不进入 NDJSON 或 React |
 | `desktop/electron/speech-delivery.ts` | 在 Electron Main 内关联可以任意先后抵达的 NDJSON Clip Metadata 与 fd3 Binary Frame，逐项核验 Request/Chat/Sequence/Token/长度/格式/Hash，并且每次只允许一个未确认 Frame。失败句子按序跳过；Terminal、取消、迟到结果、播放器失败和 Pipe EOF 都以有界状态收敛。 | `backend-process.ts`、`speech-audio-channel.ts`、`speech-playback-owner.ts`；对 React 只可生成无 Token/Hash/音频的安全状态 |
 | `desktop/electron/speech-playback-owner.ts` | Main 到可信 Preload 的单 Clip 播放 Owner；生成一次性 UUID、验证 Settlement 只能来自所属窗口 Main Frame，以 130 秒上限处理播放、取消、窗口销毁和跨文档断连，并保留所有尚未精确结算的 Retired ID 来隔离迟到 ACK（数量受 In-flight 上限约束）。稳定路由可在 macOS 窗口关闭与重建之间替换具体 Owner，而页面内锚点跳转不会误中断播放。 | `main.ts`、`preload.cts`、`speech-delivery.ts`；固定私有 IPC Channel 不进入 `DesktopApi` |
-| `desktop/electron/backend-process.ts` | Python 子进程 Owner 和 Protocol State Machine；通过有界 NDJSON Reader 限制 stdout，关联 Chat/STT Request 与封闭 Lifecycle Event，并为子进程建立独立 fd3 Speech Pipe。Speech Metadata 只交给 Main 内 Delivery Coordinator，WAV 只交给可信 Preload；Renderer 只收到 Request/Chat、闭集状态和有序 Sequence。Speech Pipe 关闭或损坏会立即移除 Renderer 的 `voice.speech` capability，不破坏文字 Chat，也不会让 Voice Session 无限等待。Python stderr 不原样暴露。 | Main、`desktop_backend.py`、`protocol.ts`、`bounded-ndjson.ts`、`speech-delivery.ts` |
-| `desktop/electron/protocol.ts` | TypeScript 端 Protocol v1 类型、Builder、Parser 和严格 Runtime Validation；严格验证 Schema v3 的七项 Voice 行为设置、STT exact 状态与一次性 PCM 请求，并封闭验证 Speech Clip/Failure/Terminal 的 Request、Token、uint32 Sequence、8 MiB WAV Metadata、失败枚举和终态计数，不把静态类型当安全边界。 | BackendProcess、共享 Schema/Fixtures、Contract Tests、私有二进制音频 Reader |
+| `desktop/electron/backend-process.ts` | Python 子进程 Owner 和 Protocol State Machine；通过有界 NDJSON Reader 限制 stdout，关联 Chat/STT/Knowledge Request 与封闭 Lifecycle Event，并为子进程建立独立 fd3 Speech Pipe。它在全局 lease 下串行化 Knowledge lifecycle/export 与 grounded ownership，验证 Project/Source/operation/expected export receipt correlation，把 active lifecycle/export owner 推入跨 Renderer reload 的 snapshot，并只在 authoritative response 后发布 state settled 或路径私有 `knowledge-export-settled`。Export 不可由 Renderer Stop。Speech Metadata 只交给 Main 内 Delivery Coordinator，WAV 只交给可信 Preload；Python stderr 不原样暴露。 | Main、`desktop_backend.py`、`protocol.ts`、`bounded-ndjson.ts`、`speech-delivery.ts` |
+| `desktop/electron/protocol.ts` | TypeScript 端 Protocol v1 类型、Builder、Parser 和严格 Runtime Validation；除 Voice/Settings 外还封闭验证 Knowledge method/state/operation/export 与 grounded proof，复核 Project/Citation ID 闭包、answered context 和逐字 `source_fact` Evidence，不把静态类型当安全边界。 | BackendProcess、共享 Schema/Fixtures、Contract Tests、私有二进制音频 Reader |
 | `desktop/electron/protocol-text.ts` | 定义跨 Python/TypeScript 一致的 Unicode Code Point 长度、Blank Set 和 Trim 规则。 | `protocol.ts`、Python Contracts |
 | `desktop/electron/renderer-source.ts` | 只允许准确的 Vite Root 或打包 `dist/index.html` 作为可信 Renderer 来源。 | Main、Permission Policy、测试 |
 | `desktop/electron/audio-permission.ts` | 只为可信主窗口和主 Frame 放行 audio-only microphone 或 speaker selection。 | Main 的 Chromium Permission Handler |
@@ -410,7 +426,7 @@ Loader 输出仍是 Raw Structure；后续纯转换生成可重复 Chunk，独�
 | --- | --- | --- |
 | `desktop/src/main.tsx` | 初始化 React Root、StrictMode、ThemeProvider 和 ErrorBoundary；初始 Paint 后通知 Electron。 | `index.html`、`App.tsx`、Preload API |
 | `desktop/src/AppErrorBoundary.tsx` | 捕获 React Render Error，显示可恢复错误并把焦点移动到错误区域。 | `main.tsx` |
-| `desktop/src/App.tsx` | Renderer 总协调器；除 Canonical State、Draft、Retry、Attachments 与 Settings 外，还把 Capture、STT、Voice Session Controller、Canonical Chat Send、安全 Speech Status、字幕、麦克风静音、Reply-time Interruption 和一次性自动续听串起来。用户可以显式发送 Final Transcript，或只把它写入当前 Chat 草稿；自动续听仅在同一 Voice/Chat/Project、成功完成且 Speech 已排空的 Turn 后启动新 Capture，永远不会自动提交 Transcript。 | 所有 React Feature、`window.elysiaDesktop`；Voice 与文字复用同一发送/恢复/持久化路径，直接 Voice Send 不消费 Composer Draft 或 Attachment |
+| `desktop/src/App.tsx` | Renderer 总协调器；除 Canonical State、Draft、Retry、Attachments、Settings 与 Voice 外，还按 Project 隔离 Knowledge state/request/error，从 Electron snapshot 恢复 lifecycle/export owner，以全局 busy 阻止跨 Project 冲突写入，处理 changed/completed/export-settled/error correlation 与迟到 snapshot tombstone，并把显式 `Use Project Sources` 意图传给文字、Retry 与 Voice Send。 | 所有 React Feature、`window.elysiaDesktop`；Canonical state 仍由 Python 返回，Renderer 只保存暂态 |
 | `desktop/src/App.css` | App Shell、Chat、Dialog、Settings、Voice 行为表单、主/次状态、计时、字幕、静音与 Call Controls，以及 Responsive、High Zoom 和 Forced Colors 样式。 | `App.tsx`、`SettingsView.tsx`、`CallPreview.tsx`、Design Tokens |
 | `desktop/src/desktop-api.d.ts` | 扩展 Browser `Window` 类型，声明可选 `elysiaDesktop`；不会实际创建 API。 | TypeScript、Preload Contracts |
 
@@ -430,18 +446,20 @@ Loader 输出仍是 Raw Structure；后续纯转换生成可重复 Chunk，独�
 | --- | --- | --- |
 | `desktop/src/chat/ChatView.tsx` | 组合 Chat Header、Connection Status、Message Timeline、Feedback 和 Composer，并管理滚动。 | App、MessageView、Composer |
 | `desktop/src/chat/Composer.tsx` | 受控 Textarea、附件、模型、麦克风测试/Voice 入口和 Send/Stop；保护中文 IME，Enter 发送、Shift+Enter 换行。 | ChatView、App callbacks；不直接访问 Electron API |
-| `desktop/src/chat/MessageView.tsx` | User 消息以纯文本显示；Assistant 使用安全 GFM；禁止 Raw HTML/外部图片，支持复制、Regenerate、Edit and retry 和 Attachment Chips。 | App callbacks、Electron External URL/Clipboard |
-| `desktop/src/chat/types.ts` | 定义只供 Renderer 展示的 Message/Streaming/Retry/Notice 类型；不是持久化 Schema。 | App、ChatView、MessageView |
+| `desktop/src/chat/MessageView.tsx` | User 消息以纯文本显示；Assistant 使用安全 GFM；禁止 Raw HTML/外部图片，支持复制、Regenerate、Edit and retry、Attachment Chips，以及可键盘聚焦的 grounded statement kind 与 Citation detail。 | App callbacks、Electron External URL/Clipboard、Knowledge proof DTO |
+| `desktop/src/chat/types.ts` | 定义只供 Renderer 展示的 Message/Streaming/Retry/Notice 与 grounded proof 类型；不是持久化 Schema。 | App、ChatView、MessageView |
 
 ## 20. React Project 与 Attachment：`desktop/src/projects/`、`desktop/src/attachments/`
 
 | 文件 | 实际用途 | 主要连接 |
 | --- | --- | --- |
-| `desktop/src/projects/ProjectView.tsx` | 完整 Project UI；创建/打开/编辑/归档、Instructions、Workspace、Chat 归属、Sources 和 Settings。 | App、Desktop API、AttachmentSurface |
-| `desktop/src/projects/ProjectView.css` | Project Split View、List/Detail、Tabs、Cards、Workspace、Dialog 和响应式布局。 | ProjectView、Design Tokens |
+| `desktop/src/projects/ProjectView.tsx` | 完整 Project UI；创建/打开/编辑/归档、Instructions、Workspace、Chat 归属，以及 canonical Project Sources lifecycle；全局 Knowledge owner 存在时禁用会改变 authority 的 Project 动作。 | App、Desktop API、ProjectSourcesPanel |
+| `desktop/src/projects/ProjectView.css` | Project Split View、List/Detail、Tabs、Cards、Workspace、Knowledge surface、Dialog 和响应式布局。 | ProjectView、Knowledge.css、Design Tokens |
 | `desktop/src/attachments/AttachmentSurface.tsx` | Chat/Project 共用的 Scope-bound Attachment UI；处理 Picker、Drag/Drop、Metadata、Remove、Pending/Error 和焦点恢复。 | App/Desktop API、Composer、ProjectView |
+| `desktop/src/knowledge/ProjectSourcesPanel.tsx` | 显示 Source health、持久 operation history/progress/error，并委托 add/replace/reindex/delete/export/rebuild/revoke/recover/stop；组件本地 pending 只覆盖 picker/dialog，Backend request ownership来自 App 恢复的 Electron snapshot。全局 Knowledge busy、归档或 capability 缺失时只读，export 不启用 Stop，也不接收本地路径、内部 File ID、Hash、Prompt 或 Vector。 | App、ProjectView、Knowledge Desktop API |
+| `desktop/src/knowledge/Knowledge.css` | Project Sources、进度、错误、grounded statement/Citation 与显式 per-Chat knowledge toggle 的响应式/Forced-colors 样式。 | ProjectSourcesPanel、MessageView、App |
 
-Project Memory 页面目前仍是明确 Placeholder。当前 Desktop Project Sources 页面只安全保存文件；独立 Python 授权与 RAG Library 尚未接入该界面，因此桌面应用还不会理解文件内容。
+Project Memory 页面目前仍是明确 Placeholder。Project Sources 已使用独立 lifecycle route 接入 Production Knowledge Runtime；普通 Attachment API 对 Project scope fail closed，避免绕开 index/catalog saga。文件问答仍必须在准确 Project Chat 中显式开启，不会因添加 Source 自动发生。
 
 ## 21. React Settings 与 Voice：`desktop/src/settings/`、`desktop/src/voice/`
 
@@ -470,11 +488,11 @@ Project Memory 页面目前仍是明确 Placeholder。当前 Desktop Project Sou
 
 | 文件 | 实际用途 | 主要连接 |
 | --- | --- | --- |
-| `desktop_protocol/README.md` | 人类可读 Protocol v1 文档；说明 Handshake、Capabilities、Streaming、Cancel、Settings、Attachment、Voice Capture/Transcription，以及 fd3 Speech Audio Frame 与封闭控制事件的不变量。 | Python/TypeScript 实现和测试 |
-| `desktop_protocol/schema/v1.schema.json` | Draft 2020-12 JSON Schema；描述所有 Client/Server Frame，并约束 STT 状态、PCM/Final Result，以及 Speech Clip/Failure/Terminal 的 exact payload、uint32/8 MiB 边界和安全枚举。 | Shared Fixtures、Python/Node Contract Tests |
-| `desktop_protocol/fixtures/v1.samples.json` | Python 与 TypeScript 同时读取的 Valid/Invalid Conformance Samples；包含 STT 状态以及 Speech Clip/Failure/Terminal 的合法样本、未知 Event、路径/错误详情泄露和计数不一致拒绝样本。 | `contracts.py`、`protocol.ts`、两端测试 |
+| `desktop_protocol/README.md` | 人类可读 Protocol v1 文档；说明 Handshake、Capabilities、Streaming、Cancel、Settings、Attachment、Knowledge Lifecycle/Grounded Answer、Voice Capture/Transcription，以及 fd3 Speech Audio Frame 与封闭控制事件的不变量。 | Python/TypeScript 实现和测试 |
+| `desktop_protocol/schema/v1.schema.json` | Draft 2020-12 JSON Schema；描述全部 Client/Server Frame，并约束 Knowledge methods/state/operation events、grounded Chat history、STT/PCM/Final Result 和 Speech exact payload。 | Shared Fixtures、Python/Node Contract Tests |
+| `desktop_protocol/fixtures/v1.samples.json` | Python 与 TypeScript 同时读取的 Valid/Invalid Conformance Samples；覆盖 Knowledge/RAG intent/grounded history、STT 和 Speech 的合法样本，以及 extra field、路径/错误详情泄漏、引用闭包或状态不一致拒绝样本。 | `contracts.py`、`protocol.ts`、两端测试 |
 | `desktop_protocol/audio_channel.py` | 用固定 84-byte Header 和独立 fd3 匿名 Pipe 传送最多 8 MiB、120 秒的 canonical 32 kHz mono PCM16 WAV；生成不重复 Correlation Token、SHA-256 和安全 Metadata，验证 OS Pipe 类型与去继承，强制单一待发送 Frame、Partial-write Poison，并让 Close 不等待阻塞 Writer。 | 当前 `desktop_speech.py` Queue Callback、Electron `speech-audio-channel.ts` Reader 与 `speech-delivery.ts` Parser；Electron 停止时须先 drain/关闭读端，原始音频不进入 NDJSON 或 React |
-| `desktop_protocol/contracts.py` | Python 端 TypedDict、严格 Parser、Runtime Validator 和 Builder；只接受已知且 Request-correlated 的 Chat/STT/Speech Event，并严格约束 Speech Token、Digest、Sequence、WAV 长度、失败枚举与终态计数，拒绝路径、文本、Native Message 与扩展字段。 | `desktop_backend.py`、Schema/Fixtures、Python Tests |
+| `desktop_protocol/contracts.py` | Python 端 TypedDict、严格 Parser、Runtime Validator 和 Builder；除 Chat/STT/Speech 外，对 Knowledge Source/Operation/Export、changed/completed event、grounded statement/citation/location 和 `useProjectKnowledge` 做 exact validation，并拒绝路径、Hash、Vector、Prompt、Native Message 与扩展字段。 | `desktop_backend.py`、Schema/Fixtures、Python Tests |
 | `desktop_protocol/__init__.py` | 汇出 NDJSON 协议、封闭 Speech Event 边界与私有音频通道的常量、类型、Parser、Builder 和 Writer。 | Desktop Backend、测试 |
 
 协议的 Python 与 TypeScript Parser 都是手写的，Schema 不是代码生成器。因此修改协议时必须同步维护两端和共享 Fixtures。
@@ -484,15 +502,15 @@ Project Memory 页面目前仍是明确 Placeholder。当前 Desktop Project Sou
 | 文件 | 实际用途 | 主要连接 |
 | --- | --- | --- |
 | `desktop/tests/check-documentation.test.mjs` | 验证源码发现会排除精确的 `models/cache/`，同时继续扫描 `core/cache/` 等受维护目录。 | Documentation Checker、`npm run test:contract` |
-| `desktop/tests/protocol.contract.test.mjs` | 在 Node 中测试编译后的 Protocol Helpers 和 BackendProcess；覆盖双端 Fixture、有界 NDJSON、STT exact Status、Request 关联、Cancel/Draining Race、Speech Capability/fd3 生命周期，以及 Renderer-safe Speech Status 字段白名单、Chat 文本结束后的播放停止和语音失效时立即移除 capability。 | `dist-electron`、Schema/Fixtures；使用 Fake Child 与一次性本地 Node Child，不启动真实 Python |
+| `desktop/tests/protocol.contract.test.mjs` | 在 Node 中测试编译后的 Protocol Helpers 和 BackendProcess；覆盖双端 Fixture、有界 NDJSON、Knowledge method/result/event、grounded history、全局 lifecycle/export admission、export snapshot/receipt/terminal/error race、STT/Speech correlation 与 capability/fd3 生命周期。 | `dist-electron`、Schema/Fixtures；使用 Fake Child 与一次性本地 Node Child，不启动真实 Python |
 | `desktop/tests/voice-session-controller.test.mjs` | 覆盖五状态、显式确认、Chat/播放终态任意顺序、无 Speech Capability、Terminal-before-ACK、取消/Hang-up、跨 Chat/Project、迟到与乱序事件、一次性安全续听，以及 200 轮 Speech/Text 交替后零异步 Owner 的 Soak。 | 纯 Controller 测试，不启动 Electron、Python、模型或真实音频 |
 | `desktop/tests/voice-ui-state.test.mjs` | 覆盖主回复生命周期与被动麦克风监控的优先级、监控失败、Confirmed Barge-in、取消/转写错误、静音、人工 Review 状态和有界 Session 时钟格式。 | `voice-ui-state.ts` 的纯状态测试，不启动 React、Electron、麦克风或模型 |
 | `desktop/tests/speech-audio-channel.test.mjs` | 直接测试 Electron 二进制音频 Reader 与 Delivery Coordinator；覆盖每个分片边界、Coalesced Frame、ACK/Discard 背压、EOF 截断/干净关闭、长度先验、Header/Token/Hash、Canonical WAV、Metadata 任意到达顺序、FIFO、失败跳过、取消/迟到 Settlement、Terminal 计数、播放器断连、错误脱敏和 Listener 清理。 | `speech-audio-channel.ts` 与 `speech-delivery.ts` 编译产物；使用内存 Pipe 和 Fake Playback，不启动 Python、Electron UI 或真实模型 |
 | `desktop/tests/preload-speech-playback.test.cjs` | 在隔离 Node 进程中加载生产 Preload，验证指定/默认 Output Sink 都在 Decode 和 Start 前完成、路由失败不回退、Settings 查询期间取消不会播放、Active `speechVolumePercent` 经 GainNode 应用、无效音量 Fail Closed，以及私有音频能力未暴露给 React。 | `preload.cts` 编译产物、Fake Electron IPC 与 Fake Web Audio |
 | `desktop/tests/speech-playback-owner.test.mjs` | 直接验证 Main 所有的私有 Playback Owner；覆盖一次性 Settlement、所属 Main Frame、取消迟到回复、窗口替换、Renderer 崩溃、跨文档导航、空闲 Owner 退役和 Listener 清理。 | `speech-playback-owner.ts` 编译产物与 Electron Module Mock |
 | `desktop/tests/ui/electron-main.cjs` | Playwright 专用 Electron Main；加载生产 Renderer Build，保持 Sandbox/Context Isolation，但不启动生产 Backend。 | UI Test、Mock Preload、`dist/index.html` |
-| `desktop/tests/ui/mock-preload.cjs` | UI 测试专用 `elysiaDesktop` Fake；除 Canonical 状态外模拟扩展后的 Global Voice 行为设置、STT 开始/终态/取消、Speech Status、按 Request 停止播放、Readiness、延迟、失败、Reload 和 Race。 | App Shell UI Tests；不会进入生产包 |
-| `desktop/tests/ui/app-shell.spec.ts` | Playwright 启动真实 Electron Renderer，覆盖 Chat/Project/Settings/Voice；Voice 回归包括行为设置、主/麦克风双状态、计时/字幕/静音、编辑、显式 Send、Use/Append 草稿、安全自动续听与中断边界、Canonical Chat、Thinking/Speaking、无 Speech Capability、取消迟到结果、Close、Fresh Retry 与安全 Readiness。 | Production React Build + Mock Backend；不等同于真实麦克风、扬声器、GPU 或模型矩阵 |
+| `desktop/tests/ui/mock-preload.cjs` | UI 测试专用 `elysiaDesktop` Fake；除 Canonical Chat/Project/Voice 外模拟 Knowledge list/mutation/progress/completion/error/cancel、延迟 export、active snapshot、`knowledge-export-settled`、grounded history、Project 隔离、失败、Reload 和 Race。 | App Shell UI Tests；不会进入生产包 |
+| `desktop/tests/ui/app-shell.spec.ts` | Playwright 启动真实 Electron Renderer，覆盖 Chat/Project/Settings/Voice/Knowledge；验证 Project Sources actions、归档只读、状态隔离、export 跨 reload/Project switch 的全局 busy 与 terminal tombstone、terminal-before-ACK、Citation 键盘交互、显式 knowledge toggle，以及既有 Voice Session 边界。 | Production React Build + Mock Backend；不等同于真实模型、GPU、麦克风或扬声器矩阵 |
 
 ## 25. Python 测试：`tests/`
 
@@ -517,18 +535,22 @@ Project Memory 页面目前仍是明确 Placeholder。当前 Desktop Project Sou
 | `tests/test_document_indexing.py` | Processing → Embedding → Store 同步组合的 Scope/Link/Lineage 传递、替换/重建语义、失败保留与错误边界。 |
 | `tests/test_document_retrieval.py` | 真实 SQLite 单事务暴力 Cosine Top-K、Threshold、精确 Scope/Generation Allowlist、闭集 Metadata Filter、Missing/Stale 全搜索失败、准确 `(kind, text)` 去重与多来源 Evidence、稳定 Tie、空 Corpus 短路、可选 Reranker Fail-closed、Embedding Space Mismatch 和 Path/Vector 隐私。 |
 | `tests/test_document_grounding.py` | Retrieve→Generate 单次所有权、空证据零模型调用、完整排名前缀、三类 Statement、PDF/Text/Table Location、多 Evidence、Prompt Injection Data 隔离、严格 JSON/Fingerprint/Citation 闭包、变异 Adapter、预算和异常脱敏；并验证 structured source preference 只重排已相关 Hit、style guidance 保持为不可信 Data。 |
+| `tests/test_ollama_grounding.py` | 生产 Grounded Generator 的 loopback Origin、生成前后 Manifest Digest 固定、闭合 deterministic policy、截断/隐藏思考拒绝、Raw Body 预算、Duplicate Tag 与 transport 脱敏。 |
+| `tests/test_real_document_regression.py` | 从提交的真实 PDF/DOCX container bytes 经生产 Attachment/Loader/Cleaner/Chunker 进入同 Project Retrieval；复核结构、路径私有性与固定 SHA-256，模型环节使用确定性 test adapter。 |
+| `tests/fixtures/documents/README.md` 与 PDF/DOCX fixtures | 记录项目贡献者自制的 CC0 回归内容、生成属性和 SHA-256；二进制 fixtures 是测试输入，不是用户资料或生产模型资产。 |
 | `tests/test_file_metadata_store.py` | Manifest v2、v1 Migration、Scope-local 去重、路径隐私、Derived 级联、取消清理、跨 Scope 删除、Verified Read 完整性和未知 Schema Fail-closed。 |
-| `tests/test_brain.py` | Brain 的 Chat、Canonical Streaming、跨 Chunk 空白、Memory、Summary、Retry、Cancel 和 Attachment 协调。 |
+| `tests/test_brain.py` | Brain 的 Chat、Canonical Streaming、跨 Chunk 空白、Memory、Summary、Retry、Cancel 和 Attachment 协调；另验证 grounded answer 经 generation commit gate 把文本与结构化 proof 一起保存。 |
 | `tests/test_chat_domain.py` | Chat、Message、Summary、Attachment Metadata、ID 和不变量。 |
-| `tests/test_chat_repository.py` | Index/Detail、CRUD、原子失败、重启和 Index Recovery。 |
+| `tests/test_chat_repository.py` | Index/Detail、CRUD、原子失败、重启和 Index Recovery；包含 Statement/Citation/Location 的 grounded proof 能原样跨 Repository 重启恢复。 |
 | `tests/test_console.py` | Console Commands、Streaming 和 Session 行为。 |
 | `tests/test_conversation_summarization.py` | Model Summarizer、严格结构和增量摘要。 |
 | `tests/test_conversation_summary.py` | Stage 4 旧 Summary Schema 与存储。 |
 | `tests/test_data_portability.py` | Bundle Export/Import、Hash、路径、Conflict、Quarantine 和 Rollback。 |
 | `tests/test_distribution_assets.py` | 覆盖 Git Force-add、Case/NFKC Alias、模型/音频/Archive、完整 Builder Shape、继承/Hook/App Root/Platform Files 逃逸、Unpacked/ASAR 与当前真实仓库。 |
-| `tests/test_desktop_backend.py` | Python Bridge 的 Handshake、Routing、Streaming、Cancel、Chat/Project/Settings/Attachment、STT 与可选 Speech 集成；覆盖 Voice 行为设置的 Live/Restart 语义、初始化前按 Active Profile/Rate 惰性组合 Speech、自动朗读关闭、Speech Admission/生成失败时的 exactly-once 零句 Terminal、Shutdown 资源归属，并证明传给 Speech 的 Chunk 与 Canonical Stream 完全一致且 Speech Feed/Finish/Cancel 的任意失败不会改变文字终态或持久化回复。 |
+| `tests/test_desktop_backend.py` | Python Bridge 的 Handshake、Routing、Streaming、Cancel、Chat/Project/Settings/Attachment、Knowledge、STT 与可选 Speech 集成；覆盖 grounded routing/persistence、Knowledge worker/admission、Project mutation race、durable cancel ACK、explicit recovery、非阻塞 export cleanup、typed error mapping 与 shutdown/runtime ownership，并继续证明 Speech 失败不会改变文字终态或持久化回复。 |
+| `tests/test_desktop_knowledge.py` | 生产知识 Factory 共享 Chat/Project/Source authority、operation lease 和持久 Store；复核构造阶段零 HTTP/零索引、profile 与路径无关但绑定 route/chunking 合同，并拒绝远程 Ollama Origin。 |
 | `tests/test_desktop_audio_channel.py` | 验证 fd3 固定所有权、OS Pipe 类型与去继承、84-byte Header、Token/Digest、无歧义桌面 PCM WAV、8 MiB/120 秒上限、Partial Write、单待发 Frame、反射篡改、Poison、非阻塞 Close 和错误脱敏。 |
-| `tests/test_desktop_protocol.py` | Python Protocol Parser/Builder 与共享 Fixture Contract；覆盖 Schema v3 Voice 行为设置、STT 设置/状态的 exact shape 与脱敏边界。 |
+| `tests/test_desktop_protocol.py` | Python Protocol Parser/Builder 与共享 Fixture Contract；覆盖 Knowledge method/result/event、grounded history/use intent、Schema v3 Voice 行为设置、STT 设置/状态的 exact shape 与脱敏边界。 |
 | `tests/test_desktop_speech_protocol.py` | 验证 Speech Clip/Failure/Terminal Event Builder、二进制 Metadata 上下界、固定失败码、终态计数关系、Request 关联、未知 Event/私有字段拒绝，以及 Schema 与 Runtime 常量一致。 |
 | `tests/test_desktop_speech.py` | 用真实 Sentence Queue 与 AudioChannelWriter、Fake Managed Runtime 验证 Active `voiceProfileId`/`speechRatePercent` 的配置、解析和绝对 Rate 映射，以及后台启动期间的有界 Chunk 转移、自然分句/FIFO、Metadata 先于 Binary、取消后丢弃迟到音频、主动取消或自发 Worker Poison 后整条语音路径只失效一次且不重试、Bootstrap 失败只关闭语音、Terminal Exactly-once 和退出清理。 |
 | `tests/test_desktop_settings.py` | Desktop Settings 十五字段 Validation、Schema v1/v2 到 v3 Migration、Voice 行为字段的 Live/Restart 分类、Desired/Active Restart Diff、Revision CAS、锁和 Quarantine。 |
@@ -551,6 +573,7 @@ Project Memory 页面目前仍是明确 Placeholder。当前 Desktop Project Sou
 | `tests/test_project_service.py` | Project–Chat 关系、删除策略、Rollback 和 Busy Guard。 |
 | `tests/test_project_sources.py` | Project Source catalog 跨线程实例/真实 spawn process CAS、tombstone、Instructions fingerprint 与持久化；同 Project 多 Chat 共享、跨 Project/Archived Owner 拒绝、Chat Attachment 隔离与 canonical-history committed-only promotion、相同 bytes/不同 metadata 冲突、文档路由过滤、完整 current-profile corpus、Instructions 子集约束和生成后 authority revalidation。 |
 | `tests/test_knowledge_lifecycle.py` | Knowledge journal strict CAS、同 Project 单 recoverable operation、terminal retention、phase/state 单调性、add/reindex/rebuild 发布顺序、copy-on-write replace、tombstone-first delete、whole-Project revoke、故障恢复、跨 Project 隔离、source views 与 verified original export。 |
+| `tests/test_knowledge_export_recovery.py` | Export durable cleanup-intent recovery：正常遗留/missing temp 收敛、损坏与 temp/parent identity mismatch Fail Closed、多 intent 隔离清理、发布前最终 identity guard，以及 publish 后 private intent 延迟清理的一致终态。 |
 | `tests/test_prompts.py` | Elysia 人格规则和 JSON 数据边界。 |
 | `tests/test_python_documentation_check.py` | 文档扫描只排除精确的 `models/cache/`，不会把其他同名源码目录误排。 |
 | `tests/test_scoped_memory_integration.py` | 跨 Chat/Project Memory 隔离和同 Key 覆盖。 |
@@ -789,7 +812,7 @@ documents/domain.py（结构或预算改变时）
 → docs/05-DOCUMENT-LOADERS.md
 ```
 
-新格式必须先定义精确 Extension + MIME Route、内容 Signature、资源预算与稳定错误；Loader 只能消费 `open_verified_file()` 产生的 Bytes，不能接受或重开本机路径。若未来暴露给桌面，再单独设计最小 Protocol 与 Renderer-safe DTO，不能直接序列化 Parser 对象或底层异常。
+新格式必须先定义精确 Extension + MIME Route、内容 Signature、资源预算与稳定错误；Loader 只能消费 `open_verified_file()` 产生的 Bytes，不能接受或重开本机路径。桌面现在只暴露最小 Knowledge DTO；新格式必须同步 route/profile/错误映射与真实 fixture 回归，不能把 Parser 对象或底层异常直接序列化给 Renderer。
 
 ### 修改 Document Cleaning 或 Chunking
 
@@ -835,19 +858,27 @@ documents/embedding.py（EmbeddedQuery Identity/Policy 改变时）
 → docs/08-RETRIEVER-RERANKING.md
 ```
 
-Retriever 只能消费由上层验证后显式提供的准确 Scope 与 `ExpectedDocumentGeneration` Allowlist；不能自行枚举 Scope、推断 Project-to-Chat 权限或把缺失/过期 Generation 当作空结果。任何更改 Query Template、阈值、Tie-break、Dedup Key、Reranker Score Semantics、Input Shape 或 Truncation Policy 的行为都必须作为版本化 Contract 处理。配置了 Reranker 后必须完整成功或 Fail Closed，不能静默回退成另一种排序。下游 Grounded Answer/Citation、Project Source authorization 与 Project-only Knowledge Lifecycle Library 均已独立完成；生产 Generator、Composition Root、Protocol 和 UI 仍要在后续模块接线。
+Retriever 只能消费由上层验证后显式提供的准确 Scope 与 `ExpectedDocumentGeneration` Allowlist；不能自行枚举 Scope、推断 Project-to-Chat 权限或把缺失/过期 Generation 当作空结果。任何更改 Query Template、阈值、Tie-break、Dedup Key、Reranker Score Semantics、Input Shape 或 Truncation Policy 的行为都必须作为版本化 Contract 处理。配置了 Reranker 后必须完整成功或 Fail Closed，不能静默回退成另一种排序。下游 Grounded Answer/Citation、Project Source authorization 与 Project-only Knowledge Lifecycle 现已由 `documents/ollama_grounding.py`、`desktop_knowledge.py`、Protocol 和 React 接入生产桌面路径；更改 Retriever 合同必须同步这些消费者。
 
 ### 修改 Grounded Answer 或 Citation Contract
 
 ```text
 documents/retrieval.py（Hit/Evidence/Mapping 改变时）
 → documents/grounding.py（Context、Prompt、Generator、Statement、Citation）
+→ documents/ollama_grounding.py（生产 Generator transport/schema）
 → documents/__init__.py（稳定公共 API）
+→ chats/domain.py、serialization.py（持久 proof shape）
+→ core/brain.py 与 desktop_knowledge.py（commit/composition）
+→ 双端 Desktop Protocol、Electron contracts、React MessageView
 → tests/test_document_grounding.py
+→ tests/test_ollama_grounding.py、test_brain.py、test_chat_repository.py
+→ tests/test_desktop_protocol.py、desktop/tests/protocol.contract.test.mjs
+→ desktop/tests/ui/app-shell.spec.ts
 → docs/09-GROUNDED-ANSWERS-CITATIONS.md
+→ docs/12-KNOWLEDGE-UI-TESTING.md
 ```
 
-`GroundedAnswerService` 必须继续拥有同一次检索与至多一次非流式生成，不能公开接受任意 Query + `RetrievalResult` 配对。Preference 只能在完整 Retrieval validation 后重排已相关 Hit；片段只能选择完整前缀，文件名、页码和位置只能从检索 Evidence 构造，不能信任模型返回。新增 Statement 类型、Prompt/Preference 字段、Citation ID 域、预算、截断或输出 Schema 都属于版本化 Contract 变化。Project Source 授权由 `project_sources` 组合，Project-only 索引生命周期由 `knowledge_lifecycle` 组合；真实 Generator Adapter、Brain/Protocol/UI 接线仍留给后续边界。
+`GroundedAnswerService` 必须继续拥有同一次检索与至多一次非流式生成，不能公开接受任意 Query + `RetrievalResult` 配对。Preference 只能在完整 Retrieval validation 后重排已相关 Hit；片段只能选择完整前缀，文件名、页码和位置只能从检索 Evidence 构造，不能信任模型返回。新增 Statement 类型、Prompt/Preference 字段、Citation ID 域、预算、截断或输出 Schema 都属于版本化 Contract 变化。Project Source 授权由 `project_sources` 组合，Project-only 索引生命周期由 `knowledge_lifecycle` 组合，`OllamaGroundedAnswerAdapter` 与 Brain/Protocol/UI 已是当前生产消费者；合同变化必须更新全链路 fixtures 与持久化验证。
 
 ### 修改 Project Source Authorization 或 Catalog
 
@@ -860,10 +891,14 @@ attachments/domain.py、repository.py、service.py、store.py
 → project_sources/repository.py
 → project_sources/service.py
 → project_sources/__init__.py
+→ desktop_knowledge.py 与 desktop_backend.py
+→ 双端 Desktop Protocol / Electron / React Knowledge UI
 → tests/test_file_metadata_store.py
 → tests/test_document_grounding.py
 → tests/test_project_sources.py
+→ tests/test_desktop_knowledge.py 与 Desktop Protocol/UI tests
 → docs/10-PROJECT-SOURCES.md
+→ docs/12-KNOWLEDGE-UI-TESTING.md
 ```
 
 回答入口不能接受 caller-provided Project ID、Scope 或 Generation Allowlist；它们必须从 canonical Chat→Project、原子 ownership snapshot 与显式 catalog 派生。Catalog CAS 必须覆盖完整跨进程 read/compare/write，删除必须保留单调、policy-bearing tombstone 防止 ABA；即使从未发布 live catalog，显式 revoke 也必须从 revision 0 原子创建 tombstone。结构化 preferred link IDs 必须是当前 catalog 的子集，自由文本 Instructions 只能作为有界、不可信 style data。Chat Attachment promotion 必须同时证明 canonical Chat history ownership 与 committed Manifest 状态，且只能通过持有 authority lease 的 Project Source coordinator 调用。
@@ -879,11 +914,15 @@ attachments/repository.py、service.py、store.py（ownership/removal 合同改�
 → knowledge_lifecycle/service.py
 → knowledge_lifecycle/export.py
 → knowledge_lifecycle/__init__.py
+→ desktop_knowledge.py 与 desktop_backend.py
+→ 双端 Desktop Protocol / Electron / React Knowledge UI
 → 对应 Attachment/Indexing/Project Source/Lifecycle 测试
+→ tests/test_desktop_knowledge.py 与 Desktop Protocol/UI tests
 → docs/11-KNOWLEDGE-LIFECYCLE.md
+→ docs/12-KNOWLEDGE-UI-TESTING.md
 ```
 
-Knowledge Lifecycle 必须保持 Project-only；新 Generation 必须最后发布完整 catalog，replace/delete 必须先写入保留 post-operation Instructions 的 tombstone 再清理。Journal checkpoint 必须先于第一个副作用并使用 exact next-revision CAS，JSON array insertion order 是 durable creation sequence；Journal 不是长期 policy authority，撤销后的 Instructions 必须留在 catalog tombstone。恢复要从 canonical stores 向前收敛，profile 或 supported-route 漂移也不能阻止已 tombstone 的 delete/replace 完成安全清理；route 只控制准入/索引，cleanup identity 必须直接来自 exact immutable Manifest。Preview/Cache 目前没有实体，但显式 `KnowledgeArtifactCleanup` 不能被删除：新增独立 artifact store 时必须替换 no-op adapter 并纳入 ownership 删除前的幂等 cleanup。这里的 Library 尚未授权添加 Desktop route；接线时还必须更新 Protocol 双端、Composition Root 和 UI。
+Knowledge Lifecycle 必须保持 Project-only；新 Generation 必须最后发布完整 catalog，replace/delete 必须先写入保留 post-operation Instructions 的 tombstone 再清理。Journal checkpoint 必须先于第一个副作用并使用 exact next-revision CAS，JSON array insertion order 是 durable creation sequence；Journal 不是长期 policy authority，撤销后的 Instructions 必须留在 catalog tombstone。恢复要从 canonical stores 向前收敛，profile 或 supported-route 漂移也不能阻止已 tombstone 的 delete/replace 完成安全清理；route 只控制准入/索引，cleanup identity 必须直接来自 exact immutable Manifest。Preview/Cache 目前没有实体，但显式 `KnowledgeArtifactCleanup` 不能被删除：新增独立 artifact store 时必须替换 no-op adapter 并纳入 ownership 删除前的幂等 cleanup。Verified export 共用全局 Knowledge lease，但必须与 lifecycle journal 分离；其 destination 只留在 Main/Python，跨 reload ownership 由 Electron snapshot 表达，且只有与预认证 Source metadata 匹配的路径私有 receipt 才能产生 `knowledge-export-settled`。当前 Desktop route 已经存在；任何 lifecycle/export ownership、字段、state/phase、receipt 或错误语义变化，都必须同步 Python/TypeScript/Schema/fixtures、Composition Root、BackendProcess、Main、App 与 UI tests。
 
 ### 修改 Protocol
 
@@ -1018,28 +1057,30 @@ config/settings.py + config/voice_profiles.example.json
 22. `documents/embedding.py` 与 `documents/ollama_embedding.py`
 23. `documents/vector_store.py` 与 `documents/indexing.py`
 24. `documents/retrieval.py`
-25. `documents/grounding.py`
+25. `documents/grounding.py` 与 `documents/ollama_grounding.py`
 26. `project_sources/catalog.py`、`project_sources/domain.py`、`project_sources/repository.py` 与 `project_sources/service.py`
 27. `knowledge_lifecycle/domain.py`、`knowledge_lifecycle/repository.py`、`knowledge_lifecycle/service.py` 与 `knowledge_lifecycle/export.py`
-28. `docs/05-DOCUMENT-LOADERS.md`、`docs/06-DOCUMENT-CLEANING-CHUNKING.md`、`docs/07-LOCAL-EMBEDDINGS-VECTOR-STORE.md`、`docs/08-RETRIEVER-RERANKING.md`、`docs/09-GROUNDED-ANSWERS-CITATIONS.md`、`docs/10-PROJECT-SOURCES.md` 与 `docs/11-KNOWLEDGE-LIFECYCLE.md`
-29. `desktop_protocol/README.md`
-30. `desktop/electron/contracts.ts`
-31. `desktop/electron/preload.cts`
-32. `desktop/electron/main.ts`
-33. `desktop/electron/backend-process.ts`
-34. `desktop_backend.py`
-35. `desktop_speech.py`
-36. `voice/speech_queue.py`
-37. `voice/managed_gpt_sovits.py` 与 `scripts/gpt_sovits_worker.py`
-38. `desktop_protocol/audio_channel.py`
-39. `desktop/electron/speech-delivery.ts`
-40. `desktop/electron/speech-playback-owner.ts`
-41. `desktop/src/voice/audio-capture.ts` 与 `desktop/src/voice/voice-activity-detector.ts`
-42. `desktop/src/voice/voice-session-controller.ts`
-43. `desktop/src/voice/voice-ui-state.ts`
-44. `desktop/src/App.tsx`
-45. `desktop/src/voice/CallPreview.tsx` 与其他具体 Feature Component
-46. 对应测试，尤其是 Document Loading/Processing/Embedding/Indexing/Retrieval/Grounding、Project Sources、Knowledge Lifecycle、`desktop/tests/voice-session-controller.test.mjs` 与 `desktop/tests/voice-ui-state.test.mjs`
+28. `desktop_knowledge.py`
+29. `docs/05-DOCUMENT-LOADERS.md`、`docs/06-DOCUMENT-CLEANING-CHUNKING.md`、`docs/07-LOCAL-EMBEDDINGS-VECTOR-STORE.md`、`docs/08-RETRIEVER-RERANKING.md`、`docs/09-GROUNDED-ANSWERS-CITATIONS.md`、`docs/10-PROJECT-SOURCES.md`、`docs/11-KNOWLEDGE-LIFECYCLE.md` 与 `docs/12-KNOWLEDGE-UI-TESTING.md`
+30. `desktop_protocol/README.md`
+31. `desktop/electron/contracts.ts`
+32. `desktop/electron/preload.cts`
+33. `desktop/electron/main.ts`
+34. `desktop/electron/backend-process.ts`
+35. `desktop_backend.py`
+36. `desktop/src/knowledge/ProjectSourcesPanel.tsx` 与 `desktop/src/chat/MessageView.tsx`
+37. `desktop_speech.py`
+38. `voice/speech_queue.py`
+39. `voice/managed_gpt_sovits.py` 与 `scripts/gpt_sovits_worker.py`
+40. `desktop_protocol/audio_channel.py`
+41. `desktop/electron/speech-delivery.ts`
+42. `desktop/electron/speech-playback-owner.ts`
+43. `desktop/src/voice/audio-capture.ts` 与 `desktop/src/voice/voice-activity-detector.ts`
+44. `desktop/src/voice/voice-session-controller.ts`
+45. `desktop/src/voice/voice-ui-state.ts`
+46. `desktop/src/App.tsx`
+47. `desktop/src/voice/CallPreview.tsx` 与其他具体 Feature Component
+48. 对应测试，尤其是 Document Loading/Processing/Embedding/Indexing/Retrieval/Grounding、Project Sources、Knowledge Lifecycle、`tests/test_desktop_knowledge.py`、`tests/test_real_document_regression.py`、`desktop/tests/protocol.contract.test.mjs`、`desktop/tests/ui/app-shell.spec.ts`、`desktop/tests/voice-session-controller.test.mjs` 与 `desktop/tests/voice-ui-state.test.mjs`
 
 读完后应形成以下心智模型：
 
@@ -1055,4 +1096,4 @@ config/settings.py + config/voice_profiles.example.json
 - Streaming Overlay 不等于已保存消息。
 - `ChatSession.project_id` 是 Project–Chat 关系的唯一真相。
 - 所有 Memory 使用前都必须经过 Scope 过滤。
-- `DocumentLoaderService` 只能通过 `open_verified_file()` 读取 Scope-authorized Verified Bytes；格式 Loader 只收到关闭读取 Context 后的无路径快照。`DocumentProcessingService` 组合纯 Cleaner/Chunker 并复核 Piece-table、Fingerprint/Lineage 与 LoadedDocument Source Mapping；`DocumentEmbeddingService` 把精确 Chunk Lineage 绑定到固定本地 Ollama 向量空间，`SQLiteVectorStore` 再以精确 Chat/Project Scope 和原子 Generation 持久化它。`KnowledgeLifecycleService` 以 Project-only durable saga 协调 add/replace/reindex/rebuild/revoke/delete，新 Generation 最后发布 catalog，破坏性操作先 tombstone；`ProjectSourceAnswerService` 再从 canonical Chat→Project、原子 ownership snapshot 和显式 current-profile catalog 派生唯一允许的 Project Generation。`DocumentRetriever` 只搜索该 Allowlist，在单事务中验证并计算有界 Cosine Top-K，保留去重 Evidence；`GroundedAnswerService` 再从完整命中前缀生成结构化陈述并只发布解析到可信 Evidence 的 Citation。当前仍没有生产 Generator 或生产 RAG/桌面接线。
+- `DocumentLoaderService` 只能通过 `open_verified_file()` 读取 Scope-authorized Verified Bytes；格式 Loader 只收到关闭读取 Context 后的无路径快照。`DocumentProcessingService` 组合纯 Cleaner/Chunker 并复核 Piece-table、Fingerprint/Lineage 与 LoadedDocument Source Mapping；`DocumentEmbeddingService` 把精确 Chunk Lineage 绑定到固定本地 Ollama 向量空间，`SQLiteVectorStore` 再以精确 Project Scope 和原子 Generation 持久化它。`KnowledgeLifecycleService` 以 Project-only durable saga 协调 add/replace/reindex/rebuild/revoke/delete，新 Generation 最后发布 catalog，破坏性操作先 tombstone；`KnowledgeExportService` 在同一全局 lease 下用私有 cleanup intent 导出 verified original，但不进入 journal；`ProjectSourceAnswerService` 再从 canonical Chat→Project、原子 ownership snapshot 和显式 current-profile catalog 派生唯一允许的 Project Generation。`DocumentRetriever` 只搜索该 Allowlist，在单事务中验证并计算有界 Cosine Top-K，保留去重 Evidence；`GroundedAnswerService` 再从完整命中前缀生成结构化陈述并只发布解析到可信 Evidence 的 Citation。`desktop_knowledge.py` 组合生产 Ollama Adapter 与共享 lease/store，Brain 原子保存文本和 proof，Protocol/Electron/React 再只发布路径私有的 Source/Operation/Citation/Export Receipt DTO；Electron 另外持有跨 reload 的 lifecycle/export request ownership。这条生产链已接通，但仍不包含文件 Preview、原文定位跳转、自动目录导入或语义正确性证明。

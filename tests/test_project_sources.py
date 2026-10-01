@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -10,8 +11,8 @@ import hashlib
 import json
 import multiprocessing
 from pathlib import Path
-from threading import Barrier
-from typing import Any, Iterator, cast
+from threading import Barrier, Event
+from typing import Any, cast
 
 import pytest
 
@@ -32,6 +33,7 @@ from chats import (
 )
 from documents import (
     DocumentSource,
+    DocumentOperationCancelledError,
     ExpectedDocumentGeneration,
     GROUNDED_ANSWER_PREFERENCES_SCHEMA_VERSION,
     GROUNDED_ANSWER_SCHEMA_VERSION,
@@ -156,6 +158,7 @@ class _Grounder:
                 GroundedAnswerPreferences | None,
             ]
         ] = []
+        self.cancel_during_answer: Event | None = None
 
     def answer(
         self,
@@ -168,12 +171,21 @@ class _Grounder:
         retrieval_policy: RetrievalPolicy = RetrievalPolicy(),
         retrieval_limits: RetrievalLimits = RetrievalLimits(),
         answer_limits: GroundedAnswerLimits = GroundedAnswerLimits(),
+        cancel_requested: Callable[[], bool] | None = None,
     ) -> GroundedAnswerResult:
         """Return model-free insufficiency from the exact supplied scope."""
 
         del metadata_filter, retrieval_policy, retrieval_limits, answer_limits
         assert self.lease.depth == 1
         self.calls.append((scope, query, expected_documents, preferences))
+        cancellation = self.cancel_during_answer
+        self.cancel_during_answer = None
+        if cancellation is not None:
+            cancellation.set()
+        if cancel_requested is not None and cancel_requested():
+            raise DocumentOperationCancelledError(
+                "Grounding was cancelled inside the Project authority lease."
+            )
         return GroundedAnswerResult(
             schema_version=GROUNDED_ANSWER_SCHEMA_VERSION,
             scope=scope,
@@ -628,6 +640,41 @@ def test_two_chats_share_only_their_canonical_project_generations(
     )
     assert grounder.calls[0][3].answer_style == "concise"
     assert grounder.calls[0][3].style_guidance == "Answer briefly."
+    assert lease.depth == 0
+    attachment_store.close()
+
+
+def test_project_answer_propagates_event_cancellation_through_grounding(
+    tmp_path: Path,
+) -> None:
+    """Retain authority while passing Brain's callback into grounded work."""
+
+    project = create_project(name="Cancellation")
+    chats, _scope = _owners(project, "Cancelled Chat")
+    attachment_store = JsonAttachmentStore(tmp_path / "files", 1_000_000)
+    attachments = AttachmentService(attachment_store)
+    lease = _Lease()
+    grounder = _Grounder(lease)
+    cancelled = Event()
+    grounder.cancel_during_answer = cancelled
+    service = _service(
+        chats=chats,
+        project=project,
+        attachments=attachments,
+        catalog=JsonProjectSourceRepository(tmp_path / "catalog"),
+        lease=lease,
+        grounder=grounder,
+        profile=_digest("profile"),
+    )
+
+    with pytest.raises(DocumentOperationCancelledError, match="cancelled"):
+        service.answer(
+            chats[0].chat_id,
+            "Stop this answer",
+            should_cancel=cancelled.is_set,
+        )
+
+    assert cancelled.is_set()
     assert lease.depth == 0
     attachment_store.close()
 

@@ -5,6 +5,10 @@ class DocumentError(Exception):
     """Base class for failures exposed by document processing boundaries."""
 
 
+class DocumentOperationCancelledError(DocumentError):
+    """Report cooperative cancellation before a document commit boundary."""
+
+
 class DocumentValidationError(DocumentError):
     """Report an invalid request, domain value, or adapter result."""
 

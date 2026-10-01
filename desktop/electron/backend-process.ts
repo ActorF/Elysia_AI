@@ -18,6 +18,7 @@ import type {
   ArchiveChatRequest,
   ArchiveProjectRequest,
   ActiveChatGeneration,
+  ActiveKnowledgeOperation,
   AttachmentScope,
   AttachmentState,
   BackendEvent,
@@ -28,6 +29,8 @@ import type {
   CreateProjectRequest,
   MoveChatToProjectRequest,
   PinChatRequest,
+  KnowledgeState,
+  KnowledgeExportResult,
   ProjectState,
   ProjectWorkspaceRequest,
   RenameChatRequest,
@@ -64,6 +67,8 @@ import {
   parseAttachmentStateResult,
   parseHandshakeResult,
   parseInitializeResult,
+  parseKnowledgeStateResult,
+  parseKnowledgeExportResult,
   parseProjectStateResult,
   parseSettingsStateResult,
   parseVoiceCaptureResult,
@@ -91,6 +96,7 @@ const HANDSHAKE_TIMEOUT_MS = 15_000
 const INITIALIZE_TIMEOUT_MS = 120_000
 const CANCEL_ACK_TIMEOUT_MS = 5_000
 const CANCEL_TERMINAL_TIMEOUT_MS = 15_000
+const GROUNDED_CANCEL_TERMINAL_TIMEOUT_MS = 150_000
 const VOICE_CAPTURE_VALIDATION_TIMEOUT_MS = 5_000
 const MAX_TIMED_OUT_VOICE_CAPTURE_REQUEST_IDS = 32
 const SHUTDOWN_TIMEOUT_MS = 30_000
@@ -173,10 +179,158 @@ function safeVoiceTranscriptionFailure(error: ErrorResponse['error']): {
   return { code: error.code, ...known }
 }
 
+const KNOWLEDGE_FAILURES = {
+  'knowledge.required': {
+    message: 'Project knowledge is required for this request.',
+    retryable: false,
+  },
+  'knowledge.unavailable': {
+    message: 'Project Sources are unavailable.',
+    retryable: true,
+  },
+  'knowledge.busy': {
+    message: 'Another Project Source operation is already active.',
+    retryable: true,
+  },
+  'knowledge.invalid': {
+    message: 'The Project Source request is invalid.',
+    retryable: false,
+  },
+  'knowledge.not_found': {
+    message: 'The requested Project Source was not found.',
+    retryable: false,
+  },
+  'knowledge.conflict': {
+    message: 'Project Sources changed during the operation. Try again.',
+    retryable: true,
+  },
+  'knowledge.recovery_required': {
+    message: 'Project Source recovery still requires attention.',
+    retryable: true,
+  },
+  'knowledge.storage_failed': {
+    message: 'Project Sources could not be stored safely.',
+    retryable: true,
+  },
+  'knowledge.failed': {
+    message: 'The Project Source operation failed safely.',
+    retryable: true,
+  },
+  'knowledge.unauthorized': {
+    message: 'The Project Source request is not authorized.',
+    retryable: false,
+  },
+  'knowledge.stale': {
+    message: 'Project Sources changed before the request completed. Try again.',
+    retryable: true,
+  },
+  'knowledge.model_unavailable': {
+    message: 'The local model required by Project Sources is unavailable.',
+    retryable: true,
+  },
+  'knowledge.answer_failed': {
+    message: 'The grounded answer could not be completed safely.',
+    retryable: true,
+  },
+  'project.not_found': {
+    message: 'The requested Project no longer exists.',
+    retryable: false,
+  },
+  'protocol.not_initialized': {
+    message: 'Project Sources are unavailable until the Backend is initialized.',
+    retryable: false,
+  },
+  'backend.request_failed': {
+    message: 'The Project Source request failed safely.',
+    retryable: true,
+  },
+  'request.cancelled': {
+    message: 'The Project Source operation was cancelled.',
+    retryable: false,
+  },
+} as const
+
+const GROUNDED_CHAT_FAILURES = {
+  'chat.not_active': {
+    message: 'The active Chat changed before the grounded reply started.',
+    retryable: false,
+  },
+  'chat.busy': {
+    message: 'Another Chat reply is already in progress.',
+    retryable: true,
+  },
+  'chat.retry_target': {
+    message: 'The retry target no longer matches the Chat history.',
+    retryable: false,
+  },
+  'chat.not_found': {
+    message: 'The requested Chat no longer exists.',
+    retryable: false,
+  },
+  'chat.reply_too_large': {
+    message: 'The local reply exceeded the supported size.',
+    retryable: false,
+  },
+  'chat.empty_reply': {
+    message: 'The local model returned an empty reply.',
+    retryable: true,
+  },
+  'chat.failed': {
+    message: 'The grounded Chat request failed safely.',
+    retryable: true,
+  },
+  'request.cancelled': {
+    message: 'The grounded Chat reply was cancelled.',
+    retryable: false,
+  },
+} as const
+
+interface SafeRendererFailure {
+  code: string
+  message: string
+  retryable: boolean
+}
+
+function safeKnowledgeFailure(
+  error: ErrorResponse['error'],
+): SafeRendererFailure {
+  // Filesystem, database, and model adapters can place private paths in their
+  // exception text. Only a closed code table may select Renderer wording.
+  if (!Object.hasOwn(KNOWLEDGE_FAILURES, error.code)) {
+    return { code: 'knowledge.failed', ...KNOWLEDGE_FAILURES['knowledge.failed'] }
+  }
+  const known = KNOWLEDGE_FAILURES[
+    error.code as keyof typeof KNOWLEDGE_FAILURES
+  ]
+  return { code: error.code, ...known }
+}
+
+function safeGroundedChatFailure(
+  error: ErrorResponse['error'],
+): SafeRendererFailure {
+  if (Object.hasOwn(GROUNDED_CHAT_FAILURES, error.code)) {
+    const known = GROUNDED_CHAT_FAILURES[
+      error.code as keyof typeof GROUNDED_CHAT_FAILURES
+    ]
+    return { code: error.code, ...known }
+  }
+  if (Object.hasOwn(KNOWLEDGE_FAILURES, error.code)) {
+    return safeKnowledgeFailure(error)
+  }
+  return { code: 'chat.failed', ...GROUNDED_CHAT_FAILURES['chat.failed'] }
+}
+
 interface PendingRequest {
   method: ProtocolMethod
   chatId?: string
   attachmentScope?: AttachmentScope
+  knowledgeProjectId?: string
+  knowledgeTargetSourceId?: string
+  knowledgeExpectedExport?: Pick<
+    KnowledgeExportResult,
+    'fileName' | 'mediaType' | 'bytesWritten'
+  >
+  usesProjectKnowledge?: boolean
   nextSequence: number
   streamCompleted: boolean
   streamedReply: string
@@ -202,6 +356,10 @@ interface PendingRequest {
   >
   resolveAttachmentState?: (state: AttachmentState) => void
   rejectAttachmentState?: (error: Error) => void
+  resolveKnowledgeState?: (state: KnowledgeState) => void
+  rejectKnowledgeState?: (error: Error) => void
+  resolveKnowledgeExport?: (result: KnowledgeExportResult) => void
+  rejectKnowledgeExport?: (error: Error) => void
   cancelTargetId?: string
   resolveCancellation?: () => void
   rejectCancellation?: (error: Error) => void
@@ -225,9 +383,66 @@ const VOICE_TRANSCRIPTION_METHODS = new Set<ProtocolMethod>([
   'voice.transcription.start',
 ])
 
+type KnowledgeMutationMethod =
+  | 'knowledge.source.add'
+  | 'knowledge.source.replace'
+  | 'knowledge.source.reindex'
+  | 'knowledge.source.delete'
+  | 'knowledge.project.rebuild'
+  | 'knowledge.project.revoke'
+  | 'knowledge.recover'
+
+type KnowledgeStateMethod =
+  'knowledge.list'
+
+const KNOWLEDGE_MUTATION_METHODS = new Set<ProtocolMethod>([
+  'knowledge.source.add',
+  'knowledge.source.replace',
+  'knowledge.source.reindex',
+  'knowledge.source.delete',
+  'knowledge.project.rebuild',
+  'knowledge.project.revoke',
+  'knowledge.recover',
+])
+
+const KNOWLEDGE_LEASE_METHODS = new Set<ProtocolMethod>([
+  ...KNOWLEDGE_MUTATION_METHODS,
+  'knowledge.source.export',
+])
+
+const CANCELLABLE_KNOWLEDGE_METHODS = new Set<ProtocolMethod>([
+  'knowledge.source.add',
+  'knowledge.source.replace',
+  'knowledge.source.reindex',
+  'knowledge.source.delete',
+  'knowledge.project.rebuild',
+  'knowledge.project.revoke',
+])
+
+const KNOWLEDGE_METHODS = new Set<ProtocolMethod>([
+  'knowledge.list',
+  ...KNOWLEDGE_MUTATION_METHODS,
+  'knowledge.source.export',
+])
+
+const KNOWLEDGE_STATE_METHODS = new Set<ProtocolMethod>([
+  'knowledge.list',
+  ...KNOWLEDGE_MUTATION_METHODS,
+])
+
+const KNOWLEDGE_KIND_BY_METHOD = new Map<ProtocolMethod, string>([
+  ['knowledge.source.add', 'add'],
+  ['knowledge.source.replace', 'replace'],
+  ['knowledge.source.reindex', 'reindex'],
+  ['knowledge.source.delete', 'delete'],
+  ['knowledge.project.rebuild', 'rebuild'],
+  ['knowledge.project.revoke', 'revoke'],
+])
+
 const CANCELLABLE_METHODS = new Set<ProtocolMethod>([
   ...CHAT_GENERATION_METHODS,
   ...VOICE_TRANSCRIPTION_METHODS,
+  ...CANCELLABLE_KNOWLEDGE_METHODS,
 ])
 
 const VOICE_TRANSCRIPTION_LIFECYCLE_EVENTS = new Set([
@@ -351,6 +566,9 @@ export class BackendProcess {
     const activeEntry = [...this.pendingRequests.entries()].find(
       ([, pending]) => CHAT_GENERATION_METHODS.has(pending.method),
     )
+    const activeKnowledgeEntry = [...this.pendingRequests.entries()].find(
+      ([, pending]) => KNOWLEDGE_LEASE_METHODS.has(pending.method),
+    )
     const activeGeneration = activeEntry === undefined
       ? undefined
       : {
@@ -371,12 +589,29 @@ export class BackendProcess {
                   activeEntry[1].generation.assistantMessageId,
               }),
           reply: activeEntry[1].streamedReply,
+          ...(activeEntry[1].usesProjectKnowledge === true
+            ? { usesProjectKnowledge: true }
+            : {}),
           stopping: activeEntry[1].cancelAccepted === true
             || [...this.pendingRequests.values()].some((pending) => (
               pending.method === 'request.cancel'
               && pending.cancelTargetId === activeEntry[0]
             )),
         } satisfies ActiveChatGeneration
+    const activeKnowledgeOperation = activeKnowledgeEntry === undefined
+      ? undefined
+      : {
+          requestId: activeKnowledgeEntry[0],
+          projectId: activeKnowledgeEntry[1].knowledgeProjectId!,
+          cancellable: (
+            CANCELLABLE_KNOWLEDGE_METHODS.has(activeKnowledgeEntry[1].method)
+            && activeKnowledgeEntry[1].cancelAccepted !== true
+            && ![...this.pendingRequests.values()].some((pending) => (
+              pending.method === 'request.cancel'
+              && pending.cancelTargetId === activeKnowledgeEntry[0]
+            ))
+          ),
+        } satisfies ActiveKnowledgeOperation
     return {
       ...this.snapshot,
       capabilities: this.speechDeliveryDisabled
@@ -386,6 +621,9 @@ export class BackendProcess {
         : [...this.snapshot.capabilities],
       models: [...this.snapshot.models],
       ...(activeGeneration === undefined ? {} : { activeGeneration }),
+      ...(activeKnowledgeOperation === undefined
+        ? {}
+        : { activeKnowledgeOperation }),
     }
   }
 
@@ -582,6 +820,9 @@ export class BackendProcess {
     ) {
       throw new Error('Wait for the current attachment action to finish.')
     }
+    if (request.useProjectKnowledge === true && this.hasActiveKnowledgeLease()) {
+      throw new Error('Wait for the current Project Source operation to finish.')
+    }
 
     if (
       request.attachmentIds.length > MAX_ATTACHMENT_FILE_COUNT
@@ -605,7 +846,11 @@ export class BackendProcess {
       chatId: request.chatId,
       message,
       attachmentIds: [...request.attachmentIds],
+      ...(request.useProjectKnowledge === undefined
+        ? {}
+        : { useProjectKnowledge: request.useProjectKnowledge }),
     }, request.chatId, {
+      usesProjectKnowledge: request.useProjectKnowledge === true,
       generation: {
         kind: 'send',
         userText: message,
@@ -806,6 +1051,9 @@ export class BackendProcess {
     ) {
       throw new Error('Wait for local voice transcription to finish.')
     }
+    if (request.useProjectKnowledge === true && this.hasActiveKnowledgeLease()) {
+      throw new Error('Wait for the current Project Source operation to finish.')
+    }
     for (const identifier of [
       request.chatId,
       request.userMessageId,
@@ -839,9 +1087,13 @@ export class BackendProcess {
         userMessageId: request.userMessageId,
         assistantMessageId: request.assistantMessageId,
         ...(message === undefined ? {} : { message }),
+        ...(request.useProjectKnowledge === undefined
+          ? {}
+          : { useProjectKnowledge: request.useProjectKnowledge }),
       },
       request.chatId,
       {
+        usesProjectKnowledge: request.useProjectKnowledge === true,
         generation: {
           kind: 'retry',
           ...(message === undefined ? {} : { userText: message }),
@@ -1251,6 +1503,140 @@ export class BackendProcess {
     )
   }
 
+  /** Load the path-private Source catalog and durable operations for a Project. */
+  listProjectKnowledge(projectId: string): Promise<KnowledgeState> {
+    return this.requestKnowledgeState('knowledge.list', { projectId })
+  }
+
+  /** Begin importing native paths already authenticated by Electron main. */
+  beginAddProjectSources(
+    projectId: string,
+    sourcePaths: string[],
+  ): { requestId: string } {
+    return this.beginKnowledgeMutation(
+      'knowledge.source.add',
+      { projectId, sourcePaths },
+      projectId,
+    )
+  }
+
+  /** Begin atomically replacing one Project Source with a trusted native file. */
+  beginReplaceProjectSource(
+    projectId: string,
+    sourceId: string,
+    sourcePath: string,
+  ): { requestId: string } {
+    return this.beginKnowledgeMutation(
+      'knowledge.source.replace',
+      { projectId, sourceId, sourcePath },
+      projectId,
+      sourceId,
+    )
+  }
+
+  /** Begin rebuilding one Source under the active immutable index profile. */
+  beginReindexProjectSource(
+    projectId: string,
+    sourceId: string,
+  ): { requestId: string } {
+    return this.beginKnowledgeMutation(
+      'knowledge.source.reindex',
+      { projectId, sourceId },
+      projectId,
+      sourceId,
+    )
+  }
+
+  /** Begin deleting one Source and its derived index ownership. */
+  beginDeleteProjectSource(
+    projectId: string,
+    sourceId: string,
+  ): { requestId: string } {
+    return this.beginKnowledgeMutation(
+      'knowledge.source.delete',
+      { projectId, sourceId },
+      projectId,
+      sourceId,
+    )
+  }
+
+  /** Begin rebuilding every currently authorized Source in one Project. */
+  beginRebuildProjectKnowledge(projectId: string): { requestId: string } {
+    return this.beginKnowledgeMutation(
+      'knowledge.project.rebuild',
+      { projectId },
+      projectId,
+    )
+  }
+
+  /** Begin revoking one Project corpus before deterministic cleanup. */
+  beginRevokeProjectKnowledge(projectId: string): { requestId: string } {
+    return this.beginKnowledgeMutation(
+      'knowledge.project.revoke',
+      { projectId },
+      projectId,
+    )
+  }
+
+  /** Resume or compensate every recoverable lifecycle action for a Project. */
+  beginRecoverProjectKnowledge(projectId: string): { requestId: string } {
+    return this.beginKnowledgeMutation(
+      'knowledge.recover',
+      { projectId },
+      projectId,
+    )
+  }
+
+  /** Cancel one exact in-flight Knowledge mutation by its Backend request ID. */
+  stopKnowledgeOperation(requestId: string): Promise<void> {
+    return this.cancelPendingRequest(
+      requestId,
+      CANCELLABLE_KNOWLEDGE_METHODS,
+      'knowledge operation',
+    )
+  }
+
+  /** Export one verified original to a main-process-selected destination. */
+  exportProjectSource(
+    projectId: string,
+    sourceId: string,
+    destination: string,
+    overwrite: boolean,
+    expected: Pick<
+      KnowledgeExportResult,
+      'fileName' | 'mediaType' | 'bytesWritten'
+    >,
+  ): Promise<KnowledgeExportResult> {
+    try {
+      this.assertKnowledgeAvailable()
+    } catch (error) {
+      return Promise.reject(error)
+    }
+    if (this.hasActiveKnowledgeLease()) {
+      return Promise.reject(
+        new Error('Wait for the current knowledge operation to finish.'),
+      )
+    }
+    return new Promise<KnowledgeExportResult>((resolve, reject) => {
+      this.sendRequest(
+        'knowledge.source.export',
+        { projectId, sourceId, destination, overwrite },
+        undefined,
+        {
+          knowledgeProjectId: projectId,
+          knowledgeTargetSourceId: sourceId,
+          knowledgeExpectedExport: { ...expected },
+          resolveKnowledgeExport: resolve,
+          rejectKnowledgeExport: reject,
+        },
+      )
+      // Unlike lifecycle calls, export's public IPC Promise resolves only at
+      // terminal completion. Publish its Electron-owned lease immediately so
+      // a reloaded renderer and every Project surface remain safely blocked.
+      this.updateSnapshot({})
+    })
+  }
+
   private resolvePythonExecutable(): string {
     const configuredPython = process.env.ELYSIA_PYTHON
     if (configuredPython?.trim()) {
@@ -1341,6 +1727,15 @@ export class BackendProcess {
     ) {
       return Promise.reject(
         new Error('Wait for local voice transcription to finish.'),
+      )
+    }
+    if (
+      this.hasActiveKnowledgeLease()
+      && method !== 'project.list'
+      && method !== 'project.open'
+    ) {
+      return Promise.reject(
+        new Error('Wait for the current Project Source operation to finish.'),
       )
     }
 
@@ -1488,6 +1883,71 @@ export class BackendProcess {
     })
   }
 
+  private assertKnowledgeAvailable(): void {
+    if (this.snapshot.status !== 'ready') {
+      throw new Error('Python Backend is not ready.')
+    }
+    if (!this.snapshot.capabilities.includes('knowledge.management')) {
+      throw new Error('Python Backend does not support knowledge management.')
+    }
+  }
+
+  private hasActiveKnowledgeLease(): boolean {
+    return [...this.pendingRequests.values()].some((pending) => (
+      KNOWLEDGE_LEASE_METHODS.has(pending.method)
+      || (
+        CHAT_GENERATION_METHODS.has(pending.method)
+        && pending.usesProjectKnowledge === true
+      )
+    ))
+  }
+
+  private beginKnowledgeMutation<Method extends KnowledgeMutationMethod>(
+    method: Method,
+    params: RequestParamsByMethod[Method],
+    projectId: string,
+    targetSourceId?: string,
+  ): { requestId: string } {
+    this.assertKnowledgeAvailable()
+    if (this.hasActiveKnowledgeLease()) {
+      throw new Error('Wait for the current knowledge operation to finish.')
+    }
+    return {
+      requestId: this.sendRequest(method, params, undefined, {
+        knowledgeProjectId: projectId,
+        ...(targetSourceId === undefined
+          ? {}
+          : { knowledgeTargetSourceId: targetSourceId }),
+      }),
+    }
+  }
+
+  private requestKnowledgeState<Method extends KnowledgeStateMethod>(
+    method: Method,
+    params: RequestParamsByMethod[Method],
+  ): Promise<KnowledgeState> {
+    try {
+      this.assertKnowledgeAvailable()
+    } catch (error) {
+      return Promise.reject(error)
+    }
+    // Python's canonical Source read shares the lifecycle mutation lease. Do
+    // not enqueue it on the synchronous command loop while a worker owns that
+    // lease, because a blocked list request would delay request.cancel itself.
+    if (this.hasActiveKnowledgeLease()) {
+      return Promise.reject(
+        new Error('Wait for the current knowledge operation to finish.'),
+      )
+    }
+    return new Promise<KnowledgeState>((resolve, reject) => {
+      this.sendRequest(method, params, undefined, {
+        knowledgeProjectId: params.projectId,
+        resolveKnowledgeState: resolve,
+        rejectKnowledgeState: reject,
+      })
+    })
+  }
+
   private sendRequest<Method extends ProtocolMethod>(
     method: Method,
     params: RequestParamsByMethod[Method],
@@ -1509,6 +1969,14 @@ export class BackendProcess {
       | 'resolveAttachmentState'
       | 'rejectAttachmentState'
       | 'attachmentScope'
+      | 'knowledgeProjectId'
+      | 'knowledgeTargetSourceId'
+      | 'knowledgeExpectedExport'
+      | 'usesProjectKnowledge'
+      | 'resolveKnowledgeState'
+      | 'rejectKnowledgeState'
+      | 'resolveKnowledgeExport'
+      | 'rejectKnowledgeExport'
       | 'cancelTargetId'
       | 'resolveCancellation'
       | 'rejectCancellation'
@@ -1660,6 +2128,22 @@ export class BackendProcess {
         parseVoiceSpeechCancellationResult(message.result)
       } else if (ATTACHMENT_METHODS.has(pending.method)) {
         parseAttachmentStateResult(message.result)
+      } else if (KNOWLEDGE_STATE_METHODS.has(pending.method)) {
+        parseKnowledgeStateResult(message.result)
+      } else if (pending.method === 'knowledge.source.export') {
+        const result = parseKnowledgeExportResult(message.result)
+        const expected = pending.knowledgeExpectedExport
+        if (
+          expected === undefined
+          || result.fileName !== expected.fileName
+          || result.mediaType !== expected.mediaType
+          || result.bytesWritten !== expected.bytesWritten
+        ) {
+          throw new ProtocolValidationError(
+            'protocol.invalid_result',
+            'Knowledge export receipt does not match its authenticated Source.',
+          )
+        }
       } else if (CHAT_GENERATION_METHODS.has(pending.method)) {
         parseChatResult(message.result)
       }
@@ -1696,9 +2180,13 @@ export class BackendProcess {
         this.failInitialization(message.error.message)
         return
       }
+      // A Knowledge stop only requests cooperative rollback. Its durable
+      // cleanup can still succeed at a point of no return or surface a typed
+      // recovery/storage failure; the correlated journal/error is terminal.
       if (
         CANCELLABLE_METHODS.has(pending.method)
         && pending.cancelAccepted
+        && !KNOWLEDGE_MUTATION_METHODS.has(pending.method)
         && message.error.code !== 'request.cancelled'
       ) {
         this.protocolFailure(
@@ -1711,13 +2199,16 @@ export class BackendProcess {
         && pending.chatId !== undefined
       ) {
         this.speechDelivery?.cancelTurn(message.id)
+        const failure = pending.usesProjectKnowledge === true
+          ? safeGroundedChatFailure(message.error)
+          : message.error
         this.emitToRenderer({
           type: 'chat-error',
           requestId: message.id,
           chatId: pending.chatId,
-          code: message.error.code,
-          message: message.error.message,
-          retryable: message.error.retryable,
+          code: failure.code,
+          message: failure.message,
+          retryable: failure.retryable,
         })
       }
       if (VOICE_TRANSCRIPTION_METHODS.has(pending.method)) {
@@ -1735,6 +2226,26 @@ export class BackendProcess {
           sessionId: expected.sessionId,
           chatId: expected.chatId,
           ...failure,
+        })
+      }
+      if (KNOWLEDGE_LEASE_METHODS.has(pending.method)) {
+        if (pending.knowledgeProjectId === undefined) {
+          this.protocolFailure(
+            'Knowledge failure response has no matching Project.',
+          )
+          return
+        }
+        const failure = safeKnowledgeFailure(message.error)
+        // The Renderer already owns the asynchronous receipt, so a strictly
+        // correlated safe event is the only way to surface admission errors
+        // and cleanup/recovery failures that have no operation event.
+        this.emitToRenderer({
+          type: 'knowledge-operation-error',
+          requestId: message.id,
+          projectId: pending.knowledgeProjectId,
+          code: failure.code,
+          message: failure.message,
+          retryable: failure.retryable,
         })
       }
       if (CHAT_SESSION_METHODS.has(pending.method)) {
@@ -1755,14 +2266,29 @@ export class BackendProcess {
       if (ATTACHMENT_METHODS.has(pending.method)) {
         pending.rejectAttachmentState?.(new Error(message.error.message))
       }
+      if (KNOWLEDGE_METHODS.has(pending.method)) {
+        const failure = safeKnowledgeFailure(message.error)
+        pending.rejectKnowledgeState?.(new Error(failure.message))
+        pending.rejectKnowledgeExport?.(new Error(failure.message))
+      }
       if (pending.method === 'request.cancel') {
-        pending.rejectCancellation?.(new Error(message.error.message))
+        const target = pending.cancelTargetId === undefined
+          ? undefined
+          : this.pendingRequests.get(pending.cancelTargetId)
+        const cancellationMessage = target !== undefined
+          && CANCELLABLE_KNOWLEDGE_METHODS.has(target.method)
+          ? safeKnowledgeFailure(message.error).message
+          : message.error.message
+        pending.rejectCancellation?.(new Error(cancellationMessage))
         if (pending.deferredTargetResponse !== undefined) {
           this.handleResponse(pending.deferredTargetResponse)
         }
       }
       if (pending.method === 'voice.speech.cancel') {
         pending.rejectSpeechCancellation?.(new Error(message.error.message))
+      }
+      if (pending.method === 'knowledge.source.export') {
+        this.updateSnapshot({})
       }
       return
     }
@@ -1778,6 +2304,7 @@ export class BackendProcess {
         'voice.settings',
         'voice.capture',
         'attachment.management',
+        'knowledge.management',
         'request.cancel',
         'stream',
         'progress',
@@ -1833,7 +2360,11 @@ export class BackendProcess {
       return
     }
 
-    if (CANCELLABLE_METHODS.has(pending.method) && pending.cancelAccepted) {
+    if (
+      CANCELLABLE_METHODS.has(pending.method)
+      && pending.cancelAccepted
+      && !KNOWLEDGE_MUTATION_METHODS.has(pending.method)
+    ) {
       this.protocolFailure(
         'Backend completed a request after accepting its cancellation.',
       )
@@ -1981,6 +2512,60 @@ export class BackendProcess {
       return
     }
 
+    if (KNOWLEDGE_STATE_METHODS.has(pending.method)) {
+      const result = parseKnowledgeStateResult(message.result)
+      if (
+        pending.knowledgeProjectId === undefined
+        || result.projectId !== pending.knowledgeProjectId
+      ) {
+        const error = new Error(
+          'Knowledge response does not match its requested Project.',
+        )
+        pending.rejectKnowledgeState?.(error)
+        this.protocolFailure(error.message)
+        return
+      }
+      pending.resolveKnowledgeState?.(result)
+      if (KNOWLEDGE_MUTATION_METHODS.has(pending.method)) {
+        // The pending request was removed before this branch.  Publishing the
+        // validated authoritative state now gives Renderer one race-free
+        // settlement boundary even when recovery had no operation to resume;
+        // a journal completed event may precede the terminal response.
+        this.emitToRenderer({
+          type: 'knowledge-operation-settled',
+          requestId: message.id,
+          projectId: result.projectId,
+          state: result,
+        })
+      }
+      return
+    }
+
+    if (pending.method === 'knowledge.source.export') {
+      const result = parseKnowledgeExportResult(message.result)
+      if (
+        pending.knowledgeProjectId === undefined
+        || pending.knowledgeTargetSourceId === undefined
+      ) {
+        const error = new Error(
+          'Knowledge export has no matching requested Source.',
+        )
+        pending.rejectKnowledgeExport?.(error)
+        this.protocolFailure(error.message)
+        return
+      }
+      this.emitToRenderer({
+        type: 'knowledge-export-settled',
+        requestId: message.id,
+        projectId: pending.knowledgeProjectId,
+        sourceId: pending.knowledgeTargetSourceId,
+        result,
+      })
+      pending.resolveKnowledgeExport?.(result)
+      this.updateSnapshot({})
+      return
+    }
+
     if (CHAT_GENERATION_METHODS.has(pending.method)) {
       if (!pending.streamCompleted || pending.chatId === undefined) {
         this.protocolFailure(
@@ -2035,10 +2620,17 @@ export class BackendProcess {
       target.cancelAccepted = true
       const targetName = VOICE_TRANSCRIPTION_METHODS.has(target.method)
         ? 'voice transcription'
-        : 'generation'
+        : KNOWLEDGE_MUTATION_METHODS.has(target.method)
+          ? 'knowledge operation'
+          : 'generation'
       const deferredResponse = pending.deferredTargetResponse
+      const knowledgeSettledDurably = (
+        KNOWLEDGE_MUTATION_METHODS.has(target.method)
+        && deferredResponse !== undefined
+      )
       if (
         deferredResponse !== undefined
+        && !knowledgeSettledDurably
         && (
           deferredResponse.ok
           || deferredResponse.error.code !== 'request.cancelled'
@@ -2052,7 +2644,14 @@ export class BackendProcess {
         return
       }
 
-      if (deferredResponse === undefined) {
+      if (
+        deferredResponse === undefined
+        && !KNOWLEDGE_MUTATION_METHODS.has(target.method)
+      ) {
+        // Knowledge cancellation is persisted before Python acknowledges it,
+        // so a long local embedding call may drain without constituting a
+        // protocol failure. Chat generation has no durable saga; grounded
+        // requests receive enough time to cross one bounded local-model call.
         target.timeout = setTimeout(() => {
           if (
             this.pendingRequests.get(targetId) !== target
@@ -2063,7 +2662,9 @@ export class BackendProcess {
           this.protocolFailure(
             `Cancelled ${targetName} did not reach a terminal response.`,
           )
-        }, CANCEL_TERMINAL_TIMEOUT_MS)
+        }, target.usesProjectKnowledge
+          ? GROUNDED_CANCEL_TERMINAL_TIMEOUT_MS
+          : CANCEL_TERMINAL_TIMEOUT_MS)
       }
       pending.resolveCancellation?.()
       if (deferredResponse !== undefined) {
@@ -2173,14 +2774,90 @@ export class BackendProcess {
       })
       return
     }
-    this.emitToRenderer({
-      type: 'progress',
-      requestId: message.requestId,
-      operation: message.operation,
-      completed: message.completed,
-      total: message.total,
-      message: message.message,
-    })
+    if (pending.method === 'initialize') {
+      if (
+        message.operation !== 'backend.initialize'
+        || message.total !== 3
+        || message.completed < 0
+        || message.completed > 3
+      ) {
+        this.protocolFailure('Backend initialization progress is invalid.')
+        return
+      }
+      const safeMessages = [
+        'Validating local settings',
+        'Discovering local models',
+        'Loading Chat services',
+        null,
+      ] as const
+      this.emitToRenderer({
+        type: 'progress',
+        requestId: message.requestId,
+        operation: 'backend.initialize',
+        completed: message.completed,
+        total: 3,
+        message: safeMessages[message.completed],
+      })
+      return
+    }
+    if (CHAT_GENERATION_METHODS.has(pending.method)) {
+      const starting = message.completed === 0 && message.total === null
+      const completed = message.completed === 1 && message.total === 1
+      if (message.operation !== 'chat.generate' || (!starting && !completed)) {
+        this.protocolFailure('Backend Chat generation progress is invalid.')
+        return
+      }
+      this.emitToRenderer({
+        type: 'progress',
+        requestId: message.requestId,
+        operation: 'chat.generate',
+        completed: message.completed,
+        total: message.total,
+        message: starting ? 'Generating reply' : null,
+      })
+      return
+    }
+    if (KNOWLEDGE_MUTATION_METHODS.has(pending.method)) {
+      if (
+        message.operation !== 'knowledge.lifecycle'
+        || message.total !== 100
+        || (message.completed !== 0 && message.completed !== 100)
+      ) {
+        this.protocolFailure('Backend Knowledge lifecycle progress is invalid.')
+        return
+      }
+      this.emitToRenderer({
+        type: 'progress',
+        requestId: message.requestId,
+        operation: 'knowledge.lifecycle',
+        completed: message.completed,
+        total: 100,
+        message: message.completed === 0 ? 'Updating Project Sources' : null,
+      })
+      return
+    }
+    if (pending.method === 'knowledge.source.export') {
+      if (
+        message.operation !== 'knowledge.export'
+        || message.total !== 1
+        || (message.completed !== 0 && message.completed !== 1)
+      ) {
+        this.protocolFailure('Backend Knowledge export progress is invalid.')
+        return
+      }
+      this.emitToRenderer({
+        type: 'progress',
+        requestId: message.requestId,
+        operation: 'knowledge.export',
+        completed: message.completed,
+        total: 1,
+        message: message.completed === 0
+          ? 'Exporting verified original'
+          : null,
+      })
+      return
+    }
+    this.protocolFailure('Backend progress is not valid for this request.')
   }
 
   private handlePermission(message: PermissionMessage): void {
@@ -2283,6 +2960,52 @@ export class BackendProcess {
       }
       // Final renderer state comes only from the validated terminal response.
       // Swallowing Python lifecycle events avoids forwarding arbitrary data.
+      return
+    }
+    if (
+      message.event === 'knowledge.operation.changed'
+      || message.event === 'knowledge.operation.completed'
+    ) {
+      const pending = this.pendingRequests.get(message.requestId)
+      if (
+        !KNOWLEDGE_MUTATION_METHODS.has(pending?.method ?? 'shutdown')
+        || pending?.knowledgeProjectId === undefined
+        || message.data.projectId !== pending.knowledgeProjectId
+        || message.data.operation.projectId !== pending.knowledgeProjectId
+        || (
+          KNOWLEDGE_KIND_BY_METHOD.has(pending.method)
+          && message.data.operation.kind
+          !== KNOWLEDGE_KIND_BY_METHOD.get(pending.method)
+        )
+        || (
+          pending.knowledgeTargetSourceId !== undefined
+          && message.data.operation.targetSourceId
+          !== pending.knowledgeTargetSourceId
+        )
+      ) {
+        this.protocolFailure('Backend Knowledge lifecycle event is invalid.')
+        return
+      }
+      // Knowledge cancellation is cooperative: once replace/delete/publish
+      // crosses its durable point of no return, a concurrently accepted stop
+      // may still end in a valid success instead of a cancelled checkpoint.
+      this.emitToRenderer({
+        type: 'protocol-event',
+        name: message.event,
+        requestId: message.requestId,
+        data: {
+          projectId: message.data.projectId,
+          operation: { ...message.data.operation },
+          cancellable: (
+            CANCELLABLE_KNOWLEDGE_METHODS.has(pending.method)
+            && pending.cancelAccepted !== true
+            && ![...this.pendingRequests.values()].some((candidate) => (
+              candidate.method === 'request.cancel'
+              && candidate.cancelTargetId === message.requestId
+            ))
+          ),
+        },
+      })
       return
     }
   }
@@ -2410,6 +3133,16 @@ export class BackendProcess {
           'Python Backend stopped before the Attachment action completed.',
         ),
       )
+      pending.rejectKnowledgeState?.(
+        new Error(
+          'Python Backend stopped before the Knowledge action completed.',
+        ),
+      )
+      pending.rejectKnowledgeExport?.(
+        new Error(
+          'Python Backend stopped before the Knowledge export completed.',
+        ),
+      )
       pending.rejectCancellation?.(
         new Error('Python Backend stopped before generation was cancelled.'),
       )
@@ -2435,6 +3168,8 @@ export class BackendProcess {
       pending.rejectVoiceSettingsState?.(error)
       pending.rejectVoiceCapture?.(error)
       pending.rejectAttachmentState?.(error)
+      pending.rejectKnowledgeState?.(error)
+      pending.rejectKnowledgeExport?.(error)
       pending.rejectCancellation?.(error)
       pending.rejectSpeechCancellation?.(error)
       pending.resolveChatState = undefined
@@ -2449,6 +3184,10 @@ export class BackendProcess {
       pending.rejectVoiceCapture = undefined
       pending.resolveAttachmentState = undefined
       pending.rejectAttachmentState = undefined
+      pending.resolveKnowledgeState = undefined
+      pending.rejectKnowledgeState = undefined
+      pending.resolveKnowledgeExport = undefined
+      pending.rejectKnowledgeExport = undefined
       pending.resolveCancellation = undefined
       pending.rejectCancellation = undefined
       pending.resolveSpeechCancellation = undefined

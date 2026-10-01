@@ -1,14 +1,22 @@
 """Test Brain orchestration, streaming, cancellation, and persistence."""
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
+from threading import Event
 
 import pytest
 
+from attachments import AttachmentScope
 from chats import (
+    ChatId,
     ChatSession,
     JsonChatRepository,
     create_attachment_metadata,
+)
+from documents import (
+    GROUNDED_ANSWER_SCHEMA_VERSION,
+    DocumentOperationCancelledError,
+    GroundedAnswerResult,
 )
 from core import (
     ActiveConversationService,
@@ -17,7 +25,11 @@ from core import (
 )
 from core.chat_model import ChatMessage
 from memory import Memory, ShortTermMemory
-from projects import JsonProjectRepository
+from project_sources import (
+    PROJECT_SOURCE_ANSWER_SCHEMA_VERSION,
+    ProjectSourceAnswer,
+)
+from projects import JsonProjectRepository, ProjectChatService
 
 class FakeChatModel:
     """Capture prompts and serve configured sync or streaming model output."""
@@ -79,6 +91,118 @@ def _active_brain(
     )
     chat = brain.create_chat(title="Test Chat")
     return brain, memory, chat
+
+
+def _project_brain(
+    tmp_path: Path,
+) -> tuple[Brain, ChatSession]:
+    """Compose one Project Chat for grounded-answer orchestration tests."""
+
+    memory = Memory(tmp_path)
+    chats = JsonChatRepository(tmp_path / "data" / "chats")
+    projects = JsonProjectRepository(tmp_path / "data" / "projects")
+    active = ActiveConversationService(chats, projects)
+    brain = Brain(
+        "fake-model",
+        memory,
+        active_conversation_service=active,
+        project_service=ProjectChatService(
+            projects,
+            chats,
+            is_chat_busy=active.is_chat_busy,
+        ),
+    )
+    project = brain.create_project(name="Grounded Project")
+    return brain, brain.create_chat(
+        title="Grounded Chat",
+        project_id=project.project_id,
+    )
+
+
+def test_grounded_chat_persists_structured_insufficient_result(
+    tmp_path: Path,
+) -> None:
+    """Keep a verified refusal attached to the same atomic Chat turn."""
+
+    brain, chat = _project_brain(tmp_path)
+
+    def answerer(chat_id: ChatId, query: str) -> ProjectSourceAnswer:
+        """Return deterministic model-free insufficiency in the Chat Project."""
+
+        assert chat_id == chat.chat_id
+        assert query == "What does the source say?"
+        project_id = brain.get_chat(chat.chat_id).project_id
+        assert project_id is not None
+        return ProjectSourceAnswer(
+            schema_version=PROJECT_SOURCE_ANSWER_SCHEMA_VERSION,
+            chat_id=chat.chat_id,
+            project_id=project_id,
+            answer=GroundedAnswerResult(
+                schema_version=GROUNDED_ANSWER_SCHEMA_VERSION,
+                scope=AttachmentScope(
+                    kind="project",
+                    id=str(project_id),
+                ),
+                status="insufficient_evidence",
+                generator_identity=None,
+                context_passage_count=0,
+                statements=(),
+                citations=(),
+            ),
+        )
+
+    chunks = list(
+        brain.stream_grounded_chat(
+            chat.chat_id,
+            "What does the source say?",
+            answerer,
+        )
+    )
+
+    assert chunks == [
+        "I couldn't find enough evidence in this Project's current sources."
+    ]
+    persisted = brain.get_chat(chat.chat_id)
+    assert persisted.messages[-1].grounded_answer is not None
+    assert persisted.messages[-1].grounded_answer.status == (
+        "insufficient_evidence"
+    )
+
+
+def test_grounded_chat_translates_deep_domain_cancellation(
+    tmp_path: Path,
+) -> None:
+    """Propagate Brain's callback and preserve its request-cancel contract."""
+
+    brain, chat = _project_brain(tmp_path)
+    cancelled = Event()
+
+    def answerer(
+        chat_id: ChatId,
+        query: str,
+        *,
+        should_cancel: Callable[[], bool] | None = None,
+    ) -> ProjectSourceAnswer:
+        """Model cancellation winning inside the grounded dependency graph."""
+
+        assert chat_id == chat.chat_id
+        assert query == "Cancel grounded work"
+        assert should_cancel is not None
+        cancelled.set()
+        assert should_cancel()
+        raise DocumentOperationCancelledError("deep cancellation")
+
+    with pytest.raises(GenerationCancelledError, match="cancelled"):
+        list(
+            brain.stream_grounded_chat(
+                chat.chat_id,
+                "Cancel grounded work",
+                answerer,
+                should_cancel=cancelled.is_set,
+            )
+        )
+
+    assert brain.get_chat(chat.chat_id).messages == ()
 
 
 def test_chat_returns_reply_and_saves_messages(

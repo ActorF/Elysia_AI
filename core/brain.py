@@ -6,9 +6,15 @@ from collections.abc import Callable, Generator, Iterable, Iterator
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
+from typing import Protocol
 
 from chats import (
     AttachmentMetadata,
+    ChatGroundedAnswer,
+    ChatGroundedCitation,
+    ChatGroundedStatement,
+    ChatGroundedTableLocation,
+    ChatGroundedTextLocation,
     ChatId,
     ChatMessage as StoredChatMessage,
     ChatMessageId,
@@ -17,6 +23,11 @@ from chats import (
     ChatSummary,
     ConversationMode,
     ProjectId,
+)
+from documents import (
+    DocumentOperationCancelledError,
+    GroundedTableCellLocation,
+    GroundedTextLocation,
 )
 from memory import (
     ConversationMessage,
@@ -35,6 +46,7 @@ from memory import (
     ShortTermMemory,
 )
 from projects import Project, ProjectChatService
+from project_sources import ProjectSourceAnswer
 
 from .active_conversation import ActiveConversationService
 from .chat_model import ChatMessage, ChatModel
@@ -49,6 +61,138 @@ from .prompts import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class ProjectSourceAnswerer(Protocol):
+    """Produce one Project-grounded answer with optional cooperative cancel."""
+
+    def __call__(
+        self,
+        chat_id: ChatId,
+        query: str,
+        *,
+        should_cancel: Callable[[], bool] | None = None,
+    ) -> ProjectSourceAnswer:
+        """Answer the named Chat question or stop when cancellation is visible."""
+
+        ...
+
+
+_INSUFFICIENT_PROJECT_EVIDENCE_REPLY = (
+    "I couldn't find enough evidence in this Project's current sources."
+)
+
+
+def _run_project_source_answerer(
+    answerer: ProjectSourceAnswerer,
+    chat_id: ChatId,
+    query: str,
+    should_cancel: Callable[[], bool] | None,
+) -> ProjectSourceAnswer:
+    """Translate document-domain cancellation into Brain's Chat contract."""
+
+    try:
+        if should_cancel is None:
+            return answerer(chat_id, query)
+        return answerer(
+            chat_id,
+            query,
+            should_cancel=should_cancel,
+        )
+    except DocumentOperationCancelledError:
+        raise GenerationCancelledError(
+            "Chat generation was cancelled."
+        ) from None
+
+
+def _chat_grounded_answer(
+    value: ProjectSourceAnswer,
+    *,
+    expected_chat_id: ChatId,
+    expected_project_id: ProjectId,
+) -> ChatGroundedAnswer:
+    """Detach one renderer-safe answer from its live retrieval authority.
+
+    Persistence intentionally omits passage IDs, model fingerprints, source
+    link IDs, file identities, and paths. Those values authorize generation;
+    they are not required to explain an already committed answer.
+    """
+
+    if (
+        value.chat_id != expected_chat_id
+        or value.project_id != expected_project_id
+    ):
+        raise ValueError("Grounded answer changed its Chat or Project scope.")
+    answer = value.answer
+    citations: list[
+        ChatGroundedCitation
+    ] = []
+    for citation in answer.citations:
+        locations: list[
+            ChatGroundedTextLocation | ChatGroundedTableLocation
+        ] = []
+        for location in citation.locations:
+            if isinstance(location, GroundedTableCellLocation):
+                locations.append(
+                    ChatGroundedTableLocation(
+                        block_ordinal=location.block_ordinal,
+                        row_index=location.row_index,
+                        column_index=location.column_index,
+                        source_start_code_point=(
+                            location.source_start_code_point
+                        ),
+                        source_end_code_point=(
+                            location.source_end_code_point
+                        ),
+                    )
+                )
+            elif isinstance(location, GroundedTextLocation):
+                locations.append(
+                    ChatGroundedTextLocation(
+                        block_ordinal=location.block_ordinal,
+                        source_start_code_point=(
+                            location.source_start_code_point
+                        ),
+                        source_end_code_point=(
+                            location.source_end_code_point
+                        ),
+                    )
+                )
+            else:
+                raise TypeError("Grounded citation location is invalid.")
+        citations.append(
+            ChatGroundedCitation(
+                citation_id=citation.citation_id,
+                kind=citation.kind,
+                excerpt=citation.excerpt,
+                file_name=citation.file_name,
+                media_type=citation.media_type,
+                page_number=citation.page_number,
+                locations=tuple(locations),
+            )
+        )
+    return ChatGroundedAnswer(
+        status=answer.status,
+        context_passage_count=answer.context_passage_count,
+        statements=tuple(
+            ChatGroundedStatement(
+                statement_id=statement.statement_id,
+                kind=statement.kind,
+                text=statement.text,
+                citation_ids=statement.citation_ids,
+            )
+            for statement in answer.statements
+        ),
+        citations=tuple(citations),
+    )
+
+
+def _grounded_reply_text(answer: ChatGroundedAnswer) -> str:
+    """Create canonical readable text while retaining structured evidence."""
+
+    if answer.status == "insufficient_evidence":
+        return _INSUFFICIENT_PROJECT_EVIDENCE_REPLY
+    return "\n\n".join(statement.text for statement in answer.statements)
 
 
 def _user_message_for_model(
@@ -661,6 +805,71 @@ class Brain:
             chat_id,
         )
 
+    def stream_grounded_chat(
+        self,
+        chat_id: ChatId,
+        user_message: str,
+        answerer: ProjectSourceAnswerer,
+        *,
+        attachments: Iterable[AttachmentMetadata] = (),
+        should_cancel: Callable[[], bool] | None = None,
+        begin_commit: Callable[[], bool] | None = None,
+    ) -> Generator[str, None, None]:
+        """Answer from the active Project corpus and atomically persist proof.
+
+        The answer service derives Project authority from the canonical Chat;
+        callers cannot nominate a different Project. Structured statements and
+        citations commit beside the readable assistant text only after the
+        cancellation gate has been claimed.
+        """
+
+        cleaned_user_message = user_message.strip()
+        attachment_records = tuple(attachments)
+        if not cleaned_user_message:
+            raise ValueError(
+                "Project Source questions must contain text."
+            )
+        if not callable(answerer):
+            raise TypeError("answerer must be callable.")
+        self._raise_if_generation_cancelled(should_cancel)
+        service = self._require_active_conversation_service()
+        with service.open_turn(chat_id) as active_conversation:
+            self._raise_if_generation_cancelled(should_cancel)
+            project = active_conversation.project
+            if project is None:
+                raise ValueError(
+                    "Project Sources require a Chat assigned to a Project."
+                )
+            answer = _chat_grounded_answer(
+                _run_project_source_answerer(
+                    answerer,
+                    chat_id,
+                    cleaned_user_message,
+                    should_cancel,
+                ),
+                expected_chat_id=chat_id,
+                expected_project_id=project.project_id,
+            )
+            self._raise_if_generation_cancelled(should_cancel)
+            reply = _grounded_reply_text(answer)
+            yield reply
+            self._claim_generation_commit(
+                should_cancel=should_cancel,
+                begin_commit=begin_commit,
+            )
+            service.commit_turn(
+                active_conversation,
+                user_message=cleaned_user_message,
+                assistant_message=reply,
+                attachments=attachment_records,
+                grounded_answer=answer,
+            )
+
+        logger.info(
+            "Grounded chat turn completed: chat_id=%s.",
+            chat_id,
+        )
+
     def stream_retry(
         self,
         chat_id: ChatId,
@@ -741,6 +950,79 @@ class Brain:
             )
 
         logger.info("Chat retry completed: chat_id=%s.", chat_id)
+
+    def stream_grounded_retry(
+        self,
+        chat_id: ChatId,
+        user_message_id: ChatMessageId,
+        assistant_message_id: ChatMessageId,
+        answerer: ProjectSourceAnswerer,
+        message: str | None = None,
+        *,
+        should_cancel: Callable[[], bool] | None = None,
+        begin_commit: Callable[[], bool] | None = None,
+    ) -> Generator[str, None, None]:
+        """Regenerate a tail turn from current Project Sources and replace it.
+
+        Historical citations remain immutable until a complete current-corpus
+        answer has passed scope validation and won the atomic commit gate.
+        """
+
+        if not callable(answerer):
+            raise TypeError("answerer must be callable.")
+        self._raise_if_generation_cancelled(should_cancel)
+        service = self._require_active_conversation_service()
+        with service.open_turn(chat_id) as active_conversation:
+            self._raise_if_generation_cancelled(should_cancel)
+            project = active_conversation.project
+            if project is None:
+                raise ValueError(
+                    "Project Sources require a Chat assigned to a Project."
+                )
+            user_record, _assistant_record = service.get_retry_turn(
+                active_conversation,
+                user_message_id=user_message_id,
+                assistant_message_id=assistant_message_id,
+            )
+            effective_user_message = (
+                user_record.content
+                if message is None
+                else message.strip()
+            )
+            if not effective_user_message:
+                raise ValueError(
+                    "Project Source questions must contain text."
+                )
+            answer = _chat_grounded_answer(
+                _run_project_source_answerer(
+                    answerer,
+                    chat_id,
+                    effective_user_message,
+                    should_cancel,
+                ),
+                expected_chat_id=chat_id,
+                expected_project_id=project.project_id,
+            )
+            self._raise_if_generation_cancelled(should_cancel)
+            reply = _grounded_reply_text(answer)
+            yield reply
+            self._claim_generation_commit(
+                should_cancel=should_cancel,
+                begin_commit=begin_commit,
+            )
+            service.commit_retry(
+                active_conversation,
+                user_message_id=user_message_id,
+                assistant_message_id=assistant_message_id,
+                user_message=effective_user_message,
+                assistant_message=reply,
+                grounded_answer=answer,
+            )
+
+        logger.info(
+            "Grounded chat retry completed: chat_id=%s.",
+            chat_id,
+        )
 
     def _stream_model_reply(
         self,

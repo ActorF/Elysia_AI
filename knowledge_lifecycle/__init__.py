@@ -13,6 +13,7 @@ from .domain import (
     validate_knowledge_operation_id,
 )
 from .exceptions import (
+    KnowledgeExportCancelledError,
     KnowledgeLifecycleConflictError,
     KnowledgeLifecycleDataCorruptionError,
     KnowledgeLifecycleError,
@@ -45,6 +46,7 @@ __all__ = [
     "MAX_KNOWLEDGE_OPERATIONS",
     "MAX_KNOWLEDGE_OPERATION_ATTEMPTS",
     "JsonKnowledgeOperationRepository",
+    "KnowledgeExportCancelledError",
     "KnowledgeLifecycleConflictError",
     "KnowledgeLifecycleDataCorruptionError",
     "KnowledgeLifecycleError",

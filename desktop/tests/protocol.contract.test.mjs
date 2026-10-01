@@ -34,6 +34,9 @@ import {
   parseClientRequest,
   parseHandshakeResult,
   parseInitializeResult,
+  parseKnowledgeExportResult,
+  parseKnowledgeOperation,
+  parseKnowledgeStateResult,
   parseChatStateResult,
   parseProjectStateResult,
   parseSettingsStateResult,
@@ -724,6 +727,332 @@ test('TypeScript parses bounded Attachment state without local paths', () => {
     maxFileBytes: 10,
   }
   assert.deepEqual(parseAttachmentStateResult(historicalState), historicalState)
+})
+
+function knowledgeOperation(overrides = {}) {
+  return {
+    operationId: `knowledge_${'a'.repeat(32)}`,
+    projectId: 'project_fixture',
+    kind: 'add',
+    state: 'succeeded',
+    phase: 'completed',
+    progressPercent: 100,
+    attempt: 1,
+    createdAt: '2026-09-29T12:00:00Z',
+    updatedAt: '2026-09-29T12:00:01Z',
+    errorCode: null,
+    targetSourceId: null,
+    stagedSourceId: 'attachment_source',
+    ...overrides,
+  }
+}
+
+function knowledgeState(overrides = {}) {
+  return {
+    kind: 'knowledge.state',
+    projectId: 'project_fixture',
+    sources: [
+      {
+        sourceId: 'attachment_source',
+        fileName: 'notes.txt',
+        mediaType: 'text/plain',
+        sizeBytes: 12,
+        state: 'ready',
+        publishedAt: '2026-09-29T12:00:01Z',
+        operationId: null,
+      },
+    ],
+    operations: [knowledgeOperation()],
+    ...overrides,
+  }
+}
+
+test('TypeScript validates exact Knowledge requests and normalizes RAG intent', () => {
+  const sourcePath = String.raw`C:\Users\Actor\Documents\notes.txt`
+  const destination = String.raw`D:\Exports\notes.txt`
+  const cases = [
+    ['knowledge.list', { projectId: 'project_fixture' }],
+    [
+      'knowledge.source.add',
+      { projectId: 'project_fixture', sourcePaths: [sourcePath] },
+    ],
+    [
+      'knowledge.source.replace',
+      {
+        projectId: 'project_fixture',
+        sourceId: 'attachment_source',
+        sourcePath,
+      },
+    ],
+    [
+      'knowledge.source.reindex',
+      { projectId: 'project_fixture', sourceId: 'attachment_source' },
+    ],
+    [
+      'knowledge.source.delete',
+      { projectId: 'project_fixture', sourceId: 'attachment_source' },
+    ],
+    ['knowledge.project.rebuild', { projectId: 'project_fixture' }],
+    ['knowledge.project.revoke', { projectId: 'project_fixture' }],
+    ['knowledge.recover', { projectId: 'project_fixture' }],
+    [
+      'knowledge.source.export',
+      {
+        projectId: 'project_fixture',
+        sourceId: 'attachment_source',
+        destination,
+        overwrite: false,
+      },
+    ],
+  ]
+  for (const [method, params] of cases) {
+    assert.deepEqual(
+      createRequest(`request-${method}`, method, params).params,
+      params,
+    )
+  }
+
+  assert.equal(
+    createRequest('chat-default-rag', 'chat.stream', {
+      chatId: 'chat_fixture',
+      message: 'Hello',
+      attachmentIds: [],
+    }).params.useProjectKnowledge ?? false,
+    false,
+  )
+  assert.equal(
+    createRequest('retry-with-rag', 'chat.retry', {
+      chatId: 'chat_fixture',
+      userMessageId: 'message_user',
+      assistantMessageId: 'message_assistant',
+      useProjectKnowledge: true,
+    }).params.useProjectKnowledge,
+    true,
+  )
+})
+
+for (const [name, method, params] of [
+  [
+    'path leak',
+    'knowledge.list',
+    { projectId: 'project_fixture', sourcePath: String.raw`C:\private.txt` },
+  ],
+  [
+    'relative add path',
+    'knowledge.source.add',
+    { projectId: 'project_fixture', sourcePaths: ['notes.txt'] },
+  ],
+  [
+    'duplicate add paths',
+    'knowledge.source.add',
+    {
+      projectId: 'project_fixture',
+      sourcePaths: [String.raw`C:\Notes.txt`, 'c:/notes.txt'],
+    },
+  ],
+  [
+    'invalid source id',
+    'knowledge.source.delete',
+    { projectId: 'project_fixture', sourceId: String.raw`C:\private.txt` },
+  ],
+  [
+    'untrusted export overwrite',
+    'knowledge.source.export',
+    {
+      projectId: 'project_fixture',
+      sourceId: 'attachment_source',
+      destination: String.raw`D:\Exports\notes.txt`,
+      overwrite: 'yes',
+    },
+  ],
+]) {
+  test(`TypeScript rejects Knowledge request with ${name}`, () => {
+    assert.throws(
+      () => parseClientRequest({
+        type: 'request',
+        protocol: fixtures.protocol,
+        id: `invalid-${name}`,
+        method,
+        params,
+      }),
+      ProtocolValidationError,
+    )
+  })
+}
+
+test('TypeScript accepts only closed path-private Knowledge state', () => {
+  const state = knowledgeState()
+  assert.deepEqual(parseKnowledgeStateResult(state), state)
+  assert.deepEqual(parseKnowledgeOperation(state.operations[0]), state.operations[0])
+
+  for (const invalid of [
+    {
+      ...state,
+      sources: [{ ...state.sources[0], sourcePath: String.raw`C:\private.txt` }],
+    },
+    {
+      ...state,
+      operations: [{ ...state.operations[0], indexProfileFingerprint: 'a'.repeat(64) }],
+    },
+    {
+      ...state,
+      sources: [{ ...state.sources[0], state: 'processing' }],
+    },
+    {
+      ...state,
+      operations: [knowledgeOperation({ projectId: 'project_other' })],
+    },
+  ]) {
+    assert.throws(
+      () => parseKnowledgeStateResult(invalid),
+      ProtocolValidationError,
+    )
+  }
+})
+
+test('TypeScript validates Knowledge export receipts without destinations', () => {
+  const receipt = {
+    kind: 'knowledge.export',
+    fileName: 'notes.txt',
+    mediaType: 'text/plain',
+    bytesWritten: 12,
+  }
+  assert.deepEqual(parseKnowledgeExportResult(receipt), receipt)
+  assert.throws(
+    () => parseKnowledgeExportResult({
+      ...receipt,
+      destination: String.raw`D:\Exports\notes.txt`,
+    }),
+    ProtocolValidationError,
+  )
+})
+
+test('TypeScript validates correlated Knowledge lifecycle events', () => {
+  const operation = knowledgeOperation({
+    state: 'running',
+    phase: 'indexing',
+    progressPercent: 50,
+  })
+  const changed = parseServerMessage(JSON.parse(eventFrame(
+    'knowledge-request',
+    'knowledge.operation.changed',
+    { projectId: 'project_fixture', operation },
+  )))
+  assert.equal(changed.event, 'knowledge.operation.changed')
+
+  assert.throws(
+    () => parseServerMessage(JSON.parse(eventFrame(
+      'knowledge-request',
+      'knowledge.operation.completed',
+      { projectId: 'project_fixture', operation },
+    ))),
+    ProtocolValidationError,
+  )
+  assert.throws(
+    () => parseServerMessage(JSON.parse(eventFrame(
+      'knowledge-request',
+      'knowledge.operation.changed',
+      { projectId: 'project_other', operation },
+    ))),
+    ProtocolValidationError,
+  )
+})
+
+test('TypeScript parses bounded grounded Chat history and rejects private lineage', () => {
+  const sample = fixtures.validServerMessages.find(
+    (candidate) => candidate.name === 'chat state response',
+  )
+  assert.ok(sample)
+  const result = structuredClone(sample.message.result)
+  const assistant = result.activeChat.messages.find(
+    (message) => message.role === 'assistant',
+  )
+  assert.ok(assistant)
+  assistant.groundedAnswer = {
+    status: 'answered',
+    contextPassageCount: 1,
+    statements: [
+      {
+        statementId: 'statement_001',
+        kind: 'source_fact',
+        text: 'verified fact',
+        citationIds: [`citation_${'a'.repeat(64)}`],
+      },
+    ],
+    citations: [
+      {
+        citationId: `citation_${'a'.repeat(64)}`,
+        kind: 'prose',
+        excerpt: 'A verified fact appears here.',
+        fileName: 'notes.txt',
+        mediaType: 'text/plain',
+        pageNumber: null,
+        locations: [
+          {
+            kind: 'text',
+            blockOrdinal: 0,
+            sourceStartCodePoint: 2,
+            sourceEndCodePoint: 15,
+          },
+        ],
+      },
+    ],
+  }
+  assert.deepEqual(parseChatStateResult(result), result)
+
+  assistant.groundedAnswer.citations[0].locations[0].sourcePath = (
+    String.raw`C:\private.txt`
+  )
+  assert.throws(
+    () => parseChatStateResult(result),
+    ProtocolValidationError,
+  )
+})
+
+test('TypeScript rejects answered grounded history without selected context', () => {
+  const sample = fixtures.validServerMessages.find(
+    (candidate) => candidate.name === 'chat state response',
+  )
+  assert.ok(sample)
+  const result = structuredClone(sample.message.result)
+  const assistant = result.activeChat.messages.find(
+    (message) => message.role === 'assistant',
+  )
+  assert.ok(assistant?.groundedAnswer)
+  assistant.groundedAnswer.contextPassageCount = 0
+
+  assert.throws(
+    () => parseChatStateResult(result),
+    ProtocolValidationError,
+  )
+})
+
+test('TypeScript requires every source-fact citation to contain the exact fact', () => {
+  const sample = fixtures.validServerMessages.find(
+    (candidate) => candidate.name === 'chat state response',
+  )
+  assert.ok(sample)
+  const result = structuredClone(sample.message.result)
+  const assistant = result.activeChat.messages.find(
+    (message) => message.role === 'assistant',
+  )
+  assert.ok(assistant?.groundedAnswer)
+  const statement = assistant.groundedAnswer.statements[0]
+  const matchingCitation = assistant.groundedAnswer.citations[0]
+  assert.ok(statement)
+  assert.ok(matchingCitation)
+  const mismatchingCitationId = `citation_${'b'.repeat(64)}`
+  statement.citationIds.push(mismatchingCitationId)
+  assistant.groundedAnswer.citations.push({
+    ...structuredClone(matchingCitation),
+    citationId: mismatchingCitationId,
+    excerpt: 'This second excerpt contains only a paraphrase.',
+  })
+
+  assert.throws(
+    () => parseChatStateResult(result),
+    ProtocolValidationError,
+  )
 })
 
 test('renderer text helpers follow the protocol blank definition', () => {
@@ -1850,6 +2179,62 @@ test('Backend snapshot preserves an in-flight reply through stop completion', as
     },
   }))
   assert.equal(backend.getSnapshot().activeGeneration, undefined)
+})
+
+test('Backend gives grounded generation cancellation a bounded model-call drain window', async (context) => {
+  context.mock.timers.enable({ apis: ['setTimeout'] })
+  const writes = []
+  const backend = new BackendProcess('.', () => undefined)
+  backend.child = {
+    stdin: {
+      writable: true,
+      write: (value) => writes.push(value),
+    },
+    kill: () => undefined,
+  }
+  backend.snapshot = {
+    revision: 1,
+    status: 'ready',
+    capabilities: ['chat.stream', 'request.cancel'],
+    models: ['qwen3.5:9b'],
+    modelName: 'qwen3.5:9b',
+    chatId: 'chat_fixture',
+    chatTitle: 'Elysia Chat',
+  }
+
+  const { requestId } = backend.beginChat({
+    chatId: 'chat_fixture',
+    message: 'Use the project sources.',
+    attachmentIds: [],
+    useProjectKnowledge: true,
+  })
+  const stopping = backend.stopGeneration(requestId)
+  const cancelRequest = JSON.parse(writes.at(-1))
+  backend.handleProtocolLine(JSON.stringify({
+    type: 'response',
+    protocol: fixtures.protocol,
+    id: cancelRequest.id,
+    ok: true,
+    result: { stopped: true },
+  }))
+  await stopping
+
+  context.mock.timers.tick(15_000)
+  assert.equal(backend.getSnapshot().status, 'ready')
+  assert.equal(backend.pendingRequests.has(requestId), true)
+
+  backend.handleProtocolLine(JSON.stringify({
+    type: 'response',
+    protocol: fixtures.protocol,
+    id: requestId,
+    ok: false,
+    error: {
+      code: 'request.cancelled',
+      message: 'Grounded generation was stopped.',
+      retryable: false,
+    },
+  }))
+  assert.equal(backend.pendingRequests.size, 0)
 })
 
 test('Backend sends an attachment-only Chat request without paths', () => {
@@ -3308,6 +3693,729 @@ test('Backend rejects an Attachment response for another scope', async () => {
   await assert.rejects(listing, /does not match its requested scope/)
   assert.equal(killCount, 1)
   assert.equal(backend.getSnapshot().status, 'error')
+})
+
+function readyKnowledgeBackend() {
+  const writes = []
+  const events = []
+  let killCount = 0
+  const backend = new BackendProcess('.', (event) => events.push(event))
+  backend.child = {
+    stdin: {
+      writable: true,
+      write: (value) => writes.push(value),
+    },
+    kill: () => {
+      killCount += 1
+      return true
+    },
+  }
+  backend.snapshot = {
+    revision: 1,
+    status: 'ready',
+    capabilities: ['knowledge.management', 'request.cancel'],
+    models: ['qwen3.5:9b'],
+    modelName: 'qwen3.5:9b',
+    chatId: 'chat_fixture',
+    chatTitle: 'Elysia Chat',
+  }
+  return {
+    backend,
+    events,
+    writes,
+    getKillCount: () => killCount,
+  }
+}
+
+test('Backend correlates Knowledge state, mutations, and safe lifecycle events', async () => {
+  const { backend, events, writes } = readyKnowledgeBackend()
+  const listing = backend.listProjectKnowledge('project_fixture')
+  const listRequest = JSON.parse(writes.at(-1))
+  assert.equal(listRequest.method, 'knowledge.list')
+  assert.deepEqual(listRequest.params, { projectId: 'project_fixture' })
+  backend.handleProtocolLine(JSON.stringify({
+    type: 'response',
+    protocol: fixtures.protocol,
+    id: listRequest.id,
+    ok: true,
+    result: knowledgeState(),
+  }))
+  assert.deepEqual(await listing, knowledgeState())
+
+  const sourcePaths = [String.raw`C:\Users\Actor\Documents\notes.txt`]
+  const { requestId } = backend.beginAddProjectSources(
+    'project_fixture',
+    sourcePaths,
+  )
+  assert.deepEqual(backend.getSnapshot().activeKnowledgeOperation, {
+    requestId,
+    projectId: 'project_fixture',
+    cancellable: true,
+  })
+  const addRequest = JSON.parse(writes.at(-1))
+  assert.equal(addRequest.id, requestId)
+  assert.equal(addRequest.method, 'knowledge.source.add')
+  assert.deepEqual(addRequest.params, {
+    projectId: 'project_fixture',
+    sourcePaths,
+  })
+  assert.throws(
+    () => backend.beginRebuildProjectKnowledge('project_fixture'),
+    /current knowledge operation/,
+  )
+  await assert.rejects(
+    backend.listProjectKnowledge('project_fixture'),
+    /current knowledge operation/,
+  )
+
+  const running = knowledgeOperation({
+    state: 'running',
+    phase: 'indexing',
+    progressPercent: 50,
+  })
+  backend.handleProtocolLine(eventFrame(
+    requestId,
+    'knowledge.operation.changed',
+    { projectId: 'project_fixture', operation: running },
+  ))
+  assert.deepEqual(events.at(-1), {
+    type: 'protocol-event',
+    name: 'knowledge.operation.changed',
+    requestId,
+    data: {
+      projectId: 'project_fixture',
+      operation: running,
+      cancellable: true,
+    },
+  })
+  backend.handleProtocolLine(eventFrame(
+    requestId,
+    'knowledge.operation.completed',
+    { projectId: 'project_fixture', operation: knowledgeOperation() },
+  ))
+  backend.handleProtocolLine(JSON.stringify({
+    type: 'response',
+    protocol: fixtures.protocol,
+    id: requestId,
+    ok: true,
+    result: knowledgeState(),
+  }))
+  assert.equal(backend.pendingRequests.has(requestId), false)
+  assert.equal(backend.getSnapshot().activeKnowledgeOperation, undefined)
+  assert.deepEqual(events.at(-1), {
+    type: 'knowledge-operation-settled',
+    requestId,
+    projectId: 'project_fixture',
+    state: knowledgeState(),
+  })
+})
+
+test('Backend settles a no-op Knowledge recovery without a journal event', () => {
+  const { backend, events, writes } = readyKnowledgeBackend()
+  const { requestId } = backend.beginRecoverProjectKnowledge('project_fixture')
+  const request = JSON.parse(writes.at(-1))
+  assert.equal(request.id, requestId)
+  assert.equal(request.method, 'knowledge.recover')
+
+  backend.handleProtocolLine(JSON.stringify({
+    type: 'response',
+    protocol: fixtures.protocol,
+    id: requestId,
+    ok: true,
+    result: knowledgeState(),
+  }))
+
+  assert.equal(backend.pendingRequests.size, 0)
+  assert.deepEqual(events, [{
+    type: 'knowledge-operation-settled',
+    requestId,
+    projectId: 'project_fixture',
+    state: knowledgeState(),
+  }])
+})
+
+test('Backend never presents forward-only Knowledge recovery as cancellable', async () => {
+  const { backend, events, writes } = readyKnowledgeBackend()
+  const { requestId } = backend.beginRecoverProjectKnowledge('project_fixture')
+  assert.deepEqual(backend.getSnapshot().activeKnowledgeOperation, {
+    requestId,
+    projectId: 'project_fixture',
+    cancellable: false,
+  })
+
+  await assert.rejects(
+    backend.stopKnowledgeOperation(requestId),
+    /knowledge operation is not in progress/,
+  )
+  assert.equal(writes.length, 1)
+  assert.equal(JSON.parse(writes[0]).method, 'knowledge.recover')
+
+  backend.handleProtocolLine(eventFrame(
+    requestId,
+    'knowledge.operation.changed',
+    {
+      projectId: 'project_fixture',
+      operation: knowledgeOperation({
+        state: 'running',
+        phase: 'indexing',
+        progressPercent: 25,
+      }),
+    },
+  ))
+  assert.equal(events.at(-1).data.cancellable, false)
+
+  backend.handleProtocolLine(JSON.stringify({
+    type: 'response',
+    protocol: fixtures.protocol,
+    id: requestId,
+    ok: true,
+    result: knowledgeState(),
+  }))
+  assert.equal(backend.pendingRequests.size, 0)
+})
+
+test('Backend cancels one exact Knowledge mutation by Backend request ID', async () => {
+  const { backend, events, writes } = readyKnowledgeBackend()
+  const { requestId } = backend.beginReindexProjectSource(
+    'project_fixture',
+    'attachment_source',
+  )
+  const stopping = backend.stopKnowledgeOperation(requestId)
+  assert.equal(
+    backend.getSnapshot().activeKnowledgeOperation.cancellable,
+    false,
+  )
+  const cancelRequest = JSON.parse(writes.at(-1))
+  assert.equal(cancelRequest.method, 'request.cancel')
+  assert.deepEqual(cancelRequest.params, { requestId })
+
+  backend.handleProtocolLine(JSON.stringify({
+    type: 'response',
+    protocol: fixtures.protocol,
+    id: requestId,
+    ok: false,
+    error: {
+      code: 'request.cancelled',
+      message: 'Knowledge operation was cancelled.',
+      retryable: false,
+    },
+  }))
+  assert.equal(backend.pendingRequests.has(requestId), true)
+  backend.handleProtocolLine(JSON.stringify({
+    type: 'response',
+    protocol: fixtures.protocol,
+    id: cancelRequest.id,
+    ok: true,
+    result: { stopped: true },
+  }))
+  await stopping
+  assert.equal(backend.pendingRequests.size, 0)
+  assert.deepEqual(events.at(-1), {
+    type: 'knowledge-operation-error',
+    requestId,
+    projectId: 'project_fixture',
+    code: 'request.cancelled',
+    message: 'The Project Source operation was cancelled.',
+    retryable: false,
+  })
+})
+
+test('Backend accepts Knowledge success after cooperative cancellation loses its race', async () => {
+  const { backend, events, writes } = readyKnowledgeBackend()
+  const { requestId } = backend.beginReindexProjectSource(
+    'project_fixture',
+    'attachment_source',
+  )
+  const stopping = backend.stopKnowledgeOperation(requestId)
+  const cancelRequest = JSON.parse(writes.at(-1))
+
+  backend.handleProtocolLine(JSON.stringify({
+    type: 'response',
+    protocol: fixtures.protocol,
+    id: cancelRequest.id,
+    ok: true,
+    result: { stopped: true },
+  }))
+  await stopping
+  assert.equal(
+    backend.pendingRequests.get(requestId).timeout,
+    undefined,
+  )
+
+  const succeeded = knowledgeOperation({
+    kind: 'reindex',
+    targetSourceId: 'attachment_source',
+    stagedSourceId: null,
+  })
+  backend.handleProtocolLine(eventFrame(
+    requestId,
+    'knowledge.operation.completed',
+    { projectId: 'project_fixture', operation: succeeded },
+  ))
+  backend.handleProtocolLine(JSON.stringify({
+    type: 'response',
+    protocol: fixtures.protocol,
+    id: requestId,
+    ok: true,
+    result: knowledgeState({ operations: [succeeded] }),
+  }))
+
+  assert.equal(backend.getSnapshot().status, 'ready')
+  assert.equal(backend.pendingRequests.size, 0)
+  assert.equal(events.at(-1).type, 'knowledge-operation-settled')
+  assert.equal(events.at(-1).state.operations[0].state, 'succeeded')
+})
+
+test('Backend preserves typed Knowledge cleanup failure after accepted cancellation', async () => {
+  const { backend, events, writes } = readyKnowledgeBackend()
+  const { requestId } = backend.beginDeleteProjectSource(
+    'project_fixture',
+    'attachment_source',
+  )
+  const stopping = backend.stopKnowledgeOperation(requestId)
+  const cancelRequest = JSON.parse(writes.at(-1))
+
+  backend.handleProtocolLine(JSON.stringify({
+    type: 'response',
+    protocol: fixtures.protocol,
+    id: requestId,
+    ok: false,
+    error: {
+      code: 'knowledge.recovery_required',
+      message: 'Project Source cleanup requires recovery.',
+      retryable: true,
+    },
+  }))
+  assert.equal(backend.pendingRequests.has(requestId), true)
+  backend.handleProtocolLine(JSON.stringify({
+    type: 'response',
+    protocol: fixtures.protocol,
+    id: cancelRequest.id,
+    ok: true,
+    result: { stopped: true },
+  }))
+
+  await stopping
+  assert.equal(backend.getSnapshot().status, 'ready')
+  assert.equal(backend.pendingRequests.size, 0)
+  assert.deepEqual(events.at(-1), {
+    type: 'knowledge-operation-error',
+    requestId,
+    projectId: 'project_fixture',
+    code: 'knowledge.recovery_required',
+    message: 'Project Source recovery still requires attention.',
+    retryable: true,
+  })
+})
+
+test('Backend surfaces a pre-journal Knowledge admission error safely', () => {
+  const { backend, events, writes } = readyKnowledgeBackend()
+  const { requestId } = backend.beginRebuildProjectKnowledge(
+    'project_fixture',
+  )
+  const request = JSON.parse(writes.at(-1))
+  assert.equal(request.id, requestId)
+  backend.handleProtocolLine(JSON.stringify({
+    type: 'response',
+    protocol: fixtures.protocol,
+    id: requestId,
+    ok: false,
+    error: {
+      code: 'knowledge.busy',
+      message: 'Another Project Source operation is already active.',
+      retryable: true,
+    },
+  }))
+
+  assert.deepEqual(events, [{
+    type: 'knowledge-operation-error',
+    requestId,
+    projectId: 'project_fixture',
+    code: 'knowledge.busy',
+    message: 'Another Project Source operation is already active.',
+    retryable: true,
+  }])
+  assert.equal(backend.pendingRequests.size, 0)
+  assert.equal(backend.getSnapshot().status, 'ready')
+})
+
+test('Backend resolves a safe Knowledge export receipt without its destination', async () => {
+  const { backend, events, writes } = readyKnowledgeBackend()
+  const exporting = backend.exportProjectSource(
+    'project_fixture',
+    'attachment_source',
+    String.raw`D:\Exports\notes.txt`,
+    false,
+    {
+      fileName: 'notes.txt',
+      mediaType: 'text/plain',
+      bytesWritten: 12,
+    },
+  )
+  const request = JSON.parse(writes.at(-1))
+  assert.equal(request.method, 'knowledge.source.export')
+  assert.deepEqual(request.params, {
+    projectId: 'project_fixture',
+    sourceId: 'attachment_source',
+    destination: String.raw`D:\Exports\notes.txt`,
+    overwrite: false,
+  })
+  assert.deepEqual(backend.getSnapshot().activeKnowledgeOperation, {
+    requestId: request.id,
+    projectId: 'project_fixture',
+    cancellable: false,
+  })
+  assert.equal(events.at(-1).type, 'snapshot')
+  assert.deepEqual(
+    events.at(-1).snapshot.activeKnowledgeOperation,
+    backend.getSnapshot().activeKnowledgeOperation,
+  )
+  assert.throws(
+    () => backend.beginRebuildProjectKnowledge('project_fixture'),
+    /current knowledge operation/,
+  )
+  await assert.rejects(
+    backend.listProjectKnowledge('project_other'),
+    /current knowledge operation/,
+  )
+  await assert.rejects(
+    backend.exportProjectSource(
+      'project_other',
+      'attachment_other',
+      String.raw`D:\Exports\other.txt`,
+      false,
+      {
+        fileName: 'other.txt',
+        mediaType: 'text/plain',
+        bytesWritten: 4,
+      },
+    ),
+    /current knowledge operation/,
+  )
+  assert.throws(
+    () => backend.beginChat({
+      chatId: 'chat_fixture',
+      message: 'Use Project Sources',
+      attachmentIds: [],
+      useProjectKnowledge: true,
+    }),
+    /Project Source operation/,
+  )
+  await assert.rejects(
+    backend.updateProject({
+      projectId: 'project_fixture',
+      name: 'Renamed Project',
+      instructions: 'Keep authority stable.',
+    }),
+    /Project Source operation/,
+  )
+  const result = {
+    kind: 'knowledge.export',
+    fileName: 'notes.txt',
+    mediaType: 'text/plain',
+    bytesWritten: 12,
+  }
+  backend.handleProtocolLine(JSON.stringify({
+    type: 'response',
+    protocol: fixtures.protocol,
+    id: request.id,
+    ok: true,
+    result,
+  }))
+  assert.deepEqual(await exporting, result)
+  assert.deepEqual(events.at(-2), {
+    type: 'knowledge-export-settled',
+    requestId: request.id,
+    projectId: 'project_fixture',
+    sourceId: 'attachment_source',
+    result,
+  })
+  assert.equal(events.at(-1).type, 'snapshot')
+  assert.equal(
+    events.at(-1).snapshot.activeKnowledgeOperation,
+    undefined,
+  )
+  assert.equal(backend.getSnapshot().activeKnowledgeOperation, undefined)
+  assert.equal(Object.hasOwn(await Promise.resolve(result), 'destination'), false)
+})
+
+test('Backend serializes grounded Chat against the global Knowledge lease', () => {
+  const { backend, events, writes } = readyKnowledgeBackend()
+  const { requestId } = backend.beginChat({
+    chatId: 'chat_fixture',
+    message: 'Answer only from my Project Sources.',
+    attachmentIds: [],
+    useProjectKnowledge: true,
+  })
+  assert.equal(
+    backend.getSnapshot().activeGeneration.usesProjectKnowledge,
+    true,
+  )
+  assert.throws(
+    () => backend.beginRebuildProjectKnowledge('project_fixture'),
+    /current knowledge operation/,
+  )
+  assert.equal(writes.length, 1)
+
+  const sentinel = String.raw`C:\Users\Actor\Secret\private.pdf`
+  backend.handleProtocolLine(JSON.stringify({
+    type: 'progress',
+    protocol: fixtures.protocol,
+    requestId,
+    operation: 'chat.generate',
+    completed: 0,
+    total: null,
+    message: sentinel,
+  }))
+  backend.handleProtocolLine(JSON.stringify({
+    type: 'response',
+    protocol: fixtures.protocol,
+    id: requestId,
+    ok: false,
+    error: {
+      code: 'knowledge.answer_failed',
+      message: sentinel,
+      retryable: false,
+    },
+  }))
+
+  assert.deepEqual(events, [
+    {
+      type: 'progress',
+      requestId,
+      operation: 'chat.generate',
+      completed: 0,
+      total: null,
+      message: 'Generating reply',
+    },
+    {
+      type: 'chat-error',
+      requestId,
+      chatId: 'chat_fixture',
+      code: 'knowledge.answer_failed',
+      message: 'The grounded answer could not be completed safely.',
+      retryable: true,
+    },
+  ])
+  assert.equal(JSON.stringify(events).includes(sentinel), false)
+})
+
+test('Backend replaces private Knowledge progress and failures with fixed text', async () => {
+  const sentinel = String.raw`C:\Users\Actor\Secret\private.pdf`
+  const mutation = readyKnowledgeBackend()
+  const { requestId } = mutation.backend.beginRebuildProjectKnowledge(
+    'project_fixture',
+  )
+  mutation.backend.handleProtocolLine(JSON.stringify({
+    type: 'progress',
+    protocol: fixtures.protocol,
+    requestId,
+    operation: 'knowledge.lifecycle',
+    completed: 0,
+    total: 100,
+    message: sentinel,
+  }))
+  mutation.backend.handleProtocolLine(JSON.stringify({
+    type: 'response',
+    protocol: fixtures.protocol,
+    id: requestId,
+    ok: false,
+    error: {
+      code: 'knowledge.storage_failed',
+      message: sentinel,
+      retryable: false,
+    },
+  }))
+  assert.deepEqual(mutation.events, [
+    {
+      type: 'progress',
+      requestId,
+      operation: 'knowledge.lifecycle',
+      completed: 0,
+      total: 100,
+      message: 'Updating Project Sources',
+    },
+    {
+      type: 'knowledge-operation-error',
+      requestId,
+      projectId: 'project_fixture',
+      code: 'knowledge.storage_failed',
+      message: 'Project Sources could not be stored safely.',
+      retryable: true,
+    },
+  ])
+
+  const listingBackend = readyKnowledgeBackend()
+  const listing = listingBackend.backend.listProjectKnowledge('project_fixture')
+  const listRequest = JSON.parse(listingBackend.writes.at(-1))
+  listingBackend.backend.handleProtocolLine(JSON.stringify({
+    type: 'response',
+    protocol: fixtures.protocol,
+    id: listRequest.id,
+    ok: false,
+    error: {
+      code: 'adapter.private_failure',
+      message: sentinel,
+      retryable: false,
+    },
+  }))
+  await assert.rejects(listing, /Project Source operation failed safely/)
+
+  const exportBackend = readyKnowledgeBackend()
+  const exporting = exportBackend.backend.exportProjectSource(
+    'project_fixture',
+    'attachment_source',
+    String.raw`D:\Exports\notes.txt`,
+    false,
+    {
+      fileName: 'notes.txt',
+      mediaType: 'text/plain',
+      bytesWritten: 12,
+    },
+  )
+  const exportRequest = JSON.parse(exportBackend.writes.at(-1))
+  exportBackend.backend.handleProtocolLine(JSON.stringify({
+    type: 'progress',
+    protocol: fixtures.protocol,
+    requestId: exportRequest.id,
+    operation: 'knowledge.export',
+    completed: 0,
+    total: 1,
+    message: sentinel,
+  }))
+  exportBackend.backend.handleProtocolLine(JSON.stringify({
+    type: 'response',
+    protocol: fixtures.protocol,
+    id: exportRequest.id,
+    ok: false,
+    error: {
+      code: 'knowledge.unauthorized',
+      message: sentinel,
+      retryable: true,
+    },
+  }))
+  await assert.rejects(exporting, /not authorized/)
+  assert.equal(
+    JSON.stringify([
+      ...mutation.events,
+      ...listingBackend.events,
+      ...exportBackend.events,
+    ]).includes(sentinel),
+    false,
+  )
+  assert.deepEqual(
+    exportBackend.events.find(
+      (event) => event.type === 'knowledge-operation-error',
+    ),
+    {
+      type: 'knowledge-operation-error',
+      requestId: exportRequest.id,
+      projectId: 'project_fixture',
+      code: 'knowledge.unauthorized',
+      message: 'The Project Source request is not authorized.',
+      retryable: false,
+    },
+  )
+  assert.equal(
+    exportBackend.backend.getSnapshot().activeKnowledgeOperation,
+    undefined,
+  )
+})
+
+test('Backend fails closed before publishing a mismatched export receipt', async () => {
+  const { backend, events, getKillCount, writes } = readyKnowledgeBackend()
+  const exporting = backend.exportProjectSource(
+    'project_fixture',
+    'attachment_source',
+    String.raw`D:\Exports\notes.txt`,
+    false,
+    {
+      fileName: 'notes.txt',
+      mediaType: 'text/plain',
+      bytesWritten: 12,
+    },
+  )
+  const request = JSON.parse(writes.at(-1))
+  backend.handleProtocolLine(JSON.stringify({
+    type: 'response',
+    protocol: fixtures.protocol,
+    id: request.id,
+    ok: true,
+    result: {
+      kind: 'knowledge.export',
+      fileName: 'different.txt',
+      mediaType: 'text/plain',
+      bytesWritten: 12,
+    },
+  }))
+
+  await assert.rejects(exporting, /does not match its authenticated Source/)
+  assert.equal(
+    events.some((event) => event.type === 'knowledge-export-settled'),
+    false,
+  )
+  assert.equal(backend.getSnapshot().status, 'error')
+  assert.equal(getKillCount(), 1)
+})
+
+test('Backend rejects a Knowledge event for another Project', () => {
+  const { backend, getKillCount } = readyKnowledgeBackend()
+  const { requestId } = backend.beginRebuildProjectKnowledge(
+    'project_fixture',
+  )
+  backend.handleProtocolLine(eventFrame(
+    requestId,
+    'knowledge.operation.changed',
+    {
+      projectId: 'project_other',
+      operation: knowledgeOperation({
+        projectId: 'project_other',
+        kind: 'rebuild',
+        state: 'running',
+        phase: 'indexing',
+        progressPercent: 25,
+        stagedSourceId: null,
+      }),
+    },
+  ))
+  assert.equal(backend.getSnapshot().status, 'error')
+  assert.equal(getKillCount(), 1)
+})
+
+test('Backend rejects a Knowledge event for another mutation or Source', () => {
+  const invalidOperations = [
+    knowledgeOperation({
+      kind: 'delete',
+      state: 'running',
+      phase: 'cleaning',
+      progressPercent: 25,
+      targetSourceId: 'attachment_source',
+      stagedSourceId: null,
+    }),
+    knowledgeOperation({
+      kind: 'reindex',
+      state: 'running',
+      phase: 'indexing',
+      progressPercent: 25,
+      targetSourceId: 'attachment_other',
+      stagedSourceId: null,
+    }),
+  ]
+
+  for (const operation of invalidOperations) {
+    const { backend, getKillCount } = readyKnowledgeBackend()
+    const { requestId } = backend.beginReindexProjectSource(
+      'project_fixture',
+      'attachment_source',
+    )
+    backend.handleProtocolLine(eventFrame(
+      requestId,
+      'knowledge.operation.changed',
+      { projectId: 'project_fixture', operation },
+    ))
+    assert.equal(backend.getSnapshot().status, 'error')
+    assert.equal(getKillCount(), 1)
+  }
 })
 
 test('Backend rejects a pending Settings action on a malformed result', async () => {

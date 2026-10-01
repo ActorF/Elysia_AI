@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 from pathlib import Path
-from threading import Barrier
+from threading import Barrier, Event
+from typing import BinaryIO, cast
 
 import pytest
 
@@ -41,6 +43,7 @@ from documents import (
 from knowledge_lifecycle import (
     KNOWLEDGE_OPERATION_SCHEMA_VERSION,
     JsonKnowledgeOperationRepository,
+    KnowledgeExportCancelledError,
     KnowledgeExportService,
     KnowledgeLifecycleConflictError,
     KnowledgeLifecycleDataCorruptionError,
@@ -178,6 +181,75 @@ class _RecordingAttachmentService(AttachmentService):
         )
 
 
+class _BlockingBinaryReader:
+    """Pause the second read so export cancellation wins deterministically."""
+
+    def __init__(
+        self,
+        source: BinaryIO,
+        blocked: Event,
+        release: Event,
+    ) -> None:
+        """Wrap verified bytes with an Event-controlled second read."""
+
+        self._source = source
+        self._blocked = blocked
+        self._release = release
+        self._read_count = 0
+
+    def read(self, size: int = -1) -> bytes:
+        """Block after one full copy iteration and then return source bytes."""
+
+        self._read_count += 1
+        if self._read_count == 2:
+            self._blocked.set()
+            if not self._release.wait(2.0):
+                raise RuntimeError("Timed out waiting to release fixture read.")
+        value = self._source.read(size)
+        if not isinstance(value, bytes):
+            raise TypeError("Verified binary fixture returned non-bytes data.")
+        return value
+
+
+class _BlockingAttachmentReader:
+    """Delegate metadata while controlling verified original reads."""
+
+    def __init__(
+        self,
+        delegate: AttachmentService,
+        blocked: Event,
+        release: Event,
+    ) -> None:
+        """Compose a real attachment service with two synchronization events."""
+
+        self._delegate = delegate
+        self._blocked = blocked
+        self._release = release
+
+    def snapshot_file(
+        self,
+        scope: AttachmentScope,
+        attachment_id: str,
+    ) -> FileCatalogSnapshot:
+        """Return the delegate's exact ownership/original snapshot."""
+
+        return self._delegate.snapshot_file(scope, attachment_id)
+
+    @contextmanager
+    def open_verified_file(
+        self,
+        scope: AttachmentScope,
+        file_id: str,
+    ) -> Iterator[BinaryIO]:
+        """Yield verified bytes whose second read waits for test release."""
+
+        with self._delegate.open_verified_file(scope, file_id) as source:
+            yield cast(
+                BinaryIO,
+                _BlockingBinaryReader(source, self._blocked, self._release),
+            )
+
+
 class _RecordingProjectSourceRepository(JsonProjectSourceRepository):
     """Retain the real strict catalog while exposing publication ordering."""
 
@@ -263,11 +335,14 @@ class _DeterministicIndexer:
         self.fail_prepare_once: Exception | None = None
         self.fail_delete_once: Exception | None = None
         self.after_commit_once: Callable[[], None] | None = None
+        self.cancel_during_prepare_once: Event | None = None
 
     def prepare_document(
         self,
         scope: AttachmentScope,
         link_id: str,
+        *,
+        cancel_requested: Callable[[], bool] | None = None,
     ) -> EmbeddedDocument:
         """Prepare real immutable lineage without mutating the vector map."""
 
@@ -305,7 +380,14 @@ class _DeterministicIndexer:
         chunked = StructureAwareDocumentChunker().chunk(
             ConservativeDocumentCleaner().clean(loaded)
         )
-        return self._embedder.embed_document(chunked)
+        cancellation = self.cancel_during_prepare_once
+        self.cancel_during_prepare_once = None
+        if cancellation is not None:
+            cancellation.set()
+        return self._embedder.embed_document(
+            chunked,
+            cancel_requested=cancel_requested,
+        )
 
     def commit_document(
         self,
@@ -326,11 +408,18 @@ class _DeterministicIndexer:
         self,
         scope: AttachmentScope,
         link_ids: tuple[str, ...],
+        *,
+        cancel_requested: Callable[[], bool] | None = None,
     ) -> tuple[EmbeddedDocument, ...]:
         """Prepare all sources before atomically replacing one scope map."""
 
         prepared = tuple(
-            self.prepare_document(scope, link_id) for link_id in link_ids
+            self.prepare_document(
+                scope,
+                link_id,
+                cancel_requested=cancel_requested,
+            )
+            for link_id in link_ids
         )
         self._events.append(("vector_rebuild", scope.id))
         retained = {
@@ -471,6 +560,33 @@ def _operation(
         target_link_id=target_link_id,
         source_catalog_fingerprint=_digest("source-catalog"),
     )
+
+
+def test_archived_project_keeps_read_only_source_and_operation_views(
+    lifecycle_environment: _Harness,
+    tmp_path: Path,
+) -> None:
+    """Show archived corpus history while continuing to reject mutations."""
+
+    harness = lifecycle_environment
+    completed = harness.service.add_project_source(
+        harness.project.project_id,
+        _source_path(tmp_path, "archive.txt", "archived evidence"),
+    )
+    archived = replace(harness.project, is_archived=True)
+    harness.projects.projects[archived.project_id] = archived
+
+    sources = harness.service.list_project_sources(archived.project_id)
+    operations = harness.service.list_operations(archived.project_id)
+
+    assert len(sources) == 1
+    assert sources[0].state == "ready"
+    assert operations[-1].operation_id == completed.operation_id
+    with pytest.raises(KnowledgeLifecycleConflictError):
+        harness.service.reindex_project_source(
+            archived.project_id,
+            sources[0].source.link_id,
+        )
 
 
 def test_json_operation_journal_is_strict_cas_and_cancel_safe(
@@ -1078,6 +1194,67 @@ def test_reindex_cancellation_after_prepare_never_commits(
         harness.indexer.vectors[(harness.scope, added.staged_link_id)]
         == old_vector
     )
+
+
+@pytest.mark.parametrize("kind", ("add", "replace", "reindex", "rebuild"))
+def test_indexing_event_cancellation_uses_durable_lifecycle_cleanup(
+    lifecycle_environment: _Harness,
+    tmp_path: Path,
+    kind: str,
+) -> None:
+    """Cancel every indexing command inside preparation without generic failure."""
+
+    harness = lifecycle_environment
+    existing_link: str | None = None
+    if kind != "add":
+        added = harness.service.add_project_source(
+            harness.project.project_id,
+            _source_path(tmp_path, f"existing-{kind}.txt", "existing"),
+        )
+        existing_link = added.staged_link_id
+        assert existing_link is not None
+    before = harness.source_repository.read_entry(harness.scope)
+    harness.events.clear()
+    cancelled = Event()
+    harness.indexer.cancel_during_prepare_once = cancelled
+
+    if kind == "add":
+        result = harness.service.add_project_source(
+            harness.project.project_id,
+            _source_path(tmp_path, "cancel-add.txt", "cancel add"),
+            cancel_requested=cancelled.is_set,
+        )
+    elif kind == "replace":
+        assert existing_link is not None
+        result = harness.service.replace_project_source(
+            harness.project.project_id,
+            existing_link,
+            _source_path(tmp_path, "cancel-replace.txt", "cancel replace"),
+            cancel_requested=cancelled.is_set,
+        )
+    elif kind == "reindex":
+        assert existing_link is not None
+        result = harness.service.reindex_project_source(
+            harness.project.project_id,
+            existing_link,
+            cancel_requested=cancelled.is_set,
+        )
+    else:
+        result = harness.service.rebuild_project_sources(
+            harness.project.project_id,
+            cancel_requested=cancelled.is_set,
+        )
+
+    assert cancelled.is_set()
+    assert result.state == "cancelled"
+    assert result.phase == "completed"
+    assert result.error_code is None
+    assert harness.operations.list_recoverable() == ()
+    assert harness.source_repository.read_entry(harness.scope) == before
+    event_names = [event[0] for event in harness.events]
+    assert "vector_commit" not in event_names
+    assert "vector_rebuild" not in event_names
+    assert "catalog_publish" not in event_names
 
 
 def test_restart_honors_preparing_cancellation_before_source_selection(
@@ -1843,3 +2020,56 @@ def test_export_reads_verified_original_and_never_overwrites_by_default(
         )
     assert blocked.read_text(encoding="utf-8") == "keep me"
     assert tuple(tmp_path.glob(".blocked.txt.*.export.tmp")) == ()
+
+
+def test_export_cancel_during_multiblock_copy_removes_temporary_file(
+    lifecycle_environment: _Harness,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cancel a blocked copy without publishing either partial path."""
+
+    harness = lifecycle_environment
+    source = _source_path(
+        tmp_path,
+        "cancel-export.txt",
+        "four-block-export",
+    )
+    harness.attachments.stage_files(harness.scope, (source,))
+    link_id = harness.attachments.snapshot_files(
+        harness.scope
+    ).ownerships[0].link_id
+    read_blocked = Event()
+    release_read = Event()
+    cancel_requested = Event()
+    reader = _BlockingAttachmentReader(
+        harness.attachments,
+        read_blocked,
+        release_read,
+    )
+    exporter = KnowledgeExportService(
+        harness.projects,
+        reader,
+        harness.lease,
+    )
+    destination = tmp_path / "cancelled-export.txt"
+    monkeypatch.setattr("knowledge_lifecycle.export._COPY_BUFFER_BYTES", 4)
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(
+            exporter.export_original,
+            harness.project.project_id,
+            link_id,
+            destination,
+            should_cancel=cancel_requested.is_set,
+        )
+        try:
+            assert read_blocked.wait(2.0)
+            cancel_requested.set()
+        finally:
+            release_read.set()
+        with pytest.raises(KnowledgeExportCancelledError):
+            future.result(timeout=2.0)
+
+    assert not destination.exists()
+    assert tuple(tmp_path.glob(".cancelled-export.txt.*.export.tmp")) == ()

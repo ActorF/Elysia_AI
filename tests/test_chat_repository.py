@@ -9,6 +9,10 @@ from pathlib import Path
 import pytest
 
 from chats import (
+    ChatGroundedAnswer,
+    ChatGroundedCitation,
+    ChatGroundedStatement,
+    ChatGroundedTextLocation,
     ChatDataCorruptionError,
     ChatId,
     ChatMessageId,
@@ -70,6 +74,35 @@ def test_complete_chat_survives_repository_restart(
     assistant_message = create_chat_message(
         role="assistant",
         content="I read the file.",
+        grounded_answer=ChatGroundedAnswer(
+            status="answered",
+            context_passage_count=1,
+            statements=(
+                ChatGroundedStatement(
+                    statement_id="statement_001",
+                    kind="source_fact",
+                    text="I read the file.",
+                    citation_ids=("citation_" + "a" * 64,),
+                ),
+            ),
+            citations=(
+                ChatGroundedCitation(
+                    citation_id="citation_" + "a" * 64,
+                    kind="prose",
+                    excerpt="I read the file.",
+                    file_name="notes.txt",
+                    media_type="text/plain",
+                    page_number=None,
+                    locations=(
+                        ChatGroundedTextLocation(
+                            block_ordinal=0,
+                            source_start_code_point=0,
+                            source_end_code_point=16,
+                        ),
+                    ),
+                ),
+            ),
+        ),
         created_at=BASE_TIME + timedelta(seconds=2),
     )
     summary = ChatSummary(

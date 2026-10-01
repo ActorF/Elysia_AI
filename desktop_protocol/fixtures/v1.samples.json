@@ -34,7 +34,11 @@
         "protocol": { "name": "elysia.desktop", "version": 1 },
         "id": "chat-1",
         "method": "chat.stream",
-        "params": { "chatId": "chat_fixture", "message": "Hello" }
+        "params": {
+          "chatId": "chat_fixture",
+          "message": "Hello",
+          "useProjectKnowledge": true
+        }
       }
     },
     {
@@ -47,7 +51,8 @@
         "params": {
           "chatId": "chat_fixture",
           "userMessageId": "message_user",
-          "assistantMessageId": "message_assistant"
+          "assistantMessageId": "message_assistant",
+          "useProjectKnowledge": false
         }
       }
     },
@@ -183,6 +188,114 @@
         "params": {
           "scope": { "kind": "chat", "id": "chat_fixture" },
           "attachmentId": "attachment_fixture"
+        }
+      }
+    },
+    {
+      "name": "knowledge list request",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "knowledge-list-1",
+        "method": "knowledge.list",
+        "params": { "projectId": "project_fixture" }
+      }
+    },
+    {
+      "name": "knowledge source add request",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "knowledge-add-1",
+        "method": "knowledge.source.add",
+        "params": {
+          "projectId": "project_fixture",
+          "sourcePaths": ["D:\\Notes\\course.md"]
+        }
+      }
+    },
+    {
+      "name": "knowledge source replace request",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "knowledge-replace-1",
+        "method": "knowledge.source.replace",
+        "params": {
+          "projectId": "project_fixture",
+          "sourceId": "attachment_source",
+          "sourcePath": "D:\\Notes\\replacement.md"
+        }
+      }
+    },
+    {
+      "name": "knowledge source reindex request",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "knowledge-reindex-1",
+        "method": "knowledge.source.reindex",
+        "params": {
+          "projectId": "project_fixture",
+          "sourceId": "attachment_source"
+        }
+      }
+    },
+    {
+      "name": "knowledge source delete request",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "knowledge-delete-1",
+        "method": "knowledge.source.delete",
+        "params": {
+          "projectId": "project_fixture",
+          "sourceId": "attachment_source"
+        }
+      }
+    },
+    {
+      "name": "knowledge project rebuild request",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "knowledge-rebuild-1",
+        "method": "knowledge.project.rebuild",
+        "params": { "projectId": "project_fixture" }
+      }
+    },
+    {
+      "name": "knowledge project revoke request",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "knowledge-revoke-1",
+        "method": "knowledge.project.revoke",
+        "params": { "projectId": "project_fixture" }
+      }
+    },
+    {
+      "name": "knowledge recover request",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "knowledge-recover-1",
+        "method": "knowledge.recover",
+        "params": { "projectId": "project_fixture" }
+      }
+    },
+    {
+      "name": "knowledge source export request",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "knowledge-export-1",
+        "method": "knowledge.source.export",
+        "params": {
+          "projectId": "project_fixture",
+          "sourceId": "attachment_source",
+          "destination": "D:\\Exports\\course.md",
+          "overwrite": false
         }
       }
     },
@@ -527,7 +640,39 @@
                     "mediaType": "text/plain",
                     "sizeBytes": 12
                   }
-                ]
+                ],
+                "groundedAnswer": {
+                  "status": "answered",
+                  "contextPassageCount": 1,
+                  "statements": [
+                    {
+                      "statementId": "statement_007",
+                      "kind": "source_fact",
+                      "text": "Hello back",
+                      "citationIds": [
+                        "citation_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                      ]
+                    }
+                  ],
+                  "citations": [
+                    {
+                      "citationId": "citation_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                      "kind": "prose",
+                      "excerpt": "Hello back is recorded in the note.",
+                      "fileName": "note.txt",
+                      "mediaType": "text/plain",
+                      "pageNumber": null,
+                      "locations": [
+                        {
+                          "kind": "text",
+                          "blockOrdinal": 0,
+                          "sourceStartCodePoint": 0,
+                          "sourceEndCodePoint": 10
+                        }
+                      ]
+                    }
+                  ]
+                }
               }
             ]
           },
@@ -580,6 +725,61 @@
           ],
           "maxFileBytes": 16777216,
           "maxFileCount": 10
+        }
+      }
+    },
+    {
+      "name": "knowledge state response",
+      "message": {
+        "type": "response",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "knowledge-list-1",
+        "ok": true,
+        "result": {
+          "kind": "knowledge.state",
+          "projectId": "project_fixture",
+          "sources": [
+            {
+              "sourceId": "attachment_source",
+              "fileName": "course.md",
+              "mediaType": "text/markdown",
+              "sizeBytes": 128,
+              "state": "ready",
+              "publishedAt": "2026-09-29T12:00:01+00:00",
+              "operationId": null
+            }
+          ],
+          "operations": [
+            {
+              "operationId": "knowledge_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "projectId": "project_fixture",
+              "kind": "add",
+              "state": "succeeded",
+              "phase": "completed",
+              "progressPercent": 100,
+              "attempt": 1,
+              "createdAt": "2026-09-29T12:00:00+00:00",
+              "updatedAt": "2026-09-29T12:00:01+00:00",
+              "errorCode": null,
+              "targetSourceId": null,
+              "stagedSourceId": "attachment_source"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "knowledge export response",
+      "message": {
+        "type": "response",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "knowledge-export-1",
+        "ok": true,
+        "result": {
+          "kind": "knowledge.export",
+          "fileName": "course.md",
+          "mediaType": "text/markdown",
+          "bytesWritten": 128
         }
       }
     },
@@ -1052,6 +1252,58 @@
           "failedSentences": 1
         }
       }
+    },
+    {
+      "name": "knowledge operation changed event",
+      "message": {
+        "type": "event",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "event": "knowledge.operation.changed",
+        "requestId": "knowledge-add-1",
+        "data": {
+          "projectId": "project_fixture",
+          "operation": {
+            "operationId": "knowledge_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "projectId": "project_fixture",
+            "kind": "add",
+            "state": "running",
+            "phase": "indexing",
+            "progressPercent": 50,
+            "attempt": 1,
+            "createdAt": "2026-09-29T12:01:00+00:00",
+            "updatedAt": "2026-09-29T12:01:01+00:00",
+            "errorCode": null,
+            "targetSourceId": null,
+            "stagedSourceId": "attachment_source"
+          }
+        }
+      }
+    },
+    {
+      "name": "knowledge operation completed event",
+      "message": {
+        "type": "event",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "event": "knowledge.operation.completed",
+        "requestId": "knowledge-add-1",
+        "data": {
+          "projectId": "project_fixture",
+          "operation": {
+            "operationId": "knowledge_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "projectId": "project_fixture",
+            "kind": "add",
+            "state": "succeeded",
+            "phase": "completed",
+            "progressPercent": 100,
+            "attempt": 1,
+            "createdAt": "2026-09-29T12:01:00+00:00",
+            "updatedAt": "2026-09-29T12:01:02+00:00",
+            "errorCode": null,
+            "targetSourceId": null,
+            "stagedSourceId": "attachment_source"
+          }
+        }
+      }
     }
   ],
   "invalidClientMessages": [
@@ -1095,6 +1347,33 @@
         "id": "unknown-1",
         "method": "memory.write",
         "params": {}
+      }
+    },
+    {
+      "name": "chat knowledge flag is not boolean",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "chat-knowledge-invalid-1",
+        "method": "chat.stream",
+        "params": {
+          "chatId": "chat_fixture",
+          "message": "Hello",
+          "useProjectKnowledge": "yes"
+        }
+      }
+    },
+    {
+      "name": "knowledge add rejects relative source path",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "knowledge-add-invalid-1",
+        "method": "knowledge.source.add",
+        "params": {
+          "projectId": "project_fixture",
+          "sourcePaths": ["course.md"]
+        }
       }
     },
     {
@@ -1515,6 +1794,154 @@
         "id": "unknown-result-1",
         "ok": true,
         "result": { "ready": true }
+      }
+    },
+    {
+      "name": "knowledge state exposes a private source path",
+      "message": {
+        "type": "response",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "knowledge-list-invalid-1",
+        "ok": true,
+        "result": {
+          "kind": "knowledge.state",
+          "projectId": "project_fixture",
+          "sources": [
+            {
+              "sourceId": "attachment_source",
+              "fileName": "course.md",
+              "mediaType": "text/markdown",
+              "sizeBytes": 128,
+              "state": "ready",
+              "publishedAt": "2026-09-29T12:00:01+00:00",
+              "operationId": null,
+              "sourcePath": "D:\\Notes\\course.md"
+            }
+          ],
+          "operations": []
+        }
+      }
+    },
+    {
+      "name": "knowledge export response exposes its destination",
+      "message": {
+        "type": "response",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "knowledge-export-invalid-1",
+        "ok": true,
+        "result": {
+          "kind": "knowledge.export",
+          "fileName": "course.md",
+          "mediaType": "text/markdown",
+          "bytesWritten": 128,
+          "destination": "D:\\Exports\\course.md"
+        }
+      }
+    },
+    {
+      "name": "knowledge event crosses its Project boundary",
+      "runtimeOnly": true,
+      "message": {
+        "type": "event",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "event": "knowledge.operation.changed",
+        "requestId": "knowledge-add-invalid-1",
+        "data": {
+          "projectId": "project_other",
+          "operation": {
+            "operationId": "knowledge_cccccccccccccccccccccccccccccccc",
+            "projectId": "project_fixture",
+            "kind": "add",
+            "state": "running",
+            "phase": "indexing",
+            "progressPercent": 50,
+            "attempt": 1,
+            "createdAt": "2026-09-29T12:02:00+00:00",
+            "updatedAt": "2026-09-29T12:02:01+00:00",
+            "errorCode": null,
+            "targetSourceId": null,
+            "stagedSourceId": "attachment_source"
+          }
+        }
+      }
+    },
+    {
+      "name": "knowledge completed event carries a nonterminal operation",
+      "runtimeOnly": true,
+      "message": {
+        "type": "event",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "event": "knowledge.operation.completed",
+        "requestId": "knowledge-add-invalid-2",
+        "data": {
+          "projectId": "project_fixture",
+          "operation": {
+            "operationId": "knowledge_dddddddddddddddddddddddddddddddd",
+            "projectId": "project_fixture",
+            "kind": "add",
+            "state": "recovery_required",
+            "phase": "cleaning",
+            "progressPercent": 75,
+            "attempt": 2,
+            "createdAt": "2026-09-29T12:02:00+00:00",
+            "updatedAt": "2026-09-29T12:02:02+00:00",
+            "errorCode": "cleanup_failed",
+            "targetSourceId": null,
+            "stagedSourceId": "attachment_source"
+          }
+        }
+      }
+    },
+    {
+      "name": "grounded answer is attached to a user message",
+      "message": {
+        "type": "response",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "chat-list-grounded-invalid-1",
+        "ok": true,
+        "result": {
+          "activeChat": {
+            "chatId": "chat_grounded_invalid",
+            "title": "Grounded Chat",
+            "mode": "chat",
+            "createdAt": "2026-09-29T12:03:00+00:00",
+            "updatedAt": "2026-09-29T12:03:01+00:00",
+            "messageCount": 1,
+            "projectId": "project_fixture",
+            "modelName": "qwen3.5:9b",
+            "pinned": false,
+            "archived": false,
+            "messages": [
+              {
+                "messageId": "message_grounded_invalid",
+                "role": "user",
+                "content": "Where is the evidence?",
+                "createdAt": "2026-09-29T12:03:01+00:00",
+                "attachments": [],
+                "groundedAnswer": {
+                  "status": "insufficient_evidence",
+                  "contextPassageCount": 0,
+                  "statements": [],
+                  "citations": []
+                }
+              }
+            ]
+          },
+          "chats": [
+            {
+              "chatId": "chat_grounded_invalid",
+              "title": "Grounded Chat",
+              "mode": "chat",
+              "createdAt": "2026-09-29T12:03:00+00:00",
+              "updatedAt": "2026-09-29T12:03:01+00:00",
+              "messageCount": 1,
+              "projectId": "project_fixture",
+              "modelName": "qwen3.5:9b",
+              "pinned": false,
+              "archived": false
+            }
+          ]
+        }
       }
     },
     {

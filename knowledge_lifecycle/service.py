@@ -30,6 +30,7 @@ from chats import ProjectId
 from documents import (
     DocumentError,
     DocumentLoaderService,
+    DocumentOperationCancelledError,
     DocumentRoute,
     DocumentSource,
     EmbeddedDocument,
@@ -102,6 +103,8 @@ class _DocumentIndexer(Protocol):
         self,
         scope: AttachmentScope,
         link_id: str,
+        *,
+        cancel_requested: Callable[[], bool] | None = None,
     ) -> EmbeddedDocument:
         """Process and embed one source without mutating vector storage."""
 
@@ -120,6 +123,8 @@ class _DocumentIndexer(Protocol):
         self,
         scope: AttachmentScope,
         link_ids: tuple[str, ...],
+        *,
+        cancel_requested: Callable[[], bool] | None = None,
     ) -> tuple[EmbeddedDocument, ...]:
         """Atomically replace every vector generation in one scope."""
 
@@ -349,7 +354,7 @@ class KnowledgeLifecycleService:
     ) -> tuple[KnowledgeSourceView, ...]:
         """Return every indexable ownership with its authorization health."""
 
-        scope = self._active_project_scope(project_id)
+        scope = self._readable_project_scope(project_id)
         with self._mutation_lease.hold_mutation():
             files = self._indexable_catalog(scope)
             sources = sources_from_catalog(files, scope)
@@ -439,7 +444,7 @@ class KnowledgeLifecycleService:
         scope = (
             None
             if project_id is None
-            else self._active_project_scope(project_id)
+            else self._readable_project_scope(project_id)
         )
         operations = self._operation_repository.list_operations()
         if scope is None:
@@ -533,6 +538,10 @@ class KnowledgeLifecycleService:
                 embedded = self._document_indexer.prepare_document(
                     scope,
                     staged_link,
+                    cancel_requested=lambda: self._cancel_now(
+                        job.operation_id,
+                        cancel_requested,
+                    ),
                 )
                 job = self._refresh_operation(job)
                 if self._cancel_now(job.operation_id, cancel_requested):
@@ -551,6 +560,8 @@ class KnowledgeLifecycleService:
                 return self._succeed(job, snapshot)
             except AttachmentImportCancelledError:
                 return self._cancel_without_side_effect(job)
+            except DocumentOperationCancelledError:
+                return self._cancel_staged(job)
             except KnowledgeLifecycleError:
                 rollback_completed = staged_link is None
                 if staged_link is not None and not vector_may_be_committed:
@@ -666,6 +677,10 @@ class KnowledgeLifecycleService:
                 embedded = self._document_indexer.prepare_document(
                     scope,
                     staged_link,
+                    cancel_requested=lambda: self._cancel_now(
+                        job.operation_id,
+                        cancel_requested,
+                    ),
                 )
                 job = self._refresh_operation(job)
                 if self._cancel_now(job.operation_id, cancel_requested):
@@ -697,6 +712,8 @@ class KnowledgeLifecycleService:
                 return self._succeed(job, snapshot)
             except AttachmentImportCancelledError:
                 return self._cancel_without_side_effect(job)
+            except DocumentOperationCancelledError:
+                return self._cancel_staged(job)
             except KnowledgeLifecycleError:
                 rollback_completed = staged_link is None
                 if staged_link is not None and not point_of_no_return:
@@ -773,6 +790,10 @@ class KnowledgeLifecycleService:
                 embedded = self._document_indexer.prepare_document(
                     scope,
                     link_id,
+                    cancel_requested=lambda: self._cancel_now(
+                        job.operation_id,
+                        cancel_requested,
+                    ),
                 )
                 if self._cancel_now(job.operation_id, cancel_requested):
                     return self._cancel_without_side_effect(job)
@@ -787,6 +808,8 @@ class KnowledgeLifecycleService:
                     ),
                 )
                 return self._succeed(job, snapshot)
+            except DocumentOperationCancelledError:
+                return self._cancel_without_side_effect(job)
             except KnowledgeLifecycleError:
                 self._fail_operation(
                     job,
@@ -833,10 +856,18 @@ class KnowledgeLifecycleService:
                     phase="indexing",
                     progress_percent=30,
                 )
+                # The rebuild adapter owns one atomic store transaction. Mark
+                # its call conservatively before entry so a store that commits
+                # and then raises still enters durable recovery. The dedicated
+                # cancellation exception promises it was raised pre-commit.
                 vector_may_be_committed = True
                 embedded = self._document_indexer.rebuild_scope(
                     scope,
                     tuple(source.link_id for source in sources),
+                    cancel_requested=lambda: self._cancel_now(
+                        job.operation_id,
+                        cancel_requested,
+                    ),
                 )
                 overrides = {
                     document.source.link_id: self._generation(document)
@@ -849,6 +880,8 @@ class KnowledgeLifecycleService:
                     fallback_sources=(),
                 )
                 return self._succeed(job, snapshot)
+            except DocumentOperationCancelledError:
+                return self._cancel_without_side_effect(job)
             except KnowledgeLifecycleError:
                 self._fail_operation(
                     job,
@@ -1998,6 +2031,39 @@ class KnowledgeLifecycleService:
         ):
             raise KnowledgeLifecycleConflictError(
                 "Project is not active."
+            )
+        try:
+            return AttachmentScope(kind="project", id=project_id)
+        except ValueError:
+            raise KnowledgeLifecycleValidationError(
+                "Project identifier is invalid."
+            ) from None
+
+    def _readable_project_scope(self, project_id: object) -> AttachmentScope:
+        """Resolve an existing Project while allowing archived read-only UI."""
+
+        if type(project_id) is not str:
+            raise KnowledgeLifecycleValidationError(
+                "Project identifier is invalid."
+            )
+        try:
+            project = self._project_repository.get_project(
+                ProjectId(project_id)
+            )
+        except ProjectNotFoundError:
+            raise KnowledgeLifecycleNotFoundError(
+                "Project is unavailable."
+            ) from None
+        except Exception:
+            raise KnowledgeLifecycleStorageError(
+                "Project authority could not be loaded."
+            ) from None
+        if (
+            type(project) is not Project
+            or str(project.project_id) != project_id
+        ):
+            raise KnowledgeLifecycleConflictError(
+                "Project identity changed while loading Sources."
             )
         try:
             return AttachmentScope(kind="project", id=project_id)

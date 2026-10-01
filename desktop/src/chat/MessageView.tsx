@@ -9,6 +9,7 @@
 import {
   isValidElement,
   useEffect,
+  useId,
   useRef,
   useState,
   type ReactNode,
@@ -22,6 +23,7 @@ import type {
   RetryEditDraft,
   RetryableChatPair,
 } from './types.ts'
+import '../knowledge/Knowledge.css'
 
 interface MessageViewProps {
   message: ChatMessage
@@ -89,6 +91,149 @@ function statusLabel(message: ChatMessage): string {
     case 'cancelled':
       return 'Stopped'
   }
+}
+
+type GroundedAnswer = NonNullable<ChatMessage['groundedAnswer']>
+type GroundedCitation = GroundedAnswer['citations'][number]
+
+function statementKindLabel(kind: GroundedAnswer['statements'][number]['kind']): string {
+  switch (kind) {
+    case 'source_fact':
+      return 'Source fact'
+    case 'model_summary':
+      return 'Model summary'
+    case 'inference':
+      return 'Inference'
+  }
+}
+
+function citationLocationLabel(citation: GroundedCitation): string {
+  const labels: string[] = []
+  if (citation.pageNumber !== null) {
+    labels.push(`Page ${citation.pageNumber}`)
+  }
+  for (const [index, location] of citation.locations.entries()) {
+    const locationLabels = [`Block ${location.blockOrdinal + 1}`]
+    if (location.kind === 'table') {
+      locationLabels.push(
+        `Row ${location.rowIndex + 1}, column ${location.columnIndex + 1}`,
+      )
+    }
+    locationLabels.push(
+      `Characters ${location.sourceStartCodePoint}–${location.sourceEndCodePoint}`,
+    )
+    labels.push(
+      citation.locations.length > 1
+        ? `Location ${index + 1}: ${locationLabels.join(' · ')}`
+        : locationLabels.join(' · '),
+    )
+  }
+  return labels.join(' · ')
+}
+
+interface GroundedAnswerViewProps {
+  answer: GroundedAnswer
+}
+
+/** Render a closed grounded answer without converting citations into web links. */
+function GroundedAnswerView({ answer }: GroundedAnswerViewProps) {
+  const [activeCitationId, setActiveCitationId] = useState<string | null>(null)
+  const detailRef = useRef<HTMLElement | null>(null)
+  const detailId = useId()
+  const citationById = new Map(
+    answer.citations.map((citation) => [citation.citationId, citation]),
+  )
+  const activeCitation = activeCitationId === null
+    ? null
+    : citationById.get(activeCitationId) ?? null
+
+  useEffect(() => {
+    if (activeCitation !== null) {
+      detailRef.current?.focus({ preventScroll: true })
+    }
+  }, [activeCitation])
+
+  if (answer.status === 'insufficient_evidence') {
+    return (
+      <div className="grounded-answer grounded-answer-insufficient" role="status">
+        <strong>Project Sources did not produce an answer.</strong>
+        <span>
+          {answer.contextPassageCount === 0
+            ? 'No relevant passages were found in the current Project corpus.'
+            : 'Relevant passages were found, but they did not support a reliable answer.'}
+        </span>
+      </div>
+    )
+  }
+
+  return (
+    <div className="grounded-answer">
+      <ol className="grounded-statement-list" aria-label="Grounded answer statements">
+        {answer.statements.map((statement) => (
+          <li key={statement.statementId} className="grounded-statement">
+            <span className={`grounded-kind grounded-kind-${statement.kind}`}>
+              {statementKindLabel(statement.kind)}
+            </span>
+            <p>{statement.text}</p>
+            <div className="grounded-citation-buttons" aria-label="Citations">
+              {statement.citationIds.map((citationId) => {
+                const citation = citationById.get(citationId)
+                if (citation === undefined) {
+                  return null
+                }
+                const citationNumber = answer.citations.findIndex(
+                  (item) => item.citationId === citationId,
+                ) + 1
+                return (
+                  <button
+                    key={citationId}
+                    type="button"
+                    className="grounded-citation-button"
+                    aria-controls={detailId}
+                    aria-expanded={activeCitationId === citationId}
+                    onClick={() => {
+                      setActiveCitationId(citationId)
+                    }}
+                  >
+                    [{citationNumber}] {citation.fileName}
+                  </button>
+                )
+              })}
+            </div>
+          </li>
+        ))}
+      </ol>
+
+      {activeCitation !== null && (
+        <section
+          ref={detailRef}
+          id={detailId}
+          className="grounded-citation-detail"
+          aria-label={`Citation from ${activeCitation.fileName}`}
+          tabIndex={-1}
+        >
+          <div className="grounded-citation-heading">
+            <div>
+              <strong>{activeCitation.fileName}</strong>
+              <span>{activeCitation.mediaType}</span>
+            </div>
+            <button
+              type="button"
+              className="grounded-citation-close"
+              aria-label="Close citation details"
+              onClick={() => { setActiveCitationId(null) }}
+            >
+              <Icon name="close" />
+            </button>
+          </div>
+          <p className="grounded-citation-location">
+            {citationLocationLabel(activeCitation)}
+          </p>
+          <blockquote>{activeCitation.excerpt}</blockquote>
+        </section>
+      )}
+    </div>
+  )
 }
 
 interface CopyButtonProps {
@@ -284,7 +429,9 @@ export function MessageView({
           </span>
         </div>
 
-        {isAssistant ? (
+        {isAssistant && message.groundedAnswer !== undefined ? (
+          <GroundedAnswerView answer={message.groundedAnswer} />
+        ) : isAssistant ? (
           <AssistantMarkdown
             text={message.text}
             onCopy={onCopy}

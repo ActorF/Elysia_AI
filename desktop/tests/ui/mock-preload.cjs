@@ -180,6 +180,74 @@ function addAttachmentFiles(scope, files) {
   return clone(nextState)
 }
 
+function defaultKnowledgeState(projectId) {
+  return {
+    kind: 'knowledge.state',
+    projectId,
+    sources: [],
+    operations: [],
+  }
+}
+
+function knowledgeStateFor(projectId) {
+  if (!knowledgeStates.has(projectId)) {
+    knowledgeStates.set(projectId, defaultKnowledgeState(projectId))
+  }
+  return knowledgeStates.get(projectId)
+}
+
+function knowledgeTimestamp() {
+  return `2026-08-25T12:${String(nextKnowledgeNumber).padStart(2, '0')}:00+00:00`
+}
+
+function completeKnowledgeOperation(projectId, kind, options = {}) {
+  const current = knowledgeStateFor(projectId)
+  const operationNumber = nextKnowledgeNumber
+  nextKnowledgeNumber += 1
+  const operationId = operationNumber.toString(16).padStart(32, '0')
+  const operation = {
+    operationId: `knowledge_${operationId}`,
+    projectId,
+    kind,
+    state: 'succeeded',
+    phase: 'completed',
+    progressPercent: 100,
+    attempt: 1,
+    createdAt: knowledgeTimestamp(),
+    updatedAt: knowledgeTimestamp(),
+    errorCode: null,
+    targetSourceId: options.targetSourceId ?? null,
+    stagedSourceId: options.stagedSourceId ?? null,
+  }
+  knowledgeStates.set(projectId, {
+    ...current,
+    operations: [...current.operations, operation],
+  })
+  const receipt = { requestId: `test-knowledge-request-${operationNumber}` }
+  queueMicrotask(() => {
+    const completedEvent = {
+      type: 'protocol-event',
+      name: 'knowledge.operation.completed',
+      requestId: receipt.requestId,
+      data: {
+        projectId,
+        operation,
+        cancellable: options.cancellable ?? true,
+      },
+    }
+    for (const listener of backendListeners) {
+      listener(clone(completedEvent))
+      listener(clone({
+        type: 'knowledge-operation-settled',
+        requestId: receipt.requestId,
+        projectId,
+        state: knowledgeStateFor(projectId),
+      }))
+    }
+  })
+  return receipt
+}
+
 let snapshot = clone(initialSnapshot)
 let chatState = defaultChatState()
 let projectState = defaultProjectState()
@@ -198,12 +266,14 @@ let chatMessages = new Map([
 let pendingGenerations = new Map()
 let selectedFiles = []
 let attachmentStates = new Map()
+let knowledgeStates = new Map()
 let nextAttachmentError = null
 let nextAttachmentPickerCancelled = false
 let nextSendError = null
 let selectedWorkspace = null
 let nextRequestNumber = 1
 let nextAttachmentNumber = 1
+let nextKnowledgeNumber = 1
 let nextCallSequence = 1
 let nextProjectUpdateNumber = 1
 let calls = []
@@ -239,8 +309,10 @@ if (reloadState !== null) {
   chatMessages = new Map(clone(reloadState.chatMessages))
   pendingGenerations = new Map(clone(reloadState.pendingGenerations))
   attachmentStates = new Map(clone(reloadState.attachmentStates))
+  knowledgeStates = new Map(clone(reloadState.knowledgeStates ?? []))
   nextRequestNumber = reloadState.nextRequestNumber
   nextAttachmentNumber = reloadState.nextAttachmentNumber
+  nextKnowledgeNumber = reloadState.nextKnowledgeNumber ?? 1
   nextProjectUpdateNumber = reloadState.nextProjectUpdateNumber
 }
 
@@ -798,6 +870,7 @@ const desktopApi = {
         kind: 'send',
         userText: request.message,
         reply: '',
+        usesProjectKnowledge: request.useProjectKnowledge === true,
         stopping: false,
       },
     }
@@ -822,6 +895,7 @@ const desktopApi = {
         userMessageId: request.userMessageId,
         assistantMessageId: request.assistantMessageId,
         reply: '',
+        usesProjectKnowledge: request.useProjectKnowledge === true,
         stopping: false,
       },
     }
@@ -1185,6 +1259,194 @@ const desktopApi = {
     return clone(state)
   },
 
+  listProjectKnowledge: async (projectId) => {
+    record('listProjectKnowledge', [projectId])
+    if (
+      snapshot.activeKnowledgeOperation !== undefined
+      || snapshot.activeGeneration?.usesProjectKnowledge === true
+      || [...pendingGenerations.values()].some(
+        (generation) => generation.request.useProjectKnowledge === true,
+      )
+    ) {
+      // Grounded generation, lifecycle mutation, and verified export share
+      // one Knowledge admission boundary. Model every owner so renderer
+      // recovery tests cannot pass against a weaker mock than the Backend.
+      throw new Error('Wait for the current knowledge operation to finish.')
+    }
+    return clone(knowledgeStateFor(projectId))
+  },
+
+  chooseProjectSources: async (projectId) => {
+    record('chooseProjectSources', [projectId])
+    if (selectedFiles.length === 0) {
+      return null
+    }
+    const current = knowledgeStateFor(projectId)
+    const additions = selectedFiles.map((file) => ({
+      sourceId: `attachment_source_${nextKnowledgeNumber++}`,
+      fileName: String(file.name),
+      mediaType: mediaTypeFor(file),
+      sizeBytes: Number(file.sizeBytes ?? file.size),
+      state: 'ready',
+      publishedAt: knowledgeTimestamp(),
+      operationId: null,
+    }))
+    selectedFiles = []
+    knowledgeStates.set(projectId, {
+      ...current,
+      sources: [...current.sources, ...additions],
+    })
+    return completeKnowledgeOperation(projectId, 'add', {
+      stagedSourceId: additions.at(-1)?.sourceId ?? null,
+    })
+  },
+
+  replaceProjectSource: async (projectId, sourceId) => {
+    record('replaceProjectSource', [projectId, sourceId])
+    if (selectedFiles.length === 0) {
+      return null
+    }
+    const current = knowledgeStateFor(projectId)
+    const replacement = selectedFiles[0]
+    selectedFiles = []
+    let found = false
+    const stagedSourceId = `attachment_source_${nextKnowledgeNumber++}`
+    const sources = current.sources.map((source) => {
+      if (source.sourceId !== sourceId) {
+        return source
+      }
+      found = true
+      return {
+        sourceId: stagedSourceId,
+        fileName: String(replacement.name),
+        mediaType: mediaTypeFor(replacement),
+        sizeBytes: Number(replacement.sizeBytes ?? replacement.size),
+        state: 'ready',
+        publishedAt: knowledgeTimestamp(),
+        operationId: null,
+      }
+    })
+    if (!found) {
+      throw new Error('Project Source does not exist.')
+    }
+    knowledgeStates.set(projectId, { ...current, sources })
+    return completeKnowledgeOperation(projectId, 'replace', {
+      targetSourceId: sourceId,
+      stagedSourceId,
+    })
+  },
+
+  reindexProjectSource: async (projectId, sourceId) => {
+    record('reindexProjectSource', [projectId, sourceId])
+    const current = knowledgeStateFor(projectId)
+    let found = false
+    const sources = current.sources.map((source) => {
+      if (source.sourceId !== sourceId) {
+        return source
+      }
+      found = true
+      return {
+        ...source,
+        state: 'ready',
+        publishedAt: knowledgeTimestamp(),
+        operationId: null,
+      }
+    })
+    if (!found) {
+      throw new Error('Project Source does not exist.')
+    }
+    knowledgeStates.set(projectId, { ...current, sources })
+    return completeKnowledgeOperation(projectId, 'reindex', {
+      targetSourceId: sourceId,
+    })
+  },
+
+  deleteProjectSource: async (projectId, sourceId) => {
+    record('deleteProjectSource', [projectId, sourceId])
+    const current = knowledgeStateFor(projectId)
+    if (!current.sources.some((source) => source.sourceId === sourceId)) {
+      throw new Error('Project Source does not exist.')
+    }
+    knowledgeStates.set(projectId, {
+      ...current,
+      sources: current.sources.filter((source) => source.sourceId !== sourceId),
+    })
+    return completeKnowledgeOperation(projectId, 'delete', {
+      targetSourceId: sourceId,
+    })
+  },
+
+  rebuildProjectKnowledge: async (projectId) => {
+    record('rebuildProjectKnowledge', [projectId])
+    const current = knowledgeStateFor(projectId)
+    knowledgeStates.set(projectId, {
+      ...current,
+      sources: current.sources.map((source) => ({
+        ...source,
+        state: 'ready',
+        publishedAt: knowledgeTimestamp(),
+        operationId: null,
+      })),
+    })
+    return completeKnowledgeOperation(projectId, 'rebuild', {
+      cancellable: false,
+    })
+  },
+
+  revokeProjectKnowledge: async (projectId) => {
+    record('revokeProjectKnowledge', [projectId])
+    const current = knowledgeStateFor(projectId)
+    knowledgeStates.set(projectId, {
+      ...current,
+      sources: current.sources.map((source) => ({
+        ...source,
+        state: 'revoked',
+        publishedAt: null,
+        operationId: null,
+      })),
+    })
+    return completeKnowledgeOperation(projectId, 'revoke')
+  },
+
+  recoverProjectKnowledge: async (projectId) => {
+    record('recoverProjectKnowledge', [projectId])
+    const current = knowledgeStateFor(projectId)
+    knowledgeStates.set(projectId, {
+      ...current,
+      operations: current.operations.map((operation) => (
+        operation.state === 'recovery_required'
+          ? {
+              ...operation,
+              state: 'cancelled',
+              phase: 'completed',
+              progressPercent: Math.min(operation.progressPercent, 99),
+              errorCode: null,
+            }
+          : operation
+      )),
+    })
+    return completeKnowledgeOperation(projectId, 'rebuild')
+  },
+
+  stopKnowledgeOperation: async (requestId) => {
+    record('stopKnowledgeOperation', [requestId])
+  },
+
+  exportProjectSource: async (projectId, sourceId) => {
+    record('exportProjectSource', [projectId, sourceId])
+    const current = knowledgeStateFor(projectId)
+    if (!current.sources.some((source) => source.sourceId === sourceId)) {
+      throw new Error('Project Source does not exist.')
+    }
+    const source = current.sources.find((item) => item.sourceId === sourceId)
+    return {
+      kind: 'knowledge.export',
+      fileName: source.fileName,
+      mediaType: source.mediaType,
+      bytesWritten: source.sizeBytes,
+    }
+  },
+
   setCharacterPanelOpen: async (open) => {
     record('setCharacterPanelOpen', [open])
     if (delayCharacterPanelChanges) {
@@ -1231,12 +1493,14 @@ const testControl = {
     pendingGenerations = new Map()
     selectedFiles = []
     attachmentStates = new Map()
+    knowledgeStates = new Map()
     nextAttachmentError = null
     nextAttachmentPickerCancelled = false
     nextSendError = null
     selectedWorkspace = null
     nextRequestNumber = 1
     nextAttachmentNumber = 1
+    nextKnowledgeNumber = 1
     nextCallSequence = 1
     nextProjectUpdateNumber = 1
     nextVoiceTranscriptionNumber = 1
@@ -1434,6 +1698,17 @@ const testControl = {
         delete snapshot.activeGeneration
       }
     }
+    if (
+      (
+        nextEvent.type === 'knowledge-operation-settled'
+        || nextEvent.type === 'knowledge-export-settled'
+        || nextEvent.type === 'knowledge-operation-error'
+      )
+      && snapshot.activeKnowledgeOperation?.requestId === nextEvent.requestId
+    ) {
+      snapshot = { ...snapshot }
+      delete snapshot.activeKnowledgeOperation
+    }
     for (const listener of backendListeners) {
       listener(clone(nextEvent))
     }
@@ -1445,6 +1720,10 @@ const testControl = {
 
   setAttachmentState: (state) => {
     attachmentStates.set(attachmentScopeKey(state.scope), clone(state))
+  },
+
+  setKnowledgeState: (state) => {
+    knowledgeStates.set(state.projectId, clone(state))
   },
 
   cancelNextAttachmentPicker: () => {
@@ -1557,8 +1836,10 @@ const testControl = {
       chatMessages: [...chatMessages.entries()],
       pendingGenerations: [...pendingGenerations.entries()],
       attachmentStates: [...attachmentStates.entries()],
+      knowledgeStates: [...knowledgeStates.entries()],
       nextRequestNumber,
       nextAttachmentNumber,
+      nextKnowledgeNumber,
       nextProjectUpdateNumber,
     })
     window.sessionStorage.setItem(RELOAD_STATE_KEY, reloadState)

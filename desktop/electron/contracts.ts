@@ -32,7 +32,16 @@ export interface ActiveChatGeneration {
   userMessageId?: string
   assistantMessageId?: string
   reply: string
+  /** True only when this generation owns the global Project knowledge lease. */
+  usesProjectKnowledge?: boolean
   stopping: boolean
+}
+
+/** One Knowledge request still owned by Electron across renderer reloads. */
+export interface ActiveKnowledgeOperation {
+  requestId: string
+  projectId: string
+  cancellable: boolean
 }
 
 export interface BackendSnapshot {
@@ -47,6 +56,7 @@ export interface BackendSnapshot {
   chatId?: string
   chatTitle?: string
   activeGeneration?: ActiveChatGeneration
+  activeKnowledgeOperation?: ActiveKnowledgeOperation
   error?: string
 }
 
@@ -54,6 +64,7 @@ export interface ChatRequest {
   chatId: string
   message: string
   attachmentIds: string[]
+  useProjectKnowledge?: boolean
 }
 
 /** Regenerate the persisted tail turn, optionally replacing its user text. */
@@ -62,6 +73,7 @@ export interface RetryChatRequest {
   userMessageId: string
   assistantMessageId: string
   message?: string
+  useProjectKnowledge?: boolean
 }
 
 /** Lightweight persisted Chat data used by the sidebar. */
@@ -86,6 +98,55 @@ export interface ChatAttachment {
   sizeBytes: number
 }
 
+/** One exact text range inside a renderer-safe citation excerpt and source block. */
+export interface GroundedTextLocation {
+  kind: 'text'
+  blockOrdinal: number
+  sourceStartCodePoint: number
+  sourceEndCodePoint: number
+}
+
+/** One projected excerpt range and its original table-cell coordinates. */
+export interface GroundedTableLocation {
+  kind: 'table'
+  blockOrdinal: number
+  rowIndex: number
+  columnIndex: number
+  sourceStartCodePoint: number
+  sourceEndCodePoint: number
+}
+
+export type GroundedCitationLocation =
+  | GroundedTextLocation
+  | GroundedTableLocation
+
+/** One source occurrence selected by a persisted grounded answer. */
+export interface GroundedCitation {
+  citationId: string
+  kind: 'prose' | 'code' | 'table'
+  excerpt: string
+  fileName: string
+  mediaType: string
+  pageNumber: number | null
+  locations: GroundedCitationLocation[]
+}
+
+/** One answer statement whose support is a closed set of citation IDs. */
+export interface GroundedStatement {
+  statementId: string
+  kind: 'source_fact' | 'model_summary' | 'inference'
+  text: string
+  citationIds: string[]
+}
+
+/** Persisted renderer-safe grounded content; private source lineage stays in Python. */
+export interface GroundedAnswer {
+  status: 'answered' | 'insufficient_evidence'
+  contextPassageCount: number
+  statements: GroundedStatement[]
+  citations: GroundedCitation[]
+}
+
 /** One canonical message loaded from Python persistence. */
 export interface ChatHistoryMessage {
   messageId: string
@@ -93,6 +154,7 @@ export interface ChatHistoryMessage {
   content: string
   createdAt: string
   attachments: ChatAttachment[]
+  groundedAnswer?: GroundedAnswer
 }
 
 /** Full active Chat data returned when a session is opened. */
@@ -200,6 +262,86 @@ export interface AttachmentState {
 export interface AttachmentSelectionResult {
   cancelled: boolean
   state: AttachmentState | null
+}
+
+export type KnowledgeSourceState =
+  | 'ready'
+  | 'unindexed'
+  | 'stale'
+  | 'revoked'
+  | 'processing'
+
+/** Renderer-safe Project Source metadata without paths, hashes, or private file IDs. */
+export interface KnowledgeSource {
+  sourceId: string
+  fileName: string
+  mediaType: string
+  sizeBytes: number
+  state: KnowledgeSourceState
+  publishedAt: string | null
+  operationId: string | null
+}
+
+export type KnowledgeOperationKind =
+  | 'add'
+  | 'replace'
+  | 'reindex'
+  | 'rebuild'
+  | 'revoke'
+  | 'delete'
+
+export type KnowledgeOperationState =
+  | 'running'
+  | 'cancel_requested'
+  | 'recovery_required'
+  | 'succeeded'
+  | 'cancelled'
+  | 'failed'
+
+export type KnowledgeOperationPhase =
+  | 'preparing'
+  | 'importing'
+  | 'indexing'
+  | 'revoking'
+  | 'cleaning'
+  | 'publishing'
+  | 'completed'
+
+/** One bounded durable lifecycle checkpoint safe to display in the renderer. */
+export interface KnowledgeOperation {
+  operationId: string
+  projectId: string
+  kind: KnowledgeOperationKind
+  state: KnowledgeOperationState
+  phase: KnowledgeOperationPhase
+  progressPercent: number
+  attempt: number
+  createdAt: string
+  updatedAt: string
+  errorCode: string | null
+  targetSourceId: string | null
+  stagedSourceId: string | null
+}
+
+/** Canonical Project Source collection and bounded lifecycle history. */
+export interface KnowledgeState {
+  kind: 'knowledge.state'
+  projectId: string
+  sources: KnowledgeSource[]
+  operations: KnowledgeOperation[]
+}
+
+/** Safe export receipt; the user-selected destination path never reaches React. */
+export interface KnowledgeExportResult {
+  kind: 'knowledge.export'
+  fileName: string
+  mediaType: string
+  bytesWritten: number
+}
+
+/** Correlate one asynchronous lifecycle request without exposing its native path. */
+export interface KnowledgeOperationReceipt {
+  requestId: string
 }
 
 /** Renderer-safe global settings, including persisted Voice behavior choices. */
@@ -323,6 +465,27 @@ export type BackendEvent =
       code: string
       message: string
       retryable: boolean
+    }
+  | {
+      type: 'knowledge-operation-error'
+      requestId: string
+      projectId: string
+      code: string
+      message: string
+      retryable: boolean
+    }
+  | {
+      type: 'knowledge-operation-settled'
+      requestId: string
+      projectId: string
+      state: KnowledgeState
+    }
+  | {
+      type: 'knowledge-export-settled'
+      requestId: string
+      projectId: string
+      sourceId: string
+      result: KnowledgeExportResult
     }
   | {
       type: 'voice-speech-status'
@@ -453,6 +616,40 @@ export interface DesktopApi {
     scope: AttachmentScope,
     attachmentId: string,
   ): Promise<AttachmentState>
+  /** Load the canonical renderer-safe Sources and operation history for a Project. */
+  listProjectKnowledge(projectId: string): Promise<KnowledgeState>
+  /** Choose one or more native documents and begin their lifecycle imports. */
+  chooseProjectSources(
+    projectId: string,
+  ): Promise<KnowledgeOperationReceipt | null>
+  /** Choose one native replacement for an existing Project Source. */
+  replaceProjectSource(
+    projectId: string,
+    sourceId: string,
+  ): Promise<KnowledgeOperationReceipt | null>
+  /** Begin reindexing one existing Project Source. */
+  reindexProjectSource(
+    projectId: string,
+    sourceId: string,
+  ): Promise<KnowledgeOperationReceipt>
+  /** Begin deleting one Project Source and all of its derived artifacts. */
+  deleteProjectSource(
+    projectId: string,
+    sourceId: string,
+  ): Promise<KnowledgeOperationReceipt>
+  /** Rebuild the complete current Project corpus under the active index profile. */
+  rebuildProjectKnowledge(projectId: string): Promise<KnowledgeOperationReceipt>
+  /** Revoke the complete Project corpus before deterministic cleanup. */
+  revokeProjectKnowledge(projectId: string): Promise<KnowledgeOperationReceipt>
+  /** Recover every pending lifecycle operation for one Project. */
+  recoverProjectKnowledge(projectId: string): Promise<KnowledgeOperationReceipt>
+  /** Cancel only the matching in-flight lifecycle request. */
+  stopKnowledgeOperation(requestId: string): Promise<void>
+  /** Export one verified original through a native destination dialog. */
+  exportProjectSource(
+    projectId: string,
+    sourceId: string,
+  ): Promise<KnowledgeExportResult | null>
   /** Expand or restore the native window for the character panel. */
   setCharacterPanelOpen(open: boolean): Promise<void>
   /** Subscribe to validated Backend events and return an unsubscribe callback. */

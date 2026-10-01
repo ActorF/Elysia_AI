@@ -2,7 +2,7 @@
 
 本文记录 Elysia AI 在 [Project Sources](./10-PROJECT-SOURCES.md) 授权层之上新增的独立 Python Knowledge Lifecycle 边界。它把 Attachment Manifest、Document Processing/Embedding、SQLite Vector Generation 和 Project Source catalog 组合成持久、可恢复的 saga，并把 catalog 作为唯一授权发布面。
 
-当前实现位于 `knowledge_lifecycle/`，并复用 `attachments/`、`documents/indexing.py` 与 `project_sources/`。这是 **Project-only 的后端 Library**：它尚未接入 `start.py`、`desktop_backend.py`、Desktop Protocol、Electron/React 或生产 `GroundedAnswerGenerator`，因此完成本模块不代表桌面 Chat 已经能够管理知识任务或向文件提问。
+当前实现位于 `knowledge_lifecycle/`，并复用 `attachments/`、`documents/indexing.py` 与 `project_sources/`。它仍是 **Project-only 的后端 Library**，但已由 `desktop_knowledge.py` 与 `desktop_backend.py` 接入生产桌面路径：Desktop Protocol/Electron/React 可以管理 Source 与持久操作，显式开启的 Project Chat 可以通过 loopback-only Ollama Generator 得到带 Citation 的回答。该 Library 自身仍不依赖 Renderer 或 Electron。
 
 ## 1. 范围与硬边界
 
@@ -226,7 +226,7 @@ Attachment removal 只允许 Project Scope 和精确 `project_source` role，并
 
 幂等性建立在底层操作上：Vector replace/rebuild 是原子 replacement，Vector delete 可重复，catalog save/delete 使用 Revision CAS，catalog 已达到目标时可直接识别，cleanup 在 ownership 已消失时仍可重复删除 Vector，Attachment removal 使用 snapshot fingerprint 防止删错新的 ownership。这里保证的是 **同一个 durable operation 的恢复幂等**；公开 add/replace API 当前没有 caller-provided idempotency key，用户重复发起一个全新命令仍可能创建新的操作。
 
-每个 Project 同时只允许一个 recoverable lifecycle operation。生产接线还必须让 Lifecycle、Project Source answer、promotion、Chat→Project 关系变化和 Project archive 共用同一个 mutation lease；当前 Library 只提供组合边界，不替生产 Composition Root 自动完成该接线。
+当前生产 Runtime 使用保守的**全局** Knowledge lease，而不是按 Project 分片：`desktop_knowledge.py` 让 Lifecycle、Project Source answer 与 verified export 共用同一个 `ProjectSourceOperationCoordinator`；Desktop Backend 同时只允许一个公开 lifecycle/export task，并在 grounded generation 与 Project authority write 的 admission 边界执行对称检查。这样即使用户在任务期间切换到另一个 Project，也不能启动第二个 Source mutation、export、grounded answer、Chat→Project move、Project archive 或 Instructions/workspace mutation。Renderer 忙状态只是这项事实的可见投影，不能替代 Python 的最终权威检查。未来若改为 keyed coordinator，必须先证明跨 Project Chat move 与 authority-change 竞态仍被关闭。
 
 ## 10. Source view 与操作视图
 
@@ -240,7 +240,7 @@ Attachment removal 只允许 Project Scope 和精确 `project_source` role，并
 | `revoked` | catalog 已有单调 tombstone revision 且当前没有授权 snapshot。 |
 | `processing` | 该 link 是 recoverable operation 的 staged 或 target Source。 |
 
-View 只包含 `DocumentSource` 的 path-private metadata、闭集状态、可选 derivation/profile fingerprint、发布时间与 opaque operation ID。`get_operation()` / `list_operations()` 返回 durable checkpoint，供未来可信 Backend 映射成更窄的 Protocol DTO；它们目前没有 Desktop route。
+View 只包含 `DocumentSource` 的 path-private metadata、闭集状态、可选 derivation/profile fingerprint、发布时间与 opaque operation ID。`get_operation()` / `list_operations()` 返回 durable checkpoint；`desktop_backend.py` 已把它们映射为更窄的 Knowledge Protocol DTO，并用 `knowledge.operation.changed` / `knowledge.operation.completed` 发布相关请求的进度与终态。Renderer 不会收到原始 journal 文件或内部路径。
 
 ## 11. 原始文件导出
 
@@ -251,12 +251,15 @@ View 只包含 `DocumentSource` 的 path-private metadata、闭集状态、可�
 1. 要求 native caller 提供绝对目标路径，且父目录已经存在；
 2. 拒绝父目录链中的 symlink / Windows reparse redirect；
 3. 在共享 mutation lease 下读取单 link 原子 snapshot，并要求准确 `project_source` role；
-4. 通过 `open_verified_file()` 流式复制，经 declared-size 上下界验证后 flush + `fsync`；
-5. 发布前重新读取相同 ownership fingerprint，拒绝并发 replace/delete；
-6. `overwrite=False` 使用同目录 hard-link create-if-absent，`overwrite=True` 使用 `os.replace`；
-7. 返回安全文件名、media type 与写入字节数，不返回内部 ID 或路径。
+4. 外部 temp 创建后、任何 original byte 写入前，把 temp/parent 绝对路径与稳定文件身份原子写入 app-private cleanup intent，并 flush + `fsync`；
+5. 通过 `open_verified_file()` 流式复制，经 declared-size 上下界验证后 flush + `fsync`；
+6. 发布前重新读取相同 ownership fingerprint，并再次验证 temp、parent 及完整父链身份，拒绝并发 replace/delete 或路径替换；
+7. `overwrite=False` 使用同目录 hard-link create-if-absent，`overwrite=True` 使用 `os.replace`；
+8. 正常 publish/cancel cleanup 后原子清除 private intent，再返回安全文件名、media type 与写入字节数，不返回内部 ID 或路径。
 
-导出不是 lifecycle operation，也不进入 saga journal；失败时临时文件会 best-effort 清理。当前没有 Desktop Save-dialog / Protocol 接线。
+导出不是 lifecycle operation，也不进入 saga journal。正常异常、协作取消和 shutdown 会按已记录身份删除未发布 temp；进程被强制终止时，下一次 runtime 初始化在独立后台 worker 调用 `recover_pending_exports()`。构造函数只验证 app-private intent storage，不读取或等待断开的 USB/UNC/外部目标，因此 Backend initialize 不被恢复阻塞。恢复只会删除名称、父链、temp identity 与 parent identity 全部匹配的普通文件；missing temp 代表 publish/cleanup 已跨越边界，可安全清 intent；损坏、路径替换、identity mismatch 或不可达父目录均保留 intent/path 并 Fail Closed，同时不会阻止其他合法 intent 的清理。发布完成后若仅 private intent 清除失败，协议仍报告已发生的成功发布，遗留 intent 会在下次恢复时收敛。
+
+Electron 通过原生 Save dialog 获得用户选择的目标，再由 `knowledge.source.export` 把经验证的绝对路径只传给 Python 可信边界。Save dialog 结束且请求进入 Backend pending map 后，Electron 才成为跨 Renderer reload 与 Project switch 的可观察 owner；snapshot 只公开 request ID、Project ID 和 `cancellable: false`，不公开目标路径。Main 在对话框前固定当前 Source 的安全文件名、media type 与字节数，BackendProcess 在移除 pending ownership 和发布 `knowledge-export-settled` 前要求路径私有 receipt 与这三项完全一致，Main 再做相同检查作为纵深防御。失败使用同一 request/Project 相关的安全 Knowledge error event。React 没有 Export Stop 控件，也永远不会收到 destination、temp path、cleanup intent 或本机诊断。
 
 ## 12. Preview / Cache cleanup 预留
 
@@ -268,7 +271,7 @@ Lifecycle 仍要求显式注入 `KnowledgeArtifactCleanup`：
 purge_document(exact Project Scope, exact DocumentSource) → idempotent cleanup
 ```
 
-当前组合应明确传入 `NoStoredKnowledgeArtifacts`，表示“本部署确实没有独立 Preview/Cache repository”，而不是默默跳过未来数据。这是有意的删除传播协议：以后若引入 Preview、OCR cache、rendered page 或其他独立 artifact，Composition Root 必须替换该 adapter，并在 ownership 删除前完成其幂等清理；否则不能声称 delete 已覆盖全部派生数据。
+生产 `desktop_knowledge.py` 明确传入 `NoStoredKnowledgeArtifacts`，表示“本部署确实没有独立 Preview/Cache repository”，而不是默默跳过未来数据。这是有意的删除传播协议：以后若引入 Preview、OCR cache、rendered page 或其他独立 artifact，Composition Root 必须替换该 adapter，并在 ownership 删除前完成其幂等清理；否则不能声称 delete 已覆盖全部派生数据。
 
 ## 13. 资源、安全与隐私
 
@@ -281,19 +284,11 @@ purge_document(exact Project Scope, exact DocumentSource) → idempotent cleanup
 - Library 不后台扫描 Workspace、不联网、不自动导入文件，也不因 Project Workspace binding 产生副作用。
 - 公开异常分为 Validation、Not Found、Conflict、Storage、Data Corruption 与 Recovery；取消通过 durable `cancel_requested` / `cancelled` 状态表达，依赖异常会被转换为稳定脱敏语义。
 
-## 14. Module 9 非目标与当前接线状态
+## 14. 桌面集成状态与剩余非目标
 
-本模块完成后，以下能力仍不属于 Knowledge Lifecycle：
+Module 9 已完成生产 `OllamaGroundedAnswerAdapter`、`desktop_knowledge.py` Composition Root、显式 lifecycle recovery、全局 Knowledge worker/admission、operation/view/export/cancel DTO 与 route、Electron open/save dialog、跨 Renderer reload 的 lifecycle/export ownership、React Project Sources 管理和 grounded Chat/Citation 持久化。Archived Project 只能查看 Source/operation，mutation、export 与 grounded answer 继续 Fail Closed。
 
-- 生产 `GroundedAnswerGenerator` Adapter；
-- `start.py` / `desktop_backend.py` Composition Root 接线；
-- Desktop Protocol 的 operation/view/export/cancel DTO 与 route；
-- React Project Sources 管理、进度、Retry、Citation、Preview 和 page/block/cell 跳转 UI；
-- Answer/Statement/Citation 的 Chat Message 持久化；
-- 后台调度器、跨启动自动触发恢复与用户可见通知策略；
-- 真实 PDF/DOCX Desktop end-to-end 和故障注入验收。
-
-这些属于后续 Module 9 的集成与 UI/Testing 边界。当前可准确表述为：**Project-only Knowledge Lifecycle 后端 Library 已实现；Desktop 尚未接入，现有 Chat 仍不能使用 Project 文件回答问题。**
+当前仍不存在独立 Preview/Cache repository，也没有文件 Preview、page/block/cell 原文跳转、后台目录扫描、自动导入、跨 Project 搜索或长期任务调度器。Lifecycle 操作只由用户明确选择 **Recover** 后向前恢复；Backend 初始化仅在独立 daemon 中清理身份完全匹配的 export temp，且不会等待不可达外部卷。真实 PDF/DOCX fixtures 已通过生产 Loader/Processing/Retrieval 自动化回归；模型部分使用确定性测试 Adapter，因此不声称真实 Ollama/GPU 桌面矩阵已全部验收。
 
 ## 15. 相关文件
 
@@ -302,11 +297,16 @@ purge_document(exact Project Scope, exact DocumentSource) → idempotent cleanup
 | `knowledge_lifecycle/domain.py` | 操作 ID、kind/state/phase、路径私有 durable snapshot 与不变量。 |
 | `knowledge_lifecycle/repository.py` | 有界、跨进程锁定、原子替换、Revision CAS 的 JSON saga journal。 |
 | `knowledge_lifecycle/service.py` | Project-only add/replace/reindex/rebuild/revoke/delete、view、cancel 与 crash recovery 协调。 |
-| `knowledge_lifecycle/export.py` | 在 mutation lease 下验证并原子导出一个 Project Source original。 |
+| `knowledge_lifecycle/export.py` | 在共享全局 operation lease 下验证并原子导出一个 Project Source original；它使用独立 cleanup intent，不写 lifecycle saga journal。 |
 | `knowledge_lifecycle/exceptions.py` | 稳定、脱敏的生命周期错误闭集。 |
 | `attachments/repository.py` / `service.py` / `store.py` | 原子 ownership snapshot 与 fingerprint-guarded Project Source removal。 |
 | `documents/indexing.py` | 无 Store mutation 的 prepare、原子 Generation commit/rebuild 与幂等 delete。 |
 | `project_sources/catalog.py` | canonical Attachment snapshot、文档路由过滤与 `DocumentSource` 派生。 |
 | `project_sources/repository.py` | 原子 catalog entry read、CAS publish、schema-v1 migration 与保留 Instructions 的单调 tombstone。 |
 | `tests/test_knowledge_lifecycle.py` | Journal CAS/retention、取消、发布顺序、replace/delete/revoke/recovery、Scope 隔离、view 与 export 回归。 |
+| `desktop_knowledge.py` | 共享 repository/lease/store 的生产知识 Composition Root 与 index-profile fingerprint。 |
+| `documents/ollama_grounding.py` | digest-pinned、loopback-only 的生产结构化 Generator Adapter。 |
+| `desktop_backend.py` / `desktop_protocol/` | 显式 lifecycle recovery、非阻塞 export-temp cleanup、全局 lease/admission、窄 DTO、进度、取消、路径私有导出 receipt 与 grounded Chat route。 |
+| `desktop/src/knowledge/ProjectSourcesPanel.tsx` | Source/operation 管理、恢复、导出、归档只读与稳定错误显示。 |
+| `tests/test_desktop_knowledge.py` / `tests/test_real_document_regression.py` | Composition Root 不发起 HTTP 的构造边界，以及真实 PDF/DOCX container 的生产 Loader/Processing/Retrieval 回归。 |
 | `docs/10-PROJECT-SOURCES.md` | 回答授权、同 Project 共享、Generation allowlist 与 catalog 完整性。 |

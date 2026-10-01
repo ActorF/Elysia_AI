@@ -18,6 +18,7 @@ messages are replaced at this boundary.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 import hashlib
 import json
@@ -51,7 +52,11 @@ from .embedding import (
     EmbeddingValidationError,
     EmbeddingVector,
 )
-from .exceptions import DocumentError, DocumentLimitError
+from .exceptions import (
+    DocumentError,
+    DocumentLimitError,
+    DocumentOperationCancelledError,
+)
 
 
 RETRIEVAL_SCHEMA_VERSION: Final[Literal[1]] = 1
@@ -98,6 +103,17 @@ _MODEL_TAG_PATTERN: Final = re.compile(
 _RERANKER_IDENTITY_DOMAIN: Final = "elysia.document-reranker.v1"
 _RERANKER_REQUEST_DOMAIN: Final = "elysia.document-reranker-request.v1"
 _RERANKER_INPUT_DOMAIN: Final = "elysia.document-reranker-input.v1"
+
+
+def _raise_if_retrieval_cancelled(
+    cancel_requested: Callable[[], bool] | None,
+) -> None:
+    """Stop between query, store, and reranker boundaries when requested."""
+
+    if cancel_requested is not None and cancel_requested():
+        raise DocumentOperationCancelledError(
+            "Document retrieval was cancelled before answer publication."
+        )
 
 
 class RetrievalError(DocumentError):
@@ -934,7 +950,12 @@ class RerankerBatch:
 class QueryEmbeddingService(Protocol):
     """Embed one exact query and publish its vector-space identity."""
 
-    def embed_query(self, text: str) -> EmbeddedQuery:
+    def embed_query(
+        self,
+        text: str,
+        *,
+        cancel_requested: Callable[[], bool] | None = None,
+    ) -> EmbeddedQuery:
         """Return one identity-bearing query or raise a typed EmbeddingError."""
 
         ...
@@ -1760,6 +1781,7 @@ class DocumentRetriever:
         metadata_filter: RetrievalMetadataFilter = RetrievalMetadataFilter(),
         policy: RetrievalPolicy = RetrievalPolicy(),
         limits: RetrievalLimits = RetrievalLimits(),
+        cancel_requested: Callable[[], bool] | None = None,
     ) -> RetrievalResult:
         """Return deterministic grounded Top-K hits or a truthful empty result.
 
@@ -1769,6 +1791,11 @@ class DocumentRetriever:
         fallback passage from which a later answer layer could invent support.
         """
 
+        if cancel_requested is not None and not callable(cancel_requested):
+            raise RetrievalValidationError(
+                "cancel_requested must be callable or None."
+            )
+        _raise_if_retrieval_cancelled(cancel_requested)
         canonical_scope = _snapshot_scope(scope)
         canonical_policy = _snapshot_policy(policy)
         canonical_limits = _snapshot_limits(limits)
@@ -1836,13 +1863,18 @@ class DocumentRetriever:
             )
         )
         if not eligible_generations:
+            _raise_if_retrieval_cancelled(cancel_requested)
             return _empty_result(
                 canonical_scope,
                 canonical_policy,
                 canonical_filter,
             )
 
-        embedded_query = self._embed_query(canonical_query)
+        embedded_query = self._embed_query(
+            canonical_query,
+            cancel_requested=cancel_requested,
+        )
+        _raise_if_retrieval_cancelled(cancel_requested)
         candidates = self._search_store(
             canonical_scope,
             embedded_query,
@@ -1850,7 +1882,9 @@ class DocumentRetriever:
             canonical_filter,
             canonical_policy,
             canonical_limits,
+            cancel_requested=cancel_requested,
         )
+        _raise_if_retrieval_cancelled(cancel_requested)
         hits = self._consolidate_candidates(
             candidates,
             canonical_scope,
@@ -1862,7 +1896,12 @@ class DocumentRetriever:
         )
         reranker_identity: RerankerIdentity | None = None
         if hits and self._reranker is not None:
-            hits, reranker_identity = self._rerank(canonical_query, hits)
+            hits, reranker_identity = self._rerank(
+                canonical_query,
+                hits,
+                cancel_requested=cancel_requested,
+            )
+        _raise_if_retrieval_cancelled(cancel_requested)
         selected = hits[:canonical_policy.top_k]
         return RetrievalResult(
             schema_version=RETRIEVAL_SCHEMA_VERSION,
@@ -1878,11 +1917,27 @@ class DocumentRetriever:
             hits=selected,
         )
 
-    def _embed_query(self, query: str) -> EmbeddedQuery:
+    def _embed_query(
+        self,
+        query: str,
+        *,
+        cancel_requested: Callable[[], bool] | None,
+    ) -> EmbeddedQuery:
         """Call and validate the injected query embedder with sanitized errors."""
 
         try:
-            return _snapshot_embedded_query(self._embedder.embed_query(query))
+            embedded = (
+                self._embedder.embed_query(query)
+                if cancel_requested is None
+                else self._embedder.embed_query(
+                    query,
+                    cancel_requested=cancel_requested,
+                )
+            )
+            _raise_if_retrieval_cancelled(cancel_requested)
+            return _snapshot_embedded_query(embedded)
+        except DocumentOperationCancelledError:
+            raise
         except EmbeddingError as error:
             _raise_sanitized_embedding_error(error)
         except RetrievalError:
@@ -1906,6 +1961,8 @@ class DocumentRetriever:
         metadata_filter: RetrievalMetadataFilter,
         policy: RetrievalPolicy,
         limits: RetrievalLimits,
+        *,
+        cancel_requested: Callable[[], bool] | None,
     ) -> tuple[StoredRetrievalCandidate, ...]:
         """Call one atomic store snapshot and sanitize every failure message."""
 
@@ -1922,6 +1979,7 @@ class DocumentRetriever:
         store_policy = _snapshot_policy(policy)
         store_limits = _snapshot_limits(limits)
         try:
+            _raise_if_retrieval_cancelled(cancel_requested)
             result = self._store.search_scope(
                 scope=store_scope,
                 query=store_query,
@@ -1930,6 +1988,9 @@ class DocumentRetriever:
                 policy=store_policy,
                 limits=store_limits,
             )
+            _raise_if_retrieval_cancelled(cancel_requested)
+        except DocumentOperationCancelledError:
+            raise
         except RetrievalError:
             raise RetrievalFailedError(
                 "The vector store returned no safe retrieval result."
@@ -2081,6 +2142,8 @@ class DocumentRetriever:
         self,
         query: str,
         hits: tuple[RetrievalHit, ...],
+        *,
+        cancel_requested: Callable[[], bool] | None,
     ) -> tuple[tuple[RetrievalHit, ...], RerankerIdentity]:
         """Apply a complete score permutation or fail closed and sanitized."""
 
@@ -2088,6 +2151,7 @@ class DocumentRetriever:
         if reranker is None:
             raise AssertionError("Configured reranker unexpectedly disappeared.")
         try:
+            _raise_if_retrieval_cancelled(cancel_requested)
             identity = _snapshot_reranker_identity(reranker.identity)
             policy = _snapshot_reranker_policy(reranker.policy)
             request_policy = _snapshot_reranker_policy(policy)
@@ -2105,6 +2169,7 @@ class DocumentRetriever:
             expected_texts = tuple(item.text for item in inputs)
             expected_request_fingerprint = request.request_fingerprint
             batch = reranker.rerank(request)
+            _raise_if_retrieval_cancelled(cancel_requested)
             if (
                 type(batch) is not RerankerBatch
                 or type(batch.identity) is not RerankerIdentity
@@ -2237,6 +2302,8 @@ class DocumentRetriever:
                 )
             )
             return ordered, identity
+        except DocumentOperationCancelledError:
+            raise
         except (MemoryError, RecursionError):
             raise RetrievalLimitError(
                 "Reranking exceeded a safe resource limit."

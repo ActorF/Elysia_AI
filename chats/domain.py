@@ -37,12 +37,31 @@ _MEDIA_TYPE_PATTERN = re.compile(
 
 ConversationMode = Literal["chat", "work"]
 ChatMessageRole = Literal["system", "user", "assistant"]
+ChatGroundedAnswerStatus = Literal["answered", "insufficient_evidence"]
+ChatGroundedStatementKind = Literal[
+    "source_fact",
+    "model_summary",
+    "inference",
+]
 
 # NewType prevents mypy from mixing identifiers that are all strings on disk.
 ChatId = NewType("ChatId", str)
 ChatMessageId = NewType("ChatMessageId", str)
 AttachmentId = NewType("AttachmentId", str)
 ProjectId = NewType("ProjectId", str)
+
+_CITATION_ID_PATTERN = re.compile(r"^citation_[0-9a-f]{64}$")
+_STATEMENT_ID_PATTERN = re.compile(r"^statement_[0-9]{3}$")
+_GROUNDED_STATEMENT_KINDS: Final = frozenset(
+    {"source_fact", "model_summary", "inference"}
+)
+MAX_GROUNDED_CHAT_STATEMENTS: Final = 32
+MAX_GROUNDED_CHAT_CITATIONS: Final = 64
+MAX_GROUNDED_CHAT_CONTEXT_PASSAGES: Final = 20
+MAX_GROUNDED_CHAT_LOCATIONS: Final = 100_000
+MAX_GROUNDED_CHAT_STATEMENT_LENGTH: Final = 4_000
+MAX_GROUNDED_CHAT_TOTAL_STATEMENT_LENGTH: Final = 16_000
+MAX_GROUNDED_CHAT_EXCERPT_LENGTH: Final = 2_000
 
 
 def _validate_identifier(value: object, field_name: str) -> None:
@@ -184,6 +203,223 @@ class ChatModelSettings:
 
 
 @dataclass(frozen=True, slots=True)
+class ChatGroundedTextLocation:
+    """Persist one exact text span without retaining a source path or hash."""
+
+    block_ordinal: int
+    source_start_code_point: int
+    source_end_code_point: int
+
+    def __post_init__(self) -> None:
+        """Require one non-empty, zero-based half-open source range."""
+
+        values = (
+            self.block_ordinal,
+            self.source_start_code_point,
+            self.source_end_code_point,
+        )
+        if any(type(value) is not int or value < 0 for value in values):
+            raise ValueError("Grounded text locations must use non-negative integers.")
+        if self.source_end_code_point <= self.source_start_code_point:
+            raise ValueError("Grounded text locations must contain a non-empty range.")
+
+
+@dataclass(frozen=True, slots=True)
+class ChatGroundedTableLocation:
+    """Persist one table-cell span for keyboard-accessible citation details."""
+
+    block_ordinal: int
+    row_index: int
+    column_index: int
+    source_start_code_point: int
+    source_end_code_point: int
+
+    def __post_init__(self) -> None:
+        """Require non-negative cell coordinates and a valid half-open range."""
+
+        values = (
+            self.block_ordinal,
+            self.row_index,
+            self.column_index,
+            self.source_start_code_point,
+            self.source_end_code_point,
+        )
+        if any(type(value) is not int or value < 0 for value in values):
+            raise ValueError("Grounded table locations must use non-negative integers.")
+        if self.source_end_code_point < self.source_start_code_point:
+            raise ValueError("Grounded table locations contain an invalid range.")
+
+
+ChatGroundedCitationLocation = (
+    ChatGroundedTextLocation | ChatGroundedTableLocation
+)
+
+
+@dataclass(frozen=True, slots=True)
+class ChatGroundedCitation:
+    """Persist renderer-safe evidence and its source-document location."""
+
+    citation_id: str
+    kind: Literal["prose", "code", "table"]
+    excerpt: str
+    file_name: str
+    media_type: str
+    page_number: int | None
+    locations: tuple[ChatGroundedCitationLocation, ...]
+
+    def __post_init__(self) -> None:
+        """Reject path-bearing labels, oversized evidence, and bad locations."""
+
+        if _CITATION_ID_PATTERN.fullmatch(self.citation_id) is None:
+            raise ValueError("citation_id has an invalid opaque-ID format.")
+        if self.kind not in ("prose", "code", "table"):
+            raise ValueError("Grounded citation kind is invalid.")
+        if (
+            not isinstance(self.excerpt, str)
+            or not self.excerpt
+            or len(self.excerpt) > MAX_GROUNDED_CHAT_EXCERPT_LENGTH
+        ):
+            raise ValueError("Grounded citation excerpt is invalid.")
+        # Reuse AttachmentMetadata's hardened display-label checks without
+        # inventing an attachment identity or retaining the original path.
+        AttachmentMetadata(
+            attachment_id=AttachmentId("attachment_citation"),
+            file_name=self.file_name,
+            media_type=self.media_type,
+            size_bytes=1,
+        )
+        if self.page_number is not None and (
+            type(self.page_number) is not int or self.page_number <= 0
+        ):
+            raise ValueError("Grounded citation page_number is invalid.")
+        if (
+            not isinstance(self.locations, tuple)
+            or not self.locations
+            or len(self.locations) > MAX_GROUNDED_CHAT_LOCATIONS
+            or not all(
+                isinstance(
+                    location,
+                    (ChatGroundedTextLocation, ChatGroundedTableLocation),
+                )
+                for location in self.locations
+            )
+        ):
+            raise ValueError("Grounded citation locations are invalid.")
+        if self.kind == "table" and not all(
+            isinstance(location, ChatGroundedTableLocation)
+            for location in self.locations
+        ):
+            raise ValueError("Table citations require table-cell locations.")
+        if self.kind != "table" and not all(
+            isinstance(location, ChatGroundedTextLocation)
+            for location in self.locations
+        ):
+            raise ValueError("Text citations require text locations.")
+
+
+@dataclass(frozen=True, slots=True)
+class ChatGroundedStatement:
+    """Persist one labeled answer statement and its closed citation set."""
+
+    statement_id: str
+    kind: ChatGroundedStatementKind
+    text: str
+    citation_ids: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        """Require bounded meaningful text and unique opaque citations."""
+
+        if _STATEMENT_ID_PATTERN.fullmatch(self.statement_id) is None:
+            raise ValueError("statement_id has an invalid opaque-ID format.")
+        if self.kind not in _GROUNDED_STATEMENT_KINDS:
+            raise ValueError("Grounded statement kind is invalid.")
+        if (
+            not isinstance(self.text, str)
+            or not self.text.strip()
+            or len(self.text) > MAX_GROUNDED_CHAT_STATEMENT_LENGTH
+        ):
+            raise ValueError("Grounded statement text is invalid.")
+        if (
+            not isinstance(self.citation_ids, tuple)
+            or not self.citation_ids
+            or len(self.citation_ids) > MAX_GROUNDED_CHAT_CITATIONS
+            or any(
+                _CITATION_ID_PATTERN.fullmatch(citation_id) is None
+                for citation_id in self.citation_ids
+            )
+            or len(set(self.citation_ids)) != len(self.citation_ids)
+        ):
+            raise ValueError("Grounded statement citations are invalid.")
+
+
+@dataclass(frozen=True, slots=True)
+class ChatGroundedAnswer:
+    """Persist one verified Project answer beside its canonical Chat text."""
+
+    status: ChatGroundedAnswerStatus
+    context_passage_count: int
+    statements: tuple[ChatGroundedStatement, ...]
+    citations: tuple[ChatGroundedCitation, ...]
+
+    def __post_init__(self) -> None:
+        """Enforce answered/refusal coherence and a closed citation union."""
+
+        if self.status not in ("answered", "insufficient_evidence"):
+            raise ValueError("Grounded answer status is invalid.")
+        if (
+            type(self.context_passage_count) is not int
+            or not 0
+            <= self.context_passage_count
+            <= MAX_GROUNDED_CHAT_CONTEXT_PASSAGES
+        ):
+            raise ValueError("Grounded context passage count is invalid.")
+        if (
+            not isinstance(self.statements, tuple)
+            or len(self.statements) > MAX_GROUNDED_CHAT_STATEMENTS
+            or not all(
+                isinstance(statement, ChatGroundedStatement)
+                for statement in self.statements
+            )
+        ):
+            raise ValueError("Grounded answer statements are invalid.")
+        if sum(len(statement.text) for statement in self.statements) > (
+            MAX_GROUNDED_CHAT_TOTAL_STATEMENT_LENGTH
+        ):
+            raise ValueError("Grounded answer statement text is too large.")
+        if (
+            not isinstance(self.citations, tuple)
+            or len(self.citations) > MAX_GROUNDED_CHAT_CITATIONS
+            or not all(
+                isinstance(citation, ChatGroundedCitation)
+                for citation in self.citations
+            )
+        ):
+            raise ValueError("Grounded answer citations are invalid.")
+        citation_ids = tuple(
+            citation.citation_id for citation in self.citations
+        )
+        if len(set(citation_ids)) != len(citation_ids):
+            raise ValueError("Grounded answer citation IDs must be unique.")
+        if sum(len(citation.locations) for citation in self.citations) > (
+            MAX_GROUNDED_CHAT_LOCATIONS
+        ):
+            raise ValueError("Grounded answer has too many citation locations.")
+        referenced = {
+            citation_id
+            for statement in self.statements
+            for citation_id in statement.citation_ids
+        }
+        if referenced != set(citation_ids):
+            raise ValueError("Grounded answer citations must form a closed union.")
+        if self.status == "answered" and not self.statements:
+            raise ValueError("An answered grounded result needs statements.")
+        if self.status == "insufficient_evidence" and (
+            self.statements or self.citations
+        ):
+            raise ValueError("An insufficient grounded result cannot cite evidence.")
+
+
+@dataclass(frozen=True, slots=True)
 class ChatMessage:
     """Represent one stable, timestamped message in a chat session."""
 
@@ -192,6 +428,7 @@ class ChatMessage:
     content: str
     created_at: datetime
     attachments: tuple[AttachmentMetadata, ...] = ()
+    grounded_answer: ChatGroundedAnswer | None = None
 
     def __post_init__(self) -> None:
         """Validate message identity, content, time, and attachments."""
@@ -238,6 +475,13 @@ class ChatMessage:
             raise ValueError(
                 "A message cannot contain more than "
                 f"{MAX_ATTACHMENTS_PER_MESSAGE} attachments."
+            )
+        if self.grounded_answer is not None and (
+            self.role != "assistant"
+            or not isinstance(self.grounded_answer, ChatGroundedAnswer)
+        ):
+            raise ValueError(
+                "Only assistant messages can carry a grounded answer."
             )
 
 
@@ -534,6 +778,7 @@ def create_chat_message(
     role: ChatMessageRole,
     content: str,
     attachments: Iterable[AttachmentMetadata] = (),
+    grounded_answer: ChatGroundedAnswer | None = None,
     created_at: datetime | None = None,
 ) -> ChatMessage:
     """Create a message with a stable ID and an optional aware timestamp.
@@ -553,6 +798,7 @@ def create_chat_message(
         content=content,
         created_at=message_created_at,
         attachments=tuple(attachments),
+        grounded_answer=grounded_answer,
     )
 
 

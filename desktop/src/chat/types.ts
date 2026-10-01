@@ -1,7 +1,10 @@
 /** Define renderer-only Chat presentation types; persisted data stays in Python. */
 
 import type { InlineAlertTone } from '../design-system/Feedback.tsx'
-import type { ChatAttachment } from '../../electron/contracts.ts'
+import type {
+  ChatAttachment,
+  ChatHistoryMessage,
+} from '../../electron/contracts.ts'
 
 export type ChatMessageState =
   | 'streaming'
@@ -12,6 +15,8 @@ export type ChatMessageState =
 /** A single locally rendered message and its streaming lifecycle state. */
 export interface ChatMessage {
   attachments: ChatAttachment[]
+  /** Canonical structured answer metadata returned only for grounded replies. */
+  groundedAnswer?: NonNullable<ChatHistoryMessage['groundedAnswer']>
   id: string
   role: 'user' | 'assistant'
   text: string

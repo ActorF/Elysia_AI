@@ -12,6 +12,7 @@ from collections.abc import Callable
 from dataclasses import replace
 import hashlib
 import json
+from threading import Event
 import traceback
 from typing import Any, cast
 
@@ -39,6 +40,7 @@ from documents.grounding import (
     GroundedTableCellLocation,
     GroundedTextLocation,
 )
+from documents.exceptions import DocumentOperationCancelledError
 from documents.retrieval import (
     RETRIEVAL_SCHEMA_VERSION,
     ExpectedDocumentGeneration,
@@ -87,9 +89,11 @@ class _StaticRetriever:
         metadata_filter: RetrievalMetadataFilter = RetrievalMetadataFilter(),
         policy: RetrievalPolicy = RetrievalPolicy(),
         limits: RetrievalLimits = RetrievalLimits(),
+        cancel_requested: Callable[[], bool] | None = None,
     ) -> RetrievalResult:
         """Record the exact request and return the configured outcome."""
 
+        del cancel_requested
         self.calls.append(
             (
                 scope,
@@ -466,6 +470,47 @@ def test_grounded_answer_happy_path_publishes_only_verified_content() -> None:
     assert answer.citations[0].excerpt == "The launch date is 2030."
     assert len(retriever.calls) == 1
     assert len(generator.requests) == 1
+
+
+def test_grounded_answer_cancels_after_generator_returns() -> None:
+    """Discard a complete model response when an Event wins during inference."""
+
+    scope, generation, result = _single_hit_fixture()
+    cancelled = Event()
+
+    class _CancellingGenerator:
+        """Set cancellation after receiving the fully bound answer request."""
+
+        @property
+        def identity(self) -> GroundedAnswerGeneratorIdentity:
+            """Return the deterministic structured-generator identity."""
+
+            return _generator_identity()
+
+        def generate(
+            self,
+            request: GroundedAnswerRequest,
+            *,
+            cancel_requested: Callable[[], bool] | None = None,
+        ) -> str:
+            """Return valid JSON after making cancellation observable."""
+
+            assert cancel_requested is not None
+            cancelled.set()
+            return _single_fact_response(request)
+
+    with pytest.raises(DocumentOperationCancelledError, match="cancelled"):
+        GroundedAnswerService(
+            _StaticRetriever(result),
+            _CancellingGenerator(),
+        ).answer(
+            scope,
+            "When is the launch?",
+            (generation,),
+            cancel_requested=cancelled.is_set,
+        )
+
+    assert cancelled.is_set()
 
 
 def test_empty_retrieval_refuses_without_reading_or_calling_generator() -> None:

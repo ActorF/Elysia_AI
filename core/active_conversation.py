@@ -8,6 +8,7 @@ from threading import Lock, RLock
 
 from chats import (
     AttachmentMetadata,
+    ChatGroundedAnswer,
     ChatId,
     ChatMessage,
     ChatMessageId,
@@ -279,6 +280,7 @@ class ActiveConversationService:
         user_message: str,
         assistant_message: str,
         attachments: Iterable[AttachmentMetadata] = (),
+        grounded_answer: ChatGroundedAnswer | None = None,
     ) -> ChatSession:
         """Append one complete turn if the guarded snapshot is still current."""
 
@@ -308,6 +310,7 @@ class ActiveConversationService:
             assistant_record = create_chat_message(
                 role="assistant",
                 content=cleaned_assistant_message,
+                grounded_answer=grounded_answer,
                 created_at=commit_time,
             )
             updated_session = replace(
@@ -346,6 +349,7 @@ class ActiveConversationService:
         assistant_message_id: ChatMessageId,
         user_message: str,
         assistant_message: str,
+        grounded_answer: ChatGroundedAnswer | None = None,
     ) -> ChatSession:
         """Atomically replace the persisted tail pair after a successful retry.
 
@@ -383,6 +387,7 @@ class ActiveConversationService:
                     replace(
                         assistant_record,
                         content=cleaned_assistant_message,
+                        grounded_answer=grounded_answer,
                     ),
                 ),
                 summary=None,

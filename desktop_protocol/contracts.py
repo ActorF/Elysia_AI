@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+from datetime import datetime
 import math
 import ntpath
 import re
@@ -54,6 +55,13 @@ MAX_ATTACHMENT_SOURCE_PATH_LENGTH: Final = 32_767
 MIN_SESSION_TOKEN_LENGTH: Final = 32
 MAX_SESSION_TOKEN_LENGTH: Final = 512
 MAX_SAFE_INTEGER: Final = 9_007_199_254_740_991
+MAX_GROUNDED_CONTEXT_PASSAGES: Final = 20
+MAX_GROUNDED_STATEMENTS: Final = 32
+MAX_GROUNDED_CITATIONS: Final = 64
+MAX_GROUNDED_LOCATIONS: Final = 100_000
+MAX_GROUNDED_STATEMENT_CODE_POINTS: Final = 4_000
+MAX_GROUNDED_TOTAL_STATEMENT_CODE_POINTS: Final = 16_000
+MAX_GROUNDED_EXCERPT_CODE_POINTS: Final = 2_000
 
 TRANSCRIPTION_MODELS: Final = (
     "tiny",
@@ -113,6 +121,16 @@ _ATTACHMENT_ID_PATTERN: Final = re.compile(
     r"^attachment_[A-Za-z0-9_-]+$"
 )
 _LOWERCASE_SHA256_PATTERN: Final = re.compile(r"^[0-9a-f]{64}$")
+_CITATION_ID_PATTERN: Final = re.compile(r"^citation_[0-9a-f]{64}$")
+_STATEMENT_ID_PATTERN: Final = re.compile(r"^statement_[0-9]{3}$")
+_KNOWLEDGE_OPERATION_ID_PATTERN: Final = re.compile(
+    r"^knowledge_[0-9a-f]{32}$"
+)
+_KNOWLEDGE_ERROR_CODE_PATTERN: Final = re.compile(
+    r"^[a-z][a-z0-9_]{0,63}$"
+)
+MAX_KNOWLEDGE_OPERATIONS: Final = 2_048
+MAX_KNOWLEDGE_SOURCES: Final = 128
 _VOICE_PROFILE_ID_PATTERN: Final = re.compile(
     r"^[a-z0-9][a-z0-9._-]{0,63}$"
 )
@@ -133,6 +151,8 @@ ProtocolEventName: TypeAlias = Literal[
     "voice.speech.clip",
     "voice.speech.failure",
     "voice.speech.terminal",
+    "knowledge.operation.changed",
+    "knowledge.operation.completed",
 ]
 VoiceSpeechFailureCode: TypeAlias = Literal[
     "invalid_request",
@@ -171,6 +191,8 @@ _PROTOCOL_EVENT_NAMES: Final = (
         "voice.speech.clip",
         "voice.speech.failure",
         "voice.speech.terminal",
+        "knowledge.operation.changed",
+        "knowledge.operation.completed",
     })
 )
 
@@ -196,6 +218,15 @@ ProtocolMethod = Literal[
     "project.workspace",
     "project.archive",
     "project.chat.move",
+    "knowledge.list",
+    "knowledge.source.add",
+    "knowledge.source.replace",
+    "knowledge.source.reindex",
+    "knowledge.source.delete",
+    "knowledge.project.rebuild",
+    "knowledge.project.revoke",
+    "knowledge.recover",
+    "knowledge.source.export",
     "settings.get",
     "settings.update",
     "voice.settings.get",
@@ -229,6 +260,15 @@ SUPPORTED_METHODS: Final[tuple[ProtocolMethod, ...]] = (
     "project.workspace",
     "project.archive",
     "project.chat.move",
+    "knowledge.list",
+    "knowledge.source.add",
+    "knowledge.source.replace",
+    "knowledge.source.reindex",
+    "knowledge.source.delete",
+    "knowledge.project.rebuild",
+    "knowledge.project.revoke",
+    "knowledge.recover",
+    "knowledge.source.export",
     "settings.get",
     "settings.update",
     "voice.settings.get",
@@ -286,6 +326,7 @@ class ChatStreamParams(TypedDict):
     chatId: str
     message: str
     attachmentIds: NotRequired[list[str]]
+    useProjectKnowledge: NotRequired[bool]
 
 
 class AttachmentScope(TypedDict):
@@ -322,6 +363,7 @@ class ChatRetryParams(TypedDict):
     userMessageId: str
     assistantMessageId: str
     message: NotRequired[str]
+    useProjectKnowledge: NotRequired[bool]
 
 
 class ChatListParams(TypedDict):
@@ -404,6 +446,37 @@ class ProjectChatMoveParams(TypedDict):
 
     chatId: str
     projectId: str | None
+
+
+class KnowledgeProjectParams(TypedDict):
+    """Identify one Project knowledge corpus."""
+
+    projectId: str
+
+
+class KnowledgeAddParams(KnowledgeProjectParams):
+    """Import trusted native paths into one Project corpus."""
+
+    sourcePaths: list[str]
+
+
+class KnowledgeSourceParams(KnowledgeProjectParams):
+    """Identify one opaque Project Source ownership link."""
+
+    sourceId: str
+
+
+class KnowledgeReplaceParams(KnowledgeSourceParams):
+    """Replace one Project Source from a trusted native path."""
+
+    sourcePath: str
+
+
+class KnowledgeExportParams(KnowledgeSourceParams):
+    """Export one source to a native Main-selected destination."""
+
+    destination: str
+    overwrite: bool
 
 
 class CancelParams(TypedDict, total=False):
@@ -619,6 +692,57 @@ class ChatSessionMessage(TypedDict):
     content: str
     createdAt: str
     attachments: list[ChatAttachment]
+    groundedAnswer: NotRequired["ChatGroundedAnswer"]
+
+
+class ChatGroundedTextLocation(TypedDict):
+    """Expose one renderer-safe text citation span."""
+
+    kind: Literal["text"]
+    blockOrdinal: int
+    sourceStartCodePoint: int
+    sourceEndCodePoint: int
+
+
+class ChatGroundedTableLocation(TypedDict):
+    """Expose one renderer-safe table-cell citation span."""
+
+    kind: Literal["table"]
+    blockOrdinal: int
+    rowIndex: int
+    columnIndex: int
+    sourceStartCodePoint: int
+    sourceEndCodePoint: int
+
+
+class ChatGroundedStatement(TypedDict):
+    """Expose one labeled grounded statement and its citation references."""
+
+    statementId: str
+    kind: Literal["source_fact", "model_summary", "inference"]
+    text: str
+    citationIds: list[str]
+
+
+class ChatGroundedCitation(TypedDict):
+    """Expose bounded evidence and a path-private document location."""
+
+    citationId: str
+    kind: Literal["prose", "code", "table"]
+    excerpt: str
+    fileName: str
+    mediaType: str
+    pageNumber: int | None
+    locations: list[ChatGroundedTextLocation | ChatGroundedTableLocation]
+
+
+class ChatGroundedAnswer(TypedDict):
+    """Expose one persisted answer with its closed citation union."""
+
+    status: Literal["answered", "insufficient_evidence"]
+    contextPassageCount: int
+    statements: list[ChatGroundedStatement]
+    citations: list[ChatGroundedCitation]
 
 
 class ChatSessionSummary(TypedDict):
@@ -668,6 +792,68 @@ class ProjectStateResult(TypedDict):
     activeProject: ProjectSummary | None
     projects: list[ProjectSummary]
     chatState: ChatStateResult
+
+
+class KnowledgeSource(TypedDict):
+    """Expose one Project Source without a path, hash, or internal file ID."""
+
+    sourceId: str
+    fileName: str
+    mediaType: str
+    sizeBytes: int
+    state: Literal["unindexed", "processing", "ready", "stale", "revoked"]
+    publishedAt: str | None
+    operationId: str | None
+
+
+class KnowledgeOperation(TypedDict):
+    """Expose one sanitized durable lifecycle checkpoint."""
+
+    operationId: str
+    projectId: str
+    kind: Literal["add", "replace", "reindex", "rebuild", "revoke", "delete"]
+    state: Literal[
+        "running",
+        "cancel_requested",
+        "recovery_required",
+        "succeeded",
+        "cancelled",
+        "failed",
+    ]
+    phase: Literal[
+        "preparing",
+        "importing",
+        "indexing",
+        "revoking",
+        "cleaning",
+        "publishing",
+        "completed",
+    ]
+    progressPercent: int
+    attempt: int
+    createdAt: str
+    updatedAt: str
+    errorCode: str | None
+    targetSourceId: str | None
+    stagedSourceId: str | None
+
+
+class KnowledgeStateResult(TypedDict):
+    """Return one Project's current sources and bounded operation history."""
+
+    kind: Literal["knowledge.state"]
+    projectId: str
+    sources: list[KnowledgeSource]
+    operations: list[KnowledgeOperation]
+
+
+class KnowledgeExportResult(TypedDict):
+    """Confirm an export without returning its private destination path."""
+
+    kind: Literal["knowledge.export"]
+    fileName: str
+    mediaType: str
+    bytesWritten: int
 
 
 class SettingsProjectScope(TypedDict):
@@ -1003,7 +1189,7 @@ def _validate_chat_params(params: JsonObject) -> None:
         params,
         {"chatId", "message"},
         context,
-        optional={"attachmentIds"},
+        optional={"attachmentIds", "useProjectKnowledge"},
     )
     _require_identifier(params, "chatId", context)
     message = _require_string(params, "message", context, minimum=0)
@@ -1019,6 +1205,8 @@ def _validate_chat_params(params: JsonObject) -> None:
             "protocol.invalid_params",
             "chat.stream params.message cannot be blank.",
         )
+    if "useProjectKnowledge" in params:
+        _require_boolean(params, "useProjectKnowledge", context)
 
 
 def _validate_attachment_id_array(
@@ -1090,27 +1278,29 @@ def _validate_attachment_list_params(params: JsonObject) -> None:
     _validate_attachment_scope(params["scope"], context=f"{context}.scope")
 
 
-def _validate_attachment_add_params(params: JsonObject) -> None:
-    context = "attachment.add params"
-    _require_fields(params, {"scope", "sourcePaths"}, context)
-    _validate_attachment_scope(params["scope"], context=f"{context}.scope")
-    source_paths = params["sourcePaths"]
+def _validate_native_source_paths(
+    value: object,
+    *,
+    context: str,
+    maximum_count: int,
+) -> list[str]:
+    """Validate absolute Windows paths supplied only by Electron Main."""
+
     if (
-        not isinstance(source_paths, list)
-        or not source_paths
-        or len(source_paths) > MAX_ATTACHMENTS_PER_SCOPE
+        not isinstance(value, list)
+        or not value
+        or len(value) > maximum_count
     ):
         raise ProtocolValidationError(
             "protocol.invalid_params",
-            f"{context}.sourcePaths must contain 1 to "
-            f"{MAX_ATTACHMENTS_PER_SCOPE} paths.",
+            f"{context} must contain 1 to {maximum_count} paths.",
         )
     normalized_paths: list[str] = []
-    for source_path in source_paths:
+    for source_path in value:
         if not isinstance(source_path, str):
             raise ProtocolValidationError(
                 "protocol.invalid_params",
-                f"{context}.sourcePaths must contain strings.",
+                f"{context} must contain strings.",
             )
         holder: JsonObject = {"path": source_path}
         path = _require_string(
@@ -1143,7 +1333,7 @@ def _validate_attachment_add_params(params: JsonObject) -> None:
         ):
             raise ProtocolValidationError(
                 "protocol.invalid_params",
-                f"{context}.sourcePaths contains an invalid path.",
+                f"{context} contains an invalid path.",
             )
         normalized_paths.append(
             ntpath.normcase(ntpath.normpath(normalized_path))
@@ -1151,8 +1341,20 @@ def _validate_attachment_add_params(params: JsonObject) -> None:
     if len(normalized_paths) != len(set(normalized_paths)):
         raise ProtocolValidationError(
             "protocol.invalid_params",
-            f"{context}.sourcePaths must be unique.",
+            f"{context} must be unique.",
         )
+    return cast(list[str], value)
+
+
+def _validate_attachment_add_params(params: JsonObject) -> None:
+    context = "attachment.add params"
+    _require_fields(params, {"scope", "sourcePaths"}, context)
+    _validate_attachment_scope(params["scope"], context=f"{context}.scope")
+    _validate_native_source_paths(
+        params["sourcePaths"],
+        context=f"{context}.sourcePaths",
+        maximum_count=MAX_ATTACHMENTS_PER_SCOPE,
+    )
 
 
 def _validate_attachment_remove_params(params: JsonObject) -> None:
@@ -1172,13 +1374,103 @@ def _validate_attachment_remove_params(params: JsonObject) -> None:
         )
 
 
+def _validate_knowledge_project_params(
+    params: JsonObject,
+    *,
+    method: str,
+) -> None:
+    """Validate a Project-only knowledge request with no source selector."""
+
+    context = f"{method} params"
+    _require_fields(params, {"projectId"}, context)
+    _require_project_identifier(params, "projectId", context)
+
+
+def _validate_knowledge_source_id(
+    params: JsonObject,
+    *,
+    context: str,
+) -> None:
+    """Validate one opaque attachment link used as a public source ID."""
+
+    source_id = _require_identifier(params, "sourceId", context)
+    if _ATTACHMENT_ID_PATTERN.fullmatch(source_id) is None:
+        raise ProtocolValidationError(
+            "protocol.invalid_params",
+            f"{context}.sourceId is invalid.",
+        )
+
+
+def _validate_knowledge_add_params(params: JsonObject) -> None:
+    """Validate one bounded native source import request."""
+
+    context = "knowledge.source.add params"
+    _require_fields(params, {"projectId", "sourcePaths"}, context)
+    _require_project_identifier(params, "projectId", context)
+    _validate_native_source_paths(
+        params["sourcePaths"],
+        context=f"{context}.sourcePaths",
+        maximum_count=MAX_ATTACHMENTS_PER_SCOPE,
+    )
+
+
+def _validate_knowledge_replace_params(params: JsonObject) -> None:
+    """Validate one copy-on-write source replacement request."""
+
+    context = "knowledge.source.replace params"
+    _require_fields(
+        params,
+        {"projectId", "sourceId", "sourcePath"},
+        context,
+    )
+    _require_project_identifier(params, "projectId", context)
+    _validate_knowledge_source_id(params, context=context)
+    _validate_native_source_paths(
+        [params["sourcePath"]],
+        context=f"{context}.sourcePath",
+        maximum_count=1,
+    )
+
+
+def _validate_knowledge_source_params(
+    params: JsonObject,
+    *,
+    method: str,
+) -> None:
+    """Validate one Project Source mutation without a native path."""
+
+    context = f"{method} params"
+    _require_fields(params, {"projectId", "sourceId"}, context)
+    _require_project_identifier(params, "projectId", context)
+    _validate_knowledge_source_id(params, context=context)
+
+
+def _validate_knowledge_export_params(params: JsonObject) -> None:
+    """Validate one Main-selected, absolute source export destination."""
+
+    context = "knowledge.source.export params"
+    _require_fields(
+        params,
+        {"projectId", "sourceId", "destination", "overwrite"},
+        context,
+    )
+    _require_project_identifier(params, "projectId", context)
+    _validate_knowledge_source_id(params, context=context)
+    _validate_native_source_paths(
+        [params["destination"]],
+        context=f"{context}.destination",
+        maximum_count=1,
+    )
+    _require_boolean(params, "overwrite", context)
+
+
 def _validate_chat_retry_params(params: JsonObject) -> None:
     context = "chat.retry params"
     _require_fields(
         params,
         {"chatId", "userMessageId", "assistantMessageId"},
         context,
-        optional={"message"},
+        optional={"message", "useProjectKnowledge"},
     )
     _require_identifier(params, "chatId", context)
     _require_identifier(params, "userMessageId", context)
@@ -1193,6 +1485,8 @@ def _validate_chat_retry_params(params: JsonObject) -> None:
                 "protocol.invalid_params",
                 "chat.retry params.message cannot be blank.",
             )
+    if "useProjectKnowledge" in params:
+        _require_boolean(params, "useProjectKnowledge", context)
 
 
 def _validate_chat_list_params(params: JsonObject) -> None:
@@ -1871,6 +2165,24 @@ def parse_client_request(value: object) -> ClientRequest:
         _validate_project_archive_params(params)
     elif method == "project.chat.move":
         _validate_project_chat_move_params(params)
+    elif method in {
+        "knowledge.list",
+        "knowledge.project.rebuild",
+        "knowledge.project.revoke",
+        "knowledge.recover",
+    }:
+        _validate_knowledge_project_params(params, method=method)
+    elif method == "knowledge.source.add":
+        _validate_knowledge_add_params(params)
+    elif method == "knowledge.source.replace":
+        _validate_knowledge_replace_params(params)
+    elif method in {
+        "knowledge.source.reindex",
+        "knowledge.source.delete",
+    }:
+        _validate_knowledge_source_params(params, method=method)
+    elif method == "knowledge.source.export":
+        _validate_knowledge_export_params(params)
     elif method == "settings.get":
         _require_fields(params, set(), "settings.get params")
     elif method == "settings.update":
@@ -2039,6 +2351,293 @@ def _validate_attachment_state_result(
     return cast(AttachmentStateResult, result)
 
 
+def _validate_grounded_answer(
+    value: object,
+    *,
+    context: str,
+) -> ChatGroundedAnswer:
+    """Validate one bounded, closed, path-private grounded answer payload."""
+
+    answer = _as_object(value, context)
+    _require_fields(
+        answer,
+        {"status", "contextPassageCount", "statements", "citations"},
+        context,
+    )
+    status = _require_string(answer, "status", context, maximum=21)
+    if status not in {"answered", "insufficient_evidence"}:
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.status is unsupported.",
+        )
+    passage_count = _require_integer(
+        answer,
+        "contextPassageCount",
+        context,
+    )
+    if not 0 <= passage_count <= MAX_GROUNDED_CONTEXT_PASSAGES:
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.contextPassageCount is out of range.",
+        )
+    raw_statements = answer.get("statements")
+    raw_citations = answer.get("citations")
+    if (
+        not isinstance(raw_statements, list)
+        or len(raw_statements) > MAX_GROUNDED_STATEMENTS
+        or not isinstance(raw_citations, list)
+        or len(raw_citations) > MAX_GROUNDED_CITATIONS
+    ):
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context} contains too many statements or citations.",
+        )
+    referenced: set[str] = set()
+    statement_ids: set[str] = set()
+    source_fact_requirements: list[tuple[str, tuple[str, ...]]] = []
+    total_statement_text = 0
+    for position, raw_statement in enumerate(raw_statements):
+        item_context = f"{context}.statements[{position}]"
+        statement = _as_object(raw_statement, item_context)
+        _require_fields(
+            statement,
+            {"statementId", "kind", "text", "citationIds"},
+            item_context,
+        )
+        statement_id = _require_identifier(
+            statement,
+            "statementId",
+            item_context,
+        )
+        if (
+            _STATEMENT_ID_PATTERN.fullmatch(statement_id) is None
+            or statement_id in statement_ids
+        ):
+            raise ProtocolValidationError(
+                "protocol.invalid_message",
+                f"{item_context}.statementId is invalid or duplicated.",
+            )
+        statement_ids.add(statement_id)
+        kind = _require_string(statement, "kind", item_context, maximum=13)
+        if kind not in {"source_fact", "model_summary", "inference"}:
+            raise ProtocolValidationError(
+                "protocol.invalid_message",
+                f"{item_context}.kind is unsupported.",
+            )
+        text = _require_string(
+            statement,
+            "text",
+            item_context,
+            maximum=MAX_GROUNDED_STATEMENT_CODE_POINTS,
+        )
+        if not _has_non_blank_character(text):
+            raise ProtocolValidationError(
+                "protocol.invalid_message",
+                f"{item_context}.text cannot be blank.",
+            )
+        total_statement_text += len(text)
+        statement_citation_ids = statement.get("citationIds")
+        if (
+            not isinstance(statement_citation_ids, list)
+            or not statement_citation_ids
+            or len(statement_citation_ids) > MAX_GROUNDED_CITATIONS
+            or not all(
+                isinstance(citation_id, str)
+                and _CITATION_ID_PATTERN.fullmatch(citation_id) is not None
+                for citation_id in statement_citation_ids
+            )
+            or len(set(statement_citation_ids))
+            != len(statement_citation_ids)
+        ):
+            raise ProtocolValidationError(
+                "protocol.invalid_message",
+                f"{item_context}.citationIds is invalid.",
+            )
+        canonical_statement_citation_ids = tuple(
+            cast(list[str], statement_citation_ids)
+        )
+        referenced.update(canonical_statement_citation_ids)
+        if kind == "source_fact":
+            source_fact_requirements.append(
+                (text, canonical_statement_citation_ids)
+            )
+    if total_statement_text > MAX_GROUNDED_TOTAL_STATEMENT_CODE_POINTS:
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.statements contain too much text.",
+        )
+
+    published_citation_ids: set[str] = set()
+    citation_excerpts: dict[str, str] = {}
+    total_locations = 0
+    for position, raw_citation in enumerate(raw_citations):
+        item_context = f"{context}.citations[{position}]"
+        citation = _as_object(raw_citation, item_context)
+        _require_fields(
+            citation,
+            {
+                "citationId",
+                "kind",
+                "excerpt",
+                "fileName",
+                "mediaType",
+                "pageNumber",
+                "locations",
+            },
+            item_context,
+        )
+        citation_id = _require_identifier(
+            citation,
+            "citationId",
+            item_context,
+        )
+        if (
+            _CITATION_ID_PATTERN.fullmatch(citation_id) is None
+            or citation_id in published_citation_ids
+        ):
+            raise ProtocolValidationError(
+                "protocol.invalid_message",
+                f"{item_context}.citationId is invalid or duplicated.",
+            )
+        published_citation_ids.add(citation_id)
+        kind = _require_string(citation, "kind", item_context, maximum=5)
+        if kind not in {"prose", "code", "table"}:
+            raise ProtocolValidationError(
+                "protocol.invalid_message",
+                f"{item_context}.kind is unsupported.",
+            )
+        excerpt = _require_string(
+            citation,
+            "excerpt",
+            item_context,
+            maximum=MAX_GROUNDED_EXCERPT_CODE_POINTS,
+        )
+        citation_excerpts[citation_id] = excerpt
+        file_name = _require_string(
+            citation,
+            "fileName",
+            item_context,
+            maximum=MAX_ATTACHMENT_FILE_NAME_LENGTH,
+        )
+        media_type = _require_string(
+            citation,
+            "mediaType",
+            item_context,
+            maximum=MAX_ATTACHMENT_MEDIA_TYPE_LENGTH,
+        )
+        try:
+            validate_file_name(file_name)
+            validate_media_type(media_type)
+        except (TypeError, ValueError):
+            raise ProtocolValidationError(
+                "protocol.invalid_message",
+                f"{item_context} contains unsafe display metadata.",
+            ) from None
+        page_number = citation.get("pageNumber")
+        if page_number is not None:
+            parsed_page = _require_integer(
+                citation,
+                "pageNumber",
+                item_context,
+            )
+            if parsed_page <= 0:
+                raise ProtocolValidationError(
+                    "protocol.invalid_message",
+                    f"{item_context}.pageNumber must be positive.",
+                )
+        locations = citation.get("locations")
+        if not isinstance(locations, list) or not locations:
+            raise ProtocolValidationError(
+                "protocol.invalid_message",
+                f"{item_context}.locations must be a non-empty array.",
+            )
+        total_locations += len(locations)
+        if total_locations > MAX_GROUNDED_LOCATIONS:
+            raise ProtocolValidationError(
+                "protocol.invalid_message",
+                f"{context} contains too many citation locations.",
+            )
+        for location_position, raw_location in enumerate(locations):
+            location_context = (
+                f"{item_context}.locations[{location_position}]"
+            )
+            location = _as_object(raw_location, location_context)
+            location_kind = _require_string(
+                location,
+                "kind",
+                location_context,
+                maximum=5,
+            )
+            fields = {
+                "kind",
+                "blockOrdinal",
+                "sourceStartCodePoint",
+                "sourceEndCodePoint",
+            }
+            if location_kind == "table":
+                fields |= {"rowIndex", "columnIndex"}
+            elif location_kind != "text":
+                raise ProtocolValidationError(
+                    "protocol.invalid_message",
+                    f"{location_context}.kind is unsupported.",
+                )
+            _require_fields(location, fields, location_context)
+            values = [
+                _require_integer(location, field, location_context)
+                for field in fields
+                if field != "kind"
+            ]
+            if any(item < 0 for item in values):
+                raise ProtocolValidationError(
+                    "protocol.invalid_message",
+                    f"{location_context} contains a negative coordinate.",
+                )
+            start = cast(int, location["sourceStartCodePoint"])
+            end = cast(int, location["sourceEndCodePoint"])
+            if end < start or (location_kind == "text" and end == start):
+                raise ProtocolValidationError(
+                    "protocol.invalid_message",
+                    f"{location_context} contains an invalid range.",
+                )
+            if (kind == "table") != (location_kind == "table"):
+                raise ProtocolValidationError(
+                    "protocol.invalid_message",
+                    f"{location_context} does not match its citation kind.",
+                )
+    if referenced != published_citation_ids:
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context} citations must form a closed union.",
+        )
+    # Source facts promise verbatim evidence. Enforce that promise again at
+    # the wire boundary instead of trusting an in-process domain object that
+    # may have been replaced by a malformed Backend adapter or test double.
+    if any(
+        text not in citation_excerpts[citation_id]
+        for text, citation_ids in source_fact_requirements
+        for citation_id in citation_ids
+    ):
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context} source facts must be exact cited excerpts.",
+        )
+    if status == "answered" and (
+        passage_count == 0 or not raw_statements or not raw_citations
+    ):
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context} answered result must contain selected evidence.",
+        )
+    if status == "insufficient_evidence" and (
+        raw_statements or raw_citations
+    ):
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context} insufficient result cannot contain evidence.",
+        )
+    return cast(ChatGroundedAnswer, answer)
+
+
 def _validate_chat_message(
     value: object,
     *,
@@ -2049,6 +2648,7 @@ def _validate_chat_message(
         message,
         {"messageId", "role", "content", "createdAt", "attachments"},
         context,
+        optional={"groundedAnswer"},
     )
     _require_identifier(message, "messageId", context)
     role = _require_string(message, "role", context, maximum=9)
@@ -2083,6 +2683,17 @@ def _validate_chat_message(
                 f"{context}.attachments must have unique IDs.",
             )
         attachment_ids.add(attachment_id)
+    grounded = message.get("groundedAnswer")
+    if grounded is not None:
+        if role != "assistant":
+            raise ProtocolValidationError(
+                "protocol.invalid_message",
+                f"{context}.groundedAnswer requires an assistant message.",
+            )
+        _validate_grounded_answer(
+            grounded,
+            context=f"{context}.groundedAnswer",
+        )
     return cast(ChatSessionMessage, message)
 
 
@@ -2334,6 +2945,378 @@ def _validate_project_state_result(value: object) -> ProjectStateResult:
     return cast(ProjectStateResult, result)
 
 
+def _require_protocol_timestamp(
+    value: JsonObject,
+    key: str,
+    context: str,
+) -> datetime:
+    """Parse one bounded timezone-aware protocol timestamp."""
+
+    raw = _require_string(value, key, context, maximum=128)
+    if not (raw.endswith("Z") or re.search(r"[+-][0-9]{2}:[0-9]{2}$", raw)):
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.{key} must be a timezone-aware timestamp.",
+        )
+    try:
+        parsed = datetime.fromisoformat(
+            f"{raw[:-1]}+00:00" if raw.endswith("Z") else raw
+        )
+    except ValueError:
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.{key} must be a timezone-aware timestamp.",
+        ) from None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.{key} must be a timezone-aware timestamp.",
+        )
+    return parsed
+
+
+def _validate_knowledge_operation(
+    value: object,
+    *,
+    context: str,
+    expected_project_id: str | None = None,
+) -> KnowledgeOperation:
+    """Validate one path-private, bounded lifecycle operation DTO."""
+
+    operation = _as_object(value, context)
+    _require_fields(
+        operation,
+        {
+            "operationId",
+            "projectId",
+            "kind",
+            "state",
+            "phase",
+            "progressPercent",
+            "attempt",
+            "createdAt",
+            "updatedAt",
+            "errorCode",
+            "targetSourceId",
+            "stagedSourceId",
+        },
+        context,
+    )
+    operation_id = _require_identifier(
+        operation,
+        "operationId",
+        context,
+    )
+    if _KNOWLEDGE_OPERATION_ID_PATTERN.fullmatch(operation_id) is None:
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.operationId is invalid.",
+        )
+    project_id = _require_project_identifier(
+        operation,
+        "projectId",
+        context,
+    )
+    if expected_project_id is not None and project_id != expected_project_id:
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.projectId crosses the requested Project.",
+        )
+    kind = _require_string(operation, "kind", context, maximum=7)
+    if kind not in {"add", "replace", "reindex", "rebuild", "revoke", "delete"}:
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.kind is unsupported.",
+        )
+    state = _require_string(operation, "state", context, maximum=17)
+    if state not in {
+        "running",
+        "cancel_requested",
+        "recovery_required",
+        "succeeded",
+        "cancelled",
+        "failed",
+    }:
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.state is unsupported.",
+        )
+    phase = _require_string(operation, "phase", context, maximum=10)
+    if phase not in {
+        "preparing",
+        "importing",
+        "indexing",
+        "revoking",
+        "cleaning",
+        "publishing",
+        "completed",
+    }:
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.phase is unsupported.",
+        )
+    progress = _require_integer(operation, "progressPercent", context)
+    attempt = _require_integer(operation, "attempt", context)
+    if not 0 <= progress <= 100 or not 1 <= attempt <= 8:
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context} progress or attempt is out of range.",
+        )
+    created_at = _require_protocol_timestamp(operation, "createdAt", context)
+    updated_at = _require_protocol_timestamp(operation, "updatedAt", context)
+    if updated_at < created_at:
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.updatedAt cannot precede createdAt.",
+        )
+    error_code = operation.get("errorCode")
+    if error_code is not None and (
+        not isinstance(error_code, str)
+        or _KNOWLEDGE_ERROR_CODE_PATTERN.fullmatch(error_code) is None
+    ):
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.errorCode is invalid.",
+        )
+    source_ids: dict[str, str | None] = {}
+    for key in ("targetSourceId", "stagedSourceId"):
+        source_id = operation.get(key)
+        if source_id is not None and (
+            not isinstance(source_id, str)
+            or _ATTACHMENT_ID_PATTERN.fullmatch(source_id) is None
+        ):
+            raise ProtocolValidationError(
+                "protocol.invalid_message",
+                f"{context}.{key} is invalid.",
+            )
+        source_ids[key] = cast(str | None, source_id)
+    terminal = state in {"succeeded", "cancelled", "failed"}
+    target_required = kind in {"replace", "reindex", "delete"}
+    if (
+        terminal != (phase == "completed")
+        or (state == "succeeded") != (progress == 100)
+        or (
+            state in {"succeeded", "cancelled"}
+            and error_code is not None
+        )
+        or (state == "failed" and error_code is None)
+        or target_required != (source_ids["targetSourceId"] is not None)
+        or (
+            kind not in {"add", "replace"}
+            and source_ids["stagedSourceId"] is not None
+        )
+    ):
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context} lifecycle fields are inconsistent.",
+        )
+    return cast(KnowledgeOperation, operation)
+
+
+def _validate_knowledge_state_result(value: object) -> KnowledgeStateResult:
+    """Validate one complete Project Source state snapshot."""
+
+    result = _as_object(value, "knowledge state result")
+    context = "knowledge state result"
+    _require_fields(
+        result,
+        {"kind", "projectId", "sources", "operations"},
+        context,
+    )
+    if result.get("kind") != "knowledge.state":
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.kind must be knowledge.state.",
+        )
+    project_id = _require_project_identifier(result, "projectId", context)
+    raw_sources = result.get("sources")
+    raw_operations = result.get("operations")
+    if (
+        not isinstance(raw_sources, list)
+        or len(raw_sources) > MAX_KNOWLEDGE_SOURCES
+    ):
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.sources is invalid.",
+        )
+    if (
+        not isinstance(raw_operations, list)
+        or len(raw_operations) > MAX_KNOWLEDGE_OPERATIONS
+    ):
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.operations is invalid.",
+        )
+    source_ids: set[str] = set()
+    source_operation_ids: list[str] = []
+    for position, raw_source in enumerate(raw_sources):
+        item_context = f"{context}.sources[{position}]"
+        source = _as_object(raw_source, item_context)
+        _require_fields(
+            source,
+            {
+                "sourceId",
+                "fileName",
+                "mediaType",
+                "sizeBytes",
+                "state",
+                "publishedAt",
+                "operationId",
+            },
+            item_context,
+        )
+        source_id = _require_identifier(source, "sourceId", item_context)
+        if (
+            _ATTACHMENT_ID_PATTERN.fullmatch(source_id) is None
+            or source_id in source_ids
+        ):
+            raise ProtocolValidationError(
+                "protocol.invalid_message",
+                f"{item_context}.sourceId is invalid or duplicated.",
+            )
+        source_ids.add(source_id)
+        file_name = _require_string(
+            source,
+            "fileName",
+            item_context,
+            maximum=MAX_ATTACHMENT_FILE_NAME_LENGTH,
+        )
+        media_type = _require_string(
+            source,
+            "mediaType",
+            item_context,
+            maximum=MAX_ATTACHMENT_MEDIA_TYPE_LENGTH,
+        )
+        try:
+            validate_file_name(file_name)
+            validate_media_type(media_type)
+        except (TypeError, ValueError):
+            raise ProtocolValidationError(
+                "protocol.invalid_message",
+                f"{item_context} contains unsafe display metadata.",
+            ) from None
+        size_bytes = _require_integer(source, "sizeBytes", item_context)
+        if not 1 <= size_bytes <= MAX_DATA_IMPORT_BYTES:
+            raise ProtocolValidationError(
+                "protocol.invalid_message",
+                f"{item_context}.sizeBytes is outside the supported range.",
+            )
+        source_state = _require_string(
+            source,
+            "state",
+            item_context,
+            maximum=10,
+        )
+        if source_state not in {
+            "unindexed",
+            "processing",
+            "ready",
+            "stale",
+            "revoked",
+        }:
+            raise ProtocolValidationError(
+                "protocol.invalid_message",
+                f"{item_context}.state is unsupported.",
+            )
+        published_at = source.get("publishedAt")
+        if published_at is not None:
+            _require_protocol_timestamp(source, "publishedAt", item_context)
+        operation_id = source.get("operationId")
+        if operation_id is not None and (
+            not isinstance(operation_id, str)
+            or _KNOWLEDGE_OPERATION_ID_PATTERN.fullmatch(operation_id) is None
+        ):
+            raise ProtocolValidationError(
+                "protocol.invalid_message",
+                f"{item_context}.operationId is invalid.",
+            )
+        if (
+            (source_state == "ready" and published_at is None)
+            or (
+                source_state in {"unindexed", "revoked"}
+                and published_at is not None
+            )
+            or (
+                (source_state == "processing")
+                != (operation_id is not None)
+            )
+        ):
+            raise ProtocolValidationError(
+                "protocol.invalid_message",
+                f"{item_context} state metadata is inconsistent.",
+            )
+        if isinstance(operation_id, str):
+            source_operation_ids.append(operation_id)
+    operation_ids: set[str] = set()
+    for position, raw_operation in enumerate(raw_operations):
+        operation = _validate_knowledge_operation(
+            raw_operation,
+            context=f"{context}.operations[{position}]",
+            expected_project_id=project_id,
+        )
+        if operation["operationId"] in operation_ids:
+            raise ProtocolValidationError(
+                "protocol.invalid_message",
+                f"{context}.operations contains duplicate IDs.",
+            )
+        operation_ids.add(operation["operationId"])
+    if any(
+        operation_id not in operation_ids
+        for operation_id in source_operation_ids
+    ):
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context} contains inconsistent operation identities.",
+        )
+    return cast(KnowledgeStateResult, result)
+
+
+def _validate_knowledge_export_result(
+    value: object,
+) -> KnowledgeExportResult:
+    """Validate an export acknowledgement without a destination path."""
+
+    result = _as_object(value, "knowledge export result")
+    context = "knowledge export result"
+    _require_fields(
+        result,
+        {"kind", "fileName", "mediaType", "bytesWritten"},
+        context,
+    )
+    if result.get("kind") != "knowledge.export":
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.kind must be knowledge.export.",
+        )
+    file_name = _require_string(
+        result,
+        "fileName",
+        context,
+        maximum=MAX_ATTACHMENT_FILE_NAME_LENGTH,
+    )
+    media_type = _require_string(
+        result,
+        "mediaType",
+        context,
+        maximum=MAX_ATTACHMENT_MEDIA_TYPE_LENGTH,
+    )
+    try:
+        validate_file_name(file_name)
+        validate_media_type(media_type)
+    except (TypeError, ValueError):
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context} contains unsafe display metadata.",
+        ) from None
+    bytes_written = _require_integer(result, "bytesWritten", context)
+    if not 1 <= bytes_written <= MAX_DATA_IMPORT_BYTES:
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.bytesWritten is outside the supported range.",
+        )
+    return cast(KnowledgeExportResult, result)
+
+
 def _validate_success_result(result: JsonObject) -> None:
     fields = set(result)
     if fields == {"protocol", "server", "capabilities"}:
@@ -2376,6 +3359,12 @@ def _validate_success_result(result: JsonObject) -> None:
         return
     if fields == {"activeProject", "projects", "chatState"}:
         _validate_project_state_result(result)
+        return
+    if fields == {"kind", "projectId", "sources", "operations"}:
+        _validate_knowledge_state_result(result)
+        return
+    if fields == {"kind", "fileName", "mediaType", "bytesWritten"}:
+        _validate_knowledge_export_result(result)
         return
     if fields == {
         "scope",
@@ -2984,6 +3973,31 @@ def _validate_transcription_lifecycle_event_data(data: JsonObject) -> None:
     _require_identifier(data, "chatId", context)
 
 
+def _validate_knowledge_operation_event_data(
+    data: JsonObject,
+    event: str,
+) -> None:
+    """Expose one scoped checkpoint with truthful completion semantics."""
+
+    context = "knowledge operation event.data"
+    _require_fields(data, {"projectId", "operation"}, context)
+    project_id = _require_project_identifier(data, "projectId", context)
+    operation = _validate_knowledge_operation(
+        data["operation"],
+        context=f"{context}.operation",
+        expected_project_id=project_id,
+    )
+    if (
+        event == "knowledge.operation.completed"
+        and operation["state"]
+        not in {"succeeded", "cancelled", "failed"}
+    ):
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context} does not match its lifecycle event.",
+        )
+
+
 def _validate_voice_speech_clip_event_data(data: JsonObject) -> None:
     """Validate metadata that must exactly match one private binary frame."""
 
@@ -3125,6 +4139,11 @@ def _validate_event(message: JsonObject) -> EventMessage:
         _validate_chat_lifecycle_event_data(data)
     elif event in _TRANSCRIPTION_LIFECYCLE_EVENTS:
         _validate_transcription_lifecycle_event_data(data)
+    elif event in {
+        "knowledge.operation.changed",
+        "knowledge.operation.completed",
+    }:
+        _validate_knowledge_operation_event_data(data, event)
     elif event == "voice.speech.clip":
         _validate_voice_speech_clip_event_data(data)
     elif event == "voice.speech.failure":

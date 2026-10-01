@@ -27,7 +27,7 @@
     "stream sequences are contiguous per request and have exactly one terminal chunk",
     "the terminal response reply exactly equals the concatenated stream chunks",
     "request and permission identifiers correlate with live pending operations",
-    "attachment.add sourcePaths are unique after Windows separator, dot-segment, and case normalization",
+    "attachment.add and knowledge.source.add sourcePaths are unique after Windows separator, dot-segment, and case normalization",
     "voice.capture.complete sampleCount and speech markers are aligned to 320-sample frames",
     "voice.capture.complete speech markers satisfy 0 <= speechStartSample < speechEndSample <= sampleCount and span at least 3200 samples",
     "voice.capture.complete pcmBase64 is strict canonical Base64 whose decoded byte length equals sampleCount * 2",
@@ -40,7 +40,16 @@
     "voice.speech.cancel targets one managed speech turn by the exact requestId and chatId pair",
     "voice.speech.clip metadata exactly matches the next private binary frame before playback",
     "voice.speech events contain no source text, model path, profile, cache state, or native error detail",
-    "voice.speech.terminal satisfies failedSentences <= completedSentences <= submittedSentences and completed state has equal completed/submitted counts"
+    "voice.speech.terminal satisfies failedSentences <= completedSentences <= submittedSentences and completed state has equal completed/submitted counts",
+    "knowledge.state sources and operations have unique identifiers and every operation belongs to the enclosing Project",
+    "every non-null knowledge.state source operationId refers to an operation in the same result",
+    "knowledge operation timestamps are timezone-aware and updatedAt never precedes createdAt",
+    "knowledge operation event projectId equals its operation projectId and completed events carry a terminal operation",
+    "groundedAnswer statement IDs and citation IDs are unique and citations form the exact closed union referenced by statements",
+    "an answered groundedAnswer has contextPassageCount greater than zero and every source_fact text is an exact contiguous substring of every cited excerpt",
+    "groundedAnswer aggregate statement text is at most 16000 Unicode code points and aggregate citation locations are at most 100000",
+    "groundedAnswer text ranges satisfy sourceStartCodePoint < sourceEndCodePoint; table ranges permit equality",
+    "groundedAnswer is present only on assistant Chat messages and never exposes paths, hashes, or private storage lineage"
   ],
   "oneOf": [
     { "$ref": "#/$defs/handshakeRequest" },
@@ -57,6 +66,15 @@
     { "$ref": "#/$defs/attachmentListRequest" },
     { "$ref": "#/$defs/attachmentAddRequest" },
     { "$ref": "#/$defs/attachmentRemoveRequest" },
+    { "$ref": "#/$defs/knowledgeListRequest" },
+    { "$ref": "#/$defs/knowledgeSourceAddRequest" },
+    { "$ref": "#/$defs/knowledgeSourceReplaceRequest" },
+    { "$ref": "#/$defs/knowledgeSourceReindexRequest" },
+    { "$ref": "#/$defs/knowledgeSourceDeleteRequest" },
+    { "$ref": "#/$defs/knowledgeProjectRebuildRequest" },
+    { "$ref": "#/$defs/knowledgeProjectRevokeRequest" },
+    { "$ref": "#/$defs/knowledgeRecoverRequest" },
+    { "$ref": "#/$defs/knowledgeSourceExportRequest" },
     { "$ref": "#/$defs/projectListRequest" },
     { "$ref": "#/$defs/projectCreateRequest" },
     { "$ref": "#/$defs/projectOpenRequest" },
@@ -142,6 +160,15 @@
             "attachment.list",
             "attachment.add",
             "attachment.remove",
+            "knowledge.list",
+            "knowledge.source.add",
+            "knowledge.source.replace",
+            "knowledge.source.reindex",
+            "knowledge.source.delete",
+            "knowledge.project.rebuild",
+            "knowledge.project.revoke",
+            "knowledge.recover",
+            "knowledge.source.export",
             "project.list",
             "project.create",
             "project.open",
@@ -208,7 +235,8 @@
           },
           "maxItems": 10,
           "uniqueItems": true
-        }
+        },
+        "useProjectKnowledge": { "type": "boolean" }
       },
       "required": ["chatId", "message"],
       "additionalProperties": false,
@@ -292,6 +320,74 @@
       "required": ["scope", "attachmentId"],
       "additionalProperties": false
     },
+    "knowledgeSourceIdentifier": {
+      "type": "string",
+      "pattern": "^attachment_[A-Za-z0-9_-]+$",
+      "maxLength": 128
+    },
+    "knowledgeOperationIdentifier": {
+      "type": "string",
+      "pattern": "^knowledge_[0-9a-f]{32}$"
+    },
+    "absoluteWindowsPath": {
+      "type": "string",
+      "minLength": 4,
+      "maxLength": 32767,
+      "pattern": "^(?!\\s)(?!.*[\\r\\n\\u0000])[A-Za-z]:[\\\\/](?!\\.{1,2}(?:[\\\\/]|$))(?!.*:)(?!.*[\\\\/]\\.{1,2}(?:[\\\\/]|$)).*\\S$"
+    },
+    "knowledgeProjectParams": {
+      "type": "object",
+      "properties": {
+        "projectId": { "$ref": "#/$defs/projectIdentifier" }
+      },
+      "required": ["projectId"],
+      "additionalProperties": false
+    },
+    "knowledgeSourceParams": {
+      "type": "object",
+      "properties": {
+        "projectId": { "$ref": "#/$defs/projectIdentifier" },
+        "sourceId": { "$ref": "#/$defs/knowledgeSourceIdentifier" }
+      },
+      "required": ["projectId", "sourceId"],
+      "additionalProperties": false
+    },
+    "knowledgeSourceAddParams": {
+      "type": "object",
+      "properties": {
+        "projectId": { "$ref": "#/$defs/projectIdentifier" },
+        "sourcePaths": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/absoluteWindowsPath" },
+          "minItems": 1,
+          "maxItems": 10,
+          "uniqueItems": true
+        }
+      },
+      "required": ["projectId", "sourcePaths"],
+      "additionalProperties": false
+    },
+    "knowledgeSourceReplaceParams": {
+      "type": "object",
+      "properties": {
+        "projectId": { "$ref": "#/$defs/projectIdentifier" },
+        "sourceId": { "$ref": "#/$defs/knowledgeSourceIdentifier" },
+        "sourcePath": { "$ref": "#/$defs/absoluteWindowsPath" }
+      },
+      "required": ["projectId", "sourceId", "sourcePath"],
+      "additionalProperties": false
+    },
+    "knowledgeSourceExportParams": {
+      "type": "object",
+      "properties": {
+        "projectId": { "$ref": "#/$defs/projectIdentifier" },
+        "sourceId": { "$ref": "#/$defs/knowledgeSourceIdentifier" },
+        "destination": { "$ref": "#/$defs/absoluteWindowsPath" },
+        "overwrite": { "type": "boolean" }
+      },
+      "required": ["projectId", "sourceId", "destination", "overwrite"],
+      "additionalProperties": false
+    },
     "chatRetryParams": {
       "type": "object",
       "properties": {
@@ -303,7 +399,8 @@
           "minLength": 1,
           "maxLength": 1000000,
           "pattern": "[^\\u0009-\\u000D\\u0020\\u0085\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000\\uFEFF]"
-        }
+        },
+        "useProjectKnowledge": { "type": "boolean" }
       },
       "required": ["chatId", "userMessageId", "assistantMessageId"],
       "additionalProperties": false
@@ -845,6 +942,105 @@
         }
       ]
     },
+    "knowledgeListRequest": {
+      "allOf": [
+        { "$ref": "#/$defs/requestEnvelope" },
+        {
+          "properties": {
+            "method": { "const": "knowledge.list" },
+            "params": { "$ref": "#/$defs/knowledgeProjectParams" }
+          }
+        }
+      ]
+    },
+    "knowledgeSourceAddRequest": {
+      "allOf": [
+        { "$ref": "#/$defs/requestEnvelope" },
+        {
+          "properties": {
+            "method": { "const": "knowledge.source.add" },
+            "params": { "$ref": "#/$defs/knowledgeSourceAddParams" }
+          }
+        }
+      ]
+    },
+    "knowledgeSourceReplaceRequest": {
+      "allOf": [
+        { "$ref": "#/$defs/requestEnvelope" },
+        {
+          "properties": {
+            "method": { "const": "knowledge.source.replace" },
+            "params": { "$ref": "#/$defs/knowledgeSourceReplaceParams" }
+          }
+        }
+      ]
+    },
+    "knowledgeSourceReindexRequest": {
+      "allOf": [
+        { "$ref": "#/$defs/requestEnvelope" },
+        {
+          "properties": {
+            "method": { "const": "knowledge.source.reindex" },
+            "params": { "$ref": "#/$defs/knowledgeSourceParams" }
+          }
+        }
+      ]
+    },
+    "knowledgeSourceDeleteRequest": {
+      "allOf": [
+        { "$ref": "#/$defs/requestEnvelope" },
+        {
+          "properties": {
+            "method": { "const": "knowledge.source.delete" },
+            "params": { "$ref": "#/$defs/knowledgeSourceParams" }
+          }
+        }
+      ]
+    },
+    "knowledgeProjectRebuildRequest": {
+      "allOf": [
+        { "$ref": "#/$defs/requestEnvelope" },
+        {
+          "properties": {
+            "method": { "const": "knowledge.project.rebuild" },
+            "params": { "$ref": "#/$defs/knowledgeProjectParams" }
+          }
+        }
+      ]
+    },
+    "knowledgeProjectRevokeRequest": {
+      "allOf": [
+        { "$ref": "#/$defs/requestEnvelope" },
+        {
+          "properties": {
+            "method": { "const": "knowledge.project.revoke" },
+            "params": { "$ref": "#/$defs/knowledgeProjectParams" }
+          }
+        }
+      ]
+    },
+    "knowledgeRecoverRequest": {
+      "allOf": [
+        { "$ref": "#/$defs/requestEnvelope" },
+        {
+          "properties": {
+            "method": { "const": "knowledge.recover" },
+            "params": { "$ref": "#/$defs/knowledgeProjectParams" }
+          }
+        }
+      ]
+    },
+    "knowledgeSourceExportRequest": {
+      "allOf": [
+        { "$ref": "#/$defs/requestEnvelope" },
+        {
+          "properties": {
+            "method": { "const": "knowledge.source.export" },
+            "params": { "$ref": "#/$defs/knowledgeSourceExportParams" }
+          }
+        }
+      ]
+    },
     "projectListRequest": {
       "allOf": [
         { "$ref": "#/$defs/requestEnvelope" },
@@ -1171,6 +1367,202 @@
       "required": ["scope", "attachments", "maxFileBytes", "maxFileCount"],
       "additionalProperties": false
     },
+    "groundedTextLocation": {
+      "type": "object",
+      "properties": {
+        "kind": { "const": "text" },
+        "blockOrdinal": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "sourceStartCodePoint": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "sourceEndCodePoint": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "kind", "blockOrdinal", "sourceStartCodePoint", "sourceEndCodePoint"
+      ],
+      "additionalProperties": false
+    },
+    "groundedTableLocation": {
+      "type": "object",
+      "properties": {
+        "kind": { "const": "table" },
+        "blockOrdinal": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "rowIndex": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "columnIndex": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "sourceStartCodePoint": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "sourceEndCodePoint": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "kind", "blockOrdinal", "rowIndex", "columnIndex",
+        "sourceStartCodePoint", "sourceEndCodePoint"
+      ],
+      "additionalProperties": false
+    },
+    "groundedStatement": {
+      "type": "object",
+      "properties": {
+        "statementId": {
+          "type": "string",
+          "pattern": "^statement_[0-9]{3}$"
+        },
+        "kind": { "enum": ["source_fact", "model_summary", "inference"] },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4000,
+          "pattern": "[^\\u0009-\\u000D\\u0020\\u0085\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000\\uFEFF]"
+        },
+        "citationIds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^citation_[0-9a-f]{64}$"
+          },
+          "minItems": 1,
+          "maxItems": 64,
+          "uniqueItems": true
+        }
+      },
+      "required": ["statementId", "kind", "text", "citationIds"],
+      "additionalProperties": false
+    },
+    "groundedCitation": {
+      "type": "object",
+      "properties": {
+        "citationId": {
+          "type": "string",
+          "pattern": "^citation_[0-9a-f]{64}$"
+        },
+        "kind": { "enum": ["prose", "code", "table"] },
+        "excerpt": { "type": "string", "minLength": 1, "maxLength": 2000 },
+        "fileName": { "$ref": "#/$defs/attachmentFileName" },
+        "mediaType": { "$ref": "#/$defs/attachmentMediaType" },
+        "pageNumber": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            { "type": "null" }
+          ]
+        },
+        "locations": {
+          "type": "array",
+          "items": {
+            "oneOf": [
+              { "$ref": "#/$defs/groundedTextLocation" },
+              { "$ref": "#/$defs/groundedTableLocation" }
+            ]
+          },
+          "minItems": 1,
+          "maxItems": 100000
+        }
+      },
+      "required": [
+        "citationId", "kind", "excerpt", "fileName", "mediaType",
+        "pageNumber", "locations"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": { "kind": { "const": "table" } },
+            "required": ["kind"]
+          },
+          "then": {
+            "properties": {
+              "locations": {
+                "items": { "$ref": "#/$defs/groundedTableLocation" }
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "locations": {
+                "items": { "$ref": "#/$defs/groundedTextLocation" }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "groundedAnswer": {
+      "type": "object",
+      "properties": {
+        "status": { "enum": ["answered", "insufficient_evidence"] },
+        "contextPassageCount": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 20
+        },
+        "statements": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/groundedStatement" },
+          "maxItems": 32,
+          "uniqueItems": true
+        },
+        "citations": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/groundedCitation" },
+          "maxItems": 64,
+          "uniqueItems": true
+        }
+      },
+      "required": ["status", "contextPassageCount", "statements", "citations"],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": { "status": { "const": "answered" } },
+            "required": ["status"]
+          },
+          "then": {
+            "properties": {
+              "contextPassageCount": { "minimum": 1 },
+              "statements": { "minItems": 1 },
+              "citations": { "minItems": 1 }
+            }
+          },
+          "else": {
+            "properties": {
+              "statements": { "maxItems": 0 },
+              "citations": { "maxItems": 0 }
+            }
+          }
+        }
+      ]
+    },
     "chatSessionMessage": {
       "type": "object",
       "properties": {
@@ -1183,10 +1575,17 @@
           "items": { "$ref": "#/$defs/chatAttachment" },
           "maxItems": 10,
           "uniqueItems": true
-        }
+        },
+        "groundedAnswer": { "$ref": "#/$defs/groundedAnswer" }
       },
       "required": ["messageId", "role", "content", "createdAt", "attachments"],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": { "required": ["groundedAnswer"] },
+          "then": { "properties": { "role": { "const": "assistant" } } }
+        }
+      ]
     },
     "chatSummaryShape": {
       "type": "object",
@@ -1287,6 +1686,241 @@
         "chatState": { "$ref": "#/$defs/chatStateResult" }
       },
       "required": ["activeProject", "projects", "chatState"],
+      "additionalProperties": false
+    },
+    "knowledgeTimestamp": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "(?:Z|[+-][0-9]{2}:[0-9]{2})$"
+    },
+    "knowledgeOperation": {
+      "type": "object",
+      "properties": {
+        "operationId": { "$ref": "#/$defs/knowledgeOperationIdentifier" },
+        "projectId": { "$ref": "#/$defs/projectIdentifier" },
+        "kind": {
+          "enum": ["add", "replace", "reindex", "rebuild", "revoke", "delete"]
+        },
+        "state": {
+          "enum": [
+            "running", "cancel_requested", "recovery_required",
+            "succeeded", "cancelled", "failed"
+          ]
+        },
+        "phase": {
+          "enum": [
+            "preparing", "importing", "indexing", "revoking",
+            "cleaning", "publishing", "completed"
+          ]
+        },
+        "progressPercent": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "attempt": { "type": "integer", "minimum": 1, "maximum": 8 },
+        "createdAt": { "$ref": "#/$defs/knowledgeTimestamp" },
+        "updatedAt": { "$ref": "#/$defs/knowledgeTimestamp" },
+        "errorCode": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "pattern": "^[a-z][a-z0-9_]{0,63}$"
+            },
+            { "type": "null" }
+          ]
+        },
+        "targetSourceId": {
+          "oneOf": [
+            { "$ref": "#/$defs/knowledgeSourceIdentifier" },
+            { "type": "null" }
+          ]
+        },
+        "stagedSourceId": {
+          "oneOf": [
+            { "$ref": "#/$defs/knowledgeSourceIdentifier" },
+            { "type": "null" }
+          ]
+        }
+      },
+      "required": [
+        "operationId", "projectId", "kind", "state", "phase",
+        "progressPercent", "attempt", "createdAt", "updatedAt",
+        "errorCode", "targetSourceId", "stagedSourceId"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "state": { "enum": ["succeeded", "cancelled", "failed"] }
+            },
+            "required": ["state"]
+          },
+          "then": { "properties": { "phase": { "const": "completed" } } },
+          "else": { "properties": { "phase": { "not": { "const": "completed" } } } }
+        },
+        {
+          "if": {
+            "properties": { "state": { "const": "succeeded" } },
+            "required": ["state"]
+          },
+          "then": {
+            "properties": {
+              "progressPercent": { "const": 100 },
+              "errorCode": { "type": "null" }
+            }
+          },
+          "else": { "properties": { "progressPercent": { "maximum": 99 } } }
+        },
+        {
+          "if": {
+            "properties": { "state": { "const": "cancelled" } },
+            "required": ["state"]
+          },
+          "then": { "properties": { "errorCode": { "type": "null" } } }
+        },
+        {
+          "if": {
+            "properties": { "state": { "const": "failed" } },
+            "required": ["state"]
+          },
+          "then": {
+            "properties": {
+              "errorCode": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+                "pattern": "^[a-z][a-z0-9_]{0,63}$"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": { "enum": ["replace", "reindex", "delete"] }
+            },
+            "required": ["kind"]
+          },
+          "then": {
+            "properties": {
+              "targetSourceId": { "$ref": "#/$defs/knowledgeSourceIdentifier" }
+            }
+          },
+          "else": { "properties": { "targetSourceId": { "type": "null" } } }
+        },
+        {
+          "if": {
+            "properties": { "kind": { "enum": ["add", "replace"] } },
+            "required": ["kind"]
+          },
+          "else": { "properties": { "stagedSourceId": { "type": "null" } } }
+        }
+      ]
+    },
+    "knowledgeSource": {
+      "type": "object",
+      "properties": {
+        "sourceId": { "$ref": "#/$defs/knowledgeSourceIdentifier" },
+        "fileName": { "$ref": "#/$defs/attachmentFileName" },
+        "mediaType": { "$ref": "#/$defs/attachmentMediaType" },
+        "sizeBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2147483647
+        },
+        "state": {
+          "enum": ["ready", "unindexed", "stale", "revoked", "processing"]
+        },
+        "publishedAt": {
+          "oneOf": [
+            { "$ref": "#/$defs/knowledgeTimestamp" },
+            { "type": "null" }
+          ]
+        },
+        "operationId": {
+          "oneOf": [
+            { "$ref": "#/$defs/knowledgeOperationIdentifier" },
+            { "type": "null" }
+          ]
+        }
+      },
+      "required": [
+        "sourceId", "fileName", "mediaType", "sizeBytes", "state",
+        "publishedAt", "operationId"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": { "state": { "const": "ready" } },
+            "required": ["state"]
+          },
+          "then": {
+            "properties": {
+              "publishedAt": { "$ref": "#/$defs/knowledgeTimestamp" }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "state": { "enum": ["unindexed", "revoked"] } },
+            "required": ["state"]
+          },
+          "then": { "properties": { "publishedAt": { "type": "null" } } }
+        },
+        {
+          "if": {
+            "properties": { "state": { "const": "processing" } },
+            "required": ["state"]
+          },
+          "then": {
+            "properties": {
+              "operationId": { "$ref": "#/$defs/knowledgeOperationIdentifier" }
+            }
+          },
+          "else": { "properties": { "operationId": { "type": "null" } } }
+        }
+      ]
+    },
+    "knowledgeStateResult": {
+      "type": "object",
+      "properties": {
+        "kind": { "const": "knowledge.state" },
+        "projectId": { "$ref": "#/$defs/projectIdentifier" },
+        "sources": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/knowledgeSource" },
+          "maxItems": 128,
+          "uniqueItems": true
+        },
+        "operations": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/knowledgeOperation" },
+          "maxItems": 2048,
+          "uniqueItems": true
+        }
+      },
+      "required": ["kind", "projectId", "sources", "operations"],
+      "additionalProperties": false
+    },
+    "knowledgeExportResult": {
+      "type": "object",
+      "properties": {
+        "kind": { "const": "knowledge.export" },
+        "fileName": { "$ref": "#/$defs/attachmentFileName" },
+        "mediaType": { "$ref": "#/$defs/attachmentMediaType" },
+        "bytesWritten": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2147483647
+        }
+      },
+      "required": ["kind", "fileName", "mediaType", "bytesWritten"],
       "additionalProperties": false
     },
     "settingsProjectScope": {
@@ -1648,6 +2282,8 @@
             { "$ref": "#/$defs/chatStateResult" },
             { "$ref": "#/$defs/projectStateResult" },
             { "$ref": "#/$defs/attachmentStateResult" },
+            { "$ref": "#/$defs/knowledgeStateResult" },
+            { "$ref": "#/$defs/knowledgeExportResult" },
             { "$ref": "#/$defs/settingsStateResult" },
             { "$ref": "#/$defs/voiceSettingsStateResult" },
             { "$ref": "#/$defs/voiceCaptureResult" },
@@ -1930,6 +2566,56 @@
           },
           "required": ["type", "protocol", "event", "requestId", "data"],
           "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": { "const": "event" },
+            "protocol": { "$ref": "#/$defs/protocol" },
+            "event": {
+              "enum": [
+                "knowledge.operation.changed",
+                "knowledge.operation.completed"
+              ]
+            },
+            "requestId": { "$ref": "#/$defs/identifier" },
+            "data": {
+              "type": "object",
+              "properties": {
+                "projectId": { "$ref": "#/$defs/projectIdentifier" },
+                "operation": { "$ref": "#/$defs/knowledgeOperation" }
+              },
+              "required": ["projectId", "operation"],
+              "additionalProperties": false
+            }
+          },
+          "required": ["type", "protocol", "event", "requestId", "data"],
+          "additionalProperties": false,
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "event": { "const": "knowledge.operation.completed" }
+                },
+                "required": ["event"]
+              },
+              "then": {
+                "properties": {
+                  "data": {
+                    "properties": {
+                      "operation": {
+                        "properties": {
+                          "state": {
+                            "enum": ["succeeded", "cancelled", "failed"]
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          ]
         }
       ]
     }

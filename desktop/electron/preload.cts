@@ -19,6 +19,9 @@ import type {
   DesktopApi,
   DesktopThemePreference,
   DesktopSettingsState,
+  KnowledgeExportResult,
+  KnowledgeOperationReceipt,
+  KnowledgeState,
   MicrophonePermissionStatus,
   MoveChatToProjectRequest,
   PinChatRequest,
@@ -617,6 +620,78 @@ const desktopApi: DesktopApi = {
       'attachment:remove',
       { scope, attachmentId },
     ) as Promise<AttachmentState>,
+
+  listProjectKnowledge: (projectId: string) =>
+    ipcRenderer.invoke(
+      'knowledge:list',
+      projectId,
+    ) as Promise<KnowledgeState>,
+
+  chooseProjectSources: (projectId: string) =>
+    ipcRenderer.invoke(
+      'knowledge:choose-sources',
+      projectId,
+    ) as Promise<KnowledgeOperationReceipt | null>,
+
+  replaceProjectSource: (
+    projectId: string,
+    sourceId: string,
+  ) =>
+    ipcRenderer.invoke(
+      'knowledge:replace-source',
+      { projectId, sourceId },
+    ) as Promise<KnowledgeOperationReceipt | null>,
+
+  reindexProjectSource: (
+    projectId: string,
+    sourceId: string,
+  ) =>
+    ipcRenderer.invoke(
+      'knowledge:reindex-source',
+      { projectId, sourceId },
+    ) as Promise<KnowledgeOperationReceipt>,
+
+  deleteProjectSource: (
+    projectId: string,
+    sourceId: string,
+  ) =>
+    ipcRenderer.invoke(
+      'knowledge:delete-source',
+      { projectId, sourceId },
+    ) as Promise<KnowledgeOperationReceipt>,
+
+  rebuildProjectKnowledge: (projectId: string) =>
+    ipcRenderer.invoke(
+      'knowledge:rebuild',
+      projectId,
+    ) as Promise<KnowledgeOperationReceipt>,
+
+  revokeProjectKnowledge: (projectId: string) =>
+    ipcRenderer.invoke(
+      'knowledge:revoke',
+      projectId,
+    ) as Promise<KnowledgeOperationReceipt>,
+
+  recoverProjectKnowledge: (projectId: string) =>
+    ipcRenderer.invoke(
+      'knowledge:recover',
+      projectId,
+    ) as Promise<KnowledgeOperationReceipt>,
+
+  stopKnowledgeOperation: (requestId: string) =>
+    ipcRenderer.invoke(
+      'knowledge:stop-operation',
+      requestId,
+    ) as Promise<void>,
+
+  exportProjectSource: (
+    projectId: string,
+    sourceId: string,
+  ) =>
+    ipcRenderer.invoke(
+      'knowledge:export-source',
+      { projectId, sourceId },
+    ) as Promise<KnowledgeExportResult | null>,
 
   setCharacterPanelOpen: (open: boolean) =>
     ipcRenderer.invoke(

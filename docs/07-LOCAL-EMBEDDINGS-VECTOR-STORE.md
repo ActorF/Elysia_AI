@@ -1,6 +1,6 @@
 # Local Embeddings and Vector Store：本地向量与 Scope-safe 索引
 
-本文记录 Elysia AI 在 `ChunkedDocument` 之后的独立 Python Embedding 与索引边界。当前实现使用固定的本地 Ollama 模型空间，把每个向量绑定到精确 Chunk Lineage，并由标准库 SQLite 按 Chat/Project Scope 存储。下游 [Retriever and Reranking](./08-RETRIEVER-RERANKING.md) 已作为独立 Python Library 完成，但整条链仍未接入 `start.py`、`desktop_backend.py`、Desktop Protocol 或 React；存在本地索引与检索 Library **不等于** 桌面 Chat 已能使用附件。
+本文记录 Elysia AI 在 `ChunkedDocument` 之后的独立 Python Embedding 与索引边界。当前实现使用固定的本地 Ollama 模型空间，把每个向量绑定到精确 Chunk Lineage，并由标准库 SQLite 按 Chat/Project Scope 存储。下游 [Retriever and Reranking](./08-RETRIEVER-RERANKING.md) 保持独立 Python Library 边界；生产 Project Source 生命周期已通过桌面 Composition Root 接线，但本地 Library 的存在本身仍不授予任意 Chat 附件知识权限。
 
 ## 1. 完成范围与设计原则
 
@@ -35,11 +35,12 @@ AttachmentScope + ownership link_id
 
   ✗ this indexing stage performs no retrieval or reranking itself
   ✗ no Citation, Prompt composition, or grounded answer generation
-  ✗ no production composition-root, Desktop Protocol, or Renderer wiring
-  ✗ no background lifecycle, retry, progress, cancellation, or cleanup jobs
+  → production composition-root + Project Source lifecycle owns explicit operations
+      authorization, durable recovery, progress, cancellation, and cleanup
+      Desktop Protocol + Renderer expose only the lifecycle's safe state
 ```
 
-`documents/indexing.py` 提供同步 Application Service 来组合已实现的 Processing、Embedding 和 Store 边界；它不会因为 Attachment 新增、更新或删除就自动运行。`documents/retrieval.py` 已能在调用方提供准确 Scope 与 `ExpectedDocumentGeneration` Allowlist 后消费 Store，但不会替 Indexing Service 决定哪些 Source 可读。未来生产接线仍必须另行定义 Derived Relation、任务所有权、崩溃恢复、删除传播和用户可见状态，不能把当前同步 Library 冒充为完整生命周期。
+`documents/indexing.py` 提供同步 Application Service 来组合已实现的 Processing、Embedding 和 Store 边界；它不会因为 Attachment 新增、更新或删除就自动运行。`documents/retrieval.py` 在调用方提供准确 Scope 与 `ExpectedDocumentGeneration` Allowlist 后消费 Store，但不会替 Indexing Service 决定哪些 Source 可读。生产中的任务所有权、崩溃恢复、删除传播、取消和用户可见状态由 `knowledge_lifecycle` 与 `desktop_knowledge.py` 负责；Library 自身仍不会暗中启动后台工作。
 
 ## 3. 固定模型 Artifact 与运行时边界
 
@@ -209,8 +210,8 @@ Embedding/Vector Store 模块本身不提供：
 - Retriever 的 Corpus 授权、Top-K Policy、Metadata Filter、Deduplication 或 Reranker 决策；下游独立 Library 已实现有界暴力 Cosine Top-K、Exact Deduplication 与可选 Fail-closed Reranker，但不是本索引模块的职责；
 - ANN、Hybrid/BM25 Search、Semantic Deduplication、Diversity/Recency Scoring 或 Query-time Scope Union；
 - Citation Selection、Prompt Composition、Prompt-injection Isolation 或 Grounded Answer Generation；
-- `start.py` / `desktop_backend.py` Composition-root Wiring、Desktop Protocol、React 文档预览/问答 UI；
-- Attachment Derived Relation 持久化、自动增量索引、删除传播、Job Queue、Progress、Cancel、Retry 或 Crash Recovery；
+- `start.py` / `desktop_backend.py` Composition-root Wiring、Desktop Protocol、React Project Source UI；这些由上层桌面实现提供；
+- Attachment Derived Relation 持久化与自动增量索引；生产 `knowledge_lifecycle` 只提供显式 add/replace/reindex/rebuild/revoke/delete、durable checkpoint、Progress、协作取消和显式 Recover，Desktop Backend 用单个后台 worker 执行已获准操作，不存在目录监听或长期自动 Job Queue；
 - 模型下载、Ollama 进程启动、自动选模型或 Remote Embedding Fallback。
 
-下游 Retrieval/Reranking Contract 已完成 Identity-bearing Query、显式 Generation Allowlist、有界单事务 Cosine Top-K、精确 Filter、阈值、去重 Evidence 和可选不可信 Reranker，详见 [Retriever and Reranking](./08-RETRIEVER-RERANKING.md)；有限 Prompt、结构化 Grounded Answer 与可信 Citation 见 [Grounded Answers and Citations](./09-GROUNDED-ANSWERS-CITATIONS.md)，Chat-derived 授权与共享语义见 [Project Sources](./10-PROJECT-SOURCES.md)。在生产 Generator、Composition Root、生命周期和桌面协议/UI 完成前，本地 SQLite 里存在 Vector、Grounding 或授权 Library 仍不意味着 Project Sources 可以被 Chat 查询或引用。
+下游 Retrieval/Reranking Contract 已完成 Identity-bearing Query、显式 Generation Allowlist、有界单事务 Cosine Top-K、精确 Filter、阈值、去重 Evidence 和可选不可信 Reranker，详见 [Retriever and Reranking](./08-RETRIEVER-RERANKING.md)；有限 Prompt、结构化 Grounded Answer 与可信 Citation 见 [Grounded Answers and Citations](./09-GROUNDED-ANSWERS-CITATIONS.md)，Chat-derived 授权与共享语义见 [Project Sources](./10-PROJECT-SOURCES.md)。生产层只允许显式完成索引并通过当前 Project Chat 授权的 Source 被查询；SQLite 中仅仅存在 Vector 并不构成权限。

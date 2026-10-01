@@ -1,6 +1,6 @@
 # Document Loaders：可信文件读取与有界结构提取
 
-本文记录 Elysia AI 的文档加载边界。它把 Stage 8 已保存的原始 Attachment 转换成稳定、可测试的原始文档结构；Loader 本身不会清洗、切块、生成 Embedding、建立 Vector Store、检索或生成 Citation。其下游保守 [Cleaning/Chunking](./06-DOCUMENT-CLEANING-CHUNKING.md)、[Local Embeddings/Vector Store](./07-LOCAL-EMBEDDINGS-VECTOR-STORE.md)、[Retriever/Reranking](./08-RETRIEVER-RERANKING.md) 与 [Grounded Answer/Citation](./09-GROUNDED-ANSWERS-CITATIONS.md) Contract 已作为独立 Python Library 完成；生产 Generator 和桌面接线仍未完成。
+本文记录 Elysia AI 的文档加载边界。它把已保存的原始 Attachment 转换成稳定、可测试的原始文档结构；Loader 本身不会清洗、切块、生成 Embedding、建立 Vector Store、检索或生成 Citation。其下游保守 [Cleaning/Chunking](./06-DOCUMENT-CLEANING-CHUNKING.md)、[Local Embeddings/Vector Store](./07-LOCAL-EMBEDDINGS-VECTOR-STORE.md)、[Retriever/Reranking](./08-RETRIEVER-RERANKING.md) 与 [Grounded Answer/Citation](./09-GROUNDED-ANSWERS-CITATIONS.md) Contract 仍保持独立 Python Library 边界，并已由 Project Source 生命周期和桌面 Composition Root 组合为生产能力。
 
 ## 1. 完成范围
 
@@ -37,7 +37,7 @@ Renderer / caller supplies Scope + ownership link_id
 
 Loader 从不接收本机路径，也不会用文件名重新打开文件。唯一的选择键是已经通过 Scope 授权的 Ownership；共享内容即使有相同 File ID，不同 Chat/Project 仍必须通过各自的 `link_id` 和 Scope。解析发生在验证读取 Context 关闭之后，因此第三方 Parser 不会持有 Attachment Store 的句柄。
 
-本模块目前是独立 Python Library，尚未由 `start.py` / `desktop_backend.py` 的生产 Composition Root 构造，也未新增 Desktop Protocol 或 React API。下游 Cleaning/Chunking、Embedding/SQLite Store、Retriever/Reranker、结构化 Grounded Answer/Citation 与 [Project Sources](./10-PROJECT-SOURCES.md) 授权 Library 均已完成；但仍无生产 Generator、知识生命周期或桌面接线，因此不能向桌面层暴露“向文件提问”能力。
+本模块仍是可独立测试的 Python Library；生产层通过 `desktop_knowledge.py` 把它与 Cleaning/Chunking、Embedding/SQLite Store、Retriever/Reranker、Grounded Answer/Citation 和 [Project Sources](./10-PROJECT-SOURCES.md) 生命周期组合，并由 `desktop_backend.py`、Desktop Protocol 与 React UI 暴露显式的 Project Source 管理和 Grounded Chat。普通 Chat 附件不会自动进入知识库，只有用户明确添加并完成索引的 Project Source 才会进入当前 Project Chat 的授权语料。
 
 ## 3. 稳定领域模型
 
@@ -149,7 +149,7 @@ DOCX Loader 直接读取内存中的 OPC ZIP，不把成员解压到磁盘：
 
 `DocumentUnsupportedFormatError` 表示扩展名/MIME 路由未注册；`DocumentUnsupportedFeatureError` 表示格式已经受支持，但活动内容强制要求当前 Consumer 尚未实现的能力；`DocumentCorruptError` 只表示语法、结构或内部一致性损坏。
 
-底层路径、OS Error、ZIP Member、Hash、Native Object 或第三方 Parser 原文只保留在 Exception Chaining 中，不进入稳定消息。未来若把错误映射到 Desktop Protocol，应继续转成闭集 Code，而不是显示 `str(cause)`。
+底层路径、OS Error、ZIP Member、Hash、Native Object 或第三方 Parser 原文只保留在 Exception Chaining 中，不进入稳定消息。生产桌面边界把这些失败映射为 Desktop Protocol 的闭集 Code；后续新增错误仍必须扩展闭集合同，而不是显示 `str(cause)`。
 
 ## 9. 文件职责与测试
 
@@ -179,4 +179,4 @@ DOCX Loader 直接读取内存中的 OPC ZIP，不把成员解压到磁盘：
 - OCR、复杂 PDF Layout、Spreadsheet、Presentation 或旧 Office Binary Format；
 - Renderer Preview 或“向 Chat 提问此文件”的 UI。
 
-版本化 Cleaning/Chunking Contract、可重现 Chunk Identity 与 Page/Block/Cell/Offset Source Location 已在 [Document Cleaning and Chunking](./06-DOCUMENT-CLEANING-CHUNKING.md) 中完成；固定 Model/Space Identity、本地 Ollama Adapter 和 Scope-safe SQLite 索引见 [Local Embeddings and Vector Store](./07-LOCAL-EMBEDDINGS-VECTOR-STORE.md)；显式 Generation Allowlist、有界检索与可选 Reranker 见 [Retriever and Reranking](./08-RETRIEVER-RERANKING.md)；有限 Prompt、结构化陈述和可信位置见 [Grounded Answers and Citations](./09-GROUNDED-ANSWERS-CITATIONS.md)。生产持久化生命周期仍需登记 Attachment Derived Relation，并实现版本变化、替换和删除时的任务、重建与传播规则。
+版本化 Cleaning/Chunking Contract、可重现 Chunk Identity 与 Page/Block/Cell/Offset Source Location 已在 [Document Cleaning and Chunking](./06-DOCUMENT-CLEANING-CHUNKING.md) 中完成；固定 Model/Space Identity、本地 Ollama Adapter 和 Scope-safe SQLite 索引见 [Local Embeddings and Vector Store](./07-LOCAL-EMBEDDINGS-VECTOR-STORE.md)；显式 Generation Allowlist、有界检索与可选 Reranker 见 [Retriever and Reranking](./08-RETRIEVER-RERANKING.md)；有限 Prompt、结构化陈述和可信位置见 [Grounded Answers and Citations](./09-GROUNDED-ANSWERS-CITATIONS.md)。生产持久化、Attachment Derived Relation、版本变化、替换/删除传播、恢复与取消规则见 [Knowledge Lifecycle](./11-KNOWLEDGE-LIFECYCLE.md)。

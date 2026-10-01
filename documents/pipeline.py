@@ -9,7 +9,7 @@ persistence, embedding, retrieval, model, network, or desktop UI work.
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from typing import Final
 
 from attachments.domain import AttachmentScope
@@ -47,6 +47,7 @@ from .domain import (
 from .exceptions import (
     DocumentContentLimitError,
     DocumentError,
+    DocumentOperationCancelledError,
     DocumentProcessingFailedError,
     DocumentValidationError,
 )
@@ -61,6 +62,17 @@ _TABLE_ESCAPES: Final = {
     "\r": "\\r",
 }
 _ZERO_WIDTH_NO_BREAK_SPACE: Final = "\ufeff"
+
+
+def _raise_if_processing_cancelled(
+    cancel_requested: Callable[[], bool] | None,
+) -> None:
+    """Stop between bounded adapters before more document work is admitted."""
+
+    if cancel_requested is not None and cancel_requested():
+        raise DocumentOperationCancelledError(
+            "Document processing was cancelled before commit."
+        )
 
 
 def _snapshot_scope(scope: object) -> AttachmentScope:
@@ -615,17 +627,31 @@ class DocumentProcessingService:
         self,
         scope: AttachmentScope,
         link_id: str,
+        *,
+        cancel_requested: Callable[[], bool] | None = None,
     ) -> ChunkedDocument:
-        """Load, clean, chunk, and verify one exact attachment ownership link."""
+        """Load, clean, chunk, and verify one exact attachment ownership link.
+
+        Cooperative cancellation is checked around every bounded adapter. A
+        synchronous loader, cleaner, or chunker cannot be interrupted midway,
+        so a cancellation observed during it wins before the next derived
+        representation is admitted.
+        """
 
         try:
             if not isinstance(link_id, str):
                 raise DocumentValidationError("link_id must be a string.")
+            if cancel_requested is not None and not callable(cancel_requested):
+                raise DocumentValidationError(
+                    "cancel_requested must be callable or None."
+                )
+            _raise_if_processing_cancelled(cancel_requested)
             requested_scope = _snapshot_scope(scope)
             loaded_result = self._loader.load(
                 _snapshot_scope(requested_scope),
                 link_id,
             )
+            _raise_if_processing_cancelled(cancel_requested)
             loaded = self._validate_loaded_result(
                 requested_scope,
                 link_id,
@@ -643,9 +669,11 @@ class DocumentProcessingService:
                 raise DocumentValidationError(
                     "Document cleaner exposed invalid version metadata."
                 )
+            _raise_if_processing_cancelled(cancel_requested)
             cleaned_result = self._cleaner.clean(
                 _snapshot_loaded_document(loaded)
             )
+            _raise_if_processing_cancelled(cancel_requested)
             cleaned = self._validate_cleaned_result(
                 requested_scope,
                 link_id,
@@ -667,13 +695,15 @@ class DocumentProcessingService:
                 raise DocumentValidationError(
                     "Document chunker exposed invalid version metadata."
                 )
+            _raise_if_processing_cancelled(cancel_requested)
             chunked_result = self._chunker.chunk(
                 _snapshot_cleaned_document(
                     cleaned,
                     resource_limits=cleaned.limits,
                 )
             )
-            return self._validate_chunked_result(
+            _raise_if_processing_cancelled(cancel_requested)
+            result = self._validate_chunked_result(
                 requested_scope,
                 link_id,
                 loaded,
@@ -683,6 +713,8 @@ class DocumentProcessingService:
                 chunker_version=chunker_version,
                 policy=chunking_policy,
             )
+            _raise_if_processing_cancelled(cancel_requested)
+            return result
         except DocumentError:
             raise
         except (MemoryError, RecursionError) as error:

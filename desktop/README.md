@@ -43,6 +43,18 @@ sees only closed, sanitized playback status used to present `SPEAKING` and to
 settle the exact Voice turn. The independent
 loopback-only Python adapter and repeated/multi-emotion smoke remain available
 for diagnostics.
+The Stage 8 knowledge slice now connects Project Sources to the same desktop
+chain. The Project surface can add, replace, reindex, rebuild, revoke, and
+delete through durable lifecycle operations with bounded cancellation and
+explicit recovery. Verified-original export is a separate, non-journaled task:
+it shares the global Knowledge lease, persists private cleanup intent, and does
+not expose a Renderer Stop action. A Project Chat uses those sources only when
+**Use Project Sources** is explicitly enabled for that turn or retry. The opt-in
+is renderer-memory state bound to the exact Chat/Project pair; reload, moving
+the Chat, or archiving the Project resets it. Python derives the exact corpus from the canonical Chat-to-Project
+relationship, persists structured proof with the Assistant message, and React
+shows statement kinds plus path-free citation details. No workspace directory
+is scanned or imported automatically.
 Electron is frozen as the production
 shell. The Tauri source and toolchain were removed after the comparison; the
 rationale, recorded measurements, and revisit gates are in
@@ -54,6 +66,8 @@ Prerequisites:
 
 - The repository Python virtual environment exists at `.venv`.
 - Ollama is running and the model configured in the root `.env` is installed.
+  Project Source indexing additionally requires the fixed
+  `qwen3-embedding:0.6b` artifact; neither model is downloaded automatically.
 - Local STT additionally requires `requirements-stt.txt` and a complete model
   directory at `models/weights/faster-whisper/<model>`; neither is installed or
   downloaded automatically.
@@ -160,11 +174,30 @@ Git-ignored and must not be committed or packaged with the application.
 - Unsent Chat text is stored per Chat on this device. Refreshing or reopening
   the renderer restores that draft, while a renderer refresh during generation
   reconnects to the request still owned by Electron.
-- Use the paperclip or drag and drop to stage files for the exact active Chat,
-  or add local files to a Project's Sources surface. Selection cancellation is
-  a no-op, failed sends keep the Chat draft, and removing a file never affects
-  another Chat or Project. Files are stored locally but are not parsed or
-  indexed yet.
+- Use the paperclip or drag and drop to stage files for the exact active Chat.
+  Chat attachments remain message-scoped and are not implicitly promoted into
+  a Project corpus. Selection cancellation is a no-op, failed sends keep the
+  Chat draft, and removing a file never affects another Chat or Project.
+- Use **Project Sources** to add supported local documents through the native
+  picker. The production Python pipeline verifies, parses, cleans, chunks,
+  embeds, and indexes those files, then publishes a complete Project catalog
+  last. The surface exposes source health, durable progress, cancellation,
+  recovery, export, and archived read-only state without returning native
+  paths to React.
+- After a native export destination is accepted and the Python request starts,
+  Electron owns that export across Renderer reloads and Project switches. Its
+  Backend snapshot keeps every Project Source and Project-authority mutation
+  disabled until the global Knowledge lease is released; **Stop current** stays
+  disabled because export is not cooperatively cancellable from React. Success
+  is published only after the path-free receipt matches the authenticated
+  Source name, media type, and byte size. The destination path remains inside
+  Electron Main and Python.
+- In a Chat assigned to that Project, turn on **Use Project Sources** before
+  Send or Retry to request a grounded answer. This per-window choice resets on
+  reload and whenever the Chat/Project authority changes. The result labels direct source
+  facts, model summaries, and inferences and exposes expandable citation
+  details. It does not open a source preview or jump into a PDF/DOCX page,
+  block, or cell.
 - Navigation becomes a modal drawer at narrow CSS widths, including high
   Windows display or Electron zoom levels. The Composer remains in normal
   layout flow so attachments, alerts, and multiline input cannot cover the
@@ -174,7 +207,8 @@ Git-ignored and must not be committed or packaged with the application.
   assignment, archive, and restore. Managed sentence playback is available for
   ordinary Chat replies when its ignored local runtime and Profile are valid;
   reply-time barge-in is available when verified echo cancellation starts.
-  Work permissions and later file-processing controls remain unavailable.
+  Work permissions, automatic workspace scanning, and background source import
+  remain unavailable.
 
 ### Global Voice behavior settings
 
@@ -406,7 +440,11 @@ semantic why/how requirements remain part of review under the root
 `AGENTS.md` policy.
 
 `npm test` runs both the shared protocol contract suite and Electron renderer
-UI tests. `npm run test:ui` can be used independently while working on layout.
+UI tests, including Knowledge method/event races, export ownership across
+Renderer reload and Project switches, trusted receipt settlement, Project
+isolation, archived read-only behavior, explicit grounded intent, and citation
+accessibility.
+`npm run test:ui` can be used independently while working on layout.
 The UI suite loads the production renderer through a dedicated sandboxed test
 preload; its mock Backend and control surface are never included by the
 production preload or packaged application.
@@ -444,6 +482,20 @@ method, results, capability gaps, and limitations.
   fresh local session token before Electron marks it connected.
 - Python and TypeScript validate the same samples in
   `desktop_protocol/fixtures/v1.samples.json`.
+- Knowledge methods use exact Project/source identifiers and closed DTOs.
+  Native add/replace/export paths exist only between Electron Main and Python;
+  source state, operation events, grounded history, and citations cannot carry
+  paths, content hashes, vectors, prompts, or native diagnostic messages. The
+  global Knowledge lease serializes lifecycle mutation, verified export, and
+  grounded-answer ownership. Electron snapshots an in-flight lifecycle/export
+  request for Renderer recovery, treats export as non-cancellable, and emits a
+  path-free `knowledge-export-settled` event only after its safe receipt matches
+  the Source metadata authenticated before the native Save dialog.
+- Project Source generations are authorized only after the complete catalog is
+  published. Replace/delete/revoke tombstone authorization before cleanup, and
+  the shared production operation lease covers lifecycle work, grounded
+  answers, and verified export. A stale or partial catalog fails closed instead
+  of becoming an empty corpus.
 - Python delegates persistence and streaming to the existing Stage 5 Brain.
 - The independent Python GPT-SoVITS adapter remains outside the desktop
   protocol: it permits only loopback-IP HTTP, ignores environment proxies,

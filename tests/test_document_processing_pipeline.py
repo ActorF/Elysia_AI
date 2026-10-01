@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import replace
+from threading import Event
 
 import pytest
 
@@ -38,6 +39,7 @@ from documents.domain import (
 from documents.exceptions import (
     DocumentContentLimitError,
     DocumentNotFoundError,
+    DocumentOperationCancelledError,
     DocumentProcessingFailedError,
     DocumentValidationError,
 )
@@ -114,6 +116,26 @@ class _StaticLoader:
         if self.error is not None:
             raise self.error
         return self.result  # type: ignore[return-value]
+
+
+def test_processing_cancels_after_loader_before_cleaning() -> None:
+    """Observe an Event raised during loading before derived work continues."""
+
+    cancelled = Event()
+    loaded = _document((DocumentBlock(0, "paragraph", "bounded"),))
+    loader = _StaticLoader(
+        loaded,
+        mutate_scope=lambda _scope: cancelled.set(),
+    )
+
+    with pytest.raises(DocumentOperationCancelledError, match="cancelled"):
+        DocumentProcessingService(loader).process(
+            loaded.source.scope,
+            loaded.source.link_id,
+            cancel_requested=cancelled.is_set,
+        )
+
+    assert loader.calls == [(loaded.source.scope, loaded.source.link_id)]
 
 
 class _StaticCleaner:

@@ -104,6 +104,17 @@ export const MAX_ATTACHMENT_FILE_COUNT = 10
 export const MAX_ATTACHMENT_FILE_NAME_LENGTH = 255
 export const MAX_ATTACHMENT_MEDIA_TYPE_LENGTH = 255
 export const MAX_ATTACHMENT_SOURCE_PATH_LENGTH = 32_767
+export const MAX_KNOWLEDGE_SOURCES = 128
+export const MAX_KNOWLEDGE_OPERATIONS = 2_048
+export const MAX_KNOWLEDGE_OPERATION_ATTEMPTS = 8
+export const MAX_GROUNDED_CONTEXT_PASSAGES = 20
+export const MAX_GROUNDED_STATEMENTS = 32
+export const MAX_GROUNDED_STATEMENT_CODE_POINTS = 4_000
+export const MAX_GROUNDED_TOTAL_STATEMENT_CODE_POINTS = 16_000
+export const MAX_GROUNDED_CITATIONS = 64
+export const MAX_GROUNDED_CITATIONS_PER_STATEMENT = 64
+export const MAX_GROUNDED_EXCERPT_CODE_POINTS = 2_000
+export const MAX_GROUNDED_LOCATIONS = 100_000
 const MIN_SESSION_TOKEN_LENGTH = 32
 const MAX_SESSION_TOKEN_LENGTH = 512
 const PROJECT_ID_PATTERN = /^project_[A-Za-z0-9_-]+$/
@@ -111,6 +122,10 @@ const CHAT_ID_PATTERN = /^chat_[A-Za-z0-9_-]+$/
 const VOICE_SESSION_ID_PATTERN = /^voice_[A-Za-z0-9_-]+$/
 const VOICE_PROFILE_ID_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/u
 const ATTACHMENT_ID_PATTERN = /^attachment_[A-Za-z0-9_-]+$/
+const KNOWLEDGE_OPERATION_ID_PATTERN = /^knowledge_[0-9a-f]{32}$/u
+const KNOWLEDGE_ERROR_CODE_PATTERN = /^[a-z][a-z0-9_]{0,63}$/u
+const CITATION_ID_PATTERN = /^citation_[0-9a-f]{64}$/u
+const STATEMENT_ID_PATTERN = /^statement_[0-9]{3}$/u
 const CANONICAL_BASE64_PATTERN = (
   /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u
 )
@@ -179,6 +194,7 @@ export interface ChatStreamParams {
   chatId: string
   message: string
   attachmentIds: string[]
+  useProjectKnowledge?: boolean
 }
 
 export interface ChatRetryParams {
@@ -186,6 +202,7 @@ export interface ChatRetryParams {
   userMessageId: string
   assistantMessageId: string
   message?: string
+  useProjectKnowledge?: boolean
 }
 
 export interface ChatListParams {
@@ -345,6 +362,27 @@ export interface AttachmentRemoveParams {
   attachmentId: string
 }
 
+export interface KnowledgeProjectParams {
+  projectId: string
+}
+
+export interface KnowledgeSourceAddParams extends KnowledgeProjectParams {
+  sourcePaths: string[]
+}
+
+export interface KnowledgeSourceParams extends KnowledgeProjectParams {
+  sourceId: string
+}
+
+export interface KnowledgeSourceReplaceParams extends KnowledgeSourceParams {
+  sourcePath: string
+}
+
+export interface KnowledgeSourceExportParams extends KnowledgeSourceParams {
+  destination: string
+  overwrite: boolean
+}
+
 export interface RequestParamsByMethod {
   handshake: HandshakeParams
   initialize: Record<string, never>
@@ -374,6 +412,15 @@ export interface RequestParamsByMethod {
   'attachment.list': AttachmentListParams
   'attachment.add': AttachmentAddParams
   'attachment.remove': AttachmentRemoveParams
+  'knowledge.list': KnowledgeProjectParams
+  'knowledge.source.add': KnowledgeSourceAddParams
+  'knowledge.source.replace': KnowledgeSourceReplaceParams
+  'knowledge.source.reindex': KnowledgeSourceParams
+  'knowledge.source.delete': KnowledgeSourceParams
+  'knowledge.project.rebuild': KnowledgeProjectParams
+  'knowledge.project.revoke': KnowledgeProjectParams
+  'knowledge.recover': KnowledgeProjectParams
+  'knowledge.source.export': KnowledgeSourceExportParams
   'request.cancel': CancelParams
   'permission.respond': PermissionResponseParams
   shutdown: Record<string, never>
@@ -515,12 +562,29 @@ export interface VoiceSpeechTerminalEventMessage {
   }
 }
 
+export type KnowledgeOperationEventName =
+  | 'knowledge.operation.changed'
+  | 'knowledge.operation.completed'
+
+/** Publish one already-sanitized durable lifecycle checkpoint. */
+export interface KnowledgeOperationEventMessage {
+  type: 'event'
+  protocol: ProtocolDescriptor
+  event: KnowledgeOperationEventName
+  requestId: string
+  data: {
+    projectId: string
+    operation: KnowledgeOperation
+  }
+}
+
 export type ProtocolEventMessage =
   | ChatLifecycleEventMessage
   | VoiceTranscriptionLifecycleEventMessage
   | VoiceSpeechClipEventMessage
   | VoiceSpeechFailureEventMessage
   | VoiceSpeechTerminalEventMessage
+  | KnowledgeOperationEventMessage
 
 export type ServerMessage =
   | SuccessResponse
@@ -560,12 +624,57 @@ export interface ChatAttachment {
 
 export type ChatMessageRole = 'system' | 'user' | 'assistant'
 
+export interface GroundedTextLocation {
+  kind: 'text'
+  blockOrdinal: number
+  sourceStartCodePoint: number
+  sourceEndCodePoint: number
+}
+
+export interface GroundedTableLocation {
+  kind: 'table'
+  blockOrdinal: number
+  rowIndex: number
+  columnIndex: number
+  sourceStartCodePoint: number
+  sourceEndCodePoint: number
+}
+
+export type GroundedCitationLocation =
+  | GroundedTextLocation
+  | GroundedTableLocation
+
+export interface GroundedCitation {
+  citationId: string
+  kind: 'prose' | 'code' | 'table'
+  excerpt: string
+  fileName: string
+  mediaType: string
+  pageNumber: number | null
+  locations: GroundedCitationLocation[]
+}
+
+export interface GroundedStatement {
+  statementId: string
+  kind: 'source_fact' | 'model_summary' | 'inference'
+  text: string
+  citationIds: string[]
+}
+
+export interface GroundedAnswer {
+  status: 'answered' | 'insufficient_evidence'
+  contextPassageCount: number
+  statements: GroundedStatement[]
+  citations: GroundedCitation[]
+}
+
 export interface ChatSessionMessage {
   messageId: string
   role: ChatMessageRole
   content: string
   createdAt: string
   attachments: ChatAttachment[]
+  groundedAnswer?: GroundedAnswer
 }
 
 export interface ChatSessionSummary {
@@ -691,6 +800,77 @@ export interface AttachmentStateResult {
   attachments: AttachmentItem[]
   maxFileBytes: number
   maxFileCount: number
+}
+
+export type KnowledgeSourceState =
+  | 'ready'
+  | 'unindexed'
+  | 'stale'
+  | 'revoked'
+  | 'processing'
+
+export interface KnowledgeSource {
+  sourceId: string
+  fileName: string
+  mediaType: string
+  sizeBytes: number
+  state: KnowledgeSourceState
+  publishedAt: string | null
+  operationId: string | null
+}
+
+export type KnowledgeOperationKind =
+  | 'add'
+  | 'replace'
+  | 'reindex'
+  | 'rebuild'
+  | 'revoke'
+  | 'delete'
+
+export type KnowledgeOperationState =
+  | 'running'
+  | 'cancel_requested'
+  | 'recovery_required'
+  | 'succeeded'
+  | 'cancelled'
+  | 'failed'
+
+export type KnowledgeOperationPhase =
+  | 'preparing'
+  | 'importing'
+  | 'indexing'
+  | 'revoking'
+  | 'cleaning'
+  | 'publishing'
+  | 'completed'
+
+export interface KnowledgeOperation {
+  operationId: string
+  projectId: string
+  kind: KnowledgeOperationKind
+  state: KnowledgeOperationState
+  phase: KnowledgeOperationPhase
+  progressPercent: number
+  attempt: number
+  createdAt: string
+  updatedAt: string
+  errorCode: string | null
+  targetSourceId: string | null
+  stagedSourceId: string | null
+}
+
+export interface KnowledgeStateResult {
+  kind: 'knowledge.state'
+  projectId: string
+  sources: KnowledgeSource[]
+  operations: KnowledgeOperation[]
+}
+
+export interface KnowledgeExportResult {
+  kind: 'knowledge.export'
+  fileName: string
+  mediaType: string
+  bytesWritten: number
 }
 
 /** Report a stable wire error code alongside a human-readable validation failure. */
@@ -860,6 +1040,36 @@ function readAttachmentIdentifier(
   return raw
 }
 
+function readKnowledgeOperationIdentifier(
+  value: Record<string, unknown>,
+  key: string,
+  context: string,
+): string {
+  const raw = readIdentifier(value, key, context)
+  if (!KNOWLEDGE_OPERATION_ID_PATTERN.test(raw)) {
+    return fail(
+      'protocol.invalid_message',
+      `${context}.${key} must use the knowledge_<hex> format.`,
+    )
+  }
+  return raw
+}
+
+function readCitationIdentifier(
+  value: Record<string, unknown>,
+  key: string,
+  context: string,
+): string {
+  const raw = readIdentifier(value, key, context)
+  if (!CITATION_ID_PATTERN.test(raw)) {
+    return fail(
+      'protocol.invalid_message',
+      `${context}.${key} must use the citation_<digest> format.`,
+    )
+  }
+  return raw
+}
+
 function readNonBlankString(
   value: Record<string, unknown>,
   key: string,
@@ -971,7 +1181,7 @@ function parseChatStreamParams(
     params,
     ['chatId', 'message'],
     'chat.stream params',
-    ['attachmentIds'],
+    ['attachmentIds', 'useProjectKnowledge'],
   )
   const message = readString(params, 'message', 'chat.stream params', {
     minimum: 0,
@@ -1010,6 +1220,15 @@ function parseChatStreamParams(
     chatId: readIdentifier(params, 'chatId', 'chat.stream params'),
     message,
     attachmentIds,
+    ...(Object.hasOwn(params, 'useProjectKnowledge')
+      ? {
+          useProjectKnowledge: readBoolean(
+            params,
+            'useProjectKnowledge',
+            'chat.stream params',
+          ),
+        }
+      : {}),
   }
 }
 
@@ -1022,7 +1241,7 @@ function parseChatRetryParams(
     params,
     ['chatId', 'userMessageId', 'assistantMessageId'],
     context,
-    ['message'],
+    ['message', 'useProjectKnowledge'],
   )
   const message = params.message === undefined
     ? undefined
@@ -1042,6 +1261,15 @@ function parseChatRetryParams(
       context,
     ),
     ...(message === undefined ? {} : { message }),
+    ...(Object.hasOwn(params, 'useProjectKnowledge')
+      ? {
+          useProjectKnowledge: readBoolean(
+            params,
+            'useProjectKnowledge',
+            context,
+          ),
+        }
+      : {}),
   }
 }
 
@@ -1801,6 +2029,136 @@ function parseAttachmentRemoveParams(
   }
 }
 
+function parseKnowledgeProjectParams(
+  value: unknown,
+  method: string,
+): KnowledgeProjectParams {
+  const context = `${method} params`
+  const params = asRecord(value, context)
+  requireFields(params, ['projectId'], context)
+  return {
+    projectId: readProjectIdentifier(
+      params,
+      'projectId',
+      context,
+      'protocol.invalid_params',
+    ),
+  }
+}
+
+function parseKnowledgeSourceParams(
+  value: unknown,
+  method: string,
+): KnowledgeSourceParams {
+  const context = `${method} params`
+  const params = asRecord(value, context)
+  requireFields(params, ['projectId', 'sourceId'], context)
+  return {
+    projectId: readProjectIdentifier(
+      params,
+      'projectId',
+      context,
+      'protocol.invalid_params',
+    ),
+    sourceId: readAttachmentIdentifier(
+      params,
+      'sourceId',
+      context,
+      'protocol.invalid_params',
+    ),
+  }
+}
+
+function parseKnowledgeSourceAddParams(
+  value: unknown,
+): KnowledgeSourceAddParams {
+  const context = 'knowledge.source.add params'
+  const params = asRecord(value, context)
+  requireFields(params, ['projectId', 'sourcePaths'], context)
+  if (
+    !Array.isArray(params.sourcePaths)
+    || params.sourcePaths.length === 0
+    || params.sourcePaths.length > MAX_ATTACHMENT_FILE_COUNT
+  ) {
+    return fail(
+      'protocol.invalid_params',
+      `${context}.sourcePaths must contain 1..${MAX_ATTACHMENT_FILE_COUNT} paths.`,
+    )
+  }
+  const sourcePaths = params.sourcePaths.map((sourcePath, index) => (
+    readSourcePath(sourcePath, `${context}.sourcePaths[${index}]`)
+  ))
+  const normalized = sourcePaths.map((sourcePath) => (
+    sourcePath.replaceAll('/', '\\').toLocaleLowerCase('en-US')
+  ))
+  if (new Set(normalized).size !== normalized.length) {
+    return fail(
+      'protocol.invalid_params',
+      `${context}.sourcePaths must be unique.`,
+    )
+  }
+  return {
+    projectId: readProjectIdentifier(
+      params,
+      'projectId',
+      context,
+      'protocol.invalid_params',
+    ),
+    sourcePaths,
+  }
+}
+
+function parseKnowledgeSourceReplaceParams(
+  value: unknown,
+): KnowledgeSourceReplaceParams {
+  const context = 'knowledge.source.replace params'
+  const params = asRecord(value, context)
+  requireFields(params, ['projectId', 'sourceId', 'sourcePath'], context)
+  return {
+    projectId: readProjectIdentifier(
+      params,
+      'projectId',
+      context,
+      'protocol.invalid_params',
+    ),
+    sourceId: readAttachmentIdentifier(
+      params,
+      'sourceId',
+      context,
+      'protocol.invalid_params',
+    ),
+    sourcePath: readSourcePath(params.sourcePath, `${context}.sourcePath`),
+  }
+}
+
+function parseKnowledgeSourceExportParams(
+  value: unknown,
+): KnowledgeSourceExportParams {
+  const context = 'knowledge.source.export params'
+  const params = asRecord(value, context)
+  requireFields(
+    params,
+    ['projectId', 'sourceId', 'destination', 'overwrite'],
+    context,
+  )
+  return {
+    projectId: readProjectIdentifier(
+      params,
+      'projectId',
+      context,
+      'protocol.invalid_params',
+    ),
+    sourceId: readAttachmentIdentifier(
+      params,
+      'sourceId',
+      context,
+      'protocol.invalid_params',
+    ),
+    destination: readSourcePath(params.destination, `${context}.destination`),
+    overwrite: readBoolean(params, 'overwrite', context),
+  }
+}
+
 /** Parse a renderer request with exact common fields and method-specific parameters. */
 export function parseClientRequest(value: unknown): ClientRequest {
   const request = asRecord(value, 'request')
@@ -1974,6 +2332,44 @@ export function parseClientRequest(value: unknown): ClientRequest {
     return {
       type: 'request', protocol, id, method,
       params: parseAttachmentRemoveParams(request.params),
+    }
+  }
+  if (
+    method === 'knowledge.list'
+    || method === 'knowledge.project.rebuild'
+    || method === 'knowledge.project.revoke'
+    || method === 'knowledge.recover'
+  ) {
+    return {
+      type: 'request', protocol, id, method,
+      params: parseKnowledgeProjectParams(request.params, method),
+    }
+  }
+  if (method === 'knowledge.source.add') {
+    return {
+      type: 'request', protocol, id, method,
+      params: parseKnowledgeSourceAddParams(request.params),
+    }
+  }
+  if (method === 'knowledge.source.replace') {
+    return {
+      type: 'request', protocol, id, method,
+      params: parseKnowledgeSourceReplaceParams(request.params),
+    }
+  }
+  if (
+    method === 'knowledge.source.reindex'
+    || method === 'knowledge.source.delete'
+  ) {
+    return {
+      type: 'request', protocol, id, method,
+      params: parseKnowledgeSourceParams(request.params, method),
+    }
+  }
+  if (method === 'knowledge.source.export') {
+    return {
+      type: 'request', protocol, id, method,
+      params: parseKnowledgeSourceExportParams(request.params),
     }
   }
   if (method === 'request.cancel') {
@@ -2442,6 +2838,40 @@ function parseEvent(
       data: parseVoiceSpeechTerminalEventData(message.data),
     }
   }
+  if (
+    event === 'knowledge.operation.changed'
+    || event === 'knowledge.operation.completed'
+  ) {
+    const context = `${event} event.data`
+    const data = asRecord(message.data, context)
+    requireFields(data, ['projectId', 'operation'], context)
+    const projectId = readProjectIdentifier(data, 'projectId', context)
+    const operation = parseKnowledgeOperation(
+      data.operation,
+      `${context}.operation`,
+    )
+    const terminal = (
+      operation.state === 'succeeded'
+      || operation.state === 'cancelled'
+      || operation.state === 'failed'
+    )
+    if (
+      operation.projectId !== projectId
+      || (event === 'knowledge.operation.completed' && !terminal)
+    ) {
+      return fail(
+        'protocol.invalid_message',
+        `${context} does not match its lifecycle event.`,
+      )
+    }
+    return {
+      type: 'event',
+      protocol,
+      event,
+      requestId,
+      data: { projectId, operation },
+    }
+  }
   return fail('protocol.invalid_message', 'event.event is unsupported.')
 }
 
@@ -2742,6 +3172,629 @@ export function parseAttachmentStateResult(
   }
 }
 
+function readProtocolTimestamp(
+  value: Record<string, unknown>,
+  key: string,
+  context: string,
+): string {
+  const timestamp = readString(value, key, context, { maximum: 128 })
+  if (
+    !/(?:Z|[+-][0-9]{2}:[0-9]{2})$/u.test(timestamp)
+    || !Number.isFinite(Date.parse(timestamp))
+  ) {
+    return fail(
+      'protocol.invalid_message',
+      `${context}.${key} must be a timezone-aware timestamp.`,
+    )
+  }
+  return timestamp
+}
+
+/** Parse one exact renderer-safe durable Knowledge lifecycle checkpoint. */
+export function parseKnowledgeOperation(
+  value: unknown,
+  context = 'knowledge operation',
+): KnowledgeOperation {
+  const operation = asRecord(value, context)
+  requireFields(
+    operation,
+    [
+      'operationId',
+      'projectId',
+      'kind',
+      'state',
+      'phase',
+      'progressPercent',
+      'attempt',
+      'createdAt',
+      'updatedAt',
+      'errorCode',
+      'targetSourceId',
+      'stagedSourceId',
+    ],
+    context,
+  )
+  const kind = readStringLiteral(
+    operation,
+    'kind',
+    context,
+    ['add', 'replace', 'reindex', 'rebuild', 'revoke', 'delete'] as const,
+  )
+  const state = readStringLiteral(
+    operation,
+    'state',
+    context,
+    [
+      'running',
+      'cancel_requested',
+      'recovery_required',
+      'succeeded',
+      'cancelled',
+      'failed',
+    ] as const,
+  )
+  const phase = readStringLiteral(
+    operation,
+    'phase',
+    context,
+    [
+      'preparing',
+      'importing',
+      'indexing',
+      'revoking',
+      'cleaning',
+      'publishing',
+      'completed',
+    ] as const,
+  )
+  const progressPercent = readInteger(operation, 'progressPercent', context)
+  const attempt = readInteger(operation, 'attempt', context)
+  if (
+    progressPercent < 0
+    || progressPercent > 100
+    || attempt < 1
+    || attempt > MAX_KNOWLEDGE_OPERATION_ATTEMPTS
+  ) {
+    return fail(
+      'protocol.invalid_message',
+      `${context} progress or attempt is outside its hard limit.`,
+    )
+  }
+  const createdAt = readProtocolTimestamp(operation, 'createdAt', context)
+  const updatedAt = readProtocolTimestamp(operation, 'updatedAt', context)
+  if (Date.parse(updatedAt) < Date.parse(createdAt)) {
+    return fail(
+      'protocol.invalid_message',
+      `${context}.updatedAt cannot precede createdAt.`,
+    )
+  }
+  const errorCode = operation.errorCode === null
+    ? null
+    : readString(operation, 'errorCode', context, { maximum: 64 })
+  if (
+    errorCode !== null
+    && !KNOWLEDGE_ERROR_CODE_PATTERN.test(errorCode)
+  ) {
+    return fail(
+      'protocol.invalid_message',
+      `${context}.errorCode is invalid.`,
+    )
+  }
+  const targetSourceId = operation.targetSourceId === null
+    ? null
+    : readAttachmentIdentifier(operation, 'targetSourceId', context)
+  const stagedSourceId = operation.stagedSourceId === null
+    ? null
+    : readAttachmentIdentifier(operation, 'stagedSourceId', context)
+  const terminal = state === 'succeeded' || state === 'cancelled' || state === 'failed'
+  const targetRequired = kind === 'replace' || kind === 'reindex' || kind === 'delete'
+  if (
+    terminal !== (phase === 'completed')
+    || (state === 'succeeded') !== (progressPercent === 100)
+    || ((state === 'succeeded' || state === 'cancelled') && errorCode !== null)
+    || (state === 'failed' && errorCode === null)
+    || targetRequired !== (targetSourceId !== null)
+    || (!['add', 'replace'].includes(kind) && stagedSourceId !== null)
+  ) {
+    return fail(
+      'protocol.invalid_message',
+      `${context} lifecycle fields are inconsistent.`,
+    )
+  }
+  return {
+    operationId: readKnowledgeOperationIdentifier(
+      operation,
+      'operationId',
+      context,
+    ),
+    projectId: readProjectIdentifier(operation, 'projectId', context),
+    kind,
+    state,
+    phase,
+    progressPercent,
+    attempt,
+    createdAt,
+    updatedAt,
+    errorCode,
+    targetSourceId,
+    stagedSourceId,
+  }
+}
+
+function parseKnowledgeSource(
+  value: unknown,
+  context: string,
+): KnowledgeSource {
+  const source = asRecord(value, context)
+  requireFields(
+    source,
+    [
+      'sourceId',
+      'fileName',
+      'mediaType',
+      'sizeBytes',
+      'state',
+      'publishedAt',
+      'operationId',
+    ],
+    context,
+  )
+  const sizeBytes = readInteger(source, 'sizeBytes', context)
+  if (sizeBytes <= 0 || sizeBytes > MAX_DATA_IMPORT_BYTES) {
+    return fail(
+      'protocol.invalid_message',
+      `${context}.sizeBytes is outside the supported range.`,
+    )
+  }
+  const state = readStringLiteral(
+    source,
+    'state',
+    context,
+    ['ready', 'unindexed', 'stale', 'revoked', 'processing'] as const,
+  )
+  const publishedAt = source.publishedAt === null
+    ? null
+    : readProtocolTimestamp(source, 'publishedAt', context)
+  const operationId = source.operationId === null
+    ? null
+    : readKnowledgeOperationIdentifier(source, 'operationId', context)
+  if (
+    (state === 'ready' && publishedAt === null)
+    || ((state === 'unindexed' || state === 'revoked') && publishedAt !== null)
+    || (state === 'processing') !== (operationId !== null)
+  ) {
+    return fail(
+      'protocol.invalid_message',
+      `${context} state metadata is inconsistent.`,
+    )
+  }
+  return {
+    sourceId: readAttachmentIdentifier(source, 'sourceId', context),
+    fileName: readAttachmentFileName(source, context),
+    mediaType: readAttachmentMediaType(source, context),
+    sizeBytes,
+    state,
+    publishedAt,
+    operationId,
+  }
+}
+
+/** Parse one canonical Project Source view with no native paths or fingerprints. */
+export function parseKnowledgeStateResult(
+  value: unknown,
+): KnowledgeStateResult {
+  const context = 'knowledge state result'
+  const result = asRecord(value, context)
+  requireFields(result, ['kind', 'projectId', 'sources', 'operations'], context)
+  if (result.kind !== 'knowledge.state') {
+    return fail(
+      'protocol.invalid_message',
+      `${context}.kind must be 'knowledge.state'.`,
+    )
+  }
+  if (
+    !Array.isArray(result.sources)
+    || result.sources.length > MAX_KNOWLEDGE_SOURCES
+    || !Array.isArray(result.operations)
+    || result.operations.length > MAX_KNOWLEDGE_OPERATIONS
+  ) {
+    return fail(
+      'protocol.invalid_message',
+      `${context} collections exceed their hard limits.`,
+    )
+  }
+  const projectId = readProjectIdentifier(result, 'projectId', context)
+  const sources = result.sources.map((source, index) => (
+    parseKnowledgeSource(source, `${context}.sources[${index}]`)
+  ))
+  const operations = result.operations.map((operation, index) => (
+    parseKnowledgeOperation(
+      operation,
+      `${context}.operations[${index}]`,
+    )
+  ))
+  const sourceIds = sources.map((source) => source.sourceId)
+  const operationIds = operations.map((operation) => operation.operationId)
+  if (
+    new Set(sourceIds).size !== sourceIds.length
+    || new Set(operationIds).size !== operationIds.length
+    || operations.some((operation) => operation.projectId !== projectId)
+    || sources.some((source) => (
+      source.operationId !== null
+      && !operationIds.includes(source.operationId)
+    ))
+  ) {
+    return fail(
+      'protocol.invalid_message',
+      `${context} contains inconsistent identities.`,
+    )
+  }
+  return {
+    kind: 'knowledge.state',
+    projectId,
+    sources,
+    operations,
+  }
+}
+
+/** Parse an export receipt without accepting the private destination path. */
+export function parseKnowledgeExportResult(
+  value: unknown,
+): KnowledgeExportResult {
+  const context = 'knowledge export result'
+  const result = asRecord(value, context)
+  requireFields(
+    result,
+    ['kind', 'fileName', 'mediaType', 'bytesWritten'],
+    context,
+  )
+  if (result.kind !== 'knowledge.export') {
+    return fail(
+      'protocol.invalid_message',
+      `${context}.kind must be 'knowledge.export'.`,
+    )
+  }
+  const bytesWritten = readInteger(result, 'bytesWritten', context)
+  if (bytesWritten <= 0 || bytesWritten > MAX_DATA_IMPORT_BYTES) {
+    return fail(
+      'protocol.invalid_message',
+      `${context}.bytesWritten is outside the supported range.`,
+    )
+  }
+  return {
+    kind: 'knowledge.export',
+    fileName: readAttachmentFileName(result, context),
+    mediaType: readAttachmentMediaType(result, context),
+    bytesWritten,
+  }
+}
+
+function readNonNegativeInteger(
+  value: Record<string, unknown>,
+  key: string,
+  context: string,
+): number {
+  const parsed = readInteger(value, key, context)
+  if (parsed < 0) {
+    return fail(
+      'protocol.invalid_message',
+      `${context}.${key} cannot be negative.`,
+    )
+  }
+  return parsed
+}
+
+function parseGroundedCitationLocation(
+  value: unknown,
+  context: string,
+): GroundedCitationLocation {
+  const location = asRecord(value, context)
+  const kind = readStringLiteral(
+    location,
+    'kind',
+    context,
+    ['text', 'table'] as const,
+  )
+  const commonFields = [
+    'kind',
+    'blockOrdinal',
+    'sourceStartCodePoint',
+    'sourceEndCodePoint',
+  ] as const
+  requireFields(
+    location,
+    kind === 'table'
+      ? [...commonFields, 'rowIndex', 'columnIndex']
+      : commonFields,
+    context,
+  )
+  const blockOrdinal = readNonNegativeInteger(
+    location,
+    'blockOrdinal',
+    context,
+  )
+  const sourceStartCodePoint = readNonNegativeInteger(
+    location,
+    'sourceStartCodePoint',
+    context,
+  )
+  const sourceEndCodePoint = readNonNegativeInteger(
+    location,
+    'sourceEndCodePoint',
+    context,
+  )
+  if (
+    sourceEndCodePoint < sourceStartCodePoint
+    || (kind === 'text' && sourceEndCodePoint === sourceStartCodePoint)
+  ) {
+    return fail(
+      'protocol.invalid_message',
+      `${context} source range is invalid.`,
+    )
+  }
+  if (kind === 'table') {
+    return {
+      kind,
+      blockOrdinal,
+      rowIndex: readNonNegativeInteger(location, 'rowIndex', context),
+      columnIndex: readNonNegativeInteger(location, 'columnIndex', context),
+      sourceStartCodePoint,
+      sourceEndCodePoint,
+    }
+  }
+  return {
+    kind,
+    blockOrdinal,
+    sourceStartCodePoint,
+    sourceEndCodePoint,
+  }
+}
+
+function parseGroundedCitation(
+  value: unknown,
+  context: string,
+): GroundedCitation {
+  const citation = asRecord(value, context)
+  requireFields(
+    citation,
+    [
+      'citationId',
+      'kind',
+      'excerpt',
+      'fileName',
+      'mediaType',
+      'pageNumber',
+      'locations',
+    ],
+    context,
+  )
+  const kind = readStringLiteral(
+    citation,
+    'kind',
+    context,
+    ['prose', 'code', 'table'] as const,
+  )
+  if (
+    !Array.isArray(citation.locations)
+    || citation.locations.length === 0
+    || citation.locations.length > MAX_GROUNDED_LOCATIONS
+  ) {
+    return fail(
+      'protocol.invalid_message',
+      `${context}.locations must be a non-empty bounded array.`,
+    )
+  }
+  const locations = citation.locations.map((location, index) => (
+    parseGroundedCitationLocation(
+      location,
+      `${context}.locations[${index}]`,
+    )
+  ))
+  const expectedLocationKind = kind === 'table' ? 'table' : 'text'
+  if (locations.some((location) => location.kind !== expectedLocationKind)) {
+    return fail(
+      'protocol.invalid_message',
+      `${context}.locations do not match the citation kind.`,
+    )
+  }
+  const rawPageNumber = citation.pageNumber
+  const pageNumber = rawPageNumber === null
+    ? null
+    : readInteger(citation, 'pageNumber', context)
+  if (pageNumber !== null && pageNumber < 1) {
+    return fail(
+      'protocol.invalid_message',
+      `${context}.pageNumber must be positive or null.`,
+    )
+  }
+  return {
+    citationId: readCitationIdentifier(citation, 'citationId', context),
+    kind,
+    excerpt: readString(citation, 'excerpt', context, {
+      minimum: 1,
+      maximum: MAX_GROUNDED_EXCERPT_CODE_POINTS,
+    }),
+    fileName: readAttachmentFileName(citation, context),
+    mediaType: readAttachmentMediaType(citation, context),
+    pageNumber,
+    locations,
+  }
+}
+
+function parseGroundedStatement(
+  value: unknown,
+  context: string,
+): GroundedStatement {
+  const statement = asRecord(value, context)
+  requireFields(
+    statement,
+    ['statementId', 'kind', 'text', 'citationIds'],
+    context,
+  )
+  const statementId = readIdentifier(statement, 'statementId', context)
+  if (!STATEMENT_ID_PATTERN.test(statementId)) {
+    return fail(
+      'protocol.invalid_message',
+      `${context}.statementId must use the statement_<ordinal> format.`,
+    )
+  }
+  if (
+    !Array.isArray(statement.citationIds)
+    || statement.citationIds.length === 0
+    || statement.citationIds.length > MAX_GROUNDED_CITATIONS_PER_STATEMENT
+  ) {
+    return fail(
+      'protocol.invalid_message',
+      `${context}.citationIds must be a non-empty bounded array.`,
+    )
+  }
+  const citationIds = statement.citationIds.map((citationId, index) => (
+    readCitationIdentifier(
+      { citationId },
+      'citationId',
+      `${context}.citationIds[${index}]`,
+    )
+  ))
+  if (new Set(citationIds).size !== citationIds.length) {
+    return fail(
+      'protocol.invalid_message',
+      `${context}.citationIds must be unique.`,
+    )
+  }
+  return {
+    statementId,
+    kind: readStringLiteral(
+      statement,
+      'kind',
+      context,
+      ['source_fact', 'model_summary', 'inference'] as const,
+    ),
+    text: readNonBlankString(
+      statement,
+      'text',
+      context,
+      MAX_GROUNDED_STATEMENT_CODE_POINTS,
+      'protocol.invalid_message',
+    ),
+    citationIds,
+  }
+}
+
+function parseGroundedAnswer(
+  value: unknown,
+  context: string,
+): GroundedAnswer {
+  const answer = asRecord(value, context)
+  requireFields(
+    answer,
+    ['status', 'contextPassageCount', 'statements', 'citations'],
+    context,
+  )
+  const status = readStringLiteral(
+    answer,
+    'status',
+    context,
+    ['answered', 'insufficient_evidence'] as const,
+  )
+  const contextPassageCount = readNonNegativeInteger(
+    answer,
+    'contextPassageCount',
+    context,
+  )
+  if (contextPassageCount > MAX_GROUNDED_CONTEXT_PASSAGES) {
+    return fail(
+      'protocol.invalid_message',
+      `${context}.contextPassageCount exceeds its hard limit.`,
+    )
+  }
+  if (
+    !Array.isArray(answer.statements)
+    || answer.statements.length > MAX_GROUNDED_STATEMENTS
+    || !Array.isArray(answer.citations)
+    || answer.citations.length > MAX_GROUNDED_CITATIONS
+  ) {
+    return fail(
+      'protocol.invalid_message',
+      `${context} answer arrays exceed their hard limits.`,
+    )
+  }
+  const statements = answer.statements.map((statement, index) => (
+    parseGroundedStatement(statement, `${context}.statements[${index}]`)
+  ))
+  if (
+    new Set(statements.map((statement) => statement.statementId)).size
+    !== statements.length
+    || statements.reduce(
+      (total, statement) => total + codePointLength(statement.text),
+      0,
+    ) > MAX_GROUNDED_TOTAL_STATEMENT_CODE_POINTS
+  ) {
+    return fail(
+      'protocol.invalid_message',
+      `${context}.statements are not canonical.`,
+    )
+  }
+  const citations = answer.citations.map((citation, index) => (
+    parseGroundedCitation(citation, `${context}.citations[${index}]`)
+  ))
+  const citationIds = citations.map((citation) => citation.citationId)
+  const citationById = new Map(
+    citations.map((citation) => [citation.citationId, citation]),
+  )
+  const referencedCitationIds = new Set(
+    statements.flatMap((statement) => statement.citationIds),
+  )
+  if (
+    new Set(citationIds).size !== citationIds.length
+    || referencedCitationIds.size !== citationIds.length
+    || citationIds.some((citationId) => !referencedCitationIds.has(citationId))
+    || citations.reduce(
+      (total, citation) => total + citation.locations.length,
+      0,
+    ) > MAX_GROUNDED_LOCATIONS
+  ) {
+    return fail(
+      'protocol.invalid_message',
+      `${context} citation closure is invalid.`,
+    )
+  }
+  // A source_fact is a verbatim claim rather than a model paraphrase. Recheck
+  // every referenced public excerpt here because Python output crosses an
+  // untrusted process boundary before it reaches the renderer.
+  if (statements.some((statement) => (
+    statement.kind === 'source_fact'
+    && statement.citationIds.some((citationId) => (
+      citationById.get(citationId)?.excerpt.includes(statement.text) !== true
+    ))
+  ))) {
+    return fail(
+      'protocol.invalid_message',
+      `${context} source facts must be exact substrings of every cited excerpt.`,
+    )
+  }
+  if (
+    (status === 'answered'
+      && (
+        contextPassageCount === 0
+        || statements.length === 0
+        || citations.length === 0
+      ))
+    || (status === 'insufficient_evidence'
+      && (statements.length !== 0 || citations.length !== 0))
+  ) {
+    return fail(
+      'protocol.invalid_message',
+      `${context} status is inconsistent with its answer content.`,
+    )
+  }
+  return {
+    status,
+    contextPassageCount,
+    statements,
+    citations,
+  }
+}
+
 function parseChatSessionMessage(
   value: unknown,
   context: string,
@@ -2751,6 +3804,7 @@ function parseChatSessionMessage(
     message,
     ['messageId', 'role', 'content', 'createdAt', 'attachments'],
     context,
+    ['groundedAnswer'],
   )
   const role = readString(message, 'role', context, { maximum: 9 })
   if (role !== 'system' && role !== 'user' && role !== 'assistant') {
@@ -2783,12 +3837,25 @@ function parseChatSessionMessage(
       `${context}.attachments must have unique attachmentId values.`,
     )
   }
+  const groundedAnswer = Object.hasOwn(message, 'groundedAnswer')
+    ? parseGroundedAnswer(
+        message.groundedAnswer,
+        `${context}.groundedAnswer`,
+      )
+    : undefined
+  if (groundedAnswer !== undefined && role !== 'assistant') {
+    return fail(
+      'protocol.invalid_message',
+      `${context}.groundedAnswer is only valid for assistant messages.`,
+    )
+  }
   return {
     messageId: readIdentifier(message, 'messageId', context),
     role,
     content: readString(message, 'content', context, { minimum: 0 }),
     createdAt: readString(message, 'createdAt', context, { maximum: 128 }),
     attachments,
+    ...(groundedAnswer === undefined ? {} : { groundedAnswer }),
   }
 }
 
@@ -3545,6 +4612,14 @@ export function parseVoiceSpeechCancellationResult(
 
 function validateSuccessResult(value: unknown): Record<string, unknown> {
   const result = asRecord(value, 'response.result')
+  if (result.kind === 'knowledge.state') {
+    parseKnowledgeStateResult(result)
+    return result
+  }
+  if (result.kind === 'knowledge.export') {
+    parseKnowledgeExportResult(result)
+    return result
+  }
   if (result.kind === 'voice.speech.cancel') {
     parseVoiceSpeechCancellationResult(result)
     return result

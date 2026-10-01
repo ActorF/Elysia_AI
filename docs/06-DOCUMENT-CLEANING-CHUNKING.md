@@ -1,6 +1,6 @@
 # Document Cleaning and Chunking：保守清洗与可重复分块
 
-本文记录 Elysia AI 在 `LoadedDocument` 之后、Embedding 之前的纯 Python 派生边界。当前实现把可信 Loader 的有界原始结构转换为带完整来源映射的 `CleanedDocument` 与 `ChunkedDocument`；这一纯派生层自身不会读取文件、写入索引、调用模型或生成 Embedding。下游 [Local Embeddings and Vector Store](./07-LOCAL-EMBEDDINGS-VECTOR-STORE.md) 与 [Retriever and Reranking](./08-RETRIEVER-RERANKING.md) 已作为独立 Library 完成，但整条文档链仍未接入生产 Composition Root、Desktop Protocol 或 React 文件问答入口。
+本文记录 Elysia AI 在 `LoadedDocument` 之后、Embedding 之前的纯 Python 派生边界。当前实现把可信 Loader 的有界原始结构转换为带完整来源映射的 `CleanedDocument` 与 `ChunkedDocument`；这一纯派生层自身不会读取文件、写入索引、调用模型或生成 Embedding。下游 [Local Embeddings and Vector Store](./07-LOCAL-EMBEDDINGS-VECTOR-STORE.md) 与 [Retriever and Reranking](./08-RETRIEVER-RERANKING.md) 仍是独立 Library，而生产 Project Source 生命周期已通过 `desktop_knowledge.py`、`desktop_backend.py`、Desktop Protocol 与 React UI 把整条链连接起来。
 
 ## 1. 完成范围与设计原则
 
@@ -42,7 +42,7 @@ Scope + ownership link_id
 
 `DocumentProcessingService` 默认组合 `ConservativeDocumentCleaner` 与 `StructureAwareDocumentChunker`，也允许注入实现 `DocumentSourceLoader`、`DocumentCleaner`、`DocumentChunker` Protocol 的测试或替代 Adapter。Loader 仍是唯一读取 Attachment Bytes 的组件；Cleaner 和 Chunker 只接收重新构造且彼此隔离的领域快照，不接收真实路径、文件句柄或 Parser 对象。
 
-Pipeline 不信任注入 Adapter 的返回值。原始请求、Loader 权威结果、Cleaner 输入、Cleaned 权威结果、Chunker 输入与最终发布结果分别使用递归重建的快照；即使 Adapter 绕过 Frozen Dataclass 修改自己持有的嵌套 Scope、Source、Table、Policy、Limits、Span 或 Chunk，也不能反向改写已经验证的 Lineage。Pipeline 还会独立复核请求的 Scope/Ownership、Loader Result 类型、Cleaner Producer/Policy/Limits、Piece-table 的逐 Block 完整分区、Cleaned Fingerprints、Chunk Lineage/Policy、Mapping 顺序与 Bounds、每段 Text Mapping 的准确来源文字，以及全部 Table Chunk 能否完整重建 Canonical JSONL Projection。验证成功后才发布与 Adapter 对象图隔离的 `ChunkedDocument`。这一 Service 仍只返回内存结果；独立 `DocumentIndexingService` 已可继续生成 Embedding 并把完整 Lineage 写入 Scope-safe SQLite Store，`DocumentRetriever` 也可消费调用方显式授权的准确 Generation。Attachment Manifest 的 Derived Relation、删除传播、自动重新索引和任务崩溃恢复仍未实现。
+Pipeline 不信任注入 Adapter 的返回值。原始请求、Loader 权威结果、Cleaner 输入、Cleaned 权威结果、Chunker 输入与最终发布结果分别使用递归重建的快照；即使 Adapter 绕过 Frozen Dataclass 修改自己持有的嵌套 Scope、Source、Table、Policy、Limits、Span 或 Chunk，也不能反向改写已经验证的 Lineage。Pipeline 还会独立复核请求的 Scope/Ownership、Loader Result 类型、Cleaner Producer/Policy/Limits、Piece-table 的逐 Block 完整分区、Cleaned Fingerprints、Chunk Lineage/Policy、Mapping 顺序与 Bounds、每段 Text Mapping 的准确来源文字，以及全部 Table Chunk 能否完整重建 Canonical JSONL Projection。验证成功后才发布与 Adapter 对象图隔离的 `ChunkedDocument`。这一纯 Service 仍只返回内存结果；独立 `DocumentIndexingService` 可继续生成 Embedding 并把完整 Lineage 写入 Scope-safe SQLite Store，`DocumentRetriever` 可消费调用方显式授权的准确 Generation。上层 `knowledge_lifecycle` 已负责显式删除传播与崩溃恢复，但不会因为 Attachment 变化而自动重新索引；Attachment Manifest 仍不保存独立 Derived Relation。
 
 ## 3. 坐标与来源语义
 
@@ -222,9 +222,9 @@ npm run docs:check
 
 - 模糊 Boilerplate Detection、语言改写、拼写修复、OCR 或视觉 Layout Reconstruction；
 - Tokenizer-aware、Embedding-aware、Overlap 或 Query-specific Chunking；
-- Derived Chunk 的磁盘持久化、Attachment Manifest 登记、Job Progress、Cancel 或 Crash Recovery；
-- Embedding、Vector Store、Retrieval 与 Grounded Answer/Citation 不是本纯派生模块的职责；这些能力已在下游独立 Library 中实现，但生产接线仍未完成；
+- Derived Chunk 的磁盘持久化、Attachment Manifest 登记、Job Progress、Cancel 或 Crash Recovery；这些由生产知识生命周期拥有；
+- Embedding、Vector Store、Retrieval 与 Grounded Answer/Citation 不是本纯派生模块的职责；这些能力由下游独立 Library 和桌面 Composition Root 组合；
 - Prompt Injection Detection/Isolation；
-- `start.py` / `desktop_backend.py` 生产接线、Desktop Protocol、React Preview 或“向文件提问”UI。
+- `start.py` / `desktop_backend.py` 生产接线、Desktop Protocol、React Project Source UI；这些是调用本模块的上层职责。
 
-Local Embeddings/Vector Store 与 Retriever/Reranker 已分别完成，详见 [Local Embeddings and Vector Store](./07-LOCAL-EMBEDDINGS-VECTOR-STORE.md) 和 [Retriever and Reranking](./08-RETRIEVER-RERANKING.md)；有限 Prompt、三类结构化陈述和可信 Citation 也已在 [Grounded Answers and Citations](./09-GROUNDED-ANSWERS-CITATIONS.md) 中作为独立 Library 完成，Chat-derived 授权与共享语义见 [Project Sources](./10-PROJECT-SOURCES.md)。生产 Generator、知识生命周期和桌面接线完成前，仍不能声称 Project Sources 已可被桌面 Chat 检索、引用或用于回答。
+Local Embeddings/Vector Store 与 Retriever/Reranker 详见 [Local Embeddings and Vector Store](./07-LOCAL-EMBEDDINGS-VECTOR-STORE.md) 和 [Retriever and Reranking](./08-RETRIEVER-RERANKING.md)；有限 Prompt、三类结构化陈述和可信 Citation 见 [Grounded Answers and Citations](./09-GROUNDED-ANSWERS-CITATIONS.md)，Chat-derived 授权与共享语义见 [Project Sources](./10-PROJECT-SOURCES.md)，生产恢复、传播与取消规则见 [Knowledge Lifecycle](./11-KNOWLEDGE-LIFECYCLE.md)。

@@ -2,7 +2,7 @@
 
 本文记录 Elysia AI 在 [Retriever and Reranking](./08-RETRIEVER-RERANKING.md) 之后的独立 Grounded Answer Library 边界。当前 `documents/grounding.py` 在一次同步调用中固定执行“准确 Scope 检索 → 完整片段选择 → 单次结构化生成 → 本地引用重建”，从而避免调用方把一个问题与另一个问题的检索结果错误配对。
 
-该模块已经定义严格的 Domain、Prompt、Generator Protocol、Response Validation、Citation Location 和稳定错误；下游 [Project Sources](./10-PROJECT-SOURCES.md) 也已建立 Chat-derived Project 授权、共享语义和安全 Instructions。但仓库目前**没有真实 `GroundedAnswerGenerator` Adapter、没有捆绑回答模型，也没有接入 `Brain`、`start.py`、`desktop_backend.py`、Desktop Protocol 或 React**。存在这些独立 Library 不等于桌面 Chat 已经可以向附件或 Project Sources 提问。
+该模块定义严格的 Domain、Prompt、Generator Protocol、Response Validation、Citation Location 和稳定错误。仓库现在还提供 `documents/ollama_grounding.py` 的 loopback-only 生产 Adapter，并由 `desktop_knowledge.py`、`Brain`、Desktop Protocol、Electron 和 React 把 Project-only 文件问答接入桌面；完整产品接线见 [Knowledge UI and Testing](./12-KNOWLEDGE-UI-TESTING.md)。模型权重仍不随仓库或安装包提供，而且只有用户在准确 Project Chat 中显式开启 **Use Project Sources** 才会进入这条路径。
 
 ## 1. 完成范围与核心原则
 
@@ -43,13 +43,16 @@ exact AttachmentScope
               → rebuild only referenced public citations locally
               → GroundedAnswerResult
 
-  ✗ no Project Source discovery or cross-scope union
-  ✗ no real generator adapter or bundled answer model
-  ✗ no Brain, production composition-root, Desktop Protocol, or React wiring
-  ✗ no persistence, streaming, tools, Agentic RAG, or semantic verifier
+  ✗ GroundedAnswerService itself does not discover Project Sources
+    or perform cross-scope union
+  ✗ no bundled answer model, tools, Agentic RAG, or semantic verifier
+  ✗ no persistence, streaming, Protocol, or UI responsibility inside
+    this lower-level service
 ```
 
 Service 自己拥有检索到生成的完整调用，原因是 `RetrievalResult` 有意不保存 Query 原文。若公开接受任意 `(query, retrieval_result)`，Library 无法证明该结果确实由同一个 Query 检索得到。
+
+生产上层不改变这个责任分界：`ProjectSourceAnswerService` 在共享租约内派生准确 Scope/Generation，`OllamaGroundedAnswerAdapter` 执行本机结构化生成，`Brain` 原子保存文本与 proof，Protocol/Renderer 只发布经过字段白名单的 Statement 和 Citation。
 
 ## 3. 公共 API
 
@@ -78,7 +81,7 @@ answer(
 
 ### 3.2 `GroundedAnswerGenerator`
 
-Generator 是一个 Protocol，不是当前仓库中的真实 Adapter：
+Generator 的稳定核心合同是一个 Protocol；生产实现是 `OllamaGroundedAnswerAdapter`：
 
 ```python
 class GroundedAnswerGenerator(Protocol):
@@ -100,7 +103,7 @@ Identity 固定 `provider`、`adapter_id`、`adapter_version`、`model_tag`、`m
 
 这些设置与完整 Prompt、Allowlist、Preferences Fingerprint 和 Identity 一起进入 v2 Request Fingerprint；同一 Prompt 只要任一输出上限或 Preference 改变，就不再是同一个生成合同。它们使执行合同可预测，但不能把概率模型的语义输出提升为逐字节确定性保证。
 
-`GroundedAnswerGenerator` 只是依赖注入 Protocol。`provider`、Policy Flag、Fingerprint 或 `model_digest` **都不能证明 Transport 位于本机，也不能阻止一个恶意实现把 Query/Passage 外发**。当前仓库没有生产 Adapter，因此当前 Library 不执行网络请求；后续 Adapter 必须单独强制可信本地 Transport/Host、禁用 Proxy/Redirect/Retry、设置完整 Body 前的 Byte Cap 与 Deadline，把上述 Policy 落实为真实动态 Structured-output Schema，并验证实际模型 Digest。`model_tag` 只允许不含路径分隔符的公开显示标签，原生模型路径不得进入 Identity 或 Result。
+`GroundedAnswerGenerator` 是依赖注入 Protocol。`provider`、Policy Flag、Fingerprint 或 `model_digest` **都不能单独证明 Transport 位于本机，也不能阻止一个恶意实现把 Query/Passage 外发**。因此生产 `OllamaGroundedAnswerAdapter` 另外强制规范化 loopback IP Origin，禁用环境 Proxy、Redirect 与 Retry，限制 Raw Body/Deadline，使用闭合 Structured-output Schema，并在生成前后验证同一 Tag 的完整 Manifest Digest。它不下载或启动模型。`model_tag` 只允许不含路径分隔符的公开显示标签，原生模型路径不得进入 Identity 或 Result。
 
 ### 3.3 `GroundedAnswerRequest`
 
@@ -273,7 +276,7 @@ Prompt Injection 防护降低文档文字改变模型行为的风险，但不能
 1. **Retriever 成功但 `hits=()`**：Service 在读取 Generator Identity 之前直接返回；`context_passage_count=0`、`generator_identity=None`、`statements=()`、`citations=()`，Generator 不会被调用。
 2. **已有 Context，但 Generator 保守拒答**：严格响应为 `status=insufficient_evidence` 且 `statements=[]`；结果保留实际 `context_passage_count>0` 与 Generator Identity，但仍不发布 Statement 或 Citation。
 
-这两种状态都不会生成无 Citation 的普通回答。它们在 Backend Domain 中可由 Context Count 与 Generator Identity 区分；未来 UI 如何措辞属于 Module 9。
+这两种状态都不会生成无 Citation 的普通回答。它们在 Backend Domain 中可由 Context Count 与 Generator Identity 区分；Desktop DTO 保留这些字段，Renderer 会把证据不足作为结构化状态显示。
 
 ### 9.2 Stable Error Set
 
@@ -328,9 +331,9 @@ Generator 抛出的 `GroundedAnswerUnavailableError` 与 `GroundedAnswerLimitErr
 - Derivation / Embedding / Chunk 私有身份；
 - Vector、Cosine 或 Reranker Score。
 
-Citation Excerpt 与安全文件名本身仍是用户文档数据，只应在当前授权 Scope 内使用。当前结果是 Python Backend Domain，并非 Desktop Wire DTO；Renderer 的最终字段 Allowlist、HTML/Markdown Escaping 与引用跳转仍属于 Module 9。
+Citation Excerpt 与安全文件名本身仍是用户文档数据，只应在当前授权 Scope 内使用。Desktop Wire DTO 现已以 exact field allowlist 镜像这个结果，Renderer 用安全 GFM/纯文本显示 Statement 和 Citation detail；它不接收路径、Hash、Vector、Prompt 或底层诊断。真正打开原文、Preview 与 page/block/cell 定位跳转仍未实现。
 
-## 12. 明确非目标与 Module 7–9
+## 12. 层内边界与已完成的下游接线
 
 ### Module 7：Project Sources
 
@@ -347,26 +350,17 @@ Grounding 层本身仍不发现 Project Sources；调用它的底层 API 继续�
 
 ### Module 8：Knowledge Lifecycle
 
-当前模块不负责：
+底层 Grounding 模块本身不负责：
 
 - 查看、替换、重新索引、导出或删除文档；
 - 删除时传播清理 Chunk、Vector、Metadata、Preview 或 Cache；
 - Index Job 的进度、取消、重试与 Crash Recovery；
 - Grounded Answer 或 Citation 的持久化生命周期。
 
-Stale 或 Missing Generation 继续由 Retriever Fail Closed。
+Stale 或 Missing Generation 继续由 Retriever Fail Closed。这些变更操作现由 [Knowledge Lifecycle](./11-KNOWLEDGE-LIFECYCLE.md) 实现，而 grounded proof 随 Assistant Message 的原子持久化由 Chat/Brain 集成层完成。
 
 ### Module 9：Knowledge UI and Testing
 
-当前模块不负责：
+Module 9 已经完成 `desktop_knowledge.py` Composition Root、loopback Ollama Adapter、Brain/Chat proof 持久化、严格 Desktop DTO、Electron 原生文件对话框、Project Sources UI、显式问答开关与 Citation detail。真实 PDF/DOCX container 也经过生产 Loader/Processing/Retrieval 自动化回归；模型环节使用确定性测试 Adapter，因此这不是对每台机器的 Ollama/GPU 或真实文档互动质量背书。
 
-- `Brain`、`start.py` 或 Desktop Backend Composition Root；
-- Electron IPC / Desktop Protocol / React 数据合同；
-- 用户可见的 Statement 类型标签、Citation 格式化或本地化；
-- Citation 点击、文件 Preview、Page / Block / Cell 跳转；
-- Chat Message 持久化、流式显示、停止生成与切换 Chat 的事件隔离；
-- 真实 PDF/DOCX 的端到端桌面验收。
-
-此外，本模块不提供 Agentic RAG、Tool Call、Hybrid/BM25/ANN Search、第二模型语义 Verifier、远程 Generator Fallback、模型下载、真实 Generator Adapter 或新的模型素材许可。
-
-下一步由 Module 8 完成知识生命周期，再由 Module 9 建立生产接线、严格 Desktop DTO、可访问 UI 与真实文档回归。在这些边界完成前，不能声称桌面 Chat 已能安全地回答或引用用户文件。
+仍然的明确非目标是 Agentic RAG、Tool Call、Hybrid/BM25/ANN Search、第二模型语义 Verifier、远程 Generator Fallback、自动模型下载、文件 Preview 以及 page/block/cell 原文跳转。

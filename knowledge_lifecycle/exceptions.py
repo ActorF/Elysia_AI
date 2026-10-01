@@ -17,6 +17,10 @@ class KnowledgeLifecycleConflictError(KnowledgeLifecycleError):
     """Report a concurrent revision or incompatible operation transition."""
 
 
+class KnowledgeExportCancelledError(KnowledgeLifecycleError):
+    """Report cancellation before an original-byte export is published."""
+
+
 class KnowledgeLifecycleStorageError(KnowledgeLifecycleError):
     """Report a sanitized failure to read or replace the lifecycle journal."""
 

@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from io import BytesIO, StringIO, TextIOWrapper
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from threading import Event, Timer
+from threading import Event, Thread, Timer, current_thread
 from time import monotonic
 from typing import Any, TextIO, cast
 from unittest.mock import patch
@@ -21,6 +21,7 @@ import desktop_backend as desktop_backend_module
 from attachments import (
     AttachmentConflictError,
     AttachmentScope,
+    AttachmentService,
     JsonAttachmentStore,
 )
 from chats import (
@@ -62,6 +63,7 @@ from desktop_backend import (
     _configure_protocol_streams,
     _extract_model_names,
 )
+from desktop_knowledge import DesktopKnowledgeRuntime
 from desktop_protocol import (
     AudioChannelWriter,
     PROTOCOL_NAME,
@@ -71,6 +73,20 @@ from desktop_protocol import (
     build_request,
 )
 from desktop_speech import DesktopSpeechCoordinator
+from knowledge_lifecycle import (
+    KNOWLEDGE_OPERATION_SCHEMA_VERSION,
+    KnowledgeExportResult,
+    KnowledgeOperationId,
+    KnowledgeOperationPhase,
+    KnowledgeOperationSnapshot,
+    KnowledgeOperationState,
+)
+from project_sources import (
+    PROJECT_SOURCE_INSTRUCTIONS_SCHEMA_VERSION,
+    ProjectSourceStorageError,
+    ProjectSourceInstructions,
+    ProjectSourceValidationError,
+)
 from projects import (
     Project,
     ProjectArchivedError,
@@ -455,6 +471,555 @@ class FakeBrain:
 
 JsonObject = dict[str, Any]
 SESSION_TOKEN = "0123456789abcdef0123456789abcdef"
+
+
+class _KnowledgeLifecycleDouble:
+    """Expose deterministic recovery state and reject unexpected mutations."""
+
+    def __init__(
+        self,
+        recovery_result: KnowledgeOperationSnapshot | None = None,
+        *,
+        block_startup_recovery: bool = False,
+        block_reindex: bool = False,
+        block_monitor_read: bool = False,
+        block_cancel_read: bool = False,
+        succeed_reindex: bool = False,
+        reindex_error: Exception | None = None,
+    ) -> None:
+        """Store one optional recovery result behind explicit test gates."""
+
+        self.recovery_result = recovery_result
+        self.block_startup_recovery = block_startup_recovery
+        self.block_reindex = block_reindex
+        self.block_monitor_read = block_monitor_read
+        self.block_cancel_read = block_cancel_read
+        self.succeed_reindex = succeed_reindex
+        self.reindex_error = reindex_error
+        self.startup_recovery_entered = Event()
+        self.release_startup_recovery = Event()
+        self.startup_recovery_finished = Event()
+        self.recovery_entered = Event()
+        self.release_recovery = Event()
+        self.recovery_finished = Event()
+        self.reindex_entered = Event()
+        self.release_reindex = Event()
+        self.cancel_persisted = Event()
+        self.monitor_read_entered = Event()
+        self.release_monitor_read = Event()
+        self.cancel_read_entered = Event()
+        self.release_cancel_read = Event()
+        self.active_operation: KnowledgeOperationSnapshot | None = None
+        self.list_source_calls = 0
+        self.mutation_calls = 0
+
+    def recover_pending(
+        self,
+        project_id: ProjectId | None = None,
+    ) -> tuple[KnowledgeOperationSnapshot, ...]:
+        """Return no startup work or the gated Project recovery result."""
+
+        if project_id is None:
+            if not self.block_startup_recovery:
+                return ()
+            self.startup_recovery_entered.set()
+            try:
+                if not self.release_startup_recovery.wait(5.0):
+                    raise RuntimeError(
+                        "Test did not release startup Knowledge recovery."
+                    )
+            finally:
+                self.startup_recovery_finished.set()
+            return ()
+        self.recovery_entered.set()
+        try:
+            if not self.release_recovery.wait(2.0):
+                raise RuntimeError("Test did not release Knowledge recovery.")
+            return (
+                ()
+                if self.recovery_result is None
+                else (self.recovery_result,)
+            )
+        finally:
+            self.recovery_finished.set()
+
+    def list_operations(
+        self,
+        _project_id: ProjectId,
+    ) -> tuple[KnowledgeOperationSnapshot, ...]:
+        """Expose the durable recovery checkpoint to Backend monitoring."""
+
+        thread_name = current_thread().name
+        if (
+            self.block_monitor_read
+            and thread_name.startswith("elysia-knowledge-monitor-")
+        ):
+            self.monitor_read_entered.set()
+            if not self.release_monitor_read.wait(5.0):
+                raise RuntimeError("Test did not release the Knowledge monitor.")
+        if (
+            self.block_cancel_read
+            and thread_name.startswith("elysia-knowledge-cancel-")
+        ):
+            self.cancel_read_entered.set()
+            if not self.release_cancel_read.wait(5.0):
+                raise RuntimeError("Test did not release the cancellation waiter.")
+        if self.active_operation is not None:
+            return (self.active_operation,)
+        return (
+            ()
+            if self.recovery_result is None
+            else (self.recovery_result,)
+        )
+
+    def list_project_sources(self, _project_id: ProjectId) -> tuple[()]:
+        """Return an empty corpus while recording control-path access."""
+
+        self.list_source_calls += 1
+        return ()
+
+    def reindex_project_source(
+        self,
+        _project_id: ProjectId,
+        _source_id: str,
+        *,
+        cancel_requested: Callable[[], bool] | None = None,
+    ) -> KnowledgeOperationSnapshot:
+        """Fail if grounded generation did not reject mutation admission."""
+
+        self.mutation_calls += 1
+        if self.block_reindex:
+            operation = _knowledge_operation(
+                _project_id,
+                state="running",
+                phase="indexing",
+                progress_percent=25,
+            )
+            self.active_operation = operation
+            self.reindex_entered.set()
+            if not self.release_reindex.wait(5.0):
+                raise RuntimeError("Test did not release Knowledge reindex.")
+            if cancel_requested is not None and cancel_requested():
+                cancelled = replace(
+                    operation,
+                    journal_revision=(
+                        self.active_operation.journal_revision + 1
+                        if self.active_operation is not None
+                        else operation.journal_revision + 1
+                    ),
+                    state="cancelled",
+                    phase="completed",
+                    updated_at=operation.updated_at + timedelta(microseconds=2),
+                    error_code=None,
+                )
+                self.active_operation = cancelled
+                return cancelled
+            if self.reindex_error is not None:
+                raise self.reindex_error
+            if self.succeed_reindex:
+                succeeded = replace(
+                    operation,
+                    journal_revision=operation.journal_revision + 1,
+                    state="succeeded",
+                    phase="completed",
+                    progress_percent=100,
+                    updated_at=operation.updated_at + timedelta(microseconds=1),
+                )
+                self.active_operation = succeeded
+                return succeeded
+            return operation
+        raise AssertionError(
+            "Knowledge mutation crossed an active grounded-answer lease."
+        )
+
+    def request_cancel(
+        self,
+        operation_id: str,
+    ) -> KnowledgeOperationSnapshot:
+        """Persist one recoverable cancellation intent before protocol ACK."""
+
+        operation = self.active_operation
+        if operation is None or str(operation.operation_id) != operation_id:
+            raise AssertionError("Cancellation did not target the active operation.")
+        cancelled = replace(
+            operation,
+            journal_revision=operation.journal_revision + 1,
+            state="cancel_requested",
+            updated_at=operation.updated_at + timedelta(microseconds=1),
+        )
+        self.active_operation = cancelled
+        self.cancel_persisted.set()
+        return cancelled
+
+
+class _KnowledgeExportDouble:
+    """Reject exports that cross an active grounded-answer lease."""
+
+    def __init__(
+        self,
+        *,
+        block_recovery: bool = False,
+        block_export: bool = False,
+        export_succeeds: bool = False,
+        export_error: Exception | None = None,
+    ) -> None:
+        """Initialize export accounting and optional startup recovery gates."""
+
+        self.calls = 0
+        self.block_recovery = block_recovery
+        self.block_export = block_export
+        self.export_succeeds = export_succeeds
+        self.export_error = export_error
+        self.recovery_entered = Event()
+        self.release_recovery = Event()
+        self.recovery_finished = Event()
+        self.export_entered = Event()
+        self.release_export = Event()
+        self.export_finished = Event()
+
+    def recover_pending_exports(self) -> None:
+        """Expose deterministic recovery without touching a real volume."""
+
+        self.recovery_entered.set()
+        try:
+            if self.block_recovery and not self.release_recovery.wait(5.0):
+                raise RuntimeError("Test did not release export recovery.")
+        finally:
+            self.recovery_finished.set()
+
+    def export_original(
+        self,
+        _project_id: ProjectId,
+        _source_id: str,
+        _destination: Path,
+        *,
+        overwrite: bool,
+        should_cancel: Callable[[], bool] | None = None,
+    ) -> KnowledgeExportResult:
+        """Fail if Backend starts export while grounded generation is active."""
+
+        del overwrite, should_cancel
+        self.calls += 1
+        self.export_entered.set()
+        if self.block_export and not self.release_export.wait(5.0):
+            raise RuntimeError("Test did not release Project Source export.")
+        self.export_finished.set()
+        if self.export_error is not None:
+            raise self.export_error
+        if self.export_succeeds:
+            return KnowledgeExportResult(
+                file_name="export.txt",
+                media_type="text/plain",
+                bytes_written=12,
+            )
+        raise AssertionError(
+            "Knowledge export crossed an active grounded-answer lease."
+        )
+
+
+class _BlockingKnowledgeAnswers:
+    """Hold one grounded answer inside the Knowledge runtime until released."""
+
+    def __init__(self) -> None:
+        """Create explicit entry, release, and completion synchronization."""
+
+        self.entered = Event()
+        self.release = Event()
+        self.finished = Event()
+
+    def answer(self, *_args: object, **_kwargs: object) -> object:
+        """Block one answer without relying on timing or model I/O."""
+
+        self.entered.set()
+        try:
+            if not self.release.wait(5.0):
+                raise RuntimeError("Test did not release grounded answering.")
+            return object()
+        finally:
+            self.finished.set()
+
+
+class _FailingKnowledgeAnswers:
+    """Raise one typed Project Source error after deterministic admission."""
+
+    def __init__(self, error: Exception) -> None:
+        """Retain the injected error behind explicit worker synchronization."""
+
+        self.error = error
+        self.entered = Event()
+        self.release = Event()
+        self.finished = Event()
+
+    def answer(self, *_args: object, **_kwargs: object) -> object:
+        """Wait until the test observes admission, then raise the typed error."""
+
+        self.entered.set()
+        try:
+            if not self.release.wait(5.0):
+                raise RuntimeError("Test did not release failing grounded answer.")
+            raise self.error
+        finally:
+            self.finished.set()
+
+
+class _KnowledgeRuntimeDouble:
+    """Bundle narrow Knowledge services and record runtime close ordering."""
+
+    def __init__(
+        self,
+        recovery_result: KnowledgeOperationSnapshot | None = None,
+        *,
+        block_startup_recovery: bool = False,
+        block_reindex: bool = False,
+        block_monitor_read: bool = False,
+        block_cancel_read: bool = False,
+        succeed_reindex: bool = False,
+        reindex_error: Exception | None = None,
+        block_export: bool = False,
+        export_succeeds: bool = False,
+        export_error: Exception | None = None,
+    ) -> None:
+        """Compose deterministic lifecycle, export, and answer boundaries."""
+
+        self.lifecycle = _KnowledgeLifecycleDouble(
+            recovery_result,
+            block_startup_recovery=block_startup_recovery,
+            block_reindex=block_reindex,
+            block_monitor_read=block_monitor_read,
+            block_cancel_read=block_cancel_read,
+            succeed_reindex=succeed_reindex,
+            reindex_error=reindex_error,
+        )
+        self.export = _KnowledgeExportDouble(
+            block_recovery=block_startup_recovery,
+            block_export=block_export,
+            export_succeeds=export_succeeds,
+            export_error=export_error,
+        )
+        self.answers: _BlockingKnowledgeAnswers | _FailingKnowledgeAnswers = (
+            _BlockingKnowledgeAnswers()
+        )
+        self.closed = Event()
+        self.close_calls = 0
+        self.closed_while_answer_active = False
+        self.closed_while_export_recovery_active = False
+
+    def close(self) -> None:
+        """Record whether shutdown closed dependencies under an active answer."""
+
+        self.close_calls += 1
+        self.closed_while_answer_active = (
+            self.answers.entered.is_set()
+            and not self.answers.finished.is_set()
+        )
+        self.closed_while_export_recovery_active = (
+            self.export.recovery_entered.is_set()
+            and not self.export.recovery_finished.is_set()
+        )
+        self.closed.set()
+
+
+class _CancellationAckOutput(StringIO):
+    """Observe durable Knowledge state at the exact successful ACK write."""
+
+    def __init__(self, lifecycle: _KnowledgeLifecycleDouble) -> None:
+        """Retain the lifecycle authority inspected at cancellation ACK."""
+
+        super().__init__()
+        self.lifecycle = lifecycle
+        self.ack_written = Event()
+        self.persisted_before_ack: bool | None = None
+        self.state_before_ack: KnowledgeOperationState | None = None
+
+    def write(self, value: str) -> int:
+        """Record whether durable intent preceded the successful wire ACK."""
+
+        written = super().write(value)
+        try:
+            message = cast(JsonObject, json.loads(value))
+        except json.JSONDecodeError:
+            return written
+        if (
+            message.get("type") == "response"
+            and message.get("id") == "cancel-knowledge-operation"
+            and message.get("ok") is True
+        ):
+            operation = self.lifecycle.active_operation
+            self.persisted_before_ack = self.lifecycle.cancel_persisted.is_set()
+            self.state_before_ack = (
+                None if operation is None else operation.state
+            )
+            self.ack_written.set()
+        return written
+
+
+class _KnowledgeTerminalOrderingOutput(StringIO):
+    """Observe task settlement at the exact terminal response write."""
+
+    def __init__(self, request_id: str) -> None:
+        """Retain the request correlation populated before worker release."""
+
+        super().__init__()
+        self.request_id = request_id
+        self.backend: DesktopBackend | None = None
+        self.task: desktop_backend_module._KnowledgeTask | None = None
+        self.terminal_written = Event()
+        self.task_done_before_terminal: bool | None = None
+        self.task_cleared_before_terminal: bool | None = None
+
+    def write(self, value: str) -> int:
+        """Record ownership state before accepting one terminal JSON frame."""
+
+        written = super().write(value)
+        try:
+            message = json.loads(value)
+        except json.JSONDecodeError:
+            return written
+        if (
+            not isinstance(message, dict)
+            or message.get("type") != "response"
+            or message.get("id") != self.request_id
+        ):
+            return written
+
+        backend = self.backend
+        task = self.task
+        if backend is None or task is None:
+            raise AssertionError("Knowledge terminal observer was not armed.")
+        self.task_done_before_terminal = task.done.is_set()
+        with backend._state_lock:
+            self.task_cleared_before_terminal = backend._knowledge_task is None
+        self.terminal_written.set()
+        return written
+
+
+class _BlockingGroundedBrain(FakeBrain):
+    """Drive grounded generation through a test-controlled answer service."""
+
+    def stream_grounded_chat(
+        self,
+        chat_id: object,
+        user_message: str,
+        answerer: Callable[..., object],
+        *,
+        attachments: tuple[AttachmentMetadata, ...] = (),
+        should_cancel: Callable[[], bool] | None = None,
+        begin_commit: Callable[[], bool] | None = None,
+    ) -> Generator[str, None, None]:
+        """Remain inside ``answerer`` until tests inspect concurrent requests."""
+
+        del attachments, begin_commit
+        answerer(ChatId(str(chat_id)), user_message)
+        if should_cancel is not None and should_cancel():
+            raise GenerationCancelledError("Grounded generation was cancelled.")
+        yield "Grounded answer"
+
+
+def _knowledge_operation(
+    project_id: ProjectId,
+    *,
+    state: KnowledgeOperationState,
+    phase: KnowledgeOperationPhase,
+    progress_percent: int,
+) -> KnowledgeOperationSnapshot:
+    """Build one valid Project operation checkpoint for Backend tests."""
+
+    timestamp = datetime(2026, 9, 29, 12, 0, tzinfo=timezone.utc)
+    return KnowledgeOperationSnapshot(
+        schema_version=KNOWLEDGE_OPERATION_SCHEMA_VERSION,
+        journal_revision=2,
+        operation_id=KnowledgeOperationId("knowledge_" + ("a" * 32)),
+        scope=AttachmentScope("project", str(project_id)),
+        kind="reindex",
+        state=state,
+        phase=phase,
+        progress_percent=progress_percent,
+        catalog_revision=1,
+        index_profile_fingerprint="b" * 64,
+        instructions=ProjectSourceInstructions(
+            schema_version=PROJECT_SOURCE_INSTRUCTIONS_SCHEMA_VERSION,
+        ),
+        attempt=2,
+        created_at=timestamp,
+        updated_at=timestamp,
+        target_link_id="attachment_recovery_source",
+        error_code=(
+            "recovery_required" if state == "recovery_required" else None
+        ),
+    )
+
+
+def _project_scoped_brain(
+    brain: FakeBrain,
+) -> tuple[FakeBrain, Project]:
+    """Attach the active fake Chat to one canonical active Project."""
+
+    project = create_project(name="Knowledge test Project")
+    brain.add_project(project)
+    brain.chat = replace(brain.chat, project_id=project.project_id)
+    brain.add_chat(brain.chat)
+    return brain, project
+
+
+def _build_knowledge_backend(
+    tmp_path: Path,
+    brain: FakeBrain,
+    runtime: _KnowledgeRuntimeDouble,
+    *,
+    input_stream: TextIO | None = None,
+    output_stream: StringIO | None = None,
+) -> tuple[DesktopBackend, StringIO]:
+    """Build one isolated Backend around the narrow Knowledge test runtime."""
+
+    def _runtime_factory(
+        _settings: AppSettings,
+        _attachments: AttachmentService,
+    ) -> DesktopKnowledgeRuntime:
+        """Return the structural runtime double through the typed seam."""
+
+        return cast(DesktopKnowledgeRuntime, runtime)
+
+    active_output_stream = (
+        StringIO() if output_stream is None else output_stream
+    )
+    backend = DesktopBackend(
+        brain_factory=lambda: cast(Brain, brain),
+        model_loader=lambda: (brain.model_name,),
+        settings_validator=lambda: None,
+        settings_repository=_desktop_settings_repository(
+            tmp_path / "global.json"
+        ),
+        voice_settings_service=create_voice_settings_service(tmp_path),
+        attachment_store=JsonAttachmentStore(
+            tmp_path / "attachments",
+            max_file_bytes=1_024 * 1_024,
+        ),
+        knowledge_runtime_factory=_runtime_factory,
+        input_stream=StringIO() if input_stream is None else input_stream,
+        output_stream=active_output_stream,
+        expected_session_token=SESSION_TOKEN,
+    )
+    return backend, active_output_stream
+
+
+def _initialize_knowledge_backend(
+    tmp_path: Path,
+    brain: FakeBrain,
+    runtime: _KnowledgeRuntimeDouble,
+    *,
+    output_stream: StringIO | None = None,
+) -> tuple[DesktopBackend, StringIO]:
+    """Authenticate and initialize one directly driven Knowledge Backend."""
+
+    backend, output_stream = _build_knowledge_backend(
+        tmp_path,
+        brain,
+        runtime,
+        output_stream=output_stream,
+    )
+    assert backend._handle_line(json.dumps(_handshake_request()))
+    assert backend._handle_line(json.dumps(_initialize_request()))
+    return backend, output_stream
 
 
 class _RecordingStartupAttachmentStore:
@@ -5324,3 +5889,912 @@ def test_input_frame_limit_counts_leading_json_whitespace(
 
     response = cast(JsonObject, json.loads(output_stream.getvalue()))
     assert response["error"]["code"] == "protocol.frame_too_large"
+
+
+def test_recovery_required_never_reports_completion_or_success(
+    tmp_path: Path,
+) -> None:
+    """Keep unresolved durable recovery visibly nonterminal on every frame."""
+
+    brain, project = _project_scoped_brain(FakeBrain())
+    operation = _knowledge_operation(
+        project.project_id,
+        state="recovery_required",
+        phase="indexing",
+        progress_percent=50,
+    )
+    runtime = _KnowledgeRuntimeDouble(operation)
+    backend, output_stream = _initialize_knowledge_backend(
+        tmp_path,
+        brain,
+        runtime,
+    )
+
+    assert backend._handle_line(
+        json.dumps(
+            _request(
+                "knowledge-recovery",
+                "knowledge.recover",
+                {"projectId": str(project.project_id)},
+            )
+        )
+    )
+    assert runtime.lifecycle.recovery_entered.wait(1.0)
+    with backend._state_lock:
+        task = backend._knowledge_task
+    assert task is not None
+    runtime.lifecycle.release_recovery.set()
+    assert task.done.wait(1.0)
+
+    messages = _output_messages(output_stream)
+    assert _error(messages, "knowledge-recovery") == {
+        "code": "knowledge.recovery_required",
+        "message": "Project Source recovery still requires attention.",
+        "retryable": True,
+    }
+    assert not any(
+        message.get("type") == "response"
+        and message.get("id") == "knowledge-recovery"
+        and message.get("ok") is True
+        for message in messages
+    )
+    assert not any(
+        message.get("type") == "progress"
+        and message.get("requestId") == "knowledge-recovery"
+        and message.get("current") == 100
+        for message in messages
+    )
+    operation_events = [
+        message
+        for message in messages
+        if message.get("type") == "event"
+        and message.get("requestId") == "knowledge-recovery"
+        and str(message.get("event", "")).startswith("knowledge.operation.")
+    ]
+    assert operation_events
+    assert all(
+        message["event"] == "knowledge.operation.changed"
+        for message in operation_events
+    )
+    assert all(
+        cast(JsonObject, cast(JsonObject, message["data"])["operation"])[
+            "state"
+        ]
+        == "recovery_required"
+        for message in operation_events
+    )
+
+
+def test_grounded_generation_rejects_knowledge_controls_without_blocking(
+    tmp_path: Path,
+) -> None:
+    """Reject list, mutation, and export before they enter the held lease."""
+
+    grounded_brain = _BlockingGroundedBrain()
+    _, project = _project_scoped_brain(grounded_brain)
+    runtime = _KnowledgeRuntimeDouble()
+    backend, output_stream = _initialize_knowledge_backend(
+        tmp_path,
+        grounded_brain,
+        runtime,
+    )
+    project_before = grounded_brain._projects[project.project_id]
+    chat_before = grounded_brain._chats[grounded_brain.chat.chat_id]
+
+    assert backend._handle_line(
+        json.dumps(
+            _request(
+                "grounded-active",
+                "chat.stream",
+                {
+                    "chatId": str(grounded_brain.chat.chat_id),
+                    "message": "Use the Project corpus",
+                    "useProjectKnowledge": True,
+                },
+            )
+        )
+    )
+    assert runtime.answers.entered.wait(1.0)
+    with backend._state_lock:
+        generation = backend._generation_task
+    assert generation is not None
+    calls_before = tuple(grounded_brain.session_calls)
+
+    try:
+        requests = (
+            _request(
+                "knowledge-list-busy",
+                "knowledge.list",
+                {"projectId": str(project.project_id)},
+            ),
+            _request(
+                "knowledge-mutation-busy",
+                "knowledge.source.reindex",
+                {
+                    "projectId": str(project.project_id),
+                    "sourceId": "attachment_grounded_busy",
+                },
+            ),
+            _request(
+                "knowledge-export-busy",
+                "knowledge.source.export",
+                {
+                    "projectId": str(project.project_id),
+                    "sourceId": "attachment_grounded_busy",
+                    "destination": r"C:\Elysia\Exports\grounded-busy.txt",
+                    "overwrite": False,
+                },
+            ),
+            _request(
+                "project-update-grounded-busy",
+                "project.update",
+                {
+                    "projectId": str(project.project_id),
+                    "name": "Unauthorized grounded rename",
+                    "customInstructions": "Changed during retrieval.",
+                },
+            ),
+            _request(
+                "project-workspace-grounded-busy",
+                "project.workspace",
+                {
+                    "projectId": str(project.project_id),
+                    "workspacePath": r"C:\Blocked\GroundedWorkspace",
+                },
+            ),
+            _request(
+                "project-archive-grounded-busy",
+                "project.archive",
+                {
+                    "projectId": str(project.project_id),
+                    "archived": True,
+                },
+            ),
+            _request(
+                "project-chat-move-grounded-busy",
+                "project.chat.move",
+                {
+                    "chatId": str(grounded_brain.chat.chat_id),
+                    "projectId": None,
+                },
+            ),
+        )
+        for request in requests:
+            assert backend._handle_line(json.dumps(request))
+
+        messages = _output_messages(output_stream)
+        for request_id in (
+            "knowledge-list-busy",
+            "knowledge-mutation-busy",
+            "knowledge-export-busy",
+            "project-update-grounded-busy",
+            "project-workspace-grounded-busy",
+            "project-archive-grounded-busy",
+            "project-chat-move-grounded-busy",
+        ):
+            assert _error(messages, request_id)["code"] == "knowledge.busy"
+        assert not runtime.answers.release.is_set()
+        assert runtime.lifecycle.list_source_calls == 0
+        assert runtime.lifecycle.mutation_calls == 0
+        assert runtime.export.calls == 0
+        assert grounded_brain._projects[project.project_id] == project_before
+        assert grounded_brain._chats[grounded_brain.chat.chat_id] == chat_before
+        calls_after_admission = grounded_brain.session_calls[len(calls_before):]
+        assert not any(
+            call[0] in {
+                "update_project",
+                "bind_workspace",
+                "unbind_workspace",
+                "archive_project",
+                "restore_project",
+                "move_chat",
+            }
+            for call in calls_after_admission
+        )
+    finally:
+        runtime.answers.release.set()
+        assert generation.done.wait(1.0)
+
+
+def test_active_knowledge_mutation_blocks_project_authority_changes(
+    tmp_path: Path,
+) -> None:
+    """Keep Project and Chat authority immutable under a Knowledge mutation."""
+
+    brain, project = _project_scoped_brain(FakeBrain())
+    runtime = _KnowledgeRuntimeDouble(block_reindex=True)
+    backend, output_stream = _initialize_knowledge_backend(
+        tmp_path,
+        brain,
+        runtime,
+    )
+    project_before = brain._projects[project.project_id]
+    chat_before = brain._chats[brain.chat.chat_id]
+
+    assert backend._handle_line(
+        json.dumps(
+            _request(
+                "knowledge-authority-owner",
+                "knowledge.source.reindex",
+                {
+                    "projectId": str(project.project_id),
+                    "sourceId": "attachment_authority_owner",
+                },
+            )
+        )
+    )
+    assert runtime.lifecycle.reindex_entered.wait(1.0)
+    with backend._state_lock:
+        task = backend._knowledge_task
+    assert task is not None
+    calls_before = tuple(brain.session_calls)
+
+    requests = (
+        _request(
+            "project-update-knowledge-busy",
+            "project.update",
+            {
+                "projectId": str(project.project_id),
+                "name": "Unauthorized rename",
+                "customInstructions": "Changed while indexing.",
+            },
+        ),
+        _request(
+            "project-workspace-knowledge-busy",
+            "project.workspace",
+            {
+                "projectId": str(project.project_id),
+                "workspacePath": r"C:\Blocked\Workspace",
+            },
+        ),
+        _request(
+            "project-archive-knowledge-busy",
+            "project.archive",
+            {
+                "projectId": str(project.project_id),
+                "archived": True,
+            },
+        ),
+        _request(
+            "project-chat-move-knowledge-busy",
+            "project.chat.move",
+            {
+                "chatId": str(brain.chat.chat_id),
+                "projectId": None,
+            },
+        ),
+    )
+    try:
+        for request in requests:
+            assert backend._handle_line(json.dumps(request))
+
+        messages = _output_messages(output_stream)
+        for request in requests:
+            error = _error(messages, cast(str, request["id"]))
+            assert error == {
+                "code": "knowledge.busy",
+                "message": "Wait for the active Project Source work.",
+                "retryable": False,
+            }
+        assert brain._projects[project.project_id] == project_before
+        assert brain._chats[brain.chat.chat_id] == chat_before
+        assert tuple(brain.session_calls) == calls_before
+    finally:
+        runtime.lifecycle.release_reindex.set()
+
+    assert task.done.wait(1.0)
+
+
+@pytest.mark.parametrize("termination", ["shutdown", "eof"])
+def test_grounded_worker_keeps_knowledge_runtime_open_through_shutdown(
+    tmp_path: Path,
+    termination: str,
+) -> None:
+    """Delay runtime close until a grounded worker relinquishes its answerer."""
+
+    grounded_brain = _BlockingGroundedBrain()
+    _, project = _project_scoped_brain(grounded_brain)
+    runtime = _KnowledgeRuntimeDouble()
+
+    def _request_lines() -> Generator[str, None, None]:
+        """Reach shutdown or EOF only after the grounded answer owns runtime."""
+
+        requests = (
+            _handshake_request(),
+            _initialize_request(),
+            _request(
+                "grounded-shutdown-target",
+                "chat.stream",
+                {
+                    "chatId": str(grounded_brain.chat.chat_id),
+                    "message": "Hold the Project corpus",
+                    "useProjectKnowledge": True,
+                },
+            ),
+        )
+        for request in requests:
+            yield f"{json.dumps(request)}\n"
+        assert runtime.answers.entered.wait(1.0)
+        if termination == "shutdown":
+            yield (
+                f"{json.dumps(_request('shutdown-grounded', 'shutdown', {}))}\n"
+            )
+
+    backend, _output_stream = _build_knowledge_backend(
+        tmp_path,
+        grounded_brain,
+        runtime,
+        input_stream=cast(TextIO, _request_lines()),
+    )
+    try:
+        with patch.object(
+            desktop_backend_module,
+            "GENERATION_SHUTDOWN_TIMEOUT_SECONDS",
+            0.05,
+        ):
+            backend.run()
+
+        assert runtime.answers.entered.is_set()
+        assert not runtime.answers.finished.is_set()
+        assert not runtime.closed.is_set()
+        assert runtime.close_calls == 0
+    finally:
+        runtime.answers.release.set()
+
+    assert runtime.answers.finished.wait(1.0)
+    assert runtime.closed.wait(1.0)
+    assert runtime.close_calls == 1
+    assert runtime.closed_while_answer_active is False
+
+
+def test_initialize_does_not_wait_for_blocked_knowledge_recovery(
+    tmp_path: Path,
+) -> None:
+    """Complete initialization while optional durable recovery remains blocked."""
+
+    brain, _project = _project_scoped_brain(FakeBrain())
+    runtime = _KnowledgeRuntimeDouble(block_startup_recovery=True)
+    backend, output_stream = _build_knowledge_backend(
+        tmp_path,
+        brain,
+        runtime,
+    )
+    assert backend._handle_line(json.dumps(_handshake_request()))
+    initialize_done = Event()
+    initialize_results: list[bool] = []
+
+    def _initialize() -> None:
+        """Drive initialization independently from the blocked recovery call."""
+
+        try:
+            initialize_results.append(
+                backend._handle_line(json.dumps(_initialize_request()))
+            )
+        finally:
+            initialize_done.set()
+
+    initialize_thread = Thread(
+        target=_initialize,
+        name="test-nonblocking-knowledge-initialize",
+        daemon=True,
+    )
+    initialize_thread.start()
+    try:
+        assert initialize_done.wait(1.0)
+        assert initialize_results == [True]
+        assert runtime.export.recovery_entered.wait(1.0)
+        assert not runtime.export.release_recovery.is_set()
+        assert not runtime.export.recovery_finished.is_set()
+        assert _success_result(
+            _output_messages(output_stream),
+            "initialize-1",
+        )["chatId"] == str(brain.chat.chat_id)
+    finally:
+        runtime.export.release_recovery.set()
+        initialize_thread.join(1.0)
+
+    assert not initialize_thread.is_alive()
+    assert runtime.export.recovery_finished.wait(1.0)
+
+
+@pytest.mark.parametrize("termination", ["shutdown", "eof"])
+def test_export_recovery_keeps_knowledge_runtime_open_through_shutdown(
+    tmp_path: Path,
+    termination: str,
+) -> None:
+    """Close the runtime once only after startup export recovery releases it."""
+
+    brain, _project = _project_scoped_brain(FakeBrain())
+    runtime = _KnowledgeRuntimeDouble(block_startup_recovery=True)
+
+    def _request_lines() -> Generator[str, None, None]:
+        """Reach shutdown or EOF only after export recovery owns the runtime."""
+
+        yield f"{json.dumps(_handshake_request())}\n"
+        yield f"{json.dumps(_initialize_request())}\n"
+        assert runtime.export.recovery_entered.wait(1.0)
+        if termination == "shutdown":
+            yield (
+                f"{json.dumps(_request('shutdown-export-recovery', 'shutdown', {}))}\n"
+            )
+
+    backend, _output_stream = _build_knowledge_backend(
+        tmp_path,
+        brain,
+        runtime,
+        input_stream=cast(TextIO, _request_lines()),
+    )
+    try:
+        backend.run()
+
+        assert runtime.export.recovery_entered.is_set()
+        assert not runtime.export.recovery_finished.is_set()
+        assert len(backend._knowledge_runtime_owners) == 1
+        assert not runtime.closed.is_set()
+        assert runtime.close_calls == 0
+    finally:
+        runtime.export.release_recovery.set()
+
+    assert runtime.export.recovery_finished.wait(1.0)
+    assert backend._knowledge_runtime_owners == set()
+    assert runtime.closed.wait(1.0)
+    assert runtime.close_calls == 1
+    assert runtime.closed_while_export_recovery_active is False
+
+
+def test_monitor_owner_delays_runtime_close_after_worker_shutdown(
+    tmp_path: Path,
+) -> None:
+    """Keep runtime open when a stopped lifecycle monitor is still draining."""
+
+    brain, project = _project_scoped_brain(FakeBrain())
+    runtime = _KnowledgeRuntimeDouble(
+        block_reindex=True,
+        block_monitor_read=True,
+    )
+    backend, _output_stream = _initialize_knowledge_backend(
+        tmp_path,
+        brain,
+        runtime,
+    )
+    assert runtime.export.recovery_finished.wait(1.0)
+    assert backend._handle_line(
+        json.dumps(
+            _request(
+                "monitor-runtime-owner",
+                "knowledge.source.reindex",
+                {
+                    "projectId": str(project.project_id),
+                    "sourceId": "attachment_monitor_owner",
+                },
+            )
+        )
+    )
+    assert runtime.lifecycle.reindex_entered.wait(1.0)
+    assert runtime.lifecycle.monitor_read_entered.wait(1.0)
+    with backend._state_lock:
+        task = backend._knowledge_task
+    assert task is not None
+
+    try:
+        with patch.object(
+            desktop_backend_module,
+            "GENERATION_SHUTDOWN_TIMEOUT_SECONDS",
+            0.01,
+        ):
+            backend._prepare_knowledge_shutdown()
+        assert not runtime.closed.is_set()
+        runtime.lifecycle.release_reindex.set()
+        assert runtime.lifecycle.monitor_read_entered.is_set()
+        assert not task.done.is_set()
+        assert not runtime.closed.is_set()
+        assert runtime.close_calls == 0
+    finally:
+        runtime.lifecycle.release_reindex.set()
+        runtime.lifecycle.release_monitor_read.set()
+
+    assert task.done.wait(1.0)
+    assert runtime.closed.wait(1.0)
+    assert runtime.close_calls == 1
+    assert backend._knowledge_runtime_owners == set()
+
+
+def test_cancel_waiter_owner_delays_runtime_close_after_worker_shutdown(
+    tmp_path: Path,
+) -> None:
+    """Keep runtime open until cancellation persistence releases its owner."""
+
+    brain, project = _project_scoped_brain(FakeBrain())
+    runtime = _KnowledgeRuntimeDouble(
+        block_reindex=True,
+        block_cancel_read=True,
+    )
+    backend, _output_stream = _initialize_knowledge_backend(
+        tmp_path,
+        brain,
+        runtime,
+    )
+    assert runtime.export.recovery_finished.wait(1.0)
+    assert backend._handle_line(
+        json.dumps(
+            _request(
+                "cancel-waiter-owner-target",
+                "knowledge.source.reindex",
+                {
+                    "projectId": str(project.project_id),
+                    "sourceId": "attachment_cancel_waiter_owner",
+                },
+            )
+        )
+    )
+    assert runtime.lifecycle.reindex_entered.wait(1.0)
+    with backend._state_lock:
+        task = backend._knowledge_task
+    assert task is not None
+    assert backend._handle_line(
+        json.dumps(
+            _request(
+                "cancel-waiter-owner-request",
+                "request.cancel",
+                {"requestId": "cancel-waiter-owner-target"},
+            )
+        )
+    )
+    assert runtime.lifecycle.cancel_read_entered.wait(1.0)
+
+    try:
+        with patch.object(
+            desktop_backend_module,
+            "GENERATION_SHUTDOWN_TIMEOUT_SECONDS",
+            0.01,
+        ):
+            backend._prepare_knowledge_shutdown()
+        assert not runtime.closed.is_set()
+        runtime.lifecycle.release_reindex.set()
+        assert task.done.wait(2.0)
+        assert runtime.lifecycle.cancel_read_entered.is_set()
+        assert not runtime.closed.is_set()
+        assert runtime.close_calls == 0
+    finally:
+        runtime.lifecycle.release_reindex.set()
+        runtime.lifecycle.release_cancel_read.set()
+
+    assert runtime.closed.wait(1.0)
+    assert runtime.close_calls == 1
+    assert backend._knowledge_runtime_owners == set()
+
+
+@pytest.mark.parametrize("outcome", ["success", "error"])
+def test_knowledge_terminal_releases_admission_before_renderer_observes_it(
+    tmp_path: Path,
+    outcome: str,
+) -> None:
+    """Permit an immediate list after either lifecycle terminal response."""
+
+    brain, project = _project_scoped_brain(FakeBrain())
+    runtime = _KnowledgeRuntimeDouble(
+        block_reindex=True,
+        succeed_reindex=outcome == "success",
+        reindex_error=(
+            RuntimeError("Injected lifecycle failure.")
+            if outcome == "error"
+            else None
+        ),
+    )
+    output_stream = _KnowledgeTerminalOrderingOutput("terminal-order-target")
+    backend, _ = _initialize_knowledge_backend(
+        tmp_path,
+        brain,
+        runtime,
+        output_stream=output_stream,
+    )
+    assert runtime.export.recovery_finished.wait(1.0)
+    output_stream.backend = backend
+    assert backend._handle_line(
+        json.dumps(
+            _request(
+                "terminal-order-target",
+                "knowledge.source.reindex",
+                {
+                    "projectId": str(project.project_id),
+                    "sourceId": "attachment_terminal_order",
+                },
+            )
+        )
+    )
+    assert runtime.lifecycle.reindex_entered.wait(1.0)
+    with backend._state_lock:
+        task = backend._knowledge_task
+    assert task is not None
+    output_stream.task = task
+
+    runtime.lifecycle.release_reindex.set()
+    assert output_stream.terminal_written.wait(2.0)
+    assert output_stream.task_done_before_terminal is True
+    assert output_stream.task_cleared_before_terminal is True
+    assert backend._knowledge_runtime_owners == set()
+    assert backend._handle_line(
+        json.dumps(
+            _request(
+                "list-after-terminal",
+                "knowledge.list",
+                {"projectId": str(project.project_id)},
+            )
+        )
+    )
+
+    messages = _output_messages(output_stream)
+    assert _success_result(messages, "list-after-terminal")["projectId"] == str(
+        project.project_id
+    )
+    terminal = next(
+        message
+        for message in messages
+        if message.get("type") == "response"
+        and message.get("id") == "terminal-order-target"
+    )
+    assert terminal["ok"] is (outcome == "success")
+
+
+@pytest.mark.parametrize("outcome", ["success", "error"])
+def test_export_terminal_releases_admission_before_renderer_observes_it(
+    tmp_path: Path,
+    outcome: str,
+) -> None:
+    """Permit an immediate list after either export terminal response."""
+
+    brain, project = _project_scoped_brain(FakeBrain())
+    runtime = _KnowledgeRuntimeDouble(
+        block_export=True,
+        export_succeeds=outcome == "success",
+        export_error=(
+            RuntimeError("Injected export failure.")
+            if outcome == "error"
+            else None
+        ),
+    )
+    output_stream = _KnowledgeTerminalOrderingOutput("export-order-target")
+    backend, _ = _initialize_knowledge_backend(
+        tmp_path,
+        brain,
+        runtime,
+        output_stream=output_stream,
+    )
+    assert runtime.export.recovery_finished.wait(1.0)
+    output_stream.backend = backend
+    assert backend._handle_line(
+        json.dumps(
+            _request(
+                "export-order-target",
+                "knowledge.source.export",
+                {
+                    "projectId": str(project.project_id),
+                    "sourceId": "attachment_export_order",
+                    "destination": r"C:\Elysia\Exports\terminal-order.txt",
+                    "overwrite": False,
+                },
+            )
+        )
+    )
+    assert runtime.export.export_entered.wait(1.0)
+    with backend._state_lock:
+        task = backend._knowledge_task
+    assert task is not None
+    output_stream.task = task
+
+    runtime.export.release_export.set()
+    assert output_stream.terminal_written.wait(1.0)
+    assert output_stream.task_done_before_terminal is True
+    assert output_stream.task_cleared_before_terminal is True
+    assert backend._knowledge_runtime_owners == set()
+    assert backend._handle_line(
+        json.dumps(
+            _request(
+                "list-after-export-terminal",
+                "knowledge.list",
+                {"projectId": str(project.project_id)},
+            )
+        )
+    )
+
+    messages = _output_messages(output_stream)
+    assert _success_result(
+        messages,
+        "list-after-export-terminal",
+    )["projectId"] == str(project.project_id)
+    terminal = next(
+        message
+        for message in messages
+        if message.get("type") == "response"
+        and message.get("id") == "export-order-target"
+    )
+    assert terminal["ok"] is (outcome == "success")
+
+
+def test_initialize_survives_export_recovery_thread_start_failure(
+    tmp_path: Path,
+) -> None:
+    """Leave durable cleanup for a later launch if no daemon can be started."""
+
+    brain, _project = _project_scoped_brain(FakeBrain())
+    runtime = _KnowledgeRuntimeDouble()
+    backend, output_stream = _build_knowledge_backend(
+        tmp_path,
+        brain,
+        runtime,
+    )
+    assert backend._handle_line(json.dumps(_handshake_request()))
+
+    with patch.object(desktop_backend_module, "Thread") as thread_type:
+        thread_type.return_value.start.side_effect = RuntimeError(
+            "No worker capacity."
+        )
+        assert backend._handle_line(json.dumps(_initialize_request()))
+
+    assert _success_result(
+        _output_messages(output_stream),
+        "initialize-1",
+    )["chatId"] == str(brain.chat.chat_id)
+    assert backend._knowledge_runtime_owners == set()
+
+
+def test_grounded_non_project_chat_is_rejected_before_worker_admission(
+    tmp_path: Path,
+) -> None:
+    """Return Knowledge authorization failure without starting Chat work."""
+
+    brain = _BlockingGroundedBrain()
+    runtime = _KnowledgeRuntimeDouble()
+    backend, output_stream = _initialize_knowledge_backend(
+        tmp_path,
+        brain,
+        runtime,
+    )
+
+    assert backend._handle_line(
+        json.dumps(
+            _request(
+                "grounded-without-project",
+                "chat.stream",
+                {
+                    "chatId": str(brain.chat.chat_id),
+                    "message": "Use unavailable Project Sources",
+                    "useProjectKnowledge": True,
+                },
+            )
+        )
+    )
+
+    messages = _output_messages(output_stream)
+    assert _error(messages, "grounded-without-project") == {
+        "code": "knowledge.unauthorized",
+        "message": "Project Sources require an active Project Chat.",
+        "retryable": False,
+    }
+    with backend._state_lock:
+        assert backend._generation_task is None
+    assert not runtime.answers.entered.is_set()
+    assert not any(
+        message.get("requestId") == "grounded-without-project"
+        and (
+            message.get("type") in {"stream", "progress"}
+            or message.get("event") in {"chat.started", "chat.failed"}
+        )
+        for message in messages
+    )
+
+
+@pytest.mark.parametrize(
+    ("error", "expected_code", "expected_retryable"),
+    (
+        (
+            ProjectSourceValidationError("Grounded request is invalid."),
+            "knowledge.invalid",
+            False,
+        ),
+        (
+            ProjectSourceStorageError("Grounded storage is unavailable."),
+            "knowledge.storage_failed",
+            True,
+        ),
+    ),
+)
+def test_grounded_worker_preserves_typed_project_source_failures(
+    tmp_path: Path,
+    error: Exception,
+    expected_code: str,
+    expected_retryable: bool,
+) -> None:
+    """Map async answer failures as precisely as synchronous Knowledge calls."""
+
+    brain = _BlockingGroundedBrain()
+    _, _project = _project_scoped_brain(brain)
+    runtime = _KnowledgeRuntimeDouble()
+    failing_answers = _FailingKnowledgeAnswers(error)
+    runtime.answers = failing_answers
+    backend, output_stream = _initialize_knowledge_backend(
+        tmp_path,
+        brain,
+        runtime,
+    )
+
+    assert backend._handle_line(
+        json.dumps(
+            _request(
+                "grounded-typed-failure",
+                "chat.stream",
+                {
+                    "chatId": str(brain.chat.chat_id),
+                    "message": "Use the Project corpus",
+                    "useProjectKnowledge": True,
+                },
+            )
+        )
+    )
+    assert failing_answers.entered.wait(1.0)
+    with backend._state_lock:
+        task = backend._generation_task
+    assert task is not None
+    failing_answers.release.set()
+    assert task.done.wait(1.0)
+
+    assert _error(_output_messages(output_stream), "grounded-typed-failure") == {
+        "code": expected_code,
+        "message": str(error),
+        "retryable": expected_retryable,
+    }
+
+
+def test_knowledge_cancel_persists_intent_before_success_ack(
+    tmp_path: Path,
+) -> None:
+    """Make a successful cancel ACK imply recoverable durable intent."""
+
+    brain, project = _project_scoped_brain(FakeBrain())
+    runtime = _KnowledgeRuntimeDouble(block_reindex=True)
+    output_stream = _CancellationAckOutput(runtime.lifecycle)
+    backend, _ = _initialize_knowledge_backend(
+        tmp_path,
+        brain,
+        runtime,
+        output_stream=output_stream,
+    )
+
+    assert backend._handle_line(
+        json.dumps(
+            _request(
+                "knowledge-operation-to-cancel",
+                "knowledge.source.reindex",
+                {
+                    "projectId": str(project.project_id),
+                    "sourceId": "attachment_cancel_source",
+                },
+            )
+        )
+    )
+    assert runtime.lifecycle.reindex_entered.wait(1.0)
+    with backend._state_lock:
+        task = backend._knowledge_task
+    assert task is not None
+
+    try:
+        assert backend._handle_line(
+            json.dumps(
+                _request(
+                    "cancel-knowledge-operation",
+                    "request.cancel",
+                    {"requestId": "knowledge-operation-to-cancel"},
+                )
+            )
+        )
+        assert output_stream.ack_written.wait(1.0)
+        assert output_stream.persisted_before_ack is True
+        assert output_stream.state_before_ack == "cancel_requested"
+        durable = runtime.lifecycle.list_operations(project.project_id)
+        assert len(durable) == 1
+        assert durable[0].state == "cancel_requested"
+        assert runtime.lifecycle.cancel_persisted.is_set()
+    finally:
+        runtime.lifecycle.release_reindex.set()
+
+    assert task.done.wait(1.0)

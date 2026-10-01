@@ -36,7 +36,13 @@ interface BackendSnapshot {
     userMessageId?: string
     assistantMessageId?: string
     reply: string
+    usesProjectKnowledge?: boolean
     stopping: boolean
+  }
+  activeKnowledgeOperation?: {
+    requestId: string
+    projectId: string
+    cancellable: boolean
   }
   error?: string
   modelName?: string
@@ -87,6 +93,7 @@ interface ChatSessionState {
       content: string
       createdAt: string
       attachments: unknown[]
+      groundedAnswer?: GroundedAnswer
     }>
   }
   chats: ChatSessionSummary[]
@@ -107,6 +114,61 @@ interface ProjectState {
   activeProject: ProjectSummary | null
   projects: ProjectSummary[]
   chatState: ChatSessionState
+}
+
+interface GroundedAnswer {
+  status: 'answered' | 'insufficient_evidence'
+  contextPassageCount: number
+  statements: Array<{
+    statementId: string
+    kind: 'source_fact' | 'model_summary' | 'inference'
+    text: string
+    citationIds: string[]
+  }>
+  citations: Array<{
+    citationId: string
+    kind: 'prose' | 'code' | 'table'
+    excerpt: string
+    fileName: string
+    mediaType: string
+    pageNumber: number | null
+    locations: Array<{
+      kind: 'text' | 'table'
+      blockOrdinal: number
+      sourceStartCodePoint: number
+      sourceEndCodePoint: number
+      rowIndex?: number
+      columnIndex?: number
+    }>
+  }>
+}
+
+interface KnowledgeState {
+  kind: 'knowledge.state'
+  projectId: string
+  sources: Array<{
+    sourceId: string
+    fileName: string
+    mediaType: string
+    sizeBytes: number
+    state: 'ready' | 'unindexed' | 'stale' | 'revoked' | 'processing'
+    publishedAt: string | null
+    operationId: string | null
+  }>
+  operations: Array<{
+    operationId: string
+    projectId: string
+    kind: 'add' | 'replace' | 'reindex' | 'rebuild' | 'revoke' | 'delete'
+    state: 'running' | 'cancel_requested' | 'recovery_required' | 'succeeded' | 'cancelled' | 'failed'
+    phase: 'preparing' | 'importing' | 'indexing' | 'revoking' | 'cleaning' | 'publishing' | 'completed'
+    progressPercent: number
+    attempt: number
+    createdAt: string
+    updatedAt: string
+    errorCode: string | null
+    targetSourceId: string | null
+    stagedSourceId: string | null
+  }>
 }
 
 interface DesktopSettingsValues {
@@ -239,6 +301,7 @@ interface RendererTestControl {
   failNextAttachmentAction(message: string): void
   failNextSend(message: string): void
   setAttachmentState(state: AttachmentState): void
+  setKnowledgeState(state: KnowledgeState): void
   setSelectedFiles(files: SelectedFile[]): void
   setSelectedWorkspace(workspacePath: string | null): void
 }
@@ -347,6 +410,12 @@ async function setChatState(state: ChatSessionState): Promise<void> {
 async function setProjectState(state: ProjectState): Promise<void> {
   await page.evaluate((nextState) => {
     ;(window as TestWindow).elysiaDesktopTest.setProjectState(nextState)
+  }, state)
+}
+
+async function setKnowledgeState(state: KnowledgeState): Promise<void> {
+  await page.evaluate((nextState) => {
+    ;(window as TestWindow).elysiaDesktopTest.setKnowledgeState(nextState)
   }, state)
 }
 
@@ -2517,6 +2586,7 @@ test('sends a reviewed transcript through Chat and follows trusted speech status
     chatId: 'chat-test',
     message: 'Send this reviewed voice turn',
     attachmentIds: [],
+    useProjectKnowledge: false,
   }])
   await expect(page.locator('.call-microphone-state'))
     .toHaveText('Monitoring interruptions')
@@ -4624,6 +4694,7 @@ test('uses Shift+Enter for a line and Enter to send through DesktopApi', async (
     chatId: 'chat-test',
     message: 'first line\nsecond line',
     attachmentIds: [],
+    useProjectKnowledge: false,
   }])
   await expect(page.getByLabel('Message from you')).toContainText(
     'first line',
@@ -4978,9 +5049,24 @@ test('renders canonical Projects, scoped Chats, and every Project entry point', 
     projects: [alpha, archived],
     chatState,
   })
+  await setKnowledgeState({
+    kind: 'knowledge.state',
+    projectId: alpha.projectId,
+    sources: [{
+      sourceId: 'attachment_source_existing',
+      fileName: 'architecture.pdf',
+      mediaType: 'application/pdf',
+      sizeBytes: 8_192,
+      state: 'ready',
+      publishedAt: '2026-08-25T12:00:00+00:00',
+      operationId: null,
+    }],
+    operations: [],
+  })
   await emitSnapshot(readySnapshot({
     chatId: projectChat.chatId,
     chatTitle: projectChat.title,
+    capabilities: ['chat.stream', 'knowledge.management'],
   }))
 
   await page.getByRole('button', { name: /^Projects/ }).click()
@@ -5002,28 +5088,26 @@ test('renders canonical Projects, scoped Chats, and every Project entry point', 
   })
   await sectionNavigation.getByRole('button', { name: 'Sources' }).click()
   await expect(page.getByRole('heading', {
-    name: 'Project files',
+    name: 'Project Sources',
   })).toBeVisible()
-  await expect(page.getByText('Search, parsing, and indexing are not enabled yet.'))
-    .toBeVisible()
+  await expect(page.getByText('architecture.pdf', { exact: true })).toBeVisible()
   await page.evaluate(() => {
     ;(window as TestWindow).elysiaDesktopTest.setSelectedFiles([
       { name: 'project-context.txt', sizeBytes: 512, mediaType: 'text/plain' },
     ])
   })
   const projectFiles = page.getByRole('region', {
-    name: 'Shared in Project · Alpha Workspace',
+    name: 'Project Sources for Alpha Workspace',
   })
   await projectFiles.getByRole('button', {
-    name: 'Choose files',
+    name: 'Add sources',
     exact: true,
   }).click()
   await expect(projectFiles.getByText('project-context.txt', { exact: true }))
     .toBeVisible()
   expect((await getCalls()).find(
-    (call) => call.method === 'chooseAttachments'
-      && (call.args[0] as AttachmentScope).kind === 'project',
-  )?.args).toEqual([{ kind: 'project', id: alpha.projectId }])
+    (call) => call.method === 'chooseProjectSources',
+  )?.args).toEqual([alpha.projectId])
   await sectionNavigation.getByRole('button', { name: 'Memory' }).click()
   await expect(page.getByRole('heading', {
     name: "Project Memory isn't connected yet",
@@ -5035,6 +5119,868 @@ test('renders canonical Projects, scoped Chats, and every Project entry point', 
     alpha.customInstructions ?? '',
   )
   await expect(page.getByText(alpha.workspacePath ?? '')).toBeVisible()
+})
+
+test('keeps Project Sources isolated while switching Projects and makes archived sources read-only', async () => {
+  const chat = chatSummary('chat-source-projects', 'Source projects')
+  const active = projectSummary('project-source-a', 'Source A')
+  const archived = projectSummary('project-source-b', 'Source B', {
+    archived: true,
+  })
+  await setProjectState({
+    activeProject: active,
+    projects: [active, archived],
+    chatState: {
+      activeChat: { ...chat, messages: [] },
+      chats: [chat],
+    },
+  })
+  await setKnowledgeState({
+    kind: 'knowledge.state',
+    projectId: active.projectId,
+    sources: [{
+      sourceId: 'attachment_source_a',
+      fileName: 'only-a.pdf',
+      mediaType: 'application/pdf',
+      sizeBytes: 4_096,
+      state: 'ready',
+      publishedAt: '2026-08-25T12:00:00+00:00',
+      operationId: null,
+    }],
+    operations: [],
+  })
+  await setKnowledgeState({
+    kind: 'knowledge.state',
+    projectId: archived.projectId,
+    sources: [{
+      sourceId: 'attachment_source_b',
+      fileName: 'only-b.docx',
+      mediaType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      sizeBytes: 5_120,
+      state: 'stale',
+      publishedAt: '2026-08-25T12:05:00+00:00',
+      operationId: null,
+    }],
+    operations: [],
+  })
+  await emitSnapshot(readySnapshot({
+    capabilities: ['chat.stream', 'knowledge.management'],
+  }))
+
+  await page.getByRole('button', { name: /^Projects/ }).click()
+  const sections = page.getByRole('navigation', { name: 'Project sections' })
+  await sections.getByRole('button', { name: 'Sources' }).click()
+  await expect(page.getByText('only-a.pdf', { exact: true })).toBeVisible()
+  await expect(page.getByText('only-b.docx', { exact: true })).toHaveCount(0)
+
+  await page.getByRole('button', { name: 'Open project Source B' }).click()
+  await sections.getByRole('button', { name: 'Sources' }).click()
+  const panel = page.getByRole('region', { name: 'Project Sources for Source B' })
+  await expect(panel.getByText('only-b.docx', { exact: true })).toBeVisible()
+  await expect(panel.getByText('only-a.pdf', { exact: true })).toHaveCount(0)
+  await expect(panel.getByText(/archived.*read-only/i)).toBeVisible()
+  for (const actionName of [
+    'Add sources',
+    'Rebuild all',
+    'Revoke all',
+    'Replace',
+    'Reindex',
+    'Export original',
+    'Delete',
+  ]) {
+    await expect(panel.getByRole('button', { name: actionName })).toBeDisabled()
+  }
+})
+
+test('keeps knowledge progress cancellable and settles authoritative outcomes', async () => {
+  const chat = chatSummary('chat-knowledge-progress', 'Knowledge progress')
+  const project = projectSummary('project-knowledge-progress', 'Progress Project')
+  await setProjectState({
+    activeProject: project,
+    projects: [project],
+    chatState: {
+      activeChat: { ...chat, messages: [] },
+      chats: [chat],
+    },
+  })
+  await setKnowledgeState({
+    kind: 'knowledge.state',
+    projectId: project.projectId,
+    sources: [{
+      sourceId: 'attachment_progress_source',
+      fileName: 'progress.pdf',
+      mediaType: 'application/pdf',
+      sizeBytes: 4_096,
+      state: 'ready',
+      publishedAt: '2026-08-25T12:00:00+00:00',
+      operationId: null,
+    }],
+    operations: [],
+  })
+  await emitSnapshot(readySnapshot({
+    capabilities: ['chat.stream', 'knowledge.management'],
+  }))
+  await page.getByRole('button', { name: /^Projects/ }).click()
+  await page.getByRole('navigation', { name: 'Project sections' })
+    .getByRole('button', { name: 'Sources' }).click()
+  await expect(page.getByText('progress.pdf', { exact: true })).toBeVisible()
+  await clearCalls()
+
+  const runningOperation: KnowledgeState['operations'][number] = {
+    operationId: 'knowledge_00000000000000000000000000000001',
+    projectId: project.projectId,
+    kind: 'reindex',
+    state: 'running',
+    phase: 'indexing',
+    progressPercent: 35,
+    attempt: 1,
+    createdAt: '2026-08-25T12:01:00+00:00',
+    updatedAt: '2026-08-25T12:01:01+00:00',
+    errorCode: null,
+    targetSourceId: 'attachment_progress_source',
+    stagedSourceId: null,
+  }
+  await emitEvent({
+    type: 'protocol-event',
+    name: 'knowledge.operation.changed',
+    requestId: 'knowledge-request-progress',
+    data: {
+      projectId: project.projectId,
+      operation: runningOperation,
+      cancellable: true,
+    },
+  })
+  await expect(page.getByText('35%', { exact: true })).toBeVisible()
+  expect((await getCalls()).filter(
+    (call) => call.method === 'listProjectKnowledge',
+  )).toHaveLength(0)
+
+  await page.getByRole('button', { name: 'Stop current' }).click()
+  await expect.poll(async () => (
+    (await getCalls()).find(
+      (call) => call.method === 'stopKnowledgeOperation',
+    )?.args
+  )).toEqual(['knowledge-request-progress'])
+  await expect(page.getByRole('button', { name: 'Stop current' })).toBeDisabled()
+  expect((await getCalls()).filter(
+    (call) => call.method === 'listProjectKnowledge',
+  )).toHaveLength(0)
+
+  await emitEvent({
+    type: 'protocol-event',
+    name: 'knowledge.operation.changed',
+    requestId: 'knowledge-request-progress',
+    data: {
+      projectId: project.projectId,
+      cancellable: false,
+      operation: {
+        ...runningOperation,
+        state: 'cancel_requested',
+        updatedAt: '2026-08-25T12:01:01.500000+00:00',
+      },
+    },
+  })
+  await expect(page.getByRole('button', { name: 'Stopping…' })).toBeDisabled()
+
+  await emitEvent({
+    type: 'protocol-event',
+    name: 'knowledge.operation.completed',
+    requestId: 'knowledge-request-progress',
+    data: {
+      projectId: project.projectId,
+      cancellable: true,
+      operation: {
+        ...runningOperation,
+        state: 'cancelled',
+        phase: 'completed',
+        progressPercent: 35,
+        updatedAt: '2026-08-25T12:01:02+00:00',
+      },
+    },
+  })
+  expect((await getCalls()).filter(
+    (call) => call.method === 'listProjectKnowledge',
+  )).toHaveLength(0)
+  // The durable terminal event makes a second stop invalid immediately, but
+  // the Renderer retains request correlation until Electron supplies the
+  // authoritative post-response state below.
+  await expect(page.getByRole('button', { name: 'Stop current' })).toBeDisabled()
+
+  await emitEvent({
+    type: 'knowledge-operation-settled',
+    requestId: 'knowledge-request-progress',
+    projectId: project.projectId,
+    state: {
+      kind: 'knowledge.state',
+      projectId: project.projectId,
+      sources: [{
+        sourceId: 'attachment_progress_source',
+        fileName: 'progress.pdf',
+        mediaType: 'application/pdf',
+        sizeBytes: 4_096,
+        state: 'ready',
+        publishedAt: '2026-08-25T12:00:00+00:00',
+        operationId: null,
+      }],
+      operations: [{
+        ...runningOperation,
+        state: 'cancelled',
+        phase: 'completed',
+        progressPercent: 35,
+        updatedAt: '2026-08-25T12:01:02+00:00',
+      }],
+    },
+  })
+  await expect(page.getByRole('button', { name: 'Stop current' })).toBeDisabled()
+  await expect.poll(async () => (
+    (await getCalls()).filter(
+      (call) => call.method === 'listProjectKnowledge',
+    ).length
+  )).toBe(0)
+
+  await clearCalls()
+  await emitEvent({
+    type: 'protocol-event',
+    name: 'knowledge.operation.changed',
+    requestId: 'knowledge-request-error',
+    data: {
+      projectId: project.projectId,
+      cancellable: true,
+      operation: {
+        ...runningOperation,
+        operationId: 'knowledge_00000000000000000000000000000002',
+        progressPercent: 10,
+        updatedAt: '2026-08-25T12:02:00+00:00',
+      },
+    },
+  })
+  await expect(page.getByRole('button', { name: 'Stop current' })).toBeEnabled()
+  await emitEvent({
+    type: 'knowledge-operation-error',
+    requestId: 'knowledge-request-error',
+    projectId: project.projectId,
+    code: 'knowledge.operation_failed',
+    message: 'The source failed at a safe indexing boundary.',
+    retryable: true,
+  })
+  await expect(page.getByRole('alert')).toContainText(
+    'The source failed at a safe indexing boundary.',
+  )
+  await expect(page.getByRole('button', { name: 'Stop current' })).toBeDisabled()
+  await expect.poll(async () => (
+    (await getCalls()).filter(
+      (call) => call.method === 'listProjectKnowledge',
+    ).length
+  )).toBe(1)
+})
+
+test('restores Knowledge stop authority from the Electron snapshot', async () => {
+  const chat = chatSummary('chat-knowledge-resume', 'Knowledge resume')
+  const project = projectSummary('project-knowledge-resume', 'Resume Project')
+  await setProjectState({
+    activeProject: project,
+    projects: [project],
+    chatState: {
+      activeChat: { ...chat, messages: [] },
+      chats: [chat],
+    },
+  })
+  await setKnowledgeState({
+    kind: 'knowledge.state',
+    projectId: project.projectId,
+    sources: [],
+    operations: [],
+  })
+  const requestId = 'knowledge-request-after-renderer-reload'
+  const staleActiveSnapshot = readySnapshot({
+    revision: 80,
+    capabilities: ['chat.stream', 'knowledge.management'],
+    activeKnowledgeOperation: {
+      requestId,
+      projectId: project.projectId,
+      cancellable: true,
+    },
+  })
+  await emitSnapshot(staleActiveSnapshot)
+
+  await page.getByRole('button', { name: /^Projects/ }).click()
+  await page.getByRole('navigation', { name: 'Project sections' })
+    .getByRole('button', { name: 'Sources' }).click()
+  await expect(page.getByRole('button', { name: 'Stop current' })).toBeEnabled()
+
+  await clearCalls()
+  await page.getByRole('button', { name: 'Stop current' }).click()
+  await expect.poll(async () => (
+    (await getCalls()).find(
+      (call) => call.method === 'stopKnowledgeOperation',
+    )?.args
+  )).toEqual([requestId])
+  await expect(page.getByRole('button', { name: 'Stop current' })).toBeDisabled()
+
+  await emitEvent({
+    type: 'knowledge-operation-error',
+    requestId,
+    projectId: project.projectId,
+    code: 'request.cancelled',
+    message: 'Knowledge operation was cancelled.',
+    retryable: false,
+  })
+  // A getSnapshot() promise started before the terminal event may resolve
+  // afterward with the same revision. The request tombstone must prevent that
+  // stale dynamic ownership from resurrecting a completed operation.
+  await emitSnapshot(staleActiveSnapshot)
+  await expect(page.getByRole('button', { name: 'Stop current' })).toBeDisabled()
+})
+
+test('retries deferred cross-Project Source reads after Knowledge success and error terminals', async () => {
+  const chat = chatSummary('chat-cross-project-lease', 'Cross-Project lease')
+  const owner = projectSummary('project-lease-owner', 'Lease Owner')
+  const visible = projectSummary('project-deferred-reader', 'Deferred Reader')
+  const ownerState: KnowledgeState = {
+    kind: 'knowledge.state',
+    projectId: owner.projectId,
+    sources: [],
+    operations: [],
+  }
+  await setProjectState({
+    activeProject: owner,
+    projects: [owner, visible],
+    chatState: {
+      activeChat: { ...chat, messages: [] },
+      chats: [chat],
+    },
+  })
+  await setKnowledgeState(ownerState)
+  await setKnowledgeState({
+    kind: 'knowledge.state',
+    projectId: visible.projectId,
+    sources: [{
+      sourceId: 'attachment_deferred_reader',
+      fileName: 'deferred-reader.pdf',
+      mediaType: 'application/pdf',
+      sizeBytes: 5_120,
+      state: 'ready',
+      publishedAt: '2026-08-25T12:10:00+00:00',
+      operationId: null,
+    }],
+    operations: [],
+  })
+  await emitSnapshot(readySnapshot({
+    capabilities: ['chat.stream', 'knowledge.management'],
+  }))
+
+  await page.getByRole('button', { name: /^Projects/ }).click()
+  await page.getByRole('button', { name: `Open project ${visible.name}` }).click()
+  await expect(page.getByRole('heading', { name: visible.name })).toBeVisible()
+  await clearCalls()
+
+  const successfulRequestId = 'knowledge-cross-project-success'
+  await emitSnapshot(readySnapshot({
+    revision: 20,
+    capabilities: ['chat.stream', 'knowledge.management'],
+    activeKnowledgeOperation: {
+      requestId: successfulRequestId,
+      projectId: owner.projectId,
+      cancellable: true,
+    },
+  }))
+  await persistBackendForReload()
+  await replaceRendererWindow()
+  await page.getByRole('button', { name: /^Projects/ }).click()
+  const sections = page.getByRole('navigation', { name: 'Project sections' })
+  await sections.getByRole('button', { name: 'Sources' }).click()
+  const panel = page.getByRole('region', {
+    name: `Project Sources for ${visible.name}`,
+  })
+  await expect(panel.getByRole('alert')).toContainText(
+    'Wait for the current knowledge operation to finish.',
+  )
+  await expect.poll(async () => (
+    (await getCalls()).filter((call) => (
+      call.method === 'listProjectKnowledge'
+      && call.args[0] === visible.projectId
+    )).length
+  )).toBe(1)
+
+  await emitEvent({
+    type: 'knowledge-operation-settled',
+    requestId: successfulRequestId,
+    projectId: owner.projectId,
+    state: ownerState,
+  })
+  await expect(panel.getByText('deferred-reader.pdf', { exact: true })).toBeVisible()
+  await expect(panel.getByRole('alert')).toHaveCount(0)
+  await expect.poll(async () => (
+    (await getCalls()).filter((call) => (
+      call.method === 'listProjectKnowledge'
+      && call.args[0] === visible.projectId
+    )).length
+  )).toBe(2)
+
+  const failedRequestId = 'knowledge-cross-project-error'
+  await emitSnapshot(readySnapshot({
+    revision: 21,
+    capabilities: ['chat.stream', 'knowledge.management'],
+    activeKnowledgeOperation: {
+      requestId: failedRequestId,
+      projectId: owner.projectId,
+      cancellable: true,
+    },
+  }))
+  await persistBackendForReload()
+  await replaceRendererWindow()
+  await page.getByRole('button', { name: /^Projects/ }).click()
+  await page.getByRole('navigation', { name: 'Project sections' })
+    .getByRole('button', { name: 'Sources' }).click()
+  const reloadedPanel = page.getByRole('region', {
+    name: `Project Sources for ${visible.name}`,
+  })
+  await expect(reloadedPanel.getByRole('alert')).toContainText(
+    'Wait for the current knowledge operation to finish.',
+  )
+  await clearCalls()
+
+  await emitEvent({
+    type: 'knowledge-operation-error',
+    requestId: failedRequestId,
+    projectId: owner.projectId,
+    code: 'knowledge.failed',
+    message: 'Project Sources could not be updated.',
+    retryable: true,
+  })
+  await expect(reloadedPanel.getByRole('alert')).toHaveCount(0)
+  await expect(reloadedPanel.getByText('deferred-reader.pdf', { exact: true }))
+    .toBeVisible()
+  await expect.poll(async () => (
+    (await getCalls()).filter((call) => (
+      call.method === 'listProjectKnowledge'
+      && call.args[0] === visible.projectId
+    )).length
+  )).toBe(1)
+  expect((await getCalls()).some((call) => (
+    call.method === 'listProjectKnowledge'
+    && call.args[0] === owner.projectId
+  ))).toBe(true)
+})
+
+test('retries deferred Sources after grounded Chat completion and failure', async () => {
+  const owner = projectSummary('project-grounded-owner', 'Grounded Owner', {
+    chatCount: 1,
+  })
+  const visible = projectSummary('project-grounded-reader', 'Grounded Reader')
+  const chat = chatSummary('chat-grounded-lease', 'Grounded lease', {
+    projectId: owner.projectId,
+  })
+  await setProjectState({
+    activeProject: visible,
+    projects: [owner, visible],
+    chatState: {
+      activeChat: { ...chat, messages: [] },
+      chats: [chat],
+    },
+  })
+  await setKnowledgeState({
+    kind: 'knowledge.state',
+    projectId: visible.projectId,
+    sources: [{
+      sourceId: 'attachment_grounded_reader',
+      fileName: 'grounded-reader.docx',
+      mediaType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      sizeBytes: 7_168,
+      state: 'ready',
+      publishedAt: '2026-08-25T12:20:00+00:00',
+      operationId: null,
+    }],
+    operations: [],
+  })
+
+  const completedRequestId = 'grounded-generation-complete'
+  await emitSnapshot(readySnapshot({
+    revision: 30,
+    chatId: chat.chatId,
+    chatTitle: chat.title,
+    capabilities: ['chat.stream', 'knowledge.management'],
+    activeGeneration: {
+      requestId: completedRequestId,
+      chatId: chat.chatId,
+      kind: 'send',
+      userText: 'Use the Project corpus.',
+      reply: '',
+      usesProjectKnowledge: true,
+      stopping: false,
+    },
+  }))
+  await page.getByRole('button', { name: /^Projects/ }).click()
+  await page.getByRole('navigation', { name: 'Project sections' })
+    .getByRole('button', { name: 'Sources' }).click()
+  const panel = page.getByRole('region', {
+    name: `Project Sources for ${visible.name}`,
+  })
+  await expect(panel.getByRole('alert')).toContainText(
+    'Wait for the current knowledge operation to finish.',
+  )
+  await clearCalls()
+
+  await emitEvent({
+    type: 'chat-complete',
+    requestId: completedRequestId,
+    chatId: chat.chatId,
+    reply: 'Grounded answer completed.',
+  })
+  await expect(panel.getByRole('alert')).toHaveCount(0)
+  await expect(panel.getByText('grounded-reader.docx', { exact: true })).toBeVisible()
+  await expect.poll(async () => (
+    (await getCalls()).filter((call) => (
+      call.method === 'listProjectKnowledge'
+      && call.args[0] === visible.projectId
+    )).length
+  )).toBe(1)
+
+  const failedRequestId = 'grounded-generation-error'
+  await emitSnapshot(readySnapshot({
+    revision: 31,
+    chatId: chat.chatId,
+    chatTitle: chat.title,
+    capabilities: ['chat.stream', 'knowledge.management'],
+    activeGeneration: {
+      requestId: failedRequestId,
+      chatId: chat.chatId,
+      kind: 'send',
+      userText: 'Use the Project corpus again.',
+      reply: '',
+      usesProjectKnowledge: true,
+      stopping: false,
+    },
+  }))
+  await persistBackendForReload()
+  await replaceRendererWindow()
+  await page.getByRole('button', { name: /^Projects/ }).click()
+  await page.getByRole('navigation', { name: 'Project sections' })
+    .getByRole('button', { name: 'Sources' }).click()
+  const reloadedPanel = page.getByRole('region', {
+    name: `Project Sources for ${visible.name}`,
+  })
+  await expect(reloadedPanel.getByRole('alert')).toContainText(
+    'Wait for the current knowledge operation to finish.',
+  )
+  await clearCalls()
+
+  await emitEvent({
+    type: 'chat-error',
+    requestId: failedRequestId,
+    chatId: chat.chatId,
+    code: 'knowledge.answer_failed',
+    message: 'Grounded Chat failed safely.',
+    retryable: true,
+  })
+  await expect(reloadedPanel.getByRole('alert')).toHaveCount(0)
+  await expect(reloadedPanel.getByText('grounded-reader.docx', { exact: true }))
+    .toBeVisible()
+  await expect.poll(async () => (
+    (await getCalls()).filter((call) => (
+      call.method === 'listProjectKnowledge'
+      && call.args[0] === visible.projectId
+    )).length
+  )).toBe(1)
+})
+
+test('restores a forward-only export lease and ignores its stale snapshot after settlement', async () => {
+  const chat = chatSummary('chat-export-lease', 'Export lease')
+  const owner = projectSummary('project-export-owner', 'Export Owner')
+  const visible = projectSummary('project-export-reader', 'Export Reader')
+  await setProjectState({
+    activeProject: owner,
+    projects: [owner, visible],
+    chatState: {
+      activeChat: { ...chat, messages: [] },
+      chats: [chat],
+    },
+  })
+  await setKnowledgeState({
+    kind: 'knowledge.state',
+    projectId: owner.projectId,
+    sources: [],
+    operations: [],
+  })
+  await setKnowledgeState({
+    kind: 'knowledge.state',
+    projectId: visible.projectId,
+    sources: [{
+      sourceId: 'attachment_export_reader',
+      fileName: 'export-reader.pdf',
+      mediaType: 'application/pdf',
+      sizeBytes: 8_192,
+      state: 'ready',
+      publishedAt: '2026-08-25T12:30:00+00:00',
+      operationId: null,
+    }],
+    operations: [],
+  })
+  await emitSnapshot(readySnapshot({
+    capabilities: ['chat.stream', 'knowledge.management'],
+  }))
+  await page.getByRole('button', { name: /^Projects/ }).click()
+  await page.getByRole('button', { name: `Open project ${visible.name}` }).click()
+  await expect(page.getByRole('heading', { name: visible.name })).toBeVisible()
+  await page.getByRole('navigation', { name: 'Project sections' })
+    .getByRole('button', { name: 'Sources' }).click()
+  await expect(page.getByText('export-reader.pdf', { exact: true })).toBeVisible()
+
+  const exportRequestId = 'knowledge-export-active'
+  const activeExportSnapshot = readySnapshot({
+    revision: 50,
+    capabilities: ['chat.stream', 'knowledge.management'],
+    activeKnowledgeOperation: {
+      requestId: exportRequestId,
+      projectId: owner.projectId,
+      cancellable: false,
+    },
+  })
+  await emitSnapshot(activeExportSnapshot)
+  let panel = page.getByRole('region', {
+    name: `Project Sources for ${visible.name}`,
+  })
+  for (const actionName of [
+    'Add sources',
+    'Rebuild all',
+    'Revoke all',
+    'Replace',
+    'Reindex',
+    'Export original',
+    'Delete',
+    'Stop current',
+  ]) {
+    await expect(panel.getByRole('button', { name: actionName })).toBeDisabled()
+  }
+
+  await persistBackendForReload()
+  await replaceRendererWindow()
+  await page.getByRole('button', { name: /^Projects/ }).click()
+  await page.getByRole('navigation', { name: 'Project sections' })
+    .getByRole('button', { name: 'Sources' }).click()
+  panel = page.getByRole('region', {
+    name: `Project Sources for ${visible.name}`,
+  })
+  await expect(panel.getByRole('alert')).toContainText(
+    'Wait for the current knowledge operation to finish.',
+  )
+  for (const actionName of [
+    'Add sources',
+    'Rebuild all',
+    'Revoke all',
+    'Stop current',
+  ]) {
+    await expect(panel.getByRole('button', { name: actionName })).toBeDisabled()
+  }
+  await clearCalls()
+
+  await emitEvent({
+    type: 'knowledge-export-settled',
+    requestId: exportRequestId,
+    projectId: owner.projectId,
+    sourceId: 'attachment_export_owner',
+    result: {
+      kind: 'knowledge.export',
+      fileName: 'owner-source.pdf',
+      mediaType: 'application/pdf',
+      bytesWritten: 4_096,
+    },
+  })
+  await expect(panel.getByRole('alert')).toHaveCount(0)
+  await expect(panel.getByText('export-reader.pdf', { exact: true })).toBeVisible()
+  await expect.poll(async () => (
+    (await getCalls()).filter((call) => (
+      call.method === 'listProjectKnowledge'
+      && call.args[0] === visible.projectId
+    )).length
+  )).toBe(1)
+  for (const actionName of [
+    'Add sources',
+    'Rebuild all',
+    'Revoke all',
+    'Replace',
+    'Reindex',
+    'Export original',
+    'Delete',
+  ]) {
+    await expect(panel.getByRole('button', { name: actionName })).toBeEnabled()
+  }
+  await expect(panel.getByRole('button', { name: 'Stop current' })).toBeDisabled()
+
+  // A delayed getSnapshot from the export's renderer epoch must not restore
+  // authority after Electron has emitted the request-correlated terminal.
+  await emitSnapshot(activeExportSnapshot)
+  for (const actionName of [
+    'Add sources',
+    'Rebuild all',
+    'Revoke all',
+    'Replace',
+    'Reindex',
+    'Export original',
+    'Delete',
+  ]) {
+    await expect(panel.getByRole('button', { name: actionName })).toBeEnabled()
+  }
+  await expect(panel.getByRole('button', { name: 'Stop current' })).toBeDisabled()
+})
+
+test('does not offer Stop for forward-only Knowledge recovery', async () => {
+  const chat = chatSummary('chat-knowledge-recovery', 'Knowledge recovery')
+  const project = projectSummary('project-knowledge-recovery', 'Recovery Project')
+  const recoveryOperation: KnowledgeState['operations'][number] = {
+    operationId: 'knowledge_00000000000000000000000000000003',
+    projectId: project.projectId,
+    kind: 'reindex',
+    state: 'recovery_required',
+    phase: 'indexing',
+    progressPercent: 45,
+    attempt: 2,
+    createdAt: '2026-08-25T12:03:00+00:00',
+    updatedAt: '2026-08-25T12:03:01+00:00',
+    errorCode: 'index_failed',
+    targetSourceId: 'attachment_recovery_source',
+    stagedSourceId: null,
+  }
+  await setProjectState({
+    activeProject: project,
+    projects: [project],
+    chatState: {
+      activeChat: { ...chat, messages: [] },
+      chats: [chat],
+    },
+  })
+  await setKnowledgeState({
+    kind: 'knowledge.state',
+    projectId: project.projectId,
+    sources: [],
+    operations: [recoveryOperation],
+  })
+  await emitSnapshot(readySnapshot({
+    capabilities: ['chat.stream', 'knowledge.management'],
+  }))
+  await page.getByRole('button', { name: /^Projects/ }).click()
+  await page.getByRole('navigation', { name: 'Project sections' })
+    .getByRole('button', { name: 'Sources' }).click()
+  await expect(page.getByRole('button', {
+    name: 'Recover',
+    exact: true,
+  })).toBeEnabled()
+
+  await emitEvent({
+    type: 'protocol-event',
+    name: 'knowledge.operation.changed',
+    requestId: 'knowledge-recovery-active',
+    data: {
+      projectId: project.projectId,
+      cancellable: false,
+      operation: {
+        ...recoveryOperation,
+        state: 'running',
+        attempt: 3,
+        updatedAt: '2026-08-25T12:03:02+00:00',
+      },
+    },
+  })
+
+  await expect(page.getByRole('button', { name: 'Stop current' })).toBeDisabled()
+  await expect(page.getByRole('button', { name: 'Rebuild all' })).toBeDisabled()
+})
+
+test('opts a Project Chat into grounded answers and focuses safe citation details', async () => {
+  const project = projectSummary('project-grounded', 'Grounded Project', {
+    chatCount: 1,
+  })
+  const chat = chatSummary('chat-grounded', 'Grounded Chat', {
+    projectId: project.projectId,
+    messageCount: 2,
+  })
+  const groundedAnswer: GroundedAnswer = {
+    status: 'answered',
+    contextPassageCount: 1,
+    statements: [{
+      statementId: 'statement-1',
+      kind: 'source_fact',
+      text: 'The indexed total is 42.',
+      citationIds: ['citation-1'],
+    }],
+    citations: [{
+      citationId: 'citation-1',
+      kind: 'table',
+      excerpt: 'The indexed total is 42.',
+      fileName: 'safe-report.pdf',
+      mediaType: 'application/pdf',
+      pageNumber: 3,
+      locations: [{
+        kind: 'table',
+        blockOrdinal: 4,
+        rowIndex: 2,
+        columnIndex: 1,
+        sourceStartCodePoint: 15,
+        sourceEndCodePoint: 25,
+      }],
+    }],
+  }
+  const chatState: ChatSessionState = {
+    activeChat: {
+      ...chat,
+      messages: [{
+        messageId: 'user-grounded',
+        role: 'user',
+        content: 'What is the indexed total?',
+        createdAt: '2026-08-25T12:00:00+00:00',
+        attachments: [],
+      }, {
+        messageId: 'assistant-grounded',
+        role: 'assistant',
+        content: 'The indexed total is 42.',
+        createdAt: '2026-08-25T12:00:01+00:00',
+        attachments: [],
+        groundedAnswer,
+      }],
+    },
+    chats: [chat],
+  }
+  await setProjectState({
+    activeProject: project,
+    projects: [project],
+    chatState,
+  })
+  await emitSnapshot(readySnapshot({
+    chatId: chat.chatId,
+    chatTitle: chat.title,
+    capabilities: ['chat.stream', 'knowledge.management'],
+  }))
+
+  const toggle = page.getByRole('switch', { name: /Use Project Sources/ })
+  await expect(toggle).toBeVisible()
+  await toggle.check()
+  const citation = page.getByRole('button', {
+    name: /safe-report\.pdf/,
+  })
+  await citation.focus()
+  await citation.press('Enter')
+  const detail = page.getByRole('region', {
+    name: 'Citation from safe-report.pdf',
+  })
+  await expect(detail).toBeFocused()
+  await expect(detail).toContainText('Page 3')
+  await expect(detail).toContainText('Block 5')
+  await expect(detail).toContainText('Row 3, column 2')
+  await expect(detail).toContainText('Characters 15–25')
+  await expect(detail.locator('a')).toHaveCount(0)
+
+  await clearCalls()
+  const composer = page.getByLabel('Message Elysia')
+  await composer.fill('Answer only from the Project corpus.')
+  await composer.press('Enter')
+  await expect.poll(async () => (
+    (await getCalls()).find((call) => call.method === 'sendMessage')?.args
+  )).toEqual([{
+    chatId: chat.chatId,
+    message: 'Answer only from the Project corpus.',
+    attachmentIds: [],
+    useProjectKnowledge: true,
+  }])
 })
 
 test('refreshes Projects once after navigating during a pending Chat action', async () => {
@@ -5252,9 +6198,13 @@ test('moves Project Chats and keeps archived Projects read-only until restored',
   const project = projectSummary('project-move', 'Move Project', {
     chatCount: 1,
   })
+  const destination = projectSummary(
+    'project-destination',
+    'Destination Project',
+  )
   await setProjectState({
     activeProject: project,
-    projects: [project],
+    projects: [project, destination],
     chatState: {
       activeChat: { ...linked, messages: [] },
       chats: [linked, unassigned],
@@ -5263,7 +6213,12 @@ test('moves Project Chats and keeps archived Projects read-only until restored',
   await emitSnapshot(readySnapshot({
     chatId: linked.chatId,
     chatTitle: linked.title,
+    capabilities: ['chat.stream', 'knowledge.management'],
   }))
+  const knowledgeToggle = page.getByRole('switch', {
+    name: /Use Project Sources/,
+  })
+  await knowledgeToggle.check()
   await page.getByRole('button', { name: /^Projects/ }).click()
 
   await clearCalls()
@@ -5288,10 +6243,28 @@ test('moves Project Chats and keeps archived Projects read-only until restored',
   await expect(page.getByRole('region', { name: 'Unassigned Chats' }))
     .toContainText(linked.title)
 
+  await page.getByRole('button', {
+    name: `Open project ${destination.name}`,
+  }).click()
+  await page.getByRole('button', { name: `Move here ${linked.title}` }).click()
+  await expect.poll(async () => (
+    (await getCalls()).filter(
+      (call) => call.method === 'moveChatToProject',
+    ).at(-1)?.args
+  )).toEqual([{
+    chatId: linked.chatId,
+    projectId: destination.projectId,
+  }])
+
+  await page.getByRole('button', { name: /^Chat$/ }).click()
+  await expect(knowledgeToggle).toBeVisible()
+  await expect(knowledgeToggle).not.toBeChecked()
+  await page.getByRole('button', { name: /^Projects/ }).click()
+
   await clearCalls()
   await page.getByRole('button', { name: 'Archive Project' }).click()
   const archiveDialog = page.getByRole('dialog', {
-    name: /Archive “Move Project”/,
+    name: /Archive “Destination Project”/,
   })
   expect((await getCalls()).some(
     (call) => call.method === 'setProjectArchived',
@@ -5300,10 +6273,13 @@ test('moves Project Chats and keeps archived Projects read-only until restored',
   await expect.poll(async () => (
     (await getCalls()).find((call) => call.method === 'setProjectArchived')?.args
   )).toEqual([{
-    projectId: project.projectId,
+    projectId: destination.projectId,
     archived: true,
   }])
   await expect(page.getByText('Read-only Project')).toBeVisible()
+  await page.getByRole('button', { name: /^Chat$/ }).click()
+  await expect(knowledgeToggle).toHaveCount(0)
+  await page.getByRole('button', { name: /^Projects/ }).click()
   await page.getByRole('navigation', { name: 'Project sections' })
     .getByRole('button', { name: 'Settings' }).click()
   await expect(page.getByLabel('Project name')).toBeDisabled()
@@ -5314,10 +6290,26 @@ test('moves Project Chats and keeps archived Projects read-only until restored',
   await expect.poll(async () => (
     (await getCalls()).find((call) => call.method === 'setProjectArchived')?.args
   )).toEqual([{
-    projectId: project.projectId,
+    projectId: destination.projectId,
     archived: false,
   }])
   await expect(page.getByText('Read-only Project')).toHaveCount(0)
+
+  await page.getByRole('button', { name: /^Chat$/ }).click()
+  await expect(knowledgeToggle).toBeVisible()
+  await expect(knowledgeToggle).not.toBeChecked()
+  await clearCalls()
+  const composer = page.getByLabel('Message Elysia')
+  await composer.fill('Do not inherit the previous Project corpus.')
+  await composer.press('Enter')
+  await expect.poll(async () => (
+    (await getCalls()).find((call) => call.method === 'sendMessage')?.args
+  )).toEqual([{
+    chatId: linked.chatId,
+    message: 'Do not inherit the previous Project corpus.',
+    attachmentIds: [],
+    useProjectKnowledge: false,
+  }])
 })
 
 test('contains Project surfaces and dialog focus at compact high zoom', async () => {
@@ -5596,6 +6588,7 @@ test('regenerates and edit-retries only the persisted tail pair', async () => {
     chatId: summary.chatId,
     userMessageId: 'user-retry',
     assistantMessageId: 'assistant-retry',
+    useProjectKnowledge: false,
   }])
   await expect(assistant.getByText('Generating', { exact: true })).toBeVisible()
 
@@ -5627,6 +6620,7 @@ test('regenerates and edit-retries only the persisted tail pair', async () => {
     chatId: summary.chatId,
     userMessageId: 'user-retry',
     assistantMessageId: 'assistant-retry',
+    useProjectKnowledge: false,
     message: 'Edited question',
   }])
 
@@ -6063,6 +7057,7 @@ test('adds a dropped file, retains it after send rejection, and persists its chi
     chatId: 'chat-test',
     message: 'Keep this file attached.',
     attachmentIds: ['attachment_test_1'],
+    useProjectKnowledge: false,
   }])
   expect(sendCalls[1]?.args).toEqual(sendCalls[0]?.args)
 
@@ -6097,6 +7092,7 @@ test('sends an attachment-only message through the canonical Chat request', asyn
     chatId: 'chat-test',
     message: '',
     attachmentIds: ['attachment_test_1'],
+    useProjectKnowledge: false,
   }])
   const optimisticMessage = page.getByLabel('Message from you').last()
   await expect(optimisticMessage).toContainText('attachment-only.pdf')

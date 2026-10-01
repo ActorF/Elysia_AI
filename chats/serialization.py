@@ -9,6 +9,11 @@ from .domain import (
     AttachmentId,
     AttachmentMetadata,
     ChatId,
+    ChatGroundedAnswer,
+    ChatGroundedCitation,
+    ChatGroundedStatement,
+    ChatGroundedTableLocation,
+    ChatGroundedTextLocation,
     ChatMessage,
     ChatMessageId,
     ChatMessageRole,
@@ -159,10 +164,225 @@ def _attachment_from_value(value: object) -> AttachmentMetadata:
     )
 
 
+def _grounded_location_to_data(
+    location: ChatGroundedTextLocation | ChatGroundedTableLocation,
+) -> JsonObject:
+    """Serialize one citation location with an explicit shape discriminator."""
+
+    shared: JsonObject = {
+        "block_ordinal": location.block_ordinal,
+        "source_start_code_point": location.source_start_code_point,
+        "source_end_code_point": location.source_end_code_point,
+    }
+    if isinstance(location, ChatGroundedTableLocation):
+        return {
+            "kind": "table",
+            **shared,
+            "row_index": location.row_index,
+            "column_index": location.column_index,
+        }
+    return {"kind": "text", **shared}
+
+
+def _grounded_location_from_value(
+    value: object,
+) -> ChatGroundedTextLocation | ChatGroundedTableLocation:
+    """Build one validated citation location from persisted JSON."""
+
+    data = _as_object(value, "grounded citation location")
+    kind = _as_string(_required(data, "kind"), "location kind")
+    shared = {
+        "block_ordinal": _as_integer(
+            _required(data, "block_ordinal"),
+            "block_ordinal",
+        ),
+        "source_start_code_point": _as_integer(
+            _required(data, "source_start_code_point"),
+            "source_start_code_point",
+        ),
+        "source_end_code_point": _as_integer(
+            _required(data, "source_end_code_point"),
+            "source_end_code_point",
+        ),
+    }
+    if kind == "text":
+        if set(data) != {
+            "kind",
+            "block_ordinal",
+            "source_start_code_point",
+            "source_end_code_point",
+        }:
+            raise ValueError("grounded text location has invalid fields.")
+        return ChatGroundedTextLocation(**shared)
+    if kind == "table":
+        if set(data) != {
+            "kind",
+            "block_ordinal",
+            "row_index",
+            "column_index",
+            "source_start_code_point",
+            "source_end_code_point",
+        }:
+            raise ValueError("grounded table location has invalid fields.")
+        return ChatGroundedTableLocation(
+            **shared,
+            row_index=_as_integer(
+                _required(data, "row_index"),
+                "row_index",
+            ),
+            column_index=_as_integer(
+                _required(data, "column_index"),
+                "column_index",
+            ),
+        )
+    raise ValueError("grounded citation location kind is invalid.")
+
+
+def _grounded_answer_to_data(answer: ChatGroundedAnswer) -> JsonObject:
+    """Serialize renderer-safe grounded statements and citation evidence."""
+
+    return {
+        "status": answer.status,
+        "context_passage_count": answer.context_passage_count,
+        "statements": [
+            {
+                "statement_id": statement.statement_id,
+                "kind": statement.kind,
+                "text": statement.text,
+                "citation_ids": list(statement.citation_ids),
+            }
+            for statement in answer.statements
+        ],
+        "citations": [
+            {
+                "citation_id": citation.citation_id,
+                "kind": citation.kind,
+                "excerpt": citation.excerpt,
+                "file_name": citation.file_name,
+                "media_type": citation.media_type,
+                "page_number": citation.page_number,
+                "locations": [
+                    _grounded_location_to_data(location)
+                    for location in citation.locations
+                ],
+            }
+            for citation in answer.citations
+        ],
+    }
+
+
+def _grounded_answer_from_value(value: object) -> ChatGroundedAnswer:
+    """Build one closed grounded answer from backward-compatible storage."""
+
+    data = _as_object(value, "grounded_answer")
+    if set(data) != {
+        "status",
+        "context_passage_count",
+        "statements",
+        "citations",
+    }:
+        raise ValueError("grounded_answer has invalid fields.")
+    statements: list[ChatGroundedStatement] = []
+    for value_statement in _as_list(
+        _required(data, "statements"),
+        "grounded statements",
+    ):
+        statement = _as_object(value_statement, "grounded statement")
+        if set(statement) != {
+            "statement_id",
+            "kind",
+            "text",
+            "citation_ids",
+        }:
+            raise ValueError("grounded statement has invalid fields.")
+        statements.append(
+            ChatGroundedStatement(
+                statement_id=_as_string(
+                    _required(statement, "statement_id"),
+                    "statement_id",
+                ),
+                kind=cast(
+                    Literal["source_fact", "model_summary", "inference"],
+                    _as_string(_required(statement, "kind"), "kind"),
+                ),
+                text=_as_string(_required(statement, "text"), "text"),
+                citation_ids=_string_tuple_from_value(
+                    _required(statement, "citation_ids"),
+                    "citation_id",
+                ),
+            )
+        )
+    citations: list[ChatGroundedCitation] = []
+    for value_citation in _as_list(
+        _required(data, "citations"),
+        "grounded citations",
+    ):
+        citation = _as_object(value_citation, "grounded citation")
+        if set(citation) != {
+            "citation_id",
+            "kind",
+            "excerpt",
+            "file_name",
+            "media_type",
+            "page_number",
+            "locations",
+        }:
+            raise ValueError("grounded citation has invalid fields.")
+        page_number = _required(citation, "page_number")
+        citations.append(
+            ChatGroundedCitation(
+                citation_id=_as_string(
+                    _required(citation, "citation_id"),
+                    "citation_id",
+                ),
+                kind=cast(
+                    Literal["prose", "code", "table"],
+                    _as_string(_required(citation, "kind"), "kind"),
+                ),
+                excerpt=_as_string(
+                    _required(citation, "excerpt"),
+                    "excerpt",
+                ),
+                file_name=_as_string(
+                    _required(citation, "file_name"),
+                    "file_name",
+                ),
+                media_type=_as_string(
+                    _required(citation, "media_type"),
+                    "media_type",
+                ),
+                page_number=(
+                    None
+                    if page_number is None
+                    else _as_integer(page_number, "page_number")
+                ),
+                locations=tuple(
+                    _grounded_location_from_value(location)
+                    for location in _as_list(
+                        _required(citation, "locations"),
+                        "grounded citation locations",
+                    )
+                ),
+            )
+        )
+    return ChatGroundedAnswer(
+        status=cast(
+            Literal["answered", "insufficient_evidence"],
+            _as_string(_required(data, "status"), "status"),
+        ),
+        context_passage_count=_as_integer(
+            _required(data, "context_passage_count"),
+            "context_passage_count",
+        ),
+        statements=tuple(statements),
+        citations=tuple(citations),
+    )
+
+
 def _message_to_data(message: ChatMessage) -> JsonObject:
     """Serialize one chat message and its attachment metadata."""
 
-    return {
+    data: JsonObject = {
         "message_id": str(message.message_id),
         "role": message.role,
         "content": message.content,
@@ -172,6 +392,11 @@ def _message_to_data(message: ChatMessage) -> JsonObject:
             for attachment in message.attachments
         ],
     }
+    if message.grounded_answer is not None:
+        data["grounded_answer"] = _grounded_answer_to_data(
+            message.grounded_answer
+        )
+    return data
 
 
 def _message_from_value(value: object) -> ChatMessage:
@@ -183,6 +408,7 @@ def _message_from_value(value: object) -> ChatMessage:
         _required(data, "attachments"),
         "attachments",
     )
+    grounded_value = data.get("grounded_answer")
 
     return ChatMessage(
         message_id=ChatMessageId(
@@ -203,6 +429,11 @@ def _message_from_value(value: object) -> ChatMessage:
         attachments=tuple(
             _attachment_from_value(attachment)
             for attachment in attachments
+        ),
+        grounded_answer=(
+            None
+            if grounded_value is None
+            else _grounded_answer_from_value(grounded_value)
         ),
     )
 

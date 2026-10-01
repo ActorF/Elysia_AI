@@ -16,16 +16,14 @@ import {
 
 import type {
   ArchiveProjectRequest,
-  AttachmentScope,
-  AttachmentState,
   ChatSessionSummary,
   CreateProjectRequest,
+  KnowledgeState,
   MoveChatToProjectRequest,
   ProjectState,
   ProjectSummary,
   UpdateProjectRequest,
 } from '../../electron/contracts.ts'
-import { AttachmentSurface } from '../attachments/AttachmentSurface.tsx'
 import {
   codePointLength,
   hasNonBlankCodePoint,
@@ -37,6 +35,7 @@ import {
   LoadingState,
 } from '../design-system/Feedback.tsx'
 import { Icon } from '../design-system/Icon.tsx'
+import { ProjectSourcesPanel } from '../knowledge/ProjectSourcesPanel.tsx'
 import { ChatActionDialog } from '../shell/ChatActionDialog.tsx'
 import './ProjectView.css'
 
@@ -51,38 +50,49 @@ type ProjectDialogState =
   | { kind: 'unbind'; project: ProjectSummary }
 
 export interface ProjectViewProps {
-  attachmentAdding: boolean
-  attachmentError: string | null
-  attachmentRemovingIds: string[]
-  attachmentState: AttachmentState | null
   busyChatId?: string
+  knowledgeActiveRequestId: string | null
+  knowledgeAvailable: boolean
+  knowledgeError: string | null
+  knowledgeLoading: boolean
+  knowledgeOperationCancellable: boolean
+  knowledgeState: KnowledgeState | null
   loading?: boolean
   mutationPending?: boolean
   projectState: ProjectState | null
   sidebarOpen: boolean
   /** Persist the requested archive or restore transition. */
   onArchive(request: ArchiveProjectRequest): Promise<void>
-  /** Request native attachment selection for the supplied Project scope. */
-  onChooseAttachments(scope: AttachmentScope): void
+  /** Choose native documents and begin safe Project Source imports. */
+  onAddProjectSources(projectId: string): Promise<void>
   /** Choose a workspace and report whether its binding changed. */
   onChooseWorkspace(projectId: string): Promise<boolean>
   /** Create and activate a Project from validated form values. */
   onCreate(request: CreateProjectRequest): Promise<void>
-  /** Clear the attachment error belonging to the supplied scope. */
-  onDismissAttachmentError(scope: AttachmentScope): void
-  /** Submit dropped files for canonical Project attachment staging. */
-  onDropAttachments(scope: AttachmentScope, files: File[]): void
+  /** Delete one Project Source through the revoke-first lifecycle. */
+  onDeleteProjectSource(projectId: string, sourceId: string): Promise<void>
+  /** Clear the user-visible knowledge error for the supplied Project. */
+  onDismissKnowledgeError(projectId: string): void
+  /** Export one verified source original through a native save dialog. */
+  onExportProjectSource(projectId: string, sourceId: string): Promise<void>
   /** Attach, transfer, or detach one Chat according to the request. */
   onMoveChat(request: MoveChatToProjectRequest): Promise<void>
   /** Switch from this Project surface to the selected Chat. */
   onOpenChat(chatId: string): Promise<void>
   /** Load and activate the selected Project. */
   onOpenProject(projectId: string): Promise<void>
-  /** Remove one Project attachment and report whether it succeeded. */
-  onRemoveAttachment(
-    scope: AttachmentScope,
-    attachmentId: string,
-  ): Promise<boolean>
+  /** Rebuild every current Project Source under the active index profile. */
+  onRebuildProjectKnowledge(projectId: string): Promise<void>
+  /** Recover durable nonterminal lifecycle operations for one Project. */
+  onRecoverProjectKnowledge(projectId: string): Promise<void>
+  /** Reindex one current Project Source. */
+  onReindexProjectSource(projectId: string, sourceId: string): Promise<void>
+  /** Choose and index a native replacement for one Project Source. */
+  onReplaceProjectSource(projectId: string, sourceId: string): Promise<void>
+  /** Revoke the complete Project corpus while retaining owned originals. */
+  onRevokeProjectKnowledge(projectId: string): Promise<void>
+  /** Cooperatively stop the active lifecycle request for one Project. */
+  onStopKnowledgeOperation(projectId: string): Promise<void>
   /** Toggle the compact navigation sidebar. */
   onToggleSidebar(): void
   /** Remove the selected Project's persisted workspace binding. */
@@ -343,25 +353,33 @@ function ProjectSettingsPanel({
 
 /** Render the complete Project list, detail surfaces, and relationship actions. */
 export function ProjectView({
-  attachmentAdding,
-  attachmentError,
-  attachmentRemovingIds,
-  attachmentState,
   busyChatId,
+  knowledgeActiveRequestId,
+  knowledgeAvailable,
+  knowledgeError,
+  knowledgeLoading,
+  knowledgeOperationCancellable,
+  knowledgeState,
   loading = false,
   mutationPending = false,
   projectState,
   sidebarOpen,
+  onAddProjectSources,
   onArchive,
-  onChooseAttachments,
   onChooseWorkspace,
   onCreate,
-  onDismissAttachmentError,
-  onDropAttachments,
+  onDeleteProjectSource,
+  onDismissKnowledgeError,
+  onExportProjectSource,
   onMoveChat,
   onOpenChat,
   onOpenProject,
-  onRemoveAttachment,
+  onRebuildProjectKnowledge,
+  onRecoverProjectKnowledge,
+  onReindexProjectSource,
+  onReplaceProjectSource,
+  onRevokeProjectKnowledge,
+  onStopKnowledgeOperation,
   onToggleSidebar,
   onUnbindWorkspace,
   onUpdate,
@@ -976,48 +994,49 @@ export function ProjectView({
 
                   {section === 'sources' && (
                     <section className="project-card project-sources-card">
-                      <div className="project-card-heading">
-                        <div>
-                          <h3>Project files</h3>
-                          <p>
-                            Files are stored for this Project only. Search,
-                            parsing, and indexing are not enabled yet.
-                          </p>
-                        </div>
-                        <span className="project-count">
-                          {attachmentState?.attachments.length ?? 0}
-                        </span>
-                      </div>
-                      <AttachmentSurface
-                        key={`project:${activeProject.projectId}`}
-                        adding={attachmentAdding}
-                        error={attachmentError}
-                        label={`Shared in Project · ${activeProject.name}`}
+                      <ProjectSourcesPanel
+                        key={activeProject.projectId}
+                        activeRequestId={knowledgeActiveRequestId}
+                        available={knowledgeAvailable}
+                        busy={pending}
+                        error={knowledgeError}
+                        loading={knowledgeLoading}
+                        operationCancellable={knowledgeOperationCancellable}
+                        projectId={activeProject.projectId}
+                        projectName={activeProject.name}
                         readOnly={activeProject.archived}
-                        removingIds={attachmentRemovingIds}
-                        scope={{ kind: 'project', id: activeProject.projectId }}
-                        state={attachmentState}
-                        onChoose={() => {
-                          onChooseAttachments({
-                            kind: 'project',
-                            id: activeProject.projectId,
-                          })
-                        }}
+                        state={knowledgeState}
+                        onAdd={() => onAddProjectSources(activeProject.projectId)}
+                        onDelete={(sourceId) => onDeleteProjectSource(
+                          activeProject.projectId,
+                          sourceId,
+                        )}
                         onDismissError={() => {
-                          onDismissAttachmentError({
-                            kind: 'project',
-                            id: activeProject.projectId,
-                          })
+                          onDismissKnowledgeError(activeProject.projectId)
                         }}
-                        onDrop={(files) => {
-                          onDropAttachments(
-                            { kind: 'project', id: activeProject.projectId },
-                            files,
-                          )
-                        }}
-                        onRemove={(attachmentId) => onRemoveAttachment(
-                          { kind: 'project', id: activeProject.projectId },
-                          attachmentId,
+                        onExport={(sourceId) => onExportProjectSource(
+                          activeProject.projectId,
+                          sourceId,
+                        )}
+                        onRebuild={() => onRebuildProjectKnowledge(
+                          activeProject.projectId,
+                        )}
+                        onRecover={() => onRecoverProjectKnowledge(
+                          activeProject.projectId,
+                        )}
+                        onReindex={(sourceId) => onReindexProjectSource(
+                          activeProject.projectId,
+                          sourceId,
+                        )}
+                        onReplace={(sourceId) => onReplaceProjectSource(
+                          activeProject.projectId,
+                          sourceId,
+                        )}
+                        onRevoke={() => onRevokeProjectKnowledge(
+                          activeProject.projectId,
+                        )}
+                        onStop={() => onStopKnowledgeOperation(
+                          activeProject.projectId,
                         )}
                       />
                     </section>

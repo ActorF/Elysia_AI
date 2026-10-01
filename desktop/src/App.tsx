@@ -27,6 +27,9 @@ import type {
   CreateProjectRequest,
   DesktopSettingsState,
   DesktopSettingsValues,
+  KnowledgeOperation,
+  KnowledgeOperationReceipt,
+  KnowledgeState,
   MicrophonePermissionStatus,
   MoveChatToProjectRequest,
   ProjectState,
@@ -499,6 +502,9 @@ function presentChatMessages(chat: ChatDetail): ChatMessage[] {
       text: message.content,
       state: 'complete',
       persisted: true,
+      ...(message.groundedAnswer === undefined
+        ? {}
+        : { groundedAnswer: message.groundedAnswer }),
     }))
 }
 
@@ -522,6 +528,7 @@ interface InFlightTurn {
   userText: string
   assistantText: string
   originalAssistantText: string
+  useProjectKnowledge: boolean
   phase: GenerationPhase
 }
 
@@ -532,6 +539,7 @@ interface ChatSendIntent {
   readonly projectId: string | null
   readonly message: string
   readonly attachmentItems: AttachmentItem[]
+  readonly useProjectKnowledge: boolean
   readonly consumeComposerDraft: boolean
 }
 
@@ -593,6 +601,20 @@ const idleAttachmentActivity: AttachmentActivity = {
   adding: false,
   error: null,
   removingIds: [],
+}
+
+interface ProjectKnowledgeActivity {
+  activeRequestCancellable: boolean
+  activeRequestId: string | null
+  error: string | null
+  loading: boolean
+}
+
+const idleProjectKnowledgeActivity: ProjectKnowledgeActivity = {
+  activeRequestCancellable: false,
+  activeRequestId: null,
+  error: null,
+  loading: false,
 }
 
 function attachmentScopeKey(scope: AttachmentScope): string {
@@ -836,6 +858,15 @@ function App() {
   const [attachmentActivities, setAttachmentActivities] = useState<
     Record<string, AttachmentActivity>
   >({})
+  const [knowledgeStates, setKnowledgeStates] = useState<
+    Record<string, KnowledgeState>
+  >({})
+  const [knowledgeActivities, setKnowledgeActivities] = useState<
+    Record<string, ProjectKnowledgeActivity>
+  >({})
+  const [projectKnowledgeByChat, setProjectKnowledgeByChat] = useState<
+    Record<string, string>
+  >({})
   const [notice, setNotice] = useState<ChatNotice | null>(null)
   const [callPreviewOpen, setCallPreviewOpen] = useState(false)
   const [captionsEnabled, setCaptionsEnabled] = useState(true)
@@ -916,6 +947,10 @@ function App() {
   const attachmentOperationsRef = useRef(new Map<string, number>())
   const attachmentMutationScopesRef = useRef(new Set<string>())
   const attachmentReloadPendingScopesRef = useRef(new Set<string>())
+  const knowledgeLoadOperationsRef = useRef(new Map<string, number>())
+  const knowledgeReloadPendingProjectsRef = useRef(new Set<string>())
+  const settledKnowledgeRequestIdsRef = useRef(new Set<string>())
+  const activeProjectIdRef = useRef<string | null>(null)
   const streamingRef = useRef(false)
   const generationReconcilePendingRef = useRef(false)
   const inFlightTurnRef = useRef<InFlightTurn | null>(null)
@@ -977,11 +1012,6 @@ function App() {
     id: activeChatId ?? 'chat_unavailable',
   }), [activeChatId])
   const activeProjectId = projectState?.activeProject?.projectId
-  const activeProjectScope = useMemo<AttachmentScope | null>(() => (
-    activeProjectId === undefined
-      ? null
-      : { kind: 'project', id: activeProjectId }
-  ), [activeProjectId])
   const draft = activeChatId === undefined
     ? ''
     : draftsByChat[activeChatId] ?? ''
@@ -999,15 +1029,24 @@ function App() {
   const activeChatAttachments = attachmentStates[activeChatAttachmentKey] ?? null
   const activeChatAttachmentActivity = attachmentActivities[activeChatAttachmentKey]
     ?? idleAttachmentActivity
-  const activeProjectAttachmentKey = activeProjectScope === null
+  const activeProjectKnowledge = activeProjectId === undefined
     ? null
-    : attachmentScopeKey(activeProjectScope)
-  const activeProjectAttachments = activeProjectAttachmentKey === null
-    ? null
-    : attachmentStates[activeProjectAttachmentKey] ?? null
-  const activeProjectAttachmentActivity = activeProjectAttachmentKey === null
-    ? idleAttachmentActivity
-    : attachmentActivities[activeProjectAttachmentKey] ?? idleAttachmentActivity
+    : knowledgeStates[activeProjectId] ?? null
+  const activeProjectKnowledgeActivity = activeProjectId === undefined
+    ? idleProjectKnowledgeActivity
+    : knowledgeActivities[activeProjectId] ?? idleProjectKnowledgeActivity
+  const knowledgeManagementAvailable = snapshot.capabilities.includes(
+    'knowledge.management',
+  )
+  const activeChatProject = projectState?.projects.find(
+    (project) => project.projectId === activeChatProjectId,
+  )
+  const projectKnowledgeAvailable = knowledgeManagementAvailable
+    && activeChatProject !== undefined
+    && !activeChatProject.archived
+  const useProjectKnowledge = projectKnowledgeAvailable
+    && activeChatId !== undefined
+    && projectKnowledgeByChat[activeChatId] === activeChatProjectId
   const displayedMessages = useMemo(() => overlayTurn(
     messages,
     inFlightTurn,
@@ -1018,6 +1057,14 @@ function App() {
     [chatState?.activeChat],
   )
   const generationBusy = generationIsBusy(inFlightTurn)
+  const knowledgeLeaseBusy = snapshot.activeKnowledgeOperation !== undefined
+    || Object.values(knowledgeActivities).some(
+      (activity) => activity.activeRequestId !== null,
+    )
+    || (
+      generationBusy
+      && inFlightTurn?.useProjectKnowledge === true
+    )
   const activeGeneration = generationBusy
     && inFlightTurn?.chatId === activeChatId
   const stopPending = activeGeneration && inFlightTurn?.phase === 'stopping'
@@ -1870,6 +1917,17 @@ function App() {
       acceptedSnapshot = { ...nextSnapshot }
       delete acceptedSnapshot.activeGeneration
     }
+    const activeKnowledgeRequestId
+      = acceptedSnapshot.activeKnowledgeOperation?.requestId
+    if (
+      activeKnowledgeRequestId !== undefined
+      && settledKnowledgeRequestIdsRef.current.has(activeKnowledgeRequestId)
+    ) {
+      if (acceptedSnapshot === nextSnapshot) {
+        acceptedSnapshot = { ...nextSnapshot }
+      }
+      delete acceptedSnapshot.activeKnowledgeOperation
+    }
     acceptedSnapshotRevisionRef.current = nextSnapshot.revision
     backendStatusRef.current = acceptedSnapshot.status
     setSnapshot(acceptedSnapshot)
@@ -1895,6 +1953,27 @@ function App() {
     })
   }, [])
 
+  const markKnowledgeRequestSettled = useCallback((requestId: string): void => {
+    const settledIds = settledKnowledgeRequestIdsRef.current
+    settledIds.add(requestId)
+    if (settledIds.size > 128) {
+      const oldestId = settledIds.values().next().value as string | undefined
+      if (oldestId !== undefined) {
+        settledIds.delete(oldestId)
+      }
+    }
+    setSnapshot((currentSnapshot) => {
+      if (
+        currentSnapshot.activeKnowledgeOperation?.requestId !== requestId
+      ) {
+        return currentSnapshot
+      }
+      const nextSnapshot = { ...currentSnapshot }
+      delete nextSnapshot.activeKnowledgeOperation
+      return nextSnapshot
+    })
+  }, [])
+
   const acceptChatState = useCallback((nextState: ChatSessionState): void => {
     for (const chat of [...nextState.chats, nextState.activeChat]) {
       const knownCount = knownChatMessageCountsRef.current.get(chat.chatId) ?? 0
@@ -1910,6 +1989,34 @@ function App() {
   }, [])
 
   const acceptProjectState = useCallback((nextState: ProjectState): void => {
+    setProjectKnowledgeByChat((current) => {
+      const activeProjectIds = new Set(
+        nextState.projects
+          .filter((project) => !project.archived)
+          .map((project) => project.projectId),
+      )
+      const canonicalProjectByChat = new Map(
+        [...nextState.chatState.chats, nextState.chatState.activeChat]
+          .map((chat) => [chat.chatId, chat.projectId] as const),
+      )
+      const retained: Record<string, string> = {}
+      let changed = false
+
+      for (const [chatId, authorizedProjectId] of Object.entries(current)) {
+        if (
+          canonicalProjectByChat.get(chatId) === authorizedProjectId
+          && activeProjectIds.has(authorizedProjectId)
+        ) {
+          retained[chatId] = authorizedProjectId
+        } else {
+          // Consent is bound to the exact Chat/Project pair. Moving a Chat or
+          // archiving its Project must never silently authorize a new corpus.
+          changed = true
+        }
+      }
+      return changed ? retained : current
+    })
+    activeProjectIdRef.current = nextState.activeProject?.projectId ?? null
     setProjectState(nextState)
     acceptChatState(nextState.chatState)
   }, [acceptChatState])
@@ -2292,6 +2399,376 @@ function App() {
     updateAttachmentActivity(scope, (current) => ({ ...current, error: null }))
   }, [updateAttachmentActivity])
 
+  const updateKnowledgeActivity = useCallback((
+    projectId: string,
+    update: (current: ProjectKnowledgeActivity) => ProjectKnowledgeActivity,
+  ): void => {
+    setKnowledgeActivities((current) => ({
+      ...current,
+      [projectId]: update(
+        current[projectId] ?? idleProjectKnowledgeActivity,
+      ),
+    }))
+  }, [])
+
+  useEffect(() => {
+    const active = snapshot.activeKnowledgeOperation
+    if (snapshot.status !== 'ready' || active === undefined) {
+      setKnowledgeActivities((current) => {
+        let changed = false
+        const next = Object.fromEntries(Object.entries(current).map(
+          ([projectId, activity]) => {
+            if (activity.activeRequestId === null) {
+              return [projectId, activity]
+            }
+            changed = true
+            return [projectId, {
+              ...activity,
+              activeRequestCancellable: false,
+              activeRequestId: null,
+            }]
+          },
+        ))
+        return changed ? next : current
+      })
+      return
+    }
+    if (settledKnowledgeRequestIdsRef.current.has(active.requestId)) {
+      return
+    }
+    // Electron owns pending Backend requests across renderer reloads. Restore
+    // that narrow authority directly from its snapshot because knowledge.list
+    // intentionally refuses to queue behind the global Knowledge lease.
+    setKnowledgeActivities((current) => {
+      const owner = current[active.projectId] ?? idleProjectKnowledgeActivity
+      const next: Record<string, ProjectKnowledgeActivity> = {}
+      let changed = owner.activeRequestId !== active.requestId
+        || owner.activeRequestCancellable !== active.cancellable
+      for (const [projectId, activity] of Object.entries(current)) {
+        if (projectId === active.projectId) {
+          next[projectId] = {
+            ...activity,
+            activeRequestCancellable: active.cancellable,
+            activeRequestId: active.requestId,
+          }
+        } else if (activity.activeRequestId !== null) {
+          changed = true
+          next[projectId] = {
+            ...activity,
+            activeRequestCancellable: false,
+            activeRequestId: null,
+          }
+        } else {
+          next[projectId] = activity
+        }
+      }
+      if (!Object.hasOwn(next, active.projectId)) {
+        next[active.projectId] = {
+          ...owner,
+          activeRequestCancellable: active.cancellable,
+          activeRequestId: active.requestId,
+        }
+      }
+      return changed ? next : current
+    })
+  }, [
+    snapshot.activeKnowledgeOperation,
+    snapshot.status,
+  ])
+
+  const acceptKnowledgeState = useCallback((
+    expectedProjectId: string,
+    state: KnowledgeState,
+  ): void => {
+    // Project identity is checked again in the renderer so a delayed or
+    // misrouted response cannot overwrite another Project's visible corpus.
+    if (state.projectId !== expectedProjectId) {
+      throw new Error('The local Backend returned Sources for a different Project.')
+    }
+    knowledgeReloadPendingProjectsRef.current.delete(expectedProjectId)
+    setKnowledgeStates((current) => ({
+      ...current,
+      [expectedProjectId]: state,
+    }))
+  }, [])
+
+  const loadProjectKnowledge = useCallback(async (
+    projectId: string,
+    preserveError = false,
+  ): Promise<void> => {
+    if (desktopApi === undefined || snapshot.status !== 'ready') {
+      return
+    }
+    const operation = (knowledgeLoadOperationsRef.current.get(projectId) ?? 0) + 1
+    knowledgeLoadOperationsRef.current.set(projectId, operation)
+    updateKnowledgeActivity(projectId, (current) => ({
+      ...current,
+      loading: true,
+      error: preserveError ? current.error : null,
+    }))
+    try {
+      const state = await desktopApi.listProjectKnowledge(projectId)
+      if (knowledgeLoadOperationsRef.current.get(projectId) !== operation) {
+        return
+      }
+      acceptKnowledgeState(projectId, state)
+      const hasRecoverableOperation = state.operations.some((operationState) => (
+        operationState.state === 'running'
+        || operationState.state === 'cancel_requested'
+        || operationState.state === 'recovery_required'
+      ))
+      updateKnowledgeActivity(projectId, (current) => ({
+        ...current,
+        activeRequestCancellable: hasRecoverableOperation
+          ? current.activeRequestCancellable
+          : false,
+        activeRequestId: hasRecoverableOperation
+          ? current.activeRequestId
+          : null,
+        loading: false,
+        error: preserveError ? current.error : null,
+      }))
+    } catch (error) {
+      if (knowledgeLoadOperationsRef.current.get(projectId) !== operation) {
+        return
+      }
+      // Reads can lose an admission race with either a Knowledge mutation or
+      // a grounded Chat generation. Remember the Project without coupling the
+      // renderer to an IPC error string; the owning operation's terminal event
+      // provides the safe retry boundary.
+      knowledgeReloadPendingProjectsRef.current.add(projectId)
+      updateKnowledgeActivity(projectId, (current) => ({
+        ...current,
+        loading: false,
+        error: preserveError && current.error !== null
+          ? current.error
+          : error instanceof Error
+            ? error.message
+            : 'Could not load Project Sources.',
+      }))
+    }
+  }, [
+    acceptKnowledgeState,
+    desktopApi,
+    snapshot.status,
+    updateKnowledgeActivity,
+  ])
+
+  const retryDeferredActiveKnowledgeLoad = useCallback((
+    separatelyReconciledProjectId?: string,
+  ): void => {
+    const visibleProjectId = activeProjectIdRef.current
+    if (
+      visibleProjectId === null
+      || visibleProjectId === separatelyReconciledProjectId
+      || !knowledgeReloadPendingProjectsRef.current.delete(visibleProjectId)
+    ) {
+      return
+    }
+    // Knowledge mutation and grounded-generation terminals are both safe
+    // lease boundaries. A failed retry re-enters the deferred set in the
+    // loader, so this never spins and does not require a fragile error match.
+    void loadProjectKnowledge(visibleProjectId)
+  }, [loadProjectKnowledge])
+
+  const startKnowledgeOperation = useCallback(async (
+    projectId: string,
+    start: () => Promise<KnowledgeOperationReceipt | null>,
+    fallbackError: string,
+    cancellable = true,
+  ): Promise<void> => {
+    if (desktopApi === undefined || snapshot.status !== 'ready') {
+      throw new Error('Reconnect the local Backend before changing Project Sources.')
+    }
+    updateKnowledgeActivity(projectId, (current) => ({
+      ...current,
+      error: null,
+    }))
+    try {
+      const receipt = await start()
+      if (receipt === null) {
+        return
+      }
+      const completedBeforeAcknowledgement
+        = settledKnowledgeRequestIdsRef.current.has(receipt.requestId)
+      updateKnowledgeActivity(projectId, (current) => ({
+        ...current,
+        activeRequestCancellable: completedBeforeAcknowledgement
+          ? false
+          : cancellable,
+        activeRequestId: completedBeforeAcknowledgement
+          ? null
+          : receipt.requestId,
+      }))
+    } catch (error) {
+      const message = error instanceof Error ? error.message : fallbackError
+      updateKnowledgeActivity(projectId, (current) => ({
+        ...current,
+        error: message,
+      }))
+      throw error instanceof Error ? error : new Error(message)
+    }
+  }, [
+    desktopApi,
+    snapshot.status,
+    updateKnowledgeActivity,
+  ])
+
+  const addProjectSources = useCallback(async (projectId: string): Promise<void> => {
+    if (desktopApi === undefined) {
+      throw new Error('The Project Sources API is unavailable.')
+    }
+    await startKnowledgeOperation(
+      projectId,
+      () => desktopApi.chooseProjectSources(projectId),
+      'Could not add the selected Project Sources.',
+    )
+  }, [desktopApi, startKnowledgeOperation])
+
+  const replaceProjectSource = useCallback(async (
+    projectId: string,
+    sourceId: string,
+  ): Promise<void> => {
+    if (desktopApi === undefined) {
+      throw new Error('The Project Sources API is unavailable.')
+    }
+    await startKnowledgeOperation(
+      projectId,
+      () => desktopApi.replaceProjectSource(projectId, sourceId),
+      'Could not replace the Project Source.',
+    )
+  }, [desktopApi, startKnowledgeOperation])
+
+  const reindexProjectSource = useCallback(async (
+    projectId: string,
+    sourceId: string,
+  ): Promise<void> => {
+    if (desktopApi === undefined) {
+      throw new Error('The Project Sources API is unavailable.')
+    }
+    await startKnowledgeOperation(
+      projectId,
+      () => desktopApi.reindexProjectSource(projectId, sourceId),
+      'Could not reindex the Project Source.',
+    )
+  }, [desktopApi, startKnowledgeOperation])
+
+  const deleteProjectSource = useCallback(async (
+    projectId: string,
+    sourceId: string,
+  ): Promise<void> => {
+    if (desktopApi === undefined) {
+      throw new Error('The Project Sources API is unavailable.')
+    }
+    await startKnowledgeOperation(
+      projectId,
+      () => desktopApi.deleteProjectSource(projectId, sourceId),
+      'Could not delete the Project Source.',
+    )
+  }, [desktopApi, startKnowledgeOperation])
+
+  const rebuildProjectKnowledge = useCallback(async (
+    projectId: string,
+  ): Promise<void> => {
+    if (desktopApi === undefined) {
+      throw new Error('The Project Sources API is unavailable.')
+    }
+    await startKnowledgeOperation(
+      projectId,
+      () => desktopApi.rebuildProjectKnowledge(projectId),
+      'Could not rebuild Project knowledge.',
+    )
+  }, [desktopApi, startKnowledgeOperation])
+
+  const revokeProjectKnowledge = useCallback(async (
+    projectId: string,
+  ): Promise<void> => {
+    if (desktopApi === undefined) {
+      throw new Error('The Project Sources API is unavailable.')
+    }
+    await startKnowledgeOperation(
+      projectId,
+      () => desktopApi.revokeProjectKnowledge(projectId),
+      'Could not revoke Project knowledge.',
+    )
+  }, [desktopApi, startKnowledgeOperation])
+
+  const recoverProjectKnowledge = useCallback(async (
+    projectId: string,
+  ): Promise<void> => {
+    if (desktopApi === undefined) {
+      throw new Error('The Project Sources API is unavailable.')
+    }
+    await startKnowledgeOperation(
+      projectId,
+      () => desktopApi.recoverProjectKnowledge(projectId),
+      'Could not recover Project knowledge.',
+      false,
+    )
+  }, [desktopApi, startKnowledgeOperation])
+
+  const exportProjectSource = useCallback(async (
+    projectId: string,
+    sourceId: string,
+  ): Promise<void> => {
+    if (desktopApi === undefined || snapshot.status !== 'ready') {
+      throw new Error('Reconnect the local Backend before exporting a Project Source.')
+    }
+    try {
+      await desktopApi.exportProjectSource(projectId, sourceId)
+    } catch (error) {
+      const message = error instanceof Error
+        ? error.message
+        : 'Could not export the Project Source.'
+      updateKnowledgeActivity(projectId, (current) => ({
+        ...current,
+        error: message,
+      }))
+      throw error instanceof Error ? error : new Error(message)
+    }
+  }, [
+    desktopApi,
+    snapshot.status,
+    updateKnowledgeActivity,
+  ])
+
+  const stopKnowledgeOperation = useCallback(async (
+    projectId: string,
+  ): Promise<void> => {
+    const requestId = knowledgeActivities[projectId]?.activeRequestId ?? null
+    if (desktopApi === undefined || requestId === null) {
+      throw new Error('There is no active Project Sources operation to stop.')
+    }
+    try {
+      await desktopApi.stopKnowledgeOperation(requestId)
+      updateKnowledgeActivity(projectId, (current) => (
+        current.activeRequestId === requestId
+          ? { ...current, activeRequestCancellable: false }
+          : current
+      ))
+    } catch (error) {
+      const message = error instanceof Error
+        ? error.message
+        : 'Could not stop the Project Sources operation.'
+      updateKnowledgeActivity(projectId, (current) => ({
+        ...current,
+        error: message,
+      }))
+      throw error instanceof Error ? error : new Error(message)
+    }
+  }, [
+    desktopApi,
+    knowledgeActivities,
+    updateKnowledgeActivity,
+  ])
+
+  const dismissKnowledgeError = useCallback((projectId: string): void => {
+    updateKnowledgeActivity(projectId, (current) => ({
+      ...current,
+      error: null,
+    }))
+  }, [updateKnowledgeActivity])
+
   const replacePendingChatSend = useCallback((
     pendingSend: PersistedPendingChatSend | null,
   ): boolean => {
@@ -2643,6 +3120,7 @@ function App() {
       userText: activeGeneration.userText ?? canonicalUser?.content ?? '',
       assistantText: activeGeneration.reply,
       originalAssistantText: canonicalAssistant?.content ?? '',
+      useProjectKnowledge: activeGeneration.usesProjectKnowledge === true,
       phase: activeGeneration.stopping
         ? 'stopping'
         : activeGeneration.reply.length > 0 ? 'streaming' : 'starting',
@@ -3005,11 +3483,20 @@ function App() {
   }, [activeChatId, activeChatScope, loadAttachments, snapshot.status])
 
   useEffect(() => {
-    if (activeProjectScope === null || snapshot.status !== 'ready') {
+    if (
+      activeProjectId === undefined
+      || snapshot.status !== 'ready'
+      || !knowledgeManagementAvailable
+    ) {
       return
     }
-    void loadAttachments(activeProjectScope)
-  }, [activeProjectScope, loadAttachments, snapshot.status])
+    void loadProjectKnowledge(activeProjectId)
+  }, [
+    activeProjectId,
+    knowledgeManagementAvailable,
+    loadProjectKnowledge,
+    snapshot.status,
+  ])
 
   useEffect(() => {
     if (typeof window.matchMedia !== 'function') {
@@ -3098,6 +3585,133 @@ function App() {
         if (event.snapshot.status === 'error') {
           setNotice(null)
         }
+        return
+      }
+
+      if (
+        event.type === 'protocol-event'
+        && (
+          event.name === 'knowledge.operation.changed'
+          || event.name === 'knowledge.operation.completed'
+        )
+      ) {
+        const projectId = event.data.projectId
+        const rawOperation = event.data.operation
+        const operationCancellable = event.data.cancellable
+        if (
+          typeof projectId !== 'string'
+          || typeof rawOperation !== 'object'
+          || rawOperation === null
+          || typeof operationCancellable !== 'boolean'
+        ) {
+          return
+        }
+        const operation = rawOperation as KnowledgeOperation
+        if (operation.projectId !== projectId) {
+          return
+        }
+        // Progress events can arrive while Python still owns the Project's
+        // mutation lease. Merge the already-validated event payload locally;
+        // issuing a list request here could block the protocol reader behind
+        // that lease and delay the user's exact-request cancellation.
+        setKnowledgeStates((current) => {
+          const state = current[projectId]
+          if (state === undefined) {
+            return current
+          }
+          const index = state.operations.findIndex(
+            (item) => item.operationId === operation.operationId,
+          )
+          const operations = index < 0
+            ? [...state.operations, operation]
+            : state.operations.map((item, itemIndex) => (
+                itemIndex === index ? operation : item
+              ))
+          return {
+            ...current,
+            [projectId]: { ...state, operations },
+          }
+        })
+        updateKnowledgeActivity(projectId, (current) => ({
+          ...current,
+          activeRequestCancellable:
+            event.name === 'knowledge.operation.changed'
+              ? operationCancellable
+              : false,
+          activeRequestId: event.name === 'knowledge.operation.changed'
+            ? event.requestId ?? current.activeRequestId
+            : current.activeRequestId,
+        }))
+        return
+      }
+
+      if (event.type === 'knowledge-operation-settled') {
+        // Retain a bounded terminal tombstone across both an early invoke ACK
+        // and a delayed getSnapshot result from a previous renderer epoch.
+        markKnowledgeRequestSettled(event.requestId)
+        acceptKnowledgeState(event.projectId, event.state)
+        updateKnowledgeActivity(event.projectId, (current) => {
+          if (
+            current.activeRequestId !== null
+            && current.activeRequestId !== event.requestId
+          ) {
+            return current
+          }
+          return {
+            ...current,
+            activeRequestCancellable: false,
+            activeRequestId: null,
+            loading: false,
+            error: null,
+          }
+        })
+        retryDeferredActiveKnowledgeLoad(event.projectId)
+        return
+      }
+
+      if (event.type === 'knowledge-operation-error') {
+        markKnowledgeRequestSettled(event.requestId)
+        updateKnowledgeActivity(event.projectId, (current) => {
+          if (
+            current.activeRequestId !== null
+            && current.activeRequestId !== event.requestId
+          ) {
+            return current
+          }
+          return {
+            ...current,
+            activeRequestCancellable: false,
+            activeRequestId: null,
+            error: event.message,
+          }
+        })
+        // Electron emits this renderer event only after Python's terminal
+        // failure response, when the mutation lease is no longer held.
+        void loadProjectKnowledge(event.projectId, true)
+        retryDeferredActiveKnowledgeLoad(event.projectId)
+        return
+      }
+
+      if (event.type === 'knowledge-export-settled') {
+        markKnowledgeRequestSettled(event.requestId)
+        updateKnowledgeActivity(event.projectId, (current) => {
+          if (
+            current.activeRequestId !== null
+            && current.activeRequestId !== event.requestId
+          ) {
+            return current
+          }
+          return {
+            ...current,
+            activeRequestCancellable: false,
+            activeRequestId: null,
+            loading: false,
+            error: null,
+          }
+        })
+        // Export leaves the corpus unchanged, but a read deferred anywhere
+        // during its global lease now has a safe, path-free retry boundary.
+        retryDeferredActiveKnowledgeLoad()
         return
       }
 
@@ -3266,6 +3880,7 @@ function App() {
 
       if (event.type === 'chat-complete') {
         markGenerationSettled(event.requestId)
+        retryDeferredActiveKnowledgeLoad()
         const currentTurn = inFlightTurnRef.current
         const pendingSend = pendingChatSendRef.current
         const pendingRetryEdit = retryEditDraftRef.current
@@ -3418,6 +4033,7 @@ function App() {
 
       if (event.type === 'chat-error') {
         markGenerationSettled(event.requestId)
+        retryDeferredActiveKnowledgeLoad()
         const currentTurn = inFlightTurnRef.current
         const currentTurnMatches = currentTurn !== null
           && event.chatId === currentTurn.chatId
@@ -3616,6 +4232,7 @@ function App() {
     }
   }, [
     acceptChatState,
+    acceptKnowledgeState,
     acceptSnapshot,
     acknowledgeManagedSpeechTurn,
     clearPendingChatSend,
@@ -3624,18 +4241,22 @@ function App() {
     desktopApi,
     interruptInFlightTurn,
     loadAttachments,
+    loadProjectKnowledge,
+    markKnowledgeRequestSettled,
     markGenerationSettled,
     observeVoiceInterruptionTerminal,
     observeManagedSpeechStatus,
     requestManagedSpeechStop,
     requestVoiceInterruptionCancellation,
     requestProjectRefresh,
+    retryDeferredActiveKnowledgeLoad,
     reconcileVoiceSpeechCapability,
     routeVoiceSpeechStatus,
     restorePendingChatSend,
     restoreRetryEditDraft,
     settleVoiceTurnUiIfNeeded,
     updateInFlightTurn,
+    updateKnowledgeActivity,
     voiceSessionController,
   ])
 
@@ -3856,6 +4477,11 @@ function App() {
       delete next[key]
       return next
     })
+    setProjectKnowledgeByChat((current) => {
+      const next = { ...current }
+      delete next[chatId]
+      return next
+    })
   }
 
   function beginChatSend(intent: ChatSendIntent): Promise<string> | null {
@@ -3925,6 +4551,7 @@ function App() {
       userText: message,
       assistantText: '',
       originalAssistantText: '',
+      useProjectKnowledge: intent.useProjectKnowledge,
       phase: 'starting',
     }))
     beginManagedSpeechTurn(
@@ -3940,6 +4567,7 @@ function App() {
           chatId,
           message,
           attachmentIds,
+          useProjectKnowledge: intent.useProjectKnowledge,
         })
         acknowledgeManagedSpeechTurn(operationId, requestId)
         requestVoiceInterruptionCancellation(operationId, chatId, requestId)
@@ -4014,6 +4642,7 @@ function App() {
       projectId: activeChat.projectId,
       message: draft,
       attachmentItems: activeChatAttachments?.attachments ?? [],
+      useProjectKnowledge,
       consumeComposerDraft: true,
     })
     void sending?.catch(() => undefined)
@@ -4075,6 +4704,10 @@ function App() {
       chatId: pair.chatId,
       userMessageId: pair.userMessageId,
       assistantMessageId: pair.assistantMessageId,
+      useProjectKnowledge: (
+        projectKnowledgeAvailable
+        && projectKnowledgeByChat[pair.chatId] === activeChatProjectId
+      ),
       ...(editedMessage === undefined ? {} : { message: editedMessage }),
     }
     setNotice(null)
@@ -4095,6 +4728,7 @@ function App() {
       userText: editedMessage ?? pair.userText,
       assistantText: '',
       originalAssistantText: pair.assistantText,
+      useProjectKnowledge: request.useProjectKnowledge === true,
       phase: 'starting',
     }))
     beginManagedSpeechTurn(
@@ -5411,6 +6045,14 @@ function App() {
         projectId: confirmed.projectId,
         message: confirmed.text,
         attachmentItems: [],
+        useProjectKnowledge: (
+          confirmed.projectId !== null
+          && snapshot.capabilities.includes('knowledge.management')
+          && projectState?.projects.some((project) => (
+            project.projectId === confirmed.projectId && !project.archived
+          )) === true
+          && projectKnowledgeByChat[confirmed.chatId] === confirmed.projectId
+        ),
         consumeComposerDraft: false,
       })
       if (sending === null) {
@@ -5694,29 +6336,39 @@ function App() {
   } else if (activeView === 'projects') {
     content = (
       <ProjectView
-        attachmentAdding={activeProjectAttachmentActivity.adding}
-        attachmentError={activeProjectAttachmentActivity.error}
-        attachmentRemovingIds={activeProjectAttachmentActivity.removingIds}
-        attachmentState={activeProjectAttachments}
         busyChatId={generationBusy ? inFlightTurn?.chatId : undefined}
+        knowledgeActiveRequestId={activeProjectKnowledgeActivity.activeRequestId}
+        knowledgeAvailable={knowledgeManagementAvailable}
+        knowledgeOperationCancellable={
+          activeProjectKnowledgeActivity.activeRequestCancellable
+        }
+        knowledgeError={activeProjectKnowledgeActivity.error}
+        knowledgeLoading={activeProjectKnowledgeActivity.loading}
+        knowledgeState={activeProjectKnowledge}
         loading={projectLoading}
         mutationPending={
-          projectMutationPending || snapshot.status !== 'ready'
+          projectMutationPending
+          || knowledgeLeaseBusy
+          || snapshot.status !== 'ready'
         }
         projectState={projectState}
         sidebarOpen={sidebarOpen}
+        onAddProjectSources={addProjectSources}
         onArchive={archiveProject}
-        onChooseAttachments={(scope) => { void chooseAttachments(scope) }}
         onChooseWorkspace={chooseProjectWorkspace}
         onCreate={createProject}
-        onDismissAttachmentError={dismissAttachmentError}
-        onDropAttachments={(scope, files) => {
-          void acceptDroppedAttachments(scope, files)
-        }}
+        onDeleteProjectSource={deleteProjectSource}
+        onDismissKnowledgeError={dismissKnowledgeError}
+        onExportProjectSource={exportProjectSource}
         onMoveChat={moveChatToProject}
         onOpenChat={openChatFromProject}
         onOpenProject={openProject}
-        onRemoveAttachment={removeAttachment}
+        onRebuildProjectKnowledge={rebuildProjectKnowledge}
+        onRecoverProjectKnowledge={recoverProjectKnowledge}
+        onReindexProjectSource={reindexProjectSource}
+        onReplaceProjectSource={replaceProjectSource}
+        onRevokeProjectKnowledge={revokeProjectKnowledge}
+        onStopKnowledgeOperation={stopKnowledgeOperation}
         onToggleSidebar={() => { setSidebarOpen((open) => !open) }}
         onUnbindWorkspace={unbindProjectWorkspace}
         onUpdate={updateProject}
@@ -5734,7 +6386,8 @@ function App() {
     )
   } else {
     content = (
-      <ChatView
+      <div className="knowledge-chat-shell">
+        <ChatView
         attachmentAdding={activeChatAttachmentActivity.adding}
         attachmentError={activeChatAttachmentActivity.error}
         attachmentLabel={`This message · ${displayedChat}`}
@@ -5814,7 +6467,34 @@ function App() {
         }}
         onVerifyMicrophone={() => { void verifyMicrophone() }}
         onVoicePlaceholder={() => { void openCallPreview() }}
-      />
+        />
+        {projectKnowledgeAvailable && activeChatId !== undefined && (
+          <label className="project-knowledge-toggle">
+            <input
+              type="checkbox"
+              role="switch"
+              checked={useProjectKnowledge}
+              disabled={sessionUiPending || generationBusy}
+              onChange={(event) => {
+                const enabled = event.currentTarget.checked
+                setProjectKnowledgeByChat((current) => {
+                  const next = { ...current }
+                  if (enabled && activeChatProjectId !== null) {
+                    next[activeChatId] = activeChatProjectId
+                  } else {
+                    delete next[activeChatId]
+                  }
+                  return next
+                })
+              }}
+            />
+            <span>
+              <strong>Use Project Sources</strong>
+              <small>Require indexed Project evidence and show citations.</small>
+            </span>
+          </label>
+        )}
+      </div>
     )
   }
 
