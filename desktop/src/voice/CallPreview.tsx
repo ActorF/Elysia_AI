@@ -6,6 +6,7 @@
 import { useEffect, useRef, useState } from 'react'
 
 import { hasNonBlankCodePoint } from '../../electron/protocol-text.js'
+import { CharacterArtwork } from '../character/CharacterArtwork.tsx'
 import { Icon } from '../design-system/Icon.tsx'
 import type { AudioCaptureSnapshot } from './audio-capture.ts'
 import type { VoiceSessionPhase } from './voice-session-controller.ts'
@@ -221,16 +222,7 @@ export function CallPreview({
           )}
           aria-hidden="true"
         />
-        <div
-          className="character-portrait call-portrait"
-          aria-label="Character artwork placeholder"
-          role="img"
-        >
-          <div className="portrait-hair" />
-          <div className="portrait-face" />
-          <div className="portrait-shoulders" />
-          <span>Character artwork</span>
-        </div>
+        <CharacterArtwork className="character-portrait call-portrait" />
         <div
           className="call-status-cluster"
         >

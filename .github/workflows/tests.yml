@@ -110,11 +110,18 @@ jobs:
         working-directory: desktop
         run: npx --no-install asar list out\win-unpacked\resources\app.asar > "%RUNNER_TEMP%\elysia-asar-listing.txt"
 
+      - name: Extract reviewed ASAR portrait
+        run: |
+          if exist "%RUNNER_TEMP%\elysia-portrait.png" del /f /q "%RUNNER_TEMP%\elysia-portrait.png"
+          cd /d "%RUNNER_TEMP%"
+          call "%GITHUB_WORKSPACE%\desktop\node_modules\.bin\asar.cmd" extract-file "%GITHUB_WORKSPACE%\desktop\out\win-unpacked\resources\app.asar" "dist\character\elysia-portrait.png"
+
       - name: Audit packaged distribution assets
         run: >-
           python scripts\check_distribution_assets.py
           --unpacked-tree desktop\out\win-unpacked
           --asar-listing "%RUNNER_TEMP%\elysia-asar-listing.txt"
+          --extracted-asar-portrait "%RUNNER_TEMP%\elysia-portrait.png"
 
   desktop:
     runs-on: ubuntu-latest

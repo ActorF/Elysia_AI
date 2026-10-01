@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import shutil
 
 import pytest
 
@@ -91,11 +92,108 @@ def test_maintained_source_and_brand_assets_are_allowed() -> None:
             "config/voice_profiles.example.json",
             "desktop/public/elysia-icon.png",
             "desktop/assets/elysia-icon.ico",
+            "desktop/public/character/elysia-portrait.png",
         ],
         source="synthetic-index",
     )
 
     assert problems == ()
+
+
+def _copy_reviewed_portrait(destination_root: Path) -> Path:
+    """Copy the real approved portrait into one isolated audit fixture."""
+
+    source = (
+        _REPOSITORY_ROOT
+        / "desktop"
+        / "public"
+        / "character"
+        / "elysia-portrait.png"
+    )
+    destination = (
+        destination_root
+        / "desktop"
+        / "public"
+        / "character"
+        / "elysia-portrait.png"
+    )
+    destination.parent.mkdir(parents=True)
+    shutil.copyfile(source, destination)
+    return destination
+
+
+def test_reviewed_character_portrait_matches_exact_contract(tmp_path: Path) -> None:
+    """Accept only the generated portrait bytes covered by the asset review."""
+
+    _copy_reviewed_portrait(tmp_path)
+
+    assert check_distribution_assets.audit_reviewed_assets(tmp_path) == ()
+
+
+def test_reviewed_character_portrait_content_mutation_is_rejected(
+    tmp_path: Path,
+) -> None:
+    """Reject a same-length replacement that would evade a size-only check."""
+
+    portrait = _copy_reviewed_portrait(tmp_path)
+    with portrait.open("r+b") as portrait_stream:
+        first_byte = portrait_stream.read(1)
+        portrait_stream.seek(0)
+        portrait_stream.write(bytes((first_byte[0] ^ 0xFF,)))
+
+    problems = check_distribution_assets.audit_reviewed_assets(tmp_path)
+
+    assert len(problems) == 1
+    assert "SHA-256" in problems[0].message
+
+
+def test_reviewed_character_portrait_length_mutation_is_rejected(
+    tmp_path: Path,
+) -> None:
+    """Reject truncation even though the reviewed path and format still match."""
+
+    portrait = _copy_reviewed_portrait(tmp_path)
+    with portrait.open("r+b") as portrait_stream:
+        portrait_stream.truncate(portrait.stat().st_size - 1)
+
+    problems = check_distribution_assets.audit_reviewed_assets(tmp_path)
+
+    assert any("byte length" in problem.message for problem in problems)
+
+
+def test_reviewed_character_portrait_is_required_at_exact_path(tmp_path: Path) -> None:
+    """Fail closed when the approved distributable portrait is absent."""
+
+    problems = check_distribution_assets.audit_reviewed_assets(tmp_path)
+
+    assert len(problems) == 1
+    assert problems[0].path == "desktop/public/character/elysia-portrait.png"
+    assert "missing, linked, or unreadable" in problems[0].message
+
+
+def test_extracted_asar_portrait_matches_exact_contract(tmp_path: Path) -> None:
+    """Accept the exact reviewed bytes after extraction from an ASAR package."""
+
+    portrait = _copy_reviewed_portrait(tmp_path)
+
+    assert check_distribution_assets.audit_extracted_asar_portrait(portrait) == ()
+
+
+def test_extracted_asar_portrait_mutation_is_rejected(tmp_path: Path) -> None:
+    """Reject packaged bytes that differ from the reviewed repository image."""
+
+    portrait = _copy_reviewed_portrait(tmp_path)
+    with portrait.open("r+b") as portrait_stream:
+        portrait_stream.seek(1024)
+        original_byte = portrait_stream.read(1)
+        portrait_stream.seek(1024)
+        portrait_stream.write(bytes((original_byte[0] ^ 0xFF,)))
+
+    problems = check_distribution_assets.audit_extracted_asar_portrait(portrait)
+
+    assert len(problems) == 1
+    assert problems[0].path == "dist/character/elysia-portrait.png"
+    assert "SHA-256" in problems[0].message
 
 
 def test_builder_accepts_only_the_frozen_allowlist(tmp_path: Path) -> None:
@@ -223,6 +321,7 @@ def test_asar_listing_rejects_unicode_paths_and_concealed_archives(
     listing = tmp_path / "asar-listing.txt"
     listing.write_text(
         "\\dist\\index.html\n"
+        "\\dist\\character\\elysia-portrait.png\n"
         "\\ＭＯＤＥＬＳ\\ＷＥＩＧＨＴＳ\\voice.ckpt\n"
         "\\dist\\assets\\voice-pack.zip\n",
         encoding="utf-8",
@@ -231,6 +330,78 @@ def test_asar_listing_rejects_unicode_paths_and_concealed_archives(
     problems = check_distribution_assets.audit_asar_listing(listing)
 
     assert len(problems) == 2
+
+
+@pytest.mark.parametrize(
+    ("portrait_entries", "expected_exact", "expected_normalized"),
+    [
+        ([], 0, 0),
+        (
+            [
+                "\\dist\\character\\elysia-portrait.png",
+                "\\dist\\character\\elysia-portrait.png",
+            ],
+            2,
+            2,
+        ),
+        (
+            [
+                "\\dist\\character\\elysia-portrait.png",
+                "\\DIST\\CHARACTER\\ELYSIA-PORTRAIT.PNG",
+            ],
+            1,
+            2,
+        ),
+        (
+            [
+                "\\dist\\character\\elysia-portrait.png",
+                "\\ｄｉｓｔ\\ｃｈａｒａｃｔｅｒ\\ｅｌｙｓｉａ－ｐｏｒｔｒａｉｔ．ｐｎｇ",
+            ],
+            1,
+            2,
+        ),
+    ],
+)
+def test_asar_listing_requires_exactly_one_reviewed_portrait(
+    tmp_path: Path,
+    portrait_entries: list[str],
+    expected_exact: int,
+    expected_normalized: int,
+) -> None:
+    """Reject missing or duplicate portrait entries in the actual ASAR index."""
+
+    listing = tmp_path / "asar-listing.txt"
+    listing.write_text(
+        "\n".join(["\\dist\\index.html", *portrait_entries]) + "\n",
+        encoding="utf-8",
+    )
+
+    problems = check_distribution_assets.audit_asar_listing(listing)
+
+    assert len(problems) == 1
+    assert problems[0].path == "dist/character/elysia-portrait.png"
+    assert f"found {expected_exact} exact" in problems[0].message
+    assert f"{expected_normalized} normalized" in problems[0].message
+
+
+def test_repository_requires_asar_listing_and_extracted_portrait_together(
+    tmp_path: Path,
+) -> None:
+    """Prevent a package audit from silently omitting either integrity proof."""
+
+    listing = tmp_path / "asar-listing.txt"
+    portrait = tmp_path / "elysia-portrait.png"
+
+    with pytest.raises(check_distribution_assets.DistributionAuditError):
+        check_distribution_assets.audit_repository(
+            _REPOSITORY_ROOT,
+            asar_listing=listing,
+        )
+    with pytest.raises(check_distribution_assets.DistributionAuditError):
+        check_distribution_assets.audit_repository(
+            _REPOSITORY_ROOT,
+            extracted_asar_portrait=portrait,
+        )
 
 
 def test_current_repository_passes_required_distribution_checks() -> None:

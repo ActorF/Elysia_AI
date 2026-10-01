@@ -1,6 +1,6 @@
 # Model & Voice Asset Notice / 模型与语音素材说明
 
-> Last reviewed / 最近核对：2026-09-28
+> Last reviewed / 最近核对：2026-09-30
 
 ## Purpose and Status / 用途与性质
 
@@ -26,6 +26,17 @@ This document records the known provenance, local handling rules, and current au
 | `models/cache/faster-whisper/` and `models/weights/faster-whisper/` | Ignored and currently outside the Git index / 已忽略且当前不在 Git Index 中 | Local speech-recognition models only; the adapter requires an explicit complete directory and never bundles or implicitly downloads weights / 仅存本地的语音识别模型；Adapter 要求明确、完整的目录，不打包也不隐式下载权重 |
 | `data/characters/elysia_character_reference_zh.md` | Tracked / 已跟踪 | Character background and quotations requiring separate source review / 需要单独审查来源的角色背景与语录 |
 | `desktop/public/elysia-icon.png` and `desktop/assets/elysia-icon.ico` | Tracked third-party branding / 已跟踪的第三方品牌素材 | Derived from an official *Honkai Impact 3rd* Elysia signet and included at the project owner's express direction for this unofficial, non-commercial fan project; © HoYoverse / miHoYo, excluded from every source-code license, no endorsement implied, and removable on rights-holder request / 由《崩坏3》爱莉希雅官方刻印制作，并按项目所有者明确决定用于本非官方、非商业粉丝项目；© HoYoverse / miHoYo，不属于任何源码许可证，不代表官方背书，权利人要求时应移除 |
+| `desktop/public/character/elysia-portrait.png` | Tracked reviewed generated fan artwork / 已跟踪并完成固定审核的生成式同人立绘 | Generated with OpenAI's built-in image-generation tool from Elysia reference images supplied by the project owner; distributed only as part of this unofficial, non-commercial fan project, excluded from every source-code license, and authenticated by the distribution audit / 使用 OpenAI 内置图像生成工具并参考项目所有者提供的爱莉希雅图片生成；仅随本非官方、非商业粉丝项目分发，不属于任何源码许可证，并由分发审计验证固定内容 |
+
+### Reviewed generated character portrait / 已审核的生成式角色立绘
+
+The portrait at `desktop/public/character/elysia-portrait.png` was generated on 2026-09-30 with OpenAI's built-in image-generation tool. The generation used three Elysia reference images supplied directly by the project owner plus one pre-existing Elysia portrait from the owner's local asset collection. Those four reference files are not part of this repository or its packages, and this notice does not claim or grant rights in them. The reviewed output is exactly **2,223,154 bytes**, with SHA-256 **`359c2620ac5286cc6c77d533e5c53d1b63fd0fe08fdf42f5952136b7c5bcafb2`**. CI rejects a missing file, a different byte length, or any content mutation at the reviewed repository path. After packaging, it also requires exactly one `dist/character/elysia-portrait.png` ASAR entry and authenticates bytes extracted from that entry against the same size and digest, so a source or package replacement cannot silently inherit this review.
+
+`desktop/public/character/elysia-portrait.png` 中的立绘于 2026-09-30 使用 OpenAI 内置图像生成工具生成，生成时参考了项目所有者本次直接提供的三张爱莉希雅图片，以及所有者本机素材集内原有的一张爱莉希雅立绘。这四张参考文件不属于本仓库或安装包，本说明也不主张或授予对参考文件的权利。审核后的输出固定为 **2,223,154 字节**，SHA-256 为 **`359c2620ac5286cc6c77d533e5c53d1b63fd0fe08fdf42f5952136b7c5bcafb2`**。CI 会拒绝仓库审核路径上的文件缺失、长度变化或任意内容变化；打包后还要求 ASAR 中恰好出现一次 `dist/character/elysia-portrait.png`，并把该条目抽取出的实际字节与同一长度和摘要比对，避免源码或安装包内的替换文件自动继承本次审核结论。
+
+The generated output is still recognizably based on Elysia from *Honkai Impact 3rd*. AI generation does not transfer or erase the underlying character, design, name, or trademark rights, which remain with HoYoverse / miHoYo and other applicable rights holders. Elysia AI claims no affiliation or endorsement, does not sell or separately license the portrait, excludes it from any present or future source-code license, and will remove it upon a valid rights-holder request. Any replacement or derivative must receive a new provenance and distribution review and update the pinned digest and length deliberately.
+
+该生成结果仍明确以《崩坏3》角色爱莉希雅为基础。AI 生成不会转移或消除底层角色、设计、名称或商标权利；相关权利仍归 HoYoverse / 米哈游及其他适用权利人所有。Elysia AI 不声称与官方有关联或获得背书，不售卖或单独授权该立绘，并将其排除在当前及未来的任何源码许可证之外；若收到有效的权利人要求，将移除该素材。任何替换或衍生版本都必须重新完成来源与分发审核，并明确更新固定摘要与字节长度。
 
 The independently started loopback smoke path remains an opt-in, Python-only adapter and reports `service_binding_unverified`, because the upstream API cannot attest which checkpoints its external process actually loaded. Separately, Desktop sentence speech now uses an Elysia-owned managed worker plus a private Electron transport and playback chain. A real local evaluation loaded the selected Elysia GPT/SoVITS checkpoints and returned valid audio through that managed path. This proves technical interoperability on that machine only: it does not establish production readiness, grant distribution rights, or change any asset-authorization gap described below.
 

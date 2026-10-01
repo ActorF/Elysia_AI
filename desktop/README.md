@@ -417,16 +417,21 @@ npm run build
 npm audit --audit-level=high
 npm run package
 npx --no-install asar list out\win-unpacked\resources\app.asar > "%TEMP%\elysia-asar-listing.txt"
+if exist "%TEMP%\elysia-portrait.png" del /f /q "%TEMP%\elysia-portrait.png"
+pushd "%TEMP%"
+call "D:\Elysia_AI\desktop\node_modules\.bin\asar.cmd" extract-file "D:\Elysia_AI\desktop\out\win-unpacked\resources\app.asar" "dist\character\elysia-portrait.png"
+popd
 cd /d D:\Elysia_AI
-.venv\Scripts\python.exe scripts\check_distribution_assets.py --unpacked-tree desktop\out\win-unpacked --asar-listing "%TEMP%\elysia-asar-listing.txt"
-del "%TEMP%\elysia-asar-listing.txt"
+.venv\Scripts\python.exe scripts\check_distribution_assets.py --unpacked-tree desktop\out\win-unpacked --asar-listing "%TEMP%\elysia-asar-listing.txt" --extracted-asar-portrait "%TEMP%\elysia-portrait.png"
+del /f /q "%TEMP%\elysia-asar-listing.txt" "%TEMP%\elysia-portrait.png"
 ```
 
 `npm run package` creates an unpacked desktop build in `desktop\out`.
 On Windows, `npm run make` additionally creates an unsigned NSIS installer.
-The final audit scans the actual package tree and its ASAR listing; neither
-accepted output contains the GPT-SoVITS runtime, Voice Profile catalog, model
-weights, or reference audio.
+The final audit scans the actual package tree and its ASAR listing, then verifies
+the bytes extracted from the ASAR's one required portrait path. Neither accepted
+output contains the GPT-SoVITS runtime, Voice Profile catalog, model weights, or
+reference audio.
 
 The application PNG and Windows ICO are derived from the official *Honkai
 Impact 3rd* Elysia signet at the project owner's express direction for this

@@ -393,12 +393,16 @@ npm audit --audit-level=high
 cd /d D:\Elysia_AI\desktop
 npm run package
 npx --no-install asar list out\win-unpacked\resources\app.asar > "%TEMP%\elysia-asar-listing.txt"
+if exist "%TEMP%\elysia-portrait.png" del /f /q "%TEMP%\elysia-portrait.png"
+pushd "%TEMP%"
+call "D:\Elysia_AI\desktop\node_modules\.bin\asar.cmd" extract-file "D:\Elysia_AI\desktop\out\win-unpacked\resources\app.asar" "dist\character\elysia-portrait.png"
+popd
 cd /d D:\Elysia_AI
-.venv\Scripts\python.exe scripts\check_distribution_assets.py --unpacked-tree desktop\out\win-unpacked --asar-listing "%TEMP%\elysia-asar-listing.txt"
-del "%TEMP%\elysia-asar-listing.txt"
+.venv\Scripts\python.exe scripts\check_distribution_assets.py --unpacked-tree desktop\out\win-unpacked --asar-listing "%TEMP%\elysia-asar-listing.txt" --extracted-asar-portrait "%TEMP%\elysia-portrait.png"
+del /f /q "%TEMP%\elysia-asar-listing.txt" "%TEMP%\elysia-portrait.png"
 ```
 
-The unpacked output is written to `desktop\out\win-unpacked`. The audit scans both the real unpacked tree and its ASAR listing, rejecting model weights, audio, runtime/user data, archives, and link escapes; run it before publishing every artifact. `npm run make` can generate an unsigned NSIS installer, but the current artifact does not include Python, Ollama, or models and is not a standalone release.
+The unpacked output is written to `desktop\out\win-unpacked`. The audit scans the real unpacked tree, the ASAR listing, and the portrait extracted from the exact path in that same ASAR. The portrait must appear exactly once and its packaged bytes must match the pinned length and SHA-256. The audit also rejects model weights, audio, runtime/user data, archives, and link escapes; run it before publishing every artifact. `npm run make` can generate an unsigned NSIS installer, but the current artifact does not include Python, Ollama, or models and is not a standalone release.
 
 ---
 
@@ -526,6 +530,8 @@ In particular, the local model-pack note does not provide complete, verifiable r
 `data/characters/elysia_character_reference_zh.md` is already tracked, while its quotations and voice transcriptions have not received item-level provenance and permission review. This is a current repository-distribution risk rather than something to defer until a formal release; [MODEL_LICENSE.md](./MODEL_LICENSE.md) records the details and recommended actions.
 
 The project owner has expressly selected the official *Honkai Impact 3rd* Elysia signet as public branding for this unofficial, non-commercial fan project. The PNG/ICO is outside any source-code license and remains the property of HoYoverse / miHoYo; this project claims no endorsement and will respond to a rights-holder removal request.
+
+The in-app Elysia portrait was generated with OpenAI's built-in image-generation tool from three references supplied directly by the project owner and one pre-existing portrait in the owner's local asset collection. The four references are not included in the repository or installer; the reviewed PNG is pinned by exact path, byte length, and SHA-256 in the distribution gate, and the real ASAR must contain that path exactly once and pass an extracted-byte verification. The portrait is likewise outside the source-code license and is used only in this unofficial, non-commercial fan project. The underlying Elysia and *Honkai Impact 3rd* character IP remains with HoYoverse / miHoYo and other applicable rights holders; no endorsement is implied, and the project will respond to a valid removal request. See [MODEL_LICENSE.md](./MODEL_LICENSE.md) for the complete record.
 
 ---
 

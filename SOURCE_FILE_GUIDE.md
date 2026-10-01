@@ -117,7 +117,7 @@ start.create_data_portability_service()
 
 | 文件 | 实际用途 | 主要连接 |
 | --- | --- | --- |
-| `.github/workflows/tests.yml` | GitHub Actions 入口；先检查双端源码文档与分发边界，再在 Ubuntu 运行 Python pytest/mypy 和 Desktop lint/typecheck/protocol/UI/build，在 Windows 运行原生集成、构建真实 Unpacked Package，并扫描 Package Tree 与 ASAR 清单。 | `scripts/check_python_documentation.py`、`scripts/check_distribution_assets.py`、`desktop/package.json`、Python/Desktop 测试 |
+| `.github/workflows/tests.yml` | GitHub Actions 入口；先检查双端源码文档与分发边界，再在 Ubuntu 运行 Python pytest/mypy 和 Desktop lint/typecheck/protocol/UI/build，在 Windows 运行原生集成、构建真实 Unpacked Package、扫描 Package Tree/ASAR 清单，并抽取审核立绘验证真实打包字节。 | `scripts/check_python_documentation.py`、`scripts/check_distribution_assets.py`、`desktop/package.json`、Python/Desktop 测试 |
 | `.gitignore` | 排除 `.venv`、Cache、日志、构建产物、私人 `workspace`、`.env` 和模型权重。 | Git 工作树与本地运行数据边界 |
 | `AGENTS.md` | 全仓库源码注释规范；要求文件说明、公开 API 文档、复杂算法/设计/边界原因和具体 TODO/FIXME，并禁止逐行复述普通语句。 | 所有后续源码修改、双端文档覆盖检查、Code Review |
 | `mypy.ini` | 固定 Python 静态类型检查路径规则；只排除被忽略的 `models/cache/` 外部 Runtime，不能误排其他名为 cache 的源码。 | 本地 mypy、GitHub Actions、第三方 Runtime 边界 |
@@ -130,7 +130,7 @@ start.create_data_portability_service()
 | `requirements-stt.txt` | 固定可选的 Faster-Whisper 与 NumPy 版本；只在需要本地单句转写时叠加安装，不包含或下载模型权重。 | `voice/faster_whisper.py`、本地 `.venv`、`models/weights/faster-whisper/<model>` |
 | `scripts/__init__.py` | 把维护脚本标记为可导入 Package，使 Smoke CLI 能同时按模块与文件路径测试。 | `scripts/smoke_gpt_sovits.py`、测试 |
 | `scripts/benchmark_voice_pipeline.py` | Windows 三组件资源基准；以固定内容并发测量 Ollama Streaming 与受管 GPT-SoVITS，随后在模型驻留时执行 CPU Faster-Whisper；只输出脱敏数值，限制总墙钟、响应大小和 GPU 采样，并在失败时独立清理所有自有 Owner。 | `config.SETTINGS`、`desktop_speech.py`、Managed GPT-SoVITS、Faster-Whisper、Ollama、`nvidia-smi` |
-| `scripts/check_distribution_assets.py` | 分发门禁；审计 Git Index 的模型/音频/Runtime/User Data/Archive，冻结完整 Electron Builder 配置，并可扫描真实 Unpacked Tree 与 ASAR 清单；对 Case、Unicode Alias、Link/Junction 和配置逃逸 Fail Closed。 | `MODEL_LICENSE.md`、GitHub Actions、`desktop/package.json`、每次发行产物 |
+| `scripts/check_distribution_assets.py` | 分发门禁；审计 Git Index 的模型/音频/Runtime/User Data/Archive，以路径、字节长度和 SHA-256 固定已审核的公开素材，冻结完整 Electron Builder 配置，并可扫描真实 Unpacked Tree 与 ASAR 清单；ASAR 审计要求立绘路径恰好一次，并验证从同一包抽取的实际字节；对 Case、Unicode Alias、Link/Junction、素材替换和配置逃逸 Fail Closed。 | `MODEL_LICENSE.md`、GitHub Actions、`desktop/package.json`、每次发行产物 |
 | `scripts/check_python_documentation.py` | 用标准库 AST 检查所有受维护 Python 文件的 module、public class、public function/method docstring 覆盖。 | `AGENTS.md`、GitHub Actions、Python 开发验证 |
 | `scripts/gpt_sovits_protocol.py` | 定义主 Python 3.14 与隔离 GPT-SoVITS Python 3.9 共用的固定宽度二进制帧，以及两端共用且有序的 Runtime Manifest 与封闭 Import Path 清单；严格限制消息类型、Canonical JSON Metadata、Request ID 和 32 MiB 原始 Payload，错误与 repr 不暴露内容。 | 受管 Worker/Parent Pipe；不导入 `voice` 或上游 `tools`，避免运行时版本、Manifest 顺序和包名冲突 |
 | `scripts/gpt_sovits_worker.py` | 在隔离 Python 3.9 进程中按父进程传入的稳定 Volume-GUID 路径重算 Voice 资产和部分 Runtime 一致性锚点，固定加载一组 GPT-SoVITS v2 权重与 Reference，拒绝 Config Fallback、热切换、全零错误音频和多 Yield，并通过私有二进制 Pipe 返回完整 PCM WAV。`READY` 只证明父子进程本次观察到同一组已声明内容，不是第三方 Runtime 的完整供应链证明；上层持续持有每个已检查文件的防写/防替换 Guard。 | `scripts/gpt_sovits_protocol.py`、`voice/managed_gpt_sovits.py`、被忽略的本地 GPT-SoVITS Runtime；不经过外部 HTTP API |
@@ -400,6 +400,7 @@ Loader 输出仍是 Raw Structure；后续纯转换生成可重复 Chunk，Embed
 | `desktop/tsconfig.electron.json` | 编译 Electron `.ts/.cts` 到 `dist-electron`；Preload `.cts` 输出 CommonJS `.cjs`。 | `npm run electron:build`、Electron Runtime |
 | `desktop/public/elysia-icon.png` | 由《崩坏3》爱莉希雅官方刻印制作的方形第三方品牌图；供 Browser favicon、开发/打包窗口、Tray 和 README 使用，不属于源码许可。 | `index.html`、Electron Main、README、Vite Public Assets、`MODEL_LICENSE.md` |
 | `desktop/assets/elysia-icon.ico` | 同一官方刻印的多尺寸 Windows ICO 构建资源；不属于源码许可。 | `package.json`、electron-builder、Windows EXE/Installer、`MODEL_LICENSE.md` |
+| `desktop/public/character/elysia-portrait.png` | 使用 OpenAI 内置图像生成工具、参考项目所有者直接提供的三张图片与本机素材集的一张立绘生成的应用内角色图；审核版本由路径、2,223,154 字节和 SHA-256 固定，不属于源码许可。 | Character UI、Vite Public Assets、`scripts/check_distribution_assets.py`、`MODEL_LICENSE.md` |
 | `desktop/benchmarks/measure-shell.ps1` | Electron/Tauri 决策时使用的 Windows 启动、内存、进程树和正常退出 Benchmark。 | Desktop ADR；不参与正常启动 |
 
 ## 16. Electron 可信边界：`desktop/electron/`

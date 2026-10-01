@@ -7319,6 +7319,128 @@ test('keeps global shortcuts inside native modal boundaries', async () => {
   })).toBeFocused()
 })
 
+test('shares one decoded Elysia portrait without disturbing Chat', async () => {
+  await emitSnapshot(readySnapshot({
+    capabilities: [
+      'chat.stream',
+      'voice.settings',
+      'voice.capture',
+      'voice.transcription',
+    ],
+  }))
+  const composer = page.getByLabel('Message Elysia')
+  await composer.fill('Keep this draft while viewing Elysia')
+  await clearCalls()
+
+  await page.getByRole('button', { name: 'Expand Elysia panel' }).click()
+  const panel = page.locator('.character-panel')
+  const panelImage = panel.getByRole('img', {
+    name: 'Elysia character portrait',
+    exact: true,
+  })
+  await expect(panelImage).toBeVisible()
+  await expect.poll(() => panelImage.evaluate((element) => {
+    const image = element as HTMLImageElement
+    return image.complete && image.naturalWidth > 0 && image.naturalHeight > 0
+  })).toBe(true)
+  const panelSource = await panelImage.evaluate(
+    (element) => (element as HTMLImageElement).currentSrc,
+  )
+  expect(panelSource).toContain('/character/elysia-portrait.png')
+  await expect(page.getByText('Character artwork', { exact: true }))
+    .toHaveCount(0)
+  await expect(page.getByText(
+    'Visual assets arrive in a later character feature.',
+    { exact: true },
+  )).toHaveCount(0)
+
+  await panel.getByRole('button', {
+    name: 'Close Elysia character panel',
+  }).click()
+  await expect(panel).toHaveCount(0)
+  await expect(page.locator('#chat-title')).toHaveText('Elysia Chat')
+  await expect(composer).toHaveValue('Keep this draft while viewing Elysia')
+  await expect(composer).toBeEnabled()
+
+  await page.getByRole('button', { name: 'Start voice' }).click()
+  const call = page.getByRole('main', { name: 'Voice capture' })
+  const callImage = call.getByRole('img', {
+    name: 'Elysia character portrait',
+    exact: true,
+  })
+  await expect(callImage).toBeVisible()
+  await expect.poll(() => callImage.evaluate((element) => {
+    const image = element as HTMLImageElement
+    return image.complete && image.naturalWidth > 0 && image.naturalHeight > 0
+  })).toBe(true)
+  await expect.poll(() => callImage.evaluate(
+    (element) => (element as HTMLImageElement).currentSrc,
+  )).toBe(panelSource)
+  await expect(call.getByText('Character artwork', { exact: true }))
+    .toHaveCount(0)
+  await call.getByRole('button', { name: 'Close voice' }).click()
+
+  await composer.focus()
+  await expect(composer).toBeFocused()
+  await composer.press('Enter')
+  await expect.poll(async () => (
+    (await getCalls()).filter((callRecord) => (
+      callRecord.method === 'sendMessage'
+    )).length
+  )).toBe(1)
+})
+
+test('keeps character and Voice controls usable when portrait loading fails', async () => {
+  await emitSnapshot(readySnapshot({
+    capabilities: [
+      'chat.stream',
+      'voice.settings',
+      'voice.capture',
+      'voice.transcription',
+    ],
+  }))
+  await page.getByRole('button', { name: 'Expand Elysia panel' }).click()
+  const panel = page.locator('.character-panel')
+  const panelImage = panel.getByRole('img', {
+    name: 'Elysia character portrait',
+    exact: true,
+  })
+  await panelImage.evaluate((element) => {
+    ;(element as HTMLImageElement).src = 'file:///missing-panel-portrait.png'
+  })
+  await expect(panel.getByRole('img', {
+    name: 'Elysia character portrait unavailable',
+  })).toBeVisible()
+  await expect(panelImage).toHaveCount(0)
+
+  const closePanel = panel.getByRole('button', {
+    name: 'Close Elysia character panel',
+  })
+  await expect(closePanel).toBeEnabled()
+  await closePanel.click()
+  await expect(panel).toHaveCount(0)
+  await expect(page.getByLabel('Message Elysia')).toBeEnabled()
+
+  await page.getByRole('button', { name: 'Start voice' }).click()
+  const call = page.getByRole('main', { name: 'Voice capture' })
+  const callImage = call.getByRole('img', {
+    name: 'Elysia character portrait',
+    exact: true,
+  })
+  await callImage.evaluate((element) => {
+    ;(element as HTMLImageElement).src = 'file:///missing-call-portrait.png'
+  })
+  await expect(call.getByRole('img', {
+    name: 'Elysia character portrait unavailable',
+  })).toBeVisible()
+  await expect(callImage).toHaveCount(0)
+  await expect(call.getByRole('button', { name: 'Start microphone' }))
+    .toBeEnabled()
+  await call.getByRole('button', { name: 'Close voice' }).click()
+  await expect(call).toHaveCount(0)
+  await expect(page.getByLabel('Message Elysia')).toBeEnabled()
+})
+
 test('makes the compact character panel modal and directly dismissible', async () => {
   await emitSnapshot(readySnapshot())
   await setWindowAndZoom(960, 640, 2)
@@ -7331,6 +7453,10 @@ test('makes the compact character panel modal and directly dismissible', async (
     name: 'Close Elysia character panel',
   })
   await expect(panel).toBeVisible()
+  await expect(panel.getByRole('img', {
+    name: 'Elysia character portrait',
+    exact: true,
+  })).toBeVisible()
   await expect(close).toBeFocused()
   await expect(page.locator('#main-content')).toHaveAttribute('inert', '')
 

@@ -1,4 +1,4 @@
-"""Reject local model, voice, runtime-data, and unsafe packaging inclusions.
+"""Reject unsafe packaging inclusions and verify reviewed public assets.
 
 The repository intentionally keeps model weights, reference recordings, runtime
 caches, and user data outside Git and desktop packages.  Ignore rules alone do
@@ -6,6 +6,11 @@ not enforce that boundary because files can be force-added or copied into an
 otherwise allowed build directory.  This checker therefore audits the Git
 index and the Electron Builder allowlist, with optional scans for an unpacked
 application tree and a text listing produced by ``asar list``.
+
+The small set of approved third-party or generated public assets is pinned by
+repository-relative path, byte length, and SHA-256.  That positive allowlist
+prevents an asset replacement from silently inheriting an earlier rights and
+distribution review.
 """
 
 from __future__ import annotations
@@ -13,6 +18,7 @@ from __future__ import annotations
 import argparse
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
+import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -113,6 +119,18 @@ _MAX_JSON_BYTES: Final = 1024 * 1024
 _MAX_ASAR_LISTING_BYTES: Final = 16 * 1024 * 1024
 _MAX_ASAR_ENTRIES: Final = 200_000
 _MAX_PATH_CODE_POINTS: Final = 4096
+_HASH_CHUNK_BYTES: Final = 1024 * 1024
+_REVIEWED_PORTRAIT_SIZE: Final = 2_223_154
+_REVIEWED_PORTRAIT_SHA256: Final = (
+    "359c2620ac5286cc6c77d533e5c53d1b63fd0fe08fdf42f5952136b7c5bcafb2"
+)
+_REVIEWED_ASAR_PORTRAIT_PATH: Final = "dist/character/elysia-portrait.png"
+_REVIEWED_DISTRIBUTION_ASSETS: Final[dict[str, tuple[int, str]]] = {
+    "desktop/public/character/elysia-portrait.png": (
+        _REVIEWED_PORTRAIT_SIZE,
+        _REVIEWED_PORTRAIT_SHA256,
+    ),
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -289,6 +307,137 @@ def audit_git_index(repository_root: Path) -> tuple[DistributionProblem, ...]:
     return audit_distribution_paths(decoded_paths, source="git-index")
 
 
+def _audit_exact_asset(
+    asset_path: Path,
+    *,
+    source: str,
+    logical_path: str,
+    expected_size: int,
+    expected_digest: str,
+) -> tuple[DistributionProblem, ...]:
+    """Authenticate one regular file with bounded reads and stable diagnostics.
+
+    Size is checked before hashing so a malicious oversized replacement cannot
+    make CI read an unbounded file.  The hash loop is capped at one byte beyond
+    the reviewed size as defense against a concurrent append after that check.
+    """
+
+    try:
+        if (
+            asset_path.is_symlink()
+            or (
+                hasattr(os.path, "isjunction")
+                and os.path.isjunction(asset_path)
+            )
+            or not asset_path.is_file()
+        ):
+            raise OSError("asset is not a regular file")
+        reported_size = asset_path.stat().st_size
+    except OSError:
+        return (
+            DistributionProblem(
+                source,
+                logical_path,
+                "reviewed public asset is missing, linked, or unreadable",
+            ),
+        )
+
+    if reported_size != expected_size:
+        return (
+            DistributionProblem(
+                source,
+                logical_path,
+                f"byte length must remain exactly {expected_size}",
+            ),
+        )
+
+    digest = hashlib.sha256()
+    byte_count = 0
+    try:
+        with asset_path.open("rb") as asset_stream:
+            remaining = expected_size + 1
+            while remaining:
+                chunk = asset_stream.read(min(_HASH_CHUNK_BYTES, remaining))
+                if not chunk:
+                    break
+                byte_count += len(chunk)
+                remaining -= len(chunk)
+                digest.update(chunk)
+    except OSError:
+        return (
+            DistributionProblem(
+                source,
+                logical_path,
+                "reviewed public asset became unreadable during verification",
+            ),
+        )
+
+    if byte_count != expected_size:
+        return (
+            DistributionProblem(
+                source,
+                logical_path,
+                f"byte length must remain exactly {expected_size}",
+            ),
+        )
+    if digest.hexdigest() != expected_digest:
+        return (
+            DistributionProblem(
+                source,
+                logical_path,
+                "SHA-256 does not match the reviewed public asset",
+            ),
+        )
+    return ()
+
+
+def audit_reviewed_assets(repository_root: Path) -> tuple[DistributionProblem, ...]:
+    """Require every reviewed repository asset to retain its approved bytes.
+
+    A generated or third-party image can remain at an innocuous ``.png`` path
+    while its content changes completely.  The ordinary extension denylist
+    cannot detect that replacement, so these exceptional distributable assets
+    are authenticated separately by canonical path, length, and digest.
+    """
+
+    root = repository_root.resolve()
+    problems: list[DistributionProblem] = []
+    for relative_path, (expected_size, expected_digest) in (
+        _REVIEWED_DISTRIBUTION_ASSETS.items()
+    ):
+        asset_path = root.joinpath(*PurePosixPath(relative_path).parts)
+        problems.extend(
+            _audit_exact_asset(
+                asset_path,
+                source="reviewed-asset",
+                logical_path=relative_path,
+                expected_size=expected_size,
+                expected_digest=expected_digest,
+            )
+        )
+    return tuple(problems)
+
+
+def audit_extracted_asar_portrait(
+    extracted_portrait: Path,
+) -> tuple[DistributionProblem, ...]:
+    """Authenticate the portrait bytes extracted from the packaged ASAR.
+
+    The caller must extract the exact logical path named by
+    ``_REVIEWED_ASAR_PORTRAIT_PATH`` from the just-built archive.  Pairing this
+    check with ``audit_asar_listing`` proves both archive placement/cardinality
+    and the bytes actually stored in that archive.
+    """
+
+    return _audit_exact_asset(
+        extracted_portrait,
+        source="asar-reviewed-asset",
+        logical_path=_REVIEWED_ASAR_PORTRAIT_PATH,
+        expected_size=_REVIEWED_PORTRAIT_SIZE,
+        expected_digest=_REVIEWED_PORTRAIT_SHA256,
+    )
+
+
 def _load_package_json(package_path: Path) -> Mapping[str, object]:
     """Load bounded strict JSON for the Electron package declaration."""
 
@@ -454,7 +603,7 @@ def audit_unpacked_tree(unpacked_root: Path) -> tuple[DistributionProblem, ...]:
 
 
 def audit_asar_listing(listing_path: Path) -> tuple[DistributionProblem, ...]:
-    """Audit a bounded UTF-8 text listing previously produced by ``asar list``."""
+    """Audit a bounded ASAR listing and require one exact portrait entry."""
 
     try:
         if not listing_path.is_file() or listing_path.stat().st_size > _MAX_ASAR_LISTING_BYTES:
@@ -465,7 +614,42 @@ def audit_asar_listing(listing_path: Path) -> tuple[DistributionProblem, ...]:
     if len(lines) > _MAX_ASAR_ENTRIES:
         raise DistributionAuditError("ASAR listing contains too many entries.")
     paths = [line.strip() for line in lines if line.strip()]
-    return audit_distribution_paths(paths, source="asar-listing")
+    problems = list(audit_distribution_paths(paths, source="asar-listing"))
+
+    # The listing is the archive's source of truth for placement and
+    # cardinality.  Slash direction and one archive-root marker vary by host,
+    # but case and Unicode spelling remain exact so aliases cannot satisfy the
+    # reviewed path contract.
+    expected_components = _normalize_distribution_path(
+        _REVIEWED_ASAR_PORTRAIT_PATH
+    )
+    exact_portrait_count = 0
+    portrait_alias_count = 0
+    for path in paths:
+        portable_path = path.replace("\\", "/")
+        if portable_path.startswith("/"):
+            portable_path = portable_path[1:]
+        if portable_path == _REVIEWED_ASAR_PORTRAIT_PATH:
+            exact_portrait_count += 1
+        try:
+            if _normalize_distribution_path(path) == expected_components:
+                portrait_alias_count += 1
+        except DistributionAuditError:
+            # The generic path audit already reports malformed entries; they
+            # cannot count toward the reviewed portrait contract.
+            continue
+    if exact_portrait_count != 1 or portrait_alias_count != 1:
+        problems.append(
+            DistributionProblem(
+                "asar-listing",
+                _REVIEWED_ASAR_PORTRAIT_PATH,
+                "reviewed portrait must appear exactly once in the ASAR "
+                "listing without case or Unicode aliases "
+                f"(found {exact_portrait_count} exact, "
+                f"{portrait_alias_count} normalized)",
+            )
+        )
+    return tuple(problems)
 
 
 def audit_repository(
@@ -473,18 +657,31 @@ def audit_repository(
     *,
     unpacked_root: Path | None = None,
     asar_listing: Path | None = None,
+    extracted_asar_portrait: Path | None = None,
 ) -> tuple[DistributionProblem, ...]:
     """Run the required repository checks plus any requested artifact scans."""
+
+    if (asar_listing is None) != (extracted_asar_portrait is None):
+        raise DistributionAuditError(
+            "ASAR listing and extracted reviewed portrait must be audited together."
+        )
 
     root = repository_root.resolve()
     problems = [
         *audit_git_index(root),
+        *audit_reviewed_assets(root),
         *audit_desktop_builder(root / "desktop" / "package.json"),
     ]
     if unpacked_root is not None:
         problems.extend(audit_unpacked_tree(unpacked_root.resolve()))
     if asar_listing is not None:
         problems.extend(audit_asar_listing(asar_listing.resolve()))
+    if extracted_asar_portrait is not None:
+        problems.extend(
+            # Do not resolve this path before the regular-file check: resolving
+            # would hide a symlink supplied in place of the extracted payload.
+            audit_extracted_asar_portrait(extracted_asar_portrait)
+        )
     return tuple(problems)
 
 
@@ -492,7 +689,9 @@ def _parse_arguments(arguments: Sequence[str] | None) -> argparse.Namespace:
     """Parse command-line inputs for local and CI distribution checks."""
 
     parser = argparse.ArgumentParser(
-        description="Check that local model and voice assets cannot be distributed.",
+        description=(
+            "Check distribution exclusions and authenticate reviewed public assets."
+        ),
     )
     parser.add_argument(
         "--repository-root",
@@ -510,6 +709,14 @@ def _parse_arguments(arguments: Sequence[str] | None) -> argparse.Namespace:
         type=Path,
         help="Optional UTF-8 output captured from `asar list`.",
     )
+    parser.add_argument(
+        "--extracted-asar-portrait",
+        type=Path,
+        help=(
+            "Portrait extracted from dist/character/elysia-portrait.png in the "
+            "same ASAR represented by --asar-listing."
+        ),
+    )
     return parser.parse_args(arguments)
 
 
@@ -522,6 +729,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
             options.repository_root,
             unpacked_root=options.unpacked_tree,
             asar_listing=options.asar_listing,
+            extracted_asar_portrait=options.extracted_asar_portrait,
         )
     except DistributionAuditError as error:
         print(f"Distribution asset check failed: {error}")
@@ -533,11 +741,14 @@ def main(arguments: Sequence[str] | None = None) -> int:
         print(f"Distribution asset check failed: {len(problems)} problem(s).")
         return 1
 
-    optional_count = int(options.unpacked_tree is not None) + int(
-        options.asar_listing is not None
+    optional_count = (
+        int(options.unpacked_tree is not None)
+        + int(options.asar_listing is not None)
+        + int(options.extracted_asar_portrait is not None)
     )
     print(
-        "Distribution asset check passed: Git index, Electron Builder, "
+        "Distribution asset check passed: Git index, reviewed public assets, "
+        "Electron Builder, "
         f"and {optional_count} optional artifact input(s)."
     )
     return 0

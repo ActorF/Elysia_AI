@@ -348,12 +348,16 @@ npm audit --audit-level=high
 cd /d D:\Elysia_AI\desktop
 npm run package
 npx --no-install asar list out\win-unpacked\resources\app.asar > "%TEMP%\elysia-asar-listing.txt"
+if exist "%TEMP%\elysia-portrait.png" del /f /q "%TEMP%\elysia-portrait.png"
+pushd "%TEMP%"
+call "D:\Elysia_AI\desktop\node_modules\.bin\asar.cmd" extract-file "D:\Elysia_AI\desktop\out\win-unpacked\resources\app.asar" "dist\character\elysia-portrait.png"
+popd
 cd /d D:\Elysia_AI
-.venv\Scripts\python.exe scripts\check_distribution_assets.py --unpacked-tree desktop\out\win-unpacked --asar-listing "%TEMP%\elysia-asar-listing.txt"
-del "%TEMP%\elysia-asar-listing.txt"
+.venv\Scripts\python.exe scripts\check_distribution_assets.py --unpacked-tree desktop\out\win-unpacked --asar-listing "%TEMP%\elysia-asar-listing.txt" --extracted-asar-portrait "%TEMP%\elysia-portrait.png"
+del /f /q "%TEMP%\elysia-asar-listing.txt" "%TEMP%\elysia-portrait.png"
 ```
 
-输出位于 `desktop\out\win-unpacked`。审计会同时检查真实 Unpacked Tree 和 ASAR 清单，并拒绝模型权重、音频、Runtime/User Data、压缩包或链接逃逸；它必须在每次发布产物前运行。`npm run make` 可以生成未签名的 NSIS Installer，但当前产物不包含 Python、Ollama 或模型，不能视为独立发行版。
+输出位于 `desktop\out\win-unpacked`。审计会同时检查真实 Unpacked Tree、ASAR 清单和从同一 ASAR 精确路径抽取的角色立绘；立绘必须恰好出现一次，且实际打包字节必须符合固定长度与 SHA-256。审计也会拒绝模型权重、音频、Runtime/User Data、压缩包或链接逃逸；它必须在每次发布产物前运行。`npm run make` 可以生成未签名的 NSIS Installer，但当前产物不包含 Python、Ollama 或模型，不能视为独立发行版。
 
 ---
 
@@ -466,6 +470,8 @@ cd /d D:\Elysia_AI\desktop
 `data/characters/elysia_character_reference_zh.md` 已被 Git 跟踪，其中语录与语音转写尚未完成逐条来源和授权审查。这是当前仓库的分发风险，不应等到正式发行时才处理；详情与建议动作同样记录在 [MODEL_LICENSE.md](./MODEL_LICENSE.md)。
 
 项目所有者明确选择把《崩坏3》爱莉希雅官方刻印作为本非官方、非商业粉丝项目的公开品牌素材。PNG/ICO 不属于项目源码许可，相关权利仍归 HoYoverse / miHoYo；本项目不声称获得官方背书，并会响应权利人的移除要求。
+
+应用内的爱莉希雅立绘由 OpenAI 内置图像生成工具参考项目所有者本次直接提供的三张图片，以及所有者本机素材集内原有的一张立绘生成。这四张参考图片不进入仓库或安装包；审核后的 PNG 以准确路径、字节长度和 SHA-256 固定在分发门禁中，真实 ASAR 还必须恰好包含一次该路径并通过抽取字节复核。该立绘同样不属于源码许可，只用于本非官方、非商业粉丝项目；底层爱莉希雅与《崩坏3》角色 IP 仍归 HoYoverse / miHoYo 等适用权利人所有，不代表官方背书，并会响应有效的权利人移除要求。完整记录见 [MODEL_LICENSE.md](./MODEL_LICENSE.md)。
 
 ---
 

@@ -5,6 +5,7 @@
 
 import type { BackendSnapshot } from '../../electron/contracts.ts'
 import { Icon } from '../design-system/Icon.tsx'
+import { CharacterArtwork } from './CharacterArtwork.tsx'
 
 interface CharacterPanelProps {
   chatTitle: string
@@ -55,19 +56,10 @@ export function CharacterPanel({
       </div>
 
       <div className="character-card">
-        <div
-          className="character-portrait"
-          aria-label="Character artwork placeholder"
-          role="img"
-        >
-          <div className="portrait-hair" />
-          <div className="portrait-face" />
-          <div className="portrait-shoulders" />
-          <span>Character artwork</span>
-        </div>
+        <CharacterArtwork className="character-portrait" />
         <div className="character-caption">
           <strong>Pink fairy at your side</strong>
-          <span>Visual assets arrive in a later character feature.</span>
+          <span>Elysia's portrait accompanies your local conversations.</span>
         </div>
       </div>
 
