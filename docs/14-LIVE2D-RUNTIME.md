@@ -45,6 +45,14 @@ archives, even if a copied model was moved or its parent directory renamed.
 Only the exact reviewed model-independent compatibility runtime and license
 paths may be packaged below `character/live2d`.
 
+Settings uses a visibly styled native-folder control for either an existing
+paid pack or a free pack. In the development checkout only, the first picker
+defaults to the generic `data/characters` parent when it exists. The local
+paid-pack child is Git-ignored, and its folder name is not compiled into public
+code. Installed builds do not probe that source-tree location. The selected
+absolute path remains in Main, and the Renderer receives only a safe folder
+name and opaque model summaries.
+
 The former project-generated `desktop/public/character/live2d/elysia` model,
 face master, 21-layer authoring stack, build wrappers, and face-alignment gate
 have been removed. They are not a fallback and must not be recreated by the

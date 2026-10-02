@@ -83,6 +83,7 @@ memory/test_memory.txt
 node_modules/
 dist-electron/
 out/
+/desktop/out-picker-validation*/
 *.tsbuildinfo
 npm-debug.log*
 test-results/

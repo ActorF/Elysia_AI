@@ -18,6 +18,17 @@ const PLAYBACK_IDS = [
   '00000000-0000-4000-8000-000000000005',
   '00000000-0000-4000-8000-000000000006',
 ]
+const DESKTOP_PET_PICKER_STATE = Object.freeze({
+  folderName: '付费模型',
+  libraryStatus: 'ready',
+  mode: 'disabled',
+  models: [],
+  revision: 3,
+  runtime: 'absent',
+  selectedModelId: null,
+  updatedAt: '2026-10-02T12:00:00.000Z',
+  warning: null,
+})
 
 const operations = []
 const settlements = []
@@ -34,8 +45,12 @@ class FakeIpcRenderer extends EventEmitter {
     if (channel === SETTLED_CHANNEL) settlements.push(value)
   }
 
-  /** Return only the settings used by the trusted speech path. */
+  /** Return closed fixtures for the specific Preload capabilities under test. */
   invoke(channel) {
+    if (channel === 'desktop-pet:choose-model-directory') {
+      operations.push('desktop-pet-picker')
+      return Promise.resolve(DESKTOP_PET_PICKER_STATE)
+    }
     if (channel === 'voice:settings-get') {
       operations.push('settings')
       if (deferSettings) {
@@ -339,6 +354,13 @@ test('audio plays through gain without creating or sampling a mouth analyser', a
     playbackId: PLAYBACK_IDS[0],
     status: 'played',
   }])
+})
+
+test('main-window preload invokes the exact Desktop Pet directory channel', async () => {
+  const result = await exposedApis[0].api.chooseDesktopPetModelDirectory()
+
+  assert.deepEqual(result, DESKTOP_PET_PICKER_STATE)
+  assert.equal(operations.includes('desktop-pet-picker'), true)
 })
 
 test('sink-selection failure never falls back to the default output', async () => {

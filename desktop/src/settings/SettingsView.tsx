@@ -470,24 +470,25 @@ function AppearanceSettings({
       </div>
       <div className="desktop-pet-library" aria-label="Desktop Pet model library">
         <p className="desktop-pet-note">
-          Models by @书呆儿 are not included. Download the free pack, then choose
-          its folder; Elysia lists only models it can validate on this device.
+          Use a Live2D pack already on this computer, including a paid pack you
+          own. Models by @书呆儿 are not included or copied; Elysia lists only
+          models it can validate inside the local folder you choose.
         </p>
         <div className="desktop-pet-actions">
+          <button
+            type="button"
+            className="primary-button"
+            disabled={desktopPetBusy}
+            onClick={() => { void onChooseDesktopPetModelDirectory() }}
+          >
+            {desktopPetBusy ? 'Scanning…' : 'Choose local Live2D folder…'}
+          </button>
           <button
             type="button"
             className="secondary-button"
             onClick={() => { void onOpenDesktopPetDownload() }}
           >
-            Download free Live2D pack
-          </button>
-          <button
-            type="button"
-            className="secondary-button"
-            disabled={desktopPetBusy}
-            onClick={() => { void onChooseDesktopPetModelDirectory() }}
-          >
-            {desktopPetBusy ? 'Scanning…' : 'Choose downloaded folder'}
+            Download optional free pack
           </button>
           <button
             type="button"
@@ -530,9 +531,12 @@ function AppearanceSettings({
           {desktopPetState === null
             ? 'Loading the model library…'
             : desktopPetState.folderName === null
-              ? 'No model folder selected.'
+              ? 'No local Live2D folder selected.'
               : `${desktopPetState.models.length} compatible model${desktopPetState.models.length === 1 ? '' : 's'} detected in ${desktopPetState.folderName}.`}
         </p>
+        {desktopPetError !== null && (
+          <p className="desktop-pet-error" role="alert">{desktopPetError}</p>
+        )}
       </div>
       <fieldset
         className="theme-options desktop-pet-options"
@@ -605,9 +609,6 @@ function AppearanceSettings({
         <p className="desktop-pet-warning" role="status">
           {desktopPetState.warning}
         </p>
-      )}
-      {desktopPetError !== null && (
-        <p className="desktop-pet-error" role="alert">{desktopPetError}</p>
       )}
       <p className="resolved-theme" role="status" aria-live="polite">
         Elysia is rendered in {resolvedTheme.toLowerCase()} mode with static character artwork.

@@ -76,6 +76,13 @@ pack is credited to `@书呆儿`; it is never copied into the repository, upload
 or packaged. Settings links to the purported free pack at
 <https://pan.quark.cn/s/cb5d84acad8e>, but this project has not verified that
 link's current contents or terms.
+The primary **Choose local Live2D folder…** control accepts an already-owned
+paid or free pack through the native picker; downloading the free pack is
+optional. In a development checkout, the picker starts at the generic
+`data/characters` parent when it exists. The paid-pack child is Git-ignored,
+and its folder name is not compiled into public code. Packaged builds never
+probe that development location, and the absolute selected path remains
+private to Electron Main.
 Electron Main owns the strict `disabled / hidden / visible` preference, private
 library/resource paths, private display placement, and at most one
 transparent, always-on-top native window. `hidden` destroys the dedicated

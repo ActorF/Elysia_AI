@@ -182,6 +182,49 @@ svg {
   object-fit: cover;
 }
 
+.primary-button,
+.secondary-button {
+  display: inline-flex;
+  gap: var(--space-2);
+  align-items: center;
+  justify-content: center;
+  min-height: var(--control-height-lg);
+  padding-inline: var(--space-4);
+  border: 1px solid transparent;
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  transition:
+    color var(--motion-duration-fast) var(--motion-easing-standard),
+    background var(--motion-duration-fast) var(--motion-easing-standard),
+    border-color var(--motion-duration-fast) var(--motion-easing-standard);
+}
+
+.primary-button {
+  color: var(--color-accent-contrast);
+  background: var(--color-accent);
+}
+
+.primary-button:hover:not(:disabled) {
+  background: var(--color-accent-hover);
+}
+
+.secondary-button {
+  color: var(--color-text-secondary);
+  background: var(--color-bg-surface);
+  border-color: var(--color-border-strong);
+}
+
+.secondary-button:hover:not(:disabled) {
+  color: var(--color-text-primary);
+  background: var(--color-bg-hover);
+}
+
+.primary-button:disabled,
+.secondary-button:disabled {
+  opacity: var(--opacity-disabled);
+}
+
 .icon-button,
 .tiny-button,
 .tool-button,

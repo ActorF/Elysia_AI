@@ -2340,10 +2340,10 @@ test('configures detected Desktop Pet models before enabling the window', async 
   await openSettings()
 
   const download = page.getByRole('button', {
-    name: 'Download free Live2D pack',
+    name: 'Download optional free pack',
   })
   const chooseFolder = page.getByRole('button', {
-    name: 'Choose downloaded folder',
+    name: 'Choose local Live2D folder…',
   })
   const rescan = page.getByRole('button', { name: 'Rescan' })
   const model = page.getByRole('combobox', { name: 'Dynamic model' })
@@ -2359,7 +2359,39 @@ test('configures detected Desktop Pet models before enabling the window', async 
   await expect(visible).toBeDisabled()
   await expect(model).toBeDisabled()
   await expect(rescan).toBeDisabled()
-  await expect(page.getByText('No model folder selected.')).toBeVisible()
+  await expect(page.getByText('No local Live2D folder selected.')).toBeVisible()
+  await expect(page.locator('.desktop-pet-library .desktop-pet-note').first()).toContainText(
+    'Use a Live2D pack already on this computer, including a paid pack you own.',
+  )
+  await expect(page.getByText(
+    'Download the free pack, then choose its folder',
+    { exact: false },
+  )).toHaveCount(0)
+  await expect(chooseFolder).toBeVisible()
+  await expect(chooseFolder).toBeEnabled()
+  const chooseFolderPresentation = await chooseFolder.evaluate((element) => {
+    const style = window.getComputedStyle(element)
+    const bounds = element.getBoundingClientRect()
+    return {
+      backgroundColor: style.backgroundColor,
+      height: bounds.height,
+      opacity: Number(style.opacity),
+      paddingLeft: Number.parseFloat(style.paddingLeft),
+      paddingRight: Number.parseFloat(style.paddingRight),
+      pointerEvents: style.pointerEvents,
+      tagName: element.tagName,
+      width: bounds.width,
+    }
+  })
+  expect(chooseFolderPresentation.tagName).toBe('BUTTON')
+  expect(chooseFolderPresentation.opacity).toBeGreaterThan(0)
+  expect(chooseFolderPresentation.backgroundColor).not.toBe('rgba(0, 0, 0, 0)')
+  expect(chooseFolderPresentation.backgroundColor).not.toBe('transparent')
+  expect(chooseFolderPresentation.paddingRight).toBeGreaterThan(0)
+  expect(chooseFolderPresentation.paddingLeft).toBeGreaterThan(0)
+  expect(chooseFolderPresentation.pointerEvents).not.toBe('none')
+  expect(Math.round(chooseFolderPresentation.width)).toBeGreaterThanOrEqual(44)
+  expect(Math.round(chooseFolderPresentation.height)).toBeGreaterThanOrEqual(44)
   await expect(page.getByText(
     'Preference: disabled. Native window: absent.',
   )).toBeVisible()

@@ -66,6 +66,10 @@ import {
   type DesktopPetModelLibraryScan,
 } from './desktop-pet-model-library.js'
 import {
+  resolveDesktopPetPickerDefaultPath,
+  selectedDesktopPetDirectory,
+} from './desktop-pet-directory-picker.js'
+import {
   DESKTOP_PET_MAX_HEIGHT_DIP,
   DESKTOP_PET_MAX_WIDTH_DIP,
   DesktopPetPreferencesRepository,
@@ -1226,16 +1230,24 @@ async function scanConfiguredDesktopPetLibrary(
 }
 
 async function chooseDesktopPetModelDirectory(): Promise<DesktopPetState> {
-  const result = await dialog.showOpenDialog(requireMainWindow(), {
-    title: 'Choose a downloaded Live2D model folder',
-    buttonLabel: 'Use this folder',
-    properties: ['openDirectory', 'dontAddToRecent'],
-  })
-  if (result.canceled || result.filePaths.length !== 1) {
-    return requireDesktopPetPreferences().state
-  }
   try {
-    const scan = await scanDesktopPetModelLibrary(result.filePaths[0]!)
+    const current = requireDesktopPetPreferences()
+    const defaultPath = await resolveDesktopPetPickerDefaultPath(
+      current.libraryPath,
+      resolveProjectRoot(),
+      app.isPackaged,
+    )
+    const result = await dialog.showOpenDialog(requireMainWindow(), {
+      title: 'Choose a local Live2D model folder',
+      buttonLabel: 'Use this folder',
+      properties: ['openDirectory', 'dontAddToRecent'],
+      ...(defaultPath === undefined ? {} : { defaultPath }),
+    })
+    const selectedDirectory = selectedDesktopPetDirectory(result)
+    if (selectedDirectory === null) {
+      return requireDesktopPetPreferences().state
+    }
+    const scan = await scanDesktopPetModelLibrary(selectedDirectory)
     return installScannedDesktopPetLibrary(scan, true)
   } catch (error) {
     const message = error instanceof DesktopPetModelLibraryUnavailableError
