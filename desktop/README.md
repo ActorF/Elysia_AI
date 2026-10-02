@@ -297,7 +297,7 @@ Git-ignored and must not be committed or packaged with the application.
 - Unsent Chat text is stored per Chat on this device. Refreshing or reopening
   the renderer restores that draft, while a renderer refresh during generation
   reconnects to the request still owned by Electron.
-- Use the paperclip or drag and drop to stage files for the exact active Chat.
+- Use the small plus beside the model selector, or drag and drop onto the composer, to stage files for the exact active Chat.
   Chat attachments remain message-scoped and are not implicitly promoted into
   a Project corpus. Selection cancellation is a no-op, failed sends keep the
   Chat draft, and removing a file never affects another Chat or Project.

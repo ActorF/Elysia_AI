@@ -1871,6 +1871,26 @@ svg {
   box-shadow: var(--shadow-floating);
 }
 
+.attachment-surface-compact {
+  margin: 0 auto;
+}
+
+.attachment-surface-compact.drag-active {
+  background: color-mix(in srgb, var(--color-accent-soft) 72%, var(--color-bg-raised));
+  border-color: var(--color-accent);
+}
+
+.attachment-surface-compact > .attachment-operation-error,
+.attachment-surface-compact > .attachment-operation-status {
+  margin: 0 0 var(--space-2);
+}
+
+.attachment-surface-compact > .attachment-list {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr));
+  max-height: 6.5rem;
+  margin: 0 0 var(--space-2);
+}
+
 .composer-card:focus-within {
   border-color: color-mix(in srgb, var(--color-border-focus) 56%, var(--color-border));
   box-shadow:
@@ -1929,6 +1949,24 @@ svg {
 .tool-button svg {
   width: 1.125rem;
   height: 1.125rem;
+}
+
+.composer-attachment-button {
+  width: var(--control-height-sm);
+  height: var(--control-height-sm);
+  color: var(--color-accent-hover);
+  background: var(--color-bg-soft);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-full);
+}
+
+.composer-attachment-button:disabled {
+  opacity: var(--opacity-disabled);
+}
+
+.composer-attachment-button svg {
+  width: var(--icon-size-sm);
+  height: var(--icon-size-sm);
 }
 
 .phone-button {

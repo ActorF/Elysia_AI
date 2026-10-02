@@ -7623,6 +7623,126 @@ test('rescues a retry edit whose Chat was deleted', async () => {
   )).toBeVisible()
 })
 
+test('places a compact attachment picker immediately before the model selector', async () => {
+  await emitSnapshot(readySnapshot())
+  const chatFiles = page.getByRole('region', { name: /This message/ })
+  const chooseFiles = chatFiles.getByRole('button', {
+    name: 'Choose files',
+    exact: true,
+  })
+
+  await expect(chooseFiles).toBeVisible()
+  await expect(chatFiles.locator('.attachment-surface-heading')).toHaveCount(0)
+  await expect(chatFiles.locator('.attachment-empty-dropzone')).toHaveCount(0)
+  await expect(chatFiles.getByText('Choose files or drop them here')).toHaveCount(0)
+
+  const layout = await chatFiles.evaluate((surface) => {
+    const trigger = surface.querySelector('[aria-label="Choose files"]')
+    const picker = surface.querySelector('.model-picker')
+    if (!(trigger instanceof HTMLElement) || !(picker instanceof HTMLElement)) {
+      throw new Error('Missing compact attachment or model control.')
+    }
+    const triggerBounds = trigger.getBoundingClientRect()
+    const pickerBounds = picker.getBoundingClientRect()
+    return {
+      isComposerCard: surface.classList.contains('composer-card'),
+      sameToolbar: trigger.parentElement === picker.parentElement,
+      triggerHeight: triggerBounds.height,
+      triggerWidth: triggerBounds.width,
+      triggerBeforePicker: (
+        trigger.compareDocumentPosition(picker)
+        & Node.DOCUMENT_POSITION_FOLLOWING
+      ) !== 0,
+      visuallyBeforePicker: triggerBounds.right <= pickerBounds.left + 1,
+    }
+  })
+
+  expect(layout.isComposerCard).toBe(true)
+  expect(layout.sameToolbar).toBe(true)
+  expect(layout.triggerBeforePicker).toBe(true)
+  expect(layout.visuallyBeforePicker).toBe(true)
+  expect(layout.triggerHeight).toBeGreaterThanOrEqual(28)
+  expect(layout.triggerHeight).toBeLessThanOrEqual(36)
+  expect(layout.triggerWidth).toBe(layout.triggerHeight)
+})
+
+test('does not restore stale attachment drag state after returning to a Chat', async () => {
+  const chatA = chatSummary('chat-a', 'Chat A')
+  const chatB = chatSummary('chat-b', 'Chat B')
+  await setChatState({
+    activeChat: { ...chatA, messages: [] },
+    chats: [chatA, chatB],
+  })
+  await emitSnapshot(readySnapshot({
+    chatId: chatA.chatId,
+    chatTitle: chatA.title,
+  }))
+
+  const chatFiles = page.getByRole('region', { name: /This message/ })
+  await chatFiles.evaluate((surface) => {
+    const transfer = new DataTransfer()
+    transfer.items.add(new File(['temporary'], 'stale-drag.txt'))
+    surface.dispatchEvent(new DragEvent('dragenter', {
+      bubbles: true,
+      cancelable: true,
+      dataTransfer: transfer,
+    }))
+  })
+  await expect(chatFiles).toHaveClass(/drag-active/)
+
+  await page.getByRole('button', { name: 'Open chat Chat B' }).click()
+  await expect(page.locator('#chat-title')).toHaveText('Chat B')
+  await expect(chatFiles).not.toHaveClass(/drag-active/)
+  await page.getByRole('button', { name: 'Open chat Chat A' }).click()
+  await expect(page.locator('#chat-title')).toHaveText('Chat A')
+  await expect(chatFiles).not.toHaveClass(/drag-active/)
+  await expect(chatFiles.getByText(/Drop files into This message/)).toHaveCount(0)
+})
+
+test('does not move focus across Chats when attachment removal finishes', async () => {
+  const chatA = chatSummary('chat-a', 'Chat A')
+  const chatB = chatSummary('chat-b', 'Chat B')
+  await setChatState({
+    activeChat: { ...chatA, messages: [] },
+    chats: [chatA, chatB],
+  })
+  await emitSnapshot(readySnapshot({
+    chatId: chatA.chatId,
+    chatTitle: chatA.title,
+  }))
+  await page.evaluate(() => {
+    ;(window as TestWindow).elysiaDesktopTest.setSelectedFiles([
+      { name: 'remove-from-a.txt', sizeBytes: 128 },
+    ])
+  })
+  await page.getByRole('button', { name: 'Choose files', exact: true }).click()
+
+  await page.evaluate(() => {
+    ;(window as TestWindow).elysiaDesktopTest.setAttachmentActionDelay(true)
+  })
+  await page.getByRole('button', { name: 'Remove remove-from-a.txt' }).click()
+  await expect.poll(async () => page.evaluate(() => (
+    (window as TestWindow).elysiaDesktopTest.getPendingAttachmentActionCount()
+  ))).toBe(1)
+
+  await page.getByRole('button', { name: 'Open chat Chat B' }).click()
+  await expect(page.locator('#chat-title')).toHaveText('Chat B')
+  const nextComposer = page.getByLabel('Message Elysia')
+  await nextComposer.focus()
+  await expect(nextComposer).toBeFocused()
+
+  await page.evaluate(() => {
+    const control = (window as TestWindow).elysiaDesktopTest
+    control.releaseNextAttachmentAction()
+    control.setAttachmentActionDelay(false)
+  })
+  await expect.poll(async () => page.evaluate(() => (
+    (window as TestWindow).elysiaDesktopTest.getPendingAttachmentActionCount()
+  ))).toBe(0)
+  await waitForTwoAnimationFrames()
+  await expect(nextComposer).toBeFocused()
+})
+
 test('preserves picker drafts on cancel and recovers a failed keyboard removal', async () => {
   await emitSnapshot(readySnapshot())
   await page.evaluate(() => {
@@ -7670,13 +7790,18 @@ test('preserves picker drafts on cancel and recovers a failed keyboard removal',
 
   await firstRemove.click()
   await expect(chatFiles.getByText('课程笔记🙂.md', { exact: true })).toHaveCount(0)
-  await expect(chatFiles.getByRole('button', { name: 'Remove reference.pdf' }))
-    .toBeFocused()
+  const finalRemove = chatFiles.getByRole('button', { name: 'Remove reference.pdf' })
+  await expect(finalRemove).toBeFocused()
+  await finalRemove.click()
+  await expect(chatFiles.getByRole('button', {
+    name: 'Choose files',
+    exact: true,
+  })).toBeFocused()
 
   const calls = await getCalls()
   expect(calls.filter((call) => call.method === 'chooseAttachments').at(-1)?.args)
     .toEqual([{ kind: 'chat', id: 'chat-test' }])
-  expect(calls.filter((call) => call.method === 'removeAttachment')).toHaveLength(2)
+  expect(calls.filter((call) => call.method === 'removeAttachment')).toHaveLength(3)
 })
 
 test('adds a dropped file, retains it after send rejection, and persists its chip', async () => {

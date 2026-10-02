@@ -6,9 +6,12 @@
  */
 
 import {
+  useLayoutEffect,
   useRef,
   useState,
+  type ReactNode,
   type DragEvent,
+  type RefObject,
 } from 'react'
 
 import type {
@@ -20,6 +23,10 @@ import { Icon } from '../design-system/Icon.tsx'
 
 export interface AttachmentSurfaceProps {
   adding: boolean
+  /** Render Chat attachment feedback inside the compact composer card. */
+  compact?: boolean
+  /** Supply the composer contents that share this surface's drop target. */
+  children?: ReactNode
   disabled?: boolean
   error: string | null
   label: string
@@ -27,6 +34,8 @@ export interface AttachmentSurfaceProps {
   removingIds: string[]
   scope: AttachmentScope
   state: AttachmentState | null
+  /** Focus the compact picker after its final attachment is removed. */
+  triggerRef?: RefObject<HTMLButtonElement | null>
   /** Request native file selection for this attachment scope. */
   onChoose(): void
   /** Clear the recoverable attachment error displayed for this scope. */
@@ -54,6 +63,8 @@ function hasFiles(event: DragEvent<HTMLElement>): boolean {
 /** Display canonical ready items plus local pending and recoverable error UI. */
 export function AttachmentSurface({
   adding,
+  children,
+  compact = false,
   disabled = false,
   error,
   label,
@@ -61,23 +72,47 @@ export function AttachmentSurface({
   removingIds,
   scope,
   state,
+  triggerRef,
   onChoose,
   onDismissError,
   onDrop,
   onRemove,
 }: AttachmentSurfaceProps) {
-  const [dragDepth, setDragDepth] = useState(0)
-  const addButtonRef = useRef<HTMLButtonElement | null>(null)
+  const [dragState, setDragState] = useState({
+    depth: 0,
+    scopeId: scope.id,
+    scopeKind: scope.kind,
+  })
+  const activeScopeRef = useRef({ id: scope.id, kind: scope.kind })
+  const defaultTriggerRef = useRef<HTMLButtonElement | null>(null)
+  const addButtonRef = triggerRef ?? defaultTriggerRef
   const removeButtonRefs = useRef(new Map<string, HTMLButtonElement>())
   const attachments = state?.attachments ?? []
+  // Drag enter/leave events are nested and may be interrupted by a Chat switch.
+  // Keeping the depth tagged with its scope discards stale hover state without
+  // remounting the composer and disrupting its text or keyboard focus.
+  const dragDepth = dragState.scopeKind === scope.kind && dragState.scopeId === scope.id
+    ? dragState.depth
+    : 0
   const dragActive = dragDepth > 0
   const busy = adding || removingIds.length > 0
   const interactionDisabled = readOnly || disabled || busy
   const maxFileBytes = state?.maxFileBytes
   const maxFileCount = state?.maxFileCount
 
+  useLayoutEffect(() => {
+    const previous = activeScopeRef.current
+    activeScopeRef.current = { id: scope.id, kind: scope.kind }
+    if (previous.kind === scope.kind && previous.id === scope.id) {
+      return
+    }
+    // A scope change is an interaction boundary: a lost dragleave from the old
+    // Chat must not reappear if the user later returns to that same Chat.
+    setDragState({ depth: 0, scopeId: scope.id, scopeKind: scope.kind })
+  }, [scope.id, scope.kind])
+
   function resetDrag(): void {
-    setDragDepth(0)
+    setDragState({ depth: 0, scopeId: scope.id, scopeKind: scope.kind })
   }
 
   function handleDragEnter(event: DragEvent<HTMLElement>): void {
@@ -86,7 +121,15 @@ export function AttachmentSurface({
     }
     event.preventDefault()
     if (!readOnly && !disabled) {
-      setDragDepth((depth) => depth + 1)
+      setDragState((current) => ({
+        depth: (
+          current.scopeKind === scope.kind && current.scopeId === scope.id
+            ? current.depth
+            : 0
+        ) + 1,
+        scopeId: scope.id,
+        scopeKind: scope.kind,
+      }))
     }
   }
 
@@ -104,7 +147,18 @@ export function AttachmentSurface({
     }
     event.preventDefault()
     if (!readOnly && !disabled) {
-      setDragDepth((depth) => Math.max(0, depth - 1))
+      setDragState((current) => ({
+        depth: Math.max(
+          0,
+          (
+            current.scopeKind === scope.kind && current.scopeId === scope.id
+              ? current.depth
+              : 0
+          ) - 1,
+        ),
+        scopeId: scope.id,
+        scopeKind: scope.kind,
+      }))
     }
   }
 
@@ -124,14 +178,26 @@ export function AttachmentSurface({
   }
 
   async function removeItem(item: AttachmentItem, index: number): Promise<void> {
+    const initiatingScope = { id: scope.id, kind: scope.kind }
+    const scopeIsStillActive = (): boolean => (
+      activeScopeRef.current.kind === initiatingScope.kind
+      && activeScopeRef.current.id === initiatingScope.id
+    )
     const nextId = attachments[index + 1]?.attachmentId
       ?? attachments[index - 1]?.attachmentId
       ?? null
     if (!await onRemove(item.attachmentId)) {
-      removeButtonRefs.current.get(item.attachmentId)?.focus()
+      if (scopeIsStillActive()) {
+        removeButtonRefs.current.get(item.attachmentId)?.focus()
+      }
       return
     }
     window.requestAnimationFrame(() => {
+      // The initiating Chat may have changed while the canonical removal was
+      // pending; never steal focus from the user's new conversation.
+      if (!scopeIsStillActive()) {
+        return
+      }
       if (nextId !== null) {
         removeButtonRefs.current.get(nextId)?.focus()
       } else {
@@ -144,13 +210,14 @@ export function AttachmentSurface({
     <section
       className={[
         'attachment-surface',
+        compact ? 'attachment-surface-compact composer-card' : '',
         dragActive ? 'drag-active' : '',
         readOnly ? 'read-only' : '',
         disabled ? 'disabled' : '',
       ].filter(Boolean).join(' ')}
       aria-label={label}
       aria-busy={busy}
-      aria-disabled={readOnly || disabled}
+      aria-disabled={compact ? undefined : readOnly || disabled}
       data-scope-kind={scope.kind}
       data-scope-id={scope.id}
       onDragEnter={handleDragEnter}
@@ -158,29 +225,31 @@ export function AttachmentSurface({
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
-      <div className="attachment-surface-heading">
-        <div>
-          <strong>{label}</strong>
-          <span>
-            {readOnly
-              ? 'This scope is read-only.'
-              : disabled
-                ? 'Waiting for the active conversation.'
-              : 'Stored locally only · Contents are not read or indexed yet.'}
-          </span>
+      {!compact && (
+        <div className="attachment-surface-heading">
+          <div>
+            <strong>{label}</strong>
+            <span>
+              {readOnly
+                ? 'This scope is read-only.'
+                : disabled
+                  ? 'Waiting for the active conversation.'
+                : 'Stored locally only · Contents are not read or indexed yet.'}
+            </span>
+          </div>
+          <button
+            ref={addButtonRef}
+            type="button"
+            className="attachment-add-button"
+            disabled={interactionDisabled}
+            aria-label="Choose files"
+            onClick={onChoose}
+          >
+            <Icon name="plus" />
+            <span>{adding ? 'Adding…' : 'Add files'}</span>
+          </button>
         </div>
-        <button
-          ref={addButtonRef}
-          type="button"
-          className="attachment-add-button"
-          disabled={interactionDisabled}
-          aria-label="Choose files"
-          onClick={onChoose}
-        >
-          <Icon name="plus" />
-          <span>{adding ? 'Adding…' : 'Add files'}</span>
-        </button>
-      </div>
+      )}
       <p className="visually-hidden" role="status" aria-live="polite" aria-atomic="true">
         {attachments.length} {attachments.length === 1 ? 'file' : 'files'} ready in {label}.
       </p>
@@ -216,7 +285,7 @@ export function AttachmentSurface({
         </p>
       )}
 
-      {attachments.length === 0 && !adding ? (
+      {attachments.length === 0 && !adding && !compact ? (
         <button
           type="button"
           className="attachment-empty-dropzone"
@@ -227,7 +296,7 @@ export function AttachmentSurface({
           <Icon name="file" />
           <span>{readOnly ? 'No stored files' : 'Choose files or drop them here'}</span>
         </button>
-      ) : (
+      ) : attachments.length > 0 ? (
         <ul className="attachment-list" aria-label={`Files in ${label}`}>
           {attachments.map((item, index) => {
             const removing = removingIds.includes(item.attachmentId)
@@ -266,13 +335,14 @@ export function AttachmentSurface({
             )
           })}
         </ul>
-      )}
+      ) : null}
 
-      {maxFileBytes !== undefined && maxFileCount !== undefined && (
+      {maxFileBytes !== undefined && maxFileCount !== undefined && !compact && (
         <p className="attachment-limits">
           New files: up to {maxFileCount} · {formatBytes(maxFileBytes)} each
         </p>
       )}
+      {children}
     </section>
   )
 }

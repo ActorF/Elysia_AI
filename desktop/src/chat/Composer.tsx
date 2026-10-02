@@ -91,9 +91,13 @@ export function Composer({
   onVoicePlaceholder,
 }: ComposerProps) {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
+  const attachmentTriggerRef = useRef<HTMLButtonElement | null>(null)
   const displayedNotice = notice?.message ?? snapshot.error ?? null
   const noticeTone = notice?.tone
     ?? (snapshot.error === undefined ? 'info' : 'error')
+  const attachmentInteractionDisabled = attachmentDisabled
+    || attachmentAdding
+    || attachmentRemovingIds.length > 0
 
   useLayoutEffect(() => {
     const textarea = textareaRef.current
@@ -117,21 +121,6 @@ export function Composer({
 
   return (
     <footer className="composer-zone" aria-label="Message composer">
-      <AttachmentSurface
-        key={`${attachmentScope.kind}:${attachmentScope.id}`}
-        adding={attachmentAdding}
-        disabled={attachmentDisabled}
-        error={attachmentError}
-        label={attachmentLabel}
-        removingIds={attachmentRemovingIds}
-        scope={attachmentScope}
-        state={attachmentState}
-        onChoose={onChooseAttachments}
-        onDismissError={onDismissAttachmentError}
-        onDrop={onDropAttachments}
-        onRemove={onRemoveAttachment}
-      />
-
       {displayedNotice !== null && (
         <InlineAlert
           tone={noticeTone}
@@ -150,7 +139,21 @@ export function Composer({
         </InlineAlert>
       )}
 
-      <div className="composer-card">
+      <AttachmentSurface
+        adding={attachmentAdding}
+        compact
+        disabled={attachmentDisabled}
+        error={attachmentError}
+        label={attachmentLabel}
+        removingIds={attachmentRemovingIds}
+        scope={attachmentScope}
+        state={attachmentState}
+        triggerRef={attachmentTriggerRef}
+        onChoose={onChooseAttachments}
+        onDismissError={onDismissAttachmentError}
+        onDrop={onDropAttachments}
+        onRemove={onRemoveAttachment}
+      >
         <label className="visually-hidden" htmlFor="chat-composer">
           Message Elysia
         </label>
@@ -171,6 +174,17 @@ export function Composer({
         />
         <div className="composer-toolbar">
           <div className="composer-tools">
+            <button
+              ref={attachmentTriggerRef}
+              type="button"
+              className="tool-button composer-attachment-button"
+              disabled={attachmentInteractionDisabled}
+              onClick={onChooseAttachments}
+              aria-label="Choose files"
+              title={attachmentAdding ? 'Adding files…' : 'Add files'}
+            >
+              <Icon name={attachmentAdding ? 'refresh' : 'plus'} />
+            </button>
             <label className="model-picker">
               <span className="model-spark">
                 <Icon name="sparkles" />
@@ -257,7 +271,7 @@ export function Composer({
             )}
           </div>
         </div>
-      </div>
+      </AttachmentSurface>
       <p className="composer-note" id="composer-help">
         Enter sends · Shift+Enter adds a line · Local output may be inaccurate
       </p>

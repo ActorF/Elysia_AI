@@ -475,7 +475,7 @@ Loader 输出仍是 Raw Structure；后续纯转换生成可重复 Chunk，Embed
 | `desktop/src/main.tsx` | 初始化 React Root、StrictMode、ThemeProvider 和 ErrorBoundary；初始 Paint 后通知 Electron。主 Renderer 没有角色动画 Provider。 | `index.html`、`App.tsx`、Preload API |
 | `desktop/src/AppErrorBoundary.tsx` | 捕获 React Render Error，显示可恢复错误并把焦点移动到错误区域。 | `main.tsx` |
 | `desktop/src/App.tsx` | 主 Renderer 总协调器；除 Canonical State、Draft、Retry、Attachments、Settings、Voice、Knowledge、桌宠与 Presence 外，还独立加载 Main-owned Data Storage state，并以本地 operation ID/busy guard 调用刷新、原生移动、固定临时清理和打开目录；桌宠流程只提交 revision、闭集模式和 Main 已发布的 opaque 程序 ID，处理选目录/重扫/切换后的 Canonical state 与安全错误，但从不持有目录、可执行路径、PID 或外部配置。 | 所有主 React Feature、`window.elysiaDesktop`；Canonical state 仍由 Python/Main 返回，Renderer 只保存暂态 |
-| `desktop/src/App.css` | App Shell、Chat、Dialog、Settings、Data & Storage 容量卡/类别/操作、Desktop Pet/Presence、Voice、静态状态/表情、Responsive、High Zoom 和 Forced Colors 样式。 | `App.tsx`、`CharacterArtwork.tsx`、`SettingsView.tsx`、`CallPreview.tsx`、Design Tokens |
+| `desktop/src/App.css` | App Shell、Chat（含输入卡内的紧凑附件预览与模型选择器左侧加号）、Dialog、Settings、Data & Storage 容量卡/类别/操作、Desktop Pet/Presence、Voice、静态状态/表情、Responsive、High Zoom 和 Forced Colors 样式。 | `App.tsx`、`CharacterArtwork.tsx`、`SettingsView.tsx`、`CallPreview.tsx`、Design Tokens |
 | `desktop/src/desktop-api.d.ts` | 扩展 Browser `Window` 类型，声明可选 `elysiaDesktop`；不会实际创建 API。 | TypeScript、Preload Contracts |
 
 `App.tsx` 的 LocalStorage 只保存 UI 恢复数据，例如 Chat Draft、Pending Send 和 Retry Draft。Python 返回的 Chat/Project 仍然是 Canonical State。
@@ -493,7 +493,7 @@ Loader 输出仍是 Raw Structure；后续纯转换生成可重复 Chunk，Embed
 | 文件 | 实际用途 | 主要连接 |
 | --- | --- | --- |
 | `desktop/src/chat/ChatView.tsx` | 组合 Chat Header、Connection Status、Message Timeline、Feedback 和 Composer，并管理滚动。 | App、MessageView、Composer |
-| `desktop/src/chat/Composer.tsx` | 受控 Textarea、附件、模型、麦克风测试/Voice 入口和 Send/Stop；保护中文 IME，Enter 发送、Shift+Enter 换行。 | ChatView、App callbacks；不直接访问 Electron API |
+| `desktop/src/chat/Composer.tsx` | 受控 Textarea、模型选择器左侧紧凑附件加号/预览、麦克风测试/Voice 入口和 Send/Stop；整张输入卡接受文件拖放，并保护中文 IME，Enter 发送、Shift+Enter 换行。 | ChatView、App callbacks；不直接访问 Electron API |
 | `desktop/src/chat/MessageView.tsx` | User 消息以纯文本显示；Assistant 使用安全 GFM；禁止 Raw HTML/外部图片，支持复制、Regenerate、Edit and retry、Attachment Chips，以及可键盘聚焦的 grounded statement kind 与 Citation detail。 | App callbacks、Electron External URL/Clipboard、Knowledge proof DTO |
 | `desktop/src/chat/types.ts` | 定义只供 Renderer 展示的 Message/Streaming/Retry/Notice 与 grounded proof 类型；不是持久化 Schema。 | App、ChatView、MessageView |
 
@@ -503,7 +503,7 @@ Loader 输出仍是 Raw Structure；后续纯转换生成可重复 Chunk，Embed
 | --- | --- | --- |
 | `desktop/src/projects/ProjectView.tsx` | 完整 Project UI；创建/打开/编辑/归档、Instructions、Workspace、Chat 归属，以及 canonical Project Sources lifecycle；全局 Knowledge owner 存在时禁用会改变 authority 的 Project 动作。 | App、Desktop API、ProjectSourcesPanel |
 | `desktop/src/projects/ProjectView.css` | Project Split View、List/Detail、Tabs、Cards、Workspace、Knowledge surface、Dialog 和响应式布局。 | ProjectView、Knowledge.css、Design Tokens |
-| `desktop/src/attachments/AttachmentSurface.tsx` | Chat/Project 共用的 Scope-bound Attachment UI；处理 Picker、Drag/Drop、Metadata、Remove、Pending/Error 和焦点恢复。 | App/Desktop API、Composer、ProjectView |
+| `desktop/src/attachments/AttachmentSurface.tsx` | Scope-bound Attachment UI；支持完整面板和 Chat 输入卡紧凑模式，处理 Picker、整卡 Drag/Drop、Metadata、Remove、Pending/Error、切换 Scope 时的拖放状态清理和焦点恢复。 | App/Desktop API、Composer、未来 Project Attachment UI |
 | `desktop/src/knowledge/ProjectSourcesPanel.tsx` | 显示 Source health、持久 operation history/progress/error，并委托 add/replace/reindex/delete/export/rebuild/revoke/recover/stop；组件本地 pending 只覆盖 picker/dialog，Backend request ownership来自 App 恢复的 Electron snapshot。全局 Knowledge busy、归档或 capability 缺失时只读，export 不启用 Stop，也不接收本地路径、内部 File ID、Hash、Prompt 或 Vector。 | App、ProjectView、Knowledge Desktop API |
 | `desktop/src/knowledge/Knowledge.css` | Project Sources、进度、错误、grounded statement/Citation 与显式 per-Chat knowledge toggle 的响应式/Forced-colors 样式。 | ProjectSourcesPanel、MessageView、App |
 

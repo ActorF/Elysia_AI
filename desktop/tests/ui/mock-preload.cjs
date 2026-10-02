@@ -1546,6 +1546,7 @@ const desktopApi = {
 
   removeAttachment: async (scope, attachmentId) => {
     record('removeAttachment', [scope, attachmentId])
+    await waitForAttachmentAction()
     if (nextAttachmentError !== null) {
       const message = nextAttachmentError
       nextAttachmentError = null
