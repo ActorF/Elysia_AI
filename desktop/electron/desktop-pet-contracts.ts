@@ -3,16 +3,33 @@
  *
  * These values never enter the Python desktop protocol. Electron Main owns
  * persistence and native-window lifecycle, while the dedicated pet preload
- * exposes only the native actions and read-only motion synchronization needed
- * by the isolated pet renderer.
+ * exposes only native actions and one opaque selected-model URL to the
+ * isolated pet renderer.
  */
-
-import type {
-  CharacterPerformanceState,
-} from './character-performance-contracts.js'
 
 /** Persisted user intent for the optional desktop-pet window. */
 export type DesktopPetMode = 'disabled' | 'hidden' | 'visible'
+
+/** Renderer-safe outcome of scanning one Main-owned external model folder. */
+export type DesktopPetLibraryStatus =
+  | 'not-configured'
+  | 'scanning'
+  | 'ready'
+  | 'empty'
+  | 'unavailable'
+  | 'invalid'
+
+/** One externally discovered model without its private filesystem identity. */
+export interface DesktopPetModelSummary {
+  readonly id: string
+  readonly displayName: string
+}
+
+/** Renderer-safe coordinates needed to load the current external model. */
+export interface DesktopPetModelBootstrap {
+  readonly modelId: string
+  readonly manifestUrl: string
+}
 
 /** Current native-window outcome, which is never persisted as user intent. */
 export type DesktopPetRuntimeState =
@@ -28,12 +45,18 @@ export interface DesktopPetState {
   readonly mode: DesktopPetMode
   readonly runtime: DesktopPetRuntimeState
   readonly warning: string | null
+  readonly libraryStatus: DesktopPetLibraryStatus
+  readonly folderName: string | null
+  readonly models: readonly DesktopPetModelSummary[]
+  readonly selectedModelId: string | null
 }
 
 /** Replace desktop-pet user intent using optimistic revision control. */
 export interface UpdateDesktopPetRequest {
   readonly expectedRevision: number
   readonly mode: DesktopPetMode
+  /** Replace the selected external model, or preserve it when omitted. */
+  readonly modelId?: string | null
 }
 
 /**
@@ -45,16 +68,14 @@ export interface UpdateDesktopPetRequest {
 export interface DesktopPetApi {
   /** Announce that the isolated pet document is ready to be revealed. */
   ready(): Promise<void>
+  /** Report an initialization or runtime failure so Main can destroy the pet. */
+  failed(): Promise<void>
   /** Persistently hide the pet without disabling the user's opt-in. */
   hide(): Promise<void>
   /** Reveal and focus the ordinary main Chat window. */
   openMainChat(): Promise<void>
-  /** Read Main's latest motion choice without accessing main-renderer storage. */
-  getCharacterPerformanceState(): Promise<CharacterPerformanceState>
-  /** Subscribe to later validated motion choices relayed by Electron Main. */
-  onCharacterPerformanceStateChanged(
-    listener: (state: CharacterPerformanceState) => void,
-  ): () => void
+  /** Read the opaque manifest URL for the model selected by Settings. */
+  getModelBootstrap(): Promise<DesktopPetModelBootstrap>
 }
 
 const DESKTOP_PET_MODES: ReadonlySet<string> = new Set([
@@ -63,9 +84,17 @@ const DESKTOP_PET_MODES: ReadonlySet<string> = new Set([
   'visible',
 ])
 
+const DESKTOP_PET_MODEL_ID_PATTERN = /^model_[0-9a-f]{32}$/u
+
 /** Narrow an unknown value to the complete persisted desktop-pet mode set. */
 export function isDesktopPetMode(value: unknown): value is DesktopPetMode {
   return typeof value === 'string' && DESKTOP_PET_MODES.has(value)
+}
+
+/** Accept only opaque identifiers minted by the bounded Main-process scan. */
+export function isDesktopPetModelId(value: unknown): value is string {
+  return typeof value === 'string'
+    && DESKTOP_PET_MODEL_ID_PATTERN.test(value)
 }
 
 /**
@@ -82,9 +111,10 @@ export function parseUpdateDesktopPetRequest(
   }
   const fields = Reflect.ownKeys(value)
   if (
-    fields.length !== 2
+    (fields.length !== 2 && fields.length !== 3)
     || !fields.includes('expectedRevision')
     || !fields.includes('mode')
+    || (fields.length === 3 && !fields.includes('modelId'))
   ) {
     throw new Error('Desktop pet update has invalid fields.')
   }
@@ -97,6 +127,20 @@ export function parseUpdateDesktopPetRequest(
   }
   if (!isDesktopPetMode(request.mode)) {
     throw new Error('Desktop pet mode is invalid.')
+  }
+  if (
+    Object.hasOwn(request, 'modelId')
+    && request.modelId !== null
+    && !isDesktopPetModelId(request.modelId)
+  ) {
+    throw new Error('Desktop pet model selection is invalid.')
+  }
+  if (Object.hasOwn(request, 'modelId')) {
+    return Object.freeze({
+      expectedRevision: request.expectedRevision as number,
+      mode: request.mode,
+      modelId: request.modelId as string | null,
+    })
   }
   return Object.freeze({
     expectedRevision: request.expectedRevision as number,

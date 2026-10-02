@@ -1,11 +1,11 @@
-/** Initialize the isolated Elysia desktop pet with a safe Live2D fallback. */
+/** Initialize the isolated desktop pet with its selected external Live2D model. */
 
+import {
+  isDesktopPetModelId,
+  type DesktopPetModelBootstrap,
+} from '../electron/desktop-pet-contracts.ts'
 import { createLive2DController } from './character/live2d-runtime.ts'
 import { bindLive2DRuntimeFailure } from './character/live2d-runtime-failure.ts'
-import {
-  isCharacterPerformancePreference,
-  type CharacterPerformanceState,
-} from '../electron/character-performance-contracts.ts'
 
 type Live2DController = Awaited<ReturnType<typeof createLive2DController>>
 
@@ -17,6 +17,40 @@ function requireElement<ElementType extends Element>(
     throw new Error(`The desktop-pet document is missing ${selector}.`)
   }
   return element
+}
+
+function parseModelBootstrap(value: unknown): DesktopPetModelBootstrap {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error('Desktop Pet model bootstrap is invalid.')
+  }
+  const candidate = value as Record<string, unknown>
+  if (
+    Reflect.ownKeys(candidate).length !== 2
+    || !isDesktopPetModelId(candidate.modelId)
+    || typeof candidate.manifestUrl !== 'string'
+  ) {
+    throw new Error('Desktop Pet model bootstrap is invalid.')
+  }
+  let manifestUrl: URL
+  try {
+    manifestUrl = new URL(candidate.manifestUrl)
+  } catch {
+    throw new Error('Desktop Pet model bootstrap is invalid.')
+  }
+  if (
+    manifestUrl.protocol !== 'elysia-pet-asset:'
+    || manifestUrl.hostname !== 'model'
+    || manifestUrl.search !== ''
+    || manifestUrl.hash !== ''
+    || manifestUrl.username !== ''
+    || manifestUrl.password !== ''
+  ) {
+    throw new Error('Desktop Pet model bootstrap is invalid.')
+  }
+  return Object.freeze({
+    modelId: candidate.modelId,
+    manifestUrl: manifestUrl.toString(),
+  })
 }
 
 const openMainButton = requireElement<HTMLButtonElement>(
@@ -35,21 +69,14 @@ const imageFallback = requireElement<HTMLElement>(
   '#desktop-pet-image-fallback',
 )
 const status = requireElement<HTMLElement>('#desktop-pet-status')
-const reducedMotionQuery = window.matchMedia('(prefers-reduced-motion: reduce)')
 const api = window.elysiaDesktopPet
 
 let live2DController: Live2DController | null = null
-let live2DGeneration = 0
-let live2DStarting = false
-let portraitAvailable = !(portrait.complete && portrait.naturalWidth === 0)
-let performanceState: CharacterPerformanceState = Object.freeze({
-  preference: 'still',
-  revision: -1,
-})
-let unsubscribePerformance = (): void => {}
+let disposed = false
+let failureReported = false
 
-function reportUnavailable(): void {
-  status.textContent = 'Desktop pet controls are unavailable.'
+function reportUnavailable(message = 'Desktop pet controls are unavailable.'): void {
+  status.textContent = message
 }
 
 async function invokePetAction(action: () => Promise<void>): Promise<void> {
@@ -66,125 +93,26 @@ async function invokePetAction(action: () => Promise<void>): Promise<void> {
   }
 }
 
-function showImageFallback(): void {
-  // A missing packaged asset must leave an accessible operation entry instead
-  // of making the transparent window appear empty or unusable.
-  portraitAvailable = false
-  if (live2DController === null) {
-    portrait.hidden = true
-    imageFallback.hidden = false
-  }
-}
-
-if (portrait.complete && portrait.naturalWidth === 0) {
-  showImageFallback()
-} else {
-  portrait.addEventListener('error', showImageFallback, { once: true })
-}
-
-function showStaticPortrait(): void {
+function showFailureFallback(): void {
   live2DCanvas.hidden = true
   delete live2DCanvas.dataset.live2dReady
-  if (portraitAvailable) {
-    portrait.hidden = false
-    imageFallback.hidden = true
-  } else {
-    portrait.hidden = true
-    imageFallback.hidden = false
-  }
+  portrait.hidden = true
+  imageFallback.hidden = false
+  reportUnavailable('The selected Live2D model could not be rendered.')
 }
 
-function stopLive2D(): void {
-  // Incrementing the generation also disowns an asynchronous controller that
-  // resolves after Reduced Motion or renderer teardown changed the decision.
-  live2DGeneration += 1
-  live2DStarting = false
-  live2DController?.dispose()
-  live2DController = null
-  showStaticPortrait()
-}
-
-async function startLive2D(): Promise<void> {
-  if (
-    reducedMotionQuery.matches
-    || performanceState.preference !== 'animated'
-    || live2DStarting
-    || live2DController !== null
-  ) {
+function reportRuntimeFailure(): void {
+  showFailureFallback()
+  if (api === undefined || failureReported || disposed) {
     return
   }
-  live2DStarting = true
-  const generation = ++live2DGeneration
-  // Keep a laid-out but invisible canvas during initialization. A display:none
-  // canvas has no useful client size for the renderer's first viewport.
-  live2DCanvas.dataset.live2dReady = 'false'
-  live2DCanvas.hidden = false
-  try {
-    const controller = await createLive2DController(live2DCanvas, {
-      emotion: 'neutral',
-      framing: 'full-body',
-      state: 'idle',
-    })
-    if (
-      generation !== live2DGeneration
-      || reducedMotionQuery.matches
-      || performanceState.preference !== 'animated'
-    ) {
-      controller.dispose()
-      return
-    }
-    live2DController = controller
-    portrait.hidden = true
-    imageFallback.hidden = true
-    live2DCanvas.dataset.live2dReady = 'true'
-    live2DCanvas.hidden = false
-  } catch {
-    // The portrait is intentionally retained for unsupported WebGL, a blocked
-    // WASM runtime, or a missing packaged model; pet controls remain usable.
-    if (generation === live2DGeneration) {
-      showStaticPortrait()
-    }
-  } finally {
-    if (generation === live2DGeneration) {
-      live2DStarting = false
-    }
-  }
+  failureReported = true
+  // Main immediately destroys the failed transparent window and publishes a
+  // retryable state. The catch intentionally absorbs teardown races because a
+  // destroyed WebContents can invalidate its own final IPC settlement.
+  void api.failed().catch(() => {})
 }
 
-function synchronizeMotionPreference(): void {
-  if (
-    reducedMotionQuery.matches
-    || performanceState.preference !== 'animated'
-  ) {
-    stopLive2D()
-  } else {
-    void startLive2D()
-  }
-}
-
-function acceptPerformanceState(value: unknown): void {
-  // Although Main is trusted, the renderer still fails visually closed if an
-  // older build or malformed event crosses the isolated-world boundary.
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    return
-  }
-  const candidate = value as Record<string, unknown>
-  if (
-    !Number.isSafeInteger(candidate.revision)
-    || (candidate.revision as number) < 0
-    || (candidate.revision as number) < performanceState.revision
-    || !isCharacterPerformancePreference(candidate.preference)
-  ) {
-    return
-  }
-  performanceState = Object.freeze({
-    preference: candidate.preference,
-    revision: candidate.revision as number,
-  })
-  synchronizeMotionPreference()
-}
-
-reducedMotionQuery.addEventListener('change', synchronizeMotionPreference)
 const unbindRuntimeFailure = bindLive2DRuntimeFailure(
   live2DCanvas,
   () => {
@@ -192,19 +120,40 @@ const unbindRuntimeFailure = bindLive2DRuntimeFailure(
     live2DController = null
     return failedController
   },
-  () => {
-    // Disown an in-flight creation as well as a ready controller before the
-    // portrait returns, so a late resolution cannot replace the fallback.
-    live2DGeneration += 1
-    live2DStarting = false
-    showStaticPortrait()
-  },
+  reportRuntimeFailure,
 )
+
+async function startDesktopPet(): Promise<void> {
+  if (api === undefined) {
+    reportUnavailable()
+    return
+  }
+  live2DCanvas.dataset.live2dReady = 'false'
+  live2DCanvas.hidden = false
+  const bootstrap = parseModelBootstrap(await api.getModelBootstrap())
+  const controller = await createLive2DController(live2DCanvas, {
+    emotion: 'neutral',
+    framing: 'full-body',
+    modelManifestUrl: bootstrap.manifestUrl,
+    state: 'idle',
+  })
+  if (disposed) {
+    controller.dispose()
+    return
+  }
+  live2DController = controller
+  portrait.hidden = true
+  imageFallback.hidden = true
+  live2DCanvas.dataset.live2dReady = 'true'
+  live2DCanvas.hidden = false
+  await api.ready()
+}
+
 window.addEventListener('beforeunload', () => {
-  reducedMotionQuery.removeEventListener('change', synchronizeMotionPreference)
-  unsubscribePerformance()
+  disposed = true
   unbindRuntimeFailure()
-  stopLive2D()
+  live2DController?.dispose()
+  live2DController = null
 }, { once: true })
 
 openMainButton.addEventListener('click', () => {
@@ -223,15 +172,8 @@ hideButton.addEventListener('click', () => {
   void invokePetAction(() => api.hide())
 })
 
-if (api === undefined) {
-  reportUnavailable()
-} else {
-  unsubscribePerformance = api.onCharacterPerformanceStateChanged(
-    acceptPerformanceState,
-  )
-  void api.getCharacterPerformanceState()
-    .then(acceptPerformanceState)
-    .catch(reportUnavailable)
-  void api.ready().catch(reportUnavailable)
-}
-synchronizeMotionPreference()
+void startDesktopPet().catch(() => {
+  if (!disposed) {
+    reportRuntimeFailure()
+  }
+})

@@ -52,7 +52,6 @@ import {
 } from '../electron/protocol-text.js'
 import './App.css'
 import { CharacterPanel } from './character/CharacterPanel.tsx'
-import { useCharacterPerformance } from './character/CharacterPerformanceProvider.tsx'
 import { resolveCharacterEmotion } from './character/character-emotion.ts'
 import { deriveApplicationCharacterState } from './character/character-state.ts'
 import { ChatView } from './chat/ChatView.tsx'
@@ -813,11 +812,6 @@ function PlaceholderView({
 function App() {
   const desktopApi = window.elysiaDesktop
   const { theme, resolvedTheme, setTheme } = useTheme()
-  const {
-    preference: characterPerformancePreference,
-    resolvedMode: resolvedCharacterPerformance,
-    setPreference: setCharacterPerformancePreference,
-  } = useCharacterPerformance()
   const [snapshot, setSnapshot] = useState<BackendSnapshot>(() => (
     desktopApi === undefined
       ? {
@@ -2518,6 +2512,100 @@ function App() {
       }
     }
   }, [desktopApi, desktopPetPending, desktopPetState])
+
+  const changeDesktopPetModel = useCallback(async (
+    modelId: string,
+  ): Promise<void> => {
+    if (
+      desktopApi === undefined
+      || desktopPetState === null
+      || desktopPetPending
+    ) {
+      return
+    }
+    const operationId = desktopPetOperationRef.current + 1
+    desktopPetOperationRef.current = operationId
+    setDesktopPetPending(true)
+    setDesktopPetError(null)
+    try {
+      const nextState = await desktopApi.updateDesktopPet({
+        expectedRevision: desktopPetState.revision,
+        mode: desktopPetState.mode,
+        modelId,
+      })
+      if (operationId === desktopPetOperationRef.current) {
+        setDesktopPetState(nextState)
+      }
+    } catch (error) {
+      if (operationId === desktopPetOperationRef.current) {
+        setDesktopPetError(
+          error instanceof Error
+            ? error.message
+            : 'Could not select the Desktop Pet model.',
+        )
+      }
+    } finally {
+      if (operationId === desktopPetOperationRef.current) {
+        setDesktopPetPending(false)
+      }
+    }
+  }, [desktopApi, desktopPetPending, desktopPetState])
+
+  const chooseDesktopPetModelDirectory = useCallback(async (): Promise<void> => {
+    if (desktopApi === undefined || desktopPetPending) {
+      return
+    }
+    const operationId = desktopPetOperationRef.current + 1
+    desktopPetOperationRef.current = operationId
+    setDesktopPetPending(true)
+    setDesktopPetError(null)
+    try {
+      const nextState = await desktopApi.chooseDesktopPetModelDirectory()
+      if (operationId === desktopPetOperationRef.current) {
+        setDesktopPetState(nextState)
+      }
+    } catch (error) {
+      if (operationId === desktopPetOperationRef.current) {
+        setDesktopPetError(
+          error instanceof Error
+            ? error.message
+            : 'Could not scan the selected Live2D folder.',
+        )
+      }
+    } finally {
+      if (operationId === desktopPetOperationRef.current) {
+        setDesktopPetPending(false)
+      }
+    }
+  }, [desktopApi, desktopPetPending])
+
+  const refreshDesktopPetModels = useCallback(async (): Promise<void> => {
+    if (desktopApi === undefined || desktopPetPending) {
+      return
+    }
+    const operationId = desktopPetOperationRef.current + 1
+    desktopPetOperationRef.current = operationId
+    setDesktopPetPending(true)
+    setDesktopPetError(null)
+    try {
+      const nextState = await desktopApi.refreshDesktopPetModels()
+      if (operationId === desktopPetOperationRef.current) {
+        setDesktopPetState(nextState)
+      }
+    } catch (error) {
+      if (operationId === desktopPetOperationRef.current) {
+        setDesktopPetError(
+          error instanceof Error
+            ? error.message
+            : 'Could not rescan the Live2D folder.',
+        )
+      }
+    } finally {
+      if (operationId === desktopPetOperationRef.current) {
+        setDesktopPetPending(false)
+      }
+    }
+  }, [desktopApi, desktopPetPending])
 
   const changePresenceNotifications = useCallback(async (
     completionNotifications: boolean,
@@ -6858,8 +6946,6 @@ function App() {
       <SettingsView
         themePreference={theme}
         resolvedTheme={resolvedTheme}
-        characterPerformancePreference={characterPerformancePreference}
-        resolvedCharacterPerformance={resolvedCharacterPerformance}
         desktopPetState={desktopPetState}
         desktopPetPending={desktopPetPending}
         desktopPetError={desktopPetError}
@@ -6884,8 +6970,13 @@ function App() {
         voicePending={voiceSettingsPending}
         voiceError={voiceSettingsError}
         onThemeChange={setTheme}
-        onCharacterPerformanceChange={setCharacterPerformancePreference}
         onDesktopPetModeChange={changeDesktopPetMode}
+        onDesktopPetModelChange={changeDesktopPetModel}
+        onChooseDesktopPetModelDirectory={chooseDesktopPetModelDirectory}
+        onRefreshDesktopPetModels={refreshDesktopPetModels}
+        onOpenDesktopPetDownload={() => openExternalUrl(
+          'https://pan.quark.cn/s/cb5d84acad8e',
+        )}
         onResetDesktopPetPosition={resetDesktopPetPosition}
         onPresenceNotificationChange={changePresenceNotifications}
         onRefreshDataStorage={refreshDataStorage}

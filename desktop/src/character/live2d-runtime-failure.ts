@@ -1,7 +1,7 @@
 /**
- * Bind the shared one-shot fallback boundary for post-readiness Live2D faults.
- * Both React presence and the isolated desktop pet use this small contract so
- * a failed animation controller cannot leave an empty or frozen character.
+ * Bind the desktop pet's one-shot recovery boundary after a Live2D fault.
+ * The main application character is always static; only the isolated desktop
+ * pet owns an animation controller that can require this recovery boundary.
  */
 
 interface DisposableLive2DController {
@@ -11,7 +11,7 @@ interface DisposableLive2DController {
 const LIVE2D_RUNTIME_ERROR_EVENT = 'elysia:live2d-error'
 
 /**
- * Release one failed controller and run its static-fallback transition.
+ * Release one failed controller and run its local failure transition.
  *
  * The listener disarms before invoking callbacks because disposal can itself
  * touch WebGL state. Cleanup errors are contained so optional animation can
@@ -37,8 +37,8 @@ export function bindLive2DRuntimeFailure(
       try {
         controller?.dispose()
       } catch {
-        // A broken renderer may also reject cleanup. The reviewed fallback is
-        // still more important than surfacing an optional visual error.
+        // A broken renderer may also reject cleanup. Converging Main to the
+        // retryable failed state is more important than surfacing cleanup.
       }
     } finally {
       showFallback()

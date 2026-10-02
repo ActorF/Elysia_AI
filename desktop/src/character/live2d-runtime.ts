@@ -1,18 +1,25 @@
 /**
- * Load the fixed local Elysia Cubism model through PurismCore and render it
- * with a small WebGL2 pipeline that has no third-party renderer dependency.
+ * Load a validated local Cubism model through PurismCore and render it with a
+ * bounded WebGL2 pipeline that has no third-party renderer dependency.
  */
 
 import type { CharacterEmotion } from './character-emotion.ts'
 import type { CharacterState } from './character-state.ts'
 
-/** Closed camera profiles supported by the fixed Elysia Live2D model. */
+/** Closed camera profiles supported by local Cubism models. */
 export type Live2DFraming = 'full-body' | 'half-body' | 'call-half-body'
 
 /** Initial semantic values required to start the Live2D renderer. */
 export interface Live2DControllerOptions {
   readonly emotion: CharacterEmotion
   readonly framing: Live2DFraming
+  /**
+   * Absolute or page-relative URL of the selected model3 manifest.
+   *
+   * Electron supplies an opaque allowlisted protocol URL for external models;
+   * development callers may provide only a same-origin HTTP(S) URL.
+   */
+  readonly modelManifestUrl: string
   readonly state: CharacterState
 }
 
@@ -28,6 +35,7 @@ export interface Live2DController {
 
 interface ModelFileReferences {
   readonly Moc?: unknown
+  readonly Physics?: unknown
   readonly Textures?: unknown
 }
 
@@ -52,6 +60,7 @@ interface PurismDrawables {
   readonly textureIndices: Int32Array
   readonly opacities: Float32Array
   readonly maskCounts: Int32Array
+  readonly masks?: readonly Int32Array[]
   readonly vertexCounts: Int32Array
   readonly indexCounts: Int32Array
   readonly multiplyColors: Float32Array
@@ -106,16 +115,93 @@ interface Live2DWindow extends Window {
   PurismCore?: PurismCoreNamespace
 }
 
-interface AssetUrls {
-  readonly manifest: URL
-  readonly moc: URL
-  readonly texture: URL
+interface ValidatedModelManifest extends ModelManifest {
+  readonly FileReferences: ModelFileReferences & {
+    readonly Moc: string
+    readonly Physics?: string
+    readonly Textures: readonly string[]
+  }
 }
 
 interface LoadedAssets {
-  readonly manifest: ModelManifest
+  readonly manifest: ValidatedModelManifest
   readonly moc: Uint8Array
-  readonly texture: Uint8Array
+  readonly physics: PhysicsRigDefinition | null
+  readonly textures: readonly Uint8Array[]
+}
+
+interface ResolvedModelAssets {
+  readonly manifest: ValidatedModelManifest
+  readonly mocUrl: URL
+  readonly physicsUrl: URL | null
+  readonly textureUrls: readonly URL[]
+}
+
+type PhysicsValueType = 'X' | 'Y' | 'Angle'
+
+interface PhysicsVector {
+  readonly x: number
+  readonly y: number
+}
+
+interface PhysicsNormalization {
+  readonly minimum: number
+  readonly defaultValue: number
+  readonly maximum: number
+}
+
+interface PhysicsInputDefinition {
+  readonly parameterId: string
+  readonly reflect: boolean
+  readonly type: PhysicsValueType
+  readonly weight: number
+}
+
+interface PhysicsOutputDefinition {
+  readonly parameterId: string
+  readonly reflect: boolean
+  readonly scale: number
+  readonly type: PhysicsValueType
+  readonly vertexIndex: number
+  readonly weight: number
+}
+
+interface PhysicsParticleDefinition {
+  readonly acceleration: number
+  readonly delay: number
+  readonly mobility: number
+  readonly radius: number
+}
+
+interface PhysicsSettingDefinition {
+  readonly inputs: readonly PhysicsInputDefinition[]
+  readonly normalizationAngle: PhysicsNormalization
+  readonly normalizationPosition: PhysicsNormalization
+  readonly outputs: readonly PhysicsOutputDefinition[]
+  readonly particles: readonly PhysicsParticleDefinition[]
+}
+
+interface PhysicsRigDefinition {
+  readonly fps: number
+  readonly gravity: PhysicsVector
+  readonly settings: readonly PhysicsSettingDefinition[]
+  readonly wind: PhysicsVector
+}
+
+interface PhysicsParticleState {
+  readonly acceleration: number
+  readonly delay: number
+  readonly mobility: number
+  readonly radius: number
+  lastGravity: PhysicsVector
+  lastPosition: PhysicsVector
+  position: PhysicsVector
+  velocity: PhysicsVector
+}
+
+interface PngHeader {
+  readonly height: number
+  readonly width: number
 }
 
 interface Live2DCameraViewport {
@@ -133,6 +219,25 @@ interface ShaderLocations {
   readonly multiplyColor: WebGLUniformLocation
   readonly screenColor: WebGLUniformLocation
   readonly texture: WebGLUniformLocation
+  readonly maskEnabled: WebGLUniformLocation
+  readonly maskInverted: WebGLUniformLocation
+  readonly maskTexture: WebGLUniformLocation
+  readonly viewport: WebGLUniformLocation
+}
+
+interface MaskShaderLocations {
+  readonly opacity: WebGLUniformLocation
+  readonly texture: WebGLUniformLocation
+  readonly transform: WebGLUniformLocation
+}
+
+interface MaskGpuResources {
+  readonly framebuffer: WebGLFramebuffer
+  readonly locations: MaskShaderLocations
+  readonly program: WebGLProgram
+  readonly texture: WebGLTexture
+  height: number
+  width: number
 }
 
 interface GpuResources {
@@ -141,8 +246,9 @@ interface GpuResources {
   readonly positionBuffer: WebGLBuffer
   readonly uvBuffer: WebGLBuffer
   readonly indexBuffer: WebGLBuffer
-  readonly texture: WebGLTexture
+  readonly textures: readonly WebGLTexture[]
   readonly locations: ShaderLocations
+  readonly mask: MaskGpuResources | null
 }
 
 interface StatePose {
@@ -160,23 +266,34 @@ interface StatePose {
 type DecodedTexture = ImageBitmap | HTMLImageElement
 
 const CORE_SCRIPT_PATH = './character/live2d/runtime/purismcore.js'
-const DEVELOPMENT_MODEL_BASE = './character/live2d/elysia/'
-const PACKAGED_MODEL_BASE = 'elysia-asset://character/live2d/elysia/'
-const MODEL_MANIFEST_NAME = 'model.model3.json'
-const MODEL_MOC_NAME = 'model.moc3'
-const MODEL_TEXTURE_NAME = 'textures/atlas.png'
-const MODEL_MANIFEST_LIMIT = 64 * 1024
-const MODEL_MOC_LIMIT = 8 * 1024 * 1024
-const MODEL_TEXTURE_LIMIT = 4 * 1024 * 1024
+const MODEL_MANIFEST_LIMIT = 256 * 1024
+const MODEL_MOC_LIMIT = 64 * 1024 * 1024
+const MODEL_PHYSICS_LIMIT = 2 * 1024 * 1024
+const MODEL_TEXTURE_LIMIT = 16 * 1024 * 1024
+const MODEL_TEXTURE_TOTAL_LIMIT = 64 * 1024 * 1024
+const MODEL_TEXTURE_COUNT_LIMIT = 8
 const MODEL_TEXTURE_DIMENSION_LIMIT = 4096
 const MODEL_TEXTURE_PIXEL_LIMIT = 16 * 1024 * 1024
+const MODEL_TEXTURE_TOTAL_PIXEL_LIMIT = 16 * 1024 * 1024
+const PHYSICS_SETTING_LIMIT = 64
+const PHYSICS_INPUT_LIMIT = 256
+const PHYSICS_OUTPUT_LIMIT = 512
+const PHYSICS_PARTICLE_LIMIT = 1024
+const PHYSICS_PARTICLES_PER_SETTING_LIMIT = 64
+const PHYSICS_IDENTIFIER_LIMIT = 256
+const PHYSICS_ABSOLUTE_VALUE_LIMIT = 1_000_000
+const PHYSICS_AIR_RESISTANCE = 5
+const PHYSICS_MOVEMENT_THRESHOLD = 0.001
+const PHYSICS_MAX_FIXED_STEPS = 8
 const LOAD_TIMEOUT_MS = 10_000
-const CORE_MEMORY_RESERVATION = 64 * 1024 * 1024
+const CORE_MEMORY_RESERVATION = 128 * 1024 * 1024
 const MAX_DEVICE_PIXEL_RATIO = 2
 const MAX_CANVAS_DIMENSION = 4096
 const MAX_DRAWABLES = 512
 const MAX_TOTAL_VERTICES = 1_000_000
 const MAX_TOTAL_INDICES = 3_000_000
+const MAX_MASKS_PER_DRAWABLE = 64
+const MAX_TOTAL_MASK_REFERENCES = 4096
 const RUNTIME_ERROR_EVENT = 'elysia:live2d-error'
 
 const CHARACTER_STATES = new Set<CharacterState>([
@@ -201,9 +318,9 @@ const LIVE2D_FRAMINGS = new Set<Live2DFraming>([
   'call-half-body',
 ])
 
-// These reviewed camera rectangles are deliberately pinned to this model's
-// coordinates. Deriving a camera from animated vertices each frame would make
-// breathing, hair, and arm motion visibly change the character's scale.
+// Half-body surfaces retain the reviewed legacy crop. Full-body rendering is
+// derived from immutable Core canvas metadata so differently authored desktop
+// pet models fit without animation-driven camera jitter.
 const CAMERA_BY_FRAMING: Readonly<Record<
   Live2DFraming,
   Live2DCameraViewport
@@ -226,28 +343,6 @@ const CAMERA_BY_FRAMING: Readonly<Record<
     width: 0.86,
     height: 1.16,
   }),
-})
-
-const REQUIRED_PARAMETERS = Object.freeze([
-  'ParamEyeLOpen',
-  'ParamEyeROpen',
-  'ParamMouthOpenY',
-  'ParamMouthForm',
-  'ParamAngleX',
-  'ParamAngleY',
-  'ParamAngleZ',
-  'ParamHairFront',
-  'ParamHairBack',
-  'ParamHairFrontV',
-  'ParamHairBackV',
-  'ParamBreath',
-])
-
-const MOUTH_OPEN_BY_DATASET: Readonly<Record<string, number>> = Object.freeze({
-  closed: 0,
-  small: 0.28,
-  medium: 0.58,
-  wide: 0.92,
 })
 
 const STATE_POSES: Readonly<Record<CharacterState, StatePose>> = Object.freeze({
@@ -331,8 +426,8 @@ const STATE_POSES: Readonly<Record<CharacterState, StatePose>> = Object.freeze({
 })
 
 const VERTEX_SHADER_SOURCE = `#version 300 es
-in vec2 a_position;
-in vec2 a_uv;
+layout(location = 0) in vec2 a_position;
+layout(location = 1) in vec2 a_uv;
 uniform vec4 u_transform;
 out vec2 v_uv;
 
@@ -354,6 +449,10 @@ uniform sampler2D u_texture;
 uniform vec4 u_base_color;
 uniform vec4 u_multiply_color;
 uniform vec4 u_screen_color;
+uniform sampler2D u_mask_texture;
+uniform int u_mask_enabled;
+uniform int u_mask_inverted;
+uniform vec2 u_viewport;
 out vec4 output_color;
 
 void main() {
@@ -361,7 +460,30 @@ void main() {
   texel.rgb *= u_multiply_color.rgb;
   texel.rgb = (texel.rgb + u_screen_color.rgb * texel.a)
     - (texel.rgb * u_screen_color.rgb);
-  output_color = texel * u_base_color;
+  float mask_alpha = 1.0;
+  if (u_mask_enabled != 0) {
+    mask_alpha = texture(u_mask_texture, gl_FragCoord.xy / u_viewport).a;
+    if (u_mask_inverted != 0) {
+      mask_alpha = 1.0 - mask_alpha;
+    }
+  }
+  output_color = texel * u_base_color * mask_alpha;
+}
+`
+
+const MASK_FRAGMENT_SHADER_SOURCE = `#version 300 es
+precision mediump float;
+in vec2 v_uv;
+uniform sampler2D u_texture;
+uniform float u_opacity;
+out vec4 output_color;
+
+void main() {
+  float alpha = texture(u_texture, v_uv).a * u_opacity;
+  if (alpha <= 0.001) {
+    discard;
+  }
+  output_color = vec4(alpha);
 }
 `
 
@@ -370,6 +492,10 @@ let coreMemoryReserved = false
 
 function asError(value: unknown): Error {
   return value instanceof Error ? value : new Error(String(value))
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 function isFinitePositive(value: number): boolean {
@@ -385,32 +511,87 @@ function smoothStep(value: number): number {
   return bounded * bounded * (3 - 2 * bounded)
 }
 
-function resolveAssetUrls(): AssetUrls {
-  const pageProtocol = window.location.protocol
-  let base: URL
-  if (pageProtocol === 'file:') {
-    base = new URL(PACKAGED_MODEL_BASE)
-  } else if (pageProtocol === 'http:' || pageProtocol === 'https:') {
-    base = new URL(DEVELOPMENT_MODEL_BASE, document.baseURI)
-    if (base.origin !== window.location.origin) {
+function validateAssetEndpoint(url: URL): void {
+  if (
+    url.username !== ''
+    || url.password !== ''
+    || url.search !== ''
+    || url.hash !== ''
+  ) {
+    throw new Error('Live2D asset URLs cannot contain credentials or URL modifiers.')
+  }
+  if (url.protocol === 'http:' || url.protocol === 'https:') {
+    if (url.origin !== window.location.origin) {
       throw new Error('Live2D development assets must remain same-origin.')
     }
-  } else {
-    throw new Error(`Unsupported Live2D page protocol: ${pageProtocol}`)
+    return
   }
-
-  const manifest = new URL(MODEL_MANIFEST_NAME, base)
-  const moc = new URL(MODEL_MOC_NAME, base)
-  const texture = new URL(MODEL_TEXTURE_NAME, base)
-  for (const url of [manifest, moc, texture]) {
-    if (url.username !== '' || url.password !== '' || url.search !== '' || url.hash !== '') {
-      throw new Error('Live2D asset URLs cannot contain credentials or URL modifiers.')
-    }
+  if (url.protocol === 'elysia-pet-asset:' && url.host === 'model') {
+    return
   }
-  return { manifest, moc, texture }
+  if (url.protocol !== 'elysia-pet-asset:') {
+    throw new Error(`Unsupported Live2D asset protocol: ${url.protocol}`)
+  }
+  throw new Error(`Unsupported Live2D asset authority: ${url.host}`)
 }
 
-function validateManifest(value: unknown): ModelManifest {
+function resolveManifestUrl(candidate: string): URL {
+  if (typeof candidate !== 'string' || candidate.length === 0) {
+    throw new TypeError('A Live2D model manifest URL is required.')
+  }
+  const manifest = new URL(candidate, document.baseURI)
+  validateAssetEndpoint(manifest)
+  return manifest
+}
+
+function resolveManifestReference(reference: string, manifestUrl: URL): URL {
+  if (reference.length === 0 || reference.length > 1024) {
+    throw new Error('Live2D manifest contains an invalid empty or oversized file reference.')
+  }
+  let decodedReference: string
+  try {
+    decodedReference = decodeURIComponent(reference)
+  } catch (error) {
+    throw new Error('Live2D manifest contains an invalid percent-encoded file reference.', {
+      cause: error,
+    })
+  }
+  const segments = decodedReference.split('/')
+  if (
+    decodedReference.startsWith('/')
+    || decodedReference.includes('\\')
+    || decodedReference.includes('\0')
+    || decodedReference.includes('?')
+    || decodedReference.includes('#')
+    || segments.some((segment) => (
+      segment === ''
+      || segment === '.'
+      || segment === '..'
+      || segment.includes(':')
+    ))
+  ) {
+    // A model3 reference is a path below its manifest. Keeping this invariant
+    // prevents renderer-controlled JSON from widening Main's protocol grant.
+    throw new Error(`Unsafe Live2D manifest file reference: ${reference}`)
+  }
+
+  const directory = new URL('./', manifestUrl)
+  const resolved = new URL(reference, directory)
+  validateAssetEndpoint(resolved)
+  if (
+    resolved.protocol !== directory.protocol
+    || resolved.host !== directory.host
+    || !resolved.pathname.startsWith(directory.pathname)
+  ) {
+    throw new Error(`Live2D manifest file reference escaped its model directory: ${reference}`)
+  }
+  return resolved
+}
+
+function validateManifest(
+  value: unknown,
+  manifestUrl: URL,
+): ResolvedModelAssets {
   if (typeof value !== 'object' || value === null) {
     throw new Error('The Live2D model manifest must be a JSON object.')
   }
@@ -420,16 +601,27 @@ function validateManifest(value: unknown): ModelManifest {
     manifest.Version !== 3
     || typeof references !== 'object'
     || references === null
-    || references.Moc !== MODEL_MOC_NAME
+    || typeof references.Moc !== 'string'
+    || (references.Physics !== undefined && typeof references.Physics !== 'string')
     || !Array.isArray(references.Textures)
-    || references.Textures.length !== 1
-    || references.Textures[0] !== MODEL_TEXTURE_NAME
+    || references.Textures.length === 0
+    || references.Textures.length > MODEL_TEXTURE_COUNT_LIMIT
+    || references.Textures.some((texture) => typeof texture !== 'string')
   ) {
-    // Resource references are data in Cubism manifests. Exact comparison keeps
-    // a replaced manifest from turning this local renderer into a URL loader.
-    throw new Error('The Live2D model manifest does not match the fixed asset contract.')
+    throw new Error('The Live2D model manifest does not match the bounded asset contract.')
   }
-  return manifest
+  const validated = manifest as ValidatedModelManifest
+  const mocUrl = resolveManifestReference(validated.FileReferences.Moc, manifestUrl)
+  const physicsUrl = validated.FileReferences.Physics === undefined
+    ? null
+    : resolveManifestReference(validated.FileReferences.Physics, manifestUrl)
+  const textureUrls = validated.FileReferences.Textures.map(
+    (reference) => resolveManifestReference(reference, manifestUrl),
+  )
+  if (new Set(textureUrls.map((url) => url.href)).size !== textureUrls.length) {
+    throw new Error('The Live2D model manifest contains duplicate textures.')
+  }
+  return { manifest: validated, mocUrl, physicsUrl, textureUrls }
 }
 
 function validateResponseUrl(response: Response, expected: URL): void {
@@ -487,7 +679,7 @@ async function readBoundedResponse(
   return bytes
 }
 
-async function fetchFixedAsset(
+async function fetchModelAsset(
   url: URL,
   maximumBytes: number,
   signal: AbortSignal,
@@ -506,19 +698,367 @@ async function fetchFixedAsset(
   return readBoundedResponse(response, maximumBytes)
 }
 
-async function loadFixedAssets(): Promise<LoadedAssets> {
-  const urls = resolveAssetUrls()
+function hasMoc3Header(bytes: Uint8Array): boolean {
+  return bytes.byteLength >= 4
+    && bytes[0] === 0x4d
+    && bytes[1] === 0x4f
+    && bytes[2] === 0x43
+    && bytes[3] === 0x33
+}
+
+function readUint32BigEndian(bytes: Uint8Array, offset: number): number {
+  return (bytes[offset]! * 0x1000000)
+    + (bytes[offset + 1]! * 0x10000)
+    + (bytes[offset + 2]! * 0x100)
+    + bytes[offset + 3]!
+}
+
+/**
+ * Read the fixed PNG signature and IHDR before invoking a browser decoder.
+ *
+ * Compressed byte limits do not bound a PNG's decoded allocation. Inspecting
+ * its mandatory first chunk here prevents a tiny decompression-bomb header
+ * from reaching `createImageBitmap` and allocating an attacker-chosen surface.
+ */
+function parsePngHeader(bytes: Uint8Array): PngHeader {
+  if (
+    bytes.byteLength < 33
+    || bytes[0] !== 0x89
+    || bytes[1] !== 0x50
+    || bytes[2] !== 0x4e
+    || bytes[3] !== 0x47
+    || bytes[4] !== 0x0d
+    || bytes[5] !== 0x0a
+    || bytes[6] !== 0x1a
+    || bytes[7] !== 0x0a
+    || readUint32BigEndian(bytes, 8) !== 13
+    || bytes[12] !== 0x49
+    || bytes[13] !== 0x48
+    || bytes[14] !== 0x44
+    || bytes[15] !== 0x52
+  ) {
+    throw new Error('A selected Live2D texture has an invalid PNG IHDR.')
+  }
+
+  const width = readUint32BigEndian(bytes, 16)
+  const height = readUint32BigEndian(bytes, 20)
+  if (
+    width <= 0
+    || height <= 0
+    || width > MODEL_TEXTURE_DIMENSION_LIMIT
+    || height > MODEL_TEXTURE_DIMENSION_LIMIT
+    || width * height > MODEL_TEXTURE_PIXEL_LIMIT
+  ) {
+    throw new Error('Live2D atlas dimensions exceed their fixed limit.')
+  }
+
+  const bitDepth = bytes[24]!
+  const colorType = bytes[25]!
+  const validBitDepth = (
+    (colorType === 0 && [1, 2, 4, 8, 16].includes(bitDepth))
+    || (colorType === 2 && (bitDepth === 8 || bitDepth === 16))
+    || (colorType === 3 && [1, 2, 4, 8].includes(bitDepth))
+    || (colorType === 4 && (bitDepth === 8 || bitDepth === 16))
+    || (colorType === 6 && (bitDepth === 8 || bitDepth === 16))
+  )
+  if (
+    !validBitDepth
+    || bytes[26] !== 0
+    || bytes[27] !== 0
+    || (bytes[28] !== 0 && bytes[28] !== 1)
+  ) {
+    throw new Error('A selected Live2D texture uses an unsupported PNG format.')
+  }
+  return { height, width }
+}
+
+function validateTextureHeaders(textures: readonly Uint8Array[]): void {
+  let totalPixels = 0
+  for (const texture of textures) {
+    const header = parsePngHeader(texture)
+    totalPixels += header.width * header.height
+    if (totalPixels > MODEL_TEXTURE_TOTAL_PIXEL_LIMIT) {
+      throw new Error('The selected Live2D textures exceed their decoded pixel budget.')
+    }
+  }
+}
+
+function requirePhysicsNumber(
+  value: unknown,
+  field: string,
+  minimum = -PHYSICS_ABSOLUTE_VALUE_LIMIT,
+  maximum = PHYSICS_ABSOLUTE_VALUE_LIMIT,
+): number {
+  if (
+    typeof value !== 'number'
+    || !Number.isFinite(value)
+    || value < minimum
+    || value > maximum
+  ) {
+    throw new Error(`Live2D physics ${field} is invalid.`)
+  }
+  return value
+}
+
+function requirePhysicsCount(value: unknown, field: string, maximum: number): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 0 || (value as number) > maximum) {
+    throw new Error(`Live2D physics ${field} is invalid.`)
+  }
+  return value as number
+}
+
+function requirePhysicsIdentifier(value: unknown, field: string): string {
+  if (
+    typeof value !== 'string'
+    || value.length === 0
+    || value.length > PHYSICS_IDENTIFIER_LIMIT
+    || /\p{Cc}/u.test(value)
+  ) {
+    throw new Error(`Live2D physics ${field} is invalid.`)
+  }
+  return value
+}
+
+function requirePhysicsVector(value: unknown, field: string): PhysicsVector {
+  if (!isRecord(value)) {
+    throw new Error(`Live2D physics ${field} is invalid.`)
+  }
+  return Object.freeze({
+    x: requirePhysicsNumber(value.X, `${field}.X`),
+    y: requirePhysicsNumber(value.Y, `${field}.Y`),
+  })
+}
+
+function requirePhysicsNormalization(
+  value: unknown,
+  field: string,
+): PhysicsNormalization {
+  if (!isRecord(value)) {
+    throw new Error(`Live2D physics ${field} is invalid.`)
+  }
+  const minimum = requirePhysicsNumber(value.Minimum, `${field}.Minimum`)
+  const defaultValue = requirePhysicsNumber(value.Default, `${field}.Default`)
+  const maximum = requirePhysicsNumber(value.Maximum, `${field}.Maximum`)
+  if (minimum > defaultValue || defaultValue > maximum || minimum === maximum) {
+    throw new Error(`Live2D physics ${field} range is invalid.`)
+  }
+  return Object.freeze({ defaultValue, maximum, minimum })
+}
+
+function requirePhysicsType(value: unknown, field: string): PhysicsValueType {
+  if (value !== 'X' && value !== 'Y' && value !== 'Angle') {
+    throw new Error(`Live2D physics ${field} is unsupported.`)
+  }
+  return value
+}
+
+/** Parse an untrusted physics3 document into a closed, allocation-bounded rig. */
+function parsePhysicsRig(bytes: Uint8Array): PhysicsRigDefinition {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes))
+  } catch (error) {
+    throw new Error('The Live2D physics file is not valid UTF-8 JSON.', {
+      cause: error,
+    })
+  }
+  if (!isRecord(parsed) || parsed.Version !== 3 || !isRecord(parsed.Meta)) {
+    throw new Error('The Live2D physics file does not use the supported format.')
+  }
+  const meta = parsed.Meta
+  if (!isRecord(meta.EffectiveForces) || !Array.isArray(parsed.PhysicsSettings)) {
+    throw new Error('The Live2D physics metadata is invalid.')
+  }
+  const settingCount = requirePhysicsCount(
+    meta.PhysicsSettingCount,
+    'setting count',
+    PHYSICS_SETTING_LIMIT,
+  )
+  const expectedInputCount = requirePhysicsCount(
+    meta.TotalInputCount,
+    'input count',
+    PHYSICS_INPUT_LIMIT,
+  )
+  const expectedOutputCount = requirePhysicsCount(
+    meta.TotalOutputCount,
+    'output count',
+    PHYSICS_OUTPUT_LIMIT,
+  )
+  const expectedParticleCount = requirePhysicsCount(
+    meta.VertexCount,
+    'particle count',
+    PHYSICS_PARTICLE_LIMIT,
+  )
+  if (settingCount !== parsed.PhysicsSettings.length) {
+    throw new Error('The Live2D physics setting count does not match its metadata.')
+  }
+
+  let totalInputs = 0
+  let totalOutputs = 0
+  let totalParticles = 0
+  const settings = parsed.PhysicsSettings.map((settingValue, settingIndex) => {
+    if (
+      !isRecord(settingValue)
+      || !Array.isArray(settingValue.Input)
+      || !Array.isArray(settingValue.Output)
+      || !Array.isArray(settingValue.Vertices)
+      || !isRecord(settingValue.Normalization)
+      || settingValue.Vertices.length < 2
+      || settingValue.Vertices.length > PHYSICS_PARTICLES_PER_SETTING_LIMIT
+    ) {
+      throw new Error(`Live2D physics setting ${settingIndex} is invalid.`)
+    }
+    totalInputs += settingValue.Input.length
+    totalOutputs += settingValue.Output.length
+    totalParticles += settingValue.Vertices.length
+    if (
+      totalInputs > PHYSICS_INPUT_LIMIT
+      || totalOutputs > PHYSICS_OUTPUT_LIMIT
+      || totalParticles > PHYSICS_PARTICLE_LIMIT
+    ) {
+      throw new Error('The Live2D physics rig exceeds its allocation limits.')
+    }
+
+    const inputs = settingValue.Input.map((inputValue, inputIndex) => {
+      if (
+        !isRecord(inputValue)
+        || !isRecord(inputValue.Source)
+        || inputValue.Source.Target !== 'Parameter'
+        || typeof inputValue.Reflect !== 'boolean'
+      ) {
+        throw new Error(`Live2D physics input ${settingIndex}:${inputIndex} is invalid.`)
+      }
+      return Object.freeze({
+        parameterId: requirePhysicsIdentifier(
+          inputValue.Source.Id,
+          `input ${settingIndex}:${inputIndex} id`,
+        ),
+        reflect: inputValue.Reflect,
+        type: requirePhysicsType(inputValue.Type, `input ${settingIndex}:${inputIndex} type`),
+        weight: requirePhysicsNumber(
+          inputValue.Weight,
+          `input ${settingIndex}:${inputIndex} weight`,
+          0,
+          100,
+        ),
+      })
+    })
+    const particles = settingValue.Vertices.map((particleValue, particleIndex) => {
+      if (!isRecord(particleValue)) {
+        throw new Error(`Live2D physics particle ${settingIndex}:${particleIndex} is invalid.`)
+      }
+      requirePhysicsVector(
+        particleValue.Position,
+        `particle ${settingIndex}:${particleIndex} position`,
+      )
+      return Object.freeze({
+        acceleration: requirePhysicsNumber(
+          particleValue.Acceleration,
+          `particle ${settingIndex}:${particleIndex} acceleration`,
+          0,
+          100,
+        ),
+        delay: requirePhysicsNumber(
+          particleValue.Delay,
+          `particle ${settingIndex}:${particleIndex} delay`,
+          0,
+          10,
+        ),
+        mobility: requirePhysicsNumber(
+          particleValue.Mobility,
+          `particle ${settingIndex}:${particleIndex} mobility`,
+          0,
+          10,
+        ),
+        radius: requirePhysicsNumber(
+          particleValue.Radius,
+          `particle ${settingIndex}:${particleIndex} radius`,
+          0,
+          10_000,
+        ),
+      })
+    })
+    const outputs = settingValue.Output.map((outputValue, outputIndex) => {
+      if (
+        !isRecord(outputValue)
+        || !isRecord(outputValue.Destination)
+        || outputValue.Destination.Target !== 'Parameter'
+        || typeof outputValue.Reflect !== 'boolean'
+      ) {
+        throw new Error(`Live2D physics output ${settingIndex}:${outputIndex} is invalid.`)
+      }
+      const vertexIndex = requirePhysicsCount(
+        outputValue.VertexIndex,
+        `output ${settingIndex}:${outputIndex} vertex`,
+        particles.length - 1,
+      )
+      if (vertexIndex < 1) {
+        throw new Error(`Live2D physics output ${settingIndex}:${outputIndex} vertex is invalid.`)
+      }
+      return Object.freeze({
+        parameterId: requirePhysicsIdentifier(
+          outputValue.Destination.Id,
+          `output ${settingIndex}:${outputIndex} id`,
+        ),
+        reflect: outputValue.Reflect,
+        scale: requirePhysicsNumber(
+          outputValue.Scale,
+          `output ${settingIndex}:${outputIndex} scale`,
+        ),
+        type: requirePhysicsType(outputValue.Type, `output ${settingIndex}:${outputIndex} type`),
+        vertexIndex,
+        weight: requirePhysicsNumber(
+          outputValue.Weight,
+          `output ${settingIndex}:${outputIndex} weight`,
+          0,
+          100,
+        ),
+      })
+    })
+    return Object.freeze({
+      inputs: Object.freeze(inputs),
+      normalizationAngle: requirePhysicsNormalization(
+        settingValue.Normalization.Angle,
+        `setting ${settingIndex} angle normalization`,
+      ),
+      normalizationPosition: requirePhysicsNormalization(
+        settingValue.Normalization.Position,
+        `setting ${settingIndex} position normalization`,
+      ),
+      outputs: Object.freeze(outputs),
+      particles: Object.freeze(particles),
+    })
+  })
+  if (
+    totalInputs !== expectedInputCount
+    || totalOutputs !== expectedOutputCount
+    || totalParticles !== expectedParticleCount
+  ) {
+    throw new Error('The Live2D physics totals do not match their metadata.')
+  }
+  const fps = meta.Fps === undefined
+    ? 0
+    : requirePhysicsNumber(meta.Fps, 'frame rate', 1, 240)
+  return Object.freeze({
+    fps,
+    gravity: requirePhysicsVector(meta.EffectiveForces.Gravity, 'gravity'),
+    settings: Object.freeze(settings),
+    wind: requirePhysicsVector(meta.EffectiveForces.Wind, 'wind'),
+  })
+}
+
+async function loadModelAssets(manifestUrl: URL): Promise<LoadedAssets> {
   const abortController = new AbortController()
   const timeout = globalThis.setTimeout(() => {
     abortController.abort(new Error('Live2D asset loading timed out.'))
   }, LOAD_TIMEOUT_MS)
 
   try {
-    const [manifestBytes, moc, texture] = await Promise.all([
-      fetchFixedAsset(urls.manifest, MODEL_MANIFEST_LIMIT, abortController.signal),
-      fetchFixedAsset(urls.moc, MODEL_MOC_LIMIT, abortController.signal),
-      fetchFixedAsset(urls.texture, MODEL_TEXTURE_LIMIT, abortController.signal),
-    ])
+    const manifestBytes = await fetchModelAsset(
+      manifestUrl,
+      MODEL_MANIFEST_LIMIT,
+      abortController.signal,
+    )
     let parsedManifest: unknown
     try {
       parsedManifest = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(manifestBytes))
@@ -527,32 +1067,37 @@ async function loadFixedAssets(): Promise<LoadedAssets> {
         cause: error,
       })
     }
-    if (
-      moc.byteLength < 4
-      || moc[0] !== 0x4d
-      || moc[1] !== 0x4f
-      || moc[2] !== 0x43
-      || moc[3] !== 0x33
-    ) {
-      throw new Error('The fixed Live2D moc does not have a MOC3 header.')
+    const resolved = validateManifest(parsedManifest, manifestUrl)
+    const [moc, textures, physicsBytes] = await Promise.all([
+      fetchModelAsset(resolved.mocUrl, MODEL_MOC_LIMIT, abortController.signal),
+      Promise.all(resolved.textureUrls.map((url) => (
+        fetchModelAsset(url, MODEL_TEXTURE_LIMIT, abortController.signal)
+      ))),
+      resolved.physicsUrl === null
+        ? Promise.resolve(null)
+        : fetchModelAsset(
+            resolved.physicsUrl,
+            MODEL_PHYSICS_LIMIT,
+            abortController.signal,
+          ),
+    ])
+    if (!hasMoc3Header(moc)) {
+      throw new Error('The selected Live2D moc does not have a MOC3 header.')
     }
-    if (
-      texture.byteLength < 8
-      || texture[0] !== 0x89
-      || texture[1] !== 0x50
-      || texture[2] !== 0x4e
-      || texture[3] !== 0x47
-      || texture[4] !== 0x0d
-      || texture[5] !== 0x0a
-      || texture[6] !== 0x1a
-      || texture[7] !== 0x0a
-    ) {
-      throw new Error('The fixed Live2D texture does not have a PNG signature.')
+    validateTextureHeaders(textures)
+    const totalTextureBytes = textures.reduce(
+      (total, texture) => total + texture.byteLength,
+      0,
+    )
+    if (totalTextureBytes > MODEL_TEXTURE_TOTAL_LIMIT) {
+      throw new Error('The selected Live2D textures exceed their aggregate size limit.')
     }
+
     return {
-      manifest: validateManifest(parsedManifest),
+      manifest: resolved.manifest,
       moc,
-      texture,
+      physics: physicsBytes === null ? null : parsePhysicsRig(physicsBytes),
+      textures,
     }
   } catch (error) {
     const timedOut = abortController.signal.aborted
@@ -659,12 +1204,12 @@ function createCoreModel(
   const buffer = exactArrayBuffer(mocBytes)
   const moc = core.Moc.fromArrayBuffer(buffer)
   if (moc === null) {
-    throw new Error('PurismCore rejected the fixed Live2D moc.')
+    throw new Error('PurismCore rejected the selected Live2D moc.')
   }
   try {
     const consistency = moc.hasMocConsistency(buffer)
     if (consistency !== 1 && consistency !== true) {
-      throw new Error('The fixed Live2D moc failed its consistency check.')
+      throw new Error('The selected Live2D moc failed its consistency check.')
     }
 
     // Consistency checking allocates temporary WASM memory. Constructing the
@@ -672,7 +1217,7 @@ function createCoreModel(
     // only after that possible memory growth has finished.
     const model = core.Model.fromMoc(moc)
     if (model === null) {
-      throw new Error('PurismCore could not instantiate the fixed Live2D model.')
+      throw new Error('PurismCore could not instantiate the selected Live2D model.')
     }
     return { moc, model }
   } catch (error) {
@@ -689,7 +1234,10 @@ function getRenderOrders(model: PurismModel): Int32Array {
   return orders
 }
 
-function validateCoreModel(model: PurismModel): ReadonlyMap<string, number> {
+function validateCoreModel(
+  model: PurismModel,
+  textureCount: number,
+): ReadonlyMap<string, number> {
   const parameters = model.parameters
   if (
     parameters.count <= 0
@@ -730,12 +1278,6 @@ function validateCoreModel(model: PurismModel): ReadonlyMap<string, number> {
     }
     parameterIndices.set(id, index)
   })
-  for (const required of REQUIRED_PARAMETERS) {
-    if (!parameterIndices.has(required)) {
-      throw new Error(`The Live2D model is missing required parameter ${required}.`)
-    }
-  }
-
   const drawables = model.drawables
   if (drawables.count <= 0 || drawables.count > MAX_DRAWABLES) {
     throw new Error('The Live2D drawable count is outside its fixed limit.')
@@ -761,17 +1303,21 @@ function validateCoreModel(model: PurismModel): ReadonlyMap<string, number> {
   ) {
     throw new Error('PurismCore returned mismatched Live2D color arrays.')
   }
-  if (Array.from(drawables.maskCounts).some((count) => count !== 0)) {
-    // The reviewed v2 model deliberately has no clipping masks. Failing closed
-    // is safer than silently drawing a future masked model incorrectly.
-    throw new Error('This Live2D renderer accepts only the reviewed mask-free model.')
+  if (
+    drawables.masks !== undefined
+    && drawables.masks.length !== drawables.count
+  ) {
+    throw new Error('PurismCore returned mismatched Live2D mask arrays.')
   }
-  if (Array.from(drawables.textureIndices).some((index) => index !== 0)) {
-    throw new Error('This Live2D renderer accepts only the fixed single atlas.')
+  if (Array.from(drawables.textureIndices).some((index) => (
+    !Number.isInteger(index) || index < 0 || index >= textureCount
+  ))) {
+    throw new Error('A Live2D drawable selects an unavailable texture atlas.')
   }
 
   let totalVertices = 0
   let totalIndices = 0
+  let totalMaskReferences = 0
   for (let index = 0; index < drawables.count; index += 1) {
     const vertexCount = drawables.vertexCounts[index] ?? -1
     const indexCount = drawables.indexCounts[index] ?? -1
@@ -787,11 +1333,31 @@ function validateCoreModel(model: PurismModel): ReadonlyMap<string, number> {
     ) {
       throw new Error(`Live2D drawable ${index} has invalid mesh arrays.`)
     }
+    const maskCount = drawables.maskCounts[index] ?? -1
+    const masks = drawables.masks?.[index]
+    if (
+      !Number.isInteger(maskCount)
+      || maskCount < 0
+      || maskCount > MAX_MASKS_PER_DRAWABLE
+      || (maskCount > 0 && masks === undefined)
+      || (masks !== undefined && masks.length !== maskCount)
+      || masks?.some((maskIndex) => (
+        !Number.isInteger(maskIndex)
+        || maskIndex < 0
+        || maskIndex >= drawables.count
+      )) === true
+    ) {
+      throw new Error(`Live2D drawable ${index} has invalid clipping masks.`)
+    }
     totalVertices += vertexCount
     totalIndices += indexCount
+    totalMaskReferences += maskCount
   }
   if (totalVertices > MAX_TOTAL_VERTICES || totalIndices > MAX_TOTAL_INDICES) {
     throw new Error('The Live2D mesh exceeds its fixed geometry limits.')
+  }
+  if (totalMaskReferences > MAX_TOTAL_MASK_REFERENCES) {
+    throw new Error('The Live2D model exceeds its clipping-mask limit.')
   }
   getRenderOrders(model)
 
@@ -809,13 +1375,19 @@ function validateCoreModel(model: PurismModel): ReadonlyMap<string, number> {
 }
 
 async function decodeTexture(bytes: Uint8Array): Promise<DecodedTexture> {
+  const header = parsePngHeader(bytes)
   const blob = new Blob([exactArrayBuffer(bytes)], { type: 'image/png' })
   if (typeof globalThis.createImageBitmap === 'function') {
-    return globalThis.createImageBitmap(blob, {
+    const bitmap = await globalThis.createImageBitmap(blob, {
       colorSpaceConversion: 'default',
       imageOrientation: 'none',
       premultiplyAlpha: 'premultiply',
     })
+    if (bitmap.width !== header.width || bitmap.height !== header.height) {
+      bitmap.close()
+      throw new Error('The decoded Live2D texture does not match its PNG IHDR.')
+    }
+    return bitmap
   }
 
   const objectUrl = URL.createObjectURL(blob)
@@ -824,9 +1396,29 @@ async function decodeTexture(bytes: Uint8Array): Promise<DecodedTexture> {
     image.decoding = 'async'
     image.src = objectUrl
     await image.decode()
+    if (image.width !== header.width || image.height !== header.height) {
+      throw new Error('The decoded Live2D texture does not match its PNG IHDR.')
+    }
     return image
   } finally {
     URL.revokeObjectURL(objectUrl)
+  }
+}
+
+async function decodeTextures(
+  textureBytes: readonly Uint8Array[],
+): Promise<readonly DecodedTexture[]> {
+  const decoded: DecodedTexture[] = []
+  try {
+    for (const bytes of textureBytes) {
+      // Decode sequentially so one malformed atlas cannot leave several large
+      // browser decoders and bitmaps alive after Promise.all rejects early.
+      decoded.push(await decodeTexture(bytes))
+    }
+    return decoded
+  } catch (error) {
+    for (const texture of decoded) closeDecodedTexture(texture)
+    throw error
   }
 }
 
@@ -867,24 +1459,14 @@ function requireUniform(
   return location
 }
 
-function createGpuResources(
+function linkProgram(
   gl: WebGL2RenderingContext,
-  decodedTexture: DecodedTexture,
-): GpuResources {
-  if (
-    decodedTexture.width <= 0
-    || decodedTexture.height <= 0
-    || decodedTexture.width > MODEL_TEXTURE_DIMENSION_LIMIT
-    || decodedTexture.height > MODEL_TEXTURE_DIMENSION_LIMIT
-    || decodedTexture.width * decodedTexture.height > MODEL_TEXTURE_PIXEL_LIMIT
-  ) {
-    throw new Error('The Live2D atlas dimensions exceed their fixed limit.')
-  }
-
+  fragmentSource: string,
+): WebGLProgram {
   const vertexShader = compileShader(gl, gl.VERTEX_SHADER, VERTEX_SHADER_SOURCE)
   let fragmentShader: WebGLShader
   try {
-    fragmentShader = compileShader(gl, gl.FRAGMENT_SHADER, FRAGMENT_SHADER_SOURCE)
+    fragmentShader = compileShader(gl, gl.FRAGMENT_SHADER, fragmentSource)
   } catch (error) {
     gl.deleteShader(vertexShader)
     throw error
@@ -893,7 +1475,7 @@ function createGpuResources(
   if (program === null) {
     gl.deleteShader(vertexShader)
     gl.deleteShader(fragmentShader)
-    throw new Error('WebGL2 could not allocate the Live2D shader program.')
+    throw new Error('WebGL2 could not allocate a Live2D shader program.')
   }
   try {
     gl.attachShader(program, vertexShader)
@@ -911,35 +1493,65 @@ function createGpuResources(
     gl.deleteProgram(program)
     throw new Error(`Live2D shader linking failed: ${detail}`)
   }
+  return program
+}
+
+function createGpuResources(
+  gl: WebGL2RenderingContext,
+  decodedTextures: readonly DecodedTexture[],
+  needsClippingMasks: boolean,
+): GpuResources {
+  for (const decodedTexture of decodedTextures) {
+    if (
+      decodedTexture.width <= 0
+      || decodedTexture.height <= 0
+      || decodedTexture.width > MODEL_TEXTURE_DIMENSION_LIMIT
+      || decodedTexture.height > MODEL_TEXTURE_DIMENSION_LIMIT
+      || decodedTexture.width * decodedTexture.height > MODEL_TEXTURE_PIXEL_LIMIT
+    ) {
+      throw new Error('Live2D atlas dimensions exceed their fixed limit.')
+    }
+  }
+
+  const program = linkProgram(gl, FRAGMENT_SHADER_SOURCE)
 
   const vertexArray = gl.createVertexArray()
   const positionBuffer = gl.createBuffer()
   const uvBuffer = gl.createBuffer()
   const indexBuffer = gl.createBuffer()
-  const texture = gl.createTexture()
+  const textures = decodedTextures.map(() => gl.createTexture())
   if (
     vertexArray === null
     || positionBuffer === null
     || uvBuffer === null
     || indexBuffer === null
-    || texture === null
+    || textures.some((texture) => texture === null)
   ) {
     gl.deleteProgram(program)
     if (vertexArray !== null) gl.deleteVertexArray(vertexArray)
     if (positionBuffer !== null) gl.deleteBuffer(positionBuffer)
     if (uvBuffer !== null) gl.deleteBuffer(uvBuffer)
     if (indexBuffer !== null) gl.deleteBuffer(indexBuffer)
-    if (texture !== null) gl.deleteTexture(texture)
+    for (const texture of textures) {
+      if (texture !== null) gl.deleteTexture(texture)
+    }
     throw new Error('WebGL2 could not allocate Live2D drawing resources.')
   }
+  const allocatedTextures = textures as WebGLTexture[]
+  let mask: MaskGpuResources | null = null
 
   const releaseAllocations = (): void => {
+    if (mask !== null) {
+      gl.deleteFramebuffer(mask.framebuffer)
+      gl.deleteTexture(mask.texture)
+      gl.deleteProgram(mask.program)
+    }
     gl.deleteProgram(program)
     gl.deleteVertexArray(vertexArray)
     gl.deleteBuffer(positionBuffer)
     gl.deleteBuffer(uvBuffer)
     gl.deleteBuffer(indexBuffer)
-    gl.deleteTexture(texture)
+    for (const texture of allocatedTextures) gl.deleteTexture(texture)
   }
   try {
     const position = gl.getAttribLocation(program, 'a_position')
@@ -955,6 +1567,10 @@ function createGpuResources(
       multiplyColor: requireUniform(gl, program, 'u_multiply_color'),
       screenColor: requireUniform(gl, program, 'u_screen_color'),
       texture: requireUniform(gl, program, 'u_texture'),
+      maskEnabled: requireUniform(gl, program, 'u_mask_enabled'),
+      maskInverted: requireUniform(gl, program, 'u_mask_inverted'),
+      maskTexture: requireUniform(gl, program, 'u_mask_texture'),
+      viewport: requireUniform(gl, program, 'u_viewport'),
     }
 
     gl.bindVertexArray(vertexArray)
@@ -967,21 +1583,56 @@ function createGpuResources(
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indexBuffer)
 
     gl.activeTexture(gl.TEXTURE0)
-    gl.bindTexture(gl.TEXTURE_2D, texture)
-    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false)
-    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true)
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
-    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
-    gl.texImage2D(
-      gl.TEXTURE_2D,
-      0,
-      gl.RGBA,
-      gl.RGBA,
-      gl.UNSIGNED_BYTE,
-      decodedTexture,
-    )
+    decodedTextures.forEach((decodedTexture, index) => {
+      gl.bindTexture(gl.TEXTURE_2D, allocatedTextures[index] ?? null)
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false)
+      gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true)
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
+      gl.texImage2D(
+        gl.TEXTURE_2D,
+        0,
+        gl.RGBA,
+        gl.RGBA,
+        gl.UNSIGNED_BYTE,
+        decodedTexture,
+      )
+    })
+
+    if (needsClippingMasks) {
+      const maskProgram = linkProgram(gl, MASK_FRAGMENT_SHADER_SOURCE)
+      const maskTexture = gl.createTexture()
+      const maskFramebuffer = gl.createFramebuffer()
+      if (maskTexture === null || maskFramebuffer === null) {
+        if (maskTexture !== null) gl.deleteTexture(maskTexture)
+        if (maskFramebuffer !== null) gl.deleteFramebuffer(maskFramebuffer)
+        gl.deleteProgram(maskProgram)
+        throw new Error('WebGL2 could not allocate Live2D clipping resources.')
+      }
+      let maskLocations: MaskShaderLocations
+      try {
+        maskLocations = {
+          opacity: requireUniform(gl, maskProgram, 'u_opacity'),
+          texture: requireUniform(gl, maskProgram, 'u_texture'),
+          transform: requireUniform(gl, maskProgram, 'u_transform'),
+        }
+      } catch (error) {
+        gl.deleteFramebuffer(maskFramebuffer)
+        gl.deleteTexture(maskTexture)
+        gl.deleteProgram(maskProgram)
+        throw error
+      }
+      mask = {
+        framebuffer: maskFramebuffer,
+        height: 0,
+        locations: maskLocations,
+        program: maskProgram,
+        texture: maskTexture,
+        width: 0,
+      }
+    }
     gl.bindVertexArray(null)
     gl.bindTexture(gl.TEXTURE_2D, null)
 
@@ -991,8 +1642,9 @@ function createGpuResources(
       positionBuffer,
       uvBuffer,
       indexBuffer,
-      texture,
+      textures: allocatedTextures,
       locations,
+      mask,
     }
   } catch (error) {
     releaseAllocations()
@@ -1004,7 +1656,12 @@ function deleteGpuResources(
   gl: WebGL2RenderingContext,
   resources: GpuResources,
 ): void {
-  gl.deleteTexture(resources.texture)
+  if (resources.mask !== null) {
+    gl.deleteFramebuffer(resources.mask.framebuffer)
+    gl.deleteTexture(resources.mask.texture)
+    gl.deleteProgram(resources.mask.program)
+  }
+  for (const texture of resources.textures) gl.deleteTexture(texture)
   gl.deleteBuffer(resources.indexBuffer)
   gl.deleteBuffer(resources.uvBuffer)
   gl.deleteBuffer(resources.positionBuffer)
@@ -1030,13 +1687,299 @@ function validateFraming(framing: Live2DFraming): void {
   }
 }
 
+function physicsVector(x: number, y: number): PhysicsVector {
+  return { x, y }
+}
+
+function normalizePhysicsVector(value: PhysicsVector, fallback: PhysicsVector): PhysicsVector {
+  const length = Math.hypot(value.x, value.y)
+  if (!Number.isFinite(length) || length <= Number.EPSILON) {
+    return physicsVector(fallback.x, fallback.y)
+  }
+  return physicsVector(value.x / length, value.y / length)
+}
+
+function physicsDirectionToRadians(from: PhysicsVector, to: PhysicsVector): number {
+  let result = Math.atan2(to.y, to.x) - Math.atan2(from.y, from.x)
+  while (result < -Math.PI) result += Math.PI * 2
+  while (result > Math.PI) result -= Math.PI * 2
+  return result
+}
+
+function normalizePhysicsParameter(
+  value: number,
+  parameterMinimum: number,
+  parameterMaximum: number,
+  normalization: PhysicsNormalization,
+  reflect: boolean,
+): number {
+  const minimum = Math.min(parameterMinimum, parameterMaximum)
+  const maximum = Math.max(parameterMinimum, parameterMaximum)
+  // Cubism Physics normalizes around the midpoint of the Core range, not the
+  // parameter's authored default. This distinction matters for asymmetric
+  // defaults and keeps the pendulum input compatible with physics3 output.
+  const defaultValue = minimum + (maximum - minimum) / 2
+  const bounded = clamp(value, minimum, maximum)
+  let normalized = normalization.defaultValue
+  if (bounded > defaultValue && maximum > defaultValue) {
+    normalized += (bounded - defaultValue)
+      * (normalization.maximum - normalization.defaultValue)
+      / (maximum - defaultValue)
+  } else if (bounded < defaultValue && minimum < defaultValue) {
+    normalized += (bounded - defaultValue)
+      * (normalization.minimum - normalization.defaultValue)
+      / (minimum - defaultValue)
+  }
+  // Cubism's Reflect flag chooses the authored sign; false intentionally
+  // negates the normalized input rather than meaning "leave unchanged".
+  return reflect ? normalized : -normalized
+}
+
+function createPhysicsParticleStates(
+  particles: readonly PhysicsParticleDefinition[],
+): PhysicsParticleState[] {
+  const states: PhysicsParticleState[] = []
+  let y = 0
+  for (let index = 0; index < particles.length; index += 1) {
+    const particle = particles[index]!
+    if (index > 0) y += particle.radius
+    const position = physicsVector(0, y)
+    states.push({
+      acceleration: particle.acceleration,
+      delay: particle.delay,
+      lastGravity: physicsVector(0, 1),
+      lastPosition: physicsVector(position.x, position.y),
+      mobility: particle.mobility,
+      position,
+      radius: particle.radius,
+      velocity: physicsVector(0, 0),
+    })
+  }
+  return states
+}
+
+/**
+ * Evaluate the bounded Physics 3 pendulum graph against Core parameters.
+ *
+ * Every setting is processed in document order so an authored output can feed
+ * a later setting during the same step. Particles retain velocity between
+ * frames, while normalization and output blending use Core's declared bounds;
+ * this preserves the behavior encoded by the model without evaluating scripts
+ * or allocating from untrusted counts during animation.
+ */
+class PhysicsEvaluator {
+  readonly #definition: PhysicsRigDefinition
+  readonly #parameterIndices: ReadonlyMap<string, number>
+  readonly #particleStates: readonly PhysicsParticleState[][]
+  #remainingTime = 0
+
+  constructor(
+    definition: PhysicsRigDefinition,
+    parameterIndices: ReadonlyMap<string, number>,
+  ) {
+    this.#definition = definition
+    this.#parameterIndices = parameterIndices
+    this.#particleStates = definition.settings.map((setting) => (
+      createPhysicsParticleStates(setting.particles)
+    ))
+  }
+
+  evaluate(parameters: PurismParameters, deltaSeconds: number): void {
+    if (this.#definition.fps <= 0) {
+      this.#step(parameters, deltaSeconds)
+      return
+    }
+    const fixedStep = 1 / this.#definition.fps
+    this.#remainingTime = Math.min(
+      this.#remainingTime + deltaSeconds,
+      fixedStep * PHYSICS_MAX_FIXED_STEPS,
+    )
+    let steps = 0
+    while (
+      this.#remainingTime >= fixedStep
+      && steps < PHYSICS_MAX_FIXED_STEPS
+    ) {
+      this.#step(parameters, fixedStep)
+      this.#remainingTime -= fixedStep
+      steps += 1
+    }
+  }
+
+  #step(parameters: PurismParameters, deltaSeconds: number): void {
+    for (
+      let settingIndex = 0;
+      settingIndex < this.#definition.settings.length;
+      settingIndex += 1
+    ) {
+      const setting = this.#definition.settings[settingIndex]!
+      const particles = this.#particleStates[settingIndex]!
+      let translationX = 0
+      let translationY = 0
+      let totalAngle = 0
+      for (const input of setting.inputs) {
+        const parameterIndex = this.#parameterIndices.get(input.parameterId)
+        if (parameterIndex === undefined) continue
+        const normalization = input.type === 'Angle'
+          ? setting.normalizationAngle
+          : setting.normalizationPosition
+        const value = normalizePhysicsParameter(
+          parameters.values[parameterIndex]!,
+          parameters.minimumValues[parameterIndex]!,
+          parameters.maximumValues[parameterIndex]!,
+          normalization,
+          input.reflect,
+        ) * (input.weight / 100)
+        if (input.type === 'X') translationX += value
+        else if (input.type === 'Y') translationY += value
+        else totalAngle += value
+      }
+
+      const inputRadians = -totalAngle * Math.PI / 180
+      const rotatedX = translationX * Math.cos(inputRadians)
+        - translationY * Math.sin(inputRadians)
+      const rotatedY = translationX * Math.sin(inputRadians)
+        + translationY * Math.cos(inputRadians)
+      this.#updateParticles(
+        particles,
+        physicsVector(rotatedX, rotatedY),
+        totalAngle,
+        setting,
+        deltaSeconds,
+      )
+      for (const output of setting.outputs) {
+        this.#applyOutput(parameters, particles, output)
+      }
+    }
+  }
+
+  #updateParticles(
+    particles: readonly PhysicsParticleState[],
+    translation: PhysicsVector,
+    totalAngle: number,
+    setting: PhysicsSettingDefinition,
+    deltaSeconds: number,
+  ): void {
+    particles[0]!.position = physicsVector(translation.x, translation.y)
+    const angleRadians = totalAngle * Math.PI / 180
+    const currentGravity = normalizePhysicsVector(
+      physicsVector(Math.sin(angleRadians), Math.cos(angleRadians)),
+      physicsVector(0, 1),
+    )
+    const threshold = PHYSICS_MOVEMENT_THRESHOLD * Math.max(
+      Math.abs(setting.normalizationPosition.minimum),
+      Math.abs(setting.normalizationPosition.maximum),
+    )
+    for (let index = 1; index < particles.length; index += 1) {
+      const particle = particles[index]!
+      const parent = particles[index - 1]!
+      const previousPosition = particle.position
+      particle.lastPosition = physicsVector(previousPosition.x, previousPosition.y)
+      const delay = particle.delay * deltaSeconds * 30
+      const direction = physicsVector(
+        particle.position.x - parent.position.x,
+        particle.position.y - parent.position.y,
+      )
+      const gravityRotation = physicsDirectionToRadians(
+        particle.lastGravity,
+        currentGravity,
+      ) / PHYSICS_AIR_RESISTANCE
+      const rotatedDirection = physicsVector(
+        Math.cos(gravityRotation) * direction.x
+          - Math.sin(gravityRotation) * direction.y,
+        Math.sin(gravityRotation) * direction.x
+          + Math.cos(gravityRotation) * direction.y,
+      )
+      let position = physicsVector(
+        parent.position.x + rotatedDirection.x,
+        parent.position.y + rotatedDirection.y,
+      )
+      const force = physicsVector(
+        currentGravity.x * particle.acceleration + this.#definition.wind.x,
+        currentGravity.y * particle.acceleration + this.#definition.wind.y,
+      )
+      position = physicsVector(
+        position.x + particle.velocity.x * delay + force.x * delay * delay,
+        position.y + particle.velocity.y * delay + force.y * delay * delay,
+      )
+      const constrainedDirection = normalizePhysicsVector(
+        physicsVector(position.x - parent.position.x, position.y - parent.position.y),
+        currentGravity,
+      )
+      position = physicsVector(
+        parent.position.x + constrainedDirection.x * particle.radius,
+        parent.position.y + constrainedDirection.y * particle.radius,
+      )
+      if (Math.abs(position.x) < threshold) {
+        position = physicsVector(0, position.y)
+      }
+      if (!Number.isFinite(position.x) || !Number.isFinite(position.y)) {
+        throw new Error('Live2D physics produced a non-finite particle position.')
+      }
+      particle.position = position
+      particle.velocity = delay <= Number.EPSILON
+        ? physicsVector(0, 0)
+        : physicsVector(
+            (position.x - particle.lastPosition.x) / delay * particle.mobility,
+            (position.y - particle.lastPosition.y) / delay * particle.mobility,
+          )
+      particle.lastGravity = currentGravity
+    }
+  }
+
+  #applyOutput(
+    parameters: PurismParameters,
+    particles: readonly PhysicsParticleState[],
+    output: PhysicsOutputDefinition,
+  ): void {
+    const parameterIndex = this.#parameterIndices.get(output.parameterId)
+    if (parameterIndex === undefined) return
+    const particle = particles[output.vertexIndex]!
+    const parent = particles[output.vertexIndex - 1]!
+    const translation = physicsVector(
+      particle.position.x - parent.position.x,
+      particle.position.y - parent.position.y,
+    )
+    let value: number
+    if (output.type === 'X') {
+      value = translation.x
+    } else if (output.type === 'Y') {
+      value = translation.y
+    } else {
+      const parentDirection = output.vertexIndex >= 2
+        ? physicsVector(
+            parent.position.x - particles[output.vertexIndex - 2]!.position.x,
+            parent.position.y - particles[output.vertexIndex - 2]!.position.y,
+          )
+        : physicsVector(
+            -this.#definition.gravity.x,
+            -this.#definition.gravity.y,
+          )
+      value = physicsDirectionToRadians(parentDirection, translation)
+    }
+    if (output.reflect) value *= -1
+    const target = clamp(
+      value * output.scale,
+      parameters.minimumValues[parameterIndex]!,
+      parameters.maximumValues[parameterIndex]!,
+    )
+    const weight = output.weight / 100
+    const current = parameters.values[parameterIndex]!
+    const next = weight >= 1 ? target : current * (1 - weight) + target * weight
+    if (!Number.isFinite(next)) {
+      throw new Error('Live2D physics produced a non-finite parameter value.')
+    }
+    parameters.values[parameterIndex] = next
+  }
+}
+
 class Live2DControllerImplementation implements Live2DController {
   readonly #canvas: HTMLCanvasElement
   readonly #gl: WebGL2RenderingContext
   readonly #model: PurismModel
   readonly #moc: PurismMoc
   readonly #parameterIndices: ReadonlyMap<string, number>
-  readonly #textureBytes: Uint8Array
+  readonly #physics: PhysicsEvaluator | null
+  readonly #textureBytes: readonly Uint8Array[]
   readonly #framing: Live2DFraming
   #gpu: GpuResources | null = null
   #state: CharacterState
@@ -1055,7 +1998,8 @@ class Live2DControllerImplementation implements Live2DController {
     model: PurismModel,
     moc: PurismMoc,
     parameterIndices: ReadonlyMap<string, number>,
-    textureBytes: Uint8Array,
+    physics: PhysicsRigDefinition | null,
+    textureBytes: readonly Uint8Array[],
     options: Live2DControllerOptions,
   ) {
     this.#canvas = canvas
@@ -1063,6 +2007,9 @@ class Live2DControllerImplementation implements Live2DController {
     this.#model = model
     this.#moc = moc
     this.#parameterIndices = parameterIndices
+    this.#physics = physics === null
+      ? null
+      : new PhysicsEvaluator(physics, parameterIndices)
     this.#textureBytes = textureBytes
     this.#framing = options.framing
     this.#state = options.state
@@ -1070,11 +2017,15 @@ class Live2DControllerImplementation implements Live2DController {
   }
 
   async initialize(): Promise<void> {
-    const decodedTexture = await decodeTexture(this.#textureBytes)
+    const decodedTextures = await decodeTextures(this.#textureBytes)
     try {
-      this.#gpu = createGpuResources(this.#gl, decodedTexture)
+      this.#gpu = createGpuResources(
+        this.#gl,
+        decodedTextures,
+        Array.from(this.#model.drawables.maskCounts).some((count) => count > 0),
+      )
     } finally {
-      closeDecodedTexture(decodedTexture)
+      for (const texture of decodedTextures) closeDecodedTexture(texture)
     }
 
     this.#canvas.addEventListener('webglcontextlost', this.#handleContextLost)
@@ -1178,12 +2129,16 @@ class Live2DControllerImplementation implements Live2DController {
 
   async #restoreAfterContextLoss(revision: number): Promise<void> {
     try {
-      const decodedTexture = await decodeTexture(this.#textureBytes)
+      const decodedTextures = await decodeTextures(this.#textureBytes)
       let gpu: GpuResources
       try {
-        gpu = createGpuResources(this.#gl, decodedTexture)
+        gpu = createGpuResources(
+          this.#gl,
+          decodedTextures,
+          Array.from(this.#model.drawables.maskCounts).some((count) => count > 0),
+        )
       } finally {
-        closeDecodedTexture(decodedTexture)
+        for (const texture of decodedTextures) closeDecodedTexture(texture)
       }
       if (this.#disposed || revision !== this.#restorationRevision) {
         deleteGpuResources(this.#gl, gpu)
@@ -1282,16 +2237,28 @@ class Live2DControllerImplementation implements Live2DController {
     this.#setParameter('ParamEyeLOpen', eyeOpen, 1)
     this.#setParameter('ParamEyeROpen', eyeOpen, 1)
 
-    const mouthDataset = document.documentElement.dataset.characterMouth ?? 'closed'
-    const mouthOpen = this.#state === 'speaking'
-      ? (MOUTH_OPEN_BY_DATASET[mouthDataset] ?? 0)
-      : 0
-    this.#setParameter('ParamMouthOpenY', mouthOpen, 1)
+    // The external pet has no access to trusted speech playback or the main
+    // renderer DOM. Keeping mouth-open at its neutral value prevents a local
+    // model from becoming an accidental cross-window audio side channel.
+    this.#setParameter('ParamMouthOpenY', 0, 1)
+    this.#physics?.evaluate(this.#model.parameters, deltaSeconds)
   }
 
   #resizeAndGetTransform(): readonly [number, number, number, number] {
     this.#resizeCanvas()
-    const camera = CAMERA_BY_FRAMING[this.#framing]
+    const canvasInfo = this.#model.canvasinfo
+    const camera = this.#framing === 'full-body'
+      ? {
+          centerX: (
+            canvasInfo.CanvasWidth / 2 - canvasInfo.CanvasOriginX
+          ) / canvasInfo.PixelsPerUnit,
+          centerY: (
+            canvasInfo.CanvasOriginY - canvasInfo.CanvasHeight / 2
+          ) / canvasInfo.PixelsPerUnit,
+          height: canvasInfo.CanvasHeight / canvasInfo.PixelsPerUnit * 1.04,
+          width: canvasInfo.CanvasWidth / canvasInfo.PixelsPerUnit * 1.04,
+        }
+      : CAMERA_BY_FRAMING[this.#framing]
     const pixelsPerModelUnit = Math.min(
       this.#canvas.width / camera.width,
       this.#canvas.height / camera.height,
@@ -1304,6 +2271,121 @@ class Live2DControllerImplementation implements Live2DController {
       -camera.centerX * scaleX,
       -camera.centerY * scaleY,
     ]
+  }
+
+  #uploadDrawableMesh(resources: GpuResources, drawableIndex: number): void {
+    const gl = this.#gl
+    const drawables = this.#model.drawables
+    gl.bindBuffer(gl.ARRAY_BUFFER, resources.positionBuffer)
+    gl.bufferData(
+      gl.ARRAY_BUFFER,
+      drawables.vertexPositions[drawableIndex] ?? new Float32Array(0),
+      gl.STREAM_DRAW,
+    )
+    gl.bindBuffer(gl.ARRAY_BUFFER, resources.uvBuffer)
+    gl.bufferData(
+      gl.ARRAY_BUFFER,
+      drawables.vertexUvs[drawableIndex] ?? new Float32Array(0),
+      gl.STREAM_DRAW,
+    )
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, resources.indexBuffer)
+    gl.bufferData(
+      gl.ELEMENT_ARRAY_BUFFER,
+      drawables.indices[drawableIndex] ?? new Uint16Array(0),
+      gl.STREAM_DRAW,
+    )
+  }
+
+  #bindDrawableTexture(resources: GpuResources, drawableIndex: number): void {
+    const textureIndex = this.#model.drawables.textureIndices[drawableIndex] ?? -1
+    const texture = resources.textures[textureIndex]
+    if (texture === undefined) {
+      throw new Error(`Live2D drawable ${drawableIndex} selected a missing texture.`)
+    }
+    this.#gl.activeTexture(this.#gl.TEXTURE0)
+    this.#gl.bindTexture(this.#gl.TEXTURE_2D, texture)
+  }
+
+  #ensureClippingTarget(mask: MaskGpuResources): void {
+    const gl = this.#gl
+    gl.activeTexture(gl.TEXTURE0 + 1)
+    gl.bindTexture(gl.TEXTURE_2D, mask.texture)
+    if (mask.width !== this.#canvas.width || mask.height !== this.#canvas.height) {
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
+      gl.texImage2D(
+        gl.TEXTURE_2D,
+        0,
+        gl.RGBA,
+        this.#canvas.width,
+        this.#canvas.height,
+        0,
+        gl.RGBA,
+        gl.UNSIGNED_BYTE,
+        null,
+      )
+      mask.width = this.#canvas.width
+      mask.height = this.#canvas.height
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, mask.framebuffer)
+    gl.framebufferTexture2D(
+      gl.FRAMEBUFFER,
+      gl.COLOR_ATTACHMENT0,
+      gl.TEXTURE_2D,
+      mask.texture,
+      0,
+    )
+    if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null)
+      throw new Error('WebGL2 rejected the Live2D clipping framebuffer.')
+    }
+  }
+
+  #renderClippingMask(
+    resources: GpuResources,
+    drawableIndex: number,
+    transform: readonly [number, number, number, number],
+  ): void {
+    const mask = resources.mask
+    const maskDrawables = this.#model.drawables.masks?.[drawableIndex]
+    if (mask === null || maskDrawables === undefined) {
+      throw new Error(`Live2D drawable ${drawableIndex} has no clipping resources.`)
+    }
+    const gl = this.#gl
+    const drawables = this.#model.drawables
+    this.#ensureClippingTarget(mask)
+    gl.viewport(0, 0, this.#canvas.width, this.#canvas.height)
+    gl.disable(gl.DEPTH_TEST)
+    gl.disable(gl.SCISSOR_TEST)
+    gl.disable(gl.CULL_FACE)
+    gl.enable(gl.BLEND)
+    gl.blendFuncSeparate(
+      gl.ONE,
+      gl.ONE_MINUS_SRC_ALPHA,
+      gl.ONE,
+      gl.ONE_MINUS_SRC_ALPHA,
+    )
+    gl.clearColor(0, 0, 0, 0)
+    gl.clear(gl.COLOR_BUFFER_BIT)
+    gl.useProgram(mask.program)
+    gl.bindVertexArray(resources.vertexArray)
+    gl.uniform1i(mask.locations.texture, 0)
+    gl.uniform4f(mask.locations.transform, ...transform)
+
+    for (const maskDrawableIndex of maskDrawables) {
+      const opacity = drawables.opacities[maskDrawableIndex] ?? 0
+      const indexCount = drawables.indexCounts[maskDrawableIndex] ?? 0
+      if (opacity <= 0 || indexCount <= 0) {
+        continue
+      }
+      this.#bindDrawableTexture(resources, maskDrawableIndex)
+      this.#uploadDrawableMesh(resources, maskDrawableIndex)
+      gl.uniform1f(mask.locations.opacity, opacity)
+      gl.drawElements(gl.TRIANGLES, indexCount, gl.UNSIGNED_SHORT, 0)
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null)
   }
 
   #configureBlendMode(constantFlags: number): void {
@@ -1327,6 +2409,7 @@ class Live2DControllerImplementation implements Live2DController {
     const drawables = this.#model.drawables
     const transform = this.#resizeAndGetTransform()
 
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null)
     gl.viewport(0, 0, this.#canvas.width, this.#canvas.height)
     gl.disable(gl.DEPTH_TEST)
     gl.disable(gl.STENCIL_TEST)
@@ -1334,13 +2417,6 @@ class Live2DControllerImplementation implements Live2DController {
     gl.enable(gl.BLEND)
     gl.clearColor(0, 0, 0, 0)
     gl.clear(gl.COLOR_BUFFER_BIT)
-    gl.useProgram(resources.program)
-    gl.bindVertexArray(resources.vertexArray)
-    gl.activeTexture(gl.TEXTURE0)
-    gl.bindTexture(gl.TEXTURE_2D, resources.texture)
-    gl.uniform1i(resources.locations.texture, 0)
-    gl.uniform4f(resources.locations.transform, ...transform)
-
     // Render order is a mutable value per drawable, not an index array. A full
     // stable sort and complete upload every frame handles parameter-driven
     // order and mesh changes without stale GPU caches.
@@ -1362,6 +2438,34 @@ class Live2DControllerImplementation implements Live2DController {
       }
 
       const constantFlags = drawables.constantFlags[drawableIndex] ?? 0
+      const maskCount = drawables.maskCounts[drawableIndex] ?? 0
+      if (maskCount > 0) {
+        this.#renderClippingMask(resources, drawableIndex, transform)
+      }
+
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null)
+      gl.viewport(0, 0, this.#canvas.width, this.#canvas.height)
+      gl.useProgram(resources.program)
+      gl.bindVertexArray(resources.vertexArray)
+      gl.uniform1i(resources.locations.texture, 0)
+      gl.uniform1i(resources.locations.maskTexture, 1)
+      gl.uniform1i(resources.locations.maskEnabled, maskCount > 0 ? 1 : 0)
+      gl.uniform1i(
+        resources.locations.maskInverted,
+        maskCount > 0 && (constantFlags & 8) !== 0 ? 1 : 0,
+      )
+      gl.uniform2f(
+        resources.locations.viewport,
+        this.#canvas.width,
+        this.#canvas.height,
+      )
+      gl.uniform4f(resources.locations.transform, ...transform)
+      if (maskCount > 0 && resources.mask !== null) {
+        gl.activeTexture(gl.TEXTURE0 + 1)
+        gl.bindTexture(gl.TEXTURE_2D, resources.mask.texture)
+      }
+      this.#bindDrawableTexture(resources, drawableIndex)
+
       if ((constantFlags & 4) !== 0) {
         gl.disable(gl.CULL_FACE)
       } else {
@@ -1370,25 +2474,7 @@ class Live2DControllerImplementation implements Live2DController {
         gl.cullFace(gl.BACK)
       }
       this.#configureBlendMode(constantFlags)
-
-      gl.bindBuffer(gl.ARRAY_BUFFER, resources.positionBuffer)
-      gl.bufferData(
-        gl.ARRAY_BUFFER,
-        drawables.vertexPositions[drawableIndex] ?? new Float32Array(0),
-        gl.STREAM_DRAW,
-      )
-      gl.bindBuffer(gl.ARRAY_BUFFER, resources.uvBuffer)
-      gl.bufferData(
-        gl.ARRAY_BUFFER,
-        drawables.vertexUvs[drawableIndex] ?? new Float32Array(0),
-        gl.STREAM_DRAW,
-      )
-      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, resources.indexBuffer)
-      gl.bufferData(
-        gl.ELEMENT_ARRAY_BUFFER,
-        drawables.indices[drawableIndex] ?? new Uint16Array(0),
-        gl.STREAM_DRAW,
-      )
+      this.#uploadDrawableMesh(resources, drawableIndex)
 
       const colorOffset = drawableIndex * 4
       // The texture upload and blend function both use premultiplied alpha.
@@ -1420,6 +2506,9 @@ class Live2DControllerImplementation implements Live2DController {
     }
 
     gl.bindVertexArray(null)
+    gl.activeTexture(gl.TEXTURE0 + 1)
+    gl.bindTexture(gl.TEXTURE_2D, null)
+    gl.activeTexture(gl.TEXTURE0)
     gl.bindTexture(gl.TEXTURE_2D, null)
     drawables.resetDynamicFlags()
   }
@@ -1466,7 +2555,7 @@ class Live2DControllerImplementation implements Live2DController {
 }
 
 /**
- * Create a ready Live2D controller for the fixed local Elysia model.
+ * Create a ready Live2D controller for one bounded local Cubism model.
  *
  * The promise resolves only after PurismCore, bounded model assets, texture
  * decoding, model consistency validation, and WebGL2 resources are ready. A
@@ -1480,6 +2569,7 @@ export async function createLive2DController(
   validateState(options.state)
   validateEmotion(options.emotion)
   validateFraming(options.framing)
+  const manifestUrl = resolveManifestUrl(options.modelManifestUrl)
   canvas.dataset.live2dStatus = 'loading'
 
   const gl = canvas.getContext('webgl2', {
@@ -1503,19 +2593,20 @@ export async function createLive2DController(
   try {
     const [core, assets] = await Promise.all([
       loadPurismCore(),
-      loadFixedAssets(),
+      loadModelAssets(manifestUrl),
     ])
     const created = createCoreModel(core, assets.moc)
     model = created.model
     moc = created.moc
-    const parameterIndices = validateCoreModel(model)
+    const parameterIndices = validateCoreModel(model, assets.textures.length)
     controller = new Live2DControllerImplementation(
       canvas,
       gl,
       model,
       moc,
       parameterIndices,
-      assets.texture,
+      assets.physics,
+      assets.textures,
       options,
     )
     await controller.initialize()

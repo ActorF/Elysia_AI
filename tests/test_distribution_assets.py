@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import shutil
+import subprocess
 
 import pytest
 
@@ -13,13 +14,11 @@ from scripts import check_distribution_assets
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 _REQUIRED_ASAR_LISTING_ENTRIES = (
+    "\\dist\\elysia-icon.png",
     "\\dist\\character\\elysia-portrait.png",
     "\\dist\\character\\elysia-state-atlas.png",
     "\\dist\\character\\elysia-expression-atlas.png",
     "\\dist\\character\\elysia-speech-atlas.png",
-    "\\dist\\character\\live2d\\elysia\\model.moc3",
-    "\\dist\\character\\live2d\\elysia\\model.model3.json",
-    "\\dist\\character\\live2d\\elysia\\textures\\atlas.png",
     "\\dist\\character\\live2d\\runtime\\purismcore.js",
     "\\dist\\character\\live2d\\runtime\\LICENSE-PurismCore.txt",
     "\\dist\\pet.html",
@@ -77,6 +76,9 @@ def _valid_build() -> dict[str, object]:
         "assets/reference.WAV",
         "release/local-voice.7Z",
         "copied/GPT-SoVITS-v2-240821/runtime/python.exe",
+        "data/characters/爱莉希雅原版猫猫版总合集_34be1/model/model.moc3",
+        "dist/character/live2d/copied/model.moc3",
+        "desktop/public/character/live2d/copied/textures/texture_00.png",
     ],
 )
 def test_forced_add_style_paths_are_rejected(path: str) -> None:
@@ -88,6 +90,95 @@ def test_forced_add_style_paths_are_rejected(path: str) -> None:
     )
 
     assert len(problems) == 1
+
+
+@pytest.mark.parametrize(
+    "file_name",
+    [
+        "renamed.can3",
+        "renamed.cdi3.json",
+        "renamed.cmo3",
+        "renamed.cmp3",
+        "renamed.exp3.json",
+        "renamed.moc3",
+        "renamed.model3.json",
+        "renamed.motion3.json",
+        "renamed.physics3.json",
+        "renamed.pose3.json",
+        "renamed.userdata3.json",
+        "ＲＥＮＡＭＥＤ．ＭＯＤＥＬ３．ＪＳＯＮ",
+    ],
+)
+def test_live2d_model_suffixes_are_globally_rejected(file_name: str) -> None:
+    """Reject renamed Cubism payloads outside every known asset directory."""
+
+    problems = check_distribution_assets.audit_distribution_paths(
+        [f"unrelated/themes/rose-companion/{file_name}"],
+        source="synthetic-index",
+    )
+
+    assert len(problems) == 1
+    assert "external Live2D model" in problems[0].message
+
+
+def test_git_index_rejects_renamed_paid_live2d_copy(tmp_path: Path) -> None:
+    """Catch a paid model copied and renamed beneath an innocuous Git path."""
+
+    subprocess.run(
+        ["git", "init", "--quiet"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    copied_model = tmp_path / "themes" / "rose-companion" / "avatar.moc3"
+    copied_manifest = copied_model.with_name("avatar.model3.json")
+    copied_model.parent.mkdir(parents=True)
+    copied_model.write_bytes(b"synthetic paid-model copy")
+    copied_manifest.write_text("{}", encoding="utf-8")
+    subprocess.run(
+        ["git", "add", "--all"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+
+    problems = check_distribution_assets.audit_git_index(tmp_path)
+
+    assert {problem.path for problem in problems} == {
+        "themes/rose-companion/avatar.moc3",
+        "themes/rose-companion/avatar.model3.json",
+    }
+    assert all(
+        "external Live2D model" in problem.message for problem in problems
+    )
+
+
+def test_git_index_rejects_paid_texture_under_an_innocent_path(
+    tmp_path: Path,
+) -> None:
+    """Require explicit review before any new raster asset can enter Git."""
+
+    subprocess.run(
+        ["git", "init", "--quiet"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+    copied_texture = tmp_path / "themes" / "rose" / "texture_00.png"
+    copied_texture.parent.mkdir(parents=True)
+    copied_texture.write_bytes(b"synthetic paid texture copy")
+    subprocess.run(
+        ["git", "add", "--all"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+    )
+
+    problems = check_distribution_assets.audit_git_index(tmp_path)
+
+    assert len(problems) == 1
+    assert problems[0].path == "themes/rose/texture_00.png"
+    assert "unreviewed visual asset" in problems[0].message
 
 
 def test_case_and_unicode_compatibility_aliases_are_rejected() -> None:
@@ -119,13 +210,38 @@ def test_maintained_source_and_brand_assets_are_allowed() -> None:
             "desktop/public/character/elysia-state-atlas.png",
             "desktop/public/character/elysia-expression-atlas.png",
             "desktop/public/character/elysia-speech-atlas.png",
-            "desktop/public/character/live2d/elysia/model.moc3",
             "desktop/public/character/live2d/runtime/purismcore.js",
+            "desktop/public/character/live2d/runtime/LICENSE-PurismCore.txt",
         ],
         source="synthetic-index",
     )
 
     assert problems == ()
+
+
+def test_only_reviewed_purismcore_runtime_paths_are_allowed() -> None:
+    """Keep the exact Core runtime while rejecting renamed-location copies."""
+
+    allowed = check_distribution_assets.audit_distribution_paths(
+        [
+            "desktop/public/character/live2d/runtime/purismcore.js",
+            "desktop/public/character/live2d/runtime/LICENSE-PurismCore.txt",
+            "dist/character/live2d/runtime/purismcore.js",
+            "dist/character/live2d/runtime/LICENSE-PurismCore.txt",
+        ],
+        source="synthetic-distribution",
+    )
+    rejected = check_distribution_assets.audit_distribution_paths(
+        [
+            "vendor/copied/purismcore.js",
+            "assets/copied/LICENSE-PurismCore.txt",
+        ],
+        source="synthetic-distribution",
+    )
+
+    assert allowed == ()
+    assert len(rejected) == 2
+    assert all("reviewed paths" in problem.message for problem in rejected)
 
 
 def _copy_reviewed_portrait(destination_root: Path) -> Path:
@@ -216,13 +332,10 @@ def _copy_reviewed_speech_atlas(destination_root: Path) -> Path:
     return destination
 
 
-def _copy_reviewed_live2d_assets(destination_root: Path) -> tuple[Path, ...]:
-    """Copy the complete fixed Live2D runtime bundle into an audit fixture."""
+def _copy_reviewed_live2d_runtime(destination_root: Path) -> tuple[Path, ...]:
+    """Copy the distributable Live2D compatibility runtime into a fixture."""
 
     relative_paths = (
-        "desktop/public/character/live2d/elysia/model.moc3",
-        "desktop/public/character/live2d/elysia/model.model3.json",
-        "desktop/public/character/live2d/elysia/textures/atlas.png",
         "desktop/public/character/live2d/runtime/purismcore.js",
         "desktop/public/character/live2d/runtime/LICENSE-PurismCore.txt",
     )
@@ -236,6 +349,23 @@ def _copy_reviewed_live2d_assets(destination_root: Path) -> tuple[Path, ...]:
     return tuple(copied)
 
 
+def _copy_reviewed_brand_assets(destination_root: Path) -> tuple[Path, Path]:
+    """Copy both pinned application-icon formats into an audit fixture."""
+
+    relative_paths = (
+        "desktop/public/elysia-icon.png",
+        "desktop/assets/elysia-icon.ico",
+    )
+    copied: list[Path] = []
+    for relative_path in relative_paths:
+        source = _REPOSITORY_ROOT / relative_path
+        destination = destination_root / relative_path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, destination)
+        copied.append(destination)
+    return copied[0], copied[1]
+
+
 def _copy_reviewed_character_assets(
     destination_root: Path,
 ) -> tuple[Path, Path, Path, Path]:
@@ -247,7 +377,8 @@ def _copy_reviewed_character_assets(
         _copy_reviewed_expression_atlas(destination_root),
         _copy_reviewed_speech_atlas(destination_root),
     )
-    _copy_reviewed_live2d_assets(destination_root)
+    _copy_reviewed_live2d_runtime(destination_root)
+    _copy_reviewed_brand_assets(destination_root)
     return assets
 
 
@@ -255,35 +386,35 @@ def _copy_reviewed_asar_tree(destination_root: Path) -> Path:
     """Build an extracted-ASAR fixture containing every pinned public asset."""
 
     source_and_archive_paths = (
-        ("elysia-portrait.png", "elysia-portrait.png"),
-        ("elysia-state-atlas.png", "elysia-state-atlas.png"),
-        ("elysia-expression-atlas.png", "elysia-expression-atlas.png"),
-        ("elysia-speech-atlas.png", "elysia-speech-atlas.png"),
-        ("live2d/elysia/model.moc3", "live2d/elysia/model.moc3"),
+        ("elysia-icon.png", "elysia-icon.png"),
         (
-            "live2d/elysia/model.model3.json",
-            "live2d/elysia/model.model3.json",
+            "character/elysia-portrait.png",
+            "character/elysia-portrait.png",
         ),
         (
-            "live2d/elysia/textures/atlas.png",
-            "live2d/elysia/textures/atlas.png",
+            "character/elysia-state-atlas.png",
+            "character/elysia-state-atlas.png",
         ),
-        ("live2d/runtime/purismcore.js", "live2d/runtime/purismcore.js"),
         (
-            "live2d/runtime/LICENSE-PurismCore.txt",
-            "live2d/runtime/LICENSE-PurismCore.txt",
+            "character/elysia-expression-atlas.png",
+            "character/elysia-expression-atlas.png",
+        ),
+        (
+            "character/elysia-speech-atlas.png",
+            "character/elysia-speech-atlas.png",
+        ),
+        (
+            "character/live2d/runtime/purismcore.js",
+            "character/live2d/runtime/purismcore.js",
+        ),
+        (
+            "character/live2d/runtime/LICENSE-PurismCore.txt",
+            "character/live2d/runtime/LICENSE-PurismCore.txt",
         ),
     )
-    character_root = destination_root / "dist" / "character"
     for source_relative, archive_relative in source_and_archive_paths:
-        source = (
-            _REPOSITORY_ROOT
-            / "desktop"
-            / "public"
-            / "character"
-            / source_relative
-        )
-        destination = character_root / archive_relative
+        source = _REPOSITORY_ROOT / "desktop" / "public" / source_relative
+        destination = destination_root / "dist" / archive_relative
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source, destination)
     return destination_root
@@ -297,10 +428,10 @@ def test_reviewed_character_portrait_matches_exact_contract(tmp_path: Path) -> N
     assert check_distribution_assets.audit_reviewed_assets(tmp_path) == ()
 
 
-def test_extracted_asar_tree_authenticates_complete_live2d_bundle(
+def test_extracted_asar_tree_authenticates_live2d_runtime(
     tmp_path: Path,
 ) -> None:
-    """Accept a package tree only when every Live2D byte matches review."""
+    """Accept a package tree when its compatibility runtime matches review."""
 
     extracted = _copy_reviewed_asar_tree(tmp_path / "extracted")
 
@@ -693,6 +824,64 @@ def test_unpacked_tree_rejects_assets_but_allows_electron_snapshot_bins(
     assert problems[0].path.endswith("reference.flac")
 
 
+def test_unpacked_tree_rejects_renamed_paid_live2d_copy(
+    tmp_path: Path,
+) -> None:
+    """Find a renamed external Cubism model anywhere in a produced tree."""
+
+    copied_root = tmp_path / "resources" / "themes" / "rose-companion"
+    copied_root.mkdir(parents=True)
+    (copied_root / "avatar.moc3").write_bytes(b"synthetic paid-model copy")
+    (copied_root / "avatar.model3.json").write_text("{}", encoding="utf-8")
+
+    problems = check_distribution_assets.audit_unpacked_tree(tmp_path)
+
+    assert {problem.path for problem in problems} == {
+        "resources/themes/rose-companion/avatar.moc3",
+        "resources/themes/rose-companion/avatar.model3.json",
+    }
+    assert all(
+        "external Live2D model" in problem.message for problem in problems
+    )
+
+
+def test_unpacked_tree_rejects_paid_texture_without_model_files(
+    tmp_path: Path,
+) -> None:
+    """Reject a standalone paid texture even when model suffixes are absent."""
+
+    copied_texture = tmp_path / "resources" / "themes" / "texture_00.png"
+    copied_texture.parent.mkdir(parents=True)
+    copied_texture.write_bytes(b"synthetic paid texture copy")
+
+    problems = check_distribution_assets.audit_unpacked_tree(tmp_path)
+
+    assert len(problems) == 1
+    assert problems[0].path == "resources/themes/texture_00.png"
+    assert "unreviewed visual asset" in problems[0].message
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "dist-electron/character-performance-contracts.js",
+        "dist-electron/character-performance-contracts.js.map",
+        "dist-electron/speech-mouth.js",
+        "dist/assets/speech-mouth-deadbeef.js",
+    ],
+)
+def test_build_outputs_reject_retired_desktop_modules(path: str) -> None:
+    """Stop stale emitted modules from surviving source-file deletion."""
+
+    problems = check_distribution_assets.audit_distribution_paths(
+        [path],
+        source="synthetic-build",
+    )
+
+    assert len(problems) == 1
+    assert "retired desktop module" in problems[0].message
+
+
 def test_asar_listing_rejects_unicode_paths_and_concealed_archives(
     tmp_path: Path,
 ) -> None:
@@ -712,6 +901,83 @@ def test_asar_listing_rejects_unicode_paths_and_concealed_archives(
     problems = check_distribution_assets.audit_asar_listing(listing)
 
     assert len(problems) == 2
+
+
+def test_asar_listing_rejects_renamed_paid_live2d_copy(
+    tmp_path: Path,
+) -> None:
+    """Find renamed external Cubism payloads in an otherwise valid ASAR."""
+
+    copied_entries = (
+        "\\dist\\themes\\rose-companion\\avatar.moc3",
+        "\\dist\\themes\\rose-companion\\avatar.model3.json",
+    )
+    listing = tmp_path / "asar-listing.txt"
+    listing.write_text(
+        "\n".join([
+            "\\dist\\index.html",
+            *_required_asar_entries(),
+            *copied_entries,
+        ]) + "\n",
+        encoding="utf-8",
+    )
+
+    problems = check_distribution_assets.audit_asar_listing(listing)
+
+    assert {problem.path for problem in problems} == set(copied_entries)
+    assert all(
+        "external Live2D model" in problem.message for problem in problems
+    )
+
+
+def test_asar_listing_rejects_paid_texture_without_model_files(
+    tmp_path: Path,
+) -> None:
+    """Admit only reviewed visual paths in the final application archive."""
+
+    copied_texture = "\\dist\\themes\\rose\\texture_00.png"
+    listing = tmp_path / "asar-listing.txt"
+    listing.write_text(
+        "\n".join([
+            "\\dist\\index.html",
+            *_required_asar_entries(),
+            copied_texture,
+        ]) + "\n",
+        encoding="utf-8",
+    )
+
+    problems = check_distribution_assets.audit_asar_listing(listing)
+
+    assert len(problems) == 1
+    assert problems[0].path == copied_texture
+    assert "unreviewed visual asset" in problems[0].message
+
+
+def test_asar_listing_rejects_retired_desktop_module_outputs(
+    tmp_path: Path,
+) -> None:
+    """Reject stale retired modules in an otherwise complete desktop ASAR."""
+
+    retired_entries = (
+        "\\dist-electron\\character-performance-contracts.js",
+        "\\dist-electron\\speech-mouth.js.map",
+    )
+    listing = tmp_path / "asar-listing.txt"
+    listing.write_text(
+        "\n".join([
+            "\\dist\\index.html",
+            *_required_asar_entries(),
+            *retired_entries,
+        ]) + "\n",
+        encoding="utf-8",
+    )
+
+    problems = check_distribution_assets.audit_asar_listing(listing)
+
+    assert {problem.path for problem in problems} == set(retired_entries)
+    assert all(
+        "retired desktop module" in problem.message for problem in problems
+    )
 
 
 @pytest.mark.parametrize(

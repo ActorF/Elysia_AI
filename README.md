@@ -20,7 +20,7 @@
 
 > [!IMPORTANT]
 >
-> 本项目目前是 **开发预览**，不是下载即用的正式发行版。桌面壳仍依赖源码目录中的 Python 环境、Ollama 和本地模型；Project Sources 管理、本地文件问答与可信引用、有界单句 STT、显式确认的 Voice Session、受管 GPT-SoVITS 分句播放、思考/朗读期间的安全 Barge-in，以及正常回复后的可选自动续听已经接通。文件问答必须由用户在 Project Chat 中明确开启；自动续听默认关闭、在通话页可见且可随时关闭，每轮 Final Transcript 仍需人工检查并明确发送。封闭的 Character State API 已把 Chat、Voice 与 Knowledge 生命周期连接到真实本地 Live2D 模型；主 Chat 与 Voice 使用适合应用内面板的半身构图，独立透明置顶桌宠使用可拖动的全身构图。真实 Web Audio 播放振幅以不高于 20 Hz 的 RMS 采样驱动 `closed / small / medium / wide` 四档嘴型，用户限定的 `neutral / happy / sad` 同时选择 TTS 参考与模型表情。模型不能下发任意情绪、路径或动画指令；Still、Windows Reduced Motion 及加载失败会使用审核静态素材。桌宠首次无偏好时默认显示，用户仍可隐藏或完全禁用；固定文案的系统通知继续默认关闭。通知允许独立开启回复完成提示，并可另选 Daily / Weekly 中性提醒，也可一键全部关闭。提醒的调度与投递只在 Elysia 已运行时发生，不建立后台服务、开机自启、连续打卡或模型生成的主动消息。可选语音 Runtime、模型和参考音频均不随基础安装提供，实时 Partial Transcript、Work Agent 与正式安装体验尚未完成。真实麦克风/扬声器、房间回声和长通话人工矩阵未执行，项目负责人已明确豁免其作为当前交付的关闭门槛，因此本项目不声称这些人工观察已经通过。
+> 本项目目前是 **开发预览**，不是下载即用的正式发行版。桌面壳仍依赖源码目录中的 Python 环境、Ollama 和本地模型；Project Sources 管理、本地文件问答与可信引用、有界单句 STT、显式确认的 Voice Session、受管 GPT-SoVITS 分句播放、思考/朗读期间的安全 Barge-in，以及正常回复后的可选自动续听已经接通。文件问答必须由用户在 Project Chat 中明确开启；自动续听默认关闭、在通话页可见且可随时关闭，每轮 Final Transcript 仍需人工检查并明确发送。封闭的 Character State API 把 Chat、Voice 与 Knowledge 生命周期映射到主界面和 Voice 的审核静态半身素材；这两个界面不会创建 Live2D、WebGL 或动态嘴型。独立透明置顶桌宠默认关闭，只有用户选择本机外部 Live2D 目录、选择扫描到的兼容模型并明确开启后，才会以可拖动的全身动态模型运行。外部模型不进入 Git、GitHub、安装包或构建输出。用户限定的 `neutral / happy / sad` 选择 TTS 参考与静态角色表情，模型不能下发任意情绪、路径或动画指令。固定文案的系统通知继续默认关闭。通知允许独立开启回复完成提示，并可另选 Daily / Weekly 中性提醒，也可一键全部关闭。提醒的调度与投递只在 Elysia 已运行时发生，不建立后台服务、开机自启、连续打卡或模型生成的主动消息。可选语音 Runtime、模型和参考音频均不随基础安装提供，实时 Partial Transcript、Work Agent 与正式安装体验尚未完成。真实麦克风/扬声器、房间回声和长通话人工矩阵未执行，项目负责人已明确豁免其作为当前交付的关闭门槛，因此本项目不声称这些人工观察已经通过。
 
 ---
 
@@ -35,8 +35,8 @@
 - 🎙️ **本地 Voice Session** — 显式采集经过本地 VAD 与 Faster-Whisper；Final Transcript 可编辑，发送后可在思考或朗读期间自然打断
 - 🔊 **本地回复朗读** — Python 按自然断句排队调用受管 GPT-SoVITS，Electron 在可信 Preload 中按序播放经过双重校验的 PCM WAV
 - 🎭 **角色状态 API** — 将 Chat、Voice 与 Knowledge 生命周期归一为封闭语义状态，并为未来 Work/Approval 保留闭集；角色组件不直接操作动画文件
-- 🌸 **应用内 Live2D 角色** — 主界面与 Voice 以半身构图共用真实 `.moc3`；七态映射、用户限定情绪、真实播放 RMS 四档嘴型，以及完整静态回退均不影响 Chat 或 Voice
-- 🌷 **Live2D 桌宠** — 首次无偏好时默认显示；独立透明置顶窗口使用全身构图，角色区域可直接拖动，悬浮控制条可打开 Chat 或隐藏桌宠，也可从 Settings/托盘恢复或禁用
+- 🌸 **应用内静态角色** — 主界面与 Voice 使用审核半身素材呈现七种语义状态和用户限定情绪，始终静态且不依赖 Live2D
+- 🌷 **可选动态桌宠** — 默认关闭；Settings 扫描用户选择的本机 Live2D 目录并列出兼容模型，选定后在独立透明置顶窗口中动态显示
 - 🔕 **可选 Presence 与系统通知** — 回复完成通知和 Daily / Weekly 中性提醒均默认关闭、静音且可完全停用；固定文案不包含对话、Project 或文件内容
 - 💾 **恢复优先** — 本地 JSON 存储、旧会话迁移、损坏隔离、原子写入以及导入/导出服务
 - ♿ **桌面可用性** — 主题、键盘导航、焦点管理、Windows 缩放、中文 IME 与离线/错误恢复
@@ -51,7 +51,7 @@
 | Chat History | ✅ 可用 | 多会话、置顶、归档、恢复、删除与独立草稿 |
 | Project | ✅ 可用 | 元数据、Instructions、Workspace 绑定和 Chat 归属 |
 | Memory Core | ✅ 可用 | Global / Project / Chat Scope、检索、摘要与长期记忆基础 |
-| Settings | ✅ 可用 | Chat/Ollama/Memory/文件/STT、主题、角色性能模式，以及自动朗读、语速、音量、Voice Profile、`neutral / happy / sad` Voice Emotion、字幕、人工 Transcript 审核和自动续听 |
+| Settings | ✅ 可用 | Chat/Ollama/Memory/文件/STT、主题、外部桌宠模型选择，以及自动朗读、语速、音量、Voice Profile、`neutral / happy / sad` Voice Emotion、字幕、人工 Transcript 审核和自动续听 |
 | Attachments / Sources | ✅ 可用 | Scope-bound 文件存储与 Project Sources UI；生命周期写操作支持进度、受限协作取消和显式恢复；已验证原始文件导出共用全局 Knowledge 租约，但不进入操作日志、也没有 Renderer Stop |
 | Audio Devices | ✅ 可用 | 麦克风/扬声器选择、Windows 权限、输入电平与输出音调测试 |
 | 单句录音与本地 VAD | ✅ 可用 | 显式启动、16 kHz mono `s16le`、临时处理；不会自动生成 Chat Turn |
@@ -61,12 +61,12 @@
 | Barge-in / 语音打断 | ✅ 可用 | 仅在显式发送的 Voice Turn 回复期间启用；要求经过验证的 WebRTC 回声消除与持续语音确认，并精确取消该 Turn |
 | 自动续听 | ✅ 可用 | 可见开关可在正常回复安全结束后再次监听；默认关闭，Final Transcript 不会自动发送 |
 | Character State API | ✅ 可用 | 封闭的 `idle / listening / thinking / speaking / working / waiting_approval / error` 合同；Chat、Voice 与 Knowledge 已接入，审批状态保留给后续真实 Work/Approval 流程 |
-| 应用内角色 | ✅ 可用 | 真实本地 `.moc3` 以半身构图显示，由七种语义状态、三种用户限定表情和真实播放 RMS 四档嘴型驱动；Still/Reduced Motion 与初始化失败使用固定审核图集/立绘回退 |
-| Live2D 桌宠 | ✅ 可用 | 首次无偏好时为 `visible`；全身 Live2D 位于透明置顶可拖动窗口，`hidden` 保留选择但销毁独立 Renderer，`disabled` 完全关闭；Reduced Motion/加载失败回退静态立绘 |
+| 应用内角色 | ✅ 可用 | 主界面与 Voice 固定使用审核静态半身素材，由七种语义状态和三种用户限定表情选择；不初始化 Live2D、WebGL 或音频驱动嘴型 |
+| Live2D 桌宠 | ✅ 可用 | 默认 `disabled`；用户选择本机目录后，Settings 按实际扫描结果列出兼容模型，`visible` 动态显示选中模型，`hidden` 保留选择但销毁独立 Renderer；加载或运行失败会关闭桌宠窗口并进入可重试状态 |
 | Presence 与系统通知 | ✅ 可用 | 回复完成通知默认 Off；中性提醒只允许 Off / Daily / Weekly，前台、Voice 或忙碌时不弹出且不补发；无云推送、后台服务、行为追踪或模型生成通知 |
 | 文件解析与本地 RAG | ✅ 基础可用 | 版本化 Chunk Lineage、固定本地 Embedding 空间、Scope-safe SQLite 索引、有界 Retriever/Reranker、loopback-only Grounded Generator、同 Project 多 Chat 共享且跨 Project fail-closed；Chat 需显式开启 **Use Project Sources**，证据不足不会生成无引用回答 |
 | Work Agent 与工具权限 | ⏳ 计划中 | 尚无工具执行、桌面控制、Internet 或 Vision 工作流 |
-| Live2D | ✅ 可用 | 本地 26 部件、31 参数的 Cubism-compatible 模型已接入主界面、Voice 与桌宠；口型由真实音频振幅驱动，不声称音素识别 |
+| 外部 Live2D 支持 | ✅ 可用 | 仅用于可选桌宠；模型由用户持有并从本机目录直接读取，不复制进仓库、安装包或应用数据 |
 | 独立安装与更新 | ⏳ 计划中 | 当前打包结果不内置 Python、Ollama 或模型，也未签名 |
 
 `✅ 可用` 表示核心流程已经实现；`🚧 开发中` 表示代码已进入集成或验收，但不应视为稳定能力；`⏳ 计划中` 表示当前界面或路线中可能已有入口，底层服务仍未完成。
@@ -112,7 +112,7 @@ flowchart LR
 - **Python 是业务事实来源**：Chat、Project、Memory、附件状态和持久化由 Python Domain/Service/Repository 管理。
 - **Electron 是可信桌面边界**：它拥有 Python 子进程、原生文件选择、硬件权限与窗口生命周期。
 - **React 保持沙箱化**：`contextIsolation: true`、`nodeIntegration: false`、`sandbox: true`；Renderer 不能直接读取 Node、Python、Chat、Memory 或本地源路径。
-- **桌宠能力独立且首次默认显示**：没有保存偏好时，Main 以 `visible` 创建全身 Live2D 桌宠；用户可改为 `hidden` 或 `disabled`。Main 独占偏好、窗口和显示器坐标；桌宠 Renderer 使用单独入口和最小 Preload，只能报告就绪、隐藏自己、打开主 Chat，以及只读获取/订阅 Main 的闭集角色动作快照。两个 Renderer 的 Storage Partition 不共享；桌宠在同步完成前保持 Still，并独立遵守系统 Reduced Motion。它不能访问 Backend、网络、文件系统、任意 IPC 或主 Renderer API。损坏或不合法的偏好仍 Fail Closed 到 `disabled`。
+- **桌宠能力独立且默认关闭**：没有保存偏好或旧版偏好迁移时，Main 保持 `disabled`。用户必须在 Settings 选择外部模型目录、从实际扫描到的兼容模型中选择一套并明确设为 `visible`；`hidden` 保留选择但销毁窗口。Main 独占原生目录路径、资源清单、偏好、窗口和显示器坐标；主 Renderer 只看到不含原生路径的模型摘要及不透明选中 ID。桌宠 Renderer 使用隔离 Session 和最小 Preload，只能报告就绪或失败、隐藏自己、打开主 Chat，以及获取当前模型的 generation-scoped 不透明 Bootstrap。模型资源只通过 generation-scoped 精确白名单协议读取；它不能访问 Backend、任意网络、文件系统、任意 IPC 或主 Renderer API。损坏的偏好 Fail Closed 到 `disabled`，缺失或不兼容的模型库则阻止进入 `visible` 并返回净化后的可恢复状态。
 - **Presence 与通知默认全关**：Main 独占严格、revisioned 的设备偏好、计时器和原生通知对象；Renderer 不能提交标题、正文、链接、声音、Urgency 或任意计划。回复完成只观察经过最终一致性验证的 `chat-complete`，提醒按 24 小时或 7 天从明确选择时重新计时；到期周期会先保存处理锚点，再仅在窗口不存在、隐藏或最小化且 Backend 空闲时投递。窗口仍可见，或 Chat、Voice、完整受管朗读生命周期（包括合成空档和最终播放排空）、Knowledge 忙碌时只消费该周期；退出会停止计时器与投递，不会伪造新的已处理周期。
 - **协议双端校验**：TypeScript 与 Python 使用同一组 JSON Schema/fixture 约束，连接前完成版本、能力与随机会话令牌握手。
 - **本地数据可恢复**：关键 JSON 使用严格 Schema、revision、原子替换和损坏隔离；生成取消不会保存残缺的正式回复。
@@ -291,16 +291,17 @@ DEBUG=False
 - 2026-09-23 的三组件实机基准让 `qwen3.5:9b` 与受管 GPT-SoVITS 并行使用 RTX 4070 SUPER，并在两者驻留时用 CPU Faster-Whisper 转写；观察到全局峰值 9,824 / 12,282 MiB。完整测量、清理证据、限制与重测条件见 [Voice Performance, Safety, and Rights Acceptance](./docs/03-VOICE-PERFORMANCE-SAFETY-RIGHTS.md)。
 - Python 已提供引擎无关的合成 Contract、本地 Voice Profile Catalog、惰性 Composition Root 和只接受 Loopback IP Origin 的 GPT-SoVITS `/tts` Adapter；`localhost` 会先规范化为 `127.0.0.1`。通用 Contract 对最大 32 MiB 的 PCM WAV、Ogg Opus 与受支持 ADTS AAC 子集执行完整 Container/Transport Framing 检查，不冒充 Codec 解码；当前非流式 GPT-SoVITS Adapter 只配置 WAV/AAC，并要求有界、声明 `Content-Length`、非压缩且非 `Transfer-Encoding` 的响应。
 - 本机真实验收使用同一固定中文测试句，对 `neutral`、`happy`、`sad` 各连续合成两次，六次均得到有效 WAV；停掉服务后 Smoke 返回稳定的 `service_unreachable`，完整文字 Chat 回归仍通过。`service_binding_unverified` 表示服务在线但上游 API 不能证明当前加载的是 Catalog 所声明的权重，不是对权重身份的背书。
-- 桌面路径从 `Brain.stream_chat()` 复制准确文本块，在自然标点或长度上限处分句；有界 FIFO 只允许一个受管 Worker 合成。NDJSON 只承载关联 Metadata，PCM WAV 通过独立 fd3 进入 Electron Main，再由不属于公开 `DesktopApi` 的私有 IPC 送到 Preload Web Audio；每个片段会应用已保存的扬声器选择和当前音量，通过 GainNode 控制增益。指定设备不可用时跳过该片段，不会悄悄回退到其他扬声器；音量为 0 时只静音该片段，不会关闭合成。可信 Preload 对实际播放波形做不高于 20 Hz 的 RMS 采样、平滑与迟滞量化，只向 DOM 发布 `closed / small / medium / wide` 四档视觉提示；原始样本和连续包络不会进入 React。这是振幅驱动嘴型，不是音素识别；Animated 模式把四档提示映射到 Live2D `ParamMouthOpenY`，静态回退继续使用审核嘴型图集。用户在 Settings 选择的 `neutral / happy / sad` 是唯一允许的 Voice Emotion；成功重启后，同一 Active 值同时选择 GPT-SoVITS 参考与有界模型/静态表情，模型不能提交任意情绪、路径、参数、图集格或动画命令。Still 与系统 Reduced Motion 不启动嘴型采样。React 只收到 Request/Chat、`playing|played|skipped` 加 Sequence 或 `completed|cancelled` 终态，不接触 WAV、Token、Hash、文本、准确 Prompt、诊断或本机资产路径；以准确 Request ID 与 Chat ID 停止播放也必须经过可信 Main 校验。Profile 配置、Runtime、权重和参考音频均留在被 Git 忽略的本机目录；来源和使用限制见 [MODEL_LICENSE.md](./MODEL_LICENSE.md)。
+- 桌面路径从 `Brain.stream_chat()` 复制准确文本块，在自然标点或长度上限处分句；有界 FIFO 只允许一个受管 Worker 合成。NDJSON 只承载关联 Metadata，PCM WAV 通过独立 fd3 进入 Electron Main，再由不属于公开 `DesktopApi` 的私有 IPC 送到 Preload Web Audio；每个片段会应用已保存的扬声器选择和当前音量，通过 GainNode 控制增益。指定设备不可用时跳过该片段，不会悄悄回退到其他扬声器；音量为 0 时只静音该片段，不会关闭合成。主界面与 Voice 的角色图保持静态，可信 Preload 不为它们建立音频分析器或发布嘴型提示。用户在 Settings 选择的 `neutral / happy / sad` 是唯一允许的 Voice Emotion；成功重启后，同一 Active 值选择 GPT-SoVITS 参考与有界静态表情，模型不能提交任意情绪、路径、参数、图集格或动画命令。React 只收到 Request/Chat、`playing|played|skipped` 加 Sequence 或 `completed|cancelled` 终态，不接触 WAV、Token、Hash、文本、准确 Prompt、诊断或本机资产路径；以准确 Request ID 与 Chat ID 停止播放也必须经过可信 Main 校验。Profile 配置、Runtime、权重和参考音频均留在被 Git 忽略的本机目录；来源和使用限制见 [MODEL_LICENSE.md](./MODEL_LICENSE.md)。
 
 ### 🌷 可选 Live2D 桌宠
 
-- 首次不存在桌宠偏好文件时使用 `visible`，直接创建全身 Live2D 桌宠。Settings 的 `disabled / hidden / visible` 是完整闭集：`hidden` 保留用户选择但立即销毁桌宠 Renderer 释放其资源，`disabled` 完全关闭，`visible` 创建窗口。
-- 当前实现复用与主界面相同的本地 `.moc3` 和纹理，但使用不同构图：主 Chat/Voice 是半身像，桌宠是适合桌面摆放的全身像。系统 Reduced Motion、WASM/WebGL/模型加载失败时回退审核 `elysia-portrait.png`。它不使用 `07-desktop-pet-key-poses.png`，也不是自主 Agent。
+- 首次不存在桌宠偏好文件时使用 `disabled`，不会创建窗口或加载模型。Settings 的 `disabled / hidden / visible` 是完整闭集：`hidden` 保留用户选择但立即销毁桌宠 Renderer 释放其资源，`disabled` 完全关闭，只有已选择兼容模型时 `visible` 才创建窗口。
+- 用户通过原生目录选择器指定外部 Live2D 合集；Scanner 按有界规则发现兼容 `model3.json`，按外观去重，并优先选择标准交互版本。Settings 显示实际检测数量和安全名称，不显示原生路径。项目所有者当前本机合集可检测六套外观；其他下载内容按实际扫描结果呈现，不硬编码“六套”。来源标注为 `@书呆儿`，记录的公开下载页为 <https://pan.quark.cn/s/cb5d84acad8e>，但链接当前内容和条款尚未独立核验。
+- 主 Chat/Voice 永远使用静态半身素材；只有桌宠读取用户选中的外部 `.moc3`、多纹理与可选 `physics3`，以全身动态构图、Blink/Breath/Head 动态和模型自带物理显示。动作、表情、Pose 等引用会由 Main 有界验证，但当前 Renderer 不执行它们。WASM/WebGL/模型加载或运行失败会立即关闭失败的透明窗口，并在 Settings 提供重试状态。它不使用 `07-desktop-pet-key-poses.png`，也不是自主 Agent。
 - Electron Main 只允许一个透明、无边框、置顶的桌宠窗口。全身角色区域本身就是拖动表面；悬浮或键盘聚焦时显示的控制条属于非拖动区，可打开主 Chat 或隐藏桌宠。名义尺寸为 320×480 DIP，并在显示器工作区较小时缩小；纯几何函数按当前多显示器 DIP 工作区恢复和钳制位置，不把 `scaleFactor` 重复乘入坐标。显示器移除、分辨率或缩放变化后会重新钳制，Settings 和托盘均可重置位置。
 - 控制条的 Chat 按钮显示并聚焦主窗口、进入主 Chat；Hide 按钮切换到 `hidden`。托盘可显示/隐藏、禁用、重试失败窗口，以及临时开启鼠标穿透；Settings 在失败状态也提供显式重试。鼠标穿透不会持久化；选择 Hidden 后即使主窗口已关闭，进程和托盘仍会保留为恢复入口，只有 Off 才恢复“最后窗口关闭即退出”的行为。
-- 桌宠使用自己的 HTML 入口、Sandbox 和最小 Preload。其公开 API 只有 `ready / hide / openMainChat` 与 Main-owned `animated / still` 快照的只读获取/订阅，没有 Backend、Chat 数据、任意网络、文件系统、Storage、Node、原始 IPC、语音或主 Renderer 能力；模型只能经 Electron 的三文件本地协议白名单读取，导航、新窗口和权限请求仍被拒绝。
-- 偏好由 Main 保存在 Electron `userData` 下的独立严格 JSON 中，采用 16 KiB 读取上限、revision CAS 和同目录临时文件同步后原子替换；Settings、托盘、桌宠控制、位置重置与拖动保存共用一条变更队列，显示器 ID 与坐标从不返回 Renderer。缺失文件表示首次运行并默认 `visible`；存在但损坏、超限或不合法的文件仍 Fail Closed 到 `disabled`。Preload 失败或 10 秒内未 ready 的窗口会被销毁并进入净化后的 `failed` 状态。退出会先排空已接纳的偏好写入，再保存最终位置，整个可选持久化序列最多等待 2 秒。该失败可从 Settings 或托盘重试，不影响主 Chat、Voice 或 Backend。
+- 桌宠使用自己的 HTML 入口、隔离 Session、Sandbox 和最小 Preload。其公开 API 精确限制为 `ready / failed / hide / openMainChat / getModelBootstrap`；无参数 `failed` 只允许桌宠让 Main 立即收敛失败窗口，不携带错误正文或路径。它没有 Backend、Chat 数据、任意网络、文件系统、Storage、Node、原始 IPC、语音或主 Renderer 能力。模型 Bootstrap 只含不透明模型 ID 和 generation-scoped Manifest URL；Manifest 引用的 MOC、纹理、动作、表情与物理文件只能经 Scanner 生成的精确资源白名单读取，目录遍历、符号链接、旧 generation、未知资源、Query/Fragment、导航、新窗口和权限请求均被拒绝。
+- 偏好由 Main 保存在 Electron `userData` 下的独立严格 JSON 中，采用 16 KiB 读取上限、revision CAS 和同目录临时文件同步后原子替换；本机目录路径、资源路径和显示位置只保留在 Main，公开状态只含不透明选中 ID 与净化后的模型摘要。Settings、托盘、桌宠控制、位置重置与拖动保存共用一条变更队列，显示器 ID、坐标和路径从不返回 Renderer。缺失文件与旧版迁移均默认 `disabled`；存在但损坏、超限或不合法的文件也 Fail Closed 到 `disabled`。Preload 加载失败会立即销毁窗口；真实模型在 30 秒内未完成初始化并报告 ready 时才由超时门禁销毁，二者都进入净化后的 `failed` 状态。退出会先排空已接纳的偏好写入，再保存最终位置，整个可选持久化序列最多等待 2 秒。该失败可从 Settings 或托盘重试，不影响主 Chat、Voice 或 Backend。
 
 ### 🔕 Presence 与系统通知
 
@@ -375,7 +376,7 @@ cd /d D:\Elysia_AI
 .venv\Scripts\python.exe scripts\check_distribution_assets.py --unpacked-tree desktop\out\win-unpacked --asar-listing "%TEMP%\elysia-asar-listing.txt" --extracted-asar-tree "%TEMP%\elysia-asar-extracted"
 ```
 
-输出位于 `desktop\out\win-unpacked`。审计会同时检查真实 Unpacked Tree、ASAR 清单与完整抽取树；Live2D manifest/MOC/texture/Core/许可证及全部静态回退都必须恰好出现一次，且实际打包字节必须符合各自固定长度与 SHA-256。审计也会拒绝本机 AI 模型权重、音频、Runtime/User Data、压缩包或链接逃逸；它必须在每次发布产物前运行。`npm run make` 可以生成未签名的 NSIS Installer，但当前产物不包含 Python、Ollama 或推理模型，不能视为独立发行版。
+输出位于 `desktop\out\win-unpacked`。审计会同时检查真实 Unpacked Tree、ASAR 清单与完整抽取树；PurismCore/许可证、应用图标及全部静态回退必须恰好出现一次且符合固定长度与 SHA-256，任何 Live2D manifest、MOC、physics、motion、expression 或编辑器模型文件都必须为零。Git 和安装包中的 PNG、ICO、WebP 等视觉素材还受准确路径白名单约束，因此把付费纹理改名为普通图片或移动到普通目录也会被拒绝。审计同样拒绝本机 AI 模型权重、音频、Runtime/User Data、压缩包、退役构建残留或链接逃逸；它必须在每次发布产物前运行。`npm run make` 可以生成未签名的 NSIS Installer，但当前产物不包含 Python、Ollama 或推理模型，不能视为独立发行版。
 
 ---
 
@@ -493,7 +494,9 @@ cd /d D:\Elysia_AI\desktop
 
 项目所有者明确选择把《崩坏3》爱莉希雅官方刻印作为本非官方、非商业粉丝项目的公开品牌素材。PNG/ICO 不属于项目源码许可，相关权利仍归 HoYoverse / miHoYo；本项目不声称获得官方背书，并会响应权利人的移除要求。
 
-应用内的爱莉希雅立绘、七态图集、表情图集与嘴型图集由 OpenAI 内置图像生成工具参考项目所有者提供的爱莉希雅图片生成。外部原始参考图片不进入仓库或安装包；已审核的旧立绘保留在仓库与安装包中，并作为图集的二次参考和运行时回退。运行时的状态、表情与嘴型图集分别是审阅包 `02-activity-states.png`、`03-expression-atlas.png` 与 `04-facial-rig-atlas.png` 的逐字节副本；嘴型只使用 04 第一带前四格作为振幅档位，不把其余格宣称为音素识别。全部审核运行时 PNG 都以准确路径、字节长度和 SHA-256 固定在分发门禁中，真实 ASAR 还必须恰好包含一次各路径并通过抽取字节复核。这些图片不属于源码许可，只用于本非官方、非商业粉丝项目；底层爱莉希雅与《崩坏3》角色 IP 仍归 HoYoverse / miHoYo 等适用权利人所有，不代表官方背书，并会响应有效的权利人移除要求。完整记录见 [MODEL_LICENSE.md](./MODEL_LICENSE.md)。
+应用内的爱莉希雅立绘、七态图集、表情图集与嘴型审阅图集由 OpenAI 内置图像生成工具参考项目所有者提供的爱莉希雅图片生成。外部原始参考图片不进入仓库或安装包；已审核的旧立绘保留在仓库与安装包中，并作为图集的二次参考和故障回退。主界面和 Voice 只选择静态状态/表情素材，不使用嘴型审阅图集、不采样音频，也不执行 Live2D。全部审核 PNG 仍以准确路径、字节长度和 SHA-256 固定在分发门禁中，真实 ASAR 还必须恰好包含一次各路径并通过抽取字节复核。这些图片不属于源码许可，只用于本非官方、非商业粉丝项目；底层爱莉希雅与《崩坏3》角色 IP 仍归 HoYoverse / miHoYo 等适用权利人所有，不代表官方背书，并会响应有效的权利人移除要求。
+
+可选动态桌宠使用用户本机持有的外部 Live2D 模型。当前本机六套合集来源标注为 `@书呆儿`，项目不会复制、提交、上传或打包其中任何模型文件；记录的免费版下载页为 <https://pan.quark.cn/s/cb5d84acad8e>，但其当前内容、授权和条款尚未独立核验。完整记录见 [MODEL_LICENSE.md](./MODEL_LICENSE.md)。
 
 ---
 

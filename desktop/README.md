@@ -60,34 +60,34 @@ The Stage 13 Character State API is renderer-local and closed over `idle`,
 It projects current-Chat generation, current-Project Knowledge activity, Voice's
 primary lifecycle, and Backend failure into the Character Panel and call page.
 The contract adds no IPC and never selects a model path or arbitrary animation.
-Animated mode loads the pinned local Cubism-compatible model through a
-three-file custom-protocol allowlist and maps those states plus the
-user-controlled `neutral / happy / sad` emotion to bounded parameters. The same
-active emotion selects the local TTS reference after a Backend restart. During
-real Web Audio playback, trusted Preload samples RMS at no more than 20 Hz and
-quantizes it into `closed / small / medium / wide` mouth cues, which drive
-Live2D `ParamMouthOpenY`; raw waveform samples and continuous envelopes stay
-outside React. Still and OS Reduced Motion do not create a Live2D model,
-WebGL context, or render loop; the shared page currently loads the Core script
-before that renderer-level decision. Model
-failure falls back through speech → expression → state → portrait → accessible
-text. This is amplitude motion, not phoneme-level lip sync. `waiting_approval`
-still has no producer until a real Work/Approval workflow exists.
-Main Chat and Voice frame that model with surface-specific half-body portraits. Stage 13 also
-provides a full-body Live2D Desktop Pet that is visible when no saved preference
-exists. Electron Main owns its strict `disabled / hidden / visible`
-preference, private display placement, and at most one transparent,
-always-on-top native window. `hidden` destroys the dedicated Renderer instead
-of merely making it invisible. The pet reuses the main UI model and keeps the
-reviewed `elysia-portrait.png` as its Reduced Motion/error fallback. The whole
-character surface can be dragged; a toolbar revealed on hover or keyboard focus
-opens the ordinary main Chat or hides the pet. The tray can also make it
-temporarily click-through. Its separate
-sandboxed entry receives only `ready`, `hide`, `openMainChat`, and read-only
-access to Main's closed character-motion snapshot through a
-minimal Preload; it has no Backend, arbitrary network, filesystem, Node, audio,
-or main Renderer capability. Model fetches use the same fixed local protocol
-allowlist.
+Main Chat and Voice always render reviewed static half-body artwork selected by
+that state and the user-controlled `neutral / happy / sad` emotion. They do not
+load Cubism, create a WebGL context, expose an Animated/Still preference, or
+derive mouth cues from Web Audio RMS. The same active emotion selects the local
+TTS reference after a Backend restart, while artwork failure falls back through
+expression → state → portrait → accessible text. `waiting_approval` still has
+no producer until a real Work/Approval workflow exists.
+Stage 13 separately provides an optional dynamic Live2D Desktop Pet. It is Off
+(`disabled`) on first run. Settings lets the user choose an external local
+folder, rescans compatible `model3.json` manifests, de-duplicates the known
+Standard/Keyboard/Gamepad layout by appearance, and lets the user select one
+detected appearance before **Visible** can be enabled. The purchased reference
+pack is credited to `@书呆儿`; it is never copied into the repository, uploaded,
+or packaged. Settings links to the purported free pack at
+<https://pan.quark.cn/s/cb5d84acad8e>, but this project has not verified that
+link's current contents or terms.
+Electron Main owns the strict `disabled / hidden / visible` preference, private
+library/resource paths, private display placement, and at most one
+transparent, always-on-top native window. `hidden` destroys the dedicated
+Renderer instead of merely making it invisible. The character surface can be
+dragged; a toolbar revealed on hover or keyboard focus opens the ordinary main
+Chat or hides the pet, and the tray can temporarily make it click-through. The
+separate sandboxed entry receives exactly `ready`, `failed`, `hide`,
+`openMainChat`, and `getModelBootstrap` through its minimal Preload. It has no Backend, arbitrary
+network, filesystem, Node, audio, or main Renderer capability. Only the pet's
+isolated Electron session installs `elysia-pet-asset`; every scan rotates a
+generation-scoped exact allowlist, so the renderer receives an opaque manifest
+URL rather than a native path.
 Stage 13 Presence and Notifications is also Main-owned and fully off by
 default. Settings can independently enable fixed-copy reply-ready notices and
 select a neutral Daily / Weekly reminder, then disable both with one action.
@@ -159,8 +159,9 @@ Git-ignored and must not be committed or packaged with the application.
   origin, Memory limits, file import size, local STT model/device/language, and
   appearance, including the optional Desktop Pet. Backend values are atomically stored in
   `workspace/settings/global.json` below the active data root; each control identifies whether a saved
-  value is live or waits for a Backend restart. Appearance remains in this
-  device's renderer storage and applies immediately. If Voice contains a
+  value is live or waits for a Backend restart. Theme remains in this device's
+  Renderer storage and applies immediately; Desktop Pet intent instead uses
+  Main-owned revisioned storage under Electron `userData`. If Voice contains a
   non-empty Final transcript, `Ctrl+,` asks before discarding it.
 - **Data & storage** remains available even when Python is stopped. Electron
   Main shows the active versioned data root and a bounded category scan, uses a
@@ -197,24 +198,20 @@ Git-ignored and must not be committed or packaged with the application.
 - The optional Character Panel and Voice portrait consume the same semantic
   Character State contract. Closed registries map each state and the active
   `neutral / happy / sad` user setting to reviewed cells; no model output can
-  select an emotion, path, cell, or animation name. During real speech output,
-  trusted Preload applies the active gain, samples Web Audio RMS no faster than
-  20 Hz, and publishes only `closed / small / medium / wide` visual cues. The
-  same active emotion value also selects the TTS reference. Settings persists
-  Animated / Still on this device; Still and OS Reduced Motion do not create a
-  Live2D model, WebGL context, or render loop. Animated mode drives the pinned
-  local model, while failures follow
-  speech → expression → state → portrait → accessible text without affecting
-  Chat or Voice. The surface does not claim phoneme-level lip sync, write Chat
-  state, or create a new Backend capability. Both in-app surfaces use the
-  explicit head-to-waist half-body framing rather than shrinking the complete
-  model into the portrait panel. Voice keeps a separate taller half-body camera
-  so its call layout does not crop the shoulders and arms.
+  select an emotion, path, cell, or animation name. The same active emotion
+  value also selects the TTS reference. Both in-app surfaces are permanently
+  static: they mount no Live2D model, WebGL context, render loop, Animated/Still
+  control, audio analyser, or mouth-cue path. Failures follow expression → state
+  → portrait → accessible text without affecting Chat or Voice. These surfaces
+  do not write Chat state or create a new Backend capability.
 - Desktop Pet settings are separate from Backend settings. A missing preference
-  file is first-run state and defaults to **Visible**; **Hidden** keeps the
-  choice while destroying the pet Renderer and native window, and **Off**
-  (`disabled`) turns the feature off. **Visible** creates one transparent,
-  frameless, always-on-top 320×480 DIP nominal window with full-body framing.
+  file is first-run state and defaults to **Off** (`disabled`). The user must
+  choose a local model directory, select one compatible detected appearance,
+  and explicitly choose **Visible**. **Hidden** preserves the opt-in and model
+  selection while destroying the pet Renderer and native window. **Visible**
+  creates one transparent, frameless, always-on-top 320×480 DIP nominal window
+  and dynamically renders the selected external Live2D model with full-body
+  framing.
   The character surface moves the window; the non-drag toolbar appears on hover
   or keyboard focus and exposes Open Chat and Hide. The tray can show or hide
   it, temporarily enable mouse click-through, reset its position, disable it,
@@ -223,19 +220,28 @@ Git-ignored and must not be committed or packaged with the application.
   Click-through is not persisted. Hidden keeps the process and tray resident
   after the main window closes, while Off restores the normal Windows/Linux
   last-window exit behavior.
-- Main stores Desktop Pet intent in a strict revisioned JSON document under
-  Electron `userData`; Settings, tray, pet controls, reset, and drag saves use
-  one mutation queue, while native display ID and DIP coordinates never enter
-  either Renderer. Position restoration clamps the window to current work
-  areas across negative-coordinate and mixed-scale displays without applying
-  Electron's `scaleFactor` twice. Display topology/metric changes reclamp the
-  window. A missing preference is the first-run `visible` default; a present
-  but corrupt, oversized, or invalid preference still fails closed to
-  `disabled`. A load/crash failure becomes a sanitized recoverable `failed`
-  runtime state without affecting Chat, Voice, or the Python Backend. A missing
-  Preload or Renderer that never reports ready is destroyed after a 10-second deadline;
-  shutdown drains admitted writes before its final position snapshot, with the
-  complete optional persistence sequence bounded to two seconds.
+- Main stores Desktop Pet intent in a strict version-2 revisioned JSON document
+  under Electron `userData`; the native library/resource paths and display
+  placement remain private to Main. Settings receives only a folder name, sanitized
+  model summaries, scan status, and the selected opaque ID. Choosing or
+  rescanning a directory enumerates its actual compatible `model3.json`
+  manifests; the recognized multi-input pack layout is grouped by appearance
+  instead of exposing Standard, Keyboard, and Gamepad copies as three pets.
+  External model files stay in place and are never copied, committed, uploaded,
+  or included in an application package.
+  Settings, tray, pet controls, reset, and drag saves use one mutation queue,
+  while native display ID and DIP coordinates never enter either Renderer.
+  Position restoration clamps the window to current work areas across
+  negative-coordinate and mixed-scale displays without applying Electron's
+  `scaleFactor` twice. Display topology/metric changes reclamp the window. A
+  missing, corrupt, oversized, invalid, or legacy preference without a selected
+  model fails closed to `disabled`. A missing folder or selected model becomes
+  a sanitized recoverable library/runtime warning without affecting Chat,
+  Voice, or the Python Backend. A missing Preload is destroyed immediately;
+  only a real model that never reports ready waits for the 30-second deadline.
+  Shutdown drains
+  admitted writes before its final position snapshot, with the complete
+  optional persistence sequence bounded to two seconds.
 - **Presence & notifications** is a separate immediate Settings section owned
   by Electron Main. **Reply completion notifications** and **Neutral presence
   reminders** both default to Off; reminder frequency accepts only Off, Daily,
@@ -536,26 +542,23 @@ npm run build
 npm audit --audit-level=high
 npm run package
 npx --no-install asar list out\win-unpacked\resources\app.asar > "%TEMP%\elysia-asar-listing.txt"
-if exist "%TEMP%\elysia-portrait.png" del /f /q "%TEMP%\elysia-portrait.png"
-if exist "%TEMP%\elysia-state-atlas.png" del /f /q "%TEMP%\elysia-state-atlas.png"
-if exist "%TEMP%\elysia-expression-atlas.png" del /f /q "%TEMP%\elysia-expression-atlas.png"
-if exist "%TEMP%\elysia-speech-atlas.png" del /f /q "%TEMP%\elysia-speech-atlas.png"
-pushd "%TEMP%"
-call "D:\Elysia_AI\desktop\node_modules\.bin\asar.cmd" extract-file "D:\Elysia_AI\desktop\out\win-unpacked\resources\app.asar" "dist\character\elysia-portrait.png"
-call "D:\Elysia_AI\desktop\node_modules\.bin\asar.cmd" extract-file "D:\Elysia_AI\desktop\out\win-unpacked\resources\app.asar" "dist\character\elysia-state-atlas.png"
-call "D:\Elysia_AI\desktop\node_modules\.bin\asar.cmd" extract-file "D:\Elysia_AI\desktop\out\win-unpacked\resources\app.asar" "dist\character\elysia-expression-atlas.png"
-call "D:\Elysia_AI\desktop\node_modules\.bin\asar.cmd" extract-file "D:\Elysia_AI\desktop\out\win-unpacked\resources\app.asar" "dist\character\elysia-speech-atlas.png"
-popd
+if exist "%TEMP%\elysia-asar-extracted" rmdir /s /q "%TEMP%\elysia-asar-extracted"
+call "D:\Elysia_AI\desktop\node_modules\.bin\asar.cmd" extract "D:\Elysia_AI\desktop\out\win-unpacked\resources\app.asar" "%TEMP%\elysia-asar-extracted"
 cd /d D:\Elysia_AI
-.venv\Scripts\python.exe scripts\check_distribution_assets.py --unpacked-tree desktop\out\win-unpacked --asar-listing "%TEMP%\elysia-asar-listing.txt" --extracted-asar-portrait "%TEMP%\elysia-portrait.png" --extracted-asar-character-atlas "%TEMP%\elysia-state-atlas.png" --extracted-asar-expression-atlas "%TEMP%\elysia-expression-atlas.png" --extracted-asar-speech-atlas "%TEMP%\elysia-speech-atlas.png"
-del /f /q "%TEMP%\elysia-asar-listing.txt" "%TEMP%\elysia-portrait.png" "%TEMP%\elysia-state-atlas.png" "%TEMP%\elysia-expression-atlas.png" "%TEMP%\elysia-speech-atlas.png"
+.venv\Scripts\python.exe scripts\check_distribution_assets.py --unpacked-tree desktop\out\win-unpacked --asar-listing "%TEMP%\elysia-asar-listing.txt" --extracted-asar-tree "%TEMP%\elysia-asar-extracted"
+del /f /q "%TEMP%\elysia-asar-listing.txt"
+rmdir /s /q "%TEMP%\elysia-asar-extracted"
 ```
 
 `npm run package` creates an unpacked desktop build in `desktop\out`.
 On Windows, `npm run make` additionally creates an unsigned NSIS installer.
-The final audit scans the actual package tree and its ASAR listing, then verifies
-the bytes extracted from the required portrait, state, expression, and speech
-atlas paths. Neither
+The final audit scans the actual package tree, its ASAR listing, and the complete
+extracted archive. It verifies the required portrait, state, expression, and
+speech atlases, application icons, and exact PurismCore build and license;
+requires one Pet entry and one dedicated Preload entry; and applies the global
+Cubism-model suffix ban to every extracted path. Exact visual-asset path
+allowlists cover Git, Unpacked, and ASAR boundaries, so a renamed standalone
+texture cannot bypass the model-suffix checks. Neither
 accepted output contains the GPT-SoVITS runtime, Voice Profile catalog, model
 weights, or reference audio.
 
@@ -565,23 +568,19 @@ unofficial, non-commercial fan project. They are third-party assets, are not
 covered by any source-code license, and do not imply HoYoverse / miHoYo
 endorsement. See the root `MODEL_LICENSE.md` before publishing a build.
 
-The packaged portrait fallback plus state, expression, and speech atlases are
-reviewed generated fan artwork, not source-code-licensed assets. The
-distribution audit pins all four by exact path, byte length, SHA-256, ASAR
-cardinality, and extracted bytes. The state atlas is a static 4×2 RGB sheet:
-only its first seven cells participate in the closed Character State contract,
-and the eighth success cell is not a new runtime state. The expression atlas
-admits only the user-controlled `neutral / happy / sad` mapping. Runtime speech
-uses only the first four cells of the facial atlas's first band as
-`closed / small / medium / wide` amplitude cues; it does not interpret the
-remaining review cells as detected phonemes.
-The Desktop Pet reuses the same fixed Live2D model as the main character but
-selects full-body framing, Main Chat selects a head-to-waist half-body framing,
-and Voice selects its own taller call framing.
-It keeps the already reviewed, pinned portrait only for Reduced Motion and
-runtime failure. It introduces no second character model or implied license. The larger
-Desktop Pet pose review sheet remains repository review material and is not
-loaded by the pet window.
+The packaged portrait plus state, expression, and speech atlases are reviewed
+generated fan artwork, not source-code-licensed assets. The distribution audit
+pins all four by exact path, byte length, SHA-256, ASAR cardinality, and
+extracted bytes. The state atlas is a static 4×2 RGB sheet: only its first seven
+cells participate in the closed Character State contract, and the eighth
+success cell is not a new runtime state. The expression atlas admits only the
+user-controlled `neutral / happy / sad` mapping. The speech atlas remains an
+authenticated review asset, but the current renderer does not load it or derive
+visual mouth cues from playback.
+Main Chat and Voice use only the packaged static artwork. The dynamic Desktop
+Pet instead loads one user-selected external Cubism model in its isolated
+window. No external model pack is part of the repository or package, and the
+runtime does not fall back to a bundled Live2D character.
 
 `npm run docs:check` enforces file-purpose comments plus public class,
 function, class-method, and exported interface-method documentation. The
@@ -593,21 +592,29 @@ UI tests, including Knowledge method/event races, export ownership across
 Renderer reload and Project switches, trusted receipt settlement, Project
 isolation, archived read-only behavior, explicit grounded intent, and citation
 accessibility. The contract suite also runs `character-state.test.mjs`,
-`character-presentation.test.mjs`, `speech-mouth.test.mjs`, and
-`desktop-pet-lifecycle.test.mjs`, `desktop-pet-preferences.test.mjs`,
+`character-presentation.test.mjs`, `desktop-pet-lifecycle.test.mjs`,
+`desktop-pet-model-library.test.mjs`, `desktop-pet-preferences.test.mjs`,
+`desktop-pet-preload.test.cjs`, `live2d-assets.test.mjs`,
+`live2d-runtime-fallback.test.mjs`, `live2d-runtime.test.mjs`,
 `presence-native-notification.test.mjs`, and
 `presence-notification-preferences.test.mjs`.
 Desktop Pet coverage verifies ready/shutdown deadlines, the shared cross-entry
 mutation queue, Hidden tray residency and Disabled exit, programmatic-position
-suppression, the strict update schema, first-run-visible and corrupt-file
-fail-closed behavior,
-revision CAS, atomic replace failure, Main-private placement, resource bounds,
-and mixed-scale, negative-coordinate, removed-display, and Windows
-unsigned-hash display-ID DIP clamping. Renderer source-policy
-tests prove that the main and pet HTML entries cannot borrow each other's IPC
-authority. `desktop-pet-preload.test.cjs` loads the production dedicated
-Preload in isolation and proves that only its frozen native-action plus
-read-only motion-state API and fixed channels exist. Presence notification
+suppression, the strict update schema, first-run-disabled and corrupt-file
+fail-closed behavior, version-1 migration, model selection, bounded directory
+scanning, appearance de-duplication, revision CAS, atomic replace failure,
+Main-private paths and placement, resource bounds, and mixed-scale,
+negative-coordinate, removed-display, and Windows unsigned-hash display-ID DIP
+clamping. Renderer source-policy tests prove that the main and pet HTML entries
+cannot borrow each other's IPC authority. `desktop-pet-preload.test.cjs` loads
+the production dedicated Preload in isolation and proves that exactly
+`ready`, `failed`, `hide`, `openMainChat`, and `getModelBootstrap` plus their fixed
+channels exist. The Live2D protocol tests cover the isolated partition,
+generation rotation, in-flight revocation, exact response length, exact
+resource allowlisting, path traversal rejection, and opaque model bootstrap;
+runtime tests cover bounded multi-texture external models, PNG decoded-memory
+admission, bounded Physics 3 evaluation, and one-shot failure recovery.
+Presence notification
 contract coverage verifies the exact
 three-field update, fully-off defaults, strict 16 KiB persistence, fail-closed
 invalid storage, revision conflicts, no-op and frequency re-anchoring behavior,
@@ -619,12 +626,12 @@ replacement, explicit close, and sanitized delivery failure. The UI suite
 verifies revisioned
 notification controls, **Turn all off**, failure recovery, and sanitized
 unsupported runtime alongside revisioned Desktop Pet Settings, failure/reload
-recovery, explicit failed-state retry, the request to return to main Chat,
+recovery, external-folder selection and rescan, detected-model selection,
+explicit failed-state retry, the request to return to main Chat,
 current-Chat/Project
 scoping, Voice projection, Backend failure,
-closed state/emotion/speech atlas cues, performance preference/Reduced Motion,
-and the speech → expression → state → portrait → accessible-text fallback
-chain.
+closed state/emotion artwork, an always-static in-app character surface, and
+the expression → state → portrait → accessible-text fallback chain.
 `npm run test:ui` can be used independently while working on layout.
 The UI suite loads the production renderer through a dedicated sandboxed test
 preload; its mock Backend and control surface are never included by the
@@ -655,20 +662,29 @@ method, results, capability gaps, and limitations.
 - React cannot access Node.js, Python, Chat files, or Memory files directly.
 - The sandboxed preload exposes only the methods in `electron/contracts.ts`.
 - The Desktop Pet is a second, exact renderer entry with a separate sandboxed
-  Preload. Its frozen API contains only `ready`, `hide`, `openMainChat`, and
-  read/subscribe access to Main's closed `animated / still` motion snapshot;
-  Electron validates its exact top frame and window owner for every call. The
-  pet defaults to Still until this snapshot arrives and separately honors OS
-  Reduced Motion. Renderer storage partitions are never shared. It
-  cannot obtain the main `DesktopApi`, Backend state, raw IPC, network,
-  filesystem, Node, microphone, speaker-selection, or arbitrary navigation
-  capability.
-- Desktop Pet persistence is Main-only: the exact JSON schema is capped at
-  16 KiB, mode changes use optimistic revisions and same-directory atomic
-  replacement, and native placement is excluded from public state. Invalid
-  storage defaults to Off, while an absent file means first run and defaults to
-  Visible. The nominal 320×480 DIP window is clamped to each
-  current display work area and the general geometry contract caps it at
+  Preload. Its frozen API contains only `ready`, `failed`, `hide`,
+  `openMainChat`, and `getModelBootstrap`; Electron validates its exact top frame and window owner
+  for every call. Renderer storage partitions are never shared. The pet cannot
+  obtain the main `DesktopApi`, Backend state, a native model path, raw IPC,
+  arbitrary network, filesystem, Node, microphone, speaker-selection, or
+  arbitrary navigation capability. Main returns only the opaque model ID and
+  an `elysia-pet-asset://model/...` manifest URL.
+- External Live2D files are served only in the dedicated pet session. Main
+  validates a bounded compatible `model3.json` graph beneath the selected real
+  directory, rejects links and path escape, and registers its exact resources
+  in a generation-scoped allowlist. Choosing or rescanning a library rotates
+  that generation and restarts the pet, so an earlier URL cannot select another
+  model or become a general file reader. The main Chat/Voice renderer neither
+  registers this protocol nor loads Cubism/WebGL.
+- Desktop Pet persistence is Main-only: the exact version-2 JSON schema is
+  capped at 16 KiB, mode/model changes use optimistic revisions and
+  same-directory atomic replacement. The native library/resource paths and
+  placement are excluded from public state; the opaque selected model ID is
+  deliberately exposed with sanitized summaries so Settings can render and
+  update the closed selection.
+  Missing or invalid storage defaults to Off; Visible is rejected until a
+  validated model is selected. The nominal 320×480 DIP window is clamped to
+  each current display work area and the general geometry contract caps it at
   420×560 DIP; Hidden and Disabled destroy the renderer rather than retaining
   an invisible page. These are resource bounds, not a promise of a fixed RAM
   measurement.
@@ -740,12 +756,11 @@ method, results, capability gaps, and limitations.
   percentage are applied inside trusted preload for every admitted clip. A Web
   Audio gain node enforces the per-clip volume; zero remains an intentional
   silent playback, and an unavailable explicit sink skips that clip instead of
-  leaking it through the system default speaker. For Animated speaking artwork,
-  the same trusted graph samples the actual post-selection playback at no more
-  than 20 Hz and reduces RMS to a four-value mouth cue; raw samples, continuous
-  levels, and arbitrary animation selectors never cross into React. Still and
-  Reduced Motion keep the cue closed. The managed runtime's current partial manifest proves launch consistency, not complete
-  supply-chain provenance, so desktop speech caching remains disabled.
+  leaking it through the system default speaker. The graph does not sample RMS
+  for character animation and publishes no mouth cue to React; Main Chat and
+  Voice artwork stays static while audio plays. The managed runtime's current
+  partial manifest proves launch consistency, not complete supply-chain
+  provenance, so desktop speech caching remains disabled.
 - Settings accepts an exact non-sensitive allowlist, including the closed STT
   model/device/language enums and eight Voice behavior fields, uses optimistic
   revisions and atomic replacement, and remains repairable after Backend

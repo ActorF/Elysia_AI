@@ -1,4 +1,4 @@
-/** Verify the desktop-pet Preload exposes only closed actions and motion state. */
+/** Verify the desktop-pet Preload exposes closed actions and model bootstrap. */
 
 const assert = require('node:assert/strict')
 const { EventEmitter } = require('node:events')
@@ -8,11 +8,18 @@ const test = require('node:test')
 
 const invocations = []
 const exposedApis = []
+const modelBootstrap = Object.freeze({
+  manifestUrl: (
+    'elysia-pet-asset://model/0123456789abcdef0123456789abcdef/'
+    + 'model_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/Elysia.model3.json'
+  ),
+  modelId: 'model_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+})
 const ipcRenderer = new EventEmitter()
 ipcRenderer.invoke = (channel) => {
   invocations.push(channel)
-  if (channel === 'desktop-pet:get-character-performance') {
-    return Promise.resolve({ preference: 'still', revision: 0 })
+  if (channel === 'desktop-pet:get-model-bootstrap') {
+    return Promise.resolve(modelBootstrap)
   }
   return Promise.resolve()
 }
@@ -48,9 +55,9 @@ test('desktop-pet Preload exposes one frozen least-privilege API', () => {
   assert.equal(exposedApis[0].name, 'elysiaDesktopPet')
   assert.equal(Object.isFrozen(exposedApis[0].api), true)
   assert.deepEqual(Object.keys(exposedApis[0].api).sort(), [
-    'getCharacterPerformanceState',
+    'failed',
+    'getModelBootstrap',
     'hide',
-    'onCharacterPerformanceStateChanged',
     'openMainChat',
     'ready',
   ])
@@ -62,38 +69,16 @@ test('desktop-pet Preload exposes one frozen least-privilege API', () => {
 test('desktop-pet actions invoke only their closed Main channels', async () => {
   const api = exposedApis[0].api
   await api.ready()
+  await api.failed()
   await api.hide()
   await api.openMainChat()
-  assert.deepEqual(await api.getCharacterPerformanceState(), {
-    preference: 'still',
-    revision: 0,
-  })
+  assert.equal(await api.getModelBootstrap(), modelBootstrap)
 
   assert.deepEqual(invocations, [
     'desktop-pet:ready',
+    'desktop-pet:failed',
     'desktop-pet:hide',
     'desktop-pet:open-main-chat',
-    'desktop-pet:get-character-performance',
+    'desktop-pet:get-model-bootstrap',
   ])
-})
-
-test('desktop-pet motion subscription accepts only its fixed Main channel', () => {
-  const received = []
-  const unsubscribe = exposedApis[0].api.onCharacterPerformanceStateChanged(
-    (state) => { received.push(state) },
-  )
-  ipcRenderer.emit(
-    'desktop-pet:character-performance-changed',
-    {},
-    { preference: 'animated', revision: 1 },
-  )
-  ipcRenderer.emit('backend:event', {}, { type: 'unrelated' })
-  unsubscribe()
-  ipcRenderer.emit(
-    'desktop-pet:character-performance-changed',
-    {},
-    { preference: 'still', revision: 2 },
-  )
-
-  assert.deepEqual(received, [{ preference: 'animated', revision: 1 }])
 })

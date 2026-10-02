@@ -2,7 +2,7 @@
 
 本目录是 2026-10-01 根据项目所有者的十条逐图复审制作并继续逐格修正的最终审阅包。反馈编号严格对应 01 至 10。内容整合完成后，项目所有者要求删除旧的 v1 与 v2 目录；本目录现为唯一保留版本。
 
-这些文件是角色视觉和产品界面的最终审阅母版。运行时使用由 08 提供身体/服装分层、由 `live2d-face-master.png` 提供统一正脸五官的 `live2d-source/` 制作真实 Cubism-compatible 模型；`02-activity-states.png`、`03-expression-atlas.png`、`04-facial-rig-atlas.png` 与既有审核立绘继续作为 Still、Reduced Motion 和故障回退。桌宠复用同一 Live2D 模型与静态立绘，不加载 07 姿势总览。
+这些文件是角色视觉和产品界面的最终静态审阅母版。应用内角色状态板固定使用审核后的静态图集，不再加载项目自制 Live2D。桌面宠物的动画模型由用户从本机外部六变体合集选择；该合集不会复制进此目录、Git 或安装包。`07-desktop-pet-key-poses.png` 仍只是动作审阅总览，不是运行时 Sprite Sheet。
 
 ## 十条反馈与 v3 处理结果
 
@@ -41,7 +41,6 @@
 | `07d-row4.png` | 07 第 4 行原尺寸条带 | 2172×724 | RGB | `5694BFD1A581E7BD5263ED704504CC13BECE49E683FA1FC83AE42D5B0EEFD8BD` |
 | `08-layer-separation-guide.png` | 二值透明部件分层视觉指南 | 1536×1024 | RGBA | `8FBD3849352E04F8BA6A77E5F7321A577694B3AE6D0585CB675699CBBC47F568` |
 | `09-color-and-detail-master.png` | 正背角色、细节与色板 | 1536×1024 | RGB | `759F0CE419955B137F414E69DEFEC43CDF9D200DEE223F3A0E9F260006ED8641` |
-| `live2d-face-master.png` | 统一正脸五官与 V 形下颌制作母版 | 1254×1254 | RGBA | `F617A9A91ADF12DB590FE54695026369DB130847D1BBBBDFB7F90A44A046045F` |
 
 ## 全套固定规则
 
@@ -176,17 +175,17 @@ ImageGen 输出仍包含 255 个 alpha 等级，透明区附近存在视觉上�
 2. 对 alpha 为 0 的像素将 RGB 同时清零，避免隐藏的白色或粉色污染后续合成。
 3. 分别合成到纯白和近黑背景，检查角色、头发、服装和小配件边缘。
 
-最终文件的 alpha 只有 0 和 255 两种值；保留的不透明面积约为 44.97%。它本身仍只是身体、服装和头发的部件边界参考，不是可绑定 PSD。实际模型使用 `live2d-source/` 中统一为同一 `2048 × 2048` 角色画布的 21 个源层；脸部、眼睛、闭眼线、眉毛、鼻子、嘴线、口腔和腮红统一来自 `live2d-face-master.png`，目录内 README 记录了每层职责与限制。
+最终文件的 alpha 只有 0 和 255 两种值；保留的不透明面积约为 44.97%。它只是身体、服装和头发的部件边界审阅参考，不是可绑定 PSD，也不再用于生成项目内置 Live2D 模型。
 
 ## 应用内运行时选片
 
-Animated 模式优先加载 `desktop/public/character/live2d/elysia/` 的固定模型、MOC 与纹理。以下三张审核母版仍以逐字节副本进入 Desktop Public Assets；运行时不重新编码、不执行 AI 重绘，也不把整套审阅包或源层复制进安装包。它们只负责静态模式、加载期间和故障回退。
+应用内角色状态板始终静态，不再提供 Animated/Still 切换。以下三张审核母版仍以逐字节副本进入 Desktop Public Assets；运行时不重新编码、不执行 AI 重绘，也不把整套审阅包复制进安装包。桌宠动画与这些状态图分离，由外部本机 Live2D 模型负责。
 
 | 审阅母版 | 运行时副本 | 字节数 | SHA-256 | 运行时用途 |
 | --- | --- | ---: | --- | --- |
 | `02-activity-states.png` | `desktop/public/character/elysia-state-atlas.png` | 2,303,963 | `54EB2525673C2A849819BE10EB88EB2F670EB1911E86FD154E69B578CBB4C25C` | 七个封闭 Character State |
 | `03-expression-atlas.png` | `desktop/public/character/elysia-expression-atlas.png` | 2,500,647 | `FBF7A515B2651B3A881CF9B838A5605C316BEFD0B174DDE046780D8E441D7F93` | 用户限定的三种静态情绪 |
-| `04-facial-rig-atlas.png` | `desktop/public/character/elysia-speech-atlas.png` | 2,054,767 | `21BF4496ACC4417D491FF0163C9EE1D38593E376CA25A3D452FD393C6157F9AB` | 真实播放振幅的四档嘴型 |
+| `04-facial-rig-atlas.png` | `desktop/public/character/elysia-speech-atlas.png` | 2,054,767 | `21BF4496ACC4417D491FF0163C9EE1D38593E376CA25A3D452FD393C6157F9AB` | 静态嘴型审阅与安全回退 |
 
 分发门禁同时固定每个运行时副本的仓库路径、长度、SHA-256、ASAR 精确路径、唯一条目数与抽取字节，避免未审核替换继承本次结论。
 
@@ -216,21 +215,19 @@ Settings 的 Voice Emotion 只接受 `neutral`、`happy` 与 `sad`。Backend 成
 | `happy` | 1 | 1 | Happy |
 | `sad` | 2 | 1 | Gentle sad |
 
-### 04 — 真实播放振幅嘴型
+### 04 — 静态嘴型审阅参考
 
-运行时只使用 04 第一带的前四格，依次作为 `closed`、`small`、`medium` 与 `wide`。可信 Preload 从正在输出的真实 Web Audio 时域样本计算 RMS，在当前播放 Gain 生效后进行平滑和迟滞量化，并以 50 ms 计时器调度，因此最多更新 20 次/秒。原始样本与连续包络不会进入 React；DOM 只收到四值提示。音量为 0 时嘴型保持 `closed`，视觉分析失败也只关闭嘴型，不中断声音。
-
-这套实现是**振幅驱动**，不会识别 A/E/I/O/U 音素。04 中其余嘴型、眼型和眉型仍只是审阅参考，不应被描述为音素绑定。角色处于 `speaking` 且生效性能模式为 Animated 时，四档提示驱动 Live2D `ParamMouthOpenY`；模型尚未 ready 或失败时，同一提示驱动第一带前四格。Still 与系统 Reduced Motion 一律禁止嘴型动画，并显示用户选择的静态表情。
+04 保留已审核的嘴、眼和眉形状，供静态状态与错误回退复核。应用内角色状态板不会根据音频振幅驱动它，也不会把 A/E/I/O/U 描述成实时音素绑定。桌宠的嘴部动画属于用户所选外部 Live2D 模型自身的参数和动作能力，与本图集互不替换。
 
 ### 可选 Live2D Desktop Pet
 
-独立桌宠**没有**把 `07-desktop-pet-key-poses.png` 或其四条 row strip 当作运行时 Sprite Sheet。窗口复用主界面的同一固定 Live2D 模型，并保留 `desktop/public/character/elysia-portrait.png` 作为 Reduced Motion 与失败回退，因此不会为桌宠复制第二份模型或让未选中的审阅图进入安装包。
+独立桌宠**没有**把 `07-desktop-pet-key-poses.png` 或其四条 row strip 当作运行时 Sprite Sheet。它直接读取用户从六套本机外部 Live2D 中选择的一套，并保留 `desktop/public/character/elysia-portrait.png` 作为不可用与错误回退；外部文件不会被复制、缓存或重新打包。
 
-该桌宠是透明窗口中的 Live2D 呈现，不是自主角色 Agent。它默认关闭；`hidden` 会销毁独立 Renderer 释放其资源，`visible` 且未启用 Reduced Motion 时才加载模型。桌宠专用 Preload 只有就绪、隐藏和打开主 Chat 三个能力，无法读取本目录、其他本机文件、Backend、任意网络或主 Renderer 数据；模型读取被 Electron 的三文件本地协议白名单限制。
+外部合集来源标注为 `@书呆儿`，记录的公开下载页为 <https://pan.quark.cn/s/cb5d84acad8e>。链接内容及条款尚未独立核验，运行时只按当前本机扫描结果显示实际可用的模型数量，不能假定链接或六套文件永远存在。
 
 ### 回退与功能隔离
 
-Animated 模式先显示静态资源并异步加载 Live2D；模型 ready 后才切换画布。失败时按 `speech → expression → state → portrait → accessible text` 顺序回退。任何 WASM/WebGL/模型/图集失败、角色面板关闭或静态性能模式都不会阻止 Chat、Voice、Knowledge 或声音播放。
+应用内角色状态板始终按 `expression → state → portrait → accessible text` 使用静态回退。桌宠单独异步加载所选外部 Live2D；目录缺失、扫描失败、模型不兼容或 WebGL 失败时只让桌宠进入静态回退，不会阻止 Chat、Voice、Knowledge 或声音播放。
 
 ## 审计结论与仍需注意的地方
 
@@ -239,8 +236,8 @@ Animated 模式先显示静态资源并异步加载 Live2D；模型 ready 后才
 - 04 的 worried 眼型格出现轻微下弯嘴，而非与前五格完全相同的中性嘴；部分眉型因刘海遮挡，视觉差异较细。
 - 04 第一带头饰顶部安全距离偏小，但没有被裁切或碰到边界。
 - 02 第 6 格两手已完全分开，中间保留浅色背景间隙。
-- 08 原图是视觉切层指南；`live2d-source/` 才是经过统一锚点、活动五官补层并用于当前 Rig 的制作输入。它仍不等同于官方原始 PSD。
-- Live2D manifest/MOC/texture/Core 与静态回退都由分发门禁固定路径、长度和 SHA-256；实际 ASAR 必须只含每个预期条目一次并通过完整抽取树的字节验证。
+- 08 原图只保留为视觉切层指南；旧的自制模型、脸部母版、统一画布源层和生成脚本已删除。
+- 分发门禁只固定兼容 Core 与静态回退的路径、长度和 SHA-256，并明确禁止任何项目内置 Live2D 模型或命名的外部付费素材目录进入 Git/ASAR。
 
 ## 参考来源
 

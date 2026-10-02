@@ -217,12 +217,29 @@ interface DesktopSettingsState {
 
 type DesktopPetMode = 'disabled' | 'hidden' | 'visible'
 
+type DesktopPetLibraryStatus =
+  | 'not-configured'
+  | 'scanning'
+  | 'ready'
+  | 'empty'
+  | 'unavailable'
+  | 'invalid'
+
+interface DesktopPetModelSummary {
+  id: string
+  displayName: string
+}
+
 interface DesktopPetState {
   revision: number
   updatedAt: string | null
   mode: DesktopPetMode
   runtime: 'absent' | 'loading' | 'visible' | 'failed'
   warning: string | null
+  libraryStatus: DesktopPetLibraryStatus
+  folderName: string | null
+  models: DesktopPetModelSummary[]
+  selectedModelId: string | null
 }
 
 type PresenceReminderFrequency = 'off' | 'daily' | 'weekly'
@@ -1274,8 +1291,35 @@ function desktopPetState(
     mode: 'disabled',
     runtime: 'absent',
     warning: null,
+    libraryStatus: 'not-configured',
+    folderName: null,
+    models: [],
+    selectedModelId: null,
     ...overrides,
   }
+}
+
+const detectedDesktopPetModels: DesktopPetModelSummary[] = [
+  {
+    id: 'model_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    displayName: 'Elysia Herrscher',
+  },
+  {
+    id: 'model_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+    displayName: 'Elysia Maid',
+  },
+]
+
+function readyDesktopPetState(
+  overrides: Partial<DesktopPetState> = {},
+): DesktopPetState {
+  return desktopPetState({
+    libraryStatus: 'ready',
+    folderName: 'elysia-live2d-free',
+    models: detectedDesktopPetModels,
+    selectedModelId: detectedDesktopPetModels[0].id,
+    ...overrides,
+  })
 }
 
 function presenceNotificationState(
@@ -1561,18 +1605,6 @@ async function readThemeState(): Promise<{
     resolved: document.documentElement.dataset.theme,
     stored: window.localStorage.getItem('elysia.theme'),
     colorScheme: document.documentElement.style.colorScheme,
-  }))
-}
-
-async function readCharacterPerformanceState(): Promise<{
-  preference?: string
-  resolved?: string
-  stored: string | null
-}> {
-  return page.evaluate(() => ({
-    preference: document.documentElement.dataset.characterPerformancePreference,
-    resolved: document.documentElement.dataset.characterPerformance,
-    stored: window.localStorage.getItem('elysia.characterPerformance'),
   }))
 }
 
@@ -2088,64 +2120,20 @@ test('persists system, light, and dark theme choices', async () => {
   ]))
 })
 
-test('persists character performance and honors reduced motion', async () => {
-  await page.emulateMedia({ reducedMotion: 'no-preference' })
+test('keeps the main character static and offers no Live2D toggle', async () => {
   await openSettings()
-  await expect.poll(readCharacterPerformanceState).toEqual({
-    preference: 'animated',
-    resolved: 'animated',
-    stored: null,
-  })
-
-  await page.getByText('Still', { exact: true }).click()
-  await expect(page.getByRole('radio', { name: /^Still/ })).toBeChecked()
-  await expect.poll(readCharacterPerformanceState).toEqual({
-    preference: 'still',
-    resolved: 'still',
-    stored: 'still',
-  })
-  await expect.poll(async () => (
-    (await getCalls())
-      .filter((call) => call.method === 'setCharacterPerformancePreference')
-      .map((call) => call.args[0])
-  )).toContain('still')
+  await expect(page.getByText(
+    /character state panel always uses static half-body artwork/iu,
+  )).toBeVisible()
+  await expect(page.getByRole('radio', { name: /^Animated/ })).toHaveCount(0)
+  await expect(page.getByRole('radio', { name: /^Still/ })).toHaveCount(0)
 
   await page.getByRole('button', { name: 'Back to chat' }).click()
   await page.getByRole('button', { name: 'Expand Elysia panel' }).click()
   const artwork = page.locator('.character-panel .character-artwork')
   await expect(artwork).toHaveAttribute('data-character-performance', 'still')
-  await expect.poll(() => artwork.locator('.character-artwork-frame').evaluate(
-    (element) => window.getComputedStyle(element).animationName,
-  )).toBe('none')
-
-  await page.locator('.character-panel').getByRole('button', {
-    name: 'Close Elysia character panel',
-  }).click()
-  await pressControlShortcut(',')
-  await page.getByText('Animated', { exact: true }).click()
-  await expect.poll(readCharacterPerformanceState).toEqual({
-    preference: 'animated',
-    resolved: 'animated',
-    stored: 'animated',
-  })
-  await expect.poll(async () => (
-    (await getCalls())
-      .filter((call) => call.method === 'setCharacterPerformancePreference')
-      .map((call) => call.args[0])
-  )).toContain('animated')
-  await page.getByRole('button', { name: 'Back to chat' }).click()
-  await page.getByRole('button', { name: 'Expand Elysia panel' }).click()
-  await expect.poll(() => artwork.locator('.character-artwork-frame').evaluate(
-    (element) => window.getComputedStyle(element).animationName,
-  )).toBe('character-resting')
-
-  await page.emulateMedia({ reducedMotion: 'reduce' })
-  await expect.poll(readCharacterPerformanceState).toEqual({
-    preference: 'animated',
-    resolved: 'still',
-    stored: 'animated',
-  })
-  await expect(artwork).toHaveAttribute('data-character-performance', 'still')
+  await expect(artwork.locator('canvas')).toHaveCount(0)
+  await expect(artwork.locator('img')).toHaveCount(1)
   await expect.poll(() => artwork.locator('.character-artwork-frame').evaluate(
     (element) => window.getComputedStyle(element).animationName,
   )).toBe('none')
@@ -2154,7 +2142,7 @@ test('persists character performance and honors reduced motion', async () => {
     name: 'Close Elysia character panel',
   }).click()
   const composer = page.getByLabel('Message Elysia')
-  await composer.fill('Character motion is optional.')
+  await composer.fill('The main character stays static.')
   await composer.press('Enter')
   await expect.poll(async () => (
     (await getCalls()).filter((call) => call.method === 'sendMessage').length
@@ -2348,9 +2336,17 @@ test('keeps storage visible without Backend settings and disables busy mutations
     .toBeDisabled()
 })
 
-test('manages the optional Desktop Pet with revisioned immediate controls', async () => {
+test('configures detected Desktop Pet models before enabling the window', async () => {
   await openSettings()
 
+  const download = page.getByRole('button', {
+    name: 'Download free Live2D pack',
+  })
+  const chooseFolder = page.getByRole('button', {
+    name: 'Choose downloaded folder',
+  })
+  const rescan = page.getByRole('button', { name: 'Rescan' })
+  const model = page.getByRole('combobox', { name: 'Dynamic model' })
   const controls = page.getByRole('group', {
     name: 'Desktop Pet visibility',
   })
@@ -2360,10 +2356,32 @@ test('manages the optional Desktop Pet with revisioned immediate controls', asyn
   const resetPosition = page.getByRole('button', { name: 'Reset position' })
 
   await expect(off).toBeChecked()
+  await expect(visible).toBeDisabled()
+  await expect(model).toBeDisabled()
+  await expect(rescan).toBeDisabled()
+  await expect(page.getByText('No model folder selected.')).toBeVisible()
   await expect(page.getByText(
     'Preference: disabled. Native window: absent.',
   )).toBeVisible()
   await clearCalls()
+
+  await download.click()
+  await expect.poll(async () => (
+    (await getCalls()).find((call) => call.method === 'openExternalUrl')?.args
+  )).toEqual(['https://pan.quark.cn/s/cb5d84acad8e'])
+
+  await chooseFolder.click()
+  await expect(page.getByText(
+    '2 compatible models detected in elysia-live2d-free.',
+  )).toBeVisible()
+  await expect(model).toBeEnabled()
+  await expect(model).toHaveValue(detectedDesktopPetModels[0].id)
+  await expect(visible).toBeEnabled()
+  await expect(rescan).toBeEnabled()
+
+  await model.selectOption(detectedDesktopPetModels[1].id)
+  await expect(model).toHaveValue(detectedDesktopPetModels[1].id)
+  await rescan.click()
 
   await controls.getByText('Visible', { exact: true }).click()
   await expect(visible).toBeChecked()
@@ -2387,12 +2405,23 @@ test('manages the optional Desktop Pet with revisioned immediate controls', asyn
   )).toBeVisible()
 
   const calls = await getCalls()
+  expect(calls.filter(
+    (call) => call.method === 'chooseDesktopPetModelDirectory',
+  )).toHaveLength(1)
+  expect(calls.filter(
+    (call) => call.method === 'refreshDesktopPetModels',
+  )).toHaveLength(1)
   expect(calls.filter((call) => call.method === 'updateDesktopPet').map(
     (call) => call.args,
   )).toEqual([
-    [{ expectedRevision: 0, mode: 'visible' }],
-    [{ expectedRevision: 1, mode: 'hidden' }],
-    [{ expectedRevision: 2, mode: 'disabled' }],
+    [{
+      expectedRevision: 1,
+      mode: 'disabled',
+      modelId: detectedDesktopPetModels[1].id,
+    }],
+    [{ expectedRevision: 2, mode: 'visible' }],
+    [{ expectedRevision: 3, mode: 'hidden' }],
+    [{ expectedRevision: 4, mode: 'disabled' }],
   ])
   expect(calls.filter(
     (call) => call.method === 'resetDesktopPetPosition',
@@ -2401,7 +2430,7 @@ test('manages the optional Desktop Pet with revisioned immediate controls', asyn
 
 test('recovers canonical Desktop Pet state after an update fails', async () => {
   await openSettings()
-  const visibleState = desktopPetState({
+  const visibleState = readyDesktopPetState({
     revision: 7,
     updatedAt: '2026-10-01T12:07:00.000Z',
     mode: 'visible',
@@ -2446,7 +2475,7 @@ test('recovers canonical Desktop Pet state after an update fails', async () => {
 
 test('retries a failed visible Desktop Pet from Settings', async () => {
   await openSettings()
-  await emitDesktopPetState(desktopPetState({
+  await emitDesktopPetState(readyDesktopPetState({
     revision: 9,
     updatedAt: '2026-10-01T12:09:00.000Z',
     mode: 'visible',
@@ -8135,7 +8164,7 @@ test('uses only the active closed emotion to select a reviewed expression', asyn
     .toHaveAttribute('src', './character/elysia-expression-atlas.png')
 })
 
-test('keeps the Chat character speaking for exact managed playback', async () => {
+test('keeps managed playback state visible through static character art', async () => {
   await emitSnapshot(readySnapshot({
     capabilities: ['chat.stream', 'voice.speech'],
   }))
@@ -8158,19 +8187,13 @@ test('keeps the Chat character speaking for exact managed playback', async () =>
   })
   await expect(panel).toHaveAttribute('data-character-state', 'speaking')
   await expect(artwork).toHaveAttribute('data-character-state', 'speaking')
-  await expect(artwork).toHaveAttribute('data-character-asset', 'speech-atlas')
-  await expect(artwork.getByRole('img')).toHaveAttribute(
-    'src',
-    './character/elysia-speech-atlas.png',
-  )
-  await artwork.locator('.character-artwork-speech-atlas').evaluate(
-    (element) => {
-      ;(element as HTMLImageElement).src = 'file:///missing-speech-atlas.png'
-    },
-  )
   await expect(artwork).toHaveAttribute(
     'data-character-asset',
     'expression-atlas',
+  )
+  await expect(artwork.getByRole('img')).toHaveAttribute(
+    'src',
+    './character/elysia-expression-atlas.png',
   )
   await artwork.locator('.character-artwork-expression-atlas').evaluate((element) => {
     ;(element as HTMLImageElement).src = 'file:///missing-expression-atlas.png'

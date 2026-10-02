@@ -1,6 +1,7 @@
-/** Verify closed Character State visuals and motion policy without a browser. */
+/** Verify closed Character State visuals and the permanently static surface. */
 
 import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 
 import {
@@ -11,14 +12,6 @@ import {
   isCharacterEmotion,
   resolveCharacterEmotion,
 } from '../src/character/character-emotion.ts'
-import {
-  isCharacterPerformancePreference,
-  resolveCharacterPerformance,
-} from '../src/character/character-performance.ts'
-import {
-  parseCharacterPerformancePreference,
-} from '../electron/character-performance-contracts.ts'
-
 const states = [
   'idle',
   'listening',
@@ -95,23 +88,14 @@ test('maps three strict emotions to distinct reviewed expression cells', () => {
   }
 })
 
-test('accepts only the two persisted character performance choices', () => {
-  for (const value of ['animated', 'still']) {
-    assert.equal(isCharacterPerformancePreference(value), true)
-    assert.equal(parseCharacterPerformancePreference(value), value)
-  }
-  for (const value of [null, '', 'system', 'hidden', 'full', 1, {}]) {
-    assert.equal(isCharacterPerformancePreference(value), false)
-    assert.throws(
-      () => parseCharacterPerformancePreference(value),
-      /Character performance preference is invalid\./u,
-    )
-  }
-})
+test('main CharacterArtwork is static and never advertises mouth animation', async () => {
+  const source = await readFile(
+    new URL('../src/character/CharacterArtwork.tsx', import.meta.url),
+    'utf8',
+  )
 
-test('never lets animation override a system reduced-motion request', () => {
-  assert.equal(resolveCharacterPerformance('animated', false), 'animated')
-  assert.equal(resolveCharacterPerformance('animated', true), 'still')
-  assert.equal(resolveCharacterPerformance('still', false), 'still')
-  assert.equal(resolveCharacterPerformance('still', true), 'still')
+  assert.match(source, /data-character-performance="still"/u)
+  assert.doesNotMatch(source, /Live2DCharacterCanvas/u)
+  assert.doesNotMatch(source, /data-character-mouth-capable/u)
+  assert.doesNotMatch(source, /character-performance\.ts/u)
 })

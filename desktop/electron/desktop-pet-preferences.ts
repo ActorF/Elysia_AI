@@ -18,14 +18,17 @@ import {
 import path from 'node:path'
 
 import {
+  type DesktopPetLibraryStatus,
   type DesktopPetMode,
+  type DesktopPetModelSummary,
   type DesktopPetRuntimeState,
   type DesktopPetState,
+  isDesktopPetModelId,
   parseUpdateDesktopPetRequest,
 } from './desktop-pet-contracts.js'
 
 /** Current on-disk schema for the Electron-owned desktop-pet preference. */
-export const DESKTOP_PET_PREFERENCES_SCHEMA_VERSION = 1
+export const DESKTOP_PET_PREFERENCES_SCHEMA_VERSION = 2
 
 /** Maximum native pet content width, expressed in Electron DIP units. */
 export const DESKTOP_PET_MAX_WIDTH_DIP = 420
@@ -38,8 +41,13 @@ const DESKTOP_PET_MIN_HEIGHT_DIP = 200
 const DESKTOP_PET_DEFAULT_EDGE_MARGIN_DIP = 24
 const DESKTOP_PET_MAX_PREFERENCE_BYTES = 16 * 1024
 const DESKTOP_PET_MAX_ABSOLUTE_COORDINATE_DIP = 1_000_000
+const DESKTOP_PET_MAX_LIBRARY_PATH_CODE_UNITS = 32_767
 const DESKTOP_PET_LOAD_WARNING = (
   'Desktop pet preferences could not be loaded safely. The pet remains off.'
+)
+const DESKTOP_PET_MIGRATION_WARNING = (
+  'The previous bundled Desktop Pet was removed. Choose a local Live2D folder '
+  + 'before turning the pet on.'
 )
 
 const DESKTOP_PET_RUNTIME_STATES: ReadonlySet<string> = new Set([
@@ -49,12 +57,23 @@ const DESKTOP_PET_RUNTIME_STATES: ReadonlySet<string> = new Set([
   'failed',
 ])
 
+const DESKTOP_PET_LIBRARY_STATES: ReadonlySet<string> = new Set([
+  'not-configured',
+  'scanning',
+  'ready',
+  'empty',
+  'unavailable',
+  'invalid',
+])
+
 interface StoredDesktopPetDocument {
   readonly schemaVersion: typeof DESKTOP_PET_PREFERENCES_SCHEMA_VERSION
   readonly revision: number
   readonly updatedAt: string | null
   readonly mode: DesktopPetMode
   readonly placement: DesktopPetPlacement | null
+  readonly libraryPath: string | null
+  readonly selectedModelId: string | null
 }
 
 interface ReadDesktopPetDocument {
@@ -101,6 +120,22 @@ export interface DesktopPetBounds {
 export interface LoadedDesktopPetPreferences {
   readonly state: DesktopPetState
   readonly placement: DesktopPetPlacement | null
+  /** Absolute external folder retained only by Electron Main. */
+  readonly libraryPath: string | null
+}
+
+/** Renderer-safe library facts supplied after Main completes one bounded scan. */
+export interface DesktopPetLibraryPresentation {
+  readonly status: DesktopPetLibraryStatus
+  readonly folderName: string | null
+  readonly models: readonly DesktopPetModelSummary[]
+}
+
+/** Main-private replacement for the external model folder and selection. */
+export interface UpdateDesktopPetLibraryRequest {
+  readonly expectedRevision: number
+  readonly libraryPath: string | null
+  readonly selectedModelId: string | null
 }
 
 /** Replace operation used by the atomic writer and deterministic failure tests. */
@@ -183,17 +218,46 @@ function isCanonicalTimestamp(value: unknown): value is string | null {
   return Number.isFinite(parsed.getTime()) && parsed.toISOString() === value
 }
 
-function parseStoredDocument(value: unknown): StoredDesktopPetDocument {
+function parseLibraryPath(value: unknown): string | null {
+  if (value === null) {
+    return null
+  }
+  if (
+    typeof value !== 'string'
+    || value.length === 0
+    || value.length > DESKTOP_PET_MAX_LIBRARY_PATH_CODE_UNITS
+    || /[\0\r\n]/u.test(value)
+    || !path.isAbsolute(value)
+  ) {
+    throw new DesktopPetPreferencesValidationError(
+      'Desktop pet model folder is invalid.',
+    )
+  }
+  return path.resolve(value)
+}
+
+function parseSelectedModelId(value: unknown): string | null {
+  if (value === null) {
+    return null
+  }
+  if (!isDesktopPetModelId(value)) {
+    throw new DesktopPetPreferencesValidationError(
+      'Desktop pet model selection is invalid.',
+    )
+  }
+  return value
+}
+
+function libraryFolderName(libraryPath: string): string {
+  const basename = path.basename(libraryPath)
+  // Filesystem roots have no basename. A neutral label keeps the renderer from
+  // receiving the absolute root while still producing a usable Settings row.
+  return basename.length === 0 ? 'Selected folder' : basename
+}
+
+function parseStoredDocument(value: unknown): ReadDesktopPetDocument {
   if (
     !isRecord(value)
-    || !hasExactFields(value, [
-      'schemaVersion',
-      'revision',
-      'updatedAt',
-      'mode',
-      'placement',
-    ])
-    || value.schemaVersion !== DESKTOP_PET_PREFERENCES_SCHEMA_VERSION
     || !Number.isSafeInteger(value.revision)
     || (value.revision as number) < 0
     || !isCanonicalTimestamp(value.updatedAt)
@@ -202,16 +266,82 @@ function parseStoredDocument(value: unknown): StoredDesktopPetDocument {
       'Desktop pet preference document is invalid.',
     )
   }
+
+  if (
+    value.schemaVersion === 1
+    && hasExactFields(value, [
+      'schemaVersion',
+      'revision',
+      'updatedAt',
+      'mode',
+      'placement',
+    ])
+  ) {
+    // The v1 model was bundled with the application. That asset no longer
+    // exists, so migration preserves only safe placement and never turns on an
+    // external model the user has not explicitly chosen.
+    parseUpdateDesktopPetRequest({
+      expectedRevision: value.revision,
+      mode: value.mode,
+    })
+    return Object.freeze({
+      document: Object.freeze({
+        schemaVersion: DESKTOP_PET_PREFERENCES_SCHEMA_VERSION,
+        revision: value.revision as number,
+        updatedAt: value.updatedAt,
+        mode: 'disabled',
+        placement: parsePlacement(value.placement),
+        libraryPath: null,
+        selectedModelId: null,
+      }),
+      warning: DESKTOP_PET_MIGRATION_WARNING,
+    })
+  }
+
+  if (
+    value.schemaVersion !== DESKTOP_PET_PREFERENCES_SCHEMA_VERSION
+    || !hasExactFields(value, [
+      'schemaVersion',
+      'revision',
+      'updatedAt',
+      'mode',
+      'placement',
+      'libraryPath',
+      'selectedModelId',
+    ])
+  ) {
+    throw new DesktopPetPreferencesValidationError(
+      'Desktop pet preference document is invalid.',
+    )
+  }
   const request = parseUpdateDesktopPetRequest({
     expectedRevision: value.revision,
     mode: value.mode,
+    modelId: value.selectedModelId,
   })
+  const libraryPath = parseLibraryPath(value.libraryPath)
+  const selectedModelId = parseSelectedModelId(request.modelId)
+  if (libraryPath === null && selectedModelId !== null) {
+    throw new DesktopPetPreferencesValidationError(
+      'Desktop pet model selection has no configured folder.',
+    )
+  }
+  if (request.mode === 'visible' && selectedModelId === null) {
+    throw new DesktopPetPreferencesValidationError(
+      'Visible desktop pet preferences require a selected model.',
+    )
+  }
   return Object.freeze({
-    schemaVersion: DESKTOP_PET_PREFERENCES_SCHEMA_VERSION,
-    revision: request.expectedRevision,
-    updatedAt: value.updatedAt,
-    mode: request.mode,
-    placement: parsePlacement(value.placement),
+    document: Object.freeze({
+      schemaVersion: DESKTOP_PET_PREFERENCES_SCHEMA_VERSION,
+      revision: request.expectedRevision,
+      updatedAt: value.updatedAt,
+      mode: request.mode,
+      placement: parsePlacement(value.placement),
+      libraryPath,
+      selectedModelId,
+    }),
+    warning: null,
   })
 }
 
@@ -220,8 +350,10 @@ function firstRunStoredDocument(): StoredDesktopPetDocument {
     schemaVersion: DESKTOP_PET_PREFERENCES_SCHEMA_VERSION,
     revision: 0,
     updatedAt: null,
-    mode: 'visible',
+    mode: 'disabled',
     placement: null,
+    libraryPath: null,
+    selectedModelId: null,
   })
 }
 
@@ -232,6 +364,8 @@ function failClosedStoredDocument(): StoredDesktopPetDocument {
     updatedAt: null,
     mode: 'disabled',
     placement: null,
+    libraryPath: null,
+    selectedModelId: null,
   })
 }
 
@@ -258,8 +392,76 @@ function toLoadedPreferences(
       mode: document.mode,
       runtime: requireRuntimeState(runtime),
       warning: value.warning,
+      libraryStatus: document.libraryPath === null
+        ? 'not-configured'
+        : 'scanning',
+      folderName: document.libraryPath === null
+        ? null
+        : libraryFolderName(document.libraryPath),
+      models: Object.freeze([]),
+      selectedModelId: document.selectedModelId,
     }),
     placement: document.placement,
+    libraryPath: document.libraryPath,
+  })
+}
+
+/**
+ * Merge a bounded Main scan into public state without exposing its root path.
+ *
+ * The private preference object is retained so later persistence continues to
+ * use the canonical absolute folder chosen through Electron's native dialog.
+ */
+export function presentDesktopPetLibrary(
+  preferences: LoadedDesktopPetPreferences,
+  presentation: DesktopPetLibraryPresentation,
+): LoadedDesktopPetPreferences {
+  if (!DESKTOP_PET_LIBRARY_STATES.has(presentation.status)) {
+    throw new DesktopPetPreferencesValidationError(
+      'Desktop pet model-library status is invalid.',
+    )
+  }
+  if (
+    presentation.folderName !== null
+    && (
+      presentation.folderName.length === 0
+      || presentation.folderName.length > 255
+      || /[\0\r\n\\/]/u.test(presentation.folderName)
+    )
+  ) {
+    throw new DesktopPetPreferencesValidationError(
+      'Desktop pet model-folder name is invalid.',
+    )
+  }
+  const seen = new Set<string>()
+  const models = presentation.models.map((model) => {
+    if (
+      !isDesktopPetModelId(model.id)
+      || seen.has(model.id)
+      || typeof model.displayName !== 'string'
+      || model.displayName.length === 0
+      || model.displayName.length > 200
+      || /[\0\r\n]/u.test(model.displayName)
+    ) {
+      throw new DesktopPetPreferencesValidationError(
+        'Desktop pet model summary is invalid.',
+      )
+    }
+    seen.add(model.id)
+    return Object.freeze({
+      id: model.id,
+      displayName: model.displayName,
+    })
+  })
+  return Object.freeze({
+    state: Object.freeze({
+      ...preferences.state,
+      libraryStatus: presentation.status,
+      folderName: presentation.folderName,
+      models: Object.freeze(models),
+    }),
+    placement: preferences.placement,
+    libraryPath: preferences.libraryPath,
   })
 }
 
@@ -325,7 +527,7 @@ async function readBoundedUtf8(filePath: string): Promise<string | null> {
 
 async function readStoredDocument(
   filePath: string,
-): Promise<StoredDesktopPetDocument | null> {
+): Promise<ReadDesktopPetDocument | null> {
   const content = await readBoundedUtf8(filePath)
   if (content === null) {
     return null
@@ -574,15 +776,15 @@ export class DesktopPetPreferencesRepository {
     this.#replaceFile = options.replaceFile ?? rename
   }
 
-  /** Load first-run visibility, while malformed persisted state fails closed. */
+  /** Load default-off intent, while malformed persisted state also fails closed. */
   async load(
     runtime: DesktopPetRuntimeState = 'absent',
   ): Promise<LoadedDesktopPetPreferences> {
     requireRuntimeState(runtime)
     try {
-      const document = await readStoredDocument(this.#filePath)
-      return toLoadedPreferences({
-        document: document ?? firstRunStoredDocument(),
+      const stored = await readStoredDocument(this.#filePath)
+      return toLoadedPreferences(stored ?? {
+        document: firstRunStoredDocument(),
         warning: null,
       }, runtime)
     } catch {
@@ -603,9 +805,8 @@ export class DesktopPetPreferencesRepository {
     return withPathLock(this.#filePath, async () => {
       let current: ReadDesktopPetDocument
       try {
-        current = {
-          document: await readStoredDocument(this.#filePath)
-            ?? firstRunStoredDocument(),
+        current = await readStoredDocument(this.#filePath) ?? {
+          document: firstRunStoredDocument(),
           warning: null,
         }
       } catch (error) {
@@ -623,7 +824,26 @@ export class DesktopPetPreferencesRepository {
           'Desktop pet preferences changed elsewhere. Reload before saving.',
         )
       }
-      if (request.mode === current.document.mode) {
+      const selectedModelId = request.modelId === undefined
+        ? current.document.selectedModelId
+        : request.modelId
+      if (
+        selectedModelId !== null
+        && current.document.libraryPath === null
+      ) {
+        throw new DesktopPetPreferencesValidationError(
+          'Choose a Desktop Pet model folder before selecting a model.',
+        )
+      }
+      if (request.mode === 'visible' && selectedModelId === null) {
+        throw new DesktopPetPreferencesValidationError(
+          'Choose a Desktop Pet model before turning it on.',
+        )
+      }
+      if (
+        request.mode === current.document.mode
+        && selectedModelId === current.document.selectedModelId
+      ) {
         return toLoadedPreferences(current, runtime)
       }
       if (current.document.revision === Number.MAX_SAFE_INTEGER) {
@@ -636,6 +856,91 @@ export class DesktopPetPreferencesRepository {
         revision: current.document.revision + 1,
         updatedAt: safeTimestamp(this.#now),
         mode: request.mode,
+        selectedModelId,
+      })
+      await writeStoredDocument(
+        this.#filePath,
+        next,
+        this.#replaceFile,
+      )
+      return toLoadedPreferences({ document: next, warning: null }, runtime)
+    })
+  }
+
+  /**
+   * Persist a Main-validated external folder without exposing it through IPC.
+   *
+   * Clearing the folder or its selection also disables the pet, because a
+   * visible native window must never outlive the model identity it was using.
+   */
+  async updateLibrary(
+    requestValue: UpdateDesktopPetLibraryRequest,
+    runtime: DesktopPetRuntimeState = 'absent',
+  ): Promise<LoadedDesktopPetPreferences> {
+    if (
+      !isRecord(requestValue)
+      || !hasExactFields(requestValue, [
+        'expectedRevision',
+        'libraryPath',
+        'selectedModelId',
+      ])
+      || !Number.isSafeInteger(requestValue.expectedRevision)
+      || requestValue.expectedRevision < 0
+    ) {
+      throw new DesktopPetPreferencesValidationError(
+        'Desktop pet model-folder update is invalid.',
+      )
+    }
+    const libraryPath = parseLibraryPath(requestValue.libraryPath)
+    const selectedModelId = parseSelectedModelId(
+      requestValue.selectedModelId,
+    )
+    if (libraryPath === null && selectedModelId !== null) {
+      throw new DesktopPetPreferencesValidationError(
+        'Desktop pet model selection has no configured folder.',
+      )
+    }
+    requireRuntimeState(runtime)
+    return withPathLock(this.#filePath, async () => {
+      let current: ReadDesktopPetDocument
+      try {
+        current = await readStoredDocument(this.#filePath) ?? {
+          document: firstRunStoredDocument(),
+          warning: null,
+        }
+      } catch (error) {
+        if (error instanceof DesktopPetPreferencesValidationError) {
+          current = {
+            document: failClosedStoredDocument(),
+            warning: DESKTOP_PET_LOAD_WARNING,
+          }
+        } else {
+          throw error
+        }
+      }
+      if (requestValue.expectedRevision !== current.document.revision) {
+        throw new DesktopPetPreferencesConflictError(
+          'Desktop pet preferences changed elsewhere. Reload before saving.',
+        )
+      }
+      if (
+        libraryPath === current.document.libraryPath
+        && selectedModelId === current.document.selectedModelId
+      ) {
+        return toLoadedPreferences(current, runtime)
+      }
+      if (current.document.revision === Number.MAX_SAFE_INTEGER) {
+        throw new DesktopPetPreferencesStorageError(
+          'Desktop pet preferences could not be saved.',
+        )
+      }
+      const next = Object.freeze({
+        ...current.document,
+        revision: current.document.revision + 1,
+        updatedAt: safeTimestamp(this.#now),
+        mode: selectedModelId === null ? 'disabled' as const : current.document.mode,
+        libraryPath,
+        selectedModelId,
       })
       await writeStoredDocument(
         this.#filePath,
@@ -654,8 +959,9 @@ export class DesktopPetPreferencesRepository {
     await withPathLock(this.#filePath, async () => {
       let current: StoredDesktopPetDocument
       try {
-        current = await readStoredDocument(this.#filePath)
-          ?? firstRunStoredDocument()
+        current = (
+          await readStoredDocument(this.#filePath)
+        )?.document ?? firstRunStoredDocument()
       } catch {
         // A drag must never overwrite a damaged preference and accidentally
         // restore a pet the user did not safely opt into.

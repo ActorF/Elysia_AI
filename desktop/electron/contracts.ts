@@ -14,10 +14,6 @@ import type {
   DesktopPetState,
   UpdateDesktopPetRequest,
 } from './desktop-pet-contracts.js'
-import type {
-  CharacterPerformancePreference,
-  CharacterPerformanceState,
-} from './character-performance-contracts.js'
 import type { DataStorageViewState } from './data-storage-contracts.js'
 import type {
   PresenceNotificationState,
@@ -539,16 +535,16 @@ export interface DesktopApi {
   rendererReady(): Promise<void>
   /** Keep native window chrome aligned with the renderer's saved appearance. */
   setThemePreference(theme: DesktopThemePreference): Promise<void>
-  /** Relay the validated main-renderer motion choice to the isolated pet. */
-  setCharacterPerformancePreference(
-    preference: CharacterPerformancePreference,
-  ): Promise<CharacterPerformanceState>
   /** Return Electron-owned Desktop Pet intent and bounded runtime status. */
   getDesktopPetState(): Promise<DesktopPetState>
   /** Persist one revision-checked Desktop Pet visibility choice. */
   updateDesktopPet(
     request: UpdateDesktopPetRequest,
   ): Promise<DesktopPetState>
+  /** Pick and scan a local external Live2D folder without exposing its path. */
+  chooseDesktopPetModelDirectory(): Promise<DesktopPetState>
+  /** Rescan the configured external folder and revalidate its selected model. */
+  refreshDesktopPetModels(): Promise<DesktopPetState>
   /** Move the next visible Desktop Pet to a safe primary-display position. */
   resetDesktopPetPosition(): Promise<DesktopPetState>
   /** Return Main-owned, default-off native notification preferences. */

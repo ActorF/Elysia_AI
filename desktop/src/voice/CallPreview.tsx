@@ -239,7 +239,6 @@ export function CallPreview({
         <CharacterArtwork
           className="character-portrait call-portrait"
           emotion={characterEmotion}
-          live2DFraming="call-half-body"
           state={characterState.state}
         />
         <div

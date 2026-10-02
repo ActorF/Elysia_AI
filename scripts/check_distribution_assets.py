@@ -70,6 +70,25 @@ _FORBIDDEN_MODEL_SUFFIXES: Final = frozenset(
         ".tflite",
     }
 )
+# Cubism runtime and editor files carry compound suffixes that ordinary
+# ``Path.suffix`` checks reduce to ``.json``.  Matching the complete normalized
+# filename ending makes the boundary independent of a paid pack's directory
+# name or an expected ``character/live2d`` destination.  Generic textures are
+# covered when they remain beside a known pack, while every usable copied model
+# necessarily retains at least its manifest or compiled model file.
+_FORBIDDEN_LIVE2D_MODEL_SUFFIXES: Final = (
+    ".can3",
+    ".cdi3.json",
+    ".cmo3",
+    ".cmp3",
+    ".exp3.json",
+    ".moc3",
+    ".model3.json",
+    ".motion3.json",
+    ".physics3.json",
+    ".pose3.json",
+    ".userdata3.json",
+)
 _FORBIDDEN_AUDIO_SUFFIXES: Final = frozenset(
     {
         ".aac",
@@ -81,6 +100,26 @@ _FORBIDDEN_AUDIO_SUFFIXES: Final = frozenset(
         ".wav",
         ".webm",
         ".wma",
+    }
+)
+_REVIEWED_VISUAL_ASSET_SUFFIXES: Final = frozenset(
+    {
+        ".avif",
+        ".bmp",
+        ".clip",
+        ".dds",
+        ".gif",
+        ".ico",
+        ".jpeg",
+        ".jpg",
+        ".kra",
+        ".ktx",
+        ".ktx2",
+        ".png",
+        ".psb",
+        ".psd",
+        ".tga",
+        ".webp",
     }
 )
 _FORBIDDEN_ARCHIVE_SUFFIXES: Final = (
@@ -112,9 +151,71 @@ _FORBIDDEN_RUNTIME_COMPONENTS: Final = frozenset(
         "参考音频",
     }
 )
+_FORBIDDEN_PAID_ASSET_COMPONENTS: Final = frozenset(
+    {"爱莉希雅原版猫猫版总合集_34be1"}
+)
+_BUILD_OUTPUT_COMPONENTS: Final = frozenset({"dist", "dist-electron"})
+_FORBIDDEN_RETIRED_DESKTOP_MODULE_STEMS: Final = (
+    "character-performance-contracts",
+    "speech-mouth",
+)
+_LIVE2D_DIRECTORY_COMPONENTS: Final = frozenset({"live2d"})
+_ALLOWED_PACKAGED_LIVE2D_RUNTIME_PATHS: Final = frozenset(
+    {
+        "desktop/public/character/live2d",
+        "desktop/public/character/live2d/runtime",
+        "desktop/public/character/live2d/runtime/license-purismcore.txt",
+        "desktop/public/character/live2d/runtime/purismcore.js",
+        "dist/character/live2d",
+        "dist/character/live2d/runtime",
+        "dist/character/live2d/runtime/license-purismcore.txt",
+        "dist/character/live2d/runtime/purismcore.js",
+    }
+)
+_LIVE2D_RUNTIME_FILE_NAMES: Final = frozenset(
+    {"license-purismcore.txt", "purismcore.js"}
+)
 _ALLOWED_UNPACKED_BIN_PATHS: Final = frozenset(
     {"snapshot_blob.bin", "v8_context_snapshot.bin"}
 )
+_ALLOWED_GIT_VISUAL_ASSET_PATHS: Final = frozenset(
+    {
+        "data/characters/elysia-2dart/01-character-turnaround.png",
+        "data/characters/elysia-2dart/02-activity-states.png",
+        "data/characters/elysia-2dart/03-expression-atlas.png",
+        "data/characters/elysia-2dart/04-facial-rig-atlas.png",
+        "data/characters/elysia-2dart/05-chibi-stickers.png",
+        "data/characters/elysia-2dart/05a-row1.png",
+        "data/characters/elysia-2dart/05b-row2.png",
+        "data/characters/elysia-2dart/05c-row3.png",
+        "data/characters/elysia-2dart/05d-row4.png",
+        "data/characters/elysia-2dart/05e-row5.png",
+        "data/characters/elysia-2dart/06-ui-illustrations.png",
+        "data/characters/elysia-2dart/07-desktop-pet-key-poses.png",
+        "data/characters/elysia-2dart/07a-row1.png",
+        "data/characters/elysia-2dart/07b-row2.png",
+        "data/characters/elysia-2dart/07c-row3.png",
+        "data/characters/elysia-2dart/07d-row4.png",
+        "data/characters/elysia-2dart/08-layer-separation-guide.png",
+        "data/characters/elysia-2dart/09-color-and-detail-master.png",
+        "desktop/assets/elysia-icon.ico",
+        "desktop/public/character/elysia-expression-atlas.png",
+        "desktop/public/character/elysia-portrait.png",
+        "desktop/public/character/elysia-speech-atlas.png",
+        "desktop/public/character/elysia-state-atlas.png",
+        "desktop/public/elysia-icon.png",
+    }
+)
+_ALLOWED_ASAR_VISUAL_ASSET_PATHS: Final = frozenset(
+    {
+        "dist/character/elysia-expression-atlas.png",
+        "dist/character/elysia-portrait.png",
+        "dist/character/elysia-speech-atlas.png",
+        "dist/character/elysia-state-atlas.png",
+        "dist/elysia-icon.png",
+    }
+)
+_ALLOWED_UNPACKED_VISUAL_ASSET_PATHS: Final[frozenset[str]] = frozenset()
 _MAX_JSON_BYTES: Final = 1024 * 1024
 _MAX_ASAR_LISTING_BYTES: Final = 16 * 1024 * 1024
 _MAX_ASAR_ENTRIES: Final = 200_000
@@ -136,18 +237,6 @@ _REVIEWED_SPEECH_ATLAS_SIZE: Final = 2_054_767
 _REVIEWED_SPEECH_ATLAS_SHA256: Final = (
     "21bf4496acc4417d491ff0163c9ee1d38593e376ca25a3d452fd393c6157f9ab"
 )
-_REVIEWED_LIVE2D_MODEL_SIZE: Final = 5_135_616
-_REVIEWED_LIVE2D_MODEL_SHA256: Final = (
-    "2f8b91318d73622cf2c09cb438438dc06eb5d27615196ea0279071209aee7bbb"
-)
-_REVIEWED_LIVE2D_MANIFEST_SIZE: Final = 536
-_REVIEWED_LIVE2D_MANIFEST_SHA256: Final = (
-    "fde0ebdc6fbfc4e267bdcb8789291eb3505937ecd1ff6146a4b534a401888d00"
-)
-_REVIEWED_LIVE2D_TEXTURE_SIZE: Final = 1_707_575
-_REVIEWED_LIVE2D_TEXTURE_SHA256: Final = (
-    "21f86a4f38154266d44f48dd16331c055ffb8621ea6d9313f9828f13c19c3c2d"
-)
 _REVIEWED_LIVE2D_CORE_SIZE: Final = 256_528
 _REVIEWED_LIVE2D_CORE_SHA256: Final = (
     "3eec0b1e6cd20bab0773744228aac21f4c882dbef708c28379ba6315a11b15f4"
@@ -155,6 +244,14 @@ _REVIEWED_LIVE2D_CORE_SHA256: Final = (
 _REVIEWED_LIVE2D_CORE_LICENSE_SIZE: Final = 1_103
 _REVIEWED_LIVE2D_CORE_LICENSE_SHA256: Final = (
     "0c420f717a04a7bbc4cd3c652c83e77d0d7883a14b363d60af94ff6cdf3b7768"
+)
+_REVIEWED_ICON_PNG_SIZE: Final = 241_299
+_REVIEWED_ICON_PNG_SHA256: Final = (
+    "4a2e248382700a03270172aa420835c1a7f1b92d82dc503dd0047a48f7cd8b01"
+)
+_REVIEWED_ICON_ICO_SIZE: Final = 113_389
+_REVIEWED_ICON_ICO_SHA256: Final = (
+    "c44d2db9282ea84f519d09be64400ce8ef0024fd20d18128b69b4a1b3692feb1"
 )
 _REVIEWED_ASAR_PORTRAIT_PATH: Final = "dist/character/elysia-portrait.png"
 _REVIEWED_ASAR_CHARACTER_ATLAS_PATH: Final = (
@@ -166,22 +263,22 @@ _REVIEWED_ASAR_EXPRESSION_ATLAS_PATH: Final = (
 _REVIEWED_ASAR_SPEECH_ATLAS_PATH: Final = (
     "dist/character/elysia-speech-atlas.png"
 )
-_REVIEWED_ASAR_LIVE2D_MODEL_PATH: Final = (
-    "dist/character/live2d/elysia/model.moc3"
-)
-_REVIEWED_ASAR_LIVE2D_MANIFEST_PATH: Final = (
-    "dist/character/live2d/elysia/model.model3.json"
-)
-_REVIEWED_ASAR_LIVE2D_TEXTURE_PATH: Final = (
-    "dist/character/live2d/elysia/textures/atlas.png"
-)
 _REVIEWED_ASAR_LIVE2D_CORE_PATH: Final = (
     "dist/character/live2d/runtime/purismcore.js"
 )
 _REVIEWED_ASAR_LIVE2D_CORE_LICENSE_PATH: Final = (
     "dist/character/live2d/runtime/LICENSE-PurismCore.txt"
 )
+_REVIEWED_ASAR_ICON_PATH: Final = "dist/elysia-icon.png"
 _REVIEWED_DISTRIBUTION_ASSETS: Final[dict[str, tuple[int, str]]] = {
+    "desktop/assets/elysia-icon.ico": (
+        _REVIEWED_ICON_ICO_SIZE,
+        _REVIEWED_ICON_ICO_SHA256,
+    ),
+    "desktop/public/elysia-icon.png": (
+        _REVIEWED_ICON_PNG_SIZE,
+        _REVIEWED_ICON_PNG_SHA256,
+    ),
     "desktop/public/character/elysia-portrait.png": (
         _REVIEWED_PORTRAIT_SIZE,
         _REVIEWED_PORTRAIT_SHA256,
@@ -198,18 +295,6 @@ _REVIEWED_DISTRIBUTION_ASSETS: Final[dict[str, tuple[int, str]]] = {
         _REVIEWED_SPEECH_ATLAS_SIZE,
         _REVIEWED_SPEECH_ATLAS_SHA256,
     ),
-    "desktop/public/character/live2d/elysia/model.moc3": (
-        _REVIEWED_LIVE2D_MODEL_SIZE,
-        _REVIEWED_LIVE2D_MODEL_SHA256,
-    ),
-    "desktop/public/character/live2d/elysia/model.model3.json": (
-        _REVIEWED_LIVE2D_MANIFEST_SIZE,
-        _REVIEWED_LIVE2D_MANIFEST_SHA256,
-    ),
-    "desktop/public/character/live2d/elysia/textures/atlas.png": (
-        _REVIEWED_LIVE2D_TEXTURE_SIZE,
-        _REVIEWED_LIVE2D_TEXTURE_SHA256,
-    ),
     "desktop/public/character/live2d/runtime/purismcore.js": (
         _REVIEWED_LIVE2D_CORE_SIZE,
         _REVIEWED_LIVE2D_CORE_SHA256,
@@ -220,6 +305,10 @@ _REVIEWED_DISTRIBUTION_ASSETS: Final[dict[str, tuple[int, str]]] = {
     ),
 }
 _REVIEWED_ASAR_ASSETS: Final[dict[str, tuple[int, str]]] = {
+    _REVIEWED_ASAR_ICON_PATH: (
+        _REVIEWED_ICON_PNG_SIZE,
+        _REVIEWED_ICON_PNG_SHA256,
+    ),
     _REVIEWED_ASAR_PORTRAIT_PATH: (
         _REVIEWED_PORTRAIT_SIZE,
         _REVIEWED_PORTRAIT_SHA256,
@@ -235,18 +324,6 @@ _REVIEWED_ASAR_ASSETS: Final[dict[str, tuple[int, str]]] = {
     _REVIEWED_ASAR_SPEECH_ATLAS_PATH: (
         _REVIEWED_SPEECH_ATLAS_SIZE,
         _REVIEWED_SPEECH_ATLAS_SHA256,
-    ),
-    _REVIEWED_ASAR_LIVE2D_MODEL_PATH: (
-        _REVIEWED_LIVE2D_MODEL_SIZE,
-        _REVIEWED_LIVE2D_MODEL_SHA256,
-    ),
-    _REVIEWED_ASAR_LIVE2D_MANIFEST_PATH: (
-        _REVIEWED_LIVE2D_MANIFEST_SIZE,
-        _REVIEWED_LIVE2D_MANIFEST_SHA256,
-    ),
-    _REVIEWED_ASAR_LIVE2D_TEXTURE_PATH: (
-        _REVIEWED_LIVE2D_TEXTURE_SIZE,
-        _REVIEWED_LIVE2D_TEXTURE_SHA256,
     ),
     _REVIEWED_ASAR_LIVE2D_CORE_PATH: (
         _REVIEWED_LIVE2D_CORE_SIZE,
@@ -353,12 +430,14 @@ def _path_policy_message(
     raw_path: str,
     *,
     allow_unpacked_runtime_bins: bool,
+    allowed_visual_asset_paths: frozenset[str] | None,
 ) -> str | None:
     """Return the first policy violation for one distribution-relative path."""
 
     components = _normalize_distribution_path(raw_path)
     normalized_path = "/".join(components)
     file_name = components[-1]
+    suffix = PurePosixPath(file_name).suffix.casefold()
 
     if file_name in _FORBIDDEN_FILE_NAMES or file_name.startswith(".env."):
         return "private environment or local voice configuration is forbidden"
@@ -366,10 +445,50 @@ def _path_policy_message(
         return "runtime user data or logs are forbidden"
     if _contains_pair(components, "models", _FORBIDDEN_MODEL_SUBDIRECTORIES):
         return "local model, cache, manifest, or metadata paths are forbidden"
+    if any(
+        file_name.endswith(suffix)
+        for suffix in _FORBIDDEN_LIVE2D_MODEL_SUFFIXES
+    ):
+        return "external Live2D model files are forbidden in distributions"
+    if (
+        file_name in _LIVE2D_RUNTIME_FILE_NAMES
+        and normalized_path not in _ALLOWED_PACKAGED_LIVE2D_RUNTIME_PATHS
+    ):
+        return "PurismCore runtime files are allowed only at reviewed paths"
     if any(component in _FORBIDDEN_RUNTIME_COMPONENTS for component in components):
         return "known local voice runtime or asset-pack paths are forbidden"
+    if any(component in _FORBIDDEN_PAID_ASSET_COMPONENTS for component in components):
+        return "the user-owned paid Live2D source directory must remain local"
+    if (
+        any(component in _BUILD_OUTPUT_COMPONENTS for component in components)
+        and any(
+            retired_stem in file_name
+            for retired_stem in _FORBIDDEN_RETIRED_DESKTOP_MODULE_STEMS
+        )
+    ):
+        # TypeScript does not remove outputs for deleted source files.  Reject
+        # their emitted names in either build tree so stale modules cannot
+        # survive an incremental build and enter the packaged ASAR.
+        return "retired desktop module output is forbidden"
+    if (
+        _contains_pair(components, "character", _LIVE2D_DIRECTORY_COMPONENTS)
+        and normalized_path not in _ALLOWED_PACKAGED_LIVE2D_RUNTIME_PATHS
+    ):
+        # User-selected models are loaded from their external purchase folder.
+        # Keeping only the reviewed compatibility runtime in Git and packages
+        # prevents paid art, MOC, motion, expression, and texture files from
+        # being redistributed even if a model folder is renamed before copy.
+        return "bundled Live2D model assets are forbidden; load them externally"
 
-    suffix = PurePosixPath(file_name).suffix.casefold()
+    if (
+        allowed_visual_asset_paths is not None
+        and suffix in _REVIEWED_VISUAL_ASSET_SUFFIXES
+        and normalized_path not in allowed_visual_asset_paths
+    ):
+        # Texture filenames are generic, so suffix deny rules cannot
+        # distinguish a paid model texture from ordinary artwork.  Exact path
+        # admission makes every new visual asset an explicit rights review.
+        return "unreviewed visual assets are forbidden at this boundary"
     if suffix in _FORBIDDEN_MODEL_SUFFIXES:
         if allow_unpacked_runtime_bins and normalized_path in _ALLOWED_UNPACKED_BIN_PATHS:
             return None
@@ -386,8 +505,9 @@ def audit_distribution_paths(
     *,
     source: str,
     allow_unpacked_runtime_bins: bool = False,
+    allowed_visual_asset_paths: frozenset[str] | None = None,
 ) -> tuple[DistributionProblem, ...]:
-    """Audit caller-supplied relative paths using the distribution deny policy."""
+    """Audit paths using deny rules and an optional visual-asset allowlist."""
 
     problems: list[DistributionProblem] = []
     for raw_path in paths:
@@ -395,6 +515,7 @@ def audit_distribution_paths(
             message = _path_policy_message(
                 raw_path,
                 allow_unpacked_runtime_bins=allow_unpacked_runtime_bins,
+                allowed_visual_asset_paths=allowed_visual_asset_paths,
             )
         except DistributionAuditError as error:
             problems.append(
@@ -435,7 +556,11 @@ def audit_git_index(repository_root: Path) -> tuple[DistributionProblem, ...]:
                     "Git path is not valid UTF-8 and cannot be distributed safely",
                 ),
             )
-    return audit_distribution_paths(decoded_paths, source="git-index")
+    return audit_distribution_paths(
+        decoded_paths,
+        source="git-index",
+        allowed_visual_asset_paths=_ALLOWED_GIT_VISUAL_ASSET_PATHS,
+    )
 
 
 def _audit_exact_asset(
@@ -802,6 +927,7 @@ def audit_unpacked_tree(unpacked_root: Path) -> tuple[DistributionProblem, ...]:
             relative_paths,
             source="unpacked-tree",
             allow_unpacked_runtime_bins=True,
+            allowed_visual_asset_paths=_ALLOWED_UNPACKED_VISUAL_ASSET_PATHS,
         )
     )
     return tuple(problems)
@@ -819,7 +945,13 @@ def audit_asar_listing(listing_path: Path) -> tuple[DistributionProblem, ...]:
     if len(lines) > _MAX_ASAR_ENTRIES:
         raise DistributionAuditError("ASAR listing contains too many entries.")
     paths = [line.strip() for line in lines if line.strip()]
-    problems = list(audit_distribution_paths(paths, source="asar-listing"))
+    problems = list(
+        audit_distribution_paths(
+            paths,
+            source="asar-listing",
+            allowed_visual_asset_paths=_ALLOWED_ASAR_VISUAL_ASSET_PATHS,
+        )
+    )
 
     # The listing is the archive's source of truth for placement and
     # cardinality.  Slash direction and one archive-root marker vary by host,

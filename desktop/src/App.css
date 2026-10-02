@@ -2121,10 +2121,6 @@ svg {
   border: 0;
 }
 
-.character-performance-options {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
 .appearance-subheading {
   margin-top: var(--space-6);
 }
@@ -2156,6 +2152,25 @@ svg {
 .desktop-pet-options:disabled .theme-option {
   cursor: wait;
   opacity: 0.7;
+}
+
+.theme-option:has(input:disabled) {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.desktop-pet-library {
+  display: grid;
+  gap: var(--space-3);
+  margin-top: var(--space-4);
+  padding: var(--space-4);
+  background: var(--color-bg-soft);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+}
+
+.desktop-pet-library .desktop-pet-actions {
+  justify-content: flex-start;
 }
 
 .desktop-pet-status {
@@ -2989,16 +3004,6 @@ kbd {
   container-type: size;
 }
 
-.character-artwork-live2d {
-  position: absolute;
-  z-index: 0;
-  inset: 0;
-  display: block;
-  width: 100%;
-  height: 100%;
-  pointer-events: none;
-}
-
 .character-artwork-frame {
   position: relative;
   flex: 0 0 auto;
@@ -3007,17 +3012,6 @@ kbd {
   overflow: hidden;
   aspect-ratio: 3 / 4;
   transform-origin: 50% 74%;
-}
-
-.character-artwork-speech-frame {
-  position: relative;
-  flex: 0 0 auto;
-  width: min(100cqw, calc(100cqh * 1.2));
-  height: min(100cqh, calc(100cqw / 1.2));
-  overflow: hidden;
-  aspect-ratio: 6 / 5;
-  border-radius: var(--radius-xl);
-  transform-origin: 50% 70%;
 }
 
 .character-artwork-expression-frame {
@@ -3048,16 +3042,6 @@ kbd {
   );
 }
 
-.character-artwork-speech-atlas {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 500%;
-  max-width: none;
-  height: 400%;
-  transform: translateX(calc(var(--character-mouth-column, 0) * -20%));
-}
-
 .character-artwork-expression-atlas {
   position: absolute;
   top: 0;
@@ -3071,22 +3055,6 @@ kbd {
   );
 }
 
-:root[data-character-mouth="closed"] {
-  --character-mouth-column: 0;
-}
-
-:root[data-character-mouth="small"] {
-  --character-mouth-column: 1;
-}
-
-:root[data-character-mouth="medium"] {
-  --character-mouth-column: 2;
-}
-
-:root[data-character-mouth="wide"] {
-  --character-mouth-column: 3;
-}
-
 .character-artwork-static {
   width: 100%;
   height: 100%;
@@ -3094,33 +3062,10 @@ kbd {
   object-position: 50% 25%;
 }
 
-.character-artwork[data-character-performance="animated"][data-character-action="resting"]
-  :is(.character-artwork-frame, .character-artwork-expression-frame) {
-  animation: character-resting 5.6s ease-in-out infinite;
-}
-
-.character-artwork[data-character-performance="animated"][data-character-action="listening"]
-  .character-artwork-frame {
-  animation: character-listening 2.8s ease-in-out infinite;
-}
-
-.character-artwork[data-character-performance="animated"][data-character-action="thinking"]
-  .character-artwork-frame,
-.character-artwork[data-character-performance="animated"][data-character-action="working"]
-  .character-artwork-frame {
-  animation: character-focused 4.2s ease-in-out infinite;
-}
-
-.character-artwork[data-character-performance="animated"][data-character-action="speaking"]
-  :is(.character-artwork-frame, .character-artwork-speech-frame) {
-  animation: character-speaking 1.6s ease-in-out infinite;
-}
-
 .character-artwork[data-character-performance="still"]
   :is(
     .character-artwork-frame,
-    .character-artwork-expression-frame,
-    .character-artwork-speech-frame
+    .character-artwork-expression-frame
   ) {
   animation: none;
   transform: none;
@@ -3697,36 +3642,11 @@ kbd {
   }
 }
 
-@keyframes character-resting {
-  0%,
-  100% { transform: translateY(0) scale(1); }
-  50% { transform: translateY(-0.15rem) scale(1.006); }
-}
-
-@keyframes character-listening {
-  0%,
-  100% { transform: translateY(0) rotate(0); }
-  50% { transform: translateY(-0.18rem) rotate(-0.35deg); }
-}
-
-@keyframes character-focused {
-  0%,
-  100% { transform: translateY(0); }
-  50% { transform: translateY(-0.22rem); }
-}
-
-@keyframes character-speaking {
-  0%,
-  100% { transform: scale(1); }
-  50% { transform: scale(1.012); }
-}
-
 @media (prefers-reduced-motion: reduce) {
   .character-artwork
     :is(
       .character-artwork-frame,
-      .character-artwork-expression-frame,
-      .character-artwork-speech-frame
+      .character-artwork-expression-frame
     ) {
     animation: none !important;
     transform: none !important;

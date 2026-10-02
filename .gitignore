@@ -76,6 +76,9 @@ memory/test_memory.txt
 /docs/tree.txt
 /docs/02-ROADMAP.md
 
+# Local paid Live2D reference pack (source: @书呆儿); never redistribute.
+/data/characters/爱莉希雅原版猫猫版总合集_34be1/
+
 # Node.js
 node_modules/
 dist-electron/

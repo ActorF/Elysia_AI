@@ -9,7 +9,7 @@ import type { DesktopPetMode } from './desktop-pet-contracts.js'
 import type { DesktopPetPlacement } from './desktop-pet-preferences.js'
 
 /** Maximum time a loaded pet window may wait for its isolated Renderer. */
-export const DESKTOP_PET_READY_TIMEOUT_MS = 10_000
+export const DESKTOP_PET_READY_TIMEOUT_MS = 30_000
 
 /** Maximum shutdown delay allowed for the optional position write. */
 export const DESKTOP_PET_SHUTDOWN_SAVE_TIMEOUT_MS = 2_000

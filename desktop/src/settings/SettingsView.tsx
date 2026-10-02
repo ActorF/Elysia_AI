@@ -29,10 +29,6 @@ import type {
   PresenceReminderFrequency,
 } from '../../electron/presence-notification-contracts.ts'
 import { codePointLength } from '../../electron/protocol-text.js'
-import type {
-  CharacterPerformanceMode,
-  CharacterPerformancePreference,
-} from '../character/character-performance.ts'
 import { InlineAlert, LoadingState } from '../design-system/Feedback'
 import { Icon, type IconName } from '../design-system/Icon'
 import type { AudioDeviceSnapshot } from '../voice/audio-devices.ts'
@@ -55,8 +51,6 @@ export type DataStorageAction =
 export interface SettingsViewProps {
   themePreference: ThemePreference
   resolvedTheme: ResolvedTheme
-  characterPerformancePreference: CharacterPerformancePreference
-  resolvedCharacterPerformance: CharacterPerformanceMode
   desktopPetState: DesktopPetState | null
   desktopPetPending: boolean
   desktopPetError: string | null
@@ -82,12 +76,16 @@ export interface SettingsViewProps {
   voiceError: string | null
   /** Apply the selected renderer and native-chrome theme preference. */
   onThemeChange(theme: ThemePreference): void
-  /** Apply the selected renderer-local character performance preference. */
-  onCharacterPerformanceChange(
-    preference: CharacterPerformancePreference,
-  ): void
   /** Persist one closed Desktop Pet visibility mode immediately. */
   onDesktopPetModeChange(mode: DesktopPetMode): Promise<void>
+  /** Select one model from Main's current validated external inventory. */
+  onDesktopPetModelChange(modelId: string): Promise<void>
+  /** Open the native directory picker and scan the chosen model pack. */
+  onChooseDesktopPetModelDirectory(): Promise<void>
+  /** Revalidate the currently configured external model folder. */
+  onRefreshDesktopPetModels(): Promise<void>
+  /** Open the recorded public download page in the system browser. */
+  onOpenDesktopPetDownload(): Promise<void>
   /** Restore the Desktop Pet to a safe primary-display position. */
   onResetDesktopPetPosition(): Promise<void>
   /** Persist both Main-owned notification choices as one revisioned update. */
@@ -133,13 +131,6 @@ export interface SettingsViewProps {
 
 interface ThemeOption {
   value: ThemePreference
-  label: string
-  description: string
-  icon: IconName
-}
-
-interface CharacterPerformanceOption {
-  value: CharacterPerformancePreference
   label: string
   description: string
   icon: IconName
@@ -191,21 +182,6 @@ const themeOptions: readonly ThemeOption[] = [
     label: 'Dark',
     description: 'Use the dark Elysia palette on this device.',
     icon: 'moon',
-  },
-]
-
-const characterPerformanceOptions: readonly CharacterPerformanceOption[] = [
-  {
-    value: 'animated',
-    label: 'Animated',
-    description: 'Use bounded motion unless Windows requests reduced motion.',
-    icon: 'sparkles',
-  },
-  {
-    value: 'still',
-    label: 'Still',
-    description: 'Keep state expressions but disable character animation.',
-    icon: 'stop',
   },
 ]
 
@@ -414,36 +390,42 @@ function validateDraft(draft: SettingsDraft): SettingsValidationErrors {
 function AppearanceSettings({
   themePreference,
   resolvedTheme,
-  characterPerformancePreference,
-  resolvedCharacterPerformance,
   desktopPetState,
   desktopPetPending,
   desktopPetError,
   onThemeChange,
-  onCharacterPerformanceChange,
   onDesktopPetModeChange,
+  onDesktopPetModelChange,
+  onChooseDesktopPetModelDirectory,
+  onRefreshDesktopPetModels,
+  onOpenDesktopPetDownload,
   onResetDesktopPetPosition,
 }: Pick<
   SettingsViewProps,
   | 'themePreference'
   | 'resolvedTheme'
-  | 'characterPerformancePreference'
-  | 'resolvedCharacterPerformance'
   | 'desktopPetState'
   | 'desktopPetPending'
   | 'desktopPetError'
   | 'onThemeChange'
-  | 'onCharacterPerformanceChange'
   | 'onDesktopPetModeChange'
+  | 'onDesktopPetModelChange'
+  | 'onChooseDesktopPetModelDirectory'
+  | 'onRefreshDesktopPetModels'
+  | 'onOpenDesktopPetDownload'
   | 'onResetDesktopPetPosition'
 >) {
   const themeGroupId = useId()
   const desktopPetMode = desktopPetState?.mode ?? 'disabled'
+  const desktopPetReady = desktopPetState?.libraryStatus === 'ready'
+    && desktopPetState.selectedModelId !== null
+  const desktopPetBusy = desktopPetPending
+    || desktopPetState?.libraryStatus === 'scanning'
   return (
     <section className="settings-section" aria-labelledby={`${themeGroupId}-heading`}>
       <div className="settings-section-heading">
         <h2 id={`${themeGroupId}-heading`}>Appearance</h2>
-        <p>Theme and character performance apply immediately on this device.</p>
+        <p>Theme changes apply immediately on this device.</p>
       </div>
       <fieldset className="theme-options">
         <legend className="visually-hidden">Color theme</legend>
@@ -475,45 +457,86 @@ function AppearanceSettings({
           )
         })}
       </fieldset>
-      <fieldset className="theme-options character-performance-options">
-        <legend className="visually-hidden">Character performance</legend>
-        {characterPerformanceOptions.map((option) => {
-          const optionId = `${themeGroupId}-character-${option.value}`
-          const descriptionId = `${optionId}-description`
-          return (
-            <label
-              key={option.value}
-              className={`theme-option${characterPerformancePreference === option.value ? ' selected' : ''}`}
-              htmlFor={optionId}
-            >
-              <input
-                id={optionId}
-                type="radio"
-                name={`${themeGroupId}-character-performance`}
-                value={option.value}
-                checked={characterPerformancePreference === option.value}
-                onChange={() => { onCharacterPerformanceChange(option.value) }}
-                aria-describedby={descriptionId}
-              />
-              <Icon name={option.icon} className="theme-option-icon" />
-              <span className="theme-option-copy">
-                <strong>{option.label}</strong>
-                <span id={descriptionId}>{option.description}</span>
-              </span>
-              <span className="theme-option-indicator" aria-hidden="true" />
-            </label>
-          )
-        })}
-      </fieldset>
+      <p className="settings-readonly-status">
+        The character state panel always uses static half-body artwork. Dynamic
+        Live2D is available only in the optional Desktop Pet window.
+      </p>
       <div className="appearance-subheading">
         <h3>Desktop Pet</h3>
         <p>
-          Independent Live2D desktop companion. The main Chat keeps the half-body portrait and complete controls.
+          Independent dynamic Live2D companion. Model files stay in your chosen
+          local folder and are never copied into Elysia AI.
+        </p>
+      </div>
+      <div className="desktop-pet-library" aria-label="Desktop Pet model library">
+        <p className="desktop-pet-note">
+          Models by @书呆儿 are not included. Download the free pack, then choose
+          its folder; Elysia lists only models it can validate on this device.
+        </p>
+        <div className="desktop-pet-actions">
+          <button
+            type="button"
+            className="secondary-button"
+            onClick={() => { void onOpenDesktopPetDownload() }}
+          >
+            Download free Live2D pack
+          </button>
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={desktopPetBusy}
+            onClick={() => { void onChooseDesktopPetModelDirectory() }}
+          >
+            {desktopPetBusy ? 'Scanning…' : 'Choose downloaded folder'}
+          </button>
+          <button
+            type="button"
+            className="secondary-button"
+            disabled={
+              desktopPetBusy
+              || desktopPetState === null
+              || desktopPetState.folderName === null
+            }
+            onClick={() => { void onRefreshDesktopPetModels() }}
+          >
+            Rescan
+          </button>
+        </div>
+        <label className="settings-field" htmlFor={`${themeGroupId}-desktop-pet-model`}>
+          <span>Dynamic model</span>
+          <select
+            id={`${themeGroupId}-desktop-pet-model`}
+            value={desktopPetState?.selectedModelId ?? ''}
+            disabled={
+              desktopPetBusy
+              || desktopPetState === null
+              || desktopPetState.models.length === 0
+            }
+            onChange={(event) => {
+              if (event.target.value !== '') {
+                void onDesktopPetModelChange(event.target.value)
+              }
+            }}
+          >
+            <option value="">Choose a detected model</option>
+            {desktopPetState?.models.map((model) => (
+              <option key={model.id} value={model.id}>
+                {model.displayName}
+              </option>
+            ))}
+          </select>
+        </label>
+        <p className="desktop-pet-note" role="status" aria-live="polite">
+          {desktopPetState === null
+            ? 'Loading the model library…'
+            : desktopPetState.folderName === null
+              ? 'No model folder selected.'
+              : `${desktopPetState.models.length} compatible model${desktopPetState.models.length === 1 ? '' : 's'} detected in ${desktopPetState.folderName}.`}
         </p>
       </div>
       <fieldset
         className="theme-options desktop-pet-options"
-        disabled={desktopPetPending || desktopPetState === null}
+        disabled={desktopPetBusy || desktopPetState === null}
         aria-describedby={`${themeGroupId}-desktop-pet-note`}
       >
         <legend className="visually-hidden">Desktop Pet visibility</legend>
@@ -532,6 +555,7 @@ function AppearanceSettings({
                 name={`${themeGroupId}-desktop-pet`}
                 value={option.value}
                 checked={desktopPetMode === option.value}
+                disabled={option.value === 'visible' && !desktopPetReady}
                 onChange={() => { void onDesktopPetModeChange(option.value) }}
                 aria-describedby={descriptionId}
               />
@@ -557,19 +581,19 @@ function AppearanceSettings({
             <button
               type="button"
               className="secondary-button"
-              disabled={desktopPetPending}
+              disabled={desktopPetBusy}
               onClick={() => { void onDesktopPetModeChange('visible') }}
             >
-              {desktopPetPending ? 'Retrying…' : 'Retry Desktop Pet'}
+              {desktopPetBusy ? 'Retrying…' : 'Retry Desktop Pet'}
             </button>
           )}
           <button
             type="button"
             className="secondary-button"
-            disabled={desktopPetPending || desktopPetState === null}
+            disabled={desktopPetBusy || desktopPetState === null}
             onClick={() => { void onResetDesktopPetPosition() }}
           >
-            {desktopPetPending ? 'Applying…' : 'Reset position'}
+            {desktopPetBusy ? 'Applying…' : 'Reset position'}
           </button>
         </div>
       </div>
@@ -586,8 +610,7 @@ function AppearanceSettings({
         <p className="desktop-pet-error" role="alert">{desktopPetError}</p>
       )}
       <p className="resolved-theme" role="status" aria-live="polite">
-        Elysia is rendered in {resolvedTheme.toLowerCase()} mode with{' '}
-        {resolvedCharacterPerformance} character motion.
+        Elysia is rendered in {resolvedTheme.toLowerCase()} mode with static character artwork.
       </p>
     </section>
   )
@@ -949,8 +972,6 @@ function DataStorageSettings({
 export function SettingsView({
   themePreference,
   resolvedTheme,
-  characterPerformancePreference,
-  resolvedCharacterPerformance,
   desktopPetState,
   desktopPetPending,
   desktopPetError,
@@ -975,8 +996,11 @@ export function SettingsView({
   voicePending,
   voiceError,
   onThemeChange,
-  onCharacterPerformanceChange,
   onDesktopPetModeChange,
+  onDesktopPetModelChange,
+  onChooseDesktopPetModelDirectory,
+  onRefreshDesktopPetModels,
+  onOpenDesktopPetDownload,
   onResetDesktopPetPosition,
   onPresenceNotificationChange,
   onRefreshDataStorage,
@@ -1158,14 +1182,15 @@ export function SettingsView({
           <AppearanceSettings
             themePreference={themePreference}
             resolvedTheme={resolvedTheme}
-            characterPerformancePreference={characterPerformancePreference}
-            resolvedCharacterPerformance={resolvedCharacterPerformance}
             desktopPetState={desktopPetState}
             desktopPetPending={desktopPetPending}
             desktopPetError={desktopPetError}
             onThemeChange={onThemeChange}
-            onCharacterPerformanceChange={onCharacterPerformanceChange}
             onDesktopPetModeChange={onDesktopPetModeChange}
+            onDesktopPetModelChange={onDesktopPetModelChange}
+            onChooseDesktopPetModelDirectory={onChooseDesktopPetModelDirectory}
+            onRefreshDesktopPetModels={onRefreshDesktopPetModels}
+            onOpenDesktopPetDownload={onOpenDesktopPetDownload}
             onResetDesktopPetPosition={onResetDesktopPetPosition}
           />
           <PresenceNotificationSettings
@@ -1192,14 +1217,15 @@ export function SettingsView({
           <AppearanceSettings
             themePreference={themePreference}
             resolvedTheme={resolvedTheme}
-            characterPerformancePreference={characterPerformancePreference}
-            resolvedCharacterPerformance={resolvedCharacterPerformance}
             desktopPetState={desktopPetState}
             desktopPetPending={desktopPetPending}
             desktopPetError={desktopPetError}
             onThemeChange={onThemeChange}
-            onCharacterPerformanceChange={onCharacterPerformanceChange}
             onDesktopPetModeChange={onDesktopPetModeChange}
+            onDesktopPetModelChange={onDesktopPetModelChange}
+            onChooseDesktopPetModelDirectory={onChooseDesktopPetModelDirectory}
+            onRefreshDesktopPetModels={onRefreshDesktopPetModels}
+            onOpenDesktopPetDownload={onOpenDesktopPetDownload}
             onResetDesktopPetPosition={onResetDesktopPetPosition}
           />
           <PresenceNotificationSettings
@@ -1856,14 +1882,15 @@ export function SettingsView({
           <AppearanceSettings
             themePreference={themePreference}
             resolvedTheme={resolvedTheme}
-            characterPerformancePreference={characterPerformancePreference}
-            resolvedCharacterPerformance={resolvedCharacterPerformance}
             desktopPetState={desktopPetState}
             desktopPetPending={desktopPetPending}
             desktopPetError={desktopPetError}
             onThemeChange={onThemeChange}
-            onCharacterPerformanceChange={onCharacterPerformanceChange}
             onDesktopPetModeChange={onDesktopPetModeChange}
+            onDesktopPetModelChange={onDesktopPetModelChange}
+            onChooseDesktopPetModelDirectory={onChooseDesktopPetModelDirectory}
+            onRefreshDesktopPetModels={onRefreshDesktopPetModels}
+            onOpenDesktopPetDownload={onOpenDesktopPetDownload}
             onResetDesktopPetPosition={onResetDesktopPetPosition}
           />
 

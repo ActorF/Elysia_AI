@@ -136,7 +136,24 @@ function defaultDesktopPetState() {
     mode: 'disabled',
     runtime: 'absent',
     warning: null,
+    libraryStatus: 'not-configured',
+    folderName: null,
+    models: [],
+    selectedModelId: null,
   }
+}
+
+function detectedDesktopPetModels() {
+  return [
+    {
+      id: 'model_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      displayName: 'Elysia Herrscher',
+    },
+    {
+      id: 'model_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      displayName: 'Elysia Maid',
+    },
+  ]
 }
 
 function defaultPresenceNotificationState() {
@@ -719,14 +736,6 @@ const desktopApi = {
     record('setThemePreference', [theme])
   },
 
-  setCharacterPerformancePreference: async (preference) => {
-    record('setCharacterPerformancePreference', [preference])
-    return {
-      preference,
-      revision: 1,
-    }
-  },
-
   getDesktopPetState: async () => {
     record('getDesktopPetState')
     return clone(desktopPetState)
@@ -744,7 +753,26 @@ const desktopApi = {
         'Desktop pet preferences changed elsewhere. Reload before saving.',
       )
     }
+    const selectedModelId = Object.hasOwn(request, 'modelId')
+      ? request.modelId
+      : desktopPetState.selectedModelId
+    if (
+      selectedModelId !== null
+      && !desktopPetState.models.some((model) => model.id === selectedModelId)
+    ) {
+      throw new Error('Choose one of the detected Desktop Pet models.')
+    }
+    if (
+      request.mode === 'visible'
+      && (
+        desktopPetState.libraryStatus !== 'ready'
+        || selectedModelId === null
+      )
+    ) {
+      throw new Error('Choose a ready Desktop Pet model before showing it.')
+    }
     const same = request.mode === desktopPetState.mode
+      && selectedModelId === desktopPetState.selectedModelId
     desktopPetState = {
       ...desktopPetState,
       revision: same
@@ -756,7 +784,31 @@ const desktopApi = {
       mode: request.mode,
       runtime: request.mode === 'visible' ? 'visible' : 'absent',
       warning: null,
+      selectedModelId,
     }
+    return clone(desktopPetState)
+  },
+
+  chooseDesktopPetModelDirectory: async () => {
+    record('chooseDesktopPetModelDirectory')
+    const models = detectedDesktopPetModels()
+    desktopPetState = {
+      ...desktopPetState,
+      revision: desktopPetState.revision + 1,
+      updatedAt: '2026-10-01T12:00:00.000Z',
+      mode: 'disabled',
+      runtime: 'absent',
+      warning: null,
+      libraryStatus: 'ready',
+      folderName: 'elysia-live2d-free',
+      models,
+      selectedModelId: models[0].id,
+    }
+    return clone(desktopPetState)
+  },
+
+  refreshDesktopPetModels: async () => {
+    record('refreshDesktopPetModels')
     return clone(desktopPetState)
   },
 

@@ -1,9 +1,11 @@
-/** Verify the fixed-asset PurismCore WebGL2 runtime without a browser. */
+/** Verify the bounded generic PurismCore WebGL2 runtime without a browser. */
 
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import { createLive2DController } from '../src/character/live2d-runtime.ts'
+
+const SAME_ORIGIN_MODEL_MANIFEST_URL = 'https://elysia.test/models/cat.model3.json'
 
 const ORIGINAL_GLOBALS = {
   CustomEvent: globalThis.CustomEvent,
@@ -29,14 +31,11 @@ const PARAMETER_IDS = [
   'ParamBrowLForm',
   'ParamBrowRY',
   'ParamBrowRForm',
-  'ParamHairFront',
-  'ParamHairBack',
-  'ParamHairFrontV',
-  'ParamHairBackV',
   'ParamBodyAngleX',
   'ParamBodyAngleY',
   'ParamBodyAngleZ',
   'ParamBreath',
+  'ParamPhysicsOut',
 ]
 
 function makeStreamResponse(url, bytes, declaredLength = bytes.byteLength) {
@@ -55,11 +54,78 @@ function makeStreamResponse(url, bytes, declaredLength = bytes.byteLength) {
   }
 }
 
+function makePngHeader(width = 512, height = 512) {
+  const bytes = new Uint8Array(33)
+  bytes.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0)
+  bytes[11] = 13
+  bytes.set([0x49, 0x48, 0x44, 0x52], 12)
+  new DataView(bytes.buffer).setUint32(16, width)
+  new DataView(bytes.buffer).setUint32(20, height)
+  bytes[24] = 8
+  bytes[25] = 6
+  return bytes
+}
+
+function makePhysicsDocument() {
+  return {
+    Meta: {
+      EffectiveForces: {
+        Gravity: { X: 0, Y: -1 },
+        Wind: { X: 0, Y: 0 },
+      },
+      PhysicsSettingCount: 1,
+      TotalInputCount: 1,
+      TotalOutputCount: 1,
+      VertexCount: 2,
+    },
+    PhysicsSettings: [{
+      Input: [{
+        Reflect: false,
+        Source: { Id: 'ParamAngleX', Target: 'Parameter' },
+        Type: 'X',
+        Weight: 100,
+      }],
+      Normalization: {
+        Angle: { Default: 0, Maximum: 30, Minimum: -30 },
+        Position: { Default: 0, Maximum: 30, Minimum: -30 },
+      },
+      Output: [{
+        Destination: { Id: 'ParamPhysicsOut', Target: 'Parameter' },
+        Reflect: false,
+        Scale: 30,
+        Type: 'Angle',
+        VertexIndex: 1,
+        Weight: 100,
+      }],
+      Vertices: [
+        {
+          Acceleration: 1,
+          Delay: 1,
+          Mobility: 1,
+          Position: { X: 0, Y: 0 },
+          Radius: 0,
+        },
+        {
+          Acceleration: 1,
+          Delay: 1,
+          Mobility: 0.8,
+          Position: { X: 0, Y: 10 },
+          Radius: 10,
+        },
+      ],
+    }],
+    Version: 3,
+  }
+}
+
 function makeFakeGl() {
   let lastIndexUpload = []
   const drawnIndices = []
+  const maskDrawnIndices = []
   const deleted = []
+  const uniform1iCalls = []
   const uniform4fCalls = []
+  let framebuffer = null
   const constants = {
     ARRAY_BUFFER: 0x8892,
     BACK: 0x0405,
@@ -67,12 +133,15 @@ function makeFakeGl() {
     CCW: 0x0901,
     CLAMP_TO_EDGE: 0x812f,
     COLOR_BUFFER_BIT: 0x4000,
+    COLOR_ATTACHMENT0: 0x8ce0,
     COMPILE_STATUS: 0x8b81,
     CULL_FACE: 0x0b44,
     DEPTH_TEST: 0x0b71,
     DST_COLOR: 0x0306,
     ELEMENT_ARRAY_BUFFER: 0x8893,
     FLOAT: 0x1406,
+    FRAMEBUFFER: 0x8d40,
+    FRAMEBUFFER_COMPLETE: 0x8cd5,
     FRAGMENT_SHADER: 0x8b30,
     LINEAR: 0x2601,
     LINK_STATUS: 0x8b82,
@@ -101,6 +170,7 @@ function makeFakeGl() {
     activeTexture() {},
     attachShader() {},
     bindBuffer() {},
+    bindFramebuffer(_target, value) { framebuffer = value },
     bindTexture() {},
     bindVertexArray() {},
     blendFuncSeparate() {},
@@ -111,22 +181,29 @@ function makeFakeGl() {
     },
     clear() {},
     clearColor() {},
+    checkFramebufferStatus: () => constants.FRAMEBUFFER_COMPLETE,
     compileShader() {},
     createBuffer: () => ({}),
+    createFramebuffer: () => ({}),
     createProgram: () => ({}),
     createShader: () => ({}),
     createTexture: () => ({}),
     createVertexArray: () => ({}),
     cullFace() {},
     deleteBuffer(value) { deleted.push(value) },
+    deleteFramebuffer(value) { deleted.push(value) },
     deleteProgram(value) { deleted.push(value) },
     deleteShader() {},
     deleteTexture(value) { deleted.push(value) },
     deleteVertexArray(value) { deleted.push(value) },
     disable() {},
-    drawElements() { drawnIndices.push(lastIndexUpload) },
+    drawElements() {
+      ;(framebuffer === null ? drawnIndices : maskDrawnIndices)
+        .push(lastIndexUpload)
+    },
     enable() {},
     enableVertexAttribArray() {},
+    framebufferTexture2D() {},
     frontFace() {},
     getAttribLocation(_program, name) { return name === 'a_position' ? 0 : 1 },
     getProgramInfoLog: () => '',
@@ -139,7 +216,11 @@ function makeFakeGl() {
     shaderSource() {},
     texImage2D() {},
     texParameteri() {},
-    uniform1i() {},
+    uniform1f() {},
+    uniform1i(location, value) {
+      uniform1iCalls.push({ name: location?.name, value })
+    },
+    uniform2f() {},
     uniform4f(location, ...values) {
       uniform4fCalls.push({
         name: location?.name,
@@ -150,14 +231,24 @@ function makeFakeGl() {
     vertexAttribPointer() {},
     viewport() {},
   }
-  return { deleted, drawnIndices, gl, uniform4fCalls }
+  return {
+    deleted,
+    drawnIndices,
+    gl,
+    maskDrawnIndices,
+    uniform1iCalls,
+    uniform4fCalls,
+  }
 }
 
 function installEnvironment({
   canvasBounds = { height: 300, width: 200 },
   drawableOpacities = [1, 1],
   manifestOverride,
-  packaged = false,
+  mocDeclaredLength,
+  physicsDocument,
+  textureDeclaredLength,
+  textureDimensions = [[512, 512], [512, 512]],
   webgl = true,
 } = {}) {
   const animationFrames = new Map()
@@ -167,6 +258,8 @@ function installEnvironment({
     deleted,
     drawnIndices,
     gl,
+    maskDrawnIndices,
+    uniform1iCalls,
     uniform4fCalls,
   } = makeFakeGl()
   const parameterValues = new Float32Array(PARAMETER_IDS.length)
@@ -178,19 +271,21 @@ function installEnvironment({
   let modelReleased = false
   let modelError = 0
   let mocReleased = false
+  let bitmapDecodeCount = 0
 
   const drawables = {
     count: 2,
-    constantFlags: new Uint8Array([4, 4]),
+    constantFlags: new Uint8Array([12, 4]),
     dynamicFlags: new Uint8Array([1, 1]),
     indexCounts: new Int32Array([3, 3]),
     indices: [new Uint16Array([0, 1, 2]), new Uint16Array([0, 2, 1])],
-    maskCounts: new Int32Array([0, 0]),
+    maskCounts: new Int32Array([1, 0]),
+    masks: [new Int32Array([1]), new Int32Array(0)],
     multiplyColors: new Float32Array([1, 1, 1, 1, 1, 1, 1, 1]),
     opacities: new Float32Array(drawableOpacities),
     resetDynamicFlags() { this.dynamicFlags.fill(0) },
     screenColors: new Float32Array(8),
-    textureIndices: new Int32Array([0, 0]),
+    textureIndices: new Int32Array([1, 0]),
     vertexCounts: new Int32Array([3, 3]),
     vertexPositions: [
       new Float32Array([-1, -1, 1, -1, 0, 1]),
@@ -239,9 +334,7 @@ function installEnvironment({
     addEventListener(type, listener) { windowListeners.set(type, listener) },
     cancelAnimationFrame(id) { animationFrames.delete(id) },
     devicePixelRatio: 1.5,
-    location: packaged
-      ? { origin: 'null', protocol: 'file:' }
-      : { origin: 'https://elysia.test', protocol: 'https:' },
+    location: { origin: 'https://elysia.test', protocol: 'https:' },
     removeEventListener(type) { windowListeners.delete(type) },
     requestAnimationFrame(callback) {
       const id = nextFrame
@@ -250,10 +343,9 @@ function installEnvironment({
       return id
     },
   }
-  const rootDataset = { characterMouth: 'wide' }
   const fakeDocument = {
     baseURI: 'https://elysia.test/',
-    documentElement: { dataset: rootDataset },
+    documentElement: { dataset: {} },
     head: { append() { throw new Error('Core script must not be injected in this test.') } },
   }
   const canvas = {
@@ -272,14 +364,20 @@ function installEnvironment({
   const defaultManifest = {
     FileReferences: {
       Moc: 'model.moc3',
-      Textures: ['textures/atlas.png'],
+      ...(physicsDocument === undefined ? {} : { Physics: 'cat.physics3.json' }),
+      Textures: ['textures/face.png', 'textures/body.png'],
     },
     Version: 3,
   }
   const manifest = manifestOverride ?? defaultManifest
   const manifestBytes = new TextEncoder().encode(JSON.stringify(manifest))
   const mocBytes = new Uint8Array([0x4d, 0x4f, 0x43, 0x33, 1])
-  const textureBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+  const textureBytes = textureDimensions.map(([width, height]) => (
+    makePngHeader(width, height)
+  ))
+  const physicsBytes = physicsDocument === undefined
+    ? null
+    : new TextEncoder().encode(JSON.stringify(physicsDocument))
 
   globalThis.CustomEvent ??= class CustomEvent extends Event {
     constructor(type, init = {}) {
@@ -291,24 +389,36 @@ function installEnvironment({
     disconnect() {}
     observe() {}
   }
-  globalThis.createImageBitmap = async () => ({
-    close() {},
-    height: 512,
-    width: 512,
-  })
+  globalThis.createImageBitmap = async () => {
+    const [width, height] = textureDimensions[
+      bitmapDecodeCount % textureDimensions.length
+    ]
+    bitmapDecodeCount += 1
+    return {
+      close() {},
+      height,
+      width,
+    }
+  }
   globalThis.document = fakeDocument
   globalThis.window = fakeWindow
   globalThis.fetch = async (input) => {
     const url = input instanceof URL ? input.href : String(input)
     requestedUrls.push(url)
-    if (url.endsWith('/model.model3.json')) {
+    if (url.endsWith('.model3.json')) {
       return makeStreamResponse(url, manifestBytes)
     }
     if (url.endsWith('/model.moc3')) {
-      return makeStreamResponse(url, mocBytes)
+      return makeStreamResponse(url, mocBytes, mocDeclaredLength)
     }
-    if (url.endsWith('/textures/atlas.png')) {
-      return makeStreamResponse(url, textureBytes)
+    if (url.endsWith('/cat.physics3.json') && physicsBytes !== null) {
+      return makeStreamResponse(url, physicsBytes)
+    }
+    const textureIndex = url.endsWith('/textures/face.png')
+      ? 0
+      : url.endsWith('/textures/body.png') ? 1 : -1
+    if (textureIndex >= 0) {
+      return makeStreamResponse(url, textureBytes[textureIndex], textureDeclaredLength)
     }
     throw new Error(`Unexpected URL: ${url}`)
   }
@@ -319,35 +429,41 @@ function installEnvironment({
     canvasListeners,
     deleted,
     drawnIndices,
+    get bitmapDecodeCount() { return bitmapDecodeCount },
+    maskDrawnIndices,
     get modelReleased() { return modelReleased },
     get mocReleased() { return mocReleased },
     maximumValues,
     minimumValues,
     parameterValues,
     requestedUrls,
-    rootDataset,
     setModelError(value) { modelError = value },
+    uniform1iCalls,
     uniform4fCalls,
   }
 }
 
-test('loads only fixed assets and renders every drawable in render order', async () => {
+test('loads a selected multi-texture model with masks and optional parameters', async () => {
   // This first environment also supplies the module-cached fake Core to later
   // cases, so exercise non-opaque values here instead of creating a second
   // fake Core that the production cache would intentionally ignore.
   const environment = installEnvironment({
     drawableOpacities: [0.25, 0.625],
+    physicsDocument: makePhysicsDocument(),
   })
   const controller = await createLive2DController(environment.canvas, {
     emotion: 'happy',
     framing: 'half-body',
+    modelManifestUrl: 'https://elysia.test/selected/cat.model3.json',
     state: 'speaking',
   })
 
   assert.deepEqual(environment.requestedUrls.sort(), [
-    'https://elysia.test/character/live2d/elysia/model.moc3',
-    'https://elysia.test/character/live2d/elysia/model.model3.json',
-    'https://elysia.test/character/live2d/elysia/textures/atlas.png',
+    'https://elysia.test/selected/cat.model3.json',
+    'https://elysia.test/selected/cat.physics3.json',
+    'https://elysia.test/selected/model.moc3',
+    'https://elysia.test/selected/textures/body.png',
+    'https://elysia.test/selected/textures/face.png',
   ])
   assert.equal(environment.canvas.dataset.live2dStatus, 'ready')
   assert.equal(environment.canvas.width, 300)
@@ -360,6 +476,13 @@ test('loads only fixed assets and renders every drawable in render order', async
   environment.animationFrames.delete(queuedFrameId)
   queuedFrame(performance.now() + 1000)
   assert.deepEqual(environment.drawnIndices, [[0, 2, 1], [0, 1, 2]])
+  assert.deepEqual(environment.maskDrawnIndices, [[0, 2, 1]])
+  assert.ok(
+    environment.uniform1iCalls.some(
+      ({ name, value }) => name === 'u_mask_inverted' && value === 1,
+    ),
+    'the Cubism inverted-mask flag must reach the composite shader',
+  )
   const baseColors = environment.uniform4fCalls
     .filter(({ name }) => name === 'u_base_color')
     .map(({ values }) => values)
@@ -371,9 +494,15 @@ test('loads only fixed assets and renders every drawable in render order', async
     ],
     'render-order uploads must remain premultiplied during opacity crossfades',
   )
-  assert.ok(
-    environment.parameterValues[PARAMETER_IDS.indexOf('ParamMouthOpenY')] > 0.9,
-    'the trusted root mouth cue should drive the speaking parameter',
+  assert.equal(
+    environment.parameterValues[PARAMETER_IDS.indexOf('ParamMouthOpenY')],
+    0,
+    'the isolated pet must not consume a main-renderer speech cue',
+  )
+  assert.notEqual(
+    environment.parameterValues[PARAMETER_IDS.indexOf('ParamPhysicsOut')],
+    0,
+    'the selected physics3 rig must update its destination parameter',
   )
 
   controller.setState('idle')
@@ -385,9 +514,9 @@ test('loads only fixed assets and renders every drawable in render order', async
     height: 512,
     width: 512,
   })
-  let resolveRestoredTexture
+  const restoreResolvers = []
   globalThis.createImageBitmap = () => new Promise((resolve) => {
-    resolveRestoredTexture = resolve
+    restoreResolvers.push(resolve)
   })
   environment.canvasListeners.get('webglcontextlost')({
     preventDefault() { defaultPrevented = true },
@@ -396,7 +525,9 @@ test('loads only fixed assets and renders every drawable in render order', async
   assert.equal(environment.canvas.dataset.live2dStatus, 'recovering')
   environment.canvasListeners.get('webglcontextrestored')()
   environment.canvasListeners.get('webglcontextlost')({ preventDefault() {} })
-  resolveRestoredTexture(makeBitmap())
+  restoreResolvers.shift()(makeBitmap())
+  await new Promise((resolve) => { setImmediate(resolve) })
+  restoreResolvers.shift()(makeBitmap())
   await new Promise((resolve) => { setImmediate(resolve) })
   assert.equal(
     environment.canvas.dataset.live2dStatus,
@@ -420,6 +551,7 @@ test('loads only fixed assets and renders every drawable in render order', async
     createLive2DController(environment.canvas, {
       emotion: 'neutral',
       framing: 'half-body',
+      modelManifestUrl: SAME_ORIGIN_MODEL_MANIFEST_URL,
       state: 'idle',
     }),
     /invalid bounds or values/,
@@ -429,6 +561,7 @@ test('loads only fixed assets and renders every drawable in render order', async
   const fatalController = await createLive2DController(environment.canvas, {
     emotion: 'neutral',
     framing: 'half-body',
+    modelManifestUrl: SAME_ORIGIN_MODEL_MANIFEST_URL,
     state: 'idle',
   })
   let runtimeError
@@ -460,26 +593,142 @@ test('rejects a manifest that tries to select a different resource', async () =>
     createLive2DController(environment.canvas, {
       emotion: 'neutral',
       framing: 'half-body',
+      modelManifestUrl: SAME_ORIGIN_MODEL_MANIFEST_URL,
       state: 'idle',
     }),
-    /fixed asset contract/,
+    /Unsafe Live2D manifest file reference/,
   )
   assert.equal(environment.canvas.dataset.live2dStatus, 'error')
 })
 
-test('uses only the allowlisted custom protocol in a packaged file page', async () => {
-  const environment = installEnvironment({ packaged: true })
+test('rejects the removed bundled-model protocol before requesting assets', async () => {
+  const environment = installEnvironment()
+  await assert.rejects(
+    createLive2DController(environment.canvas, {
+      emotion: 'neutral',
+      framing: 'half-body',
+      modelManifestUrl: 'elysia-asset://character/live2d/elysia/model.model3.json',
+      state: 'idle',
+    }),
+    /Unsupported Live2D asset protocol: elysia-asset:/,
+  )
+  assert.deepEqual(environment.requestedUrls, [])
+})
+
+test('loads an explicitly selected opaque desktop-pet protocol manifest', async () => {
+  const environment = installEnvironment()
   const controller = await createLive2DController(environment.canvas, {
     emotion: 'neutral',
-    framing: 'half-body',
+    framing: 'full-body',
+    modelManifestUrl: 'elysia-pet-asset://model/generation-7/model_0123456789abcdef0123456789abcdef/cat.model3.json',
     state: 'idle',
   })
   assert.deepEqual(environment.requestedUrls.sort(), [
-    'elysia-asset://character/live2d/elysia/model.moc3',
-    'elysia-asset://character/live2d/elysia/model.model3.json',
-    'elysia-asset://character/live2d/elysia/textures/atlas.png',
+    'elysia-pet-asset://model/generation-7/model_0123456789abcdef0123456789abcdef/cat.model3.json',
+    'elysia-pet-asset://model/generation-7/model_0123456789abcdef0123456789abcdef/model.moc3',
+    'elysia-pet-asset://model/generation-7/model_0123456789abcdef0123456789abcdef/textures/body.png',
+    'elysia-pet-asset://model/generation-7/model_0123456789abcdef0123456789abcdef/textures/face.png',
   ])
   controller.dispose()
+})
+
+test('rejects cross-origin manifests and oversized model resources', async () => {
+  const crossOrigin = installEnvironment()
+  await assert.rejects(
+    createLive2DController(crossOrigin.canvas, {
+      emotion: 'neutral',
+      framing: 'full-body',
+      modelManifestUrl: 'https://untrusted.example/cat.model3.json',
+      state: 'idle',
+    }),
+    /same-origin/,
+  )
+  assert.deepEqual(crossOrigin.requestedUrls, [])
+
+  const wrongAuthority = installEnvironment()
+  await assert.rejects(
+    createLive2DController(wrongAuthority.canvas, {
+      emotion: 'neutral',
+      framing: 'full-body',
+      modelManifestUrl: 'elysia-pet-asset://unselected/cat.model3.json',
+      state: 'idle',
+    }),
+    /asset authority/,
+  )
+  assert.deepEqual(wrongAuthority.requestedUrls, [])
+
+  const oversizedMoc = installEnvironment({
+    mocDeclaredLength: 64 * 1024 * 1024 + 1,
+  })
+  await assert.rejects(
+    createLive2DController(oversizedMoc.canvas, {
+      emotion: 'neutral',
+      framing: 'full-body',
+      modelManifestUrl: SAME_ORIGIN_MODEL_MANIFEST_URL,
+      state: 'idle',
+    }),
+    /declared size limit/,
+  )
+
+  const oversizedTexture = installEnvironment({
+    textureDeclaredLength: 16 * 1024 * 1024 + 1,
+  })
+  await assert.rejects(
+    createLive2DController(oversizedTexture.canvas, {
+      emotion: 'neutral',
+      framing: 'full-body',
+      modelManifestUrl: SAME_ORIGIN_MODEL_MANIFEST_URL,
+      state: 'idle',
+    }),
+    /declared size limit/,
+  )
+})
+
+test('rejects oversized PNG dimensions before invoking an image decoder', async () => {
+  const oversizedAtlas = installEnvironment({
+    textureDimensions: [[4097, 1], [1, 1]],
+  })
+  await assert.rejects(
+    createLive2DController(oversizedAtlas.canvas, {
+      emotion: 'neutral',
+      framing: 'full-body',
+      modelManifestUrl: SAME_ORIGIN_MODEL_MANIFEST_URL,
+      state: 'idle',
+    }),
+    /atlas dimensions/,
+  )
+  assert.equal(oversizedAtlas.bitmapDecodeCount, 0)
+
+  const excessiveAggregate = installEnvironment({
+    textureDimensions: [[4096, 4096], [4096, 4096]],
+  })
+  await assert.rejects(
+    createLive2DController(excessiveAggregate.canvas, {
+      emotion: 'neutral',
+      framing: 'full-body',
+      modelManifestUrl: SAME_ORIGIN_MODEL_MANIFEST_URL,
+      state: 'idle',
+    }),
+    /decoded pixel budget/,
+  )
+  assert.equal(excessiveAggregate.bitmapDecodeCount, 0)
+})
+
+test('rejects physics3 metadata mismatches before starting animation', async () => {
+  const invalidPhysics = makePhysicsDocument()
+  invalidPhysics.Meta.TotalOutputCount = 2
+  const environment = installEnvironment({ physicsDocument: invalidPhysics })
+
+  await assert.rejects(
+    createLive2DController(environment.canvas, {
+      emotion: 'neutral',
+      framing: 'full-body',
+      modelManifestUrl: SAME_ORIGIN_MODEL_MANIFEST_URL,
+      state: 'idle',
+    }),
+    /physics totals do not match/,
+  )
+  assert.equal(environment.bitmapDecodeCount, 0)
 })
 
 test('fails before loading assets when WebGL2 is unavailable', async () => {
@@ -488,6 +737,7 @@ test('fails before loading assets when WebGL2 is unavailable', async () => {
     createLive2DController(environment.canvas, {
       emotion: 'neutral',
       framing: 'half-body',
+      modelManifestUrl: SAME_ORIGIN_MODEL_MANIFEST_URL,
       state: 'idle',
     }),
     /WebGL2 is unavailable/,
@@ -506,7 +756,7 @@ test('uses the reviewed half-body and full-body camera transforms', async () => 
       framing: 'call-half-body',
     },
     {
-      expected: [1.485149, 0.990099, 0, -0.009901],
+      expected: [0.961538, 0.641026, 0, 0],
       framing: 'full-body',
     },
   ]
@@ -516,6 +766,7 @@ test('uses the reviewed half-body and full-body camera transforms', async () => 
     const controller = await createLive2DController(environment.canvas, {
       emotion: 'neutral',
       framing,
+      modelManifestUrl: SAME_ORIGIN_MODEL_MANIFEST_URL,
       state: 'idle',
     })
     const [frameId, frame] = [...environment.animationFrames.entries()][0]
@@ -542,6 +793,7 @@ test('main half-body camera keeps the reviewed head-to-waist viewport', async ()
   const controller = await createLive2DController(environment.canvas, {
     emotion: 'neutral',
     framing: 'half-body',
+    modelManifestUrl: SAME_ORIGIN_MODEL_MANIFEST_URL,
     state: 'idle',
   })
   const [frameId, frame] = [...environment.animationFrames.entries()][0]
@@ -569,6 +821,7 @@ test('rejects unsupported framing before requesting model assets', async () => {
     createLive2DController(environment.canvas, {
       emotion: 'neutral',
       framing: 'portrait',
+      modelManifestUrl: SAME_ORIGIN_MODEL_MANIFEST_URL,
       state: 'idle',
     }),
     /Unsupported Live2D character framing: portrait/,

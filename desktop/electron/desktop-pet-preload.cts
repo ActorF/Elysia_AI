@@ -1,40 +1,24 @@
-/** Expose the closed native actions and read-only motion state needed by the pet. */
+/** Expose closed native actions and one opaque model URL to the pet. */
 
 import { contextBridge, ipcRenderer } from 'electron'
 
-import type { DesktopPetApi } from './desktop-pet-contracts.js'
 import type {
-  CharacterPerformanceState,
-} from './character-performance-contracts.js'
+  DesktopPetApi,
+  DesktopPetModelBootstrap,
+} from './desktop-pet-contracts.js'
 
 const desktopPetApi: DesktopPetApi = Object.freeze({
   ready: () => ipcRenderer.invoke('desktop-pet:ready') as Promise<void>,
+  failed: () => ipcRenderer.invoke('desktop-pet:failed') as Promise<void>,
   hide: () => ipcRenderer.invoke('desktop-pet:hide') as Promise<void>,
   openMainChat: () => (
     ipcRenderer.invoke('desktop-pet:open-main-chat') as Promise<void>
   ),
-  getCharacterPerformanceState: () => (
+  getModelBootstrap: () => (
     ipcRenderer.invoke(
-      'desktop-pet:get-character-performance',
-    ) as Promise<CharacterPerformanceState>
+      'desktop-pet:get-model-bootstrap',
+    ) as Promise<DesktopPetModelBootstrap>
   ),
-  onCharacterPerformanceStateChanged: (
-    listener: (state: CharacterPerformanceState) => void,
-  ) => {
-    const handler = (
-      _event: Electron.IpcRendererEvent,
-      state: CharacterPerformanceState,
-    ): void => {
-      listener(state)
-    }
-    ipcRenderer.on('desktop-pet:character-performance-changed', handler)
-    return () => {
-      ipcRenderer.removeListener(
-        'desktop-pet:character-performance-changed',
-        handler,
-      )
-    }
-  },
 })
 
 contextBridge.exposeInMainWorld('elysiaDesktopPet', desktopPetApi)
