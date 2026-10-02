@@ -380,7 +380,6 @@ let nextVoiceTranscriptionNumber = 1
 let nextVoiceTranscriptionTerminalBeforeAcknowledgement = false
 const backendListeners = new Set()
 const desktopPetStateListeners = new Set()
-const desktopPetOpenChatListeners = new Set()
 const presenceNotificationStateListeners = new Set()
 
 const reloadState = takeReloadState()
@@ -760,7 +759,7 @@ const desktopApi = {
       selectedModelId !== null
       && !desktopPetState.models.some((model) => model.id === selectedModelId)
     ) {
-      throw new Error('Choose one of the detected Desktop Pet models.')
+      throw new Error('Choose one of the detected Desktop Pet programs.')
     }
     if (
       request.mode === 'visible'
@@ -769,7 +768,7 @@ const desktopApi = {
         || selectedModelId === null
       )
     ) {
-      throw new Error('Choose a ready Desktop Pet model before showing it.')
+      throw new Error('Choose a ready Desktop Pet program before launching it.')
     }
     const same = request.mode === desktopPetState.mode
       && selectedModelId === desktopPetState.selectedModelId
@@ -800,7 +799,7 @@ const desktopApi = {
       runtime: 'absent',
       warning: null,
       libraryStatus: 'ready',
-      folderName: 'elysia-live2d-free',
+      folderName: 'elysia-desktop-pet-free',
       models,
       selectedModelId: models[0].id,
     }
@@ -809,11 +808,6 @@ const desktopApi = {
 
   refreshDesktopPetModels: async () => {
     record('refreshDesktopPetModels')
-    return clone(desktopPetState)
-  },
-
-  resetDesktopPetPosition: async () => {
-    record('resetDesktopPetPosition')
     return clone(desktopPetState)
   },
 
@@ -1777,15 +1771,6 @@ const desktopApi = {
     }
   },
 
-  onDesktopPetOpenChatRequested: (listener) => {
-    record('onDesktopPetOpenChatRequested.subscribe')
-    desktopPetOpenChatListeners.add(listener)
-    return () => {
-      desktopPetOpenChatListeners.delete(listener)
-      record('onDesktopPetOpenChatRequested.unsubscribe')
-    }
-  },
-
   onPresenceNotificationStateChanged: (listener) => {
     record('onPresenceNotificationStateChanged.subscribe')
     presenceNotificationStateListeners.add(listener)
@@ -2089,12 +2074,6 @@ const testControl = {
     presenceNotificationState = clone(state)
     for (const listener of presenceNotificationStateListeners) {
       listener(clone(presenceNotificationState))
-    }
-  },
-
-  emitDesktopPetOpenChatRequested: () => {
-    for (const listener of desktopPetOpenChatListeners) {
-      listener()
     }
   },
 

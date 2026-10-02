@@ -40,7 +40,6 @@ const excludedDirectories = new Set([
   'workspace',
 ])
 const excludedRelativeDirectories = new Set([
-  'desktop/public/character/live2d/runtime',
   'models/cache',
 ])
 

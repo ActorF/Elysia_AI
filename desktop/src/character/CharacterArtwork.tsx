@@ -1,9 +1,9 @@
 /**
  * Render the application's deliberately static character state artwork.
  *
- * Dynamic Live2D is isolated to the optional desktop-pet window. Keeping this
- * surface image-only gives Chat and Voice a predictable half-body portrait and
- * prevents an external model library from becoming a dependency of the app UI.
+ * Dynamic motion is delegated to an optional external desktop-pet program.
+ * Keeping this surface image-only gives Chat and Voice a predictable half-body
+ * portrait and keeps external program files out of the app UI.
  */
 
 import { useState, type CSSProperties } from 'react'

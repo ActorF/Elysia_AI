@@ -1,7 +1,7 @@
 /**
  * Define the renderer-wide semantic state contract for Elysia's presence.
  * Callers provide bounded activity facts; this module resolves their priority
- * without returning artwork, motion, or Live2D resource selectors.
+ * without returning artwork, motion, or external companion-program selectors.
  */
 
 import type { BackendStatus } from '../../electron/contracts.ts'

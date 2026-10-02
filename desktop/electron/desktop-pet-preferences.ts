@@ -1,10 +1,10 @@
 /**
- * Persist bounded Electron-only desktop-pet intent and restore safe DIP bounds.
+ * Persist bounded Electron-only desktop-pet program intent.
  *
  * The repository owns a small strict JSON document below Electron's user-data
- * directory. Renderer-safe state intentionally excludes native display IDs and
- * coordinates. Geometry helpers consume Electron work areas already expressed
- * in device-independent pixels and never apply display scale twice.
+ * directory. Renderer-safe state intentionally excludes native paths and
+ * process identifiers. Legacy embedded-window placement is discarded during
+ * migration because the external companion program owns its own position.
  */
 
 import { randomUUID } from 'node:crypto'
@@ -28,26 +28,16 @@ import {
 } from './desktop-pet-contracts.js'
 
 /** Current on-disk schema for the Electron-owned desktop-pet preference. */
-export const DESKTOP_PET_PREFERENCES_SCHEMA_VERSION = 2
+export const DESKTOP_PET_PREFERENCES_SCHEMA_VERSION = 3
 
-/** Maximum native pet content width, expressed in Electron DIP units. */
-export const DESKTOP_PET_MAX_WIDTH_DIP = 420
-
-/** Maximum native pet content height, expressed in Electron DIP units. */
-export const DESKTOP_PET_MAX_HEIGHT_DIP = 560
-
-const DESKTOP_PET_MIN_WIDTH_DIP = 160
-const DESKTOP_PET_MIN_HEIGHT_DIP = 200
-const DESKTOP_PET_DEFAULT_EDGE_MARGIN_DIP = 24
 const DESKTOP_PET_MAX_PREFERENCE_BYTES = 16 * 1024
-const DESKTOP_PET_MAX_ABSOLUTE_COORDINATE_DIP = 1_000_000
 const DESKTOP_PET_MAX_LIBRARY_PATH_CODE_UNITS = 32_767
 const DESKTOP_PET_LOAD_WARNING = (
   'Desktop pet preferences could not be loaded safely. The pet remains off.'
 )
 const DESKTOP_PET_MIGRATION_WARNING = (
-  'The previous bundled Desktop Pet was removed. Choose a local Live2D folder '
-  + 'before turning the pet on.'
+  'The previous bundled Desktop Pet was removed. Choose a local companion '
+  + 'program folder before turning the pet on.'
 )
 
 const DESKTOP_PET_RUNTIME_STATES: ReadonlySet<string> = new Set([
@@ -71,7 +61,6 @@ interface StoredDesktopPetDocument {
   readonly revision: number
   readonly updatedAt: string | null
   readonly mode: DesktopPetMode
-  readonly placement: DesktopPetPlacement | null
   readonly libraryPath: string | null
   readonly selectedModelId: string | null
 }
@@ -81,45 +70,9 @@ interface ReadDesktopPetDocument {
   readonly warning: string | null
 }
 
-/** Main-private position used to restore one fixed-size pet window. */
-export interface DesktopPetPlacement {
-  readonly displayId: number | null
-  readonly x: number
-  readonly y: number
-}
-
-/** Fixed requested pet-window size in Electron device-independent pixels. */
-export interface DesktopPetWindowSize {
-  readonly width: number
-  readonly height: number
-}
-
-/** One Electron display work area already normalized to DIP coordinates. */
-export interface DesktopPetDisplayGeometry {
-  readonly id: number
-  readonly primary: boolean
-  readonly scaleFactor: number
-  readonly workArea: DesktopPetBounds
-}
-
-/** Resolved native window rectangle in Electron device-independent pixels. */
-export interface DesktopPetBounds {
-  readonly x: number
-  readonly y: number
-  readonly width: number
-  readonly height: number
-}
-
-/**
- * Main-only result containing renderer-safe state and private native placement.
- *
- * IPC handlers must return only ``state``. The placement exists solely so the
- * native window controller can restore a reviewed position without granting a
- * renderer any display-enumeration capability.
- */
+/** Main-only result containing public state plus its private library path. */
 export interface LoadedDesktopPetPreferences {
   readonly state: DesktopPetState
-  readonly placement: DesktopPetPlacement | null
   /** Absolute external folder retained only by Electron Main. */
   readonly libraryPath: string | null
 }
@@ -131,7 +84,7 @@ export interface DesktopPetLibraryPresentation {
   readonly models: readonly DesktopPetModelSummary[]
 }
 
-/** Main-private replacement for the external model folder and selection. */
+/** Main-private replacement for the external program folder and selection. */
 export interface UpdateDesktopPetLibraryRequest {
   readonly expectedRevision: number
   readonly libraryPath: string | null
@@ -155,7 +108,7 @@ export interface DesktopPetPreferencesRepositoryOptions {
 /** Report an optimistic-concurrency mismatch without exposing file details. */
 export class DesktopPetPreferencesConflictError extends Error {}
 
-/** Report an invalid Main-owned placement or repository construction request. */
+/** Report an invalid Main-owned preference or repository construction request. */
 export class DesktopPetPreferencesValidationError extends Error {}
 
 /** Report a persistence failure without exposing a native path to renderers. */
@@ -172,39 +125,6 @@ function hasExactFields(
   const actual = Reflect.ownKeys(value)
   return actual.length === expected.length
     && expected.every((field) => actual.includes(field))
-}
-
-function isSafeCoordinate(value: unknown): value is number {
-  return Number.isSafeInteger(value)
-    && Math.abs(value as number) <= DESKTOP_PET_MAX_ABSOLUTE_COORDINATE_DIP
-}
-
-function isSafeDisplayId(value: unknown): value is number {
-  // Electron display IDs are opaque safe integers, not signed 32-bit
-  // coordinates. Windows may expose the full unsigned hash range.
-  return Number.isSafeInteger(value)
-}
-
-function parsePlacement(value: unknown): DesktopPetPlacement | null {
-  if (value === null) {
-    return null
-  }
-  if (
-    !isRecord(value)
-    || !hasExactFields(value, ['displayId', 'x', 'y'])
-    || (value.displayId !== null && !isSafeDisplayId(value.displayId))
-    || !isSafeCoordinate(value.x)
-    || !isSafeCoordinate(value.y)
-  ) {
-    throw new DesktopPetPreferencesValidationError(
-      'Desktop pet placement is invalid.',
-    )
-  }
-  return Object.freeze({
-    displayId: value.displayId as number | null,
-    x: value.x as number,
-    y: value.y as number,
-  })
 }
 
 function isCanonicalTimestamp(value: unknown): value is string | null {
@@ -230,7 +150,7 @@ function parseLibraryPath(value: unknown): string | null {
     || !path.isAbsolute(value)
   ) {
     throw new DesktopPetPreferencesValidationError(
-      'Desktop pet model folder is invalid.',
+      'Desktop pet program folder is invalid.',
     )
   }
   return path.resolve(value)
@@ -242,14 +162,19 @@ function parseSelectedModelId(value: unknown): string | null {
   }
   if (!isDesktopPetModelId(value)) {
     throw new DesktopPetPreferencesValidationError(
-      'Desktop pet model selection is invalid.',
+      'Desktop pet program selection is invalid.',
     )
   }
   return value
 }
 
 function libraryFolderName(libraryPath: string): string {
-  const basename = path.basename(libraryPath)
+  // The path stays Main-private, while its final component is presentation.
+  // Remove control and bidi-format characters so a local folder cannot forge
+  // the direction or neighboring labels in Settings.
+  const basename = Array.from(
+    path.basename(libraryPath).replace(/[\p{Cc}\p{Cf}]/gu, '').trim(),
+  ).slice(0, 255).join('')
   // Filesystem roots have no basename. A neutral label keeps the renderer from
   // receiving the absolute root while still producing a usable Settings row.
   return basename.length === 0 ? 'Selected folder' : basename
@@ -277,9 +202,9 @@ function parseStoredDocument(value: unknown): ReadDesktopPetDocument {
       'placement',
     ])
   ) {
-    // The v1 model was bundled with the application. That asset no longer
-    // exists, so migration preserves only safe placement and never turns on an
-    // external model the user has not explicitly chosen.
+    // The v1 model was bundled with the application. That asset and its native
+    // window no longer exist, so migration drops placement and never turns on
+    // an external program the user has not explicitly chosen.
     parseUpdateDesktopPetRequest({
       expectedRevision: value.revision,
       mode: value.mode,
@@ -290,7 +215,6 @@ function parseStoredDocument(value: unknown): ReadDesktopPetDocument {
         revision: value.revision as number,
         updatedAt: value.updatedAt,
         mode: 'disabled',
-        placement: parsePlacement(value.placement),
         libraryPath: null,
         selectedModelId: null,
       }),
@@ -298,9 +222,8 @@ function parseStoredDocument(value: unknown): ReadDesktopPetDocument {
     })
   }
 
-  if (
-    value.schemaVersion !== DESKTOP_PET_PREFERENCES_SCHEMA_VERSION
-    || !hasExactFields(value, [
+  const isLegacyExternalDocument = value.schemaVersion === 2
+    && hasExactFields(value, [
       'schemaVersion',
       'revision',
       'updatedAt',
@@ -309,7 +232,18 @@ function parseStoredDocument(value: unknown): ReadDesktopPetDocument {
       'libraryPath',
       'selectedModelId',
     ])
-  ) {
+  const isCurrentDocument = (
+    value.schemaVersion === DESKTOP_PET_PREFERENCES_SCHEMA_VERSION
+    && hasExactFields(value, [
+      'schemaVersion',
+      'revision',
+      'updatedAt',
+      'mode',
+      'libraryPath',
+      'selectedModelId',
+    ])
+  )
+  if (!isLegacyExternalDocument && !isCurrentDocument) {
     throw new DesktopPetPreferencesValidationError(
       'Desktop pet preference document is invalid.',
     )
@@ -323,12 +257,12 @@ function parseStoredDocument(value: unknown): ReadDesktopPetDocument {
   const selectedModelId = parseSelectedModelId(request.modelId)
   if (libraryPath === null && selectedModelId !== null) {
     throw new DesktopPetPreferencesValidationError(
-      'Desktop pet model selection has no configured folder.',
+      'Desktop pet program selection has no configured folder.',
     )
   }
   if (request.mode === 'visible' && selectedModelId === null) {
     throw new DesktopPetPreferencesValidationError(
-      'Visible desktop pet preferences require a selected model.',
+      'Visible desktop pet preferences require a selected program.',
     )
   }
   return Object.freeze({
@@ -337,7 +271,6 @@ function parseStoredDocument(value: unknown): ReadDesktopPetDocument {
       revision: request.expectedRevision,
       updatedAt: value.updatedAt,
       mode: request.mode,
-      placement: parsePlacement(value.placement),
       libraryPath,
       selectedModelId,
     }),
@@ -351,7 +284,6 @@ function firstRunStoredDocument(): StoredDesktopPetDocument {
     revision: 0,
     updatedAt: null,
     mode: 'disabled',
-    placement: null,
     libraryPath: null,
     selectedModelId: null,
   })
@@ -363,7 +295,6 @@ function failClosedStoredDocument(): StoredDesktopPetDocument {
     revision: 0,
     updatedAt: null,
     mode: 'disabled',
-    placement: null,
     libraryPath: null,
     selectedModelId: null,
   })
@@ -401,7 +332,6 @@ function toLoadedPreferences(
       models: Object.freeze([]),
       selectedModelId: document.selectedModelId,
     }),
-    placement: document.placement,
     libraryPath: document.libraryPath,
   })
 }
@@ -418,7 +348,7 @@ export function presentDesktopPetLibrary(
 ): LoadedDesktopPetPreferences {
   if (!DESKTOP_PET_LIBRARY_STATES.has(presentation.status)) {
     throw new DesktopPetPreferencesValidationError(
-      'Desktop pet model-library status is invalid.',
+      'Desktop pet program-library status is invalid.',
     )
   }
   if (
@@ -430,7 +360,7 @@ export function presentDesktopPetLibrary(
     )
   ) {
     throw new DesktopPetPreferencesValidationError(
-      'Desktop pet model-folder name is invalid.',
+      'Desktop pet program-folder name is invalid.',
     )
   }
   const seen = new Set<string>()
@@ -444,7 +374,7 @@ export function presentDesktopPetLibrary(
       || /[\0\r\n]/u.test(model.displayName)
     ) {
       throw new DesktopPetPreferencesValidationError(
-        'Desktop pet model summary is invalid.',
+        'Desktop pet program summary is invalid.',
       )
     }
     seen.add(model.id)
@@ -460,7 +390,6 @@ export function presentDesktopPetLibrary(
       folderName: presentation.folderName,
       models: Object.freeze(models),
     }),
-    placement: preferences.placement,
     libraryPath: preferences.libraryPath,
   })
 }
@@ -619,142 +548,6 @@ function safeTimestamp(now: () => Date): string {
   }
 }
 
-function normalizeWorkArea(bounds: DesktopPetBounds): DesktopPetBounds | null {
-  if (
-    !Number.isFinite(bounds.x)
-    || !Number.isFinite(bounds.y)
-    || !Number.isFinite(bounds.width)
-    || !Number.isFinite(bounds.height)
-    || bounds.width <= 0
-    || bounds.height <= 0
-  ) {
-    return null
-  }
-  return Object.freeze({
-    x: Math.trunc(bounds.x),
-    y: Math.trunc(bounds.y),
-    width: Math.max(1, Math.trunc(bounds.width)),
-    height: Math.max(1, Math.trunc(bounds.height)),
-  })
-}
-
-function distanceSquaredToWorkArea(
-  x: number,
-  y: number,
-  workArea: DesktopPetBounds,
-): number {
-  const maximumX = workArea.x + workArea.width
-  const maximumY = workArea.y + workArea.height
-  const deltaX = x < workArea.x
-    ? workArea.x - x
-    : x > maximumX
-      ? x - maximumX
-      : 0
-  const deltaY = y < workArea.y
-    ? workArea.y - y
-    : y > maximumY
-      ? y - maximumY
-      : 0
-  return (deltaX * deltaX) + (deltaY * deltaY)
-}
-
-/**
- * Resolve a bounded fixed-size pet rectangle across current display work areas.
- *
- * Electron supplies every work area in DIP, so ``scaleFactor`` is validated but
- * deliberately not multiplied into coordinates. A missing saved display uses
- * the nearest current work area; no saved placement uses the primary display.
- * Invalid display input returns ``null`` so Main can fail the optional surface
- * without risking an off-screen or unbounded native window.
- */
-export function resolveDesktopPetBounds(
-  placement: DesktopPetPlacement | null,
-  displays: readonly DesktopPetDisplayGeometry[],
-  requestedSize: DesktopPetWindowSize,
-): DesktopPetBounds | null {
-  const validDisplays = displays.flatMap((display) => {
-    const workArea = normalizeWorkArea(display.workArea)
-    if (
-      workArea === null
-      || !isSafeDisplayId(display.id)
-      || typeof display.primary !== 'boolean'
-      || !Number.isFinite(display.scaleFactor)
-      || display.scaleFactor <= 0
-    ) {
-      return []
-    }
-    return [{ ...display, workArea }]
-  })
-  if (
-    validDisplays.length === 0
-    || !Number.isFinite(requestedSize.width)
-    || !Number.isFinite(requestedSize.height)
-    || requestedSize.width <= 0
-    || requestedSize.height <= 0
-  ) {
-    return null
-  }
-
-  let safePlacement: DesktopPetPlacement | null
-  try {
-    safePlacement = parsePlacement(placement)
-  } catch {
-    safePlacement = null
-  }
-  let display = safePlacement?.displayId === null
-    || safePlacement === null
-    ? undefined
-    : validDisplays.find((candidate) => (
-        candidate.id === safePlacement?.displayId
-      ))
-  if (display === undefined && safePlacement !== null) {
-    display = [...validDisplays].sort((left, right) => (
-      distanceSquaredToWorkArea(
-        safePlacement.x,
-        safePlacement.y,
-        left.workArea,
-      ) - distanceSquaredToWorkArea(
-        safePlacement.x,
-        safePlacement.y,
-        right.workArea,
-      )
-    ))[0]
-  }
-  display ??= validDisplays.find((candidate) => candidate.primary)
-    ?? validDisplays[0]
-
-  const width = Math.min(
-    display.workArea.width,
-    DESKTOP_PET_MAX_WIDTH_DIP,
-    Math.max(DESKTOP_PET_MIN_WIDTH_DIP, Math.trunc(requestedSize.width)),
-  )
-  const height = Math.min(
-    display.workArea.height,
-    DESKTOP_PET_MAX_HEIGHT_DIP,
-    Math.max(DESKTOP_PET_MIN_HEIGHT_DIP, Math.trunc(requestedSize.height)),
-  )
-  const minimumX = display.workArea.x
-  const minimumY = display.workArea.y
-  const maximumX = display.workArea.x + display.workArea.width - width
-  const maximumY = display.workArea.y + display.workArea.height - height
-  const defaultX = maximumX - Math.min(
-    DESKTOP_PET_DEFAULT_EDGE_MARGIN_DIP,
-    Math.max(0, maximumX - minimumX),
-  )
-  const defaultY = maximumY - Math.min(
-    DESKTOP_PET_DEFAULT_EDGE_MARGIN_DIP,
-    Math.max(0, maximumY - minimumY),
-  )
-  const requestedX = safePlacement?.x ?? defaultX
-  const requestedY = safePlacement?.y ?? defaultY
-  return Object.freeze({
-    x: Math.max(minimumX, Math.min(requestedX, maximumX)),
-    y: Math.max(minimumY, Math.min(requestedY, maximumY)),
-    width,
-    height,
-  })
-}
-
 /** Persist strict desktop-pet intent independently from the Python Backend. */
 export class DesktopPetPreferencesRepository {
   readonly #filePath: string
@@ -832,12 +625,12 @@ export class DesktopPetPreferencesRepository {
         && current.document.libraryPath === null
       ) {
         throw new DesktopPetPreferencesValidationError(
-          'Choose a Desktop Pet model folder before selecting a model.',
+          'Choose a Desktop Pet program folder before selecting a program.',
         )
       }
       if (request.mode === 'visible' && selectedModelId === null) {
         throw new DesktopPetPreferencesValidationError(
-          'Choose a Desktop Pet model before turning it on.',
+          'Choose a Desktop Pet program before turning it on.',
         )
       }
       if (
@@ -868,10 +661,10 @@ export class DesktopPetPreferencesRepository {
   }
 
   /**
-   * Persist a Main-validated external folder without exposing it through IPC.
+   * Persist a Main-validated external program folder without exposing it.
    *
    * Clearing the folder or its selection also disables the pet, because a
-   * visible native window must never outlive the model identity it was using.
+   * running process must never outlive the program identity it was using.
    */
   async updateLibrary(
     requestValue: UpdateDesktopPetLibraryRequest,
@@ -888,7 +681,7 @@ export class DesktopPetPreferencesRepository {
       || requestValue.expectedRevision < 0
     ) {
       throw new DesktopPetPreferencesValidationError(
-        'Desktop pet model-folder update is invalid.',
+      'Desktop pet program-folder update is invalid.',
       )
     }
     const libraryPath = parseLibraryPath(requestValue.libraryPath)
@@ -897,7 +690,7 @@ export class DesktopPetPreferencesRepository {
     )
     if (libraryPath === null && selectedModelId !== null) {
       throw new DesktopPetPreferencesValidationError(
-        'Desktop pet model selection has no configured folder.',
+        'Desktop pet program selection has no configured folder.',
       )
     }
     requireRuntimeState(runtime)
@@ -951,36 +744,4 @@ export class DesktopPetPreferencesRepository {
     })
   }
 
-  /** Atomically save native placement without changing renderer CAS revision. */
-  async savePlacement(
-    placementValue: DesktopPetPlacement | null,
-  ): Promise<void> {
-    const placement = parsePlacement(placementValue)
-    await withPathLock(this.#filePath, async () => {
-      let current: StoredDesktopPetDocument
-      try {
-        current = (
-          await readStoredDocument(this.#filePath)
-        )?.document ?? firstRunStoredDocument()
-      } catch {
-        // A drag must never overwrite a damaged preference and accidentally
-        // restore a pet the user did not safely opt into.
-        throw new DesktopPetPreferencesStorageError(
-          'Desktop pet preferences could not be saved.',
-        )
-      }
-      if (
-        current.placement?.displayId === placement?.displayId
-        && current.placement?.x === placement?.x
-        && current.placement?.y === placement?.y
-      ) {
-        return
-      }
-      await writeStoredDocument(
-        this.#filePath,
-        Object.freeze({ ...current, placement }),
-        this.#replaceFile,
-      )
-    })
-  }
 }

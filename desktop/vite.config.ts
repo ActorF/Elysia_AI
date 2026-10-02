@@ -14,10 +14,7 @@ export default defineConfig({
   base: './',
   build: {
     rollupOptions: {
-      input: {
-        main: path.join(desktopRoot, 'index.html'),
-        pet: path.join(desktopRoot, 'pet.html'),
-      },
+      input: path.join(desktopRoot, 'index.html'),
     },
   },
   plugins: [react()],

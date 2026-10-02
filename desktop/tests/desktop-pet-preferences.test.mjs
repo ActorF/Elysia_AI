@@ -1,4 +1,4 @@
-/** Verify strict Electron-owned desktop-pet persistence and DIP restoration. */
+/** Verify strict Electron-owned desktop-pet program preference persistence. */
 
 import assert from 'node:assert/strict'
 import {
@@ -16,19 +16,16 @@ import {
   parseUpdateDesktopPetRequest,
 } from '../dist-electron/desktop-pet-contracts.js'
 import {
-  DESKTOP_PET_MAX_HEIGHT_DIP,
-  DESKTOP_PET_MAX_WIDTH_DIP,
   DesktopPetPreferencesConflictError,
   DesktopPetPreferencesRepository,
   DesktopPetPreferencesStorageError,
   DesktopPetPreferencesValidationError,
   presentDesktopPetLibrary,
-  resolveDesktopPetBounds,
 } from '../dist-electron/desktop-pet-preferences.js'
 
 const MODEL_ID = 'model_0123456789abcdef0123456789abcdef'
 const ALTERNATE_MODEL_ID = 'model_fedcba9876543210fedcba9876543210'
-const LIBRARY_PATH = path.resolve(os.tmpdir(), 'elysia-live2d-library')
+const LIBRARY_PATH = path.resolve(os.tmpdir(), 'elysia-desktop-pet-programs')
 
 async function withTempDirectory(operation) {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'elysia-pet-test-'))
@@ -41,35 +38,15 @@ async function withTempDirectory(operation) {
 
 function canonicalDocument(overrides = {}) {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     revision: 3,
     updatedAt: '2026-10-01T12:00:00.000Z',
     mode: 'hidden',
-    placement: {
-      displayId: 7,
-      x: -640,
-      y: 120,
-    },
     libraryPath: LIBRARY_PATH,
     selectedModelId: MODEL_ID,
     ...overrides,
   }
 }
-
-const DISPLAYS = Object.freeze([
-  Object.freeze({
-    id: 1,
-    primary: true,
-    scaleFactor: 1,
-    workArea: Object.freeze({ x: 0, y: 0, width: 1920, height: 1080 }),
-  }),
-  Object.freeze({
-    id: 2,
-    primary: false,
-    scaleFactor: 2,
-    workArea: Object.freeze({ x: -1280, y: 0, width: 1280, height: 720 }),
-  }),
-])
 
 test('update contract accepts only exact closed fields', () => {
   assert.deepEqual(
@@ -136,7 +113,6 @@ test('missing preferences default disabled without creating a file', async () =>
         models: [],
         selectedModelId: null,
       },
-      placement: null,
       libraryPath: null,
     })
 
@@ -150,25 +126,7 @@ test('missing preferences default disabled without creating a file', async () =>
   })
 })
 
-test('first drag persists disabled schema-v2 state with private placement', async () => {
-  await withTempDirectory(async (directory) => {
-    const filePath = path.join(directory, 'desktop-pet.json')
-    const repository = new DesktopPetPreferencesRepository(filePath)
-    await repository.savePlacement({ displayId: 2, x: -700, y: 100 })
-
-    assert.deepEqual(JSON.parse(await readFile(filePath, 'utf8')), {
-      schemaVersion: 2,
-      revision: 0,
-      updatedAt: null,
-      mode: 'disabled',
-      placement: { displayId: 2, x: -700, y: 100 },
-      libraryPath: null,
-      selectedModelId: null,
-    })
-  })
-})
-
-test('schema-v1 migration preserves placement but forces the pet off', async () => {
+test('schema-v1 migration discards retired placement and forces the pet off', async () => {
   await withTempDirectory(async (directory) => {
     const filePath = path.join(directory, 'desktop-pet.json')
     await writeFile(filePath, JSON.stringify({
@@ -189,22 +147,56 @@ test('schema-v1 migration preserves placement but forces the pet off', async () 
     assert.equal(migrated.state.selectedModelId, null)
     assert.match(migrated.state.warning, /previous bundled Desktop Pet/u)
     assert.equal(migrated.libraryPath, null)
-    assert.deepEqual(migrated.placement, { displayId: 7, x: -640, y: 120 })
+    assert.equal(Object.hasOwn(migrated, 'placement'), false)
 
     await repository.update({ expectedRevision: 3, mode: 'hidden' })
     assert.deepEqual(JSON.parse(await readFile(filePath, 'utf8')), {
-      schemaVersion: 2,
+      schemaVersion: 3,
       revision: 4,
       updatedAt: '2026-10-01T12:30:00.000Z',
       mode: 'hidden',
-      placement: { displayId: 7, x: -640, y: 120 },
       libraryPath: null,
       selectedModelId: null,
     })
   })
 })
 
-test('valid public state excludes Main-private path and placement', async () => {
+test('schema-v2 migration preserves program intent but discards placement', async () => {
+  await withTempDirectory(async (directory) => {
+    const filePath = path.join(directory, 'desktop-pet.json')
+    await writeFile(filePath, JSON.stringify({
+      schemaVersion: 2,
+      revision: 5,
+      updatedAt: '2026-10-01T12:00:00.000Z',
+      mode: 'hidden',
+      placement: { displayId: 2, x: 400, y: 200 },
+      libraryPath: LIBRARY_PATH,
+      selectedModelId: MODEL_ID,
+    }), 'utf8')
+    const repository = new DesktopPetPreferencesRepository(filePath, {
+      now: () => new Date('2026-10-01T12:30:00.000Z'),
+    })
+
+    const migrated = await repository.load('absent')
+    assert.equal(migrated.state.revision, 5)
+    assert.equal(migrated.state.mode, 'hidden')
+    assert.equal(migrated.state.selectedModelId, MODEL_ID)
+    assert.equal(migrated.libraryPath, LIBRARY_PATH)
+    assert.equal(Object.hasOwn(migrated, 'placement'), false)
+
+    await repository.update({ expectedRevision: 5, mode: 'disabled' })
+    assert.deepEqual(JSON.parse(await readFile(filePath, 'utf8')), {
+      schemaVersion: 3,
+      revision: 6,
+      updatedAt: '2026-10-01T12:30:00.000Z',
+      mode: 'disabled',
+      libraryPath: LIBRARY_PATH,
+      selectedModelId: MODEL_ID,
+    })
+  })
+})
+
+test('valid public state excludes the Main-private program path', async () => {
   await withTempDirectory(async (directory) => {
     const filePath = path.join(directory, 'desktop-pet.json')
     await writeFile(filePath, JSON.stringify(canonicalDocument()), 'utf8')
@@ -222,15 +214,14 @@ test('valid public state excludes Main-private path and placement', async () => 
       models: [],
       selectedModelId: MODEL_ID,
     })
-    assert.equal(Object.hasOwn(loaded.state, 'placement'), false)
     assert.equal(Object.hasOwn(loaded.state, 'libraryPath'), false)
     assert.equal(JSON.stringify(loaded.state).includes(LIBRARY_PATH), false)
     assert.equal(loaded.libraryPath, LIBRARY_PATH)
-    assert.deepEqual(loaded.placement, { displayId: 7, x: -640, y: 120 })
+    assert.equal(Object.hasOwn(loaded, 'placement'), false)
 
     const presented = presentDesktopPetLibrary(loaded, {
       status: 'ready',
-      folderName: 'Elysia Live2D',
+      folderName: 'Elysia Desktop Pet',
       models: [
         { id: MODEL_ID, displayName: '爱莉希雅人律' },
         { id: ALTERNATE_MODEL_ID, displayName: '爱莉希雅泳装' },
@@ -250,7 +241,7 @@ test('invalid or oversized documents always fail closed', async () => {
     const invalidDocuments = [
       '{',
       JSON.stringify({}),
-      JSON.stringify(canonicalDocument({ schemaVersion: 3 })),
+      JSON.stringify(canonicalDocument({ schemaVersion: 2 })),
       JSON.stringify({ ...canonicalDocument(), nativePath: 'C:\\secret' }),
       JSON.stringify(canonicalDocument({ revision: -1 })),
       JSON.stringify(canonicalDocument({ updatedAt: '2026-10-01T12:00:00Z' })),
@@ -266,12 +257,7 @@ test('invalid or oversized documents always fail closed', async () => {
         libraryPath: LIBRARY_PATH,
         selectedModelId: null,
       })),
-      JSON.stringify(canonicalDocument({
-        placement: { displayId: 7, x: 0, y: 0, width: 800 },
-      })),
-      JSON.stringify(canonicalDocument({
-        placement: { displayId: 7, x: 1_000_001, y: 0 },
-      })),
+      JSON.stringify({ ...canonicalDocument(), placement: null }),
       'x'.repeat((16 * 1024) + 1),
     ]
 
@@ -283,7 +269,7 @@ test('invalid or oversized documents always fail closed', async () => {
       assert.equal(loaded.state.runtime, 'failed')
       assert.equal(loaded.state.libraryStatus, 'not-configured')
       assert.match(loaded.state.warning, /remains off/u)
-      assert.equal(loaded.placement, null)
+      assert.equal(Object.hasOwn(loaded, 'placement'), false)
       assert.equal(loaded.libraryPath, null)
     }
   })
@@ -340,7 +326,6 @@ test('library and mode updates are revisioned, private, and no-op aware', async 
         revision: 3,
         updatedAt: '2026-10-01T13:00:03.000Z',
         mode: 'visible',
-        placement: null,
         selectedModelId: ALTERNATE_MODEL_ID,
       }),
     )
@@ -449,134 +434,6 @@ test('failed atomic replacement preserves the last known-good file', async () =>
     assert.deepEqual(await readdir(directory), ['desktop-pet.json'])
     assert.equal((await initial.load()).state.mode, 'disabled')
   })
-})
-
-test('placement writes stay private and do not churn preference revision', async () => {
-  await withTempDirectory(async (directory) => {
-    const filePath = path.join(directory, 'desktop-pet.json')
-    const repository = new DesktopPetPreferencesRepository(filePath, {
-      now: () => new Date('2026-10-01T16:00:00.000Z'),
-    })
-    await repository.update({ expectedRevision: 0, mode: 'hidden' })
-
-    await repository.savePlacement({ displayId: 2, x: -700, y: 100 })
-    const loaded = await repository.load('visible')
-
-    assert.equal(loaded.state.revision, 1)
-    assert.equal(loaded.state.updatedAt, '2026-10-01T16:00:00.000Z')
-    assert.equal(Object.hasOwn(loaded.state, 'placement'), false)
-    assert.deepEqual(loaded.placement, { displayId: 2, x: -700, y: 100 })
-
-    await repository.savePlacement({
-      displayId: 0xffff_fffe,
-      x: -700,
-      y: 100,
-    })
-    assert.deepEqual((await repository.load('visible')).placement, {
-      displayId: 0xffff_fffe,
-      x: -700,
-      y: 100,
-    })
-    await assert.rejects(
-      repository.savePlacement({ displayId: 2, x: 1_000_001, y: 0 }),
-      DesktopPetPreferencesValidationError,
-    )
-  })
-})
-
-test('DIP geometry restores and clamps on a scaled negative-coordinate display', () => {
-  const bounds = resolveDesktopPetBounds(
-    { displayId: 2, x: -2_000, y: 900 },
-    DISPLAYS,
-    { width: 900, height: 900 },
-  )
-
-  assert.deepEqual(bounds, {
-    x: -1280,
-    y: 160,
-    width: DESKTOP_PET_MAX_WIDTH_DIP,
-    height: DESKTOP_PET_MAX_HEIGHT_DIP,
-  })
-})
-
-test('removed displays use the nearest current DIP work area', () => {
-  const displays = [
-    DISPLAYS[0],
-    {
-      id: 3,
-      primary: false,
-      scaleFactor: 1.5,
-      workArea: { x: 1920, y: 0, width: 1600, height: 900 },
-    },
-  ]
-  const bounds = resolveDesktopPetBounds(
-    { displayId: 99, x: 3_500, y: 850 },
-    displays,
-    { width: 320, height: 480 },
-  )
-
-  assert.deepEqual(bounds, {
-    x: 3_200,
-    y: 420,
-    width: 320,
-    height: 480,
-  })
-})
-
-test('Windows unsigned-hash display IDs remain valid geometry owners', () => {
-  const displayId = 0xffff_fffe
-  const bounds = resolveDesktopPetBounds(
-    { displayId, x: 200, y: 150 },
-    [{
-      id: displayId,
-      primary: true,
-      scaleFactor: 1.25,
-      workArea: { x: 0, y: 0, width: 1600, height: 900 },
-    }],
-    { width: 320, height: 480 },
-  )
-
-  assert.deepEqual(bounds, {
-    x: 200,
-    y: 150,
-    width: 320,
-    height: 480,
-  })
-})
-
-test('new placement uses the primary work-area edge without scale multiplication', () => {
-  const bounds = resolveDesktopPetBounds(
-    null,
-    DISPLAYS,
-    { width: 320, height: 480 },
-  )
-
-  assert.deepEqual(bounds, {
-    x: 1576,
-    y: 576,
-    width: 320,
-    height: 480,
-  })
-})
-
-test('invalid geometry cannot create an unbounded native rectangle', () => {
-  assert.equal(
-    resolveDesktopPetBounds(null, [], { width: 320, height: 480 }),
-    null,
-  )
-  assert.equal(
-    resolveDesktopPetBounds(null, DISPLAYS, { width: Number.NaN, height: 480 }),
-    null,
-  )
-  assert.equal(
-    resolveDesktopPetBounds(null, [{
-      id: 1,
-      primary: true,
-      scaleFactor: 0,
-      workArea: { x: 0, y: 0, width: 100, height: 100 },
-    }], { width: 320, height: 480 }),
-    null,
-  )
 })
 
 test('repository rejects relative paths and invalid runtime states', async () => {

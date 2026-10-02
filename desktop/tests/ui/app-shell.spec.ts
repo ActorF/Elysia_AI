@@ -300,7 +300,6 @@ interface CallRecord {
 interface RendererTestControl {
   clearCalls(): void
   emitBackendEvent(event: unknown): void
-  emitDesktopPetOpenChatRequested(): void
   emitDesktopPetState(state: DesktopPetState): void
   emitPresenceNotificationState(state: PresenceNotificationState): void
   getPendingChatActionCount(): number
@@ -512,13 +511,6 @@ async function emitPresenceNotificationState(
     ;(window as TestWindow).elysiaDesktopTest
       .emitPresenceNotificationState(nextState)
   }, state)
-}
-
-async function emitDesktopPetOpenChatRequested(): Promise<void> {
-  await page.evaluate(() => {
-    ;(window as TestWindow).elysiaDesktopTest
-      .emitDesktopPetOpenChatRequested()
-  })
 }
 
 async function setVoiceSettingsState(
@@ -1315,7 +1307,7 @@ function readyDesktopPetState(
 ): DesktopPetState {
   return desktopPetState({
     libraryStatus: 'ready',
-    folderName: 'elysia-live2d-free',
+    folderName: 'elysia-desktop-pet-free',
     models: detectedDesktopPetModels,
     selectedModelId: detectedDesktopPetModels[0].id,
     ...overrides,
@@ -2336,37 +2328,35 @@ test('keeps storage visible without Backend settings and disables busy mutations
     .toBeDisabled()
 })
 
-test('configures detected Desktop Pet models before enabling the window', async () => {
+test('configures a detected local companion program before launching it', async () => {
   await openSettings()
 
   const download = page.getByRole('button', {
-    name: 'Download optional free pack',
+    name: 'Download free pack',
   })
   const chooseFolder = page.getByRole('button', {
-    name: 'Choose local Live2D folder…',
+    name: 'Choose desktop-pet program folder…',
   })
   const rescan = page.getByRole('button', { name: 'Rescan' })
-  const model = page.getByRole('combobox', { name: 'Dynamic model' })
+  const model = page.getByRole('combobox', { name: 'Companion program' })
   const controls = page.getByRole('group', {
-    name: 'Desktop Pet visibility',
+    name: 'Desktop Pet mode',
   })
   const off = controls.getByRole('radio', { name: /^Off/ })
   const hidden = controls.getByRole('radio', { name: /^Hidden/ })
   const visible = controls.getByRole('radio', { name: /^Visible/ })
-  const resetPosition = page.getByRole('button', { name: 'Reset position' })
 
   await expect(off).toBeChecked()
   await expect(visible).toBeDisabled()
   await expect(model).toBeDisabled()
   await expect(rescan).toBeDisabled()
-  await expect(page.getByText('No local Live2D folder selected.')).toBeVisible()
+  await expect(page.getByText('No desktop-pet program folder selected.')).toBeVisible()
   await expect(page.locator('.desktop-pet-library .desktop-pet-note').first()).toContainText(
-    'Use a Live2D pack already on this computer, including a paid pack you own.',
+    'Programs by @书呆儿 are not included.',
   )
-  await expect(page.getByText(
-    'Download the free pack, then choose its folder',
-    { exact: false },
-  )).toHaveCount(0)
+  await expect(page.locator('.desktop-pet-library .desktop-pet-note').first()).toContainText(
+    'Elysia never copies or modifies the programs, model files, or each program\'s local configuration.',
+  )
   await expect(chooseFolder).toBeVisible()
   await expect(chooseFolder).toBeEnabled()
   const chooseFolderPresentation = await chooseFolder.evaluate((element) => {
@@ -2393,7 +2383,7 @@ test('configures detected Desktop Pet models before enabling the window', async 
   expect(Math.round(chooseFolderPresentation.width)).toBeGreaterThanOrEqual(44)
   expect(Math.round(chooseFolderPresentation.height)).toBeGreaterThanOrEqual(44)
   await expect(page.getByText(
-    'Preference: disabled. Native window: absent.',
+    'Preference: disabled. Companion program: absent.',
   )).toBeVisible()
   await clearCalls()
 
@@ -2404,7 +2394,7 @@ test('configures detected Desktop Pet models before enabling the window', async 
 
   await chooseFolder.click()
   await expect(page.getByText(
-    '2 compatible models detected in elysia-live2d-free.',
+    '2 compatible programs detected in elysia-desktop-pet-free.',
   )).toBeVisible()
   await expect(model).toBeEnabled()
   await expect(model).toHaveValue(detectedDesktopPetModels[0].id)
@@ -2418,22 +2408,18 @@ test('configures detected Desktop Pet models before enabling the window', async 
   await controls.getByText('Visible', { exact: true }).click()
   await expect(visible).toBeChecked()
   await expect(page.getByText(
-    'Preference: visible. Native window: visible.',
+    'Preference: visible. Companion program: visible.',
   )).toBeVisible()
-
-  await resetPosition.click()
-  await expect(resetPosition).toBeEnabled()
-
   await controls.getByText('Hidden', { exact: true }).click()
   await expect(hidden).toBeChecked()
   await expect(page.getByText(
-    'Preference: hidden. Native window: absent.',
+    'Preference: hidden. Companion program: absent.',
   )).toBeVisible()
 
   await controls.getByText('Off', { exact: true }).click()
   await expect(off).toBeChecked()
   await expect(page.getByText(
-    'Preference: disabled. Native window: absent.',
+    'Preference: disabled. Companion program: absent.',
   )).toBeVisible()
 
   const calls = await getCalls()
@@ -2455,9 +2441,6 @@ test('configures detected Desktop Pet models before enabling the window', async 
     [{ expectedRevision: 3, mode: 'hidden' }],
     [{ expectedRevision: 4, mode: 'disabled' }],
   ])
-  expect(calls.filter(
-    (call) => call.method === 'resetDesktopPetPosition',
-  )).toHaveLength(1)
 })
 
 test('recovers canonical Desktop Pet state after an update fails', async () => {
@@ -2471,7 +2454,7 @@ test('recovers canonical Desktop Pet state after an update fails', async () => {
   await emitDesktopPetState(visibleState)
 
   const controls = page.getByRole('group', {
-    name: 'Desktop Pet visibility',
+    name: 'Desktop Pet mode',
   })
   await expect(controls.getByRole('radio', { name: /^Visible/ })).toBeChecked()
 
@@ -2489,7 +2472,7 @@ test('recovers canonical Desktop Pet state after an update fails', async () => {
   await expect(page.getByRole('alert')).toHaveText(failure)
   await expect(controls.getByRole('radio', { name: /^Hidden/ })).toBeChecked()
   await expect(page.getByText(
-    'Preference: hidden. Native window: absent.',
+    'Preference: hidden. Companion program: absent.',
   )).toBeVisible()
 
   const calls = await getCalls()
@@ -2516,35 +2499,18 @@ test('retries a failed visible Desktop Pet from Settings', async () => {
   }))
   await clearCalls()
 
-  const retry = page.getByRole('button', { name: 'Retry Desktop Pet' })
+  const retry = page.getByRole('button', { name: 'Retry companion program' })
   await expect(retry).toBeVisible()
   await retry.click()
 
   await expect(page.getByText(
-    'Preference: visible. Native window: visible.',
+    'Preference: visible. Companion program: visible.',
   )).toBeVisible()
   await expect(retry).toHaveCount(0)
   const calls = await getCalls()
   expect(calls.filter((call) => call.method === 'updateDesktopPet').map(
     (call) => call.args,
   )).toEqual([[{ expectedRevision: 9, mode: 'visible' }]])
-})
-
-test('returns to Chat when the Desktop Pet requests the main surface', async () => {
-  await openSettings()
-  await expect.poll(async () => (
-    (await getCalls()).some(
-      (call) => call.method === 'onDesktopPetOpenChatRequested.subscribe',
-    )
-  )).toBe(true)
-
-  await emitDesktopPetOpenChatRequested()
-
-  await expect(page.getByRole('heading', { name: 'Talk with Elysia' }))
-    .toBeVisible()
-  await expect(page.getByRole('heading', { name: 'Settings', exact: true }))
-    .toHaveCount(0)
-  await expect(page.getByLabel('Message Elysia')).toBeFocused()
 })
 
 test('keeps optional native notifications off until exact user choices', async () => {

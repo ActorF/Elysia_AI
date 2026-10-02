@@ -76,18 +76,16 @@ export interface SettingsViewProps {
   voiceError: string | null
   /** Apply the selected renderer and native-chrome theme preference. */
   onThemeChange(theme: ThemePreference): void
-  /** Persist one closed Desktop Pet visibility mode immediately. */
+  /** Persist one closed Desktop Pet operating mode immediately. */
   onDesktopPetModeChange(mode: DesktopPetMode): Promise<void>
-  /** Select one model from Main's current validated external inventory. */
+  /** Select one companion program from Main's validated external inventory. */
   onDesktopPetModelChange(modelId: string): Promise<void>
-  /** Open the native directory picker and scan the chosen model pack. */
+  /** Open the native directory picker and scan a local companion-program pack. */
   onChooseDesktopPetModelDirectory(): Promise<void>
-  /** Revalidate the currently configured external model folder. */
+  /** Revalidate the currently configured external program folder. */
   onRefreshDesktopPetModels(): Promise<void>
   /** Open the recorded public download page in the system browser. */
   onOpenDesktopPetDownload(): Promise<void>
-  /** Restore the Desktop Pet to a safe primary-display position. */
-  onResetDesktopPetPosition(): Promise<void>
   /** Persist both Main-owned notification choices as one revisioned update. */
   onPresenceNotificationChange(
     completionNotifications: boolean,
@@ -189,19 +187,19 @@ const desktopPetOptions: readonly DesktopPetOption[] = [
   {
     value: 'disabled',
     label: 'Off',
-    description: 'Do not create a Desktop Pet window.',
+    description: 'Disable Desktop Pet and do not launch a companion program.',
     icon: 'stop',
   },
   {
     value: 'hidden',
     label: 'Hidden',
-    description: 'Keep the opt-in, but release the Pet window and its resources.',
+    description: 'Stop it while preserving the selected program and its settings.',
     icon: 'archive',
   },
   {
     value: 'visible',
     label: 'Visible',
-    description: 'Show the draggable, always-on-top full-body Live2D companion.',
+    description: 'Launch the selected local companion program.',
     icon: 'sparkles',
   },
 ]
@@ -399,7 +397,6 @@ function AppearanceSettings({
   onChooseDesktopPetModelDirectory,
   onRefreshDesktopPetModels,
   onOpenDesktopPetDownload,
-  onResetDesktopPetPosition,
 }: Pick<
   SettingsViewProps,
   | 'themePreference'
@@ -413,7 +410,6 @@ function AppearanceSettings({
   | 'onChooseDesktopPetModelDirectory'
   | 'onRefreshDesktopPetModels'
   | 'onOpenDesktopPetDownload'
-  | 'onResetDesktopPetPosition'
 >) {
   const themeGroupId = useId()
   const desktopPetMode = desktopPetState?.mode ?? 'disabled'
@@ -459,20 +455,20 @@ function AppearanceSettings({
       </fieldset>
       <p className="settings-readonly-status">
         The character state panel always uses static half-body artwork. Dynamic
-        Live2D is available only in the optional Desktop Pet window.
+        motion is available only through an optional local Desktop Pet program.
       </p>
       <div className="appearance-subheading">
         <h3>Desktop Pet</h3>
         <p>
-          Independent dynamic Live2D companion. Model files stay in your chosen
-          local folder and are never copied into Elysia AI.
+          Independent dynamic companion powered by one detected local program.
         </p>
       </div>
-      <div className="desktop-pet-library" aria-label="Desktop Pet model library">
+      <div className="desktop-pet-library" aria-label="Desktop Pet program library">
         <p className="desktop-pet-note">
-          Use a Live2D pack already on this computer, including a paid pack you
-          own. Models by @书呆儿 are not included or copied; Elysia lists only
-          models it can validate inside the local folder you choose.
+          Programs by @书呆儿 are not included. Download the free pack or use a
+          purchased pack already on this computer, then choose a folder containing
+          desktop-pet programs. Elysia never copies or modifies the programs,
+          model files, or each program&apos;s local configuration.
         </p>
         <div className="desktop-pet-actions">
           <button
@@ -481,14 +477,14 @@ function AppearanceSettings({
             disabled={desktopPetBusy}
             onClick={() => { void onChooseDesktopPetModelDirectory() }}
           >
-            {desktopPetBusy ? 'Scanning…' : 'Choose local Live2D folder…'}
+            {desktopPetBusy ? 'Scanning…' : 'Choose desktop-pet program folder…'}
           </button>
           <button
             type="button"
             className="secondary-button"
             onClick={() => { void onOpenDesktopPetDownload() }}
           >
-            Download optional free pack
+            Download free pack
           </button>
           <button
             type="button"
@@ -504,7 +500,7 @@ function AppearanceSettings({
           </button>
         </div>
         <label className="settings-field" htmlFor={`${themeGroupId}-desktop-pet-model`}>
-          <span>Dynamic model</span>
+          <span>Companion program</span>
           <select
             id={`${themeGroupId}-desktop-pet-model`}
             value={desktopPetState?.selectedModelId ?? ''}
@@ -519,7 +515,7 @@ function AppearanceSettings({
               }
             }}
           >
-            <option value="">Choose a detected model</option>
+            <option value="">Choose a detected program</option>
             {desktopPetState?.models.map((model) => (
               <option key={model.id} value={model.id}>
                 {model.displayName}
@@ -529,10 +525,10 @@ function AppearanceSettings({
         </label>
         <p className="desktop-pet-note" role="status" aria-live="polite">
           {desktopPetState === null
-            ? 'Loading the model library…'
+            ? 'Loading the companion program library…'
             : desktopPetState.folderName === null
-              ? 'No local Live2D folder selected.'
-              : `${desktopPetState.models.length} compatible model${desktopPetState.models.length === 1 ? '' : 's'} detected in ${desktopPetState.folderName}.`}
+              ? 'No desktop-pet program folder selected.'
+              : `${desktopPetState.models.length} compatible program${desktopPetState.models.length === 1 ? '' : 's'} detected in ${desktopPetState.folderName}.`}
         </p>
         {desktopPetError !== null && (
           <p className="desktop-pet-error" role="alert">{desktopPetError}</p>
@@ -543,7 +539,7 @@ function AppearanceSettings({
         disabled={desktopPetBusy || desktopPetState === null}
         aria-describedby={`${themeGroupId}-desktop-pet-note`}
       >
-        <legend className="visually-hidden">Desktop Pet visibility</legend>
+        <legend className="visually-hidden">Desktop Pet mode</legend>
         {desktopPetOptions.map((option) => {
           const optionId = `${themeGroupId}-desktop-pet-${option.value}`
           const descriptionId = `${optionId}-description`
@@ -577,33 +573,26 @@ function AppearanceSettings({
         <p role="status" aria-live="polite">
           {desktopPetState === null
             ? 'Loading the Desktop Pet preference…'
-            : `Preference: ${desktopPetState.mode}. Native window: ${desktopPetState.runtime}.`}
+            : `Preference: ${desktopPetState.mode}. Companion program: ${desktopPetState.runtime}.`}
         </p>
-        <div className="desktop-pet-actions">
-          {desktopPetState?.mode === 'visible'
-            && desktopPetState.runtime === 'failed' && (
+        {desktopPetState?.mode === 'visible'
+          && desktopPetState.runtime === 'failed' && (
+          <div className="desktop-pet-actions">
             <button
               type="button"
               className="secondary-button"
               disabled={desktopPetBusy}
               onClick={() => { void onDesktopPetModeChange('visible') }}
             >
-              {desktopPetBusy ? 'Retrying…' : 'Retry Desktop Pet'}
+              {desktopPetBusy ? 'Retrying…' : 'Retry companion program'}
             </button>
-          )}
-          <button
-            type="button"
-            className="secondary-button"
-            disabled={desktopPetBusy || desktopPetState === null}
-            onClick={() => { void onResetDesktopPetPosition() }}
-          >
-            {desktopPetBusy ? 'Applying…' : 'Reset position'}
-          </button>
-        </div>
+          </div>
+        )}
       </div>
       <p className="desktop-pet-note">
-        Hidden destroys the Pet renderer to release resources. Use the tray menu to restore it,
-        temporarily enable click-through, or recover it after a display change.
+        Visible launches the selected local program. Hidden stops that program but
+        keeps the selection and its own settings for the next launch. Off disables
+        Desktop Pet until you opt in again.
       </p>
       {desktopPetState?.warning !== null && desktopPetState?.warning !== undefined && (
         <p className="desktop-pet-warning" role="status">
@@ -1002,7 +991,6 @@ export function SettingsView({
   onChooseDesktopPetModelDirectory,
   onRefreshDesktopPetModels,
   onOpenDesktopPetDownload,
-  onResetDesktopPetPosition,
   onPresenceNotificationChange,
   onRefreshDataStorage,
   onMoveDataDirectory,
@@ -1192,7 +1180,6 @@ export function SettingsView({
             onChooseDesktopPetModelDirectory={onChooseDesktopPetModelDirectory}
             onRefreshDesktopPetModels={onRefreshDesktopPetModels}
             onOpenDesktopPetDownload={onOpenDesktopPetDownload}
-            onResetDesktopPetPosition={onResetDesktopPetPosition}
           />
           <PresenceNotificationSettings
             state={presenceNotificationState}
@@ -1227,7 +1214,6 @@ export function SettingsView({
             onChooseDesktopPetModelDirectory={onChooseDesktopPetModelDirectory}
             onRefreshDesktopPetModels={onRefreshDesktopPetModels}
             onOpenDesktopPetDownload={onOpenDesktopPetDownload}
-            onResetDesktopPetPosition={onResetDesktopPetPosition}
           />
           <PresenceNotificationSettings
             state={presenceNotificationState}
@@ -1892,7 +1878,6 @@ export function SettingsView({
             onChooseDesktopPetModelDirectory={onChooseDesktopPetModelDirectory}
             onRefreshDesktopPetModels={onRefreshDesktopPetModels}
             onOpenDesktopPetDownload={onOpenDesktopPetDownload}
-            onResetDesktopPetPosition={onResetDesktopPetPosition}
           />
 
           <PresenceNotificationSettings

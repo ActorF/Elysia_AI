@@ -157,22 +157,15 @@ _FORBIDDEN_PAID_ASSET_COMPONENTS: Final = frozenset(
 _BUILD_OUTPUT_COMPONENTS: Final = frozenset({"dist", "dist-electron"})
 _FORBIDDEN_RETIRED_DESKTOP_MODULE_STEMS: Final = (
     "character-performance-contracts",
+    "desktop-pet-main",
+    "desktop-pet-model-library",
+    "desktop-pet-preload",
+    "live2d-assets",
+    "live2d-runtime",
     "speech-mouth",
 )
 _LIVE2D_DIRECTORY_COMPONENTS: Final = frozenset({"live2d"})
-_ALLOWED_PACKAGED_LIVE2D_RUNTIME_PATHS: Final = frozenset(
-    {
-        "desktop/public/character/live2d",
-        "desktop/public/character/live2d/runtime",
-        "desktop/public/character/live2d/runtime/license-purismcore.txt",
-        "desktop/public/character/live2d/runtime/purismcore.js",
-        "dist/character/live2d",
-        "dist/character/live2d/runtime",
-        "dist/character/live2d/runtime/license-purismcore.txt",
-        "dist/character/live2d/runtime/purismcore.js",
-    }
-)
-_LIVE2D_RUNTIME_FILE_NAMES: Final = frozenset(
+_FORBIDDEN_RETIRED_LIVE2D_RUNTIME_FILE_NAMES: Final = frozenset(
     {"license-purismcore.txt", "purismcore.js"}
 )
 _ALLOWED_UNPACKED_BIN_PATHS: Final = frozenset(
@@ -237,14 +230,6 @@ _REVIEWED_SPEECH_ATLAS_SIZE: Final = 2_054_767
 _REVIEWED_SPEECH_ATLAS_SHA256: Final = (
     "21bf4496acc4417d491ff0163c9ee1d38593e376ca25a3d452fd393c6157f9ab"
 )
-_REVIEWED_LIVE2D_CORE_SIZE: Final = 256_528
-_REVIEWED_LIVE2D_CORE_SHA256: Final = (
-    "3eec0b1e6cd20bab0773744228aac21f4c882dbef708c28379ba6315a11b15f4"
-)
-_REVIEWED_LIVE2D_CORE_LICENSE_SIZE: Final = 1_103
-_REVIEWED_LIVE2D_CORE_LICENSE_SHA256: Final = (
-    "0c420f717a04a7bbc4cd3c652c83e77d0d7883a14b363d60af94ff6cdf3b7768"
-)
 _REVIEWED_ICON_PNG_SIZE: Final = 241_299
 _REVIEWED_ICON_PNG_SHA256: Final = (
     "4a2e248382700a03270172aa420835c1a7f1b92d82dc503dd0047a48f7cd8b01"
@@ -262,12 +247,6 @@ _REVIEWED_ASAR_EXPRESSION_ATLAS_PATH: Final = (
 )
 _REVIEWED_ASAR_SPEECH_ATLAS_PATH: Final = (
     "dist/character/elysia-speech-atlas.png"
-)
-_REVIEWED_ASAR_LIVE2D_CORE_PATH: Final = (
-    "dist/character/live2d/runtime/purismcore.js"
-)
-_REVIEWED_ASAR_LIVE2D_CORE_LICENSE_PATH: Final = (
-    "dist/character/live2d/runtime/LICENSE-PurismCore.txt"
 )
 _REVIEWED_ASAR_ICON_PATH: Final = "dist/elysia-icon.png"
 _REVIEWED_DISTRIBUTION_ASSETS: Final[dict[str, tuple[int, str]]] = {
@@ -295,14 +274,6 @@ _REVIEWED_DISTRIBUTION_ASSETS: Final[dict[str, tuple[int, str]]] = {
         _REVIEWED_SPEECH_ATLAS_SIZE,
         _REVIEWED_SPEECH_ATLAS_SHA256,
     ),
-    "desktop/public/character/live2d/runtime/purismcore.js": (
-        _REVIEWED_LIVE2D_CORE_SIZE,
-        _REVIEWED_LIVE2D_CORE_SHA256,
-    ),
-    "desktop/public/character/live2d/runtime/LICENSE-PurismCore.txt": (
-        _REVIEWED_LIVE2D_CORE_LICENSE_SIZE,
-        _REVIEWED_LIVE2D_CORE_LICENSE_SHA256,
-    ),
 }
 _REVIEWED_ASAR_ASSETS: Final[dict[str, tuple[int, str]]] = {
     _REVIEWED_ASAR_ICON_PATH: (
@@ -325,20 +296,8 @@ _REVIEWED_ASAR_ASSETS: Final[dict[str, tuple[int, str]]] = {
         _REVIEWED_SPEECH_ATLAS_SIZE,
         _REVIEWED_SPEECH_ATLAS_SHA256,
     ),
-    _REVIEWED_ASAR_LIVE2D_CORE_PATH: (
-        _REVIEWED_LIVE2D_CORE_SIZE,
-        _REVIEWED_LIVE2D_CORE_SHA256,
-    ),
-    _REVIEWED_ASAR_LIVE2D_CORE_LICENSE_PATH: (
-        _REVIEWED_LIVE2D_CORE_LICENSE_SIZE,
-        _REVIEWED_LIVE2D_CORE_LICENSE_SHA256,
-    ),
 }
-_REQUIRED_ASAR_ENTRY_PATHS: Final = (
-    *_REVIEWED_ASAR_ASSETS,
-    "dist/pet.html",
-    "dist-electron/desktop-pet-preload.cjs",
-)
+_REQUIRED_ASAR_ENTRY_PATHS: Final = tuple(_REVIEWED_ASAR_ASSETS)
 
 
 @dataclass(frozen=True, slots=True)
@@ -450,11 +409,8 @@ def _path_policy_message(
         for suffix in _FORBIDDEN_LIVE2D_MODEL_SUFFIXES
     ):
         return "external Live2D model files are forbidden in distributions"
-    if (
-        file_name in _LIVE2D_RUNTIME_FILE_NAMES
-        and normalized_path not in _ALLOWED_PACKAGED_LIVE2D_RUNTIME_PATHS
-    ):
-        return "PurismCore runtime files are allowed only at reviewed paths"
+    if file_name in _FORBIDDEN_RETIRED_LIVE2D_RUNTIME_FILE_NAMES:
+        return "the retired embedded Live2D runtime is forbidden"
     if any(component in _FORBIDDEN_RUNTIME_COMPONENTS for component in components):
         return "known local voice runtime or asset-pack paths are forbidden"
     if any(component in _FORBIDDEN_PAID_ASSET_COMPONENTS for component in components):
@@ -472,13 +428,11 @@ def _path_policy_message(
         return "retired desktop module output is forbidden"
     if (
         _contains_pair(components, "character", _LIVE2D_DIRECTORY_COMPONENTS)
-        and normalized_path not in _ALLOWED_PACKAGED_LIVE2D_RUNTIME_PATHS
     ):
-        # User-selected models are loaded from their external purchase folder.
-        # Keeping only the reviewed compatibility runtime in Git and packages
-        # prevents paid art, MOC, motion, expression, and texture files from
-        # being redistributed even if a model folder is renamed before copy.
-        return "bundled Live2D model assets are forbidden; load them externally"
+        # The companion is now the creator's complete external executable. No
+        # model, texture, compatibility runtime, or old renderer asset belongs
+        # in Git or a package, even if a paid folder is renamed before copy.
+        return "bundled Live2D assets are forbidden; use the external program"
 
     if (
         allowed_visual_asset_paths is not None

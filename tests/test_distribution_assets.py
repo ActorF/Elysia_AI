@@ -19,10 +19,6 @@ _REQUIRED_ASAR_LISTING_ENTRIES = (
     "\\dist\\character\\elysia-state-atlas.png",
     "\\dist\\character\\elysia-expression-atlas.png",
     "\\dist\\character\\elysia-speech-atlas.png",
-    "\\dist\\character\\live2d\\runtime\\purismcore.js",
-    "\\dist\\character\\live2d\\runtime\\LICENSE-PurismCore.txt",
-    "\\dist\\pet.html",
-    "\\dist-electron\\desktop-pet-preload.cjs",
 )
 
 
@@ -210,8 +206,6 @@ def test_maintained_source_and_brand_assets_are_allowed() -> None:
             "desktop/public/character/elysia-state-atlas.png",
             "desktop/public/character/elysia-expression-atlas.png",
             "desktop/public/character/elysia-speech-atlas.png",
-            "desktop/public/character/live2d/runtime/purismcore.js",
-            "desktop/public/character/live2d/runtime/LICENSE-PurismCore.txt",
         ],
         source="synthetic-index",
     )
@@ -219,29 +213,21 @@ def test_maintained_source_and_brand_assets_are_allowed() -> None:
     assert problems == ()
 
 
-def test_only_reviewed_purismcore_runtime_paths_are_allowed() -> None:
-    """Keep the exact Core runtime while rejecting renamed-location copies."""
+def test_retired_embedded_live2d_runtime_is_rejected_everywhere() -> None:
+    """Keep the deleted compatibility runtime out of Git and packages."""
 
-    allowed = check_distribution_assets.audit_distribution_paths(
-        [
-            "desktop/public/character/live2d/runtime/purismcore.js",
-            "desktop/public/character/live2d/runtime/LICENSE-PurismCore.txt",
-            "dist/character/live2d/runtime/purismcore.js",
-            "dist/character/live2d/runtime/LICENSE-PurismCore.txt",
-        ],
-        source="synthetic-distribution",
-    )
     rejected = check_distribution_assets.audit_distribution_paths(
         [
+            "desktop/public/character/live2d/runtime/purismcore.js",
+            "dist/character/live2d/runtime/LICENSE-PurismCore.txt",
             "vendor/copied/purismcore.js",
             "assets/copied/LICENSE-PurismCore.txt",
         ],
         source="synthetic-distribution",
     )
 
-    assert allowed == ()
-    assert len(rejected) == 2
-    assert all("reviewed paths" in problem.message for problem in rejected)
+    assert len(rejected) == 4
+    assert all("retired embedded Live2D" in problem.message for problem in rejected)
 
 
 def _copy_reviewed_portrait(destination_root: Path) -> Path:
@@ -332,23 +318,6 @@ def _copy_reviewed_speech_atlas(destination_root: Path) -> Path:
     return destination
 
 
-def _copy_reviewed_live2d_runtime(destination_root: Path) -> tuple[Path, ...]:
-    """Copy the distributable Live2D compatibility runtime into a fixture."""
-
-    relative_paths = (
-        "desktop/public/character/live2d/runtime/purismcore.js",
-        "desktop/public/character/live2d/runtime/LICENSE-PurismCore.txt",
-    )
-    copied: list[Path] = []
-    for relative_path in relative_paths:
-        source = _REPOSITORY_ROOT / relative_path
-        destination = destination_root / relative_path
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source, destination)
-        copied.append(destination)
-    return tuple(copied)
-
-
 def _copy_reviewed_brand_assets(destination_root: Path) -> tuple[Path, Path]:
     """Copy both pinned application-icon formats into an audit fixture."""
 
@@ -377,7 +346,6 @@ def _copy_reviewed_character_assets(
         _copy_reviewed_expression_atlas(destination_root),
         _copy_reviewed_speech_atlas(destination_root),
     )
-    _copy_reviewed_live2d_runtime(destination_root)
     _copy_reviewed_brand_assets(destination_root)
     return assets
 
@@ -403,14 +371,6 @@ def _copy_reviewed_asar_tree(destination_root: Path) -> Path:
             "character/elysia-speech-atlas.png",
             "character/elysia-speech-atlas.png",
         ),
-        (
-            "character/live2d/runtime/purismcore.js",
-            "character/live2d/runtime/purismcore.js",
-        ),
-        (
-            "character/live2d/runtime/LICENSE-PurismCore.txt",
-            "character/live2d/runtime/LICENSE-PurismCore.txt",
-        ),
     )
     for source_relative, archive_relative in source_and_archive_paths:
         source = _REPOSITORY_ROOT / "desktop" / "public" / source_relative
@@ -428,10 +388,10 @@ def test_reviewed_character_portrait_matches_exact_contract(tmp_path: Path) -> N
     assert check_distribution_assets.audit_reviewed_assets(tmp_path) == ()
 
 
-def test_extracted_asar_tree_authenticates_live2d_runtime(
+def test_extracted_asar_tree_authenticates_reviewed_static_assets(
     tmp_path: Path,
 ) -> None:
-    """Accept a package tree when its compatibility runtime matches review."""
+    """Accept a package tree when every reviewed static asset matches."""
 
     extracted = _copy_reviewed_asar_tree(tmp_path / "extracted")
 
@@ -441,36 +401,6 @@ def test_extracted_asar_tree_authenticates_live2d_runtime(
         )
         == ()
     )
-
-
-def test_extracted_asar_tree_rejects_live2d_runtime_mutation(
-    tmp_path: Path,
-) -> None:
-    """Reject a packaged Core replacement even when its path is unchanged."""
-
-    extracted = _copy_reviewed_asar_tree(tmp_path / "extracted")
-    runtime = (
-        extracted
-        / "dist"
-        / "character"
-        / "live2d"
-        / "runtime"
-        / "purismcore.js"
-    )
-    with runtime.open("r+b") as runtime_stream:
-        original_byte = runtime_stream.read(1)
-        runtime_stream.seek(0)
-        runtime_stream.write(bytes((original_byte[0] ^ 0xFF,)))
-
-    problems = (
-        check_distribution_assets.audit_extracted_asar_reviewed_assets(
-            extracted
-        )
-    )
-
-    assert len(problems) == 1
-    assert problems[0].path.endswith("purismcore.js")
-    assert "SHA-256" in problems[0].message
 
 
 def test_runtime_state_atlas_is_the_reviewed_source_without_reencoding() -> None:
@@ -866,6 +796,11 @@ def test_unpacked_tree_rejects_paid_texture_without_model_files(
     [
         "dist-electron/character-performance-contracts.js",
         "dist-electron/character-performance-contracts.js.map",
+        "dist-electron/desktop-pet-model-library.js",
+        "dist-electron/desktop-pet-preload.cjs",
+        "dist-electron/live2d-assets.js",
+        "dist/assets/desktop-pet-main-deadbeef.js",
+        "dist/assets/live2d-runtime-deadbeef.js",
         "dist-electron/speech-mouth.js",
         "dist/assets/speech-mouth-deadbeef.js",
     ],
@@ -960,6 +895,9 @@ def test_asar_listing_rejects_retired_desktop_module_outputs(
 
     retired_entries = (
         "\\dist-electron\\character-performance-contracts.js",
+        "\\dist-electron\\desktop-pet-model-library.js",
+        "\\dist-electron\\desktop-pet-preload.cjs",
+        "\\dist-electron\\live2d-assets.js",
         "\\dist-electron\\speech-mouth.js.map",
     )
     listing = tmp_path / "asar-listing.txt"
@@ -1155,85 +1093,6 @@ def test_asar_listing_requires_each_reviewed_face_atlas_once(
 
     assert len(problems) == 1
     assert problems[0].path == f"dist/character/{logical_name}"
-    assert f"found {expected_exact} exact" in problems[0].message
-    assert f"{expected_normalized} normalized" in problems[0].message
-
-
-@pytest.mark.parametrize(
-    ("logical_path", "entries", "expected_exact", "expected_normalized"),
-    [
-        ("dist/pet.html", [], 0, 0),
-        (
-            "dist/pet.html",
-            ["\\dist\\pet.html", "\\dist\\pet.html"],
-            2,
-            2,
-        ),
-        (
-            "dist/pet.html",
-            ["\\dist\\pet.html", "\\DIST\\PET.HTML"],
-            1,
-            2,
-        ),
-        (
-            "dist/pet.html",
-            ["\\dist\\pet.html", "\\ｄｉｓｔ\\ｐｅｔ．ｈｔｍｌ"],
-            1,
-            2,
-        ),
-        ("dist-electron/desktop-pet-preload.cjs", [], 0, 0),
-        (
-            "dist-electron/desktop-pet-preload.cjs",
-            [
-                "\\dist-electron\\desktop-pet-preload.cjs",
-                "\\dist-electron\\desktop-pet-preload.cjs",
-            ],
-            2,
-            2,
-        ),
-        (
-            "dist-electron/desktop-pet-preload.cjs",
-            [
-                "\\dist-electron\\desktop-pet-preload.cjs",
-                "\\DIST-ELECTRON\\DESKTOP-PET-PRELOAD.CJS",
-            ],
-            1,
-            2,
-        ),
-        (
-            "dist-electron/desktop-pet-preload.cjs",
-            [
-                "\\dist-electron\\desktop-pet-preload.cjs",
-                "\\ｄｉｓｔ－ｅｌｅｃｔｒｏｎ\\ｄｅｓｋｔｏｐ－ｐｅｔ－ｐｒｅｌｏａｄ．ｃｊｓ",
-            ],
-            1,
-            2,
-        ),
-    ],
-)
-def test_asar_listing_requires_each_desktop_pet_entry_once(
-    tmp_path: Path,
-    logical_path: str,
-    entries: list[str],
-    expected_exact: int,
-    expected_normalized: int,
-) -> None:
-    """Reject missing, duplicate, case-aliased, or Unicode-aliased pet entries."""
-
-    listing = tmp_path / "asar-listing.txt"
-    listing.write_text(
-        "\n".join([
-            "\\dist\\index.html",
-            *_required_asar_entries(excluding=logical_path),
-            *entries,
-        ]) + "\n",
-        encoding="utf-8",
-    )
-
-    problems = check_distribution_assets.audit_asar_listing(listing)
-
-    assert len(problems) == 1
-    assert problems[0].path == logical_path
     assert f"found {expected_exact} exact" in problems[0].message
     assert f"{expected_normalized} normalized" in problems[0].message
 

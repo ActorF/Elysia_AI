@@ -2,15 +2,15 @@
  * Define the closed Electron-only contracts for the optional desktop pet.
  *
  * These values never enter the Python desktop protocol. Electron Main owns
- * persistence and native-window lifecycle, while the dedicated pet preload
- * exposes only native actions and one opaque selected-model URL to the
- * isolated pet renderer.
+ * persistence and the lifecycle of one explicitly selected local companion
+ * program. Paths remain private to Main and paid program files never enter
+ * the renderer, application package, or Python protocol.
  */
 
-/** Persisted user intent for the optional desktop-pet window. */
+/** Persisted user intent for the optional external desktop-pet program. */
 export type DesktopPetMode = 'disabled' | 'hidden' | 'visible'
 
-/** Renderer-safe outcome of scanning one Main-owned external model folder. */
+/** Renderer-safe outcome of scanning one Main-owned external program folder. */
 export type DesktopPetLibraryStatus =
   | 'not-configured'
   | 'scanning'
@@ -19,19 +19,13 @@ export type DesktopPetLibraryStatus =
   | 'unavailable'
   | 'invalid'
 
-/** One externally discovered model without its private filesystem identity. */
+/** One externally discovered companion program without its private path. */
 export interface DesktopPetModelSummary {
   readonly id: string
   readonly displayName: string
 }
 
-/** Renderer-safe coordinates needed to load the current external model. */
-export interface DesktopPetModelBootstrap {
-  readonly modelId: string
-  readonly manifestUrl: string
-}
-
-/** Current native-window outcome, which is never persisted as user intent. */
+/** Current managed-program outcome, which is never persisted as user intent. */
 export type DesktopPetRuntimeState =
   | 'absent'
   | 'loading'
@@ -55,27 +49,8 @@ export interface DesktopPetState {
 export interface UpdateDesktopPetRequest {
   readonly expectedRevision: number
   readonly mode: DesktopPetMode
-  /** Replace the selected external model, or preserve it when omitted. */
+  /** Replace the selected external program, or preserve it when omitted. */
   readonly modelId?: string | null
-}
-
-/**
- * Minimal capability surface exposed only inside the sandboxed pet renderer.
- *
- * The pet receives no Backend, filesystem, settings, raw IPC, or arbitrary
- * native-window capabilities. Main revalidates the sender for every call.
- */
-export interface DesktopPetApi {
-  /** Announce that the isolated pet document is ready to be revealed. */
-  ready(): Promise<void>
-  /** Report an initialization or runtime failure so Main can destroy the pet. */
-  failed(): Promise<void>
-  /** Persistently hide the pet without disabling the user's opt-in. */
-  hide(): Promise<void>
-  /** Reveal and focus the ordinary main Chat window. */
-  openMainChat(): Promise<void>
-  /** Read the opaque manifest URL for the model selected by Settings. */
-  getModelBootstrap(): Promise<DesktopPetModelBootstrap>
 }
 
 const DESKTOP_PET_MODES: ReadonlySet<string> = new Set([
@@ -91,7 +66,7 @@ export function isDesktopPetMode(value: unknown): value is DesktopPetMode {
   return typeof value === 'string' && DESKTOP_PET_MODES.has(value)
 }
 
-/** Accept only opaque identifiers minted by the bounded Main-process scan. */
+/** Accept only opaque program identifiers minted by the bounded Main scan. */
 export function isDesktopPetModelId(value: unknown): value is string {
   return typeof value === 'string'
     && DESKTOP_PET_MODEL_ID_PATTERN.test(value)
@@ -101,7 +76,7 @@ export function isDesktopPetModelId(value: unknown): value is string {
  * Revalidate one renderer-originated update before it reaches persistence.
  *
  * Exact fields prevent a future or compromised renderer from smuggling native
- * bounds, paths, animation selectors, or other capabilities into Main.
+ * paths, process identifiers, launch arguments, or other capabilities into Main.
  */
 export function parseUpdateDesktopPetRequest(
   value: unknown,

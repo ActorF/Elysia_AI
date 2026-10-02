@@ -412,11 +412,6 @@ const desktopApi: DesktopApi = {
       'desktop-pet:refresh-models',
     ) as Promise<DesktopPetState>,
 
-  resetDesktopPetPosition: () =>
-    ipcRenderer.invoke(
-      'desktop-pet:reset-position',
-    ) as Promise<DesktopPetState>,
-
   getPresenceNotificationState: () =>
     ipcRenderer.invoke(
       'presence-notifications:get-state',
@@ -797,17 +792,6 @@ const desktopApi: DesktopApi = {
     ipcRenderer.on('desktop-pet:state-changed', handler)
     return () => {
       ipcRenderer.removeListener('desktop-pet:state-changed', handler)
-    }
-  },
-
-  onDesktopPetOpenChatRequested: (listener: () => void) => {
-    const handler = (): void => {
-      listener()
-    }
-
-    ipcRenderer.on('desktop-pet:open-chat-requested', handler)
-    return () => {
-      ipcRenderer.removeListener('desktop-pet:open-chat-requested', handler)
     }
   },
 

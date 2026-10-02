@@ -17,20 +17,17 @@ import {
   type MenuItemConstructorOptions,
   nativeImage,
   nativeTheme,
-  net,
   Notification,
   type NotificationCloseEventParams,
-  protocol,
   screen,
   session,
   shell,
   systemPreferences,
   Tray,
 } from 'electron'
-import { lstat, realpath, stat } from 'node:fs/promises'
-import { randomBytes } from 'node:crypto'
+import { lstat, stat } from 'node:fs/promises'
 import path from 'node:path'
-import { fileURLToPath, pathToFileURL } from 'node:url'
+import { fileURLToPath } from 'node:url'
 
 import { BackendProcess } from './backend-process.js'
 import {
@@ -49,48 +46,36 @@ import {
 } from './audio-permission.js'
 import { parseSafeExternalUrl } from './external-url.js'
 import {
-  LIVE2D_ASSET_DESKTOP_PET_PARTITION,
-  LIVE2D_ASSET_MAXIMUM_BYTES,
-  LIVE2D_ASSET_PRIVILEGES,
-  LIVE2D_ASSET_SCHEME,
-  Live2DAssetRegistry,
-  materializeLive2DAssetResponse,
-} from './live2d-assets.js'
-import {
-  DesktopPetModelLibraryUnavailableError,
-  DesktopPetModelLibraryValidationError,
-  findDesktopPetModel,
-  presentDesktopPetModelLibrary,
-  scanDesktopPetModelLibrary,
-  type DesktopPetModelDescriptor,
-  type DesktopPetModelLibraryScan,
-} from './desktop-pet-model-library.js'
+  DesktopPetProgramLibraryUnavailableError,
+  DesktopPetProgramLibraryValidationError,
+  findDesktopPetProgram,
+  presentDesktopPetProgramLibrary,
+  revalidateDesktopPetProgramForLaunch,
+  scanDesktopPetProgramLibrary,
+  type DesktopPetProgramDescriptor,
+  type DesktopPetProgramLibraryScan,
+} from './desktop-pet-program-library.js'
+import { DesktopPetProgramManager } from './desktop-pet-program-manager.js'
 import {
   resolveDesktopPetPickerDefaultPath,
   selectedDesktopPetDirectory,
 } from './desktop-pet-directory-picker.js'
 import {
-  DESKTOP_PET_MAX_HEIGHT_DIP,
-  DESKTOP_PET_MAX_WIDTH_DIP,
   DesktopPetPreferencesRepository,
   presentDesktopPetLibrary,
-  type DesktopPetDisplayGeometry,
   type DesktopPetLibraryPresentation,
-  type DesktopPetPlacement,
   type LoadedDesktopPetPreferences,
-  resolveDesktopPetBounds,
 } from './desktop-pet-preferences.js'
 import {
-  type DesktopPetModelBootstrap,
   type DesktopPetState,
   parseUpdateDesktopPetRequest,
 } from './desktop-pet-contracts.js'
 import {
-  DesktopPetReadyDeadline,
   drainDesktopPetAndIndependentPersistenceWithin,
   sequenceDesktopPetMutation,
+  shouldApplyDesktopPetModeRequest,
+  stopDesktopPetBeforePersistence,
   shouldQuitAfterAllDesktopWindowsClose,
-  shouldPersistDesktopPetPlacement,
 } from './desktop-pet-lifecycle.js'
 import {
   parseUpdatePresenceNotificationRequest,
@@ -145,7 +130,6 @@ import {
   trimProtocolBlankCharacters,
 } from './protocol.js'
 import {
-  isTrustedRendererEntryUrl,
   isTrustedRendererUrl as matchesRendererSource,
 } from './renderer-source.js'
 import type {
@@ -175,26 +159,9 @@ const moduleDirectory = path.dirname(
   fileURLToPath(import.meta.url),
 )
 
-// Privileged custom schemes must be declared before Electron becomes ready.
-// The resolver and handler below still restrict this fetch-capable scheme to
-// the scanner-validated files of one selected model; it never grants a
-// renderer general filesystem access.
-protocol.registerSchemesAsPrivileged([
-  {
-    scheme: LIVE2D_ASSET_SCHEME,
-    privileges: LIVE2D_ASSET_PRIVILEGES,
-  },
-])
-
 const DEVELOPMENT_URL = 'http://localhost:5173'
 const CHARACTER_PANEL_WIDTH = 324
 const RENDERER_READY_TIMEOUT_MS = 10_000
-const DESKTOP_PET_WIDTH_DIP = 320
-const DESKTOP_PET_HEIGHT_DIP = 480
-const DESKTOP_PET_POSITION_SAVE_DELAY_MS = 300
-const DESKTOP_PET_RUNTIME_WARNING = (
-  'The Desktop Pet could not be displayed. Retry it from Settings or the tray.'
-)
 const PRESENCE_NOTIFICATION_UNSUPPORTED_WARNING = (
   'System notifications are not supported on this device. Chat, Voice, and Work remain available.'
 )
@@ -214,7 +181,6 @@ const BACKEND_REQUEST_ID_PATTERN = (
 const TRAY_ICON_DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAANsSURBVFhH1ZdJTBNhFMc5esPM2PkGL9WEEC9EExpjwgWNRI0XYyHRiyFCggcXpBRK9cBBo0IQ022IB1QE0YMh8SBHE7eiLGXvhqAnjy4cTLw8876ZNtP3TWtnggdf8juUeX3/t833lYqK/9UUSTnEZNZghvpsq7lcLlWR1QtMZlNMVqEEcSazAKtke2gMR1ZZ6d7JZNanSOyXhVhJqt3V9zFxGrNs01urfqOBy+Xh8AjwxHexMzT2X41JrMVJ1Tlq99UC/PwN9Qfrjb+xPqpR1FCcBrRDzd4aCPXf4wlgF/Cz8WyIagmGbTdX3nGyHSY7H8Bzg/D5OxA87YNexOuDgLeL0+PtgtvtN2Dm5TQXpjwdGQfPfg/gIlPNvOHC0Jmj+OfQLGyGZmEjNAefQnOwHpqHbHgeMuEEpMMJSIUXIBlZgLXIIqxGFuHLiw3YSn3nwuszGWg5ey4fD4tzuXYfoNrcsEW0nVi1HfGVyBKsRJchM5bmCWjXh4URMUmdpNr6e26xdJiAXfHl6DIsRVdgK/sDfE09YgKyCkIX+OFh4YgzN4s/843mZ450e/0cP9LUzeni9MDN9lvQWHdciMmRmEYSwBNMdMSFM1eO4tTHEZL6NS+un3YWTrLKt93cdqya+jglPwb9YhEdkFBrf8HMJ3yjJduOMy/adkruhFTkqlPCQwOceTkLtxhdhYXoKiSia9BZZPEoilTVYSSAt5zokEvAjvg8TyAgxLHGOJ6xFeJDHWy5HfG5aBKulp9AwHgD+K1n4aDCUOtAgfiYf1yYOYJtx8pR/KinzB2QWAtPwDiCRQdZ5ctmrhzFqY9TcPmNF5HvwSZ1QDABc9uxcurjBDx13W73jnwCVvcAgq+aeebYdurjCHof4KEgOMkqDLYNFizcI/8TYeZIB6cXrjTrXOYE4YjnhBATwVe/IAE0zIo64tIV2/bZWBJmYin4GEvBh1gaprU0xLUMvNcy8E7LwlstC5eag4I4k9QE1eZm1YXH/nHH4m+0dbhokYBl9Tmjt+JA213H4q95AtdI9eQWtDJFUidyX2isO2Zr5thyBCtH8cOFOxAv2Pxihk7mJLaJON66VKuk4VltEcg+EtPKqtzK9F/J6ishaBkoEkuWXDg7hoFwLFa/G0XYVP6c/xdm/Dcc0EdUQIPdVv8BMyc76Y4zJXMAAAAASUVORK5CYII='
 
 let mainWindow: BrowserWindow | null = null
-let desktopPetWindow: BrowserWindow | null = null
 let backendProcess: BackendProcess | null = null
 let dataStorage: ElectronDataStorage | null = null
 let dataStorageState: DataStorageState | null = null
@@ -227,16 +193,13 @@ const speechPlaybackRouter = new ReplaceableSpeechPlaybackOwner()
 let tray: Tray | null = null
 let desktopPetRepository: DesktopPetPreferencesRepository | null = null
 let desktopPetPreferences: LoadedDesktopPetPreferences | null = null
-let desktopPetModelLibrary: DesktopPetModelLibraryScan | null = null
+let desktopPetProgramLibrary: DesktopPetProgramLibraryScan | null = null
 let desktopPetLibraryPresentation: DesktopPetLibraryPresentation = Object.freeze({
   status: 'not-configured',
   folderName: null,
   models: Object.freeze([]),
 })
-let live2DAssetRegistry = new Live2DAssetRegistry(
-  null,
-  randomBytes(16).toString('hex'),
-)
+let desktopPetProgramManager: DesktopPetProgramManager | null = null
 let presenceNotificationRepository:
   PresenceNotificationPreferencesRepository | null = null
 let presenceNotificationPreferences:
@@ -253,15 +216,9 @@ const presenceNotificationPersistenceOperations = new Set<Promise<unknown>>()
 let nativePresenceNotificationManager:
   ManagedPresenceNativeNotification | null = null
 const notifiedCompletionRequestIds = new Set<string>()
-let desktopPetClickThrough = false
-let desktopPetPositionTimer: ReturnType<typeof setTimeout> | null = null
-const desktopPetReadyDeadline = new DesktopPetReadyDeadline()
-let desktopPetIgnoredPlacement: DesktopPetPlacement | null = null
 let desktopPetMutationRequest: Promise<unknown> | null = null
 const desktopPetPersistenceOperations = new Set<Promise<unknown>>()
 const desktopPetModeOperations = new Set<Promise<unknown>>()
-let mainRendererReady = false
-let pendingDesktopPetChatRequest = false
 let characterPanelOpen = false
 let collapsedWindowPlacement: {
   x: number
@@ -740,7 +697,7 @@ function enqueueDesktopPetMutation<Result>(
   if (shutdownStarted) {
     return Promise.reject(new Error('Elysia is shutting down.'))
   }
-  // Settings, tray, pet-window controls, resets, and delayed drag saves all
+  // Settings, tray controls, folder scans, and program lifecycle changes all
   // mutate the same file and in-memory snapshot. One queue preserves admission
   // order across those entry points rather than merely serializing file rename.
   const queued = sequenceDesktopPetMutation(
@@ -778,19 +735,12 @@ function decorateDesktopPetPreferences(
   return presentDesktopPetLibrary(preferences, desktopPetLibraryPresentation)
 }
 
-function selectedDesktopPetModel(): DesktopPetModelDescriptor | null {
+function selectedDesktopPetProgram(): DesktopPetProgramDescriptor | null {
   const selectedModelId = desktopPetPreferences?.state.selectedModelId
-  if (desktopPetModelLibrary === null || selectedModelId == null) {
+  if (desktopPetProgramLibrary === null || selectedModelId == null) {
     return null
   }
-  return findDesktopPetModel(desktopPetModelLibrary, selectedModelId)
-}
-
-function rebuildLive2DAssetRegistry(): void {
-  live2DAssetRegistry = new Live2DAssetRegistry(
-    selectedDesktopPetModel(),
-    randomBytes(16).toString('hex'),
-  )
+  return findDesktopPetProgram(desktopPetProgramLibrary, selectedModelId)
 }
 
 function replaceDesktopPetRuntime(
@@ -810,313 +760,69 @@ function replaceDesktopPetRuntime(
       runtime,
       warning,
     }),
-    placement: current.placement,
     libraryPath: current.libraryPath,
   })
   publishDesktopPetState()
 }
 
-function desktopPetDisplays(): DesktopPetDisplayGeometry[] {
-  const primaryId = screen.getPrimaryDisplay().id
-  return screen.getAllDisplays().map((display) => ({
-    id: display.id,
-    primary: display.id === primaryId,
-    scaleFactor: display.scaleFactor,
-    workArea: display.workArea,
-  }))
+function requireDesktopPetProgramManager(): DesktopPetProgramManager {
+  if (desktopPetProgramManager === null) {
+    throw new Error('Desktop Pet program manager is not available.')
+  }
+  return desktopPetProgramManager
 }
 
-function resolvedDesktopPetBounds(
-  placement: DesktopPetPlacement | null,
-) {
-  return resolveDesktopPetBounds(
-    placement,
-    desktopPetDisplays(),
-    {
-      width: DESKTOP_PET_WIDTH_DIP,
-      height: DESKTOP_PET_HEIGHT_DIP,
-    },
-  )
-}
-
-function clearDesktopPetPositionTimer(): void {
-  if (desktopPetPositionTimer !== null) {
-    clearTimeout(desktopPetPositionTimer)
-    desktopPetPositionTimer = null
-  }
-}
-
-function currentDesktopPetPlacement(): DesktopPetPlacement | null {
-  const window = desktopPetWindow
-  if (window === null || window.isDestroyed()) {
-    return null
-  }
-  const bounds = window.getBounds()
-  return {
-    displayId: screen.getDisplayMatching(bounds).id,
-    x: bounds.x,
-    y: bounds.y,
-  }
-}
-
-async function persistDesktopPetPlacement(): Promise<void> {
-  clearDesktopPetPositionTimer()
-  const placement = currentDesktopPetPlacement()
-  if (
-    desktopPetPreferences === null
-    || !shouldPersistDesktopPetPlacement(
-      placement,
-      desktopPetIgnoredPlacement,
-    )
-  ) {
-    return
-  }
-  desktopPetIgnoredPlacement = null
-  try {
-    await requireDesktopPetRepository().savePlacement(placement)
-    const current = requireDesktopPetPreferences()
-    desktopPetPreferences = Object.freeze({
-      state: current.state,
-      placement: Object.freeze(placement),
-      libraryPath: current.libraryPath,
-    })
-  } catch {
-    if (shutdownStarted) {
-      return
-    }
-    replaceDesktopPetRuntime(
-      requireDesktopPetPreferences().state.runtime,
-      'The Desktop Pet position could not be saved.',
-    )
-  }
-}
-
-function scheduleDesktopPetPlacementSave(): void {
-  if (shutdownStarted) {
-    return
-  }
-  clearDesktopPetPositionTimer()
-  desktopPetPositionTimer = setTimeout(() => {
-    desktopPetPositionTimer = null
-    void enqueueDesktopPetMutation(persistDesktopPetPlacement, false)
-  }, DESKTOP_PET_POSITION_SAVE_DELAY_MS)
-  desktopPetPositionTimer.unref()
-}
-
-function setDesktopPetClickThrough(enabled: boolean): void {
-  if (shutdownStarted) {
-    return
-  }
-  const window = desktopPetWindow
-  desktopPetClickThrough = enabled
-    && window !== null
-    && !window.isDestroyed()
-    && requireDesktopPetPreferences().state.runtime === 'visible'
-  if (window !== null && !window.isDestroyed()) {
-    // Click-through deliberately has no forwarded mouse stream. The tray is
-    // the durable escape hatch, and avoiding forwarded motion bounds idle work.
-    window.setIgnoreMouseEvents(desktopPetClickThrough)
-  }
-  refreshTrayMenu()
-}
-
-function failDesktopPetWindow(window: BrowserWindow): void {
-  if (desktopPetWindow !== window) {
-    return
-  }
-  desktopPetWindow = null
-  desktopPetClickThrough = false
-  desktopPetReadyDeadline.clear()
-  desktopPetIgnoredPlacement = null
-  clearDesktopPetPositionTimer()
-  if (!window.isDestroyed()) {
-    window.destroy()
-  }
-  replaceDesktopPetRuntime('failed', DESKTOP_PET_RUNTIME_WARNING)
-}
-
-function createDesktopPetWindow(): void {
-  const preferences = requireDesktopPetPreferences()
-  if (
-    shutdownStarted
-    || preferences.state.mode !== 'visible'
-    || (desktopPetWindow !== null && !desktopPetWindow.isDestroyed())
-  ) {
-    return
-  }
-  if (
-    selectedDesktopPetModel() === null
-    || live2DAssetRegistry.bootstrap() === null
-  ) {
-    replaceDesktopPetRuntime(
-      'failed',
-      'Choose a detected Live2D model in Settings before showing the Desktop Pet.',
-    )
-    return
-  }
-  const bounds = resolvedDesktopPetBounds(preferences.placement)
-  if (bounds === null) {
-    replaceDesktopPetRuntime('failed', DESKTOP_PET_RUNTIME_WARNING)
-    return
-  }
-
-  desktopPetClickThrough = false
-  replaceDesktopPetRuntime('loading', null)
-  let window: BrowserWindow
-  try {
-    window = new BrowserWindow({
-      ...bounds,
-      minWidth: Math.min(bounds.width, DESKTOP_PET_WIDTH_DIP),
-      minHeight: Math.min(bounds.height, DESKTOP_PET_HEIGHT_DIP),
-      maxWidth: Math.min(bounds.width, DESKTOP_PET_MAX_WIDTH_DIP),
-      maxHeight: Math.min(bounds.height, DESKTOP_PET_MAX_HEIGHT_DIP),
-      title: 'Elysia Desktop Pet',
-      icon: resolveApplicationIconPath(),
-      transparent: true,
-      backgroundColor: '#00000000',
-      frame: false,
-      show: false,
-      alwaysOnTop: true,
-      skipTaskbar: true,
-      resizable: false,
-      maximizable: false,
-      minimizable: false,
-      fullscreenable: false,
-      autoHideMenuBar: true,
-      webPreferences: {
-        preload: path.join(moduleDirectory, 'desktop-pet-preload.cjs'),
-        contextIsolation: true,
-        nodeIntegration: false,
-        sandbox: true,
-        spellcheck: false,
-        backgroundThrottling: true,
-        devTools: !app.isPackaged,
-        navigateOnDragDrop: false,
-        partition: LIVE2D_ASSET_DESKTOP_PET_PARTITION,
-      },
-    })
-  } catch {
-    // Native construction can fail before a BrowserWindow exists. Collapse
-    // that synchronous edge into the same retryable state as load failures.
-    replaceDesktopPetRuntime('failed', DESKTOP_PET_RUNTIME_WARNING)
-    return
-  }
-  desktopPetWindow = window
-  try {
-    desktopPetIgnoredPlacement = preferences.placement === null
-      ? currentDesktopPetPlacement()
-      : null
-    window.setAlwaysOnTop(true, 'floating')
-    window.setMenu(null)
-    window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
-    window.webContents.on('will-attach-webview', (event) => {
-      event.preventDefault()
-    })
-    window.webContents.on('will-navigate', (event, targetUrl) => {
-      if (!isTrustedDesktopPetRendererUrl(targetUrl)) {
-        event.preventDefault()
-      }
-    })
-    window.webContents.session.setPermissionCheckHandler(() => false)
-    window.webContents.session.setPermissionRequestHandler(
-      (_webContents, _permission, callback) => {
-        callback(false)
-      },
-    )
-    window.webContents.on(
-      'did-fail-load',
-      (_event, _code, _description, _url, isMainFrame) => {
-        if (isMainFrame) {
-          failDesktopPetWindow(window)
-        }
-      },
-    )
-    window.webContents.on('preload-error', () => {
-      failDesktopPetWindow(window)
-    })
-    window.webContents.on('render-process-gone', () => {
-      failDesktopPetWindow(window)
-    })
-    window.on('move', scheduleDesktopPetPlacementSave)
-    window.on('close', (event) => {
-      if (
-        desktopPetWindow === window
-        && !shutdownStarted
-        && desktopPetPreferences?.state.mode === 'visible'
-      ) {
-        // Alt+F4 is a user hide request, not evidence that the renderer failed.
-        event.preventDefault()
-        void requestDesktopPetMode('hidden')
-      }
-    })
-    window.on('closed', () => {
-      if (desktopPetWindow !== window) {
-        return
-      }
-      desktopPetWindow = null
-      desktopPetClickThrough = false
-      desktopPetReadyDeadline.clear()
-      desktopPetIgnoredPlacement = null
-      clearDesktopPetPositionTimer()
-      const mode = desktopPetPreferences?.state.mode
-      if (mode === 'visible' && !shutdownStarted) {
-        replaceDesktopPetRuntime('failed', DESKTOP_PET_RUNTIME_WARNING)
-      }
-    })
-
-    desktopPetReadyDeadline.arm(() => {
-      failDesktopPetWindow(window)
-    })
-
-    const load = app.isPackaged
-      ? window.loadFile(path.join(app.getAppPath(), 'dist', 'pet.html'))
-      : window.loadURL(`${DEVELOPMENT_URL}/pet.html`)
-    void load.catch(() => {
-      failDesktopPetWindow(window)
-    })
-  } catch {
-    // Native setup is synchronous and can fail after construction. Destroy the
-    // partial window so no invisible WebContents survives in loading state.
-    failDesktopPetWindow(window)
-  }
-}
-
-function destroyDesktopPetWindowForReconfiguration(): void {
-  const window = desktopPetWindow
-  desktopPetWindow = null
-  desktopPetClickThrough = false
-  desktopPetReadyDeadline.clear()
-  desktopPetIgnoredPlacement = null
-  clearDesktopPetPositionTimer()
-  if (window !== null && !window.isDestroyed()) {
-    window.destroy()
-  }
-}
-
-function reconcileDesktopPetWindow(): void {
+async function reconcileDesktopPetProgram(): Promise<void> {
   const preferences = requireDesktopPetPreferences()
   if (preferences.state.mode !== 'visible') {
-    destroyDesktopPetWindowForReconfiguration()
-    replaceDesktopPetRuntime('absent')
+    await requireDesktopPetProgramManager().reconcile(null, false)
     return
   }
-  createDesktopPetWindow()
+  const library = desktopPetProgramLibrary
+  const program = selectedDesktopPetProgram()
+  if (library === null || program === null) {
+    await requireDesktopPetProgramManager().reconcile(null, false)
+    replaceDesktopPetRuntime(
+      'failed',
+      'Choose a detected Desktop Pet program in Settings before showing it.',
+    )
+    return
+  }
+  try {
+    // Discovery is not execution authority forever. Revalidate every pinned
+    // binary and model boundary immediately before path-based spawn so stale
+    // selection data is not trusted across an arbitrarily long interval.
+    const verifiedProgram = await revalidateDesktopPetProgramForLaunch(
+      library,
+      program,
+    )
+    await requireDesktopPetProgramManager().reconcile(verifiedProgram, true)
+  } catch (error) {
+    await requireDesktopPetProgramManager().reconcile(null, false)
+    replaceDesktopPetRuntime(
+      'failed',
+      'The selected Desktop Pet program changed or could not be started safely. Rescan the folder and try again.',
+    )
+    throw new Error(
+      'The selected Desktop Pet program could not be started safely.',
+      { cause: error },
+    )
+  }
 }
 
 function setDesktopPetLibraryPresentation(
   presentation: DesktopPetLibraryPresentation,
-  scan: DesktopPetModelLibraryScan | null,
+  scan: DesktopPetProgramLibraryScan | null,
 ): void {
   desktopPetLibraryPresentation = presentation
-  desktopPetModelLibrary = scan
+  desktopPetProgramLibrary = scan
   desktopPetPreferences = decorateDesktopPetPreferences(
     requireDesktopPetPreferences(),
   )
-  rebuildLive2DAssetRegistry()
 }
 
 async function persistDesktopPetLibrary(
-  scan: DesktopPetModelLibraryScan,
+  scan: DesktopPetProgramLibraryScan,
   selectedModelId: string | null,
 ): Promise<void> {
   const current = requireDesktopPetPreferences()
@@ -1126,37 +832,39 @@ async function persistDesktopPetLibrary(
     selectedModelId,
   }, current.state.runtime)
   setDesktopPetLibraryPresentation(
-    presentDesktopPetModelLibrary(scan),
+    presentDesktopPetProgramLibrary(scan),
     scan,
   )
 }
 
 async function installScannedDesktopPetLibrary(
-  scan: DesktopPetModelLibraryScan,
+  scan: DesktopPetProgramLibraryScan,
   selectFirstWhenMissing: boolean,
 ): Promise<DesktopPetState> {
   const current = requireDesktopPetPreferences()
   const selectedIsValid = current.state.selectedModelId !== null
-    && findDesktopPetModel(scan, current.state.selectedModelId) !== null
+    && findDesktopPetProgram(scan, current.state.selectedModelId) !== null
   const selectedModelId = selectedIsValid
     ? current.state.selectedModelId
     : selectFirstWhenMissing
-      ? scan.models[0]?.id ?? null
+      ? scan.programs[0]?.id ?? null
       : null
   const selectionChanged = selectedModelId !== current.state.selectedModelId
     || scan.rootPath !== current.libraryPath
+  if (selectionChanged && current.state.mode === 'visible') {
+    // The old process must be gone before a different local program becomes
+    // authoritative. Each program keeps its own untouched config.json.
+    await requireDesktopPetProgramManager().reconcile(null, false)
+  }
   if (selectionChanged) {
     await persistDesktopPetLibrary(scan, selectedModelId)
   } else {
     setDesktopPetLibraryPresentation(
-      presentDesktopPetModelLibrary(scan),
+      presentDesktopPetProgramLibrary(scan),
       scan,
     )
   }
-  // A rescan always rotates the custom-protocol generation. Restarting the
-  // isolated renderer prevents it from retaining URLs from the old allowlist.
-  destroyDesktopPetWindowForReconfiguration()
-  reconcileDesktopPetWindow()
+  await reconcileDesktopPetProgram()
   publishDesktopPetState()
   return requireDesktopPetPreferences().state
 }
@@ -1165,28 +873,31 @@ async function markDesktopPetLibraryUnavailable(
   status: 'unavailable' | 'invalid',
   warning: string,
 ): Promise<DesktopPetState> {
-  const current = requireDesktopPetPreferences()
-  if (current.state.selectedModelId !== null) {
-    desktopPetPreferences = await requireDesktopPetRepository().updateLibrary({
-      expectedRevision: current.state.revision,
-      libraryPath: current.libraryPath,
-      selectedModelId: null,
-    }, current.state.runtime)
-  }
-  desktopPetLibraryPresentation = Object.freeze({
-    status,
-    folderName: requireDesktopPetPreferences().state.folderName,
-    models: Object.freeze([]),
-  })
-  desktopPetModelLibrary = null
-  desktopPetPreferences = decorateDesktopPetPreferences(
-    requireDesktopPetPreferences(),
+  return stopDesktopPetBeforePersistence(
+    () => requireDesktopPetProgramManager().reconcile(null, false),
+    async () => {
+      const current = requireDesktopPetPreferences()
+      if (current.state.selectedModelId !== null) {
+        desktopPetPreferences = await requireDesktopPetRepository().updateLibrary({
+          expectedRevision: current.state.revision,
+          libraryPath: current.libraryPath,
+          selectedModelId: null,
+        }, current.state.runtime)
+      }
+      desktopPetLibraryPresentation = Object.freeze({
+        status,
+        folderName: requireDesktopPetPreferences().state.folderName,
+        models: Object.freeze([]),
+      })
+      desktopPetProgramLibrary = null
+      desktopPetPreferences = decorateDesktopPetPreferences(
+        requireDesktopPetPreferences(),
+      )
+      replaceDesktopPetRuntime('absent', warning)
+      publishDesktopPetState()
+      return requireDesktopPetPreferences().state
+    },
   )
-  rebuildLive2DAssetRegistry()
-  destroyDesktopPetWindowForReconfiguration()
-  replaceDesktopPetRuntime('absent', warning)
-  publishDesktopPetState()
-  return requireDesktopPetPreferences().state
 }
 
 async function scanConfiguredDesktopPetLibrary(
@@ -1199,24 +910,24 @@ async function scanConfiguredDesktopPetLibrary(
       folderName: null,
       models: Object.freeze([]),
     }), null)
-    reconcileDesktopPetWindow()
+    await reconcileDesktopPetProgram()
     publishDesktopPetState()
     return requireDesktopPetPreferences().state
   }
   try {
-    const scan = await scanDesktopPetModelLibrary(current.libraryPath)
+    const scan = await scanDesktopPetProgramLibrary(current.libraryPath)
     return installScannedDesktopPetLibrary(scan, selectFirstWhenMissing)
   } catch (error) {
-    if (error instanceof DesktopPetModelLibraryUnavailableError) {
+    if (error instanceof DesktopPetProgramLibraryUnavailableError) {
       return markDesktopPetLibraryUnavailable(
         'unavailable',
-        'The selected Live2D folder is unavailable. Reconnect it or choose another folder.',
+        'The selected Desktop Pet program folder is unavailable. Reconnect it or choose another folder.',
       )
     }
-    if (error instanceof DesktopPetModelLibraryValidationError) {
+    if (error instanceof DesktopPetProgramLibraryValidationError) {
       return markDesktopPetLibraryUnavailable(
         'invalid',
-        'No compatible Live2D model could be loaded from the selected folder.',
+        'No trusted Desktop Pet program could be loaded from the selected folder.',
       )
     }
     // Optional removable/network storage must never prevent Chat or the Python
@@ -1224,7 +935,7 @@ async function scanConfiguredDesktopPetLibrary(
     // trust boundary so absolute paths cannot reach the renderer or dialog.
     return markDesktopPetLibraryUnavailable(
       'invalid',
-      'The selected Live2D folder could not be scanned safely.',
+      'The selected Desktop Pet program folder could not be scanned safely.',
     )
   }
 }
@@ -1238,7 +949,7 @@ async function chooseDesktopPetModelDirectory(): Promise<DesktopPetState> {
       app.isPackaged,
     )
     const result = await dialog.showOpenDialog(requireMainWindow(), {
-      title: 'Choose a local Live2D model folder',
+      title: 'Choose a local Desktop Pet program folder',
       buttonLabel: 'Use this folder',
       properties: ['openDirectory', 'dontAddToRecent'],
       ...(defaultPath === undefined ? {} : { defaultPath }),
@@ -1247,13 +958,13 @@ async function chooseDesktopPetModelDirectory(): Promise<DesktopPetState> {
     if (selectedDirectory === null) {
       return requireDesktopPetPreferences().state
     }
-    const scan = await scanDesktopPetModelLibrary(selectedDirectory)
+    const scan = await scanDesktopPetProgramLibrary(selectedDirectory)
     return installScannedDesktopPetLibrary(scan, true)
   } catch (error) {
-    const message = error instanceof DesktopPetModelLibraryUnavailableError
-      || error instanceof DesktopPetModelLibraryValidationError
-      ? 'No compatible Live2D model was found in that folder.'
-      : 'The selected Live2D folder could not be scanned safely.'
+    const message = error instanceof DesktopPetProgramLibraryUnavailableError
+      || error instanceof DesktopPetProgramLibraryValidationError
+      ? 'No trusted Desktop Pet program was found in that folder.'
+      : 'The selected Desktop Pet program folder could not be scanned safely.'
     // Keep the native failure as a Main-only cause for diagnostics while the
     // renderer receives only the fixed message and never a filesystem path.
     throw new Error(message, { cause: error })
@@ -1271,67 +982,31 @@ async function updateDesktopPetPreferences(
   if (
     effectiveModelId !== null
     && (
-      desktopPetModelLibrary === null
-      || findDesktopPetModel(desktopPetModelLibrary, effectiveModelId) === null
+      desktopPetProgramLibrary === null
+      || findDesktopPetProgram(desktopPetProgramLibrary, effectiveModelId) === null
     )
   ) {
-    throw new Error('Choose one of the detected Desktop Pet models.')
-  }
-  if (request.mode !== 'visible' && current.state.mode === 'visible') {
-    await persistDesktopPetPlacement()
+    throw new Error('Choose one of the detected Desktop Pet programs.')
   }
   const selectionChanged = request.modelId !== undefined
     && request.modelId !== current.state.selectedModelId
+  if (
+    current.state.mode === 'visible'
+    && (request.mode !== 'visible' || selectionChanged)
+  ) {
+    await requireDesktopPetProgramManager().reconcile(null, false)
+  }
   desktopPetPreferences = decorateDesktopPetPreferences(
     await requireDesktopPetRepository().update(
       request,
       current.state.runtime,
     ),
   )
-  rebuildLive2DAssetRegistry()
-  if (selectionChanged) {
-    destroyDesktopPetWindowForReconfiguration()
-  }
-  // Reconcile before publishing so Renderer and tray never observe a
-  // persisted mode paired with the previous mode's native runtime.
-  reconcileDesktopPetWindow()
+  // Reconcile before publishing so Settings and the tray never pair a new
+  // selection with the previous program process.
+  await reconcileDesktopPetProgram()
   publishDesktopPetState()
   return requireDesktopPetPreferences().state
-}
-
-async function resetDesktopPetPosition(): Promise<DesktopPetState> {
-  clearDesktopPetPositionTimer()
-  await requireDesktopPetRepository().savePlacement(null)
-  const current = requireDesktopPetPreferences()
-  desktopPetPreferences = Object.freeze({
-    state: current.state,
-    placement: null,
-    libraryPath: current.libraryPath,
-  })
-  const window = desktopPetWindow
-  const bounds = resolvedDesktopPetBounds(null)
-  if (window !== null && !window.isDestroyed() && bounds !== null) {
-    desktopPetIgnoredPlacement = {
-      displayId: screen.getDisplayMatching(bounds).id,
-      x: bounds.x,
-      y: bounds.y,
-    }
-    window.setBounds(bounds, false)
-  }
-  return requireDesktopPetPreferences().state
-}
-
-function deliverPendingDesktopPetChatRequest(): void {
-  if (
-    !pendingDesktopPetChatRequest
-    || !mainRendererReady
-    || mainWindow === null
-    || mainWindow.isDestroyed()
-  ) {
-    return
-  }
-  pendingDesktopPetChatRequest = false
-  mainWindow.webContents.send('desktop-pet:open-chat-requested')
 }
 
 function showOrCreateMainWindow(): void {
@@ -1344,40 +1019,6 @@ function showOrCreateMainWindow(): void {
   }
   revealMainWindow()
   mainWindow.focus()
-  deliverPendingDesktopPetChatRequest()
-}
-
-function openMainChatFromDesktopPet(): void {
-  if (shutdownStarted) {
-    return
-  }
-  pendingDesktopPetChatRequest = true
-  showOrCreateMainWindow()
-}
-
-function repositionDesktopPetOnCurrentDisplays(): void {
-  const window = desktopPetWindow
-  if (window === null || window.isDestroyed()) {
-    return
-  }
-  const currentPlacement = currentDesktopPetPlacement()
-  const usesDefaultPlacement = desktopPetPreferences?.placement === null
-  const bounds = resolvedDesktopPetBounds(
-    usesDefaultPlacement ? null : currentPlacement,
-  )
-  if (bounds === null) {
-    failDesktopPetWindow(window)
-    return
-  }
-  if (usesDefaultPlacement) {
-    desktopPetIgnoredPlacement = {
-      displayId: screen.getDisplayMatching(bounds).id,
-      x: bounds.x,
-      y: bounds.y,
-    }
-  }
-  window.setBounds(bounds, false)
-  scheduleDesktopPetPlacementSave()
 }
 
 function installSpeechPlaybackOwner(window: BrowserWindow): void {
@@ -1429,23 +1070,6 @@ function isTrustedRendererUrl(rawUrl: string): boolean {
   })
 }
 
-/** Keep the pet's closed command surface isolated from the ordinary renderer. */
-function isTrustedDesktopPetRendererUrl(rawUrl: string): boolean {
-  return isTrustedRendererEntryUrl(
-    rawUrl,
-    {
-      appPath: app.getAppPath(),
-      developmentUrl: DEVELOPMENT_URL,
-      isPackaged: app.isPackaged,
-      platform: process.platform,
-    },
-    {
-      developmentPath: '/pet.html',
-      packagedFileName: 'pet.html',
-    },
-  )
-}
-
 function assertTrustedSender(event: IpcMainInvokeEvent): void {
   const senderFrame = event.senderFrame
   const mainFrame = event.sender.mainFrame
@@ -1460,24 +1084,6 @@ function assertTrustedSender(event: IpcMainInvokeEvent): void {
     || !isTrustedRendererUrl(senderFrame.url)
   ) {
     throw new Error('Desktop IPC rejected an untrusted renderer.')
-  }
-}
-
-/** Bind every pet command to its exact top-level WebContents and entry file. */
-function assertTrustedDesktopPetSender(event: IpcMainInvokeEvent): void {
-  const senderFrame = event.senderFrame
-  const mainFrame = event.sender.mainFrame
-
-  if (
-    desktopPetWindow === null
-    || event.sender !== desktopPetWindow.webContents
-    || senderFrame === null
-    || senderFrame.parent !== null
-    || senderFrame.processId !== mainFrame.processId
-    || senderFrame.routingId !== mainFrame.routingId
-    || !isTrustedDesktopPetRendererUrl(senderFrame.url)
-  ) {
-    throw new Error('Desktop Pet IPC rejected an untrusted renderer.')
   }
 }
 
@@ -2671,12 +2277,10 @@ function registerIpcHandlers(): void {
       // an old reply cannot speak inside a newly loaded Voice Session.
       requireBackend().stopCurrentSpeechPlayback()
       installSpeechPlaybackOwner(requireMainWindow())
-      mainRendererReady = true
       presenceVoiceSessionActive = false
       presenceReminderSchedulingStarted = true
       schedulePresenceReminder()
       revealMainWindow()
-      deliverPendingDesktopPetChatRequest()
     },
   )
 
@@ -2731,17 +2335,6 @@ function registerIpcHandlers(): void {
   )
 
   ipcMain.handle(
-    'desktop-pet:reset-position',
-    (event) => {
-      assertTrustedSender(event)
-      return enqueueDesktopPetMutation(
-        resetDesktopPetPosition,
-        false,
-      )
-    },
-  )
-
-  ipcMain.handle(
     'presence-notifications:get-state',
     (event): PresenceNotificationState => {
       assertTrustedSender(event)
@@ -2765,66 +2358,6 @@ function registerIpcHandlers(): void {
         throw new Error('Voice presence state is invalid.')
       }
       presenceVoiceSessionActive = active
-    },
-  )
-
-  ipcMain.handle(
-    'desktop-pet:ready',
-    (event): void => {
-      assertTrustedDesktopPetSender(event)
-      const window = desktopPetWindow
-      if (
-        window === null
-        || window.isDestroyed()
-        || requireDesktopPetPreferences().state.mode !== 'visible'
-      ) {
-        return
-      }
-      desktopPetReadyDeadline.clear()
-      window.showInactive()
-      replaceDesktopPetRuntime('visible', null)
-    },
-  )
-
-  ipcMain.handle(
-    'desktop-pet:failed',
-    (event): void => {
-      assertTrustedDesktopPetSender(event)
-      const window = desktopPetWindow
-      if (window !== null && !window.isDestroyed()) {
-        // The renderer owns WebGL/Cubism health; Main owns the truthful native
-        // lifecycle. A closed failure signal avoids a hidden 30-second wait at
-        // startup and prevents post-ready faults from remaining "visible".
-        failDesktopPetWindow(window)
-      }
-    },
-  )
-
-  ipcMain.handle(
-    'desktop-pet:get-model-bootstrap',
-    (event): DesktopPetModelBootstrap => {
-      assertTrustedDesktopPetSender(event)
-      const bootstrap = live2DAssetRegistry.bootstrap()
-      if (bootstrap === null) {
-        throw new Error('Desktop Pet model is not configured.')
-      }
-      return bootstrap
-    },
-  )
-
-  ipcMain.handle(
-    'desktop-pet:hide',
-    (event) => {
-      assertTrustedDesktopPetSender(event)
-      return requestDesktopPetMode('hidden').then(() => undefined)
-    },
-  )
-
-  ipcMain.handle(
-    'desktop-pet:open-main-chat',
-    (event): void => {
-      assertTrustedDesktopPetSender(event)
-      openMainChatFromDesktopPet()
     },
   )
 
@@ -3584,98 +3117,6 @@ function configureAudioPermissions(): void {
   )
 }
 
-function registerLive2DAssetProtocol(targetProtocol: Electron.Protocol): void {
-  targetProtocol.handle(LIVE2D_ASSET_SCHEME, async (request) => {
-    if (request.method !== 'GET') {
-      return new Response(null, {
-        status: 405,
-        headers: { Allow: 'GET' },
-      })
-    }
-
-    const requestRegistry = live2DAssetRegistry
-    const asset = requestRegistry.resolve(request.url)
-    if (asset === null) {
-      // A uniform not-found response avoids revealing whether rejected input
-      // described a real path elsewhere in the installation.
-      return new Response(null, { status: 404 })
-    }
-    let assetSize: number
-    try {
-      const assetStats = await lstat(asset.absolutePath)
-      if (
-        assetStats.isSymbolicLink()
-        || !assetStats.isFile()
-        || assetStats.size <= 0
-        || assetStats.size > LIVE2D_ASSET_MAXIMUM_BYTES
-        || assetStats.size !== asset.sizeBytes
-      ) {
-        return new Response(null, { status: 404 })
-      }
-      const canonicalPath = await realpath(asset.absolutePath)
-      if (canonicalPath !== asset.absolutePath) {
-        return new Response(null, { status: 404 })
-      }
-      assetSize = assetStats.size
-    } catch {
-      return new Response(null, { status: 404 })
-    }
-    const fileUrl = pathToFileURL(asset.absolutePath).toString()
-    let fileResponse: Response
-    try {
-      fileResponse = await net.fetch(fileUrl, {
-        bypassCustomProtocolHandlers: true,
-        cache: 'no-store',
-        credentials: 'omit',
-        redirect: 'error',
-        referrerPolicy: 'no-referrer',
-      })
-    } catch {
-      return new Response(null, { status: 404 })
-    }
-    if (!fileResponse.ok || fileResponse.redirected) {
-      return new Response(null, { status: 404 })
-    }
-    if (live2DAssetRegistry !== requestRegistry) {
-      await fileResponse.body?.cancel().catch(() => {})
-      return new Response(null, { status: 404 })
-    }
-    const body = await materializeLive2DAssetResponse(
-      fileResponse,
-      assetSize,
-      () => live2DAssetRegistry === requestRegistry,
-    )
-    if (body === null) {
-      return new Response(null, { status: 404 })
-    }
-    if (live2DAssetRegistry !== requestRegistry) {
-      // A model switch revokes every prior generation. Recheck after native
-      // I/O so an already admitted request cannot return bytes from the old
-      // allowlist after Settings rotates the selected model.
-      return new Response(null, { status: 404 })
-    }
-    const headers = new Headers(fileResponse.headers)
-    // Packaged `file:` pages have an opaque origin. CORS remains enabled on
-    // the scheme, but the exact per-model registry is still the sole read
-    // authority for these user-owned external files.
-    headers.set('Access-Control-Allow-Origin', '*')
-    headers.set(
-      'Access-Control-Expose-Headers',
-      'Content-Length, Cross-Origin-Resource-Policy, X-Content-Type-Options',
-    )
-    headers.set('Cache-Control', 'no-store')
-    headers.set('Content-Length', String(assetSize))
-    headers.set('Cross-Origin-Resource-Policy', 'cross-origin')
-    headers.set('X-Content-Type-Options', 'nosniff')
-    headers.delete('Location')
-    return new Response(body, {
-      status: fileResponse.status,
-      statusText: fileResponse.statusText,
-      headers,
-    })
-  })
-}
-
 function reportDesktopPetModeFailure(): void {
   if (shutdownStarted || desktopPetPreferences === null) {
     return
@@ -3692,15 +3133,16 @@ function requestDesktopPetMode(
   if (shutdownStarted) {
     return Promise.reject(new Error('Elysia is shutting down.'))
   }
-  // Tray clicks, the pet Hide button, and Alt+F4 can arrive in the same event
-  // turn. Serialize them so a successful first CAS cannot make the duplicate
-  // request look like a persistence failure.
+  // Tray and Settings actions can arrive in the same event turn. Serialize
+  // them so a successful first CAS cannot make a duplicate request look like
+  // a persistence failure.
   const execute = async (): Promise<DesktopPetState> => {
     const current = requireDesktopPetPreferences().state
-    if (
-      current.mode === mode
-      && !(mode === 'visible' && current.runtime === 'failed')
-    ) {
+    if (!shouldApplyDesktopPetModeRequest(
+      current.mode,
+      current.runtime,
+      mode,
+    )) {
       return current
     }
     // Requests admitted before shutdown retain their place in the serialized
@@ -3736,10 +3178,10 @@ function refreshTrayMenu(): void {
   const petToggleLabel = !petConfigured
     ? 'Configure Desktop Pet in Settings'
     : petVisible
-      ? 'Hide Desktop Pet'
+      ? 'Stop Desktop Pet'
       : petFailed
         ? 'Retry Desktop Pet'
-        : 'Show Desktop Pet'
+        : 'Launch Desktop Pet'
   const template: MenuItemConstructorOptions[] = [
     {
       label: 'Show Elysia',
@@ -3751,25 +3193,6 @@ function refreshTrayMenu(): void {
       enabled: petVisible || petConfigured,
       click: () => {
         void requestDesktopPetMode(petVisible ? 'hidden' : 'visible')
-      },
-    },
-    {
-      label: 'Mouse click-through',
-      type: 'checkbox',
-      checked: desktopPetClickThrough,
-      enabled: state?.runtime === 'visible',
-      click: (menuItem) => {
-        setDesktopPetClickThrough(menuItem.checked)
-      },
-    },
-    {
-      label: 'Reset Desktop Pet position',
-      enabled: state?.mode !== 'disabled',
-      click: () => {
-        void enqueueDesktopPetMutation(
-          resetDesktopPetPosition,
-          false,
-        ).catch(reportDesktopPetModeFailure)
       },
     },
     {
@@ -3810,7 +3233,6 @@ function createTray(): void {
 
 function createMainWindow(): void {
   const primaryWorkArea = screen.getPrimaryDisplay().workArea
-  mainRendererReady = false
   mainWindow = new BrowserWindow({
     width: Math.min(1180, primaryWorkArea.width),
     height: Math.min(780, primaryWorkArea.height),
@@ -3850,7 +3272,6 @@ function createMainWindow(): void {
     },
   )
   mainWindow.webContents.on('did-start-loading', () => {
-    mainRendererReady = false
     presenceVoiceSessionActive = false
   })
   mainWindow.webContents.on('render-process-gone', () => {
@@ -3859,7 +3280,6 @@ function createMainWindow(): void {
   })
   mainWindow.on('closed', () => {
     clearRendererReadyTimer()
-    mainRendererReady = false
     presenceVoiceSessionActive = false
     const closingOwner = speechPlaybackOwner
     speechPlaybackOwner = null
@@ -3894,17 +3314,19 @@ if (!hasSingleInstanceLock) {
     if (process.platform === 'win32') {
       app.setAppUserModelId('ai.elysia.desktop')
     }
-    // External model files are exposed only inside the dedicated Pet session;
-    // the ordinary app renderer remains static and cannot request these URLs.
-    registerLive2DAssetProtocol(
-      session.fromPartition(LIVE2D_ASSET_DESKTOP_PET_PARTITION).protocol,
-    )
     const projectRoot = resolveProjectRoot()
     const activeDataRoot = await initializeManagedDataStorage(projectRoot)
     desktopPetRepository = new DesktopPetPreferencesRepository(
       path.join(app.getPath('userData'), 'desktop-pet.json'),
     )
     desktopPetPreferences = await desktopPetRepository.load('absent')
+    desktopPetProgramManager = new DesktopPetProgramManager(
+      (runtime, warning) => {
+        if (desktopPetPreferences !== null) {
+          replaceDesktopPetRuntime(runtime, warning)
+        }
+      },
+    )
     refreshPresenceNotificationRuntime()
     presenceNotificationRepository = (
       new PresenceNotificationPreferencesRepository(
@@ -3918,12 +3340,6 @@ if (!hasSingleInstanceLock) {
         mainWindow.setBackgroundColor(nativeBackgroundColor())
       }
     })
-    const handleDisplayChange = (): void => {
-      repositionDesktopPetOnCurrentDisplays()
-    }
-    screen.on('display-added', handleDisplayChange)
-    screen.on('display-removed', handleDisplayChange)
-    screen.on('display-metrics-changed', handleDisplayChange)
     configureAudioPermissions()
     backendProcess = new BackendProcess(
       projectRoot,
@@ -3954,10 +3370,10 @@ if (!hasSingleInstanceLock) {
         folderName: desktopPetPreferences.state.folderName,
         models: Object.freeze([]),
       }), null)
-      destroyDesktopPetWindowForReconfiguration()
+      void desktopPetProgramManager?.stop().catch(() => {})
       replaceDesktopPetRuntime(
         'failed',
-        'The selected Live2D folder could not be scanned safely.',
+        'The selected Desktop Pet program folder could not be scanned safely.',
       )
     })
 
@@ -3987,20 +3403,12 @@ if (!hasSingleInstanceLock) {
     presenceVoiceSessionActive = false
     clearPresenceReminderTimer()
     closeAllNativePresenceNotifications()
-    clearDesktopPetPositionTimer()
     const optionalPersistenceFlush =
       drainDesktopPetAndIndependentPersistenceWithin(
         [...desktopPetPersistenceOperations],
-        persistDesktopPetPlacement,
+        () => desktopPetProgramManager?.shutdown() ?? Promise.resolve(),
         [...presenceNotificationPersistenceOperations],
       )
-    desktopPetReadyDeadline.clear()
-    desktopPetClickThrough = false
-    if (desktopPetWindow !== null && !desktopPetWindow.isDestroyed()) {
-      // Hide immediately but keep the native bounds available until admitted
-      // reset/mode writes and the ordered final placement snapshot have settled.
-      desktopPetWindow.hide()
-    }
     tray?.destroy()
     tray = null
     // A move may be between verified pointer publication and rollback/commit.
@@ -4021,12 +3429,6 @@ if (!hasSingleInstanceLock) {
       stopBackend,
       optionalPersistenceFlush,
     ]).finally(() => {
-      const petWindow = desktopPetWindow
-      desktopPetWindow = null
-      desktopPetIgnoredPlacement = null
-      if (petWindow !== null && !petWindow.isDestroyed()) {
-        petWindow.destroy()
-      }
       const closingOwner = speechPlaybackOwner
       speechPlaybackOwner = null
       speechPlaybackRouter.replace(null)

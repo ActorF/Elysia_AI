@@ -67,34 +67,27 @@ derive mouth cues from Web Audio RMS. The same active emotion selects the local
 TTS reference after a Backend restart, while artwork failure falls back through
 expression → state → portrait → accessible text. `waiting_approval` still has
 no producer until a real Work/Approval workflow exists.
-Stage 13 separately provides an optional dynamic Live2D Desktop Pet. It is Off
-(`disabled`) on first run. Settings lets the user choose an external local
-folder, rescans compatible `model3.json` manifests, de-duplicates the known
-Standard/Keyboard/Gamepad layout by appearance, and lets the user select one
-detected appearance before **Visible** can be enabled. The purchased reference
-pack is credited to `@书呆儿`; it is never copied into the repository, uploaded,
-or packaged. Settings links to the purported free pack at
+Stage 13 separately provides an optional external Desktop Pet program. It is
+Off (`disabled`) on first run. Settings lets the user choose a local folder,
+scans for complete trusted companion-program installations, and lets the user
+select one detected program before **Visible** can be enabled. The purchased
+reference pack is credited to `@书呆儿`; it is never copied into the repository,
+uploaded, or packaged. Settings links to the purported free pack at
 <https://pan.quark.cn/s/cb5d84acad8e>, but this project has not verified that
 link's current contents or terms.
-The primary **Choose local Live2D folder…** control accepts an already-owned
-paid or free pack through the native picker; downloading the free pack is
-optional. In a development checkout, the picker starts at the generic
-`data/characters` parent when it exists. The paid-pack child is Git-ignored,
-and its folder name is not compiled into public code. Packaged builds never
-probe that development location, and the absolute selected path remains
-private to Electron Main.
-Electron Main owns the strict `disabled / hidden / visible` preference, private
-library/resource paths, private display placement, and at most one
-transparent, always-on-top native window. `hidden` destroys the dedicated
-Renderer instead of merely making it invisible. The character surface can be
-dragged; a toolbar revealed on hover or keyboard focus opens the ordinary main
-Chat or hides the pet, and the tray can temporarily make it click-through. The
-separate sandboxed entry receives exactly `ready`, `failed`, `hide`,
-`openMainChat`, and `getModelBootstrap` through its minimal Preload. It has no Backend, arbitrary
-network, filesystem, Node, audio, or main Renderer capability. Only the pet's
-isolated Electron session installs `elysia-pet-asset`; every scan rotates a
-generation-scoped exact allowlist, so the renderer receives an opaque manifest
-URL rather than a native path.
+The primary **Choose desktop-pet program folder…** control accepts an
+already-owned paid or free pack through the native picker; downloading the free
+pack is optional. The paid files stay in that folder, which remains Git-ignored,
+and the absolute selected path remains private to Electron Main.
+Electron Main owns the strict `disabled / hidden / visible` preference and at
+most one child program that Elysia itself launched. **Visible** starts the
+selected executable in its own directory, allowing the original program to
+provide its mouse, keyboard, eye-tracking, expression, position, and appearance
+behavior. **Hidden** stops that owned process while retaining both Elysia's
+selection and the companion program's own settings. Switching selections waits
+for the old owned process to exit before starting the new one. Elysia never
+copies or modifies program binaries, model files, or `config.json`, and never
+terminates another copy merely because it has the same executable name.
 Stage 13 Presence and Notifications is also Main-owned and fully off by
 default. Settings can independently enable fixed-copy reply-ready notices and
 select a neutral Daily / Weekly reminder, then disable both with one action.
@@ -213,42 +206,34 @@ Git-ignored and must not be committed or packaged with the application.
   do not write Chat state or create a new Backend capability.
 - Desktop Pet settings are separate from Backend settings. A missing preference
   file is first-run state and defaults to **Off** (`disabled`). The user must
-  choose a local model directory, select one compatible detected appearance,
-  and explicitly choose **Visible**. **Hidden** preserves the opt-in and model
-  selection while destroying the pet Renderer and native window. **Visible**
-  creates one transparent, frameless, always-on-top 320×480 DIP nominal window
-  and dynamically renders the selected external Live2D model with full-body
-  framing.
-  The character surface moves the window; the non-drag toolbar appears on hover
-  or keyboard focus and exposes Open Chat and Hide. The tray can show or hide
-  it, temporarily enable mouse click-through, reset its position, disable it,
-  or retry a failed renderer; Settings also exposes an explicit retry for the
-  failed state.
-  Click-through is not persisted. Hidden keeps the process and tray resident
-  after the main window closes, while Off restores the normal Windows/Linux
-  last-window exit behavior.
-- Main stores Desktop Pet intent in a strict version-2 revisioned JSON document
-  under Electron `userData`; the native library/resource paths and display
-  placement remain private to Main. Settings receives only a folder name, sanitized
-  model summaries, scan status, and the selected opaque ID. Choosing or
-  rescanning a directory enumerates its actual compatible `model3.json`
-  manifests; the recognized multi-input pack layout is grouped by appearance
-  instead of exposing Standard, Keyboard, and Gamepad copies as three pets.
-  External model files stay in place and are never copied, committed, uploaded,
-  or included in an application package.
-  Settings, tray, pet controls, reset, and drag saves use one mutation queue,
-  while native display ID and DIP coordinates never enter either Renderer.
-  Position restoration clamps the window to current work areas across
-  negative-coordinate and mixed-scale displays without applying Electron's
-  `scaleFactor` twice. Display topology/metric changes reclamp the window. A
-  missing, corrupt, oversized, invalid, or legacy preference without a selected
-  model fails closed to `disabled`. A missing folder or selected model becomes
-  a sanitized recoverable library/runtime warning without affecting Chat,
-  Voice, or the Python Backend. A missing Preload is destroyed immediately;
-  only a real model that never reports ready waits for the 30-second deadline.
-  Shutdown drains
-  admitted writes before its final position snapshot, with the complete
-  optional persistence sequence bounded to two seconds.
+  choose a folder containing supported desktop-pet programs, select one
+  detected program, and explicitly choose **Visible**. **Visible** launches the
+  selected local program. **Hidden** stops the process Elysia launched while
+  preserving its selection and the program's own settings. **Off** leaves the
+  feature disabled until the user opts in again. Position, scale, input mode,
+  eye tracking, expressions, and other pet behavior remain owned by the
+  companion program and its own interface.
+- Main stores Desktop Pet intent in a strict version-3 revisioned JSON document
+  under Electron `userData`; executable paths remain private to Main. Settings
+  receives only a folder name, sanitized program summaries, scan status, and
+  the selected opaque ID. A bounded scan accepts only the reviewed program
+  layout and pinned executable/DLL identities with complete Standard, Keyboard,
+  and Gamepad model profiles. External program and model files stay in place
+  and are never copied, modified, committed, uploaded, or included in an
+  application package.
+  Immediately before every launch, Main repeats the link, canonical-path,
+  boundary, required-structure, size, and full pinned-hash checks. This second
+  validation rejects changes already present when it runs instead of trusting
+  stale discovery results, and shortens but does not eliminate the remaining
+  check-to-use interval. Launch remains path-based rather than bound to a
+  verified file handle or immutable file identity. A missing, corrupt,
+  oversized, invalid, or legacy
+  preference without a selected program fails closed to `disabled`; missing,
+  changed, or unsupported folders become sanitized recoverable warnings without
+  affecting Chat, Voice, or the Python Backend. The process manager serializes
+  starts, switches, stops, and shutdown, targets only the exact child PID Elysia
+  owns, and bounds native termination. Shutdown also drains already admitted
+  preference writes without writing the external program's `config.json`.
 - **Presence & notifications** is a separate immediate Settings section owned
   by Electron Main. **Reply completion notifications** and **Neutral presence
   reminders** both default to Off; reminder frequency accepts only Off, Daily,
@@ -561,9 +546,8 @@ rmdir /s /q "%TEMP%\elysia-asar-extracted"
 On Windows, `npm run make` additionally creates an unsigned NSIS installer.
 The final audit scans the actual package tree, its ASAR listing, and the complete
 extracted archive. It verifies the required portrait, state, expression, and
-speech atlases, application icons, and exact PurismCore build and license;
-requires one Pet entry and one dedicated Preload entry; and applies the global
-Cubism-model suffix ban to every extracted path. Exact visual-asset path
+speech atlases and application icons, and applies the global external-model and
+desktop-pet-program exclusion rules to every extracted path. Exact visual-asset path
 allowlists cover Git, Unpacked, and ASAR boundaries, so a renamed standalone
 texture cannot bypass the model-suffix checks. Neither
 accepted output contains the GPT-SoVITS runtime, Voice Profile catalog, model
@@ -584,10 +568,10 @@ success cell is not a new runtime state. The expression atlas admits only the
 user-controlled `neutral / happy / sad` mapping. The speech atlas remains an
 authenticated review asset, but the current renderer does not load it or derive
 visual mouth cues from playback.
-Main Chat and Voice use only the packaged static artwork. The dynamic Desktop
-Pet instead loads one user-selected external Cubism model in its isolated
-window. No external model pack is part of the repository or package, and the
-runtime does not fall back to a bundled Live2D character.
+Main Chat and Voice use only the packaged static artwork. The optional Desktop
+Pet instead launches one user-selected external companion program in place.
+No external program or model pack is part of the repository or package, and
+the application does not fall back to a bundled animated character.
 
 `npm run docs:check` enforces file-purpose comments plus public class,
 function, class-method, and exported interface-method documentation. The
@@ -600,27 +584,19 @@ Renderer reload and Project switches, trusted receipt settlement, Project
 isolation, archived read-only behavior, explicit grounded intent, and citation
 accessibility. The contract suite also runs `character-state.test.mjs`,
 `character-presentation.test.mjs`, `desktop-pet-lifecycle.test.mjs`,
-`desktop-pet-model-library.test.mjs`, `desktop-pet-preferences.test.mjs`,
-`desktop-pet-preload.test.cjs`, `live2d-assets.test.mjs`,
-`live2d-runtime-fallback.test.mjs`, `live2d-runtime.test.mjs`,
+`desktop-pet-program-library.test.mjs`,
+`desktop-pet-program-manager.test.mjs`, `desktop-pet-preferences.test.mjs`,
 `presence-native-notification.test.mjs`, and
 `presence-notification-preferences.test.mjs`.
-Desktop Pet coverage verifies ready/shutdown deadlines, the shared cross-entry
-mutation queue, Hidden tray residency and Disabled exit, programmatic-position
-suppression, the strict update schema, first-run-disabled and corrupt-file
-fail-closed behavior, version-1 migration, model selection, bounded directory
-scanning, appearance de-duplication, revision CAS, atomic replace failure,
-Main-private paths and placement, resource bounds, and mixed-scale,
-negative-coordinate, removed-display, and Windows unsigned-hash display-ID DIP
-clamping. Renderer source-policy tests prove that the main and pet HTML entries
-cannot borrow each other's IPC authority. `desktop-pet-preload.test.cjs` loads
-the production dedicated Preload in isolation and proves that exactly
-`ready`, `failed`, `hide`, `openMainChat`, and `getModelBootstrap` plus their fixed
-channels exist. The Live2D protocol tests cover the isolated partition,
-generation rotation, in-flight revocation, exact response length, exact
-resource allowlisting, path traversal rejection, and opaque model bootstrap;
-runtime tests cover bounded multi-texture external models, PNG decoded-memory
-admission, bounded Physics 3 evaluation, and one-shot failure recovery.
+Desktop Pet coverage verifies the strict update schema, first-run-disabled and
+corrupt-file fail-closed behavior, migration, program selection, bounded
+directory scanning, pinned executable and DLL identities, required input
+profiles, path/link rejection, revision CAS, atomic replace failure, and
+launch-time rejection when a previously scanned trusted file is replaced before
+revalidation.
+Process manager tests verify single-child ownership, ordered switches, safe
+PID-specific termination, startup/shutdown deadlines, failure recovery, and
+preservation of the external program's own configuration.
 Presence notification
 contract coverage verifies the exact
 three-field update, fully-off defaults, strict 16 KiB persistence, fail-closed
@@ -633,8 +609,8 @@ replacement, explicit close, and sanitized delivery failure. The UI suite
 verifies revisioned
 notification controls, **Turn all off**, failure recovery, and sanitized
 unsupported runtime alongside revisioned Desktop Pet Settings, failure/reload
-recovery, external-folder selection and rescan, detected-model selection,
-explicit failed-state retry, the request to return to main Chat,
+recovery, external-folder selection and rescan, detected-program selection,
+and explicit failed-state retry,
 current-Chat/Project
 scoping, Voice projection, Backend failure,
 closed state/emotion artwork, an always-static in-app character surface, and
@@ -668,33 +644,33 @@ method, results, capability gaps, and limitations.
 
 - React cannot access Node.js, Python, Chat files, or Memory files directly.
 - The sandboxed preload exposes only the methods in `electron/contracts.ts`.
-- The Desktop Pet is a second, exact renderer entry with a separate sandboxed
-  Preload. Its frozen API contains only `ready`, `failed`, `hide`,
-  `openMainChat`, and `getModelBootstrap`; Electron validates its exact top frame and window owner
-  for every call. Renderer storage partitions are never shared. The pet cannot
-  obtain the main `DesktopApi`, Backend state, a native model path, raw IPC,
-  arbitrary network, filesystem, Node, microphone, speaker-selection, or
-  arbitrary navigation capability. Main returns only the opaque model ID and
-  an `elysia-pet-asset://model/...` manifest URL.
-- External Live2D files are served only in the dedicated pet session. Main
-  validates a bounded compatible `model3.json` graph beneath the selected real
-  directory, rejects links and path escape, and registers its exact resources
-  in a generation-scoped allowlist. Choosing or rescanning a library rotates
-  that generation and restarts the pet, so an earlier URL cannot select another
-  model or become a general file reader. The main Chat/Voice renderer neither
-  registers this protocol nor loads Cubism/WebGL.
-- Desktop Pet persistence is Main-only: the exact version-2 JSON schema is
+- Desktop Pet execution remains Main-only. The Renderer can choose only an
+  opaque detected-program ID and a closed operating mode; it cannot submit an
+  executable path, launch arguments, process ID, shell command, or arbitrary
+  configuration.
+- Main bounds directory traversal, rejects links and path escape, verifies the
+  reviewed launcher and every loadable top-level DLL by exact size and SHA-256,
+  and requires complete Standard, Keyboard, and Gamepad model profiles before a
+  local installation becomes selectable. It repeats the full structural and
+  cryptographic validation immediately before each launch so replacements that
+  are already present at revalidation are rejected and the path-based launch
+  window is reduced. This defense does not eliminate TOCTOU: process creation
+  is not bound to the verified file handle or an immutable Windows file
+  identity, so a local writer could still replace a path in the remaining
+  interval. Program paths never enter the Renderer or Python protocol.
+- Desktop Pet persistence is Main-only: the exact version-3 JSON schema is
   capped at 16 KiB, mode/model changes use optimistic revisions and
-  same-directory atomic replacement. The native library/resource paths and
-  placement are excluded from public state; the opaque selected model ID is
+  same-directory atomic replacement. Native program paths are excluded from
+  public state; the opaque selected program ID is
   deliberately exposed with sanitized summaries so Settings can render and
   update the closed selection.
   Missing or invalid storage defaults to Off; Visible is rejected until a
-  validated model is selected. The nominal 320×480 DIP window is clamped to
-  each current display work area and the general geometry contract caps it at
-  420×560 DIP; Hidden and Disabled destroy the renderer rather than retaining
-  an invisible page. These are resource bounds, not a promise of a fixed RAM
-  measurement.
+  validated program is selected. Hidden and Disabled stop only the exact child
+  process Elysia launched. Selection changes are serialized so the old child
+  exits before the new one starts; failed or timed-out stops retain ownership
+  and block replacement instead of leaving two programs running. The child runs
+  in its original directory and owns its existing `config.json`; Elysia neither
+  rewrites that file nor substitutes an application-managed copy.
 - Presence notification persistence is also Main-only and capped at 16 KiB.
   Missing or invalid storage fails closed to reply notifications Off and
   reminder frequency Off; exact-schema updates use optimistic revisions,
@@ -716,8 +692,8 @@ method, results, capability gaps, and limitations.
   visible or Voice/Backend/an undrained managed speech turn is active, records a
   suppressed due cycle as handled, and closes outstanding notifications during
   shutdown. Admitted preference and cadence-anchor writes use a parallel
-  bounded drain so they cannot consume the Desktop Pet's ordered final-position
-  save window before process exit. The only
+  bounded drain so they cannot consume the Desktop Pet's ordered process-stop
+  deadline during shutdown. The only
   Renderer activity signal is a trusted boolean indicating whether the visible
   Voice Session is open; it suppresses both optional notification kinds and
   carries no transcript, audio, prompt, or model data.

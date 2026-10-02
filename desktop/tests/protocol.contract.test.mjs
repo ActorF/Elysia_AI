@@ -17,10 +17,7 @@ import {
   allowAudioPermissionRequest,
 } from '../dist-electron/audio-permission.js'
 import { parseSafeExternalUrl } from '../dist-electron/external-url.js'
-import {
-  isTrustedRendererEntryUrl,
-  isTrustedRendererUrl,
-} from '../dist-electron/renderer-source.js'
+import { isTrustedRendererUrl } from '../dist-electron/renderer-source.js'
 import {
   PROTOCOL_NAME,
   PROTOCOL_VERSION,
@@ -5083,40 +5080,6 @@ test('renderer source policy accepts only the exact development document', () =>
   assert.equal(isTrustedRendererUrl('https://localhost:5173/', policy), false)
 })
 
-test('renderer source policy isolates the development desktop-pet entry', () => {
-  const policy = {
-    appPath: '/application',
-    developmentUrl: 'http://localhost:5173',
-    isPackaged: false,
-    platform: 'linux',
-  }
-  const petEntry = {
-    developmentPath: '/pet.html',
-    packagedFileName: 'pet.html',
-  }
-
-  assert.equal(
-    isTrustedRendererEntryUrl(
-      'http://localhost:5173/pet.html',
-      policy,
-      petEntry,
-    ),
-    true,
-  )
-  assert.equal(
-    isTrustedRendererEntryUrl('http://localhost:5173/', policy, petEntry),
-    false,
-  )
-  assert.equal(
-    isTrustedRendererEntryUrl(
-      'http://localhost:5173/pet.html?main=true',
-      policy,
-      petEntry,
-    ),
-    false,
-  )
-})
-
 test('renderer source policy accepts only the packaged index file', () => {
   const appPath = path.resolve('fixture-app')
   const policy = {
@@ -5136,37 +5099,6 @@ test('renderer source policy accepts only the packaged index file', () => {
   assert.equal(isTrustedRendererUrl(`${indexUrl}?unexpected=1`, policy), false)
   assert.equal(isTrustedRendererUrl(`${indexUrl}#unexpected`, policy), false)
   assert.equal(isTrustedRendererUrl(otherUrl, policy), false)
-})
-
-test('renderer source policy isolates the packaged desktop-pet entry', () => {
-  const appPath = path.resolve('fixture-app')
-  const policy = {
-    appPath,
-    developmentUrl: 'http://localhost:5173',
-    isPackaged: true,
-    platform: process.platform,
-  }
-  const petEntry = {
-    developmentPath: '/pet.html',
-    packagedFileName: 'pet.html',
-  }
-  const petUrl = pathToFileURL(
-    path.join(appPath, 'dist', 'pet.html'),
-  ).href
-  const indexUrl = pathToFileURL(
-    path.join(appPath, 'dist', 'index.html'),
-  ).href
-
-  assert.equal(isTrustedRendererEntryUrl(petUrl, policy, petEntry), true)
-  assert.equal(
-    isTrustedRendererEntryUrl(`${petUrl}?unexpected=1`, policy, petEntry),
-    false,
-  )
-  assert.equal(
-    isTrustedRendererEntryUrl(`${petUrl}#unexpected`, policy, petEntry),
-    false,
-  )
-  assert.equal(isTrustedRendererEntryUrl(indexUrl, policy, petEntry), false)
 })
 
 test('audio permission policy allows only trusted microphone access', () => {

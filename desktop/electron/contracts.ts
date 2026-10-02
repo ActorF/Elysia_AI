@@ -541,12 +541,10 @@ export interface DesktopApi {
   updateDesktopPet(
     request: UpdateDesktopPetRequest,
   ): Promise<DesktopPetState>
-  /** Pick and scan a local external Live2D folder without exposing its path. */
+  /** Pick and scan a local companion-program folder without exposing its path. */
   chooseDesktopPetModelDirectory(): Promise<DesktopPetState>
-  /** Rescan the configured external folder and revalidate its selected model. */
+  /** Rescan the configured external folder and revalidate its selected program. */
   refreshDesktopPetModels(): Promise<DesktopPetState>
-  /** Move the next visible Desktop Pet to a safe primary-display position. */
-  resetDesktopPetPosition(): Promise<DesktopPetState>
   /** Return Main-owned, default-off native notification preferences. */
   getPresenceNotificationState(): Promise<PresenceNotificationState>
   /** Persist both closed notification choices with revision checking. */
@@ -700,8 +698,6 @@ export interface DesktopApi {
   onDesktopPetStateChanged(
     listener: (state: DesktopPetState) => void,
   ): () => void
-  /** Subscribe to requests that the ordinary application navigate to Chat. */
-  onDesktopPetOpenChatRequested(listener: () => void): () => void
   /** Subscribe to canonical native notification preference/runtime changes. */
   onPresenceNotificationStateChanged(
     listener: (state: PresenceNotificationState) => void,

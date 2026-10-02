@@ -19,9 +19,9 @@ export interface RendererEntryPoint {
 /**
  * Check an IPC caller against one exact renderer entry point.
  *
- * Main and Desktop Pet have different capability surfaces. Requiring the
- * exact HTML file and development pathname prevents either renderer from
- * borrowing the other's IPC authority merely because both share an origin.
+ * Requiring the exact HTML file and development pathname prevents an iframe
+ * or future secondary surface from borrowing the main renderer's IPC
+ * authority merely because it shares an origin.
  */
 export function isTrustedRendererEntryUrl(
   rawUrl: string,

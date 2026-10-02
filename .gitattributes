@@ -1,7 +1,3 @@
 # Document assets are binary even when a platform-level Git rule installs a text converter.
 *.pdf binary
 *.docx binary
-
-desktop/public/character/live2d/runtime/LICENSE-PurismCore.txt text eol=lf
-# Preserve the third-party build exactly as published, including its own bytes.
-desktop/public/character/live2d/runtime/purismcore.js -text

@@ -2541,7 +2541,7 @@ function App() {
         setDesktopPetError(
           error instanceof Error
             ? error.message
-            : 'Could not select the Desktop Pet model.',
+            : 'Could not select the Desktop Pet companion program.',
         )
       }
     } finally {
@@ -2569,7 +2569,7 @@ function App() {
         setDesktopPetError(
           error instanceof Error
             ? error.message
-            : 'Could not scan the selected Live2D folder.',
+            : 'Could not scan the selected desktop-pet program folder.',
         )
       }
     } finally {
@@ -2597,7 +2597,7 @@ function App() {
         setDesktopPetError(
           error instanceof Error
             ? error.message
-            : 'Could not rescan the Live2D folder.',
+            : 'Could not rescan the desktop-pet program folder.',
         )
       }
     } finally {
@@ -2657,34 +2657,6 @@ function App() {
     presenceNotificationPending,
     presenceNotificationState,
   ])
-
-  const resetDesktopPetPosition = useCallback(async (): Promise<void> => {
-    if (desktopApi === undefined || desktopPetPending) {
-      return
-    }
-    const operationId = desktopPetOperationRef.current + 1
-    desktopPetOperationRef.current = operationId
-    setDesktopPetPending(true)
-    setDesktopPetError(null)
-    try {
-      const nextState = await desktopApi.resetDesktopPetPosition()
-      if (operationId === desktopPetOperationRef.current) {
-        setDesktopPetState(nextState)
-      }
-    } catch (error) {
-      if (operationId === desktopPetOperationRef.current) {
-        setDesktopPetError(
-          error instanceof Error
-            ? error.message
-            : 'Could not reset the Desktop Pet position.',
-        )
-      }
-    } finally {
-      if (operationId === desktopPetOperationRef.current) {
-        setDesktopPetPending(false)
-      }
-    }
-  }, [desktopApi, desktopPetPending])
 
   const refreshAudioDevices = useCallback(async (): Promise<void> => {
     await audioDeviceControllerRef.current?.refreshDevices()
@@ -4006,31 +3978,6 @@ function App() {
   const toggleCharacterPanel = useCallback((): Promise<void> => (
     setCharacterPanelVisibility(!panelTargetOpenRef.current)
   ), [setCharacterPanelVisibility])
-
-  useEffect(() => desktopApi?.onDesktopPetOpenChatRequested(() => {
-    if (callPreviewOpenRef.current && !closeCallPreview()) {
-      return
-    }
-    if (!mayLeaveSettings('chat', settingsDirtyRef.current)) {
-      return
-    }
-    activeViewRef.current = 'chat'
-    setActiveView('chat')
-    setSearchOpen(false)
-    setSearchQuery('')
-    if (panelTargetOpenRef.current) {
-      void setCharacterPanelVisibility(false)
-    }
-    if (compactShell) {
-      setSidebarOpen(false)
-    }
-    focusChatComposer()
-  }), [
-    closeCallPreview,
-    compactShell,
-    desktopApi,
-    setCharacterPanelVisibility,
-  ])
 
   useEffect(() => {
     if (desktopApi === undefined || snapshot.status !== 'ready') {
@@ -6977,7 +6924,6 @@ function App() {
         onOpenDesktopPetDownload={() => openExternalUrl(
           'https://pan.quark.cn/s/cb5d84acad8e',
         )}
-        onResetDesktopPetPosition={resetDesktopPetPosition}
         onPresenceNotificationChange={changePresenceNotifications}
         onRefreshDataStorage={refreshDataStorage}
         onMoveDataDirectory={moveDataDirectory}
