@@ -2,6 +2,10 @@
 
 import { createLive2DController } from './character/live2d-runtime.ts'
 import { bindLive2DRuntimeFailure } from './character/live2d-runtime-failure.ts'
+import {
+  isCharacterPerformancePreference,
+  type CharacterPerformanceState,
+} from '../electron/character-performance-contracts.ts'
 
 type Live2DController = Awaited<ReturnType<typeof createLive2DController>>
 
@@ -32,11 +36,17 @@ const imageFallback = requireElement<HTMLElement>(
 )
 const status = requireElement<HTMLElement>('#desktop-pet-status')
 const reducedMotionQuery = window.matchMedia('(prefers-reduced-motion: reduce)')
+const api = window.elysiaDesktopPet
 
 let live2DController: Live2DController | null = null
 let live2DGeneration = 0
 let live2DStarting = false
 let portraitAvailable = !(portrait.complete && portrait.naturalWidth === 0)
+let performanceState: CharacterPerformanceState = Object.freeze({
+  preference: 'still',
+  revision: -1,
+})
+let unsubscribePerformance = (): void => {}
 
 function reportUnavailable(): void {
   status.textContent = 'Desktop pet controls are unavailable.'
@@ -97,6 +107,7 @@ function stopLive2D(): void {
 async function startLive2D(): Promise<void> {
   if (
     reducedMotionQuery.matches
+    || performanceState.preference !== 'animated'
     || live2DStarting
     || live2DController !== null
   ) {
@@ -111,9 +122,14 @@ async function startLive2D(): Promise<void> {
   try {
     const controller = await createLive2DController(live2DCanvas, {
       emotion: 'neutral',
+      framing: 'full-body',
       state: 'idle',
     })
-    if (generation !== live2DGeneration || reducedMotionQuery.matches) {
+    if (
+      generation !== live2DGeneration
+      || reducedMotionQuery.matches
+      || performanceState.preference !== 'animated'
+    ) {
       controller.dispose()
       return
     }
@@ -136,11 +152,36 @@ async function startLive2D(): Promise<void> {
 }
 
 function synchronizeMotionPreference(): void {
-  if (reducedMotionQuery.matches) {
+  if (
+    reducedMotionQuery.matches
+    || performanceState.preference !== 'animated'
+  ) {
     stopLive2D()
   } else {
     void startLive2D()
   }
+}
+
+function acceptPerformanceState(value: unknown): void {
+  // Although Main is trusted, the renderer still fails visually closed if an
+  // older build or malformed event crosses the isolated-world boundary.
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return
+  }
+  const candidate = value as Record<string, unknown>
+  if (
+    !Number.isSafeInteger(candidate.revision)
+    || (candidate.revision as number) < 0
+    || (candidate.revision as number) < performanceState.revision
+    || !isCharacterPerformancePreference(candidate.preference)
+  ) {
+    return
+  }
+  performanceState = Object.freeze({
+    preference: candidate.preference,
+    revision: candidate.revision as number,
+  })
+  synchronizeMotionPreference()
 }
 
 reducedMotionQuery.addEventListener('change', synchronizeMotionPreference)
@@ -161,13 +202,12 @@ const unbindRuntimeFailure = bindLive2DRuntimeFailure(
 )
 window.addEventListener('beforeunload', () => {
   reducedMotionQuery.removeEventListener('change', synchronizeMotionPreference)
+  unsubscribePerformance()
   unbindRuntimeFailure()
   stopLive2D()
 }, { once: true })
-synchronizeMotionPreference()
 
 openMainButton.addEventListener('click', () => {
-  const api = window.elysiaDesktopPet
   if (api === undefined) {
     reportUnavailable()
     return
@@ -176,7 +216,6 @@ openMainButton.addEventListener('click', () => {
 })
 
 hideButton.addEventListener('click', () => {
-  const api = window.elysiaDesktopPet
   if (api === undefined) {
     reportUnavailable()
     return
@@ -184,9 +223,15 @@ hideButton.addEventListener('click', () => {
   void invokePetAction(() => api.hide())
 })
 
-const api = window.elysiaDesktopPet
 if (api === undefined) {
   reportUnavailable()
 } else {
+  unsubscribePerformance = api.onCharacterPerformanceStateChanged(
+    acceptPerformanceState,
+  )
+  void api.getCharacterPerformanceState()
+    .then(acceptPerformanceState)
+    .catch(reportUnavailable)
   void api.ready().catch(reportUnavailable)
 }
+synchronizeMotionPreference()

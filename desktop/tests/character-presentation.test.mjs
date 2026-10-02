@@ -15,6 +15,9 @@ import {
   isCharacterPerformancePreference,
   resolveCharacterPerformance,
 } from '../src/character/character-performance.ts'
+import {
+  parseCharacterPerformancePreference,
+} from '../electron/character-performance-contracts.ts'
 
 const states = [
   'idle',
@@ -95,9 +98,14 @@ test('maps three strict emotions to distinct reviewed expression cells', () => {
 test('accepts only the two persisted character performance choices', () => {
   for (const value of ['animated', 'still']) {
     assert.equal(isCharacterPerformancePreference(value), true)
+    assert.equal(parseCharacterPerformancePreference(value), value)
   }
   for (const value of [null, '', 'system', 'hidden', 'full', 1, {}]) {
     assert.equal(isCharacterPerformancePreference(value), false)
+    assert.throws(
+      () => parseCharacterPerformancePreference(value),
+      /Character performance preference is invalid\./u,
+    )
   }
 })
 

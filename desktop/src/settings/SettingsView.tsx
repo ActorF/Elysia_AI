@@ -225,7 +225,7 @@ const desktopPetOptions: readonly DesktopPetOption[] = [
   {
     value: 'visible',
     label: 'Visible',
-    description: 'Show one static, always-on-top 2D Pet window.',
+    description: 'Show the draggable, always-on-top full-body Live2D companion.',
     icon: 'sparkles',
   },
 ]
@@ -508,7 +508,7 @@ function AppearanceSettings({
       <div className="appearance-subheading">
         <h3>Desktop Pet</h3>
         <p>
-          Optional static 2D companion. The main Chat remains the complete way to use Elysia.
+          Independent Live2D desktop companion. The main Chat keeps the half-body portrait and complete controls.
         </p>
       </div>
       <fieldset

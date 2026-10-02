@@ -25,6 +25,21 @@ const assetRoot = path.join(
   'elysia',
 )
 
+function elementWithId(html, id) {
+  const element = new RegExp(`<[^>]+\\bid="${id}"[^>]*>`, 'u').exec(html)?.[0]
+  assert.ok(element, `expected an element with id=${id}`)
+  return element
+}
+
+function elementWithClass(html, className) {
+  const element = new RegExp(
+    `<[^>]+\\bclass="[^"]*\\b${className}\\b[^"]*"[^>]*>`,
+    'u',
+  ).exec(html)?.[0]
+  assert.ok(element, `expected an element with class=${className}`)
+  return element
+}
+
 test('scheme privileges support secure fetches without bypassing CSP', () => {
   assert.deepEqual(LIVE2D_ASSET_PRIVILEGES, {
     standard: true,
@@ -47,6 +62,50 @@ test('renderer policies expose fetch and WASM without exposing the asset scheme 
     assert.match(policy, /img-src [^;]*blob:/u)
     assert.doesNotMatch(policy, /img-src [^;]*elysia-asset:/u)
   }
+})
+
+test('assigns each Live2D surface its reviewed framing and drag boundary', async () => {
+  const [
+    petHtml,
+    petCss,
+    characterArtwork,
+    characterCanvas,
+    callPreview,
+  ] = await Promise.all([
+    readFile(new URL('../pet.html', import.meta.url), 'utf8'),
+    readFile(new URL('../src/desktop-pet.css', import.meta.url), 'utf8'),
+    readFile(
+      new URL('../src/character/CharacterArtwork.tsx', import.meta.url),
+      'utf8',
+    ),
+    readFile(
+      new URL('../src/character/Live2DCharacterCanvas.tsx', import.meta.url),
+      'utf8',
+    ),
+    readFile(new URL('../src/voice/CallPreview.tsx', import.meta.url), 'utf8'),
+  ])
+
+  const petCharacter = elementWithClass(petHtml, 'desktop-pet-character')
+  assert.match(petCharacter, /class="[^"]*desktop-pet-drag-surface[^"]*"/u)
+
+  for (const controlId of ['desktop-pet-open-main', 'desktop-pet-hide']) {
+    const control = elementWithId(petHtml, controlId)
+    assert.match(control, /class="[^"]*desktop-pet-control[^"]*"/u)
+  }
+
+  const petCanvas = elementWithId(petHtml, 'desktop-pet-live2d')
+  assert.match(petCanvas, /data-live2d-framing="full-body"/u)
+  assert.match(
+    petCss,
+    /\.desktop-pet-drag-surface\s*\{[^}]*-webkit-app-region:\s*drag\s*;/su,
+  )
+  assert.match(
+    petCss,
+    /\.desktop-pet-control\s*\{[^}]*-webkit-app-region:\s*no-drag\s*;/su,
+  )
+  assert.match(characterCanvas, /data-live2d-framing=\{framing\}/u)
+  assert.match(characterArtwork, /live2DFraming = 'half-body'/u)
+  assert.match(callPreview, /live2DFraming="call-half-body"/u)
 })
 
 test('only the three packaged Live2D files resolve', () => {

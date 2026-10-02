@@ -92,7 +92,7 @@ test('update contract accepts only exact closed fields', () => {
   assert.throws(() => parseUpdateDesktopPetRequest(symbolField))
 })
 
-test('missing preferences default off without creating a file', async () => {
+test('missing preferences default visible without creating a file', async () => {
   await withTempDirectory(async (directory) => {
     const filePath = path.join(directory, 'desktop-pet.json')
     const repository = new DesktopPetPreferencesRepository(filePath)
@@ -103,13 +103,37 @@ test('missing preferences default off without creating a file', async () => {
       state: {
         revision: 0,
         updatedAt: null,
-        mode: 'disabled',
+        mode: 'visible',
         runtime: 'absent',
         warning: null,
       },
       placement: null,
     })
+
+    const unchanged = await repository.update({
+      expectedRevision: 0,
+      mode: 'visible',
+    })
+    assert.equal(unchanged.state.revision, 0)
+    assert.equal(unchanged.state.mode, 'visible')
     assert.deepEqual(await readdir(directory), [])
+  })
+})
+
+test('first drag persists visible first-run mode with private placement', async () => {
+  await withTempDirectory(async (directory) => {
+    const filePath = path.join(directory, 'desktop-pet.json')
+    const repository = new DesktopPetPreferencesRepository(filePath)
+
+    await repository.savePlacement({ displayId: 2, x: -700, y: 100 })
+
+    assert.deepEqual(JSON.parse(await readFile(filePath, 'utf8')), {
+      schemaVersion: 1,
+      revision: 0,
+      updatedAt: null,
+      mode: 'visible',
+      placement: { displayId: 2, x: -700, y: 100 },
+    })
   })
 })
 
@@ -181,14 +205,14 @@ test('mode update is atomic, revisioned, canonical, and no-op aware', async () =
       },
     })
 
-    const visible = await repository.update({
+    const hidden = await repository.update({
       expectedRevision: 0,
-      mode: 'visible',
+      mode: 'hidden',
     }, 'loading')
-    assert.deepEqual(visible.state, {
+    assert.deepEqual(hidden.state, {
       revision: 1,
       updatedAt: '2026-10-01T13:00:00.000Z',
-      mode: 'visible',
+      mode: 'hidden',
       runtime: 'loading',
       warning: null,
     })
@@ -196,10 +220,10 @@ test('mode update is atomic, revisioned, canonical, and no-op aware', async () =
 
     const noOp = await repository.update({
       expectedRevision: 1,
-      mode: 'visible',
+      mode: 'hidden',
     }, 'visible')
     assert.equal(noOp.state.revision, 1)
-    assert.equal(noOp.state.updatedAt, visible.state.updatedAt)
+    assert.equal(noOp.state.updatedAt, hidden.state.updatedAt)
     assert.equal(noOp.state.runtime, 'visible')
     assert.equal(clockCalls, 1)
 
@@ -207,13 +231,13 @@ test('mode update is atomic, revisioned, canonical, and no-op aware', async () =
     assert.deepEqual(stored, canonicalDocument({
       revision: 1,
       updatedAt: '2026-10-01T13:00:00.000Z',
-      mode: 'visible',
+      mode: 'hidden',
       placement: null,
     }))
     assert.deepEqual(await readdir(directory), ['desktop-pet.json'])
 
     await assert.rejects(
-      repository.update({ expectedRevision: 0, mode: 'hidden' }),
+      repository.update({ expectedRevision: 0, mode: 'visible' }),
       DesktopPetPreferencesConflictError,
     )
   })
@@ -226,8 +250,8 @@ test('same-path concurrent CAS updates permit exactly one winner', async () => {
     const second = new DesktopPetPreferencesRepository(filePath)
 
     const outcomes = await Promise.allSettled([
-      first.update({ expectedRevision: 0, mode: 'visible' }),
-      second.update({ expectedRevision: 0, mode: 'hidden' }),
+      first.update({ expectedRevision: 0, mode: 'hidden' }),
+      second.update({ expectedRevision: 0, mode: 'disabled' }),
     ])
 
     assert.equal(
@@ -239,7 +263,7 @@ test('same-path concurrent CAS updates permit exactly one winner', async () => {
     assert.ok(rejection.reason instanceof DesktopPetPreferencesConflictError)
     const loaded = await first.load()
     assert.equal(loaded.state.revision, 1)
-    assert.ok(['visible', 'hidden'].includes(loaded.state.mode))
+    assert.ok(['disabled', 'hidden'].includes(loaded.state.mode))
   })
 })
 
@@ -249,7 +273,7 @@ test('failed atomic replacement preserves the last known-good file', async () =>
     const initial = new DesktopPetPreferencesRepository(filePath, {
       now: () => new Date('2026-10-01T14:00:00.000Z'),
     })
-    await initial.update({ expectedRevision: 0, mode: 'visible' })
+    await initial.update({ expectedRevision: 0, mode: 'hidden' })
     const before = await readFile(filePath, 'utf8')
     const failing = new DesktopPetPreferencesRepository(filePath, {
       now: () => new Date('2026-10-01T15:00:00.000Z'),
@@ -259,13 +283,13 @@ test('failed atomic replacement preserves the last known-good file', async () =>
     })
 
     await assert.rejects(
-      failing.update({ expectedRevision: 1, mode: 'hidden' }),
+      failing.update({ expectedRevision: 1, mode: 'visible' }),
       DesktopPetPreferencesStorageError,
     )
 
     assert.equal(await readFile(filePath, 'utf8'), before)
     assert.deepEqual(await readdir(directory), ['desktop-pet.json'])
-    assert.equal((await initial.load()).state.mode, 'visible')
+    assert.equal((await initial.load()).state.mode, 'hidden')
   })
 })
 
@@ -275,7 +299,7 @@ test('placement writes stay private and do not churn preference revision', async
     const repository = new DesktopPetPreferencesRepository(filePath, {
       now: () => new Date('2026-10-01T16:00:00.000Z'),
     })
-    await repository.update({ expectedRevision: 0, mode: 'visible' })
+    await repository.update({ expectedRevision: 0, mode: 'hidden' })
 
     await repository.savePlacement({ displayId: 2, x: -700, y: 100 })
     const loaded = await repository.load('visible')

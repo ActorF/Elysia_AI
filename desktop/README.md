@@ -67,19 +67,24 @@ active emotion selects the local TTS reference after a Backend restart. During
 real Web Audio playback, trusted Preload samples RMS at no more than 20 Hz and
 quantizes it into `closed / small / medium / wide` mouth cues, which drive
 Live2D `ParamMouthOpenY`; raw waveform samples and continuous envelopes stay
-outside React. Still and OS Reduced Motion never initialize WASM/WebGL. Model
+outside React. Still and OS Reduced Motion do not create a Live2D model,
+WebGL context, or render loop; the shared page currently loads the Core script
+before that renderer-level decision. Model
 failure falls back through speech → expression → state → portrait → accessible
 text. This is amplitude motion, not phoneme-level lip sync. `waiting_approval`
 still has no producer until a real Work/Approval workflow exists.
-Stage 13 also provides an optional Live2D Desktop Pet that is disabled by
-default. Electron Main owns its strict `disabled / hidden / visible`
+Main Chat and Voice frame that model with surface-specific half-body portraits. Stage 13 also
+provides a full-body Live2D Desktop Pet that is visible when no saved preference
+exists. Electron Main owns its strict `disabled / hidden / visible`
 preference, private display placement, and at most one transparent,
 always-on-top native window. `hidden` destroys the dedicated Renderer instead
 of merely making it invisible. The pet reuses the main UI model and keeps the
-reviewed `elysia-portrait.png` as its Reduced Motion/error fallback. It can be
-dragged or temporarily made click-through from the tray, and opens the ordinary
-main Chat when clicked. Its separate
-sandboxed entry receives only `ready`, `hide`, and `openMainChat` through a
+reviewed `elysia-portrait.png` as its Reduced Motion/error fallback. The whole
+character surface can be dragged; a toolbar revealed on hover or keyboard focus
+opens the ordinary main Chat or hides the pet. The tray can also make it
+temporarily click-through. Its separate
+sandboxed entry receives only `ready`, `hide`, `openMainChat`, and read-only
+access to Main's closed character-motion snapshot through a
 minimal Preload; it has no Backend, arbitrary network, filesystem, Node, audio,
 or main Renderer capability. Model fetches use the same fixed local protocol
 allowlist.
@@ -118,22 +123,22 @@ Prerequisites:
   text-only desktop UI.
 - Run all npm commands from the `desktop` directory.
 
-Start Vite in the first terminal:
+Start the complete development desktop once from one CMD window:
 
 ```bat
 cd /d D:\Elysia_AI\desktop
 npm run dev
 ```
 
-Start Electron in the second terminal:
+This command compiles Electron Main/Preload, starts Vite, and launches Electron
+after the Renderer is ready. Electron then starts
+`D:\Elysia_AI\.venv\Scripts\python.exe`, runs `desktop_backend.py`, and stops
+that child process when the app quits.
 
-```bat
-cd /d D:\Elysia_AI\desktop
-npm run electron:dev
-```
-
-Electron starts `D:\Elysia_AI\.venv\Scripts\python.exe`, runs
-`desktop_backend.py`, and stops that child process when the app quits.
+`npm run dev:renderer` starts only the Vite browser preview. It does not inject
+the Electron Preload and therefore cannot connect Python, microphone features,
+or the Desktop Pet. Use the Electron window opened by `npm run dev` for the
+complete application.
 
 To enable the default `small` speech model on CPU, install the optional runtime
 from the repository root and place the model before starting Electron:
@@ -196,19 +201,25 @@ Git-ignored and must not be committed or packaged with the application.
   trusted Preload applies the active gain, samples Web Audio RMS no faster than
   20 Hz, and publishes only `closed / small / medium / wide` visual cues. The
   same active emotion value also selects the TTS reference. Settings persists
-  Animated / Still on this device; Still and OS Reduced Motion do not initialize
-  Live2D. Animated mode drives the pinned local model, while failures follow
+  Animated / Still on this device; Still and OS Reduced Motion do not create a
+  Live2D model, WebGL context, or render loop. Animated mode drives the pinned
+  local model, while failures follow
   speech → expression → state → portrait → accessible text without affecting
   Chat or Voice. The surface does not claim phoneme-level lip sync, write Chat
-  state, or create a new Backend capability.
-- Desktop Pet settings are separate from Backend settings and default to
-  **Off** (`disabled`). **Hidden** keeps the opt-in while destroying the pet
-  Renderer and native window; **Visible** creates one transparent, frameless,
-  always-on-top 320×480 DIP nominal window. Its drag handle moves the window,
-  its close control selects Hidden, and clicking the character reveals and
-  focuses the main Chat. The tray can show or hide it, temporarily enable
-  mouse click-through, reset its position, disable it, or retry a failed
-  renderer; Settings also exposes an explicit retry for the failed state.
+  state, or create a new Backend capability. Both in-app surfaces use the
+  explicit head-to-waist half-body framing rather than shrinking the complete
+  model into the portrait panel. Voice keeps a separate taller half-body camera
+  so its call layout does not crop the shoulders and arms.
+- Desktop Pet settings are separate from Backend settings. A missing preference
+  file is first-run state and defaults to **Visible**; **Hidden** keeps the
+  choice while destroying the pet Renderer and native window, and **Off**
+  (`disabled`) turns the feature off. **Visible** creates one transparent,
+  frameless, always-on-top 320×480 DIP nominal window with full-body framing.
+  The character surface moves the window; the non-drag toolbar appears on hover
+  or keyboard focus and exposes Open Chat and Hide. The tray can show or hide
+  it, temporarily enable mouse click-through, reset its position, disable it,
+  or retry a failed renderer; Settings also exposes an explicit retry for the
+  failed state.
   Click-through is not persisted. Hidden keeps the process and tray resident
   after the main window closes, while Off restores the normal Windows/Linux
   last-window exit behavior.
@@ -218,10 +229,11 @@ Git-ignored and must not be committed or packaged with the application.
   either Renderer. Position restoration clamps the window to current work
   areas across negative-coordinate and mixed-scale displays without applying
   Electron's `scaleFactor` twice. Display topology/metric changes reclamp the
-  window. A missing or invalid preference fails closed to `disabled`, while a
-  load/crash failure becomes a sanitized recoverable `failed` runtime state
-  without affecting Chat, Voice, or the Python Backend. A missing Preload or
-  Renderer that never reports ready is destroyed after a 10-second deadline;
+  window. A missing preference is the first-run `visible` default; a present
+  but corrupt, oversized, or invalid preference still fails closed to
+  `disabled`. A load/crash failure becomes a sanitized recoverable `failed`
+  runtime state without affecting Chat, Voice, or the Python Backend. A missing
+  Preload or Renderer that never reports ready is destroyed after a 10-second deadline;
   shutdown drains admitted writes before its final position snapshot, with the
   complete optional persistence sequence bounded to two seconds.
 - **Presence & notifications** is a separate immediate Settings section owned
@@ -346,19 +358,17 @@ performed; they are optional future validation and must not be represented as
 passed. The production-chain and automated evidence recorded later in this
 section is the accepted engineering gate for this delivery.
 
-Use two Command Prompt windows, not PowerShell. Start Vite in the first:
+Use Command Prompt, not PowerShell, and start the complete desktop once:
 
 ```bat
 cd /d D:\Elysia_AI\desktop
 npm run dev
 ```
 
-Start Electron in the second:
-
-```bat
-cd /d D:\Elysia_AI\desktop
-npm run electron:dev
-```
+The command compiles Electron, starts Vite, launches the Electron window, and
+owns both child lifecycles. Do not use the Renderer-only `npm run dev:renderer`
+preview for this acceptance path because it has no Python, microphone, or
+Desktop Pet integration.
 
 Install `requirements-stt.txt`, place a complete model in the matching
 `models\weights\faster-whisper\<model>\` directory, then select that model and
@@ -565,9 +575,11 @@ admits only the user-controlled `neutral / happy / sad` mapping. Runtime speech
 uses only the first four cells of the facial atlas's first band as
 `closed / small / medium / wide` amplitude cues; it does not interpret the
 remaining review cells as detected phonemes.
-The Desktop Pet reuses the same fixed Live2D model as the main character and
-keeps the already reviewed, pinned portrait only for Reduced Motion and runtime
-failure. It introduces no second character model or implied license. The larger
+The Desktop Pet reuses the same fixed Live2D model as the main character but
+selects full-body framing, Main Chat selects a head-to-waist half-body framing,
+and Voice selects its own taller call framing.
+It keeps the already reviewed, pinned portrait only for Reduced Motion and
+runtime failure. It introduces no second character model or implied license. The larger
 Desktop Pet pose review sheet remains repository review material and is not
 loaded by the pet window.
 
@@ -587,14 +599,16 @@ accessibility. The contract suite also runs `character-state.test.mjs`,
 `presence-notification-preferences.test.mjs`.
 Desktop Pet coverage verifies ready/shutdown deadlines, the shared cross-entry
 mutation queue, Hidden tray residency and Disabled exit, programmatic-position
-suppression, the strict update schema, default-off and corrupt-file behavior,
+suppression, the strict update schema, first-run-visible and corrupt-file
+fail-closed behavior,
 revision CAS, atomic replace failure, Main-private placement, resource bounds,
 and mixed-scale, negative-coordinate, removed-display, and Windows
 unsigned-hash display-ID DIP clamping. Renderer source-policy
 tests prove that the main and pet HTML entries cannot borrow each other's IPC
 authority. `desktop-pet-preload.test.cjs` loads the production dedicated
-Preload in isolation and proves that only its frozen three-method API and fixed
-channels exist. Presence notification contract coverage verifies the exact
+Preload in isolation and proves that only its frozen native-action plus
+read-only motion-state API and fixed channels exist. Presence notification
+contract coverage verifies the exact
 three-field update, fully-off defaults, strict 16 KiB persistence, fail-closed
 invalid storage, revision conflicts, no-op and frequency re-anchoring behavior,
 atomic replacement failure, private handled-cycle state, clock rollback and
@@ -641,15 +655,19 @@ method, results, capability gaps, and limitations.
 - React cannot access Node.js, Python, Chat files, or Memory files directly.
 - The sandboxed preload exposes only the methods in `electron/contracts.ts`.
 - The Desktop Pet is a second, exact renderer entry with a separate sandboxed
-  Preload. Its frozen API contains only `ready`, `hide`, and `openMainChat`;
-  Electron validates its exact top frame and window owner for every call. It
+  Preload. Its frozen API contains only `ready`, `hide`, `openMainChat`, and
+  read/subscribe access to Main's closed `animated / still` motion snapshot;
+  Electron validates its exact top frame and window owner for every call. The
+  pet defaults to Still until this snapshot arrives and separately honors OS
+  Reduced Motion. Renderer storage partitions are never shared. It
   cannot obtain the main `DesktopApi`, Backend state, raw IPC, network,
   filesystem, Node, microphone, speaker-selection, or arbitrary navigation
   capability.
 - Desktop Pet persistence is Main-only: the exact JSON schema is capped at
   16 KiB, mode changes use optimistic revisions and same-directory atomic
   replacement, and native placement is excluded from public state. Invalid
-  storage defaults to Off. The nominal 320×480 DIP window is clamped to each
+  storage defaults to Off, while an absent file means first run and defaults to
+  Visible. The nominal 320×480 DIP window is clamped to each
   current display work area and the general geometry contract caps it at
   420×560 DIP; Hidden and Disabled destroy the renderer rather than retaining
   an invisible page. These are resource bounds, not a promise of a fixed RAM

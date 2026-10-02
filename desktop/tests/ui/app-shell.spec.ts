@@ -2104,6 +2104,11 @@ test('persists character performance and honors reduced motion', async () => {
     resolved: 'still',
     stored: 'still',
   })
+  await expect.poll(async () => (
+    (await getCalls())
+      .filter((call) => call.method === 'setCharacterPerformancePreference')
+      .map((call) => call.args[0])
+  )).toContain('still')
 
   await page.getByRole('button', { name: 'Back to chat' }).click()
   await page.getByRole('button', { name: 'Expand Elysia panel' }).click()
@@ -2123,6 +2128,11 @@ test('persists character performance and honors reduced motion', async () => {
     resolved: 'animated',
     stored: 'animated',
   })
+  await expect.poll(async () => (
+    (await getCalls())
+      .filter((call) => call.method === 'setCharacterPerformancePreference')
+      .map((call) => call.args[0])
+  )).toContain('animated')
   await page.getByRole('button', { name: 'Back to chat' }).click()
   await page.getByRole('button', { name: 'Expand Elysia panel' }).click()
   await expect.poll(() => artwork.locator('.character-artwork-frame').evaluate(

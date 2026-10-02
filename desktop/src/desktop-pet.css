@@ -44,53 +44,35 @@ button:focus-visible {
 
 .desktop-pet {
   position: relative;
-  display: grid;
-  grid-template-rows: 2.25rem minmax(0, 1fr);
   width: 100%;
   height: 100%;
-  padding: 0.35rem;
   overflow: hidden;
   user-select: none;
 }
 
-.desktop-pet-toolbar {
-  position: relative;
-  z-index: 2;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 2rem;
-  align-items: center;
-  gap: 0.35rem;
-  min-width: 0;
-}
-
-.desktop-pet-drag-handle {
-  display: grid;
-  width: min(5.25rem, 55%);
-  height: 1.45rem;
-  place-items: center;
-  justify-self: center;
-  cursor: grab;
-  background: rgb(38 22 39 / 78%);
-  border: 1px solid rgb(255 199 229 / 58%);
-  border-radius: 999px;
-  box-shadow: 0 0.2rem 0.65rem rgb(22 8 24 / 28%);
+.desktop-pet-drag-surface {
   -webkit-app-region: drag;
 }
 
-.desktop-pet-drag-handle > span[aria-hidden="true"] {
-  width: 2rem;
-  height: 0.2rem;
-  background: rgb(255 225 241 / 82%);
-  border-radius: 999px;
-}
-
-.desktop-pet-hide,
-.desktop-pet-character {
-  border: 0;
+.desktop-pet-toolbar {
+  position: absolute;
+  top: 0.45rem;
+  right: 0.45rem;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  opacity: 0.18;
+  transition: opacity 140ms ease;
   -webkit-app-region: no-drag;
 }
 
-.desktop-pet-hide {
+.desktop-pet:hover .desktop-pet-toolbar,
+.desktop-pet-toolbar:focus-within {
+  opacity: 1;
+}
+
+.desktop-pet-control {
   display: grid;
   width: 2rem;
   height: 2rem;
@@ -101,25 +83,22 @@ button:focus-visible {
   border: 1px solid rgb(255 199 229 / 58%);
   border-radius: 999px;
   box-shadow: 0 0.2rem 0.65rem rgb(22 8 24 / 28%);
+  -webkit-app-region: no-drag;
 }
 
-.desktop-pet-hide:hover {
+.desktop-pet-control:hover {
   background: rgb(93 48 74 / 90%);
 }
 
-.desktop-pet-hide:disabled,
-.desktop-pet-character:disabled {
+.desktop-pet-control:disabled {
   cursor: wait;
 }
 
 .desktop-pet-character {
-  position: relative;
+  position: absolute;
+  inset: 0;
   display: block;
-  min-width: 0;
-  min-height: 0;
-  padding: 0;
-  cursor: pointer;
-  background: transparent;
+  cursor: grab;
   filter: drop-shadow(0 0.55rem 0.75rem rgb(22 8 24 / 42%));
 }
 
@@ -173,9 +152,18 @@ button:focus-visible {
   clip-path: inset(50%);
 }
 
+@media (prefers-reduced-motion: reduce) {
+  .desktop-pet-toolbar {
+    transition: none;
+  }
+}
+
 @media (forced-colors: active) {
-  .desktop-pet-drag-handle,
-  .desktop-pet-hide,
+  .desktop-pet-toolbar {
+    opacity: 1;
+  }
+
+  .desktop-pet-control,
   .desktop-pet-image-fallback {
     color: ButtonText;
     background: ButtonFace;

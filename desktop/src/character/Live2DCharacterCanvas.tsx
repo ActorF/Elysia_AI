@@ -6,13 +6,17 @@
 
 import { useEffect, useLayoutEffect, useRef } from 'react'
 
-import { createLive2DController } from './live2d-runtime.ts'
+import {
+  createLive2DController,
+  type Live2DFraming,
+} from './live2d-runtime.ts'
 import { bindLive2DRuntimeFailure } from './live2d-runtime-failure.ts'
 import type { CharacterEmotion } from './character-emotion.ts'
 import type { CharacterState } from './character-state.ts'
 
 interface Live2DCharacterCanvasProps {
   readonly emotion: CharacterEmotion
+  readonly framing: Exclude<Live2DFraming, 'full-body'>
   readonly onStatusChange: (status: 'loading' | 'ready' | 'failed') => void
   readonly state: CharacterState
 }
@@ -28,6 +32,7 @@ type Live2DController = Awaited<ReturnType<typeof createLive2DController>>
  */
 export function Live2DCharacterCanvas({
   emotion,
+  framing,
   onStatusChange,
   state,
 }: Live2DCharacterCanvasProps) {
@@ -79,6 +84,7 @@ export function Live2DCharacterCanvas({
     )
     void createLive2DController(canvas, {
       emotion: emotionRef.current,
+      framing,
       state: stateRef.current,
     }).then((controller) => {
       if (!active) {
@@ -106,7 +112,7 @@ export function Live2DCharacterCanvas({
       }
       ownedController?.dispose()
     }
-  }, [])
+  }, [framing])
 
   useEffect(() => {
     controllerRef.current?.setState(state)
@@ -120,6 +126,7 @@ export function Live2DCharacterCanvas({
     <canvas
       ref={canvasRef}
       className="character-artwork-live2d"
+      data-live2d-framing={framing}
       role="img"
       aria-label="Animated Elysia character"
     />

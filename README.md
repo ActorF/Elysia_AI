@@ -20,7 +20,7 @@
 
 > [!IMPORTANT]
 >
-> 本项目目前是 **开发预览**，不是下载即用的正式发行版。桌面壳仍依赖源码目录中的 Python 环境、Ollama 和本地模型；Project Sources 管理、本地文件问答与可信引用、有界单句 STT、显式确认的 Voice Session、受管 GPT-SoVITS 分句播放、思考/朗读期间的安全 Barge-in，以及正常回复后的可选自动续听已经接通。文件问答必须由用户在 Project Chat 中明确开启；自动续听默认关闭、在通话页可见且可随时关闭，每轮 Final Transcript 仍需人工检查并明确发送。封闭的 Character State API 已把 Chat、Voice 与 Knowledge 生命周期连接到真实本地 Live2D 模型；真实 Web Audio 播放振幅以不高于 20 Hz 的 RMS 采样驱动 `closed / small / medium / wide` 四档嘴型，用户限定的 `neutral / happy / sad` 同时选择 TTS 参考与模型表情。模型不能下发任意情绪、路径或动画指令；Still、Windows Reduced Motion 及加载失败会使用审核静态素材。可选 Live2D 桌宠以及固定文案的系统通知均已接入，但两者默认关闭；通知允许独立开启回复完成提示，并可另选 Daily / Weekly 中性提醒，也可一键全部关闭。提醒的调度与投递只在 Elysia 已运行时发生，不建立后台服务、开机自启、连续打卡或模型生成的主动消息。可选语音 Runtime、模型和参考音频均不随基础安装提供，实时 Partial Transcript、Work Agent 与正式安装体验尚未完成。真实麦克风/扬声器、房间回声和长通话人工矩阵未执行，项目负责人已明确豁免其作为当前交付的关闭门槛，因此本项目不声称这些人工观察已经通过。
+> 本项目目前是 **开发预览**，不是下载即用的正式发行版。桌面壳仍依赖源码目录中的 Python 环境、Ollama 和本地模型；Project Sources 管理、本地文件问答与可信引用、有界单句 STT、显式确认的 Voice Session、受管 GPT-SoVITS 分句播放、思考/朗读期间的安全 Barge-in，以及正常回复后的可选自动续听已经接通。文件问答必须由用户在 Project Chat 中明确开启；自动续听默认关闭、在通话页可见且可随时关闭，每轮 Final Transcript 仍需人工检查并明确发送。封闭的 Character State API 已把 Chat、Voice 与 Knowledge 生命周期连接到真实本地 Live2D 模型；主 Chat 与 Voice 使用适合应用内面板的半身构图，独立透明置顶桌宠使用可拖动的全身构图。真实 Web Audio 播放振幅以不高于 20 Hz 的 RMS 采样驱动 `closed / small / medium / wide` 四档嘴型，用户限定的 `neutral / happy / sad` 同时选择 TTS 参考与模型表情。模型不能下发任意情绪、路径或动画指令；Still、Windows Reduced Motion 及加载失败会使用审核静态素材。桌宠首次无偏好时默认显示，用户仍可隐藏或完全禁用；固定文案的系统通知继续默认关闭。通知允许独立开启回复完成提示，并可另选 Daily / Weekly 中性提醒，也可一键全部关闭。提醒的调度与投递只在 Elysia 已运行时发生，不建立后台服务、开机自启、连续打卡或模型生成的主动消息。可选语音 Runtime、模型和参考音频均不随基础安装提供，实时 Partial Transcript、Work Agent 与正式安装体验尚未完成。真实麦克风/扬声器、房间回声和长通话人工矩阵未执行，项目负责人已明确豁免其作为当前交付的关闭门槛，因此本项目不声称这些人工观察已经通过。
 
 ---
 
@@ -35,8 +35,8 @@
 - 🎙️ **本地 Voice Session** — 显式采集经过本地 VAD 与 Faster-Whisper；Final Transcript 可编辑，发送后可在思考或朗读期间自然打断
 - 🔊 **本地回复朗读** — Python 按自然断句排队调用受管 GPT-SoVITS，Electron 在可信 Preload 中按序播放经过双重校验的 PCM WAV
 - 🎭 **角色状态 API** — 将 Chat、Voice 与 Knowledge 生命周期归一为封闭语义状态，并为未来 Work/Approval 保留闭集；角色组件不直接操作动画文件
-- 🌸 **应用内 Live2D 角色** — 主界面与 Voice 共用真实 `.moc3`；七态映射、用户限定情绪、真实播放 RMS 四档嘴型，以及完整静态回退均不影响 Chat 或 Voice
-- 🌷 **可选 Live2D 桌宠** — 默认关闭；独立透明置顶窗口可拖动、隐藏或从托盘恢复，Reduced Motion 或模型失败时回退静态立绘，点击角色会回到主 Chat
+- 🌸 **应用内 Live2D 角色** — 主界面与 Voice 以半身构图共用真实 `.moc3`；七态映射、用户限定情绪、真实播放 RMS 四档嘴型，以及完整静态回退均不影响 Chat 或 Voice
+- 🌷 **Live2D 桌宠** — 首次无偏好时默认显示；独立透明置顶窗口使用全身构图，角色区域可直接拖动，悬浮控制条可打开 Chat 或隐藏桌宠，也可从 Settings/托盘恢复或禁用
 - 🔕 **可选 Presence 与系统通知** — 回复完成通知和 Daily / Weekly 中性提醒均默认关闭、静音且可完全停用；固定文案不包含对话、Project 或文件内容
 - 💾 **恢复优先** — 本地 JSON 存储、旧会话迁移、损坏隔离、原子写入以及导入/导出服务
 - ♿ **桌面可用性** — 主题、键盘导航、焦点管理、Windows 缩放、中文 IME 与离线/错误恢复
@@ -61,8 +61,8 @@
 | Barge-in / 语音打断 | ✅ 可用 | 仅在显式发送的 Voice Turn 回复期间启用；要求经过验证的 WebRTC 回声消除与持续语音确认，并精确取消该 Turn |
 | 自动续听 | ✅ 可用 | 可见开关可在正常回复安全结束后再次监听；默认关闭，Final Transcript 不会自动发送 |
 | Character State API | ✅ 可用 | 封闭的 `idle / listening / thinking / speaking / working / waiting_approval / error` 合同；Chat、Voice 与 Knowledge 已接入，审批状态保留给后续真实 Work/Approval 流程 |
-| 应用内角色 | ✅ 可用 | 真实本地 `.moc3` 由七种语义状态、三种用户限定表情和真实播放 RMS 四档嘴型驱动；Still/Reduced Motion 与初始化失败使用固定审核图集/立绘回退 |
-| 可选 Live2D 桌宠 | ✅ 可用 | 默认 `disabled`；`hidden` 保留选择但销毁独立 Renderer，`visible` 创建透明置顶可拖动窗口；Reduced Motion/加载失败回退静态立绘 |
+| 应用内角色 | ✅ 可用 | 真实本地 `.moc3` 以半身构图显示，由七种语义状态、三种用户限定表情和真实播放 RMS 四档嘴型驱动；Still/Reduced Motion 与初始化失败使用固定审核图集/立绘回退 |
+| Live2D 桌宠 | ✅ 可用 | 首次无偏好时为 `visible`；全身 Live2D 位于透明置顶可拖动窗口，`hidden` 保留选择但销毁独立 Renderer，`disabled` 完全关闭；Reduced Motion/加载失败回退静态立绘 |
 | Presence 与系统通知 | ✅ 可用 | 回复完成通知默认 Off；中性提醒只允许 Off / Daily / Weekly，前台、Voice 或忙碌时不弹出且不补发；无云推送、后台服务、行为追踪或模型生成通知 |
 | 文件解析与本地 RAG | ✅ 基础可用 | 版本化 Chunk Lineage、固定本地 Embedding 空间、Scope-safe SQLite 索引、有界 Retriever/Reranker、loopback-only Grounded Generator、同 Project 多 Chat 共享且跨 Project fail-closed；Chat 需显式开启 **Use Project Sources**，证据不足不会生成无引用回答 |
 | Work Agent 与工具权限 | ⏳ 计划中 | 尚无工具执行、桌面控制、Internet 或 Vision 工作流 |
@@ -112,7 +112,7 @@ flowchart LR
 - **Python 是业务事实来源**：Chat、Project、Memory、附件状态和持久化由 Python Domain/Service/Repository 管理。
 - **Electron 是可信桌面边界**：它拥有 Python 子进程、原生文件选择、硬件权限与窗口生命周期。
 - **React 保持沙箱化**：`contextIsolation: true`、`nodeIntegration: false`、`sandbox: true`；Renderer 不能直接读取 Node、Python、Chat、Memory 或本地源路径。
-- **桌宠能力独立且默认关闭**：Main 独占偏好、窗口和显示器坐标；桌宠 Renderer 使用单独入口和最小 Preload，只能报告就绪、隐藏自己或打开主 Chat，不能访问 Backend、网络、文件系统、任意 IPC 或主 Renderer API。
+- **桌宠能力独立且首次默认显示**：没有保存偏好时，Main 以 `visible` 创建全身 Live2D 桌宠；用户可改为 `hidden` 或 `disabled`。Main 独占偏好、窗口和显示器坐标；桌宠 Renderer 使用单独入口和最小 Preload，只能报告就绪、隐藏自己、打开主 Chat，以及只读获取/订阅 Main 的闭集角色动作快照。两个 Renderer 的 Storage Partition 不共享；桌宠在同步完成前保持 Still，并独立遵守系统 Reduced Motion。它不能访问 Backend、网络、文件系统、任意 IPC 或主 Renderer API。损坏或不合法的偏好仍 Fail Closed 到 `disabled`。
 - **Presence 与通知默认全关**：Main 独占严格、revisioned 的设备偏好、计时器和原生通知对象；Renderer 不能提交标题、正文、链接、声音、Urgency 或任意计划。回复完成只观察经过最终一致性验证的 `chat-complete`，提醒按 24 小时或 7 天从明确选择时重新计时；到期周期会先保存处理锚点，再仅在窗口不存在、隐藏或最小化且 Backend 空闲时投递。窗口仍可见，或 Chat、Voice、完整受管朗读生命周期（包括合成空档和最终播放排空）、Knowledge 忙碌时只消费该周期；退出会停止计时器与投递，不会伪造新的已处理周期。
 - **协议双端校验**：TypeScript 与 Python 使用同一组 JSON Schema/fixture 约束，连接前完成版本、能力与随机会话令牌握手。
 - **本地数据可恢复**：关键 JSON 使用严格 Schema、revision、原子替换和损坏隔离；生成取消不会保存残缺的正式回复。
@@ -198,23 +198,16 @@ cd ..
 
 ### 5. 启动桌面端
 
-桌面开发模式需要两个 CMD 窗口。
-
-第一个窗口启动 Vite Renderer：
+在一个 CMD 窗口中运行一次：
 
 ```bat
 cd /d D:\Elysia_AI\desktop
 npm run dev
 ```
 
-第二个窗口启动 Electron：
+该命令会先编译 Electron Main/Preload，再启动 Vite，并在 Renderer 就绪后启动 Electron。Electron 会从 Project Root 推导 `.venv\Scripts\python.exe` 与 `desktop_backend.py`，退出应用时也会清理该子进程。若仓库不在 `D:\Elysia_AI`，只需把工作目录替换成你的实际位置。
 
-```bat
-cd /d D:\Elysia_AI\desktop
-npm run electron:dev
-```
-
-Electron 会从 Project Root 推导 `.venv\Scripts\python.exe` 与 `desktop_backend.py`，退出应用时也会清理该子进程。若仓库不在 `D:\Elysia_AI`，只需把上面两个启动命令中的工作目录替换成你的实际位置。
+只检查 Renderer 页面时可运行 `npm run dev:renderer`。它是裸浏览器预览，不会注入 Electron Preload，因此不能连接 Python Backend、麦克风或 Desktop Pet；完整功能必须使用 `npm run dev` 打开的 Electron 窗口。
 
 ### 可选：启动 Console
 
@@ -302,12 +295,12 @@ DEBUG=False
 
 ### 🌷 可选 Live2D 桌宠
 
-- 桌宠默认是 `disabled`，不会在首次启动时创建额外窗口。Settings 的 `disabled / hidden / visible` 是完整闭集：`hidden` 保留用户选择但立即销毁桌宠 Renderer 释放其资源，`visible` 才创建窗口。
-- 当前实现复用与主界面相同的本地 `.moc3` 和纹理；系统 Reduced Motion、WASM/WebGL/模型加载失败时回退审核 `elysia-portrait.png`。它不使用 `07-desktop-pet-key-poses.png`，也不是自主 Agent。
-- Electron Main 只允许一个透明、无边框、置顶、可拖动的桌宠窗口。名义尺寸为 320×480 DIP，并在显示器工作区较小时缩小；纯几何函数按当前多显示器 DIP 工作区恢复和钳制位置，不把 `scaleFactor` 重复乘入坐标。显示器移除、分辨率或缩放变化后会重新钳制，Settings 和托盘均可重置位置。
-- 点击角色只会显示并聚焦主窗口、进入主 Chat；关闭按钮会切换到 `hidden`。托盘可显示/隐藏、禁用、重试失败窗口，以及临时开启鼠标穿透；Settings 在失败状态也提供显式重试。鼠标穿透不会持久化；选择 Hidden 后即使主窗口已关闭，进程和托盘仍会保留为恢复入口，只有 Off 才恢复“最后窗口关闭即退出”的行为。
-- 桌宠使用自己的 HTML 入口、Sandbox 和最小 Preload。其公开 API 只有 `ready / hide / openMainChat`，没有 Backend、Chat 数据、任意网络、文件系统、Node、原始 IPC、语音或主 Renderer 能力；模型只能经 Electron 的三文件本地协议白名单读取，导航、新窗口和权限请求仍被拒绝。
-- 偏好由 Main 保存在 Electron `userData` 下的独立严格 JSON 中，采用 16 KiB 读取上限、revision CAS 和同目录临时文件同步后原子替换；Settings、托盘、桌宠控制、位置重置与拖动保存共用一条变更队列，显示器 ID 与坐标从不返回 Renderer。缺失或损坏的偏好安全回退到 `disabled`；Preload 失败或 10 秒内未 ready 的隐藏窗口会被销毁并进入净化后的 `failed` 状态。退出会先排空已接纳的偏好写入，再保存最终位置，整个可选持久化序列最多等待 2 秒。该失败可从 Settings 或托盘重试，不影响主 Chat、Voice 或 Backend。
+- 首次不存在桌宠偏好文件时使用 `visible`，直接创建全身 Live2D 桌宠。Settings 的 `disabled / hidden / visible` 是完整闭集：`hidden` 保留用户选择但立即销毁桌宠 Renderer 释放其资源，`disabled` 完全关闭，`visible` 创建窗口。
+- 当前实现复用与主界面相同的本地 `.moc3` 和纹理，但使用不同构图：主 Chat/Voice 是半身像，桌宠是适合桌面摆放的全身像。系统 Reduced Motion、WASM/WebGL/模型加载失败时回退审核 `elysia-portrait.png`。它不使用 `07-desktop-pet-key-poses.png`，也不是自主 Agent。
+- Electron Main 只允许一个透明、无边框、置顶的桌宠窗口。全身角色区域本身就是拖动表面；悬浮或键盘聚焦时显示的控制条属于非拖动区，可打开主 Chat 或隐藏桌宠。名义尺寸为 320×480 DIP，并在显示器工作区较小时缩小；纯几何函数按当前多显示器 DIP 工作区恢复和钳制位置，不把 `scaleFactor` 重复乘入坐标。显示器移除、分辨率或缩放变化后会重新钳制，Settings 和托盘均可重置位置。
+- 控制条的 Chat 按钮显示并聚焦主窗口、进入主 Chat；Hide 按钮切换到 `hidden`。托盘可显示/隐藏、禁用、重试失败窗口，以及临时开启鼠标穿透；Settings 在失败状态也提供显式重试。鼠标穿透不会持久化；选择 Hidden 后即使主窗口已关闭，进程和托盘仍会保留为恢复入口，只有 Off 才恢复“最后窗口关闭即退出”的行为。
+- 桌宠使用自己的 HTML 入口、Sandbox 和最小 Preload。其公开 API 只有 `ready / hide / openMainChat` 与 Main-owned `animated / still` 快照的只读获取/订阅，没有 Backend、Chat 数据、任意网络、文件系统、Storage、Node、原始 IPC、语音或主 Renderer 能力；模型只能经 Electron 的三文件本地协议白名单读取，导航、新窗口和权限请求仍被拒绝。
+- 偏好由 Main 保存在 Electron `userData` 下的独立严格 JSON 中，采用 16 KiB 读取上限、revision CAS 和同目录临时文件同步后原子替换；Settings、托盘、桌宠控制、位置重置与拖动保存共用一条变更队列，显示器 ID 与坐标从不返回 Renderer。缺失文件表示首次运行并默认 `visible`；存在但损坏、超限或不合法的文件仍 Fail Closed 到 `disabled`。Preload 失败或 10 秒内未 ready 的窗口会被销毁并进入净化后的 `failed` 状态。退出会先排空已接纳的偏好写入，再保存最终位置，整个可选持久化序列最多等待 2 秒。该失败可从 Settings 或托盘重试，不影响主 Chat、Voice 或 Backend。
 
 ### 🔕 Presence 与系统通知
 
@@ -449,11 +442,15 @@ cd /d D:\Elysia_AI\desktop
 
 直接使用 CMD 执行本文的 `npm` 命令即可，不需要为了本项目放宽系统的 PowerShell Execution Policy。
 
+### 为什么页面提示只能通过 Electron 打开，无法连接 Python Backend？
+
+你打开的是 `npm run dev:renderer` 提供的裸浏览器预览，浏览器没有 Electron Preload，因此 Python Backend、麦克风和 Desktop Pet 都不会连接。关闭该预览，在 `desktop` 目录运行一次 `npm run dev`，并使用随后自动打开的 Electron 窗口。
+
 ### 为什么桌面端显示 `Connection error` 或一直等待 Backend？
 
 请确认：
 
-1. Vite 与 Electron 分别在两个 CMD 窗口运行。
+1. 已在 `desktop` 目录通过 `npm run dev` 启动 Electron，而不是只在浏览器中运行 `npm run dev:renderer`。
 2. `.venv\Scripts\python.exe` 存在且依赖已安装。
 3. Ollama 正在运行，Settings 中的 Origin 可访问。
 4. 配置的模型已经通过 `ollama pull <model>` 安装。

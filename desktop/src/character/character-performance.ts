@@ -1,20 +1,20 @@
 /** Define and resolve the renderer-local character performance preference. */
 
-/** Persisted choice for state-driven character motion on this device. */
-export type CharacterPerformancePreference = 'animated' | 'still'
+import {
+  isCharacterPerformancePreference,
+  type CharacterPerformancePreference,
+} from '../../electron/character-performance-contracts.ts'
+
+export {
+  isCharacterPerformancePreference,
+  type CharacterPerformancePreference,
+}
 
 /** Effective character rendering mode after applying system motion settings. */
 export type CharacterPerformanceMode = 'animated' | 'still'
 
 /** Stable localStorage key owned only by the renderer appearance layer. */
 export const CHARACTER_PERFORMANCE_STORAGE_KEY = 'elysia.characterPerformance'
-
-/** Narrow untrusted persisted data to the supported preference set. */
-export function isCharacterPerformancePreference(
-  value: unknown,
-): value is CharacterPerformancePreference {
-  return value === 'animated' || value === 'still'
-}
 
 /** Resolve the choice while letting system reduced-motion override animation. */
 export function resolveCharacterPerformance(

@@ -14,6 +14,10 @@ import type {
   DesktopPetState,
   UpdateDesktopPetRequest,
 } from './desktop-pet-contracts.js'
+import type {
+  CharacterPerformancePreference,
+  CharacterPerformanceState,
+} from './character-performance-contracts.js'
 import type { DataStorageViewState } from './data-storage-contracts.js'
 import type {
   PresenceNotificationState,
@@ -535,6 +539,10 @@ export interface DesktopApi {
   rendererReady(): Promise<void>
   /** Keep native window chrome aligned with the renderer's saved appearance. */
   setThemePreference(theme: DesktopThemePreference): Promise<void>
+  /** Relay the validated main-renderer motion choice to the isolated pet. */
+  setCharacterPerformancePreference(
+    preference: CharacterPerformancePreference,
+  ): Promise<CharacterPerformanceState>
   /** Return Electron-owned Desktop Pet intent and bounded runtime status. */
   getDesktopPetState(): Promise<DesktopPetState>
   /** Persist one revision-checked Desktop Pet visibility choice. */

@@ -6,9 +6,13 @@
 import type { CharacterEmotion } from './character-emotion.ts'
 import type { CharacterState } from './character-state.ts'
 
+/** Closed camera profiles supported by the fixed Elysia Live2D model. */
+export type Live2DFraming = 'full-body' | 'half-body' | 'call-half-body'
+
 /** Initial semantic values required to start the Live2D renderer. */
 export interface Live2DControllerOptions {
   readonly emotion: CharacterEmotion
+  readonly framing: Live2DFraming
   readonly state: CharacterState
 }
 
@@ -114,6 +118,13 @@ interface LoadedAssets {
   readonly texture: Uint8Array
 }
 
+interface Live2DCameraViewport {
+  readonly centerX: number
+  readonly centerY: number
+  readonly height: number
+  readonly width: number
+}
+
 interface ShaderLocations {
   readonly position: number
   readonly uv: number
@@ -183,6 +194,39 @@ const CHARACTER_EMOTIONS = new Set<CharacterEmotion>([
   'happy',
   'sad',
 ])
+
+const LIVE2D_FRAMINGS = new Set<Live2DFraming>([
+  'full-body',
+  'half-body',
+  'call-half-body',
+])
+
+// These reviewed camera rectangles are deliberately pinned to this model's
+// coordinates. Deriving a camera from animated vertices each frame would make
+// breathing, hair, and arm motion visibly change the character's scale.
+const CAMERA_BY_FRAMING: Readonly<Record<
+  Live2DFraming,
+  Live2DCameraViewport
+>> = Object.freeze({
+  'full-body': Object.freeze({
+    centerX: 0,
+    centerY: 0.01,
+    width: 0.86,
+    height: 2.02,
+  }),
+  'half-body': Object.freeze({
+    centerX: 0,
+    centerY: 0.57,
+    width: 0.86,
+    height: 0.84,
+  }),
+  'call-half-body': Object.freeze({
+    centerX: 0,
+    centerY: 0.43,
+    width: 0.86,
+    height: 1.16,
+  }),
+})
 
 const REQUIRED_PARAMETERS = Object.freeze([
   'ParamEyeLOpen',
@@ -980,6 +1024,12 @@ function validateEmotion(emotion: CharacterEmotion): void {
   }
 }
 
+function validateFraming(framing: Live2DFraming): void {
+  if (!LIVE2D_FRAMINGS.has(framing)) {
+    throw new TypeError(`Unsupported Live2D character framing: ${String(framing)}`)
+  }
+}
+
 class Live2DControllerImplementation implements Live2DController {
   readonly #canvas: HTMLCanvasElement
   readonly #gl: WebGL2RenderingContext
@@ -987,6 +1037,7 @@ class Live2DControllerImplementation implements Live2DController {
   readonly #moc: PurismMoc
   readonly #parameterIndices: ReadonlyMap<string, number>
   readonly #textureBytes: Uint8Array
+  readonly #framing: Live2DFraming
   #gpu: GpuResources | null = null
   #state: CharacterState
   #emotion: CharacterEmotion
@@ -1013,6 +1064,7 @@ class Live2DControllerImplementation implements Live2DController {
     this.#moc = moc
     this.#parameterIndices = parameterIndices
     this.#textureBytes = textureBytes
+    this.#framing = options.framing
     this.#state = options.state
     this.#emotion = options.emotion
   }
@@ -1239,22 +1291,19 @@ class Live2DControllerImplementation implements Live2DController {
 
   #resizeAndGetTransform(): readonly [number, number, number, number] {
     this.#resizeCanvas()
-    const canvasInfo = this.#model.canvasinfo
-    const logicalWidth = canvasInfo.CanvasWidth / canvasInfo.PixelsPerUnit
-    const logicalHeight = canvasInfo.CanvasHeight / canvasInfo.PixelsPerUnit
-    const centerX = (
-      canvasInfo.CanvasWidth / 2 - canvasInfo.CanvasOriginX
-    ) / canvasInfo.PixelsPerUnit
-    const centerY = (
-      canvasInfo.CanvasHeight / 2 - canvasInfo.CanvasOriginY
-    ) / canvasInfo.PixelsPerUnit
+    const camera = CAMERA_BY_FRAMING[this.#framing]
     const pixelsPerModelUnit = Math.min(
-      this.#canvas.width / logicalWidth,
-      this.#canvas.height / logicalHeight,
+      this.#canvas.width / camera.width,
+      this.#canvas.height / camera.height,
     )
     const scaleX = 2 * pixelsPerModelUnit / this.#canvas.width
     const scaleY = 2 * pixelsPerModelUnit / this.#canvas.height
-    return [scaleX, scaleY, -centerX * scaleX, -centerY * scaleY]
+    return [
+      scaleX,
+      scaleY,
+      -camera.centerX * scaleX,
+      -camera.centerY * scaleY,
+    ]
   }
 
   #configureBlendMode(constantFlags: number): void {
@@ -1420,6 +1469,7 @@ export async function createLive2DController(
 ): Promise<Live2DController> {
   validateState(options.state)
   validateEmotion(options.emotion)
+  validateFraming(options.framing)
   canvas.dataset.live2dStatus = 'loading'
 
   const gl = canvas.getContext('webgl2', {

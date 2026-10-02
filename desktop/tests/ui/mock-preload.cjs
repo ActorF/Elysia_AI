@@ -719,6 +719,14 @@ const desktopApi = {
     record('setThemePreference', [theme])
   },
 
+  setCharacterPerformancePreference: async (preference) => {
+    record('setCharacterPerformancePreference', [preference])
+    return {
+      preference,
+      revision: 1,
+    }
+  },
+
   getDesktopPetState: async () => {
     record('getDesktopPetState')
     return clone(desktopPetState)

@@ -3,8 +3,13 @@
  *
  * These values never enter the Python desktop protocol. Electron Main owns
  * persistence and native-window lifecycle, while the dedicated pet preload
- * exposes only the three commands required by the isolated pet renderer.
+ * exposes only the native actions and read-only motion synchronization needed
+ * by the isolated pet renderer.
  */
+
+import type {
+  CharacterPerformanceState,
+} from './character-performance-contracts.js'
 
 /** Persisted user intent for the optional desktop-pet window. */
 export type DesktopPetMode = 'disabled' | 'hidden' | 'visible'
@@ -44,6 +49,12 @@ export interface DesktopPetApi {
   hide(): Promise<void>
   /** Reveal and focus the ordinary main Chat window. */
   openMainChat(): Promise<void>
+  /** Read Main's latest motion choice without accessing main-renderer storage. */
+  getCharacterPerformanceState(): Promise<CharacterPerformanceState>
+  /** Subscribe to later validated motion choices relayed by Electron Main. */
+  onCharacterPerformanceStateChanged(
+    listener: (state: CharacterPerformanceState) => void,
+  ): () => void
 }
 
 const DESKTOP_PET_MODES: ReadonlySet<string> = new Set([

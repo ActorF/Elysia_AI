@@ -19,10 +19,12 @@ import {
   getCharacterPresentation,
 } from './character-presentation.ts'
 import type { CharacterState } from './character-state.ts'
+import type { Live2DFraming } from './live2d-runtime.ts'
 
 interface CharacterArtworkProps {
   className?: string
   emotion?: CharacterEmotion
+  live2DFraming?: Exclude<Live2DFraming, 'full-body'>
   state: CharacterState
 }
 
@@ -57,6 +59,7 @@ const CHARACTER_VISUAL_REFRESH_EVENT = 'elysia:character-visual-refresh'
 export function CharacterArtwork({
   className,
   emotion = 'neutral',
+  live2DFraming = 'half-body',
   state,
 }: CharacterArtworkProps) {
   const [speechAtlasFailed, setSpeechAtlasFailed] = useState(false)
@@ -133,6 +136,7 @@ export function CharacterArtwork({
       {live2DEnabled ? (
         <Live2DCharacterCanvas
           emotion={emotion}
+          framing={live2DFraming}
           state={state}
           onStatusChange={handleLive2DStatus}
         />

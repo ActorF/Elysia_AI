@@ -20,7 +20,7 @@
 
 > [!IMPORTANT]
 >
-> This project is currently a **development preview**, not a ready-to-install release. The desktop shell still depends on the source checkout, its Python environment, Ollama, and local models. Project Source management, local document answers with trusted citations, bounded one-utterance STT, an explicitly confirmed Voice Session, managed GPT-SoVITS reply playback, safe barge-in while a reply is thinking or speaking, and optional re-listening after a normal reply are connected. Document answers remain an explicit per-Project-Chat choice. Automatic re-listening is off by default, visible and disableable on the call surface, and every final transcript still requires review and an explicit send. A closed Character State API now connects Chat, Voice, and Knowledge lifecycles to a real local Live2D model. Real Web Audio playback is sampled at no more than 20 Hz and quantized by RMS into `closed / small / medium / wide` mouth cues, while the user-restricted `neutral / happy / sad` setting selects both the TTS reference and bounded model expression. The model cannot submit arbitrary emotions, paths, parameters, or animation commands; Still, Windows Reduced Motion, and initialization failure use reviewed static assets. An optional Live2D desktop pet and fixed-copy system notifications are now connected, but both are off by default. Settings can independently enable the reply-ready notice and choose a Daily / Weekly neutral reminder, then turn both off together. Reminder scheduling and delivery occur only while Elysia is running; they create no background service, startup task, engagement streak, or model-generated proactive message. Optional voice runtimes, models, and reference audio are not included in the base install; real-time partial transcripts, the Work Agent, and production installation are not complete. The real microphone/speaker, room-echo, and long-call human matrix was not run and the project owner explicitly waived it as a closing gate for this delivery, so the project does not claim those observations passed.
+> This project is currently a **development preview**, not a ready-to-install release. The desktop shell still depends on the source checkout, its Python environment, Ollama, and local models. Project Source management, local document answers with trusted citations, bounded one-utterance STT, an explicitly confirmed Voice Session, managed GPT-SoVITS reply playback, safe barge-in while a reply is thinking or speaking, and optional re-listening after a normal reply are connected. Document answers remain an explicit per-Project-Chat choice. Automatic re-listening is off by default, visible and disableable on the call surface, and every final transcript still requires review and an explicit send. A closed Character State API now connects Chat, Voice, and Knowledge lifecycles to a real local Live2D model. Main Chat and Voice use a half-body composition sized for their in-app panels, while the separate transparent always-on-top desktop pet uses a draggable full-body composition. Real Web Audio playback is sampled at no more than 20 Hz and quantized by RMS into `closed / small / medium / wide` mouth cues, while the user-restricted `neutral / happy / sad` setting selects both the TTS reference and bounded model expression. The model cannot submit arbitrary emotions, paths, parameters, or animation commands; Still, Windows Reduced Motion, and initialization failure use reviewed static assets. The pet appears by default when no preference has been saved and can still be hidden or disabled; fixed-copy system notifications remain off by default. Settings can independently enable the reply-ready notice and choose a Daily / Weekly neutral reminder, then turn both off together. Reminder scheduling and delivery occur only while Elysia is running; they create no background service, startup task, engagement streak, or model-generated proactive message. Optional voice runtimes, models, and reference audio are not included in the base install; real-time partial transcripts, the Work Agent, and production installation are not complete. The real microphone/speaker, room-echo, and long-call human matrix was not run and the project owner explicitly waived it as a closing gate for this delivery, so the project does not claim those observations passed.
 
 ---
 
@@ -35,8 +35,8 @@
 - 🎙️ **Local Voice Session** — Explicit capture runs through local VAD and Faster-Whisper; reviewed final text can be sent, then naturally interrupt the reply while it thinks or speaks
 - 🔊 **Local Reply Playback** — Python queues naturally segmented replies through managed GPT-SoVITS, while trusted Electron Preload plays doubly validated PCM WAV in order
 - 🎭 **Character State API** — Normalizes Chat, Voice, and Knowledge lifecycles into a closed semantic state set while reserving states for future Work/Approval flows; character components never select animation files directly
-- 🌸 **In-app Live2D Character** — Main Chat and Voice share a real `.moc3` with seven states, user-restricted emotion, four real-playback RMS mouth cues, and complete static fallback
-- 🌷 **Optional Live2D Desktop Pet** — Off by default; a separate transparent always-on-top window can be dragged, hidden, or restored from the tray, with static fallback for Reduced Motion or model failure
+- 🌸 **In-app Live2D Character** — Main Chat and Voice share a half-body presentation of the real `.moc3`, with seven states, user-restricted emotion, four real-playback RMS mouth cues, and complete static fallback
+- 🌷 **Live2D Desktop Pet** — Visible by default when no preference exists; the separate transparent always-on-top window shows the full body, uses the character surface for dragging, and reveals Chat/Hide controls on hover or keyboard focus
 - 🔕 **Optional Presence and System Notifications** — Reply-ready notices and Daily / Weekly neutral reminders are off by default, silent, and fully disableable; fixed copy never contains conversation, Project, or file content
 - 💾 **Recovery First** — Local JSON storage, legacy migration, quarantine, atomic writes, and import/export services
 - ♿ **Desktop Usability** — Themes, keyboard navigation, focus management, Windows scaling, Chinese IME, and offline/error recovery
@@ -61,8 +61,8 @@
 | Barge-in / speech interruption | ✅ Available | Enabled only for the reply to an explicitly sent Voice turn; requires verified WebRTC echo cancellation and sustained-speech confirmation, then cancels that exact turn |
 | Automatic re-listening | ✅ Available | A visible switch can listen again after a safely completed reply; it is off by default and never auto-sends a final transcript |
 | Character State API | ✅ Available | Closed `idle / listening / thinking / speaking / working / waiting_approval / error` contract; Chat, Voice, and Knowledge are connected, while approval remains reserved for a future real Work/Approval flow |
-| In-app Character | ✅ Available | A real local `.moc3` is driven by seven semantic states, three user-restricted expressions, and four real-playback RMS mouth cues; Still/Reduced Motion and initialization failure use pinned atlas/portrait fallback |
-| Optional Live2D desktop pet | ✅ Available | Defaults to `disabled`; `hidden` destroys the separate Renderer, while `visible` creates a transparent, draggable, always-on-top window; Reduced Motion/model failure uses the static portrait |
+| In-app Character | ✅ Available | A half-body presentation of the real local `.moc3` is driven by seven semantic states, three user-restricted expressions, and four real-playback RMS mouth cues; Still/Reduced Motion and initialization failure use pinned atlas/portrait fallback |
+| Live2D desktop pet | ✅ Available | Defaults to `visible` only when no preference exists; full-body Live2D occupies a transparent draggable always-on-top window, `hidden` preserves intent while destroying the Renderer, and `disabled` turns it off; Reduced Motion/model failure uses the static portrait |
 | Presence and system notifications | ✅ Available | Reply-ready notices default to Off; neutral reminders are limited to Off / Daily / Weekly, stay quiet while the app is attentive or Chat, Voice, or Knowledge is busy, and never catch up later; there is no cloud push, background service, behavior tracking, or model-authored notification |
 | File parsing and local RAG | ✅ Baseline available | Versioned lineage, a pinned local embedding space, Scope-safe SQLite indexing, bounded retrieval/reranking, a loopback-only grounded generator, same-Project sharing, and cross-Project fail-closed authorization are wired into Desktop Chat; users must explicitly enable **Use Project Sources** |
 | Work Agent and tool permissions | ⏳ Planned | No tool execution, desktop control, Internet, or Vision workflow |
@@ -112,7 +112,7 @@ flowchart LR
 - **Python is the application source of truth**: Chat, Project, Memory, attachment state, and persistence are managed through Python domain/service/repository boundaries.
 - **Electron is the trusted desktop boundary**: it owns the Python child process, native file selection, hardware permissions, and window lifecycle.
 - **React remains sandboxed**: `contextIsolation: true`, `nodeIntegration: false`, and `sandbox: true`; the Renderer cannot directly read Node, Python, Chat, Memory, or native source paths.
-- **The desktop pet is separate and off by default**: Main exclusively owns its preference, native window, and display coordinates. Its dedicated Renderer and minimal Preload can only report readiness, hide the pet, or open the main Chat; they cannot access the Backend, network, filesystem, arbitrary IPC, or the main Renderer API.
+- **The desktop pet is separate and visible on first run**: when no preference exists, Main creates the full-body pet in `visible` mode; the user can choose `hidden` or `disabled`. Main exclusively owns its preference, native window, and display coordinates. Its dedicated Renderer and minimal Preload can report readiness, hide the pet, open the main Chat, and read/subscribe to only Main's closed character-motion snapshot. Renderer storage remains isolated; the pet stays Still until synchronization and independently honors Reduced Motion. It cannot access the Backend, network, filesystem, arbitrary IPC, or the main Renderer API. Corrupt or invalid stored preferences still fail closed to `disabled`.
 - **Presence and notifications are fully off by default**: Main exclusively owns the strict revisioned device preference, timer, and native notification objects. The Renderer cannot supply titles, bodies, links, sounds, urgency, or arbitrary schedules. Reply-ready delivery observes only a validated terminal `chat-complete`; neutral reminders use a full 24-hour or seven-day interval anchored when the user selects the cadence. Main records a due cycle before delivery and shows it only when the window is absent, hidden, or minimized and the Backend is idle. A still-visible window or busy Chat, Voice, managed playback, or Knowledge work consumes that cycle; shutdown instead stops the timer and delivery without manufacturing a new handled cycle.
 - **Both sides validate the protocol**: TypeScript and Python consume matching JSON Schema/fixture constraints and negotiate the version, capabilities, and a random session token before use.
 - **Local data is recoverable**: important JSON uses strict schemas, revisions, atomic replacement, and corruption quarantine; cancellation does not save an incomplete formal reply.
@@ -216,23 +216,16 @@ cd ..
 
 ### 5. Start the Desktop
 
-Desktop development mode requires two CMD windows.
-
-Start the Vite Renderer in the first window:
+Run this once in one CMD window:
 
 ```bat
 cd /d D:\Elysia_AI\desktop
 npm run dev
 ```
 
-Start Electron in the second window:
+The command compiles Electron Main/Preload, starts Vite, and launches Electron after the Renderer is ready. Electron derives `.venv\Scripts\python.exe` and `desktop_backend.py` from the project root and cleans up that child when the app exits. If your checkout is not at `D:\Elysia_AI`, replace the working directory with its actual location.
 
-```bat
-cd /d D:\Elysia_AI\desktop
-npm run electron:dev
-```
-
-Electron derives `.venv\Scripts\python.exe` and `desktop_backend.py` from the project root and cleans up that child when the app exits. If your checkout is not at `D:\Elysia_AI`, replace the working directory in each of the two startup commands with its actual location.
+Use `npm run dev:renderer` only for a Renderer-only browser preview. A browser does not receive the Electron Preload, so that preview cannot connect Python, the microphone, or the Desktop Pet; use the Electron window opened by `npm run dev` for the complete application.
 
 ### Optional: Start the Console
 
@@ -327,12 +320,12 @@ Never commit future secrets, tokens, private prompts, or private configuration.
 
 ### 🌷 Optional Live2D Desktop Pet
 
-- The pet defaults to `disabled`, so first launch creates no extra window. Settings exposes the complete `disabled / hidden / visible` set: `hidden` preserves the user's opt-in but immediately destroys the pet Renderer and releases its resources; only `visible` creates the window.
-- This implementation reuses the main UI's local `.moc3` and texture. OS Reduced Motion or a WASM/WebGL/model failure falls back to the reviewed `elysia-portrait.png`. It does not use `07-desktop-pet-key-poses.png` and is not an autonomous agent.
-- Electron Main permits one transparent, frameless, draggable, always-on-top pet window. Its nominal size is 320×480 DIP and shrinks when a display work area is smaller. A pure geometry function restores and clamps it to current multi-display DIP work areas without multiplying coordinates by `scaleFactor` again. Display removal, resolution changes, and scaling changes trigger reclamping; Settings and the tray can reset its position.
-- Clicking the character only reveals and focuses the main window and enters the main Chat. The close control changes the preference to `hidden`. The tray can show/hide, disable, retry a failed window, and temporarily enable mouse click-through; Settings also exposes an explicit retry while the window is failed. Click-through is not persisted. Hidden keeps the process and tray resident after the main window closes so recovery remains possible; Off restores the normal last-window exit behavior.
-- The pet has its own HTML entry, sandbox, and minimal Preload. Its public API contains only `ready / hide / openMainChat`; it has no Backend, Chat-data, arbitrary network, filesystem, Node, raw-IPC, speech, or main-Renderer capability. Model fetches are confined to Electron's three-file local protocol allowlist; navigation, new windows, and permission requests remain denied.
-- Main stores the preference in a separate strict JSON document under Electron `userData`, with a 16 KiB read limit, revision CAS, and same-directory synchronized temporary-file replacement. Settings, tray actions, pet controls, position reset, and drag persistence share one mutation queue; display IDs and coordinates never return to a Renderer. Missing or invalid preferences fail closed to `disabled`; a missing Preload or hidden window that does not report ready within 10 seconds is destroyed and reports a sanitized `failed` state. Shutdown drains admitted preference writes before saving the final position, with the complete optional persistence sequence bounded to two seconds. Settings or the tray can retry without affecting main Chat, Voice, or Backend operation.
+- When no desktop-pet preference file exists, first run uses `visible` and creates the full-body Live2D pet. Settings exposes the complete `disabled / hidden / visible` set: `hidden` preserves the user's choice but immediately destroys the pet Renderer and releases its resources, `disabled` turns the feature off, and `visible` creates the window.
+- This implementation reuses the main UI's local `.moc3` and texture with a different composition: Main Chat and Voice are framed as a half-body portrait, while the desktop companion is framed as a full-body character. OS Reduced Motion or a WASM/WebGL/model failure falls back to the reviewed `elysia-portrait.png`. It does not use `07-desktop-pet-key-poses.png` and is not an autonomous agent.
+- Electron Main permits one transparent, frameless, always-on-top pet window. The full character surface is the drag region; a toolbar revealed on hover or keyboard focus is a non-drag region with controls to open Chat or hide the pet. Its nominal size is 320×480 DIP and shrinks when a display work area is smaller. A pure geometry function restores and clamps it to current multi-display DIP work areas without multiplying coordinates by `scaleFactor` again. Display removal, resolution changes, and scaling changes trigger reclamping; Settings and the tray can reset its position.
+- The toolbar's Chat control reveals and focuses the main window and enters the main Chat; Hide changes the preference to `hidden`. The tray can show/hide, disable, retry a failed window, and temporarily enable mouse click-through; Settings also exposes an explicit retry while the window is failed. Click-through is not persisted. Hidden keeps the process and tray resident after the main window closes so recovery remains possible; Off restores the normal last-window exit behavior.
+- The pet has its own HTML entry, sandbox, and minimal Preload. Its public API contains only `ready / hide / openMainChat` plus read/subscribe access to Main's closed `animated / still` snapshot; it has no Backend, Chat-data, arbitrary network, filesystem, Node, raw-IPC, speech, storage, or main-Renderer capability. Model fetches are confined to Electron's three-file local protocol allowlist; navigation, new windows, and permission requests remain denied.
+- Main stores the preference in a separate strict JSON document under Electron `userData`, with a 16 KiB read limit, revision CAS, and same-directory synchronized temporary-file replacement. Settings, tray actions, pet controls, position reset, and drag persistence share one mutation queue; display IDs and coordinates never return to a Renderer. A missing file means first run and defaults to `visible`; a present but corrupt, oversized, or invalid document still fails closed to `disabled`. A missing Preload or a window that does not report ready within 10 seconds is destroyed and reports a sanitized `failed` state. Shutdown drains admitted preference writes before saving the final position, with the complete optional persistence sequence bounded to two seconds. Settings or the tray can retry without affecting main Chat, Voice, or Backend operation.
 
 ### 🔕 Presence and System Notifications
 
@@ -502,11 +495,15 @@ cd /d D:\Elysia_AI\desktop
 
 Run the `npm` commands from CMD as shown in this README. You do not need to relax the machine's PowerShell Execution Policy for this project.
 
+### Why does the page say to open the preview through Electron and fail to connect Python?
+
+That page is the Renderer-only browser preview from `npm run dev:renderer`. A browser has no Electron Preload, so Python, microphone features, and the Desktop Pet are intentionally unavailable. Close the preview, run `npm run dev` once from `desktop`, and use the Electron window that opens automatically.
+
 ### Why does the desktop show `Connection error` or wait for the Backend?
 
 Confirm that:
 
-1. Vite and Electron are running in separate CMD windows.
+1. Electron was started from the `desktop` directory with `npm run dev`, rather than opening only the `npm run dev:renderer` browser preview.
 2. `.venv\Scripts\python.exe` exists and dependencies are installed.
 3. Ollama is running and the configured Settings origin is reachable.
 4. The configured model has been installed with `ollama pull <model>`.

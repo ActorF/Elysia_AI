@@ -2,6 +2,7 @@
 
 const assert = require('node:assert/strict')
 const { EventEmitter } = require('node:events')
+const { readFileSync } = require('node:fs')
 const Module = require('node:module')
 const path = require('node:path')
 const test = require('node:test')
@@ -23,6 +24,7 @@ const PLAYBACK_IDS = [
 ]
 
 const operations = []
+const motionInvocations = []
 const settlements = []
 const contexts = []
 let outputDeviceId = 'private-headphones'
@@ -83,7 +85,11 @@ class FakeIpcRenderer extends EventEmitter {
   }
 
   /** Return the current canonical voice settings selection. */
-  invoke(channel) {
+  invoke(channel, ...args) {
+    if (channel === 'window:set-character-performance') {
+      motionInvocations.push({ channel, preference: args[0] })
+      return Promise.resolve({ preference: args[0], revision: 4 })
+    }
     if (channel === 'voice:settings-get') {
       operations.push('settings')
       if (settingsResolver !== null) {
@@ -259,8 +265,16 @@ Module._load = function patchedModuleLoad(request, parent, isMain) {
 }
 globalThis.AudioContext = FakeAudioContext
 
+const preloadPath = path.resolve(
+  __dirname,
+  '..',
+  'dist-electron',
+  'preload.cjs',
+)
+const preloadSource = readFileSync(preloadPath, 'utf8')
+
 try {
-  require(path.resolve(__dirname, '..', 'dist-electron', 'preload.cjs'))
+  require(preloadPath)
 } finally {
   Module._load = originalLoad
 }
@@ -326,6 +340,27 @@ function resetObservations() {
   rootDatasetState.characterPerformancePreference = 'animated'
   rootDatasetState.characterSpeechActive = 'false'
 }
+
+test('sandboxed Preload bundle keeps Electron as its only runtime dependency', () => {
+  const requiredModules = Array.from(
+    preloadSource.matchAll(/require\((["'])([^"']+)\1\)/gu),
+    (match) => match[2],
+  )
+
+  assert.deepEqual([...new Set(requiredModules)], ['electron'])
+  assert.doesNotMatch(preloadSource, /\bimport\s*\(/u)
+})
+
+test('main Preload forwards character motion through one fixed channel', async () => {
+  const state = await exposedApis[0].api
+    .setCharacterPerformancePreference('still')
+
+  assert.deepEqual(state, { preference: 'still', revision: 4 })
+  assert.deepEqual(motionInvocations, [{
+    channel: 'window:set-character-performance',
+    preference: 'still',
+  }])
+})
 
 test('selected output is routed before decode and playback', async () => {
   assert.deepEqual(exposedApis.map(({ name }) => name), ['elysiaDesktop'])

@@ -92,6 +92,17 @@ export function CharacterPerformanceProvider({
     return () => { window.removeEventListener('storage', synchronize) }
   }, [])
 
+  useEffect(() => {
+    // Electron Main relays the validated choice to the isolated desktop-pet
+    // partition; neither renderer receives access to the other's storage.
+    void window.elysiaDesktop
+      ?.setCharacterPerformancePreference(preference)
+      .catch(() => {
+        // Browser-only previews and a closing Main process retain local motion
+        // behavior while the independent pet remains safely still.
+      })
+  }, [preference])
+
   const resolvedMode = resolveCharacterPerformance(preference, reducedMotion)
   useLayoutEffect(() => {
     const root = document.documentElement

@@ -37,6 +37,10 @@ import type {
   VoiceTranscriptionRequest,
 } from './contracts.js'
 import type {
+  CharacterPerformancePreference,
+  CharacterPerformanceState,
+} from './character-performance-contracts.js'
+import type {
   DesktopPetState,
   UpdateDesktopPetRequest,
 } from './desktop-pet-contracts.js'
@@ -599,6 +603,14 @@ const desktopApi: DesktopApi = {
       'window:set-theme',
       theme,
     ) as Promise<void>,
+
+  setCharacterPerformancePreference: (
+    preference: CharacterPerformancePreference,
+  ) =>
+    ipcRenderer.invoke(
+      'window:set-character-performance',
+      preference,
+    ) as Promise<CharacterPerformanceState>,
 
   getDesktopPetState: () =>
     ipcRenderer.invoke(

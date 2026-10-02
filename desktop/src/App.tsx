@@ -825,7 +825,7 @@ function App() {
           status: 'error',
           capabilities: [],
           models: [],
-          error: 'Open this preview through Electron to connect the Python Backend.',
+          error: 'Renderer-only preview. Run npm run dev to launch Electron; Python, microphone, and Desktop Pet features are unavailable in a browser.',
         }
       : initialSnapshot
   ))

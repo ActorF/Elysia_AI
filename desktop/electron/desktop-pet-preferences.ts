@@ -215,7 +215,17 @@ function parseStoredDocument(value: unknown): StoredDesktopPetDocument {
   })
 }
 
-function defaultStoredDocument(): StoredDesktopPetDocument {
+function firstRunStoredDocument(): StoredDesktopPetDocument {
+  return Object.freeze({
+    schemaVersion: DESKTOP_PET_PREFERENCES_SCHEMA_VERSION,
+    revision: 0,
+    updatedAt: null,
+    mode: 'visible',
+    placement: null,
+  })
+}
+
+function failClosedStoredDocument(): StoredDesktopPetDocument {
   return Object.freeze({
     schemaVersion: DESKTOP_PET_PREFERENCES_SCHEMA_VERSION,
     revision: 0,
@@ -564,7 +574,7 @@ export class DesktopPetPreferencesRepository {
     this.#replaceFile = options.replaceFile ?? rename
   }
 
-  /** Load renderer-safe state and Main-private placement, failing closed. */
+  /** Load first-run visibility, while malformed persisted state fails closed. */
   async load(
     runtime: DesktopPetRuntimeState = 'absent',
   ): Promise<LoadedDesktopPetPreferences> {
@@ -572,12 +582,12 @@ export class DesktopPetPreferencesRepository {
     try {
       const document = await readStoredDocument(this.#filePath)
       return toLoadedPreferences({
-        document: document ?? defaultStoredDocument(),
+        document: document ?? firstRunStoredDocument(),
         warning: null,
       }, runtime)
     } catch {
       return toLoadedPreferences({
-        document: defaultStoredDocument(),
+        document: failClosedStoredDocument(),
         warning: DESKTOP_PET_LOAD_WARNING,
       }, runtime)
     }
@@ -595,13 +605,13 @@ export class DesktopPetPreferencesRepository {
       try {
         current = {
           document: await readStoredDocument(this.#filePath)
-            ?? defaultStoredDocument(),
+            ?? firstRunStoredDocument(),
           warning: null,
         }
       } catch (error) {
         if (error instanceof DesktopPetPreferencesValidationError) {
           current = {
-            document: defaultStoredDocument(),
+            document: failClosedStoredDocument(),
             warning: DESKTOP_PET_LOAD_WARNING,
           }
         } else {
@@ -645,7 +655,7 @@ export class DesktopPetPreferencesRepository {
       let current: StoredDesktopPetDocument
       try {
         current = await readStoredDocument(this.#filePath)
-          ?? defaultStoredDocument()
+          ?? firstRunStoredDocument()
       } catch {
         // A drag must never overwrite a damaged preference and accidentally
         // restore a pet the user did not safely opt into.

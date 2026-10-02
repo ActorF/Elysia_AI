@@ -14,35 +14,16 @@
   </head>
   <body>
     <main class="desktop-pet" aria-label="Elysia desktop pet">
-      <header class="desktop-pet-toolbar">
-        <div
-          class="desktop-pet-drag-handle"
-          title="Drag to move Elysia"
-        >
-          <span aria-hidden="true"></span>
-          <span class="sr-only">Drag to move Elysia</span>
-        </div>
-        <button
-          class="desktop-pet-hide"
-          id="desktop-pet-hide"
-          type="button"
-          aria-label="Hide Elysia desktop pet"
-          title="Hide Elysia"
-        >
-          <span aria-hidden="true">&#x2212;</span>
-        </button>
-      </header>
-
-      <button
-        class="desktop-pet-character"
-        id="desktop-pet-open-main"
-        type="button"
-        aria-label="Open Elysia Chat"
-        title="Open Elysia Chat"
+      <div
+        class="desktop-pet-character desktop-pet-drag-surface"
+        role="img"
+        aria-label="Full-body Elysia desktop companion"
+        title="Drag Elysia to move her"
       >
         <canvas
           id="desktop-pet-live2d"
           class="desktop-pet-live2d"
+          data-live2d-framing="full-body"
           aria-hidden="true"
           hidden
         ></canvas>
@@ -61,7 +42,28 @@
           <span class="desktop-pet-fallback-mark" aria-hidden="true">&#x2661;</span>
           <span>Elysia</span>
         </span>
-      </button>
+      </div>
+
+      <nav class="desktop-pet-toolbar" aria-label="Desktop pet controls">
+        <button
+          class="desktop-pet-control desktop-pet-open-main"
+          id="desktop-pet-open-main"
+          type="button"
+          aria-label="Open Elysia Chat"
+          title="Open Elysia Chat"
+        >
+          <span aria-hidden="true">&#x2661;</span>
+        </button>
+        <button
+          class="desktop-pet-control desktop-pet-hide"
+          id="desktop-pet-hide"
+          type="button"
+          aria-label="Hide Elysia desktop pet"
+          title="Hide Elysia"
+        >
+          <span aria-hidden="true">&#x2212;</span>
+        </button>
+      </nav>
 
       <p class="sr-only" id="desktop-pet-status" role="status"></p>
     </main>

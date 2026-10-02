@@ -59,6 +59,7 @@ function makeFakeGl() {
   let lastIndexUpload = []
   const drawnIndices = []
   const deleted = []
+  const uniform4fCalls = []
   const constants = {
     ARRAY_BUFFER: 0x8892,
     BACK: 0x0405,
@@ -139,15 +140,21 @@ function makeFakeGl() {
     texImage2D() {},
     texParameteri() {},
     uniform1i() {},
-    uniform4f() {},
+    uniform4f(location, ...values) {
+      uniform4fCalls.push({
+        name: location?.name,
+        values,
+      })
+    },
     useProgram() {},
     vertexAttribPointer() {},
     viewport() {},
   }
-  return { deleted, drawnIndices, gl }
+  return { deleted, drawnIndices, gl, uniform4fCalls }
 }
 
 function installEnvironment({
+  canvasBounds = { height: 300, width: 200 },
   manifestOverride,
   packaged = false,
   webgl = true,
@@ -155,7 +162,12 @@ function installEnvironment({
   const animationFrames = new Map()
   const canvasListeners = new Map()
   const requestedUrls = []
-  const { deleted, drawnIndices, gl } = makeFakeGl()
+  const {
+    deleted,
+    drawnIndices,
+    gl,
+    uniform4fCalls,
+  } = makeFakeGl()
   const parameterValues = new Float32Array(PARAMETER_IDS.length)
   parameterValues[PARAMETER_IDS.indexOf('ParamEyeLOpen')] = 1
   parameterValues[PARAMETER_IDS.indexOf('ParamEyeROpen')] = 1
@@ -252,7 +264,7 @@ function installEnvironment({
       canvasListeners.get(event.type)?.(event)
       return true
     },
-    getBoundingClientRect: () => ({ height: 300, width: 200 }),
+    getBoundingClientRect: () => canvasBounds,
     getContext: () => (webgl ? gl : null),
     removeEventListener(type) { canvasListeners.delete(type) },
   }
@@ -314,6 +326,7 @@ function installEnvironment({
     requestedUrls,
     rootDataset,
     setModelError(value) { modelError = value },
+    uniform4fCalls,
   }
 }
 
@@ -321,6 +334,7 @@ test('loads only fixed assets and renders every drawable in render order', async
   const environment = installEnvironment()
   const controller = await createLive2DController(environment.canvas, {
     emotion: 'happy',
+    framing: 'half-body',
     state: 'speaking',
   })
 
@@ -388,6 +402,7 @@ test('loads only fixed assets and renders every drawable in render order', async
   await assert.rejects(
     createLive2DController(environment.canvas, {
       emotion: 'neutral',
+      framing: 'half-body',
       state: 'idle',
     }),
     /invalid bounds or values/,
@@ -396,6 +411,7 @@ test('loads only fixed assets and renders every drawable in render order', async
 
   const fatalController = await createLive2DController(environment.canvas, {
     emotion: 'neutral',
+    framing: 'half-body',
     state: 'idle',
   })
   let runtimeError
@@ -409,6 +425,7 @@ test('loads only fixed assets and renders every drawable in render order', async
   assert.equal(environment.canvas.dataset.live2dStatus, 'error')
   assert.match(runtimeError?.message ?? '', /error while updating/)
   assert.equal(environment.animationFrames.size, 0)
+  environment.setModelError(0)
   fatalController.dispose()
 })
 
@@ -425,6 +442,7 @@ test('rejects a manifest that tries to select a different resource', async () =>
   await assert.rejects(
     createLive2DController(environment.canvas, {
       emotion: 'neutral',
+      framing: 'half-body',
       state: 'idle',
     }),
     /fixed asset contract/,
@@ -436,6 +454,7 @@ test('uses only the allowlisted custom protocol in a packaged file page', async 
   const environment = installEnvironment({ packaged: true })
   const controller = await createLive2DController(environment.canvas, {
     emotion: 'neutral',
+    framing: 'half-body',
     state: 'idle',
   })
   assert.deepEqual(environment.requestedUrls.sort(), [
@@ -451,11 +470,94 @@ test('fails before loading assets when WebGL2 is unavailable', async () => {
   await assert.rejects(
     createLive2DController(environment.canvas, {
       emotion: 'neutral',
+      framing: 'half-body',
       state: 'idle',
     }),
     /WebGL2 is unavailable/,
   )
   assert.deepEqual(environment.requestedUrls, [])
+})
+
+test('uses the reviewed half-body and full-body camera transforms', async () => {
+  const cases = [
+    {
+      expected: [2.325581, 1.550388, 0, -0.883721],
+      framing: 'half-body',
+    },
+    {
+      expected: [2.325581, 1.550388, 0, -0.666667],
+      framing: 'call-half-body',
+    },
+    {
+      expected: [1.485149, 0.990099, 0, -0.009901],
+      framing: 'full-body',
+    },
+  ]
+
+  for (const { expected, framing } of cases) {
+    const environment = installEnvironment()
+    const controller = await createLive2DController(environment.canvas, {
+      emotion: 'neutral',
+      framing,
+      state: 'idle',
+    })
+    const [frameId, frame] = [...environment.animationFrames.entries()][0]
+    environment.animationFrames.delete(frameId)
+    frame(performance.now() + 1000)
+
+    const transform = environment.uniform4fCalls.find(
+      ({ name }) => name === 'u_transform',
+    )?.values
+    assert.ok(transform, `${framing} transform must be uploaded`)
+    assert.deepEqual(
+      transform?.map((value) => Number(value.toFixed(6))),
+      expected,
+      framing,
+    )
+    controller.dispose()
+  }
+})
+
+test('main half-body camera keeps the reviewed head-to-waist viewport', async () => {
+  const environment = installEnvironment({
+    canvasBounds: { height: 274, width: 281 },
+  })
+  const controller = await createLive2DController(environment.canvas, {
+    emotion: 'neutral',
+    framing: 'half-body',
+    state: 'idle',
+  })
+  const [frameId, frame] = [...environment.animationFrames.entries()][0]
+  environment.animationFrames.delete(frameId)
+  frame(performance.now() + 1000)
+
+  const transform = environment.uniform4fCalls.find(
+    ({ name }) => name === 'u_transform',
+  )?.values
+  assert.ok(transform, 'half-body transform must be uploaded')
+  const [scaleX, scaleY, _translateX, translateY] = transform
+  const visibleWidth = 2 / scaleX
+  const visibleBottom = (-1 - translateY) / scaleY
+  const visibleTop = (1 - translateY) / scaleY
+  assert.ok(visibleWidth >= 0.85 && visibleWidth <= 0.87, visibleWidth)
+  assert.ok(visibleBottom >= 0.14 && visibleBottom <= 0.16, visibleBottom)
+  assert.ok(visibleTop >= 0.98 && visibleTop <= 1, visibleTop)
+  controller.dispose()
+})
+
+test('rejects unsupported framing before requesting model assets', async () => {
+  const environment = installEnvironment()
+
+  await assert.rejects(
+    createLive2DController(environment.canvas, {
+      emotion: 'neutral',
+      framing: 'portrait',
+      state: 'idle',
+    }),
+    /Unsupported Live2D character framing: portrait/,
+  )
+  assert.deepEqual(environment.requestedUrls, [])
+  assert.equal('live2dStatus' in environment.canvas.dataset, false)
 })
 
 test.after(() => {

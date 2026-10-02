@@ -165,7 +165,7 @@ start.create_data_portability_service()
 | `docs/11-KNOWLEDGE-LIFECYCLE.md` | 记录 Project-only 持久 saga journal、完整 state/phase、add/reindex/rebuild 发布顺序、whole-Project revoke、copy-on-write replace、tombstone-first delete、取消/恢复/幂等，以及不入 journal 的 verified export/cleanup intent 与 Preview/Cache cleanup 预留。 | `knowledge_lifecycle/`、`attachments/`、`documents/indexing.py`、`project_sources/` |
 | `docs/12-KNOWLEDGE-UI-TESTING.md` | 记录生产 Composition Root、loopback Generator、grounded Chat 持久化、Desktop methods/events、全局 Knowledge lease、跨 reload 的 export snapshot/terminal、Project Sources/Citation UI、真实 PDF/DOCX fixtures 与 Stage 8 自动化验收边界。 | `desktop_knowledge.py`、`desktop_backend.py`、Protocol/Electron/React、真实文档回归 |
 | `docs/13-PRODUCTION-DATA-LAYOUT.md` | 定义升级安全的程序资源/用户数据分离、版本化数据树、容量分类、Legacy 首次复制、两阶段目录移动、Backend Readiness 回滚和严格临时清理边界；明确移动不是备份。 | `config/data_layout.py`、Electron Data Storage、Settings、Stage 14 后续 Backup/Packaging 模块 |
-| `docs/14-LIVE2D-RUNTIME.md` | 记录固定三文件模型、PurismCore/WebGL2 渲染、状态/表情/真实音频振幅参数映射、Context 恢复、资源释放、静态回退和打包完整性边界。 | Character Runtime、Main/Voice Artwork、Desktop Pet、Live2D 自定义协议与分发门禁 |
+| `docs/14-LIVE2D-RUNTIME.md` | 记录固定三文件模型、PurismCore/WebGL2 渲染、Main/Voice 半身与桌宠全身构图、状态/表情/真实音频振幅参数映射、桌宠首次显示与坏偏好 Fail Closed、Context 恢复、资源释放、静态回退和打包完整性边界。 | Character Runtime、Main/Voice Artwork、Desktop Pet、Live2D 自定义协议与分发门禁 |
 | `data/characters/elysia_character_reference_zh.md` | 爱莉希雅背景、语录和转写参考资料；当前 Runtime 不会自动将它注入每次 Prompt。 | 人工角色研究；受 `MODEL_LICENSE.md` 的来源/授权提醒约束 |
 | `data/characters/elysia-2dArt/README.md`、`PROMPTS.md`、18 张审阅 PNG 与 `live2d-source/` | 记录最终 2D 审阅包、逐格修复、生成参考与 Hash；02/03/04 提供静态回退，`live2d-source/` 保留从审核分层对齐并补齐活动五官的 21 个统一画布模型源层。 | CharacterArtwork、Live2D 模型制作、分发门禁、`MODEL_LICENSE.md`；源层和审阅总览不进入安装包 |
 
@@ -404,15 +404,17 @@ Loader 输出仍是 Raw Structure；后续纯转换生成可重复 Chunk，Embed
 | 文件 | 实际用途 | 主要连接 |
 | --- | --- | --- |
 | `desktop/.gitignore` | 排除 `node_modules`、`dist`、日志和常见本地编辑器文件；`dist-electron`、`out` 与 Playwright 输出由根 `.gitignore` 负责。 | npm/Vite/Electron/Playwright 生成物 |
-| `desktop/README.md` | Desktop 开发指南；双 CMD 启动、本地 STT 可选安装/模型目录、有界 Voice Session、主界面与可选 Live2D 桌宠、默认关闭的 Main-owned Presence/Notifications、架构边界、验证和打包说明。 | 根 README、Protocol README、npm scripts、`requirements-stt.txt` |
+| `desktop/README.md` | Desktop 开发指南；单次 `npm run dev` 启动、本地 STT 可选安装/模型目录、有界 Voice Session、半身应用内角色与全身 Live2D 桌宠、默认关闭的 Main-owned Presence/Notifications、架构边界、验证和打包说明。 | 根 README、Protocol README、npm scripts、`requirements-stt.txt` |
 | `desktop/package.json` | npm 项目入口、React/Electron 依赖、开发/文档审计/测试/构建/打包脚本和 electron-builder 配置。 | 所有 Desktop 工具链 |
 | `desktop/package-lock.json` | 固定完整 npm 依赖图和下载完整性，使 `npm ci` 与 CI 可复现；不要手工编辑。 | npm、GitHub Actions、安全审计 |
 | `desktop/index.html` | Vite 主 Renderer HTML 入口；定义 CSP、favicon、viewport、theme-color 和 `#root`，并从固定本地路径预载 PurismCore 后启动 React。 | `desktop/src/main.tsx`、Live2D Runtime、Vite、Electron 主窗口 |
-| `desktop/pet.html` | Live2D 桌宠的独立 Vite HTML 入口；在严格 CSP 下加载专用 CSS、本地 PurismCore、动画 Canvas、静态立绘和可访问失败提示，不加载主 React App。 | `desktop/src/desktop-pet-main.ts`、`desktop-pet.css`、Vite、Electron 桌宠窗口 |
-| `desktop/vite.config.ts` | 配置 React Plugin、固定开发端口、生产相对资源路径，以及彼此独立的 `index.html` / `pet.html` 多入口构建。 | `npm run dev`、`npm run build:renderer`、两个 Renderer 来源策略 |
+| `desktop/pet.html` | Live2D 桌宠的独立 Vite HTML 入口；在严格 CSP 下加载专用 CSS、本地 PurismCore、全身动画 Canvas、静态立绘、可访问失败提示，以及悬浮/焦点 Chat/Hide 控制条，不加载主 React App。 | `desktop/src/desktop-pet-main.ts`、`desktop-pet.css`、Vite、Electron 桌宠窗口 |
+| `desktop/vite.config.ts` | 配置 React Plugin、固定开发端口、生产相对资源路径，以及彼此独立的 `index.html` / `pet.html` 多入口构建。 | `npm run dev` / `npm run dev:renderer`、`npm run build:renderer`、两个 Renderer 来源策略 |
+| `desktop/vite.preload.config.ts` | 把主窗口的沙箱 Preload 与本地语音嘴型 Helper 打成单一 CommonJS 文件，只把 Electron 保留为运行时 External；沙箱因此不需要也不能解析相对 `require`。 | `npm run electron:build`、`scripts/dev.mjs`、`dist-electron/preload.cjs`；避免 Preload 在 Electron 中因本地模块加载失败而丢失 `window.elysiaDesktop` |
 | `desktop/eslint.config.js` | ESLint Flat Config；启用 JS、TypeScript、React Hooks 和 React Refresh 规则。 | `npm run lint` |
 | `desktop/playwright.config.ts` | 配置 Electron UI 测试目录、单 Worker、Timeout 和失败产物路径。 | `npm run test:ui`、`desktop/tests/ui/` |
 | `desktop/scripts/check-documentation.mjs` | 从仓库根目录检查 JS/TS/JSX 文件说明及公开 callable JSDoc、PowerShell 脚本/模块 Help，以及 CSS/HTML/HTM 文件说明；精确排除被忽略的 `models/cache/` 外部 Runtime，但不会误排其他名为 cache 的受维护源码。 | `npm run docs:check`、`AGENTS.md`、GitHub Actions |
+| `desktop/scripts/dev.mjs` | Desktop 开发启动协调器；先编译 Electron Main、打包单文件沙箱 Preload，再启动固定 Vite Server 与 Electron，并在 Electron 退出或收到终止信号时收敛它拥有的子进程。 | `npm run dev`、Vite、Electron、`tsconfig.electron.json`、`vite.preload.config.ts`；`npm run dev:renderer` 才是无 Preload/Backend/麦克风/桌宠的浏览器预览 |
 | `desktop/tsconfig.json` | TypeScript Solution Root，引用 Renderer 与 Node/Vite 配置。 | `npm run typecheck`、Renderer Build |
 | `desktop/tsconfig.app.json` | React Renderer 的 DOM/ES/JSX/Strict TypeScript 配置；不直接 Emit。 | `desktop/src/`、Vite |
 | `desktop/tsconfig.node.json` | `vite.config.ts` 的 NodeNext TypeScript 配置。 | Vite Config Type Check |
@@ -434,6 +436,7 @@ Loader 输出仍是 Raw Structure；后续纯转换生成可重复 Chunk，Embed
 | 文件 | 实际用途 | 主要连接 |
 | --- | --- | --- |
 | `desktop/electron/contracts.ts` | 定义主 Renderer 可见的最小 Desktop API、Backend Snapshot/Event、Chat/Project/Settings/Attachment/Knowledge/Voice、Data & Storage、桌宠与 Presence 公开状态类型；Snapshot 还携带 Electron 跨 Renderer reload 持有的准确 Chat generation 与 lifecycle/export Knowledge request ownership。Data API 只能读取容量、查看 Main 已认证的 active/recovery root、打开当前目录、请求原生选目录/迁移及用 revision+scan token 清理固定临时类别，不接受 Renderer 路径或内部 move transaction。它不是 Python 原始 Wire Schema。 | 主 Preload、Main、React、Mock Preload；状态不含 WAV、Token、Hash、正文、Renderer 自选路径、move capability、桌宠 placement、export destination、私有 reminder anchor 或诊断；旧根只在被持久化标记为 Recovery Copy 时有意披露精确本机路径 |
+| `desktop/electron/character-performance-contracts.ts` | 定义主 Renderer 到 Electron Main、再到独立桌宠 Renderer 的闭集 `animated / still` 偏好和 Main-owned 单调 revision 快照，并严格验证 Renderer 输入。 | `character-performance.ts`、两个 Preload、Main、桌宠页面；只同步动作选择，不共享两个 Renderer 的 Storage Partition |
 | `desktop/electron/preload.cts` | 用 `contextBridge` 暴露固定 `window.elysiaDesktop`；把 Knowledge list/mutation/export/cancel、桌宠与 Presence Settings 控制、Presence Voice-active 信号、一次性 STT 开始/取消和按 Request ID 停止播放映射到固定 IPC，并把净化 Event/Presence state 转交 Renderer。Presence Bridge 不暴露 `Notification` 构造器、通知正文、节奏锚点或任意 Channel。私有、未导出的 Web Audio Owner 只接受 Main 发来的 Canonical 32 kHz mono PCM16 WAV；它为每个 Clip 读取当前 Active `speechVolumePercent`，严格验证后通过 GainNode 调节音量，并在 Decode/Start 前应用已保存的 Output Sink。Animated speaking Artwork 可从同一实际播放图以最多 20 Hz 读取时域样本，把应用 Gain 后的 RMS 经平滑/迟滞量化为四档 DOM 提示；Still/Reduced Motion、不可见角色或视觉失败都保持 `closed` 且不打断声音。无效音量或指定设备路由失败会 Fail Closed，绝不回退到默认扬声器。播放结束或失败后只回送一次性 opaque Settlement；React API 不接触 WAV、原始样本、连续包络、Token、Hash、`ipcRenderer`、Node、`fs`、桌宠坐标或进程句柄。 | React、Electron Main、`speech-playback-owner.ts`、`speech-mouth.ts`、Global Settings、Project Sources、Desktop Pet 与 Presence Settings |
 | `desktop/electron/main.ts` | Electron 主进程；除窗口/托盘/桌宠、原生通知、权限和固定 IPC 外，它初始化稳定数据指针，把唯一绝对数据根注入 Python，串行执行容量扫描、原生空目录选择、Backend 离线、两阶段移动/Readiness/commit/rollback，以及只含 Audio/Cache/Logs 的确认清理。启动遇到 pending move 会先保守回滚；无法启动时显示本地恢复提示，退出则等待正在收敛的存储事务。Cleanup 返回是 commit point，之后 Backend/容量失败只形成 warning，不把已删除内容误报为失败。Renderer 只能看到当前根、容量、pending fact 和持久化 Recovery Copy 路径，不能获得内部事务。 | `data-storage.ts`、两个 Preload、Desktop Pet/Presence、BackendProcess、Electron Dialog/Shell/Notification/Clipboard/Audio/Screen/Tray |
 | `desktop/electron/data-storage-contracts.ts` | 定义 layout/bootstrap v1、十个容量类别、三类可清理 allowlist、内部 move transaction、Renderer-safe public state、持久化 retained-root 视图、一次性 cleanup request 与 commit/rollback 结果；严格拒绝额外字段、任意清理路径和 durable cleanup 类别。 | `data-storage.ts`、Main、Contracts/Preload、Settings、Node/UI tests |
@@ -442,10 +445,10 @@ Loader 输出仍是 Raw Structure；后续纯转换生成可重复 Chunk，Embed
 | `desktop/electron/presence-notification-policy.ts` | 以纯函数计算 daily/weekly 下一到期时间，并依据 opt-in、native runtime、退出状态、窗口存在/可见/最小化/聚焦、Backend readiness 与 Chat/Voice/受管朗读/Knowledge busy 决定 Reply-ready 或 Reminder 是否可投递。Reminder 只有窗口 absent/hidden/minimized 才可出现；仅 Alt-Tab 离开焦点不够。时钟回退等待一个普通周期；纯策略只返回投递决定，Main 会在调用前持久化消费到期周期，避免恢复空闲后补发或爆发。 | Main、`presence-notification-contracts.ts`、Node 合同测试；不读取消息、Prompt、Project 或模型输出 |
 | `desktop/electron/presence-native-notification.ts` | 管理唯一可替换的原生通知槽；Completion 可替换 Reminder，Reminder 不覆盖仍显示的 Completion。Windows `timedOut` 后继续保留可撤回 Handle，固定 ID/Group 的下一条、Settings 全关或退出会移除 Action Center 旧项；替换时先解绑 Listener，以对象身份拒绝旧实例迟到的 click/failed，原生异常也不会逃逸到 Chat。 | Main、`presence-native-notification.test.mjs`；只接收 `completion / reminder` 闭集，不接触通知正文或 Electron IPC |
 | `desktop/electron/presence-notification-preferences.ts` | Electron Main 私有的 Presence JSON Repository；默认 Reply/Reminder 均 Off，限制 16 KiB 严格 Schema，以 revision CAS、同路径锁和同目录临时文件同步后原子替换公开选择。私有 `lastReminderHandledAt` 锚点不进入 Renderer state；切换 cadence 会重新锚定，坏/超限文件 Fail Closed，持久化失败以封闭错误交由 Main 隔离。 | Main、Node 合同测试；文件位于 Electron `userData/presence-notifications.json`，不属于 Python Workspace |
-| `desktop/electron/desktop-pet-contracts.ts` | 定义 `disabled / hidden / visible` 偏好、`absent / loading / visible / failed` 运行状态、严格 revision update，以及专用桌宠 Preload 唯一允许的 `ready / hide / openMainChat` 三个方法。 | Main、主 Renderer Settings、专用 Pet Preload；不含 placement、路径、Backend 或任意 IPC |
-| `desktop/electron/desktop-pet-preferences.ts` | Electron Main 私有的桌宠 JSON Repository 与纯 DIP 几何函数；默认 Off，限制 16 KiB 严格 Schema，以 revision CAS、同路径串行锁和临时文件同步后 rename 原子写入模式/位置；位置不进入 Renderer 状态。多显示器恢复接受 Electron 的任意安全整数 ID（包括 Windows 无符号哈希值），并在负坐标、混合缩放、显示器移除和小工作区下钳制 320×480 名义窗口，设置 420×560 DIP 通用上限。 | Main、Node 合同测试；文件位于 Electron `userData`，不属于 Python Workspace |
+| `desktop/electron/desktop-pet-contracts.ts` | 定义 `disabled / hidden / visible` 偏好、`absent / loading / visible / failed` 运行状态、严格 revision update，以及专用桌宠 Preload 唯一允许的三个窗口动作和只读动作偏好读取/订阅。 | Main、主 Renderer Settings、专用 Pet Preload；不含 placement、路径、Backend 或任意 IPC |
+| `desktop/electron/desktop-pet-preferences.ts` | Electron Main 私有的桌宠 JSON Repository 与纯 DIP 几何函数；偏好文件缺失代表首次运行并默认 `visible`，存在但坏/超限/不合法的文件则 Fail Closed 到 `disabled`。Repository 限制 16 KiB 严格 Schema，以 revision CAS、同路径串行锁和临时文件同步后 rename 原子写入模式/位置；位置不进入 Renderer 状态。多显示器恢复接受 Electron 的任意安全整数 ID（包括 Windows 无符号哈希值），并在负坐标、混合缩放、显示器移除和小工作区下钳制 320×480 名义窗口，设置 420×560 DIP 通用上限。 | Main、Node 合同测试；文件位于 Electron `userData`，不属于 Python Workspace |
 | `desktop/electron/desktop-pet-lifecycle.ts` | 提供可独立测试的桌宠生命周期边界：10 秒 Renderer-ready Deadline、退出时持久化写入 2 秒上限、Settings/Tray/桌宠控制/Reset/拖动保存的统一变更顺序、Hidden/Visible 的托盘驻留与 Disabled 退出判断，以及区分程序化默认位置与真实用户拖动的纯判断。Deadline 在 ready/hide/failure/close/shutdown 全路径清除；桌宠写入仍先于最终位置快照，Presence 等独立写入使用同起点的另一条有界 drain，避免慢写入饿死桌宠保存或串行叠加退出期限。 | Main、Lifecycle Contract Tests；不拥有 BrowserWindow、Tray 或偏好文件 |
-| `desktop/electron/desktop-pet-preload.cts` | 只向独立桌宠 Renderer 暴露冻结的 `window.elysiaDesktopPet`，固定映射 `ready`、`hide`、`openMainChat` 三个 IPC；不导出主 `DesktopApi`、Backend、网络、文件系统、语音或原始 `ipcRenderer`。 | `pet.html`、`desktop-pet-main.ts`、Main 的专用 Sender 验证 |
+| `desktop/electron/desktop-pet-preload.cts` | 只向独立桌宠 Renderer 暴露冻结的 `window.elysiaDesktopPet`，固定映射 `ready`、`hide`、`openMainChat` 及 Main-owned 动作偏好读取/订阅；不导出主 `DesktopApi`、Backend、网络、文件系统、语音、Storage 或原始 `ipcRenderer`。 | `pet.html`、`desktop-pet-main.ts`、Main 的专用 Sender 验证 |
 | `desktop/electron/live2d-assets.ts` | 注册并解析打包版 Renderer 使用的 `elysia-asset://character` 本地协议；只接受精确三条 ASCII 资产路径，拒绝其他 Method/Host、Credentials、Query/Fragment、转义、点段和路径别名，再映射到应用自有 `dist/character/live2d/elysia`。 | Electron Main、主/桌宠 Session、`live2d-runtime.ts`、协议合同测试 |
 | `desktop/electron/bounded-ndjson.ts` | 用固定上限 Buffer 增量切分 Python stdout；按原始字节限制 Frame，接受 CRLF，严格拒绝坏 UTF-8、未换行截断和超限无换行数据，并在终态移除全部 Stream Listener。 | `desktop/electron/backend-process.ts`、Protocol Contract Tests |
 | `desktop/electron/speech-audio-channel.ts` | 增量解析独立 Pipe 上的固定 84-byte `audio.binary.v1` Frame；在 Payload 分配前限制 8 MiB，流式校验 SHA-256，只接受精确 32 kHz mono PCM16 WAV 与 120 秒上限，并以单 Frame ACK/Discard、Pause 和 `unshift` 保持顺序、背压及有界内存。任何坏 Header、Token、Hash、WAV、截断或 ACK 都会终止 Reader；无待处理 Frame 的干净 EOF 会单独通知 Owner。 | `speech-delivery.ts`、`backend-process.ts` fd3 Owner；Reader 不自行销毁 Owner Stream，原始 WAV 不进入 NDJSON 或 React |
@@ -468,9 +471,9 @@ Loader 输出仍是 Raw Structure；后续纯转换生成可重复 Chunk，Embed
 | `desktop/src/App.tsx` | 主 Renderer 总协调器；除 Canonical State、Draft、Retry、Attachments、Settings、Voice、Knowledge、桌宠与 Presence 外，还独立加载 Main-owned Data Storage state，并以本地 operation ID/busy guard 调用刷新、原生移动、固定临时清理和打开目录；它只提交 revision/scan token，从不持有目的路径或 move transaction。 | 所有主 React Feature、`window.elysiaDesktop`；Canonical state 仍由 Python/Main 返回，Renderer 只保存暂态 |
 | `desktop/src/App.css` | App Shell、Chat、Dialog、Settings、Data & Storage 容量卡/类别/操作、Desktop Pet/Presence、Voice、状态/表情/嘴型、Reduced Motion、Responsive、High Zoom 和 Forced Colors 样式。 | `App.tsx`、`CharacterArtwork.tsx`、`SettingsView.tsx`、`CallPreview.tsx`、Design Tokens |
 | `desktop/src/desktop-api.d.ts` | 扩展 Browser `Window` 类型，声明可选 `elysiaDesktop`；不会实际创建 API。 | TypeScript、Preload Contracts |
-| `desktop/src/desktop-pet-api.d.ts` | 只为独立桌宠页面声明可选 `window.elysiaDesktopPet` 的三方法类型；不会创建 API，也不会合并主 `DesktopApi`。 | `desktop-pet-main.ts`、专用 Pet Preload、TypeScript |
-| `desktop/src/desktop-pet-main.ts` | 独立桌宠页面控制器；校验固定 DOM、报告就绪，在允许动画时创建/释放 Live2D Controller，并在 Reduced Motion、初始化或运行期失败时恢复静态立绘/文字；角色点击打开主 Chat，关闭映射到 Hidden。 | `pet.html`、`live2d-runtime.ts`、`elysiaDesktopPet`；不导入 React、Backend、主 App 或 Node |
-| `desktop/src/desktop-pet.css` | 透明桌宠窗口由 `pet.html` 直接加载的独立样式；定义可拖动区、非拖动按钮、Live2D Canvas、静态立绘、焦点/Forced Colors 和无图回退。 | `pet.html`、`desktop-pet-main.ts`；不拥有动画或 WebGL 生命周期 |
+| `desktop/src/desktop-pet-api.d.ts` | 只为独立桌宠页面声明可选 `window.elysiaDesktopPet` 的受限窗口动作和只读动作偏好类型；不会创建 API，也不会合并主 `DesktopApi`。 | `desktop-pet-main.ts`、专用 Pet Preload、TypeScript |
+| `desktop/src/desktop-pet-main.ts` | 独立桌宠页面控制器；校验固定 DOM、报告就绪，以全身构图创建/释放 Live2D Controller，在主窗口选择 Still、同步前、Reduced Motion、初始化或运行期失败时恢复静态立绘/文字；悬浮/焦点控制条分别打开主 Chat 或映射到 Hidden。 | `pet.html`、`live2d-runtime.ts`、`elysiaDesktopPet`；不导入 React、Backend、主 App、Storage 或 Node |
+| `desktop/src/desktop-pet.css` | 透明桌宠窗口由 `pet.html` 直接加载的独立样式；把全身角色表面定义为拖动区，把悬浮/焦点控制条按钮定义为非拖动区，并处理 Live2D Canvas、静态立绘、焦点/Forced Colors 和无图回退。 | `pet.html`、`desktop-pet-main.ts`；不拥有动画或 WebGL 生命周期 |
 
 `App.tsx` 的 LocalStorage 只保存 UI 恢复数据，例如 Chat Draft、Pending Send 和 Retry Draft。Python 返回的 Chat/Project 仍然是 Canonical State。
 
@@ -524,10 +527,10 @@ Project Memory 页面目前仍是明确 Placeholder。Project Sources 已使用�
 | `desktop/src/character/character-presentation.ts` | 以穷尽 Record 把七态映射到状态图集格与闭集整体动作，并把三种用户情绪映射到审核静态表情格；不接受 URL、模型文本、任意格号或 CSS class，第八格 success 明确不进入状态合同。 | CharacterArtwork、`elysia-state-atlas.png`、`elysia-expression-atlas.png`、纯 presentation 测试 |
 | `desktop/src/character/character-performance.ts` | 定义 renderer-local 的 `animated/still` 偏好与生效模式、严格持久值解析和系统 Reduced Motion 优先规则。 | CharacterPerformanceProvider、SettingsView、纯 presentation 测试 |
 | `desktop/src/character/CharacterPerformanceProvider.tsx` | 从 `elysia.characterPerformance` 安全读取/保存角色性能偏好，监听 Reduced Motion 与跨窗口 Storage Event，并把生效模式同时提供给 React 和 document dataset。 | `main.tsx`、App、SettingsView、CharacterArtwork |
-| `desktop/src/character/live2d-runtime.ts` | 加载固定 Manifest/MOC/Texture 和 PurismCore，以 WebGL2 全量按 Draw Order 绘制审核的无 Mask 单 Atlas 模型；验证资源大小/路径、MOC、参数/几何/Canvas 边界，驱动七态、三情绪、Blink/Breath/Hair 和四档真实音频嘴型，并处理 DPR Resize、Context 恢复、错误事件与幂等释放。 | `Live2DCharacterCanvas.tsx`、`desktop-pet-main.ts`、本地 Core/模型、自定义协议、Runtime tests |
+| `desktop/src/character/live2d-runtime.ts` | 加载固定 Manifest/MOC/Texture 和 PurismCore，以 WebGL2 全量按 Draw Order 绘制审核的无 Mask 单 Atlas 模型；验证资源大小/路径、MOC、参数/几何/Canvas 边界，只接受受信 `half-body / call-half-body / full-body` 构图，驱动七态、三情绪、Blink/Breath/Hair 和四档真实音频嘴型，并处理 DPR Resize、Context 恢复、错误事件与幂等释放。 | `Live2DCharacterCanvas.tsx`、`desktop-pet-main.ts`、本地 Core/模型、自定义协议、Runtime tests |
 | `desktop/src/character/live2d-runtime-failure.ts` | 为主 React 角色和独立桌宠绑定一次性的 `elysia:live2d-error` 故障边界；先解除监听并尝试释放 Controller，再无条件切换静态回退，避免可选动画故障留下空白/冻结表面。 | `Live2DCharacterCanvas.tsx`、`desktop-pet-main.ts` |
-| `desktop/src/character/Live2DCharacterCanvas.tsx` | React Canvas/Controller 生命周期边界；异步创建固定模型、同步状态/情绪、报告 loading/ready/failed，并在卸载、竞态或运行期事件中释放 Owner。 | CharacterArtwork、`live2d-runtime.ts`；错误只影响视觉回退，不影响 Chat/Voice |
-| `desktop/src/character/CharacterArtwork.tsx` | Animated 模式在审核静态层之上异步装载 Live2D，ready 后才切换；Still/Reduced Motion 不初始化 WASM/WebGL。模型或图片失败按 Live2D → speech → expression → state → 原审核立绘 → 可访问文本回退；不拥有 Chat、Voice、音频采样或 Work 生命周期。 | CharacterPanel、CallPreview、Live2D Canvas、四张静态图片、CharacterPerformanceProvider、Preload DOM Observer |
+| `desktop/src/character/Live2DCharacterCanvas.tsx` | React Canvas/Controller 生命周期边界；按 Main 头到腰或 Voice 高纵横比半身构图异步创建固定模型、同步状态/情绪、报告 loading/ready/failed，并在卸载、竞态或运行期事件中释放 Owner。 | CharacterArtwork、`live2d-runtime.ts`；错误只影响视觉回退，不影响 Chat/Voice |
+| `desktop/src/character/CharacterArtwork.tsx` | Animated 模式在审核静态层之上异步装载 Live2D，ready 后才切换；Still/Reduced Motion 不创建 Live2D 模型、WebGL Context 或渲染循环，但共享页面当前会在 Renderer 决策前加载 Core 脚本。模型或图片失败按 Live2D → speech → expression → state → 原审核立绘 → 可访问文本回退；不拥有 Chat、Voice、音频采样或 Work 生命周期。 | CharacterPanel、CallPreview、Live2D Canvas、四张静态图片、CharacterPerformanceProvider、Preload DOM Observer |
 | `desktop/src/character/CharacterPanel.tsx` | 显示当前 Chat、模型、独立 Backend 连接状态、状态驱动 Live2D/静态角色图和可访问 Character State live status；保持只读、可关闭，不写 Chat/Memory。 | AppShell、Backend Snapshot、CharacterArtwork、`character-state.ts` |
 | `desktop/src/design-system/tokens.css` | 集中定义颜色、字体、Spacing、Radius、Shadow 和 Motion Semantic Tokens。 | 全部 UI CSS、Light/Dark/Forced Colors |
 | `desktop/src/design-system/global.css` | 导入 Tokens，并提供 Reset、字体、Root、表单、Focus、Selection、Scrollbar 和 Accessibility Defaults。 | `main.tsx`、整个 Renderer |
@@ -559,8 +562,8 @@ Character State API 目前是 Renderer 内部合同，不属于 `desktop_protoco
 | `desktop/tests/data-storage.test.mjs` | 覆盖 bootstrap/layout、legacy 只复制 Workspace、十类容量、link/junction/资源根/重叠拒绝、SHA staged move、pending 跨 Main 恢复与目的盘消失回滚、late known write 保留、先 finalise pointer、Recovery Copy 跨重启可发现、commit/rollback 和一次性三类 cleanup。 | 编译后的 Data Storage 模块；使用临时目录，不启动 Python 或 Renderer |
 | `desktop/tests/protocol.contract.test.mjs` | 在 Node 中测试编译后的 Protocol Helpers 和 BackendProcess；覆盖双端 Fixture、有界 NDJSON、Knowledge method/result/event、grounded history、全局 lifecycle/export admission、export snapshot/receipt/terminal/error race、STT/Speech correlation、Chat response 早于最终 Speech terminal 的 busy 边界与 capability/fd3 生命周期，并验证开发/打包主入口与桌宠入口不能借用彼此来源权限、Browser Notification permission 仍不向 Renderer 开放。 | `dist-electron`、Schema/Fixtures；使用 Fake Child 与一次性本地 Node Child，不启动真实 Python |
 | `desktop/tests/desktop-pet-lifecycle.test.mjs` | 覆盖 Renderer-ready Deadline 的触发、清除与替换，退出写入的成功/失败/超时、独立慢写入不会饿死最终位置快照，Reset、Settings 与原生模式意图在成功/失败后的统一顺序，Hidden/Visible 托盘驻留、Disabled 退出及待处理模式写入延迟退出，以及 Reset/default 坐标不会被程序化 move 事件重新持久化。 | `desktop-pet-lifecycle.ts` 编译产物；不启动 Electron 或真实文件写入 |
-| `desktop/tests/desktop-pet-preferences.test.mjs` | 覆盖桌宠 update exact schema、默认 Off、坏/超限文件 Fail Closed、revision CAS、同路径并发、原子替换失败、Main-only placement，以及负坐标、混合 DPI、显示器移除、Windows 无符号哈希显示器 ID 和无效几何的纯钳制。 | `desktop-pet-contracts.ts`、`desktop-pet-preferences.ts` 编译产物；不启动 Electron、React 或 Python |
-| `desktop/tests/desktop-pet-preload.test.cjs` | 在隔离 Node 进程中加载生产专用 Preload，验证只暴露一个冻结的 `elysiaDesktopPet`，且三个方法只能调用各自固定 Main Channel。 | `desktop-pet-preload.cts` 编译产物、Fake Electron IPC；证明没有主 `DesktopApi`、Node 或任意 Channel 暴露 |
+| `desktop/tests/desktop-pet-preferences.test.mjs` | 覆盖桌宠 update exact schema、缺失文件首次默认 Visible、坏/超限文件 Fail Closed 到 Off、revision CAS、同路径并发、原子替换失败、Main-only placement，以及负坐标、混合 DPI、显示器移除、Windows 无符号哈希显示器 ID 和无效几何的纯钳制。 | `desktop-pet-contracts.ts`、`desktop-pet-preferences.ts` 编译产物；不启动 Electron、React 或 Python |
+| `desktop/tests/desktop-pet-preload.test.cjs` | 在隔离 Node 进程中加载生产专用 Preload，验证只暴露一个冻结的 `elysiaDesktopPet`，三项原生动作及动作偏好读取只能调用各自固定 Main Channel，订阅只能接收固定事件。 | `desktop-pet-preload.cts` 编译产物、Fake Electron IPC；证明没有主 `DesktopApi`、Node 或任意 Channel 暴露 |
 | `desktop/tests/presence-native-notification.test.mjs` | 覆盖 Completion 优先的单一原生槽、Windows timeout 后仍可撤回、替换/关闭、迟到 click/failed 隔离、show failure 净化和用户取消释放。 | `presence-native-notification.ts` 编译产物；使用纯 Fake Handle，不创建真实系统通知 |
 | `desktop/tests/presence-notification-preferences.test.mjs` | 覆盖 Presence 更新 exact schema、默认全 Off、坏/超限文件 Fail Closed、公开 state 不含私有 reminder anchor、revision CAS/并发、原子替换失败、cadence 重锚、旧 anchor CAS 与私有 handled marker；纯策略同时覆盖 daily/weekly 计时、时钟回退、Reply opt-in/注意力和 Reminder hidden/idle/busy/unsupported/shutdown 条件。 | Contracts/Policy/Preferences 三个编译产物；不启动 Electron Notification、React、Python 或后台服务 |
 | `desktop/tests/voice-session-controller.test.mjs` | 覆盖五状态、显式确认、Chat/播放终态任意顺序、无 Speech Capability、Terminal-before-ACK、取消/Hang-up、跨 Chat/Project、迟到与乱序事件、一次性安全续听，以及 200 轮 Speech/Text 交替后零异步 Owner 的 Soak。 | 纯 Controller 测试，不启动 Electron、Python、模型或真实音频 |
@@ -568,11 +571,11 @@ Character State API 目前是 Renderer 内部合同，不属于 `desktop_protoco
 | `desktop/tests/character-state.test.mjs` | 覆盖全部闭集状态、确定性优先级、Backend/Chat/Knowledge facts、保留的 work-mode/approval 输入与 Voice 映射。 | `character-state.ts` 纯状态测试；不启动 React、Electron 或模型 |
 | `desktop/tests/character-presentation.test.mjs` | 覆盖七态到前七个唯一状态格、三种闭集情绪到审核表情格、未知情绪回退、success 排除、严格性能偏好解析和 Reduced Motion 优先。 | `character-emotion.ts`、`character-presentation.ts`、`character-performance.ts`；不启动 React、Electron 或模型 |
 | `desktop/tests/live2d-assets.test.mjs` | 覆盖自定义协议三文件 Allowlist、Method/Host/Credentials/Query/Fragment/Percent/Dot Segment/Backslash 拒绝、Windows 路径映射、主/桌宠 Session 共用分区常量，以及 CSP 仅允许受限 Fetch 与本地 Blob 解码。 | `electron/live2d-assets.ts`、两个 HTML 入口；不读取任意文件或启动 Electron 窗口 |
-| `desktop/tests/live2d-runtime.test.mjs` | 用 Fake PurismCore/WebGL2 验证固定开发/打包 URL、Manifest/MOC/Texture/参数/网格边界、Draw Order 全量渲染、真实嘴型提示、DPR、Context 连续丢失/恢复竞态、运行期致命错误释放及幂等 Dispose。 | `live2d-runtime.ts`；不加载真实模型到 GPU |
+| `desktop/tests/live2d-runtime.test.mjs` | 用 Fake PurismCore/WebGL2 验证固定开发/打包 URL、Manifest/MOC/Texture/参数/网格边界、Main 与 Voice 独立半身及桌宠全身构图、Main 头到腰可视范围、Draw Order 全量渲染、真实嘴型提示、DPR、Context 连续丢失/恢复竞态、运行期致命错误释放及幂等 Dispose。 | `live2d-runtime.ts`；不加载真实模型到 GPU |
 | `desktop/tests/live2d-runtime-fallback.test.mjs` | 验证主角色与桌宠共用的一次性运行期错误绑定：释放失败也必须显示静态回退，手动解除后不再响应。 | `live2d-runtime-failure.ts`；不启动 React 或 Electron |
 | `desktop/tests/speech-mouth.test.mjs` | 覆盖 RMS、实际 Output Gain、四档量化、Attack/Release、迟滞、防抖、0 音量与无效输入闭嘴回退。 | `speech-mouth.ts` 纯函数；不启动 Web Audio、React、Electron 或模型 |
 | `desktop/tests/speech-audio-channel.test.mjs` | 直接测试 Electron 二进制音频 Reader 与 Delivery Coordinator；覆盖每个分片边界、Coalesced Frame、ACK/Discard 背压、EOF 截断/干净关闭、长度先验、Header/Token/Hash、Canonical WAV、Metadata 任意到达顺序、FIFO、失败跳过、取消/迟到 Settlement、Terminal 计数、terminal 已到但最终播放未排空时仍 busy、播放器断连、错误脱敏和 Listener 清理。 | `speech-audio-channel.ts` 与 `speech-delivery.ts` 编译产物；使用内存 Pipe 和 Fake Playback，不启动 Python、Electron UI 或真实模型 |
-| `desktop/tests/preload-speech-playback.test.cjs` | 在隔离 Node 进程中加载生产 Preload，验证指定/默认 Output Sink 都在 Decode 和 Start 前完成、路由失败不回退、Settings 查询期间取消不会播放、Active `speechVolumePercent` 经 GainNode 应用、无效音量 Fail Closed，以及只在可见 Animated speaking 表面最多 20 Hz 发布四档嘴型、终态闭嘴且原始音频能力未暴露给 React。 | `preload.cts` 编译产物、Fake Electron IPC 与 Fake Web Audio |
+| `desktop/tests/preload-speech-playback.test.cjs` | 在隔离 Node 进程中加载生产 Preload，先验证沙箱产物只保留 `electron` External 且不含相对运行时 `require`，再验证指定/默认 Output Sink 都在 Decode 和 Start 前完成、路由失败不回退、Settings 查询期间取消不会播放、Active `speechVolumePercent` 经 GainNode 应用、无效音量 Fail Closed，以及只在可见 Animated speaking 表面最多 20 Hz 发布四档嘴型、终态闭嘴且原始音频能力未暴露给 React。 | `preload.cts` 单文件 Bundle、Fake Electron IPC 与 Fake Web Audio |
 | `desktop/tests/speech-playback-owner.test.mjs` | 直接验证 Main 所有的私有 Playback Owner；覆盖一次性 Settlement、所属 Main Frame、取消迟到回复、窗口替换、Renderer 崩溃、跨文档导航、空闲 Owner 退役和 Listener 清理。 | `speech-playback-owner.ts` 编译产物与 Electron Module Mock |
 | `desktop/tests/ui/electron-main.cjs` | Playwright 专用 Electron Main；加载生产 Renderer Build，保持 Sandbox/Context Isolation，但不启动生产 Backend。 | UI Test、Mock Preload、`dist/index.html` |
 | `desktop/tests/ui/mock-preload.cjs` | UI 测试专用 `elysiaDesktop` Fake；除 Chat/Project/Voice/Knowledge/Presence 外，还模拟 revisioned Data Storage 容量、移动和一次性临时清理。 | App Shell UI Tests；不会进入生产包，也不会创建真实系统通知或移动文件 |
@@ -1038,6 +1041,7 @@ desktop/tests/ui/app-shell.spec.ts
 
 ```text
 desktop/electron/desktop-pet-contracts.ts
+→ desktop/electron/character-performance-contracts.ts（动作偏好同步变化时）
 → desktop/electron/desktop-pet-preferences.ts（模式持久化或 DIP 几何变化时）
 → desktop/electron/desktop-pet-lifecycle.ts（ready/退出/程序化位置边界变化时）
 → desktop/electron/main.ts + renderer-source.ts
@@ -1049,7 +1053,8 @@ desktop/electron/desktop-pet-contracts.ts
 → Distribution/ASAR 检查（运行时素材或入口变化时）
 ```
 
-桌宠必须保持默认 `disabled`，且 `hidden` 必须销毁独立 Renderer。
+桌宠偏好文件缺失时必须保持首次默认 `visible`，存在但无效的文件必须
+Fail Closed 到 `disabled`，且 `hidden` 必须销毁独立 Renderer。
 placement 只能留在 Main；专用 Preload 不应扩展到 Backend、Node、网络、
 文件系统、音频或任意 IPC。若未来更换素材，必须先单独更新来源、摘要和
 分发门禁；`07-desktop-pet-key-poses.png` 目前不是运行时 Sprite Sheet。
@@ -1193,7 +1198,7 @@ config/settings.py + config/voice_profiles.example.json
 31. `desktop/electron/contracts.ts`
 32. `desktop/electron/preload.cts`
 33. `desktop/electron/main.ts`
-34. `desktop/electron/presence-notification-contracts.ts`、`presence-notification-policy.ts`、`presence-notification-preferences.ts` 与 `presence-native-notification.ts`
+34. `desktop/electron/character-performance-contracts.ts`、`presence-notification-contracts.ts`、`presence-notification-policy.ts`、`presence-notification-preferences.ts` 与 `presence-native-notification.ts`
 35. `desktop/electron/backend-process.ts`
 36. `desktop_backend.py`
 37. `desktop/src/knowledge/ProjectSourcesPanel.tsx` 与 `desktop/src/chat/MessageView.tsx`

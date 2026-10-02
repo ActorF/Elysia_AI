@@ -68,6 +68,10 @@ import {
   parseUpdateDesktopPetRequest,
 } from './desktop-pet-contracts.js'
 import {
+  parseCharacterPerformancePreference,
+  type CharacterPerformanceState,
+} from './character-performance-contracts.js'
+import {
   DesktopPetReadyDeadline,
   drainDesktopPetAndIndependentPersistenceWithin,
   sequenceDesktopPetMutation,
@@ -233,6 +237,12 @@ const desktopPetPersistenceOperations = new Set<Promise<unknown>>()
 const desktopPetModeOperations = new Set<Promise<unknown>>()
 let mainRendererReady = false
 let pendingDesktopPetChatRequest = false
+// The isolated pet cannot read the main renderer's localStorage partition.
+// Fail closed to still until the trusted main renderer synchronizes its choice.
+let characterPerformanceState: CharacterPerformanceState = Object.freeze({
+  preference: 'still',
+  revision: 0,
+})
 let characterPanelOpen = false
 let collapsedWindowPlacement: {
   x: number
@@ -741,6 +751,30 @@ function publishDesktopPetState(): void {
     )
   }
   refreshTrayMenu()
+}
+
+function publishCharacterPerformanceState(): void {
+  if (desktopPetWindow !== null && !desktopPetWindow.isDestroyed()) {
+    desktopPetWindow.webContents.send(
+      'desktop-pet:character-performance-changed',
+      characterPerformanceState,
+    )
+  }
+}
+
+function updateCharacterPerformanceState(
+  value: unknown,
+): CharacterPerformanceState {
+  const preference = parseCharacterPerformancePreference(value)
+  if (preference === characterPerformanceState.preference) {
+    return characterPerformanceState
+  }
+  characterPerformanceState = Object.freeze({
+    preference,
+    revision: characterPerformanceState.revision + 1,
+  })
+  publishCharacterPerformanceState()
+  return characterPerformanceState
 }
 
 function replaceDesktopPetRuntime(
@@ -2446,6 +2480,14 @@ function registerIpcHandlers(): void {
   )
 
   ipcMain.handle(
+    'window:set-character-performance',
+    (event, value: unknown): CharacterPerformanceState => {
+      assertTrustedSender(event)
+      return updateCharacterPerformanceState(value)
+    },
+  )
+
+  ipcMain.handle(
     'desktop-pet:get-state',
     (event): DesktopPetState => {
       assertTrustedSender(event)
@@ -2517,6 +2559,14 @@ function registerIpcHandlers(): void {
       desktopPetReadyDeadline.clear()
       window.showInactive()
       replaceDesktopPetRuntime('visible', null)
+    },
+  )
+
+  ipcMain.handle(
+    'desktop-pet:get-character-performance',
+    (event): CharacterPerformanceState => {
+      assertTrustedDesktopPetSender(event)
+      return characterPerformanceState
     },
   )
 
