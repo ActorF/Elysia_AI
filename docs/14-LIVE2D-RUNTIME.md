@@ -12,7 +12,11 @@ The runtime remains a presentation layer. Chat, Voice, Knowledge, and future Wor
 
 | Path | Responsibility |
 |---|---|
+| `data/characters/elysia-2dArt/live2d-face-master.png` | Reviewed neutral-face authority used to derive every movable facial feature; never packaged |
 | `data/characters/elysia-2dArt/live2d-source/` | Common-canvas source layers retained for visual review and later hand correction; never packaged |
+| `scripts/build_elysia_live2d_face_layers.py` | Deterministically rebuilds the aligned 2048-square face, eye, lid, brow, nose, lip, cavity, and blush layers |
+| `scripts/build_elysia_live2d_bundle.py` | Compiles the source stack with the pinned external `image2live2d` commit and normalizes reviewed occlusion order |
+| `scripts/check_live2d_face_alignment.py` | Standard-library CI gate for shared canvas, bilateral height, face axis, landmark order, and mouth/cavity alignment |
 | `desktop/public/character/live2d/elysia/model.model3.json` | Minimal fixed model manifest naming one MOC and one texture |
 | `desktop/public/character/live2d/elysia/model.moc3` | Binary Cubism-compatible rig |
 | `desktop/public/character/live2d/elysia/textures/atlas.png` | Packed model texture |
@@ -34,7 +38,7 @@ Only three model URLs are fetchable through `elysia-asset://character`: the mani
 6. ResizeObserver updates backing resolution with a bounded device-pixel ratio. The selected framing keeps the reviewed character bounds centered and scaled for its surface instead of fitting the model's unused square canvas space.
 7. Unmount, performance-mode change, initialization failure, or an unrecoverable frame/restore error cancels animation, releases model/MOC and GL resources, and returns to reviewed static artwork. A transient WebGL context loss first pauses rendering and rebuilds GPU resources after `webglcontextrestored`; only a failed rebuild enters the fatal fallback path.
 
-The renderer intentionally uploads and redraws all model drawables each frame. The current model is small and has no drawable masks, so this avoids trusting optional dirty-flag behavior in the compatibility core while keeping the implementation deterministic and auditable. A future masked model must add and test an explicit stencil/mask pass before it can replace this asset.
+The renderer intentionally uploads and redraws all model drawables each frame. The current model is small and has no drawable masks, so this avoids trusting optional dirty-flag behavior in the compatibility core while keeping the implementation deterministic and auditable. Textures and blend state use premultiplied alpha, so per-drawable opacity is premultiplied into all four base-color channels; this prevents the open-eye/closed-eye crossfade from producing a pale doubled fringe. A future masked model must add and test an explicit stencil/mask pass before it can replace this asset.
 
 ## Presentation surfaces
 
@@ -75,7 +79,7 @@ The pet Renderer remains separate from the main application. Renderer `localStor
 
 ## Distribution integrity
 
-`scripts/check_distribution_assets.py` pins the manifest, MOC, texture, Core runtime, Core license, and all static fallback assets by exact path, byte length, and SHA-256. Package CI requires every path exactly once in the ASAR and authenticates the bytes from a complete extracted ASAR tree. Source layers remain outside the Electron Builder allowlist.
+`scripts/check_distribution_assets.py` pins the manifest, MOC, texture, Core runtime, Core license, and all static fallback assets by exact path, byte length, and SHA-256. Package CI requires every path exactly once in the ASAR and authenticates the bytes from a complete extracted ASAR tree. `scripts/check_live2d_face_alignment.py` separately measures the authoring source so a newly pinned but visually shifted face cannot inherit approval. Source layers remain outside the Electron Builder allowlist.
 
 PurismCore v1.1.0 is included with its MIT license. Character-art and model authorization review remains a separate unresolved distribution matter recorded in `MODEL_LICENSE.md`; it does not change whether the application technically loads and drives the model.
 
@@ -85,6 +89,7 @@ The required automated gates are:
 
 ```text
 python scripts/check_python_documentation.py
+python scripts/check_live2d_face_alignment.py
 python scripts/check_distribution_assets.py
 python -m pytest
 cd desktop

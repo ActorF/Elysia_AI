@@ -131,7 +131,7 @@ start.create_data_portability_service()
 
 | 文件 | 实际用途 | 主要连接 |
 | --- | --- | --- |
-| `.github/workflows/tests.yml` | GitHub Actions 入口；先检查双端源码文档与分发边界，再在 Ubuntu 运行 Python pytest/mypy 和 Desktop lint/typecheck/protocol/UI/build，在 Windows 运行原生集成、构建真实 Unpacked Package、扫描 Package Tree/ASAR 清单，要求桌宠入口和 Live2D/静态资产各有唯一条目，并从包中抽取验证固定字节。 | `scripts/check_python_documentation.py`、`scripts/check_distribution_assets.py`、`desktop/package.json`、Python/Desktop 测试 |
+| `.github/workflows/tests.yml` | GitHub Actions 入口；先检查双端源码文档、Live2D 五官源层对齐与分发边界，再在 Ubuntu 运行 Python pytest/mypy 和 Desktop lint/typecheck/protocol/UI/build，在 Windows 运行原生集成、构建真实 Unpacked Package、扫描 Package Tree/ASAR 清单，要求桌宠入口和 Live2D/静态资产各有唯一条目，并从包中抽取验证固定字节。 | `scripts/check_python_documentation.py`、`scripts/check_live2d_face_alignment.py`、`scripts/check_distribution_assets.py`、`desktop/package.json`、Python/Desktop 测试 |
 | `.gitignore` | 排除 `.venv`、Cache、日志、构建产物、私人 `workspace`、`.env` 和模型权重。 | Git 工作树与本地运行数据边界 |
 | `AGENTS.md` | 全仓库源码注释规范；要求文件说明、公开 API 文档、复杂算法/设计/边界原因和具体 TODO/FIXME，并禁止逐行复述普通语句。 | 所有后续源码修改、双端文档覆盖检查、Code Review |
 | `mypy.ini` | 固定 Python 静态类型检查路径规则；只排除被忽略的 `models/cache/` 外部 Runtime，不能误排其他名为 cache 的源码。 | 本地 mypy、GitHub Actions、第三方 Runtime 边界 |
@@ -144,6 +144,9 @@ start.create_data_portability_service()
 | `requirements-stt.txt` | 固定可选的 Faster-Whisper 与 NumPy 版本；只在需要本地单句转写时叠加安装，不包含或下载模型权重。 | `voice/faster_whisper.py`、本地 `.venv`、`models/weights/faster-whisper/<model>` |
 | `scripts/__init__.py` | 把维护脚本标记为可导入 Package，使 Smoke CLI 能同时按模块与文件路径测试。 | `scripts/smoke_gpt_sovits.py`、测试 |
 | `scripts/benchmark_voice_pipeline.py` | Windows 三组件资源基准；以固定内容并发测量 Ollama Streaming 与受管 GPT-SoVITS，随后在模型驻留时执行 CPU Faster-Whisper；只输出脱敏数值，限制总墙钟、响应大小和 GPU 采样，并在失败时独立清理所有自有 Owner。 | `config.SETTINGS`、`desktop_speech.py`、Managed GPT-SoVITS、Faster-Whisper、Ollama、`nvidia-smi` |
+| `scripts/build_elysia_live2d_face_layers.py` | 从审核 `live2d-face-master.png` 确定性重建 2048×2048 的脸底、双眼/闭眼线、眉、鼻、嘴线、口腔和淡腮红，并把旧 1024 统一画布层只放大一次；普通应用运行不导入 Pillow/NumPy。 | Live2D 美术制作、`live2d-source/`、对齐检查；使用制作环境而非运行时依赖 |
+| `scripts/build_elysia_live2d_bundle.py` | 验证外部 Apache-2.0 `image2live2d` checkout 的固定提交，编译 MOC/Atlas/最小 Manifest，并显式修正腮红、口腔/嘴线、五官/前发的遮挡顺序。 | `live2d-source/`、Desktop Public Assets、分发门禁；外部编译器不进入应用包 |
+| `scripts/check_live2d_face_alignment.py` | 仅用 Python 标准库解码 PNG alpha，验证 21 个源层的 2048 统一画布、五官审核坐标、左右高度/中轴、纵向顺序、脸内边界及嘴线/口腔关系。 | `tests/test_live2d_face_alignment.py`、CI、Live2D 源层修改验收 |
 | `scripts/check_distribution_assets.py` | 分发门禁；审计 Git Index 的模型/音频/Runtime/User Data/Archive，以路径、字节长度和 SHA-256 固定已审核的静态素材及 Live2D manifest/MOC/texture/Core/license，冻结完整 Electron Builder 配置，并可扫描真实 Unpacked Tree、ASAR 清单和完整抽取树；对条目缺失/重复、字节替换、Case/Unicode Alias、Link/Junction 和配置逃逸 Fail Closed。 | `MODEL_LICENSE.md`、GitHub Actions、`desktop/package.json`、每次发行产物 |
 | `scripts/check_python_documentation.py` | 用标准库 AST 检查所有受维护 Python 文件的 module、public class、public function/method docstring 覆盖。 | `AGENTS.md`、GitHub Actions、Python 开发验证 |
 | `scripts/gpt_sovits_protocol.py` | 定义主 Python 3.14 与隔离 GPT-SoVITS Python 3.9 共用的固定宽度二进制帧，以及两端共用且有序的 Runtime Manifest 与封闭 Import Path 清单；严格限制消息类型、Canonical JSON Metadata、Request ID 和 32 MiB 原始 Payload，错误与 repr 不暴露内容。 | 受管 Worker/Parent Pipe；不导入 `voice` 或上游 `tools`，避免运行时版本、Manifest 顺序和包名冲突 |
@@ -167,7 +170,7 @@ start.create_data_portability_service()
 | `docs/13-PRODUCTION-DATA-LAYOUT.md` | 定义升级安全的程序资源/用户数据分离、版本化数据树、容量分类、Legacy 首次复制、两阶段目录移动、Backend Readiness 回滚和严格临时清理边界；明确移动不是备份。 | `config/data_layout.py`、Electron Data Storage、Settings、Stage 14 后续 Backup/Packaging 模块 |
 | `docs/14-LIVE2D-RUNTIME.md` | 记录固定三文件模型、PurismCore/WebGL2 渲染、Main/Voice 半身与桌宠全身构图、状态/表情/真实音频振幅参数映射、桌宠首次显示与坏偏好 Fail Closed、Context 恢复、资源释放、静态回退和打包完整性边界。 | Character Runtime、Main/Voice Artwork、Desktop Pet、Live2D 自定义协议与分发门禁 |
 | `data/characters/elysia_character_reference_zh.md` | 爱莉希雅背景、语录和转写参考资料；当前 Runtime 不会自动将它注入每次 Prompt。 | 人工角色研究；受 `MODEL_LICENSE.md` 的来源/授权提醒约束 |
-| `data/characters/elysia-2dArt/README.md`、`PROMPTS.md`、18 张审阅 PNG 与 `live2d-source/` | 记录最终 2D 审阅包、逐格修复、生成参考与 Hash；02/03/04 提供静态回退，`live2d-source/` 保留从审核分层对齐并补齐活动五官的 21 个统一画布模型源层。 | CharacterArtwork、Live2D 模型制作、分发门禁、`MODEL_LICENSE.md`；源层和审阅总览不进入安装包 |
+| `data/characters/elysia-2dArt/README.md`、`PROMPTS.md`、19 张审阅 PNG 与 `live2d-source/` | 记录最终 2D 审阅包、逐格修复、生成参考与 Hash；02/03/04 提供静态回退，`live2d-face-master.png` 固定统一正脸，`live2d-source/` 保留 21 个 2048×2048 同锚点模型源层。 | CharacterArtwork、Live2D 模型制作、对齐/分发门禁、`MODEL_LICENSE.md`；源层和审阅总览不进入安装包 |
 
 本机还存在被 Git 忽略的 `docs/02-ROADMAP.md`。它是当前 Stage/Module 规划来源，但新的 Git Clone 不会自动得到它，因此不能作为唯一公共文档。
 
@@ -426,7 +429,7 @@ Loader 输出仍是 Raw Structure；后续纯转换生成可重复 Chunk，Embed
 | `desktop/public/character/elysia-expression-atlas.png` | 与 `data/characters/elysia-2dArt/03-expression-atlas.png` 逐字节相同的 5×4 RGB 运行时图集；只有用户限定的 `neutral / happy / sad` 映射可选审核格；2,500,647 字节与 SHA-256 由分发门禁固定，不属于源码许可。 | CharacterArtwork、Vite/ASAR、`character-emotion.ts`、`character-presentation.ts`、`MODEL_LICENSE.md` |
 | `desktop/public/character/elysia-speech-atlas.png` | 与 `data/characters/elysia-2dArt/04-facial-rig-atlas.png` 逐字节相同的 RGB 运行时图集；只使用第一带前四格作为 `closed / small / medium / wide` RMS 振幅提示，不声称音素或 Live2D；2,054,767 字节与 SHA-256 由分发门禁固定。 | CharacterArtwork、Preload DOM 提示、Vite/ASAR、`speech-mouth.ts`、`MODEL_LICENSE.md` |
 | `desktop/public/character/live2d/elysia/model.model3.json` | 只声明一个固定 MOC、一个固定 Texture 以及审核 Hit Area/参数组的最小 Cubism-compatible Manifest；Renderer 会再次精确验证引用，不允许它充当任意 URL Loader。 | `live2d-runtime.ts`、`live2d-assets.ts`、Vite/ASAR、分发门禁 |
-| `desktop/public/character/live2d/elysia/model.moc3` | 由保留的 21 层源图编译得到的固定本地二进制模型；Runtime 执行 MOC3 Header、Consistency、参数/Drawable/Canvas 上限检查。 | PurismCore、`live2d-runtime.ts`、主 Character/Voice/桌宠、分发门禁 |
+| `desktop/public/character/live2d/elysia/model.moc3` | 由保留的 21 层 2048 统一画布源图通过固定编译包装生成的本地二进制模型；Runtime 执行 MOC3 Header、Consistency、参数/Drawable/Canvas 上限检查。 | PurismCore、`live2d-runtime.ts`、主 Character/Voice/桌宠、对齐/分发门禁 |
 | `desktop/public/character/live2d/elysia/textures/atlas.png` | 模型唯一允许的固定 Texture Atlas；解码尺寸、像素总量和打包字节均受限。 | WebGL2 Renderer、`live2d-assets.ts`、分发门禁 |
 | `desktop/public/character/live2d/runtime/purismcore.js`、`LICENSE-PurismCore.txt` | 固定的 PurismCore v1.1.0 Web build 及 MIT 告知；替代官方 Cubism Core，但不授予角色、MOC 或纹理权利。 | 两个 HTML 入口、`live2d-runtime.ts`、ASAR/分发门禁、`MODEL_LICENSE.md` |
 | `desktop/benchmarks/measure-shell.ps1` | Electron/Tauri 决策时使用的 Windows 启动、内存、进程树和正常退出 Benchmark。 | Desktop ADR；不参与正常启动 |
@@ -616,6 +619,7 @@ Character State API 目前是 Renderer 内部合同，不属于 `desktop_protoco
 | `tests/test_conversation_summary.py` | Stage 4 旧 Summary Schema 与存储。 |
 | `tests/test_data_portability.py` | Bundle Export/Import、Hash、路径、Conflict、Quarantine 和 Rollback。 |
 | `tests/test_distribution_assets.py` | 覆盖 Git Force-add、Case/NFKC Alias、模型/音频/Archive、完整 Builder Shape、继承/Hook/App Root/Platform Files 逃逸、立绘与状态/表情/嘴型图集的仓库/ASAR 字节固定、桌宠 HTML/专用 Preload 的 ASAR 唯一条目，以及 Unpacked/ASAR 与当前真实仓库。 |
+| `tests/test_live2d_face_alignment.py` | 对真实 21 层制作源运行标准库对齐门禁，并验证源目录缺失时会完整报告而不是静默通过。 |
 | `tests/test_desktop_backend.py` | Python Bridge 的 Handshake、Routing、Streaming、Cancel、Chat/Project/Settings/Attachment、Knowledge、STT 与可选 Speech 集成；覆盖 grounded routing/persistence、Knowledge worker/admission、Project mutation race、durable cancel ACK、explicit recovery、非阻塞 export cleanup、typed error mapping 与 shutdown/runtime ownership，并继续证明 Speech 失败不会改变文字终态或持久化回复。 |
 | `tests/test_desktop_knowledge.py` | 生产知识 Factory 共享 Chat/Project/Source authority、operation lease 和持久 Store；复核构造阶段零 HTTP/零索引、profile 与路径无关但绑定 route/chunking 合同，并拒绝远程 Ollama Origin。 |
 | `tests/test_desktop_audio_channel.py` | 验证 fd3 固定所有权、OS Pipe 类型与去继承、84-byte Header、Token/Digest、无歧义桌面 PCM WAV、8 MiB/120 秒上限、Partial Write、单待发 Frame、反射篡改、Poison、非阻塞 Close 和错误脱敏。 |

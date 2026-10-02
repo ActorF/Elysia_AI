@@ -402,6 +402,33 @@ Background: fully opaque warm off-white, matching the target; no transparent pat
 Avoid: extra, missing or fused digits; blobbed glove; duplicate thumb; exposed skin through glove; color bleed; changed face or costume; text, logo or watermark.
 ~~~
 
+## Live2D aligned face master
+
+On 2026-10-01, OpenAI's built-in image-generation tool produced
+`live2d-face-master.png`. The first input was the previous transparent
+full-body Live2D composite; the second was the project owner's close-up Elysia
+face reference (`IMG_2363..JPG`). Only the face from this result is used as an
+authoring master. The existing reviewed body, costume, arms, hands, hair, and
+accessory source layers remain authoritative.
+
+~~~text
+Use case: precise face correction for a layered Live2D authoring master.
+Preserve the full-body character's pose, costume, hair silhouette, ornament,
+hands, transparent canvas, line treatment, and low-saturation palette. Change
+only the face. Use the supplied close-up as facial-proportion authority: a
+mature elegant Elysia face, smaller horizontally set blue almond eyes with
+more natural spacing, a longer V-shaped jaw, subtle centered nose, and a small
+centered neutral mouth. Keep both eyes level and symmetric on one vertical
+face axis. Use a calm soft expression with natural unblushed skin. Do not add
+red cheeks, a chibi face, oversized eyes, shifted pupils, a crooked nose or
+mouth, extra facial marks, text, logo, or background.
+~~~
+
+`scripts/build_elysia_live2d_face_layers.py` subsequently extracts and aligns
+the active facial layers on a single 2048×2048 coordinate system. The generated
+full-body pixels outside that facial authoring region are not copied into the
+runtime model.
+
 ## Assembly and validation notes
 
 - `05-chibi-stickers.png` was assembled by stacking the five final 05 row strips in order without changing row content.

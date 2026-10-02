@@ -1391,7 +1391,17 @@ class Live2DControllerImplementation implements Live2DController {
       )
 
       const colorOffset = drawableIndex * 4
-      gl.uniform4f(resources.locations.baseColor, 1, 1, 1, opacity)
+      // The texture upload and blend function both use premultiplied alpha.
+      // Premultiplying this per-drawable tint as well prevents a fading
+      // drawable (notably the blink crossfade) from retaining bright RGB at
+      // near-zero alpha and producing a pale fringe over the replacement art.
+      gl.uniform4f(
+        resources.locations.baseColor,
+        opacity,
+        opacity,
+        opacity,
+        opacity,
+      )
       gl.uniform4f(
         resources.locations.multiplyColor,
         drawables.multiplyColors[colorOffset] ?? 1,

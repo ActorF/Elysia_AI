@@ -2,7 +2,7 @@
 
 本目录是 2026-10-01 根据项目所有者的十条逐图复审制作并继续逐格修正的最终审阅包。反馈编号严格对应 01 至 10。内容整合完成后，项目所有者要求删除旧的 v1 与 v2 目录；本目录现为唯一保留版本。
 
-这些文件是角色视觉和产品界面的最终审阅母版。运行时使用由 08 对齐并补齐必要活动五官的 `live2d-source/` 制作真实 Cubism-compatible 模型；`02-activity-states.png`、`03-expression-atlas.png`、`04-facial-rig-atlas.png` 与既有审核立绘继续作为 Still、Reduced Motion 和故障回退。桌宠复用同一 Live2D 模型与静态立绘，不加载 07 姿势总览。
+这些文件是角色视觉和产品界面的最终审阅母版。运行时使用由 08 提供身体/服装分层、由 `live2d-face-master.png` 提供统一正脸五官的 `live2d-source/` 制作真实 Cubism-compatible 模型；`02-activity-states.png`、`03-expression-atlas.png`、`04-facial-rig-atlas.png` 与既有审核立绘继续作为 Still、Reduced Motion 和故障回退。桌宠复用同一 Live2D 模型与静态立绘，不加载 07 姿势总览。
 
 ## 十条反馈与 v3 处理结果
 
@@ -41,6 +41,7 @@
 | `07d-row4.png` | 07 第 4 行原尺寸条带 | 2172×724 | RGB | `5694BFD1A581E7BD5263ED704504CC13BECE49E683FA1FC83AE42D5B0EEFD8BD` |
 | `08-layer-separation-guide.png` | 二值透明部件分层视觉指南 | 1536×1024 | RGBA | `8FBD3849352E04F8BA6A77E5F7321A577694B3AE6D0585CB675699CBBC47F568` |
 | `09-color-and-detail-master.png` | 正背角色、细节与色板 | 1536×1024 | RGB | `759F0CE419955B137F414E69DEFEC43CDF9D200DEE223F3A0E9F260006ED8641` |
+| `live2d-face-master.png` | 统一正脸五官与 V 形下颌制作母版 | 1254×1254 | RGBA | `F617A9A91ADF12DB590FE54695026369DB130847D1BBBBDFB7F90A44A046045F` |
 
 ## 全套固定规则
 
@@ -175,7 +176,7 @@ ImageGen 输出仍包含 255 个 alpha 等级，透明区附近存在视觉上�
 2. 对 alpha 为 0 的像素将 RGB 同时清零，避免隐藏的白色或粉色污染后续合成。
 3. 分别合成到纯白和近黑背景，检查角色、头发、服装和小配件边缘。
 
-最终文件的 alpha 只有 0 和 255 两种值；保留的不透明面积约为 44.97%。它本身仍只是部件边界参考，不是可绑定 PSD。实际模型使用 `live2d-source/` 中统一为同一 `1024 × 1024` 角色画布的 21 个源层，并补充闭眼、口腔和腮红层；目录内 README 记录了每层职责与限制。
+最终文件的 alpha 只有 0 和 255 两种值；保留的不透明面积约为 44.97%。它本身仍只是身体、服装和头发的部件边界参考，不是可绑定 PSD。实际模型使用 `live2d-source/` 中统一为同一 `2048 × 2048` 角色画布的 21 个源层；脸部、眼睛、闭眼线、眉毛、鼻子、嘴线、口腔和腮红统一来自 `live2d-face-master.png`，目录内 README 记录了每层职责与限制。
 
 ## 应用内运行时选片
 

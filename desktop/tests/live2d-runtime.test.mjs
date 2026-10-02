@@ -155,6 +155,7 @@ function makeFakeGl() {
 
 function installEnvironment({
   canvasBounds = { height: 300, width: 200 },
+  drawableOpacities = [1, 1],
   manifestOverride,
   packaged = false,
   webgl = true,
@@ -186,7 +187,7 @@ function installEnvironment({
     indices: [new Uint16Array([0, 1, 2]), new Uint16Array([0, 2, 1])],
     maskCounts: new Int32Array([0, 0]),
     multiplyColors: new Float32Array([1, 1, 1, 1, 1, 1, 1, 1]),
-    opacities: new Float32Array([1, 1]),
+    opacities: new Float32Array(drawableOpacities),
     resetDynamicFlags() { this.dynamicFlags.fill(0) },
     screenColors: new Float32Array(8),
     textureIndices: new Int32Array([0, 0]),
@@ -331,7 +332,12 @@ function installEnvironment({
 }
 
 test('loads only fixed assets and renders every drawable in render order', async () => {
-  const environment = installEnvironment()
+  // This first environment also supplies the module-cached fake Core to later
+  // cases, so exercise non-opaque values here instead of creating a second
+  // fake Core that the production cache would intentionally ignore.
+  const environment = installEnvironment({
+    drawableOpacities: [0.25, 0.625],
+  })
   const controller = await createLive2DController(environment.canvas, {
     emotion: 'happy',
     framing: 'half-body',
@@ -354,6 +360,17 @@ test('loads only fixed assets and renders every drawable in render order', async
   environment.animationFrames.delete(queuedFrameId)
   queuedFrame(performance.now() + 1000)
   assert.deepEqual(environment.drawnIndices, [[0, 2, 1], [0, 1, 2]])
+  const baseColors = environment.uniform4fCalls
+    .filter(({ name }) => name === 'u_base_color')
+    .map(({ values }) => values)
+  assert.deepEqual(
+    baseColors,
+    [
+      [0.625, 0.625, 0.625, 0.625],
+      [0.25, 0.25, 0.25, 0.25],
+    ],
+    'render-order uploads must remain premultiplied during opacity crossfades',
+  )
   assert.ok(
     environment.parameterValues[PARAMETER_IDS.indexOf('ParamMouthOpenY')] > 0.9,
     'the trusted root mouth cue should drive the speaking parameter',

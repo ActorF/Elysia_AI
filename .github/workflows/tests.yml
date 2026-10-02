@@ -28,6 +28,9 @@ jobs:
       - name: Check Python documentation coverage
         run: python scripts/check_python_documentation.py
 
+      - name: Check Live2D face alignment
+        run: python scripts/check_live2d_face_alignment.py
+
       - name: Check distribution asset boundary
         run: python scripts/check_distribution_assets.py
 
