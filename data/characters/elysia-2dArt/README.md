@@ -2,7 +2,7 @@
 
 本目录是 2026-10-01 根据项目所有者的十条逐图复审制作并继续逐格修正的最终审阅包。反馈编号严格对应 01 至 10。内容整合完成后，项目所有者要求删除旧的 v1 与 v2 目录；本目录现为唯一保留版本。
 
-这些文件是角色视觉和产品界面的最终审阅母版。Stage 13 运行时明确选择 `02-activity-states.png`、`03-expression-atlas.png` 与 `04-facial-rig-atlas.png` 的逐字节副本；可选静态桌宠另行复用既有审核立绘，不加载本目录的 07 姿势总览。其余文件仍只用于审阅，不会自动替换应用资源。整套素材都不是已经分层绑定或可直接发布的 Live2D/Cubism 工程。
+这些文件是角色视觉和产品界面的最终审阅母版。运行时使用由 08 对齐并补齐必要活动五官的 `live2d-source/` 制作真实 Cubism-compatible 模型；`02-activity-states.png`、`03-expression-atlas.png`、`04-facial-rig-atlas.png` 与既有审核立绘继续作为 Still、Reduced Motion 和故障回退。桌宠复用同一 Live2D 模型与静态立绘，不加载 07 姿势总览。
 
 ## 十条反馈与 v3 处理结果
 
@@ -175,11 +175,11 @@ ImageGen 输出仍包含 255 个 alpha 等级，透明区附近存在视觉上�
 2. 对 alpha 为 0 的像素将 RGB 同时清零，避免隐藏的白色或粉色污染后续合成。
 3. 分别合成到纯白和近黑背景，检查角色、头发、服装和小配件边缘。
 
-最终文件的 alpha 只有 0 和 255 两种值；保留的不透明面积约为 44.97%。它适合作为清晰部件边界参考，但仍不是实际分层的 PSD 或 Live2D 工程。
+最终文件的 alpha 只有 0 和 255 两种值；保留的不透明面积约为 44.97%。它本身仍只是部件边界参考，不是可绑定 PSD。实际模型使用 `live2d-source/` 中统一为同一 `1024 × 1024` 角色画布的 21 个源层，并补充闭眼、口腔和腮红层；目录内 README 记录了每层职责与限制。
 
 ## 应用内运行时选片
 
-Stage 13 Module 3 与 Module 4 选择以下三张审核母版，并把同一字节复制到 Desktop Public Assets。运行时不重新编码、不执行 AI 重绘，也不把整套审阅包复制进安装包；Vite/ASAR 只携带这三个运行时图集和原有的静态立绘回退。
+Animated 模式优先加载 `desktop/public/character/live2d/elysia/` 的固定模型、MOC 与纹理。以下三张审核母版仍以逐字节副本进入 Desktop Public Assets；运行时不重新编码、不执行 AI 重绘，也不把整套审阅包或源层复制进安装包。它们只负责静态模式、加载期间和故障回退。
 
 | 审阅母版 | 运行时副本 | 字节数 | SHA-256 | 运行时用途 |
 | --- | --- | ---: | --- | --- |
@@ -219,17 +219,17 @@ Settings 的 Voice Emotion 只接受 `neutral`、`happy` 与 `sad`。Backend 成
 
 运行时只使用 04 第一带的前四格，依次作为 `closed`、`small`、`medium` 与 `wide`。可信 Preload 从正在输出的真实 Web Audio 时域样本计算 RMS，在当前播放 Gain 生效后进行平滑和迟滞量化，并以 50 ms 计时器调度，因此最多更新 20 次/秒。原始样本与连续包络不会进入 React；DOM 只收到四值提示。音量为 0 时嘴型保持 `closed`，视觉分析失败也只关闭嘴型，不中断声音。
 
-这套实现是**振幅驱动**，不会识别 A/E/I/O/U 音素。04 中其余嘴型、眼型和眉型仍是审阅参考，不应被描述为运行时音素绑定、Live2D 或 Cubism Rig。只有角色处于 `speaking` 且生效性能模式为 Animated 时才采样；Still 与系统 Reduced Motion 一律禁止嘴型动画，并显示用户选择的静态表情。
+这套实现是**振幅驱动**，不会识别 A/E/I/O/U 音素。04 中其余嘴型、眼型和眉型仍只是审阅参考，不应被描述为音素绑定。角色处于 `speaking` 且生效性能模式为 Animated 时，四档提示驱动 Live2D `ParamMouthOpenY`；模型尚未 ready 或失败时，同一提示驱动第一带前四格。Still 与系统 Reduced Motion 一律禁止嘴型动画，并显示用户选择的静态表情。
 
-### 可选静态 Desktop Pet
+### 可选 Live2D Desktop Pet
 
-Stage 13 Module 5 的独立桌宠**没有**把 `07-desktop-pet-key-poses.png` 或其四条 row strip 当作运行时 Sprite Sheet。当前窗口只复用已经审核、固定并随应用分发的 `desktop/public/character/elysia-portrait.png`，因此不会为桌宠新增一份角色图片、重新编码本目录素材，或让未选中的审阅图进入安装包。
+独立桌宠**没有**把 `07-desktop-pet-key-poses.png` 或其四条 row strip 当作运行时 Sprite Sheet。窗口复用主界面的同一固定 Live2D 模型，并保留 `desktop/public/character/elysia-portrait.png` 作为 Reduced Motion 与失败回退，因此不会为桌宠复制第二份模型或让未选中的审阅图进入安装包。
 
-该桌宠是透明窗口中的静态 2D 立绘，不是 Live2D/Cubism、分层 Rig、帧动画、嘴型同步或自主角色 Agent。它默认关闭；`hidden` 会销毁独立 Renderer 释放其资源，`visible` 才加载立绘。桌宠专用 Preload 只有就绪、隐藏和打开主 Chat 三个能力，无法读取本目录、其他本机文件、Backend、网络或主 Renderer 数据。若以后要把 07 的关键姿势变成真正运行时资源，仍须先完成逐格透明切片/锚点、独立来源与权利复核、摘要固定、分发门禁和新的有界动画设计，不能把当前审阅总览直接当成已发布资产。
+该桌宠是透明窗口中的 Live2D 呈现，不是自主角色 Agent。它默认关闭；`hidden` 会销毁独立 Renderer 释放其资源，`visible` 且未启用 Reduced Motion 时才加载模型。桌宠专用 Preload 只有就绪、隐藏和打开主 Chat 三个能力，无法读取本目录、其他本机文件、Backend、任意网络或主 Renderer 数据；模型读取被 Electron 的三文件本地协议白名单限制。
 
 ### 回退与功能隔离
 
-图片失败时按 `speech → expression → state → portrait → accessible text` 顺序回退。任何图集失败、角色面板关闭或静态性能模式都不会阻止 Chat、Voice、Knowledge 或声音播放。
+Animated 模式先显示静态资源并异步加载 Live2D；模型 ready 后才切换画布。失败时按 `speech → expression → state → portrait → accessible text` 顺序回退。任何 WASM/WebGL/模型/图集失败、角色面板关闭或静态性能模式都不会阻止 Chat、Voice、Knowledge 或声音播放。
 
 ## 审计结论与仍需注意的地方
 
@@ -238,8 +238,8 @@ Stage 13 Module 5 的独立桌宠**没有**把 `07-desktop-pet-key-poses.png` �
 - 04 的 worried 眼型格出现轻微下弯嘴，而非与前五格完全相同的中性嘴；部分眉型因刘海遮挡，视觉差异较细。
 - 04 第一带头饰顶部安全距离偏小，但没有被裁切或碰到边界。
 - 02 第 6 格两手已完全分开，中间保留浅色背景间隙。
-- 08 是视觉切层指南，不代表已经完成锚点、网格、变形器、物理参数或嘴型绑定。
-- `02-activity-states.png`、`03-expression-atlas.png` 与 `04-facial-rig-atlas.png` 是已逐格审核并由分发门禁固定的运行时例外：它们有意保留不透明 RGB 背景，并以整张固定图集由 CSS 定点裁切。其余候选图若未来要作为独立透明 Sprite、Live2D 部件或其他新运行时素材进入安装包，仍须先完成统一锚点、真实透明切片、最终绘师修整，以及新的来源与分发审核。
+- 08 原图是视觉切层指南；`live2d-source/` 才是经过统一锚点、活动五官补层并用于当前 Rig 的制作输入。它仍不等同于官方原始 PSD。
+- Live2D manifest/MOC/texture/Core 与静态回退都由分发门禁固定路径、长度和 SHA-256；实际 ASAR 必须只含每个预期条目一次并通过完整抽取树的字节验证。
 
 ## 参考来源
 

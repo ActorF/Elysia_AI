@@ -174,7 +174,7 @@ function characterSpeechVisualIsVisible(): boolean {
       && visualDocument.querySelector(
         '.character-artwork[data-character-state="speaking"]'
         + '[data-character-performance="animated"]'
-        + '[data-character-asset="speech-atlas"]',
+        + '[data-character-mouth-capable="true"]',
       ) !== null
   } catch {
     // Visibility uncertainty fails visually closed. Sampling is unnecessary

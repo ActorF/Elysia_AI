@@ -39,7 +39,10 @@ const excludedDirectories = new Set([
   'tmp',
   'workspace',
 ])
-const excludedRelativeDirectories = new Set(['models/cache'])
+const excludedRelativeDirectories = new Set([
+  'desktop/public/character/live2d/runtime',
+  'models/cache',
+])
 
 /** Return whether a directory contains generated, cached, or external runtime content. */
 function isExcludedDirectory(directory, scanRoot) {

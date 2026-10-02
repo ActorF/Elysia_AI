@@ -59,29 +59,30 @@ The Stage 13 Character State API is renderer-local and closed over `idle`,
 `listening`, `thinking`, `speaking`, `working`, `waiting_approval`, and `error`.
 It projects current-Chat generation, current-Project Knowledge activity, Voice's
 primary lifecycle, and Backend failure into the Character Panel and call page.
-The contract adds no IPC and never selects an animation file. Separate closed
-registries map those states and the user-controlled `neutral / happy / sad`
-emotion setting to reviewed atlas cells; the same active emotion selects the
-local TTS reference and the static expression after a Backend restart. The
-model cannot submit an emotion, path, cell, or animation command. During real
-Web Audio playback, trusted Preload samples RMS at no more than 20 Hz and
-quantizes it into `closed / small / medium / wide` mouth cues. Raw waveform
-samples and continuous envelopes stay outside React. Animated mode consumes
-those cues; Still and OS Reduced Motion never start mouth animation. Assets
-fall back in the order speech → expression → state → portrait → accessible
-text. This amplitude visualization is neither phoneme-level lip sync nor
-Live2D. `waiting_approval` still has no producer until a real Work/Approval
-workflow exists.
-Stage 13 also provides an optional static Desktop Pet that is disabled by
+The contract adds no IPC and never selects a model path or arbitrary animation.
+Animated mode loads the pinned local Cubism-compatible model through a
+three-file custom-protocol allowlist and maps those states plus the
+user-controlled `neutral / happy / sad` emotion to bounded parameters. The same
+active emotion selects the local TTS reference after a Backend restart. During
+real Web Audio playback, trusted Preload samples RMS at no more than 20 Hz and
+quantizes it into `closed / small / medium / wide` mouth cues, which drive
+Live2D `ParamMouthOpenY`; raw waveform samples and continuous envelopes stay
+outside React. Still and OS Reduced Motion never initialize WASM/WebGL. Model
+failure falls back through speech → expression → state → portrait → accessible
+text. This is amplitude motion, not phoneme-level lip sync. `waiting_approval`
+still has no producer until a real Work/Approval workflow exists.
+Stage 13 also provides an optional Live2D Desktop Pet that is disabled by
 default. Electron Main owns its strict `disabled / hidden / visible`
 preference, private display placement, and at most one transparent,
 always-on-top native window. `hidden` destroys the dedicated Renderer instead
-of merely making it invisible. The pet reuses the reviewed
-`elysia-portrait.png`, can be dragged or temporarily made click-through from
-the tray, and opens the ordinary main Chat when clicked. Its separate
+of merely making it invisible. The pet reuses the main UI model and keeps the
+reviewed `elysia-portrait.png` as its Reduced Motion/error fallback. It can be
+dragged or temporarily made click-through from the tray, and opens the ordinary
+main Chat when clicked. Its separate
 sandboxed entry receives only `ready`, `hide`, and `openMainChat` through a
-minimal Preload; it has no Backend, network, filesystem, Node, audio, or main
-Renderer capability. This is a bounded static 2D surface, not Live2D.
+minimal Preload; it has no Backend, arbitrary network, filesystem, Node, audio,
+or main Renderer capability. Model fetches use the same fixed local protocol
+allowlist.
 Stage 13 Presence and Notifications is also Main-owned and fully off by
 default. Settings can independently enable fixed-copy reply-ready notices and
 select a neutral Daily / Weekly reminder, then disable both with one action.
@@ -194,17 +195,17 @@ Git-ignored and must not be committed or packaged with the application.
   select an emotion, path, cell, or animation name. During real speech output,
   trusted Preload applies the active gain, samples Web Audio RMS no faster than
   20 Hz, and publishes only `closed / small / medium / wide` visual cues. The
-  static emotion uses the same active value as the TTS reference. Settings
-  persists Animated / Still on this device; Still and OS Reduced Motion disable
-  mouth animation. Visual failures follow speech → expression → state →
-  portrait → accessible text without affecting Chat or Voice. The surface
-  does not load Live2D, claim phoneme-level lip sync, write Chat state, or
-  create a new Backend capability.
+  same active emotion value also selects the TTS reference. Settings persists
+  Animated / Still on this device; Still and OS Reduced Motion do not initialize
+  Live2D. Animated mode drives the pinned local model, while failures follow
+  speech → expression → state → portrait → accessible text without affecting
+  Chat or Voice. The surface does not claim phoneme-level lip sync, write Chat
+  state, or create a new Backend capability.
 - Desktop Pet settings are separate from Backend settings and default to
   **Off** (`disabled`). **Hidden** keeps the opt-in while destroying the pet
   Renderer and native window; **Visible** creates one transparent, frameless,
   always-on-top 320×480 DIP nominal window. Its drag handle moves the window,
-  its close control selects Hidden, and clicking the portrait reveals and
+  its close control selects Hidden, and clicking the character reveals and
   focuses the main Chat. The tray can show or hide it, temporarily enable
   mouse click-through, reset its position, disable it, or retry a failed
   renderer; Settings also exposes an explicit retry for the failed state.
@@ -564,10 +565,11 @@ admits only the user-controlled `neutral / happy / sad` mapping. Runtime speech
 uses only the first four cells of the facial atlas's first band as
 `closed / small / medium / wide` amplitude cues; it does not interpret the
 remaining review cells as detected phonemes.
-The Desktop Pet reuses the already reviewed and pinned portrait; it introduces
-no additional character image or implied license. The larger Desktop Pet pose
-review sheet remains repository review material and is not loaded by this
-static window.
+The Desktop Pet reuses the same fixed Live2D model as the main character and
+keeps the already reviewed, pinned portrait only for Reduced Motion and runtime
+failure. It introduces no second character model or implied license. The larger
+Desktop Pet pose review sheet remains repository review material and is not
+loaded by the pet window.
 
 `npm run docs:check` enforces file-purpose comments plus public class,
 function, class-method, and exported interface-method documentation. The

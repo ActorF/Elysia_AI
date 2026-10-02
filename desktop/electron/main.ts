@@ -17,8 +17,10 @@ import {
   type MenuItemConstructorOptions,
   nativeImage,
   nativeTheme,
+  net,
   Notification,
   type NotificationCloseEventParams,
+  protocol,
   screen,
   session,
   shell,
@@ -27,7 +29,7 @@ import {
 } from 'electron'
 import { lstat, stat } from 'node:fs/promises'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import { BackendProcess } from './backend-process.js'
 import {
@@ -45,6 +47,13 @@ import {
   allowAudioPermissionRequest,
 } from './audio-permission.js'
 import { parseSafeExternalUrl } from './external-url.js'
+import {
+  LIVE2D_ASSET_DESKTOP_PET_PARTITION,
+  LIVE2D_ASSET_MAXIMUM_BYTES,
+  LIVE2D_ASSET_PRIVILEGES,
+  LIVE2D_ASSET_SCHEME,
+  resolveLive2DAssetPath,
+} from './live2d-assets.js'
 import {
   DESKTOP_PET_MAX_HEIGHT_DIP,
   DESKTOP_PET_MAX_WIDTH_DIP,
@@ -147,6 +156,17 @@ import type {
 const moduleDirectory = path.dirname(
   fileURLToPath(import.meta.url),
 )
+
+// Privileged custom schemes must be declared before Electron becomes ready.
+// The resolver and handler below still restrict this fetch-capable scheme to
+// three immutable files; it never grants renderers general filesystem access.
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: LIVE2D_ASSET_SCHEME,
+    privileges: LIVE2D_ASSET_PRIVILEGES,
+  },
+])
+
 const DEVELOPMENT_URL = 'http://localhost:5173'
 const CHARACTER_PANEL_WIDTH = 324
 const RENDERER_READY_TIMEOUT_MS = 10_000
@@ -910,7 +930,7 @@ function createDesktopPetWindow(): void {
         backgroundThrottling: true,
         devTools: !app.isPackaged,
         navigateOnDragDrop: false,
-        partition: 'elysia-desktop-pet',
+        partition: LIVE2D_ASSET_DESKTOP_PET_PARTITION,
       },
     })
   } catch {
@@ -3272,6 +3292,75 @@ function configureAudioPermissions(): void {
   )
 }
 
+function registerLive2DAssetProtocol(targetProtocol: Electron.Protocol): void {
+  targetProtocol.handle(LIVE2D_ASSET_SCHEME, async (request) => {
+    if (request.method !== 'GET') {
+      return new Response(null, {
+        status: 405,
+        headers: { Allow: 'GET' },
+      })
+    }
+
+    const assetPath = resolveLive2DAssetPath(
+      request.url,
+      app.getAppPath(),
+    )
+    if (assetPath === null) {
+      // A uniform not-found response avoids revealing whether rejected input
+      // described a real path elsewhere in the installation.
+      return new Response(null, { status: 404 })
+    }
+    let assetSize: number
+    try {
+      const assetStats = await lstat(assetPath)
+      if (
+        !assetStats.isFile()
+        || assetStats.size <= 0
+        || assetStats.size > LIVE2D_ASSET_MAXIMUM_BYTES
+      ) {
+        return new Response(null, { status: 404 })
+      }
+      assetSize = assetStats.size
+    } catch {
+      return new Response(null, { status: 404 })
+    }
+    const fileUrl = pathToFileURL(assetPath).toString()
+    let fileResponse: Response
+    try {
+      fileResponse = await net.fetch(fileUrl, {
+        bypassCustomProtocolHandlers: true,
+        cache: 'no-store',
+        credentials: 'omit',
+        redirect: 'error',
+        referrerPolicy: 'no-referrer',
+      })
+    } catch {
+      return new Response(null, { status: 404 })
+    }
+    if (!fileResponse.ok || fileResponse.redirected) {
+      return new Response(null, { status: 404 })
+    }
+    const headers = new Headers(fileResponse.headers)
+    // Packaged `file:` pages have an opaque origin. CORS remains enabled on
+    // the scheme, so explicitly expose only these non-user, bundled assets.
+    headers.set('Access-Control-Allow-Origin', '*')
+    headers.set(
+      'Access-Control-Expose-Headers',
+      'Content-Length, Cross-Origin-Resource-Policy, X-Content-Type-Options',
+    )
+    headers.set('Cache-Control', 'no-store')
+    headers.set('Content-Length', String(assetSize))
+    headers.set('Cross-Origin-Resource-Policy', 'cross-origin')
+    headers.set('X-Content-Type-Options', 'nosniff')
+    headers.delete('Location')
+    return new Response(fileResponse.body, {
+      status: fileResponse.status,
+      statusText: fileResponse.statusText,
+      headers,
+    })
+  })
+}
+
 function reportDesktopPetModeFailure(): void {
   if (shutdownStarted || desktopPetPreferences === null) {
     return
@@ -3485,6 +3574,13 @@ if (!hasSingleInstanceLock) {
     if (process.platform === 'win32') {
       app.setAppUserModelId('ai.elysia.desktop')
     }
+    registerLive2DAssetProtocol(session.defaultSession.protocol)
+    // The Desktop Pet intentionally uses a separate in-memory session. Custom
+    // protocol handlers are session-scoped, so omitting this registration
+    // would make only the packaged pet silently fall back to a static image.
+    registerLive2DAssetProtocol(
+      session.fromPartition(LIVE2D_ASSET_DESKTOP_PET_PARTITION).protocol,
+    )
     const projectRoot = resolveProjectRoot()
     const activeDataRoot = await initializeManagedDataStorage(projectRoot)
     desktopPetRepository = new DesktopPetPreferencesRepository(

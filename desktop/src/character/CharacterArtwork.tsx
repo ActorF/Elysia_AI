@@ -1,12 +1,18 @@
 /**
- * Render reviewed state, expression, and speech atlases with safe fallbacks.
+ * Render real Live2D presence with reviewed state and portrait fallbacks.
  * Semantic producers provide only closed state/emotion values; this component
- * alone owns files, atlas coordinates, and the optional animated close-up.
+ * alone owns visual selection and optional animated-controller lifecycle.
  */
 
-import { useEffect, useState, type CSSProperties } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useState,
+  type CSSProperties,
+} from 'react'
 
 import { useCharacterPerformance } from './CharacterPerformanceProvider.tsx'
+import { Live2DCharacterCanvas } from './Live2DCharacterCanvas.tsx'
 import type { CharacterEmotion } from './character-emotion.ts'
 import {
   getCharacterEmotionPresentation,
@@ -21,6 +27,7 @@ interface CharacterArtworkProps {
 }
 
 type CharacterAssetStage =
+  | 'live2d'
   | 'speech-atlas'
   | 'expression-atlas'
   | 'atlas'
@@ -42,10 +49,10 @@ const CHARACTER_VISUAL_REFRESH_EVENT = 'elysia:character-visual-refresh'
 /**
  * Display one bounded character visual without making artwork authoritative.
  *
- * Actual speech uses the reviewed four-frame mouth band only in Animated mode.
- * Still/Reduced Motion shows the selected static expression. A failed speech
- * or expression atlas falls back independently through the state atlas,
- * portrait, and accessible text so Voice and Chat controls remain usable.
+ * Animated mode first attempts the local Live2D model, retaining reviewed
+ * static artwork while it loads or when it fails. Still/Reduced Motion never
+ * mounts the controller. Independent atlas and portrait fallback boundaries
+ * keep Voice and Chat controls usable even when visual assets are unavailable.
  */
 export function CharacterArtwork({
   className,
@@ -56,6 +63,9 @@ export function CharacterArtwork({
   const [expressionAtlasFailed, setExpressionAtlasFailed] = useState(false)
   const [stateAtlasFailed, setStateAtlasFailed] = useState(false)
   const [portraitFailed, setPortraitFailed] = useState(false)
+  const [live2DStatus, setLive2DStatus] = useState<
+    'loading' | 'ready' | 'failed'
+  >('loading')
   const { resolvedMode } = useCharacterPerformance()
   const statePresentation = getCharacterPresentation(state)
   const emotionPresentation = getCharacterEmotionPresentation(emotion)
@@ -75,18 +85,30 @@ export function CharacterArtwork({
     state === 'speaking'
     || (state === 'idle' && emotion !== 'neutral')
   )
-  let assetStage: CharacterAssetStage
+  let fallbackAssetStage: Exclude<CharacterAssetStage, 'live2d'>
   if (wantsSpeechAtlas && !speechAtlasFailed) {
-    assetStage = 'speech-atlas'
+    fallbackAssetStage = 'speech-atlas'
   } else if (wantsExpressionAtlas && !expressionAtlasFailed) {
-    assetStage = 'expression-atlas'
+    fallbackAssetStage = 'expression-atlas'
   } else if (!stateAtlasFailed) {
-    assetStage = 'atlas'
+    fallbackAssetStage = 'atlas'
   } else if (!portraitFailed) {
-    assetStage = 'portrait'
+    fallbackAssetStage = 'portrait'
   } else {
-    assetStage = 'unavailable'
+    fallbackAssetStage = 'unavailable'
   }
+  const live2DEnabled = resolvedMode === 'animated' && live2DStatus !== 'failed'
+  const assetStage: CharacterAssetStage = live2DEnabled
+    && live2DStatus === 'ready'
+    ? 'live2d'
+    : fallbackAssetStage
+  const mouthCapable = assetStage === 'live2d'
+    || assetStage === 'speech-atlas'
+  const handleLive2DStatus = useCallback((
+    status: 'loading' | 'ready' | 'failed',
+  ): void => {
+    setLive2DStatus(status)
+  }, [])
 
   useEffect(() => {
     // Preload treats this event only as a request to re-check the DOM. It does
@@ -101,12 +123,21 @@ export function CharacterArtwork({
       data-character-asset={assetStage}
       data-character-emotion={emotion}
       data-character-expression={assetStage === 'expression-atlas'
+        || (assetStage === 'live2d' && emotion !== 'neutral')
         ? emotionPresentation.expression
         : statePresentation.expression}
+      data-character-mouth-capable={mouthCapable ? 'true' : undefined}
       data-character-performance={resolvedMode}
       data-character-state={state}
     >
-      {assetStage === 'unavailable' ? (
+      {live2DEnabled ? (
+        <Live2DCharacterCanvas
+          emotion={emotion}
+          state={state}
+          onStatusChange={handleLive2DStatus}
+        />
+      ) : null}
+      {assetStage === 'live2d' ? null : assetStage === 'unavailable' ? (
         <div
           className="character-artwork-fallback"
           role="img"

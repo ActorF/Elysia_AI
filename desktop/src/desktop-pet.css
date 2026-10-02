@@ -1,4 +1,4 @@
-/** Style the isolated desktop-pet renderer as a transparent, static surface. */
+/** Style the isolated desktop pet with Live2D and static fallback surfaces. */
 
 :root {
   color: #fff7fc;
@@ -123,12 +123,26 @@ button:focus-visible {
   filter: drop-shadow(0 0.55rem 0.75rem rgb(22 8 24 / 42%));
 }
 
-.desktop-pet-character > img {
+.desktop-pet-character > img,
+.desktop-pet-live2d {
   width: 100%;
   height: 100%;
+  pointer-events: none;
+}
+
+.desktop-pet-character > img {
   object-fit: contain;
   object-position: 50% 100%;
-  pointer-events: none;
+}
+
+.desktop-pet-live2d {
+  position: absolute;
+  inset: 0;
+  display: block;
+}
+
+.desktop-pet-live2d[data-live2d-ready="false"] {
+  visibility: hidden;
 }
 
 .desktop-pet-image-fallback {

@@ -31,6 +31,7 @@ let rejectSinkSelection = false
 let settingsResolver = null
 let analyserAmplitude = 0
 let characterVisible = true
+let characterSelector = null
 let visualFailure = null
 let visualRefreshListener = null
 
@@ -61,10 +62,11 @@ const visualDocument = {
     }
     return { dataset: rootDataset }
   },
-  querySelector() {
+  querySelector(selector) {
     if (visualFailure === 'query') {
       throw new Error('renderer query failed')
     }
+    characterSelector = selector
     return characterVisible ? Object.freeze({ kind: 'character' }) : null
   },
 }
@@ -317,6 +319,7 @@ function resetObservations() {
   settlements.length = 0
   analyserAmplitude = 0
   characterVisible = true
+  characterSelector = null
   visualFailure = null
   rootDatasetState.characterMouth = 'closed'
   rootDatasetState.characterPerformance = 'animated'
@@ -363,6 +366,8 @@ test('actual analyser samples drive only bounded visual dataset cues', async () 
 
   assert.equal(rootDataset.characterSpeechActive, 'true')
   assert.equal(rootDataset.characterMouth, 'closed')
+  assert.match(characterSelector, /data-character-mouth-capable="true"/)
+  assert.doesNotMatch(characterSelector, /data-character-asset=/)
   await waitForVisualSample()
   assert.equal(rootDatasetState.characterMouth, 'wide')
   assert.equal(Object.hasOwn(exposedApis[0].api, 'speechVisual'), false)

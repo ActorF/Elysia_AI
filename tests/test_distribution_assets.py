@@ -17,6 +17,11 @@ _REQUIRED_ASAR_LISTING_ENTRIES = (
     "\\dist\\character\\elysia-state-atlas.png",
     "\\dist\\character\\elysia-expression-atlas.png",
     "\\dist\\character\\elysia-speech-atlas.png",
+    "\\dist\\character\\live2d\\elysia\\model.moc3",
+    "\\dist\\character\\live2d\\elysia\\model.model3.json",
+    "\\dist\\character\\live2d\\elysia\\textures\\atlas.png",
+    "\\dist\\character\\live2d\\runtime\\purismcore.js",
+    "\\dist\\character\\live2d\\runtime\\LICENSE-PurismCore.txt",
     "\\dist\\pet.html",
     "\\dist-electron\\desktop-pet-preload.cjs",
 )
@@ -114,6 +119,8 @@ def test_maintained_source_and_brand_assets_are_allowed() -> None:
             "desktop/public/character/elysia-state-atlas.png",
             "desktop/public/character/elysia-expression-atlas.png",
             "desktop/public/character/elysia-speech-atlas.png",
+            "desktop/public/character/live2d/elysia/model.moc3",
+            "desktop/public/character/live2d/runtime/purismcore.js",
         ],
         source="synthetic-index",
     )
@@ -209,17 +216,77 @@ def _copy_reviewed_speech_atlas(destination_root: Path) -> Path:
     return destination
 
 
+def _copy_reviewed_live2d_assets(destination_root: Path) -> tuple[Path, ...]:
+    """Copy the complete fixed Live2D runtime bundle into an audit fixture."""
+
+    relative_paths = (
+        "desktop/public/character/live2d/elysia/model.moc3",
+        "desktop/public/character/live2d/elysia/model.model3.json",
+        "desktop/public/character/live2d/elysia/textures/atlas.png",
+        "desktop/public/character/live2d/runtime/purismcore.js",
+        "desktop/public/character/live2d/runtime/LICENSE-PurismCore.txt",
+    )
+    copied: list[Path] = []
+    for relative_path in relative_paths:
+        source = _REPOSITORY_ROOT / relative_path
+        destination = destination_root / relative_path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, destination)
+        copied.append(destination)
+    return tuple(copied)
+
+
 def _copy_reviewed_character_assets(
     destination_root: Path,
 ) -> tuple[Path, Path, Path, Path]:
     """Copy every required character asset into an isolated audit fixture."""
 
-    return (
+    assets = (
         _copy_reviewed_portrait(destination_root),
         _copy_reviewed_atlas(destination_root),
         _copy_reviewed_expression_atlas(destination_root),
         _copy_reviewed_speech_atlas(destination_root),
     )
+    _copy_reviewed_live2d_assets(destination_root)
+    return assets
+
+
+def _copy_reviewed_asar_tree(destination_root: Path) -> Path:
+    """Build an extracted-ASAR fixture containing every pinned public asset."""
+
+    source_and_archive_paths = (
+        ("elysia-portrait.png", "elysia-portrait.png"),
+        ("elysia-state-atlas.png", "elysia-state-atlas.png"),
+        ("elysia-expression-atlas.png", "elysia-expression-atlas.png"),
+        ("elysia-speech-atlas.png", "elysia-speech-atlas.png"),
+        ("live2d/elysia/model.moc3", "live2d/elysia/model.moc3"),
+        (
+            "live2d/elysia/model.model3.json",
+            "live2d/elysia/model.model3.json",
+        ),
+        (
+            "live2d/elysia/textures/atlas.png",
+            "live2d/elysia/textures/atlas.png",
+        ),
+        ("live2d/runtime/purismcore.js", "live2d/runtime/purismcore.js"),
+        (
+            "live2d/runtime/LICENSE-PurismCore.txt",
+            "live2d/runtime/LICENSE-PurismCore.txt",
+        ),
+    )
+    character_root = destination_root / "dist" / "character"
+    for source_relative, archive_relative in source_and_archive_paths:
+        source = (
+            _REPOSITORY_ROOT
+            / "desktop"
+            / "public"
+            / "character"
+            / source_relative
+        )
+        destination = character_root / archive_relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, destination)
+    return destination_root
 
 
 def test_reviewed_character_portrait_matches_exact_contract(tmp_path: Path) -> None:
@@ -228,6 +295,51 @@ def test_reviewed_character_portrait_matches_exact_contract(tmp_path: Path) -> N
     _copy_reviewed_character_assets(tmp_path)
 
     assert check_distribution_assets.audit_reviewed_assets(tmp_path) == ()
+
+
+def test_extracted_asar_tree_authenticates_complete_live2d_bundle(
+    tmp_path: Path,
+) -> None:
+    """Accept a package tree only when every Live2D byte matches review."""
+
+    extracted = _copy_reviewed_asar_tree(tmp_path / "extracted")
+
+    assert (
+        check_distribution_assets.audit_extracted_asar_reviewed_assets(
+            extracted
+        )
+        == ()
+    )
+
+
+def test_extracted_asar_tree_rejects_live2d_runtime_mutation(
+    tmp_path: Path,
+) -> None:
+    """Reject a packaged Core replacement even when its path is unchanged."""
+
+    extracted = _copy_reviewed_asar_tree(tmp_path / "extracted")
+    runtime = (
+        extracted
+        / "dist"
+        / "character"
+        / "live2d"
+        / "runtime"
+        / "purismcore.js"
+    )
+    with runtime.open("r+b") as runtime_stream:
+        original_byte = runtime_stream.read(1)
+        runtime_stream.seek(0)
+        runtime_stream.write(bytes((original_byte[0] ^ 0xFF,)))
+
+    problems = (
+        check_distribution_assets.audit_extracted_asar_reviewed_assets(
+            extracted
+        )
+    )
+
+    assert len(problems) == 1
+    assert problems[0].path.endswith("purismcore.js")
+    assert "SHA-256" in problems[0].message
 
 
 def test_runtime_state_atlas_is_the_reviewed_source_without_reencoding() -> None:

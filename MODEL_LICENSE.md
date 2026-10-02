@@ -27,10 +27,12 @@ This document records the known provenance, local handling rules, and current au
 | `data/characters/elysia_character_reference_zh.md` | Tracked / 已跟踪 | Character background and quotations requiring separate source review / 需要单独审查来源的角色背景与语录 |
 | `desktop/public/elysia-icon.png` and `desktop/assets/elysia-icon.ico` | Tracked third-party branding / 已跟踪的第三方品牌素材 | Derived from an official *Honkai Impact 3rd* Elysia signet and included at the project owner's express direction for this unofficial, non-commercial fan project; © HoYoverse / miHoYo, excluded from every source-code license, no endorsement implied, and removable on rights-holder request / 由《崩坏3》爱莉希雅官方刻印制作，并按项目所有者明确决定用于本非官方、非商业粉丝项目；© HoYoverse / miHoYo，不属于任何源码许可证，不代表官方背书，权利人要求时应移除 |
 | `desktop/public/character/elysia-portrait.png` | Tracked reviewed generated fan artwork / 已跟踪并完成固定审核的生成式同人立绘 | Generated with OpenAI's built-in image-generation tool from Elysia reference images supplied by the project owner; distributed only as part of this unofficial, non-commercial fan project, excluded from every source-code license, and authenticated by the distribution audit / 使用 OpenAI 内置图像生成工具并参考项目所有者提供的爱莉希雅图片生成；仅随本非官方、非商业粉丝项目分发，不属于任何源码许可证，并由分发审计验证固定内容 |
-| `data/characters/elysia-2dArt/` | Tracked generated review pack (18 PNG files plus provenance/revision notes) / 已跟踪的生成式审阅包（18 个 PNG 及来源、修订记录） | Repository review material for this unofficial fan project, excluded from every source-code license; `02-activity-states.png`, `03-expression-atlas.png`, and `04-facial-rig-atlas.png` have byte-identical runtime copies selected for the installer, while the remaining review assets stay outside package input / 本非官方粉丝项目的仓库审阅资料，不属于任何源码许可证；`02-activity-states.png`、`03-expression-atlas.png` 与 `04-facial-rig-atlas.png` 以逐字节相同运行时副本获选进入安装包，其余审阅素材不属于打包输入 |
+| `data/characters/elysia-2dArt/` | Tracked generated review pack plus 21 aligned Live2D source layers / 已跟踪的生成式审阅包及 21 个对齐 Live2D 源层 | Repository review/material source for this unofficial fan project, excluded from every source-code license; only selected static fallbacks and the compiled Live2D bundle enter the installer / 本非官方粉丝项目的仓库审阅与制作素材，不属于任何源码许可证；只有选定静态回退和编译后的 Live2D bundle 进入安装包 |
 | `desktop/public/character/elysia-state-atlas.png` | Tracked reviewed generated state atlas / 已跟踪并完成固定审核的生成式状态图集 | Byte-identical runtime copy of `data/characters/elysia-2dArt/02-activity-states.png`; the first seven cells drive the closed in-app Character State contract, while the eighth success cell is unused; same fan-project, source-license exclusion, rights boundary, and distribution authentication apply / `data/characters/elysia-2dArt/02-activity-states.png` 的逐字节相同运行时副本；前七格驱动应用内封闭角色状态，第八格 success 不使用；同样受非商业粉丝项目、源码许可排除、权利边界与分发审计约束 |
 | `desktop/public/character/elysia-expression-atlas.png` | Tracked reviewed generated expression atlas / 已跟踪并完成固定审核的生成式表情图集 | Byte-identical runtime copy of `data/characters/elysia-2dArt/03-expression-atlas.png`; only the user-controlled `neutral / happy / sad` closed mapping selects runtime cells, and model output cannot select arbitrary expressions / `data/characters/elysia-2dArt/03-expression-atlas.png` 的逐字节相同运行时副本；运行时仅由用户控制的 `neutral / happy / sad` 闭集映射选择格子，模型输出不能选择任意表情 |
-| `desktop/public/character/elysia-speech-atlas.png` | Tracked reviewed generated speech atlas / 已跟踪并完成固定审核的生成式嘴型图集 | Byte-identical runtime copy of `data/characters/elysia-2dArt/04-facial-rig-atlas.png`; runtime uses only the first four cells of the first band as `closed / small / medium / wide` RMS-amplitude cues, not as phoneme detection or Live2D / `data/characters/elysia-2dArt/04-facial-rig-atlas.png` 的逐字节相同运行时副本；运行时只把第一带前四格作为 `closed / small / medium / wide` RMS 振幅提示，不代表音素检测或 Live2D |
+| `desktop/public/character/elysia-speech-atlas.png` | Tracked reviewed generated speech fallback atlas / 已跟踪并完成固定审核的生成式嘴型回退图集 | Byte-identical copy of `04-facial-rig-atlas.png`; its first four cells remain the loading/failure fallback for `closed / small / medium / wide`, while ready Animated mode drives Live2D `ParamMouthOpenY` / `04-facial-rig-atlas.png` 的逐字节副本；前四格保留为 `closed / small / medium / wide` 加载/故障回退，Animated ready 后改为驱动 Live2D `ParamMouthOpenY` |
+| `desktop/public/character/live2d/elysia/` | Tracked compiled Cubism-compatible model / 已跟踪的编译后 Cubism-compatible 模型 | Fixed minimal manifest, MOC, and texture generated from the aligned review layers; technically packaged and authenticated, while character-art/model authorization review remains unresolved at the owner's direction / 从对齐审阅层生成的固定最小清单、MOC 与纹理；技术上已打包并认证，角色美术/模型授权审查按项目所有者决定暂未解决 |
+| `desktop/public/character/live2d/runtime/` | Tracked third-party compatibility runtime / 已跟踪第三方兼容运行时 | PurismCore v1.1.0 Web build pinned by SHA-256 and distributed with its MIT license; that software license does not grant rights in the Elysia model or character / PurismCore v1.1.0 Web build 以 SHA-256 固定并随附 MIT 许可证；该软件许可证不授予爱莉希雅模型或角色权利 |
 
 ### Reviewed generated in-app character artwork / 已审核的生成式应用内角色图
 
@@ -38,9 +40,9 @@ The portrait at `desktop/public/character/elysia-portrait.png` was generated on 
 
 `desktop/public/character/elysia-portrait.png` 中的立绘于 2026-09-30 使用 OpenAI 内置图像生成工具生成，生成时参考了项目所有者本次直接提供的三张爱莉希雅图片，以及所有者本机素材集内原有的一张爱莉希雅立绘。这四张参考文件不属于本仓库或安装包，本说明也不主张或授予对参考文件的权利。审核后的输出固定为 **2,223,154 字节**，SHA-256 为 **`359c2620ac5286cc6c77d533e5c53d1b63fd0fe08fdf42f5952136b7c5bcafb2`**。CI 会拒绝仓库审核路径上的文件缺失、长度变化或任意内容变化；打包后还要求 ASAR 中恰好出现一次 `dist/character/elysia-portrait.png`，并把该条目抽取出的实际字节与同一长度和摘要比对，避免源码或安装包内的替换文件自动继承本次审核结论。
 
-The optional static Desktop Pet reuses this exact packaged portrait and does not add a second character-art asset or a new rights claim. It does not package or load `data/characters/elysia-2dArt/07-desktop-pet-key-poses.png`; that sheet remains review material outside the installer input. Calling the window a “Desktop Pet” describes its product surface only and must not be read as a Live2D/Cubism, animation, or licensing representation. Any future replacement or use of the pose sheet requires a separate provenance, rights, digest, and distribution review.
+The optional Live2D Desktop Pet reuses the same compiled model as the main UI and this exact portrait only as its Reduced Motion/error fallback; it adds no second character model or new rights claim. It does not package or load `data/characters/elysia-2dArt/07-desktop-pet-key-poses.png`, which remains review material outside installer input.
 
-可选静态桌宠复用上述完全相同的安装包立绘，不会增加第二份角色图素材，也不会产生新的权利主张。它不会打包或加载 `data/characters/elysia-2dArt/07-desktop-pet-key-poses.png`；该总览图仍只是安装包输入之外的审阅资料。“Desktop Pet”仅描述产品表面，不代表 Live2D/Cubism、动画或授权结论。未来若替换立绘或实际使用该姿势图，必须另行完成来源、权利、摘要与分发审核。
+可选 Live2D 桌宠复用主界面的同一编译模型，并仅把上述立绘作为 Reduced Motion/错误回退；不会增加第二份角色模型或新的权利主张。它不会打包或加载 `data/characters/elysia-2dArt/07-desktop-pet-key-poses.png`，该总览图仍只是安装包输入之外的审阅资料。
 
 The reviewed state atlas was generated on 2026-10-01 with OpenAI's built-in image-generation tool from Elysia angle, face, costume, and style references supplied by the project owner. Its full generation and correction record is stored beside the source review image under `data/characters/elysia-2dArt/`. The runtime file is a byte-identical copy of `02-activity-states.png`: exactly **2,303,963 bytes**, with SHA-256 **`54eb2525673c2a849819be10eb88eb2f670eb1911e86fd154e69b578cbb4c25c`**. The first seven row-major cells represent `idle`, `listening`, `thinking`, `speaking`, `working`, `waiting_approval`, and `error`; the eighth success/celebration cell is intentionally outside the closed runtime state set. CI pins the repository file, requires exactly one `dist/character/elysia-state-atlas.png` ASAR entry, and verifies bytes extracted from that entry.
 
@@ -53,6 +55,22 @@ The reviewed expression atlas shares the same 2026-10-01 generation references a
 The reviewed facial-rig atlas also shares the 2026-10-01 references and has its generation and targeted mouth-correction record beside `data/characters/elysia-2dArt/04-facial-rig-atlas.png`. Its byte-identical runtime copy at `desktop/public/character/elysia-speech-atlas.png` is exactly **2,054,767 bytes**, with SHA-256 **`21bf4496acc4417d491ff0163c9ee1d38593e376ca25a3d452fd393c6157f9ab`**. Runtime uses only the first four row-major cells of the first band as `closed`, `small`, `medium`, and `wide` amplitude levels. Trusted Preload derives them from real Web Audio RMS at no more than 20 Hz; it does not infer phonemes and is not a Live2D rig. Still and OS Reduced Motion prohibit the animated mouth path. CI pins the repository file, requires exactly one `dist/character/elysia-speech-atlas.png` ASAR entry, and verifies its extracted bytes.
 
 审核面部绑定图集同样沿用 2026-10-01 的参考，生成与定点嘴部修复记录保存在 `data/characters/elysia-2dArt/04-facial-rig-atlas.png` 旁。`desktop/public/character/elysia-speech-atlas.png` 是其逐字节相同运行时副本，固定为 **2,054,767 字节**，SHA-256 为 **`21bf4496acc4417d491ff0163c9ee1d38593e376ca25a3d452fd393c6157f9ab`**。运行时只按行使用第一带前四格作为 `closed`、`small`、`medium` 与 `wide` 振幅档位；可信 Preload 以不高于 20 Hz 的真实 Web Audio RMS 推导这些档位，不推断音素，也不是 Live2D 绑定。Still 与系统 Reduced Motion 禁止嘴型动画路径。CI 会固定仓库文件，要求 ASAR 中恰好出现一次 `dist/character/elysia-speech-atlas.png`，并验证抽取字节。
+
+### Live2D model and compatibility runtime / Live2D 模型与兼容运行时
+
+The packaged Elysia model was compiled from the 21 common-canvas layers retained under `data/characters/elysia-2dArt/live2d-source/`. The source set derives from the reviewed 08 separation guide and adds the closed-eye, mouth-cavity, and blush layers needed for animation. It is not an original HoYoverse PSD or an official Live2D project. The minimal runtime bundle is pinned as follows:
+
+| Packaged path | Bytes | SHA-256 |
+| --- | ---: | --- |
+| `dist/character/live2d/elysia/model.model3.json` | 566 | `51182139710e3f069e96b93ec50b1cf7d4db9f0208206b5b653df4ec05529f2d` |
+| `dist/character/live2d/elysia/model.moc3` | 5,220,224 | `4dde51d51db6f37b58d3d5259547ac240d7551c4f20a9a3f72a3413532f25020` |
+| `dist/character/live2d/elysia/textures/atlas.png` | 600,077 | `5b6b943dcc4f6424921bb6ff0ec5d77aa34e95fb8722f5f7660fbd25747c5373` |
+| `dist/character/live2d/runtime/purismcore.js` | 256,528 | `3eec0b1e6cd20bab0773744228aac21f4c882dbef708c28379ba6315a11b15f4` |
+| `dist/character/live2d/runtime/LICENSE-PurismCore.txt` | 1,103 | `0c420f717a04a7bbc4cd3c652c83e77d0d7883a14b363d60af94ff6cdf3b7768` |
+
+The Core substitute is the PurismCore v1.1.0 Web build from Sakura Motion Project, retained byte-for-byte with its MIT notice. Elysia uses its own narrow WebGL2 renderer and does not vendor the official Cubism Web Framework. The MIT grant covers PurismCore software only; it neither licenses the MOC/texture nor resolves rights in the underlying character. Per the project owner's current decision, that character/model authorization review is deferred rather than represented as complete.
+
+安装包中的爱莉希雅模型由 `data/characters/elysia-2dArt/live2d-source/` 保留的 21 个统一画布源层编译而成。源层来自审核 08 分层指南，并补充动画需要的闭眼、口腔和腮红层；它不是 HoYoverse 原始 PSD 或官方 Live2D 工程。Core 替代实现使用 Sakura Motion Project 的 PurismCore v1.1.0 Web build，并逐字节保留 MIT 告知；Elysia 使用自有的窄 WebGL2 Renderer，不 vendoring 官方 Cubism Web Framework。MIT 只覆盖 PurismCore 软件，不许可 MOC/纹理，也不解决底层角色权利。按项目所有者当前决定，角色/模型授权审查暂缓，不会被表述为已经完成。
 
 The generated outputs are still recognizably based on Elysia from *Honkai Impact 3rd*. AI generation does not transfer or erase the underlying character, design, name, or trademark rights, which remain with HoYoverse / miHoYo and other applicable rights holders. Elysia AI claims no affiliation or endorsement, does not sell or separately license these images, excludes them from any present or future source-code license, and will remove them upon a valid rights-holder request. Any replacement or derivative must receive a new provenance and distribution review and update the pinned digest and length deliberately.
 
@@ -282,19 +300,10 @@ cd /d D:\Elysia_AI
 cd desktop
 npm run package
 npx --no-install asar list out\win-unpacked\resources\app.asar > "%TEMP%\elysia-asar-listing.txt"
-if exist "%TEMP%\elysia-portrait.png" del /f /q "%TEMP%\elysia-portrait.png"
-if exist "%TEMP%\elysia-state-atlas.png" del /f /q "%TEMP%\elysia-state-atlas.png"
-if exist "%TEMP%\elysia-expression-atlas.png" del /f /q "%TEMP%\elysia-expression-atlas.png"
-if exist "%TEMP%\elysia-speech-atlas.png" del /f /q "%TEMP%\elysia-speech-atlas.png"
-pushd "%TEMP%"
-call "D:\Elysia_AI\desktop\node_modules\.bin\asar.cmd" extract-file "D:\Elysia_AI\desktop\out\win-unpacked\resources\app.asar" "dist\character\elysia-portrait.png"
-call "D:\Elysia_AI\desktop\node_modules\.bin\asar.cmd" extract-file "D:\Elysia_AI\desktop\out\win-unpacked\resources\app.asar" "dist\character\elysia-state-atlas.png"
-call "D:\Elysia_AI\desktop\node_modules\.bin\asar.cmd" extract-file "D:\Elysia_AI\desktop\out\win-unpacked\resources\app.asar" "dist\character\elysia-expression-atlas.png"
-call "D:\Elysia_AI\desktop\node_modules\.bin\asar.cmd" extract-file "D:\Elysia_AI\desktop\out\win-unpacked\resources\app.asar" "dist\character\elysia-speech-atlas.png"
-popd
+if exist "%TEMP%\elysia-asar-extracted" rmdir /s /q "%TEMP%\elysia-asar-extracted"
+call "D:\Elysia_AI\desktop\node_modules\.bin\asar.cmd" extract "D:\Elysia_AI\desktop\out\win-unpacked\resources\app.asar" "%TEMP%\elysia-asar-extracted"
 cd ..
-.venv\Scripts\python.exe scripts\check_distribution_assets.py --unpacked-tree desktop\out\win-unpacked --asar-listing "%TEMP%\elysia-asar-listing.txt" --extracted-asar-portrait "%TEMP%\elysia-portrait.png" --extracted-asar-character-atlas "%TEMP%\elysia-state-atlas.png" --extracted-asar-expression-atlas "%TEMP%\elysia-expression-atlas.png" --extracted-asar-speech-atlas "%TEMP%\elysia-speech-atlas.png"
-del /f /q "%TEMP%\elysia-asar-listing.txt" "%TEMP%\elysia-portrait.png" "%TEMP%\elysia-state-atlas.png" "%TEMP%\elysia-expression-atlas.png" "%TEMP%\elysia-speech-atlas.png"
+.venv\Scripts\python.exe scripts\check_distribution_assets.py --unpacked-tree desktop\out\win-unpacked --asar-listing "%TEMP%\elysia-asar-listing.txt" --extracted-asar-tree "%TEMP%\elysia-asar-extracted"
 ```
 
 ---

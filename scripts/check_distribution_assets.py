@@ -136,6 +136,26 @@ _REVIEWED_SPEECH_ATLAS_SIZE: Final = 2_054_767
 _REVIEWED_SPEECH_ATLAS_SHA256: Final = (
     "21bf4496acc4417d491ff0163c9ee1d38593e376ca25a3d452fd393c6157f9ab"
 )
+_REVIEWED_LIVE2D_MODEL_SIZE: Final = 5_220_224
+_REVIEWED_LIVE2D_MODEL_SHA256: Final = (
+    "4dde51d51db6f37b58d3d5259547ac240d7551c4f20a9a3f72a3413532f25020"
+)
+_REVIEWED_LIVE2D_MANIFEST_SIZE: Final = 566
+_REVIEWED_LIVE2D_MANIFEST_SHA256: Final = (
+    "51182139710e3f069e96b93ec50b1cf7d4db9f0208206b5b653df4ec05529f2d"
+)
+_REVIEWED_LIVE2D_TEXTURE_SIZE: Final = 600_077
+_REVIEWED_LIVE2D_TEXTURE_SHA256: Final = (
+    "5b6b943dcc4f6424921bb6ff0ec5d77aa34e95fb8722f5f7660fbd25747c5373"
+)
+_REVIEWED_LIVE2D_CORE_SIZE: Final = 256_528
+_REVIEWED_LIVE2D_CORE_SHA256: Final = (
+    "3eec0b1e6cd20bab0773744228aac21f4c882dbef708c28379ba6315a11b15f4"
+)
+_REVIEWED_LIVE2D_CORE_LICENSE_SIZE: Final = 1_103
+_REVIEWED_LIVE2D_CORE_LICENSE_SHA256: Final = (
+    "0c420f717a04a7bbc4cd3c652c83e77d0d7883a14b363d60af94ff6cdf3b7768"
+)
 _REVIEWED_ASAR_PORTRAIT_PATH: Final = "dist/character/elysia-portrait.png"
 _REVIEWED_ASAR_CHARACTER_ATLAS_PATH: Final = (
     "dist/character/elysia-state-atlas.png"
@@ -145,6 +165,21 @@ _REVIEWED_ASAR_EXPRESSION_ATLAS_PATH: Final = (
 )
 _REVIEWED_ASAR_SPEECH_ATLAS_PATH: Final = (
     "dist/character/elysia-speech-atlas.png"
+)
+_REVIEWED_ASAR_LIVE2D_MODEL_PATH: Final = (
+    "dist/character/live2d/elysia/model.moc3"
+)
+_REVIEWED_ASAR_LIVE2D_MANIFEST_PATH: Final = (
+    "dist/character/live2d/elysia/model.model3.json"
+)
+_REVIEWED_ASAR_LIVE2D_TEXTURE_PATH: Final = (
+    "dist/character/live2d/elysia/textures/atlas.png"
+)
+_REVIEWED_ASAR_LIVE2D_CORE_PATH: Final = (
+    "dist/character/live2d/runtime/purismcore.js"
+)
+_REVIEWED_ASAR_LIVE2D_CORE_LICENSE_PATH: Final = (
+    "dist/character/live2d/runtime/LICENSE-PurismCore.txt"
 )
 _REVIEWED_DISTRIBUTION_ASSETS: Final[dict[str, tuple[int, str]]] = {
     "desktop/public/character/elysia-portrait.png": (
@@ -163,6 +198,26 @@ _REVIEWED_DISTRIBUTION_ASSETS: Final[dict[str, tuple[int, str]]] = {
         _REVIEWED_SPEECH_ATLAS_SIZE,
         _REVIEWED_SPEECH_ATLAS_SHA256,
     ),
+    "desktop/public/character/live2d/elysia/model.moc3": (
+        _REVIEWED_LIVE2D_MODEL_SIZE,
+        _REVIEWED_LIVE2D_MODEL_SHA256,
+    ),
+    "desktop/public/character/live2d/elysia/model.model3.json": (
+        _REVIEWED_LIVE2D_MANIFEST_SIZE,
+        _REVIEWED_LIVE2D_MANIFEST_SHA256,
+    ),
+    "desktop/public/character/live2d/elysia/textures/atlas.png": (
+        _REVIEWED_LIVE2D_TEXTURE_SIZE,
+        _REVIEWED_LIVE2D_TEXTURE_SHA256,
+    ),
+    "desktop/public/character/live2d/runtime/purismcore.js": (
+        _REVIEWED_LIVE2D_CORE_SIZE,
+        _REVIEWED_LIVE2D_CORE_SHA256,
+    ),
+    "desktop/public/character/live2d/runtime/LICENSE-PurismCore.txt": (
+        _REVIEWED_LIVE2D_CORE_LICENSE_SIZE,
+        _REVIEWED_LIVE2D_CORE_LICENSE_SHA256,
+    ),
 }
 _REVIEWED_ASAR_ASSETS: Final[dict[str, tuple[int, str]]] = {
     _REVIEWED_ASAR_PORTRAIT_PATH: (
@@ -180,6 +235,26 @@ _REVIEWED_ASAR_ASSETS: Final[dict[str, tuple[int, str]]] = {
     _REVIEWED_ASAR_SPEECH_ATLAS_PATH: (
         _REVIEWED_SPEECH_ATLAS_SIZE,
         _REVIEWED_SPEECH_ATLAS_SHA256,
+    ),
+    _REVIEWED_ASAR_LIVE2D_MODEL_PATH: (
+        _REVIEWED_LIVE2D_MODEL_SIZE,
+        _REVIEWED_LIVE2D_MODEL_SHA256,
+    ),
+    _REVIEWED_ASAR_LIVE2D_MANIFEST_PATH: (
+        _REVIEWED_LIVE2D_MANIFEST_SIZE,
+        _REVIEWED_LIVE2D_MANIFEST_SHA256,
+    ),
+    _REVIEWED_ASAR_LIVE2D_TEXTURE_PATH: (
+        _REVIEWED_LIVE2D_TEXTURE_SIZE,
+        _REVIEWED_LIVE2D_TEXTURE_SHA256,
+    ),
+    _REVIEWED_ASAR_LIVE2D_CORE_PATH: (
+        _REVIEWED_LIVE2D_CORE_SIZE,
+        _REVIEWED_LIVE2D_CORE_SHA256,
+    ),
+    _REVIEWED_ASAR_LIVE2D_CORE_LICENSE_PATH: (
+        _REVIEWED_LIVE2D_CORE_LICENSE_SIZE,
+        _REVIEWED_LIVE2D_CORE_LICENSE_SHA256,
     ),
 }
 _REQUIRED_ASAR_ENTRY_PATHS: Final = (
@@ -536,6 +611,38 @@ def audit_extracted_asar_speech_atlas(
     )
 
 
+def audit_extracted_asar_reviewed_assets(
+    extracted_root: Path,
+) -> tuple[DistributionProblem, ...]:
+    """Authenticate every reviewed asset in one safely extracted ASAR tree.
+
+    A whole-tree proof avoids adding a new command-line option whenever the
+    reviewed character bundle grows.  The ASAR listing still proves exact
+    archive cardinality; this function proves that the bytes stored at every
+    required path match the repository review.
+    """
+
+    if not extracted_root.is_dir() or extracted_root.is_symlink():
+        raise DistributionAuditError(
+            "Extracted ASAR tree is unavailable or is a symbolic link."
+        )
+    problems: list[DistributionProblem] = []
+    for relative_path, (expected_size, expected_digest) in (
+        _REVIEWED_ASAR_ASSETS.items()
+    ):
+        asset_path = extracted_root.joinpath(*PurePosixPath(relative_path).parts)
+        problems.extend(
+            _audit_exact_asset(
+                asset_path,
+                source="asar-reviewed-asset",
+                logical_path=relative_path,
+                expected_size=expected_size,
+                expected_digest=expected_digest,
+            )
+        )
+    return tuple(problems)
+
+
 def _load_package_json(package_path: Path) -> Mapping[str, object]:
     """Load bounded strict JSON for the Electron package declaration."""
 
@@ -758,22 +865,40 @@ def audit_repository(
     extracted_asar_character_atlas: Path | None = None,
     extracted_asar_expression_atlas: Path | None = None,
     extracted_asar_speech_atlas: Path | None = None,
+    extracted_asar_tree: Path | None = None,
 ) -> tuple[DistributionProblem, ...]:
     """Run the required repository checks plus any requested artifact scans."""
 
-    package_inputs = (
-        asar_listing,
+    legacy_asset_inputs = (
         extracted_asar_portrait,
         extracted_asar_character_atlas,
         extracted_asar_expression_atlas,
         extracted_asar_speech_atlas,
     )
-    if any(value is not None for value in package_inputs) and any(
-        value is None for value in package_inputs
+    legacy_assets_requested = any(
+        value is not None for value in legacy_asset_inputs
+    )
+    if legacy_assets_requested and (
+        asar_listing is None
+        or any(value is None for value in legacy_asset_inputs)
     ):
         raise DistributionAuditError(
             "ASAR listing and all extracted reviewed character assets must be "
             "audited together."
+        )
+    if extracted_asar_tree is not None and (
+        asar_listing is None or legacy_assets_requested
+    ):
+        raise DistributionAuditError(
+            "An extracted ASAR tree requires its listing and cannot be mixed "
+            "with individual extracted-asset inputs."
+        )
+    if asar_listing is not None and not (
+        legacy_assets_requested or extracted_asar_tree is not None
+    ):
+        raise DistributionAuditError(
+            "An ASAR listing requires either the complete extracted tree or "
+            "all legacy extracted character assets."
         )
 
     root = repository_root.resolve()
@@ -809,6 +934,12 @@ def audit_repository(
     if extracted_asar_speech_atlas is not None:
         problems.extend(
             audit_extracted_asar_speech_atlas(extracted_asar_speech_atlas)
+        )
+    if extracted_asar_tree is not None:
+        # Preserve the submitted root itself so a directory symlink cannot be
+        # hidden by Path.resolve() before the boundary check.
+        problems.extend(
+            audit_extracted_asar_reviewed_assets(extracted_asar_tree)
         )
     return tuple(problems)
 
@@ -871,6 +1002,14 @@ def _parse_arguments(arguments: Sequence[str] | None) -> argparse.Namespace:
             "in the same ASAR represented by --asar-listing."
         ),
     )
+    parser.add_argument(
+        "--extracted-asar-tree",
+        type=Path,
+        help=(
+            "Complete tree extracted from the same ASAR represented by "
+            "--asar-listing; authenticates every reviewed runtime asset."
+        ),
+    )
     return parser.parse_args(arguments)
 
 
@@ -891,6 +1030,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
                 options.extracted_asar_expression_atlas
             ),
             extracted_asar_speech_atlas=options.extracted_asar_speech_atlas,
+            extracted_asar_tree=options.extracted_asar_tree,
         )
     except DistributionAuditError as error:
         print(f"Distribution asset check failed: {error}")
@@ -909,6 +1049,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
         + int(options.extracted_asar_character_atlas is not None)
         + int(options.extracted_asar_expression_atlas is not None)
         + int(options.extracted_asar_speech_atlas is not None)
+        + int(options.extracted_asar_tree is not None)
     )
     print(
         "Distribution asset check passed: Git index, reviewed public assets, "
