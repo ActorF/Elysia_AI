@@ -75,6 +75,7 @@ const PROGRAM_STOP_FAILURE = 'Desktop Pet program could not be closed safely.'
 const PROGRAM_STOP_TIMEOUT = 'Desktop Pet program did not close in time.'
 const PROGRAM_SELECTION_MISSING = 'Choose a detected Desktop Pet program first.'
 const PROGRAM_EXITED = 'Desktop Pet program closed unexpectedly.'
+const WINDOWS_DESKTOP_PET_COMPATIBILITY_LAYER = 'RunAsInvoker'
 
 function copySafeEnvironmentValue(
   target: NodeJS.ProcessEnv,
@@ -121,6 +122,14 @@ function desktopPetProgramEnvironment(): NodeJS.ProcessEnv {
       'System32',
       'cmd.exe',
     )
+    // The reviewed Bongo Cat Mver launcher declares ``requireAdministrator``
+    // even though its pet, input, tracking, and configuration paths operate as
+    // the interactive user. Direct CreateProcess from an unelevated Electron
+    // process otherwise fails with ERROR_ELEVATION_REQUIRED before producing a
+    // PID. RunAsInvoker keeps the companion under Elysia's existing user token,
+    // avoids granting an unsigned third-party executable administrator rights,
+    // and preserves exact PID-tree ownership for safe switching and shutdown.
+    environment.__COMPAT_LAYER = WINDOWS_DESKTOP_PET_COMPATIBILITY_LAYER
     for (const name of [
       'APPDATA',
       'LOCALAPPDATA',

@@ -299,6 +299,7 @@ DEBUG=False
 - Settings 的 **Choose downloaded folder** 使用原生目录选择器选择用户已持有的 `@书呆儿` Bongo Cat Mver 程序合集。Main 按有界深度、条目数和候选数扫描，拒绝链接逃逸，只接受同时具备 `standard / keyboard / gamepad` 三套完整配置的候选；Settings 显示实际验证通过的程序数量，不硬编码“六套”。记录的免费版下载页为 <https://pan.quark.cn/s/cb5d84acad8e>，但其当前内容、授权、条款和可用性尚未核验，不能假定与项目所有者购买的本机合集相同。
 - “选择一个文件夹”不等于允许执行其中任意 EXE。Main 要求 Launcher、`BongoCatUI.exe`、`BongoCatMverUI.dll`、全部允许的顶层 DLL 与必要资源匹配固定字节长度和 SHA-256；每次实际启动前重新验证选中程序，任何变化都会 Fail Closed，并要求重新扫描。绝对路径只存在于 Electron Main，React 只接收净化后的程序摘要与稳定选中 ID。
 - Main 只以原目录为工作目录启动当前选中的程序，不加载或渲染其中的 Live2D。键盘/鼠标反馈、眼部追踪、表情快捷键、窗口移动缩放和动态角色表现全部由原 Bongo Cat Mver 程序负责。每套原 `config.json` 留在原程序目录；Elysia 只为识别受支持输入配置做有界结构验证，不改写、不复制，也不把配置变成应用数据。
+- 受审 Launcher 自带 `requireAdministrator` manifest；Elysia 只对这个固定 Hash 的子进程应用 Windows `RunAsInvoker`，让它留在当前用户权限下，不向未签名外部程序授予管理员权限，同时保留可安全停止和切换的准确 PID tree。Windows 完整性隔离仍可能阻止它读取另一个管理员程序中的输入，Elysia 不会为绕过该系统边界而提权。
 - 同一时刻最多由 Elysia 持有一个桌宠进程。切换外观时，Main 先以 Elysia 启动并记录的准确根 PID 关闭该进程及其子进程树；不按进程名查找，因此不会关闭用户手动启动的同名程序。旧进程未能在期限内安全结束时，新程序不会启动；迟到的旧进程事件也不能覆盖新程序状态。
 - 付费合集中的 EXE、DLL、Live2D 模型、纹理、动作、表情、物理文件、Runtime、配置和源压缩包均保持本机私有，不进入 Git、GitHub、Release、安装包、ASAR 或构建输出。目录选择、程序验证或启动失败只产生净化后的可恢复状态，不影响主 Chat、Voice 或 Python Backend。
 

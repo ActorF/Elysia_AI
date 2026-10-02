@@ -76,6 +76,10 @@ test('launches the selected executable directly with its local working folder', 
   assert.equal(events[0][3].windowsHide, false)
   assert.equal(events[0][3].stdio, 'ignore')
   assert.equal(typeof events[0][3].env, 'object')
+  assert.equal(
+    events[0][3].env.__COMPAT_LAYER,
+    process.platform === 'win32' ? 'RunAsInvoker' : undefined,
+  )
   assert.deepEqual(states, [
     ['absent', null],
     ['loading', null],
@@ -85,7 +89,9 @@ test('launches the selected executable directly with its local working folder', 
 
 test('does not forward arbitrary parent environment secrets', async () => {
   const previousSecret = process.env.ELYSIA_DESKTOP_PET_TEST_SECRET
+  const previousCompatibilityLayer = process.env.__COMPAT_LAYER
   process.env.ELYSIA_DESKTOP_PET_TEST_SECRET = 'must-not-reach-the-program'
+  process.env.__COMPAT_LAYER = 'RunAsAdmin'
   const events = []
   const children = []
   try {
@@ -100,11 +106,20 @@ test('does not forward arbitrary parent environment secrets', async () => {
       Object.hasOwn(events[0][3].env, 'ELYSIA_DESKTOP_PET_TEST_SECRET'),
       false,
     )
+    assert.equal(
+      events[0][3].env.__COMPAT_LAYER,
+      process.platform === 'win32' ? 'RunAsInvoker' : undefined,
+    )
   } finally {
     if (previousSecret === undefined) {
       delete process.env.ELYSIA_DESKTOP_PET_TEST_SECRET
     } else {
       process.env.ELYSIA_DESKTOP_PET_TEST_SECRET = previousSecret
+    }
+    if (previousCompatibilityLayer === undefined) {
+      delete process.env.__COMPAT_LAYER
+    } else {
+      process.env.__COMPAT_LAYER = previousCompatibilityLayer
     }
   }
 })

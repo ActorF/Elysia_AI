@@ -213,6 +213,11 @@ Git-ignored and must not be committed or packaged with the application.
   feature disabled until the user opts in again. Position, scale, input mode,
   eye tracking, expressions, and other pet behavior remain owned by the
   companion program and its own interface.
+- The reviewed Bongo Cat Mver launcher declares administrator elevation, but
+  Elysia runs that exact pinned child with Windows `RunAsInvoker`. The unsigned
+  companion receives no administrator rights, and Main retains the owned PID
+  tree required to stop or switch it safely. Input sent to a separately
+  elevated application remains subject to normal Windows integrity isolation.
 - Main stores Desktop Pet intent in a strict version-3 revisioned JSON document
   under Electron `userData`; executable paths remain private to Main. Settings
   receives only a folder name, sanitized program summaries, scan status, and

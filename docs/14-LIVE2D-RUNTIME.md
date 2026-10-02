@@ -136,6 +136,15 @@ Elysia launches the selected reviewed executable with no arguments, with the
 program's own directory as its working directory, and without a command shell.
 The external window remains visible because it is the actual Desktop Pet.
 
+The reviewed Bongo Cat Mver launcher embeds a `requireAdministrator` manifest,
+but Elysia deliberately applies Windows `RunAsInvoker` compatibility for that
+child only. The companion therefore stays under the current interactive user
+token instead of receiving administrator rights, while Main retains the exact
+PID tree needed for safe switching and shutdown. Windows integrity isolation
+may prevent the companion from observing input sent to a separately elevated
+application; Elysia does not elevate itself or the unsigned companion to bypass
+that operating-system boundary.
+
 The original program is responsible for:
 
 - standard mouse-and-keyboard response;
