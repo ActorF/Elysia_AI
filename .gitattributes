@@ -1,3 +1,12 @@
 # Document assets are binary even when a platform-level Git rule installs a text converter.
 *.pdf binary
 *.docx binary
+
+# The Live2D manifest is audited byte-for-byte in source and packaged output.
+# Pin LF so Windows development and Linux CI observe the same reviewed bytes.
+desktop/public/character/live2d/elysia/model.model3.json text eol=lf
+desktop/public/character/live2d/elysia/model.moc3 -text
+desktop/public/character/live2d/elysia/textures/atlas.png -text
+desktop/public/character/live2d/runtime/LICENSE-PurismCore.txt text eol=lf
+# Preserve the third-party build exactly as published, including its own bytes.
+desktop/public/character/live2d/runtime/purismcore.js -text

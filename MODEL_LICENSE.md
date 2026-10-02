@@ -62,7 +62,7 @@ The packaged Elysia model was compiled from the 21 common-canvas layers retained
 
 | Packaged path | Bytes | SHA-256 |
 | --- | ---: | --- |
-| `dist/character/live2d/elysia/model.model3.json` | 566 | `51182139710e3f069e96b93ec50b1cf7d4db9f0208206b5b653df4ec05529f2d` |
+| `dist/character/live2d/elysia/model.model3.json` | 536 | `fde0ebdc6fbfc4e267bdcb8789291eb3505937ecd1ff6146a4b534a401888d00` |
 | `dist/character/live2d/elysia/model.moc3` | 5,220,224 | `4dde51d51db6f37b58d3d5259547ac240d7551c4f20a9a3f72a3413532f25020` |
 | `dist/character/live2d/elysia/textures/atlas.png` | 600,077 | `5b6b943dcc4f6424921bb6ff0ec5d77aa34e95fb8722f5f7660fbd25747c5373` |
 | `dist/character/live2d/runtime/purismcore.js` | 256,528 | `3eec0b1e6cd20bab0773744228aac21f4c882dbef708c28379ba6315a11b15f4` |
