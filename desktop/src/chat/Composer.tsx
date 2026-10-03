@@ -30,9 +30,10 @@ interface ComposerProps {
   attachmentState: AttachmentState | null
   callButtonRef: RefObject<HTMLButtonElement | null>
   canSend: boolean
+  dictationActive: boolean
+  dictationDisabled: boolean
   draft: string
   generationBusy: boolean
-  microphoneTesting: boolean
   modelSelectionPending: boolean
   modelOptions: string[]
   notice: ChatNotice | null
@@ -51,8 +52,7 @@ interface ComposerProps {
   onSelectModel(modelName: string): void
   onSend(): void
   onStop(): void
-  onVerifyMicrophone(): void
-  onVoicePlaceholder(): void
+  onToggleDictation(): void
 }
 
 /** Render the controlled Chat composer and translate user gestures to actions. */
@@ -66,9 +66,10 @@ export function Composer({
   attachmentState,
   callButtonRef,
   canSend,
+  dictationActive,
+  dictationDisabled,
   draft,
   generationBusy,
-  microphoneTesting,
   modelSelectionPending,
   modelOptions,
   notice,
@@ -87,8 +88,7 @@ export function Composer({
   onSelectModel,
   onSend,
   onStop,
-  onVerifyMicrophone,
-  onVoicePlaceholder,
+  onToggleDictation,
 }: ComposerProps) {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
   const attachmentTriggerRef = useRef<HTMLButtonElement | null>(null)
@@ -216,34 +216,24 @@ export function Composer({
           <div className="voice-tools">
             <button
               type="button"
-              className="tool-button optional-tool"
-              onClick={onVerifyMicrophone}
-              aria-label={microphoneTesting
-                ? 'Stop microphone test'
-                : 'Test microphone input'}
-              aria-pressed={microphoneTesting}
-              title={microphoneTesting
-                ? 'Stop microphone test'
-                : 'Test microphone input'}
+              className={'tool-button dictation-button' + (
+                dictationActive ? ' active' : ''
+              )}
+              disabled={!dictationActive && dictationDisabled}
+              onClick={onToggleDictation}
+              aria-label={dictationActive ? 'Stop dictation' : 'Dictate'}
+              aria-pressed={dictationActive}
+              title={dictationActive ? 'Stop dictation' : 'Dictate'}
             >
               <Icon name="microphone" />
-            </button>
-            <button
-              type="button"
-              className="tool-button optional-tool"
-              onClick={onVoicePlaceholder}
-              aria-label="Start voice"
-              title="Start voice"
-            >
-              <Icon name="voice" />
             </button>
             <button
               ref={callButtonRef}
               type="button"
               className="tool-button phone-button"
               onClick={onOpenCall}
-              aria-label="Open voice capture"
-              title="Open voice capture"
+              aria-label="Voice Call"
+              title="Voice Call"
             >
               <Icon name="phone" />
             </button>

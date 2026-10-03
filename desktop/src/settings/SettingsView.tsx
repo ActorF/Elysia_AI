@@ -380,7 +380,7 @@ function validateDraft(draft: SettingsDraft): SettingsValidationErrors {
     errors.voiceEmotion = 'Choose neutral, happy, or sad.'
   }
   if (draft.transcriptReviewMode !== 'manual') {
-    errors.transcriptReviewMode = 'Voice transcripts must remain in manual review mode.'
+    errors.transcriptReviewMode = 'The legacy transcript policy must retain its compatible manual value.'
   }
   return errors
 }
@@ -1745,56 +1745,6 @@ export function SettingsView({
                 )}
               </label>
 
-              <label className="settings-field">
-                <span>Call captions</span>
-                <select
-                  value={String(draft.captionsEnabled)}
-                  onChange={(event) => {
-                    updateDraft('captionsEnabled', event.target.value === 'true')
-                  }}
-                  disabled={backendFieldsDisabled}
-                  aria-describedby={`${backendFieldId}-captions-help`}
-                >
-                  <option value="true">Show captions</option>
-                  <option value="false">Hide captions</option>
-                </select>
-                <small id={`${backendFieldId}-captions-help`}>
-                  Controls assistant captions in Voice calls after saving.
-                </small>
-              </label>
-
-              <label className="settings-field">
-                <span>Transcript review</span>
-                <select
-                  value={draft.transcriptReviewMode}
-                  disabled
-                  aria-describedby={`${backendFieldId}-transcript-review-help`}
-                >
-                  <option value="manual">Manual review before send</option>
-                </select>
-                <small id={`${backendFieldId}-transcript-review-help`}>
-                  Recognition never sends a Chat message without your explicit review.
-                </small>
-              </label>
-
-              <label className="settings-field">
-                <span>Continue listening after replies</span>
-                <select
-                  value={String(draft.automaticRelisten)}
-                  onChange={(event) => {
-                    updateDraft('automaticRelisten', event.target.value === 'true')
-                  }}
-                  disabled={backendFieldsDisabled}
-                  aria-describedby={`${backendFieldId}-automatic-relisten-help`}
-                >
-                  <option value="false">Off</option>
-                  <option value="true">On</option>
-                </select>
-                <small id={`${backendFieldId}-automatic-relisten-help`}>
-                  Starts another local capture only after an explicitly started
-                  Voice turn finishes. Every transcript still requires review.
-                </small>
-              </label>
             </div>
           </section>
 

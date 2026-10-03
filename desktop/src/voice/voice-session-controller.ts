@@ -35,7 +35,7 @@ export interface VoiceSessionOwner extends VoiceSessionBinding {
   readonly epoch: number
 }
 
-/** PCM-free final transcript retained for explicit user review. */
+/** PCM-free final transcript retained until the owning surface confirms it. */
 export interface VoiceSessionTranscript {
   readonly captureSessionId: string
   readonly requestId: string
@@ -95,7 +95,7 @@ extends VoiceCaptureCompletion {
   readonly requestId: string
 }
 
-/** Safe final STT data accepted for review without any audio payload. */
+/** Safe final STT data accepted without any audio payload. */
 export interface VoiceTranscriptionFinal
 extends VoiceTranscriptionAcknowledgement {
   readonly text: string
@@ -391,7 +391,7 @@ export class VoiceSessionController {
     )
   }
 
-  /** Keep a safe final transcript in `transcribing` until explicit confirmation. */
+  /** Keep a safe final transcript in `transcribing` until owner confirmation. */
   acceptTranscriptionFinal(event: VoiceTranscriptionFinal): boolean {
     const transcription = this.transcription
     if (

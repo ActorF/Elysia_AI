@@ -32,8 +32,8 @@ export type AudioCaptureStatus =
   | 'cancelled'
   | 'error'
 
-/** Distinguish ordinary one-shot recording from continuous interruption watch. */
-export type AudioCapturePurpose = 'utterance' | 'barge-in'
+/** Distinguish one-shot dictation from owner-bounded continuous call capture. */
+export type AudioCapturePurpose = 'utterance' | 'voice-call' | 'barge-in'
 
 /**
  * Select capture behavior. Barge-in callers supply the exact identifier before
@@ -42,6 +42,10 @@ export type AudioCapturePurpose = 'utterance' | 'barge-in'
 export type AudioCaptureStartOptions =
   | {
       readonly purpose?: 'utterance'
+      readonly sessionId?: never
+    }
+  | {
+      readonly purpose: 'voice-call'
       readonly sessionId?: never
     }
   | {
@@ -375,7 +379,7 @@ function monoInput(buffer: AudioBuffer): Float32Array {
 }
 
 /**
- * Own either one ordinary utterance or one continuous barge-in monitor.
+ * Own either one ordinary utterance or one owner-bounded continuous monitor.
  * Only onComplete receives PCM, once, after VAD has proven that the segment
  * contains the minimum amount of voiced audio.
  */
@@ -408,7 +412,7 @@ export class AudioCaptureController {
     this.createDetector = options.createDetector
       ?? ((sessionId, purpose) => new AdaptiveEnergyVoiceActivityDetector(
         sessionId,
-        purpose === 'barge-in'
+        purpose === 'barge-in' || purpose === 'voice-call'
           ? { noSpeechTimeoutSampleCount: null }
           : {},
       ))
@@ -441,9 +445,10 @@ export class AudioCaptureController {
   /**
    * Start capture on an exact device or system default.
    *
-   * Ordinary capture remains one-shot with an internal identifier. Barge-in is
-   * continuous while waiting, requires a caller-owned identifier, and starts
-   * only when the browser proves that echo cancellation is active.
+   * Dictation remains one-shot with a bounded silence timeout. Voice Call and
+   * barge-in may wait indefinitely because their visible owner supplies mute
+   * and close controls; barge-in additionally requires a caller-owned
+   * identifier and verified browser echo cancellation.
    */
   async start(
     deviceId: string | null,

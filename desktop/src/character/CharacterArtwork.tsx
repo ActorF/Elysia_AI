@@ -19,6 +19,7 @@ interface CharacterArtworkProps {
   className?: string
   emotion?: CharacterEmotion
   state: CharacterState
+  variant?: 'state' | 'avatar'
 }
 
 type CharacterAssetStage =
@@ -40,14 +41,17 @@ interface CharacterExpressionAtlasStyle extends CSSProperties {
 /**
  * Display one bounded character visual without making artwork authoritative.
  *
- * State and emotion changes may select a different reviewed image, but no
- * canvas, sprite animation, or lip-synchronization is mounted here. Independent
- * atlas and portrait fallbacks keep Voice and Chat usable when an asset fails.
+ * State and emotion changes may select a different reviewed image, while the
+ * avatar variant deliberately prefers the square expression atlas for circular
+ * crops. No canvas, sprite animation, or lip-synchronization is mounted here.
+ * Independent atlas and portrait fallbacks keep Voice and Chat usable when an
+ * asset fails.
  */
 export function CharacterArtwork({
   className,
   emotion = 'neutral',
   state,
+  variant = 'state',
 }: CharacterArtworkProps) {
   const [expressionAtlasFailed, setExpressionAtlasFailed] = useState(false)
   const [stateAtlasFailed, setStateAtlasFailed] = useState(false)
@@ -65,7 +69,7 @@ export function CharacterArtwork({
     '--character-expression-column': emotionPresentation.atlasColumn,
     '--character-expression-row': emotionPresentation.atlasRow,
   }
-  const wantsExpressionAtlas = (
+  const wantsExpressionAtlas = variant === 'avatar' || (
     state === 'speaking'
     || (state === 'idle' && emotion !== 'neutral')
   )

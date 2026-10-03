@@ -473,6 +473,75 @@ test('ordinary capture keeps generated ownership and its idle timeout', async ()
   await harness.controller.cancel()
 })
 
+test('Voice Call waits without an idle timeout and still completes one VAD utterance', async () => {
+  const callbackOrder = []
+  let processedFrames = 0
+  const pcm = new Int16Array(VOICE_MINIMUM_SPEECH_SAMPLE_COUNT)
+  const segment = {
+    sessionId: 'voice_call_continuous',
+    sampleRate: VOICE_SAMPLE_RATE,
+    channelCount: 1,
+    sampleFormat: 's16le',
+    sampleCount: pcm.length,
+    speechStartSample: 0,
+    speechEndSample: pcm.length,
+    pcm,
+  }
+  const detector = {
+    getSnapshot: () => detectorSnapshot({
+      processedSampleCount: processedFrames * VOICE_FRAME_SAMPLE_COUNT,
+    }),
+    processFrame: () => {
+      processedFrames += 1
+      if (processedFrames === 1) {
+        return detectorSnapshot({
+          state: 'speaking',
+          event: 'speech-started',
+          processedSampleCount: VOICE_FRAME_SAMPLE_COUNT,
+          bufferedSampleCount: VOICE_FRAME_SAMPLE_COUNT,
+          voicedSampleCount: VOICE_MINIMUM_SPEECH_SAMPLE_COUNT,
+        })
+      }
+      return detectorSnapshot({
+        state: 'complete',
+        event: 'speech-completed',
+        processedSampleCount: processedFrames * VOICE_FRAME_SAMPLE_COUNT,
+        bufferedSampleCount: segment.sampleCount,
+        voicedSampleCount: VOICE_MINIMUM_SPEECH_SAMPLE_COUNT,
+        segment,
+      })
+    },
+    stop: () => null,
+    cancel: () => undefined,
+  }
+  const harness = captureHarness({
+    detector,
+    generatedSessionId: 'voice_call_continuous',
+    onSpeechConfirmed: (confirmation) => {
+      callbackOrder.push(`confirmed:${confirmation.sessionId}`)
+    },
+    onComplete: (completed) => {
+      callbackOrder.push(`completed:${completed.sessionId}`)
+    },
+  })
+
+  await harness.controller.start(null, { purpose: 'voice-call' })
+
+  assert.equal(harness.controller.getSnapshot().status, 'waiting')
+  assert.deepEqual(harness.scheduledTimeouts, [])
+  assert.deepEqual(harness.detectorCreations, [{
+    sessionId: 'voice_call_continuous',
+    purpose: 'voice-call',
+  }])
+
+  emitAudioProcess(harness.processor)
+  emitAudioProcess(harness.processor)
+
+  assert.deepEqual(callbackOrder, ['completed:voice_call_continuous'])
+  assert.equal(harness.controller.getSnapshot().status, 'completed')
+  assert.equal(harness.stopped(), 1)
+})
+
 test('verified barge-in waits continuously and confirms speech once before PCM', async () => {
   const callbackOrder = []
   let processedFrames = 0

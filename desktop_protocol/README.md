@@ -44,20 +44,21 @@ advertised as an active capability.
 `settings.get` and `settings.update` expose one exact public allowlist with
 optimistic revision checks: Chat model, Ollama origin, two Memory limits,
 import byte limit, transcription model/device/language, automatic read-aloud,
-speech rate and volume percentages, a logical Voice Profile ID, captions,
-manual Transcript review, and automatic re-listening. The STT fields are
+speech rate and volume percentages, and a logical Voice Profile ID. The STT fields are
 closed enums: `tiny|base|small|medium|large-v3|turbo`, `auto|cuda|cpu`, and
 `auto|zh|en`. Speech rate is an integer from 50 through 200, volume is an
 integer from 0 through 100, and Voice Profile IDs use the bounded logical
-`[a-z0-9][a-z0-9._-]{0,63}` form rather than a filesystem path. Transcript
-review accepts only `manual`, preserving the rule that recognition never sends
-a Chat message without explicit review.
+`[a-z0-9][a-z0-9._-]{0,63}` form rather than a filesystem path. Protocol v1
+still parses and round-trips the retired `captionsEnabled`,
+`transcriptReviewMode`, and `automaticRelisten` fields so older settings files
+can migrate without loss. Current clients do not expose those fields as
+controls, and they do not govern Dictate or Voice Call behavior.
 
 Saved changes are reported separately from active values. Model/runtime/STT
 changes, speech rate, and Voice Profile selection may be listed in
-`restartFields`; automatic read-aloud, volume, captions, manual review, and
-automatic re-listening are live preferences and are never valid restart field
-names. API keys, tokens, passwords, base paths, environment data, arbitrary
+`restartFields`; automatic read-aloud and volume are live preferences and are
+never valid restart field names. Retired compatibility fields are likewise
+never restart fields. API keys, tokens, passwords, base paths, environment data, arbitrary
 extension fields, live microphone state, Transcript content, and current Voice
 session state are rejected. Authenticated Settings reads remain available when
 Brain initialization fails or STT is active so the desktop can diagnose state;
@@ -79,8 +80,8 @@ permission state, live availability, and audio samples never cross this Python
 protocol boundary; Electron owns those transient hardware details.
 
 `voice.capture.complete` is an intentionally narrow bridge for one bounded
-utterance. It is reachable only after the user explicitly starts microphone
-capture in the renderer. The renderer downmixes and resamples input to 16 kHz
+utterance. It is reachable only after the user explicitly presses Dictate or
+opens Voice Call in the renderer. The renderer downmixes and resamples input to 16 kHz
 mono signed 16-bit little-endian PCM, processes 20 ms / 320-sample frames, and
 uses bounded local VAD so silence or short input is discarded before submission.
 An accepted request carries the active Chat ID, a bounded Voice session ID,
@@ -113,13 +114,16 @@ and timeout are immediate logical terminal states. Python cannot safely kill a
 thread executing native inference, so that physical worker remains occupied
 until the call returns; the late result is discarded and new STT or Chat work
 continues to receive a busy response during that drain. Shutdown closes
-admission and suppresses callbacks that lose the shutdown race. Electron now
+admission and suppresses callbacks that lose the shutdown race. Electron
 correlates this optional capability to the originating Voice session and Chat,
-then exposes only the final sanitized transcript to React. React lets the user
-edit it and explicitly place or append it into the current Composer draft; it
-does not send a message automatically. No partial recognized text crosses the
-wire in this slice. Real-time partial transcripts remain part of future
-continuous Voice rather than this bounded final-result contract.
+then exposes only the final sanitized transcript to React. Dictate appends that
+text to the current Composer draft and never sends it. Voice Call instead
+submits each completed final transcript through the existing Chat request path;
+after the reply and expected TTS drain, an unmuted call starts another bounded
+capture. The protocol operation itself still performs no Chat side effect: the
+Renderer chooses the consumer only after exact session ownership validation.
+No partial recognized text crosses the wire. Voice Call is an utterance-based
+loop, not real-time partial recognition or gapless streaming.
 
 Desktop Protocol v1 advertises the optional `voice.speech` capability, but it
 deliberately defines no public request that can synthesize arbitrary text.

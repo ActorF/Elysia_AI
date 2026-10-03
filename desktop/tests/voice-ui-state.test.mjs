@@ -117,11 +117,11 @@ test('shows microphone mute without hiding an active reply state', () => {
   assert.equal(presentation.microphoneLabel, 'Microphone muted')
 })
 
-test('identifies final transcripts as a separate manual-review state', () => {
+test('identifies final transcripts as the automatic Voice Call send boundary', () => {
   const presentation = deriveVoiceUiPresentation(presentationInput({
     transcription: {
       phase: 'final',
-      text: 'Review me before sending.',
+      text: 'Send this complete utterance.',
       language: 'en',
       languageProbability: 0.98,
       error: null,
@@ -129,8 +129,8 @@ test('identifies final transcripts as a separate manual-review state', () => {
     },
   }))
   assert.equal(presentation.primaryState, 'reviewing')
-  assert.equal(presentation.primaryLabel, 'Transcript ready')
-  assert.match(presentation.primaryDescription, /Nothing enters Chat/u)
+  assert.equal(presentation.primaryLabel, 'Sending transcript')
+  assert.match(presentation.primaryDescription, /normal Chat path/u)
 })
 
 test('formats bounded session clocks without leaking invalid numeric values', () => {

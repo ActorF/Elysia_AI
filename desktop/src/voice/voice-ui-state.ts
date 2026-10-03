@@ -6,7 +6,7 @@
 import type { AudioCaptureSnapshot } from './audio-capture.ts'
 import type { VoiceSessionPhase } from './voice-session-controller.ts'
 
-/** Renderer-only phases for one bounded local transcription review. */
+/** Renderer-only phases for one bounded local transcription operation. */
 export type VoiceTranscriptionPhase =
   | 'starting'
   | 'transcribing'
@@ -138,6 +138,7 @@ function derivePrimaryPresentation(
     capture,
     captureDisabledReason,
     interruptionState,
+    microphoneMuted,
     sessionPhase,
     submissionError,
     transcription,
@@ -167,7 +168,17 @@ function derivePrimaryPresentation(
     return {
       state: 'thinking',
       label: 'Elysia is thinking',
-      description: 'The reviewed transcript is using the normal Chat reply path.',
+      description: 'The completed transcript is using the normal Chat reply path.',
+    }
+  }
+  if (
+    microphoneMuted
+    && (sessionPhase === 'idle' || sessionPhase === 'listening')
+  ) {
+    return {
+      state: 'ready',
+      label: 'Microphone muted',
+      description: 'Unmute to resume continuous listening in this Voice Call.',
     }
   }
   if (capture.error !== null || capture.status === 'error') {
@@ -210,8 +221,8 @@ function derivePrimaryPresentation(
       case 'final':
         return {
           state: 'reviewing',
-          label: 'Transcript ready',
-          description: 'Review and edit the local transcript. Nothing enters Chat until you choose an action.',
+          label: 'Sending transcript',
+          description: 'The complete local transcript is entering the normal Chat path for this Voice Call.',
         }
       case 'cancelled':
         return {
@@ -263,7 +274,7 @@ function derivePrimaryPresentation(
         state: 'ready',
         label: 'Ready to listen',
         description: captureDisabledReason
-          ?? 'The microphone stays off until you start it. Audio remains temporary and is transcribed locally.',
+          ?? 'The microphone listens while this Voice Call is unmuted. Audio remains temporary and is transcribed locally.',
       }
   }
 }

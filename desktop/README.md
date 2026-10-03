@@ -4,33 +4,38 @@ The Stage 6 desktop foundation connects a React + TypeScript interface to the
 existing Python Brain through an Electron-owned child process and a strict,
 versioned local protocol. The first Stage 7 Voice slice adds host-local
 microphone and speaker selection, native permission status, and bounded input
-and output tests without retaining audio. The bounded capture slice adds
-explicit one-utterance recording: the renderer downmixes and resamples input to
-16 kHz mono `s16le`, and local VAD submits only valid speech transiently for
-local Faster-Whisper transcription. A bounded final transcript returns through
-Electron to an editable review surface. The user can explicitly send it
-through the current Chat's normal durable path or place it in the Composer,
-where it replaces an empty draft or is appended after existing draft text. A
-renderer-local controller binds the exact Chat and optional Project and owns
+and output tests without retaining audio. The current Composer exposes
+**Dictate** for one explicit utterance: the renderer downmixes and resamples
+input to 16 kHz mono `s16le`, local VAD submits only valid speech transiently
+for local Faster-Whisper transcription, and the final text is appended to the
+current message draft without sending it. **Voice Call** is a separate,
+utterance-based conversation loop. Opening it starts listening immediately;
+each complete utterance is locally transcribed and automatically submitted
+through the current Chat's normal durable path. A renderer-local controller
+binds the exact Chat and optional Project and owns
 the closed `IDLE → LISTENING → TRANSCRIBING → THINKING → SPEAKING → IDLE`
 lifecycle without owning audio bytes. The renderer also has persistent Chat and Project
 surfaces, resilient streamed message actions, revisioned Settings, Chat
 attachments, Project source storage, semantic design tokens, system/light/dark
 themes, keyboard and screen-reader navigation, durable per-Chat drafts,
 renderer-refresh stream recovery, and consistent loading, empty, error,
-offline, and fatal states. This Voice slice still exposes final transcripts
-only and requires explicit submission. After that submission, a dedicated
+offline, and fatal states. The speech-recognition boundary still exposes final
+transcripts only; it does not stream partial recognition. After Voice Call
+automatically submits an utterance, a dedicated
 reply-time monitor can accept sustained user speech while the turn is thinking
 or speaking. It requires WebRTC echo cancellation both as an exact constraint
 and as a verified track setting; otherwise it fails closed and the reply
 continues. Confirmed speech stops exact playback and managed synthesis, requests
 exact Chat cancellation, advances the Voice epoch, and continues the new
-capture in `LISTENING`. An opt-in automatic-relisten policy can begin the next
-bounded capture only after the exact Chat turn and any expected speech playback
-finish normally. Its visible Session control can disable that behavior
-immediately, and every resulting transcript still waits for manual review;
-failures, cancellation, mute, hang-up, and context changes never silently
-reopen the microphone. Real-time partial transcripts remain future work. Ordinary
+  capture in `LISTENING`. After the exact Chat turn settles, an unmuted call
+  begins the next utterance capture; a safely terminal Chat, STT, microphone,
+  or playback failure uses a fresh owner rather than reviving the failed turn.
+  A failed automatic send is restored to the Composer draft before listening
+  resumes whenever local draft storage is available. Mute pauses listening and
+  Close ends the call; context changes prevent stale ownership from reopening
+  the microphone. This is
+not gapless audio streaming, and real-time partial transcripts remain future
+work. Ordinary
 Chat replies now copy exact Brain chunks into a bounded sentence queue backed
 by one managed local GPT-SoVITS worker. Correlation metadata crosses NDJSON,
 while validated PCM WAV uses private fd3 framing and preload-owned Web Audio.
@@ -58,10 +63,11 @@ is scanned or imported automatically.
 The Stage 13 Character State API is renderer-local and closed over `idle`,
 `listening`, `thinking`, `speaking`, `working`, `waiting_approval`, and `error`.
 It projects current-Chat generation, current-Project Knowledge activity, Voice's
-primary lifecycle, and Backend failure into the Character Panel and call page.
+primary lifecycle, and Backend failure into the Character Panel and call dialog.
 The contract adds no IPC and never selects a model path or arbitrary animation.
-Main Chat and Voice always render reviewed static half-body artwork selected by
-that state and the user-controlled `neutral / happy / sad` emotion. They do not
+Main Chat renders reviewed static half-body artwork, while Voice Call renders a
+centered circular avatar; both are selected by that state and the user-controlled
+`neutral / happy / sad` emotion. They do not
 load Cubism, create a WebGL context, expose an Animated/Still preference, or
 derive mouth cues from Web Audio RMS. The same active emotion selects the local
 TTS reference after a Backend restart, while artwork failure falls back through
@@ -178,23 +184,26 @@ Git-ignored and must not be committed or packaged with the application.
   device IDs are stored separately in active-root `workspace/settings/audio-device.json`;
   device labels, permission state, availability, and test audio never enter
   Python.
-- In a Chat, **Start voice** and the phone button open the Voice capture page
-  and binds the Session to the exact active Chat and optional Project without
-  requesting microphone access. Only **Start microphone** begins one bounded
-  capture. The renderer downmixes and resamples input, and local VAD waits for
-  valid speech before sending temporary 16 kHz mono `s16le` PCM to Python once.
-  A successful recognition displays an editable **Final transcript**. **Send
-  transcript** explicitly submits it through the normal durable Chat path;
-  **Use transcript in message** or **Append transcript to message** only updates
-  the existing Composer draft. Direct Voice submission preserves that draft
-  and does not attach files staged in the Composer. Only after this explicit
-  Voice submission may the app open a reply-time interruption monitor.
-- The Voice header shows the bound model and a live Session timer. Separate
-  lifecycle and microphone-status regions announce ready, opening, listening,
-  speech detected, transcription, **Elysia is thinking**, **Elysia is
-  speaking**, interruption, cancellation, and safe failure states. Assistant
-  captions are visible only when enabled and can be hidden or shown from the
-  Session without changing their saved global default.
+- In a Chat, the left microphone is **Dictate**. Pressing it begins one bounded
+  capture; the renderer downmixes and resamples input, local VAD waits for valid
+  speech, and one temporary 16 kHz mono `s16le` payload is sent to Python. A
+  successful final transcript is appended to the current Composer draft and is
+  never sent automatically.
+- The phone button is **Voice Call**. It opens a rectangular modal bound to the
+  exact active Chat and optional Project and starts listening immediately. Each
+  completed utterance is transcribed locally and automatically submitted through
+  the normal durable Chat path. Voice submission preserves the existing Composer
+  draft and does not attach files staged there. During the reply, the app may use
+  the guarded interruption monitor; after the Chat turn settles, an unmuted call
+  resumes listening for the next utterance. Recoverable microphone and STT
+  failures retry with a fresh owner, and failed automatic sends preserve the
+  transcript in the Composer draft before listening resumes when storage allows.
+- Voice Call announces ready, opening, listening, speech detected,
+  transcription, **Elysia is thinking**, **Elysia is speaking**, interruption,
+  cancellation, and safe failure states. A live timer and centered circular
+  Elysia avatar are followed by exactly two circular icon controls:
+  **Mute/Unmute** and **Close voice**. Their names appear through hover tooltips
+  and accessible labels rather than permanent visible text.
 - The optional Character Panel and Voice portrait consume the same semantic
   Character State contract. Closed registries map each state and the active
   `neutral / happy / sad` user setting to reviewed cells; no model output can
@@ -265,19 +274,16 @@ Git-ignored and must not be committed or packaged with the application.
   focuses the ordinary main window.
 - **Mute** immediately ends and discards a live capture or held interruption
   PCM and disarms reply monitoring; it does not cancel an already-running text
-  reply, and unmuting never opens the microphone by itself. **Hang up** or
-  `Escape` releases the Voice Session's capture, transcription, monitoring, and
-  exact managed playback, while an already-running Chat reply may continue on
-  the Chat page. **Audio settings** follows the same cleanup boundary before it
-  opens the device controls. Leaving through any of these paths asks first when
-  a non-empty Final transcript would be lost.
-- The visible **Auto-continue** control mirrors the saved automatic-relisten
-  default when Voice opens and can be turned off during the Session. When it is
-  on, a normal reply returns to capture only after both the exact Chat request
-  and any expected speech finish successfully. Cancellation, failure,
-  interruption, mute, hang-up, or a Chat/Project change invalidates the pending
-  continuation. The next Final transcript is still editable and is never sent
-  automatically.
+  reply. **Unmute** restores the listening mode appropriate to the current call
+  phase. **Close voice** or `Escape` releases the Voice Call's capture,
+  transcription, monitoring, and exact managed playback, while an
+  already-running Chat reply may continue on the Chat page.
+- Voice Call has no manual-review, caption, audio-settings, or Auto-continue
+  controls. While unmuted it returns to capture only after both the exact Chat
+  request and any expected speech finish successfully. Cancellation, failure,
+  Close, or a Chat/Project change invalidates the pending continuation. Every
+  new capture still ends at one Final Transcript boundary before automatic Chat
+  submission; this is an utterance-based loop, not partial or gapless streaming.
 - Settings shows Global defaults beside the active Project's inheritance and
   the active Chat's pinned model. Speech recognition selects
   `tiny` / `base` / `small` / `medium` / `large-v3` / `turbo`,
@@ -335,11 +341,10 @@ Git-ignored and must not be committed or packaged with the application.
 
 ### Global Voice behavior settings
 
-The eight Voice behavior values are stored with the other global Backend
-settings. **Live after Save** means that a newly admitted operation observes the
-saved value without restarting the Backend; it does not mean that Save can
-rewrite work already in flight. Exactly five settings are live and three
-require a restart:
+Settings exposes five effective Voice behavior values. **Live after Save**
+means that a newly admitted operation observes the saved value without
+restarting the Backend; it does not mean that Save can rewrite work already in
+flight. Two settings are live and three require a restart:
 
 | Settings control (`global.json` field) | Default | Valid value | Apply boundary | Contract |
 | --- | --- | --- | --- | --- |
@@ -348,9 +353,11 @@ require a restart:
 | **Speech volume (%)** (`speechVolumePercent`) | 100 | 0–100 | Live after Save | Trusted preload applies the active value to each admitted clip; 0 silences playback without disabling synthesis. |
 | **Voice profile** (`voiceProfileId`) | `default` | Configured logical Profile ID | **Backend restart required** | The active Profile remains unchanged until restart. |
 | **Voice emotion** (`voiceEmotion`) | `neutral` | `neutral` / `happy` / `sad` | **Backend restart required** | The same active closed value selects the local TTS reference and reviewed static expression; model output cannot override it. |
-| **Call captions** (`captionsEnabled`) | Show | Show / Hide | Live after Save | Supplies the default for newly opened Voice Sessions; the Session control remains available. |
-| **Transcript review** (`transcriptReviewMode`) | `manual` | `manual` only | Live invariant | The disabled selector documents the enforced policy: recognition never sends without explicit review. |
-| **Continue listening after replies** (`automaticRelisten`) | Off | On / Off | Live after Save | A clean Voice reply may open one new bounded capture, but its transcript still requires manual review. |
+
+Older settings documents and Protocol v1 shapes can still contain
+`captionsEnabled`, `transcriptReviewMode`, and `automaticRelisten`. They are
+retained only for lossless migration and wire compatibility; the current UI
+does not expose them, and they do not change Dictate or Voice Call behavior.
 
 ## Manual Voice UI and real-device acceptance checklist
 
@@ -377,7 +384,7 @@ Install `requirements-stt.txt`, place a complete model in the matching
 `models\weights\faster-whisper\<model>\` directory, then select that model and
 **CPU only** under **Settings → Speech recognition**. Save and restart the
 Backend. Open a Chat, enter a short draft if you want to exercise append, choose
-**Start voice**, and use the rows below as the test script.
+**Dictate** or **Voice Call**, and use the rows below as the test script.
 
 These rows state expected behavior, not completed results. Every result is
 deliberately **Pending — manual run required** until a tester observes it on the
@@ -386,23 +393,20 @@ immediately if Windows reports that microphone access is denied.
 
 | Exercise | Expected result | Result |
 | --- | --- | --- |
-| Open Voice without starting capture. | The exact Chat/Project and model are bound, the Session timer advances, primary status is ready, microphone status is off, and no permission prompt appears merely from opening Voice. | Pending — manual run required |
-| Choose **Start microphone**, speak, and pause for about 0.6 seconds. | Status progresses through opening, listening/speech detected, and transcription. One editable **Final transcript** appears; no Chat request is sent and no partial recognition text is exposed. | Pending — manual run required |
-| Edit the result, then choose **Use transcript in message** or **Append transcript to message**. | The Composer is updated without sending. Append preserves existing draft text. Repeat the capture and choose **Send transcript**: the message uses the normal durable path in the bound Chat while the pre-existing Composer draft and staged files remain unchanged. | Pending — manual run required |
-| Observe a reviewed, submitted turn with captions shown and then hidden. | Primary status progresses through thinking and, when speech is expected, speaking; microphone status is announced separately. Assistant caption text follows its visible toggle. The Session settles only after the Chat terminal and expected speech terminal both arrive. | Pending — manual run required |
-| Press **Mute** during a normal capture and again during reply-time/held interruption capture. | The microphone closes, admitted or held PCM is discarded, monitoring is disarmed, and no transcript or Chat Turn is created from discarded audio. A running text reply is not cancelled. Unmute does not reopen capture by itself. | Pending — manual run required |
-| Turn **Auto-continue** on and complete a reviewed Voice turn normally. | After the exact Chat and any expected speech finish, one new bounded capture starts. The button remains visible; turning it off stops an automatically owned capture. Its transcript still waits for manual review. | Pending — manual run required |
-| Repeat with Auto-continue on, then mute, cancel, interrupt, hang up, change Chat/Project, or cause Chat/speech failure before clean completion. | No stale callback or pending continuation reopens the microphone. | Pending — manual run required |
-| Leave a non-empty Final transcript and try `Ctrl+,`, **Audio settings**, **Hang up**, and `Escape`. | Each route warns before data loss. Cancel keeps the review text and Session; confirming performs the requested cleanup/navigation without sending the transcript. | Pending — manual run required |
-| Open **Audio settings** from Voice, then run the microphone and speaker tests. | Voice capture, transcription, monitoring, and exact playback are released before the device page opens. The chosen opaque device remains selected after Save; cancelling a device picker is a no-op. | Pending — manual run required |
-| Submit a reviewed turn and speak a sustained phrase while thinking or speaking on hardware whose track reports echo cancellation enabled. | The UI shows interruption listening and then interruption, stops only that exact Chat stream and speech owner, rolls to a new listening epoch, and rejects late callbacks from the old epoch. The new Final transcript is not sent automatically. | Pending — manual run required |
+| Press **Dictate**, speak, and pause. | Status progresses through local capture and transcription; the final text is appended to the existing Composer draft, no Chat request is sent, and no partial recognition text is exposed. | Pending — manual run required |
+| Open **Voice Call**. | The rectangular modal binds the exact Chat/Project, its timer advances, and capture begins immediately. A centered circular Elysia avatar appears above exactly two icon-only controls whose hover/accessibility names are **Mute/Unmute** and **Close voice**. | Pending — manual run required |
+| Speak one complete utterance in Voice Call and pause. | The status progresses through listening, speech detected, transcription, and thinking. The Final Transcript is automatically submitted through the normal durable Chat path while the pre-existing Composer draft and staged files remain unchanged. No partial recognition text or transcript-review UI appears. | Pending — manual run required |
+| Let one Voice reply and any expected playback finish. | The Session settles both Chat and speech ownership, then an unmuted call automatically begins one new utterance capture. | Pending — manual run required |
+| Press **Mute** during normal capture and again during reply-time/held interruption capture, then press **Unmute**. | Mute closes the microphone, discards admitted or held PCM, and disarms monitoring without cancelling a running text reply. Unmute resumes the listening mode appropriate to the current phase. | Pending — manual run required |
+| Interrupt, change Chat/Project, or cause a Chat/speech failure before clean completion. | No stale callback or pending continuation reopens the microphone. An open, unmuted call may instead start one freshly owned capture after the failed turn settles; a failed outgoing transcript is restored to the Composer draft when storage permits. | Pending — manual run required |
+| Speak a sustained phrase while thinking or speaking on hardware whose track reports echo cancellation enabled. | The UI shows interruption listening and then interruption, stops only that exact Chat stream and speech owner, rolls to a new listening epoch, and rejects late callbacks from the old epoch. The completed new utterance is automatically submitted through normal Chat. | Pending — manual run required |
 | Repeat where WebRTC echo cancellation cannot be verified. | Monitoring fails closed, releases its microphone, shows a safe warning, and permits the current reply to continue. | Pending — manual run required |
 | Repeat interruption attempts in quiet, speaker-echo, and headset conditions, recording trial count, false triggers, and observed interruption delay. | Verified AEC must not let Elysia's own playback trigger interruption; sustained user speech should interrupt without cancelling another turn. Record the measurements instead of replacing them with an automated simulation. | Pending — manual run required |
-| Stay silent for about 10 seconds, then separately try **Cancel capture** and **Cancel transcription**. | Each path returns to a safe terminal state and creates no Chat-history Turn. | Pending — manual run required |
-| Close Voice during managed playback, then switch Chat or Project in a separate run. | Exact playback and Voice-owned audio stop; the old Session cannot be reopened by late events. A text reply already in progress may continue in its Chat. | Pending — manual run required |
-| Keep one Voice Session open for a recorded duration and complete several capture, reply, mute, and interruption cycles before hanging up. | Resource use remains bounded, the Windows microphone indicator turns off after hang-up, no background capture or playback remains, and opening a fresh Session still works. | Pending — manual run required |
-| Enable Windows Narrator or another screen reader and exercise capture, transcription, thinking/speaking, mute, cancellation, one recoverable error, and hang-up. | Controls have understandable names and focus order; primary lifecycle and microphone status are announced separately without contradictory or repeated status floods. | Pending — manual run required |
-| Save each of the five live settings, exercising a newly admitted operation after every Save. | Read-aloud, per-clip volume, caption default, enforced manual review, and automatic relisten reflect the saved value without a Backend restart. Volume 0 is silent while the text reply still completes. | Pending — manual run required |
+| Stay silent in Voice Call, then choose **Mute** and **Close voice** in separate runs. | Silence does not create an empty Chat turn. Each control releases its owned capture without retaining audio. | Pending — manual run required |
+| Close Voice Call during managed playback, then switch Chat or Project in a separate run. | Exact playback and Voice-owned audio stop; the old Session cannot be reopened by late events. A text reply already in progress may continue in its Chat. | Pending — manual run required |
+| Keep one Voice Call open for a recorded duration and complete several capture, reply, mute, and interruption cycles before closing. | Resource use remains bounded, the Windows microphone indicator turns off after Close, no background capture or playback remains, and opening a fresh call still works. | Pending — manual run required |
+| Enable Windows Narrator or another screen reader and exercise Dictate, capture, transcription, thinking/speaking, Mute/Unmute, one recoverable error, and Close. | Controls have understandable accessible names and focus order; primary lifecycle and microphone status are announced without contradictory or repeated status floods. | Pending — manual run required |
+| Save each of the two live Voice settings, exercising a newly admitted operation after every Save. | Read-aloud and per-clip volume reflect the saved value without a Backend restart. Volume 0 is silent while the text reply still completes. | Pending — manual run required |
 | Save a different speech rate, Voice Profile, and Voice Emotion without restarting, then restart the Backend. | All three controls report restart-required; active behavior stays at the old values before restart. After a successful restart, the closed emotion changes both the TTS reference choice and reviewed static expression. | Pending — manual run required |
 
 For every real-device run, record the following fields together with the table
@@ -750,23 +754,25 @@ method, results, capability gaps, and limitations.
   partial manifest proves launch consistency, not complete supply-chain
   provenance, so desktop speech caching remains disabled.
 - Settings accepts an exact non-sensitive allowlist, including the closed STT
-  model/device/language enums and eight Voice behavior fields, uses optimistic
+  model/device/language enums and Voice behavior fields, uses optimistic
   revisions and atomic replacement, and remains repairable after Backend
-  initialization rejects a saved model or Ollama origin. Read-aloud, volume,
-  captions, the manual-review invariant, and automatic relisten are adopted
-  between admitted operations after Save; synthesis rate, Voice Profile, and
-  the closed `neutral / happy / sad` Voice Emotion keep their prior active
-  values until a Backend restart. The active emotion controls both the TTS
-  reference choice and reviewed static expression; model output has no field
-  that can select arbitrary character animation.
+  initialization rejects a saved model or Ollama origin. Read-aloud and volume
+  are adopted between admitted operations after Save; synthesis rate, Voice
+  Profile, and the closed `neutral / happy / sad` Voice Emotion keep their prior
+  active values until a Backend restart. Retired caption, transcript-review,
+  and automatic-relisten fields are compatibility-only and do not control the
+  current UI. The active emotion controls both the TTS reference choice and
+  reviewed static expression; model output has no field that can select
+  arbitrary character animation.
 - Audio-device preferences use an independent optimistic revision and remain
   repairable while Chat generation is active or Brain initialization has
   failed. Electron owns hardware enumeration, Windows permission state, and
   immediate resource cleanup when a test, capture, or visible context ends.
   Microphone and speaker-selection permissions are limited to the trusted main
-  renderer. Opening the Voice page does not request microphone access; capture
-  begins only from the user's explicit control. After **Send transcript**, the
-  reply-time monitor requires verified WebRTC echo cancellation and sustained
+  renderer. **Dictate** explicitly starts one draft-only capture, while opening
+  **Voice Call** explicitly starts its utterance-based listening loop. After a
+  Voice Call utterance is automatically submitted, the reply-time monitor
+  requires verified WebRTC echo cancellation and sustained
   local VAD; inability to verify the track fails closed instead of risking a
   self-interruption. Accepted PCM exists only during the correlated local
   transcription request. If an interrupted utterance must wait for the old Chat
@@ -774,12 +780,12 @@ method, results, capability gaps, and limitations.
   is wiped on timeout, hang-up, Voice close, Chat/Project switch, or another
   privacy boundary. The final result contains bounded text and safe language
   metadata, never PCM, model paths, or native diagnostics. Neither process
-  persists audio. Capture and transcription alone never create a Chat Turn;
-  each Final Transcript still requires the user's explicit send confirmation.
-  Automatic relisten is a visible, disableable Session policy, not an
-  auto-submit mode: it admits a new capture only after a clean exact-turn
-  completion, and mute, failure, cancellation, hang-up, or context replacement
-  invalidates its ownership before the microphone can reopen.
+  persists audio. Dictate capture and transcription alone never create a Chat
+  Turn; Voice Call deliberately submits a completed Final Transcript through
+  the normal Chat path. An unmuted call admits the next capture only after a
+  clean exact-turn completion, and Mute, failure, cancellation, Close, or
+  context replacement invalidates stale ownership before the microphone can
+  reopen.
 - Native selection and drop paths remain inside the trusted preload/Electron
   boundary. Python copies validated regular files into opaque, scope-specific
   storage, and protocol responses expose only safe metadata and attachment IDs.

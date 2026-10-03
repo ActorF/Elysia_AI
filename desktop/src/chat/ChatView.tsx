@@ -40,10 +40,11 @@ interface ChatViewProps {
   canSend: boolean
   chatMode: 'chat' | 'work'
   chatTitle: string
+  dictationActive: boolean
+  dictationDisabled: boolean
   draft: string
   generationBusy: boolean
   messages: ChatMessage[]
-  microphoneTesting: boolean
   modelSelectionPending: boolean
   modelOptions: string[]
   notice: ChatNotice | null
@@ -75,8 +76,7 @@ interface ChatViewProps {
   onStop(): void
   onTogglePanel(): void
   onToggleSidebar(): void
-  onVerifyMicrophone(): void
-  onVoicePlaceholder(): void
+  onToggleDictation(): void
 }
 
 function statusLabel(snapshot: BackendSnapshot): string {
@@ -111,10 +111,11 @@ export function ChatView({
   canSend,
   chatMode,
   chatTitle,
+  dictationActive,
+  dictationDisabled,
   draft,
   generationBusy,
   messages,
-  microphoneTesting,
   modelSelectionPending,
   modelOptions,
   notice,
@@ -146,8 +147,7 @@ export function ChatView({
   onStop,
   onTogglePanel,
   onToggleSidebar,
-  onVerifyMicrophone,
-  onVoicePlaceholder,
+  onToggleDictation,
 }: ChatViewProps) {
   const scrollRef = useRef<HTMLElement | null>(null)
   const stickToBottomRef = useRef(true)
@@ -292,9 +292,10 @@ export function ChatView({
         attachmentState={attachmentState}
         callButtonRef={callButtonRef}
         canSend={canSend}
+        dictationActive={dictationActive}
+        dictationDisabled={dictationDisabled}
         draft={draft}
         generationBusy={generationBusy}
-        microphoneTesting={microphoneTesting}
         modelSelectionPending={modelSelectionPending}
         modelOptions={modelOptions}
         notice={notice}
@@ -316,8 +317,7 @@ export function ChatView({
           onSend()
         }}
         onStop={onStop}
-        onVerifyMicrophone={onVerifyMicrophone}
-        onVoicePlaceholder={onVoicePlaceholder}
+        onToggleDictation={onToggleDictation}
       />
     </div>
   )

@@ -20,7 +20,7 @@
 
 > [!IMPORTANT]
 >
-> 本项目目前是 **开发预览**，不是下载即用的正式发行版。桌面壳仍依赖源码目录中的 Python 环境、Ollama 和本地模型；Project Sources 管理、本地文件问答与可信引用、有界单句 STT、显式确认的 Voice Session、受管 GPT-SoVITS 分句播放、思考/朗读期间的安全 Barge-in，以及正常回复后的可选自动续听已经接通。文件问答必须由用户在 Project Chat 中明确开启；自动续听默认关闭、在通话页可见且可随时关闭，每轮 Final Transcript 仍需人工检查并明确发送。封闭的 Character State API 把 Chat、Voice 与 Knowledge 生命周期映射到主界面和 Voice 的审核静态半身素材；应用内角色始终静态，不创建 Live2D 或动态嘴型。独立桌宠默认关闭；用户选择本机 `@书呆儿` Bongo Cat Mver 程序合集目录后，Electron Main 只列出通过固定 Hash 校验的程序，用户明确开启时只启动选中的原程序，由它提供动态角色、键鼠反馈、眼部追踪与表情。付费程序、EXE、DLL、Live2D 模型及其 Runtime 不进入 Git、GitHub、安装包或构建输出。用户限定的 `neutral / happy / sad` 选择 TTS 参考与静态角色表情，模型不能下发任意情绪、路径或动画指令。固定文案的系统通知继续默认关闭。通知允许独立开启回复完成提示，并可另选 Daily / Weekly 中性提醒，也可一键全部关闭。提醒的调度与投递只在 Elysia 已运行时发生，不建立后台服务、开机自启、连续打卡或模型生成的主动消息。可选语音 Runtime、模型和参考音频均不随基础安装提供，实时 Partial Transcript、Work Agent 与正式安装体验尚未完成。真实麦克风/扬声器、房间回声和长通话人工矩阵未执行，项目负责人已明确豁免其作为当前交付的关闭门槛，因此本项目不声称这些人工观察已经通过。
+> 本项目目前是 **开发预览**，不是下载即用的正式发行版。桌面壳仍依赖源码目录中的 Python 环境、Ollama 和本地模型；Project Sources 管理、本地文件问答与可信引用、Composer Dictate、本地 Voice Call、受管 GPT-SoVITS 分句播放，以及思考/朗读期间的安全 Barge-in 已经接通。Dictate 把一次完整语音转写追加到当前消息草稿且绝不自动发送；打开 Voice Call 会立即开始监听，每段完整语句经本地转写后自动通过当前 Chat 的正常路径发送，回复及预期 TTS 完成后只要未静音就继续监听。Mute 暂停麦克风，Close 结束通话。这个循环仍是基于完整语句（utterance-based）的 Final Transcript 流程，不提供实时 Partial Transcript 或无缝（gapless）音频流。文件问答必须由用户在 Project Chat 中明确开启。封闭的 Character State API 把 Chat、Voice 与 Knowledge 生命周期映射到审核静态角色素材：主界面使用半身状态板，Voice Call 使用居中的圆形头像；应用内角色始终静态，不创建 Live2D 或动态嘴型。独立桌宠默认关闭；用户选择本机 `@书呆儿` Bongo Cat Mver 程序合集目录后，Electron Main 只列出通过固定 Hash 校验的程序，用户明确开启时只启动选中的原程序，由它提供动态角色、键鼠反馈、眼部追踪与表情。付费程序、EXE、DLL、Live2D 模型及其 Runtime 不进入 Git、GitHub、安装包或构建输出。用户限定的 `neutral / happy / sad` 选择 TTS 参考与静态角色表情，模型不能下发任意情绪、路径或动画指令。固定文案的系统通知继续默认关闭。通知允许独立开启回复完成提示，并可另选 Daily / Weekly 中性提醒，也可一键全部关闭。提醒的调度与投递只在 Elysia 已运行时发生，不建立后台服务、开机自启、连续打卡或模型生成的主动消息。可选语音 Runtime、模型和参考音频均不随基础安装提供，实时 Partial Transcript、Work Agent 与正式安装体验尚未完成。真实麦克风/扬声器、房间回声和长通话人工矩阵未执行，项目负责人已明确豁免其作为当前交付的关闭门槛，因此本项目不声称这些人工观察已经通过。
 
 ---
 
@@ -32,10 +32,10 @@
 - 🧠 **分范围记忆** — 为 Global、Project、Chat 提供独立边界，并保留长期记忆、摘要与人工确认流程
 - 🛡️ **严格桌面边界** — Renderer 沙箱、受限 Preload、来源校验与认证 NDJSON Protocol v1
 - 📎 **Project Sources 与本地文件问答** — Project 文件可添加、替换、重新索引、导出、撤销和删除，并可向前恢复中断的持久操作；生产 Python Runtime 有界加载、清洗、分块、索引和检索，从 canonical Chat→Project 关系授权共享 Sources，经固定本地 Ollama Adapter 生成结构化回答，并在桌面 Chat 中持久显示可信 Citation
-- 🎙️ **本地 Voice Session** — 显式采集经过本地 VAD 与 Faster-Whisper；Final Transcript 可编辑，发送后可在思考或朗读期间自然打断
+- 🎙️ **本地 Dictate 与 Voice Call** — Dictate 只把单次转写写入草稿；Voice Call 打开即监听、按完整语句自动发送，并在未静音时循环继续
 - 🔊 **本地回复朗读** — Python 按自然断句排队调用受管 GPT-SoVITS，Electron 在可信 Preload 中按序播放经过双重校验的 PCM WAV
 - 🎭 **角色状态 API** — 将 Chat、Voice 与 Knowledge 生命周期归一为封闭语义状态，并为未来 Work/Approval 保留闭集；角色组件不直接操作动画文件
-- 🌸 **应用内静态角色** — 主界面与 Voice 使用审核半身素材呈现七种语义状态和用户限定情绪，始终静态且不依赖 Live2D
+- 🌸 **应用内静态角色** — 主界面使用审核半身素材，Voice Call 使用居中圆形头像来呈现语义状态和用户限定情绪；两者始终静态且不依赖 Live2D
 - 🌷 **可选动态桌宠** — 默认关闭；Settings 扫描用户选择的本机 `@书呆儿` Bongo Cat Mver 程序合集，选定后由原程序提供完整动态交互
 - 🔕 **可选 Presence 与系统通知** — 回复完成通知和 Daily / Weekly 中性提醒均默认关闭、静音且可完全停用；固定文案不包含对话、Project 或文件内容
 - 💾 **恢复优先** — 本地 JSON 存储、旧会话迁移、损坏隔离、原子写入以及导入/导出服务
@@ -51,17 +51,17 @@
 | Chat History | ✅ 可用 | 多会话、置顶、归档、恢复、删除与独立草稿 |
 | Project | ✅ 可用 | 元数据、Instructions、Workspace 绑定和 Chat 归属 |
 | Memory Core | ✅ 可用 | Global / Project / Chat Scope、检索、摘要与长期记忆基础 |
-| Settings | ✅ 可用 | Chat/Ollama/Memory/文件/STT、主题、本机桌宠程序目录与程序选择，以及自动朗读、语速、音量、Voice Profile、`neutral / happy / sad` Voice Emotion、字幕、人工 Transcript 审核和自动续听 |
+| Settings | ✅ 可用 | Chat/Ollama/Memory/文件/STT、主题、本机桌宠程序目录与程序选择，以及自动朗读、语速、音量、Voice Profile 与 `neutral / happy / sad` Voice Emotion |
 | Attachments / Sources | ✅ 可用 | Scope-bound 文件存储与 Project Sources UI；生命周期写操作支持进度、受限协作取消和显式恢复；已验证原始文件导出共用全局 Knowledge 租约，但不进入操作日志、也没有 Renderer Stop |
 | Audio Devices | ✅ 可用 | 麦克风/扬声器选择、Windows 权限、输入电平与输出音调测试 |
-| 单句录音与本地 VAD | ✅ 可用 | 显式启动、16 kHz mono `s16le`、临时处理；不会自动生成 Chat Turn |
+| 单句录音与本地 VAD | ✅ 可用 | Dictate 由用户显式启动且只更新草稿；Voice Call 打开即启动下一段完整语句采集；16 kHz mono `s16le` 临时处理 |
 | STT / Faster-Whisper | ✅ 基础可用 | Electron/React 与本地 Final Transcript 已接通；需另装可选依赖并放置本地模型 |
-| 有界 Voice Session | ✅ 可用 | `IDLE → LISTENING → TRANSCRIBING → THINKING → SPEAKING → IDLE`；绑定准确 Chat/Project，Final Transcript 必须人工确认 |
+| 有界 Voice Call | ✅ 可用 | `IDLE → LISTENING → TRANSCRIBING → THINKING → SPEAKING → IDLE`；绑定准确 Chat/Project，每段 Final Transcript 自动走正常 Chat 发送路径 |
 | GPT-SoVITS / TTS | ✅ 基础可用 | Chat 串流分句、受管本机 Worker、有界队列、私有 fd3 传输与 Electron 播放已接通；需本机 Runtime、Profile、权重和参考音频 |
-| Barge-in / 语音打断 | ✅ 可用 | 仅在显式发送的 Voice Turn 回复期间启用；要求经过验证的 WebRTC 回声消除与持续语音确认，并精确取消该 Turn |
-| 自动续听 | ✅ 可用 | 可见开关可在正常回复安全结束后再次监听；默认关闭，Final Transcript 不会自动发送 |
+| Barge-in / 语音打断 | ✅ 可用 | 在 Voice Call 自动提交的 Turn 回复期间启用；要求经过验证的 WebRTC 回声消除与持续语音确认，并精确取消该 Turn |
+| Voice Call 连续循环 | ✅ 可用 | 打开即监听；正常回复与预期朗读结束后，未静音就继续下一段完整语句；Mute 暂停，Close 结束 |
 | Character State API | ✅ 可用 | 封闭的 `idle / listening / thinking / speaking / working / waiting_approval / error` 合同；Chat、Voice 与 Knowledge 已接入，审批状态保留给后续真实 Work/Approval 流程 |
-| 应用内角色 | ✅ 可用 | 主界面与 Voice 固定使用审核静态半身素材，由七种语义状态和三种用户限定表情选择；不执行 Live2D、动态角色渲染或音频驱动嘴型 |
+| 应用内角色 | ✅ 可用 | 主界面使用审核静态半身素材，Voice Call 使用居中圆形头像，并由语义状态和三种用户限定表情选择；不执行 Live2D、动态角色渲染或音频驱动嘴型 |
 | 外部动态桌宠 | ✅ 可用 | 默认 `disabled`；用户选择本机程序合集目录后，Settings 列出严格验证通过的程序，`visible` 只启动选中项；切换时必须先关闭由 Elysia 启动的旧 PID Tree，失败则不启动新项 |
 | Presence 与系统通知 | ✅ 可用 | 回复完成通知默认 Off；中性提醒只允许 Off / Daily / Weekly，前台、Voice 或忙碌时不弹出且不补发；无云推送、后台服务、行为追踪或模型生成通知 |
 | 文件解析与本地 RAG | ✅ 基础可用 | 版本化 Chunk Lineage、固定本地 Embedding 空间、Scope-safe SQLite 索引、有界 Retriever/Reranker、loopback-only Grounded Generator、同 Project 多 Chat 共享且跨 Project fail-closed；Chat 需显式开启 **Use Project Sources**，证据不足不会生成无引用回答 |
@@ -117,7 +117,7 @@ flowchart LR
 - **协议双端校验**：TypeScript 与 Python 使用同一组 JSON Schema/fixture 约束，连接前完成版本、能力与随机会话令牌握手。
 - **本地数据可恢复**：关键 JSON 使用严格 Schema、revision、原子替换和损坏隔离；生成取消不会保存残缺的正式回复。
 - **文档派生、授权、检索与回答保持可验证**：生产 Python Pipeline 从无路径 `LoadedDocument` 生成版本化 Chunk，复核 Piece-table、Fingerprint/Lineage 与 Source Mapping，再把精确 Chunk Lineage 绑定到固定本地 Embedding 空间和 Scope-safe SQLite 索引。Project-only Knowledge Lifecycle 用路径私有 journal 协调 add/replace/reindex/rebuild/revoke/delete：新 Generation 最后发布 catalog，破坏性操作先 tombstone 再清理。`ProjectSourceAnswerService` 只从 canonical Chat→Project 关系、原子 ownership snapshot 与显式 catalog 派生准确 Generation；Retriever 只搜索该闭集。`GroundedAnswerService` 再选择完整命中的有界前缀，把问题、片段与 style guidance 作为不可信 JSON Data 交给固定 digest、loopback-only 的同步结构化 Generator，并只发布能解析到可信 Evidence 的陈述与 Citation。Assistant 文本和 proof 原子保存，桌面可展开安全来源与页/块/单元格定位；结构闭包仍不能证明模型概括或推断在语义上必然正确。
-- **副作用必须显式**：打开 Voice 页面不会请求麦克风；首次采集必须由用户主动开始。用户发送审核后的 Transcript 后，程序才可在该回复期间监听打断；只有用户明确开启可见的自动续听开关，正常完成的回复才会开始下一次有界采集，而且识别结果仍不会自动发送。选择附件不会自动读取内容，Project 的 Workspace 绑定也不会自动执行工具。
+- **副作用保持在明确入口内**：点击 Dictate 是一次只写入当前草稿的麦克风操作；点击 **Voice Call** 是开启持续语音循环并请求麦克风的明确操作。Voice Call 按完整语句转写并自动发送，回复阶段使用受保护的打断监听，正常回复和预期朗读排空后在未静音时继续下一段；Mute 暂停，Close、切换 Chat/Project 或能力失败会结束或阻止旧 Owner 重开麦克风。选择附件不会自动读取内容，Project 的 Workspace 绑定也不会自动执行工具。
 
 更多实现细节见 [Desktop 开发指南](./desktop/README.md)、[Protocol v1](./desktop_protocol/README.md)、[Document Cleaning and Chunking](./docs/06-DOCUMENT-CLEANING-CHUNKING.md)、[Local Embeddings and Vector Store](./docs/07-LOCAL-EMBEDDINGS-VECTOR-STORE.md)、[Retriever and Reranking](./docs/08-RETRIEVER-RERANKING.md)、[Grounded Answers and Citations](./docs/09-GROUNDED-ANSWERS-CITATIONS.md)、[Project Sources](./docs/10-PROJECT-SOURCES.md)、[Knowledge Lifecycle](./docs/11-KNOWLEDGE-LIFECYCLE.md)、[Knowledge UI and Testing](./docs/12-KNOWLEDGE-UI-TESTING.md) 与 [Electron Shell 决策记录](./docs/decisions/0001-desktop-shell.md)。
 
@@ -243,7 +243,7 @@ DEBUG=False
 
 桌面端 **Settings** 允许修改 Chat 模型、Ollama Origin、Memory 限额、文件导入大小，以及本地转写模型、设备和默认语言；这些公开设置使用独立 revision 并写入当前数据根下的 `workspace/settings/global.json`。转写模型可选 `tiny` / `base` / `small` / `medium` / `large-v3` / `turbo`，设备可选 `auto` / `cuda` / `cpu`，语言可选 `auto` / `zh` / `en`。默认使用 `cpu`，为同时驻留的 Ollama 与 GPT-SoVITS 保留 GPU 显存；只有在目标机器完成三组件资源基准后才建议显式改为 `auto` 或 `cuda`。
 
-同一份全局设置还包含八个语音字段：自动朗读、50–200% 语速、0–100% 音量、受限的逻辑 Voice Profile ID、`neutral / happy / sad` Voice Emotion、字幕、Transcript 审核模式和自动续听。其中自动朗读、音量、字幕、只允许 `manual` 的审核模式以及自动续听共五项是 live preference；语速、Voice Profile 与 Voice Emotion 三项进入 `restartFields`，在 Backend 重启前保持 Saved/Active 分离。成功重启后，同一 Active Emotion 同时选择本地 TTS 参考与审核静态表情。其余模型、Ollama、Memory/文件限额与 STT Runtime 设置也继续遵守既有重启边界；主题保存在当前设备的 Renderer Storage 中并立即生效。
+当前 Settings 展示五个有效语音行为字段：自动朗读、50–200% 语速、0–100% 音量、受限的逻辑 Voice Profile ID，以及 `neutral / happy / sad` Voice Emotion。自动朗读和音量在下一次获准操作时实时生效；语速、Voice Profile 与 Voice Emotion 进入 `restartFields`，在 Backend 重启前保持 Saved/Active 分离。成功重启后，同一 Active Emotion 同时选择本地 TTS 参考与审核静态表情。旧版 `captionsEnabled`、`transcriptReviewMode` 与 `automaticRelisten` 字段只为读取旧设置和协议兼容保留，不再显示为控件，也不改变现在的 Dictate/Voice Call 流程。其余模型、Ollama、Memory/文件限额与 STT Runtime 设置继续遵守既有重启边界；主题保存在当前设备的 Renderer Storage 中并立即生效。
 
 桌面应用不要求云端 API Key。文字 Chat 只连接本地 Ollama；可选桌面 TTS 由 Python Backend 从固定本机目录启动受管 GPT-SoVITS Worker，并经私有 fd3 把音频交给 Electron。独立的 Python Smoke CLI 仍可连接 Loopback GPT-SoVITS 进行诊断。`GPT_SOVITS_ALLOW_LOCAL_EVALUATION` 默认关闭；只有在你确认本地 Voice Profile 的权利与路径后才应显式开启。不要把未来的密钥、Token、私人 Prompt 或私人配置提交到仓库。
 
@@ -274,19 +274,18 @@ DEBUG=False
 ### 🎙️ Voice
 
 - 已实现麦克风/扬声器枚举、设备偏好、Windows 麦克风权限状态、短暂输入电平与输出音调测试。
-- 有界单句采集只在用户点击 **Start microphone** 后开始；Renderer 本地 downmix、重采样并运行本地 VAD。
+- Composer 左侧的 **Dictate** 只在用户点击后启动一次有界采集；Renderer 本地 downmix、重采样并运行本地 VAD，Final Transcript 追加到当前消息草稿且不会发送。
 - 有效片段固定为 16 kHz、mono、signed 16-bit little-endian PCM；同一份 PCM 只提交一次并保持临时，最终协议结果不含音频、模型路径或 Native Error。
-- Voice 页面使用封闭的五状态生命周期：`IDLE → LISTENING → TRANSCRIBING → THINKING → SPEAKING → IDLE`。Final Transcript 返回后仍停留在 `TRANSCRIBING`，允许用户检查和编辑；只有显式点击 **Send transcript** 才会进入 `THINKING`。
-- **Send transcript** 复用与文字 Composer 相同的可靠 Chat 发送路径，不存在第二套 Voice Brain。用户消息、Brain 串流回复、Chat 持久化、Summary 与 Scoped Memory 都属于打开 Voice 时绑定的准确 Chat 和可选 Project；文字与语音可以在同一 Chat History 中交替使用。
-- **Use transcript in message** / **Append transcript to message** 仍是只写入草稿、不发送的替代操作。直接发送 Transcript 不会消费已有 Composer 草稿，也不会把暂存附件附加到语音消息。
+- 点击 **Voice Call** 会打开长方形通话框并立即进入监听。每段完整语句经本地 VAD 和 Faster-Whisper 得到 Final Transcript 后自动进入 `THINKING`；没有人工 Transcript 编辑、确认或发送步骤。
+- Voice Call 的自动提交复用与文字 Composer 相同的可靠 Chat 发送路径，不存在第二套 Voice Brain。用户消息、Brain 串流回复、Chat 持久化、Summary 与 Scoped Memory 都属于打开通话时绑定的准确 Chat 和可选 Project；文字与语音可以在同一 Chat History 中交替使用。语音提交不会消费已有 Composer 草稿，也不会附带暂存文件。
 - 播放开始后 Session 进入 `SPEAKING`。文字终态与播放终态可以任意先后到达，只有两侧都结束后才回到 `IDLE`；若 `voice.speech` 不可用或运行中失效，文字回复仍正常完成，不会因等待可选语音而卡住。
 - 快速生成的长回复先进入有界原文 Spool，再由独立 Feeder 按合成队列背压逐句送入；不会因瞬间超过八个待合成分句就截断整段朗读。停止或替换回复只丢弃过期输出，不再把健康的受管语音 Worker 当作故障永久停用。Preload 在连续分句间复用一个可信 Web Audio 输出图，每句仍重新应用当前音量与输出设备；失败、超时或异常回执只退役当前播放世代，同一个可信窗口可自动恢复下一句。
-- 用户显式发送审核后的 Transcript 后，回复处于 `THINKING` 或 `SPEAKING` 时会启动专用 Barge-in 监听。它要求 WebRTC `echoCancellation: { exact: true }`，并验证实际 Track Settings；无法确认回声消除时会 Fail Closed、释放麦克风并让当前回复安全继续，不信任未经验证的回声路径。已验证的 AEC 用于降低 Elysia 扬声器输出造成自身打断的风险；本文不据此声称已通过真实麦克风/扬声器设备矩阵验收。
+- Voice Call 自动提交一段语句后，回复处于 `THINKING` 或 `SPEAKING` 时会启动专用 Barge-in 监听。它要求 WebRTC `echoCancellation: { exact: true }`，并验证实际 Track Settings；无法确认回声消除时会 Fail Closed、释放麦克风并让当前回复安全继续，不信任未经验证的回声路径。已验证的 AEC 用于降低 Elysia 扬声器输出造成自身打断的风险；本文不据此声称已通过真实麦克风/扬声器设备矩阵验收。
 - Barge-in VAD 要求持续语音达到确认阈值。确认用户开口后，可信边界先停止本地播放，再以准确 `{requestId, chatId}` 取消该 Turn 的待处理/运行中 Speech，并以准确 Chat Request 请求停止 LLM Stream；重复、迟到或错误归属的取消不能影响其他 Turn。
 - Session 绑定准确的 Chat ID、Project ID 和本地 epoch；Capture、STT、Chat Request 与 Speech Sequence 都必须匹配。接受打断会递增 Epoch，并把已确认的新采集接入新的 `LISTENING`；旧轮次迟到事件以及关闭 Voice、切换 Chat/Project 或导航后的跨上下文事件都会被拒绝。
 - Chat 继续使用原有事务 Commit Gate：取消在 Commit 前胜出时，不会保存残缺的 Assistant Message；若完整提交已先胜出，则保留完整文字并只停止仍属于该 Turn 的播放。若新一轮 PCM 已完成但旧 Chat 仍未终止，它只在内存中等待最多 10 秒；超时、挂断、上下文切换和其他隐私边界会覆盖并丢弃该缓冲区，不会发送或保存。
-- Voice UI 会分别显示 Listening、Transcribing、Thinking、Speaking、Monitoring、Interrupting、Cancelled 与 Error 状态，并提供计时、字幕、静音、挂断和音频设备入口。当前 STT 仍只返回 Final Transcript，没有实时 Partial Transcript 或自动提交；普通采集、打断后的新采集以及自动续听得到的 Transcript 都必须由用户检查并明确发送。
-- 自动续听默认关闭，并同时受 Settings 默认值和通话页可见开关控制。开启后，只有 Chat 正常完成且预期的朗读也安全结束，程序才会开始下一次有界采集；静音、挂断、关闭 Voice、切换 Chat/Project、关闭该开关、能力或设备不可用，以及失败或取消终态都会暂停或退出循环。
+- Voice Call 会显示当前生命周期和计时，中间是圆形爱莉希雅头像，底部只保留无常驻文字的圆形 **Mute/Unmute** 与 **Close voice** 控件；控件名称通过 Hover Tooltip 和可访问名称提供，不再显示字幕、Transcript 审核、设备入口或自动续听开关。
+- Voice Call 未静音时持续执行“监听一段完整语句 → Final Transcript 自动发送 → 等待回复及预期 TTS 结束 → 继续监听”的循环；Unmute 会恢复当前阶段允许的监听，Mute 暂停，Close 与上下文变化会阻止旧 Owner 恢复。可恢复的麦克风、STT、Chat 或播放失败只会在终止旧 Owner 后建立全新监听 Owner；自动发送失败时，会在本地草稿存储可用的前提下先把 Transcript 恢复到 Composer 草稿。它是 utterance-based 循环，并非实时 Partial Transcript 或 gapless streaming。
 - Settings 与 Voice 页面只显示经过枚举净化的就绪状态。缺模型、缺可选依赖、CUDA 不可用或初始化失败时会给出可操作步骤，不显示本地路径、底层异常或 Native 诊断；`auto` 可以选择安全的 CPU 回退。
 - 已完成一次真实 CPU Runtime/模型的本地转写 Smoke 验证；CUDA 成功路径尚未在本文声称为实机验证。自动化测试同时覆盖 Fake Runtime、Cancel、Timeout、Native Draining 和迟到结果丢弃。
 - 2026-09-23 的三组件实机基准让 `qwen3.5:9b` 与受管 GPT-SoVITS 并行使用 RTX 4070 SUPER，并在两者驻留时用 CPU Faster-Whisper 转写；观察到全局峰值 9,824 / 12,282 MiB。完整测量、清理证据、限制与重测条件见 [Voice Performance, Safety, and Rights Acceptance](./docs/03-VOICE-PERFORMANCE-SAFETY-RIGHTS.md)。
@@ -296,7 +295,7 @@ DEBUG=False
 
 ### 🌷 可选外部动态桌宠
 
-- 应用内 Chat 与 Voice 的角色状态板永远使用审核静态半身素材。动态桌宠是独立、默认关闭的本机程序能力：首次运行或偏好损坏时保持 `disabled`；`hidden` 保留目录与程序选择但不运行外部程序；只有用户明确选择 `visible` 才尝试启动。
+- 应用内 Chat 角色状态板使用审核静态半身素材，Voice Call 使用审核静态圆形头像。动态桌宠是独立、默认关闭的本机程序能力：首次运行或偏好损坏时保持 `disabled`；`hidden` 保留目录与程序选择但不运行外部程序；只有用户明确选择 `visible` 才尝试启动。
 - Settings 的 **Choose downloaded folder** 使用原生目录选择器选择用户已持有的 `@书呆儿` Bongo Cat Mver 程序合集。Main 按有界深度、条目数和候选数扫描，拒绝链接逃逸，只接受同时具备 `standard / keyboard / gamepad` 三套完整配置的候选；Settings 显示实际验证通过的程序数量，不硬编码“六套”。记录的免费版下载页为 <https://pan.quark.cn/s/cb5d84acad8e>，但其当前内容、授权、条款和可用性尚未核验，不能假定与项目所有者购买的本机合集相同。
 - “选择一个文件夹”不等于允许执行其中任意 EXE。Main 要求 Launcher、`BongoCatUI.exe`、`BongoCatMverUI.dll`、全部允许的顶层 DLL 与必要资源匹配固定字节长度和 SHA-256；每次实际启动前重新验证选中程序，任何变化都会 Fail Closed，并要求重新扫描。绝对路径只存在于 Electron Main，React 只接收净化后的程序摘要与稳定选中 ID。
 - Main 只以原目录为工作目录启动当前选中的程序，不加载或渲染其中的 Live2D。键盘/鼠标反馈、眼部追踪、表情快捷键、窗口移动缩放和动态角色表现全部由原 Bongo Cat Mver 程序负责。每套原 `config.json` 留在原程序目录；Elysia 只为识别受支持输入配置做有界结构验证，不改写、不复制，也不把配置变成应用数据。
@@ -460,11 +459,11 @@ cd /d D:\Elysia_AI\desktop
 
 ### 为什么 Voice 页面显示本地转写不可用？
 
-先用 `requirements-stt.txt` 安装可选 Runtime，把所选模型的完整本地目录放到 `models\weights\faster-whisper\<model>\`，再到 **Settings → Speech recognition** 选择模型、`auto` / `cuda` / `cpu` 设备和 `auto` / `zh` / `en` 语言，保存并重启 Backend。Voice 页面会显示安全的具体恢复提示。Final Transcript 永远不会在用户确认前发送；检查或编辑后，可以点击 **Send transcript**，让它通过当前 Chat 的正常发送、持久化、Memory 和回复链，也可以选择 **Use/Append transcript in message**，只把文字放入 Composer 后继续编辑。
+先用 `requirements-stt.txt` 安装可选 Runtime，把所选模型的完整本地目录放到 `models\weights\faster-whisper\<model>\`，再到 **Settings → Speech recognition** 选择模型、`auto` / `cuda` / `cpu` 设备和 `auto` / `zh` / `en` 语言，保存并重启 Backend。界面会显示安全的具体恢复提示。Composer 的 **Dictate** 把一次 Final Transcript 写入当前消息草稿且不发送；**Voice Call** 则在打开后监听，并把每段完整语句的 Final Transcript 自动通过当前 Chat 的正常发送、持久化、Memory 和回复链提交。
 
 ### 为什么桌面端仍可能没有语音？
 
-桌面回复朗读已经接通，但它是可选能力：必须存在完整本机 GPT-SoVITS Runtime、严格 Voice Profile、匹配 Hash 的权重与参考音频，并显式开启 `GPT_SOVITS_ALLOW_LOCAL_EVALUATION`。长回复的分句会经过有界 Spool 和背压 Feeder 完整排队；连续分句在 Preload 中复用同一个 Web Audio 输出图，避免反复重建 Windows 音频设备。若单句合成、解码或播放失败，受影响句子会被跳过；播放超时或异常回执会自动换用新的播放 Owner，只有无法安全继续的通道或生命周期故障才会停用语音，文字 Chat 始终继续工作。用户在单句 Native 合成正在执行时停止或替换回复，该过期单句会被静默排空，以免强制中止污染整个受管 Worker；新朗读因此可能等待该单句返回，若第三方 Runtime 卡住则最长等到已配置的合成超时，但文字回复不受影响。有界、人工确认的 Voice Session、回复期间 Barge-in 和正常回复后的可选自动续听均已接通；Barge-in 还要求浏览器能启用并证实 WebRTC Echo Cancellation，否则会安全关闭监听并继续回复。自动续听不会自动发送识别文本。实时 Partial Transcript 尚未完成；256 轮 Python STT、256 轮 Speech Queue 与 200 轮 Renderer Voice Soak 已证明程序内 Owner 会清空，但真实设备、房间回声和多小时人类通话矩阵未执行，并由项目负责人明确豁免为当前交付的关闭门槛，不代表这些人工观察已经通过。
+桌面回复朗读已经接通，但它是可选能力：必须存在完整本机 GPT-SoVITS Runtime、严格 Voice Profile、匹配 Hash 的权重与参考音频，并显式开启 `GPT_SOVITS_ALLOW_LOCAL_EVALUATION`。长回复的分句会经过有界 Spool 和背压 Feeder 完整排队；连续分句在 Preload 中复用同一个 Web Audio 输出图，避免反复重建 Windows 音频设备。若单句合成、解码或播放失败，受影响句子会被跳过；播放超时或异常回执会自动换用新的播放 Owner，只有无法安全继续的通道或生命周期故障才会停用语音，文字 Chat 始终继续工作。用户在单句 Native 合成正在执行时停止或替换回复，该过期单句会被静默排空，以免强制中止污染整个受管 Worker；新朗读因此可能等待该单句返回，若第三方 Runtime 卡住则最长等到已配置的合成超时，但文字回复不受影响。Voice Call 的 utterance-based 自动提交、回复期间 Barge-in 和未静音时的下一语句监听均已接通；Barge-in 还要求浏览器能启用并证实 WebRTC Echo Cancellation，否则会安全关闭监听并继续回复。实时 Partial Transcript 与 gapless streaming 尚未完成；256 轮 Python STT、256 轮 Speech Queue 与 200 轮 Renderer Voice Soak 已证明程序内 Owner 会清空，但真实设备、房间回声和多小时人类通话矩阵未执行，并由项目负责人明确豁免为当前交付的关闭门槛，不代表这些人工观察已经通过。
 
 ### 如何让 Project Chat 回答文件内容？
 

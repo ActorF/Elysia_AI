@@ -26,6 +26,7 @@ export type IconName =
   | 'memory'
   | 'menu'
   | 'microphone'
+  | 'microphone-off'
   | 'monitor'
   | 'moon'
   | 'more'
@@ -41,7 +42,6 @@ export type IconName =
   | 'sun'
   | 'stop'
   | 'trash'
-  | 'voice'
 
 export interface IconProps extends Omit<SVGProps<SVGSVGElement>, 'name'> {
   name: IconName
@@ -131,8 +131,13 @@ export function Icon({
         </>
       )
       break
-    case 'voice':
-      content = <path d="M4 14v-4M8 17V7M12 20V4M16 17V7M20 14v-4" />
+    case 'microphone-off':
+      content = (
+        <>
+          <path d="M9 5.2V6a3 3 0 0 1 5.6-1.5M15 9.5V12a3 3 0 0 1-5.2 2" />
+          <path d="M5.5 11.5a6.5 6.5 0 0 0 10.8 4.9M18.5 11.5a6.5 6.5 0 0 1-.5 2.5M12 18v3M9 21h6M4 4l16 16" />
+        </>
+      )
       break
     case 'phone':
       content = <path d="M7.2 3.5 10 8l-2 2a15 15 0 0 0 6 6l2-2 4.5 2.8-.5 3.1c-.2.8-.9 1.4-1.7 1.4C9.7 20.5 3.5 14.3 2.7 5.7c0-.8.6-1.5 1.4-1.7z" />

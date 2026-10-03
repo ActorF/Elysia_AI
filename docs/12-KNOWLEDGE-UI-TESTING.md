@@ -15,7 +15,7 @@ Project 页面现在显示 canonical **Project Sources** 面板，并支持：
 - 导出经验证的 original；导出共用全局 Knowledge lease，但没有 journal entry 或 Renderer Stop；
 - 在归档 Project 中只读查看 Sources 与操作历史。
 
-每个 Project Chat 另有明确的 **Use Project Sources** 开关。关闭时继续走原有普通 Chat；开启时，Backend 只能从该 Chat 的 canonical Project 关系推导可读 corpus。Renderer 只在当前窗口内保存这项 opt-in，并把它绑定到准确 `chatId + projectId`；刷新/重开会重置，Chat 移到另一 Project 或 Project 被归档也会立即撤销。每次 Send、Retry 或 Voice Transcript 显式发送都携带当次 intent，不会因 Project 中存在文件而自动开启。
+每个 Project Chat 另有明确的 **Use Project Sources** 开关。关闭时继续走原有普通 Chat；开启时，Backend 只能从该 Chat 的 canonical Project 关系推导可读 corpus。Renderer 只在当前窗口内保存这项 opt-in，并把它绑定到准确 `chatId + projectId`；刷新/重开会重置，Chat 移到另一 Project 或 Project 被归档也会立即撤销。每次文字 Send、Retry 或 Voice Call 完整语句的自动提交都携带当次 intent，不会因 Project 中存在文件而自动开启。
 
 成功的 grounded Assistant Message 会把陈述分为 `source_fact`、`model_summary` 和 `inference`，并显示可键盘访问的 Citation 详情。UI 只显示安全文件名、媒体类型、可选页码、可信 excerpt，以及 text block/offset 或 table cell 定位；它不会收到本地路径、内容 hash、内部 File ID、Vector、Prompt、模型推理或 traceback。证据不足是结构化 `insufficient_evidence` 结果，不会退回成无引用的普通回答。
 
