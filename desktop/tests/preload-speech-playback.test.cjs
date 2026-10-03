@@ -17,6 +17,14 @@ const PLAYBACK_IDS = [
   '00000000-0000-4000-8000-000000000004',
   '00000000-0000-4000-8000-000000000005',
   '00000000-0000-4000-8000-000000000006',
+  '00000000-0000-4000-8000-000000000007',
+  '00000000-0000-4000-8000-000000000008',
+  '00000000-0000-4000-8000-000000000009',
+  '00000000-0000-4000-8000-00000000000a',
+  '00000000-0000-4000-8000-00000000000b',
+  '00000000-0000-4000-8000-00000000000c',
+  '00000000-0000-4000-8000-00000000000d',
+  '00000000-0000-4000-8000-00000000000e',
 ]
 const DESKTOP_PET_PICKER_STATE = Object.freeze({
   folderName: '付费模型',
@@ -38,6 +46,13 @@ let speechVolumePercent = 100
 let rejectSinkSelection = false
 let deferSettings = false
 let releaseSettings = null
+let deferContextClose = false
+let releaseContextClose = null
+let deferSinkSelection = false
+let releaseSinkSelection = null
+let endSynchronouslyOnStop = false
+let latestSource = null
+let rejectGainConnection = false
 
 class FakeIpcRenderer extends EventEmitter {
   /** Record private settlement without forwarding it outside this test. */
@@ -98,6 +113,10 @@ class FakeBufferSource {
   stop() {
     this.stopped = true
     operations.push('stop')
+    if (endSynchronouslyOnStop && typeof this.onended === 'function') {
+      this.ended = true
+      this.onended()
+    }
   }
 }
 
@@ -110,6 +129,9 @@ class FakeGainNode {
   /** Record the final gain-to-destination connection. */
   connect() {
     operations.push('gain-connect')
+    if (rejectGainConnection) {
+      throw new Error('private native gain connection failure')
+    }
   }
 
   /** Record gain cleanup with the source and AudioContext. */
@@ -136,18 +158,26 @@ class FakeAnalyserNode {
 }
 
 class FakeAudioContext {
-  /** Create an isolated context and destination for one private clip. */
+  /** Create one reusable context and destination for trusted private clips. */
   constructor(options) {
     assert.deepEqual(options, { sampleRate: 32_000 })
     this.destination = Object.freeze({ kind: 'destination' })
     this.gain = null
     this.source = null
+    this.closed = false
+    this.sinkId = null
     contexts.push(this)
   }
 
   /** Record context cleanup after playback or failure. */
   close() {
     operations.push('close')
+    this.closed = true
+    if (deferContextClose) {
+      return new Promise((resolve) => {
+        releaseContextClose = resolve
+      })
+    }
     return Promise.resolve()
   }
 
@@ -155,6 +185,7 @@ class FakeAudioContext {
   createBufferSource() {
     operations.push('create-source')
     this.source = new FakeBufferSource()
+    latestSource = this.source
     return this.source
   }
 
@@ -190,9 +221,16 @@ class FakeAudioContext {
   /** Select the exact output sink, rejecting instead of falling back. */
   setSinkId(sinkId) {
     operations.push(`sink:${sinkId}`)
-    return rejectSinkSelection
-      ? Promise.reject(new Error('private native device detail'))
-      : Promise.resolve()
+    this.sinkId = sinkId
+    if (rejectSinkSelection) {
+      return Promise.reject(new Error('private native device detail'))
+    }
+    if (deferSinkSelection) {
+      return new Promise((resolve) => {
+        releaseSinkSelection = resolve
+      })
+    }
+    return Promise.resolve()
   }
 }
 
@@ -280,7 +318,7 @@ function mouthSampleWindow() {
 
 /** End any source owned by the current test without double-settling it. */
 function finishLatestPlayback() {
-  const source = contexts.at(-1)?.source
+  const source = latestSource
   if (
     source?.started
     && !source.ended
@@ -294,21 +332,35 @@ function finishLatestPlayback() {
 test.beforeEach(() => {
   operations.length = 0
   settlements.length = 0
-  contexts.length = 0
   outputDeviceId = 'private-headphones'
   speechVolumePercent = 100
   rejectSinkSelection = false
   deferSettings = false
   releaseSettings = null
+  deferContextClose = false
+  releaseContextClose = null
+  deferSinkSelection = false
+  releaseSinkSelection = null
+  endSynchronouslyOnStop = false
+  latestSource = null
+  rejectGainConnection = false
 })
 
 test.afterEach(async () => {
   // A failed assertion must not leave a deferred lookup or active source that
   // can mutate the following test's observations.
   const release = releaseSettings
+  const releaseClose = releaseContextClose
+  const releaseSink = releaseSinkSelection
   releaseSettings = null
+  releaseContextClose = null
+  releaseSinkSelection = null
   deferSettings = false
+  deferContextClose = false
+  deferSinkSelection = false
   release?.()
+  releaseClose?.()
+  releaseSink?.()
   await immediate()
   finishLatestPlayback()
   await immediate()
@@ -324,23 +376,24 @@ test('sandboxed Preload bundle keeps Electron as its only runtime dependency', (
   assert.doesNotMatch(preloadSource, /\bimport\s*\(/u)
 })
 
-test('audio plays through gain without creating or sampling a mouth analyser', async () => {
+test('multiple clips reuse one routed graph without mouth sampling', async () => {
   assert.deepEqual(exposedApis.map(({ name }) => name), ['elysiaDesktop'])
   assert.equal(Object.hasOwn(exposedApis[0].api, 'trustedSpeech'), false)
+  const contextsBeforePlayback = contexts.length
   emitPlayback(PLAYBACK_IDS[0])
   await immediate()
   await mouthSampleWindow()
 
   assert.deepEqual(operations.slice(0, 10), [
+    'create-gain',
+    'gain-connect',
     'resume',
     'settings',
     'global-settings',
     'sink:private-headphones',
     'decode',
     'create-source',
-    'create-gain',
     'connect',
-    'gain-connect',
     'start',
   ])
   assert.equal(operations.includes('create-analyser'), false)
@@ -354,6 +407,32 @@ test('audio plays through gain without creating or sampling a mouth analyser', a
     playbackId: PLAYBACK_IDS[0],
     status: 'played',
   }])
+  assert.equal(operations.includes('close'), false)
+
+  operations.length = 0
+  latestSource = null
+  outputDeviceId = 'second-headphones'
+  speechVolumePercent = 35
+  emitPlayback(PLAYBACK_IDS[1])
+  await immediate()
+
+  assert.equal(contexts.length, contextsBeforePlayback + 1)
+  assert.deepEqual(operations, [
+    'resume',
+    'settings',
+    'global-settings',
+    'sink:second-headphones',
+    'decode',
+    'create-source',
+    'connect',
+    'start',
+  ])
+  assert.equal(contexts.at(-1).gain.gain.value, 0.35)
+  finishLatestPlayback()
+  assert.deepEqual(settlements, [
+    { playbackId: PLAYBACK_IDS[0], status: 'played' },
+    { playbackId: PLAYBACK_IDS[1], status: 'played' },
+  ])
 })
 
 test('main-window preload invokes the exact Desktop Pet directory channel', async () => {
@@ -365,7 +444,7 @@ test('main-window preload invokes the exact Desktop Pet directory channel', asyn
 
 test('sink-selection failure never falls back to the default output', async () => {
   rejectSinkSelection = true
-  emitPlayback(PLAYBACK_IDS[1])
+  emitPlayback(PLAYBACK_IDS[2])
   await immediate()
 
   assert.deepEqual(operations, [
@@ -373,32 +452,33 @@ test('sink-selection failure never falls back to the default output', async () =
     'settings',
     'global-settings',
     'sink:private-headphones',
+    'gain-disconnect',
     'close',
   ])
   assert.deepEqual(settlements, [{
-    playbackId: PLAYBACK_IDS[1],
+    playbackId: PLAYBACK_IDS[2],
     status: 'failed',
   }])
 })
 
 test('null selection deliberately routes to the system default sink', async () => {
   outputDeviceId = null
-  emitPlayback(PLAYBACK_IDS[2])
+  emitPlayback(PLAYBACK_IDS[3])
   await immediate()
 
   assert.ok(operations.indexOf('sink:') < operations.indexOf('start'))
   finishLatestPlayback()
   assert.deepEqual(settlements, [{
-    playbackId: PLAYBACK_IDS[2],
+    playbackId: PLAYBACK_IDS[3],
     status: 'played',
   }])
 })
 
 test('cancellation during settings lookup cannot start stale audio', async () => {
   deferSettings = true
-  emitPlayback(PLAYBACK_IDS[3])
+  emitPlayback(PLAYBACK_IDS[4])
   await immediate()
-  ipcRenderer.emit(CANCEL_CHANNEL, {}, PLAYBACK_IDS[3])
+  ipcRenderer.emit(CANCEL_CHANNEL, {}, PLAYBACK_IDS[4])
   const release = releaseSettings
   assert.equal(typeof release, 'function')
   releaseSettings = null
@@ -409,34 +489,179 @@ test('cancellation during settings lookup cannot start stale audio', async () =>
   assert.equal(operations.includes('decode'), false)
   assert.equal(operations.includes('start'), false)
   assert.deepEqual(settlements, [{
-    playbackId: PLAYBACK_IDS[3],
+    playbackId: PLAYBACK_IDS[4],
     status: 'failed',
   }])
 })
 
 test('validated speech volume is applied through a private gain stage', async () => {
   speechVolumePercent = 35
-  emitPlayback(PLAYBACK_IDS[4])
+  emitPlayback(PLAYBACK_IDS[5])
   await immediate()
 
   assert.equal(contexts.at(-1).gain.gain.value, 0.35)
   assert.ok(operations.indexOf('create-gain') < operations.indexOf('start'))
   finishLatestPlayback()
   assert.deepEqual(settlements, [{
-    playbackId: PLAYBACK_IDS[4],
+    playbackId: PLAYBACK_IDS[5],
     status: 'played',
   }])
 })
 
+test('failed playback waits for graph close before settlement', async () => {
+  rejectSinkSelection = true
+  deferContextClose = true
+  emitPlayback(PLAYBACK_IDS[6])
+  await immediate()
+
+  assert.equal(operations.includes('gain-disconnect'), true)
+  assert.equal(operations.includes('close'), true)
+  assert.deepEqual(settlements, [])
+
+  const release = releaseContextClose
+  assert.equal(typeof release, 'function')
+  releaseContextClose = null
+  deferContextClose = false
+  release()
+  await immediate()
+  assert.deepEqual(settlements, [{
+    playbackId: PLAYBACK_IDS[6],
+    status: 'failed',
+  }])
+})
+
+test('a failed graph is rebuilt for the next clip', async () => {
+  const contextsBeforePlayback = contexts.length
+  emitPlayback(PLAYBACK_IDS[7])
+  await immediate()
+
+  assert.equal(contexts.length, contextsBeforePlayback + 1)
+  assert.equal(operations.includes('create-gain'), true)
+  assert.equal(operations.includes('gain-connect'), true)
+  assert.equal(operations.includes('start'), true)
+  finishLatestPlayback()
+  assert.deepEqual(settlements, [{
+    playbackId: PLAYBACK_IDS[7],
+    status: 'played',
+  }])
+})
+
+test('cancellation wins a synchronous ended callback exactly once', async () => {
+  endSynchronouslyOnStop = true
+  emitPlayback(PLAYBACK_IDS[8])
+  await immediate()
+  const staleOnEnded = latestSource.onended
+
+  ipcRenderer.emit(CANCEL_CHANNEL, {}, PLAYBACK_IDS[8])
+  await immediate()
+  staleOnEnded()
+  await immediate()
+
+  assert.equal(latestSource.stopped, true)
+  assert.deepEqual(settlements, [{
+    playbackId: PLAYBACK_IDS[8],
+    status: 'failed',
+  }])
+})
+
+test('delayed cancelled graph close blocks replacement and stale sink routing', async () => {
+  outputDeviceId = 'sink-a'
+  deferSinkSelection = true
+  deferContextClose = true
+  emitPlayback(PLAYBACK_IDS[9])
+  await immediate()
+  const staleContext = contexts.at(-1)
+  const releaseStaleSink = releaseSinkSelection
+  assert.equal(typeof releaseStaleSink, 'function')
+
+  ipcRenderer.emit(CANCEL_CHANNEL, {}, PLAYBACK_IDS[9])
+  await immediate()
+  assert.equal(staleContext.closed, true)
+  assert.deepEqual(settlements, [])
+
+  deferSinkSelection = false
+  releaseSinkSelection = null
+  outputDeviceId = 'sink-b'
+  const contextsBeforeReplacement = contexts.length
+  emitPlayback(PLAYBACK_IDS[10])
+  await immediate()
+  assert.equal(contexts.length, contextsBeforeReplacement)
+  assert.equal(operations.includes('sink:sink-b'), false)
+  assert.equal(operations.includes('start'), false)
+
+  const releaseStaleClose = releaseContextClose
+  assert.equal(typeof releaseStaleClose, 'function')
+  releaseContextClose = null
+  deferContextClose = false
+  releaseStaleClose()
+  await immediate()
+  const replacementContext = contexts.at(-1)
+  assert.notEqual(replacementContext, staleContext)
+  assert.equal(contexts.length, contextsBeforeReplacement + 1)
+  assert.equal(replacementContext.sinkId, 'sink-b')
+  assert.equal(latestSource.started, true)
+
+  releaseStaleSink()
+  await immediate()
+  assert.equal(replacementContext.sinkId, 'sink-b')
+  finishLatestPlayback()
+  assert.deepEqual(settlements, [
+    { playbackId: PLAYBACK_IDS[9], status: 'failed' },
+    { playbackId: PLAYBACK_IDS[10], status: 'played' },
+  ])
+})
+
 test('invalid speech volume fails closed before decode or playback', async () => {
   speechVolumePercent = 101
-  emitPlayback(PLAYBACK_IDS[5])
+  emitPlayback(PLAYBACK_IDS[11])
   await immediate()
 
   assert.equal(operations.includes('decode'), false)
   assert.equal(operations.includes('start'), false)
   assert.deepEqual(settlements, [{
-    playbackId: PLAYBACK_IDS[5],
+    playbackId: PLAYBACK_IDS[11],
     status: 'failed',
   }])
+})
+
+test('failed graph construction close blocks an immediate replacement', async () => {
+  rejectGainConnection = true
+  deferContextClose = true
+  const contextsBeforeFailure = contexts.length
+  emitPlayback(PLAYBACK_IDS[12])
+  await immediate()
+
+  assert.equal(contexts.length, contextsBeforeFailure + 1)
+  assert.equal(operations.includes('close'), true)
+  assert.deepEqual(settlements, [])
+
+  ipcRenderer.emit(CANCEL_CHANNEL, {}, PLAYBACK_IDS[12])
+  await immediate()
+  assert.deepEqual(settlements, [{
+    playbackId: PLAYBACK_IDS[12],
+    status: 'failed',
+  }])
+
+  rejectGainConnection = false
+  emitPlayback(PLAYBACK_IDS[13])
+  await immediate()
+  assert.equal(contexts.length, contextsBeforeFailure + 1)
+  assert.equal(operations.includes('sink:private-headphones'), false)
+  assert.equal(operations.includes('start'), false)
+
+  const releaseFailedClose = releaseContextClose
+  assert.equal(typeof releaseFailedClose, 'function')
+  releaseContextClose = null
+  deferContextClose = false
+  releaseFailedClose()
+  await immediate()
+
+  assert.equal(contexts.length, contextsBeforeFailure + 2)
+  assert.equal(operations.includes('sink:private-headphones'), true)
+  assert.equal(latestSource.started, true)
+  finishLatestPlayback()
+  assert.deepEqual(settlements, [
+    { playbackId: PLAYBACK_IDS[12], status: 'failed' },
+    { playbackId: PLAYBACK_IDS[13], status: 'played' },
+  ])
 })

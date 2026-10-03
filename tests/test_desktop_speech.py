@@ -620,6 +620,117 @@ def test_pending_stream_reaches_fifo_and_metadata_precedes_binary(
     assert runtime.shutdown_calls == 1
 
 
+def test_long_fast_reply_waits_for_sentence_capacity_without_truncation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Spool more than eight sentences without cancelling the managed turn."""
+
+    runtime = _FakeRuntime()
+    synthesizer = _BlockingSynthesizer()
+    _install_fake_bootstrap(monkeypatch, runtime, synthesizer)
+    stream = _RecordingStream()
+    events: list[tuple[str, str, dict[str, Any]]] = []
+    terminal = Event()
+
+    def _record_event(
+        name: str,
+        request_id: str,
+        data: dict[str, Any],
+    ) -> None:
+        """Capture the complete ordered speech lifecycle."""
+
+        events.append((name, request_id, data))
+        if name == "voice.speech.terminal":
+            terminal.set()
+
+    coordinator = DesktopSpeechCoordinator(
+        _config(tmp_path),
+        AudioChannelWriter(stream),  # type: ignore[arg-type]
+        _record_event,
+    )
+    turn = coordinator.start_turn("request-long", "chat-long")
+    assert coordinator.wait_until_settled(1.0)
+    sentences = tuple(f"Sentence {index}." for index in range(13))
+
+    turn.feed(" ".join(sentences))
+    turn.finish()
+    assert synthesizer.started.wait(1.0)
+    assert not terminal.is_set()
+
+    synthesizer.release.set()
+    assert terminal.wait(3.0)
+
+    assert [request.text.strip() for request in synthesizer.requests] == list(
+        sentences
+    )
+    assert [event[0] for event in events] == [
+        *(["voice.speech.clip"] * len(sentences)),
+        "voice.speech.terminal",
+    ]
+    assert events[-1][2] == {
+        "chatId": "chat-long",
+        "state": "completed",
+        "submittedSentences": len(sentences),
+        "completedSentences": len(sentences),
+        "failedSentences": 0,
+    }
+    assert coordinator.get_status().state == "ready"
+
+    coordinator.shutdown()
+
+
+def test_pre_ready_reply_beyond_old_buffer_limit_is_spoken_completely(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Retain a bootstrap-time reply larger than the former 4,096 limit."""
+
+    runtime = _FakeRuntime(block_bootstrap=True)
+    synthesizer = _SequenceSynthesizer()
+    _install_fake_bootstrap(monkeypatch, runtime, synthesizer)
+    stream = _RecordingStream()
+    terminal = Event()
+    terminal_data: list[dict[str, Any]] = []
+
+    def _record_event(
+        name: str,
+        _request_id: str,
+        data: dict[str, Any],
+    ) -> None:
+        """Capture only the final accounting for the buffered reply."""
+
+        if name == "voice.speech.terminal":
+            terminal_data.append(data)
+            terminal.set()
+
+    coordinator = DesktopSpeechCoordinator(
+        _config(tmp_path),
+        AudioChannelWriter(stream),  # type: ignore[arg-type]
+        _record_event,
+    )
+    turn = coordinator.start_turn("request-bootstrap-long", "chat-bootstrap-long")
+    assert runtime.acquire_started.wait(1.0)
+    reply = ("A long bootstrap reply keeps every word in order, " * 100) + "done."
+    assert len(reply) > 4_096
+    turn.feed(reply)
+    turn.finish()
+
+    runtime.release_acquire.set()
+    assert coordinator.wait_until_settled(1.0)
+    assert terminal.wait(3.0)
+
+    assert "".join(request.text for request in synthesizer.requests) == reply
+    assert terminal_data[-1]["state"] == "completed"
+    assert terminal_data[-1]["submittedSentences"] > 8
+    assert terminal_data[-1]["completedSentences"] == (
+        terminal_data[-1]["submittedSentences"]
+    )
+    assert coordinator.get_status().state == "ready"
+
+    coordinator.shutdown()
+
+
 def test_cancellation_suppresses_late_native_audio(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -730,11 +841,11 @@ def test_terminal_claim_wins_exact_cancel_race_without_staling_settled_work(
     coordinator.shutdown()
 
 
-def test_active_managed_cancel_fail_closes_speech_without_retry(
+def test_active_managed_cancel_preserves_worker_for_the_next_turn(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Disable fd3 after active abort instead of reusing a poisoned worker."""
+    """Discard stale output without aborting the reusable managed worker."""
 
     runtime_lease = _PoisoningManagedLease()
     runtime = _FakeRuntime(runtime_lease=runtime_lease)
@@ -742,6 +853,7 @@ def test_active_managed_cancel_fail_closes_speech_without_retry(
     stream = _RecordingStream()
     events: list[tuple[str, str, dict[str, Any]]] = []
     first_terminal = Event()
+    second_terminal = Event()
 
     def _record_event(
         name: str,
@@ -753,6 +865,8 @@ def test_active_managed_cancel_fail_closes_speech_without_retry(
         events.append((name, request_id, data))
         if name == "voice.speech.terminal" and request_id == "request-active":
             first_terminal.set()
+        if name == "voice.speech.terminal" and request_id == "request-after":
+            second_terminal.set()
 
     coordinator = DesktopSpeechCoordinator(
         _config(tmp_path),
@@ -766,31 +880,42 @@ def test_active_managed_cancel_fail_closes_speech_without_retry(
     assert runtime_lease.started.wait(1.0)
 
     assert first.cancel()
-    assert runtime_lease.abort_called.wait(1.0)
-    assert runtime.shutdown_called.wait(1.0)
     assert first_terminal.wait(1.0)
-    assert coordinator.get_status().state == "unavailable"
-    assert stream.closed
+    assert not runtime_lease.abort_called.is_set()
+    assert not runtime.shutdown_called.is_set()
+    assert coordinator.get_status().state == "ready"
+    assert not stream.closed
     assert bytes(stream.buffer) == b""
 
     second = coordinator.start_turn("request-after", "chat-after")
-    second.feed("Do not reuse the poisoned worker.")
+    second.feed("Reuse the healthy worker.")
     second.finish()
+    runtime_lease.released.set()
+    assert second_terminal.wait(2.0)
 
     assert catalog.calls == [("default", "neutral")]
     assert len(runtime.acquired) == 1
-    assert len(runtime_lease.calls) == 1
-    assert runtime.shutdown_calls == 1
+    assert [call[0] for call in runtime_lease.calls] == [
+        "Cancel active synthesis.",
+        "Reuse the healthy worker.",
+    ]
+    assert runtime_lease.abort_tokens == []
+    assert runtime.shutdown_calls == 0
     assert [event[0] for event in events] == [
         "voice.speech.terminal",
+        "voice.speech.clip",
         "voice.speech.terminal",
     ]
-    assert [event[1] for event in events] == ["request-active", "request-after"]
-    assert events[1][2] == {
+    assert [event[1] for event in events] == [
+        "request-active",
+        "request-after",
+        "request-after",
+    ]
+    assert events[-1][2] == {
         "chatId": "chat-after",
-        "state": "cancelled",
-        "submittedSentences": 0,
-        "completedSentences": 0,
+        "state": "completed",
+        "submittedSentences": 1,
+        "completedSentences": 1,
         "failedSentences": 0,
     }
 
@@ -867,11 +992,11 @@ def test_spontaneous_managed_failure_fail_closes_speech_without_retry(
     assert runtime.shutdown_calls == 1
 
 
-def test_prestart_managed_cancel_keeps_next_turn_playable(
+def test_prestart_managed_discard_keeps_next_turn_playable(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Keep a healthy worker after cancellation wins before native admission."""
+    """Let stale native work drain without aborting the following turn."""
 
     runtime_lease = _PreStartManagedLease()
     runtime = _FakeRuntime(runtime_lease=runtime_lease)
@@ -903,7 +1028,7 @@ def test_prestart_managed_cancel_keeps_next_turn_playable(
     assert runtime_lease.started.wait(1.0)
 
     assert first.cancel()
-    assert runtime_lease.abort_called.wait(1.0)
+    assert not runtime_lease.abort_called.is_set()
     assert coordinator.get_status().state == "ready"
     runtime_lease.allow_registration.set()
 
@@ -1104,6 +1229,63 @@ def test_replacement_does_not_wait_for_an_older_delivery_callback(
         release_first_clip.set()
         replacement_thread.join(1.0)
         coordinator.shutdown()
+
+
+def test_third_turn_survives_two_callback_blocked_replacements(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reserve bounded lifecycle room for a current turn behind stale owners."""
+
+    runtime = _FakeRuntime()
+    synthesizer = _SequenceSynthesizer()
+    _install_fake_bootstrap(monkeypatch, runtime, synthesizer)
+    stream = _RecordingStream()
+    first_clip_entered = Event()
+    release_first_clip = Event()
+    third_terminal = Event()
+    events: list[tuple[str, str]] = []
+
+    def _block_first_clip(
+        name: str,
+        request_id: str,
+        _data: dict[str, Any],
+    ) -> None:
+        """Hold notifier delivery while two replacements are admitted."""
+
+        if name == "voice.speech.clip" and request_id == "request-first":
+            first_clip_entered.set()
+            assert release_first_clip.wait(3.0)
+        events.append((name, request_id))
+        if name == "voice.speech.terminal" and request_id == "request-third":
+            third_terminal.set()
+
+    coordinator = DesktopSpeechCoordinator(
+        _config(tmp_path),
+        AudioChannelWriter(stream),  # type: ignore[arg-type]
+        _block_first_clip,
+    )
+    first = coordinator.start_turn("request-first", "chat-first")
+    assert coordinator.wait_until_settled(1.0)
+    first.feed("First callback blocks.")
+    first.finish()
+    assert first_clip_entered.wait(1.0)
+
+    second = coordinator.start_turn("request-second", "chat-second")
+    second.feed("Second turn becomes stale.")
+    second.finish()
+    third = coordinator.start_turn("request-third", "chat-third")
+    third.feed("Third turn must still play.")
+    third.finish()
+
+    release_first_clip.set()
+    assert third_terminal.wait(3.0)
+
+    assert ("voice.speech.clip", "request-third") in events
+    assert ("voice.speech.terminal", "request-third") in events
+    assert coordinator.get_status().state == "ready"
+
+    coordinator.shutdown()
 
 
 def test_pre_ready_replacements_emit_bounded_zero_work_terminals(

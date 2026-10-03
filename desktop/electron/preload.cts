@@ -94,13 +94,22 @@ interface TrustedAudioContextConstructor {
 }
 
 interface TrustedPlayback {
-  readonly context: TrustedAudioContext
+  graph: TrustedAudioGraph | null
   readonly playbackId: string
-  gain: TrustedGainNode | null
+  settled: boolean
   source: TrustedAudioBufferSource | null
+  started: boolean
+}
+
+interface TrustedAudioGraph {
+  readonly context: TrustedAudioContext
+  readonly gain: TrustedGainNode
+  discardPromise: Promise<void> | null
 }
 
 let trustedPlayback: TrustedPlayback | null = null
+let trustedAudioGraph: TrustedAudioGraph | null = null
+let trustedAudioGraphCloseBarrier: Promise<void> = Promise.resolve()
 
 function trustedAudioContextConstructor(): TrustedAudioContextConstructor | null {
   const audioGlobal = globalThis as unknown as {
@@ -178,7 +187,7 @@ function isCanonicalTrustedWav(bytes: Uint8Array): boolean {
 }
 
 async function routeTrustedSpeechOutput(
-  context: TrustedAudioContext,
+  graph: TrustedAudioGraph,
   playback: TrustedPlayback,
 ): Promise<number> {
   const settingsValue = await ipcRenderer.invoke('voice:settings-get') as unknown
@@ -244,40 +253,118 @@ async function routeTrustedSpeechOutput(
   if (trustedPlayback !== playback) {
     throw new Error('Trusted speech playback is no longer current.')
   }
-  if (context.setSinkId === undefined) {
+  if (graph.context.setSinkId === undefined) {
     if (outputDeviceId !== null) {
       throw new Error('Trusted speech output routing is unavailable.')
     }
     return speechVolumePercent / 100
   }
-  await context.setSinkId(outputDeviceId ?? '')
+  await graph.context.setSinkId(outputDeviceId ?? '')
   if (trustedPlayback !== playback) {
     throw new Error('Trusted speech playback is no longer current.')
   }
   return speechVolumePercent / 100
 }
 
-function settleTrustedPlayback(
+function enqueueTrustedAudioContextClose(
+  context: TrustedAudioContext,
+  gain: TrustedGainNode | null,
+): Promise<void> {
+  const previousClose = trustedAudioGraphCloseBarrier
+  const close = previousClose.then(async (): Promise<void> => {
+    if (gain !== null) {
+      try {
+        gain.disconnect()
+      } catch {
+        // The failed or unpublished graph cannot be reused after this point.
+      }
+    }
+    try {
+      await context.close()
+    } catch {
+      // A rejected close still leaves this context permanently quarantined.
+    }
+  })
+  trustedAudioGraphCloseBarrier = close
+  return close
+}
+
+async function createTrustedAudioGraph(
+  Context: TrustedAudioContextConstructor,
+): Promise<TrustedAudioGraph> {
+  let context: TrustedAudioContext | null = null
+  let gain: TrustedGainNode | null = null
+  try {
+    context = new Context({ sampleRate: TRUSTED_SPEECH_SAMPLE_RATE_HZ })
+    gain = context.createGain()
+    gain.connect(context.destination)
+    const graph: TrustedAudioGraph = {
+      context,
+      gain,
+      discardPromise: null,
+    }
+    trustedAudioGraph = graph
+    return graph
+  } catch {
+    if (context !== null) {
+      // Construction failure can race Main admitting a replacement after
+      // cancellation, so its unpublished context participates in the same
+      // close barrier as a graph that failed later during playback setup.
+      await enqueueTrustedAudioContextClose(context, gain)
+    }
+    throw new Error('Trusted speech output graph could not be created.')
+  }
+}
+
+async function acquireTrustedAudioGraph(
+  Context: TrustedAudioContextConstructor,
+): Promise<TrustedAudioGraph> {
+  // Cancellation lets Main admit its replacement immediately. Wait for every
+  // quarantined native graph to close before inspecting or creating the next
+  // graph so Windows never owns two overlapping output-device lifetimes.
+  await trustedAudioGraphCloseBarrier
+  return trustedAudioGraph ?? createTrustedAudioGraph(Context)
+}
+
+function discardTrustedAudioGraph(graph: TrustedAudioGraph): Promise<void> {
+  if (trustedAudioGraph === graph) {
+    trustedAudioGraph = null
+  }
+  if (graph.discardPromise !== null) {
+    return graph.discardPromise
+  }
+  // A failed native graph must finish closing before Main receives settlement
+  // and admits another clip. This prevents overlapping Windows sink lifetimes.
+  graph.discardPromise = enqueueTrustedAudioContextClose(
+    graph.context,
+    graph.gain,
+  )
+  return graph.discardPromise
+}
+
+async function settleTrustedPlayback(
   playback: TrustedPlayback,
   status: 'played' | 'failed',
-): void {
-  if (trustedPlayback !== playback) {
+  discardGraph: boolean,
+): Promise<void> {
+  if (trustedPlayback !== playback || playback.settled) {
     return
   }
   // Fix terminal ownership before cleanup so a completed clip cannot become
   // current again or suppress its one terminal settlement.
+  playback.settled = true
   trustedPlayback = null
+  if (playback.source !== null) {
+    playback.source.onended = null
+  }
   try {
     playback.source?.disconnect()
   } catch {
     // The result is already fixed; native cleanup details are not observable.
   }
-  try {
-    playback.gain?.disconnect()
-  } catch {
-    // The result is already fixed; native cleanup details are not observable.
+  if (discardGraph && playback.graph !== null) {
+    await discardTrustedAudioGraph(playback.graph)
   }
-  void playback.context.close().catch(() => {})
   ipcRenderer.send(
     TRUSTED_SPEECH_SETTLED_CHANNEL,
     Object.freeze({ playbackId: playback.playbackId, status }),
@@ -309,29 +396,27 @@ ipcRenderer.on(
       return
     }
 
-    let context: TrustedAudioContext
-    try {
-      context = new Context({ sampleRate: TRUSTED_SPEECH_SAMPLE_RATE_HZ })
-    } catch {
-      ipcRenderer.send(
-        TRUSTED_SPEECH_SETTLED_CHANNEL,
-        Object.freeze({ playbackId: metadata.playbackId, status: 'failed' }),
-      )
-      return
-    }
     const playback: TrustedPlayback = {
-      context,
+      graph: null,
       playbackId: metadata.playbackId,
-      gain: null,
+      settled: false,
       source: null,
+      started: false,
     }
+    // Reserve admission synchronously. Promise continuation boundaries inside
+    // context acquisition must not let two trusted messages share one graph.
     trustedPlayback = playback
     const ownedBytes = Uint8Array.from(bytes).buffer as ArrayBuffer
     void (async (): Promise<void> => {
       try {
-        await context.resume()
-        const volume = await routeTrustedSpeechOutput(context, playback)
-        const audio = await context.decodeAudioData(ownedBytes)
+        const graph = await acquireTrustedAudioGraph(Context)
+        if (trustedPlayback !== playback) {
+          return
+        }
+        playback.graph = graph
+        await graph.context.resume()
+        const volume = await routeTrustedSpeechOutput(graph, playback)
+        const audio = await graph.context.decodeAudioData(ownedBytes)
         if (
           trustedPlayback !== playback
           || audio.numberOfChannels !== 1
@@ -342,18 +427,24 @@ ipcRenderer.on(
         ) {
           throw new Error('Trusted speech decode was rejected.')
         }
-        const source = context.createBufferSource()
-        const gain = context.createGain()
+        const source = graph.context.createBufferSource()
         playback.source = source
-        playback.gain = gain
         source.buffer = audio
-        gain.gain.value = volume
-        source.connect(gain)
-        gain.connect(context.destination)
-        source.onended = () => settleTrustedPlayback(playback, 'played')
+        graph.gain.gain.value = volume
+        source.connect(graph.gain)
+        source.onended = () => {
+          void settleTrustedPlayback(playback, 'played', false)
+        }
         source.start()
+        playback.started = true
       } catch {
-        settleTrustedPlayback(playback, 'failed')
+        if (trustedPlayback === playback) {
+          await settleTrustedPlayback(
+            playback,
+            'failed',
+            playback.graph !== null,
+          )
+        }
       }
     })()
   },
@@ -371,11 +462,19 @@ ipcRenderer.on(
       return
     }
     try {
-      playback.source?.stop()
+      if (playback.source !== null) {
+        // Some Web Audio implementations dispatch `ended` synchronously from
+        // stop(). Remove it first so cancellation owns the one settlement.
+        playback.source.onended = null
+        playback.source.stop()
+      }
     } catch {
       // A decode-pending or already-ended source still settles as cancelled.
     }
-    settleTrustedPlayback(playback, 'failed')
+    // Setup can be waiting inside settings, sink routing, or decoding. Reusing
+    // that graph would let the stale promise mutate a later clip's output, so
+    // quarantine it until close completes unless audio actually started.
+    void settleTrustedPlayback(playback, 'failed', !playback.started)
   },
 )
 

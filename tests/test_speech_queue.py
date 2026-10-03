@@ -19,6 +19,7 @@ from voice.speech_queue import (
     SentenceSegmenterConfig,
     SpeechQueueCapacityError,
     SpeechQueueClip,
+    SpeechQueueClosedError,
     SpeechQueueConfig,
     SpeechQueueFailure,
     SpeechQueueValidationError,
@@ -1042,6 +1043,152 @@ def test_capacity_rejection_rolls_back_segmenter_state_for_retry() -> None:
         queue.shutdown(timeout_seconds=2.0)
 
 
+def test_waiting_feed_admits_an_oversized_batch_in_fifo_order() -> None:
+    """Drain more sentences than total capacity without loss or deadlock."""
+
+    synthesizer = _BlockingSynthesizer()
+    events: list[object] = []
+    errors: list[BaseException] = []
+    admitted_text: list[tuple[str, ...]] = []
+    final_tails: list[tuple[str, ...]] = []
+    queue = SpeechSynthesisQueue(SpeechQueueConfig(max_pending_sentences=2))
+    turn = queue.start_turn(
+        "turn-waiting-oversized",
+        _lease(synthesizer),
+        events.append,
+    )
+
+    def _feed_all() -> None:
+        """Own the blocking feeder contract outside every queue daemon."""
+
+        try:
+            sentences = turn.feed_waiting("One. Two. Three. Four. ")
+            admitted_text.append(tuple(sentence.text for sentence in sentences))
+            tail = turn.finish_waiting()
+            final_tails.append(tuple(sentence.text for sentence in tail))
+        except BaseException as error:
+            errors.append(error)
+
+    feeder = Thread(target=_feed_all, daemon=True)
+    try:
+        feeder.start()
+        assert synthesizer.started.wait(1.0)
+        _wait_until(lambda: queue.get_status().occupied_slots == 2)
+        assert feeder.is_alive()
+
+        synthesizer.release.set()
+        feeder.join(2.0)
+        assert not feeder.is_alive()
+        assert errors == []
+        _wait_until(
+            lambda: any(
+                isinstance(event, SpeechTurnTerminal) for event in events
+            )
+        )
+
+        assert admitted_text == [("One.", " Two.", " Three.", " Four.")]
+        assert final_tails == [()]
+        assert [request.text for request in synthesizer.requests] == [
+            "One.",
+            " Two.",
+            " Three.",
+            " Four.",
+        ]
+        clips = [event for event in events if isinstance(event, SpeechQueueClip)]
+        assert [clip.sequence for clip in clips] == [0, 1, 2, 3]
+        assert events[-1] == SpeechTurnTerminal(
+            "turn-waiting-oversized",
+            "completed",
+            4,
+            4,
+            0,
+        )
+    finally:
+        synthesizer.release.set()
+        if feeder.is_alive():
+            turn.discard_nowait()
+            feeder.join(2.0)
+        queue.shutdown(timeout_seconds=2.0)
+
+
+def test_cancellation_wakes_a_capacity_waiter() -> None:
+    """Stop a partially admitted feeder when its turn becomes stale."""
+
+    synthesizer = _BlockingSynthesizer()
+    errors: list[BaseException] = []
+    queue = SpeechSynthesisQueue(SpeechQueueConfig(max_pending_sentences=1))
+    turn = queue.start_turn(
+        "turn-waiting-cancelled",
+        _lease(synthesizer),
+        lambda _event: None,
+    )
+
+    def _feed_until_cancelled() -> None:
+        """Record the lifecycle error that releases the blocked feeder."""
+
+        try:
+            turn.feed_waiting("One. Two. Three. ")
+        except BaseException as error:
+            errors.append(error)
+
+    feeder = Thread(target=_feed_until_cancelled, daemon=True)
+    try:
+        feeder.start()
+        assert synthesizer.started.wait(1.0)
+        _wait_until(lambda: queue.get_status().occupied_slots == 1)
+        assert feeder.is_alive()
+
+        assert turn.cancel_nowait() is True
+        feeder.join(1.0)
+        assert not feeder.is_alive()
+        assert len(errors) == 1
+        assert isinstance(errors[0], SpeechTurnStateError)
+    finally:
+        synthesizer.release.set()
+        if feeder.is_alive():
+            turn.cancel_nowait()
+            feeder.join(2.0)
+        queue.shutdown(timeout_seconds=2.0)
+
+
+def test_shutdown_wakes_a_capacity_waiter() -> None:
+    """Release a blocked feeder promptly when queue admission closes."""
+
+    synthesizer = _BlockingSynthesizer()
+    errors: list[BaseException] = []
+    queue = SpeechSynthesisQueue(SpeechQueueConfig(max_pending_sentences=1))
+    turn = queue.start_turn(
+        "turn-waiting-shutdown",
+        _lease(synthesizer),
+        lambda _event: None,
+    )
+
+    def _feed_until_shutdown() -> None:
+        """Record the closed-queue error instead of leaking this thread."""
+
+        try:
+            turn.feed_waiting("One. Two. Three. ")
+        except BaseException as error:
+            errors.append(error)
+
+    feeder = Thread(target=_feed_until_shutdown, daemon=True)
+    try:
+        feeder.start()
+        assert synthesizer.started.wait(1.0)
+        _wait_until(lambda: queue.get_status().occupied_slots == 1)
+        assert feeder.is_alive()
+
+        assert queue.shutdown(wait=False) is False
+        feeder.join(1.0)
+        assert not feeder.is_alive()
+        assert len(errors) == 1
+        assert isinstance(errors[0], SpeechQueueClosedError)
+    finally:
+        synthesizer.release.set()
+        feeder.join(2.0)
+        queue.shutdown(timeout_seconds=2.0)
+
+
 def test_running_cancellation_discards_late_audio() -> None:
     """Publish cancellation promptly but retain capacity until inference returns."""
 
@@ -1118,6 +1265,116 @@ def test_managed_cancel_aborts_outside_the_queue_lock() -> None:
         assert events == [
             SpeechTurnTerminal("turn-managed-abort-lock", "cancelled", 1, 0, 0)
         ]
+    finally:
+        runtime.release.set()
+        queue.shutdown(timeout_seconds=2.0)
+
+
+def test_managed_logical_discard_does_not_abort_and_keeps_worker_reusable() -> None:
+    """Suppress stale audio without poisoning the managed native worker."""
+
+    runtime = _BlockingManagedLease()
+    discarded_events: list[object] = []
+    replacement_events: list[object] = []
+    queue = SpeechSynthesisQueue()
+    discarded = queue.start_turn(
+        "turn-managed-discarded",
+        _managed_lease(runtime),
+        discarded_events.append,
+    )
+    try:
+        discarded.feed("Discard this. ")
+        discarded.finish()
+        assert runtime.started.wait(1.0)
+
+        assert discarded.discard_nowait() is True
+        _wait_until(
+            lambda: any(
+                isinstance(event, SpeechTurnTerminal)
+                for event in discarded_events
+            )
+        )
+        assert runtime.abort_tokens == []
+
+        replacement = queue.start_turn(
+            "turn-managed-replacement",
+            _managed_lease(runtime, lease_id="managed-lease-replacement"),
+            replacement_events.append,
+        )
+        replacement.feed("Keep this. ")
+        replacement.finish()
+        runtime.release.set()
+        _wait_until(
+            lambda: any(
+                isinstance(event, SpeechTurnTerminal)
+                for event in replacement_events
+            )
+        )
+
+        assert [call[0] for call in runtime.calls] == [
+            "Discard this.",
+            "Keep this.",
+        ]
+        assert runtime.abort_tokens == []
+        assert discarded_events == [
+            SpeechTurnTerminal(
+                "turn-managed-discarded",
+                "cancelled",
+                1,
+                0,
+                0,
+            )
+        ]
+        clips = [
+            event
+            for event in replacement_events
+            if isinstance(event, SpeechQueueClip)
+        ]
+        assert [clip.sequence for clip in clips] == [0]
+        assert replacement_events[-1] == SpeechTurnTerminal(
+            "turn-managed-replacement",
+            "completed",
+            1,
+            1,
+            0,
+        )
+    finally:
+        runtime.release.set()
+        queue.shutdown(timeout_seconds=2.0)
+
+
+def test_shutdown_escalates_logical_discard_to_one_physical_abort() -> None:
+    """Abort one discarded native call exactly once during final shutdown."""
+
+    runtime = _BlockingManagedLease(release_on_abort=True)
+    events: list[object] = []
+    queue = SpeechSynthesisQueue()
+    turn = queue.start_turn(
+        "turn-managed-discard-shutdown",
+        _managed_lease(runtime),
+        events.append,
+    )
+    try:
+        turn.feed("Blocked after discard. ")
+        turn.finish()
+        assert runtime.started.wait(1.0)
+        running_token = runtime.calls[0][2]
+
+        assert turn.discard_nowait() is True
+        _wait_until(
+            lambda: any(
+                isinstance(event, SpeechTurnTerminal) for event in events
+            )
+        )
+        assert runtime.abort_tokens == []
+        assert queue.get_status().running_sentences == 1
+
+        first_result = queue.shutdown(wait=False, cancel_pending=True)
+        assert isinstance(first_result, bool)
+        assert runtime.abort_called.wait(1.0)
+        assert runtime.abort_tokens == [running_token]
+        assert queue.shutdown(cancel_pending=True, timeout_seconds=2.0)
+        assert runtime.abort_tokens == [running_token]
     finally:
         runtime.release.set()
         queue.shutdown(timeout_seconds=2.0)

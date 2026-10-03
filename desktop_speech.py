@@ -12,14 +12,15 @@ from __future__ import annotations
 import logging
 import re
 import secrets
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from threading import Event, Lock, RLock, Thread
+from threading import Condition, Event, Lock, RLock, Thread
 from typing import Any, Final, Literal, Protocol, TypeAlias, runtime_checkable
 
 from config.settings import AppSettings, VOICE_EMOTIONS, VoiceEmotion
-from desktop_protocol import AudioChannelWriter, ProtocolEventName
+from desktop_protocol import AudioChannelWriter, MAX_MESSAGE_LENGTH, ProtocolEventName
 from voice.managed_gpt_sovits import (
     ManagedGptSovitsConfig,
     ManagedGptSovitsRuntime,
@@ -33,7 +34,9 @@ from voice.speech_queue import (
     SpeechSynthesisBindingLease,
     SpeechSynthesisQueue,
     SpeechTurn,
+    SpeechTurnStateError,
     SpeechTurnTerminal,
+    SPEECH_SEGMENT_MAX_CHUNK_CODE_POINTS,
     _create_managed_synthesis_binding_lease,
 )
 
@@ -52,7 +55,8 @@ DesktopSpeechEventSink: TypeAlias = Callable[
     None,
 ]
 
-_PENDING_TEXT_MAX_CODE_POINTS: Final = 4_096
+_SPEECH_SPOOL_MAX_CODE_POINTS: Final = MAX_MESSAGE_LENGTH
+_SPEECH_SPOOL_BLOCK_CODE_POINTS: Final = SPEECH_SEGMENT_MAX_CHUNK_CODE_POINTS
 _DEFAULT_LANGUAGE: Final = "auto"
 _LEASE_ID: Final = "desktop-managed-lease"
 _CACHE_IDENTITY: Final = "desktop-managed-voice"
@@ -185,10 +189,13 @@ class _TurnRecord:
     request_id: str
     chat_id: str
     queue_turn_id: str
-    buffered_chunks: list[str] = field(default_factory=list, repr=False)
-    buffered_code_points: int = 0
+    pending_blocks: deque[str] = field(default_factory=deque, repr=False)
+    pending_code_points: int = 0
+    accepted_code_points: int = 0
     delegate: SpeechTurn | None = field(default=None, repr=False)
     input_finished: bool = False
+    delegate_input_closed: bool = False
+    input_truncated: bool = False
     cancelled: bool = False
     terminal_emitted: bool = False
 
@@ -226,9 +233,10 @@ class DesktopSpeechCoordinator:
     """Own managed TTS bootstrap, bounded FIFO work, and fd3 frame delivery.
 
     Bootstrap runs on a daemon so missing or slow optional voice assets cannot
-    delay text Chat initialization.  At most one pre-ready turn buffers a small
-    fixed amount of text; once readiness settles, the existing sentence queue
-    provides all synthesis, cancellation, and delivery accounting.
+    delay text Chat initialization. A second fixed daemon drains one bounded
+    raw-text spool into the smaller sentence FIFO with backpressure, so a fast
+    model never blocks Chat streaming and cannot turn ordinary queue pressure
+    into destructive cancellation of the managed speech worker.
     """
 
     def __init__(
@@ -249,6 +257,7 @@ class DesktopSpeechCoordinator:
         self._audio_writer: AudioChannelWriter | None = audio_writer
         self._event_sink = event_sink
         self._lock = RLock()
+        self._work_condition = Condition(self._lock)
         self._turn_transition_lock = Lock()
         self._state: DesktopSpeechState = "idle"
         self._settled = Event()
@@ -257,6 +266,7 @@ class DesktopSpeechCoordinator:
         self._binding: SpeechSynthesisBindingLease | None = None
         self._active_turn: _TurnRecord | None = None
         self._bootstrap_thread: Thread | None = None
+        self._feeder_thread: Thread | None = None
 
     def get_status(self) -> DesktopSpeechStatus:
         """Return a safe in-memory readiness snapshot without probing disk."""
@@ -266,28 +276,45 @@ class DesktopSpeechCoordinator:
         return DesktopSpeechStatus(state=state, available=state == "ready")
 
     def start(self) -> None:
-        """Begin one lazy managed-runtime acquisition and never retry it."""
+        """Begin one feeder and one lazy managed-runtime acquisition."""
 
-        start_failed = False
+        feeder: Thread | None = None
+        bootstrap: Thread | None = None
         with self._lock:
             if self._state != "idle":
                 return
             self._state = "starting"
-            bootstrap = Thread(
-                target=self._bootstrap,
-                name="elysia-desktop-speech-bootstrap",
-                daemon=True,
-            )
-            self._bootstrap_thread = bootstrap
             try:
-                bootstrap.start()
+                feeder = Thread(
+                    target=self._feeder_loop,
+                    name="elysia-desktop-speech-feeder",
+                    daemon=True,
+                )
+                bootstrap = Thread(
+                    target=self._bootstrap,
+                    name="elysia-desktop-speech-bootstrap",
+                    daemon=True,
+                )
             except BaseException:
-                self._bootstrap_thread = None
-                start_failed = True
-        if start_failed:
+                # Ownership has not left this coordinator; the common failure
+                # path below closes the writer and publishes settled state.
+                pass
+            else:
+                self._feeder_thread = feeder
+                self._bootstrap_thread = bootstrap
+        if feeder is None or bootstrap is None:
             # Thread creation is optional-voice infrastructure failure, not a
             # reason to fail Backend initialization or retain the fd3 writer.
-            self._mark_unavailable()
+            self._mark_unavailable("thread_creation_failed")
+            return
+        try:
+            # Start the waiter first. It cannot act until bootstrap publishes a
+            # ready queue, but this order guarantees no ready turn can miss its
+            # only admission daemon.
+            feeder.start()
+            bootstrap.start()
+        except BaseException:
+            self._mark_unavailable("thread_start_failed")
 
     def start_turn(self, request_id: str, chat_id: str) -> DesktopSpeechTurn:
         """Replace stale playback and open one text-independent speech turn."""
@@ -304,21 +331,23 @@ class DesktopSpeechCoordinator:
                 chat_id=chat_id,
                 queue_turn_id=f"desktop-{secrets.token_hex(16)}",
             )
-            with self._lock:
+            with self._work_condition:
                 previous, self._active_turn = self._active_turn, None
+                self._work_condition.notify_all()
             if previous is not None:
                 self._cancel_turn(previous)
 
             delegate_to_cancel: SpeechTurn | None = None
-            with self._lock:
+            with self._work_condition:
                 if self._state in ("unavailable", "closed"):
                     record.cancelled = True
                 else:
                     self._active_turn = record
                     if self._state == "ready":
                         delegate_to_cancel = self._attach_delegate_locked(record)
+                self._work_condition.notify_all()
             if delegate_to_cancel is not None:
-                self._cancel_delegate(delegate_to_cancel)
+                self._discard_delegate(delegate_to_cancel)
             elif record.cancelled:
                 self._emit_undelivered_cancel(record)
             return _DesktopSpeechTurnHandle(self, record)
@@ -361,7 +390,7 @@ class DesktopSpeechCoordinator:
     def shutdown(self) -> None:
         """Stop admission and initiate bounded queue, worker, and pipe cleanup."""
 
-        with self._lock:
+        with self._work_condition:
             if self._state == "closed":
                 return
             self._state = "closed"
@@ -372,12 +401,13 @@ class DesktopSpeechCoordinator:
                 # The ordinary turn method could wait behind a pipe write after
                 # Electron has already begun its own teardown.
                 active.cancelled = True
-                active.buffered_chunks.clear()
-                active.buffered_code_points = 0
+                active.pending_blocks.clear()
+                active.pending_code_points = 0
             queue, self._queue = self._queue, None
             runtime, self._runtime = self._runtime, None
             writer, self._audio_writer = self._audio_writer, None
             self._binding = None
+            self._work_condition.notify_all()
         self._release_optional_resources(writer, queue, runtime)
 
     @staticmethod
@@ -421,10 +451,11 @@ class DesktopSpeechCoordinator:
                     seed=self._config.deterministic_seed,
                 )
             )
-            with self._lock:
+            with self._work_condition:
                 publish_runtime = self._state == "starting"
                 if publish_runtime:
                     self._runtime = runtime
+                self._work_condition.notify_all()
             if not publish_runtime:
                 # This runtime has not crossed the coordinator ownership
                 # boundary. A concurrent terminal failure or shutdown therefore
@@ -460,7 +491,10 @@ class DesktopSpeechCoordinator:
             )
             queue = SpeechSynthesisQueue(
                 SpeechQueueConfig(
-                    max_active_turns=2,
+                    # Electron tracks four correlated turns. Matching that
+                    # bound leaves room for one callback-blocked stale turn,
+                    # one replacement terminal, and the current admission.
+                    max_active_turns=4,
                     max_pending_sentences=8,
                     max_delivery_events=2,
                     max_delivery_bytes=64 * 1024 * 1024,
@@ -469,7 +503,7 @@ class DesktopSpeechCoordinator:
                     max_retained_turns=16,
                 )
             )
-            with self._lock:
+            with self._work_condition:
                 publish_queue = self._state == "starting"
                 if publish_queue:
                     self._binding = binding
@@ -480,6 +514,7 @@ class DesktopSpeechCoordinator:
                     if active is not None and not active.cancelled:
                         delegate_to_cancel = self._attach_delegate_locked(active)
                     self._settled.set()
+                self._work_condition.notify_all()
             if not publish_queue:
                 # Runtime ownership crossed the first checkpoint. Any state
                 # transition away from ``starting`` detached and shut it down;
@@ -487,18 +522,18 @@ class DesktopSpeechCoordinator:
                 self._release_optional_resources(None, queue, None)
                 return
             if delegate_to_cancel is not None:
-                self._cancel_delegate(delegate_to_cancel)
+                self._discard_delegate(delegate_to_cancel)
             elif active is not None and active.cancelled:
                 self._emit_undelivered_cancel(active)
         except BaseException:
             self._release_optional_resources(None, queue, runtime)
-            self._mark_unavailable()
+            self._mark_unavailable("bootstrap_failed")
 
     def _attach_delegate_locked(
         self,
         record: _TurnRecord,
     ) -> SpeechTurn | None:
-        """Transfer startup text and return failed work for unlocked cleanup.
+        """Attach queue ownership and wake the independent admission daemon.
 
         The caller owns ``self._lock``.  Cancellation can wait for a delivery
         callback that also needs this lock, so cleanup is deliberately returned
@@ -516,80 +551,170 @@ class DesktopSpeechCoordinator:
                 lambda event: self._on_queue_event(record, event),
             )
             record.delegate = delegate
-            buffered = tuple(record.buffered_chunks)
-            record.buffered_chunks.clear()
-            record.buffered_code_points = 0
-            for chunk in buffered:
-                delegate.feed(chunk)
-            if record.input_finished:
-                delegate.finish()
+            self._work_condition.notify_all()
             return None
         except BaseException:
             record.cancelled = True
-            record.buffered_chunks.clear()
-            record.buffered_code_points = 0
+            record.pending_blocks.clear()
+            record.pending_code_points = 0
             if self._active_turn is record:
                 self._active_turn = None
+            self._work_condition.notify_all()
             return record.delegate
 
     @staticmethod
-    def _cancel_delegate(delegate: SpeechTurn) -> None:
-        """Best-effort cancel optional queue work outside coordinator locks."""
+    def _append_spool_locked(record: _TurnRecord, chunk: str) -> None:
+        """Append text as a bounded number of engine-safe input blocks.
+
+        The spool limit bounds total text while fixed-size blocks also bound
+        Python object overhead when an LLM yields one-character chunks. A
+        block never exceeds the segmenter's public per-feed contract.
+        """
+
+        offset = 0
+        if record.pending_blocks:
+            tail = record.pending_blocks[-1]
+            available = _SPEECH_SPOOL_BLOCK_CODE_POINTS - len(tail)
+            if available > 0:
+                copied = min(available, len(chunk))
+                record.pending_blocks[-1] = tail + chunk[:copied]
+                offset = copied
+        while offset < len(chunk):
+            end = min(
+                offset + _SPEECH_SPOOL_BLOCK_CODE_POINTS,
+                len(chunk),
+            )
+            record.pending_blocks.append(chunk[offset:end])
+            offset = end
+        record.pending_code_points += len(chunk)
+        record.accepted_code_points += len(chunk)
+
+    def _feeder_loop(self) -> None:
+        """Drain spooled text through queue backpressure on one fixed daemon.
+
+        The Chat worker only appends strings and signals this condition. The
+        feeder is the sole blocking producer, and the queue wakes it whenever
+        synthesis releases sentence capacity or cancellation closes the turn.
+        """
+
+        while True:
+            with self._work_condition:
+                record: _TurnRecord | None = None
+                delegate: SpeechTurn | None = None
+                block: str | None = None
+                finish = False
+                while record is None:
+                    if self._state in ("unavailable", "closed"):
+                        return
+                    candidate = self._active_turn
+                    if (
+                        self._state == "ready"
+                        and candidate is not None
+                        and not candidate.cancelled
+                        and candidate.delegate is not None
+                    ):
+                        if candidate.pending_blocks:
+                            record = candidate
+                            delegate = candidate.delegate
+                            block = candidate.pending_blocks.popleft()
+                            candidate.pending_code_points -= len(block)
+                        elif (
+                            candidate.input_finished
+                            and not candidate.delegate_input_closed
+                        ):
+                            record = candidate
+                            delegate = candidate.delegate
+                            candidate.delegate_input_closed = True
+                            finish = True
+                    if record is None:
+                        self._work_condition.wait()
+
+            if delegate is None or record is None:
+                self._mark_unavailable("admission_state_invalid")
+                return
+            try:
+                if finish:
+                    delegate.finish_waiting()
+                elif block is not None:
+                    delegate.feed_waiting(block)
+                else:
+                    raise RuntimeError("Speech feeder selected no operation.")
+            except SpeechTurnStateError:
+                # Replacement, explicit cancellation, shutdown, and a managed
+                # runtime failure all close the queue turn and wake this exact
+                # waiter. They are already owned by the corresponding state
+                # transition and must not produce a second terminal action.
+                with self._lock:
+                    stale = (
+                        record.cancelled
+                        or record is not self._active_turn
+                        or self._state in ("unavailable", "closed")
+                    )
+                if stale:
+                    continue
+                self._mark_unavailable("admission_turn_closed")
+                return
+            except BaseException:
+                with self._lock:
+                    terminal_state = self._state in ("unavailable", "closed")
+                if terminal_state:
+                    return
+                self._mark_unavailable("admission_failed")
+                return
+
+    @staticmethod
+    def _discard_delegate(delegate: SpeechTurn) -> None:
+        """Discard stale speech without poisoning a healthy managed worker.
+
+        Only one bounded native sentence can remain in flight. Letting it
+        finish silently avoids turning an ordinary Chat replacement or Stop
+        action into permanent speech loss for every later turn.
+        """
 
         try:
-            delegate.cancel_nowait()
+            delegate.discard_nowait()
         except BaseException:
             # A failed optional queue is subsequently retired by its normal
             # shutdown path; text Chat must not inherit the failure.
             pass
 
     def _feed_turn(self, record: _TurnRecord, chunk: str) -> None:
-        """Feed speech if admitted, dropping only speech on capacity failure."""
+        """Spool one exact Chat chunk without waiting for speech capacity."""
 
         if type(chunk) is not str:
             raise TypeError("chunk must be a string.")
-        delegate: SpeechTurn | None = None
-        cancelled_without_delegate = False
-        with self._lock:
+        if not chunk:
+            return
+        truncated = False
+        with self._work_condition:
             if (
                 record is not self._active_turn
                 or record.cancelled
                 or record.input_finished
             ):
                 return
-            delegate = record.delegate
-            if delegate is None:
-                next_size = record.buffered_code_points + len(chunk)
-                if (
-                    len(chunk) > _PENDING_TEXT_MAX_CODE_POINTS
-                    or next_size > _PENDING_TEXT_MAX_CODE_POINTS
-                ):
-                    record.cancelled = True
-                    record.buffered_chunks.clear()
-                    record.buffered_code_points = 0
-                    self._active_turn = None
-                    cancelled_without_delegate = True
-                else:
-                    record.buffered_chunks.append(chunk)
-                    record.buffered_code_points = next_size
-                    return
-            if delegate is not None:
-                try:
-                    delegate.feed(chunk)
-                except BaseException:
-                    record.cancelled = True
-                    self._active_turn = None
-        if cancelled_without_delegate:
-            self._emit_undelivered_cancel(record)
-            return
-        if record.cancelled and delegate is not None:
-            self._cancel_delegate(delegate)
+            next_size = record.accepted_code_points + len(chunk)
+            if next_size > _SPEECH_SPOOL_MAX_CODE_POINTS:
+                # Backend's canonical reply bound is checked before every
+                # speech copy, so this is defense against an integration bug.
+                # Finish the already accepted prefix instead of aborting the
+                # active native call and poisoning all later speech.
+                record.input_truncated = True
+                record.input_finished = True
+                truncated = True
+            else:
+                self._append_spool_locked(record, chunk)
+            self._work_condition.notify_all()
+        if truncated:
+            logger.error(
+                "Desktop speech input exceeded its bounded spool; "
+                "the accepted prefix will finish."
+            )
 
     def _finish_turn(self, record: _TurnRecord) -> None:
-        """Flush a ready delegate or remember closure during lazy bootstrap."""
+        """Close spool input without waiting for synthesis or playback."""
 
-        delegate: SpeechTurn | None = None
-        with self._lock:
+        with self._work_condition:
             if (
                 record is not self._active_turn
                 or record.cancelled
@@ -597,16 +722,7 @@ class DesktopSpeechCoordinator:
             ):
                 return
             record.input_finished = True
-            delegate = record.delegate
-            if delegate is None:
-                return
-            try:
-                delegate.finish()
-            except BaseException:
-                record.cancelled = True
-                self._active_turn = None
-        if record.cancelled and delegate is not None:
-            self._cancel_delegate(delegate)
+            self._work_condition.notify_all()
 
     def _cancel_turn(self, record: _TurnRecord) -> bool:
         """Mark one record stale and cancel without joining callbacks.
@@ -616,7 +732,7 @@ class DesktopSpeechCoordinator:
         or terminal turns, so replacing a Chat never waits for that callback.
         """
 
-        with self._lock:
+        with self._work_condition:
             claimed, delegate = self._claim_turn_cancellation_locked(record)
         if not claimed:
             return False
@@ -632,10 +748,11 @@ class DesktopSpeechCoordinator:
         if record.cancelled or record.terminal_emitted:
             return False, None
         record.cancelled = True
-        record.buffered_chunks.clear()
-        record.buffered_code_points = 0
+        record.pending_blocks.clear()
+        record.pending_code_points = 0
         if self._active_turn is record:
             self._active_turn = None
+        self._work_condition.notify_all()
         return True, record.delegate
 
     def _finish_turn_cancellation(
@@ -646,7 +763,7 @@ class DesktopSpeechCoordinator:
         """Complete a claimed cancellation without holding coordinator locks."""
 
         if delegate is not None:
-            self._cancel_delegate(delegate)
+            self._discard_delegate(delegate)
         else:
             self._emit_undelivered_cancel(record)
 
@@ -674,7 +791,7 @@ class DesktopSpeechCoordinator:
                 },
             )
         except BaseException:
-            self._mark_unavailable()
+            self._mark_unavailable("undelivered_terminal_failed")
 
     def _on_queue_event(
         self,
@@ -715,7 +832,7 @@ class DesktopSpeechCoordinator:
                 return
             if not isinstance(event, SpeechTurnTerminal):
                 raise TypeError("Speech queue emitted an unknown event.")
-            with self._lock:
+            with self._work_condition:
                 if record.terminal_emitted:
                     raise RuntimeError(
                         "Speech turn emitted duplicate terminal state."
@@ -726,6 +843,7 @@ class DesktopSpeechCoordinator:
                 record.terminal_emitted = True
                 if self._active_turn is record:
                     self._active_turn = None
+                self._work_condition.notify_all()
             self._event_sink(
                 "voice.speech.terminal",
                 record.request_id,
@@ -738,13 +856,16 @@ class DesktopSpeechCoordinator:
                 },
             )
         except BaseException:
-            self._mark_unavailable()
+            self._mark_unavailable("delivery_failed")
 
-    def _mark_unavailable(self) -> None:
-        """Disable a failed optional speech path while preserving text Chat."""
+    def _mark_unavailable(
+        self,
+        reason: str = "managed_runtime_invalidated",
+    ) -> None:
+        """Disable failed optional speech with one non-sensitive reason code."""
 
         undelivered: _TurnRecord | None = None
-        with self._lock:
+        with self._work_condition:
             if self._state in ("unavailable", "closed"):
                 return
             self._state = "unavailable"
@@ -754,8 +875,8 @@ class DesktopSpeechCoordinator:
                 # This path can run from the queue notifier itself. Local state
                 # plus non-blocking queue shutdown cannot wait on that callback.
                 active.cancelled = True
-                active.buffered_chunks.clear()
-                active.buffered_code_points = 0
+                active.pending_blocks.clear()
+                active.pending_code_points = 0
                 if active.delegate is None:
                     # Bootstrap can fail on either side of start_turn's state
                     # check. Retire pre-queue work in both schedules so the
@@ -765,10 +886,14 @@ class DesktopSpeechCoordinator:
             runtime, self._runtime = self._runtime, None
             writer, self._audio_writer = self._audio_writer, None
             self._binding = None
+            self._work_condition.notify_all()
         self._release_optional_resources(writer, queue, runtime)
         if undelivered is not None:
             self._emit_undelivered_cancel(undelivered)
-        logger.error("Optional managed desktop speech became unavailable.")
+        logger.error(
+            "Optional managed desktop speech became unavailable: reason=%s.",
+            reason,
+        )
 
 
 __all__ = [

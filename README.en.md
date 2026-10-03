@@ -305,6 +305,7 @@ Never commit future secrets, tokens, private prompts, or private configuration.
 - **Send transcript** reuses the same durable Chat send path as the text Composer; there is no Voice-specific Brain path. The user turn, streamed reply, persistence, summaries, and scoped Memory all belong to the exact Chat and optional Project bound when Voice was opened. Text and Voice turns can alternate in the same Chat history.
 - **Use transcript in message** and **Append transcript to message** remain draft-only alternatives. Direct Voice submission neither consumes an existing Composer draft nor attaches files staged in the Composer.
 - Playback moves the Session into `SPEAKING`. Chat completion and trusted playback completion may arrive in either order, and the Session returns to `IDLE` only after both sides drain. If `voice.speech` is unavailable or becomes unavailable, text Chat still completes and the Session does not wait indefinitely for optional playback.
+- Fast long replies first enter a bounded raw-text spool, then one dedicated feeder admits sentences under synthesis-queue backpressure. Exceeding eight pending sentences no longer truncates the whole read-aloud turn. Stopping or replacing a reply logically discards stale output without permanently poisoning a healthy managed speech worker. Preload reuses one trusted Web Audio output graph between consecutive clips while reapplying the current volume and output device to each clip; a failure, timeout, or invalid settlement retires only that playback generation so the same trusted window can recover automatically for the next sentence.
 - After the user explicitly sends a reviewed transcript, a dedicated barge-in monitor starts while the reply is `THINKING` or `SPEAKING`. It requires WebRTC `echoCancellation: { exact: true }` and verifies the actual track setting. If echo cancellation cannot be confirmed, capture fails closed, releases the microphone, and lets the reply continue without trusting an unverified echo path; verified AEC reduces the risk of Elysia's own speaker output causing a self-interruption. This documentation does not claim a completed real microphone/speaker device-matrix validation.
 - Barge-in VAD requires sustained speech to reach its confirmation threshold. Once user speech is confirmed, the trusted boundary stops local playback first, cancels pending or running speech for the exact `{requestId, chatId}`, and requests cancellation of the exact Chat/LLM stream. Duplicate, late, or wrongly owned requests cannot stop another turn.
 - Session epoch, Chat ID, optional Project ID, capture/STT IDs, Chat operation/request IDs, and ordered speech sequence must all match. Accepting an interruption advances the epoch and carries the confirmed capture into a new `LISTENING` phase. Late events from the old turn, plus events after hang-up, navigation, or a Chat/Project change, are rejected.
@@ -518,10 +519,18 @@ Install the optional runtime from `requirements-stt.txt`, place the selected com
 
 Desktop reply playback is connected, but it is optional. It requires a complete
 local GPT-SoVITS runtime, a strict Voice Profile, hash-matching weights and
-reference audio, and explicit `GPT_SOVITS_ALLOW_LOCAL_EVALUATION` opt-in. A
-sentence-level synthesis, decoding, or playback failure skips the affected
-sentence; speech is disabled only when a channel or lifecycle failure makes
-safe continuation impossible, while text Chat keeps working. A bounded,
+reference audio, and explicit `GPT_SOVITS_ALLOW_LOCAL_EVALUATION` opt-in. Long
+replies pass through a bounded spool and backpressured feeder, while consecutive
+clips reuse one Preload Web Audio output graph instead of repeatedly rebuilding
+the Windows audio device. A sentence-level synthesis, decoding, or playback
+failure skips the affected sentence; playback timeout or invalid settlement
+automatically replaces the playback owner. Speech is disabled only when a
+channel or lifecycle failure makes safe continuation impossible, while text
+Chat keeps working. If the user stops or replaces a reply while one native
+sentence synthesis is already running, that stale sentence drains silently
+rather than force-aborting and poisoning the whole managed worker. New speech
+may therefore wait for that one call to return, or until the configured
+synthesis timeout if the third-party runtime stalls; text Chat is unaffected. A bounded,
 explicitly confirmed Voice Session and reply-time barge-in are connected.
 Barge-in additionally requires the browser to enable and verify WebRTC echo
 cancellation; otherwise monitoring stops safely and the reply continues.

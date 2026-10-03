@@ -784,8 +784,16 @@ class SpeechTurn(Protocol):
         """Segment and enqueue one exact model-stream chunk."""
         ...
 
+    def feed_waiting(self, chunk: str) -> tuple[SpeechSentence, ...]:
+        """Segment text and wait for bounded FIFO capacity outside Chat work."""
+        ...
+
     def finish(self) -> tuple[SpeechSentence, ...]:
         """Flush the final text tail and close sentence admission."""
+        ...
+
+    def finish_waiting(self) -> tuple[SpeechSentence, ...]:
+        """Wait to admit the final text tail, then close sentence admission."""
         ...
 
     def cancel(self) -> bool:
@@ -794,6 +802,10 @@ class SpeechTurn(Protocol):
 
     def cancel_nowait(self) -> bool:
         """Mark stale work cancelled without waiting on delivery or native I/O."""
+        ...
+
+    def discard_nowait(self) -> bool:
+        """Discard stale work without aborting a bounded native operation."""
         ...
 
 
@@ -819,6 +831,10 @@ class _TurnRecord:
     pending_notifications: int = 0
     producer_operations: int = 0
     running_operation_token: str | None = field(default=None, repr=False)
+    abort_requested_operation_token: str | None = field(
+        default=None,
+        repr=False,
+    )
 
 
 @dataclass(slots=True)
@@ -886,6 +902,25 @@ class _SpeechTurnHandle:
             finally:
                 self._queue._end_producer_operation(self._record)
 
+    def feed_waiting(self, chunk: str) -> tuple[SpeechSentence, ...]:
+        """Wait for bounded capacity on a dedicated, non-Chat feeder thread.
+
+        Unlike :meth:`feed`, admission may become partial before cancellation
+        or shutdown wakes the waiter.  This method is therefore intended only
+        for the coordinator's disposable speech copy, never for a caller that
+        needs to retry the same parser input atomically.
+        """
+
+        self._queue._require_external_waiter()
+        with self._input_lock:
+            self._queue._begin_producer_operation(self._record)
+            try:
+                sentences = self._record.segmenter.feed(chunk)
+                self._queue._submit_batch_waiting(self._record, sentences)
+                return sentences
+            finally:
+                self._queue._end_producer_operation(self._record)
+
     def finish(self) -> tuple[SpeechSentence, ...]:
         """Flush the final text tail and close sentence admission."""
 
@@ -899,6 +934,25 @@ class _SpeechTurnHandle:
                 except BaseException:
                     self._record.segmenter._restore(checkpoint)
                     raise
+                self._queue._close_turn_input(self._record)
+                return sentences
+            finally:
+                self._queue._end_producer_operation(self._record)
+
+    def finish_waiting(self) -> tuple[SpeechSentence, ...]:
+        """Wait for final-tail capacity without blocking the Chat producer.
+
+        The dedicated feeder owns this one-way speech copy.  If cancellation
+        or shutdown wins after partial admission, the queue discards every
+        admitted job and the parser state intentionally remains terminal.
+        """
+
+        self._queue._require_external_waiter()
+        with self._input_lock:
+            self._queue._begin_producer_operation(self._record)
+            try:
+                sentences = self._record.segmenter.finish()
+                self._queue._submit_batch_waiting(self._record, sentences)
                 self._queue._close_turn_input(self._record)
                 return sentences
             finally:
@@ -928,6 +982,21 @@ class _SpeechTurnHandle:
             defer_abort=True,
         )
 
+    def discard_nowait(self) -> bool:
+        """Logically discard stale speech while one native call drains.
+
+        The running operation continues to occupy its already bounded worker
+        and delivery reservation, but its eventual result is suppressed.  This
+        avoids permanently poisoning a managed worker merely because ordinary
+        UI replacement no longer needs the result.
+        """
+
+        return self._queue._cancel_turn(
+            self._record,
+            wait_for_delivery=False,
+            abort_running=False,
+        )
+
 
 class SpeechSynthesisQueue:
     """Run sentence synthesis on one bounded FIFO daemon worker.
@@ -935,11 +1004,13 @@ class SpeechSynthesisQueue:
     One worker preserves playback order and respects GPT-SoVITS's process-wide
     model state.  A separate fixed daemon dispatches shutdown aborts so
     ``wait=False`` never invokes managed process control synchronously.
-    Admission never blocks: if text generation outruns the fixed capacity,
-    speech fails closed while the caller may continue the canonical text
-    stream. Each native call first reserves one delivery event and the maximum
-    valid audio size; that reservation shrinks to the actual payload and remains
-    charged through callback completion. Audio can be cached only when a
+    Ordinary admission never blocks: if text generation outruns the fixed
+    capacity, speech fails closed while the caller may continue the canonical
+    text stream. A dedicated external feeder may instead choose incremental
+    bounded waiting without blocking Chat generation. Each native call first
+    reserves one delivery event and the maximum valid audio size; that
+    reservation shrinks to the actual payload and remains charged through
+    callback completion. Audio can be cached only when a
     factory-issued lease explicitly declares complete-manifest eligibility;
     current external and managed bindings both remain ineligible. Cache keys
     use a lease-scoped keyed digest so raw reply text is not retained.
@@ -1145,6 +1216,20 @@ class SpeechSynthesisQueue:
                 defer_abort=True,
             )
         with self._condition:
+            if cancel_pending:
+                # Logical discard intentionally leaves one bounded native call
+                # running during normal operation. Shutdown is the ownership
+                # boundary where that call must be upgraded to one physical
+                # abort even if its cancelled terminal was already delivered.
+                # Claiming under the condition also closes a discard/shutdown
+                # race and prevents repeated shutdown calls from aborting the
+                # same operation token twice.
+                for record in self._turns.values():
+                    if not record.cancelled:
+                        continue
+                    abort_target = self._claim_running_abort_locked(record)
+                    if abort_target is not None:
+                        self._enqueue_abort_locked(*abort_target)
             self._shutdown_prepared = True
             self._condition.notify_all()
         caller_is_internal = current_thread() in (
@@ -1234,6 +1319,54 @@ class SpeechSynthesisQueue:
             # then stall until an unrelated feed or finish operation occurs.
             self._condition.notify_all()
 
+    def _require_external_waiter(self) -> None:
+        """Reject capacity waits from daemons needed to make queue progress."""
+
+        if current_thread() in (self._worker, self._notifier, self._aborter):
+            raise SpeechTurnStateError(
+                "Speech capacity waiting requires an external feeder thread."
+            )
+
+    def _submit_batch_waiting(
+        self,
+        record: _TurnRecord,
+        sentences: tuple[SpeechSentence, ...],
+    ) -> None:
+        """Admit ordered sentences as capacity frees or lifecycle state ends.
+
+        Admission is deliberately incremental rather than batch-atomic: one
+        streamed model chunk can contain more natural sentence boundaries than
+        the complete FIFO capacity.  Waiting for the whole batch would then be
+        impossible.  The dedicated speech feeder may block here because Chat
+        generation retains and publishes its canonical text independently.
+        """
+
+        next_index = 0
+        with self._condition:
+            while next_index < len(sentences):
+                if self._closed:
+                    raise SpeechQueueClosedError(
+                        "The speech synthesis queue is closed."
+                    )
+                if record.cancelled or record.input_closed:
+                    raise SpeechTurnStateError(
+                        "The speech turn no longer accepts text."
+                    )
+                available = (
+                    self._config.max_pending_sentences - self._occupied_slots
+                )
+                if available <= 0:
+                    self._condition.wait()
+                    continue
+                stop = min(len(sentences), next_index + available)
+                admitted = sentences[next_index:stop]
+                for sentence in admitted:
+                    self._queue.append(_SentenceJob(record, sentence))
+                record.submitted += len(admitted)
+                self._occupied_slots += len(admitted)
+                next_index = stop
+                self._condition.notify_all()
+
     def _close_turn_input(self, record: _TurnRecord) -> None:
         """Publish completion immediately when no sentence work remains."""
 
@@ -1244,14 +1377,44 @@ class SpeechSynthesisQueue:
                 self._enqueue_notification_locked(record, terminal)
             self._condition.notify_all()
 
+    def _claim_running_abort_locked(
+        self,
+        record: _TurnRecord,
+    ) -> tuple[SpeechSynthesisBindingLease, str] | None:
+        """Claim one physical abort for the current operation token.
+
+        The queue condition must be held by the caller. Remembering the exact
+        token makes shutdown escalation idempotent while an uncooperative
+        native call remains blocked across repeated shutdown attempts.
+        """
+
+        lease = record.lease
+        operation_token = record.running_operation_token
+        if lease is None or operation_token is None:
+            return None
+        requested_token = record.abort_requested_operation_token
+        if requested_token == operation_token:
+            return None
+        if requested_token is not None:
+            raise RuntimeError("Speech abort token accounting diverged.")
+        record.abort_requested_operation_token = operation_token
+        return lease, operation_token
+
     def _cancel_turn(
         self,
         record: _TurnRecord,
         *,
         wait_for_delivery: bool = True,
         defer_abort: bool = False,
+        abort_running: bool = True,
     ) -> bool:
-        """Cancel undelivered events and invoke or enqueue a lock-free abort."""
+        """Cancel delivery and optionally abort the active native operation.
+
+        Ordinary cancellation keeps its historic physical-abort behavior.
+        Logical discard sets ``abort_running=False`` so stale output is
+        suppressed while the one already bounded native operation drains;
+        this avoids poisoning a reusable managed worker for normal UI churn.
+        """
 
         abort_target: tuple[SpeechSynthesisBindingLease, str] | None = None
         with self._condition:
@@ -1285,14 +1448,9 @@ class SpeechSynthesisQueue:
             record.completed += removed
             self._occupied_slots -= removed
             winning_notification = record.delivery_in_progress
-            if (
-                record.lease is not None
-                and record.running_operation_token is not None
-            ):
-                abort_target = (
-                    record.lease,
-                    record.running_operation_token,
-                )
+            if abort_running:
+                abort_target = self._claim_running_abort_locked(record)
+            if abort_target is not None:
                 if defer_abort:
                     self._enqueue_abort_locked(*abort_target)
                     abort_target = None

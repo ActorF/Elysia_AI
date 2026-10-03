@@ -42,6 +42,8 @@ interface PlaybackSettlement {
   readonly status: 'played' | 'failed'
 }
 
+type SpeechPlaybackDisconnectRecovery = 'replace-owner' | 'wait-for-renderer'
+
 /** Keep Backend delivery stable while its trusted window owner is replaced. */
 export class ReplaceableSpeechPlaybackOwner
 implements TrustedSpeechPlaybackOwner {
@@ -106,6 +108,7 @@ export class PreloadSpeechPlaybackOwner implements TrustedSpeechPlaybackOwner {
     private readonly window: BrowserWindow,
     private readonly onLifecycleDisconnect: (
       owner: PreloadSpeechPlaybackOwner,
+      recovery: SpeechPlaybackDisconnectRecovery,
     ) => void = () => {},
   ) {
     ipcMain.on(SETTLED_CHANNEL, this.handleSettled)
@@ -131,9 +134,10 @@ export class PreloadSpeechPlaybackOwner implements TrustedSpeechPlaybackOwner {
       return Promise.reject(new TrustedSpeechPlaybackError('disconnected'))
     }
     if (this.retiredPlaybackIds.size >= MAX_RETIRED_PLAYBACK_IDS) {
-      // Every retained ID can still produce one legitimate async settlement.
-      // Skip admission until one arrives instead of evicting an ID that could
-      // later be mistaken for a forged reply to a newer clip.
+      // Lost cancellation settlements must not block this window forever. A
+      // fresh owner has a new correlation generation and ignores well-formed
+      // stale IDs without allowing them to settle a current operation.
+      this.rejectDisconnected('replace-owner')
       return Promise.reject(new TrustedSpeechPlaybackError('clip-failed'))
     }
     const playbackId = randomUUID()
@@ -143,7 +147,7 @@ export class PreloadSpeechPlaybackOwner implements TrustedSpeechPlaybackOwner {
         if (this.pending?.playbackId !== playbackId) {
           return
         }
-        this.rejectDisconnected(false)
+        this.rejectDisconnected('replace-owner')
       }, PLAYBACK_TIMEOUT_MS)
       this.pending = { playbackId, resolve, reject, timeout }
       try {
@@ -157,7 +161,7 @@ export class PreloadSpeechPlaybackOwner implements TrustedSpeechPlaybackOwner {
           wavBytes,
         )
       } catch {
-        this.rejectDisconnected(true)
+        this.rejectDisconnected('replace-owner')
       }
     })
   }
@@ -216,11 +220,14 @@ export class PreloadSpeechPlaybackOwner implements TrustedSpeechPlaybackOwner {
     if (pending === null) {
       return
     }
-    if (
-      result === null
-      || result.playbackId !== pending.playbackId
-    ) {
-      this.rejectDisconnected(false)
+    if (result === null) {
+      this.rejectDisconnected('replace-owner')
+      return
+    }
+    if (result.playbackId !== pending.playbackId) {
+      // A well-formed stale reply from this exact preload frame cannot settle
+      // the random ID of the current clip. Ignoring it lets owner replacement
+      // recover even when an old cancellation reply arrives late.
       return
     }
     this.clearPending()
@@ -232,7 +239,7 @@ export class PreloadSpeechPlaybackOwner implements TrustedSpeechPlaybackOwner {
   }
 
   private readonly handleDisconnected = (): void => {
-    this.rejectDisconnected(true)
+    this.rejectDisconnected('wait-for-renderer')
   }
 
   private readonly handleNavigation = (
@@ -244,24 +251,24 @@ export class PreloadSpeechPlaybackOwner implements TrustedSpeechPlaybackOwner {
     // Same-document navigation is used by the accessible skip link and does
     // not replace the trusted Preload realm that owns Web Audio playback.
     if (isMainFrame && !isInPlace) {
-      this.rejectDisconnected(true)
+      this.rejectDisconnected('wait-for-renderer')
     }
   }
 
-  private rejectDisconnected(notifyLifecycleOwner: boolean): void {
+  private rejectDisconnected(
+    recovery: SpeechPlaybackDisconnectRecovery,
+  ): void {
     if (this.disposed || this.disconnected) {
       return
     }
     this.disconnected = true
     this.detachListeners()
-    if (notifyLifecycleOwner) {
-      try {
-        // Detach the routing facade before rejecting so expected window or
-        // document replacement skips this clip instead of poisoning fd3.
-        this.onLifecycleDisconnect(this)
-      } catch {
-        // The owner is still terminal even if its host cleanup hook is broken.
-      }
+    try {
+      // Detach or replace the routing facade before rejecting so expected
+      // ownership changes skip this clip instead of poisoning fd3.
+      this.onLifecycleDisconnect(this, recovery)
+    } catch {
+      // The owner is still terminal even if its host cleanup hook is broken.
     }
     const pending = this.pending
     if (pending !== null) {

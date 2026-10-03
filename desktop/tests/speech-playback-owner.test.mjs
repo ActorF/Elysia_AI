@@ -61,6 +61,39 @@ function createOwner() {
   }
 }
 
+/** Reinstall an owner on the same live window for recoverable disconnects. */
+function createRecoveringOwner() {
+  const window = new FakeWindow()
+  const router = new ReplaceableSpeechPlaybackOwner()
+  const recoveries = []
+  let owner
+  const handleDisconnect = (disconnectedOwner, recovery) => {
+    assert.equal(disconnectedOwner, owner)
+    recoveries.push(recovery)
+    router.replace(null)
+    if (
+      recovery === 'replace-owner'
+      && !window.isDestroyed()
+      && !window.webContents.isDestroyed()
+    ) {
+      owner = new PreloadSpeechPlaybackOwner(window, handleDisconnect)
+      router.replace(owner)
+    }
+  }
+  owner = new PreloadSpeechPlaybackOwner(window, handleDisconnect)
+  router.replace(owner)
+  return {
+    currentOwner: () => owner,
+    dispose: () => {
+      router.replace(null)
+      owner.dispose()
+    },
+    recoveries,
+    router,
+    window,
+  }
+}
+
 function speechClip(sequence = 0) {
   return {
     requestId: 'request_fixture',
@@ -218,6 +251,59 @@ test('failed and malformed settlements preserve sanitized failure classes', asyn
   }
 })
 
+test('malformed settlement skips one clip and reinstalls the live owner', async () => {
+  const fixture = createRecoveringOwner()
+  const malformed = fixture.router.play(speechClip())
+  const malformedId = playbackIdOf(fixture.window)
+  emitSettlement(fixture.window, {
+    playbackId: malformedId,
+    status: 'played',
+    path: 'D:/private/audio.wav',
+  })
+  await assert.rejects(malformed, matchesPlaybackError('clip-failed'))
+  assert.deepEqual(fixture.recoveries, ['replace-owner'])
+
+  const resumed = fixture.router.play(speechClip(1))
+  const resumedId = playbackIdOf(fixture.window, 2)
+  try {
+    emitSettlement(
+      fixture.window,
+      { playbackId: resumedId, status: 'played' },
+    )
+    await resumed
+  } finally {
+    fixture.dispose()
+    await resumed.catch(() => {})
+  }
+})
+
+test('playback timeout skips one clip and reinstalls the live owner', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const fixture = createRecoveringOwner()
+  const timedOut = fixture.router.play(speechClip())
+  const timedOutId = playbackIdOf(fixture.window)
+  t.mock.timers.tick(130_000)
+  await assert.rejects(timedOut, matchesPlaybackError('clip-failed'))
+  assert.deepEqual(fixture.recoveries, ['replace-owner'])
+  assert.deepEqual(
+    fixture.window.webContents.sent.at(-1),
+    [CANCEL_CHANNEL, timedOutId],
+  )
+
+  const resumed = fixture.router.play(speechClip(1))
+  const resumedId = playbackIdOf(fixture.window, 2)
+  try {
+    emitSettlement(
+      fixture.window,
+      { playbackId: resumedId, status: 'played' },
+    )
+    await resumed
+  } finally {
+    fixture.dispose()
+    await resumed.catch(() => {})
+  }
+})
+
 test('a retired cancellation reply cannot settle its replacement', async () => {
   const { owner, window } = createOwner()
   const first = owner.play(speechClip(0))
@@ -240,41 +326,44 @@ test('a retired cancellation reply cannot settle its replacement', async () => {
   }
 })
 
-test('retired reply bound skips admission without evicting a live ID', async () => {
-  const { owner, window } = createOwner()
+test('retired reply bound replaces its owner and ignores late replies', async () => {
+  const fixture = createRecoveringOwner()
   const retiredIds = []
   for (let sequence = 0; sequence < 4; sequence += 1) {
-    const operation = owner.play(speechClip(sequence))
-    retiredIds.push(playbackIdOf(window, sequence * 2))
-    owner.cancel()
+    const operation = fixture.router.play(speechClip(sequence))
+    retiredIds.push(playbackIdOf(fixture.window, sequence * 2))
+    fixture.router.cancel()
     await assert.rejects(operation, matchesPlaybackError('clip-failed'))
   }
 
-  const sendsBeforeBoundedSkip = window.webContents.sent.length
+  const sendsBeforeBoundedSkip = fixture.window.webContents.sent.length
   await assert.rejects(
-    owner.play(speechClip(4)),
+    fixture.router.play(speechClip(4)),
     matchesPlaybackError('clip-failed'),
   )
-  assert.equal(window.webContents.sent.length, sendsBeforeBoundedSkip)
+  assert.equal(fixture.window.webContents.sent.length, sendsBeforeBoundedSkip)
+  assert.deepEqual(fixture.recoveries, ['replace-owner'])
 
-  emitSettlement(
-    window,
-    { playbackId: retiredIds[0], status: 'failed' },
+  const replacement = fixture.router.play(speechClip(5))
+  const replacementId = playbackIdOf(
+    fixture.window,
+    sendsBeforeBoundedSkip,
   )
-  const replacement = owner.play(speechClip(5))
-  const replacementId = playbackIdOf(window, sendsBeforeBoundedSkip)
   try {
-    for (const retiredId of retiredIds.slice(1)) {
-      emitSettlement(window, { playbackId: retiredId, status: 'failed' })
+    for (const retiredId of retiredIds) {
+      emitSettlement(
+        fixture.window,
+        { playbackId: retiredId, status: 'failed' },
+      )
     }
     await assertStillPending(replacement)
     emitSettlement(
-      window,
+      fixture.window,
       { playbackId: replacementId, status: 'played' },
     )
     await replacement
   } finally {
-    owner.dispose()
+    fixture.dispose()
     await replacement.catch(() => {})
   }
 })

@@ -280,6 +280,7 @@ DEBUG=False
 - **Send transcript** 复用与文字 Composer 相同的可靠 Chat 发送路径，不存在第二套 Voice Brain。用户消息、Brain 串流回复、Chat 持久化、Summary 与 Scoped Memory 都属于打开 Voice 时绑定的准确 Chat 和可选 Project；文字与语音可以在同一 Chat History 中交替使用。
 - **Use transcript in message** / **Append transcript to message** 仍是只写入草稿、不发送的替代操作。直接发送 Transcript 不会消费已有 Composer 草稿，也不会把暂存附件附加到语音消息。
 - 播放开始后 Session 进入 `SPEAKING`。文字终态与播放终态可以任意先后到达，只有两侧都结束后才回到 `IDLE`；若 `voice.speech` 不可用或运行中失效，文字回复仍正常完成，不会因等待可选语音而卡住。
+- 快速生成的长回复先进入有界原文 Spool，再由独立 Feeder 按合成队列背压逐句送入；不会因瞬间超过八个待合成分句就截断整段朗读。停止或替换回复只丢弃过期输出，不再把健康的受管语音 Worker 当作故障永久停用。Preload 在连续分句间复用一个可信 Web Audio 输出图，每句仍重新应用当前音量与输出设备；失败、超时或异常回执只退役当前播放世代，同一个可信窗口可自动恢复下一句。
 - 用户显式发送审核后的 Transcript 后，回复处于 `THINKING` 或 `SPEAKING` 时会启动专用 Barge-in 监听。它要求 WebRTC `echoCancellation: { exact: true }`，并验证实际 Track Settings；无法确认回声消除时会 Fail Closed、释放麦克风并让当前回复安全继续，不信任未经验证的回声路径。已验证的 AEC 用于降低 Elysia 扬声器输出造成自身打断的风险；本文不据此声称已通过真实麦克风/扬声器设备矩阵验收。
 - Barge-in VAD 要求持续语音达到确认阈值。确认用户开口后，可信边界先停止本地播放，再以准确 `{requestId, chatId}` 取消该 Turn 的待处理/运行中 Speech，并以准确 Chat Request 请求停止 LLM Stream；重复、迟到或错误归属的取消不能影响其他 Turn。
 - Session 绑定准确的 Chat ID、Project ID 和本地 epoch；Capture、STT、Chat Request 与 Speech Sequence 都必须匹配。接受打断会递增 Epoch，并把已确认的新采集接入新的 `LISTENING`；旧轮次迟到事件以及关闭 Voice、切换 Chat/Project 或导航后的跨上下文事件都会被拒绝。
@@ -463,7 +464,7 @@ cd /d D:\Elysia_AI\desktop
 
 ### 为什么桌面端仍可能没有语音？
 
-桌面回复朗读已经接通，但它是可选能力：必须存在完整本机 GPT-SoVITS Runtime、严格 Voice Profile、匹配 Hash 的权重与参考音频，并显式开启 `GPT_SOVITS_ALLOW_LOCAL_EVALUATION`。若单句合成、解码或播放失败，受影响句子会被跳过；只有无法安全继续的通道或生命周期故障才会停用语音，文字 Chat 始终继续工作。有界、人工确认的 Voice Session、回复期间 Barge-in 和正常回复后的可选自动续听均已接通；Barge-in 还要求浏览器能启用并证实 WebRTC Echo Cancellation，否则会安全关闭监听并继续回复。自动续听不会自动发送识别文本。实时 Partial Transcript 尚未完成；256 轮 Python STT、256 轮 Speech Queue 与 200 轮 Renderer Voice Soak 已证明程序内 Owner 会清空，但真实设备、房间回声和多小时人类通话矩阵未执行，并由项目负责人明确豁免为当前交付的关闭门槛，不代表这些人工观察已经通过。
+桌面回复朗读已经接通，但它是可选能力：必须存在完整本机 GPT-SoVITS Runtime、严格 Voice Profile、匹配 Hash 的权重与参考音频，并显式开启 `GPT_SOVITS_ALLOW_LOCAL_EVALUATION`。长回复的分句会经过有界 Spool 和背压 Feeder 完整排队；连续分句在 Preload 中复用同一个 Web Audio 输出图，避免反复重建 Windows 音频设备。若单句合成、解码或播放失败，受影响句子会被跳过；播放超时或异常回执会自动换用新的播放 Owner，只有无法安全继续的通道或生命周期故障才会停用语音，文字 Chat 始终继续工作。用户在单句 Native 合成正在执行时停止或替换回复，该过期单句会被静默排空，以免强制中止污染整个受管 Worker；新朗读因此可能等待该单句返回，若第三方 Runtime 卡住则最长等到已配置的合成超时，但文字回复不受影响。有界、人工确认的 Voice Session、回复期间 Barge-in 和正常回复后的可选自动续听均已接通；Barge-in 还要求浏览器能启用并证实 WebRTC Echo Cancellation，否则会安全关闭监听并继续回复。自动续听不会自动发送识别文本。实时 Partial Transcript 尚未完成；256 轮 Python STT、256 轮 Speech Queue 与 200 轮 Renderer Voice Soak 已证明程序内 Owner 会清空，但真实设备、房间回声和多小时人类通话矩阵未执行，并由项目负责人明确豁免为当前交付的关闭门槛，不代表这些人工观察已经通过。
 
 ### 如何让 Project Chat 回答文件内容？
 

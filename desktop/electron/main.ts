@@ -1027,12 +1027,24 @@ function installSpeechPlaybackOwner(window: BrowserWindow): void {
   }
   const owner = new PreloadSpeechPlaybackOwner(
     window,
-    (disconnectedOwner) => {
+    (disconnectedOwner, recovery) => {
       if (speechPlaybackOwner !== disconnectedOwner) {
         return
       }
       speechPlaybackOwner = null
       speechPlaybackRouter.replace(null)
+      if (
+        recovery === 'replace-owner'
+        && !shutdownStarted
+        && mainWindow === window
+        && !window.isDestroyed()
+        && !window.webContents.isDestroyed()
+      ) {
+        // Timeouts and invalid settlements retire only one correlation
+        // generation. The same live trusted document can safely receive a new
+        // owner, while navigation/crash waits for renderer-ready instead.
+        installSpeechPlaybackOwner(window)
+      }
     },
   )
   speechPlaybackOwner = owner
