@@ -302,7 +302,7 @@ DEBUG=False
 - 支持 AAC、FLAC、M4A、MP3、OGG、Opus 与 WAV；输入限制为 1 秒至 12 分钟、最多 1 GiB。歌词驱动路径显示 `validating → separating → transcribing → aligning → synthesizing → mixing`，Legacy 路径显示 `validating → separating → converting → mixing`；都可取消，完成后自动播放，并提供重新播放、停止和无损 WAV 导出。
 - 原歌曲路径、输出路径、模型路径、进程 ID 与音频字节只存在于 Electron Main、私有 Worker 和可信 Preload；React 只收到安全文件名、有界进度与生命周期状态。播放使用私有 Blob URL、所选扬声器和当前语音音量，结束或取消后立即撤销。
 - 未导出的结果、在线取得的歌词和所有中间 Stem 都属于受管临时数据：创建下一首、清理临时音频、取消失败后的受管清理或退出会删除它们。SoulX、FunASR、ROSVOT、RMVPE、OpenCC、RVC v2、HuBERT、FAISS Index、Demucs、爱莉希雅 Prompt/模型及示例翻唱均留在 Git 忽略的本机目录，不进入 GitHub、Release 或当前安装包。
-- 两条路径共用保留句间动态的 60 Hz High-pass、0.5 dB Presence、线性 +1.3 dB 主唱补偿、Vocal-keyed Ducking 和 -1 dBFS Limiter。歌词驱动路径还使用 -18 dB 严格无声辅音层；RVC 路径固定使用 RMVPE、speaker `0`、Index Rate `0.00`、Protect `0.33` 与 RMS Mix Rate `0.25`，不混回原唱辅音，避免重新引入分离伪影与电音。RVC 单次子进程会关闭会按音频形状缓存显存的 CUDA Graph，并拒绝全零或持续满幅的异常结果；当前机器已用 248.294 秒完整 Stem 作业验证 WAV/MP3 输出与中间文件清理。当前能力仍是需要手动准备 CUDA/WSL 私有 Runtime 的源码开发预览，不声称自动查词等于歌词授权，也不把一次完整 RVC 验收与一次短 SVS Smoke 当作所有音区、歌曲和咬字质量的证明。准确目录、模型字节身份、测试方法、限制和权利边界见 [本机爱莉希雅翻唱](./docs/15-SONG-COVER.md) 与 [MODEL_LICENSE.md](./MODEL_LICENSE.md)。
+- 两条路径共用保留句间动态的 60 Hz High-pass、0.5 dB Presence、线性 +1.3 dB 主唱补偿、Vocal-keyed Ducking 和 -1 dBFS Limiter。歌词驱动路径还使用 -18 dB 严格无声辅音层；RVC 路径固定使用 RMVPE、speaker `0`、Index Rate `0.00`、Protect `0.33` 与 RMS Mix Rate `0.25`，不混回原唱辅音，避免重新引入分离伪影与电音。RVC 单次子进程会关闭会按音频形状缓存显存的 CUDA Graph，并在每项任务构建模型前固定 upstream seed `114514`、cuDNN 算法选择与 cuBLAS workspace；在同一已审核 Runtime 与 Device 上，相同输入不会仅因重新启动进程而随机得到不同波形。Adapter 还会拒绝全零或持续满幅的异常结果；当前机器已用 248.294 秒完整 Stem 作业验证 WAV/MP3 输出与中间文件清理。当前能力仍是需要手动准备 CUDA/WSL 私有 Runtime 的源码开发预览，不声称自动查词等于歌词授权，也不把一次完整 RVC 验收与一次短 SVS Smoke 当作所有音区、歌曲和咬字质量的证明。准确目录、模型字节身份、测试方法、限制和权利边界见 [本机爱莉希雅翻唱](./docs/15-SONG-COVER.md) 与 [MODEL_LICENSE.md](./MODEL_LICENSE.md)。
 
 ### 🌷 可选外部动态桌宠
 
@@ -437,7 +437,7 @@ Elysia_AI/
 └── start.py            # Console 入口与服务组合根
 ```
 
-`logs/`、`.env`、`.venv/`、旧开发用 `workspace/`、Ollama blobs/manifests、`models/cache/` 与 `models/weights/` 都被 Git 忽略。Desktop 的正式数据根默认位于 Electron `userData/data`，可在 **Settings → Data & storage** 查看、移动、统计容量，并只清理应用自有的临时音频、Cache 与 Log；无法安全删除的旧副本会跨重启显示为 Recovery Copy，等待人工核对。精确布局和失败回滚规则见 [Production Data Layout](./docs/13-PRODUCTION-DATA-LAYOUT.md)。
+`logs/`、`.env`、`.venv/`、旧开发用 `workspace/`、Ollama blobs/manifests（包括 `manifests-v2`）、`models/cache/` 与 `models/weights/` 都被 Git 忽略。Desktop 的正式数据根默认位于 Electron `userData/data`，可在 **Settings → Data & storage** 查看、移动、统计容量，并只清理应用自有的临时音频、Cache 与 Log；无法安全删除的旧副本会跨重启显示为 Recovery Copy，等待人工核对。精确布局和失败回滚规则见 [Production Data Layout](./docs/13-PRODUCTION-DATA-LAYOUT.md)。
 
 ---
 

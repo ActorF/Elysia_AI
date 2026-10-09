@@ -176,6 +176,7 @@ def test_runtime_scope_and_conversion_fix_every_upstream_inference_control(
     original_arguments = sys.argv[:]
     original_getaddrinfo = socket.getaddrinfo
     monkeypatch.setenv("RVC_CUDA_GRAPH", "1")
+    monkeypatch.setenv("CUBLAS_WORKSPACE_CONFIG", ":16:8")
     calls: list[tuple[object, ...]] = []
     published: list[tuple[Path, int, object]] = []
 
@@ -183,12 +184,14 @@ def test_runtime_scope_and_conversion_fix_every_upstream_inference_control(
         """Model a CUDA configuration while checking the isolated scope."""
 
         def __init__(self) -> None:
+            calls.append(("config",))
             assert Path.cwd() == request.source_root
             assert sys.path[0] == str(request.source_root)
             assert sys.argv == [str(Path(runtime.__file__).resolve())]
             assert os.environ["HF_HUB_OFFLINE"] == "1"
             assert os.environ["TRANSFORMERS_OFFLINE"] == "1"
             assert os.environ["RVC_CUDA_GRAPH"] == "0"
+            assert os.environ["CUBLAS_WORKSPACE_CONFIG"] == ":4096:8"
             assert os.environ["weight_root"] == str(request.model.parent)
             assert os.environ["rmvpe_root"] == str(request.rmvpe.parent)
             with pytest.raises(OSError, match="Network access is disabled"):
@@ -220,19 +223,32 @@ def test_runtime_scope_and_conversion_fix_every_upstream_inference_control(
             return "ok", (40_000, [0.0, 0.1, -0.1])
 
     def _loader(_request_value: runtime._Request) -> runtime._RvcApi:
+        calls.append(("load_api",))
         return runtime._RvcApi(_FakeConfig, _FakeConverter)
+
+    def _seed() -> None:
+        calls.append(("seed", runtime._INFERENCE_SEED))
 
     def _publisher(path: Path, sample_rate: int, samples: object) -> None:
         published.append((path, sample_rate, samples))
 
-    runtime._run_request(request, api_loader=_loader, publisher=_publisher)
+    runtime._run_request(
+        request,
+        api_loader=_loader,
+        publisher=_publisher,
+        seed_initializer=_seed,
+    )
 
     assert Path.cwd() == original_directory
     assert sys.argv == original_arguments
     assert socket.getaddrinfo is original_getaddrinfo
     assert os.environ["RVC_CUDA_GRAPH"] == "1"
+    assert os.environ["CUBLAS_WORKSPACE_CONFIG"] == ":16:8"
     assert published == [(request.output_audio, 40_000, [0.0, 0.1, -0.1])]
     assert calls == [
+        ("seed", 114_514),
+        ("load_api",),
+        ("config",),
         ("get_vc", request.model.name, 0.33, 0.33),
         (
             "vc_single",
@@ -248,6 +264,43 @@ def test_runtime_scope_and_conversion_fix_every_upstream_inference_control(
         ),
         ("get_vc", "", 0.33, 0.33),
     ]
+
+
+def test_torch_seed_resets_cpu_and_every_cuda_generator_for_each_job(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Apply seed 114514 and stable cuDNN selection on every invocation."""
+
+    calls: list[tuple[object, ...]] = []
+    cudnn = SimpleNamespace(benchmark=True, deterministic=False)
+    torch_module = SimpleNamespace(
+        manual_seed=lambda seed: calls.append(("manual_seed", seed)),
+        cuda=SimpleNamespace(
+            manual_seed_all=lambda seed: calls.append(
+                ("cuda_manual_seed_all", seed)
+            )
+        ),
+        backends=SimpleNamespace(cudnn=cudnn),
+    )
+
+    def _import(name: str) -> object:
+        assert name == "torch"
+        calls.append(("import", name))
+        return torch_module
+
+    monkeypatch.setattr(runtime.importlib, "import_module", _import)
+
+    runtime._seed_torch_inference()
+    runtime._seed_torch_inference()
+
+    one_job = [
+        ("import", "torch"),
+        ("manual_seed", 114_514),
+        ("cuda_manual_seed_all", 114_514),
+    ]
+    assert calls == one_job + one_job
+    assert cudnn.benchmark is False
+    assert cudnn.deterministic is True
 
 
 def test_preloaded_vendor_namespace_is_rejected_before_import_or_execution(
@@ -267,7 +320,11 @@ def test_preloaded_vendor_namespace_is_rejected_before_import_or_execution(
 
     monkeypatch.setitem(sys.modules, "infer", foreign)
     with pytest.raises(runtime._RvcRuntimeFailure) as captured:
-        runtime._run_request(request, api_loader=_loader)
+        runtime._run_request(
+            request,
+            api_loader=_loader,
+            seed_initializer=lambda: None,
+        )
 
     assert captured.value.code == "source_binding_failed"
     assert invoked == []
@@ -318,7 +375,11 @@ def test_non_cuda_and_directml_fallbacks_are_rejected_before_model_load(
         return runtime._RvcApi(_FallbackConfig, _converter_factory)
 
     with pytest.raises(runtime._RvcRuntimeFailure) as captured:
-        runtime._run_request(request, api_loader=_loader)
+        runtime._run_request(
+            request,
+            api_loader=_loader,
+            seed_initializer=lambda: None,
+        )
 
     assert captured.value.code == "cuda_required"
     assert constructed == []

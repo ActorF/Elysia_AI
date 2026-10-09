@@ -209,6 +209,8 @@ Windows Worker 不信任 Windows `HOME`，也不硬编码 Linux username。它�
 - 当前只使用一份经过人工复核、含准确文本和音符元数据的歌唱 Prompt；不会把 `slicer` 中缺少逐条转写、音高和时序标注的全部日常语音盲目当作 SoulX Prompt。多 Prompt 选择、覆盖更多音域与情绪，或训练专用歌声模型仍属于后续音质工作，不能从当前单 Prompt Smoke 推断已经完成。
 - 2026-10-08 在当前 Windows + 默认 `Ubuntu-24.04` WSL + CUDA 私有 Runtime 上完成了一次 6.71 秒受控 Lyrics-SVS 贯通 Smoke：生成结果是 44.1 kHz、Stereo、16-bit PCM WAV，并同时生成 44.1 kHz、Stereo、320 kbps MP3；成功 Job 只保留这两个输出。该证据验证了 Windows Worker → WSL Bridge → SoulX → Windows Mix 的当前机器互操作，不代表完整歌曲、多音区、快速咬字、取消/超时或人耳音质矩阵已经通过。
 - 2026-10-09 在当前 Windows CUDA 私有 Runtime 上以一对 248.294 秒 Stem 完成 Legacy RVC Worker 贯通验收：RVC 子进程生成完整 40 kHz mono PCM16 人声，最终只保留 44.1 kHz Stereo PCM16 WAV 与 320 kbps MP3；WAV 峰值约 `-3.44 dBFS`，没有时长截断或满幅削波。关闭上游按 Shape 缓存的 CUDA Graph 后，实测显存从失败路径接近 12 GiB 降到约 2 GiB。该验收证明当前机器的完整 Worker/混音/清理边界可运行，不代表所有歌曲的人耳音色、分离质量、咬字或音域都已通过。
+- 在相同已审核 Runtime、Device 与输入下，两次独立短任务产生了字节一致的 PCM（SHA-256 相同）。该结果验证本机任务重启的可复现性，不承诺跨 PyTorch、CUDA、cuDNN、驱动或硬件版本复现。
+- 固定随机源后又以同一首 248.294 秒 MP3 完成 `Demucs → RVC → mix` 整曲重跑；输出仍为 44.1 kHz Stereo PCM16 WAV 与 320 kbps MP3，WAV 峰值约 `-3.84 dBFS`，没有满幅样本或时长截断。额外 A/B 显示二次 UVR 去混响、单侧／自适应声道、BS-Roformer 替换，以及先移调再移回都会在问题片段增加掉音、音高错误、相位或高频伪影，因此它们没有进入默认链路。
 
 ## 7. CMD 测试
 
@@ -254,7 +256,7 @@ cd /d D:\Elysia_AI
 该路径不会读取或理解歌词。旋律、节拍、发音内容与演唱时序都来自输入 vocal；只选纯伴奏不会凭空生成歌词和演唱。处理步骤如下：
 
 1. FFmpeg 把输入规范化为 44.1 kHz PCM；完整歌曲模式使用 Demucs `htdemucs` 分离 vocal 与 accompaniment，Stem 模式直接使用从同一时间点开始的已对齐输入；
-2. 短命 RVC Adapter 在独立子进程中固定 speaker `0`、RVC v2 40 kHz model family、RMVPE F0、HuBERT、Index Rate `0.00`、Protect `0.33` 与 RMS Mix Rate `0.25`。它在 Vendor Import 前固定 `RVC_CUDA_GRAPH=0`：上游会按静音点形成不同长度片段，而一次性整曲任务缓存每个 Shape 的 CUDA Graph 没有 Replay 收益，只会持续占用显存。当前选定的 e50 声学 Profile 不把 FAISS 邻居混入输出；`model.index` 仍作为该私有 Profile 的固定、身份验证资产传入并校验，不能被替换成任意 Index。Renderer 只能提交 `-2..+2` 半音，不能改变上游 RVC 命令面、模型、Index、F0 方法或混合参数；
+2. 短命 RVC Adapter 在独立子进程中固定 speaker `0`、RVC v2 40 kHz model family、RMVPE F0、HuBERT、Index Rate `0.00`、Protect `0.33` 与 RMS Mix Rate `0.25`。它在 Vendor Import 前固定 `RVC_CUDA_GRAPH=0`：上游会按静音点形成不同长度片段，而一次性整曲任务缓存每个 Shape 的 CUDA Graph 没有 Replay 收益，只会持续占用显存。每项任务还会在构建模型前重置 upstream seed `114514`，关闭 cuDNN benchmark、固定 deterministic cuDNN selection，并设置 `CUBLAS_WORKSPACE_CONFIG=:4096:8`；没有启用 PyTorch strict deterministic algorithms，因为当前固定 Torch 的 RVC CUDA `cumsum` 没有该模式的实现。当前选定的 e50 声学 Profile 不把 FAISS 邻居混入输出；`model.index` 仍作为该私有 Profile 的固定、身份验证资产传入并校验，不能被替换成任意 Index。Renderer 只能提交 `-2..+2` 半音，不能改变上游 RVC 命令面、模型、Index、F0 方法或混合参数；
 3. Adapter 禁用 Socket 与 Hugging Face 在线访问，只从显式 `models/cache/rvc-v2-40k/` 载入已验证的 Source/HuBERT/RMVPE，并从 `models/weights/rvc/elysia-v2-40k/` 载入私有 Checkpoint/Index。非 CUDA Device、路径跳转、不匹配的 Model Metadata、超范围／全零／长时间持续满幅 PCM 或既存输出都会 Fail Closed；
 4. RVC 产生 40 kHz mono 人声。Worker 将它重采样到 44.1 kHz，再以 `apad + atrim` 精确对齐原目标 Sample Count；这里不使用时长拉伸，避免为了追平长度而制造新的节拍或音高伪影；
 5. RVC Protect 已负责无声内容保留，所以 Worker 不会再把原唱的辅音高频层混回转换结果。FFmpeg 对转换人声做 60 Hz High-pass、0.5 dB Presence 与线性 +1.3 dB 补偿，不使用 Vocal Compressor/Makeup；随后用人声驱动的窄频伴奏 Ducking 腾出空间，最后以 -1 dBFS 限幅；

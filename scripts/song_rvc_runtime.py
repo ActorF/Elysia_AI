@@ -17,7 +17,10 @@ full songs because upstream caches a separate graph for each distinct segment
 shape and can exhaust GPU memory.  Vendor imports run from the explicit source
 root with an isolated ``sys.argv`` and working directory because upstream RVC
 reads both during configuration.  A completed WAV is published under its final
-name only after a private sibling file has been written and synchronized.
+name only after a private sibling file has been written and synchronized.  Each
+job also resets the reviewed upstream seed and stable CUDA/cuDNN selection
+controls before model construction so known process-launch randomness does not
+select a different RVC waveform.
 """
 
 from __future__ import annotations
@@ -51,6 +54,7 @@ _KEY_SHIFTS = frozenset({-2, -1, 0, 1, 2})
 _MAX_INPUT_BYTES = 2 * 1024 * 1024 * 1024
 _MAX_ASSET_BYTES = 8 * 1024 * 1024 * 1024
 _MAX_OUTPUT_SAMPLES = _MODEL_SAMPLE_RATE * 15 * 60
+_INFERENCE_SEED = 114_514
 _FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 _OPTIONS = (
     "--source-root",
@@ -72,6 +76,10 @@ _OFFLINE_ENVIRONMENT = {
 }
 _FIXED_RUNTIME_ENVIRONMENT = {
     **_OFFLINE_ENVIRONMENT,
+    # Pin cuBLAS workspace selection before the first CUDA context is created.
+    # The process-scoped setting removes another source of run-to-run kernel
+    # variation without changing the parent application's CUDA behavior.
+    "CUBLAS_WORKSPACE_CONFIG": ":4096:8",
     # RVC divides long recordings at quiet points, so segment lengths vary.
     # Its CUDA Graph cache retains shape-specific captures and can consume the
     # entire GPU during a song; eager inference stays bounded and deterministic.
@@ -607,9 +615,61 @@ def _cuda_device(configuration: object) -> str:
     return device
 
 
-def _convert(request: _Request, api_loader: Callable[[_Request], _RvcApi]) -> tuple[int, object]:
+def _seed_torch_inference() -> None:
+    """Reset PyTorch and CUDA to the reviewed reproducible inference seed.
+
+    Upstream RVC's WebUI fixes ``torch.manual_seed`` to 114514 before it
+    constructs the model.  This one-shot adapter additionally reseeds every
+    CUDA generator and disables cuDNN benchmarking to remove the reviewed
+    run-to-run randomness; independent jobs produced byte-identical PCM during
+    fixed-runtime validation.  PyTorch's strict deterministic-algorithm mode
+    cannot be enabled here because the pitch-conditioned generator uses a CUDA
+    cumulative sum for which the pinned Torch build provides no
+    deterministic-mode implementation, so cross-runtime reproducibility is
+    deliberately not promised.
+    """
+
+    try:
+        torch_module = importlib.import_module("torch")
+        manual_seed = getattr(torch_module, "manual_seed")
+        cuda_module = getattr(torch_module, "cuda")
+        cuda_manual_seed_all = getattr(cuda_module, "manual_seed_all")
+        cudnn_backend = getattr(getattr(torch_module, "backends"), "cudnn")
+        if not all(
+            callable(operation)
+            for operation in (
+                manual_seed,
+                cuda_manual_seed_all,
+            )
+        ):
+            raise TypeError
+
+        # Reset on every request rather than relying on process startup state.
+        # ``manual_seed`` follows the upstream WebUI; ``manual_seed_all`` makes
+        # the all-device CUDA intent explicit and remains safe before lazy CUDA
+        # initialization.  CPU or DirectML still fail at ``_cuda_device``.
+        manual_seed(_INFERENCE_SEED)
+        cuda_manual_seed_all(_INFERENCE_SEED)
+        setattr(cudnn_backend, "benchmark", False)
+        setattr(cudnn_backend, "deterministic", True)
+        if bool(getattr(cudnn_backend, "benchmark")) or not bool(
+            getattr(cudnn_backend, "deterministic")
+        ):
+            raise TypeError
+    except _RvcRuntimeFailure:
+        raise
+    except BaseException:
+        _fail("configuration_failed")
+
+
+def _convert(
+    request: _Request,
+    api_loader: Callable[[_Request], _RvcApi],
+    seed_initializer: Callable[[], None],
+) -> tuple[int, object]:
     """Run one fixed speaker-zero, RMVPE RVC inference request."""
 
+    seed_initializer()
     api = api_loader(request)
     try:
         configuration = api.config_factory()
@@ -901,11 +961,12 @@ def _run_request(
     *,
     api_loader: Callable[[_Request], _RvcApi] = _load_rvc_api,
     publisher: Callable[[Path, int, object], None] = _publish_audio_atomic,
+    seed_initializer: Callable[[], None] = _seed_torch_inference,
 ) -> None:
     """Execute one validated request inside the isolated vendor scope."""
 
     with _runtime_scope(request):
-        sample_rate, samples = _convert(request, api_loader)
+        sample_rate, samples = _convert(request, api_loader, seed_initializer)
         publisher(request.output_audio, sample_rate, samples)
 
 

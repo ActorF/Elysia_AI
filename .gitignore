@@ -49,6 +49,7 @@ Desktop.ini
 # AI Model Weights
 models/blobs/
 models/manifests/
+models/manifests-v2/
 models/weights/
 models/cache/
 models/metadata/
