@@ -70,6 +70,7 @@ pytest-cache-files-*/
 # Runtime user data
 workspace/
 memory/test_memory.txt
+/data/audio/
 
 # Personal project reference files
 /docs/ROADMAP.md

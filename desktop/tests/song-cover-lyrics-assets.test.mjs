@@ -82,6 +82,22 @@ test('uses a two-part filename only when one media tag fixes its direction', () 
     }, '歌名 - 歌手.flac'),
     { title: '歌名', artist: '歌手', durationSeconds: 180 },
   )
+  assert.deepEqual(
+    deriveSongLyricsQuery({
+      title: null,
+      artist: '要不要买菜',
+      durationSeconds: 215.4,
+    }, '要不要买菜_勿忘我【動態歌詞_Lyrics_Video】.mp3'),
+    { title: '勿忘我', artist: '要不要买菜', durationSeconds: 215.4 },
+  )
+  assert.deepEqual(
+    deriveSongLyricsQuery({
+      title: '勿忘我',
+      artist: null,
+      durationSeconds: 215.4,
+    }, '要不要买菜_勿忘我【动态歌词_Lyrics_Video】.mp3'),
+    { title: '勿忘我', artist: '要不要买菜', durationSeconds: 215.4 },
+  )
   assert.equal(
     deriveSongLyricsQuery({
       title: null,
@@ -100,6 +116,9 @@ test('uses a two-part filename only when one media tag fixes its direction', () 
     '1f40a133-ed82-4ef2-8512-44f0882d4b15.flac',
     'vocals - song.wav',
     '../A - B.mp3',
+    '要不要买菜_勿忘我.mp3',
+    '要不要买菜_勿忘我【现场版】.mp3',
+    '要_不要买菜_勿忘我【動態歌詞_Lyrics_Video】.mp3',
   ]) {
     assert.equal(
       deriveSongLyricsQuery({
@@ -426,6 +445,43 @@ test('uses online results to disambiguate an untagged two-part filename', async 
     assert.deepEqual(seenQueries, [
       { title: '歌名', artist: '歌手', durationSeconds: 180 },
       { title: '歌手', artist: '歌名', durationSeconds: 180 },
+    ])
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true })
+  }
+})
+
+test('disambiguates a lyric-video underscore filename through online results', async () => {
+  const fixture = await createJobFixture()
+  const seenQueries = []
+  const preparer = new SongLyricsAssetPreparer(
+    async (query) => {
+      seenQueries.push(query)
+      if (query.artist === '要不要买菜' && query.title === '勿忘我') {
+        return foundLyrics()
+      }
+      return Object.freeze({
+        status: 'not-found',
+        plainLyrics: null,
+        syncedLyrics: null,
+        providerRecord: null,
+      })
+    },
+    async () => ({ title: null, artist: null, durationSeconds: 215.4 }),
+  )
+  try {
+    const result = await preparer.prepare({
+      jobDirectory: fixture.jobDirectory,
+      sourcePath: path.join(fixture.root, 'private', 'song.mp3'),
+      sourceName: '要不要买菜_勿忘我【動態歌詞_Lyrics_Video】.mp3',
+      ffprobePath: path.join(fixture.root, 'private', 'ffprobe'),
+      signal: uncancelledSignal(),
+      metadataOverride: null,
+    })
+    assert.equal(result.status, 'ready')
+    assert.deepEqual(seenQueries, [
+      { title: '勿忘我', artist: '要不要买菜', durationSeconds: 215.4 },
+      { title: '要不要买菜', artist: '勿忘我', durationSeconds: 215.4 },
     ])
   } finally {
     await rm(fixture.root, { recursive: true, force: true })

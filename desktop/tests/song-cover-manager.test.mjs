@@ -1,6 +1,7 @@
 /** Verify bounded Song Cover process ownership, state, playback, and export. */
 
 import assert from 'node:assert/strict'
+import { spawn } from 'node:child_process'
 import {
   chmod,
   copyFile,
@@ -12,7 +13,6 @@ import {
   rename as renamePath,
   rm,
   stat,
-  symlink,
   writeFile,
 } from 'node:fs/promises'
 import os from 'node:os'
@@ -370,6 +370,7 @@ test('fails packaged readiness closed and admits only regular development files'
   const requiredFiles = [
     path.join(runtimeRoot, 'ffmpeg.exe'),
     path.join(runtimeRoot, 'ffprobe.exe'),
+    path.join(scriptsRoot, 'song_rvc_runtime.py'),
     path.join(scriptsRoot, 'song_svs_wsl_bridge.py'),
     path.join(scriptsRoot, 'song_svs_runtime.py'),
     path.join(scriptsRoot, 'song_lyrics_alignment.py'),
@@ -457,6 +458,74 @@ function startLegacy(
     'legacy-svc',
   )
 }
+
+test('launches the legacy wire engine with fixed private RVC paths', async () => {
+  const fixture = await createFixture()
+  let launchArguments = null
+  const manager = new SongCoverManager(
+    fixture.projectRoot,
+    () => fixture.dataRoot,
+    () => ({ cancel() {}, play: () => Promise.resolve() }),
+    () => {},
+    async () => ({ outputDeviceId: null, volumePercent: 100 }),
+    () => {},
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    (command, args, options) => {
+      if (path.basename(String(args[0])) === 'song_cover_worker.py') {
+        launchArguments = [...args]
+      }
+      return spawn(command, args, options)
+    },
+  )
+  try {
+    await startLegacy(manager, 'D:/private/original.mp3', 'original.mp3')
+    await waitFor(
+      () => manager.getState().outputAvailable && !manager.hasActiveWork(),
+      'The RVC-backed Song Cover worker did not finish.',
+    )
+    assert.notEqual(launchArguments, null)
+    const option = (name) => {
+      const index = launchArguments.indexOf(name)
+      return index === -1 ? null : launchArguments[index + 1]
+    }
+    assert.equal(
+      option('--rvc-root'),
+      path.join(fixture.projectRoot, 'models', 'cache', 'rvc-v2-40k'),
+    )
+    assert.equal(
+      option('--rvc-model'),
+      path.join(
+        fixture.projectRoot,
+        'models',
+        'weights',
+        'rvc',
+        'elysia-v2-40k',
+        'model.pth',
+      ),
+    )
+    assert.equal(
+      option('--rvc-index'),
+      path.join(
+        fixture.projectRoot,
+        'models',
+        'weights',
+        'rvc',
+        'elysia-v2-40k',
+        'model.index',
+      ),
+    )
+    assert.equal(launchArguments.includes('--svc-root'), false)
+    assert.equal(launchArguments.includes('--svc-model-root'), false)
+    assert.equal(manager.getState().engine, 'legacy-svc')
+  } finally {
+    await manager.shutdown()
+    await rm(fixture.root, { recursive: true, force: true })
+  }
+})
 
 /** Build a manager with one narrowly injected export operation. */
 function createExportTestManager(fixture, exportOperations = {}) {
@@ -720,6 +789,10 @@ test('publishes closed startup error codes without provider diagnostics', async 
     {
       expectedCode: 'lyrics-no-match',
       prepare: async () => ({ status: 'low-confidence' }),
+    },
+    {
+      expectedCode: 'lyrics-needs-metadata',
+      prepare: async () => ({ status: 'needs-metadata' }),
     },
     {
       expectedCode: 'lyrics-network',
@@ -1387,7 +1460,7 @@ test('rejects a hard-link export alias without truncating the managed WAV', asyn
   }
 })
 
-test('times out a silent worker, releases its slot, and removes private scratch', {
+test('times out a silent worker, releases its slot, and removes its private job', {
   timeout: 30_000,
 }, async () => {
   const fixture = await createFixture()
@@ -2051,72 +2124,6 @@ test('retains and retries an exact private directory after cleanup fails', async
   }
 })
 
-test('blocks data moves while only exact SVC scratch cleanup is pending', async () => {
-  const fixture = await createFixture()
-  let blockedScratch = null
-  const removePath = async (target, options) => {
-    if (
-      blockedScratch !== null
-      && path.resolve(String(target)) === blockedScratch
-    ) {
-      throw new Error('simulated exact scratch cleanup failure')
-    }
-    await rm(target, options)
-  }
-  const manager = new SongCoverManager(
-    fixture.projectRoot,
-    () => fixture.dataRoot,
-    () => null,
-    () => {},
-    async () => ({ outputDeviceId: null, volumePercent: 100 }),
-    () => {},
-    undefined,
-    removePath,
-  )
-  try {
-    const started = await startLegacy(manager, 'D:/private/slow.mp3', 'slow.mp3')
-    await waitFor(
-      () => manager.getState().progressPercent === 5,
-      'The worker did not start before scratch cleanup testing.',
-    )
-    const token = started.jobId.replaceAll('-', '')
-    const scratch = path.join(
-      fixture.projectRoot,
-      'models',
-      'cache',
-      'so-vits-svc-4.1',
-      'raw',
-      `elysia_cover_${token}.wav`,
-    )
-    await mkdir(path.dirname(scratch), { recursive: true })
-    await writeFile(scratch, 'private converted vocal')
-    blockedScratch = path.resolve(scratch)
-
-    await assert.rejects(
-      manager.cancel(started.jobId),
-      /private Song Cover audio could not be cleared/iu,
-    )
-    await assert.rejects(stat(path.join(
-      fixture.dataRoot,
-      'audio',
-      'song-covers',
-      started.jobId,
-    )))
-    assert.equal(manager.hasActiveWork(), false)
-    assert.equal(manager.hasManagedOutput(), true)
-    assert.equal((await stat(scratch)).isFile(), true)
-
-    blockedScratch = null
-    await manager.discardOutput()
-    assert.equal(manager.hasManagedOutput(), false)
-    await assert.rejects(stat(scratch))
-  } finally {
-    blockedScratch = null
-    await manager.shutdown()
-    await rm(fixture.root, { recursive: true, force: true })
-  }
-})
-
 test('retains failed-worker audio until exact cleanup can be retried', async () => {
   const fixture = await createFixture()
   let blockedDirectory = null
@@ -2500,199 +2507,6 @@ test('invalidates manual playback while it awaits private preferences', async ()
     assert.equal(playCalls, 0)
   } finally {
     releasePreferences?.({ outputDeviceId: null, volumePercent: 100 })
-    await manager.shutdown()
-    await rm(fixture.root, { recursive: true, force: true })
-  }
-})
-
-test('removes only exact stale SVC scratch names during startup', async () => {
-  const fixture = await createFixture()
-  const runtimeRoot = path.join(
-    fixture.projectRoot,
-    'models',
-    'cache',
-    'so-vits-svc-4.1',
-  )
-  const rawRoot = path.join(runtimeRoot, 'raw')
-  const resultsRoot = path.join(runtimeRoot, 'results')
-  const token = '00000000000040008000000000000001'
-  const staleRaw = path.join(rawRoot, `elysia_cover_${token}.wav`)
-  const staleResult = path.join(
-    resultsRoot,
-    `elysia_cover_${token}.wav_0key_Elysia_sovits_dio.wav`,
-  )
-  const staleFcpeResult = path.join(
-    resultsRoot,
-    `elysia_cover_${token}.wav_0key_Elysia_sovits_fcpe.wav`,
-  )
-  const staleRaisedFcpeResult = path.join(
-    resultsRoot,
-    `elysia_cover_${token}.wav_2key_Elysia_sovits_fcpe.wav`,
-  )
-  const staleLoweredFcpeResult = path.join(
-    resultsRoot,
-    `elysia_cover_${token}.wav_-2key_Elysia_sovits_fcpe.wav`,
-  )
-  const unsupportedShiftResult = path.join(
-    resultsRoot,
-    `elysia_cover_${token}.wav_3key_Elysia_sovits_fcpe.wav`,
-  )
-  const unownedPredictorResult = path.join(
-    resultsRoot,
-    `elysia_cover_${token}.wav_0key_Elysia_sovits_rmvpe.wav`,
-  )
-  const unrelated = path.join(rawRoot, 'keep-user-audio.wav')
-  const nonV4Lookalike = path.join(
-    rawRoot,
-    'elysia_cover_00000000000000000000000000000000.wav',
-  )
-  await mkdir(resultsRoot, { recursive: true })
-  await mkdir(rawRoot, { recursive: true })
-  await Promise.all([
-    writeFile(staleRaw, 'private-vocal'),
-    writeFile(staleResult, 'private-result'),
-    writeFile(staleFcpeResult, 'private-fcpe-result'),
-    writeFile(staleRaisedFcpeResult, 'private-raised-fcpe-result'),
-    writeFile(staleLoweredFcpeResult, 'private-lowered-fcpe-result'),
-    writeFile(unsupportedShiftResult, 'not-owned'),
-    writeFile(unownedPredictorResult, 'not-owned'),
-    writeFile(unrelated, 'keep'),
-    writeFile(nonV4Lookalike, 'not-owned'),
-  ])
-  const manager = new SongCoverManager(
-    fixture.projectRoot,
-    () => fixture.dataRoot,
-    () => null,
-    () => {},
-    async () => ({ outputDeviceId: null, volumePercent: 100 }),
-    () => {},
-  )
-  try {
-    await manager.discardOutput()
-    await assert.rejects(stat(staleRaw))
-    await assert.rejects(stat(staleResult))
-    await assert.rejects(stat(staleFcpeResult))
-    await assert.rejects(stat(staleRaisedFcpeResult))
-    await assert.rejects(stat(staleLoweredFcpeResult))
-    assert.equal(await readFile(unsupportedShiftResult, 'utf8'), 'not-owned')
-    assert.equal(await readFile(unownedPredictorResult, 'utf8'), 'not-owned')
-    assert.equal((await readFile(unrelated, 'utf8')), 'keep')
-    assert.equal((await readFile(nonV4Lookalike, 'utf8')), 'not-owned')
-  } finally {
-    await manager.shutdown()
-    await rm(fixture.root, { recursive: true, force: true })
-  }
-})
-
-test('rejects a junctioned SVC parent without deleting external scratch', async (t) => {
-  const fixture = await createFixture()
-  const external = path.join(fixture.root, 'external-svc')
-  const externalRaw = path.join(external, 'raw')
-  const cacheRoot = path.join(fixture.projectRoot, 'models', 'cache')
-  const runtimeRoot = path.join(cacheRoot, 'so-vits-svc-4.1')
-  const marker = path.join(
-    externalRaw,
-    'elysia_cover_00000000000040008000000000000001.wav',
-  )
-  await mkdir(externalRaw, { recursive: true })
-  await mkdir(cacheRoot, { recursive: true })
-  await writeFile(marker, 'outside-project')
-  try {
-    await symlink(external, runtimeRoot, 'junction')
-  } catch {
-    await rm(fixture.root, { recursive: true, force: true })
-    t.skip('Creating a Windows junction is not permitted on this host.')
-    return
-  }
-  const manager = new SongCoverManager(
-    fixture.projectRoot,
-    () => fixture.dataRoot,
-    () => null,
-    () => {},
-    async () => ({ outputDeviceId: null, volumePercent: 100 }),
-    () => {},
-  )
-  try {
-    await assert.rejects(
-      startLegacy(manager, 'D:/private/original.mp3', 'original.mp3'),
-      /private Song Cover audio could not be cleared/iu,
-    )
-    assert.equal(await readFile(marker, 'utf8'), 'outside-project')
-  } finally {
-    await rm(runtimeRoot, { recursive: true, force: true })
-    await manager.shutdown()
-    await rm(fixture.root, { recursive: true, force: true })
-  }
-})
-
-test('keeps completed output until stale scratch cleanup can be retried', async () => {
-  const fixture = await createFixture()
-  let blockedScratch = null
-  const removePath = async (target, options) => {
-    if (
-      blockedScratch !== null
-      && path.resolve(String(target)) === blockedScratch
-    ) {
-      throw new Error(`private scratch failure at ${target}`)
-    }
-    await rm(target, options)
-  }
-  const manager = new SongCoverManager(
-    fixture.projectRoot,
-    () => fixture.dataRoot,
-    () => null,
-    () => {},
-    async () => ({ outputDeviceId: null, volumePercent: 100 }),
-    () => {},
-    undefined,
-    removePath,
-  )
-  const runtimeRoot = path.join(
-    fixture.projectRoot,
-    'models',
-    'cache',
-    'so-vits-svc-4.1',
-  )
-  const rawRoot = path.join(runtimeRoot, 'raw')
-  const marker = path.join(
-    rawRoot,
-    'elysia_cover_00000000000040008000000000000001.wav',
-  )
-  try {
-    const started = await startLegacy(manager, 'D:/private/original.mp3', 'original.mp3')
-    await waitFor(
-      () => manager.getState().outputAvailable,
-      'Song Cover did not finish before the cleanup-order test.',
-    )
-    const outputWav = path.join(
-      fixture.dataRoot,
-      'audio',
-      'song-covers',
-      started.jobId,
-      'elysia-cover.wav',
-    )
-    await mkdir(rawRoot, { recursive: true })
-    await writeFile(marker, 'private-vocal')
-    blockedScratch = path.resolve(marker)
-
-    await assert.rejects(
-      manager.discardOutput(),
-      /private Song Cover audio could not be cleared/iu,
-    )
-    assert.equal(manager.getState().outputAvailable, true)
-    assert.equal(manager.hasManagedOutput(), true)
-    assert.equal((await stat(outputWav)).isFile(), true)
-    assert.equal(await readFile(marker, 'utf8'), 'private-vocal')
-
-    blockedScratch = null
-    await manager.discardOutput()
-    assert.equal(manager.getState().stage, 'idle')
-    assert.equal(manager.getState().outputAvailable, false)
-    assert.equal(manager.hasManagedOutput(), false)
-    await assert.rejects(stat(outputWav))
-    await assert.rejects(stat(marker))
-  } finally {
-    blockedScratch = null
     await manager.shutdown()
     await rm(fixture.root, { recursive: true, force: true })
   }

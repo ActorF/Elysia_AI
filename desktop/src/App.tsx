@@ -142,6 +142,8 @@ function songCoverErrorMessage(code: SongCoverErrorCode): string {
       return 'Choose valid audio no longer than 12 minutes.'
     case 'lyrics-network':
       return 'Lyrics could not be retrieved from LRCLIB. Check your connection and try again.'
+    case 'lyrics-needs-metadata':
+      return 'The song could not be identified from its tags or filename. Enter both Song title and Artist, then try again.'
     case 'lyrics-no-match':
       return 'No reliable LRCLIB lyrics match was found. Check the song title and artist.'
     case 'lyrics-no-sync':

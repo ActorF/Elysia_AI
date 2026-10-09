@@ -85,8 +85,13 @@ def _completed_probe(payload: object) -> subprocess.CompletedProcess[str]:
     )
 
 
-def _write_pcm16_mono(path: Path, samples: array[int]) -> None:
-    """Write one canonical mono fixture for consonant-layer tests."""
+def _write_pcm16_mono(
+    path: Path,
+    samples: array[int],
+    *,
+    sample_rate: int = 44_100,
+) -> None:
+    """Write one canonical mono PCM fixture for worker audio tests."""
 
     content = array("h", samples)
     if song_cover_worker.sys.byteorder != "little":
@@ -94,7 +99,7 @@ def _write_pcm16_mono(path: Path, samples: array[int]) -> None:
     with wave.open(str(path), "wb") as destination:
         destination.setnchannels(1)
         destination.setsampwidth(2)
-        destination.setframerate(44_100)
+        destination.setframerate(sample_rate)
         destination.writeframes(content.tobytes())
 
 
@@ -225,6 +230,184 @@ def test_remove_bytecode_caches_rejects_a_windows_junction(
         os.rmdir(cache_link)
 
 
+def test_python_tree_audit_rejects_an_added_importable_module(tmp_path: Path) -> None:
+    """Reject Python code added after the reviewed RVC tree was pinned."""
+
+    source = tmp_path / "runtime.py"
+    content = b'"""Reviewed fixture."""\nVALUE = 1\n'
+    source.write_bytes(content)
+    digest = hashlib.sha256()
+    digest.update(b"runtime.py")
+    digest.update(b"\0")
+    digest.update(str(len(content)).encode("ascii"))
+    digest.update(b"\0")
+    digest.update(content)
+
+    song_cover_worker._require_python_tree(
+        tmp_path,
+        label="RVC Python runtime",
+        expected_files=1,
+        expected_bytes=len(content),
+        expected_sha256=digest.hexdigest(),
+    )
+    (tmp_path / "shadow.py").write_text(
+        '"""Unreviewed import provider."""\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(song_cover_worker._SongCoverFailure, match="does not match"):
+        song_cover_worker._require_python_tree(
+            tmp_path,
+            label="RVC Python runtime",
+            expected_files=1,
+            expected_bytes=len(content),
+            expected_sha256=digest.hexdigest(),
+        )
+
+
+@pytest.mark.parametrize("shadow_name", ["ffmpeg.exe", "launch.cmd", "build.ps1"])
+def test_python_tree_audit_rejects_native_command_shadows(
+    tmp_path: Path,
+    shadow_name: str,
+) -> None:
+    """Reject executable or command-script payloads beside reviewed RVC code."""
+
+    source = tmp_path / "runtime.py"
+    content = b'"""Reviewed fixture."""\nVALUE = 1\n'
+    source.write_bytes(content)
+    digest = hashlib.sha256()
+    digest.update(b"runtime.py")
+    digest.update(b"\0")
+    digest.update(str(len(content)).encode("ascii"))
+    digest.update(b"\0")
+    digest.update(content)
+    (tmp_path / shadow_name).write_bytes(b"unreviewed-command")
+
+    with pytest.raises(song_cover_worker._SongCoverFailure, match="executable"):
+        song_cover_worker._require_python_tree(
+            tmp_path,
+            label="RVC Python runtime",
+            expected_files=1,
+            expected_bytes=len(content),
+            expected_sha256=digest.hexdigest(),
+        )
+
+
+def test_rvc_environment_uses_only_pinned_tools_and_rejects_python_sibling(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Close PATH and reject a command shadow beside the child interpreter."""
+
+    rvc_root = tmp_path / "rvc"
+    python_root = tmp_path / "python"
+    native_root = tmp_path / "native"
+    for directory in (rvc_root, python_root, native_root):
+        directory.mkdir()
+    ffmpeg = native_root / "ffmpeg.exe"
+    ffprobe = native_root / "ffprobe.exe"
+    ffmpeg.write_bytes(b"trusted-ffmpeg")
+    ffprobe.write_bytes(b"trusted-ffprobe")
+    monkeypatch.setattr(
+        song_cover_worker.sys,
+        "executable",
+        str(python_root / "python.exe"),
+    )
+
+    environment = song_cover_worker._rvc_subprocess_environment(
+        rvc_root=rvc_root,
+        ffmpeg=ffmpeg,
+        ffprobe=ffprobe,
+    )
+
+    assert environment["PATH"] == str(native_root.resolve())
+    assert environment["PATHEXT"] == ".EXE"
+    assert environment["PYTHONDONTWRITEBYTECODE"] == "1"
+
+    (python_root / "ffmpeg.exe").write_bytes(b"shadow")
+    with pytest.raises(song_cover_worker._SongCoverFailure, match="unsafe"):
+        song_cover_worker._rvc_subprocess_environment(
+            rvc_root=rvc_root,
+            ffmpeg=ffmpeg,
+            ffprobe=ffprobe,
+        )
+
+
+def test_runtime_data_manifest_rejects_changed_json(tmp_path: Path) -> None:
+    """Reject model configuration data changed after runtime review."""
+
+    relative_name = "configs/v2/40k.json"
+    config = tmp_path / relative_name
+    config.parent.mkdir(parents=True)
+    content = b'{"value": 1}\n'
+    config.write_bytes(content)
+    digest = hashlib.sha256()
+    digest.update(relative_name.encode("utf-8"))
+    digest.update(b"\0")
+    digest.update(str(len(content)).encode("ascii"))
+    digest.update(b"\0")
+    digest.update(content)
+
+    song_cover_worker._require_file_manifest(
+        tmp_path,
+        label="RVC runtime data",
+        expected_names=(relative_name,),
+        expected_files=1,
+        expected_bytes=len(content),
+        expected_sha256=digest.hexdigest(),
+    )
+    config.write_bytes(b'{"value": 2}\n')
+
+    with pytest.raises(song_cover_worker._SongCoverFailure, match="does not match"):
+        song_cover_worker._require_file_manifest(
+            tmp_path,
+            label="RVC runtime data",
+            expected_names=(relative_name,),
+            expected_files=1,
+            expected_bytes=len(content),
+            expected_sha256=digest.hexdigest(),
+        )
+
+
+def test_locale_tree_rejects_an_added_system_locale(tmp_path: Path) -> None:
+    """Reject a locale file the vendor could select from the host setting."""
+
+    locale_root = tmp_path / "i18n" / "locale"
+    locale_root.mkdir(parents=True)
+    reviewed = locale_root / "en_US.json"
+    content = b'{"locale": "reviewed"}\n'
+    reviewed.write_bytes(content)
+    digest = hashlib.sha256()
+    digest.update(b"en_US.json")
+    digest.update(b"\0")
+    digest.update(str(len(content)).encode("ascii"))
+    digest.update(b"\0")
+    digest.update(content)
+
+    song_cover_worker._require_asset_tree(
+        locale_root,
+        label="RVC locale data",
+        expected_names=("en_US.json",),
+        expected_files=1,
+        expected_bytes=len(content),
+        expected_sha256=digest.hexdigest(),
+    )
+    (locale_root / "de_DE.json").write_text(
+        '{"locale": "unreviewed"}\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(song_cover_worker._SongCoverFailure, match="does not match"):
+        song_cover_worker._require_asset_tree(
+            locale_root,
+            label="RVC locale data",
+            expected_names=("en_US.json",),
+            expected_files=1,
+            expected_bytes=len(content),
+            expected_sha256=digest.hexdigest(),
+        )
+
+
 def test_probe_duration_accepts_one_bounded_audio_stream(monkeypatch: pytest.MonkeyPatch) -> None:
     """Accept a finite duration only when ffprobe reports the selected audio stream."""
 
@@ -315,6 +498,42 @@ def test_mix_cover_applies_the_clear_vocal_quality_chain(
     assert commands[1][commands[1].index("-b:a") + 1] == "320k"
 
 
+def test_mix_cover_omits_the_original_consonant_layer_for_rvc(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Avoid mixing the source singer back into an RVC-converted vocal."""
+
+    commands: list[list[str]] = []
+    monkeypatch.setattr(
+        song_cover_worker,
+        "_run_command",
+        lambda arguments, _failure: commands.append(list(arguments)),
+    )
+
+    song_cover_worker._mix_cover(
+        Path("ffmpeg.exe"),
+        Path("rvc-vocals.wav"),
+        None,
+        Path("instrumental.wav"),
+        Path("cover.wav"),
+        Path("cover.mp3"),
+        target_samples=441_000,
+    )
+
+    mix_command = commands[0]
+    filter_graph = mix_command[mix_command.index("-filter_complex") + 1]
+    assert mix_command.count("-i") == 2
+    assert "consonants.wav" not in mix_command
+    assert (
+        f"volume={song_cover_worker._CONSONANT_LAYER_GAIN:.6f}[c]"
+        not in filter_graph
+    )
+    assert "[vc][c]" not in filter_graph
+    assert "highpass=f=60" in filter_graph
+    assert "apad=whole_len=441000" in filter_graph
+    assert "atrim=end_sample=441000" in filter_graph
+
+
 def test_decode_maps_the_same_first_audio_stream_that_was_probed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -400,8 +619,9 @@ def test_parser_accepts_song_and_stem_source_contracts() -> None:
         "--ffprobe", "ffprobe.exe",
         "--demucs-site", "demucs",
         "--torch-home", "torch",
-        "--svc-root", "svc",
-        "--svc-model-root", "model",
+        "--rvc-root", "rvc",
+        "--rvc-model", "model.pth",
+        "--rvc-index", "model.index",
         "--job-token", "00000000-0000-4000-8000-000000000000",
     ]
 
@@ -418,6 +638,9 @@ def test_parser_accepts_song_and_stem_source_contracts() -> None:
 
     assert song.source_mode == "song"
     assert song.key_shift_semitones == 0
+    assert song.rvc_root == Path("rvc")
+    assert song.rvc_model == Path("model.pth")
+    assert song.rvc_index == Path("model.index")
     assert stems.source_mode == "stems"
     assert stems.key_shift_semitones == 2
 
@@ -432,8 +655,9 @@ def test_source_contract_rejects_mixed_or_incomplete_inputs() -> None:
         "--ffprobe", "ffprobe.exe",
         "--demucs-site", "demucs",
         "--torch-home", "torch",
-        "--svc-root", "svc",
-        "--svc-model-root", "model",
+        "--rvc-root", "rvc",
+        "--rvc-model", "model.pth",
+        "--rvc-index", "model.index",
         "--job-token", "00000000-0000-4000-8000-000000000000",
     ]
     mixed = parser.parse_args(
@@ -503,67 +727,250 @@ def test_demucs_uses_the_reviewed_high_quality_overlap_and_shift(
     assert received[received.index("--overlap") + 1] == "0.5"
 
 
+def test_rvc_index_preflight_rejects_silent_retrieval_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reject an index shape that the vendor pipeline would silently ignore."""
+
+    class IndexIVFFlat:
+        """Expose the reviewed FAISS metadata without reading a private index."""
+
+        d = 768
+        ntotal = 10_000
+        nlist = 256
+        nprobe = 1
+        is_trained = True
+
+    index = IndexIVFFlat()
+
+    class FakeFaiss:
+        """Return the deterministic in-memory index fixture."""
+
+        @staticmethod
+        def read_index(_path: str) -> IndexIVFFlat:
+            """Mirror FAISS's single-file loader contract."""
+
+            return index
+
+    monkeypatch.setitem(song_cover_worker.sys.modules, "faiss", FakeFaiss)
+    song_cover_worker._require_rvc_index_compatibility(Path("elysia.index"))
+
+    index.nprobe = 2
+    with pytest.raises(song_cover_worker._SongCoverFailure, match="incompatible"):
+        song_cover_worker._require_rvc_index_compatibility(Path("elysia.index"))
+
+
+def test_rvc_output_duration_rejects_a_truncated_conversion(tmp_path: Path) -> None:
+    """Allow an analysis-frame difference but reject a padded partial result."""
+
+    near_complete = tmp_path / "near-complete.wav"
+    truncated = tmp_path / "truncated.wav"
+    _write_pcm16_mono(
+        near_complete,
+        array("h", [0]) * 399_200,
+        sample_rate=40_000,
+    )
+    _write_pcm16_mono(
+        truncated,
+        array("h", [0]) * 200_000,
+        sample_rate=40_000,
+    )
+
+    song_cover_worker._require_rvc_output_duration(
+        near_complete,
+        target_samples=441_000,
+    )
+    with pytest.raises(song_cover_worker._SongCoverFailure, match="incomplete"):
+        song_cover_worker._require_rvc_output_duration(
+            truncated,
+            target_samples=441_000,
+        )
+
+
 @pytest.mark.parametrize("key_shift", [-2, 2])
-def test_convert_vocals_uses_fcpe_and_clarity_parameters(
+def test_convert_vocals_runs_rvc_and_normalizes_exact_length(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     key_shift: int,
 ) -> None:
-    """Invoke FCPE and move vocal pitch inside SVC without resampling it."""
+    """Invoke the closed RVC adapter then resample without time stretching."""
 
-    svc_root = tmp_path / "svc"
-    (svc_root / "raw").mkdir(parents=True)
-    (svc_root / "results").mkdir()
-    model = tmp_path / "G.pth"
-    config = tmp_path / "G.json"
+    rvc_root = tmp_path / "rvc"
+    rvc_root.mkdir()
+    runtime = tmp_path / "song_rvc_runtime.py"
+    model = tmp_path / "elysia.pth"
+    index = tmp_path / "elysia.index"
+    hubert = rvc_root / "assets" / "hubert_base"
+    hubert.mkdir(parents=True)
+    rmvpe = rvc_root / "assets" / "rmvpe" / "rmvpe.pt"
+    rmvpe.parent.mkdir()
     vocals = tmp_path / "vocals.wav"
     output = tmp_path / "converted.wav"
-    for candidate in (model, config, vocals):
+    ffprobe = tmp_path / "ffprobe.exe"
+    for candidate in (runtime, model, index, rmvpe, vocals):
         candidate.write_bytes(b"fixture")
-    captured_argv: list[str] = []
+    commands: list[list[str]] = []
+    environments: list[object] = []
+    closed_environment = {"PATH": "trusted-native-directory"}
 
-    def fake_run_path(_path: str, *, run_name: str) -> None:
-        """Capture arguments and emit the exact FCPE result name."""
+    def fake_run(
+        arguments: list[str],
+        _failure_message: str,
+        *,
+        environment: object = None,
+    ) -> None:
+        """Capture both processes and materialize each expected output."""
 
-        assert run_name == "__main__"
-        captured_argv.extend(song_cover_worker.sys.argv)
-        raw_name = "elysia_cover_00000000000040008000000000000000.wav"
-        result = (
-            svc_root
-            / "results"
-            / f"{raw_name}_{key_shift}key_Elysia_sovits_fcpe.wav"
-        )
-        result.write_bytes(b"converted")
+        command = list(arguments)
+        commands.append(command)
+        environments.append(environment)
+        if "--output" in command:
+            expected_samples = round(44_123 * 40_000 / 44_100)
+            _write_pcm16_mono(
+                Path(command[command.index("--output") + 1]),
+                array("h", [0]) * expected_samples,
+                sample_rate=40_000,
+            )
+        else:
+            Path(command[-1]).write_bytes(b"normalized-44k1")
 
-    monkeypatch.setattr(song_cover_worker, "_run_command", lambda *_args: None)
-    monkeypatch.setattr(song_cover_worker.runpy, "run_path", fake_run_path)
+    monkeypatch.setattr(song_cover_worker, "_run_command", fake_run)
+    monkeypatch.setattr(
+        song_cover_worker,
+        "_rvc_subprocess_environment",
+        lambda **_arguments: closed_environment,
+    )
 
     song_cover_worker._convert_vocals(
         ffmpeg=Path("ffmpeg.exe"),
+        ffprobe=ffprobe,
         vocals=vocals,
         output=output,
-        svc_root=svc_root,
-        svc_model=model,
-        svc_config=config,
-        job_token="00000000000040008000000000000000",
+        rvc_runtime=runtime,
+        rvc_root=rvc_root,
+        rvc_model=model,
+        rvc_index=index,
+        hubert=hubert,
+        rmvpe=rmvpe,
         key_shift_semitones=key_shift,
+        target_samples=44_123,
     )
 
-    assert captured_argv[captured_argv.index("-f0p") + 1] == "fcpe"
-    assert captured_argv[captured_argv.index("-sd") + 1] == "-48"
-    assert captured_argv[captured_argv.index("-ns") + 1] == "0.16"
-    assert captured_argv[captured_argv.index("-lea") + 1] == "0.5"
-    assert captured_argv[captured_argv.index("-t") + 1] == str(key_shift)
-    assert output.read_bytes() == b"converted"
-    assert not any((svc_root / "results").iterdir())
+    assert len(commands) == 2
+    rvc_command, normalize_command = commands
+    assert environments == [closed_environment, None]
+    assert rvc_command[0] == str(Path(song_cover_worker.sys.executable))
+    assert rvc_command[1] == str(runtime)
+    assert rvc_command[rvc_command.index("--source-root") + 1] == str(rvc_root)
+    assert rvc_command[rvc_command.index("--model") + 1] == str(model)
+    assert rvc_command[rvc_command.index("--index") + 1] == str(index)
+    assert rvc_command[rvc_command.index("--hubert") + 1] == str(hubert)
+    assert rvc_command[rvc_command.index("--rmvpe") + 1] == str(rmvpe)
+    assert rvc_command[rvc_command.index("--input") + 1] == str(vocals)
+    assert rvc_command[rvc_command.index("--key-shift") + 1] == str(key_shift)
+    audio_filter = normalize_command[normalize_command.index("-af") + 1]
+    assert "aresample=44100" in audio_filter
+    assert "apad=whole_len=44123" in audio_filter
+    assert "atrim=end_sample=44123" in audio_filter
+    assert "asetpts=N/SR/TB" in audio_filter
+    assert "atempo" not in audio_filter
+    assert "asetrate" not in audio_filter
+    assert normalize_command[normalize_command.index("-ac") + 1] == "1"
+    assert output.read_bytes() == b"normalized-44k1"
+    assert not output.with_name(".converted-rvc-40k.wav").exists()
 
 
-def test_fcpe_asset_identity_is_pinned_to_the_reviewed_local_weight() -> None:
-    """Keep unsafe or silently replaced FCPE pickle data outside inference."""
+def test_convert_vocals_clears_private_scratch_after_normalization_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Delete raw RVC and partial normalized audio when FFmpeg fails."""
 
-    assert song_cover_worker._EXPECTED_FCPE_BYTES == 69_005_189
-    assert song_cover_worker._EXPECTED_FCPE_SHA256 == (
-        "c3a8dd2dbd51baf19ed295006f2ac25dba6dd60adc7ec578ae5fbd94970951da"
+    output = tmp_path / "converted.wav"
+    calls = 0
+
+    def fail_normalization(
+        arguments: list[str],
+        _failure_message: str,
+        *,
+        environment: object = None,
+    ) -> None:
+        """Let RVC finish, then leave a partial FFmpeg file before failing."""
+
+        nonlocal calls
+        calls += 1
+        command = list(arguments)
+        if calls == 1:
+            _write_pcm16_mono(
+                Path(command[command.index("--output") + 1]),
+                array("h", [0]) * 40_000,
+                sample_rate=40_000,
+            )
+            return
+        output.write_bytes(b"partial-private-output")
+        raise song_cover_worker._SongCoverFailure("normalization failed")
+
+    monkeypatch.setattr(song_cover_worker, "_run_command", fail_normalization)
+    monkeypatch.setattr(
+        song_cover_worker,
+        "_rvc_subprocess_environment",
+        lambda **_arguments: {"PATH": "trusted-native-directory"},
+    )
+
+    with pytest.raises(song_cover_worker._SongCoverFailure, match="normalization"):
+        song_cover_worker._convert_vocals(
+            ffmpeg=Path("ffmpeg.exe"),
+            ffprobe=Path("ffprobe.exe"),
+            vocals=tmp_path / "vocals.wav",
+            output=output,
+            rvc_runtime=tmp_path / "song_rvc_runtime.py",
+            rvc_root=tmp_path / "rvc",
+            rvc_model=tmp_path / "elysia.pth",
+            rvc_index=tmp_path / "elysia.index",
+            hubert=tmp_path / "hubert",
+            rmvpe=tmp_path / "rmvpe.pt",
+            key_shift_semitones=0,
+            target_samples=44_100,
+        )
+
+    assert not output.exists()
+    assert not output.with_name(".converted-rvc-40k.wav").exists()
+
+
+def test_rvc_base_asset_identities_are_pinned() -> None:
+    """Keep silently replaced HuBERT or RMVPE weights outside inference."""
+
+    assert song_cover_worker._EXPECTED_HUBERT_FILES == 3
+    assert song_cover_worker._EXPECTED_HUBERT_BYTES == 189_207_510
+    assert song_cover_worker._EXPECTED_HUBERT_SHA256 == (
+        "c4843b2163be0aebac54b770579ad8c2b107f42c2fbc658d7b8ce7d244a54560"
+    )
+    assert song_cover_worker._EXPECTED_RVC_PYTHON_FILES == 130
+    assert song_cover_worker._EXPECTED_RVC_PYTHON_BYTES == 1_382_718
+    assert song_cover_worker._EXPECTED_RVC_PYTHON_SHA256 == (
+        "a391270fe0b38307c3c966c5cb394d947d177990fae64307cb38313ae762b6c5"
+    )
+    assert song_cover_worker._EXPECTED_RVC_RUNTIME_DATA_FILES == 18
+    assert song_cover_worker._EXPECTED_RVC_RUNTIME_DATA_BYTES == 354_205
+    assert song_cover_worker._EXPECTED_RVC_RUNTIME_DATA_SHA256 == (
+        "3e7dcf0b44cfd379d6eb658c3719159d2d3f9234e7ec4338b0cdd90924b1793b"
+    )
+    assert song_cover_worker._EXPECTED_RVC_LOCALE_FILES == 13
+    assert song_cover_worker._EXPECTED_RVC_LOCALE_BYTES == 348_857
+    assert song_cover_worker._EXPECTED_RVC_LOCALE_SHA256 == (
+        "f1f2621ebf78c3b34ce70f861bd006e65f368708b44cd365877f236586b57459"
+    )
+    assert song_cover_worker._EXPECTED_RMVPE_BYTES == 181_184_272
+    assert song_cover_worker._EXPECTED_RMVPE_SHA256 == (
+        "6d62215f4306e3ca278246188607209f09af3dc77ed4232efdd069798c4ec193"
+    )
+    assert song_cover_worker._EXPECTED_RVC_MODEL_BYTES == 55_232_507
+    assert song_cover_worker._EXPECTED_RVC_MODEL_SHA256 == (
+        "cb3fec4d975eafd7c6b73bd096a6e6cdd6b9c3ca1d6793320d48fb17bea2b9c8"
+    )
+    assert song_cover_worker._EXPECTED_RVC_INDEX_BYTES == 31_588_619
+    assert song_cover_worker._EXPECTED_RVC_INDEX_SHA256 == (
+        "86a2da597f7a09d8cb27bd2dad3f1bcfa6fd6a561268622f4daf94ab1de8737e"
     )
 
 
@@ -682,10 +1089,12 @@ def test_main_rejects_non_uuid_job_before_resolving_private_paths(
             "missing-demucs",
             "--torch-home",
             "missing-torch-home",
-            "--svc-root",
-            "missing-svc-root",
-            "--svc-model-root",
-            "missing-model-root",
+            "--rvc-root",
+            "missing-rvc-root",
+            "--rvc-model",
+            "missing-model.pth",
+            "--rvc-index",
+            "missing-model.index",
             "--job-token",
             "not-a-job-id",
         ]

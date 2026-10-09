@@ -81,8 +81,23 @@ export function ChatActionDialog({
     if (!dialog.open) {
       dialog.showModal()
     }
+    const automaticFocusTarget = document.activeElement
 
     const focusFrame = window.requestAnimationFrame(() => {
+      // A fast pointer or keyboard user can choose a field before this opening
+      // frame runs. In that race, moving focus back to the default control
+      // interrupts controlled text input one character after the dialog opens.
+      // showModal itself may also focus a control, so only a different target
+      // proves that the user changed focus during this opening frame.
+      const activeElement = document.activeElement
+      if (
+        activeElement instanceof HTMLElement
+        && activeElement !== dialog
+        && dialog.contains(activeElement)
+        && activeElement !== automaticFocusTarget
+      ) {
+        return
+      }
       const preferredTarget = dialog.querySelector<HTMLElement>(
         '[data-dialog-initial-focus]',
       )

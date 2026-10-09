@@ -132,11 +132,15 @@ Prerequisites:
   committed, or packaged by this project, and none is required to run the
   text-only desktop UI.
 - Optional Song Cover additionally requires the exact ignored Demucs 4.0.1,
-  `htdemucs`, So-VITS-SVC 4.1, ContentVec, FCPE, FFmpeg/FFprobe, and local Elysia
-  singing-model assets documented in
+  `htdemucs`, RVC v2 source, HuBERT, RMVPE, a private Elysia RVC checkpoint and
+  FAISS index, FFmpeg/FFprobe, and the lyrics-driven singing assets documented in
   [`docs/15-SONG-COVER.md`](../docs/15-SONG-COVER.md). It is CUDA-only in the
   current development configuration, performs no implicit download, and is not
-  part of the current installer input.
+  part of the current installer input. The RVC runtime belongs at the ignored
+  `models/cache/rvc-v2-40k/` path; the private checkpoint and index belong under
+  ignored `models/weights/rvc/elysia-v2-40k/`. A packaged build, or a source
+  checkout missing those local assets, reports Song Cover unavailable and does
+  not attempt a fallback engine or download.
 - Run all npm commands from the `desktop` directory.
 
 Start the complete development desktop once from one CMD window:
@@ -206,17 +210,23 @@ Git-ignored and must not be committed or packaged with the application.
   source audio. A fixed Windows-to-WSL SoulX-Singer pipeline transcribes notes,
   aligns the authoritative lyrics, regenerates official phonemes, and sings
   through a private Elysia prompt. **Legacy voice conversion** is an explicit
-  offline fallback that uses FCPE and So-VITS-SVC to preserve the source
-  pronunciation instead of reading lyrics.
+  offline fallback. The UI and wire name is retained for compatibility, but its
+  implementation is the fixed local RMVPE + RVC v2 path, preserving source
+  pronunciation, melody, and timing instead of reading lyrics.
 - Either method accepts one complete song or an already aligned
   vocal/accompaniment pair, plus original key or a closed `-2` through `+2`
   semitone shift. Complete-song mode uses pinned Demucs separation; stem mode
   skips it. Main owns every native path and the one-at-a-time process, while
   Composer receives only safe base filenames, fixed progress, and
-  cancel/play/stop/export controls. The reviewed FFmpeg mix uses a strict
-  -18 dB unvoiced-consonant layer, 60 Hz high-pass, 0.5 dB presence,
-  vocal-keyed ducking, linear +1.3 dB vocal recovery, and a -1 dBFS limiter
-  without vocal compressor/makeup. A completed cover auto-plays through trusted
+  cancel/play/stop/export controls. The reviewed FFmpeg mix uses 60 Hz
+  high-pass, 0.5 dB presence, vocal-keyed ducking, linear +1.3 dB vocal recovery,
+  and a -1 dBFS limiter without vocal compressor/makeup. Lyrics-driven synthesis
+  additionally uses the strict -18 dB unvoiced-consonant layer. RVC fixes RMVPE,
+  speaker `0`, index rate `0.00`, protect `0.33`, and RMS mix rate `0.25`. Its
+  one-shot adapter disables shape-caching CUDA Graph execution so full songs do
+  not retain a graph per segment, and rejects all-zero or sustained-full-scale
+  output. It does not mix source-singer consonants back in. A
+  completed cover auto-plays through trusted
   Preload and remains temporary unless the user explicitly exports its WAV.
   This source-only development capability requires manually prepared private
   CUDA/WSL runtimes; neither method is included in the current installer.
@@ -797,9 +807,11 @@ method, results, capability gaps, and limitations.
   reserves the task slot before asynchronous setup and retains it through
   output validation and cleanup. Exact UUID cancellation confirms the owned
   Windows process tree has stopped before deleting scratch. Runtime executables,
-  imported Python trees, separation/content/model assets, and output bounds are
+  imported Python trees, separation/feature/model/index assets, and output bounds are
   authenticated; the worker receives a minimal offline environment instead of
-  the parent process environment. MP3 preview uses a private Blob URL with
+  the parent process environment. The public `legacy-svc` discriminator remains
+  stable, while the worker delegates conversion to a closed RVC adapter and never
+  exposes the upstream RVC command surface. MP3 preview uses a private Blob URL with
   decoded-duration, size, sink, and volume validation, and always revokes that
   URL on a terminal path.
 - Settings accepts an exact non-sensitive allowlist, including the closed STT

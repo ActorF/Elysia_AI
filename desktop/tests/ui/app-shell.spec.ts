@@ -297,6 +297,7 @@ interface SongCoverState {
   errorCode:
     | 'invalid-audio'
     | 'lyrics-network'
+    | 'lyrics-needs-metadata'
     | 'lyrics-no-match'
     | 'lyrics-no-sync'
     | 'lyrics-alignment'
@@ -3149,7 +3150,7 @@ test('configures Song Cover only after explicit modal confirmation', async () =>
   await expect(dialog.getByLabel('Song title')).toBeVisible()
   await expect(dialog.getByLabel('Artist')).toBeVisible()
   await expect(dialog).toContainText(
-    'ScreenRecording, vocals, and other generic names need both fields.',
+    'Generic or ambiguous names need both fields.',
   )
   await expect(dialog).toContainText(
     'LRCLIB receives the title, artist, and rounded duration to find lyrics',
@@ -3172,6 +3173,12 @@ test('configures Song Cover only after explicit modal confirmation', async () =>
   await dialog.getByRole('radio', { name: /Legacy voice conversion/u }).check()
   await expect(dialog.getByLabel('Song title')).toHaveCount(0)
   await expect(dialog.getByLabel('Artist')).toHaveCount(0)
+  await expect(dialog).toContainText(
+    'Original key follows the source melody most closely.',
+  )
+  await expect(dialog).toContainText(
+    'may soften accompaniment transients.',
+  )
   await dialog.getByRole('radio', { name: /Vocals \+ accompaniment/u }).check()
   await dialog.getByRole('radio', { name: 'Lower 2' }).check()
   await dialog.getByRole('button', { name: 'Cancel' }).click()
@@ -3417,6 +3424,10 @@ test('maps every closed Song Cover error code to fixed Renderer guidance', async
     [
       'lyrics-network',
       'Lyrics could not be retrieved from LRCLIB. Check your connection and try again.',
+    ],
+    [
+      'lyrics-needs-metadata',
+      'The song could not be identified from its tags or filename. Enter both Song title and Artist, then try again.',
     ],
     [
       'lyrics-no-match',

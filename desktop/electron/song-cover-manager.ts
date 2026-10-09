@@ -126,17 +126,13 @@ const WORKER_STAGE_SEQUENCES = Object.freeze({
 const SONG_COVER_JOB_ID_PATTERN = (
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u
 )
-const SONG_COVER_JOB_TOKEN_SOURCE = (
-  '[0-9a-f]{12}4[0-9a-f]{3}[89ab][0-9a-f]{15}'
-)
-const SVC_SCRATCH_KEY_SHIFTS: readonly SongCoverKeyShiftSemitones[] = Object.freeze([
+const SUPPORTED_KEY_SHIFTS: readonly SongCoverKeyShiftSemitones[] = Object.freeze([
   -2,
   -1,
   0,
   1,
   2,
 ])
-const SVC_SCRATCH_F0_PREDICTORS = Object.freeze(['dio', 'fcpe'] as const)
 const PRIVATE_CLEANUP_ERROR = (
   'Private Song Cover audio could not be cleared. Close Elysia and try again.'
 )
@@ -289,8 +285,9 @@ interface SongCoverRuntimePaths {
   readonly ffprobe: string
   readonly demucsSite: string
   readonly torchHome: string
-  readonly svcRoot: string
-  readonly svcModelRoot: string
+  readonly rvcRoot: string
+  readonly rvcModel: string
+  readonly rvcIndex: string
 }
 
 interface SongCoverAccompanimentInput {
@@ -488,7 +485,6 @@ export class SongCoverManager {
   private launchCancellationRequested = false
   private launchJobId: string | null = null
   private readonly pendingJobDirectories = new Map<string, string>()
-  private readonly pendingSvcScratchJobIds = new Set<string>()
   private readonly pendingSvsPrivateJobIds = new Set<string>()
   private readonly startupJobsRoot: string
   private readonly exportOperations: SongCoverExportOperations
@@ -544,7 +540,7 @@ export class SongCoverManager {
     })
     // Start eagerly so crash-left private audio is cleared even when the Song
     // Cover UI is never opened. The tracked lease also blocks a data-root move
-    // until every parallel cleanup target has settled.
+    // until startup cleanup has settled.
     void this.beginStartupCleanup()
   }
 
@@ -573,6 +569,7 @@ export class SongCoverManager {
       runtime.svsWorker,
       runtime.ffmpeg,
       runtime.ffprobe,
+      path.join(this.projectRoot, 'scripts', 'song_rvc_runtime.py'),
       path.join(this.projectRoot, 'scripts', 'song_svs_wsl_bridge.py'),
       path.join(this.projectRoot, 'scripts', 'song_svs_runtime.py'),
       path.join(this.projectRoot, 'scripts', 'song_lyrics_alignment.py'),
@@ -604,7 +601,6 @@ export class SongCoverManager {
       this.startupCleanupRequired
       || this.outputJobId !== null
       || this.pendingJobDirectories.size > 0
-      || this.pendingSvcScratchJobIds.size > 0
       || this.pendingSvsPrivateJobIds.size > 0
     )
   }
@@ -639,7 +635,7 @@ export class SongCoverManager {
     ) {
       throw new Error('Choose a supported local audio file.')
     }
-    if (!SVC_SCRATCH_KEY_SHIFTS.includes(keyShiftSemitones)) {
+    if (!SUPPORTED_KEY_SHIFTS.includes(keyShiftSemitones)) {
       throw new Error('Song Cover key adjustment is invalid.')
     }
     if (engine !== 'lyrics-svs' && engine !== 'legacy-svc') {
@@ -785,8 +781,9 @@ export class SongCoverManager {
           '--job-token', jobId,
           ...(engine === 'legacy-svc'
             ? [
-                '--svc-root', runtime.svcRoot,
-                '--svc-model-root', runtime.svcModelRoot,
+                '--rvc-root', runtime.rvcRoot,
+                '--rvc-model', runtime.rvcModel,
+                '--rvc-index', runtime.rvcIndex,
               ]
             : []),
         ],
@@ -947,7 +944,7 @@ export class SongCoverManager {
     }
     if (result.status === 'needs-metadata') {
       throw new SongCoverStartError(
-        'lyrics-no-match',
+        'lyrics-needs-metadata',
         LYRICS_START_ERRORS.metadata,
       )
     }
@@ -1273,13 +1270,9 @@ export class SongCoverManager {
     if (!this.stopPlaybackUnconditionally()) {
       throw new Error('Song playback could not be stopped safely.')
     }
-    // Clear external runtime scratch before deleting the only managed output.
-    // If a junction or I/O failure blocks cleanup, the renderer must retain a
-    // truthful, exportable result instead of reporting idle after partial loss.
     try {
       await this.ensureStartupCleanup()
       await this.retryPendingCleanup()
-      await this.removeStaleSvcScratch()
       await this.removeOutputDirectory()
     } catch {
       throw new Error(PRIVATE_CLEANUP_ERROR)
@@ -1892,13 +1885,14 @@ export class SongCoverManager {
     }
   }
 
-  /** Keep the lease active until every parallel startup target has settled. */
+  /** Keep the lease active until startup job-root cleanup has settled. */
   private async removeStartupArtifacts(): Promise<boolean> {
-    const results = await Promise.allSettled([
-      this.removeStartupSongJobs(),
-      this.removeStaleSvcScratch(),
-    ])
-    return results.every((result) => result.status === 'fulfilled')
+    try {
+      await this.removeStartupSongJobs()
+      return true
+    } catch {
+      return false
+    }
   }
 
   /** Recover exact crash-left WSL jobs before deleting their native tokens. */
@@ -1921,7 +1915,7 @@ export class SongCoverManager {
       try {
         // lyrics-manifest.json survives every incomplete lyrics-SVS worker but
         // is removed before success.  It distinguishes crash-left SVS work
-        // from completed output and legacy SVC jobs without trusting content.
+        // from completed output and RVC conversion jobs without trusting content.
         await lstat(path.join(jobDirectory, 'lyrics-manifest.json'))
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
@@ -1961,18 +1955,27 @@ export class SongCoverManager {
       ffprobe: path.join(gptRuntime, 'ffprobe.exe'),
       demucsSite: path.join(singingRuntime, 'site-packages'),
       torchHome: path.join(singingRuntime, 'torch'),
-      svcRoot: path.join(
+      rvcRoot: path.join(
         this.projectRoot,
         'models',
         'cache',
-        'so-vits-svc-4.1',
+        'rvc-v2-40k',
       ),
-      svcModelRoot: path.join(
+      rvcModel: path.join(
         this.projectRoot,
         'models',
         'weights',
-        'so-vits-svc',
-        'elysia-v4.1',
+        'rvc',
+        'elysia-v2-40k',
+        'model.pth',
+      ),
+      rvcIndex: path.join(
+        this.projectRoot,
+        'models',
+        'weights',
+        'rvc',
+        'elysia-v2-40k',
+        'model.index',
       ),
     }
   }
@@ -2245,25 +2248,11 @@ export class SongCoverManager {
       this.activeJob = null
       return
     }
-    const scratchCleanupSucceeded = job.engine === 'legacy-svc'
-      ? await this.removeSvcScratchTracked(job.id)
-      : true
     if (this.activeJob !== job || job.cancelled || this.shuttingDown) {
       return
     }
     this.completedOutput = completedOutput
     this.outputJobId = job.id
-    if (!scratchCleanupSucceeded) {
-      this.replaceState({
-        stage: 'error',
-        progressPercent: 100,
-        outputAvailable: true,
-        message: null,
-        error: PRIVATE_CLEANUP_ERROR,
-      })
-      this.activeJob = null
-      return
-    }
     this.replaceReadyState('Song Cover ready')
     try {
       await this.play(job.id)
@@ -2372,69 +2361,6 @@ export class SongCoverManager {
     }
   }
 
-  private async removeStaleSvcScratch(): Promise<void> {
-    const svcRoot = this.runtimePaths().svcRoot
-    const scratchLocations = [
-      {
-        directory: path.join(svcRoot, 'raw'),
-        pattern: new RegExp(
-          `^elysia_cover_${SONG_COVER_JOB_TOKEN_SOURCE}\\.wav$`,
-          'u',
-        ),
-      },
-      {
-        directory: path.join(svcRoot, 'results'),
-        pattern: new RegExp(
-          `^elysia_cover_${SONG_COVER_JOB_TOKEN_SOURCE}`
-          + '\\.wav_(?:-2|-1|0|1|2)key_Elysia_sovits_(?:dio|fcpe)\\.wav$',
-          'u',
-        ),
-      },
-    ]
-    for (const location of scratchLocations) {
-      if (!await this.validateProjectPath(location.directory, 'directory')) {
-        continue
-      }
-      for (const entry of await readdir(location.directory, {
-        withFileTypes: true,
-      })) {
-        if (!location.pattern.test(entry.name)) {
-          continue
-        }
-        const candidate = path.join(location.directory, entry.name)
-        if (!await this.validateProjectPath(candidate, 'file')) {
-          continue
-        }
-        await this.removePath(candidate, { force: true })
-      }
-    }
-    this.pendingSvcScratchJobIds.clear()
-  }
-
-  private async removeSvcScratch(jobId: string): Promise<void> {
-    if (!SONG_COVER_JOB_ID_PATTERN.test(jobId)) {
-      throw new Error('Song Cover scratch identity is invalid.')
-    }
-    const token = jobId.replaceAll('-', '')
-    const runtimeRoot = this.runtimePaths().svcRoot
-    const rawName = `elysia_cover_${token}.wav`
-    const candidates = [
-      path.join(runtimeRoot, 'raw', rawName),
-      ...SVC_SCRATCH_KEY_SHIFTS.flatMap((shift) => (
-        SVC_SCRATCH_F0_PREDICTORS.map((predictor) => path.join(
-          runtimeRoot,
-          'results',
-          `${rawName}_${shift}key_Elysia_sovits_${predictor}.wav`,
-        ))
-      )),
-    ]
-    for (const candidate of candidates) {
-      if (await this.validateProjectPath(candidate, 'file')) {
-        await this.removePath(candidate, { force: true })
-      }
-    }
-  }
-
   /**
    * Remove both private artifact classes and remember any failed exact target.
    *
@@ -2456,11 +2382,7 @@ export class SongCoverManager {
       }
       return this.removeJobDirectory(job.id, job.directory)
     }
-    const [scratchRemoved, directoryRemoved] = await Promise.all([
-      this.removeSvcScratchTracked(job.id),
-      this.removeJobDirectory(job.id, job.directory),
-    ])
-    return scratchRemoved && directoryRemoved
+    return this.removeJobDirectory(job.id, job.directory)
   }
 
   private async removeSvsPrivateJobTracked(
@@ -2475,17 +2397,6 @@ export class SongCoverManager {
       return true
     } catch {
       this.pendingSvsPrivateJobIds.add(jobId)
-      return false
-    }
-  }
-
-  private async removeSvcScratchTracked(jobId: string): Promise<boolean> {
-    try {
-      await this.removeSvcScratch(jobId)
-      this.pendingSvcScratchJobIds.delete(jobId)
-      return true
-    } catch {
-      this.pendingSvcScratchJobIds.add(jobId)
       return false
     }
   }
@@ -2513,9 +2424,6 @@ export class SongCoverManager {
         ?? this.outputDirectory(jobId)
       await this.removeSvsPrivateJobTracked(jobId, directory)
     }
-    for (const jobId of [...this.pendingSvcScratchJobIds]) {
-      await this.removeSvcScratchTracked(jobId)
-    }
     for (const [jobId, directory] of [...this.pendingJobDirectories]) {
       if (this.pendingSvsPrivateJobIds.has(jobId)) {
         continue
@@ -2523,8 +2431,7 @@ export class SongCoverManager {
       await this.removeJobDirectory(jobId, directory)
     }
     if (
-      this.pendingSvcScratchJobIds.size > 0
-      || this.pendingSvsPrivateJobIds.size > 0
+      this.pendingSvsPrivateJobIds.size > 0
       || this.pendingJobDirectories.size > 0
     ) {
       throw new Error(PRIVATE_CLEANUP_ERROR)
@@ -2634,61 +2541,6 @@ export class SongCoverManager {
         deadline = null
       }
     })
-  }
-
-  /**
-   * Validate every lexical component before destructive scratch cleanup.
-   *
-   * Checking only `raw` or `results` would follow a junction placed on an
-   * earlier runtime component and could delete an external matching filename.
-   * Missing paths are harmless stale-cleanup no-ops; every redirect or type
-   * mismatch fails closed instead.
-   */
-  private async validateProjectPath(
-    candidatePath: string,
-    leafKind: 'directory' | 'file',
-  ): Promise<boolean> {
-    const trustedRoot = path.resolve(this.projectRoot)
-    const candidate = path.resolve(candidatePath)
-    const relative = path.relative(trustedRoot, candidate)
-    if (
-      relative === ''
-      || path.isAbsolute(relative)
-      || relative === '..'
-      || relative.startsWith(`..${path.sep}`)
-    ) {
-      throw new Error('Song Cover scratch path leaves the project root.')
-    }
-    const components = [trustedRoot, ...relative.split(path.sep).reduce<string[]>(
-      (paths, component) => {
-        paths.push(path.join(paths.at(-1) ?? trustedRoot, component))
-        return paths
-      },
-      [],
-    )]
-    for (let index = 0; index < components.length; index += 1) {
-      let metadata: Stats
-      try {
-        metadata = await lstat(components[index])
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-          return false
-        }
-        throw error
-      }
-      if (metadata.isSymbolicLink()) {
-        throw new Error('Song Cover scratch path contains a link or junction.')
-      }
-      const isLeaf = index === components.length - 1
-      if (
-        (!isLeaf && !metadata.isDirectory())
-        || (isLeaf && leafKind === 'directory' && !metadata.isDirectory())
-        || (isLeaf && leafKind === 'file' && !metadata.isFile())
-      ) {
-        throw new Error('Song Cover scratch path has an invalid type.')
-      }
-    }
-    return true
   }
 
   private clearJobDeadline(job: ActiveSongCoverJob): void {

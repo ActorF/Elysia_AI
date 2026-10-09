@@ -49,6 +49,7 @@ export type SongCoverReadiness =
 export type SongCoverErrorCode =
   | 'invalid-audio'
   | 'lyrics-network'
+  | 'lyrics-needs-metadata'
   | 'lyrics-no-match'
   | 'lyrics-no-sync'
   | 'lyrics-alignment'

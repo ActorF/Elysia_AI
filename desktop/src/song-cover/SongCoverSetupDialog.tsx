@@ -160,8 +160,8 @@ export function SongCoverSetupDialog({
             <legend>Online lyrics identity (optional)</legend>
             <p id={metadataDescriptionId}>
               Mandarin songs with synchronized Chinese lyrics only. Leave both
-              fields blank to use audio tags or a clear Artist - Title filename.
-              ScreenRecording, vocals, and other generic names need both fields.
+              fields blank to use audio tags or a recognized Artist/Title
+              filename. Generic or ambiguous names need both fields.
               {' '}LRCLIB receives the title, artist, and rounded duration to
               find lyrics; your audio is never uploaded.
             </p>
@@ -242,7 +242,9 @@ export function SongCoverSetupDialog({
           <p id={pitchDescriptionId}>
             Original key follows the source melody most closely. Raise only
             for hoarse low notes, or lower only for strained high notes;
-            either change intentionally moves every sung pitch.
+            either change intentionally moves every sung pitch
+            {engine === 'legacy-svc'
+              && ' and may soften accompaniment transients'}.
           </p>
           <div className="song-cover-key-choices">
             {([

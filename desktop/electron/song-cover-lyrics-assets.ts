@@ -4,8 +4,8 @@
  * Electron Main owns metadata probing, the LRCLIB lookup, and fixed-name asset
  * creation. Lyrics never cross the renderer contract or native command line;
  * an offline singing worker can read them only from its already-private job
- * root. The legacy SVC worker deliberately does not call this module because
- * it cannot consume lyrics and must not imply that it can.
+ * root. The legacy RVC voice-conversion path deliberately does not call this
+ * module because it cannot consume lyrics and must not imply that it can.
  */
 
 import { spawn } from 'node:child_process'
@@ -156,10 +156,17 @@ function filenameParts(
   const stem = path.parse(sourceName).name.normalize('NFC')
   if (looksGeneratedName(stem)) return null
   const separators = [' - ', ' – ', ' — '] as const
-  const matches = separators.flatMap((separator) => {
+  const separatedMatches = separators.flatMap((separator) => {
     const parts = stem.split(separator)
     return parts.length === 2 ? [parts] : []
   })
+  // Some lyric-video downloads use `Artist_Title【动态歌词_Lyrics_Video】`.
+  // Treating every underscore as a separator would misidentify ordinary file
+  // names, so this compatibility path accepts only that exact export shape.
+  const lyricVideoMatch = /^([^_【】]+)_([^_【】]+)【(?:動態歌詞|动态歌词)_Lyrics_Video】$/iu.exec(stem)
+  const matches = lyricVideoMatch === null
+    ? separatedMatches
+    : [...separatedMatches, [lyricVideoMatch[1], lyricVideoMatch[2]]]
   if (matches.length !== 1) return null
   const [leftValue, rightValue] = matches[0]
   const left = boundedMetadata(leftValue.trim())
