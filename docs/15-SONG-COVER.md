@@ -7,7 +7,7 @@
 Composer 中的音符按钮位于 **Dictate** 麦克风左侧。设置窗口会先让用户明确选择 Singing method：
 
 - **Lyrics-driven singing**：默认、推荐路径。Main 在线查找可信的同步歌词，再由本机 Windows + WSL Runtime 依照歌词和检测到的音符生成爱莉希雅主唱；
-- **Legacy voice conversion**：显式回退。这是保留的 UI 与 Wire 兼容名称；本机 RVC v2 复制输入 vocal 的旋律、发音内容与时序，不访问在线歌词；详细边界见第 8 节。
+- **Legacy voice conversion**：显式回退。这是保留的 UI 与 Wire 兼容名称；本机 RVC v2 以输入 vocal 的音高、发音内容与时序作为推理引导，不访问在线歌词，也不保证逐字或逐音高复刻；详细边界见第 8 节。
 
 两种方法都接受一首已混合歌曲，或一对从同一时间点开始的 vocal/accompaniment Stem；都只允许原调或升／降一至两个半音。完整歌曲在 Windows 侧使用固定 Demucs `htdemucs` 分离，Stem 模式跳过分离。
 
@@ -24,7 +24,7 @@ Composer 中的音符按钮位于 **Dictate** 麦克风左侧。设置窗口会�
 5. **WSL private staging**：Windows Worker 使用绝对 `%SystemRoot%\System32\wsl.exe`，不经过 Shell；`/usr/bin/wslpath` 把已验证的 Windows Job Root 转成 WSL mount path，并由固定 `/usr/bin/python3 -I` 查询当前 WSL UID 的 POSIX Home，再拼接固定私有 Runtime suffix。Bridge 只把 `target_vocal.wav`、`lyrics.lrc` 和可选 `lyrics.txt` 复制到当前 Linux 用户拥有的 mode-`0700` UUID Job，文件以 mode `0600` 创建；Manifest 不进入 Linux Runtime。
 6. **FunASR hotword + strict lyric/note alignment**：固定 SoulX preprocessing 以 `language=Mandarin`、CUDA、MIDI transcription 运行。同步 LRC 先转简体汉字、去重并形成有界的 FunASR `hotword`，只用于提高 ASR 偏置，不能授权错误歌词。Preprocess 产生的 segment／note metadata 随后按 LRC 时间区间分配歌词，并以单调 Dynamic Programming 对齐 ASR onset 与权威汉字；默认要求逐段 exact-match ratio `>= 0.60`、normalized cost `<= 0.45`，相同最优路径、歌词容量不足、voiced segment 缺歌词、Plain/LRC 不一致或时间归属不唯一都会失败。音高、时长、F0 与 segment 时间保持不变，校正后的文字由 SoulX 官方 G2P 重新生成 phoneme。
 7. **Fixed Elysia zero-shot SoulX**：推理固定使用本机 `SoulX-Singer/model.pt`、`soulxsinger.yaml`、phoneset、`control=score`、`auto_shift`、`pitch_shift=0`、CUDA FP16，以及固定 `elysia-v1/prompt.wav` + `prompt.json`；Renderer 不能替换模型、Prompt、语言、Device 或控制模式。生成 vocal 与 target vocal 的时长差超过 1 秒会被拒绝。
-8. **Reviewed FFmpeg mix**：Bridge 先把生成 vocal 暂存回 mounted Job，删除整个私有 Linux Job 后才原子发布 `generated_vocal.wav`。Windows Worker 再使用 -18 dB 严格无声辅音层、60 Hz high-pass、0.5 dB Presence、线性 +1.3 dB vocal 补偿、2.2–5.2 kHz vocal-keyed accompaniment ducking 和 -1 dBFS limiter，输出 WAV 与 MP3。RVC 路径不会混回这份原唱辅音层；它使用固定 Protect 保留无声内容，避免再引入分离伪影或电音。完成事件只在歌词、WSL 输出和其他 Scratch 均已清理后发送。
+8. **Reviewed FFmpeg mix**：Bridge 先把生成 vocal 暂存回 mounted Job，删除整个私有 Linux Job 后才原子发布 `generated_vocal.wav`。Windows Worker 再使用 -18 dB 严格无声辅音层、60 Hz high-pass、0.5 dB Presence、线性 +1.3 dB vocal 补偿、2.2–5.2 kHz vocal-keyed accompaniment ducking 和 -1 dBFS limiter，输出 WAV 与 MP3。RVC 路径不会混回这份原唱辅音层，以避免原唱泄漏及重新引入分离伪影；固定 Protect 参数本身不构成无声内容保证。完成事件只在歌词、WSL 输出和其他 Scratch 均已清理后发送。
 
 完整默认数据流如下：
 
@@ -87,7 +87,7 @@ LRCLIB 只有 Plain lyrics 而没有 `syncedLyrics` 时，Main 不会启动 SVS�
 | 整曲调性 | `-2`、`-1`、`0`、`+1`、`+2` 半音；SVS 在 Preprocess 前等时移动 vocal + accompaniment，Legacy RVC 直接移动检测到的 vocal F0 并等时移动 accompaniment |
 | 分离模型 | Demucs 4.0.1 `htdemucs`, CUDA, two-stems vocals, `segment=7`, `shifts=1`, `overlap=0.5`, `jobs=1`；Stem 模式跳过 |
 | SVS 推理 | Mandarin SoulX-Singer，固定 Elysia zero-shot Prompt、score control、auto-shift、CUDA FP16 |
-| 清晰度处理 | 60 Hz high-pass、0.5 dB Presence、线性 +1.3 dB 人声补偿、2.2–5.2 kHz vocal-keyed accompaniment ducking、-1 dBFS limiter；无 Vocal Compressor/Makeup。-18 dB 无声辅音层仅用于 Lyrics-driven SVS；Legacy RVC 使用固定 Protect，不混回原唱辅音 |
+| 混音处理 | 60 Hz high-pass、0.5 dB Presence、线性 +1.3 dB 人声补偿、2.2–5.2 kHz vocal-keyed accompaniment ducking、-1 dBFS limiter；无 Vocal Compressor/Makeup。-18 dB 无声辅音层仅用于 Lyrics-driven SVS；Legacy RVC 不混回原唱辅音，固定 Protect 参数不代表无声恢复保证 |
 | 导出 | 44.1 kHz stereo 16-bit PCM WAV |
 | 预览 | 44.1 kHz stereo 320 kbps MP3 |
 | 并发 | 全局一次一个任务 |
@@ -211,6 +211,7 @@ Windows Worker 不信任 Windows `HOME`，也不硬编码 Linux username。它�
 - 2026-10-09 在当前 Windows CUDA 私有 Runtime 上以一对 248.294 秒 Stem 完成 Legacy RVC Worker 贯通验收：RVC 子进程生成完整 40 kHz mono PCM16 人声，最终只保留 44.1 kHz Stereo PCM16 WAV 与 320 kbps MP3；WAV 峰值约 `-3.44 dBFS`，没有时长截断或满幅削波。关闭上游按 Shape 缓存的 CUDA Graph 后，实测显存从失败路径接近 12 GiB 降到约 2 GiB。该验收证明当前机器的完整 Worker/混音/清理边界可运行，不代表所有歌曲的人耳音色、分离质量、咬字或音域都已通过。
 - 在相同已审核 Runtime、Device 与输入下，两次独立短任务产生了字节一致的 PCM（SHA-256 相同）。该结果验证本机任务重启的可复现性，不承诺跨 PyTorch、CUDA、cuDNN、驱动或硬件版本复现。
 - 固定随机源后又以同一首 248.294 秒 MP3 完成 `Demucs → RVC → mix` 整曲重跑；输出仍为 44.1 kHz Stereo PCM16 WAV 与 320 kbps MP3，WAV 峰值约 `-3.84 dBFS`，没有满幅样本或时长截断。额外 A/B 显示二次 UVR 去混响、单侧／自适应声道、BS-Roformer 替换，以及先移调再移回都会在问题片段增加掉音、音高错误、相位或高频伪影，因此它们没有进入默认链路。
+- 同日还执行了隔离的 UV-aware 训练 Pilot。原训练标签把全部 899,182 帧插值成有声音高；重新以固定 RMVPE 阈值提取后，364,270 帧（40.511%）保持为连续 F0 `0`，对应的 RVC coarse UV bin 为 `1`。只改变推理 UV 语义的 e50 控制组没有达到预设的 10% 问题片段改善门槛；在这批纯说话语料上低学习率适配 5 轮的新候选也没有改善已知电音段，并令三份保留对白的掉音率增加 3.03–6.76 个百分点，高音片段 Spectral-flatness P95 上升约 17.1 倍。三组每组 11 个输入的两次独立 PCM 均完全一致，但新候选触发预设灾难性退化门禁，因此没有继续到 e10，也没有接入 UV 推理改动、替换生产 Checkpoint 或改动 Index。
 
 ## 7. CMD 测试
 
@@ -245,13 +246,13 @@ cd /d D:\Elysia_AI
 
 检查预检 JSON 后，只有显式增加 `--run-private-runtime` 才会创建新的临时 UUID Job 并调用生产 `song_svs_worker.py`。Smoke 使用固定四字段本机 manifest，解析完整封闭阶段协议，验证 44.1 kHz Stereo PCM16 WAV 与 MP3 的 Hash、编码、大小和时长，并再次执行 Worker 的 cleanup-only 协议确认 WSL 私有 Job 已清除。默认在验证后删除本机 Job；确需人工试听时可再增加 `--keep-output`，结果只保留在 `%TEMP%\elysia-song-cover-smoke\<stdout job_id>`。stdout 不包含歌词、输入路径、Runtime 路径或底层诊断。私人音频和歌词不得复制到 Repository、测试 Fixture 或文档目录。
 
-手工验证时，在打开的 Elysia 中点击 Dictate 左侧音符。Dialog 应默认选中 **Lyrics-driven singing**；当前高质量模式只支持普通话／中文同步歌词。可信 Tag 或清晰两段式文件名可让 Song title + Artist 同时留空；ScreenRecording、`vocals.wav` 等通用名称应同时填写两项。只填一项时 Dialog 必须停留并提示，不得打开原生文件选择器。选择完整歌曲或 Stem、选择调性，再点击 **Choose audio**。默认 SVS 应依次显示 `validating → separating → transcribing → aligning → synthesizing → mixing → ready/playing`。若无网络、无可接受的 LRCLIB match、无同步 LRC、含非 Han 内容或无法严格对齐，应安全失败，而不是生成猜测歌词。
+手工验证时，在打开的 Elysia 中点击 Dictate 左侧音符。Dialog 应默认选中 **Lyrics-driven singing**；当前歌词驱动模式只支持普通话／中文同步歌词。可信 Tag 或清晰两段式文件名可让 Song title + Artist 同时留空；ScreenRecording、`vocals.wav` 等通用名称应同时填写两项。只填一项时 Dialog 必须停留并提示，不得打开原生文件选择器。选择完整歌曲或 Stem、选择调性，再点击 **Choose audio**。默认 SVS 应依次显示 `validating → separating → transcribing → aligning → synthesizing → mixing → ready/playing`。若无网络、无可接受的 LRCLIB match、无同步 LRC、含非 Han 内容或无法严格对齐，应安全失败，而不是生成猜测歌词。
 
 若显式选择 **Legacy voice conversion**，应依次显示 `validating → separating → converting → mixing → ready/playing`，且不访问 LRCLIB。
 
 ## 8. Legacy RVC v2 显式回退
 
-`Legacy voice conversion` 不再是界面默认值。该名称只为保持 Renderer、IPC 和已有状态的兼容；实际推理引擎是 RVC v2，已移除的旧转换引擎不再属于生产路径。它适用于无法取得同步歌词、非 Mandarin 歌曲，或用户明确希望保留源 vocal 发音内容的情况；用户必须在 Singing method 中主动选择它。
+`Legacy voice conversion` 不再是界面默认值。该名称只为保持 Renderer、IPC 和已有状态的兼容；实际推理引擎是 RVC v2，已移除的旧转换引擎不再属于生产路径。它适用于无法取得同步歌词、非 Mandarin 歌曲，或用户明确希望以源 vocal 的发音和时序引导转换的情况；用户必须在 Singing method 中主动选择它。
 
 该路径不会读取或理解歌词。旋律、节拍、发音内容与演唱时序都来自输入 vocal；只选纯伴奏不会凭空生成歌词和演唱。处理步骤如下：
 
@@ -259,10 +260,12 @@ cd /d D:\Elysia_AI
 2. 短命 RVC Adapter 在独立子进程中固定 speaker `0`、RVC v2 40 kHz model family、RMVPE F0、HuBERT、Index Rate `0.00`、Protect `0.33` 与 RMS Mix Rate `0.25`。它在 Vendor Import 前固定 `RVC_CUDA_GRAPH=0`：上游会按静音点形成不同长度片段，而一次性整曲任务缓存每个 Shape 的 CUDA Graph 没有 Replay 收益，只会持续占用显存。每项任务还会在构建模型前重置 upstream seed `114514`，关闭 cuDNN benchmark、固定 deterministic cuDNN selection，并设置 `CUBLAS_WORKSPACE_CONFIG=:4096:8`；没有启用 PyTorch strict deterministic algorithms，因为当前固定 Torch 的 RVC CUDA `cumsum` 没有该模式的实现。当前选定的 e50 声学 Profile 不把 FAISS 邻居混入输出；`model.index` 仍作为该私有 Profile 的固定、身份验证资产传入并校验，不能被替换成任意 Index。Renderer 只能提交 `-2..+2` 半音，不能改变上游 RVC 命令面、模型、Index、F0 方法或混合参数；
 3. Adapter 禁用 Socket 与 Hugging Face 在线访问，只从显式 `models/cache/rvc-v2-40k/` 载入已验证的 Source/HuBERT/RMVPE，并从 `models/weights/rvc/elysia-v2-40k/` 载入私有 Checkpoint/Index。非 CUDA Device、路径跳转、不匹配的 Model Metadata、超范围／全零／长时间持续满幅 PCM 或既存输出都会 Fail Closed；
 4. RVC 产生 40 kHz mono 人声。Worker 将它重采样到 44.1 kHz，再以 `apad + atrim` 精确对齐原目标 Sample Count；这里不使用时长拉伸，避免为了追平长度而制造新的节拍或音高伪影；
-5. RVC Protect 已负责无声内容保留，所以 Worker 不会再把原唱的辅音高频层混回转换结果。FFmpeg 对转换人声做 60 Hz High-pass、0.5 dB Presence 与线性 +1.3 dB 补偿，不使用 Vocal Compressor/Makeup；随后用人声驱动的窄频伴奏 Ducking 腾出空间，最后以 -1 dBFS 限幅；
+5. Worker 不会把原唱的辅音高频层混回转换结果，以避免原唱泄漏及重新引入分离伪影。固定 Index Rate `0.00` 时上游 Protect 的 Feature Blend 是恒等操作，不能把 `0.33` 参数解释成无声内容保证。FFmpeg 对转换人声做 60 Hz High-pass、0.5 dB Presence 与线性 +1.3 dB 补偿，不使用 Vocal Compressor/Makeup；随后用人声驱动的窄频伴奏 Ducking 腾出空间，最后以 -1 dBFS 限幅；
 6. 保存 44.1 kHz stereo 16-bit PCM WAV 用于导出，并生成 320 kbps MP3 用于应用内播放。
 
 **Original key (`0`)** 最贴近原唱音高。任何非零值都会在 RVC 内有意移动检测到的 vocal F0，并以 `asetrate → aresample → atempo` 等时移动伴奏；它是音域取舍，不是更精确的原唱复刻。若已有干净 Stem，优先使用 Stem 模式以避免 Demucs 分离伪影。
+
+当前私有 RVC 声学模型只由 2,182 份说话对白 Slice 训练，没有干净的目标歌唱录音。完整作业验收只能证明处理链和输出边界可运行，不能证明所有歌唱音域与音素的音质；持续低音、高音、停顿及摩擦音仍可能出现发哑、电音、掉字或音高偏差。
 
 旧引擎曾在共享 Runtime 下创建 `raw/` 与 `results/` Scratch；当前 RVC 流程不再读写这些目录。转换中间 WAV 只存在于 Main 拥有的 UUID Job Root，发布前必须是新文件，完成/取消/失败/退出都沿现有受管 Job 清理路径收敛。应用不会扫描或删除 RVC Runtime 内的未知用户文件。
 

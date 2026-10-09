@@ -3174,10 +3174,16 @@ test('configures Song Cover only after explicit modal confirmation', async () =>
   await expect(dialog.getByLabel('Song title')).toHaveCount(0)
   await expect(dialog.getByLabel('Artist')).toHaveCount(0)
   await expect(dialog).toContainText(
-    'Original key follows the source melody most closely.',
+    'using the source vocal as a pronunciation and timing guide',
   )
   await expect(dialog).toContainText(
-    'may soften accompaniment transients.',
+    'sustained low or high notes may sound hoarse or electronic',
+  )
+  await expect(dialog).toContainText(
+    'it is a range tradeoff, not an artifact repair',
+  )
+  await expect(dialog).toContainText(
+    'may soften transients.',
   )
   await dialog.getByRole('radio', { name: /Vocals \+ accompaniment/u }).check()
   await dialog.getByRole('radio', { name: 'Lower 2' }).check()

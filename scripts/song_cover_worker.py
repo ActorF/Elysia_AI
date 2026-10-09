@@ -1,4 +1,4 @@
-"""Create one local high-quality Elysia singing cover from private audio.
+"""Create one local Elysia singing cover from private audio.
 
 The worker is intentionally a short-lived process.  Electron Main owns the
 native file selection and launches this script with paths that never cross into
@@ -1605,9 +1605,10 @@ def _mix_cover(
 
     The lyrics-driven synthesizer supplies a consonant layer because generated
     pronunciation can need conservative unvoiced recovery.  RVC deliberately
-    omits it: its protect control already retains unvoiced content, and mixing
-    the original singer back in can reintroduce separation and electric-tone
-    artifacts that the replacement model is intended to remove.
+    omits that source-singer layer to avoid leaking the original voice or
+    reintroducing separation artifacts.  This is a quality tradeoff rather
+    than a guarantee that the fixed upstream Protect argument recovers every
+    unvoiced consonant.
     """
 
     if consonant_layer is None:

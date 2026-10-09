@@ -93,7 +93,7 @@ export function SongCoverSetupDialog({
       confirmLabel="Choose audio"
       description={(
         <p>
-          Create a high-clarity cover from a complete song or prepared stems.
+          Create a local cover from a complete song or prepared stems.
         </p>
       )}
       error={metadataError}
@@ -144,8 +144,9 @@ export function SongCoverSetupDialog({
               <span>
                 <strong>Legacy voice conversion</strong>
                 <small>
-                  Explicit fallback. Copies the source vocal pronunciation and
-                  does not use online lyrics.
+                  Offline fallback using the source vocal as a pronunciation
+                  and timing guide. Quality depends on the local private model;
+                  sustained low or high notes may sound hoarse or electronic.
                 </small>
               </span>
             </label>
@@ -240,11 +241,10 @@ export function SongCoverSetupDialog({
         >
           <legend>Song key</legend>
           <p id={pitchDescriptionId}>
-            Original key follows the source melody most closely. Raise only
-            for hoarse low notes, or lower only for strained high notes;
-            either change intentionally moves every sung pitch
-            {engine === 'legacy-svc'
-              && ' and may soften accompaniment transients'}.
+            Original key follows the source melody most closely. A key shift
+            moves the entire lead and accompaniment; it is a range tradeoff,
+            not an artifact repair
+            {engine === 'legacy-svc' && ', and may soften transients'}.
           </p>
           <div className="song-cover-key-choices">
             {([

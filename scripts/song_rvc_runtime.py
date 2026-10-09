@@ -3,10 +3,12 @@
 This adapter deliberately exposes only one input WAV, one new output WAV, and
 explicit paths for the reviewed RVC source, checkpoint, FAISS index, HuBERT
 directory, and RMVPE checkpoint.  Speaker selection, pitch extraction, index
-mixing, consonant protection, loudness-envelope mixing, output sample rate,
-and model family are fixed here so an Electron-selected song cannot expand the
-upstream RVC command surface.  The sole per-song inference control is a
-bounded key shift of minus two through plus two semitones.
+mixing, the upstream Protect argument, loudness-envelope mixing, output sample
+rate, and model family are fixed here so an Electron-selected song cannot
+expand the upstream RVC command surface.  With the fixed zero index rate, the
+Protect feature blend is an identity operation; it must not be treated as a
+guarantee that unvoiced content is preserved.  The sole per-song inference
+control is a bounded key shift of minus two through plus two semitones.
 
 The parent process is responsible for digest-pinning the private assets.  This
 process independently rejects redirected paths, existing output files,
