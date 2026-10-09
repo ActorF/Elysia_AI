@@ -468,7 +468,7 @@ def _runtime_scope(request: _Request) -> Iterator[None]:
         "rmvpe_root",
     }
     missing = object()
-    previous_environment = {  # type: dict[str, object]
+    previous_environment: dict[str, object] = {
         key: os.environ.get(key, missing) for key in environment_keys
     }
     socket_methods = {
@@ -512,11 +512,11 @@ def _runtime_scope(request: _Request) -> Iterator[None]:
         sys.argv[:] = [str(Path(__file__).resolve())]
         yield
     finally:
-        socket.socket.connect = socket_methods["connect"]  # type: ignore[method-assign]
-        socket.socket.connect_ex = socket_methods["connect_ex"]  # type: ignore[method-assign]
-        socket.socket.send = socket_methods["send"]  # type: ignore[method-assign]
-        socket.socket.sendall = socket_methods["sendall"]  # type: ignore[method-assign]
-        socket.socket.sendto = socket_methods["sendto"]  # type: ignore[method-assign]
+        socket.socket.connect = socket_methods["connect"]  # type: ignore[method-assign,assignment]
+        socket.socket.connect_ex = socket_methods["connect_ex"]  # type: ignore[method-assign,assignment]
+        socket.socket.send = socket_methods["send"]  # type: ignore[method-assign,assignment]
+        socket.socket.sendall = socket_methods["sendall"]  # type: ignore[method-assign,assignment]
+        socket.socket.sendto = socket_methods["sendto"]  # type: ignore[method-assign,assignment]
         socket.create_connection = socket_methods["create_connection"]  # type: ignore[assignment]
         socket.getaddrinfo = socket_methods["getaddrinfo"]  # type: ignore[assignment]
         socket.gethostbyname = socket_methods["gethostbyname"]  # type: ignore[assignment]
@@ -674,7 +674,7 @@ def _write_pcm16_wav(path: Path, sample_rate: int, samples: object) -> None:
     """Write one validated mono integer/float vector as signed 16-bit PCM."""
 
     try:
-        import numpy as np
+        import numpy as np  # type: ignore[import-not-found]
 
         source = np.asarray(samples)
         if (
@@ -723,7 +723,7 @@ def _write_pcm16_wav(path: Path, sample_rate: int, samples: object) -> None:
             # vector pinned there is therefore corrupted or was rescaled as
             # unbounded PCM, the exact failure users hear as electric buzzing.
             _fail("invalid_audio")
-        import soundfile as sf
+        import soundfile as sf  # type: ignore[import-not-found]
 
         sf.write(str(path), audio, sample_rate, format="WAV", subtype="PCM_16")
     except _RvcRuntimeFailure:
