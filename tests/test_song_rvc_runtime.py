@@ -11,7 +11,6 @@ import sys
 from types import ModuleType, SimpleNamespace
 import wave
 
-import numpy as np
 import pytest
 
 from scripts import song_rvc_runtime as runtime
@@ -100,6 +99,19 @@ class _CacheProbe:
         """Record one cache invalidation without loading Transformers."""
 
         self.cleared = True
+
+
+def _require_numpy() -> ModuleType:
+    """Load the private RVC dependency only for PCM-specific adapter tests."""
+
+    # The application environment intentionally does not install NumPy; the
+    # ignored RVC runtime does.  Keeping this import local lets the portable
+    # command/path tests run in CI while the real dependency exercises PCM on
+    # development machines that can actually host the private runtime.
+    return pytest.importorskip(
+        "numpy",
+        reason="PCM adapter tests require the optional private RVC dependency",
+    )
 
 
 def test_parser_requires_each_explicit_option_once_and_bounds_key_shift(
@@ -386,11 +398,12 @@ def test_pcm_writer_normalizes_integer_quantization_without_full_scale_clipping(
 ) -> None:
     """Preserve int16 half-scale PCM instead of interpreting it as float gain."""
 
+    np = _require_numpy()
     output = tmp_path / "integer-pcm.wav"
 
     def _write(
         path: str,
-        audio: np.ndarray,
+        audio: object,
         sample_rate: int,
         *,
         format: str,
@@ -422,19 +435,22 @@ def test_pcm_writer_normalizes_integer_quantization_without_full_scale_clipping(
 
 
 @pytest.mark.parametrize(
-    "samples",
+    ("values", "dtype"),
     (
-        np.asarray([0.0, 1.01], dtype=np.float32),
-        np.asarray([0.0, np.inf], dtype=np.float32),
-        np.asarray([0.0, np.nan], dtype=np.float64),
+        ([0.0, 1.01], "float32"),
+        ([0.0, float("inf")], "float32"),
+        ([0.0, float("nan")], "float64"),
     ),
 )
 def test_pcm_writer_rejects_unbounded_or_nonfinite_float_audio(
     tmp_path: Path,
-    samples: np.ndarray,
+    values: list[float],
+    dtype: str,
 ) -> None:
     """Reject float vectors that soundfile would otherwise silently clip."""
 
+    np = _require_numpy()
+    samples = np.asarray(values, dtype=dtype)
     output = tmp_path / "invalid-float.wav"
     with pytest.raises(runtime._RvcRuntimeFailure) as captured:
         runtime._write_pcm16_wav(output, 40_000, samples)
@@ -444,19 +460,21 @@ def test_pcm_writer_rejects_unbounded_or_nonfinite_float_audio(
 
 
 @pytest.mark.parametrize(
-    "samples",
+    "dtype",
     (
-        np.asarray([0, 1], dtype=np.int8),
-        np.asarray([0, 1], dtype=np.int32),
-        np.asarray([0, 1], dtype=np.uint16),
+        "int8",
+        "int32",
+        "uint16",
     ),
 )
 def test_pcm_writer_rejects_integer_formats_other_than_int16(
     tmp_path: Path,
-    samples: np.ndarray,
+    dtype: str,
 ) -> None:
     """Keep the upstream integer PCM contract exact instead of guessing scale."""
 
+    np = _require_numpy()
+    samples = np.asarray([0, 1], dtype=dtype)
     output = tmp_path / "unsupported-pcm.wav"
     with pytest.raises(runtime._RvcRuntimeFailure) as captured:
         runtime._write_pcm16_wav(output, 40_000, samples)
@@ -466,19 +484,22 @@ def test_pcm_writer_rejects_integer_formats_other_than_int16(
 
 
 @pytest.mark.parametrize(
-    "samples",
+    ("value", "dtype"),
     (
-        np.zeros(40_000, dtype=np.int16),
-        np.full(40_000, 32_767, dtype=np.int16),
-        np.full(40_000, -1.0, dtype=np.float32),
+        (0, "int16"),
+        (32_767, "int16"),
+        (-1.0, "float32"),
     ),
 )
 def test_pcm_writer_rejects_silent_or_sustained_full_scale_audio(
     tmp_path: Path,
-    samples: np.ndarray,
+    value: float,
+    dtype: str,
 ) -> None:
     """Reject silent inference and long clipping that would sound electric."""
 
+    np = _require_numpy()
+    samples = np.full(40_000, value, dtype=dtype)
     output = tmp_path / "pathological.wav"
     with pytest.raises(runtime._RvcRuntimeFailure) as captured:
         runtime._write_pcm16_wav(output, 40_000, samples)

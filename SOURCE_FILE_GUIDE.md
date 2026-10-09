@@ -674,7 +674,7 @@ Character State API 目前是 Renderer 内部合同，不属于 `desktop_protoco
 | `tests/test_settings.py` | `.env`、STT 与语音情绪闭集配置/安全回退、GPT-SoVITS 本地评估 Opt-in、请求/探测 Timeout、Seed、默认值和基础 AppSettings。 |
 | `tests/test_short_term_memory.py` | Token Budget 和完整 Turn 淘汰。 |
 | `tests/test_song_cover_worker.py` | Legacy RVC Worker 的完整歌曲/stems、音频预检、Demucs 分离、RVC 资产身份/子进程调用、40→44.1 kHz 精确样本对齐、不混回原唱辅音的混音、进度、取消、原子发布、资源预算与错误脱敏；全部以 Fake Tool/合成短音频运行，不加载私人模型。 |
-| `tests/test_song_rvc_runtime.py` | 封闭 RVC Adapter 的命令面、路径/资产边界、CUDA 要求、CUDA Graph 禁用与环境恢复、网络封锁、Vendor Import 来源、固定推理参数、int16 PCM 规范化、浮点范围及全零/持续满幅拒绝、临时文件清理和原子发布；使用 Fake Vendor API，不加载 CUDA 模型。 |
+| `tests/test_song_rvc_runtime.py` | 封闭 RVC Adapter 的命令面、路径/资产边界、CUDA 要求、CUDA Graph 禁用与环境恢复、网络封锁、Vendor Import 来源、固定推理参数、int16 PCM 规范化、浮点范围及全零/持续满幅拒绝、临时文件清理和原子发布；使用 Fake Vendor API，不加载 CUDA 模型。基础 CI 不安装私有 RVC Runtime 的 NumPy，因此只跳过依赖真实 Array Dtype 的 PCM 个案，其余边界仍完整运行；具备本机 RVC 依赖时会执行全部 PCM 个案。 |
 | `tests/test_smoke_song_cover.py` | Song Cover Smoke CLI 的参数边界、四输入预检、Hash/格式/时长复核、固定四字段 Manifest、闭集 Worker 帧、WAV/MP3 与 WSL 清理验证、默认删除、可选保留和诊断脱敏；全程使用 Fake Worker/合成短音频，不加载私人模型。 |
 | `tests/test_song_lyrics_alignment.py` | LRC 解析、严格普通话 Han 约束、官方 G2P seam、音符/音节容量、等时证据歧义、跨 Segment 单调拆分、每 Token 恰好一次，以及无重叠歌词不得静默丢失。 |
 | `tests/test_song_svs_runtime.py` | WSL SoulX Runtime 的固定目录/资产、阶段参数、总墙钟、精确 session lease、取消标记、TERM→KILL 回收、输出验证和清理；使用 Fake Stage Process，不加载 CUDA 模型。 |
