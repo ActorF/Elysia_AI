@@ -1664,8 +1664,21 @@ test('rejects overlong unterminated worker stdout and releases its slot', {
 
 test('settles failed startup cleanup and rejects the first job safely', async () => {
   const fixture = await createFixture()
-  await mkdir(fixture.dataRoot, { recursive: true })
-  await writeFile(path.join(fixture.dataRoot, 'audio'), 'not-a-directory')
+  const startupRoot = path.resolve(path.join(
+    fixture.dataRoot,
+    'audio',
+    'song-covers',
+  ))
+  let blockStartupCleanup = true
+  const removePath = async (target, options) => {
+    if (
+      blockStartupCleanup
+      && path.resolve(String(target)) === startupRoot
+    ) {
+      throw new Error('simulated startup cleanup failure')
+    }
+    await rm(target, options)
+  }
   const manager = new SongCoverManager(
     fixture.projectRoot,
     () => fixture.dataRoot,
@@ -1673,15 +1686,23 @@ test('settles failed startup cleanup and rejects the first job safely', async ()
     () => {},
     async () => ({ outputDeviceId: null, volumePercent: 100 }),
     () => {},
+    undefined,
+    removePath,
   )
   try {
     await assert.rejects(
       startLegacy(manager, 'D:/private/original.mp3', 'original.mp3'),
-      /could not be started/iu,
+      new Error(
+        'Private Song Cover audio could not be cleared. Close Elysia and try again.',
+      ),
     )
     assert.equal(manager.getState().stage, 'error')
     assert.equal(manager.hasActiveWork(), false)
+    assert.equal(manager.hasManagedOutput(), true)
   } finally {
+    // Shutdown must retry the unresolved lease. Releasing the injected fault
+    // proves that retry settles instead of making the fixture platform-specific.
+    blockStartupCleanup = false
     await manager.shutdown()
     await rm(fixture.root, { recursive: true, force: true })
   }
