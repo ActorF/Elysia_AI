@@ -1,5 +1,5 @@
 /**
- * Render a small native modal for Chat renames and confirmed mutations.
+ * Render the shared native modal surface for compact shell actions.
  *
  * The dialog owns only focus and submission mechanics. Its caller keeps the
  * action state and performs every persisted operation through DesktopApi.
@@ -62,6 +62,9 @@ export function ChatActionDialog({
   const descriptionId = useId()
   const errorId = useId()
 
+  // Initial focus belongs to the closed -> open transition. Keeping it out of
+  // the keyboard-listener effect prevents controlled-field renders from
+  // stealing focus when callers recreate event callbacks.
   useEffect(() => {
     const dialog = dialogRef.current
     if (dialog === null) {
@@ -87,6 +90,17 @@ export function ChatActionDialog({
         preventScroll: true,
       })
     })
+
+    return () => {
+      window.cancelAnimationFrame(focusFrame)
+    }
+  }, [open])
+
+  useEffect(() => {
+    const dialog = dialogRef.current
+    if (dialog === null || !open) {
+      return
+    }
 
     const keepFocusInsideDialog = (event: KeyboardEvent): void => {
       if (event.key === 'Escape') {
@@ -130,7 +144,6 @@ export function ChatActionDialog({
     // Window capture runs before AppShell's document capture focus trap.
     window.addEventListener('keydown', keepFocusInsideDialog, true)
     return () => {
-      window.cancelAnimationFrame(focusFrame)
       window.removeEventListener('keydown', keepFocusInsideDialog, true)
     }
   }, [onCancel, open, pending])

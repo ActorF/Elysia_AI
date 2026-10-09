@@ -75,10 +75,29 @@ def test_voice_emotion_defaults_and_environment_choice_are_bounded(
 ) -> None:
     """Keep voice synthesis emotion on the closed supported vocabulary."""
 
+    assert VOICE_EMOTIONS == (
+        "neutral",
+        "happy",
+        "sad",
+        "caring",
+        "moved",
+        "playful",
+        "affectionate",
+        "teasing",
+        "serious",
+        "surprised",
+    )
     assert make_settings(tmp_path).voice_emotion == DEFAULT_VOICE_EMOTION
-    assert parse_choice(" SAD ", VOICE_EMOTIONS, DEFAULT_VOICE_EMOTION) == "sad"
     assert (
-        parse_choice("excited", VOICE_EMOTIONS, DEFAULT_VOICE_EMOTION)
+        parse_choice(
+            " AFFECTIONATE ",
+            VOICE_EMOTIONS,
+            DEFAULT_VOICE_EMOTION,
+        )
+        == "affectionate"
+    )
+    assert (
+        parse_choice("../happy", VOICE_EMOTIONS, DEFAULT_VOICE_EMOTION)
         == DEFAULT_VOICE_EMOTION
     )
 

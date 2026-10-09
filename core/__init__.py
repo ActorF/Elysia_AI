@@ -33,6 +33,7 @@ from .prompts import (
     ActiveConversationPromptContext,
     ProjectPromptContext,
     build_elysia_system_prompt,
+    load_elysia_system_rules,
 )
 
 # Keep the supported package API explicit for tools and future maintainers.
@@ -60,4 +61,5 @@ __all__ = [
     "OllamaChatModel",
     "ProjectPromptContext",
     "build_elysia_system_prompt",
+    "load_elysia_system_rules",
 ]

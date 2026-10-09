@@ -454,6 +454,19 @@ def test_binding_digest_uses_domain_separated_canonical_init(
     assert responses[0].metadata["binding_sha256"] == expected
 
 
+def test_utterance_seed_is_stable_distinct_and_bounded() -> None:
+    """Pin deterministic 31-bit derivation to every utterance input field."""
+
+    seed = worker._derive_utterance_seed(42, "zh", "你好，爱莉希雅。")
+
+    assert seed == 646_831_601
+    assert seed == worker._derive_utterance_seed(42, "zh", "你好，爱莉希雅。")
+    assert 0 <= seed <= 2_147_483_647
+    assert seed != worker._derive_utterance_seed(43, "zh", "你好，爱莉希雅。")
+    assert seed != worker._derive_utterance_seed(42, "en", "你好，爱莉希雅。")
+    assert seed != worker._derive_utterance_seed(42, "zh", "你好，爱莉希雅！")
+
+
 def test_partial_protocol_reads_and_writes_are_supported(tmp_path: Path) -> None:
     """Preserve framing when both OS handles make only partial progress."""
 
@@ -1644,7 +1657,15 @@ def test_production_adapter_uses_in_memory_v2_config_and_fixed_controls(
     assert upstream.reference == str(config.reference_audio.path)
     assert upstream.last_inputs["text"] == "request text"
     assert upstream.last_inputs["text_lang"] == "en"
-    assert upstream.last_inputs["seed"] == 42
+    assert upstream.last_inputs["seed"] == worker._derive_utterance_seed(
+        42,
+        "en",
+        "request text",
+    )
+    assert upstream.last_inputs["fragment_interval"] == 1 / 100
+    assert upstream.last_inputs["top_k"] == 5
+    assert upstream.last_inputs["top_p"] == 1
+    assert upstream.last_inputs["temperature"] == 1
     assert upstream.last_inputs["speed_factor"] == 1
     assert upstream.last_inputs["ref_audio_path"] is None
     with pytest.raises(RuntimeError, match="reload"):

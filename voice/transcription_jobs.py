@@ -22,6 +22,8 @@ from threading import Condition, Event, Lock, Thread, Timer, current_thread
 from time import monotonic
 from typing import Callable, Final, Literal, TypeAlias
 
+from localization import simplify_chinese_text
+
 from .transcription import (
     Transcriber,
     TranscriptionError,
@@ -628,7 +630,16 @@ class TranscriptionJobRunner:
             candidate = self._transcriber.transcribe(request)
             if not isinstance(candidate, TranscriptionResult):
                 raise TypeError("Transcriber returned an invalid result.")
-            result = candidate
+            # Script normalization belongs after the engine boundary so every
+            # current or future Transcriber feeds Dictate and Voice Call the
+            # same Simplified-Chinese final text. It also runs for an ``en``
+            # detection because mixed-language speech can still contain Han
+            # text even when the engine's dominant-language label is English.
+            result = TranscriptionResult(
+                text=simplify_chinese_text(candidate.text),
+                language=candidate.language,
+                language_probability=candidate.language_probability,
+            )
             failure = None
         except TranscriptionError as error:
             failure = self._failure_from_error(error)

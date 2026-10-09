@@ -27,8 +27,9 @@ from config.desktop_settings import (
     editable_from_app_settings,
     validate_desktop_settings_document,
     validate_ollama_host,
+    validate_voice_emotion,
 )
-from config.settings import AppSettings
+from config.settings import VOICE_EMOTIONS, AppSettings, VoiceEmotion
 
 
 SAVED_AT = datetime(2026, 8, 30, 12, 34, 56, tzinfo=timezone.utc)
@@ -66,7 +67,7 @@ def _changed_values(tmp_path: Path) -> EditableDesktopSettings:
         speech_rate_percent=125,
         speech_volume_percent=42,
         voice_profile_id="elysia",
-        voice_emotion="happy",
+        voice_emotion="affectionate",
         captions_enabled=False,
         automatic_relisten=True,
     )
@@ -167,7 +168,7 @@ def test_save_and_reload_round_trip_the_complete_allowlist(
             "transcription_device": "cpu",
             "transcription_language": "auto",
             "transcription_model": "small",
-            "voice_emotion": "happy",
+            "voice_emotion": "affectionate",
             "voice_profile_id": "elysia",
         },
         "updated_at": SAVED_AT.isoformat(),
@@ -460,7 +461,7 @@ def test_runtime_settings_apply_desired_values_and_explicit_model_override(
     assert runtime.speech_rate_percent == 125
     assert runtime.speech_volume_percent == 42
     assert runtime.voice_profile_id == "elysia"
-    assert runtime.voice_emotion == "happy"
+    assert runtime.voice_emotion == "affectionate"
     assert runtime.captions_enabled is False
     assert runtime.transcript_review_mode == "manual"
     assert runtime.automatic_relisten is True
@@ -625,6 +626,15 @@ def test_transcription_choices_reject_values_outside_the_allowlist(
         replace(_editable(tmp_path), **{field_name: value})
 
 
+@pytest.mark.parametrize("voice_emotion", VOICE_EMOTIONS)
+def test_voice_emotion_allowlist_accepts_every_closed_value(
+    voice_emotion: VoiceEmotion,
+) -> None:
+    """Accept every canonical emotion without aliases or normalization."""
+
+    assert validate_voice_emotion(voice_emotion) == voice_emotion
+
+
 @pytest.mark.parametrize(
     ("field_name", "value"),
     [
@@ -636,6 +646,7 @@ def test_transcription_choices_reject_values_outside_the_allowlist(
         ("voice_profile_id", "../voice"),
         ("voice_profile_id", "Elysia"),
         ("voice_emotion", "excited"),
+        ("voice_emotion", "../happy"),
         ("voice_emotion", "HAPPY"),
         ("captions_enabled", "true"),
         ("transcript_review_mode", "automatic"),
@@ -665,7 +676,7 @@ def test_live_voice_preferences_apply_without_creating_restart_fields(
         speech_rate_percent=150,
         speech_volume_percent=25,
         voice_profile_id="elysia",
-        voice_emotion="sad",
+        voice_emotion="surprised",
         captions_enabled=False,
         automatic_relisten=True,
     )

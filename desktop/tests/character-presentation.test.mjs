@@ -73,16 +73,50 @@ test('exposes only closed semantic presentation tokens', () => {
   }
 })
 
-test('maps three strict emotions to distinct reviewed expression cells', () => {
-  const emotions = ['neutral', 'happy', 'sad']
-  const cells = emotions.map((emotion) => {
-    const presentation = getCharacterEmotionPresentation(emotion)
-    return `${presentation.atlasColumn}:${presentation.atlasRow}`
-  })
+test('maps ten strict emotions to reviewed expression cells and cues', () => {
+  const emotions = [
+    'neutral',
+    'happy',
+    'sad',
+    'caring',
+    'moved',
+    'playful',
+    'affectionate',
+    'teasing',
+    'serious',
+    'surprised',
+  ]
+  const presentations = emotions.map(getCharacterEmotionPresentation)
+  const cells = presentations.map(
+    ({ atlasColumn, atlasRow }) => `${atlasColumn}:${atlasRow}`,
+  )
 
-  assert.deepEqual(cells, ['0:0', '1:1', '2:1'])
+  assert.deepEqual(cells, [
+    '0:0',
+    '1:1',
+    '2:1',
+    '2:3',
+    '4:3',
+    '0:2',
+    '1:2',
+    '4:1',
+    '4:0',
+    '2:2',
+  ])
+  assert.deepEqual(presentations.map(({ expression }) => expression), [
+    'soft-smile',
+    'happy',
+    'gentle-sad',
+    'tender-comfort',
+    'light-tears',
+    'playful',
+    'shy',
+    'wink',
+    'serious',
+    'surprised',
+  ])
   assert.equal(new Set(cells).size, emotions.length)
-  for (const invalid of [null, '', 'Happy', '../happy', 'playful', {}, 1]) {
+  for (const invalid of [null, '', 'Happy', '../happy', 'not-valid', {}, 1]) {
     assert.equal(isCharacterEmotion(invalid), false)
     assert.equal(resolveCharacterEmotion(invalid), 'neutral')
   }

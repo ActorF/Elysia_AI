@@ -8,7 +8,10 @@ and output tests without retaining audio. The current Composer exposes
 **Dictate** for one explicit utterance: the renderer downmixes and resamples
 input to 16 kHz mono `s16le`, local VAD submits only valid speech transiently
 for local Faster-Whisper transcription, and the final text is appended to the
-current message draft without sending it. **Voice Call** is a separate,
+current message draft without sending it. Before Dictate or Voice Call can
+observe that Final Transcript, Python applies the pinned OpenCC `t2s`
+converter to the complete result, including Chinese inside mixed-language
+recognition. **Voice Call** is a separate,
 utterance-based conversation loop. Opening it starts listening immediately;
 each complete utterance is locally transcribed and automatically submitted
 through the current Chat's normal durable path. A renderer-local controller
@@ -67,7 +70,8 @@ primary lifecycle, and Backend failure into the Character Panel and call dialog.
 The contract adds no IPC and never selects a model path or arbitrary animation.
 Main Chat renders reviewed static half-body artwork, while Voice Call renders a
 centered circular avatar; both are selected by that state and the user-controlled
-`neutral / happy / sad` emotion. They do not
+ten-value `neutral / happy / sad / caring / moved / playful / affectionate /
+teasing / serious / surprised` emotion. They do not
 load Cubism, create a WebGL context, expose an Animated/Still preference, or
 derive mouth cues from Web Audio RMS. The same active emotion selects the local
 TTS reference after a Backend restart, while artwork failure falls back through
@@ -127,6 +131,12 @@ Prerequisites:
   `workspace/settings/voice-profiles.json` catalog below the active data root. None is downloaded,
   committed, or packaged by this project, and none is required to run the
   text-only desktop UI.
+- Optional Song Cover additionally requires the exact ignored Demucs 4.0.1,
+  `htdemucs`, So-VITS-SVC 4.1, ContentVec, FCPE, FFmpeg/FFprobe, and local Elysia
+  singing-model assets documented in
+  [`docs/15-SONG-COVER.md`](../docs/15-SONG-COVER.md). It is CUDA-only in the
+  current development configuration, performs no implicit download, and is not
+  part of the current installer input.
 - Run all npm commands from the `desktop` directory.
 
 Start the complete development desktop once from one CMD window:
@@ -189,6 +199,27 @@ Git-ignored and must not be committed or packaged with the application.
   speech, and one temporary 16 kHz mono `s16le` payload is sent to Python. A
   successful final transcript is appended to the current Composer draft and is
   never sent automatically.
+- The music note immediately left of **Dictate** opens a Song Cover setup
+  dialog. **Lyrics-driven singing** is the default: after the user confirms,
+  Main sends the resolved title, artist, and rounded duration to LRCLIB and
+  requires trustworthy synchronized Mandarin Han lyrics; it never uploads the
+  source audio. A fixed Windows-to-WSL SoulX-Singer pipeline transcribes notes,
+  aligns the authoritative lyrics, regenerates official phonemes, and sings
+  through a private Elysia prompt. **Legacy voice conversion** is an explicit
+  offline fallback that uses FCPE and So-VITS-SVC to preserve the source
+  pronunciation instead of reading lyrics.
+- Either method accepts one complete song or an already aligned
+  vocal/accompaniment pair, plus original key or a closed `-2` through `+2`
+  semitone shift. Complete-song mode uses pinned Demucs separation; stem mode
+  skips it. Main owns every native path and the one-at-a-time process, while
+  Composer receives only safe base filenames, fixed progress, and
+  cancel/play/stop/export controls. The reviewed FFmpeg mix uses a strict
+  -18 dB unvoiced-consonant layer, 60 Hz high-pass, 0.5 dB presence,
+  vocal-keyed ducking, linear +1.3 dB vocal recovery, and a -1 dBFS limiter
+  without vocal compressor/makeup. A completed cover auto-plays through trusted
+  Preload and remains temporary unless the user explicitly exports its WAV.
+  This source-only development capability requires manually prepared private
+  CUDA/WSL runtimes; neither method is included in the current installer.
 - The phone button is **Voice Call**. It opens a rectangular modal bound to the
   exact active Chat and optional Project and starts listening immediately. Each
   completed utterance is transcribed locally and automatically submitted through
@@ -206,7 +237,8 @@ Git-ignored and must not be committed or packaged with the application.
   and accessible labels rather than permanent visible text.
 - The optional Character Panel and Voice portrait consume the same semantic
   Character State contract. Closed registries map each state and the active
-  `neutral / happy / sad` user setting to reviewed cells; no model output can
+  ten-value `neutral / happy / sad / caring / moved / playful / affectionate /
+  teasing / serious / surprised` user setting to reviewed cells; no model output can
   select an emotion, path, cell, or animation name. The same active emotion
   value also selects the TTS reference. Both in-app surfaces are permanently
   static: they mount no Live2D model, WebGL context, render loop, Animated/Still
@@ -333,9 +365,11 @@ Git-ignored and must not be committed or packaged with the application.
   final message. The compact character panel is also modal, traps focus, and
   has its own close control.
 - Projects support persisted metadata, instructions, workspace binding, Chat
-  assignment, archive, and restore. Managed sentence playback is available for
-  ordinary Chat replies when its ignored local runtime and Profile are valid;
-  reply-time barge-in is available when verified echo cancellation starts.
+  assignment, archive, and restore. Ordinary text Chat stays silent; its
+  persisted Assistant replies expose an explicit **Read aloud** action when the
+  ignored local runtime and Profile are valid. Voice Call may speak its replies
+  automatically, and reply-time barge-in is available when verified echo
+  cancellation starts.
   Work permissions, automatic workspace scanning, and background source import
   remain unavailable.
 
@@ -348,11 +382,11 @@ flight. Two settings are live and three require a restart:
 
 | Settings control (`global.json` field) | Default | Valid value | Apply boundary | Contract |
 | --- | --- | --- | --- | --- |
-| **Read replies aloud** (`autoReadAloud`) | On | On / Off | Live after Save | Off preserves text replies but does not start new managed speech. |
+| **Speak Voice Call replies** (`autoReadAloud`) | On | On / Off | Live after Save | Controls automatic speech only for Voice Call; ordinary Chat is silent unless the user presses **Read aloud** on a saved reply. |
 | **Speech rate (%)** (`speechRatePercent`) | 100 | 50–200 | **Backend restart required** | The active synthesis rate remains unchanged until restart. |
 | **Speech volume (%)** (`speechVolumePercent`) | 100 | 0–100 | Live after Save | Trusted preload applies the active value to each admitted clip; 0 silences playback without disabling synthesis. |
 | **Voice profile** (`voiceProfileId`) | `default` | Configured logical Profile ID | **Backend restart required** | The active Profile remains unchanged until restart. |
-| **Voice emotion** (`voiceEmotion`) | `neutral` | `neutral` / `happy` / `sad` | **Backend restart required** | The same active closed value selects the local TTS reference and reviewed static expression; model output cannot override it. |
+| **Voice emotion** (`voiceEmotion`) | `neutral` | `neutral` / `happy` / `sad` / `caring` / `moved` / `playful` / `affectionate` / `teasing` / `serious` / `surprised` | **Backend restart required** | The same active closed value selects the local TTS reference and reviewed static expression; model output cannot override it. |
 
 Older settings documents and Protocol v1 shapes can still contain
 `captionsEnabled`, `transcriptReviewMode`, and `automaticRelisten`. They are
@@ -394,6 +428,7 @@ immediately if Windows reports that microphone access is denied.
 | Exercise | Expected result | Result |
 | --- | --- | --- |
 | Press **Dictate**, speak, and pause. | Status progresses through local capture and transcription; the final text is appended to the existing Composer draft, no Chat request is sent, and no partial recognition text is exposed. | Pending — manual run required |
+| Send an ordinary text Chat message, then hover an Elysia reply and press **Read aloud**. | Sending the text message produces no automatic audio. The explicit action speaks only the selected persisted Assistant reply and never accepts arbitrary Renderer text. | Pending — manual run required |
 | Open **Voice Call**. | The rectangular modal binds the exact Chat/Project, its timer advances, and capture begins immediately. A centered circular Elysia avatar appears above exactly two icon-only controls whose hover/accessibility names are **Mute/Unmute** and **Close voice**. | Pending — manual run required |
 | Speak one complete utterance in Voice Call and pause. | The status progresses through listening, speech detected, transcription, and thinking. The Final Transcript is automatically submitted through the normal durable Chat path while the pre-existing Composer draft and staged files remain unchanged. No partial recognition text or transcript-review UI appears. | Pending — manual run required |
 | Let one Voice reply and any expected playback finish. | The Session settles both Chat and speech ownership, then an unmuted call automatically begins one new utterance capture. | Pending — manual run required |
@@ -406,7 +441,7 @@ immediately if Windows reports that microphone access is denied.
 | Close Voice Call during managed playback, then switch Chat or Project in a separate run. | Exact playback and Voice-owned audio stop; the old Session cannot be reopened by late events. A text reply already in progress may continue in its Chat. | Pending — manual run required |
 | Keep one Voice Call open for a recorded duration and complete several capture, reply, mute, and interruption cycles before closing. | Resource use remains bounded, the Windows microphone indicator turns off after Close, no background capture or playback remains, and opening a fresh call still works. | Pending — manual run required |
 | Enable Windows Narrator or another screen reader and exercise Dictate, capture, transcription, thinking/speaking, Mute/Unmute, one recoverable error, and Close. | Controls have understandable accessible names and focus order; primary lifecycle and microphone status are announced without contradictory or repeated status floods. | Pending — manual run required |
-| Save each of the two live Voice settings, exercising a newly admitted operation after every Save. | Read-aloud and per-clip volume reflect the saved value without a Backend restart. Volume 0 is silent while the text reply still completes. | Pending — manual run required |
+| Save each of the two live Voice settings, exercising a newly admitted operation after every Save. | Automatic Voice Call speech and per-clip volume reflect the saved value without a Backend restart. Volume 0 is silent while the text reply still completes; ordinary Chat remains opt-in per reply. | Pending — manual run required |
 | Save a different speech rate, Voice Profile, and Voice Emotion without restarting, then restart the Backend. | All three controls report restart-required; active behavior stays at the old values before restart. After a successful restart, the closed emotion changes both the TTS reference choice and reviewed static expression. | Pending — manual run required |
 
 For every real-device run, record the following fields together with the table
@@ -500,9 +535,11 @@ If the Profile is marked `local-evaluation-only`, leave
 its rights status and paths; then opt in locally without committing `.env`.
 For desktop playback, keep the loopback API stopped: Electron's Python Backend
 starts the worker itself from `models\cache\GPT-SoVITS-v2-240821`. Launch the
-desktop normally with **Read replies aloud** on, send a Chat message that
-produces several sentences, and confirm that each reply sentence plays once in
-order while the exact text is still persisted. Save several volume values and
+  desktop normally with **Speak Voice Call replies** on, send one Voice Call
+  utterance that produces several sentences, and confirm that each reply sentence
+  plays once in order while the exact text is still persisted. In ordinary Chat,
+  confirm that no audio starts until **Read aloud** is pressed on a persisted
+  Elysia reply. Save several volume values and
 admit a new clip after each Save: the trusted preload must apply the current
 percentage to that clip, including silence at 0, without exposing its WAV bytes
 to React or disabling synthesis. Closing the window and exiting must stop the
@@ -518,7 +555,7 @@ from CMD:
 
 ```bat
 cd /d D:\Elysia_AI
-.venv\Scripts\python.exe scripts\smoke_gpt_sovits.py --profile default --emotion neutral --emotion happy --emotion sad
+.venv\Scripts\python.exe scripts\smoke_gpt_sovits.py --profile default --emotion neutral --emotion happy --emotion sad --emotion caring --emotion moved --emotion playful --emotion affectionate --emotion teasing --emotion serious --emotion surprised
 ```
 
 The command synthesizes one fixed Chinese sentence twice per emotion and keeps
@@ -574,7 +611,8 @@ pins all four by exact path, byte length, SHA-256, ASAR cardinality, and
 extracted bytes. The state atlas is a static 4×2 RGB sheet: only its first seven
 cells participate in the closed Character State contract, and the eighth
 success cell is not a new runtime state. The expression atlas admits only the
-user-controlled `neutral / happy / sad` mapping. The speech atlas remains an
+user-controlled ten-emotion mapping (`neutral`, `happy`, `sad`, `caring`,
+`moved`, `playful`, `affectionate`, `teasing`, `serious`, and `surprised`). The speech atlas remains an
 authenticated review asset, but the current renderer does not load it or derive
 visual mouth cues from playback.
 Main Chat and Voice use only the packaged static artwork. The optional Desktop
@@ -753,12 +791,23 @@ method, results, capability gaps, and limitations.
   Voice artwork stays static while audio plays. The managed runtime's current
   partial manifest proves launch consistency, not complete supply-chain
   provenance, so desktop speech caching remains disabled.
+- Song Cover is a separate Main-owned private pipeline. Native source/output/model
+  paths, stderr, PIDs, and media bytes do not enter React or public
+  `DesktopApi`; fixed progress copy replaces third-party Runtime text. Main
+  reserves the task slot before asynchronous setup and retains it through
+  output validation and cleanup. Exact UUID cancellation confirms the owned
+  Windows process tree has stopped before deleting scratch. Runtime executables,
+  imported Python trees, separation/content/model assets, and output bounds are
+  authenticated; the worker receives a minimal offline environment instead of
+  the parent process environment. MP3 preview uses a private Blob URL with
+  decoded-duration, size, sink, and volume validation, and always revokes that
+  URL on a terminal path.
 - Settings accepts an exact non-sensitive allowlist, including the closed STT
   model/device/language enums and Voice behavior fields, uses optimistic
   revisions and atomic replacement, and remains repairable after Backend
   initialization rejects a saved model or Ollama origin. Read-aloud and volume
   are adopted between admitted operations after Save; synthesis rate, Voice
-  Profile, and the closed `neutral / happy / sad` Voice Emotion keep their prior
+  Profile, and the closed ten-value Voice Emotion set keeps its prior
   active values until a Backend restart. Retired caption, transcript-review,
   and automatic-relisten fields are compatibility-only and do not control the
   current UI. The active emotion controls both the TTS reference choice and

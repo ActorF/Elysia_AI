@@ -33,8 +33,8 @@ permission, event, cancel, and permission-decision shapes. The current runtime
 advertises `chat.stream`, `chat.retry`, `request.cancel`, `stream`, `progress`,
 `event`, `chat.sessions`, `project.management`, `settings.management`,
 `attachment.management`, `knowledge.management`, `voice.settings`,
-`voice.capture`, and the optional `voice.transcription`, `voice.speech`, and
-`voice.speech.cancel` capabilities.
+`voice.capture`, and the optional `voice.transcription`, `voice.speech`,
+`voice.speech.start`, and `voice.speech.cancel` capabilities.
 Both new-turn and retry generation reuse the `chat.reply` stream.
 Cancellation succeeds only before generation claims its atomic commit gate, so
 a successful Stop response guarantees that the interrupted turn is not saved.
@@ -43,7 +43,7 @@ advertised as an active capability.
 
 `settings.get` and `settings.update` expose one exact public allowlist with
 optimistic revision checks: Chat model, Ollama origin, two Memory limits,
-import byte limit, transcription model/device/language, automatic read-aloud,
+import byte limit, transcription model/device/language, automatic Voice Call speech,
 speech rate and volume percentages, and a logical Voice Profile ID. The STT fields are
 closed enums: `tiny|base|small|medium|large-v3|turbo`, `auto|cuda|cpu`, and
 `auto|zh|en`. Speech rate is an integer from 50 through 200, volume is an
@@ -56,7 +56,7 @@ controls, and they do not govern Dictate or Voice Call behavior.
 
 Saved changes are reported separately from active values. Model/runtime/STT
 changes, speech rate, and Voice Profile selection may be listed in
-`restartFields`; automatic read-aloud and volume are live preferences and are
+`restartFields`; automatic Voice Call speech and volume are live preferences and are
 never valid restart field names. Retired compatibility fields are likewise
 never restart fields. API keys, tokens, passwords, base paths, environment data, arbitrary
 extension fields, live microphone state, Transcript content, and current Voice
@@ -98,8 +98,11 @@ or `en` language hint, and carries each PCM payload exactly once. Python admits
 the request to a fixed-size bounded worker before emitting
 `voice.transcription.started` and progress. Its terminal response contains only
 the original Voice session and Chat IDs, bounded final text, resolved `zh` or
-`en` language, and a finite language probability. It never contains PCM, a
-model path, or native-library diagnostics.
+`en` language, and a finite language probability. Before publication, the
+complete final text always crosses the pinned OpenCC `t2s` boundary, including
+Chinese text inside an `en`-dominant result; no raw Traditional transcript is
+sent to Dictate or Voice Call. It never contains PCM, a model path, or native-
+library diagnostics.
 
 The active configuration maps the selected model name only to
 `models/weights/faster-whisper/<model>` and requires a complete local model.
@@ -125,13 +128,26 @@ Renderer chooses the consumer only after exact session ownership validation.
 No partial recognized text crosses the wire. Voice Call is an utterance-based
 loop, not real-time partial recognition or gapless streaming.
 
-Desktop Protocol v1 advertises the optional `voice.speech` capability, but it
+Desktop Protocol v1 advertises the optional `voice.speech` capability but
 deliberately defines no public request that can synthesize arbitrary text.
-During an accepted `chat.reply` stream, Python gives the speech path a copy of
-each text chunk; the canonical Chat stream and final persisted Assistant text
-remain owned by the existing Chat transaction. Natural-boundary sentences
-enter one bounded FIFO queue, and cancellation, replacement, or synthesis
-failure cannot turn a partial spoken copy into a committed Chat message.
+Every `chat.stream` and `chat.retry` request carries the required Boolean
+`speakReply`. Ordinary text Chat sends `false`, so Python does not create a
+speech turn and emits no synthetic zero-work terminal. Voice Call sends `true`;
+during that accepted `chat.reply` stream Python gives the speech path a copy of
+each text chunk when the live automatic read-aloud preference is enabled. The
+canonical Chat stream and final persisted Assistant text remain owned by the
+existing Chat transaction. Natural-boundary sentences enter one bounded FIFO
+queue, and cancellation, replacement, or synthesis failure cannot turn a
+partial spoken copy into a committed Chat message.
+
+`voice.speech.start` supports the explicit **Read aloud** action without
+opening an arbitrary-text synthesis boundary. Its closed request contains only
+the active `chatId` and one `assistantMessageId`. Python loads that Chat from
+the canonical repository, requires that the ID belongs to a persisted
+Assistant message, and feeds the stored content through a fresh managed turn.
+The closed acknowledgement echoes `kind`, the new speech-owning `requestId`,
+`chatId`, and `assistantMessageId`. Source text, paths, profiles, and synthesis
+options are rejected as unknown fields.
 
 `voice.speech.cancel` is the narrow authenticated control operation paired with
 that managed path. Its request carries both the originating Chat request ID and
@@ -247,8 +263,9 @@ use the existing correlated Knowledge error event. These are Electron
 `BackendEvent` contracts, not additional Python wire events. Archived Projects
 remain read-only.
 
-`chat.stream` and `chat.retry` accept the optional Boolean
-`useProjectKnowledge`. Omission or `false` preserves the ordinary Chat path;
+`chat.stream` and `chat.retry` require `speakReply` and accept the optional
+Boolean `useProjectKnowledge`. Omission or `false` for Project knowledge
+preserves the ordinary Chat path;
 `true` authorizes only the corpus derived from that Chat's canonical active
 Project relationship. Assistant history may contain a closed `groundedAnswer`
 object with status, bounded statement kinds, exact citation closure, safe file

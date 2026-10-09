@@ -27,6 +27,7 @@ from voice.managed_gpt_sovits import (
 )
 from voice.profiles import JsonVoiceProfileCatalog
 from voice.speech_queue import (
+    SentenceSegmenterConfig,
     SpeechQueueClip,
     SpeechQueueConfig,
     SpeechQueueEvent,
@@ -50,6 +51,10 @@ DesktopSpeechState: TypeAlias = Literal[
     "unavailable",
     "closed",
 ]
+DesktopSpeechUnavailableReason: TypeAlias = Literal[
+    "setup_unavailable",
+    "runtime_failed",
+]
 DesktopSpeechEventSink: TypeAlias = Callable[
     [ProtocolEventName, str, dict[str, Any]],
     None,
@@ -63,6 +68,9 @@ _CACHE_IDENTITY: Final = "desktop-managed-voice"
 _VOICE_PROFILE_ID_PATTERN: Final = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
 _MIN_SPEECH_RATE_PERCENT: Final = 50
 _MAX_SPEECH_RATE_PERCENT: Final = 200
+_DESKTOP_SENTENCE_SEGMENTER_CONFIG: Final = SentenceSegmenterConfig(
+    minimum_utterance_code_points=36,
+)
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -126,7 +134,7 @@ class DesktopSpeechConfig:
                 "voice_profile_id must be a bounded lowercase logical identifier."
             )
         if self.voice_emotion not in VOICE_EMOTIONS:
-            raise ValueError("voice_emotion must be neutral, happy, or sad.")
+            raise ValueError("voice_emotion must be a supported closed value.")
         if (
             type(self.speech_rate_percent) is not int
             or not _MIN_SPEECH_RATE_PERCENT
@@ -163,6 +171,18 @@ class DesktopSpeechStatus:
 
     state: DesktopSpeechState
     available: bool
+    reason: DesktopSpeechUnavailableReason | None = None
+
+    def __post_init__(self) -> None:
+        """Keep availability and the sanitized reason mutually consistent."""
+
+        if self.available is not (self.state == "ready"):
+            raise ValueError("Desktop speech availability is inconsistent.")
+        if self.state == "unavailable":
+            if self.reason is None:
+                raise ValueError("Unavailable speech must include a safe reason.")
+        elif self.reason is not None:
+            raise ValueError("Only unavailable speech may include a reason.")
 
 
 @runtime_checkable
@@ -260,6 +280,7 @@ class DesktopSpeechCoordinator:
         self._work_condition = Condition(self._lock)
         self._turn_transition_lock = Lock()
         self._state: DesktopSpeechState = "idle"
+        self._unavailable_reason: DesktopSpeechUnavailableReason | None = None
         self._settled = Event()
         self._runtime: ManagedGptSovitsRuntime | None = None
         self._queue: SpeechSynthesisQueue | None = None
@@ -273,7 +294,12 @@ class DesktopSpeechCoordinator:
 
         with self._lock:
             state = self._state
-        return DesktopSpeechStatus(state=state, available=state == "ready")
+            reason = self._unavailable_reason
+        return DesktopSpeechStatus(
+            state=state,
+            available=state == "ready",
+            reason=reason,
+        )
 
     def start(self) -> None:
         """Begin one feeder and one lazy managed-runtime acquisition."""
@@ -394,6 +420,7 @@ class DesktopSpeechCoordinator:
             if self._state == "closed":
                 return
             self._state = "closed"
+            self._unavailable_reason = None
             self._settled.set()
             active, self._active_turn = self._active_turn, None
             if active is not None:
@@ -549,6 +576,7 @@ class DesktopSpeechCoordinator:
                 record.queue_turn_id,
                 binding,
                 lambda event: self._on_queue_event(record, event),
+                segmenter_config=_DESKTOP_SENTENCE_SEGMENTER_CONFIG,
             )
             record.delegate = delegate
             self._work_condition.notify_all()
@@ -868,6 +896,14 @@ class DesktopSpeechCoordinator:
         with self._work_condition:
             if self._state in ("unavailable", "closed"):
                 return
+            # Failures before the queue becomes ready mean the local setup is
+            # absent or invalid. Failures after readiness mean a live runtime
+            # was lost. Detailed internal diagnostics remain log-only.
+            self._unavailable_reason = (
+                "setup_unavailable"
+                if self._state in ("idle", "starting")
+                else "runtime_failed"
+            )
             self._state = "unavailable"
             self._settled.set()
             active, self._active_turn = self._active_turn, None
@@ -902,5 +938,6 @@ __all__ = [
     "DesktopSpeechEventSink",
     "DesktopSpeechState",
     "DesktopSpeechStatus",
+    "DesktopSpeechUnavailableReason",
     "DesktopSpeechTurn",
 ]

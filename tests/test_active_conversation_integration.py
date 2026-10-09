@@ -381,7 +381,7 @@ def test_brain_project_mutations_reject_an_active_chat_operation(
     tmp_path: Path,
 ) -> None:
     """Verify that brain project mutations reject an active chat operation."""
-    model = RoutedChatModel(stream_chunks=["One", "Two"])
+    model = RoutedChatModel(stream_chunks=["第一段。", "第二段。"])
     brain, _memory, _chats, _projects = _brain(tmp_path, model)
     project = brain.create_project(name="Busy Project")
     chat = brain.create_chat(
@@ -390,7 +390,7 @@ def test_brain_project_mutations_reject_an_active_chat_operation(
     )
     stream = brain.stream_chat(chat.chat_id, "Question")
 
-    assert next(stream) == "One"
+    assert next(stream) == "第一段。"
     with pytest.raises(ProjectChatBusyError):
         brain.update_project(
             project.project_id,
@@ -453,7 +453,7 @@ def test_stream_failure_never_saves_partial_or_wrong_chat(
 ) -> None:
     """Keep partial model output out of both the target and active Chats on failure."""
     model = RoutedChatModel(
-        stream_chunks=["Partial"],
+        stream_chunks=["部分回复。"],
         stream_error=RuntimeError("stream failed"),
     )
     brain, _memory, _chats, _projects = _brain(tmp_path, model)
@@ -461,7 +461,7 @@ def test_stream_failure_never_saves_partial_or_wrong_chat(
     second = brain.create_chat(title="Second")
     stream = brain.stream_chat(first.chat_id, "Question")
 
-    assert next(stream) == "Partial"
+    assert next(stream) == "部分回复。"
     with pytest.raises(RuntimeError, match=r"stream failed"):
         next(stream)
 
@@ -474,12 +474,12 @@ def test_closing_stream_discards_partial_turn_and_releases_busy_guard(
     tmp_path: Path,
 ) -> None:
     """Treat consumer-closed streams as aborts and release the per-Chat busy guard."""
-    model = RoutedChatModel(stream_chunks=["One", "Two"])
+    model = RoutedChatModel(stream_chunks=["第一段。", "第二段。"])
     brain, _memory, _chats, _projects = _brain(tmp_path, model)
     chat = brain.create_chat(title="Cancelable")
     stream = brain.stream_chat(chat.chat_id, "Question")
 
-    assert next(stream) == "One"
+    assert next(stream) == "第一段。"
     assert brain.is_chat_busy(chat.chat_id) is True
     stream.close()
 
@@ -491,20 +491,20 @@ def test_busy_chat_rejects_second_generation_but_other_chat_can_run(
     tmp_path: Path,
 ) -> None:
     """Verify that busy chat rejects second generation but other chat can run."""
-    model = RoutedChatModel(stream_chunks=["One", "Two"])
+    model = RoutedChatModel(stream_chunks=["第一段。", "第二段。"])
     brain, _memory, _chats, _projects = _brain(tmp_path, model)
     first = brain.create_chat(title="First")
     second = brain.create_chat(title="Second")
     first_stream = brain.stream_chat(first.chat_id, "First question")
 
-    assert next(first_stream) == "One"
+    assert next(first_stream) == "第一段。"
     blocked_stream = brain.stream_chat(first.chat_id, "Duplicate")
     with pytest.raises(ChatBusyError):
         next(blocked_stream)
 
     assert list(brain.stream_chat(second.chat_id, "Second question")) == [
-        "One",
-        "Two",
+        "第一段。",
+        "第二段。",
     ]
     first_stream.close()
     assert brain.get_chat(first.chat_id).messages == ()

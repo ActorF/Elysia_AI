@@ -61,7 +61,7 @@ class FakeIpcRenderer extends EventEmitter {
   }
 
   /** Return closed fixtures for the specific Preload capabilities under test. */
-  invoke(channel) {
+  invoke(channel, ...args) {
     if (channel === 'desktop-pet:choose-model-directory') {
       operations.push('desktop-pet-picker')
       return Promise.resolve(DESKTOP_PET_PICKER_STATE)
@@ -74,6 +74,10 @@ class FakeIpcRenderer extends EventEmitter {
         })
       }
       return Promise.resolve({ outputDeviceId })
+    }
+    if (channel === 'voice:start-speech-playback') {
+      operations.push({ channel, args })
+      return Promise.resolve({ requestId: 'speech-start-request' })
     }
     assert.equal(channel, 'settings:get')
     operations.push('global-settings')
@@ -440,6 +444,21 @@ test('main-window preload invokes the exact Desktop Pet directory channel', asyn
 
   assert.deepEqual(result, DESKTOP_PET_PICKER_STATE)
   assert.equal(operations.includes('desktop-pet-picker'), true)
+})
+
+test('main-window preload exposes only the persisted-reply speech target', async () => {
+  const target = {
+    chatId: 'chat_fixture',
+    assistantMessageId: 'message_assistant',
+  }
+
+  const result = await exposedApis[0].api.startSpeechPlayback(target)
+
+  assert.deepEqual(result, { requestId: 'speech-start-request' })
+  assert.deepEqual(operations, [{
+    channel: 'voice:start-speech-playback',
+    args: [target],
+  }])
 })
 
 test('sink-selection failure never falls back to the default output', async () => {

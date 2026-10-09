@@ -78,9 +78,11 @@ class TranscriptionRequest:
 class TranscriptionResult:
     """Hold one bounded final transcript and language-detection metadata.
 
-    Text is preserved exactly for review and editing by a later caller. A result
-    cannot use ``auto`` because language detection must be resolved before the
-    engine-independent boundary returns. ``language_probability`` is a finite
+    This value object preserves the text supplied by an engine. The background
+    job boundary later converts all final transcripts to Simplified Chinese
+    before publishing them to Dictate or Voice Call. A result cannot use
+    ``auto`` because language detection must be resolved before the engine-
+    independent boundary returns. ``language_probability`` is a finite
     confidence value on the inclusive interval from zero to one.
     """
 

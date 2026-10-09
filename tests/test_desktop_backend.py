@@ -62,6 +62,7 @@ from desktop_backend import (
     TranscriptionRunnerFactory,
     _configure_protocol_streams,
     _extract_model_names,
+    _validate_speech_selection,
 )
 from desktop_knowledge import DesktopKnowledgeRuntime
 from desktop_protocol import (
@@ -72,7 +73,7 @@ from desktop_protocol import (
     build_event,
     build_request,
 )
-from desktop_speech import DesktopSpeechCoordinator
+from desktop_speech import DesktopSpeechCoordinator, DesktopSpeechStatus
 from knowledge_lifecycle import (
     KNOWLEDGE_OPERATION_SCHEMA_VERSION,
     KnowledgeExportResult,
@@ -100,6 +101,7 @@ from voice import (
     FasterWhisperConfig,
     FasterWhisperStatus,
     JsonVoiceSettingsRepository,
+    SynthesisUnavailableError,
     Transcriber,
     TranscriptionJobCallback,
     TranscriptionJobRunner,
@@ -1115,6 +1117,7 @@ class _RecordingSpeechCoordinator:
         self,
         turn: _RecordingSpeechTurn,
         *,
+        status: DesktopSpeechStatus | None = None,
         fail_start: bool = False,
         fail_start_turn: bool = False,
         fail_shutdown: bool = False,
@@ -1123,6 +1126,11 @@ class _RecordingSpeechCoordinator:
         """Retain the one turn returned for every deterministic test request."""
 
         self.turn = turn
+        self.status = (
+            DesktopSpeechStatus("ready", True)
+            if status is None
+            else status
+        )
         self.fail_start = fail_start
         self.fail_start_turn = fail_start_turn
         self.fail_shutdown = fail_shutdown
@@ -1133,6 +1141,11 @@ class _RecordingSpeechCoordinator:
         self.shutdown_calls = 0
         self.turn_started = Event()
         self._active_turn_key: tuple[str, str] | None = None
+
+    def get_status(self) -> DesktopSpeechStatus:
+        """Return the configured renderer-safe readiness snapshot."""
+
+        return self.status
 
     def start(self) -> None:
         """Record lazy service startup after successful Brain initialization."""
@@ -1416,6 +1429,12 @@ def _desktop_settings_repository(path: Path) -> DesktopSettingsRepository:
     )
 
 
+def _accept_speech_selection(_settings: AppSettings) -> bool:
+    """Keep bridge fixtures independent from workstation voice assets."""
+
+    return True
+
+
 def _run_bridge(
     build_lines: Callable[[str], list[JsonObject]],
     *,
@@ -1426,6 +1445,9 @@ def _run_bridge(
     attachment_store: JsonAttachmentStore | None = None,
     audio_writer: AudioChannelWriter | None = None,
     speech_coordinator: DesktopSpeechCoordinator | None = None,
+    speech_selection_validator: Callable[[AppSettings], bool] = (
+        _accept_speech_selection
+    ),
     wait_for_speech_terminal_request_id: str | None = None,
 ) -> tuple[FakeBrain, list[JsonObject]]:
     """Provide the run bridge fixture used by these tests."""
@@ -1510,6 +1532,7 @@ def _run_bridge(
             attachment_store=attachment_store,
             audio_writer=audio_writer,
             speech_coordinator=speech_coordinator,
+            speech_selection_validator=speech_selection_validator,
             input_stream=input_stream,
             output_stream=output_stream,
             expected_session_token=expected_session_token,
@@ -1548,7 +1571,11 @@ def _run_bridge_with_speech(
             _request(
                 "chat-with-speech",
                 "chat.stream",
-                {"chatId": chat_id, "message": "你好呀"},
+                {
+                    "chatId": chat_id,
+                    "message": "你好呀",
+                    "speakReply": True,
+                },
             ),
         ):
             yield f"{json.dumps(request)}\n"
@@ -1665,7 +1692,11 @@ def test_bridge_initializes_and_streams_one_real_brain_turn() -> None:
             _request(
                 "chat-1",
                 "chat.stream",
-                {"chatId": chat_id, "message": "你好呀"},
+                {
+                    "chatId": chat_id,
+                    "message": "你好呀",
+                    "speakReply": False,
+                },
             ),
         ]
     )
@@ -1774,6 +1805,502 @@ def test_bridge_copies_exact_chunks_and_finishes_only_after_commit() -> None:
         "reply": "你好呀",
     }
     assert "voice.speech" in SERVER_CAPABILITIES
+    assert "voice.speech.start" in SERVER_CAPABILITIES
+
+
+def test_text_chat_speech_policy_creates_no_turn_or_terminal() -> None:
+    """Keep ordinary text Chat outside every managed speech lifecycle."""
+
+    turn = _RecordingSpeechTurn()
+    coordinator = _RecordingSpeechCoordinator(turn)
+    brain, messages = _run_bridge(
+        lambda chat_id: [
+            _handshake_request(),
+            _initialize_request(),
+            _request(
+                "text-chat-only",
+                "chat.stream",
+                {
+                    "chatId": chat_id,
+                    "message": "Do not speak this reply",
+                    "speakReply": False,
+                },
+            ),
+        ],
+        speech_coordinator=cast(DesktopSpeechCoordinator, coordinator),
+    )
+
+    assert _success_result(messages, "text-chat-only")["reply"] == "你好呀"
+    assert brain.get_chat(brain.chat.chat_id).messages[-1].content == "你好呀"
+    assert coordinator.start_turn_calls == []
+    assert turn.chunks == []
+    assert not any(
+        message.get("type") == "event"
+        and message.get("event") == "voice.speech.terminal"
+        and message.get("requestId") == "text-chat-only"
+        for message in messages
+    )
+
+
+def test_manual_speech_reads_only_the_persisted_assistant_message(
+    tmp_path: Path,
+) -> None:
+    """Resolve Read aloud content by Assistant ID and return a closed owner."""
+
+    brain = FakeBrain()
+    turn_time = brain.chat.created_at + timedelta(seconds=1)
+    user_message = create_chat_message(
+        role="user",
+        content="Stored question",
+        created_at=turn_time,
+    )
+    assistant_message = create_chat_message(
+        role="assistant",
+        content="Stale cached answer",
+        created_at=turn_time,
+    )
+    brain.chat = replace(
+        brain.chat,
+        updated_at=turn_time,
+        messages=(user_message, assistant_message),
+    )
+    brain.add_chat(brain.chat)
+    turn = _RecordingSpeechTurn()
+    coordinator = _RecordingSpeechCoordinator(turn)
+    output_stream = StringIO()
+    backend = DesktopBackend(
+        brain_factory=lambda: cast(Brain, brain),
+        model_loader=lambda: (brain.model_name,),
+        settings_validator=lambda: None,
+        settings_repository=_desktop_settings_repository(
+            tmp_path / "global.json"
+        ),
+        voice_settings_service=create_voice_settings_service(tmp_path),
+        speech_coordinator=cast(DesktopSpeechCoordinator, coordinator),
+        input_stream=StringIO(),
+        output_stream=output_stream,
+        expected_session_token=SESSION_TOKEN,
+    )
+
+    assert backend._handle_line(json.dumps(_handshake_request()))
+    assert backend._handle_line(json.dumps(_initialize_request()))
+    canonical_message = replace(
+        assistant_message,
+        content="Canonical stored answer",
+    )
+    brain.add_chat(
+        replace(
+            brain.chat,
+            messages=(user_message, canonical_message),
+        )
+    )
+    assert backend._handle_line(
+        json.dumps(
+            _request(
+                "manual-read",
+                "voice.speech.start",
+                {
+                    "chatId": str(brain.chat.chat_id),
+                    "assistantMessageId": str(
+                        assistant_message.message_id
+                    ),
+                },
+            )
+        )
+    )
+    assert not backend._handle_line(
+        json.dumps(_request("shutdown-manual-read", "shutdown", {}))
+    )
+    messages = _output_messages(output_stream)
+
+    assert coordinator.start_turn_calls == [
+        ("manual-read", str(brain.chat.chat_id))
+    ]
+    assert turn.chunks == ["Canonical stored answer"]
+    assert turn.finish_calls == 1
+    assert turn.cancel_calls == 0
+    assert _success_result(messages, "manual-read") == {
+        "kind": "voice.speech.start",
+        "requestId": "manual-read",
+        "chatId": str(brain.chat.chat_id),
+        "assistantMessageId": str(assistant_message.message_id),
+    }
+
+
+def test_manual_speech_rejects_a_persisted_user_message() -> None:
+    """Prevent a valid message ID from widening playback beyond Assistant text."""
+
+    brain = FakeBrain()
+    turn_time = brain.chat.created_at + timedelta(seconds=1)
+    user_message = create_chat_message(
+        role="user",
+        content="Never synthesize this user text",
+        created_at=turn_time,
+    )
+    brain.chat = replace(
+        brain.chat,
+        updated_at=turn_time,
+        messages=(user_message,),
+    )
+    brain.add_chat(brain.chat)
+    turn = _RecordingSpeechTurn()
+    coordinator = _RecordingSpeechCoordinator(turn)
+
+    _brain, messages = _run_bridge(
+        lambda chat_id: [
+            _handshake_request(),
+            _initialize_request(),
+            _request(
+                "manual-read-user",
+                "voice.speech.start",
+                {
+                    "chatId": chat_id,
+                    "assistantMessageId": str(user_message.message_id),
+                },
+            ),
+        ],
+        fake_brain=brain,
+        speech_coordinator=cast(DesktopSpeechCoordinator, coordinator),
+    )
+
+    assert _error(messages, "manual-read-user")["code"] == (
+        "voice.speech.invalid_target"
+    )
+    assert coordinator.start_turn_calls == []
+    assert turn.chunks == []
+
+
+def test_manual_speech_reports_unavailable_setup_before_admission() -> None:
+    """Fail Read aloud with guidance instead of a silent cancelled turn."""
+
+    brain = FakeBrain()
+    turn_time = brain.chat.created_at + timedelta(seconds=1)
+    assistant_message = create_chat_message(
+        role="assistant",
+        content="This reply needs local speech.",
+        created_at=turn_time,
+    )
+    brain.chat = replace(
+        brain.chat,
+        updated_at=turn_time,
+        messages=(assistant_message,),
+    )
+    brain.add_chat(brain.chat)
+    turn = _RecordingSpeechTurn()
+    coordinator = _RecordingSpeechCoordinator(
+        turn,
+        status=DesktopSpeechStatus(
+            "unavailable",
+            False,
+            "setup_unavailable",
+        ),
+    )
+
+    _brain, messages = _run_bridge(
+        lambda chat_id: [
+            _handshake_request(),
+            _initialize_request(),
+            _request(
+                "manual-read-unavailable",
+                "voice.speech.start",
+                {
+                    "chatId": chat_id,
+                    "assistantMessageId": str(
+                        assistant_message.message_id
+                    ),
+                },
+            ),
+        ],
+        fake_brain=brain,
+        speech_coordinator=cast(DesktopSpeechCoordinator, coordinator),
+    )
+
+    assert _error(messages, "manual-read-unavailable") == {
+        "code": "voice.speech.unavailable",
+        "message": (
+            "Read aloud needs a configured local GPT-SoVITS runtime and "
+            "compatible voice profile. Review Voice behavior in Settings, "
+            "restart the Backend, and try again."
+        ),
+        "retryable": False,
+    }
+    assert coordinator.start_turn_calls == []
+    assert turn.chunks == []
+
+
+def test_manual_speech_rechecks_active_chat_after_repository_read(
+    tmp_path: Path,
+) -> None:
+    """Refuse stale playback when Chat selection changes during lookup."""
+
+    brain = FakeBrain()
+    turn_time = brain.chat.created_at + timedelta(seconds=1)
+    assistant_message = create_chat_message(
+        role="assistant",
+        content="Old Chat answer",
+        created_at=turn_time,
+    )
+    brain.chat = replace(
+        brain.chat,
+        updated_at=turn_time,
+        messages=(assistant_message,),
+    )
+    brain.add_chat(brain.chat)
+    turn = _RecordingSpeechTurn()
+    coordinator = _RecordingSpeechCoordinator(turn)
+    output_stream = StringIO()
+    backend = DesktopBackend(
+        brain_factory=lambda: cast(Brain, brain),
+        model_loader=lambda: (brain.model_name,),
+        settings_validator=lambda: None,
+        settings_repository=_desktop_settings_repository(
+            tmp_path / "global.json"
+        ),
+        voice_settings_service=create_voice_settings_service(tmp_path),
+        speech_coordinator=cast(DesktopSpeechCoordinator, coordinator),
+        input_stream=StringIO(),
+        output_stream=output_stream,
+        expected_session_token=SESSION_TOKEN,
+    )
+    assert backend._handle_line(json.dumps(_handshake_request()))
+    assert backend._handle_line(json.dumps(_initialize_request()))
+
+    replacement_chat = brain.next_chat
+    brain.add_chat(replacement_chat)
+    original_get_chat = brain.get_chat
+
+    def _get_chat_and_switch(chat_id: object) -> ChatSession:
+        """Return canonical data after simulating a concurrent Chat switch."""
+
+        canonical_chat = original_get_chat(chat_id)
+        backend._set_active_chat(replacement_chat)
+        return canonical_chat
+
+    brain.get_chat = _get_chat_and_switch  # type: ignore[method-assign]
+    try:
+        assert backend._handle_line(
+            json.dumps(
+                _request(
+                    "manual-read-stale-chat",
+                    "voice.speech.start",
+                    {
+                        "chatId": str(brain.chat.chat_id),
+                        "assistantMessageId": str(
+                            assistant_message.message_id
+                        ),
+                    },
+                )
+            )
+        )
+    finally:
+        brain.get_chat = original_get_chat  # type: ignore[method-assign]
+    assert not backend._handle_line(
+        json.dumps(_request("shutdown-stale-read", "shutdown", {}))
+    )
+    messages = _output_messages(output_stream)
+
+    assert _error(messages, "manual-read-stale-chat")["code"] == (
+        "chat.not_active"
+    )
+    assert coordinator.start_turn_calls == []
+    assert turn.chunks == []
+
+
+def test_manual_speech_rejects_an_active_chat_generation(
+    tmp_path: Path,
+) -> None:
+    """Prevent Read aloud from replacing an admitted Voice/Chat speech turn."""
+
+    generation_started = Event()
+    release_generation = Event()
+
+    class BlockingBrain(FakeBrain):
+        """Hold one admitted generation while manual speech is attempted."""
+
+        def stream_chat(
+            self,
+            chat_id: object,
+            message: str,
+            *,
+            attachments: tuple[AttachmentMetadata, ...] = (),
+            should_cancel: Callable[[], bool] | None = None,
+            begin_commit: Callable[[], bool] | None = None,
+        ) -> Generator[str, None, None]:
+            """Wait until the competing manual request has been rejected."""
+
+            generation_started.set()
+            assert release_generation.wait(2.0)
+            yield from super().stream_chat(
+                chat_id,
+                message,
+                attachments=attachments,
+                should_cancel=should_cancel,
+                begin_commit=begin_commit,
+            )
+
+    brain = BlockingBrain()
+    turn_time = brain.chat.created_at + timedelta(seconds=1)
+    assistant_message = create_chat_message(
+        role="assistant",
+        content="Previously persisted answer",
+        created_at=turn_time,
+    )
+    brain.chat = replace(
+        brain.chat,
+        updated_at=turn_time,
+        messages=(assistant_message,),
+    )
+    brain.add_chat(brain.chat)
+    turn = _RecordingSpeechTurn()
+    coordinator = _RecordingSpeechCoordinator(turn)
+
+    def _request_lines() -> Generator[str, None, None]:
+        """Attempt manual speech only after generation owns its state slot."""
+
+        chat_id = str(brain.chat.chat_id)
+        for request in (
+            _handshake_request(),
+            _initialize_request(),
+            _request(
+                "active-generation",
+                "chat.stream",
+                {
+                    "chatId": chat_id,
+                    "message": "Keep generating",
+                    "speakReply": False,
+                },
+            ),
+        ):
+            yield f"{json.dumps(request)}\n"
+        assert generation_started.wait(2.0)
+        yield f"{json.dumps(_request(
+            'manual-read-during-generation',
+            'voice.speech.start',
+            {
+                'chatId': chat_id,
+                'assistantMessageId': str(assistant_message.message_id),
+            },
+        ))}\n"
+        release_generation.set()
+
+    output_stream = StringIO()
+    DesktopBackend(
+        brain_factory=lambda: cast(Brain, brain),
+        model_loader=lambda: (brain.model_name,),
+        settings_validator=lambda: None,
+        settings_repository=_desktop_settings_repository(
+            tmp_path / "global.json"
+        ),
+        voice_settings_service=create_voice_settings_service(tmp_path),
+        attachment_store=JsonAttachmentStore(
+            tmp_path / "attachments",
+            max_file_bytes=1_024 * 1_024,
+        ),
+        speech_coordinator=cast(DesktopSpeechCoordinator, coordinator),
+        input_stream=cast(TextIOWrapper, _request_lines()),
+        output_stream=output_stream,
+        expected_session_token=SESSION_TOKEN,
+    ).run()
+    messages = _output_messages(output_stream)
+
+    assert _error(messages, "manual-read-during-generation") == {
+        "code": "chat.busy",
+        "message": (
+            "Wait for the active Chat reply before starting read aloud."
+        ),
+        "retryable": False,
+    }
+    assert _success_result(messages, "active-generation")["reply"] == "你好呀"
+    assert coordinator.start_turn_calls == []
+    assert turn.chunks == []
+
+
+def test_exact_speech_cancel_stops_the_manual_persisted_turn() -> None:
+    """Keep exact cancellation effective after manual feed and finish queueing."""
+
+    brain = FakeBrain()
+    turn_time = brain.chat.created_at + timedelta(seconds=1)
+    assistant_message = create_chat_message(
+        role="assistant",
+        content="Cancel this queued answer",
+        created_at=turn_time,
+    )
+    brain.chat = replace(
+        brain.chat,
+        updated_at=turn_time,
+        messages=(assistant_message,),
+    )
+    brain.add_chat(brain.chat)
+    turn = _RecordingSpeechTurn()
+    coordinator = _RecordingSpeechCoordinator(turn)
+
+    _brain, messages = _run_bridge(
+        lambda chat_id: [
+            _handshake_request(),
+            _initialize_request(),
+            _request(
+                "manual-read-cancellable",
+                "voice.speech.start",
+                {
+                    "chatId": chat_id,
+                    "assistantMessageId": str(
+                        assistant_message.message_id
+                    ),
+                },
+            ),
+            _request(
+                "manual-cancel-wrong",
+                "voice.speech.cancel",
+                {"requestId": "stale-owner", "chatId": chat_id},
+            ),
+            _request(
+                "manual-cancel-exact",
+                "voice.speech.cancel",
+                {
+                    "requestId": "manual-read-cancellable",
+                    "chatId": chat_id,
+                },
+            ),
+            _request(
+                "manual-cancel-repeat",
+                "voice.speech.cancel",
+                {
+                    "requestId": "manual-read-cancellable",
+                    "chatId": chat_id,
+                },
+            ),
+        ],
+        fake_brain=brain,
+        speech_coordinator=cast(DesktopSpeechCoordinator, coordinator),
+    )
+    chat_id = str(brain.chat.chat_id)
+
+    assert _success_result(messages, "manual-cancel-wrong") == {
+        "kind": "voice.speech.cancel",
+        "requestId": "stale-owner",
+        "chatId": chat_id,
+        "stopped": False,
+    }
+    assert _success_result(messages, "manual-cancel-exact") == {
+        "kind": "voice.speech.cancel",
+        "requestId": "manual-read-cancellable",
+        "chatId": chat_id,
+        "stopped": True,
+    }
+    assert _success_result(messages, "manual-cancel-repeat") == {
+        "kind": "voice.speech.cancel",
+        "requestId": "manual-read-cancellable",
+        "chatId": chat_id,
+        "stopped": False,
+    }
+    assert turn.chunks == ["Cancel this queued answer"]
+    assert turn.finish_calls == 1
+    assert turn.cancel_calls == 1
+    assert coordinator.cancel_turn_calls == [
+        ("stale-owner", chat_id),
+        ("manual-read-cancellable", chat_id),
+        ("manual-read-cancellable", chat_id),
+    ]
 
 
 def test_auto_read_aloud_disabled_skips_the_next_speech_turn(
@@ -1802,7 +2329,11 @@ def test_auto_read_aloud_disabled_skips_the_next_speech_turn(
             _request(
                 "chat-without-speech",
                 "chat.stream",
-                {"chatId": chat_id, "message": "Text only"},
+                {
+                    "chatId": chat_id,
+                    "message": "Text only",
+                    "speakReply": True,
+                },
             ),
         ],
         settings_repository=repository,
@@ -1875,7 +2406,11 @@ def test_suppressed_speech_emits_one_cancelled_terminal_on_failure(
             _request(
                 "chat-suppressed-failure",
                 "chat.stream",
-                {"chatId": chat_id, "message": "Fail safely"},
+                {
+                    "chatId": chat_id,
+                    "message": "Fail safely",
+                    "speakReply": True,
+                },
             ),
         ],
         fake_brain=FailingBrain(),
@@ -1947,7 +2482,11 @@ def test_suppressed_speech_emits_one_cancelled_terminal_on_user_stop(
             _request(
                 "chat-suppressed-cancel",
                 "chat.stream",
-                {"chatId": chat_id, "message": "Stop this"},
+                {
+                    "chatId": chat_id,
+                    "message": "Stop this",
+                    "speakReply": True,
+                },
             ),
             _request(
                 "cancel-suppressed-chat",
@@ -2061,7 +2600,11 @@ def test_speech_turn_start_failure_does_not_fail_text_generation() -> None:
             _request(
                 "chat-with-speech",
                 "chat.stream",
-                {"chatId": chat_id, "message": "你好呀"},
+                {
+                    "chatId": chat_id,
+                    "message": "你好呀",
+                    "speakReply": True,
+                },
             ),
         ],
         speech_coordinator=cast(DesktopSpeechCoordinator, coordinator),
@@ -2139,7 +2682,11 @@ def test_exact_speech_cancel_is_independent_of_running_chat_generation(
             _request(
                 "chat-speech-running",
                 "chat.stream",
-                {"chatId": chat_id, "message": "Keep the text reply"},
+                {
+                    "chatId": chat_id,
+                    "message": "Keep the text reply",
+                    "speakReply": True,
+                },
             ),
         ):
             yield f"{json.dumps(request)}\n"
@@ -2237,7 +2784,11 @@ def test_post_commit_speech_cancel_reaches_detached_queue_turn(
             _request(
                 "chat-speech-committed",
                 "chat.stream",
-                {"chatId": chat_id, "message": "Commit this full turn"},
+                {
+                    "chatId": chat_id,
+                    "message": "Commit this full turn",
+                    "speakReply": True,
+                },
             ),
         ):
             yield f"{json.dumps(request)}\n"
@@ -2709,6 +3260,7 @@ def test_attachment_only_stream_commits_metadata_and_finalizes_blob(
                 {
                     "chatId": chat_id,
                     "message": "",
+                    "speakReply": False,
                     "attachmentIds": [attachment_id],
                 },
             ),
@@ -2791,7 +3343,11 @@ def test_generation_terminal_response_waits_for_attachment_reconciliation(
             _request(
                 "chat-first",
                 "chat.stream",
-                {"chatId": chat_id, "message": "First"},
+                {
+                    "chatId": chat_id,
+                    "message": "First",
+                    "speakReply": False,
+                },
             ),
         ):
             yield f"{json.dumps(request)}\n"
@@ -2802,7 +3358,11 @@ def test_generation_terminal_response_waits_for_attachment_reconciliation(
         yield f"{json.dumps(_request(
             'chat-second',
             'chat.stream',
-            {'chatId': chat_id, 'message': 'Second'},
+            {
+                'chatId': chat_id,
+                'message': 'Second',
+                'speakReply': False,
+            },
         ))}\n"
 
     DesktopBackend(
@@ -2865,6 +3425,7 @@ def test_busy_generation_rejection_does_not_release_the_active_claim(
         request_id="chat-active",
         chat_id=fake_brain.chat.chat_id,
         method="chat.stream",
+        speak_reply=False,
     )
     backend._generation_task = active_task
 
@@ -2874,6 +3435,7 @@ def test_busy_generation_rejection_does_not_release_the_active_claim(
             {
                 "chatId": chat_id,
                 "message": "Must stay busy",
+                "speakReply": False,
                 "attachmentIds": [item.attachment_id],
             },
         )
@@ -2920,6 +3482,7 @@ def test_bridge_retries_the_persisted_tail_with_stable_message_ids() -> None:
                         assistant_message.message_id
                     ),
                     "message": "Edited question",
+                    "speakReply": False,
                 },
             ),
         ],
@@ -2988,7 +3551,11 @@ def test_cancel_success_prevents_partial_turn_persistence() -> None:
             _request(
                 "chat-cancelled",
                 "chat.stream",
-                {"chatId": chat_id, "message": "Do not save this"},
+                {
+                    "chatId": chat_id,
+                    "message": "Do not save this",
+                    "speakReply": True,
+                },
             ),
             _request(
                 "cancel-1",
@@ -3071,7 +3638,11 @@ def test_chat_list_does_not_block_the_cancel_request_reader(
             _request(
                 "blocked-chat",
                 "chat.stream",
-                {"chatId": chat_id, "message": "Wait"},
+                {
+                    "chatId": chat_id,
+                    "message": "Wait",
+                    "speakReply": False,
+                },
             ),
         ):
             yield f"{json.dumps(request)}\n"
@@ -3176,7 +3747,11 @@ def test_cancel_is_rejected_after_generation_claims_commit(
             _request(
                 "chat-committing",
                 "chat.stream",
-                {"chatId": chat_id, "message": "Save this"},
+                {
+                    "chatId": chat_id,
+                    "message": "Save this",
+                    "speakReply": False,
+                },
             ),
         ):
             yield f"{json.dumps(request)}\n"
@@ -3286,7 +3861,11 @@ def test_background_completion_does_not_reactivate_a_chat_after_switch(
             _request(
                 "chat-in-first",
                 "chat.stream",
-                {"chatId": first_chat_id, "message": "First Chat"},
+                {
+                    "chatId": first_chat_id,
+                    "message": "First Chat",
+                    "speakReply": False,
+                },
             ),
         ):
             yield f"{json.dumps(request)}\n"
@@ -3395,7 +3974,11 @@ def test_background_completion_does_not_replace_a_new_active_chat(
             _request(
                 "chat-before-create",
                 "chat.stream",
-                {"chatId": first_chat_id, "message": "First Chat"},
+                {
+                    "chatId": first_chat_id,
+                    "message": "First Chat",
+                    "speakReply": False,
+                },
             ),
         ):
             yield f"{json.dumps(request)}\n"
@@ -3478,7 +4061,11 @@ def test_post_commit_cache_refresh_failure_does_not_invite_retry() -> None:
             _request(
                 "committed-with-refresh-error",
                 "chat.stream",
-                {"chatId": chat_id, "message": "Save once"},
+                {
+                    "chatId": chat_id,
+                    "message": "Save once",
+                    "speakReply": False,
+                },
             ),
         ],
         fake_brain=fake_brain,
@@ -4083,6 +4670,10 @@ def test_settings_can_be_read_and_repaired_before_initialize(
         "activeSettings": _desktop_settings_values(),
         "restartRequired": False,
         "restartFields": [],
+        "speechStatus": {
+            "state": "unavailable",
+            "reason": "setup_unavailable",
+        },
         "scopes": {"project": None, "chat": None},
         "warning": None,
     }
@@ -4094,6 +4685,135 @@ def test_settings_can_be_read_and_repaired_before_initialize(
     assert repaired["restartFields"] == []
     assert repository.load().values.model_name == "second-model"
     assert "settings.management" in SERVER_CAPABILITIES
+
+
+def test_settings_reject_an_emotion_missing_from_the_selected_profile(
+    tmp_path: Path,
+) -> None:
+    """Keep an unsupported voice selection out of durable settings."""
+
+    repository = _desktop_settings_repository(tmp_path / "global.json")
+    observed: list[tuple[str, str]] = []
+
+    def reject_selection(settings: AppSettings) -> bool:
+        """Record the exact candidate and model one catalog miss."""
+
+        observed.append(
+            (settings.voice_profile_id, settings.voice_emotion)
+        )
+        return False
+
+    _brain, messages = _run_bridge(
+        lambda _chat_id: [
+            _handshake_request(),
+            _initialize_request(),
+            _request(
+                "settings-unsupported-emotion",
+                "settings.update",
+                {
+                    "expectedRevision": 0,
+                    "settings": _desktop_settings_values(
+                        voice_emotion="happy",
+                    ),
+                },
+            ),
+        ],
+        settings_repository=repository,
+        speech_selection_validator=reject_selection,
+    )
+
+    assert observed == [("default", "happy")]
+    assert _error(messages, "settings-unsupported-emotion") == {
+        "code": "settings.invalid",
+        "message": (
+            "The selected local voice profile does not provide that emotion. "
+            "Choose a configured profile and emotion pair."
+        ),
+        "retryable": False,
+    }
+    persisted = repository.load()
+    assert persisted.revision == 0
+    assert persisted.values.voice_emotion == "neutral"
+
+
+@pytest.mark.parametrize("available", [True, False])
+def test_speech_selection_preflight_resolves_the_exact_local_pair(
+    tmp_path: Path,
+    available: bool,
+) -> None:
+    """Collapse exact catalog resolution to one path-free Boolean."""
+
+    observed: list[tuple[str, str]] = []
+
+    class SelectionCatalog:
+        """Model one local catalog without touching workstation assets."""
+
+        def resolve_selection(
+            self,
+            profile_id: str,
+            emotion: str,
+        ) -> object:
+            """Record the pair and optionally model its closed miss."""
+
+            observed.append((profile_id, emotion))
+            if not available:
+                raise SynthesisUnavailableError(
+                    r"D:\private\voice\profile is unavailable"
+                )
+            return object()
+
+    settings = AppSettings(
+        base_dir=tmp_path.resolve(),
+        model_name="test-model",
+        log_level="INFO",
+        debug=False,
+        ollama_host="http://localhost:11434",
+        voice_profile_id="elysia-v2",
+        voice_emotion="serious",
+        gpt_sovits_allow_local_evaluation=True,
+    )
+    with patch.object(
+        desktop_backend_module.JsonVoiceProfileCatalog,
+        "load",
+        return_value=SelectionCatalog(),
+    ) as load_catalog:
+        result = _validate_speech_selection(settings)
+
+    assert result is available
+    assert observed == [("elysia-v2", "serious")]
+    load_catalog.assert_called_once_with(
+        tmp_path.resolve() / "workspace" / "settings" / "voice-profiles.json",
+        tmp_path.resolve() / "models" / "weights" / "gpt-sovits",
+        allow_local_evaluation=True,
+    )
+
+
+def test_settings_reports_sanitized_runtime_speech_failure() -> None:
+    """Expose a closed failure category without local diagnostic details."""
+
+    coordinator = _RecordingSpeechCoordinator(
+        _RecordingSpeechTurn(),
+        status=DesktopSpeechStatus(
+            "unavailable",
+            False,
+            "runtime_failed",
+        ),
+    )
+    _brain, messages = _run_bridge(
+        lambda _chat_id: [
+            _handshake_request(),
+            _initialize_request(),
+            _request("settings-runtime-failure", "settings.get", {}),
+        ],
+        speech_coordinator=cast(DesktopSpeechCoordinator, coordinator),
+    )
+
+    result = _success_result(messages, "settings-runtime-failure")
+    assert result["speechStatus"] == {
+        "state": "unavailable",
+        "reason": "runtime_failed",
+    }
+    assert "private" not in json.dumps(result)
 
 
 def test_preinitialize_voice_settings_configure_the_lazy_speech_runtime(
@@ -4120,7 +4840,7 @@ def test_preinitialize_voice_settings_configure_the_lazy_speech_runtime(
     changed = _desktop_settings_values(
         speech_rate_percent=135,
         voice_profile_id="elysia-v2",
-        voice_emotion="happy",
+        voice_emotion="affectionate",
     )
     with patch.object(
         desktop_backend_module,
@@ -4149,7 +4869,7 @@ def test_preinitialize_voice_settings_configure_the_lazy_speech_runtime(
     assert len(observed_configs) == 1
     assert observed_configs[0].speech_rate_percent == 135
     assert observed_configs[0].voice_profile_id == "elysia-v2"
-    assert observed_configs[0].voice_emotion == "happy"
+    assert observed_configs[0].voice_emotion == "affectionate"
 
 
 def test_preinitialize_injected_speech_runtime_keeps_restart_bound_values(
@@ -4161,7 +4881,7 @@ def test_preinitialize_injected_speech_runtime_keeps_restart_bound_values(
     changed = _desktop_settings_values(
         speech_rate_percent=135,
         voice_profile_id="elysia-v2",
-        voice_emotion="sad",
+        voice_emotion="surprised",
     )
     _brain, messages = _run_bridge(
         lambda _chat_id: [
@@ -4451,7 +5171,11 @@ def test_voice_capture_is_rejected_while_chat_generation_is_active() -> None:
                 _request(
                     "chat-active-for-capture",
                     "chat.stream",
-                    {"chatId": chat_id, "message": "Keep working"},
+                    {
+                        "chatId": chat_id,
+                        "message": "Keep working",
+                        "speakReply": False,
+                    },
                 ),
                 _request(
                     "voice-capture-busy",
@@ -4758,6 +5482,7 @@ def test_active_chat_generation_rejects_transcription_before_runner_creation(
         request_id="active-chat",
         chat_id=fake_brain.chat.chat_id,
         method="chat.stream",
+        speak_reply=False,
     )
     backend._generation_task = active_task
     params = {
@@ -4855,7 +5580,11 @@ def test_cancelled_transcription_blocks_work_until_native_inference_drains(
                 _request(
                     "chat-during-drain",
                     "chat.stream",
-                    {"chatId": chat_id, "message": "Do not overlap"},
+                    {
+                        "chatId": chat_id,
+                        "message": "Do not overlap",
+                        "speakReply": False,
+                    },
                 )
             )
         )
@@ -5403,7 +6132,11 @@ def test_voice_settings_update_is_not_blocked_by_active_chat_generation(
                 _request(
                     "chat-active-for-voice",
                     "chat.stream",
-                    {"chatId": chat_id, "message": "Keep working"},
+                    {
+                        "chatId": chat_id,
+                        "message": "Keep working",
+                        "speakReply": False,
+                    },
                 ),
                 _request(
                     "voice-during-generation",
@@ -5555,7 +6288,7 @@ def test_settings_update_reports_restart_fields_and_active_scopes(
         speech_rate_percent=150,
         speech_volume_percent=25,
         voice_profile_id="elysia",
-        voice_emotion="sad",
+        voice_emotion="affectionate",
         captions_enabled=False,
         automatic_relisten=True,
     )
@@ -5720,7 +6453,11 @@ def test_settings_update_is_rejected_while_generation_is_active(
                 _request(
                     "chat-active",
                     "chat.stream",
-                    {"chatId": chat_id, "message": "Keep working"},
+                    {
+                        "chatId": chat_id,
+                        "message": "Keep working",
+                        "speakReply": False,
+                    },
                 ),
                 _request(
                     "settings-busy",
@@ -5758,7 +6495,11 @@ def test_bridge_rejects_a_chat_other_than_the_active_chat() -> None:
             _request(
                 "chat-1",
                 "chat.stream",
-                {"chatId": "chat_wrong", "message": "Hi"},
+                {
+                    "chatId": "chat_wrong",
+                    "message": "Hi",
+                    "speakReply": False,
+                },
             ),
         ]
     )
@@ -5998,6 +6739,7 @@ def test_grounded_generation_rejects_knowledge_controls_without_blocking(
                 {
                     "chatId": str(grounded_brain.chat.chat_id),
                     "message": "Use the Project corpus",
+                    "speakReply": False,
                     "useProjectKnowledge": True,
                 },
             )
@@ -6217,6 +6959,7 @@ def test_grounded_worker_keeps_knowledge_runtime_open_through_shutdown(
                 {
                     "chatId": str(grounded_brain.chat.chat_id),
                     "message": "Hold the Project corpus",
+                    "speakReply": False,
                     "useProjectKnowledge": True,
                 },
             ),
@@ -6668,6 +7411,7 @@ def test_grounded_non_project_chat_is_rejected_before_worker_admission(
                 {
                     "chatId": str(brain.chat.chat_id),
                     "message": "Use unavailable Project Sources",
+                    "speakReply": False,
                     "useProjectKnowledge": True,
                 },
             )
@@ -6735,6 +7479,7 @@ def test_grounded_worker_preserves_typed_project_source_failures(
                 {
                     "chatId": str(brain.chat.chat_id),
                     "message": "Use the Project corpus",
+                    "speakReply": False,
                     "useProjectKnowledge": True,
                 },
             )

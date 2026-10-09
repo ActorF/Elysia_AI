@@ -70,7 +70,18 @@ export const TRANSCRIPTION_MODELS = [
 export const TRANSCRIPTION_DEVICES = ['auto', 'cuda', 'cpu'] as const
 export const TRANSCRIPTION_LANGUAGES = ['auto', 'zh', 'en'] as const
 export const TRANSCRIPT_REVIEW_MODES = ['manual'] as const
-export const VOICE_EMOTIONS = ['neutral', 'happy', 'sad'] as const
+export const VOICE_EMOTIONS = [
+  'neutral',
+  'happy',
+  'sad',
+  'caring',
+  'moved',
+  'playful',
+  'affectionate',
+  'teasing',
+  'serious',
+  'surprised',
+] as const
 const TRANSCRIPTION_STATUS_STATES = [
   'unavailable',
   'available',
@@ -91,6 +102,15 @@ const TRANSCRIPTION_STATUS_REASONS = [
   'cuda_unavailable',
   'cuda_initialization_failed',
   'initialization_failed',
+] as const
+const SPEECH_READINESS_STATES = [
+  'starting',
+  'ready',
+  'unavailable',
+] as const
+const SPEECH_READINESS_REASONS = [
+  'setup_unavailable',
+  'runtime_failed',
 ] as const
 const TRANSCRIPTION_UNAVAILABLE_REASONS = new Set<
   typeof TRANSCRIPTION_STATUS_REASONS[number]
@@ -196,6 +216,7 @@ export interface ChatStreamParams {
   message: string
   attachmentIds: string[]
   useProjectKnowledge?: boolean
+  speakReply: boolean
 }
 
 export interface ChatRetryParams {
@@ -204,6 +225,7 @@ export interface ChatRetryParams {
   assistantMessageId: string
   message?: string
   useProjectKnowledge?: boolean
+  speakReply: boolean
 }
 
 export interface ChatListParams {
@@ -275,6 +297,12 @@ export interface CancelParams {
 export interface VoiceSpeechCancelParams {
   requestId: string
   chatId: string
+}
+
+/** Identify one persisted assistant reply for explicit managed playback. */
+export interface VoiceSpeechStartParams {
+  chatId: string
+  assistantMessageId: string
 }
 
 export interface PermissionResponseParams {
@@ -413,6 +441,7 @@ export interface RequestParamsByMethod {
   'voice.settings.update': VoiceSettingsUpdateParams
   'voice.capture.complete': VoiceCaptureCompleteParams
   'voice.transcription.start': VoiceTranscriptionStartParams
+  'voice.speech.start': VoiceSpeechStartParams
   'voice.speech.cancel': VoiceSpeechCancelParams
   'attachment.list': AttachmentListParams
   'attachment.add': AttachmentAddParams
@@ -734,6 +763,12 @@ export interface SettingsChatScope {
   modelName: string
 }
 
+/** Path-free readiness for the managed local speech runtime and selection. */
+export interface SpeechReadinessStatus {
+  state: typeof SPEECH_READINESS_STATES[number]
+  reason: typeof SPEECH_READINESS_REASONS[number] | null
+}
+
 export interface SettingsStateResult {
   revision: number
   updatedAt: string | null
@@ -741,6 +776,7 @@ export interface SettingsStateResult {
   activeSettings: SettingsValues
   restartRequired: boolean
   restartFields: (keyof SettingsValues)[]
+  speechStatus: SpeechReadinessStatus
   scopes: {
     project: SettingsProjectScope | null
     chat: SettingsChatScope | null
@@ -790,6 +826,14 @@ export interface VoiceSpeechCancellationResult {
   requestId: string
   chatId: string
   stopped: boolean
+}
+
+/** Echo the exact persisted assistant reply admitted for managed playback. */
+export interface VoiceSpeechStartResult {
+  kind: 'voice.speech.start'
+  requestId: string
+  chatId: string
+  assistantMessageId: string
 }
 
 export interface AttachmentItem {
@@ -1184,7 +1228,7 @@ function parseChatStreamParams(
   const params = asRecord(value, 'chat.stream params')
   requireFields(
     params,
-    ['chatId', 'message'],
+    ['chatId', 'message', 'speakReply'],
     'chat.stream params',
     ['attachmentIds', 'useProjectKnowledge'],
   )
@@ -1225,6 +1269,7 @@ function parseChatStreamParams(
     chatId: readIdentifier(params, 'chatId', 'chat.stream params'),
     message,
     attachmentIds,
+    speakReply: readBoolean(params, 'speakReply', 'chat.stream params'),
     ...(Object.hasOwn(params, 'useProjectKnowledge')
       ? {
           useProjectKnowledge: readBoolean(
@@ -1244,7 +1289,7 @@ function parseChatRetryParams(
   const params = asRecord(value, context)
   requireFields(
     params,
-    ['chatId', 'userMessageId', 'assistantMessageId'],
+    ['chatId', 'userMessageId', 'assistantMessageId', 'speakReply'],
     context,
     ['message', 'useProjectKnowledge'],
   )
@@ -1265,6 +1310,7 @@ function parseChatRetryParams(
       'assistantMessageId',
       context,
     ),
+    speakReply: readBoolean(params, 'speakReply', context),
     ...(message === undefined ? {} : { message }),
     ...(Object.hasOwn(params, 'useProjectKnowledge')
       ? {
@@ -1494,6 +1540,23 @@ export function parseVoiceSpeechCancelParams(
   return {
     requestId: readIdentifier(params, 'requestId', context),
     chatId: readIdentifier(params, 'chatId', context),
+  }
+}
+
+/** Validate the exact persisted assistant target for explicit speech playback. */
+export function parseVoiceSpeechStartParams(
+  value: unknown,
+): VoiceSpeechStartParams {
+  const context = 'voice.speech.start params'
+  const params = asRecord(value, context)
+  requireFields(params, ['chatId', 'assistantMessageId'], context)
+  return {
+    chatId: readIdentifier(params, 'chatId', context),
+    assistantMessageId: readIdentifier(
+      params,
+      'assistantMessageId',
+      context,
+    ),
   }
 }
 
@@ -2321,6 +2384,12 @@ export function parseClientRequest(value: unknown): ClientRequest {
     return {
       type: 'request', protocol, id, method,
       params: parseVoiceTranscriptionStartParams(request.params),
+    }
+  }
+  if (method === 'voice.speech.start') {
+    return {
+      type: 'request', protocol, id, method,
+      params: parseVoiceSpeechStartParams(request.params),
     }
   }
   if (method === 'voice.speech.cancel') {
@@ -4168,6 +4237,7 @@ export function parseSettingsStateResult(
       'activeSettings',
       'restartRequired',
       'restartFields',
+      'speechStatus',
       'scopes',
       'warning',
     ],
@@ -4220,6 +4290,10 @@ export function parseSettingsStateResult(
       `${context}.restartFields is inconsistent.`,
     )
   }
+  const speechStatus = parseSpeechReadinessStatus(
+    result.speechStatus,
+    `${context}.speechStatus`,
+  )
   const scopes = asRecord(result.scopes, `${context}.scopes`)
   requireFields(scopes, ['project', 'chat'], `${context}.scopes`)
   let project: SettingsProjectScope | null = null
@@ -4286,9 +4360,41 @@ export function parseSettingsStateResult(
     activeSettings,
     restartRequired,
     restartFields: [...result.restartFields],
+    speechStatus,
     scopes: { project, chat },
     warning,
   }
+}
+
+function parseSpeechReadinessStatus(
+  value: unknown,
+  context: string,
+): SpeechReadinessStatus {
+  const status = asRecord(value, context)
+  requireFields(status, ['state', 'reason'], context)
+  const parsed: SpeechReadinessStatus = {
+    state: readStringLiteral(
+      status,
+      'state',
+      context,
+      SPEECH_READINESS_STATES,
+    ),
+    reason: readNullableStringLiteral(
+      status,
+      'reason',
+      context,
+      SPEECH_READINESS_REASONS,
+    ),
+  }
+  if (
+    (parsed.state === 'unavailable') !== (parsed.reason !== null)
+  ) {
+    return fail(
+      'protocol.invalid_message',
+      `${context}.reason is inconsistent.`,
+    )
+  }
+  return parsed
 }
 
 function parseVoiceTranscriptionStatus(
@@ -4624,6 +4730,35 @@ export function parseVoiceSpeechCancellationResult(
   }
 }
 
+/** Parse the exact receipt for explicit managed speech playback. */
+export function parseVoiceSpeechStartResult(
+  value: unknown,
+): VoiceSpeechStartResult {
+  const context = 'voice speech start result'
+  const result = asRecord(value, context)
+  requireFields(
+    result,
+    ['kind', 'requestId', 'chatId', 'assistantMessageId'],
+    context,
+  )
+  if (result.kind !== 'voice.speech.start') {
+    return fail(
+      'protocol.invalid_message',
+      `${context}.kind must be 'voice.speech.start'.`,
+    )
+  }
+  return {
+    kind: 'voice.speech.start',
+    requestId: readIdentifier(result, 'requestId', context),
+    chatId: readIdentifier(result, 'chatId', context),
+    assistantMessageId: readIdentifier(
+      result,
+      'assistantMessageId',
+      context,
+    ),
+  }
+}
+
 function validateSuccessResult(value: unknown): Record<string, unknown> {
   const result = asRecord(value, 'response.result')
   if (result.kind === 'knowledge.state') {
@@ -4636,6 +4771,10 @@ function validateSuccessResult(value: unknown): Record<string, unknown> {
   }
   if (result.kind === 'voice.speech.cancel') {
     parseVoiceSpeechCancellationResult(result)
+    return result
+  }
+  if (result.kind === 'voice.speech.start') {
+    parseVoiceSpeechStartResult(result)
     return result
   }
   if (result.kind === 'voice.settings') {

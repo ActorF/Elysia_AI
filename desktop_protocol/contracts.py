@@ -134,7 +134,19 @@ MAX_KNOWLEDGE_SOURCES: Final = 128
 _VOICE_PROFILE_ID_PATTERN: Final = re.compile(
     r"^[a-z0-9][a-z0-9._-]{0,63}$"
 )
-_VOICE_EMOTIONS: Final = frozenset({"neutral", "happy", "sad"})
+_VOICE_EMOTIONS: Final = frozenset({
+    "neutral",
+    "happy",
+    "sad",
+    "caring",
+    "moved",
+    "playful",
+    "affectionate",
+    "teasing",
+    "serious",
+    "surprised",
+})
+_MAX_VOICE_EMOTION_LENGTH: Final = max(map(len, _VOICE_EMOTIONS))
 _RESERVED_AUDIO_DEVICE_IDS: Final = frozenset({
     "default",
     "communications",
@@ -234,6 +246,7 @@ ProtocolMethod = Literal[
     "voice.settings.update",
     "voice.capture.complete",
     "voice.transcription.start",
+    "voice.speech.start",
     "voice.speech.cancel",
     "request.cancel",
     "permission.respond",
@@ -276,6 +289,7 @@ SUPPORTED_METHODS: Final[tuple[ProtocolMethod, ...]] = (
     "voice.settings.update",
     "voice.capture.complete",
     "voice.transcription.start",
+    "voice.speech.start",
     "voice.speech.cancel",
     "request.cancel",
     "permission.respond",
@@ -326,6 +340,7 @@ class ChatStreamParams(TypedDict):
 
     chatId: str
     message: str
+    speakReply: bool
     attachmentIds: NotRequired[list[str]]
     useProjectKnowledge: NotRequired[bool]
 
@@ -363,6 +378,7 @@ class ChatRetryParams(TypedDict):
     chatId: str
     userMessageId: str
     assistantMessageId: str
+    speakReply: bool
     message: NotRequired[str]
     useProjectKnowledge: NotRequired[bool]
 
@@ -494,6 +510,22 @@ class VoiceSpeechCancelParams(TypedDict):
     chatId: str
 
 
+class VoiceSpeechStartParams(TypedDict):
+    """Identify one persisted Assistant message for manual playback."""
+
+    chatId: str
+    assistantMessageId: str
+
+
+class VoiceSpeechStartResult(TypedDict):
+    """Confirm admission of one canonical persisted Assistant message."""
+
+    kind: Literal["voice.speech.start"]
+    requestId: str
+    chatId: str
+    assistantMessageId: str
+
+
 class VoiceSpeechCancelResult(TypedDict):
     """Echo the exact speech owner and whether cancellation won its race."""
 
@@ -532,7 +564,18 @@ class DesktopSettingsValues(TypedDict):
     speechRatePercent: int
     speechVolumePercent: int
     voiceProfileId: str
-    voiceEmotion: Literal["neutral", "happy", "sad"]
+    voiceEmotion: Literal[
+        "neutral",
+        "happy",
+        "sad",
+        "caring",
+        "moved",
+        "playful",
+        "affectionate",
+        "teasing",
+        "serious",
+        "surprised",
+    ]
     captionsEnabled: bool
     transcriptReviewMode: Literal["manual"]
     automaticRelisten: bool
@@ -882,6 +925,13 @@ class SettingsScopes(TypedDict):
     chat: SettingsChatScope | None
 
 
+class SpeechReadinessStatus(TypedDict):
+    """Expose managed-speech readiness without local paths or diagnostics."""
+
+    state: Literal["starting", "ready", "unavailable"]
+    reason: Literal["setup_unavailable", "runtime_failed"] | None
+
+
 class SettingsStateResult(TypedDict):
     """Return desired settings beside the currently active runtime snapshot."""
 
@@ -891,6 +941,7 @@ class SettingsStateResult(TypedDict):
     activeSettings: DesktopSettingsValues
     restartRequired: bool
     restartFields: list[str]
+    speechStatus: SpeechReadinessStatus
     scopes: SettingsScopes
     warning: str | None
 
@@ -1189,11 +1240,12 @@ def _validate_chat_params(params: JsonObject) -> None:
     context = "chat.stream params"
     _require_fields(
         params,
-        {"chatId", "message"},
+        {"chatId", "message", "speakReply"},
         context,
         optional={"attachmentIds", "useProjectKnowledge"},
     )
     _require_identifier(params, "chatId", context)
+    _require_boolean(params, "speakReply", context)
     message = _require_string(params, "message", context, minimum=0)
     attachment_ids = _validate_attachment_id_array(
         params.get("attachmentIds", []),
@@ -1470,13 +1522,14 @@ def _validate_chat_retry_params(params: JsonObject) -> None:
     context = "chat.retry params"
     _require_fields(
         params,
-        {"chatId", "userMessageId", "assistantMessageId"},
+        {"chatId", "userMessageId", "assistantMessageId", "speakReply"},
         context,
         optional={"message", "useProjectKnowledge"},
     )
     _require_identifier(params, "chatId", context)
     _require_identifier(params, "userMessageId", context)
     _require_identifier(params, "assistantMessageId", context)
+    _require_boolean(params, "speakReply", context)
     if "message" in params:
         message = _require_string(params, "message", context)
         if not any(
@@ -1667,6 +1720,15 @@ def _validate_voice_speech_cancel_params(params: JsonObject) -> None:
     _require_identifier(params, "chatId", context)
 
 
+def _validate_voice_speech_start_params(params: JsonObject) -> None:
+    """Permit playback only by canonical Chat and Assistant message identity."""
+
+    context = "voice.speech.start params"
+    _require_fields(params, {"chatId", "assistantMessageId"}, context)
+    _require_identifier(params, "chatId", context)
+    _require_identifier(params, "assistantMessageId", context)
+
+
 def _validate_permission_response_params(params: JsonObject) -> None:
     _require_fields(
         params,
@@ -1842,7 +1904,7 @@ def _validate_settings_values(
         settings,
         "voiceEmotion",
         context,
-        maximum=7,
+        maximum=_MAX_VOICE_EMOTION_LENGTH,
     )
     if voice_emotion not in _VOICE_EMOTIONS:
         raise ProtocolValidationError(
@@ -2210,6 +2272,8 @@ def parse_client_request(value: object) -> ClientRequest:
         _validate_voice_capture_complete_params(params)
     elif method == "voice.transcription.start":
         _validate_voice_transcription_start_params(params)
+    elif method == "voice.speech.start":
+        _validate_voice_speech_start_params(params)
     elif method == "voice.speech.cancel":
         _validate_voice_speech_cancel_params(params)
     elif method == "request.cancel":
@@ -3396,6 +3460,7 @@ def _validate_success_result(result: JsonObject) -> None:
         "activeSettings",
         "restartRequired",
         "restartFields",
+        "speechStatus",
         "scopes",
         "warning",
     }:
@@ -3437,6 +3502,14 @@ def _validate_success_result(result: JsonObject) -> None:
         "languageProbability",
     }:
         _validate_voice_transcription_result(result)
+        return
+    if fields == {
+        "kind",
+        "requestId",
+        "chatId",
+        "assistantMessageId",
+    }:
+        _validate_voice_speech_start_result(result)
         return
     if fields == {"kind", "requestId", "chatId", "stopped"}:
         _validate_voice_speech_cancel_result(result)
@@ -3500,6 +3573,7 @@ def _validate_settings_state_result(
             "protocol.invalid_message",
             f"{context}.restartFields is inconsistent.",
         )
+    _validate_speech_readiness_status(result.get("speechStatus"))
     scopes = _as_object(result["scopes"], f"{context}.scopes")
     _require_fields(scopes, {"project", "chat"}, f"{context}.scopes")
     raw_project = scopes.get("project")
@@ -3548,6 +3622,35 @@ def _validate_settings_state_result(
     if result.get("warning") is not None:
         _require_string(result, "warning", context, maximum=1_000)
     return cast(SettingsStateResult, result)
+
+
+def _validate_speech_readiness_status(
+    value: object,
+) -> SpeechReadinessStatus:
+    """Validate the exact path-free managed-speech readiness shape."""
+
+    context = "settings state result.speechStatus"
+    status = _as_object(value, context)
+    _require_fields(status, {"state", "reason"}, context)
+    state = _require_string(status, "state", context, maximum=11)
+    if state not in {"starting", "ready", "unavailable"}:
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.state is unsupported.",
+        )
+    reason = status.get("reason")
+    if state in {"starting", "ready"}:
+        if reason is not None:
+            raise ProtocolValidationError(
+                "protocol.invalid_message",
+                f"{context}.reason is inconsistent.",
+            )
+    elif reason not in {"setup_unavailable", "runtime_failed"}:
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.reason is inconsistent.",
+        )
+    return cast(SpeechReadinessStatus, status)
 
 
 def _validate_voice_settings_state_result(
@@ -3796,6 +3899,23 @@ def _validate_voice_transcription_result(
             f"{context}.languageProbability must be finite and between 0 and 1.",
         )
     return cast(VoiceTranscriptionResult, result)
+
+
+def _validate_voice_speech_start_result(
+    result: JsonObject,
+) -> VoiceSpeechStartResult:
+    """Validate the closed acknowledgement for manual persisted playback."""
+
+    context = "voice speech start result"
+    if result.get("kind") != "voice.speech.start":
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.kind is unsupported.",
+        )
+    _require_identifier(result, "requestId", context)
+    _require_identifier(result, "chatId", context)
+    _require_identifier(result, "assistantMessageId", context)
+    return cast(VoiceSpeechStartResult, result)
 
 
 def _validate_voice_speech_cancel_result(

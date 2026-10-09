@@ -28,6 +28,7 @@ import type {
   ProjectState,
   RenameChatRequest,
   RetryChatRequest,
+  StartSpeechPlaybackRequest,
   UpdateProjectRequest,
   UpdateDesktopSettingsRequest,
   UpdateVoiceSettingsRequest,
@@ -45,6 +46,11 @@ import type {
   PresenceNotificationState,
   UpdatePresenceNotificationRequest,
 } from './presence-notification-contracts.js'
+import type {
+  ChooseSongCoverRequest,
+  SongCoverReadiness,
+  SongCoverState,
+} from './song-cover-contracts.js'
 
 const MAX_DROPPED_ATTACHMENT_FILES = 10
 const TRUSTED_SPEECH_PLAY_CHANNEL = 'elysia:trusted-speech-play:v1'
@@ -54,6 +60,11 @@ const TRUSTED_SPEECH_MAX_WAV_BYTES = 8 * 1024 * 1024
 const TRUSTED_SPEECH_SAMPLE_RATE_HZ = 32_000
 const TRUSTED_SPEECH_MAX_DURATION_SECONDS = 120
 const TRUSTED_SPEECH_MAX_OUTPUT_DEVICE_ID_CODE_POINTS = 2_048
+const TRUSTED_MUSIC_PLAY_CHANNEL = 'elysia:trusted-music-play:v1'
+const TRUSTED_MUSIC_CANCEL_CHANNEL = 'elysia:trusted-music-cancel:v1'
+const TRUSTED_MUSIC_SETTLED_CHANNEL = 'elysia:trusted-music-settled:v1'
+const TRUSTED_MUSIC_MAX_MP3_BYTES = 64 * 1024 * 1024
+const TRUSTED_MUSIC_MAX_DURATION_SECONDS = 12 * 60
 const TRUSTED_PLAYBACK_ID_PATTERN = (
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u
 )
@@ -110,6 +121,42 @@ interface TrustedAudioGraph {
 let trustedPlayback: TrustedPlayback | null = null
 let trustedAudioGraph: TrustedAudioGraph | null = null
 let trustedAudioGraphCloseBarrier: Promise<void> = Promise.resolve()
+
+interface TrustedMusicElement {
+  readonly duration: number
+  onended: (() => void) | null
+  onerror: (() => void) | null
+  onloadedmetadata: (() => void) | null
+  preload: string
+  src: string
+  volume: number
+  load(): void
+  pause(): void
+  play(): Promise<void>
+  removeAttribute(name: string): void
+  setSinkId?(sinkId: string): Promise<void>
+}
+
+interface TrustedMusicPlayback {
+  readonly audio: TrustedMusicElement
+  readonly objectUrl: string
+  readonly playbackId: string
+  settled: boolean
+}
+
+interface TrustedMusicRuntime {
+  readonly Audio?: new() => TrustedMusicElement
+  readonly Blob?: new(
+    parts: readonly unknown[],
+    options?: { type?: string },
+  ) => unknown
+  readonly URL?: {
+    createObjectURL(blob: unknown): string
+    revokeObjectURL(url: string): void
+  }
+}
+
+let trustedMusicPlayback: TrustedMusicPlayback | null = null
 
 function trustedAudioContextConstructor(): TrustedAudioContextConstructor | null {
   const audioGlobal = globalThis as unknown as {
@@ -478,6 +525,205 @@ ipcRenderer.on(
   },
 )
 
+function trustedMusicMetadata(value: unknown): {
+  playbackId: string
+  byteLength: number
+  outputDeviceId: string | null
+  volumePercent: number
+} | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return null
+  }
+  const metadata = value as Record<string, unknown>
+  if (
+    Object.keys(metadata).length !== 4
+    || typeof metadata.playbackId !== 'string'
+    || !TRUSTED_PLAYBACK_ID_PATTERN.test(metadata.playbackId)
+    || !Number.isSafeInteger(metadata.byteLength)
+    || (metadata.byteLength as number) <= 0
+    || (metadata.byteLength as number) > TRUSTED_MUSIC_MAX_MP3_BYTES
+    || (metadata.outputDeviceId !== null && (
+      typeof metadata.outputDeviceId !== 'string'
+      || [...metadata.outputDeviceId].length === 0
+      || [...metadata.outputDeviceId].length
+        > TRUSTED_SPEECH_MAX_OUTPUT_DEVICE_ID_CODE_POINTS
+      || /\p{Cc}/u.test(metadata.outputDeviceId)
+      || metadata.outputDeviceId === 'default'
+      || metadata.outputDeviceId === 'communications'
+    ))
+    || !Number.isSafeInteger(metadata.volumePercent)
+    || (metadata.volumePercent as number) < 0
+    || (metadata.volumePercent as number) > 100
+  ) {
+    return null
+  }
+  return {
+    playbackId: metadata.playbackId,
+    byteLength: metadata.byteLength as number,
+    outputDeviceId: metadata.outputDeviceId as string | null,
+    volumePercent: metadata.volumePercent as number,
+  }
+}
+
+function isLikelyMp3(bytes: Uint8Array): boolean {
+  if (bytes.byteLength < 3 || bytes.byteLength > TRUSTED_MUSIC_MAX_MP3_BYTES) {
+    return false
+  }
+  return (
+    (bytes[0] === 0x49 && bytes[1] === 0x44 && bytes[2] === 0x33)
+    || (bytes[0] === 0xff && (bytes[1] & 0xe0) === 0xe0)
+  )
+}
+
+function trustedMusicRuntime(): TrustedMusicRuntime {
+  return globalThis as unknown as TrustedMusicRuntime
+}
+
+function settleTrustedMusic(
+  playback: TrustedMusicPlayback,
+  status: 'played' | 'failed',
+): void {
+  if (trustedMusicPlayback !== playback || playback.settled) {
+    return
+  }
+  playback.settled = true
+  trustedMusicPlayback = null
+  playback.audio.onended = null
+  playback.audio.onerror = null
+  playback.audio.onloadedmetadata = null
+  try {
+    playback.audio.pause()
+    playback.audio.removeAttribute('src')
+    playback.audio.load()
+  } catch {
+    // Terminal settlement remains authoritative if native media cleanup fails.
+  }
+  try {
+    trustedMusicRuntime().URL?.revokeObjectURL(playback.objectUrl)
+  } catch {
+    // The detached blob URL cannot be reused even when revocation is rejected.
+  }
+  ipcRenderer.send(
+    TRUSTED_MUSIC_SETTLED_CHANNEL,
+    Object.freeze({ playbackId: playback.playbackId, status }),
+  )
+}
+
+ipcRenderer.on(
+  TRUSTED_MUSIC_PLAY_CHANNEL,
+  (_event, metadataValue: unknown, bytesValue: unknown): void => {
+    const metadata = trustedMusicMetadata(metadataValue)
+    const bytes = bytesValue instanceof Uint8Array
+      ? Uint8Array.from(bytesValue)
+      : null
+    const runtime = trustedMusicRuntime()
+    if (
+      metadata === null
+      || bytes === null
+      || bytes.byteLength !== metadata.byteLength
+      || !isLikelyMp3(bytes)
+      || runtime.Audio === undefined
+      || runtime.Blob === undefined
+      || runtime.URL === undefined
+      || trustedMusicPlayback !== null
+    ) {
+      if (metadata !== null) {
+        ipcRenderer.send(
+          TRUSTED_MUSIC_SETTLED_CHANNEL,
+          Object.freeze({ playbackId: metadata.playbackId, status: 'failed' }),
+        )
+      }
+      return
+    }
+
+    let objectUrl: string | null = null
+    try {
+      objectUrl = runtime.URL.createObjectURL(
+        new runtime.Blob([bytes], { type: 'audio/mpeg' }),
+      )
+      const audio = new runtime.Audio()
+      const playback: TrustedMusicPlayback = {
+        audio,
+        objectUrl,
+        playbackId: metadata.playbackId,
+        settled: false,
+      }
+      trustedMusicPlayback = playback
+      audio.preload = 'auto'
+      audio.volume = metadata.volumePercent / 100
+      audio.onended = () => {
+        settleTrustedMusic(playback, 'played')
+      }
+      audio.onerror = () => {
+        settleTrustedMusic(playback, 'failed')
+      }
+      audio.onloadedmetadata = () => {
+        if (trustedMusicPlayback !== playback) {
+          return
+        }
+        if (
+          !Number.isFinite(audio.duration)
+          || audio.duration <= 0
+          || audio.duration > TRUSTED_MUSIC_MAX_DURATION_SECONDS
+        ) {
+          settleTrustedMusic(playback, 'failed')
+          return
+        }
+        audio.onloadedmetadata = null
+        void (async (): Promise<void> => {
+          try {
+            if (metadata.outputDeviceId !== null) {
+              if (audio.setSinkId === undefined) {
+                throw new Error('Music output routing is unavailable.')
+              }
+              await audio.setSinkId(metadata.outputDeviceId)
+            }
+            if (trustedMusicPlayback !== playback) {
+              return
+            }
+            await audio.play()
+          } catch {
+            settleTrustedMusic(playback, 'failed')
+          }
+        })()
+      }
+      audio.src = objectUrl
+      try {
+        audio.load()
+      } catch {
+        settleTrustedMusic(playback, 'failed')
+      }
+    } catch {
+      if (objectUrl !== null) {
+        try {
+          runtime.URL.revokeObjectURL(objectUrl)
+        } catch {
+          // Failed construction owns no reusable native media state.
+        }
+      }
+      ipcRenderer.send(
+        TRUSTED_MUSIC_SETTLED_CHANNEL,
+        Object.freeze({ playbackId: metadata.playbackId, status: 'failed' }),
+      )
+    }
+  },
+)
+
+ipcRenderer.on(
+  TRUSTED_MUSIC_CANCEL_CHANNEL,
+  (_event, playbackId: unknown): void => {
+    const playback = trustedMusicPlayback
+    if (
+      playback === null
+      || typeof playbackId !== 'string'
+      || playbackId !== playback.playbackId
+    ) {
+      return
+    }
+    settleTrustedMusic(playback, 'failed')
+  },
+)
+
 const desktopApi: DesktopApi = {
   rendererReady: () =>
     ipcRenderer.invoke(
@@ -619,6 +865,46 @@ const desktopApi: DesktopApi = {
       'voice:open-microphone-settings',
     ) as Promise<void>,
 
+  getSongCoverReadiness: () =>
+    ipcRenderer.invoke(
+      'song-cover:get-readiness',
+    ) as Promise<SongCoverReadiness>,
+
+  getSongCoverState: () =>
+    ipcRenderer.invoke(
+      'song-cover:get-state',
+    ) as Promise<SongCoverState>,
+
+  chooseSongCover: (request: ChooseSongCoverRequest) =>
+    ipcRenderer.invoke(
+      'song-cover:choose',
+      request,
+    ) as Promise<SongCoverState>,
+
+  cancelSongCover: (jobId: string) =>
+    ipcRenderer.invoke(
+      'song-cover:cancel',
+      jobId,
+    ) as Promise<SongCoverState>,
+
+  playSongCover: (jobId: string) =>
+    ipcRenderer.invoke(
+      'song-cover:play',
+      jobId,
+    ) as Promise<SongCoverState>,
+
+  stopSongCover: (jobId: string) =>
+    ipcRenderer.invoke(
+      'song-cover:stop',
+      jobId,
+    ) as Promise<SongCoverState>,
+
+  exportSongCover: (jobId: string) =>
+    ipcRenderer.invoke(
+      'song-cover:export',
+      jobId,
+    ) as Promise<boolean>,
+
   sendMessage: (request: ChatRequest) =>
     ipcRenderer.invoke(
       'backend:send-message',
@@ -636,6 +922,12 @@ const desktopApi: DesktopApi = {
       'backend:stop-generation',
       requestId,
     ) as Promise<void>,
+
+  startSpeechPlayback: (request: StartSpeechPlaybackRequest) =>
+    ipcRenderer.invoke(
+      'voice:start-speech-playback',
+      request,
+    ) as Promise<{ requestId: string }>,
 
   stopSpeechPlayback: (requestId: string, chatId: string) =>
     ipcRenderer.invoke(
@@ -910,6 +1202,22 @@ const desktopApi: DesktopApi = {
         'presence-notifications:state-changed',
         handler,
       )
+    }
+  },
+
+  onSongCoverStateChanged: (
+    listener: (state: SongCoverState) => void,
+  ) => {
+    const handler = (
+      _event: Electron.IpcRendererEvent,
+      state: SongCoverState,
+    ): void => {
+      listener(state)
+    }
+
+    ipcRenderer.on('song-cover:state-changed', handler)
+    return () => {
+      ipcRenderer.removeListener('song-cover:state-changed', handler)
     }
   },
 

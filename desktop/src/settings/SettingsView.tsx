@@ -223,11 +223,27 @@ const transcriptionLanguages: readonly SettingsDraft['transcriptionLanguage'][] 
   'en',
 ]
 const voiceProfileIdPattern = /^[a-z0-9][a-z0-9._-]{0,63}$/u
-const voiceEmotions: readonly SettingsDraft['voiceEmotion'][] = [
-  'neutral',
-  'happy',
-  'sad',
-]
+const voiceEmotionOptions = [
+  { value: 'neutral', label: 'Neutral' },
+  { value: 'happy', label: 'Happy' },
+  { value: 'sad', label: 'Sad' },
+  { value: 'caring', label: 'Caring' },
+  { value: 'moved', label: 'Emotionally moved' },
+  { value: 'playful', label: 'Playful' },
+  { value: 'affectionate', label: 'Affectionate' },
+  { value: 'teasing', label: 'Teasing' },
+  { value: 'serious', label: 'Serious' },
+  { value: 'surprised', label: 'Surprised' },
+] as const satisfies readonly {
+  value: SettingsDraft['voiceEmotion']
+  label: string
+}[]
+
+function isVoiceEmotion(
+  value: string,
+): value is SettingsDraft['voiceEmotion'] {
+  return voiceEmotionOptions.some((option) => option.value === value)
+}
 
 const restartLabels: Record<keyof DesktopSettingsValues, string> = {
   modelName: 'default model',
@@ -238,7 +254,7 @@ const restartLabels: Record<keyof DesktopSettingsValues, string> = {
   transcriptionModel: 'speech-recognition model',
   transcriptionDevice: 'speech-recognition device',
   transcriptionLanguage: 'speech-recognition language',
-  autoReadAloud: 'automatic read-aloud',
+  autoReadAloud: 'automatic Voice Call speech',
   speechRatePercent: 'speech rate',
   speechVolumePercent: 'speech volume',
   voiceProfileId: 'voice profile',
@@ -376,8 +392,8 @@ function validateDraft(draft: SettingsDraft): SettingsValidationErrors {
   if (!voiceProfileIdPattern.test(draft.voiceProfileId)) {
     errors.voiceProfileId = 'Use 1–64 lowercase letters, numbers, periods, underscores, or hyphens; start with a letter or number.'
   }
-  if (!voiceEmotions.includes(draft.voiceEmotion)) {
-    errors.voiceEmotion = 'Choose neutral, happy, or sad.'
+  if (!isVoiceEmotion(draft.voiceEmotion)) {
+    errors.voiceEmotion = 'Choose one of the supported voice emotions.'
   }
   if (draft.transcriptReviewMode !== 'manual') {
     errors.transcriptReviewMode = 'The legacy transcript policy must retain its compatible manual value.'
@@ -1049,6 +1065,7 @@ export function SettingsView({
   const transcriptionReadiness = voiceState === null
     ? null
     : describeTranscriptionReadiness(voiceState.transcriptionStatus)
+  const speechReadiness = settingsState?.speechStatus ?? null
 
   async function submit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault()
@@ -1468,11 +1485,12 @@ export function SettingsView({
                   aria-describedby={`${backendFieldId}-transcription-language-help`}
                 >
                   <option value="auto">Automatic Chinese / English detection</option>
-                  <option value="zh">Chinese</option>
+                  <option value="zh">Chinese (Simplified output)</option>
                   <option value="en">English</option>
                 </select>
                 <small id={`${backendFieldId}-transcription-language-help`}>
-                  This language hint applies to new captures after restart.
+                  This recognition hint applies after restart. Final Chinese text is
+                  always normalized to Simplified Chinese.
                 </small>
               </label>
             </div>
@@ -1568,9 +1586,31 @@ export function SettingsView({
                 choices remain separate below because they belong to this PC.
               </p>
             </div>
+            {speechReadiness === null ? (
+              <p className="settings-readonly-status">
+                Local speech readiness has not loaded yet.
+              </p>
+            ) : (
+              <InlineAlert
+                tone={speechReadiness.state === 'ready'
+                  ? 'success'
+                  : speechReadiness.state === 'starting'
+                    ? 'info'
+                    : 'error'}
+                title={`Local speech: ${speechReadiness.state}`}
+              >
+                {speechReadiness.state === 'ready'
+                  ? 'Read aloud and spoken Voice Call replies are ready.'
+                  : speechReadiness.state === 'starting'
+                    ? 'Wait for the local speech runtime to finish starting.'
+                    : speechReadiness.reason === 'setup_unavailable'
+                      ? 'Configure the local GPT-SoVITS runtime and a compatible profile/emotion pair, then restart the Backend.'
+                      : 'Restart the Backend before using Read aloud or spoken Voice Call replies.'}
+              </InlineAlert>
+            )}
             <div className="settings-field-grid">
               <label className="settings-field">
-                <span>Read replies aloud</span>
+                <span>Speak Voice Call replies</span>
                 <select
                   value={String(draft.autoReadAloud)}
                   onChange={(event) => {
@@ -1583,8 +1623,9 @@ export function SettingsView({
                   <option value="false">Off</option>
                 </select>
                 <small id={`${backendFieldId}-auto-read-aloud-help`}>
-                  Applies after saving. Turning this off keeps text replies but
-                  does not synthesize new spoken replies.
+                  Applies after saving. Ordinary Chat stays silent unless you
+                  choose Read aloud on a reply; this setting controls automatic
+                  speech inside Voice Call only.
                 </small>
               </label>
 
@@ -1705,13 +1746,8 @@ export function SettingsView({
                   value={draft.voiceEmotion}
                   onChange={(event) => {
                     const value = event.target.value
-                    if (voiceEmotions.includes(
-                      value as SettingsDraft['voiceEmotion'],
-                    )) {
-                      updateDraft(
-                        'voiceEmotion',
-                        value as SettingsDraft['voiceEmotion'],
-                      )
+                    if (isVoiceEmotion(value)) {
+                      updateDraft('voiceEmotion', value)
                     }
                   }}
                   disabled={backendFieldsDisabled}
@@ -1726,9 +1762,11 @@ export function SettingsView({
                     ? undefined
                     : `${backendFieldId}-voice-emotion-error`}
                 >
-                  <option value="neutral">Neutral</option>
-                  <option value="happy">Happy</option>
-                  <option value="sad">Sad</option>
+                  {voiceEmotionOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
                 </select>
                 <small id={`${backendFieldId}-voice-emotion-help`}>
                   Active: {settingsState.activeSettings.voiceEmotion}. This

@@ -22,6 +22,7 @@ import {
   PROTOCOL_NAME,
   PROTOCOL_VERSION,
   MAX_PROTOCOL_FRAME_BYTES,
+  VOICE_EMOTIONS,
   VOICE_SPEECH_MAX_SEQUENCE,
   VOICE_SPEECH_MAX_WAV_BYTES,
   VOICE_SPEECH_MIN_WAV_BYTES,
@@ -44,6 +45,7 @@ import {
   parseServerMessage,
   parseVoiceCaptureCompleteParams,
   parseVoiceCaptureResult,
+  parseVoiceSpeechStartResult,
   parseVoiceSettingsStateResult,
   parseVoiceTranscriptionResult,
   parseVoiceTranscriptionStartParams,
@@ -65,6 +67,25 @@ test('TypeScript uses the frame limit declared by the JSON Schema', () => {
   assert.equal(
     MAX_PROTOCOL_FRAME_BYTES,
     schema['x-elysia-frameMaxBytes'],
+  )
+})
+
+test('TypeScript uses the Voice Emotion enum declared by the JSON Schema', () => {
+  assert.deepEqual(VOICE_EMOTIONS, [
+    'neutral',
+    'happy',
+    'sad',
+    'caring',
+    'moved',
+    'playful',
+    'affectionate',
+    'teasing',
+    'serious',
+    'surprised',
+  ])
+  assert.deepEqual(
+    VOICE_EMOTIONS,
+    schema.$defs.settingsValues.properties.voiceEmotion.enum,
   )
 })
 
@@ -326,6 +347,10 @@ for (const sample of fixtures.validServerMessages) {
       const result = parseSettingsStateResult(parsed.result)
       assert.equal(result.revision, 3)
       assert.equal(result.restartRequired, true)
+      assert.deepEqual(result.speechStatus, {
+        state: 'ready',
+        reason: null,
+      })
       assert.deepEqual(result.restartFields, [
         'modelName',
         'ollamaHost',
@@ -372,6 +397,10 @@ for (const sample of fixtures.validServerMessages) {
       assert.equal(result.updatedAt, null)
       assert.equal(result.restartRequired, false)
       assert.deepEqual(result.restartFields, [])
+      assert.deepEqual(result.speechStatus, {
+        state: 'unavailable',
+        reason: 'setup_unavailable',
+      })
       assert.deepEqual(result.scopes, { project: null, chat: null })
       assert.match(result.warning, /Recovered safe defaults/)
     }
@@ -452,6 +481,49 @@ test('TypeScript validates exact managed speech cancellation ownership', () => {
   }).result.stopped, false)
 })
 
+test('TypeScript validates exact persisted-reply speech playback ownership', () => {
+  assert.deepEqual(
+    createRequest('speech-start-1', 'voice.speech.start', {
+      chatId: 'chat_fixture',
+      assistantMessageId: 'message_assistant',
+    }).params,
+    {
+      chatId: 'chat_fixture',
+      assistantMessageId: 'message_assistant',
+    },
+  )
+  for (const params of [
+    { chatId: 'chat_fixture' },
+    {
+      chatId: 'chat_fixture',
+      assistantMessageId: 'message_assistant',
+      text: 'must not cross the native boundary',
+    },
+  ]) {
+    assert.throws(
+      () => parseClientRequest({
+        type: 'request',
+        protocol: fixtures.protocol,
+        id: 'speech-start-invalid',
+        method: 'voice.speech.start',
+        params,
+      }),
+      ProtocolValidationError,
+    )
+  }
+  assert.deepEqual(parseVoiceSpeechStartResult({
+    kind: 'voice.speech.start',
+    requestId: 'speech-start-1',
+    chatId: 'chat_fixture',
+    assistantMessageId: 'message_assistant',
+  }), {
+    kind: 'voice.speech.start',
+    requestId: 'speech-start-1',
+    chatId: 'chat_fixture',
+    assistantMessageId: 'message_assistant',
+  })
+})
+
 test('TypeScript validates revisioned settings requests without secrets', () => {
   assert.deepEqual(
     createRequest('settings-get-1', 'settings.get', {}).params,
@@ -482,6 +554,15 @@ test('TypeScript validates revisioned settings requests without secrets', () => 
     }).params,
     { expectedRevision: 0, settings },
   )
+  for (const voiceEmotion of VOICE_EMOTIONS) {
+    assert.equal(
+      createRequest('settings-update-emotion', 'settings.update', {
+        expectedRevision: 0,
+        settings: { ...settings, voiceEmotion },
+      }).params.settings.voiceEmotion,
+      voiceEmotion,
+    )
+  }
 
   const secret = 'never-echo-this-secret'
   assert.throws(
@@ -530,11 +611,13 @@ test('TypeScript validates regenerate and edit-and-retry requests', () => {
       chatId: 'chat_fixture',
       userMessageId: 'message_user',
       assistantMessageId: 'message_assistant',
+      speakReply: false,
     }).params,
     {
       chatId: 'chat_fixture',
       userMessageId: 'message_user',
       assistantMessageId: 'message_assistant',
+      speakReply: false,
     },
   )
   assert.equal(
@@ -543,6 +626,7 @@ test('TypeScript validates regenerate and edit-and-retry requests', () => {
       userMessageId: 'message_user',
       assistantMessageId: 'message_assistant',
       message: 'Edited prompt',
+      speakReply: true,
     }).params.message,
     'Edited prompt',
   )
@@ -557,6 +641,7 @@ test('TypeScript validates regenerate and edit-and-retry requests', () => {
         userMessageId: 'message_user',
         assistantMessageId: 'message_assistant',
         message: '\ufeff\u0085',
+        speakReply: false,
       },
     }),
     ProtocolValidationError,
@@ -594,6 +679,7 @@ test('TypeScript validates exact scoped Attachment requests', () => {
       chatId: 'chat_fixture',
       message: 'Use the attached notes.',
       attachmentIds: ['attachment_fixture'],
+      speakReply: false,
     }).params.attachmentIds,
     ['attachment_fixture'],
   )
@@ -824,6 +910,7 @@ test('TypeScript validates exact Knowledge requests and normalizes RAG intent', 
       chatId: 'chat_fixture',
       message: 'Hello',
       attachmentIds: [],
+      speakReply: false,
     }).params.useProjectKnowledge ?? false,
     false,
   )
@@ -833,6 +920,7 @@ test('TypeScript validates exact Knowledge requests and normalizes RAG intent', 
       userMessageId: 'message_user',
       assistantMessageId: 'message_assistant',
       useProjectKnowledge: true,
+      speakReply: false,
     }).params.useProjectKnowledge,
     true,
   )
@@ -1107,6 +1195,35 @@ function voiceSettingsStateResponse() {
   assert.ok(sample)
   return structuredClone(sample.message)
 }
+
+test('TypeScript accepts only closed path-free managed speech readiness', () => {
+  for (const status of [
+    { state: 'starting', reason: null },
+    { state: 'ready', reason: null },
+    { state: 'unavailable', reason: 'setup_unavailable' },
+    { state: 'unavailable', reason: 'runtime_failed' },
+  ]) {
+    const response = settingsStateResponse()
+    response.result.speechStatus = status
+    assert.deepEqual(
+      parseSettingsStateResult(response.result).speechStatus,
+      status,
+    )
+  }
+
+  for (const status of [
+    { state: 'ready', reason: 'runtime_failed' },
+    { state: 'unavailable', reason: null },
+    { state: 'unavailable', reason: String.raw`D:\private\runtime` },
+  ]) {
+    const response = settingsStateResponse()
+    response.result.speechStatus = status
+    assert.throws(
+      () => parseSettingsStateResult(response.result),
+      ProtocolValidationError,
+    )
+  }
+})
 
 test('TypeScript accepts only exact renderer-safe transcription status', () => {
   const response = voiceSettingsStateResponse()
@@ -1908,7 +2025,7 @@ test('Backend stays speech-busy when Chat response precedes speech terminal', ()
   }
 })
 
-test('Backend registers speech turns only when capability is advertised', () => {
+test('Backend registers speech only for explicitly opted-in generations', () => {
   const writes = []
   const starts = []
   const backend = new BackendProcess('.', () => undefined)
@@ -1935,10 +2052,27 @@ test('Backend registers speech turns only when capability is advertised', () => 
     chatId: 'chat_fixture',
     message: 'Speak this reply.',
     attachmentIds: [],
+    speakReply: true,
   })
 
   assert.deepEqual(starts, [{ requestId, chatId: 'chat_fixture' }])
-  assert.equal(JSON.parse(writes.at(-1)).id, requestId)
+  assert.equal(backend.getSnapshot().activeGeneration.speakReply, true)
+  assert.deepEqual(JSON.parse(writes.at(-1)).params, {
+    chatId: 'chat_fixture',
+    message: 'Speak this reply.',
+    attachmentIds: [],
+    speakReply: true,
+  })
+
+  backend.pendingRequests.clear()
+  backend.beginChat({
+    chatId: 'chat_fixture',
+    message: 'Keep ordinary Chat silent.',
+    attachmentIds: [],
+    speakReply: false,
+  })
+  assert.equal(starts.length, 1)
+  assert.equal(JSON.parse(writes.at(-1)).params.speakReply, false)
 
   const ungatedStarts = []
   const ungatedBackend = new BackendProcess('.', () => undefined)
@@ -1956,8 +2090,323 @@ test('Backend registers speech turns only when capability is advertised', () => 
     chatId: 'chat_fixture',
     message: 'Text only.',
     attachmentIds: [],
+    speakReply: true,
   })
   assert.deepEqual(ungatedStarts, [])
+})
+
+test('Backend starts managed speech for one exact persisted assistant reply', async () => {
+  const writes = []
+  const starts = []
+  const arms = []
+  const backend = new BackendProcess('.', () => undefined)
+  backend.child = {
+    stdin: {
+      writable: true,
+      write: (value) => writes.push(value),
+    },
+  }
+  backend.snapshot = {
+    revision: 1,
+    status: 'ready',
+    capabilities: [
+      'voice.speech',
+      'voice.speech.start',
+      'voice.speech.cancel',
+    ],
+    models: ['qwen3.5:9b'],
+    modelName: 'qwen3.5:9b',
+    chatId: 'chat_fixture',
+    chatTitle: 'Elysia Chat',
+  }
+  backend.speechDelivery = {
+    startTurn: (requestId, chatId, playbackArmed) => {
+      starts.push({ requestId, chatId, playbackArmed })
+    },
+    armTurn: (requestId, chatId) => {
+      arms.push({ requestId, chatId })
+      return true
+    },
+  }
+
+  const starting = backend.startSpeechPlayback({
+    chatId: 'chat_fixture',
+    assistantMessageId: 'message_assistant',
+  })
+  const request = JSON.parse(writes.at(-1))
+  const pending = backend.pendingRequests.get(request.id)
+
+  assert.equal(request.method, 'voice.speech.start')
+  assert.deepEqual(request.params, {
+    chatId: 'chat_fixture',
+    assistantMessageId: 'message_assistant',
+  })
+  assert.deepEqual(starts, [{
+    requestId: request.id,
+    chatId: 'chat_fixture',
+    playbackArmed: false,
+  }])
+  assert.deepEqual(arms, [])
+  assert.ok(pending.timeout)
+
+  backend.handleProtocolLine(JSON.stringify({
+    type: 'response',
+    protocol: fixtures.protocol,
+    id: request.id,
+    ok: true,
+    result: {
+      kind: 'voice.speech.start',
+      requestId: request.id,
+      chatId: 'chat_fixture',
+      assistantMessageId: 'message_assistant',
+    },
+  }))
+
+  assert.deepEqual(await starting, { requestId: request.id })
+  assert.equal(pending.timeout, undefined)
+  assert.deepEqual(arms, [{
+    requestId: request.id,
+    chatId: 'chat_fixture',
+  }])
+})
+
+test('Backend bounds a missing speech-start ACK and cancels its exact owner', async (context) => {
+  context.mock.timers.enable({ apis: ['setTimeout'] })
+  const writes = []
+  const cancelled = []
+  const backend = new BackendProcess('.', () => undefined)
+  backend.child = {
+    stdin: {
+      writable: true,
+      write: (value) => writes.push(value),
+    },
+  }
+  backend.snapshot = {
+    revision: 1,
+    status: 'ready',
+    capabilities: [
+      'voice.speech',
+      'voice.speech.start',
+      'voice.speech.cancel',
+    ],
+    models: ['qwen3.5:9b'],
+    modelName: 'qwen3.5:9b',
+    chatId: 'chat_fixture',
+    chatTitle: 'Elysia Chat',
+  }
+  backend.speechDelivery = {
+    startTurn: () => undefined,
+    cancelOwnedTurn: (requestId, chatId) => {
+      cancelled.push({ requestId, chatId })
+      return true
+    },
+  }
+
+  const starting = backend.startSpeechPlayback({
+    chatId: 'chat_fixture',
+    assistantMessageId: 'message_assistant',
+  })
+  const startRequest = JSON.parse(writes.at(-1))
+  const timedOut = assert.rejects(starting, /start request timed out/)
+  context.mock.timers.tick(15_000)
+  await timedOut
+
+  const cancelRequest = JSON.parse(writes.at(-1))
+  assert.equal(backend.pendingRequests.has(startRequest.id), false)
+  assert.deepEqual(cancelled, [{
+    requestId: startRequest.id,
+    chatId: 'chat_fixture',
+  }])
+  assert.equal(cancelRequest.method, 'voice.speech.cancel')
+  assert.deepEqual(cancelRequest.params, {
+    requestId: startRequest.id,
+    chatId: 'chat_fixture',
+  })
+
+  backend.handleProtocolLine(JSON.stringify({
+    type: 'response',
+    protocol: fixtures.protocol,
+    id: startRequest.id,
+    ok: true,
+    result: {
+      kind: 'voice.speech.start',
+      requestId: startRequest.id,
+      chatId: 'chat_fixture',
+      assistantMessageId: 'message_assistant',
+    },
+  }))
+  assert.equal(backend.getSnapshot().status, 'ready')
+
+  backend.handleProtocolLine(JSON.stringify({
+    type: 'response',
+    protocol: fixtures.protocol,
+    id: cancelRequest.id,
+    ok: true,
+    result: {
+      kind: 'voice.speech.cancel',
+      requestId: startRequest.id,
+      chatId: 'chat_fixture',
+      stopped: true,
+    },
+  }))
+  assert.equal(backend.pendingRequests.size, 0)
+})
+
+test('Backend rejects manual speech while a Chat generation is active', async () => {
+  const writes = []
+  const starts = []
+  const backend = new BackendProcess('.', () => undefined)
+  backend.child = {
+    stdin: {
+      writable: true,
+      write: (value) => writes.push(value),
+    },
+  }
+  backend.snapshot = {
+    revision: 1,
+    status: 'ready',
+    capabilities: [
+      'chat.stream',
+      'voice.speech',
+      'voice.speech.start',
+      'voice.speech.cancel',
+    ],
+    models: ['qwen3.5:9b'],
+    modelName: 'qwen3.5:9b',
+    chatId: 'chat_fixture',
+    chatTitle: 'Elysia Chat',
+  }
+  backend.speechDelivery = {
+    startTurn: (...parameters) => starts.push(parameters),
+  }
+  backend.beginChat({
+    chatId: 'chat_fixture',
+    message: 'Keep this generation text-only.',
+    attachmentIds: [],
+    speakReply: false,
+  })
+
+  await assert.rejects(
+    backend.startSpeechPlayback({
+      chatId: 'chat_fixture',
+      assistantMessageId: 'message_assistant',
+    }),
+    /active Chat reply/,
+  )
+
+  assert.equal(writes.length, 1)
+  assert.equal(JSON.parse(writes[0]).method, 'chat.stream')
+  assert.deepEqual(starts, [])
+})
+
+test('Backend cancels local delivery and rejects a failed speech start', async () => {
+  const writes = []
+  const cancelled = []
+  const backend = new BackendProcess('.', () => undefined)
+  backend.child = {
+    stdin: {
+      writable: true,
+      write: (value) => writes.push(value),
+    },
+  }
+  backend.snapshot = {
+    revision: 1,
+    status: 'ready',
+    capabilities: [
+      'voice.speech',
+      'voice.speech.start',
+      'voice.speech.cancel',
+    ],
+    models: ['qwen3.5:9b'],
+    modelName: 'qwen3.5:9b',
+    chatId: 'chat_fixture',
+    chatTitle: 'Elysia Chat',
+  }
+  backend.speechDelivery = {
+    startTurn: () => undefined,
+    cancelOwnedTurn: (requestId, chatId) => {
+      cancelled.push({ requestId, chatId })
+      return true
+    },
+  }
+
+  const starting = backend.startSpeechPlayback({
+    chatId: 'chat_fixture',
+    assistantMessageId: 'message_assistant',
+  })
+  const request = JSON.parse(writes.at(-1))
+  backend.handleProtocolLine(JSON.stringify({
+    type: 'response',
+    protocol: fixtures.protocol,
+    id: request.id,
+    ok: false,
+    error: {
+      code: 'voice.speech.failed',
+      message: 'private backend detail',
+      retryable: true,
+    },
+  }))
+
+  await assert.rejects(starting, /could not be started/)
+  assert.deepEqual(cancelled, [{
+    requestId: request.id,
+    chatId: 'chat_fixture',
+  }])
+})
+
+test('Backend rejects a speech-start receipt for a different assistant reply', async () => {
+  const writes = []
+  const cancelled = []
+  let killed = 0
+  const backend = new BackendProcess('.', () => undefined)
+  backend.child = {
+    stdin: {
+      writable: true,
+      write: (value) => writes.push(value),
+    },
+    kill: () => { killed += 1 },
+  }
+  backend.snapshot = {
+    revision: 1,
+    status: 'ready',
+    capabilities: [
+      'voice.speech',
+      'voice.speech.start',
+      'voice.speech.cancel',
+    ],
+    models: ['qwen3.5:9b'],
+    modelName: 'qwen3.5:9b',
+    chatId: 'chat_fixture',
+    chatTitle: 'Elysia Chat',
+  }
+  backend.speechDelivery = {
+    startTurn: () => undefined,
+    cancelTurn: (requestId) => cancelled.push(requestId),
+    dispose: () => undefined,
+  }
+
+  const starting = backend.startSpeechPlayback({
+    chatId: 'chat_fixture',
+    assistantMessageId: 'message_assistant',
+  })
+  const request = JSON.parse(writes.at(-1))
+  backend.handleProtocolLine(JSON.stringify({
+    type: 'response',
+    protocol: fixtures.protocol,
+    id: request.id,
+    ok: true,
+    result: {
+      kind: 'voice.speech.start',
+      requestId: request.id,
+      chatId: 'chat_fixture',
+      assistantMessageId: 'message_other',
+    },
+  }))
+
+  await assert.rejects(starting, /does not match its request/)
+  assert.deepEqual(cancelled, [request.id])
+  assert.equal(killed, 1)
+  assert.equal(backend.getSnapshot().status, 'error')
 })
 
 test('Backend forwards only renderer-safe speech status metadata', () => {
@@ -2056,16 +2505,57 @@ test('Backend stops exact speech locally before awaiting Python ownership', asyn
   assert.equal(backend.getSnapshot().status, 'ready')
 })
 
-test('Backend can retire current speech when Renderer ownership resets', () => {
+test('Backend mirrors renderer ownership reset to one exact Python turn', () => {
+  const writes = []
   let cancelled = 0
   const backend = new BackendProcess('.', () => undefined)
+  backend.child = {
+    stdin: {
+      writable: true,
+      write: (value) => writes.push(value),
+    },
+  }
+  backend.snapshot = {
+    revision: 1,
+    status: 'ready',
+    capabilities: ['voice.speech', 'voice.speech.cancel'],
+    models: ['qwen3.5:9b'],
+    modelName: 'qwen3.5:9b',
+    chatId: 'chat_fixture',
+    chatTitle: 'Elysia Chat',
+  }
   backend.speechDelivery = {
-    cancelCurrentTurn: () => { cancelled += 1 },
+    cancelCurrentTurn: () => {
+      cancelled += 1
+      return {
+        requestId: 'speech-after-chat-1',
+        chatId: 'chat_fixture',
+      }
+    },
+    cancelOwnedTurn: () => false,
   }
 
   backend.stopCurrentSpeechPlayback()
+  const request = JSON.parse(writes.at(-1))
 
   assert.equal(cancelled, 1)
+  assert.equal(request.method, 'voice.speech.cancel')
+  assert.deepEqual(request.params, {
+    requestId: 'speech-after-chat-1',
+    chatId: 'chat_fixture',
+  })
+  backend.handleProtocolLine(JSON.stringify({
+    type: 'response',
+    protocol: fixtures.protocol,
+    id: request.id,
+    ok: true,
+    result: {
+      kind: 'voice.speech.cancel',
+      requestId: 'speech-after-chat-1',
+      chatId: 'chat_fixture',
+      stopped: true,
+    },
+  }))
 })
 
 test('Backend removes unavailable speech from renderer capabilities', () => {
@@ -2144,6 +2634,7 @@ test('Backend sends an exact retry request and tracks it as generation', () => {
     userMessageId: 'message_user',
     assistantMessageId: 'message_assistant',
     message: '  Edited prompt  ',
+    speakReply: false,
   })
   const request = JSON.parse(writes.at(-1))
 
@@ -2154,6 +2645,7 @@ test('Backend sends an exact retry request and tracks it as generation', () => {
     userMessageId: 'message_user',
     assistantMessageId: 'message_assistant',
     message: 'Edited prompt',
+    speakReply: false,
   })
   assert.equal(backend.pendingRequests.get(requestId).method, 'chat.retry')
   assert.deepEqual(backend.getSnapshot().activeGeneration, {
@@ -2164,6 +2656,7 @@ test('Backend sends an exact retry request and tracks it as generation', () => {
     userMessageId: 'message_user',
     assistantMessageId: 'message_assistant',
     reply: '',
+    speakReply: false,
     stopping: false,
   })
 })
@@ -2191,6 +2684,7 @@ test('Backend snapshot preserves an in-flight reply through stop completion', as
     chatId: 'chat_fixture',
     message: '  Continue after reload.  ',
     attachmentIds: [],
+    speakReply: false,
   })
   assert.deepEqual(backend.getSnapshot().activeGeneration, {
     requestId,
@@ -2198,6 +2692,7 @@ test('Backend snapshot preserves an in-flight reply through stop completion', as
     kind: 'send',
     userText: 'Continue after reload.',
     reply: '',
+    speakReply: false,
     stopping: false,
   })
 
@@ -2265,6 +2760,7 @@ test('Backend gives grounded generation cancellation a bounded model-call drain 
     message: 'Use the project sources.',
     attachmentIds: [],
     useProjectKnowledge: true,
+    speakReply: false,
   })
   const stopping = backend.stopGeneration(requestId)
   const cancelRequest = JSON.parse(writes.at(-1))
@@ -2318,6 +2814,7 @@ test('Backend sends an attachment-only Chat request without paths', () => {
     chatId: 'chat_fixture',
     message: '',
     attachmentIds: ['attachment_fixture'],
+    speakReply: false,
   })
   const request = JSON.parse(writes.at(-1))
   assert.equal(request.id, requestId)
@@ -2326,6 +2823,7 @@ test('Backend sends an attachment-only Chat request without paths', () => {
     chatId: 'chat_fixture',
     message: '',
     attachmentIds: ['attachment_fixture'],
+    speakReply: false,
   })
   assert.equal(JSON.stringify(request).includes('sourcePath'), false)
 })
@@ -2581,6 +3079,7 @@ test('Backend rolls back pending generation when stdin write throws', () => {
       chatId: 'chat_fixture',
       message: 'Hello',
       attachmentIds: [],
+      speakReply: false,
     }),
     /Could not write to the Python Backend/,
   )
@@ -2622,7 +3121,6 @@ test('Backend protocol failure rejects pending renderer actions before exit', as
     chatId: 'chat_fixture',
     chatTitle: 'Elysia Chat',
   }
-
   const chatAction = backend.openChat('chat_other')
   const projectAction = backend.listProjects()
   const settingsAction = backend.getSettings()
@@ -2756,6 +3254,7 @@ test('Backend permits collection reads but blocks writes during generation', asy
     chatId: 'chat_fixture',
     message: 'Keep reading state while I generate.',
     attachmentIds: [],
+    speakReply: false,
   })
   const listingChats = backend.listChats(false)
   const listingProjects = backend.listProjects()
@@ -3287,6 +3786,7 @@ test('Backend serializes Voice transcription with Chat and capture actions', asy
       chatId: 'chat_fixture',
       message: 'Do not race STT.',
       attachmentIds: [],
+      speakReply: false,
     }),
     /voice transcription/,
   )
@@ -3295,6 +3795,7 @@ test('Backend serializes Voice transcription with Chat and capture actions', asy
       chatId: 'chat_fixture',
       userMessageId: 'message_user',
       assistantMessageId: 'message_assistant',
+      speakReply: false,
     }),
     /voice transcription/,
   )
@@ -3604,6 +4105,7 @@ test('Backend sends and strictly resolves scoped Attachment actions', async () =
       chatId: 'chat_fixture',
       message: 'Do not race this attachment write.',
       attachmentIds: [],
+      speakReply: false,
     }),
     /attachment action/u,
   )
@@ -4156,6 +4658,7 @@ test('Backend resolves a safe Knowledge export receipt without its destination',
       message: 'Use Project Sources',
       attachmentIds: [],
       useProjectKnowledge: true,
+      speakReply: false,
     }),
     /Project Source operation/,
   )
@@ -4204,6 +4707,7 @@ test('Backend serializes grounded Chat against the global Knowledge lease', () =
     message: 'Answer only from my Project Sources.',
     attachmentIds: [],
     useProjectKnowledge: true,
+    speakReply: false,
   })
   assert.equal(
     backend.getSnapshot().activeGeneration.usesProjectKnowledge,
@@ -4781,11 +5285,18 @@ test('Backend stop rejects all pending renderer actions', async () => {
       'chat.sessions',
       'project.management',
       'voice.capture',
+      'voice.speech',
+      'voice.speech.start',
+      'voice.speech.cancel',
     ],
     models: ['qwen3.5:9b'],
     modelName: 'qwen3.5:9b',
     chatId: 'chat_fixture',
     chatTitle: 'Elysia Chat',
+  }
+  backend.speechDelivery = {
+    startTurn: () => undefined,
+    dispose: () => undefined,
   }
 
   let rejectChat
@@ -4844,6 +5355,14 @@ test('Backend stop rejects all pending renderer actions', async () => {
     (pending) => pending.method === 'voice.capture.complete',
   )
   assert.ok(voicePending.timeout)
+  const speechPromise = backend.startSpeechPlayback({
+    chatId: 'chat_fixture',
+    assistantMessageId: 'assistant_fixture',
+  })
+  const speechPending = [...backend.pendingRequests.values()].find(
+    (pending) => pending.method === 'voice.speech.start',
+  )
+  assert.ok(speechPending.timeout)
 
   const stopping = backend.stop()
   await assert.rejects(chatPromise, /stopping before the action completed/)
@@ -4854,7 +5373,9 @@ test('Backend stop rejects all pending renderer actions', async () => {
     /stopping before the action completed/,
   )
   await assert.rejects(voicePromise, /stopping before the action completed/)
+  await assert.rejects(speechPromise, /stopping before the action completed/)
   assert.equal(voicePending.timeout, undefined)
+  assert.equal(speechPending.timeout, undefined)
   child.emit('close', 0, null)
   await stopping
 })

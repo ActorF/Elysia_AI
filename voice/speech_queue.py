@@ -164,13 +164,20 @@ class SpeechTurnStateError(SpeechQueueError):
 
 @dataclass(frozen=True, slots=True)
 class SentenceSegmenterConfig:
-    """Configure a safe latency ceiling for one synthesized sentence."""
+    """Configure bounded utterance grouping for synthesized speech.
+
+    ``minimum_utterance_code_points`` is a soft lower bound.  A natural
+    boundary below it waits for one following natural boundary, but a final
+    short utterance still flushes so speech never loses the reply tail.  The
+    default of one preserves the original immediate-boundary behavior.
+    """
 
     max_code_points: int = SPEECH_SEGMENT_DEFAULT_MAX_CODE_POINTS
     soft_break_floor: int = 96
+    minimum_utterance_code_points: int = 1
 
     def __post_init__(self) -> None:
-        """Keep both boundaries useful and below the engine text limit."""
+        """Keep every utterance boundary useful and below the engine limit."""
 
         if (
             not _is_strict_integer(self.max_code_points)
@@ -190,6 +197,16 @@ class SentenceSegmenterConfig:
         ):
             raise SpeechQueueValidationError(
                 "soft_break_floor must be below max_code_points."
+            )
+        if (
+            not _is_strict_integer(self.minimum_utterance_code_points)
+            or not 1
+            <= self.minimum_utterance_code_points
+            <= self.max_code_points
+        ):
+            raise SpeechQueueValidationError(
+                "minimum_utterance_code_points must be between one and "
+                "max_code_points."
             )
 
 
@@ -298,6 +315,7 @@ class StreamingSentenceSegmenter:
         # distant period must not turn a 240-code-point latency/resource bound
         # into an arbitrarily large sentence.
         scan_limit = min(len(self._buffer), self._config.max_code_points)
+        short_boundary: int | None = None
         for index, character in enumerate(self._buffer[:scan_limit]):
             if character not in _NATURAL_TERMINATORS:
                 continue
@@ -321,8 +339,27 @@ class StreamingSentenceSegmenter:
                 )
             ):
                 end += 1
-            if end < len(self._buffer) or final:
+            if end >= len(self._buffer) and not final:
+                continue
+            if short_boundary is not None:
+                # One following natural boundary is enough to avoid choppy
+                # one- or two-word clips.  Treating the configured minimum as
+                # a soft bound also prevents a run of tiny interjections from
+                # waiting indefinitely for a much later sentence.
                 return end
+            candidate = self._buffer[:end]
+            if (
+                end >= self._config.minimum_utterance_code_points
+                or not _contains_speech_sentence_anchor(candidate)
+            ):
+                return end
+            short_boundary = end
+
+        if short_boundary is not None and final:
+            # At end-of-input, merge a short sentence with any remaining tail.
+            # If no tail exists, returning the boundary flushes the final short
+            # utterance instead of silently losing canonical reply content.
+            return min(len(self._buffer), self._config.max_code_points)
 
         if len(self._buffer) >= self._config.max_code_points:
             ceiling = self._config.max_code_points

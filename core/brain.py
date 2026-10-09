@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 from collections.abc import Callable, Generator, Iterable, Iterator
 from dataclasses import replace
 from datetime import datetime
@@ -28,6 +29,10 @@ from documents import (
     DocumentOperationCancelledError,
     GroundedTableCellLocation,
     GroundedTextLocation,
+)
+from localization import (
+    AssistantReplyStreamNormalizer,
+    normalize_assistant_reply,
 )
 from memory import (
     ConversationMessage,
@@ -61,6 +66,51 @@ from .prompts import (
 )
 
 logger = logging.getLogger(__name__)
+
+_CREATIVE_STAGE_REQUEST_PATTERNS = (
+    re.compile(
+        r"(?:写|创作|续写|改写|润色|生成|翻译|分析|点评)"
+        r".{0,24}(?:小说|剧本|故事|舞台剧|动作|动作描写|舞台动作|角色扮演)"
+    ),
+    re.compile(
+        r"(?:小说|剧本|故事|舞台剧|动作|动作描写|舞台动作|角色扮演)"
+        r".{0,24}(?:写|创作|续写|改写|润色|生成|翻译|分析|点评|形式)"
+    ),
+    re.compile(r"(?:扮演|角色扮演|模拟)(?:.{0,24}(?:角色|场景|对话))?"),
+    re.compile(
+        r"\b(?:write|create|continue|rewrite|edit|translate|analy[sz]e|"
+        r"critique)\b.{0,64}\b(?:fiction|novel|story|screenplay|script|"
+        r"stage direction|action)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(r"\b(?:role[- ]?play|act out)\b", re.IGNORECASE),
+)
+_NEGATED_STAGE_REQUEST_PATTERN = re.compile(
+    r"(?:不要|不再|别|禁止|无需|不需要|避免|"
+    r"不(?=写|用|加入|添加|保留|描述|进行))"
+    r"(?:再)?(?:写|用|加入|添加|保留|描述|进行)?"
+    r"(?:任何|这个|这种|这些|此类)?"
+    r"(?:动作|旁白|舞台动作|扮演|角色扮演|小说|剧本|故事)"
+    r"|\b(?:do not|don't|without|avoid|no)\b.{0,32}"
+    r"\b(?:stage directions?|action|narration|role[- ]?play)\b",
+    re.IGNORECASE,
+)
+
+
+def _preserve_requested_stage_content(user_message: str) -> bool:
+    """Keep narration only for an explicit, non-negated creative request.
+
+    Ordinary chat must never infer permission from a model-produced cue. The
+    decision is derived from the current user turn so stored history cannot
+    silently switch later replies into role-play formatting.
+    """
+
+    if _NEGATED_STAGE_REQUEST_PATTERN.search(user_message) is not None:
+        return False
+    return any(
+        pattern.search(user_message) is not None
+        for pattern in _CREATIVE_STAGE_REQUEST_PATTERNS
+    )
 
 
 class ProjectSourceAnswerer(Protocol):
@@ -193,6 +243,42 @@ def _grounded_reply_text(answer: ChatGroundedAnswer) -> str:
     if answer.status == "insufficient_evidence":
         return _INSUFFICIENT_PROJECT_EVIDENCE_REPLY
     return "\n\n".join(statement.text for statement in answer.statements)
+
+
+def _normalize_grounded_answer(
+    answer: ChatGroundedAnswer,
+    *,
+    preserve_stage_directions: bool = False,
+) -> ChatGroundedAnswer:
+    """Normalize generated statements while retaining exact source evidence.
+
+    Citation excerpts and filenames remain byte-for-byte source records. Only
+    the answerer's prose is Elysia output, so changing evidence text here would
+    break the audit trail even when its source uses Traditional Chinese. Stage
+    directions remain only when the current grounded request explicitly asks
+    for creative or action-oriented content.
+    """
+
+    normalized_statements: list[ChatGroundedStatement] = []
+    for statement in answer.statements:
+        # A source_fact is proof, not assistant prose. Its exact text must stay
+        # a contiguous substring of every cited excerpt across persistence and
+        # the Desktop Protocol, even when the source uses Traditional Chinese.
+        if statement.kind == "source_fact":
+            normalized_statements.append(statement)
+            continue
+        normalized_text = normalize_assistant_reply(
+            statement.text,
+            preserve_stage_directions=preserve_stage_directions,
+        ).strip()
+        if not normalized_text:
+            raise ValueError(
+                "Grounded answer statement cannot be empty after normalization."
+            )
+        normalized_statements.append(
+            replace(statement, text=normalized_text)
+        )
+    return replace(answer, statements=tuple(normalized_statements))
 
 
 def _user_message_for_model(
@@ -716,8 +802,11 @@ class Brain:
                 project=active_conversation.project,
             )
 
-            reply = self._chat_model.generate_reply(
-                chat_messages
+            reply = normalize_assistant_reply(
+                self._chat_model.generate_reply(chat_messages).strip(),
+                preserve_stage_directions=(
+                    _preserve_requested_stage_content(cleaned_user_message)
+                ),
             ).strip()
             if not reply:
                 raise ValueError(
@@ -787,6 +876,9 @@ class Brain:
             reply = yield from self._stream_model_reply(
                 chat_messages,
                 should_cancel=should_cancel,
+                preserve_stage_directions=(
+                    _preserve_requested_stage_content(cleaned_user_message)
+                ),
             )
             self._claim_generation_commit(
                 should_cancel=should_cancel,
@@ -840,15 +932,20 @@ class Brain:
                 raise ValueError(
                     "Project Sources require a Chat assigned to a Project."
                 )
-            answer = _chat_grounded_answer(
-                _run_project_source_answerer(
-                    answerer,
-                    chat_id,
-                    cleaned_user_message,
-                    should_cancel,
+            answer = _normalize_grounded_answer(
+                _chat_grounded_answer(
+                    _run_project_source_answerer(
+                        answerer,
+                        chat_id,
+                        cleaned_user_message,
+                        should_cancel,
+                    ),
+                    expected_chat_id=chat_id,
+                    expected_project_id=project.project_id,
                 ),
-                expected_chat_id=chat_id,
-                expected_project_id=project.project_id,
+                preserve_stage_directions=(
+                    _preserve_requested_stage_content(cleaned_user_message)
+                ),
             )
             self._raise_if_generation_cancelled(should_cancel)
             reply = _grounded_reply_text(answer)
@@ -936,6 +1033,9 @@ class Brain:
             reply = yield from self._stream_model_reply(
                 chat_messages,
                 should_cancel=should_cancel,
+                preserve_stage_directions=(
+                    _preserve_requested_stage_content(effective_user_message)
+                ),
             )
             self._claim_generation_commit(
                 should_cancel=should_cancel,
@@ -993,15 +1093,20 @@ class Brain:
                 raise ValueError(
                     "Project Source questions must contain text."
                 )
-            answer = _chat_grounded_answer(
-                _run_project_source_answerer(
-                    answerer,
-                    chat_id,
-                    effective_user_message,
-                    should_cancel,
+            answer = _normalize_grounded_answer(
+                _chat_grounded_answer(
+                    _run_project_source_answerer(
+                        answerer,
+                        chat_id,
+                        effective_user_message,
+                        should_cancel,
+                    ),
+                    expected_chat_id=chat_id,
+                    expected_project_id=project.project_id,
                 ),
-                expected_chat_id=chat_id,
-                expected_project_id=project.project_id,
+                preserve_stage_directions=(
+                    _preserve_requested_stage_content(effective_user_message)
+                ),
             )
             self._raise_if_generation_cancelled(should_cancel)
             reply = _grounded_reply_text(answer)
@@ -1029,14 +1134,19 @@ class Brain:
         chat_messages: list[ChatMessage],
         *,
         should_cancel: Callable[[], bool] | None,
+        preserve_stage_directions: bool = False,
     ) -> Generator[str, None, str]:
-        """Yield and return one identical, outer-whitespace-free reply.
+        """Yield and return one identical normalized, outer-trimmed reply.
 
         Leading whitespace can be discarded immediately. Whitespace at the
         current stream tail is held until a later non-whitespace character
         proves it is internal; a natural end discards that tail. This online
-        normalization preserves the old ``raw_reply.strip()`` result without
-        ever exposing text that persistence would later remove.
+        canonicalization then passes complete Chinese sentences through the
+        shared Simplified-Chinese boundary before UI, persistence, or speech
+        can observe them. Ordinary chat also removes stage directions; an
+        explicit creative request may preserve them as requested work product.
+        Buffering affected sentences preserves OpenCC phrase context across
+        arbitrary model chunk edges.
         """
 
         if self._chat_model is None:
@@ -1046,6 +1156,9 @@ class Brain:
         reply_chunks: list[str] = []
         pending_trailing_chunks: list[str] = []
         reply_started = False
+        reply_normalizer = AssistantReplyStreamNormalizer(
+            preserve_stage_directions=preserve_stage_directions,
+        )
         stream_source = self._chat_model.stream_reply(chat_messages)
         self._raise_if_generation_cancelled(should_cancel)
         model_stream: Iterator[str] = iter(stream_source)
@@ -1075,8 +1188,11 @@ class Brain:
                             + without_trailing
                         )
                         pending_trailing_chunks.clear()
-                    reply_chunks.append(without_trailing)
-                    yield without_trailing
+                    for normalized_chunk in reply_normalizer.push(
+                        without_trailing
+                    ):
+                        reply_chunks.append(normalized_chunk)
+                        yield normalized_chunk
                 if trailing:
                     pending_trailing_chunks.append(trailing)
         finally:
@@ -1090,6 +1206,9 @@ class Brain:
                     logger.exception("Chat model stream cleanup failed.")
 
         self._raise_if_generation_cancelled(should_cancel)
+        for normalized_chunk in reply_normalizer.finish():
+            reply_chunks.append(normalized_chunk)
+            yield normalized_chunk
         reply = "".join(reply_chunks)
         if not reply:
             raise ValueError("Model reply cannot be empty.")

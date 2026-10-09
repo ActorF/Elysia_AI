@@ -125,6 +125,7 @@ from desktop_protocol import (
 from desktop_speech import (
     DesktopSpeechConfig,
     DesktopSpeechCoordinator,
+    DesktopSpeechStatus,
     DesktopSpeechTurn,
 )
 from start import create_brain, validate_settings
@@ -147,6 +148,9 @@ from voice import (
     VOICE_CAPTURE_SAMPLE_FORMAT,
     VoiceCapture,
     VoiceCaptureValidationError,
+    JsonVoiceProfileCatalog,
+    SynthesisUnavailableError,
+    VoiceProfileCatalogError,
     VoiceSettingsConflictError,
     VoiceSettingsService,
     VoiceSettingsSnapshot,
@@ -169,6 +173,7 @@ KnowledgeRuntimeFactory = Callable[
     [AppSettings, AttachmentService],
     DesktopKnowledgeRuntime,
 ]
+SpeechSelectionValidator = Callable[[AppSettings], bool]
 
 SERVER_NAME = "elysia-python"
 SERVER_VERSION = "0.1.0"
@@ -183,6 +188,7 @@ SERVER_CAPABILITIES = (
     "voice.capture",
     "voice.transcription",
     "voice.speech",
+    "voice.speech.start",
     "voice.speech.cancel",
     "attachment.management",
     "knowledge.management",
@@ -213,6 +219,7 @@ class _GenerationTask:
     request_id: str
     chat_id: ChatId
     method: str
+    speak_reply: bool
     uses_project_knowledge: bool = False
     knowledge_runtime_owner: object | None = field(default=None, repr=False)
     state: _GenerationState = _GenerationState.RUNNING
@@ -497,6 +504,35 @@ def _create_transcriber(settings: AppSettings) -> FasterWhisperTranscriber:
     )
 
 
+def _validate_speech_selection(settings: AppSettings) -> bool:
+    """Return whether the configured local catalog resolves one exact voice.
+
+    This preflight reads only the trusted local manifest and does not start a
+    model process or contact its loopback API. All catalog detail is collapsed
+    to one Boolean so settings errors cannot expose private asset locations.
+    """
+
+    config = DesktopSpeechConfig.from_app_settings(settings)
+    try:
+        catalog = JsonVoiceProfileCatalog.load(
+            config.catalog_path,
+            config.asset_root,
+            allow_local_evaluation=config.allow_local_evaluation,
+        )
+        catalog.resolve_selection(
+            config.voice_profile_id,
+            config.voice_emotion,
+        )
+    except (
+        VoiceProfileCatalogError,
+        SynthesisUnavailableError,
+        TypeError,
+        ValueError,
+    ):
+        return False
+    return True
+
+
 class DesktopBackend:
     """Translate the desktop protocol into existing Brain operations."""
 
@@ -511,6 +547,9 @@ class DesktopBackend:
         transcription_runner_factory: TranscriptionRunnerFactory | None = None,
         attachment_store: AttachmentRepository | AttachmentService | None = None,
         knowledge_runtime_factory: KnowledgeRuntimeFactory | None = None,
+        speech_selection_validator: SpeechSelectionValidator = (
+            _validate_speech_selection
+        ),
         audio_writer: AudioChannelWriter | None = None,
         speech_coordinator: DesktopSpeechCoordinator | None = None,
         input_stream: TextIO = sys.stdin,
@@ -574,6 +613,9 @@ class DesktopBackend:
             )
         self._transcription_runner_factory = transcription_runner_factory
         self._knowledge_runtime_factory = knowledge_runtime_factory
+        if not callable(speech_selection_validator):
+            raise TypeError("speech_selection_validator must be callable.")
+        self._speech_selection_validator = speech_selection_validator
         self._input_stream = input_stream
         self._output_stream = output_stream
         self._expected_session_token = (
@@ -744,6 +786,8 @@ class DesktopBackend:
                 self._complete_voice_capture(request_id, params)
             elif method == "voice.transcription.start":
                 self._start_voice_transcription(request_id, params)
+            elif method == "voice.speech.start":
+                self._start_speech_turn(request_id, params)
             elif method == "voice.speech.cancel":
                 self._cancel_speech_turn(request_id, params)
             elif method == "chat.stream":
@@ -1301,6 +1345,7 @@ class DesktopBackend:
             "activeSettings": self._serialize_settings_values(active_values),
             "restartRequired": bool(restart_fields),
             "restartFields": list(restart_fields),
+            "speechStatus": self._speech_status_result(),
             "scopes": {
                 "project": project_scope,
                 "chat": chat_scope,
@@ -1373,6 +1418,22 @@ class DesktopBackend:
                 ),
                 automatic_relisten=cast(bool, raw["automaticRelisten"]),
             )
+            current_values = self._desired_settings.values
+            selection_changed = (
+                values.voice_profile_id != current_values.voice_profile_id
+                or values.voice_emotion != current_values.voice_emotion
+            )
+            if selection_changed:
+                candidate_settings = apply_editable_settings(
+                    self._runtime_settings,
+                    values,
+                )
+                if not self._speech_selection_validator(candidate_settings):
+                    raise DesktopSettingsValidationError(
+                        "The selected local voice profile does not provide "
+                        "that emotion. Choose a configured profile and "
+                        "emotion pair."
+                    )
             saved = self._settings_repository.save(
                 values,
                 expected_revision=cast(int, params["expectedRevision"]),
@@ -1422,6 +1483,39 @@ class DesktopBackend:
                 )
 
         self._emit_response(request_id, self._settings_state_result())
+
+    def _speech_status_result(self) -> JsonObject:
+        """Return one closed renderer-safe managed-speech readiness state."""
+
+        with self._speech_lifecycle_lock:
+            coordinator = self._speech_coordinator
+            closing = self._speech_closing
+            pending_writer = self._speech_audio_writer is not None
+            if closing:
+                status = DesktopSpeechStatus("closed", False)
+            elif coordinator is not None:
+                status = coordinator.get_status()
+            elif pending_writer:
+                status = DesktopSpeechStatus("idle", False)
+            else:
+                status = DesktopSpeechStatus(
+                    "unavailable",
+                    False,
+                    "setup_unavailable",
+                )
+
+        if status.state == "ready":
+            return {"state": "ready", "reason": None}
+        if status.state in ("idle", "starting"):
+            return {"state": "starting", "reason": None}
+        return {
+            "state": "unavailable",
+            "reason": (
+                "runtime_failed"
+                if status.state == "closed"
+                else status.reason
+            ),
+        }
 
     def _voice_settings_state_result(
         self,
@@ -3488,6 +3582,7 @@ class DesktopBackend:
 
         brain = self._brain
         raw_chat_id = cast(str, params["chatId"])
+        speak_reply = cast(bool, params["speakReply"])
         uses_project_knowledge = cast(
             bool,
             params.get("useProjectKnowledge", False),
@@ -3520,6 +3615,7 @@ class DesktopBackend:
                 request_id=request_id,
                 chat_id=ChatId(raw_chat_id),
                 method=method,
+                speak_reply=speak_reply,
                 uses_project_knowledge=uses_project_knowledge,
             )
             if (
@@ -3599,17 +3695,20 @@ class DesktopBackend:
         raw_chat_id = str(task.chat_id)
         speech_finished = False
         speech_coordinator = self._speech_coordinator
-        # Electron registers this turn before either speech transport answers.
-        # If Python cannot attach a managed turn, a zero-work terminal must
-        # retire that exact owner instead of letting repeated failures exhaust
-        # Electron's bounded delivery map.
-        zero_work_terminal_pending = speech_coordinator is not None
+        # Voice Call registers its requested turn before either speech
+        # transport answers. If Python cannot attach a managed turn, a
+        # zero-work terminal retires that exact owner. Ordinary text Chat sets
+        # speakReply=false, owns no speech delivery, and must emit no terminal.
+        zero_work_terminal_pending = (
+            task.speak_reply and speech_coordinator is not None
+        )
         zero_work_terminal_emitted = False
         zero_work_success_state: Literal["completed", "cancelled"] = "completed"
 
         try:
             if (
-                speech_coordinator is not None
+                task.speak_reply
+                and speech_coordinator is not None
                 and self._runtime_settings.auto_read_aloud
             ):
                 try:
@@ -4013,6 +4112,138 @@ class DesktopBackend:
             )
         finally:
             self._release_knowledge_runtime_owner(runtime_owner)
+
+    def _require_manual_speech_admission_locked(
+        self,
+        raw_chat_id: str,
+    ) -> None:
+        """Reject stale Chat ownership or overlap with active generation.
+
+        Callers hold ``_state_lock`` through this check. The final admission
+        caller retains it until the speech turn has been queued, preventing a
+        generation reservation or Chat switch from winning between validation
+        and the coordinator's replacement boundary.
+        """
+
+        active_chat = self._active_chat
+        if active_chat is None or raw_chat_id != str(active_chat.chat_id):
+            raise ProtocolValidationError(
+                "chat.not_active",
+                "chatId is not the active desktop Chat.",
+            )
+        generation = self._generation_task
+        if generation is not None and not generation.done.is_set():
+            raise ChatBusyError(
+                "Wait for the active Chat reply before starting read aloud."
+            )
+
+    def _start_speech_turn(
+        self,
+        request_id: str,
+        params: JsonObject,
+    ) -> None:
+        """Speak one persisted Assistant message without accepting source text.
+
+        The Backend resolves the message from the canonical Chat repository so
+        a compromised or stale renderer cannot substitute arbitrary synthesis
+        input for the message identity displayed in the conversation.
+        """
+
+        if self._brain is None:
+            raise RuntimeError("Backend is not initialized.")
+
+        raw_chat_id = cast(str, params["chatId"])
+        raw_message_id = cast(str, params["assistantMessageId"])
+        with self._state_lock:
+            self._require_manual_speech_admission_locked(raw_chat_id)
+
+        try:
+            canonical_chat = self._brain.get_chat(ChatId(raw_chat_id))
+        except ChatNotFoundError as error:
+            raise ProtocolValidationError(
+                "chat.not_found",
+                "The requested Chat no longer exists.",
+            ) from error
+
+        assistant_message = next(
+            (
+                message
+                for message in canonical_chat.messages
+                if str(message.message_id) == raw_message_id
+            ),
+            None,
+        )
+        if assistant_message is None or assistant_message.role != "assistant":
+            raise ProtocolValidationError(
+                "voice.speech.invalid_target",
+                "assistantMessageId must name a persisted Assistant message.",
+            )
+
+        speech_turn: DesktopSpeechTurn | None = None
+        try:
+            # Recheck under the same lock used by Chat switching and retain it
+            # through speech admission. The repository read above may yield,
+            # so this closes the window in which an old Chat could begin
+            # speaking after another Chat became active.
+            with self._state_lock:
+                self._require_manual_speech_admission_locked(raw_chat_id)
+                with self._speech_lifecycle_lock:
+                    coordinator = self._speech_coordinator
+                    if self._speech_closing or coordinator is None:
+                        raise ProtocolValidationError(
+                            "voice.speech.unavailable",
+                            "Read aloud needs a configured local GPT-SoVITS "
+                            "runtime and compatible voice profile. Review "
+                            "Voice behavior in Settings, restart the Backend, "
+                            "and try again.",
+                        )
+                    speech_status = coordinator.get_status()
+                    if speech_status.state in ("idle", "starting"):
+                        raise ProtocolValidationError(
+                            "voice.speech.starting",
+                            "Local speech is still starting. Wait a moment, "
+                            "then try Read aloud again.",
+                        )
+                    if not speech_status.available:
+                        raise ProtocolValidationError(
+                            "voice.speech.unavailable",
+                            "Read aloud needs a configured local GPT-SoVITS "
+                            "runtime and compatible voice profile. Review "
+                            "Voice behavior in Settings, restart the Backend, "
+                            "and try again.",
+                        )
+                    speech_turn = coordinator.start_turn(
+                        request_id,
+                        raw_chat_id,
+                    )
+                    speech_turn.feed(assistant_message.content)
+                    speech_turn.finish()
+        except ProtocolValidationError:
+            raise
+        except BaseException:
+            if speech_turn is not None:
+                try:
+                    speech_turn.cancel()
+                except BaseException:
+                    pass
+            logger.error(
+                "Persisted Assistant speech could not start: request_id=%s.",
+                request_id,
+            )
+            raise ProtocolValidationError(
+                "voice.speech.start_failed",
+                "Local speech could not be started.",
+            ) from None
+
+        self._emit_response(
+            request_id,
+            {
+                "kind": "voice.speech.start",
+                "requestId": request_id,
+                "chatId": raw_chat_id,
+                "assistantMessageId": raw_message_id,
+            },
+        )
 
     def _cancel_speech_turn(
         self,

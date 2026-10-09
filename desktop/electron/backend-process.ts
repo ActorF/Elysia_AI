@@ -35,6 +35,7 @@ import type {
   ProjectWorkspaceRequest,
   RenameChatRequest,
   RetryChatRequest,
+  StartSpeechPlaybackRequest,
   DesktopSettingsState,
   VoiceSettingsState,
   UpdateDesktopSettingsRequest,
@@ -73,6 +74,7 @@ import {
   parseSettingsStateResult,
   parseVoiceCaptureResult,
   parseVoiceSpeechCancellationResult,
+  parseVoiceSpeechStartResult,
   parseVoiceSettingsStateResult,
   parseVoiceTranscriptionResult,
   parseServerMessage,
@@ -94,11 +96,13 @@ const CLIENT_NAME = 'elysia-electron'
 const CLIENT_VERSION = '0.1.0'
 const HANDSHAKE_TIMEOUT_MS = 15_000
 const INITIALIZE_TIMEOUT_MS = 120_000
+const SPEECH_START_ACK_TIMEOUT_MS = 15_000
 const CANCEL_ACK_TIMEOUT_MS = 5_000
 const CANCEL_TERMINAL_TIMEOUT_MS = 15_000
 const GROUNDED_CANCEL_TERMINAL_TIMEOUT_MS = 150_000
 const VOICE_CAPTURE_VALIDATION_TIMEOUT_MS = 5_000
 const MAX_TIMED_OUT_VOICE_CAPTURE_REQUEST_IDS = 32
+const MAX_TIMED_OUT_SPEECH_START_REQUEST_IDS = 32
 const SHUTDOWN_TIMEOUT_MS = 30_000
 const RESTART_TIMEOUT_MS = HANDSHAKE_TIMEOUT_MS + INITIALIZE_TIMEOUT_MS + 5_000
 
@@ -113,6 +117,8 @@ const BACKEND_PROCESS_FAILURE_MESSAGE =
 const BACKEND_INPUT_FAILURE_MESSAGE = 'Python Backend input failed.'
 const BACKEND_SPEECH_FAILURE_MESSAGE =
   'Backend speech event arrived before audio delivery was enabled.'
+const MANAGED_SPEECH_START_FAILURE_MESSAGE =
+  'Managed speech playback could not be started.'
 
 const BACKEND_OUTPUT_FAILURE_MESSAGES: Record<BoundedNdjsonFailure, string> = {
   'frame-too-large': 'Python Backend emitted an oversized frame.',
@@ -369,6 +375,9 @@ interface PendingRequest {
     requestId: string
     chatId: string
   }
+  resolveSpeechStart?: (receipt: { requestId: string }) => void
+  rejectSpeechStart?: (error: Error) => void
+  speechStartTarget?: StartSpeechPlaybackRequest
   cancelAccepted?: boolean
   deferredTargetResponse?: SuccessResponse | ErrorResponse
   timeout?: ReturnType<typeof setTimeout>
@@ -536,6 +545,7 @@ export class BackendProcess {
   private initializeTimeout: ReturnType<typeof setTimeout> | null = null
   private readonly pendingRequests = new Map<string, PendingRequest>()
   private readonly timedOutVoiceCaptureRequestIds = new Set<string>()
+  private readonly timedOutSpeechStartRequestIds = new Set<string>()
   private expectedExit = false
   private restartCompletion: {
     resolve: (snapshot: BackendSnapshot) => void
@@ -596,6 +606,7 @@ export class BackendProcess {
           ...(activeEntry[1].usesProjectKnowledge === true
             ? { usesProjectKnowledge: true }
             : {}),
+          speakReply: activeEntry[1].generation?.speakReply === true,
           stopping: activeEntry[1].cancelAccepted === true
             || [...this.pendingRequests.values()].some((pending) => (
               pending.method === 'request.cancel'
@@ -676,6 +687,7 @@ export class BackendProcess {
     const sessionToken = randomBytes(32).toString('base64url')
     this.pendingRequests.clear()
     this.timedOutVoiceCaptureRequestIds.clear()
+    this.timedOutSpeechStartRequestIds.clear()
     this.disposeSpeechDelivery()
     this.speechDeliveryDisabled = false
     this.updateSnapshot({
@@ -879,6 +891,7 @@ export class BackendProcess {
       chatId: request.chatId,
       message,
       attachmentIds: [...request.attachmentIds],
+      speakReply: request.speakReply,
       ...(request.useProjectKnowledge === undefined
         ? {}
         : { useProjectKnowledge: request.useProjectKnowledge }),
@@ -887,10 +900,12 @@ export class BackendProcess {
       generation: {
         kind: 'send',
         userText: message,
+        speakReply: request.speakReply,
       },
     })
     if (
-      this.snapshot.capabilities.includes('voice.speech')
+      request.speakReply
+      && this.snapshot.capabilities.includes('voice.speech')
       && !this.speechDeliveryDisabled
     ) {
       this.speechDelivery?.startTurn(requestId, request.chatId)
@@ -1156,6 +1171,7 @@ export class BackendProcess {
         chatId: request.chatId,
         userMessageId: request.userMessageId,
         assistantMessageId: request.assistantMessageId,
+        speakReply: request.speakReply,
         ...(message === undefined ? {} : { message }),
         ...(request.useProjectKnowledge === undefined
           ? {}
@@ -1169,11 +1185,13 @@ export class BackendProcess {
           ...(message === undefined ? {} : { userText: message }),
           userMessageId: request.userMessageId,
           assistantMessageId: request.assistantMessageId,
+          speakReply: request.speakReply,
         },
       },
     )
     if (
-      this.snapshot.capabilities.includes('voice.speech')
+      request.speakReply
+      && this.snapshot.capabilities.includes('voice.speech')
       && !this.speechDeliveryDisabled
     ) {
       this.speechDelivery?.startTurn(requestId, request.chatId)
@@ -1188,6 +1206,90 @@ export class BackendProcess {
       CHAT_GENERATION_METHODS,
       'generation',
     )
+  }
+
+  /** Start managed speech for one exact persisted assistant reply. */
+  startSpeechPlayback(
+    request: StartSpeechPlaybackRequest,
+  ): Promise<{ requestId: string }> {
+    if (
+      this.snapshot.status !== 'ready'
+      || !this.snapshot.capabilities.includes('voice.speech')
+      || !this.snapshot.capabilities.includes('voice.speech.start')
+      || !this.snapshot.capabilities.includes('voice.speech.cancel')
+      || this.speechDeliveryDisabled
+      || this.speechDelivery === null
+    ) {
+      return Promise.reject(
+        new Error('Managed speech playback is not available.'),
+      )
+    }
+    if (request.chatId !== this.snapshot.chatId) {
+      return Promise.reject(new Error('The requested Chat is not active.'))
+    }
+    for (const identifier of [request.chatId, request.assistantMessageId]) {
+      if (
+        !hasNonBlankCodePoint(identifier)
+        || codePointLength(identifier) > MAX_IDENTIFIER_LENGTH
+      ) {
+        return Promise.reject(
+          new Error('Managed speech request contains an invalid identifier.'),
+        )
+      }
+    }
+    if ([...this.pendingRequests.values()].some(
+      (pending) => CHAT_GENERATION_METHODS.has(pending.method),
+    )) {
+      return Promise.reject(
+        new Error('Wait for the active Chat reply to finish.'),
+      )
+    }
+    if ([...this.pendingRequests.values()].some(
+      (pending) => pending.method === 'voice.speech.start',
+    )) {
+      return Promise.reject(
+        new Error('Managed speech playback is already starting.'),
+      )
+    }
+
+    return new Promise<{ requestId: string }>((resolve, reject) => {
+      const requestId = this.sendRequest(
+        'voice.speech.start',
+        {
+          chatId: request.chatId,
+          assistantMessageId: request.assistantMessageId,
+        },
+        undefined,
+        {
+          resolveSpeechStart: resolve,
+          rejectSpeechStart: reject,
+          speechStartTarget: { ...request },
+        },
+      )
+      // Register before control returns to Renderer so authenticated speech
+      // metadata can never outrun its local ownership record. Manual playback
+      // stays unarmed until the exact persisted-message ACK is validated.
+      this.speechDelivery?.startTurn(requestId, request.chatId, false)
+      const pending = this.pendingRequests.get(requestId)
+      if (pending !== undefined) {
+        pending.timeout = setTimeout(() => {
+          if (this.pendingRequests.get(requestId) !== pending) {
+            return
+          }
+          this.pendingRequests.delete(requestId)
+          pending.timeout = undefined
+          this.rememberTimedOutSpeechStartRequest(requestId)
+          pending.rejectSpeechStart?.(
+            new Error('Managed speech start request timed out.'),
+          )
+          // A timed-out ACK is not proof that Python rejected the request.
+          // Revoke the exact local owner and mirror that identifier back to
+          // Python so a late admission cannot speak after Renderer gives up.
+          void this.stopSpeechPlayback(requestId, request.chatId)
+            .catch(() => undefined)
+        }, SPEECH_START_ACK_TIMEOUT_MS)
+      }
+    })
   }
 
   /** Stop one exact local and Python speech turn after Chat text has settled. */
@@ -1230,9 +1332,21 @@ export class BackendProcess {
     })
   }
 
-  /** Stop the current trusted speech turn after renderer ownership is reset. */
+  /**
+   * Stop the current trusted turn after renderer ownership is reset.
+   *
+   * Local playback is invalidated synchronously. Its coordinator-proven
+   * identity is then mirrored to Python on a best-effort basis so navigation
+   * and window teardown do not leave synthesis running without an owner.
+   */
   stopCurrentSpeechPlayback(): void {
-    this.speechDelivery?.cancelCurrentTurn()
+    const target = this.speechDelivery?.cancelCurrentTurn() ?? null
+    if (target === null) {
+      return
+    }
+    void this.stopSpeechPlayback(target.requestId, target.chatId).catch(
+      () => undefined,
+    )
   }
 
   /** Ask Python to stop one currently tracked transcription request. */
@@ -1543,6 +1657,24 @@ export class BackendProcess {
       .value
     if (oldestRequestId !== undefined) {
       this.timedOutVoiceCaptureRequestIds.delete(oldestRequestId)
+    }
+  }
+
+  private rememberTimedOutSpeechStartRequest(requestId: string): void {
+    this.timedOutSpeechStartRequestIds.add(requestId)
+    if (
+      this.timedOutSpeechStartRequestIds.size
+      <= MAX_TIMED_OUT_SPEECH_START_REQUEST_IDS
+    ) {
+      return
+    }
+
+    const oldestRequestId = this.timedOutSpeechStartRequestIds
+      .values()
+      .next()
+      .value
+    if (oldestRequestId !== undefined) {
+      this.timedOutSpeechStartRequestIds.delete(oldestRequestId)
     }
   }
 
@@ -2068,6 +2200,9 @@ export class BackendProcess {
       | 'resolveSpeechCancellation'
       | 'rejectSpeechCancellation'
       | 'speechCancellationTarget'
+      | 'resolveSpeechStart'
+      | 'rejectSpeechStart'
+      | 'speechStartTarget'
       | 'generation'
     > = {},
   ): string {
@@ -2162,6 +2297,9 @@ export class BackendProcess {
       if (this.timedOutVoiceCaptureRequestIds.delete(message.id)) {
         return
       }
+      if (this.timedOutSpeechStartRequestIds.delete(message.id)) {
+        return
+      }
       this.protocolFailure(
         `Backend responded to an unknown request: ${message.id}.`,
       )
@@ -2209,6 +2347,24 @@ export class BackendProcess {
         parseVoiceCaptureResult(message.result)
       } else if (VOICE_TRANSCRIPTION_METHODS.has(pending.method)) {
         parseVoiceTranscriptionResult(message.result)
+      } else if (pending.method === 'voice.speech.start') {
+        const result = parseVoiceSpeechStartResult(message.result)
+        const target = pending.speechStartTarget
+        if (
+          target === undefined
+          || result.requestId !== message.id
+          || result.chatId !== target.chatId
+          || result.assistantMessageId !== target.assistantMessageId
+        ) {
+          this.speechDelivery?.cancelTurn(message.id)
+          throw new ProtocolValidationError(
+            'protocol.invalid_result',
+            'Managed speech start response does not match its request.',
+          )
+        }
+        // The coordinator may have become stale while the ACK was in flight;
+        // in that case the exact response can resolve but must not revive audio.
+        this.speechDelivery?.armTurn(message.id, target.chatId)
       } else if (pending.method === 'voice.speech.cancel') {
         parseVoiceSpeechCancellationResult(message.result)
       } else if (ATTACHMENT_METHODS.has(pending.method)) {
@@ -2371,6 +2527,17 @@ export class BackendProcess {
       }
       if (pending.method === 'voice.speech.cancel') {
         pending.rejectSpeechCancellation?.(new Error(message.error.message))
+      }
+      if (pending.method === 'voice.speech.start') {
+        const target = pending.speechStartTarget
+        if (target === undefined) {
+          this.speechDelivery?.cancelTurn(message.id)
+        } else {
+          this.speechDelivery?.cancelOwnedTurn(message.id, target.chatId)
+        }
+        pending.rejectSpeechStart?.(
+          new Error(MANAGED_SPEECH_START_FAILURE_MESSAGE),
+        )
       }
       if (pending.method === 'knowledge.source.export') {
         this.updateSnapshot({})
@@ -2575,6 +2742,11 @@ export class BackendProcess {
         language: result.language,
         languageProbability: result.languageProbability,
       })
+      return
+    }
+
+    if (pending.method === 'voice.speech.start') {
+      pending.resolveSpeechStart?.({ requestId: message.id })
       return
     }
 
@@ -3186,6 +3358,7 @@ export class BackendProcess {
     this.clearHandshakeTimeout()
     this.clearInitializeTimeout()
     this.timedOutVoiceCaptureRequestIds.clear()
+    this.timedOutSpeechStartRequestIds.clear()
     for (const pending of this.pendingRequests.values()) {
       if (pending.timeout !== undefined) {
         clearTimeout(pending.timeout)
@@ -3234,6 +3407,9 @@ export class BackendProcess {
       pending.rejectSpeechCancellation?.(
         new Error('Python Backend stopped before speech was cancelled.'),
       )
+      pending.rejectSpeechStart?.(
+        new Error('Python Backend stopped before speech playback started.'),
+      )
     }
     this.pendingRequests.clear()
   }
@@ -3257,6 +3433,7 @@ export class BackendProcess {
       pending.rejectKnowledgeExport?.(error)
       pending.rejectCancellation?.(error)
       pending.rejectSpeechCancellation?.(error)
+      pending.rejectSpeechStart?.(error)
       pending.resolveChatState = undefined
       pending.rejectChatState = undefined
       pending.resolveProjectState = undefined
@@ -3277,6 +3454,8 @@ export class BackendProcess {
       pending.rejectCancellation = undefined
       pending.resolveSpeechCancellation = undefined
       pending.rejectSpeechCancellation = undefined
+      pending.resolveSpeechStart = undefined
+      pending.rejectSpeechStart = undefined
     }
   }
 
@@ -3286,6 +3465,7 @@ export class BackendProcess {
     this.rejectPendingActionPromises(message)
     this.pendingRequests.clear()
     this.timedOutVoiceCaptureRequestIds.clear()
+    this.timedOutSpeechStartRequestIds.clear()
     this.updateSnapshot({
       status: 'error',
       protocolName: undefined,
@@ -3306,6 +3486,7 @@ export class BackendProcess {
     this.rejectPendingActionPromises(message)
     this.pendingRequests.clear()
     this.timedOutVoiceCaptureRequestIds.clear()
+    this.timedOutSpeechStartRequestIds.clear()
     // The handshake remains valid even though Brain creation failed. Preserve
     // negotiated capabilities so repair-only Settings methods remain gated by
     // the authenticated contract instead of looking like an unknown child.

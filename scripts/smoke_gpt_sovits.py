@@ -32,7 +32,7 @@ from voice import (
 
 _SMOKE_TEXT: Final = "这是本地语音合成连通性测试。"
 _REPETITIONS: Final = 2
-_MAX_EMOTIONS: Final = 8
+_MAX_EMOTIONS: Final = 16
 
 
 class _InvalidSmokeAudioError(Exception):

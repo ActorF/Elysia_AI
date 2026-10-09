@@ -6,8 +6,14 @@ from threading import Event
 
 import pytest
 
+import core.brain as brain_module
 from attachments import AttachmentScope
 from chats import (
+    ChatGroundedAnswer,
+    ChatGroundedCitation,
+    ChatGroundedStatement,
+    ChatGroundedStatementKind,
+    ChatGroundedTextLocation,
     ChatId,
     ChatSession,
     JsonChatRepository,
@@ -119,6 +125,74 @@ def _project_brain(
     )
 
 
+def _grounded_answer_with_statement(
+    *,
+    kind: ChatGroundedStatementKind,
+    text: str,
+    excerpt: str,
+) -> ChatGroundedAnswer:
+    """Build one closed grounded answer for normalization boundary tests."""
+
+    citation_id = "citation_" + "a" * 64
+    return ChatGroundedAnswer(
+        status="answered",
+        context_passage_count=1,
+        statements=(
+            ChatGroundedStatement(
+                statement_id="statement_001",
+                kind=kind,
+                text=text,
+                citation_ids=(citation_id,),
+            ),
+        ),
+        citations=(
+            ChatGroundedCitation(
+                citation_id=citation_id,
+                kind="prose",
+                excerpt=excerpt,
+                file_name="source.txt",
+                media_type="text/plain",
+                page_number=None,
+                locations=(
+                    ChatGroundedTextLocation(
+                        block_ordinal=0,
+                        source_start_code_point=0,
+                        source_end_code_point=len(excerpt),
+                    ),
+                ),
+            ),
+        ),
+    )
+
+
+def test_grounded_source_fact_remains_exact_evidence() -> None:
+    """Never simplify proof text away from its cited source excerpt."""
+
+    answer = _grounded_answer_with_statement(
+        kind="source_fact",
+        text="乾坤與乾燥。",
+        excerpt="原文写着：乾坤與乾燥。",
+    )
+
+    normalized = brain_module._normalize_grounded_answer(answer)
+
+    assert normalized.statements[0].text == "乾坤與乾燥。"
+    assert normalized.citations[0].excerpt == "原文写着：乾坤與乾燥。"
+
+
+def test_grounded_model_statement_cannot_normalize_to_empty() -> None:
+    """Fail closed when a model-only cue has no publishable answer text."""
+
+    answer = _grounded_answer_with_statement(
+        kind="model_summary",
+        text="（輕笑一聲）",
+        excerpt="Evidence for the summary.",
+    )
+
+    with pytest.raises(ValueError, match="cannot be empty"):
+        brain_module._normalize_grounded_answer(answer)
+
+
 def test_grounded_chat_persists_structured_insufficient_result(
     tmp_path: Path,
 ) -> None:
@@ -222,7 +296,10 @@ def test_chat_returns_reply_and_saves_messages(
     assert len(received_messages) == 2
 
     assert received_messages[0]["role"] == "system"
-    assert "你是 Elysia" in received_messages[0]["content"]
+    assert (
+        "在 Elysia AI 的角色叙事中，你是《崩坏3》中的爱莉希雅"
+        in received_messages[0]["content"]
+    )
     assert (
         "USER_PROFILE_JSON:"
         in received_messages[0]["content"]
@@ -244,6 +321,125 @@ def test_chat_returns_reply_and_saves_messages(
     assert messages[1].role == "assistant"
     assert messages[1].content == "Hello, Ying!"
     assert memory.get_recent_messages() == []
+
+
+def test_chat_simplifies_reply_and_removes_stage_direction(
+    tmp_path: Path,
+) -> None:
+    """Normalize non-streaming model prose before returning or persistence."""
+
+    chat_model = FakeChatModel(
+        "（輕笑一聲，眼神裡滿是驚喜）很高興見到你。"
+    )
+    brain, _memory, chat = _active_brain(tmp_path, chat_model)
+
+    reply = brain.chat(chat.chat_id, "你好")
+
+    assert reply == "很高兴见到你。"
+    assert brain.get_chat(chat.chat_id).messages[-1].content == reply
+
+
+def test_chat_preserves_stage_content_for_explicit_fiction_request(
+    tmp_path: Path,
+) -> None:
+    """Keep narration as work product only when the current turn requests it."""
+
+    chat_model = FakeChatModel(
+        "（輕笑一聲）她把故事的最後一頁翻開。"
+    )
+    brain, _memory, chat = _active_brain(tmp_path, chat_model)
+
+    reply = brain.chat(chat.chat_id, "请续写这个故事，并保留动作描写。")
+
+    assert reply == "（轻笑一声）她把故事的最后一页翻开。"
+    assert brain.get_chat(chat.chat_id).messages[-1].content == reply
+
+
+def test_chat_negation_does_not_enable_stage_content(
+    tmp_path: Path,
+) -> None:
+    """Treat an explicit no-narration instruction as ordinary spoken chat."""
+
+    chat_model = FakeChatModel("（輕笑一聲）好，我会直接回答。")
+    brain, _memory, chat = _active_brain(tmp_path, chat_model)
+
+    reply = brain.chat(chat.chat_id, "不要写动作旁白，直接回答。")
+
+    assert reply == "好，我会直接回答。"
+
+
+def test_chat_creative_adjective_negation_still_allows_stage_content(
+    tmp_path: Path,
+) -> None:
+    """Do not confuse a story adjective with a no-narration instruction."""
+
+    chat_model = FakeChatModel("（輕輕一笑）故事有了新的方向。")
+    brain, _memory, chat = _active_brain(tmp_path, chat_model)
+
+    reply = brain.chat(
+        chat.chat_id,
+        "请写一个不要悲伤的故事，并保留动作描写。",
+    )
+
+    assert reply == "（轻轻一笑）故事有了新的方向。"
+
+
+def test_chat_english_plural_stage_negation_removes_narration(
+    tmp_path: Path,
+) -> None:
+    """Recognize plural English stage-direction opt-outs."""
+
+    chat_model = FakeChatModel("(smiling) Here is the story.")
+    brain, _memory, chat = _active_brain(tmp_path, chat_model)
+
+    reply = brain.chat(
+        chat.chat_id,
+        "Write a story without stage directions.",
+    )
+
+    assert reply == "Here is the story."
+
+
+def test_stream_chat_normalizes_across_model_chunk_edges(
+    tmp_path: Path,
+) -> None:
+    """Expose, save, and return one identical context-aware simplified reply."""
+
+    chat_model = FakeChatModel(
+        "Unused reply",
+        stream_chunks=[
+            "（輕笑一",
+            "聲，眼神裡很開心）",
+            "乾",
+            "坤與乾",
+            "燥。",
+        ],
+    )
+    brain, _memory, chat = _active_brain(tmp_path, chat_model)
+
+    emitted = "".join(brain.stream_chat(chat.chat_id, "說點什麼"))
+
+    assert emitted == "乾坤与干燥。"
+    assert brain.get_chat(chat.chat_id).messages[-1].content == emitted
+
+
+def test_stream_chat_preserves_requested_script_actions(
+    tmp_path: Path,
+) -> None:
+    """Apply the creative-content exception across streamed chunk boundaries."""
+
+    chat_model = FakeChatModel(
+        "Unused reply",
+        stream_chunks=["（輕笑", "一聲）", "她轉身離開。"],
+    )
+    brain, _memory, chat = _active_brain(tmp_path, chat_model)
+
+    emitted = "".join(
+        brain.stream_chat(chat.chat_id, "请创作一段剧本动作描写。")
+    )
+
+    assert emitted == "（轻笑一声）她转身离开。"
+    assert brain.get_chat(chat.chat_id).messages[-1].content == emitted
 
 
 def test_chat_rejects_empty_user_message(
@@ -426,7 +622,7 @@ def test_stream_chat_yields_chunks_and_saves_complete_turn(
         brain.stream_chat(chat.chat_id, "  Hello, Elysia!  ")
     )
 
-    assert chunks == ["Hello", " Ying!"]
+    assert chunks == ["Hello Ying!"]
 
     received_messages = chat_model.received_messages
 
@@ -536,13 +732,11 @@ def test_stream_chat_does_not_save_partial_turn_on_stream_error(
 
     stream = brain.stream_chat(chat.chat_id, "Hello")
 
-    assert next(stream) == "Partial reply"
-
     with pytest.raises(
         RuntimeError,
         match=r"Streaming interrupted\.",
     ):
-        next(stream)
+        list(stream)
 
     assert brain.get_chat(chat.chat_id).messages == ()
 
@@ -569,7 +763,7 @@ def test_stream_retry_atomically_replaces_the_persisted_tail(
         )
     )
 
-    assert chunks == ["Replacement", " answer"]
+    assert chunks == ["Replacement answer"]
     retried = brain.get_chat(chat.chat_id)
     assert [message.content for message in retried.messages] == [
         "Edited question",
@@ -670,9 +864,8 @@ def test_stream_retry_failure_keeps_the_original_pair(
         "Edited question",
     )
 
-    assert next(stream) == "Partial replacement"
     with pytest.raises(RuntimeError, match=r"Retry failed"):
-        next(stream)
+        list(stream)
 
     assert brain.get_chat(chat.chat_id) == original
 
@@ -683,7 +876,7 @@ def test_cancelled_retry_keeps_the_original_pair(
     """Verify that cancelled retry keeps the original pair."""
     chat_model = FakeChatModel(
         "Original answer",
-        stream_chunks=["Partial replacement", "Not emitted"],
+        stream_chunks=["Partial replacement。", "Not emitted"],
     )
     brain, _memory, chat = _active_brain(tmp_path, chat_model)
     brain.chat(chat.chat_id, "Original question")
@@ -697,7 +890,7 @@ def test_cancelled_retry_keeps_the_original_pair(
         should_cancel=lambda: cancelled,
     )
 
-    assert next(stream) == "Partial replacement"
+    assert next(stream) == "Partial replacement。"
     cancelled = True
     with pytest.raises(GenerationCancelledError, match=r"cancelled"):
         next(stream)
@@ -711,7 +904,7 @@ def test_cancelled_stream_never_persists_a_partial_turn(
     """Keep streamed partial text transient when cancellation precedes commit."""
     chat_model = FakeChatModel(
         "Unused reply",
-        stream_chunks=["First", "Second"],
+        stream_chunks=["First。", "Second"],
     )
     brain, _memory, chat = _active_brain(tmp_path, chat_model)
     cancelled = False
@@ -721,7 +914,7 @@ def test_cancelled_stream_never_persists_a_partial_turn(
         should_cancel=lambda: cancelled,
     )
 
-    assert next(stream) == "First"
+    assert next(stream) == "First。"
     cancelled = True
     with pytest.raises(GenerationCancelledError, match=r"cancelled"):
         next(stream)
@@ -1006,7 +1199,7 @@ def test_stream_chat_saves_complete_short_term_turn(
         brain.stream_chat(chat.chat_id, "Hello, Elysia!")
     )
 
-    assert chunks == ["Hello", " Ying!"]
+    assert chunks == ["Hello Ying!"]
     assert short_term_memory.get_turns() == []
     assert [
         message.content
@@ -1036,13 +1229,11 @@ def test_stream_chat_does_not_save_partial_short_term_turn(
 
     stream = brain.stream_chat(chat.chat_id, "Hello")
 
-    assert next(stream) == "Partial reply"
-
     with pytest.raises(
         RuntimeError,
         match=r"Streaming interrupted\.",
     ):
-        next(stream)
+        list(stream)
 
     assert short_term_memory.get_turns() == []
     assert brain.get_chat(chat.chat_id).messages == ()

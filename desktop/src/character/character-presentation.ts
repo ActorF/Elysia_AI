@@ -41,7 +41,17 @@ export interface CharacterPresentation {
 export interface CharacterEmotionPresentation {
   readonly atlasColumn: 0 | 1 | 2 | 3 | 4
   readonly atlasRow: 0 | 1 | 2 | 3
-  readonly expression: 'soft-smile' | 'happy' | 'gentle-sad'
+  readonly expression:
+    | 'soft-smile'
+    | 'happy'
+    | 'gentle-sad'
+    | 'tender-comfort'
+    | 'light-tears'
+    | 'playful'
+    | 'shy'
+    | 'wink'
+    | 'serious'
+    | 'surprised'
 }
 
 const PRESENTATION_BY_STATE = Object.freeze({
@@ -104,6 +114,41 @@ const PRESENTATION_BY_EMOTION = Object.freeze({
     atlasColumn: 2,
     atlasRow: 1,
     expression: 'gentle-sad',
+  }),
+  caring: Object.freeze({
+    atlasColumn: 2,
+    atlasRow: 3,
+    expression: 'tender-comfort',
+  }),
+  moved: Object.freeze({
+    atlasColumn: 4,
+    atlasRow: 3,
+    expression: 'light-tears',
+  }),
+  playful: Object.freeze({
+    atlasColumn: 0,
+    atlasRow: 2,
+    expression: 'playful',
+  }),
+  affectionate: Object.freeze({
+    atlasColumn: 1,
+    atlasRow: 2,
+    expression: 'shy',
+  }),
+  teasing: Object.freeze({
+    atlasColumn: 4,
+    atlasRow: 1,
+    expression: 'wink',
+  }),
+  serious: Object.freeze({
+    atlasColumn: 4,
+    atlasRow: 0,
+    expression: 'serious',
+  }),
+  surprised: Object.freeze({
+    atlasColumn: 2,
+    atlasRow: 2,
+    expression: 'surprised',
   }),
 }) satisfies Readonly<Record<CharacterEmotion, CharacterEmotionPresentation>>
 

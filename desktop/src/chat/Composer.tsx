@@ -1,6 +1,6 @@
 /**
- * Render message input, attachments, model selection, feedback, and voice
- * entry points. All privileged actions are delegated through callback props.
+ * Render message input, attachments, model selection, Song Cover progress,
+ * feedback, and voice entry points. Privileged actions use callback props.
  */
 
 import {
@@ -15,10 +15,44 @@ import type {
   AttachmentState,
   BackendSnapshot,
 } from '../../electron/contracts.ts'
+import type { SongCoverState } from '../../electron/song-cover-contracts.ts'
 import { AttachmentSurface } from '../attachments/AttachmentSurface.tsx'
 import { InlineAlert } from '../design-system/Feedback.tsx'
 import { Icon } from '../design-system/Icon.tsx'
+import { isSongCoverBusyStage } from '../song-cover/song-cover-stage.ts'
 import type { ChatNotice } from './types.ts'
+
+function songCoverKeyLabel(
+  shift: SongCoverState['keyShiftSemitones'],
+): string {
+  switch (shift) {
+    case 2:
+      return 'Raised 2 semitones'
+    case 1:
+      return 'Raised 1 semitone'
+    case -2:
+      return 'Lowered 2 semitones'
+    case -1:
+      return 'Lowered 1 semitone'
+    case 0:
+      return 'Original key'
+    case null:
+      return 'Key pending'
+  }
+}
+
+function songCoverEngineLabel(
+  engine: SongCoverState['engine'],
+): string {
+  switch (engine) {
+    case 'lyrics-svs':
+      return 'Lyrics-driven singing'
+    case 'legacy-svc':
+      return 'Legacy voice conversion'
+    case null:
+      return 'Singing method pending'
+  }
+}
 
 interface ComposerProps {
   attachmentAdding: boolean
@@ -39,8 +73,12 @@ interface ComposerProps {
   notice: ChatNotice | null
   retryPending: boolean
   snapshot: BackendSnapshot
+  songCoverDisabled: boolean
+  songCoverStartUnavailableMessage: string | null
+  songCoverState: SongCoverState | null
   streaming: boolean
   stopPending: boolean
+  voiceCallDisabled: boolean
   onChooseAttachments(): void
   onDismissAttachmentError(): void
   onDismissNotice(): void
@@ -50,8 +88,13 @@ interface ComposerProps {
   onRemoveAttachment(attachmentId: string): Promise<boolean>
   onRetryConnection(): void
   onSelectModel(modelName: string): void
+  onCancelSongCover(): void
+  onExportSongCover(): void
+  onOpenSongCoverSetup(): void
+  onPlaySongCover(): void
   onSend(): void
   onStop(): void
+  onStopSongCover(): void
   onToggleDictation(): void
 }
 
@@ -75,8 +118,12 @@ export function Composer({
   notice,
   retryPending,
   snapshot,
+  songCoverDisabled,
+  songCoverStartUnavailableMessage,
+  songCoverState,
   streaming,
   stopPending,
+  voiceCallDisabled,
   onChooseAttachments,
   onDismissAttachmentError,
   onDismissNotice,
@@ -86,8 +133,13 @@ export function Composer({
   onRemoveAttachment,
   onRetryConnection,
   onSelectModel,
+  onCancelSongCover,
+  onExportSongCover,
+  onOpenSongCoverSetup,
+  onPlaySongCover,
   onSend,
   onStop,
+  onStopSongCover,
   onToggleDictation,
 }: ComposerProps) {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
@@ -98,6 +150,7 @@ export function Composer({
   const attachmentInteractionDisabled = attachmentDisabled
     || attachmentAdding
     || attachmentRemovingIds.length > 0
+  const songCoverRunning = isSongCoverBusyStage(songCoverState?.stage)
 
   useLayoutEffect(() => {
     const textarea = textareaRef.current
@@ -154,6 +207,103 @@ export function Composer({
         onDrop={onDropAttachments}
         onRemove={onRemoveAttachment}
       >
+        {songCoverState !== null && songCoverState.stage !== 'idle' && (
+          <section
+            className={`song-cover-panel ${songCoverState.stage}`}
+            aria-label="Song Cover"
+          >
+            <span className="song-cover-mark" aria-hidden="true">
+              <Icon name="music" />
+            </span>
+            <div className="song-cover-copy">
+              <strong title={songCoverState.sourceName ?? 'Song Cover'}>
+                {songCoverState.sourceName ?? 'Song Cover'}
+              </strong>
+              {songCoverState.sourceMode === 'stems'
+                && songCoverState.accompanimentName !== null && (
+                <span
+                  className="song-cover-accompaniment"
+                  title={songCoverState.accompanimentName}
+                >
+                  Accompaniment · {songCoverState.accompanimentName}
+                </span>
+              )}
+              <span
+                className="song-cover-metadata"
+                aria-label="Song Cover settings"
+              >
+                <span>{songCoverEngineLabel(songCoverState.engine)}</span>
+                <span aria-hidden="true">·</span>
+                <span>{songCoverKeyLabel(songCoverState.keyShiftSemitones)}</span>
+              </span>
+              <span
+                className="song-cover-status"
+                role={songCoverState.error === null ? 'status' : 'alert'}
+                aria-live="polite"
+              >
+                {songCoverState.error
+                  ?? songCoverState.message
+                  ?? 'Choose another song to try again.'}
+              </span>
+              {songCoverRunning && (
+                <span className="song-cover-progress">
+                  <progress
+                    max={100}
+                    value={songCoverState.progressPercent}
+                    aria-label="Song Cover progress"
+                  />
+                  <span>{songCoverState.progressPercent}%</span>
+                </span>
+              )}
+            </div>
+            <span className="song-cover-actions">
+              {songCoverRunning && (
+                <button
+                  type="button"
+                  className="tool-button"
+                  onClick={onCancelSongCover}
+                  aria-label="Cancel Song Cover"
+                  title="Cancel Song Cover"
+                >
+                  <Icon name="close" />
+                </button>
+              )}
+              {songCoverState.outputAvailable && (
+                <>
+                  <button
+                    type="button"
+                    className="tool-button"
+                    disabled={
+                      songCoverState.stage !== 'playing' && songCoverDisabled
+                    }
+                    onClick={songCoverState.stage === 'playing'
+                      ? onStopSongCover
+                      : onPlaySongCover}
+                    aria-label={songCoverState.stage === 'playing'
+                      ? 'Stop Song Cover'
+                      : 'Play Song Cover'}
+                    title={songCoverState.stage === 'playing'
+                      ? 'Stop Song Cover'
+                      : 'Play Song Cover'}
+                  >
+                    <Icon name={songCoverState.stage === 'playing'
+                      ? 'stop'
+                      : 'play'} />
+                  </button>
+                  <button
+                    type="button"
+                    className="tool-button"
+                    onClick={onExportSongCover}
+                    aria-label="Export Song Cover"
+                    title="Export lossless WAV"
+                  >
+                    <Icon name="download" />
+                  </button>
+                </>
+              )}
+            </span>
+          </section>
+        )}
         <label className="visually-hidden" htmlFor="chat-composer">
           Message Elysia
         </label>
@@ -214,6 +364,37 @@ export function Composer({
           </div>
 
           <div className="voice-tools">
+            <span
+              className="song-cover-trigger"
+              title={songCoverStartUnavailableMessage
+                ?? 'Choose a song for Elysia to sing'}
+            >
+              <button
+                type="button"
+                className="tool-button song-cover-button"
+                disabled={
+                  songCoverDisabled
+                  || songCoverStartUnavailableMessage !== null
+                }
+                onClick={onOpenSongCoverSetup}
+                aria-label="Song Cover"
+                aria-describedby={songCoverStartUnavailableMessage === null
+                  ? undefined
+                  : 'song-cover-readiness-description'}
+                title={songCoverStartUnavailableMessage
+                  ?? 'Choose a song for Elysia to sing'}
+              >
+                <Icon name="music" />
+              </button>
+              {songCoverStartUnavailableMessage !== null && (
+                <span
+                  id="song-cover-readiness-description"
+                  className="visually-hidden"
+                >
+                  {songCoverStartUnavailableMessage}
+                </span>
+              )}
+            </span>
             <button
               type="button"
               className={'tool-button dictation-button' + (
@@ -231,6 +412,7 @@ export function Composer({
               ref={callButtonRef}
               type="button"
               className="tool-button phone-button"
+              disabled={voiceCallDisabled}
               onClick={onOpenCall}
               aria-label="Voice Call"
               title="Voice Call"

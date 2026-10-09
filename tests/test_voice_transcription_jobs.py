@@ -507,6 +507,32 @@ def test_forget_removes_consumed_transcript_and_identifier() -> None:
         runner.shutdown()
 
 
+def test_success_normalizes_all_final_transcripts_to_simplified_chinese() -> None:
+    """Normalize mixed-language engine output before publishing job results."""
+
+    raw_result = TranscriptionResult(
+        text="Voice Call 說：乾坤與乾燥。",
+        language="en",
+        language_probability=0.8,
+    )
+    runner = TranscriptionJobRunner(
+        _SequenceTranscriber([raw_result]),
+        config=_config(queued=0),
+    )
+    try:
+        runner.submit("job-simplified", _request("simplified"))
+        snapshot = runner.wait("job-simplified", 1.0)
+
+        assert snapshot.state == "succeeded"
+        assert snapshot.result == TranscriptionResult(
+            text="Voice Call 说：乾坤与干燥。",
+            language="en",
+            language_probability=0.8,
+        )
+    finally:
+        runner.shutdown()
+
+
 def test_forget_keeps_draining_capacity_record_until_native_return() -> None:
     """Clear logical metadata without hiding an uninterruptible cancelled call."""
 

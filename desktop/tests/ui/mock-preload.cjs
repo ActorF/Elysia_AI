@@ -76,6 +76,7 @@ function defaultSettingsState() {
     activeSettings: { ...values },
     restartRequired: false,
     restartFields: [],
+    speechStatus: { state: 'ready', reason: null },
     scopes: {
       project: null,
       chat: {
@@ -164,6 +165,31 @@ function defaultPresenceNotificationState() {
     reminderFrequency: 'off',
     runtime: 'available',
     warning: null,
+  }
+}
+
+function defaultSongCoverState() {
+  return {
+    revision: 0,
+    jobId: null,
+    stage: 'idle',
+    sourceName: null,
+    accompanimentName: null,
+    sourceMode: null,
+    engine: null,
+    keyShiftSemitones: null,
+    progressPercent: 0,
+    outputAvailable: false,
+    message: null,
+    errorCode: null,
+    error: null,
+  }
+}
+
+function defaultSongCoverReadiness() {
+  return {
+    status: 'available',
+    reason: null,
   }
 }
 
@@ -335,6 +361,8 @@ let settingsState = defaultSettingsState()
 let dataStorageState = defaultDataStorageState()
 let desktopPetState = defaultDesktopPetState()
 let presenceNotificationState = defaultPresenceNotificationState()
+let songCoverReadiness = defaultSongCoverReadiness()
+let songCoverState = defaultSongCoverState()
 let voiceSettingsState = defaultVoiceSettingsState()
 let microphonePermissionStatus = 'granted'
 let nextSettingsError = null
@@ -361,6 +389,7 @@ let nextAttachmentNumber = 1
 let nextKnowledgeNumber = 1
 let nextCallSequence = 1
 let nextProjectUpdateNumber = 1
+let nextSongCoverNumber = 1
 let calls = []
 let delayChatActions = false
 let pendingChatActions = []
@@ -381,6 +410,7 @@ let nextVoiceTranscriptionTerminalBeforeAcknowledgement = false
 const backendListeners = new Set()
 const desktopPetStateListeners = new Set()
 const presenceNotificationStateListeners = new Set()
+const songCoverStateListeners = new Set()
 
 const reloadState = takeReloadState()
 if (reloadState !== null) {
@@ -398,6 +428,12 @@ if (reloadState !== null) {
     reloadState.presenceNotificationState
       ?? defaultPresenceNotificationState(),
   )
+  songCoverReadiness = clone(
+    reloadState.songCoverReadiness ?? defaultSongCoverReadiness(),
+  )
+  songCoverState = clone(
+    reloadState.songCoverState ?? defaultSongCoverState(),
+  )
   voiceSettingsState = clone(
     reloadState.voiceSettingsState ?? defaultVoiceSettingsState(),
   )
@@ -411,6 +447,7 @@ if (reloadState !== null) {
   nextAttachmentNumber = reloadState.nextAttachmentNumber
   nextKnowledgeNumber = reloadState.nextKnowledgeNumber ?? 1
   nextProjectUpdateNumber = reloadState.nextProjectUpdateNumber
+  nextSongCoverNumber = reloadState.nextSongCoverNumber ?? 1
 }
 
 function clone(value) {
@@ -852,6 +889,97 @@ const desktopApi = {
     record('setPresenceVoiceActive', [active])
   },
 
+  getSongCoverReadiness: async () => {
+    record('getSongCoverReadiness')
+    return clone(songCoverReadiness)
+  },
+
+  getSongCoverState: async () => {
+    record('getSongCoverState')
+    return clone(songCoverState)
+  },
+
+  chooseSongCover: async (request) => {
+    record('chooseSongCover', [clone(request)])
+    if (songCoverReadiness.status !== 'available') {
+      throw new Error('Song Cover is unavailable.')
+    }
+    const suffix = String(nextSongCoverNumber).padStart(12, '0')
+    nextSongCoverNumber += 1
+    const usingStems = request.sourceMode === 'stems'
+    songCoverState = {
+      revision: songCoverState.revision + 1,
+      jobId: `00000000-0000-4000-8000-${suffix}`,
+      stage: 'validating',
+      sourceName: usingStems ? 'selected-vocals.wav' : 'selected-song.mp3',
+      accompanimentName: usingStems ? 'selected-accompaniment.wav' : null,
+      sourceMode: request.sourceMode,
+      engine: request.engine,
+      keyShiftSemitones: request.keyShiftSemitones,
+      progressPercent: 5,
+      outputAvailable: false,
+      message: 'Reading the selected audio',
+      errorCode: null,
+      error: null,
+    }
+    return clone(songCoverState)
+  },
+
+  cancelSongCover: async (jobId) => {
+    record('cancelSongCover', [jobId])
+    if (songCoverState.jobId !== jobId) {
+      throw new Error('Song Cover job is no longer active.')
+    }
+    songCoverState = {
+      ...songCoverState,
+      revision: songCoverState.revision + 1,
+      stage: 'cancelled',
+      progressPercent: 0,
+      outputAvailable: false,
+      message: 'Song Cover cancelled',
+      error: null,
+    }
+    return clone(songCoverState)
+  },
+
+  playSongCover: async (jobId) => {
+    record('playSongCover', [jobId])
+    if (songCoverState.jobId !== jobId || !songCoverState.outputAvailable) {
+      throw new Error('Song Cover job is no longer available.')
+    }
+    songCoverState = {
+      ...songCoverState,
+      revision: songCoverState.revision + 1,
+      stage: 'playing',
+      message: 'Elysia is singing',
+      error: null,
+    }
+    return clone(songCoverState)
+  },
+
+  stopSongCover: async (jobId) => {
+    record('stopSongCover', [jobId])
+    if (songCoverState.jobId !== jobId || !songCoverState.outputAvailable) {
+      throw new Error('Song Cover job is no longer available.')
+    }
+    songCoverState = {
+      ...songCoverState,
+      revision: songCoverState.revision + 1,
+      stage: 'ready',
+      message: 'Song Cover ready',
+      error: null,
+    }
+    return clone(songCoverState)
+  },
+
+  exportSongCover: async (jobId) => {
+    record('exportSongCover', [jobId])
+    if (songCoverState.jobId !== jobId || !songCoverState.outputAvailable) {
+      throw new Error('Song Cover job is no longer available.')
+    }
+    return true
+  },
+
   getSnapshot: async () => {
     record('getSnapshot')
     return clone(snapshot)
@@ -998,6 +1126,7 @@ const desktopApi = {
       'transcriptionLanguage',
       'speechRatePercent',
       'voiceProfileId',
+      'voiceEmotion',
     ]
     const activeSettings = {
       ...settingsState.activeSettings,
@@ -1177,6 +1306,7 @@ const desktopApi = {
         userText: request.message,
         reply: '',
         usesProjectKnowledge: request.useProjectKnowledge === true,
+        speakReply: request.speakReply === true,
         stopping: false,
       },
     }
@@ -1202,6 +1332,7 @@ const desktopApi = {
         assistantMessageId: request.assistantMessageId,
         reply: '',
         usesProjectKnowledge: request.useProjectKnowledge === true,
+        speakReply: request.speakReply === true,
         stopping: false,
       },
     }
@@ -1222,6 +1353,13 @@ const desktopApi = {
         },
       }
     }
+  },
+
+  startSpeechPlayback: async (request) => {
+    record('startSpeechPlayback', [request])
+    const requestId = `test-request-${nextRequestNumber}`
+    nextRequestNumber += 1
+    return { requestId }
   },
 
   stopSpeechPlayback: async (requestId, chatId) => {
@@ -1781,6 +1919,15 @@ const desktopApi = {
     }
   },
 
+  onSongCoverStateChanged: (listener) => {
+    record('onSongCoverStateChanged.subscribe')
+    songCoverStateListeners.add(listener)
+    return () => {
+      songCoverStateListeners.delete(listener)
+      record('onSongCoverStateChanged.unsubscribe')
+    }
+  },
+
   onBackendEvent: (listener) => {
     record('onBackendEvent.subscribe')
     backendListeners.add(listener)
@@ -1807,6 +1954,8 @@ const testControl = {
     dataStorageState = defaultDataStorageState()
     desktopPetState = defaultDesktopPetState()
     presenceNotificationState = defaultPresenceNotificationState()
+    songCoverReadiness = defaultSongCoverReadiness()
+    songCoverState = defaultSongCoverState()
     voiceSettingsState = defaultVoiceSettingsState()
     microphonePermissionStatus = 'granted'
     nextSettingsError = null
@@ -1833,6 +1982,7 @@ const testControl = {
     nextKnowledgeNumber = 1
     nextCallSequence = 1
     nextProjectUpdateNumber = 1
+    nextSongCoverNumber = 1
     nextVoiceTranscriptionNumber = 1
     calls = []
     delayChatActions = false
@@ -1886,6 +2036,14 @@ const testControl = {
 
   setPresenceNotificationState: (nextState) => {
     presenceNotificationState = clone(nextState)
+  },
+
+  setSongCoverReadiness: (nextReadiness) => {
+    songCoverReadiness = clone(nextReadiness)
+  },
+
+  setSongCoverState: (nextState) => {
+    songCoverState = clone(nextState)
   },
 
   setVoiceSettingsState: (nextVoiceSettingsState) => {
@@ -2078,6 +2236,13 @@ const testControl = {
     }
   },
 
+  emitSongCoverState: (state) => {
+    songCoverState = clone(state)
+    for (const listener of songCoverStateListeners) {
+      listener(clone(songCoverState))
+    }
+  },
+
   setSelectedFiles: (files) => {
     selectedFiles = clone(files)
   },
@@ -2198,6 +2363,8 @@ const testControl = {
       dataStorageState,
       desktopPetState,
       presenceNotificationState,
+      songCoverReadiness,
+      songCoverState,
       voiceSettingsState,
       microphonePermissionStatus,
       chatMessages: [...chatMessages.entries()],
@@ -2208,6 +2375,7 @@ const testControl = {
       nextAttachmentNumber,
       nextKnowledgeNumber,
       nextProjectUpdateNumber,
+      nextSongCoverNumber,
     })
     window.sessionStorage.setItem(RELOAD_STATE_KEY, reloadState)
     window.localStorage.setItem(RELOAD_STATE_KEY, reloadState)

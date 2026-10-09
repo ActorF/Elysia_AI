@@ -184,7 +184,7 @@ ImageGen 输出仍包含 255 个 alpha 等级，透明区附近存在视觉上�
 | 审阅母版 | 运行时副本 | 字节数 | SHA-256 | 运行时用途 |
 | --- | --- | ---: | --- | --- |
 | `02-activity-states.png` | `desktop/public/character/elysia-state-atlas.png` | 2,303,963 | `54EB2525673C2A849819BE10EB88EB2F670EB1911E86FD154E69B578CBB4C25C` | 七个封闭 Character State |
-| `03-expression-atlas.png` | `desktop/public/character/elysia-expression-atlas.png` | 2,500,647 | `FBF7A515B2651B3A881CF9B838A5605C316BEFD0B174DDE046780D8E441D7F93` | 用户限定的三种静态情绪 |
+| `03-expression-atlas.png` | `desktop/public/character/elysia-expression-atlas.png` | 2,500,647 | `FBF7A515B2651B3A881CF9B838A5605C316BEFD0B174DDE046780D8E441D7F93` | 用户限定的十种静态情绪 |
 | `04-facial-rig-atlas.png` | `desktop/public/character/elysia-speech-atlas.png` | 2,054,767 | `21BF4496ACC4417D491FF0163C9EE1D38593E376CA25A3D452FD393C6157F9AB` | 静态嘴型审阅与安全回退 |
 
 分发门禁同时固定每个运行时副本的仓库路径、长度、SHA-256、ASAR 精确路径、唯一条目数与抽取字节，避免未审核替换继承本次结论。
@@ -207,13 +207,20 @@ ImageGen 输出仍包含 255 个 alpha 等级，透明区附近存在视觉上�
 
 ### 03 — 用户限定静态表情
 
-Settings 的 Voice Emotion 只接受 `neutral`、`happy` 与 `sad`。Backend 成功重启后，同一个 Active 值既选择本地 GPT-SoVITS 参考，也选择审核静态表情；模型回复没有情绪、文件路径、图集格号或动画名称字段，不能覆盖用户选择。运行时映射为：
+Settings 的 Voice Emotion 只接受下表十个闭集值。Backend 成功重启后，同一个 Active 值既选择本地 GPT-SoVITS 参考，也选择审核静态表情；模型回复没有情绪、文件路径、图集格号或动画名称字段，不能覆盖用户选择。运行时映射为：
 
 | Voice Emotion | 列 | 行 | 审核表情 |
 | --- | ---: | ---: | --- |
 | `neutral` | 0 | 0 | Soft smile |
 | `happy` | 1 | 1 | Happy |
 | `sad` | 2 | 1 | Gentle sad |
+| `caring` | 2 | 3 | Tender comfort |
+| `moved` | 4 | 3 | Light tears |
+| `playful` | 0 | 2 | Playful |
+| `affectionate` | 1 | 2 | Shy blush |
+| `teasing` | 4 | 1 | Wink |
+| `serious` | 4 | 0 | Patient serious |
+| `surprised` | 2 | 2 | Surprised |
 
 ### 04 — 静态嘴型审阅参考
 

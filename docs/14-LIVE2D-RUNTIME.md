@@ -10,10 +10,11 @@ no longer embeds or renders a dynamic desktop-pet model.
 ## Delivered behavior
 
 The character panels inside Main Chat and Voice are always static. Character
-state and the user-selected `neutral / happy / sad` expression choose only
-reviewed PNG atlas cells. There is no Animated/Still switch for those panels,
-and model output cannot select files, atlas cells, expressions, or animation
-parameters.
+state and the user-selected ten-value Voice Emotion choose only explicitly
+reviewed PNG atlas cells. The closed values are `neutral`, `happy`, `sad`,
+`caring`, `moved`, `playful`, `affectionate`, `teasing`, `serious`, and
+`surprised`. There is no Animated/Still switch for those panels, and model
+output cannot select files, atlas cells, expressions, or animation parameters.
 
 The optional animated Desktop Pet is a separate external-program integration.
 It is `disabled` by default. After the user chooses a local program-collection

@@ -19,6 +19,11 @@ import type {
   PresenceNotificationState,
   UpdatePresenceNotificationRequest,
 } from './presence-notification-contracts.js'
+import type {
+  ChooseSongCoverRequest,
+  SongCoverReadiness,
+  SongCoverState,
+} from './song-cover-contracts.js'
 
 export type BackendStatus =
   | 'starting'
@@ -43,6 +48,8 @@ export interface ActiveChatGeneration {
   reply: string
   /** True only when this generation owns the global Project knowledge lease. */
   usesProjectKnowledge?: boolean
+  /** Preserve whether this exact generation may produce managed speech. */
+  speakReply: boolean
   stopping: boolean
 }
 
@@ -74,6 +81,8 @@ export interface ChatRequest {
   message: string
   attachmentIds: string[]
   useProjectKnowledge?: boolean
+  /** Opt this exact reply into managed speech; ordinary Chat sends false. */
+  speakReply: boolean
 }
 
 /** Regenerate the persisted tail turn, optionally replacing its user text. */
@@ -83,6 +92,14 @@ export interface RetryChatRequest {
   assistantMessageId: string
   message?: string
   useProjectKnowledge?: boolean
+  /** Opt this exact replacement reply into managed speech. */
+  speakReply: boolean
+}
+
+/** Identify one persisted assistant reply without exposing its text to Main. */
+export interface StartSpeechPlaybackRequest {
+  chatId: string
+  assistantMessageId: string
 }
 
 /** Lightweight persisted Chat data used by the sidebar. */
@@ -598,12 +615,30 @@ export interface DesktopApi {
   getMicrophonePermissionStatus(): Promise<MicrophonePermissionStatus>
   /** Open native microphone privacy settings when the platform supports it. */
   openMicrophonePrivacySettings(): Promise<void>
+  /** Report whether a new local Song Cover may be offered safely. */
+  getSongCoverReadiness(): Promise<SongCoverReadiness>
+  /** Return the current Main-owned local Song Cover lifecycle. */
+  getSongCoverState(): Promise<SongCoverState>
+  /** Choose private local audio for a validated Song Cover configuration. */
+  chooseSongCover(request: ChooseSongCoverRequest): Promise<SongCoverState>
+  /** Cancel only the active local Song Cover worker. */
+  cancelSongCover(jobId: string): Promise<SongCoverState>
+  /** Play the completed private Song Cover preview. */
+  playSongCover(jobId: string): Promise<SongCoverState>
+  /** Stop Song Cover playback while retaining it for replay or export. */
+  stopSongCover(jobId: string): Promise<SongCoverState>
+  /** Export the completed lossless cover through a native save dialog. */
+  exportSongCover(jobId: string): Promise<boolean>
   /** Begin one Chat generation and return its request identifier. */
   sendMessage(request: ChatRequest): Promise<{ requestId: string }>
   /** Begin a retry for one persisted assistant message. */
   retryMessage(request: RetryChatRequest): Promise<{ requestId: string }>
   /** Ask the Backend to stop the named in-flight generation. */
   stopGeneration(requestId: string): Promise<void>
+  /** Synthesize and play one exact persisted assistant reply on demand. */
+  startSpeechPlayback(
+    request: StartSpeechPlaybackRequest,
+  ): Promise<{ requestId: string }>
   /** Stop exact trusted and Python speech work, even after Chat text completes. */
   stopSpeechPlayback(requestId: string, chatId: string): Promise<void>
   /** Copy validated plain text through the native clipboard boundary. */
@@ -701,6 +736,10 @@ export interface DesktopApi {
   /** Subscribe to canonical native notification preference/runtime changes. */
   onPresenceNotificationStateChanged(
     listener: (state: PresenceNotificationState) => void,
+  ): () => void
+  /** Subscribe to Main-owned Song Cover progress and playback changes. */
+  onSongCoverStateChanged(
+    listener: (state: SongCoverState) => void,
   ): () => void
   /** Subscribe to validated Backend events and return an unsubscribe callback. */
   onBackendEvent(listener: (event: BackendEvent) => void): () => void

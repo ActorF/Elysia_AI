@@ -11,6 +11,7 @@ import pytest
 
 from voice import (
     SYNTHESIS_MAX_AUDIO_BYTES,
+    SYNTHESIS_MAX_IDENTIFIER_LENGTH,
     VOICE_PROFILE_ASSET_MAX_BYTES,
     VOICE_PROFILE_CATALOG_MAX_BYTES,
     VOICE_PROFILE_CATALOG_MAX_PROFILES,
@@ -173,6 +174,23 @@ def test_catalog_resolves_default_profile_and_exact_emotion(tmp_path: Path) -> N
     assert selection.reference_audio.sha256 == "b" * 64
     assert selection.prompt_text not in repr(selection)
     assert selection.gpt_weights.relative_path.as_posix() not in repr(selection)
+
+
+def test_catalog_resolves_maximum_length_emotion_identifier(
+    tmp_path: Path,
+) -> None:
+    """Preserve valid extended emotion identifiers at the shared length bound."""
+
+    longest_emotion = "e" * SYNTHESIS_MAX_IDENTIFIER_LENGTH
+    profile = _profile()
+    profile["references"] = [_reference(), _reference(longest_emotion)]
+
+    catalog = _load(tmp_path, _document(profile))
+
+    resolved = catalog.resolve("default", longest_emotion)
+    assert resolved.prompt_text == (
+        f"Original {longest_emotion} reference sentence."
+    )
 
 
 def test_catalog_summaries_do_not_expose_sensitive_configuration(
@@ -607,6 +625,7 @@ def test_direct_asset_construction_rejects_a_dotdot_root(tmp_path: Path) -> None
     [
         ("emotion", "Happy"),
         ("emotion", "../escape"),
+        ("emotion", "e" * (SYNTHESIS_MAX_IDENTIFIER_LENGTH + 1)),
         ("audio", _asset("../outside.wav")),
         ("audio", _asset("C:/outside.wav")),
         ("audio", _asset("folder\\reference.wav")),
@@ -785,5 +804,24 @@ def test_tracked_example_is_valid_without_shipping_assets(tmp_path: Path) -> Non
         allow_local_evaluation=True,
     )
 
-    assert catalog.summaries()[0].profile_id == "sample-voice"
-    assert catalog.summaries()[0].rights_status == "local-evaluation-only"
+    summary = catalog.summaries()[0]
+    expected_emotions = (
+        "neutral",
+        "happy",
+        "sad",
+        "caring",
+        "moved",
+        "playful",
+        "affectionate",
+        "teasing",
+        "serious",
+        "surprised",
+    )
+
+    assert summary.profile_id == "sample-voice"
+    assert summary.rights_status == "local-evaluation-only"
+    assert summary.emotions == expected_emotions
+    assert tuple(
+        catalog.resolve("default", emotion).prompt_language
+        for emotion in expected_emotions
+    ) == ("en",) * len(expected_emotions)

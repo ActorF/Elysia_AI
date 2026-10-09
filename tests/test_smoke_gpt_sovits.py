@@ -187,6 +187,37 @@ def test_main_synthesizes_same_request_twice_for_each_emotion(
     assert service.requests[2] == service.requests[3]
 
 
+def test_build_requests_accepts_expanded_emotion_catalog() -> None:
+    """Build all ten configured emotion selections without truncating order."""
+
+    emotions = (
+        "neutral",
+        "happy",
+        "sad",
+        "caring",
+        "moved",
+        "playful",
+        "affectionate",
+        "teasing",
+        "serious",
+        "surprised",
+    )
+
+    requests = smoke_gpt_sovits._build_requests("sample", emotions)
+
+    assert tuple(request.emotion for request in requests) == emotions
+
+
+def test_build_requests_accepts_sixteen_distinct_emotions() -> None:
+    """Keep the smoke-test GPU work bound inclusive at sixteen selections."""
+
+    emotions = tuple(f"emotion-{index}" for index in range(16))
+
+    requests = smoke_gpt_sovits._build_requests("sample", emotions)
+
+    assert tuple(request.emotion for request in requests) == emotions
+
+
 def test_repeated_audio_may_have_distinct_hashes(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -312,7 +343,7 @@ def test_script_path_entry_point_works_outside_repository(
     [
         ["--profile", "INVALID"],
         ["--emotion", "neutral", "--emotion", "neutral"],
-        sum((["--emotion", f"emotion-{index}"] for index in range(9)), []),
+        sum((["--emotion", f"emotion-{index}"] for index in range(17)), []),
     ],
 )
 def test_invalid_selections_fail_before_composition(

@@ -14,6 +14,7 @@ import type {
   AttachmentState,
   BackendSnapshot,
 } from '../../electron/contracts.ts'
+import type { SongCoverState } from '../../electron/song-cover-contracts.ts'
 import { Composer } from './Composer.tsx'
 import { MessageView } from './MessageView.tsx'
 import type {
@@ -50,13 +51,20 @@ interface ChatViewProps {
   notice: ChatNotice | null
   panelOpen: boolean
   panelTransitionPending: boolean
+  readAloudDisabled: boolean
+  readAloudPendingMessageId: string | null
+  readAloudPhase: 'starting' | 'active' | 'stopping' | null
   retryPending: boolean
   retryEditDraft: RetryEditDraft | null
   retryPair: RetryableChatPair | null
   sidebarOpen: boolean
   snapshot: BackendSnapshot
+  songCoverDisabled: boolean
+  songCoverStartUnavailableMessage: string | null
+  songCoverState: SongCoverState | null
   streaming: boolean
   stopPending: boolean
+  voiceCallDisabled: boolean
   onChooseAttachments(): void
   onBeginRetryEdit(pair: RetryableChatPair): void
   onCancelRetryEdit(): void
@@ -67,13 +75,19 @@ interface ChatViewProps {
   onDropAttachments(files: File[]): void
   onOpenCall(): void
   onOpenExternalUrl(url: string): Promise<void>
+  onReadAloud(messageId: string): void
   onRemoveAttachment(attachmentId: string): Promise<boolean>
   onRetry(pair: RetryableChatPair, message?: string): boolean
   onRetryEditChange(pair: RetryableChatPair, message: string): void
   onRetryConnection(): void
   onSelectModel(modelName: string): void
+  onCancelSongCover(): void
+  onExportSongCover(): void
+  onOpenSongCoverSetup(): void
+  onPlaySongCover(): void
   onSend(): void
   onStop(): void
+  onStopSongCover(): void
   onTogglePanel(): void
   onToggleSidebar(): void
   onToggleDictation(): void
@@ -121,13 +135,20 @@ export function ChatView({
   notice,
   panelOpen,
   panelTransitionPending,
+  readAloudDisabled,
+  readAloudPendingMessageId,
+  readAloudPhase,
   retryPending,
   retryEditDraft,
   retryPair,
   sidebarOpen,
   snapshot,
+  songCoverDisabled,
+  songCoverStartUnavailableMessage,
+  songCoverState,
   streaming,
   stopPending,
+  voiceCallDisabled,
   onChooseAttachments,
   onBeginRetryEdit,
   onCancelRetryEdit,
@@ -138,13 +159,19 @@ export function ChatView({
   onDropAttachments,
   onOpenCall,
   onOpenExternalUrl,
+  onReadAloud,
   onRemoveAttachment,
   onRetry,
   onRetryEditChange,
   onRetryConnection,
   onSelectModel,
+  onCancelSongCover,
+  onExportSongCover,
+  onOpenSongCoverSetup,
+  onPlaySongCover,
   onSend,
   onStop,
+  onStopSongCover,
   onTogglePanel,
   onToggleSidebar,
   onToggleDictation,
@@ -160,7 +187,7 @@ export function ChatView({
     if (scroller !== null && stickToBottomRef.current) {
       scroller.scrollTop = scroller.scrollHeight
     }
-  }, [messages])
+  }, [messages, songCoverState?.revision])
 
   return (
     <div className="chat-surface">
@@ -234,18 +261,9 @@ export function ChatView({
           aria-live="off"
           aria-busy={streaming}
         >
-          <div className="conversation-intro">
-            <span className="intro-mark">
-              <Icon name="sparkles" />
-            </span>
-            <div>
-              <span className="eyebrow">Local conversation</span>
-              <h1>Talk with Elysia</h1>
-              <p>
-                Your Chat and Memory remain in the existing Python Backend.
-              </p>
-            </div>
-          </div>
+          <header className="conversation-intro">
+            <h1 className="eyebrow">Local Conversation</h1>
+          </header>
 
           {snapshot.status !== 'ready' && snapshot.status !== 'error' && (
             <LoadingState
@@ -259,8 +277,8 @@ export function ChatView({
             <EmptyState
               className="conversation-empty"
               icon="chat"
-              title="Start a local conversation"
-              description="Your first message will appear here."
+              title="不论何时何地，爱莉希雅都会回应你的期待。"
+              description="今天有什么事要跟我分享的吗？"
             />
           )}
 
@@ -268,13 +286,17 @@ export function ChatView({
             <MessageView
               key={message.id}
               message={message}
+              readAloudDisabled={readAloudDisabled}
+              readAloudPendingMessageId={readAloudPendingMessageId}
+              readAloudPhase={readAloudPhase}
               retryEditDraft={retryEditDraft}
               retryPair={retryPair}
-              retryDisabled={generationBusy}
+              retryDisabled={generationBusy || readAloudPendingMessageId !== null}
               onBeginRetryEdit={onBeginRetryEdit}
               onCancelRetryEdit={onCancelRetryEdit}
               onCopy={onCopy}
               onOpenExternalUrl={onOpenExternalUrl}
+              onReadAloud={onReadAloud}
               onRetry={onRetry}
               onRetryEditChange={onRetryEditChange}
             />
@@ -301,8 +323,12 @@ export function ChatView({
         notice={notice}
         retryPending={retryPending}
         snapshot={snapshot}
-        streaming={streaming}
-        stopPending={stopPending}
+        songCoverDisabled={songCoverDisabled}
+        songCoverStartUnavailableMessage={songCoverStartUnavailableMessage}
+        songCoverState={songCoverState}
+      streaming={streaming}
+      stopPending={stopPending}
+      voiceCallDisabled={voiceCallDisabled}
         onChooseAttachments={onChooseAttachments}
         onDismissAttachmentError={onDismissAttachmentError}
         onDismissNotice={onDismissNotice}
@@ -312,11 +338,16 @@ export function ChatView({
         onRemoveAttachment={onRemoveAttachment}
         onRetryConnection={onRetryConnection}
         onSelectModel={onSelectModel}
+        onCancelSongCover={onCancelSongCover}
+        onExportSongCover={onExportSongCover}
+        onOpenSongCoverSetup={onOpenSongCoverSetup}
+        onPlaySongCover={onPlaySongCover}
         onSend={() => {
           stickToBottomRef.current = true
           onSend()
         }}
         onStop={onStop}
+        onStopSongCover={onStopSongCover}
         onToggleDictation={onToggleDictation}
       />
     </div>

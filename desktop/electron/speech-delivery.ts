@@ -58,6 +58,12 @@ export interface TrustedSpeechClip {
   readonly wavBytes: Uint8Array
 }
 
+/** Exact identity retained when a speech turn loses its renderer owner. */
+export interface SpeechTurnIdentity {
+  readonly requestId: string
+  readonly chatId: string
+}
+
 /** Distinguish a local decoder failure from loss of the trusted playback host. */
 export class TrustedSpeechPlaybackError extends Error {
   /** Create a sanitized playback failure without embedding native details. */
@@ -82,6 +88,7 @@ interface TurnState {
   nextStatusSequence: number
   failureCount: number
   readonly pendingFailureSequences: Set<number>
+  playbackArmed: boolean
   stale: boolean
   terminal: VoiceSpeechTerminalEventMessage | null
 }
@@ -143,8 +150,18 @@ export class SpeechDeliveryCoordinator {
     return this.turns.size > 0
   }
 
-  /** Register a Chat generation before either speech transport can answer. */
-  startTurn(requestId: string, chatId: string): void {
+  /**
+   * Register a speech turn before either transport can answer.
+   *
+   * Chat generation turns are armed immediately. Persisted-reply playback is
+   * registered unarmed so early stdout metadata and fd3 bytes can be bounded
+   * without reaching the native player before Python returns an exact ACK.
+   */
+  startTurn(
+    requestId: string,
+    chatId: string,
+    playbackArmed = true,
+  ): void {
     if (this.channelClosed) {
       return
     }
@@ -172,10 +189,25 @@ export class SpeechDeliveryCoordinator {
       nextStatusSequence: 0,
       failureCount: 0,
       pendingFailureSequences: new Set<number>(),
+      playbackArmed,
       stale: false,
       terminal: null,
     })
     this.currentRequestId = requestId
+  }
+
+  /** Arm one exact registered turn after its control-plane ACK is validated. */
+  armTurn(requestId: string, chatId: string): boolean {
+    if (this.disposed || this.failed) {
+      return false
+    }
+    const turn = this.turns.get(requestId)
+    if (turn === undefined || turn.chatId !== chatId || turn.stale) {
+      return false
+    }
+    turn.playbackArmed = true
+    this.pairPending()
+    return true
   }
 
   /** Mark one generation stale and stop only its currently playing clip. */
@@ -207,16 +239,30 @@ export class SpeechDeliveryCoordinator {
     return true
   }
 
-  /** Cancel the current turn when renderer navigation erased its request ID. */
-  cancelCurrentTurn(): void {
+  /**
+   * Cancel the current turn when renderer navigation erased its request ID.
+   *
+   * Returning the exact identity lets Main mirror this local fail-closed stop
+   * to Python without trusting identifiers from the replacement document.
+   */
+  cancelCurrentTurn(): SpeechTurnIdentity | null {
     if (
       this.disposed
       || this.failed
       || this.currentRequestId === null
     ) {
-      return
+      return null
     }
-    this.makeTurnStale(this.currentRequestId)
+    const turn = this.turns.get(this.currentRequestId)
+    if (turn === undefined) {
+      return null
+    }
+    const identity = Object.freeze({
+      requestId: turn.requestId,
+      chatId: turn.chatId,
+    })
+    this.makeTurnStale(turn.requestId)
+    return identity
   }
 
   /** Accept one already schema-validated speech event from the NDJSON pipe. */
@@ -398,6 +444,12 @@ export class SpeechDeliveryCoordinator {
       )
       return
     }
+    if (!turn.playbackArmed && !turn.stale) {
+      // Manual playback may receive both transports before its request ACK.
+      // Keep exactly one frame paused and its bounded metadata queued until the
+      // control response proves the persisted message identity.
+      return
+    }
     this.pendingFrame = null
     this.pendingMetadata.shift()
     const delivery = { frame, metadata, turn } satisfies ActiveDelivery
@@ -527,6 +579,10 @@ export class SpeechDeliveryCoordinator {
       }
     }
     this.finalizeTurnIfDrained(turn)
+    // An unarmed manual turn can already own a paused frame. Once cancellation
+    // makes it stale, consume that pair through the discard path so fd3 cannot
+    // remain blocked after a rejected or mismatched start request.
+    this.pairPending()
   }
 
   private finalizeTurnIfDrained(turn: TurnState): void {

@@ -128,6 +128,31 @@ def test_validate_settings_rejects_invalid_import_size_limit(
         start.validate_settings()
 
 
+def test_validate_settings_requires_external_system_rules(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fail startup before model work when the trusted persona is unavailable."""
+
+    def fail_prompt_load() -> str:
+        """Emulate one sanitized fail-closed resource error."""
+
+        raise ConfigurationError(
+            "Elysia system prompt resource is unavailable."
+        )
+
+    monkeypatch.setattr(
+        start,
+        "load_elysia_system_rules",
+        fail_prompt_load,
+    )
+
+    with pytest.raises(
+        ConfigurationError,
+        match=r"^Elysia system prompt resource is unavailable\.$",
+    ):
+        start.validate_settings()
+
+
 def test_create_brain_uses_configured_token_budget(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

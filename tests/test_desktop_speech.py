@@ -17,7 +17,7 @@ from typing import Any, cast
 import pytest
 
 import desktop_speech as desktop_speech_module
-from config.settings import AppSettings
+from config.settings import VOICE_EMOTIONS, AppSettings, VoiceEmotion
 from desktop_protocol import (
     AUDIO_CHANNEL_HEADER_BYTES,
     AUDIO_CHANNEL_MAGIC,
@@ -379,14 +379,14 @@ def test_config_derives_restart_bound_voice_preferences(
         debug=False,
         ollama_host="http://127.0.0.1:11434",
         voice_profile_id="elysia-v2",
-        voice_emotion="sad",
+        voice_emotion="affectionate",
         speech_rate_percent=135,
     )
 
     config = DesktopSpeechConfig.from_app_settings(settings)
 
     assert config.voice_profile_id == "elysia-v2"
-    assert config.voice_emotion == "sad"
+    assert config.voice_emotion == "affectionate"
     assert config.speech_rate_percent == 135
 
 
@@ -422,7 +422,10 @@ def test_config_rejects_invalid_voice_preferences(
         )
 
 
-@pytest.mark.parametrize("voice_emotion", ["", "excited", "HAPPY", 1])
+@pytest.mark.parametrize(
+    "voice_emotion",
+    ["", "excited", "../happy", "HAPPY", 1],
+)
 def test_config_rejects_emotions_outside_the_closed_set(
     tmp_path: Path,
     voice_emotion: object,
@@ -431,6 +434,18 @@ def test_config_rejects_emotions_outside_the_closed_set(
 
     with pytest.raises(ValueError, match="voice_emotion"):
         _config(tmp_path, voice_emotion=cast(str, voice_emotion))
+
+
+@pytest.mark.parametrize("voice_emotion", VOICE_EMOTIONS)
+def test_config_accepts_every_closed_voice_emotion(
+    tmp_path: Path,
+    voice_emotion: VoiceEmotion,
+) -> None:
+    """Accept every reviewed selection before local catalog resolution."""
+
+    assert _config(tmp_path, voice_emotion=voice_emotion).voice_emotion == (
+        voice_emotion
+    )
 
 
 def test_bootstrap_applies_configured_profile_and_absolute_rate(
@@ -447,7 +462,7 @@ def test_bootstrap_applies_configured_profile_and_absolute_rate(
         _config(
             tmp_path,
             voice_profile_id="elysia-v2",
-            voice_emotion="happy",
+            voice_emotion="surprised",
             speech_rate_percent=135,
         ),
         AudioChannelWriter(stream),  # type: ignore[arg-type]
@@ -457,7 +472,7 @@ def test_bootstrap_applies_configured_profile_and_absolute_rate(
     coordinator.start()
     assert coordinator.wait_until_settled(1.0)
     assert coordinator.get_status().state == "ready"
-    assert catalog.calls == [("elysia-v2", "happy")]
+    assert catalog.calls == [("elysia-v2", "surprised")]
     assert len(runtime.acquired) == 1
     selection = cast(_FakeSelection, runtime.acquired[0])
     assert selection.profile_id == "elysia-test"
@@ -548,7 +563,9 @@ def test_pending_stream_reaches_fifo_and_metadata_precedes_binary(
     )
     turn = coordinator.start_turn("request-1", "chat-1")
     assert runtime.acquire_started.wait(1.0)
-    turn.feed("First sentence. Second sentence!")
+    first_sentence = "First sentence has enough detail to stand on its own."
+    second_sentence = "Second sentence also has enough detail to stand alone!"
+    turn.feed(f"{first_sentence} {second_sentence}")
     turn.finish()
     assert synthesizer.requests == []
 
@@ -558,8 +575,8 @@ def test_pending_stream_reaches_fifo_and_metadata_precedes_binary(
 
     assert catalog.calls == [("default", "neutral")]
     assert [request.text for request in synthesizer.requests] == [
-        "First sentence.",
-        " Second sentence!",
+        first_sentence,
+        f" {second_sentence}",
     ]
     assert [item[0] for item in events] == [
         "voice.speech.clip",
@@ -651,7 +668,10 @@ def test_long_fast_reply_waits_for_sentence_capacity_without_truncation(
     )
     turn = coordinator.start_turn("request-long", "chat-long")
     assert coordinator.wait_until_settled(1.0)
-    sentences = tuple(f"Sentence {index}." for index in range(13))
+    sentences = tuple(
+        f"Sentence {index} contains enough detail to remain independent."
+        for index in range(13)
+    )
 
     turn.feed(" ".join(sentences))
     turn.finish()
@@ -676,6 +696,65 @@ def test_long_fast_reply_waits_for_sentence_capacity_without_truncation(
         "failedSentences": 0,
     }
     assert coordinator.get_status().state == "ready"
+
+    coordinator.shutdown()
+
+
+def test_desktop_speech_groups_a_short_opening_before_synthesis(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Apply the desktop-only soft minimum without changing canonical text."""
+
+    runtime = _FakeRuntime()
+    synthesizer = _SequenceSynthesizer()
+    _install_fake_bootstrap(monkeypatch, runtime, synthesizer)
+    stream = _RecordingStream()
+    events: list[tuple[str, str, dict[str, Any]]] = []
+    terminal = Event()
+
+    def _record_event(
+        name: str,
+        request_id: str,
+        data: dict[str, Any],
+    ) -> None:
+        """Capture the grouped clip and final counters in publication order."""
+
+        events.append((name, request_id, data))
+        if name == "voice.speech.terminal":
+            terminal.set()
+
+    coordinator = DesktopSpeechCoordinator(
+        _config(tmp_path),
+        AudioChannelWriter(stream),  # type: ignore[arg-type]
+        _record_event,
+    )
+    turn = coordinator.start_turn("request-grouped", "chat-grouped")
+    assert coordinator.wait_until_settled(1.0)
+
+    second_sentence = (
+        "This following sentence is detailed enough to release both."
+    )
+    turn.feed(f"Hi. {second_sentence} Tail")
+    turn.finish()
+    assert terminal.wait(2.0)
+
+    assert [request.text for request in synthesizer.requests] == [
+        f"Hi. {second_sentence}",
+        " Tail",
+    ]
+    assert [event[0] for event in events] == [
+        "voice.speech.clip",
+        "voice.speech.clip",
+        "voice.speech.terminal",
+    ]
+    assert events[-1][2] == {
+        "chatId": "chat-grouped",
+        "state": "completed",
+        "submittedSentences": 2,
+        "completedSentences": 2,
+        "failedSentences": 0,
+    }
 
     coordinator.shutdown()
 
@@ -960,6 +1039,7 @@ def test_spontaneous_managed_failure_fail_closes_speech_without_retry(
     assert runtime_lease.started.wait(1.0)
     assert runtime.shutdown_called.wait(1.0)
     assert coordinator.get_status().state == "unavailable"
+    assert coordinator.get_status().reason == "runtime_failed"
     assert stream.closed
     assert bytes(stream.buffer) == b""
 
@@ -1101,6 +1181,7 @@ def test_bootstrap_failure_closes_only_optional_speech(
     assert terminal.wait(1.0)
     assert coordinator.get_status().state == "unavailable"
     assert coordinator.get_status().available is False
+    assert coordinator.get_status().reason == "setup_unavailable"
     assert stream.closed
     assert bytes(stream.buffer) == b""
     assert events == [
@@ -1455,6 +1536,7 @@ def test_bootstrap_thread_start_failure_disables_only_speech(
 
     assert coordinator.wait_until_settled(0.0)
     assert coordinator.get_status().state == "unavailable"
+    assert coordinator.get_status().reason == "setup_unavailable"
     assert stream.closed
     coordinator.shutdown()
     assert coordinator.get_status().state == "closed"

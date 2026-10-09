@@ -18,6 +18,7 @@ export type IconName =
   | 'chevron'
   | 'close'
   | 'copy'
+  | 'download'
   | 'file'
   | 'folder'
   | 'hangup'
@@ -28,16 +29,19 @@ export type IconName =
   | 'microphone'
   | 'microphone-off'
   | 'monitor'
+  | 'music'
   | 'moon'
   | 'more'
   | 'panel'
   | 'phone'
   | 'pin'
+  | 'play'
   | 'plus'
   | 'search'
   | 'refresh'
   | 'send'
   | 'settings'
+  | 'speaker'
   | 'sparkles'
   | 'sun'
   | 'stop'
@@ -98,6 +102,9 @@ export function Icon({
         </>
       )
       break
+    case 'download':
+      content = <path d="M12 3v12m-4-4 4 4 4-4M5 20h14" />
+      break
     case 'folder':
       content = <path d="M3.5 7.5h6l2-2h9v13h-17z" />
       break
@@ -139,11 +146,31 @@ export function Icon({
         </>
       )
       break
+    case 'music':
+      content = (
+        <>
+          <path d="M9 18V6l10-2v12" />
+          <circle cx="6" cy="18" r="3" />
+          <circle cx="16" cy="16" r="3" />
+        </>
+      )
+      break
     case 'phone':
       content = <path d="M7.2 3.5 10 8l-2 2a15 15 0 0 0 6 6l2-2 4.5 2.8-.5 3.1c-.2.8-.9 1.4-1.7 1.4C9.7 20.5 3.5 14.3 2.7 5.7c0-.8.6-1.5 1.4-1.7z" />
       break
+    case 'play':
+      content = <path d="m8 5 11 7-11 7z" />
+      break
     case 'send':
       content = <path d="m4 12 16-8-6 16-2.5-6.5zM11.5 13.5 20 4" />
+      break
+    case 'speaker':
+      content = (
+        <>
+          <path d="M5 9v6h4l5 4V5L9 9z" />
+          <path d="M17 9a4 4 0 0 1 0 6M19.5 6.5a7.5 7.5 0 0 1 0 11" />
+        </>
+      )
       break
     case 'refresh':
       content = (

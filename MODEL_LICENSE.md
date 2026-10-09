@@ -1,6 +1,6 @@
 # Model & Voice Asset Notice / 模型与语音素材说明
 
-> Last reviewed / 最近核对：2026-10-02
+> Last reviewed / 最近核对：2026-10-06
 
 ## Purpose and Status / 用途与性质
 
@@ -22,15 +22,19 @@ This document records the known provenance, local handling rules, and current au
 | --- | --- | --- |
 | `models/weights/gpt-sovits/elysia-v2/` | Ignored and currently outside the Git index / 已忽略且当前不在 Git Index 中 | Local-only GPT-SoVITS weights and reference audio; every package/release must independently verify exclusion / 本地 GPT-SoVITS 权重与参考音频；每次打包和发布都须独立确认排除 |
 | `models/cache/GPT-SoVITS-v2-240821/` | Ignored local external runtime / 被忽略的本地外部 Runtime | Extracted upstream Windows evaluation package and local inference YAML; not Elysia AI source and never part of Git, releases, installers, or containers / 解压后的上游 Windows 评估包和本机推理 YAML；不属于 Elysia AI 源码，也不进入 Git、Release、安装包或容器 |
+| `models/cache/so-vits-svc-4.1/` and `models/cache/singing-runtime/` | Ignored local external singing runtime / 被忽略的本机外部歌声 Runtime | Reviewed So-VITS-SVC 4.1 source, ContentVec, local FCPE pitch checkpoint, Demucs 4.0.1 packages, and `htdemucs`; authenticated for local execution but never tracked, uploaded, released, or packaged / 已审核的 So-VITS-SVC 4.1 Source、ContentVec、本机 FCPE 音高权重、Demucs 4.0.1 Package 与 `htdemucs`；只为本机执行固定身份，不被跟踪、上传、发布或打包 |
+| `models/weights/so-vits-svc/elysia-v4.1/` | Ignored local singing-model evaluation assets / 被忽略的本机歌声模型评估素材 | Local Elysia SVC checkpoint/configuration with incomplete creator, dataset, performance-rights, and redistribution provenance; local personal non-commercial technical evaluation only / 创作者、数据集、声音表演权与再分发来源记录均不完整的本机爱莉希雅 SVC Checkpoint/配置；仅限本机、个人、非商业技术评估 |
+| `~/.local/share/elysia-ai/soulx/` inside the current WSL user / 当前 WSL 用户下的 `~/.local/share/elysia-ai/soulx/` | Ignored private lyrics-driven singing runtime / 被忽略的私有歌词驱动歌声 Runtime | Pinned SoulX-Singer source/model, preprocessing models, isolated environments, and a private Elysia zero-shot prompt; local source-development evaluation only, never copied into Git, Windows build output, releases, installers, or diagnostics / 固定的 SoulX-Singer Source/Model、预处理模型、隔离环境与私有爱莉希雅 Zero-shot Prompt；仅限本机源码开发评估，不复制到 Git、Windows 构建输出、Release、安装包或诊断包 |
 | `models/blobs/` and `models/manifests/` | Ignored and currently outside the Git index / 已忽略且当前不在 Git Index 中 | Ollama-managed local models; the document-index library pins `qwen3-embedding:0.6b`, but the repository does not download or redistribute it, and each upstream model has its own terms / Ollama 管理的本地模型；文档索引库固定 `qwen3-embedding:0.6b`，但本仓库不下载或再分发它，各上游模型仍各自遵循其条款 |
 | `models/cache/faster-whisper/` and `models/weights/faster-whisper/` | Ignored and currently outside the Git index / 已忽略且当前不在 Git Index 中 | Local speech-recognition models only; the adapter requires an explicit complete directory and never bundles or implicitly downloads weights / 仅存本地的语音识别模型；Adapter 要求明确、完整的目录，不打包也不隐式下载权重 |
 | `data/characters/elysia_character_reference_zh.md` | Tracked / 已跟踪 | Character background and quotations requiring separate source review / 需要单独审查来源的角色背景与语录 |
+| `data/characters/elysia_character_analysis_zh.md` and `core/elysia_system_prompt_zh.md` | Tracked original summaries / 已跟踪的原创总结 | Transformative analysis and runtime rules derived without reproducing the online dialogue corpus; they do not grant rights to the underlying character, story, or quoted source collection / 未复刻网络完整台词库的转换性分析与运行时规则；不授予底层角色、剧情或引用语料的任何权利 |
 | `desktop/public/elysia-icon.png` and `desktop/assets/elysia-icon.ico` | Tracked third-party branding / 已跟踪的第三方品牌素材 | Derived from an official *Honkai Impact 3rd* Elysia signet and included at the project owner's express direction for this unofficial, non-commercial fan project; © HoYoverse / miHoYo, excluded from every source-code license, no endorsement implied, and removable on rights-holder request / 由《崩坏3》爱莉希雅官方刻印制作，并按项目所有者明确决定用于本非官方、非商业粉丝项目；© HoYoverse / miHoYo，不属于任何源码许可证，不代表官方背书，权利人要求时应移除 |
 | `desktop/public/character/elysia-portrait.png` | Tracked reviewed generated fan artwork / 已跟踪并完成固定审核的生成式同人立绘 | Generated with OpenAI's built-in image-generation tool from Elysia reference images supplied by the project owner; distributed only as part of this unofficial, non-commercial fan project, excluded from every source-code license, and authenticated by the distribution audit / 使用 OpenAI 内置图像生成工具并参考项目所有者提供的爱莉希雅图片生成；仅随本非官方、非商业粉丝项目分发，不属于任何源码许可证，并由分发审计验证固定内容 |
 | `data/characters/elysia-2dArt/` | Tracked generated static review pack / 已跟踪的生成式静态审阅包 | Repository review source for this unofficial fan project, excluded from every source-code license; only selected static character-panel assets enter the installer / 本非官方粉丝项目的仓库静态审阅来源，不属于任何源码许可证；只有选定的静态角色状态素材进入安装包 |
 | `data/characters/爱莉希雅原版猫猫版总合集_34be1/` | Ignored user-owned external Bongo Cat Mver program collection / 已忽略、由用户持有的外部 Bongo Cat Mver 程序合集 | The project owner's purchased local copy is attributed to `@书呆儿`; the application reports the programs that pass bounded structural checks, pinned executable/DLL/resource hashes, and launch-time revalidation instead of assuming a fixed count. Every paid EXE, DLL, Live2D model, runtime, and configuration stays in place and is never tracked, uploaded, released, installed, or copied into build output. The recorded free-version page is `https://pan.quark.cn/s/cb5d84acad8e`, but its current contents, authorization, terms, availability, and equivalence to the purchased copy have not been independently verified / 项目所有者购买的本机副本来源标注为 `@书呆儿`；应用只显示通过有界结构检查、固定程序/DLL/资源 Hash 与启动前复核的程序，不假定固定数量。全部付费 EXE、DLL、Live2D 模型、Runtime 与配置均原地保留，不被跟踪、上传、发布、安装或复制到构建输出。记录的免费版页面为 `https://pan.quark.cn/s/cb5d84acad8e`，但其当前内容、授权、条款、可用性以及是否等同于付费副本均未独立核验 |
 | `desktop/public/character/elysia-state-atlas.png` | Tracked reviewed generated state atlas / 已跟踪并完成固定审核的生成式状态图集 | Byte-identical runtime copy of `data/characters/elysia-2dArt/02-activity-states.png`; the first seven cells drive the closed in-app Character State contract, while the eighth success cell is unused; same fan-project, source-license exclusion, rights boundary, and distribution authentication apply / `data/characters/elysia-2dArt/02-activity-states.png` 的逐字节相同运行时副本；前七格驱动应用内封闭角色状态，第八格 success 不使用；同样受非商业粉丝项目、源码许可排除、权利边界与分发审计约束 |
-| `desktop/public/character/elysia-expression-atlas.png` | Tracked reviewed generated expression atlas / 已跟踪并完成固定审核的生成式表情图集 | Byte-identical runtime copy of `data/characters/elysia-2dArt/03-expression-atlas.png`; only the user-controlled `neutral / happy / sad` closed mapping selects runtime cells, and model output cannot select arbitrary expressions / `data/characters/elysia-2dArt/03-expression-atlas.png` 的逐字节相同运行时副本；运行时仅由用户控制的 `neutral / happy / sad` 闭集映射选择格子，模型输出不能选择任意表情 |
+| `desktop/public/character/elysia-expression-atlas.png` | Tracked reviewed generated expression atlas / 已跟踪并完成固定审核的生成式表情图集 | Byte-identical runtime copy of `data/characters/elysia-2dArt/03-expression-atlas.png`; only the user-controlled ten-value Voice Emotion mapping selects reviewed cells, and model output cannot select arbitrary expressions / `data/characters/elysia-2dArt/03-expression-atlas.png` 的逐字节相同运行时副本；运行时仅由用户控制的十值 Voice Emotion 闭集映射选择审核格，模型输出不能选择任意表情 |
 | `desktop/public/character/elysia-speech-atlas.png` | Tracked reviewed generated speech reference atlas / 已跟踪并完成固定审核的生成式嘴型参考图集 | Byte-identical copy of `04-facial-rig-atlas.png`; retained and distribution-authenticated as review material, but the current in-app character renderer does not select it or perform lip synchronization / `04-facial-rig-atlas.png` 的逐字节副本；作为审阅素材保留并接受分发完整性验证，但当前应用内角色 Renderer 不选择它，也不执行嘴型同步 |
 
 ### Reviewed generated in-app character artwork / 已审核的生成式应用内角色图
@@ -47,9 +51,9 @@ The reviewed state atlas was generated on 2026-10-01 with OpenAI's built-in imag
 
 审核状态图集于 2026-10-01 使用 OpenAI 内置图像生成工具制作，参考了项目所有者提供的爱莉希雅角度、面部、服装和风格图片；完整生成与定点修复记录保存在 `data/characters/elysia-2dArt/` 的源审阅图旁。运行时文件与 `02-activity-states.png` 逐字节相同，固定为 **2,303,963 字节**，SHA-256 为 **`54eb2525673c2a849819be10eb88eb2f670eb1911e86fd154e69b578cbb4c25c`**。按行读取的前七格分别表示 `idle`、`listening`、`thinking`、`speaking`、`working`、`waiting_approval` 和 `error`；第八格成功/庆祝明确不属于运行时封闭状态。CI 会固定仓库文件，要求 ASAR 中恰好出现一次 `dist/character/elysia-state-atlas.png`，并验证从该条目抽取的实际字节。
 
-The reviewed expression atlas shares the same 2026-10-01 generation references and the correction record stored beside `data/characters/elysia-2dArt/03-expression-atlas.png`. Its byte-identical runtime copy at `desktop/public/character/elysia-expression-atlas.png` is exactly **2,500,647 bytes**, with SHA-256 **`fbf7a515b2651b3a881cf9b838a5605c316befd0b174dde046780d8e441d7f93`**. Runtime selection is restricted to the user setting `neutral`, `happy`, or `sad`; the same active setting selects the local TTS reference and the reviewed static expression after a Backend restart. No model response can name an emotion, file, atlas cell, or animation. CI pins the repository file, requires exactly one `dist/character/elysia-expression-atlas.png` ASAR entry, and verifies its extracted bytes.
+The reviewed expression atlas shares the same 2026-10-01 generation references and the correction record stored beside `data/characters/elysia-2dArt/03-expression-atlas.png`. Its byte-identical runtime copy at `desktop/public/character/elysia-expression-atlas.png` is exactly **2,500,647 bytes**, with SHA-256 **`fbf7a515b2651b3a881cf9b838a5605c316befd0b174dde046780d8e441d7f93`**. Runtime selection is restricted to the closed user setting `neutral`, `happy`, `sad`, `caring`, `moved`, `playful`, `affectionate`, `teasing`, `serious`, or `surprised`; the same active setting selects the local TTS reference and its explicitly reviewed static expression after a Backend restart. No model response can name an emotion, file, atlas cell, or animation. CI pins the repository file, requires exactly one `dist/character/elysia-expression-atlas.png` ASAR entry, and verifies its extracted bytes.
 
-审核表情图集沿用 2026-10-01 的同一组生成参考，完整修订记录保存在 `data/characters/elysia-2dArt/03-expression-atlas.png` 旁。`desktop/public/character/elysia-expression-atlas.png` 是其逐字节相同运行时副本，固定为 **2,500,647 字节**，SHA-256 为 **`fbf7a515b2651b3a881cf9b838a5605c316befd0b174dde046780d8e441d7f93`**。运行时选择严格限于用户设置的 `neutral`、`happy` 或 `sad`；Backend 成功重启后，同一 Active 设置同时选择本地 TTS 参考与审核静态表情。模型回复不能命名情绪、文件、图集格或动画。CI 会固定仓库文件，要求 ASAR 中恰好出现一次 `dist/character/elysia-expression-atlas.png`，并验证抽取字节。
+审核表情图集沿用 2026-10-01 的同一组生成参考，完整修订记录保存在 `data/characters/elysia-2dArt/03-expression-atlas.png` 旁。`desktop/public/character/elysia-expression-atlas.png` 是其逐字节相同运行时副本，固定为 **2,500,647 字节**，SHA-256 为 **`fbf7a515b2651b3a881cf9b838a5605c316befd0b174dde046780d8e441d7f93`**。运行时选择严格限于用户设置的 `neutral`、`happy`、`sad`、`caring`、`moved`、`playful`、`affectionate`、`teasing`、`serious` 或 `surprised`；Backend 成功重启后，同一 Active 设置同时选择本地 TTS 参考与对应的明确审核静态表情。模型回复不能命名情绪、文件、图集格或动画。CI 会固定仓库文件，要求 ASAR 中恰好出现一次 `dist/character/elysia-expression-atlas.png`，并验证抽取字节。
 
 The reviewed facial-rig atlas also shares the 2026-10-01 references and has its generation and targeted mouth-correction record beside `data/characters/elysia-2dArt/04-facial-rig-atlas.png`. Its byte-identical reviewed copy at `desktop/public/character/elysia-speech-atlas.png` is exactly **2,054,767 bytes**, with SHA-256 **`21bf4496acc4417d491ff0163c9ee1d38593e376ca25a3d452fd393c6157f9ab`**. The current in-app character presentation is image-only and does not select cells from this atlas, sample Web Audio for visual RMS, or claim phoneme synchronization. CI still pins this retained review file, requires exactly one `dist/character/elysia-speech-atlas.png` ASAR entry, and verifies its extracted bytes; that integrity check does not make the file part of the active character-rendering path.
 
@@ -141,6 +145,75 @@ The document-retrieval library defines an optional reranker protocol, but this r
 
 ---
 
+## Elysia Song-Cover Runtime and Model Boundary / 爱莉希雅翻唱 Runtime 与模型边界
+
+The Song Cover button now exposes two distinct local singing paths rather than text-to-speech. The default lyrics-driven path sends the resolved title, artist, and rounded duration—but never audio or local paths—to the fixed LRCLIB HTTPS origin, requires trustworthy synchronized Mandarin lyrics, and resings them through a private Windows-to-WSL SoulX-Singer runtime. The explicit Legacy fallback performs offline FCPE + So-VITS-SVC conversion and therefore copies the source vocal's pronunciation instead of reading lyrics. Both accept one song or aligned vocal/accompaniment stems and a bounded `-2`, `-1`, `0`, `+1`, or `+2` semitone choice. Source audio, fetched lyrics, separated stems, intermediate PCM, generated preview, and unexported lossless output remain managed local temporary data. The repository neither supplies songs nor obtains music, lyric, recording, performer, character, service, prompt, or model rights for the user.
+
+Song Cover 按钮现在提供两条与文字转语音不同的本机歌声路径。默认歌词驱动路径只向固定 LRCLIB HTTPS Origin 发送解析后的歌名、歌手与四舍五入时长，不发送音频或本机路径；它要求可信的普通话同步歌词，再经私有 Windows→WSL SoulX-Singer Runtime 重新演唱。显式 Legacy 回退则完全离线，通过 FCPE + So-VITS-SVC 转换，因此复制原人声的发音而不读取歌词。两条路径都接受完整歌曲或已对齐的人声/伴奏 Stem，并支持受限的 `-2`、`-1`、`0`、`+1`、`+2` 半音选择。源音频、在线歌词、分离 Stem、中间 PCM、生成预览与未导出的无损结果均为受管本机临时数据。本仓库不提供歌曲，也不代替用户取得音乐、歌词、录音、表演者、角色、服务、Prompt 或模型权利。
+
+The reviewed local example directory contained three same-duration 44.1 kHz files: a stereo final mix, a stereo instrumental, and a mono converted Elysia vocal. Their structure was used only to confirm the expected pipeline shape—converted vocal plus accompaniment. None of those audio files was copied into the repository, tests, build output, package, or documentation. Their existence is not evidence that the project has permission to redistribute the source song or derivative recording.
+
+已检查的本机示例目录包含三份时长一致的 44.1 kHz 文件：Stereo 最终混音、Stereo 伴奏和 Mono 爱莉希雅转换人声。这里只用它们确认预期流水线结构，即“转换人声 + 伴奏”；任何示例音频都没有被复制进仓库、测试、构建输出、安装包或文档。它们的存在不能证明项目有权再分发源歌曲或衍生录音。
+
+The private SoulX source checkout records origin `https://github.com/Soul-AILab/SoulX-Singer.git` at revision `81aeb3ae772c70093c3de74dc23c92d983801ae4`. Its checked-in `LICENSE` is Apache-2.0, and the upstream README states that its SoulX-Singer code and model weights use Apache-2.0. That statement does not automatically relicense RMVPE, ROSVOT, FunASR, OpenCC, their checkpoints/dictionaries, CUDA/Torch dependencies, selected lyrics, the Elysia prompt, its underlying recordings, or generated covers. Those separate assets remain local; their own terms and performer/dataset provenance must be reviewed independently before any distribution.
+
+私有 SoulX Source Checkout 记录的 Origin 为 `https://github.com/Soul-AILab/SoulX-Singer.git`，固定 Revision 为 `81aeb3ae772c70093c3de74dc23c92d983801ae4`。其中随库 `LICENSE` 是 Apache-2.0，上游 README 也声明 SoulX-Singer Code 与 Model Weight 使用 Apache-2.0。该声明不会自动为 RMVPE、ROSVOT、FunASR、OpenCC、它们的 Checkpoint/Dictionary、CUDA/Torch 依赖、所选歌词、爱莉希雅 Prompt、底层录音或生成翻唱重新授权。这些独立资产继续只保留在本机；任何分发前都必须分别复核其条款及表演者/数据集来源。
+
+| Private WSL evaluation selection / 私有 WSL 评估选择 | Bytes | SHA-256 |
+| --- | ---: | --- |
+| SoulX-Singer `model.pt` | 2,818,092,278 | `447EAF41F91A6B6659D55E9EC3C9B809221724FB8592AEBAEC35A23751A5B500` |
+| Preprocess RMVPE `rmvpe.pt` | 181,184,272 | `6D62215F4306E3CA278246188607209F09AF3DC77ED4232EFDD069798C4EC193` |
+| ROSVOT RMVPE `model.pt` | 368,492,925 | `19DC1809CF4CDB0A18DB93441816BC327E14E5644B72EEAAE5220560C6736FE2` |
+| ROSVOT singing-note `model.pt` | 144,674,420 | `7501FB5F913D971C2F51BCB3063B930027B03206581820A4D2BFDC394C9C3FCB` |
+| ROSVOT word-boundary `model.pt` | 119,897,457 | `0BC2D42A6D4B7A05436DEB937E2DEDA1C12DE49E5687CFDA0BDF6A430120DCD2` |
+| Mandarin FunASR `model.pt` | 989,763,045 | `3D491689244EC5DFBF9170EF3827C358AA10F1F20E42A7C59E15E688647946D1` |
+| Private Elysia prompt `prompt.wav` | 883,808 | `2C9D9F6E0C2AEF901A9253403D137BD7D82BAB8C12870A6FE41A2EE43DB6050E` |
+| Private Elysia prompt metadata `prompt.json` | 3,646 | `2A062CAA91EF26D6DEF729403680CB782A1FA4390735E1C8E4F91BE85175DC72` |
+
+The Elysia prompt does not carry a retained creator, original publication URL, dataset record, performer authorization, or redistribution grant. Its fixed digest authenticates only the locally reviewed bytes. It must not enter Git, a public mirror, a release, an installer, a container, shared diagnostics, or a downloadable runtime bundle. The complete runtime allowlist, including configs, dictionaries, interpreter, FFmpeg, and OpenCC files, is enforced in `scripts/song_svs_runtime.py`; this table highlights the principal weights and character-specific prompt rather than pretending every dependency shares one license.
+
+爱莉希雅 Prompt 没有随附可留存的创作者身份、原始发布 URL、数据集记录、表演者授权或再分发许可；固定摘要只认证本机已审核字节。它不得进入 Git、公共镜像、Release、安装包、Container、共享诊断或可下载 Runtime Bundle。包含配置、字典、解释器、FFmpeg 与 OpenCC 文件在内的完整 Runtime Allowlist 由 `scripts/song_svs_runtime.py` 执行；上表只突出主要权重与角色专用 Prompt，不把全部依赖伪装成使用同一许可证。
+
+LRCLIB is used only as a fixed metadata-and-synchronized-lyrics lookup service after the user selects the lyrics-driven method and confirms the task. Receiving lyrics from that service is not a copyright, adaptation, public-performance, or redistribution grant. Runtime lyric files are forbidden by the repository distribution audit and are deleted with the private job; users remain responsible for the law and terms applicable to the selected song and lyrics.
+
+只有用户选择歌词驱动方法并确认任务后，应用才把 LRCLIB 用作固定的 Metadata 与同步歌词查询服务。从该服务取得歌词不代表获得著作权、改编、公开表演或再分发授权。Runtime 歌词文件受仓库分发门禁禁止，并随私有 Job 删除；用户仍须自行负责所选歌曲、歌词及适用服务条款和法律要求。
+
+The upstream [So-VITS-SVC 4.1-Stable repository](https://github.com/svc-develop-team/so-vits-svc/tree/4.1-Stable) carries the GNU AGPL-3.0 license for covered source code and separately warns users to resolve dataset and input-source authorization. Its README requires a published conversion to identify the input singing/audio source. The [Demucs repository](https://github.com/facebookresearch/demucs) identifies its covered software as MIT-licensed. Those software licenses do not automatically license ContentVec, `htdemucs`, third-party dependencies, an Elysia checkpoint, training material, the character, the original performer, selected songs, or generated covers.
+
+上游 [So-VITS-SVC 4.1-Stable 仓库](https://github.com/svc-develop-team/so-vits-svc/tree/4.1-Stable) 对其覆盖的 Source Code 使用 GNU AGPL-3.0，并另外警告用户自行解决数据集与输入源授权；其 README 要求公开转换作品时注明输入歌声/音频来源。[Demucs 仓库](https://github.com/facebookresearch/demucs) 把其覆盖的软件标为 MIT License。这些软件许可证不会自动授权 ContentVec、`htdemucs`、第三方依赖、爱莉希雅 Checkpoint、训练素材、角色、原配音演员、选中歌曲或生成翻唱。
+
+The supplied Elysia SVC pack contains `G_166400.pth`, `G_166400.json`, optional diffusion material, and an `install.txt` whose only identity note is `#Elysia`. No original publication URL, creator identity, dataset provenance, performer authorization, character authorization, redistribution grant, or commercial-use grant was retained with that local pack. Consequently, the current checkpoint cannot enter Git, a public mirror, Release, installer, container, shared diagnostic archive, or downloadable runtime bundle.
+
+本机爱莉希雅 SVC 包含 `G_166400.pth`、`G_166400.json`、可选 Diffusion 素材，以及一份只以 `#Elysia` 标识模型的 `install.txt`；随包没有留存原始发布 URL、创作者身份、数据集来源、表演者授权、角色授权、再分发许可或商业使用许可。因此当前 Checkpoint 不得进入 Git、公共镜像、Release、安装包、Container、共享诊断包或可下载 Runtime Bundle。
+
+| Local evaluation selection / 本地评估选择 | Bytes / files | SHA-256 |
+| --- | ---: | --- |
+| Elysia SVC checkpoint `G_166400.pth` | 160,938,745 | `49AD5E97A709F5CCCAB7D9329CB3012F07A657C73574EB6013E257640CB16873` |
+| Elysia SVC configuration `G_166400.json` | 2,522 | `2A2675B683D94C0C969F03F9AEEF55FC416B4053B5E572A97C6F8A9A462A4DC5` |
+| ContentVec checkpoint | 189,507,909 | `F54B40FD2802423A5643779C4861AF1E9EE9C1564DC9D32F54F20B5FFBA7DB96` |
+| FCPE pitch checkpoint `pretrain/fcpe.pt` | 69,005,189 | `C3A8DD2DBD51BAF19ED295006F2AC25DBA6DD60ADC7EC578AE5FBD94970951DA` |
+| Demucs `htdemucs` checkpoint | 84,141,911 | `8726E21A993978C7BA086D3872E7608D7D5BFCA646CA4ACA459FFDA844FAA8B4` |
+| Reviewed So-VITS-SVC Python tree | 126 files / 887,322 | `D5647B6AA4BC07ED9AFFFE19701948E18DEAA2CB2AB1FE0ADB8E5EB9B96A8F6F` |
+| Reviewed Demucs-specific singing runtime aggregate | 119 files / 1,107,739 | `3146D43372B416A46C17C2D06227F98B92C1E26C62EEA208E6277D1428B30712` |
+
+The Demucs aggregate includes `demucs/remote/htdemucs.yaml`, which selects model ID `955717e8`, and `demucs/remote/files.txt`, which binds that ID to `hybrid_transformer/955717e8-8726e21a.th`; the checkpoint bytes remain separately size- and SHA-256-authenticated. Runtime verification also rejects every sibling module or extension provider that could shadow a protected Demucs import, rather than trusting only the expected package directory.
+
+Demucs Aggregate 包含 `demucs/remote/htdemucs.yaml` 和 `demucs/remote/files.txt`：前者固定选择模型 ID `955717e8`，后者把该 ID 绑定到 `hybrid_transformer/955717e8-8726e21a.th`；Checkpoint 字节仍另行接受长度与 SHA-256 验证。Runtime 验证还会拒绝任何可以覆盖受保护 Demucs Import 的同名 Sibling Module 或 Extension Provider，而不是只信任预期 Package Directory。
+
+The FCPE checkpoint is pinned to the immutable upstream file at [`ylzz1997/rmvpe_pretrain_model@1d7161d8…/fcpe.pt`](https://huggingface.co/datasets/ylzz1997/rmvpe_pretrain_model/resolve/1d7161d803a487a0ee2e366f5e8e3a72bef52263/fcpe.pt) for local execution, but the hosting dataset page did not provide sufficient license metadata to establish redistribution permission. It therefore remains an ignored local dependency and must not enter Git, releases, installers, containers, mirrors, or shared diagnostic archives. Recording a hash authenticates bytes; it does not grant copyright, model, dataset, performer, or redistribution rights.
+
+FCPE Checkpoint 通过不可变的上游文件身份固定用于本机执行，但其托管数据集页面没有提供足以确认再分发许可的 License Metadata。因此它必须保持为被忽略的本机依赖，不得进入 Git、Release、安装包、Container、Mirror 或共享诊断归档。记录 Hash 只是在认证字节身份，不会授予著作权、模型、数据集、表演者或再分发权利。
+
+Application startup and managed temporary-audio cleanup remove only the exact So-VITS-SVC scratch names derived from a validated job UUID with hyphens removed: `raw/elysia_cover_<32-hex-job-token>.wav` and `results/elysia_cover_<32-hex-job-token>.wav_<known-key>key_Elysia_sovits_<known-f0>.wav`. `<known-key>` is limited to `-2 / -1 / 0 / 1 / 2`; `<known-f0>` is limited to the migration-era `dio` or current `fcpe` suffix. Other files are left untouched. Cleanup refuses symlink- or Windows junction/reparse-backed scratch directories and matching entries that are not regular files, so it cannot traverse a redirect outside the ignored local runtime.
+
+应用启动与受管临时音频清理只删除由已验证 Job UUID 去掉连字符后形成的 So-VITS-SVC 精确 Scratch 名称：`raw/elysia_cover_<32-hex-job-token>.wav` 和 `results/elysia_cover_<32-hex-job-token>.wav_<known-key>key_Elysia_sovits_<known-f0>.wav`；`<known-key>` 只允许 `-2 / -1 / 0 / 1 / 2`，`<known-f0>` 只允许迁移期的 `dio` 或当前的 `fcpe` 后缀。其他文件保持不变。若 Scratch Directory 是 Symbolic Link 或 Windows Junction/Reparse 跳转，或匹配项不是普通文件，清理会 Fail Closed，不会跟随重定向离开被忽略的本机 Runtime。
+
+Complete runtime executable and tree identities, temporary-data behavior, and tests are recorded in [`docs/15-SONG-COVER.md`](./docs/15-SONG-COVER.md).
+
+完整 Runtime Executable/Tree 身份、临时数据行为与测试记录见 [`docs/15-SONG-COVER.md`](./docs/15-SONG-COVER.md)。
+
+---
+
 ## Elysia GPT-SoVITS v2 Provenance / Elysia GPT-SoVITS v2 来源
 
 The `README.txt` supplied with the local pack identifies the following parties and material:
@@ -163,9 +236,16 @@ The local directory contains `.ckpt` and `.pth` model weights, `.wav` reference 
 | --- | ---: | --- | --- |
 | Selected GPT v2 checkpoint / 所选 GPT v2 Checkpoint | 155,312,566 | `C73957C7815EA36A345678DF6DDEDA9FFD2B03498D17802BF54502414C9D887B` | `【GPT2.0】Elysia-e20.ckpt`; technical candidate only / 仅为技术候选 |
 | Selected SoVITS v2 checkpoint / 所选 SoVITS v2 Checkpoint | 85,007,488 | `D095458023374D2BB7B657FF622A010504F8825B7188AB0582B91EF6412CD9CE` | `【GPT2.0】Elysia_e24_s13080.pth`; technical candidate only / 仅为技术候选 |
-| `neutral` reference / 中性参考 | 476,676 | `4FF61FE9F385450154B2C460EB0DEF5EE15013480CC17FDD235DBEB20A4E34B8` | WAV PCM, 44.1 kHz, mono, 16-bit, 238,316 frames, 5.403991 s |
+| `neutral` reference / 中性参考 | 511,604 | `D5E62E6FF2158A729DFEDB2DD8648D3919B9FA962C02C49CADAED944FA8388A7` | WAV PCM, 44.1 kHz, mono, 16-bit, 255,780 frames, 5.800000 s |
 | `happy` reference / 开心参考 | 411,672 | `C42EEE79E91B847FF5E54E4B5F7C46751CD0CDB3E18223373F385A67A42D277E` | WAV PCM, 44.1 kHz, mono, 16-bit, 205,814 frames, 4.666984 s |
-| `sad` reference / 悲伤参考 | 481,438 | `999730EB7DAA2F41A87DF7AA1D56748A8408DE7A8B45180785BE6C7EC98A8A01` | WAV PCM, 44.1 kHz, mono, 16-bit, 240,697 frames, 5.457982 s |
+| `sad` reference / 悲伤参考 | 707,408 | `31AB2CC595208B7D86852945D729C4C89C990BAA10BB50C51DDED911EE49DCB0` | WAV PCM, 44.1 kHz, mono, 16-bit, 353,682 frames, 8.020000 s |
+| `caring` reference / 关怀参考 | 711,200 | `548E252FAC86229FD68BBF1A702689540E1446329C82E5185C6184D6EF8CE981` | WAV PCM, 44.1 kHz, mono, 16-bit, 355,578 frames, 8.062993 s |
+| `moved` reference / 感动参考 | 766,766 | `723AF5FD855B9DDA3404635B4127730C42E0776FA878C6FB18FA9E22DBD4ED6A` | WAV PCM, 44.1 kHz, mono, 16-bit, 383,361 frames, 8.692993 s |
+| `playful` reference / 调皮参考 | 605,536 | `96914A59AE5F43E67E290D4BF8C88601C5B2ECD0C337899284C8C032870FB09E` | WAV PCM, 44.1 kHz, mono, 16-bit, 302,746 frames, 6.864989 s |
+| `affectionate` reference / 撒娇参考 | 337,320 | `5F84EC94CB6DFFECD919BE3BFA3422A37F48FB32649C759E76E251311236A64C` | WAV PCM, 44.1 kHz, mono, 16-bit, 168,638 frames, 3.823991 s |
+| `teasing` reference / 撩拨参考 | 373,306 | `346713B34CC019E4048BE515345F54E5AADB01EE35EB034F00A2A57F1D9A37E7` | WAV PCM, 44.1 kHz, mono, 16-bit, 186,631 frames, 4.231995 s |
+| `serious` reference / 严肃参考 | 661,102 | `1214D3C63FA1290CBED6DB754606EC57956719612094268E94C9155A51888EF1` | WAV PCM, 44.1 kHz, mono, 16-bit, 330,529 frames, 7.494989 s |
+| `surprised` reference / 惊喜参考 | 359,810 | `D5C2E061CBE6A87D1830E0B30F9AEAB71E1DED976620EED222637DFFE7313A8F` | WAV PCM, 44.1 kHz, mono, 16-bit, 179,883 frames, 4.078980 s |
 
 Choosing a higher epoch/step file for this acceptance run is not a claim that it has the best quality, verified provenance, or authorization. Exact reference filenames and prompt text remain only in the ignored local catalog because they may themselves disclose copyrighted dialogue and local paths.
 
@@ -251,6 +331,10 @@ The background section credits the [Elysia article on Moegirlpedia](https://zh.m
 This file is already tracked, so every clone or repository share distributes a copy. Its unresolved provenance is therefore a current distribution risk, not only a future-release concern. The maintainer should promptly conduct an item-level review and then remove unsupported material, replace it with original summaries, or obtain adequate permission. Removing it from a future tree would not by itself erase copies from Git history.
 
 该文件已经被 Git 跟踪，因此每次 Clone 或共享仓库都会分发副本。来源未解决是**当前分发风险**，而不只是未来正式发布时的问题。维护者应尽快逐项审查，并删除无法证明可复用的内容、改写为原创摘要，或取得充分许可。将来从工作树移除该文件，也不会自动清除 Git 历史中的既有副本。
+
+`data/characters/elysia_character_analysis_zh.md` 是按身份、人格、价值观、动机、思维、情绪、语言、交流、关系、偏好、情境反应与还原边界整理的原创研究总结；`core/elysia_system_prompt_zh.md` 则是应用实际加载的独立人格合同。两者不会把本地 2,318 条语录或网络剧情全文复制进每次模型请求。其原创表达仍不改变底层角色、剧情、名称与其他第三方权利的归属。
+
+`data/characters/elysia_character_analysis_zh.md` is an original research summary organized by identity, personality, values, motivation, reasoning, emotion, language, interaction, relationships, preferences, situational responses, and fidelity boundaries. `core/elysia_system_prompt_zh.md` is the separate persona contract loaded by the application. Neither file copies the 2,318-entry local quotation set or an online full-story transcript into each model request. Their original wording does not change ownership of the underlying character, story, names, or other third-party rights.
 
 ---
 

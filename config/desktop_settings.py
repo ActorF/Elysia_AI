@@ -438,7 +438,7 @@ def validate_voice_emotion(value: object) -> VoiceEmotion:
 
     if not isinstance(value, str) or value not in VOICE_EMOTIONS:
         raise DesktopSettingsValidationError(
-            "voice_emotion must be neutral, happy, or sad."
+            "voice_emotion must be a supported closed value."
         )
     return cast(VoiceEmotion, value)
 

@@ -39,6 +39,86 @@
           },
           "prompt_text": "This original example sounds cheerful and bright.",
           "prompt_language": "en"
+        },
+        {
+          "emotion": "sad",
+          "audio": {
+            "path": "sample-voice/references/sad.wav",
+            "bytes": 44,
+            "sha256": "4444444444444444444444444444444444444444444444444444444444444444"
+          },
+          "prompt_text": "This fictional example has a quiet and reflective tone.",
+          "prompt_language": "en"
+        },
+        {
+          "emotion": "caring",
+          "audio": {
+            "path": "sample-voice/references/caring.wav",
+            "bytes": 44,
+            "sha256": "5555555555555555555555555555555555555555555555555555555555555555"
+          },
+          "prompt_text": "This fictional example offers calm and reassuring support.",
+          "prompt_language": "en"
+        },
+        {
+          "emotion": "moved",
+          "audio": {
+            "path": "sample-voice/references/moved.wav",
+            "bytes": 44,
+            "sha256": "6666666666666666666666666666666666666666666666666666666666666666"
+          },
+          "prompt_text": "This fictional example expresses heartfelt gratitude.",
+          "prompt_language": "en"
+        },
+        {
+          "emotion": "playful",
+          "audio": {
+            "path": "sample-voice/references/playful.wav",
+            "bytes": 44,
+            "sha256": "7777777777777777777777777777777777777777777777777777777777777777"
+          },
+          "prompt_text": "This fictional example uses a light and playful delivery.",
+          "prompt_language": "en"
+        },
+        {
+          "emotion": "affectionate",
+          "audio": {
+            "path": "sample-voice/references/affectionate.wav",
+            "bytes": 44,
+            "sha256": "8888888888888888888888888888888888888888888888888888888888888888"
+          },
+          "prompt_text": "This fictional example sounds warm and affectionate.",
+          "prompt_language": "en"
+        },
+        {
+          "emotion": "teasing",
+          "audio": {
+            "path": "sample-voice/references/teasing.wav",
+            "bytes": 44,
+            "sha256": "9999999999999999999999999999999999999999999999999999999999999999"
+          },
+          "prompt_text": "This fictional example has a gently teasing cadence.",
+          "prompt_language": "en"
+        },
+        {
+          "emotion": "serious",
+          "audio": {
+            "path": "sample-voice/references/serious.wav",
+            "bytes": 44,
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "prompt_text": "This fictional example is measured and serious.",
+          "prompt_language": "en"
+        },
+        {
+          "emotion": "surprised",
+          "audio": {
+            "path": "sample-voice/references/surprised.wav",
+            "bytes": 44,
+            "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          },
+          "prompt_text": "This fictional example conveys a clear moment of surprise.",
+          "prompt_language": "en"
         }
       ]
     }

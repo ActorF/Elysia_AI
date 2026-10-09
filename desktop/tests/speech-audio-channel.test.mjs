@@ -869,6 +869,64 @@ test('delivery pairs fd3 before metadata and starts before Chat completion', () 
   input.destroy()
 })
 
+test('manual delivery buffers both transports until its exact ACK arms playback', async () => {
+  const input = new PassThrough()
+  const source = encodedFrame({ counter: 0, sequence: 0 })
+  const playback = new DeferredPlayback()
+  const statuses = []
+  const delivery = new SpeechDeliveryCoordinator(
+    input,
+    playback,
+    (failure) => assert.fail(`unexpected delivery failure: ${failure}`),
+    (status) => statuses.push(status),
+  )
+  delivery.startTurn('request_manual', 'chat_main', false)
+
+  delivery.acceptEvent(clipEvent(source, { requestId: 'request_manual' }))
+  input.write(source.bytes)
+
+  assert.equal(playback.calls.length, 0)
+  assert.deepEqual(statuses, [])
+  assert.equal(input.isPaused(), true)
+  assert.equal(delivery.armTurn('request_manual', 'chat_other'), false)
+  assert.equal(delivery.armTurn('request_manual', 'chat_main'), true)
+  assert.equal(playback.calls.length, 1)
+  assert.deepEqual(statuses.map((status) => status.kind), ['playing'])
+
+  playback.resolve()
+  await immediate()
+  delivery.dispose()
+  input.destroy()
+})
+
+test('rejected manual delivery discards an unarmed frame without playback', async () => {
+  const input = new PassThrough()
+  const source = encodedFrame({ counter: 0, sequence: 0 })
+  const playback = new DeferredPlayback()
+  const statuses = []
+  const delivery = new SpeechDeliveryCoordinator(
+    input,
+    playback,
+    (failure) => assert.fail(`unexpected delivery failure: ${failure}`),
+    (status) => statuses.push(status),
+  )
+  delivery.startTurn('request_manual', 'chat_main', false)
+  delivery.acceptEvent(clipEvent(source, { requestId: 'request_manual' }))
+  input.write(source.bytes)
+
+  assert.equal(
+    delivery.cancelOwnedTurn('request_manual', 'chat_main'),
+    true,
+  )
+  await immediate()
+
+  assert.equal(playback.calls.length, 0)
+  assert.deepEqual(statuses.map((status) => status.kind), ['skipped'])
+  assert.equal(input.isPaused(), false)
+  delivery.dispose()
+  input.destroy()
+})
+
 for (const [name, mutate] of [
   ['request', (event) => { event.requestId = 'request_forged' }],
   ['turn', (event) => { event.data.chatId = 'chat_forged' }],
@@ -1060,7 +1118,10 @@ test('renderer reset cancels the current speech turn without a leaked ID', async
   delivery.acceptEvent(clipEvent(source))
   input.write(source.bytes)
 
-  delivery.cancelCurrentTurn()
+  assert.deepEqual(delivery.cancelCurrentTurn(), {
+    requestId: 'request_main',
+    chatId: 'chat_main',
+  })
   await immediate()
 
   assert.equal(playback.cancelCalls, 1)

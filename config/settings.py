@@ -37,7 +37,18 @@ TranscriptionModel: TypeAlias = Literal[
 TranscriptionDevice: TypeAlias = Literal["auto", "cuda", "cpu"]
 TranscriptionLanguage: TypeAlias = Literal["auto", "zh", "en"]
 TranscriptReviewMode: TypeAlias = Literal["manual"]
-VoiceEmotion: TypeAlias = Literal["neutral", "happy", "sad"]
+VoiceEmotion: TypeAlias = Literal[
+    "neutral",
+    "happy",
+    "sad",
+    "caring",
+    "moved",
+    "playful",
+    "affectionate",
+    "teasing",
+    "serious",
+    "surprised",
+]
 
 DEFAULT_TRANSCRIPTION_MODEL: Final[TranscriptionModel] = "small"
 # CPU is the conservative desktop default so Ollama and GPT-SoVITS can share
@@ -63,6 +74,13 @@ VOICE_EMOTIONS: Final[tuple[VoiceEmotion, ...]] = (
     "neutral",
     "happy",
     "sad",
+    "caring",
+    "moved",
+    "playful",
+    "affectionate",
+    "teasing",
+    "serious",
+    "surprised",
 )
 
 

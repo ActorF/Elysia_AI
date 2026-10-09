@@ -11,3 +11,4 @@ jsonschema==4.26.0
 types-jsonschema==4.26.0.20260518
 langchain-ollama==1.1.0
 pypdf==6.19.0
+opencc==1.4.2

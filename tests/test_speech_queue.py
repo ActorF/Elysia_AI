@@ -497,6 +497,121 @@ def test_segmenter_preserves_arbitrary_chunk_boundaries() -> None:
     assert segmenter.finish() == (segmenter_sentence(1, "下一句"),)
 
 
+def test_segmenter_default_preserves_immediate_short_utterances() -> None:
+    """Keep the public default identical for callers that do not opt in."""
+
+    segmenter = StreamingSentenceSegmenter()
+
+    assert segmenter.feed("Hi. More") == (
+        segmenter_sentence(0, "Hi."),
+    )
+    assert segmenter.finish() == (
+        segmenter_sentence(1, " More"),
+    )
+
+
+def test_segmenter_waits_for_one_boundary_after_a_short_utterance() -> None:
+    """Combine a choppy opening with exactly one following natural phrase."""
+
+    segmenter = StreamingSentenceSegmenter(
+        SentenceSegmenterConfig(minimum_utterance_code_points=16)
+    )
+
+    assert segmenter.feed("Hi.") == ()
+    assert segmenter.feed(" Next phrase! Tail") == (
+        segmenter_sentence(0, "Hi. Next phrase!"),
+    )
+    assert segmenter.finish() == (
+        segmenter_sentence(1, " Tail"),
+    )
+
+
+def test_segmenter_merges_a_final_short_utterance_with_its_tail() -> None:
+    """Use the remaining final text instead of emitting one abrupt opener."""
+
+    segmenter = StreamingSentenceSegmenter(
+        SentenceSegmenterConfig(minimum_utterance_code_points=16)
+    )
+
+    assert segmenter.feed("Hi. trailing words") == ()
+    assert segmenter.finish() == (
+        segmenter_sentence(0, "Hi. trailing words"),
+    )
+
+
+def test_segmenter_flushes_a_final_short_utterance_without_a_tail() -> None:
+    """Never lose a complete short reply while waiting for more context."""
+
+    segmenter = StreamingSentenceSegmenter(
+        SentenceSegmenterConfig(minimum_utterance_code_points=16)
+    )
+
+    assert segmenter.feed("Hi.") == ()
+    assert segmenter.finish() == (
+        segmenter_sentence(0, "Hi."),
+    )
+
+
+def test_short_utterance_grouping_never_bypasses_the_hard_ceiling() -> None:
+    """Fall back to a bounded split when no second natural boundary arrives."""
+
+    segmenter = StreamingSentenceSegmenter(
+        SentenceSegmenterConfig(
+            max_code_points=32,
+            soft_break_floor=16,
+            minimum_utterance_code_points=20,
+        )
+    )
+
+    sentences = segmenter.feed("Hi." + ("a" * 40))
+    tail = segmenter.finish()
+
+    assert sentences == (
+        segmenter_sentence(0, "Hi." + ("a" * 29)),
+    )
+    assert tail == (
+        segmenter_sentence(1, "a" * 11),
+    )
+    assert all(len(sentence.text) <= 32 for sentence in sentences + tail)
+
+
+def test_cancelling_a_held_short_utterance_submits_no_synthesis() -> None:
+    """Discard buffered speech when its canonical turn becomes stale."""
+
+    synthesizer = _SequenceSynthesizer()
+    events: list[object] = []
+    queue = SpeechSynthesisQueue()
+    turn = queue.start_turn(
+        "turn-held-short-cancel",
+        _lease(synthesizer),
+        events.append,
+        segmenter_config=SentenceSegmenterConfig(
+            minimum_utterance_code_points=36
+        ),
+    )
+    try:
+        assert turn.feed("Hi.") == ()
+        assert turn.cancel() is True
+        _wait_until(
+            lambda: any(
+                isinstance(event, SpeechTurnTerminal) for event in events
+            )
+        )
+
+        assert synthesizer.requests == []
+        assert events == [
+            SpeechTurnTerminal(
+                "turn-held-short-cancel",
+                "cancelled",
+                0,
+                0,
+                0,
+            )
+        ]
+    finally:
+        queue.shutdown(timeout_seconds=2.0)
+
+
 def test_sentence_queue_api_is_exported_from_voice_package() -> None:
     """Keep the scheduler and binding lease available through Voice API."""
 
@@ -621,6 +736,22 @@ def test_segmenter_rejects_oversized_chunk_before_mutating_state() -> None:
         (
             {"max_code_points": 32, "soft_break_floor": 32},
             "soft_break_floor",
+        ),
+        (
+            {"minimum_utterance_code_points": True},
+            "minimum_utterance_code_points",
+        ),
+        (
+            {"minimum_utterance_code_points": 0},
+            "minimum_utterance_code_points",
+        ),
+        (
+            {
+                "max_code_points": 32,
+                "soft_break_floor": 16,
+                "minimum_utterance_code_points": 33,
+            },
+            "minimum_utterance_code_points",
         ),
     ],
 )

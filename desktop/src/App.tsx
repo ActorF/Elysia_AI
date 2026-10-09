@@ -47,6 +47,13 @@ import type {
   PresenceReminderFrequency,
 } from '../electron/presence-notification-contracts.ts'
 import {
+  parseSongCoverReadiness,
+  type ChooseSongCoverRequest,
+  type SongCoverReadiness,
+  type SongCoverErrorCode,
+  type SongCoverState,
+} from '../electron/song-cover-contracts.ts'
+import {
   hasNonBlankCodePoint,
   trimProtocolBlankCharacters,
 } from '../electron/protocol-text.js'
@@ -71,6 +78,8 @@ import {
 import type { VoiceSettingsDraft } from './settings/VoiceSettingsSection.tsx'
 import { AppShell } from './shell/AppShell.tsx'
 import { Sidebar, type AppView } from './shell/Sidebar.tsx'
+import { isSongCoverBusyStage } from './song-cover/song-cover-stage.ts'
+import { SongCoverSetupDialog } from './song-cover/SongCoverSetupDialog.tsx'
 import { useTheme } from './theme/ThemeProvider.tsx'
 import {
   CallPreview,
@@ -105,6 +114,54 @@ const MAX_PERSISTED_DRAFT_LENGTH = 1_000_000
 const MAX_AUTOMATIC_VOICE_CAPTURE_RECOVERY_ATTEMPTS = 2
 const VOICE_CAPTURE_RECOVERY_DELAY_MS = 500
 const VOICE_CAPTURE_STABLE_LISTENING_MS = 2_000
+const LOCAL_SONG_COVER_UNAVAILABLE: SongCoverReadiness = Object.freeze({
+  status: 'unavailable',
+  reason: 'local-runtime-unavailable',
+})
+
+function songCoverReadinessMessage(
+  readiness: SongCoverReadiness | null,
+): string | null {
+  if (readiness === null) {
+    return 'Checking Song Cover availability.'
+  }
+  if (readiness.status === 'available') {
+    return null
+  }
+  switch (readiness.reason) {
+    case 'not-included-in-build':
+      return 'Song Cover is unavailable in this build because the local singing runtime is not included.'
+    case 'local-runtime-unavailable':
+      return 'Song Cover is unavailable because the required local singing runtime is incomplete.'
+  }
+}
+
+function songCoverErrorMessage(code: SongCoverErrorCode): string {
+  switch (code) {
+    case 'invalid-audio':
+      return 'Choose valid audio no longer than 12 minutes.'
+    case 'lyrics-network':
+      return 'Lyrics could not be retrieved from LRCLIB. Check your connection and try again.'
+    case 'lyrics-no-match':
+      return 'No reliable LRCLIB lyrics match was found. Check the song title and artist.'
+    case 'lyrics-no-sync':
+      return 'This song has no synchronized lyrics on LRCLIB. Choose another song.'
+    case 'lyrics-alignment':
+      return 'The synchronized lyrics could not be aligned to this audio. Try a clearer recording or another song.'
+    case 'singing-runtime':
+      return 'The local singing runtime could not create this cover. Check the installed runtime and try again.'
+    default:
+      // IPC values are typed, but a fixed fallback keeps future or malformed
+      // codes from selecting a native error string in the Renderer.
+      return 'The local singing runtime could not create this cover. Check the installed runtime and try again.'
+  }
+}
+
+function rendererSongCoverState(state: SongCoverState): SongCoverState {
+  return state.errorCode === null
+    ? state
+    : { ...state, error: songCoverErrorMessage(state.errorCode) }
+}
 
 const EMPTY_AUDIO_DEVICE_SNAPSHOT: AudioDeviceSnapshot = {
   inputs: [],
@@ -523,6 +580,21 @@ function mayLeaveSettings(view: AppView, dirty: boolean): boolean {
     : true
 }
 
+function managedSpeechBlockingMessage(
+  status: DesktopSettingsState['speechStatus'],
+): string | null {
+  if (status.state === 'ready') {
+    return null
+  }
+  if (status.state === 'starting') {
+    return 'Local speech is still starting. Wait a moment.'
+  }
+  if (status.reason === 'setup_unavailable') {
+    return 'Local speech needs a configured GPT-SoVITS runtime and a compatible voice profile. Review Voice behavior in Settings, then restart the Backend.'
+  }
+  return 'Local speech stopped after a runtime failure. Restart the Backend before using speech again.'
+}
+
 function presentChatMessages(chat: ChatDetail): ChatMessage[] {
   return chat.messages
     .filter((message) => message.role !== 'system')
@@ -605,6 +677,13 @@ interface ManagedSpeechPlayback {
   readonly chatId: string
   readonly sequence: number
 }
+
+interface ManualReadAloudOwner {
+  readonly operationId: string
+  readonly messageId: string
+}
+
+type ManualReadAloudPhase = 'starting' | 'active' | 'stopping'
 
 /**
  * Retain only correlation metadata while an accepted interruption waits for
@@ -866,6 +945,14 @@ function App() {
     = useState(false)
   const [presenceNotificationError, setPresenceNotificationError]
     = useState<string | null>(null)
+  const [songCoverState, setSongCoverState] = useState<SongCoverState | null>(null)
+  const [songCoverReadiness, setSongCoverReadiness]
+    = useState<SongCoverReadiness | null>(() => (
+      desktopApi === undefined ? LOCAL_SONG_COVER_UNAVAILABLE : null
+    ))
+  const [songCoverSetupOpen, setSongCoverSetupOpen] = useState(false)
+  const [songCoverSelectionPending, setSongCoverSelectionPending]
+    = useState(false)
   const [voiceSettingsState, setVoiceSettingsState] = useState<VoiceSettingsState | null>(null)
   const [voiceSettingsLoading, setVoiceSettingsLoading] = useState(false)
   const [voiceSettingsPending, setVoiceSettingsPending] = useState(false)
@@ -909,6 +996,10 @@ function App() {
   const [inFlightTurn, setInFlightTurn] = useState<InFlightTurn | null>(null)
   const [managedSpeechPlayback, setManagedSpeechPlayback]
     = useState<ManagedSpeechPlayback | null>(null)
+  const [manualReadAloudMessageId, setManualReadAloudMessageId]
+    = useState<string | null>(null)
+  const [manualReadAloudPhase, setManualReadAloudPhase]
+    = useState<ManualReadAloudPhase | null>(null)
   const [modelSelectionPending, setModelSelectionPending] = useState(false)
   const [retryPending, setRetryPending] = useState(false)
   const [attachmentStates, setAttachmentStates] = useState<
@@ -1028,6 +1119,7 @@ function App() {
   const pendingVoiceSpeechStatusRef
     = useRef<PendingVoiceSpeechStatusBuffer | null>(null)
   const managedSpeechTurnRef = useRef<ManagedSpeechTurn | null>(null)
+  const manualReadAloudOwnerRef = useRef<ManualReadAloudOwner | null>(null)
   const panelOperationRef = useRef(0)
   const panelCommittedOpenRef = useRef(false)
   const panelTargetOpenRef = useRef(false)
@@ -1131,6 +1223,7 @@ function App() {
     [chatState?.activeChat],
   )
   const generationBusy = generationIsBusy(inFlightTurn)
+  const songCoverBusy = isSongCoverBusyStage(songCoverState?.stage)
   const knowledgeLeaseBusy = snapshot.activeKnowledgeOperation !== undefined
     || Object.values(knowledgeActivities).some(
       (activity) => activity.activeRequestId !== null,
@@ -1166,8 +1259,13 @@ function App() {
     waitingApproval: false,
   })
   const stopPending = activeGeneration && inFlightTurn?.phase === 'stopping'
-  const managedSpeechEnabled = snapshot.capabilities.includes('voice.speech')
+  const speechAvailable = snapshot.capabilities.includes('voice.speech')
+  const manualSpeechAvailable = speechAvailable
+    && snapshot.capabilities.includes('voice.speech.start')
+    && snapshot.capabilities.includes('voice.speech.cancel')
+  const voiceCallSpeechEnabled = speechAvailable
     && settingsState?.activeSettings.autoReadAloud !== false
+    && settingsState?.speechStatus.state === 'ready'
   const transcriptionReadiness = voiceSettingsState === null
     ? null
     : describeTranscriptionReadiness(voiceSettingsState.transcriptionStatus)
@@ -1208,12 +1306,24 @@ function App() {
     && !generationReconcilePending
     && !modelSelectionPending
     && !retryPending
+    && manualReadAloudMessageId === null
     && pendingChatSend === null
     && !retryEditBlocksGeneration
     && !activeChatAttachmentActivity.adding
     && activeChatAttachmentActivity.removingIds.length === 0
     && !sessionUiPending
     && chatState !== null
+  )
+  const readAloudDisabled = (
+    desktopApi === undefined
+    || !manualSpeechAvailable
+    || snapshot.status !== 'ready'
+    || snapshot.chatId === undefined
+    || snapshot.chatId !== activeChatId
+    || chatState === null
+    || generationBusy
+    || generationReconcilePending
+    || sessionUiPending
   )
   const modelOptions = useMemo(() => {
     if (snapshot.models.length > 0) {
@@ -1268,6 +1378,20 @@ function App() {
         }
       })
   }, [desktopApi])
+
+  const clearManualReadAloudOwner = useCallback((
+    operationId?: string,
+  ): void => {
+    const owner = manualReadAloudOwnerRef.current
+    if (owner === null || (operationId !== undefined && owner.operationId !== operationId)) {
+      return
+    }
+    manualReadAloudOwnerRef.current = null
+    setManualReadAloudMessageId((current) => (
+      current === owner.messageId ? null : current
+    ))
+    setManualReadAloudPhase(null)
+  }, [])
 
   const beginManagedSpeechTurn = useCallback((
     operationId: string,
@@ -1387,9 +1511,14 @@ function App() {
       // controller only after the exact request ID proves those buffered
       // visual events belonged to this turn.
       managedSpeechTurnRef.current = null
+      clearManualReadAloudOwner(turn.operationId)
     }
     return true
-  }, [applyManagedSpeechVisualStatus, stopManagedSpeechRequest])
+  }, [
+    applyManagedSpeechVisualStatus,
+    clearManualReadAloudOwner,
+    stopManagedSpeechRequest,
+  ])
 
   const requestManagedSpeechStop = useCallback((
     operationId: string,
@@ -1620,6 +1749,7 @@ function App() {
       && turn.requestId === event.requestId
     ) {
       managedSpeechTurnRef.current = null
+      clearManualReadAloudOwner(turn.operationId)
       return
     }
     if (
@@ -1631,18 +1761,23 @@ function App() {
       // controller ownership; the later Chat acknowledgement must still match.
       void stopManagedSpeechRequest(turn, event.requestId)
     }
-  }, [applyManagedSpeechVisualStatus, stopManagedSpeechRequest])
+  }, [
+    applyManagedSpeechVisualStatus,
+    clearManualReadAloudOwner,
+    stopManagedSpeechRequest,
+  ])
 
   const clearManagedSpeechTurn = useCallback((
     operationId: string,
   ): void => {
     if (managedSpeechTurnRef.current?.operationId === operationId) {
       managedSpeechTurnRef.current = null
+      clearManualReadAloudOwner(operationId)
       setManagedSpeechPlayback((current) => (
         current?.operationId === operationId ? null : current
       ))
     }
-  }, [])
+  }, [clearManualReadAloudOwner])
 
   const clearVoiceOperation = useCallback((
     cancellation: VoiceSessionCancellation,
@@ -1832,6 +1967,7 @@ function App() {
       return
     }
     managedSpeechTurnRef.current = null
+    clearManualReadAloudOwner()
     setManagedSpeechPlayback(null)
     const session = voiceSessionController.getSnapshot()
     const owner = ownerFromVoiceSession(session)
@@ -1852,7 +1988,11 @@ function App() {
       )
       settleVoiceTurnUiIfNeeded()
     }
-  }, [settleVoiceTurnUiIfNeeded, voiceSessionController])
+  }, [
+    clearManualReadAloudOwner,
+    settleVoiceTurnUiIfNeeded,
+    voiceSessionController,
+  ])
 
   const closeCallPreview = useCallback((): boolean => {
     callPreviewOpenRef.current = false
@@ -2218,6 +2358,7 @@ function App() {
     automaticRelistenEnabledRef.current = false
     audioDeviceControllerRef.current?.stopAll()
     void stopManagedSpeechForBoundary()
+    clearManualReadAloudOwner()
     hangUpVoiceSession()
     void audioCaptureControllerRef.current?.cancel()
     setVoiceCaptureSubmissionError(null)
@@ -2228,6 +2369,7 @@ function App() {
     activeChatId,
     activeChatProjectId,
     activeView,
+    clearManualReadAloudOwner,
     hangUpVoiceSession,
     stopManagedSpeechForBoundary,
   ])
@@ -2474,6 +2616,178 @@ function App() {
     }
   }, [desktopApi])
 
+  const acceptSongCoverState = useCallback((nextState: SongCoverState): void => {
+    const rendererState = rendererSongCoverState(nextState)
+    setSongCoverState((current) => (
+      current === null || rendererState.revision >= current.revision
+        ? rendererState
+        : current
+    ))
+  }, [])
+
+  const loadSongCoverState = useCallback(async (): Promise<void> => {
+    if (desktopApi === undefined) {
+      return
+    }
+    try {
+      acceptSongCoverState(await desktopApi.getSongCoverState())
+    } catch {
+      setNotice(errorNotice('Song Cover controls are unavailable.'))
+    }
+  }, [acceptSongCoverState, desktopApi])
+
+  const loadSongCoverReadiness = useCallback(async (): Promise<void> => {
+    if (desktopApi === undefined) {
+      setSongCoverReadiness(LOCAL_SONG_COVER_UNAVAILABLE)
+      return
+    }
+    try {
+      const readiness = parseSongCoverReadiness(
+        await desktopApi.getSongCoverReadiness(),
+      )
+      setSongCoverReadiness(readiness ?? LOCAL_SONG_COVER_UNAVAILABLE)
+    } catch {
+      setSongCoverReadiness(LOCAL_SONG_COVER_UNAVAILABLE)
+    }
+  }, [desktopApi])
+
+  const songCoverStartUnavailableMessage = songCoverReadinessMessage(
+    songCoverReadiness,
+  )
+
+  const chooseSongCover = useCallback(async (
+    request: ChooseSongCoverRequest,
+  ): Promise<void> => {
+    const unavailableMessage = songCoverReadinessMessage(songCoverReadiness)
+    if (
+      desktopApi === undefined
+      || unavailableMessage !== null
+      || songCoverSelectionPending
+      || songCoverBusy
+      || dictationActiveRef.current
+      || callPreviewOpenRef.current
+    ) {
+      if (unavailableMessage !== null) {
+        setSongCoverSetupOpen(false)
+        setNotice(errorNotice(unavailableMessage))
+      }
+      return
+    }
+    setSongCoverSetupOpen(false)
+    setSongCoverSelectionPending(true)
+    try {
+      acceptSongCoverState(await desktopApi.chooseSongCover(request))
+    } catch {
+      try {
+        const [failedState, rawReadiness] = await Promise.all([
+          desktopApi.getSongCoverState(),
+          desktopApi.getSongCoverReadiness(),
+        ])
+        const failedReadiness = parseSongCoverReadiness(rawReadiness)
+          ?? LOCAL_SONG_COVER_UNAVAILABLE
+        setSongCoverReadiness(failedReadiness)
+        acceptSongCoverState(failedState)
+        const failedReadinessMessage = songCoverReadinessMessage(
+          failedReadiness,
+        )
+        if (failedReadinessMessage !== null) {
+          setNotice(errorNotice(failedReadinessMessage))
+        } else if (failedState.stage !== 'error') {
+          setNotice(errorNotice('The selected audio could not be opened.'))
+        }
+      } catch {
+        setNotice(errorNotice('Song Cover controls are unavailable.'))
+      }
+    } finally {
+      setSongCoverSelectionPending(false)
+    }
+  }, [
+    acceptSongCoverState,
+    desktopApi,
+    songCoverBusy,
+    songCoverReadiness,
+    songCoverSelectionPending,
+  ])
+
+  const openSongCoverSetup = useCallback((): void => {
+    const unavailableMessage = songCoverReadinessMessage(songCoverReadiness)
+    if (
+      desktopApi === undefined
+      || unavailableMessage !== null
+      || songCoverSelectionPending
+      || songCoverBusy
+      || dictationActiveRef.current
+      || callPreviewOpenRef.current
+    ) {
+      if (unavailableMessage !== null) {
+        setNotice(errorNotice(unavailableMessage))
+      }
+      return
+    }
+    setSongCoverSetupOpen(true)
+  }, [
+    desktopApi,
+    songCoverBusy,
+    songCoverReadiness,
+    songCoverSelectionPending,
+  ])
+
+  const cancelSongCover = useCallback(async (): Promise<void> => {
+    const jobId = songCoverState?.jobId ?? null
+    if (desktopApi === undefined || jobId === null) {
+      return
+    }
+    try {
+      acceptSongCoverState(await desktopApi.cancelSongCover(jobId))
+    } catch {
+      setNotice(errorNotice('Song Cover could not be cancelled safely.'))
+      void loadSongCoverState()
+    }
+  }, [acceptSongCoverState, desktopApi, loadSongCoverState, songCoverState])
+
+  const playSongCover = useCallback(async (): Promise<void> => {
+    const jobId = songCoverState?.jobId ?? null
+    if (desktopApi === undefined || jobId === null) {
+      return
+    }
+    try {
+      acceptSongCoverState(await desktopApi.playSongCover(jobId))
+    } catch {
+      setNotice(errorNotice('Song Cover could not be played.'))
+      void loadSongCoverState()
+    }
+  }, [acceptSongCoverState, desktopApi, loadSongCoverState, songCoverState])
+
+  const stopSongCover = useCallback(async (): Promise<boolean> => {
+    const jobId = songCoverState?.jobId ?? null
+    if (desktopApi === undefined || jobId === null) {
+      return true
+    }
+    try {
+      acceptSongCoverState(await desktopApi.stopSongCover(jobId))
+      return true
+    } catch {
+      setNotice(errorNotice('Song Cover could not be stopped safely.'))
+      void loadSongCoverState()
+      return false
+    }
+  }, [acceptSongCoverState, desktopApi, loadSongCoverState, songCoverState])
+
+  const exportSongCover = useCallback(async (): Promise<void> => {
+    const jobId = songCoverState?.jobId ?? null
+    if (desktopApi === undefined || jobId === null) {
+      return
+    }
+    try {
+      if (await desktopApi.exportSongCover(jobId)) {
+        setNotice(successNotice('Lossless Song Cover exported.'))
+      }
+    } catch {
+      setNotice(errorNotice('Song Cover could not be exported.'))
+      void loadSongCoverState()
+    }
+  }, [desktopApi, loadSongCoverState, songCoverState])
+
   const loadSettings = useCallback(async (): Promise<void> => {
     if (desktopApi === undefined) {
       setSettingsError('Desktop Settings API is unavailable.')
@@ -2695,15 +3009,36 @@ function App() {
     if (desktopApi === undefined) {
       return
     }
-    // This closed signal only suppresses proactive notices. Main resets it on
-    // navigation or renderer loss, so a crashed call surface cannot stay busy.
-    void desktopApi.setPresenceVoiceActive(callPreviewOpen).catch(() => {})
+    const unsubscribe = desktopApi.onSongCoverStateChanged(
+      acceptSongCoverState,
+    )
+    queueMicrotask(() => {
+      void loadSongCoverReadiness()
+      void loadSongCoverState()
+    })
+    return unsubscribe
+  }, [
+    acceptSongCoverState,
+    desktopApi,
+    loadSongCoverReadiness,
+    loadSongCoverState,
+  ])
+
+  useEffect(() => {
+    if (desktopApi === undefined) {
+      return
+    }
+    const voicePresenceActive = callPreviewOpen || dictationActive
+    // Main uses this closed signal both to suppress proactive notices and to
+    // prevent a pending Song Cover launch from opening the speaker while a
+    // microphone surface owns the conversation. Renderer loss resets it.
+    void desktopApi.setPresenceVoiceActive(voicePresenceActive).catch(() => {})
     return () => {
-      if (callPreviewOpen) {
+      if (voicePresenceActive) {
         void desktopApi.setPresenceVoiceActive(false).catch(() => {})
       }
     }
-  }, [callPreviewOpen, desktopApi])
+  }, [callPreviewOpen, desktopApi, dictationActive])
 
   const changeDesktopPetMode = useCallback(async (
     mode: DesktopPetMode,
@@ -4014,7 +4349,7 @@ function App() {
       resumedOperationId,
       activeGeneration.chatId,
       activeChat?.projectId ?? generationSummary?.projectId ?? null,
-      managedSpeechEnabled,
+      activeGeneration.speakReply,
     )
     acknowledgeManagedSpeechTurn(
       resumedOperationId,
@@ -4048,7 +4383,6 @@ function App() {
     beginManagedSpeechTurn,
     chatState,
     desktopApi,
-    managedSpeechEnabled,
     snapshot.activeGeneration,
     snapshot.status,
     updateInFlightTurn,
@@ -5410,6 +5744,7 @@ function App() {
     const api = desktopApi
     const message = trimProtocolBlankCharacters(intent.message)
     const { chatId, operationId } = intent
+    const speakReply = intent.source === 'voice' && voiceCallSpeechEnabled
     const attachmentItems = intent.attachmentItems
     const attachmentIds = attachmentItems.map((item) => item.attachmentId)
     const generationRecoveryBlocked = pendingChatSendRef.current !== null
@@ -5428,6 +5763,7 @@ function App() {
       || streamingRef.current
       || modelSelectionPendingRef.current
       || retryPendingRef.current
+      || manualReadAloudOwnerRef.current !== null
       || generationRecoveryBlocked
       || activeChatAttachmentActivity.adding
       || activeChatAttachmentActivity.removingIds.length > 0
@@ -5480,7 +5816,7 @@ function App() {
       operationId,
       chatId,
       intent.projectId,
-      managedSpeechEnabled,
+      speakReply,
     )
 
     return (async (): Promise<string> => {
@@ -5489,6 +5825,7 @@ function App() {
           chatId,
           message,
           attachmentIds,
+          speakReply,
           useProjectKnowledge: intent.useProjectKnowledge,
         })
         if (
@@ -5601,6 +5938,7 @@ function App() {
       || pair.chatId !== activeChatIdRef.current
       || modelSelectionPendingRef.current
       || retryPendingRef.current
+      || manualReadAloudOwnerRef.current !== null
       || pendingChatSendRef.current !== null
       || generationReconcilePendingRef.current
     ) {
@@ -5647,6 +5985,7 @@ function App() {
       chatId: pair.chatId,
       userMessageId: pair.userMessageId,
       assistantMessageId: pair.assistantMessageId,
+      speakReply: false,
       useProjectKnowledge: (
         projectKnowledgeAvailable
         && projectKnowledgeByChat[pair.chatId] === activeChatProjectId
@@ -5678,7 +6017,7 @@ function App() {
       operationId,
       pair.chatId,
       activeChatProjectIdRef.current,
-      managedSpeechEnabled,
+      false,
     )
 
     void (async (): Promise<void> => {
@@ -5756,6 +6095,142 @@ function App() {
       throw new Error('Desktop API is unavailable.')
     }
     await desktopApi.copyText(text)
+  }
+
+  async function readMessageAloud(assistantMessageId: string): Promise<void> {
+    const api = desktopApi
+    const activeChat = chatState?.activeChat
+    const assistantMessage = activeChat?.messages.find(
+      (message) => message.messageId === assistantMessageId,
+    )
+    if (
+      api === undefined
+      || readAloudDisabled
+      || manualReadAloudOwnerRef.current !== null
+      || activeChat === undefined
+      || assistantMessage?.role !== 'assistant'
+    ) {
+      return
+    }
+
+    let currentSettings: DesktopSettingsState
+    try {
+      currentSettings = await api.getSettings()
+      setSettingsState(currentSettings)
+    } catch {
+      setNotice(errorNotice(
+        'Read aloud could not verify local speech readiness. Reconnect the Backend and try again.',
+      ))
+      return
+    }
+    const readinessMessage = managedSpeechBlockingMessage(
+      currentSettings.speechStatus,
+    )
+    if (readinessMessage !== null) {
+      setNotice(errorNotice(`${readinessMessage} Then try Read aloud again.`))
+      return
+    }
+
+    const stoppedPreviousSpeech = await stopManagedSpeechForBoundary()
+    if (!stoppedPreviousSpeech) {
+      setNotice(errorNotice(
+        'The previous speech request is still starting. Wait a moment and try Read aloud again.',
+      ))
+      return
+    }
+    if (
+      activeChatIdRef.current !== activeChat.chatId
+      || activeChatProjectIdRef.current !== activeChat.projectId
+      || streamingRef.current
+    ) {
+      return
+    }
+
+    const operationId = crypto.randomUUID()
+    beginManagedSpeechTurn(
+      operationId,
+      activeChat.chatId,
+      activeChat.projectId,
+      true,
+    )
+    manualReadAloudOwnerRef.current = {
+      operationId,
+      messageId: assistantMessageId,
+    }
+    setManualReadAloudMessageId(assistantMessageId)
+    setManualReadAloudPhase('starting')
+    setNotice(null)
+    try {
+      const { requestId } = await api.startSpeechPlayback({
+        chatId: activeChat.chatId,
+        assistantMessageId,
+      })
+      if (!acknowledgeManagedSpeechTurn(operationId, requestId)) {
+        // A navigation or another explicit speech boundary can supersede the
+        // invoke before its acknowledgement. Stop only that exact late request.
+        await api.stopSpeechPlayback(requestId, activeChat.chatId)
+        clearManualReadAloudOwner(operationId)
+      } else if (
+        manualReadAloudOwnerRef.current?.operationId === operationId
+      ) {
+        // Stop is enabled only after the ACK establishes the exact request ID
+        // that both Electron and Python will cancel.
+        setManualReadAloudPhase('active')
+      }
+    } catch (error) {
+      const stillOwned = manualReadAloudOwnerRef.current?.operationId === operationId
+      clearManagedSpeechTurn(operationId)
+      clearManualReadAloudOwner(operationId)
+      if (
+        stillOwned
+        && activeChatIdRef.current === activeChat.chatId
+        && activeChatProjectIdRef.current === activeChat.projectId
+      ) {
+        setNotice(errorNotice(
+          error instanceof Error
+            ? error.message
+            : 'Elysia could not read this reply aloud.',
+        ))
+      }
+    }
+  }
+
+  async function toggleMessageReadAloud(
+    assistantMessageId: string,
+  ): Promise<void> {
+    const owner = manualReadAloudOwnerRef.current
+    if (owner?.messageId !== assistantMessageId) {
+      await readMessageAloud(assistantMessageId)
+      return
+    }
+
+    const turn = managedSpeechTurnRef.current
+    if (
+      turn === null
+      || turn.operationId !== owner.operationId
+      || turn.requestId === null
+    ) {
+      return
+    }
+
+    turn.stopRequested = true
+    setManagedSpeechPlayback((current) => (
+      current?.operationId === turn.operationId ? null : current
+    ))
+    setManualReadAloudPhase('stopping')
+    const stopped = await stopManagedSpeechRequest(turn, turn.requestId)
+    if (manualReadAloudOwnerRef.current?.operationId !== owner.operationId) {
+      return
+    }
+    if (stopped) {
+      clearManagedSpeechTurn(owner.operationId)
+      return
+    }
+
+    setManualReadAloudPhase('active')
+    setNotice(errorNotice(
+      'Elysia could not confirm that this reply stopped. Try Stop reading again.',
+    ))
   }
 
   async function openExternalUrl(url: string): Promise<void> {
@@ -6738,6 +7213,16 @@ function App() {
       voiceTranscriptionLanguageRef.current = (
         savedGlobalSettings.activeSettings.transcriptionLanguage
       )
+      if (surface === 'voice-call') {
+        const speechMessage = managedSpeechBlockingMessage(
+          savedGlobalSettings.speechStatus,
+        )
+        if (speechMessage !== null) {
+          setVoiceSpeechWarning(
+            `${speechMessage} Voice Call will continue with text replies.`,
+          )
+        }
+      }
       await deviceController.refreshDevices()
       if (!actionIsCurrent()) {
         return false
@@ -6841,12 +7326,22 @@ function App() {
       setNotice(infoNotice('Dictation stopped. No audio was stored.'))
       return
     }
+    if (
+      songCoverSelectionPending
+      || songCoverBusy
+    ) {
+      setNotice(infoNotice('Cancel the active Song Cover before using Dictate.'))
+      return
+    }
     const chatId = activeChatIdRef.current
     const projectId = activeChatProjectIdRef.current
     if (chatId === undefined || voiceCaptureDisabledReason !== null) {
       setNotice(errorNotice(
         voiceCaptureDisabledReason ?? 'Wait for the active Chat to finish loading.',
       ))
+      return
+    }
+    if (songCoverState?.outputAvailable && !await stopSongCover()) {
       return
     }
     if (!await stopManagedSpeechForBoundary()) {
@@ -6872,6 +7367,12 @@ function App() {
     setVoiceCapture(EMPTY_AUDIO_CAPTURE_SNAPSHOT)
     setVoiceCaptureSubmissionError(null)
     setNotice(infoNotice('Listening for dictation…'))
+    try {
+      await desktopApi?.setPresenceVoiceActive(true)
+    } catch {
+      failDictation('Dictation could not reserve the audio session.')
+      return
+    }
     await startVoiceCapture('dictation')
   }
 
@@ -6975,7 +7476,7 @@ function App() {
       voiceSessionController.updateTranscript(transcript)
       const confirmed = voiceSessionController.confirmTranscript(
         operationId,
-        managedSpeechEnabled,
+        voiceCallSpeechEnabled,
       )
       const sending = beginChatSend({
         source: 'voice',
@@ -7098,6 +7599,13 @@ function App() {
   sendVoiceTranscriptRef.current = sendVoiceTranscript
 
   async function openCallPreview(): Promise<void> {
+    if (
+      songCoverSelectionPending
+      || songCoverBusy
+    ) {
+      setNotice(infoNotice('Cancel the active Song Cover before opening Voice Call.'))
+      return
+    }
     if (panelOpen || panelTargetOpenRef.current) {
       await setCharacterPanelVisibility(false)
     }
@@ -7109,6 +7617,9 @@ function App() {
     const projectId = activeChatProjectIdRef.current
     if (chatId === undefined) {
       setNotice(errorNotice('Wait for the active Chat to finish loading.'))
+      return
+    }
+    if (songCoverState?.outputAvailable && !await stopSongCover()) {
       return
     }
     if (!await stopManagedSpeechForBoundary()) {
@@ -7147,6 +7658,13 @@ function App() {
     setVoiceSessionStartedAtMs(Date.now())
     callPreviewOpenRef.current = true
     setCallPreviewOpen(true)
+    try {
+      await desktopApi?.setPresenceVoiceActive(true)
+    } catch {
+      closeCallPreview()
+      setNotice(errorNotice('Voice Call could not reserve the audio session.'))
+      return
+    }
     if (
       desktopApi !== undefined
       && snapshot.status === 'ready'
@@ -7289,7 +7807,12 @@ function App() {
         chatMode={chatState?.activeChat.mode ?? 'chat'}
         chatTitle={displayedChat}
         dictationActive={dictationActive}
-        dictationDisabled={voiceCaptureDisabledReason !== null || callPreviewOpen}
+        dictationDisabled={
+          voiceCaptureDisabledReason !== null
+          || callPreviewOpen
+          || songCoverSelectionPending
+          || songCoverBusy
+        }
         draft={draft}
         generationBusy={generationBusy}
         messages={displayedMessages}
@@ -7298,13 +7821,30 @@ function App() {
         notice={notice}
         panelOpen={panelOpen}
         panelTransitionPending={panelTransitionPending}
+        readAloudDisabled={readAloudDisabled}
+        readAloudPendingMessageId={manualReadAloudMessageId}
+        readAloudPhase={manualReadAloudPhase}
         retryEditDraft={retryEditDraft}
         retryPending={retryPending}
         retryPair={retryPair}
         sidebarOpen={sidebarOpen}
         snapshot={snapshot}
+        songCoverDisabled={
+          desktopApi === undefined
+          || songCoverState === null
+          || songCoverSelectionPending
+          || dictationActive
+          || callPreviewOpen
+          || songCoverBusy
+        }
+        songCoverStartUnavailableMessage={songCoverStartUnavailableMessage}
+        songCoverState={songCoverState}
         streaming={activeGeneration}
         stopPending={stopPending}
+        voiceCallDisabled={
+          songCoverSelectionPending
+          || songCoverBusy
+        }
         attachmentDisabled={sessionUiPending || activeChatId === undefined}
         onBeginRetryEdit={beginRetryEdit}
         onCancelRetryEdit={cancelRetryEdit}
@@ -7329,6 +7869,7 @@ function App() {
         }}
         onOpenCall={() => { void openCallPreview() }}
         onOpenExternalUrl={openExternalUrl}
+        onReadAloud={(messageId) => { void toggleMessageReadAloud(messageId) }}
         onRemoveAttachment={(attachmentId) => (
           activeChatId === undefined
             ? Promise.resolve(false)
@@ -7341,8 +7882,13 @@ function App() {
         onRetryEditChange={updateRetryEdit}
         onRetryConnection={() => { void retryConnection() }}
         onSelectModel={(modelName) => { void selectModel(modelName) }}
+        onCancelSongCover={() => { void cancelSongCover() }}
+        onExportSongCover={() => { void exportSongCover() }}
+        onOpenSongCoverSetup={openSongCoverSetup}
+        onPlaySongCover={() => { void playSongCover() }}
         onSend={() => { void sendMessage() }}
         onStop={() => { void stopGeneration() }}
+        onStopSongCover={() => { void stopSongCover() }}
         onTogglePanel={() => { void toggleCharacterPanel() }}
         onToggleSidebar={() => {
           setSidebarOpen((open) => {
@@ -7523,6 +8069,11 @@ function App() {
           onMicrophoneMutedChange={updateVoiceMicrophoneMuted}
         />
       )}
+      <SongCoverSetupDialog
+        open={songCoverSetupOpen}
+        onCancel={() => { setSongCoverSetupOpen(false) }}
+        onConfirm={(request) => { void chooseSongCover(request) }}
+      />
     </>
   )
 }

@@ -9,6 +9,7 @@ from typing import Any, cast
 import pytest
 from jsonschema import Draft202012Validator
 
+from config.settings import VOICE_EMOTIONS, VoiceEmotion
 from desktop_protocol import (
     MAX_AUDIO_DEVICE_ID_LENGTH,
     MAX_PROTOCOL_FRAME_BYTES,
@@ -182,6 +183,7 @@ def test_every_source_fact_citation_requires_the_exact_fact() -> None:
         ("voiceProfileId", "../escape"),
         ("voiceProfileId", "x" * 65),
         ("voiceEmotion", "excited"),
+        ("voiceEmotion", "../happy"),
         ("voiceEmotion", "HAPPY"),
         ("voiceEmotion", 1),
         ("captionsEnabled", "yes"),
@@ -211,7 +213,7 @@ def test_voice_behavior_settings_runtime_and_schema_reject_invalid_values(
     [
         (50, 0, "0", "neutral"),
         (200, 100, "a" + "." * 63, "happy"),
-        (100, 50, "default", "sad"),
+        (100, 50, "default", "affectionate"),
     ],
 )
 def test_voice_behavior_settings_runtime_and_schema_accept_boundaries(
@@ -231,6 +233,23 @@ def test_voice_behavior_settings_runtime_and_schema_accept_boundaries(
         voiceProfileId=profile_id,
         voiceEmotion=voice_emotion,
     )
+
+    parsed = parse_client_request(deepcopy(request))
+    assert cast(JsonObject, parsed["params"])["settings"] == settings
+    schema = cast(JsonObject, json.loads(SCHEMA_PATH.read_text("utf-8")))
+    Draft202012Validator(schema).validate(request)
+
+
+@pytest.mark.parametrize("voice_emotion", VOICE_EMOTIONS)
+def test_voice_emotion_runtime_and_schema_accept_the_complete_allowlist(
+    voice_emotion: VoiceEmotion,
+) -> None:
+    """Keep every closed Python setting valid in runtime and JSON Schema."""
+
+    request = _settings_update_request()
+    params = cast(JsonObject, request["params"])
+    settings = cast(JsonObject, params["settings"])
+    settings["voiceEmotion"] = voice_emotion
 
     parsed = parse_client_request(deepcopy(request))
     assert cast(JsonObject, parsed["params"])["settings"] == settings
@@ -316,6 +335,7 @@ def test_attachment_only_chat_request_is_valid_but_blank_without_ids_is_not(
         "params": {
             "chatId": "chat_attachment",
             "message": "",
+            "speakReply": False,
             "attachmentIds": ["attachment_ready"],
         },
     }
@@ -538,6 +558,68 @@ def _voice_settings_response() -> JsonObject:
         == "voice settings state response"
     )
     return cast(JsonObject, deepcopy(sample["message"]))
+
+
+def _settings_response() -> JsonObject:
+    """Provide one valid Settings response with managed-speech readiness."""
+
+    sample = next(
+        cast(JsonObject, candidate)
+        for candidate in _fixtures()["validServerMessages"]
+        if cast(JsonObject, candidate)["name"] == "settings state response"
+    )
+    return cast(JsonObject, deepcopy(sample["message"]))
+
+
+@pytest.mark.parametrize(
+    ("state", "reason"),
+    [
+        ("starting", None),
+        ("ready", None),
+        ("unavailable", "setup_unavailable"),
+        ("unavailable", "runtime_failed"),
+    ],
+)
+def test_speech_readiness_runtime_and_schema_accept_same_closed_states(
+    state: str,
+    reason: str | None,
+) -> None:
+    """Keep sanitized speech readiness aligned across both validators."""
+
+    message = _settings_response()
+    result = cast(JsonObject, message["result"])
+    status = cast(JsonObject, result["speechStatus"])
+    status.update(state=state, reason=reason)
+
+    assert parse_server_message(deepcopy(message))["type"] == "response"
+    schema = cast(JsonObject, json.loads(SCHEMA_PATH.read_text("utf-8")))
+    Draft202012Validator(schema).validate(message)
+
+
+@pytest.mark.parametrize(
+    ("state", "reason"),
+    [
+        ("ready", "runtime_failed"),
+        ("starting", "setup_unavailable"),
+        ("unavailable", None),
+        ("unavailable", "D:/private/runtime"),
+    ],
+)
+def test_speech_readiness_rejects_inconsistent_or_sensitive_values(
+    state: str,
+    reason: str | None,
+) -> None:
+    """Reject readiness combinations that could smuggle local diagnostics."""
+
+    message = _settings_response()
+    result = cast(JsonObject, message["result"])
+    status = cast(JsonObject, result["speechStatus"])
+    status.update(state=state, reason=reason)
+
+    with pytest.raises(ProtocolValidationError):
+        parse_server_message(message)
+    schema = cast(JsonObject, json.loads(SCHEMA_PATH.read_text("utf-8")))
+    assert not Draft202012Validator(schema).is_valid(message)
 
 
 @pytest.mark.parametrize(
@@ -908,6 +990,89 @@ def test_voice_speech_cancel_requires_one_exact_request_and_chat_key() -> None:
             parse_client_request(invalid)
 
 
+def test_chat_generation_requires_an_explicit_speech_policy() -> None:
+    """Reject omission or coercion so text Chat cannot accidentally speak."""
+
+    request: JsonObject = {
+        "type": "request",
+        "protocol": {"name": PROTOCOL_NAME, "version": PROTOCOL_VERSION},
+        "id": "chat-speech-policy",
+        "method": "chat.stream",
+        "params": {
+            "chatId": "chat_voice",
+            "message": "Hello",
+            "speakReply": False,
+        },
+    }
+
+    assert parse_client_request(request)["params"]["speakReply"] is False
+    for invalid_value in (None, 0, 1, "false"):
+        invalid = deepcopy(request)
+        cast(JsonObject, invalid["params"])["speakReply"] = invalid_value
+        with pytest.raises(ProtocolValidationError, match="speakReply"):
+            parse_client_request(invalid)
+
+    missing = deepcopy(request)
+    del cast(JsonObject, missing["params"])["speakReply"]
+    with pytest.raises(ProtocolValidationError):
+        parse_client_request(missing)
+
+
+def test_voice_speech_start_accepts_only_persisted_message_identity() -> None:
+    """Keep manual read-aloud closed to arbitrary renderer-supplied text."""
+
+    request: JsonObject = {
+        "type": "request",
+        "protocol": {"name": PROTOCOL_NAME, "version": PROTOCOL_VERSION},
+        "id": "speech-start-command",
+        "method": "voice.speech.start",
+        "params": {
+            "chatId": "chat_voice",
+            "assistantMessageId": "message_assistant",
+        },
+    }
+
+    parsed = parse_client_request(request)
+    assert parsed["params"] == {
+        "chatId": "chat_voice",
+        "assistantMessageId": "message_assistant",
+    }
+
+    for invalid_params in (
+        {"chatId": "chat_voice"},
+        {"assistantMessageId": "message_assistant"},
+        {
+            "chatId": "chat_voice",
+            "assistantMessageId": "message_assistant",
+            "text": "renderer substitution",
+        },
+    ):
+        invalid = deepcopy(request)
+        invalid["params"] = invalid_params
+        with pytest.raises(ProtocolValidationError):
+            parse_client_request(invalid)
+
+
+def test_voice_speech_start_result_is_a_closed_identity_acknowledgement(
+) -> None:
+    """Accept only the exact manual speech owner and persisted message IDs."""
+
+    result = {
+        "kind": "voice.speech.start",
+        "requestId": "speech-start-command",
+        "chatId": "chat_voice",
+        "assistantMessageId": "message_assistant",
+    }
+    response = build_success_response("speech-start-command", result)
+    parsed = cast(JsonObject, parse_server_message(response))
+    assert parsed["result"] == result
+
+    invalid = deepcopy(response)
+    cast(JsonObject, invalid["result"])["text"] = "must stay private"
+    with pytest.raises(ProtocolValidationError):
+        parse_server_message(invalid)
+
+
 def test_voice_speech_cancel_result_distinguishes_a_lost_terminal_race() -> None:
     """Allow stopped false only with its explicit echoed speech owner."""
 
@@ -1042,6 +1207,7 @@ def test_machine_readable_schema_covers_every_protocol_message_kind() -> None:
         "voiceSessionIdentifier",
         "audioDeviceId",
         "nullableAudioDeviceId",
+        "speechReadinessStatus",
     }.issubset(definitions)
 
     runtime_invariants = schema["x-elysia-runtimeInvariants"]
@@ -1069,6 +1235,10 @@ def test_machine_readable_schema_covers_every_protocol_message_kind() -> None:
     )
     assert any(
         "transcriptionStatus requested and resolved devices" in invariant
+        for invariant in runtime_invariants
+    )
+    assert any(
+        "speechReadinessStatus has a reason exactly" in invariant
         for invariant in runtime_invariants
     )
 

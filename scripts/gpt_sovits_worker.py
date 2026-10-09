@@ -197,6 +197,7 @@ _FFMPEG_REAP_TIMEOUT_SECONDS = 5.0
 _FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 _BINDING_DOMAIN = b"ELYTTS-BINDING-V1\0"
 _RUNTIME_MANIFEST_DOMAIN = b"ELYTTS-RUNTIME-MANIFEST-V1\0"
+_UTTERANCE_SEED_DOMAIN = b"ELYTTS-UTTERANCE-SEED-V1\0"
 _BASE_BERT_PATH = (
     "GPT_SoVITS/pretrained_models/chinese-roberta-wwm-ext-large"
 )
@@ -211,6 +212,28 @@ _NLTK_DATA_MODULE_RELATIVE_FILE = "runtime/Lib/site-packages/nltk/data.py"
 _BOOTSTRAP_SYS_PATH_RELATIVE_ENTRIES = tuple(
     _protocol.MANAGED_RUNTIME_IMPORT_RELATIVE_ENTRIES
 )
+
+
+def _derive_utterance_seed(base_seed: int, text_language: str, text: str) -> int:
+    """Derive one reproducible 31-bit seed for the exact spoken utterance.
+
+    SHA-256 avoids Python's process-randomized ``hash()`` while the dedicated
+    domain and length prefixes keep this mapping separate and unambiguous from
+    the worker's attestation digests.  The validated INIT seed remains the
+    reproducibility root, but different languages or UTF-8 text no longer
+    restart upstream sampling on the same stochastic trajectory.
+    """
+
+    language_bytes = text_language.encode("utf-8", errors="strict")
+    text_bytes = text.encode("utf-8", errors="strict")
+    digest = hashlib.sha256()
+    digest.update(_UTTERANCE_SEED_DOMAIN)
+    digest.update(struct.pack(">I", base_seed))
+    digest.update(struct.pack(">I", len(language_bytes)))
+    digest.update(language_bytes)
+    digest.update(struct.pack(">I", len(text_bytes)))
+    digest.update(text_bytes)
+    return int.from_bytes(digest.digest()[:4], "big") & 0x7FFFFFFF
 
 
 def _runtime_child_path(root: Path, relative: str) -> Path:
@@ -1335,7 +1358,11 @@ class _ProductionEngine:
             "aux_ref_audio_paths": [],
             "batch_size": 1,
             "batch_threshold": 75 / 100,
-            "fragment_interval": 3 / 10,
+            # Each call is already one complete upper-level utterance.  A
+            # 300 ms fragment interval would impose an artificial pause on
+            # every separately synthesized sentence; 10 ms retains only a
+            # minimal upstream separator.
+            "fragment_interval": 1 / 100,
             "parallel_infer": False,
             "prompt_lang": self._config.prompt_language,
             "prompt_text": self._config.prompt_text,
@@ -1345,7 +1372,11 @@ class _ProductionEngine:
             "ref_audio_path": None,
             "repetition_penalty": 135 / 100,
             "return_fragment": False,
-            "seed": self._config.seed,
+            "seed": _derive_utterance_seed(
+                self._config.seed,
+                text_language,
+                text,
+            ),
             "speed_factor": self._config.speed_milli / 1000,
             "split_bucket": False,
             "temperature": 1,

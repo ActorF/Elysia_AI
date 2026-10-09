@@ -37,6 +37,7 @@
         "params": {
           "chatId": "chat_fixture",
           "message": "Hello",
+          "speakReply": false,
           "useProjectKnowledge": true
         }
       }
@@ -52,6 +53,7 @@
           "chatId": "chat_fixture",
           "userMessageId": "message_user",
           "assistantMessageId": "message_assistant",
+          "speakReply": false,
           "useProjectKnowledge": false
         }
       }
@@ -67,7 +69,8 @@
           "chatId": "chat_fixture",
           "userMessageId": "message_user",
           "assistantMessageId": "message_assistant",
-          "message": "Edited question"
+          "message": "Edited question",
+          "speakReply": true
         }
       }
     },
@@ -151,6 +154,7 @@
         "params": {
           "chatId": "chat_fixture",
           "message": "",
+          "speakReply": false,
           "attachmentIds": ["attachment_fixture"]
         }
       }
@@ -411,7 +415,7 @@
             "speechRatePercent": 100,
             "speechVolumePercent": 100,
             "voiceProfileId": "default",
-            "voiceEmotion": "neutral",
+            "voiceEmotion": "affectionate",
             "captionsEnabled": true,
             "transcriptReviewMode": "manual",
             "automaticRelisten": false
@@ -493,7 +497,8 @@
         "method": "chat.stream",
         "params": {
           "chatId": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀",
-          "message": "Unicode boundary"
+          "message": "Unicode boundary",
+          "speakReply": false
         }
       }
     },
@@ -505,6 +510,19 @@
         "id": "cancel-1",
         "method": "request.cancel",
         "params": { "requestId": "chat-1", "reason": "User stopped" }
+      }
+    },
+    {
+      "name": "persisted Assistant speech start request",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "voice-speech-start-1",
+        "method": "voice.speech.start",
+        "params": {
+          "chatId": "chat_fixture",
+          "assistantMessageId": "message_assistant"
+        }
       }
     },
     {
@@ -568,6 +586,7 @@
             "chat.retry",
             "request.cancel",
             "voice.speech",
+            "voice.speech.start",
             "voice.speech.cancel",
             "project.management",
             "stream",
@@ -928,6 +947,7 @@
             "voiceProfileId",
             "voiceEmotion"
           ],
+          "speechStatus": { "state": "ready", "reason": null },
           "scopes": {
             "project": {
               "projectId": "project_fixture",
@@ -993,6 +1013,10 @@
           },
           "restartRequired": false,
           "restartFields": [],
+          "speechStatus": {
+            "state": "unavailable",
+            "reason": "setup_unavailable"
+          },
           "scopes": { "project": null, "chat": null },
           "warning": "Recovered safe defaults after an unreadable settings file."
         }
@@ -1085,6 +1109,21 @@
           "text": "你好，世界。",
           "language": "zh",
           "languageProbability": 0.95
+        }
+      }
+    },
+    {
+      "name": "persisted Assistant speech start response",
+      "message": {
+        "type": "response",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "voice-speech-start-1",
+        "ok": true,
+        "result": {
+          "kind": "voice.speech.start",
+          "requestId": "voice-speech-start-1",
+          "chatId": "chat_fixture",
+          "assistantMessageId": "message_assistant"
         }
       }
     },
@@ -1365,7 +1404,33 @@
         "params": {
           "chatId": "chat_fixture",
           "message": "Hello",
+          "speakReply": false,
           "useProjectKnowledge": "yes"
+        }
+      }
+    },
+    {
+      "name": "chat stream missing speech policy",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "chat-speech-policy-invalid-1",
+        "method": "chat.stream",
+        "params": { "chatId": "chat_fixture", "message": "Hello" }
+      }
+    },
+    {
+      "name": "chat retry speech policy is not boolean",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "chat-speech-policy-invalid-2",
+        "method": "chat.retry",
+        "params": {
+          "chatId": "chat_fixture",
+          "userMessageId": "message_user",
+          "assistantMessageId": "message_assistant",
+          "speakReply": "yes"
         }
       }
     },
@@ -1379,6 +1444,20 @@
         "params": {
           "projectId": "project_fixture",
           "sourcePaths": ["course.md"]
+        }
+      }
+    },
+    {
+      "name": "persisted Assistant speech rejects arbitrary text",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "voice-speech-start-invalid-1",
+        "method": "voice.speech.start",
+        "params": {
+          "chatId": "chat_fixture",
+          "assistantMessageId": "message_assistant",
+          "text": "substituted speech"
         }
       }
     },
@@ -1399,7 +1478,11 @@
         "protocol": { "name": "elysia.desktop", "version": 1 },
         "id": "chat-1",
         "method": "chat.stream",
-        "params": { "chatId": "chat_fixture", "message": "   " }
+        "params": {
+          "chatId": "chat_fixture",
+          "message": "   ",
+          "speakReply": false
+        }
       }
     },
     {
@@ -1409,7 +1492,11 @@
         "protocol": { "name": "elysia.desktop", "version": 1 },
         "id": "chat-2",
         "method": "chat.stream",
-        "params": { "chatId": "chat_fixture", "message": "\u0085" }
+        "params": {
+          "chatId": "chat_fixture",
+          "message": "\u0085",
+          "speakReply": false
+        }
       }
     },
     {
@@ -1419,7 +1506,11 @@
         "protocol": { "name": "elysia.desktop", "version": 1 },
         "id": "chat-3",
         "method": "chat.stream",
-        "params": { "chatId": "chat_fixture", "message": "\ufeff" }
+        "params": {
+          "chatId": "chat_fixture",
+          "message": "\ufeff",
+          "speakReply": false
+        }
       }
     },
     {
@@ -1433,7 +1524,8 @@
           "chatId": "chat_fixture",
           "userMessageId": "message_user",
           "assistantMessageId": "message_assistant",
-          "message": "\ufeff"
+          "message": "\ufeff",
+          "speakReply": false
         }
       }
     },
@@ -1446,7 +1538,8 @@
         "method": "chat.retry",
         "params": {
           "chatId": "chat_fixture",
-          "userMessageId": "message_user"
+          "userMessageId": "message_user",
+          "speakReply": false
         }
       }
     },
@@ -1659,7 +1752,7 @@
       }
     },
     {
-      "name": "settings update rejects arbitrary Voice emotion",
+      "name": "settings update rejects path-like Voice emotion",
       "message": {
         "type": "request",
         "protocol": { "name": "elysia.desktop", "version": 1 },
@@ -1680,7 +1773,7 @@
             "speechRatePercent": 100,
             "speechVolumePercent": 100,
             "voiceProfileId": "default",
-            "voiceEmotion": "excited-animation",
+            "voiceEmotion": "../happy",
             "captionsEnabled": true,
             "transcriptReviewMode": "manual",
             "automaticRelisten": false
@@ -1982,6 +2075,22 @@
               "archived": false
             }
           ]
+        }
+      }
+    },
+    {
+      "name": "persisted Assistant speech result rejects source text",
+      "message": {
+        "type": "response",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "voice-speech-start-invalid-1",
+        "ok": true,
+        "result": {
+          "kind": "voice.speech.start",
+          "requestId": "voice-speech-start-invalid-1",
+          "chatId": "chat_fixture",
+          "assistantMessageId": "message_assistant",
+          "text": "must stay private"
         }
       }
     },

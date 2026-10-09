@@ -27,6 +27,9 @@ import '../knowledge/Knowledge.css'
 
 interface MessageViewProps {
   message: ChatMessage
+  readAloudDisabled: boolean
+  readAloudPendingMessageId: string | null
+  readAloudPhase: 'starting' | 'active' | 'stopping' | null
   retryEditDraft: RetryEditDraft | null
   retryPair: RetryableChatPair | null
   retryDisabled: boolean
@@ -34,6 +37,7 @@ interface MessageViewProps {
   onCancelRetryEdit(): void
   onCopy(text: string): Promise<void>
   onOpenExternalUrl(url: string): Promise<void>
+  onReadAloud(messageId: string): void
   onRetry(pair: RetryableChatPair, message?: string): boolean
   onRetryEditChange(pair: RetryableChatPair, message: string): void
 }
@@ -78,19 +82,6 @@ function safeExternalUrl(href: string | undefined): string | null {
     // Relative, malformed, and non-web URLs stay inert in the renderer.
   }
   return null
-}
-
-function statusLabel(message: ChatMessage): string {
-  switch (message.state) {
-    case 'complete':
-      return 'Complete'
-    case 'streaming':
-      return 'Generating'
-    case 'error':
-      return 'Reply interrupted'
-    case 'cancelled':
-      return 'Stopped'
-  }
 }
 
 type GroundedAnswer = NonNullable<ChatMessage['groundedAnswer']>
@@ -237,12 +228,18 @@ function GroundedAnswerView({ answer }: GroundedAnswerViewProps) {
 }
 
 interface CopyButtonProps {
+  iconOnly?: boolean
   label: string
   text: string
   onCopy(text: string): Promise<void>
 }
 
-function CopyButton({ label, text, onCopy }: CopyButtonProps) {
+function CopyButton({
+  iconOnly = false,
+  label,
+  text,
+  onCopy,
+}: CopyButtonProps) {
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle')
   const resetTimerRef = useRef<number | null>(null)
 
@@ -273,7 +270,7 @@ function CopyButton({ label, text, onCopy }: CopyButtonProps) {
     : copyState === 'error'
       ? `${label} failed`
       : label
-  const visibleLabel = copyState === 'copied'
+  const titleLabel = copyState === 'copied'
     ? 'Copied'
     : copyState === 'error'
       ? 'Copy failed'
@@ -284,11 +281,11 @@ function CopyButton({ label, text, onCopy }: CopyButtonProps) {
       type="button"
       className="message-action"
       aria-label={buttonLabel}
-      title={visibleLabel}
+      title={titleLabel}
       onClick={() => { void copy() }}
     >
       <Icon name={copyState === 'copied' ? 'check' : 'copy'} />
-      <span>{visibleLabel}</span>
+      {!iconOnly && <span>{titleLabel}</span>}
     </button>
   )
 }
@@ -371,6 +368,9 @@ function AssistantMarkdown({
 /** Render one user or assistant message with its complete lifecycle state. */
 export function MessageView({
   message,
+  readAloudDisabled,
+  readAloudPendingMessageId,
+  readAloudPhase,
   retryEditDraft,
   retryPair,
   retryDisabled,
@@ -378,13 +378,14 @@ export function MessageView({
   onCancelRetryEdit,
   onCopy,
   onOpenExternalUrl,
+  onReadAloud,
   onRetry,
   onRetryEditChange,
 }: MessageViewProps) {
   const editRef = useRef<HTMLTextAreaElement | null>(null)
   const activeEditDraft = retryPair !== null
-    && message.role === 'assistant'
-    && message.id === retryPair.assistantMessageId
+    && message.role === 'user'
+    && message.id === retryPair.userMessageId
     && retryEditDraft?.chatId === retryPair.chatId
     && retryEditDraft.userMessageId === retryPair.userMessageId
     && retryEditDraft.assistantMessageId === retryPair.assistantMessageId
@@ -400,14 +401,27 @@ export function MessageView({
     }
   }, [editing])
 
-  const status = statusLabel(message)
   const isAssistant = message.role === 'assistant'
-  const pairActionsAvailable = (
+  const assistantPairActionsAvailable = (
     isAssistant
     && retryPair !== null
     && message.id === retryPair.assistantMessageId
     && message.state !== 'streaming'
   )
+  const userPairActionsAvailable = (
+    !isAssistant
+    && retryPair !== null
+    && message.id === retryPair.userMessageId
+  )
+  const readAloudPending = readAloudPendingMessageId === message.id
+  const messageReadAloudPhase = readAloudPending ? readAloudPhase : null
+  const readAloudLabel = messageReadAloudPhase === 'active'
+    ? 'Stop reading'
+    : messageReadAloudPhase === 'stopping'
+      ? 'Stopping read aloud'
+      : messageReadAloudPhase === 'starting'
+        ? 'Starting read aloud'
+        : 'Read aloud'
 
   return (
     <article
@@ -415,87 +429,106 @@ export function MessageView({
       aria-label={isAssistant ? 'Message from Elysia' : 'Message from you'}
       data-message-id={message.id}
     >
-      <div className="message-avatar" aria-hidden="true">
-        {isAssistant ? 'E' : 'Y'}
-      </div>
       <div className="message-body">
-        <div className="message-header">
-          <span className="message-author">{isAssistant ? 'Elysia' : 'You'}</span>
-          <span
-            className={`message-status message-status-${message.state}`}
-            role="status"
-          >
-            {status}
-          </span>
+        <div className="message-surface">
+          {isAssistant && message.groundedAnswer !== undefined ? (
+            <GroundedAnswerView answer={message.groundedAnswer} />
+          ) : isAssistant ? (
+            <AssistantMarkdown
+              text={message.text}
+              onCopy={onCopy}
+              onOpenExternalUrl={onOpenExternalUrl}
+            />
+          ) : (
+            <p className="message-text">{message.text}</p>
+          )}
+
+          {message.attachments.length > 0 && (
+            <div className="message-attachments">
+              <ul
+                className="message-attachment-list"
+                aria-label={`Attachments in ${isAssistant ? 'Elysia message' : 'your message'}`}
+              >
+                {message.attachments.map((attachment) => (
+                  <li key={attachment.attachmentId}>
+                    <Icon name="file" />
+                    <span>
+                      <strong title={attachment.fileName}>{attachment.fileName}</strong>
+                      <small>
+                        {attachment.mediaType} · {formatAttachmentBytes(attachment.sizeBytes)}
+                      </small>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+              <p>Stored locally · File contents are not read or indexed yet.</p>
+            </div>
+          )}
+
+          {message.state === 'streaming' && (
+            <span className="stream-caret" aria-hidden="true" />
+          )}
         </div>
-
-        {isAssistant && message.groundedAnswer !== undefined ? (
-          <GroundedAnswerView answer={message.groundedAnswer} />
-        ) : isAssistant ? (
-          <AssistantMarkdown
-            text={message.text}
-            onCopy={onCopy}
-            onOpenExternalUrl={onOpenExternalUrl}
-          />
-        ) : (
-          <p className="message-text">{message.text}</p>
-        )}
-
-        {message.attachments.length > 0 && (
-          <div className="message-attachments">
-            <ul
-              className="message-attachment-list"
-              aria-label={`Attachments in ${isAssistant ? 'Elysia message' : 'your message'}`}
-            >
-              {message.attachments.map((attachment) => (
-                <li key={attachment.attachmentId}>
-                  <Icon name="file" />
-                  <span>
-                    <strong title={attachment.fileName}>{attachment.fileName}</strong>
-                    <small>
-                      {attachment.mediaType} · {formatAttachmentBytes(attachment.sizeBytes)}
-                    </small>
-                  </span>
-                </li>
-              ))}
-            </ul>
-            <p>Stored locally · File contents are not read or indexed yet.</p>
-          </div>
-        )}
-
-        {message.state === 'streaming' && (
-          <span className="stream-caret" aria-hidden="true" />
-        )}
 
         <div className="message-actions">
           <CopyButton
+            iconOnly
             label="Copy message"
             text={message.text}
             onCopy={onCopy}
           />
-          {pairActionsAvailable && activeEditDraft === null && (
-            <>
-              <button
-                type="button"
-                className="message-action"
-                disabled={retryDisabled || anotherEditDraftExists}
-                onClick={() => { onRetry(retryPair) }}
-              >
-                <Icon name="refresh" />
-                <span>Regenerate</span>
-              </button>
-              <button
-                type="button"
-                className="message-action"
-                disabled={retryDisabled || anotherEditDraftExists}
-                onClick={() => {
-                  onBeginRetryEdit(retryPair)
-                }}
-              >
-                <Icon name="edit" />
-                <span>Edit &amp; retry</span>
-              </button>
-            </>
+          {userPairActionsAvailable && activeEditDraft === null && (
+            <button
+              type="button"
+              className="message-action"
+              aria-label="Edit message"
+              title="Edit message"
+              disabled={retryDisabled || anotherEditDraftExists}
+              onClick={() => {
+                onBeginRetryEdit(retryPair)
+              }}
+            >
+              <Icon name="edit" />
+            </button>
+          )}
+          {isAssistant && (
+            <button
+              type="button"
+              className="message-action"
+              aria-label={readAloudLabel}
+              title={readAloudLabel}
+              aria-pressed={
+                messageReadAloudPhase === 'active'
+                || messageReadAloudPhase === 'stopping'
+              }
+              disabled={
+                messageReadAloudPhase === 'starting'
+                || messageReadAloudPhase === 'stopping'
+                || (
+                  messageReadAloudPhase === null
+                  && (
+                    readAloudDisabled
+                    || readAloudPendingMessageId !== null
+                    || message.state !== 'complete'
+                  )
+                )
+              }
+              onClick={() => { onReadAloud(message.id) }}
+            >
+              <Icon name="speaker" />
+            </button>
+          )}
+          {assistantPairActionsAvailable && (
+            <button
+              type="button"
+              className="message-action"
+              aria-label="Try again"
+              title="Try again"
+              disabled={retryDisabled || anotherEditDraftExists}
+              onClick={() => { onRetry(retryPair) }}
+            >
+              <Icon name="refresh" />
+            </button>
           )}
         </div>
 

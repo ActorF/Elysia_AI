@@ -33,6 +33,24 @@ Faster-Whisper on CPU
 - Ollama owns its shared model-residency policy. Elysia closes its HTTP client but does not silently unload a model that another local client may be using.
 - Speech and transcription remain bounded queues. Cancellation releases logical ownership immediately while native work retains physical capacity only until its bounded call returns.
 
+### Managed speech readiness and profile admission
+
+The Python Backend exposes only a closed managed-speech readiness projection:
+`starting`, `ready`, or `unavailable`. An unavailable result carries only
+`setup_unavailable` or `runtime_failed`; local paths, model names, exception
+text, and worker diagnostics remain in Backend logs. A manual **Read aloud**
+request refreshes this state and fails before reserving a speech turn when the
+runtime is not ready, with fixed guidance to review Voice behavior and restart
+the Backend. Voice Call follows the same readiness state but keeps its normal
+text reply path available when spoken playback is unavailable.
+
+Voice Profile and emotion are one restart-bound selection. Before Settings can
+save a changed pair, the Backend resolves that exact pair against the trusted
+local catalog without starting a worker or contacting a service. A profile
+that does not define the selected emotion is rejected without increasing the
+settings revision, so a successful restart acknowledgement cannot defer that
+newly selected catalog mismatch until the first spoken reply.
+
 ## 3. Reproducible benchmark
 
 The benchmark accepts only bounded numeric controls. Test Prompt, synthesized WAV, and transcript are fixed internally, remain in memory, and are never included in JSON output.

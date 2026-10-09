@@ -23,6 +23,7 @@ from core import (
     LangChainOllamaChatModel,
     ModelConversationSummarizer,
     ModelMemoryExtractor,
+    load_elysia_system_rules,
 )
 from memory import (
     Memory,
@@ -90,6 +91,11 @@ def validate_settings(settings: AppSettings | None = None) -> None:
         raise ConfigurationError(
             "DATA_IMPORT_MAX_BYTES must be greater than zero."
         )
+
+    # The persona carries trusted behavior and data-boundary rules. Validate it
+    # before model discovery so the application never starts with a fallback or
+    # partially configured system prompt.
+    load_elysia_system_rules()
 
 
 def create_data_portability_service(

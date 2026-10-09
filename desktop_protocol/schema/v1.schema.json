@@ -20,6 +20,7 @@
     "every non-null projectId in projectStateResult.chatState refers to projectStateResult.projects",
     "each Project chatCount equals all matching Chats in projectStateResult.chatState.chats",
     "settingsStateResult.restartRequired is true exactly when restartFields is non-empty",
+    "speechReadinessStatus has a reason exactly when managed speech is unavailable",
     "transcriptionModel is an allowlisted directory name resolved only beneath models/weights/faster-whisper",
     "voiceProfileId is a bounded logical identifier and never a filesystem path",
     "transcriptReviewMode remains manual so recognition never sends a Chat message without explicit user review",
@@ -37,6 +38,7 @@
     "voice.transcription.start pcmBase64 is strict canonical Base64 whose decoded byte length equals sampleCount * 2",
     "voice.transcription result text follows the protocol non-blank code-point definition",
     "voice.transcription results contain no PCM, model path, or native error detail",
+    "voice.speech.start names one persisted Assistant message by chatId and assistantMessageId and never accepts source text",
     "voice.speech.cancel targets one managed speech turn by the exact requestId and chatId pair",
     "voice.speech.clip metadata exactly matches the next private binary frame before playback",
     "voice.speech events contain no source text, model path, profile, cache state, or native error detail",
@@ -88,6 +90,7 @@
     { "$ref": "#/$defs/voiceSettingsUpdateRequest" },
     { "$ref": "#/$defs/voiceCaptureCompleteRequest" },
     { "$ref": "#/$defs/voiceTranscriptionStartRequest" },
+    { "$ref": "#/$defs/voiceSpeechStartRequest" },
     { "$ref": "#/$defs/voiceSpeechCancelRequest" },
     { "$ref": "#/$defs/cancelRequest" },
     { "$ref": "#/$defs/permissionResponseRequest" },
@@ -182,6 +185,7 @@
             "voice.settings.update",
             "voice.capture.complete",
             "voice.transcription.start",
+            "voice.speech.start",
             "voice.speech.cancel",
             "request.cancel",
             "permission.respond",
@@ -236,9 +240,10 @@
           "maxItems": 10,
           "uniqueItems": true
         },
-        "useProjectKnowledge": { "type": "boolean" }
+        "useProjectKnowledge": { "type": "boolean" },
+        "speakReply": { "type": "boolean" }
       },
-      "required": ["chatId", "message"],
+      "required": ["chatId", "message", "speakReply"],
       "additionalProperties": false,
       "anyOf": [
         {
@@ -400,9 +405,12 @@
           "maxLength": 1000000,
           "pattern": "[^\\u0009-\\u000D\\u0020\\u0085\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000\\uFEFF]"
         },
-        "useProjectKnowledge": { "type": "boolean" }
+        "useProjectKnowledge": { "type": "boolean" },
+        "speakReply": { "type": "boolean" }
       },
-      "required": ["chatId", "userMessageId", "assistantMessageId"],
+      "required": [
+        "chatId", "userMessageId", "assistantMessageId", "speakReply"
+      ],
       "additionalProperties": false
     },
     "chatListParams": {
@@ -614,7 +622,20 @@
           "maxLength": 64,
           "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
         },
-        "voiceEmotion": { "enum": ["neutral", "happy", "sad"] },
+        "voiceEmotion": {
+          "enum": [
+            "neutral",
+            "happy",
+            "sad",
+            "caring",
+            "moved",
+            "playful",
+            "affectionate",
+            "teasing",
+            "serious",
+            "surprised"
+          ]
+        },
         "captionsEnabled": { "type": "boolean" },
         "transcriptReviewMode": { "const": "manual" },
         "automaticRelisten": { "type": "boolean" }
@@ -775,6 +796,15 @@
         "chatId": { "$ref": "#/$defs/identifier" }
       },
       "required": ["requestId", "chatId"],
+      "additionalProperties": false
+    },
+    "voiceSpeechStartParams": {
+      "type": "object",
+      "properties": {
+        "chatId": { "$ref": "#/$defs/identifier" },
+        "assistantMessageId": { "$ref": "#/$defs/identifier" }
+      },
+      "required": ["chatId", "assistantMessageId"],
       "additionalProperties": false
     },
     "permissionResponseParams": {
@@ -1182,6 +1212,17 @@
           "properties": {
             "method": { "const": "voice.transcription.start" },
             "params": { "$ref": "#/$defs/voiceTranscriptionStartParams" }
+          }
+        }
+      ]
+    },
+    "voiceSpeechStartRequest": {
+      "allOf": [
+        { "$ref": "#/$defs/requestEnvelope" },
+        {
+          "properties": {
+            "method": { "const": "voice.speech.start" },
+            "params": { "$ref": "#/$defs/voiceSpeechStartParams" }
           }
         }
       ]
@@ -2025,6 +2066,7 @@
           "maxItems": 11,
           "uniqueItems": true
         },
+        "speechStatus": { "$ref": "#/$defs/speechReadinessStatus" },
         "scopes": { "$ref": "#/$defs/settingsScopes" },
         "warning": {
           "oneOf": [
@@ -2040,6 +2082,7 @@
         "activeSettings",
         "restartRequired",
         "restartFields",
+        "speechStatus",
         "scopes",
         "warning"
       ],
@@ -2055,6 +2098,34 @@
           },
           "else": {
             "properties": { "restartFields": { "maxItems": 0 } }
+          }
+        }
+      ]
+    },
+    "speechReadinessStatus": {
+      "type": "object",
+      "properties": {
+        "state": { "enum": ["starting", "ready", "unavailable"] },
+        "reason": {
+          "oneOf": [
+            { "enum": ["setup_unavailable", "runtime_failed"] },
+            { "type": "null" }
+          ]
+        }
+      },
+      "required": ["state", "reason"],
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "state": { "enum": ["starting", "ready"] },
+            "reason": { "type": "null" }
+          }
+        },
+        {
+          "properties": {
+            "state": { "const": "unavailable" },
+            "reason": { "enum": ["setup_unavailable", "runtime_failed"] }
           }
         }
       ]
@@ -2264,6 +2335,17 @@
       "required": ["kind", "requestId", "chatId", "stopped"],
       "additionalProperties": false
     },
+    "voiceSpeechStartResult": {
+      "type": "object",
+      "properties": {
+        "kind": { "const": "voice.speech.start" },
+        "requestId": { "$ref": "#/$defs/identifier" },
+        "chatId": { "$ref": "#/$defs/identifier" },
+        "assistantMessageId": { "$ref": "#/$defs/identifier" }
+      },
+      "required": ["kind", "requestId", "chatId", "assistantMessageId"],
+      "additionalProperties": false
+    },
     "shutdownResult": {
       "type": "object",
       "properties": { "stopped": { "const": true } },
@@ -2291,6 +2373,7 @@
             { "$ref": "#/$defs/voiceSettingsStateResult" },
             { "$ref": "#/$defs/voiceCaptureResult" },
             { "$ref": "#/$defs/voiceTranscriptionResult" },
+            { "$ref": "#/$defs/voiceSpeechStartResult" },
             { "$ref": "#/$defs/voiceSpeechCancelResult" },
             { "$ref": "#/$defs/shutdownResult" }
           ]

@@ -143,6 +143,9 @@ _FORBIDDEN_MODEL_SUBDIRECTORIES: Final = frozenset(
 )
 _FORBIDDEN_COMPONENTS: Final = frozenset({"logs", "workspace"})
 _FORBIDDEN_FILE_NAMES: Final = frozenset({".env", "voice-profiles.json"})
+_FORBIDDEN_SONG_LYRIC_FILE_NAMES: Final = frozenset(
+    {"lyrics-manifest.json", "lyrics.txt"}
+)
 _FORBIDDEN_RUNTIME_COMPONENTS: Final = frozenset(
     {
         "gpt-sovits-v2-240821",
@@ -400,6 +403,11 @@ def _path_policy_message(
 
     if file_name in _FORBIDDEN_FILE_NAMES or file_name.startswith(".env."):
         return "private environment or local voice configuration is forbidden"
+    if suffix == ".lrc" or file_name in _FORBIDDEN_SONG_LYRIC_FILE_NAMES:
+        # Song Cover writes these exact private-job assets at runtime.  Blocking
+        # their names globally prevents an ignored job from being copied and
+        # force-added elsewhere with copyrighted lyrics still inside it.
+        return "private synchronized-lyrics artifacts are forbidden"
     if any(component in _FORBIDDEN_COMPONENTS for component in components):
         return "runtime user data or logs are forbidden"
     if _contains_pair(components, "models", _FORBIDDEN_MODEL_SUBDIRECTORIES):

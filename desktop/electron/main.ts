@@ -30,6 +30,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { BackendProcess } from './backend-process.js'
+import { ApplicationShutdownGate } from './application-shutdown-gate.js'
 import {
   DATA_STORAGE_CLEANABLE_CATEGORIES,
   type DataStorageBusyPhase,
@@ -103,6 +104,16 @@ import {
   PreloadSpeechPlaybackOwner,
   ReplaceableSpeechPlaybackOwner,
 } from './speech-playback-owner.js'
+import { PreloadMusicPlaybackOwner } from './music-playback-owner.js'
+import {
+  SongCoverManager,
+  SongCoverStartError,
+} from './song-cover-manager.js'
+import {
+  parseChooseSongCoverRequest,
+  type SongCoverReadiness,
+  type SongCoverState,
+} from './song-cover-contracts.js'
 import {
   MAX_IDENTIFIER_LENGTH,
   MAX_ATTACHMENT_FILE_COUNT,
@@ -150,6 +161,7 @@ import type {
   PinChatRequest,
   RenameChatRequest,
   RetryChatRequest,
+  StartSpeechPlaybackRequest,
   UpdateDesktopSettingsRequest,
   UpdateVoiceSettingsRequest,
   UpdateProjectRequest,
@@ -190,6 +202,8 @@ let dataStorageWarning: string | null = null
 let dataStorageOperation: Promise<unknown> | null = null
 let speechPlaybackOwner: PreloadSpeechPlaybackOwner | null = null
 const speechPlaybackRouter = new ReplaceableSpeechPlaybackOwner()
+let musicPlaybackOwner: PreloadMusicPlaybackOwner | null = null
+let songCoverManager: SongCoverManager | null = null
 let tray: Tray | null = null
 let desktopPetRepository: DesktopPetPreferencesRepository | null = null
 let desktopPetPreferences: LoadedDesktopPetPreferences | null = null
@@ -225,6 +239,7 @@ let collapsedWindowPlacement: {
   width: number
 } | null = null
 let shutdownStarted = false
+const applicationShutdownGate = new ApplicationShutdownGate()
 let rendererReadyTimer: ReturnType<typeof setTimeout> | null = null
 const hasSingleInstanceLock = app.requestSingleInstanceLock()
 
@@ -386,6 +401,7 @@ function presenceNotificationActivity(): PresenceNotificationActivity {
       backendBusy: presenceVoiceSessionActive
         || backendProcess?.hasActiveSpeechTurn() === true
         || speechPlaybackOwner?.hasActivePlayback() === true
+        || songCoverManager?.hasActiveWork() === true
         || snapshot?.activeGeneration !== undefined
         || snapshot?.activeKnowledgeOperation !== undefined,
     })
@@ -1031,6 +1047,12 @@ function installSpeechPlaybackOwner(window: BrowserWindow): void {
       if (speechPlaybackOwner !== disconnectedOwner) {
         return
       }
+      if (recovery === 'wait-for-renderer') {
+        // Navigation or renderer loss invalidates every renderer-held speech
+        // identifier. Cancel Python with the coordinator-owned exact identity
+        // before a replacement document can attach to the delivery channel.
+        backendProcess?.stopCurrentSpeechPlayback()
+      }
       speechPlaybackOwner = null
       speechPlaybackRouter.replace(null)
       if (
@@ -1049,6 +1071,88 @@ function installSpeechPlaybackOwner(window: BrowserWindow): void {
   )
   speechPlaybackOwner = owner
   speechPlaybackRouter.replace(owner)
+}
+
+function publishSongCoverState(state: SongCoverState): void {
+  if (mainWindow === null || mainWindow.isDestroyed()) {
+    return
+  }
+  try {
+    mainWindow.webContents.send('song-cover:state-changed', state)
+  } catch {
+    // Conversion survives renderer replacement; the new document rehydrates.
+  }
+}
+
+function requireSongCoverManager(): SongCoverManager {
+  if (songCoverManager === null) {
+    throw new Error('Song Cover manager is not available.')
+  }
+  return songCoverManager
+}
+
+class SongCoverUnavailableError extends Error {
+  constructor(readiness: Extract<SongCoverReadiness, { status: 'unavailable' }>) {
+    super(readiness.reason === 'not-included-in-build'
+      ? 'Song Cover is unavailable in this build because the local singing runtime is not included.'
+      : 'Song Cover is unavailable because the required local singing runtime is incomplete.')
+    this.name = 'SongCoverUnavailableError'
+  }
+}
+
+async function assertSongCoverAvailable(
+  manager: SongCoverManager,
+): Promise<void> {
+  const readiness = await manager.getReadiness(app.isPackaged)
+  if (readiness.status === 'unavailable') {
+    throw new SongCoverUnavailableError(readiness)
+  }
+}
+
+function stopSongCoverPlaybackIfActive(): void {
+  const state = songCoverManager?.getState()
+  if (state?.outputAvailable === true && state.jobId !== null) {
+    songCoverManager?.stopPlayback(state.jobId)
+  }
+}
+
+/**
+ * Atomically reserve live voice against pending and active Song Cover audio.
+ *
+ * The flag is raised before invalidating playback so a newly dispatched Play
+ * request fails its synchronous Main check. Stopping also advances the
+ * manager's generation, preventing a Play request already awaiting file or
+ * preference I/O from opening the speaker after microphone capture starts.
+ */
+function setPresenceVoiceSession(active: boolean): void {
+  if (!active) {
+    presenceVoiceSessionActive = false
+    return
+  }
+  presenceVoiceSessionActive = true
+  try {
+    stopSongCoverPlaybackIfActive()
+  } catch (error) {
+    presenceVoiceSessionActive = false
+    throw new Error(
+      'Voice capture could not reserve audio while Song Cover is active.',
+      { cause: error },
+    )
+  }
+}
+
+function installMusicPlaybackOwner(window: BrowserWindow): void {
+  if (musicPlaybackOwner !== null) {
+    return
+  }
+  const owner = new PreloadMusicPlaybackOwner(window, (disconnectedOwner) => {
+    if (musicPlaybackOwner !== disconnectedOwner) {
+      return
+    }
+    musicPlaybackOwner = null
+    songCoverManager?.handlePlaybackOwnerDisconnected()
+  })
+  musicPlaybackOwner = owner
 }
 
 function resolveProjectRoot(): string {
@@ -1113,9 +1217,10 @@ function parseChatRequest(value: unknown): ChatRequest {
     'message',
     'attachmentIds',
     'useProjectKnowledge',
+    'speakReply',
   ])
   if (
-    !['chatId', 'message', 'attachmentIds'].every((field) => (
+    !['chatId', 'message', 'attachmentIds', 'speakReply'].every((field) => (
       Object.hasOwn(request, field)
     ))
     || Object.keys(request).some((field) => !allowedFields.has(field))
@@ -1126,6 +1231,7 @@ function parseChatRequest(value: unknown): ChatRequest {
     || codePointLength(request.message) > MAX_MESSAGE_LENGTH
     || !Array.isArray(request.attachmentIds)
     || request.attachmentIds.length > MAX_ATTACHMENT_FILE_COUNT
+    || typeof request.speakReply !== 'boolean'
     || (
       Object.hasOwn(request, 'useProjectKnowledge')
       && typeof request.useProjectKnowledge !== 'boolean'
@@ -1154,6 +1260,7 @@ function parseChatRequest(value: unknown): ChatRequest {
     chatId: request.chatId,
     message: request.message,
     attachmentIds: attachmentIds as string[],
+    speakReply: request.speakReply,
     ...(Object.hasOwn(request, 'useProjectKnowledge')
       ? { useProjectKnowledge: request.useProjectKnowledge === true }
       : {}),
@@ -1173,6 +1280,7 @@ function parseRetryChatRequest(value: unknown): RetryChatRequest {
     'chatId',
     'userMessageId',
     'assistantMessageId',
+    'speakReply',
   ]
   const allowedFields = new Set([
     ...requiredFields,
@@ -1204,16 +1312,34 @@ function parseRetryChatRequest(value: unknown): RetryChatRequest {
   ) {
     throw new Error('Retry Chat knowledge selection is invalid.')
   }
+  if (typeof request.speakReply !== 'boolean') {
+    throw new Error('Retry Chat speech selection is invalid.')
+  }
   return {
     chatId: parseChatId(request.chatId),
     userMessageId: parseChatId(request.userMessageId),
     assistantMessageId: parseChatId(request.assistantMessageId),
+    speakReply: request.speakReply,
     ...(hasMessage
       ? { message: trimProtocolBlankCharacters(message as string) }
       : {}),
     ...(Object.hasOwn(request, 'useProjectKnowledge')
       ? { useProjectKnowledge: request.useProjectKnowledge === true }
       : {}),
+  }
+}
+
+function parseStartSpeechPlaybackRequest(
+  value: unknown,
+): StartSpeechPlaybackRequest {
+  const request = parseObject(
+    value,
+    ['chatId', 'assistantMessageId'],
+    'Managed speech playback request',
+  )
+  return {
+    chatId: parseChatId(request.chatId),
+    assistantMessageId: parseChatId(request.assistantMessageId),
   }
 }
 
@@ -1245,6 +1371,16 @@ function parseBackendRequestId(value: unknown): string {
     || !BACKEND_REQUEST_ID_PATTERN.test(value)
   ) {
     throw new Error('Backend request id is invalid.')
+  }
+  return value
+}
+
+function parseSongCoverJobId(value: unknown): string {
+  if (
+    typeof value !== 'string'
+    || !BACKEND_REQUEST_ID_PATTERN.test(value)
+  ) {
+    throw new Error('Song Cover job id is invalid.')
   }
   return value
 }
@@ -1975,6 +2111,9 @@ async function runDataStorageOperation(
 
 function assertBackendCanPauseForDataMaintenance(): void {
   const backend = requireBackend()
+  if (songCoverManager?.hasActiveWork() === true) {
+    throw new Error('Stop the active Song Cover before changing managed data.')
+  }
   if (backend.hasActiveMaintenanceWork()) {
     throw new Error(
       'Finish the active Chat, Voice, or Project Source action first.',
@@ -1983,6 +2122,14 @@ function assertBackendCanPauseForDataMaintenance(): void {
   const status = backend.getSnapshot().status
   if (status !== 'ready' && status !== 'stopped' && status !== 'error') {
     throw new Error('Wait for the Python Backend to finish changing state.')
+  }
+}
+
+function assertNoManagedSongCoverOutput(): void {
+  if (songCoverManager?.hasManagedOutput() === true) {
+    throw new Error(
+      'Export or clear the completed Song Cover before moving managed data.',
+    )
   }
 }
 
@@ -2006,6 +2153,7 @@ async function chooseAndMoveDataDirectory(
       throw new Error('The Python Backend must be ready before moving data.')
     }
     assertBackendCanPauseForDataMaintenance()
+    assertNoManagedSongCoverOutput()
     const selection = await dialog.showOpenDialog(
       requireMainWindow(),
       {
@@ -2042,6 +2190,7 @@ async function chooseAndMoveDataDirectory(
       throw new Error('Data storage changed. Refresh Settings and try again.')
     }
     assertBackendCanPauseForDataMaintenance()
+    assertNoManagedSongCoverOutput()
     let transaction: DataStorageMoveTransaction | null = null
     let backendStopped = false
     try {
@@ -2171,6 +2320,7 @@ async function clearTemporaryData(
     }
 
     assertBackendCanPauseForDataMaintenance()
+    await songCoverManager?.discardOutput()
     const backend = requireBackend()
     const shouldRestart = backend.getSnapshot().status === 'ready'
     let backendStopped = false
@@ -2289,6 +2439,7 @@ function registerIpcHandlers(): void {
       // an old reply cannot speak inside a newly loaded Voice Session.
       requireBackend().stopCurrentSpeechPlayback()
       installSpeechPlaybackOwner(requireMainWindow())
+      installMusicPlaybackOwner(requireMainWindow())
       presenceVoiceSessionActive = false
       presenceReminderSchedulingStarted = true
       schedulePresenceReminder()
@@ -2369,7 +2520,7 @@ function registerIpcHandlers(): void {
       if (typeof active !== 'boolean') {
         throw new Error('Voice presence state is invalid.')
       }
-      presenceVoiceSessionActive = active
+      setPresenceVoiceSession(active)
     },
   )
 
@@ -2478,6 +2629,178 @@ function registerIpcHandlers(): void {
   )
 
   ipcMain.handle(
+    'song-cover:get-readiness',
+    async (event): Promise<SongCoverReadiness> => {
+      assertTrustedSender(event)
+      return requireSongCoverManager().getReadiness(app.isPackaged)
+    },
+  )
+
+  ipcMain.handle(
+    'song-cover:get-state',
+    (event): SongCoverState => {
+      assertTrustedSender(event)
+      return requireSongCoverManager().getState()
+    },
+  )
+
+  ipcMain.handle(
+    'song-cover:choose',
+    async (event, rawRequest: unknown): Promise<SongCoverState> => {
+      assertTrustedSender(event)
+      try {
+        const request = parseChooseSongCoverRequest(rawRequest)
+        if (request === null) {
+          throw new Error('Song Cover request is invalid.')
+        }
+        const manager = requireSongCoverManager()
+        // Renderer readiness is advisory UX. Recheck in Main before revealing a
+        // picker and again after native UI yields, so no stale document can
+        // launch a worker when the local admission boundary is unavailable.
+        await assertSongCoverAvailable(manager)
+        assertDataStorageIdleForBackendRestart()
+        const vocalSelection = await dialog.showOpenDialog(requireMainWindow(), {
+          title: request.sourceMode === 'song'
+            ? 'Choose a song for Elysia to sing'
+            : 'Choose the isolated vocal stem',
+          buttonLabel: request.sourceMode === 'song'
+            ? 'Create Song Cover'
+            : 'Choose vocals',
+          properties: ['openFile', 'dontAddToRecent'],
+          filters: [
+            {
+              name: 'Audio',
+              extensions: ['aac', 'flac', 'm4a', 'mp3', 'ogg', 'opus', 'wav'],
+            },
+          ],
+        })
+        if (
+          vocalSelection.canceled
+          || vocalSelection.filePaths.length !== 1
+        ) {
+          return requireSongCoverManager().getState()
+        }
+        let accompanimentPath: string | null = null
+        if (request.sourceMode === 'stems') {
+          // The first native path remains Main-private while the second picker
+          // is open. Cancelling here never replaces a previous completed job.
+          assertDataStorageIdleForBackendRestart()
+          const accompanimentSelection = await dialog.showOpenDialog(
+            requireMainWindow(),
+            {
+              title: 'Choose the matching instrumental accompaniment',
+              buttonLabel: 'Choose accompaniment',
+              properties: ['openFile', 'dontAddToRecent'],
+              filters: [
+                {
+                  name: 'Audio',
+                  extensions: [
+                    'aac', 'flac', 'm4a', 'mp3', 'ogg', 'opus', 'wav',
+                  ],
+                },
+              ],
+            },
+          )
+          if (
+            accompanimentSelection.canceled
+            || accompanimentSelection.filePaths.length !== 1
+          ) {
+            return requireSongCoverManager().getState()
+          }
+          accompanimentPath = accompanimentSelection.filePaths[0]
+        }
+        // The native picker yields control. Recheck the data-operation lease so
+        // a song selected while a move/cleanup began cannot bind to a changing
+        // managed root. Manager.start reserves its own slot synchronously next.
+        assertDataStorageIdleForBackendRestart()
+        await assertSongCoverAvailable(manager)
+        const sourcePath = vocalSelection.filePaths[0]
+        return await manager.start(
+          sourcePath,
+          path.basename(sourcePath),
+          request.keyShiftSemitones,
+          accompanimentPath === null
+            ? null
+            : {
+                path: accompanimentPath,
+                name: path.basename(accompanimentPath),
+              },
+          request.engine,
+          request.lyricsMetadataOverride,
+        )
+      } catch (error) {
+        if (
+          error instanceof SongCoverStartError
+          || error instanceof SongCoverUnavailableError
+        ) {
+          throw new Error(error.message, { cause: error })
+        }
+        throw new Error(
+          'Song Cover could not be started. Check the local singing runtime.',
+          { cause: error },
+        )
+      }
+    },
+  )
+
+  ipcMain.handle(
+    'song-cover:cancel',
+    (event, jobId: unknown): Promise<SongCoverState> => {
+      assertTrustedSender(event)
+      return requireSongCoverManager().cancel(parseSongCoverJobId(jobId))
+    },
+  )
+
+  ipcMain.handle(
+    'song-cover:play',
+    (event, jobId: unknown): Promise<SongCoverState> => {
+      assertTrustedSender(event)
+      return requireSongCoverManager().play(parseSongCoverJobId(jobId))
+    },
+  )
+
+  ipcMain.handle(
+    'song-cover:stop',
+    (event, jobId: unknown): SongCoverState => {
+      assertTrustedSender(event)
+      return requireSongCoverManager().stopPlayback(
+        parseSongCoverJobId(jobId),
+      )
+    },
+  )
+
+  ipcMain.handle(
+    'song-cover:export',
+    async (event, jobId: unknown): Promise<boolean> => {
+      assertTrustedSender(event)
+      try {
+        const parsedJobId = parseSongCoverJobId(jobId)
+        const state = requireSongCoverManager().getState()
+        if (state.jobId !== parsedJobId || !state.outputAvailable) {
+          throw new Error('Song Cover job is no longer available.')
+        }
+        const baseName = path.parse(state.sourceName ?? 'song').name
+        const selection = await dialog.showSaveDialog(requireMainWindow(), {
+          title: 'Export Elysia Song Cover',
+          buttonLabel: 'Export WAV',
+          defaultPath: `${baseName}-Elysia-cover.wav`,
+          filters: [{ name: 'Lossless WAV audio', extensions: ['wav'] }],
+        })
+        if (selection.canceled || selection.filePath === undefined) {
+          return false
+        }
+        await requireSongCoverManager().exportWav(
+          parsedJobId,
+          selection.filePath,
+        )
+        return true
+      } catch {
+        throw new Error('The Song Cover could not be exported.')
+      }
+    },
+  )
+
+  ipcMain.handle(
     'backend:retry-message',
     (event, request: unknown) => {
       assertTrustedSender(event)
@@ -2502,6 +2825,17 @@ function registerIpcHandlers(): void {
       return requireBackend().stopSpeechPlayback(
         parseBackendRequestId(requestId),
         parseChatId(chatId),
+      )
+    },
+  )
+
+  ipcMain.handle(
+    'voice:start-speech-playback',
+    (event, request: unknown) => {
+      assertTrustedSender(event)
+      stopSongCoverPlaybackIfActive()
+      return requireBackend().startSpeechPlayback(
+        parseStartSpeechPlaybackRequest(request),
       )
     },
   )
@@ -3293,12 +3627,16 @@ function createMainWindow(): void {
   mainWindow.on('closed', () => {
     clearRendererReadyTimer()
     presenceVoiceSessionActive = false
+    backendProcess?.stopCurrentSpeechPlayback()
     const closingOwner = speechPlaybackOwner
     speechPlaybackOwner = null
     // Detach before disposal so an in-flight expected window-close rejection
     // becomes a skipped clip instead of poisoning the child-owned fd3 stream.
     speechPlaybackRouter.replace(null)
     closingOwner?.dispose()
+    const closingMusicOwner = musicPlaybackOwner
+    musicPlaybackOwner = null
+    closingMusicOwner?.dispose()
     mainWindow = null
   })
 
@@ -3359,6 +3697,31 @@ if (!hasSingleInstanceLock) {
       speechPlaybackRouter,
       activeDataRoot,
     )
+    songCoverManager = new SongCoverManager(
+      projectRoot,
+      () => requireDataStorageState().activeDataRoot,
+      () => musicPlaybackOwner,
+      () => {
+        if (presenceVoiceSessionActive) {
+          throw new Error('Voice capture must stop before Song Cover playback.')
+        }
+        requireBackend().stopCurrentSpeechPlayback()
+      },
+      async () => {
+        // Playback fails closed if current preferences cannot be authenticated.
+        // Falling back to the default device at full volume could expose audio
+        // that the user explicitly routed to a private or muted output.
+        const [settings, voiceSettings] = await Promise.all([
+          requireBackend().getSettings(),
+          requireBackend().getVoiceSettings(),
+        ])
+        return {
+          outputDeviceId: voiceSettings.outputDeviceId,
+          volumePercent: settings.activeSettings.speechVolumePercent,
+        }
+      },
+      publishSongCoverState,
+    )
     registerIpcHandlers()
     createMainWindow()
     createTray()
@@ -3404,48 +3767,76 @@ if (!hasSingleInstanceLock) {
   })
 
   app.on('before-quit', (event) => {
-    if (shutdownStarted) {
+    const shutdownAdmission = applicationShutdownGate.request()
+    if (shutdownAdmission === 'allow') {
       return
     }
-
     event.preventDefault()
+    if (shutdownAdmission === 'wait') {
+      return
+    }
     shutdownStarted = true
-    mainWindow?.hide()
-    presenceReminderSchedulingStarted = false
-    presenceVoiceSessionActive = false
-    clearPresenceReminderTimer()
-    closeAllNativePresenceNotifications()
-    const optionalPersistenceFlush =
-      drainDesktopPetAndIndependentPersistenceWithin(
-        [...desktopPetPersistenceOperations],
-        () => desktopPetProgramManager?.shutdown() ?? Promise.resolve(),
-        [...presenceNotificationPersistenceOperations],
-      )
-    tray?.destroy()
-    tray = null
-    // A move may be between verified pointer publication and rollback/commit.
-    // Let that exact transaction settle before shutting Python down so quit
-    // cannot manufacture an ambiguous pending state.
-    const finishDataStorage = dataStorageOperation === null
-      ? Promise.resolve()
-      : dataStorageOperation.then(() => undefined, () => undefined)
-    const stopBackend = finishDataStorage.then(async () => {
-      if (
-        backendProcess !== null
-        && backendProcess.getSnapshot().status !== 'stopped'
-      ) {
-        await backendProcess.stop()
+    const stopSongCover = songCoverManager?.shutdown() ?? Promise.resolve()
+    void stopSongCover.then(() => {
+      mainWindow?.hide()
+      presenceReminderSchedulingStarted = false
+      presenceVoiceSessionActive = false
+      clearPresenceReminderTimer()
+      closeAllNativePresenceNotifications()
+      const optionalPersistenceFlush =
+        drainDesktopPetAndIndependentPersistenceWithin(
+          [...desktopPetPersistenceOperations],
+          () => desktopPetProgramManager?.shutdown() ?? Promise.resolve(),
+          [...presenceNotificationPersistenceOperations],
+        )
+      tray?.destroy()
+      tray = null
+      // A move may be between verified pointer publication and rollback/commit.
+      // Let that exact transaction settle before shutting Python down so quit
+      // cannot manufacture an ambiguous pending state.
+      const finishDataStorage = dataStorageOperation === null
+        ? Promise.resolve()
+        : dataStorageOperation.then(() => undefined, () => undefined)
+      const stopBackend = finishDataStorage.then(async () => {
+        if (
+          backendProcess !== null
+          && backendProcess.getSnapshot().status !== 'stopped'
+        ) {
+          await backendProcess.stop()
+        }
+      })
+      void Promise.allSettled([
+        stopBackend,
+        optionalPersistenceFlush,
+      ]).finally(() => {
+        const closingOwner = speechPlaybackOwner
+        speechPlaybackOwner = null
+        speechPlaybackRouter.replace(null)
+        closingOwner?.dispose()
+        const closingMusicOwner = musicPlaybackOwner
+        musicPlaybackOwner = null
+        closingMusicOwner?.dispose()
+        applicationShutdownGate.allowFinalQuit()
+        app.quit()
+      })
+    }).catch(() => {
+      // A possibly-live conversion tree retains access to private vocals and
+      // GPU resources. Keep Main alive and expose only fixed recovery guidance
+      // rather than orphaning that process or leaking a native diagnostic.
+      shutdownStarted = false
+      applicationShutdownGate.retryAfterFailure()
+      const currentWindow = mainWindow
+      if (currentWindow !== null && !currentWindow.isDestroyed()) {
+        currentWindow.show()
+        currentWindow.focus()
       }
-    })
-    void Promise.allSettled([
-      stopBackend,
-      optionalPersistenceFlush,
-    ]).finally(() => {
-      const closingOwner = speechPlaybackOwner
-      speechPlaybackOwner = null
-      speechPlaybackRouter.replace(null)
-      closingOwner?.dispose()
-      app.quit()
+      dialog.showErrorBox(
+        'Elysia could not close safely',
+        'Song Cover is still using or could not clear private temporary audio. '
+        + 'Check Task Manager for its local Python, FFmpeg, or Demucs process, '
+        + 'and close anything using the generated files. If Elysia remains '
+        + 'blocked after those processes are gone, end Elysia from Task Manager.',
+      )
     })
   })
 
