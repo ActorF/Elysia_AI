@@ -44,8 +44,19 @@ if (cleanupToken !== undefined) {
     path.join(process.cwd(), 'cleanup-' + cleanupToken + '.marker'),
     cleanupToken,
   )
+  const cleanupResponsePath = path.join(
+    process.cwd(),
+    'cleanup-response.bin',
+  )
+  // Python expands its text newline to CRLF on Windows, matching the real SVS
+  // worker. A binary override lets protocol tests preserve every near-miss byte.
   process.stdout.write(
-    'ELYSIA_SONG_COVER_CLEANUP {"status":"complete"}\n',
+    fs.existsSync(cleanupResponsePath)
+      ? fs.readFileSync(cleanupResponsePath)
+      : Buffer.from(
+        'ELYSIA_SONG_COVER_CLEANUP {"status":"complete"}\r\n',
+        'utf8',
+      ),
   )
   process.exit(0)
 }
@@ -1525,6 +1536,118 @@ test('recovers an exact crash-left WSL UUID before startup cleanup', async () =>
     await rm(fixture.root, { recursive: true, force: true })
   }
 })
+
+for (const scenario of [
+  {
+    name: 'LF',
+    frame: 'ELYSIA_SONG_COVER_CLEANUP {"status":"complete"}\n',
+  },
+  {
+    name: 'Windows CRLF',
+    frame: 'ELYSIA_SONG_COVER_CLEANUP {"status":"complete"}\r\n',
+  },
+]) {
+  test(`accepts the exact ${scenario.name} private cleanup frame`, async () => {
+    const fixture = await createFixture()
+    const token = '12345678-1234-4234-9234-123456789abd'
+    const jobDirectory = path.join(
+      fixture.dataRoot,
+      'audio',
+      'song-covers',
+      token,
+    )
+    await mkdir(jobDirectory, { recursive: true })
+    await writeFile(
+      path.join(jobDirectory, 'lyrics-manifest.json'),
+      '{}',
+      'utf8',
+    )
+    await writeFile(
+      path.join(fixture.projectRoot, 'cleanup-response.bin'),
+      scenario.frame,
+      'utf8',
+    )
+    const manager = new SongCoverManager(
+      fixture.projectRoot,
+      () => fixture.dataRoot,
+      () => null,
+      () => {},
+      async () => ({ outputDeviceId: null, volumePercent: 100 }),
+      () => {},
+    )
+    try {
+      await waitFor(
+        () => !manager.hasActiveWork(),
+        `${scenario.name} private cleanup did not settle.`,
+        15_000,
+      )
+      assert.equal(manager.hasManagedOutput(), false)
+      await assert.rejects(stat(jobDirectory))
+    } finally {
+      await manager.shutdown()
+      await rm(fixture.root, { recursive: true, force: true })
+    }
+  })
+}
+
+for (const scenario of [
+  {
+    name: 'whitespace before Windows CRLF',
+    frame: 'ELYSIA_SONG_COVER_CLEANUP {"status":"complete"} \r\n',
+  },
+  {
+    name: 'an extra byte after Windows CRLF',
+    frame: 'ELYSIA_SONG_COVER_CLEANUP {"status":"complete"}\r\nx',
+  },
+]) {
+  test(`rejects a private cleanup frame with ${scenario.name}`, async () => {
+    const fixture = await createFixture()
+    const token = '12345678-1234-4234-9234-123456789abe'
+    const jobDirectory = path.join(
+      fixture.dataRoot,
+      'audio',
+      'song-covers',
+      token,
+    )
+    const responsePath = path.join(
+      fixture.projectRoot,
+      'cleanup-response.bin',
+    )
+    await mkdir(jobDirectory, { recursive: true })
+    await writeFile(
+      path.join(jobDirectory, 'lyrics-manifest.json'),
+      '{}',
+      'utf8',
+    )
+    await writeFile(responsePath, scenario.frame, 'utf8')
+    const manager = new SongCoverManager(
+      fixture.projectRoot,
+      () => fixture.dataRoot,
+      () => null,
+      () => {},
+      async () => ({ outputDeviceId: null, volumePercent: 100 }),
+      () => {},
+    )
+    try {
+      await waitFor(
+        () => !manager.hasActiveWork(),
+        `Invalid private cleanup with ${scenario.name} did not settle.`,
+        15_000,
+      )
+      assert.equal(manager.hasManagedOutput(), true)
+      assert.equal((await stat(jobDirectory)).isDirectory(), true)
+
+      await rm(responsePath, { force: true })
+      await manager.shutdown()
+      assert.equal(manager.hasManagedOutput(), false)
+      await assert.rejects(stat(jobDirectory))
+    } finally {
+      await rm(responsePath, { force: true })
+      await manager.shutdown().catch(() => {})
+      await rm(fixture.root, { recursive: true, force: true })
+    }
+  })
+}
 
 test('tree-stops a timed-out cleanup before retaining its exact retry lease', {
   timeout: 30_000,

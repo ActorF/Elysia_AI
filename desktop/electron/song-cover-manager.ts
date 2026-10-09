@@ -47,10 +47,16 @@ const MAX_WORKER_STDOUT_LINE_BYTES = 64 * 1024
 const MAX_WORKER_STDOUT_BYTES = 32 * 1024 * 1024
 const MAX_PLAYBACK_BYTES = 64 * 1024 * 1024
 const MAX_LOSSLESS_OUTPUT_BYTES = 512 * 1024 * 1024
-const PRIVATE_SVS_CLEANUP_EVENT = Buffer.from(
-  'ELYSIA_SONG_COVER_CLEANUP {"status":"complete"}\n',
-  'utf8',
+const PRIVATE_SVS_CLEANUP_EVENT_BODY = (
+  'ELYSIA_SONG_COVER_CLEANUP {"status":"complete"}'
 )
+// Python text output uses CRLF on Windows while injected workers and POSIX use
+// LF. Keep this boundary closed by allowlisting only those two exact frames;
+// trimming arbitrary bytes would let malformed cleanup output pass validation.
+const PRIVATE_SVS_CLEANUP_EVENTS = Object.freeze([
+  Buffer.from(`${PRIVATE_SVS_CLEANUP_EVENT_BODY}\n`, 'utf8'),
+  Buffer.from(`${PRIVATE_SVS_CLEANUP_EVENT_BODY}\r\n`, 'utf8'),
+])
 const MAX_PRIVATE_SVS_CLEANUP_BYTES = 256
 const PRIVATE_SVS_CLEANUP_TIMEOUT_MS = 60_000
 const DEFAULT_JOB_TIMEOUT_MS = 2 * 60 * 60 * 1_000
@@ -2615,7 +2621,7 @@ export class SongCoverManager {
         }
         finish(
           code === 0
-          && output.equals(PRIVATE_SVS_CLEANUP_EVENT),
+          && PRIVATE_SVS_CLEANUP_EVENTS.some((event) => output.equals(event)),
         )
       })
       deadline = setTimeout(() => {
