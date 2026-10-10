@@ -299,10 +299,11 @@ DEBUG=False
 
 - Composer 的音符按钮位于 **Dictate** 左侧。默认的 **Lyrics-driven singing** 会在用户确认后把解析出的歌名、歌手和四舍五入时长发送给 LRCLIB 查找同步歌词；不会上传歌曲音频。当前只接受能够严格规范化为简体汉字的普通话同步歌词，并以 Windows + WSL 中固定的 SoulX-Singer、FunASR 与音符对齐流程重新演唱；无可信匹配、无时间戳、混合语言或对齐不唯一时安全失败。用户也可显式选择不联网、不读取歌词的 **Legacy voice conversion**；这是为保持界面与协议兼容而保留的名称，本机 RVC v2 会以原人声的发音、音高和时序作为转换引导，但不保证逐字或逐音高复刻。
 - 设置窗口支持选择一首完整歌曲，或直接选择已对齐的人声/伴奏 Stem；完整歌曲模式使用固定 Demucs `htdemucs` 分离，Stem 模式跳过分离。可保留原调，或把整首歌升/降一个至两个半音；任何非零选择都会有意移动主唱和伴奏，属于音域取舍，不是更准确的原唱复刻。
+- Lyrics-driven 推理使用只保留在本机的 59 条 Prompt bank（48 corpus + 10 emotion + 1 anchor）。每段先按音域、语速与 phoneme 覆盖选最多两个 Prompt；歌词/谱面推断的 emotion/style 只在 acoustic cost 同分时决胜。推理固定 `control=score`、`auto_shift=False`、`pitch_shift=0`，先生成确定性 C0，只有结构失败或 soft loss 较高时才在全局固定预算内尝试同 Prompt 新 seed 的 C1 与第二 Prompt 的 C2。结构硬门禁排除明显无效波形，F0/note、掉音、误有声和频谱仅作候选软评分；全局 DP 选出边界一致的路径，再按绝对 sample offset 拼成精确时间线，不逐段隐式移调、拉伸或无限重试。
 - 支持 AAC、FLAC、M4A、MP3、OGG、Opus 与 WAV；输入限制为 1 秒至 12 分钟、最多 1 GiB。歌词驱动路径显示 `validating → separating → transcribing → aligning → synthesizing → mixing`，Legacy 路径显示 `validating → separating → converting → mixing`；都可取消，完成后自动播放，并提供重新播放、停止和无损 WAV 导出。
 - 原歌曲路径、输出路径、模型路径、进程 ID 与音频字节只存在于 Electron Main、私有 Worker 和可信 Preload；React 只收到安全文件名、有界进度与生命周期状态。播放使用私有 Blob URL、所选扬声器和当前语音音量，结束或取消后立即撤销。
-- 未导出的结果、在线取得的歌词和所有中间 Stem 都属于受管临时数据：创建下一首、清理临时音频、取消失败后的受管清理或退出会删除它们。SoulX、FunASR、ROSVOT、RMVPE、OpenCC、RVC v2、HuBERT、FAISS Index、Demucs、爱莉希雅 Prompt/模型及示例翻唱均留在 Git 忽略的本机目录，不进入 GitHub、Release 或当前安装包。
-- 两条路径共用保留句间动态的 60 Hz High-pass、0.5 dB Presence、线性 +1.3 dB 主唱补偿、Vocal-keyed Ducking 和 -1 dBFS Limiter。歌词驱动路径还使用 -18 dB 严格无声辅音层；RVC 路径固定使用 RMVPE、speaker `0`、Index Rate `0.00`、Protect `0.33` 与 RMS Mix Rate `0.25`。零 Index Rate 下 Protect 的 Feature Blend 是恒等操作，不能被解释成无声辅音恢复保证；RVC 不混回原唱辅音的目的是避免原唱泄漏及重新引入分离伪影。RVC 单次子进程会关闭会按音频形状缓存显存的 CUDA Graph，并在每项任务构建模型前固定 upstream seed `114514`、cuDNN 算法选择与 cuBLAS workspace；在同一已审核 Runtime 与 Device 上，相同输入不会仅因重新启动进程而随机得到不同波形。Adapter 还会拒绝全零或持续满幅的异常结果；当前机器已用 248.294 秒完整 Stem 作业验证 WAV/MP3 输出与中间文件清理。当前私有声学模型只由说话语料训练，持续低音、高音、停顿和摩擦音仍可能发哑或出现电音。该能力仍是需要手动准备 CUDA/WSL 私有 Runtime 的源码开发预览，不声称自动查词等于歌词授权，也不把一次完整 RVC 验收与一次短 SVS Smoke 当作所有音区、歌曲和咬字质量的证明。准确目录、模型字节身份、测试方法、限制和权利边界见 [本机爱莉希雅翻唱](./docs/15-SONG-COVER.md) 与 [MODEL_LICENSE.md](./MODEL_LICENSE.md)。
+- 未导出的结果、在线取得的歌词和所有中间 Stem 都属于受管临时数据：创建下一首、清理临时音频、取消失败后的受管清理或退出会删除它们。SoulX、FunASR、ROSVOT、RMVPE、OpenCC、RVC v2、HuBERT、FAISS Index、Demucs、爱莉希雅 Prompt bank/模型及示例翻唱均留在 Git 忽略的本机目录，不进入 GitHub、Release 或当前安装包；Prompt 音频、metadata、准确文本及 private manifest 内容也不得复制到仓库、测试 Fixture、诊断或文档。
+- 两条路径共用保留句间动态的 60 Hz High-pass、0.5 dB Presence、线性 +1.3 dB 主唱补偿、Vocal-keyed Ducking 和 -1 dBFS Limiter。歌词驱动路径还使用 -18 dB 严格无声辅音层；RVC 路径固定使用 RMVPE、speaker `0`、Index Rate `0.00`、Protect `0.33` 与 RMS Mix Rate `0.25`。零 Index Rate 下 Protect 的 Feature Blend 是恒等操作，不能被解释成无声辅音恢复保证；RVC 不混回原唱辅音的目的是避免原唱泄漏及重新引入分离伪影。RVC 单次子进程会关闭会按音频形状缓存显存的 CUDA Graph，并在每项任务构建模型前固定 upstream seed `114514`、cuDNN 算法选择与 cuBLAS workspace；在同一已审核 Runtime 与 Device 上，相同输入不会仅因重新启动进程而随机得到不同波形。Adapter 还会拒绝全零或持续满幅的异常结果；当前机器已用 248.294 秒完整 Stem 作业验证 RVC，并用 194.808 秒完整 Lyrics-SVS 作业验证多 Prompt、多候选、拼接、混音、WAV/MP3 发布与中间文件清理；6.71 秒受控 Lyrics-SVS 目标的两次重放得到相同输出摘要。当前私有声学模型只由说话语料训练，持续低音、高音、停顿和摩擦音仍可能发哑或出现电音。该能力仍是需要手动准备 CUDA/WSL 私有 Runtime 的源码开发预览，不声称自动查词等于歌词授权，也不把这些有限验收当作所有音区、歌曲和咬字质量的证明。准确目录、模型字节身份、测试方法、限制和权利边界见 [本机爱莉希雅翻唱](./docs/15-SONG-COVER.md) 与 [MODEL_LICENSE.md](./MODEL_LICENSE.md)。
 
 ### 🌷 可选外部动态桌宠
 
@@ -333,6 +334,13 @@ cd /d D:\Elysia_AI
 .venv\Scripts\python.exe scripts\check_distribution_assets.py
 .venv\Scripts\python.exe -m pytest -q
 .venv\Scripts\python.exe -m mypy --platform win32 agent attachments chats config core desktop_protocol documents knowledge_lifecycle localization memory models project_sources projects recovery scripts tools ui voice desktop_backend.py desktop_knowledge.py desktop_speech.py start.py
+```
+
+只验证歌词驱动歌唱的 Prompt 选择、质量门禁、候选预算、全局 DP 与精确时间线拼接时，可运行不加载私有模型的纯单元测试：
+
+```bat
+cd /d D:\Elysia_AI
+.venv\Scripts\python.exe -m pytest tests\test_song_svs_quality.py tests\test_song_svs_inference.py -q
 ```
 
 已单独启动 Loopback GPT-SoVITS 并完成本地 Profile 配置后，可用固定、不会回显参考文本或路径的 Smoke 命令验证单次合成；每个情绪会合成同一句话两次：

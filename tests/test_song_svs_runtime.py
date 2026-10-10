@@ -4,16 +4,144 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from contextlib import contextmanager
+import copy
+import hashlib
 import json
 import os
 from pathlib import Path
+import stat
 import subprocess
+from types import SimpleNamespace
 from typing import Iterator
 import wave
 
 import pytest
 
 from scripts import song_svs_runtime
+
+
+def _canonical_json(value: object) -> bytes:
+    """Encode one fixture with the production manifest's canonical JSON form."""
+
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+
+
+def _prompt_bank_document() -> dict[str, object]:
+    """Return the smallest valid closed prompt-bank manifest fixture."""
+
+    return {
+        "schema_version": 1,
+        "bank_id": "elysia-bank-v1",
+        "privacy": "private-local-only",
+        "builder_sha256": "1" * 64,
+        "source_manifest_sha256": "2" * 64,
+        "entries": [
+            {
+                "id": "synthetic-fixture-a",
+                "role": "anchor",
+                "selection_rank": 0,
+                "style_proxy": "neutral",
+                "emotion": None,
+                "audio": {
+                    "path": "audio/synthetic-fixture-a.wav",
+                    "bytes": 8,
+                    "sha256": hashlib.sha256(b"audio-v1").hexdigest(),
+                },
+                "metadata": {
+                    "path": "metadata/synthetic-fixture-a.json",
+                    "bytes": 13,
+                    "sha256": hashlib.sha256(b'{"version":1}').hexdigest(),
+                },
+                "profile": {
+                    "duration_seconds": 6.25,
+                    "note_median": 62.0,
+                    "note_p10": 55.0,
+                    "note_p90": 70.0,
+                    "note_span": 15.0,
+                    "syllables_per_second": 3.2,
+                    "phonemes": ["zh_ai", "zh_li", "<AP>"],
+                },
+                "validation": {
+                    "source_role": "anchor",
+                    "transcript_sha256": "3" * 64,
+                    "alignment_exact_match_ratio": 1.0,
+                    "alignment_cost_ratio": 0.0,
+                    "metadata_segments": 1,
+                },
+            }
+        ],
+    }
+
+
+def _write_prompt_bank(
+    runtime_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[dict[str, object], Path]:
+    """Write and pin one minimal private prompt bank for runtime tests."""
+
+    document = _prompt_bank_document()
+    bank_root = runtime_root / "prompts" / "elysia-bank-v1"
+    audio_path = bank_root / "audio" / "synthetic-fixture-a.wav"
+    metadata_path = bank_root / "metadata" / "synthetic-fixture-a.json"
+    audio_path.parent.mkdir(parents=True)
+    metadata_path.parent.mkdir(parents=True)
+    audio_path.write_bytes(b"audio-v1")
+    metadata_path.write_bytes(b'{"version":1}')
+    manifest_path = bank_root / "manifest.json"
+    encoded = _canonical_json(document)
+    manifest_path.write_bytes(encoded)
+    if os.name == "posix":
+        # The production privacy contract is exact rather than umask-relative.
+        # Explicit fixture modes keep Linux CI representative and reproducible.
+        for directory in (
+            runtime_root / "prompts",
+            bank_root,
+            audio_path.parent,
+            metadata_path.parent,
+        ):
+            directory.chmod(0o700)
+        for private_file in (audio_path, metadata_path, manifest_path):
+            private_file.chmod(0o600)
+    monkeypatch.setattr(
+        song_svs_runtime,
+        "_PROMPT_BANK_MANIFEST_ASSET",
+        song_svs_runtime._AssetSpec(
+            "prompts/elysia-bank-v1/manifest.json",
+            len(encoded),
+            hashlib.sha256(encoded).hexdigest(),
+        ),
+    )
+    return document, manifest_path
+
+
+def _set_nested_value(
+    document: dict[str, object],
+    path: tuple[str | int, ...],
+    value: object,
+) -> None:
+    """Replace one nested fixture field without weakening production parsing."""
+
+    target: object = document
+    for part in path[:-1]:
+        if isinstance(part, int):
+            assert isinstance(target, list)
+            target = target[part]
+        else:
+            assert isinstance(target, dict)
+            target = target[part]
+    final = path[-1]
+    if isinstance(final, int):
+        assert isinstance(target, list)
+        target[final] = value
+    else:
+        assert isinstance(target, dict)
+        target[final] = value
 
 
 def _write_pcm_wave(path: Path, *, duration_seconds: float = 1.25) -> None:
@@ -131,6 +259,335 @@ def test_asset_verification_rejects_digest_or_size_changes(tmp_path: Path) -> No
     )
 
 
+def test_core_runtime_assets_do_not_require_retired_single_prompt() -> None:
+    """Let a clean bank-only runtime omit the superseded one-prompt layout."""
+
+    required_paths = {
+        asset.relative_path for asset in song_svs_runtime._CORE_RUNTIME_ASSETS
+    }
+
+    assert not any(path.startswith("prompts/elysia-v1/") for path in required_paths)
+
+
+def test_prompt_bank_accepts_one_canonical_hash_pinned_entry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Accept the fixed identity and verify every referenced local asset."""
+
+    runtime_root = tmp_path / "runtime"
+    _write_prompt_bank(runtime_root, monkeypatch)
+
+    manifest = song_svs_runtime._verify_prompt_bank(runtime_root)
+
+    assert manifest.schema_version == 1
+    assert manifest.bank_id == "elysia-bank-v1"
+    assert manifest.privacy == "private-local-only"
+    assert [entry.entry_id for entry in manifest.entries] == ["synthetic-fixture-a"]
+    assert manifest.entries[0].selection_rank == 0
+    assert manifest.entries[0].profile.phonemes == ("zh_ai", "zh_li", "<AP>")
+    assert manifest.entries[0].audio.relative_path == (
+        "prompts/elysia-bank-v1/audio/synthetic-fixture-a.wav"
+    )
+
+
+@pytest.mark.parametrize(
+    ("require_directory", "mode", "uid", "expected"),
+    [
+        (True, stat.S_IFDIR | 0o700, 42, True),
+        (False, stat.S_IFREG | 0o600, 42, True),
+        (True, stat.S_IFDIR | 0o750, 42, False),
+        (False, stat.S_IFREG | 0o640, 42, False),
+        (True, stat.S_IFDIR | 0o700, 7, False),
+        (False, stat.S_IFDIR | 0o600, 42, False),
+    ],
+    ids=[
+        "private-directory",
+        "private-file",
+        "group-visible-directory",
+        "group-readable-file",
+        "foreign-owner",
+        "wrong-kind",
+    ],
+)
+def test_private_prompt_metadata_policy_is_exact(
+    require_directory: bool,
+    mode: int,
+    uid: int,
+    expected: bool,
+) -> None:
+    """Keep owner, kind, and mode checks testable on every host platform."""
+
+    info = SimpleNamespace(st_mode=mode, st_uid=uid)
+
+    assert song_svs_runtime._private_prompt_metadata_matches(
+        info,  # type: ignore[arg-type]
+        expected_uid=42,
+        require_directory=require_directory,
+    ) is expected
+
+
+@pytest.mark.parametrize(
+    ("mode", "uid", "expected"),
+    [
+        (stat.S_IFDIR | 0o755, 0, True),
+        (stat.S_IFREG | 0o755, 42, True),
+        (stat.S_IFREG | 0o644, 42, True),
+        (stat.S_IFDIR | 0o775, 42, False),
+        (stat.S_IFREG | 0o646, 42, False),
+        (stat.S_IFREG | 0o644, 7, False),
+        (stat.S_IFLNK | 0o777, 42, False),
+    ],
+    ids=[
+        "root-owned-directory",
+        "owner-executable",
+        "owner-file",
+        "group-writable-directory",
+        "other-writable-file",
+        "foreign-owner",
+        "link",
+    ],
+)
+def test_trusted_runtime_metadata_excludes_other_account_writes(
+    mode: int,
+    uid: int,
+    expected: bool,
+) -> None:
+    """Keep runtime ownership and write-permission policy platform-neutral."""
+
+    info = SimpleNamespace(st_mode=mode, st_uid=uid)
+
+    assert song_svs_runtime._trusted_runtime_metadata_matches(
+        info,  # type: ignore[arg-type]
+        expected_uid=42,
+    ) is expected
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX modes are enforced in WSL.")
+@pytest.mark.parametrize(
+    ("relative_path", "mode"),
+    [
+        ("prompts", 0o750),
+        ("prompts/elysia-bank-v1", 0o750),
+        ("prompts/elysia-bank-v1/audio", 0o750),
+        ("prompts/elysia-bank-v1/metadata", 0o750),
+        ("prompts/elysia-bank-v1/manifest.json", 0o640),
+        ("prompts/elysia-bank-v1/audio/synthetic-fixture-a.wav", 0o640),
+        ("prompts/elysia-bank-v1/metadata/synthetic-fixture-a.json", 0o640),
+    ],
+)
+def test_prompt_bank_rejects_group_visible_private_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    relative_path: str,
+    mode: int,
+) -> None:
+    """Reject every bank directory or file that another local account can read."""
+
+    runtime_root = tmp_path / "runtime"
+    _write_prompt_bank(runtime_root, monkeypatch)
+    (runtime_root / relative_path).chmod(mode)
+
+    _assert_failure_code(
+        "unsafe_path",
+        lambda: song_svs_runtime._verify_prompt_bank(runtime_root),
+    )
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        (),
+        ("entries", 0),
+        ("entries", 0, "audio"),
+        ("entries", 0, "metadata"),
+        ("entries", 0, "profile"),
+        ("entries", 0, "validation"),
+    ],
+    ids=["top", "entry", "audio", "metadata", "profile", "validation"],
+)
+def test_prompt_bank_rejects_unknown_fields_at_every_object_boundary(
+    path: tuple[str | int, ...],
+) -> None:
+    """Fail closed when any manifest object carries an unreviewed field."""
+
+    document = _prompt_bank_document()
+    target: object = document
+    for part in path:
+        if isinstance(part, int):
+            assert isinstance(target, list)
+            target = target[part]
+        else:
+            assert isinstance(target, dict)
+            target = target[part]
+    assert isinstance(target, dict)
+    target["unexpected"] = True
+
+    _assert_failure_code(
+        "runtime_integrity_failed",
+        lambda: song_svs_runtime._parse_prompt_bank_manifest(
+            _canonical_json(document)
+        ),
+    )
+
+
+def test_prompt_bank_rejects_noncanonical_or_duplicate_json_fields() -> None:
+    """Reject alternate encodings and duplicate keys before schema handling."""
+
+    document = _prompt_bank_document()
+    pretty = json.dumps(document, ensure_ascii=False, indent=2).encode("utf-8")
+    duplicate = b'{"schema_version":1,"schema_version":1}'
+
+    for encoded in (pretty, duplicate):
+        _assert_failure_code(
+            "runtime_integrity_failed",
+            lambda encoded=encoded: song_svs_runtime._parse_prompt_bank_manifest(
+                encoded
+            ),
+        )
+
+
+def test_prompt_bank_rejects_empty_oversized_or_duplicate_entry_sets() -> None:
+    """Require one to sixty-four prompts with globally unique stable IDs."""
+
+    empty = _prompt_bank_document()
+    empty["entries"] = []
+    oversized = _prompt_bank_document()
+    original = oversized["entries"]
+    assert isinstance(original, list)
+    oversized["entries"] = [copy.deepcopy(original[0]) for _ in range(65)]
+    duplicate = _prompt_bank_document()
+    original = duplicate["entries"]
+    assert isinstance(original, list)
+    original.append(copy.deepcopy(original[0]))
+
+    for document in (empty, oversized, duplicate):
+        _assert_failure_code(
+            "runtime_integrity_failed",
+            lambda document=document: song_svs_runtime._parse_prompt_bank_manifest(
+                _canonical_json(document)
+            ),
+        )
+
+
+@pytest.mark.parametrize(
+    ("path", "value"),
+    [
+        (("schema_version",), 1.0),
+        (("privacy",), "local-only"),
+        (("builder_sha256",), "A" * 64),
+        (("entries", 0, "id"), "Uppercase-ID"),
+        (("entries", 0, "role"), "fallback"),
+        (("entries", 0, "selection_rank"), -1),
+        (("entries", 0, "selection_rank"), 65),
+        (("entries", 0, "style_proxy"), "dramatic"),
+        (("entries", 0, "emotion"), "angry"),
+        (("entries", 0, "audio", "path"), "../outside.wav"),
+        (("entries", 0, "audio", "path"), "audio/nested/prompt.wav"),
+        (("entries", 0, "metadata", "path"), "metadata/prompt.txt"),
+        (("entries", 0, "audio", "bytes"), True),
+        (("entries", 0, "audio", "sha256"), "4" * 63),
+        (("entries", 0, "profile", "duration_seconds"), 2.99),
+        (("entries", 0, "profile", "note_p10"), 80.0),
+        (("entries", 0, "profile", "syllables_per_second"), 8.51),
+        (("entries", 0, "validation", "source_role"), "unknown"),
+        (("entries", 0, "validation", "source_role"), "emotion"),
+        (("entries", 0, "validation", "transcript_sha256"), "F" * 64),
+        (("entries", 0, "validation", "alignment_cost_ratio"), 1.01),
+        (("entries", 0, "validation", "metadata_segments"), 2),
+    ],
+)
+def test_prompt_bank_rejects_values_outside_the_closed_contract(
+    path: tuple[str | int, ...],
+    value: object,
+) -> None:
+    """Reject invalid identity, labels, paths, hashes, and numeric bounds."""
+
+    document = _prompt_bank_document()
+    _set_nested_value(document, path, value)
+
+    _assert_failure_code(
+        "runtime_integrity_failed",
+        lambda: song_svs_runtime._parse_prompt_bank_manifest(
+            _canonical_json(document)
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    "phonemes",
+    [
+        42,
+        [],
+        [""],
+        [" zh_ai"],
+        ["zh_ai "],
+        ["x" * 65],
+        ["zh_ai", "zh_ai"],
+        ["p"] * 4097,
+    ],
+    ids=[
+        "not-array",
+        "empty-array",
+        "empty-token",
+        "leading-space",
+        "trailing-space",
+        "long-token",
+        "duplicate-token",
+        "too-many-tokens",
+    ],
+)
+def test_prompt_bank_rejects_invalid_phoneme_arrays(phonemes: object) -> None:
+    """Require one to 4096 distinct, trimmed, bounded phoneme strings."""
+
+    document = _prompt_bank_document()
+    _set_nested_value(document, ("entries", 0, "profile", "phonemes"), phonemes)
+
+    _assert_failure_code(
+        "runtime_integrity_failed",
+        lambda: song_svs_runtime._parse_prompt_bank_manifest(
+            _canonical_json(document)
+        ),
+    )
+
+
+def test_prompt_bank_rejects_hardlinks_and_tampered_referenced_assets(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Require a single filesystem name and reviewed bytes for every asset."""
+
+    runtime_root = tmp_path / "runtime"
+    _, manifest_path = _write_prompt_bank(runtime_root, monkeypatch)
+    audio_path = (
+        runtime_root
+        / "prompts"
+        / "elysia-bank-v1"
+        / "audio"
+        / "synthetic-fixture-a.wav"
+    )
+
+    os.link(manifest_path, manifest_path.with_suffix(".linked.json"))
+    _assert_failure_code(
+        "unsafe_path",
+        lambda: song_svs_runtime._verify_prompt_bank(runtime_root),
+    )
+    manifest_path.with_suffix(".linked.json").unlink()
+
+    os.link(audio_path, audio_path.with_suffix(".linked.wav"))
+    _assert_failure_code(
+        "unsafe_path",
+        lambda: song_svs_runtime._verify_prompt_bank(runtime_root),
+    )
+    audio_path.with_suffix(".linked.wav").unlink()
+
+    audio_path.write_bytes(b"tampered")
+    _assert_failure_code(
+        "runtime_integrity_failed",
+        lambda: song_svs_runtime._verify_prompt_bank(runtime_root),
+    )
+
+
 def test_offline_environment_has_no_inherited_proxy_or_network_mode(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -153,6 +610,7 @@ def test_offline_environment_has_no_inherited_proxy_or_network_mode(
     assert environment["HF_HUB_OFFLINE"] == "1"
     assert environment["TRANSFORMERS_OFFLINE"] == "1"
     assert environment["TORCH_FORCE_WEIGHTS_ONLY_LOAD"] == "1"
+    assert environment["CUBLAS_WORKSPACE_CONFIG"] == ":4096:8"
     assert environment["NO_PROXY"] == "*"
     assert environment[song_svs_runtime._INTERNAL_JOB_TOKEN_ENV].endswith("4000")
 
@@ -192,6 +650,95 @@ def test_mandarin_hotword_wrapper_biases_every_funasr_generate_call() -> None:
             {"output_timestamp": True, "hotword": "无 瑕 歌 谣"},
         )
     ]
+
+
+def test_stage_entry_waits_for_exact_parent_lease(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Authorize vendor work only after the parent publishes matching identity."""
+
+    token = "123e4567-e89b-42d3-a456-426614174000"
+    stage_id = "a" * 32
+    pid = 4312
+    job_root = tmp_path / token
+    job_root.mkdir()
+    lease = song_svs_runtime._StageLease(
+        version=1,
+        job_token=token,
+        stage="inference",
+        stage_id=stage_id,
+        pid=pid,
+        process_group_id=pid,
+        session_id=pid,
+        start_time_ticks=99,
+    )
+    reads = iter([None, lease])
+    monkeypatch.setenv(song_svs_runtime._INTERNAL_JOB_TOKEN_ENV, token)
+    monkeypatch.setenv(song_svs_runtime._INTERNAL_STAGE_ID_ENV, stage_id)
+    monkeypatch.setattr(song_svs_runtime.os, "getpid", lambda: pid)
+    monkeypatch.setattr(
+        song_svs_runtime,
+        "_read_stage_lease",
+        lambda _root: next(reads),
+    )
+    monkeypatch.setattr(
+        song_svs_runtime,
+        "_read_proc_identity",
+        lambda _pid: ("R", pid, pid, 99),
+    )
+    monkeypatch.setattr(song_svs_runtime.time, "sleep", lambda _seconds: None)
+
+    assert song_svs_runtime._authorize_stage_entry(job_root, "inference") == lease
+
+
+def test_stage_entry_rejects_mismatched_or_missing_parent_lease(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reject replayed capabilities and children never registered by a parent."""
+
+    token = "123e4567-e89b-42d3-a456-426614174000"
+    stage_id = "b" * 32
+    pid = 8123
+    job_root = tmp_path / token
+    job_root.mkdir()
+    mismatched = song_svs_runtime._StageLease(
+        version=1,
+        job_token=token,
+        stage="preprocess",
+        stage_id="c" * 32,
+        pid=pid,
+        process_group_id=pid,
+        session_id=pid,
+        start_time_ticks=101,
+    )
+    monkeypatch.setenv(song_svs_runtime._INTERNAL_JOB_TOKEN_ENV, token)
+    monkeypatch.setenv(song_svs_runtime._INTERNAL_STAGE_ID_ENV, stage_id)
+    monkeypatch.setattr(song_svs_runtime.os, "getpid", lambda: pid)
+    monkeypatch.setattr(
+        song_svs_runtime,
+        "_read_proc_identity",
+        lambda _pid: ("R", pid, pid, 101),
+    )
+    monkeypatch.setattr(
+        song_svs_runtime,
+        "_read_stage_lease",
+        lambda _root: mismatched,
+    )
+    _assert_failure_code(
+        "stage_control_failed",
+        lambda: song_svs_runtime._authorize_stage_entry(job_root, "inference"),
+    )
+
+    clock = iter([0.0, 6.0])
+    monkeypatch.setattr(song_svs_runtime, "_read_stage_lease", lambda _root: None)
+    monkeypatch.setattr(song_svs_runtime.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(song_svs_runtime.time, "sleep", lambda _seconds: None)
+    _assert_failure_code(
+        "stage_control_failed",
+        lambda: song_svs_runtime._authorize_stage_entry(job_root, "inference"),
+    )
 
 
 def test_quiet_child_uses_argv_no_shell_and_discards_diagnostics(
@@ -466,6 +1013,172 @@ def test_shared_runtime_budget_caps_each_stage_and_expires_once(
         + song_svs_runtime._INFERENCE_TIMEOUT_SECONDS
         == song_svs_runtime._TOTAL_RUNTIME_TIMEOUT_SECONDS
     )
+
+
+def test_perform_inference_stage_builds_request_only_from_verified_assets(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Keep model, prompts, score, and output inside the fixed private contract."""
+
+    from scripts import song_svs_inference
+
+    runtime_root = tmp_path / "runtime"
+    source_root = runtime_root / "source"
+    model_path = runtime_root / "models" / "SoulX-Singer" / "model.pt"
+    config_path = source_root / "soulxsinger" / "config" / "soulxsinger.yaml"
+    phoneset_path = (
+        source_root
+        / "soulxsinger"
+        / "utils"
+        / "phoneme"
+        / "phone_set.json"
+    )
+    for path in (model_path, config_path, phoneset_path):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"reviewed")
+    _write_prompt_bank(runtime_root, monkeypatch)
+    prompt_bank = song_svs_runtime._verify_prompt_bank(runtime_root)
+
+    job_root = tmp_path / "job"
+    work_root = job_root / ".svs-work"
+    output_root = work_root / "generated"
+    output_root.mkdir(parents=True)
+    target_vocal = work_root / "target_vocal.wav"
+    _write_pcm_wave(target_vocal)
+    (work_root / "target.corrected.json").write_text(
+        '[{"text":"reviewed score"}]',
+        encoding="utf-8",
+    )
+    captured: dict[str, object] = {}
+
+    def _run(request: object) -> object:
+        captured["request"] = request
+        generated = output_root / "generated.wav"
+        _write_pcm_wave(generated)
+        return SimpleNamespace(output_path=generated)
+
+    monkeypatch.setattr(song_svs_inference, "run_svs_inference", _run)
+
+    generated = song_svs_runtime._perform_inference_stage(
+        job_root,
+        runtime_root,
+        source_root,
+        prompt_bank,
+    )
+
+    request = captured["request"]
+    assert isinstance(request, song_svs_inference.SvsInferenceRequest)
+    assert request.model_path == model_path
+    assert request.config_path == config_path
+    assert request.phoneset_path == phoneset_path
+    assert request.output_directory == output_root
+    assert request.total_samples == 30_000
+    assert request.target_audio_sha256 == song_svs_runtime._sha256(target_vocal)
+    assert [prompt.prompt_id for prompt in request.prompts] == [
+        "synthetic-fixture-a"
+    ]
+    assert request.prompts[0].audio.path.is_absolute()
+    assert "elysia-v1" not in str(request.prompts[0].audio.path)
+    assert generated == output_root / "generated.wav"
+
+
+def test_invoke_inference_uses_only_fixed_quiet_child_entry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Do not expose vendor CLI flags or renderer-controlled prompt paths."""
+
+    runtime_root = tmp_path / "one" / "two" / "three" / "soulx"
+    source_root = runtime_root / "source"
+    source_root.mkdir(parents=True)
+    token = "123e4567-e89b-42d3-a456-426614174000"
+    job_root = runtime_root / "jobs" / token
+    (job_root / ".svs-work").mkdir(parents=True)
+    captured: dict[str, object] = {}
+
+    def _run(command: list[str], **options: object) -> int:
+        captured["command"] = command
+        captured.update(options)
+        generated = job_root / ".svs-work" / "generated" / "generated.wav"
+        _write_pcm_wave(generated)
+        return 0
+
+    monkeypatch.setattr(song_svs_runtime, "_run_quiet_process", _run)
+
+    generated = song_svs_runtime._invoke_inference(
+        job_root,
+        runtime_root,
+        source_root,
+        timeout_seconds=123,
+    )
+
+    command = captured["command"]
+    assert isinstance(command, list)
+    assert command[:3] == [
+        str(runtime_root / "infer-env" / "bin" / "python"),
+        "-B",
+        "-c",
+    ]
+    assert "_inference_stage_entry" in command[3]
+    assert "--auto_shift" not in command
+    assert "--prompt_wav_path" not in command
+    environment = captured["environment"]
+    assert isinstance(environment, dict)
+    assert environment[song_svs_runtime._INTERNAL_JOB_TOKEN_ENV] == token
+    assert generated.name == "generated.wav"
+
+
+def test_inference_child_collapses_private_failures_to_fixed_exit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Prevent model, prompt, CUDA, and path details from leaving the child."""
+
+    runtime_root = tmp_path / "runtime"
+    job_root = tmp_path / "job"
+    source_root = tmp_path / "source"
+    reached_inference = False
+    monkeypatch.setenv(song_svs_runtime._INTERNAL_JOB_TOKEN_ENV, "fixed-token")
+    monkeypatch.setattr(song_svs_runtime, "_runtime_root", lambda: runtime_root)
+    monkeypatch.setattr(
+        song_svs_runtime,
+        "_job_root_from_token",
+        lambda _root, _token: job_root,
+    )
+    monkeypatch.setattr(
+        song_svs_runtime,
+        "_authorize_stage_entry",
+        lambda _root, _stage: None,
+    )
+    monkeypatch.setattr(
+        song_svs_runtime,
+        "_verify_runtime_assets",
+        lambda _root: _prompt_bank_document(),
+    )
+    monkeypatch.setattr(
+        song_svs_runtime,
+        "_verify_source_checkout",
+        lambda _root: source_root,
+    )
+    def _fail_inside_inference(*_args: object) -> None:
+        """Prove the child reaches the private operation before collapsing it."""
+
+        nonlocal reached_inference
+        reached_inference = True
+        raise RuntimeError("/private/model.pt")
+
+    monkeypatch.setattr(
+        song_svs_runtime,
+        "_perform_inference_stage",
+        _fail_inside_inference,
+    )
+
+    with pytest.raises(SystemExit) as captured:
+        song_svs_runtime._inference_stage_entry()
+
+    assert reached_inference is True
+    assert captured.value.code == song_svs_runtime._INFERENCE_EXIT_CODE
 
 
 def test_run_job_publishes_fixed_vocal_and_cleans_intermediates(

@@ -572,6 +572,8 @@ export class SongCoverManager {
       path.join(this.projectRoot, 'scripts', 'song_rvc_runtime.py'),
       path.join(this.projectRoot, 'scripts', 'song_svs_wsl_bridge.py'),
       path.join(this.projectRoot, 'scripts', 'song_svs_runtime.py'),
+      path.join(this.projectRoot, 'scripts', 'song_svs_inference.py'),
+      path.join(this.projectRoot, 'scripts', 'song_svs_quality.py'),
       path.join(this.projectRoot, 'scripts', 'song_lyrics_alignment.py'),
     ]
     try {

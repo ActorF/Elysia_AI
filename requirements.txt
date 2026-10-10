@@ -10,5 +10,6 @@ pytest==9.1.1
 jsonschema==4.26.0
 types-jsonschema==4.26.0.20260518
 langchain-ollama==1.1.0
+numpy==2.5.3
 pypdf==6.19.0
 opencc==1.4.2

@@ -23,7 +23,7 @@ Composer 中的音符按钮位于 **Dictate** 麦克风左侧。设置窗口会�
 4. **Windows audio preparation**：完整歌曲先规范化为 44.1 kHz PCM，再用 CUDA Demucs 4.0.1 `htdemucs` two-stems 拆出 vocal 与 accompaniment；Stem 模式把两份输入从共同的零时间点解码并按较长者补齐。非零调性会在进入 SVS 前以固定、等长度 FFmpeg 路径同时移动 target vocal 与 accompaniment；原调只把 vocal 准备成精确长度的 mono PCM。
 5. **WSL private staging**：Windows Worker 使用绝对 `%SystemRoot%\System32\wsl.exe`，不经过 Shell；`/usr/bin/wslpath` 把已验证的 Windows Job Root 转成 WSL mount path，并由固定 `/usr/bin/python3 -I` 查询当前 WSL UID 的 POSIX Home，再拼接固定私有 Runtime suffix。Bridge 只把 `target_vocal.wav`、`lyrics.lrc` 和可选 `lyrics.txt` 复制到当前 Linux 用户拥有的 mode-`0700` UUID Job，文件以 mode `0600` 创建；Manifest 不进入 Linux Runtime。
 6. **FunASR hotword + strict lyric/note alignment**：固定 SoulX preprocessing 以 `language=Mandarin`、CUDA、MIDI transcription 运行。同步 LRC 先转简体汉字、去重并形成有界的 FunASR `hotword`，只用于提高 ASR 偏置，不能授权错误歌词。Preprocess 产生的 segment／note metadata 随后按 LRC 时间区间分配歌词，并以单调 Dynamic Programming 对齐 ASR onset 与权威汉字；默认要求逐段 exact-match ratio `>= 0.60`、normalized cost `<= 0.45`，相同最优路径、歌词容量不足、voiced segment 缺歌词、Plain/LRC 不一致或时间归属不唯一都会失败。音高、时长、F0 与 segment 时间保持不变，校正后的文字由 SoulX 官方 G2P 重新生成 phoneme。
-7. **Fixed Elysia zero-shot SoulX**：推理固定使用本机 `SoulX-Singer/model.pt`、`soulxsinger.yaml`、phoneset、`control=score`、`auto_shift`、`pitch_shift=0`、CUDA FP16，以及固定 `elysia-v1/prompt.wav` + `prompt.json`；Renderer 不能替换模型、Prompt、语言、Device 或控制模式。生成 vocal 与 target vocal 的时长差超过 1 秒会被拒绝。
+7. **Authenticated Elysia Prompt bank + deterministic quality search**：推理固定使用本机 `SoulX-Singer/model.pt`、`soulxsinger.yaml`、phoneset、`control=score`、`auto_shift=False`、`pitch_shift=0` 与 CUDA FP16，并以 strict deterministic Torch mode Fail Closed。私有 Prompt bank 共 59 条：48 条 corpus、10 条闭集 emotion、1 条 anchor；Canonical manifest 与其引用的 WAV/metadata 都先按大小、SHA-256、普通文件及无路径逃逸规则验证。Prompt WAV 不会直接交给 Vendor：认证读取先用 `O_NOFOLLOW` 取得来源 descriptor，在流式 SHA-256 验证期间复制到不可写、不可扩缩、不可重新密封的 sealed memfd，关闭来源后才只把该密封副本的 `/proc/self/fd` 引用交给 DataProcessor。每个目标段先按音域统计、语速和 phoneme 覆盖选出最多两个 Prompt；以实际音频/metadata 身份去重，避免不同标识重复占用候选预算。由歌词与谱面推断的 emotion/style 会规整空格和延音重复，只作量化 acoustic cost 完全同分时的稳定决胜项，不会覆盖音域或 phoneme 证据，也不是学习式情绪分类器。每段先生成确定性的 C0；只有 C0 结构失败或 acoustic loss 较高时，才在全局有界预算内依次尝试同 Prompt 新 seed 的 C1，以及第二 Prompt 初始 seed 的 C2，并且结构硬失败的 Rescue 优先于仅 soft loss 偏高的请求。Seed 只由规范化的音频/metadata/Prompt 摘要与候选序号产生，不依赖 UUID 或本机路径。DataProcessor 的 `mel2note_frames × hop_size` 是模型原始生成长度合同，score `[time]` 是绝对放置合同；固定 SoulX 会把每个 note duration 独立量化到 0.01 秒，因此模型长度容差按每个 note 最多 5 ms 累积、再加两个 hop，并受 `max(3 hops, absolute interval 的 1%)` 上限约束。原始 F0 时间线仍须独立满足 `< 2 hops`，并要求完整 `note_type`／`note_pitch` 序列及 `mel2note` 覆盖逐项对应权威谱面；音高必须是精确有限整数，不能通过截断或集合比较掩盖缺失、重复或错位 note。受认证的量化差在 5 ms 收零 Ramp 后确定性截断/补零。结构硬门禁先拒绝非有限样本、模型时长违约、FP16 量化后持续近 rail 的同号平台、或真正触及 full-scale rail 的样本、超过一次 `-6 dB` 全局衰减仍无法恢复的 Headroom、DC 偏移及有效段近空音频；原始 float 超过 `±1` 本身不是 PCM 削波。只有 score 中明确的 `<SP>` 才构成预期静音，其他无音高帧不能被误当作静音。音高 loss 以 p90、gross deviation 与 octave evidence 单调加重，掉音、误有声与频谱证据仅形成 acoustic soft score。最后由全局 Dynamic Programming 同时考虑逐段分数、边界连续性和 Prompt 切换，并保留 Pareto 前缀状态，以免未来的 Headroom/Pareto 项使过早的局部 tie-break 错失全局较优路径；再按绝对 sample offset 放入精确 24 kHz mono 时间线。段间空隙保持数字静音；连续独立段的两侧或与空隙相接的边缘都在各自区间内使用 5 ms 收零 Ramp，不做 Crossfade、重叠或时间移动，长空隙只免除不连续波形的跳变/loudness 比较，不免除 Prompt switch cost。整首不提升音量、不逐段归一化、不使用 Limiter，只允许一次最多 `-6 dB` 的全局衰减到设计峰值 `0.994`，并以 `0.995` 最终硬上限复检。Renderer 不能替换模型、Prompt、语言、Device、Seed、预算、门禁或控制模式。
 8. **Reviewed FFmpeg mix**：Bridge 先把生成 vocal 暂存回 mounted Job，删除整个私有 Linux Job 后才原子发布 `generated_vocal.wav`。Windows Worker 再使用 -18 dB 严格无声辅音层、60 Hz high-pass、0.5 dB Presence、线性 +1.3 dB vocal 补偿、2.2–5.2 kHz vocal-keyed accompaniment ducking 和 -1 dBFS limiter，输出 WAV 与 MP3。RVC 路径不会混回这份原唱辅音层，以避免原唱泄漏及重新引入分离伪影；固定 Protect 参数本身不构成无声内容保证。完成事件只在歌词、WSL 输出和其他 Scratch 均已清理后发送。
 
 完整默认数据流如下：
@@ -42,7 +42,8 @@ React 音符按钮（默认 lyrics-svs）
               └─ private Linux UUID Job
                  ├─ SoulX preprocess：FunASR lyric hotword + MIDI/note metadata
                  ├─ strict LRC ↔ segment/note alignment + official G2P
-                 └─ fixed Elysia prompt + SoulX score-control zero-shot inference
+                 └─ authenticated 59-prompt bank + bounded C0/C1/C2 quality search
+                    └─ global DP → exact absolute-offset 24 kHz timeline
               └─ stage output → delete Linux Job → publish generated vocal
            └─ reviewed FFmpeg mix → WAV + 320 kbps MP3
 ```
@@ -86,7 +87,7 @@ LRCLIB 只有 Plain lyrics 而没有 `syncedLyrics` 时，Main 不会启动 SVS�
 | SVS 歌词 | 通过匹配门槛且无双向文件名冲突的 LRCLIB 同步 LRC；目前 Mandarin Han-only |
 | 整曲调性 | `-2`、`-1`、`0`、`+1`、`+2` 半音；SVS 在 Preprocess 前等时移动 vocal + accompaniment，Legacy RVC 直接移动检测到的 vocal F0 并等时移动 accompaniment |
 | 分离模型 | Demucs 4.0.1 `htdemucs`, CUDA, two-stems vocals, `segment=7`, `shifts=1`, `overlap=0.5`, `jobs=1`；Stem 模式跳过 |
-| SVS 推理 | Mandarin SoulX-Singer，固定 Elysia zero-shot Prompt、score control、auto-shift、CUDA FP16 |
+| SVS 推理 | Mandarin SoulX-Singer；私有 59 条 Prompt bank（48 corpus + 10 emotion + 1 anchor）；音域/phoneme 优先自动选择，歌词/谱面 emotion/style 仅同分决胜；`control=score`、`auto_shift=False`、`pitch_shift=0`、CUDA FP16；确定性且全局有界的 C0/C1/C2；结构硬门禁 + acoustic soft score + global DP + 精确绝对时间线拼接 |
 | 混音处理 | 60 Hz high-pass、0.5 dB Presence、线性 +1.3 dB 人声补偿、2.2–5.2 kHz vocal-keyed accompaniment ducking、-1 dBFS limiter；无 Vocal Compressor/Makeup。-18 dB 无声辅音层仅用于 Lyrics-driven SVS；Legacy RVC 不混回原唱辅音，固定 Protect 参数不代表无声恢复保证 |
 | 导出 | 44.1 kHz stereo 16-bit PCM WAV |
 | 预览 | 44.1 kHz stereo 320 kbps MP3 |
@@ -182,15 +183,16 @@ SVS Runtime 位于 Linux 用户私有目录，不在 Repository 中：
 ├── models/
 │   ├── SoulX-Singer/model.pt
 │   └── SoulX-Singer-Preprocess/    # RMVPE, ROSVOT, FunASR Mandarin
-├── prompts/elysia-v1/
-│   ├── prompt.wav
-│   └── prompt.json
+├── prompts/elysia-bank-v1/
+│   ├── manifest.json               # private canonical index; not in Git
+│   ├── audio/                      # 59 private prompt WAV files
+│   └── metadata/                   # 59 private score/phoneme records
 └── jobs/                           # mode-0700 transient UUID jobs
 ```
 
 Windows Worker 不信任 Windows `HOME`，也不硬编码 Linux username。它以固定 `/usr/bin/python3 -I` 和固定 Script 从 POSIX `pwd` 解析当前 WSL UID 的 Home，只允许在严格验证后的绝对路径后追加 `.local/share/elysia-ai/soulx/prep-env/bin/python`。Runtime 继续按同一 Linux UID 验证 `$HOME/.local/share/elysia-ai/soulx`、Job owner、mode 与无链接路径。
 
-高信任资产按固定长度与 SHA-256 验证，包括 Linux CPython、固定 FFmpeg、SoulX model、RMVPE／ROSVOT、Mandarin FunASR model/config/tokens/seg dictionary、Elysia Prompt 以及 OpenCC Python/native/config/dictionaries。SoulX Source 还必须是无修改、无 Untracked file 的 revision `81aeb3ae772c70093c3de74dc23c92d983801ae4`，并且 `pretrained_models` symlink 必须只指向固定私有 Model 目录。
+高信任资产按固定长度与 SHA-256 验证，包括 Linux CPython、固定 FFmpeg、SoulX model、RMVPE／ROSVOT、Mandarin FunASR model/config/tokens/seg dictionary、Prompt bank canonical manifest、manifest 引用的 59 组私有 Prompt WAV/metadata，以及 OpenCC Python/native/config/dictionaries。Prompt bank 由 48 条 corpus、10 条 emotion 与 1 条 anchor 组成；准确文本、逐条路径、逐条 Hash 和音频内容只存在于本机 manifest，不进入 Git、文档、构建产物或诊断。`prompts/`、bank、audio 与 metadata 目录必须由当前 WSL UID 拥有且精确为 mode `0700`，manifest、WAV 和 metadata 文件必须精确为 mode `0600`；推理会以 `O_NOFOLLOW` 打开来源文件，从同一 descriptor 复核类型、owner、mode、单链接、长度与 SHA-256，再在验证时流式复制到 sealed memfd。来源 descriptor 随即关闭，SoulX DataProcessor 只能经 `/proc/self/fd` 读取不可变密封副本，避免先验路径校验后被 rename/swap，也避免已认证 inode 随后被同 inode 写入篡改。整个静态 Runtime tree 还逐项验证 owner、目录/普通文件权限和路径边界；内部 symlink 仅可解析到同一受信 Runtime 内，并会递归复核其目标。SoulX Source 还必须是无修改、无 Untracked file 的固定审核 revision，并且 `pretrained_models` symlink 必须只指向固定私有 Model 目录。
 
 该验证不是完整 Linux 环境供应链证明。当前 `prep-env`／`infer-env` 中未单独列入高信任清单的 Python 包、Torch/CUDA Native Extension 仍以“同一操作系统用户准备并信任这个私有环境”为前提。固定解释器、模型、关键配置和 Source Revision 可以发现已知核心资产替换，但不能证明每个可导入依赖都来自可重建、签名或完整树摘要认证的环境。
 
@@ -201,13 +203,20 @@ Windows Worker 不信任 Windows `HOME`，也不硬编码 Linux username。它�
 - 完整歌曲的 Demucs 与 Legacy RVC 在 Windows CUDA Runtime 中执行；SoulX preprocessing／inference 在 WSL CUDA Runtime 中执行。没有兼容 NVIDIA GPU、WSL GPU integration、驱动、足够显存或上述当前私有布局时会失败，不会把长曲静默切到 CPU 或 DirectML。
 - Worker 没有指定 `wsl.exe --distribution`，因此 Windows 当前默认 WSL Distribution 必须提供 `/usr/bin/python3`，且当前 UID 的 Home 下必须存在固定 SoulX Runtime suffix；它不会搜索其他 Distribution 或任意模型路径。
 - Main 给 Windows Worker 的环境采用 Allowlist；WSL child 使用独立的最小、Offline、Proxy-free 环境。LRCLIB 是唯一预期的在线步骤，模型推理不会隐式下载缺失资产。
-- WSL preprocessing 与 inference 各自在新的 Linux Session 中运行，并在 UUID Job 下原子记录 PID、PGID、Session ID、Kernel start ticks 与随机 Stage ID。取消/超时/cleanup-only 会先写不可逆取消标记，再以 `flock` 串行化启动竞态，只对该准确 Lease 的同 UID 成员执行 TERM→KILL 并确认全部退出；不会按进程名枚举或影响其他 Job。私有 Runtime 共用 90 分钟总预算（preprocess 最多 35 分钟、inference 最多 55 分钟），为 Electron 的 2 小时 Job 上限保留原生分离、混音与清理时间；WSL cleanup 内层 30 秒仍小于 Main 的 60 秒外层清理期限。
+- WSL preprocessing 与 inference 各自在新的 Linux Session 中运行，并在 UUID Job 下原子记录 PID、PGID、Session ID、Kernel start ticks 与随机 Stage ID。Child Stage 在接触 Vendor/私有资产前必须等待并验证父进程发布的准确 Lease：Job token、Stage ID、capability、PID/PGID/SID 与 kernel start ticks 全部匹配，且 Child 本身必须是该 Stage 的 session leader；缺失、超时或不一致均 Fail Closed。取消/超时/cleanup-only 会先写不可逆取消标记，再以 `flock` 串行化启动竞态，只对该准确 Lease 的同 UID 成员执行 TERM→KILL 并确认全部退出；不会按进程名枚举或影响其他 Job。私有 Runtime 共用 90 分钟总预算（preprocess 最多 35 分钟、inference 最多 55 分钟），为 Electron 的 2 小时 Job 上限保留原生分离、混音与清理时间；WSL cleanup 内层 30 秒仍小于 Main 的 60 秒外层清理期限。
 - 当前 Electron Builder 只打包 `dist/`, `dist-electron/` 与 `package.json`；Python Workers、Windows `models/cache/rvc-v2-40k/`、私有 `models/weights/rvc/elysia-v2-40k/` 与 WSL Runtime 均不在安装包中。因此默认 SVS 与 Legacy fallback 目前都只面向已手动准备 Runtime 的源码开发环境。
 - Electron Main 提供闭集 Readiness：安装包固定报告 Runtime 未包含；源码环境仅以 `lstat` 检查必要 Worker/Core 文件是普通非链接文件，不联网、不运行 Python/WSL/模型。Composer 会禁用“新建翻唱”并显示固定恢复提示，但不会阻止播放或导出已经完成的结果；Main 在文件选择器前后仍会权威复核，Renderer Readiness 不能授权启动。缺少本机 RVC 资产时不会自动下载、切回旧引擎或启用未验证的 CPU 替代路径。
 - Repository 内的 `models/cache/` 与 `models/weights/` 被 `.gitignore` 排除；WSL Runtime 位于 Repository 外。Ignore rule 本身不是发布授权，实际 Release 仍必须检查打包文件清单。
 - 默认 SVS 尚不支持用户提供本机 LRC、手动修改歌词正文、Audio fingerprinting、非 Mandarin 或混合语言歌词、无同步时间戳的歌词，以及自动从失败的 SVS 降级到 Legacy RVC。歌名与歌手则可在确认窗口成对覆盖。
-- 当前只使用一份经过人工复核、含准确文本和音符元数据的歌唱 Prompt；不会把 `slicer` 中缺少逐条转写、音高和时序标注的全部日常语音盲目当作 SoulX Prompt。多 Prompt 选择、覆盖更多音域与情绪，或训练专用歌声模型仍属于后续音质工作，不能从当前单 Prompt Smoke 推断已经完成。
-- 2026-10-08 在当前 Windows + 默认 `Ubuntu-24.04` WSL + CUDA 私有 Runtime 上完成了一次 6.71 秒受控 Lyrics-SVS 贯通 Smoke：生成结果是 44.1 kHz、Stereo、16-bit PCM WAV，并同时生成 44.1 kHz、Stereo、320 kbps MP3；成功 Job 只保留这两个输出。该证据验证了 Windows Worker → WSL Bridge → SoulX → Windows Mix 的当前机器互操作，不代表完整歌曲、多音区、快速咬字、取消/超时或人耳音质矩阵已经通过。
+- 当前私有 Prompt bank 固定为 59 条：48 条通过 corpus 筛选、10 条覆盖闭集 emotion、1 条 anchor。每条都带已审核的单段 score/phoneme metadata 与预计算音域/语速/phoneme Profile；生产 Runtime 会完整验证 canonical manifest 和全部引用资产，既不会把 `slicer` 中未入选的日常语音盲目当作 Prompt，也不会在运行时自行扩充 Bank。多 Prompt 搜索已经实现，但它只是确定性、有界的局部质量选择，不能据此推断所有歌曲、音域或情绪都已经通过人耳验收。
+- 选择顺序保持保守：目标段的 note median/P10/P90/span、syllables-per-second 与 phoneme 缺失量先决定 acoustic ranking；从简体歌词词汇/标点和谱面密度/动态得到的闭集 emotion/style proxy 只在 acoustic cost 完全相同时决胜，不确定时保持 `None`/`neutral`。它不是训练出的情绪识别器，也不会为了“更像情绪”选择明显不合音域或缺 phoneme 的 Prompt。
+- 每段 C0 使用首选 Prompt 与 canonical seed 0。只有 C0 结构失败或 soft loss 较高时才申请 Rescue：C1 是同 Prompt 的 canonical seed 1，C2 是第二 Prompt 的 canonical seed 0；没有第二 Prompt 时不会虚耗 C2。结构硬失败的候选会先占用 Rescue 预算，soft loss 较高的候选只能使用剩余预算，避免较早但可用的 soft 请求挤掉必须恢复的段。默认每段最多三次、最多 12 个 Rescue segment、额外生成时长通常不超过 voiced 总时长的 25% 且绝对不超过 90 秒；单段歌曲仍可在 90 秒绝对上限内获得一次有界救援。该固定搜索面避免无限重试与指数候选爆炸。
+- Structural hard gate 只处理可以安全判定的波形缺陷；未校准为通用歌唱判官的 F0/note、dropout、false voicing 和 spectral 指标仅进入 acoustic soft score。原始 SoulX float 的绝对值超过 `1.0` 不等于已经削波：FP16 量化后持续贴近同号 rail 的平台，或真正到达 full-scale rail 的样本，才是硬证据；前者不会把孤立冲击误判为削波，后者也不能被局部异常掩盖。可用不超过 `-6 dB` 修复的 Headroom 不触发 Rescue 或 local loss，而是在 acoustic cost 完全相同时作为稳定路径决胜项；超过恢复容量则是可触发有界 Rescue 的硬失败。若整条路径能用一次受限衰减收敛到 `0.994`，就保留原始段间动态，否则 Fail Closed。音高 loss 对 p90、gross deviation 与 octave evidence 单调加重，避免更严重的偏移反而取得较低分。通过门禁的候选由全局 DP 按时长加权 local loss、边界跳变与 Prompt switch cost 选出一致路径，并保留必要的 Pareto 前缀，避免未来 Headroom 项推翻过早的局部 tie-break。拼接不拉伸、不重叠、不对连续段做 Crossfade；候选先收敛为各自 absolute interval，再对实际放置波形评分。数字静音空隙边缘使用 5 ms Ramp；两个独立候选恰好连续时，也分别在前段尾部和后段头部的现有区间内收零，绝不重叠或移动时间。长空隙仅免除不存在连续波形时的跳变/loudness 比较，不免除 Prompt switch cost。最后整首只执行一次必要的衰减，不提升音量、不逐段归一化、不使用 Limiter，并以 `0.995` 最终峰值上限和完整结构合同复检。
+- SoulX model 与 DataProcessor 每项任务各加载一次；Prompt preprocessing 有界缓存，GPU Prompt LRU 最多保留两条，第三条进入前先逐出最旧 GPU payload，因而不会出现三条同时驻留的瞬时峰值。Target CUDA tensor 不做整曲缓存，只在 C0 和获准 Rescue 的当前段构建；候选 PCM 使用 float32，帧分析采用 strided view。这样候选预算同时约束推理次数、显存驻留与分析开销，而不是把多 Prompt 变成无界穷举。
+- 2026-10-09 已在当前私有 Runtime 上验证 canonical manifest 和全部 59 条 Prompt，并让 59/59 都通过真实 SoulX DataProcessor 加载；生产 `_verify_runtime_assets` 也完成整组只读身份验证。该证据只证明 Bank 结构、资产身份与 preprocessing 兼容，不代表 59 条都完成了整曲推理或人耳质量验收。质量/推理 CI 使用 Fake Model/Processor 与合成波形，不读取这些私有音频或 manifest 内容。
+- 2026-10-08 在当前 Windows + 默认 `Ubuntu-24.04` WSL + CUDA 私有 Runtime 上完成了一次 6.71 秒受控 Lyrics-SVS 贯通 Smoke：生成结果是 44.1 kHz、Stereo、16-bit PCM WAV，并同时生成 44.1 kHz、Stereo、320 kbps MP3；成功 Job 只保留这两个输出。该证据早于 59 条 Prompt bank 与多候选质量选择接线，只验证当时 Windows Worker → WSL Bridge → SoulX → Windows Mix 的机器互操作，不能作为当前多 Prompt 路径、完整歌曲、多音区、快速咬字、取消/超时或人耳音质矩阵已经通过的证据。
+- 2026-10-10 在同一私有 Runtime 上完成当前实现的两级验收。第一层以 QA-only、与目标 vocal 自洽的同步 LRC（明确不是产品查词回退）运行 194.808 秒真实整曲 SoulX：四个目标段的 C0 都通过结构门禁，最后一段按有界预算额外生成 C1/C2 并由全局 DP 选择较优候选；发布前 24 kHz mono PCM16 峰值为 32571，满幅样本率为零。第二层从干净 UUID Job 运行正式 Windows Worker，经 WSL、严格混音及私有清理后只留下 194.808 秒的 44.1 kHz Stereo PCM16 WAV 与 MP3 两个非空普通文件。另将 6.71 秒受控目标在全 59 条 Prompt bank 下连续运行两次；每次只生成 C0/C1 两个有界候选，最终 WAV 的 SHA-256 完全相同。该证据覆盖当前多 Prompt、候选评分、连续段收零、一次全局 Headroom、整曲发布与确定性重放，但仍不替代对不同歌曲、音域、语言、取消/超时和主观音质的人类矩阵验收。
+- 2026-10-10 在 sealed-memfd、严格 duration/frame/F0 与逐 source-note coverage 加固后，先以真实 SoulX/CUDA 完成一条短目标，再把来自 anchor、emotion 与 corpus 的四条不同真实 score record 拼成连续四段目标并独立运行两次；三次都经全 59 条 Prompt 的生产选择与密封读取成功完成，四段任务的两次候选选择完全相同且最终 WAV SHA-256 一致，所有临时输出随后删除。该检查证明当前 Torchaudio/DataProcessor 能读取 sealed-memfd WAV，快速短音符的正常 BOW/content/EOW 覆写不会被误拒，并且当前多段路径保持确定性；同 inode 认证后改写隔离则由使用合成私有 bytes 的安全回归覆盖。它不扩大上一条对主观音质与歌曲覆盖面的结论。
 - 2026-10-09 在当前 Windows CUDA 私有 Runtime 上以一对 248.294 秒 Stem 完成 Legacy RVC Worker 贯通验收：RVC 子进程生成完整 40 kHz mono PCM16 人声，最终只保留 44.1 kHz Stereo PCM16 WAV 与 320 kbps MP3；WAV 峰值约 `-3.44 dBFS`，没有时长截断或满幅削波。关闭上游按 Shape 缓存的 CUDA Graph 后，实测显存从失败路径接近 12 GiB 降到约 2 GiB。该验收证明当前机器的完整 Worker/混音/清理边界可运行，不代表所有歌曲的人耳音色、分离质量、咬字或音域都已通过。
 - 在相同已审核 Runtime、Device 与输入下，两次独立短任务产生了字节一致的 PCM（SHA-256 相同）。该结果验证本机任务重启的可复现性，不承诺跨 PyTorch、CUDA、cuDNN、驱动或硬件版本复现。
 - 固定随机源后又以同一首 248.294 秒 MP3 完成 `Demucs → RVC → mix` 整曲重跑；输出仍为 44.1 kHz Stereo PCM16 WAV 与 320 kbps MP3，WAV 峰值约 `-3.84 dBFS`，没有满幅样本或时长截断。额外 A/B 显示二次 UVR 去混响、单侧／自适应声道、BS-Roformer 替换，以及先移调再移回都会在问题片段增加掉音、音高错误、相位或高频伪影，因此它们没有进入默认链路。
@@ -216,11 +225,11 @@ Windows Worker 不信任 Windows `HOME`，也不硬编码 Linux username。它�
 
 ## 7. CMD 测试
 
-以下命令覆盖 Legacy RVC Adapter/Worker，以及歌词对齐、WSL Runtime、Bridge 和 Windows SVS Worker pytest 文件：
+以下命令覆盖 Legacy RVC Adapter/Worker，以及歌词对齐、SoulX Prompt 选择/质量评分/推理编排、WSL Runtime、Bridge 和 Windows SVS Worker pytest 文件：
 
 ```bat
 cd /d D:\Elysia_AI
-.venv\Scripts\python.exe -m pytest tests\test_song_rvc_runtime.py tests\test_smoke_song_cover.py tests\test_song_cover_worker.py tests\test_song_lyrics_alignment.py tests\test_song_svs_runtime.py tests\test_song_svs_wsl_bridge.py tests\test_song_svs_worker.py -q
+.venv\Scripts\python.exe -m pytest tests\test_song_rvc_runtime.py tests\test_smoke_song_cover.py tests\test_song_cover_worker.py tests\test_song_lyrics_alignment.py tests\test_song_svs_quality.py tests\test_song_svs_inference.py tests\test_song_svs_runtime.py tests\test_song_svs_wsl_bridge.py tests\test_song_svs_worker.py -q
 .venv\Scripts\python.exe scripts\check_python_documentation.py
 
 cd /d D:\Elysia_AI\desktop

@@ -373,6 +373,8 @@ test('fails packaged readiness closed and admits only regular development files'
     path.join(scriptsRoot, 'song_rvc_runtime.py'),
     path.join(scriptsRoot, 'song_svs_wsl_bridge.py'),
     path.join(scriptsRoot, 'song_svs_runtime.py'),
+    path.join(scriptsRoot, 'song_svs_inference.py'),
+    path.join(scriptsRoot, 'song_svs_quality.py'),
     path.join(scriptsRoot, 'song_lyrics_alignment.py'),
   ]
   try {

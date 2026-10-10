@@ -32,7 +32,7 @@ import importlib
 import json
 import math
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import secrets
 import shutil
@@ -42,7 +42,10 @@ import struct
 import subprocess
 import sys
 import time
-from typing import Iterator, Mapping, NoReturn, Sequence
+from typing import TYPE_CHECKING, Iterator, Mapping, NoReturn, Sequence
+
+if TYPE_CHECKING:
+    from scripts.song_svs_quality import PromptRecord
 
 _EVENT_PREFIX = "ELYSIA_SONG_SVS "
 _EXPECTED_SOURCE_REVISION = "81aeb3ae772c70093c3de74dc23c92d983801ae4"
@@ -60,10 +63,12 @@ _INFERENCE_TIMEOUT_SECONDS = 55 * 60
 _STAGE_TERMINATE_GRACE_SECONDS = 5.0
 _STAGE_KILL_GRACE_SECONDS = 5.0
 _STAGE_POLL_SECONDS = 0.05
+_STAGE_AUTHORIZATION_TIMEOUT_SECONDS = 5.0
 _SIGTERM = int(getattr(signal, "SIGTERM", 15))
 _SIGKILL = int(getattr(signal, "SIGKILL", 9))
 _ALIGNMENT_EXIT_CODE = 21
 _PREPROCESS_EXIT_CODE = 22
+_INFERENCE_EXIT_CODE = 23
 _OUTPUT_NAME = "generated_vocal.wav"
 _WORK_DIRECTORY_NAME = ".svs-work"
 _INTERNAL_JOB_TOKEN_ENV = "ELYSIA_SVS_INTERNAL_JOB_TOKEN"
@@ -77,6 +82,77 @@ _MAX_STAGE_LEASE_BYTES = 2 * 1024
 _MAX_PROC_ENVIRONMENT_BYTES = 256 * 1024
 _STAGE_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 _STAGE_NAMES = frozenset({"preprocess", "inference"})
+_SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+_PROMPT_BANK_SCHEMA_VERSION = 1
+_PROMPT_BANK_ID = "elysia-bank-v1"
+_PROMPT_BANK_PRIVACY = "private-local-only"
+_PROMPT_BANK_ROOT = PurePosixPath("prompts/elysia-bank-v1")
+_MAX_PROMPT_BANK_MANIFEST_BYTES = 1024 * 1024
+_MAX_PROMPT_BANK_ENTRIES = 64
+_MAX_PROMPT_BANK_PHONEMES = 4096
+_MAX_PROMPT_BANK_PHONEME_CHARACTERS = 64
+_PROMPT_BANK_ROLES = frozenset({"anchor", "emotion", "corpus"})
+_PROMPT_BANK_STYLES = frozenset({"calm", "neutral", "expressive", "emphatic"})
+_PROMPT_BANK_EMOTIONS = frozenset(
+    {
+        "neutral",
+        "happy",
+        "sad",
+        "caring",
+        "moved",
+        "playful",
+        "affectionate",
+        "teasing",
+        "serious",
+        "surprised",
+    }
+)
+_PROMPT_BANK_ENTRY_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
+_PROMPT_BANK_ASSET_NAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
+_PROMPT_BANK_TOP_LEVEL_FIELDS = frozenset(
+    {
+        "schema_version",
+        "bank_id",
+        "privacy",
+        "builder_sha256",
+        "source_manifest_sha256",
+        "entries",
+    }
+)
+_PROMPT_BANK_ENTRY_FIELDS = frozenset(
+    {
+        "id",
+        "role",
+        "selection_rank",
+        "style_proxy",
+        "emotion",
+        "audio",
+        "metadata",
+        "profile",
+        "validation",
+    }
+)
+_PROMPT_BANK_ASSET_FIELDS = frozenset({"path", "bytes", "sha256"})
+_PROMPT_BANK_PROFILE_FIELDS = frozenset(
+    {
+        "duration_seconds",
+        "note_median",
+        "note_p10",
+        "note_p90",
+        "note_span",
+        "syllables_per_second",
+        "phonemes",
+    }
+)
+_PROMPT_BANK_VALIDATION_FIELDS = frozenset(
+    {
+        "source_role",
+        "transcript_sha256",
+        "alignment_exact_match_ratio",
+        "alignment_cost_ratio",
+        "metadata_segments",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,6 +162,57 @@ class _AssetSpec:
     relative_path: str
     expected_bytes: int
     expected_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class _PromptProfile:
+    """Hold bounded acoustic and phoneme features for prompt selection."""
+
+    duration_seconds: float
+    note_median: float
+    note_p10: float
+    note_p90: float
+    note_span: float
+    syllables_per_second: float
+    phonemes: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _PromptValidation:
+    """Hold reviewed provenance and alignment evidence for one prompt."""
+
+    source_role: str
+    transcript_sha256: str
+    alignment_exact_match_ratio: float
+    alignment_cost_ratio: float
+    metadata_segments: int
+
+
+@dataclass(frozen=True, slots=True)
+class _PromptBankEntry:
+    """Describe one hash-pinned private prompt and its closed selection labels."""
+
+    entry_id: str
+    role: str
+    selection_rank: int
+    style_proxy: str
+    emotion: str | None
+    audio: _AssetSpec
+    metadata: _AssetSpec
+    profile: _PromptProfile
+    validation: _PromptValidation
+
+
+@dataclass(frozen=True, slots=True)
+class _PromptBankManifest:
+    """Represent one canonical private prompt-bank manifest."""
+
+    schema_version: int
+    bank_id: str
+    privacy: str
+    builder_sha256: str
+    source_manifest_sha256: str
+    entries: tuple[_PromptBankEntry, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,6 +227,13 @@ class _StageLease:
     process_group_id: int
     session_id: int
     start_time_ticks: int
+
+
+_PROMPT_BANK_MANIFEST_ASSET = _AssetSpec(
+    "prompts/elysia-bank-v1/manifest.json",
+    62_399,
+    "8a5a4abd41054dce40e91996260600e3906df0f6d1e88a8aaf0e2b70efee825e",
+)
 
 
 _CORE_RUNTIME_ASSETS = (
@@ -190,16 +324,6 @@ _CORE_RUNTIME_ASSETS = (
         "tokens.json",
         93_676,
         "2b20c2b12572d682afff84ce1c8d560f67b8b32a4c1f21567411d141ed352127",
-    ),
-    _AssetSpec(
-        "prompts/elysia-v1/prompt.wav",
-        883_808,
-        "2c9d9f6e0c2aef901a9253403d137bd7d82bab8c12870a6fe41a2ee43db6050e",
-    ),
-    _AssetSpec(
-        "prompts/elysia-v1/prompt.json",
-        3_646,
-        "2a062caa91ef26d6def729403680cb782a1fa4390735e1c8e4f91be85175dc72",
     ),
 )
 
@@ -395,6 +519,180 @@ def _require_file(
     )
 
 
+def _trusted_runtime_metadata_matches(
+    info: os.stat_result,
+    *,
+    expected_uid: int,
+) -> bool:
+    """Return whether another local account cannot replace or edit an entry."""
+
+    return bool(
+        (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode))
+        and info.st_uid in {0, expected_uid}
+        and stat.S_IMODE(info.st_mode) & 0o022 == 0
+    )
+
+
+def _require_trusted_runtime_path(path: Path, *, label: str) -> Path:
+    """Require root/current ownership and non-writable ancestry on POSIX.
+
+    Hashing a runtime file is not sufficient if another local account can
+    replace an ancestor or rewrite the file between verification and exec.
+    System-owned ancestors are accepted, but every component must be a real
+    directory or file and must deny group/other writes.
+    """
+
+    candidate = Path(os.path.abspath(str(path)))
+    if os.name != "posix":
+        return candidate
+    try:
+        expected_uid = _current_uid()
+        current = Path(candidate.anchor)
+        components = [current]
+        for part in candidate.parts[1:]:
+            current = current / part
+            components.append(current)
+        for component in components:
+            info = os.lstat(component)
+            if (
+                stat.S_ISLNK(info.st_mode)
+                or _is_reparse(info)
+                or not _trusted_runtime_metadata_matches(
+                    info,
+                    expected_uid=expected_uid,
+                )
+            ):
+                raise OSError
+    except (OSError, RuntimeError, TypeError, ValueError) as error:
+        raise _SvsRuntimeFailure(
+            "runtime_integrity_failed",
+            f"{label} is not protected from other local accounts.",
+        ) from error
+    return candidate
+
+
+def _verify_trusted_runtime_tree(runtime_root: Path) -> None:
+    """Verify metadata trust for every executable or importable runtime entry.
+
+    The UUID job tree is deliberately excluded because it contains mutable
+    per-request inputs.  Static Python, venv, model, and vendor-source trees are
+    walked without following links.  Internal links are accepted only when
+    their resolved target remains under the trusted runtime and independently
+    satisfies the same ancestry policy.  Installer ``.lock`` sentinels are
+    inert data and are the only group-writable entries intentionally ignored.
+    """
+
+    trusted_root = _require_trusted_runtime_path(
+        runtime_root,
+        label="SoulX runtime",
+    )
+    if os.name != "posix":
+        return
+    roots = (
+        trusted_root / "python",
+        trusted_root / "prep-env",
+        trusted_root / "infer-env",
+        trusted_root / "models",
+        trusted_root / "source",
+    )
+    ignored_locks = {root / ".lock" for root in roots}
+    expected_uid = _current_uid()
+    pending = [
+        _require_trusted_runtime_path(root, label="SoulX runtime tree")
+        for root in roots
+    ]
+    while pending:
+        directory = pending.pop()
+        try:
+            entries = list(os.scandir(directory))
+        except OSError as error:
+            raise _SvsRuntimeFailure(
+                "runtime_integrity_failed",
+                "The private SoulX runtime tree could not be inspected.",
+            ) from error
+        for entry in entries:
+            path = Path(entry.path)
+            try:
+                info = os.lstat(path)
+                if path in ignored_locks:
+                    if not stat.S_ISREG(info.st_mode):
+                        raise OSError
+                    continue
+                if stat.S_ISLNK(info.st_mode):
+                    target = path.resolve(strict=True)
+                    target.relative_to(trusted_root)
+                    _require_trusted_runtime_path(
+                        target,
+                        label="SoulX runtime link target",
+                    )
+                    continue
+                if _is_reparse(info) or not _trusted_runtime_metadata_matches(
+                    info,
+                    expected_uid=expected_uid,
+                ):
+                    raise OSError
+                if stat.S_ISDIR(info.st_mode):
+                    pending.append(path)
+            except (OSError, RuntimeError, TypeError, ValueError) as error:
+                raise _SvsRuntimeFailure(
+                    "runtime_integrity_failed",
+                    "The private SoulX runtime tree is writable by another account.",
+                ) from error
+
+
+def _private_prompt_metadata_matches(
+    info: os.stat_result,
+    *,
+    expected_uid: int,
+    require_directory: bool,
+) -> bool:
+    """Return whether stat metadata satisfies the closed prompt privacy policy."""
+
+    expected_mode = 0o700 if require_directory else 0o600
+    expected_kind = (
+        stat.S_ISDIR(info.st_mode)
+        if require_directory
+        else stat.S_ISREG(info.st_mode)
+    )
+    return bool(
+        expected_kind
+        and info.st_uid == expected_uid
+        and stat.S_IMODE(info.st_mode) == expected_mode
+    )
+
+
+def _require_private_prompt_permissions(
+    path: Path,
+    *,
+    label: str,
+    require_directory: bool,
+) -> Path:
+    """Require owner-only POSIX permissions for one private prompt path.
+
+    Windows unit tests still exercise the structural path contract, while the
+    production WSL boundary additionally requires the current UID and exact
+    ``0700`` directories or ``0600`` files.  Failing closed instead of changing
+    permissions keeps an unexpected deployment visible to its owner.
+    """
+
+    if os.name != "posix":
+        return path
+    try:
+        info = os.lstat(path)
+        if not _private_prompt_metadata_matches(
+            info,
+            expected_uid=_current_uid(),
+            require_directory=require_directory,
+        ):
+            raise OSError
+    except (OSError, RuntimeError, TypeError, ValueError) as error:
+        raise _SvsRuntimeFailure(
+            "unsafe_path",
+            f"{label} does not have private owner-only permissions.",
+        ) from error
+    return path
+
+
 def _sha256(path: Path) -> str:
     """Hash one local asset incrementally to avoid multi-gigabyte allocations."""
 
@@ -411,10 +709,26 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _require_asset(runtime_root: Path, spec: _AssetSpec) -> Path:
+def _require_asset(
+    runtime_root: Path,
+    spec: _AssetSpec,
+    *,
+    require_single_link: bool = False,
+    require_private_prompt_permissions: bool = False,
+) -> Path:
     """Verify one fixed-size runtime asset against its reviewed SHA256."""
 
-    candidate = _require_file(runtime_root / spec.relative_path, "SoulX runtime asset")
+    candidate = _require_file(
+        runtime_root / spec.relative_path,
+        "SoulX runtime asset",
+        require_single_link=require_single_link,
+    )
+    if require_private_prompt_permissions:
+        _require_private_prompt_permissions(
+            candidate,
+            label="Private SoulX prompt asset",
+            require_directory=False,
+        )
     try:
         size_matches = candidate.stat().st_size == spec.expected_bytes
     except OSError as error:
@@ -430,12 +744,350 @@ def _require_asset(runtime_root: Path, spec: _AssetSpec) -> Path:
     return candidate
 
 
-def _verify_runtime_assets(runtime_root: Path) -> None:
+def _invalid_prompt_bank() -> NoReturn:
+    """Reject an unreviewed prompt-bank shape without exposing private details."""
+
+    _fail(
+        "runtime_integrity_failed",
+        "The private SoulX prompt bank manifest is invalid.",
+    )
+
+
+def _reject_duplicate_json_object(
+    pairs: list[tuple[str, object]],
+) -> dict[str, object]:
+    """Build a JSON object while rejecting ambiguous duplicate field names."""
+
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON field")
+        result[key] = value
+    return result
+
+
+def _reject_json_constant(value: str) -> NoReturn:
+    """Reject non-standard NaN and infinity tokens accepted by Python JSON."""
+
+    raise ValueError(f"non-finite JSON constant: {value}")
+
+
+def _require_manifest_object(
+    value: object,
+    expected_fields: frozenset[str],
+) -> dict[str, object]:
+    """Require one closed JSON object with exactly the reviewed fields."""
+
+    if not isinstance(value, dict) or frozenset(value) != expected_fields:
+        _invalid_prompt_bank()
+    return value
+
+
+def _require_manifest_string(value: object, allowed: frozenset[str]) -> str:
+    """Require one string selected from a closed manifest vocabulary."""
+
+    if not isinstance(value, str) or value not in allowed:
+        _invalid_prompt_bank()
+    return value
+
+
+def _require_manifest_integer(value: object, minimum: int, maximum: int) -> int:
+    """Require a bounded JSON integer while excluding booleans."""
+
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or value < minimum
+        or value > maximum
+    ):
+        _invalid_prompt_bank()
+    return value
+
+
+def _require_manifest_number(
+    value: object,
+    minimum: float,
+    maximum: float,
+) -> float:
+    """Require one finite bounded JSON number while excluding booleans."""
+
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        _invalid_prompt_bank()
+    result = float(value)
+    if not math.isfinite(result) or result < minimum or result > maximum:
+        _invalid_prompt_bank()
+    return result
+
+
+def _parse_prompt_bank_asset(value: object, *, kind: str) -> _AssetSpec:
+    """Parse one hash-pinned asset below the bank's fixed private directory."""
+
+    item = _require_manifest_object(value, _PROMPT_BANK_ASSET_FIELDS)
+    path_value = item["path"]
+    expected_suffix = ".wav" if kind == "audio" else ".json"
+    if not isinstance(path_value, str):
+        _invalid_prompt_bank()
+    relative = PurePosixPath(path_value)
+    # Exactly two ASCII-safe components keep references inside the reviewed
+    # audio/metadata directories and make Windows and WSL resolve them alike.
+    if (
+        path_value != relative.as_posix()
+        or relative.is_absolute()
+        or relative.parts != (kind, relative.name)
+        or relative.suffix != expected_suffix
+        or not _PROMPT_BANK_ASSET_NAME_PATTERN.fullmatch(relative.name)
+    ):
+        _invalid_prompt_bank()
+    maximum_bytes = _MAX_VOCAL_BYTES if kind == "audio" else _MAX_METADATA_BYTES
+    expected_bytes = _require_manifest_integer(item["bytes"], 1, maximum_bytes)
+    expected_sha256 = item["sha256"]
+    if (
+        not isinstance(expected_sha256, str)
+        or not _SHA256_PATTERN.fullmatch(expected_sha256)
+    ):
+        _invalid_prompt_bank()
+    return _AssetSpec(
+        str(_PROMPT_BANK_ROOT / relative),
+        expected_bytes,
+        expected_sha256,
+    )
+
+
+def _parse_prompt_profile(value: object) -> _PromptProfile:
+    """Parse bounded prompt-selection measurements from one manifest entry."""
+
+    item = _require_manifest_object(value, _PROMPT_BANK_PROFILE_FIELDS)
+    duration_seconds = _require_manifest_number(item["duration_seconds"], 3.0, 12.0)
+    note_median = _require_manifest_number(item["note_median"], 1.0, 127.0)
+    note_p10 = _require_manifest_number(item["note_p10"], 1.0, 127.0)
+    note_p90 = _require_manifest_number(item["note_p90"], 1.0, 127.0)
+    if note_p10 > note_median or note_median > note_p90:
+        _invalid_prompt_bank()
+    raw_phonemes = item["phonemes"]
+    if (
+        not isinstance(raw_phonemes, list)
+        or not 1 <= len(raw_phonemes) <= _MAX_PROMPT_BANK_PHONEMES
+    ):
+        _invalid_prompt_bank()
+    phonemes: list[str] = []
+    seen_phonemes: set[str] = set()
+    for phoneme in raw_phonemes:
+        if (
+            not isinstance(phoneme, str)
+            or not phoneme.strip()
+            or phoneme != phoneme.strip()
+            or len(phoneme) > _MAX_PROMPT_BANK_PHONEME_CHARACTERS
+            or phoneme in seen_phonemes
+        ):
+            _invalid_prompt_bank()
+        phonemes.append(phoneme)
+        seen_phonemes.add(phoneme)
+    return _PromptProfile(
+        duration_seconds=duration_seconds,
+        note_median=note_median,
+        note_p10=note_p10,
+        note_p90=note_p90,
+        note_span=_require_manifest_number(item["note_span"], 0.0, 127.0),
+        syllables_per_second=_require_manifest_number(
+            item["syllables_per_second"],
+            1.2,
+            8.5,
+        ),
+        phonemes=tuple(phonemes),
+    )
+
+
+def _parse_prompt_validation(value: object) -> _PromptValidation:
+    """Parse the fixed provenance and single-segment alignment evidence."""
+
+    item = _require_manifest_object(value, _PROMPT_BANK_VALIDATION_FIELDS)
+    transcript_sha256 = item["transcript_sha256"]
+    if (
+        not isinstance(transcript_sha256, str)
+        or not _SHA256_PATTERN.fullmatch(transcript_sha256)
+    ):
+        _invalid_prompt_bank()
+    return _PromptValidation(
+        source_role=_require_manifest_string(item["source_role"], _PROMPT_BANK_ROLES),
+        transcript_sha256=transcript_sha256,
+        alignment_exact_match_ratio=_require_manifest_number(
+            item["alignment_exact_match_ratio"],
+            0.0,
+            1.0,
+        ),
+        alignment_cost_ratio=_require_manifest_number(
+            item["alignment_cost_ratio"],
+            0.0,
+            1.0,
+        ),
+        metadata_segments=_require_manifest_integer(item["metadata_segments"], 1, 1),
+    )
+
+
+def _parse_prompt_bank_entry(value: object) -> _PromptBankEntry:
+    """Parse one exact prompt-bank entry and its closed selection labels."""
+
+    item = _require_manifest_object(value, _PROMPT_BANK_ENTRY_FIELDS)
+    entry_id = item["id"]
+    if (
+        not isinstance(entry_id, str)
+        or not _PROMPT_BANK_ENTRY_ID_PATTERN.fullmatch(entry_id)
+    ):
+        _invalid_prompt_bank()
+    emotion = item["emotion"]
+    if emotion is not None and (
+        not isinstance(emotion, str) or emotion not in _PROMPT_BANK_EMOTIONS
+    ):
+        _invalid_prompt_bank()
+    role = _require_manifest_string(item["role"], _PROMPT_BANK_ROLES)
+    validation = _parse_prompt_validation(item["validation"])
+    if validation.source_role != role:
+        _invalid_prompt_bank()
+    return _PromptBankEntry(
+        entry_id=entry_id,
+        role=role,
+        selection_rank=_require_manifest_integer(
+            item["selection_rank"],
+            0,
+            _MAX_PROMPT_BANK_ENTRIES,
+        ),
+        style_proxy=_require_manifest_string(item["style_proxy"], _PROMPT_BANK_STYLES),
+        emotion=emotion,
+        audio=_parse_prompt_bank_asset(item["audio"], kind="audio"),
+        metadata=_parse_prompt_bank_asset(item["metadata"], kind="metadata"),
+        profile=_parse_prompt_profile(item["profile"]),
+        validation=validation,
+    )
+
+
+def _parse_prompt_bank_manifest(raw: bytes) -> _PromptBankManifest:
+    """Parse one canonical, duplicate-free private prompt-bank manifest."""
+
+    if not raw or len(raw) > _MAX_PROMPT_BANK_MANIFEST_BYTES:
+        _invalid_prompt_bank()
+    try:
+        document = json.loads(
+            raw.decode("utf-8"),
+            object_pairs_hook=_reject_duplicate_json_object,
+            parse_constant=_reject_json_constant,
+        )
+        canonical = json.dumps(
+            document,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    except (UnicodeError, ValueError, TypeError, OverflowError, RecursionError) as error:
+        raise _SvsRuntimeFailure(
+            "runtime_integrity_failed",
+            "The private SoulX prompt bank manifest is invalid.",
+        ) from error
+    if raw != canonical:
+        _invalid_prompt_bank()
+
+    item = _require_manifest_object(document, _PROMPT_BANK_TOP_LEVEL_FIELDS)
+    schema_version = _require_manifest_integer(
+        item["schema_version"],
+        _PROMPT_BANK_SCHEMA_VERSION,
+        _PROMPT_BANK_SCHEMA_VERSION,
+    )
+    if item["bank_id"] != _PROMPT_BANK_ID or item["privacy"] != _PROMPT_BANK_PRIVACY:
+        _invalid_prompt_bank()
+    builder_sha256 = item["builder_sha256"]
+    source_manifest_sha256 = item["source_manifest_sha256"]
+    if (
+        not isinstance(builder_sha256, str)
+        or not _SHA256_PATTERN.fullmatch(builder_sha256)
+        or not isinstance(source_manifest_sha256, str)
+        or not _SHA256_PATTERN.fullmatch(source_manifest_sha256)
+    ):
+        _invalid_prompt_bank()
+    raw_entries = item["entries"]
+    if (
+        not isinstance(raw_entries, list)
+        or not 1 <= len(raw_entries) <= _MAX_PROMPT_BANK_ENTRIES
+    ):
+        _invalid_prompt_bank()
+    entries = tuple(_parse_prompt_bank_entry(entry) for entry in raw_entries)
+    entry_ids = [entry.entry_id for entry in entries]
+    if len(entry_ids) != len(set(entry_ids)):
+        _invalid_prompt_bank()
+    return _PromptBankManifest(
+        schema_version=schema_version,
+        bank_id=_PROMPT_BANK_ID,
+        privacy=_PROMPT_BANK_PRIVACY,
+        builder_sha256=builder_sha256,
+        source_manifest_sha256=source_manifest_sha256,
+        entries=entries,
+    )
+
+
+def _verify_prompt_bank(runtime_root: Path) -> _PromptBankManifest:
+    """Authenticate the canonical manifest and every private prompt it names."""
+
+    for relative_path, label in (
+        ("prompts", "Private SoulX prompt root"),
+        ("prompts/elysia-bank-v1", "Private SoulX prompt bank"),
+        ("prompts/elysia-bank-v1/audio", "Private SoulX prompt audio directory"),
+        (
+            "prompts/elysia-bank-v1/metadata",
+            "Private SoulX prompt metadata directory",
+        ),
+    ):
+        directory = _require_directory(runtime_root / relative_path, label)
+        _require_private_prompt_permissions(
+            directory,
+            label=label,
+            require_directory=True,
+        )
+    manifest_path = _require_asset(
+        runtime_root,
+        _PROMPT_BANK_MANIFEST_ASSET,
+        require_single_link=True,
+        require_private_prompt_permissions=True,
+    )
+    try:
+        raw = manifest_path.read_bytes()
+    except OSError as error:
+        raise _SvsRuntimeFailure(
+            "runtime_unavailable",
+            "The private SoulX prompt bank manifest could not be read.",
+        ) from error
+    if (
+        len(raw) != _PROMPT_BANK_MANIFEST_ASSET.expected_bytes
+        or hashlib.sha256(raw).hexdigest()
+        != _PROMPT_BANK_MANIFEST_ASSET.expected_sha256
+    ):
+        _fail(
+            "runtime_integrity_failed",
+            "The private SoulX prompt bank manifest does not match the reviewed version.",
+        )
+    manifest = _parse_prompt_bank_manifest(raw)
+    for entry in manifest.entries:
+        _require_asset(
+            runtime_root,
+            entry.audio,
+            require_single_link=True,
+            require_private_prompt_permissions=True,
+        )
+        _require_asset(
+            runtime_root,
+            entry.metadata,
+            require_single_link=True,
+            require_private_prompt_permissions=True,
+        )
+    return manifest
+
+
+def _verify_runtime_assets(runtime_root: Path) -> _PromptBankManifest:
     """Authenticate every executable, model, tokenizer, and Elysia prompt used."""
 
     _require_directory(runtime_root, "SoulX runtime")
+    _verify_trusted_runtime_tree(runtime_root)
     for spec in _RUNTIME_ASSETS:
         _require_asset(runtime_root, spec)
+    prompt_bank = _verify_prompt_bank(runtime_root)
 
     expected_python = runtime_root / _CORE_RUNTIME_ASSETS[0].relative_path
     for relative_link in ("prep-env/bin/python", "infer-env/bin/python"):
@@ -459,6 +1111,7 @@ def _verify_runtime_assets(runtime_root: Path) -> None:
             "runtime_integrity_failed",
             "The private audio decoder link is invalid.",
         ) from error
+    return prompt_bank
 
 
 def _verify_source_checkout(runtime_root: Path) -> Path:
@@ -470,6 +1123,7 @@ def _verify_source_checkout(runtime_root: Path) -> Path:
     """
 
     source_root = _require_directory(runtime_root / "source", "SoulX source")
+    _require_trusted_runtime_path(source_root, label="SoulX source")
     head_path = _require_file(source_root / ".git" / "HEAD", "SoulX revision")
     try:
         head = head_path.read_text(encoding="ascii").strip()
@@ -1011,6 +1665,61 @@ def _capture_stage_lease(
     )
 
 
+def _authorize_stage_entry(job_root: Path, expected_stage: str) -> _StageLease:
+    """Wait for and authenticate the parent-published one-time stage lease.
+
+    The child can reach Python before the parent has captured its kernel start
+    tick and atomically published the lease.  A short bounded wait closes that
+    startup race.  Vendor imports begin only after the random capability,
+    UUID, stage name, PID, session, process group, and non-reusable start tick
+    all match this exact process.
+    """
+
+    job_token = os.environ.get(_INTERNAL_JOB_TOKEN_ENV, "")
+    stage_id = os.environ.get(_INTERNAL_STAGE_ID_ENV, "")
+    if (
+        expected_stage not in _STAGE_NAMES
+        or job_token != job_root.name
+        or _JOB_TOKEN_PATTERN.fullmatch(job_token) is None
+        or _STAGE_ID_PATTERN.fullmatch(stage_id) is None
+    ):
+        _fail("stage_control_failed", "The private singing stage is unauthorized.")
+    deadline = time.monotonic() + _STAGE_AUTHORIZATION_TIMEOUT_SECONDS
+    while True:
+        lease = _read_stage_lease(job_root)
+        if lease is not None:
+            identity = _read_proc_identity(os.getpid())
+            if identity is None:
+                _fail(
+                    "stage_control_failed",
+                    "The private singing stage identity disappeared.",
+                )
+            state, process_group_id, session_id, start_time_ticks = identity
+            if (
+                state == "Z"
+                or lease.job_token != job_token
+                or lease.stage != expected_stage
+                or lease.stage_id != stage_id
+                or lease.pid != os.getpid()
+                or lease.process_group_id != process_group_id
+                or lease.session_id != session_id
+                or lease.start_time_ticks != start_time_ticks
+                or process_group_id != os.getpid()
+                or session_id != os.getpid()
+            ):
+                _fail(
+                    "stage_control_failed",
+                    "The private singing stage lease does not match this process.",
+                )
+            return lease
+        if time.monotonic() >= deadline:
+            _fail(
+                "stage_control_failed",
+                "The private singing stage was not authorized in time.",
+            )
+        time.sleep(_STAGE_POLL_SECONDS)
+
+
 def _has_inherited_stage_identity(pid: int, lease: _StageLease) -> bool:
     """Recognize a detached descendant by its inherited random stage identity.
 
@@ -1211,6 +1920,7 @@ def _offline_environment(
 
     home = runtime_root.parents[3]
     environment = {
+        "CUBLAS_WORKSPACE_CONFIG": ":4096:8",
         "CUDA_MODULE_LOADING": "LAZY",
         "CUDA_VISIBLE_DEVICES": "0",
         "HF_DATASETS_OFFLINE": "1",
@@ -1517,6 +2227,8 @@ def _preprocess_stage_entry() -> None:
         token = os.environ.get(_INTERNAL_JOB_TOKEN_ENV, "")
         runtime_root = _runtime_root()
         job_root = _job_root_from_token(runtime_root, token)
+        _authorize_stage_entry(job_root, "preprocess")
+        _verify_trusted_runtime_tree(runtime_root)
         # OpenCC is imported by the lyric alignment module.  Verify its Python,
         # native, configuration, and t2s dictionary files before that import so
         # a changed localization package cannot execute ahead of attestation.
@@ -1590,6 +2302,159 @@ def _invoke_preprocess(
         )
 
 
+def _prompt_records_from_manifest(
+    runtime_root: Path,
+    manifest: _PromptBankManifest,
+) -> tuple[PromptRecord, ...]:
+    """Convert authenticated manifest entries into selector-ready records.
+
+    The manifest parser intentionally owns filesystem policy, while the
+    quality module owns only acoustic selection.  Requiring each asset again
+    here keeps the paths handed to the model tied to the already reviewed
+    size, digest, and single-link contract at the last practical boundary.
+    """
+
+    from scripts.song_svs_quality import PromptAsset, PromptProfile, PromptRecord
+
+    records: list[PromptRecord] = []
+    for entry in manifest.entries:
+        audio_path = _require_asset(
+            runtime_root,
+            entry.audio,
+            require_single_link=True,
+            require_private_prompt_permissions=True,
+        )
+        metadata_path = _require_asset(
+            runtime_root,
+            entry.metadata,
+            require_single_link=True,
+            require_private_prompt_permissions=True,
+        )
+        records.append(
+            PromptRecord(
+                prompt_id=entry.entry_id,
+                role=entry.role,
+                selection_rank=entry.selection_rank,
+                style_proxy=entry.style_proxy,
+                emotion=entry.emotion,
+                audio=PromptAsset(
+                    path=audio_path,
+                    byte_count=entry.audio.expected_bytes,
+                    sha256=entry.audio.expected_sha256,
+                ),
+                metadata=PromptAsset(
+                    path=metadata_path,
+                    byte_count=entry.metadata.expected_bytes,
+                    sha256=entry.metadata.expected_sha256,
+                ),
+                profile=PromptProfile(
+                    duration_seconds=entry.profile.duration_seconds,
+                    note_median=entry.profile.note_median,
+                    note_p10=entry.profile.note_p10,
+                    note_p90=entry.profile.note_p90,
+                    note_span=entry.profile.note_span,
+                    syllables_per_second=entry.profile.syllables_per_second,
+                    phonemes=frozenset(entry.profile.phonemes),
+                ),
+            )
+        )
+    return tuple(records)
+
+
+def _perform_inference_stage(
+    job_root: Path,
+    runtime_root: Path,
+    source_root: Path,
+    prompt_bank: _PromptBankManifest,
+) -> Path:
+    """Run deterministic multi-prompt inference inside the pinned child.
+
+    No renderer-selected model, prompt, configuration, or output path crosses
+    this boundary.  The request is assembled exclusively from the fixed
+    runtime, verified source checkout, authenticated prompt bank, and the
+    corrected metadata produced earlier in the same private UUID job.
+    """
+
+    from scripts.song_svs_inference import SvsInferenceRequest, run_svs_inference
+
+    work_root = _require_directory(
+        job_root / _WORK_DIRECTORY_NAME,
+        "Singing work directory",
+    )
+    target_vocal = _require_file(
+        work_root / "target_vocal.wav",
+        "Private target vocal",
+        require_single_link=True,
+    )
+    target_metadata = _load_metadata(work_root / "target.corrected.json")
+    output_root = _require_directory(
+        work_root / "generated",
+        "Synthesis workspace",
+    )
+    model_path = _require_file(
+        runtime_root / "models" / "SoulX-Singer" / "model.pt",
+        "SoulX model",
+        require_single_link=True,
+    )
+    config_path = _require_file(
+        source_root / "soulxsinger" / "config" / "soulxsinger.yaml",
+        "SoulX configuration",
+        require_single_link=True,
+    )
+    phoneset_path = _require_file(
+        source_root / "soulxsinger" / "utils" / "phoneme" / "phone_set.json",
+        "SoulX phoneset",
+        require_single_link=True,
+    )
+    duration_seconds = _probe_wave(target_vocal, label="Private target vocal")
+    total_samples = max(1, int(round(duration_seconds * 24_000)))
+    expected_output = output_root / "generated.wav"
+    if expected_output.exists() or expected_output.is_symlink():
+        _fail("unsafe_path", "The synthesis output path is already occupied.")
+
+    result = run_svs_inference(
+        SvsInferenceRequest(
+            model_path=model_path,
+            config_path=config_path,
+            phoneset_path=phoneset_path,
+            output_directory=output_root,
+            target_audio_sha256=_sha256(target_vocal),
+            target_metadata=target_metadata,
+            prompts=_prompt_records_from_manifest(runtime_root, prompt_bank),
+            total_samples=total_samples,
+        )
+    )
+    if result.output_path != expected_output:
+        _fail("inference_failed", "The singing synthesizer returned an invalid output.")
+    return _require_file(
+        expected_output,
+        "Generated SoulX vocal",
+        require_single_link=True,
+    )
+
+
+def _inference_stage_entry() -> None:
+    """Execute the private inference child and expose only one exit category."""
+
+    try:
+        token = os.environ.get(_INTERNAL_JOB_TOKEN_ENV, "")
+        runtime_root = _runtime_root()
+        job_root = _job_root_from_token(runtime_root, token)
+        _authorize_stage_entry(job_root, "inference")
+        prompt_bank = _verify_runtime_assets(runtime_root)
+        source_root = _verify_source_checkout(runtime_root)
+        _perform_inference_stage(
+            job_root,
+            runtime_root,
+            source_root,
+            prompt_bank,
+        )
+    except Exception:
+        # The outer worker owns renderer-facing errors; private model, prompt,
+        # CUDA, and path details must never cross this subprocess boundary.
+        raise SystemExit(_INFERENCE_EXIT_CODE) from None
+
+
 def _invoke_inference(
     job_root: Path,
     runtime_root: Path,
@@ -1611,30 +2476,11 @@ def _invoke_inference(
     command = [
         str(runtime_root / "infer-env" / "bin" / "python"),
         "-B",
-        "-m",
-        "cli.inference",
-        "--device",
-        "cuda",
-        "--model_path",
-        "pretrained_models/SoulX-Singer/model.pt",
-        "--config",
-        "soulxsinger/config/soulxsinger.yaml",
-        "--prompt_wav_path",
-        str(runtime_root / "prompts" / "elysia-v1" / "prompt.wav"),
-        "--prompt_metadata_path",
-        str(runtime_root / "prompts" / "elysia-v1" / "prompt.json"),
-        "--target_metadata_path",
-        str(work_root / "target.corrected.json"),
-        "--phoneset_path",
-        "soulxsinger/utils/phoneme/phone_set.json",
-        "--save_dir",
-        str(save_root),
-        "--control",
-        "score",
-        "--auto_shift",
-        "--pitch_shift",
-        "0",
-        "--fp16",
+        "-c",
+        (
+            "from scripts.song_svs_runtime import _inference_stage_entry as entry; "
+            "entry()"
+        ),
     ]
     return_code = _run_quiet_process(
         command,
@@ -1642,7 +2488,11 @@ def _invoke_inference(
         job_token=job_root.name,
         stage="inference",
         cwd=source_root,
-        environment=_offline_environment(runtime_root, source_root),
+        environment=_offline_environment(
+            runtime_root,
+            source_root,
+            job_token=job_root.name,
+        ),
         timeout_seconds=timeout_seconds,
     )
     if return_code != 0:
