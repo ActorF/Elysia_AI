@@ -653,6 +653,134 @@ def test_long_score_accepts_bounded_cumulative_centisecond_rounding(
     )
 
 
+def test_long_score_accepts_bounded_serialized_duration_sum_drift(
+    tmp_path: Path,
+) -> None:
+    """Accept an honest long-score duration sum after centisecond serialization."""
+
+    prompt = _prompt("primary", tmp_path)
+    processor = _QuantizedProcessor()
+    harness = _Harness(
+        {prompt.metadata.path: _prompt_payload()},
+        processor=processor,
+    )
+    metadata = _segment(0, 0, duration_ms=6_740)
+    durations = ["0.33"] * 19 + ["0.42"]
+    metadata["duration"] = " ".join(durations)
+    metadata["phoneme"] = " ".join("zh_a" for _ in durations)
+    metadata["note_pitch"] = " ".join("57" for _ in durations)
+    metadata["note_type"] = " ".join("2" for _ in durations)
+    result = run_svs_inference(
+        _request(tmp_path, [metadata], [prompt]),
+        dependencies=harness.dependencies(),
+    )
+    assert result.sample_count == 161_760
+    assert result.generated_candidate_count == 1
+
+
+def test_serialized_duration_accepts_drift_exactly_at_tolerance(
+    tmp_path: Path,
+) -> None:
+    """Keep the inclusive centisecond tolerance boundary accepted."""
+
+    prompt = _prompt("primary", tmp_path)
+    durations = ["1.23", "1.23", "1.23", "1.25"]
+    metadata = _segment(0, 0, duration_ms=5_000)
+    metadata["duration"] = " ".join(durations)
+    metadata["phoneme"] = " ".join("zh_a" for _ in durations)
+    metadata["note_pitch"] = " ".join("57" for _ in durations)
+    metadata["note_type"] = " ".join("2" for _ in durations)
+    harness = _Harness(
+        {prompt.metadata.path: _prompt_payload()},
+        processor=_FakeProcessor(),
+    )
+
+    result = run_svs_inference(
+        _request(tmp_path, [metadata], [prompt]),
+        dependencies=harness.dependencies(),
+    )
+
+    # Four serialized notes permit 480 samples of cumulative rounding plus
+    # two 480-sample hops.  The 4.94-second sum is exactly 1,440 samples short.
+    assert result.sample_count == 120_000
+    assert result.generated_candidate_count == 1
+
+
+def test_high_precision_duration_sum_keeps_the_strict_absolute_guard(
+    tmp_path: Path,
+) -> None:
+    """Do not grant a centisecond allowance to higher-precision score input."""
+
+    prompt = _prompt("primary", tmp_path)
+    durations = ["0.334"] * 19 + ["0.344"]
+    metadata = _segment(0, 0, duration_ms=6_740)
+    metadata["duration"] = " ".join(durations)
+    metadata["phoneme"] = " ".join("zh_a" for _ in durations)
+    metadata["note_pitch"] = " ".join("57" for _ in durations)
+    metadata["note_type"] = " ".join("2" for _ in durations)
+    harness = _Harness(
+        {prompt.metadata.path: _prompt_payload()},
+        processor=_QuantizedProcessor(),
+    )
+
+    with pytest.raises(SvsInferenceError, match="absolute interval"):
+        run_svs_inference(
+            _request(tmp_path, [metadata], [prompt]),
+            dependencies=harness.dependencies(),
+        )
+    assert not harness.model.calls
+
+
+def test_high_precision_duration_rejects_drift_exactly_at_two_hops(
+    tmp_path: Path,
+) -> None:
+    """Keep the strict high-precision two-hop boundary exclusive."""
+
+    prompt = _prompt("primary", tmp_path)
+    durations = ["1.240"] * 4
+    metadata = _segment(0, 0, duration_ms=5_000)
+    metadata["duration"] = " ".join(durations)
+    metadata["phoneme"] = " ".join("zh_a" for _ in durations)
+    metadata["note_pitch"] = " ".join("57" for _ in durations)
+    metadata["note_type"] = " ".join("2" for _ in durations)
+    harness = _Harness(
+        {prompt.metadata.path: _prompt_payload()},
+        processor=_FakeProcessor(),
+    )
+
+    with pytest.raises(SvsInferenceError, match="absolute interval"):
+        run_svs_inference(
+            _request(tmp_path, [metadata], [prompt]),
+            dependencies=harness.dependencies(),
+        )
+    assert not harness.model.calls
+
+
+def test_long_score_rejects_duration_drift_beyond_the_policy_cap(
+    tmp_path: Path,
+) -> None:
+    """Reject many-note duration drift once it exceeds the interval cap."""
+
+    prompt = _prompt("primary", tmp_path)
+    durations = ["0.33"] * 20
+    metadata = _segment(0, 0, duration_ms=6_740)
+    metadata["duration"] = " ".join(durations)
+    metadata["phoneme"] = " ".join("zh_a" for _ in durations)
+    metadata["note_pitch"] = " ".join("57" for _ in durations)
+    metadata["note_type"] = " ".join("2" for _ in durations)
+    harness = _Harness(
+        {prompt.metadata.path: _prompt_payload()},
+        processor=_QuantizedProcessor(),
+    )
+
+    with pytest.raises(SvsInferenceError, match="absolute interval"):
+        run_svs_inference(
+            _request(tmp_path, [metadata], [prompt]),
+            dependencies=harness.dependencies(),
+        )
+    assert not harness.model.calls
+
+
 @pytest.mark.parametrize(
     ("duration", "frame_count", "message"),
     [

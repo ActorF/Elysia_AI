@@ -232,11 +232,31 @@ def test_runtime_scope_and_conversion_fix_every_upstream_inference_control(
     def _publisher(path: Path, sample_rate: int, samples: object) -> None:
         published.append((path, sample_rate, samples))
 
+    def _repairer(
+        input_audio: Path,
+        sample_rate: int,
+        samples: object,
+        key_shift: int,
+    ) -> object:
+        """Record that validated inference passes through the transition guard."""
+
+        calls.append(
+            (
+                "repair",
+                input_audio,
+                sample_rate,
+                samples,
+                key_shift,
+            )
+        )
+        return [0.0, 0.05, -0.05]
+
     runtime._run_request(
         request,
         api_loader=_loader,
         publisher=_publisher,
         seed_initializer=_seed,
+        artifact_repairer=_repairer,
     )
 
     assert Path.cwd() == original_directory
@@ -244,7 +264,7 @@ def test_runtime_scope_and_conversion_fix_every_upstream_inference_control(
     assert socket.getaddrinfo is original_getaddrinfo
     assert os.environ["RVC_CUDA_GRAPH"] == "1"
     assert os.environ["CUBLAS_WORKSPACE_CONFIG"] == ":16:8"
-    assert published == [(request.output_audio, 40_000, [0.0, 0.1, -0.1])]
+    assert published == [(request.output_audio, 40_000, [0.0, 0.05, -0.05])]
     assert calls == [
         ("seed", 114_514),
         ("load_api",),
@@ -263,6 +283,13 @@ def test_runtime_scope_and_conversion_fix_every_upstream_inference_control(
             0.33,
         ),
         ("get_vc", "", 0.33, 0.33),
+        (
+            "repair",
+            request.input_audio,
+            40_000,
+            [0.0, 0.1, -0.1],
+            -1,
+        ),
     ]
 
 
@@ -301,6 +328,520 @@ def test_torch_seed_resets_cpu_and_every_cuda_generator_for_each_job(
     assert calls == one_job + one_job
     assert cudnn.benchmark is False
     assert cudnn.deterministic is True
+
+
+def test_transition_guard_keeps_only_persistent_evidence() -> None:
+    """Bridge tiny holes but reject isolated evidence below persistence gates."""
+
+    np = _require_numpy()
+    flags = np.zeros(400, dtype=bool)
+    flags[20:31] = True
+    flags[200:206] = True
+    flags[208:214] = True
+    flags[380:385] = True
+
+    selected = runtime._persistent_artifact_frames(
+        flags,
+        np_module=np,
+    )
+    expected = np.zeros(400, dtype=bool)
+    expected[20:31] = True
+    expected[200:214] = True
+
+    assert selected == expected.tolist()
+
+
+def test_transition_guard_requires_joint_unvoiced_and_periodicity_evidence() -> None:
+    """Reject legal tones and weak estimates while admitting one clear defect."""
+
+    np = _require_numpy()
+    selected = runtime._candidate_artifact_frames(
+        source_f0=np.asarray([400.0, 400.0, 400.0, np.nan]),
+        source_voiced_flag=np.asarray([True, False, False, False]),
+        source_probability=np.asarray([0.99, 0.10, 0.10, 0.10]),
+        source_rms_db=np.asarray([-20.0, -20.0, -20.0, -20.0]),
+        output_f0=np.asarray([400.0, 400.0, 800.0, 400.0]),
+        output_voiced_flag=np.asarray([True, True, True, True]),
+        output_probability=np.asarray([0.99, 0.99, 0.99, 0.99]),
+        output_rms_db=np.asarray([-20.0, -20.0, -20.0, -20.0]),
+        source_periodicity=np.asarray([0.60, 0.60, 0.60, 0.60]),
+        output_periodicity=np.asarray([0.99, 0.99, 0.99, 0.99]),
+        key_shift=0,
+        np_module=np,
+    )
+
+    assert selected.tolist() == [False, True, False, False]
+
+
+def test_voicing_track_pins_the_calibrated_fast_pitch_grid() -> None:
+    """Keep the validated twenty-cent pYIN grid and analysis frame geometry."""
+
+    np = _require_numpy()
+    arguments: dict[str, object] = {}
+
+    def _pyin(_audio: object, **keywords: object) -> tuple[object, object, object]:
+        arguments.update(keywords)
+        return (
+            np.asarray([400.0, 400.0]),
+            np.asarray([True, True]),
+            np.asarray([0.99, 0.99]),
+        )
+
+    fake_librosa = SimpleNamespace(
+        pyin=_pyin,
+        feature=SimpleNamespace(
+            rms=lambda **_keywords: np.asarray([[0.25, 0.25]])
+        ),
+    )
+
+    runtime._voicing_track(
+        np.zeros(runtime._ARTIFACT_FRAME_LENGTH, dtype=np.float32),
+        np_module=np,
+        librosa_module=fake_librosa,
+    )
+
+    assert arguments["sr"] == 44_100
+    assert arguments["frame_length"] == 2_048
+    assert arguments["hop_length"] == 256
+    assert arguments["resolution"] == 0.20
+    assert arguments["fill_na"] is None
+
+
+def test_analysis_resampler_chunks_without_changing_polyphase_samples() -> None:
+    """Keep long-song block seams bit-identical to monolithic polyphase."""
+
+    np = _require_numpy()
+    signal = pytest.importorskip(
+        "scipy.signal",
+        reason="Analysis resampling requires the private RVC SciPy runtime",
+    )
+    sample_count = 800_137
+    audio = np.random.default_rng(114_514).normal(
+        0.0,
+        0.1,
+        sample_count,
+    ).astype(np.float32)
+
+    expected = signal.resample_poly(audio, 441, 400).astype(
+        np.float32,
+        copy=False,
+    )
+    actual = runtime._resample_artifact_analysis(
+        audio,
+        source_sample_rate=40_000,
+        np_module=np,
+        signal_module=signal,
+    )
+
+    assert np.array_equal(actual, expected)
+    assert len(actual) == (sample_count * 441 + 399) // 400
+    for seam in (441_000, 882_000):
+        assert np.array_equal(actual[seam - 8 : seam + 8], expected[seam - 8 : seam + 8])
+
+
+def test_voicing_track_stitches_bounded_context_segments_on_one_frame_grid() -> None:
+    """Bound long-song pYIN state without shifting or duplicating frames."""
+
+    np = _require_numpy()
+    sample_count = (
+        round(25.0 * runtime._ARTIFACT_ANALYSIS_SAMPLE_RATE) + 37
+    )
+    audio = np.arange(sample_count, dtype=np.float32)
+    analyzed_spans: list[tuple[int, int]] = []
+
+    def _frame_indexes(segment: object) -> object:
+        values = np.asarray(segment, dtype=np.float32)
+        start_frame = int(
+            round(float(values[0]) / runtime._ARTIFACT_HOP_LENGTH)
+        )
+        count = len(values) // runtime._ARTIFACT_HOP_LENGTH + 1
+        return np.arange(start_frame, start_frame + count, dtype=np.float64)
+
+    def _pyin(segment: object, **_keywords: object) -> tuple[object, object, object]:
+        values = np.asarray(segment, dtype=np.float32)
+        analyzed_spans.append((int(values[0]), len(values)))
+        frames = _frame_indexes(values)
+        return (
+            frames,
+            np.ones(len(frames), dtype=bool),
+            np.full(len(frames), 0.99, dtype=np.float32),
+        )
+
+    def _rms(**keywords: object) -> object:
+        frames = _frame_indexes(keywords["y"])
+        return np.full((1, len(frames)), 0.25, dtype=np.float32)
+
+    f0, voiced, probability, rms_db = runtime._voicing_track(
+        audio,
+        np_module=np,
+        librosa_module=SimpleNamespace(
+            pyin=_pyin,
+            feature=SimpleNamespace(rms=_rms),
+        ),
+    )
+
+    total_frames = sample_count // runtime._ARTIFACT_HOP_LENGTH + 1
+    core_frames = round(
+        runtime._ARTIFACT_PYIN_CORE_SECONDS
+        * runtime._ARTIFACT_ANALYSIS_SAMPLE_RATE
+        / runtime._ARTIFACT_HOP_LENGTH
+    )
+    expected_segments = (total_frames + core_frames - 1) // core_frames
+    assert len(analyzed_spans) == expected_segments
+    assert f0.tolist() == np.arange(total_frames, dtype=np.float64).tolist()
+    assert bool(np.all(voiced))
+    assert bool(np.all(probability == np.float32(0.99)))
+    assert bool(np.allclose(rms_db, 20.0 * np.log10(0.25)))
+    context_frames = round(
+        runtime._ARTIFACT_PYIN_CONTEXT_SECONDS
+        * runtime._ARTIFACT_ANALYSIS_SAMPLE_RATE
+        / runtime._ARTIFACT_HOP_LENGTH
+    )
+    maximum_frames = core_frames + 2 * context_frames
+    assert max(length for _start, length in analyzed_spans) <= (
+        maximum_frames * runtime._ARTIFACT_HOP_LENGTH
+    )
+
+
+def test_yin_track_stitches_the_quarter_rate_prefilter_grid() -> None:
+    """Keep fast YIN bounded and exactly aligned with the fine frame grid."""
+
+    np = _require_numpy()
+    total_frames = 2 * runtime._ARTIFACT_YIN_CORE_FRAMES + 17
+    sample_count = (
+        (total_frames - 1) * runtime._ARTIFACT_YIN_HOP_LENGTH + 19
+    )
+    audio = np.arange(sample_count, dtype=np.float32)
+    calls: list[dict[str, object]] = []
+
+    def _yin(segment: object, **keywords: object) -> object:
+        values = np.asarray(segment, dtype=np.float32)
+        calls.append({"start": int(values[0]), "length": len(values), **keywords})
+        start_frame = int(values[0]) // runtime._ARTIFACT_YIN_HOP_LENGTH
+        frame_count = len(values) // runtime._ARTIFACT_YIN_HOP_LENGTH + 1
+        return np.arange(
+            start_frame,
+            start_frame + frame_count,
+            dtype=np.float64,
+        )
+
+    result = runtime._yin_track(
+        audio,
+        np_module=np,
+        librosa_module=SimpleNamespace(yin=_yin),
+    )
+
+    assert result.tolist() == np.arange(total_frames, dtype=np.float64).tolist()
+    assert len(calls) == 3
+    assert int(calls[-1]["start"]) + int(calls[-1]["length"]) == sample_count
+    assert all(call["sr"] == 11_025 for call in calls)
+    assert all(call["frame_length"] == 512 for call in calls)
+    assert all(call["hop_length"] == 64 for call in calls)
+    assert all(call["trough_threshold"] == 0.20 for call in calls)
+    maximum_frames = (
+        runtime._ARTIFACT_YIN_CORE_FRAMES
+        + 2 * runtime._ARTIFACT_YIN_CONTEXT_FRAMES
+    )
+    assert max(int(call["length"]) for call in calls) <= (
+        (maximum_frames - 1) * runtime._ARTIFACT_YIN_HOP_LENGTH + 1
+    )
+
+
+def test_coarse_prefilter_dilates_only_joint_artifact_evidence() -> None:
+    """Use permissive joint gates and add the calibrated search radius."""
+
+    np = _require_numpy()
+    frame_count = 220
+    source_f0 = np.full(frame_count, np.nan, dtype=np.float64)
+    output_f0 = np.full(frame_count, np.nan, dtype=np.float64)
+    output_rms_db = np.full(frame_count, -120.0, dtype=np.float32)
+    source_periodicity = np.zeros(frame_count, dtype=np.float32)
+    output_periodicity = np.zeros(frame_count, dtype=np.float32)
+    ratio = 2.0 ** (2.0 / 12.0)
+
+    source_f0[100] = 400.0
+    output_f0[100] = 400.0 * ratio
+    output_rms_db[100] = -20.0
+    source_periodicity[100] = 0.70
+    output_periodicity[100] = 0.95
+
+    # Each separated decoy fails one required gate and must not open a window.
+    for index in (20, 55, 145, 190):
+        source_f0[index] = 400.0
+        output_f0[index] = 400.0 * ratio
+        output_rms_db[index] = -20.0
+        source_periodicity[index] = 0.70
+        output_periodicity[index] = 0.95
+    output_f0[20] = 800.0
+    output_rms_db[55] = -40.0
+    output_periodicity[145] = 0.90
+    source_periodicity[190] = 0.85
+
+    interest = runtime._coarse_artifact_interest(
+        source_f0=source_f0,
+        output_f0=output_f0,
+        output_rms_db=output_rms_db,
+        source_periodicity=source_periodicity,
+        output_periodicity=output_periodicity,
+        key_shift=2,
+        np_module=np,
+    )
+
+    radius = int(
+        np.ceil(
+            runtime._ARTIFACT_INTEREST_RADIUS_SECONDS
+            * runtime._ARTIFACT_ANALYSIS_SAMPLE_RATE
+            / runtime._ARTIFACT_HOP_LENGTH
+        )
+    )
+    expected = np.zeros(frame_count, dtype=bool)
+    expected[100 - radius : 100 + radius + 1] = True
+    assert interest.tolist() == expected.tolist()
+
+
+def test_coarse_prefilter_skips_frames_that_cannot_reach_acf_gates() -> None:
+    """Avoid autocorrelation for silence, absent pitch, and pitch mismatch."""
+
+    np = _require_numpy()
+    ratio = 2.0 ** (2.0 / 12.0)
+    eligible = runtime._coarse_artifact_eligibility(
+        source_f0=np.asarray([400.0, 400.0, np.nan, 400.0]),
+        output_f0=np.asarray(
+            [400.0 * ratio, 800.0, 400.0 * ratio, 400.0 * ratio]
+        ),
+        output_rms_db=np.asarray([-20.0, -20.0, -20.0, -40.0]),
+        key_shift=2,
+        np_module=np,
+    )
+
+    assert eligible.tolist() == [True, False, False, False]
+
+
+def test_fine_analysis_windows_merge_context_and_fail_open_over_budget() -> None:
+    """Merge nearby searches while refusing song-wide expensive pYIN work."""
+
+    np = _require_numpy()
+    interest = np.zeros(1_000, dtype=bool)
+    interest[100:110] = True
+    interest[175:180] = True
+    interest[500:510] = True
+    context = int(
+        np.ceil(
+            runtime._ARTIFACT_FINE_CONTEXT_SECONDS
+            * runtime._ARTIFACT_ANALYSIS_SAMPLE_RATE
+            / runtime._ARTIFACT_HOP_LENGTH
+        )
+    )
+
+    windows = runtime._fine_analysis_windows(interest, np_module=np)
+
+    assert windows == [
+        (100 - context, 180 + context),
+        (500 - context, 510 + context),
+    ]
+    widespread = np.ones(10_000, dtype=bool)
+    assert runtime._fine_analysis_windows(widespread, np_module=np) is None
+
+
+def test_fine_analysis_budget_accepts_its_boundary_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pin the inclusive budget boundary without context obscuring its math."""
+
+    np = _require_numpy()
+    monkeypatch.setattr(runtime, "_ARTIFACT_FINE_CONTEXT_SECONDS", 0.0)
+    monkeypatch.setattr(runtime, "_ARTIFACT_FINE_MINIMUM_BUDGET_SECONDS", 0.0)
+    monkeypatch.setattr(runtime, "_ARTIFACT_FINE_MAXIMUM_BUDGET_SECONDS", 1e9)
+    monkeypatch.setattr(runtime, "_ARTIFACT_FINE_BUDGET_FRACTION", 0.5)
+    at_budget = np.zeros(100, dtype=bool)
+    at_budget[:50] = True
+    over_budget = at_budget.copy()
+    over_budget[50] = True
+
+    assert runtime._fine_analysis_windows(at_budget, np_module=np) == [(0, 50)]
+    assert runtime._fine_analysis_windows(over_budget, np_module=np) is None
+
+
+def test_fine_analysis_production_budget_preserves_calibration_headroom() -> None:
+    """Pin the reviewed regional workload and the long-song hard ceiling."""
+
+    assert runtime._ARTIFACT_FINE_MINIMUM_BUDGET_SECONDS == 12.0
+    assert runtime._ARTIFACT_FINE_MAXIMUM_BUDGET_SECONDS == 30.0
+    assert runtime._ARTIFACT_FINE_BUDGET_FRACTION == 0.15
+    known_budget = min(
+        runtime._ARTIFACT_FINE_MAXIMUM_BUDGET_SECONDS,
+        max(
+            runtime._ARTIFACT_FINE_MINIMUM_BUDGET_SECONDS,
+            81.72 * runtime._ARTIFACT_FINE_BUDGET_FRACTION,
+        ),
+    )
+    long_song_budget = min(
+        runtime._ARTIFACT_FINE_MAXIMUM_BUDGET_SECONDS,
+        max(
+            runtime._ARTIFACT_FINE_MINIMUM_BUDGET_SECONDS,
+            200.0 * runtime._ARTIFACT_FINE_BUDGET_FRACTION,
+        ),
+    )
+
+    assert known_budget == pytest.approx(12.258)
+    assert known_budget > 8.7133
+    assert long_song_budget == 30.0
+
+
+def test_local_voicing_tracks_map_windows_back_to_global_frames(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Place local pYIN results exactly without treating context as evidence."""
+
+    np = _require_numpy()
+    audio = np.arange(
+        20 * runtime._ARTIFACT_HOP_LENGTH + 37,
+        dtype=np.float32,
+    )
+    spans: list[tuple[int, int, int]] = []
+
+    def _track(
+        segment: object,
+        *,
+        np_module: object,
+        librosa_module: object,
+    ) -> tuple[object, object, object, object]:
+        del np_module, librosa_module
+        values = np.asarray(segment, dtype=np.float32)
+        start = int(values[0]) // runtime._ARTIFACT_HOP_LENGTH
+        count = len(values) // runtime._ARTIFACT_HOP_LENGTH + 1
+        spans.append((start, count, len(values)))
+        return (
+            np.arange(start, start + count, dtype=np.float64),
+            np.ones(count, dtype=bool),
+            np.full(count, 0.99, dtype=np.float32),
+            np.full(count, -12.0, dtype=np.float32),
+        )
+
+    monkeypatch.setattr(runtime, "_voicing_track", _track)
+    f0, voiced, probability, rms_db = runtime._voicing_tracks_for_windows(
+        audio,
+        [(3, 6), (19, 21)],
+        total_frames=21,
+        np_module=np,
+        librosa_module=object(),
+    )
+
+    assert spans == [
+        (3, 3, 2 * runtime._ARTIFACT_HOP_LENGTH + 1),
+        (19, 2, runtime._ARTIFACT_HOP_LENGTH + 37),
+    ]
+    assert f0[3:6].tolist() == [3.0, 4.0, 5.0]
+    assert f0[19:21].tolist() == [19.0, 20.0]
+    outside = np.ones(21, dtype=bool)
+    outside[3:6] = False
+    outside[19:21] = False
+    assert bool(np.all(np.isnan(f0[outside])))
+    assert bool(np.all(~voiced[outside]))
+    assert bool(np.all(probability[outside] == 0.0))
+    assert bool(np.all(rms_db[outside] == -120.0))
+
+
+def test_periodicity_comparison_separates_tone_from_aperiodic_transition() -> None:
+    """Measure a stable oscillator strongly without mislabeling seeded noise."""
+
+    np = _require_numpy()
+    sample_count = runtime._ARTIFACT_ANALYSIS_SAMPLE_RATE * 2
+    positions = np.arange(sample_count, dtype=np.float32)
+    tone = np.sin(
+        2.0
+        * np.pi
+        * 400.0
+        * positions
+        / runtime._ARTIFACT_ANALYSIS_SAMPLE_RATE
+    ).astype(np.float32)
+    noise = np.random.default_rng(114_514).normal(
+        0.0,
+        0.25,
+        sample_count,
+    ).astype(np.float32)
+    frame_count = sample_count // runtime._ARTIFACT_HOP_LENGTH + 1
+    lags = np.full(
+        frame_count,
+        round(runtime._ARTIFACT_ANALYSIS_SAMPLE_RATE / 400.0),
+        dtype=np.int32,
+    )
+
+    tone_periodicity = runtime._periodicity_at_lags(
+        tone,
+        lags,
+        frame_count=frame_count,
+        np_module=np,
+    )
+    noise_periodicity = runtime._periodicity_at_lags(
+        noise,
+        lags,
+        frame_count=frame_count,
+        np_module=np,
+    )
+
+    interior = slice(4, -4)
+    assert float(np.median(tone_periodicity[interior])) > 0.98
+    assert abs(float(np.median(noise_periodicity[interior]))) < 0.10
+
+
+def test_periodicity_skips_unassigned_regional_pitch_rows() -> None:
+    """Keep sparse regional ACF identical without scanning zero-lag frames."""
+
+    np = _require_numpy()
+    sample_count = runtime._ARTIFACT_ANALYSIS_SAMPLE_RATE * 7
+    positions = np.arange(sample_count, dtype=np.float32)
+    tone = np.sin(
+        2.0
+        * np.pi
+        * 400.0
+        * positions
+        / runtime._ARTIFACT_ANALYSIS_SAMPLE_RATE
+    ).astype(np.float32)
+    frame_count = sample_count // runtime._ARTIFACT_HOP_LENGTH + 1
+    first_lag = round(runtime._ARTIFACT_ANALYSIS_SAMPLE_RATE / 400.0)
+    second_lag = round(runtime._ARTIFACT_ANALYSIS_SAMPLE_RATE / 500.0)
+    dense_lags = np.where(
+        np.arange(frame_count) % 2 == 0,
+        first_lag,
+        second_lag,
+    ).astype(np.int32)
+    sparse_lags = np.zeros(frame_count, dtype=np.int32)
+    selected = np.asarray([0, 511, 512, 513, 1_023, frame_count - 1])
+    sparse_lags[selected] = dense_lags[selected]
+
+    dense = runtime._periodicity_at_lags(
+        tone,
+        dense_lags,
+        frame_count=frame_count,
+        np_module=np,
+    )
+    sparse = runtime._periodicity_at_lags(
+        tone,
+        sparse_lags,
+        frame_count=frame_count,
+        np_module=np,
+    )
+
+    assert np.array_equal(sparse[selected], dense[selected])
+    outside = np.ones(frame_count, dtype=bool)
+    outside[selected] = False
+    assert bool(np.all(sparse[outside] == 0.0))
+
+
+def test_transition_guard_derives_shifted_lag_before_rounding() -> None:
+    """Prevent quantized output lags from moving source ACF decisions."""
+
+    np = _require_numpy()
+    output_lags, source_lags = runtime._pitch_lag_tracks(
+        np.asarray([703.0, np.nan, 0.0]),
+        key_shift=2,
+        np_module=np,
+    )
+
+    assert output_lags.tolist() == [63, 0, 0]
+    assert source_lags.tolist() == [70, 0, 0]
+    assert round(output_lags[0] * (2.0 ** (2.0 / 12.0))) == 71
 
 
 def test_preloaded_vendor_namespace_is_rejected_before_import_or_execution(

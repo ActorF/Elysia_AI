@@ -38,12 +38,15 @@ _MAX_TRACK_DURATION_MS: Final = 24 * 60 * 60 * 1_000
 _MAX_OFFSET_MS: Final = 60_000
 _MAX_METADATA_SEGMENTS: Final = 10_000
 _MAX_METADATA_NOTES: Final = 200_000
-# Three dense dynamic-programming tables are allocated for one segment.  This
-# product bound caps their combined resident memory even when the independent
-# note and lyric limits would otherwise permit a pathological square matrix.
+# Dense dynamic-programming tables plus interned mismatch signatures are
+# allocated for one lyric block. This product bound caps resident memory even
+# when the independent note and lyric limits permit a pathological square.
 _MAX_ALIGNMENT_DP_CELLS: Final = 262_144
 _DEFAULT_HOTWORD_CHARACTERS: Final = 2_047
 _MAX_HOTWORD_CHARACTERS: Final = 4_095
+_LRC_ONSET_EARLY_TOLERANCE_MS: Final = 100
+_LRC_LINE_START_LATE_TOLERANCE_MS: Final = 600
+_LRC_LINE_END_TOLERANCE_MS: Final = 100
 
 _TIMESTAMP_PATTERN: Final = re.compile(
     r"\[(?P<minutes>\d{1,3}):(?P<seconds>[0-5]\d)"
@@ -90,6 +93,9 @@ class SegmentLyricCorrection:
     segment_index: int
     source_text: str
     source_note_type: str
+    source_language: str
+    source_time: tuple[int, int]
+    source_duration: str
     authoritative_tokens: tuple[str, ...]
     corrected_note_tokens: tuple[str, ...]
     corrected_note_types: tuple[int, ...]
@@ -117,18 +123,44 @@ class _MetadataSegment:
     language: str
     source_text: str
     source_note_type: str
+    source_duration: str
     note_tokens: tuple[str, ...]
     note_types: tuple[int, ...]
     group_slots: tuple[tuple[int, ...], ...]
     observations: tuple[str | None, ...]
+    group_onsets_ms: tuple[int, ...]
 
 
 @dataclass(frozen=True, slots=True)
-class _SegmentLyricAssignment:
-    """Record the exact lyric tokens and source lines owned by one segment."""
+class _LyricBlock:
+    """Hold consecutive non-empty LRC lines between explicit silent gaps."""
 
+    start_ms: int
+    end_ms: int
     tokens: tuple[str, ...]
-    source_line_indexes: tuple[int, ...]
+    token_onsets_ms: tuple[int | None, ...]
+    token_line_indexes: tuple[int, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _GroupReference:
+    """Identify one voiced onset group in the global playback timeline."""
+
+    segment_index: int
+    group_index: int
+    onset_ms: int
+    observation: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class _GroupAlignment:
+    """Retain the verified alignment path and its canonical-token ownership."""
+
+    labels: tuple[str, ...]
+    note_types: tuple[int, ...]
+    canonical_indexes: tuple[int, ...]
+    exact_match_ratio: float
+    alignment_cost_ratio: float
 
 
 def _raise(code: str, message: str) -> NoReturn:
@@ -438,6 +470,42 @@ def _build_note_groups(
     return frozen_groups, observations
 
 
+def _estimate_group_onsets_ms(
+    start_ms: int,
+    end_ms: int,
+    note_durations: tuple[float, ...],
+    group_slots: tuple[tuple[int, ...], ...],
+) -> tuple[int, ...]:
+    """Place ASR onset groups on the trusted segment timeline.
+
+    SoulX duration values are relative note weights. Scaling their cumulative
+    positions to the already validated metadata interval avoids assuming a
+    vendor-specific unit while retaining the within-segment rhythmic evidence
+    needed to distinguish otherwise equal text-alignment paths.
+    """
+
+    try:
+        total_duration = math.fsum(note_durations)
+    except OverflowError:
+        _raise("invalid_metadata", "Metadata note durations have an invalid sum.")
+    if not math.isfinite(total_duration) or total_duration <= 0:
+        _raise("invalid_metadata", "Metadata note durations have an invalid sum.")
+
+    cumulative: list[float] = []
+    elapsed = 0.0
+    for duration in note_durations:
+        cumulative.append(elapsed)
+        elapsed += duration
+    interval_ms = end_ms - start_ms
+    return tuple(
+        min(
+            end_ms - 1,
+            start_ms + round(interval_ms * cumulative[slots[0]] / total_duration),
+        )
+        for slots in group_slots
+    )
+
+
 def _parse_metadata_segments(
     metadata: Sequence[Mapping[str, object]],
     track_duration_ms: int,
@@ -475,14 +543,17 @@ def _parse_metadata_segments(
             _raise("invalid_metadata", "Only Mandarin target metadata is supported.")
         source_text = record.get("text")
         source_note_type = record.get("note_type")
+        source_duration = record.get("duration")
         if not isinstance(source_text, str) or not source_text.strip():
             _raise("invalid_metadata", "Metadata text must be non-empty text.")
         if not isinstance(source_note_type, str):
             _raise("invalid_metadata", "Metadata note_type must be text.")
+        if not isinstance(source_duration, str):
+            _raise("invalid_metadata", "Metadata duration must be text.")
         note_tokens = tuple(source_text.split())
         note_types = _parse_integer_series(source_note_type, field="note_type")
         note_pitch = _parse_integer_series(record.get("note_pitch"), field="note_pitch")
-        note_duration = _parse_duration_series(record.get("duration"))
+        note_duration = _parse_duration_series(source_duration)
         phoneme = record.get("phoneme")
         if not isinstance(phoneme, str) or len(phoneme.split()) != len(note_tokens):
             _raise("invalid_metadata", "Metadata phonemes do not match the note slots.")
@@ -499,6 +570,12 @@ def _parse_metadata_segments(
             _raise("invalid_metadata", "Target metadata contains too many note slots.")
 
         group_slots, observations = _build_note_groups(note_tokens, note_types)
+        group_onsets_ms = _estimate_group_onsets_ms(
+            start_ms,
+            end_ms,
+            note_duration,
+            group_slots,
+        )
         parsed.append(
             _MetadataSegment(
                 index=segment_index,
@@ -507,203 +584,204 @@ def _parse_metadata_segments(
                 language=language,
                 source_text=source_text,
                 source_note_type=source_note_type,
+                source_duration=source_duration,
                 note_tokens=note_tokens,
                 note_types=note_types,
                 group_slots=group_slots,
                 observations=observations,
+                group_onsets_ms=group_onsets_ms,
             )
         )
     return tuple(parsed)
 
 
-def _overlap_ms(
-    left_start: int,
-    left_end: int,
-    right_start: int,
-    right_end: int,
-) -> int:
-    """Return the positive intersection length of two half-open intervals."""
+def _build_lyric_blocks(lines: tuple[TimedLyricLine, ...]) -> tuple[_LyricBlock, ...]:
+    """Join adjacent content lines while preserving explicit empty-line gaps.
 
-    return max(0, min(left_end, right_end) - max(left_start, right_start))
-
-
-def _allocate_line_token_counts(
-    line: TimedLyricLine,
-    candidates: tuple[tuple[int, int, int], ...],
-) -> tuple[int, ...]:
-    """Split one line monotonically using overlap time and remaining capacity.
-
-    Each candidate tuple contains ``(segment_index, overlap_ms, capacity)`` in
-    playback order. The initial quota is the exact floor of the line's token
-    count weighted by interval overlap. Remaining tokens go to the greatest
-    exact quota deficit while respecting each segment's unused onset slots.
-    An equal greatest deficit is rejected because timing and capacity cannot
-    prove which side of that boundary owns the next character.
-
-    This bounded apportionment avoids a token-by-segment dynamic-programming
-    matrix: one LRC line may legally overlap thousands of short SoulX slices,
-    while the line itself is bounded to 2,048 characters.
+    Ordinary LRC authenticates each line start but does not authenticate where
+    the final syllable stops. Aligning a whole consecutive block lets exact
+    later line starts resolve small timestamp drift without pretending that a
+    short line occupies an entire instrumental pause. An explicit empty line
+    closes the block, so unlabelled vocals in that gap remain untouched.
     """
 
-    token_count = len(line.tokens)
-    total_overlap = sum(overlap_ms for _index, overlap_ms, _capacity in candidates)
-    if token_count == 0 or total_overlap <= 0:
-        _raise("unassigned_lyrics", "Timed lyrics have no auditable target interval.")
-    if sum(capacity for _index, _overlap_ms, capacity in candidates) < token_count:
-        _raise(
-            "insufficient_note_capacity",
-            "Authoritative lyrics exceed the overlapping note-onset capacity.",
+    blocks: list[_LyricBlock] = []
+    block_start_ms: int | None = None
+    block_end_ms = 0
+    block_tokens: list[str] = []
+    block_onsets: list[int | None] = []
+    block_line_indexes: list[int] = []
+
+    def flush() -> None:
+        """Persist one accumulated block before starting the next interval."""
+
+        nonlocal block_start_ms, block_end_ms
+        if block_start_ms is None:
+            return
+        blocks.append(
+            _LyricBlock(
+                start_ms=block_start_ms,
+                end_ms=block_end_ms,
+                tokens=tuple(block_tokens),
+                token_onsets_ms=tuple(block_onsets),
+                token_line_indexes=tuple(block_line_indexes),
+            )
         )
+        block_start_ms = None
+        block_end_ms = 0
+        block_tokens.clear()
+        block_onsets.clear()
+        block_line_indexes.clear()
 
-    allocations = [
-        min(capacity, (token_count * overlap_ms) // total_overlap)
-        for _index, overlap_ms, capacity in candidates
-    ]
-    unassigned = token_count - sum(allocations)
-    while unassigned > 0:
-        deficits = [
-            token_count * overlap_ms - allocations[position] * total_overlap
-            if allocations[position] < capacity
-            else None
-            for position, (_index, overlap_ms, capacity) in enumerate(candidates)
-        ]
-        available = [deficit for deficit in deficits if deficit is not None]
-        if not available:
-            _raise(
-                "insufficient_note_capacity",
-                "Authoritative lyrics exceed the overlapping note-onset capacity.",
-            )
-        greatest_deficit = max(available)
-        owners = [
-            position
-            for position, deficit in enumerate(deficits)
-            if deficit == greatest_deficit
-        ]
-        if len(owners) != 1:
-            _raise(
-                "ambiguous_timing",
-                "Lyric timing cannot uniquely place a character across segments.",
-            )
-        allocations[owners[0]] += 1
-        unassigned -= 1
-    return tuple(allocations)
-
-
-def _assign_lines_to_segments(
-    lines: tuple[TimedLyricLine, ...],
-    segments: tuple[_MetadataSegment, ...],
-) -> tuple[_SegmentLyricAssignment, ...]:
-    """Assign every non-empty line token exactly once across voiced segments.
-
-    A synchronized line may cross one or more SoulX slice boundaries. Tokens
-    are kept in lyric order and partitioned by interval overlap, subject to the
-    remaining type-2 onset capacity in each segment. A non-empty line with no
-    metadata overlap fails closed: LRC timing alone cannot prove that such text
-    is merely an unsung intro, outro, translation, or stage direction.
-    """
-
-    assigned_tokens: list[list[str]] = [[] for _segment in segments]
-    assigned_line_indexes: list[list[int]] = [[] for _segment in segments]
-    remaining_capacity = [len(segment.group_slots) for segment in segments]
-    segment_cursor = 0
     for line_index, line in enumerate(lines):
         if not line.tokens:
+            flush()
             continue
-        # Both collections are ordered and internally non-overlapping. Keeping
-        # the earliest segment that may intersect this line avoids a quadratic
-        # scan at the documented 10,000-line/10,000-segment safety bounds.
-        while (
-            segment_cursor < len(segments)
-            and segments[segment_cursor].end_ms <= line.start_ms
-        ):
-            segment_cursor += 1
-        overlap_values: list[tuple[int, int]] = []
-        scan_position = segment_cursor
-        while (
-            scan_position < len(segments)
-            and segments[scan_position].start_ms < line.end_ms
-        ):
-            segment = segments[scan_position]
-            overlap_ms = _overlap_ms(
-                line.start_ms,
-                line.end_ms,
-                segment.start_ms,
-                segment.end_ms,
-            )
-            if overlap_ms > 0:
-                overlap_values.append((segment.index, overlap_ms))
-            scan_position += 1
-        overlaps = tuple(overlap_values)
-        if not overlaps:
-            _raise(
-                "unassigned_lyrics",
-                "Timed lyrics do not overlap any target metadata segment.",
-            )
-        voiced = tuple(
-            (
-                segment_index,
-                overlap_ms,
-                remaining_capacity[segment_index],
-            )
-            for segment_index, overlap_ms in overlaps
-            if segments[segment_index].group_slots
-            and remaining_capacity[segment_index] > 0
+        if block_start_ms is None:
+            block_start_ms = line.start_ms
+        block_end_ms = line.end_ms
+        block_tokens.extend(line.tokens)
+        # A line timestamp is an exact anchor only for its first character.
+        # Assigning evenly spaced times to the rest would invent word timing.
+        block_onsets.extend(
+            line.start_ms if token_index == 0 else None
+            for token_index in range(len(line.tokens))
         )
-        if not voiced:
-            _raise(
-                "insufficient_note_capacity",
-                "Timed lyrics overlap a segment with no voiced note onset.",
-            )
-        allocations = _allocate_line_token_counts(line, voiced)
-        token_cursor = 0
-        for candidate, allocation in zip(voiced, allocations, strict=True):
-            segment_index = candidate[0]
-            if allocation == 0:
-                continue
-            next_cursor = token_cursor + allocation
-            assigned_tokens[segment_index].extend(line.tokens[token_cursor:next_cursor])
-            assigned_line_indexes[segment_index].append(line_index)
-            remaining_capacity[segment_index] -= allocation
-            token_cursor = next_cursor
-        if token_cursor != len(line.tokens):
-            _raise(
-                "unassigned_lyrics",
-                "A synchronized lyric line was not assigned completely.",
-            )
+        block_line_indexes.extend(line_index for _token in line.tokens)
+    flush()
+    return tuple(blocks)
 
-    assigned_token_count = sum(len(tokens) for tokens in assigned_tokens)
-    source_token_count = sum(len(line.tokens) for line in lines)
-    if assigned_token_count != source_token_count:
-        _raise(
-            "unassigned_lyrics",
-            "Synchronized lyrics were not assigned exactly once.",
-        )
+
+def _global_group_references(
+    segments: tuple[_MetadataSegment, ...],
+) -> tuple[_GroupReference, ...]:
+    """Flatten segment onset groups into their already validated time order."""
+
     return tuple(
-        _SegmentLyricAssignment(
-            tokens=tuple(tokens),
-            source_line_indexes=tuple(line_indexes),
+        _GroupReference(
+            segment_index=segment.index,
+            group_index=group_index,
+            onset_ms=onset_ms,
+            observation=segment.observations[group_index],
         )
-        for tokens, line_indexes in zip(
-            assigned_tokens,
-            assigned_line_indexes,
-            strict=True,
-        )
+        for segment in segments
+        for group_index, onset_ms in enumerate(segment.group_onsets_ms)
     )
 
 
-def _align_groups(
+def _require_line_reference_coverage(
+    blocks: tuple[_LyricBlock, ...],
+    lines: tuple[TimedLyricLine, ...],
+    references: tuple[_GroupReference, ...],
+    segments: tuple[_MetadataSegment, ...],
+) -> None:
+    """Require plausible metadata ownership for every non-empty LRC line.
+
+    This gate preserves the distinct ``unassigned_lyrics`` failure for lyric
+    lines that have no candidate interval at all. Raw segment overlap remains
+    sufficient so the later checks can distinguish silence-only capacity and
+    bad timing. Otherwise, the same early/late tolerances as the DP windows
+    admit a legitimate boundary onset before alignment evaluates it.
+    """
+
+    block_end_by_line: dict[int, int] = {}
+    for block in blocks:
+        for line_index in dict.fromkeys(block.token_line_indexes):
+            block_end_by_line[line_index] = block.end_ms
+
+    reference_cursor = 0
+    for line_index, line in enumerate(lines):
+        if not line.tokens:
+            continue
+        if any(
+            segment.start_ms < line.end_ms and line.start_ms < segment.end_ms
+            for segment in segments
+        ):
+            # Preserve the later capacity and timing diagnostics when metadata
+            # owns the raw interval but contains only silence or a bad onset.
+            continue
+        block_end_ms = block_end_by_line.get(line_index)
+        if block_end_ms is None:
+            _raise("invalid_lrc", "A synchronized lyric line has no timing block.")
+        lower_ms = line.start_ms - _LRC_ONSET_EARLY_TOLERANCE_MS
+        upper_ms = min(
+            line.end_ms + _LRC_LINE_END_TOLERANCE_MS,
+            block_end_ms,
+        )
+        if len(line.tokens) == 1:
+            upper_ms = min(
+                upper_ms,
+                line.start_ms + _LRC_LINE_START_LATE_TOLERANCE_MS + 1,
+            )
+        while (
+            reference_cursor < len(references)
+            and references[reference_cursor].onset_ms < lower_ms
+        ):
+            reference_cursor += 1
+        if (
+            reference_cursor >= len(references)
+            or references[reference_cursor].onset_ms >= upper_ms
+        ):
+            _raise(
+                "unassigned_lyrics",
+                "Timed lyrics do not overlap any plausible voiced note onset.",
+            )
+
+
+def _block_timing_windows(
+    block: _LyricBlock,
+    lines: tuple[TimedLyricLine, ...],
+) -> tuple[tuple[int, int], ...]:
+    """Build hard onset windows from authenticated LRC line boundaries.
+
+    LRC timestamps and ASR-derived note onsets can differ slightly, so a small
+    boundary tolerance is intentional. The first word receives a larger late
+    allowance because the real singing corpus starts lines as much as 466 ms
+    after their timestamp. Keeping the end allowance narrow prevents a unique
+    text match from relocating words into the following lyric line.
+    """
+
+    windows: list[tuple[int, int]] = []
+    for token_index, line_index in enumerate(block.token_line_indexes):
+        line = lines[line_index]
+        lower_ms = line.start_ms - _LRC_ONSET_EARLY_TOLERANCE_MS
+        upper_ms = min(
+            line.end_ms + _LRC_LINE_END_TOLERANCE_MS,
+            block.end_ms,
+        )
+        if block.token_onsets_ms[token_index] is not None:
+            # Windows are half-open, hence the extra millisecond preserves the
+            # documented inclusive +600 ms allowance for integer timestamps.
+            upper_ms = min(
+                upper_ms,
+                line.start_ms + _LRC_LINE_START_LATE_TOLERANCE_MS + 1,
+            )
+        windows.append((lower_ms, upper_ms))
+    return tuple(windows)
+
+
+def _align_group_path(
     observations: tuple[str | None, ...],
     canonical: tuple[str, ...],
     *,
     minimum_exact_match_ratio: float,
     maximum_cost_ratio: float,
-) -> tuple[tuple[str, ...], tuple[int, ...], float, float]:
+    group_onsets_ms: tuple[int, ...] | None = None,
+    canonical_onsets_ms: tuple[int | None, ...] | None = None,
+    canonical_windows_ms: tuple[tuple[int, int], ...] | None = None,
+) -> _GroupAlignment:
     """Map canonical syllables monotonically onto ASR note groups with DP.
 
     Every canonical character consumes one type-2 group. Extra groups may only
-    extend the preceding canonical syllable and become type 3. Costs favor an
-    exact onset match, then an exact repeated-character extension. Equal-cost
-    paths are rejected instead of selecting an arbitrary syllable boundary.
+    extend the preceding canonical syllable and become type 3. Text costs favor
+    an exact onset match, then an exact repeated-character extension. When text
+    alone leaves multiple optimal paths, note timing and LRC timing act as a
+    lexicographic secondary cost. A final leftmost-exact cost resolves only the
+    case where the recognizer repeats the same lyric tokens after their timed
+    line start; it does not choose between mismatching observations. Paths tied
+    on all evidence are rejected instead of selecting an arbitrary boundary.
+    Optional half-open timing windows prevent a text match from moving a lyric
+    onset outside the LRC line that authorizes it.
     """
 
     group_count = len(observations)
@@ -715,6 +793,25 @@ def _align_groups(
         )
     if canonical_count == 0:
         _raise("missing_segment_lyrics", "A voiced segment has no synchronized lyrics.")
+    timing_enabled = group_onsets_ms is not None or canonical_onsets_ms is not None
+    if timing_enabled and (
+        group_onsets_ms is None
+        or canonical_onsets_ms is None
+        or len(group_onsets_ms) != group_count
+        or len(canonical_onsets_ms) != canonical_count
+    ):
+        _raise("invalid_metadata", "Lyric alignment timing evidence is incomplete.")
+    if canonical_windows_ms is not None and (
+        group_onsets_ms is None
+        or len(canonical_windows_ms) != canonical_count
+        or any(
+            type(lower_ms) is not int
+            or type(upper_ms) is not int
+            or lower_ms >= upper_ms
+            for lower_ms, upper_ms in canonical_windows_ms
+        )
+    ):
+        _raise("invalid_metadata", "Lyric alignment timing windows are incomplete.")
 
     matrix_cell_count = (group_count + 1) * (canonical_count + 1)
     if matrix_cell_count > _MAX_ALIGNMENT_DP_CELLS:
@@ -728,6 +825,14 @@ def _align_groups(
         [infinity for _canonical_index in range(canonical_count + 1)]
         for _group_index in range(group_count + 1)
     ]
+    timing_costs = [
+        [infinity for _canonical_index in range(canonical_count + 1)]
+        for _group_index in range(group_count + 1)
+    ]
+    exact_onset_position_costs = [
+        [infinity for _canonical_index in range(canonical_count + 1)]
+        for _group_index in range(group_count + 1)
+    ]
     counts = [
         [0 for _canonical_index in range(canonical_count + 1)]
         for _group_index in range(group_count + 1)
@@ -736,27 +841,115 @@ def _align_groups(
         [None for _canonical_index in range(canonical_count + 1)]
         for _group_index in range(group_count + 1)
     ]
+    unset_signature = -2
+    ambiguous_signature = -1
+    mismatch_signatures = [
+        [unset_signature for _canonical_index in range(canonical_count + 1)]
+        for _group_index in range(group_count + 1)
+    ]
+    signature_nodes: dict[tuple[int, int, int], int] = {}
+
+    def append_mismatch(
+        signature: int,
+        canonical_index: int,
+        group_index: int,
+    ) -> int:
+        """Intern an exact mismatch-position sequence without hash collisions."""
+
+        if signature == ambiguous_signature:
+            return ambiguous_signature
+        key = (signature, canonical_index, group_index)
+        existing = signature_nodes.get(key)
+        if existing is not None:
+            return existing
+        identifier = len(signature_nodes) + 1
+        signature_nodes[key] = identifier
+        return identifier
+
+    def onset_is_admissible(group_index: int, canonical_index: int) -> bool:
+        """Keep each canonical onset inside its authenticated LRC line window."""
+
+        if canonical_windows_ms is None or group_onsets_ms is None:
+            return True
+        lower_ms, upper_ms = canonical_windows_ms[canonical_index]
+        return lower_ms <= group_onsets_ms[group_index] < upper_ms
 
     # A leading extension has no syllable to extend, so the first note group
     # must carry the first canonical onset.
-    costs[1][1] = 0 if observations[0] == canonical[0] else 4
+    if not onset_is_admissible(0, 0):
+        _raise(
+            "line_timing_mismatch",
+            "A lyric onset lies outside its synchronized line window.",
+        )
+    initial_exact = observations[0] == canonical[0]
+    costs[1][1] = 0 if initial_exact else 4
+    timing_costs[1][1] = (
+        abs(group_onsets_ms[0] - canonical_onsets_ms[0])
+        if group_onsets_ms is not None
+        and canonical_onsets_ms is not None
+        and canonical_onsets_ms[0] is not None
+        else 0
+    )
+    exact_onset_position_costs[1][1] = 0
     counts[1][1] = 1
+    mismatch_signatures[1][1] = (
+        0 if initial_exact else append_mismatch(0, 0, 0)
+    )
     predecessors[1][1] = (0, 0, "onset")
 
     def update(
         next_group: int,
         next_canonical: int,
         candidate_cost: int,
+        candidate_timing_cost: int,
+        candidate_exact_onset_position_cost: int,
+        candidate_mismatch_signature: int,
         predecessor: tuple[int, int, str],
         path_count: int,
     ) -> None:
-        """Retain the best cost and cap path counts at the ambiguity boundary."""
+        """Retain leftmost exact evidence only for one mismatch placement."""
 
-        if candidate_cost < costs[next_group][next_canonical]:
+        candidate_primary = (candidate_cost, candidate_timing_cost)
+        current_primary = (
+            costs[next_group][next_canonical],
+            timing_costs[next_group][next_canonical],
+        )
+        if candidate_primary < current_primary:
             costs[next_group][next_canonical] = candidate_cost
+            timing_costs[next_group][next_canonical] = candidate_timing_cost
+            exact_onset_position_costs[next_group][next_canonical] = (
+                candidate_exact_onset_position_cost
+            )
+            mismatch_signatures[next_group][next_canonical] = (
+                candidate_mismatch_signature
+            )
             counts[next_group][next_canonical] = min(2, path_count)
             predecessors[next_group][next_canonical] = predecessor
-        elif candidate_cost == costs[next_group][next_canonical]:
+            return
+        if candidate_primary != current_primary:
+            return
+
+        current_signature = mismatch_signatures[next_group][next_canonical]
+        # Different mismatch placements are genuinely different guesses. They
+        # remain ambiguous even if one happens to place other exact tokens
+        # earlier. Identical placements may safely use the leftmost exact cost.
+        if (
+            current_signature == ambiguous_signature
+            or candidate_mismatch_signature == ambiguous_signature
+            or current_signature != candidate_mismatch_signature
+        ):
+            mismatch_signatures[next_group][next_canonical] = ambiguous_signature
+            counts[next_group][next_canonical] = 2
+            predecessors[next_group][next_canonical] = None
+            return
+        current_position_cost = exact_onset_position_costs[next_group][next_canonical]
+        if candidate_exact_onset_position_cost < current_position_cost:
+            exact_onset_position_costs[next_group][next_canonical] = (
+                candidate_exact_onset_position_cost
+            )
+            counts[next_group][next_canonical] = min(2, path_count)
+            predecessors[next_group][next_canonical] = predecessor
+        elif candidate_exact_onset_position_cost == current_position_cost:
             counts[next_group][next_canonical] = min(
                 2,
                 counts[next_group][next_canonical] + path_count,
@@ -768,6 +961,7 @@ def _align_groups(
                 continue
             groups_after_next = group_count - (used_groups + 1)
             canonical_remaining = canonical_count - used_canonical
+            current_signature = mismatch_signatures[used_groups][used_canonical]
             if groups_after_next >= canonical_remaining:
                 extension_cost = (
                     0
@@ -778,24 +972,60 @@ def _align_groups(
                     used_groups + 1,
                     used_canonical,
                     costs[used_groups][used_canonical] + extension_cost,
+                    timing_costs[used_groups][used_canonical],
+                    exact_onset_position_costs[used_groups][used_canonical],
+                    current_signature,
                     (used_groups, used_canonical, "extension"),
                     counts[used_groups][used_canonical],
                 )
-            if used_canonical < canonical_count:
-                onset_cost = (
-                    0
-                    if observations[used_groups] == canonical[used_canonical]
-                    else 4
+            if (
+                used_canonical < canonical_count
+                and onset_is_admissible(used_groups, used_canonical)
+            ):
+                onset_exact = observations[used_groups] == canonical[used_canonical]
+                onset_cost = 0 if onset_exact else 4
+                canonical_onset = (
+                    canonical_onsets_ms[used_canonical]
+                    if canonical_onsets_ms is not None
+                    else None
+                )
+                next_signature = (
+                    current_signature
+                    if onset_exact
+                    else append_mismatch(
+                        current_signature,
+                        used_canonical,
+                        used_groups,
+                    )
                 )
                 update(
                     used_groups + 1,
                     used_canonical + 1,
                     costs[used_groups][used_canonical] + onset_cost,
+                    timing_costs[used_groups][used_canonical]
+                    + (
+                        abs(group_onsets_ms[used_groups] - canonical_onset)
+                        if group_onsets_ms is not None and canonical_onset is not None
+                        else 0
+                    ),
+                    exact_onset_position_costs[used_groups][used_canonical]
+                    + (used_groups if onset_exact else 0),
+                    next_signature,
                     (used_groups, used_canonical, "onset"),
                     counts[used_groups][used_canonical],
                 )
 
-    if counts[group_count][canonical_count] != 1:
+    if counts[group_count][canonical_count] == 0:
+        if canonical_windows_ms is not None:
+            _raise(
+                "line_timing_mismatch",
+                "Lyric onsets cannot remain inside their synchronized line windows.",
+            )
+        _raise("ambiguous_alignment", "The lyric alignment path is incomplete.")
+    if (
+        counts[group_count][canonical_count] != 1
+        or mismatch_signatures[group_count][canonical_count] == ambiguous_signature
+    ):
         _raise(
             "ambiguous_alignment",
             "ASR notes admit multiple equally plausible lyric alignments.",
@@ -816,6 +1046,7 @@ def _align_groups(
 
     labels: list[str] = []
     corrected_types: list[int] = []
+    canonical_indexes: list[int] = []
     canonical_index = -1
     exact_matches = 0
     for group_index, operation in enumerate(operations):
@@ -827,19 +1058,53 @@ def _align_groups(
         else:
             corrected_types.append(3)
         labels.append(canonical[canonical_index])
+        canonical_indexes.append(canonical_index)
 
     exact_match_ratio = exact_matches / canonical_count
     maximum_cost = 4 * canonical_count + 3 * (group_count - canonical_count)
-    alignment_cost_ratio = costs[group_count][canonical_count] / max(1, maximum_cost)
+    alignment_cost_ratio = costs[group_count][canonical_count] / max(
+        1,
+        maximum_cost,
+    )
     if exact_match_ratio < minimum_exact_match_ratio:
         _raise("low_coverage", "ASR and synchronized lyrics have insufficient overlap.")
     if alignment_cost_ratio > maximum_cost_ratio:
         _raise("low_coverage", "ASR-to-lyric alignment cost is too high.")
+    return _GroupAlignment(
+        labels=tuple(labels),
+        note_types=tuple(corrected_types),
+        canonical_indexes=tuple(canonical_indexes),
+        exact_match_ratio=exact_match_ratio,
+        alignment_cost_ratio=alignment_cost_ratio,
+    )
+
+
+def _align_groups(
+    observations: tuple[str | None, ...],
+    canonical: tuple[str, ...],
+    *,
+    minimum_exact_match_ratio: float,
+    maximum_cost_ratio: float,
+    group_onsets_ms: tuple[int, ...] | None = None,
+    canonical_onsets_ms: tuple[int | None, ...] | None = None,
+    canonical_windows_ms: tuple[tuple[int, int], ...] | None = None,
+) -> tuple[tuple[str, ...], tuple[int, ...], float, float]:
+    """Expose the compact alignment result used by focused unit tests."""
+
+    alignment = _align_group_path(
+        observations,
+        canonical,
+        minimum_exact_match_ratio=minimum_exact_match_ratio,
+        maximum_cost_ratio=maximum_cost_ratio,
+        group_onsets_ms=group_onsets_ms,
+        canonical_onsets_ms=canonical_onsets_ms,
+        canonical_windows_ms=canonical_windows_ms,
+    )
     return (
-        tuple(labels),
-        tuple(corrected_types),
-        exact_match_ratio,
-        alignment_cost_ratio,
+        alignment.labels,
+        alignment.note_types,
+        alignment.exact_match_ratio,
+        alignment.alignment_cost_ratio,
     )
 
 
@@ -896,10 +1161,12 @@ def plan_metadata_lyric_corrections(
 ) -> LyricsAlignmentPlan:
     """Build a fail-closed Mandarin lyric correction plan for SoulX metadata.
 
-    Synchronized line intervals select the authoritative lyric text for each
-    target segment. Dynamic programming then aligns the segment's ASR onset
-    sequence to those characters and marks surplus onsets as melisma sustains.
-    The function never mutates metadata and never generates phonemes.
+    Consecutive non-empty LRC lines form independently auditable lyric blocks.
+    Dynamic programming aligns each block across the global note timeline, so
+    a SoulX segment boundary cannot split a short line merely because the next
+    line starts later. Explicit empty LRC intervals remain outside correction;
+    unlabelled ad-libs or spoken audio there retain their ASR text. The function
+    never mutates metadata and never generates phonemes.
 
     Args:
         metadata: SoulX target metadata objects in chronological order.
@@ -932,53 +1199,169 @@ def plan_metadata_lyric_corrections(
     synchronized_lines = parse_synced_lrc(synced_lrc, duration_ms)
     _validate_plain_lyrics(plain_lyrics, synchronized_lines)
     segments = _parse_metadata_segments(metadata, duration_ms)
-    segment_assignments = _assign_lines_to_segments(synchronized_lines, segments)
+    blocks = _build_lyric_blocks(synchronized_lines)
+    references = _global_group_references(segments)
+    _require_line_reference_coverage(
+        blocks,
+        synchronized_lines,
+        references,
+        segments,
+    )
 
-    corrections: list[SegmentLyricCorrection] = []
-    for segment, assignment in zip(segments, segment_assignments, strict=True):
-        authoritative = assignment.tokens
-        line_indexes = assignment.source_line_indexes
-        if not segment.group_slots:
-            if authoritative:
+    group_labels = [
+        [segment.note_tokens[slots[0]] for slots in segment.group_slots]
+        for segment in segments
+    ]
+    group_types = [
+        [segment.note_types[slots[0]] for slots in segment.group_slots]
+        for segment in segments
+    ]
+    aligned_types: list[list[int | None]] = [
+        [None for _group in segment.group_slots] for segment in segments
+    ]
+    aligned_line_indexes: list[list[int | None]] = [
+        [None for _group in segment.group_slots] for segment in segments
+    ]
+
+    # Blocks and references are both ordered. Advancing one cursor keeps the
+    # selection linear at the documented 200,000-note safety ceiling.
+    reference_cursor = 0
+    for block in blocks:
+        selection_start_ms = block.start_ms - _LRC_ONSET_EARLY_TOLERANCE_MS
+        while (
+            reference_cursor < len(references)
+            and references[reference_cursor].onset_ms < selection_start_ms
+        ):
+            reference_cursor += 1
+        block_end_cursor = reference_cursor
+        while (
+            block_end_cursor < len(references)
+            and references[block_end_cursor].onset_ms < block.end_ms
+        ):
+            block_end_cursor += 1
+        block_references = references[reference_cursor:block_end_cursor]
+        reference_cursor = block_end_cursor
+        if not block_references:
+            overlaps_metadata = any(
+                segment.start_ms < block.end_ms
+                and block.start_ms < segment.end_ms
+                for segment in segments
+            )
+            if overlaps_metadata:
                 _raise(
                     "insufficient_note_capacity",
-                    "Lyrics overlap a metadata segment with no voiced note onset.",
+                    "Timed lyrics overlap metadata with no voiced note onset.",
                 )
-            corrections.append(
-                SegmentLyricCorrection(
-                    segment_index=segment.index,
-                    source_text=segment.source_text,
-                    source_note_type=segment.source_note_type,
-                    authoritative_tokens=(),
-                    corrected_note_tokens=segment.note_tokens,
-                    corrected_note_types=segment.note_types,
-                    source_line_indexes=line_indexes,
-                    exact_match_ratio=1.0,
-                    alignment_cost_ratio=0.0,
-                )
-            )
-            continue
-        if not authoritative:
             _raise(
-                "missing_segment_lyrics",
-                "A voiced metadata segment has no overlapping synchronized lyrics.",
+                "unassigned_lyrics",
+                "Timed lyrics do not overlap any target metadata segment.",
             )
-        labels, group_types, coverage, cost_ratio = _align_groups(
-            segment.observations,
-            authoritative,
+
+        alignment = _align_group_path(
+            tuple(reference.observation for reference in block_references),
+            block.tokens,
             minimum_exact_match_ratio=float(minimum_exact_match_ratio),
             maximum_cost_ratio=float(maximum_cost_ratio),
+            group_onsets_ms=tuple(
+                reference.onset_ms for reference in block_references
+            ),
+            canonical_onsets_ms=block.token_onsets_ms,
+            canonical_windows_ms=_block_timing_windows(block, synchronized_lines),
         )
+        for reference, label, note_type, canonical_index in zip(
+            block_references,
+            alignment.labels,
+            alignment.note_types,
+            alignment.canonical_indexes,
+            strict=True,
+        ):
+            group_labels[reference.segment_index][reference.group_index] = label
+            group_types[reference.segment_index][reference.group_index] = note_type
+            aligned_types[reference.segment_index][reference.group_index] = note_type
+            aligned_line_indexes[reference.segment_index][reference.group_index] = (
+                block.token_line_indexes[canonical_index]
+            )
+
+    corrections: list[SegmentLyricCorrection] = []
+    for segment in segments:
+        segment_aligned_types = aligned_types[segment.index]
+        segment_line_indexes = aligned_line_indexes[segment.index]
+        authoritative = tuple(
+            group_labels[segment.index][group_index]
+            for group_index, note_type in enumerate(segment_aligned_types)
+            if note_type == 2
+        )
+        line_indexes = tuple(
+            dict.fromkeys(
+                line_index
+                for line_index in segment_line_indexes
+                if line_index is not None
+            )
+        )
+
+        # Each metadata slice is synthesized independently. If a melisma began
+        # in the preceding slice, the first local group must restart as type 2;
+        # retaining its verified label while normalizing only this boundary is
+        # the representable equivalent of a cross-slice sustain.
+        if group_types[segment.index] and group_types[segment.index][0] == 3:
+            group_types[segment.index][0] = 2
+
         corrected_tokens, corrected_types = _expand_group_corrections(
             segment,
-            labels,
-            group_types,
+            tuple(group_labels[segment.index]),
+            tuple(group_types[segment.index]),
         )
+
+        exact_matches = sum(
+            1
+            for group_index, note_type in enumerate(segment_aligned_types)
+            if note_type == 2
+            and segment.observations[group_index]
+            == group_labels[segment.index][group_index]
+        )
+        onset_count = len(authoritative)
+        extension_indexes = tuple(
+            group_index
+            for group_index, note_type in enumerate(segment_aligned_types)
+            if note_type == 3
+        )
+        local_cost = (
+            4 * (onset_count - exact_matches)
+            + sum(
+                0
+                if segment.observations[group_index]
+                == group_labels[segment.index][group_index]
+                else 3
+                for group_index in extension_indexes
+            )
+        )
+        maximum_local_cost = 4 * onset_count + 3 * len(extension_indexes)
+        coverage = exact_matches / onset_count if onset_count else 1.0
+        cost_ratio = local_cost / maximum_local_cost if maximum_local_cost else 0.0
+        onset_cost_ratio = (
+            (onset_count - exact_matches) / onset_count if onset_count else 0.0
+        )
+        # SoulX synthesizes each metadata slice independently. Rechecking its
+        # canonical onsets prevents strong neighboring slices from masking a
+        # completely unrelated local transcription. Sustain observations are
+        # excluded because a legitimate cross-slice melisma can retain the
+        # preceding lyric while the recognizer proposes a new word.
+        if onset_count and (
+            coverage < minimum_exact_match_ratio
+            or onset_cost_ratio > maximum_cost_ratio
+        ):
+            _raise(
+                "low_coverage",
+                "A target metadata segment has insufficient local lyric overlap.",
+            )
         corrections.append(
             SegmentLyricCorrection(
                 segment_index=segment.index,
                 source_text=segment.source_text,
                 source_note_type=segment.source_note_type,
+                source_language=segment.language,
+                source_time=(segment.start_ms, segment.end_ms),
+                source_duration=segment.source_duration,
                 authoritative_tokens=authoritative,
                 corrected_note_tokens=corrected_tokens,
                 corrected_note_types=corrected_types,
@@ -1035,13 +1418,23 @@ def render_corrected_metadata(
     ):
         if not isinstance(record, Mapping):
             _raise("invalid_metadata", "Every target metadata segment must be an object.")
+        record_time = record.get("time")
+        language = record.get("language")
         if (
             correction.segment_index != segment_index
             or record.get("text") != correction.source_text
             or record.get("note_type") != correction.source_note_type
+            or language != correction.source_language
+            or record.get("duration") != correction.source_duration
+            or not isinstance(record_time, (list, tuple))
+            or len(record_time) != 2
+            or any(type(value) is not int for value in record_time)
+            or (record_time[0], record_time[1]) != correction.source_time
         ):
-            _raise("stale_plan", "Metadata text or note types changed after planning.")
-        language = record.get("language")
+            _raise(
+                "stale_plan",
+                "Metadata text, language, note types, or timing changed after planning.",
+            )
         if not isinstance(language, str):
             _raise("invalid_metadata", "Metadata language is missing.")
 

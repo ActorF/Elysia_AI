@@ -13,6 +13,10 @@ control is a bounded key shift of minus two through plus two semitones.
 The parent process is responsible for digest-pinning the private assets.  This
 process independently rejects redirected paths, existing output files,
 non-CUDA fallback, unexpected model metadata, and malformed inference output.
+After inference, a language-independent transition guard compares the source
+and converted vocals.  It replaces only sustained, high-confidence false
+voicing with a quiet high-pass source-consonant layer; ordinary voiced frames
+and isolated pitch estimates remain byte-for-byte on the upstream path.
 It also disables Python networking, Hugging Face online access, and CUDA Graph
 capture before any vendor module is imported.  CUDA Graph capture is unsafe for
 full songs because upstream caches a separate graph for each distinct segment
@@ -33,6 +37,7 @@ from dataclasses import dataclass
 import errno
 import importlib
 from importlib.machinery import ModuleSpec
+import math
 import os
 from pathlib import Path
 import secrets
@@ -40,7 +45,10 @@ import socket
 import stat
 import sys
 from types import ModuleType
-from typing import Callable, Iterator, NoReturn, Optional, Sequence
+from typing import Any, Callable, Iterator, NoReturn, Optional, Sequence, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from numpy.typing import NDArray
 
 
 _SPEAKER_ID = 0
@@ -57,6 +65,44 @@ _MAX_INPUT_BYTES = 2 * 1024 * 1024 * 1024
 _MAX_ASSET_BYTES = 8 * 1024 * 1024 * 1024
 _MAX_OUTPUT_SAMPLES = _MODEL_SAMPLE_RATE * 15 * 60
 _INFERENCE_SEED = 114_514
+_ARTIFACT_ANALYSIS_SAMPLE_RATE = 44_100
+_ARTIFACT_FRAME_LENGTH = 2_048
+_ARTIFACT_HOP_LENGTH = 256
+_ARTIFACT_F0_MIN_HZ = 70.0
+_ARTIFACT_F0_MAX_HZ = 900.0
+_ARTIFACT_PITCH_RESOLUTION = 0.20
+_ARTIFACT_RESAMPLE_CORE_SECONDS = 10.0
+_ARTIFACT_PYIN_CORE_SECONDS = 10.0
+_ARTIFACT_PYIN_CONTEXT_SECONDS = 2.0
+_ARTIFACT_YIN_SAMPLE_RATE = 11_025
+_ARTIFACT_YIN_FRAME_LENGTH = 512
+_ARTIFACT_YIN_HOP_LENGTH = 64
+_ARTIFACT_YIN_CORE_FRAMES = 2_048
+_ARTIFACT_YIN_CONTEXT_FRAMES = 4
+_ARTIFACT_YIN_TROUGH_THRESHOLD = 0.20
+_ARTIFACT_PREFILTER_OUTPUT_PERIODICITY = 0.93
+_ARTIFACT_PREFILTER_PERIODICITY_INCREASE = 0.12
+_ARTIFACT_INTEREST_RADIUS_SECONDS = 0.100
+_ARTIFACT_FINE_CONTEXT_SECONDS = 0.250
+_ARTIFACT_FINE_MINIMUM_BUDGET_SECONDS = 12.0
+_ARTIFACT_FINE_MAXIMUM_BUDGET_SECONDS = 30.0
+_ARTIFACT_FINE_BUDGET_FRACTION = 0.15
+_ARTIFACT_SOURCE_ACTIVE_DBFS = -45.0
+_ARTIFACT_OUTPUT_ACTIVE_DBFS = -36.0
+_ARTIFACT_OUTPUT_VOICED_PROBABILITY = 0.90
+_ARTIFACT_OUTPUT_PERIODICITY = 0.95
+_ARTIFACT_PERIODICITY_INCREASE = 0.18
+_ARTIFACT_MAX_PITCH_ERROR_CENTS = 150.0
+_ARTIFACT_MAX_GAP_SECONDS = 0.012
+_ARTIFACT_MIN_RUN_SECONDS = 0.060
+_ARTIFACT_DENSITY_WINDOW_SECONDS = 1.0
+_ARTIFACT_MIN_DENSITY = 0.10
+_ARTIFACT_MAX_ANALYSIS_GAIN_DB = 12.0
+_ARTIFACT_MAX_REPAIR_FRACTION = 0.15
+_ARTIFACT_SOURCE_HIGHPASS_HZ = 3_200.0
+_ARTIFACT_REPAIR_DEPTH = 1.0
+_ARTIFACT_SOURCE_GAIN = 0.10
+_ARTIFACT_FADE_SECONDS = 0.005
 _FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 _OPTIONS = (
     "--source-root",
@@ -664,12 +710,1197 @@ def _seed_torch_inference() -> None:
         _fail("configuration_failed")
 
 
+def _active_rms_db(audio: object, *, sample_rate: int, np_module: Any) -> float:
+    """Estimate active RMS while preventing silence from setting the level."""
+
+    np = np_module
+    samples = np.asarray(audio, dtype=np.float32)
+    frame_samples = max(1, int(round(0.4 * sample_rate)))
+    hop_samples = max(1, int(round(0.1 * sample_rate)))
+    if len(samples) < frame_samples:
+        powers = np.asarray(
+            [float(np.mean(np.square(samples, dtype=np.float64)))],
+            dtype=np.float64,
+        )
+    else:
+        powers = np.asarray(
+            [
+                float(
+                    np.mean(
+                        np.square(
+                            samples[start : start + frame_samples],
+                            dtype=np.float64,
+                        )
+                    )
+                )
+                for start in range(
+                    0,
+                    len(samples) - frame_samples + 1,
+                    hop_samples,
+                )
+            ],
+            dtype=np.float64,
+        )
+    levels = 10.0 * np.log10(np.maximum(powers, 1e-12))
+    above_floor = levels > -70.0
+    if not bool(np.any(above_floor)):
+        return -120.0
+    relative_gate = float(np.max(levels[above_floor]) - 30.0)
+    selected = powers[above_floor & (levels >= relative_gate)]
+    return float(10.0 * np.log10(max(float(np.mean(selected)), 1e-12)))
+
+
+def _match_analysis_level(
+    source: object,
+    output: object,
+    *,
+    np_module: Any,
+) -> NDArray[Any]:
+    """Level-match detector audio without changing the waveform we publish.
+
+    The comparison is bounded to twelve decibels and exists only so pYIN and
+    RMS gates compare source and converted vocals at equivalent active levels.
+    The repair itself always uses the untouched RVC result.
+    """
+
+    np = np_module
+    source_level = _active_rms_db(
+        source,
+        sample_rate=_ARTIFACT_ANALYSIS_SAMPLE_RATE,
+        np_module=np,
+    )
+    output_level = _active_rms_db(
+        output,
+        sample_rate=_ARTIFACT_ANALYSIS_SAMPLE_RATE,
+        np_module=np,
+    )
+    gain_db = min(
+        _ARTIFACT_MAX_ANALYSIS_GAIN_DB,
+        max(-_ARTIFACT_MAX_ANALYSIS_GAIN_DB, source_level - output_level),
+    )
+    return np.asarray(output, dtype=np.float32) * (10.0 ** (gain_db / 20.0))
+
+
+def _close_artifact_gaps(flags: Sequence[object], maximum_frames: int) -> list[bool]:
+    """Fill only short false runs enclosed by artifact evidence on both sides."""
+
+    closed = [bool(value) for value in flags]
+    index = 0
+    while index < len(closed):
+        if closed[index]:
+            index += 1
+            continue
+        gap_start = index
+        while index < len(closed) and not closed[index]:
+            index += 1
+        if (
+            gap_start > 0
+            and index < len(closed)
+            and index - gap_start <= maximum_frames
+        ):
+            closed[gap_start:index] = [True] * (index - gap_start)
+    return closed
+
+
+def _persistent_artifact_frames(
+    flags: Sequence[object],
+    *,
+    np_module: Any,
+) -> list[bool]:
+    """Retain sustained or locally repeated false-voicing evidence.
+
+    A single pitch-estimation frame is not actionable.  The guard closes at
+    most twelve milliseconds of internal uncertainty, then keeps either a
+    continuous sixty-millisecond event or suspicious frames occupying at least
+    ten percent of a centered one-second window.  Density qualifies only the
+    already suspicious frames, never their clean surrounding context.
+    """
+
+    np = np_module
+    hop_seconds = _ARTIFACT_HOP_LENGTH / _ARTIFACT_ANALYSIS_SAMPLE_RATE
+    maximum_gap = max(1, int(round(_ARTIFACT_MAX_GAP_SECONDS / hop_seconds)))
+    minimum_run = int(math.ceil(_ARTIFACT_MIN_RUN_SECONDS / hop_seconds))
+    density_window = max(
+        1,
+        int(round(_ARTIFACT_DENSITY_WINDOW_SECONDS / hop_seconds)),
+    )
+    closed = np.asarray(
+        _close_artifact_gaps(flags, maximum_gap),
+        dtype=bool,
+    )
+    density_window = min(density_window, max(1, len(closed)))
+    long_members = np.zeros(len(closed), dtype=bool)
+    run_start = None  # type: Optional[int]
+    for index, value in enumerate(np.append(closed, False)):
+        if value and run_start is None:
+            run_start = index
+        elif not value and run_start is not None:
+            if index - run_start >= minimum_run:
+                long_members[run_start:index] = True
+            run_start = None
+
+    kernel = np.ones(density_window, dtype=np.float32)
+    numerator = np.convolve(closed.astype(np.float32), kernel, mode="same")
+    denominator = np.convolve(
+        np.ones(len(closed), dtype=np.float32),
+        kernel,
+        mode="same",
+    )
+    density = numerator / np.maximum(denominator, 1.0)
+    selected = closed & (
+        long_members | (density >= _ARTIFACT_MIN_DENSITY)
+    )
+    return _close_artifact_gaps(selected.tolist(), maximum_gap)
+
+
+def _periodicity_at_lags(
+    audio: object,
+    lags: object,
+    *,
+    frame_count: int,
+    np_module: Any,
+) -> NDArray[Any]:
+    """Measure normalized autocorrelation at one pitch lag per analysis frame.
+
+    Comparing the converted pitch lag with the key-adjusted corresponding lag
+    in the source distinguishes an injected stable oscillator from a legitimate
+    tonal-language contour.  Bounded batches prevent a full song from creating
+    a song-sized frame matrix while preserving the Hann-windowed detector used
+    by the fixed evaluation harness.  Rows with no valid pitch lag are skipped
+    before frame materialization because regional pYIN intentionally leaves
+    most of a song unassigned; scanning those zero-lag rows recreated the same
+    long post-inference pause that regional analysis is designed to avoid.
+    """
+
+    np = np_module
+    samples = np.asarray(audio, dtype=np.float32)
+    padded = np.pad(
+        samples,
+        (_ARTIFACT_FRAME_LENGTH // 2, _ARTIFACT_FRAME_LENGTH // 2),
+        mode="constant",
+    )
+    requested = np.asarray(lags, dtype=np.int32)[:frame_count]
+    result = np.zeros(len(requested), dtype=np.float32)
+    offsets = np.arange(_ARTIFACT_FRAME_LENGTH, dtype=np.int64)
+    positions = np.arange(_ARTIFACT_FRAME_LENGTH, dtype=np.float32)
+    window = (
+        0.5
+        - 0.5
+        * np.cos(2.0 * np.pi * positions / _ARTIFACT_FRAME_LENGTH)
+    ).astype(np.float32)
+    for batch_start in range(0, len(requested), 512):
+        batch_end = min(len(requested), batch_start + 512)
+        batch_lags = requested[batch_start:batch_end]
+        valid_rows = np.flatnonzero(
+            (batch_lags >= 1)
+            & (batch_lags < _ARTIFACT_FRAME_LENGTH // 2)
+        )
+        if len(valid_rows) == 0:
+            continue
+        frame_indexes = batch_start + valid_rows
+        sample_indexes = (
+            frame_indexes[:, np.newaxis] * _ARTIFACT_HOP_LENGTH
+            + offsets[np.newaxis, :]
+        )
+        frames = padded[sample_indexes]
+        frames = (
+            frames - np.mean(frames, axis=1, keepdims=True)
+        ) * window
+        valid_lags = batch_lags[valid_rows]
+        for lag_value in np.unique(valid_lags):
+            lag = int(lag_value)
+            rows = np.flatnonzero(valid_lags == lag)
+            left = frames[rows, :-lag]
+            right = frames[rows, lag:]
+            numerator = np.einsum("ij,ij->i", left, right)
+            denominator = np.sqrt(
+                np.einsum("ij,ij->i", left, left)
+                * np.einsum("ij,ij->i", right, right)
+            )
+            result[frame_indexes[rows]] = np.divide(
+                numerator,
+                denominator,
+                out=np.zeros_like(numerator, dtype=np.float32),
+                where=denominator > 1e-12,
+            )
+    return result
+
+
+def _pitch_lag_tracks(
+    output_f0: object,
+    *,
+    key_shift: int,
+    np_module: Any,
+) -> tuple[NDArray[Any], NDArray[Any]]:
+    """Derive output and key-corresponding source lags independently.
+
+    The source lag must use the unrounded frequency.  Scaling an already
+    quantized output lag can shift normalized autocorrelation by a full guard
+    threshold on high notes and make the detector disagree with calibration.
+    """
+
+    np = np_module
+    output_pitch = np.asarray(output_f0, dtype=np.float64)
+    finite = np.isfinite(output_pitch) & (output_pitch > 0.0)
+    output_lags = np.zeros(len(output_pitch), dtype=np.int32)
+    source_lags = np.zeros(len(output_pitch), dtype=np.int32)
+    output_lags[finite] = np.rint(
+        _ARTIFACT_ANALYSIS_SAMPLE_RATE / output_pitch[finite]
+    ).astype(np.int32)
+    source_lags[finite] = np.rint(
+        _ARTIFACT_ANALYSIS_SAMPLE_RATE
+        * (2.0 ** (key_shift / 12.0))
+        / output_pitch[finite]
+    ).astype(np.int32)
+    return output_lags, source_lags
+
+
+def _read_source_vocal(
+    path: Path,
+    *,
+    output_sample_rate: int,
+    output_samples: int,
+    np_module: Any,
+    signal_module: Any,
+) -> NDArray[Any]:
+    """Load, resample, and length-match the already validated input WAV."""
+
+    np = np_module
+    try:
+        import soundfile as sf  # type: ignore[import-not-found]
+
+        source, source_rate = sf.read(
+            str(path),
+            dtype="float32",
+            always_2d=True,
+        )
+        source = np.asarray(source, dtype=np.float32)
+        if (
+            source.ndim != 2
+            or source.shape[0] == 0
+            or not 1 <= source.shape[1] <= 2
+            or type(source_rate) is not int
+            or source_rate < 8_000
+            or source_rate > 192_000
+            or not bool(np.all(np.isfinite(source)))
+        ):
+            _fail("invalid_audio")
+        mono = np.mean(source, axis=1, dtype=np.float32)
+        divisor = math.gcd(source_rate, output_sample_rate)
+        resampled = signal_module.resample_poly(
+            mono,
+            output_sample_rate // divisor,
+            source_rate // divisor,
+        ).astype(np.float32, copy=False)
+        if len(resampled) >= output_samples:
+            return resampled[:output_samples]
+        return np.pad(resampled, (0, output_samples - len(resampled)))
+    except _RvcRuntimeFailure:
+        raise
+    except BaseException:
+        _fail("invalid_audio")
+
+
+def _resample_artifact_analysis(
+    audio: object,
+    *,
+    source_sample_rate: int,
+    np_module: Any,
+    signal_module: Any,
+) -> NDArray[Any]:
+    """Resample detector audio in phase-aligned, result-identical blocks.
+
+    SciPy's polyphase output is local: each output depends on only the finite
+    FIR support around its corresponding input position.  Core and context
+    boundaries are therefore aligned to the reduced ratio denominator, and a
+    whole filter support is retained on each side before cropping by exact
+    integer output coordinates.  This produces element-for-element the same
+    waveform as one monolithic ``resample_poly`` call while avoiding its severe
+    long-array performance path on multi-minute 40-kHz songs.
+    """
+
+    np = np_module
+    samples = np.asarray(audio, dtype=np.float32)
+    if samples.ndim != 1 or len(samples) == 0:
+        _fail("invalid_audio")
+    divisor = math.gcd(source_sample_rate, _ARTIFACT_ANALYSIS_SAMPLE_RATE)
+    up = _ARTIFACT_ANALYSIS_SAMPLE_RATE // divisor
+    down = source_sample_rate // divisor
+    if up == down == 1:
+        return samples
+
+    total_output_samples = (len(samples) * up + down - 1) // down
+    output = np.empty(total_output_samples, dtype=np.float32)
+    target_core_samples = max(
+        down,
+        int(round(_ARTIFACT_RESAMPLE_CORE_SECONDS * source_sample_rate)),
+    )
+    core_samples = max(
+        down,
+        (target_core_samples // down) * down,
+    )
+    # resample_poly's default FIR half-length is ten times the larger reduced
+    # rate.  Rounding its input-domain support up to a denominator boundary
+    # keeps both the convolution phase and every crop coordinate global.
+    filter_support = (
+        10 * max(up, down) + up - 1
+    ) // up + 1
+    context_samples = (
+        (filter_support + down - 1) // down
+    ) * down
+
+    for core_start in range(0, len(samples), core_samples):
+        core_end = min(len(samples), core_start + core_samples)
+        segment_start = max(0, core_start - context_samples)
+        segment_end = min(len(samples), core_end + context_samples)
+        segment = signal_module.resample_poly(
+            samples[segment_start:segment_end],
+            up,
+            down,
+        ).astype(np.float32, copy=False)
+        output_start = core_start * up // down
+        output_end = (
+            total_output_samples
+            if core_end == len(samples)
+            else core_end * up // down
+        )
+        local_start = (core_start - segment_start) * up // down
+        local_end = local_start + output_end - output_start
+        if local_end > len(segment):
+            _fail("invalid_audio")
+        output[output_start:output_end] = segment[local_start:local_end]
+    return output
+
+
+def _frame_rms_db(
+    audio: object,
+    *,
+    np_module: Any,
+    librosa_module: Any,
+) -> NDArray[Any]:
+    """Measure frame RMS on the detector's canonical 44.1-kHz grid."""
+
+    np = np_module
+    rms = librosa_module.feature.rms(
+        y=np.asarray(audio, dtype=np.float32),
+        frame_length=_ARTIFACT_FRAME_LENGTH,
+        hop_length=_ARTIFACT_HOP_LENGTH,
+        center=True,
+    )[0]
+    return np.asarray(
+        20.0 * np.log10(np.maximum(rms, 1e-9)),
+        dtype=np.float32,
+    )
+
+
+def _voicing_track_segment(
+    audio: object,
+    *,
+    np_module: Any,
+    librosa_module: Any,
+) -> tuple[NDArray[Any], NDArray[Any], NDArray[Any], NDArray[Any]]:
+    """Analyze one memory-bounded pYIN segment on the shared frame grid."""
+
+    np = np_module
+    segment = np.asarray(audio, dtype=np.float32)
+    f0, voiced, probability = librosa_module.pyin(
+        segment,
+        fmin=_ARTIFACT_F0_MIN_HZ,
+        fmax=_ARTIFACT_F0_MAX_HZ,
+        sr=_ARTIFACT_ANALYSIS_SAMPLE_RATE,
+        frame_length=_ARTIFACT_FRAME_LENGTH,
+        hop_length=_ARTIFACT_HOP_LENGTH,
+        center=True,
+        resolution=_ARTIFACT_PITCH_RESOLUTION,
+        fill_na=None,
+    )
+    rms_db = _frame_rms_db(
+        segment,
+        np_module=np,
+        librosa_module=librosa_module,
+    )
+    frame_count = min(len(f0), len(voiced), len(probability), len(rms_db))
+    if frame_count == 0:
+        _fail("invalid_audio")
+    return (
+        np.asarray(f0[:frame_count], dtype=np.float64),
+        np.asarray(voiced[:frame_count], dtype=bool),
+        np.nan_to_num(
+            np.asarray(probability[:frame_count], dtype=np.float32),
+            nan=0.0,
+            posinf=0.0,
+            neginf=0.0,
+        ),
+        np.asarray(rms_db[:frame_count], dtype=np.float32),
+    )
+
+
+def _voicing_track(
+    audio: object,
+    *,
+    np_module: Any,
+    librosa_module: Any,
+) -> tuple[NDArray[Any], NDArray[Any], NDArray[Any], NDArray[Any]]:
+    """Return aligned pYIN and RMS tracks without whole-song Viterbi state.
+
+    Twenty-cent pitch bins remain far narrower than the detector's 150-cent
+    agreement bound.  Ten-second cores with two seconds of context preserve
+    the calibrated decisions at joins while bounding librosa 0.9's dense pYIN
+    state; a continuous four-minute call otherwise requires multi-gigabyte
+    private commit and can spend many minutes paging after RVC inference.
+    ``fill_na=None`` retains pYIN's best candidate on unvoiced frames because
+    those are precisely the transition frames whose source/output pitch
+    agreement must be assessed.
+    """
+
+    np = np_module
+    samples = np.asarray(audio, dtype=np.float32)
+    total_frames = len(samples) // _ARTIFACT_HOP_LENGTH + 1
+    core_frames = max(
+        1,
+        int(
+            round(
+                _ARTIFACT_PYIN_CORE_SECONDS
+                * _ARTIFACT_ANALYSIS_SAMPLE_RATE
+                / _ARTIFACT_HOP_LENGTH
+            )
+        ),
+    )
+    context_frames = max(
+        1,
+        int(
+            round(
+                _ARTIFACT_PYIN_CONTEXT_SECONDS
+                * _ARTIFACT_ANALYSIS_SAMPLE_RATE
+                / _ARTIFACT_HOP_LENGTH
+            )
+        ),
+    )
+    if total_frames <= core_frames:
+        return _voicing_track_segment(
+            samples,
+            np_module=np,
+            librosa_module=librosa_module,
+        )
+
+    stitched: list[list[NDArray[Any]]] = [[], [], [], []]
+    for core_start in range(0, total_frames, core_frames):
+        core_end = min(total_frames, core_start + core_frames)
+        context_start = max(0, core_start - context_frames)
+        context_end = min(total_frames, core_end + context_frames)
+        sample_start = context_start * _ARTIFACT_HOP_LENGTH
+        sample_end = min(
+            len(samples),
+            context_end * _ARTIFACT_HOP_LENGTH,
+        )
+        segment_tracks = _voicing_track_segment(
+            samples[sample_start:sample_end],
+            np_module=np,
+            librosa_module=librosa_module,
+        )
+        keep_start = core_start - context_start
+        keep_end = keep_start + core_end - core_start
+        if any(len(track) < keep_end for track in segment_tracks):
+            _fail("invalid_audio")
+        for destination, track in zip(stitched, segment_tracks):
+            destination.append(track[keep_start:keep_end])
+
+    tracks = tuple(np.concatenate(parts) for parts in stitched)
+    if any(len(track) != total_frames for track in tracks):
+        _fail("invalid_audio")
+    return tracks  # type: ignore[return-value]
+
+
+def _yin_track(
+    audio: object,
+    *,
+    np_module: Any,
+    librosa_module: Any,
+) -> NDArray[Any]:
+    """Return a fast YIN pitch track with exact bounded-memory stitching.
+
+    The quarter-rate frame and hop sizes preserve the 44.1-kHz detector's time
+    grid.  Four context frames provide the complete half-frame acoustic support
+    needed at every retained join without invoking pYIN's dense Viterbi path.
+    """
+
+    np = np_module
+    samples = np.asarray(audio, dtype=np.float32)
+    total_frames = len(samples) // _ARTIFACT_YIN_HOP_LENGTH + 1
+    parts: list[NDArray[Any]] = []
+    for core_start in range(0, total_frames, _ARTIFACT_YIN_CORE_FRAMES):
+        core_end = min(
+            total_frames,
+            core_start + _ARTIFACT_YIN_CORE_FRAMES,
+        )
+        context_start = max(
+            0,
+            core_start - _ARTIFACT_YIN_CONTEXT_FRAMES,
+        )
+        context_end = min(
+            total_frames,
+            core_end + _ARTIFACT_YIN_CONTEXT_FRAMES,
+        )
+        sample_start = context_start * _ARTIFACT_YIN_HOP_LENGTH
+        sample_end = (
+            len(samples)
+            if context_end == total_frames
+            else (context_end - 1) * _ARTIFACT_YIN_HOP_LENGTH + 1
+        )
+        segment = np.asarray(
+            librosa_module.yin(
+                samples[sample_start:sample_end],
+                fmin=_ARTIFACT_F0_MIN_HZ,
+                fmax=_ARTIFACT_F0_MAX_HZ,
+                sr=_ARTIFACT_YIN_SAMPLE_RATE,
+                frame_length=_ARTIFACT_YIN_FRAME_LENGTH,
+                hop_length=_ARTIFACT_YIN_HOP_LENGTH,
+                trough_threshold=_ARTIFACT_YIN_TROUGH_THRESHOLD,
+                center=True,
+            ),
+            dtype=np.float64,
+        )
+        keep_start = core_start - context_start
+        keep_end = keep_start + core_end - core_start
+        if len(segment) < keep_end:
+            _fail("invalid_audio")
+        parts.append(segment[keep_start:keep_end])
+    result = np.concatenate(parts)
+    if len(result) != total_frames:
+        _fail("invalid_audio")
+    return result
+
+
+def _pitch_error_track(
+    source_f0: object,
+    output_f0: object,
+    *,
+    key_shift: int,
+    np_module: Any,
+) -> tuple[NDArray[Any], NDArray[Any]]:
+    """Return finite-pitch flags and key-adjusted error in absolute cents."""
+
+    np = np_module
+    source_pitch = np.asarray(source_f0, dtype=np.float64)
+    output_pitch = np.asarray(output_f0, dtype=np.float64)
+    finite = (
+        np.isfinite(source_pitch)
+        & (source_pitch > 0.0)
+        & np.isfinite(output_pitch)
+        & (output_pitch > 0.0)
+    )
+    error = np.full(len(output_pitch), np.inf, dtype=np.float64)
+    expected_ratio = 2.0 ** (key_shift / 12.0)
+    error[finite] = np.abs(
+        1200.0
+        * np.log2(
+            output_pitch[finite]
+            / (source_pitch[finite] * expected_ratio)
+        )
+    )
+    return finite, error
+
+
+def _coarse_artifact_eligibility(
+    *,
+    source_f0: object,
+    output_f0: object,
+    output_rms_db: object,
+    key_shift: int,
+    np_module: Any,
+) -> NDArray[Any]:
+    """Identify frames that can still pass the coarse periodicity gates.
+
+    YIN returns a finite best estimate even for silence and unrelated pitches.
+    Eliminating those frames before autocorrelation is decision-preserving
+    because pitch agreement and output activity are mandatory coarse gates,
+    and it prevents a long song from materializing thousands of 2,048-sample
+    frames that can never open a fine-analysis window.
+    """
+
+    np = np_module
+    finite_pitch, pitch_error = _pitch_error_track(
+        source_f0,
+        output_f0,
+        key_shift=key_shift,
+        np_module=np,
+    )
+    return (
+        finite_pitch
+        & (pitch_error <= _ARTIFACT_MAX_PITCH_ERROR_CENTS)
+        & (np.asarray(output_rms_db) >= _ARTIFACT_OUTPUT_ACTIVE_DBFS)
+    )
+
+
+def _coarse_artifact_interest(
+    *,
+    source_f0: object,
+    output_f0: object,
+    output_rms_db: object,
+    source_periodicity: object,
+    output_periodicity: object,
+    key_shift: int,
+    np_module: Any,
+) -> NDArray[Any]:
+    """Dilate a permissive YIN prefilter into frames needing fine pYIN.
+
+    Thresholds are deliberately wider than the final detector.  The prefilter
+    is allowed to over-select but must not decide repairs; it only avoids dense
+    pYIN work where RMS, pitch agreement, and autocorrelation already rule the
+    transition defect out.
+    """
+
+    np = np_module
+    eligible = _coarse_artifact_eligibility(
+        source_f0=source_f0,
+        output_f0=output_f0,
+        output_rms_db=output_rms_db,
+        key_shift=key_shift,
+        np_module=np,
+    )
+    output_period = np.asarray(output_periodicity)
+    source_period = np.asarray(source_periodicity)
+    candidate = (
+        eligible
+        & (output_period >= _ARTIFACT_PREFILTER_OUTPUT_PERIODICITY)
+        & (
+            output_period - source_period
+            >= _ARTIFACT_PREFILTER_PERIODICITY_INCREASE
+        )
+    )
+    radius = int(
+        math.ceil(
+            _ARTIFACT_INTEREST_RADIUS_SECONDS
+            * _ARTIFACT_ANALYSIS_SAMPLE_RATE
+            / _ARTIFACT_HOP_LENGTH
+        )
+    )
+    indexes = np.flatnonzero(candidate)
+    interest = np.zeros(len(candidate), dtype=bool)
+    if len(indexes) == 0:
+        return interest
+    starts = np.maximum(0, indexes - radius)
+    ends = np.minimum(len(candidate), indexes + radius + 1)
+    differences = np.zeros(len(candidate) + 1, dtype=np.int32)
+    np.add.at(differences, starts, 1)
+    np.add.at(differences, ends, -1)
+    return np.cumsum(differences[:-1]) > 0
+
+
+def _fine_analysis_windows(
+    interest_frames: object,
+    *,
+    np_module: Any,
+) -> Optional[list[tuple[int, int]]]:
+    """Expand, merge, and budget local pYIN windows.
+
+    ``None`` means the permissive prefilter became too widespread to represent
+    the localized transition defect.  Failing open in that case keeps runtime
+    bounded and preserves the reviewed RVC result rather than analyzing most of
+    a different singing style with an expensive fallback.  The twelve-second
+    floor and fifteen-percent allowance were calibrated against an 81.72-second
+    matrix whose six exact-match windows occupy 8.713 seconds; its 12.258-second
+    budget leaves forty percent window headroom.  A thirty-second hard cap is
+    over three times that known workload and applies before either pYIN pass.
+    """
+
+    np = np_module
+    interest = np.asarray(interest_frames, dtype=bool)
+    context_frames = int(
+        math.ceil(
+            _ARTIFACT_FINE_CONTEXT_SECONDS
+            * _ARTIFACT_ANALYSIS_SAMPLE_RATE
+            / _ARTIFACT_HOP_LENGTH
+        )
+    )
+    windows: list[tuple[int, int]] = []
+    index = 0
+    while index < len(interest):
+        if not interest[index]:
+            index += 1
+            continue
+        run_start = index
+        while index < len(interest) and interest[index]:
+            index += 1
+        start = max(0, run_start - context_frames)
+        end = min(len(interest), index + context_frames)
+        if windows and start <= windows[-1][1]:
+            windows[-1] = (windows[-1][0], max(windows[-1][1], end))
+        else:
+            windows.append((start, end))
+
+    analyzed_seconds = sum(
+        end - start for start, end in windows
+    ) * _ARTIFACT_HOP_LENGTH / _ARTIFACT_ANALYSIS_SAMPLE_RATE
+    song_seconds = (
+        len(interest) * _ARTIFACT_HOP_LENGTH
+        / _ARTIFACT_ANALYSIS_SAMPLE_RATE
+    )
+    budget_seconds = min(
+        _ARTIFACT_FINE_MAXIMUM_BUDGET_SECONDS,
+        max(
+            _ARTIFACT_FINE_MINIMUM_BUDGET_SECONDS,
+            song_seconds * _ARTIFACT_FINE_BUDGET_FRACTION,
+        ),
+    )
+    if analyzed_seconds > budget_seconds:
+        return None
+    return windows
+
+
+def _voicing_tracks_for_windows(
+    audio: object,
+    windows: Sequence[tuple[int, int]],
+    *,
+    total_frames: int,
+    np_module: Any,
+    librosa_module: Any,
+) -> tuple[NDArray[Any], NDArray[Any], NDArray[Any], NDArray[Any]]:
+    """Run fine pYIN only inside merged windows on the global frame grid."""
+
+    np = np_module
+    samples = np.asarray(audio, dtype=np.float32)
+    f0 = np.full(total_frames, np.nan, dtype=np.float64)
+    voiced = np.zeros(total_frames, dtype=bool)
+    probability = np.zeros(total_frames, dtype=np.float32)
+    rms_db = np.full(total_frames, -120.0, dtype=np.float32)
+    destinations = (f0, voiced, probability, rms_db)
+    for start, end in windows:
+        sample_start = start * _ARTIFACT_HOP_LENGTH
+        sample_end = (
+            len(samples)
+            if end == total_frames
+            else min(
+                len(samples),
+                (end - 1) * _ARTIFACT_HOP_LENGTH + 1,
+            )
+        )
+        segment_tracks = _voicing_track(
+            samples[sample_start:sample_end],
+            np_module=np,
+            librosa_module=librosa_module,
+        )
+        expected_frames = end - start
+        if any(len(track) < expected_frames for track in segment_tracks):
+            _fail("invalid_audio")
+        for destination, track in zip(destinations, segment_tracks):
+            destination[start:end] = track[:expected_frames]
+    return destinations
+
+
+def _candidate_artifact_frames(
+    *,
+    source_f0: object,
+    source_voiced_flag: object,
+    source_probability: object,
+    source_rms_db: object,
+    output_f0: object,
+    output_voiced_flag: object,
+    output_probability: object,
+    output_rms_db: object,
+    source_periodicity: object,
+    output_periodicity: object,
+    key_shift: int,
+    np_module: Any,
+) -> NDArray[Any]:
+    """Select low-confidence source pitch made unnaturally stable by RVC.
+
+    The pitch-consistency check rejects octave and subharmonic estimates that
+    occur naturally on breathy high notes.  A genuine transition defect keeps
+    the expected shifted contour but increases normalized autocorrelation, so
+    both signals are needed to separate it from legitimate tonal singing.
+    """
+
+    np = np_module
+    finite_pitch, pitch_error = _pitch_error_track(
+        source_f0,
+        output_f0,
+        key_shift=key_shift,
+        np_module=np,
+    )
+    source_voiced = (
+        np.asarray(source_voiced_flag, dtype=bool)
+        & (np.asarray(source_probability) >= 0.50)
+        & (np.asarray(source_rms_db) >= _ARTIFACT_SOURCE_ACTIVE_DBFS)
+    )
+    output_voiced = (
+        np.asarray(output_voiced_flag, dtype=bool)
+        & (np.asarray(output_probability) >= 0.50)
+        & (np.asarray(output_rms_db) >= _ARTIFACT_SOURCE_ACTIVE_DBFS)
+    )
+    return (
+        ~source_voiced
+        & output_voiced
+        & finite_pitch
+        & (pitch_error <= _ARTIFACT_MAX_PITCH_ERROR_CENTS)
+        & (
+            np.asarray(output_probability)
+            >= _ARTIFACT_OUTPUT_VOICED_PROBABILITY
+        )
+        & (np.asarray(output_rms_db) >= _ARTIFACT_OUTPUT_ACTIVE_DBFS)
+        & (
+            np.asarray(output_periodicity)
+            >= _ARTIFACT_OUTPUT_PERIODICITY
+        )
+        & (
+            np.asarray(output_periodicity) - np.asarray(source_periodicity)
+            >= _ARTIFACT_PERIODICITY_INCREASE
+        )
+    )
+
+
+def _artifact_intervals(
+    selected_frames: object,
+    *,
+    output_sample_rate: int,
+    output_samples: int,
+    np_module: Any,
+) -> list[tuple[int, int]]:
+    """Map selected analysis-frame centers to exact output sample intervals."""
+
+    np = np_module
+    selected = np.asarray(selected_frames, dtype=bool)
+    intervals: list[tuple[int, int]] = []
+    index = 0
+    while index < len(selected):
+        if not selected[index]:
+            index += 1
+            continue
+        start_frame = index
+        while index < len(selected) and selected[index]:
+            index += 1
+        analysis_start = max(
+            0,
+            start_frame * _ARTIFACT_HOP_LENGTH
+            - _ARTIFACT_HOP_LENGTH // 2,
+        )
+        analysis_end = (
+            (index - 1) * _ARTIFACT_HOP_LENGTH
+            + _ARTIFACT_HOP_LENGTH // 2
+        )
+        start = int(
+            round(
+                analysis_start
+                * output_sample_rate
+                / _ARTIFACT_ANALYSIS_SAMPLE_RATE
+            )
+        )
+        end = min(
+            output_samples,
+            int(
+                round(
+                    analysis_end
+                    * output_sample_rate
+                    / _ARTIFACT_ANALYSIS_SAMPLE_RATE
+                )
+            ),
+        )
+        if end > start:
+            intervals.append((start, end))
+    return intervals
+
+
+def _artifact_envelope(
+    intervals: Sequence[tuple[int, int]],
+    *,
+    sample_rate: int,
+    sample_count: int,
+    np_module: Any,
+) -> NDArray[Any]:
+    """Build a core-one envelope with five-millisecond cosine boundaries."""
+
+    np = np_module
+    envelope = np.zeros(sample_count, dtype=np.float32)
+    fade_samples = max(1, int(round(_ARTIFACT_FADE_SECONDS * sample_rate)))
+    for start, end in intervals:
+        envelope[start:end] = 1.0
+        left_start = max(0, start - fade_samples)
+        left_count = start - left_start
+        if left_count:
+            phase = np.linspace(0.0, 1.0, left_count, endpoint=False)
+            fade = 0.5 - 0.5 * np.cos(np.pi * phase)
+            envelope[left_start:start] = np.maximum(
+                envelope[left_start:start],
+                fade,
+            )
+        right_end = min(sample_count, end + fade_samples)
+        right_count = right_end - end
+        if right_count:
+            phase = np.linspace(0.0, 1.0, right_count, endpoint=False)
+            fade = 0.5 + 0.5 * np.cos(np.pi * phase)
+            envelope[end:right_end] = np.maximum(
+                envelope[end:right_end],
+                fade,
+            )
+    return envelope
+
+
+def _repair_false_voicing(
+    input_audio: Path,
+    sample_rate: int,
+    samples: object,
+    key_shift: int,
+) -> object:
+    """Replace sustained synthetic transition tones with source consonants.
+
+    A fast quarter-rate YIN and autocorrelation pass first identifies small
+    regions that could contain the defect; bounded pYIN then makes the final
+    decision only inside those regions.  A pYIN decision alone is not
+    sufficient: breathy high notes can look unvoiced in the source while RVC
+    makes them easier to track.  Repair also requires key-shift-consistent
+    source and output pitch plus a large increase in normalized
+    autocorrelation.  Persistence removes isolated estimates, and an explicit
+    regional budget preserves the original RVC output if the permissive search
+    would otherwise cover much of a song.
+    A 3.2-kHz high-pass strongly suppresses the source fundamental and low
+    harmonics; mixing it at -20 dB preserves mainly consonant/noise energy while
+    limiting audible source-timbre leakage into the converted voice.
+    """
+
+    try:
+        import numpy as np  # type: ignore[import-not-found]
+
+        converted_source = np.asarray(samples)
+        if converted_source.ndim != 1 or converted_source.size == 0:
+            _fail("invalid_audio")
+        if converted_source.dtype == np.dtype(np.int16):
+            converted = converted_source.astype(np.float32) / 32_768.0
+        elif np.issubdtype(converted_source.dtype, np.floating):
+            converted = converted_source.astype(np.float32)
+        else:
+            _fail("invalid_audio")
+        if (
+            not bool(np.all(np.isfinite(converted)))
+            or float(np.max(np.abs(converted))) > 1.000001
+        ):
+            _fail("invalid_audio")
+        if len(converted) < sample_rate:
+            # Sub-second clips cannot contain the sustained transition defect
+            # this guard targets, and pYIN edge estimates would dominate them.
+            return samples
+
+        import librosa  # type: ignore[import-not-found]
+        from scipy import signal  # type: ignore[import-not-found, import-untyped]
+
+        source = _read_source_vocal(
+            input_audio,
+            output_sample_rate=sample_rate,
+            output_samples=len(converted),
+            np_module=np,
+            signal_module=signal,
+        )
+        source_analysis = _resample_artifact_analysis(
+            source,
+            source_sample_rate=sample_rate,
+            np_module=np,
+            signal_module=signal,
+        )
+        output_analysis = _resample_artifact_analysis(
+            converted,
+            source_sample_rate=sample_rate,
+            np_module=np,
+            signal_module=signal,
+        )
+        analysis_length = min(len(source_analysis), len(output_analysis))
+        source_analysis = source_analysis[:analysis_length]
+        output_analysis = output_analysis[:analysis_length]
+        matched_output_analysis = _match_analysis_level(
+            source_analysis,
+            output_analysis,
+            np_module=np,
+        )
+
+        yin_divisor = math.gcd(
+            _ARTIFACT_ANALYSIS_SAMPLE_RATE,
+            _ARTIFACT_YIN_SAMPLE_RATE,
+        )
+        yin_up = _ARTIFACT_YIN_SAMPLE_RATE // yin_divisor
+        yin_down = _ARTIFACT_ANALYSIS_SAMPLE_RATE // yin_divisor
+        source_yin_audio = signal.resample_poly(
+            source_analysis,
+            yin_up,
+            yin_down,
+        ).astype(np.float32, copy=False)
+        output_yin_audio = signal.resample_poly(
+            matched_output_analysis,
+            yin_up,
+            yin_down,
+        ).astype(np.float32, copy=False)
+        source_coarse_f0 = _yin_track(
+            source_yin_audio,
+            np_module=np,
+            librosa_module=librosa,
+        )
+        output_coarse_f0 = _yin_track(
+            output_yin_audio,
+            np_module=np,
+            librosa_module=librosa,
+        )
+        output_coarse_rms_db = _frame_rms_db(
+            matched_output_analysis,
+            np_module=np,
+            librosa_module=librosa,
+        )
+        coarse_frame_count = min(
+            len(source_coarse_f0),
+            len(output_coarse_f0),
+            len(output_coarse_rms_db),
+        )
+        source_coarse_f0 = source_coarse_f0[:coarse_frame_count]
+        output_coarse_f0 = output_coarse_f0[:coarse_frame_count]
+        coarse_eligible = _coarse_artifact_eligibility(
+            source_f0=source_coarse_f0,
+            output_f0=output_coarse_f0,
+            output_rms_db=output_coarse_rms_db[:coarse_frame_count],
+            key_shift=key_shift,
+            np_module=np,
+        )
+        coarse_output_lags, coarse_source_lags = _pitch_lag_tracks(
+            output_coarse_f0,
+            key_shift=key_shift,
+            np_module=np,
+        )
+        coarse_output_lags[~coarse_eligible] = 0
+        coarse_source_lags[~coarse_eligible] = 0
+        coarse_output_periodicity = _periodicity_at_lags(
+            matched_output_analysis,
+            coarse_output_lags,
+            frame_count=coarse_frame_count,
+            np_module=np,
+        )
+        coarse_source_periodicity = _periodicity_at_lags(
+            source_analysis,
+            coarse_source_lags,
+            frame_count=coarse_frame_count,
+            np_module=np,
+        )
+        interest = _coarse_artifact_interest(
+            source_f0=source_coarse_f0,
+            output_f0=output_coarse_f0,
+            output_rms_db=output_coarse_rms_db[:coarse_frame_count],
+            source_periodicity=coarse_source_periodicity,
+            output_periodicity=coarse_output_periodicity,
+            key_shift=key_shift,
+            np_module=np,
+        )
+        if not bool(np.any(interest)):
+            return samples
+        fine_windows = _fine_analysis_windows(interest, np_module=np)
+        if fine_windows is None or not fine_windows:
+            return samples
+
+        source_f0, source_voiced_flag, source_probability, source_rms_db = (
+            _voicing_tracks_for_windows(
+                source_analysis,
+                fine_windows,
+                total_frames=coarse_frame_count,
+                np_module=np,
+                librosa_module=librosa,
+            )
+        )
+        output_f0, output_voiced_flag, output_probability, output_rms_db = (
+            _voicing_tracks_for_windows(
+                matched_output_analysis,
+                fine_windows,
+                total_frames=coarse_frame_count,
+                np_module=np,
+                librosa_module=librosa,
+            )
+        )
+        output_lags, source_lags = _pitch_lag_tracks(
+            output_f0,
+            key_shift=key_shift,
+            np_module=np,
+        )
+        output_periodicity = _periodicity_at_lags(
+            matched_output_analysis,
+            output_lags,
+            frame_count=coarse_frame_count,
+            np_module=np,
+        )
+        source_periodicity = _periodicity_at_lags(
+            source_analysis,
+            source_lags,
+            frame_count=coarse_frame_count,
+            np_module=np,
+        )
+
+        raw_artifact = _candidate_artifact_frames(
+            source_f0=source_f0,
+            source_voiced_flag=source_voiced_flag,
+            source_probability=source_probability,
+            source_rms_db=source_rms_db,
+            output_f0=output_f0,
+            output_voiced_flag=output_voiced_flag,
+            output_probability=output_probability,
+            output_rms_db=output_rms_db,
+            source_periodicity=source_periodicity,
+            output_periodicity=output_periodicity,
+            key_shift=key_shift,
+            np_module=np,
+        )
+        raw_artifact &= interest
+        selected = np.asarray(
+            _persistent_artifact_frames(
+                raw_artifact.tolist(),
+                np_module=np,
+            ),
+            dtype=bool,  # type: ignore[type-var]
+        )
+        selected_count = int(np.count_nonzero(selected))
+        if selected_count == 0:
+            return samples
+        if selected_count / len(selected) > _ARTIFACT_MAX_REPAIR_FRACTION:
+            # A widespread mismatch is no longer the localized transition
+            # defect this guard was calibrated for.  Preserve the reviewed RVC
+            # output instead of muting a different singing style or language.
+            return samples
+
+        intervals = _artifact_intervals(
+            selected,
+            output_sample_rate=sample_rate,
+            output_samples=len(converted),
+            np_module=np,
+        )
+        envelope = _artifact_envelope(
+            intervals,
+            sample_rate=sample_rate,
+            sample_count=len(converted),
+            np_module=np,
+        )
+        envelope *= _ARTIFACT_REPAIR_DEPTH
+        highpass = signal.butter(
+            2,
+            _ARTIFACT_SOURCE_HIGHPASS_HZ,
+            btype="highpass",
+            fs=sample_rate,
+            output="sos",
+        )
+        consonants = signal.sosfiltfilt(highpass, source).astype(
+            np.float32,
+            copy=False,
+        )
+        consonants = np.clip(consonants, -1.0, 1.0)
+        repaired = (
+            converted * (1.0 - envelope)
+            + consonants * (_ARTIFACT_SOURCE_GAIN * envelope)
+        )
+        if not bool(np.all(np.isfinite(repaired))):
+            _fail("invalid_audio")
+        return np.clip(repaired, -1.0, 1.0).astype(np.float32, copy=False)
+    except _RvcRuntimeFailure:
+        raise
+    except BaseException:
+        _fail("inference_failed")
+
+
 def _convert(
     request: _Request,
     api_loader: Callable[[_Request], _RvcApi],
     seed_initializer: Callable[[], None],
+    artifact_repairer: Callable[[Path, int, object, int], object],
 ) -> tuple[int, object]:
-    """Run one fixed speaker-zero, RMVPE RVC inference request."""
+    """Run fixed RVC inference and repair high-confidence transition tones."""
 
     seed_initializer()
     api = api_loader(request)
@@ -683,6 +1914,8 @@ def _convert(
 
     converter = None  # type: Optional[object]
     loaded = False
+    result_rate = 0
+    result_samples = None  # type: Optional[object]
     try:
         converter = api.converter_factory(configuration)
         get_vc = getattr(converter, "get_vc")
@@ -717,7 +1950,8 @@ def _convert(
             or result[1] is None
         ):
             _fail("inference_failed")
-        return result[0], result[1]
+        result_rate = result[0]
+        result_samples = result[1]
     except _RvcRuntimeFailure:
         raise
     except BaseException:
@@ -727,9 +1961,26 @@ def _convert(
             try:
                 getattr(converter, "get_vc")("", _PROTECT, _PROTECT)
             except BaseException:
-                # Model release is best effort because the process exits after
-                # this sole job; it must not replace a completed audio result.
+                # Release is best effort because the process exits after this
+                # job; it must not replace a completed inference result.
                 pass
+
+    # The detector is CPU-only and can process a full song.  Release the GPU
+    # model first so post-processing does not retain scarce CUDA memory.
+    try:
+        if result_rate != _MODEL_SAMPLE_RATE or result_samples is None:
+            _fail("inference_failed")
+        repaired = artifact_repairer(
+            request.input_audio,
+            result_rate,
+            result_samples,
+            request.key_shift,
+        )
+        return result_rate, repaired
+    except _RvcRuntimeFailure:
+        raise
+    except BaseException:
+        _fail("inference_failed")
 
 
 def _write_pcm16_wav(path: Path, sample_rate: int, samples: object) -> None:
@@ -964,11 +2215,19 @@ def _run_request(
     api_loader: Callable[[_Request], _RvcApi] = _load_rvc_api,
     publisher: Callable[[Path, int, object], None] = _publish_audio_atomic,
     seed_initializer: Callable[[], None] = _seed_torch_inference,
+    artifact_repairer: Callable[
+        [Path, int, object, int], object
+    ] = _repair_false_voicing,
 ) -> None:
-    """Execute one validated request inside the isolated vendor scope."""
+    """Execute one validated, transition-guarded request in vendor scope."""
 
     with _runtime_scope(request):
-        sample_rate, samples = _convert(request, api_loader, seed_initializer)
+        sample_rate, samples = _convert(
+            request,
+            api_loader,
+            seed_initializer,
+            artifact_repairer,
+        )
         publisher(request.output_audio, sample_rate, samples)
 
 

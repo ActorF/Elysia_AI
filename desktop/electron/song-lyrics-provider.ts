@@ -724,14 +724,19 @@ function scoreRecord(
   }
 }
 
-function selectBestRecord(
+function rankRecords(
   records: readonly LrclibRecord[],
   query: SongLyricsQuery,
-): ScoredRecord | null {
-  const candidates = records
+  requireSynchronizedLyrics = false,
+): readonly ScoredRecord[] {
+  return records
     .filter((record) => (
       !record.instrumental
       && (record.plainLyrics !== null || record.syncedLyrics !== null)
+      && (
+        !requireSynchronizedLyrics
+        || normalizeLyrics(record.syncedLyrics) !== null
+      )
     ))
     .map((record) => scoreRecord(record, query))
     .sort((left, right) => (
@@ -741,7 +746,13 @@ function selectBestRecord(
       || left.durationDifference - right.durationDifference
       || left.record.id - right.record.id
     ))
-  return candidates[0] ?? null
+}
+
+function passesTrustGates(candidate: ScoredRecord): boolean {
+  return candidate.confidence >= MIN_CONFIDENCE
+    && candidate.titleSimilarity >= MIN_TITLE_SIMILARITY
+    && candidate.artistSimilarity >= MIN_ARTIST_SIMILARITY
+    && candidate.durationDifference <= MAX_DURATION_DIFFERENCE_SECONDS
 }
 
 function normalizeLyrics(value: string | null): string | null {
@@ -798,17 +809,15 @@ async function requestWithBoundedRetry(
 function matchedResult(
   records: readonly LrclibRecord[],
   query: SongLyricsQuery,
+  requireSynchronizedLyrics = false,
 ): SongLyricsLookupResult {
-  const best = selectBestRecord(records, query)
-  if (best === null) return miss('not-found')
-  if (
-    best.confidence < MIN_CONFIDENCE
-    || best.titleSimilarity < MIN_TITLE_SIMILARITY
-    || best.artistSimilarity < MIN_ARTIST_SIMILARITY
-    || best.durationDifference > MAX_DURATION_DIFFERENCE_SECONDS
-  ) {
-    return miss('low-confidence')
-  }
+  const candidates = rankRecords(records, query, requireSynchronizedLyrics)
+  if (candidates.length === 0) return miss('not-found')
+  // Apply every independent identity gate before choosing the highest score.
+  // Otherwise an attractive but disqualified candidate can hide a slightly
+  // lower-scoring record that actually satisfies the complete trust policy.
+  const best = candidates.find(passesTrustGates)
+  if (best === undefined) return miss('low-confidence')
   const plainLyrics = normalizeLyrics(best.record.plainLyrics)
   const syncedLyrics = normalizeLyrics(best.record.syncedLyrics)
   if (plainLyrics === null && syncedLyrics === null) return miss('not-found')
@@ -858,6 +867,7 @@ export class SongLyricsProvider {
       LOOKUP_TIMEOUT_MS,
       signal,
       async (deadlineSignal) => {
+        let exactPlainLyrics: SongLyricsFoundResult | null = null
         const exactResponse = await requestWithBoundedRetry(
           this.transport,
           this.delay,
@@ -869,7 +879,10 @@ export class SongLyricsProvider {
             [parseRecordResponse(exactResponse)],
             query,
           )
-          if (exactResult.status === 'found') return exactResult
+          if (exactResult.status === 'found') {
+            if (exactResult.syncedLyrics !== null) return exactResult
+            exactPlainLyrics = exactResult
+          }
         } else if (exactResponse.statusCode !== 404) {
           throw new Error('Lyrics provider request was unsuccessful.')
         }
@@ -879,11 +892,28 @@ export class SongLyricsProvider {
           fixedRequest(searchRequestPath(query)),
           deadlineSignal,
         )
-        if (searchResponse.statusCode === 404) return miss('not-found')
+        if (searchResponse.statusCode === 404) {
+          return exactPlainLyrics ?? miss('not-found')
+        }
         if (searchResponse.statusCode !== 200) {
           throw new Error('Lyrics provider request was unsuccessful.')
         }
-        return matchedResult(parseRecords(searchResponse), query)
+        const searchRecords = parseRecords(searchResponse)
+        const synchronizedResult = matchedResult(
+          searchRecords,
+          query,
+          true,
+        )
+        if (synchronizedResult.status === 'found') return synchronizedResult
+
+        // LRCLIB can return a duration-exact plain-only record from /api/get
+        // while /api/search contains a separately contributed synchronized
+        // version. Preserve the exact plain result only after the bounded
+        // search has proved that no synchronized candidate passes every
+        // existing identity and duration gate; this keeps the caller's
+        // precise "no synchronized lyrics" outcome without missing usable LRC.
+        if (exactPlainLyrics !== null) return exactPlainLyrics
+        return matchedResult(searchRecords, query)
       },
     )
   }

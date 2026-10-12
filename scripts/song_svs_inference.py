@@ -1087,6 +1087,33 @@ def _model_timing_tolerance_samples(
     return min(mathematical_bound, policy_cap)
 
 
+def _durations_are_centisecond_serialized(metadata: Mapping[str, object]) -> bool:
+    """Return whether every score duration has the reviewed vendor format.
+
+    SoulX preprocessing writes fixed two-decimal seconds.  Higher-precision
+    metadata can originate at other trusted seams and must keep the stricter
+    absolute-duration check rather than borrowing a serialization allowance it
+    never lost.
+    """
+
+    raw_duration = metadata.get("duration")
+    if not isinstance(raw_duration, str):
+        return False
+    tokens = raw_duration.split()
+    if not tokens:
+        return False
+    for token in tokens:
+        whole, separator, fraction = token.partition(".")
+        if (
+            separator != "."
+            or not whole.isdigit()
+            or len(fraction) != 2
+            or not fraction.isdigit()
+        ):
+            return False
+    return True
+
+
 def _score_duration_samples(
     metadata: Mapping[str, object],
     expected_note_count: int,
@@ -1157,10 +1184,23 @@ def _build_score_evidence(
     expected_samples = plan.end_sample - plan.start_sample
     model_samples = len(indexes) * hop_size
     duration_samples = _score_duration_samples(plan.metadata, source_note_count)
-    # Raw score durations are not vendor-quantized yet, so their sum must
-    # independently authenticate the absolute interval within only endpoint
-    # and final-frame quantization.  Note count cannot expand this allowance.
-    if abs(duration_samples - expected_samples) >= 2 * hop_size:
+    timing_tolerance = _model_timing_tolerance_samples(
+        plan.metadata,
+        expected_samples,
+        hop_size,
+    )
+    # The pinned preprocessor serializes every source-note duration to a
+    # centisecond before both this boundary and DataProcessor see it.  Only
+    # metadata in that exact reviewed format may use the note-count-derived,
+    # one-percent-capped allowance.  Higher-precision callers retain the old
+    # strict bound because no serialization loss explains their discrepancy.
+    duration_difference = abs(duration_samples - expected_samples)
+    duration_timing_invalid = (
+        duration_difference > timing_tolerance
+        if _durations_are_centisecond_serialized(plan.metadata)
+        else duration_difference >= 2 * hop_size
+    )
+    if duration_timing_invalid:
         raise SvsInferenceError(
             "Score duration timing evidence contradicts the absolute interval."
         )
@@ -1173,11 +1213,6 @@ def _build_score_evidence(
     # discrepancy must never accumulate with song length.
     if abs(f0_samples - expected_samples) >= 2 * hop_size:
         raise SvsInferenceError("Score F0 timing evidence contradicts the score.")
-    timing_tolerance = _model_timing_tolerance_samples(
-        plan.metadata,
-        expected_samples,
-        hop_size,
-    )
     # Model frames remain authoritative for inference length; the validated
     # absolute interval remains authoritative for placement and final padding.
     if abs(model_samples - expected_samples) > timing_tolerance:

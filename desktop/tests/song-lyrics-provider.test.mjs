@@ -87,6 +87,154 @@ test('uses a fixed credential-free request and returns normalized best-match lyr
   assert.equal(result.providerRecord.confidence, 1)
 })
 
+test('searches for synchronized lyrics after a credible plain-only exact result', async () => {
+  const paths = []
+  const provider = new SongLyricsProvider(async (request) => {
+    paths.push(request.path)
+    if (request.path.startsWith('/api/get?')) {
+      return jsonResponse(record({
+        id: 3_693_845,
+        name: '自娱自乐',
+        trackName: '自娱自乐',
+        artistName: '金志文',
+        albumName: '自娱自乐',
+        duration: 225,
+        plainLyrics: '天气有点闷热',
+        syncedLyrics: null,
+      }))
+    }
+    return jsonResponse([
+      record({
+        id: 3_693_845,
+        name: '自娱自乐',
+        trackName: '自娱自乐',
+        artistName: '金志文',
+        albumName: '自娱自乐',
+        duration: 225,
+        plainLyrics: '天气有点闷热',
+        syncedLyrics: null,
+      }),
+      record({
+        id: 18_507_221,
+        name: '自娱自乐',
+        trackName: '自娱自乐',
+        artistName: '金志文',
+        albumName: '自娱自乐',
+        duration: 225.24,
+        plainLyrics: '天气有点闷热',
+        syncedLyrics: '[00:18.28]天气有点闷热',
+      }),
+    ])
+  })
+
+  const result = await provider.lookup({
+    title: '自娱自乐',
+    artist: '金志文',
+    durationSeconds: 225,
+  })
+
+  assert.equal(paths.length, 2)
+  assert.match(paths[0], /^\/api\/get\?/u)
+  assert.match(paths[1], /^\/api\/search\?/u)
+  assert.equal(result.status, 'found')
+  assert.equal(result.providerRecord.recordId, 18_507_221)
+  assert.equal(result.syncedLyrics, '[00:18.28]天气有点闷热')
+})
+
+test('prefers a credible synchronized search result over a closer plain result', async () => {
+  const provider = new SongLyricsProvider(async (request) => (
+    request.path.startsWith('/api/get?')
+      ? jsonResponse({ message: 'not found' }, 404)
+      : jsonResponse([
+          record({
+            id: 201,
+            duration: 200,
+            syncedLyrics: null,
+          }),
+          record({
+            id: 202,
+            duration: 206,
+          }),
+        ])
+  ))
+
+  const result = await provider.lookup(query())
+
+  assert.equal(result.status, 'found')
+  assert.equal(result.providerRecord.recordId, 202)
+  assert.notEqual(result.syncedLyrics, null)
+})
+
+test('does not let a disqualified synchronized result hide a trusted one', async () => {
+  const provider = new SongLyricsProvider(async (request) => (
+    request.path.startsWith('/api/get?')
+      ? jsonResponse({ message: 'not found' }, 404)
+      : jsonResponse([
+          record({
+            id: 211,
+            artistName: 'Edezz',
+          }),
+          record({
+            id: 212,
+            name: 'Moonlit Song with a deliberately long alternate suffix',
+            trackName: 'Moonlit Song with a deliberately long alternate suffix',
+            artistName: 'Eden with a deliberately long alternate suffix',
+          }),
+        ])
+  ))
+
+  const result = await provider.lookup(query())
+
+  assert.equal(result.status, 'found')
+  assert.equal(result.providerRecord.recordId, 212)
+  assert.notEqual(result.syncedLyrics, null)
+})
+
+test('keeps a credible exact plain result when search has no trusted sync', async () => {
+  let calls = 0
+  const provider = new SongLyricsProvider(async (request) => {
+    calls += 1
+    if (request.path.startsWith('/api/get?')) {
+      return jsonResponse(record({
+        id: 301,
+        syncedLyrics: null,
+      }))
+    }
+    return jsonResponse([
+      record({
+        id: 302,
+        name: 'Different Song',
+        trackName: 'Different Song',
+        artistName: 'Different Artist',
+      }),
+    ])
+  })
+
+  const result = await provider.lookup(query())
+
+  assert.equal(calls, 2)
+  assert.equal(result.status, 'found')
+  assert.equal(result.providerRecord.recordId, 301)
+  assert.equal(result.syncedLyrics, null)
+})
+
+test('keeps a credible exact plain result when synchronized search returns 404', async () => {
+  const provider = new SongLyricsProvider(async (request) => (
+    request.path.startsWith('/api/get?')
+      ? jsonResponse(record({
+          id: 311,
+          syncedLyrics: null,
+        }))
+      : jsonResponse({ message: 'not found' }, 404)
+  ))
+
+  const result = await provider.lookup(query())
+
+  assert.equal(result.status, 'found')
+  assert.equal(result.providerRecord.recordId, 311)
+  assert.equal(result.syncedLyrics, null)
+})
+
 test('rejects audio over 12 minutes before any LRCLIB transport call', async () => {
   let calls = 0
   const provider = new SongLyricsProvider(async () => {

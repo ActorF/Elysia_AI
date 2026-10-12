@@ -200,7 +200,7 @@ def test_uneven_boundary_line_stays_with_the_dominant_overlap_segment() -> None:
     ]
     plan = plan_metadata_lyric_corrections(
         metadata,
-        "[00:00.00]你好\n[00:03.00]世界",
+        "[00:00.00]你好\n[00:03.50]世界",
         8_000,
         plain_lyrics="你好\n世界",
     )
@@ -220,7 +220,7 @@ def test_cross_segment_line_is_split_monotonically_and_rendered_with_g2p() -> No
     ]
     plan = plan_metadata_lyric_corrections(
         metadata,
-        "[00:02.00]你好世界\n[00:06.00]",
+        "[00:00.00]你好世界",
         8_000,
         plain_lyrics="你好世界",
     )
@@ -247,6 +247,40 @@ def test_cross_segment_line_is_split_monotonically_and_rendered_with_g2p() -> No
     assert rendered[1]["phoneme"] == "zh_世 zh_界"
 
 
+def test_cross_segment_melisma_keeps_the_complete_line_with_its_onsets() -> None:
+    """Carry a finished line across a slice without moving its final words."""
+
+    metadata = [
+        _metadata_segment("无 可 奈 何", "2 2 2 2"),
+        _metadata_segment(
+            "我 可 爱 的 不 知",
+            "2 2 2 2 2 2",
+            start_ms=4_000,
+            end_ms=8_000,
+        ),
+    ]
+    plan = plan_metadata_lyric_corrections(
+        metadata,
+        "[00:00.00]无可奈何\n[00:06.40]不知",
+        8_000,
+        plain_lyrics="无可奈何不知",
+        minimum_exact_match_ratio=0.50,
+    )
+
+    assert plan.corrections[0].authoritative_tokens == ("无", "可", "奈", "何")
+    assert plan.corrections[1].authoritative_tokens == ("不", "知")
+    assert plan.corrections[1].corrected_note_tokens == (
+        "何",
+        "何",
+        "何",
+        "何",
+        "不",
+        "知",
+    )
+    assert plan.corrections[1].corrected_note_types == (2, 3, 3, 3, 2, 2)
+    assert plan.corrections[1].source_line_indexes == (0, 1)
+
+
 def test_cross_segment_split_respects_each_segments_remaining_capacity() -> None:
     """Move overflow forward while preserving the authoritative token order."""
 
@@ -264,21 +298,23 @@ def test_cross_segment_split_respects_each_segments_remaining_capacity() -> None
     assert plan.corrections[1].authoritative_tokens == ("夏", "秋", "冬")
 
 
-def test_single_boundary_character_with_equal_overlap_is_ambiguous() -> None:
-    """Fail closed when timing cannot select either side of a boundary."""
+def test_line_interval_selects_the_group_after_a_segment_boundary() -> None:
+    """Use actual note onset time instead of dividing tokens by overlap area."""
 
     metadata = [
-        _metadata_segment("你", "2"),
-        _metadata_segment("好", "2", start_ms=4_000, end_ms=8_000),
+        _metadata_segment("旧", "2", end_ms=2_000),
+        _metadata_segment("你", "2", start_ms=2_000, end_ms=6_000),
     ]
-    _assert_code(
-        "ambiguous_timing",
-        lambda: plan_metadata_lyric_corrections(
-            metadata,
-            "[00:02.00]你\n[00:06.00]",
-            8_000,
-        ),
+    plan = plan_metadata_lyric_corrections(
+        metadata,
+        "[00:02.00]你\n[00:06.00]",
+        8_000,
     )
+
+    assert plan.corrections[0].authoritative_tokens == ()
+    assert plan.corrections[0].corrected_note_tokens == ("旧",)
+    assert plan.corrections[1].authoritative_tokens == ("你",)
+    assert plan.corrections[1].corrected_note_tokens == ("你",)
 
 
 def test_nonempty_timed_line_without_metadata_overlap_fails_closed() -> None:
@@ -355,15 +391,188 @@ def test_low_asr_coverage_fails_instead_of_overwriting_unrelated_notes() -> None
     )
 
 
-def test_equal_cost_dynamic_programming_paths_fail_as_ambiguous() -> None:
-    """Reject two equally plausible positions for one missing canonical onset."""
+def test_equal_text_and_timing_cost_paths_fail_as_ambiguous() -> None:
+    """Reject equal text paths when no trusted timing can distinguish them."""
 
-    metadata = [_metadata_segment("我 他 她", "2 2 2")]
+    _assert_code(
+        "ambiguous_alignment",
+        lambda: alignment._align_groups(
+            ("我", "他", "她"),
+            ("我", "你"),
+            minimum_exact_match_ratio=0.0,
+            maximum_cost_ratio=1.0,
+        ),
+    )
+
+
+def test_leftmost_exact_tiebreak_does_not_hide_a_mismatched_onset() -> None:
+    """Keep primary-equal paths ambiguous when either guesses an onset word."""
+
+    _assert_code(
+        "ambiguous_alignment",
+        lambda: alignment._align_groups(
+            ("我", "我", "你", "你"),
+            ("我", "他", "你"),
+            minimum_exact_match_ratio=0.0,
+            maximum_cost_ratio=1.0,
+            group_onsets_ms=(0, 100, 200, 300),
+            canonical_onsets_ms=(0, None, None),
+        ),
+    )
+
+
+def test_note_and_lrc_timing_break_an_equal_text_cost_safely() -> None:
+    """Use exact LRC line starts only after text leaves two optimal paths."""
+
+    labels, note_types, coverage, cost_ratio = alignment._align_groups(
+        ("我", "他", "她"),
+        ("我", "你"),
+        minimum_exact_match_ratio=0.0,
+        maximum_cost_ratio=1.0,
+        group_onsets_ms=(0, 1_300, 2_700),
+        canonical_onsets_ms=(0, 2_500),
+    )
+
+    assert labels == ("我", "我", "你")
+    assert note_types == (2, 3, 2)
+    assert coverage == 0.5
+    assert cost_ratio == 7 / 11
+
+
+def test_repeated_exact_line_uses_its_leftmost_observed_tokens() -> None:
+    """Treat a later exact repetition as trailing melisma, not shifted words."""
+
+    labels, note_types, coverage, cost_ratio = alignment._align_groups(
+        ("无", "可", "奈", "何", "无", "可", "奈", "何", "不"),
+        ("无", "可", "奈", "何", "不"),
+        minimum_exact_match_ratio=0.0,
+        maximum_cost_ratio=1.0,
+        group_onsets_ms=(0, 100, 200, 300, 1_000, 1_100, 1_200, 1_300, 2_000),
+        canonical_onsets_ms=(0, None, None, None, 2_000),
+    )
+
+    assert labels == ("无", "可", "奈", "何", "何", "何", "何", "何", "不")
+    assert note_types == (2, 2, 2, 2, 3, 3, 3, 3, 2)
+    assert coverage == 1.0
+    assert cost_ratio == 9 / 32
+
+
+def test_planner_routes_segment_and_lrc_timing_into_alignment() -> None:
+    """Resolve a public planning ambiguity with derived note and lyric times."""
+
+    plan = plan_metadata_lyric_corrections(
+        [_metadata_segment("我 他 她", "2 2 2")],
+        "[00:00.00]我\n[00:02.50]你",
+        4_000,
+        minimum_exact_match_ratio=0.0,
+        maximum_cost_ratio=1.0,
+    )
+
+    correction = plan.corrections[0]
+    assert correction.corrected_note_tokens == ("我", "我", "你")
+    assert correction.corrected_note_types == (2, 3, 2)
+
+
+def test_unique_text_path_cannot_override_synchronized_line_timing() -> None:
+    """Reject an exact word that occurs far outside its LRC line window."""
+
+    metadata = [_metadata_segment("甲 乙", "2 2", end_ms=2_000)]
+    metadata[0]["duration"] = "0.05 0.95"
+
+    _assert_code(
+        "line_timing_mismatch",
+        lambda: plan_metadata_lyric_corrections(
+            metadata,
+            "[00:00.00]甲\n[00:01.00]乙\n[00:02.00]",
+            2_100,
+        ),
+    )
+
+
+@pytest.mark.parametrize("second_onset_ms", [932, 1_466])
+def test_line_start_window_allows_observed_lrc_jitter(second_onset_ms: int) -> None:
+    """Accept the measured early and late line-start drift from the real song."""
+
+    labels, note_types, coverage, cost_ratio = alignment._align_groups(
+        ("甲", "乙"),
+        ("甲", "乙"),
+        minimum_exact_match_ratio=1.0,
+        maximum_cost_ratio=0.0,
+        group_onsets_ms=(0, second_onset_ms),
+        canonical_onsets_ms=(0, 1_000),
+        canonical_windows_ms=((-100, 601), (900, 1_601)),
+    )
+
+    assert labels == ("甲", "乙")
+    assert note_types == (2, 2)
+    assert coverage == 1.0
+    assert cost_ratio == 0.0
+
+
+def test_planner_keeps_an_onset_just_before_the_first_lyric_timestamp() -> None:
+    """Pass a non-overlapping 68 ms early onset through both timing gates."""
+
+    plan = plan_metadata_lyric_corrections(
+        [_metadata_segment("甲", "2", start_ms=932, end_ms=999)],
+        "[00:01.00]甲\n[00:01.90]",
+        2_000,
+    )
+
+    assert plan.corrections[0].authoritative_tokens == ("甲",)
+
+
+def test_planner_allows_an_onset_just_after_an_internal_line_boundary() -> None:
+    """Keep the documented 99 ms late allowance in the public planner path."""
+
+    metadata = [_metadata_segment("甲 乙 丙", "2 2 2", end_ms=1_300)]
+    metadata[0]["duration"] = "1.099 0.101 0.100"
+    plan = plan_metadata_lyric_corrections(
+        metadata,
+        "[00:00.00]甲乙\n[00:01.00]丙\n[00:01.30]",
+        1_400,
+    )
+
+    assert plan.corrections[0].authoritative_tokens == ("甲", "乙", "丙")
+
+
+@pytest.mark.parametrize(
+    ("second_onset_ms", "expected_code"),
+    [(1_099, None), (1_101, "line_timing_mismatch")],
+)
+def test_previous_line_onset_cannot_move_into_the_next_line(
+    second_onset_ms: int,
+    expected_code: str | None,
+) -> None:
+    """Enforce the narrow cross-line allowance without constraining sustains."""
+
+    callback = lambda: alignment._align_groups(  # noqa: E731
+        ("甲", "乙", "丙"),
+        ("甲", "乙", "丙"),
+        minimum_exact_match_ratio=1.0,
+        maximum_cost_ratio=0.0,
+        group_onsets_ms=(0, second_onset_ms, 1_200),
+        canonical_onsets_ms=(0, None, 1_000),
+        canonical_windows_ms=((-100, 601), (-100, 1_100), (900, 1_601)),
+    )
+    if expected_code is not None:
+        _assert_code(expected_code, callback)
+        return
+
+    labels, note_types, coverage, cost_ratio = callback()
+    assert labels == ("甲", "乙", "丙")
+    assert note_types == (2, 2, 2)
+    assert coverage == 1.0
+    assert cost_ratio == 0.0
+
+
+def test_line_end_guess_cannot_resolve_an_intraline_ambiguity() -> None:
+    """Keep a short lyric before a long pause ambiguous without word timing."""
+
     _assert_code(
         "ambiguous_alignment",
         lambda: plan_metadata_lyric_corrections(
-            metadata,
-            "[00:00.00]我你",
+            [_metadata_segment("我 他 她", "2 2 2")],
+            "[00:00.00]我你\n[00:03.90]",
             4_000,
             minimum_exact_match_ratio=0.0,
             maximum_cost_ratio=1.0,
@@ -435,21 +644,40 @@ def test_plain_and_synchronized_lyrics_must_describe_the_same_song_text() -> Non
     )
 
 
-def test_voiced_segment_requires_an_owned_synchronized_lyric_line() -> None:
-    """Do not reuse distant timed text for a segment with no lyric evidence."""
+def test_each_synthesis_segment_must_meet_local_alignment_thresholds() -> None:
+    """Prevent a strong neighboring slice from masking one unrelated slice."""
+
+    metadata = [
+        _metadata_segment("我 爱 中 国", "2 2 2 2"),
+        _metadata_segment("他", "2", start_ms=4_000, end_ms=5_000),
+    ]
+    _assert_code(
+        "low_coverage",
+        lambda: plan_metadata_lyric_corrections(
+            metadata,
+            "[00:00.00]我爱中国\n[00:04.00]你",
+            5_001,
+        ),
+    )
+
+
+def test_unlabelled_voiced_segment_preserves_its_transcribed_text() -> None:
+    """Keep ad-libs in an explicit empty LRC interval outside correction."""
 
     metadata = [
         _metadata_segment("我 爱", "2 2"),
         _metadata_segment("你 好", "2 2", start_ms=5_000, end_ms=7_000),
     ]
-    _assert_code(
-        "missing_segment_lyrics",
-        lambda: plan_metadata_lyric_corrections(
-            metadata,
-            "[00:00.00]我爱\n[00:04.00]",
-            7_000,
-        ),
+    plan = plan_metadata_lyric_corrections(
+        metadata,
+        "[00:00.00]我爱\n[00:04.00]",
+        7_000,
     )
+
+    assert plan.corrections[0].authoritative_tokens == ("我", "爱")
+    assert plan.corrections[1].authoritative_tokens == ()
+    assert plan.corrections[1].corrected_note_tokens == ("你", "好")
+    assert plan.corrections[1].source_line_indexes == ()
 
 
 def test_invalid_note_group_and_array_shapes_are_rejected() -> None:
@@ -493,6 +721,47 @@ def test_render_rejects_stale_plan_and_malformed_g2p_output() -> None:
         "stale_plan",
         lambda: render_corrected_metadata(
             changed,
+            plan,
+            lambda tokens, _language: list(tokens),
+        ),
+    )
+    changed_timing = deepcopy(metadata)
+    changed_timing[0]["duration"] = "0.40 0.50 0.60"
+    _assert_code(
+        "stale_plan",
+        lambda: render_corrected_metadata(
+            changed_timing,
+            plan,
+            lambda tokens, _language: list(tokens),
+        ),
+    )
+    changed_interval = deepcopy(metadata)
+    changed_interval[0]["time"] = [0, 3_999]
+    _assert_code(
+        "stale_plan",
+        lambda: render_corrected_metadata(
+            changed_interval,
+            plan,
+            lambda tokens, _language: list(tokens),
+        ),
+    )
+    for invalid_interval in ([False, 4_000], [0.0, 4_000.0]):
+        changed_interval_type = deepcopy(metadata)
+        changed_interval_type[0]["time"] = invalid_interval
+        _assert_code(
+            "stale_plan",
+            lambda changed=changed_interval_type: render_corrected_metadata(
+                changed,
+                plan,
+                lambda tokens, _language: list(tokens),
+            ),
+        )
+    changed_language = deepcopy(metadata)
+    changed_language[0]["language"] = "English"
+    _assert_code(
+        "stale_plan",
+        lambda: render_corrected_metadata(
+            changed_language,
             plan,
             lambda tokens, _language: list(tokens),
         ),
