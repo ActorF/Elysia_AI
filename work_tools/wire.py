@@ -38,7 +38,13 @@ def validate_work_params(method: str, value: object) -> dict[str, Any]:
     grant to accept raw renderer paths.
     """
 
-    if method not in _METHOD_FIELDS or not isinstance(value, dict) or set(value) != _METHOD_FIELDS[method]:
+    fields = _METHOD_FIELDS.get(method)
+    supplied = set(value) if type(value) is dict else set()
+    if method == "work.plan.create" and isinstance(value, dict) and "useProjectKnowledge" in supplied:
+        fields = {*_METHOD_FIELDS[method], "useProjectKnowledge"}
+        if type(value["useProjectKnowledge"]) is not bool:
+            raise ValueError("Work knowledge choice must be explicit.")
+    if fields is None or not isinstance(value, dict) or supplied != fields:
         raise ValueError("Work request fields are invalid.")
     chat_id = value["chatId"]
     if not isinstance(chat_id, str) or re.fullmatch(r"chat_[A-Za-z0-9_-]{1,123}", chat_id) is None:
@@ -77,9 +83,11 @@ def validate_work_result(value: object) -> dict[str, Any]:
     if isinstance(value, dict) and value.get("kind") == "work.audit":
         return validate_audit_page(value)
     if isinstance(value, dict) and value.get("kind") == "work.plan":
-        if set(value) != {"kind", "plan"}:
+        if set(value) not in ({"kind", "plan"}, {"kind", "plan", "workflow"}):
             raise ValueError("Work plan result fields are invalid.")
         _validate_plan(value["plan"])
+        if "workflow" in value:
+            _validate_workflow_observation(value["workflow"], value["plan"])
         return dict(value)
     if isinstance(value, dict) and value.get("kind") == "work.approval":
         if set(value) != {"kind", "approval"}:
@@ -113,6 +121,29 @@ def validate_work_result(value: object) -> dict[str, Any]:
 def _validate_id(value: object, prefix: str) -> None:
     if type(value) is not str or re.fullmatch(prefix + r"_[0-9a-f]{32}", value) is None:
         raise ValueError("Work identifier is invalid.")
+
+
+def _validate_workflow_observation(value: object, plan: dict[str, Any] | None) -> None:
+    """Constrain model advice to a nonauthorizing, owner-correlated text record."""
+
+    if type(value) is not dict or set(value) != {"planId", "node", "memoryCount", "ragCount",
+                                                "memoryUnavailable", "ragUnavailable", "advice"}:
+        raise ValueError("Work observation fields are invalid.")
+    if plan is None or value["planId"] != plan["planId"]:
+        raise ValueError("Work observation changed its plan.")
+    if type(value["node"]) is not str or value["node"] not in {"idle", "admission", "memory", "rag", "brain", "approval", "tool", "verification", "end"}:
+        raise ValueError("Work observation node is invalid.")
+    for key in ("memoryCount", "ragCount"):
+        if type(value[key]) is not int or not 0 <= value[key] <= 8:
+            raise ValueError("Work observation count is invalid.")
+    for key in ("memoryUnavailable", "ragUnavailable"):
+        if type(value[key]) is not bool:
+            raise ValueError("Work observation availability is invalid.")
+    advice = value["advice"]
+    if advice is not None and (type(advice) is not dict or set(advice) != {"status", "text"}
+        or type(advice["status"]) is not str or advice["status"] not in {"ready", "unavailable"}
+        or type(advice["text"]) is not str or "\x00" in advice["text"] or len(advice["text"].encode("utf-8")) > 8192):
+        raise ValueError("Work advice is invalid.")
 
 
 def _bounded_json(value: object, maximum: int) -> None:

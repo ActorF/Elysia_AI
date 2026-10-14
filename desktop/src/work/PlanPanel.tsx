@@ -7,6 +7,7 @@ import {
   type WorkPlanAction,
   type WorkPlanClient,
   type WorkPlanState,
+  type WorkWorkflowObservation,
 } from '../../electron/work-plan-protocol.ts'
 import type { WorkToolCall } from '../../electron/work-tool-protocol.ts'
 import { ApprovalPreview } from './ApprovalPreview.tsx'
@@ -31,7 +32,9 @@ interface PlanPanelProps {
 export function PlanPanel({ api, chatId, workspacePath, ready, disabled, calls,
   onRemoveCall, onClearCalls, onLeaseChange }: PlanPanelProps) {
   const [plan, setPlan] = useState<WorkPlan | null>(null)
+  const [workflow, setWorkflow] = useState<WorkWorkflowObservation | undefined>()
   const [title, setTitle] = useState('Workspace task')
+  const [useProjectKnowledge, setUseProjectKnowledge] = useState(false)
   const [loading, setLoading] = useState(false)
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -42,6 +45,7 @@ export function PlanPanel({ api, chatId, workspacePath, ready, disabled, calls,
   const accept = useCallback((state: WorkPlanState): void => {
     planRef.current = state.plan
     setPlan(state.plan)
+    setWorkflow(state.workflow)
     onLeaseChange(workPlanHasLease(state.plan))
   }, [onLeaseChange])
 
@@ -101,7 +105,9 @@ export function PlanPanel({ api, chatId, workspacePath, ready, disabled, calls,
 
   async function create(): Promise<void> {
     if (api !== undefined && workspacePath !== null && calls.length > 0
-      && !workPlanHasLease(plan) && await action(() => api.createWorkPlan({ chatId, title, calls }))) {
+      && !workPlanHasLease(plan) && await action(() => api.createWorkPlan({ chatId, title, calls,
+        ...(useProjectKnowledge ? { useProjectKnowledge: true } : {}),
+      }))) {
       onClearCalls()
     }
   }
@@ -129,6 +135,9 @@ export function PlanPanel({ api, chatId, workspacePath, ready, disabled, calls,
         <form onSubmit={(event) => { event.preventDefault(); void create() }}>
           <label>Plan title<input value={title} maxLength={200} required disabled={blocked || live}
             onChange={(event) => { setTitle(event.currentTarget.value) }} /></label>
+          <label><input type="checkbox" checked={useProjectKnowledge} disabled={blocked || live}
+            onChange={(event) => { setUseProjectKnowledge(event.currentTarget.checked) }} />
+            Consult this Chat’s Project Sources for advisory context</label>
           <ol className="work-plan-queue">
             {calls.map((call, index) => (
               <li key={index}>
@@ -149,6 +158,15 @@ export function PlanPanel({ api, chatId, workspacePath, ready, disabled, calls,
         <div>
           <h3>{plan.title}</h3>
           <p role="status">{plan.state}{plan.busy ? ' · local operation active' : ''}</p>
+          {workflow?.planId === plan.planId && (
+            <details className="work-workflow-context">
+              <summary>Workflow: {plan.state === 'waiting' ? 'approval' : workflow.node}</summary>
+              <p>Memory: {workflow.memoryUnavailable ? 'unavailable' : workflow.memoryCount} ·
+                Project Sources: {workflow.ragUnavailable ? 'unavailable' : workflow.ragCount}</p>
+              {workflow.advice !== null && <pre>{workflow.advice.text}</pre>}
+              <small>Advisory context cannot change these steps or grant approval.</small>
+            </details>
+          )}
           <div className="work-plan-actions">
             {plan.state === 'pending' && <button type="button" disabled={blocked || plan.busy} onClick={() => { control('start') }}>Start plan</button>}
             {['pending', 'running', 'waiting'].includes(plan.state) && <button type="button" disabled={blocked} onClick={() => { control('pause') }}>Pause plan</button>}

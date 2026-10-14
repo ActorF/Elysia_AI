@@ -15,6 +15,7 @@ from pathlib import Path
 from threading import RLock
 from typing import Any
 
+from agent.workflow_nodes import WorkflowNodes
 from chats import ChatSession
 from core.mode_policy import require_work_mode
 from desktop_work_plans import DesktopWorkPlans
@@ -28,7 +29,9 @@ from work_tools.writes import WriteCoordinator
 class DesktopWorkRuntime:
     """Route Work tools through canonical mode, pinned roots, and one-action permissions."""
 
-    def __init__(self, directory: Path, chat_provider: Callable[[], ChatSession], *, protected_roots: tuple[Path, ...] = ()) -> None:
+    def __init__(self, directory: Path, chat_provider: Callable[[], ChatSession], *,
+                 protected_roots: tuple[Path, ...] = (),
+                 nodes_factory: Callable[[Callable[[], None], bool], WorkflowNodes] | None = None) -> None:
         """Use one private directory and the current canonical active-Chat provider."""
 
         self._bindings = WorkspaceBindings(directory)
@@ -38,7 +41,7 @@ class DesktopWorkRuntime:
         self._chat_provider = chat_provider
         self._lock = RLock()
         self._closed = False
-        self._plans = DesktopWorkPlans(chat_provider, self.boundary, self._get_writes)
+        self._plans = DesktopWorkPlans(chat_provider, self.boundary, self._get_writes, nodes_factory=nodes_factory)
 
     def dispatch(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         """Apply an explicit authenticated Work request or deny stale/Chat owners."""
@@ -55,14 +58,15 @@ class DesktopWorkRuntime:
         require_work_mode(chat.mode)
         chat_id = str(chat.chat_id)
         if method == "work.plan.create":
-            plan = self._plans.create(chat, params["title"], [validate_tool_call(call) for call in params["calls"]])
-            return {"kind": "work.plan", "plan": plan}
+            plan = self._plans.create(chat, params["title"], [validate_tool_call(call) for call in params["calls"]],
+                                      use_project_knowledge=params.get("useProjectKnowledge", False))
+            return self._plan_result(chat_id, plan)
         if method == "work.plan.get":
-            return {"kind": "work.plan", "plan": self._plans.get(chat_id)}
+            return self._plan_result(chat_id, self._plans.get(chat_id))
         if method == "work.plan.control":
-            return {"kind": "work.plan", "plan": self._plans.control(chat_id, params["planId"], params["action"])}
+            return self._plan_result(chat_id, self._plans.control(chat_id, params["planId"], params["action"]))
         if method == "work.plan.confirm":
-            return {"kind": "work.plan", "plan": self._plans.confirm(chat_id, params["planId"], params["approvalId"], params["granted"])}
+            return self._plan_result(chat_id, self._plans.confirm(chat_id, params["planId"], params["approvalId"], params["granted"]))
         if method == "work.audit.list":
             # History shares the writer's transaction mutex. Refusing a read
             # while native work owns it keeps the foreground RPC reader free
@@ -129,6 +133,15 @@ class DesktopWorkRuntime:
         binding = self._bindings.get(str(chat.chat_id))
         return {"kind": "work.workspace", "chatId": str(chat.chat_id),
                 "workspacePath": None if binding is None else binding.root}
+
+    def _plan_result(self, chat_id: str, plan: dict[str, Any] | None) -> dict[str, Any]:
+        """Pair observational text with its exact plan; it cannot change execution facts."""
+
+        result: dict[str, Any] = {"kind": "work.plan", "plan": plan}
+        observation = self._plans.observation(chat_id) if plan is not None else None
+        if observation is not None and plan is not None:
+            result["workflow"] = {"planId": plan["planId"], **observation}
+        return result
 
     def _get_writes(self) -> WriteCoordinator:
         """Open private recovery/audit state for explicit tools, plans, or history.

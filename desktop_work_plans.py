@@ -15,6 +15,7 @@ from threading import RLock
 from typing import Any
 
 from agent.work_plan import WorkPlanRunner
+from agent.workflow_nodes import WorkflowNodes
 from chats import ChatSession
 from work_tools.contracts import ToolCall, ToolProtocolError, ToolResult
 from work_tools.executor import WorkToolExecutor
@@ -46,6 +47,8 @@ class DesktopWorkPlans:
         chat_provider: Callable[[], ChatSession],
         boundary_provider: Callable[[str], WorkspaceBoundary],
         write_provider: Callable[[], WriteCoordinator],
+        *,
+        nodes_factory: Callable[[Callable[[], None], bool], WorkflowNodes] | None = None,
     ) -> None:
         """Inject canonical providers without opening a filesystem or starting threads."""
 
@@ -54,13 +57,14 @@ class DesktopWorkPlans:
         self._chat_provider = chat_provider
         self._boundary_provider = boundary_provider
         self._write_provider = write_provider
+        self._nodes_factory = nodes_factory
         self._lock = RLock()
         self._owners: dict[str, _Owner] = {}
         self._retired: list[_Owner] = []
         self._closed = False
         self._creation_token: object | None = None
 
-    def create(self, chat: ChatSession, title: str, calls: list[ToolCall]) -> dict[str, Any]:
+    def create(self, chat: ChatSession, title: str, calls: list[ToolCall], *, use_project_knowledge: bool = False) -> dict[str, Any]:
         """Capture the current selected scope and replace an idle plan safely.
 
         Old waiting approvals are revoked before a replacement is admitted.
@@ -82,6 +86,9 @@ class DesktopWorkPlans:
             lambda call, cancel: self._read(owner, call, cancel),
             lambda call: self._preview(owner, call),
             lambda token, granted: self._confirm_write(owner, token, granted),
+            workflow_nodes=None if self._nodes_factory is None else self._nodes_factory(
+                lambda: self._check_node_authority(owner), use_project_knowledge,
+            ),
         )
         owner.runner = runner
         snapshot = runner.create(title, calls)
@@ -116,6 +123,11 @@ class DesktopWorkPlans:
                     self._creation_token = None
         snapshot["busy"] = False
         return snapshot
+
+    def _check_node_authority(self, owner: _Owner) -> None:
+        """Revalidate the selected capability before and after advisory retrieval."""
+
+        self._authority(owner)
 
     def get(self, chat_id: str) -> dict[str, Any] | None:
         """Return only the canonical current Chat's owned detached plan snapshot."""
@@ -169,6 +181,18 @@ class DesktopWorkPlans:
         with self._lock:
             self._reap_locked()
             return self._busy_locked()
+
+    def observation(self, chat_id: str) -> dict[str, Any] | None:
+        """Return advisory progress only while its captured canonical owner remains valid."""
+
+        with self._lock:
+            owner = self._owners.get(chat_id)
+        if owner is None or not owner.active or owner.runner is None:
+            return None
+        try:
+            return owner.runner.observation()
+        except (ValueError, OSError, PermissionError):
+            return None
 
     def has_live_plan(self, chat_id: str) -> bool:
         """Report pending, running, waiting, or paused state for Backend admission gates."""

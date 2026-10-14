@@ -72,6 +72,9 @@ from desktop_knowledge import (
     DesktopKnowledgeRuntime,
     create_desktop_knowledge_runtime,
 )
+from agent.workflow_nodes import WorkflowNodes
+from desktop_work_context import make_workflow_nodes
+from project_sources import ProjectSourceAnswer
 from documents import (
     DocumentError,
     GroundedAnswerError,
@@ -1389,6 +1392,7 @@ class DesktopBackend:
                 self._work_runtime = DesktopWorkRuntime(
                     self._runtime_settings.data_layout.workspace / "work", self._work_active_chat,
                     protected_roots=(self._runtime_settings.data_layout.root, self._runtime_settings.base_dir),
+                    nodes_factory=self._make_workflow_nodes,
                 )
             runtime = self._work_runtime
         # The NDJSON dispatcher serializes admission. Releasing its state lock
@@ -1401,6 +1405,31 @@ class DesktopBackend:
             # explicit chooser without exposing those diagnostics.
             raise ProtocolValidationError("work.denied", "Work request was refused. Check the mode and selected folder.") from None
         self._emit_response(request_id, result)
+
+    def _make_workflow_nodes(self, authority_guard: Callable[[], None], use_project_knowledge: bool) -> WorkflowNodes:
+        """Bind advisory nodes to canonical Brain services and explicit Project opt-in."""
+
+        if self._brain is None:
+            raise ValueError("Work context is unavailable.")
+        return make_workflow_nodes(
+            self._work_active_chat, self._brain, self._workflow_rag_answer,
+            use_project_knowledge=use_project_knowledge, authority_guard=authority_guard,
+        )
+
+    def _workflow_rag_answer(
+        self, chat_id: ChatId, query: str, *, should_cancel: Callable[[], bool] | None = None,
+    ) -> ProjectSourceAnswer:
+        """Hold the shared knowledge runtime through one explicit Work retrieval.
+
+        Work uses the existing authority and generation leases, so source removal,
+        reindexing, and shutdown cannot leave an unowned retrieval callback.
+        """
+
+        owner = self._acquire_knowledge_runtime_owner()
+        try:
+            return self._require_knowledge_runtime().answers.answer(chat_id, query, should_cancel=should_cancel)
+        finally:
+            self._release_knowledge_runtime_owner(owner)
 
     def _load_desired_settings(self) -> DesktopSettingsSnapshot:
         """Refresh persisted desired values while retaining recovery notice."""

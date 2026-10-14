@@ -198,7 +198,8 @@
       "type": "object", "properties": {
         "chatId": { "$ref": "#/$defs/workChatId" },
         "title": { "type": "string", "minLength": 1, "maxLength": 200 },
-        "calls": { "type": "array", "minItems": 1, "maxItems": 16, "items": { "$ref": "#/$defs/workToolCall" } }
+        "calls": { "type": "array", "minItems": 1, "maxItems": 16, "items": { "$ref": "#/$defs/workToolCall" } },
+        "useProjectKnowledge": { "type": "boolean" }
       }, "required": ["chatId", "title", "calls"], "additionalProperties": false
     },
     "workPlanCreateRequest": {
@@ -253,8 +254,24 @@
     "workPlanResult": {
       "type": "object", "properties": {
         "kind": { "const": "work.plan" },
-        "plan": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/workPlan" }] }
+        "plan": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/workPlan" }] },
+        "workflow": { "$ref": "#/$defs/workWorkflowObservation" }
       }, "required": ["kind", "plan"], "additionalProperties": false
+    },
+    "workWorkflowObservation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["planId", "node", "memoryCount", "ragCount", "memoryUnavailable", "ragUnavailable", "advice"],
+      "properties": {
+        "planId": { "$ref": "#/$defs/workPlanId" },
+        "node": { "enum": ["idle", "admission", "memory", "rag", "brain", "approval", "tool", "verification", "end"] },
+        "memoryCount": { "type": "integer", "minimum": 0, "maximum": 8 },
+        "ragCount": { "type": "integer", "minimum": 0, "maximum": 8 },
+        "memoryUnavailable": { "type": "boolean" }, "ragUnavailable": { "type": "boolean" },
+        "advice": { "oneOf": [{ "type": "null" }, {
+          "type": "object", "additionalProperties": false, "required": ["status", "text"],
+          "properties": { "status": { "enum": ["ready", "unavailable"] }, "text": { "type": "string", "maxLength": 8192 } }
+        }] }
+      }
     },
     "workToolConfirmParams": {
       "type": "object", "properties": {

@@ -38,9 +38,19 @@ export interface WorkPlan {
 }
 
 /** The current canonical Chat's plan, or absence of an owned plan. */
-export interface WorkPlanState { kind: 'work.plan'; plan: WorkPlan | null }
+export interface WorkPlanState { kind: 'work.plan'; plan: WorkPlan | null; workflow?: WorkWorkflowObservation }
+/** Bounded advisory text and progress never select tools or authorize a write. */
+export interface WorkWorkflowObservation {
+  planId: string
+  node: 'idle' | 'admission' | 'memory' | 'rag' | 'brain' | 'approval' | 'tool' | 'verification' | 'end'
+  memoryCount: number
+  ragCount: number
+  memoryUnavailable: boolean
+  ragUnavailable: boolean
+  advice: { status: 'ready' | 'unavailable'; text: string } | null
+}
 export interface WorkPlanGetParams { chatId: string }
-export interface WorkPlanCreateParams { chatId: string; title: string; calls: WorkToolCall[] }
+export interface WorkPlanCreateParams { chatId: string; title: string; calls: WorkToolCall[]; useProjectKnowledge?: boolean }
 export interface WorkPlanControlParams { chatId: string; planId: string; action: WorkPlanAction }
 export interface WorkPlanConfirmParams { chatId: string; planId: string; approvalId: string; granted: boolean }
 
@@ -149,9 +159,13 @@ function step(value: unknown): WorkPlanStep {
 
 /** Validate detached plan snapshots while preserving legal worker publication races. */
 export function parseWorkPlanState(value: unknown): WorkPlanState {
-  const state = record(value, ['kind', 'plan'])
+  const observed = typeof value === 'object' && value !== null && Object.hasOwn(value, 'workflow')
+  const state = record(value, ['kind', 'plan', ...(observed ? ['workflow'] : [])])
   if (state.kind !== 'work.plan') throw new TypeError('Work plan result kind is invalid.')
-  if (state.plan === null) return { kind: 'work.plan', plan: null }
+  if (state.plan === null) {
+    if (observed) throw new TypeError('Work observation requires its exact plan.')
+    return { kind: 'work.plan', plan: null }
+  }
   const raw = record(state.plan, ['planId', 'title', 'state', 'steps', 'busy'])
   if (typeof raw.state !== 'string' || !PLAN_STATES.includes(raw.state as WorkPlanStatus)
     || typeof raw.busy !== 'boolean' || !Array.isArray(raw.steps)
@@ -172,7 +186,29 @@ export function parseWorkPlanState(value: unknown): WorkPlanState {
   // can retain an admitted write. These valid races forbid deriving state from
   // busy or requiring global plan state to equal the current step's status.
   bounded({ planId: plan.planId, title: plan.title, state: plan.state, steps: plan.steps })
-  return { kind: 'work.plan', plan }
+  return { kind: 'work.plan', plan, ...(observed ? { workflow: observation(state.workflow, plan.planId) } : {}) }
+}
+
+function observation(value: unknown, planId: string): WorkWorkflowObservation {
+  const raw = record(value, ['planId', 'node', 'memoryCount', 'ragCount', 'memoryUnavailable', 'ragUnavailable', 'advice'])
+  if (raw.planId !== planId || typeof raw.node !== 'string'
+    || !['idle', 'admission', 'memory', 'rag', 'brain', 'approval', 'tool', 'verification', 'end'].includes(raw.node)
+    || typeof raw.memoryUnavailable !== 'boolean' || typeof raw.ragUnavailable !== 'boolean'
+    || [raw.memoryCount, raw.ragCount].some((count) => typeof count !== 'number' || !Number.isInteger(count) || count < 0 || count > 8)) {
+    throw new TypeError('Work observation is invalid.')
+  }
+  let advice: WorkWorkflowObservation['advice'] = null
+  if (raw.advice !== null) {
+    const entry = record(raw.advice, ['status', 'text'])
+    if ((entry.status !== 'ready' && entry.status !== 'unavailable') || typeof entry.text !== 'string'
+      || entry.text.includes('\0') || utf8.encode(entry.text).byteLength > 8192
+      || /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/u.test(entry.text)) {
+      throw new TypeError('Work advice is invalid.')
+    }
+    advice = { status: entry.status, text: entry.text }
+  }
+  return { planId, node: raw.node as WorkWorkflowObservation['node'], memoryCount: raw.memoryCount as number,
+    ragCount: raw.ragCount as number, memoryUnavailable: raw.memoryUnavailable, ragUnavailable: raw.ragUnavailable, advice }
 }
 
 /** Validate one active Chat identifier for a read-only plan lookup. */
@@ -182,9 +218,12 @@ export function parseWorkPlanGetParams(value: unknown): WorkPlanGetParams {
 
 /** Validate bounded explicit calls without starting them or authorizing any writes. */
 export function parseWorkPlanCreateParams(value: unknown): WorkPlanCreateParams {
-  const raw = record(value, ['chatId', 'title', 'calls'])
+  const optedIn = typeof value === 'object' && value !== null && Object.hasOwn(value, 'useProjectKnowledge')
+  const raw = record(value, ['chatId', 'title', 'calls', ...(optedIn ? ['useProjectKnowledge'] : [])])
+  if (optedIn && typeof raw.useProjectKnowledge !== 'boolean') throw new TypeError('Work knowledge choice must be explicit.')
   const request = {
     ...parseWorkWorkspaceGetParams({ chatId: raw.chatId }), title: title(raw.title), calls: calls(raw.calls),
+    ...(optedIn ? { useProjectKnowledge: raw.useProjectKnowledge as boolean } : {}),
   }
   bounded(request)
   return request

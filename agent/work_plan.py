@@ -20,6 +20,7 @@ from typing import Any, Literal
 from uuid import uuid4
 
 from agent.work_graph import WorkReadGraph
+from agent.workflow_nodes import WorkflowNodes
 from work_tools.contracts import (
     TOOL_CATALOG, ToolCall, ToolResult, validate_plan_title, validate_tool_call, validate_tool_result,
 )
@@ -92,6 +93,8 @@ class WorkPlanRunner:
         read_call: ReadCall,
         preview_call: PreviewCall,
         confirm_call: ConfirmCall,
+        *,
+        workflow_nodes: WorkflowNodes | None = None,
     ) -> None:
         """Bind callbacks to one canonical Chat owner without starting a worker."""
 
@@ -99,7 +102,8 @@ class WorkPlanRunner:
             raise TypeError("Work plan callbacks must be callable.")
         # The fixed graph admits only reads. Write previews and confirmations
         # retain their existing single-use authority outside graph replay.
-        self._read_graph = WorkReadGraph(read_call)
+        self._read_graph = WorkReadGraph(read_call, nodes=workflow_nodes)
+        self._workflow_nodes = workflow_nodes
         self._preview_call = preview_call
         self._confirm_call = confirm_call
         self._lock = RLock()
@@ -153,6 +157,11 @@ class WorkPlanRunner:
 
         with self._lock:
             return self._worker_active
+
+    def observation(self) -> dict[str, Any] | None:
+        """Expose bounded advisory progress without adding permissions to the plan DTO."""
+
+        return None if self._workflow_nodes is None else self._workflow_nodes.observation()
 
     def control(self, plan_id: str, action: str) -> dict[str, Any]:
         """Start, pause, resume, cancel, or advance without holding locks during I/O.
@@ -302,8 +311,15 @@ class WorkPlanRunner:
                     result = self._confirm_call(approval_id, granted)
                     confirmation = None
                 elif current.call.tool_id in _READ_TOOLS:
-                    result = self._read_graph.run(current.call, cancel.is_set)
+                    result = self._read_graph.run(current.call, cancel.is_set, query=plan.title)
                 else:
+                    route = self._read_graph.prepare(current.call, cancel.is_set, query=plan.title)
+                    if route.status != "denied" or route.error_code != "permission_required":
+                        with self._lock:
+                            if self._owned_locked(plan, token) and not cancel.is_set():
+                                outcome = route if route.status in {"failed", "denied", "cancelled"} else ToolResult("failed", error_code="io_error")
+                                self._finish_step_locked(plan, current, outcome)
+                        return
                     approval = self._validate_approval(current.call, self._preview_call(current.call))
                     with self._lock:
                         if not self._owned_locked(plan, token) or cancel.is_set():
