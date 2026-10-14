@@ -354,6 +354,14 @@ export class VisionImageController {
     return { ...image.canonical, pngBytes: Buffer.from(image.canonical.pngBytes) }
   }
 
+  /** Read only a path-free current image fingerprint for cheap OCR/context revocation checks. */
+  getImageIdentity(chatId: string, imageId: string): Pick<VisionImage, 'imageId' | 'sha256' | 'width' | 'height'> | null {
+    const request = parseVisionRemoveRequest({ chatId, imageId })
+    this.authority(request.chatId, false)
+    const image = this.images.get(request.imageId)?.public
+    return image === undefined ? null : { imageId: image.imageId, sha256: image.sha256, width: image.width, height: image.height }
+  }
+
   /** Retain the native lease until picker/read/decode really settles, even if its owner is revoked. */
   hasActiveWork(): boolean { return this.active }
 

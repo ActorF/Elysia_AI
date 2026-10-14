@@ -19,3 +19,11 @@ Stage 11 使用独立的 Vision 面板，在 Chat 和 Work 中处理用户明确
 默认仅保留当前会话的内存副本。切换 Chat 或 Project、连接失效、归档或退出会撤销当前集合。**Remove image** 和 **Clear selected images** 删除 Vision 内存副本，不删除用户选择的原文件。普通附件和绘图图库仍沿用原有流程。
 
 Electron 的图片 API 本身不应用 EXIF 方向，因此方向校正属于本项目导入层的职责，而不是依赖解码器隐式处理。支持范围参见 [Electron nativeImage 文档](https://www.electronjs.org/docs/latest/api/native-image)。
+
+## 本地 OCR
+
+选择图片后，点击 **Check OCR** 检查现有 Tesseract 与语言数据，再选择英文、简体中文加英文或繁体中文加英文进行识别。检查和识别都由用户触发，不会安装引擎或下载语言包。Windows 默认使用 `Program Files/Tesseract-OCR/tesseract.exe`；自定义安装可在启动应用前设置 `ELYSIA_TESSERACT_PATH`。中文选项需要对应的 `chi_sim` 或 `chi_tra` 与 `eng` 数据，缺少引擎和缺少语言包分别显示。
+
+识别只把当前已审核图片的规范化 PNG 通过标准输入交给固定本地程序，不使用 Shell，也不产生临时图片。返回结果保留文字、像素位置和置信度；结果作为普通文本显示，图片内的命令和链接不能成为操作授权。TSV 输出上限为 1 MiB、文字 32 KiB、单词框 2048 个；越界坐标、异常置信度或超限输出会拒绝发布。进程超过 20 秒会请求停止。
+
+**Cancel** 会立即请求取消，但实际进程关闭前仍占用操作容量。切换分析对象、删除图片或会话失效会撤销相关结果；迟到的旧结果不会覆盖新会话。OCR 结果仅在内存中保留，不会自动加入聊天或 Work 计划。Tesseract 的输出约定参见[官方命令行文档](https://tesseract-ocr.github.io/tessdoc/Command-Line-Usage.html)。

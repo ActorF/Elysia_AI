@@ -429,6 +429,14 @@ let nextVisionImageNumber = 1
 let nextVisionError = null
 let delayVisionSelection = false
 let pendingVisionSelections = []
+let visionAnalysisOwnerKey = null
+let visionAnalysisState = null
+let visionOcrReadiness = { status: 'missing_engine', languages: [], version: null }
+let nextVisionOcrResult = null
+let delayVisionOcr = false
+let visionOcrActive = false
+let visionOcrCancellation = false
+let pendingVisionOcr = []
 let desktopOwnerKey = null
 let desktopState = null
 let desktopClipboard = 'Private clipboard text.'
@@ -480,6 +488,20 @@ function visionSnapshot(chatId) {
   }
   if (chat.chatId !== chatId || chat.archived || snapshot.status !== 'ready') throw new Error('Vision owner is unavailable.')
   return clone(visionState)
+}
+
+function visionAnalysisSnapshot(chatId) {
+  const owned = visionSnapshot(chatId)
+  const key = JSON.stringify(owned.owner)
+  if (visionAnalysisState === null || key !== visionAnalysisOwnerKey) {
+    visionAnalysisOwnerKey = key
+    visionAnalysisState = { kind: 'vision.analysis', owner: owned.owner, revision: 0, busy: false,
+      phase: null, cancelRequested: false, image: null, ocr: { readiness: null, result: null, error: null } }
+  }
+  visionAnalysisState.busy = visionOcrActive
+  visionAnalysisState.phase = visionOcrActive ? 'ocr' : null
+  visionAnalysisState.cancelRequested = visionOcrActive && visionOcrCancellation
+  return clone(visionAnalysisState)
 }
 
 function desktopAudit(chatId, action, phase, actionId, preview = null) {
@@ -1801,6 +1823,51 @@ const desktopApi = {
     visionState.items = []; visionState.revision += 1
     return visionSnapshot(chatId)
   },
+  getVisionAnalysis: async (chatId) => {
+    record('getVisionAnalysis', [chatId])
+    return visionAnalysisSnapshot(chatId)
+  },
+  checkVisionOcr: async (chatId) => {
+    record('checkVisionOcr', [chatId])
+    visionAnalysisSnapshot(chatId)
+    visionAnalysisState.ocr.readiness = clone(visionOcrReadiness)
+    visionAnalysisState.revision += 1
+    return visionAnalysisSnapshot(chatId)
+  },
+  runVisionOcr: async (request) => {
+    record('runVisionOcr', [request])
+    const before = visionSnapshot(request.chatId)
+    const selected = before.items.find((image) => image.imageId === request.imageId)
+    if (selected === undefined || visionOcrActive) throw new Error('The selected OCR image is unavailable.')
+    visionAnalysisSnapshot(request.chatId)
+    visionAnalysisState.image = { imageId: selected.imageId, sha256: selected.sha256, width: selected.width, height: selected.height }
+    visionAnalysisState.ocr.result = null; visionAnalysisState.ocr.error = null
+    visionAnalysisState.revision += 1
+    visionOcrActive = true; visionOcrCancellation = false
+    try {
+      if (delayVisionOcr) await new Promise((resolve, reject) => { pendingVisionOcr.push({ resolve, reject }) })
+      const current = visionSnapshot(request.chatId)
+      if (current.owner.projectId !== before.owner.projectId || !current.items.some((image) => image.imageId === selected.imageId && image.sha256 === selected.sha256)) {
+        throw new Error('The selected OCR image owner changed.')
+      }
+      if (visionOcrCancellation) visionAnalysisState.ocr.error = { code: 'cancelled', message: 'Local analysis was cancelled.' }
+      else visionAnalysisState.ocr.result = clone(nextVisionOcrResult ?? { text: 'Synthetic', words: [{ text: 'Synthetic', x: 0, y: 0,
+        width: selected.width, height: selected.height, confidence: 0.9 }], language: request.language,
+        width: selected.width, height: selected.height, truncated: false })
+      visionAnalysisState.revision += 1
+    } finally {
+      visionOcrActive = false; visionOcrCancellation = false
+      if (visionAnalysisState !== null) visionAnalysisState.revision += 1
+    }
+    return visionAnalysisSnapshot(request.chatId)
+  },
+  cancelVisionAnalysis: async (chatId) => {
+    record('cancelVisionAnalysis', [chatId])
+    visionAnalysisSnapshot(chatId)
+    visionOcrCancellation = visionOcrActive
+    visionAnalysisState.revision += 1
+    return visionAnalysisSnapshot(chatId)
+  },
 
   getWorkDesktopState: async (chatId) => {
     record('getWorkDesktopState', [chatId])
@@ -2623,6 +2690,17 @@ const testControl = {
     if (pending === undefined) return false
     pending.reject(new Error('Vision native action failed.')); return true
   },
+  setVisionOcrReadiness: (readiness) => { visionOcrReadiness = clone(readiness) },
+  setVisionOcrResult: (result) => { nextVisionOcrResult = clone(result) },
+  setVisionOcrDelay: (delayed) => { delayVisionOcr = delayed },
+  releaseNextVisionOcr: () => {
+    const pending = pendingVisionOcr.shift()
+    pending?.resolve(); return pending !== undefined
+  },
+  rejectNextVisionOcr: () => {
+    const pending = pendingVisionOcr.shift()
+    pending?.reject(new Error('Synthetic native OCR failed.')); return pending !== undefined
+  },
   setDesktopClipboardText: (text) => { desktopClipboard = text },
   getDesktopClipboardText: () => desktopClipboard,
   setDesktopDocumentSelection: (document) => { desktopDocumentSelection = clone(document) },
@@ -2645,6 +2723,11 @@ const testControl = {
     nextVisionError = null; delayVisionSelection = false
     for (const pending of pendingVisionSelections) pending.reject(new Error('Vision test reset.'))
     pendingVisionSelections = []
+    visionAnalysisOwnerKey = null; visionAnalysisState = null
+    visionOcrReadiness = { status: 'missing_engine', languages: [], version: null }; nextVisionOcrResult = null
+    delayVisionOcr = false; visionOcrActive = false; visionOcrCancellation = false
+    for (const pending of pendingVisionOcr) pending.reject(new Error('Vision OCR test reset.'))
+    pendingVisionOcr = []
     desktopOwnerKey = null; desktopState = null; desktopAuditEntries = []
     desktopDocumentSelection = null; desktopClipboard = 'Private clipboard text.'
     delayDesktopDecisions = false; nextDesktopError = null; desktopActionNumber = 1
@@ -2834,7 +2917,7 @@ const testControl = {
     const nextEvent = clone(event)
     if (nextEvent.type === 'snapshot') {
       snapshot = clone(nextEvent.snapshot)
-      if (snapshot.status !== 'ready') { visionState = null; visionOwnerKey = null }
+      if (snapshot.status !== 'ready') { visionState = null; visionOwnerKey = null; visionAnalysisState = null; visionAnalysisOwnerKey = null }
     }
     if (
       nextEvent.type === 'chat-chunk'

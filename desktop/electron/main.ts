@@ -32,6 +32,9 @@ import { fileURLToPath } from 'node:url'
 import { BackendProcess } from './backend-process.js'
 import { VisionImageController, VisionImageError, decodeVisionImage, readVisionSelectedFile, type VisionOwner } from './vision-images.js'
 import { parseVisionChatId, parseVisionRemoveRequest } from './vision-protocol.js'
+import { VisionAnalysisController, VisionAnalysisServiceError } from './vision-analysis.js'
+import { parseVisionOcrRequest } from './vision-analysis-protocol.js'
+import { TesseractOcrAdapter } from './vision-ocr.js'
 import { WorkDesktopController, parseWorkDesktopChatRequest, parseWorkDesktopClipboardWriteRequest,
   parseWorkDesktopDecisionRequest, parseWorkDesktopWindowSelectionRequest, type WorkDesktopOwner } from './work-desktop-tools.js'
 import { WorkDesktopStorage } from './work-desktop-storage.js'
@@ -214,6 +217,7 @@ let workDesktopStorage: { root: string; store: WorkDesktopStorage } | null = nul
 let workDesktopScope: { chatId: string; projectId: string | null; workspacePath: string | null } | null = null
 const workDesktopRequests = new Set<Promise<unknown>>()
 let visionImageController: VisionImageController | null = null
+let visionAnalysisController: VisionAnalysisController | null = null
 const visionRequests = new Set<Promise<unknown>>()
 const voiceCallWindowManager = new VoiceCallWindowManager({
   policy: {
@@ -2052,6 +2056,8 @@ function broadcastBackendEvent(event: BackendEvent): void {
   catch { workDesktopController?.clear() }
   try { visionImageController?.synchronize() }
   catch { visionImageController?.shutdown(); visionImageController = null }
+  try { visionAnalysisController?.synchronize() }
+  catch { visionAnalysisController?.shutdown() }
   try {
     maybeShowCompletionNotification(event)
   } catch {
@@ -2075,7 +2081,7 @@ function hasActiveDesktopWork(): boolean {
 }
 
 function hasActiveVisionWork(): boolean {
-  return visionRequests.size > 0 || visionImageController?.hasActiveWork() === true
+  return visionRequests.size > 0 || visionImageController?.hasActiveWork() === true || visionAnalysisController?.hasActiveWork() === true
 }
 
 function hasActiveComputerWork(): boolean { return hasActiveDesktopWork() || hasActiveVisionWork() }
@@ -2110,7 +2116,7 @@ function requireVisionController(): VisionImageController {
 
 function withVisionOwner<Result>(chatId: string, operation: (controller: VisionImageController) => Result | Promise<Result>,
   readOnly = false): Promise<Result> {
-  if (hasActiveVisionWork() || shutdownStarted || dataStorageOperation !== null || !readOnly && visionOwner().busy) {
+  if (shutdownStarted || dataStorageOperation !== null || !readOnly && (hasActiveVisionWork() || visionOwner().busy)) {
     return Promise.reject(new VisionImageError('busy'))
   }
   // Reserve before hydration starts. Even a missing canonical cache cannot
@@ -2122,6 +2128,41 @@ function withVisionOwner<Result>(chatId: string, operation: (controller: VisionI
     if (owner === null || owner.chatId !== chatId || shutdownStarted) throw new VisionImageError('owner_changed')
     return operation(requireVisionController())
   }).catch((error: unknown) => { throw new VisionImageError(error instanceof VisionImageError ? error.code : 'unavailable') })
+  visionRequests.add(request)
+  void request.then(() => visionRequests.delete(request), () => visionRequests.delete(request))
+  return request
+}
+
+function requireVisionAnalysisController(): VisionAnalysisController {
+  if (visionAnalysisController === null) {
+    const ocr = new TesseractOcrAdapter()
+    visionAnalysisController = new VisionAnalysisController({
+      getOwner: visionOwner,
+      getImageIdentity: (chatId, imageId) => requireVisionController().getImageIdentity(chatId, imageId),
+      getImage: (chatId, imageId) => requireVisionController().getImage(chatId, imageId),
+      readiness: (signal) => ocr.readiness(signal),
+      recognize: (image, language, signal) => ocr.run(image.pngBytes, image.width, image.height, language, signal),
+    })
+  }
+  return visionAnalysisController
+}
+
+function withVisionAnalysisOwner<Result>(chatId: string,
+  operation: (controller: VisionAnalysisController) => Result | Promise<Result>, control = false): Promise<Result> {
+  if (shutdownStarted || !control && (hasActiveVisionWork() || visionOwner().busy)) {
+    return Promise.reject(new VisionAnalysisServiceError('busy'))
+  }
+  // Status and cancellation must bypass a running OCR reservation; awaiting its
+  // physical callback here would make the user's Stop button unable to stop it.
+  const request = Promise.resolve().then(async () => {
+    const backend = requireBackend()
+    if (backend.getCanonicalVisionChat() === null) await backend.listChats(false)
+    const owner = backend.getCanonicalVisionChat()
+    if (owner === null || owner.chatId !== chatId || shutdownStarted) throw new VisionAnalysisServiceError('owner_changed')
+    return operation(requireVisionAnalysisController())
+  }).catch((error: unknown) => {
+    throw new VisionAnalysisServiceError(error instanceof VisionAnalysisServiceError ? error.code : 'unavailable')
+  })
   visionRequests.add(request)
   void request.then(() => visionRequests.delete(request), () => visionRequests.delete(request))
   return request
@@ -2611,6 +2652,23 @@ function requireMainWindow(): BrowserWindow {
 }
 
 function registerIpcHandlers(): void {
+  ipcMain.handle('vision:get-analysis', (event, chatId: unknown) => {
+    assertTrustedSender(event)
+    return withVisionAnalysisOwner(parseVisionChatId(chatId), (controller) => controller.getState(parseVisionChatId(chatId)), true)
+  })
+  ipcMain.handle('vision:check-ocr', (event, chatId: unknown) => {
+    assertTrustedSender(event)
+    return withVisionAnalysisOwner(parseVisionChatId(chatId), (controller) => controller.checkOcr(parseVisionChatId(chatId)))
+  })
+  ipcMain.handle('vision:run-ocr', (event, value: unknown) => {
+    assertTrustedSender(event)
+    const request = parseVisionOcrRequest(value)
+    return withVisionAnalysisOwner(request.chatId, (controller) => controller.runOcr(request))
+  })
+  ipcMain.handle('vision:cancel-analysis', (event, chatId: unknown) => {
+    assertTrustedSender(event)
+    return withVisionAnalysisOwner(parseVisionChatId(chatId), (controller) => controller.cancel(parseVisionChatId(chatId)), true)
+  })
   ipcMain.handle('vision:get-state', (event, chatId: unknown) => {
     assertTrustedSender(event)
     return withVisionOwner(parseVisionChatId(chatId), (controller) => controller.getState(parseVisionChatId(chatId)), true)
@@ -4180,6 +4238,10 @@ if (!hasSingleInstanceLock) {
     workDesktopController?.clear()
     visionImageController?.shutdown()
     visionImageController = null
+    const closingVisionAnalysis = visionAnalysisController
+    closingVisionAnalysis?.shutdown()
+    // Retain the cancelled controller until its own callback drains. The
+    // global Vision probe must not lose capacity merely because quit started.
     // Backend shutdown can await other work or fail and leave Main running.
     // Notify its live renderer now so capture cannot outlive the call controls.
     voiceCallWindowManager.endCurrent()
@@ -4205,6 +4267,9 @@ if (!hasSingleInstanceLock) {
         ? Promise.resolve()
         : dataStorageOperation.then(() => undefined, () => undefined)
       const stopBackend = Promise.allSettled([finishDataStorage, ...workDesktopRequests, ...visionRequests]).then(async () => {
+        if (visionAnalysisController === closingVisionAnalysis && closingVisionAnalysis?.hasActiveWork() !== true) {
+          visionAnalysisController = null
+        }
         if (
           backendProcess !== null
           && backendProcess.getSnapshot().status !== 'stopped'
