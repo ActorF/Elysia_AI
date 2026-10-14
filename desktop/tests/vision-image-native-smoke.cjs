@@ -64,4 +64,4 @@ void app.whenReady().then(async () => {
   assert.deepEqual(nativeImage.createFromDataURL(thumbnail.previewDataUrl).getSize(), { width: 512, height: 128 })
   process.stdout.write('VISION_NATIVE_SMOKE_OK\n')
   app.exit(0)
-}).catch(() => { process.stderr.write('Synthetic native image smoke failed.\n'); app.exit(1) })
+}).catch((error) => { process.stderr.write(`Synthetic native image smoke failed: ${String(error?.stack ?? error)}\n`); app.exit(1) })

@@ -11,8 +11,12 @@ test('Actual Electron codecs preserve PNG transparency, bound previews, and hono
   const require = createRequire(import.meta.url)
   const fixture = path.join(path.dirname(fileURLToPath(import.meta.url)), 'vision-image-native-smoke.cjs')
   const env = { ...process.env }; delete env.ELECTRON_RUN_AS_NODE
+  // Match Playwright's Linux Electron harness on CI hosts without a configured
+  // SUID helper. This isolated main-process fixture opens no renderer or user
+  // content; application launch and production sandbox settings are unchanged.
+  const args = [...(process.platform === 'linux' ? ['--no-sandbox'] : []), fixture]
   const result = await new Promise((resolve, reject) => {
-    const child = spawn(require('electron'), [fixture], { env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
+    const child = spawn(require('electron'), args, { env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
     let stdout = '', stderr = ''
     const timer = setTimeout(() => { child.kill(); reject(new Error('Synthetic Electron codec test timed out.')) }, 30000)
     child.stdout.on('data', (bytes) => { stdout += bytes.toString('utf8'); if (stdout.length > 16384) child.kill() })
