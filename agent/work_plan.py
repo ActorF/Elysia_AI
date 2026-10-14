@@ -19,6 +19,7 @@ from threading import Event, RLock, Thread
 from typing import Any, Literal
 from uuid import uuid4
 
+from agent.work_graph import WorkReadGraph
 from work_tools.contracts import (
     TOOL_CATALOG, ToolCall, ToolResult, validate_plan_title, validate_tool_call, validate_tool_result,
 )
@@ -96,7 +97,9 @@ class WorkPlanRunner:
 
         if not all(callable(callback) for callback in (read_call, preview_call, confirm_call)):
             raise TypeError("Work plan callbacks must be callable.")
-        self._read_call = read_call
+        # The fixed graph admits only reads. Write previews and confirmations
+        # retain their existing single-use authority outside graph replay.
+        self._read_graph = WorkReadGraph(read_call)
         self._preview_call = preview_call
         self._confirm_call = confirm_call
         self._lock = RLock()
@@ -299,7 +302,7 @@ class WorkPlanRunner:
                     result = self._confirm_call(approval_id, granted)
                     confirmation = None
                 elif current.call.tool_id in _READ_TOOLS:
-                    result = self._read_call(current.call, cancel.is_set)
+                    result = self._read_graph.run(current.call, cancel.is_set)
                 else:
                     approval = self._validate_approval(current.call, self._preview_call(current.call))
                     with self._lock:
