@@ -28,7 +28,7 @@ from pathlib import Path
 import re
 from threading import RLock
 from time import monotonic
-from typing import Any, cast
+from typing import Any, Literal, cast
 from uuid import uuid4
 
 from .contracts import (
@@ -51,6 +51,8 @@ _MAX_RECORD_BYTES = 64 * 1024
 _MAX_RECORDS = 1000
 _MAX_AUDIT_PAGE_BYTES = 512 * 1024
 _MAX_AUDIT_PAGE_ENTRIES = 100
+ApprovalDecision = Literal["approve", "reject", "modify", "timeout"]
+_DECISIONS = frozenset({"approve", "reject", "modify", "timeout"})
 _RECORD_FIELDS = frozenset({
     "version", "undoId", "timestamp", "chatId", "projectId", "rootPath", "rootIdentity",
     "toolId", "path", "destination", "beforeHash", "afterHash", "parameters",
@@ -217,6 +219,7 @@ class WriteCoordinator:
         if current_time.tzinfo is None:
             raise ToolProtocolError()
         expires = current_time + timedelta(minutes=5)
+        self._expire_pending(current_time)
         token = "approval_" + uuid4().hex
         with self._pending_lock:
             # Invalidation can win while native preview I/O is outside this
@@ -228,8 +231,7 @@ class WriteCoordinator:
             # so a failed edit cannot erase the still-visible approval.
             self._pending = {
                 key: value for key, value in self._pending.items()
-                if value.chat_id != chat_id and value.expires_at > current_time
-                and value.deadline > monotonic()
+                if value.chat_id != chat_id
             }
             if len(self._pending) >= 128:
                 raise ToolProtocolError("io_error")
@@ -251,12 +253,31 @@ class WriteCoordinator:
             self._approval_epochs[chat_id] = self._approval_epochs.get(chat_id, 0) + 1
             self._pending = {key: value for key, value in self._pending.items() if value.chat_id != chat_id}
 
+    def approval_expired(self, chat_id: str, project_id: str | None, approval_id: str) -> bool:
+        """Inspect this owner's UTC/monotonic lease without native I/O or consuming its token.
+
+        The plan manager can start a nonblocking timeout decision while retaining
+        physical worker ownership through the durable audit callback. A clock
+        rollback never extends the original five-minute monotonic lease.
+        """
+
+        _scope(chat_id, project_id)
+        with self._pending_lock:
+            pending = self._pending.get(approval_id)
+            if pending is None or pending.chat_id != chat_id or pending.project_id != project_id:
+                return False
+            return pending.expires_at <= self._clock() or pending.deadline <= monotonic()
+
     def confirm(
         self, chat_id: str, project_id: str | None, boundary: WorkspaceBoundary,
-        approval_id: str, granted: bool,
+        approval_id: str, granted: bool, *, decision: ApprovalDecision | None = None,
     ) -> ToolResult:
-        """Consume one token and admit mutation only within its cooperative twenty-second preparation budget.
+        """Consume one exact decision and admit only approved writes within the preparation budget.
 
+        Legacy Boolean calls map to approve/reject. Modify and timeout consume
+        the old token without mutating files; a modified plan needs a new preview.
+        Expired UTC or monotonic leases are audited as timeout, even if approval
+        arrived late. The decision is durable before any mutation is admitted.
         Preflight and durable backup are checked before native mutation begins.
         Once admitted, a non-preemptible write/flush settles and reports its
         verified actual result even if that preparation budget later elapses.
@@ -267,20 +288,26 @@ class WriteCoordinator:
                 _scope(chat_id, project_id)
                 if type(approval_id) is not str or type(granted) is not bool:
                     raise ToolProtocolError()
+                selected_decision = ("approve" if granted else "reject") if decision is None else decision
+                if (type(selected_decision) is not str or selected_decision not in _DECISIONS
+                    or (selected_decision == "approve") != granted):
+                    raise ToolProtocolError()
                 with self._pending_lock:
                     pending = self._pending.pop(approval_id, None)
                 if pending is None:
                     return ToolResult("denied", error_code="permission_denied")
                 if pending.chat_id != chat_id or pending.project_id != project_id:
                     return ToolResult("denied", error_code="permission_denied")
-                if not granted:
-                    self._record_denial(pending, "permission_denied")
-                    return ToolResult("denied", error_code="permission_denied")
                 # A system-clock rollback must not extend a permission. UTC
                 # remains the visible expiry; monotonic time bounds its lease.
                 if pending.expires_at <= self._clock() or pending.deadline <= monotonic():
-                    self._record_denial(pending, "conflict")
-                    return ToolResult("denied", error_code="conflict")
+                    selected_decision = "timeout"
+                if selected_decision == "timeout":
+                    self._record_timeout(pending, decision="timeout")
+                    return ToolResult("failed", error_code="timeout")
+                if selected_decision in {"reject", "modify"}:
+                    self._record_denial(pending, "permission_denied", decision=selected_decision)
+                    return ToolResult("denied", error_code="permission_denied")
                 descriptor = next(item for item in TOOL_CATALOG if item.tool_id == pending.call.tool_id)
                 admission_deadline = monotonic() + descriptor.timeout_seconds
                 try:
@@ -374,6 +401,7 @@ class WriteCoordinator:
         """Merge bounded owner-filtered write/read history without contents or native paths."""
 
         _scope(chat_id, None)
+        self._expire_pending(self._clock())
         with self._lock:
             records = [self._load(entry.name) for entry in self._storage.list_directory("transactions", max_entries=_MAX_RECORDS)]
             reads = [record for record, _digest in self._read_records()]
@@ -479,7 +507,7 @@ class WriteCoordinator:
             assert before is not None
             mutations.remove(call.path, _hash(before))
 
-    def _new_record(self, undo_id: str, pending: _Pending) -> dict[str, Any]:
+    def _new_record(self, undo_id: str, pending: _Pending, *, decision: ApprovalDecision = "approve") -> dict[str, Any]:
         call = pending.call
         parameters: dict[str, Any] = {"path": call.path}
         if call.destination is not None:
@@ -490,7 +518,8 @@ class WriteCoordinator:
         before_hash = None if pending.before is None else _hash(pending.before)
         after_hash = _hash((call.content or "").encode("utf-8")) if call.tool_id in {"create", "edit"} else before_hash
         return {
-            "version": 1, "undoId": undo_id, "timestamp": self._clock().astimezone(timezone.utc).isoformat(),
+            "version": 2, "undoId": undo_id, "timestamp": self._clock().astimezone(timezone.utc).isoformat(),
+            "decision": decision,
             "chatId": pending.chat_id, "projectId": pending.project_id, "rootPath": pending.root_path,
             "rootIdentity": list(pending.root_identity), "toolId": call.tool_id, "path": call.path,
             "destination": call.destination, "beforeHash": before_hash, "afterHash": after_hash,
@@ -498,15 +527,38 @@ class WriteCoordinator:
             "undoState": "unavailable", "recoverable": True,
         }
 
-    def _record_denial(self, pending: _Pending, error: str) -> None:
-        record = self._new_record("undo_" + uuid4().hex, pending)
+    def _record_denial(self, pending: _Pending, error: str, *, decision: ApprovalDecision = "approve") -> None:
+        record = self._new_record("undo_" + uuid4().hex, pending, decision=decision)
         record.update(result="denied", error=error, recoverable=False)
         self._prepare(record, None)
 
-    def _record_timeout(self, pending: _Pending) -> None:
-        record = self._new_record("undo_" + uuid4().hex, pending)
+    def _record_timeout(self, pending: _Pending, *, decision: ApprovalDecision = "approve") -> None:
+        record = self._new_record("undo_" + uuid4().hex, pending, decision=decision)
         record.update(result="failed", error="timeout", recoverable=False)
         self._prepare(record, None)
+
+    def _expire_pending(self, timestamp: datetime) -> None:
+        """Consume expired leases with durable timeout events before cleanup hides them.
+
+        The execution mutex precedes the short pending mutex, matching confirm.
+        Invalidation deliberately never calls this helper: cancel/shutdown must
+        stay responsive while an already admitted native write drains.
+        """
+
+        with self._pending_lock:
+            expired = any(item.expires_at <= timestamp or item.deadline <= monotonic()
+                          for item in self._pending.values())
+        if not expired:
+            return
+        with self._lock:
+            with self._pending_lock:
+                keys = [key for key, item in self._pending.items()
+                        if item.expires_at <= timestamp or item.deadline <= monotonic()]
+                pending = [self._pending.pop(key) for key in keys]
+            # Persistence follows irrevocable consumption, so a journal failure
+            # can never leave an expired right executable through another route.
+            for item in pending:
+                self._record_timeout(item, decision="timeout")
 
     def _prepare(self, record: dict[str, Any], backup: bytes | None) -> None:
         if len(self._storage.list_directory("transactions", max_entries=_MAX_RECORDS)) >= _MAX_RECORDS:
@@ -638,6 +690,7 @@ class WriteCoordinator:
             "timestamp": record["timestamp"], "chatId": record["chatId"], "projectId": record["projectId"],
             "toolId": record["toolId"], "parameters": dict(record["parameters"]), "approver": "user",
             "result": record["result"], "error": record["error"],
+            "decision": None,
             "undoId": None, "recoverable": False, "recovery": None,
         }
 
@@ -646,8 +699,19 @@ class WriteCoordinator:
             raise ToolProtocolError("undo_unavailable")
         raw = self._storage.read_bytes("transactions/" + undo_id + "/manifest.json", max_bytes=_MAX_RECORD_BYTES)
         record = json.loads(raw)
-        if type(record) is not dict or set(record) != _RECORD_FIELDS or type(record["version"]) is not int or record["version"] != 1 or record["undoId"] != undo_id:
+        if type(record) is not dict or type(record.get("version")) is not int or record["version"] not in {1, 2}:
             raise ToolProtocolError("undo_unavailable")
+        expected_fields = _RECORD_FIELDS | ({"decision"} if record["version"] == 2 else set())
+        if set(record) != expected_fields or record["undoId"] != undo_id:
+            raise ToolProtocolError("undo_unavailable")
+        if record["version"] == 2 and (type(record["decision"]) is not str or record["decision"] not in _DECISIONS):
+            raise ToolProtocolError("undo_unavailable")
+        if record["version"] == 2 and record["decision"] != "approve":
+            expected_result = "failed" if record["decision"] == "timeout" else "denied"
+            expected_error = "timeout" if record["decision"] == "timeout" else "permission_denied"
+            if (record["result"] != expected_result or record["error"] != expected_error
+                or record["recoverable"] is not False or record["undoState"] != "unavailable"):
+                raise ToolProtocolError("undo_unavailable")
         _scope(record["chatId"], record["projectId"])
         if record["toolId"] not in _WRITE_TOOLS or type(record["rootPath"]) is not str:
             raise ToolProtocolError("undo_unavailable")
@@ -726,6 +790,7 @@ class WriteCoordinator:
             "timestamp": record["timestamp"], "chatId": record["chatId"], "projectId": record["projectId"],
             "toolId": record["toolId"], "parameters": dict(record["parameters"]), "approver": "user",
             "result": result, "error": record["error"],
+            "decision": record.get("decision"),
             "undoId": record["undoId"] if record["result"] == "succeeded" and record["undoState"] == "available" else None,
             "recoverable": recoverable, "recovery": recovery,
         }

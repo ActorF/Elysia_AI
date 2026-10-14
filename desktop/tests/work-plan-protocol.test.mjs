@@ -6,7 +6,7 @@ import test from 'node:test'
 import { BackendProcess } from '../dist-electron/backend-process.js'
 import {
   parseWorkPlanState, parseWorkPlanGetParams, parseWorkPlanCreateParams,
-  parseWorkPlanControlParams, parseWorkPlanConfirmParams, workPlanHasLease,
+  parseWorkPlanControlParams, parseWorkPlanConfirmParams, parseWorkPlanReviseParams, workPlanHasLease,
 } from '../dist-electron/work-plan-protocol.js'
 
 const planId = `plan_${'a'.repeat(32)}`
@@ -15,6 +15,55 @@ const readCall = { toolId: 'read_text', arguments: { path: 'notes.txt' } }
 const writeCall = { toolId: 'edit', arguments: { path: 'notes.txt', content: 'updated' } }
 const cancelled = { status: 'cancelled', data: null, error: { code: 'cancelled', message: 'The action was cancelled.' } }
 const readResult = { status: 'succeeded', data: { path: 'notes.txt', content: 'original', sizeBytes: 8 }, error: null }
+
+test('Revision requests validate exact owner/token fields and detached closed tool calls', () => {
+  const request = { chatId: 'chat_work', planId, approvalId, call: structuredClone(writeCall) }
+  const parsed = parseWorkPlanReviseParams(request)
+  assert.deepEqual(parsed, request)
+  request.call.arguments.content = 'changed after parsing'
+  assert.equal(parsed.call.arguments.content, 'updated')
+  for (const mutation of [{ granted: true }, { projectId: 'project_other' }, { approvalId: 'approval_short' },
+    { call: { toolId: 'edit', arguments: { path: '../escape', content: 'new' } } }]) {
+    assert.throws(() => parseWorkPlanReviseParams({ ...request, ...mutation }), TypeError)
+  }
+})
+
+test('Revision bridge requires a fresh pending suffix and prevents stale polls restoring old approvals', async () => {
+  const { backend, writes } = bridge()
+  await createOwnedPlan(backend, writes, writeCall)
+  const waiting = state({ state: 'waiting', steps: [step({ call: writeCall, status: 'waiting', approval: approval() })] })
+  const initial = backend.getWorkPlan('chat_work')
+  deliver(backend, writes.at(-1).id, waiting)
+  await initial
+  const stale = backend.getWorkPlan('chat_work')
+  const staleId = writes.at(-1).id
+  const newCall = { toolId: 'edit', arguments: { path: 'notes.txt', content: 'revised' } }
+  const revising = backend.reviseWorkPlan({ chatId: 'chat_work', planId, approvalId, call: newCall })
+  const revisionId = writes.at(-1).id
+  await assert.rejects(backend.getWorkPlan('chat_work'), /plan revision/u)
+  await assert.rejects(backend.confirmWorkPlan({ chatId: 'chat_work', planId, approvalId, granted: true }), /no longer current/u)
+  deliver(backend, staleId, waiting)
+  await stale
+  const revised = state({ planId: `plan_${'f'.repeat(32)}`, steps: [step({ call: newCall, stepId: `step_${'e'.repeat(32)}` })] })
+  deliver(backend, revisionId, revised)
+  assert.deepEqual(await revising, revised)
+  assert.equal(backend.workPlans.get('chat_work').planId, revised.plan.planId)
+  backend.child = null
+})
+
+test('Revision bridge refuses tool substitution and responses reusing the consumed old plan ID', async () => {
+  const { backend, writes } = bridge()
+  await createOwnedPlan(backend, writes, writeCall)
+  const polling = backend.getWorkPlan('chat_work')
+  deliver(backend, writes.at(-1).id, state({ state: 'waiting', steps: [step({ call: writeCall, status: 'waiting', approval: approval() })] }))
+  await polling
+  await assert.rejects(backend.reviseWorkPlan({ chatId: 'chat_work', planId, approvalId,
+    call: { toolId: 'delete', arguments: { path: 'notes.txt' } } }), /no longer current/u)
+  const revising = backend.reviseWorkPlan({ chatId: 'chat_work', planId, approvalId, call: writeCall })
+  deliver(backend, writes.at(-1).id, state({ steps: [step({ call: writeCall })] }))
+  await assert.rejects(revising)
+  backend.child = null
+})
 
 test('Project advisory retrieval requires an exact opt-in without relaxing other fields', () => {
   const request = { chatId: 'chat_work', title: 'Review', calls: [readCall] }

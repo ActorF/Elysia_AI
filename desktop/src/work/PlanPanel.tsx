@@ -10,7 +10,7 @@ import {
   type WorkWorkflowObservation,
   type WorkRecoveryNotice,
 } from '../../electron/work-plan-protocol.ts'
-import type { WorkToolCall } from '../../electron/work-tool-protocol.ts'
+import { parseWorkToolCall, type WorkToolCall } from '../../electron/work-tool-protocol.ts'
 import { ApprovalPreview } from './ApprovalPreview.tsx'
 import './PlanPanel.css'
 
@@ -29,6 +29,36 @@ interface PlanPanelProps {
   onLeaseChange(leased: boolean): void
 }
 
+function RevisionEditor({ call, disabled, onSave, onCancel }: {
+  call: WorkToolCall; disabled: boolean; onSave(call: WorkToolCall): void; onCancel(): void;
+}) {
+  const [path, setPath] = useState(call.arguments.path)
+  const [content, setContent] = useState('content' in call.arguments ? call.arguments.content : '')
+  const [destination, setDestination] = useState('destination' in call.arguments ? call.arguments.destination : '')
+  const [error, setError] = useState<string | null>(null)
+  return <form className="work-plan-revision" aria-label="Modify waiting step" onSubmit={(event) => {
+    event.preventDefault()
+    try {
+      const revised = parseWorkToolCall({ toolId: call.toolId, arguments: { path,
+        ...('content' in call.arguments ? { content } : {}),
+        ...('destination' in call.arguments ? { destination } : {}),
+      } })
+      setError(null); onSave(revised)
+    } catch { setError('Use valid relative Workspace paths and bounded UTF-8 text.') }
+  }}>
+    <p>Modify {call.toolId}. Completed steps stay completed. A new plan must be started and reviewed again.</p>
+    <label>Revised relative path<input value={path} maxLength={4096} required disabled={disabled}
+      onChange={(event) => { setPath(event.currentTarget.value) }} /></label>
+    {'destination' in call.arguments && <label>Revised destination<input value={destination} maxLength={4096} required disabled={disabled}
+      onChange={(event) => { setDestination(event.currentTarget.value) }} /></label>}
+    {'content' in call.arguments && <label>Revised content<textarea value={content} maxLength={262144} disabled={disabled}
+      onChange={(event) => { setContent(event.currentTarget.value) }} /></label>}
+    {error !== null && <p role="alert">{error}</p>}
+    <div className="work-plan-actions"><button type="submit" disabled={disabled}>Create revised plan</button>
+      <button type="button" disabled={disabled} onClick={onCancel}>Keep original step</button></div>
+  </form>
+}
+
 /** Present the exact planned calls and require separate consent for every write step. */
 export function PlanPanel({ api, chatId, workspacePath, ready, disabled, calls,
   onRemoveCall, onClearCalls, onLeaseChange }: PlanPanelProps) {
@@ -40,6 +70,7 @@ export function PlanPanel({ api, chatId, workspacePath, ready, disabled, calls,
   const [loading, setLoading] = useState(false)
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [editingApproval, setEditingApproval] = useState<string | null>(null)
   const operationRef = useRef(0)
   const pendingRef = useRef(false)
   const planRef = useRef<WorkPlan | null>(null)
@@ -77,7 +108,8 @@ export function PlanPanel({ api, chatId, workspacePath, ready, disabled, calls,
   }, [refresh, ready, onLeaseChange])
 
   useEffect(() => {
-    if (!ready || pending || plan === null || (!plan.busy && plan.state !== 'running')) return
+    if (!ready || pending || plan === null || (!plan.busy && plan.state !== 'running' && plan.state !== 'waiting'
+      && !(plan.state === 'paused' && plan.steps.some((step) => step.approval !== null)))) return
     // State can become terminal before a native callback releases capacity.
     // Poll the physical busy flag until the same Backend confirms draining.
     const timer = window.setTimeout(() => { void refresh() }, 500)
@@ -124,6 +156,13 @@ export function PlanPanel({ api, chatId, workspacePath, ready, disabled, calls,
   function decide(approvalId: string, granted: boolean): void {
     if (api !== undefined && plan !== null && !plan.busy) {
       void action(() => api.confirmWorkPlan({ chatId, planId: plan.planId, approvalId, granted }))
+    }
+  }
+
+  function revise(approvalId: string, call: WorkToolCall): void {
+    if (api !== undefined && plan?.state === 'waiting' && !plan.busy) {
+      void action(() => api.reviseWorkPlan({ chatId, planId: plan.planId, approvalId, call }))
+        .then((accepted) => { if (accepted) setEditingApproval(null) })
     }
   }
 
@@ -189,9 +228,14 @@ export function PlanPanel({ api, chatId, workspacePath, ready, disabled, calls,
                 <strong>{step.call.toolId} · {step.call.arguments.path || 'Workspace root'}</strong>
                 <span data-plan-step-status>{step.status}</span>
                 {step.approval !== null && plan.state === 'waiting' && (
-                  <ApprovalPreview key={step.approval.approvalId} approval={step.approval}
+                  <div><ApprovalPreview key={step.approval.approvalId} approval={step.approval}
                     label="Work step approval" disabled={blocked || plan.busy}
                     onDecision={(granted) => { decide(step.approval!.approvalId, granted) }} />
+                    {editingApproval === step.approval.approvalId
+                      ? <RevisionEditor key={step.approval.approvalId} call={step.call} disabled={blocked || plan.busy}
+                        onSave={(call) => { revise(step.approval!.approvalId, call) }} onCancel={() => { setEditingApproval(null) }} />
+                      : <button type="button" disabled={blocked || plan.busy} onClick={() => { setEditingApproval(step.approval!.approvalId) }}>Modify step</button>}
+                  </div>
                 )}
                 {step.result !== null && (
                   <div className="work-tool-result">

@@ -70,6 +70,8 @@ class DesktopWorkRuntime:
             return self._plan_result(chat_id, self._plans.control(chat_id, params["planId"], params["action"]))
         if method == "work.plan.confirm":
             return self._plan_result(chat_id, self._plans.confirm(chat_id, params["planId"], params["approvalId"], params["granted"]))
+        if method == "work.plan.revise":
+            return self._plan_result(chat_id, self._plans.revise(chat_id, params["planId"], params["approvalId"], validate_tool_call(params["call"])))
         if method == "work.audit.list":
             # History shares the writer's transaction mutex. Refusing a read
             # while native work owns it keeps the foreground RPC reader free

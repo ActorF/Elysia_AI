@@ -11,6 +11,20 @@ import {
 const undoId = `undo_${'a'.repeat(32)}`
 const hash = 'b'.repeat(64)
 
+test('History preserves four actual decisions, legacy absence, and rejects nonmutating success or read approval', () => {
+  for (const decision of ['approve', 'reject', 'modify', 'timeout']) {
+    const audited = decision === 'approve' ? entry({ decision }) : entry({ decision,
+      result: decision === 'timeout' ? 'failed' : 'denied', error: decision === 'timeout' ? 'timeout' : 'permission_denied', undoId: null })
+    assert.deepEqual(parseWorkAuditState(page([audited])).entries[0], audited)
+  }
+  assert.equal(Object.hasOwn(parseWorkAuditState(page()).entries[0], 'decision'), false)
+  for (const decision of ['modify', 'timeout', { approved: true }, 'command']) {
+    assert.throws(() => parseWorkAuditState(page([entry({ decision })])), TypeError)
+  }
+  assert.throws(() => parseWorkAuditState(page([entry({ toolId: 'read_text', parameters: { path: 'notes.txt' },
+    undoId: null, decision: 'approve' })])), TypeError)
+})
+
 function entry(overrides = {}) {
   return {
     timestamp: '2026-10-14T12:34:56.123456+00:00', chatId: 'chat_work', projectId: 'project_work',

@@ -37,6 +37,7 @@ interface AuditDecision {
   undoId: string | null
   recoverable: boolean
   recovery: WorkAuditRecovery | null
+  decision?: 'approve' | 'reject' | 'modify' | 'timeout' | null
 }
 
 /** Exact per-tool metadata omits content and search terms while preserving their digests. */
@@ -152,7 +153,8 @@ function recoveryValue(value: unknown, recoverable: boolean, tool: WorkToolId): 
 }
 
 function auditEntry(value: unknown): { entry: WorkAuditEntry; ordered: string } {
-  const raw = record(value, ENTRY_FIELDS)
+  const disclosed = typeof value === 'object' && value !== null && Object.hasOwn(value, 'decision')
+  const raw = record(value, [...ENTRY_FIELDS, ...(disclosed ? ['decision'] : [])])
   const time = timestamp(raw.timestamp)
   const tool = raw.toolId
   const keys = tool === 'create' || tool === 'edit' ? ['path', 'contentBytes', 'contentSha256']
@@ -184,6 +186,16 @@ function auditEntry(value: unknown): { entry: WorkAuditEntry; ordered: string } 
   }
   const result = raw.result as WorkAuditOutcome
   const error = raw.error as WorkToolErrorCode | null
+  const decision = disclosed ? raw.decision : null
+  if (decision !== null && (typeof decision !== 'string' || !['approve', 'reject', 'modify', 'timeout'].includes(decision))) {
+    throw new TypeError('Work audit approval decision is invalid.')
+  }
+  if (READ_TOOLS.includes(call.toolId) && decision !== null) throw new TypeError('Read history cannot claim write approval.')
+  if (decision === 'reject' || decision === 'modify' || decision === 'timeout') {
+    if (result !== (decision === 'timeout' ? 'failed' : 'denied')
+      || error !== (decision === 'timeout' ? 'timeout' : 'permission_denied')
+      || raw.recoverable !== false || raw.undoId !== null) throw new TypeError('Work decision does not match its nonmutating outcome.')
+  }
   if (!raw.recoverable && ((['succeeded', 'undone'].includes(result) && error !== null)
     || (['denied', 'cancelled', 'failed'].includes(result) && error === null))) {
     throw new TypeError('Settled Work audit result and error are inconsistent.')
@@ -198,6 +210,7 @@ function auditEntry(value: unknown): { entry: WorkAuditEntry; ordered: string } 
     projectId: raw.projectId === null ? null : identifier(raw.projectId, 'project'),
     toolId: call.toolId, parameters, approver: 'user', result, error, undoId,
     recoverable: raw.recoverable, recovery: recoveryValue(raw.recovery, raw.recoverable, call.toolId),
+    ...(disclosed ? { decision } : {}),
   } as WorkAuditEntry }
 }
 

@@ -1792,6 +1792,28 @@ const desktopApi = {
     return { kind: 'work.plan', plan: clone(plan) }
   },
 
+  reviseWorkPlan: async (request) => {
+    record('reviseWorkPlan', [request])
+    const plan = workPlans.get(request.chatId)
+    const index = plan?.steps.findIndex((step) => step.approval?.approvalId === request.approvalId) ?? -1
+    if (plan?.planId !== request.planId || plan.state !== 'waiting' || plan.busy || index < 0
+      || plan.steps[index].call.toolId !== request.call.toolId) throw new Error('Revision is not current.')
+    const step = plan.steps[index]
+    recordWorkAudit(request.chatId, step.call, { status: 'denied', data: null,
+      error: { code: 'permission_denied', message: 'The action was declined.' } })
+    workAuditEntries[0].decision = 'modify'
+    workApprovals.delete(request.chatId)
+    const calls = [clone(request.call), ...plan.steps.slice(index + 1).map((item) => clone(item.call))]
+    plan.state = 'cancelled'
+    const suffix = (nextWorkPlanNumber++).toString(16).padStart(32, '0')
+    const revised = { planId: `plan_${suffix}`, title: plan.title, state: 'pending', busy: false,
+      steps: calls.map((call, index) => ({ stepId: `step_${(index + 1).toString(16).padStart(32, '0')}`,
+        call, status: 'pending', result: null, approval: null })) }
+    Object.defineProperty(revised, 'chatId', { value: request.chatId, enumerable: false })
+    workPlans.set(request.chatId, revised)
+    return { kind: 'work.plan', plan: clone(revised) }
+  },
+
   getWorkAudit: async (chatId) => {
     record('getWorkAudit', [chatId])
     const entries = workAuditEntries.filter((entry) => entry.chatId === chatId)

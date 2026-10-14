@@ -65,6 +65,7 @@
     { "$ref": "#/$defs/workPlanCreateRequest" },
     { "$ref": "#/$defs/workPlanControlRequest" },
     { "$ref": "#/$defs/workPlanConfirmRequest" },
+    { "$ref": "#/$defs/workPlanReviseRequest" },
     { "$ref": "#/$defs/workToolConfirmRequest" },
     { "$ref": "#/$defs/workToolPreviewRequest" },
     { "$ref": "#/$defs/workToolRunRequest" },
@@ -180,8 +181,17 @@
         "error": { "type": ["string", "null"], "maxLength": 64 },
         "undoId": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/workUndoId" }] },
         "recoverable": { "type": "boolean" },
-        "recovery": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/workRecoveryDisclosure" }] }
-      }, "required": ["timestamp", "chatId", "projectId", "toolId", "parameters", "approver", "result", "error", "undoId", "recoverable", "recovery"], "additionalProperties": false
+        "recovery": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/workRecoveryDisclosure" }] },
+        "decision": { "enum": [null, "approve", "reject", "modify", "timeout"] }
+      }, "required": ["timestamp", "chatId", "projectId", "toolId", "parameters", "approver", "result", "error", "undoId", "recoverable", "recovery"], "additionalProperties": false,
+      "allOf": [
+        { "if": { "properties": { "toolId": { "enum": ["list_directory", "read_text", "search_files", "metadata"] } } },
+          "then": { "properties": { "decision": { "type": "null" } } } },
+        { "if": { "required": ["decision"], "properties": { "decision": { "enum": ["reject", "modify"] } } },
+          "then": { "properties": { "result": { "const": "denied" }, "error": { "const": "permission_denied" }, "undoId": { "type": "null" }, "recoverable": { "const": false } } } },
+        { "if": { "required": ["decision"], "properties": { "decision": { "const": "timeout" } } },
+          "then": { "properties": { "result": { "const": "failed" }, "error": { "const": "timeout" }, "undoId": { "type": "null" }, "recoverable": { "const": false } } } }
+      ]
     },
     "workAuditResult": {
       "type": "object", "properties": {
@@ -230,6 +240,18 @@
     "workPlanConfirmRequest": {
       "allOf": [{ "$ref": "#/$defs/requestEnvelope" }, { "properties": {
         "method": { "const": "work.plan.confirm" }, "params": { "$ref": "#/$defs/workPlanConfirmParams" }
+      } }]
+    },
+    "workPlanReviseParams": {
+      "type": "object", "properties": {
+        "chatId": { "$ref": "#/$defs/workChatId" }, "planId": { "$ref": "#/$defs/workPlanId" },
+        "approvalId": { "type": "string", "pattern": "^approval_[0-9a-f]{32}$" },
+        "call": { "$ref": "#/$defs/workToolCall" }
+      }, "required": ["chatId", "planId", "approvalId", "call"], "additionalProperties": false
+    },
+    "workPlanReviseRequest": {
+      "allOf": [{ "$ref": "#/$defs/requestEnvelope" }, { "properties": {
+        "method": { "const": "work.plan.revise" }, "params": { "$ref": "#/$defs/workPlanReviseParams" }
       } }]
     },
     "workPlanId": { "type": "string", "pattern": "^plan_[0-9a-f]{32}$" },
@@ -444,6 +466,7 @@
             "work.plan.create",
             "work.plan.control",
             "work.plan.confirm",
+            "work.plan.revise",
             "work.audit.list",
             "work.undo",
             "handshake",

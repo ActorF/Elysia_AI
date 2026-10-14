@@ -64,7 +64,7 @@ import {
 } from './work-tool-protocol.js'
 import {
   parseWorkPlanState, workPlanHasLease,
-  type WorkPlan, type WorkPlanState, type WorkPlanCreateParams, type WorkPlanControlParams, type WorkPlanConfirmParams,
+  type WorkPlan, type WorkPlanState, type WorkPlanCreateParams, type WorkPlanControlParams, type WorkPlanConfirmParams, type WorkPlanReviseParams,
 } from './work-plan-protocol.js'
 import {
   parseWorkAuditForChat, parseWorkUndoResultForEntry,
@@ -381,6 +381,7 @@ interface PendingRequest {
   resolveWorkApproval?: (state: WorkToolApprovalState) => void
   rejectWorkApproval?: (error: Error) => void
   workPlanId?: string
+  workPreviousPlanId?: string
   workPlanCalls?: WorkToolCall[]
   workPlanSequence?: number
   resolveWorkPlan?: (state: WorkPlanState) => void
@@ -531,11 +532,11 @@ const WORK_WORKSPACE_METHODS = new Set<ProtocolMethod>([
 
 const WORK_ACTION_METHODS = new Set<ProtocolMethod>([
   'work.tool.run', 'work.tool.preview', 'work.tool.confirm',
-  'work.plan.create', 'work.plan.control', 'work.plan.confirm',
+  'work.plan.create', 'work.plan.control', 'work.plan.confirm', 'work.plan.revise',
   'work.undo',
 ])
-type WorkPlanMethod = 'work.plan.get' | 'work.plan.create' | 'work.plan.control' | 'work.plan.confirm'
-const WORK_PLAN_METHODS = new Set<ProtocolMethod>(['work.plan.get', 'work.plan.create', 'work.plan.control', 'work.plan.confirm'])
+type WorkPlanMethod = 'work.plan.get' | 'work.plan.create' | 'work.plan.control' | 'work.plan.confirm' | 'work.plan.revise'
+const WORK_PLAN_METHODS = new Set<ProtocolMethod>(['work.plan.get', 'work.plan.create', 'work.plan.control', 'work.plan.confirm', 'work.plan.revise'])
 
 type ProjectMethod =
   | 'project.list'
@@ -1692,6 +1693,34 @@ export class BackendProcess {
     return this.requestWorkPlan('work.plan.confirm', request)
   }
 
+  /** Replace the current waiting call with a new pending suffix; no decision authorizes its write. */
+  reviseWorkPlan(request: WorkPlanReviseParams): Promise<WorkPlanState> {
+    if (this.snapshot.status !== 'ready' || this.snapshot.chatId !== request.chatId
+      || !this.snapshot.capabilities.includes('work.plan')) return Promise.reject(new Error('Work plans are unavailable for this Chat.'))
+    const current = this.workPlans.get(request.chatId)
+    const index = current?.steps.findIndex((step) => step.approval?.approvalId === request.approvalId) ?? -1
+    if (current?.planId !== request.planId || current.state !== 'waiting' || current.busy || index < 0
+      || current.steps[index].call.toolId !== request.call.toolId) {
+      return Promise.reject(new Error('This plan revision is no longer current.'))
+    }
+    const calls = [parseWorkToolCall(request.call), ...current.steps.slice(index + 1).map((step) => parseWorkToolCall(step.call))]
+    const sequence = ++this.workPlanSequence
+    this.workPlanAppliedSequences.set(request.chatId, sequence)
+    this.workApprovals.delete(request.chatId)
+    // Retain physical/conflict admission until the replacement RPC settles.
+    // Earlier get responses cannot restore the consumed waiting token.
+    this.workPlans.set(request.chatId, { ...current, state: 'cancelled', busy: true,
+      steps: current.steps.map((step) => step.status === 'waiting' || step.status === 'pending'
+        ? { ...step, status: 'cancelled', approval: null, result: { status: 'cancelled', data: null,
+          error: { code: 'cancelled', message: 'The action was cancelled.' } } } : step) })
+    return new Promise((resolve, reject) => {
+      this.sendRequest('work.plan.revise', request, request.chatId, {
+        workPlanSequence: sequence, workPreviousPlanId: request.planId, workPlanCalls: calls,
+        resolveWorkPlan: resolve, rejectWorkPlan: reject,
+      })
+    })
+  }
+
   /** Set one idle Chat's pin state. */
   pinChat(request: PinChatRequest): Promise<ChatSessionState> {
     return this.requestChatState('chat.pin', request)
@@ -2422,6 +2451,8 @@ export class BackendProcess {
   }
 
   private requestWorkPlan<Method extends WorkPlanMethod>(method: Method, params: RequestParamsByMethod[Method]): Promise<WorkPlanState> {
+    if (method === 'work.plan.get' && [...this.pendingRequests.values()].some((pending) => pending.method === 'work.plan.revise'
+      && pending.chatId === params.chatId)) return Promise.reject(new Error('Wait for the current plan revision.'))
     if (this.snapshot.status !== 'ready' || this.snapshot.chatId !== params.chatId
       || !this.snapshot.capabilities.includes('work.plan')) return Promise.reject(new Error('Work plans are unavailable for this Chat.'))
     if (method === 'work.plan.create' && (this.hasWorkPlanLease() || [...this.pendingRequests.values()].some((pending) => (
@@ -2452,16 +2483,20 @@ export class BackendProcess {
       throw new ProtocolValidationError('protocol.invalid_result', 'Creating a Work plan cannot start its steps.')
     }
     if ((pending.workPlanId !== undefined && state.plan?.planId !== pending.workPlanId)
+      || (pending.workPreviousPlanId !== undefined && (state.plan === null || state.plan.planId === pending.workPreviousPlanId))
       || (pending.workPlanCalls !== undefined && JSON.stringify(calls) !== JSON.stringify(pending.workPlanCalls))) {
       throw new ProtocolValidationError('protocol.invalid_result', 'Work plan does not match its requested owner or calls.')
     }
     const previous = pending.chatId === undefined ? undefined : this.workPlans.get(pending.chatId)
+    if (pending.workPreviousPlanId !== undefined && previous !== undefined && state.plan?.title !== previous.title) {
+      throw new ProtocolValidationError('protocol.invalid_result', 'A Work revision changed its requested task title.')
+    }
     const applied = this.workPlanAppliedSequences.get(pending.chatId ?? '') ?? 0
     if ((pending.workPlanSequence ?? 0) >= applied && previous !== undefined
       && workPlanHasLease(previous) && state.plan === null) {
       throw new ProtocolValidationError('protocol.invalid_result', 'A live Work plan disappeared before native ownership ended.')
     }
-    if ((pending.workPlanSequence ?? 0) >= applied && previous !== undefined && state.plan !== null) {
+    if ((pending.workPlanSequence ?? 0) >= applied && previous !== undefined && state.plan !== null && pending.workPreviousPlanId === undefined) {
       if (previous.planId !== state.plan.planId || previous.title !== state.plan.title
         || JSON.stringify(previous.steps.map((step) => [step.stepId, step.call]))
           !== JSON.stringify(state.plan.steps.map((step) => [step.stepId, step.call]))) {
@@ -2548,6 +2583,7 @@ export class BackendProcess {
       | 'resolveWorkApproval'
       | 'rejectWorkApproval'
       | 'workPlanId'
+      | 'workPreviousPlanId'
       | 'workPlanCalls'
       | 'workPlanSequence'
       | 'resolveWorkPlan'
@@ -2597,7 +2633,7 @@ export class BackendProcess {
     const request = createRequest(requestId, method, params)
     const wireRequest = `${JSON.stringify(request)}\n`
     if (method === 'work.tool.confirm' || method === 'work.plan.create'
-      || method === 'work.plan.confirm' || method === 'work.workspace.bind') {
+      || method === 'work.plan.confirm' || method === 'work.plan.revise' || method === 'work.workspace.bind') {
       this.invalidateWorkUndo(chatId)
     }
     this.pendingRequests.set(requestId, {

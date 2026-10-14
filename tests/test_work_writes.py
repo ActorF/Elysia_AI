@@ -121,7 +121,7 @@ def test_expiry_restart_and_invalidation_discard_approval_rights(tmp_path: Path)
     boundary = WorkspaceBoundary(root)
     expired = coordinator.preview("chat_a", None, boundary, ToolCall("create", "new.txt", content="new"))
     current += timedelta(minutes=5)
-    assert coordinator.confirm("chat_a", None, boundary, expired["approvalId"], True).error_code == "conflict"
+    assert coordinator.confirm("chat_a", None, boundary, expired["approvalId"], True).error_code == "timeout"
     restart = coordinator.preview("chat_a", None, boundary, ToolCall("create", "new.txt", content="new"))
     assert WriteCoordinator(private).confirm("chat_a", None, boundary, restart["approvalId"], True).error_code == "permission_denied"
     invalidated = coordinator.preview("chat_a", None, boundary, ToolCall("create", "new.txt", content="new"))
@@ -310,7 +310,7 @@ def test_clock_rollback_cannot_extend_approval_lease(tmp_path: Path, monkeypatch
     monkeypatch.setattr(writes_module, "monotonic", lambda: runtime)
     approval = coordinator.preview("chat_a", None, boundary, ToolCall("create", "new.txt", content="new"))
     runtime += 300
-    assert coordinator.confirm("chat_a", None, boundary, approval["approvalId"], True).error_code == "conflict"
+    assert coordinator.confirm("chat_a", None, boundary, approval["approvalId"], True).error_code == "timeout"
     assert not (boundary.root / "new.txt").exists()
 
 

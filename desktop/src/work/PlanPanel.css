@@ -17,13 +17,25 @@
   gap: var(--space-1);
 }
 
-.work-plan-panel input {
+.work-plan-panel input,
+.work-plan-panel textarea {
   min-height: 2rem;
   padding: var(--space-1) var(--space-2);
   color: var(--color-text-primary);
   background: var(--color-bg-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
+}
+
+.work-plan-revision {
+  display: grid;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+.work-plan-revision textarea {
+  min-height: 8rem;
+  resize: vertical;
 }
 
 .work-plan-queue,

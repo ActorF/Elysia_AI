@@ -5,6 +5,30 @@
   },
   "validClientMessages": [
     {
+      "name": "work plan explicit parameter revision",
+      "message": {
+        "type": "request",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "work-revise-fixture",
+        "method": "work.plan.revise",
+        "params": {
+          "chatId": "chat_fixture",
+          "planId": "plan_11111111111111111111111111111111",
+          "approvalId": "approval_22222222222222222222222222222222",
+          "call": {
+            "toolId": "edit",
+            "arguments": {
+              "path": "notes.txt",
+              "content": "new reviewed body"
+            }
+          }
+        }
+      }
+    },
+    {
       "name": "work redacted audit lookup",
       "message": {
         "type": "request",
@@ -814,6 +838,150 @@
     }
   ],
   "validServerMessages": [
+    {
+      "name": "work audit explicit approve decision",
+      "message": {
+        "type": "response",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "audit-fixture",
+        "ok": true,
+        "result": {
+          "kind": "work.audit",
+          "entries": [
+            {
+              "timestamp": "2026-10-14T16:00:00+00:00",
+              "chatId": "chat_fixture",
+              "projectId": null,
+              "toolId": "edit",
+              "parameters": {
+                "path": "notes.txt",
+                "contentBytes": 4,
+                "contentSha256": "8888888888888888888888888888888888888888888888888888888888888888"
+              },
+              "approver": "user",
+              "result": "succeeded",
+              "error": null,
+              "undoId": "undo_77777777777777777777777777777777",
+              "recoverable": false,
+              "recovery": null,
+              "decision": "approve"
+            }
+          ],
+          "truncated": false
+        }
+      }
+    },
+    {
+      "name": "work audit explicit reject decision",
+      "message": {
+        "type": "response",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "audit-fixture",
+        "ok": true,
+        "result": {
+          "kind": "work.audit",
+          "entries": [
+            {
+              "timestamp": "2026-10-14T16:00:00+00:00",
+              "chatId": "chat_fixture",
+              "projectId": null,
+              "toolId": "edit",
+              "parameters": {
+                "path": "notes.txt",
+                "contentBytes": 4,
+                "contentSha256": "8888888888888888888888888888888888888888888888888888888888888888"
+              },
+              "approver": "user",
+              "result": "denied",
+              "error": "permission_denied",
+              "undoId": null,
+              "recoverable": false,
+              "recovery": null,
+              "decision": "reject"
+            }
+          ],
+          "truncated": false
+        }
+      }
+    },
+    {
+      "name": "work audit explicit modify decision",
+      "message": {
+        "type": "response",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "audit-fixture",
+        "ok": true,
+        "result": {
+          "kind": "work.audit",
+          "entries": [
+            {
+              "timestamp": "2026-10-14T16:00:00+00:00",
+              "chatId": "chat_fixture",
+              "projectId": null,
+              "toolId": "edit",
+              "parameters": {
+                "path": "notes.txt",
+                "contentBytes": 4,
+                "contentSha256": "8888888888888888888888888888888888888888888888888888888888888888"
+              },
+              "approver": "user",
+              "result": "denied",
+              "error": "permission_denied",
+              "undoId": null,
+              "recoverable": false,
+              "recovery": null,
+              "decision": "modify"
+            }
+          ],
+          "truncated": false
+        }
+      }
+    },
+    {
+      "name": "work audit explicit timeout decision",
+      "message": {
+        "type": "response",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "audit-fixture",
+        "ok": true,
+        "result": {
+          "kind": "work.audit",
+          "entries": [
+            {
+              "timestamp": "2026-10-14T16:00:00+00:00",
+              "chatId": "chat_fixture",
+              "projectId": null,
+              "toolId": "edit",
+              "parameters": {
+                "path": "notes.txt",
+                "contentBytes": 4,
+                "contentSha256": "8888888888888888888888888888888888888888888888888888888888888888"
+              },
+              "approver": "user",
+              "result": "failed",
+              "error": "timeout",
+              "undoId": null,
+              "recoverable": false,
+              "recovery": null,
+              "decision": "timeout"
+            }
+          ],
+          "truncated": false
+        }
+      }
+    },
     {
       "name": "work redacted read and write audit",
       "message": {
@@ -3622,6 +3790,81 @@
   ],
   "invalidClientMessages": [
     {
+      "name": "revision cannot grant approval",
+      "message": {
+        "type": "request",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "work-revise-fixture",
+        "method": "work.plan.revise",
+        "params": {
+          "chatId": "chat_fixture",
+          "planId": "plan_11111111111111111111111111111111",
+          "approvalId": "approval_22222222222222222222222222222222",
+          "call": {
+            "toolId": "edit",
+            "arguments": {
+              "path": "notes.txt",
+              "content": "new reviewed body"
+            }
+          },
+          "granted": true
+        }
+      }
+    },
+    {
+      "name": "revision rejects unknown owner fields",
+      "message": {
+        "type": "request",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "work-revise-fixture",
+        "method": "work.plan.revise",
+        "params": {
+          "chatId": "chat_fixture",
+          "planId": "plan_11111111111111111111111111111111",
+          "approvalId": "approval_22222222222222222222222222222222",
+          "call": {
+            "toolId": "edit",
+            "arguments": {
+              "path": "notes.txt",
+              "content": "new reviewed body"
+            }
+          },
+          "projectId": "project_other"
+        }
+      }
+    },
+    {
+      "name": "revision rejects escaped path",
+      "message": {
+        "type": "request",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "work-revise-fixture",
+        "method": "work.plan.revise",
+        "params": {
+          "chatId": "chat_fixture",
+          "planId": "plan_11111111111111111111111111111111",
+          "approvalId": "approval_22222222222222222222222222222222",
+          "call": {
+            "toolId": "edit",
+            "arguments": {
+              "path": "../outside.txt",
+              "content": "new reviewed body"
+            }
+          }
+        }
+      },
+      "runtimeOnly": true
+    },
+    {
       "name": "work Undo needs affirmative confirmation",
       "message": {
         "type": "request",
@@ -4368,6 +4611,189 @@
     }
   ],
   "invalidServerMessages": [
+    {
+      "name": "work audit rejects successful modify decision",
+      "message": {
+        "type": "response",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "audit-fixture",
+        "ok": true,
+        "result": {
+          "kind": "work.audit",
+          "entries": [
+            {
+              "timestamp": "2026-10-14T16:00:00+00:00",
+              "chatId": "chat_fixture",
+              "projectId": null,
+              "toolId": "edit",
+              "parameters": {
+                "path": "notes.txt",
+                "contentBytes": 4,
+                "contentSha256": "8888888888888888888888888888888888888888888888888888888888888888"
+              },
+              "approver": "user",
+              "result": "succeeded",
+              "error": null,
+              "undoId": "undo_77777777777777777777777777777777",
+              "recoverable": false,
+              "recovery": null,
+              "decision": "modify"
+            }
+          ],
+          "truncated": false
+        }
+      },
+      "runtimeOnly": true
+    },
+    {
+      "name": "work audit rejects successful reject decision",
+      "message": {
+        "type": "response",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "audit-fixture",
+        "ok": true,
+        "result": {
+          "kind": "work.audit",
+          "entries": [
+            {
+              "timestamp": "2026-10-14T16:00:00+00:00",
+              "chatId": "chat_fixture",
+              "projectId": null,
+              "toolId": "edit",
+              "parameters": {
+                "path": "notes.txt",
+                "contentBytes": 4,
+                "contentSha256": "8888888888888888888888888888888888888888888888888888888888888888"
+              },
+              "approver": "user",
+              "result": "succeeded",
+              "error": null,
+              "undoId": "undo_77777777777777777777777777777777",
+              "recoverable": false,
+              "recovery": null,
+              "decision": "reject"
+            }
+          ],
+          "truncated": false
+        }
+      },
+      "runtimeOnly": true
+    },
+    {
+      "name": "work audit rejects successful timeout decision",
+      "message": {
+        "type": "response",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "audit-fixture",
+        "ok": true,
+        "result": {
+          "kind": "work.audit",
+          "entries": [
+            {
+              "timestamp": "2026-10-14T16:00:00+00:00",
+              "chatId": "chat_fixture",
+              "projectId": null,
+              "toolId": "edit",
+              "parameters": {
+                "path": "notes.txt",
+                "contentBytes": 4,
+                "contentSha256": "8888888888888888888888888888888888888888888888888888888888888888"
+              },
+              "approver": "user",
+              "result": "succeeded",
+              "error": null,
+              "undoId": "undo_77777777777777777777777777777777",
+              "recoverable": false,
+              "recovery": null,
+              "decision": "timeout"
+            }
+          ],
+          "truncated": false
+        }
+      },
+      "runtimeOnly": true
+    },
+    {
+      "name": "work audit rejects successful execute_command decision",
+      "message": {
+        "type": "response",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "audit-fixture",
+        "ok": true,
+        "result": {
+          "kind": "work.audit",
+          "entries": [
+            {
+              "timestamp": "2026-10-14T16:00:00+00:00",
+              "chatId": "chat_fixture",
+              "projectId": null,
+              "toolId": "edit",
+              "parameters": {
+                "path": "notes.txt",
+                "contentBytes": 4,
+                "contentSha256": "8888888888888888888888888888888888888888888888888888888888888888"
+              },
+              "approver": "user",
+              "result": "succeeded",
+              "error": null,
+              "undoId": "undo_77777777777777777777777777777777",
+              "recoverable": false,
+              "recovery": null,
+              "decision": "execute_command"
+            }
+          ],
+          "truncated": false
+        }
+      },
+      "runtimeOnly": false
+    },
+    {
+      "name": "read audit cannot grant write permission",
+      "message": {
+        "type": "response",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "audit-fixture",
+        "ok": true,
+        "result": {
+          "kind": "work.audit",
+          "entries": [
+            {
+              "timestamp": "2026-10-14T16:00:00+00:00",
+              "chatId": "chat_fixture",
+              "projectId": null,
+              "toolId": "read_text",
+              "parameters": {
+                "path": "notes.txt"
+              },
+              "approver": "user",
+              "result": "succeeded",
+              "error": null,
+              "undoId": null,
+              "recoverable": false,
+              "recovery": null,
+              "decision": "approve"
+            }
+          ],
+          "truncated": false
+        }
+      },
+      "runtimeOnly": true
+    },
     {
       "name": "work audit cannot include private content",
       "message": {

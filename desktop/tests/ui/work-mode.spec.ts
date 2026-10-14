@@ -454,6 +454,48 @@ test('reviews a read, edit and verification plan before approving its exact writ
   await expect(page.getByRole('region', { name: 'Work tool result' })).toContainText('Hello <script>unsafe()</script>')
 })
 
+test('modifies only unfinished steps and requires a new start and fresh write approval', async () => {
+  await page.evaluate(() => {
+    ;(window as WorkTestWindow).elysiaDesktopTest.setWorkWorkspaceState({
+      kind: 'work.workspace', chatId: 'chat_work_test', workspacePath: 'D:\\work-revise',
+    })
+  })
+  await page.getByRole('combobox', { name: 'Conversation mode' }).selectOption('work')
+  const tool = page.getByLabel('Work tool', { exact: true })
+  await tool.selectOption('read_text')
+  await page.getByLabel('Relative path', { exact: true }).fill('notes.txt')
+  await page.getByRole('button', { name: 'Add to plan' }).click()
+  await tool.selectOption('edit')
+  await page.getByLabel('Complete file content').fill('Original reviewed draft.')
+  await page.getByRole('button', { name: 'Add to plan' }).click()
+  await tool.selectOption('read_text')
+  await page.getByRole('button', { name: 'Add to plan' }).click()
+  const panel = page.getByRole('region', { name: 'Work plan', exact: true })
+  await panel.getByRole('button', { name: 'Create plan', exact: true }).click()
+  await panel.getByRole('button', { name: 'Start plan', exact: true }).click()
+  await expect(panel.locator('[data-plan-step-status]')).toHaveText(['succeeded', 'waiting', 'pending'])
+  await panel.getByRole('button', { name: 'Modify step', exact: true }).click()
+  await panel.getByLabel('Revised content').fill('Revised and separately approved.')
+  await panel.getByRole('button', { name: 'Create revised plan', exact: true }).click()
+  await expect(panel.locator('[data-plan-step-status]')).toHaveText(['pending', 'pending'])
+  await expect(panel.getByRole('region', { name: 'Work step approval' })).toHaveCount(0)
+  expect(await page.evaluate(() => (window as WorkTestWindow).elysiaDesktopTest.getCalls()
+    .filter((call) => call.method === 'confirmWorkPlan'))).toHaveLength(0)
+  await panel.getByRole('button', { name: 'Start plan', exact: true }).click()
+  const consent = panel.getByRole('region', { name: 'Work step approval' })
+  await expect(consent.locator('[data-work-parameters]')).toContainText('Revised and separately approved.')
+  await consent.getByRole('button', { name: 'Approve once', exact: true }).click()
+  await expect(panel.locator('[data-plan-step-status]')).toHaveText(['succeeded', 'succeeded'])
+  await expect(panel.locator('.work-plan-steps > li').last()).toContainText('Revised and separately approved.')
+  const history = page.getByRole('region', { name: 'Work history', exact: true })
+  await expect(history).toContainText('Modification requested')
+  const calls = await page.evaluate(() => (window as WorkTestWindow).elysiaDesktopTest.getCalls())
+  const revision = calls.find((call) => call.method === 'reviseWorkPlan')!.args[0] as { approvalId: string; planId: string }
+  const approval = calls.find((call) => call.method === 'confirmWorkPlan')!.args[0] as { approvalId: string; planId: string }
+  expect(approval.approvalId).not.toBe(revision.approvalId)
+  expect(approval.planId).not.toBe(revision.planId)
+})
+
 test('retains the Work lease after cancellation until a native read actually drains', async () => {
   await page.evaluate(() => {
     const control = (window as WorkTestWindow).elysiaDesktopTest

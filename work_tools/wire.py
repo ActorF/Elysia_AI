@@ -22,6 +22,7 @@ _METHOD_FIELDS = {
     "work.plan.create": {"chatId", "title", "calls"},
     "work.plan.control": {"chatId", "planId", "action"},
     "work.plan.confirm": {"chatId", "planId", "approvalId", "granted"},
+    "work.plan.revise": {"chatId", "planId", "approvalId", "call"},
     "work.audit.list": {"chatId"},
     "work.undo": {"chatId", "undoId", "confirmed"},
 }
@@ -55,8 +56,11 @@ def validate_work_params(method: str, value: object) -> dict[str, Any]:
             raise ValueError("Workspace selection is invalid.")
     elif method in {"work.tool.run", "work.tool.preview"}:
         validate_tool_call(value["call"])
-    elif method in {"work.tool.confirm", "work.plan.confirm"}:
-        if type(value["approvalId"]) is not str or re.fullmatch(r"approval_[0-9a-f]{32}", value["approvalId"]) is None or type(value["granted"]) is not bool:
+    elif method in {"work.tool.confirm", "work.plan.confirm", "work.plan.revise"}:
+        if method == "work.plan.revise":
+            validate_tool_call(value["call"])
+            _bounded_json(value, 768 * 1024)
+        if type(value["approvalId"]) is not str or re.fullmatch(r"approval_[0-9a-f]{32}", value["approvalId"]) is None or (method != "work.plan.revise" and type(value["granted"]) is not bool):
             raise ValueError("Work confirmation is invalid.")
     elif method == "work.plan.create":
         validate_plan_title(value["title"])
@@ -72,7 +76,7 @@ def validate_work_params(method: str, value: object) -> dict[str, Any]:
         _validate_id(value["undoId"], "undo")
         if value["confirmed"] is not True:
             raise ValueError("Work Undo requires explicit confirmation.")
-    if method in {"work.plan.control", "work.plan.confirm"}:
+    if method in {"work.plan.control", "work.plan.confirm", "work.plan.revise"}:
         _validate_id(value["planId"], "plan")
     return dict(value)
 

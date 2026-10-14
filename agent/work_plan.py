@@ -303,6 +303,52 @@ class WorkPlanRunner:
             self._launch_locked(plan, confirmation=(step, approval_id, granted))
             return _copy_json(_plan_data(plan))
 
+    def revision_calls(self, plan_id: str, approval_id: str, replacement: ToolCall) -> tuple[str, list[ToolCall]]:
+        """Copy only the changed waiting step and pending suffix for a new explicit plan.
+
+        This does not consume permission, start a worker, or alter the old plan.
+        The manager must atomically close this owner before auditing modify and
+        publishing a fresh pending plan; completed steps must never be replayed.
+        """
+
+        if type(replacement) is not ToolCall:
+            raise ValueError("Work revision requires a typed call.")
+        checked = validate_tool_call(replacement.to_data())
+        with self._lock:
+            self._require_open_locked()
+            plan = self._require_plan_locked(plan_id)
+            if plan.state != "waiting" or self._worker_active:
+                raise ValueError("Work revision requires an idle waiting plan.")
+            index = next((index for index, step in enumerate(plan.steps) if step.status == "waiting"), None)
+            if index is None:
+                raise ValueError("Work revision has no waiting step.")
+            step = plan.steps[index]
+            if step.approval is None or step.approval["approvalId"] != approval_id or checked.tool_id != step.call.tool_id:
+                raise ValueError("Work revision does not match its current tool approval.")
+            if any(item.status != "pending" for item in plan.steps[index + 1:]):
+                raise ValueError("Work revision cannot replay settled steps.")
+            calls = [checked, *(validate_tool_call(item.call.to_data()) for item in plan.steps[index + 1:])]
+            _copy_json({"title": plan.title, "calls": [call.to_data() for call in calls]}, reserve_bytes=4096)
+            return plan.title, calls
+
+    def expire_approval(self, plan_id: str, approval_id: str) -> dict[str, Any]:
+        """Settle an expired waiting or paused approval using a nonmutating worker decision.
+
+        The manager first checks the writer's own UTC and monotonic clocks. This
+        helper never grants permission; pausing cannot extend the original lease.
+        """
+
+        with self._lock:
+            self._require_open_locked()
+            plan = self._require_plan_locked(plan_id)
+            if plan.state not in {"waiting", "paused"} or self._worker_active:
+                raise ValueError("Work approval cannot expire in this state.")
+            step = next((step for step in plan.steps if step.status == "waiting"), None)
+            if step is None or step.approval is None or step.approval["approvalId"] != approval_id:
+                raise ValueError("Work approval is no longer current.")
+            plan.state = "waiting"
+            return self.confirm(plan_id, approval_id, False)
+
     def shutdown(self, *, persist: bool = True) -> bool:
         """Close admission and freeze snapshots immediately; return whether I/O drained.
 

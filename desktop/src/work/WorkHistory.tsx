@@ -107,7 +107,10 @@ export function WorkHistory({ api, chatId, ready, disabled, workspacePath, undoA
             <strong>{entry.toolId} · {entry.parameters.path || 'Workspace root'}</strong>
             <span data-work-audit-outcome>{entry.result}{entry.error === null ? '' : ` · ${entry.error}`}</span>
             <time dateTime={entry.timestamp}>{entry.timestamp}</time>
-            <small>Chat: {entry.chatId} · Project: {entry.projectId ?? 'None'} · Approved by: {entry.approver}</small>
+            <small>Chat: {entry.chatId} · Project: {entry.projectId ?? 'None'} ·
+              Decision: {entry.decision === 'approve' ? 'Approved' : entry.decision === 'reject' ? 'Rejected'
+                : entry.decision === 'modify' ? 'Modification requested' : entry.decision === 'timeout' ? 'Approval expired'
+                  : ['list_directory', 'read_text', 'search_files', 'metadata'].includes(entry.toolId) ? 'Explicit read' : 'Not recorded'}</small>
             <details><summary>Parameter summary</summary><pre>{JSON.stringify(entry.parameters, null, 2)}</pre></details>
             {entry.undoId !== null && <button type="button" disabled={blocked || workspacePath === null || !undoAvailable}
               onClick={() => { setSelection(entry); setResult(null) }}>Undo {entry.toolId}</button>}

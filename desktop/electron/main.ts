@@ -32,7 +32,7 @@ import { fileURLToPath } from 'node:url'
 import { BackendProcess } from './backend-process.js'
 import { parseWorkWorkspaceGetParams } from './work-protocol.js'
 import { parseWorkToolRunParams, parseWorkToolConfirmParams } from './work-tool-protocol.js'
-import { parseWorkPlanGetParams, parseWorkPlanCreateParams, parseWorkPlanControlParams, parseWorkPlanConfirmParams } from './work-plan-protocol.js'
+import { parseWorkPlanGetParams, parseWorkPlanCreateParams, parseWorkPlanControlParams, parseWorkPlanConfirmParams, parseWorkPlanReviseParams } from './work-plan-protocol.js'
 import { parseWorkAuditListParams, parseWorkUndoParams } from './work-audit-protocol.js'
 import { VoiceCallWindowManager } from './voice-call-window.js'
 import { VOICE_CALL_IPC } from './voice-call-contracts.js'
@@ -3473,6 +3473,10 @@ function registerIpcHandlers(): void {
   ipcMain.handle('work:confirm-plan', (event, request: unknown) => {
     assertTrustedSender(event)
     return requireBackend().confirmWorkPlan(parseWorkPlanConfirmParams(request))
+  })
+  ipcMain.handle('work:revise-plan', (event, request: unknown) => {
+    assertTrustedSender(event)
+    return requireBackend().reviseWorkPlan(parseWorkPlanReviseParams(request))
   })
 
   ipcMain.handle('work:get-audit', (event, chatId: unknown) => {

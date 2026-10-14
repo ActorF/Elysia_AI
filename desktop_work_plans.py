@@ -41,6 +41,7 @@ class _Owner:
     active: bool = True
     tokens: set[str] = field(default_factory=set)
     restored: bool = False
+    use_project_knowledge: bool = False
 
 
 class DesktopWorkPlans:
@@ -79,6 +80,12 @@ class DesktopWorkPlans:
         overlap it until the retired runner has physically drained.
         """
 
+        return self._create(chat, title, calls, use_project_knowledge=use_project_knowledge)
+
+    def _create(self, chat: ChatSession, title: str, calls: list[ToolCall], *,
+                use_project_knowledge: bool = False, reservation: object | None = None) -> dict[str, Any]:
+        """Retain one creation CAS across a revised decision and fresh owner publication."""
+
         with self._lock:
             self._require_open_locked()
         if not isinstance(chat, ChatSession):
@@ -88,7 +95,8 @@ class DesktopWorkPlans:
         self._require_chat(chat_id, project_id)
         boundary = self._boundary_provider(chat_id)
         boundary.metadata()
-        owner = _Owner(chat_id, project_id, boundary.normalized_root, boundary.root_identity)
+        owner = _Owner(chat_id, project_id, boundary.normalized_root, boundary.root_identity,
+                       use_project_knowledge=use_project_knowledge)
         runner = WorkPlanRunner(
             lambda call, cancel: self._read(owner, call, cancel),
             lambda call: self._preview(owner, call),
@@ -99,11 +107,12 @@ class DesktopWorkPlans:
         )
         owner.runner = runner
         snapshot = runner.create(title, calls)
-        creation = object()
+        creation = object() if reservation is None else reservation
         with self._lock:
             self._require_open_locked()
             self._reap_locked()
-            if self._busy_locked() or self._creation_token is not None:
+            if (self._busy_locked() or (reservation is None and self._creation_token is not None)
+                or (reservation is not None and self._creation_token is not creation)):
                 raise ToolProtocolError("conflict")
             self._creation_token = creation
             old = self._owners.get(chat_id)
@@ -241,6 +250,20 @@ class DesktopWorkPlans:
         self._require_chat(owner.chat_id, owner.project_id)
         assert owner.runner is not None
         snapshot = owner.runner.get()
+        if snapshot is not None and snapshot["state"] in {"waiting", "paused"} and owner.active and not owner.runner.is_busy():
+            waiting = next((step for step in snapshot["steps"] if step["approval"] is not None), None)
+            if waiting is not None and self._write_provider().approval_expired(owner.chat_id, owner.project_id,
+                                                                              waiting["approval"]["approvalId"]):
+                # The callback writes only the timeout audit, on the ordinary
+                # worker. Polling remains responsive and cannot falsely release
+                # capacity before that durable decision finishes.
+                self._authority(owner)
+                try:
+                    snapshot = owner.runner.expire_approval(snapshot["planId"], waiting["approval"]["approvalId"])
+                except ValueError:
+                    # Another foreground decision may win between the detached
+                    # sample and token claim; publish the winner's current state.
+                    snapshot = owner.runner.get()
         if snapshot is not None:
             snapshot["busy"] = owner.runner.is_busy()
         return snapshot
@@ -275,6 +298,46 @@ class DesktopWorkPlans:
         snapshot = owner.runner.confirm(plan_id, approval_id, granted)
         snapshot["busy"] = owner.runner.is_busy()
         return snapshot
+
+    def revise(self, chat_id: str, plan_id: str, approval_id: str, replacement: ToolCall) -> dict[str, Any]:
+        """Consume modify once, close the old plan, and publish only a fresh pending suffix.
+
+        The reservation survives private audit/checkpoint I/O without holding the
+        registry lock. Cancel, navigation, or shutdown can invalidate it before
+        publication; no revised call runs until a separate explicit Start.
+        """
+
+        owner = self._owner(chat_id)
+        boundary = self._authority(owner)
+        creation = object()
+        with self._lock:
+            self._require_open_locked()
+            if self._busy_locked() or self._creation_token is not None or approval_id not in owner.tokens:
+                raise ToolProtocolError("conflict")
+            assert owner.runner is not None
+            title, calls = owner.runner.revision_calls(plan_id, approval_id, replacement)
+            self._creation_token = creation
+            self._retire_locked(owner)
+        try:
+            self._require_chat(owner.chat_id, owner.project_id)
+            fresh = self._boundary_provider(chat_id)
+            fresh.metadata()
+            if (fresh.normalized_root, fresh.root_identity) != (boundary.normalized_root, boundary.root_identity):
+                raise ToolProtocolError("conflict")
+            outcome = self._write_provider().confirm(chat_id, owner.project_id, fresh, approval_id, False, decision="modify")
+            if outcome.status != "denied" or outcome.error_code != "permission_denied":
+                raise ToolProtocolError(outcome.error_code or "io_error")
+            self._write_provider().invalidate(chat_id)
+            with self._lock:
+                self._require_open_locked()
+                if self._creation_token is not creation:
+                    raise ToolProtocolError("conflict")
+            chat = self._require_chat(owner.chat_id, owner.project_id)
+            return self._create(chat, title, calls, use_project_knowledge=owner.use_project_knowledge, reservation=creation)
+        finally:
+            with self._lock:
+                if self._creation_token is creation:
+                    self._creation_token = None
 
     def is_busy(self) -> bool:
         """Report current and retired physical capacity without invoking providers."""

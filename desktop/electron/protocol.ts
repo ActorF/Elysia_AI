@@ -29,8 +29,8 @@ import {
 } from './work-tool-protocol.js'
 import {
   parseWorkPlanState, parseWorkPlanGetParams, parseWorkPlanCreateParams,
-  parseWorkPlanControlParams, parseWorkPlanConfirmParams,
-  type WorkPlanGetParams, type WorkPlanCreateParams, type WorkPlanControlParams, type WorkPlanConfirmParams,
+  parseWorkPlanControlParams, parseWorkPlanConfirmParams, parseWorkPlanReviseParams,
+  type WorkPlanGetParams, type WorkPlanCreateParams, type WorkPlanControlParams, type WorkPlanConfirmParams, type WorkPlanReviseParams,
 } from './work-plan-protocol.js'
 import {
   parseWorkAuditState, parseWorkAuditListParams, parseWorkUndoParams,
@@ -511,6 +511,7 @@ export interface RequestParamsByMethod {
   'work.plan.create': WorkPlanCreateParams
   'work.plan.control': WorkPlanControlParams
   'work.plan.confirm': WorkPlanConfirmParams
+  'work.plan.revise': WorkPlanReviseParams
   'work.audit.list': WorkAuditListParams
   'work.undo': WorkUndoParams
   'chat.pin': ChatPinParams
@@ -2643,11 +2644,12 @@ export function parseClientRequest(value: unknown): ClientRequest {
     }
   }
   if (method === 'work.plan.get' || method === 'work.plan.create'
-    || method === 'work.plan.control' || method === 'work.plan.confirm') {
+    || method === 'work.plan.control' || method === 'work.plan.confirm' || method === 'work.plan.revise') {
     try {
       if (method === 'work.plan.get') return { type: 'request', protocol, id, method, params: parseWorkPlanGetParams(request.params) }
       if (method === 'work.plan.create') return { type: 'request', protocol, id, method, params: parseWorkPlanCreateParams(request.params) }
       if (method === 'work.plan.control') return { type: 'request', protocol, id, method, params: parseWorkPlanControlParams(request.params) }
+      if (method === 'work.plan.revise') return { type: 'request', protocol, id, method, params: parseWorkPlanReviseParams(request.params) }
       return { type: 'request', protocol, id, method, params: parseWorkPlanConfirmParams(request.params) }
     } catch {
       return fail('protocol.invalid_params', 'Work plan request is invalid.')

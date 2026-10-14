@@ -66,7 +66,7 @@ def _hash(value: object) -> None:
 def _validate_entry(value: object) -> datetime:
     """Rebuild path validation from closed tools instead of trusting stored summaries."""
 
-    if type(value) is not dict or set(value) != _FIELDS:
+    if type(value) is not dict or set(value) not in (_FIELDS, _FIELDS | {"decision"}):
         raise ValueError("Work audit entry fields are invalid.")
     _id(value["chatId"], "chat")
     if value["projectId"] is not None:
@@ -102,6 +102,17 @@ def _validate_entry(value: object) -> datetime:
         _hash(params["querySha256"])
     if value["approver"] != "user" or type(value["result"]) is not str or value["result"] not in _RESULTS:
         raise ValueError("Work audit decision is invalid.")
+    decision = value.get("decision")
+    if decision is not None and (type(decision) is not str or decision not in {"approve", "reject", "modify", "timeout"}):
+        raise ValueError("Work audit decision is invalid.")
+    if tool_id in _READ_TOOLS and decision is not None:
+        raise ValueError("Read history cannot claim a write approval.")
+    if decision in {"reject", "modify", "timeout"}:
+        expected_result = "failed" if decision == "timeout" else "denied"
+        expected_error = "timeout" if decision == "timeout" else "permission_denied"
+        if (value["result"] != expected_result or value["error"] != expected_error
+            or value["recoverable"] is not False or value["undoId"] is not None):
+            raise ValueError("Work audit decision does not match its nonmutating outcome.")
     if value["error"] is not None and (type(value["error"]) is not str or value["error"] not in ERROR_MESSAGES):
         raise ValueError("Work audit error is invalid.")
     if type(value["recoverable"]) is not bool:

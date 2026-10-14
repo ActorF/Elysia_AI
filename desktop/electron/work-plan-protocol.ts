@@ -55,6 +55,8 @@ export interface WorkPlanGetParams { chatId: string }
 export interface WorkPlanCreateParams { chatId: string; title: string; calls: WorkToolCall[]; useProjectKnowledge?: boolean }
 export interface WorkPlanControlParams { chatId: string; planId: string; action: WorkPlanAction }
 export interface WorkPlanConfirmParams { chatId: string; planId: string; approvalId: string; granted: boolean }
+/** Replace the current waiting action without changing its tool or granting approval. */
+export interface WorkPlanReviseParams { chatId: string; planId: string; approvalId: string; call: WorkToolCall }
 
 /** Inspect and control explicit Work plans without implicit write permission. */
 export interface WorkPlanClient {
@@ -66,6 +68,8 @@ export interface WorkPlanClient {
   controlWorkPlan(request: WorkPlanControlParams): Promise<WorkPlanState>
   /** Consume only the displayed current step's one-use approval decision. */
   confirmWorkPlan(request: WorkPlanConfirmParams): Promise<WorkPlanState>
+  /** Consume modify once and create a new pending plan containing only unfinished steps. */
+  reviseWorkPlan(request: WorkPlanReviseParams): Promise<WorkPlanState>
 }
 
 const PLAN_STATES: readonly WorkPlanStatus[] = ['pending', 'running', 'paused', 'waiting', 'succeeded', 'failed', 'cancelled']
@@ -262,6 +266,16 @@ export function parseWorkPlanConfirmParams(value: unknown): WorkPlanConfirmParam
     ...parseWorkToolConfirmParams({ chatId: raw.chatId, approvalId: raw.approvalId, granted: raw.granted }),
     planId: identifier(raw.planId, 'plan'),
   }
+}
+
+/** Validate one current token and a closed replacement call; the Backend enforces the unchanged tool. */
+export function parseWorkPlanReviseParams(value: unknown): WorkPlanReviseParams {
+  const raw = record(value, ['chatId', 'planId', 'approvalId', 'call'])
+  const confirmed = parseWorkToolConfirmParams({ chatId: raw.chatId, approvalId: raw.approvalId, granted: false })
+  const request = { chatId: confirmed.chatId, planId: identifier(raw.planId, 'plan'),
+    approvalId: confirmed.approvalId, call: parseWorkToolCall(raw.call) }
+  bounded(request)
+  return request
 }
 
 /** Keep conflicting Chat and Workspace actions blocked until live or physical ownership ends. */
