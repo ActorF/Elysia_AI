@@ -62,6 +62,7 @@ import { CharacterPanel } from './character/CharacterPanel.tsx'
 import { resolveCharacterEmotion } from './character/character-emotion.ts'
 import { deriveApplicationCharacterState } from './character/character-state.ts'
 import { ChatView } from './chat/ChatView.tsx'
+import { WorkPanel } from './work/WorkPanel.tsx'
 import type {
   ChatMessage,
   ChatNotice,
@@ -7879,6 +7880,17 @@ function App() {
           || songCoverBusy
         }
         attachmentDisabled={sessionUiPending || activeChatId === undefined}
+        workPanel={activeChatId === undefined ? undefined : (
+          <WorkPanel
+            key={activeChatId}
+            api={desktopApi}
+            chatId={activeChatId}
+            ready={snapshot.status === 'ready'
+              && snapshot.chatId === activeChatId
+              && snapshot.capabilities.includes('work.workspace')}
+            disabled={modeSelectionDisabled}
+          />
+        )}
         onBeginRetryEdit={beginRetryEdit}
         onCancelRetryEdit={cancelRetryEdit}
         onChooseAttachments={() => {

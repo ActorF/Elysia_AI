@@ -42,6 +42,7 @@ import type {
   DesktopPetState,
   UpdateDesktopPetRequest,
 } from './desktop-pet-contracts.js'
+import type { WorkWorkspaceState } from './work-protocol.js'
 import type { DataStorageViewState } from './data-storage-contracts.js'
 import type {
   PresenceNotificationState,
@@ -984,6 +985,15 @@ const desktopApi: DesktopApi = {
       'chat:mode',
       request,
     ) as Promise<ChatSessionState>,
+
+  getWorkWorkspace: (chatId: string) =>
+    ipcRenderer.invoke('work:get-workspace', chatId) as Promise<WorkWorkspaceState>,
+
+  chooseWorkWorkspace: (chatId: string) =>
+    ipcRenderer.invoke('work:choose-workspace', chatId) as Promise<WorkWorkspaceState | null>,
+
+  clearWorkWorkspace: (chatId: string) =>
+    ipcRenderer.invoke('work:clear-workspace', chatId) as Promise<WorkWorkspaceState>,
 
   setChatArchived: (request: ArchiveChatRequest) =>
     ipcRenderer.invoke(

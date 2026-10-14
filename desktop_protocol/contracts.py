@@ -19,6 +19,7 @@ from typing import Any, Final, Literal, NotRequired, TypeAlias, TypedDict, cast
 from urllib.parse import urlsplit
 
 from attachments.domain import validate_file_name, validate_media_type
+from work_tools.wire import validate_work_params, validate_work_result
 
 PROTOCOL_NAME: Final = "elysia.desktop"
 PROTOCOL_VERSION: Final = 1
@@ -210,6 +211,8 @@ _PROTOCOL_EVENT_NAMES: Final = (
 )
 
 ProtocolMethod = Literal[
+    "work.workspace.get",
+    "work.workspace.bind",
     "handshake",
     "initialize",
     "chat.stream",
@@ -254,6 +257,8 @@ ProtocolMethod = Literal[
     "shutdown",
 ]
 SUPPORTED_METHODS: Final[tuple[ProtocolMethod, ...]] = (
+    "work.workspace.get",
+    "work.workspace.bind",
     "handshake",
     "initialize",
     "chat.stream",
@@ -2220,7 +2225,12 @@ def parse_client_request(value: object) -> ClientRequest:
             f"Unknown request method: {method}.",
         )
     params = _as_object(request["params"], "request.params")
-    if method == "handshake":
+    if method.startswith("work."):
+        try:
+            validate_work_params(method, params)
+        except ValueError:
+            raise ProtocolValidationError("protocol.invalid_params", "Work request is invalid.") from None
+    elif method == "handshake":
         _validate_handshake_params(params)
     elif method == "initialize":
         _require_fields(params, set(), "initialize params")
@@ -3417,6 +3427,12 @@ def _validate_knowledge_export_result(
 
 
 def _validate_success_result(result: JsonObject) -> None:
+    if result.get("kind") == "work.workspace":
+        try:
+            validate_work_result(result)
+        except ValueError:
+            raise ProtocolValidationError("protocol.invalid_message", "Work response is invalid.") from None
+        return
     fields = set(result)
     if fields == {"protocol", "server", "capabilities"}:
         _validate_descriptor(result["protocol"])

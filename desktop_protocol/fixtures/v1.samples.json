@@ -5,6 +5,20 @@
   },
   "validClientMessages": [
     {
+      "name": "work workspace get request",
+      "message": {
+        "type": "request", "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "work-get-1", "method": "work.workspace.get", "params": { "chatId": "chat_fixture" }
+      }
+    },
+    {
+      "name": "work workspace bind request",
+      "message": {
+        "type": "request", "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "work-bind-1", "method": "work.workspace.bind", "params": { "chatId": "chat_fixture", "workspacePath": "D:\\Selected" }
+      }
+    },
+    {
       "name": "chat switch to work request",
       "message": {
         "type": "request",

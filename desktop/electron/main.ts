@@ -30,6 +30,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { BackendProcess } from './backend-process.js'
+import { parseWorkWorkspaceGetParams } from './work-protocol.js'
 import { ApplicationShutdownGate } from './application-shutdown-gate.js'
 import {
   DATA_STORAGE_CLEANABLE_CATEGORIES,
@@ -3381,6 +3382,37 @@ function registerIpcHandlers(): void {
       })
     },
   )
+
+  ipcMain.handle('work:get-workspace', (event, chatId: unknown) => {
+    assertTrustedSender(event)
+    const request = parseWorkWorkspaceGetParams({ chatId })
+    return requireBackend().getWorkWorkspace(request.chatId)
+  })
+
+  ipcMain.handle('work:choose-workspace', async (event, chatId: unknown) => {
+    assertTrustedSender(event)
+    const request = parseWorkWorkspaceGetParams({ chatId })
+    const selected = await dialog.showOpenDialog(requireMainWindow(), {
+      title: 'Choose a Workspace for this Work Chat',
+      properties: ['openDirectory', 'dontAddToRecent'],
+    })
+    if (selected.canceled || selected.filePaths.length !== 1) {
+      return null
+    }
+    const workspacePath = parseWorkspacePath(selected.filePaths[0])
+    if (workspacePath === null || !(await lstat(workspacePath)).isDirectory()) {
+      throw new Error('Selected Workspace is not an accessible directory.')
+    }
+    // Renderer callers supply only the Chat ID. The native picker supplies the
+    // path, and Python rechecks canonical scope and ownership before saving it.
+    return requireBackend().bindWorkWorkspace({ chatId: request.chatId, workspacePath })
+  })
+
+  ipcMain.handle('work:clear-workspace', (event, chatId: unknown) => {
+    assertTrustedSender(event)
+    const request = parseWorkWorkspaceGetParams({ chatId })
+    return requireBackend().bindWorkWorkspace({ chatId: request.chatId, workspacePath: null })
+  })
 
   ipcMain.handle(
     'project:clear-workspace',

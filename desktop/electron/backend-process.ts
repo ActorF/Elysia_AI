@@ -51,6 +51,12 @@ import {
   type BoundedNdjsonFailure,
 } from './bounded-ndjson.js'
 import {
+  parseWorkWorkspaceState,
+  type WorkWorkspaceState,
+  type WorkWorkspaceBindParams,
+  type WorkWorkspaceGetParams,
+} from './work-protocol.js'
+import {
   SpeechDeliveryCoordinator,
   type SpeechDeliveryStatus,
   type TrustedSpeechPlaybackOwner,
@@ -350,6 +356,8 @@ interface PendingRequest {
   rejectChatState?: (error: Error) => void
   resolveProjectState?: (state: ProjectState) => void
   rejectProjectState?: (error: Error) => void
+  resolveWorkWorkspace?: (state: WorkWorkspaceState) => void
+  rejectWorkWorkspace?: (error: Error) => void
   resolveSettingsState?: (state: DesktopSettingsState) => void
   rejectSettingsState?: (error: Error) => void
   resolveVoiceSettingsState?: (state: VoiceSettingsState) => void
@@ -482,6 +490,11 @@ const CHAT_SESSION_METHODS = new Set<ProtocolMethod>([
   'chat.pin',
   'chat.archive',
   'chat.delete',
+])
+
+const WORK_WORKSPACE_METHODS = new Set<ProtocolMethod>([
+  'work.workspace.get',
+  'work.workspace.bind',
 ])
 
 type ProjectMethod =
@@ -1448,6 +1461,16 @@ export class BackendProcess {
     return this.requestChatState('chat.mode', request)
   }
 
+  /** Read the canonical scope of the current explicitly selected Work Chat. */
+  getWorkWorkspace(chatId: string): Promise<WorkWorkspaceState> {
+    return this.requestWorkWorkspace('work.workspace.get', { chatId })
+  }
+
+  /** Bind a native-selected directory or revoke it through the Python boundary. */
+  bindWorkWorkspace(request: WorkWorkspaceBindParams): Promise<WorkWorkspaceState> {
+    return this.requestWorkWorkspace('work.workspace.bind', request)
+  }
+
   /** Set one idle Chat's pin state. */
   pinChat(request: PinChatRequest): Promise<ChatSessionState> {
     return this.requestChatState('chat.pin', request)
@@ -1977,6 +2000,35 @@ export class BackendProcess {
     })
   }
 
+  private requestWorkWorkspace(
+    method: 'work.workspace.get' | 'work.workspace.bind',
+    params: WorkWorkspaceGetParams | WorkWorkspaceBindParams,
+  ): Promise<WorkWorkspaceState> {
+    if (
+      this.snapshot.status !== 'ready'
+      || !this.snapshot.capabilities.includes('work.workspace')
+      || this.snapshot.chatId !== params.chatId
+    ) {
+      return Promise.reject(new Error('Work Workspace is unavailable for this Chat.'))
+    }
+    if (
+      method === 'work.workspace.bind'
+      && [...this.pendingRequests.values()].some((pending) => (
+        CHAT_GENERATION_METHODS.has(pending.method)
+        || VOICE_TRANSCRIPTION_METHODS.has(pending.method)
+        || WORK_WORKSPACE_METHODS.has(pending.method)
+      ))
+    ) {
+      return Promise.reject(new Error('Wait for the current Chat or Workspace action.'))
+    }
+    return new Promise((resolve, reject) => {
+      this.sendRequest(method, params, params.chatId, {
+        resolveWorkWorkspace: resolve,
+        rejectWorkWorkspace: reject,
+      })
+    })
+  }
+
   private requestSettingsState<
     Method extends 'settings.get' | 'settings.update',
   >(
@@ -2183,6 +2235,8 @@ export class BackendProcess {
       | 'rejectChatState'
       | 'resolveProjectState'
       | 'rejectProjectState'
+      | 'resolveWorkWorkspace'
+      | 'rejectWorkWorkspace'
       | 'resolveSettingsState'
       | 'rejectSettingsState'
       | 'resolveVoiceSettingsState'
@@ -2347,6 +2401,14 @@ export class BackendProcess {
         parseChatStateResult(message.result)
       } else if (PROJECT_METHODS.has(pending.method)) {
         parseProjectStateResult(message.result)
+      } else if (WORK_WORKSPACE_METHODS.has(pending.method)) {
+        const state = parseWorkWorkspaceState(message.result)
+        if (state.chatId !== pending.chatId) {
+          throw new ProtocolValidationError(
+            'protocol.invalid_result',
+            'Work Workspace result does not belong to its request.',
+          )
+        }
       } else if (SETTINGS_METHODS.has(pending.method)) {
         parseSettingsStateResult(message.result)
       } else if (VOICE_SETTINGS_METHODS.has(pending.method)) {
@@ -2502,6 +2564,9 @@ export class BackendProcess {
       }
       if (PROJECT_METHODS.has(pending.method)) {
         pending.rejectProjectState?.(new Error(message.error.message))
+      }
+      if (WORK_WORKSPACE_METHODS.has(pending.method)) {
+        pending.rejectWorkWorkspace?.(new Error('The Work Workspace action failed.'))
       }
       if (SETTINGS_METHODS.has(pending.method)) {
         pending.rejectSettingsState?.(new Error(message.error.message))
@@ -2668,6 +2733,11 @@ export class BackendProcess {
         error: undefined,
       })
       pending.resolveProjectState?.(result)
+      return
+    }
+
+    if (WORK_WORKSPACE_METHODS.has(pending.method)) {
+      pending.resolveWorkWorkspace?.(parseWorkWorkspaceState(message.result))
       return
     }
 
@@ -3379,6 +3449,7 @@ export class BackendProcess {
           'Python Backend stopped before the Project action completed.',
         ),
       )
+      pending.rejectWorkWorkspace?.(new Error('Python Backend stopped before the Workspace action completed.'))
       pending.rejectSettingsState?.(
         new Error(
           'Python Backend stopped before the Settings action completed.',
@@ -3433,6 +3504,7 @@ export class BackendProcess {
       const error = new Error(message)
       pending.rejectChatState?.(error)
       pending.rejectProjectState?.(error)
+      pending.rejectWorkWorkspace?.(error)
       pending.rejectSettingsState?.(error)
       pending.rejectVoiceSettingsState?.(error)
       pending.rejectVoiceCapture?.(error)
@@ -3446,6 +3518,8 @@ export class BackendProcess {
       pending.rejectChatState = undefined
       pending.resolveProjectState = undefined
       pending.rejectProjectState = undefined
+      pending.resolveWorkWorkspace = undefined
+      pending.rejectWorkWorkspace = undefined
       pending.resolveSettingsState = undefined
       pending.rejectSettingsState = undefined
       pending.resolveVoiceSettingsState = undefined

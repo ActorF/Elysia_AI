@@ -1,8 +1,8 @@
 """Expose the existing Python Brain to Electron over newline-delimited JSON.
 
-The bridge owns no Chat or Memory files. It validates small typed requests,
-delegates all conversation work to Brain, and emits one JSON object per line
-so Electron can monitor startup and forward streaming reply chunks.
+The bridge delegates conversation persistence to Brain and explicit Work
+capabilities to DesktopWorkRuntime. It validates typed requests and emits one
+JSON object per line so Electron can monitor startup and forward reply chunks.
 """
 
 from __future__ import annotations
@@ -129,6 +129,7 @@ from desktop_speech import (
     DesktopSpeechTurn,
 )
 from start import create_brain, validate_settings
+from desktop_work import DesktopWorkRuntime
 from voice import (
     FasterWhisperConfig,
     FasterWhisperStatus,
@@ -178,6 +179,7 @@ SpeechSelectionValidator = Callable[[AppSettings], bool]
 SERVER_NAME = "elysia-python"
 SERVER_VERSION = "0.1.0"
 SERVER_CAPABILITIES = (
+    "work.workspace",
     "chat.sessions",
     "chat.mode",
     "chat.stream",
@@ -562,6 +564,9 @@ class DesktopBackend:
         self._brain_factory = brain_factory
         self._model_loader = model_loader
         self._settings_validator = settings_validator
+        # Work is created lazily after Brain initialization so recovery-only
+        # Settings reads do not create filesystem capabilities or user files.
+        self._work_runtime: DesktopWorkRuntime | None = None
         self._uses_default_brain_factory = brain_factory is create_brain
         self._uses_default_model_loader = model_loader is discover_ollama_models
         self._uses_default_settings_validator = (
@@ -785,6 +790,8 @@ class DesktopBackend:
                 )
             elif method == "voice.capture.complete":
                 self._complete_voice_capture(request_id, params)
+            elif method.startswith("work."):
+                self._dispatch_work(request_id, method, params)
             elif method == "voice.transcription.start":
                 self._start_voice_transcription(request_id, params)
             elif method == "voice.speech.start":
@@ -1297,6 +1304,32 @@ class DesktopBackend:
             "transcriptReviewMode": values.transcript_review_mode,
             "automaticRelisten": values.automatic_relisten,
         }
+
+    def _work_active_chat(self) -> ChatSession:
+        """Load a canonical active Chat for Work policy and ownership checks."""
+
+        active = self._active_chat_snapshot()
+        if self._brain is None or active is None:
+            raise ValueError("Work is unavailable before initialization.")
+        return self._brain.get_chat(active.chat_id)
+
+    def _dispatch_work(self, request_id: str, method: str, params: JsonObject) -> None:
+        """Serialize explicit Work scope changes against admitted Chat/Voice work."""
+
+        with self._state_lock:
+            if self._generation_task is not None or self._transcription_capacity_reserved_locked():
+                raise ProtocolValidationError("work.busy", "Wait for Chat or Voice before using Work.")
+            if self._work_runtime is None:
+                self._work_runtime = DesktopWorkRuntime(
+                    self._runtime_settings.data_layout.workspace / "work", self._work_active_chat,
+                )
+            try:
+                result = self._work_runtime.dispatch(method, params)
+            except (OSError, ValueError, PermissionError):
+                # Native errors often include full paths. The UI can retry its
+                # explicit chooser without exposing those diagnostics.
+                raise ProtocolValidationError("work.denied", "Work request was refused. Check the mode and selected folder.") from None
+        self._emit_response(request_id, result)
 
     def _load_desired_settings(self) -> DesktopSettingsSnapshot:
         """Refresh persisted desired values while retaining recovery notice."""

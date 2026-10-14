@@ -52,6 +52,17 @@ workspace-bound, separately approved actions eligible. Message text, Project
 instructions, retrieved memory, and model output cannot select a mode or grant
 tool permissions.
 
+`work.workspace.get` and `work.workspace.bind` operate on one canonical active
+Work Chat. The bind request carries a directory supplied by Electron Main's
+native chooser or `null` to revoke access; the renderer has no raw path setter.
+Both return `{kind: "work.workspace", chatId, workspacePath}`. Each Chat's
+selection is stored beneath the private data root at `workspace/work/bindings`.
+Project paths are not inherited automatically. Directory identity is saved
+with the selection and rechecked before execution. Safe access pins ancestors
+and reads through the verified leaf handle; traversal, network/device roots,
+symlinks, Windows junctions, and hard links are rejected. Work state is durable
+during data-root migration and excluded from generic cache cleanup.
+
 `settings.get` and `settings.update` expose one exact public allowlist with
 optimistic revision checks: Chat model, Ollama origin, two Memory limits,
 import byte limit, transcription model/device/language, automatic Voice Call speech,

@@ -9,6 +9,13 @@ import {
   codePointLength,
   hasNonBlankCodePoint,
 } from './protocol-text.js'
+import {
+  parseWorkWorkspaceBindParams,
+  parseWorkWorkspaceGetParams,
+  parseWorkWorkspaceState,
+  type WorkWorkspaceBindParams,
+  type WorkWorkspaceGetParams,
+} from './work-protocol.js'
 
 export {
   codePointLength,
@@ -432,6 +439,8 @@ export interface RequestParamsByMethod {
   'chat.open': ChatIdParams
   'chat.rename': ChatRenameParams
   'chat.mode': ChatModeParams
+  'work.workspace.get': WorkWorkspaceGetParams
+  'work.workspace.bind': WorkWorkspaceBindParams
   'chat.pin': ChatPinParams
   'chat.archive': ChatArchiveParams
   'chat.delete': ChatIdParams
@@ -2332,6 +2341,15 @@ export function parseClientRequest(value: unknown): ClientRequest {
     return {
       type: 'request', protocol, id, method,
       params: parseChatArchiveParams(request.params),
+    }
+  }
+  if (method === 'work.workspace.get' || method === 'work.workspace.bind') {
+    try {
+      return method === 'work.workspace.get'
+        ? { type: 'request', protocol, id, method, params: parseWorkWorkspaceGetParams(request.params) }
+        : { type: 'request', protocol, id, method, params: parseWorkWorkspaceBindParams(request.params) }
+    } catch {
+      return fail('protocol.invalid_params', 'Work Workspace request is invalid.')
     }
   }
   if (method === 'project.list') {
@@ -4784,6 +4802,14 @@ export function parseVoiceSpeechStartResult(
 
 function validateSuccessResult(value: unknown): Record<string, unknown> {
   const result = asRecord(value, 'response.result')
+  if (result.kind === 'work.workspace') {
+    try {
+      parseWorkWorkspaceState(result)
+    } catch {
+      return fail('protocol.invalid_message', 'Work Workspace result is invalid.')
+    }
+    return result
+  }
   if (result.kind === 'knowledge.state') {
     parseKnowledgeStateResult(result)
     return result

@@ -54,6 +54,8 @@
     "groundedAnswer is present only on assistant Chat messages and never exposes paths, hashes, or private storage lineage"
   ],
   "oneOf": [
+    { "$ref": "#/$defs/workWorkspaceGetRequest" },
+    { "$ref": "#/$defs/workWorkspaceBindRequest" },
     { "$ref": "#/$defs/handshakeRequest" },
     { "$ref": "#/$defs/initializeRequest" },
     { "$ref": "#/$defs/chatStreamRequest" },
@@ -104,6 +106,34 @@
     { "$ref": "#/$defs/event" }
   ],
   "$defs": {
+    "workChatId": { "type": "string", "maxLength": 128, "pattern": "^chat_[A-Za-z0-9_-]+$" },
+    "workWorkspaceGetParams": {
+      "type": "object", "properties": { "chatId": { "$ref": "#/$defs/workChatId" } },
+      "required": ["chatId"], "additionalProperties": false
+    },
+    "workWorkspaceBindParams": {
+      "type": "object", "properties": {
+        "chatId": { "$ref": "#/$defs/workChatId" },
+        "workspacePath": { "$ref": "#/$defs/nullableWorkspacePath" }
+      }, "required": ["chatId", "workspacePath"], "additionalProperties": false
+    },
+    "workWorkspaceGetRequest": {
+      "allOf": [{ "$ref": "#/$defs/requestEnvelope" }, { "properties": {
+        "method": { "const": "work.workspace.get" }, "params": { "$ref": "#/$defs/workWorkspaceGetParams" }
+      } }]
+    },
+    "workWorkspaceBindRequest": {
+      "allOf": [{ "$ref": "#/$defs/requestEnvelope" }, { "properties": {
+        "method": { "const": "work.workspace.bind" }, "params": { "$ref": "#/$defs/workWorkspaceBindParams" }
+      } }]
+    },
+    "workWorkspaceResult": {
+      "type": "object", "properties": {
+        "kind": { "const": "work.workspace" },
+        "chatId": { "$ref": "#/$defs/workChatId" },
+        "workspacePath": { "$ref": "#/$defs/nullableWorkspacePath" }
+      }, "required": ["kind", "chatId", "workspacePath"], "additionalProperties": false
+    },
     "identifier": {
       "type": "string",
       "minLength": 1,
@@ -150,6 +180,8 @@
         "id": { "$ref": "#/$defs/identifier" },
         "method": {
           "enum": [
+            "work.workspace.get",
+            "work.workspace.bind",
             "handshake",
             "initialize",
             "chat.stream",
@@ -2383,6 +2415,7 @@
         "ok": { "const": true },
         "result": {
           "oneOf": [
+            { "$ref": "#/$defs/workWorkspaceResult" },
             { "$ref": "#/$defs/handshakeResult" },
             { "$ref": "#/$defs/initializeResult" },
             { "$ref": "#/$defs/chatResult" },

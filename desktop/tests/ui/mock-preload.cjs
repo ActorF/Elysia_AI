@@ -385,6 +385,10 @@ let nextAttachmentPickerCancelled = false
 let nextSendError = null
 let nextChatModeError = null
 let selectedWorkspace = null
+let workWorkspaces = new Map()
+let nextWorkWorkspaceError = null
+let delayWorkWorkspaceReads = false
+let pendingWorkWorkspaceReads = []
 let nextRequestNumber = 1
 let nextAttachmentNumber = 1
 let nextKnowledgeNumber = 1
@@ -444,6 +448,7 @@ if (reloadState !== null) {
   pendingGenerations = new Map(clone(reloadState.pendingGenerations))
   attachmentStates = new Map(clone(reloadState.attachmentStates))
   knowledgeStates = new Map(clone(reloadState.knowledgeStates ?? []))
+  workWorkspaces = new Map(clone(reloadState.workWorkspaces ?? []))
   nextRequestNumber = reloadState.nextRequestNumber
   nextAttachmentNumber = reloadState.nextAttachmentNumber
   nextKnowledgeNumber = reloadState.nextKnowledgeNumber ?? 1
@@ -1441,6 +1446,39 @@ const desktopApi = {
     return clone(chatState)
   },
 
+  getWorkWorkspace: async (chatId) => {
+    record('getWorkWorkspace', [chatId])
+    const result = clone(workWorkspaces.get(chatId) ?? {
+      kind: 'work.workspace', chatId, workspacePath: null,
+    })
+    if (delayWorkWorkspaceReads) {
+      await new Promise((resolve) => { pendingWorkWorkspaceReads.push(resolve) })
+    }
+    return result
+  },
+
+  chooseWorkWorkspace: async (chatId) => {
+    record('chooseWorkWorkspace', [chatId])
+    if (nextWorkWorkspaceError !== null) {
+      const message = nextWorkWorkspaceError
+      nextWorkWorkspaceError = null
+      throw new Error(message)
+    }
+    if (selectedWorkspace === null) {
+      return null
+    }
+    const state = { kind: 'work.workspace', chatId, workspacePath: selectedWorkspace }
+    workWorkspaces.set(chatId, state)
+    return clone(state)
+  },
+
+  clearWorkWorkspace: async (chatId) => {
+    record('clearWorkWorkspace', [chatId])
+    const state = { kind: 'work.workspace', chatId, workspacePath: null }
+    workWorkspaces.set(chatId, state)
+    return clone(state)
+  },
+
   setChatPinned: async (request) => {
     record('setChatPinned', [request])
     chatState.chats = chatState.chats.map((chat) => (
@@ -1960,6 +1998,13 @@ const desktopApi = {
 
 const testControl = {
   reset: () => {
+    for (const release of pendingWorkWorkspaceReads) {
+      release()
+    }
+    pendingWorkWorkspaceReads = []
+    delayWorkWorkspaceReads = false
+    workWorkspaces = new Map()
+    nextWorkWorkspaceError = null
     releaseAllChatActions()
     releaseAllChatLists()
     releaseAllCharacterPanelChanges()
@@ -2296,6 +2341,24 @@ const testControl = {
     selectedWorkspace = workspacePath
   },
 
+  setWorkWorkspaceState: (state) => {
+    workWorkspaces.set(state.chatId, clone(state))
+  },
+
+  setWorkWorkspaceReadDelay: (delayed) => {
+    delayWorkWorkspaceReads = delayed
+  },
+
+  releaseNextWorkWorkspaceRead: () => {
+    const release = pendingWorkWorkspaceReads.shift()
+    release?.()
+    return release !== undefined
+  },
+
+  failNextWorkWorkspace: (message) => {
+    nextWorkWorkspaceError = message
+  },
+
   setCharacterPanelChangeDelay: (delayed) => {
     delayCharacterPanelChanges = delayed
     if (!delayed) {
@@ -2396,6 +2459,7 @@ const testControl = {
       pendingGenerations: [...pendingGenerations.entries()],
       attachmentStates: [...attachmentStates.entries()],
       knowledgeStates: [...knowledgeStates.entries()],
+      workWorkspaces: [...workWorkspaces.entries()],
       nextRequestNumber,
       nextAttachmentNumber,
       nextKnowledgeNumber,
