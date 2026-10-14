@@ -30,7 +30,7 @@ _NODES = frozenset({"brain", "memory", "rag", "tool", "approval", "verification"
 _READ_TOOLS = frozenset({"list_directory", "read_text", "search_files", "metadata"})
 _TERMINAL = frozenset({"succeeded", "failed", "cancelled"})
 _TRANSITIONS = {
-    "pending": {"pending", "running", "paused", "cancelled"},
+    "pending": {"pending", "running", "paused", "failed", "cancelled"},
     "running": {"running", "waiting", "paused", "succeeded", "failed", "cancelled"},
     "waiting": {"waiting", "running", "paused", "failed", "cancelled"},
     "paused": {"paused", "running", "waiting", "failed", "cancelled"},

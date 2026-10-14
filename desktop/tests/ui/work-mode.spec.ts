@@ -23,6 +23,7 @@ interface WorkTestControl {
   releaseNextWorkToolRun(): boolean
   failNextWorkPreview(message: string): void
   setWorkPlanReadDelay(delayed: boolean): void
+  setWorkRecoveryState(chatId: string, state: unknown): void
   releaseNextWorkPlanRead(): boolean
   setWorkAuditState(chatId: string, state: WorkAuditState): void
   setWorkFile(path: string, content: string | null): void
@@ -366,6 +367,34 @@ test('requires edited parameters to be prepared again and uses a distinct deleti
   await expect(page.getByRole('button', { name: 'Confirm recoverable deletion' })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Approve once', exact: true })).toHaveCount(0)
   await page.getByRole('button', { name: 'Deny', exact: true }).click()
+})
+
+test('shows recovered work paused until an explicit resume and keeps uncertain writes inspection-only', async () => {
+  await page.evaluate(() => {
+    const control = (window as WorkTestWindow).elysiaDesktopTest
+    control.setWorkWorkspaceState({ kind: 'work.workspace', chatId: 'chat_work_test', workspacePath: 'D:\\recovery-test' })
+    control.setWorkRecoveryState('chat_work_test', { kind: 'work.plan',
+      plan: { planId: `plan_${'a'.repeat(32)}`, title: 'Recovered edit', state: 'paused', busy: false,
+        steps: [{ stepId: `step_${'b'.repeat(32)}`, call: { toolId: 'edit', arguments: { path: 'notes.txt', content: 'reviewed' } },
+          status: 'pending', result: null, approval: null }] },
+      recovery: { status: 'restored', planId: `plan_${'a'.repeat(32)}` } })
+  })
+  await page.getByRole('combobox', { name: 'Conversation mode' }).selectOption('work')
+  const panel = page.getByRole('region', { name: 'Work plan', exact: true })
+  await expect(panel.locator('[data-work-recovery]')).toContainText('Recovered paused')
+  await expect(page.getByRole('region', { name: 'Work step approval' })).toHaveCount(0)
+  expect(await page.evaluate(() => (window as WorkTestWindow).elysiaDesktopTest.getCalls()
+    .filter((call) => call.method === 'controlWorkPlan' || call.method === 'confirmWorkPlan'))).toEqual([])
+  await panel.getByRole('button', { name: 'Resume plan' }).click()
+  await expect(page.getByRole('region', { name: 'Work step approval' })).toBeVisible()
+  await panel.getByRole('button', { name: 'Cancel plan' }).click()
+  await page.getByRole('combobox', { name: 'Conversation mode' }).selectOption('chat')
+  await page.evaluate(() => (window as WorkTestWindow).elysiaDesktopTest.setWorkRecoveryState('chat_work_test', {
+    kind: 'work.plan', plan: null, recovery: { status: 'uncertain_write', planId: `plan_${'c'.repeat(32)}` },
+  }))
+  await page.getByRole('combobox', { name: 'Conversation mode' }).selectOption('work')
+  await expect(panel.locator('[data-work-recovery]')).toContainText('will not be replayed')
+  await expect(panel.getByRole('button', { name: 'Resume plan' })).toHaveCount(0)
 })
 
 test('reviews a read, edit and verification plan before approving its exact write step', async () => {

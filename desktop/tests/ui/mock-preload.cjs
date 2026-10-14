@@ -423,6 +423,7 @@ let nextWorkPreviewError = null
 let nextWorkApprovalNumber = 1
 let workApprovals = new Map()
 let workPlans = new Map()
+let workRecoveryNotices = new Map()
 let nextWorkPlanNumber = 1
 let delayWorkPlanReads = false
 let pendingWorkPlanReads = []
@@ -1736,7 +1737,9 @@ const desktopApi = {
 
   getWorkPlan: async (chatId) => {
     record('getWorkPlan', [chatId])
-    return { kind: 'work.plan', plan: clone(workPlans.get(chatId) ?? null) }
+    const recovery = workRecoveryNotices.get(chatId)
+    return { kind: 'work.plan', plan: clone(workPlans.get(chatId) ?? null),
+      ...(recovery === undefined ? {} : { recovery: clone(recovery) }) }
   },
 
   createWorkPlan: async (request) => {
@@ -1750,12 +1753,14 @@ const desktopApi = {
     // The owner remains private in the double, outside the exact plan DTO.
     Object.defineProperty(plan, 'chatId', { value: request.chatId, enumerable: false })
     workPlans.set(request.chatId, plan)
+    workRecoveryNotices.delete(request.chatId)
     workApprovals.delete(request.chatId)
     return { kind: 'work.plan', plan: clone(plan) }
   },
 
   controlWorkPlan: async (request) => {
     record('controlWorkPlan', [request])
+    workRecoveryNotices.delete(request.chatId)
     const plan = workPlans.get(request.chatId)
     if (plan === undefined || plan.planId !== request.planId) throw new Error('Plan is not current.')
     if (request.action === 'cancel') {
@@ -2368,6 +2373,7 @@ const testControl = {
     nextWorkApprovalNumber = 1
     workApprovals = new Map()
     workPlans = new Map()
+    workRecoveryNotices = new Map()
     workAuditEntries = []
     workAuditOverrides = new Map()
     workUndoData = new Map()
@@ -2754,6 +2760,15 @@ const testControl = {
   },
 
   setWorkPlanReadDelay: (delayed) => { delayWorkPlanReads = delayed },
+  setWorkRecoveryState: (chatId, state) => {
+    if (state.plan === null) workPlans.delete(chatId)
+    else {
+      const plan = clone(state.plan)
+      Object.defineProperty(plan, 'chatId', { value: chatId, enumerable: false })
+      workPlans.set(chatId, plan)
+    }
+    workRecoveryNotices.set(chatId, clone(state.recovery))
+  },
   setWorkAuditState: (chatId, state) => { workAuditOverrides.set(chatId, clone(state)) },
   setWorkFile: (path, content) => { if (content === null) workFiles.delete(path); else workFiles.set(path, content) },
   setWorkUndoDelay: (delayed) => { delayWorkUndo = delayed },

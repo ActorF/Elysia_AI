@@ -83,11 +83,23 @@ def validate_work_result(value: object) -> dict[str, Any]:
     if isinstance(value, dict) and value.get("kind") == "work.audit":
         return validate_audit_page(value)
     if isinstance(value, dict) and value.get("kind") == "work.plan":
-        if set(value) not in ({"kind", "plan"}, {"kind", "plan", "workflow"}):
+        if not {"kind", "plan"} <= set(value) <= {"kind", "plan", "workflow", "recovery"}:
             raise ValueError("Work plan result fields are invalid.")
         _validate_plan(value["plan"])
         if "workflow" in value:
             _validate_workflow_observation(value["workflow"], value["plan"])
+        if "recovery" in value:
+            notice = value["recovery"]
+            if type(notice) is not dict or set(notice) != {"status", "planId"}:
+                raise ValueError("Work recovery notice is invalid.")
+            _validate_id(notice["planId"], "plan")
+            if type(notice["status"]) is not str or notice["status"] not in {"restored", "uncertain_write", "storage_failed"}:
+                raise ValueError("Work recovery state is invalid.")
+            if notice["status"] == "uncertain_write":
+                if value["plan"] is not None:
+                    raise ValueError("An uncertain write cannot own a runnable plan.")
+            elif value["plan"] is None or notice["planId"] != value["plan"]["planId"]:
+                raise ValueError("Work recovery changed its plan.")
         return dict(value)
     if isinstance(value, dict) and value.get("kind") == "work.approval":
         if set(value) != {"kind", "approval"}:

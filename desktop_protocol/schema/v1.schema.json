@@ -255,7 +255,11 @@
       "type": "object", "properties": {
         "kind": { "const": "work.plan" },
         "plan": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/workPlan" }] },
-        "workflow": { "$ref": "#/$defs/workWorkflowObservation" }
+        "workflow": { "$ref": "#/$defs/workWorkflowObservation" },
+        "recovery": {
+          "type": "object", "additionalProperties": false, "required": ["status", "planId"],
+          "properties": { "status": { "enum": ["restored", "uncertain_write", "storage_failed"] }, "planId": { "$ref": "#/$defs/workPlanId" } }
+        }
       }, "required": ["kind", "plan"], "additionalProperties": false
     },
     "workWorkflowObservation": {

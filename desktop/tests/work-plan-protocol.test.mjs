@@ -39,6 +39,16 @@ test('Workflow observations bind advisory text to the exact plan and reject exec
   assert.throws(() => parseWorkPlanState({ ...observed, plan: null }), TypeError)
 })
 
+test('Recovery metadata never turns an uncertain write into a runnable plan', () => {
+  const uncertain = { kind: 'work.plan', plan: null, recovery: { status: 'uncertain_write', planId } }
+  assert.deepEqual(parseWorkPlanState(uncertain), uncertain)
+  const restored = { ...state({ state: 'paused' }), recovery: { status: 'restored', planId } }
+  assert.deepEqual(parseWorkPlanState(restored), restored)
+  assert.throws(() => parseWorkPlanState({ ...state(), recovery: uncertain.recovery }), TypeError)
+  assert.throws(() => parseWorkPlanState({ ...uncertain, recovery: restored.recovery }), TypeError)
+  assert.throws(() => parseWorkPlanState({ ...restored, recovery: { ...restored.recovery, planId: `plan_${'f'.repeat(32)}` } }), TypeError)
+})
+
 function bridge() {
   const writes = []
   const backend = new BackendProcess('.', () => undefined)

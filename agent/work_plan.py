@@ -24,6 +24,7 @@ from agent.workflow_nodes import WorkflowNodes
 from work_tools.contracts import (
     TOOL_CATALOG, ToolCall, ToolResult, validate_plan_title, validate_tool_call, validate_tool_result,
 )
+from work_tools.wire import validate_work_result
 
 
 PlanState = Literal["pending", "running", "paused", "waiting", "succeeded", "failed", "cancelled"]
@@ -95,6 +96,7 @@ class WorkPlanRunner:
         confirm_call: ConfirmCall,
         *,
         workflow_nodes: WorkflowNodes | None = None,
+        checkpoint: Callable[[dict[str, Any], str | None], None] | None = None,
     ) -> None:
         """Bind callbacks to one canonical Chat owner without starting a worker."""
 
@@ -104,6 +106,9 @@ class WorkPlanRunner:
         # retain their existing single-use authority outside graph replay.
         self._read_graph = WorkReadGraph(read_call, nodes=workflow_nodes)
         self._workflow_nodes = workflow_nodes
+        self._checkpoint_callback = checkpoint
+        self._checkpoint_lock = RLock()
+        self._checkpoint_failed = False
         self._preview_call = preview_call
         self._confirm_call = confirm_call
         self._lock = RLock()
@@ -144,7 +149,32 @@ class WorkPlanRunner:
             self._plan = plan
             self._cancel = Event()
             self._pause_requested = False
-            return snapshot
+        self._checkpoint()
+        return snapshot
+
+    def restore(self, snapshot: dict[str, Any]) -> dict[str, Any]:
+        """Install validated paused or terminal data without creating a worker or permission.
+
+        The manager already checked the persisted owner and selected root. Only
+        settled and pending steps are accepted here; interrupted writes cannot
+        be replayed by manufacturing an idle runner around a running step.
+        """
+
+        validate_work_result({"kind": "work.plan", "plan": snapshot})
+        if (snapshot["busy"] or snapshot["state"] not in {"paused", *_TERMINAL}
+            or any(step["status"] in {"running", "waiting"} or step["approval"] is not None for step in snapshot["steps"])):
+            raise ValueError("Work recovery requires safe paused data.")
+        with self._lock:
+            self._require_open_locked()
+            if self._plan is not None or self._worker_active:
+                raise ValueError("Work recovery requires an empty owner.")
+            self._plan = _Plan(snapshot["planId"], snapshot["title"], [
+                _Step(item["stepId"], validate_tool_call(item["call"]), item["status"],
+                      None if item["result"] is None else _copy_json(item["result"]))
+                for item in snapshot["steps"]
+            ], snapshot["state"])
+            self._pause_requested = snapshot["state"] == "paused"
+            return _copy_json(_plan_data(self._plan))
 
     def get(self) -> dict[str, Any] | None:
         """Return a detached snapshot, including a final frozen shutdown state."""
@@ -162,6 +192,54 @@ class WorkPlanRunner:
         """Expose bounded advisory progress without adding permissions to the plan DTO."""
 
         return None if self._workflow_nodes is None else self._workflow_nodes.observation()
+
+    def checkpoint_failed(self) -> bool:
+        """Report failed durability separately from the truthful native step outcome."""
+
+        with self._lock:
+            return self._checkpoint_failed
+
+    def attach_checkpoint(self, callback: Callable[[dict[str, Any], str | None], None]) -> None:
+        """Attach durability once to an idle newly admitted owner and save its current plan."""
+
+        with self._lock:
+            self._require_open_locked()
+            if not callable(callback) or self._checkpoint_callback is not None or self._worker_active:
+                raise ValueError("Work checkpoint ownership is already established.")
+            self._checkpoint_callback = callback
+        self._checkpoint()
+
+    def flush_checkpoint(self) -> None:
+        """Persist final detached state outside the manager's registry lock."""
+
+        self._checkpoint()
+
+    def _checkpoint(self) -> None:
+        """Save a freshly sampled boundary without retaining the state lock during disk I/O.
+
+        A separate mutex serializes snapshots, including foreground cancellation
+        and worker settlement. Cancellation changes logical state immediately;
+        a physically active worker persists that latest state before releasing
+        its lease. An admitted write is recorded before the callback can mutate.
+        """
+
+        if self._checkpoint_callback is None:
+            return
+        with self._checkpoint_lock:
+            with self._lock:
+                if self._plan is None:
+                    return
+                snapshot = _copy_json(_plan_data(self._plan))
+                admitted = next((step.step_id for step in self._plan.steps
+                                 if step.status == "running" and step.write_started), None)
+            try:
+                self._checkpoint_callback(snapshot, admitted)
+            except Exception:
+                with self._lock:
+                    self._checkpoint_failed = True
+                raise
+            with self._lock:
+                self._checkpoint_failed = False
 
     def control(self, plan_id: str, action: str) -> dict[str, Any]:
         """Start, pause, resume, cancel, or advance without holding locks during I/O.
@@ -195,7 +273,11 @@ class WorkPlanRunner:
                     plan.state = "running"
                     if not self._worker_active:
                         self._launch_locked(plan)
-            return _copy_json(_plan_data(plan))
+            snapshot = _copy_json(_plan_data(plan))
+            checkpoint_now = not self._worker_active
+        if checkpoint_now:
+            self._checkpoint()
+        return snapshot
 
     def confirm(self, plan_id: str, approval_id: str, granted: bool) -> dict[str, Any]:
         """Consume only the current waiting step's exact approval token once.
@@ -221,7 +303,7 @@ class WorkPlanRunner:
             self._launch_locked(plan, confirmation=(step, approval_id, granted))
             return _copy_json(_plan_data(plan))
 
-    def shutdown(self) -> bool:
+    def shutdown(self, *, persist: bool = True) -> bool:
         """Close admission and freeze snapshots immediately; return whether I/O drained.
 
         Native callbacks may finish later and their mutation service retains
@@ -233,7 +315,15 @@ class WorkPlanRunner:
             self._closed = True
             if self._plan is not None and self._plan.state not in _TERMINAL:
                 self._cancel_plan_locked(self._plan)
-            return not self._worker_active
+            drained = not self._worker_active
+        if drained and persist:
+            try:
+                self._checkpoint()
+            except Exception:
+                # An unavailable private disk must not block shutdown. The
+                # previous checkpoint still requires explicit revalidation.
+                pass
+        return drained
 
     def _require_open_locked(self) -> None:
         if self._closed:
@@ -295,7 +385,7 @@ class WorkPlanRunner:
                         return
                     if confirmation is not None:
                         current = confirmation[0]
-                        current.write_started = True
+                        current.write_started = confirmation[2]
                     else:
                         current = next((step for step in plan.steps if step.status == "pending"), None)
                         if current is None:
@@ -306,6 +396,16 @@ class WorkPlanRunner:
                             return
                         current.status = "running"
                         plan.state = "running"
+                self._checkpoint()
+                with self._lock:
+                    if not self._owned_locked(plan, token) or cancel.is_set():
+                        if self._owned_locked(plan, token) and confirmation is not None:
+                            # Cancellation won before the native confirmation
+                            # callback. No effect occurred despite write-ahead
+                            # admission, so this process can settle it exactly.
+                            current.write_started = False
+                            self._cancel_plan_locked(plan)
+                        return
                 if confirmation is not None:
                     _, approval_id, granted = confirmation
                     result = self._confirm_call(approval_id, granted)
@@ -357,6 +457,12 @@ class WorkPlanRunner:
                         if cancel.is_set():
                             plan.state = "cancelled"
         finally:
+            try:
+                self._checkpoint()
+            except Exception:
+                # Keep actual native outcomes visible. The saved admission
+                # record remains uncertain and the UI reports failed durability.
+                pass
             with self._lock:
                 if self._worker_token is token:
                     self._worker_active = False

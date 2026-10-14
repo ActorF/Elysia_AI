@@ -38,7 +38,9 @@ export interface WorkPlan {
 }
 
 /** The current canonical Chat's plan, or absence of an owned plan. */
-export interface WorkPlanState { kind: 'work.plan'; plan: WorkPlan | null; workflow?: WorkWorkflowObservation }
+export interface WorkPlanState { kind: 'work.plan'; plan: WorkPlan | null; workflow?: WorkWorkflowObservation; recovery?: WorkRecoveryNotice }
+/** Recovery reports facts only; an uncertain write never becomes a runnable plan. */
+export interface WorkRecoveryNotice { status: 'restored' | 'uncertain_write' | 'storage_failed'; planId: string }
 /** Bounded advisory text and progress never select tools or authorize a write. */
 export interface WorkWorkflowObservation {
   planId: string
@@ -160,11 +162,12 @@ function step(value: unknown): WorkPlanStep {
 /** Validate detached plan snapshots while preserving legal worker publication races. */
 export function parseWorkPlanState(value: unknown): WorkPlanState {
   const observed = typeof value === 'object' && value !== null && Object.hasOwn(value, 'workflow')
-  const state = record(value, ['kind', 'plan', ...(observed ? ['workflow'] : [])])
+  const recovered = typeof value === 'object' && value !== null && Object.hasOwn(value, 'recovery')
+  const state = record(value, ['kind', 'plan', ...(observed ? ['workflow'] : []), ...(recovered ? ['recovery'] : [])])
   if (state.kind !== 'work.plan') throw new TypeError('Work plan result kind is invalid.')
   if (state.plan === null) {
     if (observed) throw new TypeError('Work observation requires its exact plan.')
-    return { kind: 'work.plan', plan: null }
+    return { kind: 'work.plan', plan: null, ...(recovered ? { recovery: recoveryNotice(state.recovery, null) } : {}) }
   }
   const raw = record(state.plan, ['planId', 'title', 'state', 'steps', 'busy'])
   if (typeof raw.state !== 'string' || !PLAN_STATES.includes(raw.state as WorkPlanStatus)
@@ -186,7 +189,18 @@ export function parseWorkPlanState(value: unknown): WorkPlanState {
   // can retain an admitted write. These valid races forbid deriving state from
   // busy or requiring global plan state to equal the current step's status.
   bounded({ planId: plan.planId, title: plan.title, state: plan.state, steps: plan.steps })
-  return { kind: 'work.plan', plan, ...(observed ? { workflow: observation(state.workflow, plan.planId) } : {}) }
+  return { kind: 'work.plan', plan, ...(observed ? { workflow: observation(state.workflow, plan.planId) } : {}),
+    ...(recovered ? { recovery: recoveryNotice(state.recovery, plan.planId) } : {}) }
+}
+
+function recoveryNotice(value: unknown, planId: string | null): WorkRecoveryNotice {
+  const raw = record(value, ['status', 'planId'])
+  const id = identifier(raw.planId, 'plan')
+  if ((raw.status !== 'restored' && raw.status !== 'uncertain_write' && raw.status !== 'storage_failed')
+    || (raw.status === 'uncertain_write' ? planId !== null : id !== planId)) {
+    throw new TypeError('Work recovery changed its runnable owner.')
+  }
+  return { status: raw.status, planId: id }
 }
 
 function observation(value: unknown, planId: string): WorkWorkflowObservation {

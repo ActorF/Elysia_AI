@@ -16,6 +16,7 @@ from threading import RLock
 from typing import Any
 
 from agent.workflow_nodes import WorkflowNodes
+from agent.workflow_store import WorkflowStore
 from chats import ChatSession
 from core.mode_policy import require_work_mode
 from desktop_work_plans import DesktopWorkPlans
@@ -37,11 +38,13 @@ class DesktopWorkRuntime:
         self._bindings = WorkspaceBindings(directory)
         self._directory = directory
         self._writes: WriteCoordinator | None = None
+        self._workflow_store: WorkflowStore | None = None
         self._protected_roots = (directory.resolve(), *(path.resolve() for path in protected_roots))
         self._chat_provider = chat_provider
         self._lock = RLock()
         self._closed = False
-        self._plans = DesktopWorkPlans(chat_provider, self.boundary, self._get_writes, nodes_factory=nodes_factory)
+        self._plans = DesktopWorkPlans(chat_provider, self.boundary, self._get_writes, nodes_factory=nodes_factory,
+                                       workflow_store=self._get_workflow_store)
 
     def dispatch(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         """Apply an explicit authenticated Work request or deny stale/Chat owners."""
@@ -141,7 +144,18 @@ class DesktopWorkRuntime:
         observation = self._plans.observation(chat_id) if plan is not None else None
         if observation is not None and plan is not None:
             result["workflow"] = {"planId": plan["planId"], **observation}
+        recovery = self._plans.recovery_notice(chat_id)
+        if recovery is not None:
+            result["recovery"] = recovery
         return result
+
+    def _get_workflow_store(self) -> WorkflowStore:
+        """Open private checkpoints lazily, outside Backend state-lock construction."""
+
+        with self._lock:
+            if self._workflow_store is None:
+                self._workflow_store = WorkflowStore(self._directory / "workflows")
+            return self._workflow_store
 
     def _get_writes(self) -> WriteCoordinator:
         """Open private recovery/audit state for explicit tools, plans, or history.
@@ -178,6 +192,7 @@ class DesktopWorkRuntime:
         """Revoke a deleted Chat's scope while retaining useful file recovery records."""
 
         self.invalidate(chat_id)
+        self._plans.forget_checkpoint(chat_id)
         self._bindings.set(chat_id, None)
 
     def boundary(self, chat_id: str) -> WorkspaceBoundary:

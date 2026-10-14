@@ -1,7 +1,7 @@
 """Bind explicit Work plans to canonical Chat and Workspace capabilities.
 
-The manager owns only in-memory plan lifetimes and token routing. File previews,
-single-use permission, durable audit, and recovery remain in WriteCoordinator.
+The manager binds in-memory plan lifetimes to strict private checkpoints. File
+previews, single-use permission, and mutation recovery remain in WriteCoordinator.
 Providers and filesystem callbacks run outside the registry lock so the Backend
 can cancel a plan or inspect draining capacity without waiting behind native I/O.
 Every operation rechecks the captured Chat, Project, mode, and selected root.
@@ -16,6 +16,9 @@ from typing import Any
 
 from agent.work_plan import WorkPlanRunner
 from agent.workflow_nodes import WorkflowNodes
+from agent.workflow_session import WorkflowSession
+from agent.workflow_state import workspace_key
+from agent.workflow_store import WorkflowStore
 from chats import ChatSession
 from work_tools.contracts import ToolCall, ToolProtocolError, ToolResult
 from work_tools.executor import WorkToolExecutor
@@ -37,6 +40,7 @@ class _Owner:
     runner: WorkPlanRunner | None = None
     active: bool = True
     tokens: set[str] = field(default_factory=set)
+    restored: bool = False
 
 
 class DesktopWorkPlans:
@@ -49,6 +53,7 @@ class DesktopWorkPlans:
         write_provider: Callable[[], WriteCoordinator],
         *,
         nodes_factory: Callable[[Callable[[], None], bool], WorkflowNodes] | None = None,
+        workflow_store: WorkflowStore | Callable[[], WorkflowStore] | None = None,
     ) -> None:
         """Inject canonical providers without opening a filesystem or starting threads."""
 
@@ -58,6 +63,8 @@ class DesktopWorkPlans:
         self._boundary_provider = boundary_provider
         self._write_provider = write_provider
         self._nodes_factory = nodes_factory
+        self._workflow_store = workflow_store
+        self._recovery_notices: dict[str, dict[str, Any]] = {}
         self._lock = RLock()
         self._owners: dict[str, _Owner] = {}
         self._retired: list[_Owner] = []
@@ -106,17 +113,28 @@ class DesktopWorkPlans:
         # Keep providers outside the registry lock so Backend authority and
         # plan publication never acquire their locks in opposite orders.
         try:
+            if old is not None and old.runner is not None:
+                old.runner.flush_checkpoint()
             self._write_provider().invalidate(chat_id)
             self._require_chat(chat_id, project_id)
             fresh = self._boundary_provider(chat_id)
             fresh.metadata()
             if (fresh.normalized_root, fresh.root_identity) != (owner.root_path, owner.root_identity):
                 raise ToolProtocolError("conflict")
+            store = self._store()
+            if store is not None:
+                session = WorkflowSession(store, chat_id, project_id, workspace_key(owner.root_path, owner.root_identity))
+                with self._lock:
+                    self._require_open_locked()
+                    if self._creation_token is not creation:
+                        raise ToolProtocolError("conflict")
+                runner.attach_checkpoint(session.save)
             with self._lock:
                 self._require_open_locked()
                 if self._busy_locked() or self._creation_token is not creation:
                     raise ToolProtocolError("conflict")
                 self._owners[chat_id] = owner
+                self._recovery_notices.pop(chat_id, None)
         finally:
             with self._lock:
                 if self._creation_token is creation:
@@ -129,11 +147,93 @@ class DesktopWorkPlans:
 
         self._authority(owner)
 
+    def _store(self) -> WorkflowStore | None:
+        return self._workflow_store() if callable(self._workflow_store) else self._workflow_store
+
+    def _recover(self, chat_id: str) -> _Owner | None:
+        """Reserve recovery admission so a slow lookup cannot revoke a newer plan's token."""
+
+        creation = object()
+        with self._lock:
+            self._require_open_locked()
+            if chat_id in self._owners:
+                return self._owners[chat_id]
+            if self._busy_locked() or self._creation_token is not None:
+                return None
+            self._creation_token = creation
+        try:
+            return self._recover_reserved(chat_id, creation)
+        finally:
+            with self._lock:
+                if self._creation_token is creation:
+                    self._creation_token = None
+
+    def _recover_reserved(self, chat_id: str, creation: object) -> _Owner | None:
+        """Expose the latest safe record as paused data; never resume a native action.
+
+        No recorded path is opened. The canonical current Chat's existing
+        binding supplies a fresh root identity, and all native callbacks retain
+        the ordinary per-action authority checks after explicit Resume.
+        """
+
+        store = self._store()
+        if store is None:
+            return None
+        chat = self._chat_provider()
+        project_id = None if chat.project_id is None else str(chat.project_id)
+        self._require_chat(chat_id, project_id)
+        try:
+            boundary = self._boundary_provider(chat_id)
+            boundary.metadata()
+        except (ValueError, OSError, PermissionError):
+            return None
+        session = WorkflowSession(store, chat_id, project_id, workspace_key(boundary.normalized_root, boundary.root_identity))
+        with self._lock:
+            self._recovery_notices.pop(chat_id, None)
+        recovery = session.recovery()
+        if recovery is None:
+            return None
+        value = recovery.to_data()
+        if value["checkpoint"]["disposition"] == "uncertain_write":
+            with self._lock:
+                self._recovery_notices[chat_id] = {"status": "uncertain_write", "planId": value["plan"]["planId"]}
+            return None
+        owner = _Owner(chat_id, project_id, boundary.normalized_root, boundary.root_identity, restored=True)
+        runner = WorkPlanRunner(
+            lambda call, cancel: self._read(owner, call, cancel),
+            lambda call: self._preview(owner, call),
+            lambda token, granted: self._confirm_write(owner, token, granted),
+            workflow_nodes=None if self._nodes_factory is None else self._nodes_factory(
+                lambda: self._check_node_authority(owner), False,
+            ),
+            checkpoint=session.save,
+        )
+        owner.runner = runner
+        runner.restore(session.adopt_recovery())
+        writer = self._write_provider()
+        self._require_chat(chat_id, project_id)
+        fresh = self._boundary_provider(chat_id)
+        fresh.metadata()
+        if (fresh.normalized_root, fresh.root_identity) != (owner.root_path, owner.root_identity):
+            raise ToolProtocolError("conflict")
+        with self._lock:
+            self._require_open_locked()
+            if self._busy_locked() or self._creation_token is not creation or chat_id in self._owners:
+                return self._owners.get(chat_id)
+            # This short pending-token operation performs no disk I/O. Keep
+            # invalidation and publication in one registry turn so a stale
+            # recovery lookup cannot revoke a newly created owner's preview.
+            writer.invalidate(chat_id)
+            self._owners[chat_id] = owner
+            return owner
+
     def get(self, chat_id: str) -> dict[str, Any] | None:
         """Return only the canonical current Chat's owned detached plan snapshot."""
 
         with self._lock:
             owner = self._owners.get(chat_id)
+        if owner is None:
+            owner = self._recover(chat_id)
         if owner is None:
             return None
         # A retired plan remains visible as cancelled while its callback drains.
@@ -155,6 +255,7 @@ class DesktopWorkPlans:
             if action in {"start", "resume", "next"} and self._busy_locked() and not owner.runner.is_busy():
                 raise ToolProtocolError("conflict")
         snapshot = owner.runner.control(plan_id, action)
+        owner.restored = False
         if action == "cancel":
             self._write_provider().invalidate(chat_id)
         snapshot["busy"] = owner.runner.is_busy()
@@ -194,6 +295,21 @@ class DesktopWorkPlans:
         except (ValueError, OSError, PermissionError):
             return None
 
+    def recovery_notice(self, chat_id: str) -> dict[str, Any] | None:
+        """Report recovery and durability facts separately from native execution outcomes."""
+
+        with self._lock:
+            owner = self._owners.get(chat_id)
+            notice = self._recovery_notices.get(chat_id)
+        if owner is not None and owner.runner is not None:
+            plan = owner.runner.get()
+            if plan is not None:
+                if owner.runner.checkpoint_failed():
+                    return {"status": "storage_failed", "planId": plan["planId"]}
+                if owner.restored and plan["state"] == "paused":
+                    return {"status": "restored", "planId": plan["planId"]}
+        return None if notice is None else dict(notice)
+
     def has_live_plan(self, chat_id: str) -> bool:
         """Report pending, running, waiting, or paused state for Backend admission gates."""
 
@@ -223,6 +339,20 @@ class DesktopWorkPlans:
                 self._retire_locked(owner)
         if owner is not None:
             self._write_provider().invalidate(chat_id)
+            self._flush_retired(owner)
+
+    def forget_checkpoint(self, chat_id: str) -> None:
+        """Tombstone a deleted Chat's private plan without deleting mutation recovery evidence."""
+
+        store = self._store()
+        if store is None:
+            return
+        # A deliberately unmatched key reads only the CAS head, never content
+        # from the deleted owner's former directory or Project.
+        head = store.load_latest(chat_id, None, "0" * 64)
+        store.forget(chat_id, expected_revision=None if head is None else head.revision)
+        with self._lock:
+            self._recovery_notices.pop(chat_id, None)
 
     def shutdown(self) -> bool:
         """Close every owner promptly and return whether all native callbacks drained."""
@@ -238,7 +368,21 @@ class DesktopWorkPlans:
         if writer is not None:
             for chat_id in chat_ids:
                 writer.invalidate(chat_id)
+        for owner in owners:
+            self._flush_retired(owner)
         return not self.is_busy()
+
+    @staticmethod
+    def _flush_retired(owner: _Owner) -> None:
+        """Persist an idle retirement without blocking cancellation behind active native I/O."""
+
+        if owner.runner is not None and not owner.runner.is_busy():
+            try:
+                owner.runner.flush_checkpoint()
+            except Exception:
+                # The runner records this durability failure for UI reporting;
+                # the older checkpoint still cannot auto-resume any operation.
+                pass
 
     def _require_open_locked(self) -> None:
         if self._closed:
@@ -341,7 +485,7 @@ class DesktopWorkPlans:
     def _retire_locked(self, owner: _Owner) -> None:
         owner.active = False
         assert owner.runner is not None
-        owner.runner.shutdown()
+        owner.runner.shutdown(persist=False)
         if owner.runner.is_busy() and all(existing is not owner for existing in self._retired):
             self._retired.append(owner)
 

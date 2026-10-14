@@ -104,3 +104,15 @@ def test_workflow_advice_is_bounded_and_correlated_without_executable_fields() -
         changed["workflow"][key] = value
         with pytest.raises(ValueError):
             validate_work_result(changed)
+
+
+def test_uncertain_recovery_notice_cannot_be_paired_with_a_runnable_plan() -> None:
+    """The recovery warning never grants a native lease or a hidden Resume action."""
+
+    plan = _plan()
+    notice = {"status": "uncertain_write", "planId": plan["plan"]["planId"]}
+    assert validate_work_result({"kind": "work.plan", "plan": None, "recovery": notice})["plan"] is None
+    with pytest.raises(ValueError):
+        validate_work_result({**plan, "recovery": notice})
+    with pytest.raises(ValueError):
+        validate_work_result({"kind": "work.plan", "plan": None, "recovery": {**notice, "status": "restored"}})

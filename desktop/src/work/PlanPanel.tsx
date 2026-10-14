@@ -8,6 +8,7 @@ import {
   type WorkPlanClient,
   type WorkPlanState,
   type WorkWorkflowObservation,
+  type WorkRecoveryNotice,
 } from '../../electron/work-plan-protocol.ts'
 import type { WorkToolCall } from '../../electron/work-tool-protocol.ts'
 import { ApprovalPreview } from './ApprovalPreview.tsx'
@@ -33,6 +34,7 @@ export function PlanPanel({ api, chatId, workspacePath, ready, disabled, calls,
   onRemoveCall, onClearCalls, onLeaseChange }: PlanPanelProps) {
   const [plan, setPlan] = useState<WorkPlan | null>(null)
   const [workflow, setWorkflow] = useState<WorkWorkflowObservation | undefined>()
+  const [recovery, setRecovery] = useState<WorkRecoveryNotice | undefined>()
   const [title, setTitle] = useState('Workspace task')
   const [useProjectKnowledge, setUseProjectKnowledge] = useState(false)
   const [loading, setLoading] = useState(false)
@@ -46,6 +48,7 @@ export function PlanPanel({ api, chatId, workspacePath, ready, disabled, calls,
     planRef.current = state.plan
     setPlan(state.plan)
     setWorkflow(state.workflow)
+    setRecovery(state.recovery)
     onLeaseChange(workPlanHasLease(state.plan))
   }, [onLeaseChange])
 
@@ -67,7 +70,7 @@ export function PlanPanel({ api, chatId, workspacePath, ready, disabled, calls,
     const token = ++operationRef.current
     queueMicrotask(() => {
       if (token !== operationRef.current) return
-      if (!ready) { planRef.current = null; setPlan(null); onLeaseChange(false) }
+      if (!ready) { planRef.current = null; setPlan(null); setWorkflow(undefined); setRecovery(undefined); onLeaseChange(false) }
       else void refresh(true)
     })
     return () => { operationRef.current += 1 }
@@ -131,6 +134,13 @@ export function PlanPanel({ api, chatId, workspacePath, ready, disabled, calls,
     <section className="work-plan-panel" aria-label="Work plan" aria-busy={pending || loading}>
       <strong>Plan</strong>
       <p>Review exact steps before starting. Each file change requires separate approval.</p>
+      {recovery !== undefined && <p role="note" data-work-recovery={recovery.status}>
+        {recovery.status === 'restored'
+          ? 'Recovered paused. Resume rechecks the selected Workspace and prepares fresh approvals. Project Sources remain off after recovery.'
+          : recovery.status === 'uncertain_write'
+            ? 'An interrupted write has an uncertain outcome. Check Work history and recovery copies before creating a new plan. It will not be replayed.'
+            : 'The latest checkpoint could not be saved. The step results below remain the actual local outcomes; check Work history before restarting.'}
+      </p>}
       {calls.length > 0 && (
         <form onSubmit={(event) => { event.preventDefault(); void create() }}>
           <label>Plan title<input value={title} maxLength={200} required disabled={blocked || live}
@@ -197,7 +207,7 @@ export function PlanPanel({ api, chatId, workspacePath, ready, disabled, calls,
       )}
       {error !== null && <p className="work-tool-error" role="alert">{error}</p>}
       {error !== null && <button type="button" disabled={pending || !ready} onClick={() => { void refresh(true) }}>Reload plan</button>}
-      <small>Plans reset when the local service restarts.</small>
+      <small>The latest plan is saved privately. Recovered work stays paused until you resume it; old approvals expire.</small>
     </section>
   )
 }
