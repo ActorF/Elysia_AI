@@ -1390,6 +1390,10 @@ def test_managed_cancel_aborts_outside_the_queue_lock() -> None:
         thread.join(1.0)
         _wait_until(lambda: queue.get_status().running_sentences == 0)
 
+        # Native work drains before the independent notifier delivers its
+        # terminal callback; status alone does not synchronize this assertion.
+        _wait_until(lambda: bool(events))
+
         assert cancel_results == [True]
         assert observed_status == [False]
         assert runtime.abort_tokens == [running_token]
