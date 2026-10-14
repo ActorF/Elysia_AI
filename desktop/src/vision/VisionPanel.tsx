@@ -3,11 +3,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { VisionClient, VisionState } from '../../electron/vision-protocol.ts'
 import type { VisionAnalysisClient } from '../../electron/vision-analysis-protocol.ts'
+import type { VisionCaptureClient } from '../../electron/vision-capture-protocol.ts'
 import { VisionAnalysisPanel } from './VisionAnalysisPanel.tsx'
+import { VisionCapturePanel } from './VisionCapturePanel.tsx'
 import './VisionPanel.css'
 
 interface VisionPanelProps {
-  api: (VisionClient & VisionAnalysisClient) | undefined
+  api: (VisionClient & VisionAnalysisClient & VisionCaptureClient) | undefined
   chatId: string
   projectId: string | null
   ready: boolean
@@ -29,13 +31,20 @@ export function VisionPanel({ api, chatId, projectId, ready, disabled, onBusyCha
   const [open, setOpen] = useState(false)
   const [previewErrors, setPreviewErrors] = useState<string[]>([])
   const [analysisBusy, setAnalysisBusy] = useState(false)
+  const [captureBusy, setCaptureBusy] = useState(false)
   const version = useRef(0)
   const physicalPending = useRef(false)
   const analysisLease = useRef(false)
+  const captureLease = useRef(false)
   const updateAnalysisBusy = useCallback((busy: boolean): void => {
     analysisLease.current = busy
     setAnalysisBusy(busy)
-    onBusyChange(busy || physicalPending.current)
+    onBusyChange(busy || physicalPending.current || captureLease.current)
+  }, [onBusyChange])
+  const updateCaptureBusy = useCallback((busy: boolean): void => {
+    captureLease.current = busy
+    setCaptureBusy(busy)
+    onBusyChange(busy || physicalPending.current || analysisLease.current)
   }, [onBusyChange])
 
   function owned(next: VisionState): boolean {
@@ -62,7 +71,7 @@ export function VisionPanel({ api, chatId, projectId, ready, disabled, onBusyCha
   }, [api, chatId, projectId, ready])
 
   async function act(operation: (client: VisionClient) => Promise<VisionState>): Promise<void> {
-    if (!ready || disabled || api === undefined || physicalPending.current || analysisLease.current) return
+    if (!ready || disabled || api === undefined || physicalPending.current || analysisLease.current || captureLease.current) return
     physicalPending.current = true
     const token = ++version.current
     setPending(true); setLoading(false); setError(null); setOpen(true)
@@ -79,15 +88,15 @@ export function VisionPanel({ api, chatId, projectId, ready, disabled, onBusyCha
       // physical settlement can release the shared native-action capacity.
       physicalPending.current = false
       setPending(false)
-      onBusyChange(analysisLease.current)
+      onBusyChange(analysisLease.current || captureLease.current)
     }
   }
 
   const visible = ready && state !== null && owned(state) ? state : null
   const images = visible?.items ?? []
-  const locked = disabled || !ready || pending || analysisBusy || visible?.busy === true || loading || api === undefined
+  const locked = disabled || !ready || pending || analysisBusy || captureBusy || visible?.busy === true || loading || api === undefined
 
-  return <section className="vision-panel" aria-label="Vision images" aria-busy={pending || loading || analysisBusy}>
+  return <section className="vision-panel" aria-label="Vision images" aria-busy={pending || loading || analysisBusy || captureBusy}>
     <button type="button" className="vision-toggle" aria-expanded={open} aria-controls="vision-image-review"
       onClick={() => { setOpen((current) => !current) }}>
       Vision{images.length > 0 ? ` · ${images.length} selected` : ''}
@@ -120,11 +129,18 @@ export function VisionPanel({ api, chatId, projectId, ready, disabled, onBusyCha
       </div>
       {error !== null && <p role="alert">{error}</p>}
     </div>}
+    {typeof api?.listVisionCaptureSources === 'function' && <div className="vision-analysis-slot" hidden={!open}>
+      <VisionCapturePanel api={api} chatId={chatId} projectId={projectId} ready={ready}
+        disabled={disabled || pending || loading || analysisBusy} imageLimitReached={images.length >= 8}
+        onBusyChange={updateCaptureBusy} onStateChange={(next) => {
+          if (ready && owned(next)) { setState(next); setPreviewErrors([]) }
+        }} />
+    </div>}
     {typeof api?.getVisionAnalysis === 'function' && <div className="vision-analysis-slot" hidden={!open}>
       {/* Keep the analysis owner mounted while the review is collapsed so a
           pending provider retains cancellation/polling and its physical lease. */}
       <VisionAnalysisPanel api={api} chatId={chatId} projectId={projectId} images={images} ready={ready}
-        disabled={disabled || pending || loading} onBusyChange={updateAnalysisBusy} />
+        disabled={disabled || pending || loading || captureBusy} onBusyChange={updateAnalysisBusy} />
     </div>}
   </section>
 }

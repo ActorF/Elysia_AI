@@ -1,0 +1,10 @@
+/* Present exact screenshot scopes and bounded region edits without displaying unapproved source thumbnails. */
+
+.vision-capture { display: grid; gap: var(--space-2); min-width: 0; padding: var(--space-3) 0; border-top: 1px solid var(--color-border); }
+.vision-capture h3 { margin: 0; font-size: var(--font-size-sm); }
+.vision-capture-controls, .vision-capture-region { display: flex; flex-wrap: wrap; align-items: end; gap: var(--space-2); }
+.vision-capture-controls label, .vision-capture-region label { display: grid; gap: var(--space-1); min-width: 0; font-size: var(--font-size-sm); }
+.vision-capture select, .vision-capture input { max-width: 100%; padding: var(--space-1); border: 1px solid var(--color-border); border-radius: var(--radius-md); color: var(--color-text-primary); background: var(--color-bg-surface); }
+.vision-capture-region input { width: 7rem; }
+.vision-capture-region p { flex: 1 1 100%; }
+.vision-capture-review { display: grid; gap: var(--space-2); padding: var(--space-3); border: 1px solid var(--color-border); border-radius: var(--radius-md); overflow-wrap: anywhere; }

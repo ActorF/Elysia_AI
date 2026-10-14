@@ -5,6 +5,7 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { VisionState, VisionSelectionResult, VisionRemoveRequest } from './vision-protocol.js'
 import type { VisionAnalysisState, VisionOcrRequest, VisionModelRequest } from './vision-analysis-protocol.js'
+import type { VisionCaptureSources, VisionCaptureStatus, VisionCapturePrepareRequest, VisionCaptureConfirmRequest, VisionCaptureApproval } from './vision-capture-protocol.js'
 
 import type {
   ArchiveChatRequest,
@@ -817,6 +818,11 @@ ipcRenderer.on(
 
 const desktopApi: DesktopApi = {
   checkVisionModel: (chatId: string) => ipcRenderer.invoke('vision:check-model', chatId) as Promise<VisionAnalysisState>,
+  listVisionCaptureSources: (chatId: string) => ipcRenderer.invoke('vision:list-capture-sources', chatId) as Promise<VisionCaptureSources>,
+  getVisionCaptureState: (chatId: string) => ipcRenderer.invoke('vision:get-capture-state', chatId) as Promise<VisionCaptureStatus>,
+  prepareVisionCapture: (request: VisionCapturePrepareRequest) => ipcRenderer.invoke('vision:prepare-capture', request) as Promise<VisionCaptureApproval>,
+  captureVision: (request: VisionCaptureConfirmRequest) => ipcRenderer.invoke('vision:capture', request) as Promise<VisionSelectionResult>,
+  cancelVisionCapture: (chatId: string) => ipcRenderer.invoke('vision:cancel-capture', chatId) as Promise<VisionCaptureSources>,
   askVisionImage: (request: VisionModelRequest) => ipcRenderer.invoke('vision:ask-image', request) as Promise<VisionAnalysisState>,
   getVisionAnalysis: (chatId: string) => ipcRenderer.invoke('vision:get-analysis', chatId) as Promise<VisionAnalysisState>,
   checkVisionOcr: (chatId: string) => ipcRenderer.invoke('vision:check-ocr', chatId) as Promise<VisionAnalysisState>,

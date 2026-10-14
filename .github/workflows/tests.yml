@@ -109,9 +109,9 @@ jobs:
         working-directory: desktop
         run: npm run package
 
-      - name: Verify native Vision image decoding
+      - name: Verify native Vision decoding and synthetic window capture
         working-directory: desktop
-        run: node --test tests/vision-image-native.test.mjs
+        run: node --test tests/vision-image-native.test.mjs tests/vision-capture-synthetic.test.mjs
 
       - name: Capture ASAR file listing
         working-directory: desktop

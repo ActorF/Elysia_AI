@@ -1,4 +1,4 @@
-/** Decode explicitly selected PNG/JPEG files and own a bounded active-Chat image collection in Main memory. */
+/** Decode explicitly selected images and trusted PNG frames while owning bounded scoped pixels and private source provenance. */
 
 import { createHash, randomUUID } from 'node:crypto'
 import { constants } from 'node:fs'
@@ -53,6 +53,9 @@ export interface CanonicalVisionImage {
   sizeBytes: number
   previewDataUrl: string
 }
+
+/** Retain sanitized source provenance privately for reviewed context and explicit history, never native IDs or file paths. */
+export interface VisionImageSource { kind: 'file' | 'display' | 'window' | 'region'; label: string }
 
 const PNG_SIGNATURE = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])
 const CRC_TABLE = Array.from({ length: 256 }, (_, index) => {
@@ -225,9 +228,20 @@ function orient(image: VisionCodecImage, codec: VisionImageCodec, width: number,
 
 /** Decode one bounded still PNG/JPEG, honor EXIF orientation, and publish metadata-free canonical pixels. */
 export function decodeVisionImage(input: Buffer, codec: VisionImageCodec): CanonicalVisionImage {
-  if (!Buffer.isBuffer(input) || input.length === 0 || input.length > VISION_MAX_INPUT_BYTES) throw new VisionImageError('limit_exceeded')
+  return decodeImage(input, codec, VISION_MAX_INPUT_BYTES, false)
+}
+
+/** Decode only trusted private PNG frames under the canonical ceiling; external picked files retain their smaller input limit. */
+export function decodeVisionCanonicalImage(input: Buffer, codec: VisionImageCodec): CanonicalVisionImage {
+  return decodeImage(input, codec, VISION_MAX_CANONICAL_BYTES, true)
+}
+
+function decodeImage(input: Buffer, codec: VisionImageCodec, maximum: number, canonicalOnly: boolean): CanonicalVisionImage {
+  if (!Buffer.isBuffer(input) || input.length === 0 || input.length > maximum) throw new VisionImageError('limit_exceeded')
   try {
-    const source = input.subarray(0, 8).equals(PNG_SIGNATURE) ? { ...png(input, VISION_MAX_INPUT_BYTES), orientation: 1 } : jpeg(input)
+    const isPng = input.subarray(0, 8).equals(PNG_SIGNATURE)
+    if (canonicalOnly && !isPng) invalid()
+    const source = isPng ? { ...png(input, maximum), orientation: 1 } : jpeg(input)
     let image = codec.createFromBuffer(source.bytes)
     if (image.isEmpty() || image.getSize().width !== source.width || image.getSize().height !== source.height) invalid()
     image = orient(image, codec, source.width, source.height, source.orientation)
@@ -354,7 +368,7 @@ export interface VisionImageDependencies {
 /** Keep one active Chat/Project's images ephemeral and reserve capacity through every physical callback. */
 export class VisionImageController {
   private owner: Pick<VisionOwner, 'chatId' | 'projectId'> | null = null
-  private readonly images = new Map<string, { public: VisionImage; canonical: CanonicalVisionImage }>()
+  private readonly images = new Map<string, { public: VisionImage; canonical: CanonicalVisionImage; source: VisionImageSource }>()
   private revision = 0
   private active = false
   private closed = false
@@ -387,6 +401,28 @@ export class VisionImageController {
     return { ...image.canonical, pngBytes: Buffer.from(image.canonical.pngBytes) }
   }
 
+  /** Resolve detached sanitized provenance for the exact owned image without exposing a native handle or selected file path. */
+  getImageSource(chatId: string, imageId: string): VisionImageSource {
+    const request = parseVisionRemoveRequest({ chatId, imageId })
+    this.authority(request.chatId, false)
+    const source = this.images.get(request.imageId)?.source
+    if (source === undefined) throw new VisionImageError('owner_changed')
+    return { ...source }
+  }
+
+  /** Admit a trusted decoded capture/history PNG under the same scoped limits and mint a fresh session identity. */
+  importCanonical(chatId: string, canonical: CanonicalVisionImage, fileName: string, source: VisionImageSource): VisionSelectionResult {
+    const owner = this.authority(chatId, true), epoch = this.epoch
+    try {
+      const checkedName = validateVisionFileName(fileName)
+      if (source === null || typeof source !== 'object' || Array.isArray(source)
+        || Object.keys(source).sort().join(',') !== 'kind,label' || !['file', 'display', 'window', 'region'].includes(source.kind)) invalid()
+      const checkedSource = { kind: source.kind, label: validateVisionFileName(source.label) }
+      this.recheck(owner, epoch)
+      return this.install(owner, canonical, checkedName, checkedSource)
+    } catch (error) { throw new VisionImageError(error instanceof VisionImageError ? error.code : 'invalid_image') }
+  }
+
   /** Read only a path-free current image fingerprint for cheap OCR/context revocation checks. */
   getImageIdentity(chatId: string, imageId: string): Pick<VisionImage, 'imageId' | 'sha256' | 'width' | 'height'> | null {
     const request = parseVisionRemoveRequest({ chatId, imageId })
@@ -412,23 +448,7 @@ export class VisionImageController {
       const fileName = validateVisionFileName(input.fileName)
       const canonical = this.dependencies.decode(input.bytes)
       this.recheck(owner, epoch)
-      if (!Buffer.isBuffer(canonical.pngBytes) || canonical.pngBytes.length !== canonical.sizeBytes
-        || canonical.sizeBytes > VISION_MAX_CANONICAL_BYTES
-        || [...this.images.values()].reduce((sum, image) => sum + image.canonical.sizeBytes, 0) + canonical.sizeBytes > VISION_MAX_TOTAL_BYTES) {
-        throw new VisionImageError('limit_exceeded')
-      }
-      const checked = png(canonical.pngBytes, VISION_MAX_CANONICAL_BYTES)
-      if (!checked.bytes.equals(canonical.pngBytes) || checked.width !== canonical.width || checked.height !== canonical.height
-        || createHash('sha256').update(checked.bytes).digest('hex') !== canonical.sha256) invalid()
-      const imageId = 'vision_' + randomUUID().replaceAll('-', '')
-      const item: VisionImage = { imageId, fileName, width: canonical.width, height: canonical.height,
-        sizeBytes: canonical.sizeBytes, sha256: canonical.sha256, mediaType: 'image/png', previewDataUrl: canonical.previewDataUrl }
-      // Public validation is also applied to trusted-adapter output. Test or
-      // future codecs cannot bypass the same bounds seen by the renderer.
-      parseVisionState({ ...this.snapshot(owner, false), items: [...this.images.values()].map((image) => image.public).concat(item) })
-      this.images.set(imageId, { public: item, canonical: { ...canonical, pngBytes: Buffer.from(canonical.pngBytes) } })
-      this.revision += 1
-      return { cancelled: false, state: this.snapshot(owner, false) }
+      return this.install(owner, canonical, fileName, { kind: 'file', label: fileName })
     } catch (error) {
       throw new VisionImageError(error instanceof VisionImageError ? error.code : 'invalid_image')
     } finally { this.active = false }
@@ -452,6 +472,26 @@ export class VisionImageController {
   /** Close admission and scrub memory immediately while any admitted callback keeps its physical lease. */
   shutdown(): void {
     this.closed = true; this.images.clear(); this.owner = null; this.epoch += 1; this.revision += 1
+  }
+
+  private install(owner: VisionOwner, canonical: CanonicalVisionImage, fileName: string, source: VisionImageSource): VisionSelectionResult {
+    if (this.images.size >= VISION_MAX_IMAGES || !Buffer.isBuffer(canonical.pngBytes) || canonical.pngBytes.length !== canonical.sizeBytes
+      || canonical.sizeBytes > VISION_MAX_CANONICAL_BYTES
+      || [...this.images.values()].reduce((sum, image) => sum + image.canonical.sizeBytes, 0) + canonical.sizeBytes > VISION_MAX_TOTAL_BYTES) {
+      throw new VisionImageError('limit_exceeded')
+    }
+    const checked = png(canonical.pngBytes, VISION_MAX_CANONICAL_BYTES)
+    if (!checked.bytes.equals(canonical.pngBytes) || checked.width !== canonical.width || checked.height !== canonical.height
+      || createHash('sha256').update(checked.bytes).digest('hex') !== canonical.sha256) invalid()
+    const imageId = 'vision_' + randomUUID().replaceAll('-', '')
+    const item: VisionImage = { imageId, fileName, width: canonical.width, height: canonical.height,
+      sizeBytes: canonical.sizeBytes, sha256: canonical.sha256, mediaType: 'image/png', previewDataUrl: canonical.previewDataUrl }
+    // The private import service cannot bypass the public collection bounds,
+    // and each import mints a fresh ID rather than reviving an old receipt.
+    parseVisionState({ ...this.snapshot(owner, false), items: [...this.images.values()].map(image => image.public).concat(item) })
+    this.images.set(imageId, { public: item, canonical: { ...canonical, pngBytes: Buffer.from(canonical.pngBytes) }, source: { ...source } })
+    this.revision += 1
+    return { cancelled: false, state: this.snapshot(owner, false) }
   }
 
   private authority(chatId: string, mutation: boolean): VisionOwner {

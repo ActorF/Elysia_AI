@@ -32,6 +32,8 @@ import type { WorkAuditClient } from './work-audit-protocol.js'
 import type { WorkDesktopClient } from './work-desktop-protocol.js'
 import type { VisionClient } from './vision-protocol.js'
 import type { VisionAnalysisClient } from './vision-analysis-protocol.js'
+import type { VisionCaptureClient } from './vision-capture-protocol.js'
+export type { VisionCaptureClient, VisionCaptureSources, VisionCaptureStatus, VisionCapturePrepareRequest, VisionCaptureConfirmRequest, VisionCaptureApproval } from './vision-capture-protocol.js'
 export type { VisionAnalysisClient, VisionAnalysisState, VisionOcrRequest, VisionOcrResult, VisionModelRequest, VisionModelResult } from './vision-analysis-protocol.js'
 export type { VisionClient, VisionState, VisionSelectionResult, VisionImage } from './vision-protocol.js'
 export type { WorkDesktopClient, WorkDesktopState, WorkDesktopAuditEntry } from './work-desktop-protocol.js'
@@ -576,7 +578,7 @@ export type BackendEvent =
  * Renderer code receives domain data and owned actions, never Electron or raw
  * filesystem primitives.
  */
-export interface DesktopApi extends WorkWorkspaceClient, WorkToolClient, WorkPlanClient, WorkAuditClient, WorkDesktopClient, VisionClient, VisionAnalysisClient {
+export interface DesktopApi extends WorkWorkspaceClient, WorkToolClient, WorkPlanClient, WorkAuditClient, WorkDesktopClient, VisionClient, VisionAnalysisClient, VisionCaptureClient {
   /** Signal that the renderer can receive events and the main window may appear. */
   rendererReady(): Promise<void>
   /** Keep native window chrome aligned with the renderer's saved appearance. */

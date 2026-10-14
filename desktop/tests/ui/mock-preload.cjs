@@ -442,6 +442,15 @@ let visionAnalysisCancellation = false
 let visionAnalysisPhase = null
 let pendingVisionOcr = []
 let pendingVisionModel = []
+let visionCaptureOwnerKey = null
+let visionCaptureApproval = null
+let visionCaptureSources = []
+let nextVisionCaptureNumber = 1
+let visionCaptureActive = false
+let visionCaptureCancellation = false
+let delayVisionCapture = false
+let nextVisionCaptureError = null
+let pendingVisionCaptures = []
 let desktopOwnerKey = null
 let desktopState = null
 let desktopClipboard = 'Private clipboard text.'
@@ -510,6 +519,14 @@ function visionAnalysisSnapshot(chatId) {
   visionAnalysisState.phase = visionAnalysisActive ? visionAnalysisPhase : null
   visionAnalysisState.cancelRequested = visionAnalysisActive && visionAnalysisCancellation
   return clone(visionAnalysisState)
+}
+
+function visionCaptureSnapshot(chatId) {
+  const state = visionSnapshot(chatId), key = JSON.stringify(state.owner)
+  if (key !== visionCaptureOwnerKey) {
+    visionCaptureOwnerKey = key; visionCaptureSources = []; visionCaptureApproval = null
+  }
+  return { kind: 'vision.capture.sources', owner: state.owner, revision: 0, busy: visionCaptureActive, sources: clone(visionCaptureSources) }
 }
 
 function desktopAudit(chatId, action, phase, actionId, preview = null) {
@@ -1831,6 +1848,60 @@ const desktopApi = {
     visionState.items = []; visionState.revision += 1
     return visionSnapshot(chatId)
   },
+  getVisionCaptureState: async (chatId) => {
+    record('getVisionCaptureState', [chatId])
+    return { busy: visionCaptureActive }
+  },
+  listVisionCaptureSources: async (chatId) => {
+    record('listVisionCaptureSources', [chatId])
+    visionCaptureSnapshot(chatId)
+    visionCaptureApproval = null
+    visionCaptureSources = [
+      { selectionId: `vision_capture_selection_${(nextVisionCaptureNumber++).toString(16).padStart(32, '0')}`, kind: 'display', label: 'Synthetic display', width: 1920, height: 1080 },
+      { selectionId: `vision_capture_selection_${(nextVisionCaptureNumber++).toString(16).padStart(32, '0')}`, kind: 'window', label: 'Synthetic window', width: null, height: null },
+    ]
+    return visionCaptureSnapshot(chatId)
+  },
+  prepareVisionCapture: async (request) => {
+    record('prepareVisionCapture', [request])
+    const state = visionCaptureSnapshot(request.chatId), source = state.sources.find((item) => item.selectionId === request.selectionId)
+    if (source === undefined || visionCaptureActive) throw new Error('The selected capture source is unavailable.')
+    visionCaptureApproval = { approvalId: `vision_capture_approval_${(nextVisionCaptureNumber++).toString(16).padStart(32, '0')}`,
+      owner: state.owner, source, region: clone(request.region), expiresAt: new Date(Date.now() + 60000).toISOString() }
+    return clone(visionCaptureApproval)
+  },
+  captureVision: async (request) => {
+    record('captureVision', [request])
+    const before = visionSnapshot(request.chatId), approved = visionCaptureApproval
+    if (approved === null || approved.approvalId !== request.approvalId || approved.owner.projectId !== before.owner.projectId) {
+      throw new Error('The capture review is unavailable.')
+    }
+    visionCaptureApproval = null
+    if (!request.granted) return { cancelled: true, state: before }
+    visionCaptureActive = true; visionCaptureCancellation = false
+    try {
+      if (delayVisionCapture) await new Promise((resolve, reject) => { pendingVisionCaptures.push({ resolve, reject }) })
+      const current = visionSnapshot(request.chatId)
+      if (current.owner.projectId !== before.owner.projectId) throw new Error('The capture owner changed.')
+      if (nextVisionCaptureError !== null) { const error = nextVisionCaptureError; nextVisionCaptureError = null; throw new Error(error) }
+      if (visionCaptureCancellation) return { cancelled: true, state: current }
+      if (visionState.items.length >= 8) throw new Error('Too many selected images.')
+      // The mock frame is embedded synthetic PNG data, never a real screen or
+      // window source. The private native helper is covered separately.
+      visionState.items.push({ imageId: `vision_${(nextVisionImageNumber++).toString(16).padStart(32, '0')}`,
+        fileName: approved.region !== null ? 'Captured selected display region.png' : `Captured selected ${approved.source.kind}.png`,
+        width: 1, height: 1, sizeBytes: 68, sha256: 'c'.repeat(64), mediaType: 'image/png',
+        previewDataUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=' })
+      visionState.revision += 1
+      return { cancelled: false, state: visionSnapshot(request.chatId) }
+    } finally { visionCaptureActive = false; visionCaptureCancellation = false }
+  },
+  cancelVisionCapture: async (chatId) => {
+    record('cancelVisionCapture', [chatId])
+    visionCaptureSnapshot(chatId)
+    visionCaptureApproval = null; visionCaptureCancellation = visionCaptureActive
+    return visionCaptureSnapshot(chatId)
+  },
   getVisionAnalysis: async (chatId) => {
     record('getVisionAnalysis', [chatId])
     return visionAnalysisSnapshot(chatId)
@@ -2761,6 +2832,20 @@ const testControl = {
     const pending = pendingVisionModel.shift()
     pending?.reject(new Error('Synthetic local model failed.')); return pending !== undefined
   },
+  setVisionCaptureDelay: (delayed) => { delayVisionCapture = delayed },
+  releaseNextVisionCapture: () => {
+    const pending = pendingVisionCaptures.shift()
+    pending?.resolve(); return pending !== undefined
+  },
+  rejectNextVisionCapture: () => {
+    const pending = pendingVisionCaptures.shift()
+    pending?.reject(new Error('Synthetic capture failed.')); return pending !== undefined
+  },
+  failNextVisionCapture: (message) => { nextVisionCaptureError = message },
+  setExistingVisionCaptureBusy: (busy) => {
+    visionCaptureActive = busy
+    if (!busy) visionCaptureCancellation = false
+  },
   setDesktopClipboardText: (text) => { desktopClipboard = text },
   getDesktopClipboardText: () => desktopClipboard,
   setDesktopDocumentSelection: (document) => { desktopDocumentSelection = clone(document) },
@@ -2791,6 +2876,10 @@ const testControl = {
     pendingVisionOcr = []
     for (const pending of pendingVisionModel) pending.reject(new Error('Vision model test reset.'))
     pendingVisionModel = []
+    visionCaptureOwnerKey = null; visionCaptureApproval = null; visionCaptureSources = []; nextVisionCaptureNumber = 1
+    visionCaptureActive = false; visionCaptureCancellation = false; delayVisionCapture = false; nextVisionCaptureError = null
+    for (const pending of pendingVisionCaptures) pending.reject(new Error('Vision capture test reset.'))
+    pendingVisionCaptures = []
     desktopOwnerKey = null; desktopState = null; desktopAuditEntries = []
     desktopDocumentSelection = null; desktopClipboard = 'Private clipboard text.'
     delayDesktopDecisions = false; nextDesktopError = null; desktopActionNumber = 1

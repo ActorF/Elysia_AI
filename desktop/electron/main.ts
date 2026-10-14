@@ -30,12 +30,15 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { BackendProcess } from './backend-process.js'
-import { VisionImageController, VisionImageError, decodeVisionImage, prepareVisionModelImage, readVisionSelectedFile, type VisionOwner } from './vision-images.js'
+import { VisionImageController, VisionImageError, decodeVisionImage, decodeVisionCanonicalImage, prepareVisionModelImage, readVisionSelectedFile, type VisionOwner } from './vision-images.js'
 import { parseVisionChatId, parseVisionRemoveRequest } from './vision-protocol.js'
 import { VisionAnalysisController, VisionAnalysisServiceError } from './vision-analysis.js'
 import { parseVisionOcrRequest, parseVisionModelRequest } from './vision-analysis-protocol.js'
 import { TesseractOcrAdapter } from './vision-ocr.js'
 import { OllamaVisionAdapter } from './vision-model.js'
+import { VisionCaptureController, VisionCaptureError } from './vision-capture.js'
+import { createVisionCaptureNative } from './vision-capture-native.js'
+import { parseVisionCapturePrepareRequest, parseVisionCaptureConfirmRequest, type VisionCaptureStatus } from './vision-capture-protocol.js'
 import { WorkDesktopController, parseWorkDesktopChatRequest, parseWorkDesktopClipboardWriteRequest,
   parseWorkDesktopDecisionRequest, parseWorkDesktopWindowSelectionRequest, type WorkDesktopOwner } from './work-desktop-tools.js'
 import { WorkDesktopStorage } from './work-desktop-storage.js'
@@ -219,7 +222,9 @@ let workDesktopScope: { chatId: string; projectId: string | null; workspacePath:
 const workDesktopRequests = new Set<Promise<unknown>>()
 let visionImageController: VisionImageController | null = null
 let visionAnalysisController: VisionAnalysisController | null = null
+let visionCaptureController: VisionCaptureController | null = null
 const visionRequests = new Set<Promise<unknown>>()
+const visionCaptureRequests = new Set<Promise<unknown>>()
 const voiceCallWindowManager = new VoiceCallWindowManager({
   policy: {
     appPath: app.getAppPath(),
@@ -2059,6 +2064,8 @@ function broadcastBackendEvent(event: BackendEvent): void {
   catch { visionImageController?.shutdown(); visionImageController = null }
   try { visionAnalysisController?.synchronize() }
   catch { visionAnalysisController?.shutdown() }
+  try { visionCaptureController?.synchronize() }
+  catch { visionCaptureController?.shutdown() }
   try {
     maybeShowCompletionNotification(event)
   } catch {
@@ -2083,6 +2090,7 @@ function hasActiveDesktopWork(): boolean {
 
 function hasActiveVisionWork(): boolean {
   return visionRequests.size > 0 || visionImageController?.hasActiveWork() === true || visionAnalysisController?.hasActiveWork() === true
+    || visionCaptureController?.hasActiveWork() === true
 }
 
 function hasActiveComputerWork(): boolean { return hasActiveDesktopWork() || hasActiveVisionWork() }
@@ -2131,6 +2139,57 @@ function withVisionOwner<Result>(chatId: string, operation: (controller: VisionI
   }).catch((error: unknown) => { throw new VisionImageError(error instanceof VisionImageError ? error.code : 'unavailable') })
   visionRequests.add(request)
   void request.then(() => visionRequests.delete(request), () => visionRequests.delete(request))
+  return request
+}
+
+function requireVisionCaptureController(): VisionCaptureController {
+  if (visionCaptureController === null) {
+    const native = createVisionCaptureNative()
+    visionCaptureController = new VisionCaptureController({
+      getOwner: visionOwner,
+      listSources: () => native.listSources(),
+      captureFrame: (source, region, signal, stillValid) => native.captureFrame(source, region, signal, stillValid),
+      getState: (chatId) => requireVisionController().getState(chatId),
+      importFrame: (chatId, frame, source) => {
+        // The helper has physically drained before import. Its private canvas
+        // gets the canonical PNG ceiling, while picked files keep 8 MiB.
+        const canonical = decodeVisionCanonicalImage(frame.pngBytes, nativeImage)
+        if (canonical.width !== frame.width || canonical.height !== frame.height) throw new VisionCaptureError('invalid_image')
+        return requireVisionController().importCanonical(chatId, canonical, `${source.kind} capture.png`, source)
+      },
+    })
+  }
+  return visionCaptureController
+}
+
+function visionCaptureStatus(): VisionCaptureStatus {
+  // This physical-only probe is safe during disconnect and never rehydrates
+  // an owner, enumerates a source, or claims permission to read any pixels.
+  return { busy: visionCaptureRequests.size > 0 || visionCaptureController?.hasActiveWork() === true }
+}
+
+function withVisionCaptureOwner<Result>(chatId: string,
+  operation: (controller: VisionCaptureController) => Result | Promise<Result>, control = false): Promise<Result> {
+  if (shutdownStarted || dataStorageOperation !== null || !control && (hasActiveVisionWork() || visionOwner().busy)) {
+    return Promise.reject(new VisionCaptureError('busy'))
+  }
+  // Reserve before canonical hydration; Stop bypasses only the admission check
+  // and never waits behind or clears the physically running helper's promise.
+  const request = Promise.resolve().then(async () => {
+    const backend = requireBackend()
+    if (backend.getCanonicalVisionChat() === null) await backend.listChats(false)
+    const owner = backend.getCanonicalVisionChat()
+    if (owner === null || owner.chatId !== chatId || shutdownStarted) throw new VisionCaptureError('owner_changed')
+    return operation(requireVisionCaptureController())
+  }).catch((error: unknown) => {
+    const code = error instanceof VisionCaptureError ? error.code
+      : error instanceof VisionImageError && error.code !== 'io_error' ? error.code : 'unavailable'
+    throw new VisionCaptureError(code)
+  })
+  visionRequests.add(request)
+  visionCaptureRequests.add(request)
+  const settled = (): void => { visionRequests.delete(request); visionCaptureRequests.delete(request) }
+  void request.then(settled, settled)
   return request
 }
 
@@ -2679,6 +2738,31 @@ function requireMainWindow(): BrowserWindow {
 }
 
 function registerIpcHandlers(): void {
+  ipcMain.handle('vision:get-capture-state', (event, chatId: unknown) => {
+    assertTrustedSender(event)
+    parseVisionChatId(chatId)
+    return visionCaptureStatus()
+  })
+  ipcMain.handle('vision:list-capture-sources', (event, chatId: unknown) => {
+    assertTrustedSender(event)
+    const current = parseVisionChatId(chatId)
+    return withVisionCaptureOwner(current, controller => controller.listSources(current))
+  })
+  ipcMain.handle('vision:prepare-capture', (event, value: unknown) => {
+    assertTrustedSender(event)
+    const request = parseVisionCapturePrepareRequest(value)
+    return withVisionCaptureOwner(request.chatId, controller => controller.prepare(request))
+  })
+  ipcMain.handle('vision:capture', (event, value: unknown) => {
+    assertTrustedSender(event)
+    const request = parseVisionCaptureConfirmRequest(value)
+    return withVisionCaptureOwner(request.chatId, controller => controller.capture(request))
+  })
+  ipcMain.handle('vision:cancel-capture', (event, chatId: unknown) => {
+    assertTrustedSender(event)
+    const current = parseVisionChatId(chatId)
+    return withVisionCaptureOwner(current, controller => controller.cancel(current), true)
+  })
   ipcMain.handle('vision:check-model', (event, chatId: unknown) => {
     assertTrustedSender(event)
     return withVisionAnalysisOwner(parseVisionChatId(chatId), (controller) => controller.checkModel(parseVisionChatId(chatId)))
@@ -4276,6 +4360,8 @@ if (!hasSingleInstanceLock) {
     visionImageController = null
     const closingVisionAnalysis = visionAnalysisController
     closingVisionAnalysis?.shutdown()
+    const closingVisionCapture = visionCaptureController
+    closingVisionCapture?.shutdown()
     // Retain the cancelled controller until its own callback drains. The
     // global Vision probe must not lose capacity merely because quit started.
     // Backend shutdown can await other work or fail and leave Main running.
@@ -4305,6 +4391,9 @@ if (!hasSingleInstanceLock) {
       const stopBackend = Promise.allSettled([finishDataStorage, ...workDesktopRequests, ...visionRequests]).then(async () => {
         if (visionAnalysisController === closingVisionAnalysis && closingVisionAnalysis?.hasActiveWork() !== true) {
           visionAnalysisController = null
+        }
+        if (visionCaptureController === closingVisionCapture && closingVisionCapture?.hasActiveWork() !== true) {
+          visionCaptureController = null
         }
         if (
           backendProcess !== null

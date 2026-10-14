@@ -79,7 +79,8 @@ test('reviews synthetic images across Chat and Work and cancellation preserves e
   await panel.getByRole('button', { name: 'Choose image', exact: true }).click()
   await panel.getByRole('button', { name: 'Clear selected images', exact: true }).click()
   await expect(panel).toContainText('No images selected.')
-  expect(await page.evaluate(() => (window as VisionTestWindow).elysiaDesktopTest.getCalls().filter((call) => /sendChat|runWorkTool|previewWorkTool|capture/i.test(call.method)))).toHaveLength(0)
+  expect(await page.evaluate(() => (window as VisionTestWindow).elysiaDesktopTest.getCalls().filter((call) =>
+    ['sendChat', 'runWorkTool', 'previewWorkTool', 'captureVision', 'listVisionCaptureSources'].includes(call.method)))).toHaveLength(0)
 })
 
 test('caps the reviewed collection at eight images and removal admits one replacement', async () => {
@@ -130,11 +131,13 @@ test('a disconnect revokes preview publication but releases the physical lease o
   }, image)
   await panel.getByRole('button', { name: 'Choose image', exact: true }).click()
   await page.evaluate((next) => { (window as VisionTestWindow).elysiaDesktopTest.emitBackendEvent({ type: 'snapshot', snapshot: next }) }, snapshot('error', 2))
+  await expect(page.locator('.connection-pill')).toContainText('Connection error')
   await page.evaluate((next) => { (window as VisionTestWindow).elysiaDesktopTest.emitBackendEvent({ type: 'snapshot', snapshot: next }) }, snapshot('ready', 3))
   await expect(page.getByRole('combobox', { name: 'Conversation mode' })).toBeDisabled()
   await page.evaluate(() => { (window as VisionTestWindow).elysiaDesktopTest.rejectNextVisionSelection() })
   await expect(page.getByRole('combobox', { name: 'Conversation mode' })).toBeEnabled()
-  await panel.getByRole('button', { name: 'Vision', exact: true }).click()
+  const toggle = panel.getByRole('button', { name: /^Vision(?: · \d+ selected)?$/ })
+  if (await toggle.getAttribute('aria-expanded') !== 'true') await toggle.click()
   await expect(panel.getByRole('article')).toHaveCount(0)
   await panel.getByRole('button', { name: 'Reload images', exact: true }).click()
   await expect(panel.getByRole('button', { name: 'Choose image', exact: true })).toBeEnabled()
