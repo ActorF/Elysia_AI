@@ -1,10 +1,10 @@
-# 本地图片生成核心、私有运行时与持久 Gallery
+# 本地图片生成应用服务、私有运行时与持久 Gallery
 
 最后更新：2026-10-14（America/Chicago）
 
 ## 1. 当前状态
 
-Elysia AI 已加入第一版**受信本地图片生成核心、私有 ComfyUI 进程监督器与可恢复 Gallery Store**。当前 Python 层可以验证结构化请求与本机模型、启动每任务一个隔离子进程、执行固定工作流、验证输出，并在结果返回前终止进程和删除私有运行目录；生成结果还可独立提交到路径私有的本地 Gallery。Electron/React 产品界面、Gallery 的 Desktop 组合与导出、真实模型验收仍未接通。
+Elysia AI 已加入第一版**受信本地图片生成核心、私有 ComfyUI 进程监督器、可恢复 Gallery Store 与应用服务**。当前 Python 层可以验证结构化请求与本机模型、启动每任务一个隔离子进程、执行固定工作流、验证输出，并在结果返回前终止进程和删除私有运行目录；应用服务再用一个原子取消/提交边界把结果写入路径私有的本地 Gallery。Electron/React 产品界面、Desktop Protocol、原生导出与真实模型验收仍未接通。
 
 当前已完成：
 
@@ -19,11 +19,12 @@ Elysia AI 已加入第一版**受信本地图片生成核心、私有 ComfyUI �
 - 验证 PNG Chunk、CRC、像素格式、尺寸和解压上限；只移除惰性 Metadata Chunk，遇到会改变像素解释的 Ancillary Chunk 则拒绝，再重写 Canonical PNG。
 - 返回图片字节、模型 Profile Digest、Workflow Digest、Seed 与 UTC 时间等可复现 Metadata。
 - 用 `ImageGalleryStore` 在 `ProductionDataLayout.gallery`（`workspace/gallery`）下保存 Canonical PNG 与严格私有 Manifest；提供 Opaque ID、路径无关 Metadata、按需重新验证的 PNG Bytes、逻辑原子 Create/Delete、容量限制、可重建 Index 和启动恢复。
+- 用 `ImageGenerationApplicationService` 串联 Core 与 Gallery：一个单次 Opaque Operation ID 对应一个生成任务；取消与 `RUNNING → COMMITTING` 在同一把锁中裁决，只有 Gallery 提交成功后才向观察者发布 `completed=100`。
 
 当前尚未完成：
 
 - Electron/React 的 Image Generator、Settings、进度、取消和错误界面。
-- Gallery 的 Desktop 组合、受限预览、原生导出、容量展示和 UI。
+- Gallery 的 Desktop Protocol、受限预览传输、原生导出、容量展示和 UI。
 - 与 Ollama、GPT-SoVITS、Song Cover 共用的进程级 GPU Admission/Lease。
 - 模型安装、下载、更新、Hash 实测和许可证向导。
 - 使用真实 ComfyUI 版本、真实 Checkpoint 和目标 GPU 的本机 Smoke/Soak 验收。
@@ -72,7 +73,13 @@ PNG Canonicalization
 Verified bytes + reproducibility metadata
         │
         ▼
-可选 Trusted Gallery Store（已实现，尚未接 Desktop）
+ImageGenerationApplicationService
+        │
+        ├── Exact operation ID / single active generation
+        ├── Atomic cancel-or-commit gate
+        └── Path-private Gallery delegation
+        ▼
+Trusted Gallery Store（已实现，尚未接 Desktop）
 ```
 
 核心原则：
@@ -308,7 +315,7 @@ validating → probing → submitting → sampling → verifying → completed
 - Electron Event。
 - Process-level GPU Lease。
 
-子进程和私有目录由注入的 Managed Runtime 负责，而不是 Core 自身；持久化由独立 `ImageGalleryStore` 承担，Desktop Event、导出、Queue 和 GPU Lease 仍必须由后续 Integration Layer 添加，不能绕过 `is_managed_private_runtime` Gate。
+子进程和私有目录由注入的 Managed Runtime 负责，而不是 Core 自身；持久化由 `ImageGalleryStore` 承担，Core 与 Gallery 的发布顺序由 `ImageGenerationApplicationService` 组合。Desktop Event、导出、Queue 和 GPU Lease 仍必须由后续 Integration Layer 添加，不能绕过 `is_managed_private_runtime` Gate。
 
 ### 10.1 已实现的受管 Runtime 合同
 
@@ -337,7 +344,25 @@ validating → probing → submitting → sampling → verifying → completed
 
 `index.json` 只是无 Prompt、无路径的可重建缓存，不决定 Artifact 是否存在；缺失、陈旧、损坏或无法写回时，不会阻止读取已经验证的权威 Artifact。打开 Store 时会验证严格 Manifest、目录结构、文件身份和声明大小，并建立独占 Lease 下的内存快照；`open_verified()` 才读取目标图片，重新验证 SHA-256 与 Canonical PNG。这样 List/Get/Create 不会随 Gallery 总图片字节数重复解码整个图库，目标图片的字节篡改仍会在发布前被拒绝。
 
-同一 Store 由进程内 `RLock` 与非阻塞跨进程文件 Lease 串行化。默认上限为 1,024 个 Artifact、4 GiB 图片总量，单页最多 256 条；单图仍受 Canonical PNG 的 32 MiB 和像素预算约束。可选 Private Prompt 只进入私有 Manifest，不进入 `ImageGalleryItem` 或 Index。当前 Store 提供 Create/List/Get/Open Verified/Delete；Native Export、Desktop Preview、稳定游标分页与 Job Commit Coordination 尚未接入。同一用户账户中主动绕过 Lease 并并发替换目录节点不属于当前威胁模型；静态重定向和非协作文件结构仍会 Fail Closed。
+同一 Store 由进程内 `RLock` 与非阻塞跨进程文件 Lease 串行化。默认上限为 1,024 个 Artifact、4 GiB 图片总量，单页最多 256 条；单图仍受 Canonical PNG 的 32 MiB 和像素预算约束。可选 Private Prompt 只进入私有 Manifest，不进入 `ImageGalleryItem` 或 Index。当前 Store 提供 Create/List/Get/Open Verified/Delete；Native Export、Desktop Preview 与稳定游标分页尚未接入。同一用户账户中主动绕过 Lease 并并发替换目录节点不属于当前威胁模型；静态重定向和非协作文件结构仍会 Fail Closed。
+
+### 10.3 已实现的应用发布合同
+
+`ImageGenerationApplicationService` 是 Core 与 Gallery 之间唯一已经实现的发布协调层。调用者先创建格式固定的 `imageop_<uuid>`，再用这个 ID 发起生成或精确取消；ID 在一次尝试结束后永久退休到有界的进程内集合，迟到取消不能误伤后续任务。受管 Runtime 当前只允许一个 Active Generation，第二个并发生成在进入 Core 前返回稳定 Busy Error；Gallery 的路径无关读、开图和删除可以在推理期间由 Store 自己串行化。
+
+发布状态由同一个 `Condition` 保护：
+
+```text
+RUNNING ── cancel wins ──> CANCEL_REQUESTED ──> no Gallery create
+    │
+    └── commit wins ─────> COMMITTING ───────> Gallery item returned
+```
+
+Core 即使已经返回经过验证的 Bytes，只要取消先取得锁，应用服务仍会丢弃结果且绝不调用 `Gallery.create()`；一旦 `COMMITTING` 先取得锁，取消返回 `too-late`，随后只以 Gallery 成功或真实保存失败作为终态，不会把已提交结果伪装成取消。Core 自己的 `completed=100` 会被拦截，只有权威 Artifact 目录重命名提交完成后，应用层才发送唯一的完成进度。
+
+Gallery 私有 Manifest 当前只保存规范化后的用户正向组件，明确不把 System/Dialect Prefix 或 Negative Prompt 冒充为完整可复现 Prompt。公开 `list/get` 只返回路径无关 Metadata，`open` 只返回重新验证的 `CanonicalPng`，意外的底层异常对象、路径、Prompt 和 Runtime Response 不会进入公开异常链。
+
+关闭会先永久停止新任务准入：仍处于 `RUNNING` 的任务收到协作取消，已经进入 `COMMITTING` 的任务则完成短提交；所有已准入 Gallery 调用排空后才释放 Core 与 Gallery。多个并发关闭者共享同一轮精确结果；某个资源无法证明释放时，后续 `close()` 只重试失败的资源，且不会重新开放生成或 Gallery 准入。应用服务仍不提供 Native Export、Desktop 二进制预览通道、持久 Job Queue 或跨模型 GPU Lease。
 
 ---
 
@@ -425,18 +450,23 @@ validating → probing → submitting → sampling → verifying → completed
 
 覆盖 Opaque/path-free CRUD、Newest-first 分页、所有权标记、未拥有宽目录零删除、缺失/陈旧/损坏/不可写 Index 的读取恢复、部分 Staging/Tombstone 崩溃恢复、未知或畸形状态 Fail Closed、目标 PNG/Manifest 篡改、Symlink/Reparse/Hard-link/Special File、数量/字节/并发容量、Private Prompt 边界、跨进程 Lease、关闭语义、畸形 Result Metadata 拒绝、提交后同步/清理失败语义、Rollback Sibling Preservation 和完整异常链脱敏。测试还固定 List/Get/Create 不会重新读取或 Canonicalize 已有图片；完整 PNG 校验只发生在目标 `open_verified()`。
 
+### `tests/test_image_application_service.py`
+
+覆盖单次 Opaque Operation ID、迟到取消隔离、单任务准入、取消/提交线性化、Core 完成进度延迟、Private Prompt 不进入公开对象、路径私有 Gallery 委托、关闭时取消或等待提交、Gallery Read Drain、并发关闭结果一致、失败资源定向重试、稳定下层错误保型和完整异常对象图脱敏。测试还明确验证普通描述与 R18 描述调用同一个 `generate()`，不存在 `content_mode` 或成人模式参数。
+
 这些测试不安装 ComfyUI、不加载真实 Checkpoint，也不使用 GPU。真实 Runtime、具体模型画质、VRAM 峰值和长时间取消仍需要单独的显式本机 Smoke/Soak 验收。
 
 ---
 
 ## 14. 下一步
 
-### 第一优先：Desktop Protocol、Settings 与 Gallery Integration/Export
+### 第一优先：Desktop Protocol、Settings 与 Gallery Preview/Export
 
 - 定义路径无关的 Image Request/Progress/Result/Error DTO。
-- 在 Backend 组合受信 Profile Catalog 与 Managed Runtime Session，不直接组合 Raw `HttpComfyUiClient`。
+- 在 Backend 组合受信 Profile Catalog、Managed Runtime Session、Gallery 与现有 `ImageGenerationApplicationService`，不直接组合 Raw `HttpComfyUiClient`。
 - 加入 Desktop Settings：Runtime/Models/Private State Folder、已审核 Profile 与默认尺寸；不提供内容模式开关。
-- 在 Desktop Application Service 组合 Core 与 `ImageGalleryStore`，定义生成/提交 Commit Gate，并实现路径私有 Preview、Native Export 与容量展示。
+- 把现有 Operation ID、取消/提交 Commit Gate 和 Gallery 方法映射到 Desktop Protocol，并实现路径私有 Preview、Native Export 与容量展示。
+- PNG 上限是 32 MiB，超过现有 16 MiB NDJSON Frame，因此 Preview 不得把图片 Base64 塞进 JSON；应使用有界二进制通道，或由 Python 写入 Electron Main 授权且身份固定的目标。
 - Renderer 只获得 Opaque Artifact ID、Metadata 和受限预览能力，不获得本机模型/输出路径。
 
 ### 第二优先：真实 Runtime 与模型验收

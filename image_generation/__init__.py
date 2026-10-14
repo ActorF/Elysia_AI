@@ -1,4 +1,4 @@
-"""Expose the stable local image-generation, runtime, and Gallery surfaces.
+"""Expose stable local image application, runtime, and Gallery surfaces.
 
 The raw HTTP adapter remains available from ``image_generation.comfyui`` for
 contract tests and the managed private-runtime implementation.  It is
@@ -8,6 +8,15 @@ consumers receive opaque identifiers and path-free records; its on-disk schema
 and implementation limits remain private to ``image_generation.gallery``.
 """
 
+from .application import (
+    ImageGenerationApplicationBusyError,
+    ImageGenerationApplicationClosedError,
+    ImageGenerationApplicationError,
+    ImageGenerationApplicationLimitError,
+    ImageGenerationApplicationService,
+    ImageGenerationApplicationValidationError,
+    ImageGenerationCancelOutcome,
+)
 from .comfyui import (
     ComfyOutputDescriptor,
     ComfyPromptHandle,
@@ -57,6 +66,13 @@ __all__ = [
     "ComfyPromptHandle",
     "ComfyUiConfig",
     "create_managed_image_generation_core",
+    "ImageGenerationApplicationBusyError",
+    "ImageGenerationApplicationClosedError",
+    "ImageGenerationApplicationError",
+    "ImageGenerationApplicationLimitError",
+    "ImageGenerationApplicationService",
+    "ImageGenerationApplicationValidationError",
+    "ImageGenerationCancelOutcome",
     "ImageGenerationCancelledError",
     "ImageGenerationError",
     "ImageGenerationFailedError",
