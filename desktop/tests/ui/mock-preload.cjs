@@ -402,6 +402,8 @@ let delayInternetPolicyUpdate = false
 let pendingInternetPolicyUpdates = []
 let internetPolicyEpoch = 0
 let internetResearchState = null
+let internetResearchHydrationDelay = false
+let pendingInternetResearchHydrations = []
 let internetResearchOwnerKey = null
 let internetResearchEpoch = 0
 let internetResearchActive = false
@@ -1361,7 +1363,9 @@ const desktopApi = {
   },
   getInternetResearch: async (chatId) => {
     record('getInternetResearch', [chatId])
-    return internetResearchSnapshot(chatId)
+    const value = internetResearchSnapshot(chatId)
+    if (internetResearchHydrationDelay) await new Promise(resolve => { pendingInternetResearchHydrations.push({ resolve, value }) })
+    return value
   },
   getInternetResearchActivity: async (chatId) => {
     record('getInternetResearchActivity', [chatId])
@@ -3267,7 +3271,21 @@ const testControl = {
   setInternetReviewDelay: (delayed) => { internetReviewDelay = delayed },
   setInternetReviewTextDelay: (delayed) => { internetReviewTextDelay = delayed },
   setInternetReviewExpired: (expired) => { internetReviewExpired = expired },
-  setInternetCacheEntries: (entries) => { internetCacheEntries = clone(entries) },
+  setInternetCacheEntries: (entries) => {
+    // Seed canonical current-owner data, not an unowned array that the next
+    // asynchronous Chat hydration would correctly scrub as another scope.
+    synchronizeChatState(); internetResearchSnapshot(chatState.activeChat.chatId)
+    internetCacheEntries = clone(entries)
+  },
+  setInternetResearchHydrationDelay: (delayed) => { internetResearchHydrationDelay = delayed },
+  releaseNextInternetResearchHydration: (sources) => {
+    const pending = pendingInternetResearchHydrations.shift()
+    if (pending === undefined) return false
+    // A visible source in the delayed initial snapshot lets tests await the
+    // actual React commit instead of guessing when a Promise has rendered.
+    if (sources !== undefined) pending.value.sources = clone(sources)
+    pending.resolve(); return true
+  },
   setInternetCacheDelay: (delayed) => { internetCacheDelay = delayed },
   releaseNextInternetCache: () => { const release = pendingInternetCacheLookups.shift(); if (release === undefined) return false; release(); return true },
   setInternetWriteApprovalExpired: (expired) => { internetWriteApprovalExpired = expired },
@@ -3445,6 +3463,7 @@ const testControl = {
     for (const release of pendingInternetPolicyUpdates) release()
     pendingInternetPolicyUpdates = []
     internetResearchState = null; internetResearchOwnerKey = null; internetResearchEpoch += 1; internetResearchActive = false
+    internetResearchHydrationDelay = false; pendingInternetResearchHydrations = []
     internetResearchCancellation = false; internetSearchDelay = false; internetSourceDelay = false; internetReadDelay = false; nextInternetPage = null; pendingInternetReads = []
     internetServiceDelay = false; pendingInternetServices = []; nextInternetServiceSources = { weather: null, github: null }
     pendingInternetSearches = []; pendingInternetSources = []; nextInternetSources = []; nextInternetResearchError = null; nextInternetSourceNumber = 1

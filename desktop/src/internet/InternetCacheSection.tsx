@@ -27,9 +27,17 @@ export function InternetCacheSection({ api, chatId, projectId, ready, disabled, 
   const [error, setError] = useState<string | null>(null)
   const version = useRef(0)
   const physicalPending = useRef(false)
-  const scope = JSON.stringify([chatId, projectId, ready, researchRevision])
+  const observed = useRef<{ scope: string; revision: number } | null>(null)
+  const scope = JSON.stringify([chatId, projectId, ready])
 
   useEffect(() => {
+    const previous = observed.current
+    observed.current = { scope, revision: researchRevision }
+    // Initial research hydration can finish after an explicit cache lookup.
+    // Learning its first revision is not a cache mutation; keep that owner's
+    // pending lookup, displayed metadata and explicit stale-content consent.
+    if (previous !== null && previous.scope === scope
+      && (previous.revision < 0 || previous.revision === researchRevision)) return
     // A new result, restore or clear may replace native cache identities. Old
     // metadata and stale-content consent must not survive that change.
     const token = ++version.current
@@ -37,8 +45,9 @@ export function InternetCacheSection({ api, chatId, projectId, ready, disabled, 
       if (token !== version.current) return
       setState(null); setApprovedExpired([]); setError(null)
     })
-    return () => { version.current += 1 }
-  }, [scope])
+  }, [scope, researchRevision])
+
+  useEffect(() => () => { version.current += 1 }, [])
 
   async function list(): Promise<void> {
     if (!ready || disabled || physicalPending.current) return

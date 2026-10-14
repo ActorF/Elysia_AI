@@ -14,6 +14,8 @@ interface CacheControl {
   setInternetCacheEntries(entries: unknown[]): void
   setInternetCacheDelay(delayed: boolean): void
   releaseNextInternetCache(): boolean
+  setInternetResearchHydrationDelay(delayed: boolean): void
+  releaseNextInternetResearchHydration(sources?: unknown[]): boolean
   failNextInternetResearch(code: string): void
 }
 type CacheWindow = Window & { elysiaDesktopTest: CacheControl }
@@ -49,6 +51,9 @@ test.beforeEach(async () => {
     cwd: path.resolve(directory, '..', '..') })
   page = await application.firstWindow()
   await page.waitForFunction(() => 'elysiaDesktopTest' in window && (window as CacheWindow).elysiaDesktopTest.getCalls().some(call => call.method === 'onBackendEvent.subscribe'))
+  if (test.info().title.startsWith('initial research hydration')) {
+    await page.evaluate(() => { (window as CacheWindow).elysiaDesktopTest.setInternetResearchHydrationDelay(true) })
+  }
   await emit()
   await page.evaluate(() => { (window as CacheWindow).elysiaDesktopTest.emitInternetPolicy({ kind: 'internet.policy', revision: 1, enabled: false,
     allowedDomains: [], proxy: { mode: 'direct' }, timeoutMs: 15000, warning: null }) })
@@ -132,4 +137,30 @@ test('late metadata cannot appear in another Chat and retains its lease until th
   await page.getByRole('region', { name: 'Internet research', exact: true }).locator('button[aria-expanded]').click()
   await expect(page.getByRole('article', { name: 'Cached result Synthetic cached result', exact: true })).toHaveCount(0)
   await expect(page.getByLabel('Message Elysia')).toHaveValue('')
+})
+
+for (const order of ['before listing returns', 'after listing returns'] as const) test(`initial research hydration ${order} preserves owned cache metadata and consent`, async () => {
+  await page.waitForFunction(() => (window as CacheWindow).elysiaDesktopTest.getCalls().some(call => call.method === 'getInternetResearch' && call.args[0] === 'chat_internet_cache'))
+  await seed(true)
+  if (order === 'before listing returns') await page.evaluate(() => { (window as CacheWindow).elysiaDesktopTest.setInternetCacheDelay(true) })
+  await page.getByRole('button', { name: 'List cached results', exact: true }).click()
+  const entry = page.getByRole('article', { name: 'Cached result Synthetic cached result', exact: true })
+  if (order === 'after listing returns') {
+    await expect(entry).toBeVisible()
+    await entry.getByRole('checkbox').check()
+  }
+  await page.evaluate(source => { (window as CacheWindow).elysiaDesktopTest.releaseNextInternetResearchHydration([source]) }, { ...source, title: 'Initial hydration evidence' })
+  await expect(page.getByRole('article', { name: 'Source Initial hydration evidence', exact: true })).toBeVisible()
+  if (order === 'before listing returns') await page.evaluate(() => {
+    const control = (window as CacheWindow).elysiaDesktopTest
+    control.setInternetCacheDelay(false); control.releaseNextInternetCache()
+  })
+  await expect(entry).toBeVisible()
+  if (order === 'after listing returns') await expect(entry.getByRole('checkbox')).toBeChecked()
+  else await entry.getByRole('checkbox').check()
+  await entry.getByRole('button', { name: 'Restore cached result', exact: true }).click()
+  await expect(entry).toHaveCount(0)
+  await page.getByRole('button', { name: 'List cached results', exact: true }).click()
+  await expect(entry.getByRole('checkbox')).not.toBeChecked()
+  expect(networkCalls(await page.evaluate(() => (window as CacheWindow).elysiaDesktopTest.getCalls()))).toHaveLength(0)
 })
