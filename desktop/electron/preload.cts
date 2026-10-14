@@ -6,6 +6,7 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { InternetPolicyState, UpdateInternetPolicyRequest } from './internet-policy-protocol.js'
 import type { InternetResearchState, InternetSearchRequest, InternetReadRequest, InternetSourceRequest, InternetSourceText, InternetWeatherRequest, InternetGithubRequest } from './internet-protocol.js'
 import type { InternetReview, InternetReviewRequest, InternetReviewLookup } from './internet-review-protocol.js'
+import type { InternetWriteStatus, PrepareGithubIssueRequest, ConfirmGithubIssueRequest, GithubIssueApproval, GithubIssueWriteResult } from './internet-write-protocol.js'
 import type { VisionState, VisionSelectionResult, VisionRemoveRequest } from './vision-protocol.js'
 import type { VisionAnalysisState, VisionOcrRequest, VisionModelRequest } from './vision-analysis-protocol.js'
 import type { VisionCaptureSources, VisionCaptureStatus, VisionCapturePrepareRequest, VisionCaptureConfirmRequest, VisionCaptureApproval } from './vision-capture-protocol.js'
@@ -830,6 +831,9 @@ const desktopApi: DesktopApi = {
   searchInternet: (request: InternetSearchRequest) => ipcRenderer.invoke('desktop:internet-research:search', request) as Promise<InternetResearchState>,
   readInternetPage: (request: InternetReadRequest) => ipcRenderer.invoke('desktop:internet-research:read', request) as Promise<InternetResearchState>,
   getInternetWeather: (request: InternetWeatherRequest) => ipcRenderer.invoke('desktop:internet-research:weather', request) as Promise<InternetResearchState>,
+  getInternetWriteStatus: () => ipcRenderer.invoke('desktop:internet-write:status') as Promise<InternetWriteStatus>,
+  prepareGithubIssue: (request: PrepareGithubIssueRequest) => ipcRenderer.invoke('desktop:internet-write:prepare', request) as Promise<GithubIssueApproval>,
+  confirmGithubIssue: (request: ConfirmGithubIssueRequest) => ipcRenderer.invoke('desktop:internet-write:confirm', request) as Promise<GithubIssueWriteResult>,
   getInternetGithubRepository: (request: InternetGithubRequest) => ipcRenderer.invoke('desktop:internet-research:github', request) as Promise<InternetResearchState>,
   cancelInternetResearch: (chatId: string) => ipcRenderer.invoke('desktop:internet-research:cancel', chatId) as Promise<InternetResearchState>,
   clearInternetResearch: (chatId: string) => ipcRenderer.invoke('desktop:internet-research:clear', chatId) as Promise<InternetResearchState>,

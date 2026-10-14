@@ -4,12 +4,14 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { InternetPolicyClient, InternetPolicyState } from '../../electron/internet-policy-protocol.ts'
 import { parseInternetReadRequest, parseInternetSourceText, type InternetResearchClient, type InternetResearchState, type InternetSource } from '../../electron/internet-protocol.ts'
 import type { InternetReviewClient } from '../../electron/internet-review-protocol.ts'
+import type { InternetWriteClient } from '../../electron/internet-write-protocol.ts'
 import { InternetSourceReview } from './InternetSourceReview.tsx'
 import { InternetServicesSection } from './InternetServicesSection.tsx'
+import { GitHubIssueSection } from './GitHubIssueSection.tsx'
 import './InternetPanel.css'
 
 interface InternetPanelProps {
-  api: (InternetResearchClient & InternetPolicyClient & InternetReviewClient) | undefined
+  api: (InternetResearchClient & InternetPolicyClient & InternetReviewClient & InternetWriteClient) | undefined
   chatId: string
   projectId: string | null
   ready: boolean
@@ -58,6 +60,7 @@ export function InternetPanel({ api, chatId, projectId, ready, disabled, onBusyC
   const [cancelling, setCancelling] = useState(false)
   const [turningOff, setTurningOff] = useState(false)
   const [comparisonBusy, setComparisonBusy] = useState(false)
+  const [writeBusy, setWriteBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [reviewed, setReviewed] = useState<InternetSource | null>(null)
@@ -67,9 +70,13 @@ export function InternetPanel({ api, chatId, projectId, ready, disabled, onBusyC
   const physicalPending = useRef(false)
   const physicalBusy = useRef(false)
   const comparisonLease = useRef(false)
-  const reportBusy = useCallback(() => { onBusyChange(physicalPending.current || physicalBusy.current || comparisonLease.current) }, [onBusyChange])
+  const writeLease = useRef(false)
+  const reportBusy = useCallback(() => { onBusyChange(physicalPending.current || physicalBusy.current || comparisonLease.current || writeLease.current) }, [onBusyChange])
   const updateComparisonBusy = useCallback((busy: boolean): void => {
     comparisonLease.current = busy; setComparisonBusy(busy); reportBusy()
+  }, [reportBusy])
+  const updateWriteBusy = useCallback((busy: boolean): void => {
+    writeLease.current = busy; setWriteBusy(busy); reportBusy()
   }, [reportBusy])
 
   const accept = useCallback((next: InternetResearchState, token: number): void => {
@@ -119,7 +126,7 @@ export function InternetPanel({ api, chatId, projectId, ready, disabled, onBusyC
   }, [api, chatId, reportBusy])
 
   async function act(operation: (client: InternetResearchClient) => Promise<InternetResearchState>): Promise<void> {
-    if (api === undefined || !ready || disabled || physicalPending.current || physicalBusy.current || comparisonLease.current) return
+    if (api === undefined || !ready || disabled || physicalPending.current || physicalBusy.current || comparisonLease.current || writeLease.current) return
     const token = version.current
     physicalPending.current = true; setPending(true); setError(null); setNotice(null); setReviewed(null); reportBusy()
     try { accept(await operation(api), token) }
@@ -153,7 +160,7 @@ export function InternetPanel({ api, chatId, projectId, ready, disabled, onBusyC
   }
 
   async function addToDraft(): Promise<void> {
-    if (api === undefined || reviewed === null || !ready || disabled || physicalPending.current || physicalBusy.current || comparisonLease.current) return
+    if (api === undefined || reviewed === null || !ready || disabled || physicalPending.current || physicalBusy.current || comparisonLease.current || writeLease.current) return
     const token = version.current, sourceId = reviewed.id, evidenceRevision = revision.current, policyVersion = policyEpoch.current
     physicalPending.current = true; setPending(true); setError(null); setNotice(null); reportBusy()
     try {
@@ -167,7 +174,7 @@ export function InternetPanel({ api, chatId, projectId, ready, disabled, onBusyC
   }
 
   const visible = ready && state?.owner.chatId === chatId && state.owner.projectId === projectId ? state : null
-  const busy = pending || nativeBusy || comparisonBusy || visible?.busy === true
+  const busy = pending || nativeBusy || comparisonBusy || writeBusy || visible?.busy === true
   const locked = disabled || !ready || busy || api === undefined
   const normalized = query.trim()
   const validQuery = normalized.length > 0 && [...normalized].length <= 512 && new TextEncoder().encode(normalized).length <= 2048
@@ -213,6 +220,9 @@ export function InternetPanel({ api, chatId, projectId, ready, disabled, onBusyC
         key={JSON.stringify([chatId, projectId, ready])} chatId={chatId} policy={policy} disabled={locked}
         onWeather={request => { void act(client => client.getInternetWeather(request)) }}
         onGithub={request => { void act(client => client.getInternetGithubRepository(request)) }} />}
+      {typeof api?.prepareGithubIssue === 'function' && <GitHubIssueSection api={api} chatId={chatId} projectId={projectId} ready={ready}
+        policy={policy} disabled={disabled || pending || nativeBusy || comparisonBusy || visible?.busy === true}
+        onBusyChange={updateWriteBusy} onOpenSource={onOpenSource} />}
       {error !== null && <p role="alert">{error}</p>}
       {visible?.error !== null && visible?.error !== undefined && <p role="alert">{ERRORS[visible.error] ?? ERRORS.unavailable}</p>}
       {notice !== null && <p role="status">{notice}</p>}
@@ -240,7 +250,7 @@ export function InternetPanel({ api, chatId, projectId, ready, disabled, onBusyC
         <ol>{visible?.history.map((entry, index) => <li key={`${entry.fetchedAt}-${index}`}><strong>{entry.query}</strong> · {entry.language} · {entry.count} results · {entry.status} · {dateLabel(entry.fetchedAt)}</li>)}</ol>
       </section>}
       {typeof api?.reviewInternetSources === 'function' && <InternetSourceReview api={api} chatId={chatId} projectId={projectId}
-        sources={visible?.sources ?? []} ready={ready} disabled={disabled || pending || nativeBusy || visible?.busy === true}
+        sources={visible?.sources ?? []} ready={ready} disabled={disabled || pending || nativeBusy || writeBusy || visible?.busy === true}
         onBusyChange={updateComparisonBusy} onChatDraft={onChatDraft} />}
     </div>
   </section>

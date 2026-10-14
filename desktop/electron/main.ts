@@ -35,6 +35,9 @@ import { InternetTransport } from './internet-transport.js'
 import { InternetResearchController, InternetResearchError, type InternetResearchOwner } from './internet-research.js'
 import { InternetReviewStore } from './internet-review.js'
 import { parseInternetReviewLookup, parseInternetReviewRequest } from './internet-review-protocol.js'
+import { InternetWriteController } from './internet-write.js'
+import { parsePrepareGithubIssueRequest, parseConfirmGithubIssueRequest } from './internet-write-protocol.js'
+import { takeInternetGithubToken, confirmGithubIssueNative } from './internet-write-native.js'
 import { parseInternetChatId, parseInternetSearchRequest, parseInternetSourceRequest, parseInternetReadRequest,
   parseInternetWeatherRequest, parseInternetGithubRequest, type InternetResearchState } from './internet-protocol.js'
 import type { InternetPolicyState } from './internet-policy-protocol.js'
@@ -234,6 +237,10 @@ let backendProcess: BackendProcess | null = null
 let internetPolicyService: InternetPolicyService | null = null
 let internetTransport: InternetTransport | null = null
 let internetResearchController: InternetResearchController | null = null
+let internetWriteController: InternetWriteController | null = null
+// Capture once before spawning Backend; the credential stays out of child
+// environments, settings files, Renderer DTOs and diagnostic messages.
+const internetGithubToken = takeInternetGithubToken(process.env)
 let internetResearchGeneration = 0
 let internetResearchAdmission: { chatId: string } | null = null
 const internetReviewStore = new InternetReviewStore()
@@ -2097,6 +2104,8 @@ function broadcastBackendEvent(event: BackendEvent): void {
   catch { visionContextStore.clear(); visionContextScope = null }
   try { internetResearchController?.synchronizeOwner() }
   catch { internetResearchController?.shutdown() }
+  try { internetWriteController?.synchronizeOwner() }
+  catch { internetWriteController?.shutdown() }
   try { synchronizeInternetReviews() }
   catch { internetReviewStore.clear(); internetReviewScope = null }
   try {
@@ -2129,6 +2138,7 @@ function hasActiveVisionWork(): boolean {
 function hasActiveInternetWork(): boolean {
   return internetRequests.size > 0 || internetPolicyService?.hasActiveWork() === true
     || internetResearchController?.hasActiveWork() === true
+    || internetWriteController?.hasActiveWork() === true
 }
 
 function hasActiveComputerWork(): boolean { return hasActiveDesktopWork() || hasActiveVisionWork() || hasActiveInternetWork() }
@@ -2141,6 +2151,8 @@ function requireInternetPolicy(): InternetPolicyService {
 function publishInternetPolicy(state: InternetPolicyState): void {
   try { internetResearchController?.synchronizeOwner() }
   catch { internetResearchController?.invalidate() }
+  try { internetWriteController?.synchronizeOwner() }
+  catch { internetWriteController?.invalidate() }
   if (mainWindow !== null && !mainWindow.isDestroyed()) {
     try { mainWindow.webContents.send('desktop:internet-policy:changed', state) }
     catch { /* Optional policy notifications cannot destabilize native request cleanup. */ }
@@ -2188,6 +2200,18 @@ function requireInternetResearch(): InternetResearchController {
   return internetResearchController
 }
 
+function requireInternetWrite(): InternetWriteController {
+  if (shutdownStarted || internetTransport === null) throw new InternetResearchError('unavailable')
+  if (internetWriteController === null) {
+    const transport = internetTransport
+    internetWriteController = new InternetWriteController({ policy: requireInternetPolicy(), getOwner: internetOwner,
+      readToken: () => internetGithubToken,
+      confirm: preview => confirmGithubIssueNative(preview, options => dialog.showMessageBox(requireMainWindow(), options)),
+      write: (request, token, signal) => transport.createGithubIssue(request, token, signal) })
+  }
+  return internetWriteController
+}
+
 function withInternetOwner<Result>(chatId: string,
   operation: (controller: InternetResearchController) => Result | Promise<Result>, readOnly = false): Promise<Result> {
   if (shutdownStarted || dataStorageOperation !== null || !readOnly && (hasActiveInternetWork() || internetOwner().busy)) {
@@ -2221,12 +2245,15 @@ function retireInternetResearch(): void {
   internetResearchGeneration += 1
   internetReviewStore.clear()
   internetReviewScope = null
-  const closing = internetResearchController
-  if (closing === null) return
-  closing.shutdown()
+  const closing = [internetResearchController, internetWriteController]
   internetResearchController = null
+  internetWriteController = null
   // A reload loses the old document's intent, but not its in-flight resources.
-  void trackInternetOperation(() => closing.whenIdle()).catch(() => {})
+  for (const controller of closing) {
+    if (controller === null) continue
+    controller.shutdown()
+    void trackInternetOperation(() => controller.whenIdle()).catch(() => {})
+  }
 }
 
 function visionOwner(): VisionOwner {
@@ -2975,6 +3002,20 @@ function requireMainWindow(): BrowserWindow {
 }
 
 function registerIpcHandlers(): void {
+  ipcMain.handle('desktop:internet-write:status', event => {
+    assertTrustedSender(event)
+    return requireInternetWrite().getInternetWriteStatus()
+  })
+  ipcMain.handle('desktop:internet-write:prepare', (event, value: unknown) => {
+    assertTrustedSender(event)
+    const request = parsePrepareGithubIssueRequest(value)
+    return withInternetOwner(request.chatId, () => requireInternetWrite().prepareGithubIssue(request))
+  })
+  ipcMain.handle('desktop:internet-write:confirm', (event, value: unknown) => {
+    assertTrustedSender(event)
+    const request = parseConfirmGithubIssueRequest(value)
+    return withInternetOwner(request.chatId, () => requireInternetWrite().confirmGithubIssue(request))
+  })
   ipcMain.handle('desktop:internet-research:get', (event, value: unknown) => {
     assertTrustedSender(event)
     const chatId = parseInternetChatId(value)
@@ -3008,6 +3049,7 @@ function registerIpcHandlers(): void {
     assertTrustedSender(event)
     const chatId = parseInternetChatId(value)
     if (internetResearchAdmission?.chatId === chatId) internetResearchGeneration += 1
+    internetWriteController?.cancel(chatId)
     return requireInternetResearch().cancel(chatId)
   })
   ipcMain.handle('desktop:internet-research:clear', (event, value: unknown) => {
@@ -3015,6 +3057,7 @@ function registerIpcHandlers(): void {
     const chatId = parseInternetChatId(value)
     if (internetResearchAdmission?.chatId === chatId) internetResearchGeneration += 1
     const state = requireInternetResearch().clear(chatId)
+    internetWriteController?.cancel(chatId)
     internetReviewStore.clear()
     return state
   })

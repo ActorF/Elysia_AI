@@ -29,6 +29,7 @@ function fixture() {
   const policy = { getState: () => ({ enabled: false }), hasActiveWork: () => physical,
     update: () => { updates += 1; physical = true; return delayed } }
   const host = { module: { exports: {} }, internetPolicyService: policy, internetRequests: requests, internetResearchController: null,
+    internetWriteController: null,
     shutdownStarted: false, mainWindow: { isDestroyed: () => false, webContents: { send: (...args) => notifications.push(args) } },
     hasActiveDesktopWork: () => false, hasActiveVisionWork: () => false,
     assertTrustedSender: event => { if (event.trusted !== true) throw new Error('Untrusted sender.') },
