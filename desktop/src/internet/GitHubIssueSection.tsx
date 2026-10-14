@@ -135,8 +135,8 @@ export function GitHubIssueSection({ api, chatId, projectId, lifecycleEpoch, rea
   }
 
   return <section className="github-issue-section" aria-label="Create GitHub Issue" aria-busy={pending}>
-    <h3>Create a GitHub Issue · external write</h3>
-    <p>This creates an Issue in the selected repository under the configured GitHub account. Previewing sends nothing. Creating requires a separate confirmation window and may notify repository participants.</p>
+    <h3>Review before publishing</h3>
+    <p>Previewing sends nothing. Creating an Issue requires a separate confirmation window and may notify repository participants.</p>
     <p>{configured ? 'A GitHub write token is configured for this app session.' : 'GitHub Issue creation is unavailable until a write token is configured. Public repository queries remain available.'}</p>
     <details><summary>Token setup help</summary><p>Before starting Elysia, set ELYSIA_GITHUB_TOKEN in its launch environment to a GitHub token with access to the chosen repository and Issues write permission. Restart Elysia after changing it. The token is kept in the main process and is not entered here or sent to the AI. See the project documentation, docs/19-INTERNET-AND-SERVICES.md, for setup details.</p></details>
     {!allowed && <p>Enable Internet and allow api.github.com in Internet settings before previewing.</p>}
@@ -146,8 +146,8 @@ export function GitHubIssueSection({ api, chatId, projectId, lifecycleEpoch, rea
     </div>
     <label>Issue title<input value={title} maxLength={256} disabled={locked} onChange={event => { edit(); setTitle(event.target.value) }} /></label>
     <label>Issue body (optional)<textarea value={body} maxLength={4000} rows={3} disabled={locked} onChange={event => { edit(); setBody(event.target.value) }} /></label>
-    <p>Title: {new TextEncoder().encode(title).length}/256 UTF-8 bytes. Body: {new TextEncoder().encode(body).length}/4,000 bytes. Empty bodies are allowed.</p>
-    <button type="button" disabled={locked || !configured || !allowed || request === null} onClick={() => { void prepare() }}>{pending ? 'Waiting for the Issue action…' : 'Preview Issue'}</button>
+    <p className="internet-input-count">Title {new TextEncoder().encode(title).length}/256 · Body {new TextEncoder().encode(body).length}/4,000 UTF-8 bytes. Empty bodies are allowed.</p>
+    <button className="internet-primary" type="button" disabled={locked || !configured || !allowed || request === null} onClick={() => { void prepare() }}>{pending ? 'Waiting for the Issue action…' : 'Preview Issue'}</button>
     {error !== null && <p role="alert">{error}</p>}
     {notice !== null && <p role="status">{notice}</p>}
     {approval !== null && <section className="github-issue-preview" aria-label="GitHub Issue preview">

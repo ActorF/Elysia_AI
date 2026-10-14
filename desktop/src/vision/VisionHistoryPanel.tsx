@@ -74,21 +74,26 @@ export function VisionHistoryPanel({ api, chatId, projectId, image, ready, disab
   }
 
   return <section className="vision-history" aria-label="Saved Vision images" aria-busy={pending}>
-    <h3>Saved images</h3>
+    <h3>Keep an image for later</h3>
+    <p>Saved locally without encryption. OCR and model answers are excluded. Check for sensitive content before saving.</p>
     <label className="vision-history-opt-in"><input type="checkbox" checked={saveEnabled} disabled={locked}
       onChange={(event) => { setSaveEnabled(event.currentTarget.checked) }} />Allow saving selected images</label>
-    <p>Saving is off on each new session or Chat. Enabling it allows the Save button; it does not save automatically.</p>
-    <p>Saved copies contain image pixels and a source label in the local application data folder, without encryption. OCR and model answers are excluded. Review images for passwords, personal details, and other sensitive content before saving.</p>
+    <p>Saving starts off in each Chat. Enabling it does not save automatically.</p>
     <div className="vision-history-actions">
-      <button type="button" disabled={locked || !saveEnabled || image === null || saved} onClick={() => {
+      <button type="button" className="tool-primary" disabled={locked || !saveEnabled || image === null || saved} onClick={() => {
         if (image !== null) void act((client) => client.saveVisionImage({ chatId, imageId: image.imageId, confirmed: true }))
       }}>{saved ? 'Selected image is saved' : 'Save selected image'}</button>
       <button type="button" disabled={locked} onClick={() => { void act((client) => client.getVisionHistory(chatId)) }}>Load saved images</button>
-      <button type="button" disabled={locked || visible?.items.length === 0} onClick={() => { setRemoval({ kind: 'scope' }) }}>Clear this Chat’s saved images</button>
-      <button type="button" disabled={locked} onClick={() => { setRemoval({ kind: 'all' }) }}>Clear all saved Vision images</button>
     </div>
-    <p>Turning saving off keeps existing copies. Deleting saved copies leaves original files, selected session images, and Chat messages intact.</p>
-    <p>Deletion applies to the current application data folder. Recovery folders retained during a failed move are listed separately in Settings.</p>
+    <details className="vision-history-management"><summary>Storage and deletion</summary>
+      <p>Saved copies contain image pixels and a source label in the local application data folder. Saving is off on each new session or Chat.</p>
+      <p>Turning saving off keeps existing copies. Deleting saved copies leaves original files, selected session images, and Chat messages intact.</p>
+      <p>Deletion applies to the current application data folder. Recovery folders retained during a failed move are listed separately in Settings.</p>
+      <div className="vision-history-actions">
+        <button type="button" disabled={locked || visible?.items.length === 0} onClick={() => { setRemoval({ kind: 'scope' }) }}>Clear this Chat’s saved images</button>
+        <button type="button" disabled={locked} onClick={() => { setRemoval({ kind: 'all' }) }}>Clear all saved Vision images</button>
+      </div>
+    </details>
     {visible === null ? <p>Load the saved list to review this Chat’s image copies.</p>
       : visible.items.length === 0 ? <p>No saved images for this Chat.</p>
         : <ul className="vision-history-list">{visible.items.map((item) => <li key={item.historyId}>

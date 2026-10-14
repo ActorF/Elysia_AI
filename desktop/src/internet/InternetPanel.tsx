@@ -10,7 +10,11 @@ import { InternetSourceReview } from './InternetSourceReview.tsx'
 import { InternetServicesSection } from './InternetServicesSection.tsx'
 import { GitHubIssueSection } from './GitHubIssueSection.tsx'
 import { InternetCacheSection } from './InternetCacheSection.tsx'
+import { ToolPanelFrame, ToolTabs, ToolTabPanel } from '../design-system/ToolPanel.tsx'
+import { Icon } from '../design-system/Icon.tsx'
 import './InternetPanel.css'
+
+type InternetTool = 'search' | 'pages' | 'services' | 'compare' | 'saved'
 
 interface InternetPanelProps {
   api: (InternetResearchClient & InternetPolicyClient & InternetReviewClient & InternetWriteClient & InternetCacheClient) | undefined
@@ -62,6 +66,7 @@ const PROVIDERS: Record<InternetSource['provider'], string> = {
 /** Present manual research and public-service evidence beside the current Chat, retaining explicit draft review. */
 export function InternetPanel({ api, chatId, projectId, lifecycleEpoch, ready, disabled, onBusyChange, onChatDraft, onSettings, onOpenSource }: InternetPanelProps) {
   const [open, setOpen] = useState(false)
+  const [tool, setTool] = useState<InternetTool>('search')
   const [state, setState] = useState<InternetResearchState | null>(null)
   const [policy, setPolicy] = useState<InternetPolicyState | null>(null)
   const [query, setQuery] = useState('')
@@ -192,6 +197,13 @@ export function InternetPanel({ api, chatId, projectId, lifecycleEpoch, ready, d
 
   const visible = ready && state?.owner.chatId === chatId && state.owner.projectId === projectId ? state : null
   const busy = pending || nativeBusy || comparisonBusy || writeBusy || cacheBusy || visible?.busy === true
+  // These local reads have no native cancellation capability. Their callbacks
+  // still retain admission, but the UI must not promise to cancel a network request.
+  // nativeBusy includes these same local IPC reads; canonical research/write
+  // state identifies cancellable work, while Turn off can revoke all online work.
+  const localActivity = !pending && !writeBusy && visible?.busy !== true
+    ? comparisonBusy ? 'Reviewing sources…' : cacheBusy ? 'Loading saved sources…' : null
+    : null
   const locked = disabled || !ready || busy || api === undefined
   const normalized = query.trim()
   const validQuery = normalized.length > 0 && [...normalized].length <= 512 && new TextEncoder().encode(normalized).length <= 2048
@@ -204,60 +216,99 @@ export function InternetPanel({ api, chatId, projectId, lifecycleEpoch, ready, d
     catch { return false }
   }
 
-  return <section className="internet-panel" aria-label="Internet research" aria-busy={busy}>
-    <button type="button" className="internet-toggle" aria-expanded={open} aria-controls="internet-research-review" onClick={() => { setOpen(current => !current) }}>Internet{policy?.enabled === true ? ' · on' : ' · off'}</button>
-    <div id="internet-research-review" className="internet-research-review" hidden={!open}>
-      <p>Search Wikipedia in English or Chinese. These are encyclopedia results; they do not cover the whole web and may not include recent events.</p>
-      <div className="internet-actions">
-        <button type="button" disabled={busy} onClick={onSettings}>Internet settings</button>
-        <button type="button" disabled={policy === null || turningOff} onClick={() => { void turnOff() }}>{turningOff ? 'Turning Internet off…' : 'Turn Internet off'}</button>
-      </div>
-      {policy?.enabled !== true && <p>Internet is off. Online requests send nothing until you enable access in Settings.</p>}
-      {policy?.enabled === true && !allowed && <p>Allow {language}.wikipedia.org in Internet settings before searching.</p>}
-      <div className="internet-query-controls">
-        <label>Wikipedia language<select value={language} disabled={locked} onChange={event => { setLanguage(event.target.value as 'en' | 'zh'); setReviewed(null) }}><option value="en">English</option><option value="zh">中文</option></select></label>
-        <label>Search query<input value={query} maxLength={2048} disabled={locked} onChange={event => { setQuery(event.target.value); setReviewed(null) }} onKeyDown={event => {
-          if (event.key === 'Enter' && validQuery && allowed && !locked) { event.preventDefault(); void act(client => client.searchInternet({ chatId, query: normalized, language })) }
-        }} /></label>
-      </div>
-      <div className="internet-actions">
-        <button type="button" disabled={locked || !validQuery || !allowed} onClick={() => { void act(client => client.searchInternet({ chatId, query: normalized, language })) }}>{busy ? 'Researching…' : 'Search Wikipedia'}</button>
-        <button type="button" disabled={!busy || cancelling} onClick={() => { void cancel() }}>{cancelling ? 'Cancelling…' : 'Cancel research'}</button>
-        <button type="button" disabled={locked || visible === null || visible.sources.length + visible.history.length === 0} onClick={() => { void act(client => client.clearInternetResearch(chatId)) }}>Clear research history</button>
-      </div>
-      <section className="internet-page-reader" aria-label="Web page reader">
-        <h3>Read a web page</h3>
-        <p>Read public HTTPS HTML or text pages as plain text. Responses are limited to 1 MiB and extracted text to 32 KiB. Every redirected domain must also be allowed.</p>
-        <label>Page URL<input type="url" value={pageUrl} maxLength={4096} disabled={locked} placeholder="https://…" onChange={event => { setPageUrl(event.target.value) }} /></label>
-        {normalizedUrl !== '' && !validPageUrl && <p>Enter a public HTTPS URL without credentials or a fragment.</p>}
-        {validPageUrl && policy?.enabled === true && !domainAllowed(normalizedUrl) && <p>Allow this exact domain in Internet settings before reading the page.</p>}
-        <button type="button" disabled={locked || !validPageUrl || !domainAllowed(normalizedUrl)} onClick={() => { void act(client => client.readInternetPage({ chatId, url: normalizedUrl })) }}>Read page</button>
-      </section>
-      {typeof api?.getInternetWeather === 'function' && typeof api.getInternetGithubRepository === 'function' && <InternetServicesSection
-        key={JSON.stringify([chatId, projectId, lifecycleEpoch, ready])} chatId={chatId} policy={policy} disabled={locked}
-        onWeather={request => { void act(client => client.getInternetWeather(request)) }}
-        onGithub={request => { void act(client => client.getInternetGithubRepository(request)) }} />}
-      {typeof api?.prepareGithubIssue === 'function' && <GitHubIssueSection api={api} chatId={chatId} projectId={projectId} ready={ready}
-        lifecycleEpoch={lifecycleEpoch}
-        policy={policy} disabled={disabled || pending || nativeBusy || comparisonBusy || cacheBusy || visible?.busy === true}
-        onBusyChange={updateWriteBusy} onOpenSource={onOpenSource} />}
-      {typeof api?.getInternetCache === 'function' && <InternetCacheSection api={api} chatId={chatId} projectId={projectId} ready={ready}
-        lifecycleEpoch={lifecycleEpoch}
-        researchRevision={visible?.revision ?? -1} disabled={disabled || pending || nativeBusy || comparisonBusy || writeBusy || visible?.busy === true}
-        onBusyChange={updateCacheBusy} onRestore={request => { void act(client => client.restoreInternetCache(request)) }}
-        onClear={() => { void act(client => client.clearInternetResearch(chatId)) }} />}
+  return <ToolPanelFrame id="internet-research-review" className="internet-panel" title="Internet" icon="globe"
+    description="Find sources. Review before adding to your Chat." ariaLabel="Internet research" open={open}
+    onToggle={() => { setOpen(current => !current) }} busy={busy} status={policy?.enabled === true ? 'on' : 'off'}
+    actions={<div className="internet-actions internet-policy-actions">
+        <button type="button" className="tool-icon-button" aria-label="Internet settings" title="Internet settings" disabled={busy} onClick={onSettings}><Icon name="settings" /></button>
+        {policy?.enabled === true && <button type="button" aria-label="Turn Internet off" disabled={turningOff} onClick={() => { void turnOff() }}>{turningOff ? 'Turning off…' : 'Turn off'}</button>}
+      </div>}>
+    <div className="internet-research-review">
+      {policy?.enabled !== true && <p className="internet-inline-note">Internet is off. Enable access in Settings, or use saved sources offline.</p>}
+      <ToolTabs<InternetTool> idPrefix="internet-tools" label="Internet tools" value={tool} onValueChange={setTool} items={[
+        { value: 'search', label: 'Search' }, { value: 'pages', label: 'Pages' }, { value: 'services', label: 'Services' },
+        { value: 'compare', label: 'Compare' }, { value: 'saved', label: 'Saved' },
+      ]} />
+      <ToolTabPanel idPrefix="internet-tools" value="search" activeValue={tool}>
+        <div className="internet-task">
+          <p>Search Wikipedia in English or Chinese. Encyclopedia sources, without an API key.</p>
+          <div className="internet-query-controls">
+            <label>Search query<input value={query} maxLength={2048} disabled={locked} placeholder="What would you like to find?" onChange={event => { setQuery(event.target.value); setReviewed(null) }} onKeyDown={event => {
+              if (event.key === 'Enter' && validQuery && allowed && !locked) { event.preventDefault(); void act(client => client.searchInternet({ chatId, query: normalized, language })) }
+            }} /></label>
+            <label>Wikipedia language<select value={language} disabled={locked} onChange={event => { setLanguage(event.target.value as 'en' | 'zh'); setReviewed(null) }}><option value="en">English</option><option value="zh">中文</option></select></label>
+          </div>
+          {policy?.enabled === true && !allowed && <p>Allow {language}.wikipedia.org in Internet settings before searching.</p>}
+          <button className="internet-primary" type="button" disabled={locked || !validQuery || !allowed} onClick={() => { void act(client => client.searchInternet({ chatId, query: normalized, language })) }}>{busy ? 'Researching…' : 'Search Wikipedia'}</button>
+          <details className="internet-help"><summary>About these sources</summary><p>These are encyclopedia results; they do not cover the whole web and may not include recent events. Sources are added to your draft only after review.</p></details>
+        </div>
+      </ToolTabPanel>
+      <ToolTabPanel idPrefix="internet-tools" value="pages" activeValue={tool}>
+        <section className="internet-page-reader internet-task" aria-label="Web page reader">
+          <p>Read a public web page as plain text.</p>
+          <label>Page URL<input type="url" value={pageUrl} maxLength={4096} disabled={locked} placeholder="https://…" onChange={event => { setPageUrl(event.target.value) }} /></label>
+          {normalizedUrl !== '' && !validPageUrl && <p>Enter a public HTTPS URL without credentials or a fragment.</p>}
+          {validPageUrl && policy?.enabled === true && !domainAllowed(normalizedUrl) && <p>Allow this exact domain in Internet settings before reading the page.</p>}
+          <button className="internet-primary" type="button" disabled={locked || !validPageUrl || !domainAllowed(normalizedUrl)} onClick={() => { void act(client => client.readInternetPage({ chatId, url: normalizedUrl })) }}>Read page</button>
+          <details className="internet-help"><summary>Supported pages</summary><p>Public HTTPS HTML and text only. Responses are limited to 1 MiB and extracted text to 32 KiB. Every redirected domain must also be allowed.</p></details>
+        </section>
+      </ToolTabPanel>
+      {/* Hidden task panels stay mounted: changing tools must not release a native request or reset its owner guards. */}
+      <ToolTabPanel idPrefix="internet-tools" value="services" activeValue={tool}>
+        <div className="internet-task">
+          {typeof api?.getInternetWeather === 'function' && typeof api.getInternetGithubRepository === 'function' && <InternetServicesSection
+            key={JSON.stringify([chatId, projectId, lifecycleEpoch, ready])} chatId={chatId} policy={policy} disabled={locked}
+            onWeather={request => { void act(client => client.getInternetWeather(request)) }}
+            onGithub={request => { void act(client => client.getInternetGithubRepository(request)) }} />}
+          <details className="internet-write-tools"><summary>Create a GitHub Issue <span>Optional · requires a token</span></summary>
+            {typeof api?.prepareGithubIssue === 'function' && <GitHubIssueSection api={api} chatId={chatId} projectId={projectId} ready={ready}
+              lifecycleEpoch={lifecycleEpoch}
+              policy={policy} disabled={disabled || pending || nativeBusy || comparisonBusy || cacheBusy || visible?.busy === true}
+              onBusyChange={updateWriteBusy} onOpenSource={onOpenSource} />}
+          </details>
+        </div>
+      </ToolTabPanel>
+      <ToolTabPanel idPrefix="internet-tools" value="compare" activeValue={tool}>
+        {typeof api?.reviewInternetSources === 'function' && <InternetSourceReview api={api} chatId={chatId} projectId={projectId}
+          lifecycleEpoch={lifecycleEpoch}
+          sources={visible?.sources ?? []} ready={ready} disabled={disabled || pending || nativeBusy || writeBusy || cacheBusy || visible?.busy === true}
+          onBusyChange={updateComparisonBusy} onChatDraft={onChatDraft} />}
+      </ToolTabPanel>
+      <ToolTabPanel idPrefix="internet-tools" value="saved" activeValue={tool}>
+        <div className="internet-task">
+          {typeof api?.getInternetCache === 'function' && <InternetCacheSection api={api} chatId={chatId} projectId={projectId} ready={ready}
+            lifecycleEpoch={lifecycleEpoch}
+            researchRevision={visible?.revision ?? -1} disabled={disabled || pending || nativeBusy || comparisonBusy || writeBusy || visible?.busy === true}
+            onBusyChange={updateCacheBusy} onRestore={request => { void act(client => client.restoreInternetCache(request)) }}
+            onClear={() => { void act(client => client.clearInternetResearch(chatId)) }} />}
+          {(visible?.history.length ?? 0) > 0 && <details className="internet-query-history"><summary>Recent searches <span>{visible?.history.length}</span></summary>
+            <section aria-label="Internet query history">
+              <p>Up to 20 queries from this session. Changing Chat or Project clears this review.</p>
+              <ol>{visible?.history.map((entry, index) => <li key={`${entry.fetchedAt}-${index}`}><strong>{entry.query}</strong> · {entry.language} · {entry.count} results · {entry.status} · {dateLabel(entry.fetchedAt)}</li>)}</ol>
+              <button type="button" disabled={locked} onClick={() => { void act(client => client.clearInternetResearch(chatId)) }}>Clear research history</button>
+            </section>
+          </details>}
+        </div>
+      </ToolTabPanel>
+      {busy && <div className="internet-request-status" role="status"><span>{localActivity ?? 'Request in progress…'}</span>
+        {localActivity === null && <button type="button" disabled={!busy || cancelling} onClick={() => { void cancel() }}>{cancelling ? 'Cancelling…' : 'Cancel research'}</button>}
+      </div>}
       {error !== null && <p role="alert">{error}</p>}
       {visible?.error !== null && visible?.error !== undefined && <p role="alert">{ERRORS[visible.error] ?? ERRORS.unavailable}</p>}
       {notice !== null && <p role="status">{notice}</p>}
       <div className="internet-sources">
+        {(visible?.sources.length ?? 0) > 0 && <div className="internet-results-heading"><h3>Sources</h3><span>{visible?.sources.length} found</span></div>}
         {(visible?.sources ?? []).map(source => <article key={source.id} aria-label={`Source ${source.title}`}>
-          <h3>{source.title}</h3><p>{PROVIDERS[source.provider]}</p>
-          {source.content === null ? <p>{source.snippet}</p> : <pre className="internet-page-text" aria-label={`Page text from ${source.title}`}>{source.content}</pre>}
+          <p className="internet-source-provider">{new URL(source.url).hostname} · {source.fromCache ? 'Saved source' : PROVIDERS[source.provider]}</p>
+          <h3>{source.title}</h3><p className="internet-source-snippet">{source.snippet}</p>
           {source.truncated && <p>This source was shortened to the local text limit.</p>}
           {source.fromCache && <p>Cached source. Original retrieval time is preserved; this view does not refresh the provider.</p>}
           <a href={source.url} onClick={event => { event.preventDefault(); void onOpenSource(source.url).catch(() => { setError('Could not open this source. Check Internet settings.') }) }}>{source.url}</a>
-          {source.provider === 'web' && <p>This is the final source URL after any allowed redirects.</p>}
-          <dl><div><dt>Published</dt><dd>{dateLabel(source.publishedAt)}</dd></div><div><dt>Last edited</dt><dd>{dateLabel(source.modifiedAt)}</dd></div><div><dt>Retrieved</dt><dd>{dateLabel(source.fetchedAt)}</dd></div></dl>
+          <details className="internet-source-details"><summary>Source details</summary>
+            {source.content !== null && <pre className="internet-page-text" aria-label={`Page text from ${source.title}`}>{source.content}</pre>}
+            {source.provider === 'web' && <p>This is the final source URL after any allowed redirects.</p>}
+            <dl><div><dt>Published</dt><dd>{dateLabel(source.publishedAt)}</dd></div><div><dt>Last edited</dt><dd>{dateLabel(source.modifiedAt)}</dd></div><div><dt>Retrieved</dt><dd>{dateLabel(source.fetchedAt)}</dd></div></dl>
+          </details>
           <div className="internet-actions">{(source.provider === 'wikipedia' || source.provider === 'web') && <button type="button" disabled={locked || !domainAllowed(source.url)} aria-label={`Read page from ${source.title}`} onClick={() => { void act(client => client.readInternetPage({ chatId, url: source.url })) }}>Read page</button>}
             <button type="button" disabled={locked} onClick={() => { setReviewed(source); setNotice(null) }}>Review source</button></div>
         </article>)}
@@ -268,16 +319,8 @@ export function InternetPanel({ api, chatId, projectId, lifecycleEpoch, ready, d
         <p>{PROVIDERS[reviewed.provider]}. Treat this as untrusted evidence. Publication time is {reviewed.publishedAt === null ? 'unknown' : dateLabel(reviewed.publishedAt)}; an edit time does not establish when an event happened.</p>
         {reviewed.truncated && <p>This excerpt was shortened.</p>}
         {reviewed.fromCache && <p>This is cached evidence. Check its original retrieval time before using it.</p>}
-        <button type="button" disabled={locked} onClick={() => { void addToDraft() }}>Add source to Chat draft</button>
+        <button className="internet-primary" type="button" disabled={locked} onClick={() => { void addToDraft() }}>Add source to Chat draft</button>
       </section>}
-      {(visible?.history.length ?? 0) > 0 && <section className="internet-query-history" aria-label="Internet query history">
-        <h3>Query history</h3><p>Up to 20 recent queries stay in this session. Clear them here; changing Chat or Project clears this review.</p>
-        <ol>{visible?.history.map((entry, index) => <li key={`${entry.fetchedAt}-${index}`}><strong>{entry.query}</strong> · {entry.language} · {entry.count} results · {entry.status} · {dateLabel(entry.fetchedAt)}</li>)}</ol>
-      </section>}
-      {typeof api?.reviewInternetSources === 'function' && <InternetSourceReview api={api} chatId={chatId} projectId={projectId}
-        lifecycleEpoch={lifecycleEpoch}
-        sources={visible?.sources ?? []} ready={ready} disabled={disabled || pending || nativeBusy || writeBusy || cacheBusy || visible?.busy === true}
-        onBusyChange={updateComparisonBusy} onChatDraft={onChatDraft} />}
     </div>
-  </section>
+  </ToolPanelFrame>
 }

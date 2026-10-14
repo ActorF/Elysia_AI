@@ -102,7 +102,7 @@ export function InternetSourceReview({ api, chatId, projectId, lifecycleEpoch, s
   const locked = !ready || disabled || pending || api === undefined
   return <section className="internet-comparison" aria-label="Internet source comparison" aria-busy={pending}>
     <h3>Compare sources</h3>
-    <p>Select one to five sources, describe the question or claim, and separate reported facts from your interpretation. This comparison checks provenance; it does not verify that a claim is true.</p>
+    <p>Select up to five sources and a question. Review their provenance before adding them to your draft.</p>
     <div className="internet-comparison-sources">{sources.map((source, index) => <label key={source.id}>
       <input type="checkbox" checked={selected.includes(source.id)} disabled={locked || selected.length >= 5 && !selected.includes(source.id)} onChange={event => {
         edit(); setSelected(current => event.target.checked ? [...current, source.id] : current.filter(id => id !== source.id))
@@ -117,8 +117,8 @@ export function InternetSourceReview({ api, chatId, projectId, lifecycleEpoch, s
       <label>Event date you supplied (optional)<input type="date" value={eventDate} disabled={locked} onChange={event => { edit(); setEventDate(event.target.value) }} /></label>
     </div>
     <label>Uncertainty or conflicting information (optional)<textarea value={uncertainty} maxLength={1000} disabled={locked} rows={2} onChange={event => { edit(); setUncertainty(event.target.value) }} /></label>
-    <p>Question: up to 2,000 UTF-8 bytes. Uncertainty: up to 1,000 bytes. Event dates are your input; publication and edit dates describe the source.</p>
-    <button type="button" disabled={locked || !valid} onClick={() => { void compare() }}>{pending ? 'Reviewing comparison…' : 'Compare selected sources'}</button>
+    <details className="internet-help"><summary>About this comparison</summary><p>This comparison checks provenance; it does not verify that a claim is true. Question: up to 2,000 UTF-8 bytes. Uncertainty: up to 1,000 bytes. Event dates are your input; publication and edit dates describe the source.</p></details>
+    <button className="internet-primary" type="button" disabled={locked || !valid} onClick={() => { void compare() }}>{pending ? 'Reviewing comparison…' : 'Compare selected sources'}</button>
     {error !== null && <p role="alert">{error}</p>}
     {notice !== null && <p role="status">{notice}</p>}
     {review !== null && <section className="internet-comparison-result" aria-label="Reviewed source comparison">
@@ -135,7 +135,7 @@ export function InternetSourceReview({ api, chatId, projectId, lifecycleEpoch, s
         <pre className="internet-page-text">{source.content ?? source.snippet}</pre>
       </article>)}
       <p>This review expires at {dateLabel(review.expiresAt)}. Draft exports include bounded excerpts and direct source URLs.</p>
-      <button type="button" disabled={locked} onClick={() => { void exportReview() }}>Add comparison to Chat draft</button>
+      <button className="internet-primary" type="button" disabled={locked} onClick={() => { void exportReview() }}>Add comparison to Chat draft</button>
     </section>}
   </section>
 }

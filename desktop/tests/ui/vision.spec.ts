@@ -54,7 +54,10 @@ test('reviews synthetic images across Chat and Work and cancellation preserves e
   await expect(panel.getByRole('button', { name: 'Choose image', exact: true })).toHaveCount(0)
   expect(await page.evaluate(() => (window as VisionTestWindow).elysiaDesktopTest.getCalls().filter((call) => call.method === 'chooseVisionImage'))).toHaveLength(0)
   await panel.getByRole('button', { name: 'Vision', exact: true }).click()
-  await expect(panel).toContainText('Images stay in this session')
+  await expect(panel.getByRole('combobox', { name: 'Vision image', exact: true })).toBeHidden()
+  await panel.getByText('Image options', { exact: true }).click()
+  await expect(panel.getByText('Images stay in this session and clear when the Chat or Project changes.', { exact: true })).toBeVisible()
+  await panel.getByText('Image options', { exact: true }).click()
   await page.evaluate((fixture) => { (window as VisionTestWindow).elysiaDesktopTest.setSelectedVisionImage(fixture) }, image)
   await panel.getByRole('button', { name: 'Choose image', exact: true }).click()
   const card = panel.getByRole('article', { name: 'Selected image synthetic-review.png' })
@@ -77,8 +80,9 @@ test('reviews synthetic images across Chat and Work and cancellation preserves e
   ])
   await page.evaluate((fixture) => { (window as VisionTestWindow).elysiaDesktopTest.setSelectedVisionImage(fixture) }, image)
   await panel.getByRole('button', { name: 'Choose image', exact: true }).click()
+  await panel.getByText('Image options', { exact: true }).click()
   await panel.getByRole('button', { name: 'Clear selected images', exact: true }).click()
-  await expect(panel).toContainText('No images selected.')
+  await expect(panel).toContainText('Start with an image')
   expect(await page.evaluate(() => (window as VisionTestWindow).elysiaDesktopTest.getCalls().filter((call) =>
     ['sendChat', 'runWorkTool', 'previewWorkTool', 'captureVision', 'listVisionCaptureSources'].includes(call.method)))).toHaveLength(0)
 })
@@ -95,6 +99,7 @@ test('caps the reviewed collection at eight images and removal admits one replac
   await expect(panel).toContainText('Up to eight images')
   await panel.getByRole('button', { name: 'Remove selected image synthetic-review.png' }).first().click()
   await expect(panel.getByRole('button', { name: 'Choose image', exact: true })).toBeEnabled()
+  await panel.getByText('Image options', { exact: true }).click()
   await panel.getByRole('button', { name: 'Clear selected images', exact: true }).click()
   await expect(panel.getByRole('article')).toHaveCount(0)
 })
@@ -119,7 +124,7 @@ test('hiding a cancelled native image chooser retains all computer action locks 
   await page.evaluate(() => { (window as VisionTestWindow).elysiaDesktopTest.releaseNextVisionSelection() })
   await expect(page.getByRole('combobox', { name: 'Conversation mode' })).toBeEnabled()
   await panel.getByRole('button', { name: 'Vision', exact: true }).click()
-  await expect(panel).toContainText('No images selected.')
+  await expect(panel).toContainText('Start with an image')
 })
 
 test('a disconnect revokes preview publication but releases the physical lease only after native failure', async () => {
@@ -139,6 +144,7 @@ test('a disconnect revokes preview publication but releases the physical lease o
   const toggle = panel.getByRole('button', { name: /^Vision(?: · \d+ selected)?$/ })
   if (await toggle.getAttribute('aria-expanded') !== 'true') await toggle.click()
   await expect(panel.getByRole('article')).toHaveCount(0)
+  await panel.getByText('Image options', { exact: true }).click()
   await panel.getByRole('button', { name: 'Reload images', exact: true }).click()
   await expect(panel.getByRole('button', { name: 'Choose image', exact: true })).toBeEnabled()
 })
@@ -170,4 +176,34 @@ test('a Work plan can pause and cancel its own active read while Vision remains 
   await page.evaluate(() => { (window as VisionTestWindow).elysiaDesktopTest.releaseNextWorkPlanRead() })
   await expect(mode).toBeEnabled()
   await expect(panel.getByRole('button', { name: 'Choose image', exact: true })).toBeEnabled()
+})
+
+test('compact image cards and keyboard tool navigation fit a 320px workspace without starting providers', async () => {
+  await page.setViewportSize({ width: 320, height: 760 })
+  const panel = page.getByRole('region', { name: 'Vision images', exact: true })
+  await panel.getByRole('button', { name: 'Vision', exact: true }).click()
+  await page.evaluate((fixture) => { (window as VisionTestWindow).elysiaDesktopTest.setSelectedVisionImage(fixture) }, image)
+  await panel.getByRole('button', { name: 'Choose image', exact: true }).click()
+  await expect(panel.getByRole('button', { name: 'Review selected image synthetic-review.png', exact: true })).toHaveAttribute('aria-pressed', 'true')
+  const analyze = panel.getByRole('tab', { name: 'Analyze', exact: true })
+  await analyze.focus()
+  await analyze.press('ArrowRight')
+  await expect(panel.getByRole('tab', { name: 'Use in Chat', exact: true })).toBeFocused()
+  await expect(panel.getByRole('region', { name: 'Vision context review', exact: true })).toBeVisible()
+  await page.keyboard.press('End')
+  await expect(panel.getByRole('tab', { name: 'Saved images', exact: true })).toBeFocused()
+  await expect(panel.getByRole('region', { name: 'Saved Vision images', exact: true })).toBeVisible()
+  for (const name of ['Analyze', 'Use in Chat', 'Saved images']) {
+    await panel.getByRole('tab', { name, exact: true }).click()
+    const bounds = await panel.evaluate((element) => ({
+      left: element.getBoundingClientRect().left, right: element.getBoundingClientRect().right,
+      viewport: window.innerWidth, width: element.clientWidth, scrollWidth: element.scrollWidth,
+    }))
+    expect(bounds.left).toBeGreaterThanOrEqual(0)
+    expect(bounds.right).toBeLessThanOrEqual(bounds.viewport + 1)
+    expect(bounds.scrollWidth).toBeLessThanOrEqual(bounds.width + 1)
+  }
+  expect(await page.evaluate(() => (window as VisionTestWindow).elysiaDesktopTest.getCalls().filter((call) =>
+    ['runVisionOcr', 'checkVisionOcr', 'askVisionImage', 'checkVisionModel', 'listVisionCaptureSources',
+      'captureVision', 'prepareVisionContext', 'saveVisionImage', 'getVisionHistory'].includes(call.method)))).toHaveLength(0)
 })

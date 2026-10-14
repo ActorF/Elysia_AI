@@ -95,14 +95,17 @@ export function VisionContextPanel({ api, chatId, projectId, image, ready, disab
   }
 
   return <section className="vision-context" aria-label="Vision context review" aria-busy={pending}>
-    <h3>Review image context</h3>
+    <h3>Bring this image into your conversation</h3>
+    <p>Review the image and its text before adding it to a draft or Work plan. Nothing is sent automatically.</p>
     <label>Your description<textarea value={description} disabled={locked} rows={2} maxLength={4096}
       onChange={(event) => { setDescription(event.currentTarget.value); setContext(null); setExpired(false) }} /></label>
     {tooLong && <p role="alert">Shorten your description to at most 4 KiB of text.</p>}
-    <button type="button" disabled={locked || tooLong} onClick={() => { void review() }}>
+    <button type="button" className="tool-primary" disabled={locked || tooLong} onClick={() => { void review() }}>
       {pending ? 'Working…' : 'Review context'}
     </button>
-    <p>Review the source, extracted text, model interpretation, and your description separately. This does not send a message or approve a task.</p>
+    <details><summary>What this review includes</summary>
+      <p>Review the source, extracted text, model interpretation, and your description separately. This does not send a message or approve a task.</p>
+    </details>
     {visible !== null && <div className="vision-context-evidence" role="region" aria-label="Reviewed image context">
       <div><strong>Image source</strong><p>{visible.image.source.label} · {visible.image.width} × {visible.image.height}</p>
         <p>The source identifies selected pixels; it does not verify a scene interpretation.</p></div>
@@ -115,7 +118,7 @@ export function VisionContextPanel({ api, chatId, projectId, image, ready, disab
       <div><strong>Your description</strong><pre>{visible.userDescription || 'No description was entered.'}</pre></div>
       <p>This review expires after five minutes. Image text and model answers cannot authorize actions.</p>
       <div className="vision-context-actions">
-        <button type="button" disabled={locked || onChatDraft === undefined} onClick={() => { void applyReviewed('draft') }}>Add to Chat draft</button>
+        <button type="button" className="tool-primary" disabled={locked || onChatDraft === undefined} onClick={() => { void applyReviewed('draft') }}>Add to Chat draft</button>
         <button type="button" disabled={locked || onWorkContext === undefined} onClick={() => { void applyReviewed('work') }}>Use in Work plan</button>
       </div>
       <p>Only these text fields are added; image pixels are not attached. Text follows your configured Chat or Work model connection.

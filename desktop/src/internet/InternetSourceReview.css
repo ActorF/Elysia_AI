@@ -1,16 +1,11 @@
-/* Keep explicit source comparisons readable and bounded inside the Internet research context row. */
-
-.internet-comparison, .internet-comparison-result { display: grid; gap: var(--space-3); }
-.internet-comparison { padding-top: var(--space-3); border-top: 1px solid var(--color-border); }
-.internet-comparison > label, .internet-comparison-fields label { display: grid; gap: var(--space-1); font-size: var(--font-size-sm); }
+/* Lay out source selection and comparison as a task, with a distinct reviewed-evidence surface. */
+.internet-comparison, .internet-comparison-result { display: grid; gap: var(--space-3); min-width: 0; }
+.internet-comparison > label, .internet-comparison-fields label { display: grid; gap: var(--space-2); }
 .internet-comparison-sources { display: grid; gap: var(--space-2); }
-.internet-comparison-sources label { display: flex; gap: var(--space-2); align-items: baseline; font-size: var(--font-size-sm); overflow-wrap: anywhere; }
-.internet-comparison-sources input { flex: 0 0 auto; }
-.internet-comparison textarea, .internet-comparison select, .internet-comparison input[type=date] { min-width: 0; padding: var(--space-2); border: 1px solid var(--color-border); border-radius: var(--radius-md); color: var(--color-text-primary); background: var(--color-bg-surface); font: inherit; }
-.internet-comparison textarea { width: 100%; resize: vertical; box-sizing: border-box; }
-.internet-comparison-fields { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3); }
-.internet-comparison-result { padding: var(--space-3); border: 1px solid var(--color-border); border-radius: var(--radius-md); }
-.internet-comparison-result article { display: grid; gap: var(--space-2); padding-top: var(--space-3); border-top: 1px solid var(--color-border); }
-.internet-comparison-result h4 { margin: 0; font-size: var(--font-size-sm); }
+.internet-comparison-sources label { display: flex; gap: var(--space-2); align-items: baseline; padding-block: var(--space-1); overflow-wrap: anywhere; }
+.internet-comparison-sources input { flex: 0 0 auto; accent-color: var(--color-accent); }
+.internet-comparison-fields { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--space-3); }
+.internet-comparison-result { padding: var(--space-4); border-radius: var(--radius-lg); background: var(--color-accent-soft); }
+.internet-comparison-result article { display: grid; gap: var(--space-2); min-width: 0; padding-top: var(--space-3); border-top: 1px solid var(--color-border); }
 .internet-comparison-result ul { margin: 0; padding-left: var(--space-5); }
-@media (max-width: 600px) { .internet-comparison-fields { grid-template-columns: 1fr; } }
+@media (max-width: 600px) { .internet-comparison-fields { grid-template-columns: minmax(0, 1fr); } }

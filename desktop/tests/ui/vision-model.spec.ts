@@ -36,6 +36,8 @@ function snapshot(status = 'ready', revision = 1) {
 }
 
 async function enableModel(): Promise<void> {
+  await page.getByRole('tab', { name: 'Analyze', exact: true }).click()
+  await page.getByRole('tab', { name: 'Describe image', exact: true }).click()
   await page.evaluate(() => { (window as ModelTestWindow).elysiaDesktopTest.setVisionModelReadiness({ status: 'ready',
     models: ['qwen3.5:9b', 'qwen2.5vl:3b'], defaultModel: 'qwen3.5:9b' }) })
   await page.getByRole('button', { name: 'Check vision models', exact: true }).click()
@@ -74,6 +76,7 @@ test('discovers vision support only on a click and requires an available model a
 })
 
 test('keeps OCR separate from exact model and question provenance and treats generated markup as text', async () => {
+  await page.getByRole('tab', { name: 'Read text', exact: true }).click()
   await page.evaluate(() => { (window as ModelTestWindow).elysiaDesktopTest.setVisionOcrReadiness({ status: 'ready', languages: ['eng'], version: '5.5.0' }) })
   await page.getByRole('button', { name: 'Check OCR', exact: true }).click()
   await page.getByRole('button', { name: 'Run OCR', exact: true }).click()
@@ -91,7 +94,9 @@ test('keeps OCR separate from exact model and question provenance and treats gen
   await expect(inference).toContainText(`Question: ${question}`)
   await expect(inference.getByLabel('Local model inference', { exact: true })).toHaveText(answer)
   await expect(inference).toContainText('truncated')
+  await page.getByRole('tab', { name: 'Read text', exact: true }).click()
   await expect(page.getByLabel('Extracted OCR text', { exact: true })).toHaveText('Synthetic')
+  await page.getByRole('tab', { name: 'Describe image', exact: true }).click()
   await expect(inference.locator('script')).toHaveCount(0)
   expect(await page.evaluate(() => 'modelOwned' in window || 'neverGrant' in window)).toBe(false)
   expect(await page.evaluate(() => (window as ModelTestWindow).elysiaDesktopTest.getCalls().find((call) => call.method === 'askVisionImage')?.args)).toEqual([
@@ -104,7 +109,7 @@ test('keeps OCR separate from exact model and question provenance and treats gen
   await page.screenshot({ path: path.join(artifactDirectory, 'synthetic-model-review.png') })
   await page.getByRole('button', { name: 'Remove selected image synthetic-model.png', exact: true }).click()
   await expect(inference).toHaveCount(0)
-  await expect(page.getByRole('region', { name: 'OCR evidence', exact: true })).toHaveCount(0)
+  await expect(page.getByRole('region', { name: 'OCR evidence', exact: true, includeHidden: true })).toHaveCount(0)
 })
 
 test('cancelling a model answer does not release image and conversation locks before the response drains', async () => {

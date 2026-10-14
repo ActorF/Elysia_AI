@@ -59,6 +59,7 @@ test.beforeEach(async () => {
     allowedDomains: [], proxy: { mode: 'direct' }, timeoutMs: 15000, warning: null }) })
   await seed()
   await page.getByRole('region', { name: 'Internet research', exact: true }).locator('button[aria-expanded]').click()
+  await page.getByRole('tab', { name: 'Saved', exact: true }).click()
 })
 test.afterEach(async () => { await application?.close(); application = undefined })
 
@@ -70,6 +71,7 @@ test('opening stays idle, then an explicit offline restore preserves original pr
   await expect(entry).toContainText('Within freshness window at last listing')
   await entry.getByRole('button', { name: 'Restore cached result', exact: true }).click()
   const restored = page.getByRole('article', { name: 'Source Synthetic cached page', exact: true })
+  await restored.getByText('Source details', { exact: true }).click()
   await expect(restored).toContainText('Cached source')
   await expect(restored).toContainText('Original retrieval time is preserved')
   await expect(restored).toContainText('<script>cacheOwned()</script>')
@@ -129,6 +131,9 @@ test('clear removes cached metadata and research evidence without contacting a p
 test('late metadata cannot appear in another Chat and retains its lease until the callback settles', async () => {
   await page.evaluate(() => { (window as CacheWindow).elysiaDesktopTest.setInternetCacheDelay(true) })
   await page.getByRole('button', { name: 'List cached results', exact: true }).click()
+  await expect(page.locator('.internet-request-status')).toContainText('Loading saved sources…')
+  await expect(page.getByRole('button', { name: 'Cancel research', exact: true })).toHaveCount(0)
+  expect(await page.evaluate(() => (window as CacheWindow).elysiaDesktopTest.getCalls().filter(call => call.method === 'cancelInternetResearch'))).toHaveLength(0)
   await expect(page.getByRole('combobox', { name: 'Conversation mode', exact: true })).toBeDisabled()
   await emit(2, 'chat_internet_cache_next')
   await expect(page.getByRole('combobox', { name: 'Conversation mode', exact: true })).toBeDisabled()

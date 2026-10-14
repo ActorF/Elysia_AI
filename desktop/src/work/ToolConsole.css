@@ -2,22 +2,18 @@
 
 .work-tool-console {
   width: 100%;
-  font-size: var(--font-size-xs);
-}
-
-.work-tool-console summary {
-  cursor: pointer;
-  padding-block: var(--space-1);
-  color: var(--color-text-primary);
-  font-weight: var(--font-weight-semibold);
+  min-width: 0;
+  font-size: var(--font-size-sm);
 }
 
 .work-tool-console fieldset {
   display: flex;
   flex-wrap: wrap;
   align-items: end;
-  gap: var(--space-2);
-  padding: var(--space-2) 0;
+  gap: var(--space-3);
+  min-width: 0;
+  margin: 0;
+  padding: 0 0 var(--space-2);
   border: 0;
 }
 
@@ -39,6 +35,7 @@
   background: var(--color-bg-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
+  box-sizing: border-box;
 }
 
 .work-tool-console textarea {
@@ -52,6 +49,19 @@
 
 .work-tool-console small {
   color: var(--color-text-secondary);
+}
+
+.work-tool-result,
+.work-change-preview {
+  min-width: 0;
+  margin-top: var(--space-4);
+  padding: var(--space-3);
+  background: var(--color-bg-soft);
+  border-radius: var(--radius-lg);
+}
+
+.work-change-preview {
+  border-left: 2px solid var(--color-accent);
 }
 
 .work-tool-error {
@@ -69,6 +79,8 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   user-select: text;
+  min-width: 0;
+  font-size: var(--font-size-xs);
 }
 
 .work-change-preview h3 {

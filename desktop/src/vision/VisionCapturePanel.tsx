@@ -155,8 +155,8 @@ export function VisionCapturePanel({ api, chatId, projectId, ready, disabled, im
   const expired = approval !== null && clock >= Date.parse(approval.expiresAt)
 
   return <section className="vision-capture" aria-label="Screenshot permission" aria-busy={leased}>
-    <h3>Screenshot permission</h3>
-    <p>List display and window names without reading their pixels. Every capture needs a new confirmation for one selected frame.</p>
+    <h3>Capture a screenshot</h3>
+    <p>Choose one display or window. Listing names does not read pixels; each capture needs a new confirmation.</p>
     <div className="vision-capture-controls">
       <button type="button" disabled={locked} onClick={() => { void act('list') }}>List displays and windows</button>
       <label>Capture source<select value={selected?.selectionId ?? ''} disabled={locked || approval !== null}
@@ -191,7 +191,7 @@ export function VisionCapturePanel({ api, chatId, projectId, ready, disabled, im
         One full selected-display frame is temporarily captured before the crop is kept.</p>}
       {expired && <p role="alert">This capture review expired. Edit the scope and prepare a fresh review.</p>}
       <div className="vision-capture-controls">
-        <button type="button" disabled={locked || expired || imageLimitReached} onClick={() => { void act('capture') }}>Capture this source once</button>
+        <button type="button" className="tool-primary" disabled={locked || expired || imageLimitReached} onClick={() => { void act('capture') }}>Capture this source once</button>
         <button type="button" disabled={locked} onClick={() => { void act('capture', false) }}>Deny capture</button>
         <button type="button" disabled={locked} onClick={() => { void act('edit') }}>Edit capture scope</button>
       </div>

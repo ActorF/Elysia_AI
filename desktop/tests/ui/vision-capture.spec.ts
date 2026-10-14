@@ -29,6 +29,8 @@ function snapshot(status = 'ready', revision = 1) {
 }
 
 async function reviewWindow(): Promise<void> {
+  const screenshot = page.getByRole('button', { name: 'Take screenshot', exact: true })
+  if (await screenshot.getAttribute('aria-expanded') !== 'true') await screenshot.click()
   const capture = page.getByRole('region', { name: 'Screenshot permission', exact: true })
   await capture.getByRole('button', { name: 'List displays and windows', exact: true }).click()
   await capture.getByRole('combobox', { name: 'Capture source', exact: true }).selectOption({ label: 'window · Synthetic window' })
@@ -41,6 +43,7 @@ test.beforeEach(async () => {
   await page.waitForFunction(() => 'elysiaDesktopTest' in window && (window as CaptureTestWindow).elysiaDesktopTest.getCalls().some((call) => call.method === 'onBackendEvent.subscribe'))
   await page.evaluate((next) => { (window as CaptureTestWindow).elysiaDesktopTest.emitBackendEvent({ type: 'snapshot', snapshot: next }) }, snapshot())
   await page.getByRole('region', { name: 'Vision images', exact: true }).getByRole('button', { name: 'Vision', exact: true }).click()
+  await page.getByRole('button', { name: 'Take screenshot', exact: true }).click()
 })
 
 test.afterEach(async () => { await application?.close(); application = undefined })
@@ -104,6 +107,11 @@ test('cancelling and collapsing capture retains all physical action locks until 
   await expect(page.getByRole('combobox', { name: 'Conversation mode' })).toBeDisabled()
   await expect(page.getByRole('combobox', { name: 'AI model', exact: true })).toBeDisabled()
   await expect(page.getByRole('button', { name: 'Choose image', exact: true })).toBeDisabled()
+  await page.getByRole('button', { name: 'Take screenshot', exact: true }).click()
+  await expect(capture).toBeHidden()
+  await expect(page.getByRole('combobox', { name: 'Conversation mode' })).toBeDisabled()
+  await page.getByRole('region', { name: 'Vision images', exact: true }).getByRole('button', { name: 'View active task', exact: true }).click()
+  await expect(capture.getByRole('button', { name: 'Cancel capture', exact: true })).toBeEnabled()
   await capture.getByRole('button', { name: 'Cancel capture', exact: true }).click()
   await expect(capture).toContainText('Cancellation requested. Waiting for capture resources to close.')
   const images = page.getByRole('region', { name: 'Vision images', exact: true })
@@ -149,6 +157,7 @@ test('adopts a capture from an earlier renderer and observes its physical drain 
   const toggle = images.getByRole('button', { name: /^Vision(?: · \d+ selected)?$/ })
   if (await toggle.getAttribute('aria-expanded') !== 'true') await toggle.click()
   const capture = page.getByRole('region', { name: 'Screenshot permission', exact: true })
+  await page.getByRole('button', { name: 'Take screenshot', exact: true }).click()
   await expect(capture).toContainText('A native capture is still active')
   await capture.getByRole('button', { name: 'Cancel capture', exact: true }).click()
   await expect(capture).toContainText('Cancellation requested. Waiting')

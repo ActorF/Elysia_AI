@@ -267,8 +267,8 @@ export function ChatView({
         </div>
       </header>
 
-      <div className={'chat-mode-context' + (visionPanel === undefined ? '' : ' chat-mode-context-with-vision') + (internetPanel === undefined ? '' : ' chat-mode-context-with-internet')}>
-        <div className="chat-mode-capabilities" id="chat-mode-capabilities" role="status">
+      <div className="chat-mode-context">
+        <div className="visually-hidden" id="chat-mode-capabilities" role="status">
           {chatMode === 'work'
             ? 'Work: plan tasks in a selected Workspace. File changes require your approval.'
             : 'Chat: conversation and answers. Computer tools are disabled.'}

@@ -33,7 +33,7 @@ async function emit(status = 'ready', revision = 1): Promise<void> {
 }
 
 async function expand(): Promise<void> {
-  const button = page.getByRole('region', { name: 'Vision images', exact: true }).locator('button[aria-expanded]')
+  const button = page.getByRole('region', { name: 'Vision images', exact: true }).getByRole('button', { name: 'Vision', exact: true })
   if (await button.getAttribute('aria-expanded') !== 'true') await button.click()
 }
 
@@ -81,6 +81,7 @@ test('archiving the current Project revokes image reviews even when Chat and Pro
   await page.evaluate((image) => { (window as PrivacyWindow).elysiaDesktopTest.setSelectedVisionImage(image) }, fixture)
   await page.getByRole('button', { name: 'Choose image', exact: true }).click()
   await page.getByRole('combobox', { name: 'Vision image', exact: true }).selectOption({ label: fixture.fileName })
+  await page.getByRole('tab', { name: 'Use in Chat', exact: true }).click()
   await page.getByRole('button', { name: 'Review context', exact: true }).click()
   await expect(page.getByRole('region', { name: 'Reviewed image context', exact: true })).toBeVisible()
   await page.getByRole('button', { name: /^Projects/ }).click()
@@ -92,6 +93,7 @@ test('archiving the current Project revokes image reviews even when Chat and Pro
   await expect(page.getByRole('region', { name: 'Vision images', exact: true }).getByRole('article')).toHaveCount(0)
   await expect(page.getByRole('region', { name: 'Reviewed image context', exact: true })).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Choose image', exact: true })).toBeDisabled()
+  await page.getByRole('tab', { name: 'Use in Chat', exact: true }).click()
   await expect(page.getByRole('button', { name: 'Review context', exact: true })).toBeDisabled()
   expect(await page.evaluate(() => (window as PrivacyWindow).elysiaDesktopTest.getCalls().filter((call) =>
     ['getVisionContextText', 'sendChat', 'createWorkPlan'].includes(call.method)))).toHaveLength(0)

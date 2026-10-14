@@ -39,6 +39,7 @@ test.beforeEach(async () => {
       allowedDomains: ['www.python.org', 'docs.python.org', 'en.wikipedia.org'], proxy: { mode: 'direct' }, timeoutMs: 15000, warning: null })
   })
   await page.getByRole('region', { name: 'Internet research', exact: true }).locator('button[aria-expanded]').click()
+  await page.getByRole('tab', { name: 'Pages', exact: true }).click()
   await page.evaluate(source => { (window as ReaderWindow).elysiaDesktopTest.setInternetPage(source) }, pageFixture)
 })
 test.afterEach(async () => { await application?.close(); application = undefined })
@@ -59,6 +60,7 @@ test('renders bounded plain text and the final URL, then adds canonical reviewed
   await page.getByLabel('Page URL', { exact: true }).fill('https://www.python.org/start')
   await page.getByRole('region', { name: 'Web page reader', exact: true }).getByRole('button', { name: 'Read page', exact: true }).click()
   const source = page.getByRole('article', { name: 'Source Synthetic page', exact: true })
+  await source.getByText('Source details', { exact: true }).click()
   await expect(source).toContainText('Web page · plain text')
   await expect(source).toContainText('shortened to the local text limit')
   await expect(source.getByRole('link')).toHaveAttribute('href', pageFixture.url)
@@ -79,6 +81,7 @@ test('renders bounded plain text and the final URL, then adds canonical reviewed
 })
 
 test('a search result is read only after its separate page action is clicked', async () => {
+  await page.getByRole('tab', { name: 'Search', exact: true }).click()
   await page.evaluate(source => { (window as ReaderWindow).elysiaDesktopTest.setInternetSources([source]) }, {
     ...pageFixture, title: 'Synthetic search result', url: 'https://en.wikipedia.org/wiki/Synthetic', content: null, provider: 'wikipedia', truncated: false,
   })

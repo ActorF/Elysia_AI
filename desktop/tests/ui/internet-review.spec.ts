@@ -34,6 +34,7 @@ async function emit(status = 'ready', revision = 1): Promise<void> {
 }
 
 async function selectSources(): Promise<void> {
+  await page.getByRole('tab', { name: 'Compare', exact: true }).click()
   const comparison = page.getByRole('region', { name: 'Internet source comparison', exact: true })
   await comparison.getByRole('checkbox', { name: /^1\. Synthetic first/ }).check()
   await comparison.getByRole('checkbox', { name: /^2\. Synthetic second/ }).check()
@@ -121,6 +122,9 @@ test('expired native receipts are discarded both at preparation and before draft
 test('a late comparison keeps its physical lease through reconnect and cannot republish old sources', async () => {
   await page.evaluate(() => { (window as ReviewWindow).elysiaDesktopTest.setInternetReviewDelay(true) })
   await page.getByRole('button', { name: 'Compare selected sources', exact: true }).click()
+  await expect(page.locator('.internet-request-status')).toContainText('Reviewing sources…')
+  await expect(page.getByRole('button', { name: 'Cancel research', exact: true })).toHaveCount(0)
+  expect(await page.evaluate(() => (window as ReviewWindow).elysiaDesktopTest.getCalls().filter(call => call.method === 'cancelInternetResearch'))).toHaveLength(0)
   await expect(page.getByRole('combobox', { name: 'Conversation mode', exact: true })).toBeDisabled()
   await emit('error', 2); await emit('ready', 3)
   await expect(page.getByRole('combobox', { name: 'Conversation mode', exact: true })).toBeDisabled()

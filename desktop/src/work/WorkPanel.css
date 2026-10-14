@@ -1,33 +1,47 @@
-/** Present the Work scope with bounded paths and accessible native chooser actions. */
+/** Arrange the scoped Workspace as a compact tabbed workbench with bounded paths and quiet, accessible controls. */
 
 .work-panel {
+  min-width: 0;
+}
+
+.work-workspace-scope {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-3);
-  padding: var(--space-3) var(--space-6);
-  border-bottom: 1px solid var(--color-border);
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-lg);
   background: var(--color-bg-soft);
-  max-height: min(28rem, 45vh);
-  overflow-y: auto;
 }
 
 .work-workspace-copy {
   display: grid;
-  flex: 1 1 15rem;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: baseline;
+  flex: 1 1 14rem;
   min-width: 0;
-  gap: var(--space-1);
+  column-gap: var(--space-2);
+  row-gap: .125rem;
   font-size: var(--font-size-sm);
 }
 
 .work-workspace-path {
+  font-weight: var(--font-weight-medium);
   overflow-wrap: anywhere;
   max-height: 3rem;
   overflow-y: auto;
 }
 
 .work-workspace-copy small {
+  grid-column: 1 / -1;
   color: var(--color-text-secondary);
+  font-size: var(--font-size-xs);
+}
+
+.work-workspace-label {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
 }
 
 .work-workspace-actions {
@@ -36,14 +50,27 @@
   gap: var(--space-2);
 }
 
-.work-panel button {
-  min-height: 2rem;
-  padding: var(--space-1) var(--space-3);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  color: var(--color-text-primary);
-  background: var(--color-bg-surface);
+.work-panel [role="tabpanel"] button,
+.work-workspace-actions button {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  max-width: 100%;
+}
+
+.work-section-hint {
+  margin: 0 0 var(--space-3);
+  color: var(--color-text-secondary);
   font-size: var(--font-size-xs);
+  line-height: var(--line-height-normal);
+}
+
+.work-panel [role="tabpanel"] {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.work-panel [role="tabpanel"] > :last-child {
+  margin-bottom: 0;
 }
 
 .work-workspace-error {
@@ -59,12 +86,15 @@
 .work-tool-inspector {
   width: 100%;
   font-size: var(--font-size-xs);
+  margin-top: var(--space-4);
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--color-border);
 }
 
 .work-tool-inspector summary {
   cursor: pointer;
   padding-block: var(--space-1);
-  color: var(--color-text-primary);
+  color: var(--color-text-secondary);
 }
 
 .work-tool-list {
@@ -82,8 +112,7 @@
   display: grid;
   gap: var(--space-1);
   padding: var(--space-2);
-  background: var(--color-bg-surface);
-  border: 1px solid var(--color-border);
+  background: var(--color-bg-soft);
   border-radius: var(--radius-md);
 }
 
@@ -91,4 +120,11 @@
 .work-tool-list p {
   margin: 0;
   color: var(--color-text-secondary);
+}
+
+@media (max-width: 480px) {
+  .work-workspace-scope { padding: var(--space-2); }
+  .work-workspace-actions { width: 100%; }
+  .work-workspace-actions button { flex: 1 1 auto; }
+  .work-panel .tool-tabs > button { flex: 1 1 0; padding-inline: var(--space-2); }
 }

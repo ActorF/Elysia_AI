@@ -188,8 +188,8 @@ export function ToolConsole({ api, chatId, workspacePath, ready, readAvailable, 
     ? approval.approval : null
 
   return (
-    <details className="work-tool-console" open>
-      <summary>Tools</summary>
+    <section className="work-tool-console" aria-label="File tools">
+      <p className="work-section-hint">Read files or prepare an exact change for your approval.</p>
       {workspacePath === null && <p>Choose a Workspace to enable file tools.</p>}
       <form onSubmit={(event) => { event.preventDefault(); void run() }} aria-busy={pending}>
         <fieldset disabled={blocked}>
@@ -236,7 +236,7 @@ export function ToolConsole({ api, chatId, workspacePath, ready, readAvailable, 
               }} />
             </label>
           )}
-          <button type="submit" disabled={isWrite ? !previewAvailable : !readAvailable}>
+          <button className="tool-primary" type="submit" disabled={isWrite ? !previewAvailable : !readAvailable}>
             {pending ? 'Working…' : isWrite ? 'Prepare change' : 'Run tool'}
           </button>
           {planAvailable && <button type="button" disabled={planQueueFull} onClick={() => {
@@ -259,6 +259,6 @@ export function ToolConsole({ api, chatId, workspacePath, ready, readAvailable, 
           {visibleResult.data !== null && <pre>{JSON.stringify(visibleResult.data, null, 2)}</pre>}
         </section>
       )}
-    </details>
+    </section>
   )
 }

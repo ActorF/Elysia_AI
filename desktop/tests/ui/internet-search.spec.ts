@@ -68,11 +68,23 @@ test.afterEach(async () => { await application?.close(); application = undefined
 
 test('opening the panel stays offline and explains the encyclopedia scope without issuing queries', async () => {
   const panel = page.getByRole('region', { name: 'Internet research', exact: true })
+  await expect(page.getByRole('tab', { name: 'Search', exact: true })).toHaveAttribute('aria-selected', 'true')
+  await expect(page.getByLabel('Page URL', { exact: true })).not.toBeVisible()
+  await expect(page.getByLabel('Latitude', { exact: true })).not.toBeVisible()
+  await expect(page.getByLabel('Issue title', { exact: true })).not.toBeVisible()
+  await page.getByText('About these sources', { exact: true }).click()
   await expect(panel).toContainText('do not cover the whole web')
   await expect(panel).toContainText('Internet is off')
   await page.getByRole('textbox', { name: 'Search query', exact: true }).fill('a real-time question')
   await expect(page.getByRole('button', { name: 'Search Wikipedia', exact: true })).toBeDisabled()
-  expect(await page.evaluate(() => (window as ResearchWindow).elysiaDesktopTest.getCalls().filter(call => ['searchInternet', 'openExternalUrl', 'sendMessage'].includes(call.method)))).toHaveLength(0)
+  for (const name of ['Pages', 'Services', 'Compare', 'Saved']) await page.getByRole('tab', { name, exact: true }).click()
+  await page.getByRole('tab', { name: 'Saved', exact: true }).press('Home')
+  await expect(page.getByRole('tab', { name: 'Search', exact: true })).toBeFocused()
+  await expect(page.getByRole('textbox', { name: 'Search query', exact: true })).toHaveValue('a real-time question')
+  expect(await page.evaluate(() => (window as ResearchWindow).elysiaDesktopTest.getCalls().filter(call => [
+    'searchInternet', 'readInternetPage', 'getInternetWeather', 'getInternetGithubRepository', 'getInternetCache',
+    'reviewInternetSources', 'prepareGithubIssue', 'confirmGithubIssue', 'openExternalUrl', 'sendMessage',
+  ].includes(call.method)))).toHaveLength(0)
   await page.getByRole('button', { name: 'Internet settings', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'Settings', exact: true })).toBeVisible()
 })
@@ -80,6 +92,7 @@ test('opening the panel stays offline and explains the encyclopedia scope withou
 test('reviews literal source text and dates, appends canonical evidence to the latest draft, and clears query history', async () => {
   await allow(); await search()
   const source = page.getByRole('article', { name: 'Source Synthetic encyclopedia source', exact: true })
+  await source.getByText('Source details', { exact: true }).click()
   await expect(source).toContainText('Untrusted <script>internetOwned()</script> source claim.')
   await expect(source).toContainText('PublishedUnknown')
   await expect(source).toContainText('Last edited')
@@ -96,6 +109,8 @@ test('reviews literal source text and dates, appends canonical evidence to the l
   const calls = await page.evaluate(() => (window as ResearchWindow).elysiaDesktopTest.getCalls())
   expect(calls.filter(call => call.method === 'searchInternet').map(call => call.args)).toEqual([[{ chatId: 'chat_internet_search', query: 'synthetic test query', language: 'en' }]])
   expect(calls.filter(call => ['sendMessage', 'createWorkPlan', 'runWorkTool', 'openExternalUrl'].includes(call.method))).toHaveLength(0)
+  await page.getByRole('tab', { name: 'Saved', exact: true }).click()
+  await page.locator('.internet-query-history > summary').click()
   await expect(page.getByRole('region', { name: 'Internet query history', exact: true })).toContainText('synthetic test query')
   await page.screenshot({ path: path.resolve(directory, '..', '..', 'test-results', 'internet-search-review.png'), fullPage: true })
   await page.getByRole('button', { name: 'Clear research history', exact: true }).click()

@@ -1,8 +1,6 @@
-/* Keep manual weather and repository inputs compact within the existing scrollable Internet context. */
-
-.internet-services, .internet-services > section { display: grid; gap: var(--space-2); }
-.internet-services > section { padding-top: var(--space-3); border-top: 1px solid var(--color-border); }
+/* Arrange no-key services as compact, independent tasks using the shared Internet field styling. */
+.internet-services { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr)); gap: var(--space-5); min-width: 0; }
+.internet-services > section { display: grid; align-content: start; gap: var(--space-3); min-width: 0; }
 .internet-service-fields { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--space-3); }
-.internet-service-fields label { display: grid; gap: var(--space-1); font-size: var(--font-size-sm); }
-.internet-service-fields input { min-width: 0; min-height: 2rem; padding: var(--space-1) var(--space-2); border: 1px solid var(--color-border); border-radius: var(--radius-md); color: var(--color-text-primary); background: var(--color-bg-surface); }
-@media (max-width: 600px) { .internet-service-fields { grid-template-columns: 1fr; } }
+.internet-service-fields label { display: grid; gap: var(--space-2); }
+@media (max-width: 420px) { .internet-service-fields { grid-template-columns: minmax(0, 1fr); } }

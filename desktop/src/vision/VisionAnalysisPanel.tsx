@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { VisionImage } from '../../electron/vision-protocol.ts'
 import type { VisionAnalysisClient, VisionAnalysisState, VisionOcrLanguage } from '../../electron/vision-analysis-protocol.ts'
+import { ToolTabs, ToolTabPanel } from '../design-system/ToolPanel.tsx'
 import './VisionAnalysisPanel.css'
 
 interface VisionAnalysisPanelProps {
@@ -11,8 +12,6 @@ interface VisionAnalysisPanelProps {
   projectId: string | null
   images: VisionImage[]
   selectedImageId: string
-  /** Change the shared review target without starting a provider or granting any native action. */
-  onSelectImage(imageId: string): void
   ready: boolean
   disabled: boolean
   /** Report physical provider ownership, including an already-running native job after reconnection. */
@@ -22,7 +21,7 @@ interface VisionAnalysisPanelProps {
 const languageNames = { eng: 'English', chi_sim: 'Simplified Chinese', chi_tra: 'Traditional Chinese' }
 
 /** Analyze one selected image through explicit local providers and keep cancellation independent of their physical drain. */
-export function VisionAnalysisPanel({ api, chatId, projectId, images, selectedImageId, onSelectImage, ready, disabled, onBusyChange }: VisionAnalysisPanelProps) {
+export function VisionAnalysisPanel({ api, chatId, projectId, images, selectedImageId, ready, disabled, onBusyChange }: VisionAnalysisPanelProps) {
   const [analysis, setAnalysis] = useState<VisionAnalysisState | null>(null)
   const [language, setLanguage] = useState<VisionOcrLanguage>('eng')
   const [operation, setOperation] = useState<'readiness' | 'ocr' | 'model-readiness' | 'model' | null>(null)
@@ -31,6 +30,7 @@ export function VisionAnalysisPanel({ api, chatId, projectId, images, selectedIm
   const [cancelPending, setCancelPending] = useState(false)
   const [leased, setLeased] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [view, setView] = useState<'model' | 'ocr'>('model')
   const version = useRef(0)
   const requestActive = useRef(false)
   const observedBusy = useRef(false)
@@ -149,21 +149,22 @@ export function VisionAnalysisPanel({ api, chatId, projectId, images, selectedIm
   const phase = operation ?? visible?.phase
 
   return <section className="vision-analysis" aria-label="Visual analysis" aria-busy={leased}>
-    <div className="vision-analysis-controls">
-      <label>Vision image<select value={selected?.imageId ?? ''} disabled={locked} onChange={(event) => { onSelectImage(event.currentTarget.value) }}>
-        <option value="">Select an image</option>
-        {images.map((image) => <option key={image.imageId} value={image.imageId}>{image.fileName}</option>)}
-      </select></label>
+    <div className="vision-analysis-heading">
+      <ToolTabs<'model' | 'ocr'> idPrefix="vision-analysis-kind" label="Image analysis" value={view} onValueChange={setView}
+        items={[{ value: 'model', label: 'Describe image' }, { value: 'ocr', label: 'Read text' }]} />
+      {leased &&
       <button type="button" disabled={!ready || !leased || cancelPending || visible?.cancelRequested === true}
-        onClick={() => { void cancel() }}>Cancel analysis</button>
+        onClick={() => { void cancel() }}>Cancel analysis</button>}
     </div>
     {leased && <p role="status">{visible?.cancelRequested ? 'Cancellation requested. Waiting for the local analysis operation to finish.'
       : phase === 'model-readiness' ? 'Checking installed local vision models…'
         : phase === 'model' ? 'The local vision model is analyzing the selected image…'
           : phase === 'readiness' ? 'Checking local Tesseract and language data…' : 'Local OCR is running…'}</p>}
+    {/* These providers share one physical request owner. Switching views only
+        changes visibility; it cannot abandon the request or its cancellation. */}
+    <ToolTabPanel idPrefix="vision-analysis-kind" value="ocr" activeValue={view}>
     <section className="vision-provider" aria-label="Local OCR">
-      <h3>Local OCR</h3>
-      <p>Extract text only after selecting an image and clicking Run OCR. OCR text is evidence to review.</p>
+      <p>Read text locally from the selected image. Review the extraction before using it.</p>
       <div className="vision-analysis-controls">
       <button type="button" disabled={locked} onClick={() => { void run('readiness') }}>Check OCR</button>
       <label>OCR language<select value={language} disabled={locked} onChange={(event) => { setLanguage(event.currentTarget.value as VisionOcrLanguage) }}>
@@ -171,15 +172,15 @@ export function VisionAnalysisPanel({ api, chatId, projectId, images, selectedIm
         <option value="chi_sim+eng">Simplified Chinese + English</option>
         <option value="chi_tra+eng">Traditional Chinese + English</option>
       </select></label>
-      <button type="button" disabled={locked || selected === undefined || !available} onClick={() => { void run('ocr') }}>Run OCR</button>
+      <button type="button" className="tool-primary" disabled={locked || selected === undefined || !available} onClick={() => { void run('ocr') }}>Run OCR</button>
       </div>
     <p role="status">{readiness === null ? 'Check OCR to discover the installed local engine and language data.'
         : readiness.status === 'ready' ? `Tesseract ${readiness.version ?? ''} is ready.`
           : readiness.status === 'missing_engine' ? 'Tesseract is missing or not configured. Install a local engine before checking again.'
             : readiness.status === 'missing_languages' ? 'Required Tesseract language data is missing. Install English and the Chinese data you need.'
               : 'Local Tesseract is unavailable. Check the local installation before retrying.'}</p>
-    {readiness !== null && <p>Installed language data: {readiness.languages.length === 0 ? 'none'
-      : readiness.languages.map((installed) => languageNames[installed]).join(', ')}.</p>}
+    {readiness !== null && <details><summary>Language availability</summary><p>Installed language data: {readiness.languages.length === 0 ? 'none'
+      : readiness.languages.map((installed) => languageNames[installed]).join(', ')}.</p></details>}
     {readiness?.status === 'ready' && !available && <p>The selected language requires additional local Tesseract language data.</p>}
     {!leased && visible?.ocr.error !== null && visible?.ocr.error !== undefined && <p role="alert">Local OCR ended: {visible.ocr.error.code}.</p>}
     {evidence !== null && evidence !== undefined && selected !== undefined && <div className="vision-ocr-result" role="region" aria-label="OCR evidence">
@@ -200,9 +201,10 @@ export function VisionAnalysisPanel({ api, chatId, projectId, images, selectedIm
       </ol></details>
     </div>}
     </section>
+    </ToolTabPanel>
+    <ToolTabPanel idPrefix="vision-analysis-kind" value="model" activeValue={view}>
     <section className="vision-provider" aria-label="Local vision model">
-      <h3>Local vision model</h3>
-      <p>Ask about the selected image using an installed local model. Model inference can be wrong.</p>
+      <p>Ask a local model about this image. Model inference can be wrong.</p>
       <div className="vision-analysis-controls">
         <button type="button" disabled={locked} onClick={() => { void run('model-readiness') }}>Check vision models</button>
         <label>Vision model<select value={selectedModel} disabled={locked} onChange={(event) => { setModelName(event.currentTarget.value) }}>
@@ -216,9 +218,9 @@ export function VisionAnalysisPanel({ api, chatId, projectId, images, selectedIm
             : 'Local vision models are unavailable. Start local Ollama and check again.'}</p>
       <label className="vision-model-question">Question about image<textarea rows={3} maxLength={4096} value={question}
         disabled={locked} onChange={(event) => { setQuestion(event.currentTarget.value) }} /></label>
-      <p>{questionBytes} / 4096 UTF-8 bytes.</p>
+      {questionBytes > 3500 && <p>{questionBytes} / 4096 UTF-8 bytes.</p>}
       {!questionValid && <p>Enter a question within the byte limit before asking.</p>}
-      <button type="button" disabled={locked || selected === undefined || !modelAvailable || !questionValid}
+      <button type="button" className="tool-primary" disabled={locked || selected === undefined || !modelAvailable || !questionValid}
         onClick={() => { void run('model') }}>Ask about image</button>
       {!leased && visible?.model.error !== null && visible?.model.error !== undefined && <p role="alert">Local vision model ended: {visible.model.error.code}.</p>}
       {inference !== null && inference !== undefined && <div className="vision-ocr-result" role="region" aria-label="Model inference">
@@ -229,6 +231,7 @@ export function VisionAnalysisPanel({ api, chatId, projectId, images, selectedIm
         {inference.truncated && <p role="alert">The model response was truncated. Review it as incomplete.</p>}
       </div>}
     </section>
+    </ToolTabPanel>
     {error !== null && <p role="alert">{error}</p>}
   </section>
 }

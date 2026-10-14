@@ -65,11 +65,11 @@ export function InternetCacheSection({ api, chatId, projectId, lifecycleEpoch, r
 
   const locked = !ready || disabled || pending
   return <section className="internet-cache-section" aria-label="Offline Internet cache" aria-busy={pending}>
-    <h3>Offline cached results</h3>
-    <p>Restore a prior result without contacting its provider, including while Internet is off. Original retrieval times are preserved. Up to 20 results stay in memory for this app session and are cleared when the Chat or Project changes.</p>
-    <p>Search, weather and repository results have a five-minute freshness window; page extracts have thirty minutes. Expired content requires explicit confirmation and may be outdated.</p>
+    <h3>Saved for this session</h3>
+    <p>Restore sources offline, with their original retrieval times.</p>
+    <details className="internet-help"><summary>Availability and freshness</summary><p>Up to 20 results stay in memory for this app session and are cleared when the Chat or Project changes. Search, weather and repository results have a five-minute freshness window; page extracts have thirty minutes. Expired content requires explicit confirmation and may be outdated. Restoring does not contact the provider.</p></details>
     <div className="internet-actions">
-      <button type="button" disabled={locked} onClick={() => { void list() }}>{pending ? 'Listing cached results…' : 'List cached results'}</button>
+      <button className="internet-primary" type="button" disabled={locked} onClick={() => { void list() }}>{pending ? 'Listing cached results…' : 'List cached results'}</button>
       <button type="button" disabled={locked || state === null || state.entries.length === 0} onClick={onClear}>Clear cache and research</button>
     </div>
     {error !== null && <p role="alert">{error}</p>}

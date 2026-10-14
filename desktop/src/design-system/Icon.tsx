@@ -21,8 +21,10 @@ export type IconName =
   | 'download'
   | 'file'
   | 'folder'
+  | 'globe'
   | 'hangup'
   | 'info'
+  | 'image'
   | 'edit'
   | 'memory'
   | 'menu'
@@ -69,6 +71,12 @@ export function Icon({
 
   let content
   switch (name) {
+    case 'globe':
+      content = <><circle cx="12" cy="12" r="9" /><ellipse cx="12" cy="12" rx="4" ry="9" /><path d="M3 12h18" /></>
+      break
+    case 'image':
+      content = <><rect x="3" y="3" width="18" height="18" rx="3" /><circle cx="8" cy="8" r="1.5" /><path d="m3 17 5-5 4 4 4-6 5 7" /></>
+      break
     case 'archive':
       content = (
         <>
