@@ -10576,6 +10576,12 @@ test('recovers a pending send beside a newer draft after a window boundary', asy
   await expect.poll(() => page.evaluate(() => (
     window.localStorage.getItem('elysia.pending-chat-send.v1')
   ))).toContain('Submitted before the window closed')
+  // This boundary tests two durable recovery records. Filling the controlled
+  // composer schedules persistence; its DOM value alone does not prove the
+  // draft effect has committed before a replacement document reads storage.
+  await expect.poll(() => page.evaluate(() => (
+    JSON.parse(window.localStorage.getItem('elysia.chat-drafts.v1') ?? '{}')['chat-test']
+  ))).toBe('A newer draft written during generation')
 
   const runningApp = electronApp
   expect(runningApp).toBeDefined()
@@ -10594,8 +10600,15 @@ test('recovers a pending send beside a newer draft after a window boundary', asy
         partition: `elysia-ui-test-${process.pid}`,
       },
     })
+    // Keep an empty native window alive while the old document retires. A
+    // normal reload has one draft writer; loading two Apps concurrently makes
+    // the result depend on which renderer's initial storage effect runs last.
+    if (previousWindow !== undefined && !previousWindow.isDestroyed()) {
+      const closed = new Promise<void>((resolve) => { previousWindow.once('closed', resolve) })
+      previousWindow.close()
+      await closed
+    }
     await replacementWindow.loadFile(paths.rendererPath)
-    previousWindow?.close()
   }, {
     preloadPath: mockPreloadPath,
     rendererPath,

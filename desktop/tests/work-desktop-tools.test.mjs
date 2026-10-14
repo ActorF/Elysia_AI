@@ -296,6 +296,38 @@ test('A selected directory link cannot escape the Workspace into an external doc
   await assert.rejects(controller.chooseFile({ chatId: 'chat_work' }), /path_denied/u)
 })
 
+test('Sensitive selected roots and ancestor names cannot bypass the native document policy', async (t) => {
+  const { controller, selected, root, owner, effects, audit } = await fixture(t)
+  const sensitive = ['.ssh', '.AWS', '.gcp', '.kube', 'secrets', 'credentials', 'id_ed25519', 'known_hosts',
+    'authorized_keys', 'private_key', '.ENV-example', 'passwords', 'tokens', 'paßword', 'ſecrets', '．aws',
+    ...['pem', 'key', 'p12', 'pfx', 'crt', 'cer', 'der', 'jks', 'keystore', 'kdbx'].map((suffix) => `private.${suffix}`)]
+  for (const name of sensitive) {
+    const ancestor = path.join(root, name)
+    const workspace = path.join(ancestor, 'ordinary-project')
+    await mkdir(workspace, { recursive: true })
+    selected.path = path.join(workspace, 'notes.txt')
+    await writeFile(selected.path, 'Disposable synthetic private fixture.')
+    for (const boundRoot of [ancestor, workspace]) {
+      owner.workspacePath = boundRoot
+      await assert.rejects(controller.chooseFile({ chatId: 'chat_work' }), /path_denied/u)
+    }
+  }
+  assert.equal(effects.length, 0)
+  assert.equal(audit.length, 0)
+})
+
+test('Sensitive native filenames protect case-folded credentials, tokens and known-key document aliases', async (t) => {
+  const { controller, selected, root, effects, audit } = await fixture(t)
+  for (const name of ['.ENV.txt', 'passwords.json', 'token-report.csv', 'id_ed25519.txt', 'authorized_keys.md',
+    'paßword.json', 'ſecrets.txt', 'private-key-notes.md']) {
+    selected.path = path.join(root, name)
+    await writeFile(selected.path, 'Disposable synthetic private fixture.')
+    await assert.rejects(controller.chooseFile({ chatId: 'chat_work' }), /path_denied/u)
+  }
+  assert.equal(effects.length, 0)
+  assert.equal(audit.length, 0)
+})
+
 test('File selection is unavailable unbound and filesystem failures never leak private native paths', async (t) => {
   let pickers = 0
   const { controller, owner } = await fixture(t, { chooseFile: async () => { pickers++; throw new Error('PRIVATE chooser path') } })

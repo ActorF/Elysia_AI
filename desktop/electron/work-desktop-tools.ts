@@ -15,7 +15,23 @@ const MAX_TEXT_BYTES = 32 * 1024
 const MAX_DOCUMENT_BYTES = 16 * 1024 * 1024
 const APPROVAL_TTL_MS = 5 * 60 * 1000
 const DOCUMENT_EXTENSIONS = new Set(['.txt', '.md', '.csv', '.json', '.pdf', '.docx'])
-const SENSITIVE_NAMES = new Set(['.env', '.git', '.ssh', '.aws', '.azure', '.gnupg', '.venv', 'node_modules'])
+const SENSITIVE_NAMES = new Set(['.git', '.ssh', '.aws', '.azure', '.gcp', '.gnupg', '.kube', '.venv', 'node_modules',
+  'secrets', 'credentials', 'id_rsa', 'id_dsa', 'id_ecdsa', 'id_ed25519', 'known_hosts', 'authorized_keys', 'private_key', 'private-key'])
+const PRIVATE_SUFFIXES = new Set(['.pem', '.key', '.p12', '.pfx', '.crt', '.cer', '.der', '.jks', '.keystore', '.kdbx'])
+
+function sensitiveComponent(component: string): boolean {
+  // Match the Python file-tool policy across the complete selected ancestry,
+  // including case-fold spellings such as paßword and ſecrets. Normalization
+  // tightens this deny list only; it never changes the path opened on disk.
+  const lower = component.normalize('NFKC').toLowerCase().replaceAll('ß', 'ss')
+  const extension = path.extname(lower)
+  // Adding an allowed document suffix to a known key filename does not make
+  // its copied credential content an eligible native review document.
+  const keyAlias = DOCUMENT_EXTENSIONS.has(extension) && SENSITIVE_NAMES.has(lower.slice(0, -extension.length))
+  return lower.startsWith('.env') || SENSITIVE_NAMES.has(lower) || keyAlias || PRIVATE_SUFFIXES.has(extension)
+    || /(?:^|[._-])(?:secrets?|credentials?|passwords?|tokens?)(?:$|[._-])/u.test(lower)
+    || /secret|credential|private[-_]?key/u.test(lower)
+}
 
 import type {
   WorkDesktopOwner, WorkDesktopActionName, WorkDesktopErrorCode, WorkDesktopPreview,
@@ -449,10 +465,10 @@ export class WorkDesktopController {
     const relative = path.relative(rootReal, sourceReal)
     const components = relative.split(path.sep)
     if (!rootStat.isDirectory() || rootStat.isSymbolicLink() || !within(rootReal, sourceReal)
-      || sourceReal !== source || components.some((component) => component === '' || component.startsWith('.env')
+      || sourceReal !== source || sourceReal.split(path.sep).some(sensitiveComponent)
+      || components.some((component) => component === ''
         || component !== component.trim() || component.endsWith('.') || /[<>:"|?*]/u.test(component)
-        || /^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)/iu.test(component)
-        || SENSITIVE_NAMES.has(component.toLowerCase()) || /(?:secret|credential|private[-_]?key|\.pem$|\.key$)/iu.test(component))
+        || /^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)/iu.test(component))
       || !DOCUMENT_EXTENSIONS.has(path.extname(source).toLowerCase())) throw new BoundaryError('path_denied')
     let cursor = rootReal
     for (const component of components) {
