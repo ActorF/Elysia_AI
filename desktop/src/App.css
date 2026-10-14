@@ -1259,7 +1259,9 @@ svg {
 }
 
 .chat-surface {
-  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  /* Context and a tall composer share the remaining space at high zoom;
+     reserve a visible message lane and let both surrounding rows scroll. */
+  grid-template-rows: auto minmax(0, auto) minmax(2rem, 1fr) minmax(0, auto);
 }
 
 .message-scroll {

@@ -37,7 +37,7 @@ function transformedGroups(source, orientation) {
 }
 
 void app.whenReady().then(async () => {
-  const { decodeVisionImage } = await import('../dist-electron/vision-images.js')
+  const { decodeVisionImage, prepareVisionModelImage } = await import('../dist-electron/vision-images.js')
   const original = nativeImage.createFromBitmap(Buffer.from([
     0, 0, 255, 255, 0, 255, 0, 255, 255, 0, 0, 255,
     255, 255, 0, 255, 255, 0, 255, 255, 0, 255, 255, 255,
@@ -45,6 +45,10 @@ void app.whenReady().then(async () => {
   const png = decodeVisionImage(original.toPNG(), nativeImage)
   assert.deepEqual([png.width, png.height], [2, 3])
   assert.deepEqual(nativeImage.createFromBuffer(png.pngBytes).toBitmap(), original.toBitmap())
+  const smallSample = prepareVisionModelImage(png, nativeImage)
+  assert.deepEqual([smallSample.width, smallSample.height], [2, 3])
+  assert.deepEqual(smallSample.pngBytes, png.pngBytes)
+  assert.notEqual(smallSample.pngBytes, png.pngBytes)
   const jpeg = original.toJPEG(100)
   const jpegBitmap = nativeImage.createFromBuffer(jpeg).toBitmap()
   for (let orientation = 1; orientation <= 8; orientation++) {
@@ -62,6 +66,13 @@ void app.whenReady().then(async () => {
   const large = nativeImage.createFromBitmap(Buffer.alloc(1024 * 256 * 4, 255), { width: 1024, height: 256 })
   const thumbnail = decodeVisionImage(large.toPNG(), nativeImage)
   assert.deepEqual(nativeImage.createFromDataURL(thumbnail.previewDataUrl).getSize(), { width: 512, height: 128 })
+  const wide = nativeImage.createFromBitmap(Buffer.alloc(4096 * 512 * 4, 255), { width: 4096, height: 512 })
+  const retained = decodeVisionImage(wide.toPNG(), nativeImage), retainedBytes = Buffer.from(retained.pngBytes)
+  const sample = prepareVisionModelImage(retained, nativeImage)
+  assert.deepEqual(nativeImage.createFromBuffer(sample.pngBytes).getSize(), { width: 2048, height: 256 })
+  assert.ok(sample.pngBytes.length <= 8 * 1024 * 1024)
+  assert.deepEqual(retained.pngBytes, retainedBytes)
+  assert.deepEqual([retained.width, retained.height], [4096, 512])
   process.stdout.write('VISION_NATIVE_SMOKE_OK\n')
   app.exit(0)
 }).catch((error) => { process.stderr.write(`Synthetic native image smoke failed: ${String(error?.stack ?? error)}\n`); app.exit(1) })

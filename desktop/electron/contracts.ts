@@ -32,7 +32,7 @@ import type { WorkAuditClient } from './work-audit-protocol.js'
 import type { WorkDesktopClient } from './work-desktop-protocol.js'
 import type { VisionClient } from './vision-protocol.js'
 import type { VisionAnalysisClient } from './vision-analysis-protocol.js'
-export type { VisionAnalysisClient, VisionAnalysisState, VisionOcrRequest, VisionOcrResult } from './vision-analysis-protocol.js'
+export type { VisionAnalysisClient, VisionAnalysisState, VisionOcrRequest, VisionOcrResult, VisionModelRequest, VisionModelResult } from './vision-analysis-protocol.js'
 export type { VisionClient, VisionState, VisionSelectionResult, VisionImage } from './vision-protocol.js'
 export type { WorkDesktopClient, WorkDesktopState, WorkDesktopAuditEntry } from './work-desktop-protocol.js'
 

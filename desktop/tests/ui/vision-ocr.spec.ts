@@ -97,16 +97,37 @@ test('runs only the exact selected language and displays inert text with origina
   await expect(evidence).toHaveCount(0)
 })
 
+test('bounds the position review for a narrow tall image while retaining its original coordinates', async () => {
+  await page.evaluate((image) => {
+    const control = (window as OcrTestWindow).elysiaDesktopTest
+    control.setSelectedVisionImage({ ...image, fileName: 'synthetic-tall.png', width: 1, height: 8192 })
+    control.setVisionOcrResult({ text: 'Vertical', words: [{ text: 'Vertical', x: 0, y: 0, width: 1, height: 8192, confidence: 0.9 }],
+      language: 'eng', width: 1, height: 8192, truncated: false })
+  }, fixture)
+  await page.getByRole('button', { name: 'Choose image', exact: true }).click()
+  await page.getByRole('combobox', { name: 'Vision image', exact: true }).selectOption({ label: 'synthetic-tall.png' })
+  await enableOcr()
+  await page.getByRole('button', { name: 'Run OCR', exact: true }).click()
+  const evidence = page.getByRole('region', { name: 'OCR evidence', exact: true })
+  const box = await evidence.getByLabel('OCR word positions', { exact: true }).evaluate((element) => ({
+    height: element.getBoundingClientRect().height, rem: Number.parseFloat(getComputedStyle(document.documentElement).fontSize),
+  }))
+  expect(box.height).toBeGreaterThan(0)
+  expect(box.height).toBeLessThanOrEqual(12 * box.rem + 1)
+  await evidence.getByText('Word positions and confidence (1)', { exact: true }).click()
+  await expect(evidence).toContainText('width 1, height 8192')
+})
+
 test('cancellation and hiding the review keep the physical OCR lease until the native callback drains', async () => {
   await selectImage(); await enableOcr()
   await page.evaluate(() => { (window as OcrTestWindow).elysiaDesktopTest.setVisionOcrDelay(true) })
   const ocr = page.getByRole('region', { name: 'Local OCR', exact: true })
   await ocr.getByRole('button', { name: 'Run OCR', exact: true }).click()
-  await expect(ocr.getByRole('button', { name: 'Cancel OCR', exact: true })).toBeEnabled()
+  await expect(page.getByRole('button', { name: 'Cancel analysis', exact: true })).toBeEnabled()
   await expect(page.getByRole('combobox', { name: 'Conversation mode' })).toBeDisabled()
   await expect(page.getByRole('combobox', { name: 'AI model', exact: true })).toBeDisabled()
-  await ocr.getByRole('button', { name: 'Cancel OCR', exact: true }).click()
-  await expect(ocr.getByRole('status')).toContainText('Cancellation requested. Waiting')
+  await page.getByRole('button', { name: 'Cancel analysis', exact: true }).click()
+  await expect(page.getByRole('region', { name: 'Visual analysis', exact: true })).toContainText('Cancellation requested. Waiting')
   await expect(page.getByRole('button', { name: 'Remove selected image synthetic-ocr.png' })).toBeDisabled()
   const panel = page.getByRole('region', { name: 'Vision images', exact: true })
   await panel.getByRole('button', { name: 'Vision · 1 selected', exact: true }).click()

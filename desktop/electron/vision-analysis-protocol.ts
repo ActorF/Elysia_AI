@@ -1,4 +1,4 @@
-/** Validate bounded OCR evidence and physical progress without importing native adapters into the renderer. */
+/** Validate bounded OCR evidence, local model inference, and physical progress without importing native adapters into the renderer. */
 
 import { parseVisionChatId, parseVisionRemoveRequest, validateVisionDimensions } from './vision-protocol.js'
 
@@ -9,6 +9,7 @@ export type VisionOcrInstalledLanguage = 'eng' | 'chi_sim' | 'chi_tra'
 /** Native failures are categories; stdout, stderr, paths, and image content never appear in diagnostics. */
 export type VisionAnalysisErrorCode = 'unavailable' | 'busy' | 'cancelled' | 'timeout' | 'invalid_image'
   | 'invalid_language' | 'invalid_output' | 'limit_exceeded' | 'native_failed' | 'owner_changed'
+  | 'invalid_model' | 'invalid_question' | 'unsupported_model'
 
 /** Describe the existing engine and trained data; a readiness probe cannot install them. */
 export interface VisionOcrReadiness {
@@ -29,6 +30,13 @@ export interface VisionOcrResult {
   truncated: false
 }
 
+/** Advertise only actually installed local models whose metadata supports vision and bounded non-thinking replies. */
+export interface VisionModelReadiness { status: 'ready' | 'unavailable' | 'no_vision_model'; models: string[]; defaultModel: string | null }
+/** A local generated answer remains fallible inference, separately labeled from pixels and OCR. */
+export interface VisionModelResult { model: string; question: string; text: string; truncated: boolean }
+/** Select one displayed local model and one owned image without providing service URLs or executable instructions. */
+export interface VisionModelRequest { chatId: string; imageId: string; model: string; question: string }
+
 /** Bind evidence to the exact canonical pixels instead of only a file display name. */
 export interface VisionAnalysisImage { imageId: string; sha256: string; width: number; height: number }
 /** Fixed display text is derived from the closed code and never echoes native errors. */
@@ -40,9 +48,10 @@ export interface VisionAnalysisState {
   revision: number
   busy: boolean
   cancelRequested: boolean
-  phase: 'readiness' | 'ocr' | null
+  phase: 'readiness' | 'ocr' | 'model-readiness' | 'model' | null
   image: VisionAnalysisImage | null
   ocr: { readiness: VisionOcrReadiness | null; result: VisionOcrResult | null; error: VisionAnalysisError | null }
+  model: { readiness: VisionModelReadiness | null; result: VisionModelResult | null; error: VisionAnalysisError | null }
 }
 
 /** The renderer chooses only a displayed image and one closed installed recognition mode. */
@@ -57,16 +66,22 @@ export interface VisionAnalysisClient {
   runVisionOcr(request: VisionOcrRequest): Promise<VisionAnalysisState>
   /** Request cancellation promptly while reporting whether the native callback still owns capacity. */
   cancelVisionAnalysis(chatId: string): Promise<VisionAnalysisState>
+  /** Probe installed local vision capability without loading weights or sending any pixels. */
+  checkVisionModel(chatId: string): Promise<VisionAnalysisState>
+  /** Ask one bounded question about the exact owned image; this never executes tools or actions. */
+  askVisionImage(request: VisionModelRequest): Promise<VisionAnalysisState>
 }
 
 const LANGUAGES = ['eng', 'chi_sim', 'chi_tra'] as const
 const MODES = ['eng', 'chi_sim+eng', 'chi_tra+eng'] as const
 const ERROR_MESSAGES: Record<VisionAnalysisErrorCode, string> = {
-  unavailable: 'Local OCR is unavailable.', busy: 'Wait for the current local analysis.',
+  unavailable: 'Local analysis is unavailable.', busy: 'Wait for the current local analysis.',
   cancelled: 'Local analysis was cancelled.', timeout: 'Local analysis exceeded its time limit.',
   invalid_image: 'The selected image is unavailable or invalid.', invalid_language: 'The OCR language is invalid.',
-  invalid_output: 'Local OCR returned invalid evidence.', limit_exceeded: 'Local OCR exceeded its safe limits.',
-  native_failed: 'Local OCR could not complete.', owner_changed: 'The selected image or owner changed.',
+  invalid_output: 'Local analysis returned invalid evidence.', limit_exceeded: 'Local analysis exceeded its safe limits.',
+  native_failed: 'Local analysis could not complete.', owner_changed: 'The selected image or owner changed.',
+  invalid_model: 'The selected local vision model is unavailable.', invalid_question: 'The image question is invalid.',
+  unsupported_model: 'The selected local model does not support image questions.',
 }
 
 function record(value: unknown, keys: readonly string[]): Record<string, unknown> {
@@ -135,13 +150,60 @@ export function parseVisionOcrResult(value: unknown, image: VisionAnalysisImage)
   return { text, words, language: raw.language as VisionOcrLanguage, width: image.width, height: image.height, truncated: false }
 }
 
+function modelName(value: unknown): string {
+  if (typeof value !== 'string' || value.length > 256
+    || !/^[A-Za-z0-9][A-Za-z0-9_.-]*(?:\/[A-Za-z0-9][A-Za-z0-9_.-]*)*(?::[A-Za-z0-9][A-Za-z0-9_.-]*)?$/u.test(value)
+    || /(?:[:_-]cloud)(?:$|[._-])/iu.test(value)) throw new TypeError('Local vision model is invalid.')
+  return value
+}
+
+/** Validate a fresh local-only capability report without accepting cloud models or duplicate registry entries. */
+export function parseVisionModelReadiness(value: unknown): VisionModelReadiness {
+  const raw = record(value, ['status', 'models', 'defaultModel'])
+  if (!['ready', 'unavailable', 'no_vision_model'].includes(raw.status as string) || !Array.isArray(raw.models)
+    || raw.models.length > 64 || new Set(raw.models).size !== raw.models.length) throw new TypeError('Local vision readiness is invalid.')
+  const models = raw.models.map(modelName)
+  if (raw.status === 'ready' ? models.length === 0 || !models.includes(raw.defaultModel as string)
+    : models.length !== 0 || raw.defaultModel !== null) throw new TypeError('Local vision readiness is contradictory.')
+  return { status: raw.status as VisionModelReadiness['status'], models, defaultModel: raw.defaultModel as string | null }
+}
+
+/** Accept one bounded question and closed image reference without allowing the renderer to choose an endpoint or inference output. */
+export function parseVisionModelRequest(value: unknown): VisionModelRequest {
+  const raw = record(value, ['chatId', 'imageId', 'model', 'question'])
+  const reference = parseVisionRemoveRequest({ chatId: raw.chatId, imageId: raw.imageId })
+  return { ...reference, model: modelName(raw.model), question: question(raw.question) }
+}
+
+function question(value: unknown): string {
+  const checked = plainText(value, 4096)
+  if (checked.trim() === '') throw new TypeError('Vision question is blank.')
+  return checked
+}
+
+/** Validate generated text as bounded inference, retaining the model's truthful truncation fact. */
+export function parseVisionModelResult(value: unknown): VisionModelResult {
+  const raw = record(value, ['model', 'question', 'text', 'truncated'])
+  const text = plainText(raw.text, 16 * 1024)
+  if (text.trim() === '' || typeof raw.truncated !== 'boolean') throw new TypeError('Local vision result is invalid.')
+  return { model: modelName(raw.model), question: question(raw.question), text, truncated: raw.truncated }
+}
+
+function parseError(value: unknown): VisionAnalysisError | null {
+  if (value === null) return null
+  const failure = record(value, ['code', 'message']), error = visionAnalysisError(failure.code as VisionAnalysisErrorCode)
+  if (failure.message !== error.message) throw new TypeError('Vision analysis diagnostic is invalid.')
+  return error
+}
+
 /** Check exact scoped analysis and truthful physical draining facts, returning detached nested evidence. */
 export function parseVisionAnalysisState(value: unknown): VisionAnalysisState {
-  const raw = record(value, ['kind', 'owner', 'revision', 'busy', 'cancelRequested', 'phase', 'image', 'ocr'])
+  const raw = record(value, ['kind', 'owner', 'revision', 'busy', 'cancelRequested', 'phase', 'image', 'ocr', 'model'])
   const owner = record(raw.owner, ['chatId', 'projectId']), ocr = record(raw.ocr, ['readiness', 'result', 'error'])
+  const model = record(raw.model, ['readiness', 'result', 'error'])
   if (raw.kind !== 'vision.analysis' || typeof raw.revision !== 'number' || !Number.isSafeInteger(raw.revision) || raw.revision < 0
     || typeof raw.busy !== 'boolean' || typeof raw.cancelRequested !== 'boolean'
-    || ![null, 'readiness', 'ocr'].includes(raw.phase as null | string)
+    || ![null, 'readiness', 'ocr', 'model-readiness', 'model'].includes(raw.phase as null | string)
     || raw.busy !== (raw.phase !== null) || !raw.busy && raw.cancelRequested
     || owner.projectId !== null && (typeof owner.projectId !== 'string' || owner.projectId.length > 128
       || !/^project_[A-Za-z0-9_-]+$/u.test(owner.projectId))) throw new TypeError('Vision analysis state is invalid.')
@@ -152,15 +214,13 @@ export function parseVisionAnalysisState(value: unknown): VisionAnalysisState {
     if (typeof selected.sha256 !== 'string' || !/^[0-9a-f]{64}$/u.test(selected.sha256)) throw new TypeError('Vision analysis image is invalid.')
     image = { imageId: reference.imageId, sha256: selected.sha256, ...validateVisionDimensions(selected.width, selected.height) }
   }
-  let error: VisionAnalysisError | null = null
-  if (ocr.error !== null) {
-    const failure = record(ocr.error, ['code', 'message'])
-    error = visionAnalysisError(failure.code as VisionAnalysisErrorCode)
-    if (failure.message !== error.message) throw new TypeError('Vision analysis diagnostic is invalid.')
-  }
+  const error = parseError(ocr.error), modelError = parseError(model.error)
   if (ocr.result !== null && (image === null || error !== null)) throw new TypeError('Vision OCR evidence has no valid source.')
+  if (model.result !== null && (image === null || modelError !== null)) throw new TypeError('Vision model inference has no valid source.')
   return { kind: 'vision.analysis', owner: { chatId: parseVisionChatId(owner.chatId), projectId: owner.projectId as string | null },
     revision: raw.revision, busy: raw.busy, cancelRequested: raw.cancelRequested, phase: raw.phase as VisionAnalysisState['phase'], image,
     ocr: { readiness: ocr.readiness === null ? null : parseVisionOcrReadiness(ocr.readiness),
-      result: ocr.result === null ? null : parseVisionOcrResult(ocr.result, image!), error } }
+      result: ocr.result === null ? null : parseVisionOcrResult(ocr.result, image!), error },
+    model: { readiness: model.readiness === null ? null : parseVisionModelReadiness(model.readiness),
+      result: model.result === null ? null : parseVisionModelResult(model.result), error: modelError } }
 }

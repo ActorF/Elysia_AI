@@ -247,6 +247,39 @@ export function decodeVisionImage(input: Buffer, codec: VisionImageCodec): Canon
   }
 }
 
+/** Prepare a detached model sample under the local adapter's canvas/byte ceilings without changing the original identity. */
+export function prepareVisionModelImage(image: CanonicalVisionImage, codec: VisionImageCodec): Pick<CanonicalVisionImage, 'pngBytes' | 'width' | 'height'> {
+  try {
+    const original = png(image.pngBytes, VISION_MAX_CANONICAL_BYTES)
+    if (!original.bytes.equals(image.pngBytes) || original.width !== image.width || original.height !== image.height
+      || createHash('sha256').update(original.bytes).digest('hex') !== image.sha256) invalid()
+    const maximum = 8 * 1024 * 1024
+    if (Math.max(original.width, original.height) <= 2048 && original.bytes.length <= maximum) {
+      return { pngBytes: Buffer.from(original.bytes), width: original.width, height: original.height }
+    }
+    const decoded = codec.createFromBuffer(original.bytes)
+    if (decoded.isEmpty() || decoded.getSize().width !== original.width || decoded.getSize().height !== original.height) invalid()
+    let ratio = Math.min(1, 2048 / Math.max(original.width, original.height))
+    while (true) {
+      const width = Math.max(1, Math.round(original.width * ratio)), height = Math.max(1, Math.round(original.height * ratio))
+      const resized = decoded.resize({ width, height, quality: 'good' })
+      const bytes = resized.toPNG()
+      if (bytes.length <= maximum) {
+        const sample = png(bytes, maximum)
+        if (sample.width !== width || sample.height !== height) invalid()
+        return { pngBytes: sample.bytes, width, height }
+      }
+      // Byte bounds remain independent of edge bounds: dense RGBA canvases
+      // can exceed 8 MiB even at 2048 pixels. Halving admits at most twelve
+      // finite encodings, and never upsizes or mutates the retained original.
+      if (width === 1 && height === 1) throw new VisionImageError('limit_exceeded')
+      ratio /= 2
+    }
+  } catch (error) {
+    throw new VisionImageError(error instanceof VisionImageError ? error.code : 'invalid_image')
+  }
+}
+
 /** Read only a native-picked ordinary file, pinning each directory and the opened identity before/after I/O. */
 export async function readVisionSelectedFile(selectedPath: string): Promise<{ fileName: string; bytes: Buffer }> {
   try {

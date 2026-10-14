@@ -4,7 +4,7 @@
 
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { VisionState, VisionSelectionResult, VisionRemoveRequest } from './vision-protocol.js'
-import type { VisionAnalysisState, VisionOcrRequest } from './vision-analysis-protocol.js'
+import type { VisionAnalysisState, VisionOcrRequest, VisionModelRequest } from './vision-analysis-protocol.js'
 
 import type {
   ArchiveChatRequest,
@@ -816,6 +816,8 @@ ipcRenderer.on(
 )
 
 const desktopApi: DesktopApi = {
+  checkVisionModel: (chatId: string) => ipcRenderer.invoke('vision:check-model', chatId) as Promise<VisionAnalysisState>,
+  askVisionImage: (request: VisionModelRequest) => ipcRenderer.invoke('vision:ask-image', request) as Promise<VisionAnalysisState>,
   getVisionAnalysis: (chatId: string) => ipcRenderer.invoke('vision:get-analysis', chatId) as Promise<VisionAnalysisState>,
   checkVisionOcr: (chatId: string) => ipcRenderer.invoke('vision:check-ocr', chatId) as Promise<VisionAnalysisState>,
   runVisionOcr: (request: VisionOcrRequest) => ipcRenderer.invoke('vision:run-ocr', request) as Promise<VisionAnalysisState>,

@@ -432,11 +432,16 @@ let pendingVisionSelections = []
 let visionAnalysisOwnerKey = null
 let visionAnalysisState = null
 let visionOcrReadiness = { status: 'missing_engine', languages: [], version: null }
+let visionModelReadiness = { status: 'unavailable', models: [], defaultModel: null }
 let nextVisionOcrResult = null
+let nextVisionModelResult = null
 let delayVisionOcr = false
-let visionOcrActive = false
-let visionOcrCancellation = false
+let delayVisionModel = false
+let visionAnalysisActive = false
+let visionAnalysisCancellation = false
+let visionAnalysisPhase = null
 let pendingVisionOcr = []
+let pendingVisionModel = []
 let desktopOwnerKey = null
 let desktopState = null
 let desktopClipboard = 'Private clipboard text.'
@@ -496,11 +501,14 @@ function visionAnalysisSnapshot(chatId) {
   if (visionAnalysisState === null || key !== visionAnalysisOwnerKey) {
     visionAnalysisOwnerKey = key
     visionAnalysisState = { kind: 'vision.analysis', owner: owned.owner, revision: 0, busy: false,
-      phase: null, cancelRequested: false, image: null, ocr: { readiness: null, result: null, error: null } }
+      phase: null, cancelRequested: false, image: null, ocr: { readiness: null, result: null, error: null },
+      model: { readiness: null, result: null, error: null } }
   }
-  visionAnalysisState.busy = visionOcrActive
-  visionAnalysisState.phase = visionOcrActive ? 'ocr' : null
-  visionAnalysisState.cancelRequested = visionOcrActive && visionOcrCancellation
+  // Physical occupancy belongs to the callback, so replacing its evidence
+  // owner cannot make an old native operation appear finished after reconnect.
+  visionAnalysisState.busy = visionAnalysisActive
+  visionAnalysisState.phase = visionAnalysisActive ? visionAnalysisPhase : null
+  visionAnalysisState.cancelRequested = visionAnalysisActive && visionAnalysisCancellation
   return clone(visionAnalysisState)
 }
 
@@ -1838,25 +1846,66 @@ const desktopApi = {
     record('runVisionOcr', [request])
     const before = visionSnapshot(request.chatId)
     const selected = before.items.find((image) => image.imageId === request.imageId)
-    if (selected === undefined || visionOcrActive) throw new Error('The selected OCR image is unavailable.')
+    if (selected === undefined || visionAnalysisActive) throw new Error('The selected OCR image is unavailable.')
     visionAnalysisSnapshot(request.chatId)
+    if (visionAnalysisState.image?.imageId !== selected.imageId || visionAnalysisState.image?.sha256 !== selected.sha256) {
+      visionAnalysisState.model.result = null; visionAnalysisState.model.error = null
+    }
     visionAnalysisState.image = { imageId: selected.imageId, sha256: selected.sha256, width: selected.width, height: selected.height }
     visionAnalysisState.ocr.result = null; visionAnalysisState.ocr.error = null
     visionAnalysisState.revision += 1
-    visionOcrActive = true; visionOcrCancellation = false
+    visionAnalysisActive = true; visionAnalysisCancellation = false; visionAnalysisPhase = 'ocr'
     try {
       if (delayVisionOcr) await new Promise((resolve, reject) => { pendingVisionOcr.push({ resolve, reject }) })
       const current = visionSnapshot(request.chatId)
       if (current.owner.projectId !== before.owner.projectId || !current.items.some((image) => image.imageId === selected.imageId && image.sha256 === selected.sha256)) {
         throw new Error('The selected OCR image owner changed.')
       }
-      if (visionOcrCancellation) visionAnalysisState.ocr.error = { code: 'cancelled', message: 'Local analysis was cancelled.' }
+      if (visionAnalysisCancellation) visionAnalysisState.ocr.error = { code: 'cancelled', message: 'Local analysis was cancelled.' }
       else visionAnalysisState.ocr.result = clone(nextVisionOcrResult ?? { text: 'Synthetic', words: [{ text: 'Synthetic', x: 0, y: 0,
         width: selected.width, height: selected.height, confidence: 0.9 }], language: request.language,
         width: selected.width, height: selected.height, truncated: false })
       visionAnalysisState.revision += 1
     } finally {
-      visionOcrActive = false; visionOcrCancellation = false
+      visionAnalysisActive = false; visionAnalysisCancellation = false; visionAnalysisPhase = null
+      if (visionAnalysisState !== null) visionAnalysisState.revision += 1
+    }
+    return visionAnalysisSnapshot(request.chatId)
+  },
+  checkVisionModel: async (chatId) => {
+    record('checkVisionModel', [chatId])
+    visionAnalysisSnapshot(chatId)
+    visionAnalysisState.model.readiness = clone(visionModelReadiness)
+    visionAnalysisState.revision += 1
+    return visionAnalysisSnapshot(chatId)
+  },
+  askVisionImage: async (request) => {
+    record('askVisionImage', [request])
+    const before = visionSnapshot(request.chatId)
+    const selected = before.items.find((image) => image.imageId === request.imageId)
+    if (selected === undefined || visionAnalysisActive || !visionModelReadiness.models.includes(request.model)) {
+      throw new Error('The selected local vision model or image is unavailable.')
+    }
+    visionAnalysisSnapshot(request.chatId)
+    if (visionAnalysisState.image?.imageId !== selected.imageId || visionAnalysisState.image?.sha256 !== selected.sha256) {
+      visionAnalysisState.ocr.result = null; visionAnalysisState.ocr.error = null
+    }
+    visionAnalysisState.image = { imageId: selected.imageId, sha256: selected.sha256, width: selected.width, height: selected.height }
+    visionAnalysisState.model.result = null; visionAnalysisState.model.error = null
+    visionAnalysisState.revision += 1
+    visionAnalysisActive = true; visionAnalysisCancellation = false; visionAnalysisPhase = 'model'
+    try {
+      if (delayVisionModel) await new Promise((resolve, reject) => { pendingVisionModel.push({ resolve, reject }) })
+      const current = visionSnapshot(request.chatId)
+      if (current.owner.projectId !== before.owner.projectId || !current.items.some((image) => image.imageId === selected.imageId && image.sha256 === selected.sha256)) {
+        throw new Error('The selected vision model image owner changed.')
+      }
+      if (visionAnalysisCancellation) visionAnalysisState.model.error = { code: 'cancelled', message: 'Local analysis was cancelled.' }
+      else visionAnalysisState.model.result = { model: request.model, question: request.question,
+        text: nextVisionModelResult?.text ?? 'Synthetic local model description.', truncated: nextVisionModelResult?.truncated ?? false }
+      visionAnalysisState.revision += 1
+    } finally {
+      visionAnalysisActive = false; visionAnalysisCancellation = false; visionAnalysisPhase = null
       if (visionAnalysisState !== null) visionAnalysisState.revision += 1
     }
     return visionAnalysisSnapshot(request.chatId)
@@ -1864,7 +1913,7 @@ const desktopApi = {
   cancelVisionAnalysis: async (chatId) => {
     record('cancelVisionAnalysis', [chatId])
     visionAnalysisSnapshot(chatId)
-    visionOcrCancellation = visionOcrActive
+    visionAnalysisCancellation = visionAnalysisActive
     visionAnalysisState.revision += 1
     return visionAnalysisSnapshot(chatId)
   },
@@ -2701,6 +2750,17 @@ const testControl = {
     const pending = pendingVisionOcr.shift()
     pending?.reject(new Error('Synthetic native OCR failed.')); return pending !== undefined
   },
+  setVisionModelReadiness: (readiness) => { visionModelReadiness = clone(readiness) },
+  setVisionModelResult: (result) => { nextVisionModelResult = clone(result) },
+  setVisionModelDelay: (delayed) => { delayVisionModel = delayed },
+  releaseNextVisionModel: () => {
+    const pending = pendingVisionModel.shift()
+    pending?.resolve(); return pending !== undefined
+  },
+  rejectNextVisionModel: () => {
+    const pending = pendingVisionModel.shift()
+    pending?.reject(new Error('Synthetic local model failed.')); return pending !== undefined
+  },
   setDesktopClipboardText: (text) => { desktopClipboard = text },
   getDesktopClipboardText: () => desktopClipboard,
   setDesktopDocumentSelection: (document) => { desktopDocumentSelection = clone(document) },
@@ -2725,9 +2785,12 @@ const testControl = {
     pendingVisionSelections = []
     visionAnalysisOwnerKey = null; visionAnalysisState = null
     visionOcrReadiness = { status: 'missing_engine', languages: [], version: null }; nextVisionOcrResult = null
-    delayVisionOcr = false; visionOcrActive = false; visionOcrCancellation = false
+    visionModelReadiness = { status: 'unavailable', models: [], defaultModel: null }; nextVisionModelResult = null
+    delayVisionOcr = false; delayVisionModel = false; visionAnalysisActive = false; visionAnalysisCancellation = false; visionAnalysisPhase = null
     for (const pending of pendingVisionOcr) pending.reject(new Error('Vision OCR test reset.'))
     pendingVisionOcr = []
+    for (const pending of pendingVisionModel) pending.reject(new Error('Vision model test reset.'))
+    pendingVisionModel = []
     desktopOwnerKey = null; desktopState = null; desktopAuditEntries = []
     desktopDocumentSelection = null; desktopClipboard = 'Private clipboard text.'
     delayDesktopDecisions = false; nextDesktopError = null; desktopActionNumber = 1

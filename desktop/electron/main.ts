@@ -30,11 +30,12 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { BackendProcess } from './backend-process.js'
-import { VisionImageController, VisionImageError, decodeVisionImage, readVisionSelectedFile, type VisionOwner } from './vision-images.js'
+import { VisionImageController, VisionImageError, decodeVisionImage, prepareVisionModelImage, readVisionSelectedFile, type VisionOwner } from './vision-images.js'
 import { parseVisionChatId, parseVisionRemoveRequest } from './vision-protocol.js'
 import { VisionAnalysisController, VisionAnalysisServiceError } from './vision-analysis.js'
-import { parseVisionOcrRequest } from './vision-analysis-protocol.js'
+import { parseVisionOcrRequest, parseVisionModelRequest } from './vision-analysis-protocol.js'
 import { TesseractOcrAdapter } from './vision-ocr.js'
+import { OllamaVisionAdapter } from './vision-model.js'
 import { WorkDesktopController, parseWorkDesktopChatRequest, parseWorkDesktopClipboardWriteRequest,
   parseWorkDesktopDecisionRequest, parseWorkDesktopWindowSelectionRequest, type WorkDesktopOwner } from './work-desktop-tools.js'
 import { WorkDesktopStorage } from './work-desktop-storage.js'
@@ -2133,6 +2134,16 @@ function withVisionOwner<Result>(chatId: string, operation: (controller: VisionI
   return request
 }
 
+async function configuredVisionModel(signal: AbortSignal): Promise<OllamaVisionAdapter> {
+  if (signal.aborted) throw new VisionAnalysisServiceError('cancelled')
+  // Read the applied origin inside the reserved operation. A changed port or
+  // remote origin must never silently send pixels to a different local server.
+  const settings = await requireBackend().getSettings()
+  if (signal.aborted) throw new VisionAnalysisServiceError('cancelled')
+  try { return new OllamaVisionAdapter({ baseUrl: settings.activeSettings.ollamaHost }) }
+  catch { throw new VisionAnalysisServiceError('unavailable') }
+}
+
 function requireVisionAnalysisController(): VisionAnalysisController {
   if (visionAnalysisController === null) {
     const ocr = new TesseractOcrAdapter()
@@ -2142,6 +2153,22 @@ function requireVisionAnalysisController(): VisionAnalysisController {
       getImage: (chatId, imageId) => requireVisionController().getImage(chatId, imageId),
       readiness: (signal) => ocr.readiness(signal),
       recognize: (image, language, signal) => ocr.run(image.pngBytes, image.width, image.height, language, signal),
+      modelReadiness: async (signal) => {
+        try { return await (await configuredVisionModel(signal)).readiness(signal) }
+        catch (error) {
+          if (error instanceof VisionAnalysisServiceError && error.code === 'unavailable') {
+            return { status: 'unavailable', models: [], defaultModel: null }
+          }
+          throw error
+        }
+      },
+      infer: async (image, modelName, question, signal) => {
+        const model = await configuredVisionModel(signal)
+        if (signal.aborted) throw new VisionAnalysisServiceError('cancelled')
+        const sample = prepareVisionModelImage(image, nativeImage)
+        if (signal.aborted) throw new VisionAnalysisServiceError('cancelled')
+        return model.run(sample.pngBytes, sample.width, sample.height, modelName, question, signal)
+      },
     })
   }
   return visionAnalysisController
@@ -2652,6 +2679,15 @@ function requireMainWindow(): BrowserWindow {
 }
 
 function registerIpcHandlers(): void {
+  ipcMain.handle('vision:check-model', (event, chatId: unknown) => {
+    assertTrustedSender(event)
+    return withVisionAnalysisOwner(parseVisionChatId(chatId), (controller) => controller.checkModel(parseVisionChatId(chatId)))
+  })
+  ipcMain.handle('vision:ask-image', (event, value: unknown) => {
+    assertTrustedSender(event)
+    const request = parseVisionModelRequest(value)
+    return withVisionAnalysisOwner(request.chatId, (controller) => controller.askImage(request))
+  })
   ipcMain.handle('vision:get-analysis', (event, chatId: unknown) => {
     assertTrustedSender(event)
     return withVisionAnalysisOwner(parseVisionChatId(chatId), (controller) => controller.getState(parseVisionChatId(chatId)), true)
