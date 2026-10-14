@@ -1,10 +1,10 @@
 # 图片与屏幕理解
 
-Stage 11 使用独立的 Vision 面板，在 Chat 和 Work 中处理用户明确选择的图片。图片理解与本地绘图、普通附件、人格 Markdown 分开；图片导入不会自动发送 Chat 消息、加载模型或执行 Work 动作。
+Stage 11 在 Chat 和 Work 中使用 Vision 弹窗处理已添加的图片或单次截图。图片统一从输入栏的 Add Files 添加；点击图片附件的复查按钮可打开预览与分析。Add Files 右侧的截图图标直接打开截图弹窗，不改变聊天框位置。关闭弹窗只隐藏界面，正在处理的原生任务仍保留取消入口和操作占用，直到实际结束。图片导入不会自动发送 Chat 消息、加载模型或执行 Work 动作。
 
 ## 图片输入
 
-点击 **Choose image** 打开系统文件选择器，只接受 PNG 与 JPEG。Main 校验真实格式和画布尺寸后才交给 Electron 解码，再保存去除元数据的 PNG 像素。JPEG 的 EXIF 方向会应用到像素；路径、EXIF、原生句柄与原始文件不会交给界面。透明 PNG 的必要透明度信息保留。动画 PNG、带 EXIF 的 PNG 和不支持的像素格式明确拒绝。
+通过 **Add Files** 选择 PNG 或 JPEG 后，点击对应图片附件的 **Review image**。不再提供重复的 Choose image 文件选择入口。Backend 从当前 Chat 所有的已验证附件中读取有界快照，经内部字节协议交给 Main；Renderer 只提供附件 ID，不能提供路径。Main 校验真实格式和画布尺寸后才交给 Electron 解码，再保存去除元数据的 PNG 像素。JPEG 的 EXIF 方向会应用到像素；路径、EXIF、原生句柄与原始文件不会交给界面。透明 PNG 的必要透明度信息保留。动画 PNG、带 EXIF 的 PNG 和不支持的像素格式明确拒绝。
 
 | 边界 | 上限 |
 | --- | --- |
@@ -16,7 +16,7 @@ Stage 11 使用独立的 Vision 面板，在 Chat 和 Work 中处理用户明确
 
 文件读取拒绝链接、硬链接和读取期间的文件身份变化。名称仅用于显示，不能选择路径。导入、解码和发布结果都绑定规范的当前 Chat、Project 和模式；迟到的旧范围结果会丢弃。原生选择器和读取回调真正结束前，仍占用与 Chat、Work、语音及数据迁移共用的操作容量。
 
-默认仅保留当前会话的内存副本。切换 Chat 或 Project、连接失效、归档或退出会撤销当前集合。**Remove image** 和 **Clear selected images** 删除 Vision 内存副本，不删除用户选择的原文件。普通附件和绘图图库仍沿用原有流程。
+Vision 默认仅保留当前会话的内存副本；Add Files 导入的原附件仍由既有附件存储管理。切换 Chat 或 Project、连接失效、归档或退出会撤销当前 Vision 集合。**Remove image** 和 **Clear selected images** 删除 Vision 内存副本，不删除用户选择的原文件。移除 Vision 副本不会移除 Add Files 附件；需要时可从附件重新复查。绘图图库仍沿用原有流程。
 
 Electron 的图片 API 本身不应用 EXIF 方向，因此方向校正属于本项目导入层的职责，而不是依赖解码器隐式处理。支持范围参见 [Electron nativeImage 文档](https://www.electronjs.org/docs/latest/api/native-image)。
 

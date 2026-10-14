@@ -1993,7 +1993,9 @@ test('dismisses uncommitted model choices and preserves the draft and keyboard f
   await expect(picker).toHaveAttribute('title', models[0])
 
   await picker.click()
-  await composer.click()
+  // The model menu can overlap the composer's center as toolbar actions grow;
+  // its uncovered leading edge remains an actual outside-click target.
+  await composer.click({ position: { x: 8, y: 8 } })
   await expect(page.getByRole('listbox')).toHaveCount(0)
   await expect(composer).toBeFocused()
   await expect(composer).toHaveValue('Keep this draft while choosing a model.')
@@ -6129,7 +6131,7 @@ test('blocks restart for a dirty draft and locks Backend fields while restarting
   await selectSettingsCategory('Internet')
   await expect(page.getByRole('checkbox', { name: 'Allow Internet access' })).toBeEnabled()
   await expect(page.getByLabel('Request timeout (seconds)')).toBeEnabled()
-  await expect(page.getByRole('button', { name: 'Turn Internet off', exact: true })).toBeEnabled()
+  await expect(page.getByRole('checkbox', { name: 'Allow Internet access' })).not.toBeChecked()
   await selectSettingsCategory('Appearance')
   await expect(page.getByRole('radio', { name: /^System/ })).toBeEnabled()
 
@@ -6164,7 +6166,7 @@ test('locks Backend fields while Settings reload without disabling Appearance', 
   await selectSettingsCategory('Internet')
   await expect(page.getByRole('checkbox', { name: 'Allow Internet access' })).toBeEnabled()
   await expect(page.getByLabel('Request timeout (seconds)')).toBeEnabled()
-  await expect(page.getByRole('button', { name: 'Turn Internet off', exact: true })).toBeEnabled()
+  await expect(page.getByRole('checkbox', { name: 'Allow Internet access' })).not.toBeChecked()
   await selectSettingsCategory('Appearance')
   await expect(page.getByRole('radio', { name: /^System/ })).toBeEnabled()
 
@@ -8765,7 +8767,7 @@ test('rescues a retry edit whose Chat was deleted', async () => {
   )).toBeVisible()
 })
 
-test('places a compact attachment picker immediately before the model selector', async () => {
+test('keeps the compact attachment picker before the model selector', async () => {
   await emitSnapshot(readySnapshot())
   const chatFiles = page.getByRole('region', { name: /This message/ })
   const chooseFiles = chatFiles.getByRole('button', {

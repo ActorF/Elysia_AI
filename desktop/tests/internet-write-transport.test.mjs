@@ -93,7 +93,15 @@ async function fixture(t, options = {}) {
   const policy = new InternetPolicyService(path.join(directory, 'policy.json'))
   await policy.update({ expectedRevision: 0, enabled: options.enabled ?? true,
     allowedDomains: options.domains ?? ['api.github.com'], proxy: { mode: 'local-http', port: proxy.address().port }, timeoutMs: 1000 })
-  const transport = new InternetTransport(policy, { native: {
+  const transportPolicy = options.denyApi ? new Proxy(policy, { get(target, key) {
+    if (key === 'acquire') return (...args) => {
+      const lease = target.acquire(...args)
+      return { ...lease, policy: { ...lease.policy, allowedDomains: ['github.com'] } }
+    }
+    const value = Reflect.get(target, key)
+    return typeof value === 'function' ? value.bind(target) : value
+  } }) : policy
+  const transport = new InternetTransport(transportPolicy, { native: {
     resolve: async (host, signal) => { dns.push(host); return options.resolve === undefined ? ['140.82.114.5'] : options.resolve(host, signal) },
     request: (settings, callback) => {
       const request = https.request(settings, response => {
@@ -152,7 +160,7 @@ test('Malformed payloads and credentials cannot open DNS or transmit unreviewed 
 })
 
 test('Disabled policy, unapproved API domain and private DNS fail before any authenticated transmission', async t => {
-  for (const settings of [{ enabled: false }, { domains: ['github.com'] }, { resolve: async () => ['127.0.0.1'] },
+  for (const settings of [{ enabled: false }, { denyApi: true }, { resolve: async () => ['127.0.0.1'] },
     { resolve: async () => ['140.82.114.5', '169.254.169.254'] }]) {
     const test = await fixture(t, settings)
     assert.deepEqual(await test.transport.createGithubIssue(payload, token), outcome('not_sent'))

@@ -3,7 +3,7 @@
 import { randomUUID } from 'node:crypto'
 import { lstat, mkdir, open, rename, rm } from 'node:fs/promises'
 import path from 'node:path'
-import { defaultInternetPolicy, parseInternetPolicyState, parseUpdateInternetPolicyRequest,
+import { defaultInternetPolicy, effectiveInternetDomains, parseInternetPolicyState, parseUpdateInternetPolicyRequest,
   type InternetPolicyState } from './internet-policy-protocol.js'
 
 /** Stable public failures omit native paths and persistence diagnostics. */
@@ -144,7 +144,11 @@ export class InternetPolicyService {
 
   /** Return detached effective intent without opening files or probing any remote endpoint. */
   getState(): InternetPolicyState {
-    return parseInternetPolicyState({ ...this.state, enabled: !this.closed && this.pending === 0 && this.state.enabled })
+    // Older preference files may have an empty list. Built-in services become
+    // usable after the next explicit session enable without a manual migration;
+    // discovered search-result hosts are never appended here.
+    return parseInternetPolicyState({ ...this.state, allowedDomains: effectiveInternetDomains(this.state.allowedDomains),
+      enabled: !this.closed && this.pending === 0 && this.state.enabled })
   }
 
   /** Revoke immediately, compare the on-disk revision under a shared lock, and atomically save reviewed intent. */

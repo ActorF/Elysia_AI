@@ -190,9 +190,6 @@ const IMAGE_GENERATION_PROGRESS = new Map<string, number>([
   ['verifying', 90],
   ['completed', 100],
 ])
-const CANONICAL_BASE64_PATTERN = (
-  /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u
-)
 
 function base64DigitValue(character: string): number {
   const codePoint = character.charCodeAt(0)
@@ -209,10 +206,12 @@ function base64DigitValue(character: string): number {
 }
 
 function canonicalBase64ByteLength(value: string): number | null {
-  if (!CANONICAL_BASE64_PATTERN.test(value)) {
+  const padding = value.endsWith('==') ? 2 : value.endsWith('=') ? 1 : 0
+  // A flat alphabet scan avoids the regexp stack growth of repeating quartets
+  // for an 8 MiB image, while the length and pad-bit checks keep canonicality.
+  if (value.length % 4 !== 0 || /[^A-Za-z0-9+/]/u.test(value.slice(0, value.length - padding))) {
     return null
   }
-  const padding = value.endsWith('==') ? 2 : value.endsWith('=') ? 1 : 0
   if (
     padding === 2
     && (base64DigitValue(value.at(-3) ?? '/') & 0x0f) !== 0
@@ -260,6 +259,39 @@ export interface ChatStreamParams {
   attachmentIds: string[]
   useProjectKnowledge?: boolean
   speakReply: boolean
+  automaticInternet?: boolean
+}
+
+/** Main-approved, bounded evidence returned to one waiting Chat generation. */
+export interface ChatInternetSource {
+  title: string
+  url: string
+  snippet: string
+  fetchedAt: string
+  provider: 'web' | 'wikipedia'
+}
+
+/** Correlate one native search completion without granting the model network access. */
+export interface ChatInternetResolveParams {
+  requestId: string
+  chatId: string
+  searchId: string
+  sources: ChatInternetSource[]
+  error: 'disabled' | 'cancelled' | 'timeout' | 'unavailable' | 'invalid_request' | null
+}
+
+/** Request verified image bytes from the active Chat's private attachment store. */
+export interface AttachmentNativeSourceParams {
+  scope: { kind: 'chat'; id: string }
+  attachmentId: string
+}
+
+/** Return bounded image bytes to Main without exposing a filesystem path. */
+export interface AttachmentNativeSourceResult {
+  kind: 'attachment.native_source'
+  fileName: string
+  mediaType: 'image/png' | 'image/jpeg'
+  dataBase64: string
 }
 
 export interface ChatRetryParams {
@@ -496,6 +528,7 @@ export interface RequestParamsByMethod {
   handshake: HandshakeParams
   initialize: Record<string, never>
   'chat.stream': ChatStreamParams
+  'chat.internet.resolve': ChatInternetResolveParams
   'chat.retry': ChatRetryParams
   'chat.list': ChatListParams
   'chat.create': ChatCreateParams
@@ -542,6 +575,7 @@ export interface RequestParamsByMethod {
   'attachment.list': AttachmentListParams
   'attachment.add': AttachmentAddParams
   'attachment.remove': AttachmentRemoveParams
+  'attachment.native_source': AttachmentNativeSourceParams
   'knowledge.list': KnowledgeProjectParams
   'knowledge.source.add': KnowledgeSourceAddParams
   'knowledge.source.replace': KnowledgeSourceReplaceParams
@@ -643,6 +677,15 @@ export interface ChatLifecycleEventMessage {
   data: { chatId: string }
 }
 
+/** Ask only the native owner to resolve one short model-generated search query. */
+export interface ChatInternetRequestEventMessage {
+  type: 'event'
+  protocol: ProtocolDescriptor
+  event: 'chat.internet.request'
+  requestId: string
+  data: { chatId: string; searchId: string; query: string; language: 'en' | 'zh' }
+}
+
 export interface VoiceTranscriptionLifecycleEventMessage {
   type: 'event'
   protocol: ProtocolDescriptor
@@ -710,6 +753,7 @@ export interface KnowledgeOperationEventMessage {
 
 export type ProtocolEventMessage =
   | ChatLifecycleEventMessage
+  | ChatInternetRequestEventMessage
   | VoiceTranscriptionLifecycleEventMessage
   | VoiceSpeechClipEventMessage
   | VoiceSpeechFailureEventMessage
@@ -1380,7 +1424,7 @@ function parseChatStreamParams(
     params,
     ['chatId', 'message', 'speakReply'],
     'chat.stream params',
-    ['attachmentIds', 'useProjectKnowledge'],
+    ['attachmentIds', 'useProjectKnowledge', 'automaticInternet'],
   )
   const message = readString(params, 'message', 'chat.stream params', {
     minimum: 0,
@@ -1420,6 +1464,9 @@ function parseChatStreamParams(
     message,
     attachmentIds,
     speakReply: readBoolean(params, 'speakReply', 'chat.stream params'),
+    ...(Object.hasOwn(params, 'automaticInternet')
+      ? { automaticInternet: readBoolean(params, 'automaticInternet', 'chat.stream params') }
+      : {}),
     ...(Object.hasOwn(params, 'useProjectKnowledge')
       ? {
           useProjectKnowledge: readBoolean(
@@ -1472,6 +1519,110 @@ function parseChatRetryParams(
         }
       : {}),
   }
+}
+
+function readInternetText(value: Record<string, unknown>, key: string, maximum: number, minimum = 1): string {
+  const text = readString(value, key, 'Chat Internet', { minimum, maximum })
+  // TextEncoder replaces lone surrogates; reject them before measuring so the
+  // native and Python UTF-8 byte budgets describe the same wire payload.
+  if ([...text].some((character) => {
+    const code = character.codePointAt(0)!
+    return code >= 0xd800 && code <= 0xdfff
+  }) || new TextEncoder().encode(text).byteLength > maximum) {
+    return fail('protocol.invalid_message', 'Chat Internet text exceeds its UTF-8 contract.')
+  }
+  return text
+}
+
+function parseInternetIdentity(value: Record<string, unknown>): { chatId: string; searchId: string } {
+  const chatId = readIdentifier(value, 'chatId', 'Chat Internet')
+  const searchId = readIdentifier(value, 'searchId', 'Chat Internet')
+  if (!/^internet_search_[0-9a-f]{32}$/u.test(searchId)) {
+    return fail('protocol.invalid_message', 'Chat Internet search identity is invalid.')
+  }
+  return { chatId, searchId }
+}
+
+function parseChatInternetRequestData(value: unknown): ChatInternetRequestEventMessage['data'] {
+  const data = asRecord(value, 'Chat Internet request')
+  requireFields(data, ['chatId', 'searchId', 'query', 'language'], 'Chat Internet request')
+  const query = readInternetText(data, 'query', 2048)
+  if (!hasNonBlankCodePoint(query) || [...query].some((character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127)) {
+    return fail('protocol.invalid_message', 'Chat Internet query is invalid.')
+  }
+  return { ...parseInternetIdentity(data), query,
+    language: readStringLiteral(data, 'language', 'Chat Internet request', ['en', 'zh'] as const) }
+}
+
+/** Validate exact, inert source evidence before returning it to the local model. */
+export function parseChatInternetResolveParams(value: unknown): ChatInternetResolveParams {
+  const params = asRecord(value, 'Chat Internet resolve')
+  requireFields(params, ['requestId', 'chatId', 'searchId', 'sources', 'error'], 'Chat Internet resolve')
+  const error = readNullableStringLiteral(params, 'error', 'Chat Internet resolve',
+    ['disabled', 'cancelled', 'timeout', 'unavailable', 'invalid_request'] as const)
+  if (!Array.isArray(params.sources) || params.sources.length > 5 || error !== null && params.sources.length > 0) {
+    return fail('protocol.invalid_message', 'Chat Internet evidence is invalid.')
+  }
+  const sources = params.sources.map((raw): ChatInternetSource => {
+    const source = asRecord(raw, 'Chat Internet source')
+    requireFields(source, ['title', 'url', 'snippet', 'fetchedAt', 'provider'], 'Chat Internet source')
+    const title = readInternetText(source, 'title', 2048)
+    const url = readInternetText(source, 'url', 4096)
+    const snippet = readInternetText(source, 'snippet', 4096, 0)
+    const fetchedAt = readInternetText(source, 'fetchedAt', 24)
+    let parsed: URL
+    try { parsed = new URL(url) }
+    catch { return fail('protocol.invalid_message', 'Chat Internet source URL is invalid.') }
+    // Citation links are data, never fetch authorization. Still constrain their
+    // syntax to the same HTTPS origins accepted by the Python evidence parser.
+    if (!/^https:\/\//iu.test(url) || parsed.protocol !== 'https:' || !parsed.hostname
+      || parsed.username || parsed.password || parsed.port && parsed.port !== '443'
+      || url.slice(8).split(/[/?#]/u, 1)[0]?.includes('@')
+      || url.includes('\\') || [...url].some((character) => character.charCodeAt(0) <= 32 || character.charCodeAt(0) === 127)) {
+      return fail('protocol.invalid_message', 'Chat Internet source URL is invalid.')
+    }
+    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(fetchedAt)
+      || fetchedAt.startsWith('0000-')
+      || !Number.isFinite(Date.parse(fetchedAt)) || new Date(fetchedAt).toISOString() !== fetchedAt) {
+      return fail('protocol.invalid_message', 'Chat Internet retrieval time is invalid.')
+    }
+    return { title, url, snippet, fetchedAt,
+      provider: readStringLiteral(source, 'provider', 'Chat Internet source', ['web', 'wikipedia'] as const) }
+  })
+  if (new TextEncoder().encode(JSON.stringify(sources)).byteLength > 32768) {
+    return fail('protocol.invalid_message', 'Chat Internet evidence exceeds its byte budget.')
+  }
+  return { requestId: readIdentifier(params, 'requestId', 'Chat Internet resolve'),
+    ...parseInternetIdentity(params), sources, error }
+}
+
+/** Accept only a correlated acknowledgement; it does not authorize another search. */
+export function parseChatInternetResolvedResult(value: unknown): { kind: 'chat.internet.resolved'; accepted: boolean } {
+  const result = asRecord(value, 'Chat Internet acknowledgement')
+  requireFields(result, ['kind', 'accepted'], 'Chat Internet acknowledgement')
+  if (result.kind !== 'chat.internet.resolved') return fail('protocol.invalid_message', 'Chat Internet acknowledgement is invalid.')
+  return { kind: 'chat.internet.resolved', accepted: readBoolean(result, 'accepted', 'Chat Internet acknowledgement') }
+}
+
+/** Restrict native image transfers to an exact Chat attachment identity. */
+export function parseAttachmentNativeSourceParams(value: unknown): AttachmentNativeSourceParams {
+  const parsed = parseAttachmentRemoveParams(value)
+  if (parsed.scope.kind !== 'chat') return fail('protocol.invalid_params', 'Native images require a Chat owner.')
+  return { scope: { kind: 'chat', id: parsed.scope.id }, attachmentId: parsed.attachmentId }
+}
+
+/** Validate canonical bounded image bytes and a safe display name, never a path. */
+export function parseAttachmentNativeSourceResult(value: unknown): AttachmentNativeSourceResult {
+  const result = asRecord(value, 'Native attachment result')
+  requireFields(result, ['kind', 'fileName', 'mediaType', 'dataBase64'], 'Native attachment result')
+  if (result.kind !== 'attachment.native_source') return fail('protocol.invalid_message', 'Native attachment result is invalid.')
+  const dataBase64 = readString(result, 'dataBase64', 'Native attachment result', { maximum: 11_184_812 })
+  const length = canonicalBase64ByteLength(dataBase64)
+  if (length === null || length < 1 || length > 8 * 1024 * 1024) {
+    return fail('protocol.invalid_message', 'Native attachment bytes are invalid.')
+  }
+  return { kind: 'attachment.native_source', fileName: readAttachmentFileName(result, 'Native attachment result'),
+    mediaType: readStringLiteral(result, 'mediaType', 'Native attachment result', ['image/png', 'image/jpeg'] as const), dataBase64 }
 }
 
 function readChatTitle(
@@ -2533,7 +2684,7 @@ function parseKnowledgeSourceExportParams(
   }
 }
 
-/** Parse a renderer request with exact common fields and method-specific parameters. */
+/** Parse a private wire request with exact fields; Renderer admission is validated separately. */
 export function parseClientRequest(value: unknown): ClientRequest {
   const request = asRecord(value, 'request')
   requireFields(
@@ -2549,6 +2700,13 @@ export function parseClientRequest(value: unknown): ClientRequest {
   const method = readString(request, 'method', 'request', {
     maximum: MAX_METHOD_LENGTH,
   })
+
+  if (method === 'chat.internet.resolve') {
+    return { type: 'request', protocol, id, method, params: parseChatInternetResolveParams(request.params) }
+  }
+  if (method === 'attachment.native_source') {
+    return { type: 'request', protocol, id, method, params: parseAttachmentNativeSourceParams(request.params) }
+  }
 
   if (method === 'handshake') {
     return {
@@ -3256,6 +3414,9 @@ function parseEvent(
   )
   const event = readIdentifier(message, 'event', 'event')
   const requestId = readIdentifier(message, 'requestId', 'event')
+  if (event === 'chat.internet.request') {
+    return { type: 'event', protocol, event, requestId, data: parseChatInternetRequestData(message.data) }
+  }
   if (
     event === 'chat.started'
     || event === 'chat.completed'
@@ -5455,6 +5616,14 @@ export function parseImageGalleryOpenResult(value: unknown): ImageGalleryOpenRes
 
 function validateSuccessResult(value: unknown): Record<string, unknown> {
   const result = asRecord(value, 'response.result')
+  if (result.kind === 'chat.internet.resolved') {
+    parseChatInternetResolvedResult(result)
+    return result
+  }
+  if (result.kind === 'attachment.native_source') {
+    parseAttachmentNativeSourceResult(result)
+    return result
+  }
   if (result.kind === 'image.generation') {
     parseImageGenerationResult(result)
     return result

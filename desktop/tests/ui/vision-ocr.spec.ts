@@ -5,6 +5,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { _electron as electron } from 'playwright'
 import { expect, test, type ElectronApplication, type Page } from '@playwright/test'
+import { closeVision, openVision, reviewVisionImage } from './vision-helpers.ts'
 
 interface OcrTestControl {
   getCalls(): Array<{ method: string; args: unknown[] }>
@@ -34,9 +35,8 @@ function snapshot(status = 'ready', revision = 1) {
 }
 
 async function selectImage(): Promise<void> {
-  await page.evaluate((image) => { (window as OcrTestWindow).elysiaDesktopTest.setSelectedVisionImage(image) }, fixture)
-  await page.getByRole('region', { name: 'Vision images', exact: true }).getByRole('button', { name: 'Choose image', exact: true }).click()
-  await page.getByRole('combobox', { name: 'Vision image', exact: true }).selectOption({ label: fixture.fileName })
+  await reviewVisionImage(page, fixture)
+  await page.getByRole('tab', { name: 'Read text', exact: true }).click()
 }
 
 async function enableOcr(): Promise<void> {
@@ -52,8 +52,6 @@ test.beforeEach(async () => {
   page = await application.firstWindow()
   await page.waitForFunction(() => 'elysiaDesktopTest' in window && (window as OcrTestWindow).elysiaDesktopTest.getCalls().some((call) => call.method === 'onBackendEvent.subscribe'))
   await page.evaluate((next) => { (window as OcrTestWindow).elysiaDesktopTest.emitBackendEvent({ type: 'snapshot', snapshot: next }) }, snapshot())
-  await page.getByRole('region', { name: 'Vision images', exact: true }).getByRole('button', { name: 'Vision', exact: true }).click()
-  await page.getByRole('tab', { name: 'Read text', exact: true }).click()
 })
 
 test.afterEach(async () => { await application?.close(); application = undefined })
@@ -101,14 +99,13 @@ test('runs only the exact selected language and displays inert text with origina
 })
 
 test('bounds the position review for a narrow tall image while retaining its original coordinates', async () => {
+  await reviewVisionImage(page, { ...fixture, fileName: 'synthetic-tall.png', width: 1, height: 8192 })
   await page.evaluate((image) => {
     const control = (window as OcrTestWindow).elysiaDesktopTest
     control.setSelectedVisionImage({ ...image, fileName: 'synthetic-tall.png', width: 1, height: 8192 })
     control.setVisionOcrResult({ text: 'Vertical', words: [{ text: 'Vertical', x: 0, y: 0, width: 1, height: 8192, confidence: 0.9 }],
       language: 'eng', width: 1, height: 8192, truncated: false })
   }, fixture)
-  await page.getByRole('button', { name: 'Choose image', exact: true }).click()
-  await page.getByRole('combobox', { name: 'Vision image', exact: true }).selectOption({ label: 'synthetic-tall.png' })
   await enableOcr()
   await page.getByRole('button', { name: 'Run OCR', exact: true }).click()
   const evidence = page.getByRole('region', { name: 'OCR evidence', exact: true })
@@ -127,18 +124,17 @@ test('cancellation and hiding the review keep the physical OCR lease until the n
   const ocr = page.getByRole('region', { name: 'Local OCR', exact: true })
   await ocr.getByRole('button', { name: 'Run OCR', exact: true }).click()
   await expect(page.getByRole('button', { name: 'Cancel analysis', exact: true })).toBeEnabled()
-  await expect(page.getByRole('combobox', { name: 'Conversation mode' })).toBeDisabled()
-  await expect(page.getByRole('combobox', { name: 'AI model', exact: true })).toBeDisabled()
+  await expect(page.getByRole('combobox', { name: 'Conversation mode', includeHidden: true })).toBeDisabled()
+  await expect(page.getByRole('combobox', { name: 'AI model', exact: true, includeHidden: true })).toBeDisabled()
   await page.getByRole('button', { name: 'Cancel analysis', exact: true }).click()
   await expect(page.getByRole('region', { name: 'Visual analysis', exact: true })).toContainText('Cancellation requested. Waiting')
   await expect(page.getByRole('button', { name: 'Remove selected image synthetic-ocr.png' })).toBeDisabled()
-  const panel = page.getByRole('region', { name: 'Vision images', exact: true })
-  await panel.getByRole('button', { name: 'Vision', exact: true }).click()
+  await closeVision(page)
   await expect(ocr).toBeHidden()
-  await expect(page.getByRole('combobox', { name: 'Conversation mode' })).toBeDisabled()
+  await expect(page.getByRole('combobox', { name: 'Conversation mode', includeHidden: true })).toBeDisabled()
   await page.evaluate(() => { (window as OcrTestWindow).elysiaDesktopTest.releaseNextVisionOcr() })
-  await expect(page.getByRole('combobox', { name: 'Conversation mode' })).toBeEnabled()
-  await panel.getByRole('button', { name: 'Vision', exact: true }).click()
+  await expect(page.getByRole('combobox', { name: 'Conversation mode', includeHidden: true })).toBeEnabled()
+  await openVision(page)
   await expect(ocr.getByRole('alert')).toContainText('cancelled')
   await expect(ocr.getByRole('region', { name: 'OCR evidence', exact: true })).toHaveCount(0)
 })
@@ -150,12 +146,11 @@ test('reconnection clears old evidence and settles a failed OCR callback before 
   await page.evaluate((next) => { (window as OcrTestWindow).elysiaDesktopTest.emitBackendEvent({ type: 'snapshot', snapshot: next }) }, snapshot('error', 2))
   await expect(page.locator('.connection-pill')).toContainText('Connection error')
   await page.evaluate((next) => { (window as OcrTestWindow).elysiaDesktopTest.emitBackendEvent({ type: 'snapshot', snapshot: next }) }, snapshot('ready', 3))
-  await expect(page.getByRole('combobox', { name: 'Conversation mode' })).toBeDisabled()
+  await expect(page.getByRole('combobox', { name: 'Conversation mode', includeHidden: true })).toBeDisabled()
   await page.evaluate(() => { (window as OcrTestWindow).elysiaDesktopTest.rejectNextVisionOcr(); (window as OcrTestWindow).elysiaDesktopTest.setVisionOcrDelay(false) })
-  await expect(page.getByRole('combobox', { name: 'Conversation mode' })).toBeEnabled()
-  const panel = page.getByRole('region', { name: 'Vision images', exact: true })
-  const toggle = panel.getByRole('button', { name: /^Vision(?: · \d+ selected)?$/ })
-  if (await toggle.getAttribute('aria-expanded') !== 'true') await toggle.click()
+  await expect(page.getByRole('combobox', { name: 'Conversation mode', includeHidden: true })).toBeEnabled()
+  const panel = page.getByRole('region', { name: 'Vision images', exact: true, includeHidden: true })
+  await openVision(page)
   await panel.getByText('Image options', { exact: true }).click()
   await panel.getByRole('button', { name: 'Reload images', exact: true }).click()
   await expect(panel.getByRole('article')).toHaveCount(0)
@@ -168,21 +163,22 @@ test('reconnection clears old evidence and settles a failed OCR callback before 
 test('switching tool tabs retains an OCR lease and the active task shortcut restores cancellation controls', async () => {
   await selectImage(); await enableOcr()
   await page.evaluate(() => { (window as OcrTestWindow).elysiaDesktopTest.setVisionOcrDelay(true) })
-  const panel = page.getByRole('region', { name: 'Vision images', exact: true })
+  const panel = page.getByRole('region', { name: 'Vision images', exact: true, includeHidden: true })
   await panel.getByRole('button', { name: 'Run OCR', exact: true }).click()
   await panel.getByRole('tab', { name: 'Saved images', exact: true }).click()
   await expect(panel.getByRole('region', { name: 'Visual analysis', exact: true })).toBeHidden()
-  await expect(page.getByRole('combobox', { name: 'Conversation mode' })).toBeDisabled()
-  await expect(panel.getByRole('button', { name: 'Choose image', exact: true })).toBeDisabled()
+  await expect(page.getByRole('combobox', { name: 'Conversation mode', includeHidden: true })).toBeDisabled()
+  await expect(panel.getByRole('combobox', { name: 'Vision image', exact: true })).toBeDisabled()
   await panel.getByRole('button', { name: 'View active task', exact: true }).click()
   await expect(panel.getByRole('tab', { name: 'Analyze', exact: true })).toHaveAttribute('aria-selected', 'true')
   await panel.getByRole('button', { name: 'Cancel analysis', exact: true }).click()
-  await panel.getByRole('button', { name: 'Vision', exact: true }).click()
+  await closeVision(page)
+  await openVision(page)
   await panel.getByRole('button', { name: 'View active task', exact: true }).click()
   await expect(panel.getByRole('region', { name: 'Visual analysis', exact: true })).toContainText('Cancellation requested. Waiting')
-  await expect(page.getByRole('combobox', { name: 'Conversation mode' })).toBeDisabled()
+  await expect(page.getByRole('combobox', { name: 'Conversation mode', includeHidden: true })).toBeDisabled()
   await page.evaluate(() => { (window as OcrTestWindow).elysiaDesktopTest.releaseNextVisionOcr() })
-  await expect(page.getByRole('combobox', { name: 'Conversation mode' })).toBeEnabled()
+  await expect(page.getByRole('combobox', { name: 'Conversation mode', includeHidden: true })).toBeEnabled()
   await expect(panel.getByRole('button', { name: 'View active task', exact: true })).toHaveCount(0)
   expect(await page.evaluate(() => (window as OcrTestWindow).elysiaDesktopTest.getCalls().filter((call) => call.method === 'runVisionOcr'))).toHaveLength(1)
 })

@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { _electron as electron } from 'playwright'
 import { expect, test, type ElectronApplication, type Page } from '@playwright/test'
 import type { InternetPolicyState } from '../../electron/internet-policy-protocol.ts'
+import { expectResearchNavigationLocked, openInternetResearch, returnToChat } from './internet-helpers.ts'
 
 interface CacheControl {
   getCalls(): Array<{ method: string; args: unknown[] }>
@@ -58,7 +59,7 @@ test.beforeEach(async () => {
   await page.evaluate(() => { (window as CacheWindow).elysiaDesktopTest.emitInternetPolicy({ kind: 'internet.policy', revision: 1, enabled: false,
     allowedDomains: [], proxy: { mode: 'direct' }, timeoutMs: 15000, warning: null }) })
   await seed()
-  await page.getByRole('region', { name: 'Internet research', exact: true }).locator('button[aria-expanded]').click()
+  await openInternetResearch(page)
   await page.getByRole('tab', { name: 'Saved', exact: true }).click()
 })
 test.afterEach(async () => { await application?.close(); application = undefined })
@@ -78,6 +79,7 @@ test('opening stays idle, then an explicit offline restore preserves original pr
   await expect(restored.locator('script')).toHaveCount(0)
   await restored.getByRole('button', { name: 'Review source', exact: true }).click()
   await page.getByRole('button', { name: 'Add source to Chat draft', exact: true }).click()
+  await returnToChat(page)
   await expect(page.getByLabel('Message Elysia')).toHaveValue(/"fromCache": true/)
   await expect(page.getByLabel('Message Elysia')).toHaveValue(/"fetchedAt": "2026-10-14T12:00:00.000Z"/)
   calls = await page.evaluate(() => (window as CacheWindow).elysiaDesktopTest.getCalls())
@@ -134,13 +136,17 @@ test('late metadata cannot appear in another Chat and retains its lease until th
   await expect(page.locator('.internet-request-status')).toContainText('Loading saved sources…')
   await expect(page.getByRole('button', { name: 'Cancel research', exact: true })).toHaveCount(0)
   expect(await page.evaluate(() => (window as CacheWindow).elysiaDesktopTest.getCalls().filter(call => call.method === 'cancelInternetResearch'))).toHaveLength(0)
-  await expect(page.getByRole('combobox', { name: 'Conversation mode', exact: true })).toBeDisabled()
+  await expectResearchNavigationLocked(page)
   await emit(2, 'chat_internet_cache_next')
-  await expect(page.getByRole('combobox', { name: 'Conversation mode', exact: true })).toBeDisabled()
+  await expectResearchNavigationLocked(page)
   await page.evaluate(() => { (window as CacheWindow).elysiaDesktopTest.releaseNextInternetCache() })
+  await expect(page.getByRole('region', { name: 'Internet research', exact: true })).toHaveAttribute('aria-busy', 'false')
+  await returnToChat(page)
   await expect(page.getByRole('combobox', { name: 'Conversation mode', exact: true })).toBeEnabled()
-  await page.getByRole('region', { name: 'Internet research', exact: true }).locator('button[aria-expanded]').click()
+  await openInternetResearch(page)
+  await page.getByRole('tab', { name: 'Saved', exact: true }).click()
   await expect(page.getByRole('article', { name: 'Cached result Synthetic cached result', exact: true })).toHaveCount(0)
+  await returnToChat(page)
   await expect(page.getByLabel('Message Elysia')).toHaveValue('')
 })
 

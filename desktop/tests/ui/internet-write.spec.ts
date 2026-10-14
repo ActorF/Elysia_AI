@@ -7,6 +7,7 @@ import { _electron as electron } from 'playwright'
 import { expect, test, type ElectronApplication, type Page } from '@playwright/test'
 import type { InternetPolicyState } from '../../electron/internet-policy-protocol.ts'
 import type { GithubIssueWriteResult } from '../../electron/internet-write-protocol.ts'
+import { expectResearchNavigationLocked, openInternetResearch, returnToChat } from './internet-helpers.ts'
 
 interface WriteControl {
   getCalls(): Array<{ method: string; args: unknown[] }>
@@ -65,7 +66,7 @@ test.beforeEach(async () => {
   await emit()
   await page.evaluate(() => { (window as WriteWindow).elysiaDesktopTest.emitInternetPolicy({ kind: 'internet.policy', revision: 1, enabled: true,
     allowedDomains: ['api.github.com', 'github.com'], proxy: { mode: 'direct' }, timeoutMs: 15000, warning: null }) })
-  await page.getByRole('region', { name: 'Internet research', exact: true }).locator('button[aria-expanded]').click()
+  await openInternetResearch(page)
   await page.getByRole('tab', { name: 'Services', exact: true }).click()
   await page.locator('.internet-write-tools > summary').click()
   await fillIssue()
@@ -142,10 +143,10 @@ test('Create invokes an independent native confirmation once and consumes its re
   await page.evaluate(() => { (window as WriteWindow).elysiaDesktopTest.setInternetWriteConfirmationDelay(true) })
   await page.getByRole('button', { name: 'Create Issue…', exact: true }).click()
   await expect(page.getByRole('region', { name: 'GitHub Issue preview', exact: true })).toHaveCount(0)
-  await expect(page.getByRole('combobox', { name: 'Conversation mode', exact: true })).toBeDisabled()
+  await expectResearchNavigationLocked(page)
   await expect(page.getByRole('button', { name: 'Waiting for the Issue action…', exact: true })).toBeDisabled()
   await page.getByRole('tab', { name: 'Search', exact: true }).click()
-  await expect(page.getByRole('combobox', { name: 'Conversation mode', exact: true })).toBeDisabled()
+  await expectResearchNavigationLocked(page)
   await expect(page.getByRole('region', { name: 'Internet research', exact: true })).toHaveAttribute('aria-busy', 'true')
   await page.getByRole('tab', { name: 'Services', exact: true }).click()
   await expect(page.getByRole('button', { name: 'Waiting for the Issue action…', exact: true })).toBeDisabled()
@@ -153,11 +154,13 @@ test('Create invokes an independent native confirmation once and consumes its re
   expect(calls.filter(call => call.method === 'confirmGithubIssue').map(call => call.args)).toEqual([[{ chatId: 'chat_internet_write', approvalId: `internet_approval_${'1'.padStart(32, '0')}` }]])
   expect(calls.filter(call => call.method === 'githubIssueNativeConfirmation')).toHaveLength(1)
   await page.getByRole('button', { name: 'Cancel research', exact: true }).click()
-  await expect(page.getByRole('combobox', { name: 'Conversation mode', exact: true })).toBeDisabled()
+  await expectResearchNavigationLocked(page)
   await page.evaluate(() => { (window as WriteWindow).elysiaDesktopTest.releaseNextInternetWriteConfirmation() })
   await expect(page.getByRole('status', { name: 'GitHub Issue outcome', exact: true })).toContainText('Cancelled before the Issue request was sent')
-  await expect(page.getByRole('combobox', { name: 'Conversation mode', exact: true })).toBeEnabled()
+  await expect(page.getByRole('region', { name: 'Internet research', exact: true })).toHaveAttribute('aria-busy', 'false')
   await expect(page.getByRole('button', { name: 'Create Issue…', exact: true })).toHaveCount(0)
+  await returnToChat(page)
+  await expect(page.getByRole('combobox', { name: 'Conversation mode', exact: true })).toBeEnabled()
 })
 
 test('unknown outcomes warn about possible creation and do not retry automatically', async () => {
@@ -179,7 +182,7 @@ test('verified creation remains truthful when Internet turns off after submissio
   }, created)
   await page.getByRole('button', { name: 'Create Issue…', exact: true }).click()
   await page.getByRole('button', { name: 'Turn Internet off', exact: true }).click()
-  await expect(page.getByRole('combobox', { name: 'Conversation mode', exact: true })).toBeDisabled()
+  await expectResearchNavigationLocked(page)
   await page.evaluate(() => { (window as WriteWindow).elysiaDesktopTest.releaseNextInternetWriteConfirmation() })
   const outcome = page.getByRole('status', { name: 'GitHub Issue outcome', exact: true })
   await expect(outcome).toContainText('GitHub confirmed Issue #42 was created')
@@ -212,17 +215,18 @@ test('a same-task reconnect discards a late created result without releasing its
   await page.getByRole('button', { name: 'Create Issue…', exact: true }).click()
   await emitCoalescedReconnect()
   const research = page.getByRole('region', { name: 'Internet research', exact: true })
-  const mode = page.getByRole('combobox', { name: 'Conversation mode', exact: true })
   await expect(research).toHaveAttribute('aria-busy', 'true')
-  await expect(mode).toBeDisabled()
+  await expectResearchNavigationLocked(page)
   expect(await page.evaluate(() => (window as WriteWindow).elysiaDesktopTest.releaseNextInternetWriteConfirmation())).toBe(true)
-  await expect(mode).toBeEnabled()
+  await expect(research).toHaveAttribute('aria-busy', 'false')
   await expect(research.locator('[aria-label="GitHub Issue outcome"]')).toHaveCount(0)
   await expect(research.locator('[aria-label="GitHub Issue preview"]')).toHaveCount(0)
   await expect(research.getByLabel('Issue title', { exact: true })).toHaveValue('')
   await expect(research).toHaveAttribute('aria-busy', 'false')
   expect(await page.evaluate(() => (window as WriteWindow).elysiaDesktopTest.getCalls()
     .filter(call => call.method === 'confirmGithubIssue'))).toHaveLength(1)
+  await returnToChat(page)
+  await expect(page.getByRole('combobox', { name: 'Conversation mode', exact: true })).toBeEnabled()
 })
 
 for (const change of ['disconnect', 'Chat switch'] as const) test(`a late created result is discarded after ${change} while the physical lease drains`, async () => {
@@ -238,20 +242,27 @@ for (const change of ['disconnect', 'Chat switch'] as const) test(`a late create
     // Two back-to-back events may be batched into one ready render. Observe
     // the disconnected commit and scope reset before sending the recovery.
     await emit('error', 2)
-    await expect(page.locator('.connection-pill')).toContainText('Connection error')
     await expect(toggle).toHaveAttribute('aria-expanded', 'false')
     await expect(research.getByLabel('Issue title', { exact: true })).toHaveValue('')
     await expect(research).toHaveAttribute('aria-busy', 'true')
-    await expect(page.getByRole('combobox', { name: 'Conversation mode', exact: true })).toBeDisabled()
+    await expectResearchNavigationLocked(page)
+    const readsBeforeRecovery = await page.evaluate(() => (window as WriteWindow).elysiaDesktopTest.getCalls()
+      .filter(call => call.method === 'getInternetResearch').length)
     await emit('ready', 3)
-    await expect(page.locator('.connection-pill')).toContainText('Connected')
+    // Settings has no Chat connection pill; a fresh canonical research read
+    // proves the recovered owner was accepted without relying on hidden Chat UI.
+    await expect.poll(() => page.evaluate(() => (window as WriteWindow).elysiaDesktopTest.getCalls()
+      .filter(call => call.method === 'getInternetResearch').length)).toBeGreaterThan(readsBeforeRecovery)
   } else await emit('ready', 2, 'chat_internet_write_next')
-  await expect(page.getByRole('combobox', { name: 'Conversation mode', exact: true })).toBeDisabled()
+  await expectResearchNavigationLocked(page)
   await page.evaluate(() => { (window as WriteWindow).elysiaDesktopTest.releaseNextInternetWriteConfirmation() })
-  await expect(page.getByRole('combobox', { name: 'Conversation mode', exact: true })).toBeEnabled()
+  await expect(research).toHaveAttribute('aria-busy', 'false')
   if (await toggle.getAttribute('aria-expanded') !== 'true') await toggle.click()
   await expect(toggle).toHaveAttribute('aria-expanded', 'true')
+  await page.getByRole('tab', { name: 'Services', exact: true }).click()
   await expect(page.getByRole('status', { name: 'GitHub Issue outcome', exact: true })).toHaveCount(0)
   await expect(page.getByRole('textbox', { name: 'Issue title', exact: true })).toHaveValue('')
   await expect(page.getByRole('region', { name: 'GitHub Issue preview', exact: true })).toHaveCount(0)
+  await returnToChat(page)
+  await expect(page.getByRole('combobox', { name: 'Conversation mode', exact: true })).toBeEnabled()
 })

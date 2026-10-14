@@ -5498,7 +5498,10 @@ def test_voice_readiness_uses_the_same_adapter_as_default_transcription(
         assert create_transcriber.call_count == 1
         assert transcriber.requests[0].language == "zh"
         assert str(tmp_path) not in output_stream.getvalue()
-        assert "native" not in output_stream.getvalue().lower()
+        # Native-only capabilities are now advertised by the handshake. Voice
+        # payloads must still omit adapter implementation details.
+        voice_frames = [message for message in messages if str(message.get("id", message.get("requestId", ""))).startswith("voice-status-")]
+        assert "native" not in json.dumps(voice_frames).lower()
         backend._prepare_transcription_shutdown()
 
 

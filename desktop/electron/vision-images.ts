@@ -8,7 +8,7 @@ import {
   parseVisionChatId, parseVisionRemoveRequest, parseVisionState, validateVisionDimensions, validateVisionFileName,
   VISION_MAX_CANONICAL_BYTES, VISION_MAX_IMAGES, VISION_MAX_INPUT_BYTES, VISION_MAX_PREVIEW_BYTES,
   VISION_MAX_PREVIEW_EDGE, VISION_MAX_TOTAL_BYTES,
-  type VisionImage, type VisionRemoveRequest, type VisionSelectionResult, type VisionState,
+  type VisionImage, type VisionRemoveRequest, type VisionSelectionResult, type VisionState, type VisionAttachmentSelectionResult,
 } from './vision-protocol.js'
 
 /** Keep failures fixed and independent of native decoder, file, or dialog diagnostics. */
@@ -433,6 +433,24 @@ export class VisionImageController {
 
   /** Retain the native lease until picker/read/decode really settles, even if its owner is revoked. */
   hasActiveWork(): boolean { return this.active }
+
+  /** Review a verified attachment, retaining authority across asynchronous reads and reusing identical owned pixels. */
+  async importAttachment(chatId: string, load: () => Promise<{ fileName: string; bytes: Buffer }>): Promise<VisionAttachmentSelectionResult> {
+    const owner = this.authority(chatId, true), epoch = this.epoch
+    this.active = true
+    try {
+      const input = await load()
+      this.recheck(owner, epoch)
+      const fileName = validateVisionFileName(input.fileName), canonical = this.dependencies.decode(input.bytes)
+      this.recheck(owner, epoch)
+      const existing = [...this.images.values()].find(image => image.public.fileName === fileName && image.public.sha256 === canonical.sha256)
+      if (existing) return { state: this.snapshot(owner, false), imageId: existing.public.imageId }
+      const selected = this.install(owner, canonical, fileName, { kind: 'file', label: fileName })
+      return { state: selected.state, imageId: selected.state.items.at(-1)!.imageId }
+    } catch (error) {
+      throw new VisionImageError(error instanceof VisionImageError ? error.code : 'invalid_image')
+    } finally { this.active = false }
+  }
 
   /** Pick one image and publish it only after repeated canonical owner and storage-limit checks. */
   async chooseImage(chatId: string): Promise<VisionSelectionResult> {

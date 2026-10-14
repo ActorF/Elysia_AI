@@ -7,6 +7,7 @@ JSON object per line so Electron can monitor startup and forward reply chunks.
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import os
@@ -19,7 +20,9 @@ from enum import Enum
 from io import TextIOWrapper
 from pathlib import Path
 from threading import Event, Lock, RLock, Thread
+from time import monotonic
 from typing import Any, Literal, TextIO, cast
+from uuid import uuid4
 
 from attachments import (
     AttachmentConflictError,
@@ -33,6 +36,7 @@ from attachments import (
     JsonAttachmentStore,
 )
 from core.local_ollama import is_cloud_ollama_model_name, open_local_ollama_tags
+from core.internet_assistant import InternetEvidence, InternetLanguage, validate_internet_evidence
 from chats import (
     AttachmentId,
     AttachmentMetadata,
@@ -193,6 +197,7 @@ SERVER_CAPABILITIES = (
     "chat.sessions",
     "chat.mode",
     "chat.stream",
+    "chat.internet",
     "chat.retry",
     "request.cancel",
     "project.management",
@@ -204,6 +209,7 @@ SERVER_CAPABILITIES = (
     "voice.speech.start",
     "voice.speech.cancel",
     "attachment.management",
+    "attachment.native_source",
     "knowledge.management",
     "stream",
     "progress",
@@ -214,11 +220,14 @@ MAX_ERROR_MESSAGE_LENGTH = 4096
 MAX_RECENT_REQUEST_IDS = 4096
 GENERATION_SHUTDOWN_TIMEOUT_SECONDS = 2.0
 TRANSCRIPTION_TIMEOUT_SECONDS = 120.0
+INTERNET_SEARCH_TIMEOUT_SECONDS = 60.0
+_NATIVE_IMAGE_MAX_BYTES = 8 * 1024 * 1024
 _WORK_PHYSICAL_BUSY_METHODS = frozenset({
     "chat.create", "chat.open", "chat.rename", "chat.mode", "chat.pin",
     "chat.archive", "chat.delete", "chat.stream", "chat.retry",
     "project.create", "project.open", "project.update", "project.workspace",
     "project.archive", "project.chat.move", "attachment.add", "attachment.remove",
+    "attachment.native_source",
     "settings.update", "voice.settings.update", "voice.capture.complete",
     "voice.transcription.start", "voice.speech.start", "work.workspace.bind",
     "work.plan.create", "work.tool.run", "work.tool.preview", "work.tool.confirm",
@@ -251,6 +260,10 @@ class _GenerationTask:
     done: Event = field(default_factory=Event)
     thread: Thread | None = None
     speech_turn: DesktopSpeechTurn | None = field(default=None, repr=False)
+    internet_search_id: str | None = None
+    internet_ready: Event = field(default_factory=Event, repr=False)
+    internet_result: InternetEvidence | None = field(default=None, repr=False)
+    internet_waiting: bool = False
     _lock: Lock = field(default_factory=Lock, repr=False)
 
     def request_cancel(self) -> bool:
@@ -829,6 +842,8 @@ class DesktopBackend:
                 self._cancel_speech_turn(request_id, params)
             elif method == "chat.stream":
                 self._start_chat_stream(request_id, params)
+            elif method == "chat.internet.resolve":
+                self._resolve_chat_internet(request_id, params)
             elif method == "chat.retry":
                 self._start_chat_retry(request_id, params)
             elif method == "chat.list":
@@ -853,6 +868,8 @@ class DesktopBackend:
                 self._add_attachments(request_id, params)
             elif method == "attachment.remove":
                 self._remove_attachment(request_id, params)
+            elif method == "attachment.native_source":
+                self._read_native_attachment(request_id, params)
             elif method == "project.list":
                 self._list_projects(request_id)
             elif method == "project.create":
@@ -2317,6 +2334,46 @@ class DesktopBackend:
             "maxFileCount": state.max_file_count,
         }
 
+    def _read_native_attachment(self, request_id: str, params: JsonObject) -> None:
+        """Export verified image bytes only to native Main for the active Chat.
+
+        The attachment repository yields a hash-verified immutable snapshot.
+        Returning that bounded snapshot avoids exposing private paths or reopening
+        mutable storage after verification. Renderer requests never expose this
+        command; Electron revalidates and decodes the image before local analysis.
+        """
+
+        self._require_work_admission("attachment.native_source")
+        scope = self._attachment_scope_from_params(params)
+        with self._state_lock:
+            if self._generation_task is not None or self._transcription_capacity_reserved_locked():
+                raise ChatBusyError("Wait for Chat or Voice before reading an image.")
+            if scope.kind != "chat" or self._active_chat is None or scope.id != str(self._active_chat.chat_id):
+                raise ProtocolValidationError("chat.not_active", "Image attachment must belong to the active Chat.")
+        references = self._attachment_references(scope)
+        store = self._require_attachment_store()
+        state = store.list_state(scope, references)
+        attachment_id = cast(str, params["attachmentId"])
+        item = next((item for item in state.attachments if item.attachment_id == attachment_id), None)
+        if item is None:
+            raise AttachmentNotFoundError("Ready image attachment does not exist in this Chat.")
+        if item.media_type not in ("image/png", "image/jpeg") or item.size_bytes > _NATIVE_IMAGE_MAX_BYTES:
+            raise AttachmentValidationError("Local image analysis supports PNG/JPEG files up to 8 MiB.")
+        snapshot = store.snapshot_file(scope, attachment_id)
+        ownership = next((item for item in snapshot.ownerships if item.link_id == attachment_id), None)
+        if ownership is None:
+            raise AttachmentNotFoundError("Image attachment ownership is unavailable.")
+        with store.open_verified_file(scope, ownership.file_id) as stream:
+            payload = stream.read(_NATIVE_IMAGE_MAX_BYTES + 1)
+        valid_header = (payload.startswith(b"\x89PNG\r\n\x1a\n") if item.media_type == "image/png"
+                        else payload.startswith(b"\xff\xd8\xff"))
+        if not payload or len(payload) != item.size_bytes or len(payload) > _NATIVE_IMAGE_MAX_BYTES or not valid_header:
+            raise AttachmentValidationError("Image attachment bytes are invalid.")
+        self._emit_response(request_id, {
+            "kind": "attachment.native_source", "fileName": item.file_name,
+            "mediaType": item.media_type, "dataBase64": base64.b64encode(payload).decode("ascii"),
+        })
+
     def _list_attachments(
         self,
         request_id: str,
@@ -3591,6 +3648,15 @@ class DesktopBackend:
                         )
                     )
                 )
+            elif params.get("automaticInternet", False):
+                run = lambda active_brain, active_task: active_brain.stream_chat(
+                    active_task.chat_id,
+                    raw_message,
+                    attachments=attachment_records,
+                    should_cancel=active_task.should_cancel,
+                    begin_commit=active_task.begin_commit,
+                    internet_research=lambda query, language: self._request_chat_internet(active_task, query, language),
+                )
             elif attachment_records:
                 run = lambda active_brain, active_task: active_brain.stream_chat(
                     active_task.chat_id,
@@ -3620,6 +3686,62 @@ class DesktopBackend:
                 )
             self._abandon_generation_task(task)
             raise
+
+    def _request_chat_internet(
+        self,
+        task: _GenerationTask,
+        query: str,
+        language: InternetLanguage,
+    ) -> InternetEvidence:
+        """Wait for one Main-owned search without releasing the generation lease."""
+
+        with task._lock:
+            if task.state is not _GenerationState.RUNNING:
+                raise GenerationCancelledError("Chat generation was cancelled.")
+            if task.internet_search_id is not None:
+                return {"sources": [], "error": "invalid_request"}
+            task.internet_search_id = "internet_search_" + uuid4().hex
+            task.internet_waiting = True
+        try:
+            self._emit_event("chat.internet.request", request_id=task.request_id, data={
+                "chatId": str(task.chat_id), "searchId": task.internet_search_id,
+                "query": query, "language": language,
+            })
+            deadline = monotonic() + INTERNET_SEARCH_TIMEOUT_SECONDS
+            while True:
+                if task.should_cancel():
+                    raise GenerationCancelledError("Chat generation was cancelled.")
+                remaining = deadline - monotonic()
+                if remaining <= 0 or task.internet_ready.wait(min(0.05, remaining)):
+                    break
+            with task._lock:
+                if task.state is not _GenerationState.RUNNING:
+                    raise GenerationCancelledError("Chat generation was cancelled.")
+                return task.internet_result or {"sources": [], "error": "timeout"}
+        finally:
+            with task._lock:
+                task.internet_waiting = False
+                # Do not retain untrusted snippets or public query evidence in
+                # task state after the answer has received its detached value.
+                task.internet_result = None
+
+    def _resolve_chat_internet(self, request_id: str, params: JsonObject) -> None:
+        """Consume only the live search receipt belonging to the active generation."""
+
+        evidence = validate_internet_evidence({"sources": params["sources"], "error": params["error"]})
+        accepted = False
+        with self._state_lock:
+            task = self._generation_task
+            if (task is not None and task.request_id == params["requestId"]
+                    and str(task.chat_id) == params["chatId"] and self._active_chat is not None
+                    and str(self._active_chat.chat_id) == params["chatId"]):
+                with task._lock:
+                    if (task.state is _GenerationState.RUNNING and task.internet_waiting
+                            and task.internet_search_id == params["searchId"] and not task.internet_ready.is_set()):
+                        task.internet_result = evidence
+                        task.internet_ready.set()
+                        accepted = True
+        self._emit_response(request_id, {"kind": "chat.internet.resolved", "accepted": accepted})
 
     def _claim_chat_attachments(
         self,

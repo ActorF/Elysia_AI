@@ -5,6 +5,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { _electron as electron } from 'playwright'
 import { expect, test, type ElectronApplication, type Page } from '@playwright/test'
+import { closeVision, openVision, reviewVisionImage } from './vision-helpers.ts'
 import type { ProjectState } from '../../electron/contracts.ts'
 
 interface PrivacyControl {
@@ -33,8 +34,7 @@ async function emit(status = 'ready', revision = 1): Promise<void> {
 }
 
 async function expand(): Promise<void> {
-  const button = page.getByRole('region', { name: 'Vision images', exact: true }).getByRole('button', { name: 'Vision', exact: true })
-  if (await button.getAttribute('aria-expanded') !== 'true') await button.click()
+  await openVision(page)
 }
 
 test.beforeEach(async () => {
@@ -49,21 +49,21 @@ test.afterEach(async () => { await application?.close(); application = undefined
 test('an inherited analysis lease drains while disconnected without starting another provider', async () => {
   await page.evaluate(() => { (window as PrivacyWindow).elysiaDesktopTest.setExistingVisionAnalysisBusy(true) })
   await emit()
-  await expect(page.getByRole('combobox', { name: 'Conversation mode' })).toBeDisabled()
+  await expect(page.getByRole('combobox', { name: 'Conversation mode', includeHidden: true })).toBeDisabled()
   await expand()
   await page.getByRole('button', { name: 'Cancel analysis', exact: true }).click()
   await expect(page.getByRole('region', { name: 'Visual analysis', exact: true })).toContainText('Cancellation requested')
   await emit('error', 2)
   await expect(page.locator('.connection-pill')).toContainText('Connection error')
   await page.evaluate(() => { (window as PrivacyWindow).elysiaDesktopTest.setExistingVisionAnalysisBusy(false) })
-  await expect(page.getByRole('region', { name: 'Vision images', exact: true })).toHaveAttribute('aria-busy', 'false')
+  await expect(page.getByRole('region', { name: 'Vision images', exact: true, includeHidden: true })).toHaveAttribute('aria-busy', 'false')
   await expect(page.getByRole('button', { name: 'Retry', exact: true })).toBeEnabled()
   expect(await page.evaluate(() => (window as PrivacyWindow).elysiaDesktopTest.getCalls().filter((call) =>
     ['checkVisionOcr', 'runVisionOcr', 'checkVisionModel', 'askVisionImage'].includes(call.method)))).toHaveLength(0)
   await page.getByRole('button', { name: 'Retry', exact: true }).click()
   await expect.poll(async () => page.evaluate(() => (window as PrivacyWindow).elysiaDesktopTest.getCalls().filter((call) => call.method === 'restartBackend').length)).toBe(1)
   await emit('ready', 4)
-  await expect(page.getByRole('combobox', { name: 'Conversation mode' })).toBeEnabled()
+  await expect(page.getByRole('combobox', { name: 'Conversation mode', includeHidden: true })).toBeEnabled()
 })
 
 test('archiving the current Project revokes image reviews even when Chat and Project identifiers stay the same', async () => {
@@ -78,23 +78,24 @@ test('archiving the current Project revokes image reviews even when Chat and Pro
   await expand()
   const fixture = { fileName: 'synthetic-private.png', width: 1, height: 1, sizeBytes: 68, sha256: 'a'.repeat(64), mediaType: 'image/png',
     previewDataUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII=' }
-  await page.evaluate((image) => { (window as PrivacyWindow).elysiaDesktopTest.setSelectedVisionImage(image) }, fixture)
-  await page.getByRole('button', { name: 'Choose image', exact: true }).click()
-  await page.getByRole('combobox', { name: 'Vision image', exact: true }).selectOption({ label: fixture.fileName })
+  await reviewVisionImage(page, fixture)
   await page.getByRole('tab', { name: 'Use in Chat', exact: true }).click()
   await page.getByRole('button', { name: 'Review context', exact: true }).click()
   await expect(page.getByRole('region', { name: 'Reviewed image context', exact: true })).toBeVisible()
+  await closeVision(page)
   await page.getByRole('button', { name: /^Projects/ }).click()
   await page.getByRole('button', { name: 'Archive Project', exact: true }).click()
   await page.getByRole('dialog', { name: /Archive “Synthetic privacy project”/ }).getByRole('button', { name: 'Archive Project', exact: true }).click()
   await expect(page.getByText('Read-only Project', { exact: true })).toBeVisible()
   await page.getByRole('button', { name: /^Chat$/ }).click()
-  await expand()
-  await expect(page.getByRole('region', { name: 'Vision images', exact: true }).getByRole('article')).toHaveCount(0)
+  await expect(page.getByRole('region', { name: 'Vision images', exact: true, includeHidden: true }).getByRole('article')).toHaveCount(0)
   await expect(page.getByRole('region', { name: 'Reviewed image context', exact: true })).toHaveCount(0)
-  await expect(page.getByRole('button', { name: 'Choose image', exact: true })).toBeDisabled()
-  await page.getByRole('tab', { name: 'Use in Chat', exact: true }).click()
-  await expect(page.getByRole('button', { name: 'Review context', exact: true })).toBeDisabled()
+  await expect(page.getByRole('dialog', { name: 'Vision', exact: true })).toBeHidden()
+  await expect(page.getByRole('button', { name: 'Take screenshot', exact: true })).toBeDisabled()
+  await page.getByRole('button', { name: 'Review image synthetic-private.png', exact: true }).click()
+  await expect(page.getByRole('region', { name: 'Vision images', exact: true, includeHidden: true }).getByRole('article')).toHaveCount(0)
+  expect(await page.evaluate(() => (window as PrivacyWindow).elysiaDesktopTest.getCalls().filter((call) =>
+    call.method === 'importVisionAttachment'))).toHaveLength(1)
   expect(await page.evaluate(() => (window as PrivacyWindow).elysiaDesktopTest.getCalls().filter((call) =>
     ['getVisionContextText', 'sendChat', 'createWorkPlan'].includes(call.method)))).toHaveLength(0)
 })

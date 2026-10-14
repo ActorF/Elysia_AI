@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { _electron as electron } from 'playwright'
 import { expect, test, type ElectronApplication, type Page } from '@playwright/test'
 import type { InternetPolicyState } from '../../electron/internet-policy-protocol.ts'
+import { expectResearchNavigationLocked, openInternetResearch, returnToChat } from './internet-helpers.ts'
 
 interface ServicesControl {
   getCalls(): Array<{ method: string; args: unknown[] }>
@@ -56,7 +57,7 @@ test.beforeEach(async () => {
     control.emitInternetPolicy({ kind: 'internet.policy', revision: 1, enabled: true, allowedDomains: ['api.open-meteo.com', 'api.github.com'], proxy: { mode: 'direct' }, timeoutMs: 15000, warning: null })
     control.setInternetServiceSource('weather', weather); control.setInternetServiceSource('github', github)
   }, { weather: weatherSource, github: githubSource })
-  await page.getByRole('region', { name: 'Internet research', exact: true }).locator('button[aria-expanded]').click()
+  await openInternetResearch(page)
   await page.getByRole('tab', { name: 'Services', exact: true }).click()
 })
 test.afterEach(async () => { await application?.close(); application = undefined })
@@ -99,6 +100,7 @@ test('shares only rounded explicit coordinates and reviews weather units and pro
   await expect(source.getByRole('button', { name: /^Read page/ })).toHaveCount(0)
   await source.getByRole('button', { name: 'Review source', exact: true }).click()
   await page.getByRole('button', { name: 'Add source to Chat draft', exact: true }).click()
+  await returnToChat(page)
   await expect(page.getByLabel('Message Elysia')).toHaveValue(/"provider": "Open-Meteo weather"/)
   const calls = await page.evaluate(() => (window as ServicesWindow).elysiaDesktopTest.getCalls())
   expect(calls.filter(call => call.method === 'getInternetWeather').map(call => call.args)).toEqual([[{ chatId: 'chat_internet_services', latitude: 41.1235, longitude: -87.9877 }]])
@@ -144,18 +146,24 @@ for (const interruption of ['off', 'disconnect', 'chat change'] as const) test(`
   await page.evaluate(() => { (window as ServicesWindow).elysiaDesktopTest.setInternetServiceDelay(true) })
   await page.getByRole('button', { name: 'Get weather', exact: true }).click()
   await expect(page.getByRole('button', { name: 'Get repository', exact: true })).toBeDisabled()
-  await expect(page.getByRole('combobox', { name: 'Conversation mode', exact: true })).toBeDisabled()
-  if (interruption === 'off') await page.getByRole('button', { name: 'Turn Internet off', exact: true }).click()
+  await expectResearchNavigationLocked(page)
+  if (interruption === 'off') {
+    await page.getByRole('button', { name: 'Turn Internet off', exact: true }).click()
+  }
   else if (interruption === 'disconnect') { await emit('error', 2); await emit('ready', 3) }
   else await emit('ready', 2, 'chat_internet_service_next')
-  await expect(page.getByRole('combobox', { name: 'Conversation mode', exact: true })).toBeDisabled()
+  await expectResearchNavigationLocked(page)
   await page.evaluate(() => { (window as ServicesWindow).elysiaDesktopTest.releaseNextInternetService() })
+  await expect(page.getByRole('region', { name: 'Internet research', exact: true })).toHaveAttribute('aria-busy', 'false')
+  await returnToChat(page)
   await expect(page.getByRole('combobox', { name: 'Conversation mode', exact: true })).toBeEnabled()
+  await openInternetResearch(page)
   if (interruption !== 'off') {
-    await page.getByRole('region', { name: 'Internet research', exact: true }).locator('button[aria-expanded]').click()
+    await page.getByRole('tab', { name: 'Services', exact: true }).click()
     await expect(page.getByRole('textbox', { name: 'Latitude', exact: true })).toHaveValue('')
     await expect(page.getByRole('textbox', { name: 'GitHub owner', exact: true })).toHaveValue('')
   }
   await expect(page.getByRole('region', { name: 'Internet research', exact: true }).getByRole('article')).toHaveCount(0)
+  await returnToChat(page)
   await expect(page.getByLabel('Message Elysia')).toHaveValue('')
 })

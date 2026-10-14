@@ -55,6 +55,7 @@ from project_sources import ProjectSourceAnswer
 
 from .active_conversation import ActiveConversationService
 from .chat_model import ChatMessage, ChatModel
+from .internet_assistant import InternetResearch, add_internet_evidence, internet_provenance_suffix, plan_internet_research
 from .exceptions import (
     ChatModelMismatchError,
     GenerationCancelledError,
@@ -847,12 +848,15 @@ class Brain:
         attachments: Iterable[AttachmentMetadata] = (),
         should_cancel: Callable[[], bool] | None = None,
         begin_commit: Callable[[], bool] | None = None,
+        internet_research: InternetResearch | None = None,
     ) -> Generator[str, None, None]:
         """Yield chunks, then commit a complete turn to the named Chat.
 
         A failed, cancelled, empty, or concurrently invalidated stream is never
         written as a partial turn. The Chat busy guard remains held for the
         complete generator lifetime and is released when the generator closes.
+        An optional native research callback enables one local model planning
+        pass in Chat mode; evidence affects only this reply, not the user record.
         """
 
         cleaned_user_message = user_message.strip()
@@ -888,6 +892,26 @@ class Brain:
                 project=active_conversation.project,
             )
 
+            research_suffix = ""
+            if internet_research is not None and active_conversation.chat_session.mode == "chat":
+                recent = [
+                    {"role": message.role, "content": message.content}
+                    for message in active_conversation.chat_session.messages[-4:]
+                    if message.role in ("user", "assistant")
+                ]
+                plan = plan_internet_research(
+                    self._chat_model,
+                    cleaned_user_message,
+                    recent,
+                    should_cancel=should_cancel,
+                )
+                self._raise_if_generation_cancelled(should_cancel)
+                if plan["action"] == "search" and plan["query"] is not None:
+                    evidence = internet_research(plan["query"], plan["language"])
+                    self._raise_if_generation_cancelled(should_cancel)
+                    chat_messages = add_internet_evidence(chat_messages, evidence)
+                    research_suffix = internet_provenance_suffix(evidence, plan["language"])
+
             reply = yield from self._stream_model_reply(
                 chat_messages,
                 should_cancel=should_cancel,
@@ -895,6 +919,10 @@ class Brain:
                     _preserve_requested_stage_content(cleaned_user_message)
                 ),
             )
+            if research_suffix:
+                self._raise_if_generation_cancelled(should_cancel)
+                yield research_suffix
+                reply += research_suffix
             self._claim_generation_commit(
                 should_cancel=should_cancel,
                 begin_commit=begin_commit,

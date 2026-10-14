@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import {
+  BUILTIN_INTERNET_DOMAINS,
   parseUpdateInternetPolicyRequest,
   type InternetPolicyClient,
   type InternetPolicyState,
@@ -16,39 +17,32 @@ interface InternetSettingsSectionProps {
 }
 
 interface PolicyDraft {
-  enabled: boolean
   domains: string
   proxyMode: 'direct' | 'local-http'
   proxyPort: string
   timeoutSeconds: string
 }
 
-const DOMAIN_PRESETS = [
-  { label: 'Wikipedia', domains: ['en.wikipedia.org', 'zh.wikipedia.org'] },
-  { label: 'GitHub', domains: ['api.github.com', 'github.com'] },
-  { label: 'Open-Meteo', domains: ['api.open-meteo.com'] },
-  { label: 'Lyrics', domains: ['lrclib.net'] },
-] as const
-
 function policyDraft(state: InternetPolicyState): PolicyDraft {
-  return { enabled: state.enabled, domains: state.allowedDomains.join('\n'), proxyMode: state.proxy.mode,
+  return { domains: state.allowedDomains.filter(domain => !BUILTIN_INTERNET_DOMAINS.includes(domain)).join('\n'), proxyMode: state.proxy.mode,
     proxyPort: state.proxy.mode === 'local-http' ? String(state.proxy.port) : '7890',
     timeoutSeconds: String(state.timeoutMs / 1000) }
 }
 
-function draftRequest(draft: PolicyDraft, revision: number): UpdateInternetPolicyRequest {
-  return parseUpdateInternetPolicyRequest({ expectedRevision: revision, enabled: draft.enabled,
+function draftRequest(draft: PolicyDraft, revision: number, enabled: boolean): UpdateInternetPolicyRequest {
+  return parseUpdateInternetPolicyRequest({ expectedRevision: revision, enabled,
     allowedDomains: [...new Set(draft.domains.split(/\r?\n/u).map(domain => domain.trim().toLowerCase()).filter(Boolean))],
     proxy: draft.proxyMode === 'direct' ? { mode: 'direct' } : { mode: 'local-http', port: Number(draft.proxyPort) },
     timeoutMs: Number(draft.timeoutSeconds) * 1000 })
 }
 
-/** Keep Internet off until an explicit revision-checked save, with an independent immediate off control. */
+/** Apply the Internet switch immediately while keeping optional connection edits in a separately reviewed draft. */
 export function InternetSettingsSection({ api, onDirtyChange }: InternetSettingsSectionProps) {
   const [state, setState] = useState<InternetPolicyState | null>(null)
   const [draft, setDraft] = useState<PolicyDraft | null>(null)
   const [loading, setLoading] = useState(api !== undefined)
   const [saving, setSaving] = useState(false)
+  const [enabling, setEnabling] = useState(false)
   const [turningOff, setTurningOff] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
@@ -61,7 +55,7 @@ export function InternetSettingsSection({ api, onDirtyChange }: InternetSettings
   const dirty = draft !== null && state !== null && JSON.stringify(draft) !== JSON.stringify(policyDraft(state))
   let validationError: string | null = null
   if (draft !== null && state !== null) {
-    try { draftRequest(draft, state.revision) }
+    try { draftRequest(draft, state.revision, state.enabled) }
     catch { validationError = 'Use up to 32 exact domain names, a timeout from 1 to 60 seconds, and a proxy port from 1 to 65535.' }
   }
 
@@ -112,7 +106,7 @@ export function InternetSettingsSection({ api, onDirtyChange }: InternetSettings
 
   async function save(): Promise<void> {
     if (api === undefined || draftRef.current === null || canonical.current === null || saving || turningOff || conflict) return
-    const request = draftRequest(draftRef.current, canonical.current.revision)
+    const request = draftRequest(draftRef.current, canonical.current.revision, canonical.current.enabled)
     const token = ++operation.current
     setSaving(true); setError(null); setNotice(null)
     try {
@@ -130,10 +124,34 @@ export function InternetSettingsSection({ api, onDirtyChange }: InternetSettings
     } finally { if (live.current) setSaving(false) }
   }
 
+  async function enable(): Promise<void> {
+    if (api === undefined || canonical.current === null || loading || saving || turningOff) return
+    const current = canonical.current, token = ++operation.current
+    const rebaseDraft = !conflict && baseRevision.current === current.revision
+    setSaving(true); setEnabling(true); setError(null); setNotice(null)
+    try {
+      // The switch uses saved settings, never unsaved advanced text. A successful
+      // CAS can safely rebase that unchanged draft onto our own new revision.
+      const next = await api.updateInternetPolicy({ expectedRevision: current.revision, enabled: true,
+        allowedDomains: [...current.allowedDomains], proxy: current.proxy, timeoutMs: current.timeoutMs })
+      if (live.current && token === operation.current) {
+        accept(next)
+        if (rebaseDraft) { baseRevision.current = next.revision; setConflict(false) }
+        setNotice('Elysia can now search when your message needs online information.')
+      }
+    } catch {
+      if (live.current && token === operation.current) {
+        setError('Internet could not be enabled. Reload preferences and try again.'); setConflict(true)
+        try { const next = await api.getInternetPolicy(); if (live.current && token === operation.current) accept(next) }
+        catch { /* A failed refresh cannot turn an unavailable policy into access. */ }
+      }
+    } finally { if (live.current) { setSaving(false); setEnabling(false) } }
+  }
+
   async function turnOff(): Promise<void> {
     if (api === undefined || canonical.current === null || turningOff) return
     const token = ++operation.current
-    setTurningOff(true); setError(null); setNotice(null)
+    setTurningOff(true); setEnabling(false); setError(null); setNotice(null)
     try {
       let current = canonical.current
       let next: InternetPolicyState
@@ -167,7 +185,7 @@ export function InternetSettingsSection({ api, onDirtyChange }: InternetSettings
     }}>
     <div className="settings-section-heading">
       <h2 id="internet-settings-heading">Internet access</h2>
-      <p>Choose which public services Elysia may contact when you request online information.</p>
+      <p>Let Elysia look up current information while you chat.</p>
     </div>
     <p role="status">{state === null ? 'Internet policy is unavailable.' : `Internet is ${state.enabled ? 'on' : 'off'}.`}{notice === null ? '' : ` ${notice}`}</p>
     {api === undefined && <p>Internet settings require the desktop application.</p>}
@@ -175,19 +193,18 @@ export function InternetSettingsSection({ api, onDirtyChange }: InternetSettings
     {error !== null && <p role="alert">{error}</p>}
     {draft === null && api !== undefined && <button type="button" className="secondary-button" disabled={loading} onClick={() => { void reload() }}>Reload Internet preferences</button>}
     {draft !== null && <>
-      <fieldset disabled={loading || saving || turningOff}>
-        <label className="internet-enable"><input type="checkbox" checked={draft.enabled} onChange={event => { edit({ enabled: event.target.checked }) }} />Allow Internet access</label>
-        <p>The switch takes effect when you save. An empty domain list allows no services.</p>
+      <div className="internet-enable-row">
+        <label className="internet-enable"><input type="checkbox" checked={!turningOff && (state?.enabled === true || enabling)}
+          disabled={loading || turningOff || saving && !enabling} onChange={event => { if (event.target.checked) void enable(); else void turnOff() }} />Allow Internet access</label>
+        {(saving || turningOff) && <button type="button" className="secondary-button" disabled={turningOff} onClick={() => { void turnOff() }}>{turningOff ? 'Turning Internet off…' : 'Turn Internet off'}</button>}
+      </div>
+      <p>No API key or domain setup is needed. Web search, Wikipedia, weather, public GitHub and lyrics are included.</p>
+      <details className="internet-advanced"><summary>Advanced connection settings</summary>
+        <fieldset disabled={loading || saving || turningOff}>
         <label className="settings-field"><span>Allowed domains</span>
-          <textarea value={draft.domains} rows={5} spellCheck={false} onChange={event => { edit({ domains: event.target.value }) }} aria-describedby="internet-domains-help" />
-          <small id="internet-domains-help">One exact domain per line. Subdomains need their own entry; URLs, wildcards, IP addresses, and local addresses are not allowed.</small>
+          <textarea value={draft.domains} rows={3} spellCheck={false} onChange={event => { edit({ domains: event.target.value }) }} aria-describedby="internet-domains-help" />
+          <small id="internet-domains-help">Optional extra websites for manual reading. Built-in sources are already allowed. One exact domain per line; URLs, wildcards, IP addresses and local addresses are not allowed.</small>
         </label>
-        <div className="internet-preset-actions" aria-label="Domain presets">
-          {DOMAIN_PRESETS.map(preset => <button key={preset.label} type="button" className="secondary-button" onClick={() => {
-            const existing = draft.domains.split(/\r?\n/u).map(domain => domain.trim().toLowerCase()).filter(Boolean)
-            edit({ domains: [...new Set([...existing, ...preset.domains])].join('\n') })
-          }}>Add {preset.label}</button>)}
-        </div>
         <div className="settings-field-grid">
           <label className="settings-field"><span>Connection</span><select value={draft.proxyMode} onChange={event => { edit({ proxyMode: event.target.value as PolicyDraft['proxyMode'] }) }}>
             <option value="direct">Direct connection</option><option value="local-http">Local HTTP proxy</option>
@@ -196,21 +213,24 @@ export function InternetSettingsSection({ api, onDirtyChange }: InternetSettings
           <label className="settings-field"><span>Request timeout (seconds)</span><input type="number" min="1" max="60" step="0.001" value={draft.timeoutSeconds} onChange={event => { edit({ timeoutSeconds: event.target.value }) }} /></label>
         </div>
         <p>Elysia ignores system and environment proxy settings. A local HTTP proxy uses 127.0.0.1 and the port above; if it fails, Elysia does not fall back to a direct connection.</p>
-      </fieldset>
-      {validationError !== null && <p role="alert">{validationError}</p>}
-      {conflict && <p role="alert">The active policy changed or a save failed. Reload to review the current policy before saving this draft.</p>}
-      <div className="internet-policy-actions">
-        <button type="button" className="primary-button" disabled={!dirty || loading || saving || turningOff || conflict || validationError !== null} onClick={() => { void save() }}>{saving ? 'Saving Internet preferences…' : 'Save Internet preferences'}</button>
-        <button type="button" className="secondary-button" disabled={loading || saving || turningOff} onClick={() => { void reload() }}>Reload Internet preferences</button>
-        <button type="button" className="secondary-button" disabled={turningOff} onClick={() => { void turnOff() }}>{turningOff ? 'Turning Internet off…' : 'Turn Internet off'}</button>
-      </div>
+        </fieldset>
+        {validationError !== null && <p role="alert">{validationError}</p>}
+        {conflict && <p role="alert">The active policy changed or a save failed. Reload to review the current policy before saving this draft.</p>}
+        <div className="internet-policy-actions">
+          <button type="button" className="primary-button" disabled={!dirty || loading || saving || turningOff || conflict || validationError !== null} onClick={() => { void save() }}>{saving ? 'Saving Internet preferences…' : 'Save Internet preferences'}</button>
+          <button type="button" className="secondary-button" disabled={loading || saving || turningOff} onClick={() => { void reload() }}>Reload Internet preferences</button>
+        </div>
+      </details>
     </>}
+    <details className="internet-privacy"><summary>Privacy and sources</summary>
     <ul className="settings-privacy-list">
       <li>Internet starts off each time Elysia opens; domain, proxy and timeout choices are saved.</li>
-      <li>Only requests you start send queries or selected service inputs to allowed domains. Chat messages, images, files, and local memories are not automatically uploaded.</li>
+      <li>When your message needs online information, Elysia sends a short AI-generated search query to its search provider. It does not upload the full conversation, images, files or local memories.</li>
+      <li>Built-in domains: {BUILTIN_INTERNET_DOMAINS.join(', ')}. Search results do not grant access to additional websites.</li>
       <li>Changing this policy cancels active in-app Internet requests. External browsers control their own traffic after a link opens.</li>
       <li>Local Ollama and other local model services remain available when Internet access is off.</li>
       <li>Online content is untrusted reference material. Sending, uploading, publishing, purchasing, or logging in requires separate confirmation.</li>
     </ul>
+    </details>
   </section>
 }

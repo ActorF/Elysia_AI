@@ -939,6 +939,7 @@ function App() {
   const [sessionMutationPending, setSessionMutationPending] = useState(false)
   const [workOperationPending, setWorkOperationPending] = useState(false)
   const [visionOperationPending, setVisionOperationPending] = useState(false)
+  const [visionPresentation, setVisionPresentation] = useState<{ open: boolean; initialView: 'capture' | 'review'; attachmentId?: string }>({ open: false, initialView: 'capture' })
   const [internetOperationPending, setInternetOperationPending] = useState(false)
   const [internetLifecycleEpoch, setInternetLifecycleEpoch] = useState(0)
   const [selectedWorkVisionContext, setSelectedWorkVisionContext] = useState<VisionContext | null>(null)
@@ -1396,7 +1397,8 @@ function App() {
     const chatId = activeChatId
     if (chatId === undefined || backendStatusRef.current !== 'ready' || backendChatIdRef.current !== chatId
       || activeChatIdRef.current !== chatId || activeChatProjectIdRef.current !== activeChatProjectId
-      || activeChatArchivedRef.current || !visionProjectAllowedRef.current || activeViewRef.current !== 'chat' || sessionMutationPendingRef.current
+      || activeChatArchivedRef.current || !visionProjectAllowedRef.current
+      || activeViewRef.current !== (source === 'internet' ? 'settings' : 'chat') || sessionMutationPendingRef.current
       || workLeaseRef.current || modelSelectionPendingRef.current || retryPendingRef.current
       || generationIsBusy(inFlightTurnRef.current) || generationReconcilePendingRef.current || pendingChatSendRef.current !== null
       || (source === 'vision' && internetOperationPendingRef.current)
@@ -8121,6 +8123,14 @@ function App() {
   if (activeView === 'settings') {
     content = (
       <SettingsView
+        internetTools={activeChatId === undefined || chatState?.activeChat.mode !== 'chat' || typeof desktopApi?.getInternetResearch !== 'function' ? undefined : (
+          <InternetPanel api={desktopApi} chatId={activeChatId} projectId={activeChatProjectId}
+            lifecycleEpoch={internetLifecycleEpoch}
+            ready={snapshot.status === 'ready' && snapshot.chatId === activeChatId && chatState?.activeChat.archived === false && visionProjectAllowed}
+            disabled={workControlsDisabled || workLeaseRef.current || visionOperationPending || modelSelectionPending || retryPending}
+            onBusyChange={updateInternetBusy} onChatDraft={appendReviewedInternetDraft}
+            onSettings={() => { navigate('settings') }} onOpenSource={openExternalUrl} />
+        )}
         internetApi={desktopApi}
         themePreference={theme}
         resolvedTheme={resolvedTheme}
@@ -8312,20 +8322,20 @@ function App() {
             onBusyChange={updateWorkBusy}
           />
         )}
+        screenshotControl={activeChatId === undefined || typeof desktopApi?.getVisionState !== 'function' ? undefined : (
+          <button type="button" className="tool-button composer-screenshot-button" aria-label="Take screenshot" title="Take screenshot"
+            aria-expanded={visionPresentation.open}
+            disabled={snapshot.status !== 'ready' || snapshot.chatId !== activeChatId || chatState?.activeChat.archived !== false || !visionProjectAllowed}
+            onClick={() => setVisionPresentation({ open: true, initialView: 'capture' })}><Icon name="monitor" /></button>
+        )}
+        onReviewImage={attachmentId => setVisionPresentation({ open: true, initialView: 'review', attachmentId })}
         visionPanel={activeChatId === undefined || typeof desktopApi?.getVisionState !== 'function' ? undefined : (
           <VisionPanel api={desktopApi} chatId={activeChatId} projectId={activeChatProjectId}
+            {...visionPresentation} onClose={() => setVisionPresentation(current => ({ ...current, open: false }))}
             ready={snapshot.status === 'ready' && snapshot.chatId === activeChatId && chatState?.activeChat.archived === false && visionProjectAllowed}
             disabled={workControlsDisabled || workLeaseRef.current || internetOperationPending || modelSelectionPending || retryPending}
             onBusyChange={updateVisionBusy} onChatDraft={appendReviewedVisionDraft}
             onWorkContext={chatState?.activeChat.mode === 'work' ? selectReviewedVisionWorkContext : undefined} />
-        )}
-        internetPanel={activeChatId === undefined || chatState?.activeChat.mode !== 'chat' || typeof desktopApi?.getInternetResearch !== 'function' ? undefined : (
-          <InternetPanel api={desktopApi} chatId={activeChatId} projectId={activeChatProjectId}
-            lifecycleEpoch={internetLifecycleEpoch}
-            ready={snapshot.status === 'ready' && snapshot.chatId === activeChatId && chatState?.activeChat.archived === false && visionProjectAllowed}
-            disabled={workControlsDisabled || workLeaseRef.current || visionOperationPending || modelSelectionPending || retryPending}
-            onBusyChange={updateInternetBusy} onChatDraft={appendReviewedInternetDraft}
-            onSettings={() => { navigate('settings') }} onOpenSource={openExternalUrl} />
         )}
         onBeginRetryEdit={beginRetryEdit}
         onCancelRetryEdit={cancelRetryEdit}

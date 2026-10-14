@@ -23,7 +23,12 @@ async function fixture(t, options = {}) {
   const owner = { chatId: 'chat_a', projectId: null, mode: 'chat', archived: false, ready: true, busy: false }
   const events = [], previews = [], calls = [], clock = { value: at }, secret = { value: 'any-test-secret' }
   let tokenReads = 0
-  const controller = new InternetWriteController({ policy, getOwner: () => owner, now: () => new Date(clock.value),
+  const controllerPolicy = options.denyApi ? new Proxy(policy, { get(target, key) {
+    if (key === 'getState') return () => ({ ...target.getState(), allowedDomains: ['github.com'] })
+    const value = Reflect.get(target, key)
+    return typeof value === 'function' ? value.bind(target) : value
+  } }) : policy
+  const controller = new InternetWriteController({ policy: controllerPolicy, getOwner: () => owner, now: () => new Date(clock.value),
     readToken: () => { tokenReads += 1; return options.readToken === undefined ? secret.value : options.readToken() },
     onState: value => { events.push(value); options.onState?.(value) },
     confirm: async preview => { previews.push(preview); return options.confirm === undefined ? true : options.confirm(preview) },
@@ -115,7 +120,7 @@ test('Prepare returns exact detached scope and five-minute expiry without a dial
 })
 
 test('Prepare requires an idle canonical owner, enabled policy and exact API permission before any confirmation', async t => {
-  for (const option of [{ enabled: false }, { domains: ['github.com'] }]) {
+  for (const option of [{ enabled: false }, { denyApi: true }]) {
     const setup = await fixture(t, option)
     assert.throws(() => setup.controller.prepareGithubIssue(request()), code(option.enabled === false ? 'disabled' : 'domain_denied'))
     assert.equal(setup.previews.length, 0); assert.equal(setup.calls.length, 0)

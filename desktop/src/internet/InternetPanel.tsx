@@ -87,6 +87,7 @@ export function InternetPanel({ api, chatId, projectId, lifecycleEpoch, ready, d
   const policyEpoch = useRef(0)
   const physicalPending = useRef(false)
   const physicalBusy = useRef(false)
+  const capacityEvents = useRef(0)
   const comparisonLease = useRef(false)
   const writeLease = useRef(false)
   const cacheLease = useRef(false)
@@ -103,10 +104,17 @@ export function InternetPanel({ api, chatId, projectId, lifecycleEpoch, ready, d
 
   const accept = useCallback((next: InternetResearchState, token: number): void => {
     if (token !== version.current || !ready || next.owner.chatId !== chatId || next.owner.projectId !== projectId || next.revision < revision.current) return
+    // A native busy event must lock shell navigation before the next capacity
+    // poll; otherwise an inherited request can lose its mounted owner. Only an
+    // independent probe may release this lease after physical resources drain.
+    if (next.busy) {
+      capacityEvents.current += 1
+      physicalBusy.current = true; setNativeBusy(true); reportBusy()
+    }
     revision.current = next.revision
     setState(next)
     setReviewed(current => current !== null && next.sources.some(source => source.id === current.id) ? current : null)
-  }, [chatId, projectId, ready])
+  }, [chatId, projectId, ready, reportBusy])
 
   useEffect(() => {
     const token = ++version.current
@@ -137,9 +145,14 @@ export function InternetPanel({ api, chatId, projectId, lifecycleEpoch, ready, d
     let active = true
     let timer: ReturnType<typeof setTimeout> | undefined
     const poll = async (): Promise<void> => {
+      const observedEvents = capacityEvents.current
       try {
         const activity = await api.getInternetResearchActivity(chatId)
-        if (active) { physicalBusy.current = activity.busy; setNativeBusy(activity.busy); reportBusy() }
+        // A delayed idle response captured before a newer busy notification
+        // cannot revoke that notification's admission lock.
+        if (active && (activity.busy || observedEvents === capacityEvents.current)) {
+          physicalBusy.current = activity.busy; setNativeBusy(activity.busy); reportBusy()
+        }
       } catch { /* A failed capacity probe cannot release an already known physical request. */ }
       if (active) timer = setTimeout(() => { void poll() }, 750)
     }

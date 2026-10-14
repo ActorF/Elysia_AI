@@ -8,7 +8,7 @@ import type { InternetResearchState, InternetSearchRequest, InternetReadRequest,
 import type { InternetReview, InternetReviewRequest, InternetReviewLookup } from './internet-review-protocol.js'
 import type { InternetWriteStatus, PrepareGithubIssueRequest, ConfirmGithubIssueRequest, GithubIssueApproval, GithubIssueWriteResult } from './internet-write-protocol.js'
 import type { InternetCacheState, RestoreInternetCacheRequest } from './internet-cache-protocol.js'
-import type { VisionState, VisionSelectionResult, VisionRemoveRequest } from './vision-protocol.js'
+import type { VisionState, VisionSelectionResult, VisionRemoveRequest, VisionAttachmentRequest, VisionAttachmentSelectionResult } from './vision-protocol.js'
 import type { VisionAnalysisState, VisionOcrRequest, VisionModelRequest } from './vision-analysis-protocol.js'
 import type { VisionCaptureSources, VisionCaptureStatus, VisionCapturePrepareRequest, VisionCaptureConfirmRequest, VisionCaptureApproval } from './vision-capture-protocol.js'
 import type { VisionContext, VisionReviewRequest, VisionContextRequest } from './vision-context-protocol.js'
@@ -875,6 +875,7 @@ const desktopApi: DesktopApi = {
   cancelVisionAnalysis: (chatId: string) => ipcRenderer.invoke('vision:cancel-analysis', chatId) as Promise<VisionAnalysisState>,
   getVisionState: (chatId: string) => ipcRenderer.invoke('vision:get-state', chatId) as Promise<VisionState>,
   chooseVisionImage: (chatId: string) => ipcRenderer.invoke('vision:choose-image', chatId) as Promise<VisionSelectionResult>,
+  importVisionAttachment: (request: VisionAttachmentRequest) => ipcRenderer.invoke('vision:import-attachment', request) as Promise<VisionAttachmentSelectionResult>,
   removeVisionImage: (request: VisionRemoveRequest) => ipcRenderer.invoke('vision:remove-image', request) as Promise<VisionState>,
   clearVisionState: (chatId: string) => ipcRenderer.invoke('vision:clear-state', chatId) as Promise<VisionState>,
   openVoiceCallWindow: (state: VoiceCallWindowState) =>

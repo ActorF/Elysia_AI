@@ -44,6 +44,8 @@ export interface AttachmentSurfaceProps {
   onDrop(files: File[]): void
   /** Remove one draft and report whether focus may leave its control. */
   onRemove(attachmentId: string): Promise<boolean>
+  /** Open an explicit PNG/JPEG review using its canonical opaque attachment ID. */
+  onReviewImage?(attachmentId: string): void
 }
 
 function formatBytes(sizeBytes: number): string {
@@ -77,6 +79,7 @@ export function AttachmentSurface({
   onDismissError,
   onDrop,
   onRemove,
+  onReviewImage,
 }: AttachmentSurfaceProps) {
   const [dragState, setDragState] = useState({
     depth: 0,
@@ -312,6 +315,13 @@ export function AttachmentSurface({
                     </span>
                   </small>
                 </span>
+                {!readOnly && onReviewImage !== undefined && ['image/png', 'image/jpeg'].includes(item.mediaType) && (
+                  <button type="button" className="attachment-review-button" disabled={interactionDisabled}
+                    aria-label={`Review image ${item.fileName}`} title={`Review ${item.fileName} in Vision`}
+                    onClick={() => { onReviewImage(item.attachmentId) }}>
+                    <Icon name="image" />
+                  </button>
+                )}
                 {!readOnly && (
                   <button
                     ref={(element) => {

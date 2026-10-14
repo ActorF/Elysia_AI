@@ -8,6 +8,7 @@ import {
   useRef,
   useState,
   type KeyboardEvent,
+  type ReactNode,
   type RefObject,
 } from 'react'
 
@@ -23,6 +24,7 @@ import { Icon } from '../design-system/Icon.tsx'
 import { SongCoverPanel } from '../song-cover/SongCoverPanel.tsx'
 import { ModelPicker } from './ModelPicker.tsx'
 import type { ChatNotice } from './types.ts'
+import './Composer.css'
 
 interface ComposerProps {
   attachmentAdding: boolean
@@ -49,6 +51,8 @@ interface ComposerProps {
   streaming: boolean
   stopPending: boolean
   voiceCallDisabled: boolean
+  /** Open the persistent Vision workspace from the icon beside Add files. */
+  screenshotControl?: ReactNode
   onChooseAttachments(): void
   onDismissAttachmentError(): void
   onDismissNotice(): void
@@ -56,6 +60,8 @@ interface ComposerProps {
   onDropAttachments(files: File[]): void
   onOpenCall(): void
   onRemoveAttachment(attachmentId: string): Promise<boolean>
+  /** Review one canonical image attachment without accepting a filesystem path. */
+  onReviewImage?(attachmentId: string): void
   onRetryConnection(): void
   onSelectModel(modelName: string): void
   onCancelSongCover(): void
@@ -95,6 +101,7 @@ export function Composer({
   streaming,
   stopPending,
   voiceCallDisabled,
+  screenshotControl,
   onChooseAttachments,
   onDismissAttachmentError,
   onDismissNotice,
@@ -102,6 +109,7 @@ export function Composer({
   onDropAttachments,
   onOpenCall,
   onRemoveAttachment,
+  onReviewImage,
   onRetryConnection,
   onSelectModel,
   onCancelSongCover,
@@ -189,6 +197,7 @@ export function Composer({
         onDismissError={onDismissAttachmentError}
         onDrop={onDropAttachments}
         onRemove={onRemoveAttachment}
+        onReviewImage={onReviewImage}
       >
         {songCoverState !== null && songCoverId !== null && !songCoverHidden && (
           <SongCoverPanel
@@ -241,6 +250,7 @@ export function Composer({
             >
               <Icon name={attachmentAdding ? 'refresh' : 'plus'} />
             </button>
+            {screenshotControl}
             <ModelPicker
               value={snapshot.modelName ?? ''}
               options={modelOptions}

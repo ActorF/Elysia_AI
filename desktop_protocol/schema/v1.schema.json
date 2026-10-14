@@ -10,6 +10,10 @@
     "U+3000", "U+FEFF"
   ],
   "x-elysia-runtimeInvariants": [
+    "chat.internet.resolve sources contain at most five exact source records with UTF-8 byte limits title 2048, URL 4096, snippet 4096, and compact sources JSON 32768; error is null or sources is empty",
+    "Internet source URLs are HTTPS with no credentials, non-default port, backslash, whitespace or control bytes; fetchedAt is canonical valid UTC ISO with milliseconds",
+    "Internet query is nonblank and at most 2048 UTF-8 bytes; automaticInternet is Main-only and ignored for Project Sources or non-Chat mode",
+    "attachment.native_source returns only canonical Base64 of a verified PNG/JPEG snapshot with decoded size 1..8388608 for a ready active-Chat attachment; Main never forwards this command or bytes to Renderer",
     "progress.total is null or greater than or equal to progress.completed",
     "initializeResult.modelName is present in initializeResult.models",
     "chatStateResult.chats has unique chatId values",
@@ -76,6 +80,8 @@
     { "$ref": "#/$defs/handshakeRequest" },
     { "$ref": "#/$defs/initializeRequest" },
     { "$ref": "#/$defs/chatStreamRequest" },
+    { "$ref": "#/$defs/chatInternetResolveRequest" },
+    { "$ref": "#/$defs/attachmentNativeSourceRequest" },
     { "$ref": "#/$defs/chatRetryRequest" },
     { "$ref": "#/$defs/chatListRequest" },
     { "$ref": "#/$defs/chatCreateRequest" },
@@ -562,6 +568,8 @@
             "handshake",
             "initialize",
             "chat.stream",
+            "chat.internet.resolve",
+            "attachment.native_source",
             "chat.retry",
             "chat.list",
             "chat.create",
@@ -656,6 +664,7 @@
           "maxItems": 10,
           "uniqueItems": true
         },
+        "automaticInternet": { "type": "boolean" },
         "useProjectKnowledge": { "type": "boolean" },
         "speakReply": { "type": "boolean" }
       },
@@ -1346,6 +1355,56 @@
           }
         }
       ]
+    },
+    "internetSearchId": {
+      "type": "string", "pattern": "^internet_search_[0-9a-f]{32}$"
+    },
+    "chatInternetSource": {
+      "type": "object", "properties": {
+        "title": { "type": "string", "minLength": 1, "maxLength": 2048 },
+        "url": { "type": "string", "minLength": 1, "maxLength": 4096, "pattern": "^https://" },
+        "snippet": { "type": "string", "maxLength": 4096 },
+        "fetchedAt": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$" },
+        "provider": { "enum": ["web", "wikipedia"] }
+      }, "required": ["title", "url", "snippet", "fetchedAt", "provider"], "additionalProperties": false
+    },
+    "chatInternetResolveParams": {
+      "type": "object", "properties": {
+        "requestId": { "$ref": "#/$defs/identifier" },
+        "chatId": { "$ref": "#/$defs/identifier" },
+        "searchId": { "$ref": "#/$defs/internetSearchId" },
+        "sources": { "type": "array", "maxItems": 5, "items": { "$ref": "#/$defs/chatInternetSource" } },
+        "error": { "enum": [null, "disabled", "cancelled", "timeout", "unavailable", "invalid_request"] }
+      }, "required": ["requestId", "chatId", "searchId", "sources", "error"], "additionalProperties": false,
+      "if": { "properties": { "error": { "not": { "type": "null" } } } },
+      "then": { "properties": { "sources": { "maxItems": 0 } } }
+    },
+    "chatInternetResolveRequest": {
+      "allOf": [{ "$ref": "#/$defs/requestEnvelope" }, { "properties": {
+        "method": { "const": "chat.internet.resolve" }, "params": { "$ref": "#/$defs/chatInternetResolveParams" }
+      } }]
+    },
+    "chatInternetResolvedResult": {
+      "type": "object", "properties": {
+        "kind": { "const": "chat.internet.resolved" }, "accepted": { "type": "boolean" }
+      }, "required": ["kind", "accepted"], "additionalProperties": false
+    },
+    "attachmentNativeSourceRequest": {
+      "allOf": [{ "$ref": "#/$defs/requestEnvelope" }, { "properties": {
+        "method": { "const": "attachment.native_source" }, "params": {
+          "allOf": [{ "$ref": "#/$defs/attachmentRemoveParams" }, { "properties": {
+            "scope": { "properties": { "kind": { "const": "chat" } } }
+          } }]
+        }
+      } }]
+    },
+    "attachmentNativeSourceResult": {
+      "type": "object", "properties": {
+        "kind": { "const": "attachment.native_source" },
+        "fileName": { "type": "string", "minLength": 1, "maxLength": 255 },
+        "mediaType": { "enum": ["image/png", "image/jpeg"] },
+        "dataBase64": { "type": "string", "minLength": 4, "maxLength": 11184812, "pattern": "^[A-Za-z0-9+/]+={0,2}$" }
+      }, "required": ["kind", "fileName", "mediaType", "dataBase64"], "additionalProperties": false
     },
     "chatStreamRequest": {
       "allOf": [
@@ -3044,6 +3103,8 @@
             { "$ref": "#/$defs/workApprovalResult" },
             { "$ref": "#/$defs/handshakeResult" },
             { "$ref": "#/$defs/initializeResult" },
+            { "$ref": "#/$defs/chatInternetResolvedResult" },
+            { "$ref": "#/$defs/attachmentNativeSourceResult" },
             { "$ref": "#/$defs/chatResult" },
             { "$ref": "#/$defs/chatStateResult" },
             { "$ref": "#/$defs/projectStateResult" },
@@ -3200,6 +3261,61 @@
     },
     "event": {
       "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "event"
+            },
+            "protocol": {
+              "$ref": "#/$defs/protocol"
+            },
+            "event": {
+              "const": "chat.internet.request"
+            },
+            "requestId": {
+              "$ref": "#/$defs/identifier"
+            },
+            "data": {
+              "type": "object",
+              "properties": {
+                "chatId": {
+                  "$ref": "#/$defs/identifier"
+                },
+                "searchId": {
+                  "$ref": "#/$defs/internetSearchId"
+                },
+                "query": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 2048,
+                  "pattern": "^[^\\u0000-\\u001F\\u007F]+$"
+                },
+                "language": {
+                  "enum": [
+                    "en",
+                    "zh"
+                  ]
+                }
+              },
+              "required": [
+                "chatId",
+                "searchId",
+                "query",
+                "language"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "type",
+            "protocol",
+            "event",
+            "requestId",
+            "data"
+          ],
+          "additionalProperties": false
+        },
         {
           "type": "object",
           "properties": {

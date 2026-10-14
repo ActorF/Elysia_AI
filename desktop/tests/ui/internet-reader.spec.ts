@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { _electron as electron } from 'playwright'
 import { expect, test, type ElectronApplication, type Page } from '@playwright/test'
 import type { InternetPolicyState } from '../../electron/internet-policy-protocol.ts'
+import { expectResearchNavigationLocked, openInternetResearch, returnToChat } from './internet-helpers.ts'
 
 interface ReaderControl {
   getCalls(): Array<{ method: string; args: unknown[] }>
@@ -38,7 +39,7 @@ test.beforeEach(async () => {
     control.emitInternetPolicy({ kind: 'internet.policy', revision: 1, enabled: true,
       allowedDomains: ['www.python.org', 'docs.python.org', 'en.wikipedia.org'], proxy: { mode: 'direct' }, timeoutMs: 15000, warning: null })
   })
-  await page.getByRole('region', { name: 'Internet research', exact: true }).locator('button[aria-expanded]').click()
+  await openInternetResearch(page)
   await page.getByRole('tab', { name: 'Pages', exact: true }).click()
   await page.evaluate(source => { (window as ReaderWindow).elysiaDesktopTest.setInternetPage(source) }, pageFixture)
 })
@@ -50,7 +51,7 @@ test('requires an explicit allowed HTTPS URL without credentials, fragments, or 
     await page.getByLabel('Page URL', { exact: true }).fill(url)
     await expect(reader.getByRole('button', { name: 'Read page', exact: true })).toBeDisabled()
   }
-  await page.getByLabel('Page URL', { exact: true }).fill('https://github.com/')
+  await page.getByLabel('Page URL', { exact: true }).fill('https://www.rust-lang.org/')
   await expect(reader).toContainText('Allow this exact domain')
   await expect(reader.getByRole('button', { name: 'Read page', exact: true })).toBeDisabled()
   expect(await page.evaluate(() => (window as ReaderWindow).elysiaDesktopTest.getCalls().filter(call => call.method === 'readInternetPage'))).toHaveLength(0)
@@ -72,6 +73,7 @@ test('renders bounded plain text and the final URL, then adds canonical reviewed
   expect(await body.evaluate(element => element.scrollHeight > element.clientHeight)).toBe(true)
   await source.getByRole('button', { name: 'Review source', exact: true }).click()
   await page.getByRole('region', { name: 'Reviewed Internet source', exact: true }).getByRole('button', { name: 'Add source to Chat draft', exact: true }).click()
+  await returnToChat(page)
   await expect(page.getByLabel('Message Elysia')).toHaveValue(/"provider": "Web page"/)
   await expect(page.getByLabel('Message Elysia')).toHaveValue(/"publishedAt": "unknown"/)
   const calls = await page.evaluate(() => (window as ReaderWindow).elysiaDesktopTest.getCalls())
@@ -108,10 +110,13 @@ test('turning Internet off retains the native read lease until its callback drai
   await page.evaluate(() => { (window as ReaderWindow).elysiaDesktopTest.setInternetReadDelay(true) })
   await page.getByLabel('Page URL', { exact: true }).fill('https://docs.python.org/3/')
   await page.getByRole('region', { name: 'Web page reader', exact: true }).getByRole('button', { name: 'Read page', exact: true }).click()
-  await expect(page.getByRole('combobox', { name: 'Conversation mode', exact: true })).toBeDisabled()
+  await expectResearchNavigationLocked(page)
   await page.getByRole('button', { name: 'Turn Internet off', exact: true }).click()
-  await expect(page.getByRole('combobox', { name: 'Conversation mode', exact: true })).toBeDisabled()
+  await expectResearchNavigationLocked(page)
   await page.evaluate(() => { (window as ReaderWindow).elysiaDesktopTest.releaseNextInternetRead() })
+  await expect(page.getByRole('region', { name: 'Internet research', exact: true })).toHaveAttribute('aria-busy', 'false')
+  await returnToChat(page)
   await expect(page.getByRole('combobox', { name: 'Conversation mode', exact: true })).toBeEnabled()
+  await openInternetResearch(page)
   await expect(page.getByRole('region', { name: 'Internet research', exact: true }).getByRole('article')).toHaveCount(0)
 })

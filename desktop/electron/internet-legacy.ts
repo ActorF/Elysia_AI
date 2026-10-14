@@ -38,12 +38,17 @@ export async function prepareInternetLyrics(policy: InternetPolicyService, trans
   } finally { lease.release() }
 }
 
-/** Confirm one exact allowlisted URL before handing it to the user's independently managed browser. */
+/** Confirm one public HTTPS URL before handing it to the user's independently managed browser. */
 export async function openInternetBrowser(policy: InternetPolicyService, value: string,
   confirm: (url: string) => Promise<boolean>, open: (url: string) => Promise<void>): Promise<void> {
   const lease = policy.acquire()
   try {
-    const url = parseInternetUrl(value, lease.policy).href
+    const hostname = new URL(value).hostname
+    if (!hostname.includes('.') || /(?:\.|^)(?:localhost|local|internal|test|invalid)$/iu.test(hostname)) throw new Error('Browser URL is invalid.')
+    // A deliberate browser click may open a search citation without editing
+    // native fetch permissions. This temporary validation view grants no HTTP
+    // transport access and never changes the stored domain policy.
+    const url = parseInternetUrl(value, { ...lease.policy, allowedDomains: [hostname] }).href
     if (!await confirm(url)) return
     // The permission must still be current after the native dialog yields.
     // The browser controls its own cookies and later requests; this lease only

@@ -38,13 +38,13 @@ test('Default-off denies browser confirmation and lyrics before a native callbac
   assert.equal(policy.hasActiveWork(), false)
 })
 
-test('Browser handoff requires an exact allowed HTTPS URL and independent approval', async (t) => {
+test('Browser handoff requires a public HTTPS URL and independent approval without custom domain setup', async (t) => {
   const { policy, update } = await fixture(t)
   await update(true)
   const opened = [], reviewed = []
   const open = async url => { opened.push(url) }
   const confirm = async url => { reviewed.push(url); return true }
-  for (const url of ['http://example.org/', 'https://other.org/', 'https://name:password@example.org/',
+  for (const url of ['http://example.org/', 'https://localhost/', 'https://name:password@example.org/',
     'https://example.org:8443/', 'https://example.org/#private', 'file:///private']) {
     await assert.rejects(openInternetBrowser(policy, url, confirm, open))
   }
@@ -54,6 +54,9 @@ test('Browser handoff requires an exact allowed HTTPS URL and independent approv
   await openInternetBrowser(policy, 'https://example.org/article?version=2', confirm, open)
   assert.deepEqual(opened, ['https://example.org/article?version=2'])
   assert.deepEqual(reviewed, opened)
+  await openInternetBrowser(policy, 'https://other.org/article', confirm, open)
+  assert.equal(opened.at(-1), 'https://other.org/article')
+  assert.equal(policy.getState().allowedDomains.includes('other.org'), false)
 })
 
 test('Turning off while native approval is open revokes the handoff and retains the lease until that dialog settles', async (t) => {
@@ -73,10 +76,10 @@ test('Turning off while native approval is open revokes the handoff and retains 
   assert.equal(policy.hasActiveWork(), false)
 })
 
-test('Lyrics need their own exact domain and a prior policy generation cannot regain permission after off and on', async (t) => {
+test('Built-in lyrics need no custom domain and a prior policy generation cannot regain permission after off and on', async (t) => {
   const { policy, update } = await fixture(t)
   await update(true, ['example.org'])
-  assert.throws(() => assertInternetLyricsAllowed(policy))
+  assert.doesNotThrow(() => assertInternetLyricsAllowed(policy))
   await update(true)
   assert.doesNotThrow(() => assertInternetLyricsAllowed(policy))
   const lease = policy.acquire()

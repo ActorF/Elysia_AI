@@ -89,6 +89,10 @@ import {
   parseChatResult,
   parseChatStateResult,
   parseAttachmentStateResult,
+  parseAttachmentNativeSourceParams,
+  parseAttachmentNativeSourceResult,
+  parseChatInternetResolveParams,
+  parseChatInternetResolvedResult,
   parseHandshakeResult,
   parseInitializeResult,
   parseKnowledgeStateResult,
@@ -107,6 +111,11 @@ import {
   type PermissionMessage,
   type ProgressMessage,
   type ProtocolEventMessage,
+  type ChatInternetRequestEventMessage,
+  type ChatInternetSource,
+  type ChatInternetResolveParams,
+  type AttachmentNativeSourceParams,
+  type AttachmentNativeSourceResult,
   type ServerMessage,
   type StreamChunkMessage,
   type SuccessResponse,
@@ -114,6 +123,15 @@ import {
 } from './protocol.js'
 
 type EventSink = (event: BackendEvent) => void
+
+/** Inject only Main-owned research; neither this callback nor its opt-in reaches Renderer. */
+export interface BackendNativeOptions {
+  /** Resolve one authenticated generation's query and retain physical ownership until settlement. */
+  onInternetSearch?: (
+    request: ChatInternetRequestEventMessage['data'] & { requestId: string },
+    signal: AbortSignal,
+  ) => Promise<{ sources: ChatInternetSource[]; error: ChatInternetResolveParams['error'] }>
+}
 
 const CLIENT_NAME = 'elysia-electron'
 const CLIENT_VERSION = '0.1.0'
@@ -360,6 +378,10 @@ interface PendingRequest {
     'fileName' | 'mediaType' | 'bytesWritten'
   >
   usesProjectKnowledge?: boolean
+  automaticInternet?: boolean
+  internetSearchId?: string
+  internetAbort?: AbortController
+  internetClosed?: boolean
   nextSequence: number
   streamCompleted: boolean
   streamedReply: string
@@ -407,6 +429,8 @@ interface PendingRequest {
   >
   resolveAttachmentState?: (state: AttachmentState) => void
   rejectAttachmentState?: (error: Error) => void
+  resolveAttachmentNativeSource?: (source: AttachmentNativeSourceResult) => void
+  rejectAttachmentNativeSource?: (error: Error) => void
   resolveKnowledgeState?: (state: KnowledgeState) => void
   rejectKnowledgeState?: (error: Error) => void
   resolveKnowledgeExport?: (result: KnowledgeExportResult) => void
@@ -664,6 +688,7 @@ export class BackendProcess {
     dataRoot?: string,
     private readonly nativeWorkActive: () => boolean = () => false,
     private readonly nativeVisionActive: () => boolean = () => false,
+    private readonly nativeOptions: BackendNativeOptions = {},
   ) {
     this.dataRoot = this.validateDataRoot(dataRoot)
   }
@@ -965,8 +990,8 @@ export class BackendProcess {
     }, HANDSHAKE_TIMEOUT_MS)
   }
 
-  /** Start a streamed Chat operation and return the ID used for cancellation. */
-  beginChat(request: ChatRequest): { requestId: string } {
+  /** Start a streamed Chat; automatic research requires a separate native opt-in and negotiated capability. */
+  beginChat(request: ChatRequest, automaticInternet = false): { requestId: string } {
     this.assertWorkIdle()
     if (
       this.snapshot.status !== 'ready'
@@ -1021,17 +1046,22 @@ export class BackendProcess {
       throw new Error('Message cannot be empty without attachments.')
     }
     const message = trimProtocolBlankCharacters(request.message)
+    const internetEnabled = automaticInternet === true
+      && this.snapshot.capabilities.includes('chat.internet')
+      && this.nativeOptions.onInternetSearch !== undefined
 
     const requestId = this.sendRequest('chat.stream', {
       chatId: request.chatId,
       message,
       attachmentIds: [...request.attachmentIds],
       speakReply: request.speakReply,
+      ...(internetEnabled ? { automaticInternet: true } : {}),
       ...(request.useProjectKnowledge === undefined
         ? {}
         : { useProjectKnowledge: request.useProjectKnowledge }),
     }, request.chatId, {
       usesProjectKnowledge: request.useProjectKnowledge === true,
+      automaticInternet: internetEnabled,
       generation: {
         kind: 'send',
         userText: message,
@@ -1524,6 +1554,7 @@ export class BackendProcess {
     }
 
     if (CHAT_GENERATION_METHODS.has(target.method)) {
+      target.internetAbort?.abort()
       this.speechDelivery?.cancelTurn(requestId)
     }
 
@@ -2110,6 +2141,25 @@ export class BackendProcess {
   /** Load pending attachments for one exact Chat or Project scope. */
   listAttachments(scope: AttachmentScope): Promise<AttachmentState> {
     return this.requestAttachmentState('attachment.list', { scope })
+  }
+
+  /** Read a verified active-Chat image for Main's Vision import, without exposing storage paths. */
+  getAttachmentNativeSource(request: AttachmentNativeSourceParams): Promise<AttachmentNativeSourceResult> {
+    const parsed = parseAttachmentNativeSourceParams(request)
+    const owner = this.getCanonicalVisionChat()
+    if (owner === null || owner.chatId !== parsed.scope.id
+      || !this.snapshot.capabilities.includes('attachment.native_source')
+      || [...this.pendingRequests.values()].some((pending) => CHAT_GENERATION_METHODS.has(pending.method)
+        || ATTACHMENT_MUTATION_METHODS.has(pending.method))) {
+      return Promise.reject(new Error('The active Chat image is unavailable.'))
+    }
+    // Main's import lease is already held here. A generic native-action guard
+    // would reject our own operation; Python verifies ready status and bytes.
+    return new Promise((resolve, reject) => {
+      this.sendRequest('attachment.native_source', parsed, parsed.scope.id, {
+        resolveAttachmentNativeSource: resolve, rejectAttachmentNativeSource: reject,
+      })
+    })
   }
 
   /** Import trusted main-process source paths into canonical Backend storage. */
@@ -2802,6 +2852,9 @@ export class BackendProcess {
       | 'knowledgeTargetSourceId'
       | 'knowledgeExpectedExport'
       | 'usesProjectKnowledge'
+      | 'automaticInternet'
+      | 'resolveAttachmentNativeSource'
+      | 'rejectAttachmentNativeSource'
       | 'resolveKnowledgeState'
       | 'rejectKnowledgeState'
       | 'resolveKnowledgeExport'
@@ -3020,6 +3073,10 @@ export class BackendProcess {
         this.speechDelivery?.armTurn(message.id, target.chatId)
       } else if (pending.method === 'voice.speech.cancel') {
         parseVoiceSpeechCancellationResult(message.result)
+      } else if (pending.method === 'chat.internet.resolve') {
+        parseChatInternetResolvedResult(message.result)
+      } else if (pending.method === 'attachment.native_source') {
+        parseAttachmentNativeSourceResult(message.result)
       } else if (ATTACHMENT_METHODS.has(pending.method)) {
         parseAttachmentStateResult(message.result)
       } else if (KNOWLEDGE_STATE_METHODS.has(pending.method)) {
@@ -3043,6 +3100,7 @@ export class BackendProcess {
       }
     }
 
+    pending.internetAbort?.abort()
     this.pendingRequests.delete(message.id)
     if (pending.timeout !== undefined) {
       clearTimeout(pending.timeout)
@@ -3059,6 +3117,20 @@ export class BackendProcess {
     }
 
     if (this.expectedExit && pending.method !== 'shutdown') {
+      return
+    }
+
+    // These private RPCs never publish arbitrary response data to Renderer.
+    // A stale search acknowledgement is benign; the generation owns its own
+    // cancellation. Image bytes are returned only while the Chat is still live.
+    if (pending.method === 'chat.internet.resolve') return
+    if (pending.method === 'attachment.native_source') {
+      const owner = this.getCanonicalVisionChat()
+      if (!message.ok || owner === null || owner.chatId !== pending.chatId) {
+        pending.rejectAttachmentNativeSource?.(new Error('The active Chat image is unavailable.'))
+      } else {
+        pending.resolveAttachmentNativeSource?.(parseAttachmentNativeSourceResult(message.result))
+      }
       return
     }
 
@@ -3883,7 +3955,56 @@ export class BackendProcess {
     })
   }
 
+  private acceptInternetRequest(message: ChatInternetRequestEventMessage): void {
+    const pending = this.pendingRequests.get(message.requestId)
+    if (pending?.method !== 'chat.stream' || pending.chatId !== message.data.chatId
+      || this.snapshot.status !== 'ready' || this.snapshot.chatId !== pending.chatId
+      || pending.internetSearchId !== undefined || pending.internetClosed || pending.cancelAccepted
+      || [...this.pendingRequests.values()].some((entry) => entry.cancelTargetId === message.requestId)) return
+    // Record admission before invoking user-supplied async work. Even another
+    // search ID cannot turn one generation into repeated outbound requests.
+    pending.internetSearchId = message.data.searchId
+    const controller = new AbortController()
+    pending.internetAbort = controller
+    void this.resolveInternetRequest(message, pending, controller)
+  }
+
+  private async resolveInternetRequest(
+    message: ChatInternetRequestEventMessage,
+    pending: PendingRequest,
+    controller: AbortController,
+  ): Promise<void> {
+    let evidence: Pick<ChatInternetResolveParams, 'sources' | 'error'> = { sources: [], error: 'disabled' }
+    if (pending.automaticInternet && this.nativeOptions.onInternetSearch !== undefined) {
+      try {
+        evidence = await this.nativeOptions.onInternetSearch(
+          { requestId: message.requestId, ...message.data }, controller.signal,
+        )
+      } catch {
+        evidence = { sources: [], error: 'unavailable' }
+      }
+    }
+    // Main retains the physical network lease until its Promise settles, even
+    // after abort. This logical fence only prevents stale evidence publication.
+    if (controller.signal.aborted || this.pendingRequests.get(message.requestId) !== pending
+      || this.snapshot.status !== 'ready' || this.snapshot.chatId !== pending.chatId) return
+    const identity = { requestId: message.requestId, chatId: message.data.chatId, searchId: message.data.searchId }
+    let params: ChatInternetResolveParams
+    try { params = parseChatInternetResolveParams({ ...identity, sources: evidence.sources, error: evidence.error }) }
+    catch { params = { ...identity, sources: [], error: 'invalid_request' } }
+    try { this.sendRequest('chat.internet.resolve', params, pending.chatId) }
+    catch {
+      // sendRequest already closes a broken pipe. No model query, provider
+      // error, or failed source payload is forwarded as diagnostic UI text.
+      controller.abort()
+    }
+  }
+
   private handleBackendEvent(message: ProtocolEventMessage): void {
+    if (message.event === 'chat.internet.request') {
+      this.acceptInternetRequest(message)
+      return
+    }
     if (
       message.event === 'voice.speech.clip'
       || message.event === 'voice.speech.failure'
@@ -3932,6 +4053,10 @@ export class BackendProcess {
       }
       if (message.event === 'chat.cancelled') {
         this.speechDelivery?.cancelTurn(message.requestId)
+      }
+      if (message.event !== 'chat.started') {
+        pending.internetClosed = true
+        pending.internetAbort?.abort()
       }
       this.emitToRenderer({
         type: 'protocol-event',
@@ -4108,6 +4233,7 @@ export class BackendProcess {
     this.timedOutVoiceCaptureRequestIds.clear()
     this.timedOutSpeechStartRequestIds.clear()
     for (const pending of this.pendingRequests.values()) {
+      pending.internetAbort?.abort()
       if (pending.timeout !== undefined) {
         clearTimeout(pending.timeout)
       }
@@ -4145,6 +4271,7 @@ export class BackendProcess {
           'Python Backend stopped before the Attachment action completed.',
         ),
       )
+      pending.rejectAttachmentNativeSource?.(new Error('Python Backend stopped before the image transfer completed.'))
       pending.rejectKnowledgeState?.(
         new Error(
           'Python Backend stopped before the Knowledge action completed.',
@@ -4180,6 +4307,7 @@ export class BackendProcess {
     /** Settle renderer-facing actions before expected-exit responses vanish. */
 
     for (const pending of this.pendingRequests.values()) {
+      pending.internetAbort?.abort()
       if (pending.timeout !== undefined) {
         clearTimeout(pending.timeout)
         pending.timeout = undefined
@@ -4197,6 +4325,7 @@ export class BackendProcess {
       pending.rejectVoiceSettingsState?.(error)
       pending.rejectVoiceCapture?.(error)
       pending.rejectAttachmentState?.(error)
+      pending.rejectAttachmentNativeSource?.(error)
       pending.rejectKnowledgeState?.(error)
       pending.rejectKnowledgeExport?.(error)
       pending.rejectCancellation?.(error)
@@ -4226,6 +4355,8 @@ export class BackendProcess {
       pending.rejectVoiceCapture = undefined
       pending.resolveAttachmentState = undefined
       pending.rejectAttachmentState = undefined
+      pending.resolveAttachmentNativeSource = undefined
+      pending.rejectAttachmentNativeSource = undefined
       pending.resolveKnowledgeState = undefined
       pending.rejectKnowledgeState = undefined
       pending.resolveKnowledgeExport = undefined

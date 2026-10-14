@@ -19,6 +19,7 @@ from typing import Any, Final, Literal, NotRequired, TypeAlias, TypedDict, cast
 from urllib.parse import urlsplit
 
 from attachments.domain import validate_file_name, validate_media_type
+from core.internet_assistant import validate_internet_evidence, validate_internet_query
 from work_tools.wire import validate_work_params, validate_work_result
 
 PROTOCOL_NAME: Final = "elysia.desktop"
@@ -171,6 +172,7 @@ _IMAGE_GENERATION_PROGRESS: Final[dict[str, int]] = {
 }
 
 ProtocolEventName: TypeAlias = Literal[
+    "chat.internet.request",
     "chat.started",
     "chat.completed",
     "chat.cancelled",
@@ -219,6 +221,7 @@ _PROTOCOL_EVENT_NAMES: Final = (
     _CHAT_LIFECYCLE_EVENTS
     | _TRANSCRIPTION_LIFECYCLE_EVENTS
     | frozenset({
+        "chat.internet.request",
         "voice.speech.clip",
         "voice.speech.failure",
         "voice.speech.terminal",
@@ -228,6 +231,8 @@ _PROTOCOL_EVENT_NAMES: Final = (
 )
 
 ProtocolMethod = Literal[
+    "chat.internet.resolve",
+    "attachment.native_source",
     "work.workspace.get",
     "work.workspace.bind",
     "work.tools.list",
@@ -291,6 +296,8 @@ ProtocolMethod = Literal[
     "shutdown",
 ]
 SUPPORTED_METHODS: Final[tuple[ProtocolMethod, ...]] = (
+    "chat.internet.resolve",
+    "attachment.native_source",
     "work.workspace.get",
     "work.workspace.bind",
     "work.tools.list",
@@ -401,6 +408,7 @@ class ChatStreamParams(TypedDict):
     speakReply: bool
     attachmentIds: NotRequired[list[str]]
     useProjectKnowledge: NotRequired[bool]
+    automaticInternet: NotRequired[bool]
 
 
 class AttachmentScope(TypedDict):
@@ -1402,7 +1410,7 @@ def _validate_chat_params(params: JsonObject) -> None:
         params,
         {"chatId", "message", "speakReply"},
         context,
-        optional={"attachmentIds", "useProjectKnowledge"},
+        optional={"attachmentIds", "useProjectKnowledge", "automaticInternet"},
     )
     _require_identifier(params, "chatId", context)
     _require_boolean(params, "speakReply", context)
@@ -1421,6 +1429,56 @@ def _validate_chat_params(params: JsonObject) -> None:
         )
     if "useProjectKnowledge" in params:
         _require_boolean(params, "useProjectKnowledge", context)
+    if "automaticInternet" in params:
+        _require_boolean(params, "automaticInternet", context)
+
+
+def _validate_internet_identity(value: JsonObject, context: str) -> None:
+    _require_identifier(value, "chatId", context)
+    search_id = _require_string(value, "searchId", context, maximum=48)
+    if re.fullmatch(r"internet_search_[0-9a-f]{32}", search_id) is None:
+        raise ProtocolValidationError("protocol.invalid_params", "Internet search identity is invalid.")
+
+
+def _validate_internet_resolve_params(params: JsonObject) -> None:
+    context = "chat.internet.resolve params"
+    _require_fields(params, {"requestId", "chatId", "searchId", "sources", "error"}, context)
+    _require_identifier(params, "requestId", context)
+    _validate_internet_identity(params, context)
+    try:
+        validate_internet_evidence({"sources": params["sources"], "error": params["error"]})
+    except ValueError:
+        raise ProtocolValidationError("protocol.invalid_params", "Internet evidence is invalid.") from None
+
+
+def _validate_internet_request_data(data: JsonObject) -> None:
+    context = "chat.internet.request data"
+    _require_fields(data, {"chatId", "searchId", "query", "language"}, context)
+    _validate_internet_identity(data, context)
+    try:
+        validate_internet_query(data.get("query"))
+    except ValueError:
+        raise ProtocolValidationError("protocol.invalid_message", "Internet query is invalid.") from None
+    if data.get("language") not in ("en", "zh"):
+        raise ProtocolValidationError("protocol.invalid_message", "Internet language is invalid.")
+
+
+def _validate_native_attachment_result(result: JsonObject) -> None:
+    context = "attachment.native_source result"
+    _require_fields(result, {"kind", "fileName", "mediaType", "dataBase64"}, context)
+    try:
+        validate_file_name(result.get("fileName"))
+    except ValueError:
+        raise ProtocolValidationError("protocol.invalid_message", "Native image filename is invalid.") from None
+    if result.get("mediaType") not in ("image/png", "image/jpeg"):
+        raise ProtocolValidationError("protocol.invalid_message", "Native image type is invalid.")
+    encoded = _require_string(result, "dataBase64", context, maximum=11_184_812)
+    try:
+        payload = base64.b64decode(encoded, validate=True)
+    except (ValueError, binascii.Error):
+        raise ProtocolValidationError("protocol.invalid_message", "Native image bytes are invalid.") from None
+    if not 1 <= len(payload) <= 8 * 1024 * 1024 or base64.b64encode(payload).decode("ascii") != encoded:
+        raise ProtocolValidationError("protocol.invalid_message", "Native image bytes are invalid.")
 
 
 def _validate_attachment_id_array(
@@ -2527,6 +2585,12 @@ def parse_client_request(value: object) -> ClientRequest:
         _require_fields(params, set(), "initialize params")
     elif method == "chat.stream":
         _validate_chat_params(params)
+    elif method == "chat.internet.resolve":
+        _validate_internet_resolve_params(params)
+    elif method == "attachment.native_source":
+        _validate_attachment_remove_params(params)
+        if params["scope"]["kind"] != "chat":
+            raise ProtocolValidationError("protocol.invalid_params", "Native images require a Chat owner.")
     elif method == "chat.retry":
         _validate_chat_retry_params(params)
     elif method == "chat.list":
@@ -4017,6 +4081,13 @@ def _validate_image_gallery_open_result(result: JsonObject) -> ImageGalleryOpenR
 
 
 def _validate_success_result(result: JsonObject) -> None:
+    if result.get("kind") == "chat.internet.resolved":
+        _require_fields(result, {"kind", "accepted"}, "Internet resolve result")
+        _require_boolean(result, "accepted", "Internet resolve result")
+        return
+    if result.get("kind") == "attachment.native_source":
+        _validate_native_attachment_result(result)
+        return
     if result.get("kind") in {"work.workspace", "work.tools", "work.result", "work.approval", "work.plan", "work.audit"}:
         try:
             validate_work_result(result)
@@ -4926,7 +4997,9 @@ def _validate_event(message: JsonObject) -> EventMessage:
         )
     _require_identifier(message, "requestId", "event")
     data = _as_object(message["data"], "event.data")
-    if event in _CHAT_LIFECYCLE_EVENTS:
+    if event == "chat.internet.request":
+        _validate_internet_request_data(data)
+    elif event in _CHAT_LIFECYCLE_EVENTS:
         _validate_chat_lifecycle_event_data(data)
     elif event in _TRANSCRIPTION_LIFECYCLE_EVENTS:
         _validate_transcription_lifecycle_event_data(data)

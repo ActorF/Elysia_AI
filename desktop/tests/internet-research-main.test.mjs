@@ -40,7 +40,7 @@ function fixture() {
     readPage: request => { calls.push(request); return { sources: [] } },
     weather: request => { calls.push(request); return { sources: [] } }, github: request => { calls.push(request); return { sources: [] } },
     cancel: () => { calls.push('cancel'); return {} }, clear: () => ({}), sourceText: () => ({ text: 'native evidence' }) }
-  const host = { module: { exports: {} }, internetRequests: new Set(), internetPolicyService: null,
+  const host = { module: { exports: {} }, internetRequests: new Set(), internetPolicyService: null, automaticInternetTurn: null,
     internetResearchGeneration: 0, internetResearchAdmission: null,
     internetReviewStore: new InternetReviewStore(), internetReviewScope: null,
     synchronizeInternetReviews: () => {}, parseInternetReviewRequest, parseInternetReviewLookup,

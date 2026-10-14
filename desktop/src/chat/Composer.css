@@ -1,0 +1,21 @@
+/* Keep screenshot entry beside the existing file picker and image review inside canonical attachment chips. */
+
+.composer-screenshot-button {
+  flex: 0 0 auto;
+  width: var(--control-height-sm);
+  height: var(--control-height-sm);
+  color: var(--color-text-secondary);
+  background: transparent;
+  border-radius: var(--radius-full);
+}
+
+.composer-screenshot-button svg { width: var(--icon-size-sm); height: var(--icon-size-sm); }
+.composer-screenshot-button[aria-expanded="true"] { color: var(--color-accent); background: var(--color-accent-soft); }
+.composer-screenshot-button:disabled { opacity: var(--opacity-disabled); }
+.attachment-review-button { display: inline-grid; flex: 0 0 auto; place-items: center; width: 1.8rem; height: 1.8rem; padding: .35rem; border: 0; border-radius: var(--radius-sm); color: var(--color-accent); background: var(--color-accent-soft); }
+.attachment-review-button svg { width: 1rem; height: 1rem; }
+.attachment-review-button:disabled { opacity: var(--opacity-disabled); }
+
+@media (max-width: 420px) {
+  .composer-screenshot-button { width: 1.8rem; height: 1.8rem; }
+}

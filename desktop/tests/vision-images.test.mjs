@@ -118,6 +118,23 @@ function controller() {
   return { owner, service, cancel: () => { selected = null }, setPicker: (value) => { picker = value }, setReader: (value) => { reader = value } }
 }
 
+test('Attachment review reuses exact owned pixels and retains its lease until verified bytes arrive', async () => {
+  const { service, owner } = controller()
+  owner.mode = 'work'
+  const load = async () => ({ fileName: 'shared.png', bytes: png() })
+  const first = await service.importAttachment('chat_a', load)
+  assert.deepEqual(await service.importAttachment('chat_a', load), first)
+  let release
+  const pending = service.importAttachment('chat_a', () => new Promise(resolve => { release = resolve }))
+  assert.equal(service.hasActiveWork(), true)
+  owner.chatId = 'chat_b'; service.synchronize()
+  owner.chatId = 'chat_a'; service.synchronize()
+  release(await load())
+  await assert.rejects(pending, error => error.code === 'owner_changed')
+  assert.equal(service.hasActiveWork(), false)
+  assert.equal(service.getState('chat_a').items.length, 0)
+})
+
 test('Import, cancellation, removal and clear preserve exact active ownership without paths or disk storage', async () => {
   const { service, owner, cancel } = controller()
   const chosen = await service.chooseImage('chat_a')

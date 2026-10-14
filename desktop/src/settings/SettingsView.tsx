@@ -58,6 +58,7 @@ export type DataStorageAction =
 
 export interface SettingsViewProps {
   internetApi?: InternetPolicyClient
+  internetTools?: ReactNode
   themePreference: ThemePreference
   resolvedTheme: ResolvedTheme
   desktopPetState: DesktopPetState | null
@@ -1083,6 +1084,7 @@ function DataStorageSettings({
 /** Render navigable settings categories without discarding unsaved drafts. */
 export function SettingsView({
   internetApi,
+  internetTools,
   themePreference,
   resolvedTheme,
   desktopPetState,
@@ -1983,6 +1985,10 @@ export function SettingsView({
 
           <SettingsCategoryPanel category="internet" activeCategory={activeCategory} navigationId={navigationId}>
             <InternetSettingsSection api={internetApi} onDirtyChange={setInternetDirty} />
+            {internetTools !== undefined && <details className="internet-settings-advanced">
+              <summary>Advanced research tools</summary>
+              {internetTools}
+            </details>}
           </SettingsCategoryPanel>
 
           <SettingsCategoryPanel

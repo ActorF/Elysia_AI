@@ -1,4 +1,15 @@
-/** Define the closed, default-off Internet policy shared by Main and its isolated settings bridge. */
+/** Define default-off Internet access, fixed public providers, and bounded optional domain additions shared by Main and Settings. */
+
+/** Built-in public services need no user-authored domain rules; the Internet switch still gates every request. */
+export const BUILTIN_INTERNET_DOMAINS: readonly string[] = Object.freeze([
+  'en.wikipedia.org', 'zh.wikipedia.org', 'lite.duckduckgo.com',
+  'api.github.com', 'github.com', 'api.open-meteo.com', 'lrclib.net',
+])
+
+/** Combine validated custom domains with fixed providers without granting any discovered or model-proposed host. */
+export function effectiveInternetDomains(domains: readonly string[]): string[] {
+  return [...new Set([...BUILTIN_INTERNET_DOMAINS, ...domains])]
+}
 
 /** A proxy is either absent or an explicitly selected local HTTP CONNECT listener. */
 export type InternetProxy = { readonly mode: 'direct' } | { readonly mode: 'local-http'; readonly port: number }
@@ -7,6 +18,7 @@ export interface InternetPolicyState {
   readonly kind: 'internet.policy'
   readonly revision: number
   readonly enabled: boolean
+  /** Effective fixed providers plus user-saved custom additions; this list alone never enables requests. */
   readonly allowedDomains: readonly string[]
   readonly proxy: InternetProxy
   readonly timeoutMs: number
@@ -42,7 +54,7 @@ function revision(value: unknown): number {
   return value as number
 }
 function preferences(value: Record<string, unknown>): Pick<InternetPolicyState, 'enabled' | 'allowedDomains' | 'proxy' | 'timeoutMs'> {
-  if (typeof value.enabled !== 'boolean' || !Array.isArray(value.allowedDomains) || value.allowedDomains.length > 32
+  if (typeof value.enabled !== 'boolean' || !Array.isArray(value.allowedDomains) || value.allowedDomains.length > 32 + BUILTIN_INTERNET_DOMAINS.length
     || !Number.isSafeInteger(value.timeoutMs) || (value.timeoutMs as number) < 1000 || (value.timeoutMs as number) > 60000) {
     throw new TypeError('Internet policy settings are invalid.')
   }
@@ -57,6 +69,9 @@ function preferences(value: Record<string, unknown>): Pick<InternetPolicyState, 
     return domain
   })
   if (new Set(domains).size !== domains.length) throw new TypeError('Internet domains must be unique.')
+  // Effective state may contain the fixed providers as well as all 32 custom
+  // entries. Reusing that state for an Off update must not fail the schema.
+  if (domains.filter(domain => !BUILTIN_INTERNET_DOMAINS.includes(domain)).length > 32) throw new TypeError('Internet custom domains exceed the limit.')
   const candidate = value.proxy as { mode?: unknown } | null
   const proxy = record(value.proxy, candidate?.mode === 'local-http' ? ['mode', 'port'] : ['mode'])
   let checkedProxy: InternetProxy
@@ -67,7 +82,7 @@ function preferences(value: Record<string, unknown>): Pick<InternetPolicyState, 
   return { enabled: value.enabled, allowedDomains: domains, proxy: checkedProxy, timeoutMs: value.timeoutMs as number }
 }
 
-/** Validate and detach a complete settings update, rejecting unknown fields and implicit host permissions. */
+/** Validate and detach a complete settings update, rejecting unknown fields and unbounded custom host permissions. */
 export function parseUpdateInternetPolicyRequest(value: unknown): UpdateInternetPolicyRequest {
   const checked = record(value, ['expectedRevision', 'enabled', 'allowedDomains', 'proxy', 'timeoutMs'])
   return { expectedRevision: revision(checked.expectedRevision), ...preferences(checked) }
@@ -84,5 +99,5 @@ export function parseInternetPolicyState(value: unknown): InternetPolicyState {
 
 /** Produce a fresh disabled policy; construction and reading this value never contact a service. */
 export function defaultInternetPolicy(): InternetPolicyState {
-  return { kind: 'internet.policy', revision: 0, enabled: false, allowedDomains: [], proxy: { mode: 'direct' }, timeoutMs: 15000, warning: null }
+  return { kind: 'internet.policy', revision: 0, enabled: false, allowedDomains: effectiveInternetDomains([]), proxy: { mode: 'direct' }, timeoutMs: 15000, warning: null }
 }

@@ -32,6 +32,8 @@ import { fileURLToPath } from 'node:url'
 import { BackendProcess } from './backend-process.js'
 import { InternetPolicyService } from './internet-policy.js'
 import { InternetTransport } from './internet-transport.js'
+import { searchChatInternet } from './internet-chat-search.js'
+import type { ChatInternetRequestEventMessage, ChatInternetResolveParams, ChatInternetSource } from './protocol.js'
 import { InternetResearchController, InternetResearchError, type InternetResearchOwner } from './internet-research.js'
 import { InternetReviewStore } from './internet-review.js'
 import { parseInternetReviewLookup, parseInternetReviewRequest } from './internet-review-protocol.js'
@@ -44,7 +46,7 @@ import { parseInternetChatId, parseInternetSearchRequest, parseInternetSourceReq
 import type { InternetPolicyState } from './internet-policy-protocol.js'
 import { assertInternetLyricsAllowed, prepareInternetLyrics, openInternetBrowser } from './internet-legacy.js'
 import { VisionImageController, VisionImageError, decodeVisionImage, decodeVisionCanonicalImage, prepareVisionModelImage, readVisionSelectedFile, type VisionOwner } from './vision-images.js'
-import { parseVisionChatId, parseVisionRemoveRequest } from './vision-protocol.js'
+import { parseVisionChatId, parseVisionRemoveRequest, parseVisionAttachmentRequest } from './vision-protocol.js'
 import { VisionAnalysisController, VisionAnalysisServiceError } from './vision-analysis.js'
 import { parseVisionOcrRequest, parseVisionModelRequest } from './vision-analysis-protocol.js'
 import { TesseractOcrAdapter } from './vision-ocr.js'
@@ -237,6 +239,10 @@ let mainWindow: BrowserWindow | null = null
 let backendProcess: BackendProcess | null = null
 let internetPolicyService: InternetPolicyService | null = null
 let internetTransport: InternetTransport | null = null
+// Permission is captured when the user sends, so a later policy toggle cannot
+// grant an already-running model a new network capability.
+let automaticInternetTurn: { requestId: string; chatId: string; projectId: string | null;
+  revision: number; backend: BackendProcess; used: boolean; abort: AbortController } | null = null
 let internetResearchController: InternetResearchController | null = null
 let internetWriteController: InternetWriteController | null = null
 // Capture once before spawning Backend; the credential stays out of child
@@ -2149,6 +2155,34 @@ function requireInternetPolicy(): InternetPolicyService {
   return internetPolicyService
 }
 
+function resolveAutomaticInternet(request: ChatInternetRequestEventMessage['data'] & { requestId: string },
+  signal: AbortSignal): Promise<{ sources: ChatInternetSource[]; error: ChatInternetResolveParams['error'] }> {
+  return trackInternetOperation(async () => {
+    const turn = automaticInternetTurn
+    const valid = (): boolean => {
+      const owner = backendProcess?.getCanonicalVisionChat(), generation = backendProcess?.getSnapshot().activeGeneration
+      const policy = internetPolicyService?.getState()
+      return !signal.aborted && !shutdownStarted && dataStorageOperation === null && turn !== null && !turn.abort.signal.aborted
+        && automaticInternetTurn === turn && turn.backend === backendProcess
+        && turn.requestId === request.requestId && turn.chatId === request.chatId
+        && generation?.requestId === turn.requestId && generation.chatId === turn.chatId && !generation.stopping
+        && owner?.chatId === turn.chatId && owner.projectId === turn.projectId && owner.mode === 'chat' && !owner.archived
+        && policy?.enabled === true && policy.revision === turn.revision
+    }
+    if (!valid() || turn === null || turn.used || internetTransport === null) return { sources: [], error: 'disabled' }
+    turn.used = true
+    // One outer lease spans web and encyclopedia requests. Turning Internet
+    // off then on cannot make the fallback borrow the new policy revision.
+    const lease = requireInternetPolicy().acquire(AbortSignal.any([signal, turn.abort.signal]))
+    try {
+      const sources = await searchChatInternet(internetTransport, request, lease.signal)
+      lease.assertCurrent()
+      return valid() ? { sources, error: null } : { sources: [], error: 'cancelled' }
+    } catch { return { sources: [], error: signal.aborted ? 'cancelled' : 'unavailable' } }
+    finally { lease.release() }
+  })
+}
+
 function publishInternetPolicy(state: InternetPolicyState): void {
   try { internetResearchController?.synchronizeOwner() }
   catch { internetResearchController?.invalidate() }
@@ -2246,6 +2280,8 @@ function withInternetOwner<Result>(chatId: string,
 }
 
 function retireInternetResearch(): void {
+  automaticInternetTurn?.abort.abort()
+  automaticInternetTurn = null
   internetResearchGeneration += 1
   internetReviewStore.clear()
   internetReviewScope = null
@@ -3240,6 +3276,14 @@ function registerIpcHandlers(): void {
     assertTrustedSender(event)
     return withVisionOwner(parseVisionChatId(chatId), (controller) => controller.chooseImage(parseVisionChatId(chatId)))
   })
+  ipcMain.handle('vision:import-attachment', (event, value: unknown) => {
+    assertTrustedSender(event)
+    const request = parseVisionAttachmentRequest(value)
+    return withVisionOwner(request.chatId, controller => controller.importAttachment(request.chatId, async () => {
+      const source = await requireBackend().getAttachmentNativeSource({ scope: { kind: 'chat', id: request.chatId }, attachmentId: request.attachmentId })
+      return { fileName: source.fileName, bytes: Buffer.from(source.dataBase64, 'base64') }
+    }))
+  })
   ipcMain.handle('vision:remove-image', (event, value: unknown) => {
     assertTrustedSender(event)
     const request = parseVisionRemoveRequest(value)
@@ -3362,9 +3406,20 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle(
     'backend:send-message',
-    (event, request: unknown) => {
+    async (event, request: unknown) => {
       assertTrustedSender(event)
-      return requireBackend().beginChat(parseChatRequest(request))
+      const parsed = parseChatRequest(request), backend = requireBackend()
+      const documentGeneration = internetResearchGeneration, policy = requireInternetPolicy().getState()
+      let owner = backend.getCanonicalVisionChat()
+      if (owner === null && policy.enabled && !parsed.useProjectKnowledge) owner = await backend.hydrateVisionOwner()
+      if (backend !== requireBackend() || documentGeneration !== internetResearchGeneration) throw new Error('Chat owner changed.')
+      const currentPolicy = requireInternetPolicy().getState()
+      const enabled = policy.enabled && currentPolicy.enabled && policy.revision === currentPolicy.revision
+        && owner?.mode === 'chat' && owner.chatId === parsed.chatId && !parsed.useProjectKnowledge
+      const result = backend.beginChat(parsed, enabled)
+      automaticInternetTurn = enabled && owner !== null ? { requestId: result.requestId, chatId: owner.chatId,
+        projectId: owner.projectId, revision: policy.revision, backend, used: false, abort: new AbortController() } : null
+      return result
     },
   )
 
@@ -4748,6 +4803,7 @@ if (!hasSingleInstanceLock) {
       activeDataRoot,
       hasActiveDesktopWork,
       () => hasActiveVisionWork() || hasActiveInternetWork(),
+      { onInternetSearch: resolveAutomaticInternet },
     )
     workDesktopController = new WorkDesktopController(createWorkDesktopNativeCallbacks({
       getOwner: desktopOwner, getStorage: desktopStore, getWindow: requireMainWindow,

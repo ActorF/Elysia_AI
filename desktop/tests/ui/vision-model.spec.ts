@@ -6,6 +6,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { _electron as electron } from 'playwright'
 import { expect, test, type ElectronApplication, type Page } from '@playwright/test'
+import { openVision, reviewVisionImage } from './vision-helpers.ts'
 
 interface ModelTestControl {
   getCalls(): Array<{ method: string; args: unknown[] }>
@@ -49,10 +50,7 @@ test.beforeEach(async () => {
   page = await application.firstWindow()
   await page.waitForFunction(() => 'elysiaDesktopTest' in window && (window as ModelTestWindow).elysiaDesktopTest.getCalls().some((call) => call.method === 'onBackendEvent.subscribe'))
   await page.evaluate((next) => { (window as ModelTestWindow).elysiaDesktopTest.emitBackendEvent({ type: 'snapshot', snapshot: next }) }, snapshot())
-  await page.getByRole('region', { name: 'Vision images', exact: true }).getByRole('button', { name: 'Vision', exact: true }).click()
-  await page.evaluate((image) => { (window as ModelTestWindow).elysiaDesktopTest.setSelectedVisionImage(image) }, fixture)
-  await page.getByRole('button', { name: 'Choose image', exact: true }).click()
-  await page.getByRole('combobox', { name: 'Vision image', exact: true }).selectOption({ label: fixture.fileName })
+  await reviewVisionImage(page, fixture)
 })
 
 test.afterEach(async () => { await application?.close(); application = undefined })
@@ -116,13 +114,13 @@ test('cancelling a model answer does not release image and conversation locks be
   await enableModel()
   await page.evaluate(() => { (window as ModelTestWindow).elysiaDesktopTest.setVisionModelDelay(true) })
   await page.getByRole('button', { name: 'Ask about image', exact: true }).click()
-  await expect(page.getByRole('combobox', { name: 'Conversation mode' })).toBeDisabled()
+  await expect(page.getByRole('combobox', { name: 'Conversation mode', includeHidden: true })).toBeDisabled()
   await expect(page.getByRole('button', { name: 'Cancel analysis', exact: true })).toBeEnabled()
   await page.getByRole('button', { name: 'Cancel analysis', exact: true }).click()
   await expect(page.getByRole('region', { name: 'Visual analysis', exact: true })).toContainText('Cancellation requested. Waiting')
   await expect(page.getByRole('button', { name: 'Remove selected image synthetic-model.png' })).toBeDisabled()
   await page.evaluate(() => { (window as ModelTestWindow).elysiaDesktopTest.releaseNextVisionModel() })
-  await expect(page.getByRole('combobox', { name: 'Conversation mode' })).toBeEnabled()
+  await expect(page.getByRole('combobox', { name: 'Conversation mode', includeHidden: true })).toBeEnabled()
   await expect(page.getByRole('region', { name: 'Local vision model', exact: true }).getByRole('alert')).toContainText('cancelled')
   await expect(page.getByRole('region', { name: 'Model inference', exact: true })).toHaveCount(0)
 })
@@ -134,11 +132,10 @@ test('a late model failure after reconnect cannot publish an old answer or leave
   await page.evaluate((next) => { (window as ModelTestWindow).elysiaDesktopTest.emitBackendEvent({ type: 'snapshot', snapshot: next }) }, snapshot('error', 2))
   await expect(page.locator('.connection-pill')).toContainText('Connection error')
   await page.evaluate((next) => { (window as ModelTestWindow).elysiaDesktopTest.emitBackendEvent({ type: 'snapshot', snapshot: next }) }, snapshot('ready', 3))
-  await expect(page.getByRole('combobox', { name: 'Conversation mode' })).toBeDisabled()
+  await expect(page.getByRole('combobox', { name: 'Conversation mode', includeHidden: true })).toBeDisabled()
   await page.evaluate(() => { (window as ModelTestWindow).elysiaDesktopTest.rejectNextVisionModel() })
-  await expect(page.getByRole('combobox', { name: 'Conversation mode' })).toBeEnabled()
-  const toggle = page.getByRole('region', { name: 'Vision images', exact: true }).getByRole('button', { name: /^Vision(?: · \d+ selected)?$/ })
-  if (await toggle.getAttribute('aria-expanded') !== 'true') await toggle.click()
+  await expect(page.getByRole('combobox', { name: 'Conversation mode', includeHidden: true })).toBeEnabled()
+  await openVision(page)
   await expect(page.getByRole('region', { name: 'Model inference', exact: true })).toHaveCount(0)
   expect(await page.evaluate(() => (window as ModelTestWindow).elysiaDesktopTest.getCalls().filter((call) => call.method === 'askVisionImage'))).toHaveLength(1)
 })

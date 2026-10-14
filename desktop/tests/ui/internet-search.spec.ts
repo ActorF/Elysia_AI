@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { _electron as electron } from 'playwright'
 import { expect, test, type ElectronApplication, type Page } from '@playwright/test'
 import type { InternetPolicyState } from '../../electron/internet-policy-protocol.ts'
+import { expectResearchNavigationLocked, openInternetResearch, returnToChat } from './internet-helpers.ts'
 
 interface ResearchControl {
   getCalls(): Array<{ method: string; args: unknown[] }>
@@ -36,8 +37,7 @@ async function emit(status = 'ready', revision = 1): Promise<void> {
 }
 
 async function expand(): Promise<void> {
-  const button = page.getByRole('region', { name: 'Internet research', exact: true }).locator('button[aria-expanded]')
-  if (await button.getAttribute('aria-expanded') !== 'true') await button.click()
+  await openInternetResearch(page)
 }
 
 async function allow(): Promise<void> {
@@ -62,7 +62,10 @@ test.beforeEach(async () => {
     cwd: path.resolve(directory, '..', '..') })
   page = await application.firstWindow()
   await page.waitForFunction(() => 'elysiaDesktopTest' in window && (window as ResearchWindow).elysiaDesktopTest.getCalls().some(call => call.method === 'onBackendEvent.subscribe'))
-  await emit(); await expand()
+  await emit()
+  if (test.info().title.startsWith('reviews literal')) await page.getByLabel('Message Elysia').fill('Keep my existing question.')
+  if (test.info().title.startsWith('a delayed source export')) await page.getByLabel('Message Elysia').fill('Retain this draft.')
+  await expand()
 })
 test.afterEach(async () => { await application?.close(); application = undefined })
 
@@ -102,13 +105,15 @@ test('reviews literal source text and dates, appends canonical evidence to the l
   await source.getByRole('button', { name: 'Review source', exact: true }).click()
   const review = page.getByRole('region', { name: 'Reviewed Internet source', exact: true })
   await expect(review).toContainText('an edit time does not establish when an event happened')
-  await page.getByLabel('Message Elysia').fill('Keep my existing question.')
   await review.getByRole('button', { name: 'Add source to Chat draft', exact: true }).click()
+  await expect(panelStatus()).toContainText('Reviewed source added to your Chat draft')
+  await returnToChat(page)
   await expect(page.getByLabel('Message Elysia')).toHaveValue(/^Keep my existing question\.\n\nInternet source for review\./)
   await expect(page.getByLabel('Message Elysia')).toHaveValue(/"publishedAt": "unknown"/)
   const calls = await page.evaluate(() => (window as ResearchWindow).elysiaDesktopTest.getCalls())
   expect(calls.filter(call => call.method === 'searchInternet').map(call => call.args)).toEqual([[{ chatId: 'chat_internet_search', query: 'synthetic test query', language: 'en' }]])
   expect(calls.filter(call => ['sendMessage', 'createWorkPlan', 'runWorkTool', 'openExternalUrl'].includes(call.method))).toHaveLength(0)
+  await expand()
   await page.getByRole('tab', { name: 'Saved', exact: true }).click()
   await page.locator('.internet-query-history > summary').click()
   await expect(page.getByRole('region', { name: 'Internet query history', exact: true })).toContainText('synthetic test query')
@@ -137,6 +142,8 @@ test('turning Internet off preserves completed local evidence while the same que
   await expect(page.getByRole('button', { name: 'Search Wikipedia', exact: true })).toBeDisabled()
   await page.getByRole('button', { name: 'Review source', exact: true }).click()
   await page.getByRole('button', { name: 'Add source to Chat draft', exact: true }).click()
+  await expect(panelStatus()).toContainText('Reviewed source added to your Chat draft')
+  await returnToChat(page)
   await expect(page.getByLabel('Message Elysia')).toHaveValue(/^Internet source for review\./)
   expect(await page.evaluate(() => (window as ResearchWindow).elysiaDesktopTest.getCalls().filter(call => call.method === 'searchInternet'))).toHaveLength(1)
 })
@@ -145,27 +152,30 @@ test('off and cancellation retain admission through disconnect until the physica
   await allow()
   await page.evaluate(() => { (window as ResearchWindow).elysiaDesktopTest.setInternetSearchDelay(true) })
   await search()
-  await expect(page.getByRole('combobox', { name: 'Conversation mode', exact: true })).toBeDisabled()
-  await page.keyboard.press('Control+,')
-  await expect(page.getByRole('heading', { name: 'Settings', exact: true })).toHaveCount(0)
+  await expectResearchNavigationLocked(page)
   await page.getByRole('button', { name: 'Turn Internet off', exact: true }).click()
   await page.getByRole('button', { name: 'Cancel research', exact: true }).click()
   await expect(page.getByRole('region', { name: 'Internet research', exact: true })).toContainText('Cancellation requested')
   await emit('error', 2); await emit('ready', 3)
-  await expect(page.getByRole('combobox', { name: 'Conversation mode', exact: true })).toBeDisabled()
+  await expectResearchNavigationLocked(page)
   await page.evaluate(() => { (window as ResearchWindow).elysiaDesktopTest.releaseNextInternetSearch() })
-  await expect(page.getByRole('combobox', { name: 'Conversation mode', exact: true })).toBeEnabled()
+  await expect(page.getByRole('region', { name: 'Internet research', exact: true })).toHaveAttribute('aria-busy', 'false')
   await expand()
   await expect(page.getByRole('region', { name: 'Internet research', exact: true }).getByRole('article')).toHaveCount(0)
   expect(await page.evaluate(() => (window as ResearchWindow).elysiaDesktopTest.getCalls().filter(call => call.method === 'searchInternet'))).toHaveLength(1)
+  await returnToChat(page)
+  await expect(page.getByRole('combobox', { name: 'Conversation mode', exact: true })).toBeEnabled()
 })
 
 test('an inherited physical lease can finish offline without a new provider call', async () => {
   await page.evaluate(() => { (window as ResearchWindow).elysiaDesktopTest.setExistingInternetResearchBusy(true) })
-  await expect(page.getByRole('combobox', { name: 'Conversation mode', exact: true })).toBeDisabled()
+  // The native busy event itself must acquire shell admission. Waiting for a
+  // later activity poll would hide a window where Back can unmount the owner.
+  await expectResearchNavigationLocked(page)
   await emit('error', 2)
   await page.evaluate(() => { (window as ResearchWindow).elysiaDesktopTest.setExistingInternetResearchBusy(false) })
   await expect(page.getByRole('region', { name: 'Internet research', exact: true })).toHaveAttribute('aria-busy', 'false')
+  await returnToChat(page)
   await expect(page.getByRole('button', { name: 'Retry', exact: true })).toBeEnabled()
   expect(await page.evaluate(() => (window as ResearchWindow).elysiaDesktopTest.getCalls().filter(call => call.method === 'searchInternet'))).toHaveLength(0)
 })
@@ -173,12 +183,15 @@ test('an inherited physical lease can finish offline without a new provider call
 test('a delayed source export cannot append after the same Chat disconnects and reconnects', async () => {
   await allow(); await search()
   await page.getByRole('button', { name: 'Review source', exact: true }).click()
-  await page.getByLabel('Message Elysia').fill('Retain this draft.')
   await page.evaluate(() => { (window as ResearchWindow).elysiaDesktopTest.setInternetSourceDelay(true) })
   await page.getByRole('button', { name: 'Add source to Chat draft', exact: true }).click()
   await emit('error', 2); await emit('ready', 3)
   await page.evaluate(() => { (window as ResearchWindow).elysiaDesktopTest.releaseNextInternetSource() })
+  await expect(page.getByRole('region', { name: 'Internet research', exact: true })).toHaveAttribute('aria-busy', 'false')
+  await expect(page.getByRole('region', { name: 'Reviewed Internet source', exact: true })).toHaveCount(0)
+  await returnToChat(page)
   await expect(page.getByRole('combobox', { name: 'Conversation mode', exact: true })).toBeEnabled()
   await expect(page.getByLabel('Message Elysia')).toHaveValue('Retain this draft.')
-  await expect(page.getByRole('region', { name: 'Reviewed Internet source', exact: true })).toHaveCount(0)
 })
+
+function panelStatus() { return page.getByRole('region', { name: 'Internet research', exact: true }) }

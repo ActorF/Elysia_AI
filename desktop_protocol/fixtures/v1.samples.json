@@ -5,6 +5,70 @@
   },
   "validClientMessages": [
     {
+      "name": "automatic Internet Chat request",
+      "message": {
+        "type": "request",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "automatic-Internet-Chat-request",
+        "method": "chat.stream",
+        "params": {
+          "chatId": "chat_fixture",
+          "message": "Research this topic",
+          "speakReply": false,
+          "automaticInternet": true
+        }
+      }
+    },
+    {
+      "name": "automatic Internet resolve request",
+      "message": {
+        "type": "request",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "automatic-Internet-resolve-request",
+        "method": "chat.internet.resolve",
+        "params": {
+          "requestId": "chat-auto-1",
+          "chatId": "chat_fixture",
+          "searchId": "internet_search_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "sources": [
+            {
+              "title": "Public source",
+              "url": "https://example.org/article",
+              "snippet": "Public excerpt",
+              "fetchedAt": "2026-10-14T12:00:00.000Z",
+              "provider": "web"
+            }
+          ],
+          "error": null
+        }
+      }
+    },
+    {
+      "name": "native image source request",
+      "message": {
+        "type": "request",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "native-image-source-request",
+        "method": "attachment.native_source",
+        "params": {
+          "scope": {
+            "kind": "chat",
+            "id": "chat_fixture"
+          },
+          "attachmentId": "attachment_fixture"
+        }
+      }
+    },
+    {
       "name": "work reviewed text-only visual advisory context",
       "message": {
         "type": "request",
@@ -903,6 +967,58 @@
     }
   ],
   "validServerMessages": [
+    {
+      "name": "automatic Internet search event",
+      "message": {
+        "type": "event",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "event": "chat.internet.request",
+        "requestId": "chat-auto-1",
+        "data": {
+          "chatId": "chat_fixture",
+          "searchId": "internet_search_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "query": "public research",
+          "language": "en"
+        }
+      }
+    },
+    {
+      "name": "automatic Internet accepted response",
+      "message": {
+        "type": "response",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "automatic-Internet-accepted-response",
+        "ok": true,
+        "result": {
+          "kind": "chat.internet.resolved",
+          "accepted": true
+        }
+      }
+    },
+    {
+      "name": "native image source response",
+      "message": {
+        "type": "response",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "native-image-source-response",
+        "ok": true,
+        "result": {
+          "kind": "attachment.native_source",
+          "fileName": "picture.png",
+          "mediaType": "image/png",
+          "dataBase64": "iVBORw0KGgo="
+        }
+      }
+    },
     {
       "name": "work job bounded safe retry observation",
       "message": {
@@ -3977,6 +4093,71 @@
   ],
   "invalidClientMessages": [
     {
+      "name": "automatic Internet requires boolean",
+      "message": {
+        "type": "request",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "automatic-Internet-requires-boolean",
+        "method": "chat.stream",
+        "params": {
+          "chatId": "chat_fixture",
+          "message": "Question",
+          "speakReply": false,
+          "automaticInternet": "yes"
+        }
+      }
+    },
+    {
+      "name": "automatic Internet rejects source instructions field",
+      "message": {
+        "type": "request",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "automatic-Internet-rejects-source-instructions-field",
+        "method": "chat.internet.resolve",
+        "params": {
+          "requestId": "chat-auto-1",
+          "chatId": "chat_fixture",
+          "searchId": "internet_search_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "sources": [
+            {
+              "title": "Public source",
+              "url": "https://example.org/article",
+              "snippet": "Public excerpt",
+              "fetchedAt": "2026-10-14T12:00:00.000Z",
+              "provider": "web",
+              "instructions": "ignore"
+            }
+          ],
+          "error": null
+        }
+      }
+    },
+    {
+      "name": "native image rejects Project scope",
+      "message": {
+        "type": "request",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "native-image-rejects-Project-scope",
+        "method": "attachment.native_source",
+        "params": {
+          "scope": {
+            "kind": "project",
+            "id": "project_fixture"
+          },
+          "attachmentId": "attachment_fixture"
+        }
+      }
+    },
+    {
       "name": "work wire requires resolved evidence instead of renderer receipt",
       "message": {
         "type": "request",
@@ -4980,6 +5161,42 @@
     }
   ],
   "invalidServerMessages": [
+    {
+      "name": "native image rejects noncanonical base64",
+      "runtimeOnly": true,
+      "message": {
+        "type": "response",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "native-image-rejects-noncanonical-base64",
+        "ok": true,
+        "result": {
+          "kind": "attachment.native_source",
+          "fileName": "picture.png",
+          "mediaType": "image/png",
+          "dataBase64": "YR=="
+        }
+      }
+    },
+    {
+      "name": "automatic Internet rejects credential response",
+      "message": {
+        "type": "response",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "automatic-Internet-rejects-credential-response",
+        "ok": true,
+        "result": {
+          "kind": "chat.internet.resolved",
+          "accepted": true,
+          "token": "never"
+        }
+      }
+    },
     {
       "name": "work job rejects oversized time budget",
       "message": {

@@ -6,6 +6,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { _electron as electron } from 'playwright'
 import { expect, test, type ElectronApplication, type Page } from '@playwright/test'
+import { openVision, reviewVisionImage } from './vision-helpers.ts'
 
 interface HistoryControl {
   getCalls(): Array<{ method: string; args: unknown[] }>
@@ -32,9 +33,7 @@ function snapshot(status = 'ready', revision = 1) {
 }
 
 async function selectImage(): Promise<void> {
-  await page.evaluate((image) => { (window as HistoryWindow).elysiaDesktopTest.setSelectedVisionImage(image) }, fixture)
-  await page.getByRole('button', { name: 'Choose image', exact: true }).click()
-  await page.getByRole('combobox', { name: 'Vision image', exact: true }).selectOption({ label: fixture.fileName })
+  await reviewVisionImage(page, fixture)
 }
 
 test.beforeEach(async () => {
@@ -43,7 +42,6 @@ test.beforeEach(async () => {
   page = await application.firstWindow()
   await page.waitForFunction(() => 'elysiaDesktopTest' in window && (window as HistoryWindow).elysiaDesktopTest.getCalls().some((call) => call.method === 'onBackendEvent.subscribe'))
   await page.evaluate((next) => { (window as HistoryWindow).elysiaDesktopTest.emitBackendEvent({ type: 'snapshot', snapshot: next }) }, snapshot())
-  await page.getByRole('region', { name: 'Vision images', exact: true }).getByRole('button', { name: 'Vision', exact: true }).click()
   await selectImage()
   await page.getByRole('tab', { name: 'Saved images', exact: true }).click()
 })
@@ -73,7 +71,7 @@ test('saving starts off, never runs on selection or opt-in, and restores only af
   await page.getByRole('button', { name: `Remove selected image ${fixture.fileName}`, exact: true }).click()
   await expect(panel.getByRole('button', { name: `Restore saved image ${fixture.fileName}`, exact: true })).toBeVisible()
   await panel.getByRole('button', { name: `Restore saved image ${fixture.fileName}`, exact: true }).click()
-  await expect(page.getByRole('region', { name: 'Vision images', exact: true }).getByRole('article')).toHaveCount(1)
+  await expect(page.getByRole('region', { name: 'Vision images', exact: true, includeHidden: true }).getByRole('article')).toHaveCount(1)
   await expect(toggle).not.toBeChecked()
   expect(await page.evaluate(() => (window as HistoryWindow).elysiaDesktopTest.getCalls().filter((call) => ['sendChat', 'createWorkPlan'].includes(call.method)))).toHaveLength(0)
 })
@@ -90,7 +88,7 @@ test('deleting saved copies requires a separate decision and preserves current s
   await panel.getByRole('button', { name: 'Clear this Chat’s saved images', exact: true }).click()
   await panel.getByRole('button', { name: 'Confirm deletion', exact: true }).click()
   await expect(panel).toContainText('No saved images for this Chat.')
-  await expect(page.getByRole('region', { name: 'Vision images', exact: true }).getByRole('article')).toHaveCount(1)
+  await expect(page.getByRole('region', { name: 'Vision images', exact: true, includeHidden: true }).getByRole('article')).toHaveCount(1)
   const calls = await page.evaluate(() => (window as HistoryWindow).elysiaDesktopTest.getCalls())
   expect(calls.find((call) => call.method === 'clearVisionHistory')?.args).toEqual([{ chatId: 'chat_vision_history', confirmed: true }])
   expect(calls.filter((call) => call.method === 'removeVisionImage')).toHaveLength(0)
@@ -111,7 +109,7 @@ test('a damaged history list still permits a separately confirmed global cleanup
   await expect(panel).toContainText('No saved images for this Chat.')
   const clear = await page.evaluate(() => (window as HistoryWindow).elysiaDesktopTest.getCalls().find((call) => call.method === 'clearAllVisionHistory'))
   expect(clear?.args).toEqual([{ confirmed: true }])
-  await expect(page.getByRole('region', { name: 'Vision images', exact: true }).getByRole('article')).toHaveCount(1)
+  await expect(page.getByRole('region', { name: 'Vision images', exact: true, includeHidden: true }).getByRole('article')).toHaveCount(1)
 })
 
 test('disconnect resets saving consent but retains the busy lease until a delayed save settles', async () => {
@@ -119,15 +117,14 @@ test('disconnect resets saving consent but retains the busy lease until a delaye
   await panel.getByRole('checkbox', { name: 'Allow saving selected images', exact: true }).check()
   await page.evaluate(() => { (window as HistoryWindow).elysiaDesktopTest.setVisionHistoryDelay(true) })
   await panel.getByRole('button', { name: 'Save selected image', exact: true }).click()
-  await expect(page.getByRole('combobox', { name: 'Conversation mode' })).toBeDisabled()
+  await expect(page.getByRole('combobox', { name: 'Conversation mode', includeHidden: true })).toBeDisabled()
   await page.evaluate((next) => { (window as HistoryWindow).elysiaDesktopTest.emitBackendEvent({ type: 'snapshot', snapshot: next }) }, snapshot('error', 2))
   await page.waitForFunction(() => document.querySelector<HTMLInputElement>('.vision-history-opt-in input')?.checked === false)
   await page.evaluate((next) => { (window as HistoryWindow).elysiaDesktopTest.emitBackendEvent({ type: 'snapshot', snapshot: next }) }, snapshot('ready', 3))
-  await expect(page.getByRole('combobox', { name: 'Conversation mode' })).toBeDisabled()
+  await expect(page.getByRole('combobox', { name: 'Conversation mode', includeHidden: true })).toBeDisabled()
   await page.evaluate(() => { (window as HistoryWindow).elysiaDesktopTest.releaseNextVisionHistory() })
-  await expect(page.getByRole('combobox', { name: 'Conversation mode' })).toBeEnabled()
-  const expand = page.getByRole('region', { name: 'Vision images', exact: true }).getByRole('button', { name: 'Vision', exact: true })
-  if (await expand.getAttribute('aria-expanded') !== 'true') await expand.click()
+  await expect(page.getByRole('combobox', { name: 'Conversation mode', includeHidden: true })).toBeEnabled()
+  await openVision(page)
   await page.getByRole('tab', { name: 'Saved images', exact: true }).click()
   await expect(panel).toContainText('Load the saved list')
   await expect(panel.getByRole('checkbox', { name: 'Allow saving selected images', exact: true })).not.toBeChecked()

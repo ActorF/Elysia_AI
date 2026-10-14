@@ -195,8 +195,10 @@ function defaultPresenceNotificationState() {
   }
 }
 
+const builtinInternetDomains = ['en.wikipedia.org', 'zh.wikipedia.org', 'lite.duckduckgo.com', 'api.github.com', 'github.com', 'api.open-meteo.com', 'lrclib.net']
+
 function defaultInternetPolicyState() {
-  return { kind: 'internet.policy', revision: 0, enabled: false, allowedDomains: [],
+  return { kind: 'internet.policy', revision: 0, enabled: false, allowedDomains: [...builtinInternetDomains],
     proxy: { mode: 'direct' }, timeoutMs: 15000, warning: null }
 }
 
@@ -306,13 +308,20 @@ function addAttachmentFiles(scope, files) {
       && item.mediaType === mediaType
     ))
     if (!duplicate) {
-      attachments.push({
+      const attachment = {
         attachmentId: `attachment_test_${nextAttachmentNumber}`,
         fileName,
         mediaType,
         sizeBytes,
         status: 'ready',
-      })
+      }
+      attachments.push(attachment)
+      // Preserve each synthetic file's bytes with its canonical attachment ID.
+      // Reviewing an older attachment must not reuse the most recent picker fixture.
+      if (selectedVisionImage !== null && selectedVisionImage.fileName === fileName
+        && selectedVisionImage.mediaType === mediaType && selectedVisionImage.sizeBytes === sizeBytes) {
+        attachmentVisionFixtures.set(attachment.attachmentId, clone(selectedVisionImage))
+      }
       nextAttachmentNumber += 1
     }
   }
@@ -457,6 +466,7 @@ let chatMessages = new Map([
 let pendingGenerations = new Map()
 let selectedFiles = []
 let attachmentStates = new Map()
+let attachmentVisionFixtures = new Map()
 let knowledgeStates = new Map()
 let nextAttachmentError = null
 let nextAttachmentPickerCancelled = false
@@ -787,6 +797,7 @@ if (reloadState !== null) {
   chatMessages = new Map(clone(reloadState.chatMessages))
   pendingGenerations = new Map(clone(reloadState.pendingGenerations))
   attachmentStates = new Map(clone(reloadState.attachmentStates))
+  attachmentVisionFixtures = new Map(clone(reloadState.attachmentVisionFixtures ?? []))
   knowledgeStates = new Map(clone(reloadState.knowledgeStates ?? []))
   workWorkspaces = new Map(clone(reloadState.workWorkspaces ?? []))
   nextRequestNumber = reloadState.nextRequestNumber
@@ -1359,7 +1370,7 @@ const desktopApi = {
 
   getInternetPolicy: async () => {
     record('getInternetPolicy')
-    return clone(internetPolicyState)
+    return clone({ ...internetPolicyState, allowedDomains: [...new Set([...builtinInternetDomains, ...internetPolicyState.allowedDomains])] })
   },
   getInternetResearch: async (chatId) => {
     record('getInternetResearch', [chatId])
@@ -1549,7 +1560,7 @@ const desktopApi = {
     }
     if (request.expectedRevision !== internetPolicyState.revision) throw new Error('Internet policy changed elsewhere.')
     internetPolicyState = { kind: 'internet.policy', revision: internetPolicyState.revision + 1,
-      enabled: request.enabled, allowedDomains: clone(request.allowedDomains), proxy: clone(request.proxy),
+      enabled: request.enabled, allowedDomains: [...new Set([...builtinInternetDomains, ...request.allowedDomains])], proxy: clone(request.proxy),
       timeoutMs: request.timeoutMs, warning: null }
     for (const listener of internetPolicyListeners) listener(clone(internetPolicyState))
     return clone(internetPolicyState)
@@ -2258,6 +2269,36 @@ const desktopApi = {
       visionState.busy = false
       return { cancelled: image === null, state: visionSnapshot(chatId) }
     } finally { if (visionState !== null) visionState.busy = false }
+  },
+  importVisionAttachment: async (request) => {
+    record('importVisionAttachment', [request])
+    visionSnapshot(request.chatId)
+    const ownedState = visionState
+    const scope = { kind: 'chat', id: request.chatId }
+    const attachment = attachmentStateFor(scope).attachments.find((item) => item.attachmentId === request.attachmentId)
+    const image = attachmentVisionFixtures.get(request.attachmentId)
+    if (attachment === undefined || image === undefined || !['image/png', 'image/jpeg'].includes(attachment.mediaType)) {
+      throw new Error('The selected image attachment is unavailable.')
+    }
+    ownedState.busy = true
+    try {
+      if (delayVisionSelection) await new Promise((resolve, reject) => { pendingVisionSelections.push({ resolve, reject }) })
+      visionSnapshot(request.chatId)
+      // Even an immediate error→ready transition revokes the original native owner.
+      if (visionState !== ownedState || !attachmentStateFor(scope).attachments.some((item) => item.attachmentId === request.attachmentId)) {
+        throw new Error('Vision owner changed.')
+      }
+      if (nextVisionError !== null) { const error = nextVisionError; nextVisionError = null; throw new Error(error) }
+      let selected = ownedState.items.find((item) => item.sha256 === image.sha256 && item.fileName === image.fileName)
+      if (selected === undefined) {
+        if (ownedState.items.length >= 8) throw new Error('Too many Vision images.')
+        selected = { ...clone(image), imageId: `vision_${(nextVisionImageNumber++).toString(16).padStart(32, '0')}` }
+        ownedState.items.push(selected)
+        ownedState.revision += 1
+      }
+      ownedState.busy = false
+      return { state: visionSnapshot(request.chatId), imageId: selected.imageId }
+    } finally { ownedState.busy = false }
   },
   removeVisionImage: async (request) => {
     record('removeVisionImage', [request])
@@ -3026,6 +3067,7 @@ const desktopApi = {
       ),
     }
     attachmentStates.set(attachmentScopeKey(scope), state)
+    attachmentVisionFixtures.delete(attachmentId)
     return clone(state)
   },
 
@@ -3491,6 +3533,7 @@ const testControl = {
     pendingGenerations = new Map()
     selectedFiles = []
     attachmentStates = new Map()
+    attachmentVisionFixtures = new Map()
     knowledgeStates = new Map()
     nextAttachmentError = null
     nextAttachmentPickerCancelled = false
@@ -3967,6 +4010,7 @@ const testControl = {
       chatMessages: [...chatMessages.entries()],
       pendingGenerations: [...pendingGenerations.entries()],
       attachmentStates: [...attachmentStates.entries()],
+      attachmentVisionFixtures: [...attachmentVisionFixtures.entries()],
       knowledgeStates: [...knowledgeStates.entries()],
       workWorkspaces: [...workWorkspaces.entries()],
       nextRequestNumber,

@@ -1,13 +1,14 @@
 /** Coordinate owner-scoped image reviews, explicit local analysis/capture, and physical native action leases. */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { VisionClient, VisionState } from '../../electron/vision-protocol.ts'
+import type { VisionClient, VisionState, VisionAttachmentSelectionResult } from '../../electron/vision-protocol.ts'
 import type { VisionAnalysisClient } from '../../electron/vision-analysis-protocol.ts'
 import type { VisionCaptureClient } from '../../electron/vision-capture-protocol.ts'
 import type { VisionContext, VisionContextClient } from '../../electron/vision-context-protocol.ts'
 import type { VisionHistoryClient } from '../../electron/vision-history-protocol.ts'
 import { Icon } from '../design-system/Icon.tsx'
-import { ToolPanelFrame, ToolTabs, ToolTabPanel } from '../design-system/ToolPanel.tsx'
+import { ToolTabs, ToolTabPanel } from '../design-system/ToolPanel.tsx'
+import { VisionDialog } from './VisionDialog.tsx'
 import { VisionAnalysisPanel } from './VisionAnalysisPanel.tsx'
 import { VisionCapturePanel } from './VisionCapturePanel.tsx'
 import { VisionContextPanel } from './VisionContextPanel.tsx'
@@ -20,6 +21,11 @@ interface VisionPanelProps {
   projectId: string | null
   ready: boolean
   disabled: boolean
+  open: boolean
+  initialView: 'review' | 'capture'
+  attachmentId?: string
+  /** Hide the workspace without cancelling or releasing any native request. */
+  onClose(): void
   /** Append only explicitly resolved text to the current draft, without sending it. */
   onChatDraft?(text: string): void
   /** Select an owned advisory receipt only when the current Chat is already in Work mode. */
@@ -33,12 +39,12 @@ function formatBytes(bytes: number): string {
 }
 
 /** Display exact selected images shared by Chat and Work without automatically analyzing or sending them. */
-export function VisionPanel({ api, chatId, projectId, ready, disabled, onBusyChange, onChatDraft, onWorkContext }: VisionPanelProps) {
+export function VisionPanel({ api, chatId, projectId, ready, disabled, open, initialView, attachmentId, onClose,
+  onBusyChange, onChatDraft, onWorkContext }: VisionPanelProps) {
   const [state, setState] = useState<VisionState | null>(null)
   const [pending, setPending] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [open, setOpen] = useState(false)
   const [tab, setTab] = useState<'analyze' | 'context' | 'history'>('analyze')
   const [captureOpen, setCaptureOpen] = useState(false)
   const [previewErrors, setPreviewErrors] = useState<string[]>([])
@@ -53,6 +59,10 @@ export function VisionPanel({ api, chatId, projectId, ready, disabled, onBusyCha
   const captureLease = useRef(false)
   const contextLease = useRef(false)
   const historyLease = useRef(false)
+  const closeRef = useRef(onClose)
+  const previousOwner = useRef({ chatId, projectId, ready })
+  const previousPresentation = useRef({ open: false, initialView, attachmentId })
+  useEffect(() => { closeRef.current = onClose }, [onClose])
   const reportBusy = useCallback((): void => {
     onBusyChange(physicalPending.current || analysisLease.current || captureLease.current || contextLease.current || historyLease.current)
   }, [onBusyChange])
@@ -82,10 +92,13 @@ export function VisionPanel({ api, chatId, projectId, ready, disabled, onBusyCha
   }
 
   useEffect(() => {
+    const previous = previousOwner.current
+    previousOwner.current = { chatId, projectId, ready }
+    if (previous.chatId !== chatId || previous.projectId !== projectId || previous.ready !== ready) closeRef.current()
     const token = ++version.current
     queueMicrotask(() => {
       if (token !== version.current) return
-      setState(null); setSelectedImageId(''); setError(null); setPreviewErrors([]); setOpen(false)
+      setState(null); setSelectedImageId(''); setError(null); setPreviewErrors([])
       setTab('analyze'); setCaptureOpen(false)
       if (!ready || api === undefined || physicalPending.current) { setLoading(false); return }
       setLoading(true)
@@ -101,21 +114,22 @@ export function VisionPanel({ api, chatId, projectId, ready, disabled, onBusyCha
     return () => { version.current += 1 }
   }, [api, chatId, projectId, ready])
 
-  async function act(operation: (client: VisionClient) => Promise<VisionState>): Promise<void> {
+  const act = useCallback(async (operation: (client: VisionClient) => Promise<VisionState | VisionAttachmentSelectionResult>): Promise<void> => {
     if (!ready || disabled || api === undefined || physicalPending.current || analysisLease.current || captureLease.current || contextLease.current || historyLease.current) return
     physicalPending.current = true
     const token = ++version.current
-    setPending(true); setLoading(false); setError(null); setOpen(true)
+    setPending(true); setLoading(false); setError(null)
     reportBusy()
     try {
-      const next = await operation(api)
+      const result = await operation(api)
+      const next = 'state' in result ? result.state : result
       if (token !== version.current) return
-      if (!owned(next)) throw new Error('Vision owner changed.')
+      if (next.owner.chatId !== chatId || next.owner.projectId !== projectId) throw new Error('Vision owner changed.')
       setState(next); setPreviewErrors([])
-      setSelectedImageId((current) => next.items.some((image) => image.imageId === current)
-        ? current : next.items.at(-1)?.imageId ?? '')
+      setSelectedImageId((current) => 'state' in result ? result.imageId
+        : next.items.some((image) => image.imageId === current) ? current : next.items.at(-1)?.imageId ?? '')
     } catch {
-      if (token === version.current) setError('The image action could not complete. Choose a supported PNG or JPEG, or reload images before retrying.')
+      if (token === version.current) setError('The image action could not complete. Review a supported PNG or JPEG attachment, or reload images before retrying.')
     } finally {
       // An owner change or disconnect revokes result publication, but only
       // physical settlement can release the shared native-action capacity.
@@ -123,7 +137,23 @@ export function VisionPanel({ api, chatId, projectId, ready, disabled, onBusyCha
       setPending(false)
       reportBusy()
     }
-  }
+  }, [api, ready, disabled, chatId, projectId, reportBusy])
+
+  useEffect(() => {
+    const previous = previousPresentation.current
+    previousPresentation.current = { open, initialView, attachmentId }
+    if (!open || previous.open && previous.initialView === initialView && previous.attachmentId === attachmentId) return
+    const token = version.current
+    queueMicrotask(() => {
+      if (token !== version.current) return
+      setCaptureOpen(initialView === 'capture'); setTab('analyze')
+      if (initialView === 'review' && attachmentId !== undefined) {
+        void act((client) => client.importVisionAttachment({ chatId, attachmentId }))
+      }
+    })
+    // Closing the dialog does not invalidate this request. Only canonical owner
+    // changes revoke its result, and physical settlement releases its capacity.
+  }, [open, initialView, attachmentId, chatId, act])
 
   const visible = ready && state !== null && owned(state) ? state : null
   const images = visible?.items ?? []
@@ -131,22 +161,18 @@ export function VisionPanel({ api, chatId, projectId, ready, disabled, onBusyCha
   const locked = disabled || !ready || pending || analysisBusy || captureBusy || contextBusy || historyBusy || visible?.busy === true || loading || api === undefined
   const busy = pending || loading || analysisBusy || captureBusy || contextBusy || historyBusy
 
-  return <ToolPanelFrame id="vision-workbench" title="Vision" description="Images, screenshots and text"
-    icon="image" ariaLabel="Vision images" open={open} onToggle={() => { setOpen((current) => !current) }}
-    className="vision-panel" busy={busy} status={busy ? 'Working…' : images.length > 0 ? `${images.length} selected` : 'Local images'}
-    actions={busy && <button type="button" className="vision-activity" onClick={() => {
-      setOpen(true)
+  return <VisionDialog open={open} onClose={onClose} busy={busy}>
+    <section className="tool-panel vision-panel" aria-label="Vision images" aria-busy={busy}>
+    <div className="tool-panel-body">
+    {busy && <button type="button" className="vision-activity" onClick={() => {
       if (captureBusy) setCaptureOpen(true)
-      else setTab(contextBusy ? 'context' : historyBusy ? 'history' : 'analyze')
-    }}>View active task</button>}>
+      else { setCaptureOpen(false); setTab(contextBusy ? 'context' : historyBusy ? 'history' : 'analyze') }
+    }}>View active task</button>}
     <div className="vision-image-review">
       <div className="vision-actions">
-        <button type="button" className="tool-primary" disabled={locked || images.length >= 8} onClick={() => {
-          void act(async (client) => (await client.chooseVisionImage(chatId)).state)
-        }}><Icon name="image" />{pending ? 'Working…' : 'Choose image'}</button>
         {typeof api?.listVisionCaptureSources === 'function' && <button type="button" aria-expanded={captureOpen}
           aria-controls="vision-capture-workspace" onClick={() => { setCaptureOpen((current) => !current) }}>
-          <Icon name="monitor" />Take screenshot</button>}
+          <Icon name="monitor" />Screenshot</button>}
         <details className="vision-image-options"><summary>Image options</summary>
           <p className="vision-session-note">Images stay in this session and clear when the Chat or Project changes.</p>
           <div className="vision-actions">
@@ -156,9 +182,9 @@ export function VisionPanel({ api, chatId, projectId, ready, disabled, onBusyCha
           }}>Clear selected images</button>
         </div></details>
       </div>
-      {images.length === 0 && <div className="vision-empty"><Icon name="image" /><div><strong>{loading ? 'Loading selected images…' : 'Start with an image'}</strong>
-        <p>PNG, JPEG, or a single screenshot.</p></div></div>}
-      {images.length >= 8 && <p>Remove an image before choosing another. Up to eight images can be selected.</p>}
+      {images.length === 0 && <div className="vision-empty"><Icon name="image" /><div><strong>{loading ? 'Loading selected images…' : 'Review an image or take a screenshot'}</strong>
+        <p>Add a PNG or JPEG with Add files in the message composer, then use its review button.</p></div></div>}
+      {images.length >= 8 && <p>Remove an image before reviewing another. Up to eight images can be selected.</p>}
       <div className="vision-images">
         {images.map((image) => <article className="vision-image" key={image.imageId} aria-label={`Selected image ${image.fileName}`}>
           <button type="button" className="vision-image-select" disabled={locked} aria-pressed={image.imageId === selectedImageId}
@@ -217,5 +243,6 @@ export function VisionPanel({ api, chatId, projectId, ready, disabled, onBusyCha
         }} />
     </div>}
     </ToolTabPanel>
-  </ToolPanelFrame>
+    </div></section>
+  </VisionDialog>
 }

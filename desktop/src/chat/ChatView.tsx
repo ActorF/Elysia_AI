@@ -69,7 +69,7 @@ interface ChatViewProps {
   voiceCallDisabled: boolean
   workPanel?: ReactNode
   visionPanel?: ReactNode
-  internetPanel?: ReactNode
+  screenshotControl?: ReactNode
   onChooseAttachments(): void
   onBeginRetryEdit(pair: RetryableChatPair): void
   onCancelRetryEdit(): void
@@ -82,6 +82,8 @@ interface ChatViewProps {
   onOpenExternalUrl(url: string): Promise<void>
   onReadAloud(messageId: string): void
   onRemoveAttachment(attachmentId: string): Promise<boolean>
+  /** Open Vision for one current Chat image attachment by its opaque identity. */
+  onReviewImage?(attachmentId: string): void
   onRetry(pair: RetryableChatPair, message?: string): boolean
   onRetryEditChange(pair: RetryableChatPair, message: string): void
   onRetryConnection(): void
@@ -159,7 +161,7 @@ export function ChatView({
   voiceCallDisabled,
   workPanel,
   visionPanel,
-  internetPanel,
+  screenshotControl,
   onChooseAttachments,
   onBeginRetryEdit,
   onCancelRetryEdit,
@@ -172,6 +174,7 @@ export function ChatView({
   onOpenExternalUrl,
   onReadAloud,
   onRemoveAttachment,
+  onReviewImage,
   onRetry,
   onRetryEditChange,
   onRetryConnection,
@@ -273,8 +276,6 @@ export function ChatView({
             ? 'Work: plan tasks in a selected Workspace. File changes require your approval.'
             : 'Chat: conversation and answers. Computer tools are disabled.'}
         </div>
-        {visionPanel}
-        {internetPanel}
         {chatMode === 'work' && workPanel}
       </div>
 
@@ -386,6 +387,7 @@ export function ChatView({
         streaming={streaming}
         stopPending={stopPending}
         voiceCallDisabled={voiceCallDisabled}
+        screenshotControl={screenshotControl}
         onChooseAttachments={onChooseAttachments}
         onDismissAttachmentError={onDismissAttachmentError}
         onDismissNotice={onDismissNotice}
@@ -393,6 +395,7 @@ export function ChatView({
         onDropAttachments={onDropAttachments}
         onOpenCall={onOpenCall}
         onRemoveAttachment={onRemoveAttachment}
+        onReviewImage={onReviewImage}
         onRetryConnection={onRetryConnection}
         onSelectModel={onSelectModel}
         onCancelSongCover={onCancelSongCover}
@@ -408,6 +411,9 @@ export function ChatView({
         onStopSongCover={onStopSongCover}
         onToggleDictation={onToggleDictation}
       />
+      {/* Vision remains mounted outside the layout grid. Its dialog changes
+          visibility without shifting the conversation or retiring native work. */}
+      {visionPanel}
     </div>
   )
 }

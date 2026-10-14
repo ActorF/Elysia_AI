@@ -5,7 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import { InternetPolicyService } from '../dist-electron/internet-policy.js'
-import { defaultInternetPolicy, parseInternetPolicyState, parseUpdateInternetPolicyRequest } from '../dist-electron/internet-policy-protocol.js'
+import { BUILTIN_INTERNET_DOMAINS, defaultInternetPolicy, effectiveInternetDomains, parseInternetPolicyState, parseUpdateInternetPolicyRequest } from '../dist-electron/internet-policy-protocol.js'
 
 const request = (revision = 0, changes = {}) => ({ expectedRevision: revision, enabled: true,
   allowedDomains: ['api.github.com'], proxy: { mode: 'direct' }, timeoutMs: 15000, ...changes })
@@ -21,7 +21,7 @@ async function fixture(t, options = {}) {
   return { file, service: new InternetPolicyService(file, options) }
 }
 
-test('Missing policy stays disabled and produces no preference file or implicit domains', async t => {
+test('Missing policy lists fixed providers but stays disabled without creating a file or admitting requests', async t => {
   const { file, service } = await fixture(t)
   assert.deepEqual(service.getState(), defaultInternetPolicy())
   assert.deepEqual(await service.load(), defaultInternetPolicy())
@@ -49,16 +49,41 @@ test('Reviewed settings persist but every restart begins Off, and detached state
   assert.equal(state.revision, 1)
   assert.equal(state.enabled, true)
   state.allowedDomains.push('evil.com')
-  assert.deepEqual(service.getState().allowedDomains, ['api.github.com'])
+  assert.deepEqual(service.getState().allowedDomains, [...BUILTIN_INTERNET_DOMAINS])
   const loaded = await new InternetPolicyService(file).load()
   assert.equal(loaded.enabled, false)
-  assert.deepEqual(loaded.allowedDomains, ['api.github.com'])
+  assert.deepEqual(loaded.allowedDomains, [...BUILTIN_INTERNET_DOMAINS])
   const document = JSON.parse(await readFile(file, 'utf8'))
   assert.equal(document.schemaVersion, 1)
   assert.equal(document.policy.enabled, false)
   document.policy.enabled = true
   await writeFile(file, JSON.stringify(document))
   assert.equal((await new InternetPolicyService(file).load()).enabled, false)
+})
+
+test('Legacy empty policies gain only fixed providers and require a new session enable', async t => {
+  const { file, service } = await fixture(t)
+  await writeFile(file, JSON.stringify({ schemaVersion: 1, policy: { ...defaultInternetPolicy(), enabled: true, allowedDomains: [] } }))
+  const initial = await service.load()
+  assert.equal(initial.enabled, false)
+  assert.deepEqual(initial.allowedDomains, [...BUILTIN_INTERNET_DOMAINS])
+  assert.throws(() => service.acquire(), code('disabled'))
+  const enabled = await service.update(request(0, { allowedDomains: ['docs.python.org'] }))
+  assert.deepEqual(enabled.allowedDomains, effectiveInternetDomains(['docs.python.org']))
+  assert.equal(enabled.allowedDomains.includes('result-site.org'), false)
+  assert.equal(enabled.allowedDomains.includes('private.github.com'), false)
+  const lease = service.acquire()
+  assert.deepEqual(lease.policy.allowedDomains, enabled.allowedDomains)
+  lease.release()
+})
+
+test('All 32 custom domains survive an effective-state Off round trip without loosening the custom bound', async t => {
+  const { service } = await fixture(t)
+  const domains = Array.from({ length: 32 }, (_, index) => `custom${index}.org`)
+  const state = await service.update(request(0, { allowedDomains: domains }))
+  assert.equal(state.allowedDomains.length, 32 + BUILTIN_INTERNET_DOMAINS.length)
+  assert.equal((await service.update(request(1, { enabled: false, allowedDomains: state.allowedDomains }))).enabled, false)
+  assert.throws(() => parseUpdateInternetPolicyRequest(request(2, { allowedDomains: [...domains, 'overflow.org'] })), TypeError)
 })
 
 test('Corrupt, oversized and surplus-field documents load off with a safe warning and can be explicitly replaced', async t => {

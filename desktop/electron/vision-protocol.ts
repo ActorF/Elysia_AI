@@ -36,6 +36,11 @@ export interface VisionState {
 /** Native cancellation returns the current collection without importing another file. */
 export interface VisionSelectionResult { cancelled: boolean; state: VisionState }
 
+/** Select verified bytes already owned by Add Files; no filesystem location crosses this boundary. */
+export interface VisionAttachmentRequest { chatId: string; attachmentId: string }
+/** Identify the exact imported or reused image, independently of collection order. */
+export interface VisionAttachmentSelectionResult { state: VisionState; imageId: string }
+
 /** Select one exact owned image for removal without accepting filesystem arguments. */
 export interface VisionRemoveRequest { chatId: string; imageId: string }
 
@@ -45,6 +50,8 @@ export interface VisionClient {
   getVisionState(chatId: string): Promise<VisionState>
   /** Choose exactly one native PNG/JPEG and import it into the current session. */
   chooseVisionImage(chatId: string): Promise<VisionSelectionResult>
+  /** Import an existing owned PNG/JPEG attachment into the local image review session. */
+  importVisionAttachment(request: VisionAttachmentRequest): Promise<VisionAttachmentSelectionResult>
   /** Delete this image and its private canonical bytes from the session. */
   removeVisionImage(request: VisionRemoveRequest): Promise<VisionState>
   /** Remove all images belonging to this Chat's current Project scope. */
@@ -65,6 +72,14 @@ export function parseVisionChatId(value: unknown): string {
     throw new TypeError('Vision Chat is invalid.')
   }
   return value
+}
+
+/** Reject extra fields and paths before resolving an opaque attachment identity. */
+export function parseVisionAttachmentRequest(value: unknown): VisionAttachmentRequest {
+  const raw = record(value, ['chatId', 'attachmentId'])
+  if (typeof raw.attachmentId !== 'string' || raw.attachmentId.length > 128
+    || !/^attachment_[A-Za-z0-9_-]+$/u.test(raw.attachmentId)) throw new TypeError('Vision attachment is invalid.')
+  return { chatId: parseVisionChatId(raw.chatId), attachmentId: raw.attachmentId }
 }
 
 /** Accept only a safe display basename, following the existing portable Attachment name rules. */
