@@ -38,6 +38,7 @@ import { parseInternetReviewLookup, parseInternetReviewRequest } from './interne
 import { InternetWriteController } from './internet-write.js'
 import { parsePrepareGithubIssueRequest, parseConfirmGithubIssueRequest } from './internet-write-protocol.js'
 import { takeInternetGithubToken, confirmGithubIssueNative } from './internet-write-native.js'
+import { parseRestoreInternetCacheRequest } from './internet-cache-protocol.js'
 import { parseInternetChatId, parseInternetSearchRequest, parseInternetSourceRequest, parseInternetReadRequest,
   parseInternetWeatherRequest, parseInternetGithubRequest, type InternetResearchState } from './internet-protocol.js'
 import type { InternetPolicyState } from './internet-policy-protocol.js'
@@ -2213,14 +2214,17 @@ function requireInternetWrite(): InternetWriteController {
 }
 
 function withInternetOwner<Result>(chatId: string,
-  operation: (controller: InternetResearchController) => Result | Promise<Result>, readOnly = false): Promise<Result> {
-  if (shutdownStarted || dataStorageOperation !== null || !readOnly && (hasActiveInternetWork() || internetOwner().busy)) {
+  operation: (controller: InternetResearchController) => Result | Promise<Result>, readOnly = false, reserveOfflineIntent = false): Promise<Result> {
+  // Restoring evidence is an offline mutation: it needs idle admission and
+  // cancellation ownership, but must work without granting network permission.
+  const reservesIntent = !readOnly || reserveOfflineIntent
+  if (shutdownStarted || dataStorageOperation !== null || reservesIntent && (hasActiveInternetWork() || internetOwner().busy)) {
     return Promise.reject(new InternetResearchError('busy'))
   }
   const policy = requireInternetPolicy().getState()
   if (!readOnly && !policy.enabled) return Promise.reject(new InternetResearchError('disabled'))
   const generation = internetResearchGeneration
-  const admission = readOnly ? null : { chatId }
+  const admission = reservesIntent ? { chatId } : null
   if (admission !== null) internetResearchAdmission = admission
   // Reserve before readonly canonical hydration so another Chat cannot enter
   // the gap between a native request and its first DNS/socket operation.
@@ -2229,7 +2233,7 @@ function withInternetOwner<Result>(chatId: string,
     if (owner === null || owner.chatId !== chatId || shutdownStarted) throw new InternetResearchError('owner_changed')
     // Readonly metadata and previews still belong to the invoking document.
     // They must not initialize replacement controllers after a reload.
-    if (generation !== internetResearchGeneration || admission !== null
+    if (generation !== internetResearchGeneration || !readOnly
       && (!requireInternetPolicy().getState().enabled || policy.revision !== requireInternetPolicy().getState().revision)) {
       throw new InternetResearchError('cancelled')
     }
@@ -3002,6 +3006,16 @@ function requireMainWindow(): BrowserWindow {
 }
 
 function registerIpcHandlers(): void {
+  ipcMain.handle('desktop:internet-research:cache', (event, value: unknown) => {
+    assertTrustedSender(event)
+    const chatId = parseInternetChatId(value)
+    return withInternetOwner(chatId, controller => controller.getCache(chatId), true)
+  })
+  ipcMain.handle('desktop:internet-research:restore-cache', (event, value: unknown) => {
+    assertTrustedSender(event)
+    const request = parseRestoreInternetCacheRequest(value)
+    return withInternetOwner(request.chatId, controller => controller.restoreCache(request), true, true)
+  })
   ipcMain.handle('desktop:internet-write:status', event => {
     assertTrustedSender(event)
     return requireInternetWrite().getInternetWriteStatus()

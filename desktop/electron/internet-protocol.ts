@@ -5,7 +5,7 @@ import { parseVisionChatId } from './vision-protocol.js'
 /** Fixed failure categories never expose remote bodies, DNS answers, secrets or native paths. */
 export type InternetResearchErrorCode = 'disabled' | 'busy' | 'owner_changed' | 'cancelled' | 'timeout'
   | 'domain_denied' | 'network_failed' | 'invalid_output' | 'limit_exceeded' | 'invalid_request' | 'unavailable'
-  | 'unsupported_type' | 'invalid_encoding' | 'invalid_document' | 'empty_document'
+  | 'unsupported_type' | 'invalid_encoding' | 'invalid_document' | 'empty_document' | 'cache_expired' | 'cache_not_found'
 /** Bind session evidence to the canonical Chat and Project rather than renderer-supplied scope hints. */
 export interface InternetResearchScope { readonly chatId: string; readonly projectId: string | null }
 /** Keep direct provenance and separate publication, modification and retrieval times for one untrusted source. */
@@ -79,7 +79,7 @@ export interface InternetResearchClient {
 const encoder = new TextEncoder()
 const errorCodes = new Set<InternetResearchErrorCode>(['disabled', 'busy', 'owner_changed', 'cancelled', 'timeout',
   'domain_denied', 'network_failed', 'invalid_output', 'limit_exceeded', 'invalid_request', 'unavailable',
-  'unsupported_type', 'invalid_encoding', 'invalid_document', 'empty_document'])
+  'unsupported_type', 'invalid_encoding', 'invalid_document', 'empty_document', 'cache_expired', 'cache_not_found'])
 function record(value: unknown, fields: readonly string[]): Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)
     || Reflect.ownKeys(value).length !== fields.length || fields.some(field => !Object.hasOwn(value, field))) {

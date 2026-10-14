@@ -121,6 +121,12 @@ jobs:
           ELYSIA_CAPTURE_PACKAGE_ASAR: ${{ github.workspace }}\desktop\out\win-unpacked\resources\app.asar
         run: node --test tests/vision-capture-synthetic.test.mjs
 
+      - name: Verify packaged Internet offline boundaries
+        working-directory: desktop
+        env:
+          ELYSIA_INTERNET_PACKAGE_ASAR: ${{ github.workspace }}\desktop\out\win-unpacked\resources\app.asar
+        run: node --test tests/internet-package-native.test.mjs
+
       - name: Capture ASAR file listing
         working-directory: desktop
         run: npx --no-install asar list out\win-unpacked\resources\app.asar > "%RUNNER_TEMP%\elysia-asar-listing.txt"

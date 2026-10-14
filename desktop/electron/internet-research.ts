@@ -1,11 +1,15 @@
-/** Own ephemeral Chat-scoped Internet research and retain revoked network capacity until real native work finishes. */
+/** Own Chat-scoped Internet evidence and explicit offline restoration while retaining revoked network capacity until real native work finishes. */
 
+import { createHash } from 'node:crypto'
 import { InternetPolicyError, type InternetPolicyLease, type InternetPolicyService } from './internet-policy.js'
 import { InternetTransportError, type InternetTransport } from './internet-transport.js'
 import { searchWikipedia, type InternetSearchResult } from './internet-search.js'
 import { readInternetPage, InternetReaderError } from './internet-reader.js'
 import { readInternetWeather, readInternetGithubRepository, InternetServiceError,
   type InternetWeatherLocation, type InternetGithubRepository } from './internet-services.js'
+import { InternetCacheStore, InternetCacheError, INTERNET_CACHE_SHORT_TTL_MS, INTERNET_CACHE_WEB_TTL_MS } from './internet-cache.js'
+import { parseInternetCacheState, parseRestoreInternetCacheRequest, type InternetCacheState,
+  type RestoreInternetCacheRequest } from './internet-cache-protocol.js'
 import { formatInternetSource, parseInternetChatId, parseInternetResearchState, parseInternetSearchRequest, parseInternetReadRequest,
   parseInternetWeatherRequest, parseInternetGithubRequest,
   parseInternetSource, parseInternetSourceRequest, type InternetResearchErrorCode, type InternetResearchScope,
@@ -28,7 +32,7 @@ export interface InternetResearchDependencies {
   getOwner(): InternetResearchOwner
   /** Observe detached current-scope state; listener failures cannot affect admission or publication. */
   onState?(state: InternetResearchState): void
-  /** Supply time only for session history diagnostics and deterministic tests. */
+  /** Supply time for session history, cache freshness and deterministic tests without scheduling refresh work. */
   now?(): Date
   /** Test one physically drained provider callback without granting Renderer a generic fetch capability. */
   search?(request: InternetSearchRequest, signal: AbortSignal): Promise<InternetSearchResult>
@@ -51,6 +55,12 @@ interface ActiveResearch {
   readonly lease: InternetPolicyLease
 }
 interface ResearchResult { readonly sources: readonly InternetSource[]; readonly query?: InternetQueryRecord }
+interface CacheSelection { readonly key: string; readonly label: string; readonly ttlMs: number }
+function cacheKey(kind: string, parts: readonly (string | number)[]): string {
+  // Hash closed, validated inputs so even a maximum-length URL/query fits the
+  // private key limit. Renderer only sees opaque entry IDs and readable labels.
+  return `${kind}:${createHash('sha256').update(JSON.stringify(parts), 'utf8').digest('hex')}`
+}
 function sameScope(left: InternetResearchScope, right: InternetResearchScope): boolean {
   return left.chatId === right.chatId && left.projectId === right.projectId
 }
@@ -61,6 +71,9 @@ function safeFailure(error: unknown): InternetResearchErrorCode {
   if (error instanceof InternetResearchError) return error.code
   if (error instanceof InternetReaderError) return error.code
   if (error instanceof InternetServiceError) return error.code
+  if (error instanceof InternetCacheError) {
+    return error.code === 'expired' ? 'cache_expired' : error.code === 'not_found' ? 'cache_not_found' : error.code
+  }
   if (error instanceof InternetPolicyError) {
     return error.code === 'disabled' ? 'disabled' : error.code === 'cancelled' || error.code === 'policy_changed' ? 'cancelled' : 'unavailable'
   }
@@ -88,10 +101,12 @@ export class InternetResearchController {
   private closed = false
   private policyRevision: number
   private policyEnabled: boolean
+  private readonly cache: InternetCacheStore
   private readonly idleWaiters = new Set<() => void>()
 
   /** Construct inert provider references without reading files, resolving DNS or fetching a result. */
   constructor(private readonly dependencies: InternetResearchDependencies) {
+    this.cache = new InternetCacheStore(() => (dependencies.now?.() ?? new Date()).getTime())
     const policy = dependencies.policy.getState()
     this.policyRevision = policy.revision; this.policyEnabled = policy.enabled
   }
@@ -117,6 +132,24 @@ export class InternetResearchController {
 
   /** Return a detached session snapshot without a provider request or implicit refresh. */
   getState(chatId: string): InternetResearchState { return this.snapshot(this.authority(chatId, false)) }
+  /** List current-scope cache metadata locally, including while Internet is Off or another operation is draining. */
+  getCache(chatId: string): InternetCacheState {
+    const owner = this.authority(chatId, false)
+    return parseInternetCacheState({ kind: 'internet.cache', owner: { chatId: owner.chatId, projectId: owner.projectId }, entries: this.cache.list() })
+  }
+  /** Restore explicitly selected cached evidence for an idle canonical owner without a policy lease, DNS or fabricated query history. */
+  restoreCache(value: RestoreInternetCacheRequest): InternetResearchState {
+    let request: RestoreInternetCacheRequest
+    try { request = parseRestoreInternetCacheRequest(value) } catch { throw new InternetResearchError('invalid_request') }
+    const owner = this.authority(request.chatId, true)
+    let sources: InternetSource[]
+    try { sources = this.cache.restore(request.cacheId, request.allowExpired) }
+    catch (error) { throw new InternetResearchError(safeFailure(error)) }
+    const merged = [...sources, ...this.sources.filter(existing => !sources.some(source => source.url === existing.url))].slice(0, 10)
+    const checked = parseInternetResearchState({ ...this.snapshot(owner), sources: merged, status: 'idle', error: null })
+    this.sources = [...checked.sources]; this.error = null; this.revision += 1; this.publish()
+    return this.snapshot(owner)
+  }
   /** Report the actual provider callback lease, including retired scope or cancellation work. */
   hasActiveWork(): boolean { return this.active !== null }
   /** Wait for the active provider callback and long-lived policy lease to physically finish. */
@@ -139,7 +172,8 @@ export class InternetResearchController {
       }
       return { sources, query: { query: request.query, language: request.language, fetchedAt: result.fetchedAt,
         count: sources.length, status: 'complete' } }
-    }, request)
+    }, { key: cacheKey('search', [request.language, request.query]), label: `Wikipedia (${request.language}): ${request.query}`,
+      ttlMs: INTERNET_CACHE_SHORT_TTL_MS }, request)
   }
 
   /** Read one explicit page through shared native ownership; its plain text remains untrusted source evidence. */
@@ -151,7 +185,7 @@ export class InternetResearchController {
         ?? readInternetPage(this.dependencies.transport, request.url, signal)))
       if (source.provider !== 'web' || source.content === null || source.fromCache) throw new TypeError('Internet page provenance is invalid.')
       return { sources: [source] }
-    })
+    }, { key: cacheKey('page', [request.url]), label: request.url, ttlMs: INTERNET_CACHE_WEB_TTL_MS })
   }
 
   /** Retrieve model-derived current weather from the fixed public API for manually entered, bounded coordinates. */
@@ -168,7 +202,8 @@ export class InternetResearchController {
         || url.searchParams.get('latitude') !== location.latitude.toFixed(4)
         || url.searchParams.get('longitude') !== location.longitude.toFixed(4)) throw new TypeError('Internet weather provenance is invalid.')
       return { sources: [source] }
-    })
+    }, { key: cacheKey('weather', [location.latitude, location.longitude]),
+      label: `Weather near ${location.latitude.toFixed(4)}, ${location.longitude.toFixed(4)}`, ttlMs: INTERNET_CACHE_SHORT_TTL_MS })
   }
 
   /** Retrieve public repository metadata without authentication or permission to mutate the repository. */
@@ -186,11 +221,12 @@ export class InternetResearchController {
         throw new TypeError('Internet repository provenance is invalid.')
       }
       return { sources: [source] }
-    })
+    }, { key: cacheKey('github', [repository.owner.toLowerCase(), repository.repo.toLowerCase()]),
+      label: `GitHub: ${repository.owner}/${repository.repo}`, ttlMs: INTERNET_CACHE_SHORT_TTL_MS })
   }
 
   private async perform(chatId: string, operation: (signal: AbortSignal) => Promise<ResearchResult>,
-    query?: InternetSearchRequest): Promise<InternetResearchState> {
+    selection: CacheSelection, query?: InternetSearchRequest): Promise<InternetResearchState> {
     const owner = this.authority(chatId, true), abort = new AbortController()
     let lease: InternetPolicyLease
     try { lease = this.dependencies.policy.acquire(abort.signal) }
@@ -208,6 +244,9 @@ export class InternetResearchController {
       // malformed provider records cannot leave partially published evidence.
       const checked = parseInternetResearchState({ ...this.snapshot(owner), sources: merged, history })
       this.recheck(active)
+      // Cache only completely validated, still-owned successes. A failed or
+      // cancelled refresh must never replace an earlier usable offline result.
+      this.cache.put(selection.key, selection.label, sources, selection.ttlMs)
       this.sources = [...checked.sources]; this.history = [...checked.history]
     } catch (error) {
       const current = this.dependencies.getOwner()
@@ -280,7 +319,7 @@ export class InternetResearchController {
     if (this.closed || active !== this.active || active.epoch !== this.epoch || active.abort.signal.aborted
       || !current.ready || current.archived || !sameOwner(active.owner, current)) throw new InternetResearchError('owner_changed')
   }
-  private scrub(): void { this.sources = []; this.history = []; this.error = null; this.revision += 1 }
+  private scrub(): void { this.sources = []; this.history = []; this.cache.clear(); this.error = null; this.revision += 1 }
   private snapshot(owner: InternetResearchOwner): InternetResearchState {
     return parseInternetResearchState({ kind: 'internet.research', owner: { chatId: owner.chatId, projectId: owner.projectId },
       revision: this.revision, status: this.active !== null ? 'running' : this.error === null ? 'idle' : 'error',

@@ -69,7 +69,7 @@
 | 文件解析与本地 RAG | ✅ 基础可用 | 版本化 Chunk Lineage、固定本地 Embedding 空间、Scope-safe SQLite 索引、有界 Retriever/Reranker、loopback-only Grounded Generator、同 Project 多 Chat 共享且跨 Project fail-closed；Chat 需显式开启 **Use Project Sources**，证据不足不会生成无引用回答 |
 | Work Agent 与工具权限 | ✅ 基础可用 | 显式多步骤计划、本地目录边界、写入预览与单次批准、暂停/恢复、审计；模型建议不能增加调用或批准操作。见 [Work 工作流](./docs/17-WORKFLOW-AND-DESKTOP-AGENT.md) |
 | 图片与屏幕理解 | ✅ 基础可用 | 用户选图、本地 OCR/Ollama 问答、单次授权截图、Chat 草稿与 Work 参考、默认关闭的保存和独立历史清除。OCR 需本机 Tesseract 与语言数据。见 [Vision 使用与边界](./docs/18-VISION-AND-SCREEN.md) |
-| Internet 与外部服务 | 🚧 实现中 | Stage 12 网络策略已接入；搜索与来源功能继续实施，见 [联网说明](docs/19-INTERNET-AND-SERVICES.md) |
+| Internet 与外部服务 | ✅ 已完成 | Stage 12：默认关闭的网络策略、Wikipedia 搜索、网页读取、来源比较、天气/GitHub 查询、独立确认的 Issue 创建与离线缓存，见 [联网说明](docs/19-INTERNET-AND-SERVICES.md) |
 | 外部桌宠程序支持 | ✅ 可用 | 动态渲染、键盘/鼠标反馈、眼部追踪和表情由用户持有的原 Bongo Cat Mver 程序负责；其程序、模型与配置不复制进仓库、安装包或应用数据 |
 | 独立安装与更新 | ⏳ 计划中 | 当前打包结果不内置 Python、Ollama 或模型，也未签名 |
 

@@ -5,13 +5,15 @@ import type { InternetPolicyClient, InternetPolicyState } from '../../electron/i
 import { parseInternetReadRequest, parseInternetSourceText, type InternetResearchClient, type InternetResearchState, type InternetSource } from '../../electron/internet-protocol.ts'
 import type { InternetReviewClient } from '../../electron/internet-review-protocol.ts'
 import type { InternetWriteClient } from '../../electron/internet-write-protocol.ts'
+import type { InternetCacheClient } from '../../electron/internet-cache-protocol.ts'
 import { InternetSourceReview } from './InternetSourceReview.tsx'
 import { InternetServicesSection } from './InternetServicesSection.tsx'
 import { GitHubIssueSection } from './GitHubIssueSection.tsx'
+import { InternetCacheSection } from './InternetCacheSection.tsx'
 import './InternetPanel.css'
 
 interface InternetPanelProps {
-  api: (InternetResearchClient & InternetPolicyClient & InternetReviewClient & InternetWriteClient) | undefined
+  api: (InternetResearchClient & InternetPolicyClient & InternetReviewClient & InternetWriteClient & InternetCacheClient) | undefined
   chatId: string
   projectId: string | null
   ready: boolean
@@ -39,9 +41,18 @@ const ERRORS: Record<string, string> = {
   invalid_encoding: 'This page is not valid UTF-8 text.',
   invalid_document: 'The page could not be read as a supported document.',
   empty_document: 'This page did not contain readable text.',
+  cache_expired: 'This cached result expired. List cached results again and explicitly allow the expired content to restore it offline.',
+  cache_not_found: 'This cached result is no longer available. List cached results again to choose another local entry.',
 }
 
 function dateLabel(value: string | null): string { return value === null ? 'Unknown' : new Date(value).toLocaleString() }
+function cacheFailure(error: unknown): string | null {
+  // Electron decorates rejected IPC errors. Accept only these closed native
+  // categories, never remote exception text or a renderer-authored URL.
+  const message = error instanceof Error ? error.message : ''
+  const match = /^(?:Error invoking remote method 'desktop:internet-research:restore-cache': )?(?:Error: )?Internet research: (cache_expired|cache_not_found)\.$/u.exec(message)
+  return match === null ? null : ERRORS[match[1]]
+}
 const PROVIDERS: Record<InternetSource['provider'], string> = {
   wikipedia: 'Wikipedia encyclopedia search result', web: 'Web page · plain text',
   weather: 'Open-Meteo weather · model-derived current conditions', github: 'GitHub · public repository metadata',
@@ -61,6 +72,7 @@ export function InternetPanel({ api, chatId, projectId, ready, disabled, onBusyC
   const [turningOff, setTurningOff] = useState(false)
   const [comparisonBusy, setComparisonBusy] = useState(false)
   const [writeBusy, setWriteBusy] = useState(false)
+  const [cacheBusy, setCacheBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [reviewed, setReviewed] = useState<InternetSource | null>(null)
@@ -71,12 +83,16 @@ export function InternetPanel({ api, chatId, projectId, ready, disabled, onBusyC
   const physicalBusy = useRef(false)
   const comparisonLease = useRef(false)
   const writeLease = useRef(false)
-  const reportBusy = useCallback(() => { onBusyChange(physicalPending.current || physicalBusy.current || comparisonLease.current || writeLease.current) }, [onBusyChange])
+  const cacheLease = useRef(false)
+  const reportBusy = useCallback(() => { onBusyChange(physicalPending.current || physicalBusy.current || comparisonLease.current || writeLease.current || cacheLease.current) }, [onBusyChange])
   const updateComparisonBusy = useCallback((busy: boolean): void => {
     comparisonLease.current = busy; setComparisonBusy(busy); reportBusy()
   }, [reportBusy])
   const updateWriteBusy = useCallback((busy: boolean): void => {
     writeLease.current = busy; setWriteBusy(busy); reportBusy()
+  }, [reportBusy])
+  const updateCacheBusy = useCallback((busy: boolean): void => {
+    cacheLease.current = busy; setCacheBusy(busy); reportBusy()
   }, [reportBusy])
 
   const accept = useCallback((next: InternetResearchState, token: number): void => {
@@ -125,12 +141,12 @@ export function InternetPanel({ api, chatId, projectId, ready, disabled, onBusyC
     return () => { active = false; clearTimeout(timer) }
   }, [api, chatId, reportBusy])
 
-  async function act(operation: (client: InternetResearchClient) => Promise<InternetResearchState>): Promise<void> {
-    if (api === undefined || !ready || disabled || physicalPending.current || physicalBusy.current || comparisonLease.current || writeLease.current) return
+  async function act(operation: (client: InternetResearchClient & InternetCacheClient) => Promise<InternetResearchState>): Promise<void> {
+    if (api === undefined || !ready || disabled || physicalPending.current || physicalBusy.current || comparisonLease.current || writeLease.current || cacheLease.current) return
     const token = version.current
     physicalPending.current = true; setPending(true); setError(null); setNotice(null); setReviewed(null); reportBusy()
     try { accept(await operation(api), token) }
-    catch { if (token === version.current) setError('The research action could not complete. Check Internet settings and try again.') }
+    catch (failure) { if (token === version.current) setError(cacheFailure(failure) ?? 'The research action could not complete. Check Internet settings and try again.') }
     finally { physicalPending.current = false; setPending(false); reportBusy() }
   }
 
@@ -160,7 +176,7 @@ export function InternetPanel({ api, chatId, projectId, ready, disabled, onBusyC
   }
 
   async function addToDraft(): Promise<void> {
-    if (api === undefined || reviewed === null || !ready || disabled || physicalPending.current || physicalBusy.current || comparisonLease.current || writeLease.current) return
+    if (api === undefined || reviewed === null || !ready || disabled || physicalPending.current || physicalBusy.current || comparisonLease.current || writeLease.current || cacheLease.current) return
     const token = version.current, sourceId = reviewed.id, evidenceRevision = revision.current, policyVersion = policyEpoch.current
     physicalPending.current = true; setPending(true); setError(null); setNotice(null); reportBusy()
     try {
@@ -174,7 +190,7 @@ export function InternetPanel({ api, chatId, projectId, ready, disabled, onBusyC
   }
 
   const visible = ready && state?.owner.chatId === chatId && state.owner.projectId === projectId ? state : null
-  const busy = pending || nativeBusy || comparisonBusy || writeBusy || visible?.busy === true
+  const busy = pending || nativeBusy || comparisonBusy || writeBusy || cacheBusy || visible?.busy === true
   const locked = disabled || !ready || busy || api === undefined
   const normalized = query.trim()
   const validQuery = normalized.length > 0 && [...normalized].length <= 512 && new TextEncoder().encode(normalized).length <= 2048
@@ -221,8 +237,12 @@ export function InternetPanel({ api, chatId, projectId, ready, disabled, onBusyC
         onWeather={request => { void act(client => client.getInternetWeather(request)) }}
         onGithub={request => { void act(client => client.getInternetGithubRepository(request)) }} />}
       {typeof api?.prepareGithubIssue === 'function' && <GitHubIssueSection api={api} chatId={chatId} projectId={projectId} ready={ready}
-        policy={policy} disabled={disabled || pending || nativeBusy || comparisonBusy || visible?.busy === true}
+        policy={policy} disabled={disabled || pending || nativeBusy || comparisonBusy || cacheBusy || visible?.busy === true}
         onBusyChange={updateWriteBusy} onOpenSource={onOpenSource} />}
+      {typeof api?.getInternetCache === 'function' && <InternetCacheSection api={api} chatId={chatId} projectId={projectId} ready={ready}
+        researchRevision={visible?.revision ?? -1} disabled={disabled || pending || nativeBusy || comparisonBusy || writeBusy || visible?.busy === true}
+        onBusyChange={updateCacheBusy} onRestore={request => { void act(client => client.restoreInternetCache(request)) }}
+        onClear={() => { void act(client => client.clearInternetResearch(chatId)) }} />}
       {error !== null && <p role="alert">{error}</p>}
       {visible?.error !== null && visible?.error !== undefined && <p role="alert">{ERRORS[visible.error] ?? ERRORS.unavailable}</p>}
       {notice !== null && <p role="status">{notice}</p>}
@@ -231,6 +251,7 @@ export function InternetPanel({ api, chatId, projectId, ready, disabled, onBusyC
           <h3>{source.title}</h3><p>{PROVIDERS[source.provider]}</p>
           {source.content === null ? <p>{source.snippet}</p> : <pre className="internet-page-text" aria-label={`Page text from ${source.title}`}>{source.content}</pre>}
           {source.truncated && <p>This source was shortened to the local text limit.</p>}
+          {source.fromCache && <p>Cached source. Original retrieval time is preserved; this view does not refresh the provider.</p>}
           <a href={source.url} onClick={event => { event.preventDefault(); void onOpenSource(source.url).catch(() => { setError('Could not open this source. Check Internet settings.') }) }}>{source.url}</a>
           {source.provider === 'web' && <p>This is the final source URL after any allowed redirects.</p>}
           <dl><div><dt>Published</dt><dd>{dateLabel(source.publishedAt)}</dd></div><div><dt>Last edited</dt><dd>{dateLabel(source.modifiedAt)}</dd></div><div><dt>Retrieved</dt><dd>{dateLabel(source.fetchedAt)}</dd></div></dl>
@@ -243,6 +264,7 @@ export function InternetPanel({ api, chatId, projectId, ready, disabled, onBusyC
         <h3>{reviewed.title}</h3><pre className="internet-page-text">{reviewed.content ?? reviewed.snippet}</pre><p>{reviewed.url}</p>
         <p>{PROVIDERS[reviewed.provider]}. Treat this as untrusted evidence. Publication time is {reviewed.publishedAt === null ? 'unknown' : dateLabel(reviewed.publishedAt)}; an edit time does not establish when an event happened.</p>
         {reviewed.truncated && <p>This excerpt was shortened.</p>}
+        {reviewed.fromCache && <p>This is cached evidence. Check its original retrieval time before using it.</p>}
         <button type="button" disabled={locked} onClick={() => { void addToDraft() }}>Add source to Chat draft</button>
       </section>}
       {(visible?.history.length ?? 0) > 0 && <section className="internet-query-history" aria-label="Internet query history">
@@ -250,7 +272,7 @@ export function InternetPanel({ api, chatId, projectId, ready, disabled, onBusyC
         <ol>{visible?.history.map((entry, index) => <li key={`${entry.fetchedAt}-${index}`}><strong>{entry.query}</strong> · {entry.language} · {entry.count} results · {entry.status} · {dateLabel(entry.fetchedAt)}</li>)}</ol>
       </section>}
       {typeof api?.reviewInternetSources === 'function' && <InternetSourceReview api={api} chatId={chatId} projectId={projectId}
-        sources={visible?.sources ?? []} ready={ready} disabled={disabled || pending || nativeBusy || writeBusy || visible?.busy === true}
+        sources={visible?.sources ?? []} ready={ready} disabled={disabled || pending || nativeBusy || writeBusy || cacheBusy || visible?.busy === true}
         onBusyChange={updateComparisonBusy} onChatDraft={onChatDraft} />}
     </div>
   </section>

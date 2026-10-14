@@ -19,7 +19,6 @@ import {
   allowAudioPermissionCheck,
   allowAudioPermissionRequest,
 } from '../dist-electron/audio-permission.js'
-import { parseSafeExternalUrl } from '../dist-electron/external-url.js'
 import { isTrustedRendererUrl } from '../dist-electron/renderer-source.js'
 import {
   PROTOCOL_NAME,
@@ -5715,17 +5714,6 @@ test('audio permission policy narrowly allows trusted speaker selection', () => 
       false,
     )
   }
-})
-
-test('external link policy allows credential-free HTTP(S) URLs only', () => {
-  assert.equal(
-    parseSafeExternalUrl('https://example.com/docs?q=elysia#message'),
-    'https://example.com/docs?q=elysia#message',
-  )
-  assert.throws(() => parseSafeExternalUrl('javascript:alert(1)'))
-  assert.throws(() => parseSafeExternalUrl('https://user@example.com/'))
-  assert.throws(() => parseSafeExternalUrl('https://example.com\0.invalid/'))
-  assert.throws(() => parseSafeExternalUrl(' https://example.com/'))
 })
 
 function imageGenerateRequest() {

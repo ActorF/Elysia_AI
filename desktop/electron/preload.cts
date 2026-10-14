@@ -7,6 +7,7 @@ import type { InternetPolicyState, UpdateInternetPolicyRequest } from './interne
 import type { InternetResearchState, InternetSearchRequest, InternetReadRequest, InternetSourceRequest, InternetSourceText, InternetWeatherRequest, InternetGithubRequest } from './internet-protocol.js'
 import type { InternetReview, InternetReviewRequest, InternetReviewLookup } from './internet-review-protocol.js'
 import type { InternetWriteStatus, PrepareGithubIssueRequest, ConfirmGithubIssueRequest, GithubIssueApproval, GithubIssueWriteResult } from './internet-write-protocol.js'
+import type { InternetCacheState, RestoreInternetCacheRequest } from './internet-cache-protocol.js'
 import type { VisionState, VisionSelectionResult, VisionRemoveRequest } from './vision-protocol.js'
 import type { VisionAnalysisState, VisionOcrRequest, VisionModelRequest } from './vision-analysis-protocol.js'
 import type { VisionCaptureSources, VisionCaptureStatus, VisionCapturePrepareRequest, VisionCaptureConfirmRequest, VisionCaptureApproval } from './vision-capture-protocol.js'
@@ -832,6 +833,8 @@ const desktopApi: DesktopApi = {
   readInternetPage: (request: InternetReadRequest) => ipcRenderer.invoke('desktop:internet-research:read', request) as Promise<InternetResearchState>,
   getInternetWeather: (request: InternetWeatherRequest) => ipcRenderer.invoke('desktop:internet-research:weather', request) as Promise<InternetResearchState>,
   getInternetWriteStatus: () => ipcRenderer.invoke('desktop:internet-write:status') as Promise<InternetWriteStatus>,
+  getInternetCache: (chatId: string) => ipcRenderer.invoke('desktop:internet-research:cache', chatId) as Promise<InternetCacheState>,
+  restoreInternetCache: (request: RestoreInternetCacheRequest) => ipcRenderer.invoke('desktop:internet-research:restore-cache', request) as Promise<InternetResearchState>,
   prepareGithubIssue: (request: PrepareGithubIssueRequest) => ipcRenderer.invoke('desktop:internet-write:prepare', request) as Promise<GithubIssueApproval>,
   confirmGithubIssue: (request: ConfirmGithubIssueRequest) => ipcRenderer.invoke('desktop:internet-write:confirm', request) as Promise<GithubIssueWriteResult>,
   getInternetGithubRepository: (request: InternetGithubRequest) => ipcRenderer.invoke('desktop:internet-research:github', request) as Promise<InternetResearchState>,

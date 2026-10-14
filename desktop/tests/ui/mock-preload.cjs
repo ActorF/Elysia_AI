@@ -419,6 +419,10 @@ let nextInternetServiceSources = { weather: null, github: null }
 let nextInternetSources = []
 let nextInternetResearchError = null
 let nextInternetSourceNumber = 1
+let internetCacheEntries = []
+let nextInternetCacheNumber = 1
+let internetCacheDelay = false
+let pendingInternetCacheLookups = []
 let internetReview = null
 let nextInternetReviewNumber = 1
 let internetReviewDelay = false
@@ -564,6 +568,7 @@ function internetResearchSnapshot(chatId) {
   const key = JSON.stringify([chat.chatId, chat.projectId, chat.archived])
   if (internetResearchState === null || internetResearchOwnerKey !== key) {
     internetResearchEpoch += 1
+    internetCacheEntries = []
     internetResearchOwnerKey = key
     internetResearchState = { kind: 'internet.research', owner: { chatId: chat.chatId, projectId: chat.projectId },
       revision: 0, status: 'idle', busy: false, error: null, sources: [], history: [] }
@@ -575,6 +580,15 @@ function internetResearchSnapshot(chatId) {
 function publishInternetResearch() {
   if (internetResearchState === null) return
   for (const listener of internetResearchListeners) listener(clone({ ...internetResearchState, busy: internetResearchActive }))
+}
+
+function retainInternetCacheFixture(label, sources) {
+  const fetchedAt = sources.length === 0 ? new Date().toISOString() : sources[0].fetchedAt
+  const ttl = sources.length > 0 && sources.every(source => source.provider === 'web') ? 1800000 : 300000
+  const expiresAt = new Date(Math.min(Date.parse(fetchedAt), Date.now()) + ttl).toISOString()
+  const entry = { id: `internet_cache_${String(nextInternetCacheNumber++).padStart(32, '0')}`, label,
+    sourceCount: sources.length, fetchedAt, expiresAt, expired: Date.parse(expiresAt) <= Date.now(), sources: clone(sources) }
+  internetCacheEntries = [entry, ...internetCacheEntries.filter(item => item.label !== label)].slice(0, 20)
 }
 
 async function runInternetServiceFixture(request, provider) {
@@ -595,6 +609,7 @@ async function runInternetServiceFixture(request, provider) {
     if (error === null && nextInternetServiceSources[provider] !== null) {
       const source = { ...clone(nextInternetServiceSources[provider]), id: `internet_${String(nextInternetSourceNumber++).padStart(32, '0')}` }
       internetResearchState.sources = [source, ...internetResearchState.sources].slice(0, 10)
+      retainInternetCacheFixture(source.title, [source])
     }
     internetResearchState.status = error === null ? 'idle' : 'error'; internetResearchState.error = error
     internetResearchState.revision += 1
@@ -1353,6 +1368,30 @@ const desktopApi = {
     return { busy: internetResearchActive }
   },
   getInternetWriteStatus: async () => { record('getInternetWriteStatus'); return { configured: internetWriteConfigured } },
+  getInternetCache: async (chatId) => {
+    record('getInternetCache', [chatId]); internetResearchSnapshot(chatId)
+    const value = { kind: 'internet.cache', owner: clone(internetResearchState.owner), entries: internetCacheEntries.map(entry => ({
+      id: entry.id, label: entry.label, sourceCount: entry.sourceCount, fetchedAt: entry.fetchedAt, expiresAt: entry.expiresAt,
+      expired: entry.expired || Date.parse(entry.expiresAt) <= Date.now(),
+    })) }
+    // Hold a detached old response so tests can verify the Renderer's own scope
+    // guard, independently of Main's earlier authority checks.
+    if (internetCacheDelay) await new Promise(resolve => { pendingInternetCacheLookups.push(resolve) })
+    return value
+  },
+  restoreInternetCache: async (request) => {
+    record('restoreInternetCache', [request]); internetResearchSnapshot(request.chatId)
+    if (internetResearchActive) throw new Error('Internet research is busy.')
+    const entry = internetCacheEntries.find(item => item.id === request.cacheId)
+    const error = nextInternetResearchError ?? (entry === undefined ? 'cache_not_found'
+      : (entry.expired || Date.parse(entry.expiresAt) <= Date.now()) && !request.allowExpired ? 'cache_expired' : null)
+    nextInternetResearchError = null
+    if (error !== null) throw new Error(`Error invoking remote method 'desktop:internet-research:restore-cache': Error: Internet research: ${error}.`)
+    internetResearchState.sources = entry.sources.map(source => ({ ...clone(source),
+      id: `internet_${String(nextInternetSourceNumber++).padStart(32, '0')}`, fromCache: true }))
+    internetResearchState.error = null; internetResearchState.status = 'idle'; internetResearchState.revision += 1
+    publishInternetResearch(); return internetResearchSnapshot(request.chatId)
+  },
   prepareGithubIssue: async (request) => {
     record('prepareGithubIssue', [request]); internetResearchSnapshot(request.chatId)
     if (!internetWriteConfigured || !internetPolicyState.enabled || !internetPolicyState.allowedDomains.includes('api.github.com') || internetResearchActive) throw new Error('Issue preview unavailable.')
@@ -1396,6 +1435,7 @@ const desktopApi = {
       const fetchedAt = '2026-10-14T12:00:00.000Z'
       internetResearchState.sources = error === null ? nextInternetSources.map(source => ({ ...clone(source),
         id: `internet_${String(nextInternetSourceNumber++).padStart(32, '0')}` })) : []
+      if (error === null) retainInternetCacheFixture(`Wikipedia (${request.language}): ${request.query}`, internetResearchState.sources)
       internetResearchState.history = [{ query: request.query, language: request.language, fetchedAt,
         count: internetResearchState.sources.length, status: error === null ? 'complete' : error === 'cancelled' ? 'cancelled' : 'error' }, ...internetResearchState.history].slice(0, 20)
       internetResearchState.status = error === null ? 'idle' : 'error'; internetResearchState.error = error
@@ -1420,6 +1460,7 @@ const desktopApi = {
       if (error === null && nextInternetPage !== null) {
         const source = { ...clone(nextInternetPage), id: `internet_${String(nextInternetSourceNumber++).padStart(32, '0')}` }
         internetResearchState.sources = [source, ...internetResearchState.sources].slice(0, 10)
+        retainInternetCacheFixture(request.url, [source])
       }
       internetResearchState.status = error === null ? 'idle' : 'error'; internetResearchState.error = error
       internetResearchState.revision += 1
@@ -1438,7 +1479,7 @@ const desktopApi = {
   },
   clearInternetResearch: async (chatId) => {
     record('clearInternetResearch', [chatId]); internetResearchSnapshot(chatId)
-    internetResearchState.sources = []; internetResearchState.history = []; internetResearchState.error = null
+    internetResearchState.sources = []; internetResearchState.history = []; internetResearchState.error = null; internetCacheEntries = []
     internetResearchState.status = 'idle'; internetResearchState.revision += 1; publishInternetResearch()
     return internetResearchSnapshot(chatId)
   },
@@ -3226,6 +3267,9 @@ const testControl = {
   setInternetReviewDelay: (delayed) => { internetReviewDelay = delayed },
   setInternetReviewTextDelay: (delayed) => { internetReviewTextDelay = delayed },
   setInternetReviewExpired: (expired) => { internetReviewExpired = expired },
+  setInternetCacheEntries: (entries) => { internetCacheEntries = clone(entries) },
+  setInternetCacheDelay: (delayed) => { internetCacheDelay = delayed },
+  releaseNextInternetCache: () => { const release = pendingInternetCacheLookups.shift(); if (release === undefined) return false; release(); return true },
   setInternetWriteApprovalExpired: (expired) => { internetWriteApprovalExpired = expired },
   setInternetWriteConfirmationDelay: (delayed) => { internetWriteConfirmationDelay = delayed },
   setNextInternetWriteResult: (result) => { nextInternetWriteResult = clone(result) },
@@ -3404,6 +3448,7 @@ const testControl = {
     internetResearchCancellation = false; internetSearchDelay = false; internetSourceDelay = false; internetReadDelay = false; nextInternetPage = null; pendingInternetReads = []
     internetServiceDelay = false; pendingInternetServices = []; nextInternetServiceSources = { weather: null, github: null }
     pendingInternetSearches = []; pendingInternetSources = []; nextInternetSources = []; nextInternetResearchError = null; nextInternetSourceNumber = 1
+    internetCacheEntries = []; nextInternetCacheNumber = 1; internetCacheDelay = false; pendingInternetCacheLookups = []
     internetReview = null; nextInternetReviewNumber = 1; internetReviewDelay = false; internetReviewTextDelay = false
     pendingInternetReviews = []; pendingInternetReviewTexts = []; internetReviewExpired = false
     internetWriteConfigured = process.env.ELYSIA_TEST_WRITE_CONFIGURED === '1'; internetWriteApproval = null; internetWriteApprovalNumber = 1

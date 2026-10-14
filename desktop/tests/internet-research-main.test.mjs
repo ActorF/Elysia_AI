@@ -8,6 +8,7 @@ import ts from 'typescript'
 import { InternetReviewStore } from '../dist-electron/internet-review.js'
 import { parseInternetReviewLookup, parseInternetReviewRequest } from '../dist-electron/internet-review-protocol.js'
 import { parsePrepareGithubIssueRequest, parseConfirmGithubIssueRequest } from '../dist-electron/internet-write-protocol.js'
+import { parseRestoreInternetCacheRequest } from '../dist-electron/internet-cache-protocol.js'
 
 const text = await readFile(new URL('../electron/main.ts', import.meta.url), 'utf8')
 const source = ts.createSourceFile('main.ts', text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
@@ -15,7 +16,7 @@ const names = ['hasActiveInternetWork', 'trackInternetOperation', 'withInternetO
 const selected = source.statements.filter(node => ts.isFunctionDeclaration(node) && names.includes(node.name?.text))
 assert.equal(selected.length, names.length)
 const register = source.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'registerIpcHandlers')
-const channels = ['get', 'activity', 'search', 'read', 'weather', 'github', 'cancel', 'clear', 'source-text', 'review', 'review-text'].map(name => `desktop:internet-research:${name}`)
+const channels = ['get', 'activity', 'search', 'read', 'weather', 'github', 'cancel', 'clear', 'source-text', 'review', 'review-text', 'cache', 'restore-cache'].map(name => `desktop:internet-research:${name}`)
 channels.push(...['status', 'prepare', 'confirm'].map(name => `desktop:internet-write:${name}`))
 const handlers = register.body.statements.filter(node => ts.isExpressionStatement(node) && ts.isCallExpression(node.expression)
   && ts.isStringLiteral(node.expression.arguments[0]) && channels.includes(node.expression.arguments[0].text))
@@ -35,6 +36,7 @@ function fixture() {
     shutdown: () => calls.push('shutdown'), getState: () => ({ owner: { chatId: 'chat_research', projectId: null }, sources: [evidence] }),
     getSource: (_chatId, sourceId) => { assert.equal(sourceId, evidence.id); return evidence },
     search: request => { calls.push(request); return { sources: [] } },
+    getCache: () => ({ entries: [] }), restoreCache: request => { calls.push(request); return { sources: [] } },
     readPage: request => { calls.push(request); return { sources: [] } },
     weather: request => { calls.push(request); return { sources: [] } }, github: request => { calls.push(request); return { sources: [] } },
     cancel: () => { calls.push('cancel'); return {} }, clear: () => ({}), sourceText: () => ({ text: 'native evidence' }) }
@@ -42,7 +44,7 @@ function fixture() {
     internetResearchGeneration: 0, internetResearchAdmission: null,
     internetReviewStore: new InternetReviewStore(), internetReviewScope: null,
     synchronizeInternetReviews: () => {}, parseInternetReviewRequest, parseInternetReviewLookup,
-    parsePrepareGithubIssueRequest, parseConfirmGithubIssueRequest,
+    parsePrepareGithubIssueRequest, parseConfirmGithubIssueRequest, parseRestoreInternetCacheRequest,
     requireInternetWrite: () => ({ getInternetWriteStatus: () => ({ configured: true }),
       prepareGithubIssue: request => { calls.push(request); return { id: `internet_approval_${'1'.repeat(32)}` } },
       confirmGithubIssue: request => { calls.push(request); return drain.promise } }),
@@ -121,7 +123,7 @@ test('research reserves before canonical hydration and rejects another action in
 
 test('research rejects owner replacement after hydration and authenticates every exposed IPC', async () => {
   const f = fixture()
-  for (const name of ['get', 'activity', 'search', 'read', 'weather', 'github', 'cancel', 'clear', 'source-text', 'review', 'review-text']) {
+  for (const name of ['get', 'activity', 'search', 'read', 'weather', 'github', 'cancel', 'clear', 'source-text', 'review', 'review-text', 'cache', 'restore-cache']) {
     assert.throws(() => f.invoke(name, {}, false), /Untrusted/u)
   }
   const pending = f.invoke('search', { chatId: 'chat_research' })
@@ -179,4 +181,30 @@ test('readonly hydration cannot initialize a replacement controller after docume
   f.hydration.resolve({ chatId: 'chat_research' })
   await assert.rejects(pending, /cancelled/u)
   f.drain.resolve()
+})
+
+test('offline restore reserves idle intent without Internet permission and cancellation revokes hydration', async () => {
+  const request = { chatId: 'chat_research', cacheId: `internet_cache_${'2'.repeat(32)}`, allowExpired: false }
+  for (const cancel of [false, true]) {
+    const f = fixture()
+    f.host.requireInternetPolicy = () => ({ getState: () => ({ enabled: false, revision: 4 }) })
+    const pending = f.invoke('restore-cache', request)
+    assert.equal(f.api.hasActiveInternetWork(), true)
+    await assert.rejects(f.invoke('restore-cache', request), /busy/u)
+    if (cancel) f.invoke('cancel', 'chat_research')
+    f.hydration.resolve({ chatId: 'chat_research' })
+    if (cancel) { await assert.rejects(pending, /cancelled/u); assert.deepEqual(f.calls, ['cancel']) }
+    else { assert.deepEqual(await pending, { sources: [] }); assert.deepEqual(f.calls, [request]) }
+    assert.equal(f.api.hasActiveInternetWork(), false)
+  }
+})
+
+test('cache metadata is available offline while restore waits for other physical native work', async () => {
+  const f = fixture()
+  f.host.requireInternetPolicy = () => ({ getState: () => ({ enabled: false, revision: 4 }) })
+  f.host.internetWriteController = { hasActiveWork: () => true }
+  f.hydration.resolve({ chatId: 'chat_research' })
+  assert.deepEqual(await f.invoke('cache', 'chat_research'), { entries: [] })
+  await assert.rejects(f.invoke('restore-cache', { chatId: 'chat_research', cacheId: `internet_cache_${'2'.repeat(32)}`, allowExpired: true }), /busy/u)
+  assert.deepEqual(f.calls, [])
 })
