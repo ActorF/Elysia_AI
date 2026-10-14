@@ -411,6 +411,7 @@ interface RendererTestControl {
   cancelNextAttachmentPicker(): void
   failNextAttachmentAction(message: string): void
   failNextSend(message: string): void
+  failNextChatMode(message: string): void
   setAttachmentState(state: AttachmentState): void
   setKnowledgeState(state: KnowledgeState): void
   setSelectedFiles(files: SelectedFile[]): void
@@ -438,7 +439,7 @@ function readySnapshot(
   return {
     revision: 1,
     status: 'ready',
-    capabilities: ['chat.stream'],
+    capabilities: ['chat.stream', 'chat.mode', 'work.workspace', 'work.tools', 'work.read', 'work.preview', 'work.confirm', 'work.plan', 'work.audit', 'work.undo'],
     models: ['qwen3.5:9b'],
     chatId: 'chat-test',
     chatTitle: 'Elysia Chat',
@@ -1904,6 +1905,68 @@ test('renders canonical Chat metadata and opens persisted sessions', async () =>
     (await getCalls()).find((call) => call.method === 'createChat')?.args
   )).toEqual([{ title: 'New Chat', mode: 'chat' }])
   await expect(page.getByRole('button', { name: 'Open chat New Chat' })).toBeVisible()
+})
+
+test('persists explicit modes per Chat and preserves history across reload', async () => {
+  await emitSnapshot(readySnapshot())
+  const mode = page.getByRole('combobox', { name: 'Conversation mode' })
+  await expect(mode).toHaveValue('chat')
+  await expect(page.locator('#chat-mode-capabilities')).toContainText(
+    'Computer tools are disabled.',
+  )
+  const composer = page.getByLabel('Message Elysia')
+  await composer.fill('Please edit a file; this text must not enable tools.')
+  await expect(mode).toHaveValue('chat')
+  await mode.selectOption('work')
+  await expect.poll(async () => (
+    (await getCalls()).find((call) => call.method === 'setChatMode')?.args
+  )).toEqual([{ chatId: 'chat-test', mode: 'work' }])
+  await expect(mode).toHaveValue('work')
+  await expect(page.locator('#chat-mode-capabilities')).toContainText(
+    'File changes require your approval.',
+  )
+  await expect(composer).toHaveValue('Please edit a file; this text must not enable tools.')
+
+  await page.getByRole('button', { name: 'Create chat' }).click()
+  await expect(mode).toHaveValue('chat')
+  await page.getByRole('button', { name: 'Open chat Elysia Chat' }).click()
+  await expect(mode).toHaveValue('work')
+  await persistBackendForReload()
+  await page.reload()
+  await expect(page.getByRole('combobox', { name: 'Conversation mode' })).toHaveValue('work')
+  await expect(page.getByLabel('Message Elysia')).toHaveValue(
+    'Please edit a file; this text must not enable tools.',
+  )
+  await page.getByRole('combobox', { name: 'Conversation mode' }).selectOption('chat')
+  await expect(page.locator('#chat-mode-capabilities')).toContainText(
+    'Computer tools are disabled.',
+  )
+})
+
+test('keeps the saved mode after a failed switch and blocks switching while busy', async () => {
+  const mode = page.getByRole('combobox', { name: 'Conversation mode' })
+  await expect(mode).toBeDisabled()
+  await emitSnapshot(readySnapshot())
+  await page.evaluate(() => {
+    ;(window as TestWindow).elysiaDesktopTest.failNextChatMode('Mode could not be saved.')
+  })
+  await mode.selectOption('work')
+  await expect(page.getByRole('alert')).toContainText('Mode could not be saved.')
+  await expect(mode).toHaveValue('chat')
+  await page.evaluate(() => {
+    ;(window as TestWindow).elysiaDesktopTest.setChatActionDelay(true)
+  })
+  await mode.selectOption('work')
+  await expect(mode).toBeDisabled()
+  await expect(mode).toHaveValue('chat')
+  await page.evaluate(() => {
+    ;(window as TestWindow).elysiaDesktopTest.releaseNextChatAction()
+    ;(window as TestWindow).elysiaDesktopTest.setChatActionDelay(false)
+  })
+  await expect(mode).toHaveValue('work')
+  await page.getByLabel('Message Elysia').fill('Generate a reply.')
+  await page.getByLabel('Message Elysia').press('Enter')
+  await expect(mode).toBeDisabled()
 })
 
 test('renames, pins, and confirms permanent Chat deletion', async () => {

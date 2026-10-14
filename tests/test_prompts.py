@@ -14,6 +14,7 @@ from core import (
     load_elysia_system_rules,
 )
 from memory import Profile
+from core.mode_policy import get_mode_policy, require_work_mode
 
 
 @pytest.fixture(autouse=True)
@@ -50,8 +51,9 @@ def test_build_prompt_contains_rules_and_profile() -> None:
     prompt = build_elysia_system_prompt(profile)
 
     assert prompt.startswith(
-        f"{system_rules}\nRETRIEVED_MEMORY_JSON:\n"
+        f"{system_rules}\nMODE_POLICY:\n"
     )
+    assert get_mode_policy("chat").prompt_instructions in prompt
 
     profile_json = prompt.split(
         "USER_PROFILE_JSON:\n",
@@ -297,3 +299,49 @@ def test_active_conversation_context_is_serialized_as_data() -> None:
     )[1].split("\nUSER_PROFILE_JSON:\n", 1)[0]
 
     assert json.loads(serialized) == context
+
+
+def test_mode_policy_requires_an_explicit_work_choice() -> None:
+    """Keep Chat tool admission closed and reject unknown capability modes."""
+
+    assert get_mode_policy("chat").tool_requests_allowed is False
+    assert get_mode_policy("work").tool_requests_allowed is True
+    assert len(get_mode_policy("work").prompt_instructions) < 1024
+    with pytest.raises(PermissionError, match="explicit Work mode"):
+        require_work_mode("chat")
+    require_work_mode("work")
+    with pytest.raises(ValueError, match="chat or work"):
+        get_mode_policy("automatic")  # type: ignore[arg-type]
+
+
+def test_chat_and_work_compose_distinct_trusted_policies() -> None:
+    """Expose mode capabilities separately from unchanged persona and data."""
+
+    profile: Profile = {
+        "schema_version": 1,
+        "user_name": "Ying",
+        "assistant_name": "Elysia",
+        "languages": ["Chinese"],
+        "project": "Elysia AI",
+        "launch_count": 0,
+    }
+    chat_context: ActiveConversationPromptContext = {
+        "chat_id": "chat_mode",
+        "mode": "chat",
+        "model_name": "test-model",
+        "project": None,
+    }
+    chat_prompt = build_elysia_system_prompt(
+        profile,
+        active_conversation=chat_context,
+    )
+    work_prompt = build_elysia_system_prompt(
+        profile,
+        active_conversation={**chat_context, "mode": "work"},
+    )
+    persona = load_elysia_system_rules()
+    assert chat_prompt.startswith(persona)
+    assert work_prompt.startswith(persona)
+    assert get_mode_policy("chat").prompt_instructions in chat_prompt
+    assert get_mode_policy("work").prompt_instructions in work_prompt
+    assert chat_prompt != work_prompt

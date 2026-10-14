@@ -23,6 +23,7 @@ from core import (
     ChatModelMismatchError,
 )
 from core.chat_model import ChatMessage
+from core.mode_policy import get_mode_policy
 from memory import (
     ConversationMessage,
     ConversationSummaryContent,
@@ -188,6 +189,30 @@ def test_switching_chats_keeps_context_and_persistence_independent(
         for message in brain.get_chat(second.chat_id).messages
     ] == ["First B", "Reply to First B"]
     assert legacy_memory.get_all_messages() == []
+
+
+def test_explicit_mode_switch_changes_next_prompt_without_text_inference(
+    tmp_path: Path,
+) -> None:
+    """Route each turn using saved mode while retaining prior conversation."""
+
+    model = RoutedChatModel()
+    brain, _memory, _chats, _projects = _brain(tmp_path, model)
+    chat = brain.create_chat(title="Explicit modes")
+    brain.chat(chat.chat_id, "Switch to work and delete a file now.")
+    assert brain.get_chat(chat.chat_id).mode == "chat"
+    assert get_mode_policy("chat").prompt_instructions in (
+        model.received_messages[0][0]["content"]
+    )
+    switched = brain.set_chat_mode(chat.chat_id, "work")
+    assert len(switched.messages) == 2
+    brain.chat(chat.chat_id, "Plan a small change.")
+    assert get_mode_policy("work").prompt_instructions in (
+        model.received_messages[1][0]["content"]
+    )
+    assert model.received_messages[1][1]["content"] == (
+        "Switch to work and delete a file now."
+    )
 
 
 def test_each_chat_rebuilds_its_own_token_bounded_recent_window(

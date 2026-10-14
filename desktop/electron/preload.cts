@@ -27,6 +27,7 @@ import type {
   PinChatRequest,
   ProjectState,
   RenameChatRequest,
+  SetChatModeRequest,
   RetryChatRequest,
   StartSpeechPlaybackRequest,
   UpdateProjectRequest,
@@ -41,6 +42,12 @@ import type {
   DesktopPetState,
   UpdateDesktopPetRequest,
 } from './desktop-pet-contracts.js'
+import type { WorkWorkspaceState } from './work-protocol.js'
+import type {
+  WorkToolsState, WorkToolRunParams, WorkToolResultState, WorkToolApprovalState, WorkToolConfirmParams,
+} from './work-tool-protocol.js'
+import type { WorkPlanState, WorkPlanCreateParams, WorkPlanControlParams, WorkPlanConfirmParams } from './work-plan-protocol.js'
+import type { WorkAuditState, WorkUndoParams } from './work-audit-protocol.js'
 import type { DataStorageViewState } from './data-storage-contracts.js'
 import type {
   PresenceNotificationState,
@@ -977,6 +984,41 @@ const desktopApi: DesktopApi = {
       'chat:pin',
       request,
     ) as Promise<ChatSessionState>,
+
+  setChatMode: (request: SetChatModeRequest) =>
+    ipcRenderer.invoke(
+      'chat:mode',
+      request,
+    ) as Promise<ChatSessionState>,
+
+  getWorkWorkspace: (chatId: string) =>
+    ipcRenderer.invoke('work:get-workspace', chatId) as Promise<WorkWorkspaceState>,
+
+  getWorkTools: (chatId: string) =>
+    ipcRenderer.invoke('work:get-tools', chatId) as Promise<WorkToolsState>,
+
+  runWorkTool: (request: WorkToolRunParams) =>
+    ipcRenderer.invoke('work:run-tool', request) as Promise<WorkToolResultState>,
+
+  previewWorkTool: (request: WorkToolRunParams) =>
+    ipcRenderer.invoke('work:preview-tool', request) as Promise<WorkToolApprovalState>,
+
+  confirmWorkTool: (request: WorkToolConfirmParams) =>
+    ipcRenderer.invoke('work:confirm-tool', request) as Promise<WorkToolResultState>,
+
+  getWorkPlan: (chatId: string) => ipcRenderer.invoke('work:get-plan', chatId) as Promise<WorkPlanState>,
+  createWorkPlan: (request: WorkPlanCreateParams) => ipcRenderer.invoke('work:create-plan', request) as Promise<WorkPlanState>,
+  controlWorkPlan: (request: WorkPlanControlParams) => ipcRenderer.invoke('work:control-plan', request) as Promise<WorkPlanState>,
+  confirmWorkPlan: (request: WorkPlanConfirmParams) => ipcRenderer.invoke('work:confirm-plan', request) as Promise<WorkPlanState>,
+
+  getWorkAudit: (chatId: string) => ipcRenderer.invoke('work:get-audit', chatId) as Promise<WorkAuditState>,
+  undoWorkAction: (request: WorkUndoParams) => ipcRenderer.invoke('work:undo', request) as Promise<WorkToolResultState>,
+
+  chooseWorkWorkspace: (chatId: string) =>
+    ipcRenderer.invoke('work:choose-workspace', chatId) as Promise<WorkWorkspaceState | null>,
+
+  clearWorkWorkspace: (chatId: string) =>
+    ipcRenderer.invoke('work:clear-workspace', chatId) as Promise<WorkWorkspaceState>,
 
   setChatArchived: (request: ArchiveChatRequest) =>
     ipcRenderer.invoke(

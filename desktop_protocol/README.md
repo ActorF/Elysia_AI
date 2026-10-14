@@ -41,6 +41,118 @@ a successful Stop response guarantees that the interrupted turn is not saved.
 Backend permission prompts retain their stable schema but are not yet
 advertised as an active capability.
 
+`chat.mode` changes only the explicitly selected active Chat using
+`{chatId, mode: "chat" | "work"}` and returns the same canonical Chat state as
+other session mutations. It preserves messages, summaries, attachments, and
+drafts, and refuses changes during an admitted reply or local transcription.
+The UI explains the selected capabilities before the next turn. Mode-specific
+prompt instructions are composed separately from the unchanged persona
+resource. Chat mode denies tool admission; selecting Work only makes typed,
+workspace-bound, separately approved actions eligible. Message text, Project
+instructions, retrieved memory, and model output cannot select a mode or grant
+tool permissions.
+
+`work.workspace.get` and `work.workspace.bind` operate on one canonical active
+Work Chat. The bind request carries a directory supplied by Electron Main's
+native chooser or `null` to revoke access; the renderer has no raw path setter.
+Both return `{kind: "work.workspace", chatId, workspacePath}`. Each Chat's
+selection is stored beneath the private data root at `workspace/work/bindings`.
+Project paths are not inherited automatically. Directory identity is saved
+with the selection and rechecked before execution. Safe access pins ancestors
+and reads through the verified leaf handle; traversal, network/device roots,
+symlinks, Windows junctions, and hard links are rejected. Work state is durable
+during data-root migration and excluded from generic cache cleanup.
+
+`work.tools.list` returns `{kind: "work.tools", tools}` for the active Work
+Chat. Every catalog entry declares its exact input and output schemas, risk,
+and timeout. The catalog contains four read operations: directory listing,
+bounded text reading, filename search, and metadata, plus separately approved
+create, edit, move, and recoverable delete operations. There is no shell or
+arbitrary-command tool. Statuses distinguish
+success, partial output, denial, cancellation, and failure with fixed public
+errors. Work code uses `work_tools` because the reviewed RVC runtime owns the
+unrelated vendor namespace `tools`; the unused old Elysia namespace was removed.
+Selected Work roots must also be separate from application code and private
+application data. This prevents a file edit from modifying the very binding or
+permission journal that authorizes subsequent actions.
+
+`work.tool.run` executes an explicit `{chatId, call}` after the same canonical
+mode and workspace checks. Read tools reject credential/private-key paths,
+binary or unsupported text formats, and text beyond 256 KiB. Listing is bounded
+to 1,000 entries; filename search visits at most 5,000 entries and publishes at
+most 500 matches without reading bodies. Deadlines and cancellation are
+cooperative around native local I/O. Read operations create no cache, backup,
+or hidden file writes. Write tool IDs receive `permission_required` here.
+
+`work.tool.preview` validates an explicit write action and returns its exact
+parameters, fixed risk, bounded diff/impact preview, and a five-minute UTC
+approval lease. Preparing a change never changes selected Workspace files.
+Replacing a preview, changing mode/scope/Project/Chat, or restarting revokes
+older rights. Native write primitives exclusively pin the approved file and
+check its digest before creating, editing, moving, or deleting one text file.
+The private transaction journal and fsynced before-image precede any mutation;
+overwrites and recoverable deletes therefore retain a restoration copy.
+The 20-second write budget applies to preflight and backup admission. Once
+native writing starts it completes and verifies through the same handle, with
+an accurate outcome and recovery intent if interrupted. Native OS calls are
+not forcibly terminated to manufacture a timeout or successful cancellation.
+
+`work.tool.confirm` carries only the current Chat ID, exact shown approval ID,
+and a Boolean one-time decision. The renderer cannot substitute new parameters
+while approving. Low-risk reads are explicit user actions; medium/high writes
+always require preview and confirmation. No critical-risk operation is exposed.
+Decline, expiry, changed bytes, changed Project/root, revoked rights, and token
+replay all refuse mutation. Modified actions receive a new preview/token. The
+UI offers a stronger recoverable-deletion confirmation and no permanent grant.
+
+`work.plan.create` records a reviewed title and one to sixteen exact tool calls;
+it does not start execution. `work.plan.control` starts, pauses between steps,
+resumes, advances, or cancels the exact plan. `work.plan.get` returns its bounded
+snapshot, including each step's input, result, approval, and physical `busy`
+lease. The worker executes reads sequentially and stops before every write.
+`work.plan.confirm` authorizes only that plan's displayed approval ID once.
+Generic tool confirmation cannot consume plan-owned tokens. Pause preserves a
+pending approval; cancellation revokes it and discards late read results. An
+already admitted native write completes truthfully while cancelled capacity
+remains reserved. Backend shutdown cancels admission and waits for that worker
+to drain. Plans are in-memory and never restart automatically; durable task
+restoration belongs to the later Task stage. Mode, owner, Project, and pinned
+Workspace identity are rechecked for every step.
+
+`work.audit.list` returns the active Work Chat's latest hundred entries, newest
+first, within a 512 KiB payload and with explicit truncation. Read tools persist
+only a private audit summary; selected Workspace files remain untouched. Reads
+and writes record the original action time, Chat/Project, tool, parameter
+summary, user decision, outcome, and fixed error code. File bodies and literal
+search text never enter this public history: new content and search queries are
+represented by sizes and digests. Each action's entry reflects its current Undo
+or interrupted-recovery outcome. Audit does not grant new file access and may
+be inspected after the binding is cleared.
+
+`work.undo` carries only the exact recorded Undo ID and `confirmed: true`.
+Electron consumes the displayed history permission before dispatch and checks
+the response against that recorded path/destination. Python reacquires the
+current Chat/Project, pinned root, expected current bytes, and verified backup;
+changed files or existing destinations refuse restoration. No external edit is
+overwritten. Undo waits for live plans and native callbacks to finish. Failed
+or interrupted transactions disclose a relative journal directory under
+`workspace/work/transactions`; a `before.bin` path and digest appear only when
+that restoration copy was actually verified. Users can open the data directory
+from Settings for manual recovery. No operation resumes automatically.
+
+Work journals and before-images survive data-root migration and generic cache
+cleanup. The existing legacy export bundle has its own explicit allowlist and
+does not include Work journals or backups; retain the data root when preserving
+these recovery records. Expanding release-wide backup formats belongs to the
+later Release stage.
+
+The desktop lockfile updates the compatible cache and source-map fixes. Its
+scoped `@electron/get@3.1.0` override uses `global-agent@4.1.3` to preserve the
+packaging downloader's CommonJS proxy bootstrap while removing the vulnerable
+legacy formatter chain. The isolated proxy bootstrap regression exercises
+that actual dependency without network traffic or global HTTP side effects in
+the test process; renderer and packaged-app checks still validate the application.
+
 `settings.get` and `settings.update` expose one exact public allowlist with
 optimistic revision checks: Chat model, Ollama origin, two Memory limits,
 import byte limit, transcription model/device/language, automatic Voice Call speech,

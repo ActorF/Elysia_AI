@@ -50,6 +50,33 @@ function defaultProjectState() {
   }
 }
 
+function defaultWorkToolsState() {
+  const definitions = [
+    ['list_directory', 'List directory', 'List bounded directory entries without writing.', 10],
+    ['read_text', 'Read text', 'Read bounded UTF-8 text without writing.', 10],
+    ['search_files', 'Search files', 'Find filenames within the selected Workspace.', 20],
+    ['metadata', 'File metadata', 'Inspect file and directory metadata without reading contents.', 10],
+    ['create', 'Create file', 'Preview a new UTF-8 text file before approval.', 20, 'medium'],
+    ['edit', 'Edit file', 'Preview replacement text with a recoverable backup.', 20, 'medium'],
+    ['move', 'Move or rename', 'Preview moving a file without replacing the destination.', 20, 'high'],
+    ['delete', 'Recoverable deletion', 'Preview moving a file into recovery storage.', 20, 'high'],
+  ]
+  return {
+    kind: 'work.tools',
+    tools: definitions.map(([toolId, name, description, timeoutSeconds, risk = 'low']) => ({
+      toolId, name, description, timeoutSeconds, risk,
+      inputSchema: {
+        type: 'object', properties: { path: { type: 'string', maxLength: 4096 } },
+        required: ['path'], additionalProperties: false,
+      },
+      outputSchema: {
+        type: 'object', properties: { status: { type: 'string' }, data: {}, error: {} },
+        required: ['status', 'data', 'error'], additionalProperties: false, allOf: [],
+      },
+    })),
+  }
+}
+
 function defaultSettingsState() {
   const values = {
     modelName: 'qwen3.5:9b',
@@ -383,7 +410,32 @@ let knowledgeStates = new Map()
 let nextAttachmentError = null
 let nextAttachmentPickerCancelled = false
 let nextSendError = null
+let nextChatModeError = null
 let selectedWorkspace = null
+let workWorkspaces = new Map()
+let nextWorkWorkspaceError = null
+let nextWorkToolsError = null
+let nextWorkToolResult = null
+let nextWorkPreviewError = null
+let nextWorkApprovalNumber = 1
+let workApprovals = new Map()
+let workPlans = new Map()
+let nextWorkPlanNumber = 1
+let delayWorkPlanReads = false
+let pendingWorkPlanReads = []
+let workAuditEntries = []
+let workAuditOverrides = new Map()
+let workUndoData = new Map()
+let delayWorkUndo = false
+let pendingWorkUndos = []
+let delayWorkToolRuns = false
+let pendingWorkToolRuns = []
+const workFiles = new Map([
+  ['notes.txt', 'Hello <script>unsafe()</script>'],
+  ['docs/readme.md', 'Workspace documentation.'],
+])
+let delayWorkWorkspaceReads = false
+let pendingWorkWorkspaceReads = []
 let nextRequestNumber = 1
 let nextAttachmentNumber = 1
 let nextKnowledgeNumber = 1
@@ -443,6 +495,7 @@ if (reloadState !== null) {
   pendingGenerations = new Map(clone(reloadState.pendingGenerations))
   attachmentStates = new Map(clone(reloadState.attachmentStates))
   knowledgeStates = new Map(clone(reloadState.knowledgeStates ?? []))
+  workWorkspaces = new Map(clone(reloadState.workWorkspaces ?? []))
   nextRequestNumber = reloadState.nextRequestNumber
   nextAttachmentNumber = reloadState.nextAttachmentNumber
   nextKnowledgeNumber = reloadState.nextKnowledgeNumber ?? 1
@@ -464,6 +517,107 @@ function record(method, args = []) {
     args: clone(args),
   })
   nextCallSequence += 1
+}
+
+function mockWorkRead(call) {
+  const args = call.arguments
+  const entry = (path, content) => ({
+    path, name: path.split('/').at(-1), kind: 'file', sizeBytes: new TextEncoder().encode(content).byteLength,
+  })
+  let data
+  if (call.toolId === 'read_text') {
+    const content = workFiles.get(args.path)
+    data = content === undefined ? null : { path: args.path, content, sizeBytes: new TextEncoder().encode(content).byteLength }
+  } else if (call.toolId === 'metadata') {
+    data = args.path === '' ? { path: '', name: 'Workspace', kind: 'directory', sizeBytes: 0 }
+      : workFiles.has(args.path) ? entry(args.path, workFiles.get(args.path)) : null
+  } else if (call.toolId === 'search_files') {
+    data = { matches: [...workFiles.keys()].filter((path) => (
+      (args.path === '' || path.startsWith(`${args.path}/`)) && path.includes(args.query)
+    )).map((path) => ({ path })), truncated: false }
+  } else {
+    data = { entries: [...workFiles.entries()].filter(([path]) => args.path === '' || path.startsWith(`${args.path}/`))
+      .map(([path, content]) => entry(path, content)), truncated: false }
+  }
+  return data === null
+    ? { status: 'denied', data: null, error: { code: 'not_found', message: 'The requested file does not exist.' } }
+    : { status: 'succeeded', data, error: null }
+}
+
+function mockWorkApproval(call) {
+  const approvalId = `approval_${(nextWorkApprovalNumber++).toString(16).padStart(32, '0')}`
+  return { approvalId, call: clone(call), risk: ['create', 'edit'].includes(call.toolId) ? 'medium' : 'high',
+    preview: `Preview ${call.toolId}: ${call.arguments.path}\n${call.arguments.content ?? call.arguments.destination ?? 'Move into recovery storage.'}`,
+    expiresAt: '2100-01-01T00:00:00+00:00' }
+}
+
+function recordWorkAudit(chatId, call, result, undoId = null) {
+  const args = call.arguments
+  const parameters = { path: args.path }
+  // Digests are fixed metadata in this isolated UI double. Actual hashing and
+  // backup verification belong to the Python/native acceptance tests; inverse
+  // writes here compare the virtual file contents before restoring them.
+  if (['create', 'edit'].includes(call.toolId)) {
+    parameters.contentBytes = new TextEncoder().encode(args.content).byteLength
+    parameters.contentSha256 = 'a'.repeat(64)
+  } else if (call.toolId === 'move') parameters.destination = args.destination
+  else if (call.toolId === 'search_files') {
+    parameters.queryCharacters = Array.from(args.query).length
+    parameters.querySha256 = 'b'.repeat(64)
+  }
+  const entry = { timestamp: new Date().toISOString(), chatId, projectId: null, toolId: call.toolId,
+    parameters, approver: 'user', result: result.status, error: result.error?.code ?? null,
+    undoId, recoverable: false, recovery: null }
+  workAuditEntries.unshift(entry)
+  workAuditOverrides.delete(chatId)
+  return entry
+}
+
+function mockWorkWrite(approval, granted, chatId) {
+  if (!granted) {
+    const result = { status: 'denied', data: null, error: { code: 'permission_denied', message: 'The action was declined.' } }
+    recordWorkAudit(chatId, approval.call, result)
+    return result
+  }
+  const { toolId, arguments: args } = approval.call
+  const before = workFiles.get(args.path) ?? null
+  if (toolId === 'create' || toolId === 'edit') workFiles.set(args.path, args.content)
+  else if (toolId === 'move') { workFiles.set(args.destination, workFiles.get(args.path)); workFiles.delete(args.path) }
+  else workFiles.delete(args.path)
+  const data = { path: args.path, undoId: `undo_${approval.approvalId.slice(9)}` }
+  if (toolId === 'move') data.destination = args.destination
+  const result = { status: 'succeeded', data, error: null }
+  const audit = recordWorkAudit(chatId, approval.call, result, data.undoId)
+  workUndoData.set(data.undoId, { chatId, call: clone(approval.call), before,
+    after: toolId === 'move' ? workFiles.get(args.destination) : workFiles.get(args.path) ?? null, audit })
+  return result
+}
+
+async function driveMockWorkPlan(plan) {
+  if (plan.busy) return
+  plan.busy = true
+  try {
+    while (plan.state === 'running') {
+      const step = plan.steps.find((item) => item.status === 'pending')
+      if (step === undefined) { plan.state = 'succeeded'; return }
+      step.status = 'running'
+      if (['create', 'edit', 'move', 'delete'].includes(step.call.toolId)) {
+        step.approval = mockWorkApproval(step.call)
+        step.status = 'waiting'
+        plan.state = 'waiting'
+        return
+      }
+      const result = mockWorkRead(step.call)
+      if (delayWorkPlanReads) await new Promise((resolve) => { pendingWorkPlanReads.push(resolve) })
+      // Logical cancellation immediately marks reads cancelled, but their
+      // mocked native callback retains busy until the test releases it.
+      if (plan.state === 'cancelled') return
+      recordWorkAudit(plan.chatId, step.call, result)
+      step.result = result
+      step.status = result.status === 'succeeded' ? 'succeeded' : 'failed'
+      if (step.status === 'failed') { plan.state = 'failed'; return }
+    }
+  } finally { plan.busy = false }
 }
 
 /** Keep mock persistence behind the same request-and-Chat ownership boundary. */
@@ -1421,6 +1575,204 @@ const desktopApi = {
     return clone(chatState)
   },
 
+  setChatMode: async (request) => {
+    record('setChatMode', [request])
+    await waitForChatAction()
+    if (nextChatModeError !== null) {
+      const message = nextChatModeError
+      nextChatModeError = null
+      throw new Error(message)
+    }
+    chatState.chats = chatState.chats.map((chat) => (
+      chat.chatId === request.chatId
+        ? { ...chat, mode: request.mode }
+        : chat
+    ))
+    if (chatState.activeChat.chatId === request.chatId) {
+      chatState.activeChat.mode = request.mode
+    }
+    return clone(chatState)
+  },
+
+  getWorkWorkspace: async (chatId) => {
+    record('getWorkWorkspace', [chatId])
+    const result = clone(workWorkspaces.get(chatId) ?? {
+      kind: 'work.workspace', chatId, workspacePath: null,
+    })
+    if (delayWorkWorkspaceReads) {
+      await new Promise((resolve) => { pendingWorkWorkspaceReads.push(resolve) })
+    }
+    return result
+  },
+
+  getWorkTools: async (chatId) => {
+    record('getWorkTools', [chatId])
+    if (nextWorkToolsError !== null) {
+      const message = nextWorkToolsError
+      nextWorkToolsError = null
+      throw new Error(message)
+    }
+    return defaultWorkToolsState()
+  },
+
+  runWorkTool: async (request) => {
+    record('runWorkTool', [request])
+    const result = nextWorkToolResult ?? mockWorkRead(request.call)
+    nextWorkToolResult = null
+    if (delayWorkToolRuns) {
+      await new Promise((resolve) => { pendingWorkToolRuns.push(resolve) })
+    }
+    recordWorkAudit(request.chatId, request.call, result)
+    return { kind: 'work.result', result: clone(result) }
+  },
+
+  previewWorkTool: async (request) => {
+    record('previewWorkTool', [request])
+    if (nextWorkPreviewError !== null) {
+      const message = nextWorkPreviewError
+      nextWorkPreviewError = null
+      throw new Error(message)
+    }
+    const call = clone(request.call)
+    const old = workFiles.get(call.arguments.path) ?? ''
+    let preview = call.toolId === 'move'
+      ? `Move ${call.arguments.path} to ${call.arguments.destination}.`
+      : `--- ${call.arguments.path}\n+++ ${call.arguments.path}\n- ${old}\n+ ${call.arguments.content ?? ''}`
+    if (new TextEncoder().encode(preview).byteLength > 32768) {
+      preview = '[Preview truncated; the complete parameters remain visible above.]'
+    }
+    const approvalId = `approval_${(nextWorkApprovalNumber++).toString(16).padStart(32, '0')}`
+    const state = { kind: 'work.approval', approval: {
+      approvalId, call, risk: ['create', 'edit'].includes(call.toolId) ? 'medium' : 'high',
+      preview, expiresAt: '2100-01-01T00:00:00+00:00',
+    } }
+    workApprovals.set(request.chatId, clone(state.approval))
+    return state
+  },
+
+  confirmWorkTool: async (request) => {
+    record('confirmWorkTool', [request])
+    const approval = workApprovals.get(request.chatId)
+    workApprovals.delete(request.chatId)
+    if (approval === undefined || approval.approvalId !== request.approvalId) {
+      return { kind: 'work.result', result: { status: 'denied', data: null,
+        error: { code: 'permission_required', message: 'The action requires explicit approval.' } } }
+    }
+    if (!request.granted) return { kind: 'work.result', result: mockWorkWrite(approval, false, request.chatId) }
+    if (nextWorkToolResult !== null) {
+      const result = clone(nextWorkToolResult)
+      nextWorkToolResult = null
+      recordWorkAudit(request.chatId, approval.call, result)
+      return { kind: 'work.result', result }
+    }
+    return { kind: 'work.result', result: mockWorkWrite(approval, true, request.chatId) }
+  },
+
+  getWorkPlan: async (chatId) => {
+    record('getWorkPlan', [chatId])
+    return { kind: 'work.plan', plan: clone(workPlans.get(chatId) ?? null) }
+  },
+
+  createWorkPlan: async (request) => {
+    record('createWorkPlan', [request])
+    const suffix = (nextWorkPlanNumber++).toString(16).padStart(32, '0')
+    const plan = { planId: `plan_${suffix}`, title: request.title, state: 'pending', busy: false,
+      steps: request.calls.map((call, index) => ({
+        stepId: `step_${(index + 1).toString(16).padStart(32, '0')}`, call: clone(call),
+        status: 'pending', result: null, approval: null,
+      })) }
+    // The owner remains private in the double, outside the exact plan DTO.
+    Object.defineProperty(plan, 'chatId', { value: request.chatId, enumerable: false })
+    workPlans.set(request.chatId, plan)
+    workApprovals.delete(request.chatId)
+    return { kind: 'work.plan', plan: clone(plan) }
+  },
+
+  controlWorkPlan: async (request) => {
+    record('controlWorkPlan', [request])
+    const plan = workPlans.get(request.chatId)
+    if (plan === undefined || plan.planId !== request.planId) throw new Error('Plan is not current.')
+    if (request.action === 'cancel') {
+      plan.state = 'cancelled'
+      for (const step of plan.steps) {
+        if (['pending', 'running', 'waiting'].includes(step.status)) {
+          step.status = 'cancelled'; step.approval = null
+          step.result = { status: 'cancelled', data: null, error: { code: 'cancelled', message: 'The action was cancelled.' } }
+        }
+      }
+    } else if (request.action === 'pause') plan.state = 'paused'
+    else {
+      plan.state = plan.steps.some((step) => step.status === 'waiting') ? 'waiting' : 'running'
+      if (plan.state === 'running') void driveMockWorkPlan(plan)
+    }
+    return { kind: 'work.plan', plan: clone(plan) }
+  },
+
+  confirmWorkPlan: async (request) => {
+    record('confirmWorkPlan', [request])
+    const plan = workPlans.get(request.chatId)
+    const step = plan?.steps.find((item) => item.approval?.approvalId === request.approvalId)
+    if (plan?.planId !== request.planId || plan.state !== 'waiting' || step === undefined) throw new Error('Plan approval is not current.')
+    const result = mockWorkWrite(step.approval, request.granted, request.chatId)
+    step.approval = null; step.result = result
+    step.status = result.status === 'succeeded' ? 'succeeded' : 'failed'
+    plan.state = step.status === 'failed' ? 'failed' : 'running'
+    if (plan.state === 'running') void driveMockWorkPlan(plan)
+    return { kind: 'work.plan', plan: clone(plan) }
+  },
+
+  getWorkAudit: async (chatId) => {
+    record('getWorkAudit', [chatId])
+    const entries = workAuditEntries.filter((entry) => entry.chatId === chatId)
+    return clone(workAuditOverrides.get(chatId) ?? { kind: 'work.audit', entries: entries.slice(0, 100), truncated: entries.length > 100 })
+  },
+
+  undoWorkAction: async (request) => {
+    record('undoWorkAction', [request])
+    if (delayWorkUndo) await new Promise((resolve, reject) => { pendingWorkUndos.push({ resolve, reject }) })
+    const item = workUndoData.get(request.undoId)
+    if (item === undefined || item.chatId !== request.chatId || request.confirmed !== true) {
+      return { kind: 'work.result', result: { status: 'denied', data: null,
+        error: { code: 'undo_unavailable', message: 'The action can no longer be undone safely.' } } }
+    }
+    const { toolId, arguments: args } = item.call
+    const current = toolId === 'move' ? workFiles.get(args.destination) ?? null : workFiles.get(args.path) ?? null
+    if (current !== item.after || (toolId === 'move' && workFiles.has(args.path))) {
+      return { kind: 'work.result', result: { status: 'denied', data: null,
+        error: { code: 'conflict', message: 'The file changed; prepare the action again.' } } }
+    }
+    if (item.before === null) workFiles.delete(args.path)
+    else workFiles.set(args.path, item.before)
+    if (toolId === 'move') workFiles.delete(args.destination)
+    workUndoData.delete(request.undoId)
+    item.audit.undoId = null; item.audit.result = 'undone'
+    const data = { path: args.path, undoId: request.undoId }
+    if (toolId === 'move') data.destination = args.destination
+    return { kind: 'work.result', result: { status: 'succeeded', data, error: null } }
+  },
+
+  chooseWorkWorkspace: async (chatId) => {
+    record('chooseWorkWorkspace', [chatId])
+    if (nextWorkWorkspaceError !== null) {
+      const message = nextWorkWorkspaceError
+      nextWorkWorkspaceError = null
+      throw new Error(message)
+    }
+    if (selectedWorkspace === null) {
+      return null
+    }
+    const state = { kind: 'work.workspace', chatId, workspacePath: selectedWorkspace }
+    workWorkspaces.set(chatId, state)
+    return clone(state)
+  },
+
+  clearWorkWorkspace: async (chatId) => {
+    record('clearWorkWorkspace', [chatId])
+    const state = { kind: 'work.workspace', chatId, workspacePath: null }
+    workWorkspaces.set(chatId, state)
+    return clone(state)
+  },
+
   setChatPinned: async (request) => {
     record('setChatPinned', [request])
     chatState.chats = chatState.chats.map((chat) => (
@@ -1940,6 +2292,32 @@ const desktopApi = {
 
 const testControl = {
   reset: () => {
+    for (const release of pendingWorkToolRuns) release()
+    pendingWorkToolRuns = []
+    delayWorkToolRuns = false
+    nextWorkToolResult = null
+    nextWorkPreviewError = null
+    nextWorkApprovalNumber = 1
+    workApprovals = new Map()
+    workPlans = new Map()
+    workAuditEntries = []
+    workAuditOverrides = new Map()
+    workUndoData = new Map()
+    delayWorkUndo = false
+    for (const pending of pendingWorkUndos) pending.resolve()
+    pendingWorkUndos = []
+    nextWorkPlanNumber = 1
+    delayWorkPlanReads = false
+    for (const release of pendingWorkPlanReads) release()
+    pendingWorkPlanReads = []
+    for (const release of pendingWorkWorkspaceReads) {
+      release()
+    }
+    pendingWorkWorkspaceReads = []
+    delayWorkWorkspaceReads = false
+    workWorkspaces = new Map()
+    nextWorkWorkspaceError = null
+    nextWorkToolsError = null
     releaseAllChatActions()
     releaseAllChatLists()
     releaseAllCharacterPanelChanges()
@@ -1976,6 +2354,7 @@ const testControl = {
     nextAttachmentError = null
     nextAttachmentPickerCancelled = false
     nextSendError = null
+    nextChatModeError = null
     selectedWorkspace = null
     nextRequestNumber = 1
     nextAttachmentNumber = 1
@@ -2267,8 +2646,67 @@ const testControl = {
     nextSendError = message
   },
 
+  failNextChatMode: (message) => {
+    nextChatModeError = message
+  },
+
   setSelectedWorkspace: (workspacePath) => {
     selectedWorkspace = workspacePath
+  },
+
+  setWorkWorkspaceState: (state) => {
+    workWorkspaces.set(state.chatId, clone(state))
+  },
+
+  setWorkWorkspaceReadDelay: (delayed) => {
+    delayWorkWorkspaceReads = delayed
+  },
+
+  releaseNextWorkWorkspaceRead: () => {
+    const release = pendingWorkWorkspaceReads.shift()
+    release?.()
+    return release !== undefined
+  },
+
+  failNextWorkWorkspace: (message) => {
+    nextWorkWorkspaceError = message
+  },
+
+  failNextWorkTools: (message) => {
+    nextWorkToolsError = message
+  },
+
+  setNextWorkToolResult: (result) => {
+    nextWorkToolResult = clone(result)
+  },
+
+  failNextWorkPreview: (message) => {
+    nextWorkPreviewError = message
+  },
+
+  setWorkPlanReadDelay: (delayed) => { delayWorkPlanReads = delayed },
+  setWorkAuditState: (chatId, state) => { workAuditOverrides.set(chatId, clone(state)) },
+  setWorkFile: (path, content) => { if (content === null) workFiles.delete(path); else workFiles.set(path, content) },
+  setWorkUndoDelay: (delayed) => { delayWorkUndo = delayed },
+  rejectNextWorkUndo: () => {
+    const pending = pendingWorkUndos.shift()
+    pending?.reject(new Error('Python Backend stopped before Undo completed.'))
+    return pending !== undefined
+  },
+  releaseNextWorkPlanRead: () => {
+    const release = pendingWorkPlanReads.shift()
+    release?.()
+    return release !== undefined
+  },
+
+  setWorkToolRunDelay: (delayed) => {
+    delayWorkToolRuns = delayed
+  },
+
+  releaseNextWorkToolRun: () => {
+    const release = pendingWorkToolRuns.shift()
+    release?.()
+    return release !== undefined
   },
 
   setCharacterPanelChangeDelay: (delayed) => {
@@ -2371,6 +2809,7 @@ const testControl = {
       pendingGenerations: [...pendingGenerations.entries()],
       attachmentStates: [...attachmentStates.entries()],
       knowledgeStates: [...knowledgeStates.entries()],
+      workWorkspaces: [...workWorkspaces.entries()],
       nextRequestNumber,
       nextAttachmentNumber,
       nextKnowledgeNumber,

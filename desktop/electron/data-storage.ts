@@ -513,6 +513,9 @@ function classifyDataPath(relativePath: string): PathClassification {
     projects: 'projects',
     memory: 'memory',
     migrations: 'chats',
+    // Bindings and later Work approvals/audit are durable user data. They move
+    // with the data root and never enter the audio/cache/log cleanup grant.
+    work: 'other',
     recovery: 'config',
     sources: 'sources',
     attachments: 'sources',

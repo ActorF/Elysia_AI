@@ -34,6 +34,7 @@ import type {
   ProjectState,
   ProjectWorkspaceRequest,
   RenameChatRequest,
+  SetChatModeRequest,
   RetryChatRequest,
   StartSpeechPlaybackRequest,
   DesktopSettingsState,
@@ -49,6 +50,26 @@ import {
   BoundedNdjsonReader,
   type BoundedNdjsonFailure,
 } from './bounded-ndjson.js'
+import {
+  parseWorkWorkspaceState,
+  type WorkWorkspaceState,
+  type WorkWorkspaceBindParams,
+  type WorkWorkspaceGetParams,
+} from './work-protocol.js'
+import {
+  parseWorkToolsState, parseWorkToolResultForCall, parseWorkToolCall, parseWorkToolApprovalState,
+  type WorkToolsState, type WorkToolRunParams, type WorkToolResultState, type WorkToolCall,
+  type WorkToolApprovalState,
+  type WorkToolApproval, type WorkToolConfirmParams,
+} from './work-tool-protocol.js'
+import {
+  parseWorkPlanState, workPlanHasLease,
+  type WorkPlan, type WorkPlanState, type WorkPlanCreateParams, type WorkPlanControlParams, type WorkPlanConfirmParams,
+} from './work-plan-protocol.js'
+import {
+  parseWorkAuditForChat, parseWorkUndoResultForEntry,
+  type WorkAuditEntry, type WorkAuditState, type WorkUndoParams,
+} from './work-audit-protocol.js'
 import {
   SpeechDeliveryCoordinator,
   type SpeechDeliveryStatus,
@@ -349,6 +370,26 @@ interface PendingRequest {
   rejectChatState?: (error: Error) => void
   resolveProjectState?: (state: ProjectState) => void
   rejectProjectState?: (error: Error) => void
+  resolveWorkWorkspace?: (state: WorkWorkspaceState) => void
+  rejectWorkWorkspace?: (error: Error) => void
+  resolveWorkTools?: (state: WorkToolsState) => void
+  rejectWorkTools?: (error: Error) => void
+  workToolCall?: WorkToolCall
+  workApprovalGranted?: boolean
+  resolveWorkTool?: (state: WorkToolResultState) => void
+  rejectWorkTool?: (error: Error) => void
+  resolveWorkApproval?: (state: WorkToolApprovalState) => void
+  rejectWorkApproval?: (error: Error) => void
+  workPlanId?: string
+  workPlanCalls?: WorkToolCall[]
+  workPlanSequence?: number
+  resolveWorkPlan?: (state: WorkPlanState) => void
+  rejectWorkPlan?: (error: Error) => void
+  workAuditSequence?: number
+  workAuditEpoch?: number
+  workUndoEntry?: WorkAuditEntry
+  resolveWorkAudit?: (state: WorkAuditState) => void
+  rejectWorkAudit?: (error: Error) => void
   resolveSettingsState?: (state: DesktopSettingsState) => void
   rejectSettingsState?: (error: Error) => void
   resolveVoiceSettingsState?: (state: VoiceSettingsState) => void
@@ -467,6 +508,7 @@ type ChatSessionMethod =
   | 'chat.create'
   | 'chat.open'
   | 'chat.rename'
+  | 'chat.mode'
   | 'chat.pin'
   | 'chat.archive'
   | 'chat.delete'
@@ -476,10 +518,24 @@ const CHAT_SESSION_METHODS = new Set<ProtocolMethod>([
   'chat.create',
   'chat.open',
   'chat.rename',
+  'chat.mode',
   'chat.pin',
   'chat.archive',
   'chat.delete',
 ])
+
+const WORK_WORKSPACE_METHODS = new Set<ProtocolMethod>([
+  'work.workspace.get',
+  'work.workspace.bind',
+])
+
+const WORK_ACTION_METHODS = new Set<ProtocolMethod>([
+  'work.tool.run', 'work.tool.preview', 'work.tool.confirm',
+  'work.plan.create', 'work.plan.control', 'work.plan.confirm',
+  'work.undo',
+])
+type WorkPlanMethod = 'work.plan.get' | 'work.plan.create' | 'work.plan.control' | 'work.plan.confirm'
+const WORK_PLAN_METHODS = new Set<ProtocolMethod>(['work.plan.get', 'work.plan.create', 'work.plan.control', 'work.plan.confirm'])
 
 type ProjectMethod =
   | 'project.list'
@@ -544,6 +600,20 @@ export class BackendProcess {
   private handshakeTimeout: ReturnType<typeof setTimeout> | null = null
   private initializeTimeout: ReturnType<typeof setTimeout> | null = null
   private readonly pendingRequests = new Map<string, PendingRequest>()
+  // Native IPC accepts only the single preview already validated for this Chat.
+  // Tokens are consumed before dispatch, and scope/navigation changes revoke them.
+  private readonly workApprovals = new Map<string, WorkToolApproval>()
+  private readonly workPlans = new Map<string, WorkPlan>()
+  // Requests can resolve in a different order. An older poll must not release
+  // the lease published by a later control or confirmation acknowledgement.
+  private readonly workPlanAppliedSequences = new Map<string, number>()
+  private workPlanSequence = 0
+  private readonly workUndoEntries = new Map<string, Map<string, WorkAuditEntry>>()
+  // History can arrive after a mutation or a newer history page. Both fences
+  // keep an old response from making a consumed Undo token current again.
+  private workAuditEpoch = 0
+  private workAuditSequence = 0
+  private workAuditAppliedSequence = 0
   private readonly timedOutVoiceCaptureRequestIds = new Set<string>()
   private readonly timedOutSpeechStartRequestIds = new Set<string>()
   private expectedExit = false
@@ -658,6 +728,7 @@ export class BackendProcess {
       || this.restartCompletion !== null
       || this.pendingRequests.size > 0
       || this.hasActiveSpeechTurn()
+      || this.hasWorkPlanLease()
   }
 
   /** Spawn the Backend and begin its authenticated handshake and initialization. */
@@ -685,6 +756,10 @@ export class BackendProcess {
     this.expectedExit = false
     this.lastDiagnostic = ''
     const sessionToken = randomBytes(32).toString('base64url')
+    this.workPlans.clear()
+    this.workPlanAppliedSequences.clear()
+    this.workApprovals.clear()
+    this.invalidateWorkUndo()
     this.pendingRequests.clear()
     this.timedOutVoiceCaptureRequestIds.clear()
     this.timedOutSpeechStartRequestIds.clear()
@@ -833,6 +908,7 @@ export class BackendProcess {
 
   /** Start a streamed Chat operation and return the ID used for cancellation. */
   beginChat(request: ChatRequest): { requestId: string } {
+    this.assertWorkIdle()
     if (
       this.snapshot.status !== 'ready'
       || this.snapshot.chatId === undefined
@@ -1113,6 +1189,7 @@ export class BackendProcess {
 
   /** Retry the final persisted turn, optionally replacing its user text. */
   beginRetry(request: RetryChatRequest): { requestId: string } {
+    this.assertWorkIdle()
     if (
       this.snapshot.status !== 'ready'
       || this.snapshot.chatId === undefined
@@ -1438,6 +1515,181 @@ export class BackendProcess {
   /** Rename one idle persisted Chat. */
   renameChat(request: RenameChatRequest): Promise<ChatSessionState> {
     return this.requestChatState('chat.rename', request)
+  }
+
+  /** Persist a deliberate mode change only while the conversation is idle. */
+  setChatMode(request: SetChatModeRequest): Promise<ChatSessionState> {
+    return this.requestChatState('chat.mode', request)
+  }
+
+  /** Read the canonical scope of the current explicitly selected Work Chat. */
+  getWorkWorkspace(chatId: string): Promise<WorkWorkspaceState> {
+    return this.requestWorkWorkspace('work.workspace.get', { chatId })
+  }
+
+  /** Bind a native-selected directory or revoke it through the Python boundary. */
+  bindWorkWorkspace(request: WorkWorkspaceBindParams): Promise<WorkWorkspaceState> {
+    return this.requestWorkWorkspace('work.workspace.bind', request)
+  }
+
+  /** Read the closed tool catalog for the current explicitly selected Work Chat. */
+  getWorkTools(chatId: string): Promise<WorkToolsState> {
+    if (this.snapshot.status !== 'ready' || this.snapshot.chatId !== chatId
+      || !this.snapshot.capabilities.includes('work.tools')) {
+      return Promise.reject(new Error('Work tools are unavailable for this Chat.'))
+    }
+    return new Promise((resolve, reject) => {
+      this.sendRequest('work.tools.list', { chatId }, chatId, {
+        resolveWorkTools: resolve, rejectWorkTools: reject,
+      })
+    })
+  }
+
+  /** Execute one closed read tool, correlated with its exact expected output shape. */
+  runWorkTool(request: WorkToolRunParams): Promise<WorkToolResultState> {
+    if (this.hasWorkPlanLease()) return Promise.reject(new Error('Finish or cancel the current Work plan first.'))
+    if (this.snapshot.status !== 'ready' || this.snapshot.chatId !== request.chatId
+      || !this.snapshot.capabilities.includes('work.read')) {
+      return Promise.reject(new Error('Work read tools are unavailable for this Chat.'))
+    }
+    if (!['list_directory', 'read_text', 'search_files', 'metadata'].includes(request.call.toolId)) {
+      return Promise.reject(new Error('This endpoint accepts read tools only.'))
+    }
+    if ([...this.pendingRequests.values()].some((pending) => (
+      CHAT_GENERATION_METHODS.has(pending.method) || VOICE_TRANSCRIPTION_METHODS.has(pending.method)
+      || WORK_ACTION_METHODS.has(pending.method) || pending.method === 'work.workspace.bind'
+    ))) {
+      return Promise.reject(new Error('Wait for the current Chat or Work action.'))
+    }
+    return new Promise((resolve, reject) => {
+      this.sendRequest('work.tool.run', request, request.chatId, {
+        workToolCall: parseWorkToolCall(request.call), resolveWorkTool: resolve, rejectWorkTool: reject,
+      })
+    })
+  }
+
+  /** Prepare one exact write for inspection, with its owner frozen until approval. */
+  previewWorkTool(request: WorkToolRunParams): Promise<WorkToolApprovalState> {
+    if (this.hasWorkPlanLease()) return Promise.reject(new Error('Finish or cancel the current Work plan first.'))
+    this.workApprovals.delete(request.chatId)
+    if (this.snapshot.status !== 'ready' || this.snapshot.chatId !== request.chatId
+      || !this.snapshot.capabilities.includes('work.preview')) {
+      return Promise.reject(new Error('Work previews are unavailable for this Chat.'))
+    }
+    if (!['create', 'edit', 'move', 'delete'].includes(request.call.toolId)) {
+      return Promise.reject(new Error('Only write tools require a change preview.'))
+    }
+    if ([...this.pendingRequests.values()].some((pending) => (
+      WORK_ACTION_METHODS.has(pending.method) || CHAT_GENERATION_METHODS.has(pending.method)
+      || VOICE_TRANSCRIPTION_METHODS.has(pending.method) || pending.method === 'work.workspace.bind'
+    ))) return Promise.reject(new Error('Wait for the current Chat or Work action.'))
+    return new Promise((resolve, reject) => {
+      this.sendRequest('work.tool.preview', request, request.chatId, {
+        workToolCall: parseWorkToolCall(request.call), resolveWorkApproval: resolve, rejectWorkApproval: reject,
+      })
+    })
+  }
+
+  /** Consume the active Chat's exact preview once, with no permanent grant. */
+  confirmWorkTool(request: WorkToolConfirmParams): Promise<WorkToolResultState> {
+    if (this.hasWorkPlanLease()) return Promise.reject(new Error('Finish or cancel the current Work plan first.'))
+    if (this.snapshot.status !== 'ready' || this.snapshot.chatId !== request.chatId
+      || !this.snapshot.capabilities.includes('work.confirm')) {
+      return Promise.reject(new Error('Work approval is unavailable for this Chat.'))
+    }
+    if ([...this.pendingRequests.values()].some((pending) => (
+      WORK_ACTION_METHODS.has(pending.method) || CHAT_GENERATION_METHODS.has(pending.method)
+      || VOICE_TRANSCRIPTION_METHODS.has(pending.method) || pending.method === 'work.workspace.bind'
+    ))) return Promise.reject(new Error('Wait for the current Chat or Work action.'))
+    const approval = this.workApprovals.get(request.chatId)
+    if (approval === undefined || approval.approvalId !== request.approvalId) {
+      return Promise.reject(new Error('Prepare a new preview before approving this change.'))
+    }
+    this.workApprovals.delete(request.chatId)
+    if (Date.parse(approval.expiresAt) <= Date.now()) {
+      return Promise.reject(new Error('This preview expired. Prepare the change again.'))
+    }
+    return new Promise((resolve, reject) => {
+      this.sendRequest('work.tool.confirm', request, request.chatId, {
+        workToolCall: approval.call, workApprovalGranted: request.granted,
+        resolveWorkTool: resolve, rejectWorkTool: reject,
+      })
+    })
+  }
+
+  /** Read the active Work Chat's plan without starting or approving its steps. */
+  getWorkPlan(chatId: string): Promise<WorkPlanState> {
+    return this.requestWorkPlan('work.plan.get', { chatId })
+  }
+
+  /** Load redacted owner history even when its previous Workspace was unbound. */
+  getWorkAudit(chatId: string): Promise<WorkAuditState> {
+    if (this.snapshot.status !== 'ready' || this.snapshot.chatId !== chatId
+      || !this.snapshot.capabilities.includes('work.audit')) {
+      return Promise.reject(new Error('Work history is unavailable for this Chat.'))
+    }
+    if (this.hasWorkPlanLease() || [...this.pendingRequests.values()].some((pending) => (
+      WORK_ACTION_METHODS.has(pending.method) || CHAT_GENERATION_METHODS.has(pending.method)
+      || VOICE_TRANSCRIPTION_METHODS.has(pending.method)
+    ))) return Promise.reject(new Error('Wait for the current action before reading Work history.'))
+    return new Promise((resolve, reject) => {
+      this.sendRequest('work.audit.list', { chatId }, chatId, {
+        workAuditSequence: ++this.workAuditSequence, workAuditEpoch: this.workAuditEpoch,
+        resolveWorkAudit: resolve, rejectWorkAudit: reject,
+      })
+    })
+  }
+
+  /** Consume one displayed eligible Undo token before its conditional inverse write. */
+  undoWorkAction(request: WorkUndoParams): Promise<WorkToolResultState> {
+    if (this.snapshot.status !== 'ready' || this.snapshot.chatId !== request.chatId
+      || !this.snapshot.capabilities.includes('work.undo')) {
+      return Promise.reject(new Error('Work Undo is unavailable for this Chat.'))
+    }
+    if (this.hasActiveMaintenanceWork()) {
+      return Promise.reject(new Error('Finish the current Chat, Voice, or Work action before Undo.'))
+    }
+    const entry = this.workUndoEntries.get(request.chatId)?.get(request.undoId)
+    if (entry === undefined || request.confirmed !== true) {
+      return Promise.reject(new Error('Refresh Work history and confirm an available Undo.'))
+    }
+    this.invalidateWorkUndo(request.chatId)
+    this.workApprovals.delete(request.chatId)
+    return new Promise((resolve, reject) => {
+      this.sendRequest('work.undo', request, request.chatId, {
+        workUndoEntry: entry, resolveWorkTool: resolve, rejectWorkTool: reject,
+      })
+    })
+  }
+
+  /** Create a reviewed immutable call sequence without launching its worker. */
+  createWorkPlan(request: WorkPlanCreateParams): Promise<WorkPlanState> {
+    return this.requestWorkPlan('work.plan.create', request)
+  }
+
+  /** Apply one explicit start, pause, resume, next, or cancel to its exact plan. */
+  controlWorkPlan(request: WorkPlanControlParams): Promise<WorkPlanState> {
+    if (this.workPlans.get(request.chatId)?.planId !== request.planId) {
+      return Promise.reject(new Error('This Work plan is no longer current.'))
+    }
+    return this.requestWorkPlan('work.plan.control', request)
+  }
+
+  /** Route one displayed write-step decision through the plan owning its token. */
+  confirmWorkPlan(request: WorkPlanConfirmParams): Promise<WorkPlanState> {
+    const current = this.workPlans.get(request.chatId)
+    if (current?.planId !== request.planId || current.state !== 'waiting'
+      || !current.steps.some((step) => step.approval?.approvalId === request.approvalId)) {
+      return Promise.reject(new Error('This plan approval is no longer current.'))
+    }
+    // Reserve the displayed token before dispatch. A duplicate native IPC call
+    // cannot race the worker acknowledgement and reuse its waiting approval.
+    this.workPlans.set(request.chatId, {
+      ...current, state: 'running', busy: true,
+      steps: current.steps.map((step) => step.approval?.approvalId === request.approvalId
+        ? { ...step, status: 'running', approval: null } : step),
+    })
+    return this.requestWorkPlan('work.plan.confirm', request)
   }
 
   /** Set one idle Chat's pin state. */
@@ -1879,6 +2131,9 @@ export class BackendProcess {
     method: Method,
     params: RequestParamsByMethod[Method],
   ): Promise<ChatSessionState> {
+    if (method !== 'chat.list') {
+      try { this.assertWorkIdle() } catch (error) { return Promise.reject(error) }
+    }
     if (this.snapshot.status !== 'ready') {
       return Promise.reject(new Error('Python Backend is not ready.'))
     }
@@ -1922,6 +2177,9 @@ export class BackendProcess {
     method: Method,
     params: RequestParamsByMethod[Method],
   ): Promise<ProjectState> {
+    if (method !== 'project.list') {
+      try { this.assertWorkIdle() } catch (error) { return Promise.reject(error) }
+    }
     if (this.snapshot.status !== 'ready') {
       return Promise.reject(new Error('Python Backend is not ready.'))
     }
@@ -1966,6 +2224,39 @@ export class BackendProcess {
           rejectProjectState: reject,
         },
       )
+    })
+  }
+
+  private requestWorkWorkspace(
+    method: 'work.workspace.get' | 'work.workspace.bind',
+    params: WorkWorkspaceGetParams | WorkWorkspaceBindParams,
+  ): Promise<WorkWorkspaceState> {
+    if (method === 'work.workspace.bind' && this.hasWorkPlanLease()) {
+      return Promise.reject(new Error('Finish or cancel the current Work plan first.'))
+    }
+    if (
+      this.snapshot.status !== 'ready'
+      || !this.snapshot.capabilities.includes('work.workspace')
+      || this.snapshot.chatId !== params.chatId
+    ) {
+      return Promise.reject(new Error('Work Workspace is unavailable for this Chat.'))
+    }
+    if (
+      method === 'work.workspace.bind'
+      && [...this.pendingRequests.values()].some((pending) => (
+        CHAT_GENERATION_METHODS.has(pending.method)
+        || VOICE_TRANSCRIPTION_METHODS.has(pending.method)
+        || WORK_WORKSPACE_METHODS.has(pending.method)
+        || WORK_ACTION_METHODS.has(pending.method)
+      ))
+    ) {
+      return Promise.reject(new Error('Wait for the current Chat or Workspace action.'))
+    }
+    return new Promise((resolve, reject) => {
+      this.sendRequest(method, params, params.chatId, {
+        resolveWorkWorkspace: resolve,
+        rejectWorkWorkspace: reject,
+      })
     })
   }
 
@@ -2101,12 +2392,83 @@ export class BackendProcess {
   }
 
   private assertKnowledgeAvailable(): void {
+    this.assertWorkIdle()
     if (this.snapshot.status !== 'ready') {
       throw new Error('Python Backend is not ready.')
     }
     if (!this.snapshot.capabilities.includes('knowledge.management')) {
       throw new Error('Python Backend does not support knowledge management.')
     }
+  }
+
+  private assertWorkIdle(): void {
+    if (this.hasWorkPlanLease()
+      || [...this.pendingRequests.values()].some((pending) => WORK_ACTION_METHODS.has(pending.method))) {
+      throw new Error('Wait for the current Work tool to finish.')
+    }
+  }
+
+  private hasWorkPlanLease(): boolean {
+    return [...this.workPlans.values()].some(workPlanHasLease)
+  }
+
+  private invalidateWorkUndo(chatId?: string): void {
+    // Revocation also advances a fence for history reads already in flight.
+    // Refresh after a settled conflict can reacquire still-eligible records;
+    // a page captured before the mutation cannot restore its consumed token.
+    this.workAuditEpoch += 1
+    if (chatId === undefined) this.workUndoEntries.clear()
+    else this.workUndoEntries.delete(chatId)
+  }
+
+  private requestWorkPlan<Method extends WorkPlanMethod>(method: Method, params: RequestParamsByMethod[Method]): Promise<WorkPlanState> {
+    if (this.snapshot.status !== 'ready' || this.snapshot.chatId !== params.chatId
+      || !this.snapshot.capabilities.includes('work.plan')) return Promise.reject(new Error('Work plans are unavailable for this Chat.'))
+    if (method === 'work.plan.create' && (this.hasWorkPlanLease() || [...this.pendingRequests.values()].some((pending) => (
+      WORK_ACTION_METHODS.has(pending.method) || CHAT_GENERATION_METHODS.has(pending.method)
+      || VOICE_TRANSCRIPTION_METHODS.has(pending.method)
+    )))) return Promise.reject(new Error('Finish the current action before creating a plan.'))
+    const sequence = ++this.workPlanSequence
+    if (method === 'work.plan.create') {
+      this.workApprovals.delete(params.chatId)
+      this.workPlans.delete(params.chatId)
+      this.workPlanAppliedSequences.set(params.chatId, sequence)
+    }
+    return new Promise((resolve, reject) => {
+      this.sendRequest(method, params, params.chatId, {
+        workPlanSequence: sequence,
+        ...('planId' in params ? { workPlanId: params.planId } : {}),
+        ...('calls' in params ? { workPlanCalls: params.calls.map(parseWorkToolCall) } : {}),
+        resolveWorkPlan: resolve, rejectWorkPlan: reject,
+      })
+    })
+  }
+
+  private validateWorkPlanResponse(pending: PendingRequest, value: unknown): WorkPlanState {
+    const state = parseWorkPlanState(value)
+    const calls = state.plan?.steps.map((step) => step.call)
+    if (pending.workPlanCalls !== undefined && (state.plan?.state !== 'pending' || state.plan.busy
+      || state.plan.steps.some((step) => step.status !== 'pending'))) {
+      throw new ProtocolValidationError('protocol.invalid_result', 'Creating a Work plan cannot start its steps.')
+    }
+    if ((pending.workPlanId !== undefined && state.plan?.planId !== pending.workPlanId)
+      || (pending.workPlanCalls !== undefined && JSON.stringify(calls) !== JSON.stringify(pending.workPlanCalls))) {
+      throw new ProtocolValidationError('protocol.invalid_result', 'Work plan does not match its requested owner or calls.')
+    }
+    const previous = pending.chatId === undefined ? undefined : this.workPlans.get(pending.chatId)
+    const applied = this.workPlanAppliedSequences.get(pending.chatId ?? '') ?? 0
+    if ((pending.workPlanSequence ?? 0) >= applied && previous !== undefined
+      && workPlanHasLease(previous) && state.plan === null) {
+      throw new ProtocolValidationError('protocol.invalid_result', 'A live Work plan disappeared before native ownership ended.')
+    }
+    if ((pending.workPlanSequence ?? 0) >= applied && previous !== undefined && state.plan !== null) {
+      if (previous.planId !== state.plan.planId || previous.title !== state.plan.title
+        || JSON.stringify(previous.steps.map((step) => [step.stepId, step.call]))
+          !== JSON.stringify(state.plan.steps.map((step) => [step.stepId, step.call]))) {
+        throw new ProtocolValidationError('protocol.invalid_result', 'Work plan changed its immutable plan content.')
+      }
+    }
+    return state
   }
 
   private hasActiveKnowledgeLease(): boolean {
@@ -2175,6 +2537,26 @@ export class BackendProcess {
       | 'rejectChatState'
       | 'resolveProjectState'
       | 'rejectProjectState'
+      | 'resolveWorkWorkspace'
+      | 'rejectWorkWorkspace'
+      | 'resolveWorkTools'
+      | 'rejectWorkTools'
+      | 'workToolCall'
+      | 'workApprovalGranted'
+      | 'resolveWorkTool'
+      | 'rejectWorkTool'
+      | 'resolveWorkApproval'
+      | 'rejectWorkApproval'
+      | 'workPlanId'
+      | 'workPlanCalls'
+      | 'workPlanSequence'
+      | 'resolveWorkPlan'
+      | 'rejectWorkPlan'
+      | 'workAuditSequence'
+      | 'workAuditEpoch'
+      | 'workUndoEntry'
+      | 'resolveWorkAudit'
+      | 'rejectWorkAudit'
       | 'resolveSettingsState'
       | 'rejectSettingsState'
       | 'resolveVoiceSettingsState'
@@ -2214,6 +2596,10 @@ export class BackendProcess {
     const requestId = randomUUID()
     const request = createRequest(requestId, method, params)
     const wireRequest = `${JSON.stringify(request)}\n`
+    if (method === 'work.tool.confirm' || method === 'work.plan.create'
+      || method === 'work.plan.confirm' || method === 'work.workspace.bind') {
+      this.invalidateWorkUndo(chatId)
+    }
     this.pendingRequests.set(requestId, {
       method,
       ...(chatId === undefined ? {} : { chatId }),
@@ -2339,6 +2725,43 @@ export class BackendProcess {
         parseChatStateResult(message.result)
       } else if (PROJECT_METHODS.has(pending.method)) {
         parseProjectStateResult(message.result)
+      } else if (WORK_WORKSPACE_METHODS.has(pending.method)) {
+        const state = parseWorkWorkspaceState(message.result)
+        if (state.chatId !== pending.chatId) {
+          throw new ProtocolValidationError(
+            'protocol.invalid_result',
+            'Work Workspace result does not belong to its request.',
+          )
+        }
+      } else if (pending.method === 'work.tools.list') {
+        parseWorkToolsState(message.result)
+      } else if (pending.method === 'work.tool.run' || pending.method === 'work.tool.confirm') {
+        if (pending.workToolCall === undefined) {
+          throw new ProtocolValidationError('protocol.invalid_result', 'Work tool request has no expected operation.')
+        }
+        const outcome = parseWorkToolResultForCall(message.result, pending.workToolCall)
+        if (pending.method === 'work.tool.confirm' && pending.workApprovalGranted === false
+          && (!['denied', 'failed'].includes(outcome.result.status) || outcome.result.data !== null
+            || !['permission_denied', 'io_error', 'conflict'].includes(outcome.result.error?.code ?? ''))) {
+          // A decline can fail while persisting its audit record. Its token is
+          // still spent and no mutation occurred, so a fixed storage/conflict
+          // error is a truthful result rather than protocol corruption.
+          throw new ProtocolValidationError('protocol.invalid_result', 'A declined Work action cannot report an applied change.')
+        }
+      } else if (pending.method === 'work.tool.preview') {
+        const state = parseWorkToolApprovalState(message.result)
+        if (pending.workToolCall === undefined || JSON.stringify(state.approval.call) !== JSON.stringify(pending.workToolCall)) {
+          throw new ProtocolValidationError('protocol.invalid_result', 'Work preview does not match its exact requested parameters.')
+        }
+      } else if (WORK_PLAN_METHODS.has(pending.method)) {
+        this.validateWorkPlanResponse(pending, message.result)
+      } else if (pending.method === 'work.audit.list') {
+        parseWorkAuditForChat(message.result, pending.chatId!)
+      } else if (pending.method === 'work.undo') {
+        if (pending.workUndoEntry === undefined) {
+          throw new ProtocolValidationError('protocol.invalid_result', 'Work Undo request has no displayed audit record.')
+        }
+        parseWorkUndoResultForEntry(message.result, pending.workUndoEntry)
       } else if (SETTINGS_METHODS.has(pending.method)) {
         parseSettingsStateResult(message.result)
       } else if (VOICE_SETTINGS_METHODS.has(pending.method)) {
@@ -2495,6 +2918,21 @@ export class BackendProcess {
       if (PROJECT_METHODS.has(pending.method)) {
         pending.rejectProjectState?.(new Error(message.error.message))
       }
+      if (WORK_WORKSPACE_METHODS.has(pending.method)) {
+        pending.rejectWorkWorkspace?.(new Error('The Work Workspace action failed.'))
+      }
+      if (pending.method === 'work.tools.list') {
+        pending.rejectWorkTools?.(new Error('The Work tool catalog could not be loaded.'))
+      }
+      if (pending.method === 'work.tool.run' || pending.method === 'work.tool.confirm') {
+        pending.rejectWorkTool?.(new Error('The Work tool could not run.'))
+      }
+      if (pending.method === 'work.tool.preview') {
+        pending.rejectWorkApproval?.(new Error('The Work change preview could not be prepared.'))
+      }
+      if (WORK_PLAN_METHODS.has(pending.method)) pending.rejectWorkPlan?.(new Error('The Work plan action could not complete.'))
+      if (pending.method === 'work.audit.list') pending.rejectWorkAudit?.(new Error('Work history could not be loaded.'))
+      if (pending.method === 'work.undo') pending.rejectWorkTool?.(new Error('The Work change could not be undone.'))
       if (SETTINGS_METHODS.has(pending.method)) {
         pending.rejectSettingsState?.(new Error(message.error.message))
       }
@@ -2625,6 +3063,14 @@ export class BackendProcess {
 
     if (CHAT_SESSION_METHODS.has(pending.method)) {
       const result = parseChatStateResult(message.result)
+      if (pending.method === 'chat.mode' || result.activeChat.chatId !== this.snapshot.chatId) {
+        if (!this.hasWorkPlanLease()) {
+          this.workPlans.clear()
+          this.workPlanAppliedSequences.clear()
+        }
+        this.workApprovals.clear()
+        this.invalidateWorkUndo()
+      }
       if (result.activeChat.modelName !== this.snapshot.modelName) {
         this.protocolFailure(
           'Active Chat model does not match the running Backend.',
@@ -2645,6 +3091,10 @@ export class BackendProcess {
 
     if (PROJECT_METHODS.has(pending.method)) {
       const result = parseProjectStateResult(message.result)
+      if (pending.method !== 'project.list') {
+        this.workApprovals.clear()
+        this.invalidateWorkUndo()
+      }
       if (result.chatState.activeChat.modelName !== this.snapshot.modelName) {
         this.protocolFailure(
           'Active Chat model does not match the running Backend.',
@@ -2660,6 +3110,55 @@ export class BackendProcess {
         error: undefined,
       })
       pending.resolveProjectState?.(result)
+      return
+    }
+
+    if (WORK_WORKSPACE_METHODS.has(pending.method)) {
+      if (pending.method === 'work.workspace.bind' && pending.chatId !== undefined) {
+        this.workApprovals.delete(pending.chatId)
+      }
+      pending.resolveWorkWorkspace?.(parseWorkWorkspaceState(message.result))
+      return
+    }
+    if (pending.method === 'work.tools.list') {
+      pending.resolveWorkTools?.(parseWorkToolsState(message.result))
+      return
+    }
+    if (pending.method === 'work.audit.list') {
+      const state = parseWorkAuditForChat(message.result, pending.chatId!)
+      if (pending.workAuditEpoch === this.workAuditEpoch
+        && (pending.workAuditSequence ?? 0) >= this.workAuditAppliedSequence
+        && ![...this.pendingRequests.values()].some((request) => request.method === 'work.undo')) {
+        this.workAuditAppliedSequence = pending.workAuditSequence ?? 0
+        this.workUndoEntries.set(pending.chatId!, new Map(state.entries
+          .filter((entry) => entry.undoId !== null).map((entry) => [entry.undoId!, entry])))
+      }
+      pending.resolveWorkAudit?.(state)
+      return
+    }
+    if (pending.method === 'work.undo') {
+      pending.resolveWorkTool?.(parseWorkUndoResultForEntry(message.result, pending.workUndoEntry!))
+      return
+    }
+    if (pending.method === 'work.tool.run' || pending.method === 'work.tool.confirm') {
+      pending.resolveWorkTool?.(parseWorkToolResultForCall(message.result, pending.workToolCall!))
+      return
+    }
+    if (pending.method === 'work.tool.preview') {
+      const state = parseWorkToolApprovalState(message.result)
+      this.workApprovals.set(pending.chatId!, state.approval)
+      pending.resolveWorkApproval?.(state)
+      return
+    }
+    if (WORK_PLAN_METHODS.has(pending.method)) {
+      const state = this.validateWorkPlanResponse(pending, message.result)
+      const chatId = pending.chatId!
+      if ((pending.workPlanSequence ?? 0) >= (this.workPlanAppliedSequences.get(chatId) ?? 0)) {
+        this.workPlanAppliedSequences.set(chatId, pending.workPlanSequence ?? 0)
+        if (state.plan === null) this.workPlans.delete(chatId)
+        else this.workPlans.set(chatId, state.plan)
+      }
+      pending.resolveWorkPlan?.(state)
       return
     }
 
@@ -3371,6 +3870,12 @@ export class BackendProcess {
           'Python Backend stopped before the Project action completed.',
         ),
       )
+      pending.rejectWorkWorkspace?.(new Error('Python Backend stopped before the Workspace action completed.'))
+      pending.rejectWorkTools?.(new Error('Python Backend stopped before the tool catalog completed.'))
+      pending.rejectWorkTool?.(new Error('Python Backend stopped before the Work tool completed.'))
+      pending.rejectWorkApproval?.(new Error('Python Backend stopped before the Work preview completed.'))
+      pending.rejectWorkPlan?.(new Error('Python Backend stopped before the Work plan completed.'))
+      pending.rejectWorkAudit?.(new Error('Python Backend stopped before Work history loaded.'))
       pending.rejectSettingsState?.(
         new Error(
           'Python Backend stopped before the Settings action completed.',
@@ -3411,6 +3916,10 @@ export class BackendProcess {
         new Error('Python Backend stopped before speech playback started.'),
       )
     }
+    this.workPlans.clear()
+    this.workPlanAppliedSequences.clear()
+    this.workApprovals.clear()
+    this.invalidateWorkUndo()
     this.pendingRequests.clear()
   }
 
@@ -3425,6 +3934,12 @@ export class BackendProcess {
       const error = new Error(message)
       pending.rejectChatState?.(error)
       pending.rejectProjectState?.(error)
+      pending.rejectWorkWorkspace?.(error)
+      pending.rejectWorkTools?.(error)
+      pending.rejectWorkTool?.(error)
+      pending.rejectWorkApproval?.(error)
+      pending.rejectWorkPlan?.(error)
+      pending.rejectWorkAudit?.(error)
       pending.rejectSettingsState?.(error)
       pending.rejectVoiceSettingsState?.(error)
       pending.rejectVoiceCapture?.(error)
@@ -3438,6 +3953,18 @@ export class BackendProcess {
       pending.rejectChatState = undefined
       pending.resolveProjectState = undefined
       pending.rejectProjectState = undefined
+      pending.resolveWorkWorkspace = undefined
+      pending.rejectWorkWorkspace = undefined
+      pending.resolveWorkTools = undefined
+      pending.rejectWorkTools = undefined
+      pending.resolveWorkTool = undefined
+      pending.rejectWorkTool = undefined
+      pending.resolveWorkApproval = undefined
+      pending.rejectWorkApproval = undefined
+      pending.resolveWorkPlan = undefined
+      pending.rejectWorkPlan = undefined
+      pending.resolveWorkAudit = undefined
+      pending.rejectWorkAudit = undefined
       pending.resolveSettingsState = undefined
       pending.rejectSettingsState = undefined
       pending.resolveVoiceSettingsState = undefined
@@ -3463,6 +3990,10 @@ export class BackendProcess {
     this.clearHandshakeTimeout()
     this.clearInitializeTimeout()
     this.rejectPendingActionPromises(message)
+    this.workPlans.clear()
+    this.workPlanAppliedSequences.clear()
+    this.workApprovals.clear()
+    this.invalidateWorkUndo()
     this.pendingRequests.clear()
     this.timedOutVoiceCaptureRequestIds.clear()
     this.timedOutSpeechStartRequestIds.clear()
@@ -3484,6 +4015,10 @@ export class BackendProcess {
     this.clearHandshakeTimeout()
     this.clearInitializeTimeout()
     this.rejectPendingActionPromises(message)
+    this.workPlans.clear()
+    this.workPlanAppliedSequences.clear()
+    this.workApprovals.clear()
+    this.invalidateWorkUndo()
     this.pendingRequests.clear()
     this.timedOutVoiceCaptureRequestIds.clear()
     this.timedOutSpeechStartRequestIds.clear()

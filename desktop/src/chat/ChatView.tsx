@@ -7,6 +7,7 @@ import {
   useLayoutEffect,
   useRef,
   type RefObject,
+  type ReactNode,
 } from 'react'
 
 import type {
@@ -40,6 +41,7 @@ interface ChatViewProps {
   callButtonRef: RefObject<HTMLButtonElement | null>
   canSend: boolean
   chatMode: 'chat' | 'work'
+  modeSelectionDisabled: boolean
   chatTitle: string
   dictationActive: boolean
   dictationDisabled: boolean
@@ -65,6 +67,7 @@ interface ChatViewProps {
   streaming: boolean
   stopPending: boolean
   voiceCallDisabled: boolean
+  workPanel?: ReactNode
   onChooseAttachments(): void
   onBeginRetryEdit(pair: RetryableChatPair): void
   onCancelRetryEdit(): void
@@ -81,6 +84,7 @@ interface ChatViewProps {
   onRetryEditChange(pair: RetryableChatPair, message: string): void
   onRetryConnection(): void
   onSelectModel(modelName: string): void
+  onSelectMode(mode: 'chat' | 'work'): void
   onCancelSongCover(): void
   onExportSongCover(): void
   onOpenSongCoverSetup(): void
@@ -124,6 +128,7 @@ export function ChatView({
   callButtonRef,
   canSend,
   chatMode,
+  modeSelectionDisabled,
   chatTitle,
   dictationActive,
   dictationDisabled,
@@ -149,6 +154,7 @@ export function ChatView({
   streaming,
   stopPending,
   voiceCallDisabled,
+  workPanel,
   onChooseAttachments,
   onBeginRetryEdit,
   onCancelRetryEdit,
@@ -165,6 +171,7 @@ export function ChatView({
   onRetryEditChange,
   onRetryConnection,
   onSelectModel,
+  onSelectMode,
   onCancelSongCover,
   onExportSongCover,
   onOpenSongCoverSetup,
@@ -211,6 +218,22 @@ export function ChatView({
           </div>
         </div>
         <div className="connection-controls">
+          <select
+            className="chat-mode-select"
+            aria-label="Conversation mode"
+            aria-describedby="chat-mode-capabilities"
+            value={chatMode}
+            disabled={modeSelectionDisabled}
+            onChange={(event) => {
+              const mode = event.currentTarget.value
+              if (mode === 'chat' || mode === 'work') {
+                onSelectMode(mode)
+              }
+            }}
+          >
+            <option value="chat">Chat</option>
+            <option value="work">Work</option>
+          </select>
           <span
             className={`connection-pill ${snapshot.status}`}
             role="status"
@@ -234,6 +257,15 @@ export function ChatView({
           </button>
         </div>
       </header>
+
+      <div className="chat-mode-context">
+        <div className="chat-mode-capabilities" id="chat-mode-capabilities" role="status">
+          {chatMode === 'work'
+            ? 'Work: plan tasks in a selected Workspace. File changes require your approval.'
+            : 'Chat: conversation and answers. Computer tools are disabled.'}
+        </div>
+        {chatMode === 'work' && workPanel}
+      </div>
 
       <main
         ref={scrollRef}

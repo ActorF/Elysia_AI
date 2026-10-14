@@ -30,6 +30,10 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { BackendProcess } from './backend-process.js'
+import { parseWorkWorkspaceGetParams } from './work-protocol.js'
+import { parseWorkToolRunParams, parseWorkToolConfirmParams } from './work-tool-protocol.js'
+import { parseWorkPlanGetParams, parseWorkPlanCreateParams, parseWorkPlanControlParams, parseWorkPlanConfirmParams } from './work-plan-protocol.js'
+import { parseWorkAuditListParams, parseWorkUndoParams } from './work-audit-protocol.js'
 import { ApplicationShutdownGate } from './application-shutdown-gate.js'
 import {
   DATA_STORAGE_CLEANABLE_CATEGORIES,
@@ -160,6 +164,7 @@ import type {
   MoveChatToProjectRequest,
   PinChatRequest,
   RenameChatRequest,
+  SetChatModeRequest,
   RetryChatRequest,
   StartSpeechPlaybackRequest,
   UpdateDesktopSettingsRequest,
@@ -1656,6 +1661,17 @@ function parsePinChatRequest(value: unknown): PinChatRequest {
   }
 }
 
+function parseSetChatModeRequest(value: unknown): SetChatModeRequest {
+  const request = parseObject(value, ['chatId', 'mode'], 'Chat mode request')
+  if (request.mode !== 'chat' && request.mode !== 'work') {
+    throw new Error('Chat mode is invalid.')
+  }
+  return {
+    chatId: parseChatId(request.chatId),
+    mode: request.mode,
+  }
+}
+
 function parseArchiveChatRequest(value: unknown): ArchiveChatRequest {
   const request = parseObject(
     value,
@@ -2900,6 +2916,14 @@ function registerIpcHandlers(): void {
   )
 
   ipcMain.handle(
+    'chat:mode',
+    (event, request: unknown) => {
+      assertTrustedSender(event)
+      return requireBackend().setChatMode(parseSetChatModeRequest(request))
+    },
+  )
+
+  ipcMain.handle(
     'chat:archive',
     (event, request: unknown) => {
       assertTrustedSender(event)
@@ -3361,6 +3385,86 @@ function registerIpcHandlers(): void {
       })
     },
   )
+
+  ipcMain.handle('work:get-workspace', (event, chatId: unknown) => {
+    assertTrustedSender(event)
+    const request = parseWorkWorkspaceGetParams({ chatId })
+    return requireBackend().getWorkWorkspace(request.chatId)
+  })
+
+  ipcMain.handle('work:get-tools', (event, chatId: unknown) => {
+    assertTrustedSender(event)
+    const request = parseWorkWorkspaceGetParams({ chatId })
+    return requireBackend().getWorkTools(request.chatId)
+  })
+
+  ipcMain.handle('work:run-tool', (event, request: unknown) => {
+    assertTrustedSender(event)
+    return requireBackend().runWorkTool(parseWorkToolRunParams(request))
+  })
+
+  ipcMain.handle('work:preview-tool', (event, request: unknown) => {
+    assertTrustedSender(event)
+    return requireBackend().previewWorkTool(parseWorkToolRunParams(request))
+  })
+
+  ipcMain.handle('work:confirm-tool', (event, request: unknown) => {
+    assertTrustedSender(event)
+    return requireBackend().confirmWorkTool(parseWorkToolConfirmParams(request))
+  })
+
+  ipcMain.handle('work:get-plan', (event, chatId: unknown) => {
+    assertTrustedSender(event)
+    return requireBackend().getWorkPlan(parseWorkPlanGetParams({ chatId }).chatId)
+  })
+  ipcMain.handle('work:create-plan', (event, request: unknown) => {
+    assertTrustedSender(event)
+    return requireBackend().createWorkPlan(parseWorkPlanCreateParams(request))
+  })
+  ipcMain.handle('work:control-plan', (event, request: unknown) => {
+    assertTrustedSender(event)
+    return requireBackend().controlWorkPlan(parseWorkPlanControlParams(request))
+  })
+  ipcMain.handle('work:confirm-plan', (event, request: unknown) => {
+    assertTrustedSender(event)
+    return requireBackend().confirmWorkPlan(parseWorkPlanConfirmParams(request))
+  })
+
+  ipcMain.handle('work:get-audit', (event, chatId: unknown) => {
+    assertTrustedSender(event)
+    return requireBackend().getWorkAudit(parseWorkAuditListParams({ chatId }).chatId)
+  })
+  ipcMain.handle('work:undo', (event, request: unknown) => {
+    assertTrustedSender(event)
+    assertDataStorageIdleForBackendRestart()
+    if (songCoverManager?.hasActiveWork() === true) throw new Error('Finish the active Song Cover before Undo.')
+    return requireBackend().undoWorkAction(parseWorkUndoParams(request))
+  })
+
+  ipcMain.handle('work:choose-workspace', async (event, chatId: unknown) => {
+    assertTrustedSender(event)
+    const request = parseWorkWorkspaceGetParams({ chatId })
+    const selected = await dialog.showOpenDialog(requireMainWindow(), {
+      title: 'Choose a Workspace for this Work Chat',
+      properties: ['openDirectory', 'dontAddToRecent'],
+    })
+    if (selected.canceled || selected.filePaths.length !== 1) {
+      return null
+    }
+    const workspacePath = parseWorkspacePath(selected.filePaths[0])
+    if (workspacePath === null || !(await lstat(workspacePath)).isDirectory()) {
+      throw new Error('Selected Workspace is not an accessible directory.')
+    }
+    // Renderer callers supply only the Chat ID. The native picker supplies the
+    // path, and Python rechecks canonical scope and ownership before saving it.
+    return requireBackend().bindWorkWorkspace({ chatId: request.chatId, workspacePath })
+  })
+
+  ipcMain.handle('work:clear-workspace', (event, chatId: unknown) => {
+    assertTrustedSender(event)
+    const request = parseWorkWorkspaceGetParams({ chatId })
+    return requireBackend().bindWorkWorkspace({ chatId: request.chatId, workspacePath: null })
+  })
 
   ipcMain.handle(
     'project:clear-workspace',

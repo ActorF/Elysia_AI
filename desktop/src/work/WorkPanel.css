@@ -1,0 +1,94 @@
+/** Present the Work scope with bounded paths and accessible native chooser actions. */
+
+.work-panel {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-6);
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-bg-soft);
+  max-height: min(28rem, 45vh);
+  overflow-y: auto;
+}
+
+.work-workspace-copy {
+  display: grid;
+  flex: 1 1 15rem;
+  min-width: 0;
+  gap: var(--space-1);
+  font-size: var(--font-size-sm);
+}
+
+.work-workspace-path {
+  overflow-wrap: anywhere;
+  max-height: 3rem;
+  overflow-y: auto;
+}
+
+.work-workspace-copy small {
+  color: var(--color-text-secondary);
+}
+
+.work-workspace-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.work-panel button {
+  min-height: 2rem;
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  color: var(--color-text-primary);
+  background: var(--color-bg-surface);
+  font-size: var(--font-size-xs);
+}
+
+.work-workspace-error {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  width: 100%;
+  color: var(--color-danger);
+  font-size: var(--font-size-sm);
+}
+
+.work-tool-inspector {
+  width: 100%;
+  font-size: var(--font-size-xs);
+}
+
+.work-tool-inspector summary {
+  cursor: pointer;
+  padding-block: var(--space-1);
+  color: var(--color-text-primary);
+}
+
+.work-tool-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr));
+  max-height: 12rem;
+  overflow-y: auto;
+  gap: var(--space-3);
+  padding: var(--space-3) 0;
+  margin: 0;
+  list-style: none;
+}
+
+.work-tool-list li {
+  display: grid;
+  gap: var(--space-1);
+  padding: var(--space-2);
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+.work-tool-list span,
+.work-tool-list p {
+  margin: 0;
+  color: var(--color-text-secondary);
+}

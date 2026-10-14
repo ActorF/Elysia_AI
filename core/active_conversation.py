@@ -28,6 +28,7 @@ from .exceptions import (
     ChatRetryTargetError,
     ConversationUnavailableError,
 )
+from .mode_policy import get_mode_policy
 
 Clock = Callable[[], datetime]
 ChatDeleter = Callable[[ChatId], None]
@@ -187,6 +188,30 @@ class ActiveConversationService:
 
         with self._guard_idle_chat_action(chat_id):
             return self._chat_repository.pin_chat(chat_id, pinned)
+
+    def set_chat_mode(
+        self,
+        chat_id: ChatId,
+        mode: ConversationMode,
+    ) -> ChatSession:
+        """Persist an explicit mode choice while preserving the Chat content.
+
+        The idle guard prevents a generation from changing capabilities halfway
+        through its turn. Selecting the current mode is an idempotent no-op.
+        """
+
+        get_mode_policy(mode)
+        with self._guard_idle_chat_action(chat_id):
+            chat = self._chat_repository.get_chat(chat_id)
+            if chat.mode == mode:
+                return chat
+            updated = replace(
+                chat,
+                mode=mode,
+                updated_at=self._next_timestamp(chat.updated_at),
+            )
+            self._chat_repository.save_chat(updated)
+            return updated
 
     def archive_chat(
         self,

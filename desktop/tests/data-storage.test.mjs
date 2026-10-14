@@ -292,6 +292,36 @@ test('move switches the pointer only after verified staging and commit removes s
   })
 })
 
+test('Work bindings migrate as durable data and survive temporary cleanup', async () => {
+  await withTempDirectory(async (directory) => {
+    const storage = new ElectronDataStorage({
+      userDataDirectory: path.join(directory, 'user-data'),
+    })
+    const initial = await storage.initialize()
+    const binding = '{"chatId":"chat_work","root":"D:\\\\Documents"}'
+    await writeDataFile(initial.state.activeDataRoot, 'workspace/work/bindings.json', binding)
+    await writeDataFile(initial.state.activeDataRoot, 'work/receipt.json', 'durable receipt')
+    await writeDataFile(initial.state.activeDataRoot, 'cache/temporary.bin', 'remove me')
+    const inventory = await storage.scan()
+    assert.equal(usageByCategory(inventory).other.fileCount, 2)
+    const destination = path.join(directory, 'new-root')
+    await mkdir(destination)
+    const transaction = await storage.prepareMove(destination, 0)
+    const committed = await storage.commitMove(transaction)
+    assert.equal(committed.oldRootRetained, false)
+    assert.equal(await readFile(path.join(destination, 'workspace/work/bindings.json'), 'utf8'), binding)
+    const currentInventory = await storage.scan()
+    await storage.cleanup({
+      expectedRevision: committed.state.revision,
+      token: currentInventory.token,
+      categories: ['audio', 'cache', 'logs'],
+    })
+    assert.equal(await readFile(path.join(destination, 'workspace/work/bindings.json'), 'utf8'), binding)
+    assert.equal(await readFile(path.join(destination, 'work/receipt.json'), 'utf8'), 'durable receipt')
+    await assert.rejects(readFile(path.join(destination, 'cache/temporary.bin')), { code: 'ENOENT' })
+  })
+})
+
 test('commit retains an old root containing unknown content', async () => {
   await withTempDirectory(async (directory) => {
     const storage = new ElectronDataStorage({

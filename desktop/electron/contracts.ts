@@ -24,6 +24,22 @@ import type {
   SongCoverReadiness,
   SongCoverState,
 } from './song-cover-contracts.js'
+import type { WorkWorkspaceClient } from './work-protocol.js'
+import type { WorkToolClient } from './work-tool-protocol.js'
+import type { WorkPlanClient } from './work-plan-protocol.js'
+import type { WorkAuditClient } from './work-audit-protocol.js'
+
+export type {
+  WorkWorkspaceClient,
+  WorkWorkspaceState,
+} from './work-protocol.js'
+export type {
+  WorkToolClient, WorkToolsState, WorkToolDescriptor, WorkToolRunParams, WorkToolResultState,
+  WorkToolApprovalState,
+  WorkToolConfirmParams,
+} from './work-tool-protocol.js'
+export type { WorkPlanState, WorkPlanClient } from './work-plan-protocol.js'
+export type { WorkAuditState, WorkAuditClient } from './work-audit-protocol.js'
 
 export type BackendStatus =
   | 'starting'
@@ -204,6 +220,12 @@ export interface CreateChatRequest {
 export interface RenameChatRequest {
   chatId: string
   title: string
+}
+
+/** Explicitly choose the behavior of one persisted Chat without changing history. */
+export interface SetChatModeRequest {
+  chatId: string
+  mode: 'chat' | 'work'
 }
 
 /** Identify one Chat and the desired pin state. */
@@ -547,7 +569,7 @@ export type BackendEvent =
  * Renderer code receives domain data and owned actions, never Electron or raw
  * filesystem primitives.
  */
-export interface DesktopApi {
+export interface DesktopApi extends WorkWorkspaceClient, WorkToolClient, WorkPlanClient, WorkAuditClient {
   /** Signal that the renderer can receive events and the main window may appear. */
   rendererReady(): Promise<void>
   /** Keep native window chrome aligned with the renderer's saved appearance. */
@@ -653,6 +675,8 @@ export interface DesktopApi {
   openChat(chatId: string): Promise<ChatSessionState>
   /** Rename one Chat and return the refreshed canonical state. */
   renameChat(request: RenameChatRequest): Promise<ChatSessionState>
+  /** Persist an explicit Chat or Work selection and return canonical history. */
+  setChatMode(request: SetChatModeRequest): Promise<ChatSessionState>
   /** Persist one Chat's pin state and return refreshed canonical state. */
   setChatPinned(request: PinChatRequest): Promise<ChatSessionState>
   /** Persist one Chat's archive state and return refreshed canonical state. */

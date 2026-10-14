@@ -9,6 +9,33 @@ import {
   codePointLength,
   hasNonBlankCodePoint,
 } from './protocol-text.js'
+import {
+  parseWorkWorkspaceBindParams,
+  parseWorkWorkspaceGetParams,
+  parseWorkWorkspaceState,
+  type WorkWorkspaceBindParams,
+  type WorkWorkspaceGetParams,
+} from './work-protocol.js'
+import {
+  parseWorkToolListParams,
+  parseWorkToolRunParams,
+  parseWorkToolResultState,
+  parseWorkToolApprovalState,
+  parseWorkToolConfirmParams,
+  parseWorkToolsState,
+  type WorkToolListParams,
+  type WorkToolRunParams,
+  type WorkToolConfirmParams,
+} from './work-tool-protocol.js'
+import {
+  parseWorkPlanState, parseWorkPlanGetParams, parseWorkPlanCreateParams,
+  parseWorkPlanControlParams, parseWorkPlanConfirmParams,
+  type WorkPlanGetParams, type WorkPlanCreateParams, type WorkPlanControlParams, type WorkPlanConfirmParams,
+} from './work-plan-protocol.js'
+import {
+  parseWorkAuditState, parseWorkAuditListParams, parseWorkUndoParams,
+  type WorkAuditListParams, type WorkUndoParams,
+} from './work-audit-protocol.js'
 
 export {
   codePointLength,
@@ -263,6 +290,12 @@ export interface ChatRenameParams {
   title: string
 }
 
+/** Explicit mode choice; natural-language messages never select a mode. */
+export interface ChatModeParams {
+  chatId: string
+  mode: ConversationMode
+}
+
 export interface ChatPinParams {
   chatId: string
   pinned: boolean
@@ -467,6 +500,19 @@ export interface RequestParamsByMethod {
   'chat.create': ChatCreateParams
   'chat.open': ChatIdParams
   'chat.rename': ChatRenameParams
+  'chat.mode': ChatModeParams
+  'work.workspace.get': WorkWorkspaceGetParams
+  'work.workspace.bind': WorkWorkspaceBindParams
+  'work.tools.list': WorkToolListParams
+  'work.tool.run': WorkToolRunParams
+  'work.tool.preview': WorkToolRunParams
+  'work.tool.confirm': WorkToolConfirmParams
+  'work.plan.get': WorkPlanGetParams
+  'work.plan.create': WorkPlanCreateParams
+  'work.plan.control': WorkPlanControlParams
+  'work.plan.confirm': WorkPlanConfirmParams
+  'work.audit.list': WorkAuditListParams
+  'work.undo': WorkUndoParams
   'chat.pin': ChatPinParams
   'chat.archive': ChatArchiveParams
   'chat.delete': ChatIdParams
@@ -1501,6 +1547,16 @@ function parseChatPinParams(value: unknown): ChatPinParams {
   return {
     chatId: readIdentifier(params, 'chatId', context),
     pinned: readBoolean(params, 'pinned', context),
+  }
+}
+
+function parseChatModeParams(value: unknown): ChatModeParams {
+  const context = 'chat.mode params'
+  const params = asRecord(value, context)
+  requireFields(params, ['chatId', 'mode'], context)
+  return {
+    chatId: readIdentifier(params, 'chatId', context),
+    mode: readConversationMode(params, context),
   }
 }
 
@@ -2541,10 +2597,65 @@ export function parseClientRequest(value: unknown): ClientRequest {
       params: parseChatPinParams(request.params),
     }
   }
+  if (method === 'chat.mode') {
+    return {
+      type: 'request', protocol, id, method,
+      params: parseChatModeParams(request.params),
+    }
+  }
   if (method === 'chat.archive') {
     return {
       type: 'request', protocol, id, method,
       params: parseChatArchiveParams(request.params),
+    }
+  }
+  if (method === 'work.workspace.get' || method === 'work.workspace.bind') {
+    try {
+      return method === 'work.workspace.get'
+        ? { type: 'request', protocol, id, method, params: parseWorkWorkspaceGetParams(request.params) }
+        : { type: 'request', protocol, id, method, params: parseWorkWorkspaceBindParams(request.params) }
+    } catch {
+      return fail('protocol.invalid_params', 'Work Workspace request is invalid.')
+    }
+  }
+  if (method === 'work.tools.list') {
+    try {
+      return { type: 'request', protocol, id, method, params: parseWorkToolListParams(request.params) }
+    } catch {
+      return fail('protocol.invalid_params', 'Work tool catalog request is invalid.')
+    }
+  }
+  if (method === 'work.tool.run' || method === 'work.tool.preview') {
+    try {
+      return { type: 'request', protocol, id, method, params: parseWorkToolRunParams(request.params) }
+    } catch {
+      return fail('protocol.invalid_params', 'Work tool request is invalid.')
+    }
+  }
+  if (method === 'work.tool.confirm') {
+    try {
+      return { type: 'request', protocol, id, method, params: parseWorkToolConfirmParams(request.params) }
+    } catch {
+      return fail('protocol.invalid_params', 'Work approval choice is invalid.')
+    }
+  }
+  if (method === 'work.plan.get' || method === 'work.plan.create'
+    || method === 'work.plan.control' || method === 'work.plan.confirm') {
+    try {
+      if (method === 'work.plan.get') return { type: 'request', protocol, id, method, params: parseWorkPlanGetParams(request.params) }
+      if (method === 'work.plan.create') return { type: 'request', protocol, id, method, params: parseWorkPlanCreateParams(request.params) }
+      if (method === 'work.plan.control') return { type: 'request', protocol, id, method, params: parseWorkPlanControlParams(request.params) }
+      return { type: 'request', protocol, id, method, params: parseWorkPlanConfirmParams(request.params) }
+    } catch {
+      return fail('protocol.invalid_params', 'Work plan request is invalid.')
+    }
+  }
+  if (method === 'work.audit.list' || method === 'work.undo') {
+    try {
+      if (method === 'work.audit.list') return { type: 'request', protocol, id, method, params: parseWorkAuditListParams(request.params) }
+      return { type: 'request', protocol, id, method, params: parseWorkUndoParams(request.params) }
+    } catch {
+      return fail('protocol.invalid_params', 'Work history or Undo request is invalid.')
     }
   }
   if (method === 'project.list') {
@@ -5354,6 +5465,48 @@ function validateSuccessResult(value: unknown): Record<string, unknown> {
   }
   if (result.kind === 'image.gallery.open') {
     parseImageGalleryOpenResult(result)
+    return result
+  }
+  if (result.kind === 'work.workspace') {
+    try {
+      parseWorkWorkspaceState(result)
+    } catch {
+      return fail('protocol.invalid_message', 'Work Workspace result is invalid.')
+    }
+    return result
+  }
+  if (result.kind === 'work.tools') {
+    try {
+      parseWorkToolsState(result)
+    } catch {
+      return fail('protocol.invalid_message', 'Work tool catalog result is invalid.')
+    }
+    return result
+  }
+  if (result.kind === 'work.result') {
+    try {
+      parseWorkToolResultState(result)
+    } catch {
+      return fail('protocol.invalid_message', 'Work tool result is invalid.')
+    }
+    return result
+  }
+  if (result.kind === 'work.approval') {
+    try {
+      parseWorkToolApprovalState(result)
+    } catch {
+      return fail('protocol.invalid_message', 'Work change preview is invalid.')
+    }
+    return result
+  }
+  if (result.kind === 'work.plan') {
+    try { parseWorkPlanState(result) }
+    catch { return fail('protocol.invalid_message', 'Work plan result is invalid.') }
+    return result
+  }
+  if (result.kind === 'work.audit') {
+    try { parseWorkAuditState(result) }
+    catch { return fail('protocol.invalid_message', 'Work history result is invalid.') }
     return result
   }
   if (result.kind === 'knowledge.state') {

@@ -62,6 +62,7 @@ import { CharacterPanel } from './character/CharacterPanel.tsx'
 import { resolveCharacterEmotion } from './character/character-emotion.ts'
 import { deriveApplicationCharacterState } from './character/character-state.ts'
 import { ChatView } from './chat/ChatView.tsx'
+import { WorkPanel } from './work/WorkPanel.tsx'
 import type {
   ChatMessage,
   ChatNotice,
@@ -924,6 +925,7 @@ function App() {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [chatState, setChatState] = useState<ChatSessionState | null>(null)
   const [sessionMutationPending, setSessionMutationPending] = useState(false)
+  const [workOperationPending, setWorkOperationPending] = useState(false)
   const [projectState, setProjectState] = useState<ProjectState | null>(null)
   const [projectLoading, setProjectLoading] = useState(true)
   const [projectMutationPending, setProjectMutationPending] = useState(false)
@@ -1050,6 +1052,7 @@ function App() {
   const retryOperationRef = useRef(0)
   const retryPendingRef = useRef(false)
   const sessionMutationPendingRef = useRef(false)
+  const workOperationPendingRef = useRef(false)
   const projectMutationPendingRef = useRef(false)
   const settingsDirtyRef = useRef(false)
   const settingsLoadOperationRef = useRef(0)
@@ -1285,7 +1288,7 @@ function App() {
               ? 'Wait for the active Chat to finish loading.'
               : generationBusy || generationReconcilePending
                 ? 'Wait for the current Chat reply to finish.'
-                : sessionMutationPending
+                : sessionMutationPending || workOperationPending
                   ? 'Wait for the current Chat action to finish.'
                   : null
   const voiceCaptureDisabledReason = voiceCaptureContextDisabledReason
@@ -1294,8 +1297,26 @@ function App() {
     ?? snapshot.chatTitle
     ?? 'Chat'
   const sessionUiPending = sessionMutationPending
+    || workOperationPending
     || snapshot.status !== 'ready'
     || chatState === null
+  const workControlsDisabled = desktopApi === undefined
+    || sessionMutationPending
+    || snapshot.status !== 'ready'
+    || chatState === null
+    || generationBusy
+    || generationReconcilePending
+    || pendingChatSend !== null
+    || dictationActive
+    || callPreviewOpen
+    || voiceTranscriptionOperationRef.current !== null
+  const modeSelectionDisabled = workControlsDisabled
+    || workOperationPending
+    || !snapshot.capabilities.includes('chat.mode')
+  const updateWorkBusy = useCallback((busy: boolean): void => {
+    workOperationPendingRef.current = busy
+    setWorkOperationPending(busy)
+  }, [])
   const canSend = (
     desktopApi !== undefined
     && snapshot.status === 'ready'
@@ -5767,6 +5788,7 @@ function App() {
       || retryPendingRef.current
       || manualReadAloudOwnerRef.current !== null
       || generationRecoveryBlocked
+      || workOperationPendingRef.current
       || activeChatAttachmentActivity.adding
       || activeChatAttachmentActivity.removingIds.length > 0
     ) {
@@ -6407,6 +6429,7 @@ function App() {
     if (
       desktopApi === undefined
       || sessionMutationPendingRef.current
+      || workOperationPendingRef.current
       || streaming
       || snapshot.status !== 'ready'
       || chatState === null
@@ -6625,6 +6648,27 @@ function App() {
       () => desktopApi.renameChat({ chatId, title }),
       'Could not rename the Chat.',
     )
+  }
+
+  async function selectChatMode(mode: 'chat' | 'work'): Promise<void> {
+    if (
+      desktopApi === undefined
+      || activeChatId === undefined
+      || modeSelectionDisabled
+      || mode === chatState?.activeChat.mode
+    ) {
+      return
+    }
+    // Only a deliberate selection reaches this RPC. Canonical state replaces
+    // the display after persistence succeeds, so failed writes retain the mode.
+    try {
+      await runSessionAction(
+        () => desktopApi.setChatMode({ chatId: activeChatId, mode }),
+        'Could not change the conversation mode.',
+      )
+    } catch {
+      // runSessionAction already surfaces the failure beside the Composer.
+    }
   }
 
   function pinChat(chatId: string, pinned: boolean): Promise<void> {
@@ -7807,6 +7851,7 @@ function App() {
         callButtonRef={callButtonRef}
         canSend={canSend}
         chatMode={chatState?.activeChat.mode ?? 'chat'}
+        modeSelectionDisabled={modeSelectionDisabled}
         chatTitle={displayedChat}
         dictationActive={dictationActive}
         dictationDisabled={
@@ -7848,6 +7893,24 @@ function App() {
           || songCoverBusy
         }
         attachmentDisabled={sessionUiPending || activeChatId === undefined}
+        workPanel={activeChatId === undefined ? undefined : (
+          <WorkPanel
+            key={activeChatId}
+            api={desktopApi}
+            chatId={activeChatId}
+            ready={snapshot.status === 'ready'
+              && snapshot.chatId === activeChatId
+              && snapshot.capabilities.includes('work.workspace')}
+            disabled={workControlsDisabled}
+            readAvailable={snapshot.capabilities.includes('work.read')}
+            previewAvailable={snapshot.capabilities.includes('work.preview')}
+            confirmAvailable={snapshot.capabilities.includes('work.confirm')}
+            planAvailable={snapshot.capabilities.includes('work.plan')}
+            auditAvailable={snapshot.capabilities.includes('work.audit')}
+            undoAvailable={snapshot.capabilities.includes('work.undo')}
+            onBusyChange={updateWorkBusy}
+          />
+        )}
         onBeginRetryEdit={beginRetryEdit}
         onCancelRetryEdit={cancelRetryEdit}
         onChooseAttachments={() => {
@@ -7884,6 +7947,7 @@ function App() {
         onRetryEditChange={updateRetryEdit}
         onRetryConnection={() => { void retryConnection() }}
         onSelectModel={(modelName) => { void selectModel(modelName) }}
+        onSelectMode={(mode) => { void selectChatMode(mode) }}
         onCancelSongCover={() => { void cancelSongCover() }}
         onExportSongCover={() => { void exportSongCover() }}
         onOpenSongCoverSetup={openSongCoverSetup}

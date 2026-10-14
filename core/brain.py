@@ -746,6 +746,18 @@ class Brain:
             pinned,
         )
 
+    def set_chat_mode(
+        self,
+        chat_id: ChatId,
+        mode: ConversationMode,
+    ) -> ChatSession:
+        """Save an explicit mode selection through the idle Chat boundary."""
+
+        return self._require_active_conversation_service().set_chat_mode(
+            chat_id,
+            mode,
+        )
+
     def archive_chat(
         self,
         chat_id: ChatId,

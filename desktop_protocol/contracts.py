@@ -19,6 +19,7 @@ from typing import Any, Final, Literal, NotRequired, TypeAlias, TypedDict, cast
 from urllib.parse import urlsplit
 
 from attachments.domain import validate_file_name, validate_media_type
+from work_tools.wire import validate_work_params, validate_work_result
 
 PROTOCOL_NAME: Final = "elysia.desktop"
 PROTOCOL_VERSION: Final = 1
@@ -227,6 +228,18 @@ _PROTOCOL_EVENT_NAMES: Final = (
 )
 
 ProtocolMethod = Literal[
+    "work.workspace.get",
+    "work.workspace.bind",
+    "work.tools.list",
+    "work.tool.run",
+    "work.tool.preview",
+    "work.tool.confirm",
+    "work.plan.get",
+    "work.plan.create",
+    "work.plan.control",
+    "work.plan.confirm",
+    "work.audit.list",
+    "work.undo",
     "handshake",
     "initialize",
     "chat.stream",
@@ -235,6 +248,7 @@ ProtocolMethod = Literal[
     "chat.create",
     "chat.open",
     "chat.rename",
+    "chat.mode",
     "chat.pin",
     "chat.archive",
     "chat.delete",
@@ -275,6 +289,18 @@ ProtocolMethod = Literal[
     "shutdown",
 ]
 SUPPORTED_METHODS: Final[tuple[ProtocolMethod, ...]] = (
+    "work.workspace.get",
+    "work.workspace.bind",
+    "work.tools.list",
+    "work.tool.run",
+    "work.tool.preview",
+    "work.tool.confirm",
+    "work.plan.get",
+    "work.plan.create",
+    "work.plan.control",
+    "work.plan.confirm",
+    "work.audit.list",
+    "work.undo",
     "handshake",
     "initialize",
     "chat.stream",
@@ -283,6 +309,7 @@ SUPPORTED_METHODS: Final[tuple[ProtocolMethod, ...]] = (
     "chat.create",
     "chat.open",
     "chat.rename",
+    "chat.mode",
     "chat.pin",
     "chat.archive",
     "chat.delete",
@@ -434,6 +461,13 @@ class ChatRenameParams(TypedDict):
 
     chatId: str
     title: str
+
+
+class ChatModeParams(TypedDict):
+    """Persist an explicit capability mode on the active idle Chat."""
+
+    chatId: str
+    mode: Literal["chat", "work"]
 
 
 class ChatPinParams(TypedDict):
@@ -1721,6 +1755,15 @@ def _validate_chat_rename_params(params: JsonObject) -> None:
     _validate_chat_title(params, context=context)
 
 
+def _validate_chat_mode_params(params: JsonObject) -> None:
+    """Accept only one canonical Chat identity and explicit saved mode."""
+
+    context = "chat.mode params"
+    _require_fields(params, {"chatId", "mode"}, context)
+    _require_identifier(params, "chatId", context)
+    _validate_chat_mode(params, context=context)
+
+
 def _validate_chat_pin_params(params: JsonObject) -> None:
     context = "chat.pin params"
     _require_fields(params, {"chatId", "pinned"}, context)
@@ -2469,7 +2512,12 @@ def parse_client_request(value: object) -> ClientRequest:
             f"Unknown request method: {method}.",
         )
     params = _as_object(request["params"], "request.params")
-    if method == "handshake":
+    if method.startswith("work."):
+        try:
+            validate_work_params(method, params)
+        except ValueError:
+            raise ProtocolValidationError("protocol.invalid_params", "Work request is invalid.") from None
+    elif method == "handshake":
         _validate_handshake_params(params)
     elif method == "initialize":
         _require_fields(params, set(), "initialize params")
@@ -2485,6 +2533,8 @@ def parse_client_request(value: object) -> ClientRequest:
         _validate_chat_id_params(params, method=method)
     elif method == "chat.rename":
         _validate_chat_rename_params(params)
+    elif method == "chat.mode":
+        _validate_chat_mode_params(params)
     elif method == "chat.pin":
         _validate_chat_pin_params(params)
     elif method == "chat.archive":
@@ -3963,6 +4013,12 @@ def _validate_image_gallery_open_result(result: JsonObject) -> ImageGalleryOpenR
 
 
 def _validate_success_result(result: JsonObject) -> None:
+    if result.get("kind") in {"work.workspace", "work.tools", "work.result", "work.approval", "work.plan", "work.audit"}:
+        try:
+            validate_work_result(result)
+        except ValueError:
+            raise ProtocolValidationError("protocol.invalid_message", "Work response is invalid.") from None
+        return
     fields = set(result)
     kind = result.get("kind")
     if kind == "image.generation":
