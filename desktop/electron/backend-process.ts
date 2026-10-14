@@ -63,9 +63,10 @@ import {
   type WorkToolApproval, type WorkToolConfirmParams,
 } from './work-tool-protocol.js'
 import {
-  parseWorkPlanState, workPlanHasLease,
+  parseWorkPlanState, parseWorkPlanCreateParams, parseWorkPlanCreateWireParams, workPlanHasLease,
   type WorkPlan, type WorkPlanState, type WorkPlanCreateParams, type WorkPlanControlParams, type WorkPlanConfirmParams, type WorkPlanReviseParams,
 } from './work-plan-protocol.js'
+import { parseVisionContextData, type VisionContextData } from './vision-context-protocol.js'
 import {
   parseWorkAuditForChat, parseWorkUndoResultForEntry,
   type WorkAuditEntry, type WorkAuditState, type WorkUndoParams,
@@ -619,6 +620,7 @@ export class BackendProcess {
   private readonly workPlans = new Map<string, WorkPlan>()
   private readonly workPlanJobs = new Map<string, WorkJobObservation>()
   private readonly workPlanReconciliations = new Map<string, WorkPlanReconciliation>()
+  private visionPlanCreation: object | null = null
   private canonicalWorkChat: Pick<ChatSessionState['activeChat'], 'chatId' | 'projectId' | 'mode' | 'archived'> | null = null
   // Requests can resolve in a different order. An older poll must not release
   // the lease published by a later control or confirmation acknowledgement.
@@ -1710,7 +1712,48 @@ export class BackendProcess {
 
   /** Create a reviewed immutable call sequence without launching its worker. */
   createWorkPlan(request: WorkPlanCreateParams): Promise<WorkPlanState> {
-    return this.requestWorkPlan('work.plan.create', request)
+    try {
+      const checked = parseWorkPlanCreateParams(request)
+      if (checked.visionContextId !== undefined) throw new Error('Resolve the reviewed image context in Main before creating the plan.')
+      return this.requestWorkPlan('work.plan.create', checked)
+    } catch (error) { return Promise.reject(error) }
+  }
+
+  /** Resolve one native-reviewed receipt after canonical hydration; advisory text never changes explicit calls or grants a write. */
+  async createWorkPlanWithVisionContext(request: WorkPlanCreateParams,
+    resolveEvidence: () => VisionContextData): Promise<WorkPlanState> {
+    const checked = parseWorkPlanCreateParams(request)
+    if (checked.visionContextId === undefined || typeof resolveEvidence !== 'function') {
+      throw new Error('A reviewed native image context is required.')
+    }
+    if (this.nativeActionActive() || this.hasActiveBackendWork() || this.snapshot.status !== 'ready'
+      || this.snapshot.chatId !== checked.chatId || !this.snapshot.capabilities.includes('work.plan')) {
+      throw new Error('Finish the current action before creating a visual Work plan.')
+    }
+    const creation = {}
+    this.visionPlanCreation = creation
+    try {
+      // The reservation blocks competing mutations during readonly canonical
+      // hydration. Main resolves the receipt only afterward, so expiry, image
+      // deletion, disconnect, or an owner switch cannot reuse stale evidence.
+      if (this.getCanonicalVisionChat() === null) await this.listChats(false)
+      const owner = this.getCanonicalVisionChat()
+      if (this.visionPlanCreation !== creation || owner === null || owner.chatId !== checked.chatId || owner.mode !== 'work') {
+        throw new Error('The reviewed image owner is no longer the active Work Chat.')
+      }
+      const evidence = parseVisionContextData(resolveEvidence())
+      const wire = parseWorkPlanCreateWireParams({ chatId: checked.chatId, title: checked.title, calls: checked.calls,
+        ...(checked.useProjectKnowledge === undefined ? {} : { useProjectKnowledge: checked.useProjectKnowledge }), visionContext: evidence })
+      const current = this.getCanonicalVisionChat()
+      if (this.visionPlanCreation !== creation || current === null || current.chatId !== owner.chatId
+        || current.projectId !== owner.projectId || current.mode !== owner.mode || this.nativeActionActive()) {
+        throw new Error('The reviewed image owner changed before plan admission.')
+      }
+      // No await occurs between exchanging this reservation for the ordinary
+      // pending RPC lease. The normal create guard must not reject its own token.
+      this.visionPlanCreation = null
+      return this.requestWorkPlan('work.plan.create', wire)
+    } finally { if (this.visionPlanCreation === creation) this.visionPlanCreation = null }
   }
 
   /** Apply one explicit start, pause, resume, next, or cancel to its exact plan. */
@@ -2530,7 +2573,7 @@ export class BackendProcess {
   }
 
   private hasWorkPlanLease(): boolean {
-    return this.workPlanReconciliations.size > 0 || [...this.workPlans.values()].some(workPlanHasLease)
+    return this.visionPlanCreation !== null || this.workPlanReconciliations.size > 0 || [...this.workPlans.values()].some(workPlanHasLease)
   }
 
   private invalidateWorkUndo(chatId?: string): void {

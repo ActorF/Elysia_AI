@@ -28,9 +28,9 @@ import {
   type WorkToolConfirmParams,
 } from './work-tool-protocol.js'
 import {
-  parseWorkPlanState, parseWorkPlanGetParams, parseWorkPlanCreateParams,
+  parseWorkPlanState, parseWorkPlanGetParams, parseWorkPlanCreateWireParams,
   parseWorkPlanControlParams, parseWorkPlanConfirmParams, parseWorkPlanReviseParams,
-  type WorkPlanGetParams, type WorkPlanCreateParams, type WorkPlanControlParams, type WorkPlanConfirmParams, type WorkPlanReviseParams,
+  type WorkPlanGetParams, type WorkPlanCreateWireParams, type WorkPlanControlParams, type WorkPlanConfirmParams, type WorkPlanReviseParams,
 } from './work-plan-protocol.js'
 import {
   parseWorkAuditState, parseWorkAuditListParams, parseWorkUndoParams,
@@ -509,7 +509,7 @@ export interface RequestParamsByMethod {
   'work.tool.preview': WorkToolRunParams
   'work.tool.confirm': WorkToolConfirmParams
   'work.plan.get': WorkPlanGetParams
-  'work.plan.create': WorkPlanCreateParams
+  'work.plan.create': WorkPlanCreateWireParams
   'work.plan.control': WorkPlanControlParams
   'work.plan.confirm': WorkPlanConfirmParams
   'work.plan.revise': WorkPlanReviseParams
@@ -2649,7 +2649,7 @@ export function parseClientRequest(value: unknown): ClientRequest {
     || method === 'work.plan.control' || method === 'work.plan.confirm' || method === 'work.plan.revise' || method === 'work.plan.retry') {
     try {
       if (method === 'work.plan.get') return { type: 'request', protocol, id, method, params: parseWorkPlanGetParams(request.params) }
-      if (method === 'work.plan.create') return { type: 'request', protocol, id, method, params: parseWorkPlanCreateParams(request.params) }
+      if (method === 'work.plan.create') return { type: 'request', protocol, id, method, params: parseWorkPlanCreateWireParams(request.params) }
       if (method === 'work.plan.control') return { type: 'request', protocol, id, method, params: parseWorkPlanControlParams(request.params) }
       if (method === 'work.plan.revise') return { type: 'request', protocol, id, method, params: parseWorkPlanReviseParams(request.params) }
       if (method === 'work.plan.retry') return { type: 'request', protocol, id, method, params: parseWorkPlanRetryParams(request.params) }

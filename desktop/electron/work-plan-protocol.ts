@@ -8,6 +8,7 @@
  */
 
 import { codePointLength, trimProtocolBlankCharacters } from './protocol-text.js'
+import { parseVisionContextData, type VisionContextData } from './vision-context-protocol.js'
 import { parseWorkWorkspaceGetParams } from './work-protocol.js'
 import { parseWorkJobObservation, type WorkJobObservation, type WorkPlanRetryParams } from './work-job-protocol.js'
 import {
@@ -53,7 +54,9 @@ export interface WorkWorkflowObservation {
   advice: { status: 'ready' | 'unavailable'; text: string } | null
 }
 export interface WorkPlanGetParams { chatId: string }
-export interface WorkPlanCreateParams { chatId: string; title: string; calls: WorkToolCall[]; useProjectKnowledge?: boolean }
+export interface WorkPlanCreateParams { chatId: string; title: string; calls: WorkToolCall[]; useProjectKnowledge?: boolean; visionContextId?: string }
+/** Main resolves a reviewed receipt into text-only evidence before crossing the Python boundary. */
+export interface WorkPlanCreateWireParams extends Omit<WorkPlanCreateParams, 'visionContextId'> { visionContext?: VisionContextData }
 export interface WorkPlanControlParams { chatId: string; planId: string; action: WorkPlanAction }
 export interface WorkPlanConfirmParams { chatId: string; planId: string; approvalId: string; granted: boolean }
 /** Replace the current waiting action without changing its tool or granting approval. */
@@ -242,14 +245,36 @@ export function parseWorkPlanGetParams(value: unknown): WorkPlanGetParams {
 /** Validate bounded explicit calls without starting them or authorizing any writes. */
 export function parseWorkPlanCreateParams(value: unknown): WorkPlanCreateParams {
   const optedIn = typeof value === 'object' && value !== null && Object.hasOwn(value, 'useProjectKnowledge')
-  const raw = record(value, ['chatId', 'title', 'calls', ...(optedIn ? ['useProjectKnowledge'] : [])])
+  const visual = typeof value === 'object' && value !== null && Object.hasOwn(value, 'visionContextId')
+  const raw = record(value, ['chatId', 'title', 'calls', ...(optedIn ? ['useProjectKnowledge'] : []), ...(visual ? ['visionContextId'] : [])])
   if (optedIn && typeof raw.useProjectKnowledge !== 'boolean') throw new TypeError('Work knowledge choice must be explicit.')
+  if (visual && (typeof raw.visionContextId !== 'string' || !/^vision_context_[0-9a-f]{32}$/u.test(raw.visionContextId))) {
+    throw new TypeError('Work visual context requires a reviewed native receipt.')
+  }
   const request = {
     ...parseWorkWorkspaceGetParams({ chatId: raw.chatId }), title: title(raw.title), calls: calls(raw.calls),
     ...(optedIn ? { useProjectKnowledge: raw.useProjectKnowledge as boolean } : {}),
+    ...(visual ? { visionContextId: raw.visionContextId as string } : {}),
   }
   bounded(request)
   return request
+}
+
+/** Validate Main's resolved advisory evidence while rejecting opaque renderer review IDs on the wire. */
+export function parseWorkPlanCreateWireParams(value: unknown): WorkPlanCreateWireParams {
+  const visual = typeof value === 'object' && value !== null && Object.hasOwn(value, 'visionContext')
+  if (!visual) {
+    const request = parseWorkPlanCreateParams(value)
+    if (request.visionContextId !== undefined) throw new TypeError('Resolve visual context before sending the Work request.')
+    return request
+  }
+  const raw = value as Record<string, unknown>
+  const { visionContext, ...rest } = raw
+  const request = parseWorkPlanCreateParams(rest)
+  if (request.visionContextId !== undefined) throw new TypeError('Work evidence cannot contain a renderer receipt.')
+  const result = { ...request, visionContext: parseVisionContextData(visionContext) }
+  bounded(result)
+  return result
 }
 
 /** Validate a control token and closed action; the Backend checks its live owner. */

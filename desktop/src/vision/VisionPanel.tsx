@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { VisionClient, VisionState } from '../../electron/vision-protocol.ts'
 import type { VisionAnalysisClient } from '../../electron/vision-analysis-protocol.ts'
 import type { VisionCaptureClient } from '../../electron/vision-capture-protocol.ts'
-import type { VisionContextClient } from '../../electron/vision-context-protocol.ts'
+import type { VisionContext, VisionContextClient } from '../../electron/vision-context-protocol.ts'
 import { VisionAnalysisPanel } from './VisionAnalysisPanel.tsx'
 import { VisionCapturePanel } from './VisionCapturePanel.tsx'
 import { VisionContextPanel } from './VisionContextPanel.tsx'
@@ -16,6 +16,10 @@ interface VisionPanelProps {
   projectId: string | null
   ready: boolean
   disabled: boolean
+  /** Append only explicitly resolved text to the current draft, without sending it. */
+  onChatDraft?(text: string): void
+  /** Select an owned advisory receipt only when the current Chat is already in Work mode. */
+  onWorkContext?(context: VisionContext): void
   /** Preserve the shell's physical computer-action lease until a native request settles. */
   onBusyChange(busy: boolean): void
 }
@@ -25,7 +29,7 @@ function formatBytes(bytes: number): string {
 }
 
 /** Display exact selected images shared by Chat and Work without automatically analyzing or sending them. */
-export function VisionPanel({ api, chatId, projectId, ready, disabled, onBusyChange }: VisionPanelProps) {
+export function VisionPanel({ api, chatId, projectId, ready, disabled, onBusyChange, onChatDraft, onWorkContext }: VisionPanelProps) {
   const [state, setState] = useState<VisionState | null>(null)
   const [pending, setPending] = useState(false)
   const [loading, setLoading] = useState(false)
@@ -159,7 +163,8 @@ export function VisionPanel({ api, chatId, projectId, ready, disabled, onBusyCha
     </div>}
     {typeof api?.prepareVisionContext === 'function' && <div className="vision-analysis-slot" hidden={!open}>
       <VisionContextPanel api={api} chatId={chatId} projectId={projectId} image={selectedImage} ready={ready}
-        disabled={disabled || pending || loading || analysisBusy || captureBusy} onBusyChange={updateContextBusy} />
+        disabled={disabled || pending || loading || analysisBusy || captureBusy} onBusyChange={updateContextBusy}
+        onChatDraft={onChatDraft} onWorkContext={onWorkContext} />
     </div>}
   </section>
 }

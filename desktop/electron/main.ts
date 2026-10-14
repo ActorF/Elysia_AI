@@ -41,7 +41,7 @@ import { createVisionCaptureNative } from './vision-capture-native.js'
 import { parseVisionCapturePrepareRequest, parseVisionCaptureConfirmRequest, type VisionCaptureStatus } from './vision-capture-protocol.js'
 import { VisionContextStore, formatVisionContext } from './vision-context.js'
 import { parseVisionReviewRequest, parseVisionContextRequest, type VisionReviewRequest,
-  type VisionContextRequest, type VisionContext, type VisionContextOwner } from './vision-context-protocol.js'
+  visionContextData, type VisionContextRequest, type VisionContext, type VisionContextOwner } from './vision-context-protocol.js'
 import { WorkDesktopController, parseWorkDesktopChatRequest, parseWorkDesktopClipboardWriteRequest,
   parseWorkDesktopDecisionRequest, parseWorkDesktopWindowSelectionRequest, type WorkDesktopOwner } from './work-desktop-tools.js'
 import { WorkDesktopStorage } from './work-desktop-storage.js'
@@ -3914,7 +3914,12 @@ function registerIpcHandlers(): void {
   })
   ipcMain.handle('work:create-plan', (event, request: unknown) => {
     assertTrustedSender(event)
-    return requireBackend().createWorkPlan(parseWorkPlanCreateParams(request))
+    const plan = parseWorkPlanCreateParams(request)
+    const backend = requireBackend()
+    return plan.visionContextId === undefined ? backend.createWorkPlan(plan)
+      : backend.createWorkPlanWithVisionContext(plan, () => visionContextData(getNativeVisionContextText({
+        chatId: plan.chatId, contextId: plan.visionContextId!,
+      }).context))
   })
   ipcMain.handle('work:control-plan', (event, request: unknown) => {
     assertTrustedSender(event)

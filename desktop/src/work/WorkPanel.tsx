@@ -17,6 +17,7 @@ import type { WorkToolCall } from '../../electron/work-tool-protocol.ts'
 import type { WorkPlanClient } from '../../electron/work-plan-protocol.ts'
 import type { WorkAuditClient } from '../../electron/work-audit-protocol.ts'
 import type { WorkDesktopClient } from '../../electron/work-desktop-protocol.ts'
+import type { VisionContext } from '../../electron/vision-context-protocol.ts'
 import { ToolInspector } from './ToolInspector.tsx'
 import { ToolConsole } from './ToolConsole.tsx'
 import { PlanPanel } from './PlanPanel.tsx'
@@ -36,13 +37,16 @@ interface WorkPanelProps {
   planAvailable: boolean
   auditAvailable: boolean
   undoAvailable: boolean
+  visionContext?: VisionContext | null
+  /** Clear the reviewed visual evidence selected for the next explicit Work plan. */
+  onClearVisionContext?(): void
   /** Keep the shell from starting a conflicting mode change or Chat turn. */
   onBusyChange(busy: boolean): void
 }
 
 /** Display and revoke the explicit directory access granted to one Work Chat. */
 export function WorkPanel({ api, chatId, ready, disabled, readAvailable, previewAvailable, confirmAvailable,
-  planAvailable, auditAvailable, undoAvailable, onBusyChange }: WorkPanelProps) {
+  planAvailable, auditAvailable, undoAvailable, visionContext = null, onClearVisionContext, onBusyChange }: WorkPanelProps) {
   const [calls, setCalls] = useState<WorkToolCall[]>([])
   const [consoleBusy, setConsoleBusy] = useState(false)
   const [planLeased, setPlanLeased] = useState(false)
@@ -195,6 +199,7 @@ export function WorkPanel({ api, chatId, ready, disabled, readAvailable, preview
           setCalls((current) => current.length < 16 ? [...current, call] : current)
         }} tools={catalog?.tools ?? []} onBusyChange={updateConsoleBusy} />
       {planAvailable && <PlanPanel api={api} chatId={chatId} workspacePath={visibleScope?.workspacePath ?? null}
+        visionContext={visionContext} onClearVisionContext={onClearVisionContext}
         ready={ready} disabled={disabled || consoleBusy || undoBusy || desktopBusy} calls={calls}
         onRemoveCall={(index) => { setCalls((current) => current.filter((_, ordinal) => ordinal !== index)) }}
         onClearCalls={() => { setCalls([]) }} onLeaseChange={updatePlanLease} />}

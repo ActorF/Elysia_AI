@@ -7,7 +7,7 @@ from collections.abc import Callable, Generator, Iterable, Iterator
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 from chats import (
     AttachmentMetadata,
@@ -65,6 +65,7 @@ from .prompts import (
     build_elysia_system_prompt,
 )
 from agent.workflow_nodes import ContextFact, validate_context_facts, validate_workflow_query
+from agent.vision_context import validate_vision_context
 from work_tools.contracts import ToolProtocolError
 
 logger = logging.getLogger(__name__)
@@ -1694,10 +1695,12 @@ class Brain:
     def workflow_advice(
         self, chat_id: ChatId, project_id: ProjectId | None, query: str,
         memories: list[ContextFact], evidence: list[ContextFact], should_cancel: Callable[[], bool],
+        *, vision_context: dict[str, Any] | None = None,
     ) -> str | None:
-        """Stream bounded local advice without sending Workspace file bodies or committing any Chat turn.
+        """Stream bounded local advice without reading Workspace files or committing any Chat turn.
 
-        The model receives only the explicit query and approved advisory context.
+        The model receives only the explicit query and approved advisory context,
+        including separately labelled visual evidence when explicitly supplied.
         Its entire response remains text; it has no tool bindings, routing output,
         approval channel, or persistence hook. Missing model support is reported
         as unavailable so an already explicit safe action can still proceed.
@@ -1706,6 +1709,7 @@ class Brain:
         checked = validate_workflow_query(query)
         memory_context = validate_context_facts(memories, "memory")
         rag_context = validate_context_facts(evidence, "rag")
+        reviewed_vision = None if vision_context is None else validate_vision_context(vision_context)
         self._raise_if_generation_cancelled(should_cancel)
         chat = self._workflow_owner(chat_id, project_id)
         if self._chat_model is None:
@@ -1717,7 +1721,8 @@ class Brain:
                 "grant approval, execute commands, or claim that an action has completed."
             )},
             {"role": "user", "content": json.dumps({"query": checked, "memory": memory_context,
-                                                       "evidence": rag_context}, ensure_ascii=False)},
+                "evidence": rag_context, **({"visualEvidence": reviewed_vision} if reviewed_vision is not None else {})},
+                ensure_ascii=False)},
         ]
         stream = iter(self._chat_model.stream_reply(messages))
         chunks: list[str] = []

@@ -210,8 +210,45 @@
         "chatId": { "$ref": "#/$defs/workChatId" },
         "title": { "type": "string", "minLength": 1, "maxLength": 200 },
         "calls": { "type": "array", "minItems": 1, "maxItems": 16, "items": { "$ref": "#/$defs/workToolCall" } },
-        "useProjectKnowledge": { "type": "boolean" }
+        "useProjectKnowledge": { "type": "boolean" },
+        "visionContext": { "$ref": "#/$defs/visionContextData" }
       }, "required": ["chatId", "title", "calls"], "additionalProperties": false
+    },
+    "visionContextData": {
+      "type": "object", "properties": {
+        "imageReference": {
+          "type": "object", "properties": {
+            "imageId": { "type": "string", "pattern": "^vision_[0-9a-f]{32}$" },
+            "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+            "width": { "type": "integer", "minimum": 1, "maximum": 8192 },
+            "height": { "type": "integer", "minimum": 1, "maximum": 8192 },
+            "source": {
+              "type": "object", "properties": {
+                "kind": { "enum": ["file", "display", "window", "region"] },
+                "label": { "type": "string", "minLength": 1, "maxLength": 1024 }
+              }, "required": ["kind", "label"], "additionalProperties": false
+            }
+          }, "required": ["imageId", "sha256", "width", "height", "source"], "additionalProperties": false
+        },
+        "ocrExtraction": { "oneOf": [
+          { "type": "null" },
+          { "type": "object", "properties": {
+            "language": { "enum": ["eng", "chi_sim+eng", "chi_tra+eng"] },
+            "text": { "type": "string", "maxLength": 8192 },
+            "truncated": { "type": "boolean" }
+          }, "required": ["language", "text", "truncated"], "additionalProperties": false }
+        ] },
+        "modelInference": { "oneOf": [
+          { "type": "null" },
+          { "type": "object", "properties": {
+            "model": { "type": "string", "minLength": 1, "maxLength": 256 },
+            "question": { "type": "string", "minLength": 1, "maxLength": 4096 },
+            "text": { "type": "string", "maxLength": 8192 },
+            "truncated": { "type": "boolean" }
+          }, "required": ["model", "question", "text", "truncated"], "additionalProperties": false }
+        ] },
+        "userDescription": { "type": "string", "maxLength": 4096 }
+      }, "required": ["imageReference", "ocrExtraction", "modelInference", "userDescription"], "additionalProperties": false
     },
     "workPlanCreateRequest": {
       "allOf": [{ "$ref": "#/$defs/requestEnvelope" }, { "properties": {

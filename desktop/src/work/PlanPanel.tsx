@@ -14,6 +14,7 @@ import { parseWorkToolCall, type WorkToolCall } from '../../electron/work-tool-p
 import { ApprovalPreview } from './ApprovalPreview.tsx'
 import { JobProgress } from './JobProgress.tsx'
 import type { WorkJobObservation } from '../../electron/work-job-protocol.ts'
+import type { VisionContext } from '../../electron/vision-context-protocol.ts'
 import './PlanPanel.css'
 
 interface PlanPanelProps {
@@ -23,6 +24,9 @@ interface PlanPanelProps {
   ready: boolean
   disabled: boolean
   calls: WorkToolCall[]
+  visionContext?: VisionContext | null
+  /** Remove an explicitly selected image review from the next plan without deleting its source image. */
+  onClearVisionContext?(): void
   /** Remove a draft step before a plan is created or started. */
   onRemoveCall(index: number): void
   /** Clear only the editable queue, without cancelling an existing owned plan. */
@@ -63,7 +67,7 @@ function RevisionEditor({ call, disabled, onSave, onCancel }: {
 
 /** Present the exact planned calls and require separate consent for every write step. */
 export function PlanPanel({ api, chatId, workspacePath, ready, disabled, calls,
-  onRemoveCall, onClearCalls, onLeaseChange }: PlanPanelProps) {
+  visionContext = null, onClearVisionContext, onRemoveCall, onClearCalls, onLeaseChange }: PlanPanelProps) {
   const [plan, setPlan] = useState<WorkPlan | null>(null)
   const [workflow, setWorkflow] = useState<WorkWorkflowObservation | undefined>()
   const [recovery, setRecovery] = useState<WorkRecoveryNotice | undefined>()
@@ -149,8 +153,10 @@ export function PlanPanel({ api, chatId, workspacePath, ready, disabled, calls,
     if (api !== undefined && workspacePath !== null && calls.length > 0
       && !workPlanHasLease(plan) && await action(() => api.createWorkPlan({ chatId, title, calls,
         ...(useProjectKnowledge ? { useProjectKnowledge: true } : {}),
+        ...(visionContext !== null ? { visionContextId: visionContext.contextId } : {}),
       }))) {
       onClearCalls()
+      onClearVisionContext?.()
     }
   }
 
@@ -188,11 +194,22 @@ export function PlanPanel({ api, chatId, workspacePath, ready, disabled, calls,
       <p>Review exact steps before starting. Each file change requires separate approval.</p>
       {recovery !== undefined && <p role="note" data-work-recovery={recovery.status}>
         {recovery.status === 'restored'
-          ? 'Recovered paused. Resume rechecks the selected Workspace and prepares fresh approvals. Project Sources remain off after recovery.'
+          ? 'Recovered paused. Resume rechecks the selected Workspace and prepares fresh approvals. Project Sources remain off after recovery; image context is not restored.'
           : recovery.status === 'uncertain_write'
             ? 'An interrupted write has an uncertain outcome. Check Work history and recovery copies before creating a new plan. It will not be replayed.'
             : 'The latest checkpoint could not be saved. The step results below remain the actual local outcomes; check Work history before restarting.'}
       </p>}
+      {visionContext !== null && <section className="work-plan-visual-context" aria-label="Selected visual context">
+        <strong>Image context: {visionContext.image.source.label}</strong>
+        <p>{visionContext.image.width} × {visionContext.image.height}. This review adds advice only.
+          The exact steps below still require their own approvals. Image context is not restored after restart.</p>
+        <details><summary>Review the image context for this plan</summary>
+          <strong>OCR text</strong><pre>{visionContext.ocr?.text ?? 'No OCR text selected.'}</pre>
+          <strong>Model inference</strong><pre>{visionContext.inference?.text ?? 'No model inference selected.'}</pre>
+          <strong>Your description</strong><pre>{visionContext.userDescription || 'No description entered.'}</pre>
+        </details>
+        <button type="button" disabled={blocked || live} onClick={onClearVisionContext}>Remove image context from plan</button>
+      </section>}
       {calls.length > 0 && (
         <form onSubmit={(event) => { event.preventDefault(); void create() }}>
           <label>Plan title<input value={title} maxLength={200} required disabled={blocked || live}

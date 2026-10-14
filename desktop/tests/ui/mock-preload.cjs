@@ -2197,6 +2197,7 @@ const desktopApi = {
 
   createWorkPlan: async (request) => {
     record('createWorkPlan', [request])
+    if (request.visionContextId !== undefined) visionReview(request.chatId, request.visionContextId)
     const suffix = (nextWorkPlanNumber++).toString(16).padStart(32, '0')
     const plan = { planId: `plan_${suffix}`, title: request.title, state: 'pending', busy: false,
       steps: request.calls.map((call, index) => ({

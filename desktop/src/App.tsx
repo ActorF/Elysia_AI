@@ -1,9 +1,9 @@
 /**
  * Coordinate the local Backend with the renderer's presentational shell.
  *
- * Electron owns Windows capabilities and Python owns every Chat, model, and
- * persistence operation. This component keeps that boundary while delegating
- * layout and visual states to focused UI components.
+ * Electron owns native desktop and Vision capabilities; Python owns Chat and
+ * Work execution. This component coordinates their fixed preload contracts
+ * while delegating layout and visual states to focused UI components.
  */
 
 import {
@@ -54,6 +54,7 @@ import {
   type SongCoverState,
 } from '../electron/song-cover-contracts.ts'
 import type { VoiceCallWindowState } from '../electron/voice-call-contracts.ts'
+import type { VisionContext } from '../electron/vision-context-protocol.ts'
 import {
   hasNonBlankCodePoint,
   trimProtocolBlankCharacters,
@@ -937,6 +938,7 @@ function App() {
   const [sessionMutationPending, setSessionMutationPending] = useState(false)
   const [workOperationPending, setWorkOperationPending] = useState(false)
   const [visionOperationPending, setVisionOperationPending] = useState(false)
+  const [selectedWorkVisionContext, setSelectedWorkVisionContext] = useState<VisionContext | null>(null)
   const [projectState, setProjectState] = useState<ProjectState | null>(null)
   const [projectLoading, setProjectLoading] = useState(true)
   const [projectMutationPending, setProjectMutationPending] = useState(false)
@@ -1069,6 +1071,8 @@ function App() {
   const [sidebarOpen, setSidebarOpen] = useState(() => !isCompactShell())
   const activeChatIdRef = useRef<string | undefined>(snapshot.chatId)
   const activeChatProjectIdRef = useRef<string | null>(null)
+  const activeChatModeRef = useRef<'chat' | 'work'>('chat')
+  const activeChatArchivedRef = useRef(false)
   const activeViewRef = useRef<AppView>('chat')
   const pendingChatSendRef = useRef<PersistedPendingChatSend | null>(
     pendingChatSend,
@@ -1082,6 +1086,7 @@ function App() {
   const acceptedSnapshotRevisionRef = useRef(snapshot.revision)
   const settledGenerationRequestIdsRef = useRef(new Set<string>())
   const backendStatusRef = useRef(snapshot.status)
+  const backendChatIdRef = useRef(snapshot.chatId)
   const callButtonRef = useRef<HTMLButtonElement | null>(null)
   const modelOperationRef = useRef(0)
   const modelSelectionPendingRef = useRef(false)
@@ -1373,6 +1378,54 @@ function App() {
     workOperationPendingRef.current = pending
     setWorkOperationPending(pending)
   }, [])
+  const appendReviewedVisionDraft = useCallback((text: string): void => {
+    const chatId = activeChatId
+    if (chatId === undefined || backendStatusRef.current !== 'ready' || backendChatIdRef.current !== chatId
+      || activeChatIdRef.current !== chatId || activeChatProjectIdRef.current !== activeChatProjectId
+      || activeChatArchivedRef.current || activeViewRef.current !== 'chat' || sessionMutationPendingRef.current
+      || workLeaseRef.current || modelSelectionPendingRef.current || retryPendingRef.current) {
+      throw new Error('The reviewed draft owner changed.')
+    }
+    // The export owns the Vision lease itself. Validate the other live scope
+    // facts, then read the latest draft so typing during review is preserved.
+    const existing = draftsByChatRef.current[chatId] ?? ''
+    const nextDraft = existing.length === 0 ? text : `${existing}\n\n${text}`
+    if (nextDraft.length > MAX_PERSISTED_DRAFT_LENGTH) {
+      setNotice(errorNotice('The current message is too long to append this image context.'))
+      throw new Error('The draft exceeds its storage limit.')
+    }
+    const others = { ...draftsByChatRef.current }
+    delete others[chatId]
+    const nextDrafts = { [chatId]: nextDraft, ...others }
+    if (!persistChatDrafts(nextDrafts, chatId)) {
+      setNotice(errorNotice('The reviewed text could not be protected in local draft storage.'))
+      throw new Error('The draft could not be stored.')
+    }
+    updateChatDrafts(() => nextDrafts)
+  }, [activeChatId, activeChatProjectId, updateChatDrafts])
+  const selectReviewedVisionWorkContext = useCallback((context: VisionContext): void => {
+    const expiresAt = Date.parse(context.expiresAt)
+    if (backendStatusRef.current !== 'ready' || backendChatIdRef.current !== context.owner.chatId
+      || activeChatIdRef.current !== context.owner.chatId || activeChatProjectIdRef.current !== context.owner.projectId
+      || activeChatModeRef.current !== 'work' || activeChatArchivedRef.current || activeViewRef.current !== 'chat'
+      || sessionMutationPendingRef.current || workLeaseRef.current || modelSelectionPendingRef.current || retryPendingRef.current
+      || !Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
+      throw new Error('The reviewed Work context is no longer available.')
+    }
+    setSelectedWorkVisionContext(context)
+  }, [])
+  useEffect(() => {
+    if (selectedWorkVisionContext === null) return
+    const contextId = selectedWorkVisionContext.contextId
+    const remaining = Date.parse(selectedWorkVisionContext.expiresAt) - Date.now()
+    const timer = window.setTimeout(() => {
+      setSelectedWorkVisionContext((current) => current?.contextId === contextId ? null : current)
+    }, Math.max(0, Math.min(remaining, 300000)))
+    return () => { window.clearTimeout(timer) }
+  }, [selectedWorkVisionContext])
+  const visibleWorkVisionContext = snapshot.status === 'ready' && snapshot.chatId === activeChatId
+    && chatState?.activeChat.archived === false && selectedWorkVisionContext !== null && selectedWorkVisionContext.owner.chatId === activeChatId
+    && selectedWorkVisionContext.owner.projectId === activeChatProjectId ? selectedWorkVisionContext : null
   const canSend = (
     desktopApi !== undefined
     && snapshot.status === 'ready'
@@ -2659,6 +2712,8 @@ function App() {
     }
     acceptedSnapshotRevisionRef.current = nextSnapshot.revision
     backendStatusRef.current = acceptedSnapshot.status
+    backendChatIdRef.current = acceptedSnapshot.chatId
+    if (acceptedSnapshot.status !== 'ready' || acceptedSnapshot.chatId !== activeChatIdRef.current) setSelectedWorkVisionContext(null)
     setSnapshot(acceptedSnapshot)
     return true
   }, [])
@@ -2704,6 +2759,8 @@ function App() {
   }, [])
 
   const acceptChatState = useCallback((nextState: ChatSessionState): void => {
+    if (activeChatIdRef.current !== nextState.activeChat.chatId || activeChatProjectIdRef.current !== nextState.activeChat.projectId
+      || nextState.activeChat.archived) setSelectedWorkVisionContext(null)
     for (const chat of [...nextState.chats, nextState.activeChat]) {
       const knownCount = knownChatMessageCountsRef.current.get(chat.chatId) ?? 0
       knownChatMessageCountsRef.current.set(
@@ -2713,6 +2770,8 @@ function App() {
     }
     activeChatIdRef.current = nextState.activeChat.chatId
     activeChatProjectIdRef.current = nextState.activeChat.projectId
+    activeChatModeRef.current = nextState.activeChat.mode
+    activeChatArchivedRef.current = nextState.activeChat.archived
     setChatState(nextState)
     setMessages(presentChatMessages(nextState.activeChat))
   }, [])
@@ -8214,6 +8273,8 @@ function App() {
             planAvailable={snapshot.capabilities.includes('work.plan')}
             auditAvailable={snapshot.capabilities.includes('work.audit')}
             undoAvailable={snapshot.capabilities.includes('work.undo')}
+            visionContext={visibleWorkVisionContext}
+            onClearVisionContext={() => { setSelectedWorkVisionContext(null) }}
             onBusyChange={updateWorkBusy}
           />
         )}
@@ -8221,7 +8282,8 @@ function App() {
           <VisionPanel api={desktopApi} chatId={activeChatId} projectId={activeChatProjectId}
             ready={snapshot.status === 'ready' && snapshot.chatId === activeChatId && chatState?.activeChat.archived === false}
             disabled={workControlsDisabled || workLeaseRef.current || modelSelectionPending || retryPending}
-            onBusyChange={updateVisionBusy} />
+            onBusyChange={updateVisionBusy} onChatDraft={appendReviewedVisionDraft}
+            onWorkContext={chatState?.activeChat.mode === 'work' ? selectReviewedVisionWorkContext : undefined} />
         )}
         onBeginRetryEdit={beginRetryEdit}
         onCancelRetryEdit={cancelRetryEdit}

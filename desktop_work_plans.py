@@ -17,6 +17,7 @@ from threading import RLock
 from typing import Any
 
 from agent.work_plan import WorkPlanRunner
+from agent.vision_context import validate_vision_context
 from agent.workflow_nodes import WorkflowNodes
 from agent.workflow_session import WorkflowSession
 from agent.workflow_state import workspace_key
@@ -44,6 +45,7 @@ class _Owner:
     tokens: set[str] = field(default_factory=set)
     restored: bool = False
     use_project_knowledge: bool = False
+    vision_context: dict[str, Any] | None = None
     admission_guard: Callable[[], bool] | None = None
 
 
@@ -56,7 +58,7 @@ class DesktopWorkPlans:
         boundary_provider: Callable[[str], WorkspaceBoundary],
         write_provider: Callable[[], WriteCoordinator],
         *,
-        nodes_factory: Callable[[Callable[[], None], bool], WorkflowNodes] | None = None,
+        nodes_factory: Callable[[Callable[[], None], bool, dict[str, Any] | None], WorkflowNodes] | None = None,
         workflow_store: WorkflowStore | Callable[[], WorkflowStore] | None = None,
     ) -> None:
         """Inject canonical providers without opening a filesystem or starting threads."""
@@ -75,7 +77,8 @@ class DesktopWorkPlans:
         self._closed = False
         self._creation_token: object | None = None
 
-    def create(self, chat: ChatSession, title: str, calls: list[ToolCall], *, use_project_knowledge: bool = False) -> dict[str, Any]:
+    def create(self, chat: ChatSession, title: str, calls: list[ToolCall], *, use_project_knowledge: bool = False,
+               vision_context: dict[str, Any] | None = None) -> dict[str, Any]:
         """Capture the current selected scope and replace an idle plan safely.
 
         Old waiting approvals are revoked before a replacement is admitted.
@@ -83,10 +86,11 @@ class DesktopWorkPlans:
         overlap it until the retired runner has physically drained.
         """
 
-        return self._create(chat, title, calls, use_project_knowledge=use_project_knowledge)
+        return self._create(chat, title, calls, use_project_knowledge=use_project_knowledge, vision_context=vision_context)
 
     def _create(self, chat: ChatSession, title: str, calls: list[ToolCall], *,
-                use_project_knowledge: bool = False, reservation: object | None = None) -> dict[str, Any]:
+                use_project_knowledge: bool = False, reservation: object | None = None,
+                vision_context: dict[str, Any] | None = None) -> dict[str, Any]:
         """Retain one creation CAS across a revised decision and fresh owner publication."""
 
         with self._lock:
@@ -99,13 +103,14 @@ class DesktopWorkPlans:
         boundary = self._boundary_provider(chat_id)
         boundary.metadata()
         owner = _Owner(chat_id, project_id, boundary.normalized_root, boundary.root_identity,
-                       use_project_knowledge=use_project_knowledge)
+                       use_project_knowledge=use_project_knowledge,
+                       vision_context=None if vision_context is None else validate_vision_context(vision_context))
         runner = WorkPlanRunner(
             lambda call, cancel: self._read(owner, call, cancel),
             lambda call: self._preview(owner, call),
             lambda token, granted: self._confirm_write(owner, token, granted),
             workflow_nodes=None if self._nodes_factory is None else self._nodes_factory(
-                lambda: self._check_node_authority(owner), use_project_knowledge,
+                lambda: self._check_node_authority(owner), use_project_knowledge, owner.vision_context,
             ),
             read_result=lambda call, result: self._record_read(owner, call, result),
             timeout_call=lambda token: self._confirm_write(owner, token, False, decision="timeout"),
@@ -219,7 +224,7 @@ class DesktopWorkPlans:
             lambda call: self._preview(owner, call),
             lambda token, granted: self._confirm_write(owner, token, granted),
             workflow_nodes=None if self._nodes_factory is None else self._nodes_factory(
-                lambda: self._check_node_authority(owner), False,
+                lambda: self._check_node_authority(owner), False, None,
             ),
             checkpoint=session.save,
             read_result=lambda call, result: self._record_read(owner, call, result),
@@ -372,7 +377,8 @@ class DesktopWorkPlans:
                 if self._creation_token is not creation:
                     raise ToolProtocolError("conflict")
             chat = self._require_chat(owner.chat_id, owner.project_id)
-            return self._create(chat, title, calls, use_project_knowledge=owner.use_project_knowledge, reservation=creation)
+            return self._create(chat, title, calls, use_project_knowledge=owner.use_project_knowledge, reservation=creation,
+                                vision_context=owner.vision_context)
         finally:
             with self._lock:
                 if self._creation_token is creation:

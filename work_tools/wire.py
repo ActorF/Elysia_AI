@@ -7,6 +7,7 @@ import json
 import re
 from datetime import datetime
 
+from agent.vision_context import validate_vision_context
 from .contracts import TOOL_CATALOG, descriptor_to_data, ToolResult, ToolProtocolError, validate_plan_title, validate_tool_call, validate_tool_result
 from .audit_wire import validate_audit_page
 from .job_wire import validate_work_job
@@ -43,9 +44,9 @@ def validate_work_params(method: str, value: object) -> dict[str, Any]:
 
     fields = _METHOD_FIELDS.get(method)
     supplied = set(value) if type(value) is dict else set()
-    if method == "work.plan.create" and isinstance(value, dict) and "useProjectKnowledge" in supplied:
-        fields = {*_METHOD_FIELDS[method], "useProjectKnowledge"}
-        if type(value["useProjectKnowledge"]) is not bool:
+    if method == "work.plan.create" and isinstance(value, dict):
+        fields = {*_METHOD_FIELDS[method], *(supplied & {"useProjectKnowledge", "visionContext"})}
+        if "useProjectKnowledge" in value and type(value["useProjectKnowledge"]) is not bool:
             raise ValueError("Work knowledge choice must be explicit.")
     if fields is None or not isinstance(value, dict) or supplied != fields:
         raise ValueError("Work request fields are invalid.")
@@ -66,6 +67,8 @@ def validate_work_params(method: str, value: object) -> dict[str, Any]:
             raise ValueError("Work confirmation is invalid.")
     elif method == "work.plan.create":
         validate_plan_title(value["title"])
+        if "visionContext" in value:
+            validate_vision_context(value["visionContext"])
         if type(value["calls"]) is not list or not 1 <= len(value["calls"]) <= 16:
             raise ValueError("Work plan steps are invalid.")
         for call in value["calls"]:

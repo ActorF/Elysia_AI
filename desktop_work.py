@@ -32,7 +32,7 @@ class DesktopWorkRuntime:
 
     def __init__(self, directory: Path, chat_provider: Callable[[], ChatSession], *,
                  protected_roots: tuple[Path, ...] = (),
-                 nodes_factory: Callable[[Callable[[], None], bool], WorkflowNodes] | None = None) -> None:
+                 nodes_factory: Callable[[Callable[[], None], bool, dict[str, Any] | None], WorkflowNodes] | None = None) -> None:
         """Use one private directory and the current canonical active-Chat provider."""
 
         self._bindings = WorkspaceBindings(directory)
@@ -62,7 +62,8 @@ class DesktopWorkRuntime:
         chat_id = str(chat.chat_id)
         if method == "work.plan.create":
             plan = self._plans.create(chat, params["title"], [validate_tool_call(call) for call in params["calls"]],
-                                      use_project_knowledge=params.get("useProjectKnowledge", False))
+                                      use_project_knowledge=params.get("useProjectKnowledge", False),
+                                      vision_context=params.get("visionContext"))
             return self._plan_result(chat_id, plan)
         if method == "work.plan.get":
             return self._plan_result(chat_id, self._plans.get(chat_id))

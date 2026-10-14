@@ -9,7 +9,9 @@ selected Workspace's tool results and cannot authorize additional operations.
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import Any
 
+from agent.vision_context import validate_vision_context
 from agent.workflow_nodes import ContextFact, WorkflowNodes, validate_context_facts
 from chats import ChatSession
 from core.brain import Brain, ProjectSourceAnswerer
@@ -21,6 +23,7 @@ def make_workflow_nodes(
     chat_provider: Callable[[], ChatSession], brain: Brain,
     rag_answerer: ProjectSourceAnswerer | None = None, *,
     use_project_knowledge: bool = False, authority_guard: Callable[[], None] | None = None,
+    vision_context: dict[str, Any] | None = None,
 ) -> WorkflowNodes:
     """Capture one Work owner and return lazy providers that revalidate before/after use.
 
@@ -34,6 +37,9 @@ def make_workflow_nodes(
         raise TypeError("Workflow context providers are invalid.")
     selected = chat_provider()
     chat_id, project_id = selected.chat_id, selected.project_id
+    # Image evidence is an explicitly reviewed, text-only snapshot. Keeping it
+    # in this provider closure excludes pixels and OCR text from checkpoints.
+    reviewed_vision = None if vision_context is None else validate_vision_context(vision_context)
 
     def _guard() -> None:
         if authority_guard is not None:
@@ -75,7 +81,8 @@ def make_workflow_nodes(
 
     def _brain(query: str, memories: list[ContextFact], evidence: list[ContextFact], cancel: Callable[[], bool]) -> str | None:
         _guard()
-        advice = brain.workflow_advice(chat_id, project_id, query, memories, evidence, cancel)
+        advice = brain.workflow_advice(chat_id, project_id, query, memories, evidence, cancel,
+                                      vision_context=reviewed_vision)
         _guard()
         return advice
 

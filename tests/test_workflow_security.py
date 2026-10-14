@@ -52,7 +52,7 @@ def _setup(tmp_path: Path) -> tuple[DesktopWorkPlans, list[ChatSession], list[Pa
     writer = WriteCoordinator(private)
     store = WorkflowStore(private / "workflows")
 
-    def _nodes(guard: Callable[[], None], _knowledge: bool) -> WorkflowNodes:
+    def _nodes(guard: Callable[[], None], _knowledge: bool, _vision: dict[str, Any] | None = None) -> WorkflowNodes:
         return WorkflowNodes(
             lambda _query, _cancel: [{"source": "memory", "reference": "synthetic-memory", "text": _INJECTION}],
             lambda _query, _cancel: [{"source": "rag", "reference": "synthetic-citation", "text": _INJECTION}],

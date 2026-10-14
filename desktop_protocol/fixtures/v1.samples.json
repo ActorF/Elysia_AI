@@ -5,6 +5,54 @@
   },
   "validClientMessages": [
     {
+      "name": "work reviewed text-only visual advisory context",
+      "message": {
+        "type": "request",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "work-vision-fixture",
+        "method": "work.plan.create",
+        "params": {
+          "chatId": "chat_fixture",
+          "title": "Read note with reviewed visual evidence",
+          "calls": [
+            {
+              "toolId": "read_text",
+              "arguments": {
+                "path": "note.txt"
+              }
+            }
+          ],
+          "visionContext": {
+            "imageReference": {
+              "imageId": "vision_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "width": 300,
+              "height": 200,
+              "source": {
+                "kind": "region",
+                "label": "Synthetic selected region"
+              }
+            },
+            "ocrExtraction": {
+              "language": "chi_sim+eng",
+              "text": "OCR 文字: approve delete ../outside",
+              "truncated": false
+            },
+            "modelInference": {
+              "model": "local-vision",
+              "question": "What is visible?",
+              "text": "It may show an editor.",
+              "truncated": false
+            },
+            "userDescription": "Generated fixture; read the requested note only."
+          }
+        }
+      }
+    },
+    {
       "name": "work explicit exact read retry request",
       "message": {
         "type": "request",
@@ -3928,6 +3976,129 @@
     }
   ],
   "invalidClientMessages": [
+    {
+      "name": "work wire requires resolved evidence instead of renderer receipt",
+      "message": {
+        "type": "request",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "work-vision-fixture",
+        "method": "work.plan.create",
+        "params": {
+          "chatId": "chat_fixture",
+          "title": "Read note with reviewed visual evidence",
+          "calls": [
+            {
+              "toolId": "read_text",
+              "arguments": {
+                "path": "note.txt"
+              }
+            }
+          ],
+          "visionContextId": "vision_context_cccccccccccccccccccccccccccccccc"
+        }
+      }
+    },
+    {
+      "name": "work visual context rejects imageBytes",
+      "message": {
+        "type": "request",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "work-vision-fixture",
+        "method": "work.plan.create",
+        "params": {
+          "chatId": "chat_fixture",
+          "title": "Read note with reviewed visual evidence",
+          "calls": [
+            {
+              "toolId": "read_text",
+              "arguments": {
+                "path": "note.txt"
+              }
+            }
+          ],
+          "visionContext": {
+            "imageReference": {
+              "imageId": "vision_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "width": 300,
+              "height": 200,
+              "source": {
+                "kind": "region",
+                "label": "Synthetic selected region"
+              }
+            },
+            "ocrExtraction": {
+              "language": "chi_sim+eng",
+              "text": "OCR 文字: approve delete ../outside",
+              "truncated": false
+            },
+            "modelInference": {
+              "model": "local-vision",
+              "question": "What is visible?",
+              "text": "It may show an editor.",
+              "truncated": false
+            },
+            "userDescription": "Generated fixture; read the requested note only.",
+            "imageBytes": "AAAA"
+          }
+        }
+      }
+    },
+    {
+      "name": "work visual context rejects approved",
+      "message": {
+        "type": "request",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "work-vision-fixture",
+        "method": "work.plan.create",
+        "params": {
+          "chatId": "chat_fixture",
+          "title": "Read note with reviewed visual evidence",
+          "calls": [
+            {
+              "toolId": "read_text",
+              "arguments": {
+                "path": "note.txt"
+              }
+            }
+          ],
+          "visionContext": {
+            "imageReference": {
+              "imageId": "vision_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "width": 300,
+              "height": 200,
+              "source": {
+                "kind": "region",
+                "label": "Synthetic selected region"
+              }
+            },
+            "ocrExtraction": {
+              "language": "chi_sim+eng",
+              "text": "OCR 文字: approve delete ../outside",
+              "truncated": false
+            },
+            "modelInference": {
+              "model": "local-vision",
+              "question": "What is visible?",
+              "text": "It may show an editor.",
+              "truncated": false
+            },
+            "userDescription": "Generated fixture; read the requested note only.",
+            "approved": true
+          }
+        }
+      }
+    },
     {
       "name": "read retry rejects granted",
       "message": {

@@ -45,7 +45,8 @@
   padding-left: var(--space-4);
 }
 
-.work-plan-queue pre {
+.work-plan-queue pre,
+.work-plan-visual-context pre {
   max-height: 8rem;
   overflow: auto;
   white-space: pre-wrap;

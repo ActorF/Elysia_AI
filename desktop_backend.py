@@ -1406,14 +1406,15 @@ class DesktopBackend:
             raise ProtocolValidationError("work.denied", "Work request was refused. Check the mode and selected folder.") from None
         self._emit_response(request_id, result)
 
-    def _make_workflow_nodes(self, authority_guard: Callable[[], None], use_project_knowledge: bool) -> WorkflowNodes:
-        """Bind advisory nodes to canonical Brain services and explicit Project opt-in."""
+    def _make_workflow_nodes(self, authority_guard: Callable[[], None], use_project_knowledge: bool,
+                             vision_context: dict[str, Any] | None = None) -> WorkflowNodes:
+        """Bind advisory nodes to canonical Brain services and explicit Project or visual evidence."""
 
         if self._brain is None:
             raise ValueError("Work context is unavailable.")
         return make_workflow_nodes(
             self._work_active_chat, self._brain, self._workflow_rag_answer,
-            use_project_knowledge=use_project_knowledge, authority_guard=authority_guard,
+            use_project_knowledge=use_project_knowledge, authority_guard=authority_guard, vision_context=vision_context,
         )
 
     def _workflow_rag_answer(
