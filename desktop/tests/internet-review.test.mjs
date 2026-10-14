@@ -43,6 +43,8 @@ test('scope changes, source mutations, replacement, expiry and explicit clear in
   review = store.prepare(owner, request(), lookup)
   now += 300_000
   assert.throws(resolve)
+  now -= 300_000
+  assert.throws(resolve)
   review = store.prepare(owner, request(), lookup)
   store.prepare(owner, request(), lookup)
   assert.throws(resolve)

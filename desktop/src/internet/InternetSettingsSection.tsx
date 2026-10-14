@@ -26,7 +26,7 @@ interface PolicyDraft {
 const DOMAIN_PRESETS = [
   { label: 'Wikipedia', domains: ['en.wikipedia.org', 'zh.wikipedia.org'] },
   { label: 'GitHub', domains: ['api.github.com', 'github.com'] },
-  { label: 'Open-Meteo', domains: ['api.open-meteo.com', 'geocoding-api.open-meteo.com'] },
+  { label: 'Open-Meteo', domains: ['api.open-meteo.com'] },
   { label: 'Lyrics', domains: ['lrclib.net'] },
 ] as const
 

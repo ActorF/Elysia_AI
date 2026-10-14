@@ -14,7 +14,7 @@ const names = ['hasActiveInternetWork', 'trackInternetOperation', 'withInternetO
 const selected = source.statements.filter(node => ts.isFunctionDeclaration(node) && names.includes(node.name?.text))
 assert.equal(selected.length, names.length)
 const register = source.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'registerIpcHandlers')
-const channels = ['get', 'activity', 'search', 'read', 'cancel', 'clear', 'source-text', 'review', 'review-text'].map(name => `desktop:internet-research:${name}`)
+const channels = ['get', 'activity', 'search', 'read', 'weather', 'github', 'cancel', 'clear', 'source-text', 'review', 'review-text'].map(name => `desktop:internet-research:${name}`)
 const handlers = register.body.statements.filter(node => ts.isExpressionStatement(node) && ts.isCallExpression(node.expression)
   && ts.isStringLiteral(node.expression.arguments[0]) && channels.includes(node.expression.arguments[0].text))
 assert.equal(handlers.length, channels.length)
@@ -34,6 +34,7 @@ function fixture() {
     getSource: (_chatId, sourceId) => { assert.equal(sourceId, evidence.id); return evidence },
     search: request => { calls.push(request); return { sources: [] } },
     readPage: request => { calls.push(request); return { sources: [] } },
+    weather: request => { calls.push(request); return { sources: [] } }, github: request => { calls.push(request); return { sources: [] } },
     cancel: () => { calls.push('cancel'); return {} }, clear: () => ({}), sourceText: () => ({ text: 'native evidence' }) }
   const host = { module: { exports: {} }, internetRequests: new Set(), internetPolicyService: null,
     internetResearchGeneration: 0, internetResearchAdmission: null,
@@ -47,6 +48,7 @@ function fixture() {
     assertTrustedSender: event => { if (!event.trusted) throw new Error('Untrusted sender') },
     parseInternetChatId: value => { if (value !== 'chat_research') throw new Error('Invalid Chat'); return value },
     parseInternetSearchRequest: value => value, parseInternetSourceRequest: value => value, parseInternetReadRequest: value => value,
+    parseInternetWeatherRequest: value => value, parseInternetGithubRequest: value => value,
     ipcMain: { handle: (channel, callback) => callbacks.set(channel, callback) } }
   vm.runInNewContext(compiled, host, { timeout: 1000 })
   return { host, api: host.module.exports, calls, hydration, drain,
@@ -70,13 +72,21 @@ test('research reserves before canonical hydration and rejects another action in
 
 test('research rejects owner replacement after hydration and authenticates every exposed IPC', async () => {
   const f = fixture()
-  for (const name of ['get', 'activity', 'search', 'read', 'cancel', 'clear', 'source-text', 'review', 'review-text']) {
+  for (const name of ['get', 'activity', 'search', 'read', 'weather', 'github', 'cancel', 'clear', 'source-text', 'review', 'review-text']) {
     assert.throws(() => f.invoke(name, {}, false), /Untrusted/u)
   }
   const pending = f.invoke('search', { chatId: 'chat_research' })
   f.hydration.resolve({ chatId: 'chat_other' })
   await assert.rejects(pending, /owner_changed/u)
   assert.deepEqual(f.calls, [])
+})
+
+test('public service requests remain blocked before hydration when Internet is disabled', async () => {
+  const f = fixture()
+  f.host.requireInternetPolicy = () => ({ getState: () => ({ enabled: false, revision: 4 }) })
+  for (const method of ['weather', 'github']) await assert.rejects(f.invoke(method, { chatId: 'chat_research' }), /disabled/u)
+  assert.deepEqual(f.calls, [])
+  assert.equal(f.api.hasActiveInternetWork(), false)
 })
 
 test('comparison and draft export resolve native sources offline and clearing removes the receipt', async () => {
@@ -110,4 +120,14 @@ test('retiring the document prevents reuse but keeps physical work busy until dr
   f.drain.resolve()
   await new Promise(resolve => setImmediate(resolve))
   assert.equal(f.api.hasActiveInternetWork(), false)
+})
+
+test('readonly hydration cannot initialize a replacement controller after document retirement', async () => {
+  const f = fixture()
+  const pending = f.invoke('get', 'chat_research')
+  f.api.retireInternetResearch()
+  f.host.requireInternetResearch = () => { throw new Error('Must not initialize a replacement controller') }
+  f.hydration.resolve({ chatId: 'chat_research' })
+  await assert.rejects(pending, /cancelled/u)
+  f.drain.resolve()
 })

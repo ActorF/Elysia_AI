@@ -1,4 +1,4 @@
-/** Verify explicit encyclopedia search, inert provenance, scope revocation and physically drained Internet research ownership. */
+/** Verify explicit search/page/public-service evidence, inert provenance, scope revocation and physically drained ownership. */
 import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
 import os from 'node:os'
@@ -8,14 +8,24 @@ import { InternetPolicyService } from '../dist-electron/internet-policy.js'
 import { InternetResearchController } from '../dist-electron/internet-research.js'
 import { parseWikipediaSearchResult, searchWikipedia } from '../dist-electron/internet-search.js'
 import { InternetReaderError } from '../dist-electron/internet-reader.js'
+import { InternetServiceError } from '../dist-electron/internet-services.js'
 import { formatInternetSource, parseInternetResearchState, parseInternetSearchRequest, parseInternetSourceText,
-  parseInternetReadRequest } from '../dist-electron/internet-protocol.js'
+  parseInternetReadRequest, parseInternetWeatherRequest, parseInternetGithubRequest } from '../dist-electron/internet-protocol.js'
 
 const fetchedAt = '2026-10-14T18:30:00.000Z'
 const request = (query = 'Space telescope', language = 'en') => ({ chatId: 'chat_a', query, language })
 const response = (pageid = 1, extra = {}) => ({ query: { search: [{ ns: 0, pageid, title: 'Telescope',
   snippet: 'A <span class="searchmatch">telescope</span> &amp; optics.', timestamp: '2026-10-13T10:00:00Z', ...extra }] } })
 const result = (pageid = 1, language = 'en') => parseWikipediaSearchResult(response(pageid), language, fetchedAt)
+const weatherRequest = { chatId: 'chat_a', latitude: 41.878123, longitude: -87.629765 }
+const githubRequest = { chatId: 'chat_a', owner: 'nodejs', repo: 'node' }
+function serviceSource(provider, value) {
+  const url = provider === 'weather'
+    ? `https://api.open-meteo.com/v1/forecast?latitude=${value.latitude.toFixed(4)}&longitude=${value.longitude.toFixed(4)}`
+    : `https://api.github.com/repos/${value.owner}/${value.repo}`
+  return { ...result().sources[0], provider, url, publishedAt: null, modifiedAt: provider === 'weather' ? null : fetchedAt,
+    content: provider === 'weather' ? 'Model-derived current conditions, not a direct local station observation.' : 'Public repository metadata.' }
+}
 const code = expected => error => error.code === expected
 function deferred() { let resolve; const promise = new Promise(done => { resolve = done }); return { promise, resolve } }
 async function fixture(t, options = {}) {
@@ -29,7 +39,7 @@ async function fixture(t, options = {}) {
   if (options.enabled !== false) await policy.update({ expectedRevision: 0, enabled: true,
     allowedDomains: ['en.wikipedia.org', 'zh.wikipedia.org'], proxy: { mode: 'direct' }, timeoutMs: 15000 })
   const owner = { chatId: 'chat_a', projectId: null, mode: 'chat', archived: false, ready: true, busy: false }
-  const events = [], calls = [], readCalls = []
+  const events = [], calls = [], readCalls = [], weatherCalls = [], githubCalls = []
   const controller = new InternetResearchController({ policy, getOwner: () => owner, now: () => new Date(fetchedAt),
     transport: { read: async () => { throw new Error('unexpected generic transport') } },
     onState: state => { events.push(state) }, search: async (value, signal) => {
@@ -39,8 +49,14 @@ async function fixture(t, options = {}) {
       readCalls.push({ url, signal })
       return options.readPage === undefined ? { ...result().sources[0], provider: 'web', url, content: 'Synthetic plain page text.' }
         : options.readPage(url, signal)
+    }, weather: async (value, signal) => {
+      weatherCalls.push({ value, signal })
+      return options.weather === undefined ? serviceSource('weather', value) : options.weather(value, signal)
+    }, github: async (value, signal) => {
+      githubCalls.push({ value, signal })
+      return options.github === undefined ? serviceSource('github', value) : options.github(value, signal)
     } })
-  return { policy, owner, controller, events, calls, readCalls }
+  return { policy, owner, controller, events, calls, readCalls, weatherCalls, githubCalls }
 }
 
 test('Closed search and source-draft contracts reject scope hints, unknown fields and forged evidence text', () => {
@@ -330,5 +346,109 @@ test('Page callbacks use the same physical cancellation and owner-epoch guard as
     assert.deepEqual(state.sources, [])
     assert.deepEqual(state.history, [])
     assert.equal(policy.hasActiveWork(), false)
+  }
+})
+
+test('Public service contracts normalize explicit coordinates and reject credentials, arbitrary paths and unknown fields', () => {
+  assert.deepEqual(parseInternetWeatherRequest(weatherRequest), { chatId: 'chat_a', latitude: 41.8781, longitude: -87.6298 })
+  assert.deepEqual(parseInternetWeatherRequest({ chatId: 'chat_a', latitude: -0, longitude: 0.00001 }),
+    { chatId: 'chat_a', latitude: 0, longitude: 0 })
+  for (const changes of [{ latitude: 91 }, { longitude: -181 }, { latitude: NaN }, { longitude: Infinity },
+    { latitude: '41' }, { projectId: 'project_other' }, { url: 'https://private.example' }]) {
+    assert.throws(() => parseInternetWeatherRequest({ ...weatherRequest, ...changes }), TypeError)
+  }
+  assert.deepEqual(parseInternetGithubRequest(githubRequest), githubRequest)
+  for (const changes of [{ owner: '-bad' }, { owner: 'a'.repeat(40) }, { repo: '../private' }, { repo: '.' }, { repo: '..' },
+    { repo: 'a'.repeat(101) }, { repo: 'node?secret=x' }, { token: 'private' }, { projectId: 'project_other' }]) {
+    assert.throws(() => parseInternetGithubRequest({ ...githubRequest, ...changes }), TypeError)
+  }
+})
+
+test('Explicit weather and public repository operations preserve provider meaning and timestamps without inventing search history', async t => {
+  const { controller, weatherCalls, githubCalls, policy } = await fixture(t)
+  const weather = await controller.weather(weatherRequest)
+  assert.deepEqual(weatherCalls[0].value, { latitude: 41.8781, longitude: -87.6298 })
+  assert.equal(weather.sources[0].provider, 'weather')
+  assert.equal(weather.sources[0].publishedAt, null)
+  assert.equal(weather.sources[0].modifiedAt, null)
+  assert.match(controller.sourceText({ chatId: 'chat_a', sourceId: weather.sources[0].id }).text, /"provider": "Open-Meteo weather"/u)
+  const github = await controller.github(githubRequest)
+  assert.deepEqual(githubCalls[0].value, { owner: 'nodejs', repo: 'node' })
+  assert.equal(github.sources.length, 2)
+  assert.equal(github.sources[0].provider, 'github')
+  assert.equal(github.sources[0].publishedAt, null)
+  assert.equal(github.sources[0].modifiedAt, fetchedAt)
+  assert.match(controller.sourceText({ chatId: 'chat_a', sourceId: github.sources[0].id }).text, /"provider": "GitHub public repository"/u)
+  assert.deepEqual(github.history, [])
+  assert.equal(policy.hasActiveWork(), false)
+})
+
+test('Disabled, invalid and busy public-service requests cannot invoke a provider or infer a device location', async t => {
+  for (const operation of ['weather', 'github']) {
+    const request = operation === 'weather' ? weatherRequest : githubRequest
+    const off = await fixture(t, { enabled: false })
+    await assert.rejects(off.controller[operation](request), code('disabled'))
+    assert.equal(off[`${operation}Calls`].length, 0)
+    const normal = await fixture(t)
+    await assert.rejects(normal.controller[operation]({ ...request, token: 'private' }), code('invalid_request'))
+    normal.owner.busy = true
+    await assert.rejects(normal.controller[operation](request), code('busy'))
+    assert.equal(normal[`${operation}Calls`].length, 0)
+  }
+})
+
+test('Public-service diagnostics remain closed categories and malformed provenance cannot enter source state', async t => {
+  for (const operation of ['weather', 'github']) {
+    const request = operation === 'weather' ? weatherRequest : githubRequest
+    for (const expected of ['invalid_request', 'invalid_output', 'unavailable', 'limit_exceeded', 'cancelled']) {
+      const { controller } = await fixture(t, { [operation]: async () => { throw new InternetServiceError(expected) } })
+      const state = await controller[operation](request)
+      assert.equal(state.error, expected)
+      assert.deepEqual(state.sources, [])
+      assert.deepEqual(state.history, [])
+    }
+    for (const changes of [{ provider: 'web' }, { url: 'https://evil.com/' }, { fromCache: true }, { content: null }, { publishedAt: fetchedAt }]) {
+      const { controller } = await fixture(t, { [operation]: async value => ({ ...serviceSource(operation, value), ...changes }) })
+      const state = await controller[operation](request)
+      assert.equal(state.error, 'invalid_output')
+      assert.deepEqual(state.sources, [])
+    }
+  }
+})
+
+test('Public API operations retain physical capacity across cancellation and reject stale Chat or policy publication', async t => {
+  for (const operation of ['weather', 'github']) {
+    for (const action of ['cancel', 'clear', 'owner', 'policy']) {
+      const held = deferred()
+      const { controller, owner, policy, ...calls } = await fixture(t, { [operation]: () => held.promise })
+      const running = controller[operation](operation === 'weather' ? weatherRequest : githubRequest)
+      const call = calls[`${operation}Calls`][0]
+      if (action === 'cancel') controller.cancel('chat_a')
+      if (action === 'clear') controller.clear('chat_a')
+      if (action === 'owner') {
+        owner.chatId = 'chat_b'; controller.synchronizeOwner()
+        owner.chatId = 'chat_a'; controller.synchronizeOwner()
+      }
+      if (action === 'policy') {
+        const current = policy.getState()
+        await policy.update({ expectedRevision: current.revision, enabled: false, allowedDomains: current.allowedDomains,
+          proxy: current.proxy, timeoutMs: current.timeoutMs })
+        controller.synchronizeOwner()
+      }
+      assert.equal(call.signal.aborted, true)
+      assert.equal(controller.hasActiveWork(), true)
+      assert.equal(policy.hasActiveWork(), true)
+      let idle = false
+      const drained = controller.whenIdle().then(() => { idle = true })
+      await Promise.resolve()
+      assert.equal(idle, false)
+      await assert.rejects(controller.search(request()), code('busy'))
+      held.resolve(serviceSource(operation, call.value))
+      const state = await running
+      await drained
+      assert.deepEqual(state.sources, [])
+      assert.deepEqual(state.history, [])
+      assert.equal(policy.hasActiveWork(), false)
+    }
   }
 })

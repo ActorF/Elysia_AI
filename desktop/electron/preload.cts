@@ -4,7 +4,7 @@
 
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { InternetPolicyState, UpdateInternetPolicyRequest } from './internet-policy-protocol.js'
-import type { InternetResearchState, InternetSearchRequest, InternetReadRequest, InternetSourceRequest, InternetSourceText } from './internet-protocol.js'
+import type { InternetResearchState, InternetSearchRequest, InternetReadRequest, InternetSourceRequest, InternetSourceText, InternetWeatherRequest, InternetGithubRequest } from './internet-protocol.js'
 import type { InternetReview, InternetReviewRequest, InternetReviewLookup } from './internet-review-protocol.js'
 import type { VisionState, VisionSelectionResult, VisionRemoveRequest } from './vision-protocol.js'
 import type { VisionAnalysisState, VisionOcrRequest, VisionModelRequest } from './vision-analysis-protocol.js'
@@ -829,6 +829,8 @@ const desktopApi: DesktopApi = {
   getInternetResearchActivity: (chatId: string) => ipcRenderer.invoke('desktop:internet-research:activity', chatId) as Promise<{ busy: boolean }>,
   searchInternet: (request: InternetSearchRequest) => ipcRenderer.invoke('desktop:internet-research:search', request) as Promise<InternetResearchState>,
   readInternetPage: (request: InternetReadRequest) => ipcRenderer.invoke('desktop:internet-research:read', request) as Promise<InternetResearchState>,
+  getInternetWeather: (request: InternetWeatherRequest) => ipcRenderer.invoke('desktop:internet-research:weather', request) as Promise<InternetResearchState>,
+  getInternetGithubRepository: (request: InternetGithubRequest) => ipcRenderer.invoke('desktop:internet-research:github', request) as Promise<InternetResearchState>,
   cancelInternetResearch: (chatId: string) => ipcRenderer.invoke('desktop:internet-research:cancel', chatId) as Promise<InternetResearchState>,
   clearInternetResearch: (chatId: string) => ipcRenderer.invoke('desktop:internet-research:clear', chatId) as Promise<InternetResearchState>,
   getInternetSourceText: (request: InternetSourceRequest) => ipcRenderer.invoke('desktop:internet-research:source-text', request) as Promise<InternetSourceText>,

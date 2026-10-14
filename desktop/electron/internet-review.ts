@@ -40,8 +40,10 @@ export class InternetReviewStore {
   /** Recheck scope, expiry and exact native source identities/content before producing draft text. */
   resolve(owner: InternetResearchScope, value: InternetReviewLookup, lookup: (id: string) => InternetSource): { review: InternetReview; text: string } {
     const request = parseInternetReviewLookup(value), review = this.review
-    if (review === null || review.id !== request.reviewId || request.chatId !== owner.chatId
-      || review.owner.chatId !== owner.chatId || review.owner.projectId !== owner.projectId || Date.parse(review.expiresAt) <= this.now()) {
+    // Once expiry is observed the receipt cannot revive after a wall-clock rollback.
+    if (review !== null && Date.parse(review.expiresAt) <= this.now()) this.review = null
+    if (review === null || this.review === null || review.id !== request.reviewId || request.chatId !== owner.chatId
+      || review.owner.chatId !== owner.chatId || review.owner.projectId !== owner.projectId) {
       throw new Error('Source review expired or its owner changed.')
     }
     if (review.sources.some(source => JSON.stringify(lookup(source.id)) !== JSON.stringify(source))) throw new Error('Reviewed evidence changed.')

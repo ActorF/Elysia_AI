@@ -36,7 +36,7 @@ import { InternetResearchController, InternetResearchError, type InternetResearc
 import { InternetReviewStore } from './internet-review.js'
 import { parseInternetReviewLookup, parseInternetReviewRequest } from './internet-review-protocol.js'
 import { parseInternetChatId, parseInternetSearchRequest, parseInternetSourceRequest, parseInternetReadRequest,
-  type InternetResearchState } from './internet-protocol.js'
+  parseInternetWeatherRequest, parseInternetGithubRequest, type InternetResearchState } from './internet-protocol.js'
 import type { InternetPolicyState } from './internet-policy-protocol.js'
 import { assertInternetLyricsAllowed, prepareInternetLyrics, openInternetBrowser } from './internet-legacy.js'
 import { VisionImageController, VisionImageError, decodeVisionImage, decodeVisionCanonicalImage, prepareVisionModelImage, readVisionSelectedFile, type VisionOwner } from './vision-images.js'
@@ -235,7 +235,7 @@ let internetPolicyService: InternetPolicyService | null = null
 let internetTransport: InternetTransport | null = null
 let internetResearchController: InternetResearchController | null = null
 let internetResearchGeneration = 0
-let internetResearchAdmission: { chatId: string; generation: number } | null = null
+let internetResearchAdmission: { chatId: string } | null = null
 const internetReviewStore = new InternetReviewStore()
 let internetReviewScope: string | null = null
 const internetRequests = new Set<Promise<unknown>>()
@@ -2195,15 +2195,18 @@ function withInternetOwner<Result>(chatId: string,
   }
   const policy = requireInternetPolicy().getState()
   if (!readOnly && !policy.enabled) return Promise.reject(new InternetResearchError('disabled'))
-  const admission = readOnly ? null : { chatId, generation: internetResearchGeneration }
+  const generation = internetResearchGeneration
+  const admission = readOnly ? null : { chatId }
   if (admission !== null) internetResearchAdmission = admission
   // Reserve before readonly canonical hydration so another Chat cannot enter
   // the gap between a native request and its first DNS/socket operation.
   return trackInternetOperation(async () => {
     const owner = await requireBackend().hydrateVisionOwner()
     if (owner === null || owner.chatId !== chatId || shutdownStarted) throw new InternetResearchError('owner_changed')
-    if (admission !== null && (admission.generation !== internetResearchGeneration
-      || !requireInternetPolicy().getState().enabled || policy.revision !== requireInternetPolicy().getState().revision)) {
+    // Readonly metadata and previews still belong to the invoking document.
+    // They must not initialize replacement controllers after a reload.
+    if (generation !== internetResearchGeneration || admission !== null
+      && (!requireInternetPolicy().getState().enabled || policy.revision !== requireInternetPolicy().getState().revision)) {
       throw new InternetResearchError('cancelled')
     }
     return operation(requireInternetResearch())
@@ -2990,6 +2993,16 @@ function registerIpcHandlers(): void {
     assertTrustedSender(event)
     const request = parseInternetReadRequest(value)
     return withInternetOwner(request.chatId, controller => controller.readPage(request))
+  })
+  ipcMain.handle('desktop:internet-research:weather', (event, value: unknown) => {
+    assertTrustedSender(event)
+    const request = parseInternetWeatherRequest(value)
+    return withInternetOwner(request.chatId, controller => controller.weather(request))
+  })
+  ipcMain.handle('desktop:internet-research:github', (event, value: unknown) => {
+    assertTrustedSender(event)
+    const request = parseInternetGithubRequest(value)
+    return withInternetOwner(request.chatId, controller => controller.github(request))
   })
   ipcMain.handle('desktop:internet-research:cancel', (event, value: unknown) => {
     assertTrustedSender(event)

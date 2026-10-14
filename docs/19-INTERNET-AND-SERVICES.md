@@ -46,6 +46,14 @@ Chat 下展开 **Internet**，选择 English 或 中文并输入查询，点击 
 
 **Compare** 只根据 Main 已获取的来源生成比较记录，不启动新请求。记录有效期为五分钟；来源被替换、清除，或切换 Chat/Project 后失效。加入草稿前再次校验记录与实际来源，引用最多五份有界摘录，清楚区分来源陈述、用户输入的事件日期和推断。仍由用户审核并发送，页面文字不能授权外部操作。
 
+## 天气与公开 GitHub 信息
+
+**Weather** 只使用用户手动输入的经纬度，不读取系统定位。坐标规范到小数点后四位，发送至 `api.open-meteo.com`，返回当前模型估算的天气、温度、湿度、降水和风速，以及单位、数据时间和获取时间。这不是附近气象站的直接观测；结果中的请求 URL 可以直接复查。[Open-Meteo 文档](https://open-meteo.com/en/docs)
+
+**Public GitHub repository** 接受明确的 owner/repository，向固定 `api.github.com` 获取公开仓库的简介、星标数、开放 issue/PR 数量和更新/推送时间。公开读取不附加 Token；仓库改名重定向需要用户确认新名称后重新查询，不自动继续。`open_issues_count` 包括 Pull Request，因此界面不把它标为纯 Issue 数。[GitHub 仓库 API](https://docs.github.com/en/rest/repos/repos#get-a-repository)
+
+两种查询都需先允许相应域名，且只在点击后执行，不需要 API 密钥。返回资料使用同一来源查看、比较和聊天草稿流程，关闭联网后不会自动重试。
+
 ## 已完成验证
 
 Module 1 已通过真实 GitHub HTTPS 读取、关闭后同 URL 拒绝，以及真实本机 CONNECT/TLS 的 Host、SNI、证书、超时和取消测试。Python 全套 4406 项通过，桌面主合同套件 692 项通过，联网设置的 5 项 UI 测试与既有设置回归通过；类型、Lint 和源码文档检查通过。
@@ -57,3 +65,7 @@ Module 2 已通过实际 controller → transport → Wikipedia 搜索；关闭�
 Module 3 的真实 MediaWiki 页面读取返回正确标题及 11,488 字节正文，未执行或请求子资源；12 项提取测试与原生请求生命周期回归通过。
 
 Module 4 的四项原生来源比较测试、五项 UI 测试及十二项搜索/读取回归通过；覆盖来源替换、跨会话、过期、时间混淆与草稿修改竞争。
+
+Module 5 的真实 Open-Meteo 与 GitHub 公开读取成功；关闭后两个请求均被拒绝。十二项服务协议、日期、单位、URL、类型与异常处理测试通过。
+
+已补充旧 Renderer 的只读准备请求撤销，以及已过期比较记录不能因系统时钟倒退恢复有效的回归检查。天气域名预设只保留实际使用的 API 域名。

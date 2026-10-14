@@ -4,10 +4,14 @@ import { InternetPolicyError, type InternetPolicyLease, type InternetPolicyServi
 import { InternetTransportError, type InternetTransport } from './internet-transport.js'
 import { searchWikipedia, type InternetSearchResult } from './internet-search.js'
 import { readInternetPage, InternetReaderError } from './internet-reader.js'
+import { readInternetWeather, readInternetGithubRepository, InternetServiceError,
+  type InternetWeatherLocation, type InternetGithubRepository } from './internet-services.js'
 import { formatInternetSource, parseInternetChatId, parseInternetResearchState, parseInternetSearchRequest, parseInternetReadRequest,
+  parseInternetWeatherRequest, parseInternetGithubRequest,
   parseInternetSource, parseInternetSourceRequest, type InternetResearchErrorCode, type InternetResearchScope,
   type InternetResearchState, type InternetQueryRecord, type InternetSearchRequest, type InternetSource,
-  type InternetSourceRequest, type InternetSourceText, type InternetReadRequest } from './internet-protocol.js'
+  type InternetSourceRequest, type InternetSourceText, type InternetReadRequest,
+  type InternetWeatherRequest, type InternetGithubRequest } from './internet-protocol.js'
 
 /** Supply canonical lifecycle facts; busy excludes this controller's own native reservations. */
 export interface InternetResearchOwner extends InternetResearchScope {
@@ -30,6 +34,10 @@ export interface InternetResearchDependencies {
   search?(request: InternetSearchRequest, signal: AbortSignal): Promise<InternetSearchResult>
   /** Test a physically drained page extraction without opening a browser document. */
   readPage?(url: string, signal: AbortSignal): Promise<InternetSource>
+  /** Test one physically drained weather lookup for already validated explicit coordinates. */
+  weather?(location: InternetWeatherLocation, signal: AbortSignal): Promise<InternetSource>
+  /** Test one physically drained public repository lookup without exposing a credential-bearing operation. */
+  github?(repository: InternetGithubRepository, signal: AbortSignal): Promise<InternetSource>
 }
 /** Preserve one safe public failure category without native or provider diagnostics. */
 export class InternetResearchError extends Error {
@@ -52,6 +60,7 @@ function sameOwner(left: InternetResearchOwner, right: InternetResearchOwner): b
 function safeFailure(error: unknown): InternetResearchErrorCode {
   if (error instanceof InternetResearchError) return error.code
   if (error instanceof InternetReaderError) return error.code
+  if (error instanceof InternetServiceError) return error.code
   if (error instanceof InternetPolicyError) {
     return error.code === 'disabled' ? 'disabled' : error.code === 'cancelled' || error.code === 'policy_changed' ? 'cancelled' : 'unavailable'
   }
@@ -141,6 +150,41 @@ export class InternetResearchController {
       const source = parseInternetSource(await (this.dependencies.readPage?.(request.url, signal)
         ?? readInternetPage(this.dependencies.transport, request.url, signal)))
       if (source.provider !== 'web' || source.content === null || source.fromCache) throw new TypeError('Internet page provenance is invalid.')
+      return { sources: [source] }
+    })
+  }
+
+  /** Retrieve model-derived current weather from the fixed public API for manually entered, bounded coordinates. */
+  async weather(value: InternetWeatherRequest): Promise<InternetResearchState> {
+    let request: InternetWeatherRequest
+    try { request = parseInternetWeatherRequest(value) } catch { throw new InternetResearchError('invalid_request') }
+    const location = { latitude: request.latitude, longitude: request.longitude }
+    return this.perform(request.chatId, async signal => {
+      const source = parseInternetSource(await (this.dependencies.weather?.(location, signal)
+        ?? readInternetWeather(this.dependencies.transport, location, signal)))
+      const url = new URL(source.url)
+      if (source.provider !== 'weather' || source.content === null || source.fromCache || source.publishedAt !== null
+        || source.modifiedAt !== null || url.origin !== 'https://api.open-meteo.com' || url.pathname !== '/v1/forecast'
+        || url.searchParams.get('latitude') !== location.latitude.toFixed(4)
+        || url.searchParams.get('longitude') !== location.longitude.toFixed(4)) throw new TypeError('Internet weather provenance is invalid.')
+      return { sources: [source] }
+    })
+  }
+
+  /** Retrieve public repository metadata without authentication or permission to mutate the repository. */
+  async github(value: InternetGithubRequest): Promise<InternetResearchState> {
+    let request: InternetGithubRequest
+    try { request = parseInternetGithubRequest(value) } catch { throw new InternetResearchError('invalid_request') }
+    const repository = { owner: request.owner, repo: request.repo }
+    return this.perform(request.chatId, async signal => {
+      const source = parseInternetSource(await (this.dependencies.github?.(repository, signal)
+        ?? readInternetGithubRepository(this.dependencies.transport, repository, signal)))
+      const url = new URL(source.url)
+      if (source.provider !== 'github' || source.content === null || source.fromCache || source.publishedAt !== null
+        || url.origin !== 'https://api.github.com' || url.search !== ''
+        || url.pathname.toLowerCase() !== `/repos/${repository.owner}/${repository.repo}`.toLowerCase()) {
+        throw new TypeError('Internet repository provenance is invalid.')
+      }
       return { sources: [source] }
     })
   }
