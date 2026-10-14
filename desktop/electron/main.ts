@@ -30,6 +30,10 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { BackendProcess } from './backend-process.js'
+import { WorkDesktopController, parseWorkDesktopChatRequest, parseWorkDesktopClipboardWriteRequest,
+  parseWorkDesktopDecisionRequest, parseWorkDesktopWindowSelectionRequest, type WorkDesktopOwner } from './work-desktop-tools.js'
+import { WorkDesktopStorage } from './work-desktop-storage.js'
+import { createWorkDesktopNativeCallbacks } from './work-desktop-native.js'
 import { parseWorkWorkspaceGetParams } from './work-protocol.js'
 import { parseWorkToolRunParams, parseWorkToolConfirmParams } from './work-tool-protocol.js'
 import { parseWorkPlanGetParams, parseWorkPlanCreateParams, parseWorkPlanControlParams, parseWorkPlanConfirmParams, parseWorkPlanReviseParams } from './work-plan-protocol.js'
@@ -202,6 +206,10 @@ const TRAY_ICON_DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAA
 
 let mainWindow: BrowserWindow | null = null
 let backendProcess: BackendProcess | null = null
+let workDesktopController: WorkDesktopController | null = null
+let workDesktopStorage: { root: string; store: WorkDesktopStorage } | null = null
+let workDesktopScope: { chatId: string; projectId: string | null; workspacePath: string | null } | null = null
+const workDesktopRequests = new Set<Promise<unknown>>()
 const voiceCallWindowManager = new VoiceCallWindowManager({
   policy: {
     appPath: app.getAppPath(),
@@ -210,7 +218,7 @@ const voiceCallWindowManager = new VoiceCallWindowManager({
     platform: process.platform,
   },
   preloadPath: path.join(moduleDirectory, 'voice-call-preload.cjs'),
-  canOpen: () => !shutdownStarted,
+  canOpen: () => !shutdownStarted && !hasActiveDesktopWork(),
   currentMainWindow: () => mainWindow,
   onAction: (action) => {
     if (action.kind === 'end') {
@@ -1139,7 +1147,9 @@ class SongCoverUnavailableError extends Error {
 async function assertSongCoverAvailable(
   manager: SongCoverManager,
 ): Promise<void> {
+  if (hasActiveDesktopWork()) throw new Error('Wait for the current desktop action.')
   const readiness = await manager.getReadiness(app.isPackaged)
+  if (hasActiveDesktopWork()) throw new Error('Wait for the current desktop action.')
   if (readiness.status === 'unavailable') {
     throw new SongCoverUnavailableError(readiness)
   }
@@ -1165,6 +1175,7 @@ function setPresenceVoiceSession(active: boolean): void {
     presenceVoiceSessionActive = false
     return
   }
+  if (hasActiveDesktopWork()) throw new Error('Wait for the current desktop action before starting Voice.')
   presenceVoiceSessionActive = true
   try {
     stopSongCoverPlaybackIfActive()
@@ -2032,6 +2043,8 @@ function broadcastBackendEvent(event: BackendEvent): void {
   }
   // Deliver the core event first. Every native probe then stays behind a full
   // failure boundary so an optional notice cannot become a protocol failure.
+  try { workDesktopController?.getState() }
+  catch { workDesktopController?.clear() }
   try {
     maybeShowCompletionNotification(event)
   } catch {
@@ -2048,6 +2061,65 @@ function requireBackend(): BackendProcess {
     throw new Error('Python Backend manager is not available.')
   }
   return backendProcess
+}
+
+function hasActiveDesktopWork(): boolean {
+  return workDesktopRequests.size > 0 || workDesktopController?.hasActiveWork() === true
+}
+
+function desktopOwner(): WorkDesktopOwner {
+  const backend = backendProcess
+  const owner = backend?.getCanonicalWorkChat() ?? null
+  const scope = workDesktopScope
+  return { chatId: owner?.chatId ?? 'chat_unavailable', projectId: owner?.projectId ?? null,
+    workspacePath: scope !== null && scope.chatId === owner?.chatId && scope.projectId === owner?.projectId
+      ? scope.workspacePath : null,
+    mode: owner?.mode ?? 'chat', ready: owner !== null && !shutdownStarted,
+    // Main's own desktop lease is excluded here: including it would revoke
+    // the action as soon as it admitted itself. Other callers see that lease
+    // through BackendProcess.hasActiveMaintenanceWork and the native guards.
+    busy: backend?.hasActiveBackendWork() === true || presenceVoiceSessionActive
+      || songCoverManager?.hasActiveWork() === true || dataStorageOperation !== null || shutdownStarted }
+}
+
+function desktopStore(): WorkDesktopStorage {
+  const root = requireDataStorageState().activeDataRoot
+  if (workDesktopStorage?.root !== root) {
+    workDesktopStorage = { root, store: new WorkDesktopStorage(root) }
+    workDesktopController?.clear()
+  }
+  return workDesktopStorage.store
+}
+
+function requireDesktopController(): WorkDesktopController {
+  if (workDesktopController === null) throw new Error('Desktop tools are unavailable.')
+  return workDesktopController
+}
+
+async function hydrateDesktopOwner(chatId: string): Promise<void> {
+  const backend = requireBackend()
+  let owner = backend.getCanonicalWorkChat()
+  if (owner === null) {
+    await backend.listChats(false)
+    owner = backend.getCanonicalWorkChat()
+  }
+  if (owner === null || owner.chatId !== chatId || owner.mode !== 'work') throw new Error('Desktop tools require the active Work Chat.')
+  const scope = await backend.getWorkWorkspace(chatId)
+  const current = backend.getCanonicalWorkChat()
+  if (current === null || current.chatId !== owner.chatId || current.projectId !== owner.projectId
+    || current.mode !== 'work' || scope.chatId !== chatId) throw new Error('Desktop tools owner changed.')
+  desktopStore()
+  workDesktopScope = { chatId, projectId: current.projectId, workspacePath: scope.workspacePath }
+}
+
+function withDesktopOwner<Result>(chatId: string, operation: () => Promise<Result> | Result,
+  allowBackendBusy = false): Promise<Result> {
+  if (hasActiveDesktopWork() || shutdownStarted || dataStorageOperation !== null
+    || (!allowBackendBusy && desktopOwner().busy)) return Promise.reject(new Error('Wait for the current action before using desktop tools.'))
+  const request = (async () => { await hydrateDesktopOwner(chatId); return operation() })()
+  workDesktopRequests.add(request)
+  void request.then(() => workDesktopRequests.delete(request), () => workDesktopRequests.delete(request))
+  return request
 }
 
 function requireDataStorage(): ElectronDataStorage {
@@ -2140,6 +2212,7 @@ async function runDataStorageOperation(
   if (dataStorageOperation !== null) {
     throw new Error('Another data storage action is already running.')
   }
+  if (hasActiveDesktopWork()) throw new Error('Wait for the current desktop action before managing data.')
   dataStorageBusyPhase = phase
   const running = operation()
   dataStorageOperation = running
@@ -2181,6 +2254,7 @@ function assertNoManagedSongCoverOutput(): void {
 }
 
 function assertDataStorageIdleForBackendRestart(): void {
+  if (hasActiveDesktopWork()) throw new Error('Wait for the current desktop action before restarting.')
   if (dataStorageOperation !== null) {
     throw new Error('Wait for the data storage action to finish.')
   }
@@ -3437,6 +3511,57 @@ function registerIpcHandlers(): void {
     return requireBackend().getWorkWorkspace(request.chatId)
   })
 
+  ipcMain.handle('work:desktop-state', (event, request: unknown) => {
+    assertTrustedSender(event)
+    const { chatId } = parseWorkDesktopChatRequest(request)
+    if (hasActiveDesktopWork()) {
+      const state = requireDesktopController().getState()
+      if (state.owner?.chatId !== chatId) throw new Error('Desktop tools owner changed.')
+      return { ...state, busy: true }
+    }
+    return withDesktopOwner(chatId, () => requireDesktopController().getState(), true)
+  })
+  ipcMain.handle('work:desktop-choose-document', (event, value: unknown) => {
+    assertTrustedSender(event)
+    const request = parseWorkDesktopChatRequest(value)
+    return withDesktopOwner(request.chatId, () => requireDesktopController().chooseFile(request))
+  })
+  ipcMain.handle('work:desktop-preview-notepad', (event, value: unknown) => {
+    assertTrustedSender(event)
+    const request = parseWorkDesktopChatRequest(value)
+    return withDesktopOwner(request.chatId, () => requireDesktopController().previewNotepad(request))
+  })
+  ipcMain.handle('work:desktop-read-clipboard', (event, value: unknown) => {
+    assertTrustedSender(event)
+    const request = parseWorkDesktopChatRequest(value)
+    return withDesktopOwner(request.chatId, () => requireDesktopController().readClipboard(request))
+  })
+  ipcMain.handle('work:desktop-preview-clipboard', (event, value: unknown) => {
+    assertTrustedSender(event)
+    const request = parseWorkDesktopClipboardWriteRequest(value)
+    return withDesktopOwner(request.chatId, () => requireDesktopController().previewClipboardWrite(request))
+  })
+  ipcMain.handle('work:desktop-list-windows', (event, value: unknown) => {
+    assertTrustedSender(event)
+    const request = parseWorkDesktopChatRequest(value)
+    return withDesktopOwner(request.chatId, () => requireDesktopController().listWindows(request))
+  })
+  ipcMain.handle('work:desktop-select-window', (event, value: unknown) => {
+    assertTrustedSender(event)
+    const request = parseWorkDesktopWindowSelectionRequest(value)
+    return withDesktopOwner(request.chatId, () => requireDesktopController().selectWindow(request))
+  })
+  ipcMain.handle('work:desktop-decide', (event, value: unknown) => {
+    assertTrustedSender(event)
+    const request = parseWorkDesktopDecisionRequest(value)
+    return withDesktopOwner(request.chatId, () => requireDesktopController().decide(request))
+  })
+  ipcMain.handle('work:desktop-audit', (event, value: unknown) => {
+    assertTrustedSender(event)
+    const { chatId } = parseWorkDesktopChatRequest(value)
+    return withDesktopOwner(chatId, () => desktopStore().list(chatId, desktopOwner().projectId))
+  })
+
   ipcMain.handle('work:get-tools', (event, chatId: unknown) => {
     assertTrustedSender(event)
     const request = parseWorkWorkspaceGetParams({ chatId })
@@ -3492,6 +3617,7 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle('work:choose-workspace', async (event, chatId: unknown) => {
     assertTrustedSender(event)
+    if (hasActiveDesktopWork()) throw new Error('Wait for the current desktop action.')
     const request = parseWorkWorkspaceGetParams({ chatId })
     const selected = await dialog.showOpenDialog(requireMainWindow(), {
       title: 'Choose a Workspace for this Work Chat',
@@ -3504,14 +3630,20 @@ function registerIpcHandlers(): void {
     if (workspacePath === null || !(await lstat(workspacePath)).isDirectory()) {
       throw new Error('Selected Workspace is not an accessible directory.')
     }
+    if (hasActiveDesktopWork()) throw new Error('Wait for the current desktop action.')
     // Renderer callers supply only the Chat ID. The native picker supplies the
     // path, and Python rechecks canonical scope and ownership before saving it.
+    workDesktopScope = null
+    requireDesktopController().clear()
     return requireBackend().bindWorkWorkspace({ chatId: request.chatId, workspacePath })
   })
 
   ipcMain.handle('work:clear-workspace', (event, chatId: unknown) => {
     assertTrustedSender(event)
+    if (hasActiveDesktopWork()) throw new Error('Wait for the current desktop action.')
     const request = parseWorkWorkspaceGetParams({ chatId })
+    workDesktopScope = null
+    requireDesktopController().clear()
     return requireBackend().bindWorkWorkspace({ chatId: request.chatId, workspacePath: null })
   })
 
@@ -3879,7 +4011,11 @@ if (!hasSingleInstanceLock) {
       broadcastBackendEvent,
       speechPlaybackRouter,
       activeDataRoot,
+      hasActiveDesktopWork,
     )
+    workDesktopController = new WorkDesktopController(createWorkDesktopNativeCallbacks({
+      getOwner: desktopOwner, getStorage: desktopStore, getWindow: requireMainWindow,
+    }))
     songCoverManager = new SongCoverManager(
       projectRoot,
       () => requireDataStorageState().activeDataRoot,
@@ -3959,6 +4095,7 @@ if (!hasSingleInstanceLock) {
       return
     }
     shutdownStarted = true
+    workDesktopController?.clear()
     // Backend shutdown can await other work or fail and leave Main running.
     // Notify its live renderer now so capture cannot outlive the call controls.
     voiceCallWindowManager.endCurrent()
@@ -3983,7 +4120,7 @@ if (!hasSingleInstanceLock) {
       const finishDataStorage = dataStorageOperation === null
         ? Promise.resolve()
         : dataStorageOperation.then(() => undefined, () => undefined)
-      const stopBackend = finishDataStorage.then(async () => {
+      const stopBackend = Promise.allSettled([finishDataStorage, ...workDesktopRequests]).then(async () => {
         if (
           backendProcess !== null
           && backendProcess.getSnapshot().status !== 'stopped'

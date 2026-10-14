@@ -422,6 +422,15 @@ let nextWorkToolResult = null
 let nextWorkPreviewError = null
 let nextWorkApprovalNumber = 1
 let workApprovals = new Map()
+let desktopOwnerKey = null
+let desktopState = null
+let desktopClipboard = 'Private clipboard text.'
+let desktopAuditEntries = []
+let desktopDocumentSelection = null
+let desktopActionNumber = 1
+let delayDesktopDecisions = false
+let pendingDesktopDecisions = []
+let nextDesktopError = null
 let workPlans = new Map()
 let workRecoveryNotices = new Map()
 let nextWorkPlanNumber = 1
@@ -438,6 +447,38 @@ const workFiles = new Map([
   ['notes.txt', 'Hello <script>unsafe()</script>'],
   ['docs/readme.md', 'Workspace documentation.'],
 ])
+
+function desktopSnapshot(chatId) {
+  const chat = chatState.activeChat
+  const root = workWorkspaces.get(chat.chatId)?.workspacePath ?? null
+  const key = JSON.stringify([chat.chatId, chat.projectId, chat.mode, root, snapshot.status])
+  if (desktopOwnerKey !== key || desktopState === null) {
+    desktopOwnerKey = key
+    desktopState = { version: 1, owner: chat.mode === 'work' && snapshot.status === 'ready'
+      ? { chatId: chat.chatId, projectId: chat.projectId } : null,
+      revision: 0, busy: false, pending: null, clipboardText: null, windows: [], selectedWindow: null, lastAction: null }
+  }
+  if (desktopState.owner?.chatId !== chatId) throw new Error('Desktop owner is unavailable.')
+  return clone(desktopState)
+}
+
+function desktopAudit(chatId, action, phase, actionId, preview = null) {
+  const summary = action === 'file.open' ? { relativePath: preview.relativePath, sizeBytes: preview.sizeBytes, sha256: preview.sha256 }
+    : action === 'app.open' ? { application: 'notepad' } : action === 'window.select' ? { sha256: 'b'.repeat(64) }
+      : { sizeBytes: new TextEncoder().encode(preview?.text ?? desktopClipboard).length, sha256: 'a'.repeat(64) }
+  desktopAuditEntries.unshift({ version: 1, actionId, timestamp: '2026-10-14T12:00:00.000Z', chatId,
+    projectId: chatState.activeChat.projectId, action, phase, summary, error: null })
+}
+
+function desktopPreview(chatId, preview) {
+  desktopSnapshot(chatId)
+  const number = (desktopActionNumber++).toString(16).padStart(32, '0')
+  desktopState.pending = { approvalId: `desktop_approval_${number}`, expiresAt: '2100-01-01T00:00:00.000Z',
+    risk: preview.action === 'clipboard.write' ? 'medium' : 'low', preview: clone(preview) }
+  desktopState.lastAction = null
+  desktopAudit(chatId, preview.action, 'prepared', `desktop_action_${number}`, preview)
+  return desktopSnapshot(chatId)
+}
 let delayWorkWorkspaceReads = false
 let pendingWorkWorkspaceReads = []
 let nextRequestNumber = 1
@@ -1672,6 +1713,79 @@ const desktopApi = {
     return result
   },
 
+  getWorkDesktopState: async (chatId) => {
+    record('getWorkDesktopState', [chatId])
+    return desktopSnapshot(chatId)
+  },
+  chooseDesktopDocument: async (chatId) => {
+    record('chooseDesktopDocument', [chatId])
+    desktopSnapshot(chatId)
+    if (desktopDocumentSelection === null) return desktopSnapshot(chatId)
+    return desktopPreview(chatId, { action: 'file.open', ...clone(desktopDocumentSelection),
+      impact: 'Open a verified review copy. Edits in its app do not change the Workspace original.' })
+  },
+  previewDesktopNotepad: async (chatId) => {
+    record('previewDesktopNotepad', [chatId])
+    return desktopPreview(chatId, { action: 'app.open', application: 'notepad', impact: 'Open Windows Notepad without a file or command arguments.' })
+  },
+  readDesktopClipboard: async (chatId) => {
+    record('readDesktopClipboard', [chatId])
+    desktopSnapshot(chatId)
+    desktopState.clipboardText = desktopClipboard
+    desktopState.lastAction = { actionId: `desktop_action_${(desktopActionNumber++).toString(16).padStart(32, '0')}`,
+      action: 'clipboard.read', status: 'succeeded', error: null, applied: false }
+    desktopAudit(chatId, 'clipboard.read', 'succeeded', desktopState.lastAction.actionId)
+    return desktopSnapshot(chatId)
+  },
+  previewDesktopClipboard: async (request) => {
+    record('previewDesktopClipboard', [request])
+    return desktopPreview(request.chatId, { action: 'clipboard.write', text: request.text,
+      sizeBytes: new TextEncoder().encode(request.text).length, impact: 'Replace the system clipboard text with exactly the text shown. Previous clipboard text is not saved.' })
+  },
+  listDesktopWindows: async (chatId) => {
+    record('listDesktopWindows', [chatId])
+    desktopSnapshot(chatId)
+    desktopState.windows = [{ selectionId: `desktop_window_${'a'.repeat(32)}`, title: 'Document <script>window</script>' }]
+    return desktopSnapshot(chatId)
+  },
+  selectDesktopWindow: async (request) => {
+    record('selectDesktopWindow', [request])
+    desktopSnapshot(request.chatId)
+    const selected = desktopState.windows.find((window) => window.selectionId === request.selectionId)
+    if (selected === undefined) throw new Error('Desktop window selection expired.')
+    desktopState.selectedWindow = selected; desktopState.windows = []
+    const actionId = `desktop_action_${(desktopActionNumber++).toString(16).padStart(32, '0')}`
+    desktopState.lastAction = { actionId, action: 'window.select', status: 'succeeded', error: null, applied: false }
+    desktopAudit(request.chatId, 'window.select', 'succeeded', actionId)
+    return desktopSnapshot(request.chatId)
+  },
+  decideDesktopAction: async (request) => {
+    record('decideDesktopAction', [request])
+    desktopSnapshot(request.chatId)
+    const approval = desktopState.pending
+    desktopState.pending = null
+    if (approval?.approvalId !== request.approvalId) throw new Error('Desktop approval was consumed.')
+    if (delayDesktopDecisions) {
+      await new Promise((resolve, reject) => { pendingDesktopDecisions.push({ resolve, reject }) })
+    }
+    desktopSnapshot(request.chatId)
+    if (nextDesktopError !== null) {
+      const message = nextDesktopError; nextDesktopError = null
+      throw new Error(message)
+    }
+    const actionId = approval.approvalId.replace('desktop_approval_', 'desktop_action_')
+    if (request.granted && approval.preview.action === 'clipboard.write') desktopClipboard = approval.preview.text
+    desktopState.lastAction = { actionId, action: approval.preview.action,
+      status: request.granted ? 'succeeded' : 'denied', error: null, applied: request.granted }
+    desktopAudit(request.chatId, approval.preview.action, request.granted ? 'succeeded' : 'denied', actionId, approval.preview)
+    return desktopSnapshot(request.chatId)
+  },
+  getDesktopAudit: async (chatId) => {
+    record('getDesktopAudit', [chatId])
+    desktopSnapshot(chatId)
+    return { entries: clone(desktopAuditEntries.filter((entry) => entry.chatId === chatId)), truncated: false }
+  },
+
   getWorkTools: async (chatId) => {
     record('getWorkTools', [chatId])
     if (nextWorkToolsError !== null) {
@@ -2384,9 +2498,29 @@ const desktopApi = {
 }
 
 const testControl = {
+  setDesktopClipboardText: (text) => { desktopClipboard = text },
+  getDesktopClipboardText: () => desktopClipboard,
+  setDesktopDocumentSelection: (document) => { desktopDocumentSelection = clone(document) },
+  setDesktopDecisionDelay: (delayed) => { delayDesktopDecisions = delayed },
+  releaseNextDesktopDecision: () => {
+    const pending = pendingDesktopDecisions.shift()
+    if (pending === undefined) return false
+    pending.resolve(); return true
+  },
+  rejectNextDesktopDecision: () => {
+    const pending = pendingDesktopDecisions.shift()
+    if (pending === undefined) return false
+    pending.reject(new Error('Desktop Backend disconnected.')); return true
+  },
+  failNextDesktopAction: (message) => { nextDesktopError = message },
   getLatestVoiceCallState: () => clone(latestVoiceCallWindowState),
 
   reset: () => {
+    desktopOwnerKey = null; desktopState = null; desktopAuditEntries = []
+    desktopDocumentSelection = null; desktopClipboard = 'Private clipboard text.'
+    delayDesktopDecisions = false; nextDesktopError = null; desktopActionNumber = 1
+    for (const pending of pendingDesktopDecisions) pending.reject(new Error('Desktop test reset.'))
+    pendingDesktopDecisions = []
     for (const release of pendingWorkToolRuns) release()
     pendingWorkToolRuns = []
     delayWorkToolRuns = false

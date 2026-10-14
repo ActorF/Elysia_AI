@@ -16,14 +16,16 @@ import type { WorkToolClient, WorkToolsState } from '../../electron/work-tool-pr
 import type { WorkToolCall } from '../../electron/work-tool-protocol.ts'
 import type { WorkPlanClient } from '../../electron/work-plan-protocol.ts'
 import type { WorkAuditClient } from '../../electron/work-audit-protocol.ts'
+import type { WorkDesktopClient } from '../../electron/work-desktop-protocol.ts'
 import { ToolInspector } from './ToolInspector.tsx'
 import { ToolConsole } from './ToolConsole.tsx'
 import { PlanPanel } from './PlanPanel.tsx'
 import { WorkHistory } from './WorkHistory.tsx'
+import { DesktopToolsPanel } from './DesktopToolsPanel.tsx'
 import './WorkPanel.css'
 
 interface WorkPanelProps {
-  api: (WorkWorkspaceClient & WorkToolClient & WorkPlanClient & WorkAuditClient
+  api: (WorkWorkspaceClient & WorkToolClient & WorkPlanClient & WorkAuditClient & WorkDesktopClient
     & { /** Open the application's current managed data directory. */ openDataDirectory(): Promise<void> }) | undefined
   chatId: string
   ready: boolean
@@ -45,26 +47,33 @@ export function WorkPanel({ api, chatId, ready, disabled, readAvailable, preview
   const [consoleBusy, setConsoleBusy] = useState(false)
   const [planLeased, setPlanLeased] = useState(false)
   const [undoBusy, setUndoBusy] = useState(false)
+  const [desktopBusy, setDesktopBusy] = useState(false)
   const [historyRevision, setHistoryRevision] = useState(0)
   const consoleBusyRef = useRef(false)
   const planLeasedRef = useRef(false)
   const undoBusyRef = useRef(false)
+  const desktopBusyRef = useRef(false)
   const updateConsoleBusy = useCallback((busy: boolean): void => {
     if (!busy && consoleBusyRef.current) setHistoryRevision((current) => current + 1)
     consoleBusyRef.current = busy
     setConsoleBusy(busy)
-    onBusyChange(busy || planLeasedRef.current || undoBusyRef.current)
+    onBusyChange(busy || planLeasedRef.current || undoBusyRef.current || desktopBusyRef.current)
   }, [onBusyChange])
   const updatePlanLease = useCallback((leased: boolean): void => {
     if (!leased && planLeasedRef.current) setHistoryRevision((current) => current + 1)
     planLeasedRef.current = leased
     setPlanLeased(leased)
-    onBusyChange(leased || consoleBusyRef.current || undoBusyRef.current)
+    onBusyChange(leased || consoleBusyRef.current || undoBusyRef.current || desktopBusyRef.current)
   }, [onBusyChange])
   const updateUndoBusy = useCallback((busy: boolean): void => {
     undoBusyRef.current = busy
     setUndoBusy(busy)
-    onBusyChange(busy || consoleBusyRef.current || planLeasedRef.current)
+    onBusyChange(busy || consoleBusyRef.current || planLeasedRef.current || desktopBusyRef.current)
+  }, [onBusyChange])
+  const updateDesktopBusy = useCallback((busy: boolean): void => {
+    desktopBusyRef.current = busy
+    setDesktopBusy(busy)
+    onBusyChange(busy || consoleBusyRef.current || planLeasedRef.current || undoBusyRef.current)
   }, [onBusyChange])
   const [catalog, setCatalog] = useState<WorkToolsState | null>(null)
   const [scope, setScope] = useState<WorkWorkspaceState | null>(null)
@@ -115,7 +124,7 @@ export function WorkPanel({ api, chatId, ready, disabled, readAvailable, preview
   }, [refresh])
 
   async function changeScope(clear: boolean): Promise<void> {
-    if (api === undefined || !ready || disabled || pending || consoleBusy || planLeased || undoBusy || scope === null) {
+    if (api === undefined || !ready || disabled || pending || consoleBusy || planLeased || undoBusy || desktopBusy || scope === null) {
       return
     }
     const token = ++operationRef.current
@@ -145,7 +154,7 @@ export function WorkPanel({ api, chatId, ready, disabled, readAvailable, preview
   }
 
   const visibleScope = ready && scope?.chatId === chatId ? scope : null
-  const controlsDisabled = disabled || consoleBusy || planLeased || undoBusy || !ready || pending || visibleScope === null
+  const controlsDisabled = disabled || consoleBusy || planLeased || undoBusy || desktopBusy || !ready || pending || visibleScope === null
 
   return (
     <section className="work-panel" aria-label="Work Workspace" aria-busy={pending}>
@@ -181,18 +190,22 @@ export function WorkPanel({ api, chatId, ready, disabled, readAvailable, preview
       <ToolInspector api={api} chatId={chatId} ready={ready} onCatalogChange={setCatalog} />
       <ToolConsole api={api} chatId={chatId} workspacePath={visibleScope?.workspacePath ?? null}
         ready={ready} readAvailable={readAvailable} previewAvailable={previewAvailable} confirmAvailable={confirmAvailable}
-        disabled={disabled || pending || planLeased || undoBusy} planAvailable={planAvailable} planActive={planLeased}
+        disabled={disabled || pending || planLeased || undoBusy || desktopBusy} planAvailable={planAvailable} planActive={planLeased}
         planQueueFull={calls.length >= 16} onAddToPlan={(call) => {
           setCalls((current) => current.length < 16 ? [...current, call] : current)
         }} tools={catalog?.tools ?? []} onBusyChange={updateConsoleBusy} />
       {planAvailable && <PlanPanel api={api} chatId={chatId} workspacePath={visibleScope?.workspacePath ?? null}
-        ready={ready} disabled={disabled || consoleBusy || undoBusy} calls={calls}
+        ready={ready} disabled={disabled || consoleBusy || undoBusy || desktopBusy} calls={calls}
         onRemoveCall={(index) => { setCalls((current) => current.filter((_, ordinal) => ordinal !== index)) }}
         onClearCalls={() => { setCalls([]) }} onLeaseChange={updatePlanLease} />}
       {auditAvailable && <WorkHistory api={api} chatId={chatId} ready={ready}
-        disabled={disabled || pending || consoleBusy || planLeased}
+        disabled={disabled || pending || consoleBusy || planLeased || desktopBusy}
         workspacePath={visibleScope?.workspacePath ?? null} undoAvailable={undoAvailable}
         refreshKey={historyRevision} onBusyChange={updateUndoBusy} />}
+      {typeof api?.getWorkDesktopState === 'function' && <DesktopToolsPanel api={api} chatId={chatId}
+        workspacePath={visibleScope?.workspacePath ?? null} ready={ready}
+        disabled={disabled || pending || consoleBusy || planLeased || undoBusy}
+        onBusyChange={updateDesktopBusy} />}
     </section>
   )
 }

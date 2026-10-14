@@ -48,6 +48,7 @@ import type {
 } from './work-tool-protocol.js'
 import type { WorkPlanState, WorkPlanCreateParams, WorkPlanControlParams, WorkPlanConfirmParams, WorkPlanReviseParams } from './work-plan-protocol.js'
 import type { WorkAuditState, WorkUndoParams } from './work-audit-protocol.js'
+import type { WorkDesktopState, WorkDesktopAuditEntry } from './work-desktop-protocol.js'
 import type { DataStorageViewState } from './data-storage-contracts.js'
 import type {
   PresenceNotificationState,
@@ -1095,6 +1096,16 @@ const desktopApi: DesktopApi = {
 
   getWorkWorkspace: (chatId: string) =>
     ipcRenderer.invoke('work:get-workspace', chatId) as Promise<WorkWorkspaceState>,
+
+  getWorkDesktopState: (chatId: string) => ipcRenderer.invoke('work:desktop-state', { chatId }) as Promise<WorkDesktopState>,
+  chooseDesktopDocument: (chatId: string) => ipcRenderer.invoke('work:desktop-choose-document', { chatId }) as Promise<WorkDesktopState>,
+  previewDesktopNotepad: (chatId: string) => ipcRenderer.invoke('work:desktop-preview-notepad', { chatId }) as Promise<WorkDesktopState>,
+  readDesktopClipboard: (chatId: string) => ipcRenderer.invoke('work:desktop-read-clipboard', { chatId }) as Promise<WorkDesktopState>,
+  previewDesktopClipboard: (request: { chatId: string; text: string }) => ipcRenderer.invoke('work:desktop-preview-clipboard', request) as Promise<WorkDesktopState>,
+  listDesktopWindows: (chatId: string) => ipcRenderer.invoke('work:desktop-list-windows', { chatId }) as Promise<WorkDesktopState>,
+  selectDesktopWindow: (request: { chatId: string; selectionId: string }) => ipcRenderer.invoke('work:desktop-select-window', request) as Promise<WorkDesktopState>,
+  decideDesktopAction: (request: { chatId: string; approvalId: string; granted: boolean }) => ipcRenderer.invoke('work:desktop-decide', request) as Promise<WorkDesktopState>,
+  getDesktopAudit: (chatId: string) => ipcRenderer.invoke('work:desktop-audit', { chatId }) as Promise<{ entries: WorkDesktopAuditEntry[]; truncated: boolean }>,
 
   getWorkTools: (chatId: string) =>
     ipcRenderer.invoke('work:get-tools', chatId) as Promise<WorkToolsState>,
