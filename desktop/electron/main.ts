@@ -39,6 +39,9 @@ import { OllamaVisionAdapter } from './vision-model.js'
 import { VisionCaptureController, VisionCaptureError } from './vision-capture.js'
 import { createVisionCaptureNative } from './vision-capture-native.js'
 import { parseVisionCapturePrepareRequest, parseVisionCaptureConfirmRequest, type VisionCaptureStatus } from './vision-capture-protocol.js'
+import { VisionContextStore, formatVisionContext } from './vision-context.js'
+import { parseVisionReviewRequest, parseVisionContextRequest, type VisionReviewRequest,
+  type VisionContextRequest, type VisionContext, type VisionContextOwner } from './vision-context-protocol.js'
 import { WorkDesktopController, parseWorkDesktopChatRequest, parseWorkDesktopClipboardWriteRequest,
   parseWorkDesktopDecisionRequest, parseWorkDesktopWindowSelectionRequest, type WorkDesktopOwner } from './work-desktop-tools.js'
 import { WorkDesktopStorage } from './work-desktop-storage.js'
@@ -225,6 +228,8 @@ let visionAnalysisController: VisionAnalysisController | null = null
 let visionCaptureController: VisionCaptureController | null = null
 const visionRequests = new Set<Promise<unknown>>()
 const visionCaptureRequests = new Set<Promise<unknown>>()
+const visionContextStore = new VisionContextStore()
+let visionContextScope: string | null = null
 const voiceCallWindowManager = new VoiceCallWindowManager({
   policy: {
     appPath: app.getAppPath(),
@@ -2066,6 +2071,8 @@ function broadcastBackendEvent(event: BackendEvent): void {
   catch { visionAnalysisController?.shutdown() }
   try { visionCaptureController?.synchronize() }
   catch { visionCaptureController?.shutdown() }
+  try { synchronizeVisionContexts() }
+  catch { visionContextStore.clear(); visionContextScope = null }
   try {
     maybeShowCompletionNotification(event)
   } catch {
@@ -2121,6 +2128,51 @@ function requireVisionController(): VisionImageController {
     })
   }
   return visionImageController
+}
+
+function synchronizeVisionContexts(): void {
+  const owner = backendProcess?.getCanonicalVisionChat() ?? null
+  const scope = shutdownStarted || owner === null || owner.archived ? null
+    : JSON.stringify([owner.chatId, owner.projectId, dataStorageState?.activeDataRoot ?? null])
+  // No receipt registry is duplicated here: this scalar identifies the current
+  // authority scope so navigation, disconnect, and data-root changes scrub all
+  // retained excerpts, even if a later Chat returns with identical image bytes.
+  if (scope === null || scope !== visionContextScope) visionContextStore.clear()
+  visionContextScope = scope
+}
+
+function visionContextOwner(chatId: string): VisionContextOwner {
+  synchronizeVisionContexts()
+  return requireVisionController().getState(chatId).owner
+}
+
+function prepareNativeVisionContext(request: VisionReviewRequest): VisionContext {
+  const owner = visionContextOwner(request.chatId), images = requireVisionController()
+  const image = images.getImageIdentity(request.chatId, request.imageId)
+  if (image === null) throw new VisionImageError('owner_changed')
+  const source = images.getImageSource(request.chatId, request.imageId)
+  const analysis = visionAnalysisController?.getState(request.chatId) ?? null
+  const matching = analysis?.image !== null && analysis?.image !== undefined
+    && analysis.owner.chatId === owner.chatId && analysis.owner.projectId === owner.projectId
+    && analysis.image.imageId === image.imageId && analysis.image.sha256 === image.sha256
+    && analysis.image.width === image.width && analysis.image.height === image.height
+  // Native evidence is selected by exact original identity, never supplied by
+  // the renderer or inferred from a selected dropdown label. Missing evidence
+  // remains absent; preparing a receipt does not run OCR or a vision model.
+  const ocr = matching ? analysis!.ocr.result : null, inference = matching ? analysis!.model.result : null
+  return visionContextStore.prepare(owner, { image: { ...image, source },
+    ocr: ocr === null ? null : { language: ocr.language, text: ocr.text },
+    inference: inference === null ? null : { model: inference.model, question: inference.question,
+      text: inference.text, truncated: inference.truncated }, userDescription: request.userDescription })
+}
+
+function getNativeVisionContextText(request: VisionContextRequest): { context: VisionContext; text: string } {
+  const context = visionContextStore.get(visionContextOwner(request.chatId), request.contextId, imageId => {
+    const image = requireVisionController().getImageIdentity(request.chatId, imageId)
+    if (image === null) throw new VisionImageError('owner_changed')
+    return image.sha256
+  })
+  return { context, text: formatVisionContext(context) }
 }
 
 function withVisionOwner<Result>(chatId: string, operation: (controller: VisionImageController) => Result | Promise<Result>,
@@ -2738,6 +2790,16 @@ function requireMainWindow(): BrowserWindow {
 }
 
 function registerIpcHandlers(): void {
+  ipcMain.handle('vision:prepare-context', (event, value: unknown) => {
+    assertTrustedSender(event)
+    const request = parseVisionReviewRequest(value)
+    return withVisionOwner(request.chatId, () => prepareNativeVisionContext(request))
+  })
+  ipcMain.handle('vision:get-context-text', (event, value: unknown) => {
+    assertTrustedSender(event)
+    const request = parseVisionContextRequest(value)
+    return withVisionOwner(request.chatId, () => getNativeVisionContextText(request), true)
+  })
   ipcMain.handle('vision:get-capture-state', (event, chatId: unknown) => {
     assertTrustedSender(event)
     parseVisionChatId(chatId)
@@ -2800,11 +2862,19 @@ function registerIpcHandlers(): void {
   ipcMain.handle('vision:remove-image', (event, value: unknown) => {
     assertTrustedSender(event)
     const request = parseVisionRemoveRequest(value)
-    return withVisionOwner(request.chatId, (controller) => controller.removeImage(request))
+    return withVisionOwner(request.chatId, (controller) => {
+      const state = controller.removeImage(request)
+      visionContextStore.forgetImage(request.imageId)
+      return state
+    })
   })
   ipcMain.handle('vision:clear-state', (event, chatId: unknown) => {
     assertTrustedSender(event)
-    return withVisionOwner(parseVisionChatId(chatId), (controller) => controller.clearState(parseVisionChatId(chatId)))
+    return withVisionOwner(parseVisionChatId(chatId), (controller) => {
+      const state = controller.clearState(parseVisionChatId(chatId))
+      visionContextStore.clear()
+      return state
+    })
   })
   voiceCallWindowManager.registerIpcHandlers(ipcMain, assertTrustedSender)
   ipcMain.handle(
@@ -4355,6 +4425,8 @@ if (!hasSingleInstanceLock) {
       return
     }
     shutdownStarted = true
+    visionContextStore.clear()
+    visionContextScope = null
     workDesktopController?.clear()
     visionImageController?.shutdown()
     visionImageController = null

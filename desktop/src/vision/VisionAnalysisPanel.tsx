@@ -10,6 +10,9 @@ interface VisionAnalysisPanelProps {
   chatId: string
   projectId: string | null
   images: VisionImage[]
+  selectedImageId: string
+  /** Change the shared review target without starting a provider or granting any native action. */
+  onSelectImage(imageId: string): void
   ready: boolean
   disabled: boolean
   /** Report physical provider ownership, including an already-running native job after reconnection. */
@@ -19,9 +22,8 @@ interface VisionAnalysisPanelProps {
 const languageNames = { eng: 'English', chi_sim: 'Simplified Chinese', chi_tra: 'Traditional Chinese' }
 
 /** Analyze one selected image through explicit local providers and keep cancellation independent of their physical drain. */
-export function VisionAnalysisPanel({ api, chatId, projectId, images, ready, disabled, onBusyChange }: VisionAnalysisPanelProps) {
+export function VisionAnalysisPanel({ api, chatId, projectId, images, selectedImageId, onSelectImage, ready, disabled, onBusyChange }: VisionAnalysisPanelProps) {
   const [analysis, setAnalysis] = useState<VisionAnalysisState | null>(null)
-  const [imageId, setImageId] = useState('')
   const [language, setLanguage] = useState<VisionOcrLanguage>('eng')
   const [operation, setOperation] = useState<'readiness' | 'ocr' | 'model-readiness' | 'model' | null>(null)
   const [modelName, setModelName] = useState('')
@@ -55,7 +57,7 @@ export function VisionAnalysisPanel({ api, chatId, projectId, images, ready, dis
     revision.current = -1
     queueMicrotask(() => {
       if (token !== version.current) return
-      setAnalysis(null); setImageId(''); setError(null)
+      setAnalysis(null); setError(null)
       if (api !== undefined && ready) void api.getVisionAnalysis(chatId).then((next) => {
         publish(next, token)
       }, () => { if (token === version.current) setError('Could not load local OCR state. Check availability after reconnecting.') })
@@ -113,7 +115,7 @@ export function VisionAnalysisPanel({ api, chatId, projectId, images, ready, dis
     finally { setCancelPending(false) }
   }
 
-  const selected = images.find((image) => image.imageId === imageId)
+  const selected = images.find((image) => image.imageId === selectedImageId)
   const visible = ready && analysis?.owner.chatId === chatId && analysis.owner.projectId === projectId ? analysis : null
   const readiness = visible?.ocr.readiness ?? null
   const modelReadiness = visible?.model.readiness ?? null
@@ -132,7 +134,7 @@ export function VisionAnalysisPanel({ api, chatId, projectId, images, ready, dis
 
   return <section className="vision-analysis" aria-label="Visual analysis" aria-busy={leased}>
     <div className="vision-analysis-controls">
-      <label>Vision image<select value={selected?.imageId ?? ''} disabled={locked} onChange={(event) => { setImageId(event.currentTarget.value) }}>
+      <label>Vision image<select value={selected?.imageId ?? ''} disabled={locked} onChange={(event) => { onSelectImage(event.currentTarget.value) }}>
         <option value="">Select an image</option>
         {images.map((image) => <option key={image.imageId} value={image.imageId}>{image.fileName}</option>)}
       </select></label>

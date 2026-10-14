@@ -1,15 +1,17 @@
-/** Review owner-scoped session images through explicit native selection, bounded previews, and deletion. */
+/** Coordinate owner-scoped image reviews, explicit local analysis/capture, and physical native action leases. */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { VisionClient, VisionState } from '../../electron/vision-protocol.ts'
 import type { VisionAnalysisClient } from '../../electron/vision-analysis-protocol.ts'
 import type { VisionCaptureClient } from '../../electron/vision-capture-protocol.ts'
+import type { VisionContextClient } from '../../electron/vision-context-protocol.ts'
 import { VisionAnalysisPanel } from './VisionAnalysisPanel.tsx'
 import { VisionCapturePanel } from './VisionCapturePanel.tsx'
+import { VisionContextPanel } from './VisionContextPanel.tsx'
 import './VisionPanel.css'
 
 interface VisionPanelProps {
-  api: (VisionClient & VisionAnalysisClient & VisionCaptureClient) | undefined
+  api: (VisionClient & VisionAnalysisClient & VisionCaptureClient & VisionContextClient) | undefined
   chatId: string
   projectId: string | null
   ready: boolean
@@ -32,20 +34,31 @@ export function VisionPanel({ api, chatId, projectId, ready, disabled, onBusyCha
   const [previewErrors, setPreviewErrors] = useState<string[]>([])
   const [analysisBusy, setAnalysisBusy] = useState(false)
   const [captureBusy, setCaptureBusy] = useState(false)
+  const [contextBusy, setContextBusy] = useState(false)
+  const [selectedImageId, setSelectedImageId] = useState('')
   const version = useRef(0)
   const physicalPending = useRef(false)
   const analysisLease = useRef(false)
   const captureLease = useRef(false)
+  const contextLease = useRef(false)
+  const reportBusy = useCallback((): void => {
+    onBusyChange(physicalPending.current || analysisLease.current || captureLease.current || contextLease.current)
+  }, [onBusyChange])
   const updateAnalysisBusy = useCallback((busy: boolean): void => {
     analysisLease.current = busy
     setAnalysisBusy(busy)
-    onBusyChange(busy || physicalPending.current || captureLease.current)
-  }, [onBusyChange])
+    reportBusy()
+  }, [reportBusy])
   const updateCaptureBusy = useCallback((busy: boolean): void => {
     captureLease.current = busy
     setCaptureBusy(busy)
-    onBusyChange(busy || physicalPending.current || analysisLease.current)
-  }, [onBusyChange])
+    reportBusy()
+  }, [reportBusy])
+  const updateContextBusy = useCallback((busy: boolean): void => {
+    contextLease.current = busy
+    setContextBusy(busy)
+    reportBusy()
+  }, [reportBusy])
 
   function owned(next: VisionState): boolean {
     return next.owner.chatId === chatId && next.owner.projectId === projectId
@@ -55,7 +68,7 @@ export function VisionPanel({ api, chatId, projectId, ready, disabled, onBusyCha
     const token = ++version.current
     queueMicrotask(() => {
       if (token !== version.current) return
-      setState(null); setError(null); setPreviewErrors([]); setOpen(false)
+      setState(null); setSelectedImageId(''); setError(null); setPreviewErrors([]); setOpen(false)
       if (!ready || api === undefined || physicalPending.current) { setLoading(false); return }
       setLoading(true)
       void api.getVisionState(chatId).then((next) => {
@@ -71,11 +84,11 @@ export function VisionPanel({ api, chatId, projectId, ready, disabled, onBusyCha
   }, [api, chatId, projectId, ready])
 
   async function act(operation: (client: VisionClient) => Promise<VisionState>): Promise<void> {
-    if (!ready || disabled || api === undefined || physicalPending.current || analysisLease.current || captureLease.current) return
+    if (!ready || disabled || api === undefined || physicalPending.current || analysisLease.current || captureLease.current || contextLease.current) return
     physicalPending.current = true
     const token = ++version.current
     setPending(true); setLoading(false); setError(null); setOpen(true)
-    onBusyChange(true)
+    reportBusy()
     try {
       const next = await operation(api)
       if (token !== version.current) return
@@ -88,15 +101,16 @@ export function VisionPanel({ api, chatId, projectId, ready, disabled, onBusyCha
       // physical settlement can release the shared native-action capacity.
       physicalPending.current = false
       setPending(false)
-      onBusyChange(analysisLease.current || captureLease.current)
+      reportBusy()
     }
   }
 
   const visible = ready && state !== null && owned(state) ? state : null
   const images = visible?.items ?? []
-  const locked = disabled || !ready || pending || analysisBusy || captureBusy || visible?.busy === true || loading || api === undefined
+  const selectedImage = images.find((image) => image.imageId === selectedImageId) ?? null
+  const locked = disabled || !ready || pending || analysisBusy || captureBusy || contextBusy || visible?.busy === true || loading || api === undefined
 
-  return <section className="vision-panel" aria-label="Vision images" aria-busy={pending || loading || analysisBusy || captureBusy}>
+  return <section className="vision-panel" aria-label="Vision images" aria-busy={pending || loading || analysisBusy || captureBusy || contextBusy}>
     <button type="button" className="vision-toggle" aria-expanded={open} aria-controls="vision-image-review"
       onClick={() => { setOpen((current) => !current) }}>
       Vision{images.length > 0 ? ` · ${images.length} selected` : ''}
@@ -131,7 +145,7 @@ export function VisionPanel({ api, chatId, projectId, ready, disabled, onBusyCha
     </div>}
     {typeof api?.listVisionCaptureSources === 'function' && <div className="vision-analysis-slot" hidden={!open}>
       <VisionCapturePanel api={api} chatId={chatId} projectId={projectId} ready={ready}
-        disabled={disabled || pending || loading || analysisBusy} imageLimitReached={images.length >= 8}
+        disabled={disabled || pending || loading || analysisBusy || contextBusy} imageLimitReached={images.length >= 8}
         onBusyChange={updateCaptureBusy} onStateChange={(next) => {
           if (ready && owned(next)) { setState(next); setPreviewErrors([]) }
         }} />
@@ -140,7 +154,12 @@ export function VisionPanel({ api, chatId, projectId, ready, disabled, onBusyCha
       {/* Keep the analysis owner mounted while the review is collapsed so a
           pending provider retains cancellation/polling and its physical lease. */}
       <VisionAnalysisPanel api={api} chatId={chatId} projectId={projectId} images={images} ready={ready}
-        disabled={disabled || pending || loading || captureBusy} onBusyChange={updateAnalysisBusy} />
+        selectedImageId={selectedImageId} onSelectImage={setSelectedImageId}
+        disabled={disabled || pending || loading || captureBusy || contextBusy} onBusyChange={updateAnalysisBusy} />
+    </div>}
+    {typeof api?.prepareVisionContext === 'function' && <div className="vision-analysis-slot" hidden={!open}>
+      <VisionContextPanel api={api} chatId={chatId} projectId={projectId} image={selectedImage} ready={ready}
+        disabled={disabled || pending || loading || analysisBusy || captureBusy} onBusyChange={updateContextBusy} />
     </div>}
   </section>
 }
