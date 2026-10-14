@@ -2,6 +2,7 @@
 
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
+import { existsSync } from 'node:fs'
 import {
   chmod,
   copyFile,
@@ -13,6 +14,7 @@ import {
   rename as renamePath,
   rm,
   stat,
+  symlink,
   writeFile,
 } from 'node:fs/promises'
 import os from 'node:os'
@@ -73,8 +75,14 @@ if (!fs.existsSync(jobDirectory)) {
   fs.mkdirSync(jobDirectory, { recursive: false })
 }
 const sourceName = path.basename(source)
-const lyricsSvs = path.basename(process.argv[1]) === 'song_svs_worker.py'
-const initialLyricsFiles = lyricsSvs
+const wslSinging = path.basename(process.argv[1]) === 'song_svs_worker.py'
+const sourceSvc = wslSinging && option('--engine') === 'source-svc'
+const lyricsSvs = wslSinging && !sourceSvc
+const shiftAccompaniment = option('--shift-accompaniment')
+if (!['true', 'false'].includes(shiftAccompaniment)) {
+  process.exit(9)
+}
+const initialLyricsFiles = wslSinging
   ? fs.readdirSync(jobDirectory).sort()
   : []
 if (
@@ -94,11 +102,21 @@ if (
 ) {
   process.exit(8)
 }
+if (sourceSvc) {
+  const request = JSON.parse(fs.readFileSync(path.join(jobDirectory, 'singing-request.json'), 'utf8'))
+  if (initialLyricsFiles.join(',') !== 'singing-request.json'
+      || request.schema_version !== 1
+      || !['fairy', 'elysia'].includes(request.reference)
+      || request.key_shift_semitones !== Number(option('--key-shift-semitones'))) {
+    process.exit(10)
+  }
+}
 if (
   sourceName === 'isolated-vocals.wav'
   && (
     option('--source-mode') !== 'stems'
-    || option('--key-shift-semitones') !== '2'
+    || option('--key-shift-semitones') !== '12'
+    || shiftAccompaniment !== 'false'
     || option('--accompaniment-input') !== 'D:/private/instrumental.wav'
   )
 ) {
@@ -137,17 +155,23 @@ if (sourceName === 'alignment-error.mp3') {
       emit('synthesizing', 58, 'Singing')
     } else {
       emit('converting', 55, 'Converting the vocal melody to Elysia')
+      if (sourceSvc && sourceName.startsWith('progress-')) {
+        emit('converting', 56, 'PRIVATE stage detail')
+        emit('converting', sourceName === 'progress-regress.mp3' ? 55 : 58, 'PRIVATE stage detail')
+        emit('converting', sourceName === 'progress-high.mp3' ? 90 : 88, 'PRIVATE stage detail')
+      }
     }
     emit('mixing', 90, 'Mixing Elysia with the accompaniment')
   }
-  if (lyricsSvs) {
+  if (wslSinging) {
     for (const name of initialLyricsFiles) {
       fs.rmSync(path.join(jobDirectory, name))
     }
   }
-  const wav = Buffer.alloc(48)
+  const pcmBytes = sourceName === 'timeline.mp3' ? 176_400 * 10 : 4
+  const wav = Buffer.alloc(44 + pcmBytes)
   wav.write('RIFF', 0, 'ascii')
-  wav.writeUInt32LE(40, 4)
+  wav.writeUInt32LE(36 + pcmBytes, 4)
   wav.write('WAVE', 8, 'ascii')
   wav.write('fmt ', 12, 'ascii')
   wav.writeUInt32LE(16, 16)
@@ -158,7 +182,7 @@ if (sourceName === 'alignment-error.mp3') {
   wav.writeUInt16LE(4, 32)
   wav.writeUInt16LE(16, 34)
   wav.write('data', 36, 'ascii')
-  wav.writeUInt32LE(4, 40)
+  wav.writeUInt32LE(pcmBytes, 40)
   fs.writeFileSync(
     path.join(jobDirectory, 'elysia-cover.wav'),
     sourceName === 'invalid-wav.mp3' ? 'not-a-wave' : wav,
@@ -179,6 +203,8 @@ if (sourceName === 'alignment-error.mp3') {
   if (
     sourceName === 'malformed-event.mp3'
     || sourceName === 'skip-stages.mp3'
+    || sourceName === 'progress-regress.mp3'
+    || sourceName === 'progress-high.mp3'
   ) {
     setInterval(() => {}, 1_000)
   }
@@ -190,7 +216,9 @@ test('parses only exact Song Cover setup requests', () => {
     parseChooseSongCoverRequest({
       engine: 'lyrics-svs',
       sourceMode: 'stems',
-      keyShiftSemitones: -2,
+      keyShiftSemitones: -12,
+      shiftAccompaniment: true,
+      singingReference: null,
       lyricsMetadataOverride: {
         title: '  测试歌曲  ',
         artist: ' 测试歌手 ',
@@ -199,7 +227,9 @@ test('parses only exact Song Cover setup requests', () => {
     {
       engine: 'lyrics-svs',
       sourceMode: 'stems',
-      keyShiftSemitones: -2,
+      keyShiftSemitones: -12,
+      shiftAccompaniment: true,
+      singingReference: null,
       lyricsMetadataOverride: {
         title: '测试歌曲',
         artist: '测试歌手',
@@ -210,13 +240,17 @@ test('parses only exact Song Cover setup requests', () => {
     parseChooseSongCoverRequest({
       engine: 'legacy-svc',
       sourceMode: 'song',
-      keyShiftSemitones: 2,
+      keyShiftSemitones: 12,
+      shiftAccompaniment: false,
+      singingReference: null,
       lyricsMetadataOverride: null,
     }),
     {
       engine: 'legacy-svc',
       sourceMode: 'song',
-      keyShiftSemitones: 2,
+      keyShiftSemitones: 12,
+      shiftAccompaniment: false,
+      singingReference: null,
       lyricsMetadataOverride: null,
     },
   )
@@ -225,12 +259,16 @@ test('parses only exact Song Cover setup requests', () => {
       engine: 'lyrics-svs',
       sourceMode: 'song',
       keyShiftSemitones: 0,
+      shiftAccompaniment: true,
+      singingReference: null,
       lyricsMetadataOverride: { title: '  ', artist: '' },
     }),
     {
       engine: 'lyrics-svs',
       sourceMode: 'song',
       keyShiftSemitones: 0,
+      shiftAccompaniment: true,
+      singingReference: null,
       lyricsMetadataOverride: null,
     },
   )
@@ -240,42 +278,62 @@ test('parses only exact Song Cover setup requests', () => {
     { sourceMode: 'song' },
     {
       engine: 'lyrics-svs', sourceMode: 'lyrics', keyShiftSemitones: 0,
+      shiftAccompaniment: true,
+      singingReference: null,
       lyricsMetadataOverride: null,
     },
     {
       engine: 'other', sourceMode: 'song', keyShiftSemitones: 0,
+      shiftAccompaniment: true,
+      singingReference: null,
       lyricsMetadataOverride: null,
     },
     {
-      engine: 'lyrics-svs', sourceMode: 'song', keyShiftSemitones: 3,
+      engine: 'lyrics-svs', sourceMode: 'song', keyShiftSemitones: 13,
+      shiftAccompaniment: true,
+      singingReference: null,
       lyricsMetadataOverride: null,
     },
     {
-      engine: 'lyrics-svs', sourceMode: 'song', keyShiftSemitones: -3,
+      engine: 'lyrics-svs', sourceMode: 'song', keyShiftSemitones: -13,
+      shiftAccompaniment: true,
+      singingReference: null,
       lyricsMetadataOverride: null,
     },
     {
       engine: 'lyrics-svs', sourceMode: 'song', keyShiftSemitones: -1.5,
+      shiftAccompaniment: true,
+      singingReference: null,
       lyricsMetadataOverride: null,
     },
     {
       engine: 'lyrics-svs', sourceMode: 'song', keyShiftSemitones: 0,
+      shiftAccompaniment: true,
+      singingReference: null,
       lyricsMetadataOverride: { title: '只有标题', artist: '' },
     },
     {
       engine: 'legacy-svc', sourceMode: 'song', keyShiftSemitones: 0,
+      shiftAccompaniment: true,
+      singingReference: null,
       lyricsMetadataOverride: { title: '歌名', artist: '歌手' },
     },
     {
       engine: 'lyrics-svs', sourceMode: 'song', keyShiftSemitones: 0,
+      shiftAccompaniment: true,
+      singingReference: null,
       lyricsMetadataOverride: { title: 'a'.repeat(257), artist: '歌手' },
     },
     {
       engine: 'lyrics-svs', sourceMode: 'song', keyShiftSemitones: 0,
+      shiftAccompaniment: true,
+      singingReference: null,
       lyricsMetadataOverride: { title: '歌\n名', artist: '歌手' },
     },
     {
       engine: 'lyrics-svs', sourceMode: 'song', keyShiftSemitones: 0,
+      shiftAccompaniment: true,
+      singingReference: null,
       lyricsMetadataOverride: {
         title: '歌名', artist: '歌手', provider: 'unexpected',
       },
@@ -284,12 +342,44 @@ test('parses only exact Song Cover setup requests', () => {
       engine: 'lyrics-svs',
       sourceMode: 'song',
       keyShiftSemitones: 0,
+      shiftAccompaniment: true,
+      singingReference: null,
       lyricsMetadataOverride: null,
       nativePath: 'D:/private',
+    },
+    {
+      engine: 'lyrics-svs', sourceMode: 'song', keyShiftSemitones: 0,
+      singingReference: null,
+      lyricsMetadataOverride: null,
+    },
+    {
+      engine: 'lyrics-svs', sourceMode: 'song', keyShiftSemitones: 0,
+      shiftAccompaniment: 'true', singingReference: null,
+      lyricsMetadataOverride: null,
     },
   ]) {
     assert.equal(parseChooseSongCoverRequest(value), null)
   }
+})
+
+test('binds singing references exclusively to source conversion requests', () => {
+  const request = {
+    engine: 'source-svc', sourceMode: 'song', keyShiftSemitones: 12,
+    shiftAccompaniment: false, lyricsMetadataOverride: null,
+    singingReference: 'elysia',
+  }
+  assert.deepEqual(parseChooseSongCoverRequest(request), request)
+  for (const patch of [
+    { singingReference: null }, { singingReference: 'custom' },
+    { singingReference: 'D:/private/reference.wav' },
+    { engine: 'lyrics-svs' }, { engine: 'legacy-svc' },
+    { lyricsMetadataOverride: { title: 'Title', artist: 'Artist' } },
+    { cfg: 3 },
+  ]) {
+    assert.equal(parseChooseSongCoverRequest({ ...request, ...patch }), null)
+  }
+  const { singingReference: _omitted, ...oldRequest } = request
+  assert.equal(parseChooseSongCoverRequest(oldRequest), null)
 })
 
 test('parses only the closed renderer-safe Song Cover readiness contract', () => {
@@ -371,10 +461,14 @@ test('fails packaged readiness closed and admits only regular development files'
     path.join(runtimeRoot, 'ffmpeg.exe'),
     path.join(runtimeRoot, 'ffprobe.exe'),
     path.join(scriptsRoot, 'song_rvc_runtime.py'),
+    path.join(scriptsRoot, 'song_rvc_pipeline.py'),
     path.join(scriptsRoot, 'song_svs_wsl_bridge.py'),
     path.join(scriptsRoot, 'song_svs_runtime.py'),
     path.join(scriptsRoot, 'song_svs_inference.py'),
     path.join(scriptsRoot, 'song_svs_quality.py'),
+    path.join(scriptsRoot, 'song_svc_inference.py'),
+    path.join(scriptsRoot, 'song_svc_assets.py'),
+    path.join(scriptsRoot, 'song_svc_pitch.py'),
     path.join(scriptsRoot, 'song_lyrics_alignment.py'),
   ]
   try {
@@ -396,7 +490,7 @@ test('fails packaged readiness closed and admits only regular development files'
       reason: null,
     })
 
-    const replacedScript = requiredFiles.at(-2)
+    const replacedScript = path.join(scriptsRoot, 'song_rvc_pipeline.py')
     await rm(replacedScript)
     await mkdir(replacedScript)
     assert.deepEqual(await manager.getReadiness(false), {
@@ -444,13 +538,14 @@ async function prepareFixtureLyrics({ jobDirectory }) {
   }
 }
 
-/** Start an explicitly selected legacy worker for tests unrelated to SVS. */
+/** Start legacy conversion with an explicit accompaniment-follow preference. */
 function startLegacy(
   manager,
   sourcePath,
   sourceName,
   keyShiftSemitones = 0,
   accompaniment = null,
+  shiftAccompaniment = true,
 ) {
   return manager.start(
     sourcePath,
@@ -458,12 +553,71 @@ function startLegacy(
     keyShiftSemitones,
     accompaniment,
     'legacy-svc',
+    null,
+    shiftAccompaniment,
   )
 }
+
+test('defaults to source conversion with a closed durable singing request', async () => {
+  const fixture = await createFixture()
+  const launches = []
+  const manager = new SongCoverManager(
+    fixture.projectRoot,
+    () => fixture.dataRoot,
+    () => ({ cancel() {}, play: () => Promise.resolve() }),
+    () => {},
+    async () => ({ outputDeviceId: null, volumePercent: 100 }),
+    () => {},
+    undefined, undefined, undefined, undefined,
+    async () => { throw new Error('Source conversion must not request lyrics') },
+    (command, args, options) => {
+      if (!args.includes('--cleanup-private-job')) {
+        const jobDirectory = args[args.indexOf('--job-dir') + 1]
+        launches.push({ args: [...args], jobDirectory })
+      }
+      return spawn(command, args, options)
+    },
+  )
+  try {
+    for (const reference of ['fairy', 'elysia']) {
+      const started = reference === 'fairy'
+        ? await manager.start('D:/private/slow.mp3', 'slow.mp3')
+        : await manager.start('D:/private/slow.mp3', 'slow.mp3', 12, null,
+          'source-svc', null, false, reference)
+      assert.equal(started.engine, 'source-svc')
+      const launch = launches.at(-1)
+      assert.equal(path.basename(launch.args[0]), 'song_svs_worker.py')
+      assert.equal(launch.args[launch.args.indexOf('--engine') + 1], 'source-svc')
+      assert.equal(launch.args.includes('--svc-root'), false)
+      assert.deepEqual(await readdir(launch.jobDirectory), ['singing-request.json'])
+      assert.deepEqual(JSON.parse(await readFile(
+        path.join(launch.jobDirectory, 'singing-request.json'), 'utf8',
+      )), {
+        schema_version: 1, reference,
+        key_shift_semitones: reference === 'fairy' ? 0 : 12,
+      })
+      await manager.cancel(started.jobId)
+    }
+    await manager.start('D:/private/song.mp3', 'song.mp3')
+    await waitFor(() => ['ready', 'error'].includes(manager.getState().stage), 'Source conversion did not finish')
+    assert.equal(manager.getState().stage, 'ready', JSON.stringify(manager.getState()))
+    assert.equal(manager.getState().outputAvailable, true)
+    assert.deepEqual((await readdir(launches.at(-1).jobDirectory)).sort(), [
+      'elysia-cover.mp3', 'elysia-cover.wav',
+    ])
+  } finally {
+    await manager.shutdown()
+    await rm(fixture.root, { recursive: true, force: true })
+  }
+})
 
 test('launches the legacy wire engine with fixed private RVC paths', async () => {
   const fixture = await createFixture()
   let launchArguments = null
+  let launchEnvironment = null
+  let profileExistedAtLaunch = false
+  let shellFoldersExistedAtLaunch = false
+  let jobExistedAtLaunch = true
   const manager = new SongCoverManager(
     fixture.projectRoot,
     () => fixture.dataRoot,
@@ -479,6 +633,13 @@ test('launches the legacy wire engine with fixed private RVC paths', async () =>
     (command, args, options) => {
       if (path.basename(String(args[0])) === 'song_cover_worker.py') {
         launchArguments = [...args]
+        launchEnvironment = { ...options.env }
+        profileExistedAtLaunch = existsSync(options.env.USERPROFILE ?? '')
+        shellFoldersExistedAtLaunch = (
+          existsSync(options.env.LOCALAPPDATA ?? '')
+          && existsSync(options.env.APPDATA ?? '')
+        )
+        jobExistedAtLaunch = existsSync(args[args.indexOf('--job-dir') + 1])
       }
       return spawn(command, args, options)
     },
@@ -490,6 +651,28 @@ test('launches the legacy wire engine with fixed private RVC paths', async () =>
       'The RVC-backed Song Cover worker did not finish.',
     )
     assert.notEqual(launchArguments, null)
+    assert.notEqual(launchEnvironment, null)
+    assert.equal(
+      launchEnvironment.USERPROFILE,
+      path.join(fixture.dataRoot, 'audio', 'song-covers'),
+    )
+    assert.equal(launchEnvironment.USERPROFILE, launchEnvironment.TEMP)
+    assert.equal(profileExistedAtLaunch, true)
+    assert.equal(shellFoldersExistedAtLaunch, true)
+    assert.equal(
+      launchEnvironment.LOCALAPPDATA,
+      path.join(launchEnvironment.USERPROFILE, 'AppData', 'Local'),
+    )
+    assert.equal(
+      launchEnvironment.APPDATA,
+      path.join(launchEnvironment.USERPROFILE, 'AppData', 'Roaming'),
+    )
+    // Import-time home resolution must not pre-create the Legacy UUID job:
+    // the worker claims that directory exclusively before accepting assets.
+    assert.equal(jobExistedAtLaunch, false)
+    for (const name of ['HOME', 'HOMEDRIVE', 'HOMEPATH', 'PYTHONPATH']) {
+      assert.equal(Object.hasOwn(launchEnvironment, name), false)
+    }
     const option = (name) => {
       const index = launchArguments.indexOf(name)
       return index === -1 ? null : launchArguments[index + 1]
@@ -498,6 +681,7 @@ test('launches the legacy wire engine with fixed private RVC paths', async () =>
       option('--rvc-root'),
       path.join(fixture.projectRoot, 'models', 'cache', 'rvc-v2-40k'),
     )
+    assert.equal(option('--shift-accompaniment'), 'true')
     assert.equal(
       option('--rvc-model'),
       path.join(
@@ -523,6 +707,39 @@ test('launches the legacy wire engine with fixed private RVC paths', async () =>
     assert.equal(launchArguments.includes('--svc-root'), false)
     assert.equal(launchArguments.includes('--svc-model-root'), false)
     assert.equal(manager.getState().engine, 'legacy-svc')
+  } finally {
+    await manager.shutdown()
+    await rm(fixture.root, { recursive: true, force: true })
+  }
+})
+
+test('rejects a redirected private AppData folder before starting a worker', async () => {
+  const fixture = await createFixture()
+  const manager = new SongCoverManager(
+    fixture.projectRoot,
+    () => fixture.dataRoot,
+    () => null,
+    () => {},
+    async () => ({ outputDeviceId: null, volumePercent: 100 }),
+    () => {},
+  )
+  const outside = path.join(fixture.root, 'outside-profile')
+  try {
+    await waitFor(
+      () => !manager.hasActiveWork(),
+      'Startup cleanup did not settle before the redirected profile fixture.',
+    )
+    const jobsRoot = path.join(fixture.dataRoot, 'audio', 'song-covers')
+    await mkdir(jobsRoot, { recursive: true })
+    await mkdir(outside)
+    await symlink(outside, path.join(jobsRoot, 'AppData'), 'junction')
+    await assert.rejects(
+      startLegacy(manager, 'D:/private/original.mp3', 'original.mp3'),
+      /could not be started/iu,
+    )
+    assert.equal(manager.getState().stage, 'error')
+    assert.equal(manager.getState().outputAvailable, false)
+    assert.deepEqual(await readdir(outside), [])
   } finally {
     await manager.shutdown()
     await rm(fixture.root, { recursive: true, force: true })
@@ -977,6 +1194,114 @@ test('creates, privately plays, exports, and removes one completed cover', async
   }
 })
 
+test('keeps a validated timeline through ready seek, playback, stop, and completion', async () => {
+  const fixture = await createFixture()
+  const plays = []
+  const seeks = []
+  let preferencesAvailable = false
+  let acceptSeek = true
+  const owner = {
+    cancel() { plays.at(-1)?.resolve() },
+    seek(position) { seeks.push(position); return acceptSeek },
+    play(_bytes, _device, _volume, startPosition, onTimeline) {
+      return new Promise((resolve) => plays.push({ startPosition, onTimeline, resolve }))
+    },
+  }
+  const manager = new SongCoverManager(
+    fixture.projectRoot, () => fixture.dataRoot, () => owner, () => {},
+    async () => {
+      if (!preferencesAvailable) throw new Error('Autoplay unavailable')
+      return { outputDeviceId: null, volumePercent: 100 }
+    },
+    () => {},
+  )
+  try {
+    assert.equal(manager.getState().positionSeconds, 0)
+    assert.equal(manager.getState().durationSeconds, 0)
+    const started = await startLegacy(manager, 'D:/private/timeline.mp3', 'timeline.mp3')
+    await waitFor(() => !manager.hasActiveWork(), 'Conversion did not release its slot')
+    assert.equal(manager.getState().outputAvailable, true)
+    assert.equal(manager.getState().durationSeconds, 10)
+    assert.equal(plays.length, 0)
+    for (const position of [-1, NaN, Infinity, 10.01]) {
+      assert.throws(() => manager.seek(started.jobId, position), /position is invalid/u)
+    }
+    assert.throws(() => manager.seek('00000000-0000-4000-8000-000000000000', 1), /no longer/u)
+    const revision = manager.getState().revision
+    assert.equal(manager.seek(started.jobId, 4).positionSeconds, 4)
+    assert.equal(manager.getState().revision, revision + 1)
+    assert.deepEqual(seeks, [])
+    preferencesAvailable = true
+    await manager.play(started.jobId)
+    assert.equal(plays[0].startPosition, 4)
+    plays[0].onTimeline({ positionSeconds: 4.5, durationSeconds: 10.02 })
+    assert.equal(manager.getState().positionSeconds, 4.5)
+    assert.equal(manager.getState().durationSeconds, 10.02)
+    assert.equal(manager.seek(started.jobId, 7).positionSeconds, 7)
+    assert.deepEqual(seeks, [7])
+    acceptSeek = false
+    assert.throws(() => manager.seek(started.jobId, 8), /could not seek/u)
+    assert.equal(manager.getState().positionSeconds, 7)
+    acceptSeek = true
+    assert.equal(manager.stopPlayback(started.jobId).positionSeconds, 7)
+    plays[0].onTimeline({ positionSeconds: 2, durationSeconds: 10.02 })
+    await Promise.resolve()
+    assert.equal(manager.getState().stage, 'ready')
+    assert.equal(manager.getState().positionSeconds, 7)
+    await manager.play(started.jobId)
+    assert.equal(plays[1].startPosition, 7)
+    plays[1].resolve()
+    await waitFor(() => manager.getState().stage === 'ready', 'Natural end did not settle')
+    assert.equal(manager.getState().positionSeconds, 0)
+    manager.seek(started.jobId, manager.getState().durationSeconds)
+    await manager.play(started.jobId)
+    assert.equal(plays[2].startPosition, 0)
+    manager.stopPlayback(started.jobId)
+    const replacement = await startLegacy(manager, 'D:/private/slow.mp3', 'slow.mp3')
+    assert.equal(manager.getState().durationSeconds, 0)
+    assert.equal(manager.getState().positionSeconds, 0)
+    plays[2].onTimeline({ positionSeconds: 9, durationSeconds: 10 })
+    assert.equal(manager.getState().durationSeconds, 0)
+    assert.throws(() => manager.seek(started.jobId, 0), /no longer/u)
+    await manager.cancel(replacement.jobId)
+  } finally {
+    await manager.shutdown()
+    await rm(fixture.root, { recursive: true, force: true })
+  }
+})
+
+test('publishes bounded source-conversion progress with safe phase messages', async () => {
+  const fixture = await createFixture()
+  const published = []
+  const manager = new SongCoverManager(
+    fixture.projectRoot, () => fixture.dataRoot,
+    () => ({ cancel() {}, play: () => Promise.resolve() }), () => {},
+    async () => ({ outputDeviceId: null, volumePercent: 100 }),
+    (state) => published.push(state),
+  )
+  try {
+    await manager.start('D:/private/progress-good.mp3', 'progress-good.mp3')
+    await waitFor(() => !manager.hasActiveWork(), 'Source conversion did not finish')
+    assert.equal(manager.getState().stage, 'ready')
+    const converting = published.filter((state) => state.stage === 'converting')
+    assert.deepEqual(converting.map((state) => state.progressPercent), [55, 56, 58, 88])
+    assert.deepEqual(converting.map((state) => state.message), [
+      'Preparing singing voice', 'Reading source vocal',
+      'Checking vocal pitch', 'Preparing converted vocal for mixing',
+    ])
+    assert.equal(JSON.stringify(published).includes('PRIVATE'), false)
+    for (const sourceName of ['progress-regress.mp3', 'progress-high.mp3']) {
+      await manager.start(`D:/private/${sourceName}`, sourceName)
+      await waitFor(() => !manager.hasActiveWork(), 'Invalid progress did not settle')
+      assert.equal(manager.getState().stage, 'error')
+      assert.equal(manager.getState().outputAvailable, false)
+    }
+  } finally {
+    await manager.shutdown()
+    await rm(fixture.root, { recursive: true, force: true })
+  }
+})
+
 test('preserves an existing export when a transactional export fails', async (t) => {
   const failureCases = [
     {
@@ -1075,11 +1400,12 @@ test('keeps stem paths private and applies only a closed whole-song key shift', 
       manager,
       'D:/private/isolated-vocals.wav',
       'isolated-vocals.wav',
-      2,
+      12,
       {
         path: 'D:/private/instrumental.wav',
         name: 'instrumental.wav',
       },
+      false,
     )
     const ready = await waitFor(
       () => (
@@ -1092,7 +1418,8 @@ test('keeps stem paths private and applies only a closed whole-song key shift', 
     assert.equal(ready.sourceMode, 'stems')
     assert.equal(ready.sourceName, 'isolated-vocals.wav')
     assert.equal(ready.accompanimentName, 'instrumental.wav')
-    assert.equal(ready.keyShiftSemitones, 2)
+    assert.equal(ready.keyShiftSemitones, 12)
+    assert.equal(ready.shiftAccompaniment, false)
     assert.equal(JSON.stringify(published).includes('D:/private'), false)
     await assert.rejects(
       startLegacy(
@@ -1105,12 +1432,24 @@ test('keeps stem paths private and applies only a closed whole-song key shift', 
       /different supported accompaniment/iu,
     )
     await assert.rejects(
-      startLegacy(manager, 'D:/private/original.mp3', 'original.mp3', 3),
+      startLegacy(manager, 'D:/private/original.mp3', 'original.mp3', 13),
       /key adjustment/iu,
     )
     await assert.rejects(
-      startLegacy(manager, 'D:/private/original.mp3', 'original.mp3', -3),
+      startLegacy(manager, 'D:/private/original.mp3', 'original.mp3', -13),
       /key adjustment/iu,
+    )
+    await assert.rejects(
+      manager.start(
+        'D:/private/original.mp3',
+        'original.mp3',
+        0,
+        null,
+        'legacy-svc',
+        null,
+        'true',
+      ),
+      /accompaniment adjustment/iu,
     )
   } finally {
     await manager.shutdown()
@@ -1506,12 +1845,13 @@ test('times out a silent worker, releases its slot, and removes its private job'
   }
 })
 
+for (const engine of ['lyrics-svs', 'source-svc']) {
 for (const scenario of [
   { name: 'cancellation', source: 'slow.mp3', timeoutMs: 10_000 },
   { name: 'timeout', source: 'silent.mp3', timeoutMs: 250 },
   { name: 'bridge crash', source: 'worker-error.mp3', timeoutMs: 10_000 },
 ]) {
-  test(`cleans the exact private WSL job after lyrics-SVS ${scenario.name}`, {
+  test(`cleans the exact private WSL job after ${engine} ${scenario.name}`, {
     timeout: 30_000,
   }, async () => {
     const fixture = await createFixture()
@@ -1534,7 +1874,7 @@ for (const scenario of [
         scenario.source,
         0,
         null,
-        'lyrics-svs',
+        engine,
       )
       if (scenario.name === 'cancellation') {
         const cancelled = await manager.cancel(started.jobId)
@@ -1569,7 +1909,10 @@ for (const scenario of [
   })
 }
 
-test('recovers an exact crash-left WSL UUID before startup cleanup', async () => {
+}
+
+for (const manifest of ['lyrics-manifest.json', 'singing-request.json']) {
+test(`recovers an exact crash-left WSL UUID from ${manifest}`, async () => {
   const fixture = await createFixture()
   const token = '12345678-1234-4234-9234-123456789abc'
   const jobDirectory = path.join(
@@ -1580,7 +1923,7 @@ test('recovers an exact crash-left WSL UUID before startup cleanup', async () =>
   )
   await mkdir(jobDirectory, { recursive: true })
   await writeFile(
-    path.join(jobDirectory, 'lyrics-manifest.json'),
+    path.join(jobDirectory, manifest),
     '{}',
     'utf8',
   )
@@ -1611,6 +1954,8 @@ test('recovers an exact crash-left WSL UUID before startup cleanup', async () =>
     await rm(fixture.root, { recursive: true, force: true })
   }
 })
+
+}
 
 for (const scenario of [
   {
@@ -2313,7 +2658,7 @@ test('cancels an SVS launch through its shared AbortSignal before worker admissi
     prepareLyricsAssets,
   )
   try {
-    const starting = manager.start('D:/private/slow.mp3', 'slow.mp3')
+    const starting = manager.start('D:/private/slow.mp3', 'slow.mp3', 0, null, 'lyrics-svs')
     const jobId = manager.getState().jobId
     assert.notEqual(jobId, null)
     assert.equal(manager.getState().engine, 'lyrics-svs')

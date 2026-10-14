@@ -72,6 +72,16 @@ async function runDesktopDevelopment() {
     return
   }
 
+  // Each sandboxed window needs a self-contained preload. The TypeScript
+  // output alone retains relative imports that Electron's sandbox cannot load.
+  await build({
+    configFile: path.join(desktopRoot, 'vite.voice-call-preload.config.ts'),
+    root: desktopRoot,
+  })
+  if (terminationSignal !== null) {
+    return
+  }
+
   const server = await createServer({
     configFile: path.join(desktopRoot, 'vite.config.ts'),
     root: desktopRoot,

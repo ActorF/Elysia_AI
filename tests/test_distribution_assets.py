@@ -19,6 +19,7 @@ _REQUIRED_ASAR_LISTING_ENTRIES = (
     "\\dist\\character\\elysia-state-atlas.png",
     "\\dist\\character\\elysia-expression-atlas.png",
     "\\dist\\character\\elysia-speech-atlas.png",
+    "\\dist\\character\\elysia-ui-illustrations.png",
 )
 
 
@@ -73,6 +74,7 @@ def _valid_build() -> dict[str, object]:
         "copied/private-job/lyrics.lrc",
         "copied/private-job/lyrics.txt",
         "copied/private-job/lyrics-manifest.json",
+        "copied/private-job/singing-request.json",
         "release/local-voice.7Z",
         "copied/GPT-SoVITS-v2-240821/runtime/python.exe",
         "data/characters/爱莉希雅原版猫猫版总合集_34be1/model/model.moc3",
@@ -340,14 +342,22 @@ def _copy_reviewed_brand_assets(destination_root: Path) -> tuple[Path, Path]:
 
 def _copy_reviewed_character_assets(
     destination_root: Path,
-) -> tuple[Path, Path, Path, Path]:
+) -> tuple[Path, ...]:
     """Copy every required character asset into an isolated audit fixture."""
 
+    portrait = _copy_reviewed_portrait(destination_root)
+    illustration_relative = Path(
+        "desktop/public/character/elysia-ui-illustrations.png"
+    )
+    illustration = destination_root / illustration_relative
+    illustration.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(_REPOSITORY_ROOT / illustration_relative, illustration)
     assets = (
-        _copy_reviewed_portrait(destination_root),
+        portrait,
         _copy_reviewed_atlas(destination_root),
         _copy_reviewed_expression_atlas(destination_root),
         _copy_reviewed_speech_atlas(destination_root),
+        illustration,
     )
     _copy_reviewed_brand_assets(destination_root)
     return assets
@@ -373,6 +383,10 @@ def _copy_reviewed_asar_tree(destination_root: Path) -> Path:
         (
             "character/elysia-speech-atlas.png",
             "character/elysia-speech-atlas.png",
+        ),
+        (
+            "character/elysia-ui-illustrations.png",
+            "character/elysia-ui-illustrations.png",
         ),
     )
     for source_relative, archive_relative in source_and_archive_paths:
@@ -432,13 +446,14 @@ def test_runtime_state_atlas_is_the_reviewed_source_without_reencoding() -> None
     [
         ("03-expression-atlas.png", "elysia-expression-atlas.png"),
         ("04-facial-rig-atlas.png", "elysia-speech-atlas.png"),
+        ("06-ui-illustrations.png", "elysia-ui-illustrations.png"),
     ],
 )
 def test_runtime_face_atlases_are_reviewed_sources_without_reencoding(
     source_name: str,
     runtime_name: str,
 ) -> None:
-    """Keep each packaged face atlas byte-identical to its approved source."""
+    """Keep each packaged illustration atlas identical to its approved source."""
 
     source = (
         _REPOSITORY_ROOT
@@ -463,7 +478,7 @@ def test_reviewed_character_portrait_content_mutation_is_rejected(
 ) -> None:
     """Reject a same-length replacement that would evade a size-only check."""
 
-    portrait, _atlas, _expression, _speech = _copy_reviewed_character_assets(
+    portrait, *_other_assets = _copy_reviewed_character_assets(
         tmp_path
     )
     with portrait.open("r+b") as portrait_stream:
@@ -482,7 +497,7 @@ def test_reviewed_character_portrait_length_mutation_is_rejected(
 ) -> None:
     """Reject truncation even though the reviewed path and format still match."""
 
-    portrait, _atlas, _expression, _speech = _copy_reviewed_character_assets(
+    portrait, *_other_assets = _copy_reviewed_character_assets(
         tmp_path
     )
     with portrait.open("r+b") as portrait_stream:
@@ -500,13 +515,14 @@ def test_reviewed_character_portrait_length_mutation_is_rejected(
         "elysia-state-atlas.png",
         "elysia-expression-atlas.png",
         "elysia-speech-atlas.png",
+        "elysia-ui-illustrations.png",
     ],
 )
 def test_reviewed_character_assets_are_required_at_exact_paths(
     tmp_path: Path,
     missing_name: str,
 ) -> None:
-    """Fail closed when either approved distributable image is absent."""
+    """Fail closed when any approved distributable character image is absent."""
 
     assets = _copy_reviewed_character_assets(tmp_path)
     missing = next(asset for asset in assets if asset.name == missing_name)

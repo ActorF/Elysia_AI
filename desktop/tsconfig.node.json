@@ -19,5 +19,5 @@
     "erasableSyntaxOnly": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["vite.config.ts", "vite.preload.config.ts"]
+  "include": ["vite.config.ts", "vite.preload.config.ts", "vite.voice-call-preload.config.ts"]
 }

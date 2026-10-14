@@ -9,6 +9,8 @@ const test = require('node:test')
 const PLAY_CHANNEL = 'elysia:trusted-music-play:v1'
 const CANCEL_CHANNEL = 'elysia:trusted-music-cancel:v1'
 const SETTLED_CHANNEL = 'elysia:trusted-music-settled:v1'
+const TIMELINE_CHANNEL = 'elysia:trusted-music-timeline:v1'
+const SEEK_CHANNEL = 'elysia:trusted-music-seek:v1'
 const PLAYBACK_IDS = [
   '10000000-0000-4000-8000-000000000001',
   '10000000-0000-4000-8000-000000000002',
@@ -16,6 +18,7 @@ const PLAYBACK_IDS = [
   '10000000-0000-4000-8000-000000000004',
 ]
 
+const timelines = []
 const settlements = []
 const invocations = []
 const operations = []
@@ -29,6 +32,7 @@ class FakeIpcRenderer extends EventEmitter {
   /** Capture only private music settlements. */
   send(channel, value) {
     if (channel === SETTLED_CHANNEL) settlements.push(value)
+    if (channel === TIMELINE_CHANNEL) timelines.push(value)
   }
 
   /** Keep unrelated public API calls inert in this focused unit test. */
@@ -52,6 +56,9 @@ class FakeAudio {
   /** Create one bounded long-form playback element. */
   constructor() {
     this.duration = nextDuration
+    this.currentTime = 0
+    this.ontimeupdate = null
+    this.onseeked = null
     this.onended = null
     this.onerror = null
     this.onloadedmetadata = null
@@ -162,6 +169,7 @@ function emitMusic(playbackId, overrides = {}, bytes = Buffer.from('ID3fixture')
       byteLength: bytes.byteLength,
       outputDeviceId: 'song-headphones',
       volumePercent: 64,
+      startPositionSeconds: 0,
       ...overrides,
     }),
     bytes,
@@ -170,6 +178,7 @@ function emitMusic(playbackId, overrides = {}, bytes = Buffer.from('ID3fixture')
 
 test.beforeEach(() => {
   settlements.length = 0
+  timelines.length = 0
   operations.length = 0
   revokedUrls.length = 0
   invocations.length = 0
@@ -182,6 +191,8 @@ test('forwards one structured Song Cover setup request over its exact IPC channe
     engine: 'lyrics-svs',
     sourceMode: 'stems',
     keyShiftSemitones: -1,
+    shiftAccompaniment: false,
+    singingReference: null,
     lyricsMetadataOverride: {
       title: '测试歌曲',
       artist: '测试歌手',
@@ -199,6 +210,11 @@ test('reads Song Cover readiness over its exact IPC channel', async () => {
   assert.deepEqual(invocations, [[
     'song-cover:get-readiness',
   ]])
+})
+
+test('forwards only a job identity and time for renderer seeks', async () => {
+  await exposedApis[0].api.seekSongCover('job-fixture', 12.5)
+  assert.deepEqual(invocations, [['song-cover:seek', 'job-fixture', 12.5]])
 })
 
 test.afterEach(async () => {
@@ -241,6 +257,50 @@ test('rejects an overlong decoded cover before audio starts', async () => {
     status: 'failed',
   }])
   assert.equal(revokedUrls.length, 1)
+})
+
+test('reports real metadata and currentTime and seeks without creating new audio', async () => {
+  emitMusic(PLAYBACK_IDS[0], { startPositionSeconds: 12.5 })
+  await immediate()
+  const audio = audioElements.at(-1)
+  const count = audioElements.length
+  assert.equal(audio.currentTime, 12.5)
+  assert.deepEqual(timelines.at(-1), {
+    playbackId: PLAYBACK_IDS[0], positionSeconds: 12.5, durationSeconds: 90, seekRevision: 0,
+  })
+  audio.currentTime = 13.5
+  audio.onseeked()
+  assert.equal(timelines.at(-1).positionSeconds, 13.5)
+  ipcRenderer.emit(SEEK_CHANNEL, {}, { playbackId: PLAYBACK_IDS[0], positionSeconds: 40, seekRevision: 2 })
+  assert.equal(audio.currentTime, 40)
+  assert.equal(timelines.at(-1).seekRevision, 2)
+  for (const patch of [
+    { seekRevision: 1, positionSeconds: 15 },
+    { positionSeconds: NaN }, { positionSeconds: -1 }, { positionSeconds: 721 },
+    { playbackId: PLAYBACK_IDS[1] }, { extra: true },
+  ]) {
+    ipcRenderer.emit(SEEK_CHANNEL, {}, { playbackId: PLAYBACK_IDS[0], positionSeconds: 20, seekRevision: 3, ...patch })
+    assert.equal(audio.currentTime, 40)
+  }
+  assert.equal(audioElements.length, count)
+  const staleTimeupdate = audio.onseeked
+  const reports = timelines.length
+  ipcRenderer.emit(CANCEL_CHANNEL, {}, PLAYBACK_IDS[0])
+  staleTimeupdate()
+  assert.equal(timelines.length, reports)
+})
+
+test('a seek received before metadata becomes the first playback position', async () => {
+  deferMetadata = true
+  emitMusic(PLAYBACK_IDS[1], { startPositionSeconds: 4 })
+  const audio = audioElements.at(-1)
+  ipcRenderer.emit(SEEK_CHANNEL, {}, { playbackId: PLAYBACK_IDS[1], positionSeconds: 23, seekRevision: 1 })
+  assert.equal(timelines.length, 0)
+  audio.onloadedmetadata()
+  await immediate()
+  assert.equal(audio.currentTime, 23)
+  assert.equal(audio.played, true)
+  assert.equal(timelines.at(-1).seekRevision, 1)
 })
 
 test('cancellation wins while metadata is pending and stale callbacks are inert', async () => {

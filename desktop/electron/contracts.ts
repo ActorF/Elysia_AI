@@ -24,6 +24,7 @@ import type {
   SongCoverReadiness,
   SongCoverState,
 } from './song-cover-contracts.js'
+import type { VoiceCallWindowAction, VoiceCallWindowState } from './voice-call-contracts.js'
 
 export type BackendStatus =
   | 'starting'
@@ -570,6 +571,14 @@ export interface DesktopApi {
   ): Promise<PresenceNotificationState>
   /** Report only whether the trusted Renderer currently owns a Voice Session. */
   setPresenceVoiceActive(active: boolean): Promise<void>
+  /** Open a native presentation window before microphone capture starts. */
+  openVoiceCallWindow(state: VoiceCallWindowState): Promise<void>
+  /** Refresh the current call's display using an increasing presentation revision. */
+  updateVoiceCallWindow(state: VoiceCallWindowState): Promise<void>
+  /** Quietly retire the matching native window as its owner ends the call. */
+  closeVoiceCallWindow(callId: string): Promise<void>
+  /** Receive exact-call mute and hang-up actions; return listener cleanup. */
+  onVoiceCallWindowAction(listener: (action: VoiceCallWindowAction) => void): () => void
   /** Return the current Python Backend lifecycle and capability snapshot. */
   getSnapshot(): Promise<BackendSnapshot>
   /** Restart the Python Backend and return its resulting snapshot. */
@@ -627,6 +636,8 @@ export interface DesktopApi {
   playSongCover(jobId: string): Promise<SongCoverState>
   /** Stop Song Cover playback while retaining it for replay or export. */
   stopSongCover(jobId: string): Promise<SongCoverState>
+  /** Seek the current completed cover; stopped covers retain this next-play offset. */
+  seekSongCover(jobId: string, positionSeconds: number): Promise<SongCoverState>
   /** Export the completed lossless cover through a native save dialog. */
   exportSongCover(jobId: string): Promise<boolean>
   /** Begin one Chat generation and return its request identifier. */

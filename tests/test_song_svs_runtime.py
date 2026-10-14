@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import stat
 import subprocess
+import sys
 from types import SimpleNamespace
 from typing import Iterator
 import wave
@@ -845,6 +846,71 @@ def test_quiet_child_uses_argv_no_shell_and_discards_diagnostics(
     assert captured["lease"] is None
 
 
+@pytest.mark.parametrize("payload", [b"58\n", b"59\n59\n", b"89\n", b"/private/path\n", b"5" + b"0" * 100])
+def test_progress_reader_rejects_nonmonotonic_or_unbounded_data(payload, monkeypatch):
+    """The private progress pipe cannot carry logs, regressions, or arbitrary bytes."""
+    chunks = iter([payload, b""])
+    monkeypatch.setattr(song_svs_runtime.os, "read", lambda *_args: next(chunks))
+    with pytest.raises(song_svs_runtime._SvsRuntimeFailure) as error:
+        song_svs_runtime._SourceProgressReader(99, lambda value: None)._drain()
+    assert error.value.code == "stage_progress_failed"
+    assert "/private" not in str(error.value)
+
+
+def test_progress_reader_accepts_fragmented_frames(monkeypatch):
+    """Pipe read boundaries need not coincide with complete numeric messages."""
+    chunks = iter([b"5", b"9\n6", b"4\n88\n", b""])
+    values = []
+    monkeypatch.setattr(song_svs_runtime.os, "read", lambda *_args: next(chunks))
+    song_svs_runtime._SourceProgressReader(99, values.append)._drain()
+    assert values == [59, 64, 88]
+
+
+@pytest.mark.skipif(os.name != "posix", reason="Inherited fd and process leases run inside Linux WSL.")
+@pytest.mark.parametrize("outcome", ["success", "cancelled", "malformed", "timeout"])
+def test_real_progress_pipe_preserves_lease_cleanup_and_hides_vendor_logs(tmp_path, capsys, outcome):
+    """Relay live child progress and reap the exact session on every terminal path."""
+    token = "123e4567-e89b-42d3-a456-426614174000"
+    job_root = tmp_path / token
+    job_root.mkdir(mode=0o700)
+    finished = job_root / "child-finished"
+    values = []
+    child_pids = []
+
+    def _progress(value):
+        values.append(value)
+        lease = song_svs_runtime._read_stage_lease(job_root)
+        assert lease is not None
+        child_pids.append(lease.pid)
+        if value == 59:
+            assert not finished.exists()
+        if outcome == "cancelled":
+            song_svs_runtime._create_cancellation_marker(job_root)
+
+    tail = ("os.write(fd,b'invalid/private/path\\n');time.sleep(60)" if outcome == "malformed"
+            else "time.sleep(60)" if outcome in {"cancelled", "timeout"}
+            else "time.sleep(.3);open(sys.argv[1],'w').close();os.write(fd,b'88\\n')")
+    child = ("import os,sys,time;"
+             "fd=int(os.environ['ELYSIA_SVS_INTERNAL_PROGRESS_FD']);"
+             "print('/private/vendor/log',flush=True);os.write(fd,b'59\\n');" + tail)
+    call = lambda: song_svs_runtime._run_quiet_process(
+        [sys.executable, "-B", "-c", child, str(finished)], job_root=job_root,
+        job_token=token, stage="inference", cwd=tmp_path, environment=dict(os.environ),
+        timeout_seconds=1 if outcome == "timeout" else 5, progress=_progress)
+    if outcome == "success":
+        assert call() == 0
+        assert values == [59, 88]
+    else:
+        expected = {"cancelled": "cancelled", "malformed": "stage_progress_failed",
+                    "timeout": "stage_timeout"}[outcome]
+        with pytest.raises(song_svs_runtime._SvsRuntimeFailure) as error:
+            call()
+        assert error.value.code == expected
+    assert song_svs_runtime._read_stage_lease(job_root) is None
+    assert child_pids and all(song_svs_runtime._read_proc_identity(pid) is None for pid in child_pids)
+    assert "/private/vendor/log" not in capsys.readouterr().out
+
+
 def test_cleanup_terminates_registered_session_before_clearing_lease(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1251,6 +1317,79 @@ def test_run_job_publishes_fixed_vocal_and_cleans_intermediates(
         ("synthesizing", 58),
         ("ready", 100),
     ]
+
+
+@pytest.mark.parametrize("delta", [-1, 0, 1, -400, 400])
+def test_source_output_requires_exact_pcm_timeline(tmp_path: Path, delta: int) -> None:
+    """A single missing or excess source-conversion sample cannot be hidden."""
+    generated = tmp_path / "generated.wav"
+    destination = tmp_path / "published.wav"
+    expected = 30_017
+    with wave.open(str(generated), "wb") as stream:
+        stream.setparams((1, 3, 24_000, 0, "NONE", "not compressed"))
+        stream.writeframes(b"\x01\x02\x00" * (expected + delta))
+    if delta:
+        with pytest.raises(song_svs_runtime._SvsRuntimeFailure, match="source timeline"):
+            song_svs_runtime._publish_output(
+                generated, destination, expected_duration_seconds=expected / 24_000,
+                exact_samples=expected,
+            )
+        assert not destination.exists()
+    else:
+        song_svs_runtime._publish_output(
+            generated, destination, expected_duration_seconds=expected / 24_000,
+            exact_samples=expected,
+        )
+        assert destination.read_bytes() == generated.read_bytes()
+
+
+@pytest.mark.parametrize("status", [0, 23])
+def test_source_job_uses_lease_and_always_cleans_work(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, status: int,
+) -> None:
+    """Share authenticated inference lifecycle and never publish failed conversion."""
+    from scripts import song_svc_assets
+
+    runtime_root = tmp_path / "runtime"
+    token = "123e4567-e89b-42d3-a456-426614174000"
+    job_root = _create_managed_job(runtime_root, token)
+    for name in ("lyrics.lrc", "lyrics.txt", "lyrics-manifest.json"):
+        (job_root / name).unlink(missing_ok=True)
+    (job_root / "singing-request.json").write_text(
+        '{"schema_version":1,"reference":"elysia","key_shift_semitones":12}',
+        encoding="utf-8",
+    )
+    source_root = runtime_root / "source"
+    source_root.mkdir()
+    events = []
+    monkeypatch.setattr(song_svs_runtime, "_runtime_root", lambda: runtime_root)
+    monkeypatch.setattr(song_svc_assets, "verify_svc_assets", lambda _root: {})
+    monkeypatch.setattr(song_svs_runtime, "_verify_source_checkout", lambda _root: source_root)
+    monkeypatch.setattr(song_svs_runtime, "_emit", lambda stage, *_args, **_kwargs: events.append(stage))
+
+    def _run(command, **kwargs):
+        assert kwargs["job_root"] == job_root and kwargs["job_token"] == token
+        assert kwargs["stage"] == "inference" and kwargs["cwd"] == source_root
+        assert kwargs["environment"]["ELYSIA_SVS_INTERNAL_JOB_TOKEN"] == token
+        assert "_source_inference_stage_entry" in command[-1]
+        output = job_root / ".svs-work/generated/generated.wav"
+        with wave.open(str(output), "wb") as stream:
+            stream.setparams((1, 3, 24_000, 0, "NONE", "not compressed"))
+            stream.writeframes(b"\x01\x02\x00" * 30_000)
+        return status
+
+    monkeypatch.setattr(song_svs_runtime, "_run_quiet_process", _run)
+    if status:
+        with pytest.raises(song_svs_runtime._SvsRuntimeFailure, match="did not complete"):
+            song_svs_runtime._run_job(str(job_root))
+        assert not (job_root / "generated_vocal.wav").exists()
+        assert events == ["validating", "synthesizing"]
+    else:
+        song_svs_runtime._run_job(str(job_root))
+        assert (job_root / "generated_vocal.wav").is_file()
+        assert events == ["validating", "synthesizing", "ready"]
+    assert not (job_root / ".svs-work").exists()
+    assert (job_root / "singing-request.json").is_file()
 
 
 def test_main_collapses_unexpected_errors_without_leaking_paths(

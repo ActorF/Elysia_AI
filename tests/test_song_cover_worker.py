@@ -561,7 +561,7 @@ def test_decode_maps_the_same_first_audio_stream_that_was_probed(
     assert "atrim=end_sample=463050" in audio_filter
 
 
-@pytest.mark.parametrize("key_shift", [-2, 2])
+@pytest.mark.parametrize("key_shift", [-12, 12])
 def test_transpose_audio_uses_one_bounded_key_for_exact_length(
     monkeypatch: pytest.MonkeyPatch,
     key_shift: int,
@@ -593,11 +593,11 @@ def test_transpose_audio_uses_one_bounded_key_for_exact_length(
     assert "atrim=end_sample=463050" in audio_filter
 
 
-@pytest.mark.parametrize("key_shift", [-3, 3])
+@pytest.mark.parametrize("key_shift", [-13, 13])
 def test_transpose_audio_rejects_an_unreviewed_key_shift(
     key_shift: int,
 ) -> None:
-    """Reject pitch factors outside the closed quality-preserving allowlist."""
+    """Reject pitch factors outside the closed single-stage filter boundary."""
 
     with pytest.raises(song_cover_worker._SongCoverFailure, match="key shift"):
         song_cover_worker._transpose_audio(
@@ -609,8 +609,53 @@ def test_transpose_audio_rejects_an_unreviewed_key_shift(
         )
 
 
+@pytest.mark.parametrize(
+    ("key_shift", "shift_accompaniment", "expected_transpose"),
+    [
+        (0, True, False),
+        (5, False, False),
+        (5, True, True),
+    ],
+)
+def test_accompaniment_transpose_honors_the_explicit_follow_choice(
+    monkeypatch: pytest.MonkeyPatch,
+    key_shift: int,
+    shift_accompaniment: bool,
+    expected_transpose: bool,
+) -> None:
+    """Keep vocal-only key changes from rewriting the accompaniment."""
+
+    calls: list[dict[str, object]] = []
+
+    def fake_transpose(*_arguments: object, **options: object) -> None:
+        """Record the optional whole-track transform without invoking FFmpeg."""
+
+        calls.append(options)
+
+    monkeypatch.setattr(song_cover_worker, "_transpose_audio", fake_transpose)
+
+    created = song_cover_worker._transpose_accompaniment_if_requested(
+        Path("ffmpeg.exe"),
+        Path("instrumental.wav"),
+        Path("shifted.wav"),
+        key_shift_semitones=key_shift,
+        shift_accompaniment=shift_accompaniment,
+        target_samples=44_100,
+    )
+
+    assert created is expected_transpose
+    assert bool(calls) is expected_transpose
+    if expected_transpose:
+        assert calls == [
+            {
+                "key_shift_semitones": key_shift,
+                "target_samples": 44_100,
+            }
+        ]
+
+
 def test_parser_accepts_song_and_stem_source_contracts() -> None:
-    """Expose only the two reviewed source modes and five safe key choices."""
+    """Expose two reviewed source modes and the closed octave key range."""
 
     parser = song_cover_worker._parser()
     common = [
@@ -623,6 +668,7 @@ def test_parser_accepts_song_and_stem_source_contracts() -> None:
         "--rvc-model", "model.pth",
         "--rvc-index", "model.index",
         "--job-token", "00000000-0000-4000-8000-000000000000",
+        "--shift-accompaniment", "true",
     ]
 
     song = parser.parse_args(["--input", "song.wav", *common])
@@ -631,18 +677,43 @@ def test_parser_accepts_song_and_stem_source_contracts() -> None:
             "--source-mode", "stems",
             "--vocal-input", "vocal.wav",
             "--accompaniment-input", "instrumental.wav",
-            "--key-shift-semitones", "2",
-            *common,
+            "--key-shift-semitones", "12",
+            "--shift-accompaniment", "false",
+            *common[:-2],
         ]
     )
 
     assert song.source_mode == "song"
     assert song.key_shift_semitones == 0
+    assert song.shift_accompaniment is True
     assert song.rvc_root == Path("rvc")
     assert song.rvc_model == Path("model.pth")
     assert song.rvc_index == Path("model.index")
     assert stems.source_mode == "stems"
-    assert stems.key_shift_semitones == 2
+    assert stems.key_shift_semitones == 12
+    assert stems.shift_accompaniment is False
+
+
+@pytest.mark.parametrize("value", ["True", "1", "yes"])
+def test_parser_rejects_noncanonical_accompaniment_choices(value: str) -> None:
+    """Accept only the lowercase boolean pair emitted by Electron Main."""
+
+    with pytest.raises(SystemExit):
+        song_cover_worker._parser().parse_args(
+            [
+                "--input", "song.wav",
+                "--shift-accompaniment", value,
+                "--job-dir", "job",
+                "--ffmpeg", "ffmpeg.exe",
+                "--ffprobe", "ffprobe.exe",
+                "--demucs-site", "demucs",
+                "--torch-home", "torch",
+                "--rvc-root", "rvc",
+                "--rvc-model", "model.pth",
+                "--rvc-index", "model.index",
+                "--job-token", "00000000-0000-4000-8000-000000000000",
+            ]
+        )
 
 
 def test_source_contract_rejects_mixed_or_incomplete_inputs() -> None:
@@ -659,6 +730,7 @@ def test_source_contract_rejects_mixed_or_incomplete_inputs() -> None:
         "--rvc-model", "model.pth",
         "--rvc-index", "model.index",
         "--job-token", "00000000-0000-4000-8000-000000000000",
+        "--shift-accompaniment", "true",
     ]
     mixed = parser.parse_args(
         [
@@ -760,34 +832,44 @@ def test_rvc_index_preflight_rejects_silent_retrieval_fallback(
         song_cover_worker._require_rvc_index_compatibility(Path("elysia.index"))
 
 
-def test_rvc_output_duration_rejects_a_truncated_conversion(tmp_path: Path) -> None:
-    """Allow an analysis-frame difference but reject a padded partial result."""
+@pytest.mark.parametrize("target_samples", [441_000, 44_123])
+def test_rvc_output_duration_accepts_exact_source_timeline(
+    tmp_path: Path, target_samples: int,
+) -> None:
+    """Accept integral and fractional sample-rate mappings without frame slack."""
 
-    near_complete = tmp_path / "near-complete.wav"
-    truncated = tmp_path / "truncated.wav"
+    complete = tmp_path / "complete.wav"
     _write_pcm16_mono(
-        near_complete,
-        array("h", [0]) * 399_200,
+        complete,
+        array("h", [0]) * round(target_samples * 40_000 / 44_100),
         sample_rate=40_000,
     )
-    _write_pcm16_mono(
-        truncated,
-        array("h", [0]) * 200_000,
-        sample_rate=40_000,
-    )
-
     song_cover_worker._require_rvc_output_duration(
-        near_complete,
-        target_samples=441_000,
+        complete,
+        target_samples=target_samples,
+    )
+
+
+@pytest.mark.parametrize("sample_error", [-200_000, -4_000, -800, -400, -1, 1, 400, 4_000])
+def test_rvc_output_duration_rejects_missing_or_extra_samples(
+    tmp_path: Path, sample_error: int,
+) -> None:
+    """Reject frame loss and one-sample errors before tail padding can hide them."""
+
+    shifted = tmp_path / "shifted.wav"
+    _write_pcm16_mono(
+        shifted,
+        array("h", [0]) * (400_000 + sample_error),
+        sample_rate=40_000,
     )
     with pytest.raises(song_cover_worker._SongCoverFailure, match="incomplete"):
         song_cover_worker._require_rvc_output_duration(
-            truncated,
+            shifted,
             target_samples=441_000,
         )
 
 
-@pytest.mark.parametrize("key_shift", [-2, 2])
+@pytest.mark.parametrize("key_shift", [-12, 12])
 def test_convert_vocals_runs_rvc_and_normalizes_exact_length(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1095,6 +1177,8 @@ def test_main_rejects_non_uuid_job_before_resolving_private_paths(
             "missing-model.pth",
             "--rvc-index",
             "missing-model.index",
+            "--shift-accompaniment",
+            "true",
             "--job-token",
             "not-a-job-id",
         ]

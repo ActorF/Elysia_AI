@@ -1,4 +1,4 @@
-/** Configure Vite's React renderer build with paths that also work inside Electron. */
+/** Build the main application and isolated Voice Call renderers for Electron. */
 
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -14,7 +14,12 @@ export default defineConfig({
   base: './',
   build: {
     rollupOptions: {
-      input: path.join(desktopRoot, 'index.html'),
+      // A separate HTML entry keeps the call renderer's narrow preload bridge
+      // independent from the main application's audio and Backend ownership.
+      input: {
+        main: path.join(desktopRoot, 'index.html'),
+        voiceCall: path.join(desktopRoot, 'voice-call.html'),
+      },
     },
   },
   plugins: [react()],

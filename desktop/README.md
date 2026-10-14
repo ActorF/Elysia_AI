@@ -5,14 +5,20 @@ existing Python Brain through an Electron-owned child process and a strict,
 versioned local protocol. The first Stage 7 Voice slice adds host-local
 microphone and speaker selection, native permission status, and bounded input
 and output tests without retaining audio. The current Composer exposes
-**Dictate** for one explicit utterance: the renderer downmixes and resamples
-input to 16 kHz mono `s16le`, local VAD submits only valid speech transiently
-for local Faster-Whisper transcription, and the final text is appended to the
-current message draft without sending it. Before Dictate or Voice Call can
+**Dictate** for continuous, draft-only listening until **Stop dictation**:
+the renderer keeps the same microphone open across silence and pauses,
+downmixes and resamples input to 16 kHz mono `s16le`, and rolls valid speech
+into transient segments of at most 30 seconds. Ordered local Faster-Whisper
+transcription appends each accepted final result to the current message draft
+while listening continues. Stop closes the microphone, flushes its last valid
+speech, and lets pending transcription finish without sending a message.
+Context changes or Backend/device failures cancel and wipe unaccepted pending
+audio; already accepted words remain protected in the local draft. Before Dictate or Voice Call can
 observe that Final Transcript, Python applies the pinned OpenCC `t2s`
 converter to the complete result, including Chinese inside mixed-language
 recognition. **Voice Call** is a separate,
-utterance-based conversation loop. Opening it starts listening immediately;
+utterance-based conversation loop in a frameless window. Opening it starts
+listening after its native controls are ready;
 each complete utterance is locally transcribed and automatically submitted
 through the current Chat's normal durable path. A renderer-local controller
 binds the exact Chat and optional Project and owns
@@ -66,16 +72,17 @@ is scanned or imported automatically.
 The Stage 13 Character State API is renderer-local and closed over `idle`,
 `listening`, `thinking`, `speaking`, `working`, `waiting_approval`, and `error`.
 It projects current-Chat generation, current-Project Knowledge activity, Voice's
-primary lifecycle, and Backend failure into the Character Panel and call dialog.
-The contract adds no IPC and never selects a model path or arbitrary animation.
-Main Chat renders reviewed static half-body artwork, while Voice Call renders a
-centered circular avatar; both are selected by that state and the user-controlled
-ten-value `neutral / happy / sad / caring / moved / playful / affectionate /
-teasing / serious / surprised` emotion. They do not
-load Cubism, create a WebGL context, expose an Animated/Still preference, or
-derive mouth cues from Web Audio RMS. The same active emotion selects the local
-TTS reference after a Backend restart, while artwork failure falls back through
-expression → state → portrait → accessible text. `waiting_approval` still has
+primary lifecycle, and Backend failure into the Character Panel and independent
+Voice Call window. The Character State contract never selects a model path or
+arbitrary animation. The Character Panel renders one static cell from the owner's
+`06-ui-illustrations.png` sheet, selected by semantic state. Its portrait, status,
+and Chat/model details form one compact group. Shared avatar artwork still uses
+the reviewed expression registry; the active ten-value emotion selects the local
+TTS reference after a Backend restart. These surfaces do not load Cubism, create
+a WebGL context, expose an Animated/Still preference, or derive mouth cues from
+Web Audio RMS. Panel artwork failure falls back through UI illustrations →
+portrait → accessible text. Voice Call
+uses the bundled portrait background described below. `waiting_approval` still has
 no producer until a real Work/Approval workflow exists.
 Stage 13 separately provides an optional external Desktop Pet program. It is
 Off (`disabled`) on first run. Settings lets the user choose a local folder,
@@ -181,8 +188,8 @@ Git-ignored and must not be committed or packaged with the application.
   `workspace/settings/global.json` below the active data root; each control identifies whether a saved
   value is live or waits for a Backend restart. Theme remains in this device's
   Renderer storage and applies immediately; Desktop Pet intent instead uses
-  Main-owned revisioned storage under Electron `userData`. If Voice contains a
-  non-empty Final transcript, `Ctrl+,` asks before discarding it.
+  Main-owned revisioned storage under Electron `userData`. Opening Settings
+  ends an active Voice Call because its audio owner belongs to the active Chat.
 - **Data & storage** remains available even when Python is stopped. Electron
   Main shows the active versioned data root and a bounded category scan, uses a
   native picker for an empty move destination, verifies a staged copy before
@@ -198,25 +205,39 @@ Git-ignored and must not be committed or packaged with the application.
   device IDs are stored separately in active-root `workspace/settings/audio-device.json`;
   device labels, permission state, availability, and test audio never enter
   Python.
-- In a Chat, the left microphone is **Dictate**. Pressing it begins one bounded
-  capture; the renderer downmixes and resamples input, local VAD waits for valid
-  speech, and one temporary 16 kHz mono `s16le` payload is sent to Python. A
-  successful final transcript is appended to the current Composer draft and is
-  never sent automatically.
+- In a Chat, the left microphone is **Dictate**. Pressing it keeps the same
+  microphone listening through silence, pauses, and speech longer than 30 seconds.
+  Local VAD emits bounded temporary 16 kHz mono `s16le` segments, and ordered
+  local transcription appends accepted final text to the current Composer draft
+  while listening continues. **Stop dictation** releases the microphone, flushes
+  the last valid speech, and finishes queued transcription. Dictate never sends
+  a message automatically. Navigation and Backend/device failures cancel and
+  wipe unaccepted pending audio while preserving previously accepted draft words.
 - The music note immediately left of **Dictate** opens a Song Cover setup
-  dialog. **Lyrics-driven singing** is the default: after the user confirms,
+  dialog. **Voice conversion** is the default, using the original vocal and
+  either the Fairy or Elysia singing reference entirely offline. A conservative
+  pitch-repair pass preserves ambiguous frames, and contextual short calls
+  cover the complete source timeline. Key changes are explicit and affect F0,
+  without transposing the source content waveform. **Lyrics-driven singing**
+  is optional: after the user confirms,
   Main sends the resolved title, artist, and rounded duration to LRCLIB and
   requires trustworthy synchronized Mandarin Han lyrics; it never uploads the
   source audio. A fixed Windows-to-WSL SoulX-Singer pipeline transcribes notes,
   aligns the authoritative lyrics, regenerates official phonemes, and sings
-  through a private Elysia prompt. **Legacy voice conversion** is an explicit
-  offline fallback. The UI and wire name is retained for compatibility, but its
-  implementation is the fixed local RMVPE + RVC v2 path, preserving source
-  pronunciation, melody, and timing instead of reading lyrics.
-- Either method accepts one complete song or an already aligned
-  vocal/accompaniment pair, plus original key or a closed `-2` through `+2`
-  semitone shift. Complete-song mode uses pinned Demucs separation; stem mode
-  skips it. Main owns every native path and the one-at-a-time process, while
+  through a private Elysia prompt. **Legacy RVC** explicitly retains the previous
+  RMVPE + RVC v2 path (`legacy-svc`). Failures never silently change engines.
+  Limited listening results do not establish universal singing quality.
+- All three methods accept one complete song or an already aligned
+  vocal/accompaniment pair, plus original key or a closed integer `-12` through
+  `+12` vocal shift in a themed slider with single-step and reset controls. The vocal always follows the
+  selected key. **Shift accompaniment with vocal** is checked by default and
+  applies the same shift to the accompaniment; clearing it preserves the
+  accompaniment's original key. This option applies to all engines and both
+  source modes. A non-octave vocal-only shift will usually sound out of key or
+  dissonant, while `±12` preserves pitch classes but changes the vocal register.
+  Complete-song mode uses pinned Demucs separation; stem mode skips it. Main
+  owns every native path and the
+  one-at-a-time process, while
   Composer receives only safe base filenames, fixed progress, and
   cancel/play/stop/export controls. The reviewed FFmpeg mix uses 60 Hz
   high-pass, 0.5 dB presence, vocal-keyed ducking, linear +1.3 dB vocal recovery,
@@ -230,8 +251,18 @@ Git-ignored and must not be committed or packaged with the application.
   Preload and remains temporary unless the user explicitly exports its WAV.
   This source-only development capability requires manually prepared private
   CUDA/WSL runtimes; neither method is included in the current installer.
-- The phone button is **Voice Call**. It opens a rectangular modal bound to the
-  exact active Chat and optional Project and starts listening immediately. Each
+- Legacy setup asks about the vocal arrangement on every new cover. **Entire
+  vocal track** converts all supplied vocals; overlapping singers may blend.
+  **Lead only, keep other singers** requires a prepared isolated lead and an
+  aligned backing mix with the lead removed, containing the other voices and
+  instruments. It uses the existing two-stem workflow; Demucs does not separate
+  individual singers. Original key avoids shifting voices in the backing mix.
+  Setup and the compact playback card share the rose/lilac theme, with optional
+  technical details collapsed and reliable job progress retained.
+- The phone button is **Voice Call**. It opens an independent, movable and
+  resizable frameless native window bound to the exact active Chat and optional Project.
+  Listening starts after the native controls are ready. Clicking the phone again
+  restores the same call window without restarting the call. Each
   completed utterance is transcribed locally and automatically submitted through
   the normal durable Chat path. Voice submission preserves the existing Composer
   draft and does not attach files staged there. During the reply, the app may use
@@ -239,20 +270,30 @@ Git-ignored and must not be committed or packaged with the application.
   resumes listening for the next utterance. Recoverable microphone and STT
   failures retry with a fresh owner, and failed automatic sends preserve the
   transcript in the Composer draft before listening resumes when storage allows.
-- Voice Call announces ready, opening, listening, speech detected,
-  transcription, **Elysia is thinking**, **Elysia is speaking**, interruption,
-  cancellation, and safe failure states. A live timer and centered circular
-  Elysia avatar are followed by exactly two circular icon controls:
-  **Mute/Unmute** and **Close voice**. Their names appear through hover tooltips
-  and accessible labels rather than permanent visible text.
-- The optional Character Panel and Voice portrait consume the same semantic
-  Character State contract. Closed registries map each state and the active
-  ten-value `neutral / happy / sad / caring / moved / playful / affectionate /
-  teasing / serious / surprised` user setting to reviewed cells; no model output can
-  select an emotion, path, cell, or animation name. The same active emotion
-  value also selects the TTS reference. Both in-app surfaces are permanently
-  static: they mount no Live2D model, WebGL context, render loop, Animated/Still
-  control, audio analyser, or mouth-cue path. Failures follow expression → state
+- Voice Call uses `public/voice/voice-call-background.webp`, copied unchanged
+  from the user-provided artwork. CSS consistently dims the background and adds
+  a contrast overlay; responsive cover cropping anchors the character's face
+  near the center when the window is small. A live timer and two controls,
+  **Mute/Unmute** and **End call**, replace the visible status bar. Activity is
+  still announced to screen readers; process notices stay off the visual surface
+  while actionable errors remain visible. Missing artwork falls back to a dark
+  rose/lilac gradient. The window defaults to 360×610 with a minimum native size
+  of 320×360. It has no system title bar, icon, or caption controls: drag the
+  header or artwork to move it, resize at the edges, and use **End call** or
+  `Escape` to hang up. The privacy controls remain ordinary clickable buttons.
+- The main renderer remains the sole owner of microphone, transcription, and
+  conversation resources. The separate call preload exposes only bounded
+  display snapshots and exact-call mute/end controls, without Backend, file,
+  or microphone access. Closing the call window ends capture and playback;
+  changing Chat or view, reloading or closing the main window, and quitting the
+  app retire the call. Minimizing the main window leaves the call active.
+- The optional Character Panel consumes the semantic Character State contract.
+  Its own closed registry maps each state to a cell in the 4×4 UI illustration
+  sheet; model output cannot select a path, cell, or animation name. The active
+  ten-value emotion still selects the TTS reference and shared avatar expressions.
+  The panel's in-app artwork is permanently
+  static: it mounts no Live2D model, WebGL context, render loop, Animated/Still
+  control, audio analyser, or mouth-cue path. Panel failures follow UI illustrations
   → portrait → accessible text without affecting Chat or Voice. These surfaces
   do not write Chat state or create a new Backend capability.
 - Desktop Pet settings are separate from Backend settings. A missing preference
@@ -261,9 +302,11 @@ Git-ignored and must not be committed or packaged with the application.
   detected program, and explicitly choose **Visible**. **Visible** launches the
   selected local program. **Hidden** stops the process Elysia launched while
   preserving its selection and the program's own settings. **Off** leaves the
-  feature disabled until the user opts in again. Position, scale, input mode,
-  eye tracking, expressions, and other pet behavior remain owned by the
-  companion program and its own interface.
+  feature disabled until the user opts in again. Elysia prepares a compact
+  window beside its lower-right corner before the companion becomes visible;
+  startup and appearance changes use the same placement. Subsequent moving,
+  resizing, input mode, eye tracking, and expressions remain available through
+  the companion program and its own interface.
 - The reviewed Bongo Cat Mver launcher declares administrator elevation, but
   Elysia runs that exact pinned child with Windows `RunAsInvoker`. The unsigned
   companion receives no administrator rights, and Main retains the owned PID
@@ -317,7 +360,7 @@ Git-ignored and must not be committed or packaged with the application.
 - **Mute** immediately ends and discards a live capture or held interruption
   PCM and disarms reply monitoring; it does not cancel an already-running text
   reply. **Unmute** restores the listening mode appropriate to the current call
-  phase. **Close voice** or `Escape` releases the Voice Call's capture,
+  phase. **End call** or `Escape` releases the Voice Call's capture,
   transcription, monitoring, and exact managed playback, while an
   already-running Chat reply may continue on the Chat page.
 - Voice Call has no manual-review, caption, audio-settings, or Auto-continue
@@ -437,17 +480,19 @@ immediately if Windows reports that microphone access is denied.
 
 | Exercise | Expected result | Result |
 | --- | --- | --- |
-| Press **Dictate**, speak, and pause. | Status progresses through local capture and transcription; the final text is appended to the existing Composer draft, no Chat request is sent, and no partial recognition text is exposed. | Pending — manual run required |
+| Press **Dictate**, stay silent for more than ten seconds, then speak, pause, and continue for more than thirty seconds. | The same microphone stays open until explicit Stop; bounded segments are locally transcribed in order and accepted final text is appended to the existing Composer draft without a Chat request or partial recognition text. | Pending — manual run required |
+| Press **Stop dictation** while speaking or while transcription is pending. | The microphone closes, the last valid speech is flushed, and queued local transcription finishes in order. Accepted draft words remain saved and no message is sent automatically. | Pending — manual run required |
+| Change Chat/Project or leave Chat during Dictate, or disconnect the microphone/Backend. | Listening stops, unaccepted pending audio is wiped, exact in-flight transcription is cancelled, and late results cannot modify another draft. Previously accepted draft words remain saved. | Pending — manual run required |
 | Send an ordinary text Chat message, then hover an Elysia reply and press **Read aloud**. | Sending the text message produces no automatic audio. The explicit action speaks only the selected persisted Assistant reply and never accepts arbitrary Renderer text. | Pending — manual run required |
-| Open **Voice Call**. | The rectangular modal binds the exact Chat/Project, its timer advances, and capture begins immediately. A centered circular Elysia avatar appears above exactly two icon-only controls whose hover/accessibility names are **Mute/Unmute** and **Close voice**. | Pending — manual run required |
-| Speak one complete utterance in Voice Call and pause. | The status progresses through listening, speech detected, transcription, and thinking. The Final Transcript is automatically submitted through the normal durable Chat path while the pre-existing Composer draft and staged files remain unchanged. No partial recognition text or transcript-review UI appears. | Pending — manual run required |
+| Open **Voice Call**. | The independent 360×610 frameless window binds the exact Chat/Project, its timer advances, and capture begins after the native controls are ready. The dimmed portrait background keeps the face in view, with **Mute/Unmute** and **End call** below it. Drag the header/artwork to move it and resize at the edges; no system title bar or caption controls appear. | Pending — manual run required |
+| Speak one complete utterance in Voice Call and pause. | The audio owner progresses through listening, speech detection, transcription, and thinking without a visible status bar or process notice. The Final Transcript is automatically submitted through the normal durable Chat path while the pre-existing Composer draft and staged files remain unchanged. No partial recognition text or transcript-review UI appears. | Pending — manual run required |
 | Let one Voice reply and any expected playback finish. | The Session settles both Chat and speech ownership, then an unmuted call automatically begins one new utterance capture. | Pending — manual run required |
 | Press **Mute** during normal capture and again during reply-time/held interruption capture, then press **Unmute**. | Mute closes the microphone, discards admitted or held PCM, and disarms monitoring without cancelling a running text reply. Unmute resumes the listening mode appropriate to the current phase. | Pending — manual run required |
 | Interrupt, change Chat/Project, or cause a Chat/speech failure before clean completion. | No stale callback or pending continuation reopens the microphone. An open, unmuted call may instead start one freshly owned capture after the failed turn settles; a failed outgoing transcript is restored to the Composer draft when storage permits. | Pending — manual run required |
-| Speak a sustained phrase while thinking or speaking on hardware whose track reports echo cancellation enabled. | The UI shows interruption listening and then interruption, stops only that exact Chat stream and speech owner, rolls to a new listening epoch, and rejects late callbacks from the old epoch. The completed new utterance is automatically submitted through normal Chat. | Pending — manual run required |
-| Repeat where WebRTC echo cancellation cannot be verified. | Monitoring fails closed, releases its microphone, shows a safe warning, and permits the current reply to continue. | Pending — manual run required |
+| Speak a sustained phrase while thinking or speaking on hardware whose track reports echo cancellation enabled. | The audio owner detects the interruption without a process banner, stops only that exact Chat stream and speech owner, rolls to a new listening epoch, and rejects late callbacks from the old epoch. The completed new utterance is automatically submitted through normal Chat. | Pending — manual run required |
+| Repeat where WebRTC echo cancellation cannot be verified. | Monitoring fails closed, releases its microphone, keeps the process warning screen-reader-only, and permits the current reply to continue. | Pending — manual run required |
 | Repeat interruption attempts in quiet, speaker-echo, and headset conditions, recording trial count, false triggers, and observed interruption delay. | Verified AEC must not let Elysia's own playback trigger interruption; sustained user speech should interrupt without cancelling another turn. Record the measurements instead of replacing them with an automated simulation. | Pending — manual run required |
-| Stay silent in Voice Call, then choose **Mute** and **Close voice** in separate runs. | Silence does not create an empty Chat turn. Each control releases its owned capture without retaining audio. | Pending — manual run required |
+| Stay silent in Voice Call, then choose **Mute** and **End call** in separate runs. | Silence does not create an empty Chat turn. Each control releases its owned capture without retaining audio. | Pending — manual run required |
 | Close Voice Call during managed playback, then switch Chat or Project in a separate run. | Exact playback and Voice-owned audio stop; the old Session cannot be reopened by late events. A text reply already in progress may continue in its Chat. | Pending — manual run required |
 | Keep one Voice Call open for a recorded duration and complete several capture, reply, mute, and interruption cycles before closing. | Resource use remains bounded, the Windows microphone indicator turns off after Close, no background capture or playback remains, and opening a fresh call still works. | Pending — manual run required |
 | Enable Windows Narrator or another screen reader and exercise Dictate, capture, transcription, thinking/speaking, Mute/Unmute, one recoverable error, and Close. | Controls have understandable accessible names and focus order; primary lifecycle and microphone status are announced without contradictory or repeated status floods. | Pending — manual run required |
@@ -615,9 +660,9 @@ unofficial, non-commercial fan project. They are third-party assets, are not
 covered by any source-code license, and do not imply HoYoverse / miHoYo
 endorsement. See the root `MODEL_LICENSE.md` before publishing a build.
 
-The packaged portrait plus state, expression, and speech atlases are reviewed
+The packaged portrait plus state, expression, speech, and UI illustration atlases are reviewed
 generated fan artwork, not source-code-licensed assets. The distribution audit
-pins all four by exact path, byte length, SHA-256, ASAR cardinality, and
+pins all five by exact path, byte length, SHA-256, ASAR cardinality, and
 extracted bytes. The state atlas is a static 4×2 RGB sheet: only its first seven
 cells participate in the closed Character State contract, and the eighth
 success cell is not a new runtime state. The expression atlas admits only the
@@ -625,6 +670,9 @@ user-controlled ten-emotion mapping (`neutral`, `happy`, `sad`, `caring`,
 `moved`, `playful`, `affectionate`, `teasing`, `serious`, and `surprised`). The speech atlas remains an
 authenticated review asset, but the current renderer does not load it or derive
 visual mouth cues from playback.
+The panel uses `public/character/elysia-ui-illustrations.png`, a byte-identical
+copy of `data/characters/elysia-2dArt/06-ui-illustrations.png`; CSS crops the
+selected cell without modifying or generating bitmap assets.
 Main Chat and Voice use only the packaged static artwork. The optional Desktop
 Pet instead launches one user-selected external companion program in place.
 No external program or model pack is part of the repository or package, and
@@ -642,7 +690,8 @@ isolation, archived read-only behavior, explicit grounded intent, and citation
 accessibility. The contract suite also runs `character-state.test.mjs`,
 `character-presentation.test.mjs`, `desktop-pet-lifecycle.test.mjs`,
 `desktop-pet-program-library.test.mjs`,
-`desktop-pet-program-manager.test.mjs`, `desktop-pet-preferences.test.mjs`,
+`desktop-pet-program-manager.test.mjs`, `desktop-pet-window-controller.test.mjs`,
+`desktop-pet-preferences.test.mjs`,
 `presence-native-notification.test.mjs`, and
 `presence-notification-preferences.test.mjs`.
 Desktop Pet coverage verifies the strict update schema, first-run-disabled and
@@ -654,6 +703,8 @@ revalidation.
 Process manager tests verify single-child ownership, ordered switches, safe
 PID-specific termination, startup/shutdown deadlines, failure recovery, and
 preservation of the external program's own configuration.
+Window-controller tests cover compact placement, display boundaries and DPI,
+pre-spawn readiness, bounded native messages, and cancellation of the owned helper.
 Presence notification
 contract coverage verifies the exact
 three-field update, fully-off defaults, strict 16 KiB persistence, fail-closed
@@ -671,7 +722,7 @@ and explicit failed-state retry,
 current-Chat/Project
 scoping, Voice projection, Backend failure,
 closed state/emotion artwork, an always-static in-app character surface, and
-the expression → state → portrait → accessible-text fallback chain.
+the panel's UI-illustrations → portrait → accessible-text fallback chain.
 `npm run test:ui` can be used independently while working on layout.
 The UI suite loads the production renderer through a dedicated sandboxed test
 preload; its mock Backend and control surface are never included by the
@@ -830,13 +881,18 @@ method, results, capability gaps, and limitations.
   failed. Electron owns hardware enumeration, Windows permission state, and
   immediate resource cleanup when a test, capture, or visible context ends.
   Microphone and speaker-selection permissions are limited to the trusted main
-  renderer. **Dictate** explicitly starts one draft-only capture, while opening
+  renderer. **Dictate** explicitly starts continuous draft-only listening on one
+  microphone; pauses and 30-second segment boundaries keep that microphone open.
+  Stop flushes the last valid speech and drains ordered local transcription, while opening
   **Voice Call** explicitly starts its utterance-based listening loop. After a
   Voice Call utterance is automatically submitted, the reply-time monitor
   requires verified WebRTC echo cancellation and sustained
   local VAD; inability to verify the track fails closed instead of risking a
-  self-interruption. Accepted PCM exists only during the correlated local
-  transcription request. If an interrupted utterance must wait for the old Chat
+  self-interruption. Dictation retains pending audio only in its bounded transient
+  queue; submitted PCM exists only during the correlated local transcription
+  request. Navigation and Backend/device failures wipe unaccepted dictation
+  audio and cancel its exact request, preserving previously accepted draft words.
+  If an interrupted utterance must wait for the old Chat
   terminal, its bounded PCM remains in memory for no more than 10 seconds and
   is wiped on timeout, hang-up, Voice close, Chat/Project switch, or another
   privacy boundary. The final result contains bounded text and safe language

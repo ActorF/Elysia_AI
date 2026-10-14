@@ -172,9 +172,15 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--plain-lyrics", required=True, type=Path)
     parser.add_argument(
         "--key-shift-semitones",
-        choices=(-2, -1, 0, 1, 2),
+        choices=tuple(range(-12, 13)),
         default=0,
         type=int,
+    )
+    parser.add_argument(
+        "--shift-accompaniment",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Shift the accompaniment with the vocal (enabled by default).",
     )
     parser.add_argument(
         "--run-private-runtime",
@@ -295,7 +301,33 @@ def _verify_runtime_tools(runtime: _RuntimePaths, *, for_run: bool) -> None:
         raise _SmokeFailure("runtime_unavailable") from None
 
 
-def _closed_environment(runtime: _RuntimePaths, private_root: Path) -> dict[str, str]:
+def _prepare_worker_profile(private_root: Path) -> None:
+    """Create verified Windows shell folders outside the SVS UUID layout."""
+
+    # Pinned appdirs uses SHGetFolderPath without requesting directory creation.
+    # Prepare each checked parent first so an existing junction cannot redirect
+    # a recursive mkdir into the interactive user's profile or another tree.
+    try:
+        root = _production_audio._require_directory(
+            private_root, "Song Cover private worker profile",
+        )
+        app_data = _production_audio._require_or_create_directory(
+            root / "AppData", label="Song Cover private worker profile",
+        )
+        for name in ("Local", "Roaming"):
+            _production_audio._require_or_create_directory(
+                app_data / name, label="Song Cover private worker profile",
+            )
+    except _production_audio._SongCoverFailure as error:
+        raise _SmokeFailure("runtime_unavailable") from error
+
+
+def _closed_environment(
+    runtime: _RuntimePaths,
+    private_root: Path,
+    *,
+    private_cache_root: Path | None = None,
+) -> dict[str, str]:
     """Build the same allowlisted offline environment used by Electron Main."""
 
     system_root = os.environ.get("SystemRoot") or os.environ.get("WINDIR")
@@ -303,8 +335,10 @@ def _closed_environment(runtime: _RuntimePaths, private_root: Path) -> dict[str,
     if system_root:
         search_path.append(str(Path(system_root) / "System32"))
     environment = {
+        "APPDATA": str(private_root / "AppData" / "Roaming"),
         "HF_HUB_OFFLINE": "1",
-        "NUMBA_CACHE_DIR": str(private_root / "numba-cache"),
+        "LOCALAPPDATA": str(private_root / "AppData" / "Local"),
+        "NUMBA_CACHE_DIR": str((private_cache_root or private_root) / "numba-cache"),
         "PATH": os.pathsep.join(search_path),
         "PYTHONDONTWRITEBYTECODE": "1",
         "PYTHONIOENCODING": "utf-8",
@@ -312,6 +346,10 @@ def _closed_environment(runtime: _RuntimePaths, private_root: Path) -> dict[str,
         "PYTHONUTF8": "1",
         "TEMP": str(private_root),
         "TMP": str(private_root),
+        # Torch resolves Path.home() on Windows at import, before loading a
+        # model. Keep that lookup inside this existing private root rather
+        # than inheriting the interactive user's profile and cache locations.
+        "USERPROFILE": str(private_root),
         "TORCH_HOME": str(runtime.torch_home),
         "TRANSFORMERS_OFFLINE": "1",
     }
@@ -639,6 +677,7 @@ def _worker_command(
     job_root: Path,
     job_id: str,
     key_shift: int,
+    shift_accompaniment: bool,
 ) -> list[str]:
     """Build the production stems-mode command from fixed options only."""
 
@@ -653,6 +692,8 @@ def _worker_command(
         str(preflight.accompaniment_path),
         "--key-shift-semitones",
         str(key_shift),
+        "--shift-accompaniment",
+        str(shift_accompaniment).lower(),
         "--job-dir",
         str(job_root),
         "--ffmpeg",
@@ -718,6 +759,7 @@ def _confirm_private_cleanup(
 ) -> None:
     """Require the production worker's exact idempotent WSL cleanup acknowledgement."""
 
+    _prepare_worker_profile(job_root.parent)
     result = _run_closed_process(
         [
             str(runtime.python),
@@ -726,7 +768,9 @@ def _confirm_private_cleanup(
             job_id,
         ],
         cwd=_PROJECT_ROOT,
-        environment=_closed_environment(runtime, job_root),
+        environment=_closed_environment(
+            runtime, job_root.parent, private_cache_root=job_root,
+        ),
         timeout_seconds=_CLEANUP_TIMEOUT_SECONDS,
     )
     if result.return_code != 0 or result.stdout not in {
@@ -881,6 +925,21 @@ def _remove_job(job_root: Path) -> None:
         raise _SmokeFailure("job_cleanup_failed")
     try:
         shutil.rmtree(candidate)
+        # These shared shell folders contain no lyrics or song output. Remove
+        # only empty verified directories; another smoke job or a native cache
+        # can legitimately retain them, so never recursively clear this root.
+        if {entry.name for entry in os.scandir(root)} <= {"AppData"}:
+            for folder in (
+                root / "AppData" / "Local",
+                root / "AppData" / "Roaming",
+                root / "AppData",
+            ):
+                try:
+                    _production_audio._require_directory(
+                        folder, "Song Cover private worker profile",
+                    ).rmdir()
+                except (OSError, _production_audio._SongCoverFailure):
+                    pass
         root.rmdir()
     except OSError:
         # Other retained smoke jobs legitimately keep the shared root nonempty.
@@ -937,6 +996,7 @@ def _run_real_smoke(
     result: _ProcessResult | None = None
     try:
         try:
+            _prepare_worker_profile(job_root.parent)
             result = _run_closed_process(
                 _worker_command(
                     runtime,
@@ -944,9 +1004,12 @@ def _run_real_smoke(
                     job_root,
                     job_id,
                     arguments.key_shift_semitones,
+                    arguments.shift_accompaniment,
                 ),
                 cwd=_PROJECT_ROOT,
-                environment=_closed_environment(runtime, job_root),
+                environment=_closed_environment(
+                    runtime, job_root.parent, private_cache_root=job_root,
+                ),
                 timeout_seconds=_WORKER_TIMEOUT_SECONDS,
             )
         except BaseException as error:
@@ -981,6 +1044,7 @@ def _run_real_smoke(
             "inputs": _input_json(preflight),
             "job_id": job_id,
             "key_shift_semitones": arguments.key_shift_semitones,
+            "shift_accompaniment": arguments.shift_accompaniment,
             "outputs": {
                 name: _audio_json(summary)
                 for name, summary in outputs.items()
@@ -1019,6 +1083,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             report = {
                 "inputs": _input_json(preflight),
                 "key_shift_semitones": arguments.key_shift_semitones,
+                "shift_accompaniment": arguments.shift_accompaniment,
                 "run_private_runtime": False,
                 "status": "preflight",
             }

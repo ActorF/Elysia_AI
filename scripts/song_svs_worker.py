@@ -1,11 +1,11 @@
-"""Create one lyrics-driven Elysia cover through the private WSL SVS runtime.
+"""Create a source-guided or lyrics-driven cover through the private WSL runtime.
 
-Electron Main creates a UUID job directory containing fixed-name synchronized
-lyrics, then starts this short-lived Windows worker with the same native audio
+Electron Main creates a UUID job containing a closed singing request or lyrics,
+then starts this short-lived Windows worker with the same native audio
 contract as the legacy cover worker.  This module reuses the reviewed native
 validation, Demucs separation, pitch-shift, consonant-preservation, and mix
 helpers from :mod:`scripts.song_cover_worker`.  Only a prepared vocal and the
-fixed lyric assets cross into WSL; lyric text never appears in an argument,
+fixed mode-specific request assets cross into WSL; lyric text never appears in an argument,
 progress event, diagnostic, or renderer-visible value.
 
 The WSL boundary has no shell.  Windows paths are translated by the absolute
@@ -13,7 +13,7 @@ System32 ``wsl.exe`` and a fixed ``wslpath`` executable, after which the fixed
 private prep interpreter runs :mod:`scripts.song_svs_wsl_bridge`.  Its bounded
 ``ELYSIA_SONG_SVS`` protocol is validated and mapped to the exact
 ``ELYSIA_SONG_COVER`` stage sequence expected by Electron Main.  Successful
-jobs retain only the final WAV and MP3; every lyric and scratch artifact is
+jobs retain only the final WAV and MP3; every request and scratch artifact is
 removed before completion is reported.  Recovery cleanup is internally
 bounded to 30 seconds, below Electron Main's 60-second cleanup deadline, so
 the native manager remains the outer authority without racing equal timers.
@@ -32,6 +32,7 @@ import stat
 import subprocess
 import sys
 import threading
+import wave
 from types import ModuleType
 from typing import BinaryIO, NoReturn, Optional, Sequence, cast
 
@@ -89,6 +90,8 @@ _MAX_LYRICS_BYTES = 1024 * 1024
 _MAX_MANIFEST_BYTES = 64 * 1024
 _GENERATED_VOCAL_NAME = "generated_vocal.wav"
 _LYRICS_NAMES = ("lyrics.lrc", "lyrics.txt", "lyrics-manifest.json")
+_SVC_REQUEST_NAME = "singing-request.json"
+_SVC_SAMPLE_RATE = 24_000
 _INITIAL_JOB_FILES = frozenset(_LYRICS_NAMES)
 _REQUIRED_INITIAL_JOB_FILES = frozenset({"lyrics.lrc", "lyrics-manifest.json"})
 _FINAL_JOB_FILES = frozenset({"elysia-cover.wav", "elysia-cover.mp3"})
@@ -99,6 +102,7 @@ _SVS_STAGE_SEQUENCE = (
     "synthesizing",
     "ready",
 )
+_SVC_STAGE_SEQUENCE = ("validating", "synthesizing", "ready")
 _SVS_STAGE_PROGRESS = {
     "validating": 4,
     "transcribing": 18,
@@ -152,11 +156,12 @@ def _emit(stage: str, progress_percent: int, message: str) -> None:
 
 
 def _parser() -> argparse.ArgumentParser:
-    """Build the exact lyrics-SVS command line emitted by Electron Main."""
+    """Build the closed WSL singing command line emitted by Electron Main."""
 
     parser = argparse.ArgumentParser(
-        description="Create one local lyrics-driven Elysia song cover."
+        description="Create one local Elysia song cover."
     )
+    parser.add_argument("--engine", choices=("lyrics-svs", "source-svc"), default="lyrics-svs")
     parser.add_argument(
         "--source-mode",
         choices=("song", "stems"),
@@ -170,6 +175,11 @@ def _parser() -> argparse.ArgumentParser:
         choices=tuple(sorted(_audio._ALLOWED_KEY_SHIFTS)),
         default=0,
         type=int,
+    )
+    parser.add_argument(
+        "--shift-accompaniment",
+        required=True,
+        type=_audio._parse_explicit_boolean,
     )
     parser.add_argument("--job-dir", required=True, type=Path)
     parser.add_argument("--ffmpeg", required=True, type=Path)
@@ -428,7 +438,9 @@ def _parse_svs_event(line: bytes) -> _SvsEvent:
     return _SvsEvent(stage, progress, error_code)
 
 
-def _relay_svs_protocol(stream: BinaryIO) -> _BridgeOutcome:
+def _relay_svs_protocol(
+    stream: BinaryIO, *, engine: str = "lyrics-svs"
+) -> _BridgeOutcome:
     """Map one complete, ordered SVS stream to Electron's cover lifecycle.
 
     Vendor and bridge messages are intentionally never forwarded.  The native
@@ -441,6 +453,8 @@ def _relay_svs_protocol(stream: BinaryIO) -> _BridgeOutcome:
     event_count = 0
     expected_index = 0
     terminal_error: Optional[str] = None
+    source_progress = 58
+    sequence = _SVC_STAGE_SEQUENCE if engine == "source-svc" else _SVS_STAGE_SEQUENCE
     while True:
         raw_line = stream.readline(_MAX_SVS_LINE_BYTES + 1)
         if not raw_line:
@@ -465,14 +479,27 @@ def _relay_svs_protocol(stream: BinaryIO) -> _BridgeOutcome:
                 _fail("The private singing runtime returned an invalid response.")
             terminal_error = event.error_code
             continue
+        if engine == "source-svc" and expected_index == 2 and event.stage == "synthesizing":
+            if not source_progress < event.progress_percent <= 88:
+                _fail("The private singing runtime returned an invalid response.")
+            source_progress = event.progress_percent
+            native_progress = 55 + (source_progress - 58) * 33 // 30
+            messages = {56: "Reading the source vocal", 57: "Analyzing the vocal melody",
+                        58: "Checking the vocal pitch", 59: "Loading the singing voice",
+                        88: "Preparing the converted vocal for mixing"}
+            _emit("converting", native_progress,
+                  messages.get(native_progress, "Converting the vocal melody to Elysia"))
+            continue
         if (
-            expected_index >= len(_SVS_STAGE_SEQUENCE)
-            or event.stage != _SVS_STAGE_SEQUENCE[expected_index]
+            expected_index >= len(sequence)
+            or event.stage != sequence[expected_index]
             or event.progress_percent != _SVS_STAGE_PROGRESS[event.stage]
         ):
             _fail("The private singing runtime returned an invalid response.")
         expected_index += 1
-        if event.stage == "transcribing":
+        if event.stage == "synthesizing" and engine == "source-svc":
+            _emit("converting", 55, "Preparing the singing voice")
+        elif event.stage == "transcribing":
             _emit(
                 "transcribing",
                 35,
@@ -483,7 +510,7 @@ def _relay_svs_protocol(stream: BinaryIO) -> _BridgeOutcome:
         elif event.stage == "synthesizing":
             _emit("synthesizing", 58, "Singing the verified lyrics with Elysia voice")
 
-    if terminal_error == "lyrics_alignment_failed" and expected_index == 2:
+    if engine == "lyrics-svs" and terminal_error == "lyrics_alignment_failed" and expected_index == 2:
         # Transcription and alignment share one isolated prep process, so the
         # private runtime cannot emit its normal alignment event until that
         # process succeeds.  A typed alignment failure nevertheless proves
@@ -493,12 +520,14 @@ def _relay_svs_protocol(stream: BinaryIO) -> _BridgeOutcome:
     if terminal_error is not None:
         return _BridgeOutcome(False, terminal_error)
     return _BridgeOutcome(
-        expected_index == len(_SVS_STAGE_SEQUENCE),
+        expected_index == len(sequence),
         None,
     )
 
 
-def _run_wsl_bridge(wsl: Path, project_root: Path, job_root: Path) -> None:
+def _run_wsl_bridge(
+    wsl: Path, project_root: Path, job_root: Path, *, engine: str = "lyrics-svs"
+) -> None:
     """Run the fixed WSL bridge and accept only its closed event protocol."""
 
     mounted_project = _translate_windows_path(wsl, project_root)
@@ -532,14 +561,14 @@ def _run_wsl_bridge(wsl: Path, project_root: Path, job_root: Path) -> None:
         process.wait()
         _fail("The private singing runtime could not be started.")
     try:
-        outcome = _relay_svs_protocol(cast(BinaryIO, process.stdout))
+        outcome = _relay_svs_protocol(cast(BinaryIO, process.stdout), engine=engine)
     except BaseException:
         process.kill()
         process.wait()
         raise
     return_code = process.wait()
     if return_code != 0 or outcome.error_code is not None:
-        _fail("The private lyrics-driven singing stage did not complete.")
+        _fail("The private singing stage did not complete.")
     if not outcome.ready:
         _fail("The private singing runtime returned an invalid response.")
 
@@ -754,7 +783,7 @@ def _prepare_sources(
 
     target_vocal = job_root / "target_vocal.wav"
     _require_absent(target_vocal, label="Prepared target vocal")
-    if arguments.key_shift_semitones == 0:
+    if arguments.key_shift_semitones == 0 or getattr(arguments, "engine", "lyrics-svs") == "source-svc":
         _audio._prepare_mono_vocals(
             ffmpeg,
             vocals,
@@ -764,11 +793,9 @@ def _prepare_sources(
     else:
         unshifted_vocal = job_root / "target-vocal-unshifted.wav"
         shifted_vocal = job_root / "target-vocal-shifted.wav"
-        shifted_accompaniment = job_root / "accompaniment-key-shifted.wav"
         for path, label in (
             (unshifted_vocal, "Unshifted target-vocal scratch"),
             (shifted_vocal, "Shifted target-vocal scratch"),
-            (shifted_accompaniment, "Key-shifted accompaniment scratch"),
         ):
             _require_absent(path, label=label)
             scratch_files.append((path, label))
@@ -791,14 +818,28 @@ def _prepare_sources(
             target_vocal,
             target_samples=target_samples,
         )
-        _audio._transpose_audio(
+    if arguments.key_shift_semitones != 0:
+        # SVC reads the untouched vocal and shifts only its extracted F0 inside
+        # WSL. The accompaniment can follow independently, without applying a
+        # second key shift to the source waveform or its content features.
+        shifted_accompaniment = job_root / "accompaniment-key-shifted.wav"
+        if arguments.shift_accompaniment:
+            _require_absent(
+                shifted_accompaniment,
+                label="Key-shifted accompaniment scratch",
+            )
+        if _audio._transpose_accompaniment_if_requested(
             ffmpeg,
             accompaniment,
             shifted_accompaniment,
             key_shift_semitones=arguments.key_shift_semitones,
+            shift_accompaniment=arguments.shift_accompaniment,
             target_samples=target_samples,
-        )
-        accompaniment = shifted_accompaniment
+        ):
+            scratch_files.append(
+                (shifted_accompaniment, "Key-shifted accompaniment scratch")
+            )
+            accompaniment = shifted_accompaniment
     scratch_files.append((target_vocal, "Prepared target vocal"))
     return (
         duration,
@@ -831,6 +872,7 @@ def _cleanup_success(
             job_root / name,
             label="Private lyrics asset",
         )
+    _audio._unlink_safe_file(job_root / _SVC_REQUEST_NAME, label="Private singing request")
     numba_cache = job_root / "numba-cache"
     try:
         os.lstat(numba_cache)
@@ -846,8 +888,77 @@ def _cleanup_success(
     )
 
 
+def _unique_request_fields(pairs: Sequence[tuple[str, object]]) -> dict[str, object]:
+    """Reject duplicate request fields instead of accepting the last spelling."""
+
+    fields: dict[str, object] = {}
+    for key, value in pairs:
+        if key in fields:
+            _fail("The private singing request is invalid.")
+        fields[key] = value
+    return fields
+
+
+def _validate_svc_request(job_root: Path, key_shift_semitones: int) -> None:
+    """Match the bounded Main-owned request to the native pitch-shift contract."""
+
+    request = _require_single_link_file(
+        job_root / _SVC_REQUEST_NAME,
+        label="Private singing request",
+        maximum_bytes=1024,
+    )
+    try:
+        payload = json.loads(
+            request.read_text(encoding="utf-8"), object_pairs_hook=_unique_request_fields,
+        )
+    except (OSError, UnicodeError, ValueError) as error:
+        raise _SvsWorkerFailure("The private singing request is invalid.") from error
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != {"schema_version", "reference", "key_shift_semitones"}
+        or type(payload["schema_version"]) is not int
+        or payload["schema_version"] != 1
+        or payload["reference"] not in ("fairy", "elysia")
+        or type(payload["key_shift_semitones"]) is not int
+        or payload["key_shift_semitones"] not in _audio._ALLOWED_KEY_SHIFTS
+        or payload["key_shift_semitones"] != key_shift_semitones
+    ):
+        _fail("The private singing request is invalid.")
+
+
+def _require_svc_output_duration(path: Path, *, target_samples: int) -> None:
+    """Reject missing 24k samples before the mixer's tail-padding can hide loss.
+
+    The SVC runtime publishes mono PCM24, so its prepared 44.1k target gives an
+    exact rational sample-count contract. Read every declared frame to reject
+    truncated payloads as well as a plausible but incorrect WAVE header.
+    """
+
+    if not 1 <= target_samples <= _audio._SAMPLE_RATE * _audio._MAX_DURATION_SECONDS:
+        _fail("The requested song-cover output length is invalid.")
+    expected = round(target_samples * _SVC_SAMPLE_RATE / _audio._SAMPLE_RATE)
+    try:
+        with wave.open(str(path), "rb") as source:
+            if (
+                source.getframerate() != _SVC_SAMPLE_RATE
+                or source.getnchannels() != 1
+                or source.getsampwidth() != 3
+                or source.getcomptype() != "NONE"
+                or source.getnframes() != expected
+            ):
+                _fail("The generated singing vocal has an invalid format or duration.")
+            remaining = expected
+            while remaining:
+                count = min(remaining, 65_536)
+                if len(source.readframes(count)) != count * 3:
+                    _fail("The generated singing vocal is incomplete.")
+                remaining -= count
+    except (OSError, EOFError, wave.Error) as error:
+        raise _SvsWorkerFailure("The generated singing vocal is unavailable.") from error
+
+
 def _run_job(arguments: argparse.Namespace) -> None:
-    """Execute one native-to-WSL lyrics-driven cover transaction."""
+    """Execute one native-to-WSL cover with mode-specific closed inputs."""
 
     if _audio._JOB_TOKEN_PATTERN.fullmatch(arguments.job_token) is None:
         _fail("Song-cover job identity is invalid.")
@@ -856,27 +967,27 @@ def _run_job(arguments: argparse.Namespace) -> None:
     if job_root.name != arguments.job_token:
         _fail("Song-cover job directory is invalid.")
     job_root = _audio._require_directory(job_root, "Song-cover job directory")
+    engine = getattr(arguments, "engine", "lyrics-svs")
+    if engine not in {"lyrics-svs", "source-svc"}:
+        _fail("Song-cover engine is invalid.")
     _require_exact_job_layout(
         job_root,
-        allowed_files=_INITIAL_JOB_FILES,
-        required_files=_REQUIRED_INITIAL_JOB_FILES,
+        allowed_files=frozenset({_SVC_REQUEST_NAME}) if engine == "source-svc" else _INITIAL_JOB_FILES,
+        required_files=frozenset({_SVC_REQUEST_NAME}) if engine == "source-svc" else _REQUIRED_INITIAL_JOB_FILES,
         label="Prepared song-cover job",
     )
-    _require_single_link_file(
-        job_root / "lyrics.lrc",
-        label="Synchronized lyrics",
-        maximum_bytes=_MAX_LYRICS_BYTES,
-    )
-    _require_optional_single_link_file(
-        job_root / "lyrics.txt",
-        label="Plain lyrics",
-        maximum_bytes=_MAX_LYRICS_BYTES,
-    )
-    _require_single_link_file(
-        job_root / "lyrics-manifest.json",
-        label="Lyrics provenance",
-        maximum_bytes=_MAX_MANIFEST_BYTES,
-    )
+    if engine == "source-svc":
+        _validate_svc_request(job_root, arguments.key_shift_semitones)
+    else:
+        _require_single_link_file(
+            job_root / "lyrics.lrc", label="Synchronized lyrics", maximum_bytes=_MAX_LYRICS_BYTES,
+        )
+        _require_optional_single_link_file(
+            job_root / "lyrics.txt", label="Plain lyrics", maximum_bytes=_MAX_LYRICS_BYTES,
+        )
+        _require_single_link_file(
+            job_root / "lyrics-manifest.json", label="Lyrics provenance", maximum_bytes=_MAX_MANIFEST_BYTES,
+        )
     for name in (_GENERATED_VOCAL_NAME, "elysia-cover.wav", "elysia-cover.mp3"):
         _require_absent(job_root / name, label="Song-cover output")
 
@@ -897,15 +1008,14 @@ def _run_job(arguments: argparse.Namespace) -> None:
         demucs_site=demucs_site,
         torch_home=torch_home,
     )
-    consonant_layer = job_root / "consonant-layer.wav"
-    _require_absent(consonant_layer, label="Consonant-layer scratch")
-    _audio._create_consonant_layer(
-        ffmpeg,
-        target_vocal,
-        consonant_layer,
-        target_samples=target_samples,
-    )
-    scratch_files.append((consonant_layer, "Consonant-layer scratch"))
+    consonant_layer: Optional[Path] = None
+    if engine == "lyrics-svs":
+        consonant_layer = job_root / "consonant-layer.wav"
+        _require_absent(consonant_layer, label="Consonant-layer scratch")
+        _audio._create_consonant_layer(
+            ffmpeg, target_vocal, consonant_layer, target_samples=target_samples,
+        )
+        scratch_files.append((consonant_layer, "Consonant-layer scratch"))
 
     _audio._release_gpu_cache()
     project_root = _audio._require_directory(
@@ -913,13 +1023,18 @@ def _run_job(arguments: argparse.Namespace) -> None:
         "Elysia project runtime",
     )
     wsl = _system_wsl_executable()
-    _run_wsl_bridge(wsl, project_root, job_root)
+    if engine == "source-svc":
+        _run_wsl_bridge(wsl, project_root, job_root, engine=engine)
+    else:
+        _run_wsl_bridge(wsl, project_root, job_root)
     generated_vocal = _require_single_link_file(
         job_root / _GENERATED_VOCAL_NAME,
         label="Generated Elysia vocal",
         maximum_bytes=_audio._MAX_DECODED_BYTES,
     )
     scratch_files.append((generated_vocal, "Generated Elysia vocal"))
+    if engine == "source-svc":
+        _require_svc_output_duration(generated_vocal, target_samples=target_samples)
 
     _audio._release_gpu_cache()
     _emit("mixing", 90, "Mixing Elysia with the accompaniment")
@@ -943,7 +1058,7 @@ def _run_job(arguments: argparse.Namespace) -> None:
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    """Run one bounded local lyrics-driven cover and return process status."""
+    """Run one bounded local singing cover and return process status."""
 
     raw_arguments = list(sys.argv[1:] if argv is None else argv)
     cleanup_request = (

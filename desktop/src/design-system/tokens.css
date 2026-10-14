@@ -1,5 +1,5 @@
 /**
- * Elysia design tokens.
+ * Elysia's restrained rose visual tokens for system-native light and dark themes.
  *
  * Components consume semantic tokens only. Theme-specific values live in this
  * file so light and dark themes cannot drift into component styles.
@@ -10,8 +10,8 @@
 
   /* Typography */
   --font-family-sans:
-    "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI",
-    "Noto Sans CJK SC", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+    -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI",
+    "PingFang SC", "Microsoft YaHei UI", "Noto Sans CJK SC", system-ui, sans-serif;
   --font-family-mono:
     "Cascadia Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   --font-size-xs: 0.75rem;
@@ -79,51 +79,56 @@
 
   /* App-shell layout */
   --layout-window-min-width: 20rem;
-  --layout-sidebar-width: 15.25rem;
+  --layout-sidebar-width: 15.5rem;
   --layout-sidebar-compact-width: 4.5rem;
   --layout-character-panel-width: 20.25rem;
-  --layout-header-height: 4.125rem;
-  --layout-content-max-width: 47.5rem;
+  --layout-header-height: 3.75rem;
+  --layout-content-max-width: 48rem;
   --layout-settings-max-width: 52rem;
-  --layout-composer-max-width: 47.5rem;
+  --layout-composer-max-width: 48rem;
   --layout-main-min-width: 20rem;
   --layout-compact-breakpoint: 65rem;
 
-  /* Dark theme palette */
-  --theme-color: #0f0b10;
-  --color-bg-canvas: #0f0b10;
-  --color-bg-sidebar: #141015;
-  --color-bg-surface: #171318;
-  --color-bg-raised: #211a22;
-  --color-bg-hover: #2a202b;
-  --color-bg-active: #352637;
-  --color-bg-soft: rgb(240 143 194 / 8%);
-  --color-bg-overlay: rgb(9 6 10 / 72%);
-  --color-text-primary: #fff7fc;
-  --color-text-secondary: #c9bec8;
-  --color-text-muted: #9a8e98;
-  --color-text-disabled: #706670;
-  --color-text-inverse: #24151f;
-  --color-text-link: #ffabd7;
-  --color-border: rgb(255 232 247 / 10%);
-  --color-border-strong: rgb(255 232 247 / 18%);
-  --color-border-focus: #f08fc2;
-  --color-accent: #f08fc2;
-  --color-accent-hover: #ffabd7;
-  --color-accent-secondary: #b39ae5;
-  --color-accent-contrast: #21131c;
-  --color-success: #8dd8b5;
-  --color-success-soft: rgb(141 216 181 / 10%);
-  --color-warning: #f3c77a;
-  --color-warning-soft: rgb(243 199 122 / 11%);
-  --color-danger: #ff8f9e;
-  --color-danger-soft: rgb(255 143 158 / 11%);
-  --color-info: #a9c7ff;
-  --color-info-soft: rgb(169 199 255 / 10%);
-  --color-selection-bg: #f08fc2;
-  --color-selection-text: #1a1018;
-  --color-scrollbar: rgb(255 238 249 / 20%);
-  --color-scrollbar-hover: rgb(255 238 249 / 32%);
+  /* A faint plum tint connects dark surfaces to the character's rose palette. */
+  --theme-color: #242125;
+  --color-bg-canvas: #242125;
+  --color-bg-sidebar: #1c191d;
+  --color-bg-surface: #2b272c;
+  --color-bg-raised: #343035;
+  --color-bg-hover: #3b353c;
+  --color-bg-active: #443c46;
+  --color-bg-soft: rgb(237 168 202 / 5%);
+  --color-bg-overlay: rgb(14 11 15 / 66%);
+  --color-text-primary: #f6f1f4;
+  --color-text-secondary: #c9c1c7;
+  --color-text-muted: #a99da6;
+  --color-text-disabled: #756b72;
+  --color-text-inverse: #292028;
+  --color-text-link: #f1b8d3;
+  --color-border: rgb(255 243 250 / 9%);
+  --color-border-strong: rgb(255 243 250 / 17%);
+  --color-border-focus: #eda8ca;
+
+  /* Rose marks actions; soft fills keep the character identity unobtrusive. */
+  --color-accent: #eda8ca;
+  --color-accent-hover: #f5c0d9;
+  --color-accent-soft: rgb(237 168 202 / 8%);
+  --color-accent-secondary: #bba6d8;
+  --color-accent-contrast: #292028;
+  --color-brand: var(--color-accent);
+  --color-brand-soft: var(--color-accent-soft);
+  --color-success: #8acdaa;
+  --color-success-soft: rgb(138 205 170 / 10%);
+  --color-warning: #e9c17c;
+  --color-warning-soft: rgb(233 193 124 / 10%);
+  --color-danger: #f39a9f;
+  --color-danger-soft: rgb(243 154 159 / 10%);
+  --color-info: #a5c1e9;
+  --color-info-soft: rgb(165 193 233 / 10%);
+  --color-selection-bg: #eda8ca;
+  --color-selection-text: #292028;
+  --color-scrollbar: rgb(255 243 250 / 20%);
+  --color-scrollbar-hover: rgb(255 243 250 / 32%);
 
   /* Feedback-state aliases keep components independent of palette names. */
   --color-state-loading: var(--color-info);
@@ -138,12 +143,12 @@
   --opacity-disabled: 0.46;
 
   /* Elevation and focus depend on the active palette. */
-  --shadow-sm: 0 1px 3px rgb(0 0 0 / 24%);
-  --shadow-md: 0 8px 24px rgb(0 0 0 / 24%);
-  --shadow-lg: 0 18px 45px rgb(0 0 0 / 32%);
+  --shadow-sm: 0 1px 3px rgb(0 0 0 / 15%);
+  --shadow-md: 0 6px 20px rgb(0 0 0 / 20%);
+  --shadow-lg: 0 16px 40px rgb(0 0 0 / 26%);
   --shadow-floating:
-    0 22px 65px rgb(0 0 0 / 42%),
-    0 2px 9px rgb(0 0 0 / 22%);
+    0 18px 55px rgb(0 0 0 / 30%),
+    0 2px 8px rgb(0 0 0 / 16%);
   --focus-ring-width: 0.125rem;
   --focus-ring-offset: 0.125rem;
   --focus-ring: var(--focus-ring-width) solid var(--color-border-focus);
@@ -160,8 +165,8 @@
   --text-primary: var(--color-text-primary);
   --text-secondary: var(--color-text-secondary);
   --text-muted: var(--color-text-muted);
-  --pink: var(--color-accent);
-  --pink-bright: var(--color-accent-hover);
+  --pink: var(--color-brand);
+  --pink-bright: var(--color-text-link);
   --purple: var(--color-accent-secondary);
   --green: var(--color-success);
   --red: var(--color-danger);
@@ -170,46 +175,47 @@
 
 :root[data-theme="light"] {
   color-scheme: light;
-  --theme-color: #f8f5f8;
-  --color-bg-canvas: #f8f5f8;
-  --color-bg-sidebar: #f2edf2;
-  --color-bg-surface: #fffaff;
+  --theme-color: #fcfafb;
+  --color-bg-canvas: #fcfafb;
+  --color-bg-sidebar: #f5f1f4;
+  --color-bg-surface: #ffffff;
   --color-bg-raised: #ffffff;
-  --color-bg-hover: #eee5ed;
-  --color-bg-active: #e6d8e3;
-  --color-bg-soft: rgb(165 63 121 / 9%);
-  --color-bg-overlay: rgb(36 27 35 / 42%);
-  --color-text-primary: #241b23;
-  --color-text-secondary: #594f57;
-  --color-text-muted: #746a72;
-  --color-text-disabled: #a39aa1;
-  --color-text-inverse: #fff8fc;
-  --color-text-link: #963768;
-  --color-border: rgb(67 42 61 / 13%);
-  --color-border-strong: rgb(67 42 61 / 22%);
-  --color-border-focus: #a53f79;
-  --color-accent: #a53f79;
-  --color-accent-hover: #8d2f65;
-  --color-accent-secondary: #6f55a4;
+  --color-bg-hover: #f0e8ed;
+  --color-bg-active: #eadde5;
+  --color-bg-soft: rgb(180 81 130 / 4%);
+  --color-bg-overlay: rgb(29 22 28 / 36%);
+  --color-text-primary: #2c252b;
+  --color-text-secondary: #60565e;
+  --color-text-muted: #786b74;
+  --color-text-disabled: #a49ba2;
+  --color-text-inverse: #ffffff;
+  --color-text-link: #974169;
+  --color-border: rgb(51 36 47 / 9%);
+  --color-border-strong: rgb(51 36 47 / 17%);
+  --color-border-focus: #b45182;
+  --color-accent: #b45182;
+  --color-accent-hover: #9c3f6b;
+  --color-accent-soft: rgb(180 81 130 / 6%);
+  --color-accent-secondary: #8060ae;
   --color-accent-contrast: #ffffff;
-  --color-success: #267755;
-  --color-success-soft: rgb(38 119 85 / 10%);
-  --color-warning: #835600;
-  --color-warning-soft: rgb(131 86 0 / 10%);
-  --color-danger: #b4233f;
-  --color-danger-soft: rgb(180 35 63 / 10%);
-  --color-info: #315f9a;
-  --color-info-soft: rgb(49 95 154 / 10%);
-  --color-selection-bg: #a53f79;
+  --color-success: #286a4b;
+  --color-success-soft: rgb(40 106 75 / 8%);
+  --color-warning: #875b12;
+  --color-warning-soft: rgb(135 91 18 / 8%);
+  --color-danger: #b23948;
+  --color-danger-soft: rgb(178 57 72 / 8%);
+  --color-info: #355f99;
+  --color-info-soft: rgb(53 95 153 / 8%);
+  --color-selection-bg: #b45182;
   --color-selection-text: #ffffff;
-  --color-scrollbar: rgb(67 42 61 / 24%);
-  --color-scrollbar-hover: rgb(67 42 61 / 38%);
-  --shadow-sm: 0 1px 3px rgb(50 31 45 / 10%);
-  --shadow-md: 0 8px 24px rgb(50 31 45 / 12%);
-  --shadow-lg: 0 18px 45px rgb(50 31 45 / 15%);
+  --color-scrollbar: rgb(51 36 47 / 20%);
+  --color-scrollbar-hover: rgb(51 36 47 / 32%);
+  --shadow-sm: 0 1px 3px rgb(20 20 25 / 5%);
+  --shadow-md: 0 6px 20px rgb(20 20 25 / 7%);
+  --shadow-lg: 0 16px 40px rgb(20 20 25 / 10%);
   --shadow-floating:
-    0 22px 65px rgb(50 31 45 / 16%),
-    0 2px 9px rgb(50 31 45 / 9%);
+    0 18px 55px rgb(20 20 25 / 11%),
+    0 2px 8px rgb(20 20 25 / 5%);
 }
 
 :root[data-theme="dark"] {

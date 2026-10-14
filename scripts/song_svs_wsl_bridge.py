@@ -1,4 +1,4 @@
-"""Bridge one mounted Windows SVS job into the private WSL runtime.
+"""Bridge one mounted Windows singing job into the private WSL runtime.
 
 The bridge accepts only a mounted Windows directory with a canonical UUIDv4
 name and fixed input filenames. Inputs are copied through no-follow file
@@ -71,8 +71,9 @@ class _SourceJob:
     root: Path
     token: str
     target_vocal: Path
-    synchronized_lyrics: Path
+    synchronized_lyrics: Path | None
     plain_lyrics: Path | None
+    singing_request: Path | None = None
 
 
 class _ProtocolRelay:
@@ -404,6 +405,15 @@ def _validate_mounted_source_job(argument: str) -> _SourceJob:
     mount_point = _find_windows_mount(root)
     if mount_point is None or root == mount_point:
         _fail("invalid_job", "The singing job is not on a mounted Windows filesystem.")
+    singing_request = _optional_source_file(
+        root, "singing-request.json", maximum_bytes=4096,
+    )
+    if singing_request is not None:
+        # An ambiguous request must never silently switch engines. Main writes
+        # one durable marker so cancellation/recovery can identify WSL work.
+        for name in ("lyrics.lrc", "lyrics.txt", "lyrics-manifest.json"):
+            if (root / name).exists() or (root / name).is_symlink():
+                _fail("invalid_job", "The singing job contains conflicting inputs.")
     return _SourceJob(
         root=root,
         token=root.name,
@@ -412,16 +422,17 @@ def _validate_mounted_source_job(argument: str) -> _SourceJob:
             "target_vocal.wav",
             maximum_bytes=_MAX_VOCAL_BYTES,
         ),
-        synchronized_lyrics=_require_source_file(
+        synchronized_lyrics=None if singing_request is not None else _require_source_file(
             root,
             "lyrics.lrc",
             maximum_bytes=_MAX_LYRICS_BYTES,
         ),
-        plain_lyrics=_optional_source_file(
+        plain_lyrics=None if singing_request is not None else _optional_source_file(
             root,
             "lyrics.txt",
             maximum_bytes=_MAX_LYRICS_BYTES,
         ),
+        singing_request=singing_request,
     )
 
 
@@ -569,16 +580,19 @@ def _copy_exclusive(
 
 
 def _copy_inputs(source: _SourceJob, private_job: Path) -> None:
-    """Copy only the three allowlisted input names into the private Linux job."""
+    """Copy only the selected mode's allowlisted inputs into its private job."""
 
     copied: list[Path] = []
     try:
         pairs = [
             (source.target_vocal, private_job / "target_vocal.wav", _MAX_VOCAL_BYTES),
-            (source.synchronized_lyrics, private_job / "lyrics.lrc", _MAX_LYRICS_BYTES),
         ]
+        if source.synchronized_lyrics is not None:
+            pairs.append((source.synchronized_lyrics, private_job / "lyrics.lrc", _MAX_LYRICS_BYTES))
         if source.plain_lyrics is not None:
             pairs.append((source.plain_lyrics, private_job / "lyrics.txt", _MAX_LYRICS_BYTES))
+        if source.singing_request is not None:
+            pairs.append((source.singing_request, private_job / "singing-request.json", 4096))
         for origin, destination, maximum_bytes in pairs:
             _copy_exclusive(origin, destination, maximum_bytes=maximum_bytes)
             copied.append(destination)

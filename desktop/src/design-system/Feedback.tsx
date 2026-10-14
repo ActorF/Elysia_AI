@@ -25,7 +25,8 @@ export interface LoadingStateProps extends FeedbackBaseProps {
 export interface EmptyStateProps extends FeedbackBaseProps {
   title: string
   description?: string
-  icon?: IconName
+  /** Omit to use the default mark, or pass null for a text-only empty state. */
+  icon?: IconName | null
   action?: FeedbackAction
 }
 
@@ -83,7 +84,9 @@ export function EmptyState({
       className={classNames('feedback-state empty-state', className)}
       aria-labelledby={titleId}
     >
-      <Icon name={icon} className="feedback-state-icon empty-state-icon" />
+      {icon !== null && (
+        <Icon name={icon} className="feedback-state-icon empty-state-icon" />
+      )}
       <div className="feedback-state-copy">
         <h2 id={titleId}>{title}</h2>
         {description !== undefined && <p>{description}</p>}

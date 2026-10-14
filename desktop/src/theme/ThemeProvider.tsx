@@ -38,8 +38,8 @@ const SYSTEM_THEME_QUERY = '(prefers-color-scheme: dark)'
 const DEFAULT_THEME: ThemePreference = 'system'
 const DEFAULT_RESOLVED_THEME: ResolvedTheme = 'dark'
 const FALLBACK_THEME_COLORS: Record<ResolvedTheme, string> = {
-  dark: '#0f0b10',
-  light: '#f8f5f8',
+  dark: '#242125',
+  light: '#fcfafb',
 }
 
 const ThemeContext = createContext<ThemeContextValue | undefined>(undefined)

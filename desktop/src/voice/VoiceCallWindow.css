@@ -1,0 +1,295 @@
+/** Style an immersive, consistently dimmed Voice Call surface in any native window size. */
+
+/* The background must stay dark even if the application's main theme is light.
+   These local colors describe media overlays rather than application surfaces. */
+:root {
+  color-scheme: dark;
+  background: #20182e;
+}
+
+body {
+  min-width: 0;
+  background: #20182e;
+}
+
+.voice-call-window {
+  position: relative;
+  display: flex;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+  isolation: isolate;
+  color: #fff6fc;
+  background:
+    radial-gradient(ellipse at 66% 36%, #634267 0%, transparent 64%),
+    linear-gradient(145deg, #3f3058, #21182f 70%);
+}
+
+/* Leave an inset around this drag surface so Windows keeps native edge resizing.
+   The controls sit above it and opt out of dragging for normal pointer actions. */
+.voice-call-drag-surface {
+  position: absolute;
+  z-index: -1;
+  inset: 8px;
+  -webkit-app-region: drag;
+  app-region: drag;
+}
+
+.voice-call-background {
+  position: absolute;
+  z-index: -3;
+  max-width: none;
+  pointer-events: none;
+  user-select: none;
+  /* Apply the same dimming to every replacement artwork, including very bright
+     images; the scrim below separately preserves contrast around controls. */
+  filter: brightness(0.62) saturate(0.9);
+}
+
+.voice-call-scrim {
+  position: absolute;
+  z-index: -2;
+  inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(180deg, rgb(20 13 29 / 52%) 0%, transparent 30%, transparent 54%, rgb(17 11 25 / 76%) 100%),
+    linear-gradient(90deg, rgb(20 13 29 / 21%), rgb(20 13 29 / 9%));
+}
+
+.voice-call-header {
+  display: flex;
+  margin: 8px;
+  padding: calc(clamp(1.25rem, 5vw, 2rem) - 8px);
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  text-shadow: 0 2px 16px rgb(12 8 18 / 24%);
+  -webkit-app-region: drag;
+  app-region: drag;
+  user-select: none;
+}
+
+.voice-call-eyebrow {
+  margin: 0 0 0.25rem;
+  color: rgb(255 243 252 / 76%);
+  font-size: 0.75rem;
+  font-weight: var(--font-weight-medium);
+  letter-spacing: 0.025em;
+}
+
+.voice-call-identity h1 {
+  margin: 0;
+  font-size: clamp(1.65rem, 5vw, 2rem);
+  font-weight: 550;
+  letter-spacing: -0.045em;
+  line-height: 1.2;
+}
+
+.voice-call-duration {
+  padding-block-start: 0.125rem;
+  color: rgb(255 243 252 / 77%);
+  font-size: 0.8125rem;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.045em;
+}
+
+.voice-call-closed {
+  width: min(18rem, calc(100% - 2.5rem));
+  margin: auto;
+  padding: 1.25rem;
+  border: 1px solid rgb(255 231 247 / 12%);
+  border-radius: 1.25rem;
+  background: rgb(30 19 42 / 64%);
+  text-align: center;
+  backdrop-filter: blur(18px);
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+.voice-call-closed h2 {
+  margin: 0 0 0.5rem;
+  font-size: 1.125rem;
+  font-weight: var(--font-weight-medium);
+}
+
+.voice-call-closed p {
+  margin: 0;
+  color: rgb(255 243 252 / 74%);
+  font-size: 0.8125rem;
+}
+
+.voice-call-footer {
+  display: flex;
+  margin-block-start: auto;
+  padding: 1rem clamp(1.125rem, 4vw, 2rem) clamp(1.25rem, 5vh, 2rem);
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
+}
+
+.voice-call-controls {
+  display: flex;
+  padding: 0.6875rem 1.375rem 0.625rem;
+  align-items: center;
+  gap: 1.625rem;
+  border: 1px solid rgb(255 232 250 / 15%);
+  border-radius: 2rem;
+  background: rgb(30 20 40 / 56%);
+  box-shadow: 0 10px 40px rgb(12 7 21 / 18%), inset 0 1px 0 rgb(255 239 251 / 5%);
+  backdrop-filter: blur(22px) saturate(1.15);
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+.voice-call-control {
+  display: flex;
+  min-width: 3.125rem;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.375rem;
+  border-radius: 1rem;
+  color: #fff6fc;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.voice-call-control-icon {
+  display: grid;
+  width: 2.75rem;
+  height: 2.75rem;
+  border: 1px solid rgb(255 237 250 / 12%);
+  border-radius: 50%;
+  background: rgb(255 240 252 / 12%);
+  place-items: center;
+  transition: background 160ms ease, transform 160ms ease;
+}
+
+.voice-call-control-icon svg {
+  width: 1.25rem;
+  height: 1.25rem;
+}
+
+.voice-call-control-label {
+  font-size: 0.6875rem;
+  font-weight: var(--font-weight-medium);
+  line-height: 1.5;
+}
+
+.voice-call-control.mute.active .voice-call-control-icon {
+  border-color: rgb(255 236 250 / 72%);
+  color: #372037;
+  background: #f5d8ea;
+}
+
+.voice-call-control.hangup .voice-call-control-icon {
+  border-color: rgb(255 139 173 / 28%);
+  background: #c33e63;
+}
+
+.voice-call-control:enabled:hover .voice-call-control-icon {
+  transform: translateY(-1px);
+  background: rgb(255 240 252 / 22%);
+}
+
+.voice-call-control.mute.active:enabled:hover .voice-call-control-icon {
+  background: #ffeaf5;
+}
+
+.voice-call-control.hangup:enabled:hover .voice-call-control-icon {
+  background: #dc4c76;
+}
+
+.voice-call-control:enabled:active .voice-call-control-icon {
+  transform: scale(0.96);
+}
+
+.voice-call-control:focus-visible {
+  outline: 2px solid #ffe4f7 !important;
+  outline-offset: 6px !important;
+}
+
+.voice-call-control:disabled {
+  color: rgb(255 243 252 / 65%);
+  opacity: 0.6;
+}
+
+.voice-call-notices {
+  display: flex;
+  width: min(26rem, 100%);
+  max-height: min(30vh, 10rem);
+  flex-direction: column;
+  gap: 0.375rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+.voice-call-notice {
+  margin: 0;
+  padding: 0.625rem 0.875rem;
+  border: 1px solid rgb(255 238 250 / 14%);
+  border-radius: 0.875rem;
+  color: #f7e4f2;
+  background: rgb(29 19 41 / 78%);
+  font-size: 0.75rem;
+  overflow-wrap: anywhere;
+  backdrop-filter: blur(18px);
+}
+
+.voice-call-notice.error {
+  border-color: rgb(250 142 173 / 28%);
+  color: #ffe1e9;
+}
+
+/* The smallest native window keeps its face area open by tightening only the
+   surrounding chrome. The image crop itself continues to anchor the face. */
+@media (max-height: 460px) {
+  .voice-call-header {
+    padding-block: calc(1.125rem - 8px);
+  }
+
+  .voice-call-footer {
+    padding-block: 0.625rem 1rem;
+    gap: 0.625rem;
+  }
+
+  .voice-call-controls {
+    padding-block: 0.625rem;
+  }
+
+  .voice-call-control-icon {
+    width: 2.625rem;
+    height: 2.625rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .voice-call-control-icon {
+    transition: none;
+  }
+}
+
+.fatal-renderer {
+  display: flex;
+  height: 100%;
+  padding: 2rem;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 1rem;
+  color: #fff3fb;
+  background: #241a32;
+}
+
+.fatal-renderer :is(h1, p) {
+  margin: 0;
+}
+
+.fatal-renderer button {
+  padding: 0.625rem 1rem;
+  border-radius: 0.875rem;
+  color: #332033;
+  background: #f5d8ea;
+}

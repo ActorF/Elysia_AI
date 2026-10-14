@@ -1,9 +1,10 @@
-"""Run the private SoulX-Singer Mandarin SVS pipeline inside WSL.
+"""Run private lyric-driven singing or source voice conversion inside WSL.
 
 The worker deliberately exposes one argument only: a managed job directory.
 That directory must live below the current Linux user's private Elysia job
 root and use a UUIDv4 name.  Fixed filenames provide the separated target
-vocal and synchronized lyrics; model, prompt, interpreter, and vendor-source
+vocal and either synchronized lyrics or a closed singing-reference request;
+model, prompt, interpreter, and vendor-source
 paths are never accepted from a caller.  This keeps Electron-selected paths,
 commands, and model overrides outside the high-trust singing runtime.
 
@@ -42,7 +43,7 @@ import struct
 import subprocess
 import sys
 import time
-from typing import TYPE_CHECKING, Iterator, Mapping, NoReturn, Sequence
+from typing import TYPE_CHECKING, Callable, Iterator, Mapping, NoReturn, Sequence
 
 if TYPE_CHECKING:
     from scripts.song_svs_quality import PromptRecord
@@ -73,6 +74,7 @@ _OUTPUT_NAME = "generated_vocal.wav"
 _WORK_DIRECTORY_NAME = ".svs-work"
 _INTERNAL_JOB_TOKEN_ENV = "ELYSIA_SVS_INTERNAL_JOB_TOKEN"
 _INTERNAL_STAGE_ID_ENV = "ELYSIA_SVS_INTERNAL_STAGE_ID"
+_INTERNAL_PROGRESS_FD_ENV = "ELYSIA_SVS_INTERNAL_PROGRESS_FD"
 _STAGE_LEASE_NAME = ".active-stage.json"
 _STAGE_LEASE_TEMP_NAME = ".active-stage.json.tmp"
 _STAGE_CONTROL_LOCK_NAME = ".stage-control.lock"
@@ -1948,6 +1950,74 @@ def _offline_environment(
     return environment
 
 
+class _SourceProgressReader:
+    """Validate bounded numeric progress from a dedicated child-only pipe.
+
+    Vendor stdout/stderr stay discarded. This channel accepts at most thirty
+    strictly increasing integers, carries no message strings, and never blocks
+    cancellation or session cleanup waiting for a descendant to close its fd.
+    """
+
+    def __init__(self, descriptor: int, callback: Callable[[int], None]) -> None:
+        self._descriptor = descriptor
+        self._callback = callback
+        self._pending = b""
+        self._last = 58
+        self._bytes = 0
+
+    def _drain(self) -> None:
+        while True:
+            try:
+                block = os.read(self._descriptor, 128)
+            except BlockingIOError:
+                return
+            if not block:
+                if self._pending:
+                    _fail("stage_progress_failed", "Singing progress was incomplete.")
+                return
+            self._bytes += len(block)
+            if self._bytes > 90:
+                _fail("stage_progress_failed", "Singing progress exceeded its safe limit.")
+            self._pending += block
+            while b"\n" in self._pending:
+                line, self._pending = self._pending.split(b"\n", 1)
+                if re.fullmatch(rb"[0-9]{2}", line) is None:
+                    _fail("stage_progress_failed", "Singing progress was invalid.")
+                percent = int(line)
+                if not self._last < percent <= 88:
+                    _fail("stage_progress_failed", "Singing progress was out of order.")
+                self._last = percent
+                self._callback(percent)
+            if len(self._pending) > 2:
+                _fail("stage_progress_failed", "Singing progress was invalid.")
+
+
+@contextmanager
+def _source_progress_channel() -> Iterator[Callable[[int], None]]:
+    """Write only numeric milestones to the inherited authenticated-stage pipe."""
+    raw = os.environ.get(_INTERNAL_PROGRESS_FD_ENV, "")
+    if re.fullmatch(r"[0-9]{1,8}", raw) is None or int(raw) < 3:
+        _fail("stage_control_failed", "Singing progress channel is unavailable.")
+    descriptor = int(raw)
+    if not stat.S_ISFIFO(os.fstat(descriptor).st_mode):
+        _fail("stage_control_failed", "Singing progress channel is invalid.")
+    last = 58
+
+    def _write(percent: int) -> None:
+        nonlocal last
+        if type(percent) is not int or not last < percent <= 88:
+            _fail("stage_progress_failed", "Singing progress was out of order.")
+        encoded = f"{percent}\n".encode("ascii")
+        if os.write(descriptor, encoded) != len(encoded):
+            _fail("stage_progress_failed", "Singing progress could not be delivered.")
+        last = percent
+
+    try:
+        yield _write
+    finally:
+        os.close(descriptor)
+
+
 def _run_quiet_process(
     command: Sequence[str],
     *,
@@ -1957,6 +2027,7 @@ def _run_quiet_process(
     cwd: Path,
     environment: Mapping[str, str],
     timeout_seconds: int,
+    progress: Callable[[int], None] | None = None,
 ) -> int:
     """Run one fixed command in a leased session with exact-job termination.
 
@@ -1980,7 +2051,19 @@ def _run_quiet_process(
     process: subprocess.Popen[bytes] | None = None
     lease: _StageLease | None = None
     timed_out: subprocess.TimeoutExpired | None = None
+    read_fd: int | None = None
+    write_fd: int | None = None
     try:
+        reader = None
+        pipe_options = {}
+        if progress is not None:
+            if stage != "inference":
+                _fail("invalid_request", "Only source inference has incremental progress.")
+            read_fd, write_fd = os.pipe()
+            os.set_blocking(read_fd, False)
+            child_environment[_INTERNAL_PROGRESS_FD_ENV] = str(write_fd)
+            pipe_options["pass_fds"] = (write_fd,)
+            reader = _SourceProgressReader(read_fd, progress)
         with _stage_control_lock(job_root):
             _raise_if_cancelled(job_root)
             if _read_stage_lease(job_root) is not None:
@@ -1994,7 +2077,11 @@ def _run_quiet_process(
                 stderr=subprocess.DEVNULL,
                 start_new_session=True,
                 shell=False,
+                **pipe_options,
             )
+            if write_fd is not None:
+                os.close(write_fd)
+                write_fd = None
             lease = _capture_stage_lease(
                 process,
                 job_token=job_token,
@@ -2003,7 +2090,23 @@ def _run_quiet_process(
             )
             _write_stage_lease(job_root, lease)
         try:
-            return_code = process.wait(timeout=timeout_seconds)
+            if reader is None:
+                return_code = process.wait(timeout=timeout_seconds)
+            else:
+                deadline = time.monotonic() + timeout_seconds
+                while True:
+                    _raise_if_cancelled(job_root)
+                    reader._drain()
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise subprocess.TimeoutExpired(list(command), timeout_seconds)
+                    try:
+                        return_code = process.wait(timeout=min(.1, remaining))
+                        reader._drain()
+                        break
+                    except subprocess.TimeoutExpired:
+                        if time.monotonic() >= deadline:
+                            raise
         except subprocess.TimeoutExpired as error:
             timed_out = error
             return_code = -1
@@ -2013,6 +2116,9 @@ def _run_quiet_process(
             "The private singing stage could not be started.",
         ) from error
     finally:
+        for descriptor in (read_fd, write_fd):
+            if descriptor is not None:
+                os.close(descriptor)
         if lease is not None:
             with _stage_control_lock(job_root):
                 current = _read_stage_lease(job_root)
@@ -2512,10 +2618,28 @@ def _publish_output(
     destination: Path,
     *,
     expected_duration_seconds: float,
+    exact_samples: int | None = None,
 ) -> None:
     """Validate and atomically publish the fixed generated-vocal filename."""
 
     generated_duration = _probe_wave(generated, label="Generated SoulX vocal")
+    if exact_samples is not None:
+        # Source conversion owns every sample. A one-second tolerance belongs
+        # to the legacy score path and must not hide a missing SVC core/tail.
+        import wave
+
+        try:
+            with wave.open(str(generated), "rb") as stream:
+                valid = (
+                    stream.getframerate() == 24_000
+                    and stream.getnchannels() == 1
+                    and stream.getsampwidth() == 3
+                    and stream.getnframes() == exact_samples
+                )
+        except (OSError, EOFError, wave.Error):
+            valid = False
+        if not valid:
+            _fail("invalid_output", "The converted vocal does not cover the source timeline.")
     if abs(generated_duration - expected_duration_seconds) > 1.0:
         _fail(
             "invalid_output",
@@ -2541,12 +2665,91 @@ def _publish_output(
         ) from error
 
 
+def _read_singing_request(job_root: Path):
+    """Read one fixed private request and reject mixed lyric/source modes."""
+    from scripts.song_svc_assets import parse_singing_request
+
+    request_path = _require_file(
+        job_root / "singing-request.json", "Singing request", require_single_link=True,
+    )
+    for name in ("lyrics.lrc", "lyrics.txt", "lyrics-manifest.json"):
+        if (job_root / name).exists() or (job_root / name).is_symlink():
+            _fail("invalid_request", "The singing request contains conflicting inputs.")
+    if request_path.stat().st_size > 4096:
+        _fail("invalid_request", "The singing request exceeds the supported size.")
+    try:
+        return parse_singing_request(request_path.read_bytes())
+    except (OSError, ValueError) as error:
+        raise _SvsRuntimeFailure("invalid_request", "The singing request is invalid.") from error
+
+
+def _source_inference_stage_entry() -> None:
+    """Run source conversion only inside the same authenticated inference lease."""
+    try:
+        from scripts.song_svc_inference import SvcInferenceRequest, run_svc_inference
+
+        runtime_root = _runtime_root()
+        job_root = _job_root_from_token(runtime_root, os.environ.get(_INTERNAL_JOB_TOKEN_ENV, ""))
+        _authorize_stage_entry(job_root, "inference")
+        request = _read_singing_request(job_root)
+        source_root = _verify_source_checkout(runtime_root)
+        with _source_progress_channel() as progress:
+            run_svc_inference(SvcInferenceRequest(
+                runtime_root=runtime_root,
+                source_root=source_root,
+                target_vocal=_require_file(job_root / "target_vocal.wav", "Private target vocal", require_single_link=True),
+                output_directory=_require_directory(job_root / _WORK_DIRECTORY_NAME / "generated", "Synthesis workspace"),
+                reference_id=request.reference,
+                key_shift_semitones=request.key_shift_semitones,
+            ), progress=progress)
+    except Exception:
+        raise SystemExit(_INFERENCE_EXIT_CODE) from None
+
+
+def _run_source_job(job_root: Path, runtime_root: Path, *, deadline: float) -> None:
+    """Reuse leased execution and cleanup for exact-timeline source conversion."""
+    from scripts.song_svc_assets import verify_svc_assets
+
+    _read_singing_request(job_root)
+    target = _require_file(job_root / "target_vocal.wav", "Separated target vocal", require_single_link=True)
+    duration = _probe_wave(target, label="Separated target vocal")
+    _clear_optional_output(job_root / _OUTPUT_NAME)
+    _emit("validating", 4, "Validating the private singing runtime.")
+    verify_svc_assets(runtime_root)
+    source_root = _verify_source_checkout(runtime_root)
+    work_root = _prepare_work_tree(job_root)
+    try:
+        generated_root = work_root / "generated"
+        generated_root.mkdir(mode=0o700)
+        _emit("synthesizing", 58, "Converting the original vocal with the selected singing reference.")
+        status = _run_quiet_process(
+            [str(runtime_root / "infer-env/bin/python"), "-B", "-c",
+             "from scripts.song_svs_runtime import _source_inference_stage_entry as entry; entry()"],
+            job_root=job_root, job_token=job_root.name, stage="inference", cwd=source_root,
+            environment=_offline_environment(runtime_root, source_root, job_token=job_root.name),
+            timeout_seconds=_bounded_stage_timeout(deadline, _INFERENCE_TIMEOUT_SECONDS),
+            progress=lambda percent: _emit("synthesizing", percent, "Converting the original vocal with the selected singing reference."),
+        )
+        if status != 0:
+            _fail("inference_failed", "The local voice conversion did not complete.")
+        _publish_output(
+            generated_root / "generated.wav", job_root / _OUTPUT_NAME,
+            expected_duration_seconds=duration, exact_samples=round(duration * 24_000),
+        )
+    finally:
+        _remove_work_tree(work_root)
+    _emit("ready", 100, "The converted vocal is ready for the mix stage.")
+
+
 def _run_job(job_root_argument: str) -> None:
     """Validate one managed job and produce its fixed unmixed vocal output."""
 
     deadline = time.monotonic() + _TOTAL_RUNTIME_TIMEOUT_SECONDS
     runtime_root = _runtime_root()
     job_root, job_token = _validate_job_root(Path(job_root_argument), runtime_root)
+    if (job_root / "singing-request.json").exists() or (job_root / "singing-request.json").is_symlink():
+        _run_source_job(job_root, runtime_root, deadline=deadline)
+        return
     target_vocal = _require_file(
         job_root / "target_vocal.wav",
         "Separated target vocal",

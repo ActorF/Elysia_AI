@@ -1,11 +1,17 @@
-/** Render Backend, renderer-local, and Main-local settings with honest scopes. */
+/**
+ * Render categorized settings while preserving independently persisted drafts.
+ * Backend defaults share one save action; appearance, storage, and audio-device
+ * controls keep their existing renderer-local or Main-owned persistence rules.
+ */
 
 import {
   useId,
   useLayoutEffect,
   useMemo,
+  useRef,
   useState,
   type FormEvent,
+  type ReactNode,
 } from 'react'
 
 import type {
@@ -161,6 +167,96 @@ interface SettingsDraft {
 }
 
 type SettingsValidationErrors = Partial<Record<keyof SettingsDraft, string>>
+
+type SettingsCategory = 'general' | 'appearance' | 'voice' | 'data' | 'advanced'
+
+const settingsCategories: readonly {
+  id: SettingsCategory
+  label: string
+  description: string
+  icon: IconName
+}[] = [
+  {
+    id: 'general',
+    label: 'General',
+    description: 'Choose the defaults for your conversations.',
+    icon: 'settings',
+  },
+  {
+    id: 'appearance',
+    label: 'Appearance',
+    description: 'Make Elysia feel at home on your desktop.',
+    icon: 'sun',
+  },
+  {
+    id: 'voice',
+    label: 'Voice',
+    description: 'Adjust recognition, playback, and your audio devices.',
+    icon: 'microphone',
+  },
+  {
+    id: 'data',
+    label: 'Data & storage',
+    description: 'Manage local storage and file imports.',
+    icon: 'folder',
+  },
+  {
+    id: 'advanced',
+    label: 'Advanced',
+    description: 'Review memory limits, workspace access, and privacy.',
+    icon: 'memory',
+  },
+]
+
+const settingsFieldCategories: Record<keyof SettingsDraft, SettingsCategory> = {
+  modelName: 'general',
+  ollamaHost: 'general',
+  shortTermMemoryTokenBudget: 'advanced',
+  memoryRetrievalLimit: 'advanced',
+  dataImportMaxBytes: 'data',
+  transcriptionModel: 'voice',
+  transcriptionDevice: 'voice',
+  transcriptionLanguage: 'voice',
+  autoReadAloud: 'voice',
+  speechRatePercent: 'voice',
+  speechVolumePercent: 'voice',
+  voiceProfileId: 'voice',
+  voiceEmotion: 'voice',
+  captionsEnabled: 'voice',
+  transcriptReviewMode: 'voice',
+  automaticRelisten: 'voice',
+}
+
+function SettingsCategoryPanel({
+  category,
+  activeCategory,
+  navigationId,
+  children,
+}: {
+  category: SettingsCategory
+  activeCategory: SettingsCategory
+  navigationId: string
+  children: ReactNode
+}) {
+  const details = settingsCategories.find((entry) => entry.id === category)!
+  const headingId = `${navigationId}-heading-${category}`
+  return (
+    <section
+      id={`${navigationId}-category-${category}`}
+      className="settings-category-panel"
+      aria-labelledby={headingId}
+      hidden={activeCategory !== category}
+    >
+      <div className="settings-category-intro">
+        <h2 id={headingId} className="settings-category-heading" tabIndex={-1}>
+          {details.label}
+        </h2>
+        <p className="settings-category-description">{details.description}</p>
+      </div>
+      {children}
+    </section>
+  )
+}
 
 const themeOptions: readonly ThemeOption[] = [
   {
@@ -436,7 +532,7 @@ function AppearanceSettings({
   return (
     <section className="settings-section" aria-labelledby={`${themeGroupId}-heading`}>
       <div className="settings-section-heading">
-        <h2 id={`${themeGroupId}-heading`}>Appearance</h2>
+        <h2 id={`${themeGroupId}-heading`}>Theme</h2>
         <p>Theme changes apply immediately on this device.</p>
       </div>
       <fieldset className="theme-options">
@@ -476,7 +572,8 @@ function AppearanceSettings({
       <div className="appearance-subheading">
         <h3>Desktop Pet</h3>
         <p>
-          Independent dynamic companion powered by one detected local program.
+          Opens small beside Elysia&apos;s lower-right corner. You can move and
+          resize the companion afterward.
         </p>
       </div>
       <div className="desktop-pet-library" aria-label="Desktop Pet program library">
@@ -808,7 +905,7 @@ function DataStorageSettings({
       aria-labelledby={`${sectionId}-heading`}
     >
       <div className="settings-section-heading">
-        <h2 id={`${sectionId}-heading`}>Data &amp; storage</h2>
+        <h2 id={`${sectionId}-heading`}>Local storage</h2>
         <p>
           Inspect the Main-managed data root, move it safely, or reclaim only
           disposable local files.
@@ -974,7 +1071,7 @@ function DataStorageSettings({
   )
 }
 
-/** Render global settings alongside an independently persisted device draft. */
+/** Render navigable settings categories without discarding unsaved drafts. */
 export function SettingsView({
   themePreference,
   resolvedTheme,
@@ -1028,6 +1125,12 @@ export function SettingsView({
 }: SettingsViewProps) {
   const modelListId = useId()
   const backendFieldId = useId()
+  const navigationId = useId()
+  const formRef = useRef<HTMLFormElement>(null)
+  const footerOwnedFocusRef = useRef(false)
+  const validationFocusFieldRef = useRef<keyof SettingsDraft | null>(null)
+  const [validationFocusRequest, setValidationFocusRequest] = useState(0)
+  const [activeCategory, setActiveCategory] = useState<SettingsCategory>('general')
   const [draft, setDraft] = useState<SettingsDraft | null>(null)
   const [clientError, setClientError] = useState<string | null>(null)
   const [voiceDirty, setVoiceDirty] = useState(false)
@@ -1046,6 +1149,22 @@ export function SettingsView({
   const globalDirty = draft !== null
     && settingsState !== null
     && !draftEqualsValues(draft, settingsState.settings)
+  const globalFooterVisible = globalDirty || pending
+  useLayoutEffect(() => {
+    if (globalFooterVisible) {
+      return
+    }
+    const restoreFooterFocus = footerOwnedFocusRef.current
+    footerOwnedFocusRef.current = false
+    // Saving or discarding removes the footer's focused control. Restore focus
+    // only when that removal left it on the body; an asynchronous save must not
+    // take focus from a field or category the user selected in the meantime.
+    if (restoreFooterFocus && document.activeElement === document.body) {
+      formRef.current?.querySelector<HTMLElement>(
+        `#${CSS.escape(`${navigationId}-heading-${activeCategory}`)}`,
+      )?.focus({ preventScroll: true })
+    }
+  }, [activeCategory, globalFooterVisible, navigationId])
   useLayoutEffect(() => {
     onDirtyChange(globalDirty || voiceDirty)
     return () => { onDirtyChange(false) }
@@ -1060,23 +1179,66 @@ export function SettingsView({
   }, [models, settingsState?.settings.modelName])
 
   const validationErrors = draft === null ? {} : validateDraft(draft)
-  const firstValidationError = Object.values(validationErrors)[0] ?? null
+  const firstInvalidField = Object.keys(validationErrors)[0] as keyof SettingsDraft | undefined
   const backendFieldsDisabled = pending || restartPending || loading
   const transcriptionReadiness = voiceState === null
     ? null
     : describeTranscriptionReadiness(voiceState.transcriptionStatus)
   const speechReadiness = settingsState?.speechStatus ?? null
 
+  useLayoutEffect(() => {
+    const field = validationFocusFieldRef.current
+    if (field === null) {
+      return
+    }
+    validationFocusFieldRef.current = null
+    // The category must become visible before focus; hidden controls cannot
+    // receive focus and native form validation cannot reveal their category.
+    const target = formRef.current?.querySelector<HTMLElement>(
+      `[data-settings-field="${field}"]`,
+    ) ?? formRef.current?.querySelector<HTMLElement>(
+      `#${CSS.escape(`${navigationId}-heading-${activeCategory}`)}`,
+    )
+    target?.focus()
+  }, [activeCategory, navigationId, validationFocusRequest])
+
+  function chooseCategory(category: SettingsCategory): void {
+    if (activeCategory === 'voice' && category !== 'voice') {
+      // Hidden panels keep their device drafts alive, so visibility changes do
+      // not run the device component's unmount cleanup. Stop bounded audio tests
+      // explicitly when their controls leave view; navigation must never leave
+      // a hidden microphone or speaker test running.
+      if (audioDevices.inputTest.status === 'starting'
+        || audioDevices.inputTest.status === 'running') {
+        onStopMicrophoneTest()
+      }
+      if (audioDevices.outputTest.status === 'starting'
+        || audioDevices.outputTest.status === 'running') {
+        onStopSpeakerTest()
+      }
+    }
+    if (category !== activeCategory && formRef.current !== null) {
+      formRef.current.scrollTop = 0
+    }
+    setActiveCategory(category)
+  }
+
   async function submit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault()
+    if (firstInvalidField !== undefined) {
+      setClientError(validationErrors[firstInvalidField] ?? null)
+      validationFocusFieldRef.current = firstInvalidField
+      chooseCategory(settingsFieldCategories[firstInvalidField])
+      setValidationFocusRequest((request) => request + 1)
+      return
+    }
     if (
       draft === null
-      || firstValidationError !== null
       || !globalDirty
       || backendFieldsDisabled
       || generationBusy
     ) {
-      setClientError(firstValidationError)
+      setClientError(null)
       return
     }
     setClientError(null)
@@ -1169,750 +1331,800 @@ export function SettingsView({
           <span>Back</span>
         </button>
         <div className="settings-heading">
-          <span className="eyebrow">Preferences</span>
           <h1 id="settings-title" tabIndex={-1}>Settings</h1>
-          <p>Manage local defaults and see where each value is owned.</p>
+          <p>Make Elysia your own.</p>
         </div>
       </header>
 
-      {loading && settingsState === null ? (
-        <form
-          className="settings-content"
-          onSubmit={(event) => { event.preventDefault() }}
+      <div className="settings-layout">
+        <nav
+          className="settings-category-nav"
+          aria-label="Settings categories"
+          onFocusCapture={() => { footerOwnedFocusRef.current = false }}
         >
-          <LoadingState
-            title="Loading settings"
-            description="Reading the local settings snapshot."
-          />
-          {dataStorageSection}
-          <AppearanceSettings
-            themePreference={themePreference}
-            resolvedTheme={resolvedTheme}
-            desktopPetState={desktopPetState}
-            desktopPetPending={desktopPetPending}
-            desktopPetError={desktopPetError}
-            onThemeChange={onThemeChange}
-            onDesktopPetModeChange={onDesktopPetModeChange}
-            onDesktopPetModelChange={onDesktopPetModelChange}
-            onChooseDesktopPetModelDirectory={onChooseDesktopPetModelDirectory}
-            onRefreshDesktopPetModels={onRefreshDesktopPetModels}
-            onOpenDesktopPetDownload={onOpenDesktopPetDownload}
-          />
-          <PresenceNotificationSettings
-            state={presenceNotificationState}
-            pending={presenceNotificationPending}
-            error={presenceNotificationError}
-            onChange={onPresenceNotificationChange}
-          />
-          {voiceSection}
-        </form>
-      ) : settingsState === null || draft === null ? (
+          {settingsCategories.map((category) => (
+            <button
+              key={category.id}
+              type="button"
+              className="settings-category-button"
+              aria-current={activeCategory === category.id ? 'page' : undefined}
+              aria-controls={`${navigationId}-category-${category.id}`}
+              onClick={() => { chooseCategory(category.id) }}
+            >
+              <Icon name={category.icon} />
+              <span>{category.label}</span>
+            </button>
+          ))}
+        </nav>
+
         <form
+          ref={formRef}
           className="settings-content"
-          onSubmit={(event) => { event.preventDefault() }}
+          aria-label="Elysia settings"
+          noValidate
+          onFocusCapture={(event) => {
+            footerOwnedFocusRef.current = event.target instanceof HTMLElement
+              && event.target.closest('.settings-save-bar') !== null
+          }}
+          onSubmit={(event) => { void submit(event) }}
         >
-          <InlineAlert
-            tone="error"
-            title="Settings are unavailable"
-            action={{ label: 'Try again', onClick: onReload }}
-          >
-            {error ?? 'The local Backend has not returned Settings yet.'}
-          </InlineAlert>
-          {dataStorageSection}
-          <AppearanceSettings
-            themePreference={themePreference}
-            resolvedTheme={resolvedTheme}
-            desktopPetState={desktopPetState}
-            desktopPetPending={desktopPetPending}
-            desktopPetError={desktopPetError}
-            onThemeChange={onThemeChange}
-            onDesktopPetModeChange={onDesktopPetModeChange}
-            onDesktopPetModelChange={onDesktopPetModelChange}
-            onChooseDesktopPetModelDirectory={onChooseDesktopPetModelDirectory}
-            onRefreshDesktopPetModels={onRefreshDesktopPetModels}
-            onOpenDesktopPetDownload={onOpenDesktopPetDownload}
-          />
-          <PresenceNotificationSettings
-            state={presenceNotificationState}
-            pending={presenceNotificationPending}
-            error={presenceNotificationError}
-            onChange={onPresenceNotificationChange}
-          />
-          {voiceSection}
-        </form>
-      ) : (
-        <form className="settings-content" onSubmit={(event) => { void submit(event) }}>
-          {settingsState.warning !== null && (
-            <InlineAlert tone="warning" title="Defaults restored">
-              {settingsState.warning}
-            </InlineAlert>
-          )}
-          {(error !== null || clientError !== null) && (
+          {loading && settingsState === null ? (
+            <LoadingState
+              title="Loading settings"
+              description="Reading the local settings snapshot."
+            />
+          ) : settingsState === null || draft === null ? (
             <InlineAlert
               tone="error"
-              title="Settings were not saved"
-              action={{
-                label: loading ? 'Reloading…' : 'Reload saved settings',
-                onClick: reloadSavedSettings,
-                disabled: backendFieldsDisabled,
-              }}
+              title="Settings are unavailable"
+              action={{ label: 'Try again', onClick: onReload }}
             >
-              {clientError ?? error}
+              {error ?? 'The local Backend has not returned Settings yet.'}
             </InlineAlert>
-          )}
-          {settingsState.restartRequired && (
-            <InlineAlert
-              tone="warning"
-              title="Backend restart required"
-              action={{
-                label: restartPending ? 'Restarting…' : 'Restart Backend',
-                onClick: () => { void onRestart() },
-                disabled: (
-                  restartPending
-                  || generationBusy
-                  || pending
-                  || loading
-                  || globalDirty
-                ),
-              }}
-            >
-              Saved changes to {settingsState.restartFields
-                .map((field) => restartLabels[field])
-                .join(', ')} will apply after restart.
-              {globalDirty ? ' Save or discard the current draft first.' : ''}
-            </InlineAlert>
-          )}
+          ) : null}
 
-          <section className="settings-section" aria-labelledby="general-settings-heading">
-            <div className="settings-section-heading">
-              <h2 id="general-settings-heading">General</h2>
-              <p>Global values apply by default; Project and Chat values remain explicit.</p>
-            </div>
-            <div className="settings-scope-grid" aria-label="Settings scopes">
-              <article>
-                <strong>Global</strong>
-                <span>Default model: {settingsState.settings.modelName}</span>
-                <small>Revision {settingsState.revision}; saved locally.</small>
-              </article>
-              <article>
-                <strong>Project</strong>
-                {settingsState.scopes.project === null ? (
-                  <span>No active Project. Global settings apply.</span>
-                ) : (
-                  <>
-                    <span>{settingsState.scopes.project.projectName}</span>
-                    <small>
-                      {settingsState.scopes.project.modelName === null
-                        ? `Inherits ${settingsState.scopes.project.inheritedModelName}`
-                        : `Override: ${settingsState.scopes.project.modelName}`}
-                    </small>
-                  </>
-                )}
-              </article>
-              <article>
-                <strong>Chat</strong>
-                {settingsState.scopes.chat === null ? (
-                  <span>No active Chat.</span>
-                ) : (
-                  <>
-                    <span>{settingsState.scopes.chat.chatTitle}</span>
-                    <small>Pinned to {settingsState.scopes.chat.modelName}</small>
-                  </>
-                )}
-              </article>
-            </div>
-          </section>
-
-          <section className="settings-section" aria-labelledby="model-settings-heading">
-            <div className="settings-section-heading">
-              <h2 id="model-settings-heading">Model</h2>
-              <p>Choose the global default and local Ollama origin.</p>
-            </div>
-            <div className="settings-field-grid">
-              <label className="settings-field">
-                <span>Default model</span>
-                <input
-                  type="text"
-                  list={modelListId}
-                  value={draft.modelName}
-                  onChange={(event) => { updateDraft('modelName', event.target.value) }}
-                  disabled={backendFieldsDisabled}
-                  spellCheck={false}
-                  autoComplete="off"
-                  aria-invalid={validationErrors.modelName !== undefined}
-                  aria-describedby={[
-                    `${backendFieldId}-model-name-help`,
-                    validationErrors.modelName === undefined
-                      ? null
-                      : `${backendFieldId}-model-name-error`,
-                  ].filter(Boolean).join(' ')}
-                  aria-errormessage={validationErrors.modelName === undefined
-                    ? undefined
-                    : `${backendFieldId}-model-name-error`}
-                />
-                <datalist id={modelListId}>
-                  {modelOptions.map((model) => (
-                    <option key={model} value={model}>{model}</option>
-                  ))}
-                </datalist>
-                <small id={`${backendFieldId}-model-name-help`}>
-                  Choose an installed model, or enter its exact Ollama name to repair a failed startup.
-                </small>
-                {validationErrors.modelName !== undefined && (
-                  <small
-                    className="settings-field-error"
-                    id={`${backendFieldId}-model-name-error`}
-                  >
-                    {validationErrors.modelName}
-                  </small>
-                )}
-              </label>
-              <label className="settings-field">
-                <span>Ollama origin</span>
-                <input
-                  type="url"
-                  value={draft.ollamaHost}
-                  onChange={(event) => { updateDraft('ollamaHost', event.target.value) }}
-                  placeholder="http://localhost:11434"
-                  spellCheck={false}
-                  autoComplete="off"
-                  disabled={backendFieldsDisabled}
-                  aria-invalid={validationErrors.ollamaHost !== undefined}
-                  aria-describedby={[
-                    `${backendFieldId}-ollama-host-help`,
-                    validationErrors.ollamaHost === undefined
-                      ? null
-                      : `${backendFieldId}-ollama-host-error`,
-                  ].filter(Boolean).join(' ')}
-                  aria-errormessage={validationErrors.ollamaHost === undefined
-                    ? undefined
-                    : `${backendFieldId}-ollama-host-error`}
-                />
-                <small id={`${backendFieldId}-ollama-host-help`}>
-                  Credentials, paths, query strings, and fragments are rejected.
-                </small>
-                {validationErrors.ollamaHost !== undefined && (
-                  <small
-                    className="settings-field-error"
-                    id={`${backendFieldId}-ollama-host-error`}
-                  >
-                    {validationErrors.ollamaHost}
-                  </small>
-                )}
-              </label>
-            </div>
-          </section>
-
-          <section
-            className="settings-section"
-            aria-labelledby="transcription-settings-heading"
-          >
-            <div className="settings-section-heading">
-              <h2 id="transcription-settings-heading">Speech recognition</h2>
-              <p>
-                Choose an installed local model, execution device, and default
-                language. Changes apply after the Backend restarts.
-              </p>
-            </div>
-            {transcriptionReadiness === null ? (
-              <p className="settings-readonly-status">
-                Local speech-recognition readiness has not loaded yet.
-              </p>
-            ) : (
-              <InlineAlert
-                tone={transcriptionReadiness.tone}
-                title={`Local speech recognition: ${transcriptionReadiness.label}`}
-              >
-                {transcriptionReadiness.summary}
-              </InlineAlert>
-            )}
-            <div className="settings-field-grid">
-              <label className="settings-field">
-                <span>Speech model</span>
-                <select
-                  value={draft.transcriptionModel}
-                  onChange={(event) => {
-                    updateDraft(
-                      'transcriptionModel',
-                      event.target.value as SettingsDraft['transcriptionModel'],
-                    )
-                  }}
-                  disabled={backendFieldsDisabled}
-                  aria-describedby={`${backendFieldId}-transcription-model-help`}
-                >
-                  {transcriptionModels.map((model) => (
-                    <option key={model} value={model}>{model}</option>
-                  ))}
-                </select>
-                <small id={`${backendFieldId}-transcription-model-help`}>
-                  Elysia only opens the matching local folder and never treats
-                  this name as permission to download weights.
-                </small>
-              </label>
-              <label className="settings-field">
-                <span>Recognition device</span>
-                <select
-                  value={draft.transcriptionDevice}
-                  onChange={(event) => {
-                    updateDraft(
-                      'transcriptionDevice',
-                      event.target.value as SettingsDraft['transcriptionDevice'],
-                    )
-                  }}
-                  disabled={backendFieldsDisabled}
-                  aria-describedby={`${backendFieldId}-transcription-device-help`}
-                >
-                  <option value="auto">Auto (CUDA, then CPU fallback)</option>
-                  <option value="cuda">CUDA only</option>
-                  <option value="cpu">CPU only</option>
-                </select>
-                <small id={`${backendFieldId}-transcription-device-help`}>
-                  Active: {settingsState.activeSettings.transcriptionDevice};
-                  readiness reports the resolved device without native details.
-                </small>
-              </label>
-              <label className="settings-field">
-                <span>Default recognition language</span>
-                <select
-                  value={draft.transcriptionLanguage}
-                  onChange={(event) => {
-                    updateDraft(
-                      'transcriptionLanguage',
-                      event.target.value as SettingsDraft['transcriptionLanguage'],
-                    )
-                  }}
-                  disabled={backendFieldsDisabled}
-                  aria-describedby={`${backendFieldId}-transcription-language-help`}
-                >
-                  <option value="auto">Automatic Chinese / English detection</option>
-                  <option value="zh">Chinese (Simplified output)</option>
-                  <option value="en">English</option>
-                </select>
-                <small id={`${backendFieldId}-transcription-language-help`}>
-                  This recognition hint applies after restart. Final Chinese text is
-                  always normalized to Simplified Chinese.
-                </small>
-              </label>
-            </div>
-          </section>
-
-          <section className="settings-section" aria-labelledby="memory-settings-heading">
-            <div className="settings-section-heading">
-              <h2 id="memory-settings-heading">Memory</h2>
-              <p>Bound local context and retrieval without changing stored memories.</p>
-            </div>
-            <div className="settings-field-grid">
-              <label className="settings-field">
-                <span>Short-term token budget</span>
-                <input
-                  type="number"
-                  min="1"
-                  max="10000000"
-                  step="1"
-                  value={draft.shortTermMemoryTokenBudget}
-                  onChange={(event) => {
-                    updateDraft('shortTermMemoryTokenBudget', event.target.value)
-                  }}
-                  disabled={backendFieldsDisabled}
-                  aria-invalid={validationErrors.shortTermMemoryTokenBudget !== undefined}
-                  aria-describedby={[
-                    `${backendFieldId}-short-term-memory-help`,
-                    validationErrors.shortTermMemoryTokenBudget === undefined
-                      ? null
-                      : `${backendFieldId}-short-term-memory-error`,
-                  ].filter(Boolean).join(' ')}
-                  aria-errormessage={validationErrors.shortTermMemoryTokenBudget === undefined
-                    ? undefined
-                    : `${backendFieldId}-short-term-memory-error`}
-                />
-                <small id={`${backendFieldId}-short-term-memory-help`}>
-                  Enter a whole number from 1 to 10,000,000.
-                </small>
-                {validationErrors.shortTermMemoryTokenBudget !== undefined && (
-                  <small
-                    className="settings-field-error"
-                    id={`${backendFieldId}-short-term-memory-error`}
-                  >
-                    {validationErrors.shortTermMemoryTokenBudget}
-                  </small>
-                )}
-              </label>
-              <label className="settings-field">
-                <span>Retrieved memories per turn</span>
-                <input
-                  type="number"
-                  min="1"
-                  max="10000000"
-                  step="1"
-                  value={draft.memoryRetrievalLimit}
-                  onChange={(event) => {
-                    updateDraft('memoryRetrievalLimit', event.target.value)
-                  }}
-                  disabled={backendFieldsDisabled}
-                  aria-invalid={validationErrors.memoryRetrievalLimit !== undefined}
-                  aria-describedby={[
-                    `${backendFieldId}-memory-retrieval-help`,
-                    validationErrors.memoryRetrievalLimit === undefined
-                      ? null
-                      : `${backendFieldId}-memory-retrieval-error`,
-                  ].filter(Boolean).join(' ')}
-                  aria-errormessage={validationErrors.memoryRetrievalLimit === undefined
-                    ? undefined
-                    : `${backendFieldId}-memory-retrieval-error`}
-                />
-                <small id={`${backendFieldId}-memory-retrieval-help`}>
-                  Enter a whole number from 1 to 10,000,000.
-                </small>
-                {validationErrors.memoryRetrievalLimit !== undefined && (
-                  <small
-                    className="settings-field-error"
-                    id={`${backendFieldId}-memory-retrieval-error`}
-                  >
-                    {validationErrors.memoryRetrievalLimit}
-                  </small>
-                )}
-              </label>
-            </div>
-          </section>
-
-          <section
-            className="settings-section"
-            aria-labelledby="voice-behavior-settings-heading"
-          >
-            <div className="settings-section-heading">
-              <h2 id="voice-behavior-settings-heading">Voice behavior</h2>
-              <p>
-                Control local speech playback and Voice-call assistance. Device
-                choices remain separate below because they belong to this PC.
-              </p>
-            </div>
-            {speechReadiness === null ? (
-              <p className="settings-readonly-status">
-                Local speech readiness has not loaded yet.
-              </p>
-            ) : (
-              <InlineAlert
-                tone={speechReadiness.state === 'ready'
-                  ? 'success'
-                  : speechReadiness.state === 'starting'
-                    ? 'info'
-                    : 'error'}
-                title={`Local speech: ${speechReadiness.state}`}
-              >
-                {speechReadiness.state === 'ready'
-                  ? 'Read aloud and spoken Voice Call replies are ready.'
-                  : speechReadiness.state === 'starting'
-                    ? 'Wait for the local speech runtime to finish starting.'
-                    : speechReadiness.reason === 'setup_unavailable'
-                      ? 'Configure the local GPT-SoVITS runtime and a compatible profile/emotion pair, then restart the Backend.'
-                      : 'Restart the Backend before using Read aloud or spoken Voice Call replies.'}
-              </InlineAlert>
-            )}
-            <div className="settings-field-grid">
-              <label className="settings-field">
-                <span>Speak Voice Call replies</span>
-                <select
-                  value={String(draft.autoReadAloud)}
-                  onChange={(event) => {
-                    updateDraft('autoReadAloud', event.target.value === 'true')
-                  }}
-                  disabled={backendFieldsDisabled}
-                  aria-describedby={`${backendFieldId}-auto-read-aloud-help`}
-                >
-                  <option value="true">On</option>
-                  <option value="false">Off</option>
-                </select>
-                <small id={`${backendFieldId}-auto-read-aloud-help`}>
-                  Applies after saving. Ordinary Chat stays silent unless you
-                  choose Read aloud on a reply; this setting controls automatic
-                  speech inside Voice Call only.
-                </small>
-              </label>
-
-              <label className="settings-field">
-                <span>Speech rate (%)</span>
-                <input
-                  type="number"
-                  min="50"
-                  max="200"
-                  step="1"
-                  value={draft.speechRatePercent}
-                  onChange={(event) => {
-                    updateDraft('speechRatePercent', event.target.value)
-                  }}
-                  disabled={backendFieldsDisabled}
-                  aria-invalid={validationErrors.speechRatePercent !== undefined}
-                  aria-describedby={[
-                    `${backendFieldId}-speech-rate-help`,
-                    validationErrors.speechRatePercent === undefined
-                      ? null
-                      : `${backendFieldId}-speech-rate-error`,
-                  ].filter(Boolean).join(' ')}
-                  aria-errormessage={validationErrors.speechRatePercent === undefined
-                    ? undefined
-                    : `${backendFieldId}-speech-rate-error`}
-                />
-                <small id={`${backendFieldId}-speech-rate-help`}>
-                  Active: {settingsState.activeSettings.speechRatePercent}%.
-                  Enter 50–200; saved changes apply after a Backend restart.
-                </small>
-                {validationErrors.speechRatePercent !== undefined && (
-                  <small
-                    className="settings-field-error"
-                    id={`${backendFieldId}-speech-rate-error`}
-                  >
-                    {validationErrors.speechRatePercent}
-                  </small>
-                )}
-              </label>
-
-              <label className="settings-field">
-                <span>Speech volume (%)</span>
-                <input
-                  type="number"
-                  min="0"
-                  max="100"
-                  step="1"
-                  value={draft.speechVolumePercent}
-                  onChange={(event) => {
-                    updateDraft('speechVolumePercent', event.target.value)
-                  }}
-                  disabled={backendFieldsDisabled}
-                  aria-invalid={validationErrors.speechVolumePercent !== undefined}
-                  aria-describedby={[
-                    `${backendFieldId}-speech-volume-help`,
-                    validationErrors.speechVolumePercent === undefined
-                      ? null
-                      : `${backendFieldId}-speech-volume-error`,
-                  ].filter(Boolean).join(' ')}
-                  aria-errormessage={validationErrors.speechVolumePercent === undefined
-                    ? undefined
-                    : `${backendFieldId}-speech-volume-error`}
-                />
-                <small id={`${backendFieldId}-speech-volume-help`}>
-                  Applies to managed speech after saving. Zero keeps synthesis
-                  enabled while silencing playback.
-                </small>
-                {validationErrors.speechVolumePercent !== undefined && (
-                  <small
-                    className="settings-field-error"
-                    id={`${backendFieldId}-speech-volume-error`}
-                  >
-                    {validationErrors.speechVolumePercent}
-                  </small>
-                )}
-              </label>
-
-              <label className="settings-field">
-                <span>Voice profile</span>
-                <input
-                  type="text"
-                  value={draft.voiceProfileId}
-                  onChange={(event) => {
-                    updateDraft('voiceProfileId', event.target.value)
-                  }}
-                  disabled={backendFieldsDisabled}
-                  spellCheck={false}
-                  autoComplete="off"
-                  maxLength={64}
-                  aria-invalid={validationErrors.voiceProfileId !== undefined}
-                  aria-describedby={[
-                    `${backendFieldId}-voice-profile-help`,
-                    validationErrors.voiceProfileId === undefined
-                      ? null
-                      : `${backendFieldId}-voice-profile-error`,
-                  ].filter(Boolean).join(' ')}
-                  aria-errormessage={validationErrors.voiceProfileId === undefined
-                    ? undefined
-                    : `${backendFieldId}-voice-profile-error`}
-                />
-                <small id={`${backendFieldId}-voice-profile-help`}>
-                  Active: {settingsState.activeSettings.voiceProfileId}. Use a
-                  configured logical profile ID; saved changes apply after restart.
-                </small>
-                {validationErrors.voiceProfileId !== undefined && (
-                  <small
-                    className="settings-field-error"
-                    id={`${backendFieldId}-voice-profile-error`}
-                  >
-                    {validationErrors.voiceProfileId}
-                  </small>
-                )}
-              </label>
-
-              <label className="settings-field">
-                <span>Voice emotion</span>
-                <select
-                  value={draft.voiceEmotion}
-                  onChange={(event) => {
-                    const value = event.target.value
-                    if (isVoiceEmotion(value)) {
-                      updateDraft('voiceEmotion', value)
-                    }
-                  }}
-                  disabled={backendFieldsDisabled}
-                  aria-invalid={validationErrors.voiceEmotion !== undefined}
-                  aria-describedby={[
-                    `${backendFieldId}-voice-emotion-help`,
-                    validationErrors.voiceEmotion === undefined
-                      ? null
-                      : `${backendFieldId}-voice-emotion-error`,
-                  ].filter(Boolean).join(' ')}
-                  aria-errormessage={validationErrors.voiceEmotion === undefined
-                    ? undefined
-                    : `${backendFieldId}-voice-emotion-error`}
-                >
-                  {voiceEmotionOptions.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-                <small id={`${backendFieldId}-voice-emotion-help`}>
-                  Active: {settingsState.activeSettings.voiceEmotion}. This
-                  closed choice selects both the local reference voice and the
-                  reviewed character expression after a Backend restart.
-                </small>
-                {validationErrors.voiceEmotion !== undefined && (
-                  <small
-                    className="settings-field-error"
-                    id={`${backendFieldId}-voice-emotion-error`}
-                  >
-                    {validationErrors.voiceEmotion}
-                  </small>
-                )}
-              </label>
-
-            </div>
-          </section>
-
-          {voiceSection}
-
-          <section className="settings-section" aria-labelledby="files-settings-heading">
-            <div className="settings-section-heading">
-              <h2 id="files-settings-heading">Files</h2>
-              <p>Limit the size of one local import bundle.</p>
-            </div>
-            <label className="settings-field settings-field-single">
-              <span>Maximum import size (bytes)</span>
-              <input
-                type="number"
-                min="1"
-                max="2147483647"
-                step="1"
-                value={draft.dataImportMaxBytes}
-                onChange={(event) => { updateDraft('dataImportMaxBytes', event.target.value) }}
-                disabled={backendFieldsDisabled}
-                aria-invalid={validationErrors.dataImportMaxBytes !== undefined}
-                aria-describedby={[
-                  `${backendFieldId}-data-import-help`,
-                  validationErrors.dataImportMaxBytes === undefined
-                    ? null
-                    : `${backendFieldId}-data-import-error`,
-                ].filter(Boolean).join(' ')}
-                aria-errormessage={validationErrors.dataImportMaxBytes === undefined
-                  ? undefined
-                  : `${backendFieldId}-data-import-error`}
-              />
-              <small id={`${backendFieldId}-data-import-help`}>
-                Current draft: {positiveInteger(draft.dataImportMaxBytes, 2_147_483_647) === null
-                  ? 'invalid'
-                  : `${(Number(draft.dataImportMaxBytes) / 1_048_576).toFixed(1)} MiB`}.
-              </small>
-              {validationErrors.dataImportMaxBytes !== undefined && (
-                <small
-                  className="settings-field-error"
-                  id={`${backendFieldId}-data-import-error`}
-                >
-                  {validationErrors.dataImportMaxBytes}
-                </small>
+          {settingsState !== null && draft !== null && (
+            <>
+              {settingsState.warning !== null && (
+                <InlineAlert tone="warning" title="Defaults restored">
+                  {settingsState.warning}
+                </InlineAlert>
               )}
-            </label>
-          </section>
+              {(error !== null || clientError !== null) && (
+                <InlineAlert
+                  tone="error"
+                  title="Settings were not saved"
+                  action={{
+                    label: loading ? 'Reloading…' : 'Reload saved settings',
+                    onClick: reloadSavedSettings,
+                    disabled: backendFieldsDisabled,
+                  }}
+                >
+                  {clientError ?? error}
+                </InlineAlert>
+              )}
+              {settingsState.restartRequired && (
+                <InlineAlert
+                  tone="warning"
+                  title="Backend restart required"
+                  action={{
+                    label: restartPending ? 'Restarting…' : 'Restart Backend',
+                    onClick: () => { void onRestart() },
+                    disabled: (
+                      restartPending
+                      || generationBusy
+                      || pending
+                      || loading
+                      || globalDirty
+                    ),
+                  }}
+                >
+                  Saved changes to {settingsState.restartFields
+                    .map((field) => restartLabels[field])
+                    .join(', ')} will apply after restart.
+                  {globalDirty ? ' Save or discard the current draft first.' : ''}
+                </InlineAlert>
+              )}
+            </>
+          )}
 
-          {dataStorageSection}
+          {/* Keeping categories mounted preserves both drafts without changing their save scopes. */}
+          <SettingsCategoryPanel
+            category="general"
+            activeCategory={activeCategory}
+            navigationId={navigationId}
+          >
+            {settingsState !== null && draft !== null && (
+              <>
+                <section className="settings-section" aria-labelledby="model-settings-heading">
+                  <div className="settings-section-heading">
+                    <h2 id="model-settings-heading">Model</h2>
+                    <p>Choose the global default and local Ollama origin.</p>
+                  </div>
+                  <div className="settings-field-grid">
+                    <label className="settings-field">
+                      <span>Default model</span>
+                      <input
+                        type="text"
+                        list={modelListId}
+                        data-settings-field="modelName"
+                        value={draft.modelName}
+                        onChange={(event) => { updateDraft('modelName', event.target.value) }}
+                        disabled={backendFieldsDisabled}
+                        spellCheck={false}
+                        autoComplete="off"
+                        aria-invalid={validationErrors.modelName !== undefined}
+                        aria-describedby={[
+                          `${backendFieldId}-model-name-help`,
+                          validationErrors.modelName === undefined
+                            ? null
+                            : `${backendFieldId}-model-name-error`,
+                        ].filter(Boolean).join(' ')}
+                        aria-errormessage={validationErrors.modelName === undefined
+                          ? undefined
+                          : `${backendFieldId}-model-name-error`}
+                      />
+                      <datalist id={modelListId}>
+                        {modelOptions.map((model) => (
+                          <option key={model} value={model}>{model}</option>
+                        ))}
+                      </datalist>
+                      <small id={`${backendFieldId}-model-name-help`}>
+                        Choose an installed model, or enter its exact Ollama name to repair a failed startup.
+                      </small>
+                      {validationErrors.modelName !== undefined && (
+                        <small
+                          className="settings-field-error"
+                          id={`${backendFieldId}-model-name-error`}
+                        >
+                          {validationErrors.modelName}
+                        </small>
+                      )}
+                    </label>
+                    <label className="settings-field">
+                      <span>Ollama origin</span>
+                      <input
+                        type="url"
+                        data-settings-field="ollamaHost"
+                        value={draft.ollamaHost}
+                        onChange={(event) => { updateDraft('ollamaHost', event.target.value) }}
+                        placeholder="http://localhost:11434"
+                        spellCheck={false}
+                        autoComplete="off"
+                        disabled={backendFieldsDisabled}
+                        aria-invalid={validationErrors.ollamaHost !== undefined}
+                        aria-describedby={[
+                          `${backendFieldId}-ollama-host-help`,
+                          validationErrors.ollamaHost === undefined
+                            ? null
+                            : `${backendFieldId}-ollama-host-error`,
+                        ].filter(Boolean).join(' ')}
+                        aria-errormessage={validationErrors.ollamaHost === undefined
+                          ? undefined
+                          : `${backendFieldId}-ollama-host-error`}
+                      />
+                      <small id={`${backendFieldId}-ollama-host-help`}>
+                        Credentials, paths, query strings, and fragments are rejected.
+                      </small>
+                      {validationErrors.ollamaHost !== undefined && (
+                        <small
+                          className="settings-field-error"
+                          id={`${backendFieldId}-ollama-host-error`}
+                        >
+                          {validationErrors.ollamaHost}
+                        </small>
+                      )}
+                    </label>
+                  </div>
+                </section>
 
-          <section className="settings-section" aria-labelledby="work-settings-heading">
-            <div className="settings-section-heading">
-              <h2 id="work-settings-heading">Work</h2>
-              <p>Project workspace bindings remain Project-owned.</p>
-            </div>
-            <p className="settings-readonly-status">
-              Work permissions and tools are disabled until their execution boundary is implemented. Manage the current workspace from Projects.
-            </p>
-          </section>
+                <section className="settings-section" aria-labelledby="general-settings-heading">
+                  <div className="settings-section-heading">
+                    <h2 id="general-settings-heading">Settings scopes</h2>
+                    <p>Global values apply by default; Project and Chat values remain explicit.</p>
+                  </div>
+                  <div className="settings-scope-grid" aria-label="Settings scopes">
+                    <article>
+                      <strong>Global</strong>
+                      <span>Default model: {settingsState.settings.modelName}</span>
+                      <small>Revision {settingsState.revision}; saved locally.</small>
+                    </article>
+                    <article>
+                      <strong>Project</strong>
+                      {settingsState.scopes.project === null ? (
+                        <span>No active Project. Global settings apply.</span>
+                      ) : (
+                        <>
+                          <span>{settingsState.scopes.project.projectName}</span>
+                          <small>
+                            {settingsState.scopes.project.modelName === null
+                              ? `Inherits ${settingsState.scopes.project.inheritedModelName}`
+                              : `Override: ${settingsState.scopes.project.modelName}`}
+                          </small>
+                        </>
+                      )}
+                    </article>
+                    <article>
+                      <strong>Chat</strong>
+                      {settingsState.scopes.chat === null ? (
+                        <span>No active Chat.</span>
+                      ) : (
+                        <>
+                          <span>{settingsState.scopes.chat.chatTitle}</span>
+                          <small>Pinned to {settingsState.scopes.chat.modelName}</small>
+                        </>
+                      )}
+                    </article>
+                  </div>
+                </section>
+              </>
+            )}
+            {(settingsState === null || draft === null) && (
+              <p className="settings-readonly-status">Conversation defaults will appear when settings are available.</p>
+            )}
+          </SettingsCategoryPanel>
 
-          <section className="settings-section" aria-labelledby="privacy-settings-heading">
-            <div className="settings-section-heading">
-              <h2 id="privacy-settings-heading">Privacy</h2>
-              <p>Settings, Chats, Projects, and Memory remain in the local workspace.</p>
-            </div>
-            <ul className="settings-privacy-list">
-              <li>This settings file contains no API keys, tokens, or passwords.</li>
-              <li>Ollama requests use only the origin shown above.</li>
-              <li>External links require an explicit click and open outside Elysia.</li>
-            </ul>
-          </section>
+          <SettingsCategoryPanel
+            category="appearance"
+            activeCategory={activeCategory}
+            navigationId={navigationId}
+          >
+            <AppearanceSettings
+              themePreference={themePreference}
+              resolvedTheme={resolvedTheme}
+              desktopPetState={desktopPetState}
+              desktopPetPending={desktopPetPending}
+              desktopPetError={desktopPetError}
+              onThemeChange={onThemeChange}
+              onDesktopPetModeChange={onDesktopPetModeChange}
+              onDesktopPetModelChange={onDesktopPetModelChange}
+              onChooseDesktopPetModelDirectory={onChooseDesktopPetModelDirectory}
+              onRefreshDesktopPetModels={onRefreshDesktopPetModels}
+              onOpenDesktopPetDownload={onOpenDesktopPetDownload}
+            />
 
-          <AppearanceSettings
-            themePreference={themePreference}
-            resolvedTheme={resolvedTheme}
-            desktopPetState={desktopPetState}
-            desktopPetPending={desktopPetPending}
-            desktopPetError={desktopPetError}
-            onThemeChange={onThemeChange}
-            onDesktopPetModeChange={onDesktopPetModeChange}
-            onDesktopPetModelChange={onDesktopPetModelChange}
-            onChooseDesktopPetModelDirectory={onChooseDesktopPetModelDirectory}
-            onRefreshDesktopPetModels={onRefreshDesktopPetModels}
-            onOpenDesktopPetDownload={onOpenDesktopPetDownload}
-          />
+            <PresenceNotificationSettings
+              state={presenceNotificationState}
+              pending={presenceNotificationPending}
+              error={presenceNotificationError}
+              onChange={onPresenceNotificationChange}
+            />
+          </SettingsCategoryPanel>
 
-          <PresenceNotificationSettings
-            state={presenceNotificationState}
-            pending={presenceNotificationPending}
-            error={presenceNotificationError}
-            onChange={onPresenceNotificationChange}
-          />
+          <SettingsCategoryPanel
+            category="voice"
+            activeCategory={activeCategory}
+            navigationId={navigationId}
+          >
+            {settingsState !== null && draft !== null && (
+              <>
+                <section
+                  className="settings-section"
+                  aria-labelledby="transcription-settings-heading"
+                >
+                  <div className="settings-section-heading">
+                    <h2 id="transcription-settings-heading">Speech recognition</h2>
+                    <p>
+                      Choose an installed local model, execution device, and default
+                      language. Changes apply after the Backend restarts.
+                    </p>
+                  </div>
+                  {transcriptionReadiness === null ? (
+                    <p className="settings-readonly-status">
+                      Local speech-recognition readiness has not loaded yet.
+                    </p>
+                  ) : (
+                    <InlineAlert
+                      tone={transcriptionReadiness.tone}
+                      title={`Local speech recognition: ${transcriptionReadiness.label}`}
+                    >
+                      {transcriptionReadiness.summary}
+                    </InlineAlert>
+                  )}
+                  <div className="settings-field-grid">
+                    <label className="settings-field">
+                      <span>Speech model</span>
+                      <select
+                        data-settings-field="transcriptionModel"
+                        value={draft.transcriptionModel}
+                        onChange={(event) => {
+                          updateDraft(
+                            'transcriptionModel',
+                            event.target.value as SettingsDraft['transcriptionModel'],
+                          )
+                        }}
+                        disabled={backendFieldsDisabled}
+                        aria-describedby={`${backendFieldId}-transcription-model-help`}
+                      >
+                        {transcriptionModels.map((model) => (
+                          <option key={model} value={model}>{model}</option>
+                        ))}
+                      </select>
+                      <small id={`${backendFieldId}-transcription-model-help`}>
+                        Elysia only opens the matching local folder and never treats
+                        this name as permission to download weights.
+                      </small>
+                    </label>
+                    <label className="settings-field">
+                      <span>Recognition device</span>
+                      <select
+                        data-settings-field="transcriptionDevice"
+                        value={draft.transcriptionDevice}
+                        onChange={(event) => {
+                          updateDraft(
+                            'transcriptionDevice',
+                            event.target.value as SettingsDraft['transcriptionDevice'],
+                          )
+                        }}
+                        disabled={backendFieldsDisabled}
+                        aria-describedby={`${backendFieldId}-transcription-device-help`}
+                      >
+                        <option value="auto">Auto (CUDA, then CPU fallback)</option>
+                        <option value="cuda">CUDA only</option>
+                        <option value="cpu">CPU only</option>
+                      </select>
+                      <small id={`${backendFieldId}-transcription-device-help`}>
+                        Active: {settingsState.activeSettings.transcriptionDevice};
+                        readiness reports the resolved device without native details.
+                      </small>
+                    </label>
+                    <label className="settings-field">
+                      <span>Default recognition language</span>
+                      <select
+                        data-settings-field="transcriptionLanguage"
+                        value={draft.transcriptionLanguage}
+                        onChange={(event) => {
+                          updateDraft(
+                            'transcriptionLanguage',
+                            event.target.value as SettingsDraft['transcriptionLanguage'],
+                          )
+                        }}
+                        disabled={backendFieldsDisabled}
+                        aria-describedby={`${backendFieldId}-transcription-language-help`}
+                      >
+                        <option value="auto">Automatic Chinese / English detection</option>
+                        <option value="zh">Chinese (Simplified output)</option>
+                        <option value="en">English</option>
+                      </select>
+                      <small id={`${backendFieldId}-transcription-language-help`}>
+                        This recognition hint applies after restart. Final Chinese text is
+                        always normalized to Simplified Chinese.
+                      </small>
+                    </label>
+                  </div>
+                </section>
 
-          <footer className="settings-save-bar">
-            <div>
-              <strong>{globalDirty ? 'Unsaved global changes' : 'Global settings are up to date'}</strong>
-              <span>
-                {generationBusy
-                  ? 'Wait for the current reply before saving. '
-                  : ''}
-                Appearance and notification choices are saved separately and apply immediately.
-              </span>
-            </div>
-            <div className="settings-save-actions">
-              <button
-                type="button"
-                className="secondary-button"
-                disabled={!globalDirty || backendFieldsDisabled}
-                onClick={() => {
-                  setDraft(draftFromValues(settingsState.settings))
-                  setClientError(null)
-                }}
-              >
-                Discard
-              </button>
-              <button
-                type="submit"
-                className="primary-button"
-                disabled={
-                  !globalDirty
-                  || backendFieldsDisabled
-                  || generationBusy
-                  || firstValidationError !== null
-                }
-              >
-                {pending ? 'Saving…' : 'Save changes'}
-              </button>
-            </div>
-          </footer>
+                <section
+                  className="settings-section"
+                  aria-labelledby="voice-behavior-settings-heading"
+                >
+                  <div className="settings-section-heading">
+                    <h2 id="voice-behavior-settings-heading">Voice behavior</h2>
+                    <p>
+                      Control local speech playback and Voice-call assistance. Device
+                      choices remain separate below because they belong to this PC.
+                    </p>
+                  </div>
+                  {speechReadiness === null ? (
+                    <p className="settings-readonly-status">
+                      Local speech readiness has not loaded yet.
+                    </p>
+                  ) : (
+                    <InlineAlert
+                      tone={speechReadiness.state === 'ready'
+                        ? 'success'
+                        : speechReadiness.state === 'starting'
+                          ? 'info'
+                          : 'error'}
+                      title={`Local speech: ${speechReadiness.state}`}
+                    >
+                      {speechReadiness.state === 'ready'
+                        ? 'Read aloud and spoken Voice Call replies are ready.'
+                        : speechReadiness.state === 'starting'
+                          ? 'Wait for the local speech runtime to finish starting.'
+                          : speechReadiness.reason === 'setup_unavailable'
+                            ? 'Configure the local GPT-SoVITS runtime and a compatible profile/emotion pair, then restart the Backend.'
+                            : 'Restart the Backend before using Read aloud or spoken Voice Call replies.'}
+                    </InlineAlert>
+                  )}
+                  <div className="settings-field-grid">
+                    <label className="settings-field">
+                      <span>Speak Voice Call replies</span>
+                      <select
+                        data-settings-field="autoReadAloud"
+                        value={String(draft.autoReadAloud)}
+                        onChange={(event) => {
+                          updateDraft('autoReadAloud', event.target.value === 'true')
+                        }}
+                        disabled={backendFieldsDisabled}
+                        aria-describedby={`${backendFieldId}-auto-read-aloud-help`}
+                      >
+                        <option value="true">On</option>
+                        <option value="false">Off</option>
+                      </select>
+                      <small id={`${backendFieldId}-auto-read-aloud-help`}>
+                        Applies after saving. Ordinary Chat stays silent unless you
+                        choose Read aloud on a reply; this setting controls automatic
+                        speech inside Voice Call only.
+                      </small>
+                    </label>
+
+                    <label className="settings-field">
+                      <span>Speech rate (%)</span>
+                      <input
+                        type="number"
+                        min="50"
+                        max="200"
+                        step="1"
+                        data-settings-field="speechRatePercent"
+                        value={draft.speechRatePercent}
+                        onChange={(event) => {
+                          updateDraft('speechRatePercent', event.target.value)
+                        }}
+                        disabled={backendFieldsDisabled}
+                        aria-invalid={validationErrors.speechRatePercent !== undefined}
+                        aria-describedby={[
+                          `${backendFieldId}-speech-rate-help`,
+                          validationErrors.speechRatePercent === undefined
+                            ? null
+                            : `${backendFieldId}-speech-rate-error`,
+                        ].filter(Boolean).join(' ')}
+                        aria-errormessage={validationErrors.speechRatePercent === undefined
+                          ? undefined
+                          : `${backendFieldId}-speech-rate-error`}
+                      />
+                      <small id={`${backendFieldId}-speech-rate-help`}>
+                        Active: {settingsState.activeSettings.speechRatePercent}%.
+                        Enter 50–200; saved changes apply after a Backend restart.
+                      </small>
+                      {validationErrors.speechRatePercent !== undefined && (
+                        <small
+                          className="settings-field-error"
+                          id={`${backendFieldId}-speech-rate-error`}
+                        >
+                          {validationErrors.speechRatePercent}
+                        </small>
+                      )}
+                    </label>
+
+                    <label className="settings-field">
+                      <span>Speech volume (%)</span>
+                      <input
+                        type="number"
+                        min="0"
+                        max="100"
+                        step="1"
+                        data-settings-field="speechVolumePercent"
+                        value={draft.speechVolumePercent}
+                        onChange={(event) => {
+                          updateDraft('speechVolumePercent', event.target.value)
+                        }}
+                        disabled={backendFieldsDisabled}
+                        aria-invalid={validationErrors.speechVolumePercent !== undefined}
+                        aria-describedby={[
+                          `${backendFieldId}-speech-volume-help`,
+                          validationErrors.speechVolumePercent === undefined
+                            ? null
+                            : `${backendFieldId}-speech-volume-error`,
+                        ].filter(Boolean).join(' ')}
+                        aria-errormessage={validationErrors.speechVolumePercent === undefined
+                          ? undefined
+                          : `${backendFieldId}-speech-volume-error`}
+                      />
+                      <small id={`${backendFieldId}-speech-volume-help`}>
+                        Applies to managed speech after saving. Zero keeps synthesis
+                        enabled while silencing playback.
+                      </small>
+                      {validationErrors.speechVolumePercent !== undefined && (
+                        <small
+                          className="settings-field-error"
+                          id={`${backendFieldId}-speech-volume-error`}
+                        >
+                          {validationErrors.speechVolumePercent}
+                        </small>
+                      )}
+                    </label>
+
+                    <label className="settings-field">
+                      <span>Voice profile</span>
+                      <input
+                        type="text"
+                        data-settings-field="voiceProfileId"
+                        value={draft.voiceProfileId}
+                        onChange={(event) => {
+                          updateDraft('voiceProfileId', event.target.value)
+                        }}
+                        disabled={backendFieldsDisabled}
+                        spellCheck={false}
+                        autoComplete="off"
+                        maxLength={64}
+                        aria-invalid={validationErrors.voiceProfileId !== undefined}
+                        aria-describedby={[
+                          `${backendFieldId}-voice-profile-help`,
+                          validationErrors.voiceProfileId === undefined
+                            ? null
+                            : `${backendFieldId}-voice-profile-error`,
+                        ].filter(Boolean).join(' ')}
+                        aria-errormessage={validationErrors.voiceProfileId === undefined
+                          ? undefined
+                          : `${backendFieldId}-voice-profile-error`}
+                      />
+                      <small id={`${backendFieldId}-voice-profile-help`}>
+                        Active: {settingsState.activeSettings.voiceProfileId}. Use a
+                        configured logical profile ID; saved changes apply after restart.
+                      </small>
+                      {validationErrors.voiceProfileId !== undefined && (
+                        <small
+                          className="settings-field-error"
+                          id={`${backendFieldId}-voice-profile-error`}
+                        >
+                          {validationErrors.voiceProfileId}
+                        </small>
+                      )}
+                    </label>
+
+                    <label className="settings-field">
+                      <span>Voice emotion</span>
+                      <select
+                        data-settings-field="voiceEmotion"
+                        value={draft.voiceEmotion}
+                        onChange={(event) => {
+                          const value = event.target.value
+                          if (isVoiceEmotion(value)) {
+                            updateDraft('voiceEmotion', value)
+                          }
+                        }}
+                        disabled={backendFieldsDisabled}
+                        aria-invalid={validationErrors.voiceEmotion !== undefined}
+                        aria-describedby={[
+                          `${backendFieldId}-voice-emotion-help`,
+                          validationErrors.voiceEmotion === undefined
+                            ? null
+                            : `${backendFieldId}-voice-emotion-error`,
+                        ].filter(Boolean).join(' ')}
+                        aria-errormessage={validationErrors.voiceEmotion === undefined
+                          ? undefined
+                          : `${backendFieldId}-voice-emotion-error`}
+                      >
+                        {voiceEmotionOptions.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                      <small id={`${backendFieldId}-voice-emotion-help`}>
+                        Active: {settingsState.activeSettings.voiceEmotion}. This
+                        closed choice selects both the local reference voice and the
+                        reviewed character expression after a Backend restart.
+                      </small>
+                      {validationErrors.voiceEmotion !== undefined && (
+                        <small
+                          className="settings-field-error"
+                          id={`${backendFieldId}-voice-emotion-error`}
+                        >
+                          {validationErrors.voiceEmotion}
+                        </small>
+                      )}
+                    </label>
+
+                  </div>
+                </section>
+              </>
+            )}
+
+            {voiceSection}
+          </SettingsCategoryPanel>
+
+          <SettingsCategoryPanel
+            category="data"
+            activeCategory={activeCategory}
+            navigationId={navigationId}
+          >
+            {dataStorageSection}
+
+            {settingsState !== null && draft !== null && (
+              <>
+                <section className="settings-section" aria-labelledby="files-settings-heading">
+                  <div className="settings-section-heading">
+                    <h2 id="files-settings-heading">Files</h2>
+                    <p>Limit the size of one local import bundle.</p>
+                  </div>
+                  <label className="settings-field settings-field-single">
+                    <span>Maximum import size (bytes)</span>
+                    <input
+                      type="number"
+                      min="1"
+                      max="2147483647"
+                      step="1"
+                      data-settings-field="dataImportMaxBytes"
+                      value={draft.dataImportMaxBytes}
+                      onChange={(event) => { updateDraft('dataImportMaxBytes', event.target.value) }}
+                      disabled={backendFieldsDisabled}
+                      aria-invalid={validationErrors.dataImportMaxBytes !== undefined}
+                      aria-describedby={[
+                        `${backendFieldId}-data-import-help`,
+                        validationErrors.dataImportMaxBytes === undefined
+                          ? null
+                          : `${backendFieldId}-data-import-error`,
+                      ].filter(Boolean).join(' ')}
+                      aria-errormessage={validationErrors.dataImportMaxBytes === undefined
+                        ? undefined
+                        : `${backendFieldId}-data-import-error`}
+                    />
+                    <small id={`${backendFieldId}-data-import-help`}>
+                      Current draft: {positiveInteger(draft.dataImportMaxBytes, 2_147_483_647) === null
+                        ? 'invalid'
+                        : `${(Number(draft.dataImportMaxBytes) / 1_048_576).toFixed(1)} MiB`}.
+                    </small>
+                    {validationErrors.dataImportMaxBytes !== undefined && (
+                      <small
+                        className="settings-field-error"
+                        id={`${backendFieldId}-data-import-error`}
+                      >
+                        {validationErrors.dataImportMaxBytes}
+                      </small>
+                    )}
+                  </label>
+                </section>
+              </>
+            )}
+          </SettingsCategoryPanel>
+
+          <SettingsCategoryPanel
+            category="advanced"
+            activeCategory={activeCategory}
+            navigationId={navigationId}
+          >
+            {settingsState !== null && draft !== null && (
+              <>
+                <section className="settings-section" aria-labelledby="memory-settings-heading">
+                  <div className="settings-section-heading">
+                    <h2 id="memory-settings-heading">Memory</h2>
+                    <p>Bound local context and retrieval without changing stored memories.</p>
+                  </div>
+                  <div className="settings-field-grid">
+                    <label className="settings-field">
+                      <span>Short-term token budget</span>
+                      <input
+                        type="number"
+                        min="1"
+                        max="10000000"
+                        step="1"
+                        data-settings-field="shortTermMemoryTokenBudget"
+                        value={draft.shortTermMemoryTokenBudget}
+                        onChange={(event) => {
+                          updateDraft('shortTermMemoryTokenBudget', event.target.value)
+                        }}
+                        disabled={backendFieldsDisabled}
+                        aria-invalid={validationErrors.shortTermMemoryTokenBudget !== undefined}
+                        aria-describedby={[
+                          `${backendFieldId}-short-term-memory-help`,
+                          validationErrors.shortTermMemoryTokenBudget === undefined
+                            ? null
+                            : `${backendFieldId}-short-term-memory-error`,
+                        ].filter(Boolean).join(' ')}
+                        aria-errormessage={validationErrors.shortTermMemoryTokenBudget === undefined
+                          ? undefined
+                          : `${backendFieldId}-short-term-memory-error`}
+                      />
+                      <small id={`${backendFieldId}-short-term-memory-help`}>
+                        Enter a whole number from 1 to 10,000,000.
+                      </small>
+                      {validationErrors.shortTermMemoryTokenBudget !== undefined && (
+                        <small
+                          className="settings-field-error"
+                          id={`${backendFieldId}-short-term-memory-error`}
+                        >
+                          {validationErrors.shortTermMemoryTokenBudget}
+                        </small>
+                      )}
+                    </label>
+                    <label className="settings-field">
+                      <span>Retrieved memories per turn</span>
+                      <input
+                        type="number"
+                        min="1"
+                        max="10000000"
+                        step="1"
+                        data-settings-field="memoryRetrievalLimit"
+                        value={draft.memoryRetrievalLimit}
+                        onChange={(event) => {
+                          updateDraft('memoryRetrievalLimit', event.target.value)
+                        }}
+                        disabled={backendFieldsDisabled}
+                        aria-invalid={validationErrors.memoryRetrievalLimit !== undefined}
+                        aria-describedby={[
+                          `${backendFieldId}-memory-retrieval-help`,
+                          validationErrors.memoryRetrievalLimit === undefined
+                            ? null
+                            : `${backendFieldId}-memory-retrieval-error`,
+                        ].filter(Boolean).join(' ')}
+                        aria-errormessage={validationErrors.memoryRetrievalLimit === undefined
+                          ? undefined
+                          : `${backendFieldId}-memory-retrieval-error`}
+                      />
+                      <small id={`${backendFieldId}-memory-retrieval-help`}>
+                        Enter a whole number from 1 to 10,000,000.
+                      </small>
+                      {validationErrors.memoryRetrievalLimit !== undefined && (
+                        <small
+                          className="settings-field-error"
+                          id={`${backendFieldId}-memory-retrieval-error`}
+                        >
+                          {validationErrors.memoryRetrievalLimit}
+                        </small>
+                      )}
+                    </label>
+                  </div>
+                </section>
+
+                <section className="settings-section" aria-labelledby="work-settings-heading">
+                  <div className="settings-section-heading">
+                    <h2 id="work-settings-heading">Work</h2>
+                    <p>Project workspace bindings remain Project-owned.</p>
+                  </div>
+                  <p className="settings-readonly-status">
+                    Work permissions and tools are disabled until their execution boundary is implemented. Manage the current workspace from Projects.
+                  </p>
+                </section>
+
+                <section className="settings-section" aria-labelledby="privacy-settings-heading">
+                  <div className="settings-section-heading">
+                    <h2 id="privacy-settings-heading">Privacy</h2>
+                    <p>Settings, Chats, Projects, and Memory remain in the local workspace.</p>
+                  </div>
+                  <ul className="settings-privacy-list">
+                    <li>This settings file contains no API keys, tokens, or passwords.</li>
+                    <li>Ollama requests use only the origin shown above.</li>
+                    <li>External links require an explicit click and open outside Elysia.</li>
+                  </ul>
+                </section>
+              </>
+            )}
+            {(settingsState === null || draft === null) && (
+              <p className="settings-readonly-status">Advanced preferences will appear when settings are available.</p>
+            )}
+          </SettingsCategoryPanel>
+
+          {settingsState !== null && draft !== null && globalFooterVisible && (
+            <footer className="settings-save-bar">
+              <div>
+                <strong>{globalDirty ? 'Unsaved global changes' : 'Global settings are up to date'}</strong>
+                <span>
+                  {generationBusy
+                    ? 'Wait for the current reply before saving. '
+                    : ''}
+                  Appearance and notification choices are saved separately and apply immediately.
+                </span>
+              </div>
+              <div className="settings-save-actions">
+                <button
+                  type="button"
+                  className="secondary-button"
+                  disabled={!globalDirty || backendFieldsDisabled}
+                  onClick={() => {
+                    setDraft(draftFromValues(settingsState.settings))
+                    setClientError(null)
+                  }}
+                >
+                  Discard
+                </button>
+                <button
+                  type="submit"
+                  className="primary-button"
+                  disabled={
+                    !globalDirty
+                    || backendFieldsDisabled
+                    || generationBusy
+                  }
+                >
+                  {pending ? 'Saving…' : 'Save changes'}
+                </button>
+              </div>
+            </footer>
+          )}
         </form>
-      )}
+      </div>
     </main>
   )
 }

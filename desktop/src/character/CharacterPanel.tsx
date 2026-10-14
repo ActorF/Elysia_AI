@@ -5,9 +5,10 @@
 
 import type { BackendSnapshot } from '../../electron/contracts.ts'
 import { Icon } from '../design-system/Icon.tsx'
-import { CharacterArtwork } from './CharacterArtwork.tsx'
+import { CharacterPanelArtwork } from './CharacterPanelArtwork.tsx'
 import type { CharacterEmotion } from './character-emotion.ts'
 import type { CharacterStateSnapshot } from './character-state.ts'
+import './CharacterPanel.css'
 
 interface CharacterPanelProps {
   chatTitle: string
@@ -31,7 +32,7 @@ export function CharacterPanel({
 }: CharacterPanelProps) {
   return (
     <aside
-      className="character-panel"
+      className="character-panel character-panel-compact"
       data-character-state={characterState.state}
       id="character-panel"
       aria-labelledby="character-panel-title"
@@ -40,14 +41,8 @@ export function CharacterPanel({
       tabIndex={-1}
     >
       <div className="character-panel-header">
-        <div>
-          <span className="eyebrow">Elysia</span>
-          <h2 id="character-panel-title">Here with you</h2>
-        </div>
+        <h2 id="character-panel-title">Elysia</h2>
         <div className="character-panel-actions">
-          <span className="soft-status">
-            {snapshot.status === 'ready' ? 'Ready' : 'Waiting'}
-          </span>
           <button
             type="button"
             className="icon-button character-panel-close"
@@ -62,41 +57,36 @@ export function CharacterPanel({
         </div>
       </div>
 
-      <div className="character-card">
-        <CharacterArtwork
-          className="character-portrait"
-          emotion={emotion}
-          state={characterState.state}
-        />
-        <div
-          className="character-caption"
-          role="status"
-          aria-live="polite"
-          aria-atomic="true"
-        >
-          <strong>{characterState.label}</strong>
-          <span>{characterState.description}</span>
+      <div className="character-panel-body">
+        <div className="character-presence-card">
+          <CharacterPanelArtwork emotion={emotion} state={characterState.state} />
+          <div
+            className="character-caption"
+            role="status"
+            aria-live="polite"
+            aria-atomic="true"
+          >
+            <strong className="character-presence-label">
+              <span className="status-dot" aria-hidden="true" />
+              {characterState.label}
+            </strong>
+            <span>{characterState.description}</span>
+          </div>
         </div>
       </div>
 
-      <div className="context-card">
-        <span className="context-label">Current context</span>
-        <strong>{chatTitle}</strong>
-        <p>{snapshot.modelName ?? 'Waiting for the local model'}</p>
-      </div>
-
-      <div className="context-card subtle">
-        <span className="context-label">Presence</span>
-        <p>
-          Collapse this optional panel whenever you want the conversation to
-          use the full window width.
-        </p>
-      </div>
-
-      <div className="context-card subtle character-note">
-        <Icon name="info" />
-        <p>The character area never changes Chat or Memory data.</p>
-      </div>
+      <footer className="character-panel-footer">
+        <div className="character-context-row">
+          <span className="context-label">Chat</span>
+          <strong title={chatTitle}>{chatTitle}</strong>
+        </div>
+        <div className="character-context-row">
+          <span className="context-label">Model</span>
+          <span title={snapshot.modelName ?? undefined}>
+            {snapshot.modelName ?? 'Waiting for the local model'}
+          </span>
+        </div>
+      </footer>
     </aside>
   )
 }

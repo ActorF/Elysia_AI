@@ -1,0 +1,125 @@
+/**
+ * Keep the expanded Elysia panel's illustration, live status, and conversation
+ * context together in compact cards. All selectors are scoped to this panel so
+ * shared character avatars and the independent Voice Call remain unaffected.
+ */
+
+.character-panel.character-panel-compact {
+  gap: var(--space-3);
+}
+
+.character-panel-compact .character-panel-header {
+  flex: 0 0 auto;
+}
+
+.character-panel-compact .character-panel-body {
+  flex: 0 0 auto;
+  min-height: 0;
+  gap: 0;
+  padding-block: 0;
+}
+
+.character-panel-compact .character-presence-card {
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-2xl);
+  background: var(--color-bg-surface);
+}
+
+.character-panel-compact .character-panel-artwork {
+  width: 100%;
+  aspect-ratio: 1;
+  overflow: hidden;
+  isolation: isolate;
+  container-type: normal;
+}
+
+.character-panel-compact .character-panel-illustration-frame {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  animation: none;
+}
+
+/* Reviewed source bounds exclude uneven gutters and adjacent rows. Equal
+   scaling on both axes preserves facial proportions in every square viewport. */
+.character-panel-compact .character-panel-illustration-image {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: var(--character-ui-image-size);
+  max-width: none;
+  height: var(--character-ui-image-size);
+  transform: translate(
+    var(--character-ui-image-x),
+    var(--character-ui-image-y)
+  );
+}
+
+.character-panel-compact .character-panel-portrait-fallback {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: 50% 25%;
+}
+
+.character-panel-compact .character-panel-body .character-caption {
+  gap: var(--space-2);
+  padding: var(--space-4);
+  border-top: 1px solid var(--color-border);
+  text-align: left;
+}
+
+.character-panel-compact .character-presence-label {
+  justify-content: flex-start;
+}
+
+.character-panel-compact .character-caption > span {
+  color: var(--color-text-secondary);
+  line-height: var(--line-height-normal);
+}
+
+.character-panel-compact .character-panel-footer {
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-xl);
+  background: var(--color-bg-soft);
+}
+
+.character-panel-compact .character-context-row {
+  grid-template-columns: 2.5rem minmax(0, 1fr);
+  gap: var(--space-2);
+  line-height: var(--line-height-normal);
+}
+
+.character-panel-compact .character-context-row > :last-child {
+  color: var(--color-text-primary);
+}
+
+.character-panel-compact .character-panel-fallback-initial {
+  display: grid;
+  width: 3rem;
+  height: 3rem;
+  place-items: center;
+  border-radius: var(--radius-full);
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+  font-size: var(--font-size-2xl);
+  font-weight: var(--font-weight-semibold);
+  text-transform: none;
+}
+
+@media (max-height: 42rem) {
+  .character-panel-compact .character-panel-artwork {
+    max-height: 14rem;
+    aspect-ratio: auto;
+  }
+
+  .character-panel-compact .character-panel-illustration-frame {
+    width: min(100%, 14rem);
+    height: auto;
+    aspect-ratio: 1;
+  }
+}

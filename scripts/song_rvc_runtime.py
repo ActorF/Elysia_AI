@@ -8,15 +8,19 @@ rate, and model family are fixed here so an Electron-selected song cannot
 expand the upstream RVC command surface.  With the fixed zero index rate, the
 Protect feature blend is an identity operation; it must not be treated as a
 guarantee that unvoiced content is preserved.  The sole per-song inference
-control is a bounded key shift of minus two through plus two semitones.
+control is a bounded key shift of minus twelve through plus twelve semitones.
 
 The parent process is responsible for digest-pinning the private assets.  This
 process independently rejects redirected paths, existing output files,
 non-CUDA fallback, unexpected model metadata, and malformed inference output.
-After inference, a language-independent transition guard compares the source
-and converted vocals.  It replaces only sustained, high-confidence false
-voicing with a quiet high-pass source-consonant layer; ordinary voiced frames
-and isolated pitch estimates remain byte-for-byte on the upstream path.
+The production path owns exact source-time segment crops while keeping the
+upstream inference inputs and waveform free of transition replacement. Its
+small maintained pipeline adapter recovers already generated right context
+instead of losing 10 ms frames at HuBERT's 20 ms boundaries or padding a short
+final tail. An experimental language-independent false-voicing analyzer is
+retained for offline evaluation, but it is deliberately outside production:
+replacing detected spans changed the vocal envelope and created audible stalls
+after mixing even when the detector identified the intended transition.
 It also disables Python networking, Hugging Face online access, and CUDA Graph
 capture before any vendor module is imported.  CUDA Graph capture is unsafe for
 full songs because upstream caches a separate graph for each distinct segment
@@ -37,6 +41,7 @@ from dataclasses import dataclass
 import errno
 import importlib
 from importlib.machinery import ModuleSpec
+from importlib.util import module_from_spec, spec_from_file_location
 import math
 import os
 from pathlib import Path
@@ -60,7 +65,7 @@ _RESAMPLE_RATE = 0
 _MODEL_SAMPLE_RATE = 40_000
 _FULL_SCALE_THRESHOLD = 0.999
 _MAX_FULL_SCALE_FRACTION = 0.01
-_KEY_SHIFTS = frozenset({-2, -1, 0, 1, 2})
+_KEY_SHIFTS = frozenset(range(-12, 13))
 _MAX_INPUT_BYTES = 2 * 1024 * 1024 * 1024
 _MAX_ASSET_BYTES = 8 * 1024 * 1024 * 1024
 _MAX_OUTPUT_SAMPLES = _MODEL_SAMPLE_RATE * 15 * 60
@@ -80,6 +85,9 @@ _ARTIFACT_YIN_HOP_LENGTH = 64
 _ARTIFACT_YIN_CORE_FRAMES = 2_048
 _ARTIFACT_YIN_CONTEXT_FRAMES = 4
 _ARTIFACT_YIN_TROUGH_THRESHOLD = 0.20
+_ARTIFACT_MAX_VITERBI_STATES = 512
+_ARTIFACT_MAX_VITERBI_FRAMES = 3_000
+_ARTIFACT_MAX_VITERBI_PREDECESSORS = 64
 _ARTIFACT_PREFILTER_OUTPUT_PERIODICITY = 0.93
 _ARTIFACT_PREFILTER_PERIODICITY_INCREASE = 0.12
 _ARTIFACT_INTEREST_RADIUS_SECONDS = 0.100
@@ -156,6 +164,10 @@ class _RvcRuntimeFailure(RuntimeError):
         self.code = code
 
 
+class _ArtifactAnalysisSkipped(RuntimeError):
+    """Request a fail-open guard result when bounded analysis is unavailable."""
+
+
 class _ClosedArgumentParser(argparse.ArgumentParser):
     """Convert argparse diagnostics into the wrapper's path-free failure."""
 
@@ -181,10 +193,11 @@ class _Request:
 
 @dataclass(frozen=True)
 class _RvcApi:
-    """Hold the two reviewed upstream constructors used by the adapter."""
+    """Hold reviewed constructors and the production instance-configuration hook."""
 
     config_factory: Callable[[], object]
     converter_factory: Callable[[object], object]
+    configure_converter: Optional[Callable[[object], Callable[[], None]]] = None
 
 
 def _fail(code: str) -> NoReturn:
@@ -604,6 +617,26 @@ def _require_module_origin(module: object, expected: Path) -> None:
         _fail("source_binding_failed")
 
 
+def _load_pipeline_helper() -> ModuleType:
+    """Load only the maintained sibling helper under isolated native Python."""
+
+    # The bundled python39._pth omits both the current and script directories.
+    # Load the verified sibling by path instead of extending module search or
+    # relying on package imports that work only in the development interpreter.
+    helper_path = _require_existing_path(
+        Path(__file__).with_name("song_rvc_pipeline.py"),
+        directory=False,
+        code="source_binding_failed",
+    )
+    spec = spec_from_file_location("_elysia_song_rvc_pipeline", helper_path)
+    if spec is None or spec.loader is None:
+        _fail("source_binding_failed")
+    helper = module_from_spec(spec)
+    spec.loader.exec_module(helper)
+    _require_module_origin(helper, helper_path)
+    return helper
+
+
 def _load_rvc_api(request: _Request) -> _RvcApi:
     """Import the explicit RVC tree and bind its HuBERT path before inference."""
 
@@ -645,7 +678,22 @@ def _load_rvc_api(request: _Request) -> _RvcApi:
         if Path(getattr(hubert_module, "HUBERT_MODEL_PATH")) != request.hubert:
             raise TypeError
         _audit_vendor_modules(request)
-        return _RvcApi(config_factory, converter_factory)
+
+        def _configure_converter(converter: object) -> Callable[[], None]:
+            # Bind after get_vc constructs this request's Pipeline. Keeping the
+            # hook on the real loader preserves model-free test injection and
+            # avoids replacing vendor classes or modifying authenticated files.
+            pipeline_module = importlib.import_module("infer.vc.pipeline")
+            _require_module_origin(
+                pipeline_module,
+                request.source_root / "infer" / "vc" / "pipeline.py",
+            )
+            helper = _load_pipeline_helper()
+            return helper.bind_exact_timing_pipeline(
+                converter, pipeline_module, request.input_audio,
+            )
+
+        return _RvcApi(config_factory, converter_factory, _configure_converter)
     except _RvcRuntimeFailure:
         raise
     except BaseException:
@@ -807,13 +855,13 @@ def _persistent_artifact_frames(
     *,
     np_module: Any,
 ) -> list[bool]:
-    """Retain sustained or locally repeated false-voicing evidence.
+    """Retain sustained or repeatedly clustered artifact evidence.
 
     A single pitch-estimation frame is not actionable.  The guard closes at
     most twelve milliseconds of internal uncertainty, then keeps either a
     continuous sixty-millisecond event or suspicious frames occupying at least
     ten percent of a centered one-second window.  Density qualifies only the
-    already suspicious frames, never their clean surrounding context.
+    already suspicious frames, never their clean context.
     """
 
     np = np_module
@@ -955,6 +1003,87 @@ def _pitch_lag_tracks(
     return output_lags, source_lags
 
 
+def _resample_poly_chunked(
+    audio: object,
+    *,
+    source_sample_rate: int,
+    target_sample_rate: int,
+    core_seconds: float,
+    np_module: Any,
+    signal_module: Any,
+) -> NDArray[Any]:
+    """Resample a long mono track in bounded, sample-identical blocks.
+
+    ``scipy.signal.resample_poly`` can spend many minutes in one monolithic
+    44.1-to-40-kHz call after RVC has already finished.  Its default FIR has
+    finite support, so denominator-aligned cores with one complete filter
+    support of context on each side can be cropped on exact global output
+    coordinates.  This retains element-for-element parity with the monolithic
+    call while bounding the work presented to SciPy at one time.
+    """
+
+    np = np_module
+    samples = np.asarray(audio, dtype=np.float32)
+    if (
+        samples.ndim != 1
+        or len(samples) == 0
+        or type(source_sample_rate) is not int
+        or type(target_sample_rate) is not int
+        or source_sample_rate < 1
+        or target_sample_rate < 1
+        or not math.isfinite(core_seconds)
+        or core_seconds <= 0.0
+    ):
+        _fail("invalid_audio")
+    divisor = math.gcd(source_sample_rate, target_sample_rate)
+    up = target_sample_rate // divisor
+    down = source_sample_rate // divisor
+    if up == down == 1:
+        return samples
+
+    total_output_samples = (len(samples) * up + down - 1) // down
+    output = np.empty(total_output_samples, dtype=np.float32)
+    target_core_samples = max(
+        down,
+        int(round(core_seconds * source_sample_rate)),
+    )
+    core_samples = max(
+        down,
+        (target_core_samples // down) * down,
+    )
+    # resample_poly's default FIR half-length is ten times the larger reduced
+    # rate.  Rounding its input-domain support up to a denominator boundary
+    # keeps both convolution phase and every crop coordinate global.
+    filter_support = (
+        10 * max(up, down) + up - 1
+    ) // up + 1
+    context_samples = (
+        (filter_support + down - 1) // down
+    ) * down
+
+    for core_start in range(0, len(samples), core_samples):
+        core_end = min(len(samples), core_start + core_samples)
+        segment_start = max(0, core_start - context_samples)
+        segment_end = min(len(samples), core_end + context_samples)
+        segment = signal_module.resample_poly(
+            samples[segment_start:segment_end],
+            up,
+            down,
+        ).astype(np.float32, copy=False)
+        output_start = core_start * up // down
+        output_end = (
+            total_output_samples
+            if core_end == len(samples)
+            else core_end * up // down
+        )
+        local_start = (core_start - segment_start) * up // down
+        local_end = local_start + output_end - output_start
+        if local_end > len(segment):
+            _fail("invalid_audio")
+        output[output_start:output_end] = segment[local_start:local_end]
+    return output
+
+
 def _read_source_vocal(
     path: Path,
     *,
@@ -986,12 +1115,14 @@ def _read_source_vocal(
         ):
             _fail("invalid_audio")
         mono = np.mean(source, axis=1, dtype=np.float32)
-        divisor = math.gcd(source_rate, output_sample_rate)
-        resampled = signal_module.resample_poly(
+        resampled = _resample_poly_chunked(
             mono,
-            output_sample_rate // divisor,
-            source_rate // divisor,
-        ).astype(np.float32, copy=False)
+            source_sample_rate=source_rate,
+            target_sample_rate=output_sample_rate,
+            core_seconds=_ARTIFACT_RESAMPLE_CORE_SECONDS,
+            np_module=np,
+            signal_module=signal_module,
+        )
         if len(resampled) >= output_samples:
             return resampled[:output_samples]
         return np.pad(resampled, (0, output_samples - len(resampled)))
@@ -1019,57 +1150,14 @@ def _resample_artifact_analysis(
     long-array performance path on multi-minute 40-kHz songs.
     """
 
-    np = np_module
-    samples = np.asarray(audio, dtype=np.float32)
-    if samples.ndim != 1 or len(samples) == 0:
-        _fail("invalid_audio")
-    divisor = math.gcd(source_sample_rate, _ARTIFACT_ANALYSIS_SAMPLE_RATE)
-    up = _ARTIFACT_ANALYSIS_SAMPLE_RATE // divisor
-    down = source_sample_rate // divisor
-    if up == down == 1:
-        return samples
-
-    total_output_samples = (len(samples) * up + down - 1) // down
-    output = np.empty(total_output_samples, dtype=np.float32)
-    target_core_samples = max(
-        down,
-        int(round(_ARTIFACT_RESAMPLE_CORE_SECONDS * source_sample_rate)),
+    return _resample_poly_chunked(
+        audio,
+        source_sample_rate=source_sample_rate,
+        target_sample_rate=_ARTIFACT_ANALYSIS_SAMPLE_RATE,
+        core_seconds=_ARTIFACT_RESAMPLE_CORE_SECONDS,
+        np_module=np_module,
+        signal_module=signal_module,
     )
-    core_samples = max(
-        down,
-        (target_core_samples // down) * down,
-    )
-    # resample_poly's default FIR half-length is ten times the larger reduced
-    # rate.  Rounding its input-domain support up to a denominator boundary
-    # keeps both the convolution phase and every crop coordinate global.
-    filter_support = (
-        10 * max(up, down) + up - 1
-    ) // up + 1
-    context_samples = (
-        (filter_support + down - 1) // down
-    ) * down
-
-    for core_start in range(0, len(samples), core_samples):
-        core_end = min(len(samples), core_start + core_samples)
-        segment_start = max(0, core_start - context_samples)
-        segment_end = min(len(samples), core_end + context_samples)
-        segment = signal_module.resample_poly(
-            samples[segment_start:segment_end],
-            up,
-            down,
-        ).astype(np.float32, copy=False)
-        output_start = core_start * up // down
-        output_end = (
-            total_output_samples
-            if core_end == len(samples)
-            else core_end * up // down
-        )
-        local_start = (core_start - segment_start) * up // down
-        local_end = local_start + output_end - output_start
-        if local_end > len(segment):
-            _fail("invalid_audio")
-        output[output_start:output_end] = segment[local_start:local_end]
-    return output
 
 
 def _frame_rms_db(
@@ -1093,6 +1181,254 @@ def _frame_rms_db(
     )
 
 
+def _banded_viterbi_core(
+    log_probability: object,
+    predecessor_indexes: object,
+    predecessor_scores: object,
+    predecessor_counts: object,
+    baseline_score: float,
+    initial_scores: object,
+    state: object,
+    pointers: object,
+    previous: object,
+    current: object,
+) -> float:
+    """Decode one sparse transition lattice with dense-Viterbi tie semantics.
+
+    librosa represents forbidden pYIN transitions as the floating-point tiny
+    value instead of negative infinity.  The best such transition can be found
+    once per frame from the global best predecessor; only the narrow band of
+    real pitch transitions then needs to be scanned for each destination.  A
+    lower source index wins exact score ties, matching ``numpy.argmax`` in the
+    reviewed dense decoder.
+
+    This deliberately allocation-free loop is compiled lazily with Numba.
+    Keeping array creation in the caller lets this module establish its closed
+    runtime environment before importing NumPy or Numba.
+    """
+
+    frame_count = log_probability.shape[0]  # type: ignore[attr-defined]
+    state_count = log_probability.shape[1]  # type: ignore[attr-defined]
+    for source_index in range(state_count):
+        previous[source_index] = (
+            log_probability[0, source_index] + initial_scores[source_index]
+        )
+
+    for frame_index in range(1, frame_count):
+        baseline_source = 0
+        baseline_value = previous[0]
+        for source_index in range(1, state_count):
+            if previous[source_index] > baseline_value:
+                baseline_source = source_index
+                baseline_value = previous[source_index]
+
+        for destination_index in range(state_count):
+            best_source = baseline_source
+            best_score = baseline_value + baseline_score
+            for predecessor_offset in range(
+                predecessor_counts[destination_index]
+            ):
+                source_index = predecessor_indexes[
+                    destination_index,
+                    predecessor_offset,
+                ]
+                candidate = (
+                    previous[source_index]
+                    + predecessor_scores[
+                        destination_index,
+                        predecessor_offset,
+                    ]
+                )
+                if candidate > best_score or (
+                    candidate == best_score and source_index < best_source
+                ):
+                    best_source = source_index
+                    best_score = candidate
+            pointers[frame_index, destination_index] = best_source
+            current[destination_index] = (
+                log_probability[frame_index, destination_index] + best_score
+            )
+
+        swap = previous
+        previous = current
+        current = swap
+
+    final_state = 0
+    final_score = previous[0]
+    for state_index in range(1, state_count):
+        if previous[state_index] > final_score:
+            final_state = state_index
+            final_score = previous[state_index]
+    state[frame_count - 1] = final_state
+    for frame_index in range(frame_count - 2, -1, -1):
+        state[frame_index] = pointers[
+            frame_index + 1,
+            state[frame_index + 1],
+        ]
+    return final_score
+
+
+_compiled_banded_viterbi_core: Optional[Callable[..., float]] = None
+
+
+def _banded_viterbi(
+    log_probability: object,
+    log_transition: object,
+    log_initial: object,
+) -> tuple[object, object]:
+    """Return the exact pYIN path without librosa's quadratic dense scan.
+
+    The fixed pYIN configuration has 444 states but at most 32 meaningful
+    incoming transitions per state.  librosa 0.9 materializes and scans all
+    444 squared transitions for every frame, which made a permitted thirty
+    seconds of regional analysis consume more than twenty minutes of one CPU
+    core.  This adapter validates that the lattice remains within the reviewed
+    sparse shape, then uses the common epsilon transition as one global
+    baseline plus the explicit local predecessors.  Unexpected future lattice
+    shapes fail open at the artifact-guard boundary instead of reintroducing
+    an unbounded dense fallback.
+    """
+
+    global _compiled_banded_viterbi_core
+
+    try:
+        np = importlib.import_module("numpy")
+        probability = np.asarray(log_probability, dtype=np.float64)
+        transition = np.asarray(log_transition, dtype=np.float64)
+        initial = np.asarray(log_initial, dtype=np.float64)
+        if (
+            probability.ndim != 2
+            or transition.ndim != 2
+            or initial.ndim != 1
+            or probability.shape[0] < 1
+            or probability.shape[0] > _ARTIFACT_MAX_VITERBI_FRAMES
+            or probability.shape[1] < 1
+            or probability.shape[1] > _ARTIFACT_MAX_VITERBI_STATES
+            or transition.shape
+            != (probability.shape[1], probability.shape[1])
+            or initial.shape != (probability.shape[1],)
+            or not bool(np.all(np.isfinite(probability)))
+            or not bool(np.all(np.isfinite(transition)))
+            or not bool(np.all(np.isfinite(initial)))
+        ):
+            raise _ArtifactAnalysisSkipped
+
+        baseline = float(np.min(transition))
+        meaningful = transition > baseline
+        predecessor_counts = np.count_nonzero(
+            meaningful,
+            axis=0,
+        ).astype(np.int32)
+        maximum_predecessors = int(np.max(predecessor_counts))
+        if (
+            maximum_predecessors < 1
+            or maximum_predecessors > _ARTIFACT_MAX_VITERBI_PREDECESSORS
+        ):
+            raise _ArtifactAnalysisSkipped
+
+        state_count = probability.shape[1]
+        predecessor_indexes = np.full(
+            (state_count, maximum_predecessors),
+            -1,
+            dtype=np.int32,
+        )
+        predecessor_scores = np.full(
+            (state_count, maximum_predecessors),
+            baseline,
+            dtype=np.float64,
+        )
+        for destination_index in range(state_count):
+            indexes = np.flatnonzero(meaningful[:, destination_index]).astype(
+                np.int32,
+                copy=False,
+            )
+            count = len(indexes)
+            predecessor_indexes[destination_index, :count] = indexes
+            predecessor_scores[destination_index, :count] = transition[
+                indexes,
+                destination_index,
+            ]
+
+        if _compiled_banded_viterbi_core is None:
+            numba = importlib.import_module("numba")
+            compile_function = getattr(numba, "njit")
+            if not callable(compile_function):
+                raise TypeError
+            # Per-job cache directories are intentionally private and unique.
+            # In-memory compilation avoids pretending that a cross-job disk
+            # cache exists while still amortizing compilation across every
+            # regional pYIN call in this one conversion process.
+            _compiled_banded_viterbi_core = compile_function(cache=False)(
+                _banded_viterbi_core
+            )
+
+        frame_count = probability.shape[0]
+        state = np.zeros(frame_count, dtype=np.uint16)
+        pointers = np.zeros(
+            (frame_count, state_count),
+            dtype=np.uint16,
+        )
+        previous = np.empty(state_count, dtype=np.float64)
+        current = np.empty(state_count, dtype=np.float64)
+        final_score = _compiled_banded_viterbi_core(
+            probability,
+            predecessor_indexes,
+            predecessor_scores,
+            predecessor_counts,
+            baseline,
+            initial,
+            state,
+            pointers,
+            previous,
+            current,
+        )
+        return state, np.asarray([final_score], dtype=np.float64)
+    except _ArtifactAnalysisSkipped:
+        raise
+    except BaseException as error:
+        raise _ArtifactAnalysisSkipped from error
+
+
+def _pyin_with_banded_viterbi(
+    audio: object,
+    *,
+    librosa_module: Any,
+) -> tuple[object, object, object]:
+    """Run fixed pYIN while replacing only its dense decoder for this call.
+
+    The runtime is a single-request process and invokes pYIN serially, so the
+    temporary module binding cannot race another analysis.  Test doubles omit
+    librosa's sequence module and continue through their injected ``pyin``
+    implementation; the pinned production module must expose ``_viterbi``.
+    """
+
+    sequence_module = getattr(librosa_module, "sequence", None)
+    original_viterbi = (
+        None
+        if sequence_module is None
+        else getattr(sequence_module, "_viterbi", None)
+    )
+    if sequence_module is not None and not callable(original_viterbi):
+        raise _ArtifactAnalysisSkipped
+    if sequence_module is not None:
+        setattr(sequence_module, "_viterbi", _banded_viterbi)
+    try:
+        return librosa_module.pyin(
+            audio,
+            fmin=_ARTIFACT_F0_MIN_HZ,
+            fmax=_ARTIFACT_F0_MAX_HZ,
+            sr=_ARTIFACT_ANALYSIS_SAMPLE_RATE,
+            frame_length=_ARTIFACT_FRAME_LENGTH,
+            hop_length=_ARTIFACT_HOP_LENGTH,
+            center=True,
+            resolution=_ARTIFACT_PITCH_RESOLUTION,
+            fill_na=None,
+        )
+    finally:
+        if sequence_module is not None:
+            setattr(sequence_module, "_viterbi", original_viterbi)
+
+
 def _voicing_track_segment(
     audio: object,
     *,
@@ -1103,16 +1439,9 @@ def _voicing_track_segment(
 
     np = np_module
     segment = np.asarray(audio, dtype=np.float32)
-    f0, voiced, probability = librosa_module.pyin(
+    f0, voiced, probability = _pyin_with_banded_viterbi(
         segment,
-        fmin=_ARTIFACT_F0_MIN_HZ,
-        fmax=_ARTIFACT_F0_MAX_HZ,
-        sr=_ARTIFACT_ANALYSIS_SAMPLE_RATE,
-        frame_length=_ARTIFACT_FRAME_LENGTH,
-        hop_length=_ARTIFACT_HOP_LENGTH,
-        center=True,
-        resolution=_ARTIFACT_PITCH_RESOLUTION,
-        fill_na=None,
+        librosa_module=librosa_module,
     )
     rms_db = _frame_rms_db(
         segment,
@@ -1145,12 +1474,11 @@ def _voicing_track(
 
     Twenty-cent pitch bins remain far narrower than the detector's 150-cent
     agreement bound.  Ten-second cores with two seconds of context preserve
-    the calibrated decisions at joins while bounding librosa 0.9's dense pYIN
-    state; a continuous four-minute call otherwise requires multi-gigabyte
-    private commit and can spend many minutes paging after RVC inference.
-    ``fill_na=None`` retains pYIN's best candidate on unvoiced frames because
-    those are precisely the transition frames whose source/output pitch
-    agreement must be assessed.
+    the calibrated decisions at joins while bounding pYIN observations and
+    back-pointers.  The scoped banded decoder preserves librosa 0.9's exact
+    path without its quadratic dense transition scan.  ``fill_na=None`` keeps
+    pYIN's best candidate on unvoiced frames because those are precisely the
+    transition frames whose source/output pitch agreement must be assessed.
     """
 
     np = np_module
@@ -1332,6 +1660,39 @@ def _coarse_artifact_eligibility(
     )
 
 
+def _coarse_artifact_candidates(
+    *,
+    eligible_frames: object,
+    source_periodicity: object,
+    output_periodicity: object,
+    np_module: Any,
+) -> NDArray[Any]:
+    """Return frames passing both permissive coarse periodicity gates."""
+
+    np = np_module
+    eligible = np.asarray(eligible_frames, dtype=bool)
+    output_period = np.asarray(output_periodicity)
+    source_period = np.asarray(source_periodicity)
+    if (
+        eligible.ndim != 1
+        or source_period.ndim != 1
+        or output_period.ndim != 1
+        or len(source_period) != len(eligible)
+        or len(output_period) != len(eligible)
+        or not bool(np.all(np.isfinite(source_period)))
+        or not bool(np.all(np.isfinite(output_period)))
+    ):
+        _fail("invalid_audio")
+    return (
+        eligible
+        & (output_period >= _ARTIFACT_PREFILTER_OUTPUT_PERIODICITY)
+        & (
+            output_period - source_period
+            >= _ARTIFACT_PREFILTER_PERIODICITY_INCREASE
+        )
+    )
+
+
 def _coarse_artifact_interest(
     *,
     source_f0: object,
@@ -1358,15 +1719,11 @@ def _coarse_artifact_interest(
         key_shift=key_shift,
         np_module=np,
     )
-    output_period = np.asarray(output_periodicity)
-    source_period = np.asarray(source_periodicity)
-    candidate = (
-        eligible
-        & (output_period >= _ARTIFACT_PREFILTER_OUTPUT_PERIODICITY)
-        & (
-            output_period - source_period
-            >= _ARTIFACT_PREFILTER_PERIODICITY_INCREASE
-        )
+    candidate = _coarse_artifact_candidates(
+        eligible_frames=eligible,
+        source_periodicity=source_periodicity,
+        output_periodicity=output_periodicity,
+        np_module=np,
     )
     radius = int(
         math.ceil(
@@ -1394,18 +1751,18 @@ def _fine_analysis_windows(
 ) -> Optional[list[tuple[int, int]]]:
     """Expand, merge, and budget local pYIN windows.
 
-    ``None`` means the permissive prefilter became too widespread to represent
-    the localized transition defect.  Failing open in that case keeps runtime
-    bounded and preserves the reviewed RVC result rather than analyzing most of
-    a different singing style with an expensive fallback.  The twelve-second
-    floor and fifteen-percent allowance were calibrated against an 81.72-second
-    matrix whose six exact-match windows occupy 8.713 seconds; its 12.258-second
-    budget leaves forty percent window headroom.  A thirty-second hard cap is
-    over three times that known workload and applies before either pYIN pass.
+    ``None`` means the permissive prefilter spread beyond the localized defect
+    for which the experiment was calibrated.  Failing open keeps the reviewed
+    RVC waveform unchanged instead of applying an unvalidated detector across
+    another singing style.  The twelve-second floor and fifteen-percent
+    allowance retain headroom around the 8.713-second calibration workload;
+    the thirty-second ceiling bounds long-song analysis.
     """
 
     np = np_module
     interest = np.asarray(interest_frames, dtype=bool)
+    if interest.ndim != 1:
+        raise _ArtifactAnalysisSkipped
     context_frames = int(
         math.ceil(
             _ARTIFACT_FINE_CONTEXT_SECONDS
@@ -1635,13 +1992,13 @@ def _artifact_envelope(
     return envelope
 
 
-def _repair_false_voicing(
+def _reproduce_rejected_false_voicing_repair(
     input_audio: Path,
     sample_rate: int,
     samples: object,
     key_shift: int,
 ) -> object:
-    """Replace sustained synthetic transition tones with source consonants.
+    """Reproduce the rejected transition replacement for offline analysis.
 
     A fast quarter-rate YIN and autocorrelation pass first identifies small
     regions that could contain the defect; bounded pYIN then makes the final
@@ -1649,12 +2006,19 @@ def _repair_false_voicing(
     sufficient: breathy high notes can look unvoiced in the source while RVC
     makes them easier to track.  Repair also requires key-shift-consistent
     source and output pitch plus a large increase in normalized
-    autocorrelation.  Persistence removes isolated estimates, and an explicit
-    regional budget preserves the original RVC output if the permissive search
-    would otherwise cover much of a song.
+    autocorrelation.  Persistence removes isolated estimates.  Every coarse-
+    positive region receives the bounded fine pass, but only frames that still
+    meet the original sixty-millisecond or repeated-density gate may alter the
+    output; brief strong-event shortcuts and event growth are intentionally
+    excluded.
     A 3.2-kHz high-pass strongly suppresses the source fundamental and low
     harmonics; mixing it at -20 dB preserves mainly consonant/noise energy while
     limiting audible source-timbre leakage into the converted voice.
+
+    This exact replacement is intentionally unavailable to ``_run_request``.
+    Listening review showed that its low-level substitute creates envelope
+    holes and downstream sidechain pumping even when detection is correct.  It
+    remains only to reproduce and measure that failed experiment.
     """
 
     try:
@@ -1888,6 +2252,11 @@ def _repair_false_voicing(
         if not bool(np.all(np.isfinite(repaired))):
             _fail("invalid_audio")
         return np.clip(repaired, -1.0, 1.0).astype(np.float32, copy=False)
+    except _ArtifactAnalysisSkipped:
+        # The rejected experiment is not a prerequisite for a valid RVC result.
+        # Preserve that result if the pinned sparse pYIN shape cannot be honored
+        # within its explicit computation bounds.
+        return samples
     except _RvcRuntimeFailure:
         raise
     except BaseException:
@@ -1898,9 +2267,8 @@ def _convert(
     request: _Request,
     api_loader: Callable[[_Request], _RvcApi],
     seed_initializer: Callable[[], None],
-    artifact_repairer: Callable[[Path, int, object, int], object],
 ) -> tuple[int, object]:
-    """Run fixed RVC inference and repair high-confidence transition tones."""
+    """Run fixed RVC inference and return its waveform without postprocessing."""
 
     seed_initializer()
     api = api_loader(request)
@@ -1914,6 +2282,7 @@ def _convert(
 
     converter = None  # type: Optional[object]
     loaded = False
+    restore_pipeline = None  # type: Optional[Callable[[], None]]
     result_rate = 0
     result_samples = None  # type: Optional[object]
     try:
@@ -1930,6 +2299,8 @@ def _convert(
             or int(getattr(converter, "tgt_sr", 0)) != _MODEL_SAMPLE_RATE
         ):
             _fail("model_incompatible")
+        if api.configure_converter is not None:
+            restore_pipeline = api.configure_converter(converter)
         _status, result = vc_single(
             _SPEAKER_ID,
             str(request.input_audio),
@@ -1957,6 +2328,13 @@ def _convert(
     except BaseException:
         _fail("inference_failed")
     finally:
+        if restore_pipeline is not None:
+            try:
+                restore_pipeline()
+            except BaseException:
+                # This request owns a short-lived process. Best-effort method
+                # restoration must never prevent checkpoint/resource release.
+                pass
         if loaded and converter is not None:
             try:
                 getattr(converter, "get_vc")("", _PROTECT, _PROTECT)
@@ -1965,22 +2343,13 @@ def _convert(
                 # job; it must not replace a completed inference result.
                 pass
 
-    # The detector is CPU-only and can process a full song.  Release the GPU
-    # model first so post-processing does not retain scarce CUDA memory.
-    try:
-        if result_rate != _MODEL_SAMPLE_RATE or result_samples is None:
-            _fail("inference_failed")
-        repaired = artifact_repairer(
-            request.input_audio,
-            result_rate,
-            result_samples,
-            request.key_shift,
-        )
-        return result_rate, repaired
-    except _RvcRuntimeFailure:
-        raise
-    except BaseException:
+    # The retired transition replacement created short envelope holes that the
+    # downstream sidechain amplified into audible stalls.  Production therefore
+    # preserves generated source cores; the analyzer above remains available
+    # only for controlled offline experiments with explicit listening gates.
+    if result_rate != _MODEL_SAMPLE_RATE or result_samples is None:
         _fail("inference_failed")
+    return result_rate, result_samples
 
 
 def _write_pcm16_wav(path: Path, sample_rate: int, samples: object) -> None:
@@ -2215,18 +2584,14 @@ def _run_request(
     api_loader: Callable[[_Request], _RvcApi] = _load_rvc_api,
     publisher: Callable[[Path, int, object], None] = _publish_audio_atomic,
     seed_initializer: Callable[[], None] = _seed_torch_inference,
-    artifact_repairer: Callable[
-        [Path, int, object, int], object
-    ] = _repair_false_voicing,
 ) -> None:
-    """Execute one validated, transition-guarded request in vendor scope."""
+    """Publish fixed-profile RVC PCM with exact generated source-core ownership."""
 
     with _runtime_scope(request):
         sample_rate, samples = _convert(
             request,
             api_loader,
             seed_initializer,
-            artifact_repairer,
         )
         publisher(request.output_audio, sample_rate, samples)
 

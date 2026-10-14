@@ -39,6 +39,8 @@ export type DesktopPetProgramStateSink = (
 
 /** Replace native process primitives in deterministic unit tests. */
 export interface DesktopPetProgramManagerDependencies {
+  /** Prepare only this owned process's native window before publishing visible. */
+  readonly prepareWindow: DesktopPetWindowPreparation | null
   /** Start the exact executable with explicit non-shell process options. */
   readonly spawnProgram: (
     executablePath: string,
@@ -59,14 +61,24 @@ export interface DesktopPetProgramManagerDependencies {
   ) => Promise<boolean>
 }
 
+/** Native preparation with an optional pre-spawn readiness barrier. */
+export interface DesktopPetWindowPreparation {
+  /** Place and admit only the supplied child while respecting cancellation. */
+  (child: ChildProcess, descriptor: DesktopPetProgramDescriptor, signal: AbortSignal): Promise<void>
+  /** Arm native observation before launching any window-producing process. */
+  warmup?(signal: AbortSignal): Promise<void>
+}
+
 interface OwnedDesktopPetProgram {
   readonly descriptor: DesktopPetProgramDescriptor
   readonly child: ChildProcess
   stopping: boolean
   unhealthy: boolean
+  readonly presentationAbort: AbortController
 }
 
 const PROGRAM_START_TIMEOUT_MS = 10_000
+const PROGRAM_WINDOW_TIMEOUT_MS = 15_000
 const PROGRAM_STOP_TIMEOUT_MS = 10_000
 const WINDOWS_TASKKILL_TIMEOUT_MS = 8_000
 const PROGRAM_START_FAILURE = 'Desktop Pet program could not be started.'
@@ -328,6 +340,7 @@ function runDesktopPetOperationWithin(
 }
 
 const DEFAULT_DEPENDENCIES: DesktopPetProgramManagerDependencies = {
+  prepareWindow: null,
   spawnProgram: spawnDesktopPetProgram,
   stopProgram: stopDesktopPetProgram,
   terminateProcessTree: terminateOwnedProcessTree,
@@ -349,6 +362,8 @@ export class DesktopPetProgramManager {
   #shutdownRequested = false
   #lastRuntime: DesktopPetProgramRuntime | null = null
   #lastWarning: string | null = null
+  #warmingAbort: AbortController | null = null
+  #intentRevision = 0
 
   /** Create a manager around one state sink and optional test primitives. */
   constructor(
@@ -371,7 +386,16 @@ export class DesktopPetProgramManager {
     shouldRun: boolean,
   ): Promise<void> {
     const snapshot = program === null ? null : { ...program }
+    const intentRevision = ++this.#intentRevision
+    this.#warmingAbort?.abort()
+    if (!shouldRun || (this.#owned !== null && (snapshot === null
+      || !descriptorsMatch(this.#owned.descriptor, snapshot)))) {
+      this.#owned?.presentationAbort.abort()
+    }
     return this.#enqueue(async () => {
+      // A rapid on/off or skin switch can arrive before this queued launch
+      // begins. Skip the stale intent instead of briefly showing its pet.
+      if (intentRevision !== this.#intentRevision) return
       if (this.#shutdownRequested || !shouldRun) {
         if (!(await this.#stopOwnedProgram())) {
           throw new Error(PROGRAM_STOP_FAILURE)
@@ -395,7 +419,7 @@ export class DesktopPetProgramManager {
       if (!(await this.#stopOwnedProgram())) {
         throw new Error(PROGRAM_STOP_FAILURE)
       }
-      if (this.#shutdownRequested) {
+      if (this.#shutdownRequested || intentRevision !== this.#intentRevision) {
         this.#emit('absent', null)
         return
       }
@@ -405,6 +429,9 @@ export class DesktopPetProgramManager {
 
   /** Stop the currently owned program without preventing a later restart. */
   stop(): Promise<void> {
+    this.#intentRevision += 1
+    this.#warmingAbort?.abort()
+    this.#owned?.presentationAbort.abort()
     return this.#enqueue(async () => {
       if (!(await this.#stopOwnedProgram())) {
         throw new Error(PROGRAM_STOP_FAILURE)
@@ -414,7 +441,10 @@ export class DesktopPetProgramManager {
 
   /** Permanently prevent new launches and boundedly stop the owned program. */
   shutdown(): Promise<void> {
+    this.#intentRevision += 1
     this.#shutdownRequested = true
+    this.#warmingAbort?.abort()
+    this.#owned?.presentationAbort.abort()
     return this.#enqueue(async () => {
       if (!(await this.#stopOwnedProgram())) {
         throw new Error(PROGRAM_STOP_FAILURE)
@@ -430,6 +460,28 @@ export class DesktopPetProgramManager {
 
   async #startProgram(descriptor: DesktopPetProgramDescriptor): Promise<void> {
     this.#emit('loading', null)
+    const presentationAbort = new AbortController()
+    this.#warmingAbort = presentationAbort
+    try {
+      if (this.#dependencies.prepareWindow?.warmup !== undefined) {
+        const armed = await this.#dependencies.runWithinDeadline(
+          this.#dependencies.prepareWindow.warmup(presentationAbort.signal), PROGRAM_START_TIMEOUT_MS,
+        )
+        if (!armed) throw new Error(PROGRAM_START_TIMEOUT)
+      }
+    } catch {
+      const cancelled = presentationAbort.signal.aborted
+      presentationAbort.abort()
+      this.#warmingAbort = null
+      this.#emit(cancelled ? 'absent' : 'failed', cancelled ? null : PROGRAM_START_FAILURE)
+      return
+    }
+    this.#warmingAbort = null
+    if (presentationAbort.signal.aborted || this.#shutdownRequested) {
+      presentationAbort.abort()
+      this.#emit('absent', null)
+      return
+    }
     let child: ChildProcess
     try {
       child = this.#dependencies.spawnProgram(
@@ -440,11 +492,14 @@ export class DesktopPetProgramManager {
           env: desktopPetProgramEnvironment(),
           shell: false,
           detached: false,
-          windowsHide: false,
+          // Give the prewarmed helper the initial hidden interval to park the
+          // window before the program's own early ShowWindow displays a logo.
+          windowsHide: this.#dependencies.prepareWindow !== null,
           stdio: 'ignore',
         },
       )
     } catch {
+      presentationAbort.abort()
       this.#emit('failed', PROGRAM_START_FAILURE)
       return
     }
@@ -454,6 +509,7 @@ export class DesktopPetProgramManager {
       child,
       stopping: false,
       unhealthy: false,
+      presentationAbort,
     }
     this.#owned = owned
     let started: boolean
@@ -463,6 +519,7 @@ export class DesktopPetProgramManager {
         PROGRAM_START_TIMEOUT_MS,
       )
     } catch {
+      presentationAbort.abort()
       if (this.#owned === owned) {
         this.#owned = null
       }
@@ -480,6 +537,7 @@ export class DesktopPetProgramManager {
     }
 
     child.once('exit', () => {
+      owned.presentationAbort.abort()
       if (this.#owned !== owned) {
         return
       }
@@ -490,6 +548,7 @@ export class DesktopPetProgramManager {
       )
     })
     child.once('error', () => {
+      owned.presentationAbort.abort()
       if (this.#owned !== owned) {
         return
       }
@@ -507,11 +566,32 @@ export class DesktopPetProgramManager {
     // status after listener registration so that process cannot be reported as
     // visible forever merely because its one exit event was already delivered.
     if (child.exitCode !== null || child.signalCode !== null) {
+      owned.presentationAbort.abort()
       if (this.#owned === owned) {
         this.#owned = null
         this.#emit('failed', PROGRAM_EXITED)
       }
       return
+    }
+    if (this.#dependencies.prepareWindow !== null) {
+      try {
+        const prepared = await this.#dependencies.runWithinDeadline(
+          this.#dependencies.prepareWindow(child, descriptor, owned.presentationAbort.signal),
+          PROGRAM_WINDOW_TIMEOUT_MS,
+        )
+        if (!prepared) throw new Error(PROGRAM_START_TIMEOUT)
+        if (this.#owned !== owned || owned.presentationAbort.signal.aborted) return
+      } catch {
+        const wasCancelled = owned.presentationAbort.signal.aborted
+        // Failed preparation never establishes a visible pet. If process
+        // cleanup fails, a retry must stop that exact unhealthy child first.
+        owned.unhealthy = true
+        owned.presentationAbort.abort()
+        if (this.#owned === owned && await this.#stopOwnedProgram() && !wasCancelled) {
+          this.#emit('failed', PROGRAM_START_FAILURE)
+        }
+        return
+      }
     }
     this.#emit('visible', null)
   }
@@ -523,6 +603,7 @@ export class DesktopPetProgramManager {
       return true
     }
     owned.stopping = true
+    owned.presentationAbort.abort()
     this.#emit('loading', null)
     let stopped: boolean
     try {

@@ -53,6 +53,7 @@ import {
   type SongCoverErrorCode,
   type SongCoverState,
 } from '../electron/song-cover-contracts.ts'
+import type { VoiceCallWindowState } from '../electron/voice-call-contracts.ts'
 import {
   hasNonBlankCodePoint,
   trimProtocolBlankCharacters,
@@ -96,6 +97,11 @@ import {
   type AudioDeviceSnapshot,
 } from './voice/audio-devices.ts'
 import { describeTranscriptionReadiness } from './voice/transcription-readiness.ts'
+import {
+  DictationSessionController,
+  type DictationSessionBinding,
+  type DictationSessionControllerOptions,
+} from './voice/dictation-session-controller.ts'
 import type { CompletedVoiceSegment } from './voice/voice-activity-detector.ts'
 import {
   VoiceSessionController,
@@ -234,15 +240,18 @@ interface PersistedRetryEditDraft {
 }
 
 /**
- * Correlate one Dictate or Voice Call STT job without retaining audio. A
+ * Identify the active capture surface; continuous Dictate owns a separate queue.
+ */
+type SpeechCaptureSurface = 'dictation' | 'voice-call'
+
+/**
+ * Correlate one Voice Call STT job without retaining audio. A
  * terminal IPC event can beat the start acknowledgement, so requestId begins
  * nullable; purpose, token, and session/Chat IDs reject results after close or
  * navigation, while cancelRequested defers cancellation until that request ID
  * becomes known. This ref deliberately contains identifiers and flags only,
  * never PCM/Base64.
  */
-type SpeechCaptureSurface = 'dictation' | 'voice-call'
-
 interface VoiceTranscriptionOperation extends VoiceSessionOwner {
   purpose: SpeechCaptureSurface
   token: number
@@ -969,6 +978,30 @@ function App() {
   )
   const [voiceTranscription, setVoiceTranscription]
     = useState<VoiceTranscriptionState | null>(null)
+  const dictationCallbacksRef = useRef<DictationSessionControllerOptions>({
+    startTranscription: () => Promise.reject(new Error('Dictation is not ready.')),
+    cancelTranscription: () => Promise.resolve(),
+    onTranscript: () => false,
+    onError: () => undefined,
+    onFinished: () => undefined,
+  })
+  const [dictationController] = useState(() => new DictationSessionController({
+    startTranscription: (segment, binding) => (
+      dictationCallbacksRef.current.startTranscription(segment, binding)
+    ),
+    cancelTranscription: (requestId) => (
+      dictationCallbacksRef.current.cancelTranscription(requestId)
+    ),
+    onTranscript: (text, binding) => (
+      dictationCallbacksRef.current.onTranscript(text, binding)
+    ),
+    onError: (message) => dictationCallbacksRef.current.onError(message),
+    onFinished: () => dictationCallbacksRef.current.onFinished?.(),
+  }))
+  const [dictationSession, setDictationSession] = useState(
+    () => dictationController.getSnapshot(),
+  )
+  const dictationHadTranscriptRef = useRef(false)
   const [voiceSessionController] = useState(
     () => new VoiceSessionController(),
   )
@@ -1021,12 +1054,13 @@ function App() {
   >({})
   const [notice, setNotice] = useState<ChatNotice | null>(null)
   const [callPreviewOpen, setCallPreviewOpen] = useState(false)
+  const [voiceCallId, setVoiceCallId] = useState<string | null>(null)
   const [dictationActive, setDictationActive] = useState(false)
   const [automaticRelistenEnabled, setAutomaticRelistenEnabled]
     = useState(false)
   const [voiceMicrophoneMuted, setVoiceMicrophoneMuted] = useState(false)
   const [voiceSessionStartedAtMs, setVoiceSessionStartedAtMs]
-    = useState<number | undefined>(undefined)
+    = useState(() => Date.now())
   const [compactShell, setCompactShell] = useState(isCompactShell)
   const [sidebarOpen, setSidebarOpen] = useState(() => !isCompactShell())
   const activeChatIdRef = useRef<string | undefined>(snapshot.chatId)
@@ -1092,6 +1126,8 @@ function App() {
     = useRef<DesktopSettingsValues['transcriptionLanguage']>('auto')
   const microphoneActionOperationRef = useRef(0)
   const callPreviewOpenRef = useRef(false)
+  const voiceCallIdRef = useRef<string | null>(null)
+  const voiceCallOpeningRef = useRef(false)
   const dictationActiveRef = useRef(false)
   const speechCaptureSurfaceRef = useRef<SpeechCaptureSurface | null>(null)
   const automaticRelistenEnabledRef = useRef(false)
@@ -1296,6 +1332,9 @@ function App() {
   const sessionUiPending = sessionMutationPending
     || snapshot.status !== 'ready'
     || chatState === null
+  const dictationBusy = dictationSession.listening
+    || dictationSession.finishing
+    || dictationSession.pending
   const canSend = (
     desktopApi !== undefined
     && snapshot.status === 'ready'
@@ -1308,6 +1347,7 @@ function App() {
     && !generationReconcilePending
     && !modelSelectionPending
     && !retryPending
+    && !dictationBusy
     && manualReadAloudMessageId === null
     && pendingChatSend === null
     && !retryEditBlocksGeneration
@@ -1326,6 +1366,7 @@ function App() {
     || generationBusy
     || generationReconcilePending
     || sessionUiPending
+    || dictationBusy
   )
   const modelOptions = useMemo(() => {
     if (snapshot.models.length > 0) {
@@ -1997,6 +2038,14 @@ function App() {
   ])
 
   const closeCallPreview = useCallback((): boolean => {
+    const callId = voiceCallIdRef.current
+    voiceCallIdRef.current = null
+    setVoiceCallId(null)
+    if (callId !== null) {
+      void desktopApi?.closeVoiceCallWindow(callId).catch(() => {
+        // Audio ownership is retired below even if native teardown has already won.
+      })
+    }
     callPreviewOpenRef.current = false
     speechCaptureSurfaceRef.current = null
     autoSubmittedVoiceTranscriptionTokenRef.current = null
@@ -2019,60 +2068,51 @@ function App() {
       callButtonRef.current?.focus()
     })
     return true
-  }, [hangUpVoiceSession])
+  }, [desktopApi, hangUpVoiceSession])
 
-  const finishDictation = useCallback((
-    operation: VoiceTranscriptionOperation,
+  const appendDictationTranscript = useCallback((
+    binding: DictationSessionBinding,
     text: string,
-  ): void => {
+  ): boolean => {
     if (
-      operation.purpose !== 'dictation'
-      || !dictationActiveRef.current
-      || operation.token !== voiceCaptureOperationRef.current
-      || activeChatIdRef.current !== operation.chatId
-      || activeChatProjectIdRef.current !== operation.projectId
+      activeChatIdRef.current !== binding.chatId
+      || activeChatProjectIdRef.current !== binding.projectId
+      || activeViewRef.current !== 'chat'
     ) {
-      return
+      return false
     }
 
     const transcript = trimProtocolBlankCharacters(text)
-    const currentDraft = draftsByChatRef.current[operation.chatId] ?? ''
+    if (!hasNonBlankCodePoint(transcript)) {
+      return true
+    }
+    // Read the current draft for every ordered result, preserving edits typed
+    // while local recognition was running instead of restoring an old snapshot.
+    const currentDraft = draftsByChatRef.current[binding.chatId] ?? ''
     const separator = currentDraft.length === 0 || /\s$/u.test(currentDraft)
       ? ''
       : ' '
     const nextDraft = `${currentDraft}${separator}${transcript}`
-    let resultNotice = successNotice('Dictation added to your message.')
-    if (!hasNonBlankCodePoint(transcript)) {
-      resultNotice = errorNotice('No spoken words were detected.')
-    } else if (nextDraft.length > MAX_PERSISTED_DRAFT_LENGTH) {
-      resultNotice = errorNotice(
+    if (nextDraft.length > MAX_PERSISTED_DRAFT_LENGTH) {
+      setNotice(errorNotice(
         'The current message is too long to append this dictation.',
-      )
-    } else {
-      const otherDrafts = { ...draftsByChatRef.current }
-      delete otherDrafts[operation.chatId]
-      const nextDrafts = { [operation.chatId]: nextDraft, ...otherDrafts }
-      if (persistChatDrafts(nextDrafts, operation.chatId)) {
-        updateChatDrafts(() => nextDrafts)
-      } else {
-        resultNotice = errorNotice(
-          'The dictation could not be protected in local draft storage.',
-        )
-      }
+      ))
+      return false
     }
-
-    dictationActiveRef.current = false
-    speechCaptureSurfaceRef.current = null
-    setDictationActive(false)
-    hangUpVoiceSession()
-    void audioCaptureControllerRef.current?.cancel()
-    setVoiceCapture(EMPTY_AUDIO_CAPTURE_SNAPSHOT)
-    setVoiceCaptureSubmissionError(null)
-    setNotice(resultNotice)
-    focusChatComposer()
-  }, [hangUpVoiceSession, updateChatDrafts])
+    const otherDrafts = { ...draftsByChatRef.current }
+    delete otherDrafts[binding.chatId]
+    const nextDrafts = { [binding.chatId]: nextDraft, ...otherDrafts }
+    if (!persistChatDrafts(nextDrafts, binding.chatId)) {
+      setNotice(errorNotice('The dictation could not be protected in local draft storage.'))
+      return false
+    }
+    updateChatDrafts(() => nextDrafts)
+    dictationHadTranscriptRef.current = true
+    return true
+  }, [updateChatDrafts])
 
   const failDictation = useCallback((message: string | null): void => {
+    dictationController.cancel()
     dictationActiveRef.current = false
     speechCaptureSurfaceRef.current = null
     setDictationActive(false)
@@ -2083,7 +2123,97 @@ function App() {
     if (message !== null) {
       setNotice(errorNotice(message))
     }
-  }, [hangUpVoiceSession])
+  }, [dictationController, hangUpVoiceSession])
+
+  useEffect(() => {
+    // Capture stays open while this independent queue serializes bounded STT.
+    // Keeping callbacks in committed refs avoids resubscribing on every sample.
+    dictationCallbacksRef.current = {
+      startTranscription: (segment, binding) => {
+        try {
+          if (
+            desktopApi === undefined
+            || backendStatusRef.current !== 'ready'
+            || activeChatIdRef.current !== binding.chatId
+            || activeChatProjectIdRef.current !== binding.projectId
+            || activeViewRef.current !== 'chat'
+          ) {
+            throw new Error('Dictation is no longer connected to its Chat.')
+          }
+          const pcmBase64 = encodePcm16LittleEndian(segment.pcm)
+          return desktopApi.beginVoiceTranscription({
+            sessionId: segment.sessionId,
+            chatId: binding.chatId,
+            sampleRateHz: segment.sampleRate,
+            channelCount: segment.channelCount,
+            sampleFormat: segment.sampleFormat,
+            sampleCount: segment.sampleCount,
+            speechStartSample: segment.speechStartSample,
+            speechEndSample: segment.speechEndSample,
+            pcmBase64,
+            language: voiceTranscriptionLanguageRef.current,
+          })
+        } finally {
+          // The queue owns raw PCM only until synchronous IPC serialization;
+          // the encoded string lives only in that invocation's local scope.
+          segment.pcm.fill(0)
+        }
+      },
+      cancelTranscription: (requestId) => (
+        desktopApi?.stopVoiceTranscription(requestId) ?? Promise.resolve()
+      ),
+      onTranscript: (text, binding) => appendDictationTranscript(binding, text),
+      onError: (message) => {
+        if (speechCaptureSurfaceRef.current === 'dictation') {
+          failDictation(message)
+        }
+      },
+      onFinished: () => {
+        if (speechCaptureSurfaceRef.current !== 'dictation') {
+          return
+        }
+        speechCaptureSurfaceRef.current = null
+        setVoiceCapture(EMPTY_AUDIO_CAPTURE_SNAPSHOT)
+        setNotice(dictationHadTranscriptRef.current
+          ? successNotice('Dictation added to your message.')
+          : infoNotice('Dictation stopped. No spoken words were detected.'))
+        focusChatComposer()
+      },
+    }
+  }, [appendDictationTranscript, desktopApi, failDictation])
+
+  useEffect(() => {
+    const unsubscribe = dictationController.subscribe(setDictationSession)
+    setDictationSession(dictationController.getSnapshot())
+    return () => {
+      unsubscribe()
+      dictationController.cancel()
+    }
+  }, [dictationController])
+
+  useEffect(() => {
+    if (dictationActive && voiceCapture.status === 'error') {
+      failDictation(voiceCapture.error?.message ?? 'The dictation microphone stopped.')
+    }
+  }, [dictationActive, failDictation, voiceCapture.error, voiceCapture.status])
+
+  useEffect(() => {
+    if (
+      snapshot.status === 'ready'
+      && snapshot.capabilities.includes('voice.capture')
+      && snapshot.capabilities.includes('voice.transcription')
+    ) {
+      return
+    }
+    if (speechCaptureSurfaceRef.current === 'dictation') {
+      failDictation('Dictation stopped because local speech recognition is unavailable.')
+    }
+    if (snapshot.status !== 'ready') {
+      // A lost Backend has already retired every old STT lease. Its terminal
+      // events cannot arrive, so discard metadata barriers before reconnection.
+      dictationController.cancel({ transportLost: true })
+    }
+  }, [dictationController, failDictation, snapshot.capabilities, snapshot.status])
 
   useEffect(() => {
     const unsubscribe = voiceSessionController.subscribe(setVoiceSession)
@@ -2350,7 +2480,16 @@ function App() {
     // A short test belongs to the visible Chat or Settings surface. Switching
     // context is an immediate privacy boundary even though every test also has
     // its own safety timeout.
+    dictationController.cancel()
     ++microphoneActionOperationRef.current
+    const closingCallId = voiceCallIdRef.current
+    voiceCallIdRef.current = null
+    setVoiceCallId(null)
+    if (closingCallId !== null) {
+      void desktopApi?.closeVoiceCallWindow(closingCallId).catch(() => {
+        // Context changes still release audio when the separate window has closed.
+      })
+    }
     callPreviewOpenRef.current = false
     dictationActiveRef.current = false
     speechCaptureSurfaceRef.current = null
@@ -2372,6 +2511,8 @@ function App() {
     activeChatProjectId,
     activeView,
     clearManualReadAloudOwner,
+    desktopApi,
+    dictationController,
     hangUpVoiceSession,
     stopManagedSpeechForBoundary,
   ])
@@ -2379,6 +2520,15 @@ function App() {
   useEffect(() => {
     if (snapshot.status === 'ready' && !generationBusy) {
       return
+    }
+    const dictation = dictationController.getSnapshot()
+    if (
+      speechCaptureSurfaceRef.current === 'dictation'
+      && (dictation.listening || dictation.finishing)
+    ) {
+      failDictation(snapshot.status !== 'ready'
+        ? 'Dictation stopped because the local Backend disconnected.'
+        : 'Dictation stopped because another Chat reply started.')
     }
     const controller = audioCaptureControllerRef.current
     const voiceSnapshot = voiceSessionController.getSnapshot()
@@ -2437,6 +2587,8 @@ function App() {
   }, [
     clearVoiceInterruptionTracking,
     discardVoiceOperation,
+    dictationController,
+    failDictation,
     generationBusy,
     snapshot.status,
     voiceSessionController,
@@ -2772,6 +2924,17 @@ function App() {
       setNotice(errorNotice('Song Cover could not be stopped safely.'))
       void loadSongCoverState()
       return false
+    }
+  }, [acceptSongCoverState, desktopApi, loadSongCoverState, songCoverState])
+
+  const seekSongCover = useCallback(async (positionSeconds: number): Promise<void> => {
+    const jobId = songCoverState?.jobId ?? null
+    if (desktopApi === undefined || jobId === null) return
+    try {
+      acceptSongCoverState(await desktopApi.seekSongCover(jobId, positionSeconds))
+    } catch {
+      setNotice(errorNotice('The playback position could not be changed.'))
+      await loadSongCoverState()
     }
   }, [acceptSongCoverState, desktopApi, loadSongCoverState, songCoverState])
 
@@ -4967,6 +5130,9 @@ function App() {
       }
 
       if (event.type === 'voice-transcription-complete') {
+        if (dictationController.acceptTranscriptionFinal(event)) {
+          return
+        }
         const operation = voiceTranscriptionOperationRef.current
         if (
           operation === null
@@ -5012,7 +5178,8 @@ function App() {
           if (operation.cancelRequested) {
             failDictation(null)
           } else {
-            finishDictation(operation, event.text)
+            appendDictationTranscript(operation, event.text)
+            failDictation(null)
           }
           return
         }
@@ -5034,6 +5201,9 @@ function App() {
       }
 
       if (event.type === 'voice-transcription-error') {
+        if (dictationController.acceptTranscriptionError(event)) {
+          return
+        }
         const operation = voiceTranscriptionOperationRef.current
         if (
           operation === null
@@ -5496,7 +5666,8 @@ function App() {
     clearManagedSpeechTurn,
     desktopApi,
     failDictation,
-    finishDictation,
+    appendDictationTranscript,
+    dictationController,
     interruptInFlightTurn,
     loadAttachments,
     loadProjectKnowledge,
@@ -5573,9 +5744,7 @@ function App() {
       if (event.key !== 'Escape' || event.defaultPrevented) {
         return
       }
-      if (callPreviewOpen) {
-        closeCallPreview()
-      } else if (panelOpen) {
+      if (panelOpen) {
         void toggleCharacterPanel()
       } else if (searchOpen) {
         setSearchOpen(false)
@@ -5752,6 +5921,7 @@ function App() {
     const generationRecoveryBlocked = pendingChatSendRef.current !== null
       || retryEditDraftRef.current !== null
       || generationReconcilePendingRef.current
+    const dictation = dictationController.getSnapshot()
     if (
       api === undefined
       || snapshot.status !== 'ready'
@@ -5767,6 +5937,9 @@ function App() {
       || retryPendingRef.current
       || manualReadAloudOwnerRef.current !== null
       || generationRecoveryBlocked
+      || (intent.source === 'composer' && (
+        dictation.listening || dictation.finishing || dictation.pending
+      ))
       || activeChatAttachmentActivity.adding
       || activeChatAttachmentActivity.removingIds.length > 0
     ) {
@@ -6904,6 +7077,10 @@ function App() {
   }
 
   voiceCaptureCompleteRef.current = (segment): void => {
+    if (speechCaptureSurfaceRef.current === 'dictation') {
+      dictationController.enqueue(segment)
+      return
+    }
     const interruption = pendingVoiceInterruptionRef.current
     if (
       interruption !== null
@@ -7139,9 +7316,13 @@ function App() {
       || chatId === undefined
       || !surfaceIsActive
       || (continuationCompletionId !== null && surface !== 'voice-call')
-      || !boundSession.active
-      || boundSession.binding?.chatId !== chatId
-      || boundSession.binding.projectId !== projectId
+      || (surface === 'voice-call'
+        ? !boundSession.active
+          || boundSession.binding?.chatId !== chatId
+          || boundSession.binding.projectId !== projectId
+        : !dictationController.getSnapshot().listening
+          || dictationController.getSnapshot().binding?.chatId !== chatId
+          || dictationController.getSnapshot().binding?.projectId !== projectId)
       || voiceCaptureContextDisabledReason !== null
     ) {
       reportStartFailure(
@@ -7185,6 +7366,7 @@ function App() {
       && activeChatIdRef.current === chatId
       && activeChatProjectIdRef.current === projectId
       && audioCaptureControllerRef.current === controller
+      && (surface === 'voice-call' || activeViewRef.current === 'chat')
     )
     setVoiceCapture(EMPTY_AUDIO_CAPTURE_SNAPSHOT)
     setVoiceSpeechWarning(null)
@@ -7244,10 +7426,14 @@ function App() {
         : null
       await controller.start(
         effectiveDeviceId,
-        surface === 'voice-call' ? { purpose: 'voice-call' } : undefined,
+        { purpose: surface },
       )
       if (!actionIsCurrent()) {
-        await controller.cancel()
+        if (surface === 'voice-call') {
+          await controller.cancel()
+        }
+        // Dictation boundaries already retire their exact capture. A delayed
+        // permission result must not cancel a newer owner of this shared device.
         return false
       }
       const capture = controller.getSnapshot()
@@ -7255,6 +7441,9 @@ function App() {
         capture.sessionId !== null
         && (capture.status === 'waiting' || capture.status === 'speaking')
       ) {
+        if (surface === 'dictation') {
+          return true
+        }
         if (continuationCompletionId === null) {
           voiceSessionController.startListening(capture.sessionId)
         } else if (
@@ -7324,8 +7513,23 @@ function App() {
 
   async function toggleDictation(): Promise<void> {
     if (dictationActiveRef.current) {
-      failDictation(null)
-      setNotice(infoNotice('Dictation stopped. No audio was stored.'))
+      const stoppingEpoch = dictationController.getSnapshot().epoch
+      dictationActiveRef.current = false
+      setDictationActive(false)
+      setNotice(infoNotice('Finishing dictation…'))
+      // Stop flushes the last spoken tail; navigation still uses cancellation
+      // so its audio and unfinished jobs cannot reach a different Chat.
+      await audioCaptureControllerRef.current?.stop()
+      if (
+        dictationController.getSnapshot().epoch === stoppingEpoch
+        && speechCaptureSurfaceRef.current === 'dictation'
+      ) {
+        dictationController.finish()
+      }
+      return
+    }
+    const dictation = dictationController.getSnapshot()
+    if (dictation.listening || dictation.finishing || dictation.pending) {
       return
     }
     if (
@@ -7343,6 +7547,7 @@ function App() {
       ))
       return
     }
+    const startingAction = ++microphoneActionOperationRef.current
     if (songCoverState?.outputAvailable && !await stopSongCover()) {
       return
     }
@@ -7355,14 +7560,18 @@ function App() {
     if (
       activeChatIdRef.current !== chatId
       || activeChatProjectIdRef.current !== projectId
+      || activeViewRef.current !== 'chat'
+      || startingAction !== microphoneActionOperationRef.current
+      || callPreviewOpenRef.current
     ) {
       return
     }
 
-    ++microphoneActionOperationRef.current
     audioDeviceControllerRef.current?.stopAll()
     hangUpVoiceSession()
-    voiceSessionController.bind({ chatId, projectId })
+    dictationHadTranscriptRef.current = false
+    dictationController.begin({ chatId, projectId })
+    const dictationEpoch = dictationController.getSnapshot().epoch
     speechCaptureSurfaceRef.current = 'dictation'
     dictationActiveRef.current = true
     setDictationActive(true)
@@ -7372,7 +7581,17 @@ function App() {
     try {
       await desktopApi?.setPresenceVoiceActive(true)
     } catch {
-      failDictation('Dictation could not reserve the audio session.')
+      if (dictationController.getSnapshot().epoch === dictationEpoch
+        && speechCaptureSurfaceRef.current === 'dictation') {
+        failDictation('Dictation could not reserve the audio session.')
+      }
+      return
+    }
+    if (
+      dictationController.getSnapshot().epoch !== dictationEpoch
+      || !dictationActiveRef.current
+      || speechCaptureSurfaceRef.current !== 'dictation'
+    ) {
       return
     }
     await startVoiceCapture('dictation')
@@ -7601,82 +7820,139 @@ function App() {
   sendVoiceTranscriptRef.current = sendVoiceTranscript
 
   async function openCallPreview(): Promise<void> {
-    if (
-      songCoverSelectionPending
-      || songCoverBusy
-    ) {
-      setNotice(infoNotice('Cancel the active Song Cover before opening Voice Call.'))
+    if (desktopApi === undefined) {
+      setNotice(errorNotice('Voice Call requires the desktop app.'))
       return
     }
-    if (panelOpen || panelTargetOpenRef.current) {
-      await setCharacterPanelVisibility(false)
-    }
-    if (dictationActiveRef.current) {
-      failDictation(null)
-      await audioCaptureControllerRef.current?.cancel()
-    }
-    const chatId = activeChatIdRef.current
-    const projectId = activeChatProjectIdRef.current
-    if (chatId === undefined) {
-      setNotice(errorNotice('Wait for the active Chat to finish loading.'))
+    if (voiceCallOpeningRef.current) {
       return
     }
-    if (songCoverState?.outputAvailable && !await stopSongCover()) {
+    const initialView = (callId: string, startedAtMs: number): VoiceCallWindowState => ({
+      callId,
+      revision: 0,
+      characterState: 'idle',
+      emotion: characterEmotion,
+      microphoneMuted: voiceMicrophoneMutedRef.current,
+      startedAtMs,
+      error: null,
+      warning: null,
+    })
+    const existingCallId = voiceCallIdRef.current
+    if (existingCallId !== null && callPreviewOpenRef.current) {
+      try {
+        // A second click restores the existing window without restarting its
+        // audio owner, clock, or current visual state.
+        await desktopApi.openVoiceCallWindow(
+          initialView(existingCallId, voiceSessionStartedAtMs),
+        )
+      } catch {
+        if (voiceCallIdRef.current === existingCallId) {
+          closeCallPreview()
+          setNotice(errorNotice('The Voice Call window could not be opened.'))
+        }
+      }
       return
     }
-    if (!await stopManagedSpeechForBoundary()) {
-      setNotice(infoNotice(
-        'Wait for the current local speech request to start, then open Voice again.',
-      ))
-      return
-    }
-    if (
-      activeChatIdRef.current !== chatId
-      || activeChatProjectIdRef.current !== projectId
-    ) {
-      return
-    }
-
-    ++microphoneActionOperationRef.current
-    automaticRelistenAttemptRef.current += 1
-    automaticRelistenCaptureSessionIdRef.current = null
-    handledVoiceCompletionIdRef.current = null
-    audioDeviceControllerRef.current?.stopAll()
-    hangUpVoiceSession()
-    voiceSessionController.bind({ chatId, projectId })
-    setVoiceCapture(EMPTY_AUDIO_CAPTURE_SNAPSHOT)
-    setVoiceSpeechWarning(null)
-    setVoiceCaptureSubmissionError(null)
-    voiceMicrophoneMutedRef.current = false
-    setVoiceMicrophoneMuted(false)
-    automaticRelistenEnabledRef.current = true
-    setAutomaticRelistenEnabled(true)
-    autoSubmittedVoiceTranscriptionTokenRef.current = null
-    recoveredVoiceTranscriptionTokenRef.current = null
-    recoveredVoiceCaptureKeyRef.current = null
-    voiceCaptureRecoveryAttemptsRef.current = 0
-    recoveredVoiceDraftRef.current = null
-    speechCaptureSurfaceRef.current = 'voice-call'
-    setVoiceSessionStartedAtMs(Date.now())
-    callPreviewOpenRef.current = true
-    setCallPreviewOpen(true)
+    voiceCallOpeningRef.current = true
     try {
-      await desktopApi?.setPresenceVoiceActive(true)
-    } catch {
-      closeCallPreview()
-      setNotice(errorNotice('Voice Call could not reserve the audio session.'))
-      return
+      if (songCoverSelectionPending || songCoverBusy) {
+        setNotice(infoNotice('Cancel the active Song Cover before opening Voice Call.'))
+        return
+      }
+      if (panelOpen || panelTargetOpenRef.current) {
+        await setCharacterPanelVisibility(false)
+      }
+      if (
+        dictationActiveRef.current
+        || dictationController.getSnapshot().finishing
+        || dictationController.getSnapshot().pending
+      ) {
+        failDictation(null)
+        await audioCaptureControllerRef.current?.cancel()
+      }
+      const chatId = activeChatIdRef.current
+      const projectId = activeChatProjectIdRef.current
+      if (chatId === undefined) {
+        setNotice(errorNotice('Wait for the active Chat to finish loading.'))
+        return
+      }
+      if (songCoverState?.outputAvailable && !await stopSongCover()) {
+        return
+      }
+      if (!await stopManagedSpeechForBoundary()) {
+        setNotice(infoNotice(
+          'Wait for the current local speech request to start, then open Voice again.',
+        ))
+        return
+      }
+      if (
+        activeChatIdRef.current !== chatId
+        || activeChatProjectIdRef.current !== projectId
+        || activeViewRef.current !== 'chat'
+      ) {
+        return
+      }
+
+      ++microphoneActionOperationRef.current
+      automaticRelistenAttemptRef.current += 1
+      automaticRelistenCaptureSessionIdRef.current = null
+      handledVoiceCompletionIdRef.current = null
+      audioDeviceControllerRef.current?.stopAll()
+      hangUpVoiceSession()
+      voiceSessionController.bind({ chatId, projectId })
+      setVoiceCapture(EMPTY_AUDIO_CAPTURE_SNAPSHOT)
+      setVoiceSpeechWarning(null)
+      setVoiceCaptureSubmissionError(null)
+      voiceMicrophoneMutedRef.current = false
+      setVoiceMicrophoneMuted(false)
+      automaticRelistenEnabledRef.current = true
+      setAutomaticRelistenEnabled(true)
+      autoSubmittedVoiceTranscriptionTokenRef.current = null
+      recoveredVoiceTranscriptionTokenRef.current = null
+      recoveredVoiceCaptureKeyRef.current = null
+      voiceCaptureRecoveryAttemptsRef.current = 0
+      recoveredVoiceDraftRef.current = null
+      speechCaptureSurfaceRef.current = 'voice-call'
+      const callId = crypto.randomUUID()
+      const startedAtMs = Date.now()
+      voiceCallIdRef.current = callId
+      setVoiceCallId(callId)
+      setVoiceSessionStartedAtMs(startedAtMs)
+      callPreviewOpenRef.current = true
+      setCallPreviewOpen(true)
+      try {
+        // Keep microphone ownership in this renderer, and wait until native
+        // close/mute controls exist before requesting any audio capture.
+        await desktopApi.openVoiceCallWindow(initialView(callId, startedAtMs))
+        if (voiceCallIdRef.current !== callId || !callPreviewOpenRef.current) {
+          await desktopApi.closeVoiceCallWindow(callId)
+          return
+        }
+        await desktopApi.setPresenceVoiceActive(true)
+      } catch {
+        if (voiceCallIdRef.current === callId) {
+          closeCallPreview()
+          setNotice(errorNotice('The Voice Call window could not start its audio session.'))
+        }
+        return
+      }
+      // Closing or switching Chat while either native request was pending must
+      // never revive a retired microphone session after the promise resolves.
+      if (voiceCallIdRef.current !== callId || !callPreviewOpenRef.current) {
+        void desktopApi.setPresenceVoiceActive(false)
+        return
+      }
+      if (
+        snapshot.status === 'ready'
+        && snapshot.capabilities.includes('voice.transcription')
+      ) {
+        // External model/runtime repairs may clear a cached unavailable state.
+        void loadVoiceSettings()
+      }
+      await startVoiceCapture('voice-call')
+    } finally {
+      voiceCallOpeningRef.current = false
     }
-    if (
-      desktopApi !== undefined
-      && snapshot.status === 'ready'
-      && snapshot.capabilities.includes('voice.transcription')
-    ) {
-      // Refresh readiness whenever the surface opens so an external model or
-      // runtime repair can clear a previously cached unavailable state.
-      void loadVoiceSettings()
-    }
-    await startVoiceCapture('voice-call')
   }
 
   let content
@@ -7811,6 +8087,7 @@ function App() {
         dictationActive={dictationActive}
         dictationDisabled={
           voiceCaptureDisabledReason !== null
+          || dictationBusy
           || callPreviewOpen
           || songCoverSelectionPending
           || songCoverBusy
@@ -7836,6 +8113,7 @@ function App() {
           || songCoverState === null
           || songCoverSelectionPending
           || dictationActive
+          || dictationBusy
           || callPreviewOpen
           || songCoverBusy
         }
@@ -7888,6 +8166,7 @@ function App() {
         onExportSongCover={() => { void exportSongCover() }}
         onOpenSongCoverSetup={openSongCoverSetup}
         onPlaySongCover={() => { void playSongCover() }}
+        onSeekSongCover={seekSongCover}
         onSend={() => { void sendMessage() }}
         onStop={() => { void stopGeneration() }}
         onStopSongCover={() => { void stopSongCover() }}
@@ -8054,8 +8333,10 @@ function App() {
       >
         {content}
       </AppShell>
-      {callPreviewOpen && (
+      {callPreviewOpen && voiceCallId !== null && (
         <CallPreview
+          key={voiceCallId}
+          callId={voiceCallId}
           backendStatus={snapshot.status}
           characterEmotion={characterEmotion}
           capture={voiceCapture}
