@@ -188,3 +188,94 @@ test('Work preview bridge rejects a changed call before exposing an approval', a
   await assert.rejects(preparing, /exact requested parameters/u)
   assert.equal(backend.getSnapshot().status, 'error')
 })
+
+function approvalBackend() {
+  const writes = []
+  const backend = new BackendProcess('.', () => undefined)
+  backend.child = { stdin: { writable: true, write: (wire) => { writes.push(JSON.parse(wire)) } }, kill: () => true }
+  backend.snapshot = {
+    revision: 1, status: 'ready', capabilities: ['work.preview', 'work.confirm', 'work.workspace'],
+    chatId: 'chat_work', modelName: 'qwen3.5:9b', models: ['qwen3.5:9b'],
+  }
+  return { backend, writes }
+}
+
+function responseFor(id, result) {
+  return { type: 'response', protocol: { name: 'elysia.desktop', version: 1 }, id, ok: true, result }
+}
+
+async function prepareApproval(backend, writes) {
+  const call = { toolId: 'edit', arguments: { path: 'notes.txt', content: 'Exact approved content.' } }
+  const preparing = backend.previewWorkTool({ chatId: 'chat_work', call })
+  const approval = {
+    approvalId: `approval_${'a'.repeat(32)}`, call, risk: 'medium', preview: 'Exact diff',
+    expiresAt: '2100-01-01T00:00:00+00:00',
+  }
+  backend.handleProtocolLine(JSON.stringify(responseFor(writes.at(-1).id, { kind: 'work.approval', approval })))
+  await preparing
+  return approval
+}
+
+test('Work confirmation consumes the native preview once and correlates exact output', async () => {
+  const { backend, writes } = approvalBackend()
+  await assert.rejects(backend.confirmWorkTool({ chatId: 'chat_work', approvalId: `approval_${'a'.repeat(32)}`, granted: true }),
+    /new preview/u)
+  assert.equal(writes.length, 0)
+  const approval = await prepareApproval(backend, writes)
+  const confirming = backend.confirmWorkTool({ chatId: 'chat_work', approvalId: approval.approvalId, granted: true })
+  assert.deepEqual(writes.at(-1).params, { chatId: 'chat_work', approvalId: approval.approvalId, granted: true })
+  assert.equal(backend.workApprovals.size, 0)
+  backend.handleProtocolLine(JSON.stringify(responseFor(writes.at(-1).id, {
+    kind: 'work.result', result: { status: 'succeeded', data: { path: 'notes.txt', undoId: 'undo_owned' }, error: null },
+  })))
+  assert.equal((await confirming).result.status, 'succeeded')
+  await assert.rejects(backend.confirmWorkTool({ chatId: 'chat_work', approvalId: approval.approvalId, granted: true }), /new preview/u)
+  assert.equal(writes.length, 2)
+})
+
+test('Work binding revocation and Backend failure invalidate cached approvals', async () => {
+  const { backend, writes } = approvalBackend()
+  const approval = await prepareApproval(backend, writes)
+  const clearing = backend.bindWorkWorkspace({ chatId: 'chat_work', workspacePath: null })
+  backend.handleProtocolLine(JSON.stringify(responseFor(writes.at(-1).id, {
+    kind: 'work.workspace', chatId: 'chat_work', workspacePath: null,
+  })))
+  await clearing
+  await assert.rejects(backend.confirmWorkTool({ chatId: 'chat_work', approvalId: approval.approvalId, granted: true }), /new preview/u)
+  await prepareApproval(backend, writes)
+  backend.fail('Connection stopped.')
+  assert.equal(backend.workApprovals.size, 0)
+})
+
+test('Work denial cannot resolve as an applied write', async () => {
+  const { backend, writes } = approvalBackend()
+  const approval = await prepareApproval(backend, writes)
+  const denying = backend.confirmWorkTool({ chatId: 'chat_work', approvalId: approval.approvalId, granted: false })
+  backend.handleProtocolLine(JSON.stringify(responseFor(writes.at(-1).id, {
+    kind: 'work.result', result: { status: 'succeeded', data: { path: 'notes.txt', undoId: 'undo_owned' }, error: null },
+  })))
+  await assert.rejects(denying, /cannot report an applied change/u)
+  assert.equal(backend.getSnapshot().status, 'error')
+})
+
+test('Work decline preserves a ready Backend when its audit persistence fails safely', async () => {
+  for (const [status, code, message] of [
+    ['denied', 'io_error', 'The local file operation failed.'],
+    ['failed', 'io_error', 'The local file operation failed.'],
+    ['denied', 'conflict', 'The file changed; prepare the action again.'],
+  ]) {
+    const { backend, writes } = approvalBackend()
+    const approval = await prepareApproval(backend, writes)
+    const declining = backend.confirmWorkTool({ chatId: 'chat_work', approvalId: approval.approvalId, granted: false })
+    backend.handleProtocolLine(JSON.stringify(responseFor(writes.at(-1).id, {
+      kind: 'work.result', result: { status, data: null, error: { code, message } },
+    })))
+    const outcome = await declining
+    assert.equal(outcome.result.status, status)
+    assert.equal(outcome.result.data, null)
+    assert.equal(backend.getSnapshot().status, 'ready')
+    assert.equal(backend.workApprovals.size, 0)
+    assert.equal(backend.pendingRequests.size, 0)
+    assert.equal(writes.at(-1).params.granted, false)
+  }
+})

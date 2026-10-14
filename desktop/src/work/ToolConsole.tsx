@@ -16,6 +16,7 @@ import {
   type WorkToolRunParams,
   type WorkToolApproval,
   type WorkToolApprovalState,
+  type WorkToolConfirmParams,
 } from '../../electron/work-tool-protocol.ts'
 import './ToolConsole.css'
 
@@ -24,6 +25,8 @@ interface ToolConsoleApi {
   runWorkTool(request: WorkToolRunParams): Promise<WorkToolResultState>
   /** Prepare a write preview while leaving filesystem execution to later consent. */
   previewWorkTool(request: WorkToolRunParams): Promise<WorkToolApprovalState>
+  /** Consume the single prepared token with an explicit one-time consent choice. */
+  confirmWorkTool(request: WorkToolConfirmParams): Promise<WorkToolResultState>
 }
 
 interface ToolConsoleProps {
@@ -33,6 +36,7 @@ interface ToolConsoleProps {
   ready: boolean
   readAvailable: boolean
   previewAvailable: boolean
+  confirmAvailable: boolean
   disabled: boolean
   tools: WorkToolDescriptor[]
   /** Report one pending local operation so the shell can block conflicting actions. */
@@ -54,13 +58,15 @@ interface ScopedApproval {
 const READ_TOOLS = new Set<WorkToolId>(['list_directory', 'read_text', 'search_files', 'metadata'])
 
 /** Present explicit calls, escaped outcomes, and exact write previews before consent. */
-export function ToolConsole({ api, chatId, workspacePath, ready, readAvailable, previewAvailable, disabled, tools, onBusyChange }: ToolConsoleProps) {
+export function ToolConsole({ api, chatId, workspacePath, ready, readAvailable, previewAvailable, confirmAvailable, disabled, tools, onBusyChange }: ToolConsoleProps) {
   const [selectedTool, setSelectedTool] = useState<WorkToolId>('list_directory')
   const [path, setPath] = useState('')
   const [query, setQuery] = useState('')
   const [content, setContent] = useState('')
   const [destination, setDestination] = useState('')
   const [approval, setApproval] = useState<ScopedApproval | null>(null)
+  const [expiryNow, setExpiryNow] = useState(Date.now)
+  const pathInputRef = useRef<HTMLInputElement | null>(null)
   const [result, setResult] = useState<ScopedResult | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [pending, setPending] = useState(false)
@@ -124,11 +130,47 @@ export function ToolConsole({ api, chatId, workspacePath, ready, readAvailable, 
     setError(null)
   }
 
+  async function confirm(granted: boolean): Promise<void> {
+    const current = approval
+    if (api === undefined || !ready || disabled || !confirmAvailable || pendingRef.current
+      || current === null || current.chatId !== chatId || current.workspacePath !== workspacePath) return
+    // Consume the displayed token before awaiting IPC. The synchronous ref also
+    // prevents a second click in the same renderer batch from replaying consent.
+    setApproval(null)
+    if (Date.parse(current.approval.expiresAt) <= Date.now()) {
+      setError('This preview expired. Prepare the change again.')
+      return
+    }
+    const token = ++operationRef.current
+    pendingRef.current = true
+    setPending(true)
+    setError(null)
+    onBusyChange(true)
+    try {
+      const next = await api.confirmWorkTool({ chatId, approvalId: current.approval.approvalId, granted })
+      if (token === operationRef.current) setResult({ chatId, workspacePath: current.workspacePath, result: next.result })
+    } catch {
+      if (token === operationRef.current) setError('The change could not be completed. Prepare a new preview to try again.')
+    } finally {
+      pendingRef.current = false
+      setPending(false)
+      onBusyChange(false)
+    }
+  }
+
   const blocked = disabled || pending || !ready || workspacePath === null || activeTool === undefined
   const visibleResult = ready && result?.chatId === chatId && result.workspacePath === workspacePath
     ? result.result : null
   const visibleApproval = ready && approval?.chatId === chatId && approval.workspacePath === workspacePath
     ? approval.approval : null
+  const approvalExpired = visibleApproval !== null && Date.parse(visibleApproval.expiresAt) <= expiryNow
+
+  useEffect(() => {
+    if (visibleApproval === null || approvalExpired) return
+    const remaining = Date.parse(visibleApproval.expiresAt) - Date.now()
+    const timer = window.setTimeout(() => { setExpiryNow(Date.now()) }, Math.max(0, Math.min(remaining, 2_147_483_647)))
+    return () => { window.clearTimeout(timer) }
+  }, [visibleApproval, approvalExpired, expiryNow])
 
   return (
     <details className="work-tool-console" open>
@@ -150,7 +192,7 @@ export function ToolConsole({ api, chatId, workspacePath, ready, readAvailable, 
           </label>
           <label>
             <span>Relative path</span>
-            <input value={path} maxLength={4096} placeholder="docs/notes.md"
+            <input ref={pathInputRef} value={path} maxLength={4096} placeholder="docs/notes.md"
               required={activeTool?.toolId === 'read_text' || isWrite} onChange={(event) => {
                 setPath(event.currentTarget.value); invalidateDraft()
               }} />
@@ -194,7 +236,19 @@ export function ToolConsole({ api, chatId, workspacePath, ready, readAvailable, 
           <pre data-work-parameters>{JSON.stringify(visibleApproval.call, null, 2)}</pre>
           <h3>Change and impact</h3>
           <pre>{visibleApproval.preview}</pre>
-          <p>Review the exact change. Approval controls are unavailable in this version.</p>
+          {approvalExpired ? <p role="status">This preview expired. Prepare the change again.</p>
+            : !confirmAvailable ? <p>Approval controls are unavailable in this version.</p>
+              : (
+                <div className="work-confirmation-actions">
+                  <button type="button" disabled={blocked || approvalExpired} onClick={() => { void confirm(true) }}>
+                    {visibleApproval.call.toolId === 'delete' ? 'Confirm recoverable deletion' : 'Approve once'}
+                  </button>
+                  <button type="button" disabled={blocked} onClick={() => { void confirm(false) }}>Deny</button>
+                  <button type="button" disabled={blocked} onClick={() => {
+                    invalidateDraft(); pathInputRef.current?.focus()
+                  }}>Edit parameters</button>
+                </div>
+              )}
         </section>
       )}
       {visibleResult !== null && (

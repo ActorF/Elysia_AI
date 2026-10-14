@@ -5,6 +5,13 @@
   },
   "validClientMessages": [
     {
+      "name": "work single-use confirmation request",
+      "message": {
+        "type": "request", "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "work-confirm-1", "method": "work.tool.confirm", "params": { "chatId": "chat_fixture", "approvalId": "approval_0123456789abcdef0123456789abcdef", "granted": true }
+      }
+    },
+    {
       "name": "work edit preview request",
       "message": {
         "type": "request", "protocol": { "name": "elysia.desktop", "version": 1 },

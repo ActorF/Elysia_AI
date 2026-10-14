@@ -183,6 +183,7 @@ SERVER_CAPABILITIES = (
     "work.tools",
     "work.read",
     "work.preview",
+    "work.confirm",
     "chat.sessions",
     "chat.mode",
     "chat.stream",

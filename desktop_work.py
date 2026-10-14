@@ -22,7 +22,7 @@ from work_tools.writes import WriteCoordinator
 
 
 class DesktopWorkRuntime:
-    """Own Chat workspace selections and check canonical mode on every request."""
+    """Route Work tools through canonical mode, pinned roots, and one-action permissions."""
 
     def __init__(self, directory: Path, chat_provider: Callable[[], ChatSession], *, protected_roots: tuple[Path, ...] = ()) -> None:
         """Use one private directory and the current canonical active-Chat provider."""
@@ -37,41 +37,44 @@ class DesktopWorkRuntime:
     def dispatch(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         """Apply an explicit authenticated Work request or deny stale/Chat owners."""
 
-        # Acquire canonical Chat state before the Work mutex. Plan workers use
-        # the same provider, so this order avoids Work -> Backend lock inversion
-        # when the dispatcher invalidates a scope during a mode change.
+        # NDJSON serializes foreground admission; repositories and worker
+        # managers own their narrower locks. Never hold this runtime's singleton
+        # mutex through native I/O, so cancellation can revoke tokens promptly.
         chat = self._chat_provider()
-        with self._lock:
-            if str(chat.chat_id) != params["chatId"] or chat.is_archived:
-                raise ValueError("Work request no longer belongs to the active Chat.")
-            require_work_mode(chat.mode)
-            if method == "work.tools.list":
-                return {"kind": "work.tools", "tools": [descriptor_to_data(item) for item in TOOL_CATALOG]}
-            if method == "work.tool.run":
-                call = validate_tool_call(params["call"])
-                result = WorkToolExecutor(self.boundary(str(chat.chat_id))).run(call)
-                return {"kind": "work.result", "result": validate_tool_result(call.tool_id, result)}
-            if method == "work.tool.preview":
-                call = validate_tool_call(params["call"])
-                boundary = self.boundary(str(chat.chat_id))
-                approval = self._get_writes().preview(str(chat.chat_id), None if chat.project_id is None else str(chat.project_id),
-                                                      boundary, call)
-                return {"kind": "work.approval", "approval": approval}
-            if method == "work.workspace.bind":
-                self.invalidate(str(chat.chat_id))
-                selected = params["workspacePath"]
-                if selected is None:
-                    self._bindings.set(str(chat.chat_id), None)
-                else:
-                    boundary = WorkspaceBoundary(Path(selected))
-                    self._require_unprotected_root(boundary.root)
-                    self._bindings.set(str(chat.chat_id), boundary.normalized_root,
-                                       expected_identity=boundary.root_identity)
-            elif method != "work.workspace.get":
-                raise ValueError("Work method is unavailable.")
-            binding = self._bindings.get(str(chat.chat_id))
-            return {"kind": "work.workspace", "chatId": str(chat.chat_id),
-                    "workspacePath": None if binding is None else binding.root}
+        if str(chat.chat_id) != params["chatId"] or chat.is_archived:
+            raise ValueError("Work request no longer belongs to the active Chat.")
+        require_work_mode(chat.mode)
+        if method == "work.tools.list":
+            return {"kind": "work.tools", "tools": [descriptor_to_data(item) for item in TOOL_CATALOG]}
+        if method == "work.tool.run":
+            call = validate_tool_call(params["call"])
+            result = WorkToolExecutor(self.boundary(str(chat.chat_id))).run(call)
+            return {"kind": "work.result", "result": validate_tool_result(call.tool_id, result)}
+        if method == "work.tool.preview":
+            call = validate_tool_call(params["call"])
+            boundary = self.boundary(str(chat.chat_id))
+            approval = self._get_writes().preview(str(chat.chat_id), None if chat.project_id is None else str(chat.project_id),
+                                                  boundary, call)
+            return {"kind": "work.approval", "approval": approval}
+        if method == "work.tool.confirm":
+            result = self._get_writes().confirm(str(chat.chat_id), None if chat.project_id is None else str(chat.project_id),
+                                                self.boundary(str(chat.chat_id)), params["approvalId"], params["granted"])
+            return {"kind": "work.result", "result": result.to_data()}
+        if method == "work.workspace.bind":
+            self.invalidate(str(chat.chat_id))
+            selected = params["workspacePath"]
+            if selected is None:
+                self._bindings.set(str(chat.chat_id), None)
+            else:
+                boundary = WorkspaceBoundary(Path(selected))
+                self._require_unprotected_root(boundary.root)
+                self._bindings.set(str(chat.chat_id), boundary.normalized_root,
+                                   expected_identity=boundary.root_identity)
+        elif method != "work.workspace.get":
+            raise ValueError("Work method is unavailable.")
+        binding = self._bindings.get(str(chat.chat_id))
+        return {"kind": "work.workspace", "chatId": str(chat.chat_id),
+                "workspacePath": None if binding is None else binding.root}
 
     def _get_writes(self) -> WriteCoordinator:
         """Lazily open private recovery state after a user requests a write preview."""

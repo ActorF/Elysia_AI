@@ -54,6 +54,7 @@
     "groundedAnswer is present only on assistant Chat messages and never exposes paths, hashes, or private storage lineage"
   ],
   "oneOf": [
+    { "$ref": "#/$defs/workToolConfirmRequest" },
     { "$ref": "#/$defs/workToolPreviewRequest" },
     { "$ref": "#/$defs/workToolRunRequest" },
     { "$ref": "#/$defs/workToolsListRequest" },
@@ -109,6 +110,18 @@
     { "$ref": "#/$defs/event" }
   ],
   "$defs": {
+    "workToolConfirmParams": {
+      "type": "object", "properties": {
+        "chatId": { "$ref": "#/$defs/workChatId" },
+        "approvalId": { "type": "string", "pattern": "^approval_[0-9a-f]{32}$" },
+        "granted": { "type": "boolean" }
+      }, "required": ["chatId", "approvalId", "granted"], "additionalProperties": false
+    },
+    "workToolConfirmRequest": {
+      "allOf": [{ "$ref": "#/$defs/requestEnvelope" }, { "properties": {
+        "method": { "const": "work.tool.confirm" }, "params": { "$ref": "#/$defs/workToolConfirmParams" }
+      } }]
+    },
     "workToolPreviewRequest": {
       "allOf": [{ "$ref": "#/$defs/requestEnvelope" }, { "properties": {
         "method": { "const": "work.tool.preview" }, "params": { "$ref": "#/$defs/workToolRunParams" }
@@ -259,6 +272,7 @@
             "work.tools.list",
             "work.tool.run",
             "work.tool.preview",
+            "work.tool.confirm",
             "handshake",
             "initialize",
             "chat.stream",

@@ -60,6 +60,7 @@ import {
   parseWorkToolsState, parseWorkToolResultForCall, parseWorkToolCall, parseWorkToolApprovalState,
   type WorkToolsState, type WorkToolRunParams, type WorkToolResultState, type WorkToolCall,
   type WorkToolApprovalState,
+  type WorkToolApproval, type WorkToolConfirmParams,
 } from './work-tool-protocol.js'
 import {
   SpeechDeliveryCoordinator,
@@ -366,6 +367,7 @@ interface PendingRequest {
   resolveWorkTools?: (state: WorkToolsState) => void
   rejectWorkTools?: (error: Error) => void
   workToolCall?: WorkToolCall
+  workApprovalGranted?: boolean
   resolveWorkTool?: (state: WorkToolResultState) => void
   rejectWorkTool?: (error: Error) => void
   resolveWorkApproval?: (state: WorkToolApprovalState) => void
@@ -509,7 +511,7 @@ const WORK_WORKSPACE_METHODS = new Set<ProtocolMethod>([
   'work.workspace.bind',
 ])
 
-const WORK_ACTION_METHODS = new Set<ProtocolMethod>(['work.tool.run', 'work.tool.preview'])
+const WORK_ACTION_METHODS = new Set<ProtocolMethod>(['work.tool.run', 'work.tool.preview', 'work.tool.confirm'])
 
 type ProjectMethod =
   | 'project.list'
@@ -574,6 +576,9 @@ export class BackendProcess {
   private handshakeTimeout: ReturnType<typeof setTimeout> | null = null
   private initializeTimeout: ReturnType<typeof setTimeout> | null = null
   private readonly pendingRequests = new Map<string, PendingRequest>()
+  // Native IPC accepts only the single preview already validated for this Chat.
+  // Tokens are consumed before dispatch, and scope/navigation changes revoke them.
+  private readonly workApprovals = new Map<string, WorkToolApproval>()
   private readonly timedOutVoiceCaptureRequestIds = new Set<string>()
   private readonly timedOutSpeechStartRequestIds = new Set<string>()
   private expectedExit = false
@@ -715,6 +720,7 @@ export class BackendProcess {
     this.expectedExit = false
     this.lastDiagnostic = ''
     const sessionToken = randomBytes(32).toString('base64url')
+    this.workApprovals.clear()
     this.pendingRequests.clear()
     this.timedOutVoiceCaptureRequestIds.clear()
     this.timedOutSpeechStartRequestIds.clear()
@@ -1524,6 +1530,7 @@ export class BackendProcess {
 
   /** Prepare one exact write for inspection, with its owner frozen until approval. */
   previewWorkTool(request: WorkToolRunParams): Promise<WorkToolApprovalState> {
+    this.workApprovals.delete(request.chatId)
     if (this.snapshot.status !== 'ready' || this.snapshot.chatId !== request.chatId
       || !this.snapshot.capabilities.includes('work.preview')) {
       return Promise.reject(new Error('Work previews are unavailable for this Chat.'))
@@ -1538,6 +1545,32 @@ export class BackendProcess {
     return new Promise((resolve, reject) => {
       this.sendRequest('work.tool.preview', request, request.chatId, {
         workToolCall: parseWorkToolCall(request.call), resolveWorkApproval: resolve, rejectWorkApproval: reject,
+      })
+    })
+  }
+
+  /** Consume the active Chat's exact preview once, with no permanent grant. */
+  confirmWorkTool(request: WorkToolConfirmParams): Promise<WorkToolResultState> {
+    if (this.snapshot.status !== 'ready' || this.snapshot.chatId !== request.chatId
+      || !this.snapshot.capabilities.includes('work.confirm')) {
+      return Promise.reject(new Error('Work approval is unavailable for this Chat.'))
+    }
+    if ([...this.pendingRequests.values()].some((pending) => (
+      WORK_ACTION_METHODS.has(pending.method) || CHAT_GENERATION_METHODS.has(pending.method)
+      || VOICE_TRANSCRIPTION_METHODS.has(pending.method) || pending.method === 'work.workspace.bind'
+    ))) return Promise.reject(new Error('Wait for the current Chat or Work action.'))
+    const approval = this.workApprovals.get(request.chatId)
+    if (approval === undefined || approval.approvalId !== request.approvalId) {
+      return Promise.reject(new Error('Prepare a new preview before approving this change.'))
+    }
+    this.workApprovals.delete(request.chatId)
+    if (Date.parse(approval.expiresAt) <= Date.now()) {
+      return Promise.reject(new Error('This preview expired. Prepare the change again.'))
+    }
+    return new Promise((resolve, reject) => {
+      this.sendRequest('work.tool.confirm', request, request.chatId, {
+        workToolCall: approval.call, workApprovalGranted: request.granted,
+        resolveWorkTool: resolve, rejectWorkTool: reject,
       })
     })
   }
@@ -2322,6 +2355,7 @@ export class BackendProcess {
       | 'resolveWorkTools'
       | 'rejectWorkTools'
       | 'workToolCall'
+      | 'workApprovalGranted'
       | 'resolveWorkTool'
       | 'rejectWorkTool'
       | 'resolveWorkApproval'
@@ -2500,11 +2534,19 @@ export class BackendProcess {
         }
       } else if (pending.method === 'work.tools.list') {
         parseWorkToolsState(message.result)
-      } else if (pending.method === 'work.tool.run') {
+      } else if (pending.method === 'work.tool.run' || pending.method === 'work.tool.confirm') {
         if (pending.workToolCall === undefined) {
           throw new ProtocolValidationError('protocol.invalid_result', 'Work tool request has no expected operation.')
         }
-        parseWorkToolResultForCall(message.result, pending.workToolCall)
+        const outcome = parseWorkToolResultForCall(message.result, pending.workToolCall)
+        if (pending.method === 'work.tool.confirm' && pending.workApprovalGranted === false
+          && (!['denied', 'failed'].includes(outcome.result.status) || outcome.result.data !== null
+            || !['permission_denied', 'io_error', 'conflict'].includes(outcome.result.error?.code ?? ''))) {
+          // A decline can fail while persisting its audit record. Its token is
+          // still spent and no mutation occurred, so a fixed storage/conflict
+          // error is a truthful result rather than protocol corruption.
+          throw new ProtocolValidationError('protocol.invalid_result', 'A declined Work action cannot report an applied change.')
+        }
       } else if (pending.method === 'work.tool.preview') {
         const state = parseWorkToolApprovalState(message.result)
         if (pending.workToolCall === undefined || JSON.stringify(state.approval.call) !== JSON.stringify(pending.workToolCall)) {
@@ -2672,7 +2714,7 @@ export class BackendProcess {
       if (pending.method === 'work.tools.list') {
         pending.rejectWorkTools?.(new Error('The Work tool catalog could not be loaded.'))
       }
-      if (pending.method === 'work.tool.run') {
+      if (pending.method === 'work.tool.run' || pending.method === 'work.tool.confirm') {
         pending.rejectWorkTool?.(new Error('The Work tool could not run.'))
       }
       if (pending.method === 'work.tool.preview') {
@@ -2808,6 +2850,9 @@ export class BackendProcess {
 
     if (CHAT_SESSION_METHODS.has(pending.method)) {
       const result = parseChatStateResult(message.result)
+      if (pending.method === 'chat.mode' || result.activeChat.chatId !== this.snapshot.chatId) {
+        this.workApprovals.clear()
+      }
       if (result.activeChat.modelName !== this.snapshot.modelName) {
         this.protocolFailure(
           'Active Chat model does not match the running Backend.',
@@ -2828,6 +2873,7 @@ export class BackendProcess {
 
     if (PROJECT_METHODS.has(pending.method)) {
       const result = parseProjectStateResult(message.result)
+      if (pending.method !== 'project.list' && pending.method !== 'project.open') this.workApprovals.clear()
       if (result.chatState.activeChat.modelName !== this.snapshot.modelName) {
         this.protocolFailure(
           'Active Chat model does not match the running Backend.',
@@ -2847,6 +2893,9 @@ export class BackendProcess {
     }
 
     if (WORK_WORKSPACE_METHODS.has(pending.method)) {
+      if (pending.method === 'work.workspace.bind' && pending.chatId !== undefined) {
+        this.workApprovals.delete(pending.chatId)
+      }
       pending.resolveWorkWorkspace?.(parseWorkWorkspaceState(message.result))
       return
     }
@@ -2854,12 +2903,14 @@ export class BackendProcess {
       pending.resolveWorkTools?.(parseWorkToolsState(message.result))
       return
     }
-    if (pending.method === 'work.tool.run') {
+    if (pending.method === 'work.tool.run' || pending.method === 'work.tool.confirm') {
       pending.resolveWorkTool?.(parseWorkToolResultForCall(message.result, pending.workToolCall!))
       return
     }
     if (pending.method === 'work.tool.preview') {
-      pending.resolveWorkApproval?.(parseWorkToolApprovalState(message.result))
+      const state = parseWorkToolApprovalState(message.result)
+      this.workApprovals.set(pending.chatId!, state.approval)
+      pending.resolveWorkApproval?.(state)
       return
     }
 
@@ -3615,6 +3666,7 @@ export class BackendProcess {
         new Error('Python Backend stopped before speech playback started.'),
       )
     }
+    this.workApprovals.clear()
     this.pendingRequests.clear()
   }
 
@@ -3679,6 +3731,7 @@ export class BackendProcess {
     this.clearHandshakeTimeout()
     this.clearInitializeTimeout()
     this.rejectPendingActionPromises(message)
+    this.workApprovals.clear()
     this.pendingRequests.clear()
     this.timedOutVoiceCaptureRequestIds.clear()
     this.timedOutSpeechStartRequestIds.clear()
@@ -3700,6 +3753,7 @@ export class BackendProcess {
     this.clearHandshakeTimeout()
     this.clearInitializeTimeout()
     this.rejectPendingActionPromises(message)
+    this.workApprovals.clear()
     this.pendingRequests.clear()
     this.timedOutVoiceCaptureRequestIds.clear()
     this.timedOutSpeechStartRequestIds.clear()

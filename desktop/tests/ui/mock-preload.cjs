@@ -418,6 +418,7 @@ let nextWorkToolsError = null
 let nextWorkToolResult = null
 let nextWorkPreviewError = null
 let nextWorkApprovalNumber = 1
+let workApprovals = new Map()
 let delayWorkToolRuns = false
 let pendingWorkToolRuns = []
 const workFiles = new Map([
@@ -1551,10 +1552,40 @@ const desktopApi = {
       preview = '[Preview truncated; the complete parameters remain visible above.]'
     }
     const approvalId = `approval_${(nextWorkApprovalNumber++).toString(16).padStart(32, '0')}`
-    return { kind: 'work.approval', approval: {
+    const state = { kind: 'work.approval', approval: {
       approvalId, call, risk: ['create', 'edit'].includes(call.toolId) ? 'medium' : 'high',
       preview, expiresAt: '2100-01-01T00:00:00+00:00',
     } }
+    workApprovals.set(request.chatId, clone(state.approval))
+    return state
+  },
+
+  confirmWorkTool: async (request) => {
+    record('confirmWorkTool', [request])
+    const approval = workApprovals.get(request.chatId)
+    workApprovals.delete(request.chatId)
+    if (approval === undefined || approval.approvalId !== request.approvalId) {
+      return { kind: 'work.result', result: { status: 'denied', data: null,
+        error: { code: 'permission_required', message: 'The action requires explicit approval.' } } }
+    }
+    if (!request.granted) {
+      return { kind: 'work.result', result: { status: 'denied', data: null,
+        error: { code: 'permission_denied', message: 'The action was declined.' } } }
+    }
+    if (nextWorkToolResult !== null) {
+      const result = clone(nextWorkToolResult)
+      nextWorkToolResult = null
+      return { kind: 'work.result', result }
+    }
+    const { toolId, arguments: args } = approval.call
+    if (toolId === 'create' || toolId === 'edit') workFiles.set(args.path, args.content)
+    else if (toolId === 'move') {
+      workFiles.set(args.destination, workFiles.get(args.path))
+      workFiles.delete(args.path)
+    } else workFiles.delete(args.path)
+    const data = { path: args.path, undoId: `undo_${approval.approvalId.slice(9)}` }
+    if (toolId === 'move') data.destination = args.destination
+    return { kind: 'work.result', result: { status: 'succeeded', data, error: null } }
   },
 
   chooseWorkWorkspace: async (chatId) => {
@@ -2104,6 +2135,7 @@ const testControl = {
     nextWorkToolResult = null
     nextWorkPreviewError = null
     nextWorkApprovalNumber = 1
+    workApprovals = new Map()
     for (const release of pendingWorkWorkspaceReads) {
       release()
     }

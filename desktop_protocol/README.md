@@ -97,6 +97,14 @@ native writing starts it completes and verifies through the same handle, with
 an accurate outcome and recovery intent if interrupted. Native OS calls are
 not forcibly terminated to manufacture a timeout or successful cancellation.
 
+`work.tool.confirm` carries only the current Chat ID, exact shown approval ID,
+and a Boolean one-time decision. The renderer cannot substitute new parameters
+while approving. Low-risk reads are explicit user actions; medium/high writes
+always require preview and confirmation. No critical-risk operation is exposed.
+Decline, expiry, changed bytes, changed Project/root, revoked rights, and token
+replay all refuse mutation. Modified actions receive a new preview/token. The
+UI offers a stronger recoverable-deletion confirmation and no permanent grant.
+
 `settings.get` and `settings.update` expose one exact public allowlist with
 optimistic revision checks: Chat model, Ollama origin, two Memory limits,
 import byte limit, transcription model/device/language, automatic Voice Call speech,

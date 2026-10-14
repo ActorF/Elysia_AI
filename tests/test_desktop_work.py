@@ -1,4 +1,4 @@
-"""Exercise authenticated Work binding, canonical mode gating, and strict DTOs."""
+"""Exercise authenticated Work scope, typed reads, and one-action write permission."""
 
 from dataclasses import replace
 import json
@@ -157,3 +157,37 @@ def test_write_preview_shows_exact_change_and_does_not_change_selected_file(tmp_
     denied = runtime._get_writes().confirm(str(current.chat_id), None, WorkspaceBoundary(selected),
                                           state["approval"]["approvalId"], True)
     assert denied.status == "denied"
+
+
+def test_confirm_requires_exact_current_action_and_refuses_replay(tmp_path: Path) -> None:
+    """A declined or superseded action cannot later mutate the selected file."""
+
+    current = _chat()
+    selected = tmp_path / "selected"
+    selected.mkdir()
+    target = selected / "notes.txt"
+    target.write_text("original", encoding="utf-8")
+    runtime = DesktopWorkRuntime(tmp_path / "private", lambda: current)
+    owner = {"chatId": str(current.chat_id)}
+    runtime.dispatch("work.workspace.bind", {**owner, "workspacePath": str(selected)})
+    call = {"toolId": "edit", "arguments": {"path": "notes.txt", "content": "declined"}}
+    first = runtime.dispatch("work.tool.preview", {**owner, "call": call})["approval"]
+    denied = runtime.dispatch("work.tool.confirm", {**owner, "approvalId": first["approvalId"], "granted": False})
+    assert denied["result"]["status"] == "denied"
+    assert target.read_text("utf-8") == "original"
+    call["arguments"]["content"] = "approved modified action"
+    second = runtime.dispatch("work.tool.preview", {**owner, "call": call})["approval"]
+    request = {**owner, "approvalId": second["approvalId"], "granted": True}
+    written = runtime.dispatch("work.tool.confirm", request)
+    assert written["result"]["status"] == "succeeded"
+    assert target.read_text("utf-8") == "approved modified action"
+    assert runtime.dispatch("work.tool.confirm", request)["result"]["status"] == "denied"
+    assert build_success_response("write", written)["result"] == written
+
+
+def test_approval_cannot_be_retargeted_while_confirming() -> None:
+    """The decision schema carries no path, content, or permanent-grant extension."""
+
+    params = {"chatId": "chat_test", "approvalId": "approval_" + "0" * 32, "granted": True, "path": "other.txt"}
+    with pytest.raises(ProtocolValidationError):
+        build_request("retarget", "work.tool.confirm", params)

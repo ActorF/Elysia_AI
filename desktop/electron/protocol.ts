@@ -21,9 +21,11 @@ import {
   parseWorkToolRunParams,
   parseWorkToolResultState,
   parseWorkToolApprovalState,
+  parseWorkToolConfirmParams,
   parseWorkToolsState,
   type WorkToolListParams,
   type WorkToolRunParams,
+  type WorkToolConfirmParams,
 } from './work-tool-protocol.js'
 
 export {
@@ -453,6 +455,7 @@ export interface RequestParamsByMethod {
   'work.tools.list': WorkToolListParams
   'work.tool.run': WorkToolRunParams
   'work.tool.preview': WorkToolRunParams
+  'work.tool.confirm': WorkToolConfirmParams
   'chat.pin': ChatPinParams
   'chat.archive': ChatArchiveParams
   'chat.delete': ChatIdParams
@@ -2376,6 +2379,13 @@ export function parseClientRequest(value: unknown): ClientRequest {
       return { type: 'request', protocol, id, method, params: parseWorkToolRunParams(request.params) }
     } catch {
       return fail('protocol.invalid_params', 'Work tool request is invalid.')
+    }
+  }
+  if (method === 'work.tool.confirm') {
+    try {
+      return { type: 'request', protocol, id, method, params: parseWorkToolConfirmParams(request.params) }
+    } catch {
+      return fail('protocol.invalid_params', 'Work approval choice is invalid.')
     }
   }
   if (method === 'project.list') {

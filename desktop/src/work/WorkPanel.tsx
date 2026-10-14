@@ -24,12 +24,13 @@ interface WorkPanelProps {
   disabled: boolean
   readAvailable: boolean
   previewAvailable: boolean
+  confirmAvailable: boolean
   /** Keep the shell from starting a conflicting mode change or Chat turn. */
   onBusyChange(busy: boolean): void
 }
 
 /** Display and revoke the explicit directory access granted to one Work Chat. */
-export function WorkPanel({ api, chatId, ready, disabled, readAvailable, previewAvailable, onBusyChange }: WorkPanelProps) {
+export function WorkPanel({ api, chatId, ready, disabled, readAvailable, previewAvailable, confirmAvailable, onBusyChange }: WorkPanelProps) {
   const [catalog, setCatalog] = useState<WorkToolsState | null>(null)
   const [scope, setScope] = useState<WorkWorkspaceState | null>(null)
   const [pending, setPending] = useState(false)
@@ -144,7 +145,8 @@ export function WorkPanel({ api, chatId, ready, disabled, readAvailable, preview
       )}
       <ToolInspector api={api} chatId={chatId} ready={ready} onCatalogChange={setCatalog} />
       <ToolConsole api={api} chatId={chatId} workspacePath={visibleScope?.workspacePath ?? null}
-        ready={ready} readAvailable={readAvailable} previewAvailable={previewAvailable} disabled={disabled || pending}
+        ready={ready} readAvailable={readAvailable} previewAvailable={previewAvailable} confirmAvailable={confirmAvailable}
+        disabled={disabled || pending}
         tools={catalog?.tools ?? []} onBusyChange={onBusyChange} />
     </section>
   )

@@ -87,7 +87,7 @@ export interface WorkToolListParams { chatId: string }
 export interface WorkToolRunParams { chatId: string; call: WorkToolCall }
 export interface WorkToolConfirmParams { chatId: string; approvalId: string; granted: boolean }
 
-/** Catalog-only renderer capability introduced before execution is available. */
+/** Bounded metadata, explicit calls, and one-time approval capabilities for a Work Chat. */
 export interface WorkToolClient {
   /** Read the Backend's bounded catalog for the active explicit Work Chat. */
   getWorkTools(chatId: string): Promise<WorkToolsState>
@@ -95,6 +95,8 @@ export interface WorkToolClient {
   runWorkTool(request: WorkToolRunParams): Promise<WorkToolResultState>
   /** Prepare an exact write preview without applying the requested change. */
   previewWorkTool(request: WorkToolRunParams): Promise<WorkToolApprovalState>
+  /** Consume one exact previously shown preview by approving once or denying it. */
+  confirmWorkTool(request: WorkToolConfirmParams): Promise<WorkToolResultState>
 }
 
 const DECLARED_POLICY: Record<WorkToolId, { risk: WorkToolRisk; timeout: number }> = {

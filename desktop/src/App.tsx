@@ -7896,6 +7896,7 @@ function App() {
             disabled={modeSelectionDisabled}
             readAvailable={snapshot.capabilities.includes('work.read')}
             previewAvailable={snapshot.capabilities.includes('work.preview')}
+            confirmAvailable={snapshot.capabilities.includes('work.confirm')}
             onBusyChange={(busy) => {
               workOperationPendingRef.current = busy
               setWorkOperationPending(busy)

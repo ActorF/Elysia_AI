@@ -34,6 +34,7 @@ export type {
 export type {
   WorkToolClient, WorkToolsState, WorkToolDescriptor, WorkToolRunParams, WorkToolResultState,
   WorkToolApprovalState,
+  WorkToolConfirmParams,
 } from './work-tool-protocol.js'
 
 export type BackendStatus =

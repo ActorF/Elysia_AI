@@ -31,7 +31,7 @@ import { fileURLToPath } from 'node:url'
 
 import { BackendProcess } from './backend-process.js'
 import { parseWorkWorkspaceGetParams } from './work-protocol.js'
-import { parseWorkToolRunParams } from './work-tool-protocol.js'
+import { parseWorkToolRunParams, parseWorkToolConfirmParams } from './work-tool-protocol.js'
 import { ApplicationShutdownGate } from './application-shutdown-gate.js'
 import {
   DATA_STORAGE_CLEANABLE_CATEGORIES,
@@ -3404,6 +3404,11 @@ function registerIpcHandlers(): void {
   ipcMain.handle('work:preview-tool', (event, request: unknown) => {
     assertTrustedSender(event)
     return requireBackend().previewWorkTool(parseWorkToolRunParams(request))
+  })
+
+  ipcMain.handle('work:confirm-tool', (event, request: unknown) => {
+    assertTrustedSender(event)
+    return requireBackend().confirmWorkTool(parseWorkToolConfirmParams(request))
   })
 
   ipcMain.handle('work:choose-workspace', async (event, chatId: unknown) => {

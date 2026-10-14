@@ -9,7 +9,7 @@ from datetime import datetime
 from .contracts import TOOL_CATALOG, descriptor_to_data, ToolResult, ToolProtocolError, validate_tool_call, validate_tool_result
 
 
-WORK_METHODS = ("work.workspace.get", "work.workspace.bind", "work.tools.list", "work.tool.run", "work.tool.preview")
+WORK_METHODS = ("work.workspace.get", "work.workspace.bind", "work.tools.list", "work.tool.run", "work.tool.preview", "work.tool.confirm")
 
 
 def validate_work_params(method: str, value: object) -> dict[str, Any]:
@@ -21,6 +21,8 @@ def validate_work_params(method: str, value: object) -> dict[str, Any]:
     """
 
     fields = {"chatId", "workspacePath"} if method == "work.workspace.bind" else {"chatId", "call"} if method in {"work.tool.run", "work.tool.preview"} else {"chatId"}
+    if method == "work.tool.confirm":
+        fields = {"chatId", "approvalId", "granted"}
     if method not in WORK_METHODS or not isinstance(value, dict) or set(value) != fields:
         raise ValueError("Work request fields are invalid.")
     chat_id = value["chatId"]
@@ -32,6 +34,9 @@ def validate_work_params(method: str, value: object) -> dict[str, Any]:
             raise ValueError("Workspace selection is invalid.")
     elif method in {"work.tool.run", "work.tool.preview"}:
         validate_tool_call(value["call"])
+    elif method == "work.tool.confirm":
+        if type(value["approvalId"]) is not str or re.fullmatch(r"approval_[0-9a-f]{32}", value["approvalId"]) is None or type(value["granted"]) is not bool:
+            raise ValueError("Work confirmation is invalid.")
     return dict(value)
 
 

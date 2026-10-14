@@ -36,7 +36,7 @@ function snapshot(status = 'ready', revision = 1) {
   return {
     revision,
     status,
-    capabilities: ['chat.stream', 'chat.mode', 'work.workspace', 'work.tools', 'work.read', 'work.preview'],
+    capabilities: ['chat.stream', 'chat.mode', 'work.workspace', 'work.tools', 'work.read', 'work.preview', 'work.confirm'],
     models: ['qwen3.5:9b'],
     modelName: 'qwen3.5:9b',
     chatId: 'chat_work_test',
@@ -262,4 +262,70 @@ test('shows a bounded preview failure without exposing private diagnostics', asy
   await expect(page.getByRole('alert')).toContainText('The change preview could not be prepared.')
   await expect(page.getByRole('alert')).not.toContainText('Private file exception')
   await expect(page.getByRole('region', { name: 'Work change preview' })).toHaveCount(0)
+})
+
+test('applies one exact approval and requires separate consent for the next change', async () => {
+  await page.evaluate(() => {
+    ;(window as WorkTestWindow).elysiaDesktopTest.setWorkWorkspaceState({
+      kind: 'work.workspace', chatId: 'chat_work_test', workspacePath: 'D:\\work-confirm',
+    })
+  })
+  await page.getByRole('combobox', { name: 'Conversation mode' }).selectOption('work')
+  await page.getByLabel('Work tool', { exact: true }).selectOption('edit')
+  await page.getByLabel('Relative path', { exact: true }).fill('notes.txt')
+  await page.getByLabel('Complete file content').fill('Approved exact content.')
+  await page.getByRole('button', { name: 'Prepare change', exact: true }).click()
+  await page.getByRole('button', { name: 'Approve once', exact: true }).click()
+  const result = page.getByRole('region', { name: 'Work tool result' })
+  await expect(result).toContainText('Completed')
+  await expect(result.locator('pre')).toContainText('undoId')
+  await expect(page.getByRole('button', { name: 'Approve once', exact: true })).toHaveCount(0)
+  await page.getByLabel('Work tool', { exact: true }).selectOption('read_text')
+  await page.getByRole('button', { name: 'Run tool', exact: true }).click()
+  await expect(result.locator('pre')).toContainText('Approved exact content.')
+  await page.getByLabel('Work tool', { exact: true }).selectOption('edit')
+  await page.getByLabel('Complete file content').fill('Declined content.')
+  await page.getByRole('button', { name: 'Prepare change', exact: true }).click()
+  await page.getByRole('button', { name: 'Deny', exact: true }).click()
+  await expect(result).toContainText('The action was declined.')
+  await page.getByLabel('Work tool', { exact: true }).selectOption('read_text')
+  await page.getByRole('button', { name: 'Run tool', exact: true }).click()
+  await expect(result.locator('pre')).toContainText('Approved exact content.')
+  await expect(result.locator('pre')).not.toContainText('Declined content.')
+  const choices = await page.evaluate(() => (window as WorkTestWindow).elysiaDesktopTest.getCalls()
+    .filter((call) => call.method === 'confirmWorkTool').map((call) => call.args))
+  expect(choices).toEqual([
+    [{ chatId: 'chat_work_test', approvalId: `approval_${'0'.repeat(31)}1`, granted: true }],
+    [{ chatId: 'chat_work_test', approvalId: `approval_${'0'.repeat(31)}2`, granted: false }],
+  ])
+})
+
+test('requires edited parameters to be prepared again and uses a distinct deletion choice', async () => {
+  await page.evaluate(() => {
+    ;(window as WorkTestWindow).elysiaDesktopTest.setWorkWorkspaceState({
+      kind: 'work.workspace', chatId: 'chat_work_test', workspacePath: 'D:\\work-confirm',
+    })
+  })
+  await page.getByRole('combobox', { name: 'Conversation mode' }).selectOption('work')
+  await page.getByLabel('Work tool', { exact: true }).selectOption('edit')
+  await page.getByLabel('Relative path', { exact: true }).fill('notes.txt')
+  await page.getByLabel('Complete file content').fill('Old draft.')
+  await page.getByRole('button', { name: 'Prepare change', exact: true }).click()
+  await page.getByRole('button', { name: 'Edit parameters' }).click()
+  await expect(page.getByRole('region', { name: 'Work change preview' })).toHaveCount(0)
+  await page.getByLabel('Complete file content').fill('Revised draft.')
+  await page.getByRole('button', { name: 'Prepare change', exact: true }).click()
+  await page.evaluate(() => {
+    ;(window as WorkTestWindow).elysiaDesktopTest.setNextWorkToolResult({
+      status: 'denied', data: null, error: { code: 'conflict', message: 'The file changed; prepare the action again.' },
+    })
+  })
+  await page.getByRole('button', { name: 'Approve once', exact: true }).click()
+  await expect(page.getByRole('region', { name: 'Work tool result' })).toContainText('The file changed; prepare the action again.')
+  await expect(page.getByRole('button', { name: 'Approve once', exact: true })).toHaveCount(0)
+  await page.getByLabel('Work tool', { exact: true }).selectOption('delete')
+  await page.getByRole('button', { name: 'Prepare change', exact: true }).click()
+  await expect(page.getByRole('button', { name: 'Confirm recoverable deletion' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Approve once', exact: true })).toHaveCount(0)
+  await page.getByRole('button', { name: 'Deny', exact: true }).click()
 })
