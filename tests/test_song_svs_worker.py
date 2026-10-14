@@ -1,4 +1,4 @@
-"""Test the Windows lyrics-SVS orchestrator without loading audio models."""
+"""Test the Windows source-SVC and lyrics-SVS orchestrator without loading audio models."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+import wave
 from types import SimpleNamespace
 
 import pytest
@@ -16,6 +17,115 @@ from scripts import song_svs_worker as worker
 
 
 _TOKEN = "12345678-1234-4234-9234-123456789abc"
+
+
+def _write_svc_wave(path: Path, frames: int, *, width: int = 3) -> None:
+    """Create a complete canonical SVC output without loading audio libraries."""
+
+    with wave.open(str(path), "wb") as output:
+        output.setparams((1, width, 24_000, frames, "NONE", "not compressed"))
+        output.writeframes(bytes(width * frames))
+
+
+def test_source_svc_protocol_uses_only_conversion_stages(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Map source inference to native conversion without lyric-only stages."""
+
+    protocol = b"".join([
+        _svs_event("validating", 4), _svs_event("synthesizing", 58),
+        _svs_event("ready", 100),
+    ])
+    worker._relay_svs_protocol(BytesIO(protocol), engine="source-svc")
+    output = capsys.readouterr().out
+    assert '"stage":"converting"' in output
+    assert '"progressPercent":55' in output
+    assert '"stage":"transcribing"' not in output
+    with pytest.raises(worker._SvsWorkerFailure):
+        worker._relay_svs_protocol(BytesIO(_successful_protocol()), engine="source-svc")
+
+
+def test_source_progress_is_monotonic_bounded_and_drops_private_text(capsys):
+    """Relay repeated synthesis progress as fixed native conversion messages."""
+    protocol = _svs_event("validating", 4)
+    protocol += b"".join(_svs_event("synthesizing", value, "private words")
+                         for value in [58, 59, 60, 61, 62, 64, 72, 88])
+    protocol += _svs_event("ready", 100)
+    assert worker._relay_svs_protocol(BytesIO(protocol), engine="source-svc").ready
+    output = capsys.readouterr().out
+    assert "private words" not in output
+    records = [json.loads(line.removeprefix(worker._audio._EVENT_PREFIX)) for line in output.splitlines()]
+    assert [record["progressPercent"] for record in records] == [55, 56, 57, 58, 59, 61, 70, 88]
+    assert all(record["stage"] == "converting" for record in records)
+    assert records[3]["message"] == "Checking the vocal pitch"
+
+
+@pytest.mark.parametrize("values", [[59], [58, 58], [58, 70, 69], [58, 89]])
+def test_source_progress_rejects_invalid_first_duplicate_regression_and_overflow(values):
+    """Progress never weakens the existing ordered lifecycle or upper bound."""
+    protocol = _svs_event("validating", 4)
+    protocol += b"".join(_svs_event("synthesizing", value) for value in values)
+    protocol += _svs_event("ready", 100)
+    with pytest.raises(worker._SvsWorkerFailure):
+        worker._relay_svs_protocol(BytesIO(protocol), engine="source-svc")
+
+
+@pytest.mark.parametrize("payload", [
+    '{"schema_version":1,"reference":"fairy","key_shift_semitones":12}',
+    '{"schema_version":1,"reference":"elysia","key_shift_semitones":12}',
+])
+def test_source_svc_manifest_accepts_only_reviewed_references(tmp_path: Path, payload: str) -> None:
+    """Admit fixed profile identities bound to the native launch key."""
+
+    (tmp_path / "singing-request.json").write_text(payload, encoding="utf-8")
+    worker._validate_svc_request(tmp_path, 12)
+
+
+@pytest.mark.parametrize("payload", [
+    '{"schema_version":true,"reference":"fairy","key_shift_semitones":12}',
+    '{"schema_version":1,"reference":"fairy","key_shift_semitones":0}',
+    '{"schema_version":1,"reference":"fairy","key_shift_semitones":true}',
+    '{"schema_version":1,"reference":"fairy","key_shift_semitones":12,"cfg":3}',
+    '{"schema_version":1,"reference":"fairy","reference":"elysia","key_shift_semitones":12}',
+    '{"schema_version":1,"reference":"D:/private.wav","key_shift_semitones":12}',
+])
+def test_source_svc_manifest_rejects_ambiguous_or_unbound_requests(tmp_path: Path, payload: str) -> None:
+    """Reject duplicate fields, custom profiles, and disagreement with native IPC."""
+
+    (tmp_path / "singing-request.json").write_text(payload, encoding="utf-8")
+    with pytest.raises(worker._SvsWorkerFailure):
+        worker._validate_svc_request(tmp_path, 12)
+
+
+def test_source_svc_output_requires_exact_pcm24_payload(tmp_path: Path) -> None:
+    """Reject frame loss and truncated data before the shared mixer can pad it."""
+
+    output = tmp_path / "output.wav"
+    target_samples = 44_117
+    expected = round(target_samples * 24_000 / 44_100)
+    _write_svc_wave(output, expected)
+    worker._require_svc_output_duration(output, target_samples=target_samples)
+    for frames, width in [(expected - 1, 3), (expected + 1, 3), (expected, 2)]:
+        _write_svc_wave(output, frames, width=width)
+        with pytest.raises(worker._SvsWorkerFailure):
+            worker._require_svc_output_duration(output, target_samples=target_samples)
+    _write_svc_wave(output, expected)
+    output.write_bytes(output.read_bytes()[:-3])
+    with pytest.raises(worker._SvsWorkerFailure, match="incomplete"):
+        worker._require_svc_output_duration(output, target_samples=target_samples)
+
+
+def test_source_svc_rejects_simultaneous_lyrics_before_runtime(tmp_path: Path) -> None:
+    """Keep mode selection exclusive before starting native or WSL tooling."""
+
+    job_root = tmp_path / _TOKEN
+    job_root.mkdir()
+    (job_root / "singing-request.json").write_text("{}", encoding="utf-8")
+    (job_root / "lyrics-manifest.json").write_text("{}", encoding="utf-8")
+    arguments = _arguments(job_root)
+    arguments.engine = "source-svc"
+    with pytest.raises(worker._SvsWorkerFailure, match="unexpected entry"):
+        worker._run_job(arguments)
 
 
 def _svs_event(
@@ -59,11 +169,13 @@ def _arguments(job_root: Path) -> argparse.Namespace:
     """Create one manager-shaped stems request for an isolated job fixture."""
 
     return argparse.Namespace(
+        engine="lyrics-svs",
         source_mode="stems",
         input=None,
         vocal_input=job_root.parent / "vocal.wav",
         accompaniment_input=job_root.parent / "instrumental.wav",
         key_shift_semitones=0,
+        shift_accompaniment=True,
         job_dir=job_root,
         ffmpeg=Path("ffmpeg.exe"),
         ffprobe=Path("ffprobe.exe"),
@@ -81,7 +193,8 @@ def test_parser_matches_the_electron_lyrics_svs_launch_contract() -> None:
             "--source-mode", "stems",
             "--vocal-input", "vocal.wav",
             "--accompaniment-input", "instrumental.wav",
-            "--key-shift-semitones", "2",
+            "--key-shift-semitones", "12",
+            "--shift-accompaniment", "false",
             "--job-dir", "job",
             "--ffmpeg", "ffmpeg.exe",
             "--ffprobe", "ffprobe.exe",
@@ -92,9 +205,121 @@ def test_parser_matches_the_electron_lyrics_svs_launch_contract() -> None:
     )
 
     assert parsed.source_mode == "stems"
-    assert parsed.key_shift_semitones == 2
+    assert parsed.key_shift_semitones == 12
+    assert parsed.shift_accompaniment is False
     assert not hasattr(parsed, "svc_root")
     assert not hasattr(parsed, "svc_model_root")
+
+
+@pytest.mark.parametrize("engine", ["lyrics-svs", "source-svc"])
+@pytest.mark.parametrize("source_mode", ["song", "stems"])
+@pytest.mark.parametrize("shift_accompaniment", [False, True])
+def test_prepare_sources_shifts_only_lyrics_vocal_and_optional_accompaniment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    source_mode: str,
+    shift_accompaniment: bool,
+    engine: str,
+) -> None:
+    """Use F0-only transposition for source SVC while independently gating music."""
+
+    job_root = tmp_path / _TOKEN
+    job_root.mkdir()
+    arguments = _arguments(job_root)
+    arguments.source_mode = source_mode
+    arguments.engine = engine
+    arguments.input = tmp_path / "song.wav"
+    arguments.key_shift_semitones = 4
+    arguments.shift_accompaniment = shift_accompaniment
+    transpose_calls: list[tuple[Path, Path]] = []
+
+    monkeypatch.setattr(
+        worker._audio,
+        "_validate_source",
+        lambda source, _ffprobe: (Path(source), 2.0),
+    )
+    monkeypatch.setattr(worker._audio, "_target_samples", lambda _duration: 88_200)
+
+    def fake_decode(
+        _ffmpeg: Path,
+        _source: Path,
+        _duration: float,
+        output: Path,
+    ) -> None:
+        """Materialize each canonical decode requested by the source mode."""
+
+        output.write_bytes(b"decoded")
+
+    def fake_separate(
+        _song: Path,
+        separation_root: Path,
+        _demucs_site: Path,
+        _torch_home: Path,
+    ) -> tuple[Path, Path]:
+        """Create representative stems at the shared post-separation boundary."""
+
+        separation_root.mkdir()
+        vocals = separation_root / "vocals.wav"
+        accompaniment = separation_root / "no_vocals.wav"
+        vocals.write_bytes(b"vocals")
+        accompaniment.write_bytes(b"accompaniment")
+        return vocals, accompaniment
+
+    def fake_prepare(
+        _ffmpeg: Path,
+        _source: Path,
+        output: Path,
+        **_options: object,
+    ) -> None:
+        """Materialize one mono vocal preparation without decoding audio."""
+
+        output.write_bytes(b"prepared")
+
+    def fake_transpose(
+        _ffmpeg: Path,
+        source: Path,
+        output: Path,
+        **_options: object,
+    ) -> None:
+        """Record which stream is transposed and create its expected output."""
+
+        transpose_calls.append((source, output))
+        output.write_bytes(b"shifted")
+
+    monkeypatch.setattr(worker._audio, "_decode_song", fake_decode)
+    monkeypatch.setattr(worker._audio, "_separate_vocals", fake_separate)
+    monkeypatch.setattr(worker._audio, "_prepare_mono_vocals", fake_prepare)
+    monkeypatch.setattr(worker._audio, "_transpose_audio", fake_transpose)
+
+    result = worker._prepare_sources(
+        arguments,
+        job_root=job_root,
+        ffmpeg=Path("ffmpeg.exe"),
+        ffprobe=Path("ffprobe.exe"),
+        demucs_site=Path("demucs") if source_mode == "song" else None,
+        torch_home=Path("torch") if source_mode == "song" else None,
+    )
+
+    returned_accompaniment = result[3]
+    scratch_files = result[5]
+    vocal_calls = int(engine == "lyrics-svs")
+    if vocal_calls:
+        assert transpose_calls[0][0].name == "target-vocal-unshifted.wav"
+    if shift_accompaniment:
+        assert len(transpose_calls) == vocal_calls + 1
+        assert transpose_calls[vocal_calls][0].name in {
+            "accompaniment.wav",
+            "no_vocals.wav",
+        }
+        assert returned_accompaniment.name == "accompaniment-key-shifted.wav"
+        assert any(path == returned_accompaniment for path, _label in scratch_files)
+    else:
+        assert len(transpose_calls) == vocal_calls
+        assert returned_accompaniment.name in {"accompaniment.wav", "no_vocals.wav"}
+        assert all(
+            path.name != "accompaniment-key-shifted.wav"
+            for path, _label in scratch_files
+        )
 
 
 def test_path_translation_uses_absolute_wslpath_without_a_shell(
@@ -575,10 +800,12 @@ def test_initial_job_layout_requires_the_provenance_manifest(tmp_path: Path) -> 
         )
 
 
+@pytest.mark.parametrize("engine", ["lyrics-svs", "source-svc"])
 def test_successful_job_removes_lyrics_and_scratch_before_completion(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    engine: str,
 ) -> None:
     """Retain only final media after the private bridge and reviewed mix succeed."""
 
@@ -590,6 +817,13 @@ def test_successful_job_removes_lyrics_and_scratch_before_completion(
     (tmp_path / "vocal.wav").write_bytes(b"vocal")
     (tmp_path / "instrumental.wav").write_bytes(b"instrumental")
     arguments = _arguments(job_root)
+    arguments.engine = engine
+    if engine == "source-svc":
+        for name in ("lyrics.lrc", "lyrics.txt", "lyrics-manifest.json"):
+            (job_root / name).unlink()
+        (job_root / "singing-request.json").write_text(json.dumps({
+            "schema_version": 1, "reference": "fairy", "key_shift_semitones": 0,
+        }), encoding="utf-8")
 
     monkeypatch.setattr(
         worker,
@@ -628,17 +862,21 @@ def test_successful_job_removes_lyrics_and_scratch_before_completion(
     )
     monkeypatch.setattr(worker, "_system_wsl_executable", lambda: Path("wsl.exe"))
 
-    def fake_bridge(_wsl: Path, _project: Path, root: Path) -> None:
+    def fake_bridge(_wsl: Path, _project: Path, root: Path, **options: object) -> None:
         """Publish the one fixed bridge output without running WSL."""
 
-        (root / worker._GENERATED_VOCAL_NAME).write_bytes(b"generated")
+        if engine == "source-svc":
+            assert options == {"engine": "source-svc"}
+            _write_svc_wave(root / worker._GENERATED_VOCAL_NAME, 240_000)
+        else:
+            (root / worker._GENERATED_VOCAL_NAME).write_bytes(b"generated")
 
     monkeypatch.setattr(worker, "_run_wsl_bridge", fake_bridge)
 
     def fake_mix(
         _ffmpeg: Path,
         _vocal: Path,
-        _consonants: Path,
+        _consonants: Path | None,
         _accompaniment: Path,
         wav_output: Path,
         mp3_output: Path,
@@ -646,6 +884,8 @@ def test_successful_job_removes_lyrics_and_scratch_before_completion(
     ) -> None:
         """Create final outputs for cleanup-order verification."""
 
+        assert (_consonants is None) == (engine == "source-svc")
+        assert (job_root / "consonant-layer.wav").exists() == (engine == "lyrics-svs")
         wav_output.write_bytes(b"wav")
         mp3_output.write_bytes(b"mp3")
 
@@ -676,6 +916,7 @@ def test_main_collapses_unexpected_failures_without_a_traceback_or_lyric(
     status = worker.main(
         [
             "--input", "song.wav",
+            "--shift-accompaniment", "true",
             "--job-dir", _TOKEN,
             "--ffmpeg", "ffmpeg.exe",
             "--ffprobe", "ffprobe.exe",

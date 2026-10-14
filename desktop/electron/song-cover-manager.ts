@@ -32,10 +32,12 @@ import {
 import {
   parseSongCoverWorkerEvent,
   parseSongLyricsMetadataOverride,
+  SONG_COVER_KEY_SHIFTS,
   type SongCoverEngine,
   type SongCoverErrorCode,
   type SongCoverKeyShiftSemitones,
   type SongCoverReadiness,
+  type SongCoverSingingReference,
   type SongLyricsMetadataOverride,
   type SongCoverSourceMode,
   type SongCoverState,
@@ -106,6 +108,13 @@ const SUPPORTED_AUDIO_EXTENSIONS = new Set([
   '.wav',
 ])
 const WORKER_STAGE_SEQUENCES = Object.freeze({
+  'source-svc': Object.freeze([
+    'validating',
+    'separating',
+    'converting',
+    'mixing',
+    'complete',
+  ] as const),
   'legacy-svc': Object.freeze([
     'validating',
     'separating',
@@ -126,13 +135,6 @@ const WORKER_STAGE_SEQUENCES = Object.freeze({
 const SONG_COVER_JOB_ID_PATTERN = (
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u
 )
-const SUPPORTED_KEY_SHIFTS: readonly SongCoverKeyShiftSemitones[] = Object.freeze([
-  -2,
-  -1,
-  0,
-  1,
-  2,
-])
 const PRIVATE_CLEANUP_ERROR = (
   'Private Song Cover audio could not be cleared. Close Elysia and try again.'
 )
@@ -250,6 +252,7 @@ interface CompletedOutputIdentity {
   readonly jobId: string
   readonly mp3: OutputFileIdentity
   readonly wav: OutputFileIdentity
+  readonly durationSeconds: number
 }
 
 interface ActiveSongCoverJob {
@@ -348,16 +351,28 @@ function asciiEquals(bytes: Uint8Array, offset: number, value: string): boolean 
   return true
 }
 
-function isCanonicalSongCoverWav(
+function sourceConversionMessage(percent: number): string {
+  switch (percent) {
+    case 55: return 'Preparing singing voice'
+    case 56: return 'Reading source vocal'
+    case 57: return 'Analyzing vocal melody'
+    case 58: return 'Checking vocal pitch'
+    case 59: return 'Loading singing voice'
+    case 88: return 'Preparing converted vocal for mixing'
+    default: return 'Converting the vocal melody to Elysia'
+  }
+}
+
+function canonicalSongCoverWavDuration(
   header: Uint8Array,
   fileSize: number,
-): boolean {
+): number | null {
   if (
     header.byteLength < 44
     || !asciiEquals(header, 0, 'RIFF')
     || !asciiEquals(header, 8, 'WAVE')
   ) {
-    return false
+    return null
   }
   const view = new DataView(
     header.buffer,
@@ -365,11 +380,11 @@ function isCanonicalSongCoverWav(
     header.byteLength,
   )
   if (view.getUint32(4, true) + 8 !== fileSize) {
-    return false
+    return null
   }
   let offset = 12
   let canonicalFormat = false
-  let canonicalData = false
+  let durationSeconds: number | null = null
   // RIFF permits metadata chunks before audio. Walking their declared sizes
   // accepts normal FFmpeg metadata without trusting a fixed header offset,
   // while every addition is range-checked against both the prefix and file.
@@ -378,11 +393,11 @@ function isCanonicalSongCoverWav(
     const chunkData = offset + 8
     const paddedChunkEnd = chunkData + chunkBytes + (chunkBytes & 1)
     if (paddedChunkEnd > fileSize) {
-      return false
+      return null
     }
     if (asciiEquals(header, offset, 'fmt ')) {
       if (chunkBytes < 16 || chunkData + 16 > header.byteLength) {
-        return false
+        return null
       }
       canonicalFormat = (
         view.getUint16(chunkData, true) === 1
@@ -393,15 +408,17 @@ function isCanonicalSongCoverWav(
         && view.getUint16(chunkData + 14, true) === 16
       )
     } else if (asciiEquals(header, offset, 'data')) {
-      canonicalData = chunkBytes > 0 && chunkBytes % 4 === 0
+      if (chunkBytes > 0 && chunkBytes % 4 === 0 && chunkBytes / 176_400 <= 720) {
+        durationSeconds = chunkBytes / 176_400
+      }
       break
     }
     if (paddedChunkEnd > header.byteLength) {
-      return false
+      return null
     }
     offset = paddedChunkEnd
   }
-  return canonicalFormat && canonicalData
+  return canonicalFormat ? durationSeconds : null
 }
 
 function isCanonicalSongCoverMp3(header: Uint8Array): boolean {
@@ -467,7 +484,10 @@ export class SongCoverManager {
     sourceMode: null,
     engine: null,
     keyShiftSemitones: null,
+    shiftAccompaniment: null,
     progressPercent: 0,
+    positionSeconds: 0,
+    durationSeconds: 0,
     outputAvailable: false,
     message: null,
     errorCode: null,
@@ -570,10 +590,14 @@ export class SongCoverManager {
       runtime.ffmpeg,
       runtime.ffprobe,
       path.join(this.projectRoot, 'scripts', 'song_rvc_runtime.py'),
+      path.join(this.projectRoot, 'scripts', 'song_rvc_pipeline.py'),
       path.join(this.projectRoot, 'scripts', 'song_svs_wsl_bridge.py'),
       path.join(this.projectRoot, 'scripts', 'song_svs_runtime.py'),
       path.join(this.projectRoot, 'scripts', 'song_svs_inference.py'),
       path.join(this.projectRoot, 'scripts', 'song_svs_quality.py'),
+      path.join(this.projectRoot, 'scripts', 'song_svc_inference.py'),
+      path.join(this.projectRoot, 'scripts', 'song_svc_assets.py'),
+      path.join(this.projectRoot, 'scripts', 'song_svc_pitch.py'),
       path.join(this.projectRoot, 'scripts', 'song_lyrics_alignment.py'),
     ]
     try {
@@ -610,17 +634,21 @@ export class SongCoverManager {
   /**
    * Begin one native cover job from a full song or isolated vocal/accompaniment.
    *
-   * Main owns every path and accepts only a closed key adjustment plus an
-   * optional bounded lookup identity; neither reaches the singing worker.
-   * Lyrics-driven SVS is the default, so legacy conversion must be explicit.
+   * Main owns every path and accepts only a closed key adjustment, one explicit
+   * accompaniment-follow choice, and an optional bounded lookup identity.
+   * Source-guided SVC is the default; lyrics synthesis and RVC remain explicit.
    */
   async start(
     sourcePath: string,
     sourceName: string,
     keyShiftSemitones: SongCoverKeyShiftSemitones = 0,
     accompaniment: SongCoverAccompanimentInput | null = null,
-    engine: SongCoverEngine = 'lyrics-svs',
+    engine: SongCoverEngine = 'source-svc',
     lyricsMetadataOverride: SongLyricsMetadataOverride | null = null,
+    shiftAccompaniment = true,
+    singingReference: SongCoverSingingReference | null = (
+      engine === 'source-svc' ? 'fairy' : null
+    ),
   ): Promise<SongCoverState> {
     if (this.shuttingDown) {
       throw new Error('Song Cover is shutting down.')
@@ -637,18 +665,28 @@ export class SongCoverManager {
     ) {
       throw new Error('Choose a supported local audio file.')
     }
-    if (!SUPPORTED_KEY_SHIFTS.includes(keyShiftSemitones)) {
+    if (!SONG_COVER_KEY_SHIFTS.includes(keyShiftSemitones)) {
       throw new Error('Song Cover key adjustment is invalid.')
     }
-    if (engine !== 'lyrics-svs' && engine !== 'legacy-svc') {
+    if (typeof shiftAccompaniment !== 'boolean') {
+      throw new Error('Song Cover accompaniment adjustment is invalid.')
+    }
+    if (engine !== 'lyrics-svs' && engine !== 'legacy-svc' && engine !== 'source-svc') {
       throw new Error('Song Cover engine is invalid.')
+    }
+    if (
+      engine === 'source-svc'
+        ? singingReference !== 'fairy' && singingReference !== 'elysia'
+        : singingReference !== null
+    ) {
+      throw new Error('Song Cover singing reference is invalid.')
     }
     const validatedLyricsMetadataOverride = parseSongLyricsMetadataOverride(
       lyricsMetadataOverride,
     )
     if (
       validatedLyricsMetadataOverride === undefined
-      || (engine === 'legacy-svc' && validatedLyricsMetadataOverride !== null)
+      || (engine !== 'lyrics-svs' && validatedLyricsMetadataOverride !== null)
     ) {
       throw new Error('Song Cover lyrics metadata is invalid.')
     }
@@ -702,6 +740,7 @@ export class SongCoverManager {
           sourceMode,
           engine,
           keyShiftSemitones,
+          shiftAccompaniment,
           progressPercent: 1,
           outputAvailable: false,
           message: 'Preparing the selected audio',
@@ -727,6 +766,7 @@ export class SongCoverManager {
           sourceMode,
           engine,
           keyShiftSemitones,
+          shiftAccompaniment,
           progressPercent: 1,
           outputAvailable: false,
           message: 'Preparing the selected audio',
@@ -735,8 +775,27 @@ export class SongCoverManager {
       }
       await mkdir(jobsRoot, { recursive: true })
       const runtime = this.runtimePaths()
-      if (engine === 'lyrics-svs') {
+      if (engine !== 'legacy-svc') {
         await mkdir(jobDirectory, { recursive: false, mode: 0o700 })
+      }
+      if (engine === 'source-svc') {
+        // The durable fixed-name request also identifies crash-left WSL work.
+        // Publish it before spawning any process so recovery never loses the
+        // UUID required to stop a leased Linux stage after an app crash.
+        const requestFile = await open(
+          path.join(jobDirectory, 'singing-request.json'), 'wx', 0o600,
+        )
+        try {
+          await requestFile.writeFile(JSON.stringify({
+            schema_version: 1,
+            reference: singingReference,
+            key_shift_semitones: keyShiftSemitones,
+          }) + '\n', 'utf8')
+          await requestFile.sync()
+        } finally {
+          await requestFile.close()
+        }
+      } else if (engine === 'lyrics-svs') {
         await this.prepareLyricsDrivenAssets({
           jobDirectory,
           sourcePath,
@@ -746,6 +805,7 @@ export class SongCoverManager {
           signal: launchAbortController.signal,
         })
       }
+      await this.prepareWorkerProfile(jobsRoot)
       if (this.launchCancellationRequested) {
         if (!await this.removeJobDirectory(jobId, jobDirectory)) {
           throw new Error(PRIVATE_CLEANUP_ERROR)
@@ -772,9 +832,11 @@ export class SongCoverManager {
       const child = this.spawnWorker(
         runtime.python,
         [
-          engine === 'lyrics-svs' ? runtime.svsWorker : runtime.worker,
+          engine === 'legacy-svc' ? runtime.worker : runtime.svsWorker,
+          ...(engine === 'source-svc' ? ['--engine', 'source-svc'] : []),
           ...sourceArguments,
           '--key-shift-semitones', String(keyShiftSemitones),
+          '--shift-accompaniment', String(shiftAccompaniment),
           '--job-dir', jobDirectory,
           '--ffmpeg', runtime.ffmpeg,
           '--ffprobe', runtime.ffprobe,
@@ -1117,8 +1179,19 @@ export class SongCoverManager {
         bytes,
         preferences.outputDeviceId,
         preferences.volumePercent,
+        this.state.positionSeconds >= this.state.durationSeconds ? 0 : this.state.positionSeconds,
+        (timeline) => {
+          if (generation !== this.playbackGeneration || this.shuttingDown
+            || this.outputJobId !== jobId || this.state.stage !== 'playing') return
+          this.replaceState({
+            ...this.state,
+            positionSeconds: timeline.positionSeconds,
+            durationSeconds: timeline.durationSeconds,
+          })
+        },
       ).then(() => {
         if (generation === this.playbackGeneration && !this.shuttingDown) {
+          this.replaceState({ ...this.state, positionSeconds: 0 })
           this.replaceReadyState('Song Cover ready')
         }
       }).catch(() => {
@@ -1164,7 +1237,7 @@ export class SongCoverManager {
     }
   }
 
-  /** Stop only song playback while retaining the generated cover for replay. */
+  /** Stop playback while retaining the last reported position for resume. */
   stopPlayback(jobId: string): SongCoverState {
     if (this.state.jobId !== jobId || this.outputJobId !== jobId) {
       throw new Error('Song Cover job is no longer available.')
@@ -1172,6 +1245,23 @@ export class SongCoverManager {
     if (!this.stopPlaybackUnconditionally()) {
       throw new Error('Song playback could not be stopped safely.')
     }
+    return this.state
+  }
+
+  /** Seek current output, preserving a stopped cover's offset for its next play. */
+  seek(jobId: string, positionSeconds: number): SongCoverState {
+    if (this.shuttingDown || this.state.jobId !== jobId || this.outputJobId !== jobId
+      || this.completedOutput?.jobId !== jobId || !this.state.outputAvailable) {
+      throw new Error('Song Cover job is no longer available.')
+    }
+    if (!Number.isFinite(positionSeconds) || positionSeconds < 0
+      || positionSeconds > this.state.durationSeconds || this.state.durationSeconds <= 0) {
+      throw new Error('Song Cover playback position is invalid.')
+    }
+    if (this.state.stage === 'playing' && this.getPlaybackOwner()?.seek(positionSeconds) !== true) {
+      throw new Error('Song Cover playback could not seek safely.')
+    }
+    this.replaceState({ ...this.state, positionSeconds })
     return this.state
   }
 
@@ -1286,6 +1376,7 @@ export class SongCoverManager {
       sourceMode: null,
       engine: null,
       keyShiftSemitones: null,
+      shiftAccompaniment: null,
       stage: 'idle',
       progressPercent: 0,
       outputAvailable: false,
@@ -1308,7 +1399,7 @@ export class SongCoverManager {
     maximumBytes: number,
     expected: OutputFileIdentity | null,
     format: 'mp3' | 'wav',
-  ): Promise<{ handle: FileHandle; identity: OutputFileIdentity }> {
+  ): Promise<{ handle: FileHandle; identity: OutputFileIdentity; durationSeconds: number | null }> {
     const pathMetadata = await lstat(filePath)
     const pathIdentity = outputIdentity(pathMetadata)
     if (
@@ -1341,9 +1432,10 @@ export class SongCoverManager {
         0,
       )
       const header = prefix.subarray(0, bytesRead)
+      const durationSeconds = format === 'wav'
+        ? canonicalSongCoverWavDuration(header, openedMetadata.size) : null
       const canonical = format === 'wav'
-        ? isCanonicalSongCoverWav(header, openedMetadata.size)
-        : isCanonicalSongCoverMp3(header)
+        ? durationSeconds !== null : isCanonicalSongCoverMp3(header)
       if (!canonical) {
         throw new Error('Song Cover output format is invalid.')
       }
@@ -1351,7 +1443,7 @@ export class SongCoverManager {
       if (!sameOutputIdentity(outputIdentity(finalMetadata), openedIdentity)) {
         throw new Error('Song Cover output changed during validation.')
       }
-      return { handle, identity: openedIdentity }
+      return { handle, identity: openedIdentity, durationSeconds }
     } catch (error) {
       await handle.close().catch(() => {})
       throw error
@@ -1362,7 +1454,7 @@ export class SongCoverManager {
     filePath: string,
     maximumBytes: number,
     format: 'mp3' | 'wav',
-  ): Promise<OutputFileIdentity> {
+  ): Promise<{ identity: OutputFileIdentity; durationSeconds: number | null }> {
     const opened = await this.openValidatedOutput(
       filePath,
       maximumBytes,
@@ -1370,7 +1462,7 @@ export class SongCoverManager {
       format,
     )
     try {
-      return opened.identity
+      return { identity: opened.identity, durationSeconds: opened.durationSeconds }
     } finally {
       await opened.handle.close()
     }
@@ -1391,7 +1483,8 @@ export class SongCoverManager {
         'mp3',
       ),
     ])
-    return Object.freeze({ jobId: job.id, mp3, wav })
+    if (wav.durationSeconds === null) throw new Error("Song Cover duration is invalid.")
+    return Object.freeze({ jobId: job.id, mp3: mp3.identity, wav: wav.identity, durationSeconds: wav.durationSeconds })
   }
 
   private async readValidatedPlayback(jobId: string): Promise<Uint8Array> {
@@ -1915,10 +2008,21 @@ export class SongCoverManager {
       }
       const jobDirectory = path.join(this.startupJobsRoot, entry.name)
       try {
-        // lyrics-manifest.json survives every incomplete lyrics-SVS worker but
-        // is removed before success.  It distinguishes crash-left SVS work
-        // from completed output and RVC conversion jobs without trusting content.
-        await lstat(path.join(jobDirectory, 'lyrics-manifest.json'))
+        // Both fixed manifests survive incomplete WSL work and disappear only
+        // after success. Their contents are not needed to recover the exact
+        // UUID; completed outputs and native RVC jobs have neither marker.
+        const markers = await Promise.all(
+          ['lyrics-manifest.json', 'singing-request.json'].map(async (name) => {
+            try {
+              await lstat(path.join(jobDirectory, name))
+              return true
+            } catch (error) {
+              if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
+              throw error
+            }
+          }),
+        )
+        if (!markers.some(Boolean)) continue
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
           continue
@@ -1982,6 +2086,36 @@ export class SongCoverManager {
     }
   }
 
+  /** Prepare the private Windows shell folders before native library imports. */
+  private async prepareWorkerProfile(temporaryRoot: string): Promise<void> {
+    // Pinned librosa/pooch call SHGetFolderPath without its create flag. Merely
+    // setting USERPROFILE fails on a new data root unless both shell folders
+    // exist. Keep them outside the UUID job's closed input/output layout.
+    const folders = [
+      temporaryRoot,
+      path.join(temporaryRoot, 'AppData'),
+      path.join(temporaryRoot, 'AppData', 'Local'),
+      path.join(temporaryRoot, 'AppData', 'Roaming'),
+    ]
+    for (const [index, folder] of folders.entries()) {
+      if (index > 0) {
+        try {
+          // Each parent has already been checked; recursive mkdir could follow
+          // a redirected AppData parent before that validation takes place.
+          await mkdir(folder, { mode: 0o700 })
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
+            throw error
+          }
+        }
+      }
+      const metadata = await lstat(folder)
+      if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
+        throw new Error('Song Cover private runtime folders are unavailable.')
+      }
+    }
+  }
+
   private workerEnvironment(
     runtime: SongCoverRuntimePaths,
     temporaryRoot: string,
@@ -1997,7 +2131,9 @@ export class SongCoverManager {
       system32,
     ].filter((entry): entry is string => entry !== null)
     const environment: NodeJS.ProcessEnv = {
+      APPDATA: path.join(temporaryRoot, 'AppData', 'Roaming'),
       HF_HUB_OFFLINE: '1',
+      LOCALAPPDATA: path.join(temporaryRoot, 'AppData', 'Local'),
       NUMBA_CACHE_DIR: path.join(privateCacheRoot, 'numba-cache'),
       PATH: searchPath.join(path.delimiter),
       PYTHONDONTWRITEBYTECODE: '1',
@@ -2006,6 +2142,10 @@ export class SongCoverManager {
       PYTHONUTF8: '1',
       TEMP: temporaryRoot,
       TMP: temporaryRoot,
+      // Torch resolves Path.home() during Windows import even with dumps off.
+      // Use the existing private jobs root, not the user's profile or a Legacy
+      // job directory whose exclusive creation still belongs to the worker.
+      USERPROFILE: temporaryRoot,
       TORCH_HOME: runtime.torchHome,
       TRANSFORMERS_OFFLINE: '1',
     }
@@ -2088,6 +2228,20 @@ export class SongCoverManager {
     }
     const expectedStage = WORKER_STAGE_SEQUENCES[job.engine][job.nextStageIndex]
     const expected = WORKER_PROGRESS[event.stage]
+    // Source SVC repeats the conversion stage only after measured work has
+    // completed. It cannot skip stages or regress, and reserves 90+ for mixing.
+    if (job.engine === 'source-svc' && event.stage === 'converting'
+      && expectedStage === 'mixing' && this.state.stage === 'converting') {
+      if (event.progressPercent <= this.state.progressPercent || event.progressPercent > 88) {
+        this.rejectWorkerProtocol(job)
+        return
+      }
+      this.replaceState({
+        ...this.state, progressPercent: event.progressPercent,
+        message: sourceConversionMessage(event.progressPercent),
+      })
+      return
+    }
     if (
       event.stage !== expectedStage
       || event.progressPercent !== expected.progressPercent
@@ -2104,7 +2258,8 @@ export class SongCoverManager {
       stage: event.stage,
       progressPercent: event.progressPercent,
       outputAvailable: false,
-      message: expected.message,
+      message: job.engine === 'source-svc' && event.stage === 'converting'
+        ? sourceConversionMessage(event.progressPercent) : expected.message,
       error: null,
     })
   }
@@ -2298,6 +2453,7 @@ export class SongCoverManager {
     this.replaceState({
       stage: 'ready',
       progressPercent: 100,
+      durationSeconds: this.state.durationSeconds || this.completedOutput?.durationSeconds || 0,
       outputAvailable: true,
       message,
       error: null,
@@ -2314,7 +2470,10 @@ export class SongCoverManager {
       | 'sourceMode'
       | 'engine'
       | 'keyShiftSemitones'
+      | 'shiftAccompaniment'
       | 'errorCode'
+      | 'positionSeconds'
+      | 'durationSeconds'
     > & {
       jobId?: string | null
       sourceName?: string | null
@@ -2322,11 +2481,15 @@ export class SongCoverManager {
       sourceMode?: SongCoverSourceMode | null
       engine?: SongCoverEngine | null
       keyShiftSemitones?: SongCoverKeyShiftSemitones | null
+      shiftAccompaniment?: boolean | null
       errorCode?: SongCoverErrorCode | null
+      positionSeconds?: number
+      durationSeconds?: number
     },
   ): void {
     this.state = Object.freeze({
-      revision: this.state.revision + 1,
+      positionSeconds: next.positionSeconds ?? (next.outputAvailable ? this.state.positionSeconds : 0),
+      durationSeconds: next.durationSeconds ?? (next.outputAvailable ? this.state.durationSeconds : 0),
       jobId: next.jobId === undefined ? this.state.jobId : next.jobId,
       sourceName: next.sourceName === undefined
         ? this.state.sourceName
@@ -2341,7 +2504,13 @@ export class SongCoverManager {
       keyShiftSemitones: next.keyShiftSemitones === undefined
         ? this.state.keyShiftSemitones
         : next.keyShiftSemitones,
+      shiftAccompaniment: next.shiftAccompaniment === undefined
+        ? this.state.shiftAccompaniment
+        : next.shiftAccompaniment,
       ...next,
+      // Callers may preserve the current snapshot while changing a timeline;
+      // its old revision must never overwrite this newly published revision.
+      revision: this.state.revision + 1,
       errorCode: next.errorCode === undefined
         ? null
         : next.errorCode,
@@ -2373,7 +2542,7 @@ export class SongCoverManager {
   private async removeIncompleteJobArtifacts(
     job: ActiveSongCoverJob,
   ): Promise<boolean> {
-    if (job.engine === 'lyrics-svs') {
+    if (job.engine !== 'legacy-svc') {
       // A forced Windows process-tree stop prevents the bridge's Python
       // cleanup block from running.  Remove the one matching WSL UUID first;
       // retaining the native directory on failure preserves the token needed
@@ -2441,14 +2610,20 @@ export class SongCoverManager {
   }
 
   /** Run one isolated cleanup worker for the exact Main-issued SVS UUID. */
-  private runSvsPrivateCleanup(
+  private async runSvsPrivateCleanup(
     jobId: string,
     jobDirectory: string,
   ): Promise<boolean> {
     if (!SONG_COVER_JOB_ID_PATTERN.test(jobId)) {
-      return Promise.resolve(false)
+      return false
     }
     const runtime = this.runtimePaths()
+    const temporaryRoot = path.dirname(jobDirectory)
+    try {
+      await this.prepareWorkerProfile(temporaryRoot)
+    } catch {
+      return false
+    }
     return new Promise<boolean>((resolve) => {
       let settled = false
       let invalid = false
@@ -2477,7 +2652,7 @@ export class SongCoverManager {
             cwd: this.projectRoot,
             env: this.workerEnvironment(
               runtime,
-              this.startupJobsRoot,
+              temporaryRoot,
               jobDirectory,
             ),
             shell: false,

@@ -17,6 +17,38 @@ from scripts import song_svs_wsl_bridge as bridge
 _TOKEN = "12345678-1234-4234-9234-123456789abc"
 
 
+def test_source_singing_copies_request_without_lyrics(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Authenticate source mode without inventing lyrics or copying other files."""
+    root = tmp_path / _TOKEN
+    root.mkdir()
+    (root / "target_vocal.wav").write_bytes(b"wave")
+    (root / "singing-request.json").write_text(
+        '{"schema_version":1,"reference":"fairy","key_shift_semitones":0}',
+        encoding="utf-8",
+    )
+    (root / "unrelated.txt").write_text("private", encoding="utf-8")
+    monkeypatch.setattr(bridge, "_find_windows_mount", lambda _root: tmp_path)
+    source = bridge._validate_mounted_source_job(str(root))
+    destination = tmp_path / "private"
+    destination.mkdir()
+    bridge._copy_inputs(source, destination)
+    assert sorted(path.name for path in destination.iterdir()) == ["singing-request.json", "target_vocal.wav"]
+    assert source.synchronized_lyrics is None and source.plain_lyrics is None
+
+
+@pytest.mark.parametrize("name", ["lyrics.lrc", "lyrics.txt", "lyrics-manifest.json"])
+def test_source_singing_rejects_conflicting_mode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str) -> None:
+    """A stale lyric marker must not silently select a different engine."""
+    root = tmp_path / _TOKEN
+    root.mkdir()
+    (root / "target_vocal.wav").write_bytes(b"wave")
+    (root / "singing-request.json").write_text("{}", encoding="utf-8")
+    (root / name).write_text("conflict", encoding="utf-8")
+    monkeypatch.setattr(bridge, "_find_windows_mount", lambda _root: tmp_path)
+    with pytest.raises(bridge._BridgeFailure, match="conflicting"):
+        bridge._validate_mounted_source_job(str(root))
+
+
 def _event(
     stage: str,
     progress: int,

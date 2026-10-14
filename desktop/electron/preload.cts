@@ -58,6 +58,12 @@ import type {
   SongCoverReadiness,
   SongCoverState,
 } from './song-cover-contracts.js'
+import {
+  parseVoiceCallWindowAction,
+  VOICE_CALL_IPC,
+  type VoiceCallWindowAction,
+  type VoiceCallWindowState,
+} from './voice-call-contracts.js'
 
 const MAX_DROPPED_ATTACHMENT_FILES = 10
 const TRUSTED_SPEECH_PLAY_CHANNEL = 'elysia:trusted-speech-play:v1'
@@ -70,6 +76,8 @@ const TRUSTED_SPEECH_MAX_OUTPUT_DEVICE_ID_CODE_POINTS = 2_048
 const TRUSTED_MUSIC_PLAY_CHANNEL = 'elysia:trusted-music-play:v1'
 const TRUSTED_MUSIC_CANCEL_CHANNEL = 'elysia:trusted-music-cancel:v1'
 const TRUSTED_MUSIC_SETTLED_CHANNEL = 'elysia:trusted-music-settled:v1'
+const TRUSTED_MUSIC_TIMELINE_CHANNEL = 'elysia:trusted-music-timeline:v1'
+const TRUSTED_MUSIC_SEEK_CHANNEL = 'elysia:trusted-music-seek:v1'
 const TRUSTED_MUSIC_MAX_MP3_BYTES = 64 * 1024 * 1024
 const TRUSTED_MUSIC_MAX_DURATION_SECONDS = 12 * 60
 const TRUSTED_PLAYBACK_ID_PATTERN = (
@@ -131,9 +139,12 @@ let trustedAudioGraphCloseBarrier: Promise<void> = Promise.resolve()
 
 interface TrustedMusicElement {
   readonly duration: number
+  currentTime: number
   onended: (() => void) | null
   onerror: (() => void) | null
   onloadedmetadata: (() => void) | null
+  ontimeupdate: (() => void) | null
+  onseeked: (() => void) | null
   preload: string
   src: string
   volume: number
@@ -149,6 +160,10 @@ interface TrustedMusicPlayback {
   readonly objectUrl: string
   readonly playbackId: string
   settled: boolean
+  metadataReady: boolean
+  desiredPosition: number
+  seekRevision: number
+  lastTimelineAt: number
 }
 
 interface TrustedMusicRuntime {
@@ -537,13 +552,14 @@ function trustedMusicMetadata(value: unknown): {
   byteLength: number
   outputDeviceId: string | null
   volumePercent: number
+  startPositionSeconds: number
 } | null {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     return null
   }
   const metadata = value as Record<string, unknown>
   if (
-    Object.keys(metadata).length !== 4
+    Object.keys(metadata).length !== 5
     || typeof metadata.playbackId !== 'string'
     || !TRUSTED_PLAYBACK_ID_PATTERN.test(metadata.playbackId)
     || !Number.isSafeInteger(metadata.byteLength)
@@ -561,6 +577,10 @@ function trustedMusicMetadata(value: unknown): {
     || !Number.isSafeInteger(metadata.volumePercent)
     || (metadata.volumePercent as number) < 0
     || (metadata.volumePercent as number) > 100
+    || typeof metadata.startPositionSeconds !== 'number'
+    || !Number.isFinite(metadata.startPositionSeconds)
+    || metadata.startPositionSeconds < 0
+    || metadata.startPositionSeconds > TRUSTED_MUSIC_MAX_DURATION_SECONDS
   ) {
     return null
   }
@@ -569,6 +589,7 @@ function trustedMusicMetadata(value: unknown): {
     byteLength: metadata.byteLength as number,
     outputDeviceId: metadata.outputDeviceId as string | null,
     volumePercent: metadata.volumePercent as number,
+    startPositionSeconds: metadata.startPositionSeconds,
   }
 }
 
@@ -586,6 +607,24 @@ function trustedMusicRuntime(): TrustedMusicRuntime {
   return globalThis as unknown as TrustedMusicRuntime
 }
 
+function publishTrustedMusicTimeline(playback: TrustedMusicPlayback, force = false): void {
+  if (trustedMusicPlayback !== playback || playback.settled || !playback.metadataReady) return
+  const { currentTime, duration } = playback.audio
+  if (!Number.isFinite(currentTime) || !Number.isFinite(duration)
+    || currentTime < 0 || duration <= 0 || duration > TRUSTED_MUSIC_MAX_DURATION_SECONDS) {
+    settleTrustedMusic(playback, 'failed')
+    return
+  }
+  const now = Date.now()
+  if (!force && now - playback.lastTimelineAt < 200) return
+  playback.lastTimelineAt = now
+  ipcRenderer.send(TRUSTED_MUSIC_TIMELINE_CHANNEL, Object.freeze({
+    playbackId: playback.playbackId,
+    positionSeconds: Math.min(currentTime, duration), durationSeconds: duration,
+    seekRevision: playback.seekRevision,
+  }))
+}
+
 function settleTrustedMusic(
   playback: TrustedMusicPlayback,
   status: 'played' | 'failed',
@@ -598,6 +637,8 @@ function settleTrustedMusic(
   playback.audio.onended = null
   playback.audio.onerror = null
   playback.audio.onloadedmetadata = null
+  playback.audio.ontimeupdate = null
+  playback.audio.onseeked = null
   try {
     playback.audio.pause()
     playback.audio.removeAttribute('src')
@@ -654,6 +695,10 @@ ipcRenderer.on(
         objectUrl,
         playbackId: metadata.playbackId,
         settled: false,
+        metadataReady: false,
+        desiredPosition: metadata.startPositionSeconds,
+        seekRevision: 0,
+        lastTimelineAt: 0,
       }
       trustedMusicPlayback = playback
       audio.preload = 'auto'
@@ -664,6 +709,8 @@ ipcRenderer.on(
       audio.onerror = () => {
         settleTrustedMusic(playback, 'failed')
       }
+      audio.ontimeupdate = () => { publishTrustedMusicTimeline(playback) }
+      audio.onseeked = () => { publishTrustedMusicTimeline(playback, true) }
       audio.onloadedmetadata = () => {
         if (trustedMusicPlayback !== playback) {
           return
@@ -677,6 +724,14 @@ ipcRenderer.on(
           return
         }
         audio.onloadedmetadata = null
+        playback.metadataReady = true
+        try {
+          audio.currentTime = Math.min(playback.desiredPosition, audio.duration)
+          publishTrustedMusicTimeline(playback, true)
+        } catch {
+          settleTrustedMusic(playback, 'failed')
+          return
+        }
         void (async (): Promise<void> => {
           try {
             if (metadata.outputDeviceId !== null) {
@@ -717,6 +772,31 @@ ipcRenderer.on(
 )
 
 ipcRenderer.on(
+  TRUSTED_MUSIC_SEEK_CHANNEL,
+  (_event, value: unknown): void => {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) return
+    const request = value as Record<string, unknown>
+    const playback = trustedMusicPlayback
+    if (playback === null || Object.keys(request).length !== 3
+      || request.playbackId !== playback.playbackId
+      || typeof request.positionSeconds !== 'number' || !Number.isFinite(request.positionSeconds)
+      || request.positionSeconds < 0 || request.positionSeconds > TRUSTED_MUSIC_MAX_DURATION_SECONDS
+      || !Number.isSafeInteger(request.seekRevision)
+      || (request.seekRevision as number) <= playback.seekRevision) return
+    playback.seekRevision = request.seekRevision as number
+    playback.desiredPosition = request.positionSeconds
+    if (playback.metadataReady) {
+      try {
+        playback.audio.currentTime = Math.min(playback.desiredPosition, playback.audio.duration)
+        publishTrustedMusicTimeline(playback, true)
+      } catch {
+        settleTrustedMusic(playback, 'failed')
+      }
+    }
+  },
+)
+
+ipcRenderer.on(
   TRUSTED_MUSIC_CANCEL_CHANNEL,
   (_event, playbackId: unknown): void => {
     const playback = trustedMusicPlayback
@@ -732,6 +812,25 @@ ipcRenderer.on(
 )
 
 const desktopApi: DesktopApi = {
+  openVoiceCallWindow: (state: VoiceCallWindowState) =>
+    ipcRenderer.invoke(VOICE_CALL_IPC.open, state) as Promise<void>,
+  updateVoiceCallWindow: (state: VoiceCallWindowState) =>
+    ipcRenderer.invoke(VOICE_CALL_IPC.update, state) as Promise<void>,
+  closeVoiceCallWindow: (callId: string) =>
+    ipcRenderer.invoke(VOICE_CALL_IPC.close, callId) as Promise<void>,
+  onVoiceCallWindowAction: (listener: (action: VoiceCallWindowAction) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, value: unknown): void => {
+      let action: VoiceCallWindowAction
+      try {
+        action = parseVoiceCallWindowAction(value)
+      } catch {
+        return
+      }
+      listener(action)
+    }
+    ipcRenderer.on(VOICE_CALL_IPC.action, handler)
+    return () => { ipcRenderer.removeListener(VOICE_CALL_IPC.action, handler) }
+  },
   rendererReady: () =>
     ipcRenderer.invoke(
       'window:renderer-ready',
@@ -905,6 +1004,9 @@ const desktopApi: DesktopApi = {
       'song-cover:stop',
       jobId,
     ) as Promise<SongCoverState>,
+
+  seekSongCover: (jobId: string, positionSeconds: number) =>
+    ipcRenderer.invoke('song-cover:seek', jobId, positionSeconds) as Promise<SongCoverState>,
 
   exportSongCover: (jobId: string) =>
     ipcRenderer.invoke(

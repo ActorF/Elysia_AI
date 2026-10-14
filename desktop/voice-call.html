@@ -1,0 +1,19 @@
+<!doctype html>
+<!-- Host the isolated Voice Call renderer with no media capture or external content. -->
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/png" href="./elysia-icon.png" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#20182e" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'none'; connect-src 'self' http://localhost:5173 ws://localhost:5173; font-src 'self'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'"
+    />
+    <title>Elysia · Voice Call</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/voice/voice-call-main.tsx"></script>
+  </body>
+</html>

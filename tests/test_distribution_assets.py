@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 import json
 from pathlib import Path
 import shutil
@@ -19,6 +20,8 @@ _REQUIRED_ASAR_LISTING_ENTRIES = (
     "\\dist\\character\\elysia-state-atlas.png",
     "\\dist\\character\\elysia-expression-atlas.png",
     "\\dist\\character\\elysia-speech-atlas.png",
+    "\\dist\\character\\elysia-ui-illustrations.png",
+    "\\dist\\voice\\voice-call-background.webp",
 )
 
 
@@ -73,6 +76,7 @@ def _valid_build() -> dict[str, object]:
         "copied/private-job/lyrics.lrc",
         "copied/private-job/lyrics.txt",
         "copied/private-job/lyrics-manifest.json",
+        "copied/private-job/singing-request.json",
         "release/local-voice.7Z",
         "copied/GPT-SoVITS-v2-240821/runtime/python.exe",
         "data/characters/爱莉希雅原版猫猫版总合集_34be1/model/model.moc3",
@@ -152,8 +156,11 @@ def test_git_index_rejects_renamed_paid_live2d_copy(tmp_path: Path) -> None:
     )
 
 
+@pytest.mark.parametrize("relative_path", [
+    "themes/rose/texture_00.png", "desktop/public/voice/unreviewed-background.webp",
+])
 def test_git_index_rejects_paid_texture_under_an_innocent_path(
-    tmp_path: Path,
+    tmp_path: Path, relative_path: str,
 ) -> None:
     """Require explicit review before any new raster asset can enter Git."""
 
@@ -163,7 +170,7 @@ def test_git_index_rejects_paid_texture_under_an_innocent_path(
         check=True,
         capture_output=True,
     )
-    copied_texture = tmp_path / "themes" / "rose" / "texture_00.png"
+    copied_texture = tmp_path / relative_path
     copied_texture.parent.mkdir(parents=True)
     copied_texture.write_bytes(b"synthetic paid texture copy")
     subprocess.run(
@@ -176,7 +183,7 @@ def test_git_index_rejects_paid_texture_under_an_innocent_path(
     problems = check_distribution_assets.audit_git_index(tmp_path)
 
     assert len(problems) == 1
-    assert problems[0].path == "themes/rose/texture_00.png"
+    assert problems[0].path == relative_path
     assert "unreviewed visual asset" in problems[0].message
 
 
@@ -209,6 +216,7 @@ def test_maintained_source_and_brand_assets_are_allowed() -> None:
             "desktop/public/character/elysia-state-atlas.png",
             "desktop/public/character/elysia-expression-atlas.png",
             "desktop/public/character/elysia-speech-atlas.png",
+            "desktop/public/voice/voice-call-background.webp",
         ],
         source="synthetic-index",
     )
@@ -340,14 +348,27 @@ def _copy_reviewed_brand_assets(destination_root: Path) -> tuple[Path, Path]:
 
 def _copy_reviewed_character_assets(
     destination_root: Path,
-) -> tuple[Path, Path, Path, Path]:
-    """Copy every required character asset into an isolated audit fixture."""
+) -> tuple[Path, ...]:
+    """Copy required reviewed public assets into an isolated audit fixture."""
 
+    portrait = _copy_reviewed_portrait(destination_root)
+    illustration_relative = Path(
+        "desktop/public/character/elysia-ui-illustrations.png"
+    )
+    illustration = destination_root / illustration_relative
+    illustration.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(_REPOSITORY_ROOT / illustration_relative, illustration)
+    background_relative = Path("desktop/public/voice/voice-call-background.webp")
+    background = destination_root / background_relative
+    background.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(_REPOSITORY_ROOT / background_relative, background)
     assets = (
-        _copy_reviewed_portrait(destination_root),
+        portrait,
         _copy_reviewed_atlas(destination_root),
         _copy_reviewed_expression_atlas(destination_root),
         _copy_reviewed_speech_atlas(destination_root),
+        illustration,
+        background,
     )
     _copy_reviewed_brand_assets(destination_root)
     return assets
@@ -374,6 +395,11 @@ def _copy_reviewed_asar_tree(destination_root: Path) -> Path:
             "character/elysia-speech-atlas.png",
             "character/elysia-speech-atlas.png",
         ),
+        (
+            "character/elysia-ui-illustrations.png",
+            "character/elysia-ui-illustrations.png",
+        ),
+        ("voice/voice-call-background.webp", "voice/voice-call-background.webp"),
     )
     for source_relative, archive_relative in source_and_archive_paths:
         source = _REPOSITORY_ROOT / "desktop" / "public" / source_relative
@@ -406,6 +432,59 @@ def test_extracted_asar_tree_authenticates_reviewed_static_assets(
     )
 
 
+@pytest.mark.parametrize("location", ["repository", "archive"])
+@pytest.mark.parametrize("mutation", ["missing", "bytes", "size"])
+def test_voice_call_background_requires_exact_reviewed_bytes_in_repository_and_package(
+    tmp_path: Path, location: str, mutation: str,
+) -> None:
+    """A native-call image review permits one exact path and digest, never a replacement or missing package asset."""
+
+    audit: Callable[[Path], tuple[check_distribution_assets.DistributionProblem, ...]]
+    if location == "repository":
+        _copy_reviewed_character_assets(tmp_path)
+        path = tmp_path / "desktop" / "public" / "voice" / "voice-call-background.webp"
+        audit = check_distribution_assets.audit_reviewed_assets
+        logical_path = "desktop/public/voice/voice-call-background.webp"
+    else:
+        _copy_reviewed_asar_tree(tmp_path)
+        path = tmp_path / "dist" / "voice" / "voice-call-background.webp"
+        audit = check_distribution_assets.audit_extracted_asar_reviewed_assets
+        logical_path = "dist/voice/voice-call-background.webp"
+    assert audit(tmp_path) == ()
+    if mutation == "missing":
+        path.unlink()
+    elif mutation == "size":
+        with path.open("r+b") as output:
+            output.truncate(path.stat().st_size - 1)
+    else:
+        with path.open("r+b") as output:
+            first_byte = output.read(1)
+            output.seek(0)
+            output.write(bytes((first_byte[0] ^ 0xFF,)))
+    problems = audit(tmp_path)
+    assert len(problems) == 1 and problems[0].path == logical_path
+    expected = "missing" if mutation == "missing" else "byte length" if mutation == "size" else "SHA-256"
+    assert expected in problems[0].message
+
+
+@pytest.mark.parametrize("entries", [
+    [],
+    ["dist/voice/voice-call-background.webp", "dist/voice/voice-call-background.webp"],
+    ["dist/VOICE/voice-call-background.webp"],
+])
+def test_packaged_voice_call_background_is_required_once_at_its_exact_path(
+    tmp_path: Path, entries: list[str],
+) -> None:
+    """Reject missing, duplicated, and case-aliased Voice backgrounds without permitting arbitrary voice artwork."""
+
+    listing = tmp_path / "asar-listing.txt"
+    listing.write_text("\n".join([
+        *_required_asar_entries(excluding="dist/voice/voice-call-background.webp"), *entries,
+    ]), encoding="utf-8")
+    problems = check_distribution_assets.audit_asar_listing(listing)
+    assert any(problem.path == "dist/voice/voice-call-background.webp" for problem in problems)
+
+
 def test_runtime_state_atlas_is_the_reviewed_source_without_reencoding() -> None:
     """Keep the packaged atlas byte-identical to the accepted review image."""
 
@@ -432,13 +511,14 @@ def test_runtime_state_atlas_is_the_reviewed_source_without_reencoding() -> None
     [
         ("03-expression-atlas.png", "elysia-expression-atlas.png"),
         ("04-facial-rig-atlas.png", "elysia-speech-atlas.png"),
+        ("06-ui-illustrations.png", "elysia-ui-illustrations.png"),
     ],
 )
 def test_runtime_face_atlases_are_reviewed_sources_without_reencoding(
     source_name: str,
     runtime_name: str,
 ) -> None:
-    """Keep each packaged face atlas byte-identical to its approved source."""
+    """Keep each packaged illustration atlas identical to its approved source."""
 
     source = (
         _REPOSITORY_ROOT
@@ -463,7 +543,7 @@ def test_reviewed_character_portrait_content_mutation_is_rejected(
 ) -> None:
     """Reject a same-length replacement that would evade a size-only check."""
 
-    portrait, _atlas, _expression, _speech = _copy_reviewed_character_assets(
+    portrait, *_other_assets = _copy_reviewed_character_assets(
         tmp_path
     )
     with portrait.open("r+b") as portrait_stream:
@@ -482,7 +562,7 @@ def test_reviewed_character_portrait_length_mutation_is_rejected(
 ) -> None:
     """Reject truncation even though the reviewed path and format still match."""
 
-    portrait, _atlas, _expression, _speech = _copy_reviewed_character_assets(
+    portrait, *_other_assets = _copy_reviewed_character_assets(
         tmp_path
     )
     with portrait.open("r+b") as portrait_stream:
@@ -500,13 +580,14 @@ def test_reviewed_character_portrait_length_mutation_is_rejected(
         "elysia-state-atlas.png",
         "elysia-expression-atlas.png",
         "elysia-speech-atlas.png",
+        "elysia-ui-illustrations.png",
     ],
 )
 def test_reviewed_character_assets_are_required_at_exact_paths(
     tmp_path: Path,
     missing_name: str,
 ) -> None:
-    """Fail closed when either approved distributable image is absent."""
+    """Fail closed when any approved distributable character image is absent."""
 
     assets = _copy_reviewed_character_assets(tmp_path)
     missing = next(asset for asset in assets if asset.name == missing_name)

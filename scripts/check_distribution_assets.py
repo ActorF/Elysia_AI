@@ -144,7 +144,7 @@ _FORBIDDEN_MODEL_SUBDIRECTORIES: Final = frozenset(
 _FORBIDDEN_COMPONENTS: Final = frozenset({"logs", "workspace"})
 _FORBIDDEN_FILE_NAMES: Final = frozenset({".env", "voice-profiles.json"})
 _FORBIDDEN_SONG_LYRIC_FILE_NAMES: Final = frozenset(
-    {"lyrics-manifest.json", "lyrics.txt"}
+    {"lyrics-manifest.json", "lyrics.txt", "singing-request.json"}
 )
 _FORBIDDEN_RUNTIME_COMPONENTS: Final = frozenset(
     {
@@ -199,6 +199,8 @@ _ALLOWED_GIT_VISUAL_ASSET_PATHS: Final = frozenset(
         "desktop/public/character/elysia-portrait.png",
         "desktop/public/character/elysia-speech-atlas.png",
         "desktop/public/character/elysia-state-atlas.png",
+        "desktop/public/character/elysia-ui-illustrations.png",
+        "desktop/public/voice/voice-call-background.webp",
         "desktop/public/elysia-icon.png",
     }
 )
@@ -208,6 +210,8 @@ _ALLOWED_ASAR_VISUAL_ASSET_PATHS: Final = frozenset(
         "dist/character/elysia-portrait.png",
         "dist/character/elysia-speech-atlas.png",
         "dist/character/elysia-state-atlas.png",
+        "dist/character/elysia-ui-illustrations.png",
+        "dist/voice/voice-call-background.webp",
         "dist/elysia-icon.png",
     }
 )
@@ -232,6 +236,19 @@ _REVIEWED_EXPRESSION_ATLAS_SHA256: Final = (
 _REVIEWED_SPEECH_ATLAS_SIZE: Final = 2_054_767
 _REVIEWED_SPEECH_ATLAS_SHA256: Final = (
     "21bf4496acc4417d491ff0163c9ee1d38593e376ca25a3d452fd393c6157f9ab"
+)
+# The panel uses the owner's existing 06 review sheet verbatim. Pin the new
+# runtime path independently so approval cannot cover a later replacement.
+_REVIEWED_UI_ILLUSTRATIONS_SIZE: Final = 2_415_759
+_REVIEWED_UI_ILLUSTRATIONS_SHA256: Final = (
+    "e375b7e6fc0b3cea898c25a34381014a07cf334794ff7d6c0ea2d82f9707fa25"
+)
+# The native call uses the owner-provided artwork unchanged, as recorded in
+# desktop/README.md. Only these reviewed bytes at this exact runtime path are
+# approved; neither another voice image nor a replacement inherits that review.
+_REVIEWED_VOICE_CALL_BACKGROUND_SIZE: Final = 156_304
+_REVIEWED_VOICE_CALL_BACKGROUND_SHA256: Final = (
+    "9bda443c73f537d1be7cfcfee08f09ff57d28c432ad131bdedacecfa821de690"
 )
 _REVIEWED_ICON_PNG_SIZE: Final = 241_299
 _REVIEWED_ICON_PNG_SHA256: Final = (
@@ -277,6 +294,14 @@ _REVIEWED_DISTRIBUTION_ASSETS: Final[dict[str, tuple[int, str]]] = {
         _REVIEWED_SPEECH_ATLAS_SIZE,
         _REVIEWED_SPEECH_ATLAS_SHA256,
     ),
+    "desktop/public/character/elysia-ui-illustrations.png": (
+        _REVIEWED_UI_ILLUSTRATIONS_SIZE,
+        _REVIEWED_UI_ILLUSTRATIONS_SHA256,
+    ),
+    "desktop/public/voice/voice-call-background.webp": (
+        _REVIEWED_VOICE_CALL_BACKGROUND_SIZE,
+        _REVIEWED_VOICE_CALL_BACKGROUND_SHA256,
+    ),
 }
 _REVIEWED_ASAR_ASSETS: Final[dict[str, tuple[int, str]]] = {
     _REVIEWED_ASAR_ICON_PATH: (
@@ -298,6 +323,14 @@ _REVIEWED_ASAR_ASSETS: Final[dict[str, tuple[int, str]]] = {
     _REVIEWED_ASAR_SPEECH_ATLAS_PATH: (
         _REVIEWED_SPEECH_ATLAS_SIZE,
         _REVIEWED_SPEECH_ATLAS_SHA256,
+    ),
+    "dist/character/elysia-ui-illustrations.png": (
+        _REVIEWED_UI_ILLUSTRATIONS_SIZE,
+        _REVIEWED_UI_ILLUSTRATIONS_SHA256,
+    ),
+    "dist/voice/voice-call-background.webp": (
+        _REVIEWED_VOICE_CALL_BACKGROUND_SIZE,
+        _REVIEWED_VOICE_CALL_BACKGROUND_SHA256,
     ),
 }
 _REQUIRED_ASAR_ENTRY_PATHS: Final = tuple(_REVIEWED_ASAR_ASSETS)

@@ -24,8 +24,11 @@ export type SongCoverStage =
 /** Audio sources accepted by the native Song Cover setup workflow. */
 export type SongCoverSourceMode = 'song' | 'stems'
 
-/** Explicit local singing engine; lyrics-driven SVS is the product default. */
-export type SongCoverEngine = 'lyrics-svs' | 'legacy-svc'
+/** Explicit local singing engine; source-guided singing is the product default. */
+export type SongCoverEngine = 'source-svc' | 'lyrics-svs' | 'legacy-svc'
+
+/** Reviewed local singing references; arbitrary prompt paths are never accepted. */
+export type SongCoverSingingReference = 'fairy' | 'elysia'
 
 /** Closed reasons why Main refuses to offer new Song Cover generation. */
 export type SongCoverUnavailableReason =
@@ -56,13 +59,45 @@ export type SongCoverErrorCode =
   | 'singing-runtime'
 
 /**
- * Whole-song pitch adjustments supported by the reviewed local FFmpeg path.
+ * Closed whole-song pitch adjustments supported by the local audio path.
  *
- * Shifts beyond two semitones in either direction require a higher-quality
- * pitch shifter than the bundled runtime provides, so the renderer cannot
- * request arbitrary numbers.
+ * One octave is the symmetric product limit for the bundled accompaniment
+ * path. Raise 12 reaches `atempo`'s 0.5 lower bound, while Lower 12 uses a
+ * factor of 2.0. The closed symmetric range also contains RVC pitch-boundary
+ * and accompaniment artifacts; endpoint availability is not a quality claim.
  */
-export type SongCoverKeyShiftSemitones = -2 | -1 | 0 | 1 | 2
+export const SONG_COVER_KEY_SHIFTS = Object.freeze([
+  -12,
+  -11,
+  -10,
+  -9,
+  -8,
+  -7,
+  -6,
+  -5,
+  -4,
+  -3,
+  -2,
+  -1,
+  0,
+  1,
+  2,
+  3,
+  4,
+  5,
+  6,
+  7,
+  8,
+  9,
+  10,
+  11,
+  12,
+] as const)
+
+/** One member of the closed whole-song pitch-adjustment contract. */
+export type SongCoverKeyShiftSemitones = (
+  typeof SONG_COVER_KEY_SHIFTS[number]
+)
 
 /** Optional user-confirmed identity used only for the online lyrics lookup. */
 export interface SongLyricsMetadataOverride {
@@ -73,8 +108,10 @@ export interface SongLyricsMetadataOverride {
 /** Renderer request for native Song Cover source selection. */
 export interface ChooseSongCoverRequest {
   readonly engine: SongCoverEngine
+  readonly singingReference: SongCoverSingingReference | null
   readonly sourceMode: SongCoverSourceMode
   readonly keyShiftSemitones: SongCoverKeyShiftSemitones
+  readonly shiftAccompaniment: boolean
   readonly lyricsMetadataOverride: SongLyricsMetadataOverride | null
 }
 
@@ -88,7 +125,10 @@ export interface SongCoverState {
   readonly sourceMode: SongCoverSourceMode | null
   readonly engine: SongCoverEngine | null
   readonly keyShiftSemitones: SongCoverKeyShiftSemitones | null
+  readonly shiftAccompaniment: boolean | null
   readonly progressPercent: number
+  readonly positionSeconds: number
+  readonly durationSeconds: number
   readonly outputAvailable: boolean
   readonly message: string | null
   readonly errorCode: SongCoverErrorCode | null
@@ -96,8 +136,9 @@ export interface SongCoverState {
 }
 
 const SOURCE_MODES = new Set<SongCoverSourceMode>(['song', 'stems'])
-const ENGINES = new Set<SongCoverEngine>(['lyrics-svs', 'legacy-svc'])
-const KEY_SHIFTS = new Set<SongCoverKeyShiftSemitones>([-2, -1, 0, 1, 2])
+const ENGINES = new Set<SongCoverEngine>(['source-svc', 'lyrics-svs', 'legacy-svc'])
+const SINGING_REFERENCES = new Set<SongCoverSingingReference>(['fairy', 'elysia'])
+const KEY_SHIFTS: ReadonlySet<number> = new Set(SONG_COVER_KEY_SHIFTS)
 const UNAVAILABLE_REASONS = new Set<SongCoverUnavailableReason>([
   'not-included-in-build',
   'local-runtime-unavailable',
@@ -187,18 +228,25 @@ export function parseChooseSongCoverRequest(
     record.lyricsMetadataOverride,
   )
   if (
-    Object.keys(record).length !== 4
+    Object.keys(record).length !== 6
     || typeof record.engine !== 'string'
     || !ENGINES.has(record.engine as SongCoverEngine)
+    || (
+      record.engine === 'source-svc'
+        ? typeof record.singingReference !== 'string'
+          || !SINGING_REFERENCES.has(record.singingReference as SongCoverSingingReference)
+        : record.singingReference !== null
+    )
     || typeof record.sourceMode !== 'string'
     || !SOURCE_MODES.has(record.sourceMode as SongCoverSourceMode)
     || typeof record.keyShiftSemitones !== 'number'
     || !KEY_SHIFTS.has(
       record.keyShiftSemitones as SongCoverKeyShiftSemitones,
     )
+    || typeof record.shiftAccompaniment !== 'boolean'
     || lyricsMetadataOverride === undefined
     || (
-      record.engine === 'legacy-svc'
+      record.engine !== 'lyrics-svs'
       && lyricsMetadataOverride !== null
     )
   ) {
@@ -206,10 +254,12 @@ export function parseChooseSongCoverRequest(
   }
   return Object.freeze({
     engine: record.engine as SongCoverEngine,
+    singingReference: record.singingReference as SongCoverSingingReference | null,
     sourceMode: record.sourceMode as SongCoverSourceMode,
     keyShiftSemitones: (
       record.keyShiftSemitones as SongCoverKeyShiftSemitones
     ),
+    shiftAccompaniment: record.shiftAccompaniment,
     lyricsMetadataOverride,
   })
 }

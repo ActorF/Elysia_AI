@@ -1734,7 +1734,10 @@ export function parseImageGenerateParams(value: unknown): ImageGenerateParams {
       return fail('protocol.invalid_params', `${context}.${key} cannot be blank.`)
     }
     if (
-      /[\u0000-\u001f\u007f-\u009f]/u.test(component)
+      [...component].some((character) => {
+        const codePoint = character.codePointAt(0) ?? 0
+        return codePoint <= 0x1f || (codePoint >= 0x7f && codePoint <= 0x9f)
+      })
       || /[\ud800-\udfff]/u.test(component)
     ) {
       return fail(

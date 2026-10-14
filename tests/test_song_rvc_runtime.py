@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import errno
+import math
 import os
 from pathlib import Path
 import socket
 import struct
+import subprocess
 import sys
 from types import ModuleType, SimpleNamespace
 import wave
@@ -120,8 +122,8 @@ def test_parser_requires_each_explicit_option_once_and_bounds_key_shift(
     """Reject missing, duplicate, extra, or out-of-range inference controls."""
 
     paths = _runtime_fixture(tmp_path)
-    assert _request(paths, -2).key_shift == -2
-    assert _request(paths, 2).key_shift == 2
+    assert _request(paths, -12).key_shift == -12
+    assert _request(paths, 12).key_shift == 12
 
     for arguments in (
         _arguments(paths)[:-2],
@@ -132,9 +134,10 @@ def test_parser_requires_each_explicit_option_once_and_bounds_key_shift(
             runtime._parse_arguments(arguments)
         assert captured.value.code == "invalid_request"
 
-    with pytest.raises(runtime._RvcRuntimeFailure) as captured:
-        _request(paths, 3)
-    assert captured.value.code == "invalid_key_shift"
+    for key_shift in (-13, 13):
+        with pytest.raises(runtime._RvcRuntimeFailure) as captured:
+            _request(paths, key_shift)
+        assert captured.value.code == "invalid_key_shift"
 
 
 def test_validation_rejects_directory_input_existing_output_and_asset_aliases(
@@ -168,7 +171,7 @@ def test_runtime_scope_and_conversion_fix_every_upstream_inference_control(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Use only CUDA, speaker zero, RMVPE, and the reviewed numeric controls."""
+    """Use reviewed inference controls and publish upstream PCM unchanged."""
 
     paths = _runtime_fixture(tmp_path)
     request = _request(paths, key_shift=-1)
@@ -232,31 +235,19 @@ def test_runtime_scope_and_conversion_fix_every_upstream_inference_control(
     def _publisher(path: Path, sample_rate: int, samples: object) -> None:
         published.append((path, sample_rate, samples))
 
-    def _repairer(
-        input_audio: Path,
-        sample_rate: int,
-        samples: object,
-        key_shift: int,
-    ) -> object:
-        """Record that validated inference passes through the transition guard."""
+    def _reject_transition_replacement(*_arguments: object) -> object:
+        raise AssertionError("rejected transition replacement reached production")
 
-        calls.append(
-            (
-                "repair",
-                input_audio,
-                sample_rate,
-                samples,
-                key_shift,
-            )
-        )
-        return [0.0, 0.05, -0.05]
-
+    monkeypatch.setattr(
+        runtime,
+        "_reproduce_rejected_false_voicing_repair",
+        _reject_transition_replacement,
+    )
     runtime._run_request(
         request,
         api_loader=_loader,
         publisher=_publisher,
         seed_initializer=_seed,
-        artifact_repairer=_repairer,
     )
 
     assert Path.cwd() == original_directory
@@ -264,7 +255,7 @@ def test_runtime_scope_and_conversion_fix_every_upstream_inference_control(
     assert socket.getaddrinfo is original_getaddrinfo
     assert os.environ["RVC_CUDA_GRAPH"] == "1"
     assert os.environ["CUBLAS_WORKSPACE_CONFIG"] == ":16:8"
-    assert published == [(request.output_audio, 40_000, [0.0, 0.05, -0.05])]
+    assert published == [(request.output_audio, 40_000, [0.0, 0.1, -0.1])]
     assert calls == [
         ("seed", 114_514),
         ("load_api",),
@@ -283,13 +274,6 @@ def test_runtime_scope_and_conversion_fix_every_upstream_inference_control(
             0.33,
         ),
         ("get_vc", "", 0.33, 0.33),
-        (
-            "repair",
-            request.input_audio,
-            40_000,
-            [0.0, 0.1, -0.1],
-            -1,
-        ),
     ]
 
 
@@ -328,6 +312,79 @@ def test_torch_seed_resets_cpu_and_every_cuda_generator_for_each_job(
     assert calls == one_job + one_job
     assert cudnn.benchmark is False
     assert cudnn.deterministic is True
+
+
+@pytest.mark.parametrize("inference_fails", [False, True])
+def test_instance_pipeline_hook_restores_before_checkpoint_release(
+    tmp_path: Path,
+    inference_fails: bool,
+) -> None:
+    """Scope exact-timing configuration to the loaded job even after failure."""
+
+    request = _request(_runtime_fixture(tmp_path))
+    events: list[str] = []
+    published: list[object] = []
+
+    class _Converter:
+        """Require configuration after load and restoration before unload."""
+
+        def __init__(self, _configuration: object) -> None:
+            self.version = "v2"
+            self.if_f0 = 1
+            self.tgt_sr = 40_000
+            self.configured = False
+
+        def get_vc(self, name: str, *_protect: float) -> None:
+            """Check that the request-owned hook never survives model release."""
+
+            if not name:
+                assert not self.configured
+            events.append("load" if name else "release")
+
+        def vc_single(self, *_arguments: object) -> tuple[str, tuple[int, list[float]]]:
+            """Simulate successful or interrupted inference under the hook."""
+
+            assert self.configured
+            events.append("inference")
+            if inference_fails:
+                raise RuntimeError("fixture inference failed")
+            return "ok", (40_000, [0.0, 0.1, -0.1])
+
+    def _configure(converter: _Converter) -> object:
+        assert events == ["load"]
+        converter.configured = True
+        events.append("configure")
+
+        def _restore() -> None:
+            converter.configured = False
+            events.append("restore")
+
+        return _restore
+
+    def _loader(_request_value: runtime._Request) -> runtime._RvcApi:
+        return runtime._RvcApi(
+            lambda: SimpleNamespace(device="cuda:0", dml=False),
+            _Converter,
+            _configure,
+        )
+
+    def _run() -> None:
+        runtime._run_request(
+            request,
+            api_loader=_loader,
+            seed_initializer=lambda: None,
+            publisher=lambda _path, _rate, samples: published.append(samples),
+        )
+
+    if inference_fails:
+        with pytest.raises(runtime._RvcRuntimeFailure) as captured:
+            _run()
+        assert captured.value.code == "inference_failed"
+        assert published == []
+    else:
+        _run()
+        assert published == [[0.0, 0.1, -0.1]]
+    assert events == ["load", "configure", "inference", "restore", "release"]
 
 
 def test_transition_guard_keeps_only_persistent_evidence() -> None:
@@ -407,6 +464,104 @@ def test_voicing_track_pins_the_calibrated_fast_pitch_grid() -> None:
     assert arguments["fill_na"] is None
 
 
+def test_banded_viterbi_matches_the_dense_decoder_exactly() -> None:
+    """Preserve pYIN decisions while avoiding its quadratic state scan."""
+
+    np = _require_numpy()
+    pytest.importorskip(
+        "numba",
+        reason="The bounded pYIN decoder uses the private RVC Numba runtime",
+    )
+    # The production 70--900 Hz, twenty-cent grid has 222 pitch bins and
+    # doubles them into voiced/unvoiced states.  A short time axis keeps the
+    # dense reference cheap while exercising the real lattice width.
+    pitch_states = 222
+    local = np.zeros((pitch_states, pitch_states), dtype=np.float64)
+    for source in range(pitch_states):
+        for destination in range(
+            max(0, source - 7),
+            min(pitch_states, source + 8),
+        ):
+            local[source, destination] = 8 - abs(source - destination)
+        local[source] /= np.sum(local[source])
+    transition = np.kron(
+        np.asarray([[0.99, 0.01], [0.01, 0.99]], dtype=np.float64),
+        local,
+    )
+    random = np.random.default_rng(114_514)
+    probability = random.uniform(
+        1e-6,
+        1.0,
+        (12, 2 * pitch_states),
+    )
+    initial = random.uniform(1e-6, 1.0, 2 * pitch_states)
+    initial /= np.sum(initial)
+    epsilon = np.finfo(np.float64).tiny
+    log_probability = np.log(probability + epsilon)
+    log_transition = np.log(transition + epsilon)
+    log_initial = np.log(initial + epsilon)
+
+    values = np.zeros_like(log_probability)
+    pointers = np.zeros(log_probability.shape, dtype=np.uint16)
+    values[0] = log_probability[0] + log_initial
+    for frame in range(1, len(values)):
+        transitions = values[frame - 1] + log_transition.T
+        for destination in range(transitions.shape[0]):
+            pointers[frame, destination] = np.argmax(transitions[destination])
+            values[frame, destination] = (
+                log_probability[frame, destination]
+                + transitions[destination, pointers[frame, destination]]
+            )
+    expected_state = np.zeros(len(values), dtype=np.uint16)
+    expected_state[-1] = np.argmax(values[-1])
+    for frame in range(len(values) - 2, -1, -1):
+        expected_state[frame] = pointers[frame + 1, expected_state[frame + 1]]
+    expected_score = values[-1:, expected_state[-1]]
+
+    actual_state, actual_score = runtime._banded_viterbi(
+        log_probability,
+        log_transition,
+        log_initial,
+    )
+
+    assert np.array_equal(actual_state, expected_state)
+    assert np.array_equal(actual_score, expected_score)
+
+
+def test_pyin_restores_the_vendor_decoder_after_scoped_replacement() -> None:
+    """Keep the performance override local to one serial pYIN invocation."""
+
+    np = _require_numpy()
+    original_viterbi = lambda *_args: None
+    sequence = SimpleNamespace(_viterbi=original_viterbi)
+    observed_replacement: list[bool] = []
+
+    def _pyin(_audio: object, **_keywords: object) -> tuple[object, object, object]:
+        observed_replacement.append(sequence._viterbi is runtime._banded_viterbi)
+        return (
+            np.asarray([400.0, 400.0]),
+            np.asarray([True, True]),
+            np.asarray([0.99, 0.99]),
+        )
+
+    fake_librosa = SimpleNamespace(
+        pyin=_pyin,
+        sequence=sequence,
+        feature=SimpleNamespace(
+            rms=lambda **_keywords: np.asarray([[0.25, 0.25]])
+        ),
+    )
+
+    runtime._voicing_track(
+        np.zeros(runtime._ARTIFACT_FRAME_LENGTH, dtype=np.float32),
+        np_module=np,
+        librosa_module=fake_librosa,
+    )
+
+    assert observed_replacement == [True]
+    assert sequence._viterbi is original_viterbi
+
+
 def test_analysis_resampler_chunks_without_changing_polyphase_samples() -> None:
     """Keep long-song block seams bit-identical to monolithic polyphase."""
 
@@ -437,6 +592,93 @@ def test_analysis_resampler_chunks_without_changing_polyphase_samples() -> None:
     assert len(actual) == (sample_count * 441 + 399) // 400
     for seam in (441_000, 882_000):
         assert np.array_equal(actual[seam - 8 : seam + 8], expected[seam - 8 : seam + 8])
+
+
+@pytest.mark.parametrize(
+    ("source_rate", "target_rate"),
+    [(44_100, 40_000), (40_000, 44_100)],
+)
+def test_chunked_resampler_is_exact_in_both_song_cover_directions(
+    source_rate: int,
+    target_rate: int,
+) -> None:
+    """Keep both source matching and analysis resampling sample-identical."""
+
+    np = _require_numpy()
+    signal = pytest.importorskip(
+        "scipy.signal",
+        reason="Song-cover resampling requires the private RVC SciPy runtime",
+    )
+    sample_count = 55_137
+    audio = np.random.default_rng(source_rate + target_rate).normal(
+        0.0,
+        0.1,
+        sample_count,
+    ).astype(np.float32)
+    divisor = math.gcd(source_rate, target_rate)
+    up = target_rate // divisor
+    down = source_rate // divisor
+
+    expected = signal.resample_poly(audio, up, down).astype(
+        np.float32,
+        copy=False,
+    )
+    actual = runtime._resample_poly_chunked(
+        audio,
+        source_sample_rate=source_rate,
+        target_sample_rate=target_rate,
+        core_seconds=0.1,
+        np_module=np,
+        signal_module=signal,
+    )
+
+    assert np.array_equal(actual, expected)
+    assert len(actual) == (sample_count * up + down - 1) // down
+
+
+def test_source_vocal_reader_never_submits_a_whole_song_resample(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Prevent the long-input upfirdn cliff before artifact analysis starts."""
+
+    np = _require_numpy()
+    source_rate = 8_000
+    target_rate = 7_000
+    sample_count = 2 * round(
+        runtime._ARTIFACT_RESAMPLE_CORE_SECONDS * source_rate
+    ) + 137
+    source = np.zeros((sample_count, 1), dtype=np.float32)
+    calls: list[int] = []
+
+    def _read(*_args: object, **_keywords: object) -> tuple[object, int]:
+        return source, source_rate
+
+    def _resample_poly(audio: object, up: int, down: int) -> object:
+        values = np.asarray(audio, dtype=np.float32)
+        calls.append(len(values))
+        output_samples = (len(values) * up + down - 1) // down
+        return np.zeros(output_samples, dtype=np.float32)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "soundfile",
+        SimpleNamespace(read=_read),
+    )
+    expected_samples = (
+        sample_count * target_rate + source_rate - 1
+    ) // source_rate
+    result = runtime._read_source_vocal(
+        tmp_path / "source.wav",
+        output_sample_rate=target_rate,
+        output_samples=expected_samples,
+        np_module=np,
+        signal_module=SimpleNamespace(resample_poly=_resample_poly),
+    )
+
+    assert len(result) == expected_samples
+    assert len(calls) == 3
+    assert max(calls) < sample_count
 
 
 def test_voicing_track_stitches_bounded_context_segments_on_one_frame_grid() -> None:
@@ -618,7 +860,7 @@ def test_coarse_prefilter_skips_frames_that_cannot_reach_acf_gates() -> None:
 
 
 def test_fine_analysis_windows_merge_context_and_fail_open_over_budget() -> None:
-    """Merge nearby searches while refusing song-wide expensive pYIN work."""
+    """Merge nearby searches while refusing song-wide experimental work."""
 
     np = _require_numpy()
     interest = np.zeros(1_000, dtype=bool)
@@ -686,6 +928,17 @@ def test_fine_analysis_production_budget_preserves_calibration_headroom() -> Non
     assert known_budget == pytest.approx(12.258)
     assert known_budget > 8.7133
     assert long_song_budget == 30.0
+
+
+def test_fine_analysis_rejects_non_vector_interest() -> None:
+    """Fail open through the guard boundary when interest shape is malformed."""
+
+    np = _require_numpy()
+    with pytest.raises(runtime._ArtifactAnalysisSkipped):
+        runtime._fine_analysis_windows(
+            np.ones((2, 5), dtype=bool),
+            np_module=np,
+        )
 
 
 def test_local_voicing_tracks_map_windows_back_to_global_frames(
@@ -967,6 +1220,34 @@ def test_explicit_hubert_directory_rebinds_the_verified_vendor_module(
     assert cache_probe.cleared is True
     assert api.config_factory is config_factory
     assert api.converter_factory is converter_factory
+
+
+def test_pipeline_helper_loads_without_repository_or_script_search_paths(tmp_path: Path) -> None:
+    """Exercise the native isolated-entry bootstrap without importing model libraries."""
+
+    adapter = Path(runtime.__file__).resolve()
+    result = subprocess.run(
+        [
+            sys.executable, "-I", "-c",
+            "import runpy,sys; from pathlib import Path; "
+            f"adapter=Path({str(adapter)!r}); "
+            "assert str(adapter.parent) not in sys.path; "
+            "assert str(adapter.parent.parent) not in sys.path; "
+            "namespace=runpy.run_path(str(adapter)); "
+            "helper=namespace['_load_pipeline_helper'](); "
+            "assert callable(helper.bind_exact_timing_pipeline); "
+            "assert 'numpy' not in sys.modules and 'torch' not in sys.modules; "
+            "print(helper.__file__)",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert Path(result.stdout.strip()) == adapter.with_name("song_rvc_pipeline.py")
 
 
 def test_atomic_publisher_creates_once_and_cleans_private_sibling(

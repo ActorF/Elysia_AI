@@ -7,6 +7,8 @@ import test, { after } from 'node:test'
 const PLAY_CHANNEL = 'elysia:trusted-music-play:v1'
 const CANCEL_CHANNEL = 'elysia:trusted-music-cancel:v1'
 const SETTLED_CHANNEL = 'elysia:trusted-music-settled:v1'
+const TIMELINE_CHANNEL = 'elysia:trusted-music-timeline:v1'
+const SEEK_CHANNEL = 'elysia:trusted-music-seek:v1'
 const PLAYBACK_TIMEOUT_MS = (13 * 60 * 1_000) + 30_000
 const PLAYBACK_ID_PATTERN = (
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u
@@ -71,7 +73,7 @@ function playbackIdOf(window, sendIndex = 0) {
   assert.equal(channel, PLAY_CHANNEL)
   assert.deepEqual(
     Object.keys(metadata).sort(),
-    ['byteLength', 'outputDeviceId', 'playbackId', 'volumePercent'],
+    ['byteLength', 'outputDeviceId', 'playbackId', 'startPositionSeconds', 'volumePercent'],
   )
   assert.match(metadata.playbackId, PLAYBACK_ID_PATTERN)
   assert.ok(bytes instanceof Uint8Array)
@@ -84,6 +86,62 @@ function emitSettlement(window, value, overrides = {}) {
     senderFrame: overrides.senderFrame ?? window.webContents.mainFrame,
   }, value)
 }
+
+function emitTimeline(window, value, overrides = {}) {
+  ipcMain.emit(TIMELINE_CHANNEL, {
+    sender: overrides.sender ?? window.webContents,
+    senderFrame: overrides.senderFrame ?? window.webContents.mainFrame,
+  }, value)
+}
+
+test('correlates timeline and seeks to the exact clip and latest seek revision', async () => {
+  const { owner, window } = createOwner()
+  const seen = []
+  const playing = owner.play(Uint8Array.of(1), null, 75, 12, value => seen.push(value))
+  const playbackId = playbackIdOf(window)
+  assert.equal(window.webContents.sent[0][1].startPositionSeconds, 12)
+  const timeline = { playbackId, positionSeconds: 12, durationSeconds: 90, seekRevision: 0 }
+  try {
+    emitTimeline(window, timeline, { senderFrame: {} })
+    assert.deepEqual(seen, [])
+    emitTimeline(window, timeline)
+    assert.deepEqual(seen, [{ positionSeconds: 12, durationSeconds: 90 }])
+    assert.equal(owner.seek(30), true)
+    assert.equal(owner.seek(40), true)
+    assert.deepEqual(window.webContents.sent.at(-1), [SEEK_CHANNEL, {
+      playbackId, positionSeconds: 40, seekRevision: 2,
+    }])
+    emitTimeline(window, { ...timeline, positionSeconds: 30, seekRevision: 1 })
+    emitTimeline(window, { ...timeline, positionSeconds: 13 })
+    assert.equal(seen.length, 1)
+    emitTimeline(window, { ...timeline, positionSeconds: 40, seekRevision: 2 })
+    assert.equal(seen.at(-1).positionSeconds, 40)
+    for (const invalid of [-1, Infinity, NaN, 721]) assert.equal(owner.seek(invalid), false)
+    owner.cancel()
+    await assert.rejects(playing)
+    emitTimeline(window, { ...timeline, positionSeconds: 41, seekRevision: 2 })
+    assert.equal(seen.length, 2)
+  } finally {
+    owner.dispose()
+    await playing.catch(() => {})
+  }
+})
+
+test('malformed media measurements disconnect without leaking their payload', async () => {
+  for (const patch of [
+    { positionSeconds: NaN }, { positionSeconds: -1 }, { positionSeconds: 91 },
+    { durationSeconds: Infinity }, { durationSeconds: 0 }, { durationSeconds: 721 },
+    { seekRevision: 0.5 }, { path: 'D:/private/cover.mp3' },
+  ]) {
+    const { owner, window } = createOwner()
+    const playing = owner.play(Uint8Array.of(1), null, 100)
+    const playbackId = playbackIdOf(window)
+    emitTimeline(window, { playbackId, positionSeconds: 0, durationSeconds: 90, seekRevision: 0, ...patch })
+    await assert.rejects(playing, /not available/u)
+    assert.equal(owner.hasActivePlayback(), false)
+    owner.dispose()
+  }
+})
 
 async function assertStillPending(operation) {
   const outcome = await Promise.race([
@@ -118,6 +176,7 @@ test('sends copied MP3 bytes with closed metadata and trusts only the owning mai
     byteLength: 4,
     outputDeviceId: 'speaker-usb',
     volumePercent: 37,
+    startPositionSeconds: 0,
   })
   assert.notEqual(sentBytes, source)
   source.fill(9)

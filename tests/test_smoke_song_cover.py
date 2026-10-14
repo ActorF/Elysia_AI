@@ -6,6 +6,7 @@ import hashlib
 import json
 from pathlib import Path
 import shutil
+import sys
 from typing import Any, Sequence
 import wave
 
@@ -167,6 +168,12 @@ def _install_fake_runtime(
             return smoke._ProcessResult(0, _probe_payload())
         if command[:2] != [str(runtime.python), str(runtime.worker)]:
             raise AssertionError("Smoke launched an unreviewed command.")
+        environment = options["environment"]
+        assert environment["USERPROFILE"] == str(smoke_root)
+        for name, leaf in (("LOCALAPPDATA", "Local"), ("APPDATA", "Roaming")):
+            folder = smoke_root / "AppData" / leaf
+            assert environment[name] == str(folder)
+            assert folder.is_dir()
         if command[2:] == ["--cleanup-private-job", command[-1]]:
             if worker_mode == "cleanup-failure":
                 return smoke._ProcessResult(1, b"")
@@ -176,6 +183,8 @@ def _install_fake_runtime(
                 "SECRET lyric text at D:/private/artist/song.wav"
             )
         job_root = Path(command[command.index("--job-dir") + 1])
+        assert not (job_root / "AppData").exists()
+        assert environment["NUMBA_CACHE_DIR"] == str(job_root / "numba-cache")
         manifest_path = job_root / "lyrics-manifest.json"
         observed["manifest"] = json.loads(manifest_path.read_text("utf-8"))
         observed["job_root"] = job_root
@@ -198,6 +207,107 @@ def _install_fake_runtime(
     return observed
 
 
+def test_closed_environment_binds_windows_home_to_existing_private_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Permit Windows library imports without exposing the user's home/cache."""
+
+    private_root = tmp_path / "private-worker-home"
+    private_root.mkdir()
+    for name, value in {
+        "USERPROFILE": "D:/interactive-user",
+        "APPDATA": "D:/interactive-roaming",
+        "LOCALAPPDATA": "D:/interactive-local",
+        "HOME": "D:/interactive-home",
+        "HOMEDRIVE": "D:",
+        "HOMEPATH": "/interactive-home",
+        "PYTHONPATH": "D:/untrusted-python",
+        "HTTPS_PROXY": "https://untrusted-proxy.invalid",
+    }.items():
+        monkeypatch.setenv(name, value)
+
+    smoke._prepare_worker_profile(private_root)
+    environment = smoke._closed_environment(smoke._runtime_paths(), private_root)
+
+    assert environment["USERPROFILE"] == str(private_root)
+    assert environment["USERPROFILE"] == environment["TEMP"] == environment["TMP"]
+    assert Path(environment["USERPROFILE"]).is_dir()
+    assert environment["APPDATA"] == str(private_root / "AppData" / "Roaming")
+    assert environment["LOCALAPPDATA"] == str(private_root / "AppData" / "Local")
+    assert not {
+        "HOME", "HOMEDRIVE", "HOMEPATH", "PYTHONPATH", "HTTPS_PROXY",
+    }.intersection(environment)
+    if sys.platform == "win32":
+        # Exercise both Torch's home lookup and appdirs' Windows shell lookup
+        # in a real fresh child without importing any private model dependency.
+        result = smoke._run_closed_process(
+            [
+                sys.executable,
+                "-I",
+                "-c",
+                "import ctypes,json; from pathlib import Path; "
+                "local=ctypes.create_unicode_buffer(32768); "
+                "roaming=ctypes.create_unicode_buffer(32768); "
+                "assert ctypes.windll.shell32.SHGetFolderPathW(0,28,0,0,local)==0; "
+                "assert ctypes.windll.shell32.SHGetFolderPathW(0,26,0,0,roaming)==0; "
+                "print(json.dumps([str(Path.home()),local.value,roaming.value]))",
+            ],
+            cwd=private_root,
+            environment=environment,
+            timeout_seconds=10,
+        )
+        assert result.return_code == 0
+        assert [Path(value) for value in json.loads(result.stdout)] == [
+            private_root,
+            private_root / "AppData" / "Local",
+            private_root / "AppData" / "Roaming",
+        ]
+    assert list((private_root / "AppData" / "Local").iterdir()) == []
+    assert list((private_root / "AppData" / "Roaming").iterdir()) == []
+
+
+def test_private_worker_profile_rejects_a_non_directory_parent(tmp_path: Path) -> None:
+    """Fail before creating shell folders when AppData is an unrelated file."""
+
+    obstacle = tmp_path / "AppData"
+    obstacle.write_bytes(b"unrelated existing file")
+
+    with pytest.raises(smoke._SmokeFailure) as captured:
+        smoke._prepare_worker_profile(tmp_path)
+
+    assert captured.value.code == "runtime_unavailable"
+    assert obstacle.read_bytes() == b"unrelated existing file"
+    assert list(tmp_path.iterdir()) == [obstacle]
+
+
+def test_smoke_cleanup_keeps_shell_folders_while_another_job_remains(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Remove shared empty profile folders only after the last private job."""
+
+    root = tmp_path / "smoke-root"
+    root.mkdir()
+    first = root / "7f0a8023-551d-4da3-aaec-7c9721583f10"
+    second = root / "7f0a8023-551d-4da3-aaec-7c9721583f11"
+    first.mkdir()
+    second.mkdir()
+    monkeypatch.setattr(smoke, "_smoke_root", lambda: root)
+    smoke._prepare_worker_profile(root)
+
+    smoke._remove_job(first)
+
+    assert not first.exists()
+    assert second.is_dir()
+    assert (root / "AppData" / "Local").is_dir()
+    assert (root / "AppData" / "Roaming").is_dir()
+
+    smoke._remove_job(second)
+
+    assert not root.exists()
+
+
 def test_default_mode_preflights_hashes_without_loading_private_runtime(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -215,6 +325,7 @@ def test_default_mode_preflights_hashes_without_loading_private_runtime(
     assert captured.err == ""
     assert report["status"] == "preflight"
     assert report["run_private_runtime"] is False
+    assert report["shift_accompaniment"] is True
     assert report["inputs"]["vocals"]["sha256"] == hashlib.sha256(
         paths["vocals"].read_bytes()
     ).hexdigest()
@@ -239,7 +350,8 @@ def test_real_smoke_uses_closed_worker_command_and_removes_successful_job(
             paths,
             "--run-private-runtime",
             "--key-shift-semitones",
-            "-1",
+            "12",
+            "--no-shift-accompaniment",
         )
     ) == 0
 
@@ -247,7 +359,8 @@ def test_real_smoke_uses_closed_worker_command_and_removes_successful_job(
     report = json.loads(captured.out)
     assert captured.err == ""
     assert report["status"] == "complete"
-    assert report["key_shift_semitones"] == -1
+    assert report["key_shift_semitones"] == 12
+    assert report["shift_accompaniment"] is False
     assert report["private_cleanup"] == "confirmed"
     assert report["retained"] is False
     assert report["stages"] == [stage for stage, _ in smoke._EXPECTED_WORKER_STAGES]
@@ -269,6 +382,7 @@ def test_real_smoke_uses_closed_worker_command_and_removes_successful_job(
         "--vocal-input",
         "--accompaniment-input",
         "--key-shift-semitones",
+        "--shift-accompaniment",
         "--job-dir",
         "--ffmpeg",
         "--ffprobe",
@@ -276,7 +390,8 @@ def test_real_smoke_uses_closed_worker_command_and_removes_successful_job(
         "--torch-home",
         "--job-token",
     ]
-    assert launch[launch.index("--key-shift-semitones") + 1] == "-1"
+    assert launch[launch.index("--key-shift-semitones") + 1] == "12"
+    assert launch[launch.index("--shift-accompaniment") + 1] == "false"
     assert "--input" not in launch
     assert worker_commands[1][2:] == ["--cleanup-private-job", report["job_id"]]
     assert not observed["smoke_root"].exists()

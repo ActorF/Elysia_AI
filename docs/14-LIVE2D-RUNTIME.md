@@ -33,6 +33,7 @@ surface—provides the animated character and owns its interaction behavior.
 | `desktop/public/character/elysia-portrait.png` | Reviewed static fallback artwork |
 | `desktop/electron/desktop-pet-program-library.ts` | Main-private bounded discovery, structural validation, pinned hashes, and launch-time revalidation |
 | `desktop/electron/desktop-pet-program-manager.ts` | Single-child launch, exact PID-tree stop, switching, and stale-event isolation |
+| `desktop/electron/desktop-pet-window-controller.ts` | Hidden startup, native loading readiness, and one-time compact placement for the owned window |
 | `desktop/electron/desktop-pet-preferences.ts` | Default-off intent, Main-private folder, stable selection, migration, and atomic persistence |
 | `desktop/electron/desktop-pet-contracts.ts` | Path-free state and update contracts exposed to the main Renderer |
 | `desktop/electron/main.ts` | Native folder picker, serialized reconciliation, tray actions, and shutdown ownership |
@@ -126,16 +127,43 @@ modifies, replaces, normalizes, copies, uploads, packages, or migrates that
 file, and it does not mirror the program's settings into Electron application
 data.
 
-Consequently, each appearance keeps its own keyboard, mouse, gamepad, window,
-expression, audio, and other original settings when the user switches away and
-later returns. The Elysia preference stores only its own mode, chosen
-collection path, and selected stable program ID.
+Consequently, each appearance keeps its keyboard, mouse, gamepad, expression,
+audio, and other original settings when the user switches away and later
+returns. Elysia overrides only the newly launched native window's initial
+size and position, without writing those values to the purchased configuration.
+The Elysia preference stores only its own mode, chosen collection path, and
+selected stable program ID.
 
 ## Original-program interaction behavior
 
 Elysia launches the selected reviewed executable with no arguments, with the
 program's own directory as its working directory, and without a command shell.
-The external window remains visible because it is the actual Desktop Pet.
+The external window is the actual Desktop Pet. On Windows a helper is ready
+before the program starts. It moves the initially hidden native window outside
+the visible desktop while the original loading animation runs, then places the
+compact window beside Elysia after a normal character frame is ready. This keeps
+the welcome animation and the original 1500-by-1500 startup window from covering
+the conversation.
+
+The reviewed program has no window property that identifies the end of its
+loading animation, and it ignores a simple hidden-start request. Readiness is
+therefore specific to the pinned executable and SFML build: the helper reads
+the owned process's completed initialization guard and rendering clocks. The
+window is resized and positioned while hidden, then two normal presentations
+confirm that the resized scene is ready before it is shown without activation.
+Uncapped rendering uses two advances of the normal event-loop clock instead.
+The helper rehashes the relevant binaries before interpreting those addresses, accounts
+for the loaded image base, and never writes process memory. Updating the
+reviewed binary hashes requires revalidating this readiness contract. A failed
+or cancelled preparation follows the manager's owned-process cleanup path.
+
+Every launch and appearance switch uses the current Elysia window's lower-right
+corner, with the pet mainly beside the app when the monitor has room. Placement
+is clamped to that monitor's work area. Electron DIP bounds are converted to
+physical pixels for the native controller, including mixed-DPI and
+negative-coordinate displays. When only the tray remains, the display's
+lower-right corner is used. This is initial placement, not continuous docking:
+the user can move and resize the pet normally afterward.
 
 The reviewed Bongo Cat Mver launcher embeds a `requireAdministrator` manifest,
 but Elysia deliberately applies Windows `RunAsInvoker` compatibility for that
@@ -153,7 +181,8 @@ The original program is responsible for:
 - mouse and Live2D eye tracking, including its own mirror controls;
 - expression shortcuts and restoration behavior;
 - model motion, expressions, physics, and rendering;
-- moving, resizing, always-on-top behavior, and desktop/game display options;
+- moving and resizing after initial placement, always-on-top behavior, and
+  desktop/game display options;
 - its own UI, tray behavior, frame limit, background, audio, and compatibility
   settings.
 
@@ -167,7 +196,12 @@ like the reviewed local program.
 one child returned by its exact launch call. It never adopts a process that the
 user started manually. Launch uses the selected executable path, an empty
 argument list, its program directory as `cwd`, `shell: false`,
-`detached: false`, visible Windows behavior, and ignored standard streams.
+`detached: false`, `windowsHide: true`, and ignored standard streams. The
+manager remains `loading` while the owned native window is prepared; a PID
+alone does not mean the pet is ready to display. Preparation only targets the
+selected child's own SFML window and is cancelled when that child exits or
+the manager shuts down. Failure does not fall back to showing the giant
+unprepared window.
 
 Switching from program A to B always stops and awaits A before launching B. On
 Windows, the stop path invokes the system `taskkill.exe` with only

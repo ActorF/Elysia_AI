@@ -1,6 +1,6 @@
 /** Provide a deterministic, stateful Desktop API double to renderer UI tests. */
 
-const { contextBridge } = require('electron')
+const { contextBridge, ipcRenderer } = require('electron')
 
 const RELOAD_STATE_KEY = 'elysia.ui-test.backend-state.v1'
 
@@ -205,8 +205,11 @@ function defaultSongCoverState() {
     sourceMode: null,
     engine: null,
     keyShiftSemitones: null,
+    shiftAccompaniment: null,
     progressPercent: 0,
     outputAvailable: false,
+    positionSeconds: 0,
+    durationSeconds: 0,
     message: null,
     errorCode: null,
     error: null,
@@ -463,6 +466,17 @@ const backendListeners = new Set()
 const desktopPetStateListeners = new Set()
 const presenceNotificationStateListeners = new Set()
 const songCoverStateListeners = new Set()
+const voiceCallWindowActionListeners = new Set()
+let latestVoiceCallWindowState = null
+
+// The main mock retains microphone and Chat ownership. Its secondary window
+// uses the real restricted preload so these tests exercise the IPC boundary.
+ipcRenderer.on('voice-call:action', (_event, action) => {
+  record('voiceCallWindowAction', [action])
+  for (const listener of voiceCallWindowActionListeners) {
+    listener(clone(action))
+  }
+})
 
 const reloadState = takeReloadState()
 if (reloadState !== null) {
@@ -918,6 +932,31 @@ function discardAllVoiceTranscriptions() {
 }
 
 const desktopApi = {
+  openVoiceCallWindow: async (state) => {
+    record('openVoiceCallWindow', [state])
+    latestVoiceCallWindowState = clone(state)
+    await ipcRenderer.invoke('voice-call:open', state)
+  },
+
+  updateVoiceCallWindow: async (state) => {
+    record('updateVoiceCallWindow', [state])
+    latestVoiceCallWindowState = clone(state)
+    await ipcRenderer.invoke('voice-call:update', state)
+  },
+
+  closeVoiceCallWindow: async (callId) => {
+    record('closeVoiceCallWindow', [callId])
+    await ipcRenderer.invoke('voice-call:close', callId)
+  },
+
+  onVoiceCallWindowAction: (listener) => {
+    record('onVoiceCallWindowAction.subscribe')
+    voiceCallWindowActionListeners.add(listener)
+    return () => {
+      voiceCallWindowActionListeners.delete(listener)
+      record('onVoiceCallWindowAction.unsubscribe')
+    }
+  },
   rendererReady: async () => {
     record('rendererReady')
   },
@@ -1070,8 +1109,11 @@ const desktopApi = {
       sourceMode: request.sourceMode,
       engine: request.engine,
       keyShiftSemitones: request.keyShiftSemitones,
+      shiftAccompaniment: request.shiftAccompaniment,
       progressPercent: 5,
       outputAvailable: false,
+      positionSeconds: 0,
+      durationSeconds: 0,
       message: 'Reading the selected audio',
       errorCode: null,
       error: null,
@@ -1090,6 +1132,8 @@ const desktopApi = {
       stage: 'cancelled',
       progressPercent: 0,
       outputAvailable: false,
+      positionSeconds: 0,
+      durationSeconds: 0,
       message: 'Song Cover cancelled',
       error: null,
     }
@@ -1122,6 +1166,28 @@ const desktopApi = {
       stage: 'ready',
       message: 'Song Cover ready',
       error: null,
+    }
+    return clone(songCoverState)
+  },
+
+  seekSongCover: async (jobId, positionSeconds) => {
+    record('seekSongCover', [jobId, positionSeconds])
+    if (songCoverState.jobId !== jobId || !songCoverState.outputAvailable) {
+      throw new Error('Song Cover job is no longer available.')
+    }
+    if (!Number.isFinite(positionSeconds) || positionSeconds < 0
+      || positionSeconds > songCoverState.durationSeconds) {
+      throw new Error('Song Cover position is outside the current audio.')
+    }
+    // The mock follows Main's observable contract: seeking keeps the same job,
+    // output and playing/ready stage and publishes its new timeline position.
+    songCoverState = {
+      ...songCoverState,
+      revision: songCoverState.revision + 1,
+      positionSeconds,
+    }
+    for (const listener of songCoverStateListeners) {
+      listener(clone(songCoverState))
     }
     return clone(songCoverState)
   },
@@ -2291,6 +2357,8 @@ const desktopApi = {
 }
 
 const testControl = {
+  getLatestVoiceCallState: () => clone(latestVoiceCallWindowState),
+
   reset: () => {
     for (const release of pendingWorkToolRuns) release()
     pendingWorkToolRuns = []
@@ -2372,6 +2440,7 @@ const testControl = {
     delayAttachmentActions = false
     delayVoiceTranscriptions = false
     nextVoiceTranscriptionTerminalBeforeAcknowledgement = false
+    latestVoiceCallWindowState = null
   },
 
   setSnapshot: (nextSnapshot) => {

@@ -89,6 +89,7 @@ interface ChatViewProps {
   onExportSongCover(): void
   onOpenSongCoverSetup(): void
   onPlaySongCover(): void
+  onSeekSongCover(positionSeconds: number): Promise<void>
   onSend(): void
   onStop(): void
   onStopSongCover(): void
@@ -176,6 +177,7 @@ export function ChatView({
   onExportSongCover,
   onOpenSongCoverSetup,
   onPlaySongCover,
+  onSeekSongCover,
   onSend,
   onStop,
   onStopSongCover,
@@ -189,15 +191,17 @@ export function ChatView({
     ? 'Elysia is generating a reply.'
     : 'Elysia is ready for your next message.'
 
+  // Playback time updates do not change the card's layout and should not
+  // repeatedly scroll the conversation while a user scrubs the song.
   useLayoutEffect(() => {
     const scroller = scrollRef.current
     if (scroller !== null && stickToBottomRef.current) {
       scroller.scrollTop = scroller.scrollHeight
     }
-  }, [messages, songCoverState?.revision])
+  }, [messages, songCoverState?.stage, songCoverState?.jobId])
 
   return (
-    <div className="chat-surface">
+    <div className={'chat-surface' + (messages.length === 0 ? ' chat-surface-empty' : '')}>
       <header className="topbar">
         <div className="topbar-leading">
           <button
@@ -213,8 +217,8 @@ export function ChatView({
             <Icon name="menu" />
           </button>
           <div className="chat-heading">
-            <strong id="chat-title" title={chatTitle}>{chatTitle}</strong>
-            <span>{chatMode === 'work' ? 'Work mode' : 'Chat mode'}</span>
+            <h1 id="chat-title" title={chatTitle}>{chatTitle}</h1>
+            {chatMode === 'work' && <span className="chat-mode-label">Work mode</span>}
           </div>
         </div>
         <div className="connection-controls">
@@ -250,6 +254,7 @@ export function ChatView({
               : 'Expand Elysia panel'}
             aria-controls="character-panel"
             aria-expanded={panelOpen}
+            title={panelOpen ? 'Collapse Elysia panel' : 'Expand Elysia panel'}
             disabled={panelTransitionPending}
             onClick={onTogglePanel}
           >
@@ -293,10 +298,6 @@ export function ChatView({
           aria-live="off"
           aria-busy={streaming}
         >
-          <header className="conversation-intro">
-            <h1 className="eyebrow">Local Conversation</h1>
-          </header>
-
           {snapshot.status !== 'ready' && snapshot.status !== 'error' && (
             <LoadingState
               className="connection-state"
@@ -308,10 +309,28 @@ export function ChatView({
           {messages.length === 0 && (
             <EmptyState
               className="conversation-empty"
-              icon="chat"
+              icon={null}
               title="不论何时何地，爱莉希雅都会回应你的期待。"
               description="今天有什么事要跟我分享的吗？"
             />
+          )}
+
+          {messages.length === 0 && snapshot.status === 'ready' && draft.length === 0 && (
+            <div className="conversation-starters" role="group" aria-label="Conversation ideas">
+              {['聊聊今天', '帮我整理想法', '一起写点什么'].map((idea) => (
+                <button
+                  type="button"
+                  key={idea}
+                  onClick={() => {
+                    onDraftChange(idea)
+                    document.getElementById('chat-composer')?.focus()
+                  }}
+                >
+                  {idea}
+                  <Icon name="chevron" />
+                </button>
+              ))}
+            </div>
           )}
 
           {messages.map((message) => (
@@ -358,9 +377,9 @@ export function ChatView({
         songCoverDisabled={songCoverDisabled}
         songCoverStartUnavailableMessage={songCoverStartUnavailableMessage}
         songCoverState={songCoverState}
-      streaming={streaming}
-      stopPending={stopPending}
-      voiceCallDisabled={voiceCallDisabled}
+        streaming={streaming}
+        stopPending={stopPending}
+        voiceCallDisabled={voiceCallDisabled}
         onChooseAttachments={onChooseAttachments}
         onDismissAttachmentError={onDismissAttachmentError}
         onDismissNotice={onDismissNotice}
@@ -374,6 +393,7 @@ export function ChatView({
         onExportSongCover={onExportSongCover}
         onOpenSongCoverSetup={onOpenSongCoverSetup}
         onPlaySongCover={onPlaySongCover}
+        onSeekSongCover={onSeekSongCover}
         onSend={() => {
           stickToBottomRef.current = true
           onSend()

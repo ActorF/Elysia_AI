@@ -12,7 +12,15 @@ import {
 } from '@playwright/test'
 import { _electron as electron } from 'playwright'
 
+import type {
+  VoiceCallWindowApi,
+  VoiceCallWindowState,
+} from '../../electron/voice-call-contracts.ts'
+
 import type { DataStorageViewState } from '../../electron/data-storage-contracts.ts'
+import type {
+  SongCoverKeyShiftSemitones,
+} from '../../electron/song-cover-contracts.ts'
 
 type BackendStatus =
   | 'starting'
@@ -289,10 +297,13 @@ interface SongCoverState {
   sourceName: string | null
   accompanimentName: string | null
   sourceMode: 'song' | 'stems' | null
-  engine: 'lyrics-svs' | 'legacy-svc' | null
-  keyShiftSemitones: -2 | -1 | 0 | 1 | 2 | null
+  engine: 'source-svc' | 'lyrics-svs' | 'legacy-svc' | null
+  keyShiftSemitones: SongCoverKeyShiftSemitones | null
+  shiftAccompaniment: boolean | null
   progressPercent: number
   outputAvailable: boolean
+  positionSeconds: number
+  durationSeconds: number
   message: string | null
   errorCode:
     | 'invalid-audio'
@@ -371,6 +382,7 @@ interface RendererTestControl {
   getPendingAttachmentActionCount(): number
   getPendingVoiceTranscriptionCount(): number
   getCalls(): CallRecord[]
+  getLatestVoiceCallState(): VoiceCallWindowState | null
   persistForReload(): void
   releaseNextChatAction(): boolean
   releaseNextChatList(): boolean
@@ -420,6 +432,10 @@ interface RendererTestControl {
 
 type TestWindow = Window & {
   elysiaDesktopTest: RendererTestControl
+}
+
+type VoiceTestWindow = Window & {
+  elysiaVoiceCall: VoiceCallWindowApi
 }
 
 const require = createRequire(import.meta.url)
@@ -581,6 +597,30 @@ async function emitSongCoverState(state: SongCoverState): Promise<void> {
   await page.evaluate((nextState) => {
     ;(window as TestWindow).elysiaDesktopTest.emitSongCoverState(nextState)
   }, state)
+}
+
+function completedSongCoverState(
+  overrides: Partial<SongCoverState> = {},
+): SongCoverState {
+  return {
+    revision: 10,
+    jobId: '00000000-0000-4000-8000-000000000001',
+    stage: 'ready',
+    sourceName: 'retained-cover.mp3',
+    accompanimentName: null,
+    engine: 'source-svc',
+    sourceMode: 'song',
+    keyShiftSemitones: 0,
+    shiftAccompaniment: true,
+    progressPercent: 100,
+    outputAvailable: true,
+    positionSeconds: 42.4,
+    durationSeconds: 248.294,
+    message: 'Song Cover ready',
+    errorCode: null,
+    error: null,
+    ...overrides,
+  }
 }
 
 async function setVoiceSettingsState(
@@ -1440,11 +1480,83 @@ async function openSettings(
   await expect(
     page.getByRole('heading', { name: 'Settings', exact: true }),
   ).toBeVisible()
-  await expect(
-    page.getByRole('heading', { name: 'General', exact: true }),
-  ).toBeVisible()
+  await expect(page.locator('.settings-category-heading').filter({
+    hasText: /^General$/,
+  })).toBeVisible()
+  await expect(page.getByRole('navigation', { name: 'Settings categories' })
+    .getByRole('button', { name: 'General', exact: true }))
+    .toHaveAttribute('aria-current', 'page')
 }
 
+/** Select a settings category through its navigation and await its visible panel. */
+async function selectSettingsCategory(
+  category: 'General' | 'Appearance' | 'Voice' | 'Data & storage' | 'Advanced',
+): Promise<void> {
+  const button = page.getByRole('navigation', { name: 'Settings categories' })
+    .getByRole('button', { name: category, exact: true })
+  await button.click()
+  await expect(button).toHaveAttribute('aria-current', 'page')
+  await expect(page.locator('.settings-category-panel:visible')).toHaveCount(1)
+  await expect(page.locator('.settings-category-panel:visible')
+    .locator('.settings-category-heading')).toHaveText(category)
+}
+
+/** Wait for the native Voice renderer independently of the main Chat page. */
+async function getVoiceCallPage(): Promise<Page> {
+  await expect.poll(() => electronApp?.windows().some((window) => (
+    !window.isClosed() && window.url().endsWith('/voice-call.html')
+  ))).toBe(true)
+  const voicePage = electronApp?.windows().find((window) => (
+    !window.isClosed() && window.url().endsWith('/voice-call.html')
+  ))
+  if (voicePage === undefined) {
+    throw new Error('The native Voice Call window is unavailable.')
+  }
+  await expect(voicePage.locator('.voice-call-window')).toBeVisible()
+  return voicePage
+}
+
+/** Assert the PCM-free state relayed by the microphone-owning main renderer. */
+async function expectVoiceCallState(
+  expected: Partial<VoiceCallWindowState>,
+): Promise<void> {
+  await expect.poll(() => page.evaluate(() => (
+    (window as TestWindow).elysiaDesktopTest.getLatestVoiceCallState()
+  ))).toMatchObject(expected)
+}
+
+/** Verify recovery explanations without requiring a persistent visible status bar. */
+async function expectVoiceCallNotice(message: string): Promise<void> {
+  await expect.poll(() => page.evaluate(() => {
+    const state = (window as TestWindow).elysiaDesktopTest
+      .getLatestVoiceCallState()
+    return [state?.error, state?.warning]
+  })).toContain(message)
+}
+
+/** Wait until the native child is gone without querying its destroyed document. */
+async function expectVoiceCallClosed(): Promise<void> {
+  await expect.poll(() => electronApp?.windows().filter((window) => (
+    !window.isClosed() && window.url().endsWith('/voice-call.html')
+  )).length ?? 0).toBe(0)
+}
+
+/** Accept native closure during Escape dispatch, then verify that it really ended. */
+async function closeVoiceCallWithEscape(): Promise<void> {
+  const voicePage = await getVoiceCallPage()
+  try {
+    await voicePage.keyboard.press('Escape')
+  } catch (error) {
+    // Electron destroys the window on keydown before Playwright can receive the
+    // keyup acknowledgement. Only that expected document loss is acceptable.
+    if (!voicePage.isClosed()) {
+      throw error
+    }
+  }
+  await expectVoiceCallClosed()
+}
+
+/** Start local Voice capture through the main Chat and await listening ownership. */
 async function openVoiceCapturePage(): Promise<void> {
   await emitSnapshot(readySnapshot({
     capabilities: [
@@ -1455,9 +1567,47 @@ async function openVoiceCapturePage(): Promise<void> {
     ],
   }))
   await page.getByRole('button', { name: 'Voice Call' }).click()
-  await expect(page.getByRole('dialog', { name: 'Voice Call' })).toBeVisible()
-  await expect(page.getByText('Listening for speech', { exact: true }))
-    .toBeVisible()
+  await expect((await getVoiceCallPage()).locator('.voice-call-window')).toBeVisible()
+  await expectVoiceCallState({ characterState: 'listening' })
+  await expect.poll(async () => {
+    const stats = await audioMockStats()
+    return stats.processorsCreated - stats.contextsClosed
+  }).toBeGreaterThan(0)
+}
+
+/** Advertise ready local voice capabilities before editing the initial Chat draft. */
+async function prepareDictationBackend(): Promise<void> {
+  await emitSnapshot(readySnapshot({
+    capabilities: [
+      'chat.stream',
+      'voice.settings',
+      'voice.capture',
+      'voice.transcription',
+    ],
+  }))
+}
+
+/** Start Dictate and wait for its one continuously owned microphone graph. */
+async function openDictationCapture(): Promise<void> {
+  await prepareDictationBackend()
+  await page.getByRole('button', { name: 'Dictate' }).click()
+  await expect(page.getByRole('button', { name: 'Stop dictation' }))
+    .toHaveAttribute('aria-pressed', 'true')
+  await expect.poll(async () => {
+    const stats = await audioMockStats()
+    return stats.processorsCreated - stats.contextsClosed
+  }).toBeGreaterThan(0)
+}
+
+/** Prove pauses and bounded PCM chunks retain the same live microphone owner. */
+async function expectDictationListening(): Promise<void> {
+  await expect(page.getByRole('button', { name: 'Stop dictation' }))
+    .toHaveAttribute('aria-pressed', 'true')
+  const stats = await audioMockStats()
+  expect(stats.getUserMediaCalls).toHaveLength(1)
+  expect(stats.trackStopCount).toBe(0)
+  expect(stats.contextsClosed).toBe(0)
+  expect(stats.processorsCreated).toBe(1)
 }
 
 async function openVoiceWithFinalTranscript(text: string): Promise<void> {
@@ -1478,7 +1628,12 @@ async function openVoiceWithFinalTranscript(text: string): Promise<void> {
     languageProbability: 0.99,
   })
   await page.getByRole('button', { name: 'Voice Call' }).click()
-  await expect(page.getByRole('dialog', { name: 'Voice Call' })).toBeVisible()
+  await expect((await getVoiceCallPage()).locator('.voice-call-window')).toBeVisible()
+  await expectVoiceCallState({ characterState: 'listening' })
+  await expect.poll(async () => {
+    const stats = await audioMockStats()
+    return stats.processorsCreated - stats.contextsClosed
+  }).toBeGreaterThan(0)
   await emitSpeechFrames(0.08, 10)
   await emitAudioFrames(0, 30)
   expect(await releaseNextVoiceTranscription()).toBe(true)
@@ -1488,6 +1643,10 @@ async function openVoiceWithFinalTranscript(text: string): Promise<void> {
 }
 
 async function completeVoiceCallUtterance(text: string): Promise<void> {
+  await expect.poll(async () => {
+    const stats = await audioMockStats()
+    return stats.processorsCreated - stats.contextsClosed
+  }).toBeGreaterThan(0)
   const previousSendCount = (await getCalls()).filter(
     (call) => call.method === 'sendMessage',
   ).length
@@ -1677,7 +1836,7 @@ test.beforeEach(async () => {
       .some((call) => call.method === 'onBackendEvent.subscribe')
   ))
   await expect(
-    page.getByRole('heading', { name: 'Local Conversation' }),
+    page.locator('.chat-heading h1'),
   ).toBeVisible()
 })
 
@@ -1723,11 +1882,10 @@ test('shows starting, ready, and retryable error feedback', async () => {
 })
 
 test('presents a restrained, character-led welcome for a new chat', async () => {
-  const intro = page.locator('.conversation-intro')
   const emptyConversation = page.locator('.conversation-empty')
 
-  await expect(intro).toHaveText('Local Conversation')
-  await expect(intro.locator('svg')).toHaveCount(0)
+  await expect(page.locator('.conversation-intro')).toHaveCount(0)
+  await expect(page.locator('.chat-heading h1')).toBeVisible()
   await expect(page.getByText('Talk with Elysia')).toHaveCount(0)
   await expect(page.getByText(
     'Your Chat and Memory remain in the existing Python Backend.',
@@ -1735,7 +1893,172 @@ test('presents a restrained, character-led welcome for a new chat', async () => 
   await expect(emptyConversation).toHaveText(
     '不论何时何地，爱莉希雅都会回应你的期待。今天有什么事要跟我分享的吗？',
   )
-  await expect(emptyConversation.locator('svg')).toHaveCount(1)
+  await expect(emptyConversation.locator('svg')).toHaveCount(0)
+})
+
+test('offers conversation ideas only for an empty draft and leaves sending explicit', async () => {
+  await expect(page.getByRole('group', { name: 'Conversation ideas' })).toHaveCount(0)
+  await emitSnapshot(readySnapshot())
+  await clearCalls()
+  await page.getByRole('button', { name: '帮我整理想法' }).click()
+  const composer = page.getByLabel('Message Elysia')
+  await expect(composer).toHaveValue('帮我整理想法')
+  await expect(composer).toBeFocused()
+  await expect(page.getByRole('button', { name: '聊聊今天' })).toHaveCount(0)
+  expect((await getCalls()).filter((call) => call.method === 'sendMessage')).toHaveLength(0)
+
+  await composer.fill('My own unfinished message')
+  await expect(page.locator('.conversation-starters')).toHaveCount(0)
+  await composer.fill('')
+  await expect(page.getByRole('button', { name: '聊聊今天' })).toBeVisible()
+})
+
+test('selects a model with the keyboard and marks the committed option on reopen', async () => {
+  const models = ['qwen3.5:9b', 'llama3.2:3b', 'gemma3:4b']
+  await emitSnapshot(readySnapshot({ models }))
+  await clearCalls()
+  const picker = page.getByRole('combobox', { name: 'AI model' })
+  await picker.focus()
+  await picker.press('Enter')
+  await expect(picker).toHaveAttribute('aria-expanded', 'true')
+  await expect(page.getByRole('listbox')).toBeVisible()
+  await expect(page.getByRole('option', { name: models[0], exact: true }))
+    .toHaveAttribute('aria-selected', 'true')
+
+  await page.keyboard.press('End')
+  await page.keyboard.press('Enter')
+  await expect.poll(async () => (
+    (await getCalls()).filter((call) => call.method === 'selectModel')
+      .map((call) => call.args)
+  )).toEqual([[models[2]]])
+  await expect(picker).toHaveAttribute('title', models[2])
+  await expect(picker).toContainText(models[2])
+  await expect(picker).toHaveAttribute('aria-expanded', 'false')
+  await expect(picker).toBeFocused()
+
+  await picker.click()
+  await expect(page.getByRole('option', { name: models[2], exact: true }))
+    .toHaveAttribute('aria-selected', 'true')
+  await page.keyboard.press('Home')
+  await page.keyboard.press('ArrowDown')
+  await page.keyboard.press('Enter')
+  await expect(picker).toHaveAttribute('title', models[1])
+  await expect.poll(async () => (
+    (await getCalls()).filter((call) => call.method === 'selectModel')
+      .map((call) => call.args)
+  )).toEqual([[models[2]], [models[1]]])
+})
+
+test('dismisses uncommitted model choices and preserves the draft and keyboard focus', async () => {
+  const models = ['qwen3.5:9b', 'llama3.2:3b']
+  await emitSnapshot(readySnapshot({ models }))
+  await clearCalls()
+  const picker = page.getByRole('combobox', { name: 'AI model' })
+  const composer = page.getByLabel('Message Elysia')
+  await composer.fill('Keep this draft while choosing a model.')
+  await picker.click()
+  await page.keyboard.press('End')
+  await page.keyboard.press('Escape')
+  await expect(page.getByRole('listbox')).toHaveCount(0)
+  await expect(picker).toBeFocused()
+  await expect(picker).toHaveAttribute('title', models[0])
+
+  await picker.click()
+  await composer.click()
+  await expect(page.getByRole('listbox')).toHaveCount(0)
+  await expect(composer).toBeFocused()
+  await expect(composer).toHaveValue('Keep this draft while choosing a model.')
+
+  await picker.click()
+  await page.keyboard.press('Tab')
+  await expect(page.getByRole('listbox')).toHaveCount(0)
+  await expect(picker).not.toBeFocused()
+  // Available voice controls vary with local capabilities. Reuse the browser's
+  // normal next tab stop to ensure a model restart does not reset keyboard order.
+  const nextControl = await page.evaluateHandle(() => document.activeElement)
+  expect((await getCalls()).filter((call) => call.method === 'selectModel'))
+    .toHaveLength(0)
+
+  await picker.click()
+  await page.getByRole('option', { name: models[1], exact: true }).click()
+  await expect(picker).toHaveAttribute('title', models[1])
+  await expect(page.getByRole('listbox')).toHaveCount(0)
+  await expect(composer).toHaveValue('Keep this draft while choosing a model.')
+
+  await picker.click()
+  await page.keyboard.press('Home')
+  await page.keyboard.press('Tab')
+  await expect(picker).toHaveAttribute('title', models[0])
+  await expect.poll(() => nextControl.evaluate((element) => (
+    element === document.activeElement
+  ))).toBe(true)
+  await nextControl.dispose()
+})
+
+test('disables model choices when unavailable or busy and closes an open list on disconnect', async () => {
+  const picker = page.getByRole('combobox', { name: 'AI model' })
+  await expect(picker).toBeDisabled()
+  await emitSnapshot(readySnapshot({ models: [], modelName: undefined }))
+  await expect(picker).toBeDisabled()
+  const models = ['qwen3.5:9b', 'llama3.2:3b']
+  await emitSnapshot(readySnapshot({ revision: 2, models }))
+  await expect(picker).toBeEnabled()
+  await picker.click()
+  await expect(page.getByRole('listbox')).toBeVisible()
+
+  await emitSnapshot(readySnapshot({ revision: 3, models, status: 'initializing' }))
+  await expect(picker).toBeDisabled()
+  await expect(page.getByRole('listbox')).toHaveCount(0)
+  await expect(picker).toHaveAttribute('aria-expanded', 'false')
+
+  await emitSnapshot(readySnapshot({ revision: 4, models }))
+  await expect(picker).toBeEnabled()
+  await clearCalls()
+  const composer = page.getByLabel('Message Elysia')
+  await composer.fill('Keep the model fixed while this reply streams.')
+  await composer.press('Enter')
+  await expect(picker).toBeDisabled()
+  await expect(page.getByRole('listbox')).toHaveCount(0)
+  expect((await getCalls()).filter((call) => call.method === 'selectModel'))
+    .toHaveLength(0)
+})
+
+test('keeps long model lists reachable in a compact window at increased zoom', async () => {
+  const models = Array.from({ length: 24 }, (_, index) => (
+    `local-model-${index}-${'long-name-'.repeat(16)}`
+  ))
+  await emitSnapshot(readySnapshot({ models, modelName: models[0] }))
+  await setWindowAndZoom(960, 640, 2)
+  const picker = page.getByRole('combobox', { name: 'AI model' })
+  await picker.click()
+  await page.keyboard.press('End')
+  const lastOption = page.getByRole('option', {
+    name: models.at(-1), exact: true,
+  })
+  await expect(lastOption).toBeVisible()
+  await expect(picker).toHaveAttribute(
+    'aria-activedescendant', await lastOption.getAttribute('id') ?? '',
+  )
+  const bounds = await lastOption.evaluate((element) => {
+    const option = element.getBoundingClientRect()
+    const list = element.closest('[role="listbox"]')?.getBoundingClientRect()
+    if (list === undefined) throw new Error('Model option lost its listbox.')
+    return {
+      option: { top: option.top, bottom: option.bottom },
+      list: { top: list.top, bottom: list.bottom, left: list.left, right: list.right },
+      width: window.innerWidth,
+      height: window.innerHeight,
+    }
+  })
+  expect(bounds.list.left).toBeGreaterThanOrEqual(0)
+  expect(bounds.list.right).toBeLessThanOrEqual(bounds.width)
+  expect(bounds.list.top).toBeGreaterThanOrEqual(0)
+  expect(bounds.list.bottom).toBeLessThanOrEqual(bounds.height)
+  expect(bounds.option.top).toBeGreaterThanOrEqual(bounds.list.top - 1)
+  expect(bounds.option.bottom).toBeLessThanOrEqual(bounds.list.bottom + 1)
+  await page.keyboard.press('Enter')
+  await expect(picker).toHaveAttribute('title', models.at(-1) ?? '')
+  await expectShellWithoutHorizontalOverflow()
 })
 
 test('ignores a stale error snapshot while a newer Chat is streaming', async () => {
@@ -1897,7 +2220,7 @@ test('renders canonical Chat metadata and opens persisted sessions', async () =>
   await expect.poll(async () => (
     (await getCalls()).find((call) => call.method === 'openChat')?.args
   )).toEqual([second.chatId])
-  await expect(page.locator('.chat-heading strong')).toHaveText(second.title)
+  await expect(page.locator('.chat-heading h1')).toHaveText(second.title)
 
   await clearCalls()
   await page.getByRole('button', { name: 'Create chat' }).click()
@@ -2172,6 +2495,7 @@ test('settles a pending panel open before leaving Chat for Settings', async () =
 
 test('persists system, light, and dark theme choices', async () => {
   await openSettings()
+  await selectSettingsCategory('Appearance')
 
   await expect.poll(readThemeState).toEqual({
     preference: 'system',
@@ -2225,6 +2549,7 @@ test('persists system, light, and dark theme choices', async () => {
 
   await emitSnapshot(readySnapshot())
   await pressControlShortcut(',')
+  await selectSettingsCategory('Appearance')
   await page.getByText('System', { exact: true }).click()
   await expect(page.getByRole('radio', { name: /^System/ })).toBeChecked()
   await expect.poll(readThemeState).toEqual({
@@ -2253,6 +2578,7 @@ test('persists system, light, and dark theme choices', async () => {
 
 test('keeps the main character static and offers no Live2D toggle', async () => {
   await openSettings()
+  await selectSettingsCategory('Appearance')
   await expect(page.getByText(
     /character state panel always uses static half-body artwork/iu,
   )).toBeVisible()
@@ -2265,7 +2591,7 @@ test('keeps the main character static and offers no Live2D toggle', async () => 
   await expect(artwork).toHaveAttribute('data-character-performance', 'still')
   await expect(artwork.locator('canvas')).toHaveCount(0)
   await expect(artwork.locator('img')).toHaveCount(1)
-  await expect.poll(() => artwork.locator('.character-artwork-frame').evaluate(
+  await expect.poll(() => artwork.locator('.character-panel-illustration-frame').evaluate(
     (element) => window.getComputedStyle(element).animationName,
   )).toBe('none')
 
@@ -2304,20 +2630,28 @@ test('shows all Settings areas, ownership scopes, and no secret controls', async
     chatTitle: scopedChat.title,
   }))
 
-  await expect(page.locator('.settings-section h2')).toHaveText([
-    'General',
-    'Model',
-    'Speech recognition',
-    'Memory',
-    'Voice behavior',
-    'Audio devices',
-    'Files',
-    'Data & storage',
-    'Work',
-    'Privacy',
-    'Appearance',
-    'Presence & notifications',
+  await expect(page.locator('.settings-save-bar')).toHaveCount(0)
+  const categories = page.getByRole('navigation', {
+    name: 'Settings categories',
+  })
+  await expect(categories.getByRole('button')).toHaveText([
+    'General', 'Appearance', 'Voice', 'Data & storage', 'Advanced',
   ])
+  await expect(page.getByRole('heading', { name: 'Speech recognition' }))
+    .toHaveCount(0)
+  const expectedSections = [
+    ['General', ['Model', 'Settings scopes']],
+    ['Appearance', ['Theme', 'Presence & notifications']],
+    ['Voice', ['Speech recognition', 'Voice behavior', 'Audio devices']],
+    ['Data & storage', ['Local storage', 'Files']],
+    ['Advanced', ['Memory', 'Work', 'Privacy']],
+  ] as const
+  for (const [category, sections] of expectedSections) {
+    await selectSettingsCategory(category)
+    await expect(page.locator('.settings-category-panel:visible')
+      .locator('.settings-section h2')).toHaveText([...sections])
+  }
+  await selectSettingsCategory('General')
 
   const scopes = page.locator('[aria-label="Settings scopes"]')
   await expect(scopes.getByText('Global', { exact: true })).toBeVisible()
@@ -2362,9 +2696,10 @@ test('shows closed storage categories and invokes only Main-owned actions', asyn
         },
   })
   await openSettings()
+  await selectSettingsCategory('Data & storage')
 
   const storage = page.locator('.data-storage-settings')
-  await expect(storage.getByRole('heading', { name: 'Data & storage' }))
+  await expect(storage.getByRole('heading', { name: 'Local storage' }))
     .toBeVisible()
   await expect(storage.getByText(
     'C:\\Users\\Actor\\AppData\\Roaming\\Elysia\\data',
@@ -2450,8 +2785,9 @@ test('keeps storage visible without Backend settings and disables busy mutations
     .toBeVisible()
   await expect(page.getByText('Settings are unavailable', { exact: true }))
     .toBeVisible()
+  await selectSettingsCategory('Data & storage')
   const storage = page.locator('.data-storage-settings')
-  await expect(storage.getByRole('heading', { name: 'Data & storage' }))
+  await expect(storage.getByRole('heading', { name: 'Local storage' }))
     .toBeVisible()
   await expect(storage.getByText(
     'C:\\Users\\Actor\\AppData\\Roaming\\Elysia\\data',
@@ -2469,6 +2805,7 @@ test('keeps storage visible without Backend settings and disables busy mutations
 
 test('configures a detected local companion program before launching it', async () => {
   await openSettings()
+  await selectSettingsCategory('Appearance')
 
   const download = page.getByRole('button', {
     name: 'Download free pack',
@@ -2584,6 +2921,7 @@ test('configures a detected local companion program before launching it', async 
 
 test('recovers canonical Desktop Pet state after an update fails', async () => {
   await openSettings()
+  await selectSettingsCategory('Appearance')
   const visibleState = readyDesktopPetState({
     revision: 7,
     updatedAt: '2026-10-01T12:07:00.000Z',
@@ -2629,6 +2967,7 @@ test('recovers canonical Desktop Pet state after an update fails', async () => {
 
 test('retries a failed visible Desktop Pet from Settings', async () => {
   await openSettings()
+  await selectSettingsCategory('Appearance')
   await emitDesktopPetState(readyDesktopPetState({
     revision: 9,
     updatedAt: '2026-10-01T12:09:00.000Z',
@@ -2654,6 +2993,7 @@ test('retries a failed visible Desktop Pet from Settings', async () => {
 
 test('keeps optional native notifications off until exact user choices', async () => {
   await openSettings()
+  await selectSettingsCategory('Appearance')
 
   const completion = page.getByRole('combobox', {
     name: 'Reply completion notifications',
@@ -2714,6 +3054,7 @@ test('keeps optional native notifications off until exact user choices', async (
 
 test('recovers canonical notification preferences after an update fails', async () => {
   await openSettings()
+  await selectSettingsCategory('Appearance')
   await emitPresenceNotificationState(presenceNotificationState({
     revision: 7,
     updatedAt: '2026-10-01T12:07:00.000Z',
@@ -2763,6 +3104,7 @@ test('recovers canonical notification preferences after an update fails', async 
 
 test('shows sanitized unsupported notification runtime from Main', async () => {
   await openSettings()
+  await selectSettingsCategory('Appearance')
   await emitPresenceNotificationState(presenceNotificationState({
     runtime: 'unsupported',
     warning: 'System notifications are not supported on this device. Chat, Voice, and Work remain available.',
@@ -2781,6 +3123,7 @@ test('shows sanitized unsupported notification runtime from Main', async () => {
 test('saves exact audio devices and restores them in a replacement window', async () => {
   await installAudioMock()
   await openSettings()
+  await selectSettingsCategory('Voice')
 
   const microphone = page.getByRole('combobox', { name: /^Microphone/ })
   const speaker = page.getByRole('combobox', { name: /^Speaker/ })
@@ -2814,6 +3157,7 @@ test('saves exact audio devices and restores them in a replacement window', asyn
   await persistBackendForReload()
   await replaceRendererWindow()
   await pressControlShortcut(',')
+  await selectSettingsCategory('Voice')
   await expect(page.getByRole('heading', { name: 'Audio devices', exact: true }))
     .toBeVisible()
   await expect(page.getByRole('combobox', { name: /^Microphone/ }))
@@ -2823,9 +3167,45 @@ test('saves exact audio devices and restores them in a replacement window', asyn
   expect((await audioMockStats()).getUserMediaCalls).toHaveLength(0)
 })
 
+test('preserves Backend and audio-device drafts across Settings categories', async () => {
+  await installAudioMock()
+  await openSettings()
+  await clearCalls()
+
+  const origin = page.getByLabel('Ollama origin')
+  await origin.fill('http://127.0.0.1:11435')
+  await selectSettingsCategory('Advanced')
+  const budget = page.getByLabel('Short-term token budget')
+  await budget.fill('0')
+  await selectSettingsCategory('Voice')
+  const microphone = page.getByRole('combobox', { name: /^Microphone/ })
+  await microphone.selectOption('mic-usb')
+  await selectSettingsCategory('Appearance')
+  await selectSettingsCategory('General')
+  await expect(origin).toHaveValue('http://127.0.0.1:11435')
+  await selectSettingsCategory('Voice')
+  await expect(microphone).toHaveValue('mic-usb')
+  await expect(page.getByRole('button', { name: 'Save devices' })).toBeEnabled()
+  await selectSettingsCategory('Data & storage')
+
+  await page.getByRole('button', { name: 'Save changes' }).click()
+  await expect(page.getByRole('navigation', { name: 'Settings categories' })
+    .getByRole('button', { name: 'Advanced', exact: true }))
+    .toHaveAttribute('aria-current', 'page')
+  await expect(budget).toBeFocused()
+  await expect(budget).toHaveValue('0')
+  await expect(budget).toHaveAttribute('aria-invalid', 'true')
+  await selectSettingsCategory('Voice')
+  await expect(microphone).toHaveValue('mic-usb')
+  expect((await getCalls()).filter((call) => (
+    call.method === 'updateSettings' || call.method === 'updateVoiceSettings'
+  ))).toHaveLength(0)
+})
+
 test('keeps an unsaved device draft across a same-revision Backend reload', async () => {
   await installAudioMock()
   await openSettings()
+  await selectSettingsCategory('Voice')
   const microphone = page.getByRole('combobox', { name: /^Microphone/ })
   await microphone.selectOption('mic-usb')
   await expect(page.getByRole('button', { name: 'Save devices' })).toBeEnabled()
@@ -2860,14 +3240,18 @@ test('keeps an unsaved device draft while global Settings finish loading', async
   await expect.poll(() => page.evaluate(() => (
     (window as TestWindow).elysiaDesktopTest.getPendingSettingsLoadCount()
   ))).toBe(1)
+  await selectSettingsCategory('Voice')
   const microphone = page.getByRole('combobox', { name: /^Microphone/ })
   await expect(microphone).toBeEnabled()
   await microphone.selectOption('mic-usb')
 
   expect(await releaseNextSettingsLoad()).toBe(true)
   await setSettingsLoadDelay(false)
-  await expect(page.getByRole('heading', { name: 'General', exact: true }))
-    .toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Model', exact: true, includeHidden: true }))
+    .toHaveCount(1)
+  await expect(page.getByRole('navigation', { name: 'Settings categories' })
+    .getByRole('button', { name: 'Voice', exact: true }))
+    .toHaveAttribute('aria-current', 'page')
   await expect(microphone).toHaveValue('mic-usb')
   await expect(page.getByRole('button', { name: 'Save devices' })).toBeEnabled()
 })
@@ -2876,6 +3260,7 @@ test('reports denied microphone permission without touching real media', async (
   await setMicrophonePermissionStatus('denied')
   await installAudioMock()
   await openSettings()
+  await selectSettingsCategory('Voice')
 
   await expect(page.getByText('Microphone access denied', { exact: true }))
     .toBeVisible()
@@ -2898,6 +3283,7 @@ test('reports denied microphone permission without touching real media', async (
 test('reports a microphone that Windows cannot open because it is busy', async () => {
   await installAudioMock()
   await openSettings()
+  await selectSettingsCategory('Voice')
   await failNextAudioCapture('NotReadableError')
 
   await page.getByRole('button', { name: 'Test microphone' }).click()
@@ -2913,6 +3299,7 @@ test('reports a microphone that Windows cannot open because it is busy', async (
 test('cancels microphone resources while AudioContext resume is pending', async () => {
   await installAudioMock()
   await openSettings()
+  await selectSettingsCategory('Voice')
   await deferNextAudioResume()
 
   await page.getByRole('button', { name: 'Test microphone' }).click()
@@ -2933,6 +3320,7 @@ test('cancels microphone resources while AudioContext resume is pending', async 
 test('cancels speaker resources while output routing is pending', async () => {
   await installAudioMock()
   await openSettings()
+  await selectSettingsCategory('Voice')
   await page.getByRole('combobox', { name: /^Speaker/ })
     .selectOption('speaker-usb')
   await deferNextSinkSelection()
@@ -2962,6 +3350,7 @@ test('keeps missing selections while tests safely follow system defaults', async
   }))
   await installAudioMock()
   await openSettings()
+  await selectSettingsCategory('Voice')
   const beforeChange = (await audioMockStats()).enumerateCalls
 
   await dispatchAudioDeviceChange([
@@ -3021,6 +3410,7 @@ test('keeps missing selections while tests safely follow system defaults', async
 test('reports and releases a microphone that disconnects during its test', async () => {
   await installAudioMock()
   await openSettings()
+  await selectSettingsCategory('Voice')
   await page.getByRole('combobox', { name: /^Microphone/ })
     .selectOption('mic-usb')
   await page.getByRole('button', { name: 'Test microphone' }).click()
@@ -3038,15 +3428,39 @@ test('reports and releases a microphone that disconnects during its test', async
   await expect.poll(async () => (await audioMockStats()).contextsClosed).toBe(1)
 })
 
+test('stops microphone tests when leaving Voice while retaining device drafts', async () => {
+  await installAudioMock()
+  await openSettings()
+  await selectSettingsCategory('Voice')
+  const microphone = page.getByRole('combobox', { name: /^Microphone/ })
+  await microphone.selectOption('mic-usb')
+  await clearCalls()
+  await page.getByRole('button', { name: 'Test microphone' }).click()
+  await expect(page.getByRole('button', { name: 'Stop microphone test' }))
+    .toBeVisible()
+
+  await selectSettingsCategory('Appearance')
+  await expect.poll(async () => (await audioMockStats()).trackStopCount).toBe(1)
+  await expect.poll(async () => (await audioMockStats()).contextsClosed).toBe(1)
+  await selectSettingsCategory('Voice')
+  await expect(microphone).toHaveValue('mic-usb')
+  await expect(page.getByRole('button', { name: 'Save devices' })).toBeEnabled()
+  await expect(page.getByRole('button', { name: 'Test microphone' })).toBeVisible()
+  expect((await getCalls()).filter(
+    (call) => call.method === 'updateVoiceSettings',
+  )).toHaveLength(0)
+})
+
 test('stops microphone tracks and audio contexts when Settings closes', async () => {
   await installAudioMock()
   await openSettings()
+  await selectSettingsCategory('Voice')
   await page.getByRole('button', { name: 'Test microphone' }).click()
   await expect(page.getByRole('button', { name: 'Stop microphone test' }))
     .toBeVisible()
 
   await page.getByRole('button', { name: 'Back to chat' }).click()
-  await expect(page.getByRole('heading', { name: 'Local Conversation' }))
+  await expect(page.locator('.chat-heading h1'))
     .toBeVisible()
   await expect.poll(async () => (await audioMockStats()).trackStopCount).toBe(1)
   await expect.poll(async () => (await audioMockStats()).contextsClosed).toBe(1)
@@ -3103,6 +3517,7 @@ test('does not open Dictate capture after navigation interrupts discovery', asyn
 test('routes one bounded low-volume speaker test without microphone access', async () => {
   await installAudioMock()
   await openSettings()
+  await selectSettingsCategory('Voice')
   await page.getByRole('combobox', { name: /^Speaker/ }).selectOption('speaker-usb')
   await page.getByRole('button', { name: 'Test speaker' }).click()
 
@@ -3159,8 +3574,11 @@ test('disables new Song Covers when the packaged runtime is not included', async
       sourceMode: 'song',
       engine: 'lyrics-svs',
       keyShiftSemitones: 0,
+      shiftAccompaniment: true,
       progressPercent: 100,
       outputAvailable: true,
+      positionSeconds: 0,
+      durationSeconds: 248.294,
       message: 'Song Cover ready',
       errorCode: null,
       error: null,
@@ -3204,12 +3622,20 @@ test('configures Song Cover only after explicit modal confirmation', async () =>
   await trigger.click()
   let dialog = page.getByRole('dialog', { name: 'Create Song Cover' })
   await expect(dialog).toBeVisible()
-  await expect(dialog.getByRole('radio', { name: /Lyrics-driven singing/u }))
+  await expect(dialog.getByRole('radio', { name: /Voice conversion/u }))
     .toBeChecked()
   await expect(dialog.getByRole('radio', { name: /Complete song/u }))
     .toBeChecked()
-  await expect(dialog.getByRole('radio', { name: 'Original key' }))
-    .toBeChecked()
+  const keySelect = dialog.getByRole('slider', {
+    name: 'Song key adjustment',
+  })
+  await expect(keySelect).toHaveCount(1)
+  await expect(keySelect).toHaveValue('0')
+  await expect(dialog.getByRole('checkbox', {
+    name: /Shift accompaniment with vocal/u,
+  })).toBeChecked()
+  await expect(dialog.getByRole('radio', { name: '妖精小姐的魔法邀约', exact: true })).toBeChecked()
+  await dialog.getByRole('radio', { name: /Lyrics-driven singing/u }).check()
   await expect(dialog.getByLabel('Song title')).toBeVisible()
   await expect(dialog.getByLabel('Artist')).toBeVisible()
   await expect(dialog).toContainText(
@@ -3225,15 +3651,21 @@ test('configures Song Cover only after explicit modal confirmation', async () =>
   )).toEqual(['song', 'stems'])
   expect(await dialog.locator('input[name="song-cover-engine"]').evaluateAll(
     (inputs) => inputs.map((input) => (input as HTMLInputElement).value),
-  )).toEqual(['lyrics-svs', 'legacy-svc'])
-  expect(await dialog.locator('input[name="song-cover-key"]').evaluateAll(
-    (inputs) => inputs.map((input) => (input as HTMLInputElement).value),
-  )).toEqual(['0', '-1', '-2', '1', '2'])
+  )).toEqual(['source-svc', 'lyrics-svs', 'legacy-svc'])
+  await expect(keySelect).toHaveAttribute('min', '-12')
+  await expect(keySelect).toHaveAttribute('max', '12')
+  await expect(keySelect).toHaveAttribute('step', '1')
+  await dialog.getByRole('button', { name: 'Lower song key one semitone' }).click()
+  await expect(keySelect).toHaveValue('-1')
+  await dialog.getByRole('button', { name: 'Raise song key one semitone' }).click()
+  await expect(keySelect).toHaveValue('0')
+  await expect(dialog.getByRole('button', { name: 'Reset to original' }))
+    .toBeDisabled()
   expect((await getCalls()).filter(
     (call) => call.method === 'chooseSongCover',
   )).toHaveLength(0)
 
-  await dialog.getByRole('radio', { name: /Legacy voice conversion/u }).check()
+  await dialog.getByRole('radio', { name: /Legacy RVC/u }).check()
   await expect(dialog.getByLabel('Song title')).toHaveCount(0)
   await expect(dialog.getByLabel('Artist')).toHaveCount(0)
   await expect(dialog).toContainText(
@@ -3243,13 +3675,16 @@ test('configures Song Cover only after explicit modal confirmation', async () =>
     'sustained low or high notes may sound hoarse or electronic',
   )
   await expect(dialog).toContainText(
-    'it is a range tradeoff, not an artifact repair',
+    'It is a range tradeoff, not an artifact repair',
   )
   await expect(dialog).toContainText(
     'may soften transients.',
   )
   await dialog.getByRole('radio', { name: /Vocals \+ accompaniment/u }).check()
-  await dialog.getByRole('radio', { name: 'Lower 2' }).check()
+  await keySelect.press('Home')
+  await dialog.getByRole('checkbox', {
+    name: /Shift accompaniment with vocal/u,
+  }).uncheck()
   await dialog.getByRole('button', { name: 'Cancel' }).click()
   await expect(dialog).not.toBeVisible()
   expect((await getCalls()).filter(
@@ -3259,12 +3694,16 @@ test('configures Song Cover only after explicit modal confirmation', async () =>
   await trigger.click()
   dialog = page.getByRole('dialog', { name: 'Create Song Cover' })
   await expect(dialog).toBeVisible()
-  await expect(dialog.getByRole('radio', { name: /Lyrics-driven singing/u }))
+  await expect(dialog.getByRole('radio', { name: /Voice conversion/u }))
     .toBeChecked()
   await expect(dialog.getByRole('radio', { name: /Complete song/u }))
     .toBeChecked()
-  await expect(dialog.getByRole('radio', { name: 'Original key' }))
-    .toBeChecked()
+  await expect(dialog.getByRole('slider', {
+    name: 'Song key adjustment',
+  })).toHaveValue('0')
+  await expect(dialog.getByRole('checkbox', {
+    name: /Shift accompaniment with vocal/u,
+  })).toBeChecked()
   await page.keyboard.press('Escape')
   await expect(dialog).not.toBeVisible()
   expect((await getCalls()).filter(
@@ -3274,7 +3713,13 @@ test('configures Song Cover only after explicit modal confirmation', async () =>
   await trigger.click()
   dialog = page.getByRole('dialog', { name: 'Create Song Cover' })
   await dialog.getByRole('radio', { name: /Vocals \+ accompaniment/u }).check()
-  await dialog.getByRole('radio', { name: 'Raise 2' }).check()
+  await dialog.getByRole('slider', {
+    name: 'Song key adjustment',
+  }).press('End')
+  await dialog.getByRole('checkbox', {
+    name: /Shift accompaniment with vocal/u,
+  }).uncheck()
+  await dialog.getByRole('radio', { name: /Lyrics-driven singing/u }).check()
   await dialog.getByLabel('Song title').fill('告白气球')
   await dialog.getByRole('button', { name: 'Choose audio' }).click()
   await expect(dialog.getByRole('alert')).toContainText(
@@ -3292,7 +3737,9 @@ test('configures Song Cover only after explicit modal confirmation', async () =>
   )).toEqual([{
     engine: 'lyrics-svs',
     sourceMode: 'stems',
-    keyShiftSemitones: 2,
+    keyShiftSemitones: 12,
+    shiftAccompaniment: false,
+    singingReference: null,
     lyricsMetadataOverride: {
       title: '告白气球',
       artist: '周杰伦',
@@ -3302,27 +3749,75 @@ test('configures Song Cover only after explicit modal confirmation', async () =>
   await expect(panel).toContainText('selected-vocals.wav')
   await expect(panel).toContainText('selected-accompaniment.wav')
   await expect(panel).toContainText('Lyrics-driven singing')
-  await expect(panel).toContainText('Raised 2 semitones')
+  await expect(panel).toContainText('Raised 12 semitones')
+  await expect(panel).toContainText('Vocal-only shift')
+
+  await emitSongCoverState({
+    revision: 2,
+    jobId: '00000000-0000-4000-8000-000000000001',
+    stage: 'validating',
+    sourceName: 'selected-vocals.wav',
+    accompanimentName: 'selected-accompaniment.wav',
+    sourceMode: 'stems',
+    engine: 'lyrics-svs',
+    keyShiftSemitones: 12,
+    shiftAccompaniment: true,
+    progressPercent: 5,
+    outputAvailable: false,
+    positionSeconds: 0,
+    durationSeconds: 0,
+    message: 'Reading the selected audio',
+    errorCode: null,
+    error: null,
+  })
+  await expect(panel).toContainText('Vocal + accompaniment shift')
+  await expect(panel).not.toContainText('Vocal-only shift')
+})
+
+test('chooses a singing reference and resets it for the next source cover', async () => {
+  await emitSnapshot(readySnapshot())
+  await clearCalls()
+  const trigger = page.getByRole('button', { name: 'Song Cover', exact: true })
+  await trigger.click()
+  const dialog = page.getByRole('dialog', { name: 'Create Song Cover' })
+  await expect(dialog.getByRole('radio', { name: /Voice conversion/u })).toBeChecked()
+  await expect(dialog.getByLabel('Song title')).toHaveCount(0)
+  await dialog.getByRole('radio', { name: 'Elysia', exact: true }).check()
+  await dialog.getByRole('slider', { name: 'Song key adjustment' }).press('End')
+  await dialog.getByRole('button', { name: 'Choose audio' }).click()
+  await expect.poll(async () => (
+    (await getCalls()).find((call) => call.method === 'chooseSongCover')?.args
+  )).toEqual([{
+    engine: 'source-svc', sourceMode: 'song', keyShiftSemitones: 12,
+    shiftAccompaniment: true, singingReference: 'elysia', lyricsMetadataOverride: null,
+  }])
+  await expect(page.getByRole('region', { name: 'Song Cover' })).toContainText('Voice conversion')
+  await page.getByRole('button', { name: 'Cancel Song Cover' }).click()
+  await trigger.click()
+  await expect(dialog.getByRole('radio', { name: '妖精小姐的魔法邀约', exact: true })).toBeChecked()
+  await expect(dialog.getByRole('slider', { name: 'Song key adjustment' })).toHaveValue('0')
+  await dialog.getByRole('button', { name: 'Cancel' }).click()
 })
 
 test('keeps Song Cover metadata focus and scroll position while typing', async () => {
   await emitSnapshot(readySnapshot())
+  // A compact viewport exercises the scroll recovery even when the redesigned
+  // studio fits without scrolling at the normal desktop window size.
+  await setWindowAndZoom(960, 640, 1.25)
 
   await page.getByRole('button', { name: 'Song Cover' }).click()
   const dialog = page.getByRole('dialog', { name: 'Create Song Cover' })
+  await dialog.getByRole('radio', { name: /Lyrics-driven singing/u }).check()
   const songTitle = dialog.getByLabel('Song title')
   const scrollSurface = dialog.locator('.chat-action-dialog-card')
   await expect(dialog).toBeVisible()
   await songTitle.click()
   await expect(songTitle).toBeFocused()
 
-  const initialScrollTop = await scrollSurface.evaluate((element) => {
-    element.scrollTop = Math.min(
-      120,
-      Math.max(0, element.scrollHeight - element.clientHeight),
-    )
-    return element.scrollTop
-  })
+  // Keep the focused caret visible. Scrolling it out of view would legitimately
+  // make Chromium scroll on typing and would not test dialog focus recovery.
+  await waitForTwoAnimationFrames()
+  const initialScrollTop = await scrollSurface.evaluate((element) => element.scrollTop)
   expect(initialScrollTop).toBeGreaterThan(0)
 
   let expectedTitle = ''
@@ -3336,6 +3831,109 @@ test('keeps Song Cover metadata focus and scroll position while typing', async (
       (element) => element.scrollTop,
     )).toBe(initialScrollTop)
   }
+})
+
+test('offers a fresh vocal arrangement for each Legacy Song Cover', async () => {
+  await emitSnapshot(readySnapshot())
+  await clearCalls()
+  const trigger = page.getByRole('button', { name: 'Song Cover', exact: true })
+  await trigger.click()
+  const dialog = page.getByRole('dialog', { name: 'Create Song Cover' })
+  await dialog.getByRole('radio', { name: /Legacy RVC/u }).check()
+  await expect(dialog.getByRole('radio', { name: /Entire vocal track/u }))
+    .toBeChecked()
+  await dialog.getByRole('radio', { name: /Lead only, keep other singers/u }).check()
+  await expect(dialog.getByRole('radio', { name: /Complete song/u })).toHaveCount(0)
+  await expect(dialog.getByRole('radio', { name: /Isolated lead \+ backing mix/u }))
+    .toBeChecked()
+  await expect(dialog).toContainText('time-aligned backing mix')
+  await expect(dialog).toContainText('with the lead removed')
+  await expect(dialog).toContainText('Shifting the accompaniment also shifts the voices')
+  await dialog.getByRole('button', { name: 'Raise song key one semitone' }).click()
+  await dialog.getByRole('button', { name: 'Reset to original' }).click()
+  await expect(dialog.getByRole('slider', { name: 'Song key adjustment' }))
+    .toHaveValue('0')
+  await dialog.getByRole('button', { name: 'Choose audio' }).click()
+  await expect.poll(async () => (
+    (await getCalls()).find((call) => call.method === 'chooseSongCover')?.args
+  )).toEqual([{
+    engine: 'legacy-svc',
+    sourceMode: 'stems',
+    keyShiftSemitones: 0,
+    shiftAccompaniment: true,
+    singingReference: null,
+    lyricsMetadataOverride: null,
+  }])
+
+  await page.getByRole('button', { name: 'Cancel Song Cover' }).click()
+  await trigger.click()
+  await dialog.getByRole('radio', { name: /Legacy RVC/u }).check()
+  await expect(dialog.getByRole('radio', { name: /Entire vocal track/u }))
+    .toBeChecked()
+  await expect(dialog.getByRole('radio', { name: /Complete song/u })).toBeChecked()
+  await dialog.getByRole('radio', { name: /Lead only, keep other singers/u }).check()
+  await dialog.getByRole('radio', { name: /Lyrics-driven singing/u }).check()
+  await expect(dialog.getByRole('radio', { name: /Lead only, keep other singers/u }))
+    .toHaveCount(0)
+  await dialog.getByRole('radio', { name: /Legacy RVC/u }).check()
+  await expect(dialog.getByRole('radio', { name: /Entire vocal track/u }))
+    .toBeChecked()
+  await dialog.getByRole('button', { name: 'Cancel' }).click()
+})
+
+test('keeps the single Song Cover key selector reachable at high zoom', async () => {
+  await emitSnapshot(readySnapshot())
+  await setWindowAndZoom(960, 640, 2)
+
+  await page.getByRole('button', { name: 'Song Cover' }).click()
+  const dialog = page.getByRole('dialog', { name: 'Create Song Cover' })
+  const card = dialog.locator('.chat-action-dialog-card')
+  const keySelect = dialog.getByRole('slider', {
+    name: 'Song key adjustment',
+  })
+  await keySelect.scrollIntoViewIfNeeded()
+  await expect(keySelect).toBeVisible()
+  await keySelect.press('Home')
+  await expect(keySelect).toHaveValue('-12')
+
+  const containment = await card.evaluate((element) => {
+    const selector = element.querySelector('input[name="song-cover-key"]')
+    if (!(selector instanceof HTMLInputElement)) {
+      throw new Error('Missing Song Cover key slider.')
+    }
+    const cardBounds = element.getBoundingClientRect()
+    const selectorBounds = selector.getBoundingClientRect()
+    return {
+      cardClientWidth: element.clientWidth,
+      cardScrollWidth: element.scrollWidth,
+      cardLeft: cardBounds.left,
+      cardRight: cardBounds.right,
+      selectorLeft: selectorBounds.left,
+      selectorRight: selectorBounds.right,
+    }
+  })
+  expect(containment.cardScrollWidth).toBeLessThanOrEqual(
+    containment.cardClientWidth + 1,
+  )
+  expect(containment.selectorLeft).toBeGreaterThanOrEqual(
+    containment.cardLeft - 1,
+  )
+  expect(containment.selectorRight).toBeLessThanOrEqual(
+    containment.cardRight + 1,
+  )
+
+  const accompanimentShift = dialog.getByRole('checkbox', {
+    name: /Shift accompaniment with vocal/u,
+  })
+  await accompanimentShift.scrollIntoViewIfNeeded()
+  await expect(accompanimentShift).toBeVisible()
+  await expect(accompanimentShift).toBeChecked()
+
+  const chooseAudio = dialog.getByRole('button', { name: 'Choose audio' })
+  await chooseAudio.scrollIntoViewIfNeeded()
+  await expect(chooseAudio).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(dialog).not.toBeVisible()
 })
 
 test('keeps Song Cover and live microphone capture mutually exclusive', async () => {
@@ -3371,8 +3969,11 @@ test('keeps Song Cover and live microphone capture mutually exclusive', async ()
       engine: activeStage.engine,
       sourceMode: 'song',
       keyShiftSemitones: 0,
+      shiftAccompaniment: true,
       progressPercent: 10 + (index * 10),
       outputAvailable: false,
+      positionSeconds: 0,
+      durationSeconds: 0,
       message: `Song Cover stage: ${activeStage.stage}`,
       errorCode: null,
       error: null,
@@ -3392,8 +3993,11 @@ test('keeps Song Cover and live microphone capture mutually exclusive', async ()
     engine: 'lyrics-svs',
     sourceMode: 'song',
     keyShiftSemitones: 0,
+    shiftAccompaniment: true,
     progressPercent: 100,
     outputAvailable: true,
+    positionSeconds: 0,
+    durationSeconds: 248.294,
     message: 'Song Cover ready',
     errorCode: null,
     error: null,
@@ -3406,11 +4010,11 @@ test('keeps Song Cover and live microphone capture mutually exclusive', async ()
   await page.getByRole('button', { name: 'Stop dictation' }).click()
 
   await page.getByRole('button', { name: 'Voice Call' }).click()
-  await expect(page.getByRole('dialog', { name: 'Voice Call' })).toBeVisible()
+  await expect((await getVoiceCallPage()).locator('.voice-call-window')).toBeVisible()
   await expect(page.getByRole('button', { name: 'Song Cover', exact: true }))
     .toBeDisabled()
   await expect(page.getByRole('button', { name: 'Play Song Cover' })).toBeDisabled()
-  await page.getByRole('button', { name: 'Close voice' }).click()
+  await (await getVoiceCallPage()).getByRole('button', { name: 'Close voice' }).click()
 })
 
 test('shows bounded Song Cover progress and replay controls', async () => {
@@ -3421,12 +4025,13 @@ test('shows bounded Song Cover progress and replay controls', async () => {
   const setup = page.getByRole('dialog', { name: 'Create Song Cover' })
   await expect(setup.getByRole('radio', { name: /Complete song/u }))
     .toBeChecked()
-  await expect(setup.getByRole('radio', { name: 'Original key' }))
-    .toBeChecked()
+  await expect(setup.getByRole('slider', {
+    name: 'Song key adjustment',
+  })).toHaveValue('0')
   await setup.getByRole('button', { name: 'Choose audio' }).click()
   const panel = page.getByRole('region', { name: 'Song Cover' })
   await expect(panel).toContainText('selected-song.mp3')
-  await expect(panel).toContainText('Lyrics-driven singing')
+  await expect(panel).toContainText('Voice conversion')
   await expect(panel).toContainText('Original key')
   await expect(panel.getByRole('progressbar', { name: 'Song Cover progress' }))
     .toHaveJSProperty('value', 5)
@@ -3440,8 +4045,11 @@ test('shows bounded Song Cover progress and replay controls', async () => {
     engine: 'lyrics-svs',
     sourceMode: 'song',
     keyShiftSemitones: 0,
+    shiftAccompaniment: true,
     progressPercent: 58,
     outputAvailable: false,
+    positionSeconds: 0,
+    durationSeconds: 0,
     message: 'Singing the verified lyrics with Elysia voice',
     errorCode: null,
     error: null,
@@ -3450,8 +4058,34 @@ test('shows bounded Song Cover progress and replay controls', async () => {
   await expect(panel.getByRole('progressbar', { name: 'Song Cover progress' }))
     .toHaveJSProperty('value', 58)
 
+  for (const [index, progressPercent] of [55, 70, 88].entries()) {
+    await emitSongCoverState({
+      revision: index + 3,
+      jobId,
+      stage: 'converting',
+      sourceName: 'selected-song.mp3',
+      accompanimentName: null,
+      engine: 'source-svc',
+      sourceMode: 'song',
+      keyShiftSemitones: 0,
+      shiftAccompaniment: true,
+      progressPercent,
+      outputAvailable: false,
+      positionSeconds: 0,
+      durationSeconds: 0,
+      message: 'Converting the vocal melody to Elysia',
+      errorCode: null,
+      error: null,
+    })
+    await expect(panel.getByRole('progressbar', { name: 'Song Cover progress' }))
+      .toHaveJSProperty('value', progressPercent)
+    await expect(panel).toContainText(`${progressPercent}%`)
+    await expect(panel).not.toContainText('Working')
+    await expect(panel.getByRole('slider', { name: 'Seek Song Cover' })).toHaveCount(0)
+  }
+
   await emitSongCoverState({
-    revision: 3,
+    revision: 6,
     jobId,
     stage: 'ready',
     sourceName: 'selected-song.mp3',
@@ -3459,16 +4093,19 @@ test('shows bounded Song Cover progress and replay controls', async () => {
     engine: 'lyrics-svs',
     sourceMode: 'song',
     keyShiftSemitones: 0,
+    shiftAccompaniment: true,
     progressPercent: 100,
     outputAvailable: true,
+    positionSeconds: 0,
+    durationSeconds: 248.294,
     message: 'Song Cover ready',
     errorCode: null,
     error: null,
   })
   await panel.getByRole('button', { name: 'Play Song Cover' }).click()
-  await expect(panel).toContainText('Elysia is singing')
+  await expect(panel).toContainText('Now playing')
   await panel.getByRole('button', { name: 'Stop Song Cover' }).click()
-  await expect(panel).toContainText('Song Cover ready')
+  await expect(panel).toContainText('Ready to play')
   await panel.getByRole('button', { name: 'Export Song Cover' }).click()
 
   const calls = await getCalls()
@@ -3479,11 +4116,206 @@ test('shows bounded Song Cover progress and replay controls', async () => {
   expect(methods).toContain('exportSongCover')
   expect(calls.find((call) => call.method === 'chooseSongCover')?.args)
     .toEqual([{
-      engine: 'lyrics-svs',
+      engine: 'source-svc',
       sourceMode: 'song',
       keyShiftSemitones: 0,
+      shiftAccompaniment: true,
+      singingReference: 'fairy',
       lyricsMetadataOverride: null,
     }])
+})
+
+test('seeks a retained Song Cover by keyboard and pointer without restarting playback', async () => {
+  const state = completedSongCoverState()
+  await emitSnapshot(readySnapshot())
+  await emitSongCoverState(state)
+  const panel = page.getByRole('region', { name: 'Song Cover', exact: true })
+  const seek = panel.getByRole('slider', { name: 'Seek Song Cover' })
+  await expect(seek).toHaveValue('42.4')
+  await expect(seek).toHaveAttribute('max', '248.294')
+  await expect(panel).toContainText('0:42')
+  await expect(panel).toContainText('4:08')
+
+  await clearCalls()
+  await seek.press('Home')
+  await expect(seek).toHaveValue('0')
+  await expect.poll(async () => (await getCalls())
+    .filter((call) => call.method === 'seekSongCover').map((call) => call.args))
+    .toEqual([[state.jobId, 0]])
+  await seek.press('ArrowRight')
+  await expect.poll(async () => Number(await seek.inputValue())).toBeGreaterThan(0)
+  const keyboardPosition = Number(await seek.inputValue())
+  expect((await getCalls()).filter((call) => call.method === 'seekSongCover').at(-1)?.args)
+    .toEqual([state.jobId, keyboardPosition])
+  await expect(panel.getByRole('button', { name: 'Play Song Cover' })).toBeVisible()
+
+  await panel.getByRole('button', { name: 'Play Song Cover' }).click()
+  await emitSongCoverState(completedSongCoverState({
+    revision: 20,
+    stage: 'playing',
+    positionSeconds: 65.2,
+    message: 'Elysia is singing',
+  }))
+  await expect(seek).toHaveValue('65.2')
+  await expect(panel).toContainText('1:05')
+  await clearCalls()
+  const bounds = await seek.boundingBox()
+  if (bounds === null) throw new Error('Song Cover seek control is missing.')
+  await page.mouse.move(bounds.x + bounds.width * 0.3, bounds.y + bounds.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(bounds.x + bounds.width * 0.75, bounds.y + bounds.height / 2, { steps: 4 })
+  await page.mouse.up()
+  await expect.poll(async () => Number(await seek.inputValue()))
+    .toBeGreaterThan(state.durationSeconds * 0.7)
+  const pointerPosition = Number(await seek.inputValue())
+  expect(pointerPosition).toBeLessThan(state.durationSeconds * 0.8)
+  expect((await getCalls()).filter((call) => call.method === 'seekSongCover').at(-1)?.args)
+    .toEqual([state.jobId, pointerPosition])
+  await expect(panel.getByRole('button', { name: 'Stop Song Cover' })).toBeVisible()
+  expect((await getCalls()).filter((call) => ['playSongCover', 'stopSongCover']
+    .includes(call.method))).toHaveLength(0)
+
+  await panel.getByRole('button', { name: 'Stop Song Cover' }).click()
+  await expect(seek).toHaveValue(String(pointerPosition))
+  await expect(panel.getByRole('button', { name: 'Play Song Cover' })).toBeVisible()
+})
+
+test('hides ongoing Song Cover work and restores its latest progress without cancelling', async () => {
+  const working = completedSongCoverState({
+    stage: 'converting',
+    progressPercent: 55,
+    outputAvailable: false,
+    positionSeconds: 0,
+    durationSeconds: 0,
+    message: 'Converting the vocal melody to Elysia',
+  })
+  await emitSnapshot(readySnapshot())
+  await emitSongCoverState(working)
+  const panel = page.getByRole('region', { name: 'Song Cover', exact: true })
+  await expect(panel).toContainText('55%')
+  await clearCalls()
+  await panel.getByRole('button', { name: 'Hide Song Cover' }).click()
+  await expect(panel).toHaveCount(0)
+  const reopen = page.getByRole('button', { name: 'Show Song Cover', exact: true })
+  await expect(reopen).toBeEnabled()
+  await expect(reopen).toBeFocused()
+  await emitSongCoverState({ ...working, revision: 11, progressPercent: 70 })
+  await expect(panel).toHaveCount(0)
+  await reopen.press('Enter')
+  await expect(panel).toContainText('retained-cover.mp3')
+  await expect(panel.getByRole('button', { name: 'Hide Song Cover' })).toBeFocused()
+  await expect(panel.getByRole('progressbar', { name: 'Song Cover progress' }))
+    .toHaveJSProperty('value', 70)
+  await expect(page.getByRole('dialog', { name: 'Create Song Cover' })).toHaveCount(0)
+  expect((await getCalls()).filter((call) => [
+    'chooseSongCover', 'cancelSongCover', 'stopSongCover',
+  ].includes(call.method))).toHaveLength(0)
+
+  await panel.getByRole('button', { name: 'Hide Song Cover' }).click()
+  await emitSongCoverState(completedSongCoverState({ revision: 12 }))
+  await expect(panel).toHaveCount(0)
+  await expect(reopen).toBeEnabled()
+  // A new Main-owned job must become visible even if the previous cover was
+  // dismissed, while same-job progress/completion updates must stay hidden.
+  await emitSongCoverState({
+    ...working,
+    revision: 13,
+    jobId: '00000000-0000-4000-8000-000000000002',
+    sourceName: 'next-cover.mp3',
+    progressPercent: 55,
+  })
+  await expect(panel).toContainText('next-cover.mp3')
+  await expect(panel).toContainText('55%')
+})
+
+test('hides and restores ready or playing Song Covers without losing the output or position', async () => {
+  await emitSnapshot(readySnapshot())
+  const panel = page.getByRole('region', { name: 'Song Cover', exact: true })
+  for (const [index, stage] of (['ready', 'playing'] as const).entries()) {
+    await emitSongCoverState(completedSongCoverState({
+      revision: 20 + index,
+      stage,
+      positionSeconds: 123.4,
+      message: stage === 'playing' ? 'Elysia is singing' : 'Song Cover ready',
+    }))
+    await expect(panel.getByRole('slider', { name: 'Seek Song Cover' })).toHaveValue('123.4')
+    await clearCalls()
+    await panel.getByRole('button', { name: 'Hide Song Cover' }).click()
+    await expect(panel).toHaveCount(0)
+    await page.getByRole('button', { name: 'Show Song Cover', exact: true }).click()
+    await expect(panel).toContainText('retained-cover.mp3')
+    await expect(panel.getByRole('slider', { name: 'Seek Song Cover' })).toHaveValue('123.4')
+    await expect(panel).toContainText('2:03')
+    await expect(panel.getByRole('button', { name: 'Export Song Cover' })).toBeEnabled()
+    await expect(panel.getByRole('button', {
+      name: stage === 'playing' ? 'Stop Song Cover' : 'Play Song Cover',
+    })).toBeVisible()
+    expect((await getCalls()).filter((call) => [
+      'chooseSongCover', 'cancelSongCover', 'playSongCover', 'stopSongCover', 'seekSongCover',
+    ].includes(call.method))).toHaveLength(0)
+  }
+  await panel.getByRole('button', { name: 'Export Song Cover' }).click()
+  expect((await getCalls()).find((call) => call.method === 'exportSongCover')?.args)
+    .toEqual(['00000000-0000-4000-8000-000000000001'])
+})
+
+test('keeps Song Cover playback controls readable in light, dark, and narrow windows', async () => {
+  await emitSnapshot(readySnapshot())
+  const panel = page.getByRole('region', { name: 'Song Cover', exact: true })
+  for (const [index, variant] of ([
+    { name: 'dark', width: 1180, height: 780, scheme: 'dark' },
+    { name: 'light', width: 1180, height: 780, scheme: 'light' },
+    { name: 'narrow', width: 390, height: 844, scheme: 'light' },
+  ] as const).entries()) {
+    await emitSongCoverState(completedSongCoverState({
+      revision: 100 + index * 2,
+      positionSeconds: 83.2,
+    }))
+    await setWindowAndZoom(variant.width, variant.height, 1)
+    await page.emulateMedia({ colorScheme: variant.scheme })
+    await expect.poll(() => readThemeState()).toMatchObject({ resolved: variant.scheme })
+    await panel.scrollIntoViewIfNeeded()
+    for (const control of [
+      panel.getByRole('slider', { name: 'Seek Song Cover' }),
+      panel.getByRole('button', { name: 'Hide Song Cover' }),
+      panel.getByRole('button', { name: 'Play Song Cover' }),
+      panel.getByRole('button', { name: 'Export Song Cover' }),
+    ]) await expect(control).toBeVisible()
+    const containment = await panel.evaluate((element) => {
+      const rect = element.getBoundingClientRect()
+      return {
+        width: element.clientWidth,
+        scrollWidth: element.scrollWidth,
+        left: rect.left,
+        right: rect.right,
+        viewport: window.innerWidth,
+      }
+    })
+    expect(containment.scrollWidth).toBeLessThanOrEqual(containment.width + 1)
+    expect(containment.left).toBeGreaterThanOrEqual(-1)
+    expect(containment.right).toBeLessThanOrEqual(containment.viewport + 1)
+    await test.info().attach(`song-cover-player-${variant.name}`, {
+      body: await page.screenshot(),
+      contentType: 'image/png',
+    })
+    await emitSongCoverState(completedSongCoverState({
+      revision: 101 + index * 2,
+      stage: 'converting',
+      progressPercent: 70,
+      positionSeconds: 0,
+      durationSeconds: 0,
+      outputAvailable: false,
+      message: 'Converting the vocal melody to Elysia',
+    }))
+    await expect(panel.getByRole('progressbar', { name: 'Song Cover progress' }))
+      .toHaveJSProperty('value', 70)
+    await expect(panel.getByRole('button', { name: 'Hide Song Cover' })).toBeVisible()
+    await expect(panel.getByRole('button', { name: 'Cancel Song Cover' })).toBeVisible()
+    await test.info().attach(`song-cover-converting-${variant.name}`, {
+      body: await page.screenshot(),
+      contentType: 'image/png',
+    })
+  }
 })
 
 test('maps every closed Song Cover error code to fixed Renderer guidance', async () => {
@@ -3525,8 +4357,11 @@ test('maps every closed Song Cover error code to fixed Renderer guidance', async
       sourceMode: 'song',
       engine: 'lyrics-svs',
       keyShiftSemitones: 0,
+      shiftAccompaniment: true,
       progressPercent: 0,
       outputAvailable: false,
+      positionSeconds: 0,
+      durationSeconds: 0,
       message: null,
       errorCode,
       error: 'PRIVATE NATIVE DIAGNOSTIC D:/secret/audio.wav',
@@ -3538,19 +4373,24 @@ test('maps every closed Song Cover error code to fixed Renderer guidance', async
   }
 })
 
-test('opens Voice Call as a modal, listens immediately, and shows two icon controls', async () => {
+test('opens Voice Call in a separate native window and shows two icon controls', async () => {
   await installAudioMock()
   await openVoiceCapturePage()
 
-  const dialog = page.getByRole('dialog', { name: 'Voice Call' })
-  const controls = dialog.locator('.call-controls')
+  const dialog = (await getVoiceCallPage()).locator('.voice-call-window')
+  const controls = dialog.locator('.voice-call-controls')
   await expect(dialog).toBeVisible()
-  await expect(dialog.locator('.character-artwork')).toBeVisible()
+  await expect(dialog.locator('.voice-call-background')).toBeVisible()
+  await expect(dialog.locator('.call-state')).toHaveCount(0)
+  await expect(page.getByRole('dialog', { name: 'Voice Call' })).toHaveCount(0)
+  await page.getByLabel('Message Elysia').fill('Chat remains available during a call')
+  await expect(page.getByLabel('Message Elysia'))
+    .toHaveValue('Chat remains available during a call')
   await expect(controls.getByRole('button')).toHaveCount(2)
   await expect(controls.getByRole('button', { name: 'Mute' }))
     .toHaveAttribute('title', 'Mute')
   await expect(controls.getByRole('button', { name: 'Close voice' }))
-    .toHaveAttribute('title', 'Close voice')
+    .toHaveAttribute('title', 'End call')
   await expect(dialog.getByRole('button', { name: 'Start microphone' }))
     .toHaveCount(0)
   await expect(dialog.getByRole('button', { name: 'Send transcript' }))
@@ -3560,47 +4400,390 @@ test('opens Voice Call as a modal, listens immediately, and shows two icon contr
   await expect(dialog.getByRole('button', { name: 'Audio settings' }))
     .toHaveCount(0)
   await expect(dialog.getByRole('button', { name: 'Captions' })).toHaveCount(0)
-  const controlLayout = await controls.getByRole('button').evaluateAll(
-    (buttons) => buttons.map((button) => {
-      const icon = button.querySelector('svg')
-      if (!(button instanceof HTMLElement) || !(icon instanceof SVGElement)) {
-        throw new Error('Voice Call controls must contain one SVG icon.')
+  for (const button of await controls.getByRole('button').all()) {
+    await expect(button.locator('svg')).toHaveCount(1)
+    await expect(button.locator('svg')).toBeVisible()
+    const bounds = await button.boundingBox()
+    expect(bounds?.width).toBeGreaterThanOrEqual(44)
+    expect(bounds?.height).toBeGreaterThanOrEqual(44)
+    const iconBounds = await button.locator('.voice-call-control-icon').boundingBox()
+    expect(iconBounds?.width).toBeGreaterThanOrEqual(42)
+    expect(iconBounds?.width).toBeLessThanOrEqual(44.5)
+  }
+  const dragRegions = await dialog.evaluate((element) => {
+    const region = (selector: string): string => {
+      const target = element.querySelector(selector)
+      if (!(target instanceof HTMLElement)) {
+        throw new Error(`Missing call drag region: ${selector}`)
       }
-      const style = window.getComputedStyle(button)
-      const buttonRect = button.getBoundingClientRect()
-      const iconRect = icon.getBoundingClientRect()
-      return {
-        childCount: button.children.length,
-        columnCount: style.gridTemplateColumns
-          .trim()
-          .split(/\s+/u)
-          .filter(Boolean)
-          .length,
-        columnGap: style.columnGap,
-        display: style.display,
-        horizontalOffset: Math.abs(
-          iconRect.left + iconRect.width / 2
-          - (buttonRect.left + buttonRect.width / 2),
-        ),
-        verticalOffset: Math.abs(
-          iconRect.top + iconRect.height / 2
-          - (buttonRect.top + buttonRect.height / 2),
-        ),
-      }
-    }),
-  )
-  for (const layout of controlLayout) {
-    expect(layout.display).toBe('grid')
-    expect(layout.childCount).toBe(1)
-    expect(layout.columnCount).toBe(1)
-    expect(layout.columnGap).toBe('0px')
-    expect(layout.horizontalOffset).toBeLessThan(1)
-    expect(layout.verticalOffset).toBeLessThan(1)
+      const style = window.getComputedStyle(target)
+      return style.getPropertyValue('app-region')
+        || style.getPropertyValue('-webkit-app-region')
+    }
+    const frame = element.getBoundingClientRect()
+    const backgroundDrag = element.querySelector('.voice-call-drag-surface')!
+      .getBoundingClientRect()
+    return {
+      header: region('.voice-call-header'),
+      background: region('.voice-call-drag-surface'),
+      controls: region('.voice-call-controls'),
+      edgeInsets: [
+        backgroundDrag.left - frame.left,
+        backgroundDrag.top - frame.top,
+        frame.right - backgroundDrag.right,
+        frame.bottom - backgroundDrag.bottom,
+      ],
+    }
+  })
+  expect(dragRegions.header).toBe('drag')
+  expect(dragRegions.background).toBe('drag')
+  expect(dragRegions.controls).toBe('no-drag')
+  // Leave the native resize edges outside drag rectangles so resizing remains
+  // available after removing the title bar, including at the compact size.
+  for (const edgeInset of dragRegions.edgeInsets) {
+    expect(edgeInset).toBeGreaterThanOrEqual(6)
   }
   expect((await audioMockStats()).getUserMediaCalls).toEqual([{
     audio: { channelCount: { ideal: 1 } },
     video: false,
   }])
+})
+
+test('moves and resizes the native Voice Call independently of the main window', async () => {
+  await installAudioMock()
+  await openVoiceCapturePage()
+  const mainBounds = await electronApp?.evaluate(({ BrowserWindow }) => (
+    BrowserWindow.getAllWindows().find((window) => (
+      window.webContents.getURL().endsWith('/index.html')
+    ))?.getBounds()
+  ))
+  const nativeProperties = await electronApp?.evaluate(({ BrowserWindow }) => {
+    const voiceWindow = BrowserWindow.getAllWindows().find((window) => (
+      window.webContents.getURL().endsWith('/voice-call.html')
+    ))
+    if (voiceWindow === undefined) {
+      throw new Error('The native Voice window is missing.')
+    }
+    const initial = voiceWindow.getBounds()
+    const initialContent = voiceWindow.getContentBounds()
+    voiceWindow.setPosition(initial.x + 35, initial.y + 25)
+    voiceWindow.setSize(700, 480)
+    return {
+      parentId: voiceWindow.getParentWindow()?.id ?? null,
+      movable: voiceWindow.isMovable(),
+      resizable: voiceWindow.isResizable(),
+      minimum: voiceWindow.getMinimumSize(),
+      initial,
+      initialContent,
+      moved: voiceWindow.getBounds(),
+    }
+  })
+  expect(nativeProperties?.parentId).toBeNull()
+  expect(nativeProperties?.movable).toBe(true)
+  expect(nativeProperties?.resizable).toBe(true)
+  expect(nativeProperties?.minimum).toEqual([320, 360])
+  expect(Math.abs((nativeProperties?.initialContent.width ?? 0) - 360))
+    .toBeLessThanOrEqual(6)
+  expect(Math.abs((nativeProperties?.initialContent.height ?? 0) - 610))
+    .toBeLessThanOrEqual(6)
+  expect((nativeProperties?.initialContent.width ?? 0)
+    / (nativeProperties?.initialContent.height ?? 1))
+    .toBeCloseTo(360 / 610, 2)
+  // A frameless window has no native caption strip above its content. Allow
+  // Windows' thin native resize boundary and fractional-DPI rounding only.
+  expect(Math.abs((nativeProperties?.initialContent.y ?? 0)
+    - (nativeProperties?.initial.y ?? 0))).toBeLessThanOrEqual(4)
+  expect(nativeProperties?.moved.x).not.toBe(nativeProperties?.initial.x)
+  expect(nativeProperties?.moved.y).not.toBe(nativeProperties?.initial.y)
+  // Windows can round native bounds by a couple of DIPs at fractional scaling.
+  expect(Math.abs((nativeProperties?.moved.width ?? 0) - 700)).toBeLessThanOrEqual(2)
+  expect(Math.abs((nativeProperties?.moved.height ?? 0) - 480)).toBeLessThanOrEqual(2)
+  expect(await electronApp?.evaluate(({ BrowserWindow }) => (
+    BrowserWindow.getAllWindows().find((window) => (
+      window.webContents.getURL().endsWith('/index.html')
+    ))?.getBounds()
+  ))).toEqual(mainBounds)
+
+  await electronApp?.evaluate(({ BrowserWindow }) => {
+    BrowserWindow.getAllWindows().find((window) => (
+      window.webContents.getURL().endsWith('/index.html')
+    ))?.minimize()
+  })
+  await expect.poll(() => electronApp?.evaluate(({ BrowserWindow }) => (
+    BrowserWindow.getAllWindows().find((window) => (
+      window.webContents.getURL().endsWith('/index.html')
+    ))?.isMinimized()
+  ))).toBe(true)
+  expect(await electronApp?.evaluate(({ BrowserWindow }) => (
+    BrowserWindow.getAllWindows().find((window) => (
+      window.webContents.getURL().endsWith('/voice-call.html')
+    ))?.isVisible()
+  ))).toBe(true)
+  const audioBeforeMinimize = await audioMockStats()
+  await emitAudioFrames(0, 3)
+  const audioWhileMinimized = await audioMockStats()
+  expect(audioWhileMinimized.audioProcessCalls)
+    .toBe(audioBeforeMinimize.audioProcessCalls + 3)
+  expect(audioWhileMinimized.trackStopCount).toBe(0)
+  await electronApp?.evaluate(({ BrowserWindow }) => {
+    BrowserWindow.getAllWindows().find((window) => (
+      window.webContents.getURL().endsWith('/index.html')
+    ))?.restore()
+  })
+
+  await electronApp?.evaluate(({ BrowserWindow }) => {
+    BrowserWindow.getAllWindows().find((window) => (
+      window.webContents.getURL().endsWith('/voice-call.html')
+    ))?.setSize(320, 360)
+  })
+  const voicePage = await getVoiceCallPage()
+  for (const button of await voicePage.getByRole('button').all()) {
+    await expect(button).toBeVisible()
+    const bounds = await button.boundingBox()
+    expect(bounds?.width).toBeGreaterThanOrEqual(44)
+    expect(bounds?.height).toBeGreaterThanOrEqual(44)
+  }
+  const layout = await voicePage.evaluate(() => ({
+    width: document.documentElement.clientWidth,
+    height: document.documentElement.clientHeight,
+    scrollWidth: document.documentElement.scrollWidth,
+    scrollHeight: document.documentElement.scrollHeight,
+  }))
+  expect(layout.scrollWidth).toBeLessThanOrEqual(layout.width)
+  expect(layout.scrollHeight).toBeLessThanOrEqual(layout.height)
+})
+
+test('dims the packaged call artwork and centers its face in compact windows', async () => {
+  await installAudioMock()
+  await openVoiceCapturePage()
+  const voicePage = await getVoiceCallPage()
+  const background = voicePage.locator('.voice-call-background')
+  await expect.poll(() => background.evaluate((element) => {
+    const image = element as HTMLImageElement
+    return image.complete && image.naturalWidth > 0
+  })).toBe(true)
+  const presentation = await background.evaluate((element) => ({
+    source: (element as HTMLImageElement).currentSrc,
+    filter: window.getComputedStyle(element).filter,
+    decorative: element.getAttribute('aria-hidden'),
+    scrim: window.getComputedStyle(
+      document.querySelector('.voice-call-scrim') as Element,
+    ).backgroundImage,
+  }))
+  expect(presentation.source).toContain('/voice/voice-call-background.webp')
+  expect(presentation.decorative).toBe('true')
+  const brightness = Number(presentation.filter.match(/brightness\(([\d.]+)\)/u)?.[1])
+  expect(brightness).toBeGreaterThan(0)
+  expect(brightness).toBeLessThan(1)
+  expect(presentation.scrim).toContain('gradient')
+  await expect(voicePage.locator('.voice-call-scrim')).toBeVisible()
+
+  for (const size of [{ width: 320, height: 360 }, { width: 520, height: 680 }]) {
+    await electronApp?.evaluate(({ BrowserWindow }, bounds) => {
+      BrowserWindow.getAllWindows().find((window) => (
+        window.webContents.getURL().endsWith('/voice-call.html')
+      ))?.setSize(bounds.width, bounds.height)
+    }, size)
+    // These normalized coordinates are measured in the user's original image,
+    // so the assertion verifies the displayed face rather than the crop formula.
+    await expect.poll(() => voicePage.evaluate(() => {
+      const scene = document.querySelector('.voice-call-window')
+      const image = document.querySelector('.voice-call-background')
+      if (!(scene instanceof HTMLElement) || !(image instanceof HTMLImageElement)) {
+        throw new Error('The call background is missing.')
+      }
+      const frame = scene.getBoundingClientRect()
+      const picture = image.getBoundingClientRect()
+      return {
+        centered: Math.abs(picture.left + picture.width * 0.63 - (frame.left + frame.width / 2)) < 2
+          && Math.abs(picture.top + picture.height * 0.46 - (frame.top + frame.height / 2)) < 2,
+        covered: picture.left <= frame.left + 1
+          && picture.top <= frame.top + 1
+          && picture.right >= frame.right - 1
+          && picture.bottom >= frame.bottom - 1,
+      }
+    })).toMatchObject({
+      centered: true,
+      covered: true,
+    })
+    const face = await voicePage.evaluate(() => {
+      const frame = document.querySelector('.voice-call-window')!.getBoundingClientRect()
+      const picture = document.querySelector('.voice-call-background')!.getBoundingClientRect()
+      return {
+        x: Math.abs(picture.left + picture.width * 0.63 - (frame.left + frame.width / 2)),
+        y: Math.abs(picture.top + picture.height * 0.46 - (frame.top + frame.height / 2)),
+      }
+    })
+    expect(face.x).toBeLessThan(2)
+    expect(face.y).toBeLessThan(2)
+  }
+  await background.evaluate((element) => {
+    ;(element as HTMLImageElement).src = './character/elysia-portrait.png'
+  })
+  await expect.poll(() => background.evaluate((element) => (
+    (element as HTMLImageElement).complete
+    && (element as HTMLImageElement).naturalWidth > 0
+  ))).toBe(true)
+  expect(await background.evaluate((element) => (
+    window.getComputedStyle(element).filter
+  ))).toBe(presentation.filter)
+  await expect(voicePage.locator('.voice-call-scrim')).toBeVisible()
+})
+
+test('keeps the Voice child bridge restricted and reuses the active native call', async () => {
+  await installAudioMock()
+  await openVoiceCapturePage()
+  const voicePage = await getVoiceCallPage()
+  const bridge = await voicePage.evaluate(() => {
+    const childWindow = window as unknown as Record<string, unknown>
+    return {
+      desktop: 'elysiaDesktop' in childWindow,
+      testControl: 'elysiaDesktopTest' in childWindow,
+      node: 'require' in childWindow,
+      keys: Object.keys(childWindow.elysiaVoiceCall as object).sort(),
+    }
+  })
+  expect(bridge).toEqual({
+    desktop: false,
+    testControl: false,
+    node: false,
+    keys: ['end', 'getState', 'onState', 'setMuted'],
+  })
+  const windowId = await electronApp?.evaluate(({ BrowserWindow }) => (
+    BrowserWindow.getAllWindows().find((window) => (
+      window.webContents.getURL().endsWith('/voice-call.html')
+    ))?.id
+  ))
+  await electronApp?.evaluate(({ BrowserWindow }) => {
+    BrowserWindow.getAllWindows().find((window) => (
+      window.webContents.getURL().endsWith('/voice-call.html')
+    ))?.minimize()
+  })
+  await expect.poll(() => electronApp?.evaluate(({ BrowserWindow }) => (
+    BrowserWindow.getAllWindows().find((window) => (
+      window.webContents.getURL().endsWith('/voice-call.html')
+    ))?.isMinimized()
+  ))).toBe(true)
+  await page.getByRole('button', { name: 'Voice Call' }).click()
+  await expect.poll(() => electronApp?.evaluate(({ BrowserWindow }) => (
+    BrowserWindow.getAllWindows().find((window) => (
+      window.webContents.getURL().endsWith('/voice-call.html')
+    ))?.isMinimized()
+  ))).toBe(false)
+  expect(await electronApp?.evaluate(({ BrowserWindow }) => (
+    BrowserWindow.getAllWindows().find((window) => (
+      window.webContents.getURL().endsWith('/voice-call.html')
+    ))?.isVisible()
+  ))).toBe(true)
+  await page.getByRole('button', { name: 'Voice Call' }).click()
+  await page.evaluate(async () => {
+    const state = (window as TestWindow).elysiaDesktopTest
+      .getLatestVoiceCallState()
+    const desktop = (window as unknown as {
+      elysiaDesktop: {
+        openVoiceCallWindow(state: VoiceCallWindowState): Promise<void>
+      }
+    }).elysiaDesktop
+    if (state === null) {
+      throw new Error('The main renderer has no active Voice state.')
+    }
+    await desktop.openVoiceCallWindow(state)
+    await desktop.openVoiceCallWindow(state)
+  })
+  expect(electronApp?.windows().filter((window) => (
+    !window.isClosed() && window.url().endsWith('/voice-call.html')
+  ))).toHaveLength(1)
+  expect(await electronApp?.evaluate(({ BrowserWindow }) => (
+    BrowserWindow.getAllWindows().find((window) => (
+      window.webContents.getURL().endsWith('/voice-call.html')
+    ))?.id
+  ))).toBe(windowId)
+  await expectVoiceCallState({ microphoneMuted: false })
+  expect((await audioMockStats()).getUserMediaCalls).toHaveLength(1)
+
+  const currentState = await voicePage.evaluate(() => (
+    (window as VoiceTestWindow).elysiaVoiceCall.getState()
+  ))
+  expect(currentState).not.toBeNull()
+  const staleIdentity = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+  const rejectedAction = await voicePage.evaluate(async (callId) => {
+    try {
+      await (window as VoiceTestWindow).elysiaVoiceCall.setMuted(callId, true)
+      return false
+    } catch {
+      return true
+    }
+  }, staleIdentity)
+  expect(rejectedAction).toBe(true)
+  await page.evaluate(async ({ state, staleCallId }) => {
+    const api = (window as unknown as {
+      elysiaDesktop: {
+        updateVoiceCallWindow(state: VoiceCallWindowState): Promise<void>
+      }
+    }).elysiaDesktop
+    if (state === null) {
+      throw new Error('The active native call state is missing.')
+    }
+    await api.updateVoiceCallWindow({ ...state, microphoneMuted: true })
+    await api.updateVoiceCallWindow({
+      ...state,
+      callId: staleCallId,
+      revision: state.revision + 1,
+      microphoneMuted: true,
+    })
+    await api.updateVoiceCallWindow(state)
+  }, { state: currentState, staleCallId: staleIdentity })
+  expect(await voicePage.evaluate(() => (
+    (window as VoiceTestWindow).elysiaVoiceCall.getState()
+  ))).toEqual(currentState)
+  expect((await audioMockStats()).trackStopCount).toBe(0)
+})
+
+test('closing the native Voice window hangs up and permits a fresh call', async () => {
+  await installAudioMock()
+  await openVoiceCapturePage()
+  const firstCallId = await page.evaluate(() => (
+    (window as TestWindow).elysiaDesktopTest.getLatestVoiceCallState()?.callId
+  ))
+  await electronApp?.evaluate(({ BrowserWindow }) => {
+    BrowserWindow.getAllWindows().find((window) => (
+      window.webContents.getURL().endsWith('/voice-call.html')
+    ))?.close()
+  })
+  await expectVoiceCallClosed()
+  await expect.poll(async () => (await audioMockStats()).trackStopCount).toBe(1)
+  await expect.poll(async () => (await audioMockStats()).contextsClosed).toBe(1)
+  await openVoiceCapturePage()
+  await expect.poll(() => page.evaluate(() => (
+    (window as TestWindow).elysiaDesktopTest.getLatestVoiceCallState()?.callId
+  ))).not.toBe(firstCallId)
+  expect((await audioMockStats()).getUserMediaCalls).toHaveLength(2)
+})
+
+test('reloading the main renderer disposes its native Voice child', async () => {
+  await installAudioMock()
+  await openVoiceCapturePage()
+  await persistBackendForReload()
+  await page.reload()
+  await page.waitForFunction(() => (
+    'elysiaDesktopTest' in window
+    && (window as TestWindow).elysiaDesktopTest.getCalls()
+      .some((call) => call.method === 'onBackendEvent.subscribe')
+  ))
+  await expectVoiceCallClosed()
+  await expect(page.getByLabel('Message Elysia')).toBeEnabled()
+  await expect(page.getByRole('button', { name: 'Voice Call' })).toBeEnabled()
+})
+
+test('main renderer loss disposes its native Voice child', async () => {
+  await installAudioMock()
+  await openVoiceCapturePage()
+  await electronApp?.evaluate(({ BrowserWindow }) => {
+    BrowserWindow.getAllWindows().find((window) => (
+      window.webContents.getURL().endsWith('/index.html')
+    ))?.webContents.forcefullyCrashRenderer()
+  })
+  await expectVoiceCallClosed()
 })
 
 test('retries an initial retryable Voice Call microphone-open failure', async () => {
@@ -3609,12 +4792,8 @@ test('retries an initial retryable Voice Call microphone-open failure', async ()
 
   await openVoiceCapturePage()
 
-  const dialog = page.getByRole('dialog', { name: 'Voice Call' })
-  await expect(dialog.locator('.call-state')).toHaveText('Listening for speech')
-  await expect(dialog.getByText(
-    'The microphone could not be opened. Another application may be using it. Retrying the microphone (1/2). Listening resumed.',
-    { exact: true },
-  )).toBeVisible()
+  await expectVoiceCallState({ characterState: 'listening' })
+  await expectVoiceCallNotice('The microphone could not be opened. Another application may be using it. Retrying the microphone (1/2). Listening resumed.')
   await expect.poll(async () => (await audioMockStats()).getUserMediaCalls.length)
     .toBe(2)
 })
@@ -3636,16 +4815,14 @@ test('caps consecutive Voice Call microphone-open recovery at two retries', asyn
   }))
 
   await page.getByRole('button', { name: 'Voice Call' }).click()
-  const dialog = page.getByRole('dialog', { name: 'Voice Call' })
+  const dialog = (await getVoiceCallPage()).locator('.voice-call-window')
   await expect(dialog).toBeVisible()
   await expect.poll(
     async () => (await audioMockStats()).getUserMediaCalls.length,
     { timeout: 5_000 },
   ).toBe(3)
-  await expect(dialog.locator('.call-state')).toHaveText('Voice action failed')
-  await expect(dialog.locator('.call-status-description')).toHaveText(
-    'The microphone could not be opened. Another application may be using it.',
-  )
+  await expectVoiceCallState({ characterState: 'error' })
+  await expectVoiceCallNotice('The microphone could not be opened. Another application may be using it.')
 
   await page.waitForTimeout(1_700)
   expect((await audioMockStats()).getUserMediaCalls).toHaveLength(3)
@@ -3654,24 +4831,23 @@ test('caps consecutive Voice Call microphone-open recovery at two retries', asyn
 test('does not reset microphone recovery budget after a brief waiting state', async () => {
   await installAudioMock()
   await openVoiceCapturePage()
-  const dialog = page.getByRole('dialog', { name: 'Voice Call' })
 
   expect(await endLatestAudioTrack()).toBe(true)
   await expect.poll(
     async () => (await audioMockStats()).getUserMediaCalls.length,
     { timeout: 3_000 },
   ).toBe(2)
-  await expect(dialog.locator('.call-state')).toHaveText('Listening for speech')
+  await expectVoiceCallState({ characterState: 'listening' })
 
   expect(await endLatestAudioTrack()).toBe(true)
   await expect.poll(
     async () => (await audioMockStats()).getUserMediaCalls.length,
     { timeout: 3_000 },
   ).toBe(3)
-  await expect(dialog.locator('.call-state')).toHaveText('Listening for speech')
+  await expectVoiceCallState({ characterState: 'listening' })
 
   expect(await endLatestAudioTrack()).toBe(true)
-  await expect(dialog.locator('.call-state')).toHaveText('Microphone unavailable')
+  await expectVoiceCallState({ characterState: 'error' })
   await page.waitForTimeout(1_700)
   expect((await audioMockStats()).getUserMediaCalls).toHaveLength(3)
 })
@@ -3679,19 +4855,19 @@ test('does not reset microphone recovery budget after a brief waiting state', as
 test('mute releases Voice Call capture and unmute resumes continuous listening', async () => {
   await installAudioMock()
   await openVoiceCapturePage()
-  const dialog = page.getByRole('dialog', { name: 'Voice Call' })
+  const dialog = (await getVoiceCallPage()).locator('.voice-call-window')
 
   await dialog.getByRole('button', { name: 'Mute' }).click()
   await expect(dialog.getByRole('button', { name: 'Unmute' }))
     .toHaveAttribute('aria-pressed', 'true')
-  await expect(dialog.locator('.call-state')).toHaveText('Microphone muted')
+  await expectVoiceCallState({ characterState: 'idle' })
   await expect.poll(async () => (await audioMockStats()).trackStopCount).toBe(1)
   await expect.poll(async () => (await audioMockStats()).contextsClosed).toBe(1)
 
   await dialog.getByRole('button', { name: 'Unmute' }).click()
   await expect(dialog.getByRole('button', { name: 'Mute' }))
     .toHaveAttribute('aria-pressed', 'false')
-  await expect(dialog.locator('.call-state')).toHaveText('Listening for speech')
+  await expectVoiceCallState({ characterState: 'listening' })
   await expect.poll(async () => (await audioMockStats()).getUserMediaCalls.length)
     .toBe(2)
 })
@@ -3711,7 +4887,7 @@ test('Voice Call auto-sends one final local transcript without consuming the typ
   const composer = page.getByLabel('Message Elysia')
   await composer.fill('Keep this typed draft')
   await page.getByRole('button', { name: 'Voice Call' }).click()
-  await expect(page.getByRole('dialog', { name: 'Voice Call' })).toBeVisible()
+  await expect((await getVoiceCallPage()).locator('.voice-call-window')).toBeVisible()
   await clearCalls()
 
   await completeVoiceCallUtterance('Send this complete voice turn')
@@ -3730,7 +4906,7 @@ test('Voice Call auto-sends one final local transcript without consuming the typ
   await expect(composer).toHaveValue('Keep this typed draft')
   await expect(page.getByRole('textbox', { name: 'Final transcript' }))
     .toHaveCount(0)
-  await expect(page.getByRole('dialog', { name: 'Voice Call' }))
+  await expect((await getVoiceCallPage()).locator('.voice-call-window'))
     .toBeVisible()
 })
 
@@ -3747,18 +4923,14 @@ test('recovers fresh listening after automatic Voice Call send rejects', async (
     ],
   }))
   await page.getByRole('button', { name: 'Voice Call' }).click()
-  await expect(page.getByRole('dialog', { name: 'Voice Call' })).toBeVisible()
+  await expect((await getVoiceCallPage()).locator('.voice-call-window')).toBeVisible()
   await failNextSend('Synthetic Voice Chat dispatch failure.')
   await clearCalls()
 
   await completeVoiceCallUtterance('Preserve this failed voice turn')
 
-  const dialog = page.getByRole('dialog', { name: 'Voice Call' })
-  await expect(dialog.locator('.call-state')).toHaveText('Listening for speech')
-  await expect(dialog.getByText(
-    'The transcript was not sent and was restored to the message draft. Listening resumed.',
-    { exact: true },
-  )).toBeVisible()
+  await expectVoiceCallState({ characterState: 'listening' })
+  await expectVoiceCallNotice('The transcript was not sent and was restored to the message draft. Listening resumed.')
   await expect(page.getByLabel('Message Elysia'))
     .toHaveValue('Preserve this failed voice turn')
   await expect.poll(async () => (await audioMockStats()).getUserMediaCalls.length)
@@ -3801,7 +4973,7 @@ test('retains a rejected final Voice transcript while muted and retries it on un
   const composer = page.getByLabel('Message Elysia')
   await composer.fill('Keep original draft')
   await page.getByRole('button', { name: 'Voice Call' }).click()
-  const dialog = page.getByRole('dialog', { name: 'Voice Call' })
+  const dialog = (await getVoiceCallPage()).locator('.voice-call-window')
   await expect(dialog).toBeVisible()
   await clearCalls()
 
@@ -3816,11 +4988,8 @@ test('retains a rejected final Voice transcript while muted and retries it on un
     control.setChatActionDelay(false)
   })
 
-  await expect(dialog.locator('.call-state')).toHaveText('Voice action failed')
-  await expect(dialog.locator('.call-status-description')).toHaveText(
-    'The transcript was not sent and was restored to the message draft.',
-  )
-  await expect(dialog.locator('.call-status-description')).toBeVisible()
+  await expectVoiceCallState({ characterState: 'error' })
+  await expectVoiceCallNotice('The transcript was not sent and was restored to the message draft.')
   await expect(composer).toHaveValue(
     'Retry exact transcript\n\nKeep original draft',
   )
@@ -3839,7 +5008,7 @@ test('retains a rejected final Voice transcript while muted and retries it on un
     const drafts = raw === null ? {} : JSON.parse(raw)
     return drafts['chat-test'] ?? null
   })).toBe('Keep original draft')
-  await expect(dialog.locator('.call-state')).toHaveText('Elysia is thinking')
+  await expectVoiceCallState({ characterState: 'thinking' })
 })
 
 test('automatically starts fresh listening after a retryable STT error', async () => {
@@ -3857,12 +5026,8 @@ test('automatically starts fresh listening after a retryable STT error', async (
   ))).toBe(1)
   expect(await releaseNextVoiceTranscription()).toBe(true)
 
-  const dialog = page.getByRole('dialog', { name: 'Voice Call' })
-  await expect(dialog.locator('.call-state')).toHaveText('Listening for speech')
-  await expect(dialog.getByText(
-    'Synthetic retryable STT failure. Listening resumed.',
-    { exact: true },
-  )).toBeVisible()
+  await expectVoiceCallState({ characterState: 'listening' })
+  await expectVoiceCallNotice('Synthetic retryable STT failure. Listening resumed.')
   await expect.poll(async () => (await audioMockStats()).getUserMediaCalls.length)
     .toBe(2)
   expect((await audioMockStats()).getUserMediaCalls.at(-1)).toEqual({
@@ -3892,32 +5057,24 @@ test('does not claim listening resumed when STT recovery cannot open the microph
   await failNextAudioCapture('NotReadableError')
   expect(await releaseNextVoiceTranscription()).toBe(true)
 
-  const dialog = page.getByRole('dialog', { name: 'Voice Call' })
-  await expect(dialog.locator('.call-state')).toHaveText('Voice action failed')
-  await expect(dialog.locator('.call-status-description')).toHaveText(
-    'The microphone could not be opened. Another application may be using it.',
-  )
-  await expect(dialog.getByText(
-    'Synthetic retryable STT failure. Listening resumed.',
-    { exact: true },
-  )).toHaveCount(0)
+  await expectVoiceCallState({ characterState: 'error' })
+  await expectVoiceCallNotice('The microphone could not be opened. Another application may be using it.')
+  await expect.poll(() => page.evaluate(() => (
+    (window as TestWindow).elysiaDesktopTest.getLatestVoiceCallState()?.warning
+  ))).not.toBe('Synthetic retryable STT failure. Listening resumed.')
 
   await expect.poll(
     async () => (await audioMockStats()).getUserMediaCalls.length,
     { timeout: 3_000 },
   ).toBe(3)
-  await expect(dialog.locator('.call-state')).toHaveText('Listening for speech')
-  await expect(dialog.getByText(
-    'The microphone could not be opened. Another application may be using it. Retrying the microphone (1/2). Listening resumed.',
-    { exact: true },
-  )).toBeVisible()
-  await expect(dialog.getByText(
-    'Synthetic retryable STT failure. Listening resumed.',
-    { exact: true },
-  )).toHaveCount(0)
+  await expectVoiceCallState({ characterState: 'listening' })
+  await expectVoiceCallNotice('The microphone could not be opened. Another application may be using it. Retrying the microphone (1/2). Listening resumed.')
+  await expect.poll(() => page.evaluate(() => (
+    (window as TestWindow).elysiaDesktopTest.getLatestVoiceCallState()?.warning
+  ))).not.toBe('Synthetic retryable STT failure. Listening resumed.')
 })
 
-test('Dictate appends final local words to the draft without sending Chat', async () => {
+test('Dictate appends local words and keeps listening without sending Chat', async () => {
   await installAudioMock()
   await emitSnapshot(readySnapshot({
     capabilities: [
@@ -3937,9 +5094,7 @@ test('Dictate appends final local words to the draft without sending Chat', asyn
   })
   await clearCalls()
 
-  await page.getByRole('button', { name: 'Dictate' }).click()
-  await expect(page.getByRole('button', { name: 'Stop dictation' }))
-    .toHaveAttribute('aria-pressed', 'true')
+  await openDictationCapture()
   await emitSpeechFrames(0.08, 10)
   await emitAudioFrames(0, 30)
   await expect.poll(() => page.evaluate(() => (
@@ -3949,17 +5104,16 @@ test('Dictate appends final local words to the draft without sending Chat', asyn
   expect(await releaseNextVoiceTranscription()).toBe(true)
 
   await expect(composer).toHaveValue('Existing words dictated locally')
-  await expect(page.getByRole('button', { name: 'Dictate' }))
-    .toHaveAttribute('aria-pressed', 'false')
+  await expectDictationListening()
   expect((await getCalls()).some((call) => call.method === 'sendMessage'))
     .toBe(false)
-  await expect(page.getByText(
-    'Dictation added to your message.',
-    { exact: true },
-  )).toBeVisible()
+  await page.getByRole('button', { name: 'Stop dictation' }).click()
+  await expect(page.getByRole('button', { name: 'Dictate' })).toBeEnabled()
+  await expect.poll(async () => (await audioMockStats()).trackStopCount).toBe(1)
+  await expect.poll(async () => (await audioMockStats()).contextsClosed).toBe(1)
 })
 
-test('stopping Dictate discards temporary audio without changing the draft', async () => {
+test('stopping silent Dictate leaves the draft unchanged', async () => {
   await installAudioMock()
   await emitSnapshot(readySnapshot({
     capabilities: [
@@ -3976,6 +5130,10 @@ test('stopping Dictate discards temporary audio without changing the draft', asy
   const dictate = page.getByRole('button', { name: 'Dictate' })
   await dictate.focus()
   await dictate.click()
+  await expect.poll(async () => {
+    const stats = await audioMockStats()
+    return stats.processorsCreated - stats.contextsClosed
+  }).toBeGreaterThan(0)
   await page.getByRole('button', { name: 'Stop dictation' }).click()
   await page.getByRole('button', { name: 'Voice Call' }).focus()
 
@@ -3984,6 +5142,229 @@ test('stopping Dictate discards temporary audio without changing the draft', asy
   expect((await getCalls()).some(
     (call) => call.method === 'beginVoiceTranscription',
   )).toBe(false)
+  expect((await getCalls()).some((call) => call.method === 'sendMessage'))
+    .toBe(false)
+})
+
+test('Dictate remains active through more than ten seconds of silence', async () => {
+  await installAudioMock()
+  await page.clock.install()
+  await openDictationCapture()
+  await clearCalls()
+
+  // Advance both deadline time and incoming PCM: either of the former one-shot
+  // idle limits would end capture if continuous Dictate reused that behavior.
+  await page.clock.fastForward(11_000)
+  await emitAudioFrames(0, 550)
+  await expectDictationListening()
+  expect((await getCalls()).some(
+    (call) => call.method === 'beginVoiceTranscription',
+  )).toBe(false)
+  await page.getByRole('button', { name: 'Stop dictation' }).click()
+  await expect(page.getByRole('button', { name: 'Dictate' })).toBeEnabled()
+  await expect.poll(async () => (await audioMockStats()).trackStopCount).toBe(1)
+})
+
+test('Dictate retains one microphone across pauses and drains ordered text after Stop', async () => {
+  await installAudioMock()
+  await prepareDictationBackend()
+  const composer = page.getByLabel('Message Elysia')
+  await composer.fill('Initial draft')
+  await setVoiceTranscriptionDelay(true)
+  await setNextVoiceTranscriptionResult({
+    text: 'first phrase', language: 'en', languageProbability: 0.99,
+  })
+  await openDictationCapture()
+  await clearCalls()
+
+  await emitSpeechFrames(0.08, 10)
+  await emitAudioFrames(0, 30)
+  await expect.poll(() => page.evaluate(() => (
+    (window as TestWindow).elysiaDesktopTest.getPendingVoiceTranscriptionCount()
+  ))).toBe(1)
+  await emitAudioFrames(0, 550)
+  await expectDictationListening()
+  await emitSpeechFrames(0.08, 10)
+  await emitAudioFrames(0, 30)
+  await expectDictationListening()
+  expect((await getCalls()).filter(
+    (call) => call.method === 'beginVoiceTranscription',
+  )).toHaveLength(1)
+  await expect(composer).toHaveValue('Initial draft')
+
+  await setNextVoiceTranscriptionResult({
+    text: 'second phrase', language: 'en', languageProbability: 0.99,
+  })
+  expect(await releaseNextVoiceTranscription()).toBe(true)
+  await expect(composer).toHaveValue('Initial draft first phrase')
+  await expect.poll(async () => (await getCalls()).filter(
+    (call) => call.method === 'beginVoiceTranscription',
+  ).length).toBe(2)
+  await expectDictationListening()
+
+  await page.getByRole('button', { name: 'Stop dictation' }).click()
+  await expect.poll(async () => (await audioMockStats()).trackStopCount).toBe(1)
+  await expect.poll(async () => (await audioMockStats()).contextsClosed).toBe(1)
+  await expect(page.getByRole('button', { name: 'Dictate' })).toBeDisabled()
+  expect(await releaseNextVoiceTranscription()).toBe(true)
+  await expect(composer).toHaveValue('Initial draft first phrase second phrase')
+  await expect(page.getByRole('button', { name: 'Dictate' })).toBeEnabled()
+  expect((await getCalls()).some((call) => call.method === 'sendMessage'))
+    .toBe(false)
+})
+
+test('Dictate keeps recording beyond thirty seconds while each STT segment stays bounded', async () => {
+  await installAudioMock()
+  await page.clock.install()
+  await setVoiceTranscriptionDelay(true)
+  await setNextVoiceTranscriptionResult({
+    text: 'long first part', language: 'en', languageProbability: 0.99,
+  })
+  await openDictationCapture()
+  await clearCalls()
+  await emitSpeechFrames(0.08, 1_600)
+  await page.clock.fastForward(31_000)
+  await expectDictationListening()
+  await expect.poll(async () => (await getCalls()).filter(
+    (call) => call.method === 'beginVoiceTranscription',
+  ).length).toBe(1)
+  await page.getByRole('button', { name: 'Stop dictation' }).click()
+  await expect.poll(async () => (await audioMockStats()).trackStopCount).toBe(1)
+  await expect(page.getByRole('button', { name: 'Dictate' })).toBeDisabled()
+
+  await setNextVoiceTranscriptionResult({
+    text: 'last part', language: 'en', languageProbability: 0.99,
+  })
+  expect(await releaseNextVoiceTranscription()).toBe(true)
+  await expect.poll(async () => (await getCalls()).filter(
+    (call) => call.method === 'beginVoiceTranscription',
+  ).length).toBe(2)
+  expect(await releaseNextVoiceTranscription()).toBe(true)
+  await expect(page.getByLabel('Message Elysia'))
+    .toHaveValue('long first part last part')
+  await expect(page.getByRole('button', { name: 'Dictate' })).toBeEnabled()
+  const segments = (await getCalls()).filter(
+    (call) => call.method === 'beginVoiceTranscription',
+  )
+  for (const segment of segments) {
+    const request = segment.args[0] as { sampleCount: number }
+    expect(request.sampleCount).toBeGreaterThan(0)
+    expect(request.sampleCount).toBeLessThanOrEqual(480_000)
+  }
+  expect((await getCalls()).some((call) => call.method === 'sendMessage'))
+    .toBe(false)
+})
+
+test('Stop dictation flushes final speech into a durable draft without sending Chat', async () => {
+  await installAudioMock()
+  await prepareDictationBackend()
+  const composer = page.getByLabel('Message Elysia')
+  await composer.fill('Protected draft')
+  await setVoiceTranscriptionDelay(true)
+  await setNextVoiceTranscriptionResult({
+    text: 'final spoken words', language: 'en', languageProbability: 0.99,
+  })
+  await openDictationCapture()
+  await clearCalls()
+  await emitSpeechFrames(0.08, 10)
+  // Stop while speech is still in progress, before VAD can finish a pause.
+  await page.getByRole('button', { name: 'Stop dictation' }).click()
+  await expect.poll(() => page.evaluate(() => (
+    (window as TestWindow).elysiaDesktopTest.getPendingVoiceTranscriptionCount()
+  ))).toBe(1)
+  await expect.poll(async () => (await audioMockStats()).trackStopCount).toBe(1)
+  await expect.poll(async () => (await audioMockStats()).contextsClosed).toBe(1)
+  await expect(page.getByRole('button', { name: 'Dictate' })).toBeDisabled()
+  await expect(composer).toHaveValue('Protected draft')
+  expect(await releaseNextVoiceTranscription()).toBe(true)
+  await expect(composer).toHaveValue('Protected draft final spoken words')
+  await expect(page.getByRole('button', { name: 'Dictate' })).toBeEnabled()
+  expect((await getCalls()).some((call) => call.method === 'sendMessage'))
+    .toBe(false)
+  await expect.poll(() => page.evaluate(() => {
+    const raw = window.localStorage.getItem('elysia.chat-drafts.v1')
+    return raw === null ? null : JSON.parse(raw)['chat-test']
+  })).toBe('Protected draft final spoken words')
+  await persistBackendForReload()
+  await page.reload()
+  await expect(page.getByLabel('Message Elysia'))
+    .toHaveValue('Protected draft final spoken words')
+})
+
+test('continuous dictation keeps Work and mode controls locked until final transcription drains', async () => {
+  await installAudioMock()
+  await emitSnapshot(readySnapshot({ capabilities: [
+    ...readySnapshot().capabilities, 'voice.settings', 'voice.capture', 'voice.transcription',
+  ] }))
+  const mode = page.getByRole('combobox', { name: 'Conversation mode' })
+  await mode.selectOption('work')
+  await page.evaluate(() => {
+    ;(window as TestWindow).elysiaDesktopTest.setSelectedWorkspace('D:\\work-dictation')
+  })
+  await page.getByRole('button', { name: 'Choose Workspace' }).click()
+  await page.getByRole('button', { name: 'Add to plan' }).click()
+  await setVoiceTranscriptionDelay(true)
+  await setNextVoiceTranscriptionResult({ text: 'final Work draft', language: 'en', languageProbability: 0.99 })
+  await page.getByRole('button', { name: 'Dictate' }).click()
+  await expect(page.getByRole('button', { name: 'Stop dictation' })).toHaveAttribute('aria-pressed', 'true')
+  await expect(mode).toBeDisabled()
+  await expect(page.getByRole('button', { name: 'Run tool', exact: true })).toBeDisabled()
+  await expect(page.getByRole('button', { name: 'Create plan', exact: true })).toBeDisabled()
+  await emitSpeechFrames(0.08, 10)
+  await page.getByRole('button', { name: 'Stop dictation' }).click()
+  await expect.poll(() => page.evaluate(() => (
+    (window as TestWindow).elysiaDesktopTest.getPendingVoiceTranscriptionCount()
+  ))).toBe(1)
+  await expect(page.getByRole('button', { name: 'Dictate' })).toBeDisabled()
+  await expect(mode).toBeDisabled()
+  await expect(page.getByRole('button', { name: 'Run tool', exact: true })).toBeDisabled()
+  await expect(page.getByRole('button', { name: 'Create plan', exact: true })).toBeDisabled()
+  expect(await releaseNextVoiceTranscription()).toBe(true)
+  await expect(page.getByLabel('Message Elysia')).toHaveValue('final Work draft')
+  await expect(mode).toBeEnabled()
+  await expect(page.getByRole('button', { name: 'Run tool', exact: true })).toBeEnabled()
+  await expect(page.getByRole('button', { name: 'Create plan', exact: true })).toBeEnabled()
+})
+
+test('Chat navigation cancels unfinished Dictate STT and preserves earlier accepted words', async () => {
+  const source = chatSummary('chat-test', 'Source dictation')
+  const destination = chatSummary('chat-dictation-destination', 'Destination dictation')
+  await setChatState({
+    activeChat: { ...source, messages: [] },
+    chats: [source, destination],
+  })
+  await installAudioMock()
+  await prepareDictationBackend()
+  await page.getByLabel('Message Elysia').fill('Keep source draft')
+  await setNextVoiceTranscriptionResult({
+    text: 'accepted earlier', language: 'en', languageProbability: 0.99,
+  })
+  await openDictationCapture()
+  await emitSpeechFrames(0.08, 10)
+  await emitAudioFrames(0, 30)
+  await expect(page.getByLabel('Message Elysia'))
+    .toHaveValue('Keep source draft accepted earlier')
+  await setVoiceTranscriptionDelay(true)
+  await setNextVoiceTranscriptionResult({
+    text: 'late words must be discarded', language: 'en', languageProbability: 0.99,
+  })
+  await clearCalls()
+  await emitSpeechFrames(0.08, 10)
+  await page.getByRole('button', { name: 'Stop dictation' }).click()
+  await expect.poll(() => page.evaluate(() => (
+    (window as TestWindow).elysiaDesktopTest.getPendingVoiceTranscriptionCount()
+  ))).toBe(1)
+  await page.getByRole('button', { name: 'Open chat Destination dictation' }).click()
+  await expect(page.locator('#chat-title')).toHaveText('Destination dictation')
+  await expect.poll(async () => (await getCalls()).filter(
+    (call) => call.method === 'stopVoiceTranscription',
+  ).length).toBe(1)
+  expect(await releaseNextVoiceTranscription()).toBe(true)
+  await waitForTwoAnimationFrames()
+  await expect(page.getByLabel('Message Elysia')).toHaveValue('')
+  await page.getByRole('button', { name: 'Open chat Source dictation' }).click()
+  await expect(page.getByLabel('Message Elysia'))
+    .toHaveValue('Keep source draft accepted earlier')
   expect((await getCalls()).some((call) => call.method === 'sendMessage'))
     .toBe(false)
 })
@@ -4025,11 +5406,10 @@ test('closing Voice Call cancels pending STT and rejects its late terminal', asy
   await clearCalls()
   await emitSpeechFrames(0.08, 10)
   await emitAudioFrames(0, 30)
-  await expect(page.getByText('Transcribing locally', { exact: true }))
-    .toBeVisible()
+  await expectVoiceCallState({ characterState: 'thinking' })
 
-  await page.getByRole('button', { name: 'Close voice' }).click()
-  await expect(page.getByRole('dialog', { name: 'Voice Call' })).toHaveCount(0)
+  await (await getVoiceCallPage()).getByRole('button', { name: 'Close voice' }).click()
+  await expectVoiceCallClosed()
   await expect.poll(async () => (
     (await getCalls()).filter(
       (call) => call.method === 'stopVoiceTranscription',
@@ -4067,10 +5447,9 @@ test('switching Chat after closing Voice Call rejects the old pending STT owner'
   await clearCalls()
   await emitSpeechFrames(0.08, 10)
   await emitAudioFrames(0, 30)
-  await expect(page.getByText('Transcribing locally', { exact: true }))
-    .toBeVisible()
+  await expectVoiceCallState({ characterState: 'thinking' })
 
-  await page.keyboard.press('Escape')
+  await closeVoiceCallWithEscape()
   await page.getByRole('button', { name: 'Open chat Destination Chat' }).click()
   await expect(page.locator('#chat-title')).toHaveText('Destination Chat')
   await expect.poll(async () => (
@@ -4089,13 +5468,13 @@ test('switching Chat after closing Voice Call rejects the old pending STT owner'
 test('unmute resumes verified interruption monitoring during a Voice reply', async () => {
   await installAudioMock()
   await openVoiceWithFinalTranscript('Keep thinking while I test mute')
-  const dialog = page.getByRole('dialog', { name: 'Voice Call' })
-  await expect(dialog.locator('.call-state')).toHaveText('Elysia is thinking')
+  const dialog = (await getVoiceCallPage()).locator('.voice-call-window')
+  await expectVoiceCallState({ characterState: 'thinking' })
   await expect.poll(async () => (await audioMockStats()).getUserMediaCalls.length)
     .toBe(2)
 
   await dialog.getByRole('button', { name: 'Mute' }).click()
-  await expect(dialog.locator('.call-state')).toHaveText('Elysia is thinking')
+  await expectVoiceCallState({ characterState: 'thinking' })
   await expect.poll(async () => (await audioMockStats()).trackStopCount).toBe(2)
 
   await dialog.getByRole('button', { name: 'Unmute' }).click()
@@ -4127,7 +5506,7 @@ test('holds pre-acknowledgement barge-in PCM for the exact Chat terminal', async
   await clearCalls()
 
   await emitSpeechFrames(0.08, 10)
-  await expect(page.locator('.call-state')).toHaveText('Interrupting Elysia')
+  await expectVoiceCallState({ characterState: 'listening' })
   expect((await getCalls()).some((call) => call.method === 'stopGeneration'))
     .toBe(false)
   await emitAudioFrames(0, 30)
@@ -4174,6 +5553,54 @@ test('holds pre-acknowledgement barge-in PCM for the exact Chat terminal', async
   )).toBe(1)
 })
 
+test('keeps interruption completion warnings out of visible call chrome', async () => {
+  await installAudioMock()
+  await openVoiceWithFinalTranscript('Keep the complete reply if cancellation loses')
+  await expect.poll(async () => {
+    const stats = await audioMockStats()
+    return stats.processorsCreated - stats.contextsClosed
+  }).toBeGreaterThan(0)
+  await clearCalls()
+
+  await emitSpeechFrames(0.08, 10)
+  await expect.poll(async () => (
+    (await getCalls()).find((call) => call.method === 'stopGeneration')?.args
+  )).toEqual(['test-request-1'])
+  // Leave the new utterance in progress while the old reply wins cancellation;
+  // this isolates the exact process message shown in the user's screenshot.
+  const completedReply = 'The complete reply survived the cancellation race.'
+  await emitEvent({
+    type: 'chat-complete',
+    requestId: 'test-request-1',
+    chatId: 'chat-test',
+    reply: completedReply,
+  })
+  const warning = 'The previous reply finished before cancellation won. Its complete text was kept; keep speaking for your next message.'
+  await expectVoiceCallNotice(warning)
+  await expect(page.getByText(completedReply, { exact: true })).toBeVisible()
+
+  const voicePage = await getVoiceCallPage()
+  const processNotice = voicePage.locator('.voice-call-process-notice')
+  await expect(processNotice).toHaveText(warning)
+  const hiddenPresentation = await processNotice.evaluate((element) => {
+    const style = window.getComputedStyle(element)
+    const bounds = element.getBoundingClientRect()
+    return {
+      position: style.position,
+      clipped: style.clipPath.includes('50%') || style.clip === 'rect(0px, 0px, 0px, 0px)',
+      width: bounds.width,
+      height: bounds.height,
+    }
+  })
+  expect(hiddenPresentation.position).toBe('absolute')
+  expect(hiddenPresentation.clipped).toBe(true)
+  expect(hiddenPresentation.width).toBeLessThanOrEqual(1)
+  expect(hiddenPresentation.height).toBeLessThanOrEqual(1)
+  await expect(voicePage.locator('.voice-call-notices')).toHaveCount(0)
+  await expect(voicePage.getByRole('button', { name: 'Mute' })).toBeEnabled()
+  await expect(voicePage.getByRole('button', { name: 'Close voice' })).toBeEnabled()
+})
+
 test('hangup wipes held interruption PCM before a late cancelled terminal', async () => {
   await installAudioMock()
   await openVoiceWithFinalTranscript('Interrupt this reply and hang up')
@@ -4185,13 +5612,13 @@ test('hangup wipes held interruption PCM before a late cancelled terminal', asyn
   await clearCalls()
 
   await emitSpeechFrames(0.08, 10)
-  await expect(page.locator('.call-state')).toHaveText('Interrupting Elysia')
+  await expectVoiceCallState({ characterState: 'listening' })
   await emitAudioFrames(0, 30)
   expect((await getCalls()).some(
     (call) => call.method === 'beginVoiceTranscription',
   )).toBe(false)
 
-  await page.getByRole('button', { name: 'Close voice' }).click()
+  await (await getVoiceCallPage()).getByRole('button', { name: 'Close voice' }).click()
   await emitEvent({
     type: 'chat-error',
     requestId: 'test-request-1',
@@ -4229,7 +5656,7 @@ test('automatically listens again only after the exact Voice reply completes', a
     state: 'completed',
   })
 
-  await expect(page.locator('.call-state')).toHaveText('Listening for speech')
+  await expectVoiceCallState({ characterState: 'listening' })
   await expect.poll(async () => (await audioMockStats()).getUserMediaCalls.length)
     .toBe(3)
 })
@@ -4250,8 +5677,7 @@ for (const terminal of [
     await installAudioMock()
     const transcript = `Recover after ${terminal.label} Chat`
     await openVoiceWithFinalTranscript(transcript)
-    const dialog = page.getByRole('dialog', { name: 'Voice Call' })
-    await expect(dialog.locator('.call-state')).toHaveText('Elysia is thinking')
+      await expectVoiceCallState({ characterState: 'thinking' })
     await expect.poll(async () => (
       await audioMockStats()
     ).getUserMediaCalls.length).toBe(2)
@@ -4265,11 +5691,8 @@ for (const terminal of [
       retryable: false,
     })
 
-    await expect(dialog.locator('.call-state')).toHaveText('Listening for speech')
-    await expect(dialog.getByText(
-      'The previous Voice reply did not finish. Its transcript was restored to the message draft when possible. Listening resumed.',
-      { exact: true },
-    )).toBeVisible()
+    await expectVoiceCallState({ characterState: 'listening' })
+    await expectVoiceCallNotice('The previous Voice reply did not finish. Its transcript was restored to the message draft when possible. Listening resumed.')
     await expect(page.getByLabel('Message Elysia')).toHaveValue(transcript)
     await expect.poll(async () => (
       await audioMockStats()
@@ -4284,8 +5707,7 @@ for (const terminal of [
 test('resumes fresh listening when Voice speech playback is cancelled', async () => {
   await installAudioMock()
   await openVoiceWithFinalTranscript('Recover after cancelled playback')
-  const dialog = page.getByRole('dialog', { name: 'Voice Call' })
-  await expect(dialog.locator('.call-state')).toHaveText('Elysia is thinking')
+  await expectVoiceCallState({ characterState: 'thinking' })
   await expect.poll(async () => (
     await audioMockStats()
   ).getUserMediaCalls.length).toBe(2)
@@ -4304,11 +5726,8 @@ test('resumes fresh listening when Voice speech playback is cancelled', async ()
     state: 'cancelled',
   })
 
-  await expect(dialog.locator('.call-state')).toHaveText('Listening for speech')
-  await expect(dialog.getByText(
-    'Speech playback ended early. Listening resumed.',
-    { exact: true },
-  )).toBeVisible()
+  await expectVoiceCallState({ characterState: 'listening' })
+  await expectVoiceCallNotice('Speech playback ended early. Listening resumed.')
   await expect.poll(async () => (
     await audioMockStats()
   ).getUserMediaCalls.length).toBe(3)
@@ -4325,13 +5744,13 @@ test('Voice Call silence has no idle deadline but voiced input stays bounded', a
   await clearCalls()
 
   await emitAudioFrames(0, 525)
-  await expect(page.locator('.call-state')).toHaveText('Listening for speech')
+  await expectVoiceCallState({ characterState: 'listening' })
   expect((await getCalls()).some(
     (call) => call.method === 'beginVoiceTranscription',
   )).toBe(false)
 
   await emitSpeechFrames(0.08, 1_500)
-  await expect(page.locator('.call-state')).toHaveText('Transcribing locally')
+  await expectVoiceCallState({ characterState: 'thinking' })
   const captureCall = (await getCalls()).find(
     (call) => call.method === 'beginVoiceTranscription',
   )
@@ -4349,14 +5768,14 @@ test('Escape and microphone disconnect both release active Voice Call capture', 
   await installAudioMock()
   await openVoiceCapturePage()
 
-  await page.keyboard.press('Escape')
-  await expect(page.getByRole('dialog', { name: 'Voice Call' })).toHaveCount(0)
+  await closeVoiceCallWithEscape()
+  await expectVoiceCallClosed()
   await expect.poll(async () => (await audioMockStats()).trackStopCount).toBe(1)
   await expect.poll(async () => (await audioMockStats()).contextsClosed).toBe(1)
 
   await openVoiceCapturePage()
   expect(await endLatestAudioTrack()).toBe(true)
-  await expect(page.locator('.call-state')).toHaveText('Microphone unavailable')
+  await expectVoiceCallState({ characterState: 'error' })
   await expect.poll(async () => (await audioMockStats()).trackStopCount).toBe(2)
   await expect.poll(async () => (await audioMockStats()).contextsClosed).toBe(2)
 })
@@ -4392,9 +5811,12 @@ test('saves exact global Settings and restarts the Backend to apply them', async
   await page.getByLabel('Ollama origin').fill(
     `${expectedSettings.ollamaHost}/`,
   )
+  await selectSettingsCategory('Advanced')
   await page.getByLabel('Short-term token budget').fill('4096')
   await page.getByLabel('Retrieved memories per turn').fill('8')
+  await selectSettingsCategory('Data & storage')
   await page.getByLabel('Maximum import size (bytes)').fill('33554432')
+  await selectSettingsCategory('Voice')
   await page.getByLabel('Speech model').selectOption(
     expectedSettings.transcriptionModel,
   )
@@ -4453,6 +5875,7 @@ test('saves exact global Settings and restarts the Backend to apply them', async
 test('applies live speech behavior choices without requiring a restart', async () => {
   await setSettingsState(desktopSettingsState({ revision: 11 }))
   await openSettings()
+  await selectSettingsCategory('Voice')
   await clearCalls()
 
   await page.getByLabel('Speak Voice Call replies').selectOption('false')
@@ -4479,7 +5902,11 @@ test('applies live speech behavior choices without requiring a restart', async (
   await expect(page.locator('.inline-alert').filter({
     hasText: 'Backend restart required',
   })).toHaveCount(0)
-  await expect(page.getByText('Global settings are up to date')).toBeVisible()
+  await expect(page.locator('.settings-save-bar')).toHaveCount(0)
+  await expect(page.locator('.settings-category-panel:visible')
+    .locator('.settings-category-heading')).toHaveText('Voice')
+  await expect(page.locator('.settings-category-panel:visible')
+    .locator('.settings-category-heading')).toBeFocused()
 })
 
 test('discards a Settings draft without persisting it', async () => {
@@ -4490,14 +5917,18 @@ test('discards a Settings draft without persisting it', async () => {
   const origin = page.getByLabel('Ollama origin')
   const budget = page.getByLabel('Short-term token budget')
   await origin.fill('http://127.0.0.1:11434')
+  await selectSettingsCategory('Advanced')
   await budget.fill('3072')
   await expect(page.getByText('Unsaved global changes')).toBeVisible()
   await page.getByRole('button', { name: 'Discard', exact: true }).click()
 
   await expect(origin).toHaveValue('http://localhost:11434')
   await expect(budget).toHaveValue('2048')
-  await expect(page.getByRole('button', { name: 'Save changes' }))
-    .toBeDisabled()
+  await expect(page.locator('.settings-save-bar')).toHaveCount(0)
+  await expect(page.locator('.settings-category-panel:visible')
+    .locator('.settings-category-heading')).toHaveText('Advanced')
+  await expect(page.locator('.settings-category-panel:visible')
+    .locator('.settings-category-heading')).toBeFocused()
   expect((await getCalls()).filter(
     (call) => call.method === 'updateSettings',
   )).toHaveLength(0)
@@ -4508,34 +5939,32 @@ test('blocks invalid Settings before they reach the Desktop API', async () => {
   await openSettings()
   await clearCalls()
 
-  const origin = page.getByLabel('Ollama origin')
-  const budget = page.getByLabel('Short-term token budget')
+  const invalidFields = [
+    ['General', 'Ollama origin', 'ftp://localhost:11434', 'http://localhost:11434'],
+    ['Advanced', 'Short-term token budget', '0', '2048'],
+    ['Data & storage', 'Maximum import size (bytes)', '0', '16777216'],
+    ['Voice', 'Speech rate (%)', '49', '100'],
+    ['Voice', 'Voice profile', '../voice', 'default'],
+    ['Voice', 'Speech volume (%)', '101', '100'],
+  ] as const
   const save = page.getByRole('button', { name: 'Save changes' })
-  await origin.fill('ftp://localhost:11434')
-  await expect(save).toBeDisabled()
-  expect((await getCalls()).filter(
-    (call) => call.method === 'updateSettings',
-  )).toHaveLength(0)
-
-  await origin.fill('http://localhost:11434')
-  await budget.fill('0')
-  await expect(save).toBeDisabled()
-  expect((await getCalls()).filter(
-    (call) => call.method === 'updateSettings',
-  )).toHaveLength(0)
-
-  await budget.fill('2048')
-  await page.getByLabel('Speech rate (%)').fill('49')
-  await expect(save).toBeDisabled()
-  await page.getByLabel('Speech rate (%)').fill('100')
-  await page.getByLabel('Voice profile').fill('../voice')
-  await expect(save).toBeDisabled()
-  await page.getByLabel('Voice profile').fill('default')
-  await page.getByLabel('Speech volume (%)').fill('101')
-  await expect(save).toBeDisabled()
-  expect((await getCalls()).filter(
-    (call) => call.method === 'updateSettings',
-  )).toHaveLength(0)
+  for (const [category, label, invalidValue, validValue] of invalidFields) {
+    await selectSettingsCategory(category)
+    const field = page.getByLabel(label)
+    await field.fill(invalidValue)
+    await expect(field).toHaveAttribute('aria-invalid', 'true')
+    await selectSettingsCategory('Appearance')
+    await expect(save).toBeEnabled()
+    await save.click()
+    await expect(page.getByRole('navigation', { name: 'Settings categories' })
+      .getByRole('button', { name: category, exact: true }))
+      .toHaveAttribute('aria-current', 'page')
+    await expect(field).toBeFocused()
+    expect((await getCalls()).filter(
+      (call) => call.method === 'updateSettings',
+    )).toHaveLength(0)
+    await field.fill(validValue)
+  }
 })
 
 test('keeps an unsaved Settings draft after persistence fails', async () => {
@@ -4642,6 +6071,7 @@ test('blocks restart for a dirty draft and locks Backend fields while restarting
     name: 'Restart Backend',
   })
   const retrievalLimit = page.getByLabel('Retrieved memories per turn')
+  await selectSettingsCategory('Advanced')
   await retrievalLimit.fill('6')
   await expect(restartButton).toBeDisabled()
   await expect(restartAlert).toContainText(
@@ -4660,6 +6090,7 @@ test('blocks restart for a dirty draft and locks Backend fields while restarting
   await expect.poll(() => backendFields.evaluateAll((inputs) => (
     inputs.every((input) => (input as HTMLInputElement).disabled)
   ))).toBe(true)
+  await selectSettingsCategory('Appearance')
   await expect(page.getByRole('radio', { name: /^System/ })).toBeEnabled()
 
   expect(await releaseNextRestart()).toBe(true)
@@ -4690,6 +6121,7 @@ test('locks Backend fields while Settings reload without disabling Appearance', 
   await expect.poll(() => backendFields.evaluateAll((inputs) => (
     inputs.every((input) => (input as HTMLInputElement).disabled)
   ))).toBe(true)
+  await selectSettingsCategory('Appearance')
   await expect(page.getByRole('radio', { name: /^System/ })).toBeEnabled()
 
   expect(await releaseNextSettingsLoad()).toBe(true)
@@ -4815,6 +6247,7 @@ test('keeps Settings save controls reachable at compact high zoom', async () => 
   await setWindowAndZoom(960, 640, 2)
 
   const retrievalLimit = page.getByLabel('Retrieved memories per turn')
+  await selectSettingsCategory('Advanced')
   await retrievalLimit.fill('6')
   const save = page.getByRole('button', { name: 'Save changes' })
   await save.scrollIntoViewIfNeeded()
@@ -5041,7 +6474,7 @@ test('keeps a stressed composer reachable at compact high zoom', async () => {
     '.inline-alert-action',
     '#chat-composer',
     'button[aria-label="Choose files"]',
-    'select[aria-label="AI model"]',
+    '[role="combobox"][aria-label="AI model"]',
     'button[aria-label="Send message"]',
   ]
   for (const selector of reachableControls) {
@@ -5195,7 +6628,7 @@ test('contains long titles, files, and unbroken messages', async () => {
   await expect(page.getByLabel('Message from Elysia').last()).toContainText(
     longAssistantMessage,
   )
-  await expect(page.locator('.chat-heading strong')).toHaveAttribute(
+  await expect(page.locator('.chat-heading h1')).toHaveAttribute(
     'title',
     longTitle,
   )
@@ -5227,6 +6660,32 @@ test('contains long titles, files, and unbroken messages', async () => {
     expect(region.right, region.selector).toBeLessThanOrEqual(
       (await page.evaluate(() => window.innerWidth)) + 1,
     )
+  }
+})
+
+test('keeps panel controls inside a narrow header with long Work titles and statuses', async () => {
+  const title = '爱莉希雅与你的日常'.repeat(12)
+  const workChat = chatSummary('chat-test', title, { mode: 'work' })
+  await setChatState({ activeChat: { ...workChat, messages: [] }, chats: [workChat] })
+  await emitSnapshot(readySnapshot({ chatTitle: title }))
+  await expect(page.locator('.chat-mode-label')).toHaveText('Work mode')
+  await setWindowAndZoom(640, 640, 2)
+
+  let revision = 2
+  for (const status of ['ready', 'handshaking', 'error'] as const) {
+    await emitSnapshot(readySnapshot({ revision: revision++, chatTitle: title, status }))
+    await expect(page.locator('.connection-pill')).toHaveClass(new RegExp(status))
+    const panelButton = page.getByRole('button', { name: 'Expand Elysia panel' })
+    await expect(panelButton).toBeInViewport()
+    const bounds = await panelButton.evaluate((button) => {
+      const header = button.closest('.topbar')!.getBoundingClientRect()
+      const control = button.getBoundingClientRect()
+      return { left: control.left, right: control.right, headerLeft: header.left, headerRight: header.right }
+    })
+    expect(bounds.left).toBeGreaterThanOrEqual(bounds.headerLeft)
+    expect(bounds.right).toBeLessThanOrEqual(bounds.headerRight)
+    await panelButton.focus()
+    await expect(panelButton).toBeFocused()
   }
 })
 
@@ -6784,9 +8243,12 @@ test('keeps message chrome compact and reveals icon-only actions on intent', asy
   await expect(page.locator(
     '.message-avatar, .message-header, .message-author, .message-status',
   )).toHaveCount(0)
-  await expect(page.getByText('You', { exact: true })).toHaveCount(0)
-  await expect(page.getByText('Elysia', { exact: true })).toHaveCount(0)
-  await expect(page.getByText('Complete', { exact: true })).toHaveCount(0)
+  // Closed setup dialogs retain their options in the DOM. Author/status
+  // chrome belongs to the conversation, so its assertions stay in that scope.
+  const conversation = page.getByRole('main', { name: 'Conversation', exact: true })
+  await expect(conversation.getByText('You', { exact: true })).toHaveCount(0)
+  await expect(conversation.getByText('Elysia', { exact: true })).toHaveCount(0)
+  await expect(conversation.getByText('Complete', { exact: true })).toHaveCount(0)
   await expect(user.locator('.message-actions span')).toHaveCount(0)
   await expect(assistant.locator('.message-actions span')).toHaveCount(0)
   await expect(userCopy).toHaveAttribute('title', 'Copy message')
@@ -6817,7 +8279,7 @@ test('keeps message chrome compact and reveals icon-only actions on intent', asy
     (element) => window.getComputedStyle(element).opacity,
   )).toBe('1')
 
-  await page.locator('.conversation-intro').hover()
+  await page.locator('.topbar').hover()
   await expect.poll(() => assistantActions.evaluate(
     (element) => window.getComputedStyle(element).opacity,
   )).toBe(hoverAvailable ? '0' : '1')
@@ -7776,7 +9238,7 @@ test('keeps global shortcuts inside native modal boundaries', async () => {
   })).toBeFocused()
 })
 
-test('uses static state art and a circular expression avatar without disturbing Chat', async () => {
+test('uses static character art and the custom call scene without disturbing Chat', async () => {
   await installAudioMock()
   await emitSnapshot(readySnapshot({
     capabilities: [
@@ -7805,9 +9267,9 @@ test('uses static state art and a circular expression avatar without disturbing 
   const panelSource = await panelImage.evaluate(
     (element) => (element as HTMLImageElement).currentSrc,
   )
-  expect(panelSource).toContain('/character/elysia-state-atlas.png')
+  expect(panelSource).toContain('/character/elysia-ui-illustrations.png')
   await expect(panel.locator('.character-artwork'))
-    .toHaveAttribute('data-character-asset', 'atlas')
+    .toHaveAttribute('data-character-asset', 'ui-illustrations')
   await expect(panel.locator('.character-artwork'))
     .toHaveAttribute('data-character-expression', 'soft-smile')
   await expect(panel.locator('.character-artwork'))
@@ -7828,33 +9290,17 @@ test('uses static state art and a circular expression avatar without disturbing 
   await expect(composer).toBeEnabled()
 
   await page.getByRole('button', { name: 'Voice Call' }).click()
-  const call = page.getByRole('dialog', { name: 'Voice Call' })
-  await expect(call.locator('.call-card'))
-    .toHaveAttribute('data-character-state', 'listening')
-  const callImage = call.getByRole('img', {
-    name: 'Elysia neutral expression',
-    exact: true,
-  })
+  const call = (await getVoiceCallPage()).locator('.voice-call-window')
+  await expect(call).toHaveAttribute('data-character-state', 'listening')
+  const callImage = call.locator('.voice-call-background')
   await expect(callImage).toBeVisible()
   await expect.poll(() => callImage.evaluate((element) => {
     const image = element as HTMLImageElement
     return image.complete && image.naturalWidth > 0 && image.naturalHeight > 0
   })).toBe(true)
-  await expect.poll(() => callImage.evaluate(
-    (element) => (element as HTMLImageElement).currentSrc,
-  )).toContain('/character/elysia-expression-atlas.png')
-  await expect(call.locator('.character-artwork'))
-    .toHaveAttribute('data-character-asset', 'expression-atlas')
-  await expect.poll(() => call.locator(
-    '.character-artwork-expression-frame',
-  ).evaluate(
-    (element) => {
-      const bounds = element.getBoundingClientRect()
-      return Math.abs((bounds.width / bounds.height) - 1)
-    },
-  )).toBeLessThan(0.005)
-  await expect(call.getByText('Character artwork', { exact: true }))
-    .toHaveCount(0)
+  await expect(callImage).toHaveAttribute(
+    'src', './voice/voice-call-background.webp',
+  )
   await call.getByRole('button', { name: 'Close voice' }).click()
 
   await composer.focus()
@@ -7878,8 +9324,10 @@ test('projects Chat activity and failure through the shared character state', as
   await expect(artwork).toHaveAttribute('data-character-state', 'idle')
   await expect(artwork).toHaveAttribute('data-character-expression', 'soft-smile')
   await expect(artwork).toHaveAttribute('data-character-action', 'resting')
+  await expect(artwork).toHaveAttribute('data-ui-illustration-row', '0')
+  await expect(artwork).toHaveAttribute('data-ui-illustration-column', '0')
   await expect(captionState).toHaveText('Ready')
-  await expect(panel.locator('.soft-status')).toHaveText('Ready')
+  await expect(page.locator('.connection-pill')).toHaveText('Connected')
 
   await composer.fill('Show the conversational state.')
   await composer.press('Enter')
@@ -7887,6 +9335,8 @@ test('projects Chat activity and failure through the shared character state', as
   await expect(artwork).toHaveAttribute('data-character-state', 'thinking')
   await expect(artwork).toHaveAttribute('data-character-expression', 'focused')
   await expect(artwork).toHaveAttribute('data-character-action', 'thinking')
+  await expect(artwork).toHaveAttribute('data-ui-illustration-row', '1')
+  await expect(artwork).toHaveAttribute('data-ui-illustration-column', '2')
   await expect(captionState).toHaveText('Thinking')
   await emitEvent({
     type: 'chat-error',
@@ -7900,11 +9350,13 @@ test('projects Chat activity and failure through the shared character state', as
   await expect(artwork).toHaveAttribute('data-character-state', 'error')
   await expect(artwork).toHaveAttribute('data-character-expression', 'concerned')
   await expect(artwork).toHaveAttribute('data-character-action', 'alert')
+  await expect(artwork).toHaveAttribute('data-ui-illustration-row', '0')
+  await expect(artwork).toHaveAttribute('data-ui-illustration-column', '3')
   await expect(captionState).toHaveText('Needs attention')
-  await expect(panel.locator('.soft-status')).toHaveText('Ready')
+  await expect(page.locator('.connection-pill')).toHaveText('Connected')
 })
 
-test('uses only the active closed emotion to select a reviewed expression', async () => {
+test('keeps panel state illustrations independent of the selected voice emotion', async () => {
   const initialSettings = desktopSettingsState()
   const teasingSettings: DesktopSettingsValues = {
     ...initialSettings.settings,
@@ -7916,19 +9368,20 @@ test('uses only the active closed emotion to select a reviewed expression', asyn
     activeSettings: teasingSettings,
   })
   await openSettings()
+  await selectSettingsCategory('Voice')
   await expect(page.getByLabel('Voice emotion')).toHaveValue('teasing')
   await page.getByRole('button', { name: 'Back to chat' }).click()
   await page.getByRole('button', { name: 'Expand Elysia panel' }).click()
 
   const artwork = page.locator('.character-panel .character-artwork')
   await expect(artwork).toHaveAttribute('data-character-emotion', 'teasing')
-  await expect(artwork).toHaveAttribute('data-character-expression', 'wink')
+  await expect(artwork).toHaveAttribute('data-character-expression', 'soft-smile')
   await expect(artwork).toHaveAttribute(
     'data-character-asset',
-    'expression-atlas',
+    'ui-illustrations',
   )
-  await expect(artwork.getByRole('img', { name: 'Elysia teasing expression' }))
-    .toHaveAttribute('src', './character/elysia-expression-atlas.png')
+  await expect(artwork.getByRole('img', { name: 'Elysia character portrait' }))
+    .toHaveAttribute('src', './character/elysia-ui-illustrations.png')
 })
 
 test('reads one completed reply aloud and projects only its managed playback', async () => {
@@ -8006,16 +9459,18 @@ test('reads one completed reply aloud and projects only its managed playback', a
   await expect(artwork).toHaveAttribute('data-character-state', 'speaking')
   await expect(artwork).toHaveAttribute(
     'data-character-asset',
-    'expression-atlas',
+    'ui-illustrations',
   )
+  await expect(artwork).toHaveAttribute('data-ui-illustration-row', '1')
+  await expect(artwork).toHaveAttribute('data-ui-illustration-column', '0')
   await expect(artwork.getByRole('img')).toHaveAttribute(
     'src',
-    './character/elysia-expression-atlas.png',
+    './character/elysia-ui-illustrations.png',
   )
-  await artwork.locator('.character-artwork-expression-atlas').evaluate((element) => {
-    ;(element as HTMLImageElement).src = 'file:///missing-expression-atlas.png'
+  await artwork.locator('.character-panel-illustration-image').evaluate((element) => {
+    ;(element as HTMLImageElement).src = 'file:///missing-ui-illustrations.png'
   })
-  await expect(artwork).toHaveAttribute('data-character-asset', 'atlas')
+  await expect(artwork).toHaveAttribute('data-character-asset', 'portrait')
 
   await emitEvent({
     type: 'voice-speech-status',
@@ -8295,34 +9750,21 @@ test('keeps a background Chat generation out of the visible character state', as
     .toHaveAttribute('data-character-state', 'idle')
 })
 
-test('projects Voice listening without letting device state choose artwork', async () => {
+test('projects Voice listening and mute while preserving the background scene', async () => {
   await installAudioMock()
-  await emitSnapshot(readySnapshot({
-    capabilities: [
-      'chat.stream',
-      'voice.settings',
-      'voice.capture',
-      'voice.transcription',
-    ],
-  }))
-  await page.getByRole('button', { name: 'Voice Call' }).click()
-  const call = page.getByRole('dialog', { name: 'Voice Call' })
-  const artwork = call.locator('.character-artwork')
-  await expect(call.locator('.call-card'))
-    .toHaveAttribute('data-character-state', 'listening')
-  await expect(artwork).toHaveAttribute('data-character-state', 'listening')
-  await expect(artwork).toHaveAttribute('data-character-expression', 'soft-smile')
-  await expect(artwork).toHaveAttribute('data-character-action', 'listening')
-  await expect(page.getByText('Listening for speech', { exact: true }))
-    .toBeVisible()
+  await openVoiceCapturePage()
+  const call = (await getVoiceCallPage()).locator('.voice-call-window')
+  const background = call.locator('.voice-call-background')
+  const scene = await background.getAttribute('src')
+  await expect(call).toHaveAttribute('data-character-state', 'listening')
 
   await call.getByRole('button', { name: 'Mute' }).click()
-  await expect(call.locator('.call-card'))
-    .toHaveAttribute('data-character-state', 'idle')
-  await expect(artwork).toHaveAttribute('data-character-state', 'idle')
+  await expect(call).toHaveAttribute('data-character-state', 'idle')
+  await expectVoiceCallState({ microphoneMuted: true })
+  await expect(background).toHaveAttribute('src', scene ?? '')
 })
 
-test('keeps character and Voice controls usable through both image fallbacks', async () => {
+test('keeps character and Voice controls usable after image failures', async () => {
   await installAudioMock()
   await emitSnapshot(readySnapshot({
     capabilities: [
@@ -8370,40 +9812,17 @@ test('keeps character and Voice controls usable through both image fallbacks', a
   await expect(page.getByLabel('Message Elysia')).toBeEnabled()
 
   await page.getByRole('button', { name: 'Voice Call' }).click()
-  const call = page.getByRole('dialog', { name: 'Voice Call' })
-  const callImage = call.getByRole('img', {
-    name: 'Elysia neutral expression',
-    exact: true,
-  })
+  const call = (await getVoiceCallPage()).locator('.voice-call-window')
+  const callImage = call.locator('.voice-call-background')
   await callImage.evaluate((element) => {
-    ;(element as HTMLImageElement).src = 'file:///missing-call-expression.png'
+    ;(element as HTMLImageElement).src = 'file:///missing-call-background.webp'
   })
-  const callArtwork = call.locator('.character-artwork')
-  await expect(callArtwork).toHaveAttribute('data-character-asset', 'atlas')
-  const callAtlas = call.getByRole('img', {
-    name: 'Elysia character portrait',
-    exact: true,
-  })
-  await callAtlas.evaluate((element) => {
-    ;(element as HTMLImageElement).src = 'file:///missing-call-atlas.png'
-  })
-  await expect(callArtwork).toHaveAttribute('data-character-asset', 'portrait')
-  const callPortrait = call.getByRole('img', {
-    name: 'Elysia character portrait',
-    exact: true,
-  })
-  await callPortrait.evaluate((element) => {
-    ;(element as HTMLImageElement).src = 'file:///missing-call-portrait.png'
-  })
-  await expect(call.getByRole('img', {
-    name: 'Elysia character portrait unavailable',
-  })).toBeVisible()
-  await expect(callArtwork).toHaveAttribute('data-character-asset', 'unavailable')
-  await expect(callImage).toHaveCount(0)
+  await expect(call).toHaveAttribute('data-background', 'fallback')
+  await expect(call.locator('.voice-call-scrim')).toBeVisible()
   await expect(call.getByRole('button', { name: 'Mute' }))
     .toBeEnabled()
   await call.getByRole('button', { name: 'Close voice' }).click()
-  await expect(call).toHaveCount(0)
+  await expectVoiceCallClosed()
   await expect(page.getByLabel('Message Elysia')).toBeEnabled()
 })
 
@@ -8414,7 +9833,7 @@ test('makes the compact character panel modal and directly dismissible', async (
   await trigger.focus()
   await trigger.click()
 
-  const panel = page.getByRole('dialog', { name: 'Here with you' })
+  const panel = page.getByRole('dialog', { name: 'Elysia', exact: true })
   const close = panel.getByRole('button', {
     name: 'Close Elysia character panel',
   })
@@ -8455,7 +9874,12 @@ test('exposes field errors and restores focus across Settings navigation', async
     'Enter an HTTP or HTTPS Ollama origin without credentials or a path.',
     { exact: true },
   )).toBeVisible()
-  await expect(page.getByRole('button', { name: 'Save changes' })).toBeDisabled()
+  await selectSettingsCategory('Appearance')
+  await page.getByRole('button', { name: 'Save changes' }).click()
+  await expect(origin).toBeFocused()
+  await expect(page.getByRole('navigation', { name: 'Settings categories' })
+    .getByRole('button', { name: 'General', exact: true }))
+    .toHaveAttribute('aria-current', 'page')
 
   const back = page.getByRole('button', { name: 'Back to chat' })
   page.once('dialog', async (dialog) => { await dialog.accept() })
@@ -8676,11 +10100,11 @@ test('resumes an Electron-owned stream after renderer reload', async () => {
   ))).toBeNull()
 
   await page.getByRole('button', { name: 'Voice Call' }).click()
-  await expect(page.getByRole('dialog', { name: 'Voice Call' })).toBeVisible()
+  await expect((await getVoiceCallPage()).locator('.voice-call-window')).toBeVisible()
   expect((await getCalls()).filter(
     (call) => call.method === 'stopSpeechPlayback',
   )).toHaveLength(0)
-  await page.getByRole('button', { name: 'Close voice' }).click()
+  await (await getVoiceCallPage()).getByRole('button', { name: 'Close voice' }).click()
 
   await emitSnapshot(readySnapshot({
     activeGeneration: {

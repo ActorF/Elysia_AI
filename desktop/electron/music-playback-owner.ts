@@ -17,6 +17,9 @@ import { randomUUID } from 'node:crypto'
 const PLAY_CHANNEL = 'elysia:trusted-music-play:v1'
 const CANCEL_CHANNEL = 'elysia:trusted-music-cancel:v1'
 const SETTLED_CHANNEL = 'elysia:trusted-music-settled:v1'
+const TIMELINE_CHANNEL = 'elysia:trusted-music-timeline:v1'
+const SEEK_CHANNEL = 'elysia:trusted-music-seek:v1'
+const MAX_DURATION_SECONDS = 12 * 60
 const MAX_MUSIC_BYTES = 64 * 1024 * 1024
 const PLAYBACK_TIMEOUT_MS = (13 * 60 * 1_000) + 30_000
 const PLAYBACK_ID_PATTERN = (
@@ -27,7 +30,15 @@ interface PendingMusicPlayback {
   readonly playbackId: string
   readonly resolve: () => void
   readonly reject: (error: Error) => void
-  readonly timeout: ReturnType<typeof setTimeout>
+  timeout: ReturnType<typeof setTimeout>
+  readonly onTimeline: (timeline: MusicPlaybackTimeline) => void
+  seekRevision: number
+}
+
+/** Validated playback measurements without song bytes or private identifiers. */
+export interface MusicPlaybackTimeline {
+  readonly positionSeconds: number
+  readonly durationSeconds: number
 }
 
 interface MusicPlaybackSettlement {
@@ -49,6 +60,7 @@ export class PreloadMusicPlaybackOwner {
     ) => void = () => {},
   ) {
     ipcMain.on(SETTLED_CHANNEL, this.handleSettled)
+    ipcMain.on(TIMELINE_CHANNEL, this.handleTimeline)
     window.webContents.once('destroyed', this.handleDisconnected)
     window.webContents.on('render-process-gone', this.handleDisconnected)
     window.webContents.on('did-start-navigation', this.handleNavigation)
@@ -59,11 +71,13 @@ export class PreloadMusicPlaybackOwner {
     return this.pending !== null
   }
 
-  /** Play one bounded MP3 using a validated device and normalized volume. */
+  /** Play a bounded MP3 from its saved offset and report authenticated media time. */
   play(
     mp3Bytes: Uint8Array,
     outputDeviceId: string | null,
     volumePercent: number,
+    startPositionSeconds = 0,
+    onTimeline: (timeline: MusicPlaybackTimeline) => void = () => {},
   ): Promise<void> {
     if (
       this.disposed
@@ -85,6 +99,9 @@ export class PreloadMusicPlaybackOwner {
       || !Number.isSafeInteger(volumePercent)
       || volumePercent < 0
       || volumePercent > 100
+      || !Number.isFinite(startPositionSeconds)
+      || startPositionSeconds < 0
+      || startPositionSeconds > MAX_DURATION_SECONDS
     ) {
       return Promise.reject(new Error('Song playback request is invalid.'))
     }
@@ -96,7 +113,7 @@ export class PreloadMusicPlaybackOwner {
           this.disconnect(true)
         }
       }, PLAYBACK_TIMEOUT_MS)
-      this.pending = { playbackId, resolve, reject, timeout }
+      this.pending = { playbackId, resolve, reject, timeout, onTimeline, seekRevision: 0 }
       try {
         this.window.webContents.send(
           PLAY_CHANNEL,
@@ -105,6 +122,7 @@ export class PreloadMusicPlaybackOwner {
             byteLength: ownedBytes.byteLength,
             outputDeviceId,
             volumePercent,
+            startPositionSeconds,
           }),
           ownedBytes,
         )
@@ -112,6 +130,30 @@ export class PreloadMusicPlaybackOwner {
         this.disconnect(false)
       }
     })
+  }
+
+  /** Seek the existing private clip; revisions discard pre-seek timeline events. */
+  seek(positionSeconds: number): boolean {
+    const pending = this.pending
+    if (pending === null || pending.seekRevision === Number.MAX_SAFE_INTEGER || !Number.isFinite(positionSeconds)
+      || positionSeconds < 0 || positionSeconds > MAX_DURATION_SECONDS) return false
+    pending.seekRevision += 1
+    try {
+      this.window.webContents.send(SEEK_CHANNEL, Object.freeze({
+        playbackId: pending.playbackId, positionSeconds,
+        seekRevision: pending.seekRevision,
+      }))
+      // A deliberate user seek may extend listening beyond one song length.
+      // Restart the bound only for that command, never for incoming timeupdates.
+      clearTimeout(pending.timeout)
+      pending.timeout = setTimeout(() => {
+        if (this.pending === pending) this.disconnect(true)
+      }, PLAYBACK_TIMEOUT_MS)
+      return true
+    } catch {
+      this.disconnect()
+      return false
+    }
   }
 
   /** Cancel the exact active song and report whether Preload received it. */
@@ -177,6 +219,33 @@ export class PreloadMusicPlaybackOwner {
     }
   }
 
+  private readonly handleTimeline = (event: IpcMainEvent, value: unknown): void => {
+    if (this.disposed || this.disconnected
+      || event.sender !== this.window.webContents
+      || event.senderFrame !== this.window.webContents.mainFrame) return
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+      this.disconnect()
+      return
+    }
+    const record = value as Record<string, unknown>
+    if (Object.keys(record).length !== 4
+      || typeof record.playbackId !== 'string' || !PLAYBACK_ID_PATTERN.test(record.playbackId)
+      || typeof record.positionSeconds !== 'number' || !Number.isFinite(record.positionSeconds)
+      || typeof record.durationSeconds !== 'number' || !Number.isFinite(record.durationSeconds)
+      || record.durationSeconds <= 0 || record.durationSeconds > MAX_DURATION_SECONDS
+      || record.positionSeconds < 0 || record.positionSeconds > record.durationSeconds
+      || !Number.isSafeInteger(record.seekRevision) || (record.seekRevision as number) < 0) {
+      this.disconnect()
+      return
+    }
+    const pending = this.pending
+    if (pending === null || pending.playbackId !== record.playbackId
+      || pending.seekRevision !== record.seekRevision) return
+    pending.onTimeline(Object.freeze({
+      positionSeconds: record.positionSeconds, durationSeconds: record.durationSeconds,
+    }))
+  }
+
   private readonly handleDisconnected = (): void => {
     this.disconnect()
   }
@@ -216,6 +285,7 @@ export class PreloadMusicPlaybackOwner {
 
   private detachListeners(): void {
     ipcMain.off(SETTLED_CHANNEL, this.handleSettled)
+    ipcMain.off(TIMELINE_CHANNEL, this.handleTimeline)
     this.window.webContents.off('destroyed', this.handleDisconnected)
     this.window.webContents.off('render-process-gone', this.handleDisconnected)
     this.window.webContents.off('did-start-navigation', this.handleNavigation)

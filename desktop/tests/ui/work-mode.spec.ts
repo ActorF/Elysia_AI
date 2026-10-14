@@ -28,6 +28,9 @@ interface WorkTestControl {
   setWorkFile(path: string, content: string | null): void
   setWorkUndoDelay(delayed: boolean): void
   rejectNextWorkUndo(): boolean
+  setCharacterPanelChangeDelay(delayed: boolean): void
+  getPendingCharacterPanelChangeCount(): number
+  releaseNextCharacterPanelChange(): boolean
 }
 
 type WorkTestWindow = Window & { elysiaDesktopTest: WorkTestControl }
@@ -218,11 +221,39 @@ test('blocks conflicting actions during a read and recovers after a cancelled re
   await expect(page.getByRole('button', { name: 'Clear Workspace' })).toBeDisabled()
   await page.getByLabel('Message Elysia').fill('No conflicting model turn.')
   await expect(page.getByRole('button', { name: 'Send message' })).toBeDisabled()
+  await expect(page.getByRole('button', { name: 'Voice Call', exact: true })).toBeDisabled()
+  await expect(page.getByRole('button', { name: 'Song Cover', exact: true })).toBeDisabled()
   await page.evaluate(() => {
     ;(window as WorkTestWindow).elysiaDesktopTest.releaseNextWorkToolRun()
   })
   await expect(page.getByRole('region', { name: 'Work tool result' })).toContainText('The action was cancelled.')
   await expect(mode).toBeEnabled()
+})
+
+test('does not open a native Voice Call when Work starts across its awaited panel boundary', async () => {
+  await page.evaluate(() => {
+    const control = (window as WorkTestWindow).elysiaDesktopTest
+    control.setWorkWorkspaceState({ kind: 'work.workspace', chatId: 'chat_work_test', workspacePath: 'D:\\work-call-boundary' })
+    control.setWorkToolRunDelay(true)
+  })
+  await page.getByRole('combobox', { name: 'Conversation mode' }).selectOption('work')
+  await page.getByRole('button', { name: 'Expand Elysia panel' }).click()
+  await expect(page.locator('#character-panel')).toBeVisible()
+  await page.evaluate(() => { (window as WorkTestWindow).elysiaDesktopTest.setCharacterPanelChangeDelay(true) })
+  await page.getByRole('button', { name: 'Voice Call', exact: true }).click()
+  await expect.poll(() => page.evaluate(() => (
+    (window as WorkTestWindow).elysiaDesktopTest.getPendingCharacterPanelChangeCount()
+  ))).toBe(1)
+  await page.getByRole('button', { name: 'Run tool', exact: true }).click()
+  await page.evaluate(() => { (window as WorkTestWindow).elysiaDesktopTest.releaseNextCharacterPanelChange() })
+  await page.evaluate(() => new Promise<void>((resolve) => {
+    requestAnimationFrame(() => { requestAnimationFrame(() => { resolve() }) })
+  }))
+  const openings = await page.evaluate(() => (window as WorkTestWindow).elysiaDesktopTest.getCalls()
+    .filter((call) => call.method === 'openVoiceCallWindow'))
+  expect(openings).toHaveLength(0)
+  await page.evaluate(() => { (window as WorkTestWindow).elysiaDesktopTest.releaseNextWorkToolRun() })
+  await expect(page.getByRole('button', { name: 'Voice Call', exact: true })).toBeEnabled()
 })
 
 test('prepares exact write previews and requires a fresh preview after parameter edits', async () => {

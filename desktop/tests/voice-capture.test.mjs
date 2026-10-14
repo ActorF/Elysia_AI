@@ -169,15 +169,19 @@ test('modulated multi-frequency speech-like input still completes normally', () 
 
 function captureHarness({
   detector,
+  createDetector,
   onComplete = () => undefined,
   onSpeechConfirmed = () => undefined,
   failGraph = false,
   echoCancellation,
   exposeTrackSettings = true,
   generatedSessionId = 'voice_cleanup',
+  audioSampleRate = 48_000,
 }) {
   let stopped = 0
   let sessionIdCreations = 0
+  let microphoneStarts = 0
+  let contextCreations = 0
   let requestedConstraints = null
   const scheduledTimeouts = []
   const detectorCreations = []
@@ -202,7 +206,7 @@ function captureHarness({
     onaudioprocess: null,
   }
   const context = {
-    sampleRate: 48_000,
+    sampleRate: audioSampleRate,
     currentTime: 0,
     state: 'running',
     destination: {},
@@ -224,19 +228,25 @@ function captureHarness({
   const controller = new AudioCaptureController({
     mediaDevices: {
       getUserMedia: async (constraints) => {
+        microphoneStarts += 1
         requestedConstraints = constraints
         return stream
       },
     },
-    createAudioContext: () => context,
+    createAudioContext: () => {
+      contextCreations += 1
+      return context
+    },
     createSessionId: () => {
       sessionIdCreations += 1
-      return generatedSessionId
+      return typeof generatedSessionId === 'function'
+        ? generatedSessionId(sessionIdCreations)
+        : generatedSessionId
     },
-    createDetector: (sessionId, purpose) => {
+    createDetector: createDetector ?? (detector === undefined ? undefined : (sessionId, purpose) => {
       detectorCreations.push({ sessionId, purpose })
       return detector
-    },
+    }),
     scheduleTimeout: (_callback, delay) => {
       scheduledTimeouts.push(delay)
       return scheduledTimeouts.length
@@ -247,9 +257,12 @@ function captureHarness({
   })
   return {
     controller,
+    context,
+    contextCreations: () => contextCreations,
     detectorCreations,
     processor,
     requestedConstraints: () => requestedConstraints,
+    microphoneStarts: () => microphoneStarts,
     scheduledTimeouts,
     sessionIdCreations: () => sessionIdCreations,
     stopped: () => stopped,
@@ -289,6 +302,171 @@ function emitAudioProcess(processor) {
   })
   assert.equal(output.every((sample) => sample === 0), true)
 }
+
+/** Deliver canonical PCM through the actual resampler and frame-buffer path. */
+function emitPcmChunk(processor, pcm) {
+  const input = Float32Array.from(pcm, (sample) => sample / (sample < 0 ? 32_768 : 32_767))
+  const output = new Float32Array(input.length)
+  assert.equal(typeof processor.onaudioprocess, 'function')
+  processor.onaudioprocess({
+    inputBuffer: { numberOfChannels: 1, length: input.length, getChannelData: () => input },
+    outputBuffer: { numberOfChannels: 1, length: output.length, getChannelData: () => output },
+  })
+  assert.equal(output.every((sample) => sample === 0), true)
+}
+
+/** Join speech-like frames and silence while preserving exact boundary sample counts. */
+function joinedFrames(...groups) {
+  const frames = groups.flat()
+  const pcm = new Int16Array(frames.length * VOICE_FRAME_SAMPLE_COUNT)
+  frames.forEach((frame, index) => { pcm.set(frame, index * VOICE_FRAME_SAMPLE_COUNT) })
+  return pcm
+}
+
+/** Build continuous dictation with unique IDs and the production VAD defaults. */
+function dictationHarness(options = {}) {
+  return captureHarness({
+    audioSampleRate: VOICE_SAMPLE_RATE,
+    generatedSessionId: (index) => `voice_dictation_${index}`,
+    ...options,
+  })
+}
+
+test('dictation keeps the same microphone listening through more than ten seconds of silence', async () => {
+  const segments = []
+  const harness = dictationHarness({ onComplete: (segment) => { segments.push(segment) } })
+  await harness.controller.start(null, { purpose: 'dictation' })
+  emitPcmChunk(harness.processor, new Int16Array(VOICE_SAMPLE_RATE * 12))
+  assert.equal(harness.controller.getSnapshot().status, 'waiting')
+  assert.equal(harness.controller.getSnapshot().elapsedMs, 12_000)
+  assert.deepEqual(harness.scheduledTimeouts, [])
+  assert.equal(segments.length, 0)
+  assert.equal(harness.microphoneStarts(), 1)
+  assert.equal(harness.contextCreations(), 1)
+  assert.equal(harness.stopped(), 0)
+  await harness.controller.cancel()
+  assert.equal(harness.stopped(), 1)
+})
+
+test('dictation keeps paused utterances and callback remainder in one live microphone graph', async () => {
+  const segments = []
+  const harness = dictationHarness({ onComplete: (segment) => { segments.push(segment) } })
+  await harness.controller.start(null, { purpose: 'dictation' })
+  const speech = Array.from({ length: 18 }, (_, index) => speechLikeFrame(index))
+  const silence = Array.from({ length: 35 }, () => new Int16Array(VOICE_FRAME_SAMPLE_COUNT))
+  emitPcmChunk(harness.processor, joinedFrames(speech, silence, speech, silence))
+  assert.deepEqual(segments.map((segment) => segment.sessionId), ['voice_dictation_1', 'voice_dictation_2'])
+  assert.equal(harness.controller.getSnapshot().status, 'waiting')
+  assert.equal(harness.controller.getSnapshot().sessionId, 'voice_dictation_3')
+  assert.equal(harness.controller.getSnapshot().elapsedMs, 2_120)
+  assert.equal(harness.microphoneStarts(), 1)
+  assert.equal(harness.contextCreations(), 1)
+  assert.equal(harness.stopped(), 0)
+  assert.deepEqual(harness.scheduledTimeouts, [])
+  await harness.controller.stop()
+  assert.equal(segments.length, 2)
+  assert.equal(harness.stopped(), 1)
+})
+
+test('dictation rolls speech longer than thirty seconds without dropping boundary frames', async () => {
+  const segments = []
+  const harness = dictationHarness({ onComplete: (segment) => { segments.push(segment) } })
+  await harness.controller.start(null, { purpose: 'dictation' })
+  const input = joinedFrames(Array.from({ length: 1_535 }, (_, index) => speechLikeFrame(index)))
+  emitPcmChunk(harness.processor, input)
+  assert.equal(segments.length, 1)
+  assert.equal(segments[0].sampleCount, VOICE_MAXIMUM_BUFFER_SAMPLE_COUNT)
+  assert.equal(harness.controller.getSnapshot().status, 'speaking')
+  assert.equal(harness.controller.getSnapshot().sessionId, 'voice_dictation_2')
+  assert.equal(harness.stopped(), 0)
+  await harness.controller.stop()
+  assert.equal(segments.length, 2)
+  assert.equal(segments[1].sessionId, 'voice_dictation_2')
+  assert.ok(segments.every((segment) => segment.sampleCount <= VOICE_MAXIMUM_BUFFER_SAMPLE_COUNT))
+  assert.equal(segments.reduce((total, segment) => total + segment.sampleCount, 0), input.length)
+  assert.deepEqual(segments[0].pcm, input.subarray(0, VOICE_MAXIMUM_BUFFER_SAMPLE_COUNT))
+  assert.deepEqual(segments[1].pcm, input.subarray(VOICE_MAXIMUM_BUFFER_SAMPLE_COUNT))
+  assert.equal(harness.microphoneStarts(), 1)
+  assert.equal(harness.contextCreations(), 1)
+  assert.deepEqual(harness.scheduledTimeouts, [])
+  assert.equal(harness.stopped(), 1)
+})
+
+test('explicit dictation Stop flushes valid unfinished speech and its partial VAD frame once', async () => {
+  const segments = []
+  const harness = dictationHarness({ onComplete: (segment) => { segments.push(segment) } })
+  await harness.controller.start(null, { purpose: 'dictation' })
+  const speech = joinedFrames(Array.from({ length: 18 }, (_, index) => speechLikeFrame(index)))
+  const input = new Int16Array(speech.length + 100)
+  input.set(speech)
+  input.set(speechLikeFrame(18).subarray(0, 100), speech.length)
+  emitPcmChunk(harness.processor, input)
+  assert.equal(segments.length, 0)
+  await harness.controller.stop()
+  assert.equal(segments.length, 1)
+  assert.equal(segments[0].sessionId, 'voice_dictation_1')
+  assert.deepEqual(segments[0].pcm.subarray(0, input.length), input)
+  assert.equal(segments[0].pcm.subarray(input.length).every((sample) => sample === 0), true)
+  assert.equal(harness.controller.getSnapshot().status, 'completed')
+  assert.equal(harness.stopped(), 1)
+  assert.equal(harness.context.state, 'closed')
+  await harness.controller.stop()
+  assert.equal(segments.length, 1)
+})
+
+test('dictation cancellation wipes retained PCM without completing its valid speech', async () => {
+  const segments = []
+  let detector
+  const harness = dictationHarness({
+    createDetector: (sessionId) => {
+      detector = new AdaptiveEnergyVoiceActivityDetector(sessionId, { noSpeechTimeoutSampleCount: null })
+      return detector
+    },
+    onComplete: (segment) => { segments.push(segment) },
+  })
+  await harness.controller.start(null, { purpose: 'dictation' })
+  emitPcmChunk(harness.processor, joinedFrames(Array.from({ length: 18 }, (_, index) => speechLikeFrame(index))))
+  const retainedFrames = [...detector.utteranceFrames]
+  assert.ok(retainedFrames.length > 0)
+  await harness.controller.cancel()
+  assert.equal(segments.length, 0)
+  assert.equal(harness.controller.getSnapshot().status, 'cancelled')
+  assert.equal(retainedFrames.every((frame) => frame.every((sample) => sample === 0)), true)
+  assert.equal(harness.stopped(), 1)
+})
+
+test('throwing dictation consumers wipe orphaned PCM while microphone listening continues', async () => {
+  let orphanedPcm
+  const harness = dictationHarness({ onComplete: (segment) => {
+    orphanedPcm = segment.pcm
+    throw new Error('consumer failed')
+  } })
+  await harness.controller.start(null, { purpose: 'dictation' })
+  emitPcmChunk(harness.processor, joinedFrames(
+    Array.from({ length: 18 }, (_, index) => speechLikeFrame(index)),
+    Array.from({ length: 35 }, () => new Int16Array(VOICE_FRAME_SAMPLE_COUNT)),
+  ))
+  assert.ok(orphanedPcm instanceof Int16Array)
+  assert.equal(orphanedPcm.every((sample) => sample === 0), true)
+  assert.equal(harness.controller.getSnapshot().status, 'waiting')
+  assert.equal(harness.stopped(), 0)
+  await harness.controller.cancel()
+})
+
+test('reentrant dictation cancellation cannot deliver later segments from the same audio callback', async () => {
+  const segments = []
+  const harness = dictationHarness({ onComplete: (segment) => {
+    segments.push(segment)
+    void harness.controller.cancel()
+  } })
+  await harness.controller.start(null, { purpose: 'dictation' })
+  const speech = Array.from({ length: 18 }, (_, index) => speechLikeFrame(index))
+  const silence = Array.from({ length: 35 }, () => new Int16Array(VOICE_FRAME_SAMPLE_COUNT))
+  emitPcmChunk(harness.processor, joinedFrames(speech, silence, speech, silence))
+  assert.equal(segments.length, 1)
+  assert.equal(harness.controller.getSnapshot().status, 'cancelled')
+  assert.equal(harness.stopped(), 1)
+})
 
 test('capture graph setup failure cancels its detector during cleanup', async () => {
   let cancellations = 0

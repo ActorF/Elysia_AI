@@ -1,5 +1,7 @@
 /**
- * Own one renderer-local microphone capture and deliver one bounded PCM segment.
+ * Own renderer-local microphone capture and deliver bounded transient PCM segments.
+ * Dictation rotates segments in one live graph until its owner explicitly stops;
+ * utterance, Voice Call, and barge-in keep their existing one-segment behavior.
  * Audio remains transient here: this module has no persistence, IPC, or Chat API.
  */
 
@@ -32,8 +34,8 @@ export type AudioCaptureStatus =
   | 'cancelled'
   | 'error'
 
-/** Distinguish one-shot dictation from owner-bounded continuous call capture. */
-export type AudioCapturePurpose = 'utterance' | 'voice-call' | 'barge-in'
+/** Select one-shot capture, continuous dictation, or an owner-bounded call utterance. */
+export type AudioCapturePurpose = 'utterance' | 'dictation' | 'voice-call' | 'barge-in'
 
 /**
  * Select capture behavior. Barge-in callers supply the exact identifier before
@@ -45,7 +47,7 @@ export type AudioCaptureStartOptions =
       readonly sessionId?: never
     }
   | {
-      readonly purpose: 'voice-call'
+      readonly purpose: 'voice-call' | 'dictation'
       readonly sessionId?: never
     }
   | {
@@ -106,7 +108,7 @@ export interface AudioCaptureControllerOptions {
   readonly scheduleTimeout?: (callback: () => void, delay: number) => number
   /** Cancel a previously scheduled deadline during every cleanup path. */
   readonly cancelTimeout?: (handle: number) => void
-  /** Receives sole ownership of completed PCM; the controller never retains it. */
+  /** Receive sole ownership of each bounded segment, repeatedly during dictation. */
   readonly onComplete?: (segment: CompletedVoiceSegment) => void
   /** Receive one metadata-only barge-in confirmation before PCM completes. */
   readonly onSpeechConfirmed?: (
@@ -116,7 +118,7 @@ export interface AudioCaptureControllerOptions {
 
 interface CaptureResources {
   readonly operation: number
-  readonly sessionId: string
+  sessionId: string
   readonly deviceId: string | null
   readonly purpose: AudioCapturePurpose
   stream: MediaStream | null
@@ -132,6 +134,7 @@ interface CaptureResources {
   noSpeechTimeout: number | null
   maximumUtteranceTimeout: number | null
   speechConfirmed: boolean
+  processedSampleCount: number
   released: boolean
 }
 
@@ -379,8 +382,8 @@ function monoInput(buffer: AudioBuffer): Float32Array {
 }
 
 /**
- * Own either one ordinary utterance or one owner-bounded continuous monitor.
- * Only onComplete receives PCM, once, after VAD has proven that the segment
+ * Own a bounded utterance or continuous dictation inside one microphone graph.
+ * Only onComplete receives PCM after VAD has proven that each segment
  * contains the minimum amount of voiced audio.
  */
 export class AudioCaptureController {
@@ -412,7 +415,7 @@ export class AudioCaptureController {
     this.createDetector = options.createDetector
       ?? ((sessionId, purpose) => new AdaptiveEnergyVoiceActivityDetector(
         sessionId,
-        purpose === 'barge-in' || purpose === 'voice-call'
+        purpose === 'barge-in' || purpose === 'voice-call' || purpose === 'dictation'
           ? { noSpeechTimeoutSampleCount: null }
           : {},
       ))
@@ -445,10 +448,11 @@ export class AudioCaptureController {
   /**
    * Start capture on an exact device or system default.
    *
-   * Dictation remains one-shot with a bounded silence timeout. Voice Call and
-   * barge-in may wait indefinitely because their visible owner supplies mute
-   * and close controls; barge-in additionally requires a caller-owned
-   * identifier and verified browser echo cancellation.
+   * Dictation waits through silence and rolls bounded segments inside the same
+   * microphone graph until its visible owner stops it. Ordinary utterances
+   * retain their silence deadline. Voice Call and barge-in may wait indefinitely
+   * for one utterance; barge-in also requires a caller-owned identifier and
+   * verified browser echo cancellation.
    */
   async start(
     deviceId: string | null,
@@ -513,6 +517,7 @@ export class AudioCaptureController {
       noSpeechTimeout: null,
       maximumUtteranceTimeout: null,
       speechConfirmed: false,
+      processedSampleCount: 0,
       released: false,
     }
     this.resources = resources
@@ -608,14 +613,27 @@ export class AudioCaptureController {
     }
   }
 
-  /** Stop now, completing only an utterance that already passed VAD validity. */
+  /** Release the microphone and deliver any current speech that passed VAD validity. */
   async stop(): Promise<void> {
     if (this.disposed) {
       return
     }
     ++this.operation
     const resources = this.takeResources()
-    const segment = resources?.detector?.stop() ?? null
+    let finalFrameSegment: CompletedVoiceSegment | null = null
+    if (
+      resources?.purpose === 'dictation'
+      && resources.detector !== null
+      && resources.frameRemainder.length > 0
+    ) {
+      // Explicit Stop must retain speech arriving after the last complete VAD
+      // frame. Zero padding adds at most 20 ms to the final bounded segment.
+      const finalFrame = new Int16Array(VOICE_FRAME_SAMPLE_COUNT)
+      finalFrame.set(resources.frameRemainder)
+      finalFrameSegment = resources.detector.processFrame(finalFrame).segment
+      finalFrame.fill(0)
+    }
+    const segment = finalFrameSegment ?? resources?.detector?.stop() ?? null
     const voicedSampleCount = resources?.detector?.getSnapshot()
       .voicedSampleCount ?? 0
     const sessionId = resources?.sessionId ?? this.current.sessionId
@@ -720,7 +738,8 @@ export class AudioCaptureController {
         combined.subarray(offset, offset + VOICE_FRAME_SAMPLE_COUNT),
       )
       offset += VOICE_FRAME_SAMPLE_COUNT
-      if (result.event === 'speech-started') {
+      resources.processedSampleCount += VOICE_FRAME_SAMPLE_COUNT
+      if (result.event === 'speech-started' && resources.purpose !== 'dictation') {
         resources.maximumUtteranceTimeout = this.scheduleTimeout(() => {
           if (this.resourcesAreCurrent(resources)) {
             void this.stop()
@@ -753,6 +772,12 @@ export class AudioCaptureController {
         }
       }
       if (result.segment !== null) {
+        if (resources.purpose === 'dictation') {
+          this.rollDictationSegment(result.segment, resources, result.voicedSampleCount)
+          // Continue this callback's remaining frames on the next detector.
+          // Dropping the chunk here would lose words around every boundary.
+          continue
+        }
         combined.fill(0)
         this.completeCurrentCapture(result.segment, resources)
         return
@@ -765,7 +790,7 @@ export class AudioCaptureController {
       if (result.event === 'short-speech-rejected') {
         this.clearMaximumUtteranceTimeout(resources)
       }
-      this.updateFromVoiceActivity(result)
+      this.updateFromVoiceActivity(result, resources)
     }
     if (this.resourcesAreCurrent(resources)) {
       resources.frameRemainder = combined.slice(offset)
@@ -773,12 +798,17 @@ export class AudioCaptureController {
     combined.fill(0)
   }
 
-  private updateFromVoiceActivity(result: VoiceActivityResult): void {
+  private updateFromVoiceActivity(
+    result: VoiceActivityResult,
+    resources: CaptureResources,
+  ): void {
     this.update({
       status: result.state === 'speaking' ? 'speaking' : 'waiting',
       level: Math.min(1, result.energy * 4),
       elapsedMs: Math.floor(
-        result.processedSampleCount * 1_000 / VOICE_SAMPLE_RATE,
+        (resources.purpose === 'dictation'
+          ? resources.processedSampleCount
+          : result.processedSampleCount) * 1_000 / VOICE_SAMPLE_RATE,
       ),
       bufferedSampleCount: Math.min(
         result.bufferedSampleCount,
@@ -786,6 +816,50 @@ export class AudioCaptureController {
       ),
       voicedSampleCount: result.voicedSampleCount,
     })
+  }
+
+  private rollDictationSegment(
+    segment: CompletedVoiceSegment,
+    resources: CaptureResources,
+    voicedSampleCount: number,
+  ): void {
+    if (!this.resourcesAreCurrent(resources)) {
+      segment.pcm.fill(0)
+      return
+    }
+    try {
+      const nextSessionId = this.createSessionId()
+      if (!safeSessionId(nextSessionId) || nextSessionId === resources.sessionId) {
+        throw new Error('Dictation requires a fresh voice capture identifier.')
+      }
+      const nextDetector = this.createDetector(nextSessionId, 'dictation')
+      resources.detector?.cancel()
+      resources.sessionId = nextSessionId
+      resources.detector = nextDetector
+      resources.speechConfirmed = false
+      this.clearMaximumUtteranceTimeout(resources)
+    } catch (error: unknown) {
+      segment.pcm.fill(0)
+      this.failCurrentCapture(captureError(error, resources.purpose), resources)
+      return
+    }
+    this.update({
+      status: 'waiting',
+      sessionId: resources.sessionId,
+      level: 0,
+      elapsedMs: Math.floor(resources.processedSampleCount * 1_000 / VOICE_SAMPLE_RATE),
+      bufferedSampleCount: 0,
+      voicedSampleCount,
+      completedSampleCount: segment.sampleCount,
+      error: null,
+    })
+    if (!this.resourcesAreCurrent(resources)) {
+      segment.pcm.fill(0)
+      return
+    }
+    // Rotation happens before handing PCM out. A reentrant Stop or cancellation
+    // can retire the fresh detector without submitting this segment twice.
+    this.deliverSegment(segment)
   }
 
   private completeCurrentCapture(
@@ -827,6 +901,10 @@ export class AudioCaptureController {
       completedSampleCount: segment.sampleCount,
       error: null,
     })
+    this.deliverSegment(segment)
+  }
+
+  private deliverSegment(segment: CompletedVoiceSegment): void {
     try {
       this.onComplete(segment)
     } catch {

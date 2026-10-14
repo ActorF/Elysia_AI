@@ -5,9 +5,10 @@ native file selection and launches this script with paths that never cross into
 the sandboxed renderer.  Song mode separates one complete mix with Demucs;
 stems mode accepts an already aligned vocal and accompaniment pair.  Both modes
 can apply one bounded F0-domain vocal shift inside an isolated RVC subprocess
-and a matched duration-preserving accompaniment shift before a vocal-aware
-clarity mix.  The consonant helpers remain shared with the lyrics-driven worker,
-whose synthesizer still needs that conservative pronunciation layer.
+and, when requested, a matched duration-preserving accompaniment shift before
+a vocal-aware clarity mix.  The consonant helpers remain shared with the
+lyrics-driven worker, whose synthesizer still needs that conservative
+pronunciation layer.
 
 Neither the selected song nor the private voice model is copied into Git or an
 installer.  Progress is emitted as prefixed JSON lines so unrelated upstream
@@ -47,12 +48,11 @@ _MAX_DECODED_BYTES = 140 * 1024 * 1024
 _FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 _SAMPLE_RATE = 44_100
 _RVC_SAMPLE_RATE = 40_000
-_RVC_MAX_DURATION_ERROR_SAMPLES = 4_000  # 100 ms at the model sample rate.
 _RVC_FORBIDDEN_RUNTIME_SUFFIXES = frozenset(
     {".bat", ".cmd", ".com", ".dll", ".exe", ".ps1", ".pyc", ".pyd", ".so"}
 )
 _RVC_NATIVE_COMMAND_NAMES = frozenset({"ffmpeg", "ffprobe"})
-_ALLOWED_KEY_SHIFTS = frozenset({-2, -1, 0, 1, 2})
+_ALLOWED_KEY_SHIFTS = frozenset(range(-12, 13))
 _CONVERTED_VOCAL_GAIN = 1.161449  # +1.3 dB
 _CONSONANT_LAYER_GAIN = 0.125893  # -18 dB
 _EXPECTED_DEMUCS_VERSION = "4.0.1"
@@ -162,6 +162,16 @@ _CONSONANT_MAX_SELECTED_FRACTION = 0.35
 
 class _SongCoverFailure(RuntimeError):
     """Represent one renderer-safe terminal failure from the local pipeline."""
+
+
+def _parse_explicit_boolean(value: str) -> bool:
+    """Parse the canonical lowercase boolean emitted by Electron Main."""
+
+    if value == "true":
+        return True
+    if value == "false":
+        return False
+    raise argparse.ArgumentTypeError("expected true or false")
 
 
 def _emit(stage: str, progress_percent: int, message: str) -> None:
@@ -924,11 +934,13 @@ def _transpose_audio(
 ) -> None:
     """Apply one bounded whole-track key shift without changing sample count.
 
-    The bundled FFmpeg has no Rubber Band filter.  A small reviewed shift uses
+    The bundled FFmpeg has no Rubber Band filter.  A bounded shift uses
     sample-rate transposition followed by pitch-preserving tempo correction;
-    restricting the contract to two semitones in either direction bounds
-    artifacts. Only the accompaniment uses this waveform transform; RVC moves
-    vocal F0 directly so RMVPE and HuBERT still receive the clean source.
+    the symmetric one-octave contract reaches ``atempo``'s 0.5 lower bound when
+    raising and a 2.0 factor when lowering. Legacy RVC moves vocal F0 directly
+    so RMVPE and HuBERT still receive the clean source; lyrics-driven SVS also
+    uses this waveform transform to prepare its shifted vocal guide. Endpoint
+    availability is a technical bound, not a quality guarantee.
     """
 
     if key_shift_semitones not in _ALLOWED_KEY_SHIFTS:
@@ -965,6 +977,38 @@ def _transpose_audio(
         ],
         "The selected audio could not be shifted to the protected key.",
     )
+
+
+def _transpose_accompaniment_if_requested(
+    ffmpeg: Path,
+    source: Path,
+    output: Path,
+    *,
+    key_shift_semitones: int,
+    shift_accompaniment: bool,
+    target_samples: int,
+) -> bool:
+    """Create a shifted accompaniment only when the explicit option requires it.
+
+    The selected key always applies to the generated vocal. Keeping this gate
+    separate prevents a vocal-only request from accidentally rewriting the
+    instrumental while sharing identical behavior across both cover engines.
+    """
+
+    if type(shift_accompaniment) is not bool:
+        _fail("The accompaniment key-shift choice is invalid.")
+    if key_shift_semitones not in _ALLOWED_KEY_SHIFTS:
+        _fail("The requested song-cover key shift is not supported.")
+    if key_shift_semitones == 0 or not shift_accompaniment:
+        return False
+    _transpose_audio(
+        ffmpeg,
+        source,
+        output,
+        key_shift_semitones=key_shift_semitones,
+        target_samples=target_samples,
+    )
+    return True
 
 
 def _prepare_mono_vocals(
@@ -1144,10 +1188,10 @@ def _release_gpu_cache() -> None:
 def _require_rvc_index_compatibility(index_path: Path) -> None:
     """Reject an index that upstream RVC would silently ignore.
 
-    The vendor pipeline catches every FAISS load/search exception and continues
-    without retrieval.  That fallback sounds like a successful conversion but
-    loses the trained timbre correction, so the reviewed index structure is a
-    hard precondition rather than an optional quality hint.
+    The selected profile fixes index blending at zero, so the index does not
+    contribute acoustic features. It remains a required, authenticated asset
+    of that profile; accepting an arbitrary or incompatible index would weaken
+    the closed runtime contract even though this configuration does not query it.
     """
 
     try:
@@ -1171,12 +1215,13 @@ def _require_rvc_index_compatibility(index_path: Path) -> None:
 
 
 def _require_rvc_output_duration(path: Path, *, target_samples: int) -> None:
-    """Validate the canonical RVC WAV and reject a materially truncated result.
+    """Require the exact source timeline before any output resampling or pad.
 
-    RVC can legitimately differ by a small analysis-frame boundary, observed at
-    about 20 ms in held-out evaluation.  A fixed 100 ms tolerance admits that
-    boundary without allowing tail padding to disguise a crashed or partial
-    conversion as a complete song.
+    The maintained RVC assembler now owns every source core, including the
+    fractional final frame. A missing analysis frame is therefore a regression,
+    not an acceptable duration tolerance. The same prepared 44.1 kHz sample
+    count is rounded once to 40 kHz in both processes; the later FFmpeg pad may
+    accommodate resampling rounding only after this exact check has passed.
     """
 
     maximum = round(_MAX_DURATION_SECONDS * _SAMPLE_RATE)
@@ -1200,10 +1245,7 @@ def _require_rvc_output_duration(path: Path, *, target_samples: int) -> None:
         ) from error
 
     expected_samples = round(target_samples * _RVC_SAMPLE_RATE / _SAMPLE_RATE)
-    if (
-        actual_samples < 1
-        or abs(actual_samples - expected_samples) > _RVC_MAX_DURATION_ERROR_SAMPLES
-    ):
+    if actual_samples != expected_samples:
         _fail("The converted Elysia vocal is incomplete.")
 
 
@@ -1730,6 +1772,11 @@ def _parser() -> argparse.ArgumentParser:
         default=0,
         type=int,
     )
+    parser.add_argument(
+        "--shift-accompaniment",
+        required=True,
+        type=_parse_explicit_boolean,
+    )
     parser.add_argument("--job-dir", required=True, type=Path)
     parser.add_argument("--ffmpeg", required=True, type=Path)
     parser.add_argument("--ffprobe", required=True, type=Path)
@@ -1911,18 +1958,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             )
             vocals = decoded_vocals
             accompaniment = decoded_accompaniment
-        if arguments.key_shift_semitones != 0:
-            shifted_accompaniment = job_dir / "accompaniment-key-shifted.wav"
-            # Keep the original vocal untouched for RMVPE and HuBERT. RVC shifts
-            # its detected F0 below, while this matched, duration-safe
-            # transform keeps the instrumental in the same musical key.
-            _transpose_audio(
-                ffmpeg,
-                accompaniment,
-                shifted_accompaniment,
-                key_shift_semitones=arguments.key_shift_semitones,
-                target_samples=target_samples,
-            )
+        shifted_accompaniment = job_dir / "accompaniment-key-shifted.wav"
+        # Keep the original vocal untouched for RMVPE and HuBERT. RVC shifts
+        # its detected F0 below, while the optional duration-safe transform
+        # keeps the instrumental in the same musical key when requested.
+        if _transpose_accompaniment_if_requested(
+            ffmpeg,
+            accompaniment,
+            shifted_accompaniment,
+            key_shift_semitones=arguments.key_shift_semitones,
+            shift_accompaniment=arguments.shift_accompaniment,
+            target_samples=target_samples,
+        ):
             scratch_files.append(
                 (shifted_accompaniment, "Key-shifted accompaniment scratch")
             )

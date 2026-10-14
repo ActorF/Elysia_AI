@@ -34,6 +34,8 @@ import { parseWorkWorkspaceGetParams } from './work-protocol.js'
 import { parseWorkToolRunParams, parseWorkToolConfirmParams } from './work-tool-protocol.js'
 import { parseWorkPlanGetParams, parseWorkPlanCreateParams, parseWorkPlanControlParams, parseWorkPlanConfirmParams } from './work-plan-protocol.js'
 import { parseWorkAuditListParams, parseWorkUndoParams } from './work-audit-protocol.js'
+import { VoiceCallWindowManager } from './voice-call-window.js'
+import { VOICE_CALL_IPC } from './voice-call-contracts.js'
 import { ApplicationShutdownGate } from './application-shutdown-gate.js'
 import {
   DATA_STORAGE_CLEANABLE_CATEGORIES,
@@ -61,6 +63,7 @@ import {
   type DesktopPetProgramLibraryScan,
 } from './desktop-pet-program-library.js'
 import { DesktopPetProgramManager } from './desktop-pet-program-manager.js'
+import { createDesktopPetWindowPreparation } from './desktop-pet-window-controller.js'
 import {
   resolveDesktopPetPickerDefaultPath,
   selectedDesktopPetDirectory,
@@ -199,6 +202,34 @@ const TRAY_ICON_DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAA
 
 let mainWindow: BrowserWindow | null = null
 let backendProcess: BackendProcess | null = null
+const voiceCallWindowManager = new VoiceCallWindowManager({
+  policy: {
+    appPath: app.getAppPath(),
+    developmentUrl: DEVELOPMENT_URL,
+    isPackaged: app.isPackaged,
+    platform: process.platform,
+  },
+  preloadPath: path.join(moduleDirectory, 'voice-call-preload.cjs'),
+  canOpen: () => !shutdownStarted,
+  currentMainWindow: () => mainWindow,
+  onAction: (action) => {
+    if (action.kind === 'end') {
+      try {
+        backendProcess?.stopCurrentSpeechPlayback()
+      } catch {
+        // Capture cleanup must still reach its renderer if speech is stopping.
+      }
+    }
+    if (mainWindow === null || mainWindow.isDestroyed()) {
+      return
+    }
+    try {
+      mainWindow.webContents.send(VOICE_CALL_IPC.action, action)
+    } catch {
+      // Main renderer loss already tears down capture and invalidates this call.
+    }
+  },
+})
 let dataStorage: ElectronDataStorage | null = null
 let dataStorageState: DataStorageState | null = null
 let dataStorageInventory: DataStorageInventory | null = null
@@ -1989,7 +2020,7 @@ function parseUpdateVoiceSettingsRequest(
 }
 
 function nativeBackgroundColor(): string {
-  return nativeTheme.shouldUseDarkColors ? '#0f0b10' : '#f8f5f8'
+  return nativeTheme.shouldUseDarkColors ? '#242125' : '#fcfafb'
 }
 
 function broadcastBackendEvent(event: BackendEvent): void {
@@ -2446,6 +2477,7 @@ function requireMainWindow(): BrowserWindow {
 }
 
 function registerIpcHandlers(): void {
+  voiceCallWindowManager.registerIpcHandlers(ipcMain, assertTrustedSender)
   ipcMain.handle(
     'window:renderer-ready',
     (event): void => {
@@ -2743,6 +2775,8 @@ function registerIpcHandlers(): void {
               },
           request.engine,
           request.lyricsMetadataOverride,
+          request.shiftAccompaniment,
+          request.singingReference,
         )
       } catch (error) {
         if (
@@ -2782,6 +2816,17 @@ function registerIpcHandlers(): void {
       return requireSongCoverManager().stopPlayback(
         parseSongCoverJobId(jobId),
       )
+    },
+  )
+
+  ipcMain.handle(
+    'song-cover:seek',
+    (event, jobId: unknown, positionSeconds: unknown): SongCoverState => {
+      assertTrustedSender(event)
+      if (typeof positionSeconds !== 'number' || !Number.isFinite(positionSeconds)) {
+        throw new Error('Song Cover playback position is invalid.')
+      }
+      return requireSongCoverManager().seek(parseSongCoverJobId(jobId), positionSeconds)
     },
   )
 
@@ -3699,6 +3744,9 @@ function createMainWindow(): void {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      // Capture and VAD remain in Main's renderer when its call window is active.
+      // Windows minimization must not throttle its audio processing callbacks.
+      backgroundThrottling: false,
     },
   })
 
@@ -3722,13 +3770,18 @@ function createMainWindow(): void {
     },
   )
   mainWindow.webContents.on('did-start-loading', () => {
+    voiceCallWindowManager.dispose()
+    backendProcess?.stopCurrentSpeechPlayback()
     presenceVoiceSessionActive = false
   })
   mainWindow.webContents.on('render-process-gone', () => {
+    voiceCallWindowManager.dispose()
+    backendProcess?.stopCurrentSpeechPlayback()
     presenceVoiceSessionActive = false
     revealMainWindow()
   })
   mainWindow.on('closed', () => {
+    voiceCallWindowManager.dispose()
     clearRendererReadyTimer()
     presenceVoiceSessionActive = false
     backendProcess?.stopCurrentSpeechPlayback()
@@ -3779,6 +3832,28 @@ if (!hasSingleInstanceLock) {
         if (desktopPetPreferences !== null) {
           replaceDesktopPetRuntime(runtime, warning)
         }
+      },
+      {
+        prepareWindow: createDesktopPetWindowPreparation(() => {
+          const window = mainWindow !== null && !mainWindow.isDestroyed()
+            ? mainWindow
+            : null
+          const bounds = window?.getBounds() ?? screen.getPrimaryDisplay().workArea
+          const display = screen.getDisplayMatching(bounds)
+          // Electron uses DIP while the native controller uses per-monitor
+          // physical pixels. Convert through the same display so scaling and
+          // negative-coordinate monitors keep the pet beside this window.
+          // Tray-only launches fall back to the display's lower-right corner.
+          return {
+            appBounds: process.platform === 'win32'
+              ? screen.dipToScreenRect(window, bounds)
+              : bounds,
+            workArea: process.platform === 'win32'
+              ? screen.dipToScreenRect(window, display.workArea)
+              : display.workArea,
+            scaleFactor: display.scaleFactor,
+          }
+        }),
       },
     )
     refreshPresenceNotificationRuntime()
@@ -3880,6 +3955,9 @@ if (!hasSingleInstanceLock) {
       return
     }
     shutdownStarted = true
+    // Backend shutdown can await other work or fail and leave Main running.
+    // Notify its live renderer now so capture cannot outlive the call controls.
+    voiceCallWindowManager.endCurrent()
     const stopSongCover = songCoverManager?.shutdown() ?? Promise.resolve()
     void stopSongCover.then(() => {
       mainWindow?.hide()

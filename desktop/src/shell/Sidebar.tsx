@@ -133,7 +133,7 @@ interface ChatSummaryCopyProps {
   chat: ChatSessionSummary
 }
 
-/** Render the real list metadata shared by open and selection rows. */
+/** Render compact Chat metadata while retaining canonical associations for assistive tools. */
 function ChatSummaryCopy({ busy, chat }: ChatSummaryCopyProps) {
   const relativeTime = relativeUpdatedAt(chat.updatedAt)
   return (
@@ -148,14 +148,26 @@ function ChatSummaryCopy({ busy, chat }: ChatSummaryCopyProps) {
         )}
       </span>
       <span className="chat-item-meta">
-        <span className={`mode-badge mode-badge-${chat.mode}`}>
-          {chat.mode === 'work' ? 'Work' : 'Chat'}
-        </span>
-        <span className="chat-project" title={chat.projectId ?? 'No project'}>
-          {chat.projectId ?? 'No project'}
-        </span>
-        <span aria-hidden="true">·</span>
+        {chat.mode === 'work' ? (
+          <span className="mode-badge mode-badge-work">Work</span>
+        ) : (
+          <span className="visually-hidden">Chat</span>
+        )}
+        {chat.projectId !== null ? (
+          <span className="chat-project" title={chat.projectId}>
+            Project
+            {/* Session summaries carry IDs rather than project titles; retain
+                the association without putting protocol identifiers in the list. */}
+            <span className="visually-hidden"> {chat.projectId}</span>
+          </span>
+        ) : (
+          <span className="visually-hidden">No project</span>
+        )}
+        {(chat.mode === 'work' || chat.projectId !== null) && (
+          <span className="chat-meta-separator" aria-hidden="true">·</span>
+        )}
         <time
+          className="chat-updated-at"
           dateTime={chat.updatedAt}
           title={absoluteUpdatedAt(chat.updatedAt)}
           aria-label={`Updated ${relativeTime}`}
@@ -648,6 +660,20 @@ export function Sidebar({
           </span>
           <span>Elysia AI</span>
         </div>
+      </div>
+
+      <div className="sidebar-quick-actions">
+        <button
+          ref={createButtonRef}
+          type="button"
+          className="sidebar-new-chat"
+          aria-label="Create chat"
+          title="Create chat"
+          disabled={pending}
+          onClick={() => { void createChat() }}
+        >
+          <Icon name="plus" /><span>New chat</span>
+        </button>
         <button
           ref={searchTriggerRef}
           type="button"
@@ -718,52 +744,46 @@ export function Sidebar({
 
       <section className="chat-section" aria-labelledby="chat-section-title" aria-busy={pending}>
         <div className="section-heading">
-          <span id="chat-section-title">Chats</span>
-          <button
-            ref={createButtonRef}
-            type="button"
-            className="tiny-button"
-            aria-label="Create chat"
-            title="Create chat"
-            disabled={pending}
-            onClick={() => { void createChat() }}
-          >
-            <Icon name="plus" />
-          </button>
+          <span id="chat-section-title">{showArchived ? 'Archived chats' : 'Recents'}</span>
+          {!selectionMode && (
+            <div className="chat-management-controls">
+              <button
+                type="button"
+                className="icon-button chat-filter-button"
+                aria-label="Archived"
+                title={showArchived ? 'Show recent chats' : 'Show archived chats'}
+                aria-pressed={showArchived}
+                disabled={pending}
+                onClick={() => {
+                  setOpenMenuId(null)
+                  setSelectedChatIds(new Set())
+                  onShowArchivedChange(!showArchived)
+                }}
+              >
+                <Icon name="archive" />
+              </button>
+              <button
+                ref={selectionTriggerRef}
+                type="button"
+                className="icon-button chat-filter-button"
+                aria-label="Select chats"
+                title="Select chats"
+                disabled={pending || selectableChats.length === 0}
+                onClick={() => {
+                  setSelectionMode(true)
+                  setOpenMenuId(null)
+                  window.requestAnimationFrame(() => {
+                    selectAllRef.current?.focus({ preventScroll: true })
+                  })
+                }}
+              >
+                <Icon name="check" />
+              </button>
+            </div>
+          )}
         </div>
 
-        {!selectionMode ? (
-          <div className="chat-list-controls">
-            <button
-              type="button"
-              className="chat-filter-button"
-              aria-pressed={showArchived}
-              disabled={pending}
-              onClick={() => {
-                setOpenMenuId(null)
-                setSelectedChatIds(new Set())
-                onShowArchivedChange(!showArchived)
-              }}
-            >
-              <Icon name="archive" /><span>Archived</span>
-            </button>
-            <button
-              ref={selectionTriggerRef}
-              type="button"
-              className="chat-filter-button"
-              disabled={pending || selectableChats.length === 0}
-              onClick={() => {
-                setSelectionMode(true)
-                setOpenMenuId(null)
-                window.requestAnimationFrame(() => {
-                  selectAllRef.current?.focus({ preventScroll: true })
-                })
-              }}
-            >
-              <Icon name="check" /><span>Select chats</span>
-            </button>
-          </div>
-        ) : (
+        {selectionMode && (
           <div className="chat-selection-toolbar" role="toolbar" aria-label="Selected chats">
             <strong aria-live="polite">{selectedSelectableCount} selected</strong>
             <button

@@ -8,14 +8,13 @@
   min-width: 0;
   min-height: 0;
   color: var(--color-text-primary);
-  background: var(--color-bg-surface);
+  background: var(--color-bg-canvas);
 }
 
 .project-topbar {
   min-height: var(--layout-header-height);
   padding-inline: var(--space-5);
-  background: color-mix(in srgb, var(--color-bg-surface) 94%, transparent);
-  border-bottom: 1px solid var(--color-border);
+  background: var(--color-bg-canvas);
 }
 
 .project-page-heading {
@@ -206,11 +205,12 @@
 .project-list-button.active {
   color: var(--color-text-primary);
   background: var(--color-bg-hover);
-  border-color: var(--color-border);
+  border-color: transparent;
 }
 
 .project-list-button.active {
-  box-shadow: inset 0.125rem 0 0 var(--color-accent);
+  color: var(--color-text-link);
+  background: var(--color-bg-soft);
 }
 
 .project-list-icon {
@@ -282,7 +282,7 @@
   min-width: 0;
   min-height: 0;
   overflow: hidden;
-  background: var(--color-bg-surface);
+  background: var(--color-bg-canvas);
 }
 
 .project-detail-empty {
@@ -382,7 +382,6 @@
   background: var(--color-bg-raised);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-xl);
-  box-shadow: var(--shadow-sm);
 }
 
 .project-card-heading {
