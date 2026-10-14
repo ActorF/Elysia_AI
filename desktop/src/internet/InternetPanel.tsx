@@ -3,10 +3,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { InternetPolicyClient, InternetPolicyState } from '../../electron/internet-policy-protocol.ts'
 import { parseInternetReadRequest, parseInternetSourceText, type InternetResearchClient, type InternetResearchState, type InternetSource } from '../../electron/internet-protocol.ts'
+import type { InternetReviewClient } from '../../electron/internet-review-protocol.ts'
+import { InternetSourceReview } from './InternetSourceReview.tsx'
 import './InternetPanel.css'
 
 interface InternetPanelProps {
-  api: (InternetResearchClient & InternetPolicyClient) | undefined
+  api: (InternetResearchClient & InternetPolicyClient & InternetReviewClient) | undefined
   chatId: string
   projectId: string | null
   ready: boolean
@@ -50,6 +52,7 @@ export function InternetPanel({ api, chatId, projectId, ready, disabled, onBusyC
   const [nativeBusy, setNativeBusy] = useState(false)
   const [cancelling, setCancelling] = useState(false)
   const [turningOff, setTurningOff] = useState(false)
+  const [comparisonBusy, setComparisonBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [reviewed, setReviewed] = useState<InternetSource | null>(null)
@@ -58,7 +61,11 @@ export function InternetPanel({ api, chatId, projectId, ready, disabled, onBusyC
   const policyEpoch = useRef(0)
   const physicalPending = useRef(false)
   const physicalBusy = useRef(false)
-  const reportBusy = useCallback(() => { onBusyChange(physicalPending.current || physicalBusy.current) }, [onBusyChange])
+  const comparisonLease = useRef(false)
+  const reportBusy = useCallback(() => { onBusyChange(physicalPending.current || physicalBusy.current || comparisonLease.current) }, [onBusyChange])
+  const updateComparisonBusy = useCallback((busy: boolean): void => {
+    comparisonLease.current = busy; setComparisonBusy(busy); reportBusy()
+  }, [reportBusy])
 
   const accept = useCallback((next: InternetResearchState, token: number): void => {
     if (token !== version.current || !ready || next.owner.chatId !== chatId || next.owner.projectId !== projectId || next.revision < revision.current) return
@@ -107,7 +114,7 @@ export function InternetPanel({ api, chatId, projectId, ready, disabled, onBusyC
   }, [api, chatId, reportBusy])
 
   async function act(operation: (client: InternetResearchClient) => Promise<InternetResearchState>): Promise<void> {
-    if (api === undefined || !ready || disabled || physicalPending.current || physicalBusy.current) return
+    if (api === undefined || !ready || disabled || physicalPending.current || physicalBusy.current || comparisonLease.current) return
     const token = version.current
     physicalPending.current = true; setPending(true); setError(null); setNotice(null); setReviewed(null); reportBusy()
     try { accept(await operation(api), token) }
@@ -141,7 +148,7 @@ export function InternetPanel({ api, chatId, projectId, ready, disabled, onBusyC
   }
 
   async function addToDraft(): Promise<void> {
-    if (api === undefined || reviewed === null || !ready || disabled || physicalPending.current || physicalBusy.current) return
+    if (api === undefined || reviewed === null || !ready || disabled || physicalPending.current || physicalBusy.current || comparisonLease.current) return
     const token = version.current, sourceId = reviewed.id, evidenceRevision = revision.current, policyVersion = policyEpoch.current
     physicalPending.current = true; setPending(true); setError(null); setNotice(null); reportBusy()
     try {
@@ -155,7 +162,7 @@ export function InternetPanel({ api, chatId, projectId, ready, disabled, onBusyC
   }
 
   const visible = ready && state?.owner.chatId === chatId && state.owner.projectId === projectId ? state : null
-  const busy = pending || nativeBusy || visible?.busy === true
+  const busy = pending || nativeBusy || comparisonBusy || visible?.busy === true
   const locked = disabled || !ready || busy || api === undefined
   const normalized = query.trim()
   const validQuery = normalized.length > 0 && [...normalized].length <= 512 && new TextEncoder().encode(normalized).length <= 2048
@@ -223,6 +230,9 @@ export function InternetPanel({ api, chatId, projectId, ready, disabled, onBusyC
         <h3>Query history</h3><p>Up to 20 recent queries stay in this session. Clear them here; changing Chat or Project clears this review.</p>
         <ol>{visible?.history.map((entry, index) => <li key={`${entry.fetchedAt}-${index}`}><strong>{entry.query}</strong> · {entry.language} · {entry.count} results · {entry.status} · {dateLabel(entry.fetchedAt)}</li>)}</ol>
       </section>}
+      {typeof api?.reviewInternetSources === 'function' && <InternetSourceReview api={api} chatId={chatId} projectId={projectId}
+        sources={visible?.sources ?? []} ready={ready} disabled={disabled || pending || nativeBusy || visible?.busy === true}
+        onBusyChange={updateComparisonBusy} onChatDraft={onChatDraft} />}
     </div>
   </section>
 }

@@ -5,6 +5,7 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { InternetPolicyState, UpdateInternetPolicyRequest } from './internet-policy-protocol.js'
 import type { InternetResearchState, InternetSearchRequest, InternetReadRequest, InternetSourceRequest, InternetSourceText } from './internet-protocol.js'
+import type { InternetReview, InternetReviewRequest, InternetReviewLookup } from './internet-review-protocol.js'
 import type { VisionState, VisionSelectionResult, VisionRemoveRequest } from './vision-protocol.js'
 import type { VisionAnalysisState, VisionOcrRequest, VisionModelRequest } from './vision-analysis-protocol.js'
 import type { VisionCaptureSources, VisionCaptureStatus, VisionCapturePrepareRequest, VisionCaptureConfirmRequest, VisionCaptureApproval } from './vision-capture-protocol.js'
@@ -822,6 +823,8 @@ ipcRenderer.on(
 )
 
 const desktopApi: DesktopApi = {
+  reviewInternetSources: (request: InternetReviewRequest) => ipcRenderer.invoke('desktop:internet-research:review', request) as Promise<InternetReview>,
+  getInternetReviewText: (request: InternetReviewLookup) => ipcRenderer.invoke('desktop:internet-research:review-text', request) as Promise<{ review: InternetReview; text: string }>,
   getInternetResearch: (chatId: string) => ipcRenderer.invoke('desktop:internet-research:get', chatId) as Promise<InternetResearchState>,
   getInternetResearchActivity: (chatId: string) => ipcRenderer.invoke('desktop:internet-research:activity', chatId) as Promise<{ busy: boolean }>,
   searchInternet: (request: InternetSearchRequest) => ipcRenderer.invoke('desktop:internet-research:search', request) as Promise<InternetResearchState>,

@@ -33,6 +33,8 @@ import { BackendProcess } from './backend-process.js'
 import { InternetPolicyService } from './internet-policy.js'
 import { InternetTransport } from './internet-transport.js'
 import { InternetResearchController, InternetResearchError, type InternetResearchOwner } from './internet-research.js'
+import { InternetReviewStore } from './internet-review.js'
+import { parseInternetReviewLookup, parseInternetReviewRequest } from './internet-review-protocol.js'
 import { parseInternetChatId, parseInternetSearchRequest, parseInternetSourceRequest, parseInternetReadRequest,
   type InternetResearchState } from './internet-protocol.js'
 import type { InternetPolicyState } from './internet-policy-protocol.js'
@@ -234,6 +236,8 @@ let internetTransport: InternetTransport | null = null
 let internetResearchController: InternetResearchController | null = null
 let internetResearchGeneration = 0
 let internetResearchAdmission: { chatId: string; generation: number } | null = null
+const internetReviewStore = new InternetReviewStore()
+let internetReviewScope: string | null = null
 const internetRequests = new Set<Promise<unknown>>()
 let workDesktopController: WorkDesktopController | null = null
 let workDesktopStorage: { root: string; store: WorkDesktopStorage } | null = null
@@ -2093,6 +2097,8 @@ function broadcastBackendEvent(event: BackendEvent): void {
   catch { visionContextStore.clear(); visionContextScope = null }
   try { internetResearchController?.synchronizeOwner() }
   catch { internetResearchController?.shutdown() }
+  try { synchronizeInternetReviews() }
+  catch { internetReviewStore.clear(); internetReviewScope = null }
   try {
     maybeShowCompletionNotification(event)
   } catch {
@@ -2158,6 +2164,14 @@ function internetOwner(): InternetResearchOwner {
       || dataStorageOperation !== null || shutdownStarted }
 }
 
+function synchronizeInternetReviews(): void {
+  const owner = backendProcess?.getCanonicalVisionChat() ?? null
+  const scope = owner === null || owner.archived || shutdownStarted ? null
+    : JSON.stringify([owner.chatId, owner.projectId, owner.mode, dataStorageState?.activeDataRoot ?? null])
+  if (scope === null || scope !== internetReviewScope) internetReviewStore.clear()
+  internetReviewScope = scope
+}
+
 function publishInternetResearch(state: InternetResearchState): void {
   if (mainWindow !== null && !mainWindow.isDestroyed()) {
     try { mainWindow.webContents.send('desktop:internet-research:changed', state) }
@@ -2202,6 +2216,8 @@ function withInternetOwner<Result>(chatId: string,
 
 function retireInternetResearch(): void {
   internetResearchGeneration += 1
+  internetReviewStore.clear()
+  internetReviewScope = null
   const closing = internetResearchController
   if (closing === null) return
   closing.shutdown()
@@ -2985,12 +3001,32 @@ function registerIpcHandlers(): void {
     assertTrustedSender(event)
     const chatId = parseInternetChatId(value)
     if (internetResearchAdmission?.chatId === chatId) internetResearchGeneration += 1
-    return requireInternetResearch().clear(chatId)
+    const state = requireInternetResearch().clear(chatId)
+    internetReviewStore.clear()
+    return state
   })
   ipcMain.handle('desktop:internet-research:source-text', (event, value: unknown) => {
     assertTrustedSender(event)
     const request = parseInternetSourceRequest(value)
     return withInternetOwner(request.chatId, controller => controller.sourceText(request), true)
+  })
+  ipcMain.handle('desktop:internet-research:review', (event, value: unknown) => {
+    assertTrustedSender(event)
+    const request = parseInternetReviewRequest(value)
+    return withInternetOwner(request.chatId, controller => {
+      synchronizeInternetReviews()
+      return internetReviewStore.prepare(controller.getState(request.chatId).owner, request,
+        id => controller.getSource(request.chatId, id))
+    }, true)
+  })
+  ipcMain.handle('desktop:internet-research:review-text', (event, value: unknown) => {
+    assertTrustedSender(event)
+    const request = parseInternetReviewLookup(value)
+    return withInternetOwner(request.chatId, controller => {
+      synchronizeInternetReviews()
+      return internetReviewStore.resolve(controller.getState(request.chatId).owner, request,
+        id => controller.getSource(request.chatId, id))
+    }, true)
   })
   ipcMain.handle('desktop:internet-policy:get', (event) => {
     assertTrustedSender(event)

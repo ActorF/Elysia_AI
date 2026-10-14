@@ -5,6 +5,8 @@ import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 import vm from 'node:vm'
 import ts from 'typescript'
+import { InternetReviewStore } from '../dist-electron/internet-review.js'
+import { parseInternetReviewLookup, parseInternetReviewRequest } from '../dist-electron/internet-review-protocol.js'
 
 const text = await readFile(new URL('../electron/main.ts', import.meta.url), 'utf8')
 const source = ts.createSourceFile('main.ts', text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
@@ -12,7 +14,7 @@ const names = ['hasActiveInternetWork', 'trackInternetOperation', 'withInternetO
 const selected = source.statements.filter(node => ts.isFunctionDeclaration(node) && names.includes(node.name?.text))
 assert.equal(selected.length, names.length)
 const register = source.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'registerIpcHandlers')
-const channels = ['get', 'activity', 'search', 'read', 'cancel', 'clear', 'source-text'].map(name => `desktop:internet-research:${name}`)
+const channels = ['get', 'activity', 'search', 'read', 'cancel', 'clear', 'source-text', 'review', 'review-text'].map(name => `desktop:internet-research:${name}`)
 const handlers = register.body.statements.filter(node => ts.isExpressionStatement(node) && ts.isCallExpression(node.expression)
   && ts.isStringLiteral(node.expression.arguments[0]) && channels.includes(node.expression.arguments[0].text))
 assert.equal(handlers.length, channels.length)
@@ -24,13 +26,19 @@ const compiled = ts.transpileModule([...selected, ...handlers].map(node => node.
 function deferred() { let resolve; const promise = new Promise(done => { resolve = done }); return { promise, resolve } }
 function fixture() {
   const hydration = deferred(), drain = deferred(), callbacks = new Map(), calls = []
+  const evidence = { id: `internet_${'1'.repeat(32)}`, title: 'Native source', url: 'https://example.org/',
+    snippet: 'Canonical excerpt', content: null, publishedAt: null, modifiedAt: null, fetchedAt: new Date().toISOString(),
+    provider: 'wikipedia', fromCache: false, truncated: false }
   const controller = { hasActiveWork: () => false, whenIdle: () => drain.promise,
-    shutdown: () => calls.push('shutdown'), getState: () => ({ sources: [] }),
+    shutdown: () => calls.push('shutdown'), getState: () => ({ owner: { chatId: 'chat_research', projectId: null }, sources: [evidence] }),
+    getSource: (_chatId, sourceId) => { assert.equal(sourceId, evidence.id); return evidence },
     search: request => { calls.push(request); return { sources: [] } },
     readPage: request => { calls.push(request); return { sources: [] } },
     cancel: () => { calls.push('cancel'); return {} }, clear: () => ({}), sourceText: () => ({ text: 'native evidence' }) }
   const host = { module: { exports: {} }, internetRequests: new Set(), internetPolicyService: null,
     internetResearchGeneration: 0, internetResearchAdmission: null,
+    internetReviewStore: new InternetReviewStore(), internetReviewScope: null,
+    synchronizeInternetReviews: () => {}, parseInternetReviewRequest, parseInternetReviewLookup,
     requireInternetPolicy: () => ({ getState: () => ({ enabled: true, revision: 1 }) }),
     internetResearchController: controller, shutdownStarted: false, dataStorageOperation: null,
     internetOwner: () => ({ busy: false }), requireInternetResearch: () => controller,
@@ -62,13 +70,26 @@ test('research reserves before canonical hydration and rejects another action in
 
 test('research rejects owner replacement after hydration and authenticates every exposed IPC', async () => {
   const f = fixture()
-  for (const name of ['get', 'activity', 'search', 'read', 'cancel', 'clear', 'source-text']) {
+  for (const name of ['get', 'activity', 'search', 'read', 'cancel', 'clear', 'source-text', 'review', 'review-text']) {
     assert.throws(() => f.invoke(name, {}, false), /Untrusted/u)
   }
   const pending = f.invoke('search', { chatId: 'chat_research' })
   f.hydration.resolve({ chatId: 'chat_other' })
   await assert.rejects(pending, /owner_changed/u)
   assert.deepEqual(f.calls, [])
+})
+
+test('comparison and draft export resolve native sources offline and clearing removes the receipt', async () => {
+  const f = fixture()
+  f.host.requireInternetPolicy = () => ({ getState: () => ({ enabled: false, revision: 2 }) })
+  f.hydration.resolve({ chatId: 'chat_research' })
+  const review = await f.invoke('review', { chatId: 'chat_research', sourceIds: [`internet_${'1'.repeat(32)}`],
+    claim: 'Explain the evidence.', interpretation: 'source_report', eventDate: null, uncertainty: '' })
+  const exported = await f.invoke('review-text', { chatId: 'chat_research', reviewId: review.id })
+  assert.match(exported.text, /Canonical excerpt/u)
+  assert.deepEqual(f.calls, [])
+  f.invoke('clear', 'chat_research')
+  await assert.rejects(f.invoke('review-text', { chatId: 'chat_research', reviewId: review.id }))
 })
 
 test('page reads use the same canonical admission and cannot resume after an Off and On cycle', async () => {

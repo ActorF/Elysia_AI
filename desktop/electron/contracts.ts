@@ -37,6 +37,7 @@ import type { VisionContextClient } from './vision-context-protocol.js'
 import type { VisionHistoryClient } from './vision-history-protocol.js'
 import type { InternetPolicyClient } from './internet-policy-protocol.js'
 import type { InternetResearchClient } from './internet-protocol.js'
+import type { InternetReviewClient } from './internet-review-protocol.js'
 export type { VisionHistoryClient, VisionHistoryList, VisionHistorySaveRequest, VisionHistorySelectRequest,
   VisionHistoryClearRequest, VisionHistoryClearAllRequest } from './vision-history-protocol.js'
 export type { VisionContextClient, VisionContext, VisionReviewRequest, VisionContextRequest } from './vision-context-protocol.js'
@@ -585,7 +586,7 @@ export type BackendEvent =
  * Renderer code receives domain data and owned actions, never Electron or raw
  * filesystem primitives.
  */
-export interface DesktopApi extends WorkWorkspaceClient, WorkToolClient, WorkPlanClient, WorkAuditClient, WorkDesktopClient, VisionClient, VisionAnalysisClient, VisionCaptureClient, VisionContextClient, VisionHistoryClient, InternetPolicyClient, InternetResearchClient {
+export interface DesktopApi extends WorkWorkspaceClient, WorkToolClient, WorkPlanClient, WorkAuditClient, WorkDesktopClient, VisionClient, VisionAnalysisClient, VisionCaptureClient, VisionContextClient, VisionHistoryClient, InternetPolicyClient, InternetResearchClient, InternetReviewClient {
   /** Signal that the renderer can receive events and the main window may appear. */
   rendererReady(): Promise<void>
   /** Keep native window chrome aligned with the renderer's saved appearance. */
