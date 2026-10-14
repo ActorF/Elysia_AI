@@ -218,6 +218,7 @@ ProtocolMethod = Literal[
     "chat.create",
     "chat.open",
     "chat.rename",
+    "chat.mode",
     "chat.pin",
     "chat.archive",
     "chat.delete",
@@ -261,6 +262,7 @@ SUPPORTED_METHODS: Final[tuple[ProtocolMethod, ...]] = (
     "chat.create",
     "chat.open",
     "chat.rename",
+    "chat.mode",
     "chat.pin",
     "chat.archive",
     "chat.delete",
@@ -407,6 +409,13 @@ class ChatRenameParams(TypedDict):
 
     chatId: str
     title: str
+
+
+class ChatModeParams(TypedDict):
+    """Persist an explicit capability mode on the active idle Chat."""
+
+    chatId: str
+    mode: Literal["chat", "work"]
 
 
 class ChatPinParams(TypedDict):
@@ -1599,6 +1608,15 @@ def _validate_chat_rename_params(params: JsonObject) -> None:
     _validate_chat_title(params, context=context)
 
 
+def _validate_chat_mode_params(params: JsonObject) -> None:
+    """Accept only one canonical Chat identity and explicit saved mode."""
+
+    context = "chat.mode params"
+    _require_fields(params, {"chatId", "mode"}, context)
+    _require_identifier(params, "chatId", context)
+    _validate_chat_mode(params, context=context)
+
+
 def _validate_chat_pin_params(params: JsonObject) -> None:
     context = "chat.pin params"
     _require_fields(params, {"chatId", "pinned"}, context)
@@ -2218,6 +2236,8 @@ def parse_client_request(value: object) -> ClientRequest:
         _validate_chat_id_params(params, method=method)
     elif method == "chat.rename":
         _validate_chat_rename_params(params)
+    elif method == "chat.mode":
+        _validate_chat_mode_params(params)
     elif method == "chat.pin":
         _validate_chat_pin_params(params)
     elif method == "chat.archive":

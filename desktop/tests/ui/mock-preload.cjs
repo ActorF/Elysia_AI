@@ -383,6 +383,7 @@ let knowledgeStates = new Map()
 let nextAttachmentError = null
 let nextAttachmentPickerCancelled = false
 let nextSendError = null
+let nextChatModeError = null
 let selectedWorkspace = null
 let nextRequestNumber = 1
 let nextAttachmentNumber = 1
@@ -1421,6 +1422,25 @@ const desktopApi = {
     return clone(chatState)
   },
 
+  setChatMode: async (request) => {
+    record('setChatMode', [request])
+    await waitForChatAction()
+    if (nextChatModeError !== null) {
+      const message = nextChatModeError
+      nextChatModeError = null
+      throw new Error(message)
+    }
+    chatState.chats = chatState.chats.map((chat) => (
+      chat.chatId === request.chatId
+        ? { ...chat, mode: request.mode }
+        : chat
+    ))
+    if (chatState.activeChat.chatId === request.chatId) {
+      chatState.activeChat.mode = request.mode
+    }
+    return clone(chatState)
+  },
+
   setChatPinned: async (request) => {
     record('setChatPinned', [request])
     chatState.chats = chatState.chats.map((chat) => (
@@ -1976,6 +1996,7 @@ const testControl = {
     nextAttachmentError = null
     nextAttachmentPickerCancelled = false
     nextSendError = null
+    nextChatModeError = null
     selectedWorkspace = null
     nextRequestNumber = 1
     nextAttachmentNumber = 1
@@ -2265,6 +2286,10 @@ const testControl = {
 
   failNextSend: (message) => {
     nextSendError = message
+  },
+
+  failNextChatMode: (message) => {
+    nextChatModeError = message
   },
 
   setSelectedWorkspace: (workspacePath) => {

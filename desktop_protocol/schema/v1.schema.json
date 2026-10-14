@@ -62,6 +62,7 @@
     { "$ref": "#/$defs/chatCreateRequest" },
     { "$ref": "#/$defs/chatOpenRequest" },
     { "$ref": "#/$defs/chatRenameRequest" },
+    { "$ref": "#/$defs/chatModeRequest" },
     { "$ref": "#/$defs/chatPinRequest" },
     { "$ref": "#/$defs/chatArchiveRequest" },
     { "$ref": "#/$defs/chatDeleteRequest" },
@@ -157,6 +158,7 @@
             "chat.create",
             "chat.open",
             "chat.rename",
+            "chat.mode",
             "chat.pin",
             "chat.archive",
             "chat.delete",
@@ -463,6 +465,15 @@
         "pinned": { "type": "boolean" }
       },
       "required": ["chatId", "pinned"],
+      "additionalProperties": false
+    },
+    "chatModeParams": {
+      "type": "object",
+      "properties": {
+        "chatId": { "$ref": "#/$defs/identifier" },
+        "mode": { "$ref": "#/$defs/conversationMode" }
+      },
+      "required": ["chatId", "mode"],
       "additionalProperties": false
     },
     "chatArchiveParams": {
@@ -915,6 +926,17 @@
           "properties": {
             "method": { "const": "chat.pin" },
             "params": { "$ref": "#/$defs/chatPinParams" }
+          }
+        }
+      ]
+    },
+    "chatModeRequest": {
+      "allOf": [
+        { "$ref": "#/$defs/requestEnvelope" },
+        {
+          "properties": {
+            "method": { "const": "chat.mode" },
+            "params": { "$ref": "#/$defs/chatModeParams" }
           }
         }
       ]

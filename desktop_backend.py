@@ -179,6 +179,7 @@ SERVER_NAME = "elysia-python"
 SERVER_VERSION = "0.1.0"
 SERVER_CAPABILITIES = (
     "chat.sessions",
+    "chat.mode",
     "chat.stream",
     "chat.retry",
     "request.cancel",
@@ -802,6 +803,8 @@ class DesktopBackend:
                 self._open_chat(request_id, params)
             elif method == "chat.rename":
                 self._rename_chat(request_id, params)
+            elif method == "chat.mode":
+                self._set_chat_mode(request_id, params)
             elif method == "chat.pin":
                 self._pin_chat(request_id, params)
             elif method == "chat.archive":
@@ -2370,6 +2373,39 @@ class DesktopBackend:
             ChatId(cast(str, params["chatId"])),
             cast(bool, params["pinned"]),
         )
+        self._emit_session_response(request_id, include_archived=True)
+
+    def _set_chat_mode(self, request_id: str, params: JsonObject) -> None:
+        """Change the active Chat's saved capabilities before another turn.
+
+        The Backend reservation precedes the Brain's turn guard, so both must
+        be checked. Holding the reservation lock through persistence also
+        prevents a worker from being admitted with the previous mode snapshot.
+        """
+
+        brain = self._brain
+        if brain is None:
+            raise RuntimeError("Backend is not initialized.")
+        chat_id = ChatId(cast(str, params["chatId"]))
+        with self._state_lock:
+            active_chat = self._active_chat
+            if active_chat is None or active_chat.chat_id != chat_id:
+                raise ProtocolValidationError(
+                    "chat.not_active",
+                    "chatId is not the active desktop Chat.",
+                )
+            generation = self._generation_task
+            if (
+                generation is not None and not generation.done.is_set()
+            ) or self._transcription_capacity_reserved_locked():
+                raise ChatBusyError(
+                    "Wait for the active reply or voice transcription "
+                    "before changing Chat mode."
+                )
+            self._active_chat = brain.set_chat_mode(
+                chat_id,
+                cast(ConversationMode, params["mode"]),
+            )
         self._emit_session_response(request_id, include_archived=True)
 
     def _archive_chat(self, request_id: str, params: JsonObject) -> None:

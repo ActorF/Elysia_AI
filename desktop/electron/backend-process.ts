@@ -34,6 +34,7 @@ import type {
   ProjectState,
   ProjectWorkspaceRequest,
   RenameChatRequest,
+  SetChatModeRequest,
   RetryChatRequest,
   StartSpeechPlaybackRequest,
   DesktopSettingsState,
@@ -467,6 +468,7 @@ type ChatSessionMethod =
   | 'chat.create'
   | 'chat.open'
   | 'chat.rename'
+  | 'chat.mode'
   | 'chat.pin'
   | 'chat.archive'
   | 'chat.delete'
@@ -476,6 +478,7 @@ const CHAT_SESSION_METHODS = new Set<ProtocolMethod>([
   'chat.create',
   'chat.open',
   'chat.rename',
+  'chat.mode',
   'chat.pin',
   'chat.archive',
   'chat.delete',
@@ -1438,6 +1441,11 @@ export class BackendProcess {
   /** Rename one idle persisted Chat. */
   renameChat(request: RenameChatRequest): Promise<ChatSessionState> {
     return this.requestChatState('chat.rename', request)
+  }
+
+  /** Persist a deliberate mode change only while the conversation is idle. */
+  setChatMode(request: SetChatModeRequest): Promise<ChatSessionState> {
+    return this.requestChatState('chat.mode', request)
   }
 
   /** Set one idle Chat's pin state. */

@@ -27,6 +27,7 @@ import type {
   PinChatRequest,
   ProjectState,
   RenameChatRequest,
+  SetChatModeRequest,
   RetryChatRequest,
   StartSpeechPlaybackRequest,
   UpdateProjectRequest,
@@ -975,6 +976,12 @@ const desktopApi: DesktopApi = {
   setChatPinned: (request: PinChatRequest) =>
     ipcRenderer.invoke(
       'chat:pin',
+      request,
+    ) as Promise<ChatSessionState>,
+
+  setChatMode: (request: SetChatModeRequest) =>
+    ipcRenderer.invoke(
+      'chat:mode',
       request,
     ) as Promise<ChatSessionState>,
 

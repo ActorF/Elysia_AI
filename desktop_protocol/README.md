@@ -41,6 +41,17 @@ a successful Stop response guarantees that the interrupted turn is not saved.
 Backend permission prompts retain their stable schema but are not yet
 advertised as an active capability.
 
+`chat.mode` changes only the explicitly selected active Chat using
+`{chatId, mode: "chat" | "work"}` and returns the same canonical Chat state as
+other session mutations. It preserves messages, summaries, attachments, and
+drafts, and refuses changes during an admitted reply or local transcription.
+The UI explains the selected capabilities before the next turn. Mode-specific
+prompt instructions are composed separately from the unchanged persona
+resource. Chat mode denies tool admission; selecting Work only makes typed,
+workspace-bound, separately approved actions eligible. Message text, Project
+instructions, retrieved memory, and model output cannot select a mode or grant
+tool permissions.
+
 `settings.get` and `settings.update` expose one exact public allowlist with
 optimistic revision checks: Chat model, Ollama origin, two Memory limits,
 import byte limit, transcription model/device/language, automatic Voice Call speech,

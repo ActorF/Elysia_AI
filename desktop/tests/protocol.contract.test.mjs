@@ -3264,6 +3264,10 @@ test('Backend permits collection reads but blocks writes during generation', asy
     /active Chat reply/,
   )
   await assert.rejects(
+    backend.setChatMode({ chatId: 'chat_fixture', mode: 'work' }),
+    /active Chat reply/,
+  )
+  await assert.rejects(
     backend.openProject('project_second'),
     /active Chat reply/,
   )
@@ -3325,6 +3329,43 @@ test('Backend state machine rejects data after a terminal chunk', () => {
 
   assert.equal(events.at(-1).type, 'snapshot')
   assert.equal(events.at(-1).snapshot.status, 'error')
+})
+
+test('Backend mode switching sends exact parameters and resolves canonical history', async () => {
+  const writes = []
+  const backend = new BackendProcess('.', () => undefined)
+  backend.child = {
+    stdin: {
+      writable: true,
+      write: (value) => writes.push(value),
+    },
+  }
+  backend.snapshot = {
+    revision: 1,
+    status: 'ready',
+    capabilities: ['chat.sessions', 'chat.mode'],
+    models: ['qwen3.5:9b'],
+    modelName: 'qwen3.5:9b',
+    chatId: 'chat_fixture',
+    chatTitle: 'Elysia Chat',
+  }
+  const switching = backend.setChatMode({ chatId: 'chat_fixture', mode: 'work' })
+  const request = JSON.parse(writes[0])
+  assert.equal(request.method, 'chat.mode')
+  assert.deepEqual(request.params, { chatId: 'chat_fixture', mode: 'work' })
+  const sample = fixtures.validServerMessages.find(
+    (candidate) => candidate.name === 'chat state response',
+  )
+  assert.ok(sample)
+  const response = structuredClone(sample.message)
+  response.id = request.id
+  response.result.activeChat.mode = 'work'
+  response.result.chats[0].mode = 'work'
+  backend.handleProtocolLine(JSON.stringify(response))
+  const state = await switching
+  assert.equal(state.activeChat.mode, 'work')
+  assert.deepEqual(state.activeChat.messages, response.result.activeChat.messages)
+  assert.equal(backend.getSnapshot().status, 'ready')
 })
 
 test('Backend state machine resolves a typed Chat session action', async () => {

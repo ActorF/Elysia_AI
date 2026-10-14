@@ -248,6 +248,12 @@ export interface ChatRenameParams {
   title: string
 }
 
+/** Explicit mode choice; natural-language messages never select a mode. */
+export interface ChatModeParams {
+  chatId: string
+  mode: ConversationMode
+}
+
 export interface ChatPinParams {
   chatId: string
   pinned: boolean
@@ -425,6 +431,7 @@ export interface RequestParamsByMethod {
   'chat.create': ChatCreateParams
   'chat.open': ChatIdParams
   'chat.rename': ChatRenameParams
+  'chat.mode': ChatModeParams
   'chat.pin': ChatPinParams
   'chat.archive': ChatArchiveParams
   'chat.delete': ChatIdParams
@@ -1403,6 +1410,16 @@ function parseChatPinParams(value: unknown): ChatPinParams {
   }
 }
 
+function parseChatModeParams(value: unknown): ChatModeParams {
+  const context = 'chat.mode params'
+  const params = asRecord(value, context)
+  requireFields(params, ['chatId', 'mode'], context)
+  return {
+    chatId: readIdentifier(params, 'chatId', context),
+    mode: readConversationMode(params, context),
+  }
+}
+
 function parseChatArchiveParams(value: unknown): ChatArchiveParams {
   const context = 'chat.archive params'
   const params = asRecord(value, context)
@@ -2303,6 +2320,12 @@ export function parseClientRequest(value: unknown): ClientRequest {
     return {
       type: 'request', protocol, id, method,
       params: parseChatPinParams(request.params),
+    }
+  }
+  if (method === 'chat.mode') {
+    return {
+      type: 'request', protocol, id, method,
+      params: parseChatModeParams(request.params),
     }
   }
   if (method === 'chat.archive') {

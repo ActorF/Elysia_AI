@@ -206,6 +206,12 @@ export interface RenameChatRequest {
   title: string
 }
 
+/** Explicitly choose the behavior of one persisted Chat without changing history. */
+export interface SetChatModeRequest {
+  chatId: string
+  mode: 'chat' | 'work'
+}
+
 /** Identify one Chat and the desired pin state. */
 export interface PinChatRequest {
   chatId: string
@@ -653,6 +659,8 @@ export interface DesktopApi {
   openChat(chatId: string): Promise<ChatSessionState>
   /** Rename one Chat and return the refreshed canonical state. */
   renameChat(request: RenameChatRequest): Promise<ChatSessionState>
+  /** Persist an explicit Chat or Work selection and return canonical history. */
+  setChatMode(request: SetChatModeRequest): Promise<ChatSessionState>
   /** Persist one Chat's pin state and return refreshed canonical state. */
   setChatPinned(request: PinChatRequest): Promise<ChatSessionState>
   /** Persist one Chat's archive state and return refreshed canonical state. */

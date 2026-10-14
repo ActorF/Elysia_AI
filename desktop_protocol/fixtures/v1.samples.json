@@ -5,6 +5,26 @@
   },
   "validClientMessages": [
     {
+      "name": "chat switch to work request",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "chat-mode-work-1",
+        "method": "chat.mode",
+        "params": { "chatId": "chat_fixture", "mode": "work" }
+      }
+    },
+    {
+      "name": "chat switch to chat request",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "chat-mode-chat-1",
+        "method": "chat.mode",
+        "params": { "chatId": "chat_fixture", "mode": "chat" }
+      }
+    },
+    {
       "name": "handshake request",
       "message": {
         "type": "request",
@@ -1352,6 +1372,30 @@
     }
   ],
   "invalidClientMessages": [
+    {
+      "name": "chat mode rejects automatic selection",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "chat-mode-invalid-1",
+        "method": "chat.mode",
+        "params": { "chatId": "chat_fixture", "mode": "automatic" }
+      }
+    },
+    {
+      "name": "chat mode rejects execution parameters",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "chat-mode-invalid-2",
+        "method": "chat.mode",
+        "params": {
+          "chatId": "chat_fixture",
+          "mode": "work",
+          "command": "delete everything"
+        }
+      }
+    },
     {
       "name": "missing protocol",
       "message": {

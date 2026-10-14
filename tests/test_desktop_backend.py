@@ -213,6 +213,18 @@ class FakeBrain:
         self.add_chat(updated)
         return updated.to_meta()
 
+    def set_chat_mode(
+        self,
+        chat_id: ChatId,
+        mode: ConversationMode,
+    ) -> ChatSession:
+        """Save an explicit mode selection for desktop contract scenarios."""
+
+        self.session_calls.append(("set_chat_mode", str(chat_id), mode))
+        updated = replace(self._chats[chat_id], mode=mode)
+        self.add_chat(updated)
+        return updated
+
     def archive_chat(
         self,
         chat_id: ChatId,
@@ -4475,6 +4487,87 @@ def test_create_open_rename_and_pin_return_uniform_session_state() -> None:
         str(open_target.chat_id),
         True,
     ) in fake_brain.session_calls
+
+
+def test_chat_mode_returns_saved_canonical_state_and_rejects_inactive_chat() -> None:
+    """Switch only the active Chat and expose identical list/detail modes."""
+
+    fake_brain = FakeBrain()
+    inactive = fake_brain.next_chat
+    fake_brain.add_chat(inactive)
+    active_id = str(fake_brain.chat.chat_id)
+    _, messages = _run_bridge(
+        lambda _chat_id: [
+            _handshake_request(),
+            _initialize_request(),
+            _request(
+                "mode-work",
+                "chat.mode",
+                {"chatId": active_id, "mode": "work"},
+            ),
+            _request(
+                "mode-inactive",
+                "chat.mode",
+                {"chatId": str(inactive.chat_id), "mode": "work"},
+            ),
+            _request(
+                "mode-chat",
+                "chat.mode",
+                {"chatId": active_id, "mode": "chat"},
+            ),
+        ],
+        fake_brain=fake_brain,
+    )
+    assert "chat.mode" in SERVER_CAPABILITIES
+    for request_id, mode in (("mode-work", "work"), ("mode-chat", "chat")):
+        result = _success_result(messages, request_id)
+        assert set(result) == {"activeChat", "chats"}
+        assert result["activeChat"]["mode"] == mode
+        listed = next(chat for chat in result["chats"] if chat["chatId"] == active_id)
+        assert listed["mode"] == mode
+    assert _error(messages, "mode-inactive")["code"] == "chat.not_active"
+    assert fake_brain.get_chat(inactive.chat_id).mode == "chat"
+
+
+@pytest.mark.parametrize("reservation", ["generation", "transcription"])
+def test_chat_mode_rejects_backend_reservations_before_brain_turn_starts(
+    tmp_path: Path,
+    reservation: str,
+) -> None:
+    """Prevent capability changes during reply or pending voice admission."""
+
+    transcriber = _ControlledTranscriber(
+        TranscriptionResult(text="unused", language="en", language_probability=1.0)
+    )
+    factory, _runners = _transcription_runner_factory(transcriber)
+    backend, fake_brain, output = _initialized_backend(tmp_path, factory)
+    chat_id = fake_brain.chat.chat_id
+    if reservation == "generation":
+        backend._generation_task = desktop_backend_module._GenerationTask(
+            request_id="reserved-reply",
+            chat_id=chat_id,
+            method="chat.stream",
+            speak_reply=False,
+        )
+    else:
+        backend._transcription_task = desktop_backend_module._TranscriptionTask(
+            request_id="reserved-voice",
+            chat_id=chat_id,
+            session_id="voice_mode",
+        )
+    try:
+        assert backend._handle_line(json.dumps(_request(
+            "mode-busy",
+            "chat.mode",
+            {"chatId": str(chat_id), "mode": "work"},
+        )))
+        assert _error(_output_messages(output), "mode-busy")["code"] == "chat.busy"
+        assert fake_brain.get_chat(chat_id).mode == "chat"
+        assert not any(call[0] == "set_chat_mode" for call in fake_brain.session_calls)
+    finally:
+        backend._generation_task = None
+        backend._transcription_task = None
+        backend._prepare_transcription_shutdown()
 
 
 def test_open_rejects_archived_and_wrong_model_chats() -> None:

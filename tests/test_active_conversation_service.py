@@ -79,6 +79,44 @@ def test_open_turn_loads_matching_chat_project_and_mode(
     assert chats.get_chat(chat.chat_id) == chat
 
 
+def test_mode_switch_persists_content_and_index_across_restart(
+    tmp_path: Path,
+) -> None:
+    """Save only mode and update time, retaining content and Project scope."""
+
+    chats, projects, active = _services(tmp_path)
+    project = projects.create_project(name="Mode Project")
+    chat = active.create_chat(
+        title="Stable",
+        mode="chat",
+        model_name="fake-model",
+        project_id=project.project_id,
+    )
+    with active.open_turn(chat.chat_id) as turn:
+        completed = active.commit_turn(
+            turn,
+            user_message="Please edit a file without switching modes.",
+            assistant_message="Select Work to start a workspace task.",
+        )
+    assert completed.mode == "chat"
+    switched = active.set_chat_mode(chat.chat_id, "work")
+    assert switched == replace(
+        completed,
+        mode="work",
+        updated_at=switched.updated_at,
+    )
+    restarted = JsonChatRepository(tmp_path / "data" / "chats")
+    assert restarted.get_chat(chat.chat_id) == switched
+    assert restarted.list_chats()[0].mode == "work"
+    assert active.set_chat_mode(chat.chat_id, "work") == switched
+    assert active.set_chat_mode(chat.chat_id, "chat").messages == (
+        completed.messages
+    )
+    with pytest.raises(ValueError, match="chat or work"):
+        active.set_chat_mode(chat.chat_id, "automatic")  # type: ignore[arg-type]
+    assert chats.get_chat(chat.chat_id).mode == "chat"
+
+
 def test_same_chat_is_busy_but_different_chat_can_open(
     tmp_path: Path,
 ) -> None:
@@ -159,7 +197,7 @@ def test_chat_actions_preserve_messages_summary_and_project(
 
 @pytest.mark.parametrize(
     "action",
-    ["rename", "pin", "archive", "delete"],
+    ["rename", "pin", "archive", "delete", "mode"],
 )
 def test_busy_chat_rejects_session_actions_without_changes(
     tmp_path: Path,
@@ -181,6 +219,8 @@ def test_busy_chat_rejects_session_actions_without_changes(
                 active.pin_chat(chat.chat_id)
             elif action == "archive":
                 active.archive_chat(chat.chat_id)
+            elif action == "mode":
+                active.set_chat_mode(chat.chat_id, "work")
             else:
                 active.delete_chat(chat.chat_id)
 

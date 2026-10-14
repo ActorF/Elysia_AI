@@ -9,6 +9,7 @@ from chats import ConversationMode
 from memory import Profile, RetrievedMemory
 
 from .exceptions import ConfigurationError
+from .mode_policy import get_mode_policy
 
 
 class ProjectPromptContext(TypedDict):
@@ -32,6 +33,7 @@ _SYSTEM_RULES_PATH = Path(__file__).with_name(
 )
 _MAX_SYSTEM_RULES_BYTES = 128 * 1024
 _RESERVED_DYNAMIC_SECTION_MARKERS = (
+    "MODE_POLICY:",
     "RETRIEVED_MEMORY_JSON:",
     "ACTIVE_CONVERSATION_JSON:",
     "USER_PROFILE_JSON:",
@@ -130,8 +132,17 @@ def build_elysia_system_prompt(
         indent=2,
     )
 
+    # Mode policy is trusted code, while the persisted context below remains
+    # serialized data. A prompt embedded in a Project or message cannot grant
+    # tool permissions or reinterpret a Chat as Work.
+    mode_policy = get_mode_policy(
+        "chat" if active_conversation is None else active_conversation["mode"]
+    )
+
     return (
         f"{load_elysia_system_rules()}\n"
+        "MODE_POLICY:\n"
+        f"{mode_policy.prompt_instructions}\n"
         "RETRIEVED_MEMORY_JSON:\n"
         f"{memory_context_json}\n"
         "ACTIVE_CONVERSATION_JSON:\n"

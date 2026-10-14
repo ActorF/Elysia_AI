@@ -160,6 +160,7 @@ import type {
   MoveChatToProjectRequest,
   PinChatRequest,
   RenameChatRequest,
+  SetChatModeRequest,
   RetryChatRequest,
   StartSpeechPlaybackRequest,
   UpdateDesktopSettingsRequest,
@@ -1656,6 +1657,17 @@ function parsePinChatRequest(value: unknown): PinChatRequest {
   }
 }
 
+function parseSetChatModeRequest(value: unknown): SetChatModeRequest {
+  const request = parseObject(value, ['chatId', 'mode'], 'Chat mode request')
+  if (request.mode !== 'chat' && request.mode !== 'work') {
+    throw new Error('Chat mode is invalid.')
+  }
+  return {
+    chatId: parseChatId(request.chatId),
+    mode: request.mode,
+  }
+}
+
 function parseArchiveChatRequest(value: unknown): ArchiveChatRequest {
   const request = parseObject(
     value,
@@ -2896,6 +2908,14 @@ function registerIpcHandlers(): void {
     (event, request: unknown) => {
       assertTrustedSender(event)
       return requireBackend().pinChat(parsePinChatRequest(request))
+    },
+  )
+
+  ipcMain.handle(
+    'chat:mode',
+    (event, request: unknown) => {
+      assertTrustedSender(event)
+      return requireBackend().setChatMode(parseSetChatModeRequest(request))
     },
   )
 

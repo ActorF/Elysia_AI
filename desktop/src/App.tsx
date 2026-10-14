@@ -1296,6 +1296,15 @@ function App() {
   const sessionUiPending = sessionMutationPending
     || snapshot.status !== 'ready'
     || chatState === null
+  const modeSelectionDisabled = desktopApi === undefined
+    || !snapshot.capabilities.includes('chat.mode')
+    || sessionUiPending
+    || generationBusy
+    || generationReconcilePending
+    || pendingChatSend !== null
+    || dictationActive
+    || callPreviewOpen
+    || voiceTranscriptionOperationRef.current !== null
   const canSend = (
     desktopApi !== undefined
     && snapshot.status === 'ready'
@@ -6627,6 +6636,27 @@ function App() {
     )
   }
 
+  async function selectChatMode(mode: 'chat' | 'work'): Promise<void> {
+    if (
+      desktopApi === undefined
+      || activeChatId === undefined
+      || modeSelectionDisabled
+      || mode === chatState?.activeChat.mode
+    ) {
+      return
+    }
+    // Only a deliberate selection reaches this RPC. Canonical state replaces
+    // the display after persistence succeeds, so failed writes retain the mode.
+    try {
+      await runSessionAction(
+        () => desktopApi.setChatMode({ chatId: activeChatId, mode }),
+        'Could not change the conversation mode.',
+      )
+    } catch {
+      // runSessionAction already surfaces the failure beside the Composer.
+    }
+  }
+
   function pinChat(chatId: string, pinned: boolean): Promise<void> {
     if (desktopApi === undefined) {
       return Promise.reject(new Error('Desktop API is unavailable.'))
@@ -7807,6 +7837,7 @@ function App() {
         callButtonRef={callButtonRef}
         canSend={canSend}
         chatMode={chatState?.activeChat.mode ?? 'chat'}
+        modeSelectionDisabled={modeSelectionDisabled}
         chatTitle={displayedChat}
         dictationActive={dictationActive}
         dictationDisabled={
@@ -7884,6 +7915,7 @@ function App() {
         onRetryEditChange={updateRetryEdit}
         onRetryConnection={() => { void retryConnection() }}
         onSelectModel={(modelName) => { void selectModel(modelName) }}
+        onSelectMode={(mode) => { void selectChatMode(mode) }}
         onCancelSongCover={() => { void cancelSongCover() }}
         onExportSongCover={() => { void exportSongCover() }}
         onOpenSongCoverSetup={openSongCoverSetup}
