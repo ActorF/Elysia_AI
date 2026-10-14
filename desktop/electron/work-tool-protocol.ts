@@ -93,6 +93,8 @@ export interface WorkToolClient {
   getWorkTools(chatId: string): Promise<WorkToolsState>
   /** Run one explicitly selected read operation inside the active bound Workspace. */
   runWorkTool(request: WorkToolRunParams): Promise<WorkToolResultState>
+  /** Prepare an exact write preview without applying the requested change. */
+  previewWorkTool(request: WorkToolRunParams): Promise<WorkToolApprovalState>
 }
 
 const DECLARED_POLICY: Record<WorkToolId, { risk: WorkToolRisk; timeout: number }> = {

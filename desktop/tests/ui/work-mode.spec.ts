@@ -20,6 +20,7 @@ interface WorkTestControl {
   setNextWorkToolResult(result: unknown): void
   setWorkToolRunDelay(delayed: boolean): void
   releaseNextWorkToolRun(): boolean
+  failNextWorkPreview(message: string): void
 }
 
 type WorkTestWindow = Window & { elysiaDesktopTest: WorkTestControl }
@@ -35,7 +36,7 @@ function snapshot(status = 'ready', revision = 1) {
   return {
     revision,
     status,
-    capabilities: ['chat.stream', 'chat.mode', 'work.workspace', 'work.tools', 'work.read'],
+    capabilities: ['chat.stream', 'chat.mode', 'work.workspace', 'work.tools', 'work.read', 'work.preview'],
     models: ['qwen3.5:9b'],
     modelName: 'qwen3.5:9b',
     chatId: 'chat_work_test',
@@ -150,10 +151,10 @@ test('shows the declared tool catalog and recovers from a bounded catalog failur
   await expect(inspector.getByRole('alert')).toContainText('Could not load available tools.')
   await expect(inspector).not.toContainText('Private catalog diagnostic')
   await inspector.getByRole('button', { name: 'Reload Tools' }).click()
-  await expect(inspector.locator('summary')).toHaveText('Available tools (4)')
+  await expect(inspector.locator('summary')).toHaveText('Available tools (8)')
   await expect(inspector.getByText('Read text', { exact: true })).toBeVisible()
   await expect(inspector.getByText('low risk · 20s limit')).toBeVisible()
-  await expect(inspector.locator('li')).toHaveCount(4)
+  await expect(inspector.locator('li')).toHaveCount(8)
   await expect.poll(() => page.evaluate(() => (
     (window as WorkTestWindow).elysiaDesktopTest.getCalls()
       .find((call) => call.method === 'getWorkTools')?.args
@@ -215,4 +216,50 @@ test('blocks conflicting actions during a read and recovers after a cancelled re
   })
   await expect(page.getByRole('region', { name: 'Work tool result' })).toContainText('The action was cancelled.')
   await expect(mode).toBeEnabled()
+})
+
+test('prepares exact write previews and requires a fresh preview after parameter edits', async () => {
+  await page.evaluate(() => {
+    ;(window as WorkTestWindow).elysiaDesktopTest.setWorkWorkspaceState({
+      kind: 'work.workspace', chatId: 'chat_work_test', workspacePath: 'D:\\work-preview',
+    })
+  })
+  await page.getByRole('combobox', { name: 'Conversation mode' }).selectOption('work')
+  await page.getByLabel('Work tool', { exact: true }).selectOption('edit')
+  await page.getByLabel('Relative path', { exact: true }).fill('notes.txt')
+  await page.getByLabel('Complete file content').fill('First replacement.')
+  await page.getByRole('button', { name: 'Prepare change', exact: true }).click()
+  const preview = page.getByRole('region', { name: 'Work change preview' })
+  await expect(preview.locator('[data-work-parameters]')).toContainText('First replacement.')
+  await expect(preview).toContainText('Risk: medium')
+  await page.getByLabel('Complete file content').fill('Updated replacement.')
+  await expect(preview).toHaveCount(0)
+  await page.getByRole('button', { name: 'Prepare change', exact: true }).click()
+  await expect(preview.locator('[data-work-parameters]')).toContainText('Updated replacement.')
+  const calls = await page.evaluate(() => (window as WorkTestWindow).elysiaDesktopTest.getCalls())
+  expect(calls.filter((call) => call.method === 'previewWorkTool').length).toBe(2)
+  expect(calls.filter((call) => call.method === 'runWorkTool').length).toBe(0)
+  await page.getByLabel('Work tool', { exact: true }).selectOption('move')
+  await page.getByLabel('Destination path').fill('archive/notes.txt')
+  await page.getByRole('button', { name: 'Prepare change', exact: true }).click()
+  await expect(preview.locator('[data-work-parameters]')).toContainText('archive/notes.txt')
+  await page.getByLabel('Work tool', { exact: true }).selectOption('delete')
+  await page.getByRole('button', { name: 'Prepare change', exact: true }).click()
+  await expect(preview).toContainText('Recoverable deletion preview')
+})
+
+test('shows a bounded preview failure without exposing private diagnostics', async () => {
+  await page.evaluate(() => {
+    const control = (window as WorkTestWindow).elysiaDesktopTest
+    control.setWorkWorkspaceState({ kind: 'work.workspace', chatId: 'chat_work_test', workspacePath: 'D:\\work-preview' })
+    control.failNextWorkPreview('Private file exception at D:\\private-location')
+  })
+  await page.getByRole('combobox', { name: 'Conversation mode' }).selectOption('work')
+  await page.getByLabel('Work tool', { exact: true }).selectOption('create')
+  await page.getByLabel('Relative path', { exact: true }).fill('new.txt')
+  await page.getByLabel('Complete file content').fill('New content.')
+  await page.getByRole('button', { name: 'Prepare change', exact: true }).click()
+  await expect(page.getByRole('alert')).toContainText('The change preview could not be prepared.')
+  await expect(page.getByRole('alert')).not.toContainText('Private file exception')
+  await expect(page.getByRole('region', { name: 'Work change preview' })).toHaveCount(0)
 })

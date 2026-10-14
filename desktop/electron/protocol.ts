@@ -20,6 +20,7 @@ import {
   parseWorkToolListParams,
   parseWorkToolRunParams,
   parseWorkToolResultState,
+  parseWorkToolApprovalState,
   parseWorkToolsState,
   type WorkToolListParams,
   type WorkToolRunParams,
@@ -451,6 +452,7 @@ export interface RequestParamsByMethod {
   'work.workspace.bind': WorkWorkspaceBindParams
   'work.tools.list': WorkToolListParams
   'work.tool.run': WorkToolRunParams
+  'work.tool.preview': WorkToolRunParams
   'chat.pin': ChatPinParams
   'chat.archive': ChatArchiveParams
   'chat.delete': ChatIdParams
@@ -2369,7 +2371,7 @@ export function parseClientRequest(value: unknown): ClientRequest {
       return fail('protocol.invalid_params', 'Work tool catalog request is invalid.')
     }
   }
-  if (method === 'work.tool.run') {
+  if (method === 'work.tool.run' || method === 'work.tool.preview') {
     try {
       return { type: 'request', protocol, id, method, params: parseWorkToolRunParams(request.params) }
     } catch {
@@ -4847,6 +4849,14 @@ function validateSuccessResult(value: unknown): Record<string, unknown> {
       parseWorkToolResultState(result)
     } catch {
       return fail('protocol.invalid_message', 'Work tool result is invalid.')
+    }
+    return result
+  }
+  if (result.kind === 'work.approval') {
+    try {
+      parseWorkToolApprovalState(result)
+    } catch {
+      return fail('protocol.invalid_message', 'Work change preview is invalid.')
     }
     return result
   }

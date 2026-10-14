@@ -84,6 +84,19 @@ most 500 matches without reading bodies. Deadlines and cancellation are
 cooperative around native local I/O. Read operations create no cache, backup,
 or hidden file writes. Write tool IDs receive `permission_required` here.
 
+`work.tool.preview` validates an explicit write action and returns its exact
+parameters, fixed risk, bounded diff/impact preview, and a five-minute UTC
+approval lease. Preparing a change never changes selected Workspace files.
+Replacing a preview, changing mode/scope/Project/Chat, or restarting revokes
+older rights. Native write primitives exclusively pin the approved file and
+check its digest before creating, editing, moving, or deleting one text file.
+The private transaction journal and fsynced before-image precede any mutation;
+overwrites and recoverable deletes therefore retain a restoration copy.
+The 20-second write budget applies to preflight and backup admission. Once
+native writing starts it completes and verifies through the same handle, with
+an accurate outcome and recovery intent if interrupted. Native OS calls are
+not forcibly terminated to manufacture a timeout or successful cancellation.
+
 `settings.get` and `settings.update` expose one exact public allowlist with
 optimistic revision checks: Chat model, Ollama origin, two Memory limits,
 import byte limit, transcription model/device/language, automatic Voice Call speech,

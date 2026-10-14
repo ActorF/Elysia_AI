@@ -182,6 +182,7 @@ SERVER_CAPABILITIES = (
     "work.workspace",
     "work.tools",
     "work.read",
+    "work.preview",
     "chat.sessions",
     "chat.mode",
     "chat.stream",
@@ -680,6 +681,9 @@ class DesktopBackend:
         """Publish an active Chat without racing a completed generation."""
 
         with self._state_lock:
+            previous = self._active_chat
+            if previous is not None and previous.chat_id != chat.chat_id and self._work_runtime is not None:
+                self._work_runtime.invalidate(str(previous.chat_id))
             self._active_chat = chat
 
     def run(self) -> None:
@@ -2442,6 +2446,8 @@ class DesktopBackend:
                     "Wait for the active reply or voice transcription "
                     "before changing Chat mode."
                 )
+            if active_chat.mode != params["mode"] and self._work_runtime is not None:
+                self._work_runtime.invalidate(str(chat_id))
             self._active_chat = brain.set_chat_mode(
                 chat_id,
                 cast(ConversationMode, params["mode"]),
@@ -2480,6 +2486,8 @@ class DesktopBackend:
             AttachmentScope(kind="chat", id=str(chat_id)),
             lambda: brain.delete_chat(chat_id),
         )
+        if self._work_runtime is not None:
+            self._work_runtime.forget_binding(str(chat_id))
 
         if was_active:
             self._set_active_chat(self._resolve_active_chat(brain))
@@ -2684,6 +2692,8 @@ class DesktopBackend:
                 else ProjectId(raw_project_id)
             ),
         )
+        if self._work_runtime is not None:
+            self._work_runtime.invalidate(cast(str, params["chatId"]))
         if raw_project_id is not None:
             self._active_project_id = ProjectId(raw_project_id)
         self._emit_project_response(request_id)

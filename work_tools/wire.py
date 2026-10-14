@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from typing import Any
 import re
+from datetime import datetime
 
 from .contracts import TOOL_CATALOG, descriptor_to_data, ToolResult, ToolProtocolError, validate_tool_call, validate_tool_result
 
 
-WORK_METHODS = ("work.workspace.get", "work.workspace.bind", "work.tools.list", "work.tool.run")
+WORK_METHODS = ("work.workspace.get", "work.workspace.bind", "work.tools.list", "work.tool.run", "work.tool.preview")
 
 
 def validate_work_params(method: str, value: object) -> dict[str, Any]:
@@ -19,7 +20,7 @@ def validate_work_params(method: str, value: object) -> dict[str, Any]:
     grant to accept raw renderer paths.
     """
 
-    fields = {"chatId", "workspacePath"} if method == "work.workspace.bind" else {"chatId", "call"} if method == "work.tool.run" else {"chatId"}
+    fields = {"chatId", "workspacePath"} if method == "work.workspace.bind" else {"chatId", "call"} if method in {"work.tool.run", "work.tool.preview"} else {"chatId"}
     if method not in WORK_METHODS or not isinstance(value, dict) or set(value) != fields:
         raise ValueError("Work request fields are invalid.")
     chat_id = value["chatId"]
@@ -29,7 +30,7 @@ def validate_work_params(method: str, value: object) -> dict[str, Any]:
         root = value["workspacePath"]
         if root is not None and (not isinstance(root, str) or not root.strip() or len(root) > 32767 or any(ord(char) < 32 or ord(char) == 127 for char in root)):
             raise ValueError("Workspace selection is invalid.")
-    elif method == "work.tool.run":
+    elif method in {"work.tool.run", "work.tool.preview"}:
         validate_tool_call(value["call"])
     return dict(value)
 
@@ -37,6 +38,11 @@ def validate_work_params(method: str, value: object) -> dict[str, Any]:
 def validate_work_result(value: object) -> dict[str, Any]:
     """Validate scope, a trusted catalog, or a bounded typed tool outcome."""
 
+    if isinstance(value, dict) and value.get("kind") == "work.approval":
+        if set(value) != {"kind", "approval"}:
+            raise ValueError("Work approval result fields are invalid.")
+        _validate_approval(value["approval"])
+        return dict(value)
     if isinstance(value, dict) and value.get("kind") == "work.result":
         if set(value) != {"kind", "result"}:
             raise ValueError("Work result fields are invalid.")
@@ -79,3 +85,24 @@ def _validate_outcome(value: object) -> ToolResult:
         except ToolProtocolError:
             continue
     raise ValueError("Work tool data does not match a known result shape.")
+
+
+def _validate_approval(value: object) -> None:
+    """Check the exact action, fixed risk, safe preview, and UTC lease disclosure."""
+
+    if type(value) is not dict or set(value) != {"approvalId", "call", "risk", "preview", "expiresAt"}:
+        raise ValueError("Work approval fields are invalid.")
+    if type(value["approvalId"]) is not str or re.fullmatch(r"approval_[0-9a-f]{32}", value["approvalId"]) is None:
+        raise ValueError("Work approval identifier is invalid.")
+    call = validate_tool_call(value["call"])
+    descriptor = next(item for item in TOOL_CATALOG if item.tool_id == call.tool_id)
+    if descriptor.risk == "low" or value["risk"] != descriptor.risk:
+        raise ValueError("Work approval risk is invalid.")
+    if type(value["preview"]) is not str or len(value["preview"].encode("utf-8")) > 32768 or "\x00" in value["preview"]:
+        raise ValueError("Work approval preview is invalid.")
+    if type(value["expiresAt"]) is not str or len(value["expiresAt"]) > 128:
+        raise ValueError("Work approval expiry is invalid.")
+    expires = datetime.fromisoformat(value["expiresAt"])
+    offset = expires.utcoffset()
+    if offset is None or offset.total_seconds() != 0:
+        raise ValueError("Work approval expiry must use UTC.")

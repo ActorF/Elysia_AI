@@ -29,7 +29,8 @@
 }
 
 .work-tool-console input,
-.work-tool-console select {
+.work-tool-console select,
+.work-tool-console textarea {
   width: 100%;
   min-width: 0;
   min-height: 2rem;
@@ -40,6 +41,15 @@
   border-radius: var(--radius-md);
 }
 
+.work-tool-console textarea {
+  resize: vertical;
+  max-height: 12rem;
+}
+
+.work-tool-console .work-content-field {
+  flex-basis: 100%;
+}
+
 .work-tool-console small {
   color: var(--color-text-secondary);
 }
@@ -48,7 +58,8 @@
   color: var(--color-danger);
 }
 
-.work-tool-result pre {
+.work-tool-result pre,
+.work-change-preview pre {
   max-height: 12rem;
   overflow: auto;
   margin-bottom: 0;
@@ -58,4 +69,9 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   user-select: text;
+}
+
+.work-change-preview h3 {
+  margin-bottom: var(--space-1);
+  font-size: var(--font-size-xs);
 }

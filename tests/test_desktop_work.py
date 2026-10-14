@@ -8,6 +8,7 @@ import pytest
 
 from chats import ChatSession, create_chat_session
 from desktop_work import DesktopWorkRuntime
+from work_tools.workspace import WorkspaceBoundary
 from desktop_protocol import build_request, build_success_response, ProtocolValidationError
 from tests.test_desktop_backend import (_initialized_backend, _transcription_runner_factory,
                                        _request, _output_messages, _ControlledTranscriber)
@@ -90,13 +91,13 @@ def test_scope_result_has_discriminant_and_no_extra_native_fields() -> None:
         build_success_response("work", {**result, "handle": 123})
 
 
-def test_catalog_declares_strict_typed_read_tools_and_rejects_tampering(tmp_path: Path) -> None:
+def test_catalog_declares_strict_typed_tools_and_rejects_tampering(tmp_path: Path) -> None:
     """Active Work exposes trusted schemas and cannot accept forged command extensions."""
 
     current = _chat()
     runtime = DesktopWorkRuntime(tmp_path, lambda: current)
     result = runtime.dispatch("work.tools.list", {"chatId": str(current.chat_id)})
-    assert [tool["toolId"] for tool in result["tools"]] == ["list_directory", "read_text", "search_files", "metadata"]
+    assert [tool["toolId"] for tool in result["tools"]] == ["list_directory", "read_text", "search_files", "metadata", "create", "edit", "move", "delete"]
     assert build_success_response("catalog", result)["result"] == result
     result["tools"][0]["risk"] = "critical"
     with pytest.raises(ProtocolValidationError):
@@ -132,3 +133,27 @@ def test_real_bound_read_returns_verified_bytes_and_refuses_unapproved_writes(tm
     denied = runtime.dispatch("work.tool.run", {**owner, "call": {"toolId": "edit", "arguments": {"path": "notes.txt", "content": "unapproved"}}})
     assert denied["result"]["error"]["code"] == "permission_required"
     assert (selected / "notes.txt").read_text("utf-8") == "original"
+
+
+def test_write_preview_shows_exact_change_and_does_not_change_selected_file(tmp_path: Path) -> None:
+    """Preview is integrated while file mutation still requires a separate permission decision."""
+
+    current = _chat()
+    selected = tmp_path / "selected"
+    selected.mkdir()
+    original = selected / "notes.txt"
+    original.write_text("original\n", encoding="utf-8")
+    runtime = DesktopWorkRuntime(tmp_path / "private", lambda: current)
+    owner = {"chatId": str(current.chat_id)}
+    runtime.dispatch("work.workspace.bind", {**owner, "workspacePath": str(selected)})
+    call = {"toolId": "edit", "arguments": {"path": "notes.txt", "content": "replacement\n"}}
+    state = runtime.dispatch("work.tool.preview", {**owner, "call": call})
+    assert build_success_response("preview", state)["result"] == state
+    assert state["approval"]["call"] == call
+    assert "-original" in state["approval"]["preview"]
+    assert "+replacement" in state["approval"]["preview"]
+    assert original.read_text("utf-8") == "original\n"
+    runtime.dispatch("work.workspace.bind", {**owner, "workspacePath": None})
+    denied = runtime._get_writes().confirm(str(current.chat_id), None, WorkspaceBoundary(selected),
+                                          state["approval"]["approvalId"], True)
+    assert denied.status == "denied"

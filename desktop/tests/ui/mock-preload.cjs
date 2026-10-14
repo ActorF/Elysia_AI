@@ -56,11 +56,15 @@ function defaultWorkToolsState() {
     ['read_text', 'Read text', 'Read bounded UTF-8 text without writing.', 10],
     ['search_files', 'Search files', 'Find filenames within the selected Workspace.', 20],
     ['metadata', 'File metadata', 'Inspect file and directory metadata without reading contents.', 10],
+    ['create', 'Create file', 'Preview a new UTF-8 text file before approval.', 20, 'medium'],
+    ['edit', 'Edit file', 'Preview replacement text with a recoverable backup.', 20, 'medium'],
+    ['move', 'Move or rename', 'Preview moving a file without replacing the destination.', 20, 'high'],
+    ['delete', 'Recoverable deletion', 'Preview moving a file into recovery storage.', 20, 'high'],
   ]
   return {
     kind: 'work.tools',
-    tools: definitions.map(([toolId, name, description, timeoutSeconds]) => ({
-      toolId, name, description, timeoutSeconds, risk: 'low',
+    tools: definitions.map(([toolId, name, description, timeoutSeconds, risk = 'low']) => ({
+      toolId, name, description, timeoutSeconds, risk,
       inputSchema: {
         type: 'object', properties: { path: { type: 'string', maxLength: 4096 } },
         required: ['path'], additionalProperties: false,
@@ -412,6 +416,8 @@ let workWorkspaces = new Map()
 let nextWorkWorkspaceError = null
 let nextWorkToolsError = null
 let nextWorkToolResult = null
+let nextWorkPreviewError = null
+let nextWorkApprovalNumber = 1
 let delayWorkToolRuns = false
 let pendingWorkToolRuns = []
 const workFiles = new Map([
@@ -1529,6 +1535,28 @@ const desktopApi = {
     return { kind: 'work.result', result: clone(result) }
   },
 
+  previewWorkTool: async (request) => {
+    record('previewWorkTool', [request])
+    if (nextWorkPreviewError !== null) {
+      const message = nextWorkPreviewError
+      nextWorkPreviewError = null
+      throw new Error(message)
+    }
+    const call = clone(request.call)
+    const old = workFiles.get(call.arguments.path) ?? ''
+    let preview = call.toolId === 'move'
+      ? `Move ${call.arguments.path} to ${call.arguments.destination}.`
+      : `--- ${call.arguments.path}\n+++ ${call.arguments.path}\n- ${old}\n+ ${call.arguments.content ?? ''}`
+    if (new TextEncoder().encode(preview).byteLength > 32768) {
+      preview = '[Preview truncated; the complete parameters remain visible above.]'
+    }
+    const approvalId = `approval_${(nextWorkApprovalNumber++).toString(16).padStart(32, '0')}`
+    return { kind: 'work.approval', approval: {
+      approvalId, call, risk: ['create', 'edit'].includes(call.toolId) ? 'medium' : 'high',
+      preview, expiresAt: '2100-01-01T00:00:00+00:00',
+    } }
+  },
+
   chooseWorkWorkspace: async (chatId) => {
     record('chooseWorkWorkspace', [chatId])
     if (nextWorkWorkspaceError !== null) {
@@ -2074,6 +2102,8 @@ const testControl = {
     pendingWorkToolRuns = []
     delayWorkToolRuns = false
     nextWorkToolResult = null
+    nextWorkPreviewError = null
+    nextWorkApprovalNumber = 1
     for (const release of pendingWorkWorkspaceReads) {
       release()
     }
@@ -2442,6 +2472,10 @@ const testControl = {
 
   setNextWorkToolResult: (result) => {
     nextWorkToolResult = clone(result)
+  },
+
+  failNextWorkPreview: (message) => {
+    nextWorkPreviewError = message
   },
 
   setWorkToolRunDelay: (delayed) => {

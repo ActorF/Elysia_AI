@@ -89,6 +89,8 @@ jobs:
           tests/test_desktop_backend.py::test_attachment_add_returns_only_safe_canonical_metadata
           tests/test_windows_file_guard.py
           tests/test_work_workspace.py
+          tests/test_work_mutations.py
+          tests/test_work_writes.py
           tests/test_windows_managed_process.py
           tests/test_managed_gpt_sovits.py
 

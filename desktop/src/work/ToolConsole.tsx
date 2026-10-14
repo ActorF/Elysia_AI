@@ -1,5 +1,5 @@
 /**
- * Run explicitly selected read tools inside the current Work Chat's scope.
+ * Run explicit read tools and prepare exact write previews in a Work scope.
  *
  * User text in the Chat composer never enters this form. Results are rendered
  * as escaped text and belong to the exact Chat and Workspace that submitted
@@ -14,12 +14,16 @@ import {
   type WorkToolResult,
   type WorkToolResultState,
   type WorkToolRunParams,
+  type WorkToolApproval,
+  type WorkToolApprovalState,
 } from '../../electron/work-tool-protocol.ts'
 import './ToolConsole.css'
 
 interface ToolConsoleApi {
   /** Execute one explicitly supplied scoped call and return a validated outcome. */
   runWorkTool(request: WorkToolRunParams): Promise<WorkToolResultState>
+  /** Prepare a write preview while leaving filesystem execution to later consent. */
+  previewWorkTool(request: WorkToolRunParams): Promise<WorkToolApprovalState>
 }
 
 interface ToolConsoleProps {
@@ -27,6 +31,8 @@ interface ToolConsoleProps {
   chatId: string
   workspacePath: string | null
   ready: boolean
+  readAvailable: boolean
+  previewAvailable: boolean
   disabled: boolean
   tools: WorkToolDescriptor[]
   /** Report one pending local operation so the shell can block conflicting actions. */
@@ -39,20 +45,29 @@ interface ScopedResult {
   result: WorkToolResult
 }
 
+interface ScopedApproval {
+  chatId: string
+  workspacePath: string
+  approval: WorkToolApproval
+}
+
 const READ_TOOLS = new Set<WorkToolId>(['list_directory', 'read_text', 'search_files', 'metadata'])
 
-/** Render explicit read parameters and bounded terminal results for one Work Chat. */
-export function ToolConsole({ api, chatId, workspacePath, ready, disabled, tools, onBusyChange }: ToolConsoleProps) {
+/** Present explicit calls, escaped outcomes, and exact write previews before consent. */
+export function ToolConsole({ api, chatId, workspacePath, ready, readAvailable, previewAvailable, disabled, tools, onBusyChange }: ToolConsoleProps) {
   const [selectedTool, setSelectedTool] = useState<WorkToolId>('list_directory')
   const [path, setPath] = useState('')
   const [query, setQuery] = useState('')
+  const [content, setContent] = useState('')
+  const [destination, setDestination] = useState('')
+  const [approval, setApproval] = useState<ScopedApproval | null>(null)
   const [result, setResult] = useState<ScopedResult | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [pending, setPending] = useState(false)
   const pendingRef = useRef(false)
   const operationRef = useRef(0)
-  const readTools = tools.filter((tool) => READ_TOOLS.has(tool.toolId))
-  const activeTool = readTools.find((tool) => tool.toolId === selectedTool) ?? readTools[0]
+  const activeTool = tools.find((tool) => tool.toolId === selectedTool) ?? tools[0]
+  const isWrite = activeTool !== undefined && !READ_TOOLS.has(activeTool.toolId)
 
   useEffect(() => {
     operationRef.current += 1
@@ -61,12 +76,15 @@ export function ToolConsole({ api, chatId, workspacePath, ready, disabled, tools
 
   async function run(): Promise<void> {
     if (api === undefined || !ready || disabled || workspacePath === null
-      || activeTool === undefined || pendingRef.current) return
+      || activeTool === undefined || pendingRef.current
+      || (isWrite ? !previewAvailable : !readAvailable)) return
     let call
     try {
       call = parseWorkToolCall({
         toolId: activeTool.toolId,
-        arguments: activeTool.toolId === 'search_files' ? { path, query } : { path },
+        arguments: activeTool.toolId === 'search_files' ? { path, query }
+          : activeTool.toolId === 'create' || activeTool.toolId === 'edit' ? { path, content }
+            : activeTool.toolId === 'move' ? { path, destination } : { path },
       })
     } catch {
       setError('Use valid tool parameters and a path relative to the selected Workspace.')
@@ -77,12 +95,20 @@ export function ToolConsole({ api, chatId, workspacePath, ready, disabled, tools
     setPending(true)
     setError(null)
     setResult(null)
+    setApproval(null)
     onBusyChange(true)
     try {
-      const next = await api.runWorkTool({ chatId, call })
-      if (token === operationRef.current) setResult({ chatId, workspacePath, result: next.result })
+      if (isWrite) {
+        const next = await api.previewWorkTool({ chatId, call })
+        if (token === operationRef.current) setApproval({ chatId, workspacePath, approval: next.approval })
+      } else {
+        const next = await api.runWorkTool({ chatId, call })
+        if (token === operationRef.current) setResult({ chatId, workspacePath, result: next.result })
+      }
     } catch {
-      if (token === operationRef.current) setError('The tool could not run. Try again.')
+      if (token === operationRef.current) setError(isWrite
+        ? 'The change preview could not be prepared. Check the parameters and try again.'
+        : 'The tool could not run. Try again.')
     } finally {
       pendingRef.current = false
       onBusyChange(false)
@@ -90,13 +116,23 @@ export function ToolConsole({ api, chatId, workspacePath, ready, disabled, tools
     }
   }
 
+  function invalidateDraft(): void {
+    // Consent refers to the exact frozen call. Any parameter edit hides the old
+    // preview immediately and requires a fresh token before execution is possible.
+    setApproval(null)
+    setResult(null)
+    setError(null)
+  }
+
   const blocked = disabled || pending || !ready || workspacePath === null || activeTool === undefined
   const visibleResult = ready && result?.chatId === chatId && result.workspacePath === workspacePath
     ? result.result : null
+  const visibleApproval = ready && approval?.chatId === chatId && approval.workspacePath === workspacePath
+    ? approval.approval : null
 
   return (
     <details className="work-tool-console" open>
-      <summary>Run a tool</summary>
+      <summary>Tools</summary>
       {workspacePath === null && <p>Choose a Workspace to enable file tools.</p>}
       <form onSubmit={(event) => { event.preventDefault(); void run() }} aria-busy={pending}>
         <fieldset disabled={blocked}>
@@ -104,27 +140,63 @@ export function ToolConsole({ api, chatId, workspacePath, ready, disabled, tools
             <span>Work tool</span>
             <select aria-label="Work tool" value={activeTool?.toolId ?? ''} onChange={(event) => {
               const next = event.currentTarget.value as WorkToolId
-              if (READ_TOOLS.has(next)) setSelectedTool(next)
+              if (tools.some((tool) => tool.toolId === next)) {
+                setSelectedTool(next)
+                invalidateDraft()
+              }
             }}>
-              {readTools.map((tool) => <option key={tool.toolId} value={tool.toolId}>{tool.name}</option>)}
+              {tools.map((tool) => <option key={tool.toolId} value={tool.toolId}>{tool.name}</option>)}
             </select>
           </label>
           <label>
             <span>Relative path</span>
             <input value={path} maxLength={4096} placeholder="docs/notes.md"
-              required={activeTool?.toolId === 'read_text'} onChange={(event) => { setPath(event.currentTarget.value) }} />
+              required={activeTool?.toolId === 'read_text' || isWrite} onChange={(event) => {
+                setPath(event.currentTarget.value); invalidateDraft()
+              }} />
           </label>
           {activeTool?.toolId === 'search_files' && (
             <label>
               <span>Filename contains</span>
-              <input value={query} maxLength={256} required onChange={(event) => { setQuery(event.currentTarget.value) }} />
+              <input value={query} maxLength={256} required onChange={(event) => {
+                setQuery(event.currentTarget.value); invalidateDraft()
+              }} />
             </label>
           )}
-          <button type="submit">{pending ? 'Running…' : 'Run tool'}</button>
+          {activeTool?.toolId === 'move' && (
+            <label>
+              <span>Destination path</span>
+              <input value={destination} maxLength={4096} required onChange={(event) => {
+                setDestination(event.currentTarget.value); invalidateDraft()
+              }} />
+            </label>
+          )}
+          {(activeTool?.toolId === 'create' || activeTool?.toolId === 'edit') && (
+            <label className="work-content-field">
+              <span>Complete file content</span>
+              <textarea value={content} maxLength={262144} rows={5} onChange={(event) => {
+                setContent(event.currentTarget.value); invalidateDraft()
+              }} />
+            </label>
+          )}
+          <button type="submit" disabled={isWrite ? !previewAvailable : !readAvailable}>
+            {pending ? 'Working…' : isWrite ? 'Prepare change' : 'Run tool'}
+          </button>
         </fieldset>
-        {activeTool?.toolId !== 'read_text' && <small>Leave the path empty to use the Workspace root.</small>}
+        {!isWrite && activeTool?.toolId !== 'read_text' && <small>Leave the path empty to use the Workspace root.</small>}
       </form>
       {error !== null && <p className="work-tool-error" role="alert">{error}</p>}
+      {visibleApproval !== null && (
+        <section className="work-change-preview" aria-label="Work change preview">
+          <strong>{visibleApproval.call.toolId === 'delete' ? 'Recoverable deletion preview' : 'Change preview'}</strong>
+          <p>Risk: {visibleApproval.risk} · Expires: {visibleApproval.expiresAt}</p>
+          <h3>Complete parameters</h3>
+          <pre data-work-parameters>{JSON.stringify(visibleApproval.call, null, 2)}</pre>
+          <h3>Change and impact</h3>
+          <pre>{visibleApproval.preview}</pre>
+          <p>Review the exact change. Approval controls are unavailable in this version.</p>
+        </section>
+      )}
       {visibleResult !== null && (
         <section className="work-tool-result" aria-label="Work tool result">
           <strong role="status">{visibleResult.status === 'succeeded' ? 'Completed' : visibleResult.status}</strong>

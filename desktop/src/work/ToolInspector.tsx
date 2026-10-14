@@ -56,7 +56,7 @@ export function ToolInspector({ api, chatId, ready, onCatalogChange }: ToolInspe
               {catalog.tools.map((tool) => (
                 <li key={tool.toolId}>
                   <strong>{tool.name}</strong>
-                  <span>{tool.risk} risk · {tool.timeoutSeconds}s limit</span>
+                  <span>{tool.risk} risk · {tool.timeoutSeconds}s {tool.risk === 'low' ? 'limit' : 'admission budget'}</span>
                   <p>{tool.description}</p>
                 </li>
               ))}

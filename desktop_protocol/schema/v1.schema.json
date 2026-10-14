@@ -54,6 +54,7 @@
     "groundedAnswer is present only on assistant Chat messages and never exposes paths, hashes, or private storage lineage"
   ],
   "oneOf": [
+    { "$ref": "#/$defs/workToolPreviewRequest" },
     { "$ref": "#/$defs/workToolRunRequest" },
     { "$ref": "#/$defs/workToolsListRequest" },
     { "$ref": "#/$defs/workWorkspaceGetRequest" },
@@ -108,6 +109,25 @@
     { "$ref": "#/$defs/event" }
   ],
   "$defs": {
+    "workToolPreviewRequest": {
+      "allOf": [{ "$ref": "#/$defs/requestEnvelope" }, { "properties": {
+        "method": { "const": "work.tool.preview" }, "params": { "$ref": "#/$defs/workToolRunParams" }
+      } }]
+    },
+    "workApproval": {
+      "type": "object", "properties": {
+        "approvalId": { "type": "string", "pattern": "^approval_[0-9a-f]{32}$" },
+        "call": { "$ref": "#/$defs/workToolCall" },
+        "risk": { "enum": ["medium", "high", "critical"] },
+        "preview": { "type": "string", "maxLength": 32768 },
+        "expiresAt": { "type": "string", "maxLength": 128 }
+      }, "required": ["approvalId", "call", "risk", "preview", "expiresAt"], "additionalProperties": false
+    },
+    "workApprovalResult": {
+      "type": "object", "properties": {
+        "kind": { "const": "work.approval" }, "approval": { "$ref": "#/$defs/workApproval" }
+      }, "required": ["kind", "approval"], "additionalProperties": false
+    },
     "workToolCall": {
       "type": "object", "properties": {
         "toolId": { "enum": ["list_directory", "read_text", "search_files", "metadata", "create", "edit", "move", "delete"] },
@@ -238,6 +258,7 @@
             "work.workspace.bind",
             "work.tools.list",
             "work.tool.run",
+            "work.tool.preview",
             "handshake",
             "initialize",
             "chat.stream",
@@ -2474,6 +2495,7 @@
             { "$ref": "#/$defs/workWorkspaceResult" },
             { "$ref": "#/$defs/workToolsResult" },
             { "$ref": "#/$defs/workToolResult" },
+            { "$ref": "#/$defs/workApprovalResult" },
             { "$ref": "#/$defs/handshakeResult" },
             { "$ref": "#/$defs/initializeResult" },
             { "$ref": "#/$defs/chatResult" },

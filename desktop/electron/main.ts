@@ -3401,6 +3401,11 @@ function registerIpcHandlers(): void {
     return requireBackend().runWorkTool(parseWorkToolRunParams(request))
   })
 
+  ipcMain.handle('work:preview-tool', (event, request: unknown) => {
+    assertTrustedSender(event)
+    return requireBackend().previewWorkTool(parseWorkToolRunParams(request))
+  })
+
   ipcMain.handle('work:choose-workspace', async (event, chatId: unknown) => {
     assertTrustedSender(event)
     const request = parseWorkWorkspaceGetParams({ chatId })

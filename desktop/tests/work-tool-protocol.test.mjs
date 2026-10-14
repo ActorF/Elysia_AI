@@ -165,3 +165,26 @@ test('Work read bridge blocks conflicting turns and rejects a mismatched known o
   await assert.rejects(running, /exact requested path/u)
   assert.equal(backend.getSnapshot().status, 'error')
 })
+
+test('Work preview bridge rejects a changed call before exposing an approval', async () => {
+  const writes = []
+  const backend = new BackendProcess('.', () => undefined)
+  backend.child = { stdin: { writable: true, write: (wire) => { writes.push(JSON.parse(wire)) } }, kill: () => true }
+  backend.snapshot = {
+    revision: 1, status: 'ready', capabilities: ['work.preview'], chatId: 'chat_work',
+    modelName: 'qwen3.5:9b', models: ['qwen3.5:9b'],
+  }
+  const call = { toolId: 'edit', arguments: { path: 'notes.txt', content: 'exact replacement' } }
+  const preparing = backend.previewWorkTool({ chatId: 'chat_work', call })
+  assert.equal(writes[0].method, 'work.tool.preview')
+  backend.handleProtocolLine(JSON.stringify({
+    type: 'response', protocol: { name: 'elysia.desktop', version: 1 }, id: writes[0].id, ok: true,
+    result: { kind: 'work.approval', approval: {
+      approvalId: `approval_${'a'.repeat(32)}`,
+      call: { ...call, arguments: { ...call.arguments, content: 'different replacement' } },
+      risk: 'medium', preview: 'Changed text', expiresAt: '2100-01-01T00:00:00+00:00',
+    } },
+  }))
+  await assert.rejects(preparing, /exact requested parameters/u)
+  assert.equal(backend.getSnapshot().status, 'error')
+})

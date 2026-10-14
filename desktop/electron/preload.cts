@@ -43,7 +43,7 @@ import type {
   UpdateDesktopPetRequest,
 } from './desktop-pet-contracts.js'
 import type { WorkWorkspaceState } from './work-protocol.js'
-import type { WorkToolsState, WorkToolRunParams, WorkToolResultState } from './work-tool-protocol.js'
+import type { WorkToolsState, WorkToolRunParams, WorkToolResultState, WorkToolApprovalState } from './work-tool-protocol.js'
 import type { DataStorageViewState } from './data-storage-contracts.js'
 import type {
   PresenceNotificationState,
@@ -995,6 +995,9 @@ const desktopApi: DesktopApi = {
 
   runWorkTool: (request: WorkToolRunParams) =>
     ipcRenderer.invoke('work:run-tool', request) as Promise<WorkToolResultState>,
+
+  previewWorkTool: (request: WorkToolRunParams) =>
+    ipcRenderer.invoke('work:preview-tool', request) as Promise<WorkToolApprovalState>,
 
   chooseWorkWorkspace: (chatId: string) =>
     ipcRenderer.invoke('work:choose-workspace', chatId) as Promise<WorkWorkspaceState | null>,
