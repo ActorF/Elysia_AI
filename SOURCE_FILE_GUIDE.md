@@ -175,6 +175,9 @@ start.create_data_portability_service()
 | `desktop_backend.py` | Electron 启动的 Python NDJSON 进程；完成会话令牌握手、初始化、方法路由、Streaming、Cancel、错误映射和安全关闭。除 Chat/Project/Settings/Attachment/STT/Speech 外，它还组合 Project Sources runtime、在全局 Knowledge admission 下用后台 worker 执行显式 lifecycle mutation/recovery 或 verified export、异步清理身份匹配的 export temp、发布安全 operation/receipt DTO，并把显式 grounded Chat 接入同一 generation commit gate。Electron 通过进程环境注入绝对数据根，Backend 不再把安装根当作 Workspace。 | `desktop_protocol/`、`config/data_layout.py`、`desktop_knowledge.py`、`desktop_speech.py`、`start.py`、Chat/Project/Attachment/Voice 服务 |
 | `desktop_knowledge.py` | 生产知识 Composition Root；共享 Project/Chat/Source repositories 与 operation lease，组合 Loader→Cleaner→Chunker→Embedding→SQLite→Retriever→Grounded Answer、Lifecycle 与 verified export，配置 app-private export cleanup-intent directory，并计算绑定全部输出规则的 index profile。构造不访问 Ollama、外部 export destination 或索引任务。 | `desktop_backend.py`、`documents/`、`project_sources/`、`knowledge_lifecycle/`、`workspace/knowledge/` |
 | `desktop_speech.py` | 桌面语音 Composition Root；后台按 Active `voiceProfileId` 与闭集 `voiceEmotion` 获取 Managed GPT-SoVITS Lease，并把 Active `speechRatePercent` 作为绝对 `0.5–2.0` Speed Factor 使用。单个有界原文 Spool 在启动前后都接收快速 Brain Chunk，固定 Feeder 再按 Sentence FIFO 容量背压逐批送入，避免阻塞 Chat 或因第九个待合成分句取消整轮。普通停止/替换只逻辑丢弃过期输出，不会用 Native Abort 污染可复用 Worker；真实 Runtime/Queue/Pipe 失败仍 Fail Closed。Clip Metadata 先经 NDJSON 发送，匹配 WAV 再写入私有 fd3。 | `desktop_backend.py`、`voice/managed_gpt_sovits.py`、`voice/speech_queue.py`、`desktop_protocol/audio_channel.py` |
+| `desktop_work.py` | 将显式 Work RPC 路由到当前 Chat、用户选择的 Workspace、类型化工具和逐项确认；应用代码与私有数据根不能成为工具写入范围。 | `desktop_backend.py`、`work_tools/`、`desktop_work_plans.py` |
+| `desktop_work_plans.py` | 管理每 Chat 的短期计划所有者；每步重验模式、Project 与目录身份，取消后仍保留正在排空的原生操作容量。 | `agent/work_plan.py`、`WriteCoordinator`、Backend 生命周期与安全关闭 |
+| `agent/work_plan.py` | 顺序执行最多 16 个显式步骤，支持暂停、取消、独立写入审批与有界结果；不解析模型文字，也不自动恢复高风险任务。 | Work Plan UI、`DesktopWorkPlans`、Stage 10 的后续持久化工作流 |
 | `docs/decisions/0001-desktop-shell.md` | Electron 与 Tauri 选型 ADR；记录测量方法、能力差距、风险、最终选择和重访门槛。 | `desktop/benchmarks/measure-shell.ps1`、Desktop 技术决策 |
 | `docs/03-VOICE-PERFORMANCE-SAFETY-RIGHTS.md` | 记录最终三组件实机测量、CPU STT 资源策略、长会话自动化清理证据、Voice Rights 决定、分发门禁和重测条件。 | Module 9 验收、`MODEL_LICENSE.md`、Benchmark/Soak/Package Audit |
 | `docs/04-FILE-METADATA-STORAGE.md` | 记录版本化 File Metadata、Scope-local Content-addressed Storage、Ownership/Derived 关系、Manifest v2、迁移、验证读取、删除回滚、Renderer 隐私边界和当前非目标。 | `attachments/`、Desktop Backend、后续 Document Loaders |
@@ -200,7 +203,7 @@ start.create_data_portability_service()
 
 | 文件 | 实际用途 | 主要连接 |
 | --- | --- | --- |
-| `agent/__init__.py` | 为未来 Work/Desktop Agent 保留稳定 Python Package 位置；当前没有已实现 Agent。 | 未来 `tools/`、权限系统与 Work Mode |
+| `agent/__init__.py` | 提供显式 Work/Desktop 计划执行组件的 Python Package 边界。 | `agent/work_plan.py`、逐步执行与独立写入确认 |
 | `models/__init__.py` | 为 model-specific integration 保留 Namespace；实际 Ollama/GPT-SoVITS 权重不存放在 Python Package 中。 | `core/*chat_model.py`、被忽略的本地模型目录 |
 | `work_tools/__init__.py` | 提供经过权限控制的 Work 工具；独立名称避免与受管 RVC 的第三方 `tools` 包冲突。 | `desktop_work.py`、Work Workspace、类型化工具协议 |
 

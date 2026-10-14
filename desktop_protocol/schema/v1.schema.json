@@ -54,6 +54,10 @@
     "groundedAnswer is present only on assistant Chat messages and never exposes paths, hashes, or private storage lineage"
   ],
   "oneOf": [
+    { "$ref": "#/$defs/workPlanGetRequest" },
+    { "$ref": "#/$defs/workPlanCreateRequest" },
+    { "$ref": "#/$defs/workPlanControlRequest" },
+    { "$ref": "#/$defs/workPlanConfirmRequest" },
     { "$ref": "#/$defs/workToolConfirmRequest" },
     { "$ref": "#/$defs/workToolPreviewRequest" },
     { "$ref": "#/$defs/workToolRunRequest" },
@@ -110,6 +114,73 @@
     { "$ref": "#/$defs/event" }
   ],
   "$defs": {
+    "workPlanGetRequest": {
+      "allOf": [{ "$ref": "#/$defs/requestEnvelope" }, { "properties": {
+        "method": { "const": "work.plan.get" }, "params": { "$ref": "#/$defs/workWorkspaceGetParams" }
+      } }]
+    },
+    "workPlanCreateParams": {
+      "type": "object", "properties": {
+        "chatId": { "$ref": "#/$defs/workChatId" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "calls": { "type": "array", "minItems": 1, "maxItems": 16, "items": { "$ref": "#/$defs/workToolCall" } }
+      }, "required": ["chatId", "title", "calls"], "additionalProperties": false
+    },
+    "workPlanCreateRequest": {
+      "allOf": [{ "$ref": "#/$defs/requestEnvelope" }, { "properties": {
+        "method": { "const": "work.plan.create" }, "params": { "$ref": "#/$defs/workPlanCreateParams" }
+      } }]
+    },
+    "workPlanControlParams": {
+      "type": "object", "properties": {
+        "chatId": { "$ref": "#/$defs/workChatId" },
+        "planId": { "$ref": "#/$defs/workPlanId" },
+        "action": { "enum": ["start", "pause", "resume", "cancel", "next"] }
+      }, "required": ["chatId", "planId", "action"], "additionalProperties": false
+    },
+    "workPlanControlRequest": {
+      "allOf": [{ "$ref": "#/$defs/requestEnvelope" }, { "properties": {
+        "method": { "const": "work.plan.control" }, "params": { "$ref": "#/$defs/workPlanControlParams" }
+      } }]
+    },
+    "workPlanConfirmParams": {
+      "type": "object", "properties": {
+        "chatId": { "$ref": "#/$defs/workChatId" },
+        "planId": { "$ref": "#/$defs/workPlanId" },
+        "approvalId": { "type": "string", "pattern": "^approval_[0-9a-f]{32}$" },
+        "granted": { "type": "boolean" }
+      }, "required": ["chatId", "planId", "approvalId", "granted"], "additionalProperties": false
+    },
+    "workPlanConfirmRequest": {
+      "allOf": [{ "$ref": "#/$defs/requestEnvelope" }, { "properties": {
+        "method": { "const": "work.plan.confirm" }, "params": { "$ref": "#/$defs/workPlanConfirmParams" }
+      } }]
+    },
+    "workPlanId": { "type": "string", "pattern": "^plan_[0-9a-f]{32}$" },
+    "workPlanStep": {
+      "type": "object", "properties": {
+        "stepId": { "type": "string", "pattern": "^step_[0-9a-f]{32}$" },
+        "call": { "$ref": "#/$defs/workToolCall" },
+        "status": { "enum": ["pending", "running", "waiting", "succeeded", "failed", "cancelled"] },
+        "result": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/workToolOutcome" }] },
+        "approval": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/workApproval" }] }
+      }, "required": ["stepId", "call", "status", "result", "approval"], "additionalProperties": false
+    },
+    "workPlan": {
+      "type": "object", "properties": {
+        "planId": { "$ref": "#/$defs/workPlanId" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "state": { "enum": ["pending", "running", "paused", "waiting", "succeeded", "failed", "cancelled"] },
+        "steps": { "type": "array", "minItems": 1, "maxItems": 16, "items": { "$ref": "#/$defs/workPlanStep" } },
+        "busy": { "type": "boolean" }
+      }, "required": ["planId", "title", "state", "steps", "busy"], "additionalProperties": false
+    },
+    "workPlanResult": {
+      "type": "object", "properties": {
+        "kind": { "const": "work.plan" },
+        "plan": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/workPlan" }] }
+      }, "required": ["kind", "plan"], "additionalProperties": false
+    },
     "workToolConfirmParams": {
       "type": "object", "properties": {
         "chatId": { "$ref": "#/$defs/workChatId" },
@@ -273,6 +344,10 @@
             "work.tool.run",
             "work.tool.preview",
             "work.tool.confirm",
+            "work.plan.get",
+            "work.plan.create",
+            "work.plan.control",
+            "work.plan.confirm",
             "handshake",
             "initialize",
             "chat.stream",
@@ -2507,6 +2582,7 @@
         "result": {
           "oneOf": [
             { "$ref": "#/$defs/workWorkspaceResult" },
+            { "$ref": "#/$defs/workPlanResult" },
             { "$ref": "#/$defs/workToolsResult" },
             { "$ref": "#/$defs/workToolResult" },
             { "$ref": "#/$defs/workApprovalResult" },

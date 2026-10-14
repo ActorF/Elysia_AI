@@ -38,7 +38,7 @@ jobs:
         run: >-
           python -m mypy --platform win32
           agent attachments chats config core desktop_protocol documents image_generation knowledge_lifecycle localization memory models project_sources projects recovery
-          scripts ui voice work_tools desktop_backend.py desktop_knowledge.py desktop_speech.py desktop_work.py start.py
+          scripts ui voice work_tools desktop_backend.py desktop_knowledge.py desktop_speech.py desktop_work.py desktop_work_plans.py start.py
 
   windows-native-integration:
     runs-on: windows-latest

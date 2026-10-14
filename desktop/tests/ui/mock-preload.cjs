@@ -419,6 +419,10 @@ let nextWorkToolResult = null
 let nextWorkPreviewError = null
 let nextWorkApprovalNumber = 1
 let workApprovals = new Map()
+let workPlans = new Map()
+let nextWorkPlanNumber = 1
+let delayWorkPlanReads = false
+let pendingWorkPlanReads = []
 let delayWorkToolRuns = false
 let pendingWorkToolRuns = []
 const workFiles = new Map([
@@ -508,6 +512,75 @@ function record(method, args = []) {
     args: clone(args),
   })
   nextCallSequence += 1
+}
+
+function mockWorkRead(call) {
+  const args = call.arguments
+  const entry = (path, content) => ({
+    path, name: path.split('/').at(-1), kind: 'file', sizeBytes: new TextEncoder().encode(content).byteLength,
+  })
+  let data
+  if (call.toolId === 'read_text') {
+    const content = workFiles.get(args.path)
+    data = content === undefined ? null : { path: args.path, content, sizeBytes: new TextEncoder().encode(content).byteLength }
+  } else if (call.toolId === 'metadata') {
+    data = args.path === '' ? { path: '', name: 'Workspace', kind: 'directory', sizeBytes: 0 }
+      : workFiles.has(args.path) ? entry(args.path, workFiles.get(args.path)) : null
+  } else if (call.toolId === 'search_files') {
+    data = { matches: [...workFiles.keys()].filter((path) => (
+      (args.path === '' || path.startsWith(`${args.path}/`)) && path.includes(args.query)
+    )).map((path) => ({ path })), truncated: false }
+  } else {
+    data = { entries: [...workFiles.entries()].filter(([path]) => args.path === '' || path.startsWith(`${args.path}/`))
+      .map(([path, content]) => entry(path, content)), truncated: false }
+  }
+  return data === null
+    ? { status: 'denied', data: null, error: { code: 'not_found', message: 'The requested file does not exist.' } }
+    : { status: 'succeeded', data, error: null }
+}
+
+function mockWorkApproval(call) {
+  const approvalId = `approval_${(nextWorkApprovalNumber++).toString(16).padStart(32, '0')}`
+  return { approvalId, call: clone(call), risk: ['create', 'edit'].includes(call.toolId) ? 'medium' : 'high',
+    preview: `Preview ${call.toolId}: ${call.arguments.path}\n${call.arguments.content ?? call.arguments.destination ?? 'Move into recovery storage.'}`,
+    expiresAt: '2100-01-01T00:00:00+00:00' }
+}
+
+function mockWorkWrite(approval, granted) {
+  if (!granted) return { status: 'denied', data: null, error: { code: 'permission_denied', message: 'The action was declined.' } }
+  const { toolId, arguments: args } = approval.call
+  if (toolId === 'create' || toolId === 'edit') workFiles.set(args.path, args.content)
+  else if (toolId === 'move') { workFiles.set(args.destination, workFiles.get(args.path)); workFiles.delete(args.path) }
+  else workFiles.delete(args.path)
+  const data = { path: args.path, undoId: `undo_${approval.approvalId.slice(9)}` }
+  if (toolId === 'move') data.destination = args.destination
+  return { status: 'succeeded', data, error: null }
+}
+
+async function driveMockWorkPlan(plan) {
+  if (plan.busy) return
+  plan.busy = true
+  try {
+    while (plan.state === 'running') {
+      const step = plan.steps.find((item) => item.status === 'pending')
+      if (step === undefined) { plan.state = 'succeeded'; return }
+      step.status = 'running'
+      if (['create', 'edit', 'move', 'delete'].includes(step.call.toolId)) {
+        step.approval = mockWorkApproval(step.call)
+        step.status = 'waiting'
+        plan.state = 'waiting'
+        return
+      }
+      const result = mockWorkRead(step.call)
+      if (delayWorkPlanReads) await new Promise((resolve) => { pendingWorkPlanReads.push(resolve) })
+      // Logical cancellation immediately marks reads cancelled, but their
+      // mocked native callback retains busy until the test releases it.
+      if (plan.state === 'cancelled') return
+      step.result = result
+      step.status = result.status === 'succeeded' ? 'succeeded' : 'failed'
+      if (step.status === 'failed') { plan.state = 'failed'; return }
+    }
+  } finally { plan.busy = false }
 }
 
 /** Keep mock persistence behind the same request-and-Chat ownership boundary. */
@@ -1507,28 +1580,7 @@ const desktopApi = {
 
   runWorkTool: async (request) => {
     record('runWorkTool', [request])
-    const { toolId, arguments: args } = request.call
-    const entry = (path, content) => ({
-      path, name: path.split('/').at(-1), kind: 'file', sizeBytes: new TextEncoder().encode(content).byteLength,
-    })
-    let data
-    if (toolId === 'read_text') {
-      const content = workFiles.get(args.path)
-      data = content === undefined ? null : { path: args.path, content, sizeBytes: new TextEncoder().encode(content).byteLength }
-    } else if (toolId === 'metadata') {
-      data = args.path === '' ? { path: '', name: 'Workspace', kind: 'directory', sizeBytes: 0 }
-        : workFiles.has(args.path) ? entry(args.path, workFiles.get(args.path)) : null
-    } else if (toolId === 'search_files') {
-      data = { matches: [...workFiles.keys()].filter((path) => (
-        (args.path === '' || path.startsWith(`${args.path}/`)) && path.includes(args.query)
-      )).map((path) => ({ path })), truncated: false }
-    } else {
-      data = { entries: [...workFiles.entries()].filter(([path]) => args.path === '' || path.startsWith(`${args.path}/`))
-        .map(([path, content]) => entry(path, content)), truncated: false }
-    }
-    const result = nextWorkToolResult ?? (data === null
-      ? { status: 'denied', data: null, error: { code: 'not_found', message: 'The requested file does not exist.' } }
-      : { status: 'succeeded', data, error: null })
+    const result = nextWorkToolResult ?? mockWorkRead(request.call)
     nextWorkToolResult = null
     if (delayWorkToolRuns) {
       await new Promise((resolve) => { pendingWorkToolRuns.push(resolve) })
@@ -1577,15 +1629,58 @@ const desktopApi = {
       nextWorkToolResult = null
       return { kind: 'work.result', result }
     }
-    const { toolId, arguments: args } = approval.call
-    if (toolId === 'create' || toolId === 'edit') workFiles.set(args.path, args.content)
-    else if (toolId === 'move') {
-      workFiles.set(args.destination, workFiles.get(args.path))
-      workFiles.delete(args.path)
-    } else workFiles.delete(args.path)
-    const data = { path: args.path, undoId: `undo_${approval.approvalId.slice(9)}` }
-    if (toolId === 'move') data.destination = args.destination
-    return { kind: 'work.result', result: { status: 'succeeded', data, error: null } }
+    return { kind: 'work.result', result: mockWorkWrite(approval, true) }
+  },
+
+  getWorkPlan: async (chatId) => {
+    record('getWorkPlan', [chatId])
+    return { kind: 'work.plan', plan: clone(workPlans.get(chatId) ?? null) }
+  },
+
+  createWorkPlan: async (request) => {
+    record('createWorkPlan', [request])
+    const suffix = (nextWorkPlanNumber++).toString(16).padStart(32, '0')
+    const plan = { planId: `plan_${suffix}`, title: request.title, state: 'pending', busy: false,
+      steps: request.calls.map((call, index) => ({
+        stepId: `step_${(index + 1).toString(16).padStart(32, '0')}`, call: clone(call),
+        status: 'pending', result: null, approval: null,
+      })) }
+    workPlans.set(request.chatId, plan)
+    workApprovals.delete(request.chatId)
+    return { kind: 'work.plan', plan: clone(plan) }
+  },
+
+  controlWorkPlan: async (request) => {
+    record('controlWorkPlan', [request])
+    const plan = workPlans.get(request.chatId)
+    if (plan === undefined || plan.planId !== request.planId) throw new Error('Plan is not current.')
+    if (request.action === 'cancel') {
+      plan.state = 'cancelled'
+      for (const step of plan.steps) {
+        if (['pending', 'running', 'waiting'].includes(step.status)) {
+          step.status = 'cancelled'; step.approval = null
+          step.result = { status: 'cancelled', data: null, error: { code: 'cancelled', message: 'The action was cancelled.' } }
+        }
+      }
+    } else if (request.action === 'pause') plan.state = 'paused'
+    else {
+      plan.state = plan.steps.some((step) => step.status === 'waiting') ? 'waiting' : 'running'
+      if (plan.state === 'running') void driveMockWorkPlan(plan)
+    }
+    return { kind: 'work.plan', plan: clone(plan) }
+  },
+
+  confirmWorkPlan: async (request) => {
+    record('confirmWorkPlan', [request])
+    const plan = workPlans.get(request.chatId)
+    const step = plan?.steps.find((item) => item.approval?.approvalId === request.approvalId)
+    if (plan?.planId !== request.planId || plan.state !== 'waiting' || step === undefined) throw new Error('Plan approval is not current.')
+    const result = mockWorkWrite(step.approval, request.granted)
+    step.approval = null; step.result = result
+    step.status = result.status === 'succeeded' ? 'succeeded' : 'failed'
+    plan.state = step.status === 'failed' ? 'failed' : 'running'
+    if (plan.state === 'running') void driveMockWorkPlan(plan)
+    return { kind: 'work.plan', plan: clone(plan) }
   },
 
   chooseWorkWorkspace: async (chatId) => {
@@ -2136,6 +2231,11 @@ const testControl = {
     nextWorkPreviewError = null
     nextWorkApprovalNumber = 1
     workApprovals = new Map()
+    workPlans = new Map()
+    nextWorkPlanNumber = 1
+    delayWorkPlanReads = false
+    for (const release of pendingWorkPlanReads) release()
+    pendingWorkPlanReads = []
     for (const release of pendingWorkWorkspaceReads) {
       release()
     }
@@ -2508,6 +2608,13 @@ const testControl = {
 
   failNextWorkPreview: (message) => {
     nextWorkPreviewError = message
+  },
+
+  setWorkPlanReadDelay: (delayed) => { delayWorkPlanReads = delayed },
+  releaseNextWorkPlanRead: () => {
+    const release = pendingWorkPlanReads.shift()
+    release?.()
+    return release !== undefined
   },
 
   setWorkToolRunDelay: (delayed) => {

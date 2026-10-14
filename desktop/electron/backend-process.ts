@@ -63,6 +63,10 @@ import {
   type WorkToolApproval, type WorkToolConfirmParams,
 } from './work-tool-protocol.js'
 import {
+  parseWorkPlanState, workPlanHasLease,
+  type WorkPlan, type WorkPlanState, type WorkPlanCreateParams, type WorkPlanControlParams, type WorkPlanConfirmParams,
+} from './work-plan-protocol.js'
+import {
   SpeechDeliveryCoordinator,
   type SpeechDeliveryStatus,
   type TrustedSpeechPlaybackOwner,
@@ -372,6 +376,11 @@ interface PendingRequest {
   rejectWorkTool?: (error: Error) => void
   resolveWorkApproval?: (state: WorkToolApprovalState) => void
   rejectWorkApproval?: (error: Error) => void
+  workPlanId?: string
+  workPlanCalls?: WorkToolCall[]
+  workPlanSequence?: number
+  resolveWorkPlan?: (state: WorkPlanState) => void
+  rejectWorkPlan?: (error: Error) => void
   resolveSettingsState?: (state: DesktopSettingsState) => void
   rejectSettingsState?: (error: Error) => void
   resolveVoiceSettingsState?: (state: VoiceSettingsState) => void
@@ -511,7 +520,12 @@ const WORK_WORKSPACE_METHODS = new Set<ProtocolMethod>([
   'work.workspace.bind',
 ])
 
-const WORK_ACTION_METHODS = new Set<ProtocolMethod>(['work.tool.run', 'work.tool.preview', 'work.tool.confirm'])
+const WORK_ACTION_METHODS = new Set<ProtocolMethod>([
+  'work.tool.run', 'work.tool.preview', 'work.tool.confirm',
+  'work.plan.create', 'work.plan.control', 'work.plan.confirm',
+])
+type WorkPlanMethod = 'work.plan.get' | 'work.plan.create' | 'work.plan.control' | 'work.plan.confirm'
+const WORK_PLAN_METHODS = new Set<ProtocolMethod>(['work.plan.get', 'work.plan.create', 'work.plan.control', 'work.plan.confirm'])
 
 type ProjectMethod =
   | 'project.list'
@@ -579,6 +593,11 @@ export class BackendProcess {
   // Native IPC accepts only the single preview already validated for this Chat.
   // Tokens are consumed before dispatch, and scope/navigation changes revoke them.
   private readonly workApprovals = new Map<string, WorkToolApproval>()
+  private readonly workPlans = new Map<string, WorkPlan>()
+  // Requests can resolve in a different order. An older poll must not release
+  // the lease published by a later control or confirmation acknowledgement.
+  private readonly workPlanAppliedSequences = new Map<string, number>()
+  private workPlanSequence = 0
   private readonly timedOutVoiceCaptureRequestIds = new Set<string>()
   private readonly timedOutSpeechStartRequestIds = new Set<string>()
   private expectedExit = false
@@ -693,6 +712,7 @@ export class BackendProcess {
       || this.restartCompletion !== null
       || this.pendingRequests.size > 0
       || this.hasActiveSpeechTurn()
+      || this.hasWorkPlanLease()
   }
 
   /** Spawn the Backend and begin its authenticated handshake and initialization. */
@@ -720,6 +740,8 @@ export class BackendProcess {
     this.expectedExit = false
     this.lastDiagnostic = ''
     const sessionToken = randomBytes(32).toString('base64url')
+    this.workPlans.clear()
+    this.workPlanAppliedSequences.clear()
     this.workApprovals.clear()
     this.pendingRequests.clear()
     this.timedOutVoiceCaptureRequestIds.clear()
@@ -1508,6 +1530,7 @@ export class BackendProcess {
 
   /** Execute one closed read tool, correlated with its exact expected output shape. */
   runWorkTool(request: WorkToolRunParams): Promise<WorkToolResultState> {
+    if (this.hasWorkPlanLease()) return Promise.reject(new Error('Finish or cancel the current Work plan first.'))
     if (this.snapshot.status !== 'ready' || this.snapshot.chatId !== request.chatId
       || !this.snapshot.capabilities.includes('work.read')) {
       return Promise.reject(new Error('Work read tools are unavailable for this Chat.'))
@@ -1530,6 +1553,7 @@ export class BackendProcess {
 
   /** Prepare one exact write for inspection, with its owner frozen until approval. */
   previewWorkTool(request: WorkToolRunParams): Promise<WorkToolApprovalState> {
+    if (this.hasWorkPlanLease()) return Promise.reject(new Error('Finish or cancel the current Work plan first.'))
     this.workApprovals.delete(request.chatId)
     if (this.snapshot.status !== 'ready' || this.snapshot.chatId !== request.chatId
       || !this.snapshot.capabilities.includes('work.preview')) {
@@ -1551,6 +1575,7 @@ export class BackendProcess {
 
   /** Consume the active Chat's exact preview once, with no permanent grant. */
   confirmWorkTool(request: WorkToolConfirmParams): Promise<WorkToolResultState> {
+    if (this.hasWorkPlanLease()) return Promise.reject(new Error('Finish or cancel the current Work plan first.'))
     if (this.snapshot.status !== 'ready' || this.snapshot.chatId !== request.chatId
       || !this.snapshot.capabilities.includes('work.confirm')) {
       return Promise.reject(new Error('Work approval is unavailable for this Chat.'))
@@ -1573,6 +1598,41 @@ export class BackendProcess {
         resolveWorkTool: resolve, rejectWorkTool: reject,
       })
     })
+  }
+
+  /** Read the active Work Chat's plan without starting or approving its steps. */
+  getWorkPlan(chatId: string): Promise<WorkPlanState> {
+    return this.requestWorkPlan('work.plan.get', { chatId })
+  }
+
+  /** Create a reviewed immutable call sequence without launching its worker. */
+  createWorkPlan(request: WorkPlanCreateParams): Promise<WorkPlanState> {
+    return this.requestWorkPlan('work.plan.create', request)
+  }
+
+  /** Apply one explicit start, pause, resume, next, or cancel to its exact plan. */
+  controlWorkPlan(request: WorkPlanControlParams): Promise<WorkPlanState> {
+    if (this.workPlans.get(request.chatId)?.planId !== request.planId) {
+      return Promise.reject(new Error('This Work plan is no longer current.'))
+    }
+    return this.requestWorkPlan('work.plan.control', request)
+  }
+
+  /** Route one displayed write-step decision through the plan owning its token. */
+  confirmWorkPlan(request: WorkPlanConfirmParams): Promise<WorkPlanState> {
+    const current = this.workPlans.get(request.chatId)
+    if (current?.planId !== request.planId || current.state !== 'waiting'
+      || !current.steps.some((step) => step.approval?.approvalId === request.approvalId)) {
+      return Promise.reject(new Error('This plan approval is no longer current.'))
+    }
+    // Reserve the displayed token before dispatch. A duplicate native IPC call
+    // cannot race the worker acknowledgement and reuse its waiting approval.
+    this.workPlans.set(request.chatId, {
+      ...current, state: 'running', busy: true,
+      steps: current.steps.map((step) => step.approval?.approvalId === request.approvalId
+        ? { ...step, status: 'running', approval: null } : step),
+    })
+    return this.requestWorkPlan('work.plan.confirm', request)
   }
 
   /** Set one idle Chat's pin state. */
@@ -2060,6 +2120,9 @@ export class BackendProcess {
     method: Method,
     params: RequestParamsByMethod[Method],
   ): Promise<ProjectState> {
+    if (method !== 'project.list') {
+      try { this.assertWorkIdle() } catch (error) { return Promise.reject(error) }
+    }
     if (this.snapshot.status !== 'ready') {
       return Promise.reject(new Error('Python Backend is not ready.'))
     }
@@ -2111,6 +2174,9 @@ export class BackendProcess {
     method: 'work.workspace.get' | 'work.workspace.bind',
     params: WorkWorkspaceGetParams | WorkWorkspaceBindParams,
   ): Promise<WorkWorkspaceState> {
+    if (method === 'work.workspace.bind' && this.hasWorkPlanLease()) {
+      return Promise.reject(new Error('Finish or cancel the current Work plan first.'))
+    }
     if (
       this.snapshot.status !== 'ready'
       || !this.snapshot.capabilities.includes('work.workspace')
@@ -2279,9 +2345,64 @@ export class BackendProcess {
   }
 
   private assertWorkIdle(): void {
-    if ([...this.pendingRequests.values()].some((pending) => WORK_ACTION_METHODS.has(pending.method))) {
+    if (this.hasWorkPlanLease()
+      || [...this.pendingRequests.values()].some((pending) => WORK_ACTION_METHODS.has(pending.method))) {
       throw new Error('Wait for the current Work tool to finish.')
     }
+  }
+
+  private hasWorkPlanLease(): boolean {
+    return [...this.workPlans.values()].some(workPlanHasLease)
+  }
+
+  private requestWorkPlan<Method extends WorkPlanMethod>(method: Method, params: RequestParamsByMethod[Method]): Promise<WorkPlanState> {
+    if (this.snapshot.status !== 'ready' || this.snapshot.chatId !== params.chatId
+      || !this.snapshot.capabilities.includes('work.plan')) return Promise.reject(new Error('Work plans are unavailable for this Chat.'))
+    if (method === 'work.plan.create' && (this.hasWorkPlanLease() || [...this.pendingRequests.values()].some((pending) => (
+      WORK_ACTION_METHODS.has(pending.method) || CHAT_GENERATION_METHODS.has(pending.method)
+      || VOICE_TRANSCRIPTION_METHODS.has(pending.method)
+    )))) return Promise.reject(new Error('Finish the current action before creating a plan.'))
+    const sequence = ++this.workPlanSequence
+    if (method === 'work.plan.create') {
+      this.workApprovals.delete(params.chatId)
+      this.workPlans.delete(params.chatId)
+      this.workPlanAppliedSequences.set(params.chatId, sequence)
+    }
+    return new Promise((resolve, reject) => {
+      this.sendRequest(method, params, params.chatId, {
+        workPlanSequence: sequence,
+        ...('planId' in params ? { workPlanId: params.planId } : {}),
+        ...('calls' in params ? { workPlanCalls: params.calls.map(parseWorkToolCall) } : {}),
+        resolveWorkPlan: resolve, rejectWorkPlan: reject,
+      })
+    })
+  }
+
+  private validateWorkPlanResponse(pending: PendingRequest, value: unknown): WorkPlanState {
+    const state = parseWorkPlanState(value)
+    const calls = state.plan?.steps.map((step) => step.call)
+    if (pending.workPlanCalls !== undefined && (state.plan?.state !== 'pending' || state.plan.busy
+      || state.plan.steps.some((step) => step.status !== 'pending'))) {
+      throw new ProtocolValidationError('protocol.invalid_result', 'Creating a Work plan cannot start its steps.')
+    }
+    if ((pending.workPlanId !== undefined && state.plan?.planId !== pending.workPlanId)
+      || (pending.workPlanCalls !== undefined && JSON.stringify(calls) !== JSON.stringify(pending.workPlanCalls))) {
+      throw new ProtocolValidationError('protocol.invalid_result', 'Work plan does not match its requested owner or calls.')
+    }
+    const previous = pending.chatId === undefined ? undefined : this.workPlans.get(pending.chatId)
+    const applied = this.workPlanAppliedSequences.get(pending.chatId ?? '') ?? 0
+    if ((pending.workPlanSequence ?? 0) >= applied && previous !== undefined
+      && workPlanHasLease(previous) && state.plan === null) {
+      throw new ProtocolValidationError('protocol.invalid_result', 'A live Work plan disappeared before native ownership ended.')
+    }
+    if ((pending.workPlanSequence ?? 0) >= applied && previous !== undefined && state.plan !== null) {
+      if (previous.planId !== state.plan.planId || previous.title !== state.plan.title
+        || JSON.stringify(previous.steps.map((step) => [step.stepId, step.call]))
+          !== JSON.stringify(state.plan.steps.map((step) => [step.stepId, step.call]))) {
+        throw new ProtocolValidationError('protocol.invalid_result', 'Work plan changed its immutable plan content.')
+      }
+    }
+    return state
   }
 
   private hasActiveKnowledgeLease(): boolean {
@@ -2360,6 +2481,11 @@ export class BackendProcess {
       | 'rejectWorkTool'
       | 'resolveWorkApproval'
       | 'rejectWorkApproval'
+      | 'workPlanId'
+      | 'workPlanCalls'
+      | 'workPlanSequence'
+      | 'resolveWorkPlan'
+      | 'rejectWorkPlan'
       | 'resolveSettingsState'
       | 'rejectSettingsState'
       | 'resolveVoiceSettingsState'
@@ -2552,6 +2678,8 @@ export class BackendProcess {
         if (pending.workToolCall === undefined || JSON.stringify(state.approval.call) !== JSON.stringify(pending.workToolCall)) {
           throw new ProtocolValidationError('protocol.invalid_result', 'Work preview does not match its exact requested parameters.')
         }
+      } else if (WORK_PLAN_METHODS.has(pending.method)) {
+        this.validateWorkPlanResponse(pending, message.result)
       } else if (SETTINGS_METHODS.has(pending.method)) {
         parseSettingsStateResult(message.result)
       } else if (VOICE_SETTINGS_METHODS.has(pending.method)) {
@@ -2720,6 +2848,7 @@ export class BackendProcess {
       if (pending.method === 'work.tool.preview') {
         pending.rejectWorkApproval?.(new Error('The Work change preview could not be prepared.'))
       }
+      if (WORK_PLAN_METHODS.has(pending.method)) pending.rejectWorkPlan?.(new Error('The Work plan action could not complete.'))
       if (SETTINGS_METHODS.has(pending.method)) {
         pending.rejectSettingsState?.(new Error(message.error.message))
       }
@@ -2851,6 +2980,10 @@ export class BackendProcess {
     if (CHAT_SESSION_METHODS.has(pending.method)) {
       const result = parseChatStateResult(message.result)
       if (pending.method === 'chat.mode' || result.activeChat.chatId !== this.snapshot.chatId) {
+        if (!this.hasWorkPlanLease()) {
+          this.workPlans.clear()
+          this.workPlanAppliedSequences.clear()
+        }
         this.workApprovals.clear()
       }
       if (result.activeChat.modelName !== this.snapshot.modelName) {
@@ -2911,6 +3044,17 @@ export class BackendProcess {
       const state = parseWorkToolApprovalState(message.result)
       this.workApprovals.set(pending.chatId!, state.approval)
       pending.resolveWorkApproval?.(state)
+      return
+    }
+    if (WORK_PLAN_METHODS.has(pending.method)) {
+      const state = this.validateWorkPlanResponse(pending, message.result)
+      const chatId = pending.chatId!
+      if ((pending.workPlanSequence ?? 0) >= (this.workPlanAppliedSequences.get(chatId) ?? 0)) {
+        this.workPlanAppliedSequences.set(chatId, pending.workPlanSequence ?? 0)
+        if (state.plan === null) this.workPlans.delete(chatId)
+        else this.workPlans.set(chatId, state.plan)
+      }
+      pending.resolveWorkPlan?.(state)
       return
     }
 
@@ -3626,6 +3770,7 @@ export class BackendProcess {
       pending.rejectWorkTools?.(new Error('Python Backend stopped before the tool catalog completed.'))
       pending.rejectWorkTool?.(new Error('Python Backend stopped before the Work tool completed.'))
       pending.rejectWorkApproval?.(new Error('Python Backend stopped before the Work preview completed.'))
+      pending.rejectWorkPlan?.(new Error('Python Backend stopped before the Work plan completed.'))
       pending.rejectSettingsState?.(
         new Error(
           'Python Backend stopped before the Settings action completed.',
@@ -3666,6 +3811,8 @@ export class BackendProcess {
         new Error('Python Backend stopped before speech playback started.'),
       )
     }
+    this.workPlans.clear()
+    this.workPlanAppliedSequences.clear()
     this.workApprovals.clear()
     this.pendingRequests.clear()
   }
@@ -3685,6 +3832,7 @@ export class BackendProcess {
       pending.rejectWorkTools?.(error)
       pending.rejectWorkTool?.(error)
       pending.rejectWorkApproval?.(error)
+      pending.rejectWorkPlan?.(error)
       pending.rejectSettingsState?.(error)
       pending.rejectVoiceSettingsState?.(error)
       pending.rejectVoiceCapture?.(error)
@@ -3706,6 +3854,8 @@ export class BackendProcess {
       pending.rejectWorkTool = undefined
       pending.resolveWorkApproval = undefined
       pending.rejectWorkApproval = undefined
+      pending.resolveWorkPlan = undefined
+      pending.rejectWorkPlan = undefined
       pending.resolveSettingsState = undefined
       pending.rejectSettingsState = undefined
       pending.resolveVoiceSettingsState = undefined
@@ -3731,6 +3881,8 @@ export class BackendProcess {
     this.clearHandshakeTimeout()
     this.clearInitializeTimeout()
     this.rejectPendingActionPromises(message)
+    this.workPlans.clear()
+    this.workPlanAppliedSequences.clear()
     this.workApprovals.clear()
     this.pendingRequests.clear()
     this.timedOutVoiceCaptureRequestIds.clear()
@@ -3753,6 +3905,8 @@ export class BackendProcess {
     this.clearHandshakeTimeout()
     this.clearInitializeTimeout()
     this.rejectPendingActionPromises(message)
+    this.workPlans.clear()
+    this.workPlanAppliedSequences.clear()
     this.workApprovals.clear()
     this.pendingRequests.clear()
     this.timedOutVoiceCaptureRequestIds.clear()

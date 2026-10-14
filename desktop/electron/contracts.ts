@@ -26,6 +26,7 @@ import type {
 } from './song-cover-contracts.js'
 import type { WorkWorkspaceClient } from './work-protocol.js'
 import type { WorkToolClient } from './work-tool-protocol.js'
+import type { WorkPlanClient } from './work-plan-protocol.js'
 
 export type {
   WorkWorkspaceClient,
@@ -36,6 +37,7 @@ export type {
   WorkToolApprovalState,
   WorkToolConfirmParams,
 } from './work-tool-protocol.js'
+export type { WorkPlanState, WorkPlanClient } from './work-plan-protocol.js'
 
 export type BackendStatus =
   | 'starting'
@@ -565,7 +567,7 @@ export type BackendEvent =
  * Renderer code receives domain data and owned actions, never Electron or raw
  * filesystem primitives.
  */
-export interface DesktopApi extends WorkWorkspaceClient, WorkToolClient {
+export interface DesktopApi extends WorkWorkspaceClient, WorkToolClient, WorkPlanClient {
   /** Signal that the renderer can receive events and the main window may appear. */
   rendererReady(): Promise<void>
   /** Keep native window chrome aligned with the renderer's saved appearance. */

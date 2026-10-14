@@ -1300,15 +1300,23 @@ function App() {
     || workOperationPending
     || snapshot.status !== 'ready'
     || chatState === null
-  const modeSelectionDisabled = desktopApi === undefined
-    || !snapshot.capabilities.includes('chat.mode')
-    || sessionUiPending
+  const workControlsDisabled = desktopApi === undefined
+    || sessionMutationPending
+    || snapshot.status !== 'ready'
+    || chatState === null
     || generationBusy
     || generationReconcilePending
     || pendingChatSend !== null
     || dictationActive
     || callPreviewOpen
     || voiceTranscriptionOperationRef.current !== null
+  const modeSelectionDisabled = workControlsDisabled
+    || workOperationPending
+    || !snapshot.capabilities.includes('chat.mode')
+  const updateWorkBusy = useCallback((busy: boolean): void => {
+    workOperationPendingRef.current = busy
+    setWorkOperationPending(busy)
+  }, [])
   const canSend = (
     desktopApi !== undefined
     && snapshot.status === 'ready'
@@ -7893,14 +7901,12 @@ function App() {
             ready={snapshot.status === 'ready'
               && snapshot.chatId === activeChatId
               && snapshot.capabilities.includes('work.workspace')}
-            disabled={modeSelectionDisabled}
+            disabled={workControlsDisabled}
             readAvailable={snapshot.capabilities.includes('work.read')}
             previewAvailable={snapshot.capabilities.includes('work.preview')}
             confirmAvailable={snapshot.capabilities.includes('work.confirm')}
-            onBusyChange={(busy) => {
-              workOperationPendingRef.current = busy
-              setWorkOperationPending(busy)
-            }}
+            planAvailable={snapshot.capabilities.includes('work.plan')}
+            onBusyChange={updateWorkBusy}
           />
         )}
         onBeginRetryEdit={beginRetryEdit}

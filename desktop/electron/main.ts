@@ -32,6 +32,7 @@ import { fileURLToPath } from 'node:url'
 import { BackendProcess } from './backend-process.js'
 import { parseWorkWorkspaceGetParams } from './work-protocol.js'
 import { parseWorkToolRunParams, parseWorkToolConfirmParams } from './work-tool-protocol.js'
+import { parseWorkPlanGetParams, parseWorkPlanCreateParams, parseWorkPlanControlParams, parseWorkPlanConfirmParams } from './work-plan-protocol.js'
 import { ApplicationShutdownGate } from './application-shutdown-gate.js'
 import {
   DATA_STORAGE_CLEANABLE_CATEGORIES,
@@ -3409,6 +3410,23 @@ function registerIpcHandlers(): void {
   ipcMain.handle('work:confirm-tool', (event, request: unknown) => {
     assertTrustedSender(event)
     return requireBackend().confirmWorkTool(parseWorkToolConfirmParams(request))
+  })
+
+  ipcMain.handle('work:get-plan', (event, chatId: unknown) => {
+    assertTrustedSender(event)
+    return requireBackend().getWorkPlan(parseWorkPlanGetParams({ chatId }).chatId)
+  })
+  ipcMain.handle('work:create-plan', (event, request: unknown) => {
+    assertTrustedSender(event)
+    return requireBackend().createWorkPlan(parseWorkPlanCreateParams(request))
+  })
+  ipcMain.handle('work:control-plan', (event, request: unknown) => {
+    assertTrustedSender(event)
+    return requireBackend().controlWorkPlan(parseWorkPlanControlParams(request))
+  })
+  ipcMain.handle('work:confirm-plan', (event, request: unknown) => {
+    assertTrustedSender(event)
+    return requireBackend().confirmWorkPlan(parseWorkPlanConfirmParams(request))
   })
 
   ipcMain.handle('work:choose-workspace', async (event, chatId: unknown) => {

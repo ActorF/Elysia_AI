@@ -14,8 +14,9 @@ from typing import Any
 
 from chats import ChatSession
 from core.mode_policy import require_work_mode
+from desktop_work_plans import DesktopWorkPlans
 from work_tools.bindings import WorkspaceBindings
-from work_tools.contracts import TOOL_CATALOG, descriptor_to_data, validate_tool_call, validate_tool_result
+from work_tools.contracts import TOOL_CATALOG, ToolResult, descriptor_to_data, validate_tool_call, validate_tool_result
 from work_tools.executor import WorkToolExecutor
 from work_tools.workspace import WorkspaceBoundary
 from work_tools.writes import WriteCoordinator
@@ -33,6 +34,8 @@ class DesktopWorkRuntime:
         self._protected_roots = (directory.resolve(), *(path.resolve() for path in protected_roots))
         self._chat_provider = chat_provider
         self._lock = RLock()
+        self._closed = False
+        self._plans = DesktopWorkPlans(chat_provider, self.boundary, self._get_writes)
 
     def dispatch(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         """Apply an explicit authenticated Work request or deny stale/Chat owners."""
@@ -40,10 +43,29 @@ class DesktopWorkRuntime:
         # NDJSON serializes foreground admission; repositories and worker
         # managers own their narrower locks. Never hold this runtime's singleton
         # mutex through native I/O, so cancellation can revoke tokens promptly.
+        with self._lock:
+            if self._closed:
+                raise PermissionError("Work is shutting down.")
         chat = self._chat_provider()
         if str(chat.chat_id) != params["chatId"] or chat.is_archived:
             raise ValueError("Work request no longer belongs to the active Chat.")
         require_work_mode(chat.mode)
+        chat_id = str(chat.chat_id)
+        if method == "work.plan.create":
+            plan = self._plans.create(chat, params["title"], [validate_tool_call(call) for call in params["calls"]])
+            return {"kind": "work.plan", "plan": plan}
+        if method == "work.plan.get":
+            return {"kind": "work.plan", "plan": self._plans.get(chat_id)}
+        if method == "work.plan.control":
+            return {"kind": "work.plan", "plan": self._plans.control(chat_id, params["planId"], params["action"])}
+        if method == "work.plan.confirm":
+            return {"kind": "work.plan", "plan": self._plans.confirm(chat_id, params["planId"], params["approvalId"], params["granted"])}
+        if method == "work.tool.confirm" and self._plans.owns_approval(chat_id, params["approvalId"]):
+            return {"kind": "work.result", "result": ToolResult("denied", error_code="permission_denied").to_data()}
+        if method in {"work.tool.run", "work.tool.preview", "work.tool.confirm"} and (
+            self._plans.has_live_plan(chat_id) or self._plans.is_busy()
+        ):
+            raise PermissionError("Finish or cancel the Work plan before using another tool.")
         if method == "work.tools.list":
             return {"kind": "work.tools", "tools": [descriptor_to_data(item) for item in TOOL_CATALOG]}
         if method == "work.tool.run":
@@ -61,6 +83,8 @@ class DesktopWorkRuntime:
                                                 self.boundary(str(chat.chat_id)), params["approvalId"], params["granted"])
             return {"kind": "work.result", "result": result.to_data()}
         if method == "work.workspace.bind":
+            if self.is_busy():
+                raise PermissionError("Wait for the active Work step before changing its Workspace.")
             self.invalidate(str(chat.chat_id))
             selected = params["workspacePath"]
             if selected is None:
@@ -77,7 +101,7 @@ class DesktopWorkRuntime:
                 "workspacePath": None if binding is None else binding.root}
 
     def _get_writes(self) -> WriteCoordinator:
-        """Lazily open private recovery state after a user requests a write preview."""
+        """Open private recovery state for an explicit preview or Work plan."""
 
         with self._lock:
             if self._writes is None:
@@ -87,8 +111,21 @@ class DesktopWorkRuntime:
     def invalidate(self, chat_id: str) -> None:
         """Revoke transient approval rights after a scope, mode, or owner change."""
 
+        self._plans.invalidate(chat_id)
         if self._writes is not None:
             self._writes.invalidate(chat_id)
+
+    def is_busy(self) -> bool:
+        """Report physical plan callbacks, including cancelled workers still draining."""
+
+        return self._plans.is_busy()
+
+    def shutdown(self) -> bool:
+        """Close plan admission and cancel owners without holding the runtime mutex during I/O."""
+
+        with self._lock:
+            self._closed = True
+        return self._plans.shutdown()
 
     def forget_binding(self, chat_id: str) -> None:
         """Revoke a deleted Chat's scope while retaining useful file recovery records."""

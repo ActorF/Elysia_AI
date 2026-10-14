@@ -46,6 +46,7 @@ import type { WorkWorkspaceState } from './work-protocol.js'
 import type {
   WorkToolsState, WorkToolRunParams, WorkToolResultState, WorkToolApprovalState, WorkToolConfirmParams,
 } from './work-tool-protocol.js'
+import type { WorkPlanState, WorkPlanCreateParams, WorkPlanControlParams, WorkPlanConfirmParams } from './work-plan-protocol.js'
 import type { DataStorageViewState } from './data-storage-contracts.js'
 import type {
   PresenceNotificationState,
@@ -1003,6 +1004,11 @@ const desktopApi: DesktopApi = {
 
   confirmWorkTool: (request: WorkToolConfirmParams) =>
     ipcRenderer.invoke('work:confirm-tool', request) as Promise<WorkToolResultState>,
+
+  getWorkPlan: (chatId: string) => ipcRenderer.invoke('work:get-plan', chatId) as Promise<WorkPlanState>,
+  createWorkPlan: (request: WorkPlanCreateParams) => ipcRenderer.invoke('work:create-plan', request) as Promise<WorkPlanState>,
+  controlWorkPlan: (request: WorkPlanControlParams) => ipcRenderer.invoke('work:control-plan', request) as Promise<WorkPlanState>,
+  confirmWorkPlan: (request: WorkPlanConfirmParams) => ipcRenderer.invoke('work:confirm-plan', request) as Promise<WorkPlanState>,
 
   chooseWorkWorkspace: (chatId: string) =>
     ipcRenderer.invoke('work:choose-workspace', chatId) as Promise<WorkWorkspaceState | null>,

@@ -65,10 +65,10 @@ during data-root migration and excluded from generic cache cleanup.
 
 `work.tools.list` returns `{kind: "work.tools", tools}` for the active Work
 Chat. Every catalog entry declares its exact input and output schemas, risk,
-and timeout. The catalog introduces four read operations: directory listing,
-bounded text reading, filename search, and metadata. The complete tool contract
-also defines create, edit, move, and recoverable delete for subsequent approval
-modules. There is no shell or arbitrary-command tool. Statuses distinguish
+and timeout. The catalog contains four read operations: directory listing,
+bounded text reading, filename search, and metadata, plus separately approved
+create, edit, move, and recoverable delete operations. There is no shell or
+arbitrary-command tool. Statuses distinguish
 success, partial output, denial, cancellation, and failure with fixed public
 errors. Work code uses `work_tools` because the reviewed RVC runtime owns the
 unrelated vendor namespace `tools`; the unused old Elysia namespace was removed.
@@ -104,6 +104,20 @@ always require preview and confirmation. No critical-risk operation is exposed.
 Decline, expiry, changed bytes, changed Project/root, revoked rights, and token
 replay all refuse mutation. Modified actions receive a new preview/token. The
 UI offers a stronger recoverable-deletion confirmation and no permanent grant.
+
+`work.plan.create` records a reviewed title and one to sixteen exact tool calls;
+it does not start execution. `work.plan.control` starts, pauses between steps,
+resumes, advances, or cancels the exact plan. `work.plan.get` returns its bounded
+snapshot, including each step's input, result, approval, and physical `busy`
+lease. The worker executes reads sequentially and stops before every write.
+`work.plan.confirm` authorizes only that plan's displayed approval ID once.
+Generic tool confirmation cannot consume plan-owned tokens. Pause preserves a
+pending approval; cancellation revokes it and discards late read results. An
+already admitted native write completes truthfully while cancelled capacity
+remains reserved. Backend shutdown cancels admission and waits for that worker
+to drain. Plans are in-memory and never restart automatically; durable task
+restoration belongs to the later Task stage. Mode, owner, Project, and pinned
+Workspace identity are rechecked for every step.
 
 `settings.get` and `settings.update` expose one exact public allowlist with
 optimistic revision checks: Chat model, Ollama origin, two Memory limits,

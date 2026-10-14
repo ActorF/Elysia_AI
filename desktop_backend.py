@@ -184,6 +184,7 @@ SERVER_CAPABILITIES = (
     "work.read",
     "work.preview",
     "work.confirm",
+    "work.plan",
     "chat.sessions",
     "chat.mode",
     "chat.stream",
@@ -208,6 +209,18 @@ MAX_ERROR_MESSAGE_LENGTH = 4096
 MAX_RECENT_REQUEST_IDS = 4096
 GENERATION_SHUTDOWN_TIMEOUT_SECONDS = 2.0
 TRANSCRIPTION_TIMEOUT_SECONDS = 120.0
+_WORK_PHYSICAL_BUSY_METHODS = frozenset({
+    "chat.create", "chat.open", "chat.rename", "chat.mode", "chat.pin",
+    "chat.archive", "chat.delete", "chat.stream", "chat.retry",
+    "project.create", "project.open", "project.update", "project.workspace",
+    "project.archive", "project.chat.move", "attachment.add", "attachment.remove",
+    "settings.update", "voice.settings.update", "voice.capture.complete",
+    "voice.transcription.start", "voice.speech.start", "work.workspace.bind",
+    "work.plan.create", "work.tool.run", "work.tool.preview", "work.tool.confirm",
+    "knowledge.source.add", "knowledge.source.replace", "knowledge.source.reindex",
+    "knowledge.source.delete", "knowledge.project.rebuild", "knowledge.project.revoke",
+    "knowledge.recover", "knowledge.source.export",
+})
 
 
 class _GenerationState(Enum):
@@ -712,6 +725,7 @@ class DesktopBackend:
         self._prepare_transcription_shutdown()
         self._prepare_speech_shutdown()
         self._prepare_knowledge_shutdown()
+        self._prepare_work_shutdown()
         # A finite test/input stream may end immediately after starting a
         # generation. Give a healthy worker time to finish; if it is blocked,
         # request cancellation so stdin closure cannot strand the process.
@@ -766,6 +780,8 @@ class DesktopBackend:
         self._request_id_order.append(request_id)
 
         try:
+            if self._authenticated:
+                self._require_work_admission(method)
             if method == "handshake":
                 self._handshake(request_id, request)
             elif method == "shutdown":
@@ -773,6 +789,7 @@ class DesktopBackend:
                 self._prepare_speech_shutdown()
                 self._prepare_generation_shutdown()
                 self._prepare_knowledge_shutdown()
+                self._prepare_work_shutdown()
                 self._emit_response(request_id, {"stopped": True})
                 return False
             elif not self._authenticated:
@@ -1318,7 +1335,47 @@ class DesktopBackend:
         active = self._active_chat_snapshot()
         if self._brain is None or active is None:
             raise ValueError("Work is unavailable before initialization.")
-        return self._brain.get_chat(active.chat_id)
+        canonical = self._brain.get_chat(active.chat_id)
+        if canonical.is_archived:
+            raise ValueError("Archived Chat cannot own Work permissions.")
+        if canonical.project_id is not None:
+            try:
+                project = self._brain.get_project(canonical.project_id)
+            except ProjectNotFoundError:
+                raise ValueError("Linked Project is unavailable for Work.") from None
+            if project.is_archived:
+                raise ValueError("Archived Project cannot own Work permissions.")
+        return canonical
+
+    def _require_work_admission(self, method: str) -> None:
+        """Reject mutations before repositories change while a Work callback owns capacity.
+
+        Logical cancellation does not free an admitted native operation. Plan
+        controls and snapshot polling retain access so users can stop work and
+        observe its physical drain; other lifecycle changes wait for that drain.
+        """
+
+        with self._state_lock:
+            runtime = self._work_runtime
+        if method in _WORK_PHYSICAL_BUSY_METHODS and runtime is not None and runtime.is_busy():
+            raise ProtocolValidationError("work.busy", "Wait for the active Work step to finish.")
+
+    def _prepare_work_shutdown(self) -> None:
+        """Cancel plans and wait for admitted file callbacks without retaining Backend locks.
+
+        Returning the shutdown acknowledgement while an admitted write is still
+        settling would let Electron kill it before durable verification. Its
+        recovery journal remains conservative, but a clean shutdown waits for
+        the actual outcome and prevents any new plan admission.
+        """
+
+        with self._state_lock:
+            runtime = self._work_runtime
+        if runtime is None:
+            return
+        runtime.shutdown()
+        while runtime.is_busy():
+            Event().wait(0.02)
 
     def _dispatch_work(self, request_id: str, method: str, params: JsonObject) -> None:
         """Serialize explicit Work scope changes against admitted Chat/Voice work."""
@@ -2466,6 +2523,8 @@ class DesktopBackend:
         chat_id = ChatId(cast(str, params["chatId"]))
         archived = cast(bool, params["archived"])
         was_active = chat_id == active_chat.chat_id
+        if archived and self._work_runtime is not None:
+            self._work_runtime.invalidate(str(chat_id))
         brain.archive_chat(chat_id, archived)
 
         if was_active and archived:
@@ -2487,11 +2546,17 @@ class DesktopBackend:
             AttachmentScope(kind="chat", id=str(chat_id)),
             lambda: brain.delete_chat(chat_id),
         )
-        if self._work_runtime is not None:
-            self._work_runtime.forget_binding(str(chat_id))
-
         if was_active:
             self._set_active_chat(self._resolve_active_chat(brain))
+        if self._work_runtime is not None:
+            # Conversation deletion is already committed. Binding-file cleanup
+            # is optional housekeeping and must not strand the active pointer
+            # on the deleted Chat or manufacture a failed deletion response.
+            self._work_runtime.invalidate(str(chat_id))
+            try:
+                self._work_runtime.forget_binding(str(chat_id))
+            except (OSError, ValueError):
+                logger.warning("Deleted Chat workspace binding cleanup failed.")
 
         self._emit_session_response(request_id, include_archived=True)
 
@@ -2667,6 +2732,12 @@ class DesktopBackend:
 
         project_id = ProjectId(cast(str, params["projectId"]))
         if cast(bool, params["archived"]):
+            # Restoring a Project must not revive an approval captured before
+            # its archive. Revoke every linked Chat, including inactive ones,
+            # before the Project's authority changes.
+            if self._work_runtime is not None:
+                for linked in self._brain.list_project_chats(project_id, include_archived=True):
+                    self._work_runtime.invalidate(str(linked.chat_id))
             self._brain.archive_project(project_id)
         else:
             self._brain.restore_project(project_id)
@@ -2685,6 +2756,8 @@ class DesktopBackend:
         self._reject_project_mutation_during_knowledge()
 
         raw_project_id = cast(str | None, params["projectId"])
+        if self._work_runtime is not None:
+            self._work_runtime.invalidate(cast(str, params["chatId"]))
         self._brain.move_chat(
             ChatId(cast(str, params["chatId"])),
             (
@@ -2693,8 +2766,6 @@ class DesktopBackend:
                 else ProjectId(raw_project_id)
             ),
         )
-        if self._work_runtime is not None:
-            self._work_runtime.invalidate(cast(str, params["chatId"]))
         if raw_project_id is not None:
             self._active_project_id = ProjectId(raw_project_id)
         self._emit_project_response(request_id)
@@ -3664,6 +3735,7 @@ class DesktopBackend:
     ) -> tuple[Brain, _GenerationTask]:
         """Atomically admit one request before it can mutate attachment state."""
 
+        self._require_work_admission(method)
         if self._brain is None:
             raise RuntimeError("Backend is not initialized.")
 

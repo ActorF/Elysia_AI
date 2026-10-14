@@ -439,7 +439,7 @@ function readySnapshot(
   return {
     revision: 1,
     status: 'ready',
-    capabilities: ['chat.stream', 'chat.mode', 'work.workspace', 'work.tools', 'work.read', 'work.preview', 'work.confirm'],
+    capabilities: ['chat.stream', 'chat.mode', 'work.workspace', 'work.tools', 'work.read', 'work.preview', 'work.confirm', 'work.plan'],
     models: ['qwen3.5:9b'],
     chatId: 'chat-test',
     chatTitle: 'Elysia Chat',

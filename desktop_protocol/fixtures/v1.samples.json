@@ -5,6 +5,93 @@
   },
   "validClientMessages": [
     {
+      "name": "work plan get",
+      "message": {
+        "type": "request",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "work.plan.get",
+        "method": "work.plan.get",
+        "params": {
+          "chatId": "chat_fixture"
+        }
+      }
+    },
+    {
+      "name": "work reviewed plan create",
+      "message": {
+        "type": "request",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "work.plan.create",
+        "method": "work.plan.create",
+        "params": {
+          "chatId": "chat_fixture",
+          "title": "读取、编辑、验证",
+          "calls": [
+            {
+              "toolId": "read_text",
+              "arguments": {
+                "path": "notes.txt"
+              }
+            },
+            {
+              "toolId": "edit",
+              "arguments": {
+                "path": "notes.txt",
+                "content": "reviewed text"
+              }
+            },
+            {
+              "toolId": "read_text",
+              "arguments": {
+                "path": "notes.txt"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "work plan pause",
+      "message": {
+        "type": "request",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "work.plan.control",
+        "method": "work.plan.control",
+        "params": {
+          "chatId": "chat_fixture",
+          "planId": "plan_11111111111111111111111111111111",
+          "action": "pause"
+        }
+      }
+    },
+    {
+      "name": "work plan step confirmation",
+      "message": {
+        "type": "request",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "work.plan.confirm",
+        "method": "work.plan.confirm",
+        "params": {
+          "chatId": "chat_fixture",
+          "planId": "plan_11111111111111111111111111111111",
+          "approvalId": "approval_22222222222222222222222222222222",
+          "granted": true
+        }
+      }
+    },
+    {
       "name": "work single-use confirmation request",
       "message": {
         "type": "request", "protocol": { "name": "elysia.desktop", "version": 1 },
@@ -632,6 +719,90 @@
     }
   ],
   "validServerMessages": [
+    {
+      "name": "work waiting plan response",
+      "message": {
+        "type": "response",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "plan-fixture",
+        "ok": true,
+        "result": {
+          "kind": "work.plan",
+          "plan": {
+            "planId": "plan_11111111111111111111111111111111",
+            "title": "reviewed plan",
+            "state": "waiting",
+            "busy": false,
+            "steps": [
+              {
+                "stepId": "step_33333333333333333333333333333333",
+                "call": {
+                  "toolId": "read_text",
+                  "arguments": {
+                    "path": "notes.txt"
+                  }
+                },
+                "status": "succeeded",
+                "result": {
+                  "status": "succeeded",
+                  "data": {
+                    "path": "notes.txt",
+                    "content": "old text",
+                    "sizeBytes": 8
+                  },
+                  "error": null
+                },
+                "approval": null
+              },
+              {
+                "stepId": "step_44444444444444444444444444444444",
+                "call": {
+                  "toolId": "edit",
+                  "arguments": {
+                    "path": "notes.txt",
+                    "content": "reviewed text"
+                  }
+                },
+                "status": "waiting",
+                "result": null,
+                "approval": {
+                  "approvalId": "approval_22222222222222222222222222222222",
+                  "call": {
+                    "toolId": "edit",
+                    "arguments": {
+                      "path": "notes.txt",
+                      "content": "reviewed text"
+                    }
+                  },
+                  "risk": "medium",
+                  "preview": "- old text\n+ reviewed text",
+                  "expiresAt": "2026-10-14T16:00:00+00:00"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "work absent plan response",
+      "message": {
+        "type": "response",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "plan-fixture",
+        "ok": true,
+        "result": {
+          "kind": "work.plan",
+          "plan": null
+        }
+      }
+    },
     {
       "name": "work tools catalog response",
       "message": {
@@ -3158,6 +3329,56 @@
   ],
   "invalidClientMessages": [
     {
+      "name": "work plan rejects blank FEFF title",
+      "runtimeOnly": true,
+      "message": {
+        "type": "request",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "work.plan.create",
+        "method": "work.plan.create",
+        "params": {
+          "chatId": "chat_fixture",
+          "title": "﻿",
+          "calls": [
+            {
+              "toolId": "read_text",
+              "arguments": {
+                "path": "notes.txt"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "work plan confirmation cannot replace action",
+      "message": {
+        "type": "request",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "work.plan.confirm",
+        "method": "work.plan.confirm",
+        "params": {
+          "chatId": "chat_fixture",
+          "planId": "plan_11111111111111111111111111111111",
+          "approvalId": "approval_22222222222222222222222222222222",
+          "granted": true,
+          "call": {
+            "toolId": "edit",
+            "arguments": {
+              "path": "notes.txt",
+              "content": "reviewed text"
+            }
+          }
+        }
+      }
+    },
+    {
       "name": "chat mode rejects automatic selection",
       "message": {
         "type": "request",
@@ -3749,6 +3970,75 @@
     }
   ],
   "invalidServerMessages": [
+    {
+      "name": "work plan rejects changed approval action",
+      "runtimeOnly": true,
+      "message": {
+        "type": "response",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "plan-fixture",
+        "ok": true,
+        "result": {
+          "kind": "work.plan",
+          "plan": {
+            "planId": "plan_11111111111111111111111111111111",
+            "title": "reviewed plan",
+            "state": "waiting",
+            "busy": false,
+            "steps": [
+              {
+                "stepId": "step_33333333333333333333333333333333",
+                "call": {
+                  "toolId": "read_text",
+                  "arguments": {
+                    "path": "notes.txt"
+                  }
+                },
+                "status": "succeeded",
+                "result": {
+                  "status": "succeeded",
+                  "data": {
+                    "path": "notes.txt",
+                    "content": "old text",
+                    "sizeBytes": 8
+                  },
+                  "error": null
+                },
+                "approval": null
+              },
+              {
+                "stepId": "step_44444444444444444444444444444444",
+                "call": {
+                  "toolId": "edit",
+                  "arguments": {
+                    "path": "notes.txt",
+                    "content": "reviewed text"
+                  }
+                },
+                "status": "waiting",
+                "result": null,
+                "approval": {
+                  "approvalId": "approval_22222222222222222222222222222222",
+                  "call": {
+                    "toolId": "edit",
+                    "arguments": {
+                      "path": "different.txt",
+                      "content": "reviewed text"
+                    }
+                  },
+                  "risk": "medium",
+                  "preview": "- old text\n+ reviewed text",
+                  "expiresAt": "2026-10-14T16:00:00+00:00"
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
     {
       "name": "unknown success result",
       "message": {

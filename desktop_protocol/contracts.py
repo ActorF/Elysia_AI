@@ -217,6 +217,10 @@ ProtocolMethod = Literal[
     "work.tool.run",
     "work.tool.preview",
     "work.tool.confirm",
+    "work.plan.get",
+    "work.plan.create",
+    "work.plan.control",
+    "work.plan.confirm",
     "handshake",
     "initialize",
     "chat.stream",
@@ -267,6 +271,10 @@ SUPPORTED_METHODS: Final[tuple[ProtocolMethod, ...]] = (
     "work.tool.run",
     "work.tool.preview",
     "work.tool.confirm",
+    "work.plan.get",
+    "work.plan.create",
+    "work.plan.control",
+    "work.plan.confirm",
     "handshake",
     "initialize",
     "chat.stream",
@@ -3435,7 +3443,7 @@ def _validate_knowledge_export_result(
 
 
 def _validate_success_result(result: JsonObject) -> None:
-    if result.get("kind") in {"work.workspace", "work.tools", "work.result", "work.approval"}:
+    if result.get("kind") in {"work.workspace", "work.tools", "work.result", "work.approval", "work.plan"}:
         try:
             validate_work_result(result)
         except ValueError:

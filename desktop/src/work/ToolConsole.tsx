@@ -17,8 +17,10 @@ import {
   type WorkToolApproval,
   type WorkToolApprovalState,
   type WorkToolConfirmParams,
+  type WorkToolCall,
 } from '../../electron/work-tool-protocol.ts'
 import './ToolConsole.css'
+import { ApprovalPreview } from './ApprovalPreview.tsx'
 
 interface ToolConsoleApi {
   /** Execute one explicitly supplied scoped call and return a validated outcome. */
@@ -39,6 +41,11 @@ interface ToolConsoleProps {
   confirmAvailable: boolean
   disabled: boolean
   tools: WorkToolDescriptor[]
+  planAvailable: boolean
+  planActive: boolean
+  planQueueFull: boolean
+  /** Append one exact validated call to the reviewable draft plan. */
+  onAddToPlan(call: WorkToolCall): void
   /** Report one pending local operation so the shell can block conflicting actions. */
   onBusyChange(busy: boolean): void
 }
@@ -58,14 +65,14 @@ interface ScopedApproval {
 const READ_TOOLS = new Set<WorkToolId>(['list_directory', 'read_text', 'search_files', 'metadata'])
 
 /** Present explicit calls, escaped outcomes, and exact write previews before consent. */
-export function ToolConsole({ api, chatId, workspacePath, ready, readAvailable, previewAvailable, confirmAvailable, disabled, tools, onBusyChange }: ToolConsoleProps) {
+export function ToolConsole({ api, chatId, workspacePath, ready, readAvailable, previewAvailable, confirmAvailable,
+  disabled, tools, planAvailable, planActive, planQueueFull, onAddToPlan, onBusyChange }: ToolConsoleProps) {
   const [selectedTool, setSelectedTool] = useState<WorkToolId>('list_directory')
   const [path, setPath] = useState('')
   const [query, setQuery] = useState('')
   const [content, setContent] = useState('')
   const [destination, setDestination] = useState('')
   const [approval, setApproval] = useState<ScopedApproval | null>(null)
-  const [expiryNow, setExpiryNow] = useState(Date.now)
   const pathInputRef = useRef<HTMLInputElement | null>(null)
   const [result, setResult] = useState<ScopedResult | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -80,18 +87,34 @@ export function ToolConsole({ api, chatId, workspacePath, ready, readAvailable, 
     return () => { operationRef.current += 1 }
   }, [chatId, workspacePath, ready])
 
+  useEffect(() => {
+    if (!planActive) return
+    let mounted = true
+    queueMicrotask(() => {
+      // Creating a managed plan revokes standalone approval tokens. Hiding the
+      // old preview prevents it from reappearing after the plan releases scope.
+      if (mounted) { setApproval(null); setResult(null) }
+    })
+    return () => { mounted = false }
+  }, [planActive])
+
+  function draftCall(): WorkToolCall {
+    if (activeTool === undefined) throw new TypeError('Select an available Work tool.')
+    return parseWorkToolCall({
+      toolId: activeTool.toolId,
+      arguments: activeTool.toolId === 'search_files' ? { path, query }
+        : activeTool.toolId === 'create' || activeTool.toolId === 'edit' ? { path, content }
+          : activeTool.toolId === 'move' ? { path, destination } : { path },
+    })
+  }
+
   async function run(): Promise<void> {
     if (api === undefined || !ready || disabled || workspacePath === null
       || activeTool === undefined || pendingRef.current
       || (isWrite ? !previewAvailable : !readAvailable)) return
     let call
     try {
-      call = parseWorkToolCall({
-        toolId: activeTool.toolId,
-        arguments: activeTool.toolId === 'search_files' ? { path, query }
-          : activeTool.toolId === 'create' || activeTool.toolId === 'edit' ? { path, content }
-            : activeTool.toolId === 'move' ? { path, destination } : { path },
-      })
+      call = draftCall()
     } catch {
       setError('Use valid tool parameters and a path relative to the selected Workspace.')
       return
@@ -163,14 +186,6 @@ export function ToolConsole({ api, chatId, workspacePath, ready, readAvailable, 
     ? result.result : null
   const visibleApproval = ready && approval?.chatId === chatId && approval.workspacePath === workspacePath
     ? approval.approval : null
-  const approvalExpired = visibleApproval !== null && Date.parse(visibleApproval.expiresAt) <= expiryNow
-
-  useEffect(() => {
-    if (visibleApproval === null || approvalExpired) return
-    const remaining = Date.parse(visibleApproval.expiresAt) - Date.now()
-    const timer = window.setTimeout(() => { setExpiryNow(Date.now()) }, Math.max(0, Math.min(remaining, 2_147_483_647)))
-    return () => { window.clearTimeout(timer) }
-  }, [visibleApproval, approvalExpired, expiryNow])
 
   return (
     <details className="work-tool-console" open>
@@ -224,32 +239,18 @@ export function ToolConsole({ api, chatId, workspacePath, ready, readAvailable, 
           <button type="submit" disabled={isWrite ? !previewAvailable : !readAvailable}>
             {pending ? 'Working…' : isWrite ? 'Prepare change' : 'Run tool'}
           </button>
+          {planAvailable && <button type="button" disabled={planQueueFull} onClick={() => {
+            try { onAddToPlan(draftCall()); setError(null) }
+            catch { setError('Use valid tool parameters before adding a plan step.') }
+          }}>Add to plan</button>}
         </fieldset>
         {!isWrite && activeTool?.toolId !== 'read_text' && <small>Leave the path empty to use the Workspace root.</small>}
       </form>
       {error !== null && <p className="work-tool-error" role="alert">{error}</p>}
       {visibleApproval !== null && (
-        <section className="work-change-preview" aria-label="Work change preview">
-          <strong>{visibleApproval.call.toolId === 'delete' ? 'Recoverable deletion preview' : 'Change preview'}</strong>
-          <p>Risk: {visibleApproval.risk} · Expires: {visibleApproval.expiresAt}</p>
-          <h3>Complete parameters</h3>
-          <pre data-work-parameters>{JSON.stringify(visibleApproval.call, null, 2)}</pre>
-          <h3>Change and impact</h3>
-          <pre>{visibleApproval.preview}</pre>
-          {approvalExpired ? <p role="status">This preview expired. Prepare the change again.</p>
-            : !confirmAvailable ? <p>Approval controls are unavailable in this version.</p>
-              : (
-                <div className="work-confirmation-actions">
-                  <button type="button" disabled={blocked || approvalExpired} onClick={() => { void confirm(true) }}>
-                    {visibleApproval.call.toolId === 'delete' ? 'Confirm recoverable deletion' : 'Approve once'}
-                  </button>
-                  <button type="button" disabled={blocked} onClick={() => { void confirm(false) }}>Deny</button>
-                  <button type="button" disabled={blocked} onClick={() => {
-                    invalidateDraft(); pathInputRef.current?.focus()
-                  }}>Edit parameters</button>
-                </div>
-              )}
-        </section>
+        <ApprovalPreview key={visibleApproval.approvalId} approval={visibleApproval} disabled={blocked}
+          confirmationAvailable={confirmAvailable} onDecision={(granted) => { void confirm(granted) }}
+          onEdit={() => { invalidateDraft(); pathInputRef.current?.focus() }} />
       )}
       {visibleResult !== null && (
         <section className="work-tool-result" aria-label="Work tool result">

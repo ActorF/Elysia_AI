@@ -21,6 +21,8 @@ interface WorkTestControl {
   setWorkToolRunDelay(delayed: boolean): void
   releaseNextWorkToolRun(): boolean
   failNextWorkPreview(message: string): void
+  setWorkPlanReadDelay(delayed: boolean): void
+  releaseNextWorkPlanRead(): boolean
 }
 
 type WorkTestWindow = Window & { elysiaDesktopTest: WorkTestControl }
@@ -36,7 +38,7 @@ function snapshot(status = 'ready', revision = 1) {
   return {
     revision,
     status,
-    capabilities: ['chat.stream', 'chat.mode', 'work.workspace', 'work.tools', 'work.read', 'work.preview', 'work.confirm'],
+    capabilities: ['chat.stream', 'chat.mode', 'work.workspace', 'work.tools', 'work.read', 'work.preview', 'work.confirm', 'work.plan'],
     models: ['qwen3.5:9b'],
     modelName: 'qwen3.5:9b',
     chatId: 'chat_work_test',
@@ -328,4 +330,99 @@ test('requires edited parameters to be prepared again and uses a distinct deleti
   await expect(page.getByRole('button', { name: 'Confirm recoverable deletion' })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Approve once', exact: true })).toHaveCount(0)
   await page.getByRole('button', { name: 'Deny', exact: true }).click()
+})
+
+test('reviews a read, edit and verification plan before approving its exact write step', async () => {
+  await page.evaluate(() => {
+    ;(window as WorkTestWindow).elysiaDesktopTest.setWorkWorkspaceState({
+      kind: 'work.workspace', chatId: 'chat_work_test', workspacePath: 'D:\\work-plan',
+    })
+  })
+  const mode = page.getByRole('combobox', { name: 'Conversation mode' })
+  await mode.selectOption('work')
+  const tool = page.getByLabel('Work tool', { exact: true })
+  await tool.selectOption('read_text')
+  await page.getByLabel('Relative path', { exact: true }).fill('notes.txt')
+  await page.getByRole('button', { name: 'Add to plan' }).click()
+  await tool.selectOption('edit')
+  await page.getByLabel('Complete file content').fill('Verified plan content.')
+  await page.getByRole('button', { name: 'Add to plan' }).click()
+  await tool.selectOption('read_text')
+  await page.getByRole('button', { name: 'Add to plan' }).click()
+  await page.getByLabel('Plan title').fill('Read, edit and verify')
+  const panel = page.getByRole('region', { name: 'Work plan', exact: true })
+  await expect(panel.locator('.work-plan-queue > li')).toHaveCount(3)
+  await panel.getByRole('button', { name: 'Create plan', exact: true }).click()
+  await expect(panel.getByRole('status')).toContainText('pending')
+  await expect(mode).toBeDisabled()
+  await panel.getByRole('button', { name: 'Start plan', exact: true }).click()
+  const consent = page.getByRole('region', { name: 'Work step approval' })
+  await expect(consent.locator('[data-work-parameters]')).toContainText('Verified plan content.')
+  await expect(panel.locator('[data-plan-step-status]')).toHaveText(['succeeded', 'waiting', 'pending'])
+  await panel.getByRole('button', { name: 'Pause plan' }).click()
+  await expect(panel.getByRole('status')).toContainText('paused')
+  await panel.getByRole('button', { name: 'Resume plan' }).click()
+  await consent.getByRole('button', { name: 'Approve once', exact: true }).click()
+  await expect(panel.getByRole('status')).toContainText('succeeded')
+  await expect(panel.locator('[data-plan-step-status]')).toHaveText(['succeeded', 'succeeded', 'succeeded'])
+  await expect(panel.locator('.work-plan-steps > li').last()).toContainText('Verified plan content.')
+  await expect(mode).toBeEnabled()
+  const choices = await page.evaluate(() => (window as WorkTestWindow).elysiaDesktopTest.getCalls()
+    .filter((call) => call.method === 'confirmWorkPlan'))
+  expect(choices).toHaveLength(1)
+  expect(choices[0].args[0]).toMatchObject({ chatId: 'chat_work_test', granted: true })
+})
+
+test('retains the Work lease after cancellation until a native read actually drains', async () => {
+  await page.evaluate(() => {
+    const control = (window as WorkTestWindow).elysiaDesktopTest
+    control.setWorkWorkspaceState({ kind: 'work.workspace', chatId: 'chat_work_test', workspacePath: 'D:\\work-plan' })
+    control.setWorkPlanReadDelay(true)
+  })
+  const mode = page.getByRole('combobox', { name: 'Conversation mode' })
+  await mode.selectOption('work')
+  await page.getByLabel('Work tool', { exact: true }).selectOption('read_text')
+  await page.getByLabel('Relative path', { exact: true }).fill('notes.txt')
+  await page.getByRole('button', { name: 'Add to plan' }).click()
+  const panel = page.getByRole('region', { name: 'Work plan', exact: true })
+  await panel.getByRole('button', { name: 'Create plan', exact: true }).click()
+  await panel.getByRole('button', { name: 'Start plan', exact: true }).click()
+  await expect(panel.getByRole('status')).toContainText('local operation active')
+  await panel.getByRole('button', { name: 'Cancel plan', exact: true }).click()
+  await expect(panel.getByText('Waiting for the local operation to finish.')).toBeVisible()
+  await expect(mode).toBeDisabled()
+  await expect(page.getByRole('button', { name: 'Clear Workspace' })).toBeDisabled()
+  await page.evaluate(() => {
+    ;(window as WorkTestWindow).elysiaDesktopTest.releaseNextWorkPlanRead()
+  })
+  await expect(mode).toBeEnabled()
+  await expect(panel.locator('[data-plan-step-status]')).toHaveText(['cancelled'])
+})
+
+test('cancels a waiting plan without keeping its write approval usable', async () => {
+  await page.evaluate(() => {
+    ;(window as WorkTestWindow).elysiaDesktopTest.setWorkWorkspaceState({
+      kind: 'work.workspace', chatId: 'chat_work_test', workspacePath: 'D:\\work-plan',
+    })
+  })
+  const mode = page.getByRole('combobox', { name: 'Conversation mode' })
+  await mode.selectOption('work')
+  await page.getByLabel('Work tool', { exact: true }).selectOption('edit')
+  await page.getByLabel('Relative path', { exact: true }).fill('notes.txt')
+  await page.getByLabel('Complete file content').fill('This write must be cancelled.')
+  await page.getByRole('button', { name: 'Add to plan' }).click()
+  const panel = page.getByRole('region', { name: 'Work plan', exact: true })
+  await panel.getByRole('button', { name: 'Create plan', exact: true }).click()
+  await panel.getByRole('button', { name: 'Start plan', exact: true }).click()
+  await expect(page.getByRole('region', { name: 'Work step approval' })).toBeVisible()
+  await panel.getByRole('button', { name: 'Cancel plan', exact: true }).click()
+  await expect(panel.getByRole('status')).toContainText('cancelled')
+  await expect(page.getByRole('region', { name: 'Work step approval' })).toHaveCount(0)
+  await expect(mode).toBeEnabled()
+  const confirmations = await page.evaluate(() => (window as WorkTestWindow).elysiaDesktopTest.getCalls()
+    .filter((call) => call.method === 'confirmWorkPlan'))
+  expect(confirmations).toHaveLength(0)
+  await page.getByLabel('Work tool', { exact: true }).selectOption('read_text')
+  await page.getByRole('button', { name: 'Run tool', exact: true }).click()
+  await expect(page.getByRole('region', { name: 'Work tool result' })).toContainText('Hello <script>unsafe()</script>')
 })

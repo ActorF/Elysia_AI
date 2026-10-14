@@ -213,6 +213,21 @@ def _utf8_text(value: object, *, maximum_bytes: int, allow_empty: bool = True) -
     return value
 
 
+def validate_plan_title(value: object) -> str:
+    """Accept at most 200 Unicode code points with one protocol-nonblank character.
+
+    Python's whitespace table differs from JavaScript's. This explicit set is
+    the desktop protocol's Unicode White_Space plus FEFF definition, preserving
+    the same title in direct runner calls and both wire validators.
+    """
+
+    text = _utf8_text(value, maximum_bytes=800)
+    blank = "\u0009\u000a\u000b\u000c\u000d\u0020\u0085\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff"
+    if len(text) > 200 or not text.strip(blank):
+        raise ToolProtocolError()
+    return text
+
+
 @dataclass(frozen=True, slots=True)
 class ToolCall:
     """Hold one validated data operation with typed optional argument fields."""

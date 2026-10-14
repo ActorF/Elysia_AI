@@ -27,6 +27,11 @@ import {
   type WorkToolRunParams,
   type WorkToolConfirmParams,
 } from './work-tool-protocol.js'
+import {
+  parseWorkPlanState, parseWorkPlanGetParams, parseWorkPlanCreateParams,
+  parseWorkPlanControlParams, parseWorkPlanConfirmParams,
+  type WorkPlanGetParams, type WorkPlanCreateParams, type WorkPlanControlParams, type WorkPlanConfirmParams,
+} from './work-plan-protocol.js'
 
 export {
   codePointLength,
@@ -456,6 +461,10 @@ export interface RequestParamsByMethod {
   'work.tool.run': WorkToolRunParams
   'work.tool.preview': WorkToolRunParams
   'work.tool.confirm': WorkToolConfirmParams
+  'work.plan.get': WorkPlanGetParams
+  'work.plan.create': WorkPlanCreateParams
+  'work.plan.control': WorkPlanControlParams
+  'work.plan.confirm': WorkPlanConfirmParams
   'chat.pin': ChatPinParams
   'chat.archive': ChatArchiveParams
   'chat.delete': ChatIdParams
@@ -2386,6 +2395,17 @@ export function parseClientRequest(value: unknown): ClientRequest {
       return { type: 'request', protocol, id, method, params: parseWorkToolConfirmParams(request.params) }
     } catch {
       return fail('protocol.invalid_params', 'Work approval choice is invalid.')
+    }
+  }
+  if (method === 'work.plan.get' || method === 'work.plan.create'
+    || method === 'work.plan.control' || method === 'work.plan.confirm') {
+    try {
+      if (method === 'work.plan.get') return { type: 'request', protocol, id, method, params: parseWorkPlanGetParams(request.params) }
+      if (method === 'work.plan.create') return { type: 'request', protocol, id, method, params: parseWorkPlanCreateParams(request.params) }
+      if (method === 'work.plan.control') return { type: 'request', protocol, id, method, params: parseWorkPlanControlParams(request.params) }
+      return { type: 'request', protocol, id, method, params: parseWorkPlanConfirmParams(request.params) }
+    } catch {
+      return fail('protocol.invalid_params', 'Work plan request is invalid.')
     }
   }
   if (method === 'project.list') {
@@ -4868,6 +4888,11 @@ function validateSuccessResult(value: unknown): Record<string, unknown> {
     } catch {
       return fail('protocol.invalid_message', 'Work change preview is invalid.')
     }
+    return result
+  }
+  if (result.kind === 'work.plan') {
+    try { parseWorkPlanState(result) }
+    catch { return fail('protocol.invalid_message', 'Work plan result is invalid.') }
     return result
   }
   if (result.kind === 'knowledge.state') {
