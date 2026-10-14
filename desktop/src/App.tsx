@@ -66,6 +66,7 @@ import { deriveApplicationCharacterState } from './character/character-state.ts'
 import { ChatView } from './chat/ChatView.tsx'
 import { WorkPanel } from './work/WorkPanel.tsx'
 import { VisionPanel } from './vision/VisionPanel.tsx'
+import { InternetPanel } from './internet/InternetPanel.tsx'
 import type {
   ChatMessage,
   ChatNotice,
@@ -938,6 +939,7 @@ function App() {
   const [sessionMutationPending, setSessionMutationPending] = useState(false)
   const [workOperationPending, setWorkOperationPending] = useState(false)
   const [visionOperationPending, setVisionOperationPending] = useState(false)
+  const [internetOperationPending, setInternetOperationPending] = useState(false)
   const [selectedWorkVisionContext, setSelectedWorkVisionContext] = useState<VisionContext | null>(null)
   const [projectState, setProjectState] = useState<ProjectState | null>(null)
   const [projectLoading, setProjectLoading] = useState(true)
@@ -1098,6 +1100,7 @@ function App() {
   const workOperationPendingRef = useRef(false)
   const workLeaseRef = useRef(false)
   const visionOperationPendingRef = useRef(false)
+  const internetOperationPendingRef = useRef(false)
   const projectMutationPendingRef = useRef(false)
   const settingsDirtyRef = useRef(false)
   const settingsLoadOperationRef = useRef(0)
@@ -1368,33 +1371,43 @@ function App() {
     || !snapshot.capabilities.includes('chat.mode')
   const updateWorkBusy = useCallback((busy: boolean): void => {
     workLeaseRef.current = busy
-    const pending = busy || visionOperationPendingRef.current
+    const pending = busy || visionOperationPendingRef.current || internetOperationPendingRef.current
     workOperationPendingRef.current = pending
     setWorkOperationPending(pending)
   }, [])
   const updateVisionBusy = useCallback((busy: boolean): void => {
-    // Work and Vision share computer-action admission. A late completion from
+    // Work, Vision, and Internet share action admission. A late completion from
     // one surface cannot release a physical request owned by the other.
     visionOperationPendingRef.current = busy
     setVisionOperationPending(busy)
-    const pending = busy || workLeaseRef.current
+    const pending = busy || workLeaseRef.current || internetOperationPendingRef.current
     workOperationPendingRef.current = pending
     setWorkOperationPending(pending)
   }, [])
-  const appendReviewedVisionDraft = useCallback((text: string): void => {
+  const updateInternetBusy = useCallback((busy: boolean): void => {
+    internetOperationPendingRef.current = busy
+    setInternetOperationPending(busy)
+    const pending = busy || workLeaseRef.current || visionOperationPendingRef.current
+    workOperationPendingRef.current = pending
+    setWorkOperationPending(pending)
+  }, [])
+  const appendReviewedDraft = useCallback((text: string, source: 'vision' | 'internet'): void => {
     const chatId = activeChatId
     if (chatId === undefined || backendStatusRef.current !== 'ready' || backendChatIdRef.current !== chatId
       || activeChatIdRef.current !== chatId || activeChatProjectIdRef.current !== activeChatProjectId
       || activeChatArchivedRef.current || !visionProjectAllowedRef.current || activeViewRef.current !== 'chat' || sessionMutationPendingRef.current
-      || workLeaseRef.current || modelSelectionPendingRef.current || retryPendingRef.current) {
+      || workLeaseRef.current || modelSelectionPendingRef.current || retryPendingRef.current
+      || generationIsBusy(inFlightTurnRef.current) || generationReconcilePendingRef.current || pendingChatSendRef.current !== null
+      || (source === 'vision' && internetOperationPendingRef.current)
+      || (source === 'internet' && (visionOperationPendingRef.current || activeChatModeRef.current !== 'chat'))) {
       throw new Error('The reviewed draft owner changed.')
     }
-    // The export owns the Vision lease itself. Validate the other live scope
+    // The export owns its source's lease. Validate the other live scope
     // facts, then read the latest draft so typing during review is preserved.
     const existing = draftsByChatRef.current[chatId] ?? ''
     const nextDraft = existing.length === 0 ? text : `${existing}\n\n${text}`
     if (nextDraft.length > MAX_PERSISTED_DRAFT_LENGTH) {
-      setNotice(errorNotice('The current message is too long to append this image context.'))
+      setNotice(errorNotice('The current message is too long to append this reviewed source.'))
       throw new Error('The draft exceeds its storage limit.')
     }
     const others = { ...draftsByChatRef.current }
@@ -1406,12 +1419,14 @@ function App() {
     }
     updateChatDrafts(() => nextDrafts)
   }, [activeChatId, activeChatProjectId, updateChatDrafts])
+  const appendReviewedVisionDraft = useCallback((text: string): void => { appendReviewedDraft(text, 'vision') }, [appendReviewedDraft])
+  const appendReviewedInternetDraft = useCallback((text: string): void => { appendReviewedDraft(text, 'internet') }, [appendReviewedDraft])
   const selectReviewedVisionWorkContext = useCallback((context: VisionContext): void => {
     const expiresAt = Date.parse(context.expiresAt)
     if (backendStatusRef.current !== 'ready' || backendChatIdRef.current !== context.owner.chatId
       || activeChatIdRef.current !== context.owner.chatId || activeChatProjectIdRef.current !== context.owner.projectId
       || activeChatModeRef.current !== 'work' || activeChatArchivedRef.current || !visionProjectAllowedRef.current || activeViewRef.current !== 'chat'
-      || sessionMutationPendingRef.current || workLeaseRef.current || modelSelectionPendingRef.current || retryPendingRef.current
+      || sessionMutationPendingRef.current || workLeaseRef.current || internetOperationPendingRef.current || modelSelectionPendingRef.current || retryPendingRef.current
       || !Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
       throw new Error('The reviewed Work context is no longer available.')
     }
@@ -5831,6 +5846,7 @@ function App() {
       }
       if (modifier && event.key === ',') {
         event.preventDefault()
+        if (visionOperationPendingRef.current || internetOperationPendingRef.current) return
         if (callPreviewOpen && !closeCallPreview()) {
           return
         }
@@ -5885,7 +5901,7 @@ function App() {
   ])
 
   function navigate(view: AppView): boolean {
-    if (visionOperationPendingRef.current) return false
+    if (visionOperationPendingRef.current || internetOperationPendingRef.current) return false
     if (!mayLeaveSettings(view, settingsDirtyRef.current)) {
       return false
     }
@@ -8276,7 +8292,7 @@ function App() {
             ready={snapshot.status === 'ready'
               && snapshot.chatId === activeChatId
               && snapshot.capabilities.includes('work.workspace')}
-            disabled={workControlsDisabled || visionOperationPending}
+            disabled={workControlsDisabled || visionOperationPending || internetOperationPending}
             readAvailable={snapshot.capabilities.includes('work.read')}
             previewAvailable={snapshot.capabilities.includes('work.preview')}
             confirmAvailable={snapshot.capabilities.includes('work.confirm')}
@@ -8291,9 +8307,16 @@ function App() {
         visionPanel={activeChatId === undefined || typeof desktopApi?.getVisionState !== 'function' ? undefined : (
           <VisionPanel api={desktopApi} chatId={activeChatId} projectId={activeChatProjectId}
             ready={snapshot.status === 'ready' && snapshot.chatId === activeChatId && chatState?.activeChat.archived === false && visionProjectAllowed}
-            disabled={workControlsDisabled || workLeaseRef.current || modelSelectionPending || retryPending}
+            disabled={workControlsDisabled || workLeaseRef.current || internetOperationPending || modelSelectionPending || retryPending}
             onBusyChange={updateVisionBusy} onChatDraft={appendReviewedVisionDraft}
             onWorkContext={chatState?.activeChat.mode === 'work' ? selectReviewedVisionWorkContext : undefined} />
+        )}
+        internetPanel={activeChatId === undefined || chatState?.activeChat.mode !== 'chat' || typeof desktopApi?.getInternetResearch !== 'function' ? undefined : (
+          <InternetPanel api={desktopApi} chatId={activeChatId} projectId={activeChatProjectId}
+            ready={snapshot.status === 'ready' && snapshot.chatId === activeChatId && chatState?.activeChat.archived === false && visionProjectAllowed}
+            disabled={workControlsDisabled || workLeaseRef.current || visionOperationPending || modelSelectionPending || retryPending}
+            onBusyChange={updateInternetBusy} onChatDraft={appendReviewedInternetDraft}
+            onSettings={() => { navigate('settings') }} onOpenSource={openExternalUrl} />
         )}
         onBeginRetryEdit={beginRetryEdit}
         onCancelRetryEdit={cancelRetryEdit}

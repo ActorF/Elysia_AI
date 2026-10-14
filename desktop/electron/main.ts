@@ -32,6 +32,9 @@ import { fileURLToPath } from 'node:url'
 import { BackendProcess } from './backend-process.js'
 import { InternetPolicyService } from './internet-policy.js'
 import { InternetTransport } from './internet-transport.js'
+import { InternetResearchController, InternetResearchError, type InternetResearchOwner } from './internet-research.js'
+import { parseInternetChatId, parseInternetSearchRequest, parseInternetSourceRequest,
+  type InternetResearchState } from './internet-protocol.js'
 import type { InternetPolicyState } from './internet-policy-protocol.js'
 import { assertInternetLyricsAllowed, prepareInternetLyrics, openInternetBrowser } from './internet-legacy.js'
 import { VisionImageController, VisionImageError, decodeVisionImage, decodeVisionCanonicalImage, prepareVisionModelImage, readVisionSelectedFile, type VisionOwner } from './vision-images.js'
@@ -228,6 +231,9 @@ let mainWindow: BrowserWindow | null = null
 let backendProcess: BackendProcess | null = null
 let internetPolicyService: InternetPolicyService | null = null
 let internetTransport: InternetTransport | null = null
+let internetResearchController: InternetResearchController | null = null
+let internetResearchGeneration = 0
+let internetResearchAdmission: { chatId: string; generation: number } | null = null
 const internetRequests = new Set<Promise<unknown>>()
 let workDesktopController: WorkDesktopController | null = null
 let workDesktopStorage: { root: string; store: WorkDesktopStorage } | null = null
@@ -2085,6 +2091,8 @@ function broadcastBackendEvent(event: BackendEvent): void {
   catch { visionCaptureController?.shutdown() }
   try { synchronizeVisionContexts() }
   catch { visionContextStore.clear(); visionContextScope = null }
+  try { internetResearchController?.synchronizeOwner() }
+  catch { internetResearchController?.shutdown() }
   try {
     maybeShowCompletionNotification(event)
   } catch {
@@ -2114,6 +2122,7 @@ function hasActiveVisionWork(): boolean {
 
 function hasActiveInternetWork(): boolean {
   return internetRequests.size > 0 || internetPolicyService?.hasActiveWork() === true
+    || internetResearchController?.hasActiveWork() === true
 }
 
 function hasActiveComputerWork(): boolean { return hasActiveDesktopWork() || hasActiveVisionWork() || hasActiveInternetWork() }
@@ -2124,6 +2133,8 @@ function requireInternetPolicy(): InternetPolicyService {
 }
 
 function publishInternetPolicy(state: InternetPolicyState): void {
+  try { internetResearchController?.synchronizeOwner() }
+  catch { internetResearchController?.invalidate() }
   if (mainWindow !== null && !mainWindow.isDestroyed()) {
     try { mainWindow.webContents.send('desktop:internet-policy:changed', state) }
     catch { /* Optional policy notifications cannot destabilize native request cleanup. */ }
@@ -2135,6 +2146,68 @@ function trackInternetOperation<Result>(operation: () => Promise<Result>): Promi
   internetRequests.add(request)
   void request.then(() => internetRequests.delete(request), () => internetRequests.delete(request))
   return request
+}
+
+function internetOwner(): InternetResearchOwner {
+  const backend = backendProcess, owner = backend?.getCanonicalVisionChat() ?? null
+  // Internet's own physical lease must not invalidate its owner on completion.
+  return { chatId: owner?.chatId ?? 'chat_unavailable', projectId: owner?.projectId ?? null,
+    mode: owner?.mode ?? 'chat', archived: owner?.archived ?? false, ready: owner !== null && !shutdownStarted,
+    busy: backend?.hasActiveBackendWork() === true || hasActiveDesktopWork() || hasActiveVisionWork()
+      || presenceVoiceSessionActive || songCoverManager?.hasActiveWork() === true
+      || dataStorageOperation !== null || shutdownStarted }
+}
+
+function publishInternetResearch(state: InternetResearchState): void {
+  if (mainWindow !== null && !mainWindow.isDestroyed()) {
+    try { mainWindow.webContents.send('desktop:internet-research:changed', state) }
+    catch { /* A replaced Renderer cannot interrupt native request drain. */ }
+  }
+}
+
+function requireInternetResearch(): InternetResearchController {
+  if (shutdownStarted || internetTransport === null) throw new InternetResearchError('unavailable')
+  if (internetResearchController === null) {
+    internetResearchController = new InternetResearchController({ policy: requireInternetPolicy(),
+      transport: internetTransport, getOwner: internetOwner, onState: publishInternetResearch })
+  }
+  return internetResearchController
+}
+
+function withInternetOwner<Result>(chatId: string,
+  operation: (controller: InternetResearchController) => Result | Promise<Result>, readOnly = false): Promise<Result> {
+  if (shutdownStarted || dataStorageOperation !== null || !readOnly && (hasActiveInternetWork() || internetOwner().busy)) {
+    return Promise.reject(new InternetResearchError('busy'))
+  }
+  const policy = requireInternetPolicy().getState()
+  if (!readOnly && !policy.enabled) return Promise.reject(new InternetResearchError('disabled'))
+  const admission = readOnly ? null : { chatId, generation: internetResearchGeneration }
+  if (admission !== null) internetResearchAdmission = admission
+  // Reserve before readonly canonical hydration so another Chat cannot enter
+  // the gap between a native request and its first DNS/socket operation.
+  return trackInternetOperation(async () => {
+    const owner = await requireBackend().hydrateVisionOwner()
+    if (owner === null || owner.chatId !== chatId || shutdownStarted) throw new InternetResearchError('owner_changed')
+    if (admission !== null && (admission.generation !== internetResearchGeneration
+      || !requireInternetPolicy().getState().enabled || policy.revision !== requireInternetPolicy().getState().revision)) {
+      throw new InternetResearchError('cancelled')
+    }
+    return operation(requireInternetResearch())
+  }).catch((error: unknown) => {
+    throw error instanceof InternetResearchError ? error : new InternetResearchError('unavailable')
+  }).finally(() => {
+    if (admission !== null && internetResearchAdmission === admission) internetResearchAdmission = null
+  })
+}
+
+function retireInternetResearch(): void {
+  internetResearchGeneration += 1
+  const closing = internetResearchController
+  if (closing === null) return
+  closing.shutdown()
+  internetResearchController = null
+  // A reload loses the old document's intent, but not its in-flight resources.
+  void trackInternetOperation(() => closing.whenIdle()).catch(() => {})
 }
 
 function visionOwner(): VisionOwner {
@@ -2883,6 +2956,37 @@ function requireMainWindow(): BrowserWindow {
 }
 
 function registerIpcHandlers(): void {
+  ipcMain.handle('desktop:internet-research:get', (event, value: unknown) => {
+    assertTrustedSender(event)
+    const chatId = parseInternetChatId(value)
+    return withInternetOwner(chatId, controller => controller.getState(chatId), true)
+  })
+  ipcMain.handle('desktop:internet-research:activity', event => {
+    assertTrustedSender(event)
+    return { busy: hasActiveInternetWork() }
+  })
+  ipcMain.handle('desktop:internet-research:search', (event, value: unknown) => {
+    assertTrustedSender(event)
+    const request = parseInternetSearchRequest(value)
+    return withInternetOwner(request.chatId, controller => controller.search(request))
+  })
+  ipcMain.handle('desktop:internet-research:cancel', (event, value: unknown) => {
+    assertTrustedSender(event)
+    const chatId = parseInternetChatId(value)
+    if (internetResearchAdmission?.chatId === chatId) internetResearchGeneration += 1
+    return requireInternetResearch().cancel(chatId)
+  })
+  ipcMain.handle('desktop:internet-research:clear', (event, value: unknown) => {
+    assertTrustedSender(event)
+    const chatId = parseInternetChatId(value)
+    if (internetResearchAdmission?.chatId === chatId) internetResearchGeneration += 1
+    return requireInternetResearch().clear(chatId)
+  })
+  ipcMain.handle('desktop:internet-research:source-text', (event, value: unknown) => {
+    assertTrustedSender(event)
+    const request = parseInternetSourceRequest(value)
+    return withInternetOwner(request.chatId, controller => controller.sourceText(request), true)
+  })
   ipcMain.handle('desktop:internet-policy:get', (event) => {
     assertTrustedSender(event)
     return requireInternetPolicy().getState()
@@ -4418,17 +4522,20 @@ function createMainWindow(): void {
     },
   )
   mainWindow.webContents.on('did-start-loading', () => {
+    retireInternetResearch()
     voiceCallWindowManager.dispose()
     backendProcess?.stopCurrentSpeechPlayback()
     presenceVoiceSessionActive = false
   })
   mainWindow.webContents.on('render-process-gone', () => {
+    retireInternetResearch()
     voiceCallWindowManager.dispose()
     backendProcess?.stopCurrentSpeechPlayback()
     presenceVoiceSessionActive = false
     revealMainWindow()
   })
   mainWindow.on('closed', () => {
+    retireInternetResearch()
     voiceCallWindowManager.dispose()
     clearRendererReadyTimer()
     presenceVoiceSessionActive = false
@@ -4618,6 +4725,7 @@ if (!hasSingleInstanceLock) {
       return
     }
     shutdownStarted = true
+    retireInternetResearch()
     internetPolicyService?.shutdown()
     visionContextStore.clear()
     visionContextScope = null

@@ -6116,10 +6116,14 @@ test('blocks restart for a dirty draft and locks Backend fields while restarting
     (window as TestWindow).elysiaDesktopTest.getPendingRestartCount()
   ))).toBe(1)
 
-  const backendFields = page.locator('.settings-field input')
+  const backendFields = page.locator('.settings-field input[data-settings-field]')
   await expect.poll(() => backendFields.evaluateAll((inputs) => (
     inputs.every((input) => (input as HTMLInputElement).disabled)
   ))).toBe(true)
+  await selectSettingsCategory('Internet')
+  await expect(page.getByRole('checkbox', { name: 'Allow Internet access' })).toBeEnabled()
+  await expect(page.getByLabel('Request timeout (seconds)')).toBeEnabled()
+  await expect(page.getByRole('button', { name: 'Turn Internet off', exact: true })).toBeEnabled()
   await selectSettingsCategory('Appearance')
   await expect(page.getByRole('radio', { name: /^System/ })).toBeEnabled()
 
@@ -6147,10 +6151,14 @@ test('locks Backend fields while Settings reload without disabling Appearance', 
     (window as TestWindow).elysiaDesktopTest.getPendingSettingsLoadCount()
   ))).toBe(1)
 
-  const backendFields = page.locator('.settings-field input')
+  const backendFields = page.locator('.settings-field input[data-settings-field]')
   await expect.poll(() => backendFields.evaluateAll((inputs) => (
     inputs.every((input) => (input as HTMLInputElement).disabled)
   ))).toBe(true)
+  await selectSettingsCategory('Internet')
+  await expect(page.getByRole('checkbox', { name: 'Allow Internet access' })).toBeEnabled()
+  await expect(page.getByLabel('Request timeout (seconds)')).toBeEnabled()
+  await expect(page.getByRole('button', { name: 'Turn Internet off', exact: true })).toBeEnabled()
   await selectSettingsCategory('Appearance')
   await expect(page.getByRole('radio', { name: /^System/ })).toBeEnabled()
 

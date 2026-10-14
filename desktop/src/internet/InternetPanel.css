@@ -1,0 +1,23 @@
+/* Bound explicit Internet research to the shared Chat context area and render all remote text as readable source material. */
+
+.chat-mode-context-with-internet { max-height: min(32rem, 45vh); overflow-y: auto; overscroll-behavior: contain; }
+
+.internet-panel { border-bottom: 1px solid var(--color-border); background: var(--color-bg-soft); }
+.internet-panel button { min-height: 2rem; padding: var(--space-1) var(--space-3); border: 1px solid var(--color-border); border-radius: var(--radius-md); color: var(--color-text-primary); background: var(--color-bg-surface); font-size: var(--font-size-xs); }
+.internet-toggle { margin: var(--space-2) var(--space-6); font-weight: 600; }
+.internet-research-review { display: grid; gap: var(--space-3); padding: 0 var(--space-6) var(--space-3); }
+.internet-research-review[hidden] { display: none; }
+.internet-panel p, .internet-panel li, .internet-panel dl { margin: 0; font-size: var(--font-size-sm); color: var(--color-text-secondary); overflow-wrap: anywhere; }
+.internet-panel h3 { margin: 0; font-size: var(--font-size-sm); }
+.internet-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.internet-query-controls { display: grid; grid-template-columns: minmax(8rem, 1fr) minmax(10rem, 3fr); gap: var(--space-3); }
+.internet-query-controls label { display: grid; gap: var(--space-1); min-width: 0; font-size: var(--font-size-sm); }
+.internet-query-controls input, .internet-query-controls select { width: 100%; min-width: 0; min-height: 2rem; padding: var(--space-1) var(--space-2); border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-bg-surface); color: var(--color-text-primary); }
+.internet-sources, .internet-source-review, .internet-query-history { display: grid; gap: var(--space-3); }
+.internet-sources article, .internet-source-review { display: grid; gap: var(--space-2); padding: var(--space-3); border: 1px solid var(--color-border); border-radius: var(--radius-md); }
+.internet-panel a { color: var(--color-text-link); overflow-wrap: anywhere; font-size: var(--font-size-xs); }
+.internet-panel dl { display: flex; flex-wrap: wrap; gap: var(--space-3); }
+.internet-panel dt { font-weight: 600; }
+.internet-panel dd { margin: 0; }
+.internet-query-history ol { margin: 0; padding-left: var(--space-5); }
+@media (max-width: 600px) { .internet-query-controls { grid-template-columns: 1fr; } }
