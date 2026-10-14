@@ -59,6 +59,7 @@ def test_layout_maps_every_declared_category_below_the_exact_root(
     assert layout.memory == root / "workspace" / "memory"
     assert layout.attachments == root / "workspace" / "attachments"
     assert layout.knowledge == root / "workspace" / "knowledge"
+    assert layout.gallery == root / "workspace" / "gallery"
     assert layout.audio == root / "audio"
     assert layout.cache == root / "cache"
     assert layout.logs == root / "logs"

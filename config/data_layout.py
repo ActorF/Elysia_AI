@@ -70,6 +70,12 @@ class ProductionDataLayout:
         return self.workspace / "knowledge"
 
     @property
+    def gallery(self) -> Path:
+        """Return the durable generated-image Gallery directory."""
+
+        return self.workspace / "gallery"
+
+    @property
     def audio(self) -> Path:
         """Return the reserved transient-audio directory.
 

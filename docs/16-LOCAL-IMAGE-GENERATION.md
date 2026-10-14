@@ -1,10 +1,10 @@
-# 本地图片生成核心与私有运行时
+# 本地图片生成核心、私有运行时与持久 Gallery
 
 最后更新：2026-10-14（America/Chicago）
 
 ## 1. 当前状态
 
-Elysia AI 已加入第一版**受信本地图片生成核心与私有 ComfyUI 进程监督器**。当前 Python 层可以验证结构化请求与本机模型、启动每任务一个隔离子进程、执行固定工作流、验证输出，并在结果返回前终止进程和删除私有运行目录。Electron/React 产品界面、Gallery 与真实模型验收仍未接通。
+Elysia AI 已加入第一版**受信本地图片生成核心、私有 ComfyUI 进程监督器与可恢复 Gallery Store**。当前 Python 层可以验证结构化请求与本机模型、启动每任务一个隔离子进程、执行固定工作流、验证输出，并在结果返回前终止进程和删除私有运行目录；生成结果还可独立提交到路径私有的本地 Gallery。Electron/React 产品界面、Gallery 的 Desktop 组合与导出、真实模型验收仍未接通。
 
 当前已完成：
 
@@ -18,11 +18,12 @@ Elysia AI 已加入第一版**受信本地图片生成核心与私有 ComfyUI �
 - 成功、失败、取消和异常都先终止完整 Job Object 进程树，再释放文件守卫并删除准确 UUID 目录；任一步无法证明完成都会阻止结果发布。
 - 验证 PNG Chunk、CRC、像素格式、尺寸和解压上限；只移除惰性 Metadata Chunk，遇到会改变像素解释的 Ancillary Chunk 则拒绝，再重写 Canonical PNG。
 - 返回图片字节、模型 Profile Digest、Workflow Digest、Seed 与 UTC 时间等可复现 Metadata。
+- 用 `ImageGalleryStore` 在 `ProductionDataLayout.gallery`（`workspace/gallery`）下保存 Canonical PNG 与严格私有 Manifest；提供 Opaque ID、路径无关 Metadata、按需重新验证的 PNG Bytes、逻辑原子 Create/Delete、容量限制、可重建 Index 和启动恢复。
 
 当前尚未完成：
 
 - Electron/React 的 Image Generator、Settings、进度、取消和错误界面。
-- Generated Image Gallery、持久化、导出、删除、容量统计和恢复。
+- Gallery 的 Desktop 组合、受限预览、原生导出、容量展示和 UI。
 - 与 Ollama、GPT-SoVITS、Song Cover 共用的进程级 GPU Admission/Lease。
 - 模型安装、下载、更新、Hash 实测和许可证向导。
 - 使用真实 ComfyUI 版本、真实 Checkpoint 和目标 GPU 的本机 Smoke/Soak 验收。
@@ -71,7 +72,7 @@ PNG Canonicalization
 Verified bytes + reproducibility metadata
         │
         ▼
-未来 Trusted Gallery Store
+可选 Trusted Gallery Store（已实现，尚未接 Desktop）
 ```
 
 核心原则：
@@ -81,7 +82,7 @@ Verified bytes + reproducibility metadata
 3. **Workflow 由源码控制。** 第一版 Graph 的节点和连接不可由 Renderer 或 Prompt 改写。
 4. **Runtime 输出不可信。** 即使来自 `127.0.0.1`，HTTP、JSON、队列记录、输出名和 PNG 仍须完整验证。
 5. **共享 Runtime 不得执行。** `ImageGenerationCore` 同时要求 `is_managed_private_runtime is True` 和 Composition Root 私有签发的精确 Capability Identity；Raw Adapter 固定返回 `False` 且没有该 Capability。Capability 防止项目内部误组合，不声称隔离恶意 Python 代码。
-6. **验证和清理完成前不发布。** 只有受管会话确认完整子进程树停止、私有任务目录删除、PNG Canonicalization 成功且最后一次取消检查未获胜，图片字节才可进入后续 Gallery Store。
+6. **验证和清理完成前不发布。** 只有受管会话确认完整子进程树停止、私有任务目录删除、PNG Canonicalization 成功且最后一次取消检查未获胜，图片字节才可进入 Gallery Store。
 
 ---
 
@@ -162,7 +163,7 @@ Pony、Illustrious 与普通 SDXL 即使共享相近的 Tensor 架构，也不�
 - 总像素不超过 4,194,304。
 - 第一版 `batch_size` 固定为 1。
 
-Profile Digest 覆盖架构、Prompt 方言、Checkpoint 声明、来源、许可证、尺寸与采样默认值。后续 Gallery 应把该 Digest 与图片一同保存；只保存显示名不足以重现生成条件。
+Profile Digest 覆盖架构、Prompt 方言、Checkpoint 声明、来源、许可证、尺寸与采样默认值。Gallery 的私有 Manifest 已保存 Profile/Workflow ID 与 Digest、Workflow Version、Job ID 和 Seed；公开 `ImageGalleryItem` 不暴露私有 Provenance 或本机路径。只保存显示名不足以重现生成条件。
 
 ### 当前 Hash 与安装信任边界
 
@@ -307,7 +308,7 @@ validating → probing → submitting → sampling → verifying → completed
 - Electron Event。
 - Process-level GPU Lease。
 
-子进程和私有目录由注入的 Managed Runtime 负责，而不是 Core 自身；其余职责必须由后续 Desktop Integration Layer 添加，不能绕过 `is_managed_private_runtime` Gate。
+子进程和私有目录由注入的 Managed Runtime 负责，而不是 Core 自身；持久化由独立 `ImageGalleryStore` 承担，Desktop Event、导出、Queue 和 GPU Lease 仍必须由后续 Integration Layer 添加，不能绕过 `is_managed_private_runtime` Gate。
 
 ### 10.1 已实现的受管 Runtime 合同
 
@@ -325,6 +326,18 @@ validating → probing → submitting → sampling → verifying → completed
 - 用 Terminal Lock 串行化 Startup/Finalize/Close，避免 Close 返回后仍有子进程启动，或两个终止调用重复删除同一目录。
 
 如果宿主进程硬崩溃或机器断电，Windows Job Object 会在宿主句柄关闭时终止子进程，但磁盘 UUID Root 仍可能存在。下一次 Preflight 发现任何残留或并发拥有者都会 Fail Closed，并保留现场，不会猜测归属后自动删除。未来恢复 UI 应先展示并显式处理这种残留。
+
+### 10.2 已实现的持久 Gallery 合同
+
+`ImageGalleryStore` 是独立于 Core 的单写者持久化边界。它使用 `ProductionDataLayout.gallery`，即 `<data-root>/workspace/gallery`；Renderer 和未来 Desktop DTO 只接触 `gallery_<uuid>`、路径无关元数据与按需重新验证后的 PNG Bytes。Store 只接受 Backend 内部已经完成 Core 生命周期的 `GeneratedImageResult`；它验证存储结构和图片一致性，但不是生成来源、Prompt 与 Workflow 真实性的加密证明。
+
+每个 Artifact 的权威记录是同级 `image_<uuid>/` 目录中的 `image.png` 与严格 `manifest.json`。Create 先在准确 `.staging_<uuid>` 中写入并刷新两个文件，再以目录重命名跨过程序运行期间的逻辑提交点；Delete 先把权威目录重命名为 `.deleting_<uuid>` 使其不可见，再把 Tombstone 当作可延迟的安全清理。Windows 没有通过这一实现提供可移植的目录 `fsync`，因此这里的“提交”不宣称能够抵抗所有文件系统或断电故障。
+
+新建 Gallery 会写入固定所有权标记。启动恢复必须先完整验证所有权标记、Root Grammar 和每个候选节点，确认没有未知条目后，第二阶段才会清理准确 `.staging_*`、`.deleting_*` 和 Index Temp；误选到已有宽目录时不会先删除碰巧同名的文件。Symlink、Junction/Reparse Point、Special File、额外 Hard Link 与读取期间身份变化均拒绝。Windows 生产根还必须位于固定本机的受支持文件系统，不能依赖网络盘或可移动盘的不同锁与重命名语义。
+
+`index.json` 只是无 Prompt、无路径的可重建缓存，不决定 Artifact 是否存在；缺失、陈旧、损坏或无法写回时，不会阻止读取已经验证的权威 Artifact。打开 Store 时会验证严格 Manifest、目录结构、文件身份和声明大小，并建立独占 Lease 下的内存快照；`open_verified()` 才读取目标图片，重新验证 SHA-256 与 Canonical PNG。这样 List/Get/Create 不会随 Gallery 总图片字节数重复解码整个图库，目标图片的字节篡改仍会在发布前被拒绝。
+
+同一 Store 由进程内 `RLock` 与非阻塞跨进程文件 Lease 串行化。默认上限为 1,024 个 Artifact、4 GiB 图片总量，单页最多 256 条；单图仍受 Canonical PNG 的 32 MiB 和像素预算约束。可选 Private Prompt 只进入私有 Manifest，不进入 `ImageGalleryItem` 或 Index。当前 Store 提供 Create/List/Get/Open Verified/Delete；Native Export、Desktop Preview、稳定游标分页与 Job Commit Coordination 尚未接入。同一用户账户中主动绕过 Lease 并并发替换目录节点不属于当前威胁模型；静态重定向和非协作文件结构仍会 Fail Closed。
 
 ---
 
@@ -408,18 +421,22 @@ validating → probing → submitting → sampling → verifying → completed
 
 `tests/test_private_run_directory.py` 验证准确 UUID Root、Sibling Preservation、Redirect/Reparse/Special Node、Entry/Depth Budget；`tests/test_windows_loopback_owner.py` 验证 Windows IPv4 Loopback Listener 必须同时匹配地址、端口和 Child PID。
 
+### `tests/test_image_gallery_store.py`
+
+覆盖 Opaque/path-free CRUD、Newest-first 分页、所有权标记、未拥有宽目录零删除、缺失/陈旧/损坏/不可写 Index 的读取恢复、部分 Staging/Tombstone 崩溃恢复、未知或畸形状态 Fail Closed、目标 PNG/Manifest 篡改、Symlink/Reparse/Hard-link/Special File、数量/字节/并发容量、Private Prompt 边界、跨进程 Lease、关闭语义、畸形 Result Metadata 拒绝、提交后同步/清理失败语义、Rollback Sibling Preservation 和完整异常链脱敏。测试还固定 List/Get/Create 不会重新读取或 Canonicalize 已有图片；完整 PNG 校验只发生在目标 `open_verified()`。
+
 这些测试不安装 ComfyUI、不加载真实 Checkpoint，也不使用 GPU。真实 Runtime、具体模型画质、VRAM 峰值和长时间取消仍需要单独的显式本机 Smoke/Soak 验收。
 
 ---
 
 ## 14. 下一步
 
-### 第一优先：Desktop Protocol、Settings 与 Gallery
+### 第一优先：Desktop Protocol、Settings 与 Gallery Integration/Export
 
 - 定义路径无关的 Image Request/Progress/Result/Error DTO。
 - 在 Backend 组合受信 Profile Catalog 与 Managed Runtime Session，不直接组合 Raw `HttpComfyUiClient`。
 - 加入 Desktop Settings：Runtime/Models/Private State Folder、已审核 Profile 与默认尺寸；不提供内容模式开关。
-- 实现持久化 Gallery Manifest、Canonical PNG 原子写入、导出、删除、容量和恢复。
+- 在 Desktop Application Service 组合 Core 与 `ImageGalleryStore`，定义生成/提交 Commit Gate，并实现路径私有 Preview、Native Export 与容量展示。
 - Renderer 只获得 Opaque Artifact ID、Metadata 和受限预览能力，不获得本机模型/输出路径。
 
 ### 第二优先：真实 Runtime 与模型验收

@@ -1,9 +1,11 @@
-"""Expose the stable local image-generation domain and trusted core surface.
+"""Expose the stable local image-generation, runtime, and Gallery surfaces.
 
 The raw HTTP adapter remains available from ``image_generation.comfyui`` for
-contract tests and a future private-runtime supervisor.  It is intentionally
-not part of this stable package surface because it cannot satisfy the core's
-managed-runtime ownership requirement by itself.
+contract tests and the managed private-runtime implementation.  It is
+intentionally not part of this stable package surface because it cannot
+satisfy the core's managed-runtime ownership requirement by itself.  Gallery
+consumers receive opaque identifiers and path-free records; its on-disk schema
+and implementation limits remain private to ``image_generation.gallery``.
 """
 
 from .comfyui import (
@@ -39,6 +41,15 @@ from .service import (
     ImageGenerationProgress,
     ImageGenerationStage,
 )
+from .gallery import (
+    ImageGalleryError,
+    ImageGalleryItem,
+    ImageGalleryLimitError,
+    ImageGalleryNotFoundError,
+    ImageGalleryStorageError,
+    ImageGalleryStore,
+    ImageGalleryValidationError,
+)
 
 __all__ = [
     "CanonicalPng",
@@ -60,6 +71,13 @@ __all__ = [
     "ImageGenerationSpec",
     "ImageGenerationUnavailableError",
     "ImageGenerationValidationError",
+    "ImageGalleryError",
+    "ImageGalleryItem",
+    "ImageGalleryLimitError",
+    "ImageGalleryNotFoundError",
+    "ImageGalleryStorageError",
+    "ImageGalleryStore",
+    "ImageGalleryValidationError",
     "ImageIntent",
     "ImageSizePreset",
     "ModelArchitecture",

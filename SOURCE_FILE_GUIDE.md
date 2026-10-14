@@ -4,7 +4,7 @@
 
 > 当前架构边界：Python 是 Chat、Project、Memory、Attachment、Document Loading/Processing/Embedding/Retrieval、Project Source 授权、Knowledge Lifecycle 与结构化 Citation 持久化状态的事实来源；Electron Main 是本地进程、文件路径、硬件权限、外部桌宠程序目录与可选系统通知的可信边界；Preload 只暴露固定能力；React Renderer 只负责显示和临时交互状态。Project Sources 管理与显式启用的 grounded Chat 已接入同一生产桌面链路。Character State API 是 Renderer-local 的封闭语义投影：它只消费已验证的 Chat、Voice 与 Knowledge 生命周期，不成为新的 Python Canonical State，也不新增 IPC 或任意动画文件控制能力。用户限定的十值 Voice Emotion 同时控制 TTS 参考与应用内静态表情；Chat/Voice 的 `CharacterArtwork` 永远使用审核后的静态图片，不提供 Animated/Still 切换，也不从播放音频派生嘴型。默认关闭的 Desktop Pet 不再由 Elysia 渲染模型：Main 严格扫描用户选择目录内经过固定 Hash 审核的伴侣程序，启动前再次复核全部信任条件，只管理 Elysia 自己启动的精确 PID；Renderer 只看到无路径的程序摘要。Presence 与 Notifications 同样不进入 Python Protocol：用户只在 Settings 选择默认关闭的受审布尔值/频率，Electron Main 私有保存节奏锚点、判断窗口与活动状态，并使用不含会话内容的固定系统通知文案。
 >
-> `image_generation/` 当前是尚未接入 Desktop 的独立受信 Python 图片生成后端：普通描述和 R18 描述使用同一合同，只接受经显式确认的原创虚构成年人单图 Spec，并由审核 Profile 编译固定 SDXL `txt2img` Graph。公开 Composition Root 会创建每任务一个私有 ComfyUI 子进程；它固定 Python、入口与 Checkpoint 身份，使用准确 Loopback Child PID、隔离目录和闭合环境，并在结果发布前终止进程树、删除任务目录和重新验证 Canonical PNG。Raw `HttpComfyUiClient` 仍不能直接注入 Core；Desktop Request、Gallery 与 GPU Lease 尚未接通。
+> `image_generation/` 当前是尚未接入 Desktop 的独立受信 Python 图片生成后端：普通描述和 R18 描述使用同一合同，只接受经显式确认的原创虚构成年人单图 Spec，并由审核 Profile 编译固定 SDXL `txt2img` Graph。公开 Composition Root 会创建每任务一个私有 ComfyUI 子进程；它固定 Python、入口与 Checkpoint 身份，使用准确 Loopback Child PID、隔离目录和闭合环境，并在结果发布前终止进程树、删除任务目录和重新验证 Canonical PNG。独立 Gallery 已提供路径私有的持久化、恢复与按需验证；Raw `HttpComfyUiClient` 仍不能直接注入 Core，Desktop Request/Gallery 组合与导出、全局 GPU Lease 尚未接通。
 
 ## 1. 先看完整连接图
 
@@ -189,7 +189,7 @@ start.create_data_portability_service()
 | `docs/13-PRODUCTION-DATA-LAYOUT.md` | 定义升级安全的程序资源/用户数据分离、版本化数据树、容量分类、Legacy 首次复制、两阶段目录移动、Backend Readiness 回滚和严格临时清理边界；明确移动不是备份。 | `config/data_layout.py`、Electron Data Storage、Settings、Stage 14 后续 Backup/Packaging 模块 |
 | `docs/14-LIVE2D-RUNTIME.md` | 保存 Stage 13 的决策历史，并记录当前边界：应用内状态板永远静态，动态桌宠由用户本机已有的外部伴侣程序负责，Elysia 只做严格程序发现、启动前复核、owned-process 管理，且绝不复制或打包外部程序/模型。 | Static Main/Voice Artwork、Desktop Pet 外部程序边界与分发门禁 |
 | `docs/15-SONG-COVER.md` | 记录实验性 Song Cover 的双路径架构、LRCLIB 查询披露、同步歌词约束、59 条私有 Prompt bank、确定性有界 C0/C1/C2、结构硬门禁/acoustic soft score/global DP/精确时间线、WSL SoulX 私有资产/进程/临时文件边界、Legacy fallback、导出行为、受控实机证据、可重复 Smoke 命令和当前并非安装包能力的限制。 | Song Cover Electron/React、七个生产 Python Worker/Bridge/Runtime/Quality/Inference 文件、`smoke_song_cover.py`、`MODEL_LICENSE.md`、分发门禁 |
-| `docs/16-LOCAL-IMAGE-GENERATION.md` | 记录受信本地图片生成 Core 与私有 ComfyUI 监督器：统一普通/R18 内容路径、原创虚构成年人主体边界、结构化 Spec、审核 Profile、固定 SDXL Workflow、准确 Child PID/稳定文件路径、隔离运行目录、Canonical PNG、失败清理、模型不分发与禁止 R18 的语音资产隔离；下一层是 Desktop/Gallery/GPU Lease 和真实 Runtime/模型验收。 | `image_generation/`、图片生成/私有目录/端口所有权测试、后续 Desktop Image Integration、`MODEL_LICENSE.md` |
+| `docs/16-LOCAL-IMAGE-GENERATION.md` | 记录受信本地图片生成 Core、私有 ComfyUI 监督器和可恢复 Gallery：统一普通/R18 内容路径、原创虚构成年人主体边界、结构化 Spec、审核 Profile、固定 SDXL Workflow、准确 Child PID/稳定文件路径、隔离运行目录、Canonical PNG、路径私有持久化、失败恢复、模型不分发与禁止 R18 的语音资产隔离；下一层是 Desktop Gallery 组合/导出、GPU Lease 和真实 Runtime/模型验收。 | `image_generation/`、图片生成/Gallery/私有目录/端口所有权测试、后续 Desktop Image Integration、`MODEL_LICENSE.md` |
 | `data/characters/elysia_character_reference_zh.md` | 爱莉希雅背景、语录和转写参考资料；当前 Runtime 不会自动将它注入每次 Prompt。 | 人工角色研究；受 `MODEL_LICENSE.md` 的来源/授权提醒约束 |
 | `data/characters/elysia_character_analysis_zh.md` | 对本地 2,965 行资料、官方发布内容与往世乐土剧情索引所作的原创十二类角色分析；记录阶段、关系、证据强度、运行时边界与资料缺口，不保存网络完整台词。 | `core/elysia_system_prompt_zh.md` 的人工研究依据；角色评审与后续语料清洗 |
 | `data/characters/elysia-2dArt/README.md`、`PROMPTS.md` 与 18 张审阅 PNG | 记录最终静态 2D 审阅包、逐格修复、生成参考与 Hash；02/03/04 提供应用内静态状态、表情与回退参考。旧自制 Live2D 脸部母版和 21 层制作输入已删除。 | CharacterArtwork、静态素材分发门禁、`MODEL_LICENSE.md`；未选中的审阅总览不进入安装包 |
@@ -211,7 +211,7 @@ start.create_data_portability_service()
 | 文件 | 实际用途 | 主要连接 |
 | --- | --- | --- |
 | `config/__init__.py` | 配置包的稳定公开导出。 | `start.py`、`desktop_backend.py`、测试 |
-| `config/data_layout.py` | Python 的唯一 ProductionDataLayout；从 Main 注入的绝对根派生 Workspace/Settings/Chat/Project/Memory/Attachment/Knowledge、临时 Audio、Cache 与 Logs，避免服务把数据写进可替换安装目录。 | `config/settings.py`、`start.py`、Desktop/Knowledge/Speech Composition Roots |
+| `config/data_layout.py` | Python 的唯一 ProductionDataLayout；从 Main 注入的绝对根派生 Workspace/Settings/Chat/Project/Memory/Attachment/Knowledge、持久 Generated-image Gallery、临时 Audio、Cache 与 Logs，避免服务把数据写进可替换安装目录。Gallery 固定为 `workspace/gallery`。 | `config/settings.py`、`start.py`、Desktop/Knowledge/Speech/Image Composition Roots |
 | `config/settings.py` | 从安全默认值和根目录 `.env` 创建不可变 `AppSettings`；严格解析可选 `ELYSIA_DATA_ROOT`，把只读资源 `base_dir` 与可移动 `data_layout` 分离。除 Chat/Ollama/Memory 与 STT 闭集外，还定义自动朗读、语速、播放音量、逻辑 Voice Profile、十值闭集语音情绪、字幕、人工 Transcript Review 和安全自动续听的默认值，并限制 GPT-SoVITS 本地评估开关、请求/探测超时和确定性 Seed。 | `start.py`、Model Adapter、Memory、Recovery、Faster-Whisper 与 TTS Composition |
 | `config/desktop_settings.py` | Desktop Settings Store；把旧 Schema v1/v2/v3 文档内存迁移到 v4，并对十六个公开字段做 allowlist、Revision CAS、Desired/Active Restart Diff、线程/进程锁、原子替换和损坏隔离。`speechRatePercent`、`voiceProfileId` 与 `voiceEmotion` 属于重启生效设置；自动朗读、播放音量、字幕、人工 Review 和自动续听可实时生效。 | `desktop_backend.py`、Settings UI、`workspace/settings/global.json` |
 | `config/voice_profiles.example.json` | 只含原创占位内容的严格 Voice Profile Schema v2 示例；每个资产声明都要求相对 `path`、实际 `bytes` 和小写 `sha256`，示例数字与 Hash 必须替换。 | `workspace/settings/voice-profiles.json`、`voice/profiles.py` |
@@ -397,13 +397,13 @@ Loader 输出仍是 Raw Structure；后续纯转换生成可重复 Chunk，Embed
 
 其中 `KnowledgeLifecycleService` 是跨 Store 的 durable saga，不是假想的全局事务。新 Vector 在完整 catalog CAS publish 前没有权限；replace/delete 先 tombstone 整个 Project catalog，再幂等清理并发布剩余 corpus。`KnowledgeExportService` 共用全局 operation lease，但不进入 saga journal，只以身份固定的私有 cleanup intent 恢复未发布 temp。当前没有独立 Preview/Cache 实体，因此生产 `desktop_knowledge.py` 显式传入 `NoStoredKnowledgeArtifacts`；未来新增 artifact repository 时必须替换该 adapter。完整顺序、取消/恢复与桌面集成状态见 `docs/11-KNOWLEDGE-LIFECYCLE.md`。
 
-## 12C. 受信本地图片生成 Core 与私有运行时：`image_generation/`
+## 12C. 受信本地图片生成 Core、私有运行时与 Gallery：`image_generation/`
 
-这一层当前是独立 Python 后端，不是 Desktop Backend 的新路由。它完成统一的普通/R18 结构化 Spec、受信 Profile、固定单图 Workflow、Raw Loopback 协议、Canonical PNG 验证，以及可供生产 Composition Root 使用的 Managed Private Runtime。实际生成仍需管理员提供并审核本机 ComfyUI、Python 与 Checkpoint；Desktop Request、Gallery、持久 Job 和全局 GPU Lease 尚未连接。
+这一层当前是独立 Python 后端，不是 Desktop Backend 的新路由。它完成统一的普通/R18 结构化 Spec、受信 Profile、固定单图 Workflow、Raw Loopback 协议、Canonical PNG 验证、可供生产 Composition Root 使用的 Managed Private Runtime，以及路径私有的可恢复 Gallery。实际生成仍需管理员提供并审核本机 ComfyUI、Python 与 Checkpoint；Desktop Request/Gallery 组合与导出、持久 Job 和全局 GPU Lease 尚未连接。
 
 | 文件 | 实际用途 | 主要连接 |
 | --- | --- | --- |
-| `image_generation/__init__.py` | 图片生成 Package 的稳定公开面；集中导出 Spec/Intent、Profile、ComfyUI DTO/Config、Managed Runtime Config/Factory、PNG、Core Service、进度和稳定错误，不暴露任意 Workflow/路径控制，也故意不导出 Raw `HttpComfyUiClient`。 | Desktop Image Composition Root、测试 |
+| `image_generation/__init__.py` | 图片生成 Package 的稳定公开面；集中导出 Spec/Intent、Profile、ComfyUI DTO/Config、Managed Runtime Config/Factory、PNG、Core Service、Gallery Item/Store 和稳定错误，不暴露任意 Workflow、磁盘 Schema、实现上限或路径控制，也故意不导出 Raw `HttpComfyUiClient`。 | Desktop Image Composition Root、测试 |
 | `image_generation/exceptions.py` | 定义 Validation、Safety、Profile、Unavailable、Protocol、Limit、Cancelled 与 Failed 的路径无关错误闭集，避免把 ComfyUI Response、模型路径或内部异常直接交给 UI。 | 全部图片生成模块、后续 Desktop Error Mapping |
 | `image_generation/domain.py` | 定义第一版唯一 `new-character` Intent 和统一 `ImageGenerationSpec`；不再包含内容模式或成人确认开关，普通和 R18 描述走同一路径。所有请求都要求 `original_fictional_confirmed=true`，并保守拒绝明显的未成年人/年龄模糊、真实人物、多主体、已有角色矛盾及未审核 `embedding:` 引用；NFKC/Casefold 规则只是非对抗性 Tripwire。 | `prompting.py`、`workflow.py`、后续类型化 Desktop Request |
 | `image_generation/profiles.py` | 定义 SDXL Architecture、三种 Prompt Dialect、受限 Size Preset、受信 `ModelProfile` 与不可变 Catalog；固定相对 `.safetensors` Key、Checkpoint Hash/来源/许可声明、尺寸/像素预算、Sampler/Scheduler/Steps/CFG，并计算完整 Profile Digest。Raw HTTP 只能验证 Key，Managed Runtime 会在启动前直接验证并固定实际 Checkpoint 文件。 | `prompting.py`、`workflow.py`、`comfyui.py`、`managed_comfyui.py`、管理员模型配置 |
@@ -414,8 +414,9 @@ Loader 输出仍是 Raw Structure；后续纯转换生成可重复 Chunk，Embed
 | `image_generation/_private_run_directory.py` | 创建准确 UUID v4 私有任务根及 Input/Output/Temp/User/Cache/Frontend 子目录；删除前有界盘点且拒绝 Link/Junction/Reparse/Special Node，只删除已证明归属的准确任务根并保留 Sibling。 | `managed_comfyui.py`、清理与异常树测试 |
 | `image_generation/managed_comfyui.py` | 每任务启动、拥有并回收一个私有 ComfyUI 进程树；验证并守卫 Python/入口/Checkpoint，使用稳定卷路径、闭合环境、隔离目录、禁网/禁 Custom Node 参数和随机 Loopback Port。启动、Finalize 与 Close 由终态锁串行化；任何进程终止、Guard 释放或目录删除不能确认时进入 Fail-Closed/Poisoned 状态且不发布结果。 | `composition.py`、Raw Adapter、Windows Job/File Guard、Managed Runtime tests |
 | `image_generation/composition.py` | 唯一公开的生产组合入口；用受审 `ManagedComfyUiConfig` 创建私有 Runtime，再注入 `ImageGenerationCore`，避免 Desktop 误接 Raw Adapter。 | `__init__.py`、后续 Desktop Backend |
-| `image_generation/png.py` | 把不可信 Runtime PNG 验证并重写为 Canonical PNG：限制 32 MiB、4,096 Chunks、2,048 Edge/总像素，校验 Signature/CRC/Chunk 顺序、8-bit RGB/RGBA、非 Interlaced、精确 Workflow 尺寸、解压长度与 Filter；只移除 `eXIf/iTXt/tEXt/tIME/zTXt` 惰性 Metadata，拒绝 `tRNS/gAMA/sRGB/iCCP` 等渲染语义 Ancillary Chunk 和 Trailing Bytes，再编码 IHDR/IDAT/IEND 与 SHA-256。 | `comfyui.py`、`service.py`、后续 Gallery Store |
-| `image_generation/service.py` | 同步编排 Profile Lookup、固定 Workflow、Runtime Probe/Submit/Poll/Fetch、单调 Progress、最终取消边界和 Runtime Close；构造时强制受管私有 Capability，所以 Raw Adapter 会在任何提交前被拒绝。Core 返回 Canonical PNG、Profile/Workflow Digest、Seed 与 UTC 时间，但不拥有 Durable Gallery、Desktop Event、Queue 或 GPU Lease。 | 上述图片生成模块、Desktop/Gallery/GPU Integration |
+| `image_generation/gallery.py` | 在 `workspace/gallery` 下持有单写者持久 Gallery；以 Canonical PNG 与严格私有 Manifest 的同级目录作为权威记录，通过所有权标记、两阶段启动恢复及 Staging/Artifact/Tombstone 目录重命名定义逻辑 Create/Delete 提交点，把 `index.json` 仅作为可重建的无 Prompt/无路径缓存。公开 API 只返回 Opaque ID、路径无关元数据或按需重新验证的 PNG Bytes，并以线程/进程锁、容量预算、固定本机卷要求及 Link/Reparse/Hard-link/Tamper 检查 Fail Closed。它信任 Backend 内部 Core Result，不提供生成来源的加密证明。 | `config/data_layout.py`、`service.GeneratedImageResult`、后续 Desktop Image Service 与 Export |
+| `image_generation/png.py` | 把不可信 Runtime PNG 验证并重写为 Canonical PNG：限制 32 MiB、4,096 Chunks、2,048 Edge/总像素，校验 Signature/CRC/Chunk 顺序、8-bit RGB/RGBA、非 Interlaced、精确 Workflow 尺寸、解压长度与 Filter；只移除 `eXIf/iTXt/tEXt/tIME/zTXt` 惰性 Metadata，拒绝 `tRNS/gAMA/sRGB/iCCP` 等渲染语义 Ancillary Chunk 和 Trailing Bytes，再编码 IHDR/IDAT/IEND 与 SHA-256。 | `comfyui.py`、`service.py`、`gallery.py` |
+| `image_generation/service.py` | 同步编排 Profile Lookup、固定 Workflow、Runtime Probe/Submit/Poll/Fetch、单调 Progress、最终取消边界和 Runtime Close；构造时强制受管私有 Capability，所以 Raw Adapter 会在任何提交前被拒绝。Core 返回 Canonical PNG、Profile/Workflow Digest、Seed 与 UTC 时间，但不拥有 Durable Gallery、Desktop Event、Queue 或 GPU Lease。 | 上述图片生成模块、`gallery.py`、Desktop/GPU Integration |
 
 完整内容、安全、Raw API、模型分发、语音许可隔离与后续计划见 `docs/16-LOCAL-IMAGE-GENERATION.md`。成人图片路径不得调用爱莉希雅 GPT-SoVITS；该语音资产的随附说明明确禁止 R18，用途边界不能因图片 Core 存在而改变。
 
@@ -677,7 +678,8 @@ Character State API 目前是 Renderer 内部合同，不属于 `desktop_protoco
 | `tests/test_file_manager.py` | 基础文本文件操作。 |
 | `tests/test_comfyui_client.py` | 以离线 Fake Loopback HTTP Server 验证 Raw ComfyUI Adapter：远程/凭证/Path Origin 与 Redirect 拒绝、Node/Checkpoint Probe、预生成 Prompt/Client Identity、固定 Graph 提交、Prompt/Client/Prefix 精确 History 关联、明确成功终态、PNG Fetch、HTTP Body/Job Deadline、慢速滴流、外来记录拒绝、Pending 精确删除、重复/跨队列 Ownership 拒绝、Shared Instance 禁止 Global Interrupt、Exclusive Instance 的唯一 Owner Targeted Interrupt，以及输出名/子目录 Traversal 拒绝；不安装 ComfyUI、不加载模型或 GPU。 |
 | `tests/test_gpt_sovits.py` | Loopback URL 规范化、HTTP 请求映射、代理/Redirect/Retry/Transfer-Encoding 禁止、Content-Length、慢速 Body Deadline、Readiness、响应上限、格式与错误脱敏。 |
-| `tests/test_image_generation_core.py` | 覆盖单图 Spec 规范化、所有模式的原创虚构主体确认、成人额外 Opt-in、普通露骨内容分流、无数字年龄要求、明显未成年人/年龄模糊/真实人物/多主体/已有角色拒绝、`embedding:` 资产引用与 Negative Safety Anchor 反向否定拒绝、Profile/Checkpoint/Size/Catalog/Digest、三类 Prompt 方言、固定 SDXL Graph/Capability Seal/篡改拒绝/Copy Isolation、PNG CRC/Chunk/Filter/尺寸/惰性 Metadata 清除/渲染语义 Ancillary 拒绝，以及 Managed Runtime Boolean + 私有 Capability Gate、Prepared/Output 关联、Composition Root 二次验证、强制 Finalizer、Core 进度、取消与 Callback Failure 隔离；只用合成 PNG/Managed Fake Client。 |
+| `tests/test_image_generation_core.py` | 覆盖单图 Spec 规范化、单一内容路径的原创虚构成年人确认、普通/R18 描述共同接收、无数字年龄要求、明显未成年人/年龄模糊/真实人物/多主体/已有角色拒绝、`embedding:` 资产引用与 Negative Safety Anchor 反向否定拒绝、Profile/Checkpoint/Size/Catalog/Digest、三类 Prompt 方言、固定 SDXL Graph/Capability Seal/篡改拒绝/Copy Isolation、PNG CRC/Chunk/Filter/尺寸/惰性 Metadata 清除/渲染语义 Ancillary 拒绝，以及 Managed Runtime Boolean + 私有 Capability Gate、Prepared/Output 关联、Composition Root 二次验证、强制 Finalizer、Core 进度、取消与 Callback Failure 隔离；只用合成 PNG/Managed Fake Client。 |
+| `tests/test_image_gallery_store.py` | 覆盖路径私有 CRUD、分页、所有权标记、宽目录零删除、Index 可丢弃语义、部分事务恢复、未知状态 Fail Closed、目标 PNG/Manifest 篡改、Link/Reparse/Hard-link/Special File、容量/并发、Private Prompt、跨进程 Lease、关闭、畸形 Result Metadata、提交后同步/延迟清理、Rollback Sibling Preservation 与完整异常链脱敏；固定 List/Get/Create 不重新读取整个图库。 |
 | `tests/test_json_store.py` | 早期通用 JSON Store。 |
 | `tests/test_langchain_ollama_chat_model.py` | 生产 LangChain Ollama Adapter。 |
 | `tests/test_legacy_conversation_migration.py` | Legacy Backup、幂等性、语义前缀和失败回滚。 |
@@ -692,7 +694,7 @@ Character State API 目前是 Renderer 内部合同，不属于 `desktop_protoco
 | `tests/test_project_domain.py` | Project、Settings、WorkspaceBinding 不变量。 |
 | `tests/test_project_repository.py` | Project Persistence、排序、Archive 和 Corruption。 |
 | `tests/test_project_service.py` | Project–Chat 关系、删除策略、Rollback 和 Busy Guard。 |
-| `tests/test_production_data_layout.py` | 精确数据树、环境根校验，以及 Chat/Project/Memory/Settings/Attachment/Knowledge/Speech 各 Composition Root 的资源/数据分离。 |
+| `tests/test_production_data_layout.py` | 精确数据树、环境根校验，以及 Chat/Project/Memory/Settings/Attachment/Knowledge/Gallery/Speech 各 Composition Root 的资源/数据分离。 |
 | `tests/test_project_sources.py` | Project Source catalog 跨线程实例/真实 spawn process CAS、tombstone、Instructions fingerprint 与持久化；同 Project 多 Chat 共享、跨 Project/Archived Owner 拒绝、Chat Attachment 隔离与 canonical-history committed-only promotion、相同 bytes/不同 metadata 冲突、文档路由过滤、完整 current-profile corpus、Instructions 子集约束和生成后 authority revalidation。 |
 | `tests/test_knowledge_lifecycle.py` | Knowledge journal strict CAS、同 Project 单 recoverable operation、terminal retention、phase/state 单调性、add/reindex/rebuild 发布顺序、copy-on-write replace、tombstone-first delete、whole-Project revoke、故障恢复、跨 Project 隔离、source views 与 verified original export。 |
 | `tests/test_knowledge_export_recovery.py` | Export durable cleanup-intent recovery：正常遗留/missing temp 收敛、损坏与 temp/parent identity mismatch Fail Closed、多 intent 隔离清理、发布前最终 identity guard，以及 publish 后 private intent 延迟清理的一致终态。 |
@@ -1294,7 +1296,7 @@ config/settings.py + config/voice_profiles.example.json
 54. `desktop/src/App.tsx`
 55. `desktop/src/voice/CallPreview.tsx` 与其他具体 Feature Component
 56. 对应测试，尤其是 Document Loading/Processing/Embedding/Indexing/Retrieval/Grounding、Project Sources、Knowledge Lifecycle、Song Cover、`tests/test_desktop_knowledge.py`、`tests/test_real_document_regression.py`、`tests/test_song_lyrics_alignment.py`、`tests/test_song_svs_quality.py`、`tests/test_song_svs_inference.py`、`tests/test_song_svs_runtime.py`、`tests/test_song_svs_wsl_bridge.py`、`tests/test_song_svs_worker.py`、`desktop/tests/protocol.contract.test.mjs`、`desktop/tests/song-cover-manager.test.mjs`、`desktop/tests/song-lyrics-provider.test.mjs`、`desktop/tests/ui/app-shell.spec.ts`、`desktop/tests/voice-session-controller.test.mjs`、`desktop/tests/voice-ui-state.test.mjs` 与 `desktop/tests/character-state.test.mjs`
-57. `docs/16-LOCAL-IMAGE-GENERATION.md`，再按 `domain.py` → `profiles.py` → `prompting.py` → `workflow.py` → `comfyui.py` / `png.py` → `_windows_loopback_owner.py` / `_private_run_directory.py` → `managed_comfyui.py` → `composition.py` → `service.py` 阅读 `image_generation/`，最后查看五份对应测试
+57. `docs/16-LOCAL-IMAGE-GENERATION.md`，再按 `domain.py` → `profiles.py` → `prompting.py` → `workflow.py` → `comfyui.py` / `png.py` → `_windows_loopback_owner.py` / `_private_run_directory.py` → `managed_comfyui.py` → `composition.py` → `service.py` → `gallery.py` 阅读 `image_generation/`，最后查看六份对应测试
 
 读完后应形成以下心智模型：
 
