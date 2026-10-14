@@ -422,6 +422,13 @@ let nextWorkToolResult = null
 let nextWorkPreviewError = null
 let nextWorkApprovalNumber = 1
 let workApprovals = new Map()
+let visionOwnerKey = null
+let visionState = null
+let selectedVisionImage = null
+let nextVisionImageNumber = 1
+let nextVisionError = null
+let delayVisionSelection = false
+let pendingVisionSelections = []
 let desktopOwnerKey = null
 let desktopState = null
 let desktopClipboard = 'Private clipboard text.'
@@ -461,6 +468,18 @@ function desktopSnapshot(chatId) {
   }
   if (desktopState.owner?.chatId !== chatId) throw new Error('Desktop owner is unavailable.')
   return clone(desktopState)
+}
+
+function visionSnapshot(chatId) {
+  const chat = chatState.activeChat
+  const key = JSON.stringify([chat.chatId, chat.projectId, chat.archived])
+  if (visionState === null || visionOwnerKey !== key) {
+    visionOwnerKey = key
+    visionState = { kind: 'vision.state', owner: { chatId: chat.chatId, projectId: chat.projectId },
+      revision: 0, busy: false, retention: 'session', items: [] }
+  }
+  if (chat.chatId !== chatId || chat.archived || snapshot.status !== 'ready') throw new Error('Vision owner is unavailable.')
+  return clone(visionState)
 }
 
 function desktopAudit(chatId, action, phase, actionId, preview = null) {
@@ -1746,6 +1765,43 @@ const desktopApi = {
     return result
   },
 
+  getVisionState: async (chatId) => {
+    record('getVisionState', [chatId])
+    return visionSnapshot(chatId)
+  },
+  chooseVisionImage: async (chatId) => {
+    record('chooseVisionImage', [chatId])
+    const before = visionSnapshot(chatId)
+    const image = clone(selectedVisionImage)
+    visionState.busy = true
+    try {
+      if (delayVisionSelection) await new Promise((resolve, reject) => { pendingVisionSelections.push({ resolve, reject }) })
+      const current = visionSnapshot(chatId)
+      if (current.owner.projectId !== before.owner.projectId) throw new Error('Vision owner changed.')
+      if (nextVisionError !== null) { const error = nextVisionError; nextVisionError = null; throw new Error(error) }
+      if (image !== null) {
+        if (visionState.items.length >= 8) throw new Error('Too many Vision images.')
+        visionState.items.push({ ...image, imageId: `vision_${(nextVisionImageNumber++).toString(16).padStart(32, '0')}` })
+        visionState.revision += 1
+      }
+      visionState.busy = false
+      return { cancelled: image === null, state: visionSnapshot(chatId) }
+    } finally { if (visionState !== null) visionState.busy = false }
+  },
+  removeVisionImage: async (request) => {
+    record('removeVisionImage', [request])
+    visionSnapshot(request.chatId)
+    visionState.items = visionState.items.filter((item) => item.imageId !== request.imageId)
+    visionState.revision += 1
+    return visionSnapshot(request.chatId)
+  },
+  clearVisionState: async (chatId) => {
+    record('clearVisionState', [chatId])
+    visionSnapshot(chatId)
+    visionState.items = []; visionState.revision += 1
+    return visionSnapshot(chatId)
+  },
+
   getWorkDesktopState: async (chatId) => {
     record('getWorkDesktopState', [chatId])
     return desktopSnapshot(chatId)
@@ -2554,6 +2610,19 @@ const desktopApi = {
 }
 
 const testControl = {
+  setSelectedVisionImage: (image) => { selectedVisionImage = clone(image) },
+  setVisionSelectionDelay: (delayed) => { delayVisionSelection = delayed },
+  failNextVisionSelection: (message) => { nextVisionError = message },
+  releaseNextVisionSelection: () => {
+    const pending = pendingVisionSelections.shift()
+    if (pending === undefined) return false
+    pending.resolve(); return true
+  },
+  rejectNextVisionSelection: () => {
+    const pending = pendingVisionSelections.shift()
+    if (pending === undefined) return false
+    pending.reject(new Error('Vision native action failed.')); return true
+  },
   setDesktopClipboardText: (text) => { desktopClipboard = text },
   getDesktopClipboardText: () => desktopClipboard,
   setDesktopDocumentSelection: (document) => { desktopDocumentSelection = clone(document) },
@@ -2572,6 +2641,10 @@ const testControl = {
   getLatestVoiceCallState: () => clone(latestVoiceCallWindowState),
 
   reset: () => {
+    visionOwnerKey = null; visionState = null; selectedVisionImage = null; nextVisionImageNumber = 1
+    nextVisionError = null; delayVisionSelection = false
+    for (const pending of pendingVisionSelections) pending.reject(new Error('Vision test reset.'))
+    pendingVisionSelections = []
     desktopOwnerKey = null; desktopState = null; desktopAuditEntries = []
     desktopDocumentSelection = null; desktopClipboard = 'Private clipboard text.'
     delayDesktopDecisions = false; nextDesktopError = null; desktopActionNumber = 1
@@ -2761,6 +2834,7 @@ const testControl = {
     const nextEvent = clone(event)
     if (nextEvent.type === 'snapshot') {
       snapshot = clone(nextEvent.snapshot)
+      if (snapshot.status !== 'ready') { visionState = null; visionOwnerKey = null }
     }
     if (
       nextEvent.type === 'chat-chunk'

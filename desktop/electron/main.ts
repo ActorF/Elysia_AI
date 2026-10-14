@@ -30,6 +30,8 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { BackendProcess } from './backend-process.js'
+import { VisionImageController, VisionImageError, decodeVisionImage, readVisionSelectedFile, type VisionOwner } from './vision-images.js'
+import { parseVisionChatId, parseVisionRemoveRequest } from './vision-protocol.js'
 import { WorkDesktopController, parseWorkDesktopChatRequest, parseWorkDesktopClipboardWriteRequest,
   parseWorkDesktopDecisionRequest, parseWorkDesktopWindowSelectionRequest, type WorkDesktopOwner } from './work-desktop-tools.js'
 import { WorkDesktopStorage } from './work-desktop-storage.js'
@@ -211,6 +213,8 @@ let workDesktopController: WorkDesktopController | null = null
 let workDesktopStorage: { root: string; store: WorkDesktopStorage } | null = null
 let workDesktopScope: { chatId: string; projectId: string | null; workspacePath: string | null } | null = null
 const workDesktopRequests = new Set<Promise<unknown>>()
+let visionImageController: VisionImageController | null = null
+const visionRequests = new Set<Promise<unknown>>()
 const voiceCallWindowManager = new VoiceCallWindowManager({
   policy: {
     appPath: app.getAppPath(),
@@ -219,7 +223,7 @@ const voiceCallWindowManager = new VoiceCallWindowManager({
     platform: process.platform,
   },
   preloadPath: path.join(moduleDirectory, 'voice-call-preload.cjs'),
-  canOpen: () => !shutdownStarted && !hasActiveDesktopWork(),
+  canOpen: () => !shutdownStarted && !hasActiveComputerWork(),
   currentMainWindow: () => mainWindow,
   onAction: (action) => {
     if (action.kind === 'end') {
@@ -1148,9 +1152,9 @@ class SongCoverUnavailableError extends Error {
 async function assertSongCoverAvailable(
   manager: SongCoverManager,
 ): Promise<void> {
-  if (hasActiveDesktopWork()) throw new Error('Wait for the current desktop action.')
+  if (hasActiveComputerWork()) throw new Error('Wait for the current desktop action.')
   const readiness = await manager.getReadiness(app.isPackaged)
-  if (hasActiveDesktopWork()) throw new Error('Wait for the current desktop action.')
+  if (hasActiveComputerWork()) throw new Error('Wait for the current desktop action.')
   if (readiness.status === 'unavailable') {
     throw new SongCoverUnavailableError(readiness)
   }
@@ -1176,7 +1180,7 @@ function setPresenceVoiceSession(active: boolean): void {
     presenceVoiceSessionActive = false
     return
   }
-  if (hasActiveDesktopWork()) throw new Error('Wait for the current desktop action before starting Voice.')
+  if (hasActiveComputerWork()) throw new Error('Wait for the current desktop action before starting Voice.')
   presenceVoiceSessionActive = true
   try {
     stopSongCoverPlaybackIfActive()
@@ -2046,6 +2050,8 @@ function broadcastBackendEvent(event: BackendEvent): void {
   // failure boundary so an optional notice cannot become a protocol failure.
   try { workDesktopController?.getState() }
   catch { workDesktopController?.clear() }
+  try { visionImageController?.synchronize() }
+  catch { visionImageController?.shutdown(); visionImageController = null }
   try {
     maybeShowCompletionNotification(event)
   } catch {
@@ -2068,6 +2074,59 @@ function hasActiveDesktopWork(): boolean {
   return workDesktopRequests.size > 0 || workDesktopController?.hasActiveWork() === true
 }
 
+function hasActiveVisionWork(): boolean {
+  return visionRequests.size > 0 || visionImageController?.hasActiveWork() === true
+}
+
+function hasActiveComputerWork(): boolean { return hasActiveDesktopWork() || hasActiveVisionWork() }
+
+function visionOwner(): VisionOwner {
+  const backend = backendProcess, owner = backend?.getCanonicalVisionChat() ?? null
+  // Exclude this service's own reservation: admission must remain visible to
+  // competing work without making a newly admitted picker revoke itself.
+  return { chatId: owner?.chatId ?? 'chat_unavailable', projectId: owner?.projectId ?? null,
+    mode: owner?.mode ?? 'chat', archived: owner?.archived ?? false, ready: owner !== null && !shutdownStarted,
+    busy: backend?.hasActiveBackendWork() === true || hasActiveDesktopWork() || presenceVoiceSessionActive
+      || songCoverManager?.hasActiveWork() === true || dataStorageOperation !== null || shutdownStarted }
+}
+
+function requireVisionController(): VisionImageController {
+  if (visionImageController === null) {
+    visionImageController = new VisionImageController({
+      getOwner: visionOwner,
+      chooseFile: async () => {
+        const selected = await dialog.showOpenDialog(requireMainWindow(), {
+          title: 'Select an image for this Chat', properties: ['openFile', 'dontAddToRecent'],
+          filters: [{ name: 'Still PNG and JPEG images', extensions: ['png', 'jpg', 'jpeg'] }],
+        })
+        return !selected.canceled && selected.filePaths.length === 1 ? selected.filePaths[0]! : null
+      },
+      readFile: readVisionSelectedFile,
+      decode: (bytes) => decodeVisionImage(bytes, nativeImage),
+    })
+  }
+  return visionImageController
+}
+
+function withVisionOwner<Result>(chatId: string, operation: (controller: VisionImageController) => Result | Promise<Result>,
+  readOnly = false): Promise<Result> {
+  if (hasActiveVisionWork() || shutdownStarted || dataStorageOperation !== null || !readOnly && visionOwner().busy) {
+    return Promise.reject(new VisionImageError('busy'))
+  }
+  // Reserve before hydration starts. Even a missing canonical cache cannot
+  // leave a gap in which Chat, scope changes, or shutdown admits another owner.
+  const request = Promise.resolve().then(async () => {
+    const backend = requireBackend()
+    if (backend.getCanonicalVisionChat() === null) await backend.listChats(false)
+    const owner = backend.getCanonicalVisionChat()
+    if (owner === null || owner.chatId !== chatId || shutdownStarted) throw new VisionImageError('owner_changed')
+    return operation(requireVisionController())
+  }).catch((error: unknown) => { throw new VisionImageError(error instanceof VisionImageError ? error.code : 'unavailable') })
+  visionRequests.add(request)
+  void request.then(() => visionRequests.delete(request), () => visionRequests.delete(request))
+  return request
+}
+
 function desktopOwner(): WorkDesktopOwner {
   const backend = backendProcess
   const owner = backend?.getCanonicalWorkChat() ?? null
@@ -2079,7 +2138,7 @@ function desktopOwner(): WorkDesktopOwner {
     // Main's own desktop lease is excluded here: including it would revoke
     // the action as soon as it admitted itself. Other callers see that lease
     // through BackendProcess.hasActiveMaintenanceWork and the native guards.
-    busy: backend?.hasActiveBackendWork() === true || presenceVoiceSessionActive
+    busy: backend?.hasActiveBackendWork() === true || hasActiveVisionWork() || presenceVoiceSessionActive
       || songCoverManager?.hasActiveWork() === true || dataStorageOperation !== null || shutdownStarted }
 }
 
@@ -2115,7 +2174,7 @@ async function hydrateDesktopOwner(chatId: string): Promise<void> {
 
 function withDesktopOwner<Result>(chatId: string, operation: () => Promise<Result> | Result,
   allowBackendBusy = false): Promise<Result> {
-  if (hasActiveDesktopWork() || shutdownStarted || dataStorageOperation !== null
+  if (hasActiveComputerWork() || shutdownStarted || dataStorageOperation !== null
     || (!allowBackendBusy && desktopOwner().busy)) return Promise.reject(new Error('Wait for the current action before using desktop tools.'))
   const request = (async () => { await hydrateDesktopOwner(chatId); return operation() })()
   workDesktopRequests.add(request)
@@ -2213,7 +2272,7 @@ async function runDataStorageOperation(
   if (dataStorageOperation !== null) {
     throw new Error('Another data storage action is already running.')
   }
-  if (hasActiveDesktopWork()) throw new Error('Wait for the current desktop action before managing data.')
+  if (hasActiveComputerWork()) throw new Error('Wait for the current desktop action before managing data.')
   dataStorageBusyPhase = phase
   const running = operation()
   dataStorageOperation = running
@@ -2255,7 +2314,7 @@ function assertNoManagedSongCoverOutput(): void {
 }
 
 function assertDataStorageIdleForBackendRestart(): void {
-  if (hasActiveDesktopWork()) throw new Error('Wait for the current desktop action before restarting.')
+  if (hasActiveComputerWork()) throw new Error('Wait for the current desktop action before restarting.')
   if (dataStorageOperation !== null) {
     throw new Error('Wait for the data storage action to finish.')
   }
@@ -2552,6 +2611,23 @@ function requireMainWindow(): BrowserWindow {
 }
 
 function registerIpcHandlers(): void {
+  ipcMain.handle('vision:get-state', (event, chatId: unknown) => {
+    assertTrustedSender(event)
+    return withVisionOwner(parseVisionChatId(chatId), (controller) => controller.getState(parseVisionChatId(chatId)), true)
+  })
+  ipcMain.handle('vision:choose-image', (event, chatId: unknown) => {
+    assertTrustedSender(event)
+    return withVisionOwner(parseVisionChatId(chatId), (controller) => controller.chooseImage(parseVisionChatId(chatId)))
+  })
+  ipcMain.handle('vision:remove-image', (event, value: unknown) => {
+    assertTrustedSender(event)
+    const request = parseVisionRemoveRequest(value)
+    return withVisionOwner(request.chatId, (controller) => controller.removeImage(request))
+  })
+  ipcMain.handle('vision:clear-state', (event, chatId: unknown) => {
+    assertTrustedSender(event)
+    return withVisionOwner(parseVisionChatId(chatId), (controller) => controller.clearState(parseVisionChatId(chatId)))
+  })
   voiceCallWindowManager.registerIpcHandlers(ipcMain, assertTrustedSender)
   ipcMain.handle(
     'window:renderer-ready',
@@ -3515,7 +3591,7 @@ function registerIpcHandlers(): void {
   ipcMain.handle('work:desktop-state', (event, request: unknown) => {
     assertTrustedSender(event)
     const { chatId } = parseWorkDesktopChatRequest(request)
-    if (hasActiveDesktopWork()) {
+    if (hasActiveComputerWork()) {
       const state = requireDesktopController().getState()
       if (state.owner?.chatId !== chatId) throw new Error('Desktop tools owner changed.')
       return { ...state, busy: true }
@@ -3622,7 +3698,7 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle('work:choose-workspace', async (event, chatId: unknown) => {
     assertTrustedSender(event)
-    if (hasActiveDesktopWork()) throw new Error('Wait for the current desktop action.')
+    if (hasActiveComputerWork()) throw new Error('Wait for the current desktop action.')
     const request = parseWorkWorkspaceGetParams({ chatId })
     const selected = await dialog.showOpenDialog(requireMainWindow(), {
       title: 'Choose a Workspace for this Work Chat',
@@ -3635,7 +3711,7 @@ function registerIpcHandlers(): void {
     if (workspacePath === null || !(await lstat(workspacePath)).isDirectory()) {
       throw new Error('Selected Workspace is not an accessible directory.')
     }
-    if (hasActiveDesktopWork()) throw new Error('Wait for the current desktop action.')
+    if (hasActiveComputerWork()) throw new Error('Wait for the current desktop action.')
     // Renderer callers supply only the Chat ID. The native picker supplies the
     // path, and Python rechecks canonical scope and ownership before saving it.
     workDesktopScope = null
@@ -3645,7 +3721,7 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle('work:clear-workspace', (event, chatId: unknown) => {
     assertTrustedSender(event)
-    if (hasActiveDesktopWork()) throw new Error('Wait for the current desktop action.')
+    if (hasActiveComputerWork()) throw new Error('Wait for the current desktop action.')
     const request = parseWorkWorkspaceGetParams({ chatId })
     workDesktopScope = null
     requireDesktopController().clear()
@@ -4017,6 +4093,7 @@ if (!hasSingleInstanceLock) {
       speechPlaybackRouter,
       activeDataRoot,
       hasActiveDesktopWork,
+      hasActiveVisionWork,
     )
     workDesktopController = new WorkDesktopController(createWorkDesktopNativeCallbacks({
       getOwner: desktopOwner, getStorage: desktopStore, getWindow: requireMainWindow,
@@ -4101,6 +4178,8 @@ if (!hasSingleInstanceLock) {
     }
     shutdownStarted = true
     workDesktopController?.clear()
+    visionImageController?.shutdown()
+    visionImageController = null
     // Backend shutdown can await other work or fail and leave Main running.
     // Notify its live renderer now so capture cannot outlive the call controls.
     voiceCallWindowManager.endCurrent()
@@ -4125,7 +4204,7 @@ if (!hasSingleInstanceLock) {
       const finishDataStorage = dataStorageOperation === null
         ? Promise.resolve()
         : dataStorageOperation.then(() => undefined, () => undefined)
-      const stopBackend = Promise.allSettled([finishDataStorage, ...workDesktopRequests]).then(async () => {
+      const stopBackend = Promise.allSettled([finishDataStorage, ...workDesktopRequests, ...visionRequests]).then(async () => {
         if (
           backendProcess !== null
           && backendProcess.getSnapshot().status !== 'stopped'

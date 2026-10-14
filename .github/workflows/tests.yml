@@ -109,6 +109,10 @@ jobs:
         working-directory: desktop
         run: npm run package
 
+      - name: Verify native Vision image decoding
+        working-directory: desktop
+        run: node --test tests/vision-image-native.test.mjs
+
       - name: Capture ASAR file listing
         working-directory: desktop
         run: npx --no-install asar list out\win-unpacked\resources\app.asar > "%RUNNER_TEMP%\elysia-asar-listing.txt"

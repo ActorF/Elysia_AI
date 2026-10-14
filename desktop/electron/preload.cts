@@ -3,6 +3,7 @@
  */
 
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
+import type { VisionState, VisionSelectionResult, VisionRemoveRequest } from './vision-protocol.js'
 
 import type {
   ArchiveChatRequest,
@@ -814,6 +815,10 @@ ipcRenderer.on(
 )
 
 const desktopApi: DesktopApi = {
+  getVisionState: (chatId: string) => ipcRenderer.invoke('vision:get-state', chatId) as Promise<VisionState>,
+  chooseVisionImage: (chatId: string) => ipcRenderer.invoke('vision:choose-image', chatId) as Promise<VisionSelectionResult>,
+  removeVisionImage: (request: VisionRemoveRequest) => ipcRenderer.invoke('vision:remove-image', request) as Promise<VisionState>,
+  clearVisionState: (chatId: string) => ipcRenderer.invoke('vision:clear-state', chatId) as Promise<VisionState>,
   openVoiceCallWindow: (state: VoiceCallWindowState) =>
     ipcRenderer.invoke(VOICE_CALL_IPC.open, state) as Promise<void>,
   updateVoiceCallWindow: (state: VoiceCallWindowState) =>

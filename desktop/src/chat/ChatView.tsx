@@ -68,6 +68,7 @@ interface ChatViewProps {
   stopPending: boolean
   voiceCallDisabled: boolean
   workPanel?: ReactNode
+  visionPanel?: ReactNode
   onChooseAttachments(): void
   onBeginRetryEdit(pair: RetryableChatPair): void
   onCancelRetryEdit(): void
@@ -156,6 +157,7 @@ export function ChatView({
   stopPending,
   voiceCallDisabled,
   workPanel,
+  visionPanel,
   onChooseAttachments,
   onBeginRetryEdit,
   onCancelRetryEdit,
@@ -263,12 +265,13 @@ export function ChatView({
         </div>
       </header>
 
-      <div className="chat-mode-context">
+      <div className={'chat-mode-context' + (visionPanel === undefined ? '' : ' chat-mode-context-with-vision')}>
         <div className="chat-mode-capabilities" id="chat-mode-capabilities" role="status">
           {chatMode === 'work'
             ? 'Work: plan tasks in a selected Workspace. File changes require your approval.'
             : 'Chat: conversation and answers. Computer tools are disabled.'}
         </div>
+        {visionPanel}
         {chatMode === 'work' && workPanel}
       </div>
 

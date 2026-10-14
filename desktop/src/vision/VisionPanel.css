@@ -1,0 +1,18 @@
+/* Keep session image previews compact, scrollable, and readable in both conversation modes. */
+
+/* Share the existing context grid row so Work and image reviews cannot overlap
+   the conversation or push the composer beyond the available window. */
+.chat-mode-context-with-vision { max-height: min(32rem, 45vh); overflow-y: auto; overscroll-behavior: contain; }
+.chat-mode-context-with-vision .work-panel { max-height: none; overflow-y: visible; }
+.vision-panel { border-bottom: 1px solid var(--color-border); background: var(--color-bg-soft); }
+.vision-panel button { min-height: 2rem; padding: var(--space-1) var(--space-3); border: 1px solid var(--color-border); border-radius: var(--radius-md); color: var(--color-text-primary); background: var(--color-bg-surface); font-size: var(--font-size-xs); }
+.vision-toggle { margin: var(--space-2) var(--space-6); font-weight: 600; }
+.vision-image-review { display: grid; gap: var(--space-3); padding: 0 var(--space-6) var(--space-3); }
+.vision-image-review p { margin: 0; font-size: var(--font-size-sm); color: var(--color-text-secondary); }
+.vision-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.vision-images { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(12rem, 100%), 20rem)); gap: var(--space-3); }
+.vision-image { display: grid; gap: var(--space-2); min-width: 0; padding: var(--space-3); border: 1px solid var(--color-border); border-radius: .5rem; }
+.vision-image img { width: 100%; max-height: 12rem; object-fit: contain; border-radius: .3rem; }
+.vision-image strong, .vision-image span { overflow-wrap: anywhere; }
+.vision-image span { font-size: var(--font-size-sm); color: var(--color-text-secondary); }
+.vision-actions button, .vision-image button { white-space: normal; overflow-wrap: anywhere; }

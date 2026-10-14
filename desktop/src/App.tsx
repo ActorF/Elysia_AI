@@ -64,6 +64,7 @@ import { resolveCharacterEmotion } from './character/character-emotion.ts'
 import { deriveApplicationCharacterState } from './character/character-state.ts'
 import { ChatView } from './chat/ChatView.tsx'
 import { WorkPanel } from './work/WorkPanel.tsx'
+import { VisionPanel } from './vision/VisionPanel.tsx'
 import type {
   ChatMessage,
   ChatNotice,
@@ -935,6 +936,7 @@ function App() {
   const [chatState, setChatState] = useState<ChatSessionState | null>(null)
   const [sessionMutationPending, setSessionMutationPending] = useState(false)
   const [workOperationPending, setWorkOperationPending] = useState(false)
+  const [visionOperationPending, setVisionOperationPending] = useState(false)
   const [projectState, setProjectState] = useState<ProjectState | null>(null)
   const [projectLoading, setProjectLoading] = useState(true)
   const [projectMutationPending, setProjectMutationPending] = useState(false)
@@ -1087,6 +1089,8 @@ function App() {
   const retryPendingRef = useRef(false)
   const sessionMutationPendingRef = useRef(false)
   const workOperationPendingRef = useRef(false)
+  const workLeaseRef = useRef(false)
+  const visionOperationPendingRef = useRef(false)
   const projectMutationPendingRef = useRef(false)
   const settingsDirtyRef = useRef(false)
   const settingsLoadOperationRef = useRef(0)
@@ -1355,8 +1359,19 @@ function App() {
     || workOperationPending
     || !snapshot.capabilities.includes('chat.mode')
   const updateWorkBusy = useCallback((busy: boolean): void => {
-    workOperationPendingRef.current = busy
-    setWorkOperationPending(busy)
+    workLeaseRef.current = busy
+    const pending = busy || visionOperationPendingRef.current
+    workOperationPendingRef.current = pending
+    setWorkOperationPending(pending)
+  }, [])
+  const updateVisionBusy = useCallback((busy: boolean): void => {
+    // Work and Vision share computer-action admission. A late completion from
+    // one surface cannot release a physical request owned by the other.
+    visionOperationPendingRef.current = busy
+    setVisionOperationPending(busy)
+    const pending = busy || workLeaseRef.current
+    workOperationPendingRef.current = pending
+    setWorkOperationPending(pending)
   }, [])
   const canSend = (
     desktopApi !== undefined
@@ -5802,6 +5817,7 @@ function App() {
   ])
 
   function navigate(view: AppView): boolean {
+    if (visionOperationPendingRef.current) return false
     if (!mayLeaveSettings(view, settingsDirtyRef.current)) {
       return false
     }
@@ -6137,6 +6153,7 @@ function App() {
       || pair.chatId !== activeChatIdRef.current
       || modelSelectionPendingRef.current
       || retryPendingRef.current
+      || workOperationPendingRef.current
       || manualReadAloudOwnerRef.current !== null
       || pendingChatSendRef.current !== null
       || generationReconcilePendingRef.current
@@ -6445,6 +6462,7 @@ function App() {
       || modelName === snapshot.modelName
       || streaming
       || modelSelectionPendingRef.current
+      || workOperationPendingRef.current
     ) {
       return
     }
@@ -6484,7 +6502,7 @@ function App() {
       }
       return false
     }
-    if (retryPendingRef.current) {
+    if (retryPendingRef.current || workOperationPendingRef.current) {
       return false
     }
 
@@ -8148,7 +8166,7 @@ function App() {
         draft={draft}
         generationBusy={generationBusy}
         messages={displayedMessages}
-        modelSelectionPending={modelSelectionPending}
+        modelSelectionPending={modelSelectionPending || workOperationPending}
         modelOptions={modelOptions}
         notice={notice}
         panelOpen={panelOpen}
@@ -8189,7 +8207,7 @@ function App() {
             ready={snapshot.status === 'ready'
               && snapshot.chatId === activeChatId
               && snapshot.capabilities.includes('work.workspace')}
-            disabled={workControlsDisabled}
+            disabled={workControlsDisabled || visionOperationPending}
             readAvailable={snapshot.capabilities.includes('work.read')}
             previewAvailable={snapshot.capabilities.includes('work.preview')}
             confirmAvailable={snapshot.capabilities.includes('work.confirm')}
@@ -8198,6 +8216,12 @@ function App() {
             undoAvailable={snapshot.capabilities.includes('work.undo')}
             onBusyChange={updateWorkBusy}
           />
+        )}
+        visionPanel={activeChatId === undefined || typeof desktopApi?.getVisionState !== 'function' ? undefined : (
+          <VisionPanel api={desktopApi} chatId={activeChatId} projectId={activeChatProjectId}
+            ready={snapshot.status === 'ready' && snapshot.chatId === activeChatId && chatState?.activeChat.archived === false}
+            disabled={workControlsDisabled || workLeaseRef.current || modelSelectionPending || retryPending}
+            onBusyChange={updateVisionBusy} />
         )}
         onBeginRetryEdit={beginRetryEdit}
         onCancelRetryEdit={cancelRetryEdit}

@@ -619,7 +619,7 @@ export class BackendProcess {
   private readonly workPlans = new Map<string, WorkPlan>()
   private readonly workPlanJobs = new Map<string, WorkJobObservation>()
   private readonly workPlanReconciliations = new Map<string, WorkPlanReconciliation>()
-  private canonicalWorkChat: Pick<ChatSessionState['activeChat'], 'chatId' | 'projectId' | 'mode'> | null = null
+  private canonicalWorkChat: Pick<ChatSessionState['activeChat'], 'chatId' | 'projectId' | 'mode' | 'archived'> | null = null
   // Requests can resolve in a different order. An older poll must not release
   // the lease published by a later control or confirmation acknowledgement.
   private readonly workPlanAppliedSequences = new Map<string, number>()
@@ -658,6 +658,7 @@ export class BackendProcess {
     private readonly speechPlayback: TrustedSpeechPlaybackOwner,
     dataRoot?: string,
     private readonly nativeWorkActive: () => boolean = () => false,
+    private readonly nativeVisionActive: () => boolean = () => false,
   ) {
     this.dataRoot = this.validateDataRoot(dataRoot)
   }
@@ -750,15 +751,24 @@ export class BackendProcess {
 
   /** Include injected Main desktop capacity when admitting restart, storage, or competing work. */
   hasActiveMaintenanceWork(): boolean {
-    return this.hasActiveBackendWork() || this.nativeWorkActive()
+    return this.hasActiveBackendWork() || this.nativeActionActive()
   }
 
   /** Return only already validated active Chat authority for Main's native desktop boundary. */
   getCanonicalWorkChat(): Pick<ChatSessionState['activeChat'], 'chatId' | 'projectId' | 'mode'> | null {
     const owner = this.canonicalWorkChat
     return owner !== null && this.snapshot.status === 'ready' && owner.chatId === this.snapshot.chatId
+      ? { chatId: owner.chatId, projectId: owner.projectId, mode: owner.mode } : null
+  }
+
+  /** Return validated active Chat authority for native Vision without treating renderer mode or archive hints as permission. */
+  getCanonicalVisionChat(): Pick<ChatSessionState['activeChat'], 'chatId' | 'projectId' | 'mode' | 'archived'> | null {
+    const owner = this.canonicalWorkChat
+    return owner !== null && this.snapshot.status === 'ready' && owner.chatId === this.snapshot.chatId && !owner.archived
       ? { ...owner } : null
   }
+
+  private nativeActionActive(): boolean { return this.nativeWorkActive() || this.nativeVisionActive() }
 
   /** Spawn the Backend and begin its authenticated handshake and initialization. */
   start(modelName?: string): void {
@@ -1072,7 +1082,7 @@ export class BackendProcess {
   }
 
   private async performRestart(modelName?: string): Promise<BackendSnapshot> {
-    if (this.nativeWorkActive()) throw new Error('Wait for the current desktop action before restarting.')
+    if (this.nativeActionActive()) throw new Error('Wait for the current desktop action before restarting.')
     if (this.restartInProgress || this.restartCompletion !== null) {
       throw new Error('A Backend restart is already pending.')
     }
@@ -1580,7 +1590,7 @@ export class BackendProcess {
 
   /** Execute one closed read tool, correlated with its exact expected output shape. */
   runWorkTool(request: WorkToolRunParams): Promise<WorkToolResultState> {
-    if (this.nativeWorkActive()) return Promise.reject(new Error('Wait for the current desktop action.'))
+    if (this.nativeActionActive()) return Promise.reject(new Error('Wait for the current desktop action.'))
     if (this.hasWorkPlanLease()) return Promise.reject(new Error('Finish or cancel the current Work plan first.'))
     if (this.snapshot.status !== 'ready' || this.snapshot.chatId !== request.chatId
       || !this.snapshot.capabilities.includes('work.read')) {
@@ -1604,7 +1614,7 @@ export class BackendProcess {
 
   /** Prepare one exact write for inspection, with its owner frozen until approval. */
   previewWorkTool(request: WorkToolRunParams): Promise<WorkToolApprovalState> {
-    if (this.nativeWorkActive()) return Promise.reject(new Error('Wait for the current desktop action.'))
+    if (this.nativeActionActive()) return Promise.reject(new Error('Wait for the current desktop action.'))
     if (this.hasWorkPlanLease()) return Promise.reject(new Error('Finish or cancel the current Work plan first.'))
     this.workApprovals.delete(request.chatId)
     if (this.snapshot.status !== 'ready' || this.snapshot.chatId !== request.chatId
@@ -1627,7 +1637,7 @@ export class BackendProcess {
 
   /** Consume the active Chat's exact preview once, with no permanent grant. */
   confirmWorkTool(request: WorkToolConfirmParams): Promise<WorkToolResultState> {
-    if (this.nativeWorkActive()) return Promise.reject(new Error('Wait for the current desktop action.'))
+    if (this.nativeActionActive()) return Promise.reject(new Error('Wait for the current desktop action.'))
     if (this.hasWorkPlanLease()) return Promise.reject(new Error('Finish or cancel the current Work plan first.'))
     if (this.snapshot.status !== 'ready' || this.snapshot.chatId !== request.chatId
       || !this.snapshot.capabilities.includes('work.confirm')) {
@@ -1730,7 +1740,7 @@ export class BackendProcess {
 
   /** Replace the current waiting call with a new pending suffix; no decision authorizes its write. */
   reviseWorkPlan(request: WorkPlanReviseParams): Promise<WorkPlanState> {
-    if (this.nativeWorkActive()) return Promise.reject(new Error('Wait for the current desktop action.'))
+    if (this.nativeActionActive()) return Promise.reject(new Error('Wait for the current desktop action.'))
     if (this.snapshot.status !== 'ready' || this.snapshot.chatId !== request.chatId
       || !this.snapshot.capabilities.includes('work.plan')) return Promise.reject(new Error('Work plans are unavailable for this Chat.'))
     const current = this.workPlans.get(request.chatId)
@@ -1759,7 +1769,7 @@ export class BackendProcess {
 
   /** Reserve one advertised transient failed read and prepare its exact pending suffix with a new plan ID. */
   retryWorkPlan(request: WorkPlanRetryParams): Promise<WorkPlanState> {
-    if (this.nativeWorkActive()) return Promise.reject(new Error('Wait for the current desktop action.'))
+    if (this.nativeActionActive()) return Promise.reject(new Error('Wait for the current desktop action.'))
     if (this.snapshot.status !== 'ready' || this.snapshot.chatId !== request.chatId
       || !this.snapshot.capabilities.includes('work.plan')) return Promise.reject(new Error('Work plans are unavailable for this Chat.'))
     if (this.hasWorkPlanLease() || this.hasActiveSpeechTurn() || [...this.pendingRequests.values()].some((pending) => (
@@ -1881,7 +1891,7 @@ export class BackendProcess {
   submitVoiceCapture(
     request: VoiceCaptureRequest,
   ): Promise<VoiceCaptureReceipt> {
-    if (this.nativeWorkActive()) return Promise.reject(new Error('Wait for the current desktop action.'))
+    if (this.nativeActionActive()) return Promise.reject(new Error('Wait for the current desktop action.'))
     if (this.snapshot.status !== 'ready') {
       return Promise.reject(new Error('Python Backend is not ready.'))
     }
@@ -1934,7 +1944,7 @@ export class BackendProcess {
   beginVoiceTranscription(
     request: VoiceTranscriptionRequest,
   ): { requestId: string } {
-    if (this.nativeWorkActive()) throw new Error('Wait for the current desktop action.')
+    if (this.nativeActionActive()) throw new Error('Wait for the current desktop action.')
     if (this.snapshot.status !== 'ready') {
       throw new Error('Python Backend is not ready.')
     }
@@ -2340,7 +2350,7 @@ export class BackendProcess {
     method: 'work.workspace.get' | 'work.workspace.bind',
     params: WorkWorkspaceGetParams | WorkWorkspaceBindParams,
   ): Promise<WorkWorkspaceState> {
-    if (method === 'work.workspace.bind' && this.nativeWorkActive()) return Promise.reject(new Error('Wait for the current desktop action.'))
+    if (method === 'work.workspace.bind' && this.nativeActionActive()) return Promise.reject(new Error('Wait for the current desktop action.'))
     if (method === 'work.workspace.bind' && this.hasWorkPlanLease()) {
       return Promise.reject(new Error('Finish or cancel the current Work plan first.'))
     }
@@ -2462,6 +2472,7 @@ export class BackendProcess {
     method: Method,
     params: RequestParamsByMethod[Method],
   ): Promise<AttachmentState> {
+    if (method !== 'attachment.list' && this.nativeActionActive()) return Promise.reject(new Error('Wait for the current desktop action.'))
     if (this.snapshot.status !== 'ready') {
       return Promise.reject(new Error('Python Backend is not ready.'))
     }
@@ -2512,7 +2523,7 @@ export class BackendProcess {
   }
 
   private assertWorkIdle(): void {
-    if (this.nativeWorkActive() || this.hasWorkPlanLease()
+    if (this.nativeActionActive() || this.hasWorkPlanLease()
       || [...this.pendingRequests.values()].some((pending) => WORK_ACTION_METHODS.has(pending.method))) {
       throw new Error('Wait for the current Work tool to finish.')
     }
@@ -2532,7 +2543,7 @@ export class BackendProcess {
   }
 
   private requestWorkPlan<Method extends WorkPlanMethod>(method: Method, params: RequestParamsByMethod[Method]): Promise<WorkPlanState> {
-    if (method !== 'work.plan.get' && this.nativeWorkActive()) return Promise.reject(new Error('Wait for the current desktop action.'))
+    if (method !== 'work.plan.get' && this.nativeActionActive()) return Promise.reject(new Error('Wait for the current desktop action.'))
     if (method !== 'work.plan.get' && this.workPlanReconciliations.has(params.chatId)) {
       return Promise.reject(new Error('Reload the Work plan before another action.'))
     }
@@ -3244,7 +3255,8 @@ export class BackendProcess {
         )
         return
       }
-      this.canonicalWorkChat = { chatId: result.activeChat.chatId, projectId: result.activeChat.projectId, mode: result.activeChat.mode }
+      this.canonicalWorkChat = { chatId: result.activeChat.chatId, projectId: result.activeChat.projectId,
+        mode: result.activeChat.mode, archived: result.activeChat.archived }
       this.updateSnapshot({
         chatId: result.activeChat.chatId,
         chatTitle: result.activeChat.title,
@@ -3270,7 +3282,8 @@ export class BackendProcess {
         return
       }
       this.canonicalWorkChat = { chatId: result.chatState.activeChat.chatId,
-        projectId: result.chatState.activeChat.projectId, mode: result.chatState.activeChat.mode }
+        projectId: result.chatState.activeChat.projectId, mode: result.chatState.activeChat.mode,
+        archived: result.chatState.activeChat.archived }
       this.updateSnapshot({
         chatId: result.chatState.activeChat.chatId,
         chatTitle: result.chatState.activeChat.title,
