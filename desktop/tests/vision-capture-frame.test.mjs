@@ -5,13 +5,17 @@ import vm from 'node:vm'
 import test from 'node:test'
 
 const script = await fs.readFile(new URL('../public/vision-capture-frame.js', import.meta.url), 'utf8')
-function fixture({ region = null, width = 100, height = 50, fail = null, audio = false } = {}) {
+function fixture({ region = null, width = 100, height = 50, fail = null, audio = false, singleFrameDuringPlay = false } = {}) {
   const events = [], calls = [], stopped = []
+  let firstFrameCallback = null
   const tracks = [{ stop: () => { stopped.push(true); events.push('stop') } }]
   const stream = { getTracks: () => tracks, getAudioTracks: () => audio ? tracks : [], getVideoTracks: () => tracks }
   const video = { videoWidth: width, videoHeight: height, muted: false, srcObject: null,
-    play: async () => { if (fail === 'play') throw new Error('native-secret') }, pause: () => events.push('pause'),
-    requestVideoFrameCallback: callback => { callback(); return 1 } }
+    play: async () => {
+      if (fail === 'play') throw new Error('native-secret')
+      if (singleFrameDuringPlay) { events.push('first-frame'); firstFrameCallback?.() }
+    }, pause: () => events.push('pause'),
+    requestVideoFrameCallback: callback => { if (singleFrameDuringPlay) firstFrameCallback = callback; else callback(); return 1 } }
   const canvas = { width: 0, height: 0,
     getContext: () => fail === 'canvas' ? null : { drawImage: (...arguments_) => calls.push(arguments_) },
     toBlob: callback => callback(fail === 'blob' ? null : { size: 64, arrayBuffer: async () => new Uint8Array(64).fill(8).buffer }) }
@@ -34,6 +38,18 @@ test('One full-source frame stops every track before sending pixels and never re
   assert.deepEqual(f.events, ['capture', 'stop', 'pause', 'finish'])
   assert.equal(f.calls.at(-1).frame.width, 100); assert.equal(f.calls.at(-1).frame.height, 50)
   await f.context.elysiaCaptureStart()
+  assert.equal(f.events.filter(event => event === 'capture').length, 1)
+})
+
+test('A static source delivering its only frame during play completes without waiting for a second frame', async () => {
+  const f = fixture({ singleFrameDuringPlay: true })
+  const running = f.context.elysiaCaptureStart()
+  // This source never emits another frame: registering after play would leave
+  // the helper waiting forever, even though its first frame is already decoded.
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(f.events.at(-1), 'finish', 'The first submitted frame must be observed before play resolves.')
+  await running
+  assert.deepEqual(f.events, ['capture', 'first-frame', 'stop', 'pause', 'finish'])
   assert.equal(f.events.filter(event => event === 'capture').length, 1)
 })
 

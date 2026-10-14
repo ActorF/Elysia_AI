@@ -34,7 +34,11 @@
       if (stream.getAudioTracks().length !== 0 || stream.getVideoTracks().length !== 1) throw new Error('unavailable')
       video = document.createElement('video')
       video.muted = true; video.srcObject = stream
-      await video.play(); await frame(video)
+      // A static window may submit its only frame while play is resolving.
+      // Register first: requesting a callback afterward can wait indefinitely
+      // for a second composition frame that this source never produces.
+      const firstFrame = frame(video)
+      await video.play(); await firstFrame
       const width = video.videoWidth, height = video.videoHeight
       if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width < 1 || height < 1
         || width > 8192 || height > 8192 || width * height > 16 * 1024 * 1024) throw new Error('invalid_image')

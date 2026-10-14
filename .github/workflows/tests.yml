@@ -113,7 +113,7 @@ jobs:
         working-directory: desktop
         env:
           ELYSIA_CAPTURE_TEST_SHORT_PATH: "1"
-        run: node --test tests/vision-image-native.test.mjs tests/vision-capture-synthetic.test.mjs
+        run: node --test --test-concurrency=1 tests/vision-image-native.test.mjs tests/vision-capture-synthetic.test.mjs
 
       - name: Verify packaged Vision capture helper
         working-directory: desktop

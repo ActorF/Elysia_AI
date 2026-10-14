@@ -31,7 +31,7 @@ test('Synthetic capture color check accepts the observed Windows CI tint and rej
 test('Windows Electron source or explicitly selected ASAR helper captures only the synthetic window and destroys its WebContents',
   // The product's Windows runtime is validated here. Linux capture under Xvfb
   // has not been established; portable owner/frame/permission tests run there.
-  { timeout: 30000, skip: process.platform !== 'win32' ? 'Native capture smoke requires the validated Windows desktop runtime.' : false }, async () => {
+  { timeout: 60000, skip: process.platform !== 'win32' ? 'Native capture smoke requires the validated Windows desktop runtime.' : false }, async () => {
     const folder = await fs.mkdtemp(path.join(os.tmpdir(), 'elysia-capture-synthetic-test-'))
     try {
       const packaged = process.env.ELYSIA_CAPTURE_PACKAGE_ASAR
@@ -80,7 +80,7 @@ test('Windows Electron source or explicitly selected ASAR helper captures only t
         assert.equal(await fs.realpath(helperDirectory), await fs.realpath(folder))
       }
       const adapterOptions = packaged === undefined ? { helperDocumentPath: path.join(helperDirectory, 'vision-capture.html'),
-        preloadPath: path.join(helperDirectory, 'vision-capture-preload.cjs'), timeoutMs: 10000 } : {}
+        preloadPath: path.join(helperDirectory, 'vision-capture-preload.cjs') } : {}
       await fs.writeFile(entry, `/** Verify one-frame capture of this process's own synthetic window. */
 const { app, BrowserWindow, nativeImage } = require('electron');
 app.setPath('userData', ${JSON.stringify(path.join(folder, 'userData'))});
@@ -110,6 +110,9 @@ app.whenReady().then(async () => {
       webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false } });
     await fixture.loadFile(${JSON.stringify(fixturePath)});
     fixture.showInactive();
+    // Wait for this app-owned fixture's paint cycles without capturing pixels
+    // or generating extra stream frames that could hide a first-frame defect.
+    await fixture.webContents.executeJavaScript('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
     const { createVisionCaptureNative } = await import(${JSON.stringify(adapterLocation)});
     const native = createVisionCaptureNative(${JSON.stringify(adapterOptions)});
     const matches = (await native.listSources()).filter(item => item.kind === 'window' && item.label === ${JSON.stringify(title)});
@@ -135,7 +138,10 @@ app.whenReady().then(async () => {
       const result = await new Promise((resolve, reject) => {
         const child = spawn(require('electron'), args, { env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
         let stdout = '', stderr = ''
-        const timer = setTimeout(() => child.kill(), 20000)
+        // The actual adapter keeps its production 20-second frame deadline.
+        // This process bound additionally covers Electron startup, the fixture
+        // paint and source enumeration, and physical helper destruction.
+        const timer = setTimeout(() => child.kill(), 40000)
         child.stdout.on('data', bytes => { stdout += bytes.toString('utf8'); if (stdout.length > 16384) child.kill() })
         child.stderr.on('data', bytes => { stderr += bytes.toString('utf8'); if (stderr.length > 16384) child.kill() })
         child.once('error', error => { clearTimeout(timer); reject(error) })
