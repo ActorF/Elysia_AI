@@ -13,6 +13,21 @@ import ts from 'typescript'
 const desktop = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const require = createRequire(import.meta.url)
 
+// This is a capture/lifecycle smoke, not a color-fidelity test. Windows CI
+// produced opaque BGRA [1,26,255,255] from the fixture's CSS red background;
+// allow compositor/video color changes while still requiring a bright red
+// channel and low blue/green channels, excluding black, white and other primaries.
+function dominantRed(pixel) {
+  return pixel.length === 4 && pixel[2] >= 224 && pixel[0] <= 64 && pixel[1] <= 64 && pixel[3] >= 250
+}
+
+test('Synthetic capture color check accepts the observed Windows CI tint and rejects unrelated or transparent pixels', () => {
+  assert.equal(dominantRed([0, 0, 255, 255]), true)
+  assert.equal(dominantRed([1, 26, 255, 255]), true)
+  for (const pixel of [[0, 0, 0, 255], [255, 255, 255, 255], [255, 0, 0, 255],
+    [0, 255, 0, 255], [1, 26, 255, 0], [0, 0, 255]]) assert.equal(dominantRed(pixel), false)
+})
+
 test('Windows Electron source or explicitly selected ASAR helper captures only the synthetic window and destroys its WebContents',
   // The product's Windows runtime is validated here. Linux capture under Xvfb
   // has not been established; portable owner/frame/permission tests run there.
@@ -97,16 +112,17 @@ app.whenReady().then(async () => {
     fixture.showInactive();
     const { createVisionCaptureNative } = await import(${JSON.stringify(adapterLocation)});
     const native = createVisionCaptureNative(${JSON.stringify(adapterOptions)});
-    const source = (await native.listSources()).find(item => item.kind === 'window' && item.label === ${JSON.stringify(title)});
-    if (!source) throw new Error('Synthetic fixture is unavailable; no other source may be captured.');
+    const matches = (await native.listSources()).filter(item => item.kind === 'window' && item.label === ${JSON.stringify(title)});
+    if (matches.length !== 1) throw new Error('The unique synthetic fixture is unavailable; no other source may be captured.');
+    const source = matches[0];
     const captured = await native.captureFrame(source, null, new AbortController().signal, () => true);
     const decoded = nativeImage.createFromBuffer(captured.pngBytes);
     const size = decoded.getSize();
     const bitmap = decoded.toBitmap();
     const center = (Math.floor(size.height / 2) * size.width + Math.floor(size.width / 2)) * 4;
-    // Native video color-space conversion can round a zero channel to one.
-    if (size.width < 200 || size.height < 200 || bitmap[center] > 5 || bitmap[center + 1] > 5 || bitmap[center + 2] < 250)
-      throw new Error('Synthetic window pixels were not preserved:' + JSON.stringify({ size, center: [...bitmap.subarray(center, center + 4)] }));
+    const hasDominantRed = ${dominantRed.toString()};
+    if (size.width < 200 || size.height < 200 || !hasDominantRed(bitmap.subarray(center, center + 4)))
+      throw new Error('Synthetic window capture did not contain the expected dominant red:' + JSON.stringify({ size, center: [...bitmap.subarray(center, center + 4)] }));
     if (BrowserWindow.getAllWindows().length !== 1) throw new Error('The native capture helper did not drain.');
     console.log('VISION_CAPTURE_SYNTHETIC_OK');
     successful = true;
