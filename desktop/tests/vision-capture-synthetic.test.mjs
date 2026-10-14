@@ -1,42 +1,71 @@
 /** Exercise the actual private Electron capture helper against only its own uniquely named synthetic window, never a display or user window. */
 
 import assert from 'node:assert/strict'
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import test from 'node:test'
 import ts from 'typescript'
 
 const desktop = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const require = createRequire(import.meta.url)
 
-test('Windows Electron one-frame helper captures only the synthetic window, stops tracks, and destroys its WebContents',
+test('Windows Electron source or explicitly selected ASAR helper captures only the synthetic window and destroys its WebContents',
   // The product's Windows runtime is validated here. Linux capture under Xvfb
   // has not been established; portable owner/frame/permission tests run there.
   { timeout: 30000, skip: process.platform !== 'win32' ? 'Native capture smoke requires the validated Windows desktop runtime.' : false }, async () => {
     const folder = await fs.mkdtemp(path.join(os.tmpdir(), 'elysia-capture-synthetic-test-'))
     try {
-      await fs.writeFile(path.join(folder, 'package.json'), '{"type":"module"}')
-      for (const name of ['vision-capture-native', 'vision-capture', 'vision-capture-protocol', 'vision-protocol', 'protocol-text']) {
-        const code = await fs.readFile(path.join(desktop, 'electron', `${name}.ts`), 'utf8')
-        await fs.writeFile(path.join(folder, `${name}.js`), ts.transpileModule(code,
-          { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText)
+      const packaged = process.env.ELYSIA_CAPTURE_PACKAGE_ASAR
+      if (packaged !== undefined) {
+        // A package test must name the freshly built ASAR explicitly. Falling
+        // back to an arbitrary old output would give misleading source-only
+        // evidence while never testing the packaged HTML/preload resource paths.
+        assert.equal(path.isAbsolute(packaged), true, 'The capture package fixture must be an absolute ASAR path.')
+        assert.equal(path.extname(packaged).toLowerCase(), '.asar')
+        const details = await fs.lstat(packaged, { bigint: true })
+        assert.equal(details.isFile() && !details.isSymbolicLink() && details.nlink === 1n, true)
       }
-      const preload = path.join(folder, 'vision-capture-preload.cjs')
-      await fs.writeFile(preload, ts.transpileModule(await fs.readFile(path.join(desktop, 'electron', 'vision-capture-preload.cts'), 'utf8'),
-        { fileName: 'vision-capture-preload.cts', compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText)
+      await fs.writeFile(path.join(folder, 'package.json'), '{"type":"module"}')
+      if (packaged === undefined) {
+        for (const name of ['vision-capture-native', 'vision-capture', 'vision-capture-protocol', 'vision-protocol', 'protocol-text']) {
+          const code = await fs.readFile(path.join(desktop, 'electron', `${name}.ts`), 'utf8')
+          await fs.writeFile(path.join(folder, `${name}.js`), ts.transpileModule(code,
+            { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText)
+        }
+        const preload = path.join(folder, 'vision-capture-preload.cjs')
+        await fs.writeFile(preload, ts.transpileModule(await fs.readFile(path.join(desktop, 'electron', 'vision-capture-preload.cts'), 'utf8'),
+          { fileName: 'vision-capture-preload.cts', compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText)
+        const helperPath = path.join(folder, 'vision-capture.html')
+        await fs.copyFile(path.join(desktop, 'public', 'vision-capture.html'), helperPath)
+        const helperCode = await fs.readFile(path.join(desktop, 'public', 'vision-capture-frame.js'), 'utf8')
+        await fs.writeFile(path.join(folder, 'vision-capture-frame.js'), process.env.ELYSIA_CAPTURE_TEST_TRACE === '1'
+          ? helperCode.replace('} catch { result = null }', '} catch(error) { console.log("CAPTURE_TEST:" + error.name + ":" + error.message); result = null }') : helperCode)
+      }
       const fixturePath = path.join(folder, 'synthetic.html')
       const title = `Elysia Capture Fixture ${path.basename(folder)}`
       await fs.writeFile(fixturePath, `<!doctype html><!-- Synthetic pixels only; never capture another window. --><html><head><title>${title}</title><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'"></head><body style="margin:0;background:rgb(255,0,0)">Synthetic window only</body></html>`)
       const entry = path.join(folder, 'fixture.cjs')
-      const helperPath = path.join(folder, 'vision-capture.html')
-      await fs.copyFile(path.join(desktop, 'public', 'vision-capture.html'), helperPath)
-      const helperCode = await fs.readFile(path.join(desktop, 'public', 'vision-capture-frame.js'), 'utf8')
-      await fs.writeFile(path.join(folder, 'vision-capture-frame.js'), process.env.ELYSIA_CAPTURE_TEST_TRACE === '1'
-        ? helperCode.replace('} catch { result = null }', '} catch(error) { console.log("CAPTURE_TEST:" + error.name + ":" + error.message); result = null }') : helperCode)
+      const adapterLocation = packaged === undefined ? './vision-capture-native.js'
+        : pathToFileURL(path.join(packaged, 'dist-electron', 'vision-capture-native.js')).href
+      let helperDirectory = folder
+      if (packaged === undefined && process.env.ELYSIA_CAPTURE_TEST_SHORT_PATH === '1') {
+        // Resolve only this verified temporary fixture's DOS directory alias.
+        // The fixed PowerShell command receives its path as data via a scoped
+        // environment variable, so no path is interpolated into shell code.
+        const resolved = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+          '(New-Object -ComObject Scripting.FileSystemObject).GetFolder($env:ELYSIA_CAPTURE_SHORT_PATH_DIR).ShortPath'],
+        { env: { ...process.env, ELYSIA_CAPTURE_SHORT_PATH_DIR: folder }, encoding: 'utf8', windowsHide: true, timeout: 10000 })
+        assert.equal(resolved.status, 0, 'Could not obtain the synthetic fixture directory alias.')
+        helperDirectory = resolved.stdout.trim()
+        assert.match(helperDirectory, /~/u, 'The explicit short-path regression requires a real DOS alias.')
+        assert.equal(await fs.realpath(helperDirectory), await fs.realpath(folder))
+      }
+      const adapterOptions = packaged === undefined ? { helperDocumentPath: path.join(helperDirectory, 'vision-capture.html'),
+        preloadPath: path.join(helperDirectory, 'vision-capture-preload.cjs'), timeoutMs: 10000 } : {}
       await fs.writeFile(entry, `/** Verify one-frame capture of this process's own synthetic window. */
 const { app, BrowserWindow, nativeImage } = require('electron');
 app.setPath('userData', ${JSON.stringify(path.join(folder, 'userData'))});
@@ -66,9 +95,8 @@ app.whenReady().then(async () => {
       webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false } });
     await fixture.loadFile(${JSON.stringify(fixturePath)});
     fixture.showInactive();
-    const { createVisionCaptureNative } = await import('./vision-capture-native.js');
-    const native = createVisionCaptureNative({ helperDocumentPath: ${JSON.stringify(helperPath)},
-      preloadPath: ${JSON.stringify(preload)}, timeoutMs: 10000 });
+    const { createVisionCaptureNative } = await import(${JSON.stringify(adapterLocation)});
+    const native = createVisionCaptureNative(${JSON.stringify(adapterOptions)});
     const source = (await native.listSources()).find(item => item.kind === 'window' && item.label === ${JSON.stringify(title)});
     if (!source) throw new Error('Synthetic fixture is unavailable; no other source may be captured.');
     const captured = await native.captureFrame(source, null, new AbortController().signal, () => true);

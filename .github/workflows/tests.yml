@@ -111,7 +111,15 @@ jobs:
 
       - name: Verify native Vision decoding and synthetic window capture
         working-directory: desktop
+        env:
+          ELYSIA_CAPTURE_TEST_SHORT_PATH: "1"
         run: node --test tests/vision-image-native.test.mjs tests/vision-capture-synthetic.test.mjs
+
+      - name: Verify packaged Vision capture helper
+        working-directory: desktop
+        env:
+          ELYSIA_CAPTURE_PACKAGE_ASAR: ${{ github.workspace }}\desktop\out\win-unpacked\resources\app.asar
+        run: node --test tests/vision-capture-synthetic.test.mjs
 
       - name: Capture ASAR file listing
         working-directory: desktop

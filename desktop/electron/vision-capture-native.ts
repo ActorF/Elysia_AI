@@ -12,7 +12,7 @@
  */
 
 import { createHash, randomUUID } from 'node:crypto'
-import { existsSync } from 'node:fs'
+import { existsSync, realpathSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { BrowserWindow, desktopCapturer, ipcMain, screen, session,
@@ -71,11 +71,24 @@ async function enumerate(): Promise<{ native: DesktopCapturerSource; source: Nat
 /** Construct inert fixed native callbacks; no desktop source enumeration or capture occurs until an explicit controller operation. */
 export function createVisionCaptureNative(options: VisionCaptureNativeOptions = {}): VisionCaptureNativeAdapter {
   const packaged = fileURLToPath(new URL('../dist/vision-capture.html', import.meta.url))
-  const documentPath = options.helperDocumentPath ?? (existsSync(packaged) ? packaged : fileURLToPath(new URL('../public/vision-capture.html', import.meta.url)))
-  const preloadPath = options.preloadPath ?? fileURLToPath(new URL('./vision-capture-preload.cjs', import.meta.url))
+  const requestedDocument = options.helperDocumentPath ?? (existsSync(packaged) ? packaged : fileURLToPath(new URL('../public/vision-capture.html', import.meta.url)))
+  const requestedPreload = options.preloadPath ?? fileURLToPath(new URL('./vision-capture-preload.cjs', import.meta.url))
   const timeoutMs = options.timeoutMs ?? 20000
-  if (!path.isAbsolute(documentPath) || !path.isAbsolute(preloadPath) || !Number.isSafeInteger(timeoutMs)
+  if (!path.isAbsolute(requestedDocument) || !path.isAbsolute(requestedPreload) || !Number.isSafeInteger(timeoutMs)
     || timeoutMs < 1 || timeoutMs > 20000) throw new TypeError('Vision capture native configuration is invalid.')
+  // Chromium expands Windows DOS short names while resolving local files.
+  // Canonicalize the trusted app artifacts BEFORE deriving either their exact
+  // allowlist URLs or loadFile paths; otherwise RUNNER~1/TEMP aliases make the
+  // helper block its own document or fail its frame-bound IPC validation.
+  // The native resolver expands DOS aliases; the ordinary JS resolver can
+  // preserve them even when the path addresses the same existing artifact.
+  // No additional file, directory prefix, or URL becomes permitted.
+  let documentPath: string, preloadPath: string, scriptPath: string
+  try {
+    documentPath = realpathSync.native(requestedDocument)
+    preloadPath = realpathSync.native(requestedPreload)
+    scriptPath = realpathSync.native(path.join(path.dirname(documentPath), 'vision-capture-frame.js'))
+  } catch { throw new VisionCaptureError('unavailable') }
 
   return {
     listSources: async () => (await enumerate()).map(item => item.source),
@@ -86,7 +99,7 @@ export function createVisionCaptureNative(options: VisionCaptureNativeOptions = 
       const job = randomUUID().replaceAll('-', '')
       const prefix = `vision-capture-private:${job}:`
       const documentUrl = pathToFileURL(documentPath).href
-      const scriptUrl = pathToFileURL(path.join(path.dirname(documentPath), 'vision-capture-frame.js')).href
+      const scriptUrl = pathToFileURL(scriptPath).href
       nativeLease = true
       let privateSession: Electron.Session, helper: BrowserWindow
       try {
