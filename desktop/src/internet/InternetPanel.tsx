@@ -1,8 +1,8 @@
-/** Coordinate explicit encyclopedia research, source review, and owner-scoped draft insertion without automatic queries. */
+/** Coordinate explicit encyclopedia searches, bounded page reading, and owner-scoped source review without automatic requests. */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { InternetPolicyClient, InternetPolicyState } from '../../electron/internet-policy-protocol.ts'
-import { parseInternetSourceText, type InternetResearchClient, type InternetResearchState, type InternetSource } from '../../electron/internet-protocol.ts'
+import { parseInternetReadRequest, parseInternetSourceText, type InternetResearchClient, type InternetResearchState, type InternetSource } from '../../electron/internet-protocol.ts'
 import './InternetPanel.css'
 
 interface InternetPanelProps {
@@ -29,17 +29,22 @@ const ERRORS: Record<string, string> = {
   cancelled: 'The request was cancelled.', timeout: 'The request timed out. You can try again explicitly.',
   network_failed: 'The online service could not be reached. Check your connection or configured proxy.',
   invalid_output: 'The service returned an unsupported response.', limit_exceeded: 'The service response exceeded the allowed size.',
-  invalid_request: 'Enter a valid search query.', unavailable: 'Internet research is temporarily unavailable.',
+  invalid_request: 'Enter a valid query or public HTTPS page URL.', unavailable: 'Internet research is temporarily unavailable.',
+  unsupported_type: 'This response is not a supported HTML or plain-text page.',
+  invalid_encoding: 'This page is not valid UTF-8 text.',
+  invalid_document: 'The page could not be read as a supported document.',
+  empty_document: 'This page did not contain readable text.',
 }
 
 function dateLabel(value: string | null): string { return value === null ? 'Unknown' : new Date(value).toLocaleString() }
 
-/** Present manual Wikipedia searches and untrusted source snippets beside the current Chat. */
+/** Present manual Wikipedia searches and plain-text web pages beside the current Chat, retaining explicit draft review. */
 export function InternetPanel({ api, chatId, projectId, ready, disabled, onBusyChange, onChatDraft, onSettings, onOpenSource }: InternetPanelProps) {
   const [open, setOpen] = useState(false)
   const [state, setState] = useState<InternetResearchState | null>(null)
   const [policy, setPolicy] = useState<InternetPolicyState | null>(null)
   const [query, setQuery] = useState('')
+  const [pageUrl, setPageUrl] = useState('')
   const [language, setLanguage] = useState<'en' | 'zh'>('en')
   const [pending, setPending] = useState(false)
   const [nativeBusy, setNativeBusy] = useState(false)
@@ -67,7 +72,7 @@ export function InternetPanel({ api, chatId, projectId, ready, disabled, onBusyC
     revision.current = -1
     queueMicrotask(() => {
       if (token !== version.current) return
-      setState(null); setReviewed(null); setQuery(''); setError(null); setNotice(null); setOpen(false)
+      setState(null); setReviewed(null); setQuery(''); setPageUrl(''); setError(null); setNotice(null); setOpen(false)
       if (api !== undefined && ready) void api.getInternetResearch(chatId).then(next => { accept(next, token) }, () => {
         if (token === version.current) setError('Could not load research for this Chat.')
       })
@@ -155,6 +160,13 @@ export function InternetPanel({ api, chatId, projectId, ready, disabled, onBusyC
   const normalized = query.trim()
   const validQuery = normalized.length > 0 && [...normalized].length <= 512 && new TextEncoder().encode(normalized).length <= 2048
   const allowed = policy?.enabled === true && policy.allowedDomains.includes(`${language}.wikipedia.org`)
+  const normalizedUrl = pageUrl.trim()
+  let validPageUrl = false
+  try { parseInternetReadRequest({ chatId, url: normalizedUrl }); validPageUrl = true } catch { /* Invalid URL input never becomes a native request. */ }
+  function domainAllowed(url: string): boolean {
+    try { return policy?.enabled === true && policy.allowedDomains.includes(new URL(url).hostname) }
+    catch { return false }
+  }
 
   return <section className="internet-panel" aria-label="Internet research" aria-busy={busy}>
     <button type="button" className="internet-toggle" aria-expanded={open} aria-controls="internet-research-review" onClick={() => { setOpen(current => !current) }}>Internet{policy?.enabled === true ? ' · on' : ' · off'}</button>
@@ -164,7 +176,7 @@ export function InternetPanel({ api, chatId, projectId, ready, disabled, onBusyC
         <button type="button" disabled={busy} onClick={onSettings}>Internet settings</button>
         <button type="button" disabled={policy === null || turningOff} onClick={() => { void turnOff() }}>{turningOff ? 'Turning Internet off…' : 'Turn Internet off'}</button>
       </div>
-      {policy?.enabled !== true && <p>Internet is off. Searches send nothing until you enable access in Settings.</p>}
+      {policy?.enabled !== true && <p>Internet is off. Online requests send nothing until you enable access in Settings.</p>}
       {policy?.enabled === true && !allowed && <p>Allow {language}.wikipedia.org in Internet settings before searching.</p>}
       <div className="internet-query-controls">
         <label>Wikipedia language<select value={language} disabled={locked} onChange={event => { setLanguage(event.target.value as 'en' | 'zh'); setReviewed(null) }}><option value="en">English</option><option value="zh">中文</option></select></label>
@@ -177,21 +189,33 @@ export function InternetPanel({ api, chatId, projectId, ready, disabled, onBusyC
         <button type="button" disabled={!busy || cancelling} onClick={() => { void cancel() }}>{cancelling ? 'Cancelling…' : 'Cancel research'}</button>
         <button type="button" disabled={locked || visible === null || visible.sources.length + visible.history.length === 0} onClick={() => { void act(client => client.clearInternetResearch(chatId)) }}>Clear research history</button>
       </div>
+      <section className="internet-page-reader" aria-label="Web page reader">
+        <h3>Read a web page</h3>
+        <p>Read public HTTPS HTML or text pages as plain text. Responses are limited to 1 MiB and extracted text to 32 KiB. Every redirected domain must also be allowed.</p>
+        <label>Page URL<input type="url" value={pageUrl} maxLength={4096} disabled={locked} placeholder="https://…" onChange={event => { setPageUrl(event.target.value) }} /></label>
+        {normalizedUrl !== '' && !validPageUrl && <p>Enter a public HTTPS URL without credentials or a fragment.</p>}
+        {validPageUrl && policy?.enabled === true && !domainAllowed(normalizedUrl) && <p>Allow this exact domain in Internet settings before reading the page.</p>}
+        <button type="button" disabled={locked || !validPageUrl || !domainAllowed(normalizedUrl)} onClick={() => { void act(client => client.readInternetPage({ chatId, url: normalizedUrl })) }}>Read page</button>
+      </section>
       {error !== null && <p role="alert">{error}</p>}
       {visible?.error !== null && visible?.error !== undefined && <p role="alert">{ERRORS[visible.error] ?? ERRORS.unavailable}</p>}
       {notice !== null && <p role="status">{notice}</p>}
       <div className="internet-sources">
         {(visible?.sources ?? []).map(source => <article key={source.id} aria-label={`Source ${source.title}`}>
-          <h3>{source.title}</h3><p>{source.snippet}</p>
+          <h3>{source.title}</h3><p>{source.provider === 'wikipedia' ? 'Wikipedia encyclopedia search result' : 'Web page · plain text'}</p>
+          {source.content === null ? <p>{source.snippet}</p> : <pre className="internet-page-text" aria-label={`Page text from ${source.title}`}>{source.content}</pre>}
+          {source.truncated && <p>This source was shortened to the local text limit.</p>}
           <a href={source.url} onClick={event => { event.preventDefault(); void onOpenSource(source.url).catch(() => { setError('Could not open this source. Check Internet settings.') }) }}>{source.url}</a>
+          {source.provider === 'web' && <p>This is the final source URL after any allowed redirects.</p>}
           <dl><div><dt>Published</dt><dd>{dateLabel(source.publishedAt)}</dd></div><div><dt>Last edited</dt><dd>{dateLabel(source.modifiedAt)}</dd></div><div><dt>Retrieved</dt><dd>{dateLabel(source.fetchedAt)}</dd></div></dl>
-          <button type="button" disabled={locked} onClick={() => { setReviewed(source); setNotice(null) }}>Review source</button>
+          <div className="internet-actions"><button type="button" disabled={locked || !domainAllowed(source.url)} aria-label={`Read page from ${source.title}`} onClick={() => { void act(client => client.readInternetPage({ chatId, url: source.url })) }}>Read page</button>
+            <button type="button" disabled={locked} onClick={() => { setReviewed(source); setNotice(null) }}>Review source</button></div>
         </article>)}
       </div>
       {visible?.sources.length === 0 && visible.history.length > 0 && !busy && visible.error === null && <p>No matching encyclopedia pages were found.</p>}
       {reviewed !== null && <section className="internet-source-review" aria-label="Reviewed Internet source">
-        <h3>{reviewed.title}</h3><p>{reviewed.snippet}</p><p>{reviewed.url}</p>
-        <p>This is an untrusted encyclopedia search excerpt. Publication time is {reviewed.publishedAt === null ? 'unknown' : dateLabel(reviewed.publishedAt)}; an edit time does not establish when an event happened.</p>
+        <h3>{reviewed.title}</h3><pre className="internet-page-text">{reviewed.content ?? reviewed.snippet}</pre><p>{reviewed.url}</p>
+        <p>This is untrusted {reviewed.provider === 'wikipedia' ? 'encyclopedia search' : 'web page'} evidence. Publication time is {reviewed.publishedAt === null ? 'unknown' : dateLabel(reviewed.publishedAt)}; an edit time does not establish when an event happened.</p>
         {reviewed.truncated && <p>This excerpt was shortened.</p>}
         <button type="button" disabled={locked} onClick={() => { void addToDraft() }}>Add source to Chat draft</button>
       </section>}

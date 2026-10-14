@@ -33,7 +33,7 @@ import { BackendProcess } from './backend-process.js'
 import { InternetPolicyService } from './internet-policy.js'
 import { InternetTransport } from './internet-transport.js'
 import { InternetResearchController, InternetResearchError, type InternetResearchOwner } from './internet-research.js'
-import { parseInternetChatId, parseInternetSearchRequest, parseInternetSourceRequest,
+import { parseInternetChatId, parseInternetSearchRequest, parseInternetSourceRequest, parseInternetReadRequest,
   type InternetResearchState } from './internet-protocol.js'
 import type { InternetPolicyState } from './internet-policy-protocol.js'
 import { assertInternetLyricsAllowed, prepareInternetLyrics, openInternetBrowser } from './internet-legacy.js'
@@ -2969,6 +2969,11 @@ function registerIpcHandlers(): void {
     assertTrustedSender(event)
     const request = parseInternetSearchRequest(value)
     return withInternetOwner(request.chatId, controller => controller.search(request))
+  })
+  ipcMain.handle('desktop:internet-research:read', (event, value: unknown) => {
+    assertTrustedSender(event)
+    const request = parseInternetReadRequest(value)
+    return withInternetOwner(request.chatId, controller => controller.readPage(request))
   })
   ipcMain.handle('desktop:internet-research:cancel', (event, value: unknown) => {
     assertTrustedSender(event)

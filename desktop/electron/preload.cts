@@ -4,7 +4,7 @@
 
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { InternetPolicyState, UpdateInternetPolicyRequest } from './internet-policy-protocol.js'
-import type { InternetResearchState, InternetSearchRequest, InternetSourceRequest, InternetSourceText } from './internet-protocol.js'
+import type { InternetResearchState, InternetSearchRequest, InternetReadRequest, InternetSourceRequest, InternetSourceText } from './internet-protocol.js'
 import type { VisionState, VisionSelectionResult, VisionRemoveRequest } from './vision-protocol.js'
 import type { VisionAnalysisState, VisionOcrRequest, VisionModelRequest } from './vision-analysis-protocol.js'
 import type { VisionCaptureSources, VisionCaptureStatus, VisionCapturePrepareRequest, VisionCaptureConfirmRequest, VisionCaptureApproval } from './vision-capture-protocol.js'
@@ -825,6 +825,7 @@ const desktopApi: DesktopApi = {
   getInternetResearch: (chatId: string) => ipcRenderer.invoke('desktop:internet-research:get', chatId) as Promise<InternetResearchState>,
   getInternetResearchActivity: (chatId: string) => ipcRenderer.invoke('desktop:internet-research:activity', chatId) as Promise<{ busy: boolean }>,
   searchInternet: (request: InternetSearchRequest) => ipcRenderer.invoke('desktop:internet-research:search', request) as Promise<InternetResearchState>,
+  readInternetPage: (request: InternetReadRequest) => ipcRenderer.invoke('desktop:internet-research:read', request) as Promise<InternetResearchState>,
   cancelInternetResearch: (chatId: string) => ipcRenderer.invoke('desktop:internet-research:cancel', chatId) as Promise<InternetResearchState>,
   clearInternetResearch: (chatId: string) => ipcRenderer.invoke('desktop:internet-research:clear', chatId) as Promise<InternetResearchState>,
   getInternetSourceText: (request: InternetSourceRequest) => ipcRenderer.invoke('desktop:internet-research:source-text', request) as Promise<InternetSourceText>,

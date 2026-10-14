@@ -12,7 +12,7 @@ const names = ['hasActiveInternetWork', 'trackInternetOperation', 'withInternetO
 const selected = source.statements.filter(node => ts.isFunctionDeclaration(node) && names.includes(node.name?.text))
 assert.equal(selected.length, names.length)
 const register = source.statements.find(node => ts.isFunctionDeclaration(node) && node.name?.text === 'registerIpcHandlers')
-const channels = ['get', 'activity', 'search', 'cancel', 'clear', 'source-text'].map(name => `desktop:internet-research:${name}`)
+const channels = ['get', 'activity', 'search', 'read', 'cancel', 'clear', 'source-text'].map(name => `desktop:internet-research:${name}`)
 const handlers = register.body.statements.filter(node => ts.isExpressionStatement(node) && ts.isCallExpression(node.expression)
   && ts.isStringLiteral(node.expression.arguments[0]) && channels.includes(node.expression.arguments[0].text))
 assert.equal(handlers.length, channels.length)
@@ -27,6 +27,7 @@ function fixture() {
   const controller = { hasActiveWork: () => false, whenIdle: () => drain.promise,
     shutdown: () => calls.push('shutdown'), getState: () => ({ sources: [] }),
     search: request => { calls.push(request); return { sources: [] } },
+    readPage: request => { calls.push(request); return { sources: [] } },
     cancel: () => { calls.push('cancel'); return {} }, clear: () => ({}), sourceText: () => ({ text: 'native evidence' }) }
   const host = { module: { exports: {} }, internetRequests: new Set(), internetPolicyService: null,
     internetResearchGeneration: 0, internetResearchAdmission: null,
@@ -37,7 +38,7 @@ function fixture() {
     InternetResearchError: class extends Error { constructor(code) { super(code); this.code = code } },
     assertTrustedSender: event => { if (!event.trusted) throw new Error('Untrusted sender') },
     parseInternetChatId: value => { if (value !== 'chat_research') throw new Error('Invalid Chat'); return value },
-    parseInternetSearchRequest: value => value, parseInternetSourceRequest: value => value,
+    parseInternetSearchRequest: value => value, parseInternetSourceRequest: value => value, parseInternetReadRequest: value => value,
     ipcMain: { handle: (channel, callback) => callbacks.set(channel, callback) } }
   vm.runInNewContext(compiled, host, { timeout: 1000 })
   return { host, api: host.module.exports, calls, hydration, drain,
@@ -61,12 +62,21 @@ test('research reserves before canonical hydration and rejects another action in
 
 test('research rejects owner replacement after hydration and authenticates every exposed IPC', async () => {
   const f = fixture()
-  for (const name of ['get', 'activity', 'search', 'cancel', 'clear', 'source-text']) {
+  for (const name of ['get', 'activity', 'search', 'read', 'cancel', 'clear', 'source-text']) {
     assert.throws(() => f.invoke(name, {}, false), /Untrusted/u)
   }
   const pending = f.invoke('search', { chatId: 'chat_research' })
   f.hydration.resolve({ chatId: 'chat_other' })
   await assert.rejects(pending, /owner_changed/u)
+  assert.deepEqual(f.calls, [])
+})
+
+test('page reads use the same canonical admission and cannot resume after an Off and On cycle', async () => {
+  const f = fixture()
+  const pending = f.invoke('read', { chatId: 'chat_research', url: 'https://example.org/' })
+  f.host.requireInternetPolicy = () => ({ getState: () => ({ enabled: true, revision: 3 }) })
+  f.hydration.resolve({ chatId: 'chat_research' })
+  await assert.rejects(pending, /cancelled/u)
   assert.deepEqual(f.calls, [])
 })
 

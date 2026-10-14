@@ -3,10 +3,11 @@
 import { InternetPolicyError, type InternetPolicyLease, type InternetPolicyService } from './internet-policy.js'
 import { InternetTransportError, type InternetTransport } from './internet-transport.js'
 import { searchWikipedia, type InternetSearchResult } from './internet-search.js'
-import { formatInternetSource, parseInternetChatId, parseInternetResearchState, parseInternetSearchRequest,
+import { readInternetPage, InternetReaderError } from './internet-reader.js'
+import { formatInternetSource, parseInternetChatId, parseInternetResearchState, parseInternetSearchRequest, parseInternetReadRequest,
   parseInternetSource, parseInternetSourceRequest, type InternetResearchErrorCode, type InternetResearchScope,
   type InternetResearchState, type InternetQueryRecord, type InternetSearchRequest, type InternetSource,
-  type InternetSourceRequest, type InternetSourceText } from './internet-protocol.js'
+  type InternetSourceRequest, type InternetSourceText, type InternetReadRequest } from './internet-protocol.js'
 
 /** Supply canonical lifecycle facts; busy excludes this controller's own native reservations. */
 export interface InternetResearchOwner extends InternetResearchScope {
@@ -27,18 +28,21 @@ export interface InternetResearchDependencies {
   now?(): Date
   /** Test one physically drained provider callback without granting Renderer a generic fetch capability. */
   search?(request: InternetSearchRequest, signal: AbortSignal): Promise<InternetSearchResult>
+  /** Test a physically drained page extraction without opening a browser document. */
+  readPage?(url: string, signal: AbortSignal): Promise<InternetSource>
 }
 /** Preserve one safe public failure category without native or provider diagnostics. */
 export class InternetResearchError extends Error {
   /** Construct a fixed sanitized message for the isolated bridge. */
   constructor(readonly code: InternetResearchErrorCode) { super(`Internet research: ${code}.`) }
 }
-interface ActiveSearch {
+interface ActiveResearch {
   readonly owner: InternetResearchOwner
   readonly epoch: number
   readonly abort: AbortController
   readonly lease: InternetPolicyLease
 }
+interface ResearchResult { readonly sources: readonly InternetSource[]; readonly query?: InternetQueryRecord }
 function sameScope(left: InternetResearchScope, right: InternetResearchScope): boolean {
   return left.chatId === right.chatId && left.projectId === right.projectId
 }
@@ -47,6 +51,7 @@ function sameOwner(left: InternetResearchOwner, right: InternetResearchOwner): b
 }
 function safeFailure(error: unknown): InternetResearchErrorCode {
   if (error instanceof InternetResearchError) return error.code
+  if (error instanceof InternetReaderError) return error.code
   if (error instanceof InternetPolicyError) {
     return error.code === 'disabled' ? 'disabled' : error.code === 'cancelled' || error.code === 'policy_changed' ? 'cancelled' : 'unavailable'
   }
@@ -68,7 +73,7 @@ export class InternetResearchController {
   private sources: InternetSource[] = []
   private history: InternetQueryRecord[] = []
   private error: InternetResearchErrorCode | null = null
-  private active: ActiveSearch | null = null
+  private active: ActiveResearch | null = null
   private revision = 0
   private epoch = 0
   private closed = false
@@ -114,27 +119,47 @@ export class InternetResearchController {
   async search(value: InternetSearchRequest): Promise<InternetResearchState> {
     let request: InternetSearchRequest
     try { request = parseInternetSearchRequest(value) } catch { throw new InternetResearchError('invalid_request') }
-    const owner = this.authority(request.chatId, true), abort = new AbortController()
-    let lease: InternetPolicyLease
-    try { lease = this.dependencies.policy.acquire(abort.signal) }
-    catch (error) { throw new InternetResearchError(safeFailure(error)) }
-    const active: ActiveSearch = { owner: { ...owner }, epoch: this.epoch, abort, lease }
-    this.active = active; this.error = null; this.revision += 1; this.publish()
-    try {
-      this.recheck(active)
-      const result = await (this.dependencies.search?.(request, lease.signal)
-        ?? searchWikipedia(this.dependencies.transport, request, lease.signal))
-      this.recheck(active)
+    return this.perform(request.chatId, async signal => {
+      const result = await (this.dependencies.search?.(request, signal)
+        ?? searchWikipedia(this.dependencies.transport, request, signal))
       if (!Array.isArray(result.sources) || result.sources.length > 5) throw new TypeError('Internet results are invalid.')
       const sources = result.sources.map(parseInternetSource)
       if (sources.some(source => source.provider !== 'wikipedia' || new URL(source.url).hostname !== `${request.language}.wikipedia.org`
         || source.fetchedAt !== result.fetchedAt || source.content !== null || source.publishedAt !== null || source.fromCache)) {
         throw new TypeError('Internet search provenance is invalid.')
       }
-      const record: InternetQueryRecord = { query: request.query, language: request.language, fetchedAt: result.fetchedAt,
-        count: sources.length, status: 'complete' }
+      return { sources, query: { query: request.query, language: request.language, fetchedAt: result.fetchedAt,
+        count: sources.length, status: 'complete' } }
+    }, request)
+  }
+
+  /** Read one explicit page through shared native ownership; its plain text remains untrusted source evidence. */
+  async readPage(value: InternetReadRequest): Promise<InternetResearchState> {
+    let request: InternetReadRequest
+    try { request = parseInternetReadRequest(value) } catch { throw new InternetResearchError('invalid_request') }
+    return this.perform(request.chatId, async signal => {
+      const source = parseInternetSource(await (this.dependencies.readPage?.(request.url, signal)
+        ?? readInternetPage(this.dependencies.transport, request.url, signal)))
+      if (source.provider !== 'web' || source.content === null || source.fromCache) throw new TypeError('Internet page provenance is invalid.')
+      return { sources: [source] }
+    })
+  }
+
+  private async perform(chatId: string, operation: (signal: AbortSignal) => Promise<ResearchResult>,
+    query?: InternetSearchRequest): Promise<InternetResearchState> {
+    const owner = this.authority(chatId, true), abort = new AbortController()
+    let lease: InternetPolicyLease
+    try { lease = this.dependencies.policy.acquire(abort.signal) }
+    catch (error) { throw new InternetResearchError(safeFailure(error)) }
+    const active: ActiveResearch = { owner: { ...owner }, epoch: this.epoch, abort, lease }
+    this.active = active; this.error = null; this.revision += 1; this.publish()
+    try {
+      this.recheck(active)
+      const result = await operation(lease.signal)
+      this.recheck(active)
+      const sources = result.sources.map(parseInternetSource)
       const merged = [...sources, ...this.sources.filter(existing => !sources.some(source => source.url === existing.url))].slice(0, 10)
-      const history = [record, ...this.history].slice(0, 20)
+      const history = result.query === undefined ? this.history : [result.query, ...this.history].slice(0, 20)
       // Validate the whole detached snapshot before assigning any portion, so
       // malformed provider records cannot leave partially published evidence.
       const checked = parseInternetResearchState({ ...this.snapshot(owner), sources: merged, history })
@@ -145,10 +170,12 @@ export class InternetResearchController {
       if (!this.closed && active.epoch === this.epoch && current.ready && !current.archived && sameOwner(active.owner, current)
         && this.dependencies.policy.getState().enabled) {
         this.error = active.abort.signal.aborted || active.lease.signal.aborted ? 'cancelled' : safeFailure(error)
-        const at = (this.dependencies.now?.() ?? new Date()).toISOString()
-        const record: InternetQueryRecord = { query: request.query, language: request.language, fetchedAt: at, count: 0,
-          status: this.error === 'cancelled' ? 'cancelled' : 'error' }
-        this.history = [record, ...this.history].slice(0, 20)
+        if (query !== undefined) {
+          const at = (this.dependencies.now?.() ?? new Date()).toISOString()
+          const record: InternetQueryRecord = { query: query.query, language: query.language, fetchedAt: at, count: 0,
+            status: this.error === 'cancelled' ? 'cancelled' : 'error' }
+          this.history = [record, ...this.history].slice(0, 20)
+        }
       }
     } finally {
       // Logical revocation never frees capacity. The callback returning after
@@ -159,7 +186,7 @@ export class InternetResearchController {
       for (const resolve of this.idleWaiters) resolve()
       this.idleWaiters.clear()
     }
-    return this.getState(request.chatId)
+    return this.getState(chatId)
   }
 
   /** Request cancellation of the current operation while reporting truthful physical busy state. */
@@ -202,7 +229,7 @@ export class InternetResearchController {
     this.owner = { ...current }
     return { ...current }
   }
-  private recheck(active: ActiveSearch): void {
+  private recheck(active: ActiveResearch): void {
     this.synchronizeOwner()
     const current = this.dependencies.getOwner()
     active.lease.assertCurrent()

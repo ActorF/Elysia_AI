@@ -7,7 +7,9 @@ import test from 'node:test'
 import { InternetPolicyService } from '../dist-electron/internet-policy.js'
 import { InternetResearchController } from '../dist-electron/internet-research.js'
 import { parseWikipediaSearchResult, searchWikipedia } from '../dist-electron/internet-search.js'
-import { formatInternetSource, parseInternetResearchState, parseInternetSearchRequest, parseInternetSourceText } from '../dist-electron/internet-protocol.js'
+import { InternetReaderError } from '../dist-electron/internet-reader.js'
+import { formatInternetSource, parseInternetResearchState, parseInternetSearchRequest, parseInternetSourceText,
+  parseInternetReadRequest } from '../dist-electron/internet-protocol.js'
 
 const fetchedAt = '2026-10-14T18:30:00.000Z'
 const request = (query = 'Space telescope', language = 'en') => ({ chatId: 'chat_a', query, language })
@@ -27,14 +29,18 @@ async function fixture(t, options = {}) {
   if (options.enabled !== false) await policy.update({ expectedRevision: 0, enabled: true,
     allowedDomains: ['en.wikipedia.org', 'zh.wikipedia.org'], proxy: { mode: 'direct' }, timeoutMs: 15000 })
   const owner = { chatId: 'chat_a', projectId: null, mode: 'chat', archived: false, ready: true, busy: false }
-  const events = [], calls = []
+  const events = [], calls = [], readCalls = []
   const controller = new InternetResearchController({ policy, getOwner: () => owner, now: () => new Date(fetchedAt),
     transport: { read: async () => { throw new Error('unexpected generic transport') } },
     onState: state => { events.push(state) }, search: async (value, signal) => {
       calls.push({ value, signal })
       return options.search === undefined ? result(calls.length, value.language) : options.search(value, signal)
+    }, readPage: async (url, signal) => {
+      readCalls.push({ url, signal })
+      return options.readPage === undefined ? { ...result().sources[0], provider: 'web', url, content: 'Synthetic plain page text.' }
+        : options.readPage(url, signal)
     } })
-  return { policy, owner, controller, events, calls }
+  return { policy, owner, controller, events, calls, readCalls }
 }
 
 test('Closed search and source-draft contracts reject scope hints, unknown fields and forged evidence text', () => {
@@ -250,5 +256,79 @@ test('Renderer invalidation and shutdown retain the callback until drain and can
     await finish; await controller.whenIdle()
     assert.equal(policy.hasActiveWork(), false)
     if (!closed) assert.deepEqual(controller.getState('chat_a').sources, [])
+  }
+})
+
+test('Explicit page requests normalize HTTPS while rejecting paths, credentials, fragments and extra scope fields', () => {
+  assert.deepEqual(parseInternetReadRequest({ chatId: 'chat_a', url: 'https://en.wikipedia.org' }),
+    { chatId: 'chat_a', url: 'https://en.wikipedia.org/' })
+  for (const url of ['http://en.wikipedia.org/', 'file:///private', 'https://user:secret@en.wikipedia.org/',
+    'https://en.wikipedia.org:8443/', 'https://127.0.0.1/', 'https://en.wikipedia.org/#fragment', 'https://en.wikipedia.org\\x']) {
+    assert.throws(() => parseInternetReadRequest({ chatId: 'chat_a', url }), TypeError)
+  }
+  assert.throws(() => parseInternetReadRequest({ chatId: 'chat_a', url: 'https://en.wikipedia.org/', body: 'private' }), TypeError)
+})
+
+test('Page reading shares native admission and stores bounded web content with direct final provenance, without a synthetic search record', async t => {
+  const { controller, readCalls, policy } = await fixture(t)
+  const state = await controller.readPage({ chatId: 'chat_a', url: 'https://en.wikipedia.org/wiki/Telescope' })
+  assert.equal(readCalls.length, 1)
+  assert.equal(state.sources.length, 1)
+  assert.equal(state.sources[0].provider, 'web')
+  assert.equal(state.sources[0].content, 'Synthetic plain page text.')
+  assert.deepEqual(state.history, [])
+  const draft = controller.sourceText({ chatId: 'chat_a', sourceId: state.sources[0].id })
+  assert.match(draft.text, /"provider": "Web page"/u)
+  assert.match(draft.text, /Synthetic plain page text/u)
+  assert.equal(policy.hasActiveWork(), false)
+})
+
+test('Reading the same final URL replaces its source and opaque identity without growing the bounded collection', async t => {
+  const { controller } = await fixture(t)
+  const request = { chatId: 'chat_a', url: 'https://en.wikipedia.org/wiki/Telescope' }
+  const first = await controller.readPage(request)
+  const second = await controller.readPage(request)
+  assert.equal(second.sources.length, 1)
+  assert.notEqual(first.sources[0].id, second.sources[0].id)
+  assert.throws(() => controller.getSource('chat_a', first.sources[0].id), code('owner_changed'))
+})
+
+test('Off and competing work reject page reads before native extraction starts', async t => {
+  const off = await fixture(t, { enabled: false })
+  await assert.rejects(off.controller.readPage({ chatId: 'chat_a', url: 'https://en.wikipedia.org/' }), code('disabled'))
+  assert.equal(off.readCalls.length, 0)
+  const busy = await fixture(t)
+  busy.owner.busy = true
+  await assert.rejects(busy.controller.readPage({ chatId: 'chat_a', url: 'https://en.wikipedia.org/' }), code('busy'))
+  assert.equal(busy.readCalls.length, 0)
+})
+
+test('Reader-specific errors remain actionable closed categories and cannot become remote diagnostics or query history', async t => {
+  for (const expected of ['unsupported_type', 'invalid_encoding', 'invalid_document', 'empty_document']) {
+    const { controller } = await fixture(t, { readPage: async () => { throw new InternetReaderError(expected) } })
+    const state = await controller.readPage({ chatId: 'chat_a', url: 'https://en.wikipedia.org/' })
+    assert.equal(state.error, expected)
+    assert.deepEqual(state.sources, [])
+    assert.deepEqual(state.history, [])
+  }
+})
+
+test('Page callbacks use the same physical cancellation and owner-epoch guard as searches', async t => {
+  for (const action of ['cancel', 'clear', 'project']) {
+    const held = deferred()
+    const { controller, readCalls, owner, policy } = await fixture(t, { readPage: () => held.promise })
+    const reading = controller.readPage({ chatId: 'chat_a', url: 'https://en.wikipedia.org/wiki/Telescope' })
+    if (action === 'cancel') controller.cancel('chat_a')
+    if (action === 'clear') controller.clear('chat_a')
+    if (action === 'project') { owner.projectId = 'project_new'; controller.synchronizeOwner() }
+    assert.equal(readCalls[0].signal.aborted, true)
+    assert.equal(controller.hasActiveWork(), true)
+    assert.equal(policy.hasActiveWork(), true)
+    await assert.rejects(controller.search(request()), code('busy'))
+    held.resolve({ ...result().sources[0], provider: 'web', content: 'Late untrusted text', url: readCalls[0].url })
+    const state = await reading
+    assert.deepEqual(state.sources, [])
+    assert.deepEqual(state.history, [])
+    assert.equal(policy.hasActiveWork(), false)
   }
 })
