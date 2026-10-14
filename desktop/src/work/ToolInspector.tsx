@@ -7,25 +7,31 @@ interface ToolInspectorProps {
   api: WorkToolClient | undefined
   chatId: string
   ready: boolean
+  /** Publish the currently validated catalog to the sibling parameter form. */
+  onCatalogChange?(catalog: WorkToolsState | null): void
 }
 
 /** Let users inspect declared capabilities, risk, and time limits before execution. */
-export function ToolInspector({ api, chatId, ready }: ToolInspectorProps) {
+export function ToolInspector({ api, chatId, ready, onCatalogChange }: ToolInspectorProps) {
   const [catalog, setCatalog] = useState<WorkToolsState | null>(null)
   const [error, setError] = useState(false)
   const operationRef = useRef(0)
   const refresh = useCallback(async (): Promise<void> => {
     const token = ++operationRef.current
     setCatalog(null)
+    onCatalogChange?.(null)
     setError(false)
     if (api === undefined || !ready) return
     try {
       const next = await api.getWorkTools(chatId)
-      if (token === operationRef.current) setCatalog(next)
+      if (token === operationRef.current) {
+        setCatalog(next)
+        onCatalogChange?.(next)
+      }
     } catch {
       if (token === operationRef.current) setError(true)
     }
-  }, [api, chatId, ready])
+  }, [api, chatId, ready, onCatalogChange])
 
   useEffect(() => {
     const token = ++operationRef.current

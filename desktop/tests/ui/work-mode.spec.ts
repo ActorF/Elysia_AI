@@ -17,6 +17,9 @@ interface WorkTestControl {
   releaseNextWorkWorkspaceRead(): boolean
   failNextWorkWorkspace(message: string): void
   failNextWorkTools(message: string): void
+  setNextWorkToolResult(result: unknown): void
+  setWorkToolRunDelay(delayed: boolean): void
+  releaseNextWorkToolRun(): boolean
 }
 
 type WorkTestWindow = Window & { elysiaDesktopTest: WorkTestControl }
@@ -32,7 +35,7 @@ function snapshot(status = 'ready', revision = 1) {
   return {
     revision,
     status,
-    capabilities: ['chat.stream', 'chat.mode', 'work.workspace', 'work.tools'],
+    capabilities: ['chat.stream', 'chat.mode', 'work.workspace', 'work.tools', 'work.read'],
     models: ['qwen3.5:9b'],
     modelName: 'qwen3.5:9b',
     chatId: 'chat_work_test',
@@ -155,4 +158,61 @@ test('shows the declared tool catalog and recovers from a bounded catalog failur
     (window as WorkTestWindow).elysiaDesktopTest.getCalls()
       .find((call) => call.method === 'getWorkTools')?.args
   ))).toEqual(['chat_work_test'])
+})
+
+test('runs explicit bounded read tools and displays content as escaped text', async () => {
+  await page.getByRole('combobox', { name: 'Conversation mode' }).selectOption('work')
+  await expect(page.getByRole('button', { name: 'Run tool', exact: true })).toBeDisabled()
+  await page.evaluate(() => {
+    ;(window as WorkTestWindow).elysiaDesktopTest.setSelectedWorkspace('D:\\work-read')
+  })
+  await page.getByRole('button', { name: 'Choose Workspace' }).click()
+  const result = page.getByRole('region', { name: 'Work tool result' })
+  const tool = page.getByLabel('Work tool', { exact: true })
+  const path = page.getByLabel('Relative path', { exact: true })
+  await page.getByRole('button', { name: 'Run tool', exact: true }).click()
+  await expect(result.locator('pre')).toContainText('notes.txt')
+  await tool.selectOption('read_text')
+  await path.fill('notes.txt')
+  await page.getByRole('button', { name: 'Run tool', exact: true }).click()
+  await expect(result.locator('pre')).toContainText('<script>unsafe()</script>')
+  await expect(result.locator('script')).toHaveCount(0)
+  await tool.selectOption('metadata')
+  await page.getByRole('button', { name: 'Run tool', exact: true }).click()
+  await expect(result.locator('pre')).toContainText('sizeBytes')
+  await tool.selectOption('search_files')
+  await path.fill('')
+  await page.getByLabel('Filename contains').fill('notes')
+  await page.getByRole('button', { name: 'Run tool', exact: true }).click()
+  await expect(result.locator('pre')).toContainText('matches')
+  await expect.poll(() => page.evaluate(() => (
+    (window as WorkTestWindow).elysiaDesktopTest.getCalls()
+      .filter((call) => call.method === 'runWorkTool').map((call) => call.args)
+  ))).toEqual([
+    [{ chatId: 'chat_work_test', call: { toolId: 'list_directory', arguments: { path: '' } } }],
+    [{ chatId: 'chat_work_test', call: { toolId: 'read_text', arguments: { path: 'notes.txt' } } }],
+    [{ chatId: 'chat_work_test', call: { toolId: 'metadata', arguments: { path: 'notes.txt' } } }],
+    [{ chatId: 'chat_work_test', call: { toolId: 'search_files', arguments: { path: '', query: 'notes' } } }],
+  ])
+})
+
+test('blocks conflicting actions during a read and recovers after a cancelled result', async () => {
+  await page.evaluate(() => {
+    const control = (window as WorkTestWindow).elysiaDesktopTest
+    control.setWorkWorkspaceState({ kind: 'work.workspace', chatId: 'chat_work_test', workspacePath: 'D:\\work-read' })
+    control.setWorkToolRunDelay(true)
+    control.setNextWorkToolResult({ status: 'cancelled', data: null, error: { code: 'cancelled', message: 'The action was cancelled.' } })
+  })
+  const mode = page.getByRole('combobox', { name: 'Conversation mode' })
+  await mode.selectOption('work')
+  await page.getByRole('button', { name: 'Run tool', exact: true }).click()
+  await expect(mode).toBeDisabled()
+  await expect(page.getByRole('button', { name: 'Clear Workspace' })).toBeDisabled()
+  await page.getByLabel('Message Elysia').fill('No conflicting model turn.')
+  await expect(page.getByRole('button', { name: 'Send message' })).toBeDisabled()
+  await page.evaluate(() => {
+    ;(window as WorkTestWindow).elysiaDesktopTest.releaseNextWorkToolRun()
+  })
+  await expect(page.getByRole('region', { name: 'Work tool result' })).toContainText('The action was cancelled.')
+  await expect(mode).toBeEnabled()
 })

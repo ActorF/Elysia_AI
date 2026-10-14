@@ -12,8 +12,9 @@ import type {
   WorkWorkspaceClient,
   WorkWorkspaceState,
 } from '../../electron/work-protocol.ts'
-import type { WorkToolClient } from '../../electron/work-tool-protocol.ts'
+import type { WorkToolClient, WorkToolsState } from '../../electron/work-tool-protocol.ts'
 import { ToolInspector } from './ToolInspector.tsx'
+import { ToolConsole } from './ToolConsole.tsx'
 import './WorkPanel.css'
 
 interface WorkPanelProps {
@@ -21,10 +22,14 @@ interface WorkPanelProps {
   chatId: string
   ready: boolean
   disabled: boolean
+  readAvailable: boolean
+  /** Keep the shell from starting a conflicting mode change or Chat turn. */
+  onBusyChange(busy: boolean): void
 }
 
 /** Display and revoke the explicit directory access granted to one Work Chat. */
-export function WorkPanel({ api, chatId, ready, disabled }: WorkPanelProps) {
+export function WorkPanel({ api, chatId, ready, disabled, readAvailable, onBusyChange }: WorkPanelProps) {
+  const [catalog, setCatalog] = useState<WorkToolsState | null>(null)
   const [scope, setScope] = useState<WorkWorkspaceState | null>(null)
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -136,7 +141,10 @@ export function WorkPanel({ api, chatId, ready, disabled }: WorkPanelProps) {
           </button>
         </div>
       )}
-      <ToolInspector api={api} chatId={chatId} ready={ready} />
+      <ToolInspector api={api} chatId={chatId} ready={ready} onCatalogChange={setCatalog} />
+      <ToolConsole api={api} chatId={chatId} workspacePath={visibleScope?.workspacePath ?? null}
+        ready={ready && readAvailable} disabled={disabled || pending}
+        tools={catalog?.tools ?? []} onBusyChange={onBusyChange} />
     </section>
   )
 }

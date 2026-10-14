@@ -5,10 +5,10 @@ from __future__ import annotations
 from typing import Any
 import re
 
-from .contracts import TOOL_CATALOG, descriptor_to_data
+from .contracts import TOOL_CATALOG, descriptor_to_data, ToolResult, ToolProtocolError, validate_tool_call, validate_tool_result
 
 
-WORK_METHODS = ("work.workspace.get", "work.workspace.bind", "work.tools.list")
+WORK_METHODS = ("work.workspace.get", "work.workspace.bind", "work.tools.list", "work.tool.run")
 
 
 def validate_work_params(method: str, value: object) -> dict[str, Any]:
@@ -19,7 +19,7 @@ def validate_work_params(method: str, value: object) -> dict[str, Any]:
     grant to accept raw renderer paths.
     """
 
-    fields = {"chatId", "workspacePath"} if method == "work.workspace.bind" else {"chatId"}
+    fields = {"chatId", "workspacePath"} if method == "work.workspace.bind" else {"chatId", "call"} if method == "work.tool.run" else {"chatId"}
     if method not in WORK_METHODS or not isinstance(value, dict) or set(value) != fields:
         raise ValueError("Work request fields are invalid.")
     chat_id = value["chatId"]
@@ -29,12 +29,19 @@ def validate_work_params(method: str, value: object) -> dict[str, Any]:
         root = value["workspacePath"]
         if root is not None and (not isinstance(root, str) or not root.strip() or len(root) > 32767 or any(ord(char) < 32 or ord(char) == 127 for char in root)):
             raise ValueError("Workspace selection is invalid.")
+    elif method == "work.tool.run":
+        validate_tool_call(value["call"])
     return dict(value)
 
 
 def validate_work_result(value: object) -> dict[str, Any]:
-    """Validate scope or the trusted catalog before publishing a Work response."""
+    """Validate scope, a trusted catalog, or a bounded typed tool outcome."""
 
+    if isinstance(value, dict) and value.get("kind") == "work.result":
+        if set(value) != {"kind", "result"}:
+            raise ValueError("Work result fields are invalid.")
+        _validate_outcome(value["result"])
+        return dict(value)
     if isinstance(value, dict) and value.get("kind") == "work.tools":
         if set(value) != {"kind", "tools"} or type(value["tools"]) is not list or len(value["tools"]) > 8:
             raise ValueError("Work catalog fields are invalid.")
@@ -52,3 +59,23 @@ def validate_work_result(value: object) -> dict[str, Any]:
         raise ValueError("Work response fields are invalid.")
     validate_work_params("work.workspace.bind", {"chatId": value["chatId"], "workspacePath": value["workspacePath"]})
     return dict(value)
+
+
+def _validate_outcome(value: object) -> ToolResult:
+    """Enforce fixed errors and one known typed data shape in generic response envelopes."""
+
+    if type(value) is not dict or set(value) != {"status", "data", "error"}:
+        raise ValueError("Work tool outcome fields are invalid.")
+    error = value["error"]
+    if error is not None and (type(error) is not dict or set(error) != {"code", "message"}):
+        raise ValueError("Work error fields are invalid.")
+    typed = ToolResult(value["status"], value["data"], None if error is None else error["code"])
+    if typed.to_data() != value:
+        raise ValueError("Work error message is invalid.")
+    for descriptor in TOOL_CATALOG:
+        try:
+            validate_tool_result(descriptor.tool_id, typed)
+            return typed
+        except ToolProtocolError:
+            continue
+    raise ValueError("Work tool data does not match a known result shape.")

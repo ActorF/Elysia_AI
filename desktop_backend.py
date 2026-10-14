@@ -181,6 +181,7 @@ SERVER_VERSION = "0.1.0"
 SERVER_CAPABILITIES = (
     "work.workspace",
     "work.tools",
+    "work.read",
     "chat.sessions",
     "chat.mode",
     "chat.stream",

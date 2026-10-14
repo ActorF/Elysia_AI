@@ -76,6 +76,14 @@ Selected Work roots must also be separate from application code and private
 application data. This prevents a file edit from modifying the very binding or
 permission journal that authorizes subsequent actions.
 
+`work.tool.run` executes an explicit `{chatId, call}` after the same canonical
+mode and workspace checks. Read tools reject credential/private-key paths,
+binary or unsupported text formats, and text beyond 256 KiB. Listing is bounded
+to 1,000 entries; filename search visits at most 5,000 entries and publishes at
+most 500 matches without reading bodies. Deadlines and cancellation are
+cooperative around native local I/O. Read operations create no cache, backup,
+or hidden file writes. Write tool IDs receive `permission_required` here.
+
 `settings.get` and `settings.update` expose one exact public allowlist with
 optimistic revision checks: Chat model, Ollama origin, two Memory limits,
 import byte limit, transcription model/device/language, automatic Voice Call speech,

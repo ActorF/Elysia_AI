@@ -54,6 +54,7 @@
     "groundedAnswer is present only on assistant Chat messages and never exposes paths, hashes, or private storage lineage"
   ],
   "oneOf": [
+    { "$ref": "#/$defs/workToolRunRequest" },
     { "$ref": "#/$defs/workToolsListRequest" },
     { "$ref": "#/$defs/workWorkspaceGetRequest" },
     { "$ref": "#/$defs/workWorkspaceBindRequest" },
@@ -107,6 +108,37 @@
     { "$ref": "#/$defs/event" }
   ],
   "$defs": {
+    "workToolCall": {
+      "type": "object", "properties": {
+        "toolId": { "enum": ["list_directory", "read_text", "search_files", "metadata", "create", "edit", "move", "delete"] },
+        "arguments": { "type": "object" }
+      }, "required": ["toolId", "arguments"], "additionalProperties": false
+    },
+    "workToolRunParams": {
+      "type": "object", "properties": {
+        "chatId": { "$ref": "#/$defs/workChatId" }, "call": { "$ref": "#/$defs/workToolCall" }
+      }, "required": ["chatId", "call"], "additionalProperties": false
+    },
+    "workToolRunRequest": {
+      "allOf": [{ "$ref": "#/$defs/requestEnvelope" }, { "properties": {
+        "method": { "const": "work.tool.run" }, "params": { "$ref": "#/$defs/workToolRunParams" }
+      } }]
+    },
+    "workToolOutcome": {
+      "type": "object", "properties": {
+        "status": { "enum": ["succeeded", "partial", "denied", "cancelled", "failed"] },
+        "data": { "type": ["object", "null"] },
+        "error": { "oneOf": [{ "type": "null" }, {
+          "type": "object", "properties": { "code": { "type": "string", "maxLength": 64 }, "message": { "type": "string", "maxLength": 256 } },
+          "required": ["code", "message"], "additionalProperties": false
+        }] }
+      }, "required": ["status", "data", "error"], "additionalProperties": false
+    },
+    "workToolResult": {
+      "type": "object", "properties": {
+        "kind": { "const": "work.result" }, "result": { "$ref": "#/$defs/workToolOutcome" }
+      }, "required": ["kind", "result"], "additionalProperties": false
+    },
     "workToolsListRequest": {
       "allOf": [{ "$ref": "#/$defs/requestEnvelope" }, { "properties": {
         "method": { "const": "work.tools.list" }, "params": { "$ref": "#/$defs/workWorkspaceGetParams" }
@@ -205,6 +237,7 @@
             "work.workspace.get",
             "work.workspace.bind",
             "work.tools.list",
+            "work.tool.run",
             "handshake",
             "initialize",
             "chat.stream",
@@ -2440,6 +2473,7 @@
           "oneOf": [
             { "$ref": "#/$defs/workWorkspaceResult" },
             { "$ref": "#/$defs/workToolsResult" },
+            { "$ref": "#/$defs/workToolResult" },
             { "$ref": "#/$defs/handshakeResult" },
             { "$ref": "#/$defs/initializeResult" },
             { "$ref": "#/$defs/chatResult" },

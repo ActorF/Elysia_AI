@@ -31,7 +31,9 @@ export type {
   WorkWorkspaceClient,
   WorkWorkspaceState,
 } from './work-protocol.js'
-export type { WorkToolClient, WorkToolsState, WorkToolDescriptor } from './work-tool-protocol.js'
+export type {
+  WorkToolClient, WorkToolsState, WorkToolDescriptor, WorkToolRunParams, WorkToolResultState,
+} from './work-tool-protocol.js'
 
 export type BackendStatus =
   | 'starting'

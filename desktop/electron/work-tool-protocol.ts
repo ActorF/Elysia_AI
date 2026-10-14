@@ -91,6 +91,8 @@ export interface WorkToolConfirmParams { chatId: string; approvalId: string; gra
 export interface WorkToolClient {
   /** Read the Backend's bounded catalog for the active explicit Work Chat. */
   getWorkTools(chatId: string): Promise<WorkToolsState>
+  /** Run one explicitly selected read operation inside the active bound Workspace. */
+  runWorkTool(request: WorkToolRunParams): Promise<WorkToolResultState>
 }
 
 const DECLARED_POLICY: Record<WorkToolId, { risk: WorkToolRisk; timeout: number }> = {
@@ -346,6 +348,25 @@ export function parseWorkToolResultState(value: unknown, expectedTool?: WorkTool
   const state = record(value, ['kind', 'result'])
   if (state.kind !== 'work.result') throw new TypeError('Work result kind is invalid.')
   return { kind: 'work.result', result: parseWorkToolResult(state.result, expectedTool) }
+}
+
+/** Reject a known output shape when its paths belong to another submitted call. */
+export function parseWorkToolResultForCall(value: unknown, expected: WorkToolCall): WorkToolResultState {
+  const call = parseWorkToolCall(expected)
+  const state = parseWorkToolResultState(value, call.toolId)
+  const data = state.result.data
+  if (data === null) return state
+  const path = call.arguments.path
+  if (call.toolId === 'list_directory' || call.toolId === 'search_files') {
+    const items = data[call.toolId === 'list_directory' ? 'entries' : 'matches'] as WorkJsonObject[]
+    if (items.some((item) => typeof item.path !== 'string' || item.path === ''
+      || (path !== '' && !item.path.startsWith(`${path}/`)))) {
+      throw new TypeError('Work tool paths do not belong to the requested directory.')
+    }
+  } else if (data.path !== path || (call.toolId === 'move' && data.destination !== call.arguments.destination)) {
+    throw new TypeError('Work tool result does not belong to its exact requested path.')
+  }
+  return state
 }
 
 /** Validate a write-only approval with exact call, policy, preview, and UTC expiry. */

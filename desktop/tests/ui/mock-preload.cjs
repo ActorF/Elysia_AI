@@ -411,6 +411,13 @@ let selectedWorkspace = null
 let workWorkspaces = new Map()
 let nextWorkWorkspaceError = null
 let nextWorkToolsError = null
+let nextWorkToolResult = null
+let delayWorkToolRuns = false
+let pendingWorkToolRuns = []
+const workFiles = new Map([
+  ['notes.txt', 'Hello <script>unsafe()</script>'],
+  ['docs/readme.md', 'Workspace documentation.'],
+])
 let delayWorkWorkspaceReads = false
 let pendingWorkWorkspaceReads = []
 let nextRequestNumber = 1
@@ -1491,6 +1498,37 @@ const desktopApi = {
     return defaultWorkToolsState()
   },
 
+  runWorkTool: async (request) => {
+    record('runWorkTool', [request])
+    const { toolId, arguments: args } = request.call
+    const entry = (path, content) => ({
+      path, name: path.split('/').at(-1), kind: 'file', sizeBytes: new TextEncoder().encode(content).byteLength,
+    })
+    let data
+    if (toolId === 'read_text') {
+      const content = workFiles.get(args.path)
+      data = content === undefined ? null : { path: args.path, content, sizeBytes: new TextEncoder().encode(content).byteLength }
+    } else if (toolId === 'metadata') {
+      data = args.path === '' ? { path: '', name: 'Workspace', kind: 'directory', sizeBytes: 0 }
+        : workFiles.has(args.path) ? entry(args.path, workFiles.get(args.path)) : null
+    } else if (toolId === 'search_files') {
+      data = { matches: [...workFiles.keys()].filter((path) => (
+        (args.path === '' || path.startsWith(`${args.path}/`)) && path.includes(args.query)
+      )).map((path) => ({ path })), truncated: false }
+    } else {
+      data = { entries: [...workFiles.entries()].filter(([path]) => args.path === '' || path.startsWith(`${args.path}/`))
+        .map(([path, content]) => entry(path, content)), truncated: false }
+    }
+    const result = nextWorkToolResult ?? (data === null
+      ? { status: 'denied', data: null, error: { code: 'not_found', message: 'The requested file does not exist.' } }
+      : { status: 'succeeded', data, error: null })
+    nextWorkToolResult = null
+    if (delayWorkToolRuns) {
+      await new Promise((resolve) => { pendingWorkToolRuns.push(resolve) })
+    }
+    return { kind: 'work.result', result: clone(result) }
+  },
+
   chooseWorkWorkspace: async (chatId) => {
     record('chooseWorkWorkspace', [chatId])
     if (nextWorkWorkspaceError !== null) {
@@ -2032,6 +2070,10 @@ const desktopApi = {
 
 const testControl = {
   reset: () => {
+    for (const release of pendingWorkToolRuns) release()
+    pendingWorkToolRuns = []
+    delayWorkToolRuns = false
+    nextWorkToolResult = null
     for (const release of pendingWorkWorkspaceReads) {
       release()
     }
@@ -2396,6 +2438,20 @@ const testControl = {
 
   failNextWorkTools: (message) => {
     nextWorkToolsError = message
+  },
+
+  setNextWorkToolResult: (result) => {
+    nextWorkToolResult = clone(result)
+  },
+
+  setWorkToolRunDelay: (delayed) => {
+    delayWorkToolRuns = delayed
+  },
+
+  releaseNextWorkToolRun: () => {
+    const release = pendingWorkToolRuns.shift()
+    release?.()
+    return release !== undefined
   },
 
   setCharacterPanelChangeDelay: (delayed) => {

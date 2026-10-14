@@ -15,7 +15,8 @@ from typing import Any
 from chats import ChatSession
 from core.mode_policy import require_work_mode
 from work_tools.bindings import WorkspaceBindings
-from work_tools.contracts import TOOL_CATALOG, descriptor_to_data
+from work_tools.contracts import TOOL_CATALOG, descriptor_to_data, validate_tool_call, validate_tool_result
+from work_tools.executor import WorkToolExecutor
 from work_tools.workspace import WorkspaceBoundary
 
 
@@ -43,6 +44,10 @@ class DesktopWorkRuntime:
             require_work_mode(chat.mode)
             if method == "work.tools.list":
                 return {"kind": "work.tools", "tools": [descriptor_to_data(item) for item in TOOL_CATALOG[:4]]}
+            if method == "work.tool.run":
+                call = validate_tool_call(params["call"])
+                result = WorkToolExecutor(self.boundary(str(chat.chat_id))).run(call)
+                return {"kind": "work.result", "result": validate_tool_result(call.tool_id, result)}
             if method == "work.workspace.bind":
                 selected = params["workspacePath"]
                 if selected is None:

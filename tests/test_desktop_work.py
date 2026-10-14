@@ -114,3 +114,21 @@ def test_tools_cannot_bind_their_own_permission_or_application_storage(tmp_path:
         with pytest.raises(PermissionError):
             runtime.dispatch("work.workspace.bind", {"chatId": str(current.chat_id), "workspacePath": str(selected)})
     assert not (private / "work" / "bindings").exists()
+
+
+def test_real_bound_read_returns_verified_bytes_and_refuses_unapproved_writes(tmp_path: Path) -> None:
+    """The desktop path reads the selected file and cannot execute a write call."""
+
+    current = _chat()
+    selected = tmp_path / "selected"
+    selected.mkdir()
+    (selected / "notes.txt").write_text("original", encoding="utf-8")
+    runtime = DesktopWorkRuntime(tmp_path / "private", lambda: current)
+    owner = {"chatId": str(current.chat_id)}
+    runtime.dispatch("work.workspace.bind", {**owner, "workspacePath": str(selected)})
+    result = runtime.dispatch("work.tool.run", {**owner, "call": {"toolId": "read_text", "arguments": {"path": "notes.txt"}}})
+    assert result["result"]["data"]["content"] == "original"
+    assert build_success_response("read", result)["result"] == result
+    denied = runtime.dispatch("work.tool.run", {**owner, "call": {"toolId": "edit", "arguments": {"path": "notes.txt", "content": "unapproved"}}})
+    assert denied["result"]["error"]["code"] == "permission_required"
+    assert (selected / "notes.txt").read_text("utf-8") == "original"

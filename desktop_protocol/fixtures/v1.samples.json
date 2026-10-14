@@ -5,6 +5,13 @@
   },
   "validClientMessages": [
     {
+      "name": "work bounded read request",
+      "message": {
+        "type": "request", "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "work-read-1", "method": "work.tool.run", "params": { "chatId": "chat_fixture", "call": { "toolId": "read_text", "arguments": { "path": "notes.txt" } } }
+      }
+    },
+    {
       "name": "work tools catalog request",
       "message": {
         "type": "request", "protocol": { "name": "elysia.desktop", "version": 1 },

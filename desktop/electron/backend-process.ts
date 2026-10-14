@@ -56,7 +56,10 @@ import {
   type WorkWorkspaceBindParams,
   type WorkWorkspaceGetParams,
 } from './work-protocol.js'
-import { parseWorkToolsState, type WorkToolsState } from './work-tool-protocol.js'
+import {
+  parseWorkToolsState, parseWorkToolResultForCall, parseWorkToolCall,
+  type WorkToolsState, type WorkToolRunParams, type WorkToolResultState, type WorkToolCall,
+} from './work-tool-protocol.js'
 import {
   SpeechDeliveryCoordinator,
   type SpeechDeliveryStatus,
@@ -361,6 +364,9 @@ interface PendingRequest {
   rejectWorkWorkspace?: (error: Error) => void
   resolveWorkTools?: (state: WorkToolsState) => void
   rejectWorkTools?: (error: Error) => void
+  workToolCall?: WorkToolCall
+  resolveWorkTool?: (state: WorkToolResultState) => void
+  rejectWorkTool?: (error: Error) => void
   resolveSettingsState?: (state: DesktopSettingsState) => void
   rejectSettingsState?: (error: Error) => void
   resolveVoiceSettingsState?: (state: VoiceSettingsState) => void
@@ -852,6 +858,7 @@ export class BackendProcess {
 
   /** Start a streamed Chat operation and return the ID used for cancellation. */
   beginChat(request: ChatRequest): { requestId: string } {
+    this.assertWorkIdle()
     if (
       this.snapshot.status !== 'ready'
       || this.snapshot.chatId === undefined
@@ -1132,6 +1139,7 @@ export class BackendProcess {
 
   /** Retry the final persisted turn, optionally replacing its user text. */
   beginRetry(request: RetryChatRequest): { requestId: string } {
+    this.assertWorkIdle()
     if (
       this.snapshot.status !== 'ready'
       || this.snapshot.chatId === undefined
@@ -1483,6 +1491,28 @@ export class BackendProcess {
     return new Promise((resolve, reject) => {
       this.sendRequest('work.tools.list', { chatId }, chatId, {
         resolveWorkTools: resolve, rejectWorkTools: reject,
+      })
+    })
+  }
+
+  /** Execute one closed read tool, correlated with its exact expected output shape. */
+  runWorkTool(request: WorkToolRunParams): Promise<WorkToolResultState> {
+    if (this.snapshot.status !== 'ready' || this.snapshot.chatId !== request.chatId
+      || !this.snapshot.capabilities.includes('work.read')) {
+      return Promise.reject(new Error('Work read tools are unavailable for this Chat.'))
+    }
+    if (!['list_directory', 'read_text', 'search_files', 'metadata'].includes(request.call.toolId)) {
+      return Promise.reject(new Error('This endpoint accepts read tools only.'))
+    }
+    if ([...this.pendingRequests.values()].some((pending) => (
+      CHAT_GENERATION_METHODS.has(pending.method) || VOICE_TRANSCRIPTION_METHODS.has(pending.method)
+      || pending.method === 'work.tool.run' || pending.method === 'work.workspace.bind'
+    ))) {
+      return Promise.reject(new Error('Wait for the current Chat or Work action.'))
+    }
+    return new Promise((resolve, reject) => {
+      this.sendRequest('work.tool.run', request, request.chatId, {
+        workToolCall: parseWorkToolCall(request.call), resolveWorkTool: resolve, rejectWorkTool: reject,
       })
     })
   }
@@ -1926,6 +1956,9 @@ export class BackendProcess {
     method: Method,
     params: RequestParamsByMethod[Method],
   ): Promise<ChatSessionState> {
+    if (method !== 'chat.list') {
+      try { this.assertWorkIdle() } catch (error) { return Promise.reject(error) }
+    }
     if (this.snapshot.status !== 'ready') {
       return Promise.reject(new Error('Python Backend is not ready.'))
     }
@@ -2033,6 +2066,7 @@ export class BackendProcess {
         CHAT_GENERATION_METHODS.has(pending.method)
         || VOICE_TRANSCRIPTION_METHODS.has(pending.method)
         || WORK_WORKSPACE_METHODS.has(pending.method)
+        || pending.method === 'work.tool.run'
       ))
     ) {
       return Promise.reject(new Error('Wait for the current Chat or Workspace action.'))
@@ -2177,11 +2211,18 @@ export class BackendProcess {
   }
 
   private assertKnowledgeAvailable(): void {
+    this.assertWorkIdle()
     if (this.snapshot.status !== 'ready') {
       throw new Error('Python Backend is not ready.')
     }
     if (!this.snapshot.capabilities.includes('knowledge.management')) {
       throw new Error('Python Backend does not support knowledge management.')
+    }
+  }
+
+  private assertWorkIdle(): void {
+    if ([...this.pendingRequests.values()].some((pending) => pending.method === 'work.tool.run')) {
+      throw new Error('Wait for the current Work tool to finish.')
     }
   }
 
@@ -2255,6 +2296,9 @@ export class BackendProcess {
       | 'rejectWorkWorkspace'
       | 'resolveWorkTools'
       | 'rejectWorkTools'
+      | 'workToolCall'
+      | 'resolveWorkTool'
+      | 'rejectWorkTool'
       | 'resolveSettingsState'
       | 'rejectSettingsState'
       | 'resolveVoiceSettingsState'
@@ -2429,6 +2473,11 @@ export class BackendProcess {
         }
       } else if (pending.method === 'work.tools.list') {
         parseWorkToolsState(message.result)
+      } else if (pending.method === 'work.tool.run') {
+        if (pending.workToolCall === undefined) {
+          throw new ProtocolValidationError('protocol.invalid_result', 'Work tool request has no expected operation.')
+        }
+        parseWorkToolResultForCall(message.result, pending.workToolCall)
       } else if (SETTINGS_METHODS.has(pending.method)) {
         parseSettingsStateResult(message.result)
       } else if (VOICE_SETTINGS_METHODS.has(pending.method)) {
@@ -2590,6 +2639,9 @@ export class BackendProcess {
       }
       if (pending.method === 'work.tools.list') {
         pending.rejectWorkTools?.(new Error('The Work tool catalog could not be loaded.'))
+      }
+      if (pending.method === 'work.tool.run') {
+        pending.rejectWorkTool?.(new Error('The Work tool could not run.'))
       }
       if (SETTINGS_METHODS.has(pending.method)) {
         pending.rejectSettingsState?.(new Error(message.error.message))
@@ -2765,6 +2817,10 @@ export class BackendProcess {
     }
     if (pending.method === 'work.tools.list') {
       pending.resolveWorkTools?.(parseWorkToolsState(message.result))
+      return
+    }
+    if (pending.method === 'work.tool.run') {
+      pending.resolveWorkTool?.(parseWorkToolResultForCall(message.result, pending.workToolCall!))
       return
     }
 
@@ -3478,6 +3534,7 @@ export class BackendProcess {
       )
       pending.rejectWorkWorkspace?.(new Error('Python Backend stopped before the Workspace action completed.'))
       pending.rejectWorkTools?.(new Error('Python Backend stopped before the tool catalog completed.'))
+      pending.rejectWorkTool?.(new Error('Python Backend stopped before the Work tool completed.'))
       pending.rejectSettingsState?.(
         new Error(
           'Python Backend stopped before the Settings action completed.',
@@ -3534,6 +3591,7 @@ export class BackendProcess {
       pending.rejectProjectState?.(error)
       pending.rejectWorkWorkspace?.(error)
       pending.rejectWorkTools?.(error)
+      pending.rejectWorkTool?.(error)
       pending.rejectSettingsState?.(error)
       pending.rejectVoiceSettingsState?.(error)
       pending.rejectVoiceCapture?.(error)
@@ -3551,6 +3609,8 @@ export class BackendProcess {
       pending.rejectWorkWorkspace = undefined
       pending.resolveWorkTools = undefined
       pending.rejectWorkTools = undefined
+      pending.resolveWorkTool = undefined
+      pending.rejectWorkTool = undefined
       pending.resolveSettingsState = undefined
       pending.rejectSettingsState = undefined
       pending.resolveVoiceSettingsState = undefined

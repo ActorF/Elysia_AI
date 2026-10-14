@@ -925,6 +925,7 @@ function App() {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [chatState, setChatState] = useState<ChatSessionState | null>(null)
   const [sessionMutationPending, setSessionMutationPending] = useState(false)
+  const [workOperationPending, setWorkOperationPending] = useState(false)
   const [projectState, setProjectState] = useState<ProjectState | null>(null)
   const [projectLoading, setProjectLoading] = useState(true)
   const [projectMutationPending, setProjectMutationPending] = useState(false)
@@ -1051,6 +1052,7 @@ function App() {
   const retryOperationRef = useRef(0)
   const retryPendingRef = useRef(false)
   const sessionMutationPendingRef = useRef(false)
+  const workOperationPendingRef = useRef(false)
   const projectMutationPendingRef = useRef(false)
   const settingsDirtyRef = useRef(false)
   const settingsLoadOperationRef = useRef(0)
@@ -1286,7 +1288,7 @@ function App() {
               ? 'Wait for the active Chat to finish loading.'
               : generationBusy || generationReconcilePending
                 ? 'Wait for the current Chat reply to finish.'
-                : sessionMutationPending
+                : sessionMutationPending || workOperationPending
                   ? 'Wait for the current Chat action to finish.'
                   : null
   const voiceCaptureDisabledReason = voiceCaptureContextDisabledReason
@@ -1295,6 +1297,7 @@ function App() {
     ?? snapshot.chatTitle
     ?? 'Chat'
   const sessionUiPending = sessionMutationPending
+    || workOperationPending
     || snapshot.status !== 'ready'
     || chatState === null
   const modeSelectionDisabled = desktopApi === undefined
@@ -5777,6 +5780,7 @@ function App() {
       || retryPendingRef.current
       || manualReadAloudOwnerRef.current !== null
       || generationRecoveryBlocked
+      || workOperationPendingRef.current
       || activeChatAttachmentActivity.adding
       || activeChatAttachmentActivity.removingIds.length > 0
     ) {
@@ -6417,6 +6421,7 @@ function App() {
     if (
       desktopApi === undefined
       || sessionMutationPendingRef.current
+      || workOperationPendingRef.current
       || streaming
       || snapshot.status !== 'ready'
       || chatState === null
@@ -7889,6 +7894,11 @@ function App() {
               && snapshot.chatId === activeChatId
               && snapshot.capabilities.includes('work.workspace')}
             disabled={modeSelectionDisabled}
+            readAvailable={snapshot.capabilities.includes('work.read')}
+            onBusyChange={(busy) => {
+              workOperationPendingRef.current = busy
+              setWorkOperationPending(busy)
+            }}
           />
         )}
         onBeginRetryEdit={beginRetryEdit}

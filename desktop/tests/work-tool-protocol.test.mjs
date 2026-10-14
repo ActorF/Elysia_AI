@@ -9,6 +9,7 @@ import {
   parseWorkToolApprovalState, parseWorkToolCall, parseWorkToolConfirmParams,
   parseWorkToolListParams, parseWorkToolResult, parseWorkToolResultState,
   parseWorkToolRunParams, parseWorkToolsState,
+  parseWorkToolResultForCall,
 } from '../dist-electron/work-tool-protocol.js'
 
 function descriptor(toolId = 'read_text') {
@@ -121,5 +122,46 @@ test('Work catalog RPC validates schemas before a pending request is resolved', 
   response.result.tools[0].risk = 'critical'
   backend.handleProtocolLine(JSON.stringify(response))
   await assert.rejects(malformed, /Work tool catalog result is invalid/u)
+  assert.equal(backend.getSnapshot().status, 'error')
+})
+
+test('Work execution binds successful and partial results to exact calls and directory prefixes', () => {
+  const result = (data) => ({ kind: 'work.result', result: { status: 'succeeded', data, error: null } })
+  const read = { toolId: 'read_text', arguments: { path: 'notes.txt' } }
+  assert.equal(parseWorkToolResultForCall(result({ path: 'notes.txt', content: 'ok', sizeBytes: 2 }), read).result.status,
+    'succeeded')
+  assert.throws(() => parseWorkToolResultForCall(result({ path: 'other.txt', content: 'ok', sizeBytes: 2 }), read), /exact requested path/u)
+  assert.throws(() => parseWorkToolResultForCall(result({ path: 'notes.txt', name: 'notes.txt', kind: 'file', sizeBytes: 2 }), read), TypeError)
+  const list = { toolId: 'list_directory', arguments: { path: 'docs' } }
+  const entries = [{ path: 'docs/readme.md', name: 'readme.md', kind: 'file', sizeBytes: 2 }]
+  assert.equal(parseWorkToolResultForCall(result({ entries, truncated: false }), list).result.status, 'succeeded')
+  assert.throws(() => parseWorkToolResultForCall(result({
+    entries: [{ ...entries[0], path: 'docs-other/private.md' }], truncated: false,
+  }), list), /requested directory/u)
+  const search = { toolId: 'search_files', arguments: { path: 'docs', query: 'notes' } }
+  assert.throws(() => parseWorkToolResultForCall(result({ matches: [{ path: 'unrelated/notes.md' }], truncated: false }), search),
+    /requested directory/u)
+})
+
+test('Work read bridge blocks conflicting turns and rejects a mismatched known output', async () => {
+  const writes = []
+  const backend = new BackendProcess('.', () => undefined)
+  backend.child = { stdin: { writable: true, write: (wire) => { writes.push(JSON.parse(wire)) } }, kill: () => true }
+  backend.snapshot = {
+    revision: 1, status: 'ready', capabilities: ['work.read', 'chat.mode', 'chat.stream'],
+    chatId: 'chat_work', modelName: 'qwen3.5:9b', models: ['qwen3.5:9b'],
+  }
+  const call = { toolId: 'read_text', arguments: { path: 'notes.txt' } }
+  const running = backend.runWorkTool({ chatId: 'chat_work', call })
+  assert.deepEqual(writes[0].params, { chatId: 'chat_work', call })
+  assert.throws(() => backend.beginChat({ chatId: 'chat_work', message: 'race', attachmentIds: [], speakReply: false }),
+    /current Work tool/u)
+  await assert.rejects(backend.setChatMode({ chatId: 'chat_work', mode: 'chat' }), /current Work tool/u)
+  await assert.rejects(backend.runWorkTool({ chatId: 'chat_work', call }), /current Chat or Work action/u)
+  backend.handleProtocolLine(JSON.stringify({
+    type: 'response', protocol: { name: 'elysia.desktop', version: 1 }, id: writes[0].id, ok: true,
+    result: { kind: 'work.result', result: { status: 'succeeded', data: { path: 'other.txt', content: 'wrong owner', sizeBytes: 11 }, error: null } },
+  }))
+  await assert.rejects(running, /exact requested path/u)
   assert.equal(backend.getSnapshot().status, 'error')
 })
