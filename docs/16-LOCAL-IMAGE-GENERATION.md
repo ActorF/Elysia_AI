@@ -1,10 +1,10 @@
-# 本地图片生成核心
+# 本地图片生成核心与私有运行时
 
-最后更新：2026-10-12（America/Chicago）
+最后更新：2026-10-14（America/Chicago）
 
 ## 1. 当前状态
 
-Elysia AI 已加入第一版**受信本地图片生成编译与验证核心**。这一版建立的是 Python 领域合同、模型配置、固定工作流编译、底层 Loopback ComfyUI 协议适配和输出验证，并不等同于已经完成可执行的桌面产品功能。
+Elysia AI 已加入第一版**受信本地图片生成核心与私有 ComfyUI 进程监督器**。当前 Python 层可以验证结构化请求与本机模型、启动每任务一个隔离子进程、执行固定工作流、验证输出，并在结果返回前终止进程和删除私有运行目录。Electron/React 产品界面、Gallery 与真实模型验收仍未接通。
 
 当前已完成：
 
@@ -13,19 +13,22 @@ Elysia AI 已加入第一版**受信本地图片生成编译与验证核心**。
 - 将结构化需求编译成源码内固定的 SDXL `txt2img` ComfyUI API Graph。
 - 提供一个只连接明确本机 Loopback ComfyUI HTTP Origin 的底层 `HttpComfyUiClient`；它明确声明 `is_managed_private_runtime=False`，不从 Package Root 导出，也不能直接注入 `ImageGenerationCore`。
 - 在发起网络提交前预生成 `prompt_id`、`client_id` 与输出 Prefix，按三者精确关联提交、History 和输出，有界轮询结果并保守处理取消。
+- 由 `ManagedComfyUiRuntime` 验证 Python、ComfyUI 入口和 Checkpoint 摘要，锁定文件并使用稳定卷路径启动受管子进程；随机 Loopback Port 还会绑定到准确 Child PID。
+- 每项任务使用独立 Input、Output、Temp、User、Cache 与空 Frontend 目录；代理、继承环境、Custom Nodes、在线资产、Metadata 和自动打开浏览器均不会进入该子进程。
+- 成功、失败、取消和异常都先终止完整 Job Object 进程树，再释放文件守卫并删除准确 UUID 目录；任一步无法证明完成都会阻止结果发布。
 - 验证 PNG Chunk、CRC、像素格式、尺寸和解压上限；只移除惰性 Metadata Chunk，遇到会改变像素解释的 Ancillary Chunk 则拒绝，再重写 Canonical PNG。
 - 返回图片字节、模型 Profile Digest、Workflow Digest、Seed 与 UTC 时间等可复现 Metadata。
 
 当前尚未完成：
 
-- Elysia 管理的私有 ComfyUI Runtime：尚无组件拥有子进程 PID、隔离目录、可靠终止等待和残留清理，因此实际生成，包括成人内容生成，当前一律 Fail Closed。
 - Electron/React 的 Image Generator、Settings、进度、取消和错误界面。
 - Generated Image Gallery、持久化、导出、删除、容量统计和恢复。
 - 与 Ollama、GPT-SoVITS、Song Cover 共用的进程级 GPU Admission/Lease。
 - 模型安装、下载、更新、Hash 实测和许可证向导。
+- 使用真实 ComfyUI 版本、真实 Checkpoint 和目标 GPU 的本机 Smoke/Soak 验收。
 - Reference Image、同一角色连续生成、OpenPose、ControlNet、IP-Adapter、Inpaint 或 FaceDetailer。
 
-因此，这个核心目前应被理解为下一层私有 Runtime 与 Desktop Integration 的受信基础，而不是普通用户已经可以从界面直接使用的完整能力。普通共享 ComfyUI 的 `SaveImage` 会把原图写进它的 Output Directory，`/history` 还会保留 Workflow 与 Prompt；仅清理下载后的 PNG 不能消除这些副本。为了不把私密 Prompt 或成人图片遗留在未知 Runtime 中，生产执行必须等到受管私有 Runtime 完成后才可启用。
+因此，这一层已经可以作为 Desktop Integration 的受信后端，但还不是普通用户可从界面直接使用的完整功能。普通共享 ComfyUI 的 `SaveImage` 会把原图写进 Output Directory，`/history` 还会保留 Workflow 与 Prompt；Elysia 不连接或接管这种共享实例，而是为每个任务启动并销毁自己的私有实例。
 
 ---
 
@@ -49,11 +52,12 @@ Trusted ModelProfile Catalog
         ├── Prompt Dialect Compilation
         └── Fixed SDXL txt2img Graph Compilation
         ▼
-Elysia-managed Private ComfyUI Runtime（尚未实现）
+Elysia-managed Private ComfyUI Runtime
         │
         ├── Owned Child PID / Isolated Directories
-        ├── Metadata / Custom Nodes / API Nodes Disabled
-        └── Terminal Wait + History/File Cleanup
+        ├── Metadata / Custom Nodes / Online Assets Disabled
+        ├── Closed Environment + Private Cache Directories
+        └── Process-tree Stop + Whole-run Cleanup
         ▼
 Loopback-only Raw ComfyUI HTTP Adapter
         │
@@ -76,8 +80,8 @@ Verified bytes + reproducibility metadata
 2. **Profile 是应用配置。** 用户请求只能选择逻辑 `profile_id` 和 `size_preset_id`，不能把文件名伪装成模型选择。
 3. **Workflow 由源码控制。** 第一版 Graph 的节点和连接不可由 Renderer 或 Prompt 改写。
 4. **Runtime 输出不可信。** 即使来自 `127.0.0.1`，HTTP、JSON、队列记录、输出名和 PNG 仍须完整验证。
-5. **共享 Runtime 不得执行。** `ImageGenerationCore` 同时要求 `is_managed_private_runtime is True` 和 Composition Root 私有签发的精确 Capability Identity；Raw Adapter 固定返回 `False` 且没有该 Capability，所以当前生产执行 Fail Closed。Capability 只防止项目内部误组合，不声称能隔离恶意 Python 代码。
-6. **验证和清理完成前不发布。** 只有未来受管会话确认 Native Job 已进入终态、History/源文件清理完成、PNG Canonicalization 成功且最后一次取消检查未获胜，图片字节才可进入后续 Gallery Store。
+5. **共享 Runtime 不得执行。** `ImageGenerationCore` 同时要求 `is_managed_private_runtime is True` 和 Composition Root 私有签发的精确 Capability Identity；Raw Adapter 固定返回 `False` 且没有该 Capability。Capability 防止项目内部误组合，不声称隔离恶意 Python 代码。
+6. **验证和清理完成前不发布。** 只有受管会话确认完整子进程树停止、私有任务目录删除、PNG Canonicalization 成功且最后一次取消检查未获胜，图片字节才可进入后续 Gallery Store。
 
 ---
 
@@ -85,16 +89,15 @@ Verified bytes + reproducibility metadata
 
 ### 3.1 仅限虚构成年人
 
-所有内容模式都只允许**原创虚构且明确为成年人的角色**。第一版不要求用户为虚构角色填写一个具体数字年龄；数字本身也不能证明成年。系统要求的是：
+图片生成使用一个统一合同，同时允许普通图片和 R18 图片；没有普通/成人模式切换，也不会因为正向 Prompt 含露骨词而改走另一套流程。所有请求只允许**原创虚构且明确为成年人的角色**。第一版不要求填写具体数字年龄；数字本身也不能证明成年。系统要求的是：
 
 - 所有请求都显式设置 `original_fictional_confirmed=true`，确认主体是原创虚构人物而非真实人物或已有角色；固定 Prompt 另外把主体限定为成年人。
-- 成人内容另外显式选择 `adult` 内容模式并设置 `adult_confirmed=true`。
-- 普通模式的正向字段若出现明显露骨词，会被拒绝并要求走成人 Opt-in；Negative Prompt 中用于排除某内容的词不会因此误触发。
-- 所有模式的正向字段都保守拒绝明显的未成年人/年龄模糊、真实人物、多个主体和已有角色矛盾。
+- 普通描述和露骨描述使用完全相同的结构化字段、工作流、进程隔离和清理合同。
+- 所有正向字段都保守拒绝明显的未成年人/年龄模糊、真实人物、多个主体和已有角色矛盾。
 - 正负 Prompt 都禁止 ComfyUI `embedding:` 文本嵌入语法，防止自由文本选择 Profile 之外的本机模型资产。
 - Negative Prompt 不得否定 `adult`、`fictional`、`original character` 或单主体等强制边界；它只能追加画质或内容排除条件。
 
-这些 Unicode 规范化后的词法规则只是面向正常输入的**非对抗性 Tripwire**，用于尽早发现明显矛盾；它们不是身份、年龄或内容分类的证明，也不承诺抵抗刻意规避。后续 Desktop 层仍必须保留明确 Opt-in、清楚的原创虚构成年人确认和适当的错误说明，不能因为 Python Domain 已校验就把 UI 变成无提示开关。
+这些 Unicode 规范化后的词法规则只是面向正常输入的**非对抗性 Tripwire**，用于尽早发现主体边界的明显矛盾；它们不是身份或年龄分类的证明，也不承诺抵抗刻意规避。后续 Desktop 层必须清楚表达并保留原创虚构成年人确认，但不需要内容模式开关。
 
 ### 3.2 第一版没有身份参考入口
 
@@ -108,9 +111,9 @@ Verified bytes + reproducibility metadata
 
 未来若加入 Reference/Image Edit，必须增加独立的受信字段、文件授权、来源和身份政策；不得把图片路径、Base64、Node JSON 或隐藏命令塞入现有 Prompt 文本绕过合同。
 
-### 3.3 普通与成人模式
+### 3.3 单一内容路径
 
-`general` 与 `adult` 是两个显式闭集值。两者都要求 `original_fictional_confirmed=true`；`adult_confirmed` 只允许和 `adult` 同时出现，普通模式不能携带多余的成人确认状态。普通模式若含明显露骨的正向内容会被拒绝并指向成人 Opt-in；成人模式则额外要求 `adult_confirmed=true`。未成年人/年龄模糊、真实人物、多个主体与已有角色的明显矛盾在两个模式中都会拒绝。
+`ImageGenerationSpec` 不再包含 `content_mode` 或 `adult_confirmed`。露骨程度不是工作流分支，也不会改变模型、清理或输出验证规则。请求是否普通或 R18 都只需要同一个 `original_fictional_confirmed=true` 主体确认；未成年人/年龄模糊、真人相似、已有角色和多主体的明显矛盾始终拒绝。
 
 ---
 
@@ -131,9 +134,7 @@ Verified bytes + reproducibility metadata
 | `lighting` | 光线 | 可选 |
 | `negative_prompt` | 用户补充的负面词 | 可选；系统负面词不会被替换 |
 | `seed` | 可复现 Seed | `0` 至 JSON Safe Integer 上限 |
-| `content_mode` | 普通或成人 | `general` / `adult` 闭集 |
-| `original_fictional_confirmed` | 原创虚构主体确认 | 所有模式都必须为 `true` |
-| `adult_confirmed` | 虚构成年人确认 | 仅成人模式可为 `true` |
+| `original_fictional_confirmed` | 原创虚构主体确认 | 所有请求都必须为 `true` |
 | `intent` | 工作流意图 | 第一版只有 `new-character` |
 
 控制字符、Surrogate 和超长字段会在工作流编译前拒绝。编译后的正向和负向 Prompt 也有独立的 6,000 Code Point 上限，避免多个合法字段组合成无界 Runtime 输入。
@@ -163,11 +164,11 @@ Pony、Illustrious 与普通 SDXL 即使共享相近的 Tensor 架构，也不�
 
 Profile Digest 覆盖架构、Prompt 方言、Checkpoint 声明、来源、许可证、尺寸与采样默认值。后续 Gallery 应把该 Digest 与图片一同保存；只保存显示名不足以重现生成条件。
 
-### 当前 Hash 限制
+### 当前 Hash 与安装信任边界
 
-ComfyUI 的 Raw Model List 只返回模型 Key，不返回本机 Checkpoint 实际文件摘要。当前 Adapter 会确认准确 Key 已安装，但**不能**通过 HTTP 证明 Runtime 实际加载文件等于 Profile 中声明的 SHA-256。
+Raw Model List 只返回模型 Key，不返回 Checkpoint 摘要。因此受管 Runtime 会在启动前直接读取并验证 Python Executable、ComfyUI `main.py` 与所选 Checkpoint 的 SHA-256，再用 Windows 只读文件守卫固定三者的身份和内容。启动命令使用守卫导出的 Volume-GUID 稳定路径，避免验证后发生盘符 ABA Remap；HTTP Probe 仍会确认 ComfyUI 只暴露准确的 Checkpoint Key。
 
-所以第一版的 `checkpoint_sha256` 是管理员审查与 Artifact Provenance 声明，不是运行时文件证明。若以后由 Elysia 管理 ComfyUI 进程，必须在启动前从可信文件边界验证实际模型，再把经过验证的 Runtime 交给 Adapter。
+这不是完整的软件供应链证明：当前配置没有为 ComfyUI 的每个源码模块和 Python Site Package 建立逐文件 Manifest。Runtime 与 Python 环境仍必须来自用户明确选择且受信的固定本机安装；版本升级后需要更新受审 Hash 并重新运行真实 Smoke Test。后续安装器若负责下载 Runtime，应增加完整签名/Manifest 验证，而不是把只验证 `main.py` 描述成整个依赖树均已认证。
 
 ---
 
@@ -202,7 +203,7 @@ ComfyUI 的 Raw Model List 只返回模型 Key，不返回本机 Checkpoint 实�
 
 `SaveImage` 的 Prefix 只包含 Elysia 固定前缀与 Core 创建的 UUID。后续代码不依赖 ComfyUI 的本机输出路径，也不会把 Runtime 返回的文件名当作 Windows 路径打开。
 
-但 `SaveImage` 仍会先把源 PNG 持久化到 ComfyUI 的 Output Directory，ComfyUI `/history` 也会保存完整 Graph，通常包括正负 Prompt。Canonicalizer 只清理取回的副本，不能清理这些 Runtime 侧 Artifact。正因为这一点，Raw Adapter 不是安全的生产会话；未来受管 Runtime 必须使用隔离 Output/Temp/User/Input Directory、禁用 Metadata，并在允许结果发布前清理精确 History 与文件。
+`SaveImage` 仍会先把源 PNG 持久化到 ComfyUI 的 Output Directory，ComfyUI `/history` 也会在内存中保存完整 Graph，通常包括正负 Prompt。Canonicalizer 只清理取回副本中的 Metadata，因此 Raw Adapter 不是安全的生产会话。受管 Runtime 把 Input/Output/Temp/User/Cache 全部放进单次任务根，禁用文件 Metadata，在结果发布前终止整个私有实例并删除任务根；进程退出也同时销毁该实例的内存 History。
 
 ---
 
@@ -225,7 +226,7 @@ Raw Adapter 的 `is_managed_private_runtime` 固定为 `False`，不从 `image_g
 
 ### 8.2 Preflight 与提交
 
-提交前，Adapter 使用 `/object_info/{node}` 检查六类必需 Built-in Node，并用 `/models/checkpoints` 确认 Profile 声明的准确 Checkpoint Key 存在。它不会自动安装缺失节点、下载模型或选择名字相近的替代品。
+私有子进程启动后，Supervisor 先用 `/system_stats` 确认 API 和节点初始化完成；响应含有 Child Command Line，因此只验证必要字段，不返回或记录完整文档。随后 Adapter 使用 `/object_info/{node}` 检查六类必需 Built-in Node，并用 `/models/checkpoints` 确认 Profile 声明的准确 Checkpoint Key 存在。它不会自动安装缺失节点、下载模型或选择名字相近的替代品。API 已就绪后的缺节点/缺模型属于稳定配置错误，不会无意义地重试完整启动超时。
 
 Adapter 先在任何 Submission I/O 发生前预生成 Canonical `prompt_id`、`client_id` 与 Workflow Output Prefix，供未来 Durable Caller 先记录；随后 `/prompt` Payload 只含这组身份与固定 Graph。Response 必须回显完全相同的 `prompt_id`。`/history/{prompt_id}` 还必须精确匹配 Prompt ID、Client ID、预期 Output Node 和文件 Prefix；任一不一致、冲突或外来记录都会 Fail Closed。Node Error 或异常响应会转换成稳定、脱敏的项目错误。
 
@@ -276,9 +277,9 @@ ComfyUI 的 `/view` 返回值先由 `image_generation/png.py` 处理，不能直
 
 ## 10. Core Service 生命周期
 
-`ImageGenerationCore.generate()` 定义同步、单次、无 Gallery 持久化的可信用例。它的构造函数只接受同时声明 `is_managed_private_runtime is True` 并持有 Composition Root 私有 Capability Identity 的会话；底层 `HttpComfyUiClient` 固定为 `False` 且没有该 Capability，因此当前仓库没有可用于生产执行的具体组合，调用会在提交前 Fail Closed。测试中的 Managed Fake 只验证合同，不代表已经实现真实 Runtime Supervisor。
+`ImageGenerationCore.generate()` 定义同步、单次、无 Gallery 持久化的可信用例。它的构造函数只接受同时声明 `is_managed_private_runtime is True` 并持有 Composition Root 私有 Capability Identity 的会话；底层 `HttpComfyUiClient` 固定为 `False` 且没有该 Capability。`create_managed_image_generation_core()` 是当前唯一公开的具体组合入口，它创建 `ManagedComfyUiRuntime` 后再注入 Core。
 
-未来受管会话接通后，进度闭集为：
+进度闭集为：
 
 ```text
 validating → probing → submitting → sampling → verifying → completed
@@ -305,22 +306,25 @@ validating → probing → submitting → sampling → verifying → completed
 - 导出路径或文件选择。
 - Electron Event。
 - Process-level GPU Lease。
-- 启动、拥有和回收 ComfyUI 子进程及其私有目录。
 
-这些职责必须由后续可信 Integration Layer 添加，不能偷偷塞进同步 Core；在它们完成之前不得绕过 `is_managed_private_runtime` Gate 来启用实际生成。
+子进程和私有目录由注入的 Managed Runtime 负责，而不是 Core 自身；其余职责必须由后续 Desktop Integration Layer 添加，不能绕过 `is_managed_private_runtime` Gate。
 
-### 10.1 下一层受管 Runtime 的最低合同
+### 10.1 已实现的受管 Runtime 合同
 
-首个后续实现必须：
+`ManagedComfyUiRuntime` 当前实现：
 
 - 启动并持有唯一 Child PID，使用随机 Loopback Port；绝不接管或终止用户自行启动的共享 ComfyUI。
-- 为每个受管实例设置 Elysia 拥有的隔离 Input、Output、Temp 与 User Directory。
-- 使用 `--disable-metadata`、`--disable-all-custom-nodes`、`--disable-api-nodes` 与 `--disable-auto-launch` 收窄执行面。
-- 在提交前持久记录预生成的 Prompt/Client Identity；取消和超时后继续收敛到 Native Terminal State。
-- 精确清理本 Job 的 History 与源/临时文件，并在清理无法确认时禁止发布结果。
-- API 失联时只终止所拥有的 Child PID，等待退出后再清理私有目录。
+- 为每个受管实例设置 Elysia 拥有的隔离 Input、Output、Temp、User、Cache 与空 Frontend Directory。
+- Private State Root 必须位于固定本机卷，且不能与 Runtime、Interpreter 或 Models 路径重叠；发现任何已有 Entry 都拒绝创建新任务。
+- 使用 `--disable-metadata`、`--disable-all-custom-nodes`、`--offline`、`--disable-assets`、`--disable-partner-nodes` 与 `--disable-auto-launch` 收窄执行面。
+- 用最小闭合环境启动；Temp、User、HF/Torch/CUDA/Triton/Numba/Matplotlib/Pip 等常见缓存全部指向单次运行根。
+- API 失联、取消、推理失败或验证失败时只终止所拥有的 Job Object 进程树，确认停止后再释放 Guard 和删除准确 UUID Root。
+- 删除前完整盘点且不跟随 Symlink/Junction，只允许常规文件/目录，并限制 Entry 数量与目录深度，防止异常 Runtime 把清理变成无界遍历。
 - 只由受审 Composition Root 注入私有 Capability；不能仅用一个可自行声明的 Boolean 冒充 Managed Session。
 - 实现幂等 `finalize(handle)`，使提交前取消、提交失败、推理失败、验证失败和成功都能证明终态与清理完成。
+- 用 Terminal Lock 串行化 Startup/Finalize/Close，避免 Close 返回后仍有子进程启动，或两个终止调用重复删除同一目录。
+
+如果宿主进程硬崩溃或机器断电，Windows Job Object 会在宿主句柄关闭时终止子进程，但磁盘 UUID Root 仍可能存在。下一次 Preflight 发现任何残留或并发拥有者都会 Fail Closed，并保留现场，不会猜测归属后自动删除。未来恢复 UI 应先展示并显式处理这种残留。
 
 ---
 
@@ -353,7 +357,7 @@ validating → probing → submitting → sampling → verifying → completed
 爱莉希雅 GPT-SoVITS 随附说明明确禁止 R18 使用。因此：
 
 - 成人图片生成路径不得调用爱莉希雅 GPT-SoVITS、它的参考音频或任何衍生语音资产。
-- 成人模式状态、进度、成功或失败提示必须保持无声，或只使用与该模型完全无关且许可证允许的通用系统提示。
+- R18 图片的状态、进度、成功或失败提示必须保持无声，或只使用与该模型完全无关且许可证允许的通用系统提示。
 - Image Core 不导入 `voice/`，也不携带 Voice Profile/Emotion 字段。
 - 未来 Desktop 接线仍须保持这条隔离，不能因为普通 Voice Call 已启用就自动朗读成人图片 Prompt 或结果。
 
@@ -368,7 +372,7 @@ validating → probing → submitting → sampling → verifying → completed
 覆盖：
 
 - Spec ID、Prompt 长度、控制字符、Seed 和 Intent 边界。
-- 所有模式的原创虚构主体确认、成人额外 Opt-in、无数字年龄要求、普通模式露骨内容分流，以及明显未成年人/年龄模糊、真实人物、多主体和已有角色矛盾拒绝。
+- 单一内容路径的原创虚构主体确认、普通/R18 描述共同接收、无数字年龄要求，以及明显未成年人/年龄模糊、真实人物、多主体和已有角色矛盾拒绝。
 - Unicode NFKC/Casefold 安全 Shadow、`embedding:` 模型引用拒绝、Negative Prompt 排除语义及安全 Anchor 反向否定拒绝；词法检查仅作为非对抗性 Tripwire。
 - Profile Checkpoint Key、Digest、Size、Sampler 与 Catalog 不变量。
 - 不同 Prompt Dialect 的固定 Prefix。
@@ -382,6 +386,7 @@ validating → probing → submitting → sampling → verifying → completed
 
 - Origin 规范化与远程/凭证/Path 拒绝。
 - Node/Checkpoint Probe、预生成 Prompt/Client Identity、固定 Graph 提交、Prompt/Client/Output Prefix 的精确 History 关联、明确成功终态与 PNG Fetch。
+- `/system_stats` Readiness 合同、敏感 `argv` 丢弃和畸形响应拒绝。
 - HTTP Body 绝对 Deadline、Job 总 Deadline、慢速滴流与大小上限。
 - Redirect 拒绝和外来 Prompt Record 拒绝。
 - Pending 精确删除。
@@ -389,26 +394,40 @@ validating → probing → submitting → sampling → verifying → completed
 - 重复/跨队列 Prompt Ownership 拒绝；Exclusive Instance 只向自己的唯一 Running Prompt 发送 Targeted Interrupt。
 - 输出文件名、子目录和扩展名的 Traversal/Alias 拒绝。
 
+### `tests/test_managed_comfyui.py`
+
+使用封闭依赖注入而不启动 GPU 进程，覆盖：
+
+- 无副作用文件 Preflight、固定本机卷、Hash、稳定 Guard Path 和额外模型根拒绝。
+- 完整安全启动命令、闭合环境、私有目录和准确 Loopback PID 所有权。
+- 启动失败、早退、错误 PID、Readiness 超时、稳定配置失败和无效 Handle 的逐层回滚。
+- 成功生命周期、提交/Handle/Workflow/Output 关联、任意 Cancel 异常后的权威进程终止。
+- Finalize/Close 竞态串行化、幂等关闭、清理失败重试、旧 PID 重用和崩溃残留 Fail-Closed。
+
+### 私有目录与端口测试
+
+`tests/test_private_run_directory.py` 验证准确 UUID Root、Sibling Preservation、Redirect/Reparse/Special Node、Entry/Depth Budget；`tests/test_windows_loopback_owner.py` 验证 Windows IPv4 Loopback Listener 必须同时匹配地址、端口和 Child PID。
+
 这些测试不安装 ComfyUI、不加载真实 Checkpoint，也不使用 GPU。真实 Runtime、具体模型画质、VRAM 峰值和长时间取消仍需要单独的显式本机 Smoke/Soak 验收。
 
 ---
 
 ## 14. 下一步
 
-### 第一优先：Elysia-managed Private ComfyUI Runtime
-
-- 实现上一节列出的 Child PID、随机 Loopback Port、隔离 Input/Output/Temp/User Directory 与禁用开关。
-- 把底层 Raw Adapter 包在拥有完整 Cleanup/Terminal-Wait 合同的 Managed Session 中，并只在受审 Composition Root 为该 Session 注入私有 Capability；Boolean 本身不构成准入。
-- 对成功、失败、取消、超时、丢失 POST Response、Backend Crash 和 API 失联分别验证 History/File Cleanup；清理不确定即不发布。
-- 在真实 Runtime 上确认 `SaveImage`、`/history`、退出和重启后的残留边界。
-
-### 第二优先：Desktop Protocol、Settings 与 Gallery
+### 第一优先：Desktop Protocol、Settings 与 Gallery
 
 - 定义路径无关的 Image Request/Progress/Result/Error DTO。
 - 在 Backend 组合受信 Profile Catalog 与 Managed Runtime Session，不直接组合 Raw `HttpComfyUiClient`。
-- 加入 Desktop Settings：Runtime Address、已审核 Profile、默认尺寸、成人模式默认关闭。
+- 加入 Desktop Settings：Runtime/Models/Private State Folder、已审核 Profile 与默认尺寸；不提供内容模式开关。
 - 实现持久化 Gallery Manifest、Canonical PNG 原子写入、导出、删除、容量和恢复。
 - Renderer 只获得 Opaque Artifact ID、Metadata 和受限预览能力，不获得本机模型/输出路径。
+
+### 第二优先：真实 Runtime 与模型验收
+
+- 在明确版本的标准 ComfyUI Source Checkout 上验证安全启动参数、`/system_stats`、Built-in Nodes、`SaveImage`、退出与重启行为。
+- 对实际 Checkpoint 记录来源、许可证、Hash、Prompt Dialect、画质、VRAM 峰值和单图时间。
+- 为受管 ComfyUI/Python 依赖树增加完整 Manifest 或签名验证；当前只固定 Python、`main.py` 与 Checkpoint，不能夸大为整个安装均已认证。
+- 加入崩溃残留的用户可见恢复流程；所有自动删除仍必须有可证明的精确归属。
 
 ### 第三优先：GPU Admission 与恢复
 

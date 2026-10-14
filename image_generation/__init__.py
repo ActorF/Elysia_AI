@@ -11,7 +11,8 @@ from .comfyui import (
     ComfyPromptHandle,
     ComfyUiConfig,
 )
-from .domain import ContentMode, ImageGenerationSpec, ImageIntent
+from .composition import create_managed_image_generation_core
+from .domain import ImageGenerationSpec, ImageIntent
 from .exceptions import (
     ImageGenerationCancelledError,
     ImageGenerationError,
@@ -30,6 +31,7 @@ from .profiles import (
     ModelProfileCatalog,
     PromptDialect,
 )
+from .managed_comfyui import ManagedComfyUiConfig
 from .png import CanonicalPng, canonicalize_png
 from .service import (
     GeneratedImageResult,
@@ -39,11 +41,11 @@ from .service import (
 )
 
 __all__ = [
-    "ContentMode",
     "CanonicalPng",
     "ComfyOutputDescriptor",
     "ComfyPromptHandle",
     "ComfyUiConfig",
+    "create_managed_image_generation_core",
     "ImageGenerationCancelledError",
     "ImageGenerationError",
     "ImageGenerationFailedError",
@@ -63,6 +65,7 @@ __all__ = [
     "ModelArchitecture",
     "ModelProfile",
     "ModelProfileCatalog",
+    "ManagedComfyUiConfig",
     "PromptDialect",
     "canonicalize_png",
 ]

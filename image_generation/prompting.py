@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .domain import (
-    ContentMode,
     ImageGenerationSpec,
     MAX_COMPILED_PROMPT_CODEPOINTS,
 )
@@ -14,7 +13,6 @@ from .profiles import ModelProfile, PromptDialect
 
 
 _ADULT_SUBJECT = "original fictional adult character, clearly adult"
-_GENERAL_SUBJECT = "original fictional adult character"
 _COMMON_NEGATIVE = (
     "child, children, minor, underage, teenager, teen, loli, shota, "
     "young-looking subject, bad anatomy, malformed hands, extra fingers, "
@@ -63,14 +61,9 @@ def compile_prompts(
     if spec.profile_id != profile.profile_id:
         raise ValueError("The image spec and model profile IDs do not match.")
 
-    subject = (
-        _ADULT_SUBJECT
-        if spec.content_mode is ContentMode.ADULT
-        else _GENERAL_SUBJECT
-    )
     positive = ", ".join((
         _DIALECT_POSITIVE_PREFIXES[profile.prompt_dialect],
-        subject,
+        _ADULT_SUBJECT,
         *spec.prompt_components,
     ))
     negative_parts = [

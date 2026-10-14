@@ -115,6 +115,13 @@ class _ServerState:
         self.requests: list[tuple[str, str, object | None]] = []
         self.submitted: dict[str, Any] | None = None
         self.client_id: str | None = None
+        self.system_stats: object = {
+            "system": {
+                "comfyui_version": "0.3.65",
+                "argv": ["main.py", "--sensitive-fixture-token"],
+            },
+            "devices": [{"name": "synthetic-device"}],
+        }
         self.output_filename = "Elysia-00000000-0000-4000-8000-000000000000_00001_.png"
         self.image = _png()
 
@@ -210,6 +217,9 @@ class _Handler(BaseHTTPRequestHandler):
         state.requests.append(("GET", parsed.path, parse_qs(parsed.query)))
         if parsed.path in state.redirect_paths:
             self._send(302, b"", "text/plain", location="http://example.com/")
+            return
+        if parsed.path == "/system_stats":
+            self._json(state.system_stats)
             return
         if parsed.path.startswith("/object_info/"):
             node_class = parsed.path.rsplit("/", 1)[1]
@@ -402,6 +412,46 @@ def test_raw_adapter_never_claims_a_managed_private_runtime() -> None:
 
     with _fake_server() as (base_url, _state):
         assert _client(base_url).is_managed_private_runtime is False
+
+
+def test_readiness_probe_accepts_initialized_runtime_without_returning_stats(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Discard system statistics because current ComfyUI includes argv secrets."""
+
+    caplog.set_level("DEBUG")
+    with _fake_server() as (base_url, state):
+        result = _client(base_url).probe_ready()
+
+    assert result is None
+    assert ("GET", "/system_stats", {}) in state.requests
+    assert "sensitive-fixture-token" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        None,
+        [],
+        {},
+        {"system": {}, "devices": []},
+        {"system": {"comfyui_version": ""}, "devices": []},
+        {"system": {"comfyui_version": 3}, "devices": []},
+        {"system": {"comfyui_version": "0.3.65"}, "devices": {}},
+        {
+            "system": {"comfyui_version": "0.3.65"},
+            "devices": [{}] * 257,
+        },
+    ],
+)
+def test_readiness_probe_rejects_malformed_system_stats(document: object) -> None:
+    """Fail closed when a listener is not an initialized compatible runtime."""
+
+    with _fake_server() as (base_url, state):
+        state.system_stats = document
+
+        with pytest.raises(ImageGenerationProtocolError, match="invalid"):
+            _client(base_url).probe_ready()
 
 
 def test_probe_fails_closed_when_the_checkpoint_is_not_installed() -> None:

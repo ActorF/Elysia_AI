@@ -14,7 +14,7 @@ import pytest
 
 import image_generation.service as image_service
 from image_generation.comfyui import ComfyOutputDescriptor, ComfyPromptHandle
-from image_generation.domain import ContentMode, ImageGenerationSpec
+from image_generation.domain import ImageGenerationSpec
 from image_generation.exceptions import (
     ImageGenerationCancelledError,
     ImageGenerationProfileError,
@@ -99,7 +99,7 @@ def _profile(
 
 
 def _spec(**changes: object) -> ImageGenerationSpec:
-    """Return one general-mode structured request for unit tests."""
+    """Return one single-path structured request for unit tests."""
 
     values: dict[str, object] = {
         "profile_id": "anime-local",
@@ -115,7 +115,7 @@ def _spec(**changes: object) -> ImageGenerationSpec:
     return ImageGenerationSpec(**values)  # type: ignore[arg-type]
 
 
-def test_general_spec_normalizes_components_and_preserves_order() -> None:
+def test_spec_normalizes_components_and_preserves_order() -> None:
     """Keep UI component order deterministic while trimming benign whitespace."""
 
     spec = _spec(appearance="  pink hair  ", lighting="soft light")
@@ -130,22 +130,7 @@ def test_general_spec_normalizes_components_and_preserves_order() -> None:
     )
 
 
-def test_adult_mode_requires_explicit_fictional_adult_confirmation() -> None:
-    """Do not let selecting a content label silently authorize adult output."""
-
-    with pytest.raises(ImageGenerationSafetyError, match="confirmation"):
-        _spec(content_mode=ContentMode.ADULT)
-
-    accepted = _spec(
-        content_mode=ContentMode.ADULT,
-        adult_confirmed=True,
-        appearance="fictional adult woman with silver hair",
-    )
-
-    assert accepted.adult_confirmed is True
-
-
-def test_every_mode_requires_original_fictional_subject_confirmation() -> None:
+def test_every_request_requires_original_fictional_subject_confirmation() -> None:
     """Make the no-real-person boundary an explicit structured assertion."""
 
     with pytest.raises(ImageGenerationSafetyError, match="original fictional"):
@@ -160,7 +145,7 @@ def test_every_mode_requires_original_fictional_subject_confirmation() -> None:
         "真人明星",
     ],
 )
-def test_every_mode_rejects_obvious_real_person_contradictions(
+def test_every_request_rejects_obvious_real_person_contradictions(
     appearance: str,
 ) -> None:
     """Reject text that contradicts the original-fictional assertion."""
@@ -186,8 +171,6 @@ def test_adult_boundary_does_not_require_or_reject_adult_age_text(
     """Allow adult age wording while keeping numeric age entirely optional."""
 
     spec = _spec(
-        content_mode=ContentMode.ADULT,
-        adult_confirmed=True,
         appearance=appearance,
     )
 
@@ -225,17 +208,13 @@ def test_adult_boundary_does_not_require_or_reject_adult_age_text(
         "ｌｏｌｉ",
     ],
 )
-def test_adult_mode_rejects_obvious_contradictory_minor_terms(
+def test_request_rejects_obvious_contradictory_minor_terms(
     appearance: str,
 ) -> None:
-    """Catch explicit contradictions even after the adult affirmation is set."""
+    """Catch explicit contradictions to the fixed adult subject boundary."""
 
     with pytest.raises(ImageGenerationSafetyError, match="minor"):
-        _spec(
-            content_mode=ContentMode.ADULT,
-            adult_confirmed=True,
-            appearance=appearance,
-        )
+        _spec(appearance=appearance)
 
 
 @pytest.mark.parametrize(
@@ -246,8 +225,8 @@ def test_adult_mode_rejects_obvious_contradictory_minor_terms(
         "young-looking person",
     ],
 )
-def test_general_mode_also_rejects_non_adult_subjects(appearance: str) -> None:
-    """Keep general mode from bypassing the adult-only subject contract."""
+def test_request_rejects_additional_non_adult_subjects(appearance: str) -> None:
+    """Keep alternate minor wording outside the adult-only contract."""
 
     with pytest.raises(ImageGenerationSafetyError, match="minor"):
         _spec(appearance=appearance)
@@ -268,23 +247,25 @@ def test_general_mode_also_rejects_non_adult_subjects(appearance: str) -> None:
         "explicit XXX image",
     ],
 )
-def test_general_mode_routes_explicit_content_through_adult_opt_in(
+def test_explicit_content_uses_the_same_generation_contract(
     appearance: str,
 ) -> None:
-    """Require the categorical adult affirmation for obvious explicit text."""
+    """Accept explicit text without a separate mode or confirmation field."""
 
-    with pytest.raises(ImageGenerationSafetyError, match="adult mode"):
-        _spec(appearance=appearance)
+    spec = _spec(appearance=appearance)
 
-
-def test_general_mode_routes_topless_content_through_adult_opt_in() -> None:
-    """Treat explicit undress wording as adult content, not ordinary styling."""
-
-    with pytest.raises(ImageGenerationSafetyError, match="adult mode"):
-        _spec(outfit="topless portrait")
+    assert spec.appearance == appearance
 
 
-def test_general_mode_can_exclude_explicit_terms_in_negative_prompt() -> None:
+def test_topless_content_uses_the_same_generation_contract() -> None:
+    """Accept explicit outfit wording without a second request path."""
+
+    spec = _spec(outfit="topless portrait")
+
+    assert spec.outfit == "topless portrait"
+
+
+def test_request_can_exclude_explicit_terms_in_negative_prompt() -> None:
     """Do not mistake a requested exclusion for positive explicit content."""
 
     spec = _spec(negative_prompt="nude, erotic")
@@ -385,18 +366,15 @@ def test_original_character_appearance_rejects_a_proper_person_name() -> None:
     """Keep named real or existing identities out of the first workflow."""
 
     with pytest.raises(ImageGenerationSafetyError, match="proper name"):
-        _spec(
-            content_mode=ContentMode.ADULT,
-            adult_confirmed=True,
-            appearance="Taylor Swift nude",
-        )
+        _spec(appearance="Taylor Swift nude")
 
 
-def test_general_mode_rejects_stale_adult_confirmation() -> None:
-    """Prevent a stale checkbox from being mistaken for the selected mode."""
+@pytest.mark.parametrize("removed_field", ["content_mode", "adult_confirmed"])
+def test_spec_rejects_removed_content_mode_controls(removed_field: str) -> None:
+    """Keep legacy mode switches out of the unified request contract."""
 
-    with pytest.raises(ImageGenerationValidationError, match="only valid"):
-        _spec(adult_confirmed=True)
+    with pytest.raises(TypeError, match="unexpected keyword"):
+        _spec(**{removed_field: True})
 
 
 @pytest.mark.parametrize(
@@ -405,7 +383,6 @@ def test_general_mode_rejects_stale_adult_confirmation() -> None:
         ({"profile_id": "../model"}, "logical identifier"),
         ({"appearance": "bad\x00text"}, "control"),
         ({"seed": True}, "JSON-safe"),
-        ({"content_mode": "adult"}, "closed value"),
     ],
 )
 def test_spec_rejects_untyped_or_transport_unsafe_values(
@@ -474,15 +451,11 @@ def test_prompt_compiler_uses_profile_specific_dialects(
     assert "underage" in prompts.negative
 
 
-def test_adult_prompt_has_adult_subject_anchor_without_numeric_age() -> None:
-    """Represent the boundary as a categorical affirmation, not a fake age."""
+def test_prompt_always_has_adult_subject_anchor_without_numeric_age() -> None:
+    """Anchor every request as clearly adult without inventing numeric age."""
 
     prompts = compile_prompts(
-        _spec(
-            content_mode=ContentMode.ADULT,
-            adult_confirmed=True,
-            appearance="fictional adult woman",
-        ),
+        _spec(appearance="fictional adult woman"),
         _profile(),
     )
 
@@ -799,6 +772,11 @@ class _FakeClient:
         assert handle.prompt_id
         self.calls.append("finalize")
 
+    def close(self) -> None:
+        """Record deterministic ownership release for core lifecycle tests."""
+
+        self.calls.append("close")
+
 
 class _UnmanagedFakeClient(_FakeClient):
     """Represent an adapter attached to a shared external runtime."""
@@ -940,6 +918,17 @@ def test_core_generates_verified_bytes_with_monotonic_progress() -> None:
     assert [item.percent for item in progress] == sorted(
         item.percent for item in progress
     )
+
+
+def test_core_close_delegates_to_the_managed_runtime_owner() -> None:
+    """Give application shutdown an explicit child-process cleanup path."""
+
+    client = _FakeClient()
+    core = ImageGenerationCore(ModelProfileCatalog((_profile(),)), client)
+
+    core.close()
+
+    assert client.calls == ["close"]
 
 
 def test_core_cancellation_before_probe_has_no_runtime_side_effect() -> None:

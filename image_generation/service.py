@@ -121,6 +121,9 @@ class ComfyUiClient(Protocol):
     def finalize(self, handle: ComfyPromptHandle) -> object | None:
         """Erase private state and return only the contractually required null."""
 
+    def close(self) -> None:
+        """Permanently stop and release the managed runtime owner."""
+
 
 class ImageGenerationCore:
     """Generate one verified image through an injected trusted profile catalog."""
@@ -152,6 +155,7 @@ class ImageGenerationCore:
             "wait_for_output",
             "fetch_png",
             "finalize",
+            "close",
         )
         if not all(callable(getattr(client, name, None)) for name in required_methods):
             raise TypeError("client does not implement the ComfyUiClient contract.")
@@ -160,6 +164,21 @@ class ImageGenerationCore:
         # process and its isolated directories may cross this composition root.
         self._profiles = profiles
         self._client = client
+
+    def close(self) -> None:
+        """Permanently close the injected managed runtime owner."""
+
+        self._client.close()
+
+    def __enter__(self) -> "ImageGenerationCore":
+        """Return this synchronous generation composition root."""
+
+        return self
+
+    def __exit__(self, _type: object, _value: object, _traceback: object) -> None:
+        """Close the managed runtime when leaving a context."""
+
+        self.close()
 
     @staticmethod
     def _cancelled(cancel_requested: Callable[[], bool] | None) -> bool:

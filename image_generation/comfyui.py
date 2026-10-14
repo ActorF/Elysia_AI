@@ -580,6 +580,33 @@ class HttpComfyUiClient:
                 "The configured local image checkpoint is unavailable."
             )
 
+    def probe_ready(self) -> None:
+        """Confirm that ComfyUI finished route and node initialization.
+
+        Current ComfyUI registers ``/system_stats`` only after extra-node
+        initialization and route assembly complete.  The response also embeds
+        the child command line, so this method validates only the minimum
+        readiness fields and never returns or logs the document.
+        """
+
+        document = self._request_json(
+            "GET",
+            "/system_stats",
+            timeout_seconds=self._config.probe_timeout_seconds,
+        )
+        if not isinstance(document, dict):
+            raise ImageGenerationProtocolError(_INVALID_RESPONSE_MESSAGE)
+        system = document.get("system")
+        devices = document.get("devices")
+        if (
+            not isinstance(system, dict)
+            or type(system.get("comfyui_version")) is not str
+            or not system["comfyui_version"].strip()
+            or not isinstance(devices, list)
+            or len(devices) > 256
+        ):
+            raise ImageGenerationProtocolError(_INVALID_RESPONSE_MESSAGE)
+
     def prepare(self, workflow: CompiledWorkflow) -> ComfyPromptHandle:
         """Mint a prompt identity before any submission network I/O occurs.
 

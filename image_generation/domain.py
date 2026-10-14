@@ -80,21 +80,6 @@ _CHINESE_DIGITS: Final = {
     "八": 8,
     "九": 9,
 }
-_EXPLICIT_CONTENT_TERM_PATTERN: Final = re.compile(
-    r"(?:"
-    r"\b(?:nsfw|r-?18|xxx|nude|nudity|naked|topless|bottomless|porn|"
-    r"pornographic|hentai|ecchi|lewd|"
-    r"erotic|sex|sexual|intercourse|masturbat(?:e|ing|ion)|penetration|"
-    r"fellatio|cunnilingus|blowjob|handjob|orgasm|semen|genitals?|penis|"
-    r"vagina|vulva|pussy|cock|anus|nipples?|(?:bare|exposed)\s+breasts?|"
-    r"no\s+clothes|explicit\s+(?:adult\s+)?(?:image|scene|content)|uncensored|"
-    r"bdsm|bondage)\b"
-    r"|裸体|裸體|全裸|性交|性爱|性愛|色情|色图|色圖|成人向|口交|肛交|"
-    r"自慰|高潮|精液|阴茎|陰莖|阴道|陰道|乳头|乳頭|露点|露點|做爱|做愛|"
-    r"裸胸|上空"
-    r")",
-    flags=re.IGNORECASE,
-)
 _REAL_PERSON_REFERENCE_PATTERN: Final = re.compile(
     r"(?:"
     r"\b(?:real[-\s]+person|real[-\s]+human|celebrity|public\s+figure|"
@@ -200,13 +185,6 @@ def _parse_chinese_age(value: str) -> int:
         return 100
 
 
-class ContentMode(StrEnum):
-    """Select the general or explicitly opted-in adult content boundary."""
-
-    GENERAL = "general"
-    ADULT = "adult"
-
-
 class ImageIntent(StrEnum):
     """Identify the reviewed generation workflow requested by the user."""
 
@@ -264,11 +242,12 @@ def validate_prompt_component(
 class ImageGenerationSpec:
     """Describe one reviewed single-image request without runtime internals.
 
-    Adult content does not require a numeric fictional age.  It does require
-    the caller to select adult mode and affirm that every depicted subject is
-    fictional and adult.  The affirmation is an authorization boundary, while
-    the conservative term check catches obvious contradictory requests; it is
-    not represented as a complete natural-language content classifier.
+    Explicit and non-explicit descriptions share this one request contract.
+    Every request must affirm an original fictional subject, and the compiler
+    always anchors that subject as clearly adult.  Conservative contradiction
+    checks reject obvious minor, real-person, existing-character, and
+    multi-subject requests; they are deliberately bounded lexical tripwires,
+    not a complete natural-language identity or age classifier.
     """
 
     profile_id: str
@@ -283,8 +262,6 @@ class ImageGenerationSpec:
     negative_prompt: str = ""
     seed: int = 0
     original_fictional_confirmed: bool = False
-    content_mode: ContentMode = ContentMode.GENERAL
-    adult_confirmed: bool = False
     intent: ImageIntent = ImageIntent.NEW_CHARACTER
 
     def __post_init__(self) -> None:
@@ -319,14 +296,6 @@ class ImageGenerationSpec:
         if not self.original_fictional_confirmed:
             raise ImageGenerationSafetyError(
                 "Image generation requires confirmation of an original fictional subject."
-            )
-        if type(self.content_mode) is not ContentMode:
-            raise ImageGenerationValidationError(
-                "content_mode must be a supported closed value."
-            )
-        if type(self.adult_confirmed) is not bool:
-            raise ImageGenerationValidationError(
-                "adult_confirmed must be a boolean."
             )
         if type(self.intent) is not ImageIntent or self.intent is not ImageIntent.NEW_CHARACTER:
             raise ImageGenerationValidationError(
@@ -372,9 +341,9 @@ class ImageGenerationSpec:
             raise ImageGenerationSafetyError(
                 "The negative prompt contradicts a required subject boundary."
             )
-        # Both modes compile to a clearly adult original character.  Rejecting
-        # contradictions here prevents callers from using general mode as a
-        # route around the adult-only subject boundary.
+        # Every accepted request compiles to a clearly adult original
+        # character.  Reject contradictions before prompt compilation so the
+        # fixed subject anchor is never treated as a repair for unsafe input.
         if (
             _MINOR_TERM_PATTERN.search(policy_text) is not None
             or _contains_explicit_minor_age(policy_text)
@@ -400,20 +369,6 @@ class ImageGenerationSpec:
             raise ImageGenerationSafetyError(
                 "This image workflow supports only a new original character."
             )
-        if self.content_mode is ContentMode.ADULT:
-            if not self.adult_confirmed:
-                raise ImageGenerationSafetyError(
-                    "Adult mode requires confirmation of fictional adult subjects."
-                )
-        elif self.adult_confirmed:
-            raise ImageGenerationValidationError(
-                "adult_confirmed is only valid when adult mode is selected."
-            )
-        elif _EXPLICIT_CONTENT_TERM_PATTERN.search(policy_text) is not None:
-            raise ImageGenerationSafetyError(
-                "Explicit sexual content requires the confirmed adult mode."
-            )
-
     @property
     def prompt_components(self) -> tuple[str, ...]:
         """Return non-empty positive components in deterministic UI order."""
@@ -434,7 +389,6 @@ class ImageGenerationSpec:
 
 
 __all__ = [
-    "ContentMode",
     "ImageGenerationSpec",
     "ImageIntent",
     "MAX_COMPILED_PROMPT_CODEPOINTS",
