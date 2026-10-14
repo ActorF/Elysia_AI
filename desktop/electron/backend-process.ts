@@ -67,6 +67,10 @@ import {
   type WorkPlan, type WorkPlanState, type WorkPlanCreateParams, type WorkPlanControlParams, type WorkPlanConfirmParams,
 } from './work-plan-protocol.js'
 import {
+  parseWorkAuditForChat, parseWorkUndoResultForEntry,
+  type WorkAuditEntry, type WorkAuditState, type WorkUndoParams,
+} from './work-audit-protocol.js'
+import {
   SpeechDeliveryCoordinator,
   type SpeechDeliveryStatus,
   type TrustedSpeechPlaybackOwner,
@@ -381,6 +385,11 @@ interface PendingRequest {
   workPlanSequence?: number
   resolveWorkPlan?: (state: WorkPlanState) => void
   rejectWorkPlan?: (error: Error) => void
+  workAuditSequence?: number
+  workAuditEpoch?: number
+  workUndoEntry?: WorkAuditEntry
+  resolveWorkAudit?: (state: WorkAuditState) => void
+  rejectWorkAudit?: (error: Error) => void
   resolveSettingsState?: (state: DesktopSettingsState) => void
   rejectSettingsState?: (error: Error) => void
   resolveVoiceSettingsState?: (state: VoiceSettingsState) => void
@@ -523,6 +532,7 @@ const WORK_WORKSPACE_METHODS = new Set<ProtocolMethod>([
 const WORK_ACTION_METHODS = new Set<ProtocolMethod>([
   'work.tool.run', 'work.tool.preview', 'work.tool.confirm',
   'work.plan.create', 'work.plan.control', 'work.plan.confirm',
+  'work.undo',
 ])
 type WorkPlanMethod = 'work.plan.get' | 'work.plan.create' | 'work.plan.control' | 'work.plan.confirm'
 const WORK_PLAN_METHODS = new Set<ProtocolMethod>(['work.plan.get', 'work.plan.create', 'work.plan.control', 'work.plan.confirm'])
@@ -598,6 +608,12 @@ export class BackendProcess {
   // the lease published by a later control or confirmation acknowledgement.
   private readonly workPlanAppliedSequences = new Map<string, number>()
   private workPlanSequence = 0
+  private readonly workUndoEntries = new Map<string, Map<string, WorkAuditEntry>>()
+  // History can arrive after a mutation or a newer history page. Both fences
+  // keep an old response from making a consumed Undo token current again.
+  private workAuditEpoch = 0
+  private workAuditSequence = 0
+  private workAuditAppliedSequence = 0
   private readonly timedOutVoiceCaptureRequestIds = new Set<string>()
   private readonly timedOutSpeechStartRequestIds = new Set<string>()
   private expectedExit = false
@@ -743,6 +759,7 @@ export class BackendProcess {
     this.workPlans.clear()
     this.workPlanAppliedSequences.clear()
     this.workApprovals.clear()
+    this.invalidateWorkUndo()
     this.pendingRequests.clear()
     this.timedOutVoiceCaptureRequestIds.clear()
     this.timedOutSpeechStartRequestIds.clear()
@@ -1605,6 +1622,46 @@ export class BackendProcess {
     return this.requestWorkPlan('work.plan.get', { chatId })
   }
 
+  /** Load redacted owner history even when its previous Workspace was unbound. */
+  getWorkAudit(chatId: string): Promise<WorkAuditState> {
+    if (this.snapshot.status !== 'ready' || this.snapshot.chatId !== chatId
+      || !this.snapshot.capabilities.includes('work.audit')) {
+      return Promise.reject(new Error('Work history is unavailable for this Chat.'))
+    }
+    if (this.hasWorkPlanLease() || [...this.pendingRequests.values()].some((pending) => (
+      WORK_ACTION_METHODS.has(pending.method) || CHAT_GENERATION_METHODS.has(pending.method)
+      || VOICE_TRANSCRIPTION_METHODS.has(pending.method)
+    ))) return Promise.reject(new Error('Wait for the current action before reading Work history.'))
+    return new Promise((resolve, reject) => {
+      this.sendRequest('work.audit.list', { chatId }, chatId, {
+        workAuditSequence: ++this.workAuditSequence, workAuditEpoch: this.workAuditEpoch,
+        resolveWorkAudit: resolve, rejectWorkAudit: reject,
+      })
+    })
+  }
+
+  /** Consume one displayed eligible Undo token before its conditional inverse write. */
+  undoWorkAction(request: WorkUndoParams): Promise<WorkToolResultState> {
+    if (this.snapshot.status !== 'ready' || this.snapshot.chatId !== request.chatId
+      || !this.snapshot.capabilities.includes('work.undo')) {
+      return Promise.reject(new Error('Work Undo is unavailable for this Chat.'))
+    }
+    if (this.hasActiveMaintenanceWork()) {
+      return Promise.reject(new Error('Finish the current Chat, Voice, or Work action before Undo.'))
+    }
+    const entry = this.workUndoEntries.get(request.chatId)?.get(request.undoId)
+    if (entry === undefined || request.confirmed !== true) {
+      return Promise.reject(new Error('Refresh Work history and confirm an available Undo.'))
+    }
+    this.invalidateWorkUndo(request.chatId)
+    this.workApprovals.delete(request.chatId)
+    return new Promise((resolve, reject) => {
+      this.sendRequest('work.undo', request, request.chatId, {
+        workUndoEntry: entry, resolveWorkTool: resolve, rejectWorkTool: reject,
+      })
+    })
+  }
+
   /** Create a reviewed immutable call sequence without launching its worker. */
   createWorkPlan(request: WorkPlanCreateParams): Promise<WorkPlanState> {
     return this.requestWorkPlan('work.plan.create', request)
@@ -2355,6 +2412,15 @@ export class BackendProcess {
     return [...this.workPlans.values()].some(workPlanHasLease)
   }
 
+  private invalidateWorkUndo(chatId?: string): void {
+    // Revocation also advances a fence for history reads already in flight.
+    // Refresh after a settled conflict can reacquire still-eligible records;
+    // a page captured before the mutation cannot restore its consumed token.
+    this.workAuditEpoch += 1
+    if (chatId === undefined) this.workUndoEntries.clear()
+    else this.workUndoEntries.delete(chatId)
+  }
+
   private requestWorkPlan<Method extends WorkPlanMethod>(method: Method, params: RequestParamsByMethod[Method]): Promise<WorkPlanState> {
     if (this.snapshot.status !== 'ready' || this.snapshot.chatId !== params.chatId
       || !this.snapshot.capabilities.includes('work.plan')) return Promise.reject(new Error('Work plans are unavailable for this Chat.'))
@@ -2486,6 +2552,11 @@ export class BackendProcess {
       | 'workPlanSequence'
       | 'resolveWorkPlan'
       | 'rejectWorkPlan'
+      | 'workAuditSequence'
+      | 'workAuditEpoch'
+      | 'workUndoEntry'
+      | 'resolveWorkAudit'
+      | 'rejectWorkAudit'
       | 'resolveSettingsState'
       | 'rejectSettingsState'
       | 'resolveVoiceSettingsState'
@@ -2525,6 +2596,10 @@ export class BackendProcess {
     const requestId = randomUUID()
     const request = createRequest(requestId, method, params)
     const wireRequest = `${JSON.stringify(request)}\n`
+    if (method === 'work.tool.confirm' || method === 'work.plan.create'
+      || method === 'work.plan.confirm' || method === 'work.workspace.bind') {
+      this.invalidateWorkUndo(chatId)
+    }
     this.pendingRequests.set(requestId, {
       method,
       ...(chatId === undefined ? {} : { chatId }),
@@ -2680,6 +2755,13 @@ export class BackendProcess {
         }
       } else if (WORK_PLAN_METHODS.has(pending.method)) {
         this.validateWorkPlanResponse(pending, message.result)
+      } else if (pending.method === 'work.audit.list') {
+        parseWorkAuditForChat(message.result, pending.chatId!)
+      } else if (pending.method === 'work.undo') {
+        if (pending.workUndoEntry === undefined) {
+          throw new ProtocolValidationError('protocol.invalid_result', 'Work Undo request has no displayed audit record.')
+        }
+        parseWorkUndoResultForEntry(message.result, pending.workUndoEntry)
       } else if (SETTINGS_METHODS.has(pending.method)) {
         parseSettingsStateResult(message.result)
       } else if (VOICE_SETTINGS_METHODS.has(pending.method)) {
@@ -2849,6 +2931,8 @@ export class BackendProcess {
         pending.rejectWorkApproval?.(new Error('The Work change preview could not be prepared.'))
       }
       if (WORK_PLAN_METHODS.has(pending.method)) pending.rejectWorkPlan?.(new Error('The Work plan action could not complete.'))
+      if (pending.method === 'work.audit.list') pending.rejectWorkAudit?.(new Error('Work history could not be loaded.'))
+      if (pending.method === 'work.undo') pending.rejectWorkTool?.(new Error('The Work change could not be undone.'))
       if (SETTINGS_METHODS.has(pending.method)) {
         pending.rejectSettingsState?.(new Error(message.error.message))
       }
@@ -2985,6 +3069,7 @@ export class BackendProcess {
           this.workPlanAppliedSequences.clear()
         }
         this.workApprovals.clear()
+        this.invalidateWorkUndo()
       }
       if (result.activeChat.modelName !== this.snapshot.modelName) {
         this.protocolFailure(
@@ -3006,7 +3091,10 @@ export class BackendProcess {
 
     if (PROJECT_METHODS.has(pending.method)) {
       const result = parseProjectStateResult(message.result)
-      if (pending.method !== 'project.list' && pending.method !== 'project.open') this.workApprovals.clear()
+      if (pending.method !== 'project.list') {
+        this.workApprovals.clear()
+        this.invalidateWorkUndo()
+      }
       if (result.chatState.activeChat.modelName !== this.snapshot.modelName) {
         this.protocolFailure(
           'Active Chat model does not match the running Backend.',
@@ -3034,6 +3122,22 @@ export class BackendProcess {
     }
     if (pending.method === 'work.tools.list') {
       pending.resolveWorkTools?.(parseWorkToolsState(message.result))
+      return
+    }
+    if (pending.method === 'work.audit.list') {
+      const state = parseWorkAuditForChat(message.result, pending.chatId!)
+      if (pending.workAuditEpoch === this.workAuditEpoch
+        && (pending.workAuditSequence ?? 0) >= this.workAuditAppliedSequence
+        && ![...this.pendingRequests.values()].some((request) => request.method === 'work.undo')) {
+        this.workAuditAppliedSequence = pending.workAuditSequence ?? 0
+        this.workUndoEntries.set(pending.chatId!, new Map(state.entries
+          .filter((entry) => entry.undoId !== null).map((entry) => [entry.undoId!, entry])))
+      }
+      pending.resolveWorkAudit?.(state)
+      return
+    }
+    if (pending.method === 'work.undo') {
+      pending.resolveWorkTool?.(parseWorkUndoResultForEntry(message.result, pending.workUndoEntry!))
       return
     }
     if (pending.method === 'work.tool.run' || pending.method === 'work.tool.confirm') {
@@ -3771,6 +3875,7 @@ export class BackendProcess {
       pending.rejectWorkTool?.(new Error('Python Backend stopped before the Work tool completed.'))
       pending.rejectWorkApproval?.(new Error('Python Backend stopped before the Work preview completed.'))
       pending.rejectWorkPlan?.(new Error('Python Backend stopped before the Work plan completed.'))
+      pending.rejectWorkAudit?.(new Error('Python Backend stopped before Work history loaded.'))
       pending.rejectSettingsState?.(
         new Error(
           'Python Backend stopped before the Settings action completed.',
@@ -3814,6 +3919,7 @@ export class BackendProcess {
     this.workPlans.clear()
     this.workPlanAppliedSequences.clear()
     this.workApprovals.clear()
+    this.invalidateWorkUndo()
     this.pendingRequests.clear()
   }
 
@@ -3833,6 +3939,7 @@ export class BackendProcess {
       pending.rejectWorkTool?.(error)
       pending.rejectWorkApproval?.(error)
       pending.rejectWorkPlan?.(error)
+      pending.rejectWorkAudit?.(error)
       pending.rejectSettingsState?.(error)
       pending.rejectVoiceSettingsState?.(error)
       pending.rejectVoiceCapture?.(error)
@@ -3856,6 +3963,8 @@ export class BackendProcess {
       pending.rejectWorkApproval = undefined
       pending.resolveWorkPlan = undefined
       pending.rejectWorkPlan = undefined
+      pending.resolveWorkAudit = undefined
+      pending.rejectWorkAudit = undefined
       pending.resolveSettingsState = undefined
       pending.rejectSettingsState = undefined
       pending.resolveVoiceSettingsState = undefined
@@ -3884,6 +3993,7 @@ export class BackendProcess {
     this.workPlans.clear()
     this.workPlanAppliedSequences.clear()
     this.workApprovals.clear()
+    this.invalidateWorkUndo()
     this.pendingRequests.clear()
     this.timedOutVoiceCaptureRequestIds.clear()
     this.timedOutSpeechStartRequestIds.clear()
@@ -3908,6 +4018,7 @@ export class BackendProcess {
     this.workPlans.clear()
     this.workPlanAppliedSequences.clear()
     this.workApprovals.clear()
+    this.invalidateWorkUndo()
     this.pendingRequests.clear()
     this.timedOutVoiceCaptureRequestIds.clear()
     this.timedOutSpeechStartRequestIds.clear()

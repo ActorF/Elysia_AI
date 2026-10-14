@@ -8,6 +8,7 @@ import re
 from datetime import datetime
 
 from .contracts import TOOL_CATALOG, descriptor_to_data, ToolResult, ToolProtocolError, validate_plan_title, validate_tool_call, validate_tool_result
+from .audit_wire import validate_audit_page
 
 
 _METHOD_FIELDS = {
@@ -21,6 +22,8 @@ _METHOD_FIELDS = {
     "work.plan.create": {"chatId", "title", "calls"},
     "work.plan.control": {"chatId", "planId", "action"},
     "work.plan.confirm": {"chatId", "planId", "approvalId", "granted"},
+    "work.audit.list": {"chatId"},
+    "work.undo": {"chatId", "undoId", "confirmed"},
 }
 WORK_METHODS = tuple(_METHOD_FIELDS)
 _PLAN_STATES = {"pending", "running", "paused", "waiting", "succeeded", "failed", "cancelled"}
@@ -59,14 +62,20 @@ def validate_work_params(method: str, value: object) -> dict[str, Any]:
     elif method == "work.plan.control":
         if type(value["action"]) is not str or value["action"] not in {"start", "pause", "resume", "cancel", "next"}:
             raise ValueError("Work plan action is invalid.")
+    elif method == "work.undo":
+        _validate_id(value["undoId"], "undo")
+        if value["confirmed"] is not True:
+            raise ValueError("Work Undo requires explicit confirmation.")
     if method in {"work.plan.control", "work.plan.confirm"}:
         _validate_id(value["planId"], "plan")
     return dict(value)
 
 
 def validate_work_result(value: object) -> dict[str, Any]:
-    """Validate scope, a trusted catalog, or a bounded typed tool outcome."""
+    """Validate scope, trusted tools, explicit plans, or redacted bounded history."""
 
+    if isinstance(value, dict) and value.get("kind") == "work.audit":
+        return validate_audit_page(value)
     if isinstance(value, dict) and value.get("kind") == "work.plan":
         if set(value) != {"kind", "plan"}:
             raise ValueError("Work plan result fields are invalid.")

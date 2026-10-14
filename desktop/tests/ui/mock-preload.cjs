@@ -423,6 +423,11 @@ let workPlans = new Map()
 let nextWorkPlanNumber = 1
 let delayWorkPlanReads = false
 let pendingWorkPlanReads = []
+let workAuditEntries = []
+let workAuditOverrides = new Map()
+let workUndoData = new Map()
+let delayWorkUndo = false
+let pendingWorkUndos = []
 let delayWorkToolRuns = false
 let pendingWorkToolRuns = []
 const workFiles = new Map([
@@ -546,15 +551,46 @@ function mockWorkApproval(call) {
     expiresAt: '2100-01-01T00:00:00+00:00' }
 }
 
-function mockWorkWrite(approval, granted) {
-  if (!granted) return { status: 'denied', data: null, error: { code: 'permission_denied', message: 'The action was declined.' } }
+function recordWorkAudit(chatId, call, result, undoId = null) {
+  const args = call.arguments
+  const parameters = { path: args.path }
+  // Digests are fixed metadata in this isolated UI double. Actual hashing and
+  // backup verification belong to the Python/native acceptance tests; inverse
+  // writes here compare the virtual file contents before restoring them.
+  if (['create', 'edit'].includes(call.toolId)) {
+    parameters.contentBytes = new TextEncoder().encode(args.content).byteLength
+    parameters.contentSha256 = 'a'.repeat(64)
+  } else if (call.toolId === 'move') parameters.destination = args.destination
+  else if (call.toolId === 'search_files') {
+    parameters.queryCharacters = Array.from(args.query).length
+    parameters.querySha256 = 'b'.repeat(64)
+  }
+  const entry = { timestamp: new Date().toISOString(), chatId, projectId: null, toolId: call.toolId,
+    parameters, approver: 'user', result: result.status, error: result.error?.code ?? null,
+    undoId, recoverable: false, recovery: null }
+  workAuditEntries.unshift(entry)
+  workAuditOverrides.delete(chatId)
+  return entry
+}
+
+function mockWorkWrite(approval, granted, chatId) {
+  if (!granted) {
+    const result = { status: 'denied', data: null, error: { code: 'permission_denied', message: 'The action was declined.' } }
+    recordWorkAudit(chatId, approval.call, result)
+    return result
+  }
   const { toolId, arguments: args } = approval.call
+  const before = workFiles.get(args.path) ?? null
   if (toolId === 'create' || toolId === 'edit') workFiles.set(args.path, args.content)
   else if (toolId === 'move') { workFiles.set(args.destination, workFiles.get(args.path)); workFiles.delete(args.path) }
   else workFiles.delete(args.path)
   const data = { path: args.path, undoId: `undo_${approval.approvalId.slice(9)}` }
   if (toolId === 'move') data.destination = args.destination
-  return { status: 'succeeded', data, error: null }
+  const result = { status: 'succeeded', data, error: null }
+  const audit = recordWorkAudit(chatId, approval.call, result, data.undoId)
+  workUndoData.set(data.undoId, { chatId, call: clone(approval.call), before,
+    after: toolId === 'move' ? workFiles.get(args.destination) : workFiles.get(args.path) ?? null, audit })
+  return result
 }
 
 async function driveMockWorkPlan(plan) {
@@ -576,6 +612,7 @@ async function driveMockWorkPlan(plan) {
       // Logical cancellation immediately marks reads cancelled, but their
       // mocked native callback retains busy until the test releases it.
       if (plan.state === 'cancelled') return
+      recordWorkAudit(plan.chatId, step.call, result)
       step.result = result
       step.status = result.status === 'succeeded' ? 'succeeded' : 'failed'
       if (step.status === 'failed') { plan.state = 'failed'; return }
@@ -1585,6 +1622,7 @@ const desktopApi = {
     if (delayWorkToolRuns) {
       await new Promise((resolve) => { pendingWorkToolRuns.push(resolve) })
     }
+    recordWorkAudit(request.chatId, request.call, result)
     return { kind: 'work.result', result: clone(result) }
   },
 
@@ -1620,16 +1658,14 @@ const desktopApi = {
       return { kind: 'work.result', result: { status: 'denied', data: null,
         error: { code: 'permission_required', message: 'The action requires explicit approval.' } } }
     }
-    if (!request.granted) {
-      return { kind: 'work.result', result: { status: 'denied', data: null,
-        error: { code: 'permission_denied', message: 'The action was declined.' } } }
-    }
+    if (!request.granted) return { kind: 'work.result', result: mockWorkWrite(approval, false, request.chatId) }
     if (nextWorkToolResult !== null) {
       const result = clone(nextWorkToolResult)
       nextWorkToolResult = null
+      recordWorkAudit(request.chatId, approval.call, result)
       return { kind: 'work.result', result }
     }
-    return { kind: 'work.result', result: mockWorkWrite(approval, true) }
+    return { kind: 'work.result', result: mockWorkWrite(approval, true, request.chatId) }
   },
 
   getWorkPlan: async (chatId) => {
@@ -1645,6 +1681,8 @@ const desktopApi = {
         stepId: `step_${(index + 1).toString(16).padStart(32, '0')}`, call: clone(call),
         status: 'pending', result: null, approval: null,
       })) }
+    // The owner remains private in the double, outside the exact plan DTO.
+    Object.defineProperty(plan, 'chatId', { value: request.chatId, enumerable: false })
     workPlans.set(request.chatId, plan)
     workApprovals.delete(request.chatId)
     return { kind: 'work.plan', plan: clone(plan) }
@@ -1675,12 +1713,42 @@ const desktopApi = {
     const plan = workPlans.get(request.chatId)
     const step = plan?.steps.find((item) => item.approval?.approvalId === request.approvalId)
     if (plan?.planId !== request.planId || plan.state !== 'waiting' || step === undefined) throw new Error('Plan approval is not current.')
-    const result = mockWorkWrite(step.approval, request.granted)
+    const result = mockWorkWrite(step.approval, request.granted, request.chatId)
     step.approval = null; step.result = result
     step.status = result.status === 'succeeded' ? 'succeeded' : 'failed'
     plan.state = step.status === 'failed' ? 'failed' : 'running'
     if (plan.state === 'running') void driveMockWorkPlan(plan)
     return { kind: 'work.plan', plan: clone(plan) }
+  },
+
+  getWorkAudit: async (chatId) => {
+    record('getWorkAudit', [chatId])
+    const entries = workAuditEntries.filter((entry) => entry.chatId === chatId)
+    return clone(workAuditOverrides.get(chatId) ?? { kind: 'work.audit', entries: entries.slice(0, 100), truncated: entries.length > 100 })
+  },
+
+  undoWorkAction: async (request) => {
+    record('undoWorkAction', [request])
+    if (delayWorkUndo) await new Promise((resolve, reject) => { pendingWorkUndos.push({ resolve, reject }) })
+    const item = workUndoData.get(request.undoId)
+    if (item === undefined || item.chatId !== request.chatId || request.confirmed !== true) {
+      return { kind: 'work.result', result: { status: 'denied', data: null,
+        error: { code: 'undo_unavailable', message: 'The action can no longer be undone safely.' } } }
+    }
+    const { toolId, arguments: args } = item.call
+    const current = toolId === 'move' ? workFiles.get(args.destination) ?? null : workFiles.get(args.path) ?? null
+    if (current !== item.after || (toolId === 'move' && workFiles.has(args.path))) {
+      return { kind: 'work.result', result: { status: 'denied', data: null,
+        error: { code: 'conflict', message: 'The file changed; prepare the action again.' } } }
+    }
+    if (item.before === null) workFiles.delete(args.path)
+    else workFiles.set(args.path, item.before)
+    if (toolId === 'move') workFiles.delete(args.destination)
+    workUndoData.delete(request.undoId)
+    item.audit.undoId = null; item.audit.result = 'undone'
+    const data = { path: args.path, undoId: request.undoId }
+    if (toolId === 'move') data.destination = args.destination
+    return { kind: 'work.result', result: { status: 'succeeded', data, error: null } }
   },
 
   chooseWorkWorkspace: async (chatId) => {
@@ -2232,6 +2300,12 @@ const testControl = {
     nextWorkApprovalNumber = 1
     workApprovals = new Map()
     workPlans = new Map()
+    workAuditEntries = []
+    workAuditOverrides = new Map()
+    workUndoData = new Map()
+    delayWorkUndo = false
+    for (const pending of pendingWorkUndos) pending.resolve()
+    pendingWorkUndos = []
     nextWorkPlanNumber = 1
     delayWorkPlanReads = false
     for (const release of pendingWorkPlanReads) release()
@@ -2611,6 +2685,14 @@ const testControl = {
   },
 
   setWorkPlanReadDelay: (delayed) => { delayWorkPlanReads = delayed },
+  setWorkAuditState: (chatId, state) => { workAuditOverrides.set(chatId, clone(state)) },
+  setWorkFile: (path, content) => { if (content === null) workFiles.delete(path); else workFiles.set(path, content) },
+  setWorkUndoDelay: (delayed) => { delayWorkUndo = delayed },
+  rejectNextWorkUndo: () => {
+    const pending = pendingWorkUndos.shift()
+    pending?.reject(new Error('Python Backend stopped before Undo completed.'))
+    return pending !== undefined
+  },
   releaseNextWorkPlanRead: () => {
     const release = pendingWorkPlanReads.shift()
     release?.()

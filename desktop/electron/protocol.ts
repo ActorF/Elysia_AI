@@ -32,6 +32,10 @@ import {
   parseWorkPlanControlParams, parseWorkPlanConfirmParams,
   type WorkPlanGetParams, type WorkPlanCreateParams, type WorkPlanControlParams, type WorkPlanConfirmParams,
 } from './work-plan-protocol.js'
+import {
+  parseWorkAuditState, parseWorkAuditListParams, parseWorkUndoParams,
+  type WorkAuditListParams, type WorkUndoParams,
+} from './work-audit-protocol.js'
 
 export {
   codePointLength,
@@ -465,6 +469,8 @@ export interface RequestParamsByMethod {
   'work.plan.create': WorkPlanCreateParams
   'work.plan.control': WorkPlanControlParams
   'work.plan.confirm': WorkPlanConfirmParams
+  'work.audit.list': WorkAuditListParams
+  'work.undo': WorkUndoParams
   'chat.pin': ChatPinParams
   'chat.archive': ChatArchiveParams
   'chat.delete': ChatIdParams
@@ -2406,6 +2412,14 @@ export function parseClientRequest(value: unknown): ClientRequest {
       return { type: 'request', protocol, id, method, params: parseWorkPlanConfirmParams(request.params) }
     } catch {
       return fail('protocol.invalid_params', 'Work plan request is invalid.')
+    }
+  }
+  if (method === 'work.audit.list' || method === 'work.undo') {
+    try {
+      if (method === 'work.audit.list') return { type: 'request', protocol, id, method, params: parseWorkAuditListParams(request.params) }
+      return { type: 'request', protocol, id, method, params: parseWorkUndoParams(request.params) }
+    } catch {
+      return fail('protocol.invalid_params', 'Work history or Undo request is invalid.')
     }
   }
   if (method === 'project.list') {
@@ -4893,6 +4907,11 @@ function validateSuccessResult(value: unknown): Record<string, unknown> {
   if (result.kind === 'work.plan') {
     try { parseWorkPlanState(result) }
     catch { return fail('protocol.invalid_message', 'Work plan result is invalid.') }
+    return result
+  }
+  if (result.kind === 'work.audit') {
+    try { parseWorkAuditState(result) }
+    catch { return fail('protocol.invalid_message', 'Work history result is invalid.') }
     return result
   }
   if (result.kind === 'knowledge.state') {

@@ -74,7 +74,9 @@ def test_real_read_edit_verify_plan_requires_confirmation_and_preserves_safe_aud
     assert note.read_bytes() == b"updated\n"
     assert final["steps"][2]["result"]["data"]["content"] == "updated\n"
     history = writer.audit(chat_id)
-    assert len(history) == 1 and history[0]["result"] == "succeeded"
+    writes = [entry for entry in history if entry["toolId"] == "edit"]
+    assert len(writes) == 1 and writes[0]["result"] == "succeeded"
+    assert len([entry for entry in history if entry["toolId"] == "read_text"]) == 2
     assert "updated" not in str(history) and "original" not in str(history)
 
 

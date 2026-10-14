@@ -3,6 +3,9 @@
 The coordinator receives canonical Chat objects from Brain. It keeps binding
 state in the production data root, leaving message and personality storage
 alone. Renderer text never enters this dispatcher as an executable instruction.
+Read results require a private redacted audit event before publication; that
+event contains parameter summaries and fixed outcomes, never file bodies or
+literal search text, and creates no files inside the selected Workspace.
 """
 
 from __future__ import annotations
@@ -60,6 +63,25 @@ class DesktopWorkRuntime:
             return {"kind": "work.plan", "plan": self._plans.control(chat_id, params["planId"], params["action"])}
         if method == "work.plan.confirm":
             return {"kind": "work.plan", "plan": self._plans.confirm(chat_id, params["planId"], params["approvalId"], params["granted"])}
+        if method == "work.audit.list":
+            # History shares the writer's transaction mutex. Refusing a read
+            # while native work owns it keeps the foreground RPC reader free
+            # to deliver Pause/Cancel instead of waiting behind that write.
+            if self.is_busy():
+                raise PermissionError("Wait for the active Work step before reading history.")
+            return {"kind": "work.audit", **self._get_writes().audit_page(chat_id)}
+        if method == "work.undo":
+            if set(params) != {"chatId", "undoId", "confirmed"} or params["confirmed"] is not True:
+                raise PermissionError("Undo requires one explicit confirmed action.")
+            if self._plans.has_live_plan(chat_id) or self.is_busy():
+                raise PermissionError("Finish or cancel the Work plan before Undo.")
+            boundary = self.boundary(chat_id)
+            writer = self._get_writes()
+            # Undo changes the target's bytes, so a previously displayed generic
+            # preview must not remain a hidden permission for the old state.
+            writer.invalidate(chat_id)
+            result = writer.undo(chat_id, None if chat.project_id is None else str(chat.project_id), boundary, params["undoId"])
+            return {"kind": "work.result", "result": result.to_data()}
         if method == "work.tool.confirm" and self._plans.owns_approval(chat_id, params["approvalId"]):
             return {"kind": "work.result", "result": ToolResult("denied", error_code="permission_denied").to_data()}
         if method in {"work.tool.run", "work.tool.preview", "work.tool.confirm"} and (
@@ -71,6 +93,14 @@ class DesktopWorkRuntime:
         if method == "work.tool.run":
             call = validate_tool_call(params["call"])
             result = WorkToolExecutor(self.boundary(str(chat.chat_id))).run(call)
+            if call.tool_id in {"list_directory", "read_text", "search_files", "metadata"}:
+                try:
+                    self._get_writes().record_read(chat_id, None if chat.project_id is None else str(chat.project_id), call, result)
+                except Exception:
+                    # Do not expose a file body after its audit event failed.
+                    # The selected file was only read; retrying cannot replay
+                    # an unaudited filesystem mutation or overwrite data.
+                    result = ToolResult("failed", error_code="io_error")
             return {"kind": "work.result", "result": validate_tool_result(call.tool_id, result)}
         if method == "work.tool.preview":
             call = validate_tool_call(params["call"])
@@ -101,7 +131,11 @@ class DesktopWorkRuntime:
                 "workspacePath": None if binding is None else binding.root}
 
     def _get_writes(self) -> WriteCoordinator:
-        """Open private recovery state for an explicit preview or Work plan."""
+        """Open private recovery/audit state for explicit tools, plans, or history.
+
+        Read-only actions save redacted history in application-private storage;
+        they never write caches or logs inside the selected Workspace.
+        """
 
         with self._lock:
             if self._writes is None:

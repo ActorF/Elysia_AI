@@ -4,6 +4,9 @@ Approvals bind exact parameters, Chat/Project owner, selected-root identity, and
 the original file digest. They expire after five minutes and disappear on
 restart. Original private bytes live only in bounded transaction backups;
 public audit entries contain relative targets and content lengths/digests.
+Explicit read outcomes use a separate rolling private event log; neither file
+contents, result snippets, nor literal search queries enter that log. Recording
+a read changes only application-owned audit storage, never the selected root.
 
 The journal commits an intent before opening a mutation handle. A failed or
 interrupted operation remains recoverable and never triggers an automatic
@@ -29,7 +32,8 @@ from typing import Any, cast
 from uuid import uuid4
 
 from .contracts import (
-    MAX_TOOL_CONTENT_BYTES, TOOL_CATALOG, ToolCall, ToolProtocolError, ToolResult,
+    ERROR_MESSAGES, MAX_TOOL_CONTENT_BYTES, MAX_TOOL_QUERY_CHARACTERS,
+    TOOL_CATALOG, ToolCall, ToolProtocolError, ToolResult,
     validate_tool_call, validate_tool_result,
 )
 from .executor import is_sensitive_path, is_supported_text_path
@@ -38,7 +42,9 @@ from .workspace import WorkspaceBoundary, WorkspaceBoundaryError, validate_relat
 
 
 _WRITE_TOOLS = frozenset({"create", "edit", "move", "delete"})
+_READ_TOOLS = frozenset({"list_directory", "read_text", "search_files", "metadata"})
 _TRANSACTION_ID = re.compile(r"undo_[0-9a-f]{32}\Z")
+_READ_EVENT_ID = re.compile(r"event_[0-9a-f]{32}\Z")
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _MAX_PREVIEW_BYTES = 32 * 1024
 _MAX_RECORD_BYTES = 64 * 1024
@@ -49,6 +55,10 @@ _RECORD_FIELDS = frozenset({
     "version", "undoId", "timestamp", "chatId", "projectId", "rootPath", "rootIdentity",
     "toolId", "path", "destination", "beforeHash", "afterHash", "parameters",
     "result", "error", "undoState", "recoverable",
+})
+_READ_RECORD_FIELDS = frozenset({
+    "version", "eventId", "timestamp", "chatId", "projectId", "toolId",
+    "parameters", "result", "error",
 })
 
 
@@ -137,10 +147,10 @@ class _Pending:
 
 
 class WriteCoordinator:
-    """Own explicit single-use approvals and private durable recovery for bounded text-file writes."""
+    """Own exact write approvals, durable conditional recovery, and redacted read/write audit."""
 
     def __init__(self, private_directory: Path, *, clock: Callable[[], datetime] = _now) -> None:
-        """Initialize one trusted private transaction directory and an empty approval table."""
+        """Initialize trusted private transaction/event directories and an empty approval table."""
 
         if not isinstance(private_directory, Path) or not private_directory.is_absolute() or not callable(clock):
             raise ToolProtocolError()
@@ -164,13 +174,14 @@ class WriteCoordinator:
                 os.mkdir(access.path if access.directory_fd is None else access.leaf_name, 0o700, dir_fd=access.directory_fd)
             boundary = WorkspaceBoundary(path)
         self._storage = WorkspaceBoundary(private_directory)
-        with self._storage.guarded_parent("transactions") as access:
-            if access.stat_leaf() is None:
-                os.mkdir(access.path if access.directory_fd is None else access.leaf_name, 0o700, dir_fd=access.directory_fd)
-        # A replaced or linked transaction root must fail before any record is
-        # read, even when the containing private application root remains valid.
-        if self._storage.metadata("transactions").kind != "directory":
-            raise ToolProtocolError("io_error")
+        for name in ("transactions", "read_events"):
+            with self._storage.guarded_parent(name) as access:
+                if access.stat_leaf() is None:
+                    os.mkdir(access.path if access.directory_fd is None else access.leaf_name, 0o700, dir_fd=access.directory_fd)
+            # A replaced or linked private log root must fail before any record
+            # is read, even when the containing application root remains valid.
+            if self._storage.metadata(name).kind != "directory":
+                raise ToolProtocolError("io_error")
 
     def preview(
         self, chat_id: str, project_id: str | None, boundary: WorkspaceBoundary, call: ToolCall,
@@ -314,13 +325,64 @@ class WriteCoordinator:
             except Exception:
                 return ToolResult("failed", error_code="io_error")
 
+    def record_read(self, chat_id: str, project_id: str | None, call: ToolCall, result: ToolResult) -> None:
+        """Persist one validated explicit read outcome in bounded private audit storage.
+
+        The selected workspace remains read-only. Search queries are summarized
+        by length and SHA-256; successful result bodies and native diagnostics
+        are never serialized. Storage failures propagate so the caller can
+        report audit failure separately from the already-completed read.
+        """
+
+        _scope(chat_id, project_id)
+        if type(call) is not ToolCall or type(result) is not ToolResult:
+            raise ToolProtocolError()
+        checked = validate_tool_call(call.to_data())
+        if checked.tool_id not in _READ_TOOLS:
+            raise ToolProtocolError("unsupported_tool")
+        serialized = validate_tool_result(checked.tool_id, result)
+        payload = serialized["data"]
+        if payload is not None:
+            # Pair the schema-checked result with the actual call. A defective
+            # adapter must not log an unrelated successful path under this
+            # user's explicit read action.
+            if checked.tool_id in {"read_text", "metadata"}:
+                if payload["path"] != checked.path:
+                    raise ToolProtocolError()
+            else:
+                entries = payload["entries"] if checked.tool_id == "list_directory" else payload["matches"]
+                prefix = checked.path + "/" if checked.path else ""
+                if any(not entry["path"].startswith(prefix) for entry in entries):
+                    raise ToolProtocolError()
+        parameters: dict[str, Any] = {"path": checked.path}
+        if checked.query is not None:
+            parameters.update(queryCharacters=len(checked.query), querySha256=_hash(checked.query.encode("utf-8")))
+        timestamp = self._clock()
+        if timestamp.tzinfo is None:
+            raise ToolProtocolError()
+        record = {
+            "version": 1, "eventId": "event_" + uuid4().hex,
+            "timestamp": timestamp.astimezone(timezone.utc).isoformat(),
+            "chatId": chat_id, "projectId": project_id, "toolId": checked.tool_id,
+            "parameters": parameters, "result": serialized["status"],
+            "error": None if serialized["error"] is None else serialized["error"]["code"],
+        }
+        with self._lock:
+            self._save_read(record)
+
     def audit(self, chat_id: str) -> list[dict[str, Any]]:
-        """Read bounded safe history for one Chat without disclosing contents, backups, or native paths."""
+        """Merge bounded owner-filtered write/read history without contents or native paths."""
 
         _scope(chat_id, None)
         with self._lock:
             records = [self._load(entry.name) for entry in self._storage.list_directory("transactions", max_entries=_MAX_RECORDS)]
-            return [self._audit_data(record) for record in sorted(records, key=lambda record: record["timestamp"]) if record["chatId"] == chat_id]
+            reads = [record for record, _digest in self._read_records()]
+            # Owner filtering precedes before-image verification and public
+            # projection, keeping another Chat's recovery bytes out of this
+            # request even when both histories share application storage.
+            entries = [self._audit_data(record) for record in records if record["chatId"] == chat_id]
+            entries.extend(self._read_audit_data(record) for record in reads if record["chatId"] == chat_id)
+            return sorted(entries, key=lambda record: record["timestamp"])
 
     def audit_page(self, chat_id: str) -> dict[str, Any]:
         """Return at most the newest hundred safe entries within a 512 KiB encoded frame.
@@ -487,6 +549,98 @@ class WriteCoordinator:
                 except FileNotFoundError:
                     pass
 
+    def _save_read(self, record: dict[str, Any]) -> None:
+        """Publish verified immutable read events and conditionally prune only validated old events."""
+
+        entries = self._storage.list_directory("read_events", max_entries=_MAX_RECORDS)
+        if len(entries) >= _MAX_RECORDS:
+            records = self._read_records()
+            if not records:
+                # Unknown files and crash temporaries count against the cap;
+                # their provenance cannot justify deleting them automatically.
+                raise ToolProtocolError("io_error")
+            oldest, digest = min(records, key=lambda item: (item[0]["timestamp"], item[0]["eventId"]))
+            WorkspaceMutations(self._storage).remove("read_events/" + oldest["eventId"] + ".json", digest)
+        encoded = json.dumps(record, ensure_ascii=False, allow_nan=False).encode("utf-8")
+        if len(encoded) > _MAX_RECORD_BYTES:
+            raise ToolProtocolError("io_error")
+        digest = _hash(encoded)
+        temporary = "read_events/.event_" + uuid4().hex + ".tmp"
+        relative = "read_events/" + record["eventId"] + ".json"
+        mutations = WorkspaceMutations(self._storage)
+        # The temporary source is written, flushed, and verified before its
+        # native handle-addressed rename publishes the unique immutable event.
+        # No source/destination pathname following can redirect these bytes.
+        with self._storage.guarded_parent(relative) as access:
+            try:
+                mutations.create(temporary, encoded)
+                mutations.move(temporary, relative, digest)
+                if access.directory_fd is not None:
+                    os.fsync(access.directory_fd)
+            finally:
+                try:
+                    mutations.remove(temporary, digest)
+                except (WorkspaceBoundaryError, OSError):
+                    # A missing temporary is the normal successful outcome.
+                    # A partial or externally changed file remains bounded
+                    # evidence; never delete it using an unchecked pathname.
+                    pass
+
+    def _read_records(self) -> list[tuple[dict[str, Any], str]]:
+        """Load only canonical event names while counting every directory entry against the cap."""
+
+        records: list[tuple[dict[str, Any], str]] = []
+        for entry in self._storage.list_directory("read_events", max_entries=_MAX_RECORDS):
+            if not entry.name.endswith(".json") or _READ_EVENT_ID.fullmatch(entry.name[:-5]) is None:
+                continue
+            raw = self._storage.read_bytes("read_events/" + entry.name, max_bytes=_MAX_RECORD_BYTES)
+            record = json.loads(raw)
+            if (
+                type(record) is not dict or set(record) != _READ_RECORD_FIELDS
+                or type(record["version"]) is not int or record["version"] != 1
+                or record["eventId"] != entry.name[:-5]
+            ):
+                raise ToolProtocolError("io_error")
+            _scope(record["chatId"], record["projectId"])
+            if (
+                type(record["toolId"]) is not str or record["toolId"] not in _READ_TOOLS
+                or type(record["result"]) is not str
+                or record["result"] not in {"succeeded", "partial", "denied", "cancelled", "failed"}
+                or (record["error"] is not None and (type(record["error"]) is not str or record["error"] not in ERROR_MESSAGES))
+                or (record["result"] == "succeeded" and record["error"] is not None)
+                or (record["result"] in {"denied", "cancelled", "failed"} and record["error"] is None)
+            ):
+                raise ToolProtocolError("io_error")
+            parameters = record["parameters"]
+            expected_keys = {"path", "queryCharacters", "querySha256"} if record["toolId"] == "search_files" else {"path"}
+            if type(parameters) is not dict or set(parameters) != expected_keys:
+                raise ToolProtocolError("io_error")
+            validate_relative_path(parameters["path"], allow_root=record["toolId"] != "read_text")
+            if record["toolId"] == "search_files" and (
+                type(parameters["queryCharacters"]) is not int
+                or not 1 <= parameters["queryCharacters"] <= MAX_TOOL_QUERY_CHARACTERS
+                or type(parameters["querySha256"]) is not str
+                or _SHA256.fullmatch(parameters["querySha256"]) is None
+            ):
+                raise ToolProtocolError("io_error")
+            if type(record["timestamp"]) is not str or len(record["timestamp"]) > 64:
+                raise ToolProtocolError("io_error")
+            timestamp = datetime.fromisoformat(record["timestamp"])
+            if timestamp.tzinfo is None:
+                raise ToolProtocolError("io_error")
+            record["timestamp"] = timestamp.astimezone(timezone.utc).isoformat()
+            records.append((record, _hash(raw)))
+        return records
+
+    @staticmethod
+    def _read_audit_data(record: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "timestamp": record["timestamp"], "chatId": record["chatId"], "projectId": record["projectId"],
+            "toolId": record["toolId"], "parameters": dict(record["parameters"]), "approver": "user",
+            "result": record["result"], "error": record["error"],
+            "undoId": None, "recoverable": False, "recovery": None,
+        }
+
     def _load(self, undo_id: str) -> dict[str, Any]:
         if type(undo_id) is not str or _TRANSACTION_ID.fullmatch(undo_id) is None:
             raise ToolProtocolError("undo_unavailable")
@@ -545,15 +699,35 @@ class WriteCoordinator:
         record["timestamp"] = timestamp.astimezone(timezone.utc).isoformat()
         return cast(dict[str, Any], record)
 
-    @staticmethod
-    def _audit_data(record: dict[str, Any]) -> dict[str, Any]:
+    def _audit_data(self, record: dict[str, Any]) -> dict[str, Any]:
         result = "failed" if record["result"] == "prepared" else record["result"]
+        recoverable = record["recoverable"] or record["undoState"] == "executing"
+        recovery: dict[str, Any] | None = None
+        if recoverable:
+            relative_directory = "workspace/work/transactions/" + record["undoId"]
+            recovery = {
+                "recoveryId": record["undoId"], "directory": relative_directory,
+                "backupPath": None, "beforeSha256": None,
+            }
+            if record["beforeHash"] is not None:
+                # A persisted intent is useful even if backup publication was
+                # interrupted. Describe bytes as a recovery copy only after
+                # the actual bounded non-link file matches its recorded hash.
+                try:
+                    backup = self._storage.read_bytes(
+                        "transactions/" + record["undoId"] + "/before.bin",
+                        max_bytes=MAX_TOOL_CONTENT_BYTES,
+                    )
+                    if _hash(backup) == record["beforeHash"]:
+                        recovery.update(backupPath=relative_directory + "/before.bin", beforeSha256=record["beforeHash"])
+                except (WorkspaceBoundaryError, OSError):
+                    pass
         return {
             "timestamp": record["timestamp"], "chatId": record["chatId"], "projectId": record["projectId"],
             "toolId": record["toolId"], "parameters": dict(record["parameters"]), "approver": "user",
             "result": result, "error": record["error"],
             "undoId": record["undoId"] if record["result"] == "succeeded" and record["undoState"] == "available" else None,
-            "recoverable": record["recoverable"] or record["undoState"] == "executing",
+            "recoverable": recoverable, "recovery": recovery,
         }
 
     @staticmethod

@@ -119,6 +119,40 @@ to drain. Plans are in-memory and never restart automatically; durable task
 restoration belongs to the later Task stage. Mode, owner, Project, and pinned
 Workspace identity are rechecked for every step.
 
+`work.audit.list` returns the active Work Chat's latest hundred entries, newest
+first, within a 512 KiB payload and with explicit truncation. Read tools persist
+only a private audit summary; selected Workspace files remain untouched. Reads
+and writes record the original action time, Chat/Project, tool, parameter
+summary, user decision, outcome, and fixed error code. File bodies and literal
+search text never enter this public history: new content and search queries are
+represented by sizes and digests. Each action's entry reflects its current Undo
+or interrupted-recovery outcome. Audit does not grant new file access and may
+be inspected after the binding is cleared.
+
+`work.undo` carries only the exact recorded Undo ID and `confirmed: true`.
+Electron consumes the displayed history permission before dispatch and checks
+the response against that recorded path/destination. Python reacquires the
+current Chat/Project, pinned root, expected current bytes, and verified backup;
+changed files or existing destinations refuse restoration. No external edit is
+overwritten. Undo waits for live plans and native callbacks to finish. Failed
+or interrupted transactions disclose a relative journal directory under
+`workspace/work/transactions`; a `before.bin` path and digest appear only when
+that restoration copy was actually verified. Users can open the data directory
+from Settings for manual recovery. No operation resumes automatically.
+
+Work journals and before-images survive data-root migration and generic cache
+cleanup. The existing legacy export bundle has its own explicit allowlist and
+does not include Work journals or backups; retain the data root when preserving
+these recovery records. Expanding release-wide backup formats belongs to the
+later Release stage.
+
+The desktop lockfile updates the compatible cache and source-map fixes. Its
+scoped `@electron/get@3.1.0` override uses `global-agent@4.1.3` to preserve the
+packaging downloader's CommonJS proxy bootstrap while removing the vulnerable
+legacy formatter chain. The isolated proxy bootstrap regression exercises
+that actual dependency without network traffic or global HTTP side effects in
+the test process; renderer and packaged-app checks still validate the application.
+
 `settings.get` and `settings.update` expose one exact public allowlist with
 optimistic revision checks: Chat model, Ollama origin, two Memory limits,
 import byte limit, transcription model/device/language, automatic Voice Call speech,

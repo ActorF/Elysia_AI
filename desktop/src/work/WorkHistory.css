@@ -1,0 +1,13 @@
+/** Keep redacted Work history, recovery paths, and explicit Undo controls readable in the scoped panel. */
+
+.work-history { display: grid; gap: 0.65rem; min-width: 0; border-top: 1px solid var(--color-border); padding-top: 0.9rem; }
+.work-history-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.5rem; }
+.work-history-entries { display: grid; gap: 0.75rem; margin: 0; padding-left: 1.4rem; max-height: 22rem; overflow: auto; }
+.work-history-entries li { display: grid; gap: 0.4rem; min-width: 0; }
+.work-history small, .work-history time { overflow-wrap: anywhere; color: var(--color-text-secondary); }
+.work-history pre { margin: 0; padding: 0.65rem; max-height: 12rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.work-history-recovery, .work-undo-decision { display: grid; gap: 0.5rem; padding: 0.75rem; border: 1px solid var(--color-border); border-radius: 0.6rem; min-width: 0; }
+.work-history-recovery code { overflow-wrap: anywhere; }
+.work-undo-decision > div { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.work-history button { justify-self: start; }
+.work-history p { margin: 0; }

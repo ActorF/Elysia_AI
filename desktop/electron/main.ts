@@ -33,6 +33,7 @@ import { BackendProcess } from './backend-process.js'
 import { parseWorkWorkspaceGetParams } from './work-protocol.js'
 import { parseWorkToolRunParams, parseWorkToolConfirmParams } from './work-tool-protocol.js'
 import { parseWorkPlanGetParams, parseWorkPlanCreateParams, parseWorkPlanControlParams, parseWorkPlanConfirmParams } from './work-plan-protocol.js'
+import { parseWorkAuditListParams, parseWorkUndoParams } from './work-audit-protocol.js'
 import { ApplicationShutdownGate } from './application-shutdown-gate.js'
 import {
   DATA_STORAGE_CLEANABLE_CATEGORIES,
@@ -3427,6 +3428,17 @@ function registerIpcHandlers(): void {
   ipcMain.handle('work:confirm-plan', (event, request: unknown) => {
     assertTrustedSender(event)
     return requireBackend().confirmWorkPlan(parseWorkPlanConfirmParams(request))
+  })
+
+  ipcMain.handle('work:get-audit', (event, chatId: unknown) => {
+    assertTrustedSender(event)
+    return requireBackend().getWorkAudit(parseWorkAuditListParams({ chatId }).chatId)
+  })
+  ipcMain.handle('work:undo', (event, request: unknown) => {
+    assertTrustedSender(event)
+    assertDataStorageIdleForBackendRestart()
+    if (songCoverManager?.hasActiveWork() === true) throw new Error('Finish the active Song Cover before Undo.')
+    return requireBackend().undoWorkAction(parseWorkUndoParams(request))
   })
 
   ipcMain.handle('work:choose-workspace', async (event, chatId: unknown) => {

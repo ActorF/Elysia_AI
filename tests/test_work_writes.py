@@ -1,6 +1,7 @@
 """Verify single-use exact-action approval, durable before-images, safe audit, and conditional Undo."""
 
 from datetime import datetime, timedelta, timezone
+import hashlib
 import json
 from pathlib import Path
 from threading import Event, Thread
@@ -8,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from work_tools.contracts import ToolCall, ToolProtocolError
+from work_tools.contracts import ToolCall, ToolProtocolError, ToolResult
 from work_tools.mutations import WorkspaceMutations
 from work_tools.workspace import WorkspaceBoundary, WorkspaceBoundaryError
 from work_tools.writes import WriteCoordinator
@@ -186,6 +187,11 @@ def test_backup_and_intent_exist_before_any_workspace_write(tmp_path: Path, monk
     assert audit[0]["result"] == "failed" and audit[0]["recoverable"] is True
     assert audit[0]["undoId"] is None
     assert "original private bytes" not in json.dumps(audit)
+    recovery = audit[0]["recovery"]
+    assert recovery["directory"] == "workspace/work/transactions/" + recovery["recoveryId"]
+    assert recovery["backupPath"] == recovery["directory"] + "/before.bin"
+    assert recovery["beforeSha256"] == hashlib.sha256(b"original private bytes").hexdigest()
+    assert str(private) not in json.dumps(recovery)
 
 
 def test_backup_failure_prevents_workspace_mutation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -206,7 +212,9 @@ def test_backup_failure_prevents_workspace_mutation(tmp_path: Path, monkeypatch:
     approval = coordinator.preview("chat_a", None, boundary, ToolCall("delete", "note.txt"))
     assert coordinator.confirm("chat_a", None, boundary, approval["approvalId"], True).status == "failed"
     assert (boundary.root / "note.txt").read_bytes() == b"original"
-    assert WriteCoordinator(private).audit("chat_a")[0]["recoverable"] is True
+    recovery = WriteCoordinator(private).audit("chat_a")[0]["recovery"]
+    assert recovery["directory"].startswith("workspace/work/transactions/undo_")
+    assert recovery["backupPath"] is None and recovery["beforeSha256"] is None
 
 
 @pytest.mark.parametrize("tool_id", ["create", "edit", "move", "delete"])
@@ -543,3 +551,225 @@ def test_invalidation_wins_late_preview_publication(tmp_path: Path, monkeypatch:
     assert not worker.is_alive()
     assert isinstance(outcomes[0], ToolProtocolError) and outcomes[0].code == "permission_denied"
     assert not (boundary.root / "new.txt").exists()
+
+
+def test_failed_creation_discloses_intent_directory_without_inventing_backup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An interrupted new-file write has an inspectable journal and no nonexistent original-byte recovery copy."""
+
+    coordinator, boundary, _ = _setup(tmp_path)
+
+    def interrupted_create(selected: WorkspaceBoundary, call: ToolCall, before: bytes | None) -> None:
+        """Leave partial new bytes to represent interruption after durable intent admission."""
+
+        (selected.root / call.path).write_bytes(b"partial")
+        raise WorkspaceBoundaryError("interrupted creation")
+
+    monkeypatch.setattr(coordinator, "_apply", interrupted_create)
+    approval = coordinator.preview("chat_a", None, boundary, ToolCall("create", "new.txt", content="complete"))
+    assert coordinator.confirm("chat_a", None, boundary, approval["approvalId"], True).status == "failed"
+    entry = coordinator.audit("chat_a")[0]
+    assert entry["recoverable"] and entry["undoId"] is None
+    assert entry["recovery"]["backupPath"] is None and entry["recovery"]["beforeSha256"] is None
+    assert entry["recovery"]["directory"] == "workspace/work/transactions/" + entry["recovery"]["recoveryId"]
+    assert coordinator.audit("chat_b") == []
+
+
+def test_recovery_copy_is_verified_again_before_each_audit_disclosure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Corrupting a stored before-image removes the copy claim while preserving its manual intent recovery folder."""
+
+    coordinator, boundary, private = _setup(tmp_path)
+    target = boundary.root / "note.txt"
+    target.write_bytes(b"original")
+
+    def interrupted_edit(selected: WorkspaceBoundary, call: ToolCall, before: bytes | None) -> None:
+        """Keep the durable before-image while simulating a partial admitted native edit."""
+
+        (selected.root / call.path).write_bytes(b"partial")
+        raise WorkspaceBoundaryError("interrupted edit")
+
+    monkeypatch.setattr(coordinator, "_apply", interrupted_edit)
+    approval = coordinator.preview("chat_a", None, boundary, ToolCall("edit", "note.txt", content="complete"))
+    assert coordinator.confirm("chat_a", None, boundary, approval["approvalId"], True).status == "failed"
+    verified = coordinator.audit("chat_a")[0]["recovery"]
+    assert verified["backupPath"] is not None
+    (private / "transactions" / verified["recoveryId"] / "before.bin").write_bytes(b"corrupted")
+    current = WriteCoordinator(private).audit("chat_a")[0]["recovery"]
+    assert current["directory"] == verified["directory"]
+    assert current["backupPath"] is None and current["beforeSha256"] is None
+    assert target.read_bytes() == b"partial"
+
+
+def test_successful_and_declined_actions_do_not_publish_recovery_folders(tmp_path: Path) -> None:
+    """Manual recovery paths appear only for interrupted state; ordinary success continues to expose conditional Undo."""
+
+    coordinator, boundary, _ = _setup(tmp_path)
+    undo_id = _confirm(coordinator, boundary, ToolCall("create", "success.txt", content="complete"))
+    successful = coordinator.audit("chat_a")[0]
+    assert successful["undoId"] == undo_id and successful["recovery"] is None
+    approval = coordinator.preview("chat_a", None, boundary, ToolCall("create", "declined.txt", content="declined"))
+    coordinator.confirm("chat_a", None, boundary, approval["approvalId"], False)
+    assert all(entry["recovery"] is None for entry in coordinator.audit("chat_a"))
+
+
+@pytest.mark.parametrize("tool_id", ["list_directory", "read_text", "search_files", "metadata"])
+def test_read_audit_persists_only_safe_parameter_summary_and_fixed_outcome(tmp_path: Path, tool_id: Any) -> None:
+    """Every read tool logs its explicit action without query text, returned bodies, or selected-file changes."""
+
+    coordinator, boundary, private = _setup(tmp_path)
+    target = boundary.root / "note.txt"
+    target.write_bytes(b"private-file-body")
+    call = ToolCall(tool_id, "note.txt" if tool_id in {"read_text", "metadata"} else "", query="secret-query-value" if tool_id == "search_files" else None)
+    entry = {"path": "note.txt", "name": "note.txt", "kind": "file", "sizeBytes": 17}
+    data = {
+        "list_directory": {"entries": [entry], "truncated": False},
+        "read_text": {"path": "note.txt", "content": "returned-private-body", "sizeBytes": 21},
+        "search_files": {"matches": [{"path": "note.txt"}], "truncated": False},
+        "metadata": entry,
+    }[tool_id]
+    coordinator.record_read("chat_a", "project_a", call, ToolResult("succeeded", data))
+    stored = "".join(path.read_text("utf-8") for path in (private / "read_events").iterdir())
+    public = WriteCoordinator(private).audit("chat_a")[0]
+    assert public["toolId"] == tool_id and public["result"] == "succeeded" and public["approver"] == "user"
+    assert public["undoId"] is None and public["recoverable"] is False and public["recovery"] is None
+    assert "returned-private-body" not in stored and "private-file-body" not in stored and "secret-query-value" not in stored
+    assert "content" not in public["parameters"] and "query" not in public["parameters"]
+    if tool_id == "search_files":
+        assert public["parameters"]["queryCharacters"] == len("secret-query-value")
+        assert public["parameters"]["querySha256"] == hashlib.sha256(b"secret-query-value").hexdigest()
+    assert target.read_bytes() == b"private-file-body"
+    assert list(boundary.root.iterdir()) == [target]
+    assert not list((private / "transactions").iterdir())
+    assert all(path.suffix == ".json" for path in (private / "read_events").iterdir())
+
+
+def test_read_audit_merges_restarted_owner_isolated_write_and_failure_history(tmp_path: Path) -> None:
+    """Persist read errors and mix tools in canonical time order while preserving each Chat's ownership."""
+
+    coordinator, boundary, private = _setup(tmp_path)
+    coordinator.record_read("chat_b", None, ToolCall("metadata", ""), ToolResult("failed", error_code="io_error"))
+    _confirm(coordinator, boundary, ToolCall("create", "note.txt", content="written-private-body"))
+    coordinator.record_read("chat_a", "project_a", ToolCall("read_text", "missing.txt"), ToolResult("denied", error_code="not_found"))
+    coordinator.record_read("chat_a", "project_a", ToolCall("search_files", "", query="private query"), ToolResult("partial", {"matches": [], "truncated": True}, error_code="timeout"))
+    coordinator.record_read("chat_a", "project_a", ToolCall("metadata", ""), ToolResult("cancelled", error_code="cancelled"))
+    restarted = WriteCoordinator(private)
+    history = restarted.audit("chat_a")
+    assert [entry["toolId"] for entry in history] == ["create", "read_text", "search_files", "metadata"]
+    assert [entry["error"] for entry in history] == [None, "not_found", "timeout", "cancelled"]
+    assert [entry["result"] for entry in restarted.audit_page("chat_a")["entries"]] == ["cancelled", "partial", "denied", "succeeded"]
+    assert all(entry["chatId"] == "chat_a" for entry in history)
+    assert restarted.audit("chat_b")[0]["error"] == "io_error"
+    assert "private" not in json.dumps(history)
+
+
+def test_read_audit_rejects_write_calls_malformed_results_and_unrelated_paths(tmp_path: Path) -> None:
+    """Exact validation occurs before audit persistence and never invents a success for another target."""
+
+    coordinator, _boundary, private = _setup(tmp_path)
+    cases = [
+        (ToolCall("create", "note.txt", content="private"), ToolResult("failed", error_code="io_error")),
+        (ToolCall("metadata", "note.txt"), ToolResult("succeeded", {"secret": "private diagnostics"})),
+        (ToolCall("read_text", "note.txt"), ToolResult("succeeded", {"path": "other.txt", "content": "private", "sizeBytes": 7})),
+        (ToolCall("search_files", "sub", query="name"), ToolResult("succeeded", {"matches": [{"path": "submarine/name.txt"}], "truncated": False})),
+    ]
+    for call, result in cases:
+        with pytest.raises(ToolProtocolError):
+            coordinator.record_read("chat_a", None, call, result)
+    assert coordinator.audit("chat_a") == []
+    assert not list((private / "read_events").iterdir())
+
+
+def test_read_audit_retention_keeps_newest_records_without_removing_write_backups(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The rolling read cap conditionally removes only validated oldest events, preserving durable Undo state."""
+
+    coordinator, boundary, private = _setup(tmp_path)
+    undo_id = _confirm(coordinator, boundary, ToolCall("create", "written.txt", content="written"))
+    monkeypatch.setattr(writes_module, "_MAX_RECORDS", 3)
+    current_time = datetime(2030, 1, 1, tzinfo=timezone.utc)
+    for index in range(5):
+        monkeypatch.setattr(coordinator, "_clock", lambda index=index: current_time + timedelta(seconds=index))
+        coordinator.record_read("chat_a", None, ToolCall("metadata", f"{index}.txt"), ToolResult("denied", error_code="not_found"))
+    assert len(list((private / "read_events").iterdir())) == 3
+    retained = [entry["parameters"]["path"] for entry in coordinator.audit("chat_a") if entry["toolId"] == "metadata"]
+    assert retained == ["2.txt", "3.txt", "4.txt"]
+    assert (private / "transactions" / undo_id / "manifest.json").exists()
+    assert coordinator.undo("chat_a", "project_a", boundary, undo_id).status == "succeeded"
+
+
+def test_read_audit_rejects_forged_content_or_error_details_on_restart(tmp_path: Path) -> None:
+    """A tampered private record cannot smuggle result text or arbitrary native diagnostics into safe audit."""
+
+    coordinator, _boundary, private = _setup(tmp_path)
+    coordinator.record_read("chat_a", None, ToolCall("metadata", ""), ToolResult("failed", error_code="io_error"))
+    path = next((private / "read_events").iterdir())
+    original = json.loads(path.read_text("utf-8"))
+    for field, value in (("parameters", {"path": "", "content": "private backup"}), ("error", "private native exception")):
+        forged = dict(original)
+        forged[field] = value
+        path.write_text(json.dumps(forged), "utf-8")
+        with pytest.raises(ToolProtocolError):
+            WriteCoordinator(private).audit("chat_a")
+
+
+def test_read_audit_combined_page_stays_bounded_with_unicode_targets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Mixed history retains newest entries within count and UTF-8 byte budgets without shortening summaries."""
+
+    coordinator, boundary, _private = _setup(tmp_path)
+    _confirm(coordinator, boundary, ToolCall("create", "written.txt", content="private"))
+    monkeypatch.setattr(writes_module, "_MAX_AUDIT_PAGE_BYTES", 2048)
+    for index in range(6):
+        path = "字" * 120 + str(index) + ".txt"
+        coordinator.record_read("chat_a", None, ToolCall("metadata", path), ToolResult("denied", error_code="not_found"))
+    page = coordinator.audit_page("chat_a")
+    assert page["truncated"] and len(page["entries"]) < 7
+    assert page["entries"][0]["parameters"]["path"].endswith("5.txt")
+    assert len(json.dumps(page, ensure_ascii=False).encode("utf-8")) <= 2048
+    assert len(page["entries"][0]["parameters"]["path"]) == 125
+
+
+@pytest.mark.parametrize("failed_final_journal", [False, True])
+def test_failed_edit_undo_remains_valid_audit_with_verified_manual_recovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failed_final_journal: bool,
+) -> None:
+    """A real Undo interruption preserves the original write outcome and valid recovery DTO across restart."""
+
+    from work_tools.audit_wire import validate_audit_page
+
+    coordinator, boundary, private = _setup(tmp_path)
+    target = boundary.root / "note.txt"
+    target.write_bytes(b"original-private-bytes")
+    undo_id = _confirm(coordinator, boundary, ToolCall("edit", "note.txt", content="changed"))
+    real_save = coordinator._save
+
+    def _partial_restore(_self: WorkspaceMutations, path: str, data: bytes, expected_sha256: str) -> str:
+        record = json.loads((private / "transactions" / undo_id / "manifest.json").read_bytes())
+        assert record["undoState"] == "executing" and record["recoverable"]
+        (boundary.root / path).write_bytes(b"partial-restored")
+        raise WorkspaceBoundaryError("native private failure")
+
+    def _save_or_interrupt(record: dict[str, Any]) -> None:
+        if failed_final_journal and record["undoState"] == "unavailable":
+            raise OSError("private journal failure")
+        real_save(record)
+
+    monkeypatch.setattr(WorkspaceMutations, "replace", _partial_restore)
+    monkeypatch.setattr(coordinator, "_save", _save_or_interrupt)
+    assert coordinator.undo("chat_a", "project_a", boundary, undo_id).status == "failed"
+    restarted = WriteCoordinator(private)
+    page = {"kind": "work.audit", **restarted.audit_page("chat_a")}
+    assert validate_audit_page(page) == page
+    entry = page["entries"][0]
+    assert entry["result"] == "succeeded" and entry["recoverable"] and entry["undoId"] is None
+    assert entry["error"] == (None if failed_final_journal else "io_error")
+    assert entry["recovery"]["beforeSha256"] == hashlib.sha256(b"original-private-bytes").hexdigest()
+    assert entry["recovery"]["backupPath"].endswith("/before.bin")
+    assert restarted.undo("chat_a", "project_a", boundary, undo_id).error_code == "undo_unavailable"
+    assert target.read_bytes() == b"partial-restored"
+    assert "original-private-bytes" not in json.dumps(page) and "native private failure" not in json.dumps(page)

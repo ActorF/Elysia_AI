@@ -54,6 +54,8 @@
     "groundedAnswer is present only on assistant Chat messages and never exposes paths, hashes, or private storage lineage"
   ],
   "oneOf": [
+    { "$ref": "#/$defs/workAuditListRequest" },
+    { "$ref": "#/$defs/workUndoRequest" },
     { "$ref": "#/$defs/workPlanGetRequest" },
     { "$ref": "#/$defs/workPlanCreateRequest" },
     { "$ref": "#/$defs/workPlanControlRequest" },
@@ -114,6 +116,69 @@
     { "$ref": "#/$defs/event" }
   ],
   "$defs": {
+    "workAuditListRequest": {
+      "allOf": [{ "$ref": "#/$defs/requestEnvelope" }, { "properties": {
+        "method": { "const": "work.audit.list" }, "params": { "$ref": "#/$defs/workWorkspaceGetParams" }
+      } }]
+    },
+    "workUndoParams": {
+      "type": "object", "properties": {
+        "chatId": { "$ref": "#/$defs/workChatId" },
+        "undoId": { "$ref": "#/$defs/workUndoId" }, "confirmed": { "const": true }
+      }, "required": ["chatId", "undoId", "confirmed"], "additionalProperties": false
+    },
+    "workUndoRequest": {
+      "allOf": [{ "$ref": "#/$defs/requestEnvelope" }, { "properties": {
+        "method": { "const": "work.undo" }, "params": { "$ref": "#/$defs/workUndoParams" }
+      } }]
+    },
+    "workUndoId": { "type": "string", "pattern": "^undo_[0-9a-f]{32}$" },
+    "workAuditDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "workAuditParameters": {
+      "oneOf": [
+        { "type": "object", "properties": { "path": { "type": "string", "maxLength": 4096 } },
+          "required": ["path"], "additionalProperties": false },
+        { "type": "object", "properties": {
+          "path": { "type": "string", "maxLength": 4096 }, "destination": { "type": "string", "maxLength": 4096 }
+        }, "required": ["path", "destination"], "additionalProperties": false },
+        { "type": "object", "properties": {
+          "path": { "type": "string", "maxLength": 4096 }, "contentBytes": { "type": "integer", "minimum": 0, "maximum": 262144 },
+          "contentSha256": { "$ref": "#/$defs/workAuditDigest" }
+        }, "required": ["path", "contentBytes", "contentSha256"], "additionalProperties": false },
+        { "type": "object", "properties": {
+          "path": { "type": "string", "maxLength": 4096 }, "queryCharacters": { "type": "integer", "minimum": 1, "maximum": 256 },
+          "querySha256": { "$ref": "#/$defs/workAuditDigest" }
+        }, "required": ["path", "queryCharacters", "querySha256"], "additionalProperties": false }
+      ]
+    },
+    "workRecoveryDisclosure": {
+      "type": "object", "properties": {
+        "recoveryId": { "$ref": "#/$defs/workUndoId" },
+        "directory": { "type": "string", "pattern": "^workspace/work/transactions/undo_[0-9a-f]{32}$" },
+        "backupPath": { "oneOf": [{ "type": "null" }, { "type": "string", "pattern": "^workspace/work/transactions/undo_[0-9a-f]{32}/before\\.bin$" }] },
+        "beforeSha256": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/workAuditDigest" }] }
+      }, "required": ["recoveryId", "directory", "backupPath", "beforeSha256"], "additionalProperties": false
+    },
+    "workAuditEntry": {
+      "type": "object", "properties": {
+        "timestamp": { "type": "string", "maxLength": 128 },
+        "chatId": { "$ref": "#/$defs/workChatId" },
+        "projectId": { "oneOf": [{ "type": "null" }, { "type": "string", "maxLength": 128, "pattern": "^project_[A-Za-z0-9_-]+$" }] },
+        "toolId": { "enum": ["list_directory", "read_text", "search_files", "metadata", "create", "edit", "move", "delete"] },
+        "parameters": { "$ref": "#/$defs/workAuditParameters" }, "approver": { "const": "user" },
+        "result": { "enum": ["succeeded", "partial", "denied", "cancelled", "failed", "undone"] },
+        "error": { "type": ["string", "null"], "maxLength": 64 },
+        "undoId": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/workUndoId" }] },
+        "recoverable": { "type": "boolean" },
+        "recovery": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/workRecoveryDisclosure" }] }
+      }, "required": ["timestamp", "chatId", "projectId", "toolId", "parameters", "approver", "result", "error", "undoId", "recoverable", "recovery"], "additionalProperties": false
+    },
+    "workAuditResult": {
+      "type": "object", "properties": {
+        "kind": { "const": "work.audit" }, "entries": { "type": "array", "maxItems": 100, "items": { "$ref": "#/$defs/workAuditEntry" } },
+        "truncated": { "type": "boolean" }
+      }, "required": ["kind", "entries", "truncated"], "additionalProperties": false
+    },
     "workPlanGetRequest": {
       "allOf": [{ "$ref": "#/$defs/requestEnvelope" }, { "properties": {
         "method": { "const": "work.plan.get" }, "params": { "$ref": "#/$defs/workWorkspaceGetParams" }
@@ -348,6 +413,8 @@
             "work.plan.create",
             "work.plan.control",
             "work.plan.confirm",
+            "work.audit.list",
+            "work.undo",
             "handshake",
             "initialize",
             "chat.stream",
@@ -2583,6 +2650,7 @@
           "oneOf": [
             { "$ref": "#/$defs/workWorkspaceResult" },
             { "$ref": "#/$defs/workPlanResult" },
+            { "$ref": "#/$defs/workAuditResult" },
             { "$ref": "#/$defs/workToolsResult" },
             { "$ref": "#/$defs/workToolResult" },
             { "$ref": "#/$defs/workApprovalResult" },

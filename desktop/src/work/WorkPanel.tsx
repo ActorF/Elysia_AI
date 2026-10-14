@@ -15,13 +15,16 @@ import type {
 import type { WorkToolClient, WorkToolsState } from '../../electron/work-tool-protocol.ts'
 import type { WorkToolCall } from '../../electron/work-tool-protocol.ts'
 import type { WorkPlanClient } from '../../electron/work-plan-protocol.ts'
+import type { WorkAuditClient } from '../../electron/work-audit-protocol.ts'
 import { ToolInspector } from './ToolInspector.tsx'
 import { ToolConsole } from './ToolConsole.tsx'
 import { PlanPanel } from './PlanPanel.tsx'
+import { WorkHistory } from './WorkHistory.tsx'
 import './WorkPanel.css'
 
 interface WorkPanelProps {
-  api: (WorkWorkspaceClient & WorkToolClient & WorkPlanClient) | undefined
+  api: (WorkWorkspaceClient & WorkToolClient & WorkPlanClient & WorkAuditClient
+    & { /** Open the application's current managed data directory. */ openDataDirectory(): Promise<void> }) | undefined
   chatId: string
   ready: boolean
   disabled: boolean
@@ -29,26 +32,39 @@ interface WorkPanelProps {
   previewAvailable: boolean
   confirmAvailable: boolean
   planAvailable: boolean
+  auditAvailable: boolean
+  undoAvailable: boolean
   /** Keep the shell from starting a conflicting mode change or Chat turn. */
   onBusyChange(busy: boolean): void
 }
 
 /** Display and revoke the explicit directory access granted to one Work Chat. */
-export function WorkPanel({ api, chatId, ready, disabled, readAvailable, previewAvailable, confirmAvailable, planAvailable, onBusyChange }: WorkPanelProps) {
+export function WorkPanel({ api, chatId, ready, disabled, readAvailable, previewAvailable, confirmAvailable,
+  planAvailable, auditAvailable, undoAvailable, onBusyChange }: WorkPanelProps) {
   const [calls, setCalls] = useState<WorkToolCall[]>([])
   const [consoleBusy, setConsoleBusy] = useState(false)
   const [planLeased, setPlanLeased] = useState(false)
+  const [undoBusy, setUndoBusy] = useState(false)
+  const [historyRevision, setHistoryRevision] = useState(0)
   const consoleBusyRef = useRef(false)
   const planLeasedRef = useRef(false)
+  const undoBusyRef = useRef(false)
   const updateConsoleBusy = useCallback((busy: boolean): void => {
+    if (!busy && consoleBusyRef.current) setHistoryRevision((current) => current + 1)
     consoleBusyRef.current = busy
     setConsoleBusy(busy)
-    onBusyChange(busy || planLeasedRef.current)
+    onBusyChange(busy || planLeasedRef.current || undoBusyRef.current)
   }, [onBusyChange])
   const updatePlanLease = useCallback((leased: boolean): void => {
+    if (!leased && planLeasedRef.current) setHistoryRevision((current) => current + 1)
     planLeasedRef.current = leased
     setPlanLeased(leased)
-    onBusyChange(leased || consoleBusyRef.current)
+    onBusyChange(leased || consoleBusyRef.current || undoBusyRef.current)
+  }, [onBusyChange])
+  const updateUndoBusy = useCallback((busy: boolean): void => {
+    undoBusyRef.current = busy
+    setUndoBusy(busy)
+    onBusyChange(busy || consoleBusyRef.current || planLeasedRef.current)
   }, [onBusyChange])
   const [catalog, setCatalog] = useState<WorkToolsState | null>(null)
   const [scope, setScope] = useState<WorkWorkspaceState | null>(null)
@@ -99,7 +115,7 @@ export function WorkPanel({ api, chatId, ready, disabled, readAvailable, preview
   }, [refresh])
 
   async function changeScope(clear: boolean): Promise<void> {
-    if (api === undefined || !ready || disabled || pending || consoleBusy || planLeased || scope === null) {
+    if (api === undefined || !ready || disabled || pending || consoleBusy || planLeased || undoBusy || scope === null) {
       return
     }
     const token = ++operationRef.current
@@ -129,7 +145,7 @@ export function WorkPanel({ api, chatId, ready, disabled, readAvailable, preview
   }
 
   const visibleScope = ready && scope?.chatId === chatId ? scope : null
-  const controlsDisabled = disabled || consoleBusy || planLeased || !ready || pending || visibleScope === null
+  const controlsDisabled = disabled || consoleBusy || planLeased || undoBusy || !ready || pending || visibleScope === null
 
   return (
     <section className="work-panel" aria-label="Work Workspace" aria-busy={pending}>
@@ -165,14 +181,18 @@ export function WorkPanel({ api, chatId, ready, disabled, readAvailable, preview
       <ToolInspector api={api} chatId={chatId} ready={ready} onCatalogChange={setCatalog} />
       <ToolConsole api={api} chatId={chatId} workspacePath={visibleScope?.workspacePath ?? null}
         ready={ready} readAvailable={readAvailable} previewAvailable={previewAvailable} confirmAvailable={confirmAvailable}
-        disabled={disabled || pending || planLeased} planAvailable={planAvailable} planActive={planLeased}
+        disabled={disabled || pending || planLeased || undoBusy} planAvailable={planAvailable} planActive={planLeased}
         planQueueFull={calls.length >= 16} onAddToPlan={(call) => {
           setCalls((current) => current.length < 16 ? [...current, call] : current)
         }} tools={catalog?.tools ?? []} onBusyChange={updateConsoleBusy} />
       {planAvailable && <PlanPanel api={api} chatId={chatId} workspacePath={visibleScope?.workspacePath ?? null}
-        ready={ready} disabled={disabled || consoleBusy} calls={calls}
+        ready={ready} disabled={disabled || consoleBusy || undoBusy} calls={calls}
         onRemoveCall={(index) => { setCalls((current) => current.filter((_, ordinal) => ordinal !== index)) }}
         onClearCalls={() => { setCalls([]) }} onLeaseChange={updatePlanLease} />}
+      {auditAvailable && <WorkHistory api={api} chatId={chatId} ready={ready}
+        disabled={disabled || pending || consoleBusy || planLeased}
+        workspacePath={visibleScope?.workspacePath ?? null} undoAvailable={undoAvailable}
+        refreshKey={historyRevision} onBusyChange={updateUndoBusy} />}
     </section>
   )
 }

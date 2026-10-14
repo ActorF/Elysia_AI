@@ -7,6 +7,7 @@ import { _electron as electron } from 'playwright'
 import { expect, test, type ElectronApplication, type Page } from '@playwright/test'
 
 import type { WorkWorkspaceState } from '../../electron/work-protocol.ts'
+import type { WorkAuditState } from '../../electron/work-audit-protocol.ts'
 
 interface WorkTestControl {
   getCalls(): Array<{ method: string; args: unknown[] }>
@@ -23,6 +24,10 @@ interface WorkTestControl {
   failNextWorkPreview(message: string): void
   setWorkPlanReadDelay(delayed: boolean): void
   releaseNextWorkPlanRead(): boolean
+  setWorkAuditState(chatId: string, state: WorkAuditState): void
+  setWorkFile(path: string, content: string | null): void
+  setWorkUndoDelay(delayed: boolean): void
+  rejectNextWorkUndo(): boolean
 }
 
 type WorkTestWindow = Window & { elysiaDesktopTest: WorkTestControl }
@@ -38,7 +43,7 @@ function snapshot(status = 'ready', revision = 1) {
   return {
     revision,
     status,
-    capabilities: ['chat.stream', 'chat.mode', 'work.workspace', 'work.tools', 'work.read', 'work.preview', 'work.confirm', 'work.plan'],
+    capabilities: ['chat.stream', 'chat.mode', 'work.workspace', 'work.tools', 'work.read', 'work.preview', 'work.confirm', 'work.plan', 'work.audit', 'work.undo'],
     models: ['qwen3.5:9b'],
     modelName: 'qwen3.5:9b',
     chatId: 'chat_work_test',
@@ -371,6 +376,17 @@ test('reviews a read, edit and verification plan before approving its exact writ
     .filter((call) => call.method === 'confirmWorkPlan'))
   expect(choices).toHaveLength(1)
   expect(choices[0].args[0]).toMatchObject({ chatId: 'chat_work_test', granted: true })
+  const history = page.getByRole('region', { name: 'Work history', exact: true })
+  await history.getByRole('button', { name: 'Undo edit', exact: true }).click()
+  const undo = history.getByRole('region', { name: 'Confirm Work Undo' })
+  await expect(undo).toContainText('notes.txt')
+  await undo.getByRole('button', { name: 'Confirm Undo', exact: true }).click()
+  await expect(history.getByRole('status')).toHaveText('Undo completed and verified.')
+  await expect(history.locator('[data-work-audit-outcome]')).toContainText(['succeeded', 'undone', 'succeeded'])
+  await expect(history.getByRole('button', { name: 'Undo edit', exact: true })).toHaveCount(0)
+  await page.getByLabel('Work tool', { exact: true }).selectOption('read_text')
+  await page.getByRole('button', { name: 'Run tool', exact: true }).click()
+  await expect(page.getByRole('region', { name: 'Work tool result' })).toContainText('Hello <script>unsafe()</script>')
 })
 
 test('retains the Work lease after cancellation until a native read actually drains', async () => {
@@ -425,4 +441,77 @@ test('cancels a waiting plan without keeping its write approval usable', async (
   await page.getByLabel('Work tool', { exact: true }).selectOption('read_text')
   await page.getByRole('button', { name: 'Run tool', exact: true }).click()
   await expect(page.getByRole('region', { name: 'Work tool result' })).toContainText('Hello <script>unsafe()</script>')
+})
+
+async function prepareHistoryWrite(): Promise<void> {
+  await page.evaluate(() => {
+    ;(window as WorkTestWindow).elysiaDesktopTest.setWorkWorkspaceState({
+      kind: 'work.workspace', chatId: 'chat_work_test', workspacePath: 'D:\\work-audit',
+    })
+  })
+  await page.getByRole('combobox', { name: 'Conversation mode' }).selectOption('work')
+  await page.getByLabel('Work tool', { exact: true }).selectOption('edit')
+  await page.getByLabel('Relative path', { exact: true }).fill('notes.txt')
+  await page.getByLabel('Complete file content').fill('Private replacement text.')
+  await page.getByRole('button', { name: 'Prepare change' }).click()
+  await page.getByRole('region', { name: 'Work change preview' }).getByRole('button', { name: 'Approve once', exact: true }).click()
+  await expect(page.getByRole('region', { name: 'Work history' }).getByRole('button', { name: 'Undo edit', exact: true })).toBeEnabled()
+}
+
+test('keeps external edits when an explicitly confirmed Undo conflicts', async () => {
+  await prepareHistoryWrite()
+  const history = page.getByRole('region', { name: 'Work history' })
+  await expect(history).not.toContainText('Private replacement text.')
+  await history.getByRole('button', { name: 'Undo edit', exact: true }).click()
+  const decision = history.getByRole('region', { name: 'Confirm Work Undo' })
+  const before = await page.evaluate(() => (window as WorkTestWindow).elysiaDesktopTest.getCalls()
+    .filter((call) => call.method === 'undoWorkAction'))
+  expect(before).toHaveLength(0)
+  await page.evaluate(() => { (window as WorkTestWindow).elysiaDesktopTest.setWorkFile('notes.txt', 'A newer external edit.') })
+  await decision.getByRole('button', { name: 'Confirm Undo', exact: true }).click()
+  await expect(history.getByRole('status')).toContainText('The file changed; prepare the action again.')
+  await page.getByLabel('Work tool', { exact: true }).selectOption('read_text')
+  await page.getByRole('button', { name: 'Run tool', exact: true }).click()
+  await expect(page.getByRole('region', { name: 'Work tool result' })).toContainText('A newer external edit.')
+})
+
+test('releases Undo busy state when the Backend disconnects before its request settles', async () => {
+  await prepareHistoryWrite()
+  await page.evaluate(() => { (window as WorkTestWindow).elysiaDesktopTest.setWorkUndoDelay(true) })
+  const history = page.getByRole('region', { name: 'Work history' })
+  await history.getByRole('button', { name: 'Undo edit', exact: true }).click()
+  await history.getByRole('button', { name: 'Confirm Undo', exact: true }).click()
+  const mode = page.getByRole('combobox', { name: 'Conversation mode' })
+  await expect(mode).toBeDisabled()
+  await page.evaluate((next) => { (window as WorkTestWindow).elysiaDesktopTest.emitBackendEvent({ type: 'snapshot', snapshot: next }) }, snapshot('starting', 2))
+  await page.evaluate(() => { (window as WorkTestWindow).elysiaDesktopTest.rejectNextWorkUndo() })
+  await page.evaluate((next) => { (window as WorkTestWindow).elysiaDesktopTest.emitBackendEvent({ type: 'snapshot', snapshot: next }) }, snapshot('ready', 3))
+  await expect(mode).toBeEnabled()
+  await expect(history.getByRole('button', { name: 'Refresh history' })).toBeEnabled()
+  await expect(history.getByRole('button', { name: 'Undo edit', exact: true })).toBeEnabled()
+})
+
+test('discloses a verified recovery copy separately from an interruption journal', async () => {
+  await page.evaluate(() => {
+    const control = (window as WorkTestWindow).elysiaDesktopTest
+    const recoveryId = `undo_${'a'.repeat(32)}`
+    const directory = `workspace/work/transactions/${recoveryId}`
+    const base = { timestamp: '2026-10-14T12:00:00+00:00', chatId: 'chat_work_test', projectId: null,
+      toolId: 'edit' as const, parameters: { path: 'notes.txt', contentBytes: 3, contentSha256: 'b'.repeat(64) },
+      approver: 'user' as const, result: 'failed' as const, error: 'io_error' as const,
+      undoId: null, recoverable: true }
+    control.setWorkAuditState('chat_work_test', { kind: 'work.audit', truncated: false, entries: [
+      { ...base, recovery: { recoveryId, directory, backupPath: null, beforeSha256: null } },
+      { ...base, recovery: { recoveryId, directory, backupPath: `${directory}/before.bin`, beforeSha256: 'c'.repeat(64) } },
+    ] })
+  })
+  await page.getByRole('combobox', { name: 'Conversation mode' }).selectOption('work')
+  const history = page.getByRole('region', { name: 'Work history' })
+  await expect(history).toContainText('No verified recovery copy is available.')
+  await expect(history.getByText('Verified recovery copy:', { exact: false })).toHaveCount(1)
+  await expect(history.getByRole('button', { name: /^Undo / })).toHaveCount(0)
+  await history.getByRole('button', { name: 'Open data folder', exact: true }).first().click()
+  const opens = await page.evaluate(() => (window as WorkTestWindow).elysiaDesktopTest.getCalls()
+    .filter((call) => call.method === 'openDataDirectory'))
+  expect(opens).toHaveLength(1)
 })

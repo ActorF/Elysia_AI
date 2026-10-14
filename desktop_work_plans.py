@@ -262,13 +262,22 @@ class DesktopWorkPlans:
             boundary = self._authority(owner)
             result = WorkToolExecutor(boundary).run(call, should_cancel=cancel)
             self._authority(owner)
-            return result
         except ToolProtocolError as error:
-            return ToolResult("denied", error_code=error.code)
+            result = ToolResult("denied", error_code=error.code)
         except (WorkspaceBoundaryError, ValueError, PermissionError):
-            return ToolResult("denied", error_code="conflict")
+            result = ToolResult("denied", error_code="conflict")
+        except Exception:
+            result = ToolResult("failed", error_code="io_error")
+        if cancel():
+            result = ToolResult("cancelled", error_code="cancelled")
+        try:
+            # A plan can retire while its read drains. The durable event still
+            # belongs to the captured user action; only relative parameters and
+            # the fixed outcome are retained, never the late result body.
+            self._write_provider().record_read(owner.chat_id, owner.project_id, call, result)
         except Exception:
             return ToolResult("failed", error_code="io_error")
+        return result
 
     def _preview(self, owner: _Owner, call: ToolCall) -> dict[str, Any]:
         writer = self._write_provider()

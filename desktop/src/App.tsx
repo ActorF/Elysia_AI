@@ -7906,6 +7906,8 @@ function App() {
             previewAvailable={snapshot.capabilities.includes('work.preview')}
             confirmAvailable={snapshot.capabilities.includes('work.confirm')}
             planAvailable={snapshot.capabilities.includes('work.plan')}
+            auditAvailable={snapshot.capabilities.includes('work.audit')}
+            undoAvailable={snapshot.capabilities.includes('work.undo')}
             onBusyChange={updateWorkBusy}
           />
         )}

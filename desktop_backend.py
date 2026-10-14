@@ -185,6 +185,8 @@ SERVER_CAPABILITIES = (
     "work.preview",
     "work.confirm",
     "work.plan",
+    "work.audit",
+    "work.undo",
     "chat.sessions",
     "chat.mode",
     "chat.stream",
@@ -219,7 +221,7 @@ _WORK_PHYSICAL_BUSY_METHODS = frozenset({
     "work.plan.create", "work.tool.run", "work.tool.preview", "work.tool.confirm",
     "knowledge.source.add", "knowledge.source.replace", "knowledge.source.reindex",
     "knowledge.source.delete", "knowledge.project.rebuild", "knowledge.project.revoke",
-    "knowledge.recover", "knowledge.source.export",
+    "knowledge.recover", "knowledge.source.export", "work.undo", "work.audit.list",
 })
 
 

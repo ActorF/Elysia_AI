@@ -5,6 +5,38 @@
   },
   "validClientMessages": [
     {
+      "name": "work redacted audit lookup",
+      "message": {
+        "type": "request",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "work.audit.list",
+        "method": "work.audit.list",
+        "params": {
+          "chatId": "chat_fixture"
+        }
+      }
+    },
+    {
+      "name": "work explicitly confirmed Undo",
+      "message": {
+        "type": "request",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "work.undo",
+        "method": "work.undo",
+        "params": {
+          "chatId": "chat_fixture",
+          "undoId": "undo_77777777777777777777777777777777",
+          "confirmed": true
+        }
+      }
+    },
+    {
       "name": "work plan get",
       "message": {
         "type": "request",
@@ -719,6 +751,73 @@
     }
   ],
   "validServerMessages": [
+    {
+      "name": "work redacted read and write audit",
+      "message": {
+        "type": "response",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "audit-fixture",
+        "ok": true,
+        "result": {
+          "kind": "work.audit",
+          "entries": [
+            {
+              "timestamp": "2026-10-14T16:00:00+00:00",
+              "chatId": "chat_fixture",
+              "projectId": null,
+              "toolId": "edit",
+              "parameters": {
+                "path": "notes.txt",
+                "contentBytes": 4,
+                "contentSha256": "8888888888888888888888888888888888888888888888888888888888888888"
+              },
+              "approver": "user",
+              "result": "succeeded",
+              "error": null,
+              "undoId": "undo_77777777777777777777777777777777",
+              "recoverable": false,
+              "recovery": null
+            },
+            {
+              "timestamp": "2026-10-14T16:00:00+00:00",
+              "chatId": "chat_fixture",
+              "projectId": null,
+              "toolId": "read_text",
+              "parameters": {
+                "path": "notes.txt"
+              },
+              "approver": "user",
+              "result": "succeeded",
+              "error": null,
+              "undoId": null,
+              "recoverable": false,
+              "recovery": null
+            }
+          ],
+          "truncated": false
+        }
+      }
+    },
+    {
+      "name": "work empty audit",
+      "message": {
+        "type": "response",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "audit-fixture",
+        "ok": true,
+        "result": {
+          "kind": "work.audit",
+          "entries": [],
+          "truncated": false
+        }
+      }
+    },
     {
       "name": "work waiting plan response",
       "message": {
@@ -3329,6 +3428,41 @@
   ],
   "invalidClientMessages": [
     {
+      "name": "work Undo needs affirmative confirmation",
+      "message": {
+        "type": "request",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "work.undo",
+        "method": "work.undo",
+        "params": {
+          "chatId": "chat_fixture",
+          "undoId": "undo_77777777777777777777777777777777",
+          "confirmed": false
+        }
+      }
+    },
+    {
+      "name": "work Undo cannot retarget recorded action",
+      "message": {
+        "type": "request",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "work.undo",
+        "method": "work.undo",
+        "params": {
+          "chatId": "chat_fixture",
+          "undoId": "undo_77777777777777777777777777777777",
+          "confirmed": true,
+          "path": "other.txt"
+        }
+      }
+    },
+    {
       "name": "work plan rejects blank FEFF title",
       "runtimeOnly": true,
       "message": {
@@ -3970,6 +4104,42 @@
     }
   ],
   "invalidServerMessages": [
+    {
+      "name": "work audit cannot include private content",
+      "message": {
+        "type": "response",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "audit-fixture",
+        "ok": true,
+        "result": {
+          "kind": "work.audit",
+          "entries": [
+            {
+              "timestamp": "2026-10-14T16:00:00+00:00",
+              "chatId": "chat_fixture",
+              "projectId": null,
+              "toolId": "edit",
+              "parameters": {
+                "path": "notes.txt",
+                "contentBytes": 4,
+                "contentSha256": "8888888888888888888888888888888888888888888888888888888888888888",
+                "content": "private body"
+              },
+              "approver": "user",
+              "result": "succeeded",
+              "error": null,
+              "undoId": "undo_77777777777777777777777777777777",
+              "recoverable": false,
+              "recovery": null
+            }
+          ],
+          "truncated": false
+        }
+      }
+    },
     {
       "name": "work plan rejects changed approval action",
       "runtimeOnly": true,
