@@ -31,6 +31,18 @@ async function emit(status = 'ready', revision = 1, chatId = 'chat_internet_writ
   } }) }, { status, revision, chatId })
 }
 
+async function emitCoalescedReconnect(): Promise<void> {
+  // Both native notifications arrive in one JavaScript task. React may commit
+  // only the final ready snapshot, so revocation must survive that batching.
+  await page.evaluate(() => {
+    const control = (window as WriteWindow).elysiaDesktopTest
+    const snapshot = { capabilities: ['chat.stream', 'chat.mode'], models: ['qwen3.5:9b'], modelName: 'qwen3.5:9b',
+      chatId: 'chat_internet_write', chatTitle: 'Internet Issue fixture' }
+    control.emitBackendEvent({ type: 'snapshot', snapshot: { ...snapshot, revision: 2, status: 'error', error: 'Synthetic disconnect.' } })
+    control.emitBackendEvent({ type: 'snapshot', snapshot: { ...snapshot, revision: 3, status: 'ready' } })
+  })
+}
+
 async function fillIssue(body = '<script>writeOwned()</script>\nExact second line.'): Promise<void> {
   const form = page.getByRole('region', { name: 'Create GitHub Issue', exact: true })
   await form.getByRole('textbox', { name: 'Issue repository owner', exact: true }).fill('synthetic-owner')
@@ -169,6 +181,43 @@ test('verified creation remains truthful when Internet turns off after submissio
   expect(await page.evaluate(() => (window as WriteWindow).elysiaDesktopTest.getCalls().filter(call => call.method === 'openExternalUrl'))).toHaveLength(0)
 })
 
+test('a same-task reconnect clears an unsubmitted Issue preview and its old input', async () => {
+  await preview()
+  await emitCoalescedReconnect()
+  const research = page.getByRole('region', { name: 'Internet research', exact: true })
+  // Inspect hidden descendants too: collapsing stale approval UI is not revocation.
+  await expect(research.getByLabel('Issue title', { exact: true })).toHaveValue('')
+  await expect(research.getByLabel('Issue repository owner', { exact: true })).toHaveValue('')
+  await expect(research.getByLabel('Issue repository name', { exact: true })).toHaveValue('')
+  await expect(research.getByLabel('Issue body (optional)', { exact: true })).toHaveValue('')
+  await expect(research.locator('[aria-label="GitHub Issue preview"]')).toHaveCount(0)
+  await expect(research.locator('[aria-label="GitHub Issue outcome"]')).toHaveCount(0)
+  expect(await page.evaluate(() => (window as WriteWindow).elysiaDesktopTest.getCalls()
+    .filter(call => ['confirmGithubIssue', 'githubIssueNativeConfirmation'].includes(call.method)))).toHaveLength(0)
+})
+
+test('a same-task reconnect discards a late created result without releasing its physical lease early', async () => {
+  await preview()
+  await page.evaluate(result => {
+    const control = (window as WriteWindow).elysiaDesktopTest
+    control.setNextInternetWriteResult(result); control.setInternetWriteConfirmationDelay(true)
+  }, created)
+  await page.getByRole('button', { name: 'Create Issue…', exact: true }).click()
+  await emitCoalescedReconnect()
+  const research = page.getByRole('region', { name: 'Internet research', exact: true })
+  const mode = page.getByRole('combobox', { name: 'Conversation mode', exact: true })
+  await expect(research).toHaveAttribute('aria-busy', 'true')
+  await expect(mode).toBeDisabled()
+  expect(await page.evaluate(() => (window as WriteWindow).elysiaDesktopTest.releaseNextInternetWriteConfirmation())).toBe(true)
+  await expect(mode).toBeEnabled()
+  await expect(research.locator('[aria-label="GitHub Issue outcome"]')).toHaveCount(0)
+  await expect(research.locator('[aria-label="GitHub Issue preview"]')).toHaveCount(0)
+  await expect(research.getByLabel('Issue title', { exact: true })).toHaveValue('')
+  await expect(research).toHaveAttribute('aria-busy', 'false')
+  expect(await page.evaluate(() => (window as WriteWindow).elysiaDesktopTest.getCalls()
+    .filter(call => call.method === 'confirmGithubIssue'))).toHaveLength(1)
+})
+
 for (const change of ['disconnect', 'Chat switch'] as const) test(`a late created result is discarded after ${change} while the physical lease drains`, async () => {
   await preview()
   await page.evaluate(result => {
@@ -176,12 +225,25 @@ for (const change of ['disconnect', 'Chat switch'] as const) test(`a late create
     control.setNextInternetWriteResult(result); control.setInternetWriteConfirmationDelay(true)
   }, created)
   await page.getByRole('button', { name: 'Create Issue…', exact: true }).click()
-  if (change === 'disconnect') { await emit('error', 2); await emit('ready', 3) }
-  else await emit('ready', 2, 'chat_internet_write_next')
+  const research = page.getByRole('region', { name: 'Internet research', exact: true })
+  const toggle = research.locator('button[aria-expanded]')
+  if (change === 'disconnect') {
+    // Two back-to-back events may be batched into one ready render. Observe
+    // the disconnected commit and scope reset before sending the recovery.
+    await emit('error', 2)
+    await expect(page.locator('.connection-pill')).toContainText('Connection error')
+    await expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    await expect(research.getByLabel('Issue title', { exact: true })).toHaveValue('')
+    await expect(research).toHaveAttribute('aria-busy', 'true')
+    await expect(page.getByRole('combobox', { name: 'Conversation mode', exact: true })).toBeDisabled()
+    await emit('ready', 3)
+    await expect(page.locator('.connection-pill')).toContainText('Connected')
+  } else await emit('ready', 2, 'chat_internet_write_next')
   await expect(page.getByRole('combobox', { name: 'Conversation mode', exact: true })).toBeDisabled()
   await page.evaluate(() => { (window as WriteWindow).elysiaDesktopTest.releaseNextInternetWriteConfirmation() })
   await expect(page.getByRole('combobox', { name: 'Conversation mode', exact: true })).toBeEnabled()
-  await page.getByRole('region', { name: 'Internet research', exact: true }).locator('button[aria-expanded]').click()
+  if (await toggle.getAttribute('aria-expanded') !== 'true') await toggle.click()
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true')
   await expect(page.getByRole('status', { name: 'GitHub Issue outcome', exact: true })).toHaveCount(0)
   await expect(page.getByRole('textbox', { name: 'Issue title', exact: true })).toHaveValue('')
   await expect(page.getByRole('region', { name: 'GitHub Issue preview', exact: true })).toHaveCount(0)

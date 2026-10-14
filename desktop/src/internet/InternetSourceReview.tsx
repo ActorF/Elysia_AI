@@ -10,6 +10,7 @@ interface InternetSourceReviewProps {
   api: InternetReviewClient | undefined
   chatId: string
   projectId: string | null
+  lifecycleEpoch: number
   sources: readonly InternetSource[]
   ready: boolean
   disabled: boolean
@@ -22,7 +23,7 @@ interface InternetSourceReviewProps {
 function dateLabel(value: string | null): string { return value === null ? 'Unknown' : new Date(value).toLocaleString() }
 
 /** Compare explicitly selected sources without presenting agreement or timestamps as verified truth. */
-export function InternetSourceReview({ api, chatId, projectId, sources, ready, disabled, onBusyChange, onChatDraft }: InternetSourceReviewProps) {
+export function InternetSourceReview({ api, chatId, projectId, lifecycleEpoch, sources, ready, disabled, onBusyChange, onChatDraft }: InternetSourceReviewProps) {
   const [selected, setSelected] = useState<string[]>([])
   const [claim, setClaim] = useState('')
   const [interpretation, setInterpretation] = useState<InternetReviewRequest['interpretation']>('source_report')
@@ -36,7 +37,7 @@ export function InternetSourceReview({ api, chatId, projectId, sources, ready, d
   const physicalPending = useRef(false)
   const previousScope = useRef('')
   const sourcesKey = useMemo(() => JSON.stringify(sources), [sources])
-  const scope = JSON.stringify([chatId, projectId, ready])
+  const scope = JSON.stringify([chatId, projectId, lifecycleEpoch, ready])
   const request = { chatId, sourceIds: selected, claim: claim.trim(), interpretation, eventDate: eventDate || null, uncertainty: uncertainty.trim() }
   let valid = false
   try { parseInternetReviewRequest(request); valid = true } catch { /* Incomplete or oversized drafts never reach the native review boundary. */ }

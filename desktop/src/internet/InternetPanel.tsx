@@ -16,6 +16,7 @@ interface InternetPanelProps {
   api: (InternetResearchClient & InternetPolicyClient & InternetReviewClient & InternetWriteClient & InternetCacheClient) | undefined
   chatId: string
   projectId: string | null
+  lifecycleEpoch: number
   ready: boolean
   disabled: boolean
   /** Keep global native admission occupied until actual requests have settled. */
@@ -59,7 +60,7 @@ const PROVIDERS: Record<InternetSource['provider'], string> = {
 }
 
 /** Present manual research and public-service evidence beside the current Chat, retaining explicit draft review. */
-export function InternetPanel({ api, chatId, projectId, ready, disabled, onBusyChange, onChatDraft, onSettings, onOpenSource }: InternetPanelProps) {
+export function InternetPanel({ api, chatId, projectId, lifecycleEpoch, ready, disabled, onBusyChange, onChatDraft, onSettings, onOpenSource }: InternetPanelProps) {
   const [open, setOpen] = useState(false)
   const [state, setState] = useState<InternetResearchState | null>(null)
   const [policy, setPolicy] = useState<InternetPolicyState | null>(null)
@@ -114,7 +115,7 @@ export function InternetPanel({ api, chatId, projectId, ready, disabled, onBusyC
     })
     const unsubscribe = api?.onInternetResearchChanged(next => { accept(next, token) })
     return () => { version.current += 1; unsubscribe?.() }
-  }, [accept, api, chatId, projectId, ready])
+  }, [accept, api, chatId, projectId, lifecycleEpoch, ready])
 
   useEffect(() => {
     let active = true, events = 0
@@ -233,13 +234,15 @@ export function InternetPanel({ api, chatId, projectId, ready, disabled, onBusyC
         <button type="button" disabled={locked || !validPageUrl || !domainAllowed(normalizedUrl)} onClick={() => { void act(client => client.readInternetPage({ chatId, url: normalizedUrl })) }}>Read page</button>
       </section>
       {typeof api?.getInternetWeather === 'function' && typeof api.getInternetGithubRepository === 'function' && <InternetServicesSection
-        key={JSON.stringify([chatId, projectId, ready])} chatId={chatId} policy={policy} disabled={locked}
+        key={JSON.stringify([chatId, projectId, lifecycleEpoch, ready])} chatId={chatId} policy={policy} disabled={locked}
         onWeather={request => { void act(client => client.getInternetWeather(request)) }}
         onGithub={request => { void act(client => client.getInternetGithubRepository(request)) }} />}
       {typeof api?.prepareGithubIssue === 'function' && <GitHubIssueSection api={api} chatId={chatId} projectId={projectId} ready={ready}
+        lifecycleEpoch={lifecycleEpoch}
         policy={policy} disabled={disabled || pending || nativeBusy || comparisonBusy || cacheBusy || visible?.busy === true}
         onBusyChange={updateWriteBusy} onOpenSource={onOpenSource} />}
       {typeof api?.getInternetCache === 'function' && <InternetCacheSection api={api} chatId={chatId} projectId={projectId} ready={ready}
+        lifecycleEpoch={lifecycleEpoch}
         researchRevision={visible?.revision ?? -1} disabled={disabled || pending || nativeBusy || comparisonBusy || writeBusy || visible?.busy === true}
         onBusyChange={updateCacheBusy} onRestore={request => { void act(client => client.restoreInternetCache(request)) }}
         onClear={() => { void act(client => client.clearInternetResearch(chatId)) }} />}
@@ -272,6 +275,7 @@ export function InternetPanel({ api, chatId, projectId, ready, disabled, onBusyC
         <ol>{visible?.history.map((entry, index) => <li key={`${entry.fetchedAt}-${index}`}><strong>{entry.query}</strong> · {entry.language} · {entry.count} results · {entry.status} · {dateLabel(entry.fetchedAt)}</li>)}</ol>
       </section>}
       {typeof api?.reviewInternetSources === 'function' && <InternetSourceReview api={api} chatId={chatId} projectId={projectId}
+        lifecycleEpoch={lifecycleEpoch}
         sources={visible?.sources ?? []} ready={ready} disabled={disabled || pending || nativeBusy || writeBusy || cacheBusy || visible?.busy === true}
         onBusyChange={updateComparisonBusy} onChatDraft={onChatDraft} />}
     </div>

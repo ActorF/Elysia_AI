@@ -8,6 +8,7 @@ interface InternetCacheSectionProps {
   api: InternetCacheClient
   chatId: string
   projectId: string | null
+  lifecycleEpoch: number
   ready: boolean
   disabled: boolean
   researchRevision: number
@@ -20,7 +21,7 @@ interface InternetCacheSectionProps {
 }
 
 /** Inspect local cache metadata explicitly, without polling, provider refresh, or permission to bypass stale evidence review. */
-export function InternetCacheSection({ api, chatId, projectId, ready, disabled, researchRevision, onBusyChange, onRestore, onClear }: InternetCacheSectionProps) {
+export function InternetCacheSection({ api, chatId, projectId, lifecycleEpoch, ready, disabled, researchRevision, onBusyChange, onRestore, onClear }: InternetCacheSectionProps) {
   const [state, setState] = useState<InternetCacheState | null>(null)
   const [approvedExpired, setApprovedExpired] = useState<string[]>([])
   const [pending, setPending] = useState(false)
@@ -28,7 +29,7 @@ export function InternetCacheSection({ api, chatId, projectId, ready, disabled, 
   const version = useRef(0)
   const physicalPending = useRef(false)
   const observed = useRef<{ scope: string; revision: number } | null>(null)
-  const scope = JSON.stringify([chatId, projectId, ready])
+  const scope = JSON.stringify([chatId, projectId, lifecycleEpoch, ready])
 
   useEffect(() => {
     const previous = observed.current

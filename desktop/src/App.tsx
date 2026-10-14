@@ -940,6 +940,7 @@ function App() {
   const [workOperationPending, setWorkOperationPending] = useState(false)
   const [visionOperationPending, setVisionOperationPending] = useState(false)
   const [internetOperationPending, setInternetOperationPending] = useState(false)
+  const [internetLifecycleEpoch, setInternetLifecycleEpoch] = useState(0)
   const [selectedWorkVisionContext, setSelectedWorkVisionContext] = useState<VisionContext | null>(null)
   const [projectState, setProjectState] = useState<ProjectState | null>(null)
   const [projectLoading, setProjectLoading] = useState(true)
@@ -2729,6 +2730,13 @@ function App() {
       delete acceptedSnapshot.activeKnowledgeOperation
     }
     acceptedSnapshotRevisionRef.current = nextSnapshot.revision
+    // React may batch error -> ready into one render. Preserve every observed
+    // loss of Backend authority or Chat replacement as a monotonic epoch so
+    // old Internet previews/results cannot revive when the final props match.
+    // Updating props, rather than remounting the panel, retains physical leases.
+    if (acceptedSnapshot.status !== 'ready' || acceptedSnapshot.chatId !== backendChatIdRef.current) {
+      setInternetLifecycleEpoch(current => current + 1)
+    }
     backendStatusRef.current = acceptedSnapshot.status
     backendChatIdRef.current = acceptedSnapshot.chatId
     if (acceptedSnapshot.status !== 'ready' || acceptedSnapshot.chatId !== activeChatIdRef.current) setSelectedWorkVisionContext(null)
@@ -8313,6 +8321,7 @@ function App() {
         )}
         internetPanel={activeChatId === undefined || chatState?.activeChat.mode !== 'chat' || typeof desktopApi?.getInternetResearch !== 'function' ? undefined : (
           <InternetPanel api={desktopApi} chatId={activeChatId} projectId={activeChatProjectId}
+            lifecycleEpoch={internetLifecycleEpoch}
             ready={snapshot.status === 'ready' && snapshot.chatId === activeChatId && chatState?.activeChat.archived === false && visionProjectAllowed}
             disabled={workControlsDisabled || workLeaseRef.current || visionOperationPending || modelSelectionPending || retryPending}
             onBusyChange={updateInternetBusy} onChatDraft={appendReviewedInternetDraft}

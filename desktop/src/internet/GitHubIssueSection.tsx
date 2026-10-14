@@ -10,6 +10,7 @@ interface GitHubIssueSectionProps {
   api: InternetWriteClient
   chatId: string
   projectId: string | null
+  lifecycleEpoch: number
   ready: boolean
   disabled: boolean
   policy: InternetPolicyState | null
@@ -31,7 +32,7 @@ const FAILURES: Record<string, string> = {
 }
 
 /** Keep external writes distinct from public reads, with complete previews, one-use confirmation and no automatic retry. */
-export function GitHubIssueSection({ api, chatId, projectId, ready, disabled, policy, onBusyChange, onOpenSource }: GitHubIssueSectionProps) {
+export function GitHubIssueSection({ api, chatId, projectId, lifecycleEpoch, ready, disabled, policy, onBusyChange, onOpenSource }: GitHubIssueSectionProps) {
   const [configured, setConfigured] = useState(false)
   const [owner, setOwner] = useState('')
   const [repo, setRepo] = useState('')
@@ -46,7 +47,7 @@ export function GitHubIssueSection({ api, chatId, projectId, ready, disabled, po
   const policyVersion = useRef(0)
   const physicalPending = useRef(false)
   const approvalRef = useRef<GithubIssueApproval | null>(null)
-  const scope = JSON.stringify([chatId, projectId, ready])
+  const scope = JSON.stringify([chatId, projectId, lifecycleEpoch, ready])
   const policyKey = JSON.stringify(policy)
 
   useEffect(() => {
