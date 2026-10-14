@@ -1,4 +1,4 @@
-"""Validate the shared desktop-protocol contract in Python."""
+"""Verify Desktop Protocol v1 runtime, schema, and shared-fixture parity."""
 
 import base64
 import json
@@ -17,6 +17,7 @@ from desktop_protocol import (
     PROTOCOL_VERSION,
     VOICE_CAPTURE_MAX_BASE64_CHARACTERS,
     VOICE_TRANSCRIPTION_MAX_TEXT_CODE_POINTS,
+    ProgressMessage,
     ProtocolValidationError,
     build_error_response,
     build_event,
@@ -484,6 +485,106 @@ def test_permission_scopes_must_be_unique() -> None:
     }
 
     with pytest.raises(ProtocolValidationError):
+        parse_server_message(message)
+
+
+def _image_generate_request() -> JsonObject:
+    """Return one isolated canonical original-character image request."""
+
+    sample = next(
+        cast(JsonObject, candidate)
+        for candidate in _fixtures()["validClientMessages"]
+        if cast(JsonObject, candidate)["name"] == "image generation request"
+    )
+    return cast(JsonObject, deepcopy(sample["message"]))
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    ["contentMode", "adultMode", "nsfw", "protection"],
+)
+def test_image_generation_rejects_every_caller_policy_toggle(
+    field_name: str,
+) -> None:
+    """Keep content policy and the new-character intent Backend-owned."""
+
+    request = _image_generate_request()
+    cast(JsonObject, request["params"])[field_name] = True
+
+    with pytest.raises(ProtocolValidationError, match="invalid fields"):
+        parse_client_request(deepcopy(request))
+    schema = cast(JsonObject, json.loads(SCHEMA_PATH.read_text("utf-8")))
+    assert not Draft202012Validator(schema).is_valid(request)
+
+
+@pytest.mark.parametrize("invalid_text", ["white\x00dress", "lone\ud800"])
+def test_image_generation_rejects_controls_and_lone_surrogates(
+    invalid_text: str,
+) -> None:
+    """Reject JSON-valid prompt text that is unsafe or runtime-ambiguous."""
+
+    request = _image_generate_request()
+    cast(JsonObject, request["params"])["outfit"] = invalid_text
+
+    with pytest.raises(ProtocolValidationError, match="unsupported characters"):
+        parse_client_request(deepcopy(request))
+    schema = cast(JsonObject, json.loads(SCHEMA_PATH.read_text("utf-8")))
+    assert not Draft202012Validator(schema).is_valid(request)
+
+
+@pytest.mark.parametrize(
+    ("stage", "completed"),
+    [
+        ("validating", 5),
+        ("probing", 15),
+        ("submitting", 25),
+        ("sampling", 35),
+        ("verifying", 90),
+        ("completed", 100),
+    ],
+)
+def test_image_progress_accepts_only_public_stage_checkpoints(
+    stage: str,
+    completed: int,
+) -> None:
+    """Accept each stable image phase without exposing runtime diagnostics."""
+
+    message = build_progress(
+        "image-generate-1",
+        "image.generate",
+        completed,
+        total=100,
+        message=stage,
+    )
+    parsed = cast(ProgressMessage, parse_server_message(message))
+    assert parsed["message"] == stage
+
+
+@pytest.mark.parametrize(
+    ("stage", "completed", "total"),
+    [
+        ("sampling", 34, 100),
+        ("private-model-load", 35, 100),
+        ("sampling", 35, 99),
+    ],
+)
+def test_image_progress_rejects_noncanonical_stage_checkpoints(
+    stage: str,
+    completed: int,
+    total: int,
+) -> None:
+    """Prevent arbitrary lower-layer phase strings from entering the wire."""
+
+    message: JsonObject = {
+        "type": "progress",
+        "protocol": {"name": PROTOCOL_NAME, "version": PROTOCOL_VERSION},
+        "requestId": "image-generate-1",
+        "operation": "image.generate",
+        "completed": completed,
+        "total": total,
+        "message": stage,
+    }
+    with pytest.raises(ProtocolValidationError, match="stage checkpoint"):
         parse_server_message(message)
 
 

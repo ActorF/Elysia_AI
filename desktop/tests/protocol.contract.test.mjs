@@ -1,4 +1,7 @@
 /** Verify the Electron bridge and Python backend share one strict wire contract. */
+/**
+ * @fileoverview Exercises Desktop Protocol v1 and Electron boundary policies.
+ */
 
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
@@ -5682,4 +5685,76 @@ test('external link policy allows credential-free HTTP(S) URLs only', () => {
   assert.throws(() => parseSafeExternalUrl('https://user@example.com/'))
   assert.throws(() => parseSafeExternalUrl('https://example.com\0.invalid/'))
   assert.throws(() => parseSafeExternalUrl(' https://example.com/'))
+})
+
+function imageGenerateRequest() {
+  const sample = fixtures.validClientMessages.find(
+    (candidate) => candidate.name === 'image generation request',
+  )
+  assert.ok(sample)
+  return structuredClone(sample.message)
+}
+
+test('image generation keeps policy toggles outside the public DTO', () => {
+  for (const field of ['contentMode', 'adultMode', 'nsfw', 'protection']) {
+    const request = imageGenerateRequest()
+    request.params[field] = true
+    assert.throws(
+      () => parseClientRequest(request),
+      ProtocolValidationError,
+    )
+  }
+})
+
+test('image generation rejects controls and lone surrogates', () => {
+  for (const text of ['white\0dress', 'lone\uD800']) {
+    const request = imageGenerateRequest()
+    request.params.outfit = text
+    assert.throws(
+      () => parseClientRequest(request),
+      ProtocolValidationError,
+    )
+  }
+})
+
+test('image progress accepts only the closed public checkpoints', () => {
+  const checkpoints = [
+    ['validating', 5],
+    ['probing', 15],
+    ['submitting', 25],
+    ['sampling', 35],
+    ['verifying', 90],
+    ['completed', 100],
+  ]
+  for (const [message, completed] of checkpoints) {
+    const parsed = parseServerMessage({
+      type: 'progress',
+      protocol: fixtures.protocol,
+      requestId: 'image-generate-1',
+      operation: 'image.generate',
+      completed,
+      total: 100,
+      message,
+    })
+    assert.equal(parsed.message, message)
+  }
+
+  for (const [message, completed, total] of [
+    ['sampling', 34, 100],
+    ['private-model-load', 35, 100],
+    ['sampling', 35, 99],
+  ]) {
+    assert.throws(
+      () => parseServerMessage({
+        type: 'progress',
+        protocol: fixtures.protocol,
+        requestId: 'image-generate-1',
+        operation: 'image.generate',
+        completed,
+        total,
+        message,
+      }),
+      ProtocolValidationError,
+    )
+  }
 })

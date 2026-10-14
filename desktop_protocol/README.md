@@ -207,6 +207,41 @@ sink, decode, lifecycle, or correlation failure. Window replacement and
 shutdown release stale playback ownership without making text Chat depend on
 optional speech.
 
+`image.generate` is the single Protocol v1 image-generation entry point. Its
+exact DTO contains `profileId`, `sizePresetId`, the eight public prompt
+components (`appearance`, `outfit`, `pose`, `scene`, `style`, `camera`,
+`lighting`, and `negativePrompt`), `seed`, and the required literal
+`originalFictionalConfirmed: true`. The Backend fixes the operation to a new
+original fictional character; callers cannot select a different intent,
+workflow, model, path, policy, or content mode. Unknown fields are rejected,
+including `contentMode`, `adultMode`, `nsfw`, and `protection`. Prompt
+components are bounded Unicode text and reject control characters and lone
+surrogates so Python, TypeScript, and JSON Schema interpret the DTO equally.
+
+Image progress is also a closed public surface. `operation: "image.generate"`
+always uses `total: 100` and exactly these `(message, completed)` checkpoints:
+`validating/5`, `probing/15`, `submitting/25`, `sampling/35`, `verifying/90`,
+and `completed/100`. Runtime model names, paths, node names, and arbitrary
+diagnostic phases cannot become protocol progress text. Generic
+`request.cancel` remains the cancellation operation and continues to target
+the originating request ID.
+
+`image.gallery.list`, `image.gallery.get`, `image.gallery.delete`, and
+`image.gallery.open` expose only opaque `gallery_<32 lowercase hex>` artifact
+IDs. List pages use `limit` 1 through 255 plus a non-negative `offset`; items
+are unique and sorted newest first by the complete canonical
+`YYYY-MM-DDTHH:mm:ss.ffffffZ` timestamp, then artifact ID, with `hasMore`
+allowed only for a full page. Public artifact metadata is limited to ID,
+creation time, bounded dimensions and byte size, SHA-256, `image/png`, profile
+ID, and seed. Generation additionally returns an opaque
+`imageop_<32 lowercase hex>` operation ID.
+
+Gallery open never returns PNG bytes, Base64, a path, a prompt, or workflow
+details. It returns the artifact ID plus a nonzero 256-bit `previewToken`,
+length, digest, media type, and dimensions that must match the next bounded
+frame on the separate private image byte channel. This keeps JSON responses
+path-free while retaining exact metadata-to-bytes correlation.
+
 `attachment.list`, `attachment.add`, and `attachment.remove` operate on one
 exact Chat or Project scope. Native source paths are accepted only across the
 authenticated Electron-main-to-Python boundary and are never returned in a

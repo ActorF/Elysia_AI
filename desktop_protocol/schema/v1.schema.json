@@ -43,6 +43,11 @@
     "voice.speech.clip metadata exactly matches the next private binary frame before playback",
     "voice.speech events contain no source text, model path, profile, cache state, or native error detail",
     "voice.speech.terminal satisfies failedSentences <= completedSentences <= submittedSentences and completed state has equal completed/submitted counts",
+    "image.generate is the single Backend-fixed new-character workflow and accepts no content mode, policy toggle, intent, path, model, or workflow selector",
+    "image.generate progress uses only the six exact stage/percent pairs and completed is emitted only after Gallery commit",
+    "image Gallery lists contain unique artifacts in descending createdAt and artifactId order, and hasMore requires a full page",
+    "image artifact dimensions satisfy width * height <= 4194304 and timestamps are timezone-aware",
+    "image.gallery.open metadata exactly matches the next private PNG frame and its nonzero previewToken is single-use",
     "knowledge.state sources and operations have unique identifiers and every operation belongs to the enclosing Project",
     "every non-null knowledge.state source operationId refers to an operation in the same result",
     "knowledge operation timestamps are timezone-aware and updatedAt never precedes createdAt",
@@ -92,6 +97,11 @@
     { "$ref": "#/$defs/voiceTranscriptionStartRequest" },
     { "$ref": "#/$defs/voiceSpeechStartRequest" },
     { "$ref": "#/$defs/voiceSpeechCancelRequest" },
+    { "$ref": "#/$defs/imageGenerateRequest" },
+    { "$ref": "#/$defs/imageGalleryListRequest" },
+    { "$ref": "#/$defs/imageGalleryGetRequest" },
+    { "$ref": "#/$defs/imageGalleryDeleteRequest" },
+    { "$ref": "#/$defs/imageGalleryOpenRequest" },
     { "$ref": "#/$defs/cancelRequest" },
     { "$ref": "#/$defs/permissionResponseRequest" },
     { "$ref": "#/$defs/shutdownRequest" },
@@ -187,6 +197,11 @@
             "voice.transcription.start",
             "voice.speech.start",
             "voice.speech.cancel",
+            "image.generate",
+            "image.gallery.list",
+            "image.gallery.get",
+            "image.gallery.delete",
+            "image.gallery.open",
             "request.cancel",
             "permission.respond",
             "shutdown"
@@ -780,6 +795,86 @@
       ],
       "additionalProperties": false
     },
+    "imagePublicId": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+    },
+    "imagePromptComponent": {
+      "type": "string",
+      "maxLength": 1024,
+      "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]*$"
+    },
+    "imageGenerateParams": {
+      "type": "object",
+      "properties": {
+        "profileId": { "$ref": "#/$defs/imagePublicId" },
+        "sizePresetId": { "$ref": "#/$defs/imagePublicId" },
+        "appearance": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024,
+          "allOf": [
+            {
+              "pattern": "[^\\u0009-\\u000D\\u0020\\u0085\\u00A0\\u1680\\u2000-\\u200A\\u2028\\u2029\\u202F\\u205F\\u3000\\uFEFF]"
+            },
+            {
+              "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F\\uD800-\\uDFFF]*$"
+            }
+          ]
+        },
+        "outfit": { "$ref": "#/$defs/imagePromptComponent" },
+        "pose": { "$ref": "#/$defs/imagePromptComponent" },
+        "scene": { "$ref": "#/$defs/imagePromptComponent" },
+        "style": { "$ref": "#/$defs/imagePromptComponent" },
+        "camera": { "$ref": "#/$defs/imagePromptComponent" },
+        "lighting": { "$ref": "#/$defs/imagePromptComponent" },
+        "negativePrompt": { "$ref": "#/$defs/imagePromptComponent" },
+        "seed": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "originalFictionalConfirmed": { "const": true }
+      },
+      "required": [
+        "profileId", "sizePresetId", "appearance", "outfit", "pose",
+        "scene", "style", "camera", "lighting", "negativePrompt",
+        "seed", "originalFictionalConfirmed"
+      ],
+      "additionalProperties": false
+    },
+    "imageGalleryListParams": {
+      "type": "object",
+      "properties": {
+        "limit": { "type": "integer", "minimum": 1, "maximum": 255 },
+        "offset": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": ["limit", "offset"],
+      "additionalProperties": false
+    },
+    "imageArtifactId": {
+      "type": "string",
+      "pattern": "^gallery_[0-9a-f]{32}$"
+    },
+    "imageTimestamp": {
+      "type": "string",
+      "minLength": 27,
+      "maxLength": 27,
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{6}Z$",
+      "format": "date-time"
+    },
+    "imageGalleryArtifactParams": {
+      "type": "object",
+      "properties": {
+        "artifactId": { "$ref": "#/$defs/imageArtifactId" }
+      },
+      "required": ["artifactId"],
+      "additionalProperties": false
+    },
     "cancelParams": {
       "type": "object",
       "properties": {
@@ -1234,6 +1329,61 @@
           "properties": {
             "method": { "const": "voice.speech.cancel" },
             "params": { "$ref": "#/$defs/voiceSpeechCancelParams" }
+          }
+        }
+      ]
+    },
+    "imageGenerateRequest": {
+      "allOf": [
+        { "$ref": "#/$defs/requestEnvelope" },
+        {
+          "properties": {
+            "method": { "const": "image.generate" },
+            "params": { "$ref": "#/$defs/imageGenerateParams" }
+          }
+        }
+      ]
+    },
+    "imageGalleryListRequest": {
+      "allOf": [
+        { "$ref": "#/$defs/requestEnvelope" },
+        {
+          "properties": {
+            "method": { "const": "image.gallery.list" },
+            "params": { "$ref": "#/$defs/imageGalleryListParams" }
+          }
+        }
+      ]
+    },
+    "imageGalleryGetRequest": {
+      "allOf": [
+        { "$ref": "#/$defs/requestEnvelope" },
+        {
+          "properties": {
+            "method": { "const": "image.gallery.get" },
+            "params": { "$ref": "#/$defs/imageGalleryArtifactParams" }
+          }
+        }
+      ]
+    },
+    "imageGalleryDeleteRequest": {
+      "allOf": [
+        { "$ref": "#/$defs/requestEnvelope" },
+        {
+          "properties": {
+            "method": { "const": "image.gallery.delete" },
+            "params": { "$ref": "#/$defs/imageGalleryArtifactParams" }
+          }
+        }
+      ]
+    },
+    "imageGalleryOpenRequest": {
+      "allOf": [
+        { "$ref": "#/$defs/requestEnvelope" },
+        {
+          "properties": {
+            "method": { "const": "image.gallery.open" },
+            "params": { "$ref": "#/$defs/imageGalleryArtifactParams" }
           }
         }
       ]
@@ -2346,6 +2496,110 @@
       "required": ["kind", "requestId", "chatId", "assistantMessageId"],
       "additionalProperties": false
     },
+    "imageArtifact": {
+      "type": "object",
+      "properties": {
+        "artifactId": { "$ref": "#/$defs/imageArtifactId" },
+        "createdAt": { "$ref": "#/$defs/imageTimestamp" },
+        "width": { "type": "integer", "minimum": 1, "maximum": 2048 },
+        "height": { "type": "integer", "minimum": 1, "maximum": 2048 },
+        "byteSize": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 33554432
+        },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "mediaType": { "const": "image/png" },
+        "profileId": { "$ref": "#/$defs/imagePublicId" },
+        "seed": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "artifactId", "createdAt", "width", "height", "byteSize",
+        "sha256", "mediaType", "profileId", "seed"
+      ],
+      "additionalProperties": false
+    },
+    "imageGenerationResult": {
+      "type": "object",
+      "properties": {
+        "kind": { "const": "image.generation" },
+        "operationId": {
+          "type": "string",
+          "pattern": "^imageop_[0-9a-f]{32}$"
+        },
+        "artifact": { "$ref": "#/$defs/imageArtifact" }
+      },
+      "required": ["kind", "operationId", "artifact"],
+      "additionalProperties": false
+    },
+    "imageGalleryListResult": {
+      "type": "object",
+      "properties": {
+        "kind": { "const": "image.gallery.list" },
+        "items": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/imageArtifact" },
+          "maxItems": 255
+        },
+        "limit": { "type": "integer", "minimum": 1, "maximum": 255 },
+        "offset": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "hasMore": { "type": "boolean" }
+      },
+      "required": ["kind", "items", "limit", "offset", "hasMore"],
+      "additionalProperties": false
+    },
+    "imageGalleryGetResult": {
+      "type": "object",
+      "properties": {
+        "kind": { "const": "image.gallery.get" },
+        "item": { "$ref": "#/$defs/imageArtifact" }
+      },
+      "required": ["kind", "item"],
+      "additionalProperties": false
+    },
+    "imageGalleryDeleteResult": {
+      "type": "object",
+      "properties": {
+        "kind": { "const": "image.gallery.delete" },
+        "artifactId": { "$ref": "#/$defs/imageArtifactId" },
+        "deleted": { "const": true }
+      },
+      "required": ["kind", "artifactId", "deleted"],
+      "additionalProperties": false
+    },
+    "imageGalleryOpenResult": {
+      "type": "object",
+      "properties": {
+        "kind": { "const": "image.gallery.open" },
+        "artifactId": { "$ref": "#/$defs/imageArtifactId" },
+        "previewToken": {
+          "type": "string",
+          "pattern": "^(?!0{64}$)[0-9a-f]{64}$"
+        },
+        "byteLength": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 33554432
+        },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "mediaType": { "const": "image/png" },
+        "width": { "type": "integer", "minimum": 1, "maximum": 2048 },
+        "height": { "type": "integer", "minimum": 1, "maximum": 2048 }
+      },
+      "required": [
+        "kind", "artifactId", "previewToken", "byteLength", "sha256",
+        "mediaType", "width", "height"
+      ],
+      "additionalProperties": false
+    },
     "shutdownResult": {
       "type": "object",
       "properties": { "stopped": { "const": true } },
@@ -2375,6 +2629,11 @@
             { "$ref": "#/$defs/voiceTranscriptionResult" },
             { "$ref": "#/$defs/voiceSpeechStartResult" },
             { "$ref": "#/$defs/voiceSpeechCancelResult" },
+            { "$ref": "#/$defs/imageGenerationResult" },
+            { "$ref": "#/$defs/imageGalleryListResult" },
+            { "$ref": "#/$defs/imageGalleryGetResult" },
+            { "$ref": "#/$defs/imageGalleryDeleteResult" },
+            { "$ref": "#/$defs/imageGalleryOpenResult" },
             { "$ref": "#/$defs/shutdownResult" }
           ]
         }
@@ -2462,7 +2721,26 @@
       "required": [
         "type", "protocol", "requestId", "operation", "completed", "total", "message"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": { "operation": { "const": "image.generate" } },
+            "required": ["operation"]
+          },
+          "then": {
+            "properties": { "total": { "const": 100 } },
+            "oneOf": [
+              { "properties": { "message": { "const": "validating" }, "completed": { "const": 5 } } },
+              { "properties": { "message": { "const": "probing" }, "completed": { "const": 15 } } },
+              { "properties": { "message": { "const": "submitting" }, "completed": { "const": 25 } } },
+              { "properties": { "message": { "const": "sampling" }, "completed": { "const": 35 } } },
+              { "properties": { "message": { "const": "verifying" }, "completed": { "const": 90 } } },
+              { "properties": { "message": { "const": "completed" }, "completed": { "const": 100 } } }
+            ]
+          }
+        }
+      ]
     },
     "permission": {
       "type": "object",

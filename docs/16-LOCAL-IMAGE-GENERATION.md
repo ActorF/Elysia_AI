@@ -4,7 +4,7 @@
 
 ## 1. 当前状态
 
-Elysia AI 已加入第一版**受信本地图片生成核心、私有 ComfyUI 进程监督器、可恢复 Gallery Store 与应用服务**。当前 Python 层可以验证结构化请求与本机模型、启动每任务一个隔离子进程、执行固定工作流、验证输出，并在结果返回前终止进程和删除私有运行目录；应用服务再用一个原子取消/提交边界把结果写入路径私有的本地 Gallery。Electron/React 产品界面、Desktop Protocol、原生导出与真实模型验收仍未接通。
+Elysia AI 已加入第一版**受信本地图片生成核心、私有 ComfyUI 进程监督器、可恢复 Gallery Store、应用服务与 Desktop Protocol 合同**。当前 Python 层可以验证结构化请求与本机模型、启动每任务一个隔离子进程、执行固定工作流、验证输出，并在结果返回前终止进程和删除私有运行目录；应用服务再用一个原子取消/提交边界把结果写入路径私有的本地 Gallery。Python、TypeScript、JSON Schema 与共享 Fixtures 已定义路径无关的生成/Gallery DTO，独立有界二进制通道负责最多 32 MiB 的 PNG Preview。Backend Composition、Electron Pipe Owner、React 产品界面、原生导出与真实模型验收仍未接通。
 
 当前已完成：
 
@@ -20,11 +20,13 @@ Elysia AI 已加入第一版**受信本地图片生成核心、私有 ComfyUI �
 - 返回图片字节、模型 Profile Digest、Workflow Digest、Seed 与 UTC 时间等可复现 Metadata。
 - 用 `ImageGalleryStore` 在 `ProductionDataLayout.gallery`（`workspace/gallery`）下保存 Canonical PNG 与严格私有 Manifest；提供 Opaque ID、路径无关 Metadata、按需重新验证的 PNG Bytes、逻辑原子 Create/Delete、容量限制、可重建 Index 和启动恢复。
 - 用 `ImageGenerationApplicationService` 串联 Core 与 Gallery：一个单次 Opaque Operation ID 对应一个生成任务；取消与 `RUNNING → COMMITTING` 在同一把锁中裁决，只有 Gallery 提交成功后才向观察者发布 `completed=100`。
+- 用 Protocol v1 精确定义 `image.generate`、Gallery List/Get/Delete/Open、六个封闭进度检查点与路径无关结果；请求没有普通/成人内容模式字段。
+- 用固定 88-byte Header 的私有 Image Channel 关联一次性 Preview Token、尺寸、长度和 SHA-256；PNG Bytes 不进入 NDJSON/Base64，Reader 在读取 Payload 前先拒绝越界 Header。
 
 当前尚未完成：
 
 - Electron/React 的 Image Generator、Settings、进度、取消和错误界面。
-- Gallery 的 Desktop Protocol、受限预览传输、原生导出、容量展示和 UI。
+- Desktop Backend 路由、Electron 私有 Preview Pipe/Renderer Capability、原生导出、容量展示和 UI。
 - 与 Ollama、GPT-SoVITS、Song Cover 共用的进程级 GPU Admission/Lease。
 - 模型安装、下载、更新、Hash 实测和许可证向导。
 - 使用真实 ComfyUI 版本、真实 Checkpoint 和目标 GPU 的本机 Smoke/Soak 验收。
@@ -79,7 +81,10 @@ ImageGenerationApplicationService
         ├── Atomic cancel-or-commit gate
         └── Path-private Gallery delegation
         ▼
-Trusted Gallery Store（已实现，尚未接 Desktop）
+Trusted Gallery Store（已实现）
+        │
+        ▼
+Desktop Protocol + bounded binary Preview frame（合同已实现，运行时尚未接线）
 ```
 
 核心原则：
@@ -344,7 +349,7 @@ validating → probing → submitting → sampling → verifying → completed
 
 `index.json` 只是无 Prompt、无路径的可重建缓存，不决定 Artifact 是否存在；缺失、陈旧、损坏或无法写回时，不会阻止读取已经验证的权威 Artifact。打开 Store 时会验证严格 Manifest、目录结构、文件身份和声明大小，并建立独占 Lease 下的内存快照；`open_verified()` 才读取目标图片，重新验证 SHA-256 与 Canonical PNG。这样 List/Get/Create 不会随 Gallery 总图片字节数重复解码整个图库，目标图片的字节篡改仍会在发布前被拒绝。
 
-同一 Store 由进程内 `RLock` 与非阻塞跨进程文件 Lease 串行化。默认上限为 1,024 个 Artifact、4 GiB 图片总量，单页最多 256 条；单图仍受 Canonical PNG 的 32 MiB 和像素预算约束。可选 Private Prompt 只进入私有 Manifest，不进入 `ImageGalleryItem` 或 Index。当前 Store 提供 Create/List/Get/Open Verified/Delete；Native Export、Desktop Preview 与稳定游标分页尚未接入。同一用户账户中主动绕过 Lease 并并发替换目录节点不属于当前威胁模型；静态重定向和非协作文件结构仍会 Fail Closed。
+同一 Store 由进程内 `RLock` 与非阻塞跨进程文件 Lease 串行化。默认上限为 1,024 个 Artifact、4 GiB 图片总量，单页最多 256 条；Desktop Protocol 单页最多请求 255 条，使 Backend 可以在 Store 内部读取 `limit + 1` 并准确计算 `hasMore`。单图仍受 Canonical PNG 的 32 MiB 和像素预算约束。可选 Private Prompt 只进入私有 Manifest，不进入 `ImageGalleryItem` 或 Index。当前 Store 提供 Create/List/Get/Open Verified/Delete；Desktop DTO 和 Preview 二进制帧已定义，但 Backend/Electron Runtime、Native Export 与稳定游标分页尚未接入。同一用户账户中主动绕过 Lease 并并发替换目录节点不属于当前威胁模型；静态重定向和非协作文件结构仍会 Fail Closed。
 
 ### 10.3 已实现的应用发布合同
 
@@ -362,7 +367,15 @@ Core 即使已经返回经过验证的 Bytes，只要取消先取得锁，应用
 
 Gallery 私有 Manifest 当前只保存规范化后的用户正向组件，明确不把 System/Dialect Prefix 或 Negative Prompt 冒充为完整可复现 Prompt。公开 `list/get` 只返回路径无关 Metadata，`open` 只返回重新验证的 `CanonicalPng`，意外的底层异常对象、路径、Prompt 和 Runtime Response 不会进入公开异常链。
 
-关闭会先永久停止新任务准入：仍处于 `RUNNING` 的任务收到协作取消，已经进入 `COMMITTING` 的任务则完成短提交；所有已准入 Gallery 调用排空后才释放 Core 与 Gallery。多个并发关闭者共享同一轮精确结果；某个资源无法证明释放时，后续 `close()` 只重试失败的资源，且不会重新开放生成或 Gallery 准入。应用服务仍不提供 Native Export、Desktop 二进制预览通道、持久 Job Queue 或跨模型 GPU Lease。
+关闭会先永久停止新任务准入：仍处于 `RUNNING` 的任务收到协作取消，已经进入 `COMMITTING` 的任务则完成短提交；所有已准入 Gallery 调用排空后才释放 Core 与 Gallery。多个并发关闭者共享同一轮精确结果；某个资源无法证明释放时，后续 `close()` 只重试失败的资源，且不会重新开放生成或 Gallery 准入。应用服务仍不负责 Native Export、Desktop Pipe 所有权、持久 Job Queue 或跨模型 GPU Lease。
+
+### 10.4 已实现的 Desktop Protocol 与 Preview Frame 合同
+
+Protocol v1 现在定义五个路径无关方法：`image.generate`、`image.gallery.list`、`image.gallery.get`、`image.gallery.delete` 与 `image.gallery.open`。生成请求只接受结构化 Profile/尺寸/外观/服装/姿势/场景/风格/镜头/光线/负面词、JSON-safe Seed 和必须为 `true` 的原创虚构主体确认；Backend 固定第一版 `new-character` Intent。协议不接受文件路径、模型路径、任意 Workflow、图片 Bytes、`contentMode`、`adultMode`、`nsfw` 或保护模式字段。
+
+`image.gallery.open` 的 JSON Result 只发布 Opaque Artifact ID、一次性 64-hex Preview Token、长度、尺寸、摘要和 `image/png`。实际 PNG 使用 `ELYSIMG1` v1 的固定 88-byte Little-endian Header 加 Payload 传输；Header 在 Payload 缓冲前限制 32 MiB、2,048-pixel 单边和总像素预算，接收后再核对 SHA-256、PNG Signature 与 IHDR 尺寸。Writer 同时最多持有一个待发布或正在写入的 Frame；Partial Write、篡改、关闭失败或非法状态都会使通道 Fail Closed。Reader 一次最多返回一帧及精确消费长度，让 Electron Owner 对合并读取保留后缀并施加背压。
+
+该模块只定义并验证合同，不拥有 OS Descriptor，也不把“已有协议方法”描述成可用产品功能。下一层仍须由 Backend 绑定应用服务与 Operation ID，由 Electron Main 创建、排空和关闭私有 Pipe，并以短期 Renderer Capability 暴露 Preview；在这些完成前不会在 Handshake 中广告图片 Capability。
 
 ---
 
@@ -454,19 +467,23 @@ Gallery 私有 Manifest 当前只保存规范化后的用户正向组件，明�
 
 覆盖单次 Opaque Operation ID、迟到取消隔离、单任务准入、取消/提交线性化、Core 完成进度延迟、Private Prompt 不进入公开对象、路径私有 Gallery 委托、关闭时取消或等待提交、Gallery Read Drain、并发关闭结果一致、失败资源定向重试、稳定下层错误保型和完整异常对象图脱敏。测试还明确验证普通描述与 R18 描述调用同一个 `generate()`，不存在 `content_mode` 或成人模式参数。
 
+### Desktop Protocol 与 Image Channel Tests
+
+`tests/test_desktop_protocol.py` 与 `desktop/tests/protocol.contract.test.mjs` 共同读取 Schema/Fixtures，并验证五个 Image 方法、路径无关 Artifact DTO、一次性 Operation/Preview Token、严格字段集合、分页、排序和六个精确进度检查点在 Python 与 TypeScript 两端一致。`tests/test_desktop_image_channel.py` 覆盖 Header/Payload 单字节分片、合并 Frame 消费边界、32 MiB 与尺寸上限、Hash/IHDR 绑定、Partial Write Poison、反射篡改、并发 Close、截断 EOF 和异常信息净化。
+
 这些测试不安装 ComfyUI、不加载真实 Checkpoint，也不使用 GPU。真实 Runtime、具体模型画质、VRAM 峰值和长时间取消仍需要单独的显式本机 Smoke/Soak 验收。
 
 ---
 
 ## 14. 下一步
 
-### 第一优先：Desktop Protocol、Settings 与 Gallery Preview/Export
+### 第一优先：Backend/Electron Runtime、Settings 与 Gallery Preview/Export
 
-- 定义路径无关的 Image Request/Progress/Result/Error DTO。
 - 在 Backend 组合受信 Profile Catalog、Managed Runtime Session、Gallery 与现有 `ImageGenerationApplicationService`，不直接组合 Raw `HttpComfyUiClient`。
 - 加入 Desktop Settings：Runtime/Models/Private State Folder、已审核 Profile 与默认尺寸；不提供内容模式开关。
-- 把现有 Operation ID、取消/提交 Commit Gate 和 Gallery 方法映射到 Desktop Protocol，并实现路径私有 Preview、Native Export 与容量展示。
-- PNG 上限是 32 MiB，超过现有 16 MiB NDJSON Frame，因此 Preview 不得把图片 Base64 塞进 JSON；应使用有界二进制通道，或由 Python 写入 Electron Main 授权且身份固定的目标。
+- 把现有 Operation ID、取消/提交 Commit Gate 和 Gallery 方法接到已定义的 Desktop Protocol；只有运行时完整接通后才在 Handshake 中广告 Capability。
+- 由 Electron Main 创建并拥有私有 Preview Pipe，匹配一次性 Preview Token 后再向 Renderer 发放短期 Capability；PNG 不得以 Base64 进入 16 MiB NDJSON Frame。
+- 原生导出只允许 Renderer 提交 Opaque Artifact ID；由 Main 打开 Save Dialog、选择目标并原子写入，Renderer 不向 Python 传入任意输出路径。
 - Renderer 只获得 Opaque Artifact ID、Metadata 和受限预览能力，不获得本机模型/输出路径。
 
 ### 第二优先：真实 Runtime 与模型验收

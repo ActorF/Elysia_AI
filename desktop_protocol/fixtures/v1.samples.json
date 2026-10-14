@@ -567,6 +567,69 @@
         "method": "shutdown",
         "params": {}
       }
+    },
+    {
+      "name": "image generation request",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "image-generate-1",
+        "method": "image.generate",
+        "params": {
+          "profileId": "anime_default",
+          "sizePresetId": "portrait",
+          "appearance": "adult original fictional woman, pink hair",
+          "outfit": "white dress",
+          "pose": "standing",
+          "scene": "garden",
+          "style": "anime illustration",
+          "camera": "medium shot",
+          "lighting": "soft daylight",
+          "negativePrompt": "extra fingers",
+          "seed": 42,
+          "originalFictionalConfirmed": true
+        }
+      }
+    },
+    {
+      "name": "image gallery list request",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "image-list-1",
+        "method": "image.gallery.list",
+        "params": { "limit": 2, "offset": 0 }
+      }
+    },
+    {
+      "name": "image gallery get request",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "image-get-1",
+        "method": "image.gallery.get",
+        "params": { "artifactId": "gallery_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }
+      }
+    },
+    {
+      "name": "image gallery delete request",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "image-delete-1",
+        "method": "image.gallery.delete",
+        "params": { "artifactId": "gallery_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }
+      }
+    },
+    {
+      "name": "image gallery open request",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "image-open-1",
+        "method": "image.gallery.open",
+        "params": { "artifactId": "gallery_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }
+      }
     }
   ],
   "validServerMessages": [
@@ -1349,6 +1412,137 @@
           }
         }
       }
+    },
+    {
+      "name": "image generation response",
+      "message": {
+        "type": "response",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "image-generate-1",
+        "ok": true,
+        "result": {
+          "kind": "image.generation",
+          "operationId": "imageop_cccccccccccccccccccccccccccccccc",
+          "artifact": {
+            "artifactId": "gallery_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "createdAt": "2026-10-14T12:00:00.000002Z",
+            "width": 1024,
+            "height": 1024,
+            "byteSize": 2048,
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "mediaType": "image/png",
+            "profileId": "anime_default",
+            "seed": 42
+          }
+        }
+      }
+    },
+    {
+      "name": "image gallery list response",
+      "message": {
+        "type": "response",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "image-list-1",
+        "ok": true,
+        "result": {
+          "kind": "image.gallery.list",
+          "items": [
+            {
+              "artifactId": "gallery_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "createdAt": "2026-10-14T12:00:00.000002Z",
+              "width": 1024,
+              "height": 1024,
+              "byteSize": 2048,
+              "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+              "mediaType": "image/png",
+              "profileId": "anime_default",
+              "seed": 42
+            },
+            {
+              "artifactId": "gallery_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "createdAt": "2026-10-14T12:00:00.000001Z",
+              "width": 768,
+              "height": 1024,
+              "byteSize": 1024,
+              "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+              "mediaType": "image/png",
+              "profileId": "anime_default",
+              "seed": 7
+            }
+          ],
+          "limit": 2,
+          "offset": 0,
+          "hasMore": true
+        }
+      }
+    },
+    {
+      "name": "image gallery get response",
+      "message": {
+        "type": "response",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "image-get-1",
+        "ok": true,
+        "result": {
+          "kind": "image.gallery.get",
+          "item": {
+            "artifactId": "gallery_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "createdAt": "2026-10-14T12:00:00.000002Z",
+            "width": 1024,
+            "height": 1024,
+            "byteSize": 2048,
+            "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "mediaType": "image/png",
+            "profileId": "anime_default",
+            "seed": 42
+          }
+        }
+      }
+    },
+    {
+      "name": "image gallery delete response",
+      "message": {
+        "type": "response",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "image-delete-1",
+        "ok": true,
+        "result": {
+          "kind": "image.gallery.delete",
+          "artifactId": "gallery_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "deleted": true
+        }
+      }
+    },
+    {
+      "name": "image gallery open response",
+      "message": {
+        "type": "response",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "image-open-1",
+        "ok": true,
+        "result": {
+          "kind": "image.gallery.open",
+          "artifactId": "gallery_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "previewToken": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "byteLength": 2048,
+          "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "mediaType": "image/png",
+          "width": 1024,
+          "height": 1024
+        }
+      }
+    },
+    {
+      "name": "image generation progress",
+      "message": {
+        "type": "progress",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "requestId": "image-generate-1",
+        "operation": "image.generate",
+        "completed": 35,
+        "total": 100,
+        "message": "sampling"
+      }
     }
   ],
   "invalidClientMessages": [
@@ -1915,6 +2109,76 @@
           "speechStartSample": 0,
           "speechEndSample": 3200,
           "pcmBase64": "AB=="
+        }
+      }
+    },
+    {
+      "name": "image generation rejects caller-selected content mode",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "image-generate-invalid-1",
+        "method": "image.generate",
+        "params": {
+          "profileId": "anime_default",
+          "sizePresetId": "portrait",
+          "appearance": "adult original fictional woman",
+          "outfit": "",
+          "pose": "",
+          "scene": "",
+          "style": "",
+          "camera": "",
+          "lighting": "",
+          "negativePrompt": "",
+          "seed": 42,
+          "originalFictionalConfirmed": true,
+          "contentMode": "caller-controlled"
+        }
+      }
+    },
+    {
+      "name": "image generation requires original fictional confirmation",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "image-generate-invalid-2",
+        "method": "image.generate",
+        "params": {
+          "profileId": "anime_default",
+          "sizePresetId": "portrait",
+          "appearance": "adult original fictional woman",
+          "outfit": "",
+          "pose": "",
+          "scene": "",
+          "style": "",
+          "camera": "",
+          "lighting": "",
+          "negativePrompt": "",
+          "seed": 42,
+          "originalFictionalConfirmed": false
+        }
+      }
+    },
+    {
+      "name": "image generation rejects prompt controls",
+      "message": {
+        "type": "request",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "image-generate-invalid-3",
+        "method": "image.generate",
+        "params": {
+          "profileId": "anime_default",
+          "sizePresetId": "portrait",
+          "appearance": "adult original fictional woman",
+          "outfit": "white\u0000dress",
+          "pose": "",
+          "scene": "",
+          "style": "",
+          "camera": "",
+          "lighting": "",
+          "negativePrompt": "",
+          "seed": 42,
+          "originalFictionalConfirmed": true
         }
       }
     }
@@ -2534,6 +2798,78 @@
           "durationMs": -1,
           "speechDurationMs": 200,
           "sha256Hex": "728eabe201bf53e2d86b61e09c4ccdd4a37c01f3c100c63dacc75ea664689f4e"
+        }
+      }
+    },
+    {
+      "name": "image gallery open response rejects private path",
+      "message": {
+        "type": "response",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "image-open-invalid-1",
+        "ok": true,
+        "result": {
+          "kind": "image.gallery.open",
+          "artifactId": "gallery_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "previewToken": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "byteLength": 2048,
+          "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "mediaType": "image/png",
+          "width": 1024,
+          "height": 1024,
+          "path": "D:\\private\\gallery.png"
+        }
+      }
+    },
+    {
+      "name": "image generation progress rejects arbitrary runtime phase",
+      "message": {
+        "type": "progress",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "requestId": "image-generate-invalid-1",
+        "operation": "image.generate",
+        "completed": 36,
+        "total": 100,
+        "message": "loading-checkpoint-from-private-path"
+      }
+    },
+    {
+      "name": "image gallery list rejects microsecond misordering",
+      "runtimeOnly": true,
+      "message": {
+        "type": "response",
+        "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "image-list-invalid-1",
+        "ok": true,
+        "result": {
+          "kind": "image.gallery.list",
+          "items": [
+            {
+              "artifactId": "gallery_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "createdAt": "2026-10-14T12:00:00.000001Z",
+              "width": 1024,
+              "height": 1024,
+              "byteSize": 2048,
+              "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+              "mediaType": "image/png",
+              "profileId": "anime_default",
+              "seed": 42
+            },
+            {
+              "artifactId": "gallery_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "createdAt": "2026-10-14T12:00:00.000002Z",
+              "width": 768,
+              "height": 1024,
+              "byteSize": 1024,
+              "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+              "mediaType": "image/png",
+              "profileId": "anime_default",
+              "seed": 7
+            }
+          ],
+          "limit": 2,
+          "offset": 0,
+          "hasMore": false
         }
       }
     }

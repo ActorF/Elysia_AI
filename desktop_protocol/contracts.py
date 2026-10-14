@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import base64
 import binascii
-from datetime import datetime
+from datetime import datetime, timezone
 import math
 import ntpath
 import re
@@ -62,6 +62,8 @@ MAX_GROUNDED_LOCATIONS: Final = 100_000
 MAX_GROUNDED_STATEMENT_CODE_POINTS: Final = 4_000
 MAX_GROUNDED_TOTAL_STATEMENT_CODE_POINTS: Final = 16_000
 MAX_GROUNDED_EXCERPT_CODE_POINTS: Final = 2_000
+MAX_IMAGE_PROMPT_COMPONENT_CODE_POINTS: Final = 1_024
+MAX_IMAGE_GALLERY_LIST_LIMIT: Final = 255
 
 TRANSCRIPTION_MODELS: Final = (
     "tiny",
@@ -121,6 +123,13 @@ _ATTACHMENT_ID_PATTERN: Final = re.compile(
     r"^attachment_[A-Za-z0-9_-]+$"
 )
 _LOWERCASE_SHA256_PATTERN: Final = re.compile(r"^[0-9a-f]{64}$")
+_IMAGE_OPERATION_ID_PATTERN: Final = re.compile(r"^imageop_[0-9a-f]{32}$")
+_IMAGE_ARTIFACT_ID_PATTERN: Final = re.compile(r"^gallery_[0-9a-f]{32}$")
+_IMAGE_PUBLIC_ID_PATTERN: Final = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
+_IMAGE_TIMESTAMP_PATTERN: Final = re.compile(
+    r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T"
+    r"[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{6}Z$"
+)
 _CITATION_ID_PATTERN: Final = re.compile(r"^citation_[0-9a-f]{64}$")
 _STATEMENT_ID_PATTERN: Final = re.compile(r"^statement_[0-9]{3}$")
 _KNOWLEDGE_OPERATION_ID_PATTERN: Final = re.compile(
@@ -151,6 +160,14 @@ _RESERVED_AUDIO_DEVICE_IDS: Final = frozenset({
     "default",
     "communications",
 })
+_IMAGE_GENERATION_PROGRESS: Final[dict[str, int]] = {
+    "validating": 5,
+    "probing": 15,
+    "submitting": 25,
+    "sampling": 35,
+    "verifying": 90,
+    "completed": 100,
+}
 
 ProtocolEventName: TypeAlias = Literal[
     "chat.started",
@@ -248,6 +265,11 @@ ProtocolMethod = Literal[
     "voice.transcription.start",
     "voice.speech.start",
     "voice.speech.cancel",
+    "image.generate",
+    "image.gallery.list",
+    "image.gallery.get",
+    "image.gallery.delete",
+    "image.gallery.open",
     "request.cancel",
     "permission.respond",
     "shutdown",
@@ -291,6 +313,11 @@ SUPPORTED_METHODS: Final[tuple[ProtocolMethod, ...]] = (
     "voice.transcription.start",
     "voice.speech.start",
     "voice.speech.cancel",
+    "image.generate",
+    "image.gallery.list",
+    "image.gallery.get",
+    "image.gallery.delete",
+    "image.gallery.open",
     "request.cancel",
     "permission.respond",
     "shutdown",
@@ -510,6 +537,41 @@ class VoiceSpeechCancelParams(TypedDict):
     chatId: str
 
 
+class ImageGenerateParams(TypedDict):
+    """Describe one new original fictional character image request.
+
+    The new-character intent is fixed by the Backend and therefore is not a
+    caller-selectable wire field. Explicit and non-explicit descriptions use
+    this same DTO; no content-mode or policy-bypass switch exists.
+    """
+
+    profileId: str
+    sizePresetId: str
+    appearance: str
+    outfit: str
+    pose: str
+    scene: str
+    style: str
+    camera: str
+    lighting: str
+    negativePrompt: str
+    seed: int
+    originalFictionalConfirmed: Literal[True]
+
+
+class ImageGalleryListParams(TypedDict):
+    """Select one bounded newest-first Gallery metadata page."""
+
+    limit: int
+    offset: int
+
+
+class ImageGalleryArtifactParams(TypedDict):
+    """Select one path-private Gallery artifact by opaque identifier."""
+
+    artifactId: str
+
+
 class VoiceSpeechStartParams(TypedDict):
     """Identify one persisted Assistant message for manual playback."""
 
@@ -533,6 +595,66 @@ class VoiceSpeechCancelResult(TypedDict):
     requestId: str
     chatId: str
     stopped: bool
+
+
+class ImageArtifact(TypedDict):
+    """Expose one generated PNG without bytes, paths, or private prompts."""
+
+    artifactId: str
+    createdAt: str
+    width: int
+    height: int
+    byteSize: int
+    sha256: str
+    mediaType: Literal["image/png"]
+    profileId: str
+    seed: int
+
+
+class ImageGenerationResult(TypedDict):
+    """Publish one committed Gallery artifact for a generation operation."""
+
+    kind: Literal["image.generation"]
+    operationId: str
+    artifact: ImageArtifact
+
+
+class ImageGalleryListResult(TypedDict):
+    """Return one bounded Gallery page and whether another page exists."""
+
+    kind: Literal["image.gallery.list"]
+    items: list[ImageArtifact]
+    limit: int
+    offset: int
+    hasMore: bool
+
+
+class ImageGalleryGetResult(TypedDict):
+    """Return one exact Gallery artifact metadata item."""
+
+    kind: Literal["image.gallery.get"]
+    item: ImageArtifact
+
+
+class ImageGalleryDeleteResult(TypedDict):
+    """Confirm one committed Gallery deletion without exposing storage."""
+
+    kind: Literal["image.gallery.delete"]
+    artifactId: str
+    deleted: Literal[True]
+
+
+class ImageGalleryOpenResult(TypedDict):
+    """Authorize one private bounded PNG preview channel by opaque token."""
+
+    kind: Literal["image.gallery.open"]
+    artifactId: str
+    previewToken: str
+    byteLength: int
+    sha256: str
+    mediaType: Literal["image/png"]
+    width: int
+    height: int
 
 
 class PermissionResponseParams(TypedDict):
@@ -1711,6 +1833,151 @@ def _validate_cancel_params(params: JsonObject) -> None:
         )
 
 
+def _validate_image_public_id(
+    value: JsonObject,
+    key: str,
+    context: str,
+    *,
+    error_code: str = "protocol.invalid_params",
+) -> str:
+    """Accept one bounded logical image profile or preset identifier."""
+
+    identifier = _require_string(value, key, context, maximum=64)
+    if _IMAGE_PUBLIC_ID_PATTERN.fullmatch(identifier) is None:
+        raise ProtocolValidationError(
+            error_code,
+            f"{context}.{key} must be a lowercase logical identifier.",
+        )
+    return identifier
+
+
+def _validate_image_generate_params(params: JsonObject) -> None:
+    """Validate the sole generation DTO without caller-selectable intent.
+
+    Exact fields are a security boundary: accepting a mode, policy toggle,
+    workflow, path, model name, or intent would silently broaden the reviewed
+    Backend-owned new-character workflow.
+    """
+
+    context = "image.generate params"
+    _require_fields(
+        params,
+        {
+            "profileId",
+            "sizePresetId",
+            "appearance",
+            "outfit",
+            "pose",
+            "scene",
+            "style",
+            "camera",
+            "lighting",
+            "negativePrompt",
+            "seed",
+            "originalFictionalConfirmed",
+        },
+        context,
+    )
+    _validate_image_public_id(params, "profileId", context)
+    _validate_image_public_id(params, "sizePresetId", context)
+    def require_component(key: str, *, required: bool) -> str:
+        component = _require_string(
+            params,
+            key,
+            context,
+            minimum=1 if required else 0,
+            maximum=MAX_IMAGE_PROMPT_COMPONENT_CODE_POINTS,
+        )
+        if required and not _has_non_blank_character(component):
+            raise ProtocolValidationError(
+                "protocol.invalid_params",
+                f"{context}.{key} cannot be blank.",
+            )
+        if any(
+            unicodedata.category(character) in {"Cc", "Cs"}
+            for character in component
+        ):
+            # Escaped controls and lone surrogates are legal JSON text but
+            # unsafe prompt material and differ subtly across runtimes.
+            raise ProtocolValidationError(
+                "protocol.invalid_params",
+                f"{context}.{key} contains unsupported characters.",
+            )
+        return component
+
+    require_component("appearance", required=True)
+    for key in (
+        "outfit",
+        "pose",
+        "scene",
+        "style",
+        "camera",
+        "lighting",
+        "negativePrompt",
+    ):
+        require_component(key, required=False)
+    seed = _require_integer(params, "seed", context)
+    if seed < 0:
+        raise ProtocolValidationError(
+            "protocol.invalid_params",
+            f"{context}.seed cannot be negative.",
+        )
+    if _require_boolean(params, "originalFictionalConfirmed", context) is not True:
+        raise ProtocolValidationError(
+            "protocol.invalid_params",
+            f"{context}.originalFictionalConfirmed must be true.",
+        )
+
+
+def _validate_image_gallery_list_params(params: JsonObject) -> None:
+    """Validate one bounded Gallery page request."""
+
+    context = "image.gallery.list params"
+    _require_fields(params, {"limit", "offset"}, context)
+    limit = _require_integer(params, "limit", context)
+    offset = _require_integer(params, "offset", context)
+    if not 1 <= limit <= MAX_IMAGE_GALLERY_LIST_LIMIT or offset < 0:
+        raise ProtocolValidationError(
+            "protocol.invalid_params",
+            f"{context} pagination is outside the supported range.",
+        )
+
+
+def _validate_image_artifact_id(
+    value: JsonObject,
+    key: str,
+    context: str,
+    *,
+    error_code: str,
+) -> str:
+    """Accept only a Gallery-owned opaque ID, never path-like caller text."""
+
+    artifact_id = _require_string(value, key, context, maximum=40)
+    if _IMAGE_ARTIFACT_ID_PATTERN.fullmatch(artifact_id) is None:
+        raise ProtocolValidationError(
+            error_code,
+            f"{context}.{key} must use the gallery_<id> format.",
+        )
+    return artifact_id
+
+
+def _validate_image_gallery_artifact_params(
+    params: JsonObject,
+    *,
+    method: str,
+) -> None:
+    """Validate one path-free Gallery selection request."""
+
+    context = f"{method} params"
+    _require_fields(params, {"artifactId"}, context)
+    _validate_image_artifact_id(
+        params,
+        "artifactId",
+        context,
+        error_code="protocol.invalid_params",
+    )
+
+
 def _validate_voice_speech_cancel_params(params: JsonObject) -> None:
     """Require both halves of the speech turn's exact ownership key."""
 
@@ -2276,6 +2543,16 @@ def parse_client_request(value: object) -> ClientRequest:
         _validate_voice_speech_start_params(params)
     elif method == "voice.speech.cancel":
         _validate_voice_speech_cancel_params(params)
+    elif method == "image.generate":
+        _validate_image_generate_params(params)
+    elif method == "image.gallery.list":
+        _validate_image_gallery_list_params(params)
+    elif method in {
+        "image.gallery.get",
+        "image.gallery.delete",
+        "image.gallery.open",
+    }:
+        _validate_image_gallery_artifact_params(params, method=method)
     elif method == "request.cancel":
         _validate_cancel_params(params)
     elif method == "permission.respond":
@@ -3396,8 +3673,313 @@ def _validate_knowledge_export_result(
     return cast(KnowledgeExportResult, result)
 
 
+def _validate_image_operation_id(
+    value: JsonObject,
+    key: str,
+    context: str,
+) -> str:
+    """Validate one single-use image operation identifier."""
+
+    operation_id = _require_string(value, key, context, maximum=40)
+    if _IMAGE_OPERATION_ID_PATTERN.fullmatch(operation_id) is None:
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.{key} must use the imageop_<id> format.",
+        )
+    return operation_id
+
+
+def _validate_image_dimensions(value: JsonObject, context: str) -> None:
+    """Enforce the canonical PNG canvas ceiling on public metadata."""
+
+    width = _require_integer(value, "width", context)
+    height = _require_integer(value, "height", context)
+    if not 1 <= width <= 2_048 or not 1 <= height <= 2_048 or width * height > 4_194_304:
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context} dimensions exceed the canonical image bounds.",
+        )
+
+
+def _validate_image_digest_and_media(value: JsonObject, context: str) -> None:
+    """Require one canonical PNG identity without carrying its bytes."""
+
+    sha256 = _require_string(value, "sha256", context, maximum=64)
+    if _LOWERCASE_SHA256_PATTERN.fullmatch(sha256) is None:
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.sha256 must be a lowercase SHA-256 digest.",
+        )
+    media_type = _require_string(value, "mediaType", context, maximum=9)
+    if media_type != "image/png":
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.mediaType must be image/png.",
+        )
+
+
+def _require_image_timestamp(
+    value: JsonObject,
+    key: str,
+    context: str,
+) -> datetime:
+    """Parse the Gallery store's canonical microsecond-precision UTC time.
+
+    The fixed representation makes newest-first ordering identical in Python,
+    JSON Schema, and JavaScript, whose native ``Date`` otherwise truncates
+    sub-millisecond precision.
+    """
+
+    raw = _require_string(value, key, context, maximum=27)
+    if _IMAGE_TIMESTAMP_PATTERN.fullmatch(raw) is None:
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.{key} must be a canonical UTC Gallery timestamp.",
+        )
+    try:
+        parsed = datetime.fromisoformat(f"{raw[:-1]}+00:00")
+    except ValueError:
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.{key} must be a canonical UTC Gallery timestamp.",
+        ) from None
+    if (
+        parsed.astimezone(timezone.utc)
+        .isoformat(timespec="microseconds")
+        .replace("+00:00", "Z")
+        != raw
+    ):
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.{key} must be a canonical UTC Gallery timestamp.",
+        )
+    return parsed
+
+
+def _validate_image_artifact(value: object, *, context: str) -> ImageArtifact:
+    """Validate one path-free immutable Gallery metadata snapshot."""
+
+    artifact = _as_object(value, context)
+    _require_fields(
+        artifact,
+        {
+            "artifactId",
+            "createdAt",
+            "width",
+            "height",
+            "byteSize",
+            "sha256",
+            "mediaType",
+            "profileId",
+            "seed",
+        },
+        context,
+    )
+    _validate_image_artifact_id(
+        artifact,
+        "artifactId",
+        context,
+        error_code="protocol.invalid_message",
+    )
+    _require_image_timestamp(artifact, "createdAt", context)
+    _validate_image_dimensions(artifact, context)
+    byte_size = _require_integer(artifact, "byteSize", context)
+    if not 1 <= byte_size <= 32 * 1024 * 1024:
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.byteSize exceeds the canonical PNG limit.",
+        )
+    _validate_image_digest_and_media(artifact, context)
+    _validate_image_public_id(
+        artifact,
+        "profileId",
+        context,
+        error_code="protocol.invalid_message",
+    )
+    seed = _require_integer(artifact, "seed", context)
+    if seed < 0:
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.seed cannot be negative.",
+        )
+    return cast(ImageArtifact, artifact)
+
+
+def _validate_image_generation_result(result: JsonObject) -> ImageGenerationResult:
+    """Validate one operation-to-artifact publication receipt."""
+
+    context = "image generation result"
+    _require_fields(result, {"kind", "operationId", "artifact"}, context)
+    if result.get("kind") != "image.generation":
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.kind is unsupported.",
+        )
+    _validate_image_operation_id(result, "operationId", context)
+    _validate_image_artifact(result["artifact"], context=f"{context}.artifact")
+    return cast(ImageGenerationResult, result)
+
+
+def _validate_image_gallery_list_result(result: JsonObject) -> ImageGalleryListResult:
+    """Validate one bounded path-free Gallery page."""
+
+    context = "image gallery list result"
+    _require_fields(result, {"kind", "items", "limit", "offset", "hasMore"}, context)
+    if result.get("kind") != "image.gallery.list":
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.kind is unsupported.",
+        )
+    limit = _require_integer(result, "limit", context)
+    offset = _require_integer(result, "offset", context)
+    if not 1 <= limit <= MAX_IMAGE_GALLERY_LIST_LIMIT or offset < 0:
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context} pagination is outside the supported range.",
+        )
+    raw_items = result.get("items")
+    if not isinstance(raw_items, list) or len(raw_items) > limit:
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.items exceeds the requested page size.",
+        )
+    artifact_ids: set[str] = set()
+    ordering_keys: list[tuple[datetime, str]] = []
+    for position, raw_item in enumerate(raw_items):
+        item = _validate_image_artifact(
+            raw_item,
+            context=f"{context}.items[{position}]",
+        )
+        if item["artifactId"] in artifact_ids:
+            raise ProtocolValidationError(
+                "protocol.invalid_message",
+                f"{context}.items contains duplicate artifact IDs.",
+            )
+        artifact_ids.add(item["artifactId"])
+        ordering_keys.append(
+            (
+                _require_image_timestamp(
+                    cast(JsonObject, item),
+                    "createdAt",
+                    f"{context}.items[{position}]",
+                ),
+                item["artifactId"],
+            )
+        )
+    if ordering_keys != sorted(ordering_keys, reverse=True):
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.items must be ordered newest first.",
+        )
+    has_more = _require_boolean(result, "hasMore", context)
+    if has_more and len(raw_items) != limit:
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.hasMore requires a full page.",
+        )
+    return cast(ImageGalleryListResult, result)
+
+
+def _validate_image_gallery_get_result(result: JsonObject) -> ImageGalleryGetResult:
+    """Validate one exact Gallery metadata lookup result."""
+
+    context = "image gallery get result"
+    _require_fields(result, {"kind", "item"}, context)
+    if result.get("kind") != "image.gallery.get":
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.kind is unsupported.",
+        )
+    _validate_image_artifact(result["item"], context=f"{context}.item")
+    return cast(ImageGalleryGetResult, result)
+
+
+def _validate_image_gallery_delete_result(result: JsonObject) -> ImageGalleryDeleteResult:
+    """Validate one path-free committed-deletion receipt."""
+
+    context = "image gallery delete result"
+    _require_fields(result, {"kind", "artifactId", "deleted"}, context)
+    if result.get("kind") != "image.gallery.delete" or result.get("deleted") is not True:
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context} is not a committed deletion receipt.",
+        )
+    _validate_image_artifact_id(
+        result,
+        "artifactId",
+        context,
+        error_code="protocol.invalid_message",
+    )
+    return cast(ImageGalleryDeleteResult, result)
+
+
+def _validate_image_gallery_open_result(result: JsonObject) -> ImageGalleryOpenResult:
+    """Validate metadata for the separate bounded binary preview channel."""
+
+    context = "image gallery open result"
+    _require_fields(
+        result,
+        {
+            "kind",
+            "artifactId",
+            "previewToken",
+            "byteLength",
+            "sha256",
+            "mediaType",
+            "width",
+            "height",
+        },
+        context,
+    )
+    if result.get("kind") != "image.gallery.open":
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.kind is unsupported.",
+        )
+    _validate_image_artifact_id(
+        result,
+        "artifactId",
+        context,
+        error_code="protocol.invalid_message",
+    )
+    preview_token = _require_string(result, "previewToken", context, maximum=64)
+    if (
+        _LOWERCASE_SHA256_PATTERN.fullmatch(preview_token) is None
+        or preview_token == "0" * 64
+    ):
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.previewToken must be 64 lowercase hexadecimal characters.",
+        )
+    byte_length = _require_integer(result, "byteLength", context)
+    if not 1 <= byte_length <= 32 * 1024 * 1024:
+        raise ProtocolValidationError(
+            "protocol.invalid_message",
+            f"{context}.byteLength exceeds the canonical PNG limit.",
+        )
+    _validate_image_digest_and_media(result, context)
+    _validate_image_dimensions(result, context)
+    return cast(ImageGalleryOpenResult, result)
+
+
 def _validate_success_result(result: JsonObject) -> None:
     fields = set(result)
+    kind = result.get("kind")
+    if kind == "image.generation":
+        _validate_image_generation_result(result)
+        return
+    if kind == "image.gallery.list":
+        _validate_image_gallery_list_result(result)
+        return
+    if kind == "image.gallery.get":
+        _validate_image_gallery_get_result(result)
+        return
+    if kind == "image.gallery.delete":
+        _validate_image_gallery_delete_result(result)
+        return
+    if kind == "image.gallery.open":
+        _validate_image_gallery_open_result(result)
+        return
     if fields == {"protocol", "server", "capabilities"}:
         _validate_descriptor(result["protocol"])
         server = _as_object(result["server"], "handshake result.server")
@@ -4020,7 +4602,7 @@ def _validate_progress(message: JsonObject) -> ProgressMessage:
         "progress",
     )
     _require_identifier(message, "requestId", "progress")
-    _require_string(
+    operation = _require_string(
         message,
         "operation",
         "progress",
@@ -4043,6 +4625,19 @@ def _validate_progress(message: JsonObject) -> ProgressMessage:
     progress_message = message.get("message")
     if progress_message is not None:
         _require_string(message, "message", "progress")
+    if operation == "image.generate":
+        if (
+            total != 100
+            or not isinstance(progress_message, str)
+            or _IMAGE_GENERATION_PROGRESS.get(progress_message) != completed
+        ):
+            # Runtime stage strings are not forwarded verbatim.  The closed
+            # pairs keep UI state deterministic and prevent lower-layer
+            # diagnostics from becoming an accidental public wire surface.
+            raise ProtocolValidationError(
+                "protocol.invalid_message",
+                "image.generate progress must use a supported stage checkpoint.",
+            )
     return cast(ProgressMessage, message)
 
 

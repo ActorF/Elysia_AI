@@ -136,6 +136,8 @@ export const MAX_GROUNDED_CITATIONS = 64
 export const MAX_GROUNDED_CITATIONS_PER_STATEMENT = 64
 export const MAX_GROUNDED_EXCERPT_CODE_POINTS = 2_000
 export const MAX_GROUNDED_LOCATIONS = 100_000
+export const MAX_IMAGE_PROMPT_COMPONENT_CODE_POINTS = 1_024
+export const MAX_IMAGE_GALLERY_LIST_LIMIT = 255
 const MIN_SESSION_TOKEN_LENGTH = 32
 const MAX_SESSION_TOKEN_LENGTH = 512
 const PROJECT_ID_PATTERN = /^project_[A-Za-z0-9_-]+$/
@@ -147,6 +149,19 @@ const KNOWLEDGE_OPERATION_ID_PATTERN = /^knowledge_[0-9a-f]{32}$/u
 const KNOWLEDGE_ERROR_CODE_PATTERN = /^[a-z][a-z0-9_]{0,63}$/u
 const CITATION_ID_PATTERN = /^citation_[0-9a-f]{64}$/u
 const STATEMENT_ID_PATTERN = /^statement_[0-9]{3}$/u
+const IMAGE_OPERATION_ID_PATTERN = /^imageop_[0-9a-f]{32}$/u
+const IMAGE_ARTIFACT_ID_PATTERN = /^gallery_[0-9a-f]{32}$/u
+const IMAGE_PUBLIC_ID_PATTERN = /^[a-z][a-z0-9_-]{0,63}$/u
+const LOWERCASE_SHA256_PATTERN = /^[0-9a-f]{64}$/u
+const IMAGE_TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$/u
+const IMAGE_GENERATION_PROGRESS = new Map<string, number>([
+  ['validating', 5],
+  ['probing', 15],
+  ['submitting', 25],
+  ['sampling', 35],
+  ['verifying', 90],
+  ['completed', 100],
+])
 const CANONICAL_BASE64_PATTERN = (
   /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u
 )
@@ -305,6 +320,33 @@ export interface VoiceSpeechStartParams {
   assistantMessageId: string
 }
 
+/** Describe one Backend-fixed new-character image generation request. */
+export interface ImageGenerateParams {
+  profileId: string
+  sizePresetId: string
+  appearance: string
+  outfit: string
+  pose: string
+  scene: string
+  style: string
+  camera: string
+  lighting: string
+  negativePrompt: string
+  seed: number
+  originalFictionalConfirmed: true
+}
+
+/** Select one bounded newest-first Gallery page. */
+export interface ImageGalleryListParams {
+  limit: number
+  offset: number
+}
+
+/** Select one private Gallery artifact through its opaque public ID. */
+export interface ImageGalleryArtifactParams {
+  artifactId: string
+}
+
 export interface PermissionResponseParams {
   permissionId: string
   granted: boolean
@@ -443,6 +485,11 @@ export interface RequestParamsByMethod {
   'voice.transcription.start': VoiceTranscriptionStartParams
   'voice.speech.start': VoiceSpeechStartParams
   'voice.speech.cancel': VoiceSpeechCancelParams
+  'image.generate': ImageGenerateParams
+  'image.gallery.list': ImageGalleryListParams
+  'image.gallery.get': ImageGalleryArtifactParams
+  'image.gallery.delete': ImageGalleryArtifactParams
+  'image.gallery.open': ImageGalleryArtifactParams
   'attachment.list': AttachmentListParams
   'attachment.add': AttachmentAddParams
   'attachment.remove': AttachmentRemoveParams
@@ -834,6 +881,60 @@ export interface VoiceSpeechStartResult {
   requestId: string
   chatId: string
   assistantMessageId: string
+}
+
+/** Public immutable metadata for one canonical generated PNG. */
+export interface ImageArtifact {
+  artifactId: string
+  createdAt: string
+  width: number
+  height: number
+  byteSize: number
+  sha256: string
+  mediaType: 'image/png'
+  profileId: string
+  seed: number
+}
+
+/** Bind a single-use operation to its committed Gallery artifact. */
+export interface ImageGenerationResult {
+  kind: 'image.generation'
+  operationId: string
+  artifact: ImageArtifact
+}
+
+/** Return one bounded path-free Gallery metadata page. */
+export interface ImageGalleryListResult {
+  kind: 'image.gallery.list'
+  items: ImageArtifact[]
+  limit: number
+  offset: number
+  hasMore: boolean
+}
+
+/** Return one exact Gallery artifact metadata item. */
+export interface ImageGalleryGetResult {
+  kind: 'image.gallery.get'
+  item: ImageArtifact
+}
+
+/** Confirm one committed Gallery deletion. */
+export interface ImageGalleryDeleteResult {
+  kind: 'image.gallery.delete'
+  artifactId: string
+  deleted: true
+}
+
+/** Describe the separate private binary preview frame without carrying bytes. */
+export interface ImageGalleryOpenResult {
+  kind: 'image.gallery.open'
+  artifactId: string
+  previewToken: string
+  byteLength: number
+  sha256: string
+  mediaType: 'image/png'
+  width: number
+  height: number
 }
 
 export interface AttachmentItem {
@@ -1527,6 +1628,141 @@ function parseCancelParams(value: unknown): CancelParams {
   return {
     requestId: readIdentifier(params, 'requestId', 'request.cancel params'),
     ...(reason === undefined ? {} : { reason }),
+  }
+}
+
+function readImagePublicId(
+  value: Record<string, unknown>,
+  key: string,
+  context: string,
+  errorCode = 'protocol.invalid_params',
+): string {
+  const identifier = readString(value, key, context, { maximum: 64 })
+  if (!IMAGE_PUBLIC_ID_PATTERN.test(identifier)) {
+    return fail(
+      errorCode,
+      `${context}.${key} must be a lowercase logical identifier.`,
+    )
+  }
+  return identifier
+}
+
+/** Validate the sole image request without policy, mode, path, or intent fields. */
+export function parseImageGenerateParams(value: unknown): ImageGenerateParams {
+  const context = 'image.generate params'
+  const params = asRecord(value, context)
+  requireFields(
+    params,
+    [
+      'profileId',
+      'sizePresetId',
+      'appearance',
+      'outfit',
+      'pose',
+      'scene',
+      'style',
+      'camera',
+      'lighting',
+      'negativePrompt',
+      'seed',
+      'originalFictionalConfirmed',
+    ],
+    context,
+  )
+  const readComponent = (key: string, required: boolean): string => {
+    const component = readString(params, key, context, {
+      minimum: required ? 1 : 0,
+      maximum: MAX_IMAGE_PROMPT_COMPONENT_CODE_POINTS,
+    })
+    if (required && !hasNonBlankCodePoint(component)) {
+      return fail('protocol.invalid_params', `${context}.${key} cannot be blank.`)
+    }
+    if (
+      /[\u0000-\u001f\u007f-\u009f]/u.test(component)
+      || /[\ud800-\udfff]/u.test(component)
+    ) {
+      return fail(
+        'protocol.invalid_params',
+        `${context}.${key} contains unsupported characters.`,
+      )
+    }
+    return component
+  }
+  const seed = readInteger(params, 'seed', context)
+  if (seed < 0) {
+    return fail('protocol.invalid_params', `${context}.seed cannot be negative.`)
+  }
+  if (readBoolean(params, 'originalFictionalConfirmed', context) !== true) {
+    return fail(
+      'protocol.invalid_params',
+      `${context}.originalFictionalConfirmed must be true.`,
+    )
+  }
+  return {
+    profileId: readImagePublicId(params, 'profileId', context),
+    sizePresetId: readImagePublicId(params, 'sizePresetId', context),
+    appearance: readComponent('appearance', true),
+    outfit: readComponent('outfit', false),
+    pose: readComponent('pose', false),
+    scene: readComponent('scene', false),
+    style: readComponent('style', false),
+    camera: readComponent('camera', false),
+    lighting: readComponent('lighting', false),
+    negativePrompt: readComponent('negativePrompt', false),
+    seed,
+    originalFictionalConfirmed: true,
+  }
+}
+
+/** Validate one bounded Gallery page request. */
+export function parseImageGalleryListParams(
+  value: unknown,
+): ImageGalleryListParams {
+  const context = 'image.gallery.list params'
+  const params = asRecord(value, context)
+  requireFields(params, ['limit', 'offset'], context)
+  const limit = readInteger(params, 'limit', context)
+  const offset = readInteger(params, 'offset', context)
+  if (limit < 1 || limit > MAX_IMAGE_GALLERY_LIST_LIMIT || offset < 0) {
+    return fail(
+      'protocol.invalid_params',
+      `${context} pagination is outside the supported range.`,
+    )
+  }
+  return { limit, offset }
+}
+
+function readImageArtifactId(
+  value: Record<string, unknown>,
+  key: string,
+  context: string,
+  errorCode: string,
+): string {
+  const artifactId = readString(value, key, context, { maximum: 40 })
+  if (!IMAGE_ARTIFACT_ID_PATTERN.test(artifactId)) {
+    return fail(
+      errorCode,
+      `${context}.${key} must use the gallery_<id> format.`,
+    )
+  }
+  return artifactId
+}
+
+/** Validate one path-free Gallery artifact selection. */
+export function parseImageGalleryArtifactParams(
+  value: unknown,
+  method: 'image.gallery.get' | 'image.gallery.delete' | 'image.gallery.open',
+): ImageGalleryArtifactParams {
+  const context = `${method} params`
+  const params = asRecord(value, context)
+  requireFields(params, ['artifactId'], context)
+  return {
+    artifactId: readImageArtifactId(
+      params,
+      'artifactId',
+      context,
+      'protocol.invalid_params',
+    ),
   }
 }
 
@@ -2454,6 +2690,28 @@ export function parseClientRequest(value: unknown): ClientRequest {
       params: parseKnowledgeSourceExportParams(request.params),
     }
   }
+  if (method === 'image.generate') {
+    return {
+      type: 'request', protocol, id, method,
+      params: parseImageGenerateParams(request.params),
+    }
+  }
+  if (method === 'image.gallery.list') {
+    return {
+      type: 'request', protocol, id, method,
+      params: parseImageGalleryListParams(request.params),
+    }
+  }
+  if (
+    method === 'image.gallery.get'
+    || method === 'image.gallery.delete'
+    || method === 'image.gallery.open'
+  ) {
+    return {
+      type: 'request', protocol, id, method,
+      params: parseImageGalleryArtifactParams(request.params, method),
+    }
+  }
   if (method === 'request.cancel') {
     return {
       type: 'request', protocol, id, method,
@@ -2624,11 +2882,25 @@ function parseProgress(
   const progressMessage = message.message === null
     ? null
     : readString(message, 'message', 'progress')
+  const operation = readIdentifier(message, 'operation', 'progress')
+  if (
+    operation === 'image.generate'
+    && (
+      total !== 100
+      || progressMessage === null
+      || IMAGE_GENERATION_PROGRESS.get(progressMessage) !== completed
+    )
+  ) {
+    return fail(
+      'protocol.invalid_message',
+      'image.generate progress must use a supported stage checkpoint.',
+    )
+  }
   return {
     type: 'progress',
     protocol,
     requestId: readIdentifier(message, 'requestId', 'progress'),
-    operation: readIdentifier(message, 'operation', 'progress'),
+    operation,
     completed,
     total,
     message: progressMessage,
@@ -4759,8 +5031,331 @@ export function parseVoiceSpeechStartResult(
   }
 }
 
+function readImageOperationId(
+  value: Record<string, unknown>,
+  key: string,
+  context: string,
+): string {
+  const operationId = readString(value, key, context, { maximum: 40 })
+  if (!IMAGE_OPERATION_ID_PATTERN.test(operationId)) {
+    return fail(
+      'protocol.invalid_message',
+      `${context}.${key} must use the imageop_<id> format.`,
+    )
+  }
+  return operationId
+}
+
+function readImageDimensions(
+  value: Record<string, unknown>,
+  context: string,
+): { width: number; height: number } {
+  const width = readInteger(value, 'width', context)
+  const height = readInteger(value, 'height', context)
+  if (
+    width < 1
+    || width > 2_048
+    || height < 1
+    || height > 2_048
+    || width * height > 4_194_304
+  ) {
+    return fail(
+      'protocol.invalid_message',
+      `${context} dimensions exceed the canonical image bounds.`,
+    )
+  }
+  return { width, height }
+}
+
+function readImageDigestAndMedia(
+  value: Record<string, unknown>,
+  context: string,
+): { sha256: string; mediaType: 'image/png' } {
+  const sha256 = readString(value, 'sha256', context, { maximum: 64 })
+  if (!LOWERCASE_SHA256_PATTERN.test(sha256)) {
+    return fail(
+      'protocol.invalid_message',
+      `${context}.sha256 must be a lowercase SHA-256 digest.`,
+    )
+  }
+  if (value.mediaType !== 'image/png') {
+    return fail(
+      'protocol.invalid_message',
+      `${context}.mediaType must be image/png.`,
+    )
+  }
+  return { sha256, mediaType: 'image/png' }
+}
+
+function readImageTimestamp(
+  value: Record<string, unknown>,
+  key: string,
+  context: string,
+): string {
+  const timestamp = readString(value, key, context, { maximum: 27 })
+  if (!IMAGE_TIMESTAMP_PATTERN.test(timestamp)) {
+    return fail(
+      'protocol.invalid_message',
+      `${context}.${key} must be a canonical UTC Gallery timestamp.`,
+    )
+  }
+  const parsed = Date.parse(timestamp)
+  if (!Number.isFinite(parsed)) {
+    return fail(
+      'protocol.invalid_message',
+      `${context}.${key} must be a canonical UTC Gallery timestamp.`,
+    )
+  }
+  const millisecondPrefix = new Date(parsed).toISOString().slice(0, 23)
+  if (`${millisecondPrefix}${timestamp.slice(23)}` !== timestamp) {
+    return fail(
+      'protocol.invalid_message',
+      `${context}.${key} must be a canonical UTC Gallery timestamp.`,
+    )
+  }
+  return timestamp
+}
+
+/** Parse one immutable path-free Gallery artifact metadata snapshot. */
+export function parseImageArtifact(
+  value: unknown,
+  context = 'image artifact',
+): ImageArtifact {
+  const artifact = asRecord(value, context)
+  requireFields(
+    artifact,
+    [
+      'artifactId',
+      'createdAt',
+      'width',
+      'height',
+      'byteSize',
+      'sha256',
+      'mediaType',
+      'profileId',
+      'seed',
+    ],
+    context,
+  )
+  const byteSize = readInteger(artifact, 'byteSize', context)
+  if (byteSize < 1 || byteSize > 32 * 1024 * 1024) {
+    return fail(
+      'protocol.invalid_message',
+      `${context}.byteSize exceeds the canonical PNG limit.`,
+    )
+  }
+  const seed = readInteger(artifact, 'seed', context)
+  if (seed < 0) {
+    return fail('protocol.invalid_message', `${context}.seed cannot be negative.`)
+  }
+  return {
+    artifactId: readImageArtifactId(
+      artifact,
+      'artifactId',
+      context,
+      'protocol.invalid_message',
+    ),
+    createdAt: readImageTimestamp(artifact, 'createdAt', context),
+    ...readImageDimensions(artifact, context),
+    byteSize,
+    ...readImageDigestAndMedia(artifact, context),
+    profileId: readImagePublicId(
+      artifact,
+      'profileId',
+      context,
+      'protocol.invalid_message',
+    ),
+    seed,
+  }
+}
+
+/** Parse one operation-to-artifact publication receipt. */
+export function parseImageGenerationResult(
+  value: unknown,
+): ImageGenerationResult {
+  const context = 'image generation result'
+  const result = asRecord(value, context)
+  requireFields(result, ['kind', 'operationId', 'artifact'], context)
+  if (result.kind !== 'image.generation') {
+    return fail('protocol.invalid_message', `${context}.kind is unsupported.`)
+  }
+  return {
+    kind: 'image.generation',
+    operationId: readImageOperationId(result, 'operationId', context),
+    artifact: parseImageArtifact(result.artifact, `${context}.artifact`),
+  }
+}
+
+/** Parse one bounded newest-first Gallery metadata page. */
+export function parseImageGalleryListResult(
+  value: unknown,
+): ImageGalleryListResult {
+  const context = 'image gallery list result'
+  const result = asRecord(value, context)
+  requireFields(result, ['kind', 'items', 'limit', 'offset', 'hasMore'], context)
+  if (result.kind !== 'image.gallery.list') {
+    return fail('protocol.invalid_message', `${context}.kind is unsupported.`)
+  }
+  const limit = readInteger(result, 'limit', context)
+  const offset = readInteger(result, 'offset', context)
+  if (limit < 1 || limit > MAX_IMAGE_GALLERY_LIST_LIMIT || offset < 0) {
+    return fail(
+      'protocol.invalid_message',
+      `${context} pagination is outside the supported range.`,
+    )
+  }
+  if (!Array.isArray(result.items) || result.items.length > limit) {
+    return fail(
+      'protocol.invalid_message',
+      `${context}.items exceeds the requested page size.`,
+    )
+  }
+  const items = result.items.map((item, index) => (
+    parseImageArtifact(item, `${context}.items[${index}]`)
+  ))
+  if (new Set(items.map((item) => item.artifactId)).size !== items.length) {
+    return fail(
+      'protocol.invalid_message',
+      `${context}.items contains duplicate artifact IDs.`,
+    )
+  }
+  for (let index = 1; index < items.length; index += 1) {
+    const previous = items[index - 1]
+    const current = items[index]
+    if (
+      previous.createdAt < current.createdAt
+      || (
+        previous.createdAt === current.createdAt
+        && previous.artifactId < current.artifactId
+      )
+    ) {
+      return fail(
+        'protocol.invalid_message',
+        `${context}.items must be ordered newest first.`,
+      )
+    }
+  }
+  const hasMore = readBoolean(result, 'hasMore', context)
+  if (hasMore && items.length !== limit) {
+    return fail(
+      'protocol.invalid_message',
+      `${context}.hasMore requires a full page.`,
+    )
+  }
+  return { kind: 'image.gallery.list', items, limit, offset, hasMore }
+}
+
+/** Parse one exact Gallery metadata lookup. */
+export function parseImageGalleryGetResult(value: unknown): ImageGalleryGetResult {
+  const context = 'image gallery get result'
+  const result = asRecord(value, context)
+  requireFields(result, ['kind', 'item'], context)
+  if (result.kind !== 'image.gallery.get') {
+    return fail('protocol.invalid_message', `${context}.kind is unsupported.`)
+  }
+  return {
+    kind: 'image.gallery.get',
+    item: parseImageArtifact(result.item, `${context}.item`),
+  }
+}
+
+/** Parse one committed Gallery deletion receipt. */
+export function parseImageGalleryDeleteResult(
+  value: unknown,
+): ImageGalleryDeleteResult {
+  const context = 'image gallery delete result'
+  const result = asRecord(value, context)
+  requireFields(result, ['kind', 'artifactId', 'deleted'], context)
+  if (result.kind !== 'image.gallery.delete' || result.deleted !== true) {
+    return fail(
+      'protocol.invalid_message',
+      `${context} is not a committed deletion receipt.`,
+    )
+  }
+  return {
+    kind: 'image.gallery.delete',
+    artifactId: readImageArtifactId(
+      result,
+      'artifactId',
+      context,
+      'protocol.invalid_message',
+    ),
+    deleted: true,
+  }
+}
+
+/** Parse path-free metadata for a following private PNG preview frame. */
+export function parseImageGalleryOpenResult(value: unknown): ImageGalleryOpenResult {
+  const context = 'image gallery open result'
+  const result = asRecord(value, context)
+  requireFields(
+    result,
+    [
+      'kind',
+      'artifactId',
+      'previewToken',
+      'byteLength',
+      'sha256',
+      'mediaType',
+      'width',
+      'height',
+    ],
+    context,
+  )
+  if (result.kind !== 'image.gallery.open') {
+    return fail('protocol.invalid_message', `${context}.kind is unsupported.`)
+  }
+  const previewToken = readString(result, 'previewToken', context, { maximum: 64 })
+  if (!LOWERCASE_SHA256_PATTERN.test(previewToken) || /^0{64}$/u.test(previewToken)) {
+    return fail(
+      'protocol.invalid_message',
+      `${context}.previewToken must be a nonzero lowercase 256-bit token.`,
+    )
+  }
+  const byteLength = readInteger(result, 'byteLength', context)
+  if (byteLength < 1 || byteLength > 32 * 1024 * 1024) {
+    return fail(
+      'protocol.invalid_message',
+      `${context}.byteLength exceeds the canonical PNG limit.`,
+    )
+  }
+  return {
+    kind: 'image.gallery.open',
+    artifactId: readImageArtifactId(
+      result,
+      'artifactId',
+      context,
+      'protocol.invalid_message',
+    ),
+    previewToken,
+    byteLength,
+    ...readImageDigestAndMedia(result, context),
+    ...readImageDimensions(result, context),
+  }
+}
+
 function validateSuccessResult(value: unknown): Record<string, unknown> {
   const result = asRecord(value, 'response.result')
+  if (result.kind === 'image.generation') {
+    parseImageGenerationResult(result)
+    return result
+  }
+  if (result.kind === 'image.gallery.list') {
+    parseImageGalleryListResult(result)
+    return result
+  }
+  if (result.kind === 'image.gallery.get') {
+    parseImageGalleryGetResult(result)
+    return result
+  }
+  if (result.kind === 'image.gallery.delete') {
+    parseImageGalleryDeleteResult(result)
+    return result
+  }
+  if (result.kind === 'image.gallery.open') {
+    parseImageGalleryOpenResult(result)
+    return result
+  }
   if (result.kind === 'knowledge.state') {
     parseKnowledgeStateResult(result)
     return result
