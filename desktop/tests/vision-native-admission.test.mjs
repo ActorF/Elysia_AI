@@ -36,6 +36,7 @@ test('Canonical Vision authority refuses archived, switched and disconnected Cha
   const { backend } = fixture()
   assert.equal(backend.getCanonicalVisionChat(), null)
   backend.canonicalWorkChat = { chatId: 'chat_vision', projectId: 'project_a', mode: 'work', archived: false }
+  backend.canonicalVisionProject = { projectId: 'project_a', archived: false }
   const canonical = backend.getCanonicalVisionChat(); canonical.projectId = 'project_fake'
   assert.equal(backend.getCanonicalVisionChat().projectId, 'project_a')
   backend.canonicalWorkChat.archived = true; assert.equal(backend.getCanonicalVisionChat(), null)

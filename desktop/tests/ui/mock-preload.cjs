@@ -448,6 +448,11 @@ let nextVisionReviewNumber = 1
 let delayVisionReview = false
 let expireVisionReview = false
 let pendingVisionReviews = []
+let visionHistory = []
+let nextVisionHistoryNumber = 1
+let failVisionHistory = false
+let delayVisionHistory = false
+let pendingVisionHistory = []
 let visionCaptureOwnerKey = null
 let visionCaptureApproval = null
 let visionCaptureSources = []
@@ -536,6 +541,18 @@ function visionReview(chatId, contextId) {
     throw new Error('The image review is no longer available.')
   }
   return clone(context)
+}
+
+function visionHistorySnapshot(chatId) {
+  const { owner } = visionSnapshot(chatId)
+  if (failVisionHistory) throw new Error('private-path: simulated damaged history')
+  return { kind: 'vision.history', owner, items: visionHistory.filter(item =>
+    item.owner.chatId === owner.chatId && item.owner.projectId === owner.projectId).map(item => clone(item.metadata)) }
+}
+
+async function waitForVisionHistory() {
+  if (delayVisionHistory) await new Promise((resolve) => { pendingVisionHistory.push(resolve) })
+  if (failVisionHistory) throw new Error('private-path: simulated damaged history')
 }
 
 function visionExcerpt(text, limit = 8192) {
@@ -1843,6 +1860,57 @@ const desktopApi = {
     record('getVisionState', [chatId])
     return visionSnapshot(chatId)
   },
+  getVisionHistory: async (chatId) => {
+    record('getVisionHistory', [chatId])
+    return visionHistorySnapshot(chatId)
+  },
+  saveVisionImage: async (request) => {
+    record('saveVisionImage', [request])
+    const before = visionSnapshot(request.chatId)
+    const image = before.items.find(item => item.imageId === request.imageId)
+    if (request.confirmed !== true || image === undefined) throw new Error('No selected image to save.')
+    const saved = { owner: before.owner, image: clone(image), metadata: {
+      historyId: `vision_history_${(nextVisionHistoryNumber++).toString(16).padStart(32, '0')}`,
+      fileName: image.fileName, width: image.width, height: image.height, sizeBytes: image.sizeBytes, sha256: image.sha256,
+      source: clone(visionImageSources.get(image.imageId) ?? { kind: 'file', label: image.fileName }), savedAt: new Date().toISOString(),
+    } }
+    await waitForVisionHistory()
+    // An admitted disk save can finish after disconnect, but its stale result
+    // must not restore consent or image state in the new renderer scope.
+    visionHistory.push(saved)
+    return visionHistorySnapshot(request.chatId)
+  },
+  restoreVisionImage: async (request) => {
+    record('restoreVisionImage', [request])
+    const state = visionSnapshot(request.chatId)
+    const saved = visionHistory.find(item => item.metadata.historyId === request.historyId
+      && item.owner.chatId === state.owner.chatId && item.owner.projectId === state.owner.projectId)
+    if (saved === undefined || state.items.length >= 8) throw new Error('Saved image is unavailable.')
+    const imageId = `vision_${(nextVisionImageNumber++).toString(16).padStart(32, '0')}`
+    visionState.items.push({ ...clone(saved.image), imageId })
+    visionImageSources.set(imageId, clone(saved.metadata.source)); visionState.revision += 1
+    return { cancelled: false, state: visionSnapshot(request.chatId) }
+  },
+  removeVisionHistory: async (request) => {
+    record('removeVisionHistory', [request])
+    const current = visionHistorySnapshot(request.chatId)
+    if (!current.items.some(item => item.historyId === request.historyId)) throw new Error('Saved image is unavailable.')
+    visionHistory = visionHistory.filter(item => item.metadata.historyId !== request.historyId)
+    return visionHistorySnapshot(request.chatId)
+  },
+  clearVisionHistory: async (request) => {
+    record('clearVisionHistory', [request])
+    const current = visionHistorySnapshot(request.chatId)
+    if (request.confirmed !== true) throw new Error('Explicit deletion confirmation is required.')
+    const ids = new Set(current.items.map(item => item.historyId))
+    visionHistory = visionHistory.filter(item => !ids.has(item.metadata.historyId))
+    return visionHistorySnapshot(request.chatId)
+  },
+  clearAllVisionHistory: async (request) => {
+    record('clearAllVisionHistory', [request])
+    if (request.confirmed !== true) throw new Error('Explicit global deletion confirmation is required.')
+    visionHistory = []
+  },
   chooseVisionImage: async (chatId) => {
     record('chooseVisionImage', [chatId])
     const before = visionSnapshot(chatId)
@@ -1970,6 +2038,10 @@ const desktopApi = {
   getVisionAnalysis: async (chatId) => {
     record('getVisionAnalysis', [chatId])
     return visionAnalysisSnapshot(chatId)
+  },
+  getVisionAnalysisActivity: async (chatId) => {
+    record('getVisionAnalysisActivity', [chatId])
+    return { busy: visionAnalysisActive }
   },
   checkVisionOcr: async (chatId) => {
     record('checkVisionOcr', [chatId])
@@ -2880,6 +2952,14 @@ const testControl = {
   setVisionReviewDelay: (delayed) => { delayVisionReview = delayed },
   releaseNextVisionReview: () => { const release = pendingVisionReviews.shift(); if (release === undefined) return false; release(); return true },
   setVisionReviewExpired: (expired) => { expireVisionReview = expired },
+  setVisionHistoryFailure: (failed) => { failVisionHistory = failed },
+  setVisionHistoryDelay: (delayed) => { delayVisionHistory = delayed },
+  releaseNextVisionHistory: () => { const release = pendingVisionHistory.shift(); if (release === undefined) return false; release(); return true },
+  setExistingVisionAnalysisBusy: (busy) => {
+    visionAnalysisActive = busy
+    visionAnalysisPhase = busy ? 'ocr' : null
+    if (!busy) visionAnalysisCancellation = false
+  },
   setVisionOcrResult: (result) => { nextVisionOcrResult = clone(result) },
   setVisionOcrDelay: (delayed) => { delayVisionOcr = delayed },
   releaseNextVisionOcr: () => {
@@ -2939,6 +3019,7 @@ const testControl = {
     pendingVisionSelections = []
     visionAnalysisOwnerKey = null; visionAnalysisState = null
     visionReviews.clear(); nextVisionReviewNumber = 1; delayVisionReview = false; expireVisionReview = false; pendingVisionReviews = []
+    visionHistory = []; nextVisionHistoryNumber = 1; failVisionHistory = false; delayVisionHistory = false; pendingVisionHistory = []
     visionOcrReadiness = { status: 'missing_engine', languages: [], version: null }; nextVisionOcrResult = null
     visionModelReadiness = { status: 'unavailable', models: [], defaultModel: null }; nextVisionModelResult = null
     delayVisionOcr = false; delayVisionModel = false; visionAnalysisActive = false; visionAnalysisCancellation = false; visionAnalysisPhase = null

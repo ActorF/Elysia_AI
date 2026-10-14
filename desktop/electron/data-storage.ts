@@ -516,6 +516,9 @@ function classifyDataPath(relativePath: string): PathClassification {
     // Bindings and later Work approvals/audit are durable user data. They move
     // with the data root and never enter the audio/cache/log cleanup grant.
     work: 'other',
+    // Explicitly saved Vision pixels are durable user data, never cache. The
+    // data-root move carries them; deletion belongs to Vision history controls.
+    vision: 'other',
     recovery: 'config',
     sources: 'sources',
     attachments: 'sources',

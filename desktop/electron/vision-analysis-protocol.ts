@@ -58,6 +58,8 @@ export interface VisionAnalysisState {
 export interface VisionOcrRequest { chatId: string; imageId: string; language: VisionOcrLanguage }
 /** Local OCR uses independent metadata/cancel calls while the actual recognition callback drains. */
 export interface VisionAnalysisClient {
+  /** Read only physical analysis capacity during reload or disconnect; this reveals no owner, image, or evidence. */
+  getVisionAnalysisActivity(chatId: string): Promise<{ busy: boolean }>
   /** Read current scoped evidence and global native busy facts without recognizing anything. */
   getVisionAnalysis(chatId: string): Promise<VisionAnalysisState>
   /** Check the existing local engine and language data without installing or downloading. */

@@ -38,7 +38,8 @@ function fixture(hydrate = false) {
     visionCaptureController: controller, visionOwner: () => owner,
     hasActiveVisionWork: () => requests.size > 0 || controller.hasActiveWork(),
     requireBackend: () => ({ getCanonicalVisionChat: () => canonical,
-      listChats: async () => { await hydration.promise; canonical = owner } }), requireVisionCaptureController: () => controller }
+      hydrateVisionOwner: async () => { if (canonical === null) { await hydration.promise; canonical = owner } return canonical } }),
+    requireVisionCaptureController: () => controller }
   vm.runInNewContext(compiled, host, { timeout: 1000 })
   return { ...host.module.exports, controller, owner, hydration, frame, requests, signal: () => signal, imports: () => imports }
 }

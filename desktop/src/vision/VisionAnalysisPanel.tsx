@@ -36,6 +36,7 @@ export function VisionAnalysisPanel({ api, chatId, projectId, images, selectedIm
   const observedBusy = useRef(false)
   const revision = useRef(-1)
   const pollActive = useRef(false)
+  const metadataActive = useRef(false)
 
   const report = useCallback(() => {
     const busy = requestActive.current || observedBusy.current
@@ -47,10 +48,13 @@ export function VisionAnalysisPanel({ api, chatId, projectId, images, selectedIm
     if (token !== version.current || next.owner.chatId !== chatId || next.owner.projectId !== projectId
       || next.revision < revision.current) return
     revision.current = next.revision
-    observedBusy.current = next.busy
     setAnalysis(next)
+  }, [chatId, projectId])
+  const observe = useCallback((busy: boolean, token: number): void => {
+    if (token !== version.current) return
+    observedBusy.current = busy
     report()
-  }, [chatId, projectId, report])
+  }, [report])
 
   useEffect(() => {
     const token = ++version.current
@@ -58,27 +62,39 @@ export function VisionAnalysisPanel({ api, chatId, projectId, images, selectedIm
     queueMicrotask(() => {
       if (token !== version.current) return
       setAnalysis(null); setError(null)
+      if (api !== undefined) void api.getVisionAnalysisActivity(chatId).then((next) => {
+        observe(next.busy, token)
+      }, () => {})
       if (api !== undefined && ready) void api.getVisionAnalysis(chatId).then((next) => {
         publish(next, token)
       }, () => { if (token === version.current) setError('Could not load local OCR state. Check availability after reconnecting.') })
     })
     return () => { version.current += 1 }
-  }, [api, chatId, projectId, ready, publish])
+  }, [api, chatId, projectId, ready, publish, observe])
 
   useEffect(() => {
-    if (api === undefined || !ready || !leased) return
+    if (api === undefined || !leased) return
     const token = version.current
-    // Native cancellation is logical before the provider actually closes. Only
-    // a current metadata response or the terminal original request releases it.
+    // Physical capacity stays observable while Python is disconnected. Evidence
+    // hydration may await that service, so it must never delay offline drain
+    // polling or release a lease based only on cleared owner-scoped evidence.
     const timer = window.setInterval(() => {
       if (pollActive.current || token !== version.current) return
       pollActive.current = true
-      void api.getVisionAnalysis(chatId).then((next) => { publish(next, token) }, () => {}).finally(() => {
+      void api.getVisionAnalysisActivity(chatId).then((next) => {
+        observe(next.busy, token)
+        if (token === version.current && ready && !metadataActive.current) {
+          metadataActive.current = true
+          void api.getVisionAnalysis(chatId).then((state) => { publish(state, token) }, () => {}).finally(() => {
+            metadataActive.current = false
+          })
+        }
+      }, () => {}).finally(() => {
         pollActive.current = false
       })
     }, 300)
     return () => { window.clearInterval(timer) }
-  }, [api, chatId, ready, leased, publish])
+  }, [api, chatId, projectId, ready, leased, publish, observe])
 
   async function run(kind: 'readiness' | 'ocr' | 'model-readiness' | 'model'): Promise<void> {
     if (api === undefined || !ready || disabled || requestActive.current || observedBusy.current

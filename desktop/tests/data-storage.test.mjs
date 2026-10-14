@@ -292,7 +292,7 @@ test('move switches the pointer only after verified staging and commit removes s
   })
 })
 
-test('Work bindings migrate as durable data and survive temporary cleanup', async () => {
+test('Work bindings and opted-in Vision images migrate as durable data and survive temporary cleanup', async () => {
   await withTempDirectory(async (directory) => {
     const storage = new ElectronDataStorage({
       userDataDirectory: path.join(directory, 'user-data'),
@@ -301,9 +301,11 @@ test('Work bindings migrate as durable data and survive temporary cleanup', asyn
     const binding = '{"chatId":"chat_work","root":"D:\\\\Documents"}'
     await writeDataFile(initial.state.activeDataRoot, 'workspace/work/bindings.json', binding)
     await writeDataFile(initial.state.activeDataRoot, 'work/receipt.json', 'durable receipt')
+    const savedVision = Buffer.from([69, 86, 72, 49, 0, 255, 128, 1])
+    await writeDataFile(initial.state.activeDataRoot, 'workspace/vision/history/synthetic.evh', savedVision)
     await writeDataFile(initial.state.activeDataRoot, 'cache/temporary.bin', 'remove me')
     const inventory = await storage.scan()
-    assert.equal(usageByCategory(inventory).other.fileCount, 2)
+    assert.equal(usageByCategory(inventory).other.fileCount, 3)
     const destination = path.join(directory, 'new-root')
     await mkdir(destination)
     const transaction = await storage.prepareMove(destination, 0)
@@ -318,6 +320,7 @@ test('Work bindings migrate as durable data and survive temporary cleanup', asyn
     })
     assert.equal(await readFile(path.join(destination, 'workspace/work/bindings.json'), 'utf8'), binding)
     assert.equal(await readFile(path.join(destination, 'work/receipt.json'), 'utf8'), 'durable receipt')
+    assert.deepEqual(await readFile(path.join(destination, 'workspace/vision/history/synthetic.evh')), savedVision)
     await assert.rejects(readFile(path.join(destination, 'cache/temporary.bin')), { code: 'ENOENT' })
   })
 })

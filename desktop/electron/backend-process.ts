@@ -622,6 +622,9 @@ export class BackendProcess {
   private readonly workPlanReconciliations = new Map<string, WorkPlanReconciliation>()
   private visionPlanCreation: object | null = null
   private canonicalWorkChat: Pick<ChatSessionState['activeChat'], 'chatId' | 'projectId' | 'mode' | 'archived'> | null = null
+  // A linked Project's archive fact comes only from the validated Project
+  // response, never renderer selection. Unknown linked rights fail closed.
+  private canonicalVisionProject: { projectId: string; archived: boolean } | null = null
   // Requests can resolve in a different order. An older poll must not release
   // the lease published by a later control or confirmation acknowledgement.
   private readonly workPlanAppliedSequences = new Map<string, number>()
@@ -767,7 +770,18 @@ export class BackendProcess {
   getCanonicalVisionChat(): Pick<ChatSessionState['activeChat'], 'chatId' | 'projectId' | 'mode' | 'archived'> | null {
     const owner = this.canonicalWorkChat
     return owner !== null && this.snapshot.status === 'ready' && owner.chatId === this.snapshot.chatId && !owner.archived
+      && (owner.projectId === null || this.canonicalVisionProject?.projectId === owner.projectId && !this.canonicalVisionProject.archived)
       ? { ...owner } : null
+  }
+
+  /** Hydrate only missing canonical Chat/linked-Project facts through readonly RPCs, including under Main's own Vision lease. */
+  async hydrateVisionOwner(): Promise<ReturnType<BackendProcess['getCanonicalVisionChat']>> {
+    if (this.getCanonicalWorkChat() === null) await this.listChats(false)
+    const owner = this.getCanonicalWorkChat()
+    if (owner?.projectId !== undefined && owner.projectId !== null && this.canonicalVisionProject?.projectId !== owner.projectId) {
+      await this.listProjects()
+    }
+    return this.getCanonicalVisionChat()
   }
 
   private nativeActionActive(): boolean { return this.nativeWorkActive() || this.nativeVisionActive() }
@@ -801,6 +815,7 @@ export class BackendProcess {
     this.workPlanJobs.clear()
     this.workPlanReconciliations.clear()
     this.canonicalWorkChat = null
+    this.canonicalVisionProject = null
     this.workPlanAppliedSequences.clear()
     this.workApprovals.clear()
     this.invalidateWorkUndo()
@@ -1736,7 +1751,7 @@ export class BackendProcess {
       // The reservation blocks competing mutations during readonly canonical
       // hydration. Main resolves the receipt only afterward, so expiry, image
       // deletion, disconnect, or an owner switch cannot reuse stale evidence.
-      if (this.getCanonicalVisionChat() === null) await this.listChats(false)
+      if (this.getCanonicalVisionChat() === null) await this.hydrateVisionOwner()
       const owner = this.getCanonicalVisionChat()
       if (this.visionPlanCreation !== creation || owner === null || owner.chatId !== checked.chatId || owner.mode !== 'work') {
         throw new Error('The reviewed image owner is no longer the active Work Chat.')
@@ -3300,6 +3315,7 @@ export class BackendProcess {
       }
       this.canonicalWorkChat = { chatId: result.activeChat.chatId, projectId: result.activeChat.projectId,
         mode: result.activeChat.mode, archived: result.activeChat.archived }
+      if (this.canonicalVisionProject?.projectId !== result.activeChat.projectId) this.canonicalVisionProject = null
       this.updateSnapshot({
         chatId: result.activeChat.chatId,
         chatTitle: result.activeChat.title,
@@ -3327,6 +3343,9 @@ export class BackendProcess {
       this.canonicalWorkChat = { chatId: result.chatState.activeChat.chatId,
         projectId: result.chatState.activeChat.projectId, mode: result.chatState.activeChat.mode,
         archived: result.chatState.activeChat.archived }
+      const linkedProject = result.projects.find(project => project.projectId === result.chatState.activeChat.projectId)
+      this.canonicalVisionProject = linkedProject === undefined ? null
+        : { projectId: linkedProject.projectId, archived: linkedProject.archived }
       this.updateSnapshot({
         chatId: result.chatState.activeChat.chatId,
         chatTitle: result.chatState.activeChat.title,
@@ -4150,6 +4169,7 @@ export class BackendProcess {
     this.workPlanJobs.clear()
     this.workPlanReconciliations.clear()
     this.canonicalWorkChat = null
+    this.canonicalVisionProject = null
     this.workPlanAppliedSequences.clear()
     this.workApprovals.clear()
     this.invalidateWorkUndo()
@@ -4227,6 +4247,7 @@ export class BackendProcess {
     this.workPlanJobs.clear()
     this.workPlanReconciliations.clear()
     this.canonicalWorkChat = null
+    this.canonicalVisionProject = null
     this.workPlanAppliedSequences.clear()
     this.workApprovals.clear()
     this.invalidateWorkUndo()
@@ -4255,6 +4276,7 @@ export class BackendProcess {
     this.workPlanJobs.clear()
     this.workPlanReconciliations.clear()
     this.canonicalWorkChat = null
+    this.canonicalVisionProject = null
     this.workPlanAppliedSequences.clear()
     this.workApprovals.clear()
     this.invalidateWorkUndo()

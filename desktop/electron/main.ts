@@ -40,6 +40,10 @@ import { VisionCaptureController, VisionCaptureError } from './vision-capture.js
 import { createVisionCaptureNative } from './vision-capture-native.js'
 import { parseVisionCapturePrepareRequest, parseVisionCaptureConfirmRequest, type VisionCaptureStatus } from './vision-capture-protocol.js'
 import { VisionContextStore, formatVisionContext } from './vision-context.js'
+import { VisionHistoryStore, VisionHistoryError } from './vision-history.js'
+import { parseVisionHistoryList, parseVisionHistorySaveRequest, parseVisionHistorySelectRequest,
+  parseVisionHistoryClearRequest, parseVisionHistoryClearAllRequest,
+  type VisionHistoryList, type VisionHistoryOwner } from './vision-history-protocol.js'
 import { parseVisionReviewRequest, parseVisionContextRequest, type VisionReviewRequest,
   visionContextData, type VisionContextRequest, type VisionContext, type VisionContextOwner } from './vision-context-protocol.js'
 import { WorkDesktopController, parseWorkDesktopChatRequest, parseWorkDesktopClipboardWriteRequest,
@@ -228,8 +232,10 @@ let visionAnalysisController: VisionAnalysisController | null = null
 let visionCaptureController: VisionCaptureController | null = null
 const visionRequests = new Set<Promise<unknown>>()
 const visionCaptureRequests = new Set<Promise<unknown>>()
+const visionAnalysisRequests = new Set<Promise<unknown>>()
 const visionContextStore = new VisionContextStore()
 let visionContextScope: string | null = null
+let visionHistoryStorage: { root: string; store: VisionHistoryStore } | null = null
 const voiceCallWindowManager = new VoiceCallWindowManager({
   policy: {
     appPath: app.getAppPath(),
@@ -2175,6 +2181,61 @@ function getNativeVisionContextText(request: VisionContextRequest): { context: V
   return { context, text: formatVisionContext(context) }
 }
 
+function requireVisionHistoryStorage(): { root: string; store: VisionHistoryStore } {
+  const root = requireDataStorageState().activeDataRoot
+  if (visionHistoryStorage === null || visionHistoryStorage.root !== root) {
+    visionHistoryStorage = { root, store: new VisionHistoryStore(root) }
+  }
+  return visionHistoryStorage
+}
+
+function safeVisionHistoryFailure(error: unknown): VisionImageError {
+  if (error instanceof VisionImageError) return error
+  const code = error instanceof VisionHistoryError ? error.code : 'io_error'
+  return new VisionImageError(code === 'limit_exceeded' || code === 'invalid_image' || code === 'io_error' ? code
+    : code === 'owner_changed' || code === 'not_found' ? 'owner_changed' : 'invalid_image')
+}
+
+function withVisionHistoryOwner<Result>(chatId: string,
+  operation: (store: VisionHistoryStore, owner: VisionHistoryOwner, images: VisionImageController, assertCurrent: (unchangedImages?: boolean) => void) => Promise<Result>,
+  readOnly = false): Promise<Result> {
+  return withVisionOwner(chatId, async images => {
+    const initial = images.getState(chatId), owner = initial.owner, selected = requireVisionHistoryStorage()
+    const assertCurrent = (unchangedImages = false): void => {
+      const currentState = images.getState(chatId), current = currentState.owner
+      if (current.chatId !== owner.chatId || current.projectId !== owner.projectId
+        || requireDataStorageState().activeDataRoot !== selected.root || shutdownStarted
+        || unchangedImages && currentState.revision !== initial.revision) throw new VisionImageError('owner_changed')
+    }
+    try {
+      const result = await operation(selected.store, owner, images, assertCurrent)
+      assertCurrent()
+      return result
+    } catch (error) { throw safeVisionHistoryFailure(error) }
+  }, readOnly)
+}
+
+async function visionHistoryList(store: VisionHistoryStore, owner: VisionHistoryOwner): Promise<VisionHistoryList> {
+  return parseVisionHistoryList({ kind: 'vision.history', owner, items: await store.list(owner) })
+}
+
+function clearAllNativeVisionHistory(): Promise<void> {
+  if (shutdownStarted || dataStorageOperation !== null || hasActiveVisionWork() || visionOwner().busy) {
+    return Promise.reject(new VisionImageError('busy'))
+  }
+  // This explicitly confirmed private cleanup includes deleted Chats, so no
+  // current Chat grants its authority. Reserve globally before filesystem I/O
+  // and drain it on exit rather than claiming logical cancellation removed it.
+  const request = Promise.resolve().then(async () => {
+    const selected = requireVisionHistoryStorage()
+    await selected.store.clearAll()
+    if (requireDataStorageState().activeDataRoot !== selected.root) throw new VisionImageError('owner_changed')
+  }).catch((error: unknown) => { throw safeVisionHistoryFailure(error) })
+  visionRequests.add(request)
+  void request.then(() => visionRequests.delete(request), () => visionRequests.delete(request))
+  return request
+}
+
 function withVisionOwner<Result>(chatId: string, operation: (controller: VisionImageController) => Result | Promise<Result>,
   readOnly = false): Promise<Result> {
   if (shutdownStarted || dataStorageOperation !== null || !readOnly && (hasActiveVisionWork() || visionOwner().busy)) {
@@ -2184,8 +2245,7 @@ function withVisionOwner<Result>(chatId: string, operation: (controller: VisionI
   // leave a gap in which Chat, scope changes, or shutdown admits another owner.
   const request = Promise.resolve().then(async () => {
     const backend = requireBackend()
-    if (backend.getCanonicalVisionChat() === null) await backend.listChats(false)
-    const owner = backend.getCanonicalVisionChat()
+    const owner = await backend.hydrateVisionOwner()
     if (owner === null || owner.chatId !== chatId || shutdownStarted) throw new VisionImageError('owner_changed')
     return operation(requireVisionController())
   }).catch((error: unknown) => { throw new VisionImageError(error instanceof VisionImageError ? error.code : 'unavailable') })
@@ -2229,8 +2289,7 @@ function withVisionCaptureOwner<Result>(chatId: string,
   // and never waits behind or clears the physically running helper's promise.
   const request = Promise.resolve().then(async () => {
     const backend = requireBackend()
-    if (backend.getCanonicalVisionChat() === null) await backend.listChats(false)
-    const owner = backend.getCanonicalVisionChat()
+    const owner = await backend.hydrateVisionOwner()
     if (owner === null || owner.chatId !== chatId || shutdownStarted) throw new VisionCaptureError('owner_changed')
     return operation(requireVisionCaptureController())
   }).catch((error: unknown) => {
@@ -2294,16 +2353,21 @@ function withVisionAnalysisOwner<Result>(chatId: string,
   // physical callback here would make the user's Stop button unable to stop it.
   const request = Promise.resolve().then(async () => {
     const backend = requireBackend()
-    if (backend.getCanonicalVisionChat() === null) await backend.listChats(false)
-    const owner = backend.getCanonicalVisionChat()
+    const owner = await backend.hydrateVisionOwner()
     if (owner === null || owner.chatId !== chatId || shutdownStarted) throw new VisionAnalysisServiceError('owner_changed')
     return operation(requireVisionAnalysisController())
   }).catch((error: unknown) => {
     throw new VisionAnalysisServiceError(error instanceof VisionAnalysisServiceError ? error.code : 'unavailable')
   })
   visionRequests.add(request)
-  void request.then(() => visionRequests.delete(request), () => visionRequests.delete(request))
+  if (!control) visionAnalysisRequests.add(request)
+  const settled = (): void => { visionRequests.delete(request); visionAnalysisRequests.delete(request) }
+  void request.then(settled, settled)
   return request
+}
+
+function visionAnalysisActivity(): { busy: boolean } {
+  return { busy: visionAnalysisRequests.size > 0 || visionAnalysisController?.hasActiveWork() === true }
 }
 
 function desktopOwner(): WorkDesktopOwner {
@@ -2790,6 +2854,68 @@ function requireMainWindow(): BrowserWindow {
 }
 
 function registerIpcHandlers(): void {
+  ipcMain.handle('vision:get-history', (event, chatId: unknown) => {
+    assertTrustedSender(event)
+    const current = parseVisionChatId(chatId)
+    return withVisionHistoryOwner(current, (store, owner) => visionHistoryList(store, owner), true)
+  })
+  ipcMain.handle('vision:save-image', (event, value: unknown) => {
+    assertTrustedSender(event)
+    const request = parseVisionHistorySaveRequest(value)
+    return withVisionHistoryOwner(request.chatId, async (store, owner, images) => {
+      const image = images.getImage(request.chatId, request.imageId)
+      const item = images.getState(request.chatId).items.find(image => image.imageId === request.imageId)
+      if (item === undefined) throw new VisionImageError('owner_changed')
+      await store.save(owner, { fileName: item.fileName, source: images.getImageSource(request.chatId, request.imageId),
+        pngBytes: image.pngBytes, width: image.width, height: image.height, sha256: image.sha256 })
+      return visionHistoryList(store, owner)
+    })
+  })
+  ipcMain.handle('vision:restore-image', (event, value: unknown) => {
+    assertTrustedSender(event)
+    const request = parseVisionHistorySelectRequest(value)
+    return withVisionHistoryOwner(request.chatId, async (store, owner, images, assertCurrent) => {
+      const saved = await store.restore(owner, request.historyId)
+      // Readonly canonical replies can relocate this Chat while disk I/O is
+      // pending. Check before any pixels enter the current session, as well as
+      // before publishing the result; rejecting afterward would be too late.
+      assertCurrent(true)
+      const canonical = decodeVisionCanonicalImage(saved.pngBytes, nativeImage)
+      // The store verified the saved-byte digest before decode. A newer native
+      // encoder may produce a different lossless PNG representation; its new
+      // digest belongs to this fresh session ID rather than reviving a receipt.
+      if (canonical.width !== saved.metadata.width || canonical.height !== saved.metadata.height) {
+        throw new VisionImageError('invalid_image')
+      }
+      return images.importCanonical(request.chatId, canonical, saved.metadata.fileName, saved.metadata.source)
+    })
+  })
+  ipcMain.handle('vision:remove-history', (event, value: unknown) => {
+    assertTrustedSender(event)
+    const request = parseVisionHistorySelectRequest(value)
+    return withVisionHistoryOwner(request.chatId, async (store, owner) => {
+      await store.remove(owner, request.historyId)
+      return visionHistoryList(store, owner)
+    })
+  })
+  ipcMain.handle('vision:clear-history', (event, value: unknown) => {
+    assertTrustedSender(event)
+    const request = parseVisionHistoryClearRequest(value)
+    return withVisionHistoryOwner(request.chatId, async (store, owner) => {
+      await store.clear(owner)
+      return visionHistoryList(store, owner)
+    })
+  })
+  ipcMain.handle('vision:clear-all-history', (event, value: unknown) => {
+    assertTrustedSender(event)
+    parseVisionHistoryClearAllRequest(value)
+    return clearAllNativeVisionHistory()
+  })
+  ipcMain.handle('vision:get-analysis-activity', (event, chatId: unknown) => {
+    assertTrustedSender(event)
+    parseVisionChatId(chatId)
+    return visionAnalysisActivity()
+  })
   ipcMain.handle('vision:prepare-context', (event, value: unknown) => {
     assertTrustedSender(event)
     const request = parseVisionReviewRequest(value)

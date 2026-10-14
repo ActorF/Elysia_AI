@@ -20,7 +20,7 @@
 
 > [!IMPORTANT]
 >
-> 本项目目前是 **开发预览**，不是下载即用的正式发行版。桌面壳仍依赖源码目录中的 Python 环境、Ollama 和本地模型；Project Sources 管理、本地文件问答与可信引用、Composer Dictate、本地 Voice Call、受管 GPT-SoVITS 分句播放，以及思考/朗读期间的安全 Barge-in 已经接通。Dictate 把一次完整语音转写追加到当前消息草稿且绝不自动发送；打开 Voice Call 会立即开始监听，每段完整语句经本地转写后自动通过当前 Chat 的正常路径发送，回复及预期 TTS 完成后只要未静音就继续监听。Mute 暂停麦克风，Close 结束通话。这个循环仍是基于完整语句（utterance-based）的 Final Transcript 流程，不提供实时 Partial Transcript 或无缝（gapless）音频流。文件问答必须由用户在 Project Chat 中明确开启。封闭的 Character State API 把 Chat、Voice 与 Knowledge 生命周期映射到审核静态角色素材：主界面使用半身状态板，Voice Call 使用居中的圆形头像；应用内角色始终静态，不创建 Live2D 或动态嘴型。独立桌宠默认关闭；用户选择本机 `@书呆儿` Bongo Cat Mver 程序合集目录后，Electron Main 只列出通过固定 Hash 校验的程序，用户明确开启时只启动选中的原程序，由它提供动态角色、键鼠反馈、眼部追踪与表情。付费程序、EXE、DLL、Live2D 模型及其 Runtime 不进入 Git、GitHub、安装包或构建输出。用户限定的十种 Voice Emotion（`neutral / happy / sad / caring / moved / playful / affectionate / teasing / serious / surprised`）选择 TTS 参考与静态角色表情，模型不能下发任意情绪、路径或动画指令。固定文案的系统通知继续默认关闭。通知允许独立开启回复完成提示，并可另选 Daily / Weekly 中性提醒，也可一键全部关闭。提醒的调度与投递只在 Elysia 已运行时发生，不建立后台服务、开机自启、连续打卡或模型生成的主动消息。可选语音 Runtime、模型和参考音频均不随基础安装提供，实时 Partial Transcript、Work Agent 与正式安装体验尚未完成。真实麦克风/扬声器、房间回声和长通话人工矩阵未执行，项目负责人已明确豁免其作为当前交付的关闭门槛，因此本项目不声称这些人工观察已经通过。
+> 本项目目前是 **开发预览**，不是下载即用的正式发行版。桌面壳仍依赖源码目录中的 Python 环境、Ollama 和本地模型；Project Sources 管理、本地文件问答与可信引用、Composer Dictate、本地 Voice Call、受管 GPT-SoVITS 分句播放，以及思考/朗读期间的安全 Barge-in 已经接通。Dictate 把一次完整语音转写追加到当前消息草稿且绝不自动发送；打开 Voice Call 会立即开始监听，每段完整语句经本地转写后自动通过当前 Chat 的正常路径发送，回复及预期 TTS 完成后只要未静音就继续监听。Mute 暂停麦克风，Close 结束通话。这个循环仍是基于完整语句（utterance-based）的 Final Transcript 流程，不提供实时 Partial Transcript 或无缝（gapless）音频流。文件问答必须由用户在 Project Chat 中明确开启。封闭的 Character State API 把 Chat、Voice 与 Knowledge 生命周期映射到审核静态角色素材：主界面使用半身状态板，Voice Call 使用居中的圆形头像；应用内角色始终静态，不创建 Live2D 或动态嘴型。独立桌宠默认关闭；用户选择本机 `@书呆儿` Bongo Cat Mver 程序合集目录后，Electron Main 只列出通过固定 Hash 校验的程序，用户明确开启时只启动选中的原程序，由它提供动态角色、键鼠反馈、眼部追踪与表情。付费程序、EXE、DLL、Live2D 模型及其 Runtime 不进入 Git、GitHub、安装包或构建输出。用户限定的十种 Voice Emotion（`neutral / happy / sad / caring / moved / playful / affectionate / teasing / serious / surprised`）选择 TTS 参考与静态角色表情，模型不能下发任意情绪、路径或动画指令。固定文案的系统通知继续默认关闭。通知允许独立开启回复完成提示，并可另选 Daily / Weekly 中性提醒，也可一键全部关闭。提醒的调度与投递只在 Elysia 已运行时发生，不建立后台服务、开机自启、连续打卡或模型生成的主动消息。可选语音 Runtime、模型和参考音频均不随基础安装提供，实时 Partial Transcript 与正式安装体验尚未完成；Work 使用显式计划、目录边界与单次批准。真实麦克风/扬声器、房间回声和长通话人工矩阵未执行，项目负责人已明确豁免其作为当前交付的关闭门槛，因此本项目不声称这些人工观察已经通过。
 
 > 所有 Final Transcript 与 Elysia 的中文回复都会先经固定 OpenCC `t2s` 边界统一为简体中文。回复中的代码、URL、Markdown 目标与边界明确的真实路径保持原样；含空格且没有扩展名的路径需放入引号或代码格式。普通对话中，已识别的段首括号或星号动作旁白会在显示、保存和朗读前移除；用户明确要求小说、剧本、角色扮演或动作分析时保留为作品内容。
 
@@ -67,7 +67,9 @@
 | 外部动态桌宠 | ✅ 可用 | 默认 `disabled`；用户选择本机程序合集目录后，Settings 列出严格验证通过的程序，`visible` 只启动选中项；切换时必须先关闭由 Elysia 启动的旧 PID Tree，失败则不启动新项 |
 | Presence 与系统通知 | ✅ 可用 | 回复完成通知默认 Off；中性提醒只允许 Off / Daily / Weekly，前台、Voice 或忙碌时不弹出且不补发；无云推送、后台服务、行为追踪或模型生成通知 |
 | 文件解析与本地 RAG | ✅ 基础可用 | 版本化 Chunk Lineage、固定本地 Embedding 空间、Scope-safe SQLite 索引、有界 Retriever/Reranker、loopback-only Grounded Generator、同 Project 多 Chat 共享且跨 Project fail-closed；Chat 需显式开启 **Use Project Sources**，证据不足不会生成无引用回答 |
-| Work Agent 与工具权限 | ⏳ 计划中 | 尚无工具执行、桌面控制、Internet 或 Vision 工作流 |
+| Work Agent 与工具权限 | ✅ 基础可用 | 显式多步骤计划、本地目录边界、写入预览与单次批准、暂停/恢复、审计；模型建议不能增加调用或批准操作。见 [Work 工作流](./docs/17-WORKFLOW-AND-DESKTOP-AGENT.md) |
+| 图片与屏幕理解 | ✅ 基础可用 | 用户选图、本地 OCR/Ollama 问答、单次授权截图、Chat 草稿与 Work 参考、默认关闭的保存和独立历史清除。OCR 需本机 Tesseract 与语言数据。见 [Vision 使用与边界](./docs/18-VISION-AND-SCREEN.md) |
+| Internet 与外部服务 | ⏳ 计划中 | Stage 12 尚未实现 |
 | 外部桌宠程序支持 | ✅ 可用 | 动态渲染、键盘/鼠标反馈、眼部追踪和表情由用户持有的原 Bongo Cat Mver 程序负责；其程序、模型与配置不复制进仓库、安装包或应用数据 |
 | 独立安装与更新 | ⏳ 计划中 | 当前打包结果不内置 Python、Ollama 或模型，也未签名 |
 

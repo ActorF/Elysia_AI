@@ -1073,6 +1073,8 @@ function App() {
   const activeChatProjectIdRef = useRef<string | null>(null)
   const activeChatModeRef = useRef<'chat' | 'work'>('chat')
   const activeChatArchivedRef = useRef(false)
+  const canonicalProjectStateRef = useRef<ProjectState | null>(null)
+  const visionProjectAllowedRef = useRef(true)
   const activeViewRef = useRef<AppView>('chat')
   const pendingChatSendRef = useRef<PersistedPendingChatSend | null>(
     pendingChatSend,
@@ -1257,6 +1259,7 @@ function App() {
   const activeChatProject = projectState?.projects.find(
     (project) => project.projectId === activeChatProjectId,
   )
+  const visionProjectAllowed = activeChatProjectId === null || activeChatProject !== undefined && !activeChatProject.archived
   const projectKnowledgeAvailable = knowledgeManagementAvailable
     && activeChatProject !== undefined
     && !activeChatProject.archived
@@ -1382,7 +1385,7 @@ function App() {
     const chatId = activeChatId
     if (chatId === undefined || backendStatusRef.current !== 'ready' || backendChatIdRef.current !== chatId
       || activeChatIdRef.current !== chatId || activeChatProjectIdRef.current !== activeChatProjectId
-      || activeChatArchivedRef.current || activeViewRef.current !== 'chat' || sessionMutationPendingRef.current
+      || activeChatArchivedRef.current || !visionProjectAllowedRef.current || activeViewRef.current !== 'chat' || sessionMutationPendingRef.current
       || workLeaseRef.current || modelSelectionPendingRef.current || retryPendingRef.current) {
       throw new Error('The reviewed draft owner changed.')
     }
@@ -1407,7 +1410,7 @@ function App() {
     const expiresAt = Date.parse(context.expiresAt)
     if (backendStatusRef.current !== 'ready' || backendChatIdRef.current !== context.owner.chatId
       || activeChatIdRef.current !== context.owner.chatId || activeChatProjectIdRef.current !== context.owner.projectId
-      || activeChatModeRef.current !== 'work' || activeChatArchivedRef.current || activeViewRef.current !== 'chat'
+      || activeChatModeRef.current !== 'work' || activeChatArchivedRef.current || !visionProjectAllowedRef.current || activeViewRef.current !== 'chat'
       || sessionMutationPendingRef.current || workLeaseRef.current || modelSelectionPendingRef.current || retryPendingRef.current
       || !Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
       throw new Error('The reviewed Work context is no longer available.')
@@ -1424,7 +1427,7 @@ function App() {
     return () => { window.clearTimeout(timer) }
   }, [selectedWorkVisionContext])
   const visibleWorkVisionContext = snapshot.status === 'ready' && snapshot.chatId === activeChatId
-    && chatState?.activeChat.archived === false && selectedWorkVisionContext !== null && selectedWorkVisionContext.owner.chatId === activeChatId
+    && chatState?.activeChat.archived === false && visionProjectAllowed && selectedWorkVisionContext !== null && selectedWorkVisionContext.owner.chatId === activeChatId
     && selectedWorkVisionContext.owner.projectId === activeChatProjectId ? selectedWorkVisionContext : null
   const canSend = (
     desktopApi !== undefined
@@ -2759,8 +2762,11 @@ function App() {
   }, [])
 
   const acceptChatState = useCallback((nextState: ChatSessionState): void => {
+    const ownerProjectId = nextState.activeChat.projectId
+    const ownerProject = canonicalProjectStateRef.current?.projects.find((project) => project.projectId === ownerProjectId)
+    visionProjectAllowedRef.current = ownerProjectId === null || ownerProject !== undefined && !ownerProject.archived
     if (activeChatIdRef.current !== nextState.activeChat.chatId || activeChatProjectIdRef.current !== nextState.activeChat.projectId
-      || nextState.activeChat.archived) setSelectedWorkVisionContext(null)
+      || nextState.activeChat.archived || !visionProjectAllowedRef.current) setSelectedWorkVisionContext(null)
     for (const chat of [...nextState.chats, nextState.activeChat]) {
       const knownCount = knownChatMessageCountsRef.current.get(chat.chatId) ?? 0
       knownChatMessageCountsRef.current.set(
@@ -2777,6 +2783,9 @@ function App() {
   }, [])
 
   const acceptProjectState = useCallback((nextState: ProjectState): void => {
+    // Archiving a Project can retain the exact Chat/Project identifiers. Revoke
+    // visual reviews from the canonical catalog, not just navigation changes.
+    canonicalProjectStateRef.current = nextState
     setProjectKnowledgeByChat((current) => {
       const activeProjectIds = new Set(
         nextState.projects
@@ -8280,7 +8289,7 @@ function App() {
         )}
         visionPanel={activeChatId === undefined || typeof desktopApi?.getVisionState !== 'function' ? undefined : (
           <VisionPanel api={desktopApi} chatId={activeChatId} projectId={activeChatProjectId}
-            ready={snapshot.status === 'ready' && snapshot.chatId === activeChatId && chatState?.activeChat.archived === false}
+            ready={snapshot.status === 'ready' && snapshot.chatId === activeChatId && chatState?.activeChat.archived === false && visionProjectAllowed}
             disabled={workControlsDisabled || workLeaseRef.current || modelSelectionPending || retryPending}
             onBusyChange={updateVisionBusy} onChatDraft={appendReviewedVisionDraft}
             onWorkContext={chatState?.activeChat.mode === 'work' ? selectReviewedVisionWorkContext : undefined} />

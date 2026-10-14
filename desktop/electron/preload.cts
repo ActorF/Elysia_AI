@@ -7,6 +7,8 @@ import type { VisionState, VisionSelectionResult, VisionRemoveRequest } from './
 import type { VisionAnalysisState, VisionOcrRequest, VisionModelRequest } from './vision-analysis-protocol.js'
 import type { VisionCaptureSources, VisionCaptureStatus, VisionCapturePrepareRequest, VisionCaptureConfirmRequest, VisionCaptureApproval } from './vision-capture-protocol.js'
 import type { VisionContext, VisionReviewRequest, VisionContextRequest } from './vision-context-protocol.js'
+import type { VisionHistoryList, VisionHistorySaveRequest, VisionHistorySelectRequest,
+  VisionHistoryClearRequest, VisionHistoryClearAllRequest } from './vision-history-protocol.js'
 
 import type {
   ArchiveChatRequest,
@@ -828,6 +830,13 @@ const desktopApi: DesktopApi = {
   cancelVisionCapture: (chatId: string) => ipcRenderer.invoke('vision:cancel-capture', chatId) as Promise<VisionCaptureSources>,
   askVisionImage: (request: VisionModelRequest) => ipcRenderer.invoke('vision:ask-image', request) as Promise<VisionAnalysisState>,
   getVisionAnalysis: (chatId: string) => ipcRenderer.invoke('vision:get-analysis', chatId) as Promise<VisionAnalysisState>,
+  getVisionAnalysisActivity: (chatId: string) => ipcRenderer.invoke('vision:get-analysis-activity', chatId) as Promise<{ busy: boolean }>,
+  getVisionHistory: (chatId: string) => ipcRenderer.invoke('vision:get-history', chatId) as Promise<VisionHistoryList>,
+  saveVisionImage: (request: VisionHistorySaveRequest) => ipcRenderer.invoke('vision:save-image', request) as Promise<VisionHistoryList>,
+  restoreVisionImage: (request: VisionHistorySelectRequest) => ipcRenderer.invoke('vision:restore-image', request) as Promise<VisionSelectionResult>,
+  removeVisionHistory: (request: VisionHistorySelectRequest) => ipcRenderer.invoke('vision:remove-history', request) as Promise<VisionHistoryList>,
+  clearVisionHistory: (request: VisionHistoryClearRequest) => ipcRenderer.invoke('vision:clear-history', request) as Promise<VisionHistoryList>,
+  clearAllVisionHistory: (request: VisionHistoryClearAllRequest) => ipcRenderer.invoke('vision:clear-all-history', request) as Promise<void>,
   checkVisionOcr: (chatId: string) => ipcRenderer.invoke('vision:check-ocr', chatId) as Promise<VisionAnalysisState>,
   runVisionOcr: (request: VisionOcrRequest) => ipcRenderer.invoke('vision:run-ocr', request) as Promise<VisionAnalysisState>,
   cancelVisionAnalysis: (chatId: string) => ipcRenderer.invoke('vision:cancel-analysis', chatId) as Promise<VisionAnalysisState>,

@@ -82,8 +82,8 @@ TTS reference after a Backend restart. These surfaces do not load Cubism, create
 a WebGL context, expose an Animated/Still preference, or derive mouth cues from
 Web Audio RMS. Panel artwork failure falls back through UI illustrations →
 portrait → accessible text. Voice Call
-uses the bundled portrait background described below. `waiting_approval` still has
-no producer until a real Work/Approval workflow exists.
+uses the bundled portrait background described below. The character presentation
+does not yet consume the Work panel’s existing waiting-for-approval state.
 Stage 13 separately provides an optional external Desktop Pet program. It is
 Off (`disabled`) on first run. Settings lets the user choose a local folder,
 scans for complete trusted companion-program installations, and lets the user
@@ -423,8 +423,17 @@ Git-ignored and must not be committed or packaged with the application.
   ignored local runtime and Profile are valid. Voice Call may speak its replies
   automatically, and reply-time barge-in is available when verified echo
   cancellation starts.
-  Work permissions, automatic workspace scanning, and background source import
-  remain unavailable.
+  Work uses explicit bounded tools, selected Workspace access, previews, and
+  single-use approvals. Automatic workspace scanning and background source
+  import remain unavailable. See the [workflow guide](../docs/17-WORKFLOW-AND-DESKTOP-AGENT.md)
+  and the [Vision guide](../docs/18-VISION-AND-SCREEN.md) for the separate image
+  review and local analysis flow.
+- Vision saves no image history by default. Each retained PNG requires a
+  session-local opt-in and explicit Save; storage is scoped to Chat/Project
+  under the active data root, capped at 32 records / 128 MiB, and excludes OCR
+  and model answers. Saved copies are plaintext. Restore does not restore
+  analysis or approvals, and separately confirmed deletion affects the active
+  data folder. Failed-move recovery folders remain listed in Settings.
 
 ### Global Voice behavior settings
 

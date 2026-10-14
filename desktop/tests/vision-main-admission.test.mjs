@@ -10,13 +10,13 @@ import { VisionAnalysisController, VisionAnalysisServiceError } from '../dist-el
 
 const sourceText = await readFile(new URL('../electron/main.ts', import.meta.url), 'utf8')
 const source = ts.createSourceFile('main.ts', sourceText, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
-const names = ['withVisionOwner', 'withVisionAnalysisOwner']
+const names = ['withVisionOwner', 'withVisionAnalysisOwner', 'visionAnalysisActivity']
 const declarations = source.statements.filter((statement) => ts.isFunctionDeclaration(statement) && names.includes(statement.name?.text))
 assert.equal(declarations.length, names.length)
 // Only these already reviewed admission functions are evaluated. Importing
 // Main would otherwise start the real application, dialogs, and Backend.
 const compiled = ts.transpileModule(declarations.map((declaration) => declaration.getText(source)).join('\n')
-  + '\nmodule.exports = { withVisionOwner, withVisionAnalysisOwner };', {
+  + '\nmodule.exports = { withVisionOwner, withVisionAnalysisOwner,visionAnalysisActivity };', {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
 }).outputText
 
@@ -36,13 +36,14 @@ function fixture(hydrating = false) {
   const images = { getState: () => ({ kind: 'vision.state', owner: { chatId: owner.chatId, projectId: owner.projectId },
     revision: 0, busy: false, retention: 'session', items: [] }) }
   const host = { module: { exports: {} }, VisionImageError, VisionAnalysisServiceError,
-    visionRequests: requests, shutdownStarted: false, dataStorageOperation: null,
+    visionRequests: requests, visionAnalysisRequests: new Set(), visionAnalysisController: analysis,
+    shutdownStarted: false, dataStorageOperation: null,
     visionOwner: () => owner, hasActiveVisionWork: () => requests.size > 0 || analysis.hasActiveWork(),
     requireBackend: () => ({ getCanonicalVisionChat: () => canonical,
-      listChats: async () => { await hydration.promise; canonical = owner } }),
+      hydrateVisionOwner: async () => { if (canonical === null) { await hydration.promise; canonical = owner } return canonical } }),
     requireVisionController: () => images, requireVisionAnalysisController: () => analysis }
   vm.runInNewContext(compiled, host, { timeout: 1000 })
-  return { api: host.module.exports, requests, analysis, hydration, probe, images }
+  return { api: host.module.exports, requests, analysis, hydration, probe, images, owner }
 }
 
 test('Independent OCR and image metadata mount requests both resolve while native reservations remain counted', async () => {
@@ -83,4 +84,17 @@ test('Main metadata and Stop bypass a running OCR reservation without releasing 
   probe.resolve({ status: 'ready', languages: ['eng'], version: '5.5.0' })
   assert.equal((await checking).busy, false)
   assert.equal(analysis.hasActiveWork(), false); assert.equal(requests.size, 0)
+})
+
+test('Physical-only analysis status survives disconnect without exposing evidence or hydrating a canonical owner', async () => {
+  const { api, requests, analysis, probe, owner } = fixture()
+  const checking = api.withVisionAnalysisOwner('chat_a', controller => controller.checkOcr('chat_a'))
+  assert.equal(api.visionAnalysisActivity().busy, true)
+  await new Promise(resolve => setImmediate(resolve))
+  owner.ready = false; analysis.synchronize()
+  assert.deepEqual(Object.keys(api.visionAnalysisActivity()), ['busy'])
+  assert.equal(api.visionAnalysisActivity().busy, true); assert.equal(requests.size, 1)
+  probe.resolve({ status: 'ready', languages: ['eng'], version: '5.5.0' })
+  await assert.rejects(checking)
+  assert.equal(api.visionAnalysisActivity().busy, false); assert.equal(requests.size, 0)
 })
