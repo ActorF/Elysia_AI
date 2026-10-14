@@ -433,6 +433,7 @@ let pendingDesktopDecisions = []
 let nextDesktopError = null
 let workPlans = new Map()
 let workRecoveryNotices = new Map()
+let workPlanJobs = new Map()
 let nextWorkPlanNumber = 1
 let delayWorkPlanReads = false
 let pendingWorkPlanReads = []
@@ -647,6 +648,38 @@ function mockWorkWrite(approval, granted, chatId) {
   workUndoData.set(data.undoId, { chatId, call: clone(approval.call), before,
     after: toolId === 'move' ? workFiles.get(args.destination) : workFiles.get(args.path) ?? null, audit })
   return result
+}
+
+/** Keep seeded monotonic budgets while reflecting the mock's actual logical and physical worker state. */
+function mockWorkPlanState(chatId) {
+  const plan = workPlans.get(chatId) ?? null
+  const recovery = workRecoveryNotices.get(chatId)
+  const previous = workPlanJobs.get(chatId)
+  let job
+  if (plan !== null && previous !== undefined) {
+    job = clone(previous)
+    job.planId = plan.planId
+    job.physicalBusy = plan.busy
+    job.cancelRequested ||= plan.state === 'cancelled'
+    if (job.physicalBusy) {
+      const active = plan.steps.find((step) => step.stepId === job.activeStepId)
+        ?? plan.steps.find((step) => step.status === 'running')
+        ?? plan.steps.find((step) => step.status === 'cancelled')
+      job.activeStepId = active?.stepId ?? null
+      job.activePhase = ['create', 'edit', 'move', 'delete'].includes(active?.call.toolId) ? 'preview' : 'read'
+      job.activeAttempt ??= 1
+      job.stepRemainingSeconds ??= Math.min(30, job.totalRemainingSeconds)
+    } else {
+      job.activeStepId = null; job.activePhase = null; job.activeAttempt = null; job.stepRemainingSeconds = null
+    }
+    job.stopReason = job.cancelRequested || job.closed ? 'cancelled'
+      : job.totalRemainingSeconds === 0 || (job.physicalBusy && job.stepRemainingSeconds === 0) ? 'timeout' : null
+    job.retryableStepIds = job.physicalBusy || job.stopReason !== null ? []
+      : job.retryableStepIds.filter((id) => plan.steps.some((step) => step.stepId === id && step.status === 'failed'))
+    workPlanJobs.set(chatId, job)
+  }
+  return { kind: 'work.plan', plan: clone(plan),
+    ...(recovery === undefined ? {} : { recovery: clone(recovery) }), ...(job === undefined ? {} : { job: clone(job) }) }
 }
 
 async function driveMockWorkPlan(plan) {
@@ -1851,9 +1884,7 @@ const desktopApi = {
 
   getWorkPlan: async (chatId) => {
     record('getWorkPlan', [chatId])
-    const recovery = workRecoveryNotices.get(chatId)
-    return { kind: 'work.plan', plan: clone(workPlans.get(chatId) ?? null),
-      ...(recovery === undefined ? {} : { recovery: clone(recovery) }) }
+    return mockWorkPlanState(chatId)
   },
 
   createWorkPlan: async (request) => {
@@ -1868,8 +1899,9 @@ const desktopApi = {
     Object.defineProperty(plan, 'chatId', { value: request.chatId, enumerable: false })
     workPlans.set(request.chatId, plan)
     workRecoveryNotices.delete(request.chatId)
+    workPlanJobs.delete(request.chatId)
     workApprovals.delete(request.chatId)
-    return { kind: 'work.plan', plan: clone(plan) }
+    return mockWorkPlanState(request.chatId)
   },
 
   controlWorkPlan: async (request) => {
@@ -1890,7 +1922,7 @@ const desktopApi = {
       plan.state = plan.steps.some((step) => step.status === 'waiting') ? 'waiting' : 'running'
       if (plan.state === 'running') void driveMockWorkPlan(plan)
     }
-    return { kind: 'work.plan', plan: clone(plan) }
+    return mockWorkPlanState(request.chatId)
   },
 
   confirmWorkPlan: async (request) => {
@@ -1903,7 +1935,7 @@ const desktopApi = {
     step.status = result.status === 'succeeded' ? 'succeeded' : 'failed'
     plan.state = step.status === 'failed' ? 'failed' : 'running'
     if (plan.state === 'running') void driveMockWorkPlan(plan)
-    return { kind: 'work.plan', plan: clone(plan) }
+    return mockWorkPlanState(request.chatId)
   },
 
   reviseWorkPlan: async (request) => {
@@ -1925,7 +1957,31 @@ const desktopApi = {
         call, status: 'pending', result: null, approval: null })) }
     Object.defineProperty(revised, 'chatId', { value: request.chatId, enumerable: false })
     workPlans.set(request.chatId, revised)
-    return { kind: 'work.plan', plan: clone(revised) }
+    workPlanJobs.delete(request.chatId)
+    return mockWorkPlanState(request.chatId)
+  },
+
+  retryWorkPlan: async (request) => {
+    record('retryWorkPlan', [request])
+    const plan = workPlans.get(request.chatId)
+    const job = workPlanJobs.get(request.chatId)
+    const index = plan?.steps.findIndex((step) => step.stepId === request.stepId) ?? -1
+    const step = plan?.steps[index]
+    if (plan?.planId !== request.planId || plan.state !== 'failed' || plan.busy || index < 0
+      || step?.status !== 'failed' || step.result?.status !== 'failed'
+      || !['list_directory', 'read_text', 'search_files', 'metadata'].includes(step.call.toolId)
+      || !['timeout', 'io_error'].includes(step.result.error?.code)
+      || job?.planId !== request.planId || job.physicalBusy || job.stopReason !== null
+      || !job.retryableStepIds.includes(request.stepId)
+      || plan.steps.slice(index + 1).some((item) => item.status !== 'pending')) throw new Error('Read retry is not current.')
+    const suffix = (nextWorkPlanNumber++).toString(16).padStart(32, '0')
+    const retried = { planId: `plan_${suffix}`, title: plan.title, state: 'pending', busy: false,
+      steps: plan.steps.slice(index).map((item) => ({ ...clone(item), status: 'pending', result: null, approval: null })) }
+    Object.defineProperty(retried, 'chatId', { value: request.chatId, enumerable: false })
+    workPlans.set(request.chatId, retried)
+    workPlanJobs.set(request.chatId, { ...clone(job), planId: retried.planId, retryableStepIds: [] })
+    workRecoveryNotices.delete(request.chatId)
+    return mockWorkPlanState(request.chatId)
   },
 
   getWorkAudit: async (chatId) => {
@@ -2530,6 +2586,7 @@ const testControl = {
     workApprovals = new Map()
     workPlans = new Map()
     workRecoveryNotices = new Map()
+    workPlanJobs = new Map()
     workAuditEntries = []
     workAuditOverrides = new Map()
     workUndoData = new Map()
@@ -2923,7 +2980,10 @@ const testControl = {
       Object.defineProperty(plan, 'chatId', { value: chatId, enumerable: false })
       workPlans.set(chatId, plan)
     }
-    workRecoveryNotices.set(chatId, clone(state.recovery))
+    if (state.recovery === undefined) workRecoveryNotices.delete(chatId)
+    else workRecoveryNotices.set(chatId, clone(state.recovery))
+    if (state.job === undefined || state.plan === null) workPlanJobs.delete(chatId)
+    else workPlanJobs.set(chatId, clone(state.job))
   },
   setWorkAuditState: (chatId, state) => { workAuditOverrides.set(chatId, clone(state)) },
   setWorkFile: (path, content) => { if (content === null) workFiles.delete(path); else workFiles.set(path, content) },

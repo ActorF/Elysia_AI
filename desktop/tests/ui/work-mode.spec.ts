@@ -496,6 +496,49 @@ test('modifies only unfinished steps and requires a new start and fresh write ap
   expect(approval.planId).not.toBe(revision.planId)
 })
 
+test('shows the remaining job budget and prepares an explicit read retry without replaying completed steps', async () => {
+  await page.evaluate(() => {
+    const control = (window as WorkTestWindow).elysiaDesktopTest
+    const planId = `plan_${'a'.repeat(32)}`
+    const stepIds = ['b', 'c', 'd'].map((letter) => `step_${letter.repeat(32)}`)
+    control.setWorkWorkspaceState({ kind: 'work.workspace', chatId: 'chat_work_test', workspacePath: 'D:\\job-test' })
+    control.setWorkRecoveryState('chat_work_test', { kind: 'work.plan', plan: {
+      planId, title: 'Retry a read then review the edit', state: 'failed', busy: false, steps: [
+        { stepId: stepIds[0], call: { toolId: 'read_text', arguments: { path: 'notes.txt' } }, status: 'succeeded', approval: null,
+          result: { status: 'succeeded', data: { path: 'notes.txt', content: 'read', sizeBytes: 4 }, error: null } },
+        { stepId: stepIds[1], call: { toolId: 'read_text', arguments: { path: 'notes.txt' } }, status: 'failed', approval: null,
+          result: { status: 'failed', data: null, error: { code: 'timeout', message: 'The tool exceeded its time limit.' } } },
+        { stepId: stepIds[2], call: { toolId: 'edit', arguments: { path: 'notes.txt', content: 'Still requires approval.' } },
+          status: 'pending', result: null, approval: null },
+      ],
+    }, job: { planId, totalTimeoutSeconds: 300, totalRemainingSeconds: 240, stepTimeoutSeconds: 30,
+      mutationAdmissionSeconds: 20, maxReadRetries: 2, pauseCountsTowardBudget: true, physicalBusy: false,
+      cancelRequested: false, closed: false, activeStepId: null, activePhase: null, activeAttempt: null,
+      stepRemainingSeconds: null, stopReason: null, retryableStepIds: [stepIds[1]] } })
+  })
+  await page.getByRole('combobox', { name: 'Conversation mode' }).selectOption('work')
+  const panel = page.getByRole('region', { name: 'Work plan', exact: true })
+  const job = panel.getByRole('region', { name: 'Work job progress' })
+  await expect(job).toContainText('240 seconds of 300')
+  await expect(job).toContainText('Pauses and approval waits count')
+  const initialPolls = await page.evaluate(() => (window as WorkTestWindow).elysiaDesktopTest.getCalls()
+    .filter((call) => call.method === 'getWorkPlan').length)
+  await expect.poll(() => page.evaluate(() => (window as WorkTestWindow).elysiaDesktopTest.getCalls()
+    .filter((call) => call.method === 'getWorkPlan').length)).toBeGreaterThan(initialPolls)
+  await job.getByRole('button', { name: 'Prepare read retry' }).click()
+  await expect(panel.locator('[data-plan-step-status]')).toHaveText(['pending', 'pending'])
+  await expect(job).toContainText('240 seconds of 300')
+  await expect(panel.getByRole('region', { name: 'Work step approval' })).toHaveCount(0)
+  expect(await page.evaluate(() => (window as WorkTestWindow).elysiaDesktopTest.getCalls()
+    .filter((call) => call.method === 'controlWorkPlan' || call.method === 'confirmWorkPlan'))).toEqual([])
+  await panel.getByRole('button', { name: 'Start plan' }).click()
+  const approval = panel.getByRole('region', { name: 'Work step approval' })
+  await expect(approval).toContainText('Still requires approval.')
+  await approval.getByRole('button', { name: 'Deny', exact: true }).click()
+  await expect(panel.locator('[data-plan-step-status]')).toHaveText(['succeeded', 'failed'])
+  await expect(job.getByRole('button', { name: 'Prepare read retry' })).toHaveCount(0)
+})
+
 test('retains the Work lease after cancellation until a native read actually drains', async () => {
   await page.evaluate(() => {
     const control = (window as WorkTestWindow).elysiaDesktopTest

@@ -66,6 +66,7 @@
     { "$ref": "#/$defs/workPlanControlRequest" },
     { "$ref": "#/$defs/workPlanConfirmRequest" },
     { "$ref": "#/$defs/workPlanReviseRequest" },
+    { "$ref": "#/$defs/workPlanRetryRequest" },
     { "$ref": "#/$defs/workToolConfirmRequest" },
     { "$ref": "#/$defs/workToolPreviewRequest" },
     { "$ref": "#/$defs/workToolRunRequest" },
@@ -254,6 +255,18 @@
         "method": { "const": "work.plan.revise" }, "params": { "$ref": "#/$defs/workPlanReviseParams" }
       } }]
     },
+    "workPlanRetryParams": {
+      "type": "object", "additionalProperties": false, "required": ["chatId", "planId", "stepId"],
+      "properties": {
+        "chatId": { "$ref": "#/$defs/workChatId" }, "planId": { "$ref": "#/$defs/workPlanId" },
+        "stepId": { "type": "string", "pattern": "^step_[0-9a-f]{32}$" }
+      }
+    },
+    "workPlanRetryRequest": {
+      "allOf": [{ "$ref": "#/$defs/requestEnvelope" }, { "properties": {
+        "method": { "const": "work.plan.retry" }, "params": { "$ref": "#/$defs/workPlanRetryParams" }
+      } }]
+    },
     "workPlanId": { "type": "string", "pattern": "^plan_[0-9a-f]{32}$" },
     "workPlanStep": {
       "type": "object", "properties": {
@@ -278,11 +291,50 @@
         "kind": { "const": "work.plan" },
         "plan": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/workPlan" }] },
         "workflow": { "$ref": "#/$defs/workWorkflowObservation" },
+        "job": { "$ref": "#/$defs/workJobObservation" },
         "recovery": {
           "type": "object", "additionalProperties": false, "required": ["status", "planId"],
           "properties": { "status": { "enum": ["restored", "uncertain_write", "storage_failed"] }, "planId": { "$ref": "#/$defs/workPlanId" } }
         }
       }, "required": ["kind", "plan"], "additionalProperties": false
+    },
+    "workJobObservation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["planId", "totalTimeoutSeconds", "totalRemainingSeconds", "stepTimeoutSeconds",
+        "mutationAdmissionSeconds", "maxReadRetries", "pauseCountsTowardBudget", "physicalBusy",
+        "cancelRequested", "closed", "activeStepId", "activePhase", "activeAttempt",
+        "stepRemainingSeconds", "stopReason", "retryableStepIds"],
+      "properties": {
+        "planId": { "$ref": "#/$defs/workPlanId" },
+        "totalTimeoutSeconds": { "type": "number", "exclusiveMinimum": 0, "maximum": 900 },
+        "totalRemainingSeconds": { "type": "number", "minimum": 0, "maximum": 900 },
+        "stepTimeoutSeconds": { "const": 30 }, "mutationAdmissionSeconds": { "const": 20 },
+        "maxReadRetries": { "type": "integer", "minimum": 0, "maximum": 2 },
+        "pauseCountsTowardBudget": { "const": true }, "physicalBusy": { "type": "boolean" },
+        "cancelRequested": { "type": "boolean" }, "closed": { "type": "boolean" },
+        "activeStepId": { "type": ["null", "string"], "pattern": "^step_[0-9a-f]{32}$" },
+        "activePhase": { "enum": [null, "read", "preview", "mutation"] },
+        "activeAttempt": { "type": ["null", "integer"], "minimum": 1, "maximum": 3 },
+        "stepRemainingSeconds": { "type": ["null", "number"], "minimum": 0, "maximum": 30 },
+        "stopReason": { "enum": [null, "cancelled", "timeout"] },
+        "retryableStepIds": { "type": "array", "maxItems": 16, "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^step_[0-9a-f]{32}$" } }
+      },
+      "allOf": [
+        { "if": { "properties": { "physicalBusy": { "const": false } } },
+          "then": { "properties": { "activeStepId": { "type": "null" }, "activePhase": { "type": "null" },
+            "activeAttempt": { "type": "null" }, "stepRemainingSeconds": { "type": "null" } } },
+          "else": { "properties": { "activeStepId": { "type": "string" }, "activePhase": { "type": "string" },
+            "activeAttempt": { "type": "integer" }, "stepRemainingSeconds": { "type": "number" },
+            "retryableStepIds": { "maxItems": 0 } } } },
+        { "if": { "properties": { "activePhase": { "enum": ["preview", "mutation"] } } },
+          "then": { "properties": { "activeAttempt": { "const": 1 } } } },
+        { "if": { "properties": { "activePhase": { "const": "mutation" } } },
+          "then": { "properties": { "stepRemainingSeconds": { "maximum": 20 } } } },
+        { "if": { "anyOf": [{ "properties": { "closed": { "const": true } } },
+                              { "properties": { "cancelRequested": { "const": true } } }] },
+          "then": { "properties": { "stopReason": { "const": "cancelled" }, "retryableStepIds": { "maxItems": 0 } } } }
+      ]
     },
     "workWorkflowObservation": {
       "type": "object", "additionalProperties": false,
@@ -467,6 +519,7 @@
             "work.plan.control",
             "work.plan.confirm",
             "work.plan.revise",
+            "work.plan.retry",
             "work.audit.list",
             "work.undo",
             "handshake",

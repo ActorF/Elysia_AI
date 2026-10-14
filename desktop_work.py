@@ -72,6 +72,8 @@ class DesktopWorkRuntime:
             return self._plan_result(chat_id, self._plans.confirm(chat_id, params["planId"], params["approvalId"], params["granted"]))
         if method == "work.plan.revise":
             return self._plan_result(chat_id, self._plans.revise(chat_id, params["planId"], params["approvalId"], validate_tool_call(params["call"])))
+        if method == "work.plan.retry":
+            return self._plan_result(chat_id, self._plans.retry(chat_id, params["planId"], params["stepId"]))
         if method == "work.audit.list":
             # History shares the writer's transaction mutex. Refusing a read
             # while native work owns it keeps the foreground RPC reader free
@@ -149,6 +151,10 @@ class DesktopWorkRuntime:
         recovery = self._plans.recovery_notice(chat_id)
         if recovery is not None:
             result["recovery"] = recovery
+        if plan is not None:
+            job = self._plans.job_observation(chat_id, plan["planId"], plan=plan)
+            if job is not None:
+                result["job"] = job
         return result
 
     def _get_workflow_store(self) -> WorkflowStore:

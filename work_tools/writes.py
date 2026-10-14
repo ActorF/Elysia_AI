@@ -271,6 +271,7 @@ class WriteCoordinator:
     def confirm(
         self, chat_id: str, project_id: str | None, boundary: WorkspaceBoundary,
         approval_id: str, granted: bool, *, decision: ApprovalDecision | None = None,
+        admission_expired: Callable[[], bool] | None = None,
     ) -> ToolResult:
         """Consume one exact decision and admit only approved writes within the preparation budget.
 
@@ -281,12 +282,18 @@ class WriteCoordinator:
         Preflight and durable backup are checked before native mutation begins.
         Once admitted, a non-preemptible write/flush settles and reports its
         verified actual result even if that preparation budget later elapses.
+        The optional trusted admission guard extends the same caller's budget
+        across write-ahead checkpoint and backup, rather than resetting the
+        twenty-second allowance when this service is entered. It is not an RPC
+        field and is never consulted after a native mutation starts.
         """
 
         with self._lock:
             try:
                 _scope(chat_id, project_id)
                 if type(approval_id) is not str or type(granted) is not bool:
+                    raise ToolProtocolError()
+                if admission_expired is not None and not callable(admission_expired):
                     raise ToolProtocolError()
                 selected_decision = ("approve" if granted else "reject") if decision is None else decision
                 if (type(selected_decision) is not str or selected_decision not in _DECISIONS
@@ -315,7 +322,7 @@ class WriteCoordinator:
                 except (ToolProtocolError, WorkspaceBoundaryError):
                     self._record_denial(pending, "conflict")
                     return ToolResult("denied", error_code="conflict")
-                if monotonic() >= admission_deadline:
+                if monotonic() >= admission_deadline or admission_expired is not None and admission_expired():
                     self._record_timeout(pending)
                     return ToolResult("failed", error_code="timeout")
                 undo_id = "undo_" + uuid4().hex
@@ -325,7 +332,7 @@ class WriteCoordinator:
                     # Only pre-mutation work is cooperatively timed. Once a
                     # native write starts, preempting it can corrupt data; let
                     # it verify and report its actual durable outcome instead.
-                    if monotonic() >= admission_deadline:
+                    if monotonic() >= admission_deadline or admission_expired is not None and admission_expired():
                         record.update(result="failed", error="timeout", recoverable=False)
                         self._save(record)
                         return ToolResult("failed", error_code="timeout")

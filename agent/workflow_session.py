@@ -71,7 +71,10 @@ class WorkflowSession:
                 workflow_from_plan(public, chat_id=self._chat_id, project_id=self._project_id,
                                    selected_workspace_key=self._workspace_key, created_at=now,
                                    admitted_step_id=admitted_step_id)
-                if self._live is None else replace_workflow_plan(
+                # Explicit read retry creates a different logical plan while
+                # retaining the disk CAS fence and live resource budget. Its
+                # previous failed state remains immutable; it is not resumed.
+                if self._live is None or self._live.to_data()["plan"]["planId"] != public["planId"] else replace_workflow_plan(
                     self._live, public, admitted_step_id=admitted_step_id,
                 )
             )

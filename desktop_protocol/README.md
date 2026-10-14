@@ -115,9 +115,31 @@ Generic tool confirmation cannot consume plan-owned tokens. Pause preserves a
 pending approval; cancellation revokes it and discards late read results. An
 already admitted native write completes truthfully while cancelled capacity
 remains reserved. Backend shutdown cancels admission and waits for that worker
-to drain. Plans are in-memory and never restart automatically; durable task
-restoration belongs to the later Task stage. Mode, owner, Project, and pinned
-Workspace identity are rechecked for every step.
+to drain. Private versioned checkpoints restore safe unfinished work as paused;
+uncertain writes require audit inspection and cannot replay. Approval tokens
+never survive restart. Mode, owner, Project, and pinned Workspace identity are
+rechecked for every step and before an explicit Resume.
+
+`work.plan.revise` consumes the shown approval as a `modify` decision and
+prepares a new pending plan containing the revised same-tool call and unfinished
+suffix. It neither starts that plan nor approves the replacement. Audit decision
+values are `approve`, `modify`, `reject`, and `timeout`; legacy records have a
+null decision rather than an inferred one.
+
+`work.plan.retry` accepts only `chatId`, `planId`, and `stepId`. It prepares a
+new pending plan from an explicitly retryable failed read and the unfinished
+suffix, preserving exact step IDs/calls and the original job budget. Completed
+steps never replay. Only `timeout` and `io_error` reads permit up to two retries;
+new writes still need their own preview and approval.
+
+An optional strict `job` observation accompanies plan snapshots: a default
+300-second total budget (trusted configuration capped at 900), 30-second read
+or preview steps, and a 20-second write-admission deadline. Pause and approval
+wait consume total time. Retry cannot reset that clock. Cancellation/timeout
+keep physical capacity reserved until native work drains; already admitted
+writes report their actual outcome. Active step, phase, attempt, remaining
+seconds, stop reason, and retry hints are validated against the plan, without
+exposing callbacks, filesystem handles, or any authority to change limits.
 
 `work.audit.list` returns the active Work Chat's latest hundred entries, newest
 first, within a 512 KiB payload and with explicit truncation. Read tools persist

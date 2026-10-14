@@ -9,6 +9,7 @@ from datetime import datetime
 
 from .contracts import TOOL_CATALOG, descriptor_to_data, ToolResult, ToolProtocolError, validate_plan_title, validate_tool_call, validate_tool_result
 from .audit_wire import validate_audit_page
+from .job_wire import validate_work_job
 
 
 _METHOD_FIELDS = {
@@ -23,6 +24,7 @@ _METHOD_FIELDS = {
     "work.plan.control": {"chatId", "planId", "action"},
     "work.plan.confirm": {"chatId", "planId", "approvalId", "granted"},
     "work.plan.revise": {"chatId", "planId", "approvalId", "call"},
+    "work.plan.retry": {"chatId", "planId", "stepId"},
     "work.audit.list": {"chatId"},
     "work.undo": {"chatId", "undoId", "confirmed"},
 }
@@ -76,8 +78,10 @@ def validate_work_params(method: str, value: object) -> dict[str, Any]:
         _validate_id(value["undoId"], "undo")
         if value["confirmed"] is not True:
             raise ValueError("Work Undo requires explicit confirmation.")
-    if method in {"work.plan.control", "work.plan.confirm", "work.plan.revise"}:
+    if method in {"work.plan.control", "work.plan.confirm", "work.plan.revise", "work.plan.retry"}:
         _validate_id(value["planId"], "plan")
+    if method == "work.plan.retry":
+        _validate_id(value["stepId"], "step")
     return dict(value)
 
 
@@ -87,11 +91,13 @@ def validate_work_result(value: object) -> dict[str, Any]:
     if isinstance(value, dict) and value.get("kind") == "work.audit":
         return validate_audit_page(value)
     if isinstance(value, dict) and value.get("kind") == "work.plan":
-        if not {"kind", "plan"} <= set(value) <= {"kind", "plan", "workflow", "recovery"}:
+        if not {"kind", "plan"} <= set(value) <= {"kind", "plan", "workflow", "recovery", "job"}:
             raise ValueError("Work plan result fields are invalid.")
         _validate_plan(value["plan"])
         if "workflow" in value:
             _validate_workflow_observation(value["workflow"], value["plan"])
+        if "job" in value:
+            validate_work_job(value["job"], value["plan"])
         if "recovery" in value:
             notice = value["recovery"]
             if type(notice) is not dict or set(notice) != {"status", "planId"}:

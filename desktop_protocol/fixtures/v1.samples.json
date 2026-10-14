@@ -5,6 +5,23 @@
   },
   "validClientMessages": [
     {
+      "name": "work explicit exact read retry request",
+      "message": {
+        "type": "request",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "job-retry-fixture",
+        "method": "work.plan.retry",
+        "params": {
+          "chatId": "chat_fixture",
+          "planId": "plan_55555555555555555555555555555555",
+          "stepId": "step_66666666666666666666666666666666"
+        }
+      }
+    },
+    {
       "name": "work plan explicit parameter revision",
       "message": {
         "type": "request",
@@ -838,6 +855,128 @@
     }
   ],
   "validServerMessages": [
+    {
+      "name": "work job bounded safe retry observation",
+      "message": {
+        "type": "response",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "job-fixture",
+        "ok": true,
+        "result": {
+          "kind": "work.plan",
+          "plan": {
+            "planId": "plan_55555555555555555555555555555555",
+            "title": "Retry read",
+            "state": "failed",
+            "busy": false,
+            "steps": [
+              {
+                "stepId": "step_66666666666666666666666666666666",
+                "call": {
+                  "toolId": "read_text",
+                  "arguments": {
+                    "path": "notes.txt"
+                  }
+                },
+                "status": "failed",
+                "approval": null,
+                "result": {
+                  "status": "failed",
+                  "data": null,
+                  "error": {
+                    "code": "io_error",
+                    "message": "The local file operation failed."
+                  }
+                }
+              }
+            ]
+          },
+          "job": {
+            "planId": "plan_55555555555555555555555555555555",
+            "totalTimeoutSeconds": 300,
+            "totalRemainingSeconds": 240,
+            "stepTimeoutSeconds": 30,
+            "mutationAdmissionSeconds": 20,
+            "maxReadRetries": 2,
+            "pauseCountsTowardBudget": true,
+            "physicalBusy": false,
+            "cancelRequested": false,
+            "closed": false,
+            "activeStepId": null,
+            "activePhase": null,
+            "activeAttempt": null,
+            "stepRemainingSeconds": null,
+            "stopReason": null,
+            "retryableStepIds": [
+              "step_66666666666666666666666666666666"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "work cancelled job still physically draining",
+      "message": {
+        "type": "response",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "job-fixture",
+        "ok": true,
+        "result": {
+          "kind": "work.plan",
+          "plan": {
+            "planId": "plan_55555555555555555555555555555555",
+            "title": "Retry read",
+            "state": "cancelled",
+            "busy": true,
+            "steps": [
+              {
+                "stepId": "step_66666666666666666666666666666666",
+                "call": {
+                  "toolId": "read_text",
+                  "arguments": {
+                    "path": "notes.txt"
+                  }
+                },
+                "status": "cancelled",
+                "approval": null,
+                "result": {
+                  "status": "cancelled",
+                  "data": null,
+                  "error": {
+                    "code": "cancelled",
+                    "message": "The action was cancelled."
+                  }
+                }
+              }
+            ]
+          },
+          "job": {
+            "planId": "plan_55555555555555555555555555555555",
+            "totalTimeoutSeconds": 300,
+            "totalRemainingSeconds": 240,
+            "stepTimeoutSeconds": 30,
+            "mutationAdmissionSeconds": 20,
+            "maxReadRetries": 2,
+            "pauseCountsTowardBudget": true,
+            "physicalBusy": true,
+            "cancelRequested": true,
+            "closed": false,
+            "activeStepId": "step_66666666666666666666666666666666",
+            "activePhase": "read",
+            "activeAttempt": 1,
+            "stepRemainingSeconds": 15,
+            "stopReason": "cancelled",
+            "retryableStepIds": []
+          }
+        }
+      }
+    },
     {
       "name": "work audit explicit approve decision",
       "message": {
@@ -3790,6 +3929,65 @@
   ],
   "invalidClientMessages": [
     {
+      "name": "read retry rejects granted",
+      "message": {
+        "type": "request",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "job-retry-fixture",
+        "method": "work.plan.retry",
+        "params": {
+          "chatId": "chat_fixture",
+          "planId": "plan_55555555555555555555555555555555",
+          "stepId": "step_66666666666666666666666666666666",
+          "granted": true
+        }
+      }
+    },
+    {
+      "name": "read retry rejects call",
+      "message": {
+        "type": "request",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "job-retry-fixture",
+        "method": "work.plan.retry",
+        "params": {
+          "chatId": "chat_fixture",
+          "planId": "plan_55555555555555555555555555555555",
+          "stepId": "step_66666666666666666666666666666666",
+          "call": {
+            "toolId": "delete",
+            "arguments": {
+              "path": "notes.txt"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "read retry rejects totalTimeoutSeconds",
+      "message": {
+        "type": "request",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "job-retry-fixture",
+        "method": "work.plan.retry",
+        "params": {
+          "chatId": "chat_fixture",
+          "planId": "plan_55555555555555555555555555555555",
+          "stepId": "step_66666666666666666666666666666666",
+          "totalTimeoutSeconds": 900
+        }
+      }
+    },
+    {
       "name": "revision cannot grant approval",
       "message": {
         "type": "request",
@@ -4611,6 +4809,319 @@
     }
   ],
   "invalidServerMessages": [
+    {
+      "name": "work job rejects oversized time budget",
+      "message": {
+        "type": "response",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "job-fixture",
+        "ok": true,
+        "result": {
+          "kind": "work.plan",
+          "plan": {
+            "planId": "plan_55555555555555555555555555555555",
+            "title": "Retry read",
+            "state": "failed",
+            "busy": false,
+            "steps": [
+              {
+                "stepId": "step_66666666666666666666666666666666",
+                "call": {
+                  "toolId": "read_text",
+                  "arguments": {
+                    "path": "notes.txt"
+                  }
+                },
+                "status": "failed",
+                "approval": null,
+                "result": {
+                  "status": "failed",
+                  "data": null,
+                  "error": {
+                    "code": "io_error",
+                    "message": "The local file operation failed."
+                  }
+                }
+              }
+            ]
+          },
+          "job": {
+            "planId": "plan_55555555555555555555555555555555",
+            "totalTimeoutSeconds": 901,
+            "totalRemainingSeconds": 240,
+            "stepTimeoutSeconds": 30,
+            "mutationAdmissionSeconds": 20,
+            "maxReadRetries": 2,
+            "pauseCountsTowardBudget": true,
+            "physicalBusy": false,
+            "cancelRequested": false,
+            "closed": false,
+            "activeStepId": null,
+            "activePhase": null,
+            "activeAttempt": null,
+            "stepRemainingSeconds": null,
+            "stopReason": null,
+            "retryableStepIds": [
+              "step_66666666666666666666666666666666"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "name": "work job rejects invented permission",
+      "message": {
+        "type": "response",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "job-fixture",
+        "ok": true,
+        "result": {
+          "kind": "work.plan",
+          "plan": {
+            "planId": "plan_55555555555555555555555555555555",
+            "title": "Retry read",
+            "state": "failed",
+            "busy": false,
+            "steps": [
+              {
+                "stepId": "step_66666666666666666666666666666666",
+                "call": {
+                  "toolId": "read_text",
+                  "arguments": {
+                    "path": "notes.txt"
+                  }
+                },
+                "status": "failed",
+                "approval": null,
+                "result": {
+                  "status": "failed",
+                  "data": null,
+                  "error": {
+                    "code": "io_error",
+                    "message": "The local file operation failed."
+                  }
+                }
+              }
+            ]
+          },
+          "job": {
+            "planId": "plan_55555555555555555555555555555555",
+            "totalTimeoutSeconds": 300,
+            "totalRemainingSeconds": 240,
+            "stepTimeoutSeconds": 30,
+            "mutationAdmissionSeconds": 20,
+            "maxReadRetries": 2,
+            "pauseCountsTowardBudget": true,
+            "physicalBusy": false,
+            "cancelRequested": false,
+            "closed": false,
+            "activeStepId": null,
+            "activePhase": null,
+            "activeAttempt": null,
+            "stepRemainingSeconds": null,
+            "stopReason": null,
+            "retryableStepIds": [
+              "step_66666666666666666666666666666666"
+            ],
+            "approved": true
+          }
+        }
+      }
+    },
+    {
+      "name": "work job rejects wrong logical owner",
+      "message": {
+        "type": "response",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "job-fixture",
+        "ok": true,
+        "result": {
+          "kind": "work.plan",
+          "plan": {
+            "planId": "plan_55555555555555555555555555555555",
+            "title": "Retry read",
+            "state": "failed",
+            "busy": false,
+            "steps": [
+              {
+                "stepId": "step_66666666666666666666666666666666",
+                "call": {
+                  "toolId": "read_text",
+                  "arguments": {
+                    "path": "notes.txt"
+                  }
+                },
+                "status": "failed",
+                "approval": null,
+                "result": {
+                  "status": "failed",
+                  "data": null,
+                  "error": {
+                    "code": "io_error",
+                    "message": "The local file operation failed."
+                  }
+                }
+              }
+            ]
+          },
+          "job": {
+            "planId": "plan_77777777777777777777777777777777",
+            "totalTimeoutSeconds": 300,
+            "totalRemainingSeconds": 240,
+            "stepTimeoutSeconds": 30,
+            "mutationAdmissionSeconds": 20,
+            "maxReadRetries": 2,
+            "pauseCountsTowardBudget": true,
+            "physicalBusy": false,
+            "cancelRequested": false,
+            "closed": false,
+            "activeStepId": null,
+            "activePhase": null,
+            "activeAttempt": null,
+            "stepRemainingSeconds": null,
+            "stopReason": null,
+            "retryableStepIds": [
+              "step_66666666666666666666666666666666"
+            ]
+          }
+        }
+      },
+      "runtimeOnly": true
+    },
+    {
+      "name": "work job rejects expired retry claim",
+      "message": {
+        "type": "response",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "job-fixture",
+        "ok": true,
+        "result": {
+          "kind": "work.plan",
+          "plan": {
+            "planId": "plan_55555555555555555555555555555555",
+            "title": "Retry read",
+            "state": "failed",
+            "busy": false,
+            "steps": [
+              {
+                "stepId": "step_66666666666666666666666666666666",
+                "call": {
+                  "toolId": "read_text",
+                  "arguments": {
+                    "path": "notes.txt"
+                  }
+                },
+                "status": "failed",
+                "approval": null,
+                "result": {
+                  "status": "failed",
+                  "data": null,
+                  "error": {
+                    "code": "io_error",
+                    "message": "The local file operation failed."
+                  }
+                }
+              }
+            ]
+          },
+          "job": {
+            "planId": "plan_55555555555555555555555555555555",
+            "totalTimeoutSeconds": 300,
+            "totalRemainingSeconds": 0,
+            "stepTimeoutSeconds": 30,
+            "mutationAdmissionSeconds": 20,
+            "maxReadRetries": 2,
+            "pauseCountsTowardBudget": true,
+            "physicalBusy": false,
+            "cancelRequested": false,
+            "closed": false,
+            "activeStepId": null,
+            "activePhase": null,
+            "activeAttempt": null,
+            "stepRemainingSeconds": null,
+            "stopReason": null,
+            "retryableStepIds": [
+              "step_66666666666666666666666666666666"
+            ]
+          }
+        }
+      },
+      "runtimeOnly": true
+    },
+    {
+      "name": "work job rejects idle active lease",
+      "message": {
+        "type": "response",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "job-fixture",
+        "ok": true,
+        "result": {
+          "kind": "work.plan",
+          "plan": {
+            "planId": "plan_55555555555555555555555555555555",
+            "title": "Retry read",
+            "state": "failed",
+            "busy": false,
+            "steps": [
+              {
+                "stepId": "step_66666666666666666666666666666666",
+                "call": {
+                  "toolId": "read_text",
+                  "arguments": {
+                    "path": "notes.txt"
+                  }
+                },
+                "status": "failed",
+                "approval": null,
+                "result": {
+                  "status": "failed",
+                  "data": null,
+                  "error": {
+                    "code": "io_error",
+                    "message": "The local file operation failed."
+                  }
+                }
+              }
+            ]
+          },
+          "job": {
+            "planId": "plan_55555555555555555555555555555555",
+            "totalTimeoutSeconds": 300,
+            "totalRemainingSeconds": 240,
+            "stepTimeoutSeconds": 30,
+            "mutationAdmissionSeconds": 20,
+            "maxReadRetries": 2,
+            "pauseCountsTowardBudget": true,
+            "physicalBusy": false,
+            "cancelRequested": false,
+            "closed": false,
+            "activeStepId": null,
+            "activePhase": null,
+            "activeAttempt": 1,
+            "stepRemainingSeconds": null,
+            "stopReason": null,
+            "retryableStepIds": [
+              "step_66666666666666666666666666666666"
+            ]
+          }
+        }
+      }
+    },
     {
       "name": "work audit rejects successful modify decision",
       "message": {

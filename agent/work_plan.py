@@ -6,6 +6,10 @@ callbacks execute outside its state lock. Cancellation is cooperative and
 shutdown invalidates publication, so a late local read cannot update a replaced
 Chat owner. Approved writes retain their outcome while this owner remains live:
 cancelling a plan cannot pretend an already-authorized mutation did not happen.
+Monotonic budgets cover graph advice and native preparation. Explicit safe-read
+retries create a new pending suffix while retaining the original job's time and
+attempt limits; completed writes and terminal checkpoint observations are never
+rewritten or repeated.
 """
 
 from __future__ import annotations
@@ -20,6 +24,7 @@ from typing import Any, Literal
 from uuid import uuid4
 
 from agent.work_graph import WorkReadGraph
+from agent.workflow_jobs import JobPhase, WorkflowAttempt, WorkflowJobBudget, WorkflowJobError
 from agent.workflow_nodes import WorkflowNodes
 from work_tools.contracts import (
     TOOL_CATALOG, ToolCall, ToolResult, validate_plan_title, validate_tool_call, validate_tool_result,
@@ -97,8 +102,19 @@ class WorkPlanRunner:
         *,
         workflow_nodes: WorkflowNodes | None = None,
         checkpoint: Callable[[dict[str, Any], str | None], None] | None = None,
+        job_budget: WorkflowJobBudget | None = None,
+        read_result: Callable[[ToolCall, ToolResult], None] | None = None,
+        timeout_call: Callable[[str], ToolResult] | None = None,
+        budget_confirm_call: Callable[[str, bool, Callable[[], bool]], ToolResult] | None = None,
     ) -> None:
-        """Bind callbacks to one canonical Chat owner without starting a worker."""
+        """Bind one canonical owner and live limits without starting callbacks.
+
+        read_result receives the verified budget-settled outcome for private
+        audit before publication. timeout_call consumes a waiting decision with
+        no mutation. budget_confirm_call carries the same preparation deadline
+        into native backup so entering that service cannot reset its allowance.
+        Legacy two-argument confirmation callbacks remain supported.
+        """
 
         if not all(callable(callback) for callback in (read_call, preview_call, confirm_call)):
             raise TypeError("Work plan callbacks must be callable.")
@@ -111,12 +127,18 @@ class WorkPlanRunner:
         self._checkpoint_failed = False
         self._preview_call = preview_call
         self._confirm_call = confirm_call
+        self._budget_confirm_call = budget_confirm_call
+        self._timeout_call = timeout_call if timeout_call is not None else lambda token: confirm_call(token, False)
+        self._read_result = read_result
+        self._job = WorkflowJobBudget() if job_budget is None else job_budget
+        self._retry_steps: set[str] = set()
         self._lock = RLock()
         self._plan: _Plan | None = None
         self._cancel = Event()
         self._pause_requested = False
         self._closed = False
         self._worker_active = False
+        self._preparing_retry = False
         self._worker_token: object | None = None
 
     def create(self, title: str, calls: list[ToolCall]) -> dict[str, Any]:
@@ -144,11 +166,14 @@ class WorkPlanRunner:
         snapshot = _copy_json(_plan_data(plan), reserve_bytes=4096)
         with self._lock:
             self._require_open_locked()
-            if self._worker_active:
+            if self._worker_active or self._preparing_retry:
                 raise ValueError("Wait for the active Work step to finish.")
+            if self._plan is not None:
+                self._job = self._job.fresh()
             self._plan = plan
             self._cancel = Event()
             self._pause_requested = False
+            self._retry_steps.clear()
         self._checkpoint()
         return snapshot
 
@@ -182,11 +207,104 @@ class WorkPlanRunner:
         with self._lock:
             return None if self._plan is None else _copy_json(_plan_data(self._plan))
 
+    def job_observation(self, plan_snapshot: dict[str, Any] | None = None) -> dict[str, Any] | None:
+        """Pair live limits with a supplied detached plan, filtering hints against that exact response snapshot."""
+
+        with self._lock:
+            if self._plan is None:
+                return None
+            plan = _plan_data(self._plan) if plan_snapshot is None else plan_snapshot
+            if plan["planId"] != self._plan.plan_id:
+                return None
+            snapshot = self._job.snapshot()
+            # A worker can settle after the plan is detached but before this
+            # budget sample. Hints must describe the response's failed reads,
+            # rather than advertise a retry for its older running/null step.
+            failed = {step["stepId"] for step in plan["steps"] if step["status"] == "failed"
+                      and step["call"]["toolId"] in _READ_TOOLS and step["result"] is not None
+                      and step["result"]["status"] == "failed" and step["result"]["error"] is not None
+                      and step["result"]["error"]["code"] in {"timeout", "io_error"}}
+            snapshot["retryableStepIds"] = [step_id for step_id in snapshot["retryableStepIds"] if step_id in failed]
+            return {"planId": self._plan.plan_id, **snapshot}
+
+    def retry(self, plan_id: str, step_id: str) -> dict[str, Any]:
+        """Create a pending replacement suffix for one explicitly retried drained transient read.
+
+        The old settled snapshot is unchanged. Remaining calls and step IDs are
+        exact, while a new plan/workflow identity avoids rewriting a terminal
+        checkpoint. The same live budget retains the total deadline and retry
+        count. No callback runs until a separate Start action succeeds.
+        """
+
+        with self._lock:
+            self._require_open_locked()
+            plan = self._require_plan_locked(plan_id)
+            if plan.state != "failed" or self._worker_active or self._preparing_retry or self._checkpoint_failed or not self._job.can_retry(step_id):
+                raise ValueError("This Work read cannot be retried.")
+            index = next((index for index, step in enumerate(plan.steps) if step.step_id == step_id and step.status == "failed"), None)
+            if index is None or any(step.status != "pending" for step in plan.steps[index + 1:]):
+                raise ValueError("Work retry cannot replay settled steps.")
+            self._plan = _Plan("plan_" + uuid4().hex, plan.title,
+                               [_Step(step.step_id, step.call) for step in plan.steps[index:]])
+            self._cancel = Event()
+            self._pause_requested = False
+            self._retry_steps = {step_id}
+            snapshot = _copy_json(_plan_data(self._plan))
+            self._preparing_retry = True
+        try:
+            self._checkpoint()
+        finally:
+            with self._lock:
+                changed = self._plan is not None and _plan_data(self._plan) != snapshot
+            try:
+                if changed:
+                    try:
+                        self._checkpoint()
+                    except Exception:
+                        # Logical cancellation remains responsive while the
+                        # retry CAS drains; failed durability prevents admission.
+                        pass
+            finally:
+                with self._lock:
+                    self._preparing_retry = False
+        with self._lock:
+            current = self._require_plan_locked(snapshot["planId"])
+            if self._closed or current.state != "pending":
+                # Cancel/Pause can win while private CAS I/O is outside this
+                # mutex. A successful retry response promises a pending plan;
+                # reject a superseded publication rather than revive old UI.
+                raise WorkflowJobError("conflict")
+            return _copy_json(_plan_data(current))
+
+    def expire_budget(self) -> None:
+        """Observe an idle expired job without a timer, auditing a waiting timeout on the normal worker."""
+
+        changed = False
+        with self._lock:
+            plan = self._plan
+            if (self._closed or plan is None or plan.state in _TERMINAL or self._worker_active
+                or self._job.snapshot()["stopReason"] != "timeout"):
+                return
+            waiting = next((step for step in plan.steps if step.status == "waiting" and step.approval is not None), None)
+            if waiting is not None:
+                approval_id = waiting.approval["approvalId"]  # type: ignore[index]
+                waiting.approval = None
+                waiting.status = "running"
+                plan.state = "running"
+                self._launch_locked(plan, confirmation=(waiting, approval_id, False, True))
+                return
+            pending = next((step for step in plan.steps if step.status == "pending"), None)
+            if pending is not None:
+                self._finish_step_locked(plan, pending, ToolResult("failed", error_code="timeout"))
+                changed = True
+        if changed:
+            self._checkpoint()
+
     def is_busy(self) -> bool:
         """Report physical worker ownership while a cancelled or paused step drains."""
 
         with self._lock:
-            return self._worker_active
+            return self._worker_active or self._preparing_retry
 
     def observation(self) -> dict[str, Any] | None:
         """Expose bounded advisory progress without adding permissions to the plan DTO."""
@@ -249,6 +367,7 @@ class WorkPlanRunner:
         second write. The next action uses the same sequential admission rules.
         """
 
+        self.expire_budget()
         with self._lock:
             self._require_open_locked()
             plan = self._require_plan_locked(plan_id)
@@ -263,6 +382,8 @@ class WorkPlanRunner:
                 self._pause_requested = True
                 plan.state = "paused"
             else:
+                if self._checkpoint_failed or self._preparing_retry:
+                    raise ValueError("Work checkpoint storage must recover before admission.")
                 allowed = {"pending"} if action == "start" else {"pending", "paused"}
                 if plan.state not in allowed:
                     raise ValueError("This Work plan cannot be started or resumed.")
@@ -274,7 +395,7 @@ class WorkPlanRunner:
                     if not self._worker_active:
                         self._launch_locked(plan)
             snapshot = _copy_json(_plan_data(plan))
-            checkpoint_now = not self._worker_active
+            checkpoint_now = not self._worker_active and not self._preparing_retry
         if checkpoint_now:
             self._checkpoint()
         return snapshot
@@ -287,6 +408,7 @@ class WorkPlanRunner:
         block pause/cancel controls behind filesystem work.
         """
 
+        self.expire_budget()
         with self._lock:
             self._require_open_locked()
             plan = self._require_plan_locked(plan_id)
@@ -300,7 +422,7 @@ class WorkPlanRunner:
             step.status = "running"
             step.approval = None
             plan.state = "running"
-            self._launch_locked(plan, confirmation=(step, approval_id, granted))
+            self._launch_locked(plan, confirmation=(step, approval_id, granted, False))
             return _copy_json(_plan_data(plan))
 
     def revision_calls(self, plan_id: str, approval_id: str, replacement: ToolCall) -> tuple[str, list[ToolCall]]:
@@ -346,8 +468,11 @@ class WorkPlanRunner:
             step = next((step for step in plan.steps if step.status == "waiting"), None)
             if step is None or step.approval is None or step.approval["approvalId"] != approval_id:
                 raise ValueError("Work approval is no longer current.")
-            plan.state = "waiting"
-            return self.confirm(plan_id, approval_id, False)
+            step.approval = None
+            step.status = "running"
+            plan.state = "running"
+            self._launch_locked(plan, confirmation=(step, approval_id, False, True))
+            return _copy_json(_plan_data(plan))
 
     def shutdown(self, *, persist: bool = True) -> bool:
         """Close admission and freeze snapshots immediately; return whether I/O drained.
@@ -359,9 +484,10 @@ class WorkPlanRunner:
 
         with self._lock:
             self._closed = True
+            self._job.shutdown()
             if self._plan is not None and self._plan.state not in _TERMINAL:
                 self._cancel_plan_locked(self._plan)
-            drained = not self._worker_active
+            drained = not self._worker_active and not self._preparing_retry
         if drained and persist:
             try:
                 self._checkpoint()
@@ -382,6 +508,7 @@ class WorkPlanRunner:
 
     def _cancel_plan_locked(self, plan: _Plan) -> None:
         self._cancel.set()
+        self._job.cancel()
         plan.state = "cancelled"
         for step in plan.steps:
             if step.status in {"pending", "waiting"} or (step.status == "running" and not step.write_started):
@@ -393,7 +520,7 @@ class WorkPlanRunner:
         self,
         plan: _Plan,
         *,
-        confirmation: tuple[_Step, str, bool] | None = None,
+        confirmation: tuple[_Step, str, bool, bool] | None = None,
     ) -> None:
         token = object()
         self._worker_active = True
@@ -419,19 +546,24 @@ class WorkPlanRunner:
         plan: _Plan,
         token: object,
         cancel: Event,
-        confirmation: tuple[_Step, str, bool] | None,
+        confirmation: tuple[_Step, str, bool, bool] | None,
     ) -> None:
         """Execute one immutable step at a time and publish only to its live owner."""
 
         current: _Step | None = None
+        attempt: WorkflowAttempt | None = None
+        native_started = False
+        read_audited = False
         try:
             while True:
+                native_started = False
+                read_audited = False
                 with self._lock:
                     if not self._owned_locked(plan, token) or cancel.is_set():
                         return
                     if confirmation is not None:
                         current = confirmation[0]
-                        current.write_started = confirmation[2]
+                        current.write_started = confirmation[2] and not confirmation[3]
                     else:
                         current = next((step for step in plan.steps if step.status == "pending"), None)
                         if current is None:
@@ -442,6 +574,12 @@ class WorkPlanRunner:
                             return
                         current.status = "running"
                         plan.state = "running"
+                timeout_decision = confirmation is not None and confirmation[3]
+                if not timeout_decision:
+                    phase: JobPhase = "mutation" if confirmation is not None else "read" if current.call.tool_id in _READ_TOOLS else "preview"
+                    attempt = self._job.begin_step(current.step_id, current.call,
+                                                   retry=current.step_id in self._retry_steps, phase=phase)
+                    self._retry_steps.discard(current.step_id)
                 self._checkpoint()
                 with self._lock:
                     if not self._owned_locked(plan, token) or cancel.is_set():
@@ -453,20 +591,49 @@ class WorkPlanRunner:
                             self._cancel_plan_locked(plan)
                         return
                 if confirmation is not None:
-                    _, approval_id, granted = confirmation
-                    result = self._confirm_call(approval_id, granted)
+                    _, approval_id, granted, expired = confirmation
+                    if expired or attempt is not None and attempt.should_stop():
+                        current.write_started = False
+                        self._checkpoint()
+                        result = self._timeout_call(approval_id)
+                        if result.error_code != "io_error":
+                            result = ToolResult("failed", error_code="timeout")
+                    else:
+                        native_started = granted
+                        if self._budget_confirm_call is not None:
+                            assert attempt is not None
+                            result = self._budget_confirm_call(approval_id, granted, attempt.should_stop)
+                        else:
+                            result = self._confirm_call(approval_id, granted)
                     confirmation = None
                 elif current.call.tool_id in _READ_TOOLS:
-                    result = self._read_graph.run(current.call, cancel.is_set, query=plan.title)
+                    assert attempt is not None
+                    lease = attempt
+                    result = self._read_graph.run(current.call, lambda: cancel.is_set() or lease.should_stop(), query=plan.title)
                 else:
-                    route = self._read_graph.prepare(current.call, cancel.is_set, query=plan.title)
+                    assert attempt is not None
+                    lease = attempt
+                    route = self._read_graph.prepare(current.call, lambda: cancel.is_set() or lease.should_stop(), query=plan.title)
                     if route.status != "denied" or route.error_code != "permission_required":
+                        result = self._job.finish(attempt, route)
+                        attempt = None
                         with self._lock:
                             if self._owned_locked(plan, token) and not cancel.is_set():
-                                outcome = route if route.status in {"failed", "denied", "cancelled"} else ToolResult("failed", error_code="io_error")
+                                outcome = result if result.status in {"failed", "denied", "cancelled"} else ToolResult("failed", error_code="io_error")
                                 self._finish_step_locked(plan, current, outcome)
                         return
                     approval = self._validate_approval(current.call, self._preview_call(current.call))
+                    preview_lease = attempt
+                    attempt = None
+                    try:
+                        self._job.finish_preview(preview_lease)
+                    except WorkflowJobError as error:
+                        # The returned preview never became visible. Consume
+                        # its native token as a nonmutating timeout rather than
+                        # retaining a hidden permission after budget expiry.
+                        if error.code == "timeout":
+                            self._timeout_call(approval["approvalId"])
+                        raise
                     with self._lock:
                         if not self._owned_locked(plan, token) or cancel.is_set():
                             return
@@ -480,6 +647,16 @@ class WorkPlanRunner:
                             return
                         plan.state = "paused" if self._pause_requested else "waiting"
                     return
+                if attempt is not None:
+                    result = self._job.finish(attempt, result, admitted_write=native_started)
+                    attempt = None
+                if current.call.tool_id in _READ_TOOLS:
+                    read_audited = True
+                    if self._read_result is not None:
+                        try:
+                            self._read_result(current.call, result)
+                        except Exception:
+                            result = ToolResult("failed", error_code="io_error")
                 with self._lock:
                     if not self._owned_locked(plan, token):
                         return
@@ -491,7 +668,16 @@ class WorkPlanRunner:
                         return
                     if not keep_running:
                         return
-        except Exception:
+        except Exception as error:
+            result = ToolResult("failed", error_code=error.code if isinstance(error, WorkflowJobError) else "io_error")
+            if attempt is not None:
+                result = self._job.finish(attempt, result, admitted_write=native_started)
+                attempt = None
+            if current is not None and current.call.tool_id in _READ_TOOLS and not read_audited and self._read_result is not None:
+                try:
+                    self._read_result(current.call, result)
+                except Exception:
+                    result = ToolResult("failed", error_code="io_error")
             with self._lock:
                 if current is not None and self._owned_locked(plan, token):
                     # A cancelled read can discard its late failure. An
@@ -499,10 +685,15 @@ class WorkPlanRunner:
                     # raises, otherwise the step would stay "running" after
                     # physical capacity has already been released.
                     if not cancel.is_set() or current.write_started:
-                        self._finish_step_locked(plan, current, ToolResult("failed", error_code="io_error"))
+                        self._finish_step_locked(plan, current, result)
                         if cancel.is_set():
                             plan.state = "cancelled"
         finally:
+            if attempt is not None:
+                # Early cancellation between checkpoint and callback still
+                # owns a lease. Only this physically returning worker releases
+                # it; shutdown never clears the native operation itself.
+                self._job.finish(attempt, ToolResult("cancelled", error_code="cancelled"), admitted_write=native_started)
             try:
                 self._checkpoint()
             except Exception:

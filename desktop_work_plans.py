@@ -5,6 +5,8 @@ previews, single-use permission, and mutation recovery remain in WriteCoordinato
 Providers and filesystem callbacks run outside the registry lock so the Backend
 can cancel a plan or inspect draining capacity without waiting behind native I/O.
 Every operation rechecks the captured Chat, Project, mode, and selected root.
+Explicit transient read retries retain that owner's live budget while a new
+plan identity and durable CAS keep earlier settled checkpoints immutable.
 """
 
 from __future__ import annotations
@@ -23,7 +25,7 @@ from chats import ChatSession
 from work_tools.contracts import ToolCall, ToolProtocolError, ToolResult
 from work_tools.executor import WorkToolExecutor
 from work_tools.workspace import WorkspaceBoundary, WorkspaceBoundaryError
-from work_tools.writes import WriteCoordinator
+from work_tools.writes import ApprovalDecision, WriteCoordinator
 
 
 _LIVE_STATES = frozenset({"pending", "running", "paused", "waiting"})
@@ -42,6 +44,7 @@ class _Owner:
     tokens: set[str] = field(default_factory=set)
     restored: bool = False
     use_project_knowledge: bool = False
+    admission_guard: Callable[[], bool] | None = None
 
 
 class DesktopWorkPlans:
@@ -104,6 +107,9 @@ class DesktopWorkPlans:
             workflow_nodes=None if self._nodes_factory is None else self._nodes_factory(
                 lambda: self._check_node_authority(owner), use_project_knowledge,
             ),
+            read_result=lambda call, result: self._record_read(owner, call, result),
+            timeout_call=lambda token: self._confirm_write(owner, token, False, decision="timeout"),
+            budget_confirm_call=lambda token, granted, stop: self._confirm_with_budget(owner, token, granted, stop),
         )
         owner.runner = runner
         snapshot = runner.create(title, calls)
@@ -216,6 +222,9 @@ class DesktopWorkPlans:
                 lambda: self._check_node_authority(owner), False,
             ),
             checkpoint=session.save,
+            read_result=lambda call, result: self._record_read(owner, call, result),
+            timeout_call=lambda token: self._confirm_write(owner, token, False, decision="timeout"),
+            budget_confirm_call=lambda token, granted, stop: self._confirm_with_budget(owner, token, granted, stop),
         )
         owner.runner = runner
         runner.restore(session.adopt_recovery())
@@ -249,6 +258,8 @@ class DesktopWorkPlans:
         # Reading that snapshot grants no capability and needs no bound root.
         self._require_chat(owner.chat_id, owner.project_id)
         assert owner.runner is not None
+        if owner.active:
+            owner.runner.expire_budget()
         snapshot = owner.runner.get()
         if snapshot is not None and snapshot["state"] in {"waiting", "paused"} and owner.active and not owner.runner.is_busy():
             waiting = next((step for step in snapshot["steps"] if step["approval"] is not None), None)
@@ -275,7 +286,7 @@ class DesktopWorkPlans:
         self._require_chat(owner.chat_id, owner.project_id)
         assert owner.runner is not None
         with self._lock:
-            if action in {"start", "resume", "next"} and self._busy_locked() and not owner.runner.is_busy():
+            if action in {"start", "resume", "next"} and (self._creation_token is not None or self._busy_locked() and not owner.runner.is_busy()):
                 raise ToolProtocolError("conflict")
         snapshot = owner.runner.control(plan_id, action)
         owner.restored = False
@@ -283,6 +294,34 @@ class DesktopWorkPlans:
             self._write_provider().invalidate(chat_id)
         snapshot["busy"] = owner.runner.is_busy()
         return snapshot
+
+    def retry(self, chat_id: str, plan_id: str, step_id: str) -> dict[str, Any]:
+        """Revalidate one read retry and reserve publication without resetting its owner's live budget."""
+
+        owner = self._owner(chat_id)
+        self._authority(owner)
+        creation = object()
+        with self._lock:
+            self._require_open_locked()
+            if self._busy_locked() or self._creation_token is not None:
+                raise ToolProtocolError("conflict")
+            self._creation_token = creation
+        try:
+            self._write_provider().invalidate(chat_id)
+            self._authority(owner)
+            assert owner.runner is not None
+            snapshot = owner.runner.retry(plan_id, step_id)
+            with self._lock:
+                self._require_open_locked()
+                if self._creation_token is not creation or not owner.active or self._owners.get(chat_id) is not owner:
+                    raise ToolProtocolError("conflict")
+            owner.restored = False
+            snapshot["busy"] = owner.runner.is_busy()
+            return snapshot
+        finally:
+            with self._lock:
+                if self._creation_token is creation:
+                    self._creation_token = None
 
     def confirm(self, chat_id: str, plan_id: str, approval_id: str, granted: bool) -> dict[str, Any]:
         """Admit a decision only through the plan that owns its exact approval token."""
@@ -357,6 +396,17 @@ class DesktopWorkPlans:
             return owner.runner.observation()
         except (ValueError, OSError, PermissionError):
             return None
+
+    def job_observation(self, chat_id: str, plan_id: str, *, plan: dict[str, Any] | None = None) -> dict[str, Any] | None:
+        """Return only the sampled plan's resource facts; a concurrently replaced plan contributes no stale hints."""
+
+        with self._lock:
+            owner = self._owners.get(chat_id)
+        if owner is None or owner.runner is None:
+            return None
+        self._require_chat(owner.chat_id, owner.project_id)
+        snapshot = owner.runner.job_observation(plan)
+        return snapshot if snapshot is not None and snapshot["planId"] == plan_id else None
 
     def recovery_notice(self, chat_id: str) -> dict[str, Any] | None:
         """Report recovery and durability facts separately from native execution outcomes."""
@@ -501,14 +551,14 @@ class DesktopWorkPlans:
             result = ToolResult("failed", error_code="io_error")
         if cancel():
             result = ToolResult("cancelled", error_code="cancelled")
-        try:
-            # A plan can retire while its read drains. The durable event still
-            # belongs to the captured user action; only relative parameters and
-            # the fixed outcome are retained, never the late result body.
-            self._write_provider().record_read(owner.chat_id, owner.project_id, call, result)
-        except Exception:
-            return ToolResult("failed", error_code="io_error")
         return result
+
+    def _record_read(self, owner: _Owner, call: ToolCall, result: ToolResult) -> None:
+        """Audit the graph's settled deadline/cancel outcome, never an unverified raw executor result."""
+
+        # A retired owner can still record its explicit action as the callback
+        # drains. Only fixed outcomes/relative summaries survive, never bodies.
+        self._write_provider().record_read(owner.chat_id, owner.project_id, call, result)
 
     def _preview(self, owner: _Owner, call: ToolCall) -> dict[str, Any]:
         writer = self._write_provider()
@@ -531,13 +581,26 @@ class DesktopWorkPlans:
             writer.invalidate(owner.chat_id)
             raise
 
-    def _confirm_write(self, owner: _Owner, token: str, granted: bool) -> ToolResult:
+    def _confirm_with_budget(self, owner: _Owner, token: str, granted: bool, stop: Callable[[], bool]) -> ToolResult:
+        """Scope one worker's live preparation guard without changing the existing confirmation callback contract."""
+
+        # One runner worker owns this owner until it drains. The guard is live
+        # context only, never checkpoint data or a reusable approval capability.
+        owner.admission_guard = stop
+        try:
+            return self._confirm_write(owner, token, granted)
+        finally:
+            owner.admission_guard = None
+
+    def _confirm_write(self, owner: _Owner, token: str, granted: bool, *, decision: ApprovalDecision | None = None,
+                       admission_expired: Callable[[], bool] | None = None) -> ToolResult:
         try:
             boundary = self._authority(owner)
             with self._lock:
                 if token not in owner.tokens:
                     return ToolResult("denied", error_code="permission_denied")
-            return self._write_provider().confirm(owner.chat_id, owner.project_id, boundary, token, granted)
+            return self._write_provider().confirm(owner.chat_id, owner.project_id, boundary, token, granted,
+                                                 decision=decision, admission_expired=admission_expired or owner.admission_guard)
         except ToolProtocolError as error:
             return ToolResult("denied", error_code=error.code)
         except (WorkspaceBoundaryError, ValueError, PermissionError):

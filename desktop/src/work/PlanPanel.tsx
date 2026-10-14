@@ -12,6 +12,8 @@ import {
 } from '../../electron/work-plan-protocol.ts'
 import { parseWorkToolCall, type WorkToolCall } from '../../electron/work-tool-protocol.ts'
 import { ApprovalPreview } from './ApprovalPreview.tsx'
+import { JobProgress } from './JobProgress.tsx'
+import type { WorkJobObservation } from '../../electron/work-job-protocol.ts'
 import './PlanPanel.css'
 
 interface PlanPanelProps {
@@ -65,6 +67,7 @@ export function PlanPanel({ api, chatId, workspacePath, ready, disabled, calls,
   const [plan, setPlan] = useState<WorkPlan | null>(null)
   const [workflow, setWorkflow] = useState<WorkWorkflowObservation | undefined>()
   const [recovery, setRecovery] = useState<WorkRecoveryNotice | undefined>()
+  const [job, setJob] = useState<WorkJobObservation | undefined>()
   const [title, setTitle] = useState('Workspace task')
   const [useProjectKnowledge, setUseProjectKnowledge] = useState(false)
   const [loading, setLoading] = useState(false)
@@ -80,6 +83,7 @@ export function PlanPanel({ api, chatId, workspacePath, ready, disabled, calls,
     setPlan(state.plan)
     setWorkflow(state.workflow)
     setRecovery(state.recovery)
+    setJob(state.job)
     onLeaseChange(workPlanHasLease(state.plan))
   }, [onLeaseChange])
 
@@ -101,20 +105,23 @@ export function PlanPanel({ api, chatId, workspacePath, ready, disabled, calls,
     const token = ++operationRef.current
     queueMicrotask(() => {
       if (token !== operationRef.current) return
-      if (!ready) { planRef.current = null; setPlan(null); setWorkflow(undefined); setRecovery(undefined); onLeaseChange(false) }
+      if (!ready) { planRef.current = null; setPlan(null); setWorkflow(undefined); setRecovery(undefined); setJob(undefined); onLeaseChange(false) }
       else void refresh(true)
     })
     return () => { operationRef.current += 1 }
   }, [refresh, ready, onLeaseChange])
 
   useEffect(() => {
+    const retryBudgetLive = plan?.state === 'failed' && job !== undefined
+      && job.totalRemainingSeconds > 0 && job.retryableStepIds.length > 0
     if (!ready || pending || plan === null || (!plan.busy && plan.state !== 'running' && plan.state !== 'waiting'
-      && !(plan.state === 'paused' && plan.steps.some((step) => step.approval !== null)))) return
+      && plan.state !== 'paused' && plan.state !== 'pending' && !retryBudgetLive)) return
     // State can become terminal before a native callback releases capacity.
-    // Poll the physical busy flag until the same Backend confirms draining.
+    // Keep polling a retryable failure too: its original budget still expires
+    // while the user decides, so an old hint cannot stay displayed indefinitely.
     const timer = window.setTimeout(() => { void refresh() }, 500)
     return () => { window.clearTimeout(timer) }
-  }, [plan, pending, ready, refresh])
+  }, [plan, job, pending, ready, refresh])
 
   async function action(request: () => Promise<WorkPlanState>): Promise<boolean> {
     if (!ready || disabled || api === undefined || pendingRef.current) return false
@@ -166,6 +173,12 @@ export function PlanPanel({ api, chatId, workspacePath, ready, disabled, calls,
     }
   }
 
+  function retry(stepId: string): void {
+    if (api !== undefined && plan?.state === 'failed' && !plan.busy && job?.retryableStepIds.includes(stepId)) {
+      void action(() => api.retryWorkPlan({ chatId, planId: plan.planId, stepId }))
+    }
+  }
+
   const blocked = disabled || pending || loading || !ready
   const live = workPlanHasLease(plan)
 
@@ -207,6 +220,7 @@ export function PlanPanel({ api, chatId, workspacePath, ready, disabled, calls,
         <div>
           <h3>{plan.title}</h3>
           <p role="status">{plan.state}{plan.busy ? ' · local operation active' : ''}</p>
+          {job?.planId === plan.planId && <JobProgress plan={plan} job={job} disabled={blocked} onRetry={retry} />}
           {workflow?.planId === plan.planId && (
             <details className="work-workflow-context">
               <summary>Workflow: {plan.state === 'waiting' ? 'approval' : workflow.node}</summary>

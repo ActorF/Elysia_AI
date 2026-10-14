@@ -47,6 +47,7 @@ import type {
   WorkToolsState, WorkToolRunParams, WorkToolResultState, WorkToolApprovalState, WorkToolConfirmParams,
 } from './work-tool-protocol.js'
 import type { WorkPlanState, WorkPlanCreateParams, WorkPlanControlParams, WorkPlanConfirmParams, WorkPlanReviseParams } from './work-plan-protocol.js'
+import type { WorkPlanRetryParams } from './work-job-protocol.js'
 import type { WorkAuditState, WorkUndoParams } from './work-audit-protocol.js'
 import type { WorkDesktopState, WorkDesktopAuditEntry } from './work-desktop-protocol.js'
 import type { DataStorageViewState } from './data-storage-contracts.js'
@@ -1124,6 +1125,7 @@ const desktopApi: DesktopApi = {
   controlWorkPlan: (request: WorkPlanControlParams) => ipcRenderer.invoke('work:control-plan', request) as Promise<WorkPlanState>,
   confirmWorkPlan: (request: WorkPlanConfirmParams) => ipcRenderer.invoke('work:confirm-plan', request) as Promise<WorkPlanState>,
   reviseWorkPlan: (request: WorkPlanReviseParams) => ipcRenderer.invoke('work:revise-plan', request) as Promise<WorkPlanState>,
+  retryWorkPlan: (request: WorkPlanRetryParams) => ipcRenderer.invoke('work:retry-plan', request) as Promise<WorkPlanState>,
 
   getWorkAudit: (chatId: string) => ipcRenderer.invoke('work:get-audit', chatId) as Promise<WorkAuditState>,
   undoWorkAction: (request: WorkUndoParams) => ipcRenderer.invoke('work:undo', request) as Promise<WorkToolResultState>,

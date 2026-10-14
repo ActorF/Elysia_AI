@@ -36,6 +36,7 @@ import {
   parseWorkAuditState, parseWorkAuditListParams, parseWorkUndoParams,
   type WorkAuditListParams, type WorkUndoParams,
 } from './work-audit-protocol.js'
+import { parseWorkPlanRetryParams, type WorkPlanRetryParams } from './work-job-protocol.js'
 
 export {
   codePointLength,
@@ -512,6 +513,7 @@ export interface RequestParamsByMethod {
   'work.plan.control': WorkPlanControlParams
   'work.plan.confirm': WorkPlanConfirmParams
   'work.plan.revise': WorkPlanReviseParams
+  'work.plan.retry': WorkPlanRetryParams
   'work.audit.list': WorkAuditListParams
   'work.undo': WorkUndoParams
   'chat.pin': ChatPinParams
@@ -2644,12 +2646,13 @@ export function parseClientRequest(value: unknown): ClientRequest {
     }
   }
   if (method === 'work.plan.get' || method === 'work.plan.create'
-    || method === 'work.plan.control' || method === 'work.plan.confirm' || method === 'work.plan.revise') {
+    || method === 'work.plan.control' || method === 'work.plan.confirm' || method === 'work.plan.revise' || method === 'work.plan.retry') {
     try {
       if (method === 'work.plan.get') return { type: 'request', protocol, id, method, params: parseWorkPlanGetParams(request.params) }
       if (method === 'work.plan.create') return { type: 'request', protocol, id, method, params: parseWorkPlanCreateParams(request.params) }
       if (method === 'work.plan.control') return { type: 'request', protocol, id, method, params: parseWorkPlanControlParams(request.params) }
       if (method === 'work.plan.revise') return { type: 'request', protocol, id, method, params: parseWorkPlanReviseParams(request.params) }
+      if (method === 'work.plan.retry') return { type: 'request', protocol, id, method, params: parseWorkPlanRetryParams(request.params) }
       return { type: 'request', protocol, id, method, params: parseWorkPlanConfirmParams(request.params) }
     } catch {
       return fail('protocol.invalid_params', 'Work plan request is invalid.')

@@ -70,6 +70,7 @@ import {
   parseWorkAuditForChat, parseWorkUndoResultForEntry,
   type WorkAuditEntry, type WorkAuditState, type WorkUndoParams,
 } from './work-audit-protocol.js'
+import type { WorkPlanRetryParams, WorkJobObservation } from './work-job-protocol.js'
 import {
   SpeechDeliveryCoordinator,
   type SpeechDeliveryStatus,
@@ -383,6 +384,7 @@ interface PendingRequest {
   workPlanId?: string
   workPreviousPlanId?: string
   workPlanCalls?: WorkToolCall[]
+  workPlanStepIds?: string[]
   workPlanSequence?: number
   resolveWorkPlan?: (state: WorkPlanState) => void
   rejectWorkPlan?: (error: Error) => void
@@ -532,11 +534,21 @@ const WORK_WORKSPACE_METHODS = new Set<ProtocolMethod>([
 
 const WORK_ACTION_METHODS = new Set<ProtocolMethod>([
   'work.tool.run', 'work.tool.preview', 'work.tool.confirm',
-  'work.plan.create', 'work.plan.control', 'work.plan.confirm', 'work.plan.revise',
+  'work.plan.create', 'work.plan.control', 'work.plan.confirm', 'work.plan.revise', 'work.plan.retry',
   'work.undo',
 ])
-type WorkPlanMethod = 'work.plan.get' | 'work.plan.create' | 'work.plan.control' | 'work.plan.confirm' | 'work.plan.revise'
-const WORK_PLAN_METHODS = new Set<ProtocolMethod>(['work.plan.get', 'work.plan.create', 'work.plan.control', 'work.plan.confirm', 'work.plan.revise'])
+type WorkPlanMethod = 'work.plan.get' | 'work.plan.create' | 'work.plan.control' | 'work.plan.confirm' | 'work.plan.revise' | 'work.plan.retry'
+const WORK_PLAN_METHODS = new Set<ProtocolMethod>(['work.plan.get', 'work.plan.create', 'work.plan.control', 'work.plan.confirm', 'work.plan.revise', 'work.plan.retry'])
+
+// A failed retry RPC can already have installed its suffix before checkpoint
+// I/O failed. Keep capacity until a fresh canonical get identifies that owner;
+// never guess that the old failed plan is still current or restore its hints.
+interface WorkPlanReconciliation {
+  previous: WorkPlan
+  calls: WorkToolCall[]
+  stepIds: string[]
+  sequence: number
+}
 
 type ProjectMethod =
   | 'project.list'
@@ -605,6 +617,8 @@ export class BackendProcess {
   // Tokens are consumed before dispatch, and scope/navigation changes revoke them.
   private readonly workApprovals = new Map<string, WorkToolApproval>()
   private readonly workPlans = new Map<string, WorkPlan>()
+  private readonly workPlanJobs = new Map<string, WorkJobObservation>()
+  private readonly workPlanReconciliations = new Map<string, WorkPlanReconciliation>()
   private canonicalWorkChat: Pick<ChatSessionState['activeChat'], 'chatId' | 'projectId' | 'mode'> | null = null
   // Requests can resolve in a different order. An older poll must not release
   // the lease published by a later control or confirmation acknowledgement.
@@ -772,6 +786,8 @@ export class BackendProcess {
     this.lastDiagnostic = ''
     const sessionToken = randomBytes(32).toString('base64url')
     this.workPlans.clear()
+    this.workPlanJobs.clear()
+    this.workPlanReconciliations.clear()
     this.canonicalWorkChat = null
     this.workPlanAppliedSequences.clear()
     this.workApprovals.clear()
@@ -1741,6 +1757,48 @@ export class BackendProcess {
     })
   }
 
+  /** Reserve one advertised transient failed read and prepare its exact pending suffix with a new plan ID. */
+  retryWorkPlan(request: WorkPlanRetryParams): Promise<WorkPlanState> {
+    if (this.nativeWorkActive()) return Promise.reject(new Error('Wait for the current desktop action.'))
+    if (this.snapshot.status !== 'ready' || this.snapshot.chatId !== request.chatId
+      || !this.snapshot.capabilities.includes('work.plan')) return Promise.reject(new Error('Work plans are unavailable for this Chat.'))
+    if (this.hasWorkPlanLease() || this.hasActiveSpeechTurn() || [...this.pendingRequests.values()].some((pending) => (
+      WORK_ACTION_METHODS.has(pending.method) || CHAT_GENERATION_METHODS.has(pending.method)
+      || VOICE_TRANSCRIPTION_METHODS.has(pending.method) || pending.method === 'work.workspace.bind'
+      || CHAT_SESSION_METHODS.has(pending.method) && pending.method !== 'chat.list'
+      || PROJECT_METHODS.has(pending.method) && pending.method !== 'project.list'
+    ))) return Promise.reject(new Error('Finish the current action before preparing a read retry.'))
+    const current = this.workPlans.get(request.chatId)
+    const job = this.workPlanJobs.get(request.chatId)
+    const index = current?.steps.findIndex((step) => step.stepId === request.stepId) ?? -1
+    const failed = index < 0 ? undefined : current?.steps[index]
+    if (current?.planId !== request.planId || current.state !== 'failed' || current.busy
+      || failed?.status !== 'failed' || failed.result?.status !== 'failed'
+      || !['list_directory', 'read_text', 'search_files', 'metadata'].includes(failed.call.toolId)
+      || !['timeout', 'io_error'].includes(failed.result.error?.code ?? '')
+      || job?.planId !== request.planId || job.physicalBusy || job.closed || job.cancelRequested || job.stopReason !== null
+      || !job.retryableStepIds.includes(request.stepId)
+      || current.steps.slice(index + 1).some((step) => step.status !== 'pending')) {
+      return Promise.reject(new Error('This read retry is no longer available.'))
+    }
+    const steps = current.steps.slice(index)
+    const sequence = ++this.workPlanSequence
+    this.workPlanAppliedSequences.set(request.chatId, sequence)
+    this.workPlanJobs.delete(request.chatId)
+    this.workPlanReconciliations.set(request.chatId, {
+      previous: current, calls: steps.map((step) => parseWorkToolCall(step.call)),
+      stepIds: steps.map((step) => step.stepId), sequence,
+    })
+    this.workPlans.set(request.chatId, { ...current, busy: true })
+    return new Promise((resolve, reject) => {
+      this.sendRequest('work.plan.retry', request, request.chatId, {
+        workPlanSequence: sequence, workPreviousPlanId: request.planId,
+        workPlanCalls: steps.map((step) => parseWorkToolCall(step.call)), workPlanStepIds: steps.map((step) => step.stepId),
+        resolveWorkPlan: resolve, rejectWorkPlan: reject,
+      })
+    })
+  }
+
   /** Set one idle Chat's pin state. */
   pinChat(request: PinChatRequest): Promise<ChatSessionState> {
     return this.requestChatState('chat.pin', request)
@@ -2461,7 +2519,7 @@ export class BackendProcess {
   }
 
   private hasWorkPlanLease(): boolean {
-    return [...this.workPlans.values()].some(workPlanHasLease)
+    return this.workPlanReconciliations.size > 0 || [...this.workPlans.values()].some(workPlanHasLease)
   }
 
   private invalidateWorkUndo(chatId?: string): void {
@@ -2475,7 +2533,10 @@ export class BackendProcess {
 
   private requestWorkPlan<Method extends WorkPlanMethod>(method: Method, params: RequestParamsByMethod[Method]): Promise<WorkPlanState> {
     if (method !== 'work.plan.get' && this.nativeWorkActive()) return Promise.reject(new Error('Wait for the current desktop action.'))
-    if (method === 'work.plan.get' && [...this.pendingRequests.values()].some((pending) => pending.method === 'work.plan.revise'
+    if (method !== 'work.plan.get' && this.workPlanReconciliations.has(params.chatId)) {
+      return Promise.reject(new Error('Reload the Work plan before another action.'))
+    }
+    if (method === 'work.plan.get' && [...this.pendingRequests.values()].some((pending) => (pending.method === 'work.plan.revise' || pending.method === 'work.plan.retry')
       && pending.chatId === params.chatId)) return Promise.reject(new Error('Wait for the current plan revision.'))
     if (this.snapshot.status !== 'ready' || this.snapshot.chatId !== params.chatId
       || !this.snapshot.capabilities.includes('work.plan')) return Promise.reject(new Error('Work plans are unavailable for this Chat.'))
@@ -2487,6 +2548,7 @@ export class BackendProcess {
     if (method === 'work.plan.create') {
       this.workApprovals.delete(params.chatId)
       this.workPlans.delete(params.chatId)
+      this.workPlanJobs.delete(params.chatId)
       this.workPlanAppliedSequences.set(params.chatId, sequence)
     }
     return new Promise((resolve, reject) => {
@@ -2501,6 +2563,12 @@ export class BackendProcess {
 
   private validateWorkPlanResponse(pending: PendingRequest, value: unknown): WorkPlanState {
     const state = parseWorkPlanState(value)
+    const reconciliation = pending.chatId === undefined ? undefined : this.workPlanReconciliations.get(pending.chatId)
+    if (pending.method === 'work.plan.get' && reconciliation !== undefined
+      && (pending.workPlanSequence ?? 0) > reconciliation.sequence) {
+      this.validateWorkPlanReconciliation(state, reconciliation)
+      return state
+    }
     const calls = state.plan?.steps.map((step) => step.call)
     if (pending.workPlanCalls !== undefined && (state.plan?.state !== 'pending' || state.plan.busy
       || state.plan.steps.some((step) => step.status !== 'pending'))) {
@@ -2508,6 +2576,7 @@ export class BackendProcess {
     }
     if ((pending.workPlanId !== undefined && state.plan?.planId !== pending.workPlanId)
       || (pending.workPreviousPlanId !== undefined && (state.plan === null || state.plan.planId === pending.workPreviousPlanId))
+      || (pending.workPlanStepIds !== undefined && JSON.stringify(state.plan?.steps.map((step) => step.stepId)) !== JSON.stringify(pending.workPlanStepIds))
       || (pending.workPlanCalls !== undefined && JSON.stringify(calls) !== JSON.stringify(pending.workPlanCalls))) {
       throw new ProtocolValidationError('protocol.invalid_result', 'Work plan does not match its requested owner or calls.')
     }
@@ -2528,6 +2597,37 @@ export class BackendProcess {
       }
     }
     return state
+  }
+
+  private validateWorkPlanReconciliation(state: WorkPlanState, reconciliation: WorkPlanReconciliation): void {
+    const plan = state.plan
+    if (plan === null) return
+    const previous = reconciliation.previous
+    if (plan.planId === previous.planId) {
+      if (plan.busy || plan.title !== previous.title || plan.state !== previous.state
+        || JSON.stringify(plan.steps) !== JSON.stringify(previous.steps) || state.job?.physicalBusy) {
+        throw new ProtocolValidationError('protocol.invalid_result', 'Work retry reconciliation changed its settled original plan.')
+      }
+      return
+    }
+    const unchangedSuffix = plan.title === previous.title && !plan.busy && !state.job?.physicalBusy
+      && JSON.stringify(plan.steps.map((step) => step.stepId)) === JSON.stringify(reconciliation.stepIds)
+      && JSON.stringify(plan.steps.map((step) => step.call)) === JSON.stringify(reconciliation.calls)
+    // No Start was admitted during retry CAS. Cancellation, pause, and total
+    // timeout can nevertheless win before its error reply; these are safe
+    // nonexecuting facts. An approval or applied result would require a worker
+    // that this reservation never authorized and must fail closed.
+    const unexecuted = plan.steps.every((step) => step.approval === null && (
+      step.status === 'pending' && step.result === null
+      || step.status === 'cancelled' && step.result?.status === 'cancelled' && step.result.error?.code === 'cancelled'
+      || step.status === 'failed' && step.result?.status === 'failed' && step.result.error?.code === 'timeout'
+    ))
+    const consistentState = ['pending', 'paused'].includes(plan.state) ? plan.steps.every((step) => step.status === 'pending')
+      : plan.state === 'cancelled' ? plan.steps.every((step) => step.status === 'cancelled')
+      : plan.state === 'failed' && plan.steps[0].status === 'failed' && plan.steps.slice(1).every((step) => step.status === 'pending')
+    if (!unchangedSuffix || !unexecuted || !consistentState) {
+      throw new ProtocolValidationError('protocol.invalid_result', 'Work retry reconciliation does not match its exact unexecuted suffix.')
+    }
   }
 
   private hasActiveKnowledgeLease(): boolean {
@@ -2609,6 +2709,7 @@ export class BackendProcess {
       | 'workPlanId'
       | 'workPreviousPlanId'
       | 'workPlanCalls'
+      | 'workPlanStepIds'
       | 'workPlanSequence'
       | 'resolveWorkPlan'
       | 'rejectWorkPlan'
@@ -2657,7 +2758,7 @@ export class BackendProcess {
     const request = createRequest(requestId, method, params)
     const wireRequest = `${JSON.stringify(request)}\n`
     if (method === 'work.tool.confirm' || method === 'work.plan.create'
-      || method === 'work.plan.confirm' || method === 'work.plan.revise' || method === 'work.workspace.bind') {
+      || method === 'work.plan.confirm' || method === 'work.plan.revise' || method === 'work.plan.retry' || method === 'work.workspace.bind') {
       this.invalidateWorkUndo(chatId)
     }
     this.pendingRequests.set(requestId, {
@@ -3126,6 +3227,8 @@ export class BackendProcess {
       if (pending.method === 'chat.mode' || result.activeChat.chatId !== this.snapshot.chatId) {
         if (!this.hasWorkPlanLease()) {
           this.workPlans.clear()
+          this.workPlanJobs.clear()
+          this.workPlanReconciliations.clear()
           this.canonicalWorkChat = null
           this.workPlanAppliedSequences.clear()
         }
@@ -3221,6 +3324,13 @@ export class BackendProcess {
         this.workPlanAppliedSequences.set(chatId, pending.workPlanSequence ?? 0)
         if (state.plan === null) this.workPlans.delete(chatId)
         else this.workPlans.set(chatId, state.plan)
+        if (state.job === undefined || state.plan === null) this.workPlanJobs.delete(chatId)
+        else this.workPlanJobs.set(chatId, state.job)
+        const reconciliation = this.workPlanReconciliations.get(chatId)
+        if (pending.method === 'work.plan.retry' || pending.method === 'work.plan.get'
+          && reconciliation !== undefined && (pending.workPlanSequence ?? 0) > reconciliation.sequence) {
+          this.workPlanReconciliations.delete(chatId)
+        }
       }
       pending.resolveWorkPlan?.(state)
       return
@@ -3981,6 +4091,8 @@ export class BackendProcess {
       )
     }
     this.workPlans.clear()
+    this.workPlanJobs.clear()
+    this.workPlanReconciliations.clear()
     this.canonicalWorkChat = null
     this.workPlanAppliedSequences.clear()
     this.workApprovals.clear()
@@ -4056,6 +4168,8 @@ export class BackendProcess {
     this.clearInitializeTimeout()
     this.rejectPendingActionPromises(message)
     this.workPlans.clear()
+    this.workPlanJobs.clear()
+    this.workPlanReconciliations.clear()
     this.canonicalWorkChat = null
     this.workPlanAppliedSequences.clear()
     this.workApprovals.clear()
@@ -4082,6 +4196,8 @@ export class BackendProcess {
     this.clearInitializeTimeout()
     this.rejectPendingActionPromises(message)
     this.workPlans.clear()
+    this.workPlanJobs.clear()
+    this.workPlanReconciliations.clear()
     this.canonicalWorkChat = null
     this.workPlanAppliedSequences.clear()
     this.workApprovals.clear()

@@ -267,7 +267,8 @@ def test_recovery_reservation_blocks_create_until_old_load_cannot_revoke_a_new_a
     token = waiting["steps"][0]["approval"]["approvalId"]
     restarted.confirm(chat_id, replacement["planId"], token, True)
     _wait(lambda: not restarted.is_busy())
-    assert restarted.get(chat_id)["state"] == "succeeded"
+    final = restarted.get(chat_id)
+    assert final is not None and final["state"] == "succeeded"
     assert (selected / "new.txt").read_text("utf-8") == "new"
 
 
