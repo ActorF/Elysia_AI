@@ -1556,6 +1556,35 @@ async function closeVoiceCallWithEscape(): Promise<void> {
   await expectVoiceCallClosed()
 }
 
+/** Click Hang up and prove owner cleanup, including audio when that fixture was installed. */
+async function closeVoiceCallWithButton(requireAudioCleanup = true): Promise<void> {
+  const voicePage = await getVoiceCallPage()
+  const previousCloses = (await getCalls()).filter(
+    (call) => call.method === 'closeVoiceCallWindow',
+  ).length
+  try {
+    await voicePage.getByRole('button', { name: 'Close voice' }).click()
+  } catch (error) {
+    // Hang up destroys its own renderer before the click acknowledgement on
+    // some hosts. Accept only that exact document-loss error, then independently
+    // prove the native close reached the main renderer and released its audio.
+    if (!voicePage.isClosed() || !(error instanceof Error)
+      || !error.message.includes('Target page, context or browser has been closed')) {
+      throw error
+    }
+  }
+  await expectVoiceCallClosed()
+  await expect.poll(async () => (await getCalls()).filter(
+    (call) => call.method === 'closeVoiceCallWindow',
+  ).length).toBeGreaterThan(previousCloses)
+  if (requireAudioCleanup) {
+    await expect.poll(async () => {
+      const stats = await audioMockStats()
+      return stats.processorsCreated - stats.contextsClosed
+    }).toBe(0)
+  }
+}
+
 /** Start local Voice capture through the main Chat and await listening ownership. */
 async function openVoiceCapturePage(): Promise<void> {
   await emitSnapshot(readySnapshot({
@@ -4014,7 +4043,7 @@ test('keeps Song Cover and live microphone capture mutually exclusive', async ()
   await expect(page.getByRole('button', { name: 'Song Cover', exact: true }))
     .toBeDisabled()
   await expect(page.getByRole('button', { name: 'Play Song Cover' })).toBeDisabled()
-  await (await getVoiceCallPage()).getByRole('button', { name: 'Close voice' }).click()
+  await closeVoiceCallWithButton()
 })
 
 test('shows bounded Song Cover progress and replay controls', async () => {
@@ -5408,7 +5437,7 @@ test('closing Voice Call cancels pending STT and rejects its late terminal', asy
   await emitAudioFrames(0, 30)
   await expectVoiceCallState({ characterState: 'thinking' })
 
-  await (await getVoiceCallPage()).getByRole('button', { name: 'Close voice' }).click()
+  await closeVoiceCallWithButton()
   await expectVoiceCallClosed()
   await expect.poll(async () => (
     (await getCalls()).filter(
@@ -5618,7 +5647,7 @@ test('hangup wipes held interruption PCM before a late cancelled terminal', asyn
     (call) => call.method === 'beginVoiceTranscription',
   )).toBe(false)
 
-  await (await getVoiceCallPage()).getByRole('button', { name: 'Close voice' }).click()
+  await closeVoiceCallWithButton()
   await emitEvent({
     type: 'chat-error',
     requestId: 'test-request-1',
@@ -9301,7 +9330,7 @@ test('uses static character art and the custom call scene without disturbing Cha
   await expect(callImage).toHaveAttribute(
     'src', './voice/voice-call-background.webp',
   )
-  await call.getByRole('button', { name: 'Close voice' }).click()
+  await closeVoiceCallWithButton()
 
   await composer.focus()
   await expect(composer).toBeFocused()
@@ -9821,7 +9850,7 @@ test('keeps character and Voice controls usable after image failures', async () 
   await expect(call.locator('.voice-call-scrim')).toBeVisible()
   await expect(call.getByRole('button', { name: 'Mute' }))
     .toBeEnabled()
-  await call.getByRole('button', { name: 'Close voice' }).click()
+  await closeVoiceCallWithButton()
   await expectVoiceCallClosed()
   await expect(page.getByLabel('Message Elysia')).toBeEnabled()
 })
@@ -10104,7 +10133,9 @@ test('resumes an Electron-owned stream after renderer reload', async () => {
   expect((await getCalls()).filter(
     (call) => call.method === 'stopSpeechPlayback',
   )).toHaveLength(0)
-  await (await getVoiceCallPage()).getByRole('button', { name: 'Close voice' }).click()
+  // This reload test deliberately has no microphone fixture. Native and main
+  // owner cleanup remain mandatory; audio cleanup is checked by the Voice tests.
+  await closeVoiceCallWithButton(false)
 
   await emitSnapshot(readySnapshot({
     activeGeneration: {

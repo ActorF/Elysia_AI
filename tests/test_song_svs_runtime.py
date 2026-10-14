@@ -874,6 +874,7 @@ def test_real_progress_pipe_preserves_lease_cleanup_and_hides_vendor_logs(tmp_pa
     job_root = tmp_path / token
     job_root.mkdir(mode=0o700)
     finished = job_root / "child-finished"
+    progress_observed = job_root / "progress-observed"
     values = []
     child_pids = []
 
@@ -884,17 +885,21 @@ def test_real_progress_pipe_preserves_lease_cleanup_and_hides_vendor_logs(tmp_pa
         child_pids.append(lease.pid)
         if value == 59:
             assert not finished.exists()
+            # The child waits for this acknowledgement instead of assuming a
+            # scheduler on a loaded CI runner will invoke us within 300 ms.
+            progress_observed.touch()
         if outcome == "cancelled":
             song_svs_runtime._create_cancellation_marker(job_root)
 
     tail = ("os.write(fd,b'invalid/private/path\\n');time.sleep(60)" if outcome == "malformed"
             else "time.sleep(60)" if outcome in {"cancelled", "timeout"}
-            else "time.sleep(.3);open(sys.argv[1],'w').close();os.write(fd,b'88\\n')")
+            else "\nwhile not os.path.exists(sys.argv[2]): time.sleep(.01)\n"
+                 "open(sys.argv[1],'w').close();os.write(fd,b'88\\n')")
     child = ("import os,sys,time;"
              "fd=int(os.environ['ELYSIA_SVS_INTERNAL_PROGRESS_FD']);"
              "print('/private/vendor/log',flush=True);os.write(fd,b'59\\n');" + tail)
     call = lambda: song_svs_runtime._run_quiet_process(
-        [sys.executable, "-B", "-c", child, str(finished)], job_root=job_root,
+        [sys.executable, "-B", "-c", child, str(finished), str(progress_observed)], job_root=job_root,
         job_token=token, stage="inference", cwd=tmp_path, environment=dict(os.environ),
         timeout_seconds=1 if outcome == "timeout" else 5, progress=_progress)
     if outcome == "success":

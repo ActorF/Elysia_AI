@@ -158,8 +158,39 @@ jobs:
       - name: Run shared protocol contract tests
         run: npm run test:contract
 
+      - name: Install the headless window manager
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends openbox x11-utils
+
       - name: Run Electron renderer UI tests
-        run: xvfb-run --auto-servernum npm run test:ui
+        run: |
+          # Xvfb supplies a display; native minimize/restore requires a window
+          # manager as well. Prove that the manager owns this same display
+          # before Electron launches instead of skipping those integration tests.
+          xvfb-run --auto-servernum bash -euo pipefail <<'UI_SESSION'
+          openbox --sm-disable >"$RUNNER_TEMP/elysia-openbox.log" 2>&1 &
+          window_manager_pid=$!
+          trap 'kill "$window_manager_pid" 2>/dev/null || true' EXIT
+          window_manager_ready=false
+          for readiness_attempt in {1..50}; do
+            if ! kill -0 "$window_manager_pid" 2>/dev/null; then
+              cat "$RUNNER_TEMP/elysia-openbox.log"
+              exit 1
+            fi
+            window_manager_property="$(xprop -root _NET_SUPPORTING_WM_CHECK 2>/dev/null || true)"
+            if [[ "$window_manager_property" == *"window id #"* ]]; then
+              window_manager_ready=true
+              break
+            fi
+            sleep 0.1
+          done
+          if [[ "$window_manager_ready" != true ]]; then
+            cat "$RUNNER_TEMP/elysia-openbox.log"
+            exit 1
+          fi
+          npm run test:ui
+          UI_SESSION
 
       - name: Build the desktop application
         run: npm run build
