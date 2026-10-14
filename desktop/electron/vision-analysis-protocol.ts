@@ -106,21 +106,31 @@ export function visionAnalysisError(code: VisionAnalysisErrorCode): VisionAnalys
   return { code, message: ERROR_MESSAGES[code] }
 }
 
+/** Accept a bounded release identifier, including Windows build dates, without paths or diagnostic text. */
+export function parseVisionOcrVersion(value: unknown): string {
+  // Windows distributions include a literal v and an eight-digit build date;
+  // share this grammar with the native probe so genuine reports survive IPC.
+  if (typeof value !== 'string' || value.length > 128 || /\s/u.test(value)
+    || !/^v?[4-9]\.[0-9]+(?:\.[0-9]+(?:\.[0-9]{8})?)?(?:[-+][A-Za-z0-9.-]+)?$/u.test(value)) {
+    throw new TypeError('Vision OCR version is invalid.')
+  }
+  return value
+}
+
 /** Validate a detached installed-engine report without accepting runtime paths or arbitrary languages. */
 export function parseVisionOcrReadiness(value: unknown): VisionOcrReadiness {
   const raw = record(value, ['status', 'languages', 'version'])
   if (!['ready', 'missing_engine', 'missing_languages', 'unavailable'].includes(raw.status as string)
     || !Array.isArray(raw.languages) || raw.languages.length > 3 || new Set(raw.languages).size !== raw.languages.length
-    || raw.languages.some((language) => !LANGUAGES.includes(language as VisionOcrInstalledLanguage))
-    || raw.version !== null && (typeof raw.version !== 'string' || raw.version.length > 128
-      || !/^[4-9]\.[0-9]+(?:\.[0-9]+)?(?:[-+][A-Za-z0-9.-]+)?$/u.test(raw.version))) {
+    || raw.languages.some((language) => !LANGUAGES.includes(language as VisionOcrInstalledLanguage))) {
     throw new TypeError('Vision OCR readiness is invalid.')
   }
+  const version = raw.version === null ? null : parseVisionOcrVersion(raw.version)
   if ((['missing_engine', 'unavailable'].includes(raw.status as string) && (raw.version !== null || raw.languages.length !== 0))
     || ['ready', 'missing_languages'].includes(raw.status as string) && raw.version === null
     || raw.status === 'ready' && !raw.languages.includes('eng')
     || raw.status === 'missing_languages' && raw.languages.includes('eng')) throw new TypeError('Vision OCR readiness is contradictory.')
-  return { status: raw.status as VisionOcrReadiness['status'], languages: [...raw.languages] as VisionOcrInstalledLanguage[], version: raw.version as string | null }
+  return { status: raw.status as VisionOcrReadiness['status'], languages: [...raw.languages] as VisionOcrInstalledLanguage[], version }
 }
 
 /** Validate the exact image/language request without admitting paths, words, or command arguments. */

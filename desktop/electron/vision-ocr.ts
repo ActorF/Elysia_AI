@@ -10,6 +10,7 @@
 import { spawn, type ChildProcessWithoutNullStreams, type SpawnOptionsWithoutStdio } from 'node:child_process'
 import { lstat, realpath } from 'node:fs/promises'
 import path from 'node:path'
+import { parseVisionOcrVersion } from './vision-analysis-protocol.js'
 
 /** One available trained-data language; runtime paths never appear in readiness. */
 export type OcrInstalledLanguage = 'eng' | 'chi_sim' | 'chi_tra'
@@ -198,12 +199,22 @@ export class TesseractOcrAdapter {
 
   private async executable(): Promise<string | null> {
     const selected = this.options.executable === undefined
-      ? process.env.ELYSIA_TESSERACT_PATH ?? (process.platform === 'win32'
-        ? path.join(process.env.ProgramFiles ?? 'C:\\Program Files', 'Tesseract-OCR', 'tesseract.exe') : '/usr/bin/tesseract')
+      ? process.env.ELYSIA_TESSERACT_PATH
       : this.options.executable
-    if (selected === null) return null
-    try { return await this.localPath(selected, false) }
-    catch (error: unknown) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null; throw error }
+    const candidates = selected !== undefined ? [selected] : process.platform === 'win32'
+      ? [path.join(process.env.ProgramFiles ?? 'C:\\Program Files', 'Tesseract-OCR', 'tesseract.exe'),
+        ...(process.env.LOCALAPPDATA === undefined ? []
+          : [path.join(process.env.LOCALAPPDATA, 'Programs', 'Tesseract-OCR', 'tesseract.exe')])]
+      : ['/usr/bin/tesseract']
+    // A user installation needs no administrator rights. Only absence of the
+    // fixed machine runtime permits fallback; explicit or unsafe choices never
+    // silently authorize another executable, PATH search, or registry discovery.
+    for (const candidate of candidates) {
+      if (candidate === null) return null
+      try { return await this.localPath(candidate, false) }
+      catch (error: unknown) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
+    }
+    return null
   }
 
   private async dataDirectory(): Promise<string | null> {
@@ -219,6 +230,14 @@ export class TesseractOcrAdapter {
     if (components.some((component) => component === '' || component === '.' || component === '..'
       || component !== component.trim() || component.endsWith('.') || component.includes(':')
       || /^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)/iu.test(component))) throw new OcrError('unavailable')
+    // Check the selected spelling from the root before resolving it. A dangling
+    // link or redirected ancestor must fail closed, not resemble an absent
+    // machine installation and unlock fallback to a different runtime.
+    let cursor = path.parse(value).root
+    for (const component of components) {
+      cursor = path.join(cursor, component)
+      if ((await lstat(cursor)).isSymbolicLink()) throw new OcrError('unavailable')
+    }
     const resolved = await realpath(value)
     if (resolved.startsWith('\\\\')) throw new OcrError('unavailable')
     const details = await lstat(resolved)
@@ -236,8 +255,10 @@ export class TesseractOcrAdapter {
 
   private async probe(executable: string, deadline: number, signal: AbortSignal): Promise<OcrReadiness> {
     const versionText = decode(await this.invoke(executable, ['--version'], null, 32 * 1024, deadline, signal))
-    const version = /^tesseract\s+([4-9]\.[0-9]+(?:\.[0-9]+)?(?:[-+][A-Za-z0-9.-]+)?)(?:\s|$)/u.exec(versionText)?.[1]
-    if (version === undefined || version.length > 128) throw new OcrError('unavailable')
+    const reported = /^tesseract[ \t]+(\S+)(?:\s|$)/u.exec(versionText)?.[1]
+    let version: string
+    try { version = parseVisionOcrVersion(reported) }
+    catch { throw new OcrError('unavailable') }
     const directory = await this.dataDirectory()
     const output = decode(await this.invoke(executable, [...(directory === null ? [] : ['--tessdata-dir', directory]), '--list-langs'], null,
       32 * 1024, deadline, signal))

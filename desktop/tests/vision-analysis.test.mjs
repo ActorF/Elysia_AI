@@ -8,7 +8,7 @@ const moduleUrl = process.env.ELYSIA_VISION_ANALYSIS_TEST_MODULE
   ? pathToFileURL(process.env.ELYSIA_VISION_ANALYSIS_TEST_MODULE) : new URL('../dist-electron/vision-analysis.js', import.meta.url)
 const { VisionAnalysisController } = await import(moduleUrl.href)
 const protocolUrl = new URL('./vision-analysis-protocol.js', moduleUrl)
-const { parseVisionAnalysisState, parseVisionOcrRequest, parseVisionOcrResult } = await import(protocolUrl.href)
+const { parseVisionAnalysisState, parseVisionOcrReadiness, parseVisionOcrRequest, parseVisionOcrResult } = await import(protocolUrl.href)
 
 const IMAGE = { imageId: `vision_${'a'.repeat(32)}`, sha256: 'b'.repeat(64), width: 100, height: 100 }
 const READY = { status: 'ready', languages: ['eng', 'chi_sim', 'chi_tra'], version: '5.5.0' }
@@ -16,6 +16,17 @@ const RESULT = { text: '你好 Hello', language: 'chi_sim+eng', width: 100, heig
   words: [{ text: '你好', x: 2, y: 3, width: 20, height: 10, confidence: 0.9 },
     { text: 'Hello', x: 24, y: 3, width: 30, height: 10, confidence: 0.85 }] }
 const REQUEST = { chatId: 'chat_a', imageId: IMAGE.imageId, language: 'chi_sim+eng' }
+
+test('OCR wire readiness admits bounded Windows date builds and rejects diagnostic text or forged version syntax', () => {
+  for (const version of ['4.1', '5.5.0', 'v5.5.3.20260724', '5.5.3.20260724', '5.5.0-rc1', '5.5.0+build.1']) {
+    assert.deepEqual(parseVisionOcrReadiness({ ...READY, version }), { ...READY, version })
+  }
+  for (const version of ['v3.5.0', 'v5.5.3.2026072', 'v5.5.3.202607240', 'v5.5.3.20260724.1',
+    'vv5.5.3', 'v5.5.3/private', 'v5.5.3;command', '5.5.3\n', '5.5.3 secret', '5.5.3\u0000',
+    `5.5.0-${'x'.repeat(123)}`, null, 5]) {
+    assert.throws(() => parseVisionOcrReadiness({ ...READY, version }))
+  }
+})
 
 function deferred() {
   let resolve, reject

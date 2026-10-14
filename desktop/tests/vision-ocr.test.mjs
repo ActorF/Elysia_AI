@@ -2,7 +2,7 @@
 
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { link, mkdir, mkdtemp, rm, rmdir, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { PassThrough } from 'node:stream'
@@ -54,7 +54,34 @@ async function fixture(t, options = {}) {
   } }
   const adapter = new TesseractOcrAdapter({ executable, native, timeoutMs: options.timeoutMs ?? 1000,
     ...(options.tessdataDirectory === undefined ? {} : { tessdataDirectory: options.tessdataDirectory }) })
-  return { adapter, executable, calls, children, killed, directory }
+  return { adapter, executable, native, calls, children, killed, directory }
+}
+
+function runtimeEnvironment(t, values) {
+  const previous = Object.fromEntries(Object.keys(values).map((key) => [key, process.env[key]]))
+  for (const [key, value] of Object.entries(values)) {
+    if (value === undefined) delete process.env[key]
+    else process.env[key] = value
+  }
+  t.after(() => {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+  })
+}
+
+async function windowsInstallations(t) {
+  const setup = await fixture(t)
+  const machineRoot = path.join(setup.directory, 'Program Files')
+  const userRoot = path.join(setup.directory, 'Local')
+  const machine = path.join(machineRoot, 'Tesseract-OCR', 'tesseract.exe')
+  const user = path.join(userRoot, 'Programs', 'Tesseract-OCR', 'tesseract.exe')
+  await mkdir(path.dirname(machine), { recursive: true })
+  await mkdir(path.dirname(user), { recursive: true })
+  await writeFile(user, 'Synthetic inert current-user runtime.')
+  runtimeEnvironment(t, { ProgramFiles: machineRoot, LOCALAPPDATA: userRoot, ELYSIA_TESSERACT_PATH: undefined })
+  return { ...setup, machineRoot, machine, user }
 }
 
 async function waitFor(predicate) {
@@ -73,6 +100,62 @@ test('Readiness only reports installed closed languages and safe version; no ins
   const missing = new TesseractOcrAdapter({ executable: null })
   assert.deepEqual(await missing.readiness(), { status: 'missing_engine', languages: [], version: null })
 })
+
+test('Real Windows v-prefixed date builds and ordinary releases pass the native readiness boundary', async (t) => {
+  for (const version of ['4.1', '5.5.0', 'v5.5.3.20260724', '5.5.3.20260724', '5.5.0-rc1', '5.5.0+build.1']) {
+    const { adapter, calls } = await fixture(t, { version: `tesseract ${version}\r\n leptonica-1.85.0\r\n` })
+    assert.deepEqual(await adapter.readiness(), { status: 'ready', languages: ['eng', 'chi_sim', 'chi_tra'], version })
+    assert.equal(calls.length, 2)
+  }
+})
+
+test('Malformed, unsupported and unbounded release identifiers cannot reach the language probe', async (t) => {
+  for (const version of ['v3.5.0', 'v5.5.3.2026072', 'v5.5.3.202607240', 'v5.5.3.20260724.1',
+    'vv5.5.3', 'v5.5.3/private', 'v5.5.3;command', `5.5.0-${'x'.repeat(123)}`]) {
+    const { adapter, calls } = await fixture(t, { version: `tesseract ${version}\n` })
+    assert.deepEqual(await adapter.readiness(), { status: 'unavailable', languages: [], version: null })
+    assert.equal(calls.length, 1)
+  }
+})
+
+test('Windows defaults prefer the fixed machine install and fall back to the fixed current-user install only when absent',
+  { skip: process.platform !== 'win32' }, async (t) => {
+    const { native, calls, machine, user } = await windowsInstallations(t)
+    assert.equal((await new TesseractOcrAdapter({ native }).readiness()).status, 'ready')
+    assert.ok(calls.every((call) => call.command === user))
+    calls.length = 0
+    await writeFile(machine, 'Synthetic inert machine runtime.')
+    assert.equal((await new TesseractOcrAdapter({ native }).readiness()).status, 'ready')
+    assert.ok(calls.every((call) => call.command === machine))
+  })
+
+test('An explicit missing or disabled runtime never falls back to installed Windows defaults',
+  { skip: process.platform !== 'win32' }, async (t) => {
+    const { native, calls, directory, machine } = await windowsInstallations(t)
+    await writeFile(machine, 'Synthetic inert machine runtime.')
+    const missing = path.join(directory, 'missing.exe')
+    process.env.ELYSIA_TESSERACT_PATH = missing
+    for (const options of [{}, { executable: missing }, { executable: null }]) {
+      assert.deepEqual(await new TesseractOcrAdapter({ ...options, native }).readiness(),
+        { status: 'missing_engine', languages: [], version: null })
+    }
+    assert.equal(calls.length, 0)
+  })
+
+test('Unsafe existing machine runtimes fail closed without using the current-user fallback',
+  { skip: process.platform !== 'win32' }, async (t) => {
+    const { native, calls, executable, machine, machineRoot, directory } = await windowsInstallations(t)
+    await mkdir(machine)
+    assert.deepEqual(await new TesseractOcrAdapter({ native }).readiness(), { status: 'unavailable', languages: [], version: null })
+    await rmdir(machine)
+    await link(executable, machine)
+    assert.deepEqual(await new TesseractOcrAdapter({ native }).readiness(), { status: 'unavailable', languages: [], version: null })
+    await rm(machine)
+    await rmdir(path.dirname(machine))
+    await symlink(path.join(directory, 'missing-target'), path.join(machineRoot, 'Tesseract-OCR'), 'junction')
+    assert.deepEqual(await new TesseractOcrAdapter({ native }).readiness(), { status: 'unavailable', languages: [], version: null })
+    assert.equal(calls.length, 0)
+  })
 
 test('Recognition returns Chinese and English word positions with normalized confidence using fixed hidden stdin/stdout', async (t) => {
   const { adapter, calls, children } = await fixture(t)

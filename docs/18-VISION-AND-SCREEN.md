@@ -22,7 +22,7 @@ Electron 的图片 API 本身不应用 EXIF 方向，因此方向校正属于本
 
 ## 本地 OCR
 
-选择图片后，点击 **Check OCR** 检查现有 Tesseract 与语言数据，再选择英文、简体中文加英文或繁体中文加英文进行识别。检查和识别都由用户触发，不会安装引擎或下载语言包。Windows 默认使用 `Program Files/Tesseract-OCR/tesseract.exe`；自定义安装可在启动应用前设置 `ELYSIA_TESSERACT_PATH`。中文选项需要对应的 `chi_sim` 或 `chi_tra` 与 `eng` 数据，缺少引擎和缺少语言包分别显示。
+选择图片后，点击 **Check OCR** 检查现有 Tesseract 与语言数据，再选择英文、简体中文加英文或繁体中文加英文进行识别。检查和识别都由用户触发，不会安装引擎或下载语言包。Windows 先检查 `Program Files/Tesseract-OCR/tesseract.exe`，仅在该文件不存在时检查 `%LOCALAPPDATA%/Programs/Tesseract-OCR/tesseract.exe`，支持无需管理员权限的当前用户安装。自定义安装可在启动应用前设置 `ELYSIA_TESSERACT_PATH`；显式指定的安装不可用时不会改用其他引擎，也不搜索 PATH。中文选项需要安装目录 `tessdata` 中对应的 `chi_sim.traineddata` 或 `chi_tra.traineddata` 与 `eng.traineddata`，缺少引擎和缺少语言包分别显示。
 
 识别只把当前已审核图片的规范化 PNG 通过标准输入交给固定本地程序，不使用 Shell，也不产生临时图片。返回结果保留文字、像素位置和置信度；结果作为普通文本显示，图片内的命令和链接不能成为操作授权。TSV 输出上限为 1 MiB、文字 32 KiB、单词框 2048 个；越界坐标、异常置信度或超限输出会拒绝发布。进程超过 20 秒会请求停止。
 
@@ -78,4 +78,15 @@ Work 的视觉证据只保存在当前进程内，修改未完成步骤时可保
 
 自动化检查覆盖图片格式与尺寸、EXIF 方向、OCR 坐标与文本边界、本机模型连接、一次性截图批准、旧会话结果丢弃、审核过期、Work 写入批准、图片保存与删除，以及数据迁移。界面检查覆盖默认关闭、不自动发送或执行、断线与归档后的撤销、延迟原生操作实际结束前的忙碌状态。真实 Windows 截图测试只捕获测试自己创建的合成窗口，并检查源码与 ASAR 包内辅助页。
 
-开发验收已使用本机 Ollama 视觉模型完成合成图片问答。当前验收机器未安装 Tesseract，因此 OCR 的协议、失败路径和界面已有自动化验证，真实中文/英文识别仍需要安装本机 Tesseract 及相应语言数据后使用。
+开发验收已使用本机 Ollama 视觉模型完成合成图片问答。2026-10-14 补齐了当前用户目录的 [Tesseract 5.5.3 Windows 安装](https://github.com/tesseract-ocr/tesseract/releases/tag/5.5.3)（引擎报告 `v5.5.3.20260724`），以及官方 [tessdata_best 英文、简体、繁体数据](https://github.com/tesseract-ocr/tessdata_best/tree/e12c65a915945e4c28e237a9b52bc4a8f39a0cec)。安装包与语言文件经过来源及摘要核对，运行时文件不提交 Git。普通 `tessdata_fast` 数据在本次繁体样例上误识别了部分笔画，验收使用上述 `best` 数据；这属于本机依赖选择，应用不会自行下载或替换模型。
+
+真实 OCR 验收通过产品的图片规范化、图片所有权、分析控制器、Tesseract 进程及严格结果协议，识别英文 `Local OCR 2026` / `English text recognition`、简体 `简体中文识别测试` 和繁体 `繁體中文識別測試`。验证逐字内容（忽略分词空白）、原图像素坐标、文字框内实际笔画、置信度范围和原生进程结束后的空闲状态。测试只在内存中渲染合成文字，不读用户图片或屏幕。识别精度仍受实际图片清晰度、字体和排版影响。
+
+安装上述引擎与语言数据后，在 `desktop` 目录运行以下 Windows 原生验收；需先运行 `npm run electron:build`，并具备 Windows 的 Arial、Microsoft YaHei、Microsoft JhengHei 字体：
+
+```powershell
+$env:ELYSIA_OCR_NATIVE_TEST = '1'
+node --test tests/vision-ocr-native.test.mjs
+```
+
+验收显式启用后，缺引擎、语言数据、字体或识别结果不符都会失败，不会静默跳过。普通协议检查无需安装 OCR。验证新打包的代码时，先运行 `npm run package`，再设置 `$env:ELYSIA_OCR_PACKAGE_ASAR = (Resolve-Path 'out/win-unpacked/resources/app.asar').Path` 并重跑同一命令；本次开发输出与新构建的 ASAR 已分别通过三种语言及坐标检查。
