@@ -1490,7 +1490,7 @@ async function openSettings(
 
 /** Select a settings category through its navigation and await its visible panel. */
 async function selectSettingsCategory(
-  category: 'General' | 'Appearance' | 'Voice' | 'Data & storage' | 'Advanced',
+  category: 'General' | 'Appearance' | 'Voice' | 'Data & storage' | 'Internet' | 'Advanced',
 ): Promise<void> {
   const button = page.getByRole('navigation', { name: 'Settings categories' })
     .getByRole('button', { name: category, exact: true })
@@ -2664,7 +2664,7 @@ test('shows all Settings areas, ownership scopes, and no secret controls', async
     name: 'Settings categories',
   })
   await expect(categories.getByRole('button')).toHaveText([
-    'General', 'Appearance', 'Voice', 'Data & storage', 'Advanced',
+    'General', 'Appearance', 'Voice', 'Data & storage', 'Internet', 'Advanced',
   ])
   await expect(page.getByRole('heading', { name: 'Speech recognition' }))
     .toHaveCount(0)
@@ -2673,6 +2673,7 @@ test('shows all Settings areas, ownership scopes, and no secret controls', async
     ['Appearance', ['Theme', 'Presence & notifications']],
     ['Voice', ['Speech recognition', 'Voice behavior', 'Audio devices']],
     ['Data & storage', ['Local storage', 'Files']],
+    ['Internet', ['Internet access']],
     ['Advanced', ['Memory', 'Work', 'Privacy']],
   ] as const
   for (const [category, sections] of expectedSections) {

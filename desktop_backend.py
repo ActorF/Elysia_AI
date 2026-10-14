@@ -20,7 +20,6 @@ from io import TextIOWrapper
 from pathlib import Path
 from threading import Event, Lock, RLock, Thread
 from typing import Any, Literal, TextIO, cast
-from urllib.request import Request, urlopen
 
 from attachments import (
     AttachmentConflictError,
@@ -33,6 +32,7 @@ from attachments import (
     AttachmentValidationError,
     JsonAttachmentStore,
 )
+from core.local_ollama import is_cloud_ollama_model_name, open_local_ollama_tags
 from chats import (
     AttachmentId,
     AttachmentMetadata,
@@ -449,7 +449,11 @@ def _extract_model_names(
                 if not isinstance(raw_name, str):
                     raw_name = raw_model.get("model")
 
-                if isinstance(raw_name, str) and raw_name.strip():
+                if (
+                    isinstance(raw_name, str)
+                    and raw_name.strip()
+                    and not is_cloud_ollama_model_name(raw_name)
+                ):
                     discovered.append(raw_name.strip())
 
     ordered_names = [fallback_model.strip(), *sorted(discovered)]
@@ -462,20 +466,16 @@ def discover_ollama_models(
     """Return Ollama model choices with the configured fallback listed first."""
 
     runtime_settings = SETTINGS if settings is None else settings
-    endpoint = f"{runtime_settings.ollama_host.rstrip('/')}/api/tags"
-    request = Request(
-        endpoint,
-        headers={"Accept": "application/json"},
-    )
-
     try:
-        with urlopen(request, timeout=3.0) as response:
-            payload = json.load(response)
+        with open_local_ollama_tags(runtime_settings.ollama_host) as response:
+            # Discovery is advisory; an oversized catalog must not consume
+            # unbounded memory or undo the local-only connection boundary.
+            raw = response.read(1024 * 1024 + 1)
+            if len(raw) > 1024 * 1024:
+                raise ValueError("Local Ollama catalog exceeds its limit.")
+            payload = json.loads(raw)
     except (OSError, ValueError):
-        logger.exception(
-            "Could not enumerate Ollama models from %s.",
-            endpoint,
-        )
+        logger.warning("Could not enumerate models from the configured local Ollama service.")
         payload = {}
 
     return _extract_model_names(payload, runtime_settings.model_name)

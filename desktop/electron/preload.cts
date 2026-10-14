@@ -3,6 +3,7 @@
  */
 
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
+import type { InternetPolicyState, UpdateInternetPolicyRequest } from './internet-policy-protocol.js'
 import type { VisionState, VisionSelectionResult, VisionRemoveRequest } from './vision-protocol.js'
 import type { VisionAnalysisState, VisionOcrRequest, VisionModelRequest } from './vision-analysis-protocol.js'
 import type { VisionCaptureSources, VisionCaptureStatus, VisionCapturePrepareRequest, VisionCaptureConfirmRequest, VisionCaptureApproval } from './vision-capture-protocol.js'
@@ -820,6 +821,13 @@ ipcRenderer.on(
 )
 
 const desktopApi: DesktopApi = {
+  getInternetPolicy: () => ipcRenderer.invoke('desktop:internet-policy:get') as Promise<InternetPolicyState>,
+  updateInternetPolicy: (request: UpdateInternetPolicyRequest) => ipcRenderer.invoke('desktop:internet-policy:update', request) as Promise<InternetPolicyState>,
+  onInternetPolicyChanged: (listener: (state: InternetPolicyState) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, state: InternetPolicyState): void => { listener(state) }
+    ipcRenderer.on('desktop:internet-policy:changed', handler)
+    return () => { ipcRenderer.removeListener('desktop:internet-policy:changed', handler) }
+  },
   checkVisionModel: (chatId: string) => ipcRenderer.invoke('vision:check-model', chatId) as Promise<VisionAnalysisState>,
   listVisionCaptureSources: (chatId: string) => ipcRenderer.invoke('vision:list-capture-sources', chatId) as Promise<VisionCaptureSources>,
   getVisionCaptureState: (chatId: string) => ipcRenderer.invoke('vision:get-capture-state', chatId) as Promise<VisionCaptureStatus>,

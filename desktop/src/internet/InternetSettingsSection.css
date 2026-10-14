@@ -1,0 +1,10 @@
+/* Keep independently saved Internet controls readable within the shared Settings form. */
+
+.internet-settings fieldset { border: 0; margin: 0; padding: 0; min-width: 0; }
+.internet-enable { display: flex; align-items: center; gap: .6rem; font-weight: 600; }
+.internet-settings textarea { width: 100%; box-sizing: border-box; resize: vertical; min-height: 6rem; padding: .65rem; color: inherit; background: var(--color-bg-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); font: inherit; }
+.internet-preset-actions, .internet-policy-actions { display: flex; flex-wrap: wrap; gap: .5rem; margin: .75rem 0; }
+.internet-settings button { padding: .45rem .7rem; }
+.internet-settings p, .internet-settings li, .internet-settings small { overflow-wrap: anywhere; }
+.internet-settings p { font-size: var(--font-size-sm); line-height: var(--line-height-normal); }
+.internet-settings .settings-field-grid { margin-top: 1rem; }

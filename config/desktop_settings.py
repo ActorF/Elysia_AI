@@ -21,7 +21,6 @@ from pathlib import Path
 from tempfile import mkstemp
 from threading import Lock, RLock
 from typing import BinaryIO, Final, cast
-from urllib.parse import urlsplit
 
 from .settings import (
     DEFAULT_AUTO_READ_ALOUD,
@@ -334,7 +333,9 @@ def validate_boolean(value: object, field_name: str) -> bool:
 
 
 def validate_model_name(value: object) -> str:
-    """Return a model name only when it is bounded, trimmed, and printable."""
+    """Return bounded local model names while rejecting explicit cloud tags."""
+
+    from core.local_ollama import LOCAL_OLLAMA_MODEL_ERROR, is_cloud_ollama_model_name
 
     if (
         not isinstance(value, str)
@@ -347,46 +348,23 @@ def validate_model_name(value: object) -> str:
         raise DesktopSettingsValidationError(
             "model_name must be a non-empty trimmed single-line string."
         )
+    if is_cloud_ollama_model_name(value):
+        raise DesktopSettingsValidationError(LOCAL_OLLAMA_MODEL_ERROR)
     return value
 
 
 def validate_ollama_host(value: object) -> str:
-    """Return one safe HTTP(S) Ollama origin without credentials or a path."""
+    """Validate local HTTP while preserving the user's accepted display spelling."""
 
-    if (
-        not isinstance(value, str)
-        or not value
-        or value != value.strip()
-        or len(value) > MAX_OLLAMA_HOST_LENGTH
-        or "\x00" in value
-        or any(character.isspace() for character in value)
-    ):
-        raise DesktopSettingsValidationError(
-            "ollama_host must be a valid HTTP or HTTPS origin."
-        )
+    # Import on validation rather than package import: config bootstrap must
+    # remain independent of the core package's model/service re-exports.
+    from core.local_ollama import normalize_local_ollama_origin
 
     try:
-        parsed = urlsplit(value)
-        parsed_port = parsed.port
+        normalize_local_ollama_origin(value)
     except ValueError as error:
-        raise DesktopSettingsValidationError(
-            "ollama_host must be a valid HTTP or HTTPS origin."
-        ) from error
-
-    if (
-        parsed.scheme not in {"http", "https"}
-        or parsed.hostname is None
-        or parsed.username is not None
-        or parsed.password is not None
-        or parsed.query
-        or parsed.fragment
-        or parsed.path not in {"", "/"}
-        or parsed_port is not None and not 1 <= parsed_port <= 65_535
-    ):
-        raise DesktopSettingsValidationError(
-            "ollama_host must be a valid HTTP or HTTPS origin."
-        )
-    return value.removesuffix("/")
+        raise DesktopSettingsValidationError(str(error)) from None
+    return cast(str, value).removesuffix("/")
 
 
 def validate_transcription_model(value: object) -> TranscriptionModel:

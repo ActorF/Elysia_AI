@@ -4727,7 +4727,7 @@ def test_settings_can_be_read_and_repaired_before_initialize(
     repository = _desktop_settings_repository(tmp_path / "global.json")
     changed = _desktop_settings_values(
         model_name="second-model",
-        ollama_host="https://ollama.example.test:11434",
+        ollama_host="http://127.0.0.1:11435",
         short_term_memory_token_budget=4_096,
         memory_retrieval_limit=9,
         data_import_max_bytes=32 * 1024 * 1024,
@@ -6318,7 +6318,7 @@ def test_invalid_bootstrap_prefers_valid_persisted_settings(
     persisted_repository = _desktop_settings_repository(settings_path)
     persisted_values = EditableDesktopSettings(
         model_name="test-model",
-        ollama_host="https://ollama.example.test:11434",
+        ollama_host="http://127.0.0.1:11435",
         short_term_memory_token_budget=4_096,
         memory_retrieval_limit=9,
         data_import_max_bytes=32 * 1024 * 1024,
@@ -6344,7 +6344,7 @@ def test_invalid_bootstrap_prefers_valid_persisted_settings(
     assert settings["revision"] == 1
     assert settings["settings"] == _desktop_settings_values(
         model_name="test-model",
-        ollama_host="https://ollama.example.test:11434",
+        ollama_host="http://127.0.0.1:11435",
         short_term_memory_token_budget=4_096,
         memory_retrieval_limit=9,
         data_import_max_bytes=32 * 1024 * 1024,
@@ -6370,7 +6370,7 @@ def test_settings_update_reports_restart_fields_and_active_scopes(
     )
     changed = _desktop_settings_values(
         model_name="second-model",
-        ollama_host="https://ollama.example.test:11434",
+        ollama_host="http://127.0.0.1:11435",
         short_term_memory_token_budget=4_096,
         memory_retrieval_limit=9,
         data_import_max_bytes=32 * 1024 * 1024,

@@ -59,7 +59,7 @@ def _changed_values(tmp_path: Path) -> EditableDesktopSettings:
     return replace(
         _editable(tmp_path),
         model_name="saved-model",
-        ollama_host="https://ollama.example.test:11434",
+        ollama_host="http://127.0.0.1:11435",
         short_term_memory_token_budget=4_096,
         memory_retrieval_limit=8,
         data_import_max_bytes=32 * 1024 * 1024,
@@ -160,7 +160,7 @@ def test_save_and_reload_round_trip_the_complete_allowlist(
             "captions_enabled": False,
             "memory_retrieval_limit": 8,
             "model_name": "saved-model",
-            "ollama_host": "https://ollama.example.test:11434",
+            "ollama_host": "http://127.0.0.1:11435",
             "short_term_memory_token_budget": 4_096,
             "speech_rate_percent": 125,
             "speech_volume_percent": 42,

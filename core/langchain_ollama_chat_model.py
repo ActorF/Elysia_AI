@@ -1,7 +1,7 @@
-"""LangChain adapter for Ollama."""
+"""Generate and stream replies with LangChain over proxy-free local Ollama HTTP."""
 
-from collections.abc import Iterator
-from httpx import ConnectError, TimeoutException
+from collections.abc import Generator, Iterator
+from httpx import Auth, ConnectError, Request, Response, TimeoutException
 from langchain_core.messages import (
     AIMessage,
     BaseMessage,
@@ -17,6 +17,23 @@ from .exceptions import (
     ChatModelResponseError,
 )
 from .ollama_chat_model import OllamaChatModel
+from .local_ollama import (
+    LOCAL_OLLAMA_MODEL_ERROR,
+    is_cloud_ollama_model_name,
+    normalize_local_ollama_origin,
+)
+
+
+class _LocalModelAuth(Auth):
+    """Remove SDK-inherited credentials from both sync and async local requests."""
+
+    def auth_flow(self, request: Request) -> Generator[Request, Response, None]:
+        """Strip ambient Ollama credentials immediately before HTTPX sends bytes."""
+        # Ollama's SDK inserts OLLAMA_API_KEY even for a loopback host. An auth
+        # flow runs after its headers are assembled, without process-global
+        # environment changes that could race unrelated clients.
+        request.headers.pop("Authorization", None)
+        yield request
 
 
 class LangChainOllamaChatModel:
@@ -35,18 +52,12 @@ class LangChainOllamaChatModel:
         """
 
         cleaned_model_name = model_name.strip()
-        cleaned_host = ollama_host.strip().rstrip("/")
+        cleaned_host = normalize_local_ollama_origin(ollama_host)
 
         if not cleaned_model_name:
             raise ValueError("Model name cannot be empty.")
-
-        if not cleaned_host.startswith(
-            ("http://", "https://")
-        ):
-            raise ValueError(
-                "Ollama host must start with "
-                "http:// or https://."
-            )
+        if is_cloud_ollama_model_name(cleaned_model_name):
+            raise ValueError(LOCAL_OLLAMA_MODEL_ERROR)
 
         if timeout_seconds <= 0:
             raise ValueError(
@@ -69,6 +80,12 @@ class LangChainOllamaChatModel:
             reasoning=False,
             client_kwargs={
                 "timeout": timeout_seconds,
+                # Ollama's SDK defaults to following redirects. Both sync and
+                # async clients must preserve the same local-only boundary as
+                # discovery instead of inheriting proxy or redirect policy.
+                "trust_env": False,
+                "follow_redirects": False,
+                "auth": _LocalModelAuth(),
             },
         )
 

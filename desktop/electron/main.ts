@@ -30,6 +30,10 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { BackendProcess } from './backend-process.js'
+import { InternetPolicyService } from './internet-policy.js'
+import { InternetTransport } from './internet-transport.js'
+import type { InternetPolicyState } from './internet-policy-protocol.js'
+import { assertInternetLyricsAllowed, prepareInternetLyrics, openInternetBrowser } from './internet-legacy.js'
 import { VisionImageController, VisionImageError, decodeVisionImage, decodeVisionCanonicalImage, prepareVisionModelImage, readVisionSelectedFile, type VisionOwner } from './vision-images.js'
 import { parseVisionChatId, parseVisionRemoveRequest } from './vision-protocol.js'
 import { VisionAnalysisController, VisionAnalysisServiceError } from './vision-analysis.js'
@@ -72,7 +76,6 @@ import {
   allowAudioPermissionCheck,
   allowAudioPermissionRequest,
 } from './audio-permission.js'
-import { parseSafeExternalUrl } from './external-url.js'
 import {
   DesktopPetProgramLibraryUnavailableError,
   DesktopPetProgramLibraryValidationError,
@@ -223,6 +226,9 @@ const TRAY_ICON_DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAA
 
 let mainWindow: BrowserWindow | null = null
 let backendProcess: BackendProcess | null = null
+let internetPolicyService: InternetPolicyService | null = null
+let internetTransport: InternetTransport | null = null
+const internetRequests = new Set<Promise<unknown>>()
 let workDesktopController: WorkDesktopController | null = null
 let workDesktopStorage: { root: string; store: WorkDesktopStorage } | null = null
 let workDesktopScope: { chatId: string; projectId: string | null; workspacePath: string | null } | null = null
@@ -2106,7 +2112,30 @@ function hasActiveVisionWork(): boolean {
     || visionCaptureController?.hasActiveWork() === true
 }
 
-function hasActiveComputerWork(): boolean { return hasActiveDesktopWork() || hasActiveVisionWork() }
+function hasActiveInternetWork(): boolean {
+  return internetRequests.size > 0 || internetPolicyService?.hasActiveWork() === true
+}
+
+function hasActiveComputerWork(): boolean { return hasActiveDesktopWork() || hasActiveVisionWork() || hasActiveInternetWork() }
+
+function requireInternetPolicy(): InternetPolicyService {
+  if (internetPolicyService === null || shutdownStarted) throw new Error('Internet settings are unavailable.')
+  return internetPolicyService
+}
+
+function publishInternetPolicy(state: InternetPolicyState): void {
+  if (mainWindow !== null && !mainWindow.isDestroyed()) {
+    try { mainWindow.webContents.send('desktop:internet-policy:changed', state) }
+    catch { /* Optional policy notifications cannot destabilize native request cleanup. */ }
+  }
+}
+
+function trackInternetOperation<Result>(operation: () => Promise<Result>): Promise<Result> {
+  const request = Promise.resolve().then(operation)
+  internetRequests.add(request)
+  void request.then(() => internetRequests.delete(request), () => internetRequests.delete(request))
+  return request
+}
 
 function visionOwner(): VisionOwner {
   const backend = backendProcess, owner = backend?.getCanonicalVisionChat() ?? null
@@ -2114,7 +2143,7 @@ function visionOwner(): VisionOwner {
   // competing work without making a newly admitted picker revoke itself.
   return { chatId: owner?.chatId ?? 'chat_unavailable', projectId: owner?.projectId ?? null,
     mode: owner?.mode ?? 'chat', archived: owner?.archived ?? false, ready: owner !== null && !shutdownStarted,
-    busy: backend?.hasActiveBackendWork() === true || hasActiveDesktopWork() || presenceVoiceSessionActive
+    busy: backend?.hasActiveBackendWork() === true || hasActiveDesktopWork() || hasActiveInternetWork() || presenceVoiceSessionActive
       || songCoverManager?.hasActiveWork() === true || dataStorageOperation !== null || shutdownStarted }
 }
 
@@ -2381,7 +2410,7 @@ function desktopOwner(): WorkDesktopOwner {
     // Main's own desktop lease is excluded here: including it would revoke
     // the action as soon as it admitted itself. Other callers see that lease
     // through BackendProcess.hasActiveMaintenanceWork and the native guards.
-    busy: backend?.hasActiveBackendWork() === true || hasActiveVisionWork() || presenceVoiceSessionActive
+    busy: backend?.hasActiveBackendWork() === true || hasActiveVisionWork() || hasActiveInternetWork() || presenceVoiceSessionActive
       || songCoverManager?.hasActiveWork() === true || dataStorageOperation !== null || shutdownStarted }
 }
 
@@ -2854,6 +2883,17 @@ function requireMainWindow(): BrowserWindow {
 }
 
 function registerIpcHandlers(): void {
+  ipcMain.handle('desktop:internet-policy:get', (event) => {
+    assertTrustedSender(event)
+    return requireInternetPolicy().getState()
+  })
+  ipcMain.handle('desktop:internet-policy:update', (event, request: unknown) => {
+    assertTrustedSender(event)
+    // Turning Internet off must stay available while a native request drains.
+    // The service revokes permission synchronously before persistence begins.
+    const pending = requireInternetPolicy().update(request)
+    return trackInternetOperation(() => pending)
+  })
   ipcMain.handle('vision:get-history', (event, chatId: unknown) => {
     assertTrustedSender(event)
     const current = parseVisionChatId(chatId)
@@ -3226,6 +3266,10 @@ function registerIpcHandlers(): void {
         if (request === null) {
           throw new Error('Song Cover request is invalid.')
         }
+        if (request.engine === 'lyrics-svs') {
+          try { assertInternetLyricsAllowed(requireInternetPolicy()) }
+          catch { throw new SongCoverStartError('lyrics-network', 'Enable Internet and allow lrclib.net in Settings before fetching lyrics.') }
+        }
         const manager = requireSongCoverManager()
         // Renderer readiness is advisory UX. Recheck in Main before revealing a
         // picker and again after native UI yields, so no stale document can
@@ -3438,7 +3482,15 @@ function registerIpcHandlers(): void {
     'desktop:open-external-url',
     async (event, url: unknown): Promise<void> => {
       assertTrustedSender(event)
-      await shell.openExternal(parseSafeExternalUrl(url))
+      if (typeof url !== 'string') throw new Error('External URL is invalid.')
+      await trackInternetOperation(() => openInternetBrowser(requireInternetPolicy(), url, async target => {
+        const choice = await dialog.showMessageBox(requireMainWindow(), {
+          type: 'question', title: 'Open external website', message: 'Open this website in your browser?',
+          detail: `${target}\n\nYour browser controls its own cookies, login and network traffic. Turning Internet off in Elysia will not close this tab.`,
+          buttons: ['Cancel', 'Open browser'], defaultId: 0, cancelId: 0, noLink: true,
+        })
+        return choice.response === 1
+      }, target => shell.openExternal(target)))
     },
   )
 
@@ -4419,6 +4471,11 @@ if (!hasSingleInstanceLock) {
     }
     const projectRoot = resolveProjectRoot()
     const activeDataRoot = await initializeManagedDataStorage(projectRoot)
+    internetPolicyService = new InternetPolicyService(path.join(app.getPath('userData'), 'internet-policy.json'), {
+      onChange: publishInternetPolicy,
+    })
+    await internetPolicyService.load()
+    internetTransport = new InternetTransport(internetPolicyService)
     desktopPetRepository = new DesktopPetPreferencesRepository(
       path.join(app.getPath('userData'), 'desktop-pet.json'),
     )
@@ -4472,7 +4529,7 @@ if (!hasSingleInstanceLock) {
       speechPlaybackRouter,
       activeDataRoot,
       hasActiveDesktopWork,
-      hasActiveVisionWork,
+      () => hasActiveVisionWork() || hasActiveInternetWork(),
     )
     workDesktopController = new WorkDesktopController(createWorkDesktopNativeCallbacks({
       getOwner: desktopOwner, getStorage: desktopStore, getWindow: requireMainWindow,
@@ -4501,6 +4558,11 @@ if (!hasSingleInstanceLock) {
         }
       },
       publishSongCoverState,
+      undefined, undefined, undefined, undefined,
+      input => trackInternetOperation(() => {
+        if (internetTransport === null) throw new Error('Internet transport is unavailable.')
+        return prepareInternetLyrics(requireInternetPolicy(), internetTransport, input)
+      }),
     )
     registerIpcHandlers()
     createMainWindow()
@@ -4556,6 +4618,7 @@ if (!hasSingleInstanceLock) {
       return
     }
     shutdownStarted = true
+    internetPolicyService?.shutdown()
     visionContextStore.clear()
     visionContextScope = null
     workDesktopController?.clear()
@@ -4591,7 +4654,8 @@ if (!hasSingleInstanceLock) {
       const finishDataStorage = dataStorageOperation === null
         ? Promise.resolve()
         : dataStorageOperation.then(() => undefined, () => undefined)
-      const stopBackend = Promise.allSettled([finishDataStorage, ...workDesktopRequests, ...visionRequests]).then(async () => {
+      const stopBackend = Promise.allSettled([finishDataStorage, ...workDesktopRequests, ...visionRequests,
+        ...internetRequests, internetPolicyService?.whenIdle() ?? Promise.resolve()]).then(async () => {
         if (visionAnalysisController === closingVisionAnalysis && closingVisionAnalysis?.hasActiveWork() !== true) {
           visionAnalysisController = null
         }

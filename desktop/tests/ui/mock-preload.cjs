@@ -195,6 +195,11 @@ function defaultPresenceNotificationState() {
   }
 }
 
+function defaultInternetPolicyState() {
+  return { kind: 'internet.policy', revision: 0, enabled: false, allowedDomains: [],
+    proxy: { mode: 'direct' }, timeoutMs: 15000, warning: null }
+}
+
 function defaultSongCoverState() {
   return {
     revision: 0,
@@ -391,6 +396,11 @@ let settingsState = defaultSettingsState()
 let dataStorageState = defaultDataStorageState()
 let desktopPetState = defaultDesktopPetState()
 let presenceNotificationState = defaultPresenceNotificationState()
+let internetPolicyState = defaultInternetPolicyState()
+let nextInternetPolicyError = null
+let delayInternetPolicyUpdate = false
+let pendingInternetPolicyUpdates = []
+let internetPolicyEpoch = 0
 let songCoverReadiness = defaultSongCoverReadiness()
 let songCoverState = defaultSongCoverState()
 let voiceSettingsState = defaultVoiceSettingsState()
@@ -618,6 +628,7 @@ let nextVoiceTranscriptionTerminalBeforeAcknowledgement = false
 const backendListeners = new Set()
 const desktopPetStateListeners = new Set()
 const presenceNotificationStateListeners = new Set()
+const internetPolicyListeners = new Set()
 const songCoverStateListeners = new Set()
 const voiceCallWindowActionListeners = new Set()
 let latestVoiceCallWindowState = null
@@ -647,6 +658,7 @@ if (reloadState !== null) {
     reloadState.presenceNotificationState
       ?? defaultPresenceNotificationState(),
   )
+  internetPolicyState = clone(reloadState.internetPolicyState ?? defaultInternetPolicyState())
   songCoverReadiness = clone(
     reloadState.songCoverReadiness ?? defaultSongCoverReadiness(),
   )
@@ -1229,6 +1241,36 @@ const desktopApi = {
   getPresenceNotificationState: async () => {
     record('getPresenceNotificationState')
     return clone(presenceNotificationState)
+  },
+
+  getInternetPolicy: async () => {
+    record('getInternetPolicy')
+    return clone(internetPolicyState)
+  },
+  updateInternetPolicy: async (request) => {
+    record('updateInternetPolicy', [request])
+    const epoch = ++internetPolicyEpoch
+    internetPolicyState = { ...internetPolicyState, enabled: false }
+    for (const listener of internetPolicyListeners) listener(clone(internetPolicyState))
+    if (delayInternetPolicyUpdate && request.enabled) await new Promise(resolve => { pendingInternetPolicyUpdates.push(resolve) })
+    if (epoch !== internetPolicyEpoch) throw new Error('Internet policy changed during the update.')
+    if (nextInternetPolicyError !== null) {
+      const message = nextInternetPolicyError; nextInternetPolicyError = null
+      internetPolicyState = { ...internetPolicyState, warning: 'storage_unavailable' }
+      for (const listener of internetPolicyListeners) listener(clone(internetPolicyState))
+      throw new Error(message)
+    }
+    if (request.expectedRevision !== internetPolicyState.revision) throw new Error('Internet policy changed elsewhere.')
+    internetPolicyState = { kind: 'internet.policy', revision: internetPolicyState.revision + 1,
+      enabled: request.enabled, allowedDomains: clone(request.allowedDomains), proxy: clone(request.proxy),
+      timeoutMs: request.timeoutMs, warning: null }
+    for (const listener of internetPolicyListeners) listener(clone(internetPolicyState))
+    return clone(internetPolicyState)
+  },
+  onInternetPolicyChanged: (listener) => {
+    record('onInternetPolicyChanged.subscribe')
+    internetPolicyListeners.add(listener)
+    return () => { internetPolicyListeners.delete(listener); record('onInternetPolicyChanged.unsubscribe') }
   },
 
   updatePresenceNotifications: async (request) => {
@@ -2935,6 +2977,18 @@ const desktopApi = {
 }
 
 const testControl = {
+  setInternetPolicy: (state) => { internetPolicyState = clone(state) },
+  emitInternetPolicy: (state) => {
+    internetPolicyState = clone(state)
+    for (const listener of internetPolicyListeners) listener(clone(internetPolicyState))
+  },
+  failNextInternetPolicyUpdate: (message) => { nextInternetPolicyError = message },
+  setInternetPolicyUpdateDelay: (delayed) => { delayInternetPolicyUpdate = delayed },
+  releaseNextInternetPolicyUpdate: () => {
+    const release = pendingInternetPolicyUpdates.shift()
+    if (release === undefined) return false
+    release(); return true
+  },
   setSelectedVisionImage: (image) => { selectedVisionImage = clone(image) },
   setVisionSelectionDelay: (delayed) => { delayVisionSelection = delayed },
   failNextVisionSelection: (message) => { nextVisionError = message },
@@ -3078,6 +3132,10 @@ const testControl = {
     dataStorageState = defaultDataStorageState()
     desktopPetState = defaultDesktopPetState()
     presenceNotificationState = defaultPresenceNotificationState()
+    internetPolicyState = defaultInternetPolicyState(); nextInternetPolicyError = null; delayInternetPolicyUpdate = false
+    internetPolicyEpoch += 1
+    for (const release of pendingInternetPolicyUpdates) release()
+    pendingInternetPolicyUpdates = []
     songCoverReadiness = defaultSongCoverReadiness()
     songCoverState = defaultSongCoverState()
     voiceSettingsState = defaultVoiceSettingsState()
@@ -3561,6 +3619,7 @@ const testControl = {
       dataStorageState,
       desktopPetState,
       presenceNotificationState,
+      internetPolicyState,
       songCoverReadiness,
       songCoverState,
       voiceSettingsState,

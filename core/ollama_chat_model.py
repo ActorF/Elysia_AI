@@ -1,10 +1,15 @@
-"""Direct HTTP adapter for Ollama."""
+"""Generate Chat replies through explicit, proxy-free local Ollama HTTP."""
 
 import logging
 import requests
 
 from typing import Any, cast
 from .chat_model import ChatMessage
+from .local_ollama import (
+    LOCAL_OLLAMA_MODEL_ERROR,
+    is_cloud_ollama_model_name,
+    normalize_local_ollama_origin,
+)
 
 from requests.exceptions import (
     ConnectionError as RequestsConnectionError,
@@ -41,18 +46,12 @@ class OllamaChatModel:
         """
 
         cleaned_model_name = model_name.strip()
-        cleaned_host = ollama_host.strip().rstrip("/")
+        cleaned_host = normalize_local_ollama_origin(ollama_host)
 
         if not cleaned_model_name:
             raise ValueError("Model name cannot be empty.")
-
-        if not cleaned_host.startswith(
-            ("http://", "https://")
-        ):
-            raise ValueError(
-                "Ollama host must start with "
-                "http:// or https://."
-            )
+        if is_cloud_ollama_model_name(cleaned_model_name):
+            raise ValueError(LOCAL_OLLAMA_MODEL_ERROR)
 
         if timeout_seconds <= 0:
             raise ValueError(
@@ -177,12 +176,17 @@ class OllamaChatModel:
         """
 
         try:
-            response = requests.request(
-                method,
-                f"{self._ollama_host}{path}",
-                json=cast(Any,payload),
-                timeout=self._timeout_seconds,
-            )
+            # Chat remains local even with machine-wide proxy variables or a
+            # local service that attempts to redirect private prompt content.
+            with requests.Session() as session:
+                session.trust_env = False
+                response = session.request(
+                    method,
+                    f"{self._ollama_host}{path}",
+                    json=cast(Any, payload),
+                    timeout=self._timeout_seconds,
+                    allow_redirects=False,
+                )
 
         # Connection and timeout failures share the same actionable UI message.
         except (
@@ -198,6 +202,9 @@ class OllamaChatModel:
             raise ChatModelError(
                 "The Ollama request failed."
             ) from error
+
+        if 300 <= response.status_code < 400:
+            raise ChatModelResponseError("Local Ollama redirects are disabled.")
 
         try:
             decoded_data: object = response.json()

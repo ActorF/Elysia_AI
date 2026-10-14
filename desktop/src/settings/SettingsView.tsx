@@ -1,6 +1,6 @@
 /**
  * Render categorized settings while preserving independently persisted drafts.
- * Backend defaults share one save action; appearance, storage, and audio-device
+ * Backend defaults share one save action; Internet, appearance, storage, and audio-device
  * controls keep their existing renderer-local or Main-owned persistence rules.
  */
 
@@ -43,6 +43,8 @@ import {
   type VoiceSettingsDraft,
 } from './VoiceSettingsSection.tsx'
 import { describeTranscriptionReadiness } from '../voice/transcription-readiness.ts'
+import type { InternetPolicyClient } from '../../electron/internet-policy-protocol.ts'
+import { InternetSettingsSection } from '../internet/InternetSettingsSection.tsx'
 
 export type ThemePreference = 'system' | 'light' | 'dark'
 export type ResolvedTheme = Exclude<ThemePreference, 'system'>
@@ -55,6 +57,7 @@ export type DataStorageAction =
   | 'opening'
 
 export interface SettingsViewProps {
+  internetApi?: InternetPolicyClient
   themePreference: ThemePreference
   resolvedTheme: ResolvedTheme
   desktopPetState: DesktopPetState | null
@@ -168,7 +171,7 @@ interface SettingsDraft {
 
 type SettingsValidationErrors = Partial<Record<keyof SettingsDraft, string>>
 
-type SettingsCategory = 'general' | 'appearance' | 'voice' | 'data' | 'advanced'
+type SettingsCategory = 'general' | 'appearance' | 'voice' | 'data' | 'internet' | 'advanced'
 
 const settingsCategories: readonly {
   id: SettingsCategory
@@ -199,6 +202,12 @@ const settingsCategories: readonly {
     label: 'Data & storage',
     description: 'Manage local storage and file imports.',
     icon: 'folder',
+  },
+  {
+    id: 'internet',
+    label: 'Internet',
+    description: 'Control explicit access to public online services.',
+    icon: 'settings',
   },
   {
     id: 'advanced',
@@ -1073,6 +1082,7 @@ function DataStorageSettings({
 
 /** Render navigable settings categories without discarding unsaved drafts. */
 export function SettingsView({
+  internetApi,
   themePreference,
   resolvedTheme,
   desktopPetState,
@@ -1134,6 +1144,7 @@ export function SettingsView({
   const [draft, setDraft] = useState<SettingsDraft | null>(null)
   const [clientError, setClientError] = useState<string | null>(null)
   const [voiceDirty, setVoiceDirty] = useState(false)
+  const [internetDirty, setInternetDirty] = useState(false)
 
   useLayoutEffect(() => {
     let active = true
@@ -1166,9 +1177,9 @@ export function SettingsView({
     }
   }, [activeCategory, globalFooterVisible, navigationId])
   useLayoutEffect(() => {
-    onDirtyChange(globalDirty || voiceDirty)
+    onDirtyChange(globalDirty || voiceDirty || internetDirty)
     return () => { onDirtyChange(false) }
-  }, [globalDirty, onDirtyChange, voiceDirty])
+  }, [globalDirty, internetDirty, onDirtyChange, voiceDirty])
 
   const modelOptions = useMemo(() => {
     const desiredModel = settingsState?.settings.modelName
@@ -1970,6 +1981,10 @@ export function SettingsView({
             )}
           </SettingsCategoryPanel>
 
+          <SettingsCategoryPanel category="internet" activeCategory={activeCategory} navigationId={navigationId}>
+            <InternetSettingsSection api={internetApi} onDirtyChange={setInternetDirty} />
+          </SettingsCategoryPanel>
+
           <SettingsCategoryPanel
             category="advanced"
             activeCategory={activeCategory}
@@ -2064,7 +2079,7 @@ export function SettingsView({
                     <p>Project workspace bindings remain Project-owned.</p>
                   </div>
                   <p className="settings-readonly-status">
-                    Work permissions and tools are disabled until their execution boundary is implemented. Manage the current workspace from Projects.
+                    Work plans use the current Project workspace. Review proposed actions and approve file changes separately in Work mode. Manage workspace bindings from Projects.
                   </p>
                 </section>
 

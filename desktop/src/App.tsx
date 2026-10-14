@@ -8097,6 +8097,7 @@ function App() {
   if (activeView === 'settings') {
     content = (
       <SettingsView
+        internetApi={desktopApi}
         themePreference={theme}
         resolvedTheme={resolvedTheme}
         desktopPetState={desktopPetState}

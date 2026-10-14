@@ -78,7 +78,7 @@ LRCLIB 只有 Plain lyrics 而没有 `syncedLyrics` 时，Main 不会启动 SVS�
 
 网络只用于 Main 发起的 LRCLIB 查询。用户选中 **Lyrics-driven singing** 并确认 **Choose audio** 后，Main 会向固定 `https://lrclib.net` 发送从手动覆盖、可信 Tag 或文件名解析出的歌名、歌手，以及 FFprobe 取得并四舍五入的音频时长；不会上传歌曲、人声 Stem、伴奏、模型、Prompt、本机路径或生成结果。查询使用无凭据 HTTPS GET，因此这些匹配字段会成为该请求 URL 的 Query；两种 voice conversion 均不进行在线歌词查询。
 
-没有网络、LRCLIB 不可用或未找到可信同步歌词时，歌词路径不会回退到猜测，也不会自动切换 Legacy 路径。歌词准备完成后，Windows／WSL 的 Demucs、FunASR、ROSVOT、RMVPE、OpenCC 与 SoulX 模型均从本机读取；子进程强制 Hugging Face、Datasets 和 Transformers Offline，移除 Proxy，并丢弃 Vendor stdout/stderr。当前项目尚未完成 Stage 12 的全局网络总开关、代理和统一查询记录；Song Cover 只依靠该对话框中的显式方法选择与确认建立一次任务授权，不能被描述成整个应用的联网策略已经完成。
+没有网络、LRCLIB 不可用或未找到可信同步歌词时，歌词路径不会回退到猜测，也不会自动切换 Legacy 路径。歌词准备完成后，Windows／WSL 的 Demucs、FunASR、ROSVOT、RMVPE、OpenCC 与 SoulX 模型均从本机读取；子进程强制 Hugging Face、Datasets 和 Transformers Offline，移除 Proxy，并丢弃 Vendor stdout/stderr。歌词查询还必须通过 Stage 12 的统一网络策略：当前会话开启 Internet，并允许精确域名 `lrclib.net`；代理、超时和关闭后的取消都由 Main 管理。Choose audio 仍需要明确的方法选择与任务确认。联网设置不会自动授权上传音频或其他外部写入；查询记录功能见 [联网说明](19-INTERNET-AND-SERVICES.md)。
 
 默认 Voice conversion 与显式 Legacy RVC 都从源音频转换，不访问 LRCLIB。
 

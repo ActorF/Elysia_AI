@@ -36,14 +36,17 @@ def test_ensure_model_available_finds_model(
 ) -> None:
     """Verify that ensure model available finds model."""
     def fake_request(
+        self: requests.Session,
         method: str,
         url: str,
         **kwargs: object,
     ) -> FakeResponse:
         """Validate the tags request and report the configured model present."""
+        assert self.trust_env is False
+        assert kwargs["allow_redirects"] is False
         assert method == "GET"
         assert url == (
-            "http://localhost:11434/api/tags"
+            "http://127.0.0.1:11434/api/tags"
         )
         assert kwargs["timeout"] == 120.0
         assert kwargs["json"] is None
@@ -60,7 +63,7 @@ def test_ensure_model_available_finds_model(
         )
 
     monkeypatch.setattr(
-        requests,
+        requests.Session,
         "request",
         fake_request,
     )
@@ -78,6 +81,7 @@ def test_ensure_model_available_rejects_missing_model(
 ) -> None:
     """Verify that ensure model available rejects missing model."""
     def fake_request(
+        self: requests.Session,
         method: str,
         url: str,
         **kwargs: object,
@@ -92,7 +96,7 @@ def test_ensure_model_available_rejects_missing_model(
         )
 
     monkeypatch.setattr(
-        requests,
+        requests.Session,
         "request",
         fake_request,
     )
@@ -114,14 +118,17 @@ def test_generate_reply_returns_content(
 ) -> None:
     """Verify that generate reply returns content."""
     def fake_request(
+        self: requests.Session,
         method: str,
         url: str,
         **kwargs: object,
     ) -> FakeResponse:
         """Validate the chat request and return a padded assistant reply."""
+        assert self.trust_env is False
+        assert kwargs["allow_redirects"] is False
         assert method == "POST"
         assert url == (
-            "http://localhost:11434/api/chat"
+            "http://127.0.0.1:11434/api/chat"
         )
         assert kwargs["json"] == {
             "model": "qwen3.5:9b",
@@ -157,7 +164,7 @@ def test_generate_reply_returns_content(
         )
 
     monkeypatch.setattr(
-        requests,
+        requests.Session,
         "request",
         fake_request,
     )
@@ -195,6 +202,7 @@ def test_request_rejects_offline_ollama(
 ) -> None:
     """Verify that request rejects offline Ollama."""
     def fake_request(
+        self: requests.Session,
         method: str,
         url: str,
         **kwargs: object,
@@ -203,7 +211,7 @@ def test_request_rejects_offline_ollama(
         raise RequestsConnectionError("Offline")
 
     monkeypatch.setattr(
-        requests,
+        requests.Session,
         "request",
         fake_request,
     )
@@ -225,6 +233,7 @@ def test_generate_reply_rejects_invalid_content(
 ) -> None:
     """Verify that generate reply rejects invalid content."""
     def fake_request(
+        self: requests.Session,
         method: str,
         url: str,
         **kwargs: object,
@@ -240,7 +249,7 @@ def test_generate_reply_rejects_invalid_content(
         )
 
     monkeypatch.setattr(
-        requests,
+        requests.Session,
         "request",
         fake_request,
     )
