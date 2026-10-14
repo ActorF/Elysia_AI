@@ -63,6 +63,19 @@ and reads through the verified leaf handle; traversal, network/device roots,
 symlinks, Windows junctions, and hard links are rejected. Work state is durable
 during data-root migration and excluded from generic cache cleanup.
 
+`work.tools.list` returns `{kind: "work.tools", tools}` for the active Work
+Chat. Every catalog entry declares its exact input and output schemas, risk,
+and timeout. The catalog introduces four read operations: directory listing,
+bounded text reading, filename search, and metadata. The complete tool contract
+also defines create, edit, move, and recoverable delete for subsequent approval
+modules. There is no shell or arbitrary-command tool. Statuses distinguish
+success, partial output, denial, cancellation, and failure with fixed public
+errors. Work code uses `work_tools` because the reviewed RVC runtime owns the
+unrelated vendor namespace `tools`; the unused old Elysia namespace was removed.
+Selected Work roots must also be separate from application code and private
+application data. This prevents a file edit from modifying the very binding or
+permission journal that authorizes subsequent actions.
+
 `settings.get` and `settings.update` expose one exact public allowlist with
 optimistic revision checks: Chat model, Ollama origin, two Memory limits,
 import byte limit, transcription model/device/language, automatic Voice Call speech,

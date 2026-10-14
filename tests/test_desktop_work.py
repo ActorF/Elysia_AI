@@ -59,7 +59,7 @@ def test_workspace_rpc_reaches_runtime_and_chat_mode_refuses_it(tmp_path: Path) 
 
     factory, _ = _transcription_runner_factory(_ControlledTranscriber(RuntimeError("Unused transcription")))
     backend, brain, output = _initialized_backend(tmp_path, factory)
-    backend._runtime_settings = replace(backend._runtime_settings, data_root=tmp_path)
+    backend._runtime_settings = replace(backend._runtime_settings, data_root=tmp_path / "application-data")
     chat_id = str(brain.chat.chat_id)
     request = _request("work-chat-denied", "work.workspace.get", {"chatId": chat_id})
     assert backend._handle_line(json.dumps(request))
@@ -88,3 +88,29 @@ def test_scope_result_has_discriminant_and_no_extra_native_fields() -> None:
     assert build_success_response("work", result)["result"] == result
     with pytest.raises(ProtocolValidationError):
         build_success_response("work", {**result, "handle": 123})
+
+
+def test_catalog_declares_strict_typed_read_tools_and_rejects_tampering(tmp_path: Path) -> None:
+    """Active Work exposes trusted schemas and cannot accept forged command extensions."""
+
+    current = _chat()
+    runtime = DesktopWorkRuntime(tmp_path, lambda: current)
+    result = runtime.dispatch("work.tools.list", {"chatId": str(current.chat_id)})
+    assert [tool["toolId"] for tool in result["tools"]] == ["list_directory", "read_text", "search_files", "metadata"]
+    assert build_success_response("catalog", result)["result"] == result
+    result["tools"][0]["risk"] = "critical"
+    with pytest.raises(ProtocolValidationError):
+        build_success_response("catalog", result)
+
+
+def test_tools_cannot_bind_their_own_permission_or_application_storage(tmp_path: Path) -> None:
+    """Editing a binding journal cannot expand access to an unselected directory."""
+
+    current = _chat()
+    private = tmp_path / "application-data"
+    private.mkdir()
+    runtime = DesktopWorkRuntime(private / "work", lambda: current, protected_roots=(private,))
+    for selected in (private, tmp_path):
+        with pytest.raises(PermissionError):
+            runtime.dispatch("work.workspace.bind", {"chatId": str(current.chat_id), "workspacePath": str(selected)})
+    assert not (private / "work" / "bindings").exists()

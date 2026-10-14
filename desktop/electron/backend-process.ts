@@ -56,6 +56,7 @@ import {
   type WorkWorkspaceBindParams,
   type WorkWorkspaceGetParams,
 } from './work-protocol.js'
+import { parseWorkToolsState, type WorkToolsState } from './work-tool-protocol.js'
 import {
   SpeechDeliveryCoordinator,
   type SpeechDeliveryStatus,
@@ -358,6 +359,8 @@ interface PendingRequest {
   rejectProjectState?: (error: Error) => void
   resolveWorkWorkspace?: (state: WorkWorkspaceState) => void
   rejectWorkWorkspace?: (error: Error) => void
+  resolveWorkTools?: (state: WorkToolsState) => void
+  rejectWorkTools?: (error: Error) => void
   resolveSettingsState?: (state: DesktopSettingsState) => void
   rejectSettingsState?: (error: Error) => void
   resolveVoiceSettingsState?: (state: VoiceSettingsState) => void
@@ -1471,6 +1474,19 @@ export class BackendProcess {
     return this.requestWorkWorkspace('work.workspace.bind', request)
   }
 
+  /** Read the closed tool catalog for the current explicitly selected Work Chat. */
+  getWorkTools(chatId: string): Promise<WorkToolsState> {
+    if (this.snapshot.status !== 'ready' || this.snapshot.chatId !== chatId
+      || !this.snapshot.capabilities.includes('work.tools')) {
+      return Promise.reject(new Error('Work tools are unavailable for this Chat.'))
+    }
+    return new Promise((resolve, reject) => {
+      this.sendRequest('work.tools.list', { chatId }, chatId, {
+        resolveWorkTools: resolve, rejectWorkTools: reject,
+      })
+    })
+  }
+
   /** Set one idle Chat's pin state. */
   pinChat(request: PinChatRequest): Promise<ChatSessionState> {
     return this.requestChatState('chat.pin', request)
@@ -2237,6 +2253,8 @@ export class BackendProcess {
       | 'rejectProjectState'
       | 'resolveWorkWorkspace'
       | 'rejectWorkWorkspace'
+      | 'resolveWorkTools'
+      | 'rejectWorkTools'
       | 'resolveSettingsState'
       | 'rejectSettingsState'
       | 'resolveVoiceSettingsState'
@@ -2409,6 +2427,8 @@ export class BackendProcess {
             'Work Workspace result does not belong to its request.',
           )
         }
+      } else if (pending.method === 'work.tools.list') {
+        parseWorkToolsState(message.result)
       } else if (SETTINGS_METHODS.has(pending.method)) {
         parseSettingsStateResult(message.result)
       } else if (VOICE_SETTINGS_METHODS.has(pending.method)) {
@@ -2567,6 +2587,9 @@ export class BackendProcess {
       }
       if (WORK_WORKSPACE_METHODS.has(pending.method)) {
         pending.rejectWorkWorkspace?.(new Error('The Work Workspace action failed.'))
+      }
+      if (pending.method === 'work.tools.list') {
+        pending.rejectWorkTools?.(new Error('The Work tool catalog could not be loaded.'))
       }
       if (SETTINGS_METHODS.has(pending.method)) {
         pending.rejectSettingsState?.(new Error(message.error.message))
@@ -2738,6 +2761,10 @@ export class BackendProcess {
 
     if (WORK_WORKSPACE_METHODS.has(pending.method)) {
       pending.resolveWorkWorkspace?.(parseWorkWorkspaceState(message.result))
+      return
+    }
+    if (pending.method === 'work.tools.list') {
+      pending.resolveWorkTools?.(parseWorkToolsState(message.result))
       return
     }
 
@@ -3450,6 +3477,7 @@ export class BackendProcess {
         ),
       )
       pending.rejectWorkWorkspace?.(new Error('Python Backend stopped before the Workspace action completed.'))
+      pending.rejectWorkTools?.(new Error('Python Backend stopped before the tool catalog completed.'))
       pending.rejectSettingsState?.(
         new Error(
           'Python Backend stopped before the Settings action completed.',
@@ -3505,6 +3533,7 @@ export class BackendProcess {
       pending.rejectChatState?.(error)
       pending.rejectProjectState?.(error)
       pending.rejectWorkWorkspace?.(error)
+      pending.rejectWorkTools?.(error)
       pending.rejectSettingsState?.(error)
       pending.rejectVoiceSettingsState?.(error)
       pending.rejectVoiceCapture?.(error)
@@ -3520,6 +3549,8 @@ export class BackendProcess {
       pending.rejectProjectState = undefined
       pending.resolveWorkWorkspace = undefined
       pending.rejectWorkWorkspace = undefined
+      pending.resolveWorkTools = undefined
+      pending.rejectWorkTools = undefined
       pending.resolveSettingsState = undefined
       pending.rejectSettingsState = undefined
       pending.resolveVoiceSettingsState = undefined

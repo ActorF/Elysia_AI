@@ -25,11 +25,13 @@ import type {
   SongCoverState,
 } from './song-cover-contracts.js'
 import type { WorkWorkspaceClient } from './work-protocol.js'
+import type { WorkToolClient } from './work-tool-protocol.js'
 
 export type {
   WorkWorkspaceClient,
   WorkWorkspaceState,
 } from './work-protocol.js'
+export type { WorkToolClient, WorkToolsState, WorkToolDescriptor } from './work-tool-protocol.js'
 
 export type BackendStatus =
   | 'starting'
@@ -559,7 +561,7 @@ export type BackendEvent =
  * Renderer code receives domain data and owned actions, never Electron or raw
  * filesystem primitives.
  */
-export interface DesktopApi extends WorkWorkspaceClient {
+export interface DesktopApi extends WorkWorkspaceClient, WorkToolClient {
   /** Signal that the renderer can receive events and the main window may appear. */
   rendererReady(): Promise<void>
   /** Keep native window chrome aligned with the renderer's saved appearance. */

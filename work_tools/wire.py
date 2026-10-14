@@ -5,8 +5,10 @@ from __future__ import annotations
 from typing import Any
 import re
 
+from .contracts import TOOL_CATALOG, descriptor_to_data
 
-WORK_METHODS = ("work.workspace.get", "work.workspace.bind")
+
+WORK_METHODS = ("work.workspace.get", "work.workspace.bind", "work.tools.list")
 
 
 def validate_work_params(method: str, value: object) -> dict[str, Any]:
@@ -31,8 +33,21 @@ def validate_work_params(method: str, value: object) -> dict[str, Any]:
 
 
 def validate_work_result(value: object) -> dict[str, Any]:
-    """Validate canonical Workspace scope without treating it as a Chat reply."""
+    """Validate scope or the trusted catalog before publishing a Work response."""
 
+    if isinstance(value, dict) and value.get("kind") == "work.tools":
+        if set(value) != {"kind", "tools"} or type(value["tools"]) is not list or len(value["tools"]) > 8:
+            raise ValueError("Work catalog fields are invalid.")
+        trusted = {descriptor.tool_id: descriptor_to_data(descriptor) for descriptor in TOOL_CATALOG}
+        seen: set[str] = set()
+        for entry in value["tools"]:
+            if type(entry) is not dict or type(entry.get("toolId")) is not str:
+                raise ValueError("Work catalog entry is invalid.")
+            tool_id = entry["toolId"]
+            if tool_id in seen or trusted.get(tool_id) != entry:
+                raise ValueError("Work catalog must contain unique trusted entries.")
+            seen.add(tool_id)
+        return dict(value)
     if not isinstance(value, dict) or set(value) != {"kind", "chatId", "workspacePath"} or value["kind"] != "work.workspace":
         raise ValueError("Work response fields are invalid.")
     validate_work_params("work.workspace.bind", {"chatId": value["chatId"], "workspacePath": value["workspacePath"]})

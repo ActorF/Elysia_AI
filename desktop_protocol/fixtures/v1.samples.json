@@ -5,6 +5,13 @@
   },
   "validClientMessages": [
     {
+      "name": "work tools catalog request",
+      "message": {
+        "type": "request", "protocol": { "name": "elysia.desktop", "version": 1 },
+        "id": "work-tools-1", "method": "work.tools.list", "params": { "chatId": "chat_fixture" }
+      }
+    },
+    {
       "name": "work workspace get request",
       "message": {
         "type": "request", "protocol": { "name": "elysia.desktop", "version": 1 },
@@ -604,6 +611,1749 @@
     }
   ],
   "validServerMessages": [
+    {
+      "name": "work tools catalog response",
+      "message": {
+        "type": "response",
+        "protocol": {
+          "name": "elysia.desktop",
+          "version": 1
+        },
+        "id": "work-tools-1",
+        "ok": true,
+        "result": {
+          "kind": "work.tools",
+          "tools": [
+            {
+              "toolId": "list_directory",
+              "name": "列出目录",
+              "description": "列出工作区目录的有界项目和元数据。",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string",
+                    "maxLength": 4096
+                  }
+                },
+                "required": [
+                  "path"
+                ],
+                "additionalProperties": false
+              },
+              "outputSchema": {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "enum": [
+                      "succeeded",
+                      "partial",
+                      "denied",
+                      "cancelled",
+                      "failed"
+                    ]
+                  },
+                  "data": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "entries": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "path": {
+                                  "type": "string",
+                                  "maxLength": 4096
+                                },
+                                "name": {
+                                  "type": "string",
+                                  "maxLength": 4096
+                                },
+                                "kind": {
+                                  "enum": [
+                                    "file",
+                                    "directory"
+                                  ]
+                                },
+                                "sizeBytes": {
+                                  "type": "integer",
+                                  "minimum": 0
+                                }
+                              },
+                              "required": [
+                                "path",
+                                "name",
+                                "kind",
+                                "sizeBytes"
+                              ],
+                              "additionalProperties": false
+                            },
+                            "maxItems": 1000
+                          },
+                          "truncated": {
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "entries",
+                          "truncated"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "error": {
+                    "anyOf": [
+                      {
+                        "oneOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "const": "invalid_request"
+                              },
+                              "message": {
+                                "const": "The tool request is invalid."
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "const": "unsupported_tool"
+                              },
+                              "message": {
+                                "const": "The requested tool is unavailable."
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "const": "work_mode_required"
+                              },
+                              "message": {
+                                "const": "Workspace tools require explicit Work mode."
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "const": "workspace_required"
+                              },
+                              "message": {
+                                "const": "Choose a Workspace before using tools."
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "const": "path_denied"
+                              },
+                              "message": {
+                                "const": "The requested path is outside the permitted scope or unsafe."
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "const": "sensitive_file"
+                              },
+                              "message": {
+                                "const": "The requested file is restricted."
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "const": "file_too_large"
+                              },
+                              "message": {
+                                "const": "The file exceeds the permitted size."
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "const": "binary_file"
+                              },
+                              "message": {
+                                "const": "Only UTF-8 text files are supported."
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "const": "not_found"
+                              },
+                              "message": {
+                                "const": "The requested file does not exist."
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "const": "already_exists"
+                              },
+                              "message": {
+                                "const": "The destination already exists."
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "const": "permission_required"
+                              },
+                              "message": {
+                                "const": "The action requires explicit approval."
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "const": "permission_denied"
+                              },
+                              "message": {
+                                "const": "The action was declined."
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "const": "cancelled"
+                              },
+                              "message": {
+                                "const": "The action was cancelled."
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "const": "timeout"
+                              },
+                              "message": {
+                                "const": "The tool exceeded its time limit."
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "const": "io_error"
+                              },
+                              "message": {
+                                "const": "The local file operation failed."
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "const": "conflict"
+                              },
+                              "message": {
+                                "const": "The file changed; prepare the action again."
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "const": "undo_unavailable"
+                              },
+                              "message": {
+                                "const": "The action can no longer be undone safely."
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "const": "verification_failed"
+                              },
+                              "message": {
+                                "const": "The written result could not be verified."
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          }
+                        ]
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "status",
+                  "data",
+                  "error"
+                ],
+                "additionalProperties": false,
+                "allOf": [
+                  {
+                    "if": {
+                      "properties": {
+                        "status": {
+                          "enum": [
+                            "succeeded",
+                            "partial"
+                          ]
+                        }
+                      }
+                    },
+                    "then": {
+                      "properties": {
+                        "data": {
+                          "not": {
+                            "type": "null"
+                          }
+                        }
+                      }
+                    },
+                    "else": {
+                      "properties": {
+                        "data": {
+                          "type": "null"
+                        },
+                        "error": {
+                          "not": {
+                            "type": "null"
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "if": {
+                      "properties": {
+                        "status": {
+                          "const": "succeeded"
+                        }
+                      }
+                    },
+                    "then": {
+                      "properties": {
+                        "error": {
+                          "type": "null"
+                        }
+                      }
+                    }
+                  }
+                ]
+              },
+              "risk": "low",
+              "timeoutSeconds": 10
+            },
+            {
+              "toolId": "read_text",
+              "name": "读取文本",
+              "description": "读取有界 UTF-8 文本，不修改文件。",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string",
+                    "maxLength": 4096,
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "path"
+                ],
+                "additionalProperties": false
+              },
+              "outputSchema": {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "enum": [
+                      "succeeded",
+                      "partial",
+                      "denied",
+                      "cancelled",
+                      "failed"
+                    ]
+                  },
+                  "data": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "path": {
+                            "type": "string",
+                            "maxLength": 4096
+                          },
+                          "content": {
+                            "type": "string",
+                            "maxLength": 262144
+                          },
+                          "sizeBytes": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 262144
+                          }
+                        },
+                        "required": [
+                          "path",
+                          "content",
+                          "sizeBytes"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "error": {
+                    "anyOf": [
+                      {
+                        "oneOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "const": "invalid_request"
+                              },
+                              "message": {
+                                "const": "The tool request is invalid."
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "const": "unsupported_tool"
+                              },
+                              "message": {
+                                "const": "The requested tool is unavailable."
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "const": "work_mode_required"
+                              },
+                              "message": {
+                                "const": "Workspace tools require explicit Work mode."
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "const": "workspace_required"
+                              },
+                              "message": {
+                                "const": "Choose a Workspace before using tools."
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "const": "path_denied"
+                              },
+                              "message": {
+                                "const": "The requested path is outside the permitted scope or unsafe."
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "const": "sensitive_file"
+                              },
+                              "message": {
+                                "const": "The requested file is restricted."
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "const": "file_too_large"
+                              },
+                              "message": {
+                                "const": "The file exceeds the permitted size."
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "const": "binary_file"
+                              },
+                              "message": {
+                                "const": "Only UTF-8 text files are supported."
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "const": "not_found"
+                              },
+                              "message": {
+                                "const": "The requested file does not exist."
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "const": "already_exists"
+                              },
+                              "message": {
+                                "const": "The destination already exists."
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "const": "permission_required"
+                              },
+                              "message": {
+                                "const": "The action requires explicit approval."
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "const": "permission_denied"
+                              },
+                              "message": {
+                                "const": "The action was declined."
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "const": "cancelled"
+                              },
+                              "message": {
+                                "const": "The action was cancelled."
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "const": "timeout"
+                              },
+                              "message": {
+                                "const": "The tool exceeded its time limit."
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "const": "io_error"
+                              },
+                              "message": {
+                                "const": "The local file operation failed."
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "const": "conflict"
+                              },
+                              "message": {
+                                "const": "The file changed; prepare the action again."
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "const": "undo_unavailable"
+                              },
+                              "message": {
+                                "const": "The action can no longer be undone safely."
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "const": "verification_failed"
+                              },
+                              "message": {
+                                "const": "The written result could not be verified."
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          }
+                        ]
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "status",
+                  "data",
+                  "error"
+                ],
+                "additionalProperties": false,
+                "allOf": [
+                  {
+                    "if": {
+                      "properties": {
+                        "status": {
+                          "enum": [
+                            "succeeded",
+                            "partial"
+                          ]
+                        }
+                      }
+                    },
+                    "then": {
+                      "properties": {
+                        "data": {
+                          "not": {
+                            "type": "null"
+                          }
+                        }
+                      }
+                    },
+                    "else": {
+                      "properties": {
+                        "data": {
+                          "type": "null"
+                        },
+                        "error": {
+                          "not": {
+                            "type": "null"
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "if": {
+                      "properties": {
+                        "status": {
+                          "const": "succeeded"
+                        }
+                      }
+                    },
+                    "then": {
+                      "properties": {
+                        "error": {
+                          "type": "null"
+                        }
+                      }
+                    }
+                  }
+                ]
+              },
+              "risk": "low",
+              "timeoutSeconds": 10
+            },
+            {
+              "toolId": "search_files",
+              "name": "搜索文件",
+              "description": "按字面名称搜索有界工作区路径，不读取文件正文。",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string",
+                    "maxLength": 4096
+                  },
+                  "query": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  }
+                },
+                "required": [
+                  "path",
+                  "query"
+                ],
+                "additionalProperties": false
+              },
+              "outputSchema": {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "enum": [
+                      "succeeded",
+                      "partial",
+                      "denied",
+                      "cancelled",
+                      "failed"
+                    ]
+                  },
+                  "data": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "matches": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "path": {
+                                  "type": "string",
+                                  "maxLength": 4096
+                                }
+                              },
+                              "required": [
+                                "path"
+                              ],
+                              "additionalProperties": false
+                            },
+                            "maxItems": 500
+                          },
+                          "truncated": {
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "matches",
+                          "truncated"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "error": {
+                    "anyOf": [
+                      {
+                        "oneOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "const": "invalid_request"
+                              },
+                              "message": {
+                                "const": "The tool request is invalid."
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "const": "unsupported_tool"
+                              },
+                              "message": {
+                                "const": "The requested tool is unavailable."
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "const": "work_mode_required"
+                              },
+                              "message": {
+                                "const": "Workspace tools require explicit Work mode."
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "const": "workspace_required"
+                              },
+                              "message": {
+                                "const": "Choose a Workspace before using tools."
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "const": "path_denied"
+                              },
+                              "message": {
+                                "const": "The requested path is outside the permitted scope or unsafe."
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "const": "sensitive_file"
+                              },
+                              "message": {
+                                "const": "The requested file is restricted."
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "const": "file_too_large"
+                              },
+                              "message": {
+                                "const": "The file exceeds the permitted size."
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "const": "binary_file"
+                              },
+                              "message": {
+                                "const": "Only UTF-8 text files are supported."
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "const": "not_found"
+                              },
+                              "message": {
+                                "const": "The requested file does not exist."
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "const": "already_exists"
+                              },
+                              "message": {
+                                "const": "The destination already exists."
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "const": "permission_required"
+                              },
+                              "message": {
+                                "const": "The action requires explicit approval."
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "const": "permission_denied"
+                              },
+                              "message": {
+                                "const": "The action was declined."
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "const": "cancelled"
+                              },
+                              "message": {
+                                "const": "The action was cancelled."
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "const": "timeout"
+                              },
+                              "message": {
+                                "const": "The tool exceeded its time limit."
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "const": "io_error"
+                              },
+                              "message": {
+                                "const": "The local file operation failed."
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "const": "conflict"
+                              },
+                              "message": {
+                                "const": "The file changed; prepare the action again."
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "const": "undo_unavailable"
+                              },
+                              "message": {
+                                "const": "The action can no longer be undone safely."
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "const": "verification_failed"
+                              },
+                              "message": {
+                                "const": "The written result could not be verified."
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          }
+                        ]
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "status",
+                  "data",
+                  "error"
+                ],
+                "additionalProperties": false,
+                "allOf": [
+                  {
+                    "if": {
+                      "properties": {
+                        "status": {
+                          "enum": [
+                            "succeeded",
+                            "partial"
+                          ]
+                        }
+                      }
+                    },
+                    "then": {
+                      "properties": {
+                        "data": {
+                          "not": {
+                            "type": "null"
+                          }
+                        }
+                      }
+                    },
+                    "else": {
+                      "properties": {
+                        "data": {
+                          "type": "null"
+                        },
+                        "error": {
+                          "not": {
+                            "type": "null"
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "if": {
+                      "properties": {
+                        "status": {
+                          "const": "succeeded"
+                        }
+                      }
+                    },
+                    "then": {
+                      "properties": {
+                        "error": {
+                          "type": "null"
+                        }
+                      }
+                    }
+                  }
+                ]
+              },
+              "risk": "low",
+              "timeoutSeconds": 20
+            },
+            {
+              "toolId": "metadata",
+              "name": "查看元数据",
+              "description": "查看文件或目录的安全元数据，不读取正文。",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string",
+                    "maxLength": 4096
+                  }
+                },
+                "required": [
+                  "path"
+                ],
+                "additionalProperties": false
+              },
+              "outputSchema": {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "enum": [
+                      "succeeded",
+                      "partial",
+                      "denied",
+                      "cancelled",
+                      "failed"
+                    ]
+                  },
+                  "data": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "path": {
+                            "type": "string",
+                            "maxLength": 4096
+                          },
+                          "name": {
+                            "type": "string",
+                            "maxLength": 4096
+                          },
+                          "kind": {
+                            "enum": [
+                              "file",
+                              "directory"
+                            ]
+                          },
+                          "sizeBytes": {
+                            "type": "integer",
+                            "minimum": 0
+                          }
+                        },
+                        "required": [
+                          "path",
+                          "name",
+                          "kind",
+                          "sizeBytes"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "error": {
+                    "anyOf": [
+                      {
+                        "oneOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "const": "invalid_request"
+                              },
+                              "message": {
+                                "const": "The tool request is invalid."
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "const": "unsupported_tool"
+                              },
+                              "message": {
+                                "const": "The requested tool is unavailable."
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "const": "work_mode_required"
+                              },
+                              "message": {
+                                "const": "Workspace tools require explicit Work mode."
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "const": "workspace_required"
+                              },
+                              "message": {
+                                "const": "Choose a Workspace before using tools."
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "const": "path_denied"
+                              },
+                              "message": {
+                                "const": "The requested path is outside the permitted scope or unsafe."
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "const": "sensitive_file"
+                              },
+                              "message": {
+                                "const": "The requested file is restricted."
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "const": "file_too_large"
+                              },
+                              "message": {
+                                "const": "The file exceeds the permitted size."
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "const": "binary_file"
+                              },
+                              "message": {
+                                "const": "Only UTF-8 text files are supported."
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "const": "not_found"
+                              },
+                              "message": {
+                                "const": "The requested file does not exist."
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "const": "already_exists"
+                              },
+                              "message": {
+                                "const": "The destination already exists."
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "const": "permission_required"
+                              },
+                              "message": {
+                                "const": "The action requires explicit approval."
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "const": "permission_denied"
+                              },
+                              "message": {
+                                "const": "The action was declined."
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "const": "cancelled"
+                              },
+                              "message": {
+                                "const": "The action was cancelled."
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "const": "timeout"
+                              },
+                              "message": {
+                                "const": "The tool exceeded its time limit."
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "const": "io_error"
+                              },
+                              "message": {
+                                "const": "The local file operation failed."
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "const": "conflict"
+                              },
+                              "message": {
+                                "const": "The file changed; prepare the action again."
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "const": "undo_unavailable"
+                              },
+                              "message": {
+                                "const": "The action can no longer be undone safely."
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          },
+                          {
+                            "type": "object",
+                            "properties": {
+                              "code": {
+                                "const": "verification_failed"
+                              },
+                              "message": {
+                                "const": "The written result could not be verified."
+                              }
+                            },
+                            "required": [
+                              "code",
+                              "message"
+                            ],
+                            "additionalProperties": false
+                          }
+                        ]
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "status",
+                  "data",
+                  "error"
+                ],
+                "additionalProperties": false,
+                "allOf": [
+                  {
+                    "if": {
+                      "properties": {
+                        "status": {
+                          "enum": [
+                            "succeeded",
+                            "partial"
+                          ]
+                        }
+                      }
+                    },
+                    "then": {
+                      "properties": {
+                        "data": {
+                          "not": {
+                            "type": "null"
+                          }
+                        }
+                      }
+                    },
+                    "else": {
+                      "properties": {
+                        "data": {
+                          "type": "null"
+                        },
+                        "error": {
+                          "not": {
+                            "type": "null"
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "if": {
+                      "properties": {
+                        "status": {
+                          "const": "succeeded"
+                        }
+                      }
+                    },
+                    "then": {
+                      "properties": {
+                        "error": {
+                          "type": "null"
+                        }
+                      }
+                    }
+                  }
+                ]
+              },
+              "risk": "low",
+              "timeoutSeconds": 10
+            }
+          ]
+        }
+      }
+    },
     {
       "name": "handshake response",
       "message": {

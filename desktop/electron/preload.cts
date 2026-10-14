@@ -43,6 +43,7 @@ import type {
   UpdateDesktopPetRequest,
 } from './desktop-pet-contracts.js'
 import type { WorkWorkspaceState } from './work-protocol.js'
+import type { WorkToolsState } from './work-tool-protocol.js'
 import type { DataStorageViewState } from './data-storage-contracts.js'
 import type {
   PresenceNotificationState,
@@ -988,6 +989,9 @@ const desktopApi: DesktopApi = {
 
   getWorkWorkspace: (chatId: string) =>
     ipcRenderer.invoke('work:get-workspace', chatId) as Promise<WorkWorkspaceState>,
+
+  getWorkTools: (chatId: string) =>
+    ipcRenderer.invoke('work:get-tools', chatId) as Promise<WorkToolsState>,
 
   chooseWorkWorkspace: (chatId: string) =>
     ipcRenderer.invoke('work:choose-workspace', chatId) as Promise<WorkWorkspaceState | null>,

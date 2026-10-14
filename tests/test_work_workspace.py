@@ -1,6 +1,8 @@
 """Verify selected-root containment, native handle pinning, and bounded Work reads."""
 
 from contextlib import contextmanager
+import ctypes
+from ctypes import wintypes
 import os
 from pathlib import Path
 import subprocess
@@ -49,6 +51,35 @@ def test_selected_root_requires_existing_absolute_directory(tmp_path: Path) -> N
     file_path.write_text("file", encoding="utf-8")
     with pytest.raises(WorkspaceBoundaryError):
         WorkspaceBoundary(file_path)
+
+
+def test_selected_root_has_canonical_persistable_spelling(tmp_path: Path) -> None:
+    """Persist the actual selected directory spelling after its nonredirecting chain is pinned."""
+
+    selected = tmp_path / "normal nested directory"
+    selected.mkdir()
+    boundary = WorkspaceBoundary(selected)
+    assert boundary.root == selected.resolve(strict=True)
+    assert boundary.normalized_root == str(selected.resolve(strict=True))
+    assert boundary.root_identity == (selected.stat().st_dev, selected.stat().st_ino)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows 8.3 aliases are platform-specific")
+def test_windows_short_selected_root_expands_before_scope_protection(tmp_path: Path) -> None:
+    """Short-name selection maps to the same canonical root used by protected-subtree checks."""
+
+    selected = tmp_path / "long selected directory name"
+    selected.mkdir()
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.GetShortPathNameW.argtypes = [wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD]
+    kernel.GetShortPathNameW.restype = wintypes.DWORD
+    buffer = ctypes.create_unicode_buffer(32768)
+    length = kernel.GetShortPathNameW(str(selected), buffer, len(buffer))
+    assert 0 < length < len(buffer)
+    boundary = WorkspaceBoundary(Path(buffer.value))
+    assert boundary.root == selected.resolve(strict=True)
+    assert boundary.normalized_root == str(selected.resolve(strict=True))
+    assert boundary.root_identity == (selected.stat().st_dev, selected.stat().st_ino)
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows namespaces are platform-specific")

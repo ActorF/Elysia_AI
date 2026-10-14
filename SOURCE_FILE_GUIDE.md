@@ -202,7 +202,7 @@ start.create_data_portability_service()
 | --- | --- | --- |
 | `agent/__init__.py` | 为未来 Work/Desktop Agent 保留稳定 Python Package 位置；当前没有已实现 Agent。 | 未来 `tools/`、权限系统与 Work Mode |
 | `models/__init__.py` | 为 model-specific integration 保留 Namespace；实际 Ollama/GPT-SoVITS 权重不存放在 Python Package 中。 | `core/*chat_model.py`、被忽略的本地模型目录 |
-| `tools/__init__.py` | 为未来经过权限控制的工具保留 Namespace。 | 未来 Agent、文件/桌面/网络能力 |
+| `work_tools/__init__.py` | 提供经过权限控制的 Work 工具；独立名称避免与受管 RVC 的第三方 `tools` 包冲突。 | `desktop_work.py`、Work Workspace、类型化工具协议 |
 
 这些小文件不是临时垃圾；它们明确了未来模块边界。
 

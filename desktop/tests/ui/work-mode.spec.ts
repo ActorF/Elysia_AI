@@ -16,6 +16,7 @@ interface WorkTestControl {
   setWorkWorkspaceReadDelay(delayed: boolean): void
   releaseNextWorkWorkspaceRead(): boolean
   failNextWorkWorkspace(message: string): void
+  failNextWorkTools(message: string): void
 }
 
 type WorkTestWindow = Window & { elysiaDesktopTest: WorkTestControl }
@@ -31,7 +32,7 @@ function snapshot(status = 'ready', revision = 1) {
   return {
     revision,
     status,
-    capabilities: ['chat.stream', 'chat.mode', 'work.workspace'],
+    capabilities: ['chat.stream', 'chat.mode', 'work.workspace', 'work.tools'],
     models: ['qwen3.5:9b'],
     modelName: 'qwen3.5:9b',
     chatId: 'chat_work_test',
@@ -134,4 +135,24 @@ test('retains scope after a failed binding and displays a bounded error', async 
   await expect(page.locator('[data-workspace-path]')).toHaveText('D:\\saved-scope')
   await expect(page.getByRole('alert')).toContainText('Could not bind the selected Workspace.')
   await expect(page.getByRole('alert')).not.toContainText('Private internal diagnostic')
+})
+
+test('shows the declared tool catalog and recovers from a bounded catalog failure', async () => {
+  await page.evaluate(() => {
+    ;(window as WorkTestWindow).elysiaDesktopTest.failNextWorkTools('Private catalog diagnostic')
+  })
+  await page.getByRole('combobox', { name: 'Conversation mode' }).selectOption('work')
+  const inspector = page.locator('.work-tool-inspector')
+  await inspector.locator('summary').click()
+  await expect(inspector.getByRole('alert')).toContainText('Could not load available tools.')
+  await expect(inspector).not.toContainText('Private catalog diagnostic')
+  await inspector.getByRole('button', { name: 'Reload Tools' }).click()
+  await expect(inspector.locator('summary')).toHaveText('Available tools (4)')
+  await expect(inspector.getByText('Read text', { exact: true })).toBeVisible()
+  await expect(inspector.getByText('low risk · 20s limit')).toBeVisible()
+  await expect(inspector.locator('li')).toHaveCount(4)
+  await expect.poll(() => page.evaluate(() => (
+    (window as WorkTestWindow).elysiaDesktopTest.getCalls()
+      .find((call) => call.method === 'getWorkTools')?.args
+  ))).toEqual(['chat_work_test'])
 })

@@ -54,6 +54,7 @@
     "groundedAnswer is present only on assistant Chat messages and never exposes paths, hashes, or private storage lineage"
   ],
   "oneOf": [
+    { "$ref": "#/$defs/workToolsListRequest" },
     { "$ref": "#/$defs/workWorkspaceGetRequest" },
     { "$ref": "#/$defs/workWorkspaceBindRequest" },
     { "$ref": "#/$defs/handshakeRequest" },
@@ -106,6 +107,27 @@
     { "$ref": "#/$defs/event" }
   ],
   "$defs": {
+    "workToolsListRequest": {
+      "allOf": [{ "$ref": "#/$defs/requestEnvelope" }, { "properties": {
+        "method": { "const": "work.tools.list" }, "params": { "$ref": "#/$defs/workWorkspaceGetParams" }
+      } }]
+    },
+    "workToolDescriptor": {
+      "type": "object", "properties": {
+        "toolId": { "enum": ["list_directory", "read_text", "search_files", "metadata", "create", "edit", "move", "delete"] },
+        "name": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "description": { "type": "string", "minLength": 1, "maxLength": 1000 },
+        "inputSchema": { "type": "object" }, "outputSchema": { "type": "object" },
+        "risk": { "enum": ["low", "medium", "high", "critical"] },
+        "timeoutSeconds": { "enum": [10, 20] }
+      }, "required": ["toolId", "name", "description", "inputSchema", "outputSchema", "risk", "timeoutSeconds"], "additionalProperties": false
+    },
+    "workToolsResult": {
+      "type": "object", "properties": {
+        "kind": { "const": "work.tools" },
+        "tools": { "type": "array", "maxItems": 8, "items": { "$ref": "#/$defs/workToolDescriptor" } }
+      }, "required": ["kind", "tools"], "additionalProperties": false
+    },
     "workChatId": { "type": "string", "maxLength": 128, "pattern": "^chat_[A-Za-z0-9_-]+$" },
     "workWorkspaceGetParams": {
       "type": "object", "properties": { "chatId": { "$ref": "#/$defs/workChatId" } },
@@ -182,6 +204,7 @@
           "enum": [
             "work.workspace.get",
             "work.workspace.bind",
+            "work.tools.list",
             "handshake",
             "initialize",
             "chat.stream",
@@ -2416,6 +2439,7 @@
         "result": {
           "oneOf": [
             { "$ref": "#/$defs/workWorkspaceResult" },
+            { "$ref": "#/$defs/workToolsResult" },
             { "$ref": "#/$defs/handshakeResult" },
             { "$ref": "#/$defs/initializeResult" },
             { "$ref": "#/$defs/chatResult" },

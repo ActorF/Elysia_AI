@@ -12,10 +12,12 @@ import type {
   WorkWorkspaceClient,
   WorkWorkspaceState,
 } from '../../electron/work-protocol.ts'
+import type { WorkToolClient } from '../../electron/work-tool-protocol.ts'
+import { ToolInspector } from './ToolInspector.tsx'
 import './WorkPanel.css'
 
 interface WorkPanelProps {
-  api: WorkWorkspaceClient | undefined
+  api: (WorkWorkspaceClient & WorkToolClient) | undefined
   chatId: string
   ready: boolean
   disabled: boolean
@@ -134,6 +136,7 @@ export function WorkPanel({ api, chatId, ready, disabled }: WorkPanelProps) {
           </button>
         </div>
       )}
+      <ToolInspector api={api} chatId={chatId} ready={ready} />
     </section>
   )
 }

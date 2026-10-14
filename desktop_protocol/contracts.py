@@ -213,6 +213,7 @@ _PROTOCOL_EVENT_NAMES: Final = (
 ProtocolMethod = Literal[
     "work.workspace.get",
     "work.workspace.bind",
+    "work.tools.list",
     "handshake",
     "initialize",
     "chat.stream",
@@ -259,6 +260,7 @@ ProtocolMethod = Literal[
 SUPPORTED_METHODS: Final[tuple[ProtocolMethod, ...]] = (
     "work.workspace.get",
     "work.workspace.bind",
+    "work.tools.list",
     "handshake",
     "initialize",
     "chat.stream",
@@ -3427,7 +3429,7 @@ def _validate_knowledge_export_result(
 
 
 def _validate_success_result(result: JsonObject) -> None:
-    if result.get("kind") == "work.workspace":
+    if result.get("kind") in {"work.workspace", "work.tools"}:
         try:
             validate_work_result(result)
         except ValueError:

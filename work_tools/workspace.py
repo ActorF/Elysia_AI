@@ -172,7 +172,7 @@ def _windows_drive_mapping(path: Path) -> str:
     return buffer.value
 
 
-def _windows_handle(path: Path, *, directory: bool) -> int:
+def _windows_handle(path: Path, *, directory: bool, allow_alias: bool = False) -> int:
     """Open an exact non-reparse object while refusing rename/delete sharing."""
 
     handle = _kernel32.CreateFileW(
@@ -203,8 +203,8 @@ def _windows_handle(path: Path, *, directory: bool) -> int:
             canonical = canonical[4:]
         if (
             not length or length >= len(buffer)
-            or ntpath.normcase(canonical.rstrip("\\"))
-            != ntpath.normcase(str(path).rstrip("\\"))
+            or (not allow_alias and ntpath.normcase(canonical.rstrip("\\"))
+                != ntpath.normcase(str(path).rstrip("\\")))
         ):
             raise WorkspaceBoundaryError("Workspace object has a path alias.")
         return owned
@@ -221,11 +221,13 @@ def _windows_close(handle: int) -> None:
 
 
 @contextmanager
-def _opened_directory(path: Path, *, parent_fd: int | None = None) -> Iterator[int]:
+def _opened_directory(
+    path: Path, *, parent_fd: int | None = None, allow_alias: bool = False,
+) -> Iterator[int]:
     """Pin one directory without following a mutable path component."""
 
     if os.name == "nt":
-        handle = _windows_handle(path, directory=True)
+        handle = _windows_handle(path, directory=True, allow_alias=allow_alias)
         try:
             yield handle
         finally:
@@ -348,6 +350,15 @@ class WorkspaceBoundary:
                     details = os.fstat(descriptor)
                 _require_safe(details, directory=True)
                 self._root_identity = _identity(details)
+                # The entire selected chain is now non-reparse and pinned.
+                # Resolving here expands Windows 8.3 spellings safely, so a
+                # short-name alias cannot bypass protected-root comparisons.
+                canonical_root = root.resolve(strict=True)
+                canonical_details = canonical_root.stat(follow_symlinks=False)
+                _require_safe(canonical_details, directory=True)
+                if _identity(canonical_details) != self._root_identity:
+                    raise WorkspaceBoundaryError("Selected workspace root changed during normalization.")
+            self._root = canonical_root
             if expected_root_identity is not None and self._root_identity != expected_root_identity:
                 raise WorkspaceBoundaryError("Selected workspace root has changed.")
         except OSError:
@@ -378,14 +389,21 @@ class WorkspaceBoundary:
 
         mapping = _windows_drive_mapping(self.root) if os.name == "nt" else None
         current = Path(self.root.anchor)
+        initial_selection = self._root_identity is None
         with ExitStack() as stack:
-            descriptor = stack.enter_context(_opened_directory(current))
+            descriptor = stack.enter_context(_opened_directory(current, allow_alias=True)) if initial_selection else stack.enter_context(_opened_directory(current))
             root_components = self.root.parts[1:]
             for index, component in enumerate((*root_components, *parts)):
                 current = current / component
-                descriptor = stack.enter_context(_opened_directory(
-                    current, parent_fd=None if os.name == "nt" else descriptor,
-                ))
+                if initial_selection:
+                    descriptor = stack.enter_context(_opened_directory(
+                        current, parent_fd=None if os.name == "nt" else descriptor,
+                        allow_alias=True,
+                    ))
+                else:
+                    descriptor = stack.enter_context(_opened_directory(
+                        current, parent_fd=None if os.name == "nt" else descriptor,
+                    ))
                 if index == len(root_components) - 1 and self._root_identity is not None:
                     details = current.stat(follow_symlinks=False) if os.name == "nt" else os.fstat(descriptor)
                     if _identity(details) != self._root_identity:

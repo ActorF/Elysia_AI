@@ -50,6 +50,29 @@ function defaultProjectState() {
   }
 }
 
+function defaultWorkToolsState() {
+  const definitions = [
+    ['list_directory', 'List directory', 'List bounded directory entries without writing.', 10],
+    ['read_text', 'Read text', 'Read bounded UTF-8 text without writing.', 10],
+    ['search_files', 'Search files', 'Find filenames within the selected Workspace.', 20],
+    ['metadata', 'File metadata', 'Inspect file and directory metadata without reading contents.', 10],
+  ]
+  return {
+    kind: 'work.tools',
+    tools: definitions.map(([toolId, name, description, timeoutSeconds]) => ({
+      toolId, name, description, timeoutSeconds, risk: 'low',
+      inputSchema: {
+        type: 'object', properties: { path: { type: 'string', maxLength: 4096 } },
+        required: ['path'], additionalProperties: false,
+      },
+      outputSchema: {
+        type: 'object', properties: { status: { type: 'string' }, data: {}, error: {} },
+        required: ['status', 'data', 'error'], additionalProperties: false, allOf: [],
+      },
+    })),
+  }
+}
+
 function defaultSettingsState() {
   const values = {
     modelName: 'qwen3.5:9b',
@@ -387,6 +410,7 @@ let nextChatModeError = null
 let selectedWorkspace = null
 let workWorkspaces = new Map()
 let nextWorkWorkspaceError = null
+let nextWorkToolsError = null
 let delayWorkWorkspaceReads = false
 let pendingWorkWorkspaceReads = []
 let nextRequestNumber = 1
@@ -1457,6 +1481,16 @@ const desktopApi = {
     return result
   },
 
+  getWorkTools: async (chatId) => {
+    record('getWorkTools', [chatId])
+    if (nextWorkToolsError !== null) {
+      const message = nextWorkToolsError
+      nextWorkToolsError = null
+      throw new Error(message)
+    }
+    return defaultWorkToolsState()
+  },
+
   chooseWorkWorkspace: async (chatId) => {
     record('chooseWorkWorkspace', [chatId])
     if (nextWorkWorkspaceError !== null) {
@@ -2005,6 +2039,7 @@ const testControl = {
     delayWorkWorkspaceReads = false
     workWorkspaces = new Map()
     nextWorkWorkspaceError = null
+    nextWorkToolsError = null
     releaseAllChatActions()
     releaseAllChatLists()
     releaseAllCharacterPanelChanges()
@@ -2357,6 +2392,10 @@ const testControl = {
 
   failNextWorkWorkspace: (message) => {
     nextWorkWorkspaceError = message
+  },
+
+  failNextWorkTools: (message) => {
+    nextWorkToolsError = message
   },
 
   setCharacterPanelChangeDelay: (delayed) => {

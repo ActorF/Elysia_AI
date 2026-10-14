@@ -16,6 +16,11 @@ import {
   type WorkWorkspaceBindParams,
   type WorkWorkspaceGetParams,
 } from './work-protocol.js'
+import {
+  parseWorkToolListParams,
+  parseWorkToolsState,
+  type WorkToolListParams,
+} from './work-tool-protocol.js'
 
 export {
   codePointLength,
@@ -441,6 +446,7 @@ export interface RequestParamsByMethod {
   'chat.mode': ChatModeParams
   'work.workspace.get': WorkWorkspaceGetParams
   'work.workspace.bind': WorkWorkspaceBindParams
+  'work.tools.list': WorkToolListParams
   'chat.pin': ChatPinParams
   'chat.archive': ChatArchiveParams
   'chat.delete': ChatIdParams
@@ -2350,6 +2356,13 @@ export function parseClientRequest(value: unknown): ClientRequest {
         : { type: 'request', protocol, id, method, params: parseWorkWorkspaceBindParams(request.params) }
     } catch {
       return fail('protocol.invalid_params', 'Work Workspace request is invalid.')
+    }
+  }
+  if (method === 'work.tools.list') {
+    try {
+      return { type: 'request', protocol, id, method, params: parseWorkToolListParams(request.params) }
+    } catch {
+      return fail('protocol.invalid_params', 'Work tool catalog request is invalid.')
     }
   }
   if (method === 'project.list') {
@@ -4807,6 +4820,14 @@ function validateSuccessResult(value: unknown): Record<string, unknown> {
       parseWorkWorkspaceState(result)
     } catch {
       return fail('protocol.invalid_message', 'Work Workspace result is invalid.')
+    }
+    return result
+  }
+  if (result.kind === 'work.tools') {
+    try {
+      parseWorkToolsState(result)
+    } catch {
+      return fail('protocol.invalid_message', 'Work tool catalog result is invalid.')
     }
     return result
   }

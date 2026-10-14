@@ -180,6 +180,7 @@ SERVER_NAME = "elysia-python"
 SERVER_VERSION = "0.1.0"
 SERVER_CAPABILITIES = (
     "work.workspace",
+    "work.tools",
     "chat.sessions",
     "chat.mode",
     "chat.stream",
@@ -1322,13 +1323,18 @@ class DesktopBackend:
             if self._work_runtime is None:
                 self._work_runtime = DesktopWorkRuntime(
                     self._runtime_settings.data_layout.workspace / "work", self._work_active_chat,
+                    protected_roots=(self._runtime_settings.data_layout.root, self._runtime_settings.base_dir),
                 )
-            try:
-                result = self._work_runtime.dispatch(method, params)
-            except (OSError, ValueError, PermissionError):
-                # Native errors often include full paths. The UI can retry its
-                # explicit chooser without exposing those diagnostics.
-                raise ProtocolValidationError("work.denied", "Work request was refused. Check the mode and selected folder.") from None
+            runtime = self._work_runtime
+        # The NDJSON dispatcher serializes admission. Releasing its state lock
+        # before local filesystem I/O keeps worker completion and cancellation
+        # independent of an unavailable directory or native lock.
+        try:
+            result = runtime.dispatch(method, params)
+        except (OSError, ValueError, PermissionError):
+            # Native errors often include full paths. The UI can retry its
+            # explicit chooser without exposing those diagnostics.
+            raise ProtocolValidationError("work.denied", "Work request was refused. Check the mode and selected folder.") from None
         self._emit_response(request_id, result)
 
     def _load_desired_settings(self) -> DesktopSettingsSnapshot:
