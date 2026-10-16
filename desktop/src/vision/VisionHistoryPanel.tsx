@@ -74,11 +74,11 @@ export function VisionHistoryPanel({ api, chatId, projectId, image, ready, disab
   }
 
   return <section className="vision-history" aria-label="Saved Vision images" aria-busy={pending}>
-    <h3>Keep an image for later</h3>
-    <p>Saved locally without encryption. OCR and model answers are excluded. Check for sensitive content before saving.</p>
+    <h3>Your saved images</h3>
+    <p>Saved locally without encryption. OCR and model answers are excluded.</p>
     <label className="vision-history-opt-in"><input type="checkbox" checked={saveEnabled} disabled={locked}
       onChange={(event) => { setSaveEnabled(event.currentTarget.checked) }} />Allow saving selected images</label>
-    <p>Saving starts off in each Chat. Enabling it does not save automatically.</p>
+    <p className="vision-history-note">Off in each Chat. Images are saved only when you choose.</p>
     <div className="vision-history-actions">
       <button type="button" className="tool-primary" disabled={locked || !saveEnabled || image === null || saved} onClick={() => {
         if (image !== null) void act((client) => client.saveVisionImage({ chatId, imageId: image.imageId, confirmed: true }))

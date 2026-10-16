@@ -18,7 +18,8 @@ import type { WorkPlanClient } from '../../electron/work-plan-protocol.ts'
 import type { WorkAuditClient } from '../../electron/work-audit-protocol.ts'
 import type { WorkDesktopClient } from '../../electron/work-desktop-protocol.ts'
 import type { VisionContext } from '../../electron/vision-context-protocol.ts'
-import { ToolPanelFrame, ToolTabs, ToolTabPanel } from '../design-system/ToolPanel.tsx'
+import { ToolTabs, ToolTabPanel } from '../design-system/ToolPanel.tsx'
+import { Icon } from '../design-system/Icon.tsx'
 import { ToolInspector } from './ToolInspector.tsx'
 import { ToolConsole } from './ToolConsole.tsx'
 import { PlanPanel } from './PlanPanel.tsx'
@@ -45,13 +46,27 @@ interface WorkPanelProps {
   onClearVisionContext?(): void
   /** Keep the shell from starting a conflicting mode change or Chat turn. */
   onBusyChange(busy: boolean): void
+  /** Reveal a newly prepared approval or recovery notice in an otherwise hidden workspace. */
+  onAttention?(key: string): void
 }
 
-/** Display and revoke the explicit directory access granted to one Work Chat. */
+/** Present a plan-first workspace while preserving mounted tool owners and explicit directory access. */
 export function WorkPanel({ api, chatId, ready, disabled, readAvailable, previewAvailable, confirmAvailable,
-  planAvailable, auditAvailable, undoAvailable, visionContext = null, onClearVisionContext, onBusyChange }: WorkPanelProps) {
-  const [open, setOpen] = useState(true)
-  const [activeTab, setActiveTab] = useState<WorkspaceTab>('files')
+  planAvailable, auditAvailable, undoAvailable, visionContext = null, onClearVisionContext, onBusyChange, onAttention }: WorkPanelProps) {
+  const [activeTab, setActiveTab] = useState<WorkspaceTab>(planAvailable ? 'plan' : 'files')
+  const attentionKeysRef = useRef(new Set<string>())
+  const revealAttention = useCallback((tab: WorkspaceTab, key: string): void => {
+    // Polling and reconnects can repeat the same approval. Reveal each review
+    // once so newly prepared consent is visible without repeatedly stealing a
+    // tab the user deliberately selected after inspecting that review.
+    if (attentionKeysRef.current.has(key)) return
+    attentionKeysRef.current.add(key)
+    setActiveTab(tab)
+    onAttention?.(key)
+  }, [onAttention])
+  const revealFileAttention = useCallback((key: string): void => { revealAttention('files', key) }, [revealAttention])
+  const revealPlanAttention = useCallback((key: string): void => { revealAttention('plan', key) }, [revealAttention])
+  const revealDesktopAttention = useCallback((key: string): void => { revealAttention('desktop', key) }, [revealAttention])
   const [calls, setCalls] = useState<WorkToolCall[]>([])
   const [consoleBusy, setConsoleBusy] = useState(false)
   const [planLeased, setPlanLeased] = useState(false)
@@ -96,7 +111,7 @@ export function WorkPanel({ api, chatId, ready, disabled, readAvailable, preview
   useEffect(() => {
     if (visionContext === null || !planAvailable) return
     let active = true
-    queueMicrotask(() => { if (active) { setActiveTab('plan'); setOpen(true) } })
+    queueMicrotask(() => { if (active) setActiveTab('plan') })
     return () => { active = false }
   }, [visionContext, planAvailable])
 
@@ -176,32 +191,35 @@ export function WorkPanel({ api, chatId, ready, disabled, readAvailable, preview
   const controlsDisabled = disabled || consoleBusy || planLeased || undoBusy || desktopBusy || !ready || pending || visibleScope === null
   const busy = pending || consoleBusy || planLeased || undoBusy || desktopBusy
   const tabs: Array<{ value: WorkspaceTab; label: string; count?: number }> = [
-    { value: 'files', label: 'Files' },
     ...(planAvailable ? [{ value: 'plan' as const, label: 'Plan', count: calls.length || undefined }] : []),
+    { value: 'files', label: 'Files' },
     ...(auditAvailable ? [{ value: 'history' as const, label: 'History' }] : []),
     ...(typeof api?.getWorkDesktopState === 'function' ? [{ value: 'desktop' as const, label: 'Desktop' }] : []),
   ]
   const visibleTab = tabs.some(tab => tab.value === activeTab) ? activeTab : 'files'
 
   return (
-    <ToolPanelFrame id="work-workspace" title="Workspace" description="Files, plans and local actions"
-      icon="folder" ariaLabel="Work Workspace" className="work-panel" open={open}
-      onToggle={() => { setOpen(current => !current) }} busy={busy}
-      status={busy ? 'Working' : visibleScope?.workspacePath ? 'Folder selected' : undefined}>
+    <section id="work-workspace" className="tool-panel work-panel" aria-label="Work Workspace" aria-busy={busy}>
+      <header className="work-panel-heading">
+        <div><span className="work-panel-eyebrow">WORK</span><h2>Your workspace</h2>
+          <p>A clear plan. One step at a time.</p></div>
+        {busy && <span className="work-panel-status" role="status"><span className="tool-busy-dot" aria-hidden="true" />Working</span>}
+      </header>
       <div className="work-workspace-scope">
+        <span className="work-workspace-symbol" aria-hidden="true"><Icon name="folder" /></span>
         <div className="work-workspace-copy">
-          <span className="work-workspace-label">Folder</span>
+          <span className="work-workspace-label">Working folder</span>
           <span className="work-workspace-path" data-workspace-path>
             {visibleScope?.workspacePath ?? (pending ? 'Loading Workspace…' : 'No Workspace selected')}
           </span>
           <small>
             {visibleScope?.workspacePath === null || visibleScope === null
               ? 'Choose a folder before using file tools.'
-              : 'File tools stay inside this folder.'}
+              : 'File access is limited to this folder.'}
           </small>
         </div>
         <div className="work-workspace-actions">
-          <button className="tool-primary" type="button" disabled={controlsDisabled}
+          <button className={visibleScope?.workspacePath ? 'tool-quiet' : 'tool-primary'} type="button" disabled={controlsDisabled}
             aria-label={visibleScope?.workspacePath ? 'Change Workspace' : 'Choose Workspace'} onClick={() => { void changeScope(false) }}>
             {visibleScope?.workspacePath ? 'Change' : 'Choose Workspace'}
           </button>
@@ -212,6 +230,10 @@ export function WorkPanel({ api, chatId, ready, disabled, readAvailable, preview
           )}
         </div>
       </div>
+      {planLeased && visibleTab !== 'plan' && <button type="button" className="work-active-plan" onClick={() => {
+        setActiveTab('plan')
+        document.getElementById('work-workspace-plan-tab')?.focus()
+      }}><span className="tool-busy-dot" aria-hidden="true" />A plan is active · View plan</button>}
       {error !== null && (
         <div className="work-workspace-error" role="alert">
           <span>{error}</span>
@@ -234,16 +256,18 @@ export function WorkPanel({ api, chatId, ready, disabled, readAvailable, preview
             // The clicked control becomes hidden; keep keyboard focus on the
             // visible destination tab so the next Tab enters the plan review.
             document.getElementById('work-workspace-plan-tab')?.focus()
-          }} tools={catalog?.tools ?? []} onBusyChange={updateConsoleBusy} />
+          }} tools={catalog?.tools ?? []} onBusyChange={updateConsoleBusy} onAttention={revealFileAttention} />
         <ToolInspector api={api} chatId={chatId} ready={ready} onCatalogChange={setCatalog} />
       </ToolTabPanel>
       {planAvailable && <ToolTabPanel idPrefix="work-workspace" value="plan" activeValue={visibleTab}>
-        <p className="work-section-hint">Add steps from Files, then review the complete plan before starting.</p>
         <PlanPanel api={api} chatId={chatId} workspacePath={visibleScope?.workspacePath ?? null}
           visionContext={visionContext} onClearVisionContext={onClearVisionContext}
           ready={ready} disabled={disabled || consoleBusy || undoBusy || desktopBusy} calls={calls}
           onRemoveCall={(index) => { setCalls((current) => current.filter((_, ordinal) => ordinal !== index)) }}
-          onClearCalls={() => { setCalls([]) }} onLeaseChange={updatePlanLease} />
+          onClearCalls={() => { setCalls([]) }} onLeaseChange={updatePlanLease} onAttention={revealPlanAttention} onBrowseFiles={() => {
+            setActiveTab('files')
+            document.getElementById('work-workspace-files-tab')?.focus()
+          }} />
       </ToolTabPanel>}
       {auditAvailable && <ToolTabPanel idPrefix="work-workspace" value="history" activeValue={visibleTab}>
         <WorkHistory api={api} chatId={chatId} ready={ready}
@@ -255,8 +279,8 @@ export function WorkPanel({ api, chatId, ready, disabled, readAvailable, preview
         <DesktopToolsPanel api={api} chatId={chatId}
           workspacePath={visibleScope?.workspacePath ?? null} ready={ready}
           disabled={disabled || pending || consoleBusy || planLeased || undoBusy}
-          onBusyChange={updateDesktopBusy} />
+          onBusyChange={updateDesktopBusy} onAttention={revealDesktopAttention} />
       </ToolTabPanel>}
-    </ToolPanelFrame>
+    </section>
   )
 }

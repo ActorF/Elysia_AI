@@ -95,11 +95,12 @@ export function WorkHistory({ api, chatId, ready, disabled, workspacePath, undoA
 
   return (
     <section className="work-history" aria-label="Work history" aria-busy={loading || pending}>
-      <div className="work-history-heading"><strong>History</strong>
-        <button type="button" disabled={blocked} onClick={() => { void refresh() }}>Refresh history</button>
+      <div className="work-history-heading"><div className="work-section-heading"><h3>Activity</h3>
+        <p>A record of your actions and approvals.</p></div>
+        <button type="button" className="tool-quiet" disabled={blocked} onClick={() => { void refresh() }}>Refresh history</button>
       </div>
-      <small>History contains parameter summaries and digests. File contents and search terms stay private.</small>
-      {history?.entries.length === 0 && <p>No recorded actions for this Chat.</p>}
+      {history?.entries.length === 0 && <div className="work-history-empty"><h3>No activity yet</h3>
+        <p>No recorded actions for this Chat.</p></div>}
       {history?.truncated && <p>Showing the newest available records. Older history exceeds this view’s limit.</p>}
       {history !== null && <ol className="work-history-entries">
         {history.entries.map((entry, index) => (
@@ -107,11 +108,12 @@ export function WorkHistory({ api, chatId, ready, disabled, workspacePath, undoA
             <strong>{entry.toolId} · {entry.parameters.path || 'Workspace root'}</strong>
             <span data-work-audit-outcome>{entry.result}{entry.error === null ? '' : ` · ${entry.error}`}</span>
             <time dateTime={entry.timestamp}>{entry.timestamp}</time>
-            <small>Chat: {entry.chatId} · Project: {entry.projectId ?? 'None'} ·
-              Decision: {entry.decision === 'approve' ? 'Approved' : entry.decision === 'reject' ? 'Rejected'
+            <small>Decision: {entry.decision === 'approve' ? 'Approved' : entry.decision === 'reject' ? 'Rejected'
                 : entry.decision === 'modify' ? 'Modification requested' : entry.decision === 'timeout' ? 'Approval expired'
                   : ['list_directory', 'read_text', 'search_files', 'metadata'].includes(entry.toolId) ? 'Explicit read' : 'Not recorded'}</small>
-            <details><summary>Parameter summary</summary><pre>{JSON.stringify(entry.parameters, null, 2)}</pre></details>
+            <details><summary>Parameter summary</summary>
+              <small>Chat: {entry.chatId} · Project: {entry.projectId ?? 'None'}</small>
+              <pre>{JSON.stringify(entry.parameters, null, 2)}</pre></details>
             {entry.undoId !== null && <button type="button" disabled={blocked || workspacePath === null || !undoAvailable}
               onClick={() => { setSelection(entry); setResult(null) }}>Undo {entry.toolId}</button>}
             {entry.recovery !== null && <div className="work-history-recovery">
@@ -137,6 +139,7 @@ export function WorkHistory({ api, chatId, ready, disabled, workspacePath, undoA
         {result.status === 'succeeded' ? 'Undo completed and verified.' : `Undo ${result.status}: ${result.error?.message ?? 'No change was applied.'}`}
       </div>}
       {error !== null && <p role="alert">{error}</p>}
+      <small className="work-history-privacy">File contents and search terms are never shown in history.</small>
     </section>
   )
 }

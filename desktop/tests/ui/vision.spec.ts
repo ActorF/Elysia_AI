@@ -63,7 +63,7 @@ test('Add files images enter Vision only on review, preserve picker cancellation
   const panel = page.getByRole('region', { name: 'Vision images', exact: true, includeHidden: true })
   const card = panel.getByRole('article', { name: `Selected image ${image.fileName}`, exact: true })
   await expect(card.getByRole('img', { name: `Preview of ${image.fileName}` })).toBeVisible()
-  await expect(card).toContainText('1 × 1')
+  await expect(panel.locator('.vision-image-dimensions')).toContainText('1 × 1')
   expect(await conversation.boundingBox()).toEqual(before)
   await panel.getByText('Image options', { exact: true }).click()
   await expect(panel.getByText('Images stay in this session and clear when the Chat or Project changes.', { exact: true })).toBeVisible()
@@ -87,7 +87,7 @@ test('Add files images enter Vision only on review, preserve picker cancellation
   expect(calls.find((call) => call.method === 'removeVisionImage')?.args).toEqual([
     { chatId: 'chat_vision_test', imageId: `vision_${'1'.padStart(32, '0')}` },
   ])
-  expect(calls.filter((call) => ['chooseVisionImage', 'sendChat', 'runWorkTool', 'captureVision', 'listVisionCaptureSources'].includes(call.method))).toHaveLength(0)
+  expect(calls.filter((call) => ['chooseVisionImage', 'sendMessage', 'runWorkTool', 'captureVision', 'listVisionCaptureSources'].includes(call.method))).toHaveLength(0)
 })
 
 test('eight distinct attachment reviews remain bounded and removing a session image permits its explicit restoration', async () => {
@@ -116,12 +116,15 @@ test('hiding a pending attachment import retains all computer action locks until
     control.setVisionSelectionDelay(true)
   })
   await page.getByRole('combobox', { name: 'Conversation mode' }).selectOption('work')
+  await page.getByRole('tablist', { name: 'Work views', exact: true }).getByRole('tab', { name: 'Conversation', exact: true }).click()
   await page.getByRole('button', { name: `Review image ${image.fileName}`, exact: true }).click()
   await expect(page.getByRole('combobox', { name: 'Conversation mode', includeHidden: true })).toBeDisabled()
   await closeVision(page)
+  await page.getByRole('tablist', { name: 'Work views', exact: true }).getByRole('tab', { name: 'Workspace', exact: true }).click()
+  await page.getByRole('tab', { name: 'Files', exact: true }).click()
   await expect(page.getByRole('button', { name: 'Change Workspace', exact: true })).toBeDisabled()
   await expect(page.getByRole('button', { name: 'Run tool', exact: true })).toBeDisabled()
-  await expect(page.getByRole('button', { name: 'Choose files', exact: true })).toBeDisabled()
+  await expect(page.getByRole('button', { name: 'Choose files', exact: true, includeHidden: true })).toBeDisabled()
   await openVision(page)
   await expect(page.getByRole('region', { name: 'Vision images', exact: true })).toHaveAttribute('aria-busy', 'true')
   await closeVision(page)
@@ -158,6 +161,7 @@ test('a Work plan can pause and cancel its own active read while Vision cannot s
   })
   const mode = page.getByRole('combobox', { name: 'Conversation mode' })
   await mode.selectOption('work')
+  await page.getByRole('tab', { name: 'Files', exact: true }).click()
   await page.getByLabel('Work tool', { exact: true }).selectOption('read_text')
   await page.getByLabel('Relative path', { exact: true }).fill('notes.txt')
   await page.getByRole('button', { name: 'Add to plan', exact: true }).click()

@@ -1720,6 +1720,11 @@ async function waitForTwoAnimationFrames(): Promise<void> {
   }))
 }
 
+/** Switch between Work tools and the mounted conversation without changing the Chat mode. */
+async function selectWorkView(name: 'Workspace' | 'Conversation'): Promise<void> {
+  await page.getByRole('tablist', { name: 'Work views', exact: true }).getByRole('tab', { name, exact: true }).click()
+}
+
 async function setWindowAndZoom(
   width: number,
   height: number,
@@ -1920,7 +1925,7 @@ test('presents a restrained, character-led welcome for a new chat', async () => 
     'Your Chat and Memory remain in the existing Python Backend.',
   )).toHaveCount(0)
   await expect(emptyConversation).toHaveText(
-    '不论何时何地，爱莉希雅都会回应你的期待。今天有什么事要跟我分享的吗？',
+    '今天，想聊些什么？一个想法，一件小事，都可以从这里开始。',
   )
   await expect(emptyConversation.locator('svg')).toHaveCount(0)
 })
@@ -2242,6 +2247,7 @@ test('renders canonical Chat metadata and opens persisted sessions', async () =>
   await expect(firstRow).toContainText('project_alpha')
   await expect(firstRow).toContainText('Pinned')
   await expect(page.getByLabel('1 projects')).toBeVisible()
+  await selectWorkView('Conversation')
   await expect(page.getByText('Loaded from persisted history.')).toBeVisible()
 
   await clearCalls()
@@ -2318,6 +2324,7 @@ test('keeps the saved mode after a failed switch and blocks switching while busy
     ;(window as TestWindow).elysiaDesktopTest.setChatActionDelay(false)
   })
   await expect(mode).toHaveValue('work')
+  await selectWorkView('Conversation')
   await page.getByLabel('Message Elysia').fill('Generate a reply.')
   await page.getByLabel('Message Elysia').press('Enter')
   await expect(mode).toBeDisabled()
@@ -5334,23 +5341,28 @@ test('continuous dictation keeps Work and mode controls locked until final trans
     ;(window as TestWindow).elysiaDesktopTest.setSelectedWorkspace('D:\\work-dictation')
   })
   await page.getByRole('button', { name: 'Choose Workspace' }).click()
+  await page.getByRole('tab', { name: 'Files', exact: true }).click()
   await page.getByRole('button', { name: 'Add to plan' }).click()
   await setVoiceTranscriptionDelay(true)
   await setNextVoiceTranscriptionResult({ text: 'final Work draft', language: 'en', languageProbability: 0.99 })
+  await selectWorkView('Conversation')
   await page.getByRole('button', { name: 'Dictate' }).click()
   await expect(page.getByRole('button', { name: 'Stop dictation' })).toHaveAttribute('aria-pressed', 'true')
   await expect(mode).toBeDisabled()
+  await selectWorkView('Workspace')
   await page.getByRole('tab', { name: 'Files', exact: true }).click()
   await expect(page.getByRole('button', { name: 'Run tool', exact: true })).toBeDisabled()
   await page.getByRole('tab', { name: /^Plan(?: \d+)?$/ }).click()
   await expect(page.getByRole('button', { name: 'Create plan', exact: true })).toBeDisabled()
   await emitSpeechFrames(0.08, 10)
+  await selectWorkView('Conversation')
   await page.getByRole('button', { name: 'Stop dictation' }).click()
   await expect.poll(() => page.evaluate(() => (
     (window as TestWindow).elysiaDesktopTest.getPendingVoiceTranscriptionCount()
   ))).toBe(1)
   await expect(page.getByRole('button', { name: 'Dictate' })).toBeDisabled()
   await expect(mode).toBeDisabled()
+  await selectWorkView('Workspace')
   await page.getByRole('tab', { name: 'Files', exact: true }).click()
   await expect(page.getByRole('button', { name: 'Run tool', exact: true })).toBeDisabled()
   await page.getByRole('tab', { name: /^Plan(?: \d+)?$/ }).click()
@@ -6714,7 +6726,7 @@ test('keeps panel controls inside a narrow header with long Work titles and stat
   const workChat = chatSummary('chat-test', title, { mode: 'work' })
   await setChatState({ activeChat: { ...workChat, messages: [] }, chats: [workChat] })
   await emitSnapshot(readySnapshot({ chatTitle: title }))
-  await expect(page.locator('.chat-mode-label')).toHaveText('Work mode')
+  await expect(page.getByRole('combobox', { name: 'Conversation mode', exact: true })).toHaveValue('work')
   await setWindowAndZoom(640, 640, 2)
 
   let revision = 2
@@ -9720,6 +9732,7 @@ test('scopes Work and Knowledge character activity to the current Project Chat',
   const artwork = panel.locator('.character-artwork')
   const captionState = panel.locator('.character-caption > strong')
 
+  await selectWorkView('Conversation')
   const composer = page.getByLabel('Message Elysia')
   await composer.fill('Show the Work state.')
   await composer.press('Enter')

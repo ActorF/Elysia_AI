@@ -164,7 +164,7 @@ export function VisionAnalysisPanel({ api, chatId, projectId, images, selectedIm
         changes visibility; it cannot abandon the request or its cancellation. */}
     <ToolTabPanel idPrefix="vision-analysis-kind" value="ocr" activeValue={view}>
     <section className="vision-provider" aria-label="Local OCR">
-      <p>Read text locally from the selected image. Review the extraction before using it.</p>
+      <p className="vision-provider-intro">Extract text from your image, locally.</p>
       <div className="vision-analysis-controls">
       <button type="button" disabled={locked} onClick={() => { void run('readiness') }}>Check OCR</button>
       <label>OCR language<select value={language} disabled={locked} onChange={(event) => { setLanguage(event.currentTarget.value as VisionOcrLanguage) }}>
@@ -174,7 +174,7 @@ export function VisionAnalysisPanel({ api, chatId, projectId, images, selectedIm
       </select></label>
       <button type="button" className="tool-primary" disabled={locked || selected === undefined || !available} onClick={() => { void run('ocr') }}>Run OCR</button>
       </div>
-    <p role="status">{readiness === null ? 'Check OCR to discover the installed local engine and language data.'
+    <p className="vision-provider-status" role="status">{readiness === null ? 'Check OCR to connect your local text reader.'
         : readiness.status === 'ready' ? `Tesseract ${readiness.version ?? ''} is ready.`
           : readiness.status === 'missing_engine' ? 'Tesseract is missing or not configured. Install a local engine before checking again.'
             : readiness.status === 'missing_languages' ? 'Required Tesseract language data is missing. Install English and the Chinese data you need.'
@@ -204,7 +204,7 @@ export function VisionAnalysisPanel({ api, chatId, projectId, images, selectedIm
     </ToolTabPanel>
     <ToolTabPanel idPrefix="vision-analysis-kind" value="model" activeValue={view}>
     <section className="vision-provider" aria-label="Local vision model">
-      <p>Ask a local model about this image. Model inference can be wrong.</p>
+      <p className="vision-provider-intro">Ask a question. Explore the details.</p>
       <div className="vision-analysis-controls">
         <button type="button" disabled={locked} onClick={() => { void run('model-readiness') }}>Check vision models</button>
         <label>Vision model<select value={selectedModel} disabled={locked} onChange={(event) => { setModelName(event.currentTarget.value) }}>
@@ -212,16 +212,17 @@ export function VisionAnalysisPanel({ api, chatId, projectId, images, selectedIm
           {(modelReadiness?.models ?? []).map((model) => <option key={model} value={model}>{model}</option>)}
         </select></label>
       </div>
-      <p role="status">{modelReadiness === null ? 'Check which installed local models advertise vision support.'
+      <p className="vision-provider-status" role="status">{modelReadiness === null ? 'Check vision models to get started.'
         : modelReadiness.status === 'ready' ? `${modelReadiness.models.length} installed vision model${modelReadiness.models.length === 1 ? '' : 's'} available.`
           : modelReadiness.status === 'no_vision_model' ? 'No installed model advertises vision support. Configure a local Ollama vision model and check again.'
             : 'Local vision models are unavailable. Start local Ollama and check again.'}</p>
-      <label className="vision-model-question">Question about image<textarea rows={3} maxLength={4096} value={question}
+      <label className="vision-model-question">Question about image<textarea rows={4} maxLength={4096} value={question}
         disabled={locked} onChange={(event) => { setQuestion(event.currentTarget.value) }} /></label>
       {questionBytes > 3500 && <p>{questionBytes} / 4096 UTF-8 bytes.</p>}
       {!questionValid && <p>Enter a question within the byte limit before asking.</p>}
       <button type="button" className="tool-primary" disabled={locked || selected === undefined || !modelAvailable || !questionValid}
         onClick={() => { void run('model') }}>Ask about image</button>
+      <p className="vision-provider-note">Runs locally. Review model answers for accuracy.</p>
       {!leased && visible?.model.error !== null && visible?.model.error !== undefined && <p role="alert">Local vision model ended: {visible.model.error.code}.</p>}
       {inference !== null && inference !== undefined && <div className="vision-ocr-result" role="region" aria-label="Model inference">
         <strong>Model inference · {inference.model}</strong>

@@ -1,54 +1,95 @@
-/* Keep the image workbench compact, horizontally browsable, and readable inside the shared tool surface. */
+/* Give Vision a spacious image canvas and a single responsive inspector without remounting its native request owners. */
 
-.vision-dialog { width: min(58rem, calc(100vw - 2rem)); max-width: none; max-height: min(88vh, 52rem); padding: 0; border: 1px solid var(--color-border-strong); border-radius: var(--radius-lg); background: var(--color-bg-canvas); color: var(--color-text-primary); box-shadow: 0 1.5rem 5rem rgb(0 0 0 / 25%); overflow: hidden; }
+.vision-dialog {
+  width: min(72rem, calc(100vw - 3rem)); max-width: none; max-height: min(90vh, 56rem);
+  padding: 0; border: 1px solid var(--color-border); border-radius: 1.25rem;
+  background: var(--color-bg-canvas); color: var(--color-text-primary);
+  box-shadow: 0 1.5rem 5rem rgb(0 0 0 / 20%); overflow: hidden;
+}
 .vision-dialog[open] { display: flex; flex-direction: column; }
-.vision-dialog::backdrop { background: var(--color-bg-overlay); }
-.vision-dialog-header { display: flex; align-items: center; flex: 0 0 auto; gap: .7rem; padding: 1rem 1.25rem; border-bottom: 1px solid var(--color-border); }
-.vision-dialog-header > svg { width: 1.3rem; height: 1.3rem; color: var(--color-accent); }
+.vision-dialog::backdrop { background: var(--color-bg-overlay); backdrop-filter: blur(4px); }
+.vision-dialog-header { display: flex; align-items: center; flex: 0 0 auto; gap: .75rem; padding: 1.2rem 1.5rem; }
+.vision-dialog-symbol { display: grid; place-items: center; width: 2.5rem; height: 2.5rem; border-radius: .8rem; color: var(--color-accent); background: var(--color-accent-soft); }
+.vision-dialog-symbol svg { width: 1.25rem; height: 1.25rem; }
 .vision-dialog-header > div { min-width: 0; flex: 1; }
-.vision-dialog-header h2 { margin: 0; font-size: var(--font-size-lg); }
-.vision-dialog-header p { margin: .15rem 0 0; color: var(--color-text-muted); font-size: var(--font-size-xs); }
+.vision-dialog-header h2 { margin: 0; font-size: var(--font-size-lg); font-weight: 600; letter-spacing: -.025em; }
+.vision-dialog-header p { margin: .2rem 0 0; color: var(--color-text-muted); font-size: var(--font-size-xs); }
 .vision-dialog-header button { flex: 0 0 auto; }
 .vision-dialog-status { font-size: var(--font-size-xs); color: var(--color-text-muted); }
 .vision-dialog > .vision-panel { min-height: 0; overflow-y: auto; overscroll-behavior: contain; border: 0; }
-.vision-dialog .tool-panel-body { padding-top: 1rem; }
-.vision-image-review { display: grid; min-width: 0; gap: .7rem; }
-.vision-analysis-slot { min-width: 0; }
+.vision-panel .vision-workspace { gap: 1rem; padding: 0 1.5rem 1.5rem; }
+.vision-workspace-toolbar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: .65rem; }
+.vision-workspace-label { color: var(--color-text-muted); font-size: var(--font-size-xs); }
 .vision-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
 .vision-actions > button { display: inline-flex; align-items: center; justify-content: center; gap: .45rem; }
-.vision-actions svg { width: 1rem; height: 1rem; }
-.vision-image-options { flex: 1 1 auto; min-width: 0; }
-.vision-image-options[open] { flex-basis: 100%; }
-.vision-image-options[open] > .vision-actions { margin-top: .5rem; }
-.vision-image-options summary { padding: .4rem .1rem; }
+.vision-actions svg, .vision-back-button svg { width: 1rem; height: 1rem; }
+.vision-panel .vision-screenshot-toggle { border-color: transparent; background: var(--color-bg-soft); }
+.vision-panel .vision-screenshot-toggle[aria-expanded="true"] { color: var(--color-accent); background: var(--color-accent-soft); }
+.vision-image-options { position: relative; min-width: 0; }
+.vision-image-options summary { padding: .5rem; list-style: none; }
+.vision-image-options summary::-webkit-details-marker { display: none; }
+.vision-panel .vision-image-options[open] > summary { margin: 0; }
+.vision-options-menu { position: absolute; z-index: 4; top: calc(100% + .3rem); right: 0; display: grid; gap: .5rem; width: min(17rem, calc(100vw - 4rem)); padding: .85rem; border: 1px solid var(--color-border); border-radius: .85rem; background: var(--color-bg-surface); box-shadow: 0 .6rem 2rem rgb(0 0 0 / 12%); }
+.vision-options-menu button { text-align: left; }
 .vision-panel .vision-session-note { color: var(--color-text-muted); font-size: var(--font-size-xs); }
-.vision-empty { display: flex; align-items: center; gap: .6rem; padding: .6rem .75rem; border-radius: .65rem; background: var(--color-bg-soft); }
-.vision-empty > svg { width: 1.3rem; height: 1.3rem; flex: 0 0 auto; color: var(--color-accent); }
-.vision-empty strong { font-size: var(--font-size-sm); }
-.vision-empty p { margin-top: .2rem; font-size: var(--font-size-xs); }
-.vision-images { display: flex; min-width: 0; max-width: 100%; gap: .5rem; overflow-x: auto; overscroll-behavior-inline: contain; scrollbar-width: thin; padding-block: .15rem; }
+.vision-workspace-columns { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(19rem, 1fr); gap: 1.5rem; min-width: 0; }
+.vision-image-review { display: flex; flex-direction: column; align-self: start; min-width: 0; gap: .85rem; }
+.vision-canvas-heading { display: flex; align-items: end; flex-wrap: wrap; gap: .5rem 1rem; min-width: 0; }
+.vision-image-target { display: grid; flex: 1 1 12rem; gap: .35rem; min-width: 0; }
+.vision-image-target > span { color: var(--color-text-muted); }
+.vision-panel .vision-image-target select { background: transparent; border-color: transparent; padding-left: 0; font-size: var(--font-size-sm); font-weight: 500; }
+.vision-image-dimensions { padding-bottom: .6rem; font-size: .6875rem; color: var(--color-text-muted); white-space: nowrap; }
+.vision-canvas { display: grid; place-items: center; min-height: 22rem; height: min(45vh, 29rem); padding: 1rem; overflow: hidden; border-radius: 1rem; background: var(--color-bg-soft); }
+.vision-canvas[data-empty="true"] { height: auto; }
+.vision-main-preview { display: block; max-width: 100%; max-height: 100%; width: 100%; height: 100%; object-fit: contain; border-radius: .4rem; }
+.vision-empty { display: grid; justify-items: center; gap: .8rem; width: min(100%, 18rem); text-align: center; }
+.vision-empty-symbol { display: grid; place-items: center; width: 3.5rem; height: 3.5rem; border-radius: 1.1rem; background: var(--color-bg-surface); color: var(--color-text-muted); }
+.vision-empty svg { width: 1.5rem; height: 1.5rem; }
+.vision-empty strong { font-size: var(--font-size-lg); font-weight: 500; letter-spacing: -.025em; }
+.vision-panel .vision-empty p { font-size: var(--font-size-xs); line-height: 1.65; }
+.vision-empty > button { display: inline-flex; align-items: center; gap: .5rem; margin-top: .3rem; }
+.vision-empty > button svg { width: 1rem; height: 1rem; }
+.vision-images { display: flex; min-width: 0; max-width: 100%; gap: .5rem; overflow-x: auto; overscroll-behavior-inline: contain; scrollbar-width: thin; padding: .15rem .1rem .35rem; }
 .vision-images:empty { display: none; }
-.vision-image { display: flex; flex: 0 0 min(17rem, 100%); min-width: 0; max-width: 100%; gap: .1rem; border-radius: .65rem; background: var(--color-bg-soft); }
-.vision-panel .vision-image-select { display: flex; flex: 1; min-width: 0; align-items: center; gap: .6rem; padding: .5rem; text-align: left; border-color: transparent; background: transparent; }
+.vision-image { position: relative; flex: 0 0 6.25rem; min-width: 0; max-width: 100%; }
+.vision-panel .vision-image-select { display: grid; gap: .4rem; width: 100%; padding: .35rem; text-align: left; border: 1px solid transparent; border-radius: .7rem; background: transparent; }
 .vision-panel .vision-image-select[aria-pressed="true"] { border-color: var(--color-accent); background: var(--color-accent-soft); }
-.vision-image img { flex: 0 0 auto; width: 3.5rem; height: 3.5rem; object-fit: contain; border-radius: .35rem; background: var(--color-bg-canvas); }
-.vision-image-caption { display: grid; gap: .25rem; min-width: 0; overflow-wrap: anywhere; }
-.vision-image-caption strong { display: -webkit-box; overflow: hidden; -webkit-line-clamp: 2; -webkit-box-orient: vertical; font-size: var(--font-size-xs); }
-.vision-image-caption > span { color: var(--color-text-muted); font-size: .6875rem; }
-.vision-panel .vision-image-remove { align-self: start; flex: 0 0 auto; width: 1.8rem; min-height: 1.8rem; padding: .4rem; border: 0; background: transparent; }
-.vision-image-remove svg { width: .85rem; height: .85rem; }
-.vision-image-target { display: flex; align-items: center; flex-wrap: wrap; gap: .5rem; min-width: 0; }
-.vision-image-target select { flex: 1 1 12rem; }
-.vision-capture-slot { padding: 1rem; min-width: 0; border-radius: .75rem; background: var(--color-bg-soft); }
-.vision-panel .vision-activity { justify-self: end; font-size: .6875rem; padding: .35rem .5rem; }
+.vision-image img { display: block; width: 100%; height: 3.75rem; object-fit: cover; border-radius: .4rem; background: var(--color-bg-soft); }
+.vision-image-caption { min-width: 0; }
+.vision-image-caption strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .625rem; font-weight: 400; }
+.vision-panel .vision-image-remove { position: absolute; top: .55rem; right: .55rem; display: grid; place-items: center; width: 1.35rem; min-height: 1.35rem; padding: .2rem; border: 0; border-radius: 50%; background: var(--color-bg-surface); color: var(--color-text-secondary); box-shadow: 0 1px 4px rgb(0 0 0 / 12%); }
+.vision-image-remove svg { width: .8rem; height: .8rem; }
+.vision-inspector { min-width: 0; padding-left: 1.5rem; border-left: 1px solid var(--color-border); }
+.vision-tools { display: grid; min-width: 0; gap: 1.4rem; }
+.vision-panel .vision-tools > .tool-tabs { padding: 0 0 .55rem; border-radius: 0; background: transparent; border-bottom: 1px solid var(--color-border); }
+.vision-panel .vision-tools > .tool-tabs > button { padding-inline: .6rem; border: 0; background: transparent; box-shadow: none; }
+.vision-panel .vision-tools > .tool-tabs > button[aria-selected="true"] { background: var(--color-bg-soft); color: var(--color-text-primary); }
+.vision-analysis-slot, .vision-capture-slot { min-width: 0; }
+.vision-capture-slot { display: grid; gap: 1rem; }
+.vision-panel .vision-back-button { display: inline-flex; align-items: center; justify-self: start; gap: .4rem; padding-left: 0; }
+.vision-panel .vision-activity { font-size: .6875rem; padding: .35rem .5rem; }
 .vision-panel :is(button, label, p, summary) { overflow-wrap: anywhere; }
 
-@media (max-width: 420px) {
-  .vision-dialog { width: calc(100vw - 1rem); max-height: 92vh; }
-  .vision-dialog-header { padding: .75rem; }
-  .vision-actions > button { flex: 1 1 auto; }
-  .vision-image-options { flex-basis: 100%; }
-  .vision-capture-slot { padding: .7rem; }
-  .vision-panel .tool-panel-header { flex-wrap: wrap; }
-  .vision-panel .tool-panel-header-actions { margin-left: auto; }
+/* A stacked inspector keeps image context visible in narrow desktop windows;
+   it uses the dialog's one scroll area instead of nesting tiny scrolling panes. */
+@media (max-width: 840px) {
+  .vision-workspace-columns { grid-template-columns: minmax(0, 1fr); gap: 1.25rem; }
+  .vision-inspector { padding: 1.25rem 0 0; border-left: 0; border-top: 1px solid var(--color-border); }
+  .vision-canvas { min-height: 12rem; height: min(32vh, 22rem); }
+}
+@media (max-width: 480px) {
+  .vision-dialog { width: calc(100vw - 1rem); max-height: 94vh; border-radius: 1rem; }
+  .vision-dialog-header { padding: 1rem; }
+  .vision-dialog-header p { font-size: .6875rem; }
+  .vision-dialog-symbol { width: 2.1rem; height: 2.1rem; }
+  .vision-panel .vision-workspace { padding: 0 1rem 1rem; }
+  .vision-workspace-label { display: none; }
+  .vision-workspace-toolbar > .vision-actions { width: 100%; justify-content: space-between; }
+  .vision-image-dimensions { padding: 0; }
+  .vision-canvas { min-height: 10rem; height: 25vh; }
+  .vision-canvas[data-empty="true"] { min-height: 14rem; }
+  .vision-empty { gap: .55rem; }
+  .vision-empty-symbol { width: 2.5rem; height: 2.5rem; }
+  .vision-empty strong { font-size: var(--font-size-sm); }
+  .vision-panel .vision-tools > .tool-tabs > button { padding-inline: .35rem; font-size: .6875rem; }
 }

@@ -38,7 +38,7 @@ export function ApprovalPreview({ approval, disabled, confirmationAvailable = tr
         : !confirmationAvailable ? <p>Approval controls are unavailable in this version.</p>
           : (
             <div className="work-confirmation-actions">
-              <button type="button" disabled={disabled} onClick={() => { onDecision(true) }}>
+              <button type="button" className="tool-primary" disabled={disabled} onClick={() => { onDecision(true) }}>
                 {approval.call.toolId === 'delete' ? 'Confirm recoverable deletion' : 'Approve once'}
               </button>
               <button type="button" disabled={disabled} onClick={() => { onDecision(false) }}>Deny</button>

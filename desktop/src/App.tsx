@@ -943,6 +943,8 @@ function App() {
   const [internetOperationPending, setInternetOperationPending] = useState(false)
   const [internetLifecycleEpoch, setInternetLifecycleEpoch] = useState(0)
   const [selectedWorkVisionContext, setSelectedWorkVisionContext] = useState<VisionContext | null>(null)
+  const [workspaceAttentionKey, setWorkspaceAttentionKey] = useState<string>()
+  const [conversationAttentionRevision, setConversationAttentionRevision] = useState(0)
   const [projectState, setProjectState] = useState<ProjectState | null>(null)
   const [projectLoading, setProjectLoading] = useState(true)
   const [projectMutationPending, setProjectMutationPending] = useState(false)
@@ -1377,6 +1379,11 @@ function App() {
     workOperationPendingRef.current = pending
     setWorkOperationPending(pending)
   }, [])
+  // Newly issued approvals reveal the Work view even when the user was reading
+  // the conversation; changing tabs itself never acquires or releases a lease.
+  const revealWorkAttention = useCallback((key: string): void => {
+    setWorkspaceAttentionKey(key)
+  }, [])
   const updateVisionBusy = useCallback((busy: boolean): void => {
     // Work, Vision, and Internet share action admission. A late completion from
     // one surface cannot release a physical request owned by the other.
@@ -1422,7 +1429,18 @@ function App() {
     }
     updateChatDrafts(() => nextDrafts)
   }, [activeChatId, activeChatProjectId, updateChatDrafts])
-  const appendReviewedVisionDraft = useCallback((text: string): void => { appendReviewedDraft(text, 'vision') }, [appendReviewedDraft])
+  const appendReviewedVisionDraft = useCallback((text: string): void => {
+    appendReviewedDraft(text, 'vision')
+    // Reveal the destination only after canonical validation and persistence
+    // succeed; a failed export keeps its review open for recovery.
+    setConversationAttentionRevision(revision => revision + 1)
+    setVisionPresentation(current => ({ ...current, open: false }))
+    requestAnimationFrame(() => {
+      if (activeViewRef.current === 'chat' && activeChatIdRef.current === activeChatId) {
+        document.getElementById('chat-composer')?.focus()
+      }
+    })
+  }, [activeChatId, appendReviewedDraft])
   const appendReviewedInternetDraft = useCallback((text: string): void => { appendReviewedDraft(text, 'internet') }, [appendReviewedDraft])
   const selectReviewedVisionWorkContext = useCallback((context: VisionContext): void => {
     const expiresAt = Date.parse(context.expiresAt)
@@ -1434,6 +1452,8 @@ function App() {
       throw new Error('The reviewed Work context is no longer available.')
     }
     setSelectedWorkVisionContext(context)
+    setWorkspaceAttentionKey(`vision-context:${context.contextId}`)
+    setVisionPresentation(current => ({ ...current, open: false }))
   }, [])
   useEffect(() => {
     if (selectedWorkVisionContext === null) return
@@ -8302,6 +8322,8 @@ function App() {
           || workOperationPending
         }
         attachmentDisabled={sessionUiPending || activeChatId === undefined}
+        workspaceAttentionKey={workspaceAttentionKey}
+        conversationAttentionRevision={conversationAttentionRevision}
         workPanel={activeChatId === undefined ? undefined : (
           <WorkPanel
             key={activeChatId}
@@ -8320,13 +8342,16 @@ function App() {
             visionContext={visibleWorkVisionContext}
             onClearVisionContext={() => { setSelectedWorkVisionContext(null) }}
             onBusyChange={updateWorkBusy}
+            onAttention={revealWorkAttention}
           />
         )}
         screenshotControl={activeChatId === undefined || typeof desktopApi?.getVisionState !== 'function' ? undefined : (
           <button type="button" className="tool-button composer-screenshot-button" aria-label="Take screenshot" title="Take screenshot"
             aria-expanded={visionPresentation.open}
             disabled={snapshot.status !== 'ready' || snapshot.chatId !== activeChatId || chatState?.activeChat.archived !== false || !visionProjectAllowed}
-            onClick={() => setVisionPresentation({ open: true, initialView: 'capture' })}><Icon name="monitor" /></button>
+            onClick={() => setVisionPresentation({ open: true, initialView: 'capture' })}>
+            <Icon name="monitor" /><span className="composer-screenshot-label">Vision</span>
+          </button>
         )}
         onReviewImage={attachmentId => setVisionPresentation({ open: true, initialView: 'review', attachmentId })}
         visionPanel={activeChatId === undefined || typeof desktopApi?.getVisionState !== 'function' ? undefined : (

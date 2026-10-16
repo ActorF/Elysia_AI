@@ -1,4 +1,76 @@
-/* Keep screenshot entry beside the existing file picker and image review inside canonical attachment chips. */
+/* Quiet message input, compact direct actions, and canonical image review controls. */
+
+.composer-zone .composer-card {
+  padding: .85rem;
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-strong);
+  border-radius: 1.25rem;
+  box-shadow: 0 3px 12px rgb(0 0 0 / 3%);
+}
+
+.composer-zone .composer-card:focus-within {
+  border-color: color-mix(in srgb, var(--color-text-muted) 45%, var(--color-border));
+  box-shadow: 0 3px 12px rgb(0 0 0 / 4%);
+}
+
+.composer-zone .phone-button,
+.composer-zone .song-cover-button {
+  color: var(--color-text-secondary);
+  background: transparent;
+}
+
+.composer-zone .send-button:not(.stop-button):not(:disabled) {
+  color: var(--color-bg-canvas);
+  background: var(--color-text-primary);
+  box-shadow: none;
+}
+
+.composer-zone .send-button {
+  border-radius: var(--radius-full);
+}
+
+.composer-zone .elysia-model-mark { display: none; }
+.composer-screenshot-label { display: none; }
+.chat-workspace-vision .composer-screenshot-label { display: inline; }
+.chat-workspace-vision .composer-screenshot-button {
+  display: flex;
+  gap: .5rem;
+  width: auto;
+  padding: .4rem .65rem;
+  font-size: var(--font-size-xs);
+}
+
+.chat-conversation-empty {
+  /* The welcome and composer form one calm starting point. Both occupied rows
+     may shrink and scroll independently when a draft or error grows at zoom. */
+  grid-template-rows: minmax(0, 1fr) minmax(0, auto) minmax(0, .65fr);
+}
+
+.chat-conversation-empty .message-scroll { align-self: end; max-height: 100%; }
+.chat-conversation-empty .message-column { min-height: auto; gap: 1.25rem; padding-bottom: 1.5rem; }
+.chat-conversation-empty .conversation-empty { gap: .75rem; padding: 0; }
+.chat-conversation-empty .conversation-starters button {
+  min-height: 2rem;
+  padding: .35rem .75rem;
+  background: transparent;
+  border-color: var(--color-border);
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-xs);
+}
+
+@media (max-width: 42rem) {
+  .chat-workspace-navigation { padding-inline: .75rem; gap: .5rem; }
+  .chat-workspace-vision .composer-screenshot-label { display: none; }
+  .composer-zone .composer-tools { flex-basis: 10rem; }
+  .composer-zone .tool-button { width: 2rem; height: 2rem; }
+  .composer-zone .voice-tools { margin-left: auto; }
+}
+
+@media (max-height: 40rem) {
+  .chat-conversation-empty { grid-template-rows: minmax(2rem, 1fr) minmax(0, auto); }
+  .chat-conversation-empty .message-scroll { align-self: stretch; }
+  .composer-zone .composer-card { padding: .5rem; }
+}
 
 .composer-screenshot-button {
   flex: 0 0 auto;

@@ -82,15 +82,21 @@ async function selectWorkspaceTab(name: 'Files' | 'Plan' | 'History' | 'Desktop'
   await page.getByRole('tab', { name: new RegExp(`^${name}(?: \\d+)?$`) }).click()
 }
 
+/** Change presentation while leaving Work controllers and the conversation draft mounted. */
+async function selectWorkView(name: 'Workspace' | 'Conversation'): Promise<void> {
+  await page.getByRole('tablist', { name: 'Work views', exact: true }).getByRole('tab', { name, exact: true }).click()
+}
+
 test('binds only native selections, preserves cancellation, and clears Work access', async () => {
   const mode = page.getByRole('combobox', { name: 'Conversation mode' })
   await expect(page.getByRole('region', { name: 'Work Workspace' })).toHaveCount(0)
   await mode.selectOption('work')
   const panel = page.getByRole('region', { name: 'Work Workspace' })
   await expect(panel.getByRole('tablist', { name: 'Workspace tools' }).getByRole('tab')).toHaveCount(4)
-  await expect(panel.getByRole('tab', { name: 'Files', exact: true })).toHaveAttribute('aria-selected', 'true')
+  await expect(panel.getByRole('tab', { name: 'Plan', exact: true })).toHaveAttribute('aria-selected', 'true')
   await expect(panel.getByRole('tabpanel')).toHaveCount(1)
   await expect(panel.locator('.work-tool-inspector')).not.toHaveAttribute('open')
+  await expect(panel.getByRole('button', { name: 'Run tool', exact: true })).toBeHidden()
   await expect(panel.getByText('No Workspace selected')).toBeVisible()
   await panel.getByRole('button', { name: 'Choose Workspace' }).click()
   await expect(panel.getByText('No Workspace selected')).toBeVisible()
@@ -166,6 +172,7 @@ test('shows the declared tool catalog and recovers from a bounded catalog failur
     ;(window as WorkTestWindow).elysiaDesktopTest.failNextWorkTools('Private catalog diagnostic')
   })
   await page.getByRole('combobox', { name: 'Conversation mode' }).selectOption('work')
+  await selectWorkspaceTab('Files')
   const inspector = page.locator('.work-tool-inspector')
   await inspector.locator('summary').click()
   await expect(inspector.getByRole('alert')).toContainText('Could not load available tools.')
@@ -183,6 +190,7 @@ test('shows the declared tool catalog and recovers from a bounded catalog failur
 
 test('runs explicit bounded read tools and displays content as escaped text', async () => {
   await page.getByRole('combobox', { name: 'Conversation mode' }).selectOption('work')
+  await selectWorkspaceTab('Files')
   await expect(page.getByRole('button', { name: 'Run tool', exact: true })).toBeDisabled()
   await page.evaluate(() => {
     ;(window as WorkTestWindow).elysiaDesktopTest.setSelectedWorkspace('D:\\work-read')
@@ -229,16 +237,16 @@ test('blocks conflicting actions during a read and recovers after a cancelled re
   })
   const mode = page.getByRole('combobox', { name: 'Conversation mode' })
   await mode.selectOption('work')
+  await selectWorkspaceTab('Files')
   await page.getByRole('button', { name: 'Run tool', exact: true }).click()
   await expect(mode).toBeDisabled()
   await selectWorkspaceTab('History')
   await expect(mode).toBeDisabled()
-  await page.getByRole('button', { name: 'Workspace', exact: true }).click()
   await expect(page.getByRole('region', { name: 'Work Workspace' })).toHaveAttribute('aria-busy', 'true')
   await expect(mode).toBeDisabled()
-  await page.getByRole('button', { name: 'Workspace', exact: true }).click()
   await selectWorkspaceTab('Files')
   await expect(page.getByRole('button', { name: 'Clear Workspace' })).toBeDisabled()
+  await selectWorkView('Conversation')
   await page.getByLabel('Message Elysia').fill('No conflicting model turn.')
   await expect(page.getByRole('button', { name: 'Send message' })).toBeDisabled()
   await expect(page.getByRole('button', { name: 'Voice Call', exact: true })).toBeDisabled()
@@ -246,6 +254,7 @@ test('blocks conflicting actions during a read and recovers after a cancelled re
   await page.evaluate(() => {
     ;(window as WorkTestWindow).elysiaDesktopTest.releaseNextWorkToolRun()
   })
+  await selectWorkView('Workspace')
   await expect(page.getByRole('region', { name: 'Work tool result' })).toContainText('The action was cancelled.')
   await expect(mode).toBeEnabled()
 })
@@ -257,6 +266,8 @@ test('does not open a native Voice Call when Work starts across its awaited pane
     control.setWorkToolRunDelay(true)
   })
   await page.getByRole('combobox', { name: 'Conversation mode' }).selectOption('work')
+  await selectWorkspaceTab('Files')
+  await selectWorkView('Conversation')
   await page.getByRole('button', { name: 'Expand Elysia panel' }).click()
   await expect(page.locator('#character-panel')).toBeVisible()
   await page.evaluate(() => { (window as WorkTestWindow).elysiaDesktopTest.setCharacterPanelChangeDelay(true) })
@@ -264,6 +275,7 @@ test('does not open a native Voice Call when Work starts across its awaited pane
   await expect.poll(() => page.evaluate(() => (
     (window as WorkTestWindow).elysiaDesktopTest.getPendingCharacterPanelChangeCount()
   ))).toBe(1)
+  await selectWorkView('Workspace')
   await page.getByRole('button', { name: 'Run tool', exact: true }).click()
   await page.evaluate(() => { (window as WorkTestWindow).elysiaDesktopTest.releaseNextCharacterPanelChange() })
   await page.evaluate(() => new Promise<void>((resolve) => {
@@ -273,6 +285,7 @@ test('does not open a native Voice Call when Work starts across its awaited pane
     .filter((call) => call.method === 'openVoiceCallWindow'))
   expect(openings).toHaveLength(0)
   await page.evaluate(() => { (window as WorkTestWindow).elysiaDesktopTest.releaseNextWorkToolRun() })
+  await selectWorkView('Conversation')
   await expect(page.getByRole('button', { name: 'Voice Call', exact: true })).toBeEnabled()
 })
 
@@ -583,6 +596,45 @@ test('shows the remaining job budget and prepares an explicit read retry without
   await approval.getByRole('button', { name: 'Deny', exact: true }).click()
   await expect(panel.locator('[data-plan-step-status]')).toHaveText(['succeeded', 'failed'])
   await expect(job.getByRole('button', { name: 'Prepare read retry' })).toHaveCount(0)
+})
+
+test('reveals a newly required approval once without reclaiming the user’s later conversation view', async () => {
+  await page.evaluate(() => {
+    const control = (window as WorkTestWindow).elysiaDesktopTest
+    control.setWorkWorkspaceState({ kind: 'work.workspace', chatId: 'chat_work_test', workspacePath: 'D:\\approval-visibility' })
+    control.setWorkPlanReadDelay(true)
+  })
+  await page.getByRole('combobox', { name: 'Conversation mode' }).selectOption('work')
+  await selectWorkspaceTab('Files')
+  await page.getByLabel('Work tool', { exact: true }).selectOption('read_text')
+  await page.getByLabel('Relative path', { exact: true }).fill('notes.txt')
+  await page.getByRole('button', { name: 'Add to plan', exact: true }).click()
+  await selectWorkspaceTab('Files')
+  await page.getByLabel('Work tool', { exact: true }).selectOption('edit')
+  await page.getByLabel('Complete file content').fill('Explicitly reviewed replacement.')
+  await page.getByRole('button', { name: 'Add to plan', exact: true }).click()
+  const panel = page.getByRole('region', { name: 'Work plan', exact: true })
+  await panel.getByRole('button', { name: 'Create plan', exact: true }).click()
+  await panel.getByRole('button', { name: 'Start plan', exact: true }).click()
+  await expect(panel.getByRole('status')).toContainText('local operation active')
+  await selectWorkView('Conversation')
+  await page.evaluate(() => { (window as WorkTestWindow).elysiaDesktopTest.releaseNextWorkPlanRead() })
+  const approval = page.getByRole('region', { name: 'Work step approval', exact: true })
+  await expect(approval).toBeVisible()
+  await expect(approval).toContainText('Explicitly reviewed replacement.')
+  await expect(page.getByRole('tablist', { name: 'Work views', exact: true })
+    .getByRole('tab', { name: 'Workspace', exact: true })).toBeFocused()
+  await selectWorkView('Conversation')
+  const polls = await page.evaluate(() => (window as WorkTestWindow).elysiaDesktopTest.getCalls()
+    .filter((call) => call.method === 'getWorkPlan').length)
+  await expect.poll(() => page.evaluate(() => (window as WorkTestWindow).elysiaDesktopTest.getCalls()
+    .filter((call) => call.method === 'getWorkPlan').length)).toBeGreaterThan(polls + 1)
+  await expect(page.getByRole('tablist', { name: 'Work views', exact: true })
+    .getByRole('tab', { name: 'Conversation', exact: true })).toHaveAttribute('aria-selected', 'true')
+  expect(await page.evaluate(() => (window as WorkTestWindow).elysiaDesktopTest.getCalls()
+    .filter((call) => call.method === 'confirmWorkPlan'))).toHaveLength(0)
+  await selectWorkView('Workspace')
+  await approval.getByRole('button', { name: 'Deny', exact: true }).click()
 })
 
 test('retains the Work lease after cancellation until a native read actually drains', async () => {

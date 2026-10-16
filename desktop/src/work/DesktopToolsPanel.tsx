@@ -12,10 +12,12 @@ interface DesktopToolsPanelProps {
   disabled: boolean
   /** Retain the shell's physical busy lease until the submitted native action settles. */
   onBusyChange(busy: boolean): void
+  /** Reveal a new native action review even if another workspace view is selected. */
+  onAttention?(key: string): void
 }
 
 /** Review exact native actions independently of model output, file tools, and plan permissions. */
-export function DesktopToolsPanel({ api, chatId, workspacePath, ready, disabled, onBusyChange }: DesktopToolsPanelProps) {
+export function DesktopToolsPanel({ api, chatId, workspacePath, ready, disabled, onBusyChange, onAttention }: DesktopToolsPanelProps) {
   const [state, setState] = useState<WorkDesktopState | null>(null)
   const [text, setText] = useState('')
   const [pending, setPending] = useState(false)
@@ -32,13 +34,16 @@ export function DesktopToolsPanel({ api, chatId, workspacePath, ready, disabled,
       setState(null); setHistory(null); setText(''); setError(null); setPreviewHidden(false)
       if (!ready || api === undefined || physicalPending.current) return
       void api.getWorkDesktopState(chatId).then((next) => {
-        if (version === token.current && next.owner?.chatId === chatId) setState(next)
+        if (version === token.current && next.owner?.chatId === chatId) {
+          setState(next)
+          if (next.pending !== null) onAttention?.(`desktop-approval:${next.pending.approvalId}`)
+        }
       }, () => {
         if (version === token.current) setError('Could not load desktop tools. Reload after the current action finishes.')
       })
     })
     return () => { token.current += 1 }
-  }, [api, chatId, ready, workspacePath])
+  }, [api, chatId, ready, workspacePath, onAttention])
 
   async function act(operation: (client: WorkDesktopClient) => Promise<WorkDesktopState>, consume = false): Promise<void> {
     if (!ready || disabled || api === undefined || physicalPending.current) return
@@ -52,6 +57,7 @@ export function DesktopToolsPanel({ api, chatId, workspacePath, ready, disabled,
       if (version === token.current) {
         if (next.owner?.chatId !== chatId) throw new Error('Desktop owner changed.')
         setState(next); setPreviewHidden(false)
+        if (next.pending !== null) onAttention?.(`desktop-approval:${next.pending.approvalId}`)
       }
     } catch {
       if (version === token.current) {
@@ -92,26 +98,33 @@ export function DesktopToolsPanel({ api, chatId, workspacePath, ready, disabled,
             : 'Desktop action failed before completion.'
 
   return <section className="desktop-tools" aria-label="Desktop tools" aria-busy={pending}>
-    <h3>Desktop tools</h3>
-    <p>Use a button to select a native action. Each review grants one action only.</p>
-    <div className="desktop-tools-actions">
-      <button type="button" disabled={locked || workspacePath === null} onClick={() => { void act((client) => client.chooseDesktopDocument(chatId)) }}>Choose document to review</button>
-      <button type="button" disabled={locked} onClick={() => { void act((client) => client.previewDesktopNotepad(chatId)) }}>Review opening Notepad</button>
-      <button type="button" disabled={locked} onClick={() => { void act((client) => client.readDesktopClipboard(chatId)) }}>Read clipboard text</button>
-      <button type="button" disabled={locked} onClick={() => { void act((client) => client.listDesktopWindows(chatId)) }}>List window names</button>
-      <button type="button" disabled={locked} onClick={() => { void act((client) => client.getWorkDesktopState(chatId)) }}>Reload desktop tools</button>
+    <div className="work-section-heading"><h3>Desktop actions</h3>
+      <p>Choose an action. Each approval applies only once.</p></div>
+    <div className="desktop-tool-groups">
+      <section className="desktop-tool-group" aria-label="Apps and windows">
+        <h4>Apps &amp; windows</h4>
+        <div className="desktop-tools-actions desktop-tools-action-list">
+          <button type="button" disabled={locked || workspacePath === null} onClick={() => { void act((client) => client.chooseDesktopDocument(chatId)) }}>Choose document to review</button>
+          <button type="button" disabled={locked} onClick={() => { void act((client) => client.previewDesktopNotepad(chatId)) }}>Review opening Notepad</button>
+          <button type="button" disabled={locked} onClick={() => { void act((client) => client.listDesktopWindows(chatId)) }}>List window names</button>
+        </div>
+      </section>
+      <section className="desktop-tool-group" aria-label="Clipboard actions">
+        <div className="desktop-tool-group-heading"><h4>Clipboard</h4>
+          <button type="button" className="tool-quiet" disabled={locked} onClick={() => { void act((client) => client.readDesktopClipboard(chatId)) }}>Read clipboard text</button></div>
+        {visible?.clipboardText !== null && visible?.clipboardText !== undefined && <div>
+          <strong>{visible.clipboardText === '' ? 'Clipboard was empty on your last click.' : 'Clipboard text read on your last click'}</strong>
+          <pre aria-label="Read clipboard text">{visible.clipboardText}</pre>
+        </div>}
+        <label className="desktop-clipboard-label">Text to put on clipboard
+          <textarea rows={3} value={text} disabled={locked} maxLength={32768}
+            onChange={(event) => { setText(event.target.value); setPreviewHidden(true) }} />
+        </label>
+        <button type="button" disabled={locked || text.trim() === ''} onClick={() => {
+          void act((client) => client.previewDesktopClipboard({ chatId, text }))
+        }}>Review clipboard replacement</button>
+      </section>
     </div>
-    {visible?.clipboardText !== null && visible?.clipboardText !== undefined && <div>
-      <strong>{visible.clipboardText === '' ? 'Clipboard was empty on your last click.' : 'Clipboard text read on your last click'}</strong>
-      <pre aria-label="Read clipboard text">{visible.clipboardText}</pre>
-    </div>}
-    <label className="desktop-clipboard-label">Text to put on clipboard
-      <textarea rows={3} value={text} disabled={locked} maxLength={32768}
-        onChange={(event) => { setText(event.target.value); setPreviewHidden(true) }} />
-    </label>
-    <button type="button" disabled={locked || text.trim() === ''} onClick={() => {
-      void act((client) => client.previewDesktopClipboard({ chatId, text }))
-    }}>Review clipboard replacement</button>
     {approval !== null && approval !== undefined && <section aria-label="Desktop action review" className="desktop-action-review">
       <strong>{approval.preview.action} · {approval.risk} risk</strong>
       <p>{approval.preview.impact}</p>
@@ -119,7 +132,7 @@ export function DesktopToolsPanel({ api, chatId, workspacePath, ready, disabled,
         ? approval.preview.text : JSON.stringify(approval.preview, null, 2)}</pre>
       <small>Expires {approval.expiresAt}. Approve once or deny.</small>
       <div className="desktop-tools-actions">
-        <button type="button" disabled={locked} onClick={() => { void act((client) => client.decideDesktopAction({
+        <button type="button" className="tool-primary" disabled={locked} onClick={() => { void act((client) => client.decideDesktopAction({
           chatId, approvalId: approval.approvalId, granted: true }), true) }}>Approve desktop action once</button>
         <button type="button" disabled={locked} onClick={() => { void act((client) => client.decideDesktopAction({
           chatId, approvalId: approval.approvalId, granted: false }), true) }}>Deny desktop action</button>
@@ -136,7 +149,10 @@ export function DesktopToolsPanel({ api, chatId, workspacePath, ready, disabled,
     {visible?.selectedWindow && <p>Selected window name: {visible.selectedWindow.title}. No capture permission was granted.</p>}
     {resultText !== null && <p role="status">{resultText}{result?.error ? ` (${result.error})` : ''}</p>}
     {error !== null && <p role="alert">{error}</p>}
-    <button type="button" disabled={locked} onClick={() => { void loadHistory() }}>Load desktop decision history</button>
+    <div className="desktop-tools-footer">
+      <button type="button" className="tool-quiet" disabled={locked} onClick={() => { void loadHistory() }}>Load desktop decision history</button>
+      <button type="button" className="tool-quiet" disabled={locked} onClick={() => { void act((client) => client.getWorkDesktopState(chatId)) }}>Reload desktop tools</button>
+    </div>
     {history !== null && <section aria-label="Desktop decision history">
       <p>History records metadata; clipboard and document contents are omitted.</p>
       {history.truncated && <p>Older records are outside the retained history.</p>}

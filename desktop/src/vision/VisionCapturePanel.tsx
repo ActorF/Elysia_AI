@@ -156,9 +156,9 @@ export function VisionCapturePanel({ api, chatId, projectId, ready, disabled, im
 
   return <section className="vision-capture" aria-label="Screenshot permission" aria-busy={leased}>
     <h3>Capture a screenshot</h3>
-    <p>Choose one display or window. Listing names does not read pixels; each capture needs a new confirmation.</p>
-    <div className="vision-capture-controls">
-      <button type="button" disabled={locked} onClick={() => { void act('list') }}>List displays and windows</button>
+    <p>Choose a display or window, then confirm one screenshot. Listing sources does not capture pixels.</p>
+    <button type="button" className={visibleSources.length === 0 ? 'tool-primary' : 'tool-quiet'} disabled={locked} onClick={() => { void act('list') }}>List displays and windows</button>
+    <div className="vision-capture-controls" hidden={sources === null}>
       <label>Capture source<select value={selected?.selectionId ?? ''} disabled={locked || approval !== null}
         onChange={(event) => { setSelectionId(event.currentTarget.value) }}>
         <option value="">Select a display or window</option>
@@ -181,7 +181,7 @@ export function VisionCapturePanel({ api, chatId, projectId, ready, disabled, im
       </label>)}
       {region === null && <p role="alert">Region percentages must stay inside this selected display.</p>}
     </div>}
-    <button type="button" disabled={locked || selected === undefined || approval !== null || imageLimitReached || effectiveScope === 'region' && region === null}
+    <button type="button" className="tool-primary" hidden={selected === undefined} disabled={locked || selected === undefined || approval !== null || imageLimitReached || effectiveScope === 'region' && region === null}
       onClick={() => { void act('prepare') }}>Review capture scope</button>
     {imageLimitReached && <p>Remove an image before adding a screenshot.</p>}
     {approval !== null && <section className="vision-capture-review" aria-label="Capture scope review">

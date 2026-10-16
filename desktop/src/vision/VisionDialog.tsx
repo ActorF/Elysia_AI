@@ -53,8 +53,8 @@ export function VisionDialog({ open, busy, children, onClose }: VisionDialogProp
       if (event.target === event.currentTarget && (event.clientX < bounds.left || event.clientX > bounds.right
         || event.clientY < bounds.top || event.clientY > bounds.bottom)) onClose()
     }}>
-    <div className="vision-dialog-header"><Icon name="image" /><div><h2 id={titleId}>Vision</h2>
-      <p>Images, screenshots and text</p></div>
+    <div className="vision-dialog-header"><span className="vision-dialog-symbol"><Icon name="image" /></span><div><h2 id={titleId}>Vision</h2>
+      <p>Look closer. Make sense of it.</p></div>
       {busy && <span className="vision-dialog-status" role="status">Working…</span>}
       <button type="button" className="icon-button" aria-label="Close Vision" title="Close Vision" onClick={onClose}><Icon name="close" /></button>
     </div>

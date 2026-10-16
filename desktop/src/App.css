@@ -1178,20 +1178,9 @@ svg {
   min-height: 2rem;
   padding: var(--space-1) var(--space-2);
   color: var(--color-text-primary);
-  background: var(--color-bg-surface);
-  border: 1px solid var(--color-border);
+  background: transparent;
+  border: 1px solid transparent;
   border-radius: var(--radius-md);
-}
-
-.chat-mode-context {
-  /* One shared scroll boundary keeps tool results from displacing the composer;
-     individual workspaces retain mounted request owners when collapsed. */
-  min-width: 0;
-  max-height: min(34rem, 55vh);
-  overflow-y: auto;
-  scroll-padding-top: 4.5rem;
-  overscroll-behavior: contain;
-  scrollbar-width: thin;
 }
 
 .connection-pill {
@@ -1263,9 +1252,66 @@ svg {
 }
 
 .chat-surface {
-  /* Context and a tall composer share the remaining space at high zoom;
-     reserve a visible message lane and let both surrounding rows scroll. */
-  grid-template-rows: auto minmax(0, auto) minmax(2rem, 1fr) minmax(0, auto);
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.chat-surface-work {
+  grid-template-rows: auto auto minmax(0, 1fr);
+}
+
+.chat-conversation {
+  display: grid;
+  grid-template-rows: minmax(2rem, 1fr) minmax(0, auto);
+  min-width: 0;
+  min-height: 0;
+}
+
+.chat-workspace-navigation {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  min-width: 0;
+  padding: var(--space-2) var(--space-6);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.chat-workspace-navigation .tool-tabs {
+  display: flex;
+  gap: var(--space-1);
+  padding: 0.2rem;
+  background: var(--color-bg-sidebar);
+  border-radius: var(--radius-md);
+}
+
+.chat-workspace-navigation [role="tab"] {
+  min-height: 2rem;
+  padding: var(--space-1) var(--space-3);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+  border-radius: var(--radius-sm);
+}
+
+.chat-workspace-navigation [aria-selected="true"] {
+  color: var(--color-text-primary);
+  background: var(--color-bg-raised);
+  box-shadow: var(--shadow-sm);
+}
+
+.chat-workspace-vision {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  color: var(--color-text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.chat-workspace-surface {
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
 }
 
 .message-scroll {
@@ -1284,7 +1330,7 @@ svg {
 
 /* Empty Chats center the greeting in the available message area; the composer
    keeps its normal grid row so long drafts and file errors can still scroll. */
-.chat-surface-empty .message-column {
+.chat-conversation-empty .message-column {
   display: grid;
   gap: var(--space-5);
   align-content: center;
@@ -1773,7 +1819,7 @@ svg {
 }
 
 .conversation-empty h2 {
-  font-size: clamp(1.25rem, 2.2vw, 1.75rem);
+  font-size: clamp(1.5rem, 2.5vw, 2rem);
   font-weight: var(--font-weight-medium);
   letter-spacing: var(--letter-spacing-tight);
   line-height: var(--line-height-normal);
@@ -1908,12 +1954,7 @@ svg {
   padding: var(--space-3) max(var(--space-5), calc((100% - var(--layout-composer-max-width)) / 2)) var(--space-5);
   overflow-y: auto;
   overscroll-behavior: contain;
-  background:
-    linear-gradient(
-      180deg,
-      color-mix(in srgb, var(--color-bg-canvas) 82%, transparent),
-      var(--color-bg-canvas) 42%
-    );
+  background: var(--color-bg-canvas);
 }
 
 .attachment-surface {
@@ -4615,7 +4656,7 @@ kbd {
 }
 
 @media (max-width: 34rem) {
-  /* A long title and Work badge can otherwise push the panel control out of
+  /* A long title and mode selector can otherwise push the panel control out of
      narrow windows. Keep the live status name accessible beside its dot. */
   .connection-pill > span:last-child {
     position: absolute;

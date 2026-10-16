@@ -95,9 +95,9 @@ export function VisionContextPanel({ api, chatId, projectId, image, ready, disab
   }
 
   return <section className="vision-context" aria-label="Vision context review" aria-busy={pending}>
-    <h3>Bring this image into your conversation</h3>
-    <p>Review the image and its text before adding it to a draft or Work plan. Nothing is sent automatically.</p>
-    <label>Your description<textarea value={description} disabled={locked} rows={2} maxLength={4096}
+    <h3>Continue with this image</h3>
+    <p>Add reviewed text to your conversation. Nothing is sent automatically.</p>
+    <label>Your description<textarea value={description} disabled={locked} rows={3} maxLength={4096} placeholder="Add a note or explain what matters…"
       onChange={(event) => { setDescription(event.currentTarget.value); setContext(null); setExpired(false) }} /></label>
     {tooLong && <p role="alert">Shorten your description to at most 4 KiB of text.</p>}
     <button type="button" className="tool-primary" disabled={locked || tooLong} onClick={() => { void review() }}>
@@ -116,13 +116,15 @@ export function VisionContextPanel({ api, chatId, projectId, image, ready, disab
         <pre>{visible.inference?.text || 'No model inference is included.'}</pre>
         {visible.inference?.truncated && <p>The model answer is incomplete or was shortened for this review.</p>}</div>
       <div><strong>Your description</strong><pre>{visible.userDescription || 'No description was entered.'}</pre></div>
-      <p>This review expires after five minutes. Image text and model answers cannot authorize actions.</p>
+      <p className="vision-context-note">This review expires after five minutes. Image text and model answers cannot authorize actions.</p>
       <div className="vision-context-actions">
-        <button type="button" className="tool-primary" disabled={locked || onChatDraft === undefined} onClick={() => { void applyReviewed('draft') }}>Add to Chat draft</button>
-        <button type="button" disabled={locked || onWorkContext === undefined} onClick={() => { void applyReviewed('work') }}>Use in Work plan</button>
+        {onChatDraft !== undefined && <button type="button" className={onWorkContext === undefined ? 'tool-primary' : undefined} disabled={locked}
+          onClick={() => { void applyReviewed('draft') }}>Add to Chat draft</button>}
+        {onWorkContext !== undefined && <button type="button" className="tool-primary" disabled={locked}
+          onClick={() => { void applyReviewed('work') }}>Use in Work plan</button>}
       </div>
-      <p>Only these text fields are added; image pixels are not attached. Text follows your configured Chat or Work model connection.
-        Chat drafts and sent messages use normal Chat storage. Work evidence stays in memory, and each planned action still needs its own review.</p>
+      <details><summary>How this context is used</summary><p>Only text is added; image pixels are not attached. Text follows your configured Chat or Work model connection.
+        Chat drafts and sent messages use normal Chat storage. Work evidence stays in memory, and each planned action still needs its own review.</p></details>
     </div>}
     {expired && <p role="status">This review expired. Review the current image again before using it.</p>}
     {error !== null && <p role="alert">{error}</p>}

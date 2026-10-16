@@ -27,6 +27,8 @@ import type { ChatNotice } from './types.ts'
 import './Composer.css'
 
 interface ComposerProps {
+  /** Remeasure drafts when the mounted conversation becomes visible again. */
+  visible: boolean
   attachmentAdding: boolean
   attachmentDisabled: boolean
   attachmentError: string | null
@@ -77,6 +79,7 @@ interface ComposerProps {
 
 /** Render the controlled Chat composer and translate user gestures to actions. */
 export function Composer({
+  visible,
   attachmentAdding,
   attachmentDisabled,
   attachmentError,
@@ -145,12 +148,14 @@ export function Composer({
 
   useLayoutEffect(() => {
     const textarea = textareaRef.current
-    if (textarea === null) {
+    // Hidden Work conversations have no measurable scroll height. Wait until
+    // visible so a restored or exported multiline draft keeps its full height.
+    if (textarea === null || !visible) {
       return
     }
     textarea.style.height = 'auto'
     textarea.style.height = `${Math.min(textarea.scrollHeight, 160)}px`
-  }, [draft])
+  }, [draft, visible])
 
   function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>): void {
     if (
@@ -355,7 +360,7 @@ export function Composer({
         </div>
       </AttachmentSurface>
       <p className="composer-note" id="composer-help">
-        Enter sends · Shift+Enter adds a line · Local output may be inaccurate
+        Enter sends · Shift+Enter for a new line
       </p>
     </footer>
   )

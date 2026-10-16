@@ -15,6 +15,7 @@ import { ApprovalPreview } from './ApprovalPreview.tsx'
 import { JobProgress } from './JobProgress.tsx'
 import type { WorkJobObservation } from '../../electron/work-job-protocol.ts'
 import type { VisionContext } from '../../electron/vision-context-protocol.ts'
+import { Icon } from '../design-system/Icon.tsx'
 import './PlanPanel.css'
 
 interface PlanPanelProps {
@@ -33,6 +34,10 @@ interface PlanPanelProps {
   onClearCalls(): void
   /** Retain the shell's conflict gate through live state and physical draining. */
   onLeaseChange(leased: boolean): void
+  /** Open the mounted file tools so the user can add exact steps to a draft. */
+  onBrowseFiles?(): void
+  /** Reveal a new approval or recovery notice even when the plan is hidden. */
+  onAttention?(key: string): void
 }
 
 function RevisionEditor({ call, disabled, onSave, onCancel }: {
@@ -67,7 +72,7 @@ function RevisionEditor({ call, disabled, onSave, onCancel }: {
 
 /** Present the exact planned calls and require separate consent for every write step. */
 export function PlanPanel({ api, chatId, workspacePath, ready, disabled, calls,
-  visionContext = null, onClearVisionContext, onRemoveCall, onClearCalls, onLeaseChange }: PlanPanelProps) {
+  visionContext = null, onClearVisionContext, onRemoveCall, onClearCalls, onLeaseChange, onBrowseFiles, onAttention }: PlanPanelProps) {
   const [plan, setPlan] = useState<WorkPlan | null>(null)
   const [workflow, setWorkflow] = useState<WorkWorkflowObservation | undefined>()
   const [recovery, setRecovery] = useState<WorkRecoveryNotice | undefined>()
@@ -89,7 +94,14 @@ export function PlanPanel({ api, chatId, workspacePath, ready, disabled, calls,
     setRecovery(state.recovery)
     setJob(state.job)
     onLeaseChange(workPlanHasLease(state.plan))
-  }, [onLeaseChange])
+    // A runner can reach approval while its workspace is hidden; the busy
+    // lease stays true during that transition, so attention needs its own key.
+    if (state.plan?.state === 'waiting') {
+      const approval = state.plan.steps.find((step) => step.approval !== null)?.approval
+      if (approval !== undefined && approval !== null) onAttention?.(`plan-approval:${approval.approvalId}`)
+    }
+    if (state.recovery !== undefined) onAttention?.(`plan-recovery:${state.recovery.status}:${state.recovery.planId}`)
+  }, [onLeaseChange, onAttention])
 
   const refresh = useCallback(async (initial = false): Promise<void> => {
     if (pendingRef.current || api === undefined || !ready) return
@@ -190,8 +202,10 @@ export function PlanPanel({ api, chatId, workspacePath, ready, disabled, calls,
 
   return (
     <section className="work-plan-panel" aria-label="Work plan" aria-busy={pending || loading}>
-      <strong>Plan</strong>
-      <p>Review exact steps before starting. Each file change requires separate approval.</p>
+      {(calls.length > 0 || plan !== null) && <div className="work-section-heading">
+        <h3>{calls.length > 0 ? 'Draft plan' : 'Your plan'}</h3>
+        <p>Review each step. File changes always need your approval.</p>
+      </div>}
       {recovery !== undefined && <p role="note" data-work-recovery={recovery.status}>
         {recovery.status === 'restored'
           ? 'Recovered paused. Resume rechecks the selected Workspace and prepares fresh approvals. Project Sources remain off after recovery; image context is not restored.'
@@ -210,13 +224,20 @@ export function PlanPanel({ api, chatId, workspacePath, ready, disabled, calls,
         </details>
         <button type="button" disabled={blocked || live} onClick={onClearVisionContext}>Remove image context from plan</button>
       </section>}
+      {calls.length === 0 && plan === null && !loading && <div className="work-plan-empty">
+        <span className="work-plan-empty-symbol" aria-hidden="true"><Icon name="file" /></span>
+        <h3>Start with a small step</h3>
+        <p>Choose a file action, add it to your plan, then review before running.</p>
+        {onBrowseFiles !== undefined && <button type="button" className="tool-primary" onClick={onBrowseFiles}>Add a step</button>}
+        <small>Every file change needs your approval.</small>
+      </div>}
       {calls.length > 0 && (
-        <form onSubmit={(event) => { event.preventDefault(); void create() }}>
+        <form className="work-plan-draft" onSubmit={(event) => { event.preventDefault(); void create() }}>
           <label>Plan title<input value={title} maxLength={200} required disabled={blocked || live}
             onChange={(event) => { setTitle(event.currentTarget.value) }} /></label>
-          <label><input type="checkbox" checked={useProjectKnowledge} disabled={blocked || live}
+          <label><input type="checkbox" aria-label="Consult this Chat’s Project Sources for advisory context" checked={useProjectKnowledge} disabled={blocked || live}
             onChange={(event) => { setUseProjectKnowledge(event.currentTarget.checked) }} />
-            Consult this Chat’s Project Sources for advisory context</label>
+            Use Project Sources as reference</label>
           <ol className="work-plan-queue">
             {calls.map((call, index) => (
               <li key={index}>
@@ -228,15 +249,15 @@ export function PlanPanel({ api, chatId, workspacePath, ready, disabled, calls,
             ))}
           </ol>
           <div className="work-plan-actions">
-            <button type="submit" disabled={blocked || live || workspacePath === null}>Create plan</button>
-            <button type="button" disabled={blocked || live} onClick={onClearCalls}>Clear draft plan</button>
+            <button type="submit" className="tool-primary" disabled={blocked || live || workspacePath === null}>Create plan</button>
+            <button type="button" className="tool-quiet" disabled={blocked || live} onClick={onClearCalls}>Clear draft plan</button>
           </div>
         </form>
       )}
       {ready && plan !== null && (
-        <div>
-          <h3>{plan.title}</h3>
-          <p role="status">{plan.state}{plan.busy ? ' · local operation active' : ''}</p>
+        <div className="work-plan-current">
+          <div className="work-plan-current-heading"><h3>{plan.title}</h3>
+            <span className="work-plan-state" role="status">{plan.state}{plan.busy ? ' · local operation active' : ''}</span></div>
           {job?.planId === plan.planId && <JobProgress plan={plan} job={job} disabled={blocked} onRetry={retry} />}
           {workflow?.planId === plan.planId && (
             <details className="work-workflow-context">
@@ -248,9 +269,9 @@ export function PlanPanel({ api, chatId, workspacePath, ready, disabled, calls,
             </details>
           )}
           <div className="work-plan-actions">
-            {plan.state === 'pending' && <button type="button" disabled={blocked || plan.busy} onClick={() => { control('start') }}>Start plan</button>}
+            {plan.state === 'pending' && <button type="button" className="tool-primary" disabled={blocked || plan.busy} onClick={() => { control('start') }}>Start plan</button>}
             {['pending', 'running', 'waiting'].includes(plan.state) && <button type="button" disabled={blocked} onClick={() => { control('pause') }}>Pause plan</button>}
-            {plan.state === 'paused' && <button type="button" disabled={blocked || plan.busy} onClick={() => { control('resume') }}>Resume plan</button>}
+            {plan.state === 'paused' && <button type="button" className="tool-primary" disabled={blocked || plan.busy} onClick={() => { control('resume') }}>Resume plan</button>}
             {['pending', 'running', 'paused', 'waiting'].includes(plan.state) && <button type="button" disabled={blocked} onClick={() => { control('cancel') }}>Cancel plan</button>}
           </div>
           <ol className="work-plan-steps">
@@ -282,7 +303,7 @@ export function PlanPanel({ api, chatId, workspacePath, ready, disabled, calls,
       )}
       {error !== null && <p className="work-tool-error" role="alert">{error}</p>}
       {error !== null && <button type="button" disabled={pending || !ready} onClick={() => { void refresh(true) }}>Reload plan</button>}
-      <small>The latest plan is saved privately. Recovered work stays paused until you resume it; old approvals expire.</small>
+      {plan !== null && <small className="work-plan-save-note">Saved privately. Recovered plans stay paused until you resume; old approvals expire.</small>}
     </section>
   )
 }

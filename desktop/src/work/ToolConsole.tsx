@@ -48,6 +48,8 @@ interface ToolConsoleProps {
   onAddToPlan(call: WorkToolCall): void
   /** Report one pending local operation so the shell can block conflicting actions. */
   onBusyChange(busy: boolean): void
+  /** Reveal a newly returned write preview if the user left the file tools while it was prepared. */
+  onAttention?(key: string): void
 }
 
 interface ScopedResult {
@@ -66,7 +68,7 @@ const READ_TOOLS = new Set<WorkToolId>(['list_directory', 'read_text', 'search_f
 
 /** Present explicit calls, escaped outcomes, and exact write previews before consent. */
 export function ToolConsole({ api, chatId, workspacePath, ready, readAvailable, previewAvailable, confirmAvailable,
-  disabled, tools, planAvailable, planActive, planQueueFull, onAddToPlan, onBusyChange }: ToolConsoleProps) {
+  disabled, tools, planAvailable, planActive, planQueueFull, onAddToPlan, onBusyChange, onAttention }: ToolConsoleProps) {
   const [selectedTool, setSelectedTool] = useState<WorkToolId>('list_directory')
   const [path, setPath] = useState('')
   const [query, setQuery] = useState('')
@@ -129,7 +131,10 @@ export function ToolConsole({ api, chatId, workspacePath, ready, readAvailable, 
     try {
       if (isWrite) {
         const next = await api.previewWorkTool({ chatId, call })
-        if (token === operationRef.current) setApproval({ chatId, workspacePath, approval: next.approval })
+        if (token === operationRef.current) {
+          setApproval({ chatId, workspacePath, approval: next.approval })
+          onAttention?.(`file-approval:${next.approval.approvalId}`)
+        }
       } else {
         const next = await api.runWorkTool({ chatId, call })
         if (token === operationRef.current) setResult({ chatId, workspacePath, result: next.result })
@@ -189,7 +194,8 @@ export function ToolConsole({ api, chatId, workspacePath, ready, readAvailable, 
 
   return (
     <section className="work-tool-console" aria-label="File tools">
-      <p className="work-section-hint">Read files or prepare an exact change for your approval.</p>
+      <div className="work-section-heading"><h3>File actions</h3>
+        <p>Read a file, prepare a change, or add a step to your plan.</p></div>
       {workspacePath === null && <p>Choose a Workspace to enable file tools.</p>}
       <form onSubmit={(event) => { event.preventDefault(); void run() }} aria-busy={pending}>
         <fieldset disabled={blocked}>
@@ -236,13 +242,13 @@ export function ToolConsole({ api, chatId, workspacePath, ready, readAvailable, 
               }} />
             </label>
           )}
-          <button className="tool-primary" type="submit" disabled={isWrite ? !previewAvailable : !readAvailable}>
+          <div className="work-tool-actions"><button className="tool-primary" type="submit" disabled={isWrite ? !previewAvailable : !readAvailable}>
             {pending ? 'Working…' : isWrite ? 'Prepare change' : 'Run tool'}
           </button>
           {planAvailable && <button type="button" disabled={planQueueFull} onClick={() => {
             try { onAddToPlan(draftCall()); setError(null) }
             catch { setError('Use valid tool parameters before adding a plan step.') }
-          }}>Add to plan</button>}
+          }}>Add to plan</button>}</div>
         </fieldset>
         {!isWrite && activeTool?.toolId !== 'read_text' && <small>Leave the path empty to use the Workspace root.</small>}
       </form>

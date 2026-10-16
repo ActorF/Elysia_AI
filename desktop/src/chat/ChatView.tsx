@@ -1,11 +1,12 @@
 /**
- * Compose the conversation header, message timeline, feedback states, and
- * Composer while leaving Backend coordination to the parent controller.
+ * Present focused conversation and Work views without retiring hidden request
+ * owners; leave Backend coordination to the parent controller.
  */
 
 import {
   useLayoutEffect,
   useRef,
+  useState,
   type RefObject,
   type ReactNode,
 } from 'react'
@@ -29,6 +30,7 @@ import {
   LoadingState,
 } from '../design-system/Feedback.tsx'
 import { Icon } from '../design-system/Icon.tsx'
+import { ToolTabs } from '../design-system/ToolPanel.tsx'
 
 interface ChatViewProps {
   attachmentAdding: boolean
@@ -68,6 +70,10 @@ interface ChatViewProps {
   stopPending: boolean
   voiceCallDisabled: boolean
   workPanel?: ReactNode
+  /** Reveal the workspace once when a new approval or reviewed context arrives. */
+  workspaceAttentionKey?: string
+  /** Reveal a draft explicitly exported from Vision, including in Work mode. */
+  conversationAttentionRevision?: number
   visionPanel?: ReactNode
   screenshotControl?: ReactNode
   onChooseAttachments(): void
@@ -160,6 +166,8 @@ export function ChatView({
   stopPending,
   voiceCallDisabled,
   workPanel,
+  workspaceAttentionKey,
+  conversationAttentionRevision,
   visionPanel,
   screenshotControl,
   onChooseAttachments,
@@ -194,9 +202,41 @@ export function ChatView({
 }: ChatViewProps) {
   const scrollRef = useRef<HTMLElement | null>(null)
   const stickToBottomRef = useRef(true)
+  const focusedAttentionRef = useRef(workspaceAttentionKey)
+  const [workView, setWorkView] = useState<{
+    chatId: string | undefined
+    attentionKey: string | undefined
+    draftRevision: number | undefined
+    value: 'workspace' | 'conversation'
+  }>({ chatId: snapshot.chatId, attentionKey: workspaceAttentionKey,
+    draftRevision: conversationAttentionRevision, value: 'workspace' })
+  // A new Chat or a newly issued approval must reveal its workspace. Clearing
+  // a reviewed context does not override a user's subsequent view selection.
+  const newWorkspaceAttention = workspaceAttentionKey !== undefined && workView.attentionKey !== workspaceAttentionKey
+  if (workView.chatId !== snapshot.chatId || newWorkspaceAttention
+    || workView.draftRevision !== conversationAttentionRevision) {
+    setWorkView({ chatId: snapshot.chatId, attentionKey: workspaceAttentionKey,
+      draftRevision: conversationAttentionRevision,
+      value: workView.chatId !== snapshot.chatId || newWorkspaceAttention ? 'workspace' : 'conversation' })
+  }
+  const workspaceVisible = chatMode === 'work' && workView.value === 'workspace'
   const generationAnnouncement = streaming
     ? 'Elysia is generating a reply.'
     : 'Elysia is ready for your next message.'
+
+  useLayoutEffect(() => {
+    if (!workspaceVisible || workspaceAttentionKey === undefined
+      || focusedAttentionRef.current === workspaceAttentionKey) return
+    // Wait for Vision's effect to close the native dialog before handing off
+    // focus. An open dialog still owns focus; its later close updates this node
+    // and retries the handoff without interrupting the active review.
+    const frame = requestAnimationFrame(() => {
+      if (document.querySelector('dialog[open]') !== null) return
+      focusedAttentionRef.current = workspaceAttentionKey
+      document.getElementById('work-view-workspace-tab')?.focus()
+    })
+    return () => { cancelAnimationFrame(frame) }
+  }, [workspaceAttentionKey, workspaceVisible, visionPanel])
 
   // Playback time updates do not change the card's layout and should not
   // repeatedly scroll the conversation while a user scrubs the song.
@@ -205,10 +245,10 @@ export function ChatView({
     if (scroller !== null && stickToBottomRef.current) {
       scroller.scrollTop = scroller.scrollHeight
     }
-  }, [messages, songCoverState?.stage, songCoverState?.jobId])
+  }, [messages, songCoverState?.stage, songCoverState?.jobId, workspaceVisible])
 
   return (
-    <div className={'chat-surface' + (messages.length === 0 ? ' chat-surface-empty' : '')}>
+    <div className={'chat-surface' + (chatMode === 'work' ? ' chat-surface-work' : '')}>
       <header className="topbar">
         <div className="topbar-leading">
           <button
@@ -225,7 +265,6 @@ export function ChatView({
           </button>
           <div className="chat-heading">
             <h1 id="chat-title" title={chatTitle}>{chatTitle}</h1>
-            {chatMode === 'work' && <span className="chat-mode-label">Work mode</span>}
           </div>
         </div>
         <div className="connection-controls">
@@ -238,6 +277,7 @@ export function ChatView({
             onChange={(event) => {
               const mode = event.currentTarget.value
               if (mode === 'chat' || mode === 'work') {
+                if (mode === 'work') setWorkView(current => ({ ...current, value: 'workspace' }))
                 onSelectMode(mode)
               }
             }}
@@ -249,9 +289,10 @@ export function ChatView({
             className={`connection-pill ${snapshot.status}`}
             role="status"
             aria-live="polite"
+            title={statusLabel(snapshot)}
           >
             <span className="connection-dot" />
-            <span>{statusLabel(snapshot)}</span>
+            <span className={snapshot.status === 'ready' ? 'visually-hidden' : undefined}>{statusLabel(snapshot)}</span>
           </span>
           <button
             type="button"
@@ -270,14 +311,41 @@ export function ChatView({
         </div>
       </header>
 
-      <div className="chat-mode-context">
         <div className="visually-hidden" id="chat-mode-capabilities" role="status">
           {chatMode === 'work'
             ? 'Work: plan tasks in a selected Workspace. File changes require your approval.'
             : 'Chat: conversation and answers. Computer tools are disabled.'}
         </div>
-        {chatMode === 'work' && workPanel}
-      </div>
+      {chatMode === 'work' && (
+        <div className="chat-workspace-navigation">
+          <ToolTabs
+            idPrefix="work-view"
+            label="Work views"
+            value={workView.value}
+            items={[
+              { value: 'workspace', label: 'Workspace' },
+              { value: 'conversation', label: 'Conversation' },
+            ]}
+            onValueChange={value => { setWorkView(current => ({ ...current, value })) }}
+          />
+          {workspaceVisible && <div className="chat-workspace-vision">{screenshotControl}</div>}
+        </div>
+      )}
+
+      {/* Both views stay mounted: changing the visible surface must preserve
+          drafts, native cancellation handles, and approval expiry timers. */}
+      {chatMode === 'work' && (
+        <div className="chat-workspace-surface" role="tabpanel"
+          id="work-view-workspace-panel" aria-labelledby="work-view-workspace-tab"
+          tabIndex={0} hidden={!workspaceVisible}>
+          {workPanel}
+        </div>
+      )}
+      <div className={'chat-conversation' + (messages.length === 0 ? ' chat-conversation-empty' : '')}
+        hidden={workspaceVisible}
+        role={chatMode === 'work' ? 'tabpanel' : undefined}
+        id="work-view-conversation-panel"
+        aria-labelledby={chatMode === 'work' ? 'work-view-conversation-tab' : undefined}>
 
       <main
         ref={scrollRef}
@@ -317,8 +385,8 @@ export function ChatView({
             <EmptyState
               className="conversation-empty"
               icon={null}
-              title="不论何时何地，爱莉希雅都会回应你的期待。"
-              description="今天有什么事要跟我分享的吗？"
+              title="今天，想聊些什么？"
+              description="一个想法，一件小事，都可以从这里开始。"
             />
           )}
 
@@ -334,7 +402,6 @@ export function ChatView({
                   }}
                 >
                   {idea}
-                  <Icon name="chevron" />
                 </button>
               ))}
             </div>
@@ -363,6 +430,7 @@ export function ChatView({
       </main>
 
       <Composer
+        visible={!workspaceVisible}
         attachmentAdding={attachmentAdding}
         attachmentDisabled={attachmentDisabled}
         attachmentError={attachmentError}
@@ -411,6 +479,7 @@ export function ChatView({
         onStopSongCover={onStopSongCover}
         onToggleDictation={onToggleDictation}
       />
+      </div>
       {/* Vision remains mounted outside the layout grid. Its dialog changes
           visibility without shifting the conversation or retiring native work. */}
       {visionPanel}
