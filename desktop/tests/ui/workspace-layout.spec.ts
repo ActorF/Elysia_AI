@@ -74,7 +74,7 @@ for (const variant of [
   { name: 'compact light', width: 760, height: 900, scheme: 'light' },
   { name: 'narrow dark', width: 390, height: 844, scheme: 'dark' },
 ] as const) {
-  test(`keeps the Codex conversation and persistent tools usable in ${variant.name}`, async () => {
+  test(`keeps the Work conversation and persistent tools usable in ${variant.name}`, async () => {
     await page.setViewportSize({ width: variant.width, height: variant.height })
     await page.emulateMedia({ colorScheme: variant.scheme })
     const draft = page.getByLabel('Message Elysia', { exact: true })

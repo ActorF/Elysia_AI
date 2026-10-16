@@ -1,5 +1,5 @@
 /**
- * Keep Chat and Codex conversations central, with a persistent task inspector
+ * Keep Chat and Work conversations central, with a persistent task inspector
  * that preserves native request owners when its presentation closes.
  */
 
@@ -419,7 +419,7 @@ export function ChatView({
                     setOptionsOpen(false)
                     requestAnimationFrame(() => { optionsToggleRef.current?.focus() })
                   }
-                }}><option value="chat">Chat</option><option value="work">Codex</option></select></label>
+                }}><option value="chat">Chat</option><option value="work">Work</option></select></label>
               <p>{modeSelectionDisabled ? 'Finish the current action before changing mode.' : 'Change the mode of this conversation.'}</p>
             </div>
           </div>
@@ -428,7 +428,7 @@ export function ChatView({
 
         <div className="visually-hidden" id="chat-mode-capabilities" role="status">
           {chatMode === 'work'
-            ? 'Codex: discuss tasks and review tools in Workspace. File changes require your approval.'
+            ? 'Work: discuss tasks and review tools in Workspace. File changes require your approval.'
             : 'Chat: conversation and answers. Computer tools are disabled.'}
         </div>
       <div ref={bodyRef} className="chat-body" data-workspace-open={workspaceVisible} data-workspace-modal={narrowWorkspace}>

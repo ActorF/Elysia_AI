@@ -6917,7 +6917,7 @@ function App() {
       throw new Error('Wait for the current action to finish before switching sections.')
     }
     if (!navigate('chat')) return
-    // Chat and Codex are separate collections. Navigation restores a canonical
+    // Chat and Work are separate collections. Navigation restores a canonical
     // session of the selected kind instead of converting the current history.
     // Only the explicit conversation-options control changes an existing mode.
     if (chatState?.activeChat.mode !== mode || chatState.activeChat.archived) {

@@ -1,5 +1,5 @@
 /**
- * Render independent Chat and Codex navigation with mode-scoped session history.
+ * Render independent Chat and Work navigation with mode-scoped session history.
  *
  * Chat callbacks cross the DesktopApi boundary in the parent. This component
  * waits for those promises and never fabricates IDs, metadata, or successful
@@ -426,7 +426,7 @@ export function Sidebar({
         onShowArchivedChange(false)
       }
     } catch (error) {
-      setSidebarError(actionError(error, `Could not open ${mode === 'work' ? 'Codex' : 'Chat'}.`))
+      setSidebarError(actionError(error, `Could not open ${mode === 'work' ? 'Work' : 'Chat'}.`))
     } finally {
       setLocalPending(false)
     }
@@ -779,7 +779,7 @@ export function Sidebar({
           disabled={pending || (activeMode !== 'work' && modeNavigationDisabled)}
           onClick={() => { void navigateMode('work') }}
         >
-          <Icon name="monitor" /><span>Codex</span>
+          <Icon name="monitor" /><span>Work</span>
         </button>
         <button
           type="button"

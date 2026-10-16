@@ -1,4 +1,4 @@
-/** Exercise explicit conversation migration and the persistent Codex workspace through visible user controls. */
+/** Exercise explicit conversation migration and the persistent Work workspace through visible user controls. */
 
 import { expect, type Locator, type Page } from '@playwright/test'
 

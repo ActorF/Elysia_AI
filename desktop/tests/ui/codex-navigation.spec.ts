@@ -1,4 +1,4 @@
-/** Verify Chat and Codex navigation preserves separate canonical sessions and drafts without executing task tools. */
+/** Verify Chat and Work navigation preserves separate canonical sessions and drafts without executing task tools. */
 
 import { createRequire } from 'node:module'
 import path from 'node:path'
@@ -76,14 +76,14 @@ test.beforeEach(async () => {
 
 test.afterEach(async () => { await application?.close(); application = undefined })
 
-test('restores separate Chat and Codex sessions and their unsent drafts', async () => {
+test('restores separate Chat and Work sessions and their unsent drafts', async () => {
   await connect(true)
   const primary = page.getByRole('navigation', { name: 'Primary', exact: true })
   const draft = page.getByLabel('Message Elysia', { exact: true })
   await draft.fill('A private chat thought.')
   await expect(page.getByRole('list', { name: 'Active chats', exact: true })).toContainText(chat.title)
   await expect(page.getByRole('list', { name: 'Active chats', exact: true })).not.toContainText(task.title)
-  await primary.getByRole('button', { name: 'Codex', exact: true }).click()
+  await primary.getByRole('button', { name: 'Work', exact: true }).click()
   await expect(page.getByRole('heading', { name: task.title, exact: true })).toBeVisible()
   await expect(conversationMode(page)).toHaveValue('work')
   await expect(draft).toHaveValue('')
@@ -93,15 +93,15 @@ test('restores separate Chat and Codex sessions and their unsent drafts', async 
   await primary.getByRole('button', { name: 'Chat', exact: true }).click()
   await expect(page.getByRole('heading', { name: chat.title, exact: true })).toBeVisible()
   await expect(draft).toHaveValue('A private chat thought.')
-  await primary.getByRole('button', { name: 'Codex', exact: true }).click()
+  await primary.getByRole('button', { name: 'Work', exact: true }).click()
   await expect(draft).toHaveValue('An unfinished task brief.')
   await expectNavigationOnly()
 })
 
-test('creates Work sessions for an empty Codex collection and the New task action', async () => {
+test('creates Work sessions for an empty Work collection and the New task action', async () => {
   await connect(false)
   await page.getByLabel('Message Elysia', { exact: true }).fill('The original Chat keeps its own draft.')
-  await page.getByRole('navigation', { name: 'Primary', exact: true }).getByRole('button', { name: 'Codex', exact: true }).click()
+  await page.getByRole('navigation', { name: 'Primary', exact: true }).getByRole('button', { name: 'Work', exact: true }).click()
   await expect(conversationMode(page)).toHaveValue('work')
   const firstTaskId = await publishActiveSnapshot()
   const create = page.getByRole('button', { name: 'Create chat', exact: true })
@@ -146,7 +146,7 @@ test('keeps the current Chat and draft if the destination task cannot be opened'
   await page.evaluate(chat => { (window as NavigationWindow).elysiaDesktopTest.setChatState({
     activeChat: { ...chat, messages: [] }, chats: [chat],
   }) }, chat)
-  await page.getByRole('navigation', { name: 'Primary', exact: true }).getByRole('button', { name: 'Codex', exact: true }).click()
+  await page.getByRole('navigation', { name: 'Primary', exact: true }).getByRole('button', { name: 'Work', exact: true }).click()
   await expect(page.getByRole('heading', { name: chat.title, exact: true })).toBeVisible()
   await expect(conversationMode(page)).toHaveValue('chat')
   await expect(page.getByLabel('Message Elysia', { exact: true })).toHaveValue('Do not lose this draft.')
