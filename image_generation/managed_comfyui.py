@@ -633,6 +633,19 @@ class ManagedComfyUiRuntime:
         return True
 
     @property
+    def gpu_cleanup_complete(self) -> bool:
+        """Prove no private native process or uncertain rollback retains GPU use.
+
+        ``finalize`` transitions to idle only after process termination, file
+        guards, and run-directory cleanup all succeed. A poisoned startup may
+        have no correlated active handle, so absence of that handle alone is
+        insufficient evidence for releasing a global GPU grant.
+        """
+
+        with self._lock:
+            return self._active is None and self._state in {"idle", "preflighted", "closed"}
+
+    @property
     def managed_runtime_capability(self) -> object:
         """Return the composition capability accepted by the trusted core."""
 

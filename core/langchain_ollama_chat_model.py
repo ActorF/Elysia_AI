@@ -1,6 +1,13 @@
-"""Generate and stream replies with LangChain over proxy-free local Ollama HTTP."""
+"""Generate and stream local Ollama replies under desktop GPU admission.
+
+Streaming retains its global grant until the owned SDK iterator has closed;
+availability probes never reserve GPU execution or load model weights.
+"""
 
 from collections.abc import Generator, Iterator
+from contextlib import nullcontext
+from typing import Any
+from gpu_admission import GpuAdmissionError, gpu_lease, using_desktop_gpu
 from httpx import Auth, ConnectError, Request, Response, TimeoutException
 from langchain_core.messages import (
     AIMessage,
@@ -14,6 +21,7 @@ from .chat_model import ChatMessage
 
 from .exceptions import (
     ChatModelConnectionError,
+    ChatModelError,
     ChatModelResponseError,
 )
 from .ollama_chat_model import OllamaChatModel
@@ -75,6 +83,10 @@ class LangChainOllamaChatModel:
             timeout_seconds,
         )
 
+        # A fixed private constructor option keeps the non-desktop SDK defaults
+        # intact while all desktop uses, including hidden memory/Work calls,
+        # request no idle model residency after inference completes.
+        desktop_options: dict[str, Any] = {"keep_alive": 0} if using_desktop_gpu() else {}
         self._langchain_model = ChatOllama(
             model=self._model_name,
             base_url=self._ollama_host,
@@ -88,6 +100,7 @@ class LangChainOllamaChatModel:
                 "follow_redirects": False,
                 "auth": _LocalModelAuth(),
             },
+            **desktop_options,
         )
 
     def ensure_model_available(self) -> None:
@@ -130,9 +143,10 @@ class LangChainOllamaChatModel:
                 )
 
         try:
-            response = self._langchain_model.invoke(
-                langchain_messages
-            )
+            with gpu_lease("ollama") if using_desktop_gpu() else nullcontext():
+                response = self._langchain_model.invoke(langchain_messages)
+        except GpuAdmissionError:
+            raise ChatModelError("Local GPU execution is unavailable.") from None
         except (
             ConnectError,
             TimeoutException,
@@ -219,29 +233,36 @@ class LangChainOllamaChatModel:
         has_text = False
 
         try:
-            for chunk in self._langchain_model.stream(
-                langchain_messages, reasoning=thinking,
-            ):
-                content = chunk.content
+            with gpu_lease("ollama") if using_desktop_gpu() else nullcontext():
+                chunks = self._langchain_model.stream(langchain_messages, reasoning=thinking)
+                try:
+                    for chunk in chunks:
+                        content = chunk.content
 
-                if not isinstance(content, str):
-                    raise ChatModelResponseError(
-                        "LangChain returned non-text content."
-                    )
+                        if not isinstance(content, str):
+                            raise ChatModelResponseError("LangChain returned non-text content.")
 
-                if not content:
-                    # Thinking-only chunks still provide cancellation points
-                    # to the owning Brain/Work planner. Empty chunks are never
-                    # emitted to the renderer, persistence, or speech.
-                    if thinking:
-                        yield ""
-                    continue
+                        if not content:
+                            # Thinking-only chunks still provide cancellation
+                            # points without publishing hidden reasoning text.
+                            if thinking:
+                                yield ""
+                            continue
 
-                if content.strip():
-                    has_text = True
+                        if content.strip():
+                            has_text = True
 
-                yield content
-
+                        yield content
+                finally:
+                    # Closing an outer generator does not reliably close an
+                    # arbitrary nested iterator. Explicit ownership keeps the
+                    # HTTP stream inside its GPU grant on cancellation, invalid
+                    # chunks, and consumer exceptions as well as exhaustion.
+                    close = getattr(chunks, "close", None)
+                    if callable(close):
+                        close()
+        except GpuAdmissionError:
+            raise ChatModelError("Local GPU execution is unavailable.") from None
         except (
             ConnectError,
             TimeoutException,

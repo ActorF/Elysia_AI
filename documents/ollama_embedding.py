@@ -6,6 +6,9 @@ contract does not depend on the transitively installed ``ollama`` package.
 """
 
 from __future__ import annotations
+from contextlib import nullcontext
+
+from gpu_admission import GpuAdmissionError, gpu_lease, using_desktop_gpu
 
 from dataclasses import dataclass
 from functools import partial
@@ -827,13 +830,20 @@ class OllamaEmbeddingAdapter:
             "truncate": False,
             "dimensions": self._identity.dimension,
         }
-        response = self._request_json(
-            "POST",
-            "/api/embed",
-            payload=payload,
-            timeout_seconds=self._config.request_timeout_seconds,
-            unavailable=False,
-        )
+        desktop_gpu = using_desktop_gpu()
+        if desktop_gpu:
+            # Index recovery and background retrieval use this same adapter;
+            # guarding only foreground Chat would leave these hidden model
+            # loads free to compete with images, speech, and Song Cover.
+            payload["keep_alive"] = 0
+        try:
+            with gpu_lease("ollama") if desktop_gpu else nullcontext():
+                response = self._request_json(
+                    "POST", "/api/embed", payload=payload,
+                    timeout_seconds=self._config.request_timeout_seconds, unavailable=False,
+                )
+        except GpuAdmissionError:
+            raise EmbeddingUnavailableError("Local GPU execution is unavailable.") from None
         vectors = self._decode_vectors(response, snapshot.items)
         try:
             self._require_expected_manifest()

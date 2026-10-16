@@ -2,7 +2,8 @@
  * Start, monitor, restart, and stop the local Python desktop bridge.
  *
  * Electron owns the child process. The renderer receives bounded typed events
- * and never receives a process handle, filesystem access, or raw stdio.
+ * and never receives a process handle, filesystem access, or raw stdio. Private
+ * GPU grants remain owned until backend exit and external residency cleanup.
  */
 
 import {
@@ -12,7 +13,9 @@ import {
 import { randomBytes, randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import path from 'node:path'
-import { Readable } from 'node:stream'
+import { Duplex, Readable } from 'node:stream'
+import { type GpuAdmissionCoordinator } from './gpu-admission.js'
+import { GpuBackendBroker, type GpuBackendBrokerOptions } from './gpu-backend-broker.js'
 import { ImagePreviewChannelReader } from './image-preview-channel.js'
 import { ImagePreviewOwner, type ImagePreview, type VerifiedImagePreview } from './image-preview-owner.js'
 import { parseWorkTurnOptions, parseWorkToolResult, parseWorkResolved,
@@ -136,8 +139,14 @@ import {
 
 type EventSink = (event: BackendEvent) => void
 
-/** Inject only Main-owned research; neither this callback nor its opt-in reaches Renderer. */
+/** Inject Main-owned native services without exposing their authority to Renderer. */
 export interface BackendNativeOptions {
+  /** Supply the one Main-owned GPU queue shared with native cover and vision work. */
+  gpuAdmission?: GpuAdmissionCoordinator
+  /** Confirm prior model residency is clear while holding the new GPU lease. */
+  gpuPrepare?: GpuBackendBrokerOptions['prepare']
+  /** Confirm external Ollama cleanup after a backend exits with a retained grant. */
+  gpuQuiesceExternal?: GpuBackendBrokerOptions['quiesceExternal']
   /** Execute one exact Work turn's validated native call under its frozen user permission. */
   onWorkTool?: (request: WorkAgentCall, signal: AbortSignal) => Promise<WorkAgentResult>
   /** Resolve one authenticated generation's query and retain physical ownership until settlement. */
@@ -661,6 +670,10 @@ export class BackendProcess {
   private imageOwner: ImagePreviewOwner | null = null
   private imageDeliveryDisabled = false
   private imageOpenInFlight = false
+  private readonly gpuBrokers = new Map<ChildProcessWithoutNullStreams, GpuBackendBroker>()
+  private readonly exitedGpuBrokers = new Set<GpuBackendBroker>()
+  private readonly gpuCleanupOperations = new Map<GpuBackendBroker, Promise<void>>()
+  private readonly closedChildren = new WeakSet<ChildProcessWithoutNullStreams>()
   private readonly retiredImageRequests = new Set<string>()
   private readonly imageRequests = new Map<string, {
     method: ProtocolMethod
@@ -943,6 +956,7 @@ export class BackendProcess {
   hasActiveBackendWork(): boolean {
     return this.restartInProgress
       || this.restartCompletion !== null
+      || this.exitedGpuBrokers.size > 0
       || this.imageRequests.size > 0 || this.imageOpenInFlight
       || this.pendingRequests.size > 0
       || this.hasActiveSpeechTurn()
@@ -984,6 +998,10 @@ export class BackendProcess {
   /** Spawn the Backend and begin its authenticated handshake and initialization. */
   start(modelName?: string): void {
     if (this.child !== null) {
+      return
+    }
+    if (this.gpuBrokers.size > 0 || this.exitedGpuBrokers.size > 0) {
+      this.fail('Local GPU cleanup must finish before the Backend can start.')
       return
     }
 
@@ -1055,6 +1073,13 @@ export class BackendProcess {
       // Python's source-compatible fallback instead.
       delete childEnvironment.ELYSIA_DATA_ROOT
     }
+    if (this.nativeOptions.gpuAdmission === undefined) {
+      // Ambient shell state cannot activate an unowned private broker. Legacy
+      // standalone test backends retain their existing execution policy.
+      delete childEnvironment.ELYSIA_GPU_BROKER
+    } else {
+      childEnvironment.ELYSIA_GPU_BROKER = '1'
+    }
 
     const child = spawn(
       pythonExecutable,
@@ -1062,14 +1087,44 @@ export class BackendProcess {
       {
         cwd: this.projectRoot,
         env: childEnvironment,
-        // fd3 is a dedicated binary-only channel. Keeping it out of stdout
-        // prevents WAV bytes from ever entering NDJSON or renderer events.
-        stdio: ['pipe', 'pipe', 'pipe', 'pipe', 'pipe'],
+        // Speech fd3, PNG fd4, and duplex GPU fd5 have independent framing;
+        // none can introduce private bytes or ownership authority into stdout.
+        stdio: ['pipe', 'pipe', 'pipe', 'pipe', 'pipe', this.nativeOptions.gpuAdmission === undefined ? 'ignore' : 'pipe'],
         windowsHide: true,
       },
     ) as ChildProcessWithoutNullStreams
 
     this.child = child
+    // Register physical-close ownership before any optional pipe setup can
+    // reject startup. A signal or spawn error alone never proves GPU release.
+    child.once('close', (code, signal) => {
+      this.closedChildren.add(child)
+      this.confirmGpuProcessExit(child)
+      this.handleExit(child, code, signal)
+    })
+    child.once('error', () => {
+      if (this.child === child) {
+        const message = BACKEND_PROCESS_FAILURE_MESSAGE
+        this.rejectPendingActionPromises(message)
+        this.clearChild(child)
+        this.fail(message)
+      }
+    })
+    if (this.nativeOptions.gpuAdmission !== undefined) {
+      const gpuInput = (child.stdio as readonly unknown[])[5]
+      if (!(gpuInput instanceof Duplex)) {
+        child.kill()
+        this.clearChild(child)
+        this.fail('Private GPU admission could not be started.')
+        return
+      }
+      const broker = new GpuBackendBroker(gpuInput, this.nativeOptions.gpuAdmission, () => {
+        if (this.child === child && !this.expectedExit) {
+          this.protocolFailure('Private GPU admission failed safely.')
+        }
+      }, { prepare: this.nativeOptions.gpuPrepare, quiesceExternal: this.nativeOptions.gpuQuiesceExternal })
+      this.gpuBrokers.set(child, broker)
+    }
     const imageInput = child.stdio[4]
     if (imageInput instanceof Readable) {
       const disableImage = (): void => {
@@ -1139,22 +1194,6 @@ export class BackendProcess {
       // Python owns detailed diagnostics in logs/app.log. Stderr may contain
       // model paths or native-library details, so it must never reach Renderer.
       this.lastDiagnostic = 'Python Backend reported an internal diagnostic.'
-    })
-
-    child.once('error', () => {
-      if (this.child === child) {
-        const message = BACKEND_PROCESS_FAILURE_MESSAGE
-        this.rejectPendingActionPromises(message)
-        this.clearChild(child)
-        this.fail(message)
-      }
-    })
-
-    // ChildProcess `close` follows stdout EOF, whereas `exit` can arrive while
-    // pipe bytes are still draining. Waiting for `close` lets the bounded
-    // reader validate the final delimiter instead of discarding a tail frame.
-    child.once('close', (code, signal) => {
-      this.handleExit(child, code, signal)
     })
 
     child.stdin.on('error', () => {
@@ -1402,6 +1441,7 @@ export class BackendProcess {
 
   /** Shut down the child process and settle every outstanding renderer request. */
   async stop(): Promise<void> {
+    if (this.child !== null) this.gpuBrokers.get(this.child)?.dispose()
     this.disposeImageDelivery()
     this.rejectRestartCompletion(
       'Python Backend stopped before its restart completed.',
@@ -1418,6 +1458,7 @@ export class BackendProcess {
         chatId: undefined,
         chatTitle: undefined,
       })
+      await this.finishGpuCleanup()
       return
     }
 
@@ -1439,25 +1480,15 @@ export class BackendProcess {
       this.sendRequest('shutdown', {})
     }
 
-    await new Promise<void>((resolve) => {
-      let finished = false
-      const finish = (): void => {
-        if (finished) {
-          return
-        }
-        finished = true
-        clearTimeout(timeout)
-        resolve()
+    if (!await this.waitForOwnedChildClose(child, SHUTDOWN_TIMEOUT_MS)) {
+      child.kill()
+      if (!await this.waitForOwnedChildClose(child, 5_000)) {
+        // Keep the exact child and broker reachable for a later stop attempt.
+        // Sending kill is insufficient evidence to grant a competing GPU task.
+        this.fail('Python Backend termination could not be confirmed.')
+        throw new Error('Python Backend termination could not be confirmed.')
       }
-      const timeout = setTimeout(() => {
-        if (this.child === child) {
-          child.kill()
-        }
-        finish()
-      }, SHUTDOWN_TIMEOUT_MS)
-
-      child.once('close', finish)
-    })
+    }
 
     if (this.child === child) {
       this.clearChild(child)
@@ -1471,6 +1502,7 @@ export class BackendProcess {
         chatTitle: undefined,
       })
     }
+    await this.finishGpuCleanup()
   }
 
   /** Retry the final persisted turn, optionally replacing its user text. */
@@ -4565,6 +4597,7 @@ export class BackendProcess {
     this.protocolReader = null
     this.disposeSpeechDelivery()
     this.disposeImageDelivery()
+    this.gpuBrokers.get(child)?.dispose()
     this.child = null
     this.handshakeRequestId = null
     this.initializeRequestId = null
@@ -4643,6 +4676,63 @@ export class BackendProcess {
     this.workApprovals.clear()
     this.invalidateWorkUndo()
     this.pendingRequests.clear()
+  }
+
+  private confirmGpuProcessExit(child: ChildProcessWithoutNullStreams): void {
+    const broker = this.gpuBrokers.get(child)
+    if (broker === undefined) return
+    this.gpuBrokers.delete(child)
+    this.exitedGpuBrokers.add(broker)
+    // A close callback cannot await HTTP cleanup. Retain the broker until its
+    // external residency proof succeeds; stop/restart joins this same attempt.
+    void this.cleanupGpuBroker(broker).catch(() => {})
+  }
+
+  private cleanupGpuBroker(broker: GpuBackendBroker): Promise<void> {
+    const existing = this.gpuCleanupOperations.get(broker)
+    if (existing !== undefined) return existing
+    const operation = broker.processExited()
+    this.gpuCleanupOperations.set(broker, operation)
+    void operation.then(() => {
+      this.gpuCleanupOperations.delete(broker)
+      this.exitedGpuBrokers.delete(broker)
+    }, () => {
+      // Keep failed external cleanup quarantined for a later explicit stop or
+      // restart retry; forgetting it would abandon the still-held global lease.
+      this.gpuCleanupOperations.delete(broker)
+    })
+    return operation
+  }
+
+  private async finishGpuCleanup(): Promise<void> {
+    try {
+      for (const [child, broker] of this.gpuBrokers) {
+        broker.dispose()
+        if (!this.closedChildren.has(child)) {
+          child.kill()
+          if (!await this.waitForOwnedChildClose(child, 5_000)) throw new Error()
+        }
+      }
+      await Promise.all([...this.exitedGpuBrokers].map((broker) => this.cleanupGpuBroker(broker)))
+    } catch {
+      this.fail('Local GPU cleanup could not be confirmed. Retry stopping the Backend.')
+      throw new Error('Local GPU cleanup could not be confirmed. Retry stopping the Backend.')
+    }
+  }
+
+  private waitForOwnedChildClose(child: ChildProcessWithoutNullStreams, timeoutMs: number): Promise<boolean> {
+    if (this.closedChildren.has(child)) return Promise.resolve(true)
+    return new Promise((resolve) => {
+      const finish = (closed: boolean): void => {
+        clearTimeout(timer)
+        child.off('close', onClose)
+        resolve(closed)
+      }
+      const onClose = (): void => finish(true)
+      const timer = setTimeout(() => finish(false), timeoutMs)
+      child.once('close', onClose)
+      if (this.closedChildren.has(child)) finish(true)
+    })
   }
 
   private rejectPendingActionPromises(message: string): void {
@@ -4798,6 +4888,7 @@ export class BackendProcess {
     this.protocolReader?.dispose()
     const child = this.child
     if (child !== null) {
+      this.gpuBrokers.get(child)?.dispose()
       child.kill()
     }
   }

@@ -20,7 +20,9 @@ from threading import Condition, Event, Lock, RLock, Thread
 from typing import Any, Final, Literal, Protocol, TypeAlias, runtime_checkable
 
 from config.settings import AppSettings, VOICE_EMOTIONS, VoiceEmotion
+from gpu_admission import using_desktop_gpu
 from desktop_protocol import AudioChannelWriter, MAX_MESSAGE_LENGTH, ProtocolEventName
+from voice.gpu_synthesis import _GpuSentenceSynthesisLease
 from voice.managed_gpt_sovits import (
     ManagedGptSovitsConfig,
     ManagedGptSovitsRuntime,
@@ -39,6 +41,7 @@ from voice.speech_queue import (
     SpeechTurnTerminal,
     SPEECH_SEGMENT_MAX_CHUNK_CODE_POINTS,
     _create_managed_synthesis_binding_lease,
+    _ManagedSynthesisRuntimeLease,
 )
 
 
@@ -282,7 +285,7 @@ class DesktopSpeechCoordinator:
         self._state: DesktopSpeechState = "idle"
         self._unavailable_reason: DesktopSpeechUnavailableReason | None = None
         self._settled = Event()
-        self._runtime: ManagedGptSovitsRuntime | None = None
+        self._runtime: ManagedGptSovitsRuntime | _GpuSentenceSynthesisLease | None = None
         self._queue: SpeechSynthesisQueue | None = None
         self._binding: SpeechSynthesisBindingLease | None = None
         self._active_turn: _TurnRecord | None = None
@@ -441,7 +444,7 @@ class DesktopSpeechCoordinator:
     def _release_optional_resources(
         writer: AudioChannelWriter | None,
         queue: SpeechSynthesisQueue | None,
-        runtime: ManagedGptSovitsRuntime | None,
+        runtime: ManagedGptSovitsRuntime | _GpuSentenceSynthesisLease | None,
     ) -> None:
         """Attempt every independent cleanup even when an earlier owner fails."""
 
@@ -462,13 +465,12 @@ class DesktopSpeechCoordinator:
                 logger.error("Desktop speech runtime did not close cleanly.")
 
     def _bootstrap(self) -> None:
-        """Acquire a fixed catalog selection without blocking Backend startup."""
+        """Resolve a trusted voice without reserving idle desktop GPU residency."""
 
-        runtime: ManagedGptSovitsRuntime | None = None
+        runtime: ManagedGptSovitsRuntime | _GpuSentenceSynthesisLease | None = None
         queue: SpeechSynthesisQueue | None = None
         try:
-            runtime = ManagedGptSovitsRuntime(
-                ManagedGptSovitsConfig(
+            runtime_config = ManagedGptSovitsConfig(
                     runtime_root=self._config.runtime_root,
                     worker_script=self._config.worker_script,
                     synthesis_timeout_seconds=(
@@ -476,19 +478,20 @@ class DesktopSpeechCoordinator:
                     ),
                     device="cuda",
                     seed=self._config.deterministic_seed,
-                )
             )
-            with self._work_condition:
-                publish_runtime = self._state == "starting"
-                if publish_runtime:
-                    self._runtime = runtime
-                self._work_condition.notify_all()
-            if not publish_runtime:
-                # This runtime has not crossed the coordinator ownership
-                # boundary. A concurrent terminal failure or shutdown therefore
-                # cannot have detached it and the bootstrap thread must clean it.
-                self._release_optional_resources(None, None, runtime)
-                return
+            desktop_gpu = using_desktop_gpu()
+            if not desktop_gpu:
+                runtime = ManagedGptSovitsRuntime(runtime_config)
+                with self._work_condition:
+                    publish_runtime = self._state == "starting"
+                    if publish_runtime:
+                        self._runtime = runtime
+                    self._work_condition.notify_all()
+                if not publish_runtime:
+                    # The library/console owner preserves its original eager
+                    # acquisition and rollback behavior without a Main broker.
+                    self._release_optional_resources(None, None, runtime)
+                    return
             catalog = JsonVoiceProfileCatalog.load(
                 self._config.catalog_path,
                 self._config.asset_root,
@@ -506,7 +509,26 @@ class DesktopSpeechCoordinator:
                 selection,
                 speed_factor=self._config.speech_rate_percent / 100.0,
             )
-            runtime_lease = runtime.acquire_lease(selection)
+            runtime_lease: _ManagedSynthesisRuntimeLease
+            if desktop_gpu:
+                # The catalog freezes trusted selection metadata only. Native
+                # file guards, READY attestation, and a fresh process are owned
+                # by each sentence after global GPU admission, then completely
+                # drained before another heavy task can use its grant.
+                runtime = _GpuSentenceSynthesisLease(runtime_config, selection)
+                with self._work_condition:
+                    publish_runtime = self._state == "starting"
+                    if publish_runtime:
+                        self._runtime = runtime
+                    self._work_condition.notify_all()
+                if not publish_runtime:
+                    self._release_optional_resources(None, None, runtime)
+                    return
+                runtime_lease = runtime
+            else:
+                if runtime is None or isinstance(runtime, _GpuSentenceSynthesisLease):
+                    raise RuntimeError("Managed speech bootstrap state is invalid.")
+                runtime_lease = runtime.acquire_lease(selection)
             binding = _create_managed_synthesis_binding_lease(
                 lease_id=_LEASE_ID,
                 cache_identity=_CACHE_IDENTITY,

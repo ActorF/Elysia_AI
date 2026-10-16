@@ -603,13 +603,16 @@ def _create_managed_synthesis_binding_lease(
     language: SynthesisLanguage = "auto",
     on_invalidated: Callable[[], None] | None = None,
 ) -> SpeechSynthesisBindingLease:
-    """Issue one owned binding after the managed runtime completes attestation.
+    """Issue one owned binding for a trusted supervisor-controlled runtime.
 
     The function is intentionally private and returns the same final concrete
     type admitted by the queue.  Public construction, subclassing, and caller
     supplied trust strings therefore cannot manufacture the private seal.  As
     with all Python privacy, hostile code already executing inside this process
     is outside this boundary; native isolation is provided by the managed Job.
+    The desktop GPU wrapper defers per-sentence startup and attestation until
+    it holds a global GPU grant. That private wrapper can publish audio only
+    through the same attested supervisor, and remains non-cacheable throughout.
     """
 
     _require_safe_identifier(lease_id, "lease_id")

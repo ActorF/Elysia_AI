@@ -1,10 +1,16 @@
-"""Generate Chat replies through explicit, proxy-free local Ollama HTTP."""
+"""Generate proxy-free local Ollama replies under desktop GPU admission.
+
+Desktop inference requests unload idle weights and retain their global grant
+through the complete HTTP response. Model-list discovery remains metadata-only.
+"""
 
 import logging
 import requests
 from collections.abc import Iterator
+from contextlib import nullcontext
 
 from typing import Any, cast
+from gpu_admission import GpuAdmissionError, gpu_lease, using_desktop_gpu
 from .chat_model import ChatMessage
 from .local_ollama import (
     LOCAL_OLLAMA_MODEL_ERROR,
@@ -138,12 +144,17 @@ class OllamaChatModel:
             "stream": False,
             "think": thinking,
         }
-
-        response_data = self._request_json(
-            "POST",
-            "/api/chat",
-            payload,
-        )
+        desktop_gpu = using_desktop_gpu()
+        if desktop_gpu:
+            # Main quiesces the Ollama daemon before every subsequent heavy
+            # grant. Requesting zero idle residency also avoids retaining
+            # weights after hidden memory extraction or Work inference calls.
+            payload["keep_alive"] = 0
+        try:
+            with gpu_lease("ollama") if desktop_gpu else nullcontext():
+                response_data = self._request_json("POST", "/api/chat", payload)
+        except GpuAdmissionError:
+            raise ChatModelError("Local GPU execution is unavailable.") from None
 
         message_data = response_data.get("message")
 

@@ -33,6 +33,8 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { ImageExportOwner } from './image-export.js'
 import { ImageSettingsManager } from './image-settings.js'
+import { GpuAdmissionCoordinator } from './gpu-admission.js'
+import { NativeGpuWorkloads } from './native-gpu-workloads.js'
 
 import { BackendProcess } from './backend-process.js'
 import { InternetPolicyService } from './internet-policy.js'
@@ -315,6 +317,11 @@ let imageExportInFlight = false
 let imageSettingsManager: ImageSettingsManager | null = null
 let imageSettingsRoot: string | null = null
 let imageConfigurationInFlight = false
+const gpuAdmission = new GpuAdmissionCoordinator()
+let backendGpuOllamaOrigin: string | null = null
+const nativeGpuWorkloads = new NativeGpuWorkloads(gpuAdmission, {
+  getOllamaOrigin: async () => (await requireBackend().getSettings()).activeSettings.ollamaHost,
+})
 let tray: Tray | null = null
 let desktopPetRepository: DesktopPetPreferencesRepository | null = null
 let desktopPetPreferences: LoadedDesktopPetPreferences | null = null
@@ -2569,7 +2576,8 @@ function requireVisionAnalysisController(): VisionAnalysisController {
         if (signal.aborted) throw new VisionAnalysisServiceError('cancelled')
         const sample = prepareVisionModelImage(image, nativeImage)
         if (signal.aborted) throw new VisionAnalysisServiceError('cancelled')
-        return model.run(sample.pngBytes, sample.width, sample.height, modelName, question, signal)
+        return nativeGpuWorkloads.runOllama(signal, gpuSignal =>
+          model.run(sample.pngBytes, sample.width, sample.height, modelName, question, gpuSignal))
       },
     })
   }
@@ -4968,7 +4976,20 @@ if (!hasSingleInstanceLock) {
       activeDataRoot,
       hasActiveDesktopWork,
       () => hasActiveVisionWork() || hasActiveInternetWork(),
-      { onInternetSearch: resolveAutomaticInternet, onWorkTool: resolveWorkAgent },
+      { onInternetSearch: resolveAutomaticInternet, onWorkTool: resolveWorkAgent,
+        gpuAdmission,
+        gpuPrepare: async (owner, signal) => {
+          const origin = (await requireBackend().getSettings()).activeSettings.ollamaHost
+          backendGpuOllamaOrigin = origin
+          await nativeGpuWorkloads.prepare(owner, origin, signal)
+        },
+        gpuQuiesceExternal: async () => {
+          // An external daemon outlives Python, so use the applied origin
+          // captured before its first grant rather than querying a dead child.
+          if (backendGpuOllamaOrigin === null) throw new Error('GPU cleanup authority is unavailable.')
+          await nativeGpuWorkloads.quiesceExternal(backendGpuOllamaOrigin)
+        },
+      },
     )
     workDesktopController = new WorkDesktopController(createWorkDesktopNativeCallbacks({
       getOwner: desktopOwner, getStorage: desktopStore, getWindow: requireMainWindow,
@@ -5002,6 +5023,8 @@ if (!hasSingleInstanceLock) {
         if (internetTransport === null) throw new Error('Internet transport is unavailable.')
         return prepareInternetLyrics(requireInternetPolicy(), internetTransport, input)
       }),
+      undefined, undefined, undefined,
+      signal => nativeGpuWorkloads.acquire('song-cover', signal),
     )
     registerIpcHandlers()
     createMainWindow()
@@ -5119,11 +5142,13 @@ if (!hasSingleInstanceLock) {
         ) {
           await backendProcess.stop()
         }
+        await nativeGpuWorkloads.recover()
+        await gpuAdmission.close()
       })
-      void Promise.allSettled([
+      return Promise.all([
         stopBackend,
         optionalPersistenceFlush,
-      ]).finally(() => {
+      ]).then(() => {
         const closingOwner = speechPlaybackOwner
         speechPlaybackOwner = null
         speechPlaybackRouter.replace(null)
@@ -5147,8 +5172,8 @@ if (!hasSingleInstanceLock) {
       }
       dialog.showErrorBox(
         'Elysia could not close safely',
-        'Song Cover is still using or could not clear private temporary audio. '
-        + 'Check Task Manager for its local Python, FFmpeg, or Demucs process, '
+        'A local model process or private temporary audio could not be cleared. '
+        + 'Check Task Manager for local Python, Ollama, FFmpeg, or Demucs work, '
         + 'and close anything using the generated files. If Elysia remains '
         + 'blocked after those processes are gone, end Elysia from Task Manager.',
       )

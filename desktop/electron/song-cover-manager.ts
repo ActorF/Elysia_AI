@@ -5,10 +5,13 @@
  * long-form playback.  It publishes only the bounded state declared in
  * `song-cover-contracts.ts`, ensuring a compromised renderer cannot select a
  * process, model, output path, or arbitrary command.
+ * Optional Main GPU ownership survives cancellation until process-tree and
+ * exact WSL cleanup prove that the native workload has physically stopped.
  */
 
 import { spawn, type ChildProcessByStdio } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
+import { type GpuLease } from './gpu-admission.js'
 import type { Dirent, Stats } from 'node:fs'
 import {
   link,
@@ -271,8 +274,11 @@ interface ActiveSongCoverJob {
   stdoutBytes: number
   stdoutLine: Buffer
   cancellation: Promise<SongCoverState> | null
+  cleanup: Promise<boolean> | null
   termination: Promise<boolean> | null
   terminationUncertain: boolean
+  gpuLease: GpuLease | null
+  gpuAbortListener: (() => void) | null
 }
 
 interface SongPlaybackPreferences {
@@ -506,6 +512,7 @@ export class SongCoverManager {
   private launchJobId: string | null = null
   private readonly pendingJobDirectories = new Map<string, string>()
   private readonly pendingSvsPrivateJobIds = new Set<string>()
+  private readonly retainedGpuLeases = new Map<string, GpuLease>()
   private readonly startupJobsRoot: string
   private readonly exportOperations: SongCoverExportOperations
   private startupCleanup: Promise<boolean> | null = null
@@ -533,6 +540,7 @@ export class SongCoverManager {
       PRIVATE_SVS_CLEANUP_TIMEOUT_MS
     ),
     exportOperations: Partial<SongCoverExportOperations> = {},
+    private readonly acquireGpu: ((signal: AbortSignal) => Promise<GpuLease>) | null = null,
   ) {
     if (!Number.isSafeInteger(jobTimeoutMs) || jobTimeoutMs <= 0) {
       throw new Error('Song Cover job timeout is invalid.')
@@ -617,6 +625,7 @@ export class SongCoverManager {
       this.startupCleanup !== null
       || this.launchBarrier !== null
       || this.activeJob !== null
+      || this.retainedGpuLeases.size > 0
       || this.state.stage === 'playing'
     )
   }
@@ -628,6 +637,7 @@ export class SongCoverManager {
       || this.outputJobId !== null
       || this.pendingJobDirectories.size > 0
       || this.pendingSvsPrivateJobIds.size > 0
+      || this.retainedGpuLeases.size > 0
     )
   }
 
@@ -727,6 +737,7 @@ export class SongCoverManager {
     this.launchJobId = jobId
     this.launchCancellationRequested = false
     const replacingOutput = this.outputJobId !== null
+    let launchGpuLease: GpuLease | null = null
     try {
       if (!this.stopPlaybackUnconditionally()) {
         throw new Error('Song playback could not be stopped safely.')
@@ -806,6 +817,12 @@ export class SongCoverManager {
         })
       }
       await this.prepareWorkerProfile(jobsRoot)
+      if (this.acquireGpu !== null) {
+        // Admission occurs after CPU/file preparation but before any worker
+        // can allocate a model. Launch cancellation also cancels a queued wait.
+        launchGpuLease = await this.acquireGpu(launchAbortController.signal)
+        if (launchGpuLease.signal.aborted) throw new Error('Song Cover GPU admission was cancelled.')
+      }
       if (this.launchCancellationRequested) {
         if (!await this.removeJobDirectory(jobId, jobDirectory)) {
           throw new Error(PRIVATE_CLEANUP_ERROR)
@@ -875,10 +892,14 @@ export class SongCoverManager {
         stdoutBytes: 0,
         stdoutLine: Buffer.alloc(0),
         cancellation: null,
+        cleanup: null,
         termination: null,
         terminationUncertain: false,
+        gpuLease: launchGpuLease,
+        gpuAbortListener: null,
       }
       this.activeJob = job
+      launchGpuLease = null
       job.deadline = setTimeout(() => {
         void this.handleJobTimeout(job)
       }, this.jobTimeoutMs)
@@ -893,12 +914,20 @@ export class SongCoverManager {
         job.stderr = (job.stderr + chunk).slice(-MAX_STDERR_CODE_POINTS)
       })
       child.once('error', () => {
-        void this.finishJob(job, 1)
+        // Spawn/I/O error is not physical-close evidence. The abort owner
+        // confirms termination before it can release the global GPU lease.
+        if (!job.cancelled && !this.shuttingDown) void this.abortJob(job, this.workerFailureMessage(job.stderr))
       })
       child.once('close', (code) => {
         this.finishWorkerOutput(job)
         void this.finishJob(job, code ?? 1)
       })
+      if (job.gpuLease !== null) {
+        const abort = (): void => { void this.abortJob(job, 'Song Cover GPU work was stopped.') }
+        job.gpuAbortListener = abort
+        job.gpuLease.signal.addEventListener('abort', abort, { once: true })
+        if (job.gpuLease.signal.aborted) abort()
+      }
       return this.state
     } catch (error) {
       const cleanupSucceeded = await this.removeJobDirectory(jobId, jobDirectory)
@@ -948,6 +977,9 @@ export class SongCoverManager {
       }
       throw new Error(failureMessage, { cause: error })
     } finally {
+      // No process took ownership if preparation, cancellation, or synchronous
+      // spawn failed. A transferred lease is released only by physical cleanup.
+      launchGpuLease?.release()
       if (this.launchBarrier === launchBarrier) {
         this.launchBarrier = null
       }
@@ -2408,6 +2440,9 @@ export class SongCoverManager {
     if (this.activeJob !== job || job.cancelled || this.shuttingDown) {
       return
     }
+    // The fixed worker reports complete only after its successful WSL cleanup;
+    // the matching zero-code close and validated outputs complete that proof.
+    this.settleJobGpu(job, true)
     this.completedOutput = completedOutput
     this.outputJobId = job.id
     this.replaceReadyState('Song Cover ready')
@@ -2539,7 +2574,22 @@ export class SongCoverManager {
    * decoded vocals or stems remain. Failed targets stay in a bounded in-memory
    * retry set, block data-root moves, and are retried before another job starts.
    */
-  private async removeIncompleteJobArtifacts(
+  private removeIncompleteJobArtifacts(
+    job: ActiveSongCoverJob,
+  ): Promise<boolean> {
+    if (job.cleanup !== null) return job.cleanup
+    // Coordinator shutdown can abort the lease while the application also
+    // closes. Both owners must join one WSL/native deletion: simultaneous rm
+    // calls can report ENOENT mid-traversal and incorrectly quarantine a lease.
+    const cleanup = this.removeIncompleteJobArtifactsOnce(job)
+    job.cleanup = cleanup
+    void cleanup.then(() => {
+      if (job.cleanup === cleanup) job.cleanup = null
+    })
+    return cleanup
+  }
+
+  private async removeIncompleteJobArtifactsOnce(
     job: ActiveSongCoverJob,
   ): Promise<boolean> {
     if (job.engine !== 'legacy-svc') {
@@ -2549,11 +2599,28 @@ export class SongCoverManager {
       // for an exact retry instead of losing track of private lyric material.
       if (!await this.removeSvsPrivateJobTracked(job.id, job.directory)) {
         this.pendingJobDirectories.set(job.id, job.directory)
+        this.settleJobGpu(job, false)
         return false
       }
-      return this.removeJobDirectory(job.id, job.directory)
     }
-    return this.removeJobDirectory(job.id, job.directory)
+    const removed = await this.removeJobDirectory(job.id, job.directory)
+    this.settleJobGpu(job, removed)
+    return removed
+  }
+
+  private settleJobGpu(job: ActiveSongCoverJob, cleanupSucceeded: boolean): void {
+    const lease = job.gpuLease
+    if (lease === null) return
+    if (job.gpuAbortListener !== null) lease.signal.removeEventListener('abort', job.gpuAbortListener)
+    job.gpuAbortListener = null
+    job.gpuLease = null
+    if (cleanupSucceeded) {
+      lease.release()
+    } else {
+      // Exact recovery bookkeeping outlives activeJob. Otherwise a failed WSL
+      // cleanup could leave live GPU descendants after their lease was forgotten.
+      this.retainedGpuLeases.set(job.id, lease)
+    }
   }
 
   private async removeSvsPrivateJobTracked(
@@ -2600,6 +2667,12 @@ export class SongCoverManager {
         continue
       }
       await this.removeJobDirectory(jobId, directory)
+    }
+    for (const [jobId, lease] of this.retainedGpuLeases) {
+      if (!this.pendingSvsPrivateJobIds.has(jobId) && !this.pendingJobDirectories.has(jobId)) {
+        lease.release()
+        this.retainedGpuLeases.delete(jobId)
+      }
     }
     if (
       this.pendingSvsPrivateJobIds.size > 0

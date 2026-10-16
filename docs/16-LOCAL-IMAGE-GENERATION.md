@@ -177,10 +177,17 @@ Settings 的“图片生成”页通过 Main 原生选择 ComfyUI 目录、解�
 
 下一步需要：
 
-- 建立与 Ollama、Voice、Song Cover 共用的重型 GPU 准入，提供有上限的可取消等待，并按 job 在失败/重启/关闭时释放 lease。
 - 完成真实 ComfyUI/模型/GPU smoke 与 soak、依赖树认证和可见的崩溃残留恢复。
 
-当前没有全局 GPU 所有者，不能声称与其他重型任务安全并行。参考图、OpenPose/ControlNet、Inpaint、FaceDetailer 和连续角色变体也需各自合同及验证，不能开放任意 Workflow JSON 代替设计。
+参考图、OpenPose/ControlNet、Inpaint、FaceDetailer 和连续角色变体需各自合同及验证，不能开放任意 Workflow JSON 代替设计。
+
+## 全局 GPU 准入
+
+Electron Main 持有唯一 FIFO 队列，最多 8 个等待者，每次等待最多 120 秒且可取消。Python 通过独立私有双向 fd5 请求固定任务类型的 Lease，Renderer 没有授予或释放权限。Pipe 断开、取消确认和等待超时都不代表物理 GPU 工作结束；迟到 Grant 在没有开始推理时只释放一次，无法证明清理时 Poison 并保留准入。
+
+图片从受管 Runtime 启动前一直持有 Lease，直到原生清理确认及 Gallery 提交完成。GPT-SoVITS 改为每句获得 Lease 后再启动独立受管 Runtime，句末确认清理后释放。Ollama Chat、LangChain 流和 Embedding 使用同一队列，桌面推理使用 `keep_alive=0`，流必须在 Lease 内关闭。原生 Vision 推理和 Song Cover 的真实 Worker 生命周期也使用同一 Main 队列。
+
+Ollama Daemon 可能在 Python 退出后存活，因此每个新物理任务在持有 Lease 时先通过有界 Loopback HTTP 检查 `/api/ps`、卸载 GPU 模型并确认空闲。已知推理或清理失败后，连接被拒绝不能作为释放证据；跨重试保留不确定状态。Backend 重启和应用关闭必须等待受管进程关闭及必要的外部模型卸载，失败则保留所有者供重试，不能把超时当成释放。此队列协调 Elysia 自己的任务，不能阻止无关进程使用 GPU。
 
 ## 模型许可与语音隔离
 

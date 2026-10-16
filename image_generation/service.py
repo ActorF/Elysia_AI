@@ -170,6 +170,15 @@ class ImageGenerationCore:
 
         self._client.close()
 
+    @property
+    def gpu_cleanup_complete(self) -> bool:
+        """Forward authoritative native quiescence, failing closed for unknown owners."""
+
+        try:
+            return getattr(self._client, "gpu_cleanup_complete", False) is True
+        except BaseException:
+            return False
+
     def __enter__(self) -> "ImageGenerationCore":
         """Return this synchronous generation composition root."""
 

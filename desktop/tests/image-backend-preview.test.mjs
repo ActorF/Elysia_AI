@@ -17,6 +17,7 @@ import { deflateSync } from 'node:zlib'
 
 import { BackendProcess } from '../dist-electron/backend-process.js'
 import { ImagePreviewChannelReader } from '../dist-electron/image-preview-channel.js'
+import { GpuAdmissionCoordinator } from '../dist-electron/gpu-admission.js'
 
 const ARTIFACT = `gallery_${'a'.repeat(32)}`
 const OTHER_ARTIFACT = `gallery_${'b'.repeat(32)}`
@@ -85,6 +86,18 @@ function fakeBackend(configuration) {
 
   function capture(event, details = {}) {
     fs.appendFileSync(configuration.capturePath, `${JSON.stringify({ event, pid: process.pid, ...details })}\n`)
+  }
+
+  if (configuration.withGpu) {
+    capture('gpu-enabled', { enabled: process.env.ELYSIA_GPU_BROKER === '1' })
+    const input = fs.createReadStream(null, { fd: 5, autoClose: false })
+    const output = fs.createWriteStream(null, { fd: 5, autoClose: false })
+    input.on('error', () => {})
+    output.on('error', () => {})
+    readline.createInterface({ input }).on('line', line => {
+      capture('gpu-reply', JSON.parse(line))
+    })
+    output.write(JSON.stringify({ action: 'acquire', id: 'a'.repeat(32), owner: 'ollama' }) + '\n')
   }
 
   function response(request, result) {
@@ -291,7 +304,7 @@ async function waitFor(predicate, description) {
   throw new Error(`Timed out waiting for ${description}.`)
 }
 
-async function withBackend(configuration, run) {
+async function withBackend(configuration, run, nativeOptions = {}) {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'elysia-image-backend-'))
   const projectRoot = path.join(directory, 'project')
   const capturePath = path.join(directory, 'capture.ndjson')
@@ -307,7 +320,8 @@ async function withBackend(configuration, run) {
       'utf8',
     )
     process.env.ELYSIA_PYTHON = process.execPath
-    backend = new BackendProcess(projectRoot, (event) => events.push(event), playback)
+    backend = new BackendProcess(projectRoot, (event) => events.push(event), playback,
+      undefined, undefined, undefined, nativeOptions)
     backend.start()
     await waitFor(() => {
       const snapshot = backend.getSnapshot()
@@ -331,6 +345,57 @@ async function withBackend(configuration, run) {
     await rm(directory, { recursive: true, force: true })
   }
 }
+
+test('Backend fd5 ownership survives pipe disposal until child close and external cleanup', async () => {
+  const admission = new GpuAdmissionCoordinator()
+  let finishCleanup
+  const cleanup = new Promise(resolve => { finishCleanup = resolve })
+  let cleanupStarted = false
+  await withBackend({ withGpu: true, shutdownDelayMs: 100 }, async ({ backend, capture }) => {
+    await waitFor(async () => (await capture()).some(event => event.event === 'gpu-reply' && event.status === 'granted'), 'the fd5 grant')
+    assert.equal((await capture()).find(event => event.event === 'gpu-enabled').enabled, true)
+    assert.equal(admission.getSnapshot().active.owner, 'ollama')
+    const stopping = backend.stop()
+    await waitFor(() => cleanupStarted, 'external residency cleanup after actual child close')
+    assert.equal(admission.getSnapshot().active.owner, 'ollama')
+    assert.equal(backend.hasActiveBackendWork(), true)
+    finishCleanup()
+    await stopping
+    assert.equal(admission.getSnapshot().active, null)
+  }, { gpuAdmission: admission, gpuPrepare: async () => {},
+    gpuQuiesceExternal: async () => { cleanupStarted = true; await cleanup } })
+  await admission.close()
+})
+
+test('Backend crash quarantines its GPU turn until a confirmed cleanup retry', async () => {
+  const admission = new GpuAdmissionCoordinator()
+  let cleanupFailed = true
+  await withBackend({ withGpu: true, modes: { [ARTIFACT]: 'crash' } }, async ({ backend, capture }) => {
+    await waitFor(async () => (await capture()).some(event => event.event === 'gpu-reply' && event.status === 'granted'), 'the fd5 grant')
+    await assert.rejects(backend.openImagePreview(ARTIFACT))
+    await assert.rejects(backend.stop(), /cleanup could not be confirmed/u)
+    assert.equal(admission.getSnapshot().active.owner, 'ollama')
+    cleanupFailed = false
+    await backend.stop()
+    assert.equal(admission.getSnapshot().active, null)
+  }, { gpuAdmission: admission, gpuPrepare: async () => {},
+    gpuQuiesceExternal: async () => { if (cleanupFailed) throw new Error('private daemon path') } })
+  await admission.close()
+})
+
+test('Backend inference waits in the same queue as an already active native cover', async () => {
+  const admission = new GpuAdmissionCoordinator()
+  const cover = await admission.acquire('song-cover')
+  await withBackend({ withGpu: true }, async ({ capture }) => {
+    await waitFor(() => admission.getSnapshot().queued.length === 1, 'queued Backend admission')
+    assert.equal((await capture()).some(event => event.event === 'gpu-reply'), false)
+    cover.release()
+    await waitFor(async () => (await capture()).some(event => event.event === 'gpu-reply' && event.status === 'granted'), 'the queued Backend grant')
+    assert.equal(admission.getSnapshot().active.owner, 'ollama')
+  }, { gpuAdmission: admission, gpuPrepare: async () => {}, gpuQuiesceExternal: async () => {} })
+  assert.equal(admission.getSnapshot().active, null)
+  await admission.close()
+})
 
 test('a real inherited fd4 supplies a one-use renderer URL without leaking source tokens', async () => {
   await withBackend({}, async ({ backend, events, capture }) => {

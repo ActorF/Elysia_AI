@@ -27,6 +27,7 @@ import {
   parseSongCoverWorkerEvent,
 } from '../dist-electron/song-cover-contracts.js'
 import { SongCoverManager } from '../dist-electron/song-cover-manager.js'
+import { GpuAdmissionCoordinator } from '../dist-electron/gpu-admission.js'
 
 const FAKE_WORKER = String.raw`
 const fs = require('node:fs')
@@ -3166,6 +3167,272 @@ test('maps worker text to fixed Main-owned progress messages', async () => {
     )
   } finally {
     await manager.shutdown()
+    await rm(fixture.root, { recursive: true, force: true })
+  }
+})
+
+function gpuDeferred() {
+  let resolve
+  const promise = new Promise((accepted) => { resolve = accepted })
+  return { promise, resolve }
+}
+
+function gpuTestManager(fixture, gpu, options = {}) {
+  return new SongCoverManager(
+    fixture.projectRoot,
+    () => fixture.dataRoot,
+    () => options.playback ?? null,
+    () => {},
+    async () => ({ outputDeviceId: null, volumePercent: 100 }),
+    () => {},
+    options.timeoutMs,
+    options.removePath,
+    options.terminateProcessTree ?? null,
+    undefined,
+    undefined,
+    options.spawnWorker,
+    options.cleanupTimeoutMs,
+    {},
+    options.acquireGpu ?? ((signal) => gpu.acquire('song-cover', { signal })),
+  )
+}
+
+async function stopGpuFixtureProcess(child) {
+  if (child.exitCode !== null || child.signalCode !== null) return true
+  return new Promise((resolve) => {
+    child.once('close', () => resolve(true))
+    child.kill('SIGKILL')
+  })
+}
+
+test('GPU queue waiting can be cancelled before any Song Cover worker starts', async () => {
+  const fixture = await createFixture()
+  const gpu = new GpuAdmissionCoordinator()
+  const ollama = await gpu.acquire('ollama')
+  let spawned = 0
+  const manager = gpuTestManager(fixture, gpu, { spawnWorker: (...args) => { spawned += 1; return spawn(...args) } })
+  try {
+    const starting = startLegacy(manager, 'D:/private/slow.mp3', 'slow.mp3')
+    await waitFor(() => gpu.getSnapshot().queued.length === 1, 'Song Cover did not queue for GPU admission')
+    assert.equal(spawned, 0)
+    const cancelling = manager.cancel(manager.getState().jobId)
+    assert.equal((await starting).stage, 'cancelled')
+    assert.equal((await cancelling).stage, 'cancelled')
+    assert.equal(spawned, 0)
+    assert.equal(gpu.getSnapshot().active.owner, 'ollama')
+    assert.deepEqual(gpu.getSnapshot().queued, [])
+  } finally {
+    ollama.release()
+    await manager.shutdown()
+    await gpu.close()
+    await rm(fixture.root, { recursive: true, force: true })
+  }
+})
+
+test('GPU ownership ends after successful worker cleanup while playback may continue', async () => {
+  const fixture = await createFixture()
+  const gpu = new GpuAdmissionCoordinator()
+  const playback = gpuDeferred()
+  const manager = gpuTestManager(fixture, gpu, { playback: { cancel() {}, play: () => playback.promise } })
+  try {
+    await startLegacy(manager, 'D:/private/original.mp3', 'original.mp3')
+    assert.equal(gpu.getSnapshot().active.owner, 'song-cover')
+    await waitFor(() => manager.getState().stage === 'playing', 'The completed GPU cover did not enter playback')
+    assert.equal(gpu.getSnapshot().active, null)
+    const image = await gpu.acquire('image-generation')
+    assert.equal(image.owner, 'image-generation')
+    image.release()
+  } finally {
+    playback.resolve()
+    await manager.shutdown()
+    await gpu.close()
+    await rm(fixture.root, { recursive: true, force: true })
+  }
+})
+
+test('GPU cancellation retains the lease until process-tree termination is confirmed', async () => {
+  const fixture = await createFixture()
+  const gpu = new GpuAdmissionCoordinator()
+  const termination = gpuDeferred()
+  let releaseCalls = 0
+  const manager = gpuTestManager(fixture, gpu, {
+    terminateProcessTree: async (child) => { await termination.promise; return stopGpuFixtureProcess(child) },
+    acquireGpu: async (signal) => {
+      const lease = await gpu.acquire('song-cover', { signal })
+      return { ...lease, release: () => { releaseCalls += 1; return lease.release() } }
+    },
+  })
+  try {
+    const started = await startLegacy(manager, 'D:/private/slow.mp3', 'slow.mp3')
+    await waitFor(() => manager.getState().progressPercent === 5, 'The GPU worker did not start')
+    const imagePromise = gpu.acquire('image-generation')
+    const cancelling = manager.cancel(started.jobId)
+    await new Promise((resolve) => setImmediate(resolve))
+    assert.equal(gpu.getSnapshot().active.owner, 'song-cover')
+    assert.equal(releaseCalls, 0)
+    termination.resolve()
+    assert.equal((await cancelling).stage, 'cancelled')
+    const image = await imagePromise
+    assert.equal(releaseCalls, 1)
+    image.release()
+  } finally {
+    termination.resolve()
+    await manager.shutdown()
+    assert.equal(releaseCalls, 1)
+    await gpu.close()
+    await rm(fixture.root, { recursive: true, force: true })
+  }
+})
+
+test('GPU worker failure frees capacity only after cleanup and permits a later generation', async () => {
+  const fixture = await createFixture()
+  const gpu = new GpuAdmissionCoordinator()
+  const manager = gpuTestManager(fixture, gpu)
+  try {
+    await startLegacy(manager, 'D:/private/worker-error.mp3', 'worker-error.mp3')
+    const firstGeneration = gpu.getSnapshot().active.generation
+    await waitFor(() => !manager.hasActiveWork(), 'Failed GPU worker did not finish cleanup')
+    assert.equal(manager.getState().stage, 'error')
+    assert.equal(gpu.getSnapshot().active, null)
+    const retry = await startLegacy(manager, 'D:/private/slow.mp3', 'slow.mp3')
+    assert.ok(gpu.getSnapshot().active.generation > firstGeneration)
+    await manager.cancel(retry.jobId)
+    assert.equal(gpu.getSnapshot().active, null)
+  } finally {
+    await manager.shutdown()
+    await gpu.close()
+    await rm(fixture.root, { recursive: true, force: true })
+  }
+})
+
+test('GPU ownership survives failed WSL cleanup until an exact recovery retry succeeds', async () => {
+  const fixture = await createFixture()
+  const gpu = new GpuAdmissionCoordinator()
+  const manager = gpuTestManager(fixture, gpu, { terminateProcessTree: stopGpuFixtureProcess })
+  const badResponse = path.join(fixture.projectRoot, 'cleanup-response.bin')
+  try {
+    await writeFile(badResponse, 'invalid cleanup response\n')
+    const started = await manager.start('D:/private/slow.mp3', 'slow.mp3')
+    await waitFor(() => manager.getState().progressPercent === 5, 'The WSL GPU fixture did not start')
+    await assert.rejects(manager.cancel(started.jobId), /private Song Cover audio could not be cleared/iu)
+    assert.equal(gpu.getSnapshot().active.owner, 'song-cover')
+    assert.equal(manager.hasActiveWork(), true)
+    const imagePromise = gpu.acquire('image-generation')
+    await rm(badResponse)
+    await manager.shutdown()
+    const image = await imagePromise
+    assert.equal(image.owner, 'image-generation')
+    image.release()
+  } finally {
+    await rm(badResponse, { force: true })
+    await manager.shutdown()
+    await gpu.close()
+    await rm(fixture.root, { recursive: true, force: true })
+  }
+})
+
+test('GPU termination uncertainty retains physical ownership through a successful shutdown retry', async () => {
+  const fixture = await createFixture()
+  const gpu = new GpuAdmissionCoordinator()
+  let allowTermination = false
+  const manager = gpuTestManager(fixture, gpu, {
+    terminateProcessTree: async (child) => allowTermination ? stopGpuFixtureProcess(child) : false,
+  })
+  try {
+    const started = await startLegacy(manager, 'D:/private/slow.mp3', 'slow.mp3')
+    await waitFor(() => manager.getState().progressPercent === 5, 'The uncertain GPU worker did not start')
+    await assert.rejects(manager.cancel(started.jobId), /termination could not be confirmed/iu)
+    assert.equal(gpu.getSnapshot().active.owner, 'song-cover')
+    allowTermination = true
+    await manager.shutdown()
+    assert.equal(gpu.getSnapshot().active, null)
+  } finally {
+    allowTermination = true
+    await manager.shutdown()
+    await gpu.close()
+    await rm(fixture.root, { recursive: true, force: true })
+  }
+})
+
+test('GPU child error alone cannot release capacity before its owned process closes', async () => {
+  const fixture = await createFixture()
+  const gpu = new GpuAdmissionCoordinator()
+  const termination = gpuDeferred()
+  let worker
+  const manager = gpuTestManager(fixture, gpu, {
+    spawnWorker: (...args) => { worker = spawn(...args); return worker },
+    terminateProcessTree: async (child) => { await termination.promise; return stopGpuFixtureProcess(child) },
+  })
+  try {
+    await startLegacy(manager, 'D:/private/slow.mp3', 'slow.mp3')
+    await waitFor(() => manager.getState().progressPercent === 5, 'The error GPU fixture did not start')
+    worker.emit('error', new Error('private native process error'))
+    await new Promise((resolve) => setImmediate(resolve))
+    assert.equal(gpu.getSnapshot().active.owner, 'song-cover')
+    assert.equal(worker.exitCode, null)
+    termination.resolve()
+    await waitFor(() => !manager.hasActiveWork(), 'The error GPU fixture did not physically settle')
+    assert.equal(gpu.getSnapshot().active, null)
+  } finally {
+    termination.resolve()
+    await manager.shutdown()
+    await gpu.close()
+    await rm(fixture.root, { recursive: true, force: true })
+  }
+})
+
+test('GPU coordinator shutdown aborts native work and joins the manager physical stop', async () => {
+  const fixture = await createFixture()
+  const gpu = new GpuAdmissionCoordinator()
+  const cleanupEntered = gpuDeferred()
+  const cleanupRelease = gpuDeferred()
+  let jobId = null
+  let deletionCount = 0
+  const manager = gpuTestManager(fixture, gpu, {
+    terminateProcessTree: stopGpuFixtureProcess,
+    removePath: async (target, options) => {
+      if (jobId !== null && path.basename(target) === jobId) {
+        deletionCount += 1
+        assert.equal(deletionCount, 1, 'Concurrent stop owners must share exact private cleanup.')
+        cleanupEntered.resolve()
+        await cleanupRelease.promise
+      }
+      return rm(target, options)
+    },
+  })
+  try {
+    jobId = (await startLegacy(manager, 'D:/private/slow.mp3', 'slow.mp3')).jobId
+    await waitFor(() => manager.getState().progressPercent === 5, 'The shutdown GPU worker did not start')
+    const closing = gpu.close()
+    const shutdown = manager.shutdown()
+    await cleanupEntered.promise
+    await new Promise((resolve) => setImmediate(resolve))
+    assert.equal(deletionCount, 1)
+    assert.equal(gpu.getSnapshot().active.owner, 'song-cover')
+    cleanupRelease.resolve()
+    await shutdown
+    await closing
+    assert.equal(gpu.getSnapshot().active, null)
+    assert.equal(manager.hasActiveWork(), false)
+  } finally {
+    cleanupRelease.resolve()
+    await manager.shutdown()
+    await gpu.close()
+    await rm(fixture.root, { recursive: true, force: true })
+  }
+})
+
+test('GPU admission is released when synchronous spawn fails before any physical worker exists', async () => {
+  const fixture = await createFixture()
+  const gpu = new GpuAdmissionCoordinator()
+  const manager = gpuTestManager(fixture, gpu, { spawnWorker: () => { throw new Error('private spawn diagnostic') } })
+  try {
+    await assert.rejects(startLegacy(manager, 'D:/private/slow.mp3', 'slow.mp3'), /could not be started/iu)
+    assert.equal(gpu.getSnapshot().active, null)
+    assert.equal(manager.hasActiveWork(), false)
+  } finally {
+    await manager.shutdown()
+    await gpu.close()
     await rm(fixture.root, { recursive: true, force: true })
   }
 })

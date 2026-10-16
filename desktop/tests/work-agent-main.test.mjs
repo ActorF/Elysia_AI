@@ -33,6 +33,7 @@ function fixture() {
     hasActiveComputerWork: () => host.workDesktopRequests.size > 0 || host.competing,
     hasActiveVisionWork: () => host.vision, hasActiveInternetWork: () => host.internet, competing: false, vision: false, internet: false,
     shutdownStarted: false, dataStorageOperation: null, presenceVoiceSessionActive: false, songCoverManager: null,
+    imageConfigurationInFlight: false, imageSettingsManager: null, imageExportInFlight: false,
     requireMainWindow: () => ({}), createWorkAgentNativeTools: gate => { gates.push(gate); return async (request, signal) => {
       calls.push({ request, signal }); return drain.promise
     } } }

@@ -172,6 +172,21 @@ class ImageGenerationApplicationService:
         self._core_released = False
         self._gallery_released = False
 
+    @property
+    def gpu_cleanup_complete(self) -> bool:
+        """Expose Core's physical cleanup proof independently of Gallery errors.
+
+        A missing model, cancellation, or failed Gallery commit can occur after
+        successful native cleanup. Exception categories intentionally omit
+        private supervisor state, so the desktop broker must use this explicit
+        proof rather than infer GPU release from a terminal application result.
+        """
+
+        try:
+            return getattr(self._core, "gpu_cleanup_complete", False) is True
+        except BaseException:
+            return False
+
     def __enter__(self) -> "ImageGenerationApplicationService":
         """Return this open application service for context-managed use."""
 

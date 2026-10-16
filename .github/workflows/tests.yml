@@ -38,7 +38,7 @@ jobs:
         run: >-
           python -m mypy --platform win32
           agent attachments chats config core desktop_protocol documents image_generation knowledge_lifecycle localization memory models project_sources projects recovery
-          scripts ui voice work_tools desktop_backend.py desktop_knowledge.py desktop_speech.py desktop_work.py desktop_work_plans.py start.py
+          scripts ui voice work_tools desktop_backend.py desktop_images.py desktop_image_settings.py desktop_image_settings_worker.py desktop_knowledge.py desktop_speech.py desktop_work.py desktop_work_plans.py gpu_admission.py start.py
 
   windows-native-integration:
     runs-on: windows-latest
@@ -93,6 +93,10 @@ jobs:
           tests/test_work_writes.py
           tests/test_windows_managed_process.py
           tests/test_managed_gpt_sovits.py
+          tests/test_gpu_admission.py
+          tests/test_gpu_desktop_images.py
+          tests/test_gpu_ollama.py
+          tests/test_gpu_synthesis.py
 
       - name: Set up Node.js for package audit
         uses: actions/setup-node@v7
@@ -108,6 +112,10 @@ jobs:
       - name: Build unpacked Windows package
         working-directory: desktop
         run: npm run package
+
+      - name: Verify native GPU admission and physical cleanup
+        working-directory: desktop
+        run: npm run test:gpu
 
       - name: Verify native Vision decoding and synthetic window capture
         working-directory: desktop
@@ -181,6 +189,9 @@ jobs:
 
       - name: Verify private image previews
         run: npm run test:image
+
+      - name: Verify GPU admission and physical cleanup
+        run: npm run test:gpu
 
       - name: Type-check desktop sources
         run: npm run typecheck

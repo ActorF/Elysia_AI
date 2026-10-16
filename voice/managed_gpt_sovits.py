@@ -142,6 +142,7 @@ _LEASE_ISSUER_SEAL: Final = object()
 _TEST_DEPENDENCY_SEAL: Final = object()
 _QUARANTINED_GUARDS: list[_FileGuard] = []
 _QUARANTINED_GUARDS_LOCK = Lock()
+_CLEANUP_CONDITION = Condition(_QUARANTINED_GUARDS_LOCK)
 _DOS_DEVICE_LOCK = RLock()
 _GLOBAL_CLEANUP_POISONED = False
 _GLOBAL_CLEANUP_PENDING = 0
@@ -942,8 +943,10 @@ def _complete_cleanup_barrier() -> bool:
         if _GLOBAL_CLEANUP_PENDING <= 0:
             # An impossible accounting mismatch must not reopen production.
             _GLOBAL_CLEANUP_POISONED = True
+            _CLEANUP_CONDITION.notify_all()
             return False
         _GLOBAL_CLEANUP_PENDING -= 1
+        _CLEANUP_CONDITION.notify_all()
         return True
 
 
@@ -966,6 +969,7 @@ def _quarantine_cleanup_owner(
         _GLOBAL_CLEANUP_POISONED = True
         if _GLOBAL_CLEANUP_PENDING > 0:
             _GLOBAL_CLEANUP_PENDING -= 1
+        _CLEANUP_CONDITION.notify_all()
         previous = _EMERGENCY_CLEANUP_OWNER_HEAD
         owner._quarantine_next = previous
         _EMERGENCY_CLEANUP_OWNER_HEAD = owner
@@ -989,6 +993,7 @@ def _quarantine_guard(guard: _FileGuard) -> None:
         # Poison must publish before any fallible list scan or growth. One
         # direct fallback roots the first failure without allocating.
         _GLOBAL_CLEANUP_POISONED = True
+        _CLEANUP_CONDITION.notify_all()
         if _EMERGENCY_QUARANTINE_GUARD is None:
             _EMERGENCY_QUARANTINE_GUARD = guard
         try:
@@ -1024,6 +1029,29 @@ def _close_or_quarantine(guard: _FileGuard) -> None:
         # the owner is safer than allowing garbage collection to obscure that
         # fail-closed state.
         _quarantine_guard(guard)
+
+
+def wait_for_managed_cleanup(timeout_seconds: float) -> bool:
+    """Prove all production TTS owners finished native cleanup before GPU reuse.
+
+    Runtime shutdown and lease abort may transfer resources to non-daemon
+    cleanup threads. Their process-wide barrier remains authoritative even
+    after the original runtime detached its lease. A timeout or quarantined
+    native owner returns false; callers must keep their global GPU grant
+    poisoned until the backend process exits rather than infer cleanup from
+    a logical closed state.
+    """
+
+    if type(timeout_seconds) is not float or not math.isfinite(timeout_seconds) or timeout_seconds < 0.0:
+        raise ValueError("Managed cleanup timeout must be a non-negative float.")
+    deadline = monotonic() + timeout_seconds
+    with _CLEANUP_CONDITION:
+        while _GLOBAL_CLEANUP_PENDING > 0 and not _GLOBAL_CLEANUP_POISONED:
+            remaining = deadline - monotonic()
+            if remaining <= 0.0:
+                return False
+            _CLEANUP_CONDITION.wait(remaining)
+        return not _GLOBAL_CLEANUP_POISONED and _GLOBAL_CLEANUP_PENDING == 0
 
 
 class _OwnedResources:
@@ -3552,4 +3580,5 @@ __all__ = [
     "ManagedGptSovitsSynthesisError",
     "ManagedGptSovitsUnavailableError",
     "ManagedGptSovitsValidationError",
+    "wait_for_managed_cleanup",
 ]

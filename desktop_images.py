@@ -10,12 +10,15 @@ root, never by an image request or a language model.
 from __future__ import annotations
 
 from collections.abc import Callable
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from datetime import timezone
 import logging
 from threading import Event, RLock, Thread
 from time import monotonic
 from typing import Any
+
+from gpu_admission import GpuAdmissionCancelledError, GpuAdmissionError, gpu_lease, using_desktop_gpu
 
 from desktop_protocol import (
     ServerMessage,
@@ -329,11 +332,30 @@ class DesktopImageCoordinator:
                     raise ImageGenerationCancelledError()
             service = self._service
             assert service is not None
-            item = service.generate(
-                task.operation_id,
-                spec,
-                on_progress=lambda progress: self._progress(task, progress),
-            )
+            desktop_gpu = using_desktop_gpu()
+            try:
+                with (gpu_lease("image-generation", cancel_requested=task.cancel_requested.is_set)
+                      if desktop_gpu else nullcontext()) as grant:
+                    if task.cancel_requested.is_set() or (grant is not None and grant.cancelled):
+                        raise ImageGenerationCancelledError()
+                    try:
+                        # The application call includes native finalization and
+                        # durable Gallery publication. Neither completion nor a
+                        # cancelled response can prematurely free this grant.
+                        item = service.generate(
+                            task.operation_id,
+                            spec,
+                            on_progress=lambda progress: self._progress(task, progress),
+                        )
+                    finally:
+                        if desktop_gpu and not service.gpu_cleanup_complete:
+                            assert grant is not None
+                            grant.poison()
+                            raise ImageGenerationUnavailableError()
+            except GpuAdmissionCancelledError:
+                raise ImageGenerationCancelledError() from None
+            except GpuAdmissionError:
+                raise ImageGenerationUnavailableError() from None
             response: ServerMessage = build_success_response(task.request_id, {
                 "kind": "image.generation",
                 "operationId": task.operation_id,

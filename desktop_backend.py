@@ -149,6 +149,7 @@ from desktop_images import DesktopImageCoordinator
 from desktop_protocol.image_channel import ImageChannelError, ImageChannelWriter
 from image_generation import ImageGenerationApplicationService
 from desktop_image_settings import DesktopImageSettingsStore
+from gpu_admission import GpuAdmissionClient, GpuAdmissionError, configure_gpu_client
 from voice import (
     FasterWhisperConfig,
     FasterWhisperStatus,
@@ -5091,27 +5092,44 @@ def main() -> None:
         sys.stdout,
         sys.stderr,
     )
-    audio_writer: AudioChannelWriter | None = None
-    try:
-        audio_writer = AudioChannelWriter.from_inherited_fd3()
-    except AudioChannelError:
-        # Direct Python/console launches legitimately have no fd3 capability.
-        # Text Chat remains fully usable and no arbitrary descriptor is used.
-        logger.error("Desktop speech audio channel is unavailable.")
-    image_writer: ImageChannelWriter | None = None
-    try:
-        image_writer = ImageChannelWriter.from_inherited_fd4()
-    except ImageChannelError:
-        logger.error("Desktop image preview channel is unavailable.")
-    image_service: ImageGenerationApplicationService | None = None
-    if image_writer is not None:
+    gpu_client: GpuAdmissionClient | None = None
+    if os.environ.get("ELYSIA_GPU_BROKER") == "1":
         try:
-            image_service = DesktopImageSettingsStore(SETTINGS.data_layout.root).create_service()
-        except Exception:
-            # Missing or changed local assets are optional image readiness,
-            # never a reason to lose Chat or expose private runtime diagnostics.
-            logger.error("Trusted image installation is not ready.")
-    DesktopBackend(audio_writer=audio_writer, image_writer=image_writer, image_service=image_service).run()
+            gpu_client = GpuAdmissionClient.from_inherited_fd5()
+        except GpuAdmissionError:
+            # Electron promised exclusive GPU admission. Losing that private
+            # capability must not silently enable unconstrained model fallback.
+            logger.error("Desktop GPU admission channel is unavailable.")
+            return
+        configure_gpu_client(gpu_client)
+    try:
+        audio_writer: AudioChannelWriter | None = None
+        try:
+            audio_writer = AudioChannelWriter.from_inherited_fd3()
+        except AudioChannelError:
+            # Direct Python/console launches legitimately have no fd3 capability.
+            # Text Chat remains fully usable and no arbitrary descriptor is used.
+            logger.error("Desktop speech audio channel is unavailable.")
+        image_writer: ImageChannelWriter | None = None
+        try:
+            image_writer = ImageChannelWriter.from_inherited_fd4()
+        except ImageChannelError:
+            logger.error("Desktop image preview channel is unavailable.")
+        image_service: ImageGenerationApplicationService | None = None
+        if image_writer is not None:
+            try:
+                image_service = DesktopImageSettingsStore(SETTINGS.data_layout.root).create_service()
+            except Exception:
+                # Missing or changed local assets are optional image readiness,
+                # never a reason to lose Chat or expose private runtime diagnostics.
+                logger.error("Trusted image installation is not ready.")
+        DesktopBackend(audio_writer=audio_writer, image_writer=image_writer, image_service=image_service).run()
+    finally:
+        if gpu_client is not None:
+            # Keep the closed client installed: late daemon callbacks must be
+            # refused rather than switch back to library-mode GPU execution.
+            # Main releases surviving grants only after observing process exit.
+            gpu_client.close()
 
 
 if __name__ == "__main__":
