@@ -2,6 +2,8 @@
 
 Tiny regular fixture files exercise persistence and native preflight without
 launching ComfyUI, loading checkpoints, downloading dependencies, or using GPU.
+Successful native configurations use a scoped POSIX test seam; Windows keeps
+its production platform and volume verification.
 """
 
 from __future__ import annotations
@@ -14,6 +16,8 @@ import sys
 from typing import cast
 
 import pytest
+
+from tests.image_settings_fixtures import supported_image_preflight
 
 from desktop_image_settings_worker import handle_request
 
@@ -58,7 +62,9 @@ def test_worker_unconfigured_status_has_no_paths_or_side_effects(tmp_path: Path)
     assert not root.exists()
 
 
-def test_worker_configures_fixed_profile_and_derives_model_root(tmp_path: Path) -> None:
+def test_worker_configures_fixed_profile_and_derives_model_root(
+    tmp_path: Path, supported_image_preflight: None,
+) -> None:
     """Only reviewed metadata and the selected checkpoint form the saved catalog."""
 
     request = _request(tmp_path)
@@ -137,7 +143,9 @@ def test_worker_status_detects_changed_reviewed_model(tmp_path: Path) -> None:
     assert handle_request({"op": "status"}, root)["state"] == "hash_mismatch"
 
 
-def test_worker_native_repair_requires_explicit_flag_and_preserves_corrupt_bytes(tmp_path: Path) -> None:
+def test_worker_native_repair_requires_explicit_flag_and_preserves_corrupt_bytes(
+    tmp_path: Path, supported_image_preflight: None,
+) -> None:
     """Only an explicitly confirmed repair can replace invalid private configuration."""
 
     request = _request(tmp_path)

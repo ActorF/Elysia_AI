@@ -1,7 +1,9 @@
 /** Verify native image installation review, strict public status, and worker ownership. */
 
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
+import { existsSync } from 'node:fs'
 import { mkdtemp, mkdir, readFile, writeFile, readdir, rename, rm, link, symlink } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -13,7 +15,18 @@ import {
 } from '../dist-electron/image-settings.js'
 
 const PROJECT = path.resolve(fileURLToPath(new URL('../../', import.meta.url)))
-const PYTHON = path.join(PROJECT, '.venv', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python')
+const VENV_PYTHON = path.join(PROJECT, '.venv', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python')
+// CI supplies Python on PATH rather than a project virtual environment. Keep
+// explicit test overrides authoritative, including a deliberately invalid path.
+const PYTHON_COMMAND = process.env.ELYSIA_TEST_PYTHON ?? process.env.ELYSIA_PYTHON
+  ?? (existsSync(VENV_PYTHON) ? VENV_PYTHON : process.platform === 'win32' ? 'python' : 'python3')
+// The production manager accepts startup-owned absolute paths only. Resolve
+// PATH candidates with Python itself instead of relaxing that trust boundary.
+const interpreter = spawnSync(PYTHON_COMMAND, ['-c', 'import sys; print(sys.executable)'],
+  { encoding: 'utf8', timeout: 5_000, maxBuffer: 4096, windowsHide: true, shell: false })
+assert.equal(interpreter.status, 0, 'The native settings contract requires an available Python interpreter.')
+const PYTHON = interpreter.stdout.trim()
+assert.equal(path.isAbsolute(PYTHON), true, 'Python must report an absolute executable path.')
 const METADATA = {
   displayName: 'Reviewed SDXL', profileId: 'reviewed-sdxl', promptDialect: 'sdxl-natural',
   checkpointSource: 'https://example.test/model', checkpointLicense: 'Fixture license', defaultSizePresetId: 'square',
@@ -429,9 +442,11 @@ test('private stderr and malformed stdout never reach the renderer error', async
     const projectRoot = path.join(root, 'fake-worker')
     await mkdir(projectRoot)
     await writeFile(path.join(projectRoot, 'desktop_image_settings_worker.py'),
-      'import sys\nsys.stderr.write("D:/private/checkpoint.safetensors")\nsys.stdout.write("not-json\\n")\n')
+      'from pathlib import Path\nimport sys\nPath("worker-started").write_text("started")\n'
+      + 'sys.stderr.write("D:/private/checkpoint.safetensors")\nsys.stdout.write("not-json\\n")\n')
     const manager = new ImageSettingsManager({ ...options, projectRoot, runWorker: undefined })
     await assert.rejects(manager.status(), (error) => error.reason === 'unavailable' && !error.message.includes('private'))
+    assert.equal(await readFile(path.join(projectRoot, 'worker-started'), 'utf8'), 'started')
     await manager.close()
   })
 })
@@ -441,9 +456,11 @@ test('oversized native stdout is terminated rather than retained without bound',
     const projectRoot = path.join(root, 'fake-worker')
     await mkdir(projectRoot)
     await writeFile(path.join(projectRoot, 'desktop_image_settings_worker.py'),
-      'import sys\nsys.stdout.write("x" * 2097152)\nsys.stdout.flush()\n')
+      'from pathlib import Path\nimport sys\nPath("worker-started").write_text("started")\n'
+      + 'sys.stdout.write("x" * 2097152)\nsys.stdout.flush()\n')
     const manager = new ImageSettingsManager({ ...options, projectRoot, runWorker: undefined })
     await assert.rejects(manager.status(), (error) => error.reason === 'unavailable')
+    assert.equal(await readFile(path.join(projectRoot, 'worker-started'), 'utf8'), 'started')
     await manager.close()
   })
 })

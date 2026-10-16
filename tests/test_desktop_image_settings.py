@@ -2,6 +2,8 @@
 
 Tiny fixture files stand in for reviewed runtime/model bytes. No test launches
 ComfyUI, interprets a checkpoint, downloads dependencies, or allocates a GPU.
+Tests that need a supported native host opt into a scoped fixture on POSIX;
+the unmodified production platform refusal has its own regression test.
 """
 
 from __future__ import annotations
@@ -14,6 +16,8 @@ from pathlib import Path
 from typing import cast
 
 import pytest
+
+from tests.image_settings_fixtures import supported_image_preflight
 
 import desktop_image_settings as image_settings
 from desktop_image_settings import (
@@ -87,7 +91,9 @@ def test_unconfigured_status_is_path_free_and_creates_nothing(tmp_path: Path) ->
     assert str(tmp_path) not in json.dumps(status)
 
 
-def test_confirmed_settings_roundtrip_and_native_readiness(tmp_path: Path) -> None:
+def test_confirmed_settings_roundtrip_and_native_readiness(
+    tmp_path: Path, supported_image_preflight: None,
+) -> None:
     """Restore reviewed profiles and report actual pinned-file readiness."""
 
     store, installation, data_root = _save(tmp_path)
@@ -114,8 +120,8 @@ def test_confirmed_settings_roundtrip_and_native_readiness(tmp_path: Path) -> No
     assert not (data_root / "workspace" / "gallery").exists()
 
 
-def test_venv_redirector_status_explains_supported_interpreter(tmp_path: Path) -> None:
-    """Return actionable path-free Settings guidance before native process creation."""
+def test_venv_redirector_never_advertises_readiness(tmp_path: Path) -> None:
+    """Explain redirector refusal on Windows; other hosts remain unavailable."""
 
     installation = _installation(tmp_path)
     scripts = tmp_path / "venv" / "Scripts"
@@ -128,9 +134,26 @@ def test_venv_redirector_status_explains_supported_interpreter(tmp_path: Path) -
     status = store.status().to_public_dict()
     assert status["state"] == "invalid"
     assert status["ready"] is False
-    assert "virtual-environment redirectors" in str(status["message"])
-    assert "portable" in str(status["message"])
+    if os.name == "nt":
+        assert "virtual-environment redirectors" in str(status["message"])
+        assert "portable" in str(status["message"])
     assert str(tmp_path) not in json.dumps(status)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Production POSIX platform refusal.")
+def test_production_posix_installation_never_reports_ready(tmp_path: Path) -> None:
+    """Keep real unsupported hosts unavailable despite valid fixture file hashes."""
+
+    store, _, data_root = _save(tmp_path)
+    status = store.status().to_public_dict()
+    assert status["state"] == "invalid"
+    assert status["configured"] is True
+    assert status["ready"] is False
+    assert str(tmp_path) not in json.dumps(status)
+    with pytest.raises(ImageGenerationUnavailableError, match="not ready"):
+        store.create_service()
+    assert not (data_root / "workspace" / "gallery").exists()
+    assert list((data_root / "workspace" / "image-runs").iterdir()) == []
 
 
 @pytest.mark.parametrize("confirmation", [False, 1, "true", None])
@@ -198,10 +221,13 @@ def test_missing_checkpoint_has_actionable_model_state(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("unsafe_input", ["extra-model-roots", "leftover-run", "missing-runtime"])
-def test_supervisor_preflight_still_rejects_unsafe_installations(tmp_path: Path, unsafe_input: str) -> None:
+def test_supervisor_preflight_still_rejects_unsafe_installations(
+    tmp_path: Path, unsafe_input: str, supported_image_preflight: None,
+) -> None:
     """Useful Settings errors cannot bypass the supervisor's ownership policy."""
 
     store, installation, root = _save(tmp_path)
+    assert store.status().state == "ready"
     if unsafe_input == "extra-model-roots":
         (installation.runtime_root / "extra_model_paths.yaml").write_text("unreviewed: models", encoding="utf-8")
     elif unsafe_input == "leftover-run":
@@ -272,7 +298,7 @@ def test_atomic_write_failure_preserves_last_confirmed_configuration(
 
 
 def test_service_factory_receives_only_fixed_private_locations(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, supported_image_preflight: None,
 ) -> None:
     """Service composition uses reviewed profiles and application-owned roots."""
 
@@ -347,7 +373,9 @@ def test_aliased_lock_file_cannot_receive_private_settings_writes(tmp_path: Path
     assert _settings_path(root).read_bytes() == before
 
 
-def test_explicit_native_repair_preserves_corrupt_config_and_gallery(tmp_path: Path) -> None:
+def test_explicit_native_repair_preserves_corrupt_config_and_gallery(
+    tmp_path: Path, supported_image_preflight: None,
+) -> None:
     """A confirmed repair replaces only invalid settings after making a private backup."""
 
     store, installation, root = _save(tmp_path)
