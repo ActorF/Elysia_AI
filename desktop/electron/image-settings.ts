@@ -1,0 +1,444 @@
+/**
+ * Own native ComfyUI installation selection, stable streaming hash review, and
+ * a bounded Python settings worker. Renderer metadata contains logical choices
+ * and provenance only; all filesystem paths stay inside trusted Main callbacks.
+ */
+
+import { spawn } from 'node:child_process'
+import { createHash } from 'node:crypto'
+import { constants, type BigIntStats } from 'node:fs'
+import { lstat, open, realpath } from 'node:fs/promises'
+import path from 'node:path'
+import type { ImageProfileMetadata, ImagePromptDialect } from './image-client.js'
+export type { ImageProfileMetadata, ImagePromptDialect } from './image-client.js'
+
+/** Describe one bounded canvas through a logical identifier. */
+export interface ImageSettingsPreset {
+  readonly presetId: string
+  readonly width: number
+  readonly height: number
+}
+
+/** Expose a usable model family without its private checkpoint location. */
+export interface ImageSettingsProfile {
+  readonly profileId: string
+  readonly displayName: string
+  readonly architecture: 'sdxl'
+  readonly promptDialect: ImagePromptDialect
+  readonly defaultSizePresetId: string
+  readonly sizePresets: readonly ImageSettingsPreset[]
+}
+
+/** Publish only validated readiness, logical profiles, and fixed Main messages. */
+export interface ImageSettingsStatus {
+  readonly configured: boolean
+  readonly ready: boolean
+  readonly state: 'unconfigured' | 'missing_model' | 'hash_mismatch' | 'ready' | 'invalid'
+  readonly message: string
+  readonly revision: number
+  readonly defaultProfileId: string | null
+  readonly profiles: readonly ImageSettingsProfile[]
+}
+
+/** Present private native file identities and pins only in Main's consent dialog. */
+export interface ImageInstallationReview {
+  readonly metadata: ImageProfileMetadata
+  readonly runtimeRoot: string
+  readonly pythonExecutable: string
+  readonly checkpointPath: string
+  readonly pythonSha256: string
+  readonly comfyuiMainSha256: string
+  readonly checkpointSha256: string
+}
+
+/** Bind startup-owned roots and native dialogs without a renderer path surface. */
+export interface ImageSettingsOptions {
+  readonly projectRoot: string
+  readonly dataRoot: string
+  readonly pythonExecutable: string
+  /** Choose a trusted ComfyUI directory through Main's native folder picker. */
+  readonly chooseRuntimeRoot: (signal: AbortSignal) => Promise<string | null>
+  /** Choose the runtime interpreter through Main's native executable picker. */
+  readonly choosePythonExecutable: (signal: AbortSignal) => Promise<string | null>
+  /** Choose one safetensors file directly beneath a checkpoints directory. */
+  readonly chooseCheckpoint: (signal: AbortSignal) => Promise<string | null>
+  /** Explicitly confirm paths, computed hashes, model source, and license. */
+  readonly confirmInstallation: (review: ImageInstallationReview, signal: AbortSignal) => Promise<boolean>
+  /** Inject a trusted worker runner for inert tests; private requests stay in Main. */
+  readonly runWorker?: (request: Record<string, unknown>, signal: AbortSignal) => Promise<unknown>
+  readonly timeoutMs?: number
+}
+
+/** Expose stable failure categories while withholding native errors and output. */
+export class ImageSettingsError extends Error {
+  /** Construct a fixed-message settings failure suitable for guarded IPC. */
+  constructor(readonly reason: 'busy' | 'closed' | 'cancelled' | 'invalid-metadata' | 'unavailable' | 'timeout') {
+    super('Local image settings could not be checked or saved.')
+    this.name = 'ImageSettingsError'
+  }
+}
+
+interface HashedFile {
+  readonly path: string
+  readonly sha256: string
+  readonly stats: BigIntStats
+  readonly parents: readonly { path: string; stats: BigIntStats }[]
+}
+
+const MAX_BYTES = 1_048_576
+const PUBLIC_ID = /^[a-z][a-z0-9_-]{0,63}$/u
+const DIALECTS = ['sdxl-natural', 'pony-tags', 'illustrious-tags'] as const
+const PRESETS = ['square', 'portrait', 'landscape'] as const
+const MESSAGES = {
+  unconfigured: 'Choose and confirm a trusted ComfyUI installation.',
+  missing_model: 'A configured checkpoint is missing. Install the reviewed model before generating.',
+  hash_mismatch: 'A reviewed model or runtime SHA-256 no longer matches. Review the installation.',
+  ready: 'The trusted local image installation is ready.',
+  invalid: 'Local image settings or runtime readiness checks failed. Review the installation.',
+} as const
+
+/** Validate the exact metadata contract before showing native installation UI. */
+export function parseImageProfileMetadata(value: unknown): ImageProfileMetadata {
+  try {
+    const raw = fields(value, ['displayName', 'profileId', 'promptDialect', 'checkpointSource',
+      'checkpointLicense', 'defaultSizePresetId'])
+    const profileId = publicId(raw.profileId)
+    const displayName = displayLabel(raw.displayName)
+    if (!DIALECTS.includes(raw.promptDialect as ImagePromptDialect)
+      || !PRESETS.includes(raw.defaultSizePresetId as typeof PRESETS[number])) throw new Error()
+    return Object.freeze({
+      displayName, profileId,
+      promptDialect: raw.promptDialect as ImagePromptDialect,
+      checkpointSource: text(raw.checkpointSource, 512),
+      checkpointLicense: text(raw.checkpointLicense, 512),
+      defaultSizePresetId: raw.defaultSizePresetId as typeof PRESETS[number],
+    })
+  } catch {
+    throw new ImageSettingsError('invalid-metadata')
+  }
+}
+
+/** Validate a path-free worker status and replace diagnostics with Main-owned text. */
+export function parseImageSettingsStatus(value: unknown): ImageSettingsStatus {
+  try {
+    const raw = fields(value, ['configured', 'ready', 'state', 'message', 'revision', 'defaultProfileId', 'profiles'])
+    if (typeof raw.state !== 'string' || !Object.hasOwn(MESSAGES, raw.state)
+      || typeof raw.configured !== 'boolean' || typeof raw.ready !== 'boolean'
+      || raw.ready !== (raw.state === 'ready') || !Number.isSafeInteger(raw.revision)
+      || (raw.revision as number) < 0 || typeof raw.message !== 'string'
+      || raw.message.length > 1024 || !Array.isArray(raw.profiles) || raw.profiles.length > 8) throw new Error()
+    const profiles = raw.profiles.map((item): ImageSettingsProfile => {
+      const profile = fields(item, ['profileId', 'displayName', 'architecture', 'promptDialect',
+        'defaultSizePresetId', 'sizePresets'])
+      if (profile.architecture !== 'sdxl' || !DIALECTS.includes(profile.promptDialect as ImagePromptDialect)
+        || !Array.isArray(profile.sizePresets) || profile.sizePresets.length < 1
+        || profile.sizePresets.length > 8) throw new Error()
+      const sizes = profile.sizePresets.map((item): ImageSettingsPreset => {
+        const size = fields(item, ['presetId', 'width', 'height'])
+        if (!Number.isInteger(size.width) || !Number.isInteger(size.height)
+          || (size.width as number) < 512 || (size.width as number) > 2048 || (size.width as number) % 64 !== 0
+          || (size.height as number) < 512 || (size.height as number) > 2048 || (size.height as number) % 64 !== 0
+          || (size.width as number) * (size.height as number) > 4_194_304) throw new Error()
+        return Object.freeze({ presetId: publicId(size.presetId), width: size.width as number, height: size.height as number })
+      })
+      const defaultSizePresetId = publicId(profile.defaultSizePresetId)
+      if (new Set(sizes.map((size) => size.presetId)).size !== sizes.length
+        || !sizes.some((size) => size.presetId === defaultSizePresetId)) throw new Error()
+      return Object.freeze({ profileId: publicId(profile.profileId), displayName: displayLabel(profile.displayName),
+        architecture: 'sdxl', promptDialect: profile.promptDialect as ImagePromptDialect,
+        defaultSizePresetId, sizePresets: Object.freeze(sizes) })
+    })
+    const defaultProfileId = raw.defaultProfileId === null ? null : publicId(raw.defaultProfileId)
+    if (new Set(profiles.map((profile) => profile.profileId)).size !== profiles.length
+      || raw.configured !== (profiles.length > 0) || raw.configured !== (defaultProfileId !== null)
+      || defaultProfileId !== null && !profiles.some((profile) => profile.profileId === defaultProfileId)
+      || raw.configured && raw.state === 'unconfigured' || !raw.configured && raw.state !== 'invalid' && raw.state !== 'unconfigured'
+      || raw.configured && raw.revision === 0) throw new Error()
+    const state = raw.state as ImageSettingsStatus['state']
+    return Object.freeze({ configured: raw.configured, ready: raw.ready, state, message: MESSAGES[state],
+      revision: raw.revision as number, defaultProfileId, profiles: Object.freeze(profiles) })
+  } catch {
+    throw new ImageSettingsError('unavailable')
+  }
+}
+
+/**
+ * Serialize settings checks and native guided installation with owned shutdown.
+ *
+ * SHA-256 is streamed from stable regular files; a later native consent dialog
+ * explicitly pins those bytes. Revision comparison prevents another process's
+ * newer installation from being overwritten after a long selection workflow.
+ */
+export class ImageSettingsManager {
+  private active: Promise<ImageSettingsStatus> | null = null
+  private controller: AbortController | null = null
+  private readonly timeoutMs: number
+  private closed = false
+
+  /** Accept only trusted startup roots; construction performs no installation or GPU work. */
+  constructor(private readonly options: ImageSettingsOptions) {
+    for (const value of [options.projectRoot, options.dataRoot, options.pythonExecutable]) nativePath(value)
+    this.timeoutMs = options.timeoutMs ?? 120_000
+    if (!Number.isSafeInteger(this.timeoutMs) || this.timeoutMs < 1 || this.timeoutMs > 120_000) {
+      throw new ImageSettingsError('unavailable')
+    }
+  }
+
+  /** Report ownership, including a terminating worker whose close event has not drained. */
+  isBusy(): boolean { return this.active !== null }
+
+  /** Hash the reviewed installation without launching ComfyUI or allocating GPU memory. */
+  status(): Promise<ImageSettingsStatus> {
+    return this.owned((signal) => this.invoke({ op: 'status' }, signal))
+  }
+
+  /** Run native picks, hash review, explicit consent, and revision-checked persistence. */
+  configure(metadata: unknown): Promise<ImageSettingsStatus> {
+    let checked: ImageProfileMetadata
+    try { checked = parseImageProfileMetadata(metadata) }
+    catch (error) { return Promise.reject(error) }
+    return this.owned((signal) => this.configureOnce(checked, signal))
+  }
+
+  /** Abort outstanding waits and drain the exact worker before Main may exit. */
+  async close(): Promise<void> {
+    this.closed = true
+    this.controller?.abort()
+    await this.active?.catch(() => {})
+  }
+
+  private owned(operation: (signal: AbortSignal) => Promise<ImageSettingsStatus>): Promise<ImageSettingsStatus> {
+    if (this.closed) return Promise.reject(new ImageSettingsError('closed'))
+    if (this.active !== null) return Promise.reject(new ImageSettingsError('busy'))
+    const controller = new AbortController()
+    this.controller = controller
+    const pending = Promise.resolve().then(() => {
+      checkAbort(controller.signal)
+      return operation(controller.signal)
+    }).catch((error: unknown) => {
+      throw error instanceof ImageSettingsError ? error : new ImageSettingsError('unavailable')
+    })
+    this.active = pending
+    void pending.then(() => this.release(pending), () => this.release(pending))
+    return pending
+  }
+
+  private release(pending: Promise<ImageSettingsStatus>): void {
+    if (this.active === pending) { this.active = null; this.controller = null }
+  }
+
+  private async configureOnce(metadata: ImageProfileMetadata, signal: AbortSignal): Promise<ImageSettingsStatus> {
+    const baseline = await this.invoke({ op: 'status' }, signal)
+    const runtime = await callback(() => this.options.chooseRuntimeRoot(signal), signal)
+    if (runtime === null) return baseline
+    const interpreter = await callback(() => this.options.choosePythonExecutable(signal), signal)
+    if (interpreter === null) return baseline
+    const checkpoint = await callback(() => this.options.chooseCheckpoint(signal), signal)
+    if (checkpoint === null) return baseline
+    const runtimeRoot = nativePath(runtime)
+    const pythonExecutable = nativePath(interpreter)
+    const checkpointPath = nativePath(checkpoint)
+    if (path.basename(path.dirname(checkpointPath)).toLowerCase() !== 'checkpoints'
+      || path.extname(checkpointPath).toLowerCase() !== '.safetensors') throw new ImageSettingsError('unavailable')
+    const deadline = performance.now() + this.timeoutMs
+    const python = await hashFile(pythonExecutable, signal, deadline)
+    const main = await hashFile(path.join(runtimeRoot, 'main.py'), signal, deadline)
+    const model = await hashFile(checkpointPath, signal, deadline)
+    const review: ImageInstallationReview = Object.freeze({ metadata, runtimeRoot, pythonExecutable,
+      checkpointPath, pythonSha256: python.sha256, comfyuiMainSha256: main.sha256, checkpointSha256: model.sha256 })
+    const confirmed = await callback(() => this.options.confirmInstallation(review, signal), signal)
+    if (confirmed !== true) return baseline
+    // Dialogs can stay open arbitrarily long. Recheck the exact reviewed file
+    // identities before handing their pins to persistence, without rehashing a
+    // multi-gigabyte checkpoint merely because the user read the consent text.
+    for (const file of [python, main, model]) {
+      await verifyParents(file.parents)
+      if (!sameSnapshot(await lstat(file.path, { bigint: true }), file.stats)) {
+        throw new ImageSettingsError('unavailable')
+      }
+      checkAbort(signal)
+    }
+    return this.invoke({ op: 'configure', trustedConfirmation: true,
+      ...(baseline.state === 'invalid' && baseline.revision === 0 && !baseline.configured
+        ? { repairInvalid: true } : {}),
+      expectedRevision: baseline.revision, installation: review }, signal)
+  }
+
+  private async invoke(request: Record<string, unknown>, signal: AbortSignal): Promise<ImageSettingsStatus> {
+    checkAbort(signal)
+    const raw = this.options.runWorker === undefined
+      ? await this.spawnWorker(request, signal)
+      : await callback(() => this.options.runWorker!(request, signal), signal)
+    checkAbort(signal)
+    return parseImageSettingsStatus(raw)
+  }
+
+  private spawnWorker(request: Record<string, unknown>, signal: AbortSignal): Promise<unknown> {
+    const body = Buffer.from(`${JSON.stringify(request)}\n`, 'utf8')
+    if (body.length > MAX_BYTES) return Promise.reject(new ImageSettingsError('unavailable'))
+    return new Promise((resolve, reject) => {
+      const environment: NodeJS.ProcessEnv = { ...process.env, PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8' }
+      for (const key of ['PYTHONPATH', 'PYTHONHOME', 'PYTHONSTARTUP', 'PYTHONINSPECT']) delete environment[key]
+      const child = spawn(this.options.pythonExecutable, ['-u', '-s',
+        path.join(this.options.projectRoot, 'desktop_image_settings_worker.py'), '--data-root', this.options.dataRoot],
+      { cwd: this.options.projectRoot, windowsHide: true, shell: false, detached: false, env: environment, stdio: 'pipe' })
+      const chunks: Buffer[] = []
+      let stdoutBytes = 0
+      let stderrBytes = 0
+      let failure: ImageSettingsError | null = null
+      const stop = (reason: 'cancelled' | 'timeout' | 'unavailable'): void => {
+        failure ??= new ImageSettingsError(reason)
+        if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL')
+      }
+      const abort = (): void => stop('cancelled')
+      const timer = setTimeout(() => stop('timeout'), this.timeoutMs)
+      signal.addEventListener('abort', abort, { once: true })
+      child.stdout.on('data', (chunk: Buffer) => {
+        stdoutBytes += chunk.length
+        if (stdoutBytes > MAX_BYTES) stop('unavailable')
+        else if (failure === null) chunks.push(Buffer.from(chunk))
+      })
+      child.stderr.on('data', (chunk: Buffer) => {
+        stderrBytes += chunk.length
+        if (stderrBytes > MAX_BYTES) stop('unavailable')
+      })
+      child.once('error', () => stop('unavailable'))
+      child.stdin.once('error', () => stop('unavailable'))
+      child.once('close', (code) => {
+        clearTimeout(timer)
+        signal.removeEventListener('abort', abort)
+        if (failure !== null) { reject(failure); return }
+        if (code !== 0) { reject(new ImageSettingsError('unavailable')); return }
+        try {
+          const encoded = new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(chunks)).trim()
+          if (!encoded || encoded.split(/\r?\n/u).length !== 1) throw new Error()
+          resolve(JSON.parse(encoded))
+        } catch { reject(new ImageSettingsError('unavailable')) }
+      })
+      if (signal.aborted) abort()
+      else child.stdin.end(body)
+    })
+  }
+}
+
+function fields(value: unknown, names: readonly string[]): Record<string, unknown> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new Error()
+  const raw = value as Record<string, unknown>
+  if (Object.keys(raw).length !== names.length || names.some((name) => !Object.hasOwn(raw, name))) throw new Error()
+  return raw
+}
+
+function text(value: unknown, maximum: number): string {
+  if (typeof value !== 'string') throw new Error()
+  const normalized = value.normalize('NFC').trim()
+  if (!normalized || [...normalized].length > maximum || /[\p{Cc}\p{Cf}\p{Cs}]/u.test(normalized)) throw new Error()
+  return normalized
+}
+
+function publicId(value: unknown): string {
+  if (typeof value !== 'string' || !PUBLIC_ID.test(value)) throw new Error()
+  return value
+}
+
+function displayLabel(value: unknown): string {
+  const label = text(value, 80)
+  if (/[\\/]|(?:^|\s)[a-z]:/iu.test(label)) throw new Error()
+  return label
+}
+
+function nativePath(value: string): string {
+  if (typeof value !== 'string' || !path.isAbsolute(value) || path.normalize(value) !== path.resolve(value)
+    || [...value].some((character) => character.charCodeAt(0) < 32)) throw new ImageSettingsError('unavailable')
+  const resolved = path.resolve(value)
+  if (process.platform === 'win32') {
+    if (!/^[a-z]:\\/iu.test(resolved)) throw new ImageSettingsError('unavailable')
+    if (resolved.slice(3).split('\\').some((component) => /[<>:"|?*]/u.test(component)
+      || /[. ]$/u.test(component))) throw new ImageSettingsError('unavailable')
+  }
+  return resolved
+}
+
+function checkAbort(signal: AbortSignal): void {
+  if (signal.aborted) throw new ImageSettingsError('cancelled')
+}
+
+function callback<T>(operation: () => Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) { reject(new ImageSettingsError('cancelled')); return }
+    let settled = false
+    const finish = (success: boolean, value: unknown): void => {
+      if (settled) return
+      settled = true
+      signal.removeEventListener('abort', abort)
+      if (success) resolve(value as T)
+      else reject(value)
+    }
+    const abort = (): void => finish(false, new ImageSettingsError('cancelled'))
+    signal.addEventListener('abort', abort, { once: true })
+    void Promise.resolve().then(() => { checkAbort(signal); return operation() })
+      .then((value) => finish(true, value), (error: unknown) => finish(false, error))
+  })
+}
+
+function sameFile(first: BigIntStats, second: BigIntStats): boolean {
+  return first.dev === second.dev && first.ino === second.ino
+}
+
+function sameSnapshot(first: BigIntStats, second: BigIntStats): boolean {
+  return first.isFile() && !first.isSymbolicLink() && first.nlink === 1n && sameFile(first, second)
+    && first.size === second.size && first.mtimeNs === second.mtimeNs && first.ctimeNs === second.ctimeNs
+}
+
+async function parentSnapshots(target: string): Promise<HashedFile['parents']> {
+  const root = path.parse(target).root
+  const parents: { path: string; stats: BigIntStats }[] = []
+  let directory = root
+  for (const component of ['', ...path.relative(root, path.dirname(target)).split(path.sep).filter(Boolean)]) {
+    if (component) directory = path.join(directory, component)
+    const stats = await lstat(directory, { bigint: true })
+    parents.push({ path: directory, stats })
+  }
+  await verifyParents(parents)
+  return parents
+}
+
+async function verifyParents(parents: HashedFile['parents']): Promise<void> {
+  for (const parent of parents) {
+    const current = await lstat(parent.path, { bigint: true })
+    const canonical = await realpath(parent.path)
+    const sameName = process.platform === 'win32'
+      ? canonical.toLowerCase() === parent.path.toLowerCase() : canonical === parent.path
+    if (!current.isDirectory() || current.isSymbolicLink() || !sameFile(current, parent.stats) || !sameName) {
+      throw new ImageSettingsError('unavailable')
+    }
+  }
+}
+
+async function hashFile(target: string, signal: AbortSignal, deadline: number): Promise<HashedFile> {
+  checkAbort(signal)
+  const parents = await parentSnapshots(target)
+  const before = await lstat(target, { bigint: true })
+  if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1n || before.size < 1n) {
+    throw new ImageSettingsError('unavailable')
+  }
+  const handle = await open(target, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0))
+  const hash = createHash('sha256')
+  try {
+    if (!sameSnapshot(await handle.stat({ bigint: true }), before)) throw new ImageSettingsError('unavailable')
+    const buffer = Buffer.alloc(1024 * 1024)
+    let total = 0n
+    while (true) {
+      checkAbort(signal)
+      if (performance.now() >= deadline) throw new ImageSettingsError('timeout')
+      const read = await handle.read(buffer, 0, buffer.length, null)
+      if (read.bytesRead === 0) break
+      total += BigInt(read.bytesRead)
+      if (total > before.size) throw new ImageSettingsError('unavailable')
+      hash.update(buffer.subarray(0, read.bytesRead))
+    }
+    if (total !== before.size || !sameSnapshot(await handle.stat({ bigint: true }), before)
+      || !sameSnapshot(await lstat(target, { bigint: true }), before)) throw new ImageSettingsError('unavailable')
+  } finally { await handle.close() }
+  await verifyParents(parents)
+  return { path: target, sha256: hash.digest('hex'), stats: before, parents }
+}

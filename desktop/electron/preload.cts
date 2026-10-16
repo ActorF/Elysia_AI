@@ -950,6 +950,8 @@ const desktopApi: DesktopApi = {
   openImagePreview: (artifactId: string) => ipcRenderer.invoke('elysia:image:preview', artifactId),
   /** Read only path-free model readiness from Main. */
   getImageSettings: () => ipcRenderer.invoke('elysia:image:settings'),
+  /** Main selects installation paths and asks for explicit native hash consent. */
+  configureImageInstallation: (metadata) => ipcRenderer.invoke('elysia:image:configure', metadata),
   /** Structured prompts follow the same fixed protocol for every description. */
   generateImage: (params) => ipcRenderer.invoke('elysia:image:generate', params),
   /** Target selection remains owned by Main. */

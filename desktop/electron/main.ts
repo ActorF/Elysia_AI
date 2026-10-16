@@ -32,6 +32,7 @@ import { lstat, stat } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { ImageExportOwner } from './image-export.js'
+import { ImageSettingsManager } from './image-settings.js'
 
 import { BackendProcess } from './backend-process.js'
 import { InternetPolicyService } from './internet-policy.js'
@@ -311,6 +312,9 @@ let musicPlaybackOwner: PreloadMusicPlaybackOwner | null = null
 let songCoverManager: SongCoverManager | null = null
 let imageExportOwner: ImageExportOwner | null = null
 let imageExportInFlight = false
+let imageSettingsManager: ImageSettingsManager | null = null
+let imageSettingsRoot: string | null = null
+let imageConfigurationInFlight = false
 let tray: Tray | null = null
 let desktopPetRepository: DesktopPetPreferencesRepository | null = null
 let desktopPetPreferences: LoadedDesktopPetPreferences | null = null
@@ -2148,7 +2152,8 @@ function requireBackend(): BackendProcess {
 }
 
 function hasActiveDesktopWork(): boolean {
-  return imageExportInFlight || workDesktopRequests.size > 0 || workDesktopController?.hasActiveWork() === true
+  return imageConfigurationInFlight || imageSettingsManager?.isBusy() === true || imageExportInFlight
+    || workDesktopRequests.size > 0 || workDesktopController?.hasActiveWork() === true
 }
 
 function resolveWorkAgent(request: WorkAgentCall, signal: AbortSignal): Promise<WorkAgentResult> {
@@ -3080,15 +3085,69 @@ function requireMainWindow(): BrowserWindow {
   return mainWindow
 }
 
+function requireImageSettingsManager(): ImageSettingsManager {
+  if (shutdownStarted || dataStorageOperation !== null) throw new Error('图片设置暂不可用。')
+  const dataRoot = requireDataStorageState().activeDataRoot
+  if (imageSettingsManager !== null && imageSettingsRoot === dataRoot) return imageSettingsManager
+  if (imageSettingsManager?.isBusy()) throw new Error('图片设置正在更新。')
+  void imageSettingsManager?.close()
+  imageSettingsRoot = dataRoot
+  const projectRoot = resolveProjectRoot()
+  const choose = async (title: string, directory: boolean, extension?: string): Promise<string | null> => {
+    const result = await dialog.showOpenDialog(requireMainWindow(), {
+      title, properties: [directory ? 'openDirectory' : 'openFile', 'dontAddToRecent'],
+      ...(extension ? { filters: [{ name: extension, extensions: [extension] }] } : {}),
+    })
+    return result.canceled || result.filePaths.length !== 1 ? null : result.filePaths[0]!
+  }
+  imageSettingsManager = new ImageSettingsManager({
+    projectRoot, dataRoot,
+    pythonExecutable: process.env.ELYSIA_PYTHON?.trim()
+      ? path.resolve(process.env.ELYSIA_PYTHON)
+      : path.join(projectRoot, '.venv', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python'),
+    chooseRuntimeRoot: () => choose('选择受信 ComfyUI 安装目录（包含 main.py）', true),
+    choosePythonExecutable: () => choose('选择该 ComfyUI 安装使用的 Python 解释器', false, process.platform === 'win32' ? 'exe' : undefined),
+    chooseCheckpoint: () => choose('选择 models/checkpoints 目录下的 SDXL safetensors 模型', false, 'safetensors'),
+    confirmInstallation: async (review, signal) => {
+      const result = await dialog.showMessageBox(requireMainWindow(), {
+        type: 'question', title: '确认受信图片安装', buttons: ['确认并保存', '取消'], cancelId: 1, defaultId: 1,
+        message: '请确认安装来源与模型许可，并固定本次文件摘要。修改这些文件后需要重新审核。损坏的旧配置会先备份再替换，画廊会保留。',
+        detail: `${review.runtimeRoot}\n${review.pythonExecutable}\n${review.checkpointPath}\n\nPython SHA-256: ${review.pythonSha256}\nComfyUI SHA-256: ${review.comfyuiMainSha256}\n模型 SHA-256: ${review.checkpointSha256}\n\n来源: ${review.metadata.checkpointSource}\n许可: ${review.metadata.checkpointLicense}`,
+      })
+      return !signal.aborted && result.response === 0
+    },
+  })
+  return imageSettingsManager
+}
+
 function registerIpcHandlers(): void {
   ipcMain.handle('elysia:image:settings', (event) => {
     assertTrustedSender(event)
-    return { configured: false, ready: false, state: 'unconfigured', revision: 0,
-      message: '请在图片设置中配置受信 ComfyUI 安装与模型。', defaultProfileId: null, profiles: [] }
+    return requireImageSettingsManager().status()
+  })
+  ipcMain.handle('elysia:image:configure', async (event, metadata: unknown) => {
+    assertTrustedSender(event)
+    if (requireBackend().hasActiveMaintenanceWork()) throw new Error('请先结束运行中的任务，再配置图片模型。')
+    imageConfigurationInFlight = true
+    try {
+      const manager = requireImageSettingsManager()
+      const baseline = await manager.status()
+      const result = await manager.configure(metadata)
+      if (result.revision !== baseline.revision) {
+        if (requireBackend().hasActiveBackendWork()) throw new Error('配置已保存，请在当前任务结束后重启 Backend。')
+        // Exchange our native reservation for restart synchronously. No IPC can
+        // enter between dropping this flag and performRestart taking ownership.
+        imageConfigurationInFlight = false
+        const restart = requireBackend().restart()
+        imageConfigurationInFlight = true
+        await restart
+      }
+      return result
+    } finally { imageConfigurationInFlight = false }
   })
   ipcMain.handle('elysia:image:generate', (event, value) => {
     assertTrustedSender(event)
-    if (shutdownStarted || dataStorageOperation !== null) throw new Error('图片生成暂不可用。')
+    if (shutdownStarted || dataStorageOperation !== null || hasActiveComputerWork()) throw new Error('图片生成暂不可用。')
     return requireBackend().generateImage(value)
   })
   ipcMain.handle('elysia:image:cancel', (event) => {
@@ -3109,7 +3168,7 @@ function registerIpcHandlers(): void {
   })
   ipcMain.handle('elysia:image:export', async (event, artifactId: unknown) => {
     assertTrustedSender(event)
-    if (shutdownStarted || dataStorageOperation !== null || imageExportInFlight
+    if (shutdownStarted || dataStorageOperation !== null || hasActiveComputerWork()
       || typeof artifactId !== 'string' || !/^gallery_[0-9a-f]{32}$/u.test(artifactId)) {
       throw new Error('Image export is unavailable or the artifact identity is invalid.')
     }
@@ -5019,9 +5078,12 @@ if (!hasSingleInstanceLock) {
     voiceCallWindowManager.endCurrent()
     const closingImageExport = imageExportOwner
     imageExportOwner = null
+    const closingImageSettings = imageSettingsManager
+    imageSettingsManager = null
     const stopSongCover = Promise.all([
       songCoverManager?.shutdown() ?? Promise.resolve(),
       closingImageExport?.close() ?? Promise.resolve(),
+      closingImageSettings?.close() ?? Promise.resolve(),
     ])
     void stopSongCover.then(() => {
       mainWindow?.hide()

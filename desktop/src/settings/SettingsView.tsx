@@ -59,6 +59,8 @@ export type DataStorageAction =
 export interface SettingsViewProps {
   internetApi?: InternetPolicyClient
   internetTools?: ReactNode
+  /** Render the private image configuration surface only while its category is active. */
+  imageSettings?(active: boolean): ReactNode
   themePreference: ThemePreference
   resolvedTheme: ResolvedTheme
   desktopPetState: DesktopPetState | null
@@ -172,7 +174,7 @@ interface SettingsDraft {
 
 type SettingsValidationErrors = Partial<Record<keyof SettingsDraft, string>>
 
-type SettingsCategory = 'general' | 'appearance' | 'voice' | 'data' | 'internet' | 'advanced'
+type SettingsCategory = 'general' | 'appearance' | 'voice' | 'data' | 'images' | 'internet' | 'advanced'
 
 const settingsCategories: readonly {
   id: SettingsCategory
@@ -210,6 +212,7 @@ const settingsCategories: readonly {
     description: 'Control explicit access to public online services.',
     icon: 'settings',
   },
+  { id: 'images', label: '图片生成', description: '配置受信本地图片安装、模型和默认尺寸。', icon: 'image' },
   {
     id: 'advanced',
     label: 'Advanced',
@@ -1085,6 +1088,7 @@ function DataStorageSettings({
 export function SettingsView({
   internetApi,
   internetTools,
+  imageSettings,
   themePreference,
   resolvedTheme,
   desktopPetState,
@@ -1983,6 +1987,9 @@ export function SettingsView({
             )}
           </SettingsCategoryPanel>
 
+          <SettingsCategoryPanel category="images" activeCategory={activeCategory} navigationId={navigationId}>
+            {imageSettings?.(activeCategory === 'images')}
+          </SettingsCategoryPanel>
           <SettingsCategoryPanel category="internet" activeCategory={activeCategory} navigationId={navigationId}>
             <InternetSettingsSection api={internetApi} onDirtyChange={setInternetDirty} />
             {internetTools !== undefined && <details className="internet-settings-advanced">

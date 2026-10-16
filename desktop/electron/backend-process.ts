@@ -149,7 +149,10 @@ export interface BackendNativeOptions {
 
 const CLIENT_NAME = 'elysia-electron'
 const CLIENT_VERSION = '0.1.0'
-const HANDSHAKE_TIMEOUT_MS = 15_000
+// A configured multi-gigabyte checkpoint is rehashed before Python advertises
+// its image capability. Slow local storage must not turn valid trust preflight
+// into a false protocol failure; the deadline remains finite.
+const HANDSHAKE_TIMEOUT_MS = 180_000
 const INITIALIZE_TIMEOUT_MS = 120_000
 const SPEECH_START_ACK_TIMEOUT_MS = 15_000
 const CANCEL_ACK_TIMEOUT_MS = 5_000

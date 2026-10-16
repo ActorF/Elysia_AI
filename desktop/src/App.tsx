@@ -67,6 +67,7 @@ import { resolveCharacterEmotion } from './character/character-emotion.ts'
 import { deriveApplicationCharacterState } from './character/character-state.ts'
 import { ChatView } from './chat/ChatView.tsx'
 import { ImageGenerator } from './images/ImageGenerator.tsx'
+import { ImageSettingsSection } from './images/ImageSettingsSection.tsx'
 import { WorkPanel } from './work/WorkPanel.tsx'
 import { VisionPanel } from './vision/VisionPanel.tsx'
 import { InternetPanel } from './internet/InternetPanel.tsx'
@@ -8283,6 +8284,7 @@ function App() {
   if (activeView === 'settings') {
     content = (
       <SettingsView
+        imageSettings={(active) => <ImageSettingsSection active={active} />}
         internetTools={activeChatId === undefined || chatState?.activeChat.mode !== 'chat' || typeof desktopApi?.getInternetResearch !== 'function' ? undefined : (
           <InternetPanel api={desktopApi} chatId={activeChatId} projectId={activeChatProjectId}
             lifecycleEpoch={internetLifecycleEpoch}

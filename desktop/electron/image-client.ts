@@ -3,6 +3,19 @@
 import type { ImageGenerateParams, ImageGenerationResult, ImageGalleryListParams,
   ImageGalleryListResult, ImageGalleryDeleteResult, ImageGalleryGetResult } from './protocol.js'
 
+/** Select the reviewed prompt dialect without changing the fixed node graph. */
+export type ImagePromptDialect = 'sdxl-natural' | 'pony-tags' | 'illustrious-tags'
+
+/** Describe model provenance and defaults while Main selects every native path. */
+export interface ImageProfileMetadata {
+  readonly displayName: string
+  readonly profileId: string
+  readonly promptDialect: ImagePromptDialect
+  readonly checkpointSource: string
+  readonly checkpointLicense: string
+  readonly defaultSizePresetId: 'square' | 'portrait' | 'landscape'
+}
+
 /** Path-free model readiness and reviewed preset choices. */
 export interface ImageSettingsSummary {
   configured: boolean
@@ -11,13 +24,13 @@ export interface ImageSettingsSummary {
   message: string
   revision: number
   defaultProfileId: string | null
-  profiles: Array<{
+  profiles: ReadonlyArray<{
     profileId: string
     displayName: string
     architecture: string
     promptDialect: string
     defaultSizePresetId: string
-    sizePresets: Array<{ presetId: string; width: number; height: number }>
+    sizePresets: ReadonlyArray<{ presetId: string; width: number; height: number }>
   }>
 }
 
@@ -34,6 +47,8 @@ export interface ImagePreviewCapability {
 export interface ImageClient {
   /** Read reviewed model choices and current local runtime readiness. */
   getImageSettings(): Promise<ImageSettingsSummary>
+  /** Run native installation picks and explicit hash/provenance consent before saving. */
+  configureImageInstallation(metadata: ImageProfileMetadata): Promise<ImageSettingsSummary>
   /** Generate and commit one structured original-character request. */
   generateImage(params: ImageGenerateParams): Promise<ImageGenerationResult>
   /** Cancel the current image task without releasing its physical admission early. */

@@ -464,6 +464,10 @@ let imageGallery = []
 let delayImageGeneration = false
 let pendingImageGeneration = null
 let nextImageNumber = 1
+let nextImageConfigurationResult = undefined
+let nextImageConfigurationError = null
+let delayImageConfiguration = false
+let pendingImageConfiguration = null
 let voiceSettingsState = defaultVoiceSettingsState()
 let microphonePermissionStatus = 'granted'
 let nextSettingsError = null
@@ -1301,6 +1305,31 @@ const desktopApi = {
   /** Return path-free configured model choices for the image surface. */
   getImageSettings: async () => {
     record('getImageSettings')
+    return clone(imageSettings)
+  },
+
+  /** Model native selection and explicit consent without exposing file locations. */
+  configureImageInstallation: async (metadata) => {
+    record('configureImageInstallation', [metadata])
+    if (pendingImageConfiguration !== null) throw new Error('Local image installation is already active.')
+    if (delayImageConfiguration) await new Promise((resolve) => { pendingImageConfiguration = resolve })
+    pendingImageConfiguration = null
+    if (nextImageConfigurationError !== null) {
+      const message = nextImageConfigurationError
+      nextImageConfigurationError = null
+      throw new Error(message)
+    }
+    const result = nextImageConfigurationResult
+    nextImageConfigurationResult = undefined
+    if (result === null) return clone(imageSettings)
+    imageSettings = result === undefined ? {
+      configured: true, ready: true, state: 'ready', revision: imageSettings.revision + 1,
+      message: 'The trusted local image installation is ready.', defaultProfileId: metadata.profileId,
+      profiles: [{ profileId: metadata.profileId, displayName: metadata.displayName, architecture: 'sdxl',
+        promptDialect: metadata.promptDialect, defaultSizePresetId: metadata.defaultSizePresetId,
+        sizePresets: [{ presetId: 'square', width: 1024, height: 1024 },
+          { presetId: 'portrait', width: 832, height: 1216 }, { presetId: 'landscape', width: 1216, height: 832 }] }],
+    } : clone(result)
     return clone(imageSettings)
   },
 
@@ -3411,6 +3440,20 @@ const desktopApi = {
 const testControl = {
   /** Replace reviewed path-free runtime settings before opening the studio. */
   setImageSettings: (summary) => { imageSettings = clone(summary) },
+  /** Provide a native-confirmation result; null represents a cancelled selection. */
+  setNextImageConfigurationResult: (summary) => { nextImageConfigurationResult = clone(summary) },
+  /** Fail one native installation attempt without changing current settings. */
+  failNextImageConfiguration: (message) => { nextImageConfigurationError = message },
+  /** Keep native installation controls busy until the test releases ownership. */
+  setImageConfigurationDelay: (delayed) => { delayImageConfiguration = delayed },
+  /** Finish the current mock native review exactly once. */
+  releaseImageConfiguration: () => {
+    const release = pendingImageConfiguration
+    if (release === null) return false
+    pendingImageConfiguration = null
+    release()
+    return true
+  },
   /** Seed saved artifact metadata without touching the production Gallery. */
   setImageGallery: (items) => { imageGallery = clone(items) },
   /** Retain a generation promise until an explicit completion or failure. */
@@ -3550,6 +3593,8 @@ const testControl = {
   reset: () => {
     rejectImageGeneration('Image test reset.')
     imageSettings = defaultImageSettings(); imageGallery = []; delayImageGeneration = false; nextImageNumber = 1
+    pendingImageConfiguration?.(); pendingImageConfiguration = null; delayImageConfiguration = false
+    nextImageConfigurationResult = undefined; nextImageConfigurationError = null
     visionOwnerKey = null; visionState = null; selectedVisionImage = null; nextVisionImageNumber = 1
     nextVisionError = null; delayVisionSelection = false
     for (const pending of pendingVisionSelections) pending.reject(new Error('Vision test reset.'))

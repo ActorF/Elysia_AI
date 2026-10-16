@@ -163,7 +163,7 @@ Electron Main 创建并拥有 fd4，Python 接管前验证它是 Pipe 并关闭�
 
 `ImagePreviewOwner` 将 Open Metadata 与私有帧的 Token、长度、摘要、尺寸、媒体类型绑定，最多容纳一帧短暂先于 Metadata 到达的乱序数据。源 Token 和 Renderer URL 都只能使用一次；Renderer URL 使用独立随机值、最多 60 秒、内存上限两个图片，采用 `elysia-image://preview/<token>`，不包含磁盘路径。Main 的受信 IPC 只接受 opaque artifact ID，协议处理器使用 `no-store`/`nosniff` 返回 PNG。关闭或重启撤销全部 URL 和等待者；已取消的控制请求保留有界退休 ID，跨管道迟到响应不会破坏关闭流程。
 
-## 待接线工作
+## 桌面产品与受信配置
 
 侧栏“图片生成”进入独立 Image Studio，提供 Profile、尺寸、外观、服装、姿势、场景、风格、镜头、光线、负面词与安全整数 Seed。每次生成必须确认明确成年、原创虚构、单人物且不涉及真人。所有描述使用同一 DTO，没有内容模式开关。
 
@@ -171,9 +171,12 @@ Electron Main 创建并拥有 fd4，Python 接管前验证它是 Pipe 并关闭�
 
 原生导出已由 Main 接管：Renderer 仅提交 Gallery artifact ID，Main 显示 Save Dialog 后，重新通过 Backend/Gallery 和 fd4 获取验证后的 PNG。`ImageExportOwner` 在所选目录创建排他的临时文件、刷新后原子发布；已有目标保留回滚副本，失败时恢复原文件。路径和原生错误不进入 Python 或 Renderer。取消对话框不会读取图片；应用关闭中止等待并排空临时文件清理。路径身份检查拒绝链接、非普通文件和替换，但纯 Node 在最终身份检查与 rename 系统调用之间仍无 handle-relative 比较交换保证。
 
+Settings 的“图片生成”页通过 Main 原生选择 ComfyUI 目录、解释器和 `models/checkpoints` 下的 SDXL 模型。Renderer 只提交逻辑 Profile、默认尺寸、来源和许可；Main 流式计算稳定文件 SHA-256，原生确认后通过私有 Worker 写入固定配置。配置期间保留维护准入，取消不重启 Backend；成功写入新 Revision 后重启以重新验证并广告 Capability。
+
+配置保存到私有数据根的 `workspace/settings/images.json`，使用 Revision 比较交换和原子发布。Backend 启动只从该受信配置组合 Runtime/Profile/Gallery；缺失模型、摘要变化和不可用安装明确呈现。损坏配置只能在原生确认后修复，原字节备份到固定私有文件，Gallery 保留。启动期间读取多 GiB 模型摘要，因此握手期限为 180 秒。
+
 下一步需要：
 
-- Settings 配置受信安装、模型和默认尺寸。
 - 建立与 Ollama、Voice、Song Cover 共用的重型 GPU 准入，提供有上限的可取消等待，并按 job 在失败/重启/关闭时释放 lease。
 - 完成真实 ComfyUI/模型/GPU smoke 与 soak、依赖树认证和可见的崩溃残留恢复。
 

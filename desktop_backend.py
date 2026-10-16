@@ -148,6 +148,7 @@ from desktop_work import DesktopWorkRuntime
 from desktop_images import DesktopImageCoordinator
 from desktop_protocol.image_channel import ImageChannelError, ImageChannelWriter
 from image_generation import ImageGenerationApplicationService
+from desktop_image_settings import DesktopImageSettingsStore
 from voice import (
     FasterWhisperConfig,
     FasterWhisperStatus,
@@ -5102,7 +5103,15 @@ def main() -> None:
         image_writer = ImageChannelWriter.from_inherited_fd4()
     except ImageChannelError:
         logger.error("Desktop image preview channel is unavailable.")
-    DesktopBackend(audio_writer=audio_writer, image_writer=image_writer).run()
+    image_service: ImageGenerationApplicationService | None = None
+    if image_writer is not None:
+        try:
+            image_service = DesktopImageSettingsStore(SETTINGS.data_layout.root).create_service()
+        except Exception:
+            # Missing or changed local assets are optional image readiness,
+            # never a reason to lose Chat or expose private runtime diagnostics.
+            logger.error("Trusted image installation is not ready.")
+    DesktopBackend(audio_writer=audio_writer, image_writer=image_writer, image_service=image_service).run()
 
 
 if __name__ == "__main__":
