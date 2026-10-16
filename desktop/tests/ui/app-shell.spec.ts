@@ -2671,7 +2671,7 @@ test('shows all Settings areas, ownership scopes, and no secret controls', async
     name: 'Settings categories',
   })
   await expect(categories.getByRole('button')).toHaveText([
-    'General', 'Appearance', 'Voice', 'Data & storage', 'Internet', 'Advanced',
+    'General', 'Appearance', 'Voice', 'Data & storage', 'Internet', '图片生成', 'Advanced',
   ])
   await expect(page.getByRole('heading', { name: 'Speech recognition' }))
     .toHaveCount(0)
@@ -2681,6 +2681,7 @@ test('shows all Settings areas, ownership scopes, and no secret controls', async
     ['Voice', ['Speech recognition', 'Voice behavior', 'Audio devices']],
     ['Data & storage', ['Local storage', 'Files']],
     ['Internet', ['Internet access']],
+    ['图片生成', ['本地图片生成']],
     ['Advanced', ['Memory', 'Work', 'Privacy']],
   ] as const
   for (const [category, sections] of expectedSections) {
