@@ -49,11 +49,15 @@ Keep Ollama running at its default address, `http://localhost:11434`.
 
 **3. Open the desktop app**
 
+This example assumes the checkout is at `D:\Elysia_AI`; replace the path if yours is elsewhere. Run in a new **Command Prompt** window:
+
 ```bat
-cd desktop
-npm ci
-npm run dev
+cd /d "D:\Elysia_AI\desktop"
+npm.cmd ci
+npm.cmd run dev
 ```
+
+Run `npm.cmd ci` only for initial setup or after dependency updates. To launch again, change to that directory and run `npm.cmd run dev`.
 
 Use the Electron window that opens automatically. Adjust models and preferences in **Settings**. Basic text chat needs no cloud API key or `.env` file.
 

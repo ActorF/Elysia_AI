@@ -49,11 +49,15 @@ ollama pull qwen3.5:9b
 
 **3. 打开桌面应用**
 
+以下以项目位于 `D:\Elysia_AI` 为例；其他位置请替换路径。在新开的 **CMD** 窗口中执行：
+
 ```bat
-cd desktop
-npm ci
-npm run dev
+cd /d "D:\Elysia_AI\desktop"
+npm.cmd ci
+npm.cmd run dev
 ```
+
+`npm.cmd ci` 只需在首次安装或更新依赖后执行；以后启动只需切换目录并运行 `npm.cmd run dev`。
 
 使用自动打开的 Electron 窗口。模型与偏好可在 **Settings** 中调整；基础文字聊天不需要云端 API Key 或 `.env`。
 

@@ -7,13 +7,19 @@ For product setup, start with the [project README](../README.md).
 ## Run locally
 
 Prepare the repository's `.venv` and a running Ollama instance with the
-configured Chat model. A root `.env` is optional. From `desktop`:
+configured Chat model. A root `.env` is optional. In a new **PowerShell**
+window, use the actual checkout path; this example assumes `D:\Elysia_AI`:
 
 ```powershell
-Set-Location D:\Elysia_AI\desktop
-npm ci
-npm run dev
+Set-Location -LiteralPath 'D:\Elysia_AI\desktop'
+npm.cmd ci
+npm.cmd run dev
 ```
+
+In **CMD**, replace the first line with `cd /d "D:\Elysia_AI\desktop"`.
+Run `npm.cmd ci` only for initial setup or after dependency updates; later
+launches need just the directory change and `npm.cmd run dev`.
+Using `npm.cmd` also avoids PowerShell's `npm.ps1` execution-policy errors.
 
 The command builds Main/Preload, starts Vite, opens Electron, and owns
 `.venv\Scripts\python.exe desktop_backend.py` until exit.
