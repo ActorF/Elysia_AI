@@ -11,6 +11,7 @@ import base64
 import json
 import logging
 import os
+import re
 import secrets
 import sys
 from collections import deque
@@ -460,9 +461,11 @@ def _extract_model_names(
     payload: object,
     fallback_model: str,
 ) -> tuple[str, ...]:
-    """Return unique Ollama model names with the configured model first."""
+    """Keep selectable aliases while hiding proven duplicate runner entries."""
 
-    discovered: list[str] = []
+    discovered: list[tuple[str, object]] = []
+    named_digests: set[str] = set()
+    internal_name = re.compile(r"llamacpp:([0-9a-f]{64})")
 
     if isinstance(payload, dict):
         raw_models = payload.get("models")
@@ -480,9 +483,37 @@ def _extract_model_names(
                     and raw_name.strip()
                     and not is_cloud_ollama_model_name(raw_name)
                 ):
-                    discovered.append(raw_name.strip())
+                    name = raw_name.strip()
+                    digest = raw_model.get("digest")
+                    discovered.append((name, digest))
+                    if (
+                        internal_name.fullmatch(name) is None
+                        and re.fullmatch(
+                            r"[A-Za-z0-9][A-Za-z0-9_.-]*(?:/[A-Za-z0-9][A-Za-z0-9_.-]*)*"
+                            r"(?::[A-Za-z0-9][A-Za-z0-9_.-]*)?",
+                            name,
+                        ) is not None
+                        and isinstance(digest, str)
+                        and re.fullmatch(r"[0-9a-f]{64}", digest) is not None
+                        and all(
+                            raw_model.get(key) in (None, "")
+                            for key in ("remote_host", "remote_model")
+                        )
+                    ):
+                        named_digests.add(digest)
 
-    ordered_names = [fallback_model.strip(), *sorted(discovered)]
+    # Multi-runner Ollama catalogs expose a backing llamacpp entry alongside
+    # its public model. Only an exact name/digest match proves that duplicate;
+    # preserve orphan entries and user aliases, which may carry useful config.
+    # Malformed public names cannot prove a selectable replacement exists.
+    visible_names: list[str] = []
+    for name, digest in discovered:
+        internal = internal_name.fullmatch(name)
+        if internal is not None and internal[1] == digest and digest in named_digests:
+            continue
+        visible_names.append(name)
+
+    ordered_names = [fallback_model.strip(), *sorted(visible_names)]
     return tuple(dict.fromkeys(name for name in ordered_names if name))
 
 

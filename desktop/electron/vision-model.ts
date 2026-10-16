@@ -66,6 +66,9 @@ function modelName(value: unknown): string {
 function remote(value: Record<string, unknown>): boolean {
   return ['remote_host', 'remote_model'].some(key => value[key] !== undefined && value[key] !== null && value[key] !== '')
 }
+function modelDigest(value: unknown): string | null {
+  return typeof value === 'string' && /^[a-f0-9]{64}$/u.test(value) ? value : null
+}
 function supportsVision(value: unknown): boolean {
   const details = object(value)
   if (remote(details) || !Array.isArray(details.capabilities) || details.capabilities.length > 32
@@ -194,16 +197,22 @@ export class OllamaVisionAdapter {
     const tags = object(await this.invoke('/api/tags', null, signal, deadline))
     if (!Array.isArray(tags.models)) fail('invalid_output')
     if (tags.models.length > MAX_MODELS) fail('limit_exceeded')
-    const result = new Set<string>()
+    const installed: { name: string; digest: string | null; internal: boolean }[] = []
     for (const raw of tags.models) {
       const tag = object(raw)
       if (remote(tag)) continue
       let name: string
       try { name = modelName(tag.name) } catch { continue }
       if (tag.model !== undefined && tag.model !== name) fail('invalid_output')
-      result.add(name)
+      installed.push({ name, digest: modelDigest(tag.digest), internal: /^llamacpp:[a-f0-9]{64}$/u.test(name) })
     }
-    return [...result].sort()
+    // Ollama can list a named model for multiple runners alongside a digest
+    // cache tag. Hide only a proven cache duplicate, preserving user aliases
+    // and standalone imported models that have no selectable named equivalent.
+    const namedDigests = new Set(installed.filter(tag => !tag.internal && tag.digest !== null).map(tag => tag.digest))
+    return [...new Set(installed.filter(tag => !tag.internal || tag.digest !== tag.name.slice('llamacpp:'.length)
+      || !namedDigests.has(tag.digest))
+      .map(tag => tag.name))].sort()
   }
 
   private invoke(route: '/api/tags' | '/api/show' | '/api/chat', payload: Record<string, unknown> | null,

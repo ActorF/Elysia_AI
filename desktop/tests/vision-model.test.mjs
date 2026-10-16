@@ -44,6 +44,58 @@ test('Readiness probes only installed tags and capabilities without loading a mo
   assert.equal(adapter.isBusy(), false)
 })
 
+test('Readiness collapses runner duplicates and internal digest aliases while preserving named aliases', async t => {
+  const digest = 'a'.repeat(64)
+  const cache = `llamacpp:${digest}`
+  const alias = 'my-vision-model:latest'
+  const { adapter, calls } = await serverFixture(t, { '/api/tags': { models: [
+    { name: cache, digest },
+    { name: model, digest: 'b'.repeat(64) },
+    { name: model, digest },
+    { name: alias, digest },
+  ] } })
+  assert.deepEqual(await adapter.readiness(), { status: 'ready', models: [alias, model], defaultModel: model })
+  assert.deepEqual(calls.filter(call => call.route === '/api/show').map(call => call.body.model), [alias, model])
+  await assert.rejects(adapter.run(png, 10, 20, cache, 'Describe', signal()), isCode('invalid_model'))
+  assert.equal(calls.some(call => call.route === '/api/chat'), false)
+})
+
+test('Only a selectable named model with a valid matching digest can hide an internal cache entry', async t => {
+  const digest = 'a'.repeat(64)
+  const cache = `llamacpp:${digest}`
+  for (const named of [
+    { name: 'cloud-model:cloud', digest },
+    { name: 'remote-model:latest', digest, remote_host: 'https://ollama.com' },
+    { name: '../invalid', digest },
+    { name: model, digest: 'b'.repeat(64) },
+    { name: model, digest: undefined },
+    { name: model, digest: `sha256:${digest}` },
+    { name: model, digest: digest.toUpperCase() },
+  ]) {
+    const { adapter } = await serverFixture(t, { '/api/tags': { models: [{ name: cache, digest }, named] } })
+    assert.equal((await adapter.readiness()).models.includes(cache), true)
+  }
+  const { adapter } = await serverFixture(t, { '/api/tags': { models: [
+    { name: cache, digest: 'invalid-digest' }, { name: model, digest: 'invalid-digest' },
+  ] } })
+  assert.equal((await adapter.readiness()).models.includes(cache), true)
+  const inconsistent = await serverFixture(t, { '/api/tags': { models: [
+    { name: cache, digest: 'b'.repeat(64) }, { name: model, digest: 'b'.repeat(64) },
+  ] } })
+  assert.equal((await inconsistent.adapter.readiness()).models.includes(cache), true)
+})
+
+test('Vision capability discovery supports new Qwen model names without a built-in model allowlist', async t => {
+  const futureModel = 'qwen3.8:27b'
+  const { adapter, calls } = await serverFixture(t, {
+    '/api/tags': { models: [{ name: futureModel, model: futureModel }] },
+    '/api/chat': { ...reply, model: futureModel },
+  })
+  assert.deepEqual(await adapter.readiness(), { status: 'ready', models: [futureModel], defaultModel: futureModel })
+  assert.equal((await adapter.run(png, 10, 20, futureModel, 'Describe', signal())).model, futureModel)
+  assert.equal(calls.find(call => call.route === '/api/chat').body.think, false)
+})
+
 test('Inference rechecks installation and sends only owned base64 pixels with fixed non-streaming and bounded generation', async t => {
   const { adapter, calls } = await serverFixture(t)
   const result = await adapter.run(png, 10, 20, model, '这个按钮是什么？', signal())

@@ -6681,6 +6681,73 @@ def test_model_names_are_unique_and_keep_the_active_model_first() -> None:
     assert models == ("active:latest", "other:latest")
 
 
+def test_model_catalog_hides_only_duplicate_runner_entries() -> None:
+    """Collapse multi-runner duplicates without discarding useful model aliases."""
+    digest = "a" * 64
+    models = _extract_model_names(
+        {"models": [
+            {"name": f"llamacpp:{digest}", "digest": digest},
+            {"name": "qwen:9b", "digest": "b" * 64},
+            {"name": "qwen:9b", "digest": digest},
+            {"name": "custom-qwen:latest", "digest": digest},
+        ]},
+        "qwen:9b",
+    )
+
+    assert models == ("qwen:9b", "custom-qwen:latest")
+
+
+@pytest.mark.parametrize(
+    "other_tag",
+    [
+        None,
+        {"name": "qwen:9b"},
+        {"name": "qwen:9b", "digest": "b" * 64},
+        {"name": "qwen:cloud", "digest": "a" * 64},
+        {"name": "qwen:9b", "digest": "a" * 64, "remote_host": "remote.invalid"},
+        {"name": "../invalid", "digest": "a" * 64},
+    ],
+)
+def test_model_catalog_preserves_unproven_internal_duplicates(other_tag: object) -> None:
+    """Do not hide a usable runner when no matching local public tag exists."""
+    digest = "a" * 64
+    name = f"llamacpp:{digest}"
+    models = _extract_model_names(
+        {"models": [{"name": name, "digest": digest}, other_tag]},
+        "active:latest",
+    )
+
+    assert name in models
+
+
+@pytest.mark.parametrize("digest", [None, "b" * 64, [], "sha256:" + "a" * 64])
+def test_model_catalog_preserves_malformed_runner_metadata(digest: object) -> None:
+    """Require the internal suffix and catalog digest to agree before hiding it."""
+    name = "llamacpp:" + "a" * 64
+    models = _extract_model_names(
+        {"models": [
+            {"name": name, "digest": digest},
+            {"name": "qwen:9b", "digest": "a" * 64},
+        ]},
+        "active:latest",
+    )
+
+    assert name in models
+
+
+def test_model_catalog_preserves_explicitly_configured_runner() -> None:
+    """Keep the configured fallback selectable even when its runner has an alias."""
+    digest = "a" * 64
+    name = f"llamacpp:{digest}"
+    assert _extract_model_names(
+        {"models": [
+            {"name": name, "digest": digest},
+            {"name": "qwen:9b", "digest": digest},
+        ]},
+        name,
+    ) == (name, "qwen:9b")
+
+
 def test_backend_emits_ascii_only_ndjson(
     tmp_path: Path,
 ) -> None:
