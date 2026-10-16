@@ -3124,6 +3124,14 @@ function requireImageSettingsManager(): ImageSettingsManager {
       })
       return !signal.aborted && result.response === 0
     },
+    confirmRecovery: async (review, signal) => {
+      const result = await dialog.showMessageBox(requireMainWindow(), {
+        type: 'question', title: '恢复未完成的图片任务', buttons: ['隔离保留并恢复', '取消'], cancelId: 1, defaultId: 1,
+        message: '未完成任务的文件将移入私有隔离目录，已提交画廊继续保留。',
+        detail: `${review.runCount} 个任务，${review.fileCount} 个文件，${review.byteSize} 字节。\n\n保留位置：${path.join(dataRoot, 'workspace', 'image-recovery')}\n\n恢复期间将关闭并重新启动 Backend。`,
+      })
+      return !signal.aborted && result.response === 0
+    },
   })
   return imageSettingsManager
 }
@@ -3131,11 +3139,22 @@ function requireImageSettingsManager(): ImageSettingsManager {
 function registerIpcHandlers(): void {
   ipcMain.handle('elysia:image:settings', (event) => {
     assertTrustedSender(event)
+    if (shutdownStarted || dataStorageOperation !== null || presenceVoiceSessionActive
+      || songCoverManager?.hasActiveWork() === true || requireBackend().hasActiveMaintenanceWork()) {
+      throw new Error('请先结束运行中的任务，再检查图片运行环境。')
+    }
+    // Readiness scans classify leftover run directories as crash recovery data.
+    // A live generation owns a UUID directory too, so check only while idle.
+    // status() reserves the manager synchronously, excluding new generation
+    // through hasActiveDesktopWork until its worker has fully drained.
     return requireImageSettingsManager().status()
   })
   ipcMain.handle('elysia:image:configure', async (event, metadata: unknown) => {
     assertTrustedSender(event)
-    if (requireBackend().hasActiveMaintenanceWork()) throw new Error('请先结束运行中的任务，再配置图片模型。')
+    if (shutdownStarted || dataStorageOperation !== null || presenceVoiceSessionActive
+      || songCoverManager?.hasActiveWork() === true || requireBackend().hasActiveMaintenanceWork()) {
+      throw new Error('请先结束运行中的任务，再配置图片模型。')
+    }
     imageConfigurationInFlight = true
     try {
       const manager = requireImageSettingsManager()
@@ -3152,6 +3171,33 @@ function registerIpcHandlers(): void {
       }
       return result
     } finally { imageConfigurationInFlight = false }
+  })
+  ipcMain.handle('elysia:image:recover', async (event) => {
+    assertTrustedSender(event)
+    if (shutdownStarted || dataStorageOperation !== null || presenceVoiceSessionActive
+      || songCoverManager?.hasActiveWork() === true || requireBackend().hasActiveMaintenanceWork()) {
+      throw new Error('请先结束运行中的任务，再恢复图片运行环境。')
+    }
+    imageConfigurationInFlight = true
+    let backendStopped = false
+    try {
+      const result = await requireImageSettingsManager().recover(async () => {
+        await requireBackend().stop()
+        backendStopped = true
+      })
+      return result.status
+    } finally {
+      try {
+        if (backendStopped && !shutdownStarted) {
+          // Retain the reservation after partial quarantine too: restarting
+          // advertises only capabilities whose actual preflight now succeeds.
+          imageConfigurationInFlight = false
+          const restart = requireBackend().restart()
+          imageConfigurationInFlight = true
+          await restart
+        }
+      } finally { imageConfigurationInFlight = false }
+    }
   })
   ipcMain.handle('elysia:image:generate', (event, value) => {
     assertTrustedSender(event)

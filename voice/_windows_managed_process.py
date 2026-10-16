@@ -1,6 +1,6 @@
 """Launch one Windows child inside a private kill-on-close Job Object.
 
-The managed local-speech runtime needs a stronger process boundary than the
+Managed local-model runtimes need a stronger process boundary than the
 ordinary :mod:`subprocess` convenience API exposes.  This module creates the
 child suspended, restricts inheritance to private duplicates of its three
 standard handles, assigns it to a kill-on-close Job Object, and only then lets
@@ -21,6 +21,7 @@ from ctypes import wintypes
 import math
 import ntpath
 import os
+import re
 import subprocess
 from threading import Condition, Lock, RLock
 from time import monotonic, sleep
@@ -48,6 +49,16 @@ _WAIT_FAILED = 0xFFFFFFFF
 _MAX_WINDOWS_COMMAND_LINE_CODE_UNITS = 32_767
 _MAX_WINDOWS_ENVIRONMENT_CODE_UNITS = 32_767
 _TERMINATE_EXIT_CODE = 1
+_VOLUME_EXECUTABLE_PATH = re.compile(
+    r"\\\\\?\\Volume\{"
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+    r"\}\\(?P<tail>.+)\Z",
+    re.IGNORECASE,
+)
+_RESERVED_DOS_COMPONENT = re.compile(
+    r"(?:CON|PRN|AUX|NUL|COM[1-9\u00b9\u00b2\u00b3]|LPT[1-9\u00b9\u00b2\u00b3])(?:\..*)?\Z",
+    re.IGNORECASE,
+)
 
 _HANDLE = wintypes.HANDLE
 _SIZE_T = ctypes.c_size_t
@@ -333,6 +344,42 @@ def _validate_native_handle(value: object) -> int:
     return value
 
 
+def _launch_executable_path(path: str) -> str:
+    r"""Use the equivalent device-volume namespace accepted by CreateProcessW.
+
+    GetFinalPathNameByHandleW returns trusted ``\\\\?\\Volume{GUID}`` names,
+    but CreateProcessW rejects that executable spelling with ERROR_INVALID_PARAMETER
+    on supported Windows hosts. ``\\\\.\\Volume{GUID}`` addresses the same fixed
+    volume without resolving a mutable drive letter. Only canonical components
+    can cross this spelling change: the device namespace applies Win32 path
+    normalization, unlike the verbatim namespace. Other arguments and cwd are
+    untouched; dependency resolution follows the reviewed Python installation.
+    """
+
+    if not path.casefold().startswith("\\\\?\\volume{"):
+        return path
+    matched = _VOLUME_EXECUTABLE_PATH.fullmatch(path)
+    if matched is None:
+        raise WindowsManagedProcessValidationError(
+            "The executable volume path is not canonical."
+        )
+    for component in matched.group("tail").split("\\"):
+        if (
+            not component
+            or component in (".", "..")
+            or component.endswith((" ", "."))
+            or any(
+                ord(character) < 32 or character in '/:*?"<>|'
+                for character in component
+            )
+            or _RESERVED_DOS_COMPONENT.fullmatch(component) is not None
+        ):
+            raise WindowsManagedProcessValidationError(
+                "The executable volume path is not canonical."
+            )
+    return "\\\\.\\" + path[4:]
+
+
 def _validate_launch_inputs(
     argv: object,
     cwd: object,
@@ -358,6 +405,10 @@ def _validate_launch_inputs(
         raise WindowsManagedProcessValidationError(
             "The executable path must be absolute."
         )
+    # Keep argv[0] consistent with lpApplicationName so the child's executable
+    # identity keeps the stable volume spelling. Dependency paths are a separate
+    # property of the reviewed interpreter installation.
+    frozen_argv = (_launch_executable_path(frozen_argv[0]), *frozen_argv[1:])
     if not isinstance(cwd, str) or "\x00" in cwd or not ntpath.isabs(cwd):
         raise WindowsManagedProcessValidationError(
             "cwd must be an absolute NUL-free path."

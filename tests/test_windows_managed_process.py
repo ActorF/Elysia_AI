@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ctypes
+import hashlib
 import json
 import math
 import os
@@ -15,6 +16,7 @@ from typing import Any, Dict, Tuple
 import pytest
 
 import voice._windows_managed_process as managed_process_module
+import voice._windows_file_guard as file_guard_module
 from voice._windows_managed_process import (
     WindowsManagedProcess,
     WindowsManagedProcessControlError,
@@ -211,6 +213,71 @@ def test_launch_passes_quoted_arguments_and_only_the_closed_environment() -> Non
     assert process.is_alive() is False
     assert process.close() is True
     assert process.close() is True
+
+
+def test_launch_guarded_volume_python_keeps_imports_and_file_identity() -> None:
+    """Run the real interpreter through a pinned volume without a drive fallback."""
+
+    # Windows venv executables are redirectors, not standalone interpreters;
+    # their pyvenv.cfg discovery rejects the volume namespace before Python runs.
+    executable = Path(_PYTHON_EXECUTABLE).resolve()
+    declaration = file_guard_module.GuardedFileDeclaration(
+        path=executable,
+        size_bytes=executable.stat().st_size,
+        sha256=hashlib.sha256(executable.read_bytes()).hexdigest(),
+    )
+    script = (
+        "import ctypes,json,os,site,ssl,sys; "
+        "print(json.dumps({'executable':sys.executable,'prefix':sys.prefix,"
+        "'basePrefix':sys.base_prefix,'path':sys.path,'sites':site.getsitepackages(),"
+        "'ssl':ssl.OPENSSL_VERSION,'pointerBytes':ctypes.sizeof(ctypes.c_void_p),"
+        "'rootRelative':os.path.relpath(os.path.join('/','checkpoint.safetensors'),'/')}),"
+        "flush=True)"
+    )
+    stdin_fd, stdout_read_fd, stdout_write_fd, stderr_fd = _open_standard_handles()
+    process: WindowsManagedProcess | None = None
+    try:
+        with file_guard_module.WindowsReadOnlyFileGuardSet.acquire((declaration,)) as guard:
+            stable_executable = file_guard_module._get_guarded_volume_paths(
+                guard,
+                access_seal=file_guard_module._GUARDED_VOLUME_PATH_ACCESS_SEAL,
+            )[0]
+            process = launch_windows_managed_process(
+                [stable_executable, "-I", "-u", "-c", script],
+                stdin_handle=_native_handle(stdin_fd),
+                stdout_handle=_native_handle(stdout_write_fd),
+                stderr_handle=_native_handle(stderr_fd),
+                cwd=str(Path.cwd().resolve()),
+                environment={"SystemRoot": os.environ["SystemRoot"]},
+            )
+            output = json.loads(_read_line_with_deadline(stdout_read_fd, 15.0))
+            assert process.wait(5.0) == 0
+            assert os.path.samefile(output["executable"], stable_executable)
+            assert output["executable"].casefold().startswith("\\\\.\\volume{")
+            assert output["ssl"].startswith("OpenSSL")
+            assert output["pointerBytes"] in (4, 8)
+            assert output["rootRelative"] == "checkpoint.safetensors"
+            assert output["path"] and output["sites"]
+            assert os.path.samefile(output["prefix"], sys.base_prefix)
+            assert os.path.samefile(output["basePrefix"], sys.base_prefix)
+    finally:
+        if process is not None:
+            assert process.close() is True
+        for descriptor in (stdin_fd, stdout_read_fd, stdout_write_fd, stderr_fd):
+            os.close(descriptor)
+
+
+@pytest.mark.parametrize(
+    "tail",
+    ("../python.exe", "folder\\..\\python.exe", "python.exe.", "python.exe ",
+     "folder\\\\python.exe", "python.exe:stream", "NUL.exe", "folder/child.exe"),
+)
+def test_volume_executable_translation_rejects_normalizing_components(tail: str) -> None:
+    """Reject verbatim names whose device-namespace spelling changes the target."""
+
+    path = "\\\\?\\Volume{42165ceb-45f4-4a1c-bba7-de0b64cd3d80}\\" + tail
+    with pytest.raises(WindowsManagedProcessValidationError, match="not canonical"):
+        managed_process_module._validate_launch_inputs([path], r"C:\\", {})
 
 
 def test_handle_list_excludes_an_unrelated_inheritable_handle() -> None:

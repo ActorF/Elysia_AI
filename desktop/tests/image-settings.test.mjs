@@ -97,6 +97,120 @@ test('worker messages are replaced with fixed Main text before reaching Renderer
   assert.equal(Object.isFrozen(status.profiles[0].sizePresets), true)
 })
 
+test('known Python setup failures are actionable while arbitrary worker diagnostics stay hidden', () => {
+  const portable = parseImageSettingsStatus({ ...READY, ready: false, state: 'invalid',
+    message: 'The embedded Python environment needs reviewed absolute dependency roots. '
+      + 'Run scripts/prepare_image_python.py with the trusted installation paths and --apply before checking image readiness again.' })
+  assert.match(portable.message, /prepare_image_python/u)
+  const unknown = parseImageSettingsStatus({ ...READY, ready: false, state: 'invalid', message: 'C:/private/install' })
+  assert.equal(unknown.message.includes('private'), false)
+})
+
+test('native recovery approves a bounded snapshot before stopping and moving its private runs', async () => {
+  await fixture(async ({ options }) => {
+    const calls = []
+    const preview = { kind: 'image.recovery.preview', snapshot: 'a'.repeat(64), runCount: 2, fileCount: 5, byteSize: 1024 }
+    const manager = new ImageSettingsManager({ ...options,
+      confirmRecovery: async (review) => {
+        calls.push('confirm')
+        assert.deepEqual(review, { runCount: 2, fileCount: 5, byteSize: 1024 })
+        assert.equal(JSON.stringify(review).includes(preview.snapshot), false)
+        return true
+      },
+      runWorker: async request => {
+        calls.push(request.op)
+        if (request.op === 'recovery.preview') return preview
+        assert.deepEqual(request, { op: 'recovery.apply', snapshot: preview.snapshot, trustedConfirmation: true })
+        return { kind: 'image.recovery.result', quarantinedCount: 2, status: READY }
+      },
+    })
+    const result = await manager.recover(async () => { calls.push('stop-backend') })
+    assert.equal(result.applied, true)
+    assert.equal(result.status.ready, true)
+    assert.deepEqual(calls, ['recovery.preview', 'confirm', 'stop-backend', 'recovery.apply'])
+    assert.equal(manager.isBusy(), false)
+    await manager.close()
+  })
+})
+
+test('cancelled native recovery never stops the Backend or applies its snapshot', async () => {
+  await fixture(async ({ options }) => {
+    const calls = []
+    const manager = new ImageSettingsManager({ ...options, confirmRecovery: async () => false,
+      runWorker: async request => {
+        calls.push(request.op)
+        return request.op === 'status' ? { ...READY, ready: false, state: 'recovery_required' }
+          : { kind: 'image.recovery.preview', snapshot: 'a'.repeat(64), runCount: 1, fileCount: 1, byteSize: 1 }
+      },
+    })
+    const result = await manager.recover(async () => { throw new Error('Must remain running.') })
+    assert.equal(result.applied, false)
+    assert.equal(result.status.state, 'recovery_required')
+    assert.deepEqual(calls, ['recovery.preview', 'status'])
+    await manager.close()
+  })
+})
+
+test('unbounded, path-bearing, or malformed recovery plans cannot reach native consent', async () => {
+  await fixture(async ({ options }) => {
+    const preview = { kind: 'image.recovery.preview', snapshot: 'a'.repeat(64), runCount: 1, fileCount: 1, byteSize: 1 }
+    for (const invalid of [{ ...preview, runCount: 33 }, { ...preview, fileCount: 100_001 },
+      { ...preview, byteSize: Number.MAX_SAFE_INTEGER + 1 }, { ...preview, snapshot: 'wrong' }, { ...preview, path: 'private' }]) {
+      const manager = new ImageSettingsManager({ ...options, confirmRecovery: async () => { throw new Error('Must not prompt.') },
+        runWorker: async () => invalid })
+      await assert.rejects(manager.recover(async () => {}), ImageSettingsError)
+      await manager.close()
+    }
+  })
+})
+
+test('recovery retains settings capacity through physical backend shutdown and worker completion', async () => {
+  await fixture(async ({ options }) => {
+    const stopped = deferred(), entered = deferred(), applied = deferred()
+    const manager = new ImageSettingsManager({ ...options, confirmRecovery: async () => true,
+      runWorker: async request => {
+        if (request.op === 'recovery.preview') return { kind: 'image.recovery.preview', snapshot: 'a'.repeat(64), runCount: 1, fileCount: 1, byteSize: 1 }
+        return applied.promise
+      },
+    })
+    const recovering = manager.recover(async () => { entered.resolve(); await stopped.promise })
+    await entered.promise
+    await assert.rejects(manager.status(), error => error.reason === 'busy')
+    stopped.resolve()
+    await Promise.resolve()
+    assert.equal(manager.isBusy(), true)
+    applied.resolve({ kind: 'image.recovery.result', quarantinedCount: 1, status: READY })
+    await recovering
+    assert.equal(manager.isBusy(), false)
+    await manager.close()
+  })
+})
+
+test('Settings close joins an already started backend stop before cancelling recovery publication', async () => {
+  await fixture(async ({ options }) => {
+    const stopping = deferred(), entered = deferred()
+    const calls = []
+    const manager = new ImageSettingsManager({ ...options, confirmRecovery: async () => true,
+      runWorker: async request => {
+        calls.push(request.op)
+        return { kind: 'image.recovery.preview', snapshot: 'a'.repeat(64), runCount: 1, fileCount: 1, byteSize: 1 }
+      },
+    })
+    const operation = manager.recover(async () => { entered.resolve(); await stopping.promise })
+    const rejected = assert.rejects(operation, error => error.reason === 'cancelled')
+    await entered.promise
+    let drained = false
+    const closing = manager.close().then(() => { drained = true })
+    await Promise.resolve()
+    assert.equal(drained, false)
+    assert.equal(manager.isBusy(), true)
+    stopping.resolve()
+    await Promise.all([closing, rejected])
+    assert.equal(drained, true)
+    assert.deepEqual(calls, ['recovery.preview'])
+  })
+})
+
 test('native configure reviews computed hashes before a private revision-checked save', async () => {
   await fixture(async ({ root, runtime, python, checkpoint, options }) => {
     const calls = []

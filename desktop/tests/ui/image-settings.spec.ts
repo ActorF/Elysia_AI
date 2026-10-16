@@ -43,6 +43,11 @@ function configured(): ImageSettingsSummary {
   }
 }
 
+function recoveryRequired(): ImageSettingsSummary {
+  return { ...configured(), ready: false, state: 'recovery_required',
+    message: '图片临时目录有未完成任务，请确认隔离保留这些文件后恢复生成。' }
+}
+
 async function openSettings(status = unconfigured()): Promise<Locator> {
   await page.evaluate((summary) => {
     const control = (window as TestWindow).elysiaDesktopTest
@@ -157,4 +162,57 @@ test('invalid IDs stay local and native failures preserve the editable draft wit
   await expect(configure).toBeEnabled()
   expect(await page.evaluate(() => (window as TestWindow).elysiaDesktopTest.getCalls()
     .filter((call) => call.method === 'configureImageInstallation'))).toHaveLength(1)
+})
+
+test('native recovery cancellation preserves prior readiness and submits no paths or snapshot token', async () => {
+  const section = await openSettings(recoveryRequired())
+  await page.evaluate(() => { (window as TestWindow).elysiaDesktopTest.setNextImageConfigurationResult(null) })
+  await section.getByRole('button', { name: '隔离保留并恢复图片生成', exact: true }).click()
+  await expect(section.getByRole('status').filter({ hasText: '恢复尚未完成，临时文件继续保留。' })).toBeVisible()
+  await expect(section.getByLabel('本地图片模型状态', { exact: true })).toContainText('有未完成的图片任务需要恢复')
+  await expect(section.getByLabel('已配置图片模型', { exact: true })).toContainText('测试 SDXL')
+  await expect(section.getByRole('button', { name: '隔离保留并恢复图片生成', exact: true })).toBeEnabled()
+  expect(await page.evaluate(() => (window as TestWindow).elysiaDesktopTest.getCalls()
+    .filter(call => ['recoverImageRuntime', 'configureImageInstallation', 'updateSettings'].includes(call.method))
+    .map(call => ({ method: call.method, args: call.args })))).toEqual([{ method: 'recoverImageRuntime', args: [] }])
+})
+
+test('confirmed recovery retains busy controls until native quarantine and readiness actually finish', async () => {
+  const section = await openSettings(recoveryRequired())
+  await page.evaluate(summary => {
+    const control = (window as TestWindow).elysiaDesktopTest
+    control.setNextImageConfigurationResult(summary)
+    control.setImageConfigurationDelay(true)
+  }, configured())
+  await section.getByRole('button', { name: '隔离保留并恢复图片生成', exact: true }).click()
+  await expect(section.getByRole('button', { name: '正在恢复…', exact: true })).toBeDisabled()
+  await expect(section.getByRole('button', { name: '检查模型与运行环境', exact: true })).toBeDisabled()
+  await expect(section.getByRole('button', { name: '正在选择与校验安装…', exact: true })).toBeDisabled()
+  await expect(section.getByLabel('图片模型 ID', { exact: true })).toBeDisabled()
+  await expect(section.getByLabel('本地图片模型状态', { exact: true })).toContainText('有未完成的图片任务需要恢复')
+  expect(await page.evaluate(() => (window as TestWindow).elysiaDesktopTest.getCalls()
+    .filter(call => call.method === 'recoverImageRuntime').map(call => call.args))).toEqual([[]])
+  await page.evaluate(() => { (window as TestWindow).elysiaDesktopTest.releaseImageConfiguration() })
+  await expect(section.getByRole('status').filter({ hasText: '恢复检查完成，未完成任务的文件已保留。' })).toBeVisible()
+  await expect(section.getByLabel('本地图片模型状态', { exact: true })).toContainText('本地图片生成已就绪')
+  await expect(section.getByRole('button', { name: '隔离保留并恢复图片生成', exact: true })).toHaveCount(0)
+  await expect(section.getByRole('button', { name: '检查模型与运行环境', exact: true })).toBeEnabled()
+  expect(await page.evaluate(() => (window as TestWindow).elysiaDesktopTest.getCalls()
+    .filter(call => call.method === 'configureImageInstallation' || call.method === 'updateSettings'))).toHaveLength(0)
+})
+
+test('failed native recovery preserves unavailable readiness and permits an explicit retry', async () => {
+  const section = await openSettings(recoveryRequired())
+  await page.evaluate(() => {
+    (window as TestWindow).elysiaDesktopTest.failNextImageConfiguration('<script>privateRecoveryError()</script>')
+  })
+  await section.getByRole('button', { name: '隔离保留并恢复图片生成', exact: true }).click()
+  await expect(section.getByRole('alert')).toHaveText('<script>privateRecoveryError()</script>')
+  await expect(section.locator('script')).toHaveCount(0)
+  await expect(section.getByLabel('本地图片模型状态', { exact: true })).toContainText('有未完成的图片任务需要恢复')
+  await expect(section.getByLabel('已配置图片模型', { exact: true })).toContainText('测试 SDXL')
+  await expect(section.getByRole('button', { name: '隔离保留并恢复图片生成', exact: true })).toBeEnabled()
+  expect(await page.evaluate(() => (window as TestWindow).elysiaDesktopTest.getCalls()
+    .filter(call => ['recoverImageRuntime', 'configureImageInstallation', 'updateSettings'].includes(call.method))
+    .map(call => ({ method: call.method, args: call.args })))).toEqual([{ method: 'recoverImageRuntime', args: [] }])
 })

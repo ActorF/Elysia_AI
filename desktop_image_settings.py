@@ -20,10 +20,12 @@ from typing import Literal, cast
 
 from config.data_layout import ProductionDataLayout
 from config.desktop_settings import desktop_settings_file_lock
+from desktop_image_recovery import image_recovery_required
 from image_generation.application import ImageGenerationApplicationService
 from image_generation.composition import create_managed_image_application_service
 from image_generation.exceptions import ImageGenerationUnavailableError
 from image_generation.managed_comfyui import ManagedComfyUiConfig, ManagedComfyUiRuntime
+from image_generation.python_environment import PythonEnvironmentError, check_python_environment
 from image_generation.profiles import (
     ImageSizePreset,
     ModelArchitecture,
@@ -47,7 +49,7 @@ _PROFILE_FIELDS = frozenset({
     "sampler_name", "scheduler", "steps", "cfg_scale",
 })
 ImageSettingsState = Literal[
-    "unconfigured", "missing_model", "hash_mismatch", "ready", "invalid",
+    "unconfigured", "missing_model", "hash_mismatch", "ready", "invalid", "recovery_required",
 ]
 
 
@@ -474,6 +476,13 @@ class DesktopImageSettingsStore:
 
         config = self._config(installation)
         _mkdir(self._private_root)
+        if image_recovery_required(self._data_root):
+            return "recovery_required", "Image runtime residue requires confirmed recovery. Its private files will be preserved in quarantine."
+        if os.name == "nt":
+            try:
+                check_python_environment(config.python_executable, config.runtime_root)
+            except PythonEnvironmentError as error:
+                return "invalid", str(error)
         for profile in installation.profiles.profiles:
             checkpoint = config.models_root / "checkpoints" / Path(profile.checkpoint_name.replace("\\", "/"))
             try:
@@ -501,15 +510,21 @@ class DesktopImageSettingsStore:
 
         revision = 0
         installation: TrustedImageInstallation | None = None
+        recovery_required = False
         with self._lock:
             try:
+                recovery_required = image_recovery_required(self._data_root)
                 revision, installation = self._load()
                 if installation is None:
+                    if recovery_required:
+                        return ImageSettingsStatus("recovery_required", "Image runtime residue requires confirmed recovery. Private files will be preserved.")
                     return ImageSettingsStatus("unconfigured", "Choose and confirm a trusted ComfyUI installation.")
                 state, message = self._preflight(installation)
                 return ImageSettingsStatus(state, message, revision, installation)
             except Exception:
                 pass
+        if recovery_required:
+            return ImageSettingsStatus("recovery_required", "Image runtime residue requires confirmed recovery. Private files will be preserved.", revision, installation)
         return ImageSettingsStatus("invalid", "Local image settings or runtime readiness checks failed. Review the installation.", revision, installation)
 
     def create_service(self) -> ImageGenerationApplicationService:

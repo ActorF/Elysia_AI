@@ -1,0 +1,4715 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-16T19:38:14.774406+00:00",
+  "python": "3.13.14 (tags/v3.13.14:fd17997, Jun 10 2026, 13:03:48) [MSC v.1944 64 bit (AMD64)]",
+  "pipVersion": "26.2.1",
+  "pipCheck": {
+    "passed": true,
+    "output": "No broken requirements found."
+  },
+  "pipInspectMatchesInventory": true,
+  "inventory": {
+    "packages": [
+      {
+        "name": "aiohappyeyeballs",
+        "version": "2.7.1",
+        "licenseExpression": "",
+        "licenseDeclaration": "PSF-2.0",
+        "licenseClassifiers": [
+          "License :: OSI Approved :: Python Software Foundation License"
+        ],
+        "declaredLicenseFiles": [
+          "LICENSE"
+        ],
+        "requiresDist": [],
+        "verifiedSha256Files": 12,
+        "verifiedBytes": 39456,
+        "expectedUnhashedFiles": 6,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/aiohappyeyeballs-2.7.1.dist-info/licenses/LICENSE",
+            "sha256": "3b2f81fe21d181c499c59a256c8e1968455d6689d269aa85373bfb6af41da3bf"
+          }
+        ]
+      },
+      {
+        "name": "aiohttp",
+        "version": "3.14.3",
+        "licenseExpression": "",
+        "licenseDeclaration": "Apache-2.0 AND MIT",
+        "licenseClassifiers": [],
+        "declaredLicenseFiles": [
+          "LICENSE.txt",
+          "vendor/llhttp/LICENSE"
+        ],
+        "requiresDist": [
+          "aiohappyeyeballs>=2.5.0",
+          "aiosignal>=1.4.0",
+          "async-timeout<6.0,>=4.0; python_version < \"3.11\"",
+          "attrs>=17.3.0",
+          "frozenlist>=1.1.1",
+          "multidict<7.0,>=4.5",
+          "propcache>=0.2.0",
+          "typing_extensions>=4.4; python_version < \"3.13\"",
+          "yarl<2.0,>=1.17.0",
+          "aiodns>=3.3.0; (sys_platform != \"android\" and sys_platform != \"ios\") and extra == \"speedups\"",
+          "Brotli>=1.2; (platform_python_implementation == \"CPython\" and sys_platform != \"android\" and sys_platform != \"ios\") and extra == \"speedups\"",
+          "brotlicffi>=1.2; platform_python_implementation != \"CPython\" and extra == \"speedups\"",
+          "backports.zstd; (platform_python_implementation == \"CPython\" and python_version < \"3.14\" and sys_platform != \"android\" and sys_platform != \"ios\") and extra == \"speedups\""
+        ],
+        "verifiedSha256Files": 76,
+        "verifiedBytes": 1531966,
+        "expectedUnhashedFiles": 56,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/aiohttp-3.14.3.dist-info/licenses/LICENSE.txt",
+            "sha256": "ea195371abbf66a39eef56600955d1137c2c196dc144ffec46b6ea530ce70044"
+          },
+          {
+            "path": "Lib/site-packages/aiohttp-3.14.3.dist-info/licenses/vendor/llhttp/LICENSE",
+            "sha256": "279012e02a10acfd59a3f2d8f13a497332535d871c2b27c89988985b06a3a438"
+          }
+        ]
+      },
+      {
+        "name": "aiosignal",
+        "version": "1.4.0",
+        "licenseExpression": "",
+        "licenseDeclaration": "Apache 2.0",
+        "licenseClassifiers": [
+          "License :: OSI Approved :: Apache Software License"
+        ],
+        "declaredLicenseFiles": [
+          "LICENSE"
+        ],
+        "requiresDist": [
+          "frozenlist>=1.1.0",
+          "typing-extensions>=4.2; python_version < \"3.13\""
+        ],
+        "verifiedSha256Files": 9,
+        "verifiedBytes": 16909,
+        "expectedUnhashedFiles": 2,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/aiosignal-1.4.0.dist-info/licenses/LICENSE",
+            "sha256": "6fd5243e92dd7f98ec69c7ac377728e74905709ff527a5bf98d6d0263c04f5b6"
+          }
+        ]
+      },
+      {
+        "name": "alembic",
+        "version": "1.20.0",
+        "licenseExpression": "MIT",
+        "licenseDeclaration": "",
+        "licenseClassifiers": [],
+        "declaredLicenseFiles": [
+          "LICENSE"
+        ],
+        "requiresDist": [
+          "SQLAlchemy>=2.0",
+          "Mako",
+          "typing-extensions>=4.12",
+          "tomli; python_version < \"3.11\"",
+          "tzdata; extra == \"tz\""
+        ],
+        "verifiedSha256Files": 106,
+        "verifiedBytes": 1187179,
+        "expectedUnhashedFiles": 78,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/alembic-1.20.0.dist-info/licenses/LICENSE",
+            "sha256": "6e68d94a03a0e3e327ddf3e86d1ebedc14eece3922022618fc246a36296fd0cc"
+          }
+        ]
+      },
+      {
+        "name": "annotated-doc",
+        "version": "0.0.5",
+        "licenseExpression": "MIT",
+        "licenseDeclaration": "",
+        "licenseClassifiers": [],
+        "declaredLicenseFiles": [
+          "LICENSE"
+        ],
+        "requiresDist": [],
+        "verifiedSha256Files": 10,
+        "verifiedBytes": 9134,
+        "expectedUnhashedFiles": 3,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/annotated_doc-0.0.5.dist-info/licenses/LICENSE",
+            "sha256": "fff170779a6acbf65abdb405c087f1cee1786691e4a96a4034517e4a504a0cdf"
+          }
+        ]
+      },
+      {
+        "name": "annotated-types",
+        "version": "0.8.0",
+        "licenseExpression": "MIT",
+        "licenseDeclaration": "",
+        "licenseClassifiers": [
+          "License :: OSI Approved :: MIT License"
+        ],
+        "declaredLicenseFiles": [
+          "LICENSE"
+        ],
+        "requiresDist": [],
+        "verifiedSha256Files": 9,
+        "verifiedBytes": 36045,
+        "expectedUnhashedFiles": 3,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/annotated_types-0.8.0.dist-info/licenses/LICENSE",
+            "sha256": "fe1049884b1a0d9342901e88e07f32925d24b3121d9972b6a6805fb9824b095d"
+          }
+        ]
+      },
+      {
+        "name": "anyio",
+        "version": "4.15.1",
+        "licenseExpression": "MIT",
+        "licenseDeclaration": "",
+        "licenseClassifiers": [],
+        "declaredLicenseFiles": [
+          "LICENSE"
+        ],
+        "requiresDist": [
+          "exceptiongroup>=1.0.2; python_version < \"3.11\"",
+          "idna>=2.8",
+          "typing_extensions>=4.16.0; python_version < \"3.15\"",
+          "trio>=0.32.0; extra == \"trio\""
+        ],
+        "verifiedSha256Files": 55,
+        "verifiedBytes": 535241,
+        "expectedUnhashedFiles": 47,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/anyio-4.15.1.dist-info/licenses/LICENSE",
+            "sha256": "5361ac9dc58f2ef5fd2e9b09c68297c17f04950909bbc8023bdb82eacf22c2b0"
+          }
+        ]
+      },
+      {
+        "name": "attrs",
+        "version": "26.1.0",
+        "licenseExpression": "MIT",
+        "licenseDeclaration": "",
+        "licenseClassifiers": [],
+        "declaredLicenseFiles": [
+          "LICENSE"
+        ],
+        "requiresDist": [],
+        "verifiedSha256Files": 37,
+        "verifiedBytes": 231395,
+        "expectedUnhashedFiles": 20,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/attrs-26.1.0.dist-info/licenses/LICENSE",
+            "sha256": "882115c95dfc2af1eeb6714f8ec6d5cbcabf667caff8729f42420da63f714e9f"
+          }
+        ]
+      },
+      {
+        "name": "av",
+        "version": "19.0.0",
+        "licenseExpression": "BSD-3-Clause",
+        "licenseDeclaration": "",
+        "licenseClassifiers": [],
+        "declaredLicenseFiles": [
+          "LICENSE.txt",
+          "AUTHORS.py",
+          "AUTHORS.rst"
+        ],
+        "requiresDist": [],
+        "verifiedSha256Files": 255,
+        "verifiedBytes": 70769926,
+        "expectedUnhashedFiles": 62,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/av-19.0.0.dist-info/licenses/AUTHORS.py",
+            "sha256": "a69d8ff2559cf3da0e390c7d9f5f648d9db0333a00f9d4989a330a7180cca910"
+          },
+          {
+            "path": "Lib/site-packages/av-19.0.0.dist-info/licenses/AUTHORS.rst",
+            "sha256": "2abfebe175cefe78fcb14db260a3c8972d3b52156f50dedd0bc416ac4f884a96"
+          },
+          {
+            "path": "Lib/site-packages/av-19.0.0.dist-info/licenses/LICENSE.txt",
+            "sha256": "f32ebcb6007dcc05eea369b3820e6391b0a7ef1ed763f30f1aca15dfdbacbe96"
+          }
+        ]
+      },
+      {
+        "name": "blake3",
+        "version": "1.0.10",
+        "licenseExpression": "",
+        "licenseDeclaration": "CC0-1.0 OR Apache-2.0",
+        "licenseClassifiers": [],
+        "declaredLicenseFiles": [
+          "LICENSE"
+        ],
+        "requiresDist": [
+          "typing-extensions>=4.6.0 ; python_full_version < '3.12'"
+        ],
+        "verifiedSha256Files": 11,
+        "verifiedBytes": 546183,
+        "expectedUnhashedFiles": 2,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/blake3-1.0.10.dist-info/licenses/LICENSE",
+            "sha256": "ec0404d8e25af25dda85d3cfd110fe7e758852b84f26fba9f26ee9499b24fc12"
+          }
+        ]
+      },
+      {
+        "name": "certifi",
+        "version": "2026.7.22",
+        "licenseExpression": "",
+        "licenseDeclaration": "MPL-2.0",
+        "licenseClassifiers": [
+          "License :: OSI Approved :: Mozilla Public License 2.0 (MPL 2.0)"
+        ],
+        "declaredLicenseFiles": [
+          "LICENSE"
+        ],
+        "requiresDist": [],
+        "verifiedSha256Files": 14,
+        "verifiedBytes": 248255,
+        "expectedUnhashedFiles": 6,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/certifi-2026.7.22.dist-info/licenses/LICENSE",
+            "sha256": "e93716da6b9c0d5a4a1df60fe695b370f0695603d21f6f83f053e42cfc10caf7"
+          }
+        ]
+      },
+      {
+        "name": "cffi",
+        "version": "2.1.1",
+        "licenseExpression": "MIT-0",
+        "licenseDeclaration": "",
+        "licenseClassifiers": [],
+        "declaredLicenseFiles": [
+          "LICENSE"
+        ],
+        "requiresDist": [
+          "pycparser; implementation_name != \"PyPy\""
+        ],
+        "verifiedSha256Files": 34,
+        "verifiedBytes": 673271,
+        "expectedUnhashedFiles": 21,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/cffi-2.1.1.dist-info/licenses/LICENSE",
+            "sha256": "5ba24ddc57067f9249add644c3afc41a5d6dc37e23433ef759d95df370b0af63"
+          }
+        ]
+      },
+      {
+        "name": "charset-normalizer",
+        "version": "3.5.1",
+        "licenseExpression": "",
+        "licenseDeclaration": "MIT",
+        "licenseClassifiers": [],
+        "declaredLicenseFiles": [
+          "LICENSE"
+        ],
+        "requiresDist": [],
+        "verifiedSha256Files": 24,
+        "verifiedBytes": 662120,
+        "expectedUnhashedFiles": 13,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/charset_normalizer-3.5.1.dist-info/licenses/LICENSE",
+            "sha256": "18577485d3704f1a479ded8e573c0976cfed315fd2fd17983fa988da4c2f70d1"
+          }
+        ]
+      },
+      {
+        "name": "click",
+        "version": "8.5.0",
+        "licenseExpression": "BSD-3-Clause",
+        "licenseDeclaration": "",
+        "licenseClassifiers": [],
+        "declaredLicenseFiles": [
+          "LICENSE.txt"
+        ],
+        "requiresDist": [],
+        "verifiedSha256Files": 24,
+        "verifiedBytes": 446352,
+        "expectedUnhashedFiles": 18,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/click-8.5.0.dist-info/licenses/LICENSE.txt",
+            "sha256": "9a8ad106a394e853bfe21f42f4e72d592819a22805d991b5f3275029292b658d"
+          }
+        ]
+      },
+      {
+        "name": "colorama",
+        "version": "0.4.6",
+        "licenseExpression": "",
+        "licenseDeclaration": "",
+        "licenseClassifiers": [
+          "License :: OSI Approved :: BSD License"
+        ],
+        "declaredLicenseFiles": [
+          "LICENSE.txt"
+        ],
+        "requiresDist": [],
+        "verifiedSha256Files": 19,
+        "verifiedBytes": 76577,
+        "expectedUnhashedFiles": 14,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/colorama-0.4.6.dist-info/licenses/LICENSE.txt",
+            "sha256": "cac35c02686e5d04a5a7140bfb3b36e73aed496656e891102e428886d7930318"
+          }
+        ]
+      },
+      {
+        "name": "comfy-aimdo",
+        "version": "0.5.6",
+        "licenseExpression": "",
+        "licenseDeclaration": "",
+        "licenseClassifiers": [],
+        "declaredLicenseFiles": [
+          "LICENSE"
+        ],
+        "requiresDist": [],
+        "verifiedSha256Files": 17,
+        "verifiedBytes": 603977,
+        "expectedUnhashedFiles": 10,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/comfy_aimdo-0.5.6.dist-info/licenses/LICENSE",
+            "sha256": "330573baee6bc748324bbc5f902fb2c754c6d5fc0157b9a44daff4f9cce150c9"
+          }
+        ]
+      },
+      {
+        "name": "comfy-angle",
+        "version": "0.1.1",
+        "licenseExpression": "BSD-3-Clause",
+        "licenseDeclaration": "",
+        "licenseClassifiers": [],
+        "declaredLicenseFiles": [],
+        "requiresDist": [],
+        "verifiedSha256Files": 11,
+        "verifiedBytes": 27609329,
+        "expectedUnhashedFiles": 2,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": []
+      },
+      {
+        "name": "comfy-kitchen",
+        "version": "0.2.37",
+        "licenseExpression": "",
+        "licenseDeclaration": "Apache-2.0",
+        "licenseClassifiers": [
+          "License :: OSI Approved :: Apache Software License"
+        ],
+        "declaredLicenseFiles": [
+          "LICENSE",
+          "NOTICE"
+        ],
+        "requiresDist": [
+          "nvidia-cublas>=13.0.0; extra == \"cublas\"",
+          "pytest>=7.0.0; extra == \"dev\"",
+          "pytest-benchmark>=4.0.0; extra == \"dev\"",
+          "ruff>=0.1.0; extra == \"dev\"",
+          "nanobind>=2.0.0; extra == \"build\""
+        ],
+        "verifiedSha256Files": 62,
+        "verifiedBytes": 159928141,
+        "expectedUnhashedFiles": 48,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/comfy_kitchen-0.2.37.dist-info/licenses/LICENSE",
+            "sha256": "457609350489eb6ea2982cbd2d19695e54741dc9778c9140f89e7b4e5e64ba58"
+          },
+          {
+            "path": "Lib/site-packages/comfy_kitchen-0.2.37.dist-info/licenses/NOTICE",
+            "sha256": "27a6b994dc3c6d5ff4ac589eb633e09e4627b0efd276b89dd9ea87f561991644"
+          }
+        ]
+      },
+      {
+        "name": "comfyui-embedded-docs",
+        "version": "0.5.14",
+        "licenseExpression": "GPL-3.0",
+        "licenseDeclaration": "",
+        "licenseClassifiers": [],
+        "declaredLicenseFiles": [
+          "LICENSE"
+        ],
+        "requiresDist": [],
+        "verifiedSha256Files": 15718,
+        "verifiedBytes": 44746345,
+        "expectedUnhashedFiles": 2,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/comfyui_embedded_docs-0.5.14.dist-info/licenses/LICENSE",
+            "sha256": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986"
+          }
+        ]
+      },
+      {
+        "name": "comfyui_frontend_package",
+        "version": "1.55.17",
+        "licenseExpression": "",
+        "licenseDeclaration": "",
+        "licenseClassifiers": [],
+        "declaredLicenseFiles": [],
+        "requiresDist": [],
+        "verifiedSha256Files": 1044,
+        "verifiedBytes": 101054263,
+        "expectedUnhashedFiles": 2,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": []
+      },
+      {
+        "name": "comfyui_workflow_templates",
+        "version": "0.11.84",
+        "licenseExpression": "",
+        "licenseDeclaration": "MIT",
+        "licenseClassifiers": [],
+        "declaredLicenseFiles": [
+          "LICENSE"
+        ],
+        "requiresDist": [
+          "comfyui-workflow-templates-core==0.3.375",
+          "comfyui-workflow-templates-json==0.1.110",
+          "comfyui-workflow-templates-media-api==0.3.84",
+          "comfyui-workflow-templates-media-video==0.3.101",
+          "comfyui-workflow-templates-media-image==0.3.160",
+          "comfyui-workflow-templates-media-other==0.3.229",
+          "comfyui-workflow-templates-media-assets-01==0.1.48",
+          "comfyui-workflow-templates-media-assets-02==0.1.15",
+          "comfyui-workflow-templates-json==0.1.110; extra == \"json\"",
+          "comfyui-workflow-templates-media-assets-01==0.1.48; extra == \"assets\"",
+          "comfyui-workflow-templates-media-assets-02==0.1.15; extra == \"assets\"",
+          "comfyui-workflow-templates-media-api==0.3.84; extra == \"api\"",
+          "comfyui-workflow-templates-media-video==0.3.101; extra == \"video\"",
+          "comfyui-workflow-templates-media-image==0.3.160; extra == \"image\"",
+          "comfyui-workflow-templates-media-other==0.3.229; extra == \"other\"",
+          "comfyui-workflow-templates-json==0.1.110; extra == \"all\"",
+          "comfyui-workflow-templates-media-assets-01==0.1.48; extra == \"all\"",
+          "comfyui-workflow-templates-media-assets-02==0.1.15; extra == \"all\"",
+          "comfyui-workflow-templates-media-api==0.3.84; extra == \"all\"",
+          "comfyui-workflow-templates-media-video==0.3.101; extra == \"all\"",
+          "comfyui-workflow-templates-media-image==0.3.160; extra == \"all\"",
+          "comfyui-workflow-templates-media-other==0.3.229; extra == \"all\""
+        ],
+        "verifiedSha256Files": 7,
+        "verifiedBytes": 27008,
+        "expectedUnhashedFiles": 2,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/comfyui_workflow_templates-0.11.84.dist-info/licenses/LICENSE",
+            "sha256": "5dccd61c80c847cd6b22fa98124010163ab8646e573557a16a5cae31122f2056"
+          }
+        ]
+      },
+      {
+        "name": "comfyui-workflow-templates-core",
+        "version": "0.3.375",
+        "licenseExpression": "MIT",
+        "licenseDeclaration": "",
+        "licenseClassifiers": [],
+        "declaredLicenseFiles": [],
+        "requiresDist": [],
+        "verifiedSha256Files": 7,
+        "verifiedBytes": 389689,
+        "expectedUnhashedFiles": 3,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": []
+      },
+      {
+        "name": "comfyui-workflow-templates-json",
+        "version": "0.1.110",
+        "licenseExpression": "MIT",
+        "licenseDeclaration": "",
+        "licenseClassifiers": [],
+        "declaredLicenseFiles": [],
+        "requiresDist": [],
+        "verifiedSha256Files": 627,
+        "verifiedBytes": 28482071,
+        "expectedUnhashedFiles": 2,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": []
+      },
+      {
+        "name": "comfyui-workflow-templates-media-api",
+        "version": "0.3.84",
+        "licenseExpression": "MIT",
+        "licenseDeclaration": "",
+        "licenseClassifiers": [],
+        "declaredLicenseFiles": [],
+        "requiresDist": [],
+        "verifiedSha256Files": 151,
+        "verifiedBytes": 100233361,
+        "expectedUnhashedFiles": 2,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": []
+      },
+      {
+        "name": "comfyui-workflow-templates-media-assets-01",
+        "version": "0.1.48",
+        "licenseExpression": "MIT",
+        "licenseDeclaration": "",
+        "licenseClassifiers": [],
+        "declaredLicenseFiles": [],
+        "requiresDist": [],
+        "verifiedSha256Files": 166,
+        "verifiedBytes": 94116587,
+        "expectedUnhashedFiles": 2,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": []
+      },
+      {
+        "name": "comfyui-workflow-templates-media-assets-02",
+        "version": "0.1.15",
+        "licenseExpression": "MIT",
+        "licenseDeclaration": "",
+        "licenseClassifiers": [],
+        "declaredLicenseFiles": [],
+        "requiresDist": [],
+        "verifiedSha256Files": 82,
+        "verifiedBytes": 29297553,
+        "expectedUnhashedFiles": 2,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": []
+      },
+      {
+        "name": "comfyui-workflow-templates-media-image",
+        "version": "0.3.160",
+        "licenseExpression": "MIT",
+        "licenseDeclaration": "",
+        "licenseClassifiers": [],
+        "declaredLicenseFiles": [],
+        "requiresDist": [],
+        "verifiedSha256Files": 279,
+        "verifiedBytes": 89630189,
+        "expectedUnhashedFiles": 2,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": []
+      },
+      {
+        "name": "comfyui-workflow-templates-media-other",
+        "version": "0.3.229",
+        "licenseExpression": "MIT",
+        "licenseDeclaration": "",
+        "licenseClassifiers": [],
+        "declaredLicenseFiles": [],
+        "requiresDist": [],
+        "verifiedSha256Files": 168,
+        "verifiedBytes": 89923414,
+        "expectedUnhashedFiles": 2,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": []
+      },
+      {
+        "name": "comfyui-workflow-templates-media-video",
+        "version": "0.3.101",
+        "licenseExpression": "MIT",
+        "licenseDeclaration": "",
+        "licenseClassifiers": [],
+        "declaredLicenseFiles": [],
+        "requiresDist": [],
+        "verifiedSha256Files": 88,
+        "verifiedBytes": 104367464,
+        "expectedUnhashedFiles": 2,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": []
+      },
+      {
+        "name": "einops",
+        "version": "0.8.2",
+        "licenseExpression": "",
+        "licenseDeclaration": "MIT",
+        "licenseClassifiers": [
+          "License :: OSI Approved :: MIT License"
+        ],
+        "declaredLicenseFiles": [
+          "LICENSE"
+        ],
+        "requiresDist": [],
+        "verifiedSha256Files": 33,
+        "verifiedBytes": 230371,
+        "expectedUnhashedFiles": 27,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/einops-0.8.2.dist-info/licenses/LICENSE",
+            "sha256": "30d984364296f51ffaecad4b01ee127e95250c5068918d4b66fc96206723e434"
+          }
+        ]
+      },
+      {
+        "name": "filelock",
+        "version": "4.0.6",
+        "licenseExpression": "MIT",
+        "licenseDeclaration": "",
+        "licenseClassifiers": [
+          "License :: OSI Approved :: MIT License"
+        ],
+        "declaredLicenseFiles": [
+          "LICENSE"
+        ],
+        "requiresDist": [],
+        "verifiedSha256Files": 30,
+        "verifiedBytes": 378827,
+        "expectedUnhashedFiles": 24,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/filelock-4.0.6.dist-info/licenses/LICENSE",
+            "sha256": "608c89d5060ae9921adccf3236695bc654a9946e12323ef6c021dfa04e294d48"
+          }
+        ]
+      },
+      {
+        "name": "frozenlist",
+        "version": "1.8.0",
+        "licenseExpression": "",
+        "licenseDeclaration": "Apache-2.0",
+        "licenseClassifiers": [],
+        "declaredLicenseFiles": [
+          "LICENSE"
+        ],
+        "requiresDist": [],
+        "verifiedSha256Files": 12,
+        "verifiedBytes": 108637,
+        "expectedUnhashedFiles": 2,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/frozenlist-1.8.0.dist-info/licenses/LICENSE",
+            "sha256": "6fd5243e92dd7f98ec69c7ac377728e74905709ff527a5bf98d6d0263c04f5b6"
+          }
+        ]
+      },
+      {
+        "name": "fsspec",
+        "version": "2026.9.0",
+        "licenseExpression": "BSD-3-Clause",
+        "licenseDeclaration": "",
+        "licenseClassifiers": [],
+        "declaredLicenseFiles": [
+          "LICENSE"
+        ],
+        "requiresDist": [
+          "adlfs; extra == 'abfs'",
+          "adlfs; extra == 'adl'",
+          "pyarrow>=1; extra == 'arrow'",
+          "dask; extra == 'dask'",
+          "distributed; extra == 'dask'",
+          "pre-commit; extra == 'dev'",
+          "ruff>=0.5; extra == 'dev'",
+          "numpydoc; extra == 'doc'",
+          "sphinx; extra == 'doc'",
+          "sphinx-design; extra == 'doc'",
+          "sphinx-rtd-theme; extra == 'doc'",
+          "yarl; extra == 'doc'",
+          "dropbox; extra == 'dropbox'",
+          "dropboxdrivefs; extra == 'dropbox'",
+          "requests; extra == 'dropbox'",
+          "adlfs; extra == 'full'",
+          "aiohttp!=4.0.0a0,!=4.0.0a1; extra == 'full'",
+          "dask; extra == 'full'",
+          "distributed; extra == 'full'",
+          "dropbox; extra == 'full'",
+          "dropboxdrivefs; extra == 'full'",
+          "fusepy; extra == 'full'",
+          "gcsfs>=2026.4.0; extra == 'full'",
+          "libarchive-c; extra == 'full'",
+          "ocifs; extra == 'full'",
+          "panel; extra == 'full'",
+          "paramiko; extra == 'full'",
+          "pyarrow>=1; extra == 'full'",
+          "pygit2; extra == 'full'",
+          "requests; extra == 'full'",
+          "s3fs>=2026.6.0; extra == 'full'",
+          "smbprotocol; extra == 'full'",
+          "tqdm; extra == 'full'",
+          "fusepy; extra == 'fuse'",
+          "gcsfs>=2026.4.0; extra == 'gcs'",
+          "pygit2; extra == 'git'",
+          "requests; extra == 'github'",
+          "gcsfs>=2026.4.0; extra == 'gs'",
+          "panel; extra == 'gui'",
+          "pyarrow>=1; extra == 'hdfs'",
+          "aiohttp!=4.0.0a0,!=4.0.0a1; extra == 'http'",
+          "libarchive-c; extra == 'libarchive'",
+          "ocifs; extra == 'oci'",
+          "s3fs>=2026.6.0; extra == 's3'",
+          "paramiko; extra == 'sftp'",
+          "smbprotocol; extra == 'smb'",
+          "paramiko; extra == 'ssh'",
+          "aiohttp!=4.0.0a0,!=4.0.0a1; extra == 'test'",
+          "numpy; extra == 'test'",
+          "pytest; extra == 'test'",
+          "pytest-asyncio!=0.22.0; extra == 'test'",
+          "pytest-benchmark; extra == 'test'",
+          "pytest-cov; extra == 'test'",
+          "pytest-mock; extra == 'test'",
+          "pytest-recording; extra == 'test'",
+          "pytest-rerunfailures; extra == 'test'",
+          "requests; extra == 'test'",
+          "aiobotocore<3.0.0,>=2.5.4; extra == 'test-downstream'",
+          "dask[dataframe,test]; extra == 'test-downstream'",
+          "moto[server]<5,>4; extra == 'test-downstream'",
+          "pytest-timeout; extra == 'test-downstream'",
+          "xarray; extra == 'test-downstream'",
+          "zarr; extra == 'test-downstream'",
+          "adlfs; extra == 'test-full'",
+          "aiohttp!=4.0.0a0,!=4.0.0a1; extra == 'test-full'",
+          "backports-zstd; (python_version < '3.14') and extra == 'test-full'",
+          "cloudpickle; extra == 'test-full'",
+          "dask; extra == 'test-full'",
+          "distributed; extra == 'test-full'",
+          "dropbox; extra == 'test-full'",
+          "dropboxdrivefs; extra == 'test-full'",
+          "fastparquet; extra == 'test-full'",
+          "fusepy; extra == 'test-full'",
+          "gcsfs>=2026.4.0; extra == 'test-full'",
+          "jinja2; extra == 'test-full'",
+          "kerchunk; extra == 'test-full'",
+          "libarchive-c; extra == 'test-full'",
+          "lz4; extra == 'test-full'",
+          "notebook; extra == 'test-full'",
+          "numpy; extra == 'test-full'",
+          "ocifs; extra == 'test-full'",
+          "pandas<3.0.0; extra == 'test-full'",
+          "panel; extra == 'test-full'",
+          "paramiko; extra == 'test-full'",
+          "pyarrow>=1; extra == 'test-full'",
+          "pyftpdlib; extra == 'test-full'",
+          "pygit2; extra == 'test-full'",
+          "pytest; extra == 'test-full'",
+          "pytest-asyncio!=0.22.0; extra == 'test-full'",
+          "pytest-benchmark; extra == 'test-full'",
+          "pytest-cov; extra == 'test-full'",
+          "pytest-mock; extra == 'test-full'",
+          "pytest-recording; extra == 'test-full'",
+          "pytest-rerunfailures; extra == 'test-full'",
+          "python-snappy; extra == 'test-full'",
+          "requests; extra == 'test-full'",
+          "s3fs>=2026.6.0; extra == 'test-full'",
+          "smbprotocol; extra == 'test-full'",
+          "tqdm; extra == 'test-full'",
+          "urllib3; extra == 'test-full'",
+          "zarr<3.2.0; extra == 'test-full'",
+          "zstandard; (python_version < '3.14') and extra == 'test-full'",
+          "tqdm; extra == 'tqdm'"
+        ],
+        "verifiedSha256Files": 64,
+        "verifiedBytes": 805729,
+        "expectedUnhashedFiles": 59,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/fsspec-2026.9.0.dist-info/licenses/LICENSE",
+            "sha256": "2dc35496ce53a7307915c008a844aad53e772b49b34cdd00445067691407ec94"
+          }
+        ]
+      },
+      {
+        "name": "h11",
+        "version": "0.16.0",
+        "licenseExpression": "",
+        "licenseDeclaration": "MIT",
+        "licenseClassifiers": [
+          "License :: OSI Approved :: MIT License"
+        ],
+        "declaredLicenseFiles": [
+          "LICENSE.txt"
+        ],
+        "requiresDist": [],
+        "verifiedSha256Files": 19,
+        "verifiedBytes": 102963,
+        "expectedUnhashedFiles": 12,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/h11-0.16.0.dist-info/licenses/LICENSE.txt",
+            "sha256": "37db5bb85926db28a427a25867f10b1232003aea1be69ccb851138adb8e6f361"
+          }
+        ]
+      },
+      {
+        "name": "hf-xet",
+        "version": "1.6.0",
+        "licenseExpression": "Apache-2.0",
+        "licenseDeclaration": "",
+        "licenseClassifiers": [
+          "License :: OSI Approved :: Apache Software License"
+        ],
+        "declaredLicenseFiles": [
+          "LICENSE"
+        ],
+        "requiresDist": [
+          "pytest ; extra == 'tests'"
+        ],
+        "verifiedSha256Files": 9,
+        "verifiedBytes": 9805010,
+        "expectedUnhashedFiles": 2,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/hf_xet-1.6.0.dist-info/licenses/LICENSE",
+            "sha256": "1eb85fc97224598dad1852b5d6483bbcf0aa8608790dcc657a5a2a761ae9c8c6"
+          }
+        ]
+      },
+      {
+        "name": "httpcore",
+        "version": "1.0.9",
+        "licenseExpression": "BSD-3-Clause",
+        "licenseDeclaration": "",
+        "licenseClassifiers": [
+          "License :: OSI Approved :: BSD License"
+        ],
+        "declaredLicenseFiles": [
+          "LICENSE.md"
+        ],
+        "requiresDist": [
+          "certifi",
+          "h11>=0.16",
+          "anyio<5.0,>=4.0; extra == 'asyncio'",
+          "h2<5,>=3; extra == 'http2'",
+          "socksio==1.*; extra == 'socks'",
+          "trio<1.0,>=0.22.0; extra == 'trio'"
+        ],
+        "verifiedSha256Files": 38,
+        "verifiedBytes": 285345,
+        "expectedUnhashedFiles": 32,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/httpcore-1.0.9.dist-info/licenses/LICENSE.md",
+            "sha256": "fdcb59154c74cbaba16a11242f7740bea9f23d6feb5547917d8c5f94a80392a5"
+          }
+        ]
+      },
+      {
+        "name": "httpx",
+        "version": "0.28.1",
+        "licenseExpression": "",
+        "licenseDeclaration": "BSD-3-Clause",
+        "licenseClassifiers": [
+          "License :: OSI Approved :: BSD License"
+        ],
+        "declaredLicenseFiles": [],
+        "requiresDist": [
+          "anyio",
+          "certifi",
+          "httpcore==1.*",
+          "idna",
+          "brotli; (platform_python_implementation == 'CPython') and extra == 'brotli'",
+          "brotlicffi; (platform_python_implementation != 'CPython') and extra == 'brotli'",
+          "click==8.*; extra == 'cli'",
+          "pygments==2.*; extra == 'cli'",
+          "rich<14,>=10; extra == 'cli'",
+          "h2<5,>=3; extra == 'http2'",
+          "socksio==1.*; extra == 'socks'",
+          "zstandard>=0.18.0; extra == 'zstd'"
+        ],
+        "verifiedSha256Files": 32,
+        "verifiedBytes": 401680,
+        "expectedUnhashedFiles": 24,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/httpx-0.28.1.dist-info/licenses/LICENSE.md",
+            "sha256": "4ec59d544f12b5f539a3a716fd321ac58ccd8030b465221f2c880200cdf28d8d"
+          }
+        ]
+      },
+      {
+        "name": "huggingface_hub",
+        "version": "1.33.0",
+        "licenseExpression": "",
+        "licenseDeclaration": "Apache-2.0",
+        "licenseClassifiers": [
+          "License :: OSI Approved :: Apache Software License"
+        ],
+        "declaredLicenseFiles": [
+          "LICENSE"
+        ],
+        "requiresDist": [
+          "click<9.0.0,>=8.4.2",
+          "filelock>=3.10.0",
+          "fsspec>=2023.5.0",
+          "hf-xet<2.0.0,>=1.6.0; platform_machine == \"x86_64\" or platform_machine == \"amd64\" or platform_machine == \"AMD64\" or platform_machine == \"arm64\" or platform_machine == \"aarch64\"",
+          "httpx<1,>=0.23.0",
+          "packaging>=20.9",
+          "pyyaml>=5.1",
+          "tomli>=1.1.0; python_version < \"3.11\"",
+          "tqdm>=4.42.1",
+          "typing-extensions>=4.1.0",
+          "authlib>=1.3.2; extra == \"oauth\"",
+          "fastapi; extra == \"oauth\"",
+          "httpx; extra == \"oauth\"",
+          "itsdangerous; extra == \"oauth\"",
+          "torch; extra == \"torch\"",
+          "safetensors[torch]; extra == \"torch\"",
+          "toml; extra == \"fastai\"",
+          "fastai>=2.4; extra == \"fastai\"",
+          "fastcore>=1.3.27; extra == \"fastai\"",
+          "hf-xet<2.0.0,>=1.6.0; extra == \"hf-xet\"",
+          "mcp<2.0.0,>=1.9.4; extra == \"mcp\"",
+          "authlib>=1.3.2; extra == \"testing\"",
+          "fastapi; extra == \"testing\"",
+          "httpx; extra == \"testing\"",
+          "itsdangerous; extra == \"testing\"",
+          "jedi; extra == \"testing\"",
+          "Jinja2; extra == \"testing\"",
+          "pytest>=8.4.2; extra == \"testing\"",
+          "pytest-cov; extra == \"testing\"",
+          "pytest-env; extra == \"testing\"",
+          "pytest-xdist; extra == \"testing\"",
+          "pytest-vcr; extra == \"testing\"",
+          "pytest-asyncio; extra == \"testing\"",
+          "pytest-rerunfailures>=16.2; extra == \"testing\"",
+          "pytest-mock; extra == \"testing\"",
+          "urllib3<2.0; extra == \"testing\"",
+          "soundfile; extra == \"testing\"",
+          "Pillow; extra == \"testing\"",
+          "numpy; extra == \"testing\"",
+          "duckdb; extra == \"testing\"",
+          "fastapi; extra == \"testing\"",
+          "gradio>=5.0.0; extra == \"gradio\"",
+          "requests; extra == \"gradio\"",
+          "typing-extensions>=4.8.0; extra == \"typing\"",
+          "types-PyYAML; extra == \"typing\"",
+          "types-simplejson; extra == \"typing\"",
+          "types-toml; extra == \"typing\"",
+          "types-tqdm; extra == \"typing\"",
+          "types-urllib3; extra == \"typing\"",
+          "ruff>=0.9.0; extra == \"quality\"",
+          "mypy==1.15.0; extra == \"quality\"",
+          "libcst>=1.4.0; extra == \"quality\"",
+          "ty; extra == \"quality\"",
+          "authlib>=1.3.2; extra == \"all\"",
+          "fastapi; extra == \"all\"",
+          "httpx; extra == \"all\"",
+          "itsdangerous; extra == \"all\"",
+          "jedi; extra == \"all\"",
+          "Jinja2; extra == \"all\"",
+          "pytest>=8.4.2; extra == \"all\"",
+          "pytest-cov; extra == \"all\"",
+          "pytest-env; extra == \"all\"",
+          "pytest-xdist; extra == \"all\"",
+          "pytest-vcr; extra == \"all\"",
+          "pytest-asyncio; extra == \"all\"",
+          "pytest-rerunfailures>=16.2; extra == \"all\"",
+          "pytest-mock; extra == \"all\"",
+          "urllib3<2.0; extra == \"all\"",
+          "soundfile; extra == \"all\"",
+          "Pillow; extra == \"all\"",
+          "numpy; extra == \"all\"",
+          "duckdb; extra == \"all\"",
+          "fastapi; extra == \"all\"",
+          "ruff>=0.9.0; extra == \"all\"",
+          "mypy==1.15.0; extra == \"all\"",
+          "libcst>=1.4.0; extra == \"all\"",
+          "ty; extra == \"all\"",
+          "typing-extensions>=4.8.0; extra == \"all\"",
+          "types-PyYAML; extra == \"all\"",
+          "types-simplejson; extra == \"all\"",
+          "types-toml; extra == \"all\"",
+          "types-tqdm; extra == \"all\"",
+          "types-urllib3; extra == \"all\"",
+          "authlib>=1.3.2; extra == \"dev\"",
+          "fastapi; extra == \"dev\"",
+          "httpx; extra == \"dev\"",
+          "itsdangerous; extra == \"dev\"",
+          "jedi; extra == \"dev\"",
+          "Jinja2; extra == \"dev\"",
+          "pytest>=8.4.2; extra == \"dev\"",
+          "pytest-cov; extra == \"dev\"",
+          "pytest-env; extra == \"dev\"",
+          "pytest-xdist; extra == \"dev\"",
+          "pytest-vcr; extra == \"dev\"",
+          "pytest-asyncio; extra == \"dev\"",
+          "pytest-rerunfailures>=16.2; extra == \"dev\"",
+          "pytest-mock; extra == \"dev\"",
+          "urllib3<2.0; extra == \"dev\"",
+          "soundfile; extra == \"dev\"",
+          "Pillow; extra == \"dev\"",
+          "numpy; extra == \"dev\"",
+          "duckdb; extra == \"dev\"",
+          "fastapi; extra == \"dev\"",
+          "ruff>=0.9.0; extra == \"dev\"",
+          "mypy==1.15.0; extra == \"dev\"",
+          "libcst>=1.4.0; extra == \"dev\"",
+          "ty; extra == \"dev\"",
+          "typing-extensions>=4.8.0; extra == \"dev\"",
+          "types-PyYAML; extra == \"dev\"",
+          "types-simplejson; extra == \"dev\"",
+          "types-toml; extra == \"dev\"",
+          "types-tqdm; extra == \"dev\"",
+          "types-urllib3; extra == \"dev\""
+        ],
+        "verifiedSha256Files": 199,
+        "verifiedBytes": 3597415,
+        "expectedUnhashedFiles": 186,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/huggingface_hub-1.33.0.dist-info/licenses/LICENSE",
+            "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+          }
+        ]
+      },
+      {
+        "name": "idna",
+        "version": "3.20",
+        "licenseExpression": "BSD-3-Clause",
+        "licenseDeclaration": "",
+        "licenseClassifiers": [],
+        "declaredLicenseFiles": [
+          "LICENSE.md"
+        ],
+        "requiresDist": [
+          "ruff >= 0.16.0 ; extra == \"all\"",
+          "mypy >= 1.11.2 ; extra == \"all\"",
+          "ty >= 0.0.37 ; extra == \"all\"",
+          "pytest >= 8.3.2 ; extra == \"all\"",
+          "hypothesis >= 6.141.1 ; extra == \"all\"",
+          "coverage >= 7.10.0 ; extra == \"all\""
+        ],
+        "verifiedSha256Files": 19,
+        "verifiedBytes": 449506,
+        "expectedUnhashedFiles": 11,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/idna-3.20.dist-info/licenses/LICENSE.md",
+            "sha256": "1a9a4f0e3d479a27240ddd59a9137a66ab4a0f9dfdc8ca6188cc0bfd85187f04"
+          }
+        ]
+      },
+      {
+        "name": "Jinja2",
+        "version": "3.1.6",
+        "licenseExpression": "",
+        "licenseDeclaration": "",
+        "licenseClassifiers": [
+          "License :: OSI Approved :: BSD License"
+        ],
+        "declaredLicenseFiles": [
+          "LICENSE.txt"
+        ],
+        "requiresDist": [
+          "MarkupSafe>=2.0",
+          "Babel>=2.7 ; extra == \"i18n\""
+        ],
+        "verifiedSha256Files": 33,
+        "verifiedBytes": 494826,
+        "expectedUnhashedFiles": 26,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/jinja2-3.1.6.dist-info/licenses/LICENSE.txt",
+            "sha256": "3b49dcee4105eb37bac10faf1be260408fe85d252b8e9df2e0979fc1e094437b"
+          }
+        ]
+      },
+      {
+        "name": "kornia",
+        "version": "0.8.3",
+        "licenseExpression": "",
+        "licenseDeclaration": "Apache-2.0",
+        "licenseClassifiers": [
+          "License :: OSI Approved :: Apache Software License"
+        ],
+        "declaredLicenseFiles": [
+          "LICENSE"
+        ],
+        "requiresDist": [
+          "kornia-rs>=0.1.9",
+          "packaging",
+          "torch>=2.0.0",
+          "coverage; extra == 'dev'",
+          "diffusers; extra == 'dev'",
+          "ivy>=1.0.0.0; extra == 'dev'",
+          "numpy<3; extra == 'dev'",
+          "onnx; extra == 'dev'",
+          "onnxruntime; extra == 'dev'",
+          "onnxscript; extra == 'dev'",
+          "pillow; extra == 'dev'",
+          "pre-commit; extra == 'dev'",
+          "pytest; extra == 'dev'",
+          "pytest-cov; extra == 'dev'",
+          "pytest-timeout; extra == 'dev'",
+          "requests; extra == 'dev'",
+          "ruff; extra == 'dev'",
+          "setuptools; extra == 'dev'",
+          "transformers<5.6; extra == 'dev'",
+          "furo; extra == 'docs'",
+          "ivy>=1.0.0.0; extra == 'docs'",
+          "kornia-moons; extra == 'docs'",
+          "matplotlib; extra == 'docs'",
+          "onnx; extra == 'docs'",
+          "onnxruntime; extra == 'docs'",
+          "opencv-python; extra == 'docs'",
+          "pyyaml>=5.1; extra == 'docs'",
+          "sphinx; extra == 'docs'",
+          "sphinx-autodoc-defaultargs; extra == 'docs'",
+          "sphinx-autodoc-typehints; extra == 'docs'",
+          "sphinx-copybutton>=0.3; extra == 'docs'",
+          "sphinx-design; extra == 'docs'",
+          "sphinx-notfound-page; extra == 'docs'",
+          "sphinxcontrib-bibtex; extra == 'docs'",
+          "sphinxcontrib-gtagjs; extra == 'docs'",
+          "sphinxcontrib-youtube; extra == 'docs'"
+        ],
+        "verifiedSha256Files": 498,
+        "verifiedBytes": 3924674,
+        "expectedUnhashedFiles": 492,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/kornia-0.8.3.dist-info/licenses/LICENSE",
+            "sha256": "a6cba85bc92e0cff7a450b1d873c0eaa2e9fc96bf472df0247a26bec77bf3ff9"
+          }
+        ]
+      },
+      {
+        "name": "kornia_rs",
+        "version": "0.2.0",
+        "licenseExpression": "",
+        "licenseDeclaration": "",
+        "licenseClassifiers": [
+          "License :: OSI Approved :: Apache Software License"
+        ],
+        "declaredLicenseFiles": [
+          "LICENSE"
+        ],
+        "requiresDist": [
+          "nvidia-cuda-nvrtc-cu12 ; platform_system == 'Linux' and extra == 'cuda'",
+          "pytest ; extra == 'dev'",
+          "pytest-run-parallel ; extra == 'dev'",
+          "numpy ; extra == 'dev'",
+          "torch ; extra == 'dev'"
+        ],
+        "verifiedSha256Files": 23,
+        "verifiedBytes": 11521594,
+        "expectedUnhashedFiles": 2,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/kornia_rs-0.2.0.dist-info/licenses/LICENSE",
+            "sha256": "1eb85fc97224598dad1852b5d6483bbcf0aa8608790dcc657a5a2a761ae9c8c6"
+          }
+        ]
+      },
+      {
+        "name": "Mako",
+        "version": "1.4.3",
+        "licenseExpression": "MIT",
+        "licenseDeclaration": "",
+        "licenseClassifiers": [],
+        "declaredLicenseFiles": [
+          "LICENSE"
+        ],
+        "requiresDist": [
+          "MarkupSafe>=2.0",
+          "pytest; extra == \"testing\"",
+          "Babel; extra == \"babel\"",
+          "lingua>=4.16; extra == \"lingua\""
+        ],
+        "verifiedSha256Files": 42,
+        "verifiedBytes": 386171,
+        "expectedUnhashedFiles": 34,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/mako-1.4.3.dist-info/licenses/LICENSE",
+            "sha256": "8c1d171bc5d341ad9cd33d5e2c39b96a82c7bd49b3ae89a470c37e5822232054"
+          }
+        ]
+      },
+      {
+        "name": "markdown-it-py",
+        "version": "4.2.0",
+        "licenseExpression": "",
+        "licenseDeclaration": "",
+        "licenseClassifiers": [
+          "License :: OSI Approved :: MIT License"
+        ],
+        "declaredLicenseFiles": [
+          "LICENSE",
+          "LICENSE.markdown-it"
+        ],
+        "requiresDist": [
+          "mdurl~=0.1",
+          "psutil ; extra == \"benchmarking\"",
+          "pytest ; extra == \"benchmarking\"",
+          "pytest-benchmark ; extra == \"benchmarking\"",
+          "commonmark~=0.9 ; extra == \"compare\"",
+          "markdown~=3.4 ; extra == \"compare\"",
+          "mistletoe~=1.0 ; extra == \"compare\"",
+          "mistune~=3.0 ; extra == \"compare\"",
+          "panflute~=2.3 ; extra == \"compare\"",
+          "markdown-it-pyrs ; extra == \"compare\"",
+          "linkify-it-py>=1,<3 ; extra == \"linkify\"",
+          "mdit-py-plugins>=0.5.0 ; extra == \"plugins\"",
+          "gprof2dot ; extra == \"profiling\"",
+          "mdit-py-plugins>=0.5.0 ; extra == \"rtd\"",
+          "myst-parser ; extra == \"rtd\"",
+          "pyyaml ; extra == \"rtd\"",
+          "sphinx ; extra == \"rtd\"",
+          "sphinx-copybutton ; extra == \"rtd\"",
+          "sphinx-design ; extra == \"rtd\"",
+          "sphinx-book-theme~=1.0 ; extra == \"rtd\"",
+          "jupyter_sphinx ; extra == \"rtd\"",
+          "ipykernel ; extra == \"rtd\"",
+          "coverage ; extra == \"testing\"",
+          "pytest ; extra == \"testing\"",
+          "pytest-cov ; extra == \"testing\"",
+          "pytest-regressions ; extra == \"testing\"",
+          "pytest-timeout ; extra == \"testing\"",
+          "requests ; extra == \"testing\""
+        ],
+        "verifiedSha256Files": 77,
+        "verifiedBytes": 346743,
+        "expectedUnhashedFiles": 67,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/markdown_it_py-4.2.0.dist-info/licenses/LICENSE",
+            "sha256": "4a2260d6e2cd0f5a151a1e86dbfe7d3ed552b1e2beabf9941c1ba5c49cbce484"
+          },
+          {
+            "path": "Lib/site-packages/markdown_it_py-4.2.0.dist-info/licenses/LICENSE.markdown-it",
+            "sha256": "792c48c5a849a15fdf9e37e8bcf9e6d1dd13b32b46c642a748a0a46a9919d473"
+          }
+        ]
+      },
+      {
+        "name": "MarkupSafe",
+        "version": "3.0.3",
+        "licenseExpression": "BSD-3-Clause",
+        "licenseDeclaration": "",
+        "licenseClassifiers": [],
+        "declaredLicenseFiles": [
+          "LICENSE.txt"
+        ],
+        "requiresDist": [],
+        "verifiedSha256Files": 13,
+        "verifiedBytes": 36409,
+        "expectedUnhashedFiles": 3,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/markupsafe-3.0.3.dist-info/licenses/LICENSE.txt",
+            "sha256": "4631ec0db5fd90a547e336817264c6798214338146f8ac94b4a57f96ee8c9ec4"
+          }
+        ]
+      },
+      {
+        "name": "mdurl",
+        "version": "0.1.2",
+        "licenseExpression": "",
+        "licenseDeclaration": "",
+        "licenseClassifiers": [
+          "License :: OSI Approved :: MIT License"
+        ],
+        "declaredLicenseFiles": [],
+        "requiresDist": [],
+        "verifiedSha256Files": 13,
+        "verifiedBytes": 22793,
+        "expectedUnhashedFiles": 7,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/mdurl-0.1.2.dist-info/LICENSE",
+            "sha256": "7c605df6e28667a9603118e98274f64a49ce3eed0d26fccce9534a345e0ef955"
+          }
+        ]
+      },
+      {
+        "name": "mpmath",
+        "version": "1.3.0",
+        "licenseExpression": "",
+        "licenseDeclaration": "BSD",
+        "licenseClassifiers": [
+          "License :: OSI Approved :: BSD License"
+        ],
+        "declaredLicenseFiles": [
+          "LICENSE"
+        ],
+        "requiresDist": [
+          "pytest (>=4.6) ; extra == 'develop'",
+          "pycodestyle ; extra == 'develop'",
+          "pytest-cov ; extra == 'develop'",
+          "codecov ; extra == 'develop'",
+          "wheel ; extra == 'develop'",
+          "sphinx ; extra == 'docs'",
+          "gmpy2 (>=2.1.0a4) ; (platform_python_implementation != \"PyPy\") and extra == 'gmpy'",
+          "pytest (>=4.6) ; extra == 'tests'"
+        ],
+        "verifiedSha256Files": 94,
+        "verifiedBytes": 1942794,
+        "expectedUnhashedFiles": 88,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/mpmath-1.3.0.dist-info/LICENSE",
+            "sha256": "c26cae81da4508e5e249985777a33821f183223ebb74d7f8cfbf90fe7eef2fb7"
+          }
+        ]
+      },
+      {
+        "name": "multidict",
+        "version": "6.9.1",
+        "licenseExpression": "",
+        "licenseDeclaration": "Apache License 2.0",
+        "licenseClassifiers": [],
+        "declaredLicenseFiles": [
+          "LICENSE"
+        ],
+        "requiresDist": [
+          "typing-extensions>=4.1.0; python_version < \"3.11\""
+        ],
+        "verifiedSha256Files": 13,
+        "verifiedBytes": 165647,
+        "expectedUnhashedFiles": 5,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/multidict-6.9.1.dist-info/licenses/LICENSE",
+            "sha256": "2e4be5fc6c4c72a466fcb665d726e049a6891981fe536c4f04b6366749461d23"
+          }
+        ]
+      },
+      {
+        "name": "networkx",
+        "version": "3.7",
+        "licenseExpression": "BSD-3-Clause",
+        "licenseDeclaration": "",
+        "licenseClassifiers": [],
+        "declaredLicenseFiles": [
+          "LICENSE.txt"
+        ],
+        "requiresDist": [
+          "asv>=0.6.5; extra == \"benchmarking\"",
+          "py-rattler<0.22,>=0.21; extra == \"benchmarking\"",
+          "virtualenv; extra == \"benchmarking\"",
+          "numpy>=2.2; extra == \"default\"",
+          "scipy>=1.15; extra == \"default\"",
+          "matplotlib>=3.10; extra == \"default\"",
+          "pandas>=2.3; extra == \"default\"",
+          "pre-commit>=4.1; extra == \"developer\"",
+          "mypy>=1.15; extra == \"developer\"",
+          "sphinx>=8.0; extra == \"doc\"",
+          "pydata-sphinx-theme>=0.16; extra == \"doc\"",
+          "sphinx-gallery>=0.18; extra == \"doc\"",
+          "numpydoc>=1.8.0; extra == \"doc\"",
+          "pillow>=10; extra == \"doc\"",
+          "texext>=0.6.7; extra == \"doc\"",
+          "myst-nb>=1.1; extra == \"doc\"",
+          "intersphinx-registry; extra == \"doc\"",
+          "osmnx>=2.0.0; extra == \"example\"",
+          "momepy>=0.7.2; extra == \"example\"",
+          "contextily>=1.6; extra == \"example\"",
+          "seaborn>=0.13; extra == \"example\"",
+          "cairocffi>=1.7; extra == \"example\"",
+          "igraph>=0.11; extra == \"example\"",
+          "scikit-learn>=1.6; extra == \"example\"",
+          "iplotx>=0.9.0; extra == \"example\"",
+          "hiveplotlib>=0.28; extra == \"example\"",
+          "lxml>=4.6; extra == \"extra\"",
+          "pygraphviz>=2.0; extra == \"extra\"",
+          "pydot>=3.0.1; extra == \"extra\"",
+          "sympy>=1.10; extra == \"extra\"",
+          "build>=0.10; extra == \"release\"",
+          "twine>=4.0; extra == \"release\"",
+          "wheel>=0.40; extra == \"release\"",
+          "changelist==0.5; extra == \"release\"",
+          "pytest>=7.2; extra == \"test\"",
+          "pytest-cov>=4.0; extra == \"test\"",
+          "pytest-xdist>=3.0; extra == \"test\"",
+          "pytest-mpl; extra == \"test-extras\"",
+          "pytest-randomly; extra == \"test-extras\""
+        ],
+        "verifiedSha256Files": 606,
+        "verifiedBytes": 7238038,
+        "expectedUnhashedFiles": 584,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/networkx-3.7.dist-info/licenses/LICENSE.txt",
+            "sha256": "6025f323ea29dc2f0ee0abd9523bf910186f55b0e148e6ebf646c55566278e2e"
+          }
+        ]
+      },
+      {
+        "name": "numpy",
+        "version": "2.5.3",
+        "licenseExpression": "BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0",
+        "licenseDeclaration": "",
+        "licenseClassifiers": [],
+        "declaredLicenseFiles": [
+          "LICENSE.txt",
+          "numpy/_core/include/numpy/libdivide/LICENSE.txt",
+          "numpy/_core/src/common/pythoncapi-compat/COPYING",
+          "numpy/_core/src/highway/LICENSE",
+          "numpy/_core/src/multiarray/dragon4_LICENSE.txt",
+          "numpy/_core/src/npysort/x86-simd-sort/LICENSE.md",
+          "numpy/_core/src/umath/svml/LICENSE",
+          "numpy/fft/pocketfft/LICENSE.md",
+          "numpy/linalg/lapack_lite/LICENSE.txt",
+          "numpy/ma/LICENSE",
+          "numpy/random/LICENSE.md",
+          "numpy/random/src/distributions/LICENSE.md",
+          "numpy/random/src/mt19937/LICENSE.md",
+          "numpy/random/src/pcg64/LICENSE.md",
+          "numpy/random/src/philox/LICENSE.md",
+          "numpy/random/src/sfc64/LICENSE.md",
+          "numpy/random/src/splitmix64/LICENSE.md"
+        ],
+        "requiresDist": [],
+        "verifiedSha256Files": 949,
+        "verifiedBytes": 42037686,
+        "expectedUnhashedFiles": 408,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/numpy-2.5.3.dist-info/licenses/LICENSE.txt",
+            "sha256": "a804dff0ead9fadc5293456410bcbfc32bf024be9c4513459663fb7b442d2341"
+          },
+          {
+            "path": "Lib/site-packages/numpy-2.5.3.dist-info/licenses/numpy/_core/include/numpy/libdivide/LICENSE.txt",
+            "sha256": "d544761558b510866c21f7e8a2d5716fca76e0b98117e3b6b86314db7244d150"
+          },
+          {
+            "path": "Lib/site-packages/numpy-2.5.3.dist-info/licenses/numpy/_core/src/common/pythoncapi-compat/COPYING",
+            "sha256": "aea41976c720f91bd19725c16916a1ace40eb1ea42620d340e587a5de4bbcea0"
+          },
+          {
+            "path": "Lib/site-packages/numpy-2.5.3.dist-info/licenses/numpy/_core/src/highway/LICENSE",
+            "sha256": "d208152e2777ffd0126eacc1bd21c0320d69e4e6b622d21a2a12a47e8ef73763"
+          },
+          {
+            "path": "Lib/site-packages/numpy-2.5.3.dist-info/licenses/numpy/_core/src/multiarray/dragon4_LICENSE.txt",
+            "sha256": "b0fd592d4ead563148e3977e7b589169d46a5ef2ff133c755a81af880a3fc919"
+          },
+          {
+            "path": "Lib/site-packages/numpy-2.5.3.dist-info/licenses/numpy/_core/src/npysort/x86-simd-sort/LICENSE.md",
+            "sha256": "a732977853530066790c42817087f4829b518dd98d340c916acbfd227e39d3cb"
+          },
+          {
+            "path": "Lib/site-packages/numpy-2.5.3.dist-info/licenses/numpy/_core/src/umath/svml/LICENSE",
+            "sha256": "585483905b13d4b42f800c55ba99e89d6e2e33ccd5f503e201c07531d148ff41"
+          },
+          {
+            "path": "Lib/site-packages/numpy-2.5.3.dist-info/licenses/numpy/fft/pocketfft/LICENSE.md",
+            "sha256": "8db000e158c162e7249787852d8c69764706502ccee725c06641b31c1e95c8af"
+          },
+          {
+            "path": "Lib/site-packages/numpy-2.5.3.dist-info/licenses/numpy/linalg/lapack_lite/LICENSE.txt",
+            "sha256": "19060ef465e1797d682ee0fc3081bd25ab1395e995e43d25c9d13c95d9a3cd6b"
+          },
+          {
+            "path": "Lib/site-packages/numpy-2.5.3.dist-info/licenses/numpy/ma/LICENSE",
+            "sha256": "d78dbb208b80d92b4d333e41a4baae50d12444f46e53199fa7726a91de6e2da7"
+          },
+          {
+            "path": "Lib/site-packages/numpy-2.5.3.dist-info/licenses/numpy/random/LICENSE.md",
+            "sha256": "b4bc2f4fa1c95778f1ed3dd8f14706bece399475b978f9f34b5d3cd72521b48a"
+          },
+          {
+            "path": "Lib/site-packages/numpy-2.5.3.dist-info/licenses/numpy/random/src/distributions/LICENSE.md",
+            "sha256": "cf5619f25b112d5ce7c896efffc8e610bcb345dfadcc19f2c1460aa48fff2c9e"
+          },
+          {
+            "path": "Lib/site-packages/numpy-2.5.3.dist-info/licenses/numpy/random/src/mt19937/LICENSE.md",
+            "sha256": "92c10699884321f1c2947fe2a70ab23b0fbf1507f756d89dd08f38c61fc3d4fa"
+          },
+          {
+            "path": "Lib/site-packages/numpy-2.5.3.dist-info/licenses/numpy/random/src/pcg64/LICENSE.md",
+            "sha256": "41190663b77bee5302386495a07b7eabfbfa571aa0ae2f11da6764162062fc4f"
+          },
+          {
+            "path": "Lib/site-packages/numpy-2.5.3.dist-info/licenses/numpy/random/src/philox/LICENSE.md",
+            "sha256": "322ac46d870c8aeead6c53adcccc839296fb3c8e456eae155081297daf7f8013"
+          },
+          {
+            "path": "Lib/site-packages/numpy-2.5.3.dist-info/licenses/numpy/random/src/sfc64/LICENSE.md",
+            "sha256": "28cad82ce1379dc529df30da78ec012d7d0d1d576b03ddcb93388aee53659f59"
+          },
+          {
+            "path": "Lib/site-packages/numpy-2.5.3.dist-info/licenses/numpy/random/src/splitmix64/LICENSE.md",
+            "sha256": "454ec7350e478e037061850b67395753b425b1cb0a34bbc26290b020bf89d763"
+          }
+        ]
+      },
+      {
+        "name": "packaging",
+        "version": "26.3",
+        "licenseExpression": "Apache-2.0 OR BSD-2-Clause",
+        "licenseDeclaration": "",
+        "licenseClassifiers": [],
+        "declaredLicenseFiles": [
+          "LICENSE",
+          "LICENSE.APACHE",
+          "LICENSE.BSD"
+        ],
+        "requiresDist": [],
+        "verifiedSha256Files": 31,
+        "verifiedBytes": 497116,
+        "expectedUnhashedFiles": 23,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/packaging-26.3.dist-info/licenses/LICENSE",
+            "sha256": "cad1ef5bd340d73e074ba614d26f7deaca5c7940c3d8c34852e65c4909686c48"
+          },
+          {
+            "path": "Lib/site-packages/packaging-26.3.dist-info/licenses/LICENSE.APACHE",
+            "sha256": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594"
+          },
+          {
+            "path": "Lib/site-packages/packaging-26.3.dist-info/licenses/LICENSE.BSD",
+            "sha256": "b70e7e9b742f1cc6f948b34c16aa39ffece94196364bc88ff0d2180f0028fac5"
+          }
+        ]
+      },
+      {
+        "name": "pillow",
+        "version": "12.3.0",
+        "licenseExpression": "MIT-CMU",
+        "licenseDeclaration": "",
+        "licenseClassifiers": [],
+        "declaredLicenseFiles": [
+          "LICENSE"
+        ],
+        "requiresDist": [
+          "furo; extra == \"docs\"",
+          "olefile; extra == \"docs\"",
+          "sphinx>=8.2; extra == \"docs\"",
+          "sphinx-autobuild; extra == \"docs\"",
+          "sphinx-copybutton; extra == \"docs\"",
+          "sphinx-inline-tabs; extra == \"docs\"",
+          "sphinxext-opengraph; extra == \"docs\"",
+          "olefile; extra == \"fpx\"",
+          "olefile; extra == \"mic\"",
+          "arro3-compute; extra == \"test-arrow\"",
+          "arro3-core; extra == \"test-arrow\"",
+          "nanoarrow; extra == \"test-arrow\"",
+          "pyarrow; extra == \"test-arrow\"",
+          "coverage>=7.4.2; extra == \"tests\"",
+          "defusedxml; extra == \"tests\"",
+          "markdown2; extra == \"tests\"",
+          "olefile; extra == \"tests\"",
+          "packaging; extra == \"tests\"",
+          "pytest; extra == \"tests\"",
+          "pytest-cov; extra == \"tests\"",
+          "pytest-timeout; extra == \"tests\"",
+          "pytest-xdist; extra == \"tests\"",
+          "setuptools; extra == \"tests\"",
+          "trove-classifiers>=2024.10.12; extra == \"tests\"",
+          "defusedxml; extra == \"xmp\""
+        ],
+        "verifiedSha256Files": 123,
+        "verifiedBytes": 14749376,
+        "expectedUnhashedFiles": 98,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/pillow-12.3.0.dist-info/licenses/LICENSE",
+            "sha256": "4f7866a74802c6326f81faff59a56546b6aec2b10b91973e0e9308de95e79857"
+          }
+        ]
+      },
+      {
+        "name": "pip",
+        "version": "26.2.1",
+        "licenseExpression": "MIT",
+        "licenseDeclaration": "",
+        "licenseClassifiers": [],
+        "declaredLicenseFiles": [
+          "AUTHORS.txt",
+          "LICENSE.txt",
+          "src/pip/_vendor/cachecontrol/LICENSE.txt",
+          "src/pip/_vendor/certifi/LICENSE",
+          "src/pip/_vendor/distlib/LICENSE.txt",
+          "src/pip/_vendor/distro/LICENSE",
+          "src/pip/_vendor/idna/LICENSE.md",
+          "src/pip/_vendor/msgpack/COPYING",
+          "src/pip/_vendor/packaging/LICENSE",
+          "src/pip/_vendor/packaging/LICENSE.APACHE",
+          "src/pip/_vendor/packaging/LICENSE.BSD",
+          "src/pip/_vendor/pkg_resources/LICENSE",
+          "src/pip/_vendor/platformdirs/LICENSE",
+          "src/pip/_vendor/pygments/LICENSE",
+          "src/pip/_vendor/pyproject_hooks/LICENSE",
+          "src/pip/_vendor/requests/LICENSE",
+          "src/pip/_vendor/resolvelib/LICENSE",
+          "src/pip/_vendor/rich/LICENSE",
+          "src/pip/_vendor/tomli/LICENSE",
+          "src/pip/_vendor/tomli_w/LICENSE",
+          "src/pip/_vendor/truststore/LICENSE",
+          "src/pip/_vendor/urllib3/LICENSE.txt"
+        ],
+        "requiresDist": [],
+        "verifiedSha256Files": 480,
+        "verifiedBytes": 5946417,
+        "expectedUnhashedFiles": 405,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/pip-26.2.1.dist-info/licenses/AUTHORS.txt",
+            "sha256": "4eb1fb1705e2def898e81bcba19c3aac80620d27ba3569d6a6df7b4629d1b5c2"
+          },
+          {
+            "path": "Lib/site-packages/pip-26.2.1.dist-info/licenses/LICENSE.txt",
+            "sha256": "634300a669d49aeae65b12c6c48c924c51a4cdf3d1ff086dc3456dc8bcaa2104"
+          },
+          {
+            "path": "Lib/site-packages/pip-26.2.1.dist-info/licenses/src/pip/_vendor/cachecontrol/LICENSE.txt",
+            "sha256": "86eeee87be2a43f3ff1f56496f451f69243926f025fedbb033666c304c4c161b"
+          },
+          {
+            "path": "Lib/site-packages/pip-26.2.1.dist-info/licenses/src/pip/_vendor/certifi/LICENSE",
+            "sha256": "e93716da6b9c0d5a4a1df60fe695b370f0695603d21f6f83f053e42cfc10caf7"
+          },
+          {
+            "path": "Lib/site-packages/pip-26.2.1.dist-info/licenses/src/pip/_vendor/distlib/LICENSE.txt",
+            "sha256": "808e10c8a6ab8deb149ff9b3fb19f447a808094606d712a9ca57fead3552599d"
+          },
+          {
+            "path": "Lib/site-packages/pip-26.2.1.dist-info/licenses/src/pip/_vendor/distro/LICENSE",
+            "sha256": "cb5e8e7e5f4a3988e1063c142c60dc2df75605f4c46515e776e3aca6df976e14"
+          },
+          {
+            "path": "Lib/site-packages/pip-26.2.1.dist-info/licenses/src/pip/_vendor/idna/LICENSE.md",
+            "sha256": "1a9a4f0e3d479a27240ddd59a9137a66ab4a0f9dfdc8ca6188cc0bfd85187f04"
+          },
+          {
+            "path": "Lib/site-packages/pip-26.2.1.dist-info/licenses/src/pip/_vendor/msgpack/COPYING",
+            "sha256": "492dedba85da5872f78e6091bcd1fea474d660d35acb4dee964b8aab3f007427"
+          },
+          {
+            "path": "Lib/site-packages/pip-26.2.1.dist-info/licenses/src/pip/_vendor/packaging/LICENSE",
+            "sha256": "cad1ef5bd340d73e074ba614d26f7deaca5c7940c3d8c34852e65c4909686c48"
+          },
+          {
+            "path": "Lib/site-packages/pip-26.2.1.dist-info/licenses/src/pip/_vendor/packaging/LICENSE.APACHE",
+            "sha256": "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594"
+          },
+          {
+            "path": "Lib/site-packages/pip-26.2.1.dist-info/licenses/src/pip/_vendor/packaging/LICENSE.BSD",
+            "sha256": "b70e7e9b742f1cc6f948b34c16aa39ffece94196364bc88ff0d2180f0028fac5"
+          },
+          {
+            "path": "Lib/site-packages/pip-26.2.1.dist-info/licenses/src/pip/_vendor/pkg_resources/LICENSE",
+            "sha256": "86da0f01aeae46348a3c3d465195dc1ceccde79f79e87769a64b8da04b2a4741"
+          },
+          {
+            "path": "Lib/site-packages/pip-26.2.1.dist-info/licenses/src/pip/_vendor/platformdirs/LICENSE",
+            "sha256": "29e0fd62e929850e86eb28c3fdccf0cefdf4fa94879011cffb3d0d4bed6d4db6"
+          },
+          {
+            "path": "Lib/site-packages/pip-26.2.1.dist-info/licenses/src/pip/_vendor/pygments/LICENSE",
+            "sha256": "a9d66f1d526df02e29dce73436d34e56e8632f46c275bbdffc70569e882f9f17"
+          },
+          {
+            "path": "Lib/site-packages/pip-26.2.1.dist-info/licenses/src/pip/_vendor/pyproject_hooks/LICENSE",
+            "sha256": "1b22b049b5267d6dfc23a67bf4a84d8ec04b9fdfb1a51d360e42b4342c8b4154"
+          },
+          {
+            "path": "Lib/site-packages/pip-26.2.1.dist-info/licenses/src/pip/_vendor/requests/LICENSE",
+            "sha256": "09e8a9bcec8067104652c168685ab0931e7868f9c8284b66f5ae6edae5f1130b"
+          },
+          {
+            "path": "Lib/site-packages/pip-26.2.1.dist-info/licenses/src/pip/_vendor/resolvelib/LICENSE",
+            "sha256": "f388fd38cad13112c1dc0f669bbe80e7f84541edbafb72f3030d2ca7642c3c9d"
+          },
+          {
+            "path": "Lib/site-packages/pip-26.2.1.dist-info/licenses/src/pip/_vendor/rich/LICENSE",
+            "sha256": "deed7c17a4318158190a3ea239cc879a5a50271cebb98ae7025f48fbe58dca15"
+          },
+          {
+            "path": "Lib/site-packages/pip-26.2.1.dist-info/licenses/src/pip/_vendor/tomli/LICENSE",
+            "sha256": "b80816b0d530b8accb4c2211783790984a6e3b61922c2b5ee92f3372ab2742fe"
+          },
+          {
+            "path": "Lib/site-packages/pip-26.2.1.dist-info/licenses/src/pip/_vendor/tomli_w/LICENSE",
+            "sha256": "b80816b0d530b8accb4c2211783790984a6e3b61922c2b5ee92f3372ab2742fe"
+          },
+          {
+            "path": "Lib/site-packages/pip-26.2.1.dist-info/licenses/src/pip/_vendor/truststore/LICENSE",
+            "sha256": "33be7b7e8fa4fd19b1760e1a8ed8a668bdab852c91b692dd41424bcb725a9fca"
+          },
+          {
+            "path": "Lib/site-packages/pip-26.2.1.dist-info/licenses/src/pip/_vendor/urllib3/LICENSE.txt",
+            "sha256": "130e3a64d5fdd5d096a752694634a7d9df284469de86e5732100268041e3d686"
+          }
+        ]
+      },
+      {
+        "name": "propcache",
+        "version": "0.5.4",
+        "licenseExpression": "",
+        "licenseDeclaration": "Apache-2.0",
+        "licenseClassifiers": [],
+        "declaredLicenseFiles": [
+          "LICENSE",
+          "NOTICE"
+        ],
+        "requiresDist": [],
+        "verifiedSha256Files": 15,
+        "verifiedBytes": 111203,
+        "expectedUnhashedFiles": 5,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/propcache-0.5.4.dist-info/licenses/LICENSE",
+            "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+          },
+          {
+            "path": "Lib/site-packages/propcache-0.5.4.dist-info/licenses/NOTICE",
+            "sha256": "56d6ac6c8105c0a51304c21db060e361af9a8ea0af9a75c239c28b5d13693838"
+          }
+        ]
+      },
+      {
+        "name": "psutil",
+        "version": "7.2.2",
+        "licenseExpression": "",
+        "licenseDeclaration": "BSD-3-Clause",
+        "licenseClassifiers": [],
+        "declaredLicenseFiles": [
+          "LICENSE"
+        ],
+        "requiresDist": [
+          "psleak ; extra == 'dev'",
+          "pytest ; extra == 'dev'",
+          "pytest-instafail ; extra == 'dev'",
+          "pytest-xdist ; extra == 'dev'",
+          "setuptools ; extra == 'dev'",
+          "abi3audit ; extra == 'dev'",
+          "black ; extra == 'dev'",
+          "check-manifest ; extra == 'dev'",
+          "coverage ; extra == 'dev'",
+          "packaging ; extra == 'dev'",
+          "pylint ; extra == 'dev'",
+          "pyperf ; extra == 'dev'",
+          "pypinfo ; extra == 'dev'",
+          "pytest-cov ; extra == 'dev'",
+          "requests ; extra == 'dev'",
+          "rstcheck ; extra == 'dev'",
+          "ruff ; extra == 'dev'",
+          "sphinx ; extra == 'dev'",
+          "sphinx-rtd-theme ; extra == 'dev'",
+          "toml-sort ; extra == 'dev'",
+          "twine ; extra == 'dev'",
+          "validate-pyproject[all] ; extra == 'dev'",
+          "virtualenv ; extra == 'dev'",
+          "vulture ; extra == 'dev'",
+          "wheel ; extra == 'dev'",
+          "colorama ; (os_name == \"nt\") and extra == 'dev'",
+          "pyreadline3 ; (os_name == \"nt\") and extra == 'dev'",
+          "pywin32 ; (os_name == \"nt\" and implementation_name != \"pypy\") and extra == 'dev'",
+          "wheel ; (os_name == \"nt\" and implementation_name != \"pypy\") and extra == 'dev'",
+          "wmi ; (os_name == \"nt\" and implementation_name != \"pypy\") and extra == 'dev'",
+          "psleak ; extra == 'test'",
+          "pytest ; extra == 'test'",
+          "pytest-instafail ; extra == 'test'",
+          "pytest-xdist ; extra == 'test'",
+          "setuptools ; extra == 'test'",
+          "pywin32 ; (os_name == \"nt\" and implementation_name != \"pypy\") and extra == 'test'",
+          "wheel ; (os_name == \"nt\" and implementation_name != \"pypy\") and extra == 'test'",
+          "wmi ; (os_name == \"nt\" and implementation_name != \"pypy\") and extra == 'test'"
+        ],
+        "verifiedSha256Files": 18,
+        "verifiedBytes": 450115,
+        "expectedUnhashedFiles": 11,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/psutil-7.2.2.dist-info/LICENSE",
+            "sha256": "c7adc4d5d1337a548b967421f1fbe258b93033a0417708fd6f4e38f8ecbceb80"
+          }
+        ]
+      },
+      {
+        "name": "pycparser",
+        "version": "3.0",
+        "licenseExpression": "BSD-3-Clause",
+        "licenseDeclaration": "",
+        "licenseClassifiers": [],
+        "declaredLicenseFiles": [
+          "LICENSE"
+        ],
+        "requiresDist": [],
+        "verifiedSha256Files": 15,
+        "verifiedBytes": 202992,
+        "expectedUnhashedFiles": 8,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/pycparser-3.0.dist-info/licenses/LICENSE",
+            "sha256": "0c846399369ea76ddd7b5c44fe6d16497415fcf015f5cbb508c24bf98b81c5b1"
+          }
+        ]
+      },
+      {
+        "name": "pydantic",
+        "version": "2.13.5",
+        "licenseExpression": "MIT",
+        "licenseDeclaration": "",
+        "licenseClassifiers": [],
+        "declaredLicenseFiles": [
+          "LICENSE"
+        ],
+        "requiresDist": [
+          "annotated-types>=0.6.0",
+          "pydantic-core==2.46.5",
+          "typing-extensions>=4.14.1",
+          "typing-inspection>=0.4.2",
+          "email-validator>=2.0.0; extra == 'email'",
+          "tzdata; (python_version >= '3.9' and platform_system == 'Windows') and extra == 'timezone'"
+        ],
+        "verifiedSha256Files": 113,
+        "verifiedBytes": 1884883,
+        "expectedUnhashedFiles": 106,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/pydantic-2.13.5.dist-info/licenses/LICENSE",
+            "sha256": "a9e186f3ca16b5eef84318e7a701721351a00cb7b8ae3a4394b67b49e3529ef3"
+          }
+        ]
+      },
+      {
+        "name": "pydantic_core",
+        "version": "2.46.5",
+        "licenseExpression": "MIT",
+        "licenseDeclaration": "",
+        "licenseClassifiers": [],
+        "declaredLicenseFiles": [
+          "LICENSE"
+        ],
+        "requiresDist": [
+          "typing-extensions>=4.14.1"
+        ],
+        "verifiedSha256Files": 12,
+        "verifiedBytes": 5505271,
+        "expectedUnhashedFiles": 3,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/pydantic_core-2.46.5.dist-info/licenses/LICENSE",
+            "sha256": "fbe7f615f18d135c07000e5a86325db27f42c7729699ef166ac1f7a3f4586bf4"
+          }
+        ]
+      },
+      {
+        "name": "pydantic-settings",
+        "version": "2.15.0",
+        "licenseExpression": "MIT",
+        "licenseDeclaration": "",
+        "licenseClassifiers": [
+          "License :: OSI Approved :: MIT License"
+        ],
+        "declaredLicenseFiles": [
+          "LICENSE"
+        ],
+        "requiresDist": [
+          "pydantic>=2.7.0",
+          "python-dotenv>=0.21.0",
+          "typing-inspection>=0.4.0",
+          "boto3>=1.35.0; extra == 'aws-secrets-manager'",
+          "azure-identity>=1.16.0; extra == 'azure-key-vault'",
+          "azure-keyvault-secrets>=4.8.0; extra == 'azure-key-vault'",
+          "google-cloud-secret-manager>=2.23.1; extra == 'gcp-secret-manager'",
+          "tomli>=2.0.1; extra == 'toml'",
+          "pyyaml>=6.0.1; extra == 'yaml'"
+        ],
+        "verifiedSha256Files": 29,
+        "verifiedBytes": 258568,
+        "expectedUnhashedFiles": 23,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/pydantic_settings-2.15.0.dist-info/licenses/LICENSE",
+            "sha256": "eb355a753e020346d33d83bf9769135b89fc610568ac531a01c295bcee7fd998"
+          }
+        ]
+      },
+      {
+        "name": "pygit2",
+        "version": "1.20.1",
+        "licenseExpression": "",
+        "licenseDeclaration": "GPLv2 with linking exception",
+        "licenseClassifiers": [],
+        "declaredLicenseFiles": [
+          "COPYING",
+          "AUTHORS.md"
+        ],
+        "requiresDist": [
+          "cffi>=2.0"
+        ],
+        "verifiedSha256Files": 71,
+        "verifiedBytes": 3014959,
+        "expectedUnhashedFiles": 26,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/pygit2-1.20.1.dist-info/licenses/AUTHORS.md",
+            "sha256": "6ba7263a1323468b3e31eee685c8e15a3aa004a671cd0c4e1e067ed118913ff0"
+          },
+          {
+            "path": "Lib/site-packages/pygit2-1.20.1.dist-info/licenses/COPYING",
+            "sha256": "b0ce6edbdfcaa6b86618229ac8af3fdb6292b4b5069ceb8f8187c6fb59430764"
+          }
+        ]
+      },
+      {
+        "name": "Pygments",
+        "version": "2.21.0",
+        "licenseExpression": "BSD-2-Clause",
+        "licenseDeclaration": "",
+        "licenseClassifiers": [],
+        "declaredLicenseFiles": [
+          "AUTHORS",
+          "LICENSE"
+        ],
+        "requiresDist": [
+          "colorama>=0.4.6; extra == 'windows-terminal'"
+        ],
+        "verifiedSha256Files": 352,
+        "verifiedBytes": 4700869,
+        "expectedUnhashedFiles": 344,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/pygments-2.21.0.dist-info/licenses/AUTHORS",
+            "sha256": "71a83872ad82f57be692cf827e048e2cd51d45169cfa1ea3f28706d97a872c0f"
+          },
+          {
+            "path": "Lib/site-packages/pygments-2.21.0.dist-info/licenses/LICENSE",
+            "sha256": "a9d66f1d526df02e29dce73436d34e56e8632f46c275bbdffc70569e882f9f17"
+          }
+        ]
+      },
+      {
+        "name": "PyOpenGL",
+        "version": "3.1.10",
+        "licenseExpression": "",
+        "licenseDeclaration": "",
+        "licenseClassifiers": [
+          "License :: OSI Approved :: BSD License"
+        ],
+        "declaredLicenseFiles": [],
+        "requiresDist": [],
+        "verifiedSha256Files": 2901,
+        "verifiedBytes": 7566908,
+        "expectedUnhashedFiles": 2878,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": []
+      },
+      {
+        "name": "python-dotenv",
+        "version": "1.2.3",
+        "licenseExpression": "",
+        "licenseDeclaration": "BSD-3-Clause",
+        "licenseClassifiers": [],
+        "declaredLicenseFiles": [
+          "LICENSE"
+        ],
+        "requiresDist": [
+          "click>=5.0; extra == \"cli\""
+        ],
+        "verifiedSha256Files": 18,
+        "verifiedBytes": 171843,
+        "expectedUnhashedFiles": 9,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/python_dotenv-1.2.3.dist-info/licenses/LICENSE",
+            "sha256": "80619b7049f08c81683ad0e01f08f257a840652dd71ee83146d36658c7d2c2b9"
+          }
+        ]
+      },
+      {
+        "name": "PyYAML",
+        "version": "6.0.3",
+        "licenseExpression": "",
+        "licenseDeclaration": "MIT",
+        "licenseClassifiers": [
+          "License :: OSI Approved :: MIT License"
+        ],
+        "declaredLicenseFiles": [
+          "LICENSE"
+        ],
+        "requiresDist": [],
+        "verifiedSha256Files": 26,
+        "verifiedBytes": 476766,
+        "expectedUnhashedFiles": 19,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/pyyaml-6.0.3.dist-info/licenses/LICENSE",
+            "sha256": "8d3928f9dc4490fd635707cb88eb26bd764102a7282954307d3e5167a577e8a4"
+          }
+        ]
+      },
+      {
+        "name": "regex",
+        "version": "2026.9.29",
+        "licenseExpression": "Apache-2.0 AND CNRI-Python",
+        "licenseDeclaration": "",
+        "licenseClassifiers": [],
+        "declaredLicenseFiles": [
+          "LICENSE.txt"
+        ],
+        "requiresDist": [],
+        "verifiedSha256Files": 12,
+        "verifiedBytes": 1207184,
+        "expectedUnhashedFiles": 5,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/regex-2026.9.29.dist-info/licenses/LICENSE.txt",
+            "sha256": "3d220c06594b826bbabf110312f60f385f99e57e529fa4b9e536f79091f8b4c7"
+          }
+        ]
+      },
+      {
+        "name": "requests",
+        "version": "2.34.2",
+        "licenseExpression": "",
+        "licenseDeclaration": "Apache-2.0",
+        "licenseClassifiers": [
+          "License :: OSI Approved :: Apache Software License"
+        ],
+        "declaredLicenseFiles": [
+          "LICENSE",
+          "NOTICE"
+        ],
+        "requiresDist": [
+          "charset_normalizer<4,>=2",
+          "idna<4,>=2.5",
+          "urllib3<3,>=1.26",
+          "certifi>=2023.5.7",
+          "PySocks!=1.5.7,>=1.5.6; extra == \"socks\"",
+          "chardet<8,>=3.0.2; extra == \"use-chardet-on-py3\""
+        ],
+        "verifiedSha256Files": 28,
+        "verifiedBytes": 232647,
+        "expectedUnhashedFiles": 20,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/requests-2.34.2.dist-info/licenses/LICENSE",
+            "sha256": "09e8a9bcec8067104652c168685ab0931e7868f9c8284b66f5ae6edae5f1130b"
+          },
+          {
+            "path": "Lib/site-packages/requests-2.34.2.dist-info/licenses/NOTICE",
+            "sha256": "f5110972dedad2b4e9d314518daf3b7d72d6e02e499acd802181de6f74571dcc"
+          }
+        ]
+      },
+      {
+        "name": "rich",
+        "version": "15.0.0",
+        "licenseExpression": "",
+        "licenseDeclaration": "MIT",
+        "licenseClassifiers": [
+          "License :: OSI Approved :: MIT License"
+        ],
+        "declaredLicenseFiles": [
+          "LICENSE"
+        ],
+        "requiresDist": [
+          "ipywidgets (>=7.5.1,<9) ; extra == \"jupyter\"",
+          "markdown-it-py (>=2.2.0)",
+          "pygments (>=2.13.0,<3.0.0)"
+        ],
+        "verifiedSha256Files": 107,
+        "verifiedBytes": 1238027,
+        "expectedUnhashedFiles": 101,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/rich-15.0.0.dist-info/licenses/LICENSE",
+            "sha256": "deed7c17a4318158190a3ea239cc879a5a50271cebb98ae7025f48fbe58dca15"
+          }
+        ]
+      },
+      {
+        "name": "safetensors",
+        "version": "0.8.0",
+        "licenseExpression": "",
+        "licenseDeclaration": "",
+        "licenseClassifiers": [
+          "License :: OSI Approved :: Apache Software License"
+        ],
+        "declaredLicenseFiles": [
+          "LICENSE"
+        ],
+        "requiresDist": [
+          "safetensors[torch] ; extra == 'all'",
+          "safetensors[numpy] ; extra == 'all'",
+          "safetensors[jax] ; extra == 'all'",
+          "safetensors[paddlepaddle] ; extra == 'all'",
+          "safetensors[convert] ; extra == 'all'",
+          "safetensors[quality] ; extra == 'all'",
+          "safetensors[testing] ; extra == 'all'",
+          "safetensors[torch] ; extra == 'convert'",
+          "huggingface-hub>=1.4 ; extra == 'convert'",
+          "safetensors[all] ; extra == 'dev'",
+          "safetensors[pinned-tf] ; extra == 'dev'",
+          "safetensors[numpy] ; extra == 'jax'",
+          "flax>=0.6.3 ; extra == 'jax'",
+          "jax>=0.3.25 ; extra == 'jax'",
+          "jaxlib>=0.3.25 ; extra == 'jax'",
+          "mlx>=0.0.9 ; extra == 'mlx'",
+          "numpy>=1.24.6 ; extra == 'numpy'",
+          "safetensors[numpy] ; extra == 'paddlepaddle'",
+          "paddlepaddle>=2.4.1 ; extra == 'paddlepaddle'",
+          "safetensors[numpy] ; extra == 'pinned-tf'",
+          "tensorflow==2.18.0 ; extra == 'pinned-tf'",
+          "ruff ; extra == 'quality'",
+          "safetensors[numpy] ; extra == 'tensorflow'",
+          "tensorflow>=2.11.0 ; extra == 'tensorflow'",
+          "safetensors[numpy] ; extra == 'testing'",
+          "h5py>=3.7.0 ; extra == 'testing'",
+          "setuptools-rust>=1.12.0 ; extra == 'testing'",
+          "pytest>=9.0 ; extra == 'testing'",
+          "pytest-benchmark>=5.2 ; extra == 'testing'",
+          "hypothesis>=6.70.2 ; extra == 'testing'",
+          "fsspec>=2024.6.0 ; extra == 'testing'",
+          "s3fs>=2024.6.0 ; extra == 'testing'",
+          "safetensors[numpy] ; extra == 'tf-nightly'",
+          "tf-nightly ; extra == 'tf-nightly'",
+          "safetensors[numpy] ; extra == 'torch'",
+          "torch>=2.4 ; extra == 'torch'"
+        ],
+        "verifiedSha256Files": 17,
+        "verifiedBytes": 847373,
+        "expectedUnhashedFiles": 8,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/safetensors-0.8.0.dist-info/licenses/LICENSE",
+            "sha256": "1eb85fc97224598dad1852b5d6483bbcf0aa8608790dcc657a5a2a761ae9c8c6"
+          }
+        ]
+      },
+      {
+        "name": "scipy",
+        "version": "1.18.1",
+        "licenseExpression": "",
+        "licenseDeclaration": "[full text retained in installed METADATA]",
+        "licenseClassifiers": [
+          "License :: OSI Approved :: BSD License"
+        ],
+        "declaredLicenseFiles": [],
+        "requiresDist": [
+          "numpy<2.8,>=2.0.0",
+          "pytest>=8.0.0; extra == \"test\"",
+          "pytest-cov; extra == \"test\"",
+          "pytest-timeout; extra == \"test\"",
+          "pytest-xdist; extra == \"test\"",
+          "asv; extra == \"test\"",
+          "mpmath; extra == \"test\"",
+          "gmpy2; extra == \"test\"",
+          "threadpoolctl; extra == \"test\"",
+          "scikit-umfpack; extra == \"test\"",
+          "pooch; extra == \"test\"",
+          "hypothesis>=6.30; extra == \"test\"",
+          "array-api-strict>=2.3.1; extra == \"test\"",
+          "Cython; extra == \"test\"",
+          "meson; extra == \"test\"",
+          "ninja; sys_platform != \"emscripten\" and extra == \"test\"",
+          "scipy-doctest>=2.0.0; extra == \"test\"",
+          "sphinx<8.2.0,>=5.0.0; extra == \"doc\"",
+          "intersphinx_registry; extra == \"doc\"",
+          "pydata-sphinx-theme>=0.15.2; extra == \"doc\"",
+          "sphinx-copybutton; extra == \"doc\"",
+          "sphinx-design>=0.4.0; extra == \"doc\"",
+          "matplotlib>=3.5; extra == \"doc\"",
+          "numpydoc; extra == \"doc\"",
+          "jupytext; extra == \"doc\"",
+          "myst-nb>=1.2.0; extra == \"doc\"",
+          "pooch; extra == \"doc\"",
+          "jupyterlite-sphinx>=0.19.1; extra == \"doc\"",
+          "jupyterlite-pyodide-kernel; extra == \"doc\"",
+          "linkify-it-py; extra == \"doc\"",
+          "tabulate; extra == \"doc\"",
+          "click<8.3.0; extra == \"dev\"",
+          "spin; extra == \"dev\"",
+          "mypy==1.19.1; extra == \"dev\"",
+          "pyrefly==0.63.0; extra == \"dev\"",
+          "typing_extensions; extra == \"dev\"",
+          "types-psutil; extra == \"dev\"",
+          "pycodestyle; extra == \"dev\"",
+          "ruff>=0.12.0; extra == \"dev\"",
+          "cython-lint>=0.12.2; extra == \"dev\""
+        ],
+        "verifiedSha256Files": 1537,
+        "verifiedBytes": 107783107,
+        "expectedUnhashedFiles": 989,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/scipy-1.18.1.dist-info/LICENSE.txt",
+            "sha256": "f0f5c56b298ec9795df1199edc328a987242716d14a1bde6813112e22dc15f99"
+          }
+        ]
+      },
+      {
+        "name": "sentencepiece",
+        "version": "0.2.2",
+        "licenseExpression": "Apache-2.0",
+        "licenseDeclaration": "",
+        "licenseClassifiers": [],
+        "declaredLicenseFiles": [],
+        "requiresDist": [
+          "numpy; extra == \"numpy\"",
+          "protobuf; extra == \"protobuf\"",
+          "pytest; extra == \"test\"",
+          "numpy; extra == \"test\"",
+          "protobuf; extra == \"test\""
+        ],
+        "verifiedSha256Files": 18,
+        "verifiedBytes": 2612868,
+        "expectedUnhashedFiles": 5,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": []
+      },
+      {
+        "name": "setuptools",
+        "version": "84.0.0",
+        "licenseExpression": "MIT",
+        "licenseDeclaration": "",
+        "licenseClassifiers": [],
+        "declaredLicenseFiles": [
+          "LICENSE"
+        ],
+        "requiresDist": [
+          "pytest!=8.1.*,>=6; extra == \"test\"",
+          "virtualenv>=13.0.0; extra == \"test\"",
+          "wheel>=0.44.0; extra == \"test\"",
+          "pip>=19.1; extra == \"test\"",
+          "packaging>=24.2; extra == \"test\"",
+          "jaraco.envs>=2.2; extra == \"test\"",
+          "pytest-xdist>=3; extra == \"test\"",
+          "jaraco.path>=3.7.2; extra == \"test\"",
+          "build[virtualenv]>=1.0.3; extra == \"test\"",
+          "filelock>=3.4.0; extra == \"test\"",
+          "ini2toml[lite]>=0.14; extra == \"test\"",
+          "tomli-w>=1.0.0; extra == \"test\"",
+          "pytest-timeout; extra == \"test\"",
+          "pytest-perf; sys_platform != \"cygwin\" and extra == \"test\"",
+          "jaraco.develop>=7.21; (python_version >= \"3.9\" and sys_platform != \"cygwin\") and extra == \"test\"",
+          "pytest-home>=0.5; extra == \"test\"",
+          "pytest-subprocess; extra == \"test\"",
+          "pyproject-hooks!=1.1; extra == \"test\"",
+          "jaraco.test>=5.5; extra == \"test\"",
+          "sphinx>=3.5; extra == \"doc\"",
+          "jaraco.packaging>=9.3; extra == \"doc\"",
+          "rst.linker>=1.9; extra == \"doc\"",
+          "furo; extra == \"doc\"",
+          "sphinx-lint; extra == \"doc\"",
+          "jaraco.tidelift>=1.4; extra == \"doc\"",
+          "pygments-github-lexers==0.0.5; extra == \"doc\"",
+          "sphinx-favicon; extra == \"doc\"",
+          "sphinx-inline-tabs; extra == \"doc\"",
+          "sphinx-reredirects; extra == \"doc\"",
+          "sphinxcontrib-towncrier; extra == \"doc\"",
+          "sphinx-notfound-page<2,>=1; extra == \"doc\"",
+          "pyproject-hooks!=1.1; extra == \"doc\"",
+          "towncrier<24.7; extra == \"doc\"",
+          "packaging>=24.2; extra == \"core\"",
+          "more_itertools>=8.8; extra == \"core\"",
+          "jaraco.text>=3.7; extra == \"core\"",
+          "importlib_metadata>=6; python_version < \"3.10\" and extra == \"core\"",
+          "tomli>=2.0.1; python_version < \"3.11\" and extra == \"core\"",
+          "wheel>=0.43.0; extra == \"core\"",
+          "jaraco.functools>=4; extra == \"core\"",
+          "more_itertools; extra == \"core\"",
+          "pytest-checkdocs>=2.14; extra == \"check\"",
+          "pytest-ruff>=0.2.1; sys_platform != \"cygwin\" and extra == \"check\"",
+          "ruff>=0.13.0; sys_platform != \"cygwin\" and extra == \"check\"",
+          "pytest-cov; extra == \"cover\"",
+          "pytest-enabler>=3.4; extra == \"enabler\"",
+          "pytest-mypy>=1.0.1; platform_python_implementation != \"PyPy\" and extra == \"type\"",
+          "mypy==1.18.*; extra == \"type\"",
+          "importlib_metadata>=7.0.2; python_version < \"3.10\" and extra == \"type\"",
+          "jaraco.develop>=7.21; sys_platform != \"cygwin\" and extra == \"type\""
+        ],
+        "verifiedSha256Files": 345,
+        "verifiedBytes": 2740401,
+        "expectedUnhashedFiles": 225,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/setuptools-84.0.0.dist-info/licenses/LICENSE",
+            "sha256": "86da0f01aeae46348a3c3d465195dc1ceccde79f79e87769a64b8da04b2a4741"
+          }
+        ]
+      },
+      {
+        "name": "shellingham",
+        "version": "1.5.4",
+        "licenseExpression": "",
+        "licenseDeclaration": "ISC License",
+        "licenseClassifiers": [
+          "License :: OSI Approved :: ISC License (ISCL)"
+        ],
+        "declaredLicenseFiles": [
+          "LICENSE"
+        ],
+        "requiresDist": [],
+        "verifiedSha256Files": 15,
+        "verifiedBytes": 17708,
+        "expectedUnhashedFiles": 8,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/shellingham-1.5.4.dist-info/LICENSE",
+            "sha256": "f388fd38cad13112c1dc0f669bbe80e7f84541edbafb72f3030d2ca7642c3c9d"
+          }
+        ]
+      },
+      {
+        "name": "simpleeval",
+        "version": "1.0.8",
+        "licenseExpression": "",
+        "licenseDeclaration": "MIT",
+        "licenseClassifiers": [
+          "License :: OSI Approved :: MIT License"
+        ],
+        "declaredLicenseFiles": [],
+        "requiresDist": [],
+        "verifiedSha256Files": 7,
+        "verifiedBytes": 54832,
+        "expectedUnhashedFiles": 2,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/simpleeval-1.0.8.dist-info/licenses/LICENCE",
+            "sha256": "482b4c83a3f019088cf3739351565dccd6d475fce224eecccd0344bbd0b770dd"
+          }
+        ]
+      },
+      {
+        "name": "spandrel",
+        "version": "0.4.2",
+        "licenseExpression": "",
+        "licenseDeclaration": "MIT",
+        "licenseClassifiers": [
+          "License :: OSI Approved :: MIT License"
+        ],
+        "declaredLicenseFiles": [],
+        "requiresDist": [
+          "torch",
+          "torchvision",
+          "safetensors",
+          "numpy",
+          "einops",
+          "typing_extensions"
+        ],
+        "verifiedSha256Files": 177,
+        "verifiedBytes": 1246123,
+        "expectedUnhashedFiles": 172,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": []
+      },
+      {
+        "name": "SQLAlchemy",
+        "version": "2.1.1",
+        "licenseExpression": "MIT",
+        "licenseDeclaration": "",
+        "licenseClassifiers": [],
+        "declaredLicenseFiles": [
+          "LICENSE",
+          "AUTHORS"
+        ],
+        "requiresDist": [
+          "typing-extensions>=4.6.0",
+          "greenlet>=1; extra == \"asyncio\"",
+          "mypy>=2.3; extra == \"mypy\"",
+          "types-greenlet>=2; extra == \"mypy\"",
+          "pyodbc; extra == \"mssql\"",
+          "pymssql; extra == \"mssql-pymssql\"",
+          "pyodbc; extra == \"mssql-pyodbc\"",
+          "mssql-python>=1.9.0; extra == \"mssql-python\"",
+          "mysqlclient>=1.4.0; extra == \"mysql\"",
+          "mysql-connector-python; extra == \"mysql-connector\"",
+          "mariadb!=1.1.10,!=1.1.2,!=1.1.5,>=1.0.1; extra == \"mariadb-connector\"",
+          "oracledb>=2.0.1; extra == \"oracle\"",
+          "cx_oracle>=8; extra == \"oracle-cxoracle\"",
+          "oracledb>=2.0.1; extra == \"oracle-oracledb\"",
+          "psycopg!=3.1.15,>=3.0.7; extra == \"postgresql\"",
+          "pg8000>=1.29.3; extra == \"postgresql-pg8000\"",
+          "sqlalchemy[asyncio]; extra == \"postgresql-asyncpg\"",
+          "asyncpg; extra == \"postgresql-asyncpg\"",
+          "psycopg2-binary; extra == \"postgresql-psycopg2binary\"",
+          "psycopg2cffi; extra == \"postgresql-psycopg2cffi\"",
+          "psycopg!=3.1.15,>=3.0.7; extra == \"postgresql-psycopg\"",
+          "psycopg[binary]!=3.1.15,>=3.0.7; extra == \"postgresql-psycopgbinary\"",
+          "pymysql; extra == \"pymysql\"",
+          "cymysql; extra == \"cymysql\"",
+          "sqlalchemy[asyncio]; extra == \"aiomysql\"",
+          "aiomysql; extra == \"aiomysql\"",
+          "sqlalchemy[asyncio]; extra == \"aioodbc\"",
+          "aioodbc; extra == \"aioodbc\"",
+          "sqlalchemy[asyncio]; extra == \"asyncmy\"",
+          "asyncmy>=0.2.12; extra == \"asyncmy\"",
+          "sqlalchemy[asyncio]; extra == \"aiosqlite\"",
+          "aiosqlite; extra == \"aiosqlite\"",
+          "sqlcipher3_binary; extra == \"sqlcipher\""
+        ],
+        "verifiedSha256Files": 278,
+        "verifiedBytes": 9619982,
+        "expectedUnhashedFiles": 259,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/sqlalchemy-2.1.1.dist-info/licenses/AUTHORS",
+            "sha256": "11c9de6af24a1ce9db33019364c1c2441509d7dda13dc0949f1a4b83621b2195"
+          },
+          {
+            "path": "Lib/site-packages/sqlalchemy-2.1.1.dist-info/licenses/LICENSE",
+            "sha256": "9bb754071e711cf75728b9051b170bfb8f9e3b879c08386c96a36989c42cd5f1"
+          }
+        ]
+      },
+      {
+        "name": "sympy",
+        "version": "1.14.0",
+        "licenseExpression": "",
+        "licenseDeclaration": "BSD",
+        "licenseClassifiers": [
+          "License :: OSI Approved :: BSD License"
+        ],
+        "declaredLicenseFiles": [
+          "LICENSE",
+          "AUTHORS"
+        ],
+        "requiresDist": [
+          "mpmath<1.4,>=1.1.0",
+          "pytest>=7.1.0; extra == \"dev\"",
+          "hypothesis>=6.70.0; extra == \"dev\""
+        ],
+        "verifiedSha256Files": 1573,
+        "verifiedBytes": 26805083,
+        "expectedUnhashedFiles": 1534,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/sympy-1.14.0.dist-info/licenses/AUTHORS",
+            "sha256": "82b1038521b0696c63c90b31ed4a0a2c9c4c16871c648b157b07ca44b6f18f8d"
+          },
+          {
+            "path": "Lib/site-packages/sympy-1.14.0.dist-info/licenses/LICENSE",
+            "sha256": "07a5e9819f727b4986ad2829c7a29a6320d42575f720eb24d71b7fef573a0286"
+          }
+        ]
+      },
+      {
+        "name": "tokenizers",
+        "version": "0.23.2",
+        "licenseExpression": "",
+        "licenseDeclaration": "",
+        "licenseClassifiers": [
+          "License :: OSI Approved :: Apache Software License"
+        ],
+        "declaredLicenseFiles": [],
+        "requiresDist": [
+          "huggingface-hub>=0.16.4,<2.0",
+          "tokenizers[testing] ; extra == 'dev'",
+          "sphinx ; extra == 'docs'",
+          "sphinx-rtd-theme ; extra == 'docs'",
+          "setuptools-rust ; extra == 'docs'",
+          "pytest ; extra == 'testing'",
+          "pytest-asyncio ; extra == 'testing'",
+          "requests ; extra == 'testing'",
+          "numpy ; extra == 'testing'",
+          "datasets ; extra == 'testing'",
+          "ruff ; extra == 'testing'",
+          "ty ; extra == 'testing'"
+        ],
+        "verifiedSha256Files": 34,
+        "verifiedBytes": 8237971,
+        "expectedUnhashedFiles": 17,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": []
+      },
+      {
+        "name": "torch",
+        "version": "2.14.0+cu130",
+        "licenseExpression": "Apache-2.0 AND Apache-2.0 WITH LLVM-exception AND BSD-2-Clause AND BSD-3-Clause AND BSL-1.0 AND MIT",
+        "licenseDeclaration": "",
+        "licenseClassifiers": [],
+        "declaredLicenseFiles": [
+          "LICENSE",
+          "third_party/aiter/3rdparty/composable_kernel/docs/LICENSE.rst",
+          "third_party/aiter/3rdparty/composable_kernel/LICENSE",
+          "third_party/aiter/LICENSE",
+          "third_party/benchmark/LICENSE",
+          "third_party/composable_kernel/docs/LICENSE.rst",
+          "third_party/composable_kernel/LICENSE",
+          "third_party/cpp-httplib/LICENSE",
+          "third_party/cpuinfo/deps/clog/LICENSE",
+          "third_party/cpuinfo/LICENSE",
+          "third_party/cudnn_frontend/LICENSE.txt",
+          "third_party/cutlass/LICENSE.txt",
+          "third_party/cutlass/python/LICENSE.txt",
+          "third_party/fbgemm/external/composable_kernel/docs/LICENSE.rst",
+          "third_party/fbgemm/external/composable_kernel/LICENSE",
+          "third_party/fbgemm/external/cpuinfo/deps/clog/LICENSE",
+          "third_party/fbgemm/external/cpuinfo/LICENSE",
+          "third_party/fbgemm/external/cutlass/LICENSE.txt",
+          "third_party/fbgemm/external/cutlass/python/LICENSE.txt",
+          "third_party/fbgemm/external/googletest/LICENSE",
+          "third_party/fbgemm/external/hipify_torch/LICENSE.txt",
+          "third_party/fbgemm/fbgemm_gpu/docs/src/general/LICENSE.rst",
+          "third_party/fbgemm/fbgemm_gpu/experimental/hstu/LICENSE",
+          "third_party/fbgemm/fbgemm_gpu/src/quantize_ops/mx/LICENSE",
+          "third_party/fbgemm/fbgemm_gpu/test/quantize/mx/LICENSE",
+          "third_party/fbgemm/LICENSE",
+          "third_party/flash-attention/csrc/composable_kernel/docs/LICENSE.rst",
+          "third_party/flash-attention/csrc/composable_kernel/LICENSE",
+          "third_party/flash-attention/csrc/cutlass/LICENSE.txt",
+          "third_party/flash-attention/csrc/cutlass/python/LICENSE.txt",
+          "third_party/flash-attention/flash_attn/cute/LICENSE",
+          "third_party/flash-attention/LICENSE",
+          "third_party/flash-attention/third_party/aiter/3rdparty/composable_kernel/docs/LICENSE.rst",
+          "third_party/flash-attention/third_party/aiter/3rdparty/composable_kernel/LICENSE",
+          "third_party/flash-attention/third_party/aiter/LICENSE",
+          "third_party/flatbuffers/dart/LICENSE",
+          "third_party/flatbuffers/LICENSE",
+          "third_party/flatbuffers/swift/LICENSE",
+          "third_party/fmt/LICENSE",
+          "third_party/FP16/LICENSE",
+          "third_party/FXdiv/LICENSE",
+          "third_party/gemmlowp/gemmlowp/LICENSE",
+          "third_party/gloo/LICENSE",
+          "third_party/googletest/LICENSE",
+          "third_party/ideep/LICENSE",
+          "third_party/ideep/mkl-dnn/LICENSE",
+          "third_party/ideep/mkl-dnn/third_party/gtest/LICENSE",
+          "third_party/ideep/mkl-dnn/third_party/opencl/LICENSE",
+          "third_party/kineto/libkineto/third_party/dynolog_headers/LICENSE",
+          "third_party/kineto/libkineto/third_party/fmt/LICENSE",
+          "third_party/kineto/libkineto/third_party/googletest/LICENSE",
+          "third_party/kineto/LICENSE",
+          "third_party/llvm-openmp/LICENSE.txt",
+          "third_party/mimalloc/LICENSE",
+          "third_party/miniz-3.0.2/LICENSE",
+          "third_party/mslk/external/composable_kernel/docs/LICENSE.rst",
+          "third_party/mslk/external/composable_kernel/LICENSE",
+          "third_party/mslk/external/cutlass/LICENSE.txt",
+          "third_party/mslk/external/cutlass/python/LICENSE.txt",
+          "third_party/mslk/external/googletest/LICENSE",
+          "third_party/mslk/external/hipify_torch/LICENSE.txt",
+          "third_party/mslk/LICENSE",
+          "third_party/mslk/mslk/attention/flash_attn/LICENSE",
+          "third_party/NNPACK/LICENSE",
+          "third_party/NVTX/docs/LICENSE.txt",
+          "third_party/NVTX/LICENSE.txt",
+          "third_party/NVTX/python/LICENSE.txt",
+          "third_party/NVTX/rust/LICENSE",
+          "third_party/NVTX/tools/docs/github-markdown-css/LICENSE",
+          "third_party/onnx/LICENSE",
+          "third_party/onnx/third_party/pybind11/LICENSE",
+          "third_party/perfetto/LICENSE",
+          "third_party/protobuf/LICENSE",
+          "third_party/protobuf/third_party/benchmark/LICENSE",
+          "third_party/protobuf/third_party/googletest/googlemock/LICENSE",
+          "third_party/protobuf/third_party/googletest/googlemock/scripts/generator/LICENSE",
+          "third_party/protobuf/third_party/googletest/googletest/LICENSE",
+          "third_party/protobuf/third_party/googletest/LICENSE",
+          "third_party/protobuf/third_party/utf8_range/LICENSE",
+          "third_party/psimd/LICENSE",
+          "third_party/pthreadpool/LICENSE",
+          "third_party/pybind11/LICENSE",
+          "third_party/python-peachpy/LICENSE.rst",
+          "third_party/sleef/LICENSE.txt",
+          "third_party/tensorpipe/LICENSE.txt",
+          "third_party/tensorpipe/third_party/googletest/googlemock/LICENSE",
+          "third_party/tensorpipe/third_party/googletest/googlemock/scripts/generator/LICENSE",
+          "third_party/tensorpipe/third_party/googletest/googletest/LICENSE",
+          "third_party/tensorpipe/third_party/googletest/LICENSE",
+          "third_party/tensorpipe/third_party/libnop/LICENSE",
+          "third_party/tensorpipe/third_party/libuv/LICENSE",
+          "third_party/tensorpipe/third_party/pybind11/LICENSE",
+          "third_party/tensorpipe/third_party/pybind11/tools/clang/LICENSE.txt",
+          "third_party/VulkanMemoryAllocator/LICENSE.txt",
+          "third_party/XNNPACK/LICENSE"
+        ],
+        "requiresDist": [
+          "filelock",
+          "typing-extensions>=4.10.0",
+          "setuptools>=77.0.3",
+          "sympy>=1.13.3",
+          "networkx>=2.5.1",
+          "jinja2",
+          "fsspec>=0.8.5",
+          "optree>=0.13.0; extra == \"optree\"",
+          "opt-einsum>=3.3; extra == \"opt-einsum\"",
+          "pyyaml; extra == \"pyyaml\""
+        ],
+        "verifiedSha256Files": 12251,
+        "verifiedBytes": 3018047999,
+        "expectedUnhashedFiles": 2438,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/LICENSE",
+            "sha256": "0fc92425d130d9c87a5eb7427082e3afdbff6ef169bc678e15abba4c2d37c934"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/FP16/LICENSE",
+            "sha256": "68349589306bdfa3631ac7f84633956bf21b6a448ed5e43383ea75a8a5f54e4c"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/FXdiv/LICENSE",
+            "sha256": "9e7b48284b1aef91999d1967d093711bab8f3bbbaf31e0670ab7a3af077c0a2b"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/NNPACK/LICENSE",
+            "sha256": "a4dadeb3d59219de6cdf5cb6bf920760103eed9ae5af2e71b0e8462645397b66"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/NVTX/LICENSE.txt",
+            "sha256": "c3b19baa37cf18bac07b65700824acadcfa617316f02af10d3852ed20f4f6ab8"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/NVTX/docs/LICENSE.txt",
+            "sha256": "c3b19baa37cf18bac07b65700824acadcfa617316f02af10d3852ed20f4f6ab8"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/NVTX/python/LICENSE.txt",
+            "sha256": "c3b19baa37cf18bac07b65700824acadcfa617316f02af10d3852ed20f4f6ab8"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/NVTX/rust/LICENSE",
+            "sha256": "4baebe905073b57ce85f6a0aeb242cac589181f6574c0dc87993c25d9bcf4775"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/NVTX/tools/docs/github-markdown-css/LICENSE",
+            "sha256": "fcf1a18be2e25ba82acf2c59821b030d8ee764e4e201db6ef3c51900d385515f"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/VulkanMemoryAllocator/LICENSE.txt",
+            "sha256": "e5fc8b0b0357a75d63649c8f2552576aaa6941c361a013710bb53afc64d3a8aa"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/XNNPACK/LICENSE",
+            "sha256": "4805a18e3c617424da5b7f6d8b9fde3df2fb6a5e26a6b6663a6cdb66db664d8c"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/aiter/3rdparty/composable_kernel/LICENSE",
+            "sha256": "99ec4452f4047b6c53016a502bf94451eb317eff5aab5f63cebc16f94020d64f"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/aiter/3rdparty/composable_kernel/docs/LICENSE.rst",
+            "sha256": "81c3c62d810d7277f0583179df2a28a997b013f389f97778e9e7480114e0ca06"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/aiter/LICENSE",
+            "sha256": "844e3a38ca6f748e10eb63f07eb343ddca3b5a0a6bb40b0f621fcc54ea03deb3"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/benchmark/LICENSE",
+            "sha256": "3ddf9be5c28fe27dad143a5dc76eea25222ad1dd68934a047064e56ed2fa40c5"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/composable_kernel/LICENSE",
+            "sha256": "99ec4452f4047b6c53016a502bf94451eb317eff5aab5f63cebc16f94020d64f"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/composable_kernel/docs/LICENSE.rst",
+            "sha256": "81c3c62d810d7277f0583179df2a28a997b013f389f97778e9e7480114e0ca06"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/cpp-httplib/LICENSE",
+            "sha256": "bb546eae5924d8ee842e0e567e6d533c5824bdebccf605f99a5b3429034e6697"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/cpuinfo/LICENSE",
+            "sha256": "8477bdd6a4d9f5178e5dfda1e32239c7b09c9d6da3804ae3e5c1a80210c0dd21"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/cpuinfo/deps/clog/LICENSE",
+            "sha256": "8c29231fd0034d4b1caaae8c0a63bce71f95cd8c4b0494c8588930b75c3d2155"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/cudnn_frontend/LICENSE.txt",
+            "sha256": "b6fe452605fe29245f0cbafa724b42df94a5e170bedb9d45bc9cfaa4883ad907"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/cutlass/LICENSE.txt",
+            "sha256": "10e174914fb737aec2d32762bd2e45861acb5ebf1656bee6cf575a6019a08cf0"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/cutlass/python/LICENSE.txt",
+            "sha256": "932c16f6c4f0187eda3af18df07300f8807eda85ca974bf46c5ed11fd91e5c2f"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/fbgemm/LICENSE",
+            "sha256": "5d5d5b022ecf828c796a64ad7afcfd62971bf58a52b71668cd48137ca02824c5"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/fbgemm/external/composable_kernel/LICENSE",
+            "sha256": "99ec4452f4047b6c53016a502bf94451eb317eff5aab5f63cebc16f94020d64f"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/fbgemm/external/composable_kernel/docs/LICENSE.rst",
+            "sha256": "81c3c62d810d7277f0583179df2a28a997b013f389f97778e9e7480114e0ca06"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/fbgemm/external/cpuinfo/LICENSE",
+            "sha256": "8477bdd6a4d9f5178e5dfda1e32239c7b09c9d6da3804ae3e5c1a80210c0dd21"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/fbgemm/external/cpuinfo/deps/clog/LICENSE",
+            "sha256": "8c29231fd0034d4b1caaae8c0a63bce71f95cd8c4b0494c8588930b75c3d2155"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/fbgemm/external/cutlass/LICENSE.txt",
+            "sha256": "3288ff56f62ade1ef032bd860b6d92482f83f1d3073ad5125b87228b9c11e0a8"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/fbgemm/external/cutlass/python/LICENSE.txt",
+            "sha256": "6b9e8b964c2a90f7743107a23bccec9ebc6f5a47d4a8fa3d986aa6f51f86da68"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/fbgemm/external/googletest/LICENSE",
+            "sha256": "46c35a3c9ac8ef63c16ca69b5cf0166df9fcdb789e318175c92a219de517b8e7"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/fbgemm/external/hipify_torch/LICENSE.txt",
+            "sha256": "e63d8a0f5ab5cc02d848c6ef51b7bea58644a07223aa0acdb905260a1031b2e6"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/fbgemm/fbgemm_gpu/docs/src/general/LICENSE.rst",
+            "sha256": "4f8f489489bc1ac9608b13243e6dbeb28070cefd6da94de0784cc919afbf10f6"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/fbgemm/fbgemm_gpu/experimental/hstu/LICENSE",
+            "sha256": "c364d38c8ee8070159ad68f56a8bab4917b8d020548da33a01e036505c8e4add"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/fbgemm/fbgemm_gpu/src/quantize_ops/mx/LICENSE",
+            "sha256": "9906940f61b1f0b533fa7d99baf55178b2808fbe113ea51dfbfad8572ccd5f2b"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/fbgemm/fbgemm_gpu/test/quantize/mx/LICENSE",
+            "sha256": "9906940f61b1f0b533fa7d99baf55178b2808fbe113ea51dfbfad8572ccd5f2b"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/flash-attention/LICENSE",
+            "sha256": "c364d38c8ee8070159ad68f56a8bab4917b8d020548da33a01e036505c8e4add"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/flash-attention/csrc/composable_kernel/LICENSE",
+            "sha256": "99ec4452f4047b6c53016a502bf94451eb317eff5aab5f63cebc16f94020d64f"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/flash-attention/csrc/composable_kernel/docs/LICENSE.rst",
+            "sha256": "81c3c62d810d7277f0583179df2a28a997b013f389f97778e9e7480114e0ca06"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/flash-attention/csrc/cutlass/LICENSE.txt",
+            "sha256": "3288ff56f62ade1ef032bd860b6d92482f83f1d3073ad5125b87228b9c11e0a8"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/flash-attention/csrc/cutlass/python/LICENSE.txt",
+            "sha256": "6b9e8b964c2a90f7743107a23bccec9ebc6f5a47d4a8fa3d986aa6f51f86da68"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/flash-attention/flash_attn/cute/LICENSE",
+            "sha256": "c364d38c8ee8070159ad68f56a8bab4917b8d020548da33a01e036505c8e4add"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/flash-attention/third_party/aiter/3rdparty/composable_kernel/LICENSE",
+            "sha256": "99ec4452f4047b6c53016a502bf94451eb317eff5aab5f63cebc16f94020d64f"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/flash-attention/third_party/aiter/3rdparty/composable_kernel/docs/LICENSE.rst",
+            "sha256": "81c3c62d810d7277f0583179df2a28a997b013f389f97778e9e7480114e0ca06"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/flash-attention/third_party/aiter/LICENSE",
+            "sha256": "844e3a38ca6f748e10eb63f07eb343ddca3b5a0a6bb40b0f621fcc54ea03deb3"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/flatbuffers/LICENSE",
+            "sha256": "3ddf9be5c28fe27dad143a5dc76eea25222ad1dd68934a047064e56ed2fa40c5"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/flatbuffers/dart/LICENSE",
+            "sha256": "35cf0c0dca02767d12b9a8c12ae1b6a1c08045f220df4a52b0e01563a568fe6b"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/flatbuffers/swift/LICENSE",
+            "sha256": "3ddf9be5c28fe27dad143a5dc76eea25222ad1dd68934a047064e56ed2fa40c5"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/fmt/LICENSE",
+            "sha256": "e53b24254a17f6acdaf967557c287dca7e920b22cc6290f6a84d57c34d942a6e"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/gemmlowp/gemmlowp/LICENSE",
+            "sha256": "3ddf9be5c28fe27dad143a5dc76eea25222ad1dd68934a047064e56ed2fa40c5"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/gloo/LICENSE",
+            "sha256": "6247f690b423835966eba51cad47b4c7d6a72ca226733dd1c473e4624fe6bb23"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/googletest/LICENSE",
+            "sha256": "46c35a3c9ac8ef63c16ca69b5cf0166df9fcdb789e318175c92a219de517b8e7"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/ideep/LICENSE",
+            "sha256": "e1b43a11adfb7a5bd52089243a273ab85f0a695d0437bb34a418969501392573"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/ideep/mkl-dnn/LICENSE",
+            "sha256": "b1dd911e534a75dd4dfd8dbc11a3193bd177c8390e7fcf462f98d2c8c235e112"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/ideep/mkl-dnn/third_party/gtest/LICENSE",
+            "sha256": "46c35a3c9ac8ef63c16ca69b5cf0166df9fcdb789e318175c92a219de517b8e7"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/ideep/mkl-dnn/third_party/opencl/LICENSE",
+            "sha256": "3ddf9be5c28fe27dad143a5dc76eea25222ad1dd68934a047064e56ed2fa40c5"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/kineto/LICENSE",
+            "sha256": "97729794764240cc12e0e22fe31b0cea824741c601bd09bd91b832e285e1f8c5"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/kineto/libkineto/third_party/dynolog_headers/LICENSE",
+            "sha256": "f08a94bfb0bdc1d7f1cb59badaf0f8c551b10db871185622dbf1fd036affa9cb"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/kineto/libkineto/third_party/fmt/LICENSE",
+            "sha256": "25b5db04aa6070c12ac518b91cbd0a59725c050ecb091456e6ebc3d3eeb369cf"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/kineto/libkineto/third_party/googletest/LICENSE",
+            "sha256": "46c35a3c9ac8ef63c16ca69b5cf0166df9fcdb789e318175c92a219de517b8e7"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/llvm-openmp/LICENSE.txt",
+            "sha256": "eb3eab74fe9245818659556acf23e81b8c8a24915a4a244a23804f3fcdf1fd9c"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/mimalloc/LICENSE",
+            "sha256": "82ade5d7d9b029044b5fbbc326207fc47c2d44ee4dd71e8a559c36d728217de9"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/miniz-3.0.2/LICENSE",
+            "sha256": "0115478d567121238cf6cc1c0c361926cf07a49d9e4c9e66da97fac6a01646b3"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/mslk/LICENSE",
+            "sha256": "322bba2f33f594948052de342fd7d5bd26892e2a92ba75fbb5a433eff0b229c7"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/mslk/external/composable_kernel/LICENSE",
+            "sha256": "99ec4452f4047b6c53016a502bf94451eb317eff5aab5f63cebc16f94020d64f"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/mslk/external/composable_kernel/docs/LICENSE.rst",
+            "sha256": "81c3c62d810d7277f0583179df2a28a997b013f389f97778e9e7480114e0ca06"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/mslk/external/cutlass/LICENSE.txt",
+            "sha256": "3288ff56f62ade1ef032bd860b6d92482f83f1d3073ad5125b87228b9c11e0a8"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/mslk/external/cutlass/python/LICENSE.txt",
+            "sha256": "6b9e8b964c2a90f7743107a23bccec9ebc6f5a47d4a8fa3d986aa6f51f86da68"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/mslk/external/googletest/LICENSE",
+            "sha256": "46c35a3c9ac8ef63c16ca69b5cf0166df9fcdb789e318175c92a219de517b8e7"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/mslk/external/hipify_torch/LICENSE.txt",
+            "sha256": "e63d8a0f5ab5cc02d848c6ef51b7bea58644a07223aa0acdb905260a1031b2e6"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/mslk/mslk/attention/flash_attn/LICENSE",
+            "sha256": "c364d38c8ee8070159ad68f56a8bab4917b8d020548da33a01e036505c8e4add"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/onnx/LICENSE",
+            "sha256": "3ddf9be5c28fe27dad143a5dc76eea25222ad1dd68934a047064e56ed2fa40c5"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/onnx/third_party/pybind11/LICENSE",
+            "sha256": "5494773a5dcf654c0c3c844fbb11cfc4f898ea0ea44cf467f29e5c99097da6e7"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/perfetto/LICENSE",
+            "sha256": "6bef87f6b4eda6c3cf0f42f780967e192df6412e4933f0ffb106638629aa3364"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/protobuf/LICENSE",
+            "sha256": "f4df8b2457697851385d9ebb93267832c1dfa24e0e61881952f6b0c452663dc9"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/protobuf/third_party/benchmark/LICENSE",
+            "sha256": "3ddf9be5c28fe27dad143a5dc76eea25222ad1dd68934a047064e56ed2fa40c5"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/protobuf/third_party/googletest/LICENSE",
+            "sha256": "46c35a3c9ac8ef63c16ca69b5cf0166df9fcdb789e318175c92a219de517b8e7"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/protobuf/third_party/googletest/googlemock/LICENSE",
+            "sha256": "46c35a3c9ac8ef63c16ca69b5cf0166df9fcdb789e318175c92a219de517b8e7"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/protobuf/third_party/googletest/googlemock/scripts/generator/LICENSE",
+            "sha256": "e438ef741bf3660b5c54f4452d7c0b387c8557207cc3e9cda499e461a94df2b2"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/protobuf/third_party/googletest/googletest/LICENSE",
+            "sha256": "46c35a3c9ac8ef63c16ca69b5cf0166df9fcdb789e318175c92a219de517b8e7"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/protobuf/third_party/utf8_range/LICENSE",
+            "sha256": "2317ba964cb26897602b47271a156b2c9ee140d923fa25e8f2229f20d6f3a819"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/psimd/LICENSE",
+            "sha256": "6bc97741b2f00a1d0a2f8e9be4c8af7ff837f968fe8e494864caf57026cfdbcb"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/pthreadpool/LICENSE",
+            "sha256": "2aae36e3c88f88b5e8afff5ca8d05480745ba7ad7e8d62867293c604efc0ce46"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/pybind11/LICENSE",
+            "sha256": "5494773a5dcf654c0c3c844fbb11cfc4f898ea0ea44cf467f29e5c99097da6e7"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/python-peachpy/LICENSE.rst",
+            "sha256": "b74018ea5fe273c10868dec1c5b832865fa4cf5bc44715a004d172e0a49a3f23"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/sleef/LICENSE.txt",
+            "sha256": "beb8e42e9d6b4284e03304d05a81a0755200a965fc8d0a5e0aea1e84cf805d6e"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/tensorpipe/LICENSE.txt",
+            "sha256": "a51531fad20e44cae492c601bc0997d961c17a74f25f9473ff62eb70e108277d"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/tensorpipe/third_party/googletest/LICENSE",
+            "sha256": "46c35a3c9ac8ef63c16ca69b5cf0166df9fcdb789e318175c92a219de517b8e7"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/tensorpipe/third_party/googletest/googlemock/LICENSE",
+            "sha256": "46c35a3c9ac8ef63c16ca69b5cf0166df9fcdb789e318175c92a219de517b8e7"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/tensorpipe/third_party/googletest/googlemock/scripts/generator/LICENSE",
+            "sha256": "e438ef741bf3660b5c54f4452d7c0b387c8557207cc3e9cda499e461a94df2b2"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/tensorpipe/third_party/googletest/googletest/LICENSE",
+            "sha256": "46c35a3c9ac8ef63c16ca69b5cf0166df9fcdb789e318175c92a219de517b8e7"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/tensorpipe/third_party/libnop/LICENSE",
+            "sha256": "abd3ed80490d1d168f12f6ced5a558398640e6d375382c7b85d290689a222822"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/tensorpipe/third_party/libuv/LICENSE",
+            "sha256": "7aab26dd7e0e6661accc1fd9fc19410e01b466aa0ac36ea668b2013152a8ca23"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/tensorpipe/third_party/pybind11/LICENSE",
+            "sha256": "15619fd6ee80e905a159b8139f7791f5ae1dce142d5101d099404cc5cf1007ba"
+          },
+          {
+            "path": "Lib/site-packages/torch-2.14.0+cu130.dist-info/licenses/third_party/tensorpipe/third_party/pybind11/tools/clang/LICENSE.txt",
+            "sha256": "dcd8a8d43f2dc19ba6f879f3a7e96f59e66ecb195099f700dfdcfb50641c10c9"
+          }
+        ]
+      },
+      {
+        "name": "torchaudio",
+        "version": "2.11.0+cu130",
+        "licenseExpression": "",
+        "licenseDeclaration": "",
+        "licenseClassifiers": [
+          "License :: OSI Approved :: BSD License"
+        ],
+        "declaredLicenseFiles": [
+          "LICENSE"
+        ],
+        "requiresDist": [],
+        "verifiedSha256Files": 88,
+        "verifiedBytes": 8459799,
+        "expectedUnhashedFiles": 79,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/torchaudio-2.11.0+cu130.dist-info/licenses/LICENSE",
+            "sha256": "32638e179931bfe551eabf67b0e67a13b483e166b58dd7263634ab7f89f396f5"
+          }
+        ]
+      },
+      {
+        "name": "torchsde",
+        "version": "0.2.6",
+        "licenseExpression": "",
+        "licenseDeclaration": "",
+        "licenseClassifiers": [
+          "License :: OSI Approved :: Apache Software License"
+        ],
+        "declaredLicenseFiles": [
+          "LICENSE"
+        ],
+        "requiresDist": [
+          "numpy (>=1.19)",
+          "scipy (>=1.5)",
+          "torch (>=1.6.0)",
+          "trampoline (>=0.1.2)"
+        ],
+        "verifiedSha256Files": 39,
+        "verifiedBytes": 166590,
+        "expectedUnhashedFiles": 33,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/torchsde-0.2.6.dist-info/LICENSE",
+            "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+          }
+        ]
+      },
+      {
+        "name": "torchvision",
+        "version": "0.29.0+cu130",
+        "licenseExpression": "",
+        "licenseDeclaration": "BSD",
+        "licenseClassifiers": [],
+        "declaredLicenseFiles": [
+          "LICENSE"
+        ],
+        "requiresDist": [
+          "numpy",
+          "torch (==2.14.0)",
+          "pillow (!=8.3.*,>=5.3.0)",
+          "gdown (>=4.7.3) ; extra == 'gdown'",
+          "scipy ; extra == 'scipy'"
+        ],
+        "verifiedSha256Files": 200,
+        "verifiedBytes": 16338853,
+        "expectedUnhashedFiles": 186,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/torchvision-0.29.0+cu130.dist-info/LICENSE",
+            "sha256": "c06363f9d33627dc5173b13522444cc85fbb4739f63e16d4587d5c0a165b5b1e"
+          }
+        ]
+      },
+      {
+        "name": "tqdm",
+        "version": "4.70.1",
+        "licenseExpression": "",
+        "licenseDeclaration": "MPL-2.0 AND MIT",
+        "licenseClassifiers": [],
+        "declaredLicenseFiles": [
+          "LICENCE"
+        ],
+        "requiresDist": [
+          "colorama; platform_system == \"Windows\"",
+          "requests; extra == \"discord\"",
+          "envwrap; extra == \"discord\"",
+          "slack-sdk; extra == \"slack\"",
+          "envwrap; extra == \"slack\"",
+          "requests; extra == \"telegram\"",
+          "envwrap; extra == \"telegram\"",
+          "ipywidgets>=6; extra == \"notebook\""
+        ],
+        "verifiedSha256Files": 42,
+        "verifiedBytes": 339169,
+        "expectedUnhashedFiles": 32,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/tqdm-4.70.1.dist-info/licenses/LICENCE",
+            "sha256": "fcff87c3a47ce8028a8512aa182d4fcf0ad1c90544ee75cf9b343684cac194de"
+          }
+        ]
+      },
+      {
+        "name": "trampoline",
+        "version": "0.1.2",
+        "licenseExpression": "",
+        "licenseDeclaration": "MIT",
+        "licenseClassifiers": [
+          "License :: OSI Approved :: MIT License"
+        ],
+        "declaredLicenseFiles": [],
+        "requiresDist": [],
+        "verifiedSha256Files": 7,
+        "verifiedBytes": 11635,
+        "expectedUnhashedFiles": 2,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": []
+      },
+      {
+        "name": "transformers",
+        "version": "5.17.0",
+        "licenseExpression": "",
+        "licenseDeclaration": "Apache 2.0 License",
+        "licenseClassifiers": [],
+        "declaredLicenseFiles": [
+          "LICENSE"
+        ],
+        "requiresDist": [
+          "huggingface-hub<2.0,>=1.5.0",
+          "numpy>=1.17",
+          "packaging>=20.0",
+          "pyyaml>=5.1",
+          "regex>=2025.10.22",
+          "tokenizers<0.24.0,>=0.23.1",
+          "typer",
+          "safetensors>=0.8.0",
+          "tqdm>=4.60",
+          "torch>=2.5; extra == \"torch\"",
+          "accelerate>=1.1.0; extra == \"torch\"",
+          "torchvision; extra == \"vision\"",
+          "Pillow<=15.0,>=10.0.1; extra == \"vision\"",
+          "torchaudio; extra == \"audio\"",
+          "librosa; extra == \"audio\"",
+          "pyctcdecode>=0.4.0; extra == \"audio\"",
+          "phonemizer; extra == \"audio\"",
+          "av; extra == \"video\"",
+          "timm>=1.0.23; extra == \"timm\"",
+          "datasets>=2.15.0; extra == \"quality\"",
+          "ruff==0.14.10; extra == \"quality\"",
+          "GitPython<3.1.19; extra == \"quality\"",
+          "urllib3<2.0.0; extra == \"quality\"",
+          "libcst; extra == \"quality\"",
+          "rich; extra == \"quality\"",
+          "ty==0.0.20; extra == \"quality\"",
+          "tomli; extra == \"quality\"",
+          "transformers-mlinter==0.1.5; extra == \"quality\"",
+          "hf-doc-builder; extra == \"docs\"",
+          "kernels<0.17,>=0.16.0; extra == \"kernels\"",
+          "sentencepiece!=0.1.92,>=0.1.91; extra == \"sentencepiece\"",
+          "protobuf; extra == \"sentencepiece\"",
+          "tiktoken; extra == \"tiktoken\"",
+          "blobfile; extra == \"tiktoken\"",
+          "mistral-common[image]>=1.11.7; extra == \"mistral-common\"",
+          "jinja2>=3.1.0; extra == \"chat-template\"",
+          "scikit-learn; extra == \"sklearn\"",
+          "accelerate>=1.1.0; extra == \"accelerate\"",
+          "faiss-cpu; extra == \"retrieval\"",
+          "datasets>=2.15.0; extra == \"retrieval\"",
+          "sagemaker>=2.31.0; extra == \"sagemaker\"",
+          "deepspeed>=0.9.3; extra == \"deepspeed\"",
+          "accelerate>=1.1.0; extra == \"deepspeed\"",
+          "optuna; extra == \"optuna\"",
+          "kernels<0.17,>=0.16.0; extra == \"integrations\"",
+          "optuna; extra == \"integrations\"",
+          "codecarbon>=2.8.1; extra == \"integrations\"",
+          "ray[tune]>=2.7.0; extra == \"integrations\"",
+          "ray[tune]>=2.7.0; extra == \"ray\"",
+          "codecarbon>=2.8.1; extra == \"codecarbon\"",
+          "openai>=1.98.0; extra == \"serving\"",
+          "pydantic>=2; extra == \"serving\"",
+          "uvicorn; extra == \"serving\"",
+          "fastapi; extra == \"serving\"",
+          "starlette; extra == \"serving\"",
+          "rich; extra == \"serving\"",
+          "torch>=2.5; extra == \"serving\"",
+          "accelerate>=1.1.0; extra == \"serving\"",
+          "num2words; extra == \"num2words\"",
+          "optimum-benchmark>=0.3.0; extra == \"benchmark\"",
+          "fugashi>=1.0; extra == \"ja\"",
+          "ipadic<2.0,>=1.0.0; extra == \"ja\"",
+          "unidic_lite>=1.0.7; extra == \"ja\"",
+          "unidic>=1.0.2; extra == \"ja\"",
+          "rhoknp<1.3.1,>=1.1.0; extra == \"ja\"",
+          "sudachipy>=0.6.6; extra == \"ja\"",
+          "sudachidict_core>=20220729; extra == \"ja\"",
+          "pytest<9.0.0,>=7.2.0; extra == \"testing\"",
+          "pytest-asyncio>=1.2.0; extra == \"testing\"",
+          "pytest-random-order; extra == \"testing\"",
+          "pytest-rich; extra == \"testing\"",
+          "pytest-xdist; extra == \"testing\"",
+          "pytest-order; extra == \"testing\"",
+          "pytest-rerunfailures<16.0; extra == \"testing\"",
+          "pytest-timeout; extra == \"testing\"",
+          "pytest-env; extra == \"testing\"",
+          "timeout-decorator; extra == \"testing\"",
+          "parameterized>=0.9; extra == \"testing\"",
+          "psutil; extra == \"testing\"",
+          "dill<0.3.5; extra == \"testing\"",
+          "diffusers==0.35.2; extra == \"testing\"",
+          "evaluate>=0.4.6; extra == \"testing\"",
+          "rouge-score!=0.0.7,!=0.0.8,!=0.1,!=0.1.1; extra == \"testing\"",
+          "nltk<=3.8.1; extra == \"testing\"",
+          "sacremoses; extra == \"testing\"",
+          "rjieba; extra == \"testing\"",
+          "beautifulsoup4; extra == \"testing\"",
+          "tensorboard; extra == \"testing\"",
+          "sacrebleu<2.0.0,>=1.4.12; extra == \"testing\"",
+          "filelock; extra == \"testing\"",
+          "hf-doc-builder; extra == \"testing\"",
+          "datasets>=2.15.0; extra == \"testing\"",
+          "ruff==0.14.10; extra == \"testing\"",
+          "GitPython<3.1.19; extra == \"testing\"",
+          "urllib3<2.0.0; extra == \"testing\"",
+          "libcst; extra == \"testing\"",
+          "rich; extra == \"testing\"",
+          "ty==0.0.20; extra == \"testing\"",
+          "tomli; extra == \"testing\"",
+          "transformers-mlinter==0.1.5; extra == \"testing\"",
+          "faiss-cpu; extra == \"testing\"",
+          "datasets>=2.15.0; extra == \"testing\"",
+          "sentencepiece!=0.1.92,>=0.1.91; extra == \"testing\"",
+          "protobuf; extra == \"testing\"",
+          "openai>=1.98.0; extra == \"testing\"",
+          "pydantic>=2; extra == \"testing\"",
+          "uvicorn; extra == \"testing\"",
+          "fastapi; extra == \"testing\"",
+          "starlette; extra == \"testing\"",
+          "rich; extra == \"testing\"",
+          "torch>=2.5; extra == \"testing\"",
+          "accelerate>=1.1.0; extra == \"testing\"",
+          "mistral-common[image]>=1.11.7; extra == \"testing\"",
+          "deepspeed>=0.9.3; extra == \"deepspeed-testing\"",
+          "accelerate>=1.1.0; extra == \"deepspeed-testing\"",
+          "pytest<9.0.0,>=7.2.0; extra == \"deepspeed-testing\"",
+          "pytest-asyncio>=1.2.0; extra == \"deepspeed-testing\"",
+          "pytest-random-order; extra == \"deepspeed-testing\"",
+          "pytest-rich; extra == \"deepspeed-testing\"",
+          "pytest-xdist; extra == \"deepspeed-testing\"",
+          "pytest-order; extra == \"deepspeed-testing\"",
+          "pytest-rerunfailures<16.0; extra == \"deepspeed-testing\"",
+          "pytest-timeout; extra == \"deepspeed-testing\"",
+          "pytest-env; extra == \"deepspeed-testing\"",
+          "timeout-decorator; extra == \"deepspeed-testing\"",
+          "parameterized>=0.9; extra == \"deepspeed-testing\"",
+          "psutil; extra == \"deepspeed-testing\"",
+          "dill<0.3.5; extra == \"deepspeed-testing\"",
+          "diffusers==0.35.2; extra == \"deepspeed-testing\"",
+          "evaluate>=0.4.6; extra == \"deepspeed-testing\"",
+          "rouge-score!=0.0.7,!=0.0.8,!=0.1,!=0.1.1; extra == \"deepspeed-testing\"",
+          "nltk<=3.8.1; extra == \"deepspeed-testing\"",
+          "sacremoses; extra == \"deepspeed-testing\"",
+          "rjieba; extra == \"deepspeed-testing\"",
+          "beautifulsoup4; extra == \"deepspeed-testing\"",
+          "tensorboard; extra == \"deepspeed-testing\"",
+          "sacrebleu<2.0.0,>=1.4.12; extra == \"deepspeed-testing\"",
+          "filelock; extra == \"deepspeed-testing\"",
+          "hf-doc-builder; extra == \"deepspeed-testing\"",
+          "datasets>=2.15.0; extra == \"deepspeed-testing\"",
+          "ruff==0.14.10; extra == \"deepspeed-testing\"",
+          "GitPython<3.1.19; extra == \"deepspeed-testing\"",
+          "urllib3<2.0.0; extra == \"deepspeed-testing\"",
+          "libcst; extra == \"deepspeed-testing\"",
+          "rich; extra == \"deepspeed-testing\"",
+          "ty==0.0.20; extra == \"deepspeed-testing\"",
+          "tomli; extra == \"deepspeed-testing\"",
+          "transformers-mlinter==0.1.5; extra == \"deepspeed-testing\"",
+          "faiss-cpu; extra == \"deepspeed-testing\"",
+          "datasets>=2.15.0; extra == \"deepspeed-testing\"",
+          "sentencepiece!=0.1.92,>=0.1.91; extra == \"deepspeed-testing\"",
+          "protobuf; extra == \"deepspeed-testing\"",
+          "openai>=1.98.0; extra == \"deepspeed-testing\"",
+          "pydantic>=2; extra == \"deepspeed-testing\"",
+          "uvicorn; extra == \"deepspeed-testing\"",
+          "fastapi; extra == \"deepspeed-testing\"",
+          "starlette; extra == \"deepspeed-testing\"",
+          "rich; extra == \"deepspeed-testing\"",
+          "torch>=2.5; extra == \"deepspeed-testing\"",
+          "accelerate>=1.1.0; extra == \"deepspeed-testing\"",
+          "mistral-common[image]>=1.11.7; extra == \"deepspeed-testing\"",
+          "optuna; extra == \"deepspeed-testing\"",
+          "sentencepiece!=0.1.92,>=0.1.91; extra == \"deepspeed-testing\"",
+          "protobuf; extra == \"deepspeed-testing\"",
+          "torch>=2.5; extra == \"all\"",
+          "accelerate>=1.1.0; extra == \"all\"",
+          "torchvision; extra == \"all\"",
+          "Pillow<=15.0,>=10.0.1; extra == \"all\"",
+          "torchaudio; extra == \"all\"",
+          "librosa; extra == \"all\"",
+          "pyctcdecode>=0.4.0; extra == \"all\"",
+          "phonemizer; extra == \"all\"",
+          "av; extra == \"all\"",
+          "kernels<0.17,>=0.16.0; extra == \"all\"",
+          "timm>=1.0.23; extra == \"all\"",
+          "sentencepiece!=0.1.92,>=0.1.91; extra == \"all\"",
+          "protobuf; extra == \"all\"",
+          "tiktoken; extra == \"all\"",
+          "blobfile; extra == \"all\"",
+          "jinja2>=3.1.0; extra == \"all\"",
+          "num2words; extra == \"all\"",
+          "mistral-common[image]>=1.11.7; extra == \"all\"",
+          "torch>=2.5; extra == \"dev\"",
+          "accelerate>=1.1.0; extra == \"dev\"",
+          "torchvision; extra == \"dev\"",
+          "Pillow<=15.0,>=10.0.1; extra == \"dev\"",
+          "torchaudio; extra == \"dev\"",
+          "librosa; extra == \"dev\"",
+          "pyctcdecode>=0.4.0; extra == \"dev\"",
+          "phonemizer; extra == \"dev\"",
+          "av; extra == \"dev\"",
+          "kernels<0.17,>=0.16.0; extra == \"dev\"",
+          "timm>=1.0.23; extra == \"dev\"",
+          "sentencepiece!=0.1.92,>=0.1.91; extra == \"dev\"",
+          "protobuf; extra == \"dev\"",
+          "tiktoken; extra == \"dev\"",
+          "blobfile; extra == \"dev\"",
+          "jinja2>=3.1.0; extra == \"dev\"",
+          "num2words; extra == \"dev\"",
+          "mistral-common[image]>=1.11.7; extra == \"dev\"",
+          "pytest<9.0.0,>=7.2.0; extra == \"dev\"",
+          "pytest-asyncio>=1.2.0; extra == \"dev\"",
+          "pytest-random-order; extra == \"dev\"",
+          "pytest-rich; extra == \"dev\"",
+          "pytest-xdist; extra == \"dev\"",
+          "pytest-order; extra == \"dev\"",
+          "pytest-rerunfailures<16.0; extra == \"dev\"",
+          "pytest-timeout; extra == \"dev\"",
+          "pytest-env; extra == \"dev\"",
+          "timeout-decorator; extra == \"dev\"",
+          "parameterized>=0.9; extra == \"dev\"",
+          "psutil; extra == \"dev\"",
+          "dill<0.3.5; extra == \"dev\"",
+          "diffusers==0.35.2; extra == \"dev\"",
+          "evaluate>=0.4.6; extra == \"dev\"",
+          "rouge-score!=0.0.7,!=0.0.8,!=0.1,!=0.1.1; extra == \"dev\"",
+          "nltk<=3.8.1; extra == \"dev\"",
+          "sacremoses; extra == \"dev\"",
+          "rjieba; extra == \"dev\"",
+          "beautifulsoup4; extra == \"dev\"",
+          "tensorboard; extra == \"dev\"",
+          "sacrebleu<2.0.0,>=1.4.12; extra == \"dev\"",
+          "filelock; extra == \"dev\"",
+          "hf-doc-builder; extra == \"dev\"",
+          "datasets>=2.15.0; extra == \"dev\"",
+          "ruff==0.14.10; extra == \"dev\"",
+          "GitPython<3.1.19; extra == \"dev\"",
+          "urllib3<2.0.0; extra == \"dev\"",
+          "libcst; extra == \"dev\"",
+          "rich; extra == \"dev\"",
+          "ty==0.0.20; extra == \"dev\"",
+          "tomli; extra == \"dev\"",
+          "transformers-mlinter==0.1.5; extra == \"dev\"",
+          "faiss-cpu; extra == \"dev\"",
+          "datasets>=2.15.0; extra == \"dev\"",
+          "sentencepiece!=0.1.92,>=0.1.91; extra == \"dev\"",
+          "protobuf; extra == \"dev\"",
+          "openai>=1.98.0; extra == \"dev\"",
+          "pydantic>=2; extra == \"dev\"",
+          "uvicorn; extra == \"dev\"",
+          "fastapi; extra == \"dev\"",
+          "starlette; extra == \"dev\"",
+          "rich; extra == \"dev\"",
+          "torch>=2.5; extra == \"dev\"",
+          "accelerate>=1.1.0; extra == \"dev\"",
+          "mistral-common[image]>=1.11.7; extra == \"dev\"",
+          "fugashi>=1.0; extra == \"dev\"",
+          "ipadic<2.0,>=1.0.0; extra == \"dev\"",
+          "unidic_lite>=1.0.7; extra == \"dev\"",
+          "unidic>=1.0.2; extra == \"dev\"",
+          "rhoknp<1.3.1,>=1.1.0; extra == \"dev\"",
+          "sudachipy>=0.6.6; extra == \"dev\"",
+          "sudachidict_core>=20220729; extra == \"dev\"",
+          "scikit-learn; extra == \"dev\""
+        ],
+        "verifiedSha256Files": 2691,
+        "verifiedBytes": 49194383,
+        "expectedUnhashedFiles": 2682,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/transformers-5.17.0.dist-info/licenses/LICENSE",
+            "sha256": "77fd4710def9ec3c0f6225800e0235f15a425abd4a8b03559127fcd782612049"
+          }
+        ]
+      },
+      {
+        "name": "typer",
+        "version": "0.27.2",
+        "licenseExpression": "MIT",
+        "licenseDeclaration": "",
+        "licenseClassifiers": [],
+        "declaredLicenseFiles": [
+          "LICENSE"
+        ],
+        "requiresDist": [
+          "shellingham>=1.3.0",
+          "rich>=13.8.0",
+          "annotated-doc>=0.0.2",
+          "colorama; platform_system == \"Windows\""
+        ],
+        "verifiedSha256Files": 44,
+        "verifiedBytes": 592547,
+        "expectedUnhashedFiles": 33,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/typer-0.27.2.dist-info/licenses/LICENSE",
+            "sha256": "58992cebcf8dfb6e40c4e2112ed12126c243666dca3912a3d78b7ecac4859d49"
+          }
+        ]
+      },
+      {
+        "name": "typing_extensions",
+        "version": "4.16.0",
+        "licenseExpression": "PSF-2.0",
+        "licenseDeclaration": "",
+        "licenseClassifiers": [],
+        "declaredLicenseFiles": [
+          "LICENSE"
+        ],
+        "requiresDist": [],
+        "verifiedSha256Files": 7,
+        "verifiedBytes": 182626,
+        "expectedUnhashedFiles": 2,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/typing_extensions-4.16.0.dist-info/licenses/LICENSE",
+            "sha256": "3b2f81fe21d181c499c59a256c8e1968455d6689d269aa85373bfb6af41da3bf"
+          }
+        ]
+      },
+      {
+        "name": "typing-inspection",
+        "version": "0.4.4",
+        "licenseExpression": "MIT",
+        "licenseDeclaration": "",
+        "licenseClassifiers": [],
+        "declaredLicenseFiles": [
+          "LICENSE"
+        ],
+        "requiresDist": [
+          "typing-extensions>=4.15.0"
+        ],
+        "verifiedSha256Files": 11,
+        "verifiedBytes": 54039,
+        "expectedUnhashedFiles": 4,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/typing_inspection-0.4.4.dist-info/licenses/LICENSE",
+            "sha256": "804b59b25f2c31bd278f9202a19ae49a3945aa2664387e2d0a128c7cacc61ec3"
+          }
+        ]
+      },
+      {
+        "name": "urllib3",
+        "version": "2.8.0",
+        "licenseExpression": "MIT",
+        "licenseDeclaration": "",
+        "licenseClassifiers": [],
+        "declaredLicenseFiles": [
+          "LICENSE.txt"
+        ],
+        "requiresDist": [
+          "brotli>=1.2.0; (platform_python_implementation == 'CPython') and extra == 'brotli'",
+          "brotlicffi>=1.2.0.0; (platform_python_implementation != 'CPython') and extra == 'brotli'",
+          "h2<5,>=4; extra == 'h2'",
+          "pysocks!=1.5.7,<2.0,>=1.5.6; extra == 'socks'",
+          "backports-zstd>=1.0.0; (python_version < '3.14') and extra == 'zstd'"
+        ],
+        "verifiedSha256Files": 44,
+        "verifiedBytes": 447285,
+        "expectedUnhashedFiles": 37,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/urllib3-2.8.0.dist-info/licenses/LICENSE.txt",
+            "sha256": "130e3a64d5fdd5d096a752694634a7d9df284469de86e5732100268041e3d686"
+          }
+        ]
+      },
+      {
+        "name": "yarl",
+        "version": "1.25.1",
+        "licenseExpression": "",
+        "licenseDeclaration": "Apache-2.0",
+        "licenseClassifiers": [],
+        "declaredLicenseFiles": [
+          "LICENSE",
+          "NOTICE"
+        ],
+        "requiresDist": [
+          "idna>=2.0",
+          "multidict>=4.0",
+          "propcache>=0.2.1"
+        ],
+        "verifiedSha256Files": 19,
+        "verifiedBytes": 322551,
+        "expectedUnhashedFiles": 9,
+        "otherUnhashedFiles": 0,
+        "licenseFiles": [
+          {
+            "path": "Lib/site-packages/yarl-1.25.1.dist-info/licenses/LICENSE",
+            "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+          },
+          {
+            "path": "Lib/site-packages/yarl-1.25.1.dist-info/licenses/NOTICE",
+            "sha256": "56d6ac6c8105c0a51304c21db060e361af9a8ea0af9a75c239c28b5d13693838"
+          }
+        ]
+      }
+    ],
+    "distributionCount": 89,
+    "verifiedSha256Files": 45733,
+    "verifiedBytes": 4334040326,
+    "expectedUnhashedFiles": 15369,
+    "otherUnhashedFiles": 0,
+    "issueCount": 198,
+    "issues": [
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision-0.29.0+cu130.dist-info/LICENSE",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision-0.29.0+cu130.dist-info/METADATA",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision-0.29.0+cu130.dist-info/RECORD",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision-0.29.0+cu130.dist-info/WHEEL",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision-0.29.0+cu130.dist-info/top_level.txt",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/_C_stable.pyd",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/__init__.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/_autograd_registrations.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/_internally_replaced_utils.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/_meta_registrations.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/_utils.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/datasets/__init__.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/datasets/_optical_flow.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/datasets/_stereo_matching.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/datasets/caltech.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/datasets/celeba.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/datasets/cifar.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/datasets/cityscapes.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/datasets/clevr.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/datasets/coco.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/datasets/country211.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/datasets/dtd.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/datasets/eurosat.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/datasets/fakedata.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/datasets/fer2013.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/datasets/fgvc_aircraft.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/datasets/flickr.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/datasets/flowers102.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/datasets/folder.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/datasets/food101.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/datasets/gtsrb.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/datasets/hmdb51.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/datasets/imagenet.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/datasets/imagenette.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/datasets/inaturalist.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/datasets/kinetics.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/datasets/kitti.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/datasets/lfw.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/datasets/lsun.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/datasets/mnist.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/datasets/moving_mnist.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/datasets/omniglot.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/datasets/oxford_iiit_pet.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/datasets/pcam.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/datasets/phototour.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/datasets/places365.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/datasets/rendered_sst2.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/datasets/samplers/__init__.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/datasets/samplers/clip_sampler.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/datasets/sbd.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/datasets/sbu.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/datasets/semeion.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/datasets/stanford_cars.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/datasets/stl10.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/datasets/sun397.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/datasets/svhn.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/datasets/ucf101.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/datasets/usps.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/datasets/utils.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/datasets/video_utils.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/datasets/vision.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/datasets/voc.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/datasets/widerface.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/extension.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/image_stable.pyd",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/io/__init__.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/io/_video_deprecation_warning.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/io/image.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/io/video.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/jpeg8.dll",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/libpng16.dll",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/libsharpyuv.dll",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/libwebp.dll",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/models/__init__.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/models/_api.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/models/_meta.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/models/_utils.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/models/alexnet.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/models/convnext.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/models/densenet.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/models/detection/__init__.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/models/detection/_utils.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/models/detection/anchor_utils.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/models/detection/backbone_utils.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/models/detection/faster_rcnn.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/models/detection/fcos.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/models/detection/generalized_rcnn.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/models/detection/image_list.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/models/detection/keypoint_rcnn.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/models/detection/mask_rcnn.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/models/detection/retinanet.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/models/detection/roi_heads.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/models/detection/rpn.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/models/detection/ssd.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/models/detection/ssdlite.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/models/detection/transform.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/models/efficientnet.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/models/feature_extraction.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/models/googlenet.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/models/inception.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/models/maxvit.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/models/mnasnet.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/models/mobilenet.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/models/mobilenetv2.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/models/mobilenetv3.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/models/optical_flow/__init__.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/models/optical_flow/_utils.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/models/optical_flow/raft.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/models/quantization/__init__.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/models/quantization/googlenet.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/models/quantization/inception.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/models/quantization/mobilenet.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/models/quantization/mobilenetv2.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/models/quantization/mobilenetv3.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/models/quantization/resnet.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/models/quantization/shufflenetv2.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/models/quantization/utils.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/models/regnet.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/models/resnet.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/models/segmentation/__init__.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/models/segmentation/_utils.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/models/segmentation/deeplabv3.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/models/segmentation/fcn.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/models/segmentation/lraspp.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/models/shufflenetv2.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/models/squeezenet.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/models/swin_transformer.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/models/vgg.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/models/video/__init__.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/models/video/mvit.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/models/video/resnet.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/models/video/s3d.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/models/video/swin_transformer.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/models/vision_transformer.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/nvjpeg64_13.dll",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/ops/__init__.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/ops/_box_convert.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/ops/_register_onnx_ops.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/ops/_utils.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/ops/boxes.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/ops/ciou_loss.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/ops/deform_conv.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/ops/diou_loss.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/ops/drop_block.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/ops/feature_pyramid_network.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/ops/focal_loss.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/ops/giou_loss.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/ops/misc.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/ops/poolers.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/ops/ps_roi_align.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/ops/ps_roi_pool.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/ops/roi_align.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/ops/roi_pool.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/ops/stochastic_depth.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/transforms/__init__.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/transforms/_functional_pil.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/transforms/_functional_tensor.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/transforms/_functional_video.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/transforms/_presets.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/transforms/_transforms_video.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/transforms/autoaugment.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/transforms/functional.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/transforms/transforms.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/transforms/v2/__init__.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/transforms/v2/_augment.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/transforms/v2/_auto_augment.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/transforms/v2/_color.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/transforms/v2/_container.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/transforms/v2/_deprecated.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/transforms/v2/_geometry.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/transforms/v2/_meta.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/transforms/v2/_misc.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/transforms/v2/_temporal.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/transforms/v2/_transform.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/transforms/v2/_type_conversion.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/transforms/v2/_utils.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/transforms/v2/functional/__init__.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/transforms/v2/functional/_augment.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/transforms/v2/functional/_color.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/transforms/v2/functional/_deprecated.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/transforms/v2/functional/_geometry.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/transforms/v2/functional/_meta.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/transforms/v2/functional/_misc.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/transforms/v2/functional/_temporal.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/transforms/v2/functional/_type_conversion.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/transforms/v2/functional/_utils.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/tv_tensors/__init__.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/tv_tensors/_bounding_boxes.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/tv_tensors/_dataset_wrapper.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/tv_tensors/_image.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/tv_tensors/_keypoints.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/tv_tensors/_mask.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/tv_tensors/_torch_function_helpers.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/tv_tensors/_tv_tensor.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/tv_tensors/_video.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/utils.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/version.py",
+        "reason": "duplicate-record-path"
+      },
+      {
+        "package": "torchvision",
+        "path": "Lib/site-packages/torchvision/zlib.dll",
+        "reason": "duplicate-record-path"
+      }
+    ],
+    "issuesTruncated": false,
+    "issueCountsByReason": {
+      "duplicate-record-path": 198
+    },
+    "issueCountsByPackage": {
+      "torchvision": 198
+    },
+    "unrecordedFileCount": 0,
+    "unrecordedFiles": [],
+    "unrecordedFilesTruncated": false
+  },
+  "provenance": {
+    "artifacts": [
+      {
+        "id": "reviewed-embedded-python-module-paths",
+        "relativePath": "ComfyUI_windows_portable/python_embeded/python313._pth",
+        "sha256": "2d517fda409ddcaa916ffb15d73ec87161aa39a5512609aba85eab45a81895b9",
+        "source": "https://docs.python.org/3.13/using/windows.html#finding-modules",
+        "modification": "Reviewed local acceptance configuration: only absolute ComfyUI, python313.zip, interpreter and site-packages roots; exact import site is the only executable line.",
+        "originalArchiveSha256": "5caee11a202b73328941593a3bea1a0540ddafc15a2fafc939be4520dd96e381",
+        "license": "PSF-2.0; machine-local configuration",
+        "actualSha256": "2d517fda409ddcaa916ffb15d73ec87161aa39a5512609aba85eab45a81895b9",
+        "bytes": 428,
+        "matches": true
+      },
+      {
+        "id": "comfyui-v0.41.0-portable-nvidia",
+        "relativePath": "downloads/ComfyUI-v0.41.0-nvidia.7z",
+        "sha256": "7ff446d6904a9eecdfa07870a06238cc33a6204dcd31726edc6783efd080ac34",
+        "source": "https://github.com/Comfy-Org/ComfyUI/releases/tag/v0.41.0",
+        "digestEvidence": "GitHub release asset API digest",
+        "license": "ComfyUI GPL-3.0; bundled components retain their respective licenses",
+        "actualSha256": "7ff446d6904a9eecdfa07870a06238cc33a6204dcd31726edc6783efd080ac34",
+        "bytes": 2010075321,
+        "matches": true
+      },
+      {
+        "id": "comfyui-license",
+        "relativePath": "ComfyUI_windows_portable/ComfyUI/LICENSE",
+        "sha256": "230184f60bae2feaf244f10a8bac053c8ff33a183bcc365b4d8b876d2b7f4809",
+        "source": "https://github.com/Comfy-Org/ComfyUI/blob/98cc0bf84b7cb1383654c5b402e7612d875d6d22/LICENSE",
+        "license": "GPL-3.0",
+        "actualSha256": "230184f60bae2feaf244f10a8bac053c8ff33a183bcc365b4d8b876d2b7f4809",
+        "bytes": 35823,
+        "matches": true
+      },
+      {
+        "id": "sdxl-base-1.0",
+        "relativePath": "models/checkpoints/sd_xl_base_1.0.safetensors",
+        "sha256": "31e35c80fc4829d14f90153f4c74cd59c90b779f6afe05a74cd6120b893f7e5b",
+        "source": "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/blob/76d28af79639c28a79fa5c6c6468febd3490a37e/sd_xl_base_1.0.safetensors",
+        "digestEvidence": "Pinned Hugging Face model Git LFS SHA-256",
+        "license": "CreativeML Open RAIL++-M",
+        "actualSha256": "31e35c80fc4829d14f90153f4c74cd59c90b779f6afe05a74cd6120b893f7e5b",
+        "bytes": 6938078334,
+        "matches": true
+      },
+      {
+        "id": "sdxl-base-license",
+        "relativePath": "downloads/SDXL-LICENSE.md",
+        "sha256": "19b6998b569b53ac1fc2158a8a3202c8699a9a4605b47075715d9c96be7fb6d0",
+        "source": "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/blob/76d28af79639c28a79fa5c6c6468febd3490a37e/LICENSE.md",
+        "license": "CreativeML Open RAIL++-M",
+        "actualSha256": "19b6998b569b53ac1fc2158a8a3202c8699a9a4605b47075715d9c96be7fb6d0",
+        "bytes": 14109,
+        "matches": true
+      },
+      {
+        "id": "template-media-image-wheel",
+        "relativePath": "downloads/comfyui_workflow_templates_media_image-0.3.160-py3-none-any.whl",
+        "sha256": "d4a5c5541c7088f6adb1c7da41f5d7c1c14a037eda6a61cd8b4b76c251faaa93",
+        "source": "https://pypi.org/pypi/comfyui-workflow-templates-media-image/0.3.160/json",
+        "license": "MIT",
+        "actualSha256": "d4a5c5541c7088f6adb1c7da41f5d7c1c14a037eda6a61cd8b4b76c251faaa93",
+        "bytes": 89401690,
+        "matches": true
+      },
+      {
+        "id": "template-media-other-wheel",
+        "relativePath": "downloads/comfyui_workflow_templates_media_other-0.3.229-py3-none-any.whl",
+        "sha256": "ce3d98fa9d84b914c335fe5c9bc903cfefbe1932b1bc3cb6baef7f371b4bd435",
+        "source": "https://pypi.org/pypi/comfyui-workflow-templates-media-other/0.3.229/json",
+        "license": "MIT",
+        "actualSha256": "ce3d98fa9d84b914c335fe5c9bc903cfefbe1932b1bc3cb6baef7f371b4bd435",
+        "bytes": 89097925,
+        "matches": true
+      },
+      {
+        "id": "template-media-video-wheel",
+        "relativePath": "downloads/comfyui_workflow_templates_media_video-0.3.101-py3-none-any.whl",
+        "sha256": "6270fd61c8c3931b6f0031abac7d4c90ced624de6c7918bff85b89e6c3d7493c",
+        "source": "https://pypi.org/pypi/comfyui-workflow-templates-media-video/0.3.101/json",
+        "license": "MIT",
+        "actualSha256": "6270fd61c8c3931b6f0031abac7d4c90ced624de6c7918bff85b89e6c3d7493c",
+        "bytes": 104342671,
+        "matches": true
+      }
+    ],
+    "expectedComfyRevision": "98cc0bf84b7cb1383654c5b402e7612d875d6d22",
+    "actualComfyRevision": "98cc0bf84b7cb1383654c5b402e7612d875d6d22",
+    "revisionMatches": true,
+    "trackedCheckoutClean": true
+  },
+  "advisories": {
+    "provider": "https://api.osv.dev/v1/querybatch",
+    "status": "complete",
+    "requestedQueries": 92,
+    "completedQueries": 92,
+    "affectedPackages": []
+  },
+  "scope": [
+    "No CUDA or ComfyUI imports or launches; no dependency mutation.",
+    "RECORD is locally supplied consistency evidence, not a signed upstream manifest.",
+    "The read-only audit expects a quiescent trusted install; it is not an atomic filesystem snapshot against hostile concurrent swaps.",
+    "Unhashed bytecode, bundled native libraries/CPython, unrecorded files and live-source imports need separate review.",
+    "License declarations are inventoried, not legal clearance for redistribution.",
+    "OSV is a dated PyPI advisory lookup, not exhaustive vulnerability or native-binary coverage."
+  ]
+}

@@ -1,0 +1,67 @@
+{
+  "schemaVersion": 1,
+  "comfyRelativeRoot": "ComfyUI_windows_portable/ComfyUI",
+  "comfyRevision": "98cc0bf84b7cb1383654c5b402e7612d875d6d22",
+  "artifacts": [
+    {
+      "id": "reviewed-embedded-python-module-paths",
+      "relativePath": "ComfyUI_windows_portable/python_embeded/python313._pth",
+      "sha256": "2d517fda409ddcaa916ffb15d73ec87161aa39a5512609aba85eab45a81895b9",
+      "source": "https://docs.python.org/3.13/using/windows.html#finding-modules",
+      "modification": "Reviewed local acceptance configuration: only absolute ComfyUI, python313.zip, interpreter and site-packages roots; exact import site is the only executable line.",
+      "originalArchiveSha256": "5caee11a202b73328941593a3bea1a0540ddafc15a2fafc939be4520dd96e381",
+      "license": "PSF-2.0; machine-local configuration"
+    },
+    {
+      "id": "comfyui-v0.41.0-portable-nvidia",
+      "relativePath": "downloads/ComfyUI-v0.41.0-nvidia.7z",
+      "sha256": "7ff446d6904a9eecdfa07870a06238cc33a6204dcd31726edc6783efd080ac34",
+      "source": "https://github.com/Comfy-Org/ComfyUI/releases/tag/v0.41.0",
+      "digestEvidence": "GitHub release asset API digest",
+      "license": "ComfyUI GPL-3.0; bundled components retain their respective licenses"
+    },
+    {
+      "id": "comfyui-license",
+      "relativePath": "ComfyUI_windows_portable/ComfyUI/LICENSE",
+      "sha256": "230184f60bae2feaf244f10a8bac053c8ff33a183bcc365b4d8b876d2b7f4809",
+      "source": "https://github.com/Comfy-Org/ComfyUI/blob/98cc0bf84b7cb1383654c5b402e7612d875d6d22/LICENSE",
+      "license": "GPL-3.0"
+    },
+    {
+      "id": "sdxl-base-1.0",
+      "relativePath": "models/checkpoints/sd_xl_base_1.0.safetensors",
+      "sha256": "31e35c80fc4829d14f90153f4c74cd59c90b779f6afe05a74cd6120b893f7e5b",
+      "source": "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/blob/76d28af79639c28a79fa5c6c6468febd3490a37e/sd_xl_base_1.0.safetensors",
+      "digestEvidence": "Pinned Hugging Face model Git LFS SHA-256",
+      "license": "CreativeML Open RAIL++-M"
+    },
+    {
+      "id": "sdxl-base-license",
+      "relativePath": "downloads/SDXL-LICENSE.md",
+      "sha256": "19b6998b569b53ac1fc2158a8a3202c8699a9a4605b47075715d9c96be7fb6d0",
+      "source": "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/blob/76d28af79639c28a79fa5c6c6468febd3490a37e/LICENSE.md",
+      "license": "CreativeML Open RAIL++-M"
+    },
+    {
+      "id": "template-media-image-wheel",
+      "relativePath": "downloads/comfyui_workflow_templates_media_image-0.3.160-py3-none-any.whl",
+      "sha256": "d4a5c5541c7088f6adb1c7da41f5d7c1c14a037eda6a61cd8b4b76c251faaa93",
+      "source": "https://pypi.org/pypi/comfyui-workflow-templates-media-image/0.3.160/json",
+      "license": "MIT"
+    },
+    {
+      "id": "template-media-other-wheel",
+      "relativePath": "downloads/comfyui_workflow_templates_media_other-0.3.229-py3-none-any.whl",
+      "sha256": "ce3d98fa9d84b914c335fe5c9bc903cfefbe1932b1bc3cb6baef7f371b4bd435",
+      "source": "https://pypi.org/pypi/comfyui-workflow-templates-media-other/0.3.229/json",
+      "license": "MIT"
+    },
+    {
+      "id": "template-media-video-wheel",
+      "relativePath": "downloads/comfyui_workflow_templates_media_video-0.3.101-py3-none-any.whl",
+      "sha256": "6270fd61c8c3931b6f0031abac7d4c90ced624de6c7918bff85b89e6c3d7493c",
+      "source": "https://pypi.org/pypi/comfyui-workflow-templates-media-video/0.3.101/json",
+      "license": "MIT"
+    }
+  ]
+}

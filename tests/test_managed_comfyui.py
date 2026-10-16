@@ -534,6 +534,31 @@ def test_preflight_hashes_trusted_files_without_allocating_resources(
     assert fixture.harness.raw_configs == []
 
 
+def test_preflight_rejects_windows_venv_redirector_without_starting_child(
+    tmp_path: Path,
+) -> None:
+    """Explain unsupported redirectors before readiness or any process allocation."""
+
+    from dataclasses import replace
+
+    fixture = _runtime_fixture(tmp_path)
+    scripts = tmp_path / "venv" / "Scripts"
+    scripts.mkdir(parents=True)
+    executable = scripts / "python.exe"
+    executable.write_bytes(fixture.config.python_executable.read_bytes())
+    (scripts.parent / "pyvenv.cfg").write_text("home = test-only\n", encoding="utf-8")
+    runtime = managed.ManagedComfyUiRuntime._create_for_testing(
+        replace(fixture.config, python_executable=executable),
+        fixture.harness.dependencies(),
+        dependency_seal=managed._TEST_DEPENDENCY_SEAL,
+    )
+    with pytest.raises(ImageGenerationUnavailableError, match="virtual-environment redirectors"):
+        runtime.ensure_ready(fixture.profile)
+    assert fixture.harness.processes == []
+    assert fixture.harness.guards == []
+    assert fixture.harness.runs == []
+
+
 def test_failed_revalidation_clears_an_earlier_verified_profile(
     tmp_path: Path,
 ) -> None:
@@ -602,7 +627,7 @@ def test_prepare_launches_one_closed_private_comfyui_instance(tmp_path: Path) ->
         "--disable-partner-nodes",
     ):
         assert flag in command
-    assert launch_options["cwd"] == str(fixture.config.runtime_root)
+    assert launch_options["cwd"] == str(run.root)
     assert launch_options["stdin_handle"] == 101
     assert launch_options["stdout_handle"] == 102
     assert launch_options["stderr_handle"] == 103

@@ -1333,6 +1333,28 @@ const desktopApi = {
     return clone(imageSettings)
   },
 
+  /** Model native recovery consent while recording the exact argument-free renderer request. */
+  recoverImageRuntime: async (...args) => {
+    record('recoverImageRuntime', args)
+    if (args.length !== 0) throw new Error('Image recovery does not accept renderer arguments.')
+    if (pendingImageConfiguration !== null) throw new Error('Local image maintenance is already active.')
+    if (delayImageConfiguration) await new Promise((resolve) => { pendingImageConfiguration = resolve })
+    pendingImageConfiguration = null
+    if (nextImageConfigurationError !== null) {
+      const message = nextImageConfigurationError
+      nextImageConfigurationError = null
+      throw new Error(message)
+    }
+    const result = nextImageConfigurationResult
+    nextImageConfigurationResult = undefined
+    if (result === null) return clone(imageSettings)
+    imageSettings = result === undefined ? { ...imageSettings, ready: imageSettings.configured,
+      state: imageSettings.configured ? 'ready' : 'unconfigured',
+      message: imageSettings.configured ? 'The trusted local image installation is ready.'
+        : 'Choose and confirm a trusted ComfyUI installation.' } : clone(result)
+    return clone(imageSettings)
+  },
+
   /** Hold one structured image request until the mock's explicit completion. */
   generateImage: async (params) => {
     record('generateImage', [params])
@@ -3440,11 +3462,11 @@ const desktopApi = {
 const testControl = {
   /** Replace reviewed path-free runtime settings before opening the studio. */
   setImageSettings: (summary) => { imageSettings = clone(summary) },
-  /** Provide a native-confirmation result; null represents a cancelled selection. */
+  /** Provide a native installation/recovery result; null preserves readiness after cancellation. */
   setNextImageConfigurationResult: (summary) => { nextImageConfigurationResult = clone(summary) },
-  /** Fail one native installation attempt without changing current settings. */
+  /** Fail one native installation/recovery attempt without changing current settings. */
   failNextImageConfiguration: (message) => { nextImageConfigurationError = message },
-  /** Keep native installation controls busy until the test releases ownership. */
+  /** Keep native installation/recovery controls busy until the test releases ownership. */
   setImageConfigurationDelay: (delayed) => { delayImageConfiguration = delayed },
   /** Finish the current mock native review exactly once. */
   releaseImageConfiguration: () => {

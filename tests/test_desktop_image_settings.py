@@ -114,6 +114,25 @@ def test_confirmed_settings_roundtrip_and_native_readiness(tmp_path: Path) -> No
     assert not (data_root / "workspace" / "gallery").exists()
 
 
+def test_venv_redirector_status_explains_supported_interpreter(tmp_path: Path) -> None:
+    """Return actionable path-free Settings guidance before native process creation."""
+
+    installation = _installation(tmp_path)
+    scripts = tmp_path / "venv" / "Scripts"
+    scripts.mkdir(parents=True)
+    interpreter = scripts / "python.exe"
+    interpreter.write_bytes(installation.python_executable.read_bytes())
+    (scripts.parent / "pyvenv.cfg").write_text("home = fixture\n", encoding="utf-8")
+    store = DesktopImageSettingsStore(tmp_path / "data")
+    store.save(replace(installation, python_executable=interpreter), trusted_confirmation=True, expected_revision=0)
+    status = store.status().to_public_dict()
+    assert status["state"] == "invalid"
+    assert status["ready"] is False
+    assert "virtual-environment redirectors" in str(status["message"])
+    assert "portable" in str(status["message"])
+    assert str(tmp_path) not in json.dumps(status)
+
+
 @pytest.mark.parametrize("confirmation", [False, 1, "true", None])
 def test_installation_save_requires_literal_confirmation(tmp_path: Path, confirmation: object) -> None:
     """Renderer-shaped or truthy values cannot authorize trusted local paths."""
@@ -190,7 +209,7 @@ def test_supervisor_preflight_still_rejects_unsafe_installations(tmp_path: Path,
     else:
         (installation.runtime_root / "main.py").unlink()
 
-    assert store.status().state == "invalid"
+    assert store.status().state == ("recovery_required" if unsafe_input == "leftover-run" else "invalid")
     with pytest.raises(ImageGenerationUnavailableError):
         store.create_service()
 

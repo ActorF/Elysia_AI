@@ -1,0 +1,330 @@
+{
+  "formatVersion": 1,
+  "scope": "Production managed application service; independent isolated operator acceptance, with no production settings changes.",
+  "sourceReport": "tmp/image-real-acceptance/58dbf4cfc9c14b829a2b31d12187c302/acceptance.json",
+  "sourceReportSha256": "26fee476334c48fbe9a1fd4c3bcb94fb18deac9420c67628265cdc3627e925c4",
+  "passed": true,
+  "startedAt": "2026-10-16T19:32:59.865272+00:00",
+  "finishedAt": "2026-10-16T20:05:51.167514+00:00",
+  "requestedSoakSeconds": 1800,
+  "generationWindowSeconds": 1823.349,
+  "elapsedSeconds": 1971.305,
+  "steps": 28,
+  "pins": {
+    "pythonSha256": "ef8f51028ac5329641985112f8efb1c2d4c47c86b8011ddf7e6fae21e2b4e5a1",
+    "mainSha256": "a25ef1dbc7159b79fbf1e596e2c901322d6248681020e520ea5b7f84f4f2dbec",
+    "checkpointSha256": "31e35c80fc4829d14f90153f4c74cd59c90b779f6afe05a74cd6120b893f7e5b"
+  },
+  "generationCount": 34,
+  "generationSeconds": {
+    "minimum": 52.455,
+    "maximum": 58.835,
+    "mean": 53.628,
+    "median": 53.338
+  },
+  "uniquePngHashes": 34,
+  "cancel": {
+    "samplingReached": true,
+    "outcome": "requested",
+    "seconds": 44.726
+  },
+  "recovery": {
+    "unknownStateRejected": true,
+    "unknownStatePreserved": true,
+    "fixtureCleanup": "Only the exact owned marker and empty synthetic directory.",
+    "galleryArtifactsRetained": 34
+  },
+  "failure": {
+    "exception": "ImageGenerationFailedError",
+    "seconds": 12.601
+  },
+  "shutdown": {
+    "outcome": "cancelled",
+    "drainSeconds": 0.11
+  },
+  "gpuMemory": {
+    "sampleCount": 3572,
+    "baselineUsedMiB": 2486,
+    "peakUsedMiB": 11380,
+    "lastUsedMiB": 2479,
+    "totalMiB": 12282,
+    "scope": "Whole GPU; includes pre-existing applications and is not per-process attribution.",
+    "remainingOwnedProcessIds": [],
+    "processObservationFailed": false
+  },
+  "observedOwnedProcessCount": 74,
+  "generations": [
+    {
+      "seed": 42,
+      "artifactId": "gallery_a3e46f24f2064a86bf16e9ae572dd72d",
+      "sha256": "8b0ce8f8b075563272b1882595876b8fd36a70c77d749f7229620754bdda9be4",
+      "width": 1024,
+      "height": 1024,
+      "seconds": 53.443
+    },
+    {
+      "seed": 43,
+      "artifactId": "gallery_47415f14572f43a181d85d9a2cef8016",
+      "sha256": "68321c2f6c6eb908c6cc15ca6212732fb4a53fcbdf40c4e52c45fd71e5e20ec9",
+      "width": 1024,
+      "height": 1024,
+      "seconds": 53.358
+    },
+    {
+      "seed": 44,
+      "artifactId": "gallery_99d5ea97b7f54e85a89415fa30454074",
+      "sha256": "997e89b9af01ba13e2012777b8b85b2f6593f6b16ac3ed7d2bdbd039c04a6635",
+      "width": 1024,
+      "height": 1024,
+      "seconds": 53.398
+    },
+    {
+      "seed": 45,
+      "artifactId": "gallery_cc2278897801491fa514ac7f650ee2a3",
+      "sha256": "14b69e4371057f1821c574617e025383a7f9a24d8c07a4057ba969cef150dddd",
+      "width": 1024,
+      "height": 1024,
+      "seconds": 53.056
+    },
+    {
+      "seed": 46,
+      "artifactId": "gallery_8dd2eca023e5498f9175dd8dd2b3b364",
+      "sha256": "c869bf51de19682e1d623df9acd43b683a744cd9295de3384cc7e3c92ac6bb29",
+      "width": 1024,
+      "height": 1024,
+      "seconds": 53.03
+    },
+    {
+      "seed": 47,
+      "artifactId": "gallery_d2ee6b964d414cf6a84d96ec4c8599ca",
+      "sha256": "9c37280a8a8f063efad90e443b85503f67f9bf99a4495f5e2053b290dd36b909",
+      "width": 1024,
+      "height": 1024,
+      "seconds": 54.502
+    },
+    {
+      "seed": 48,
+      "artifactId": "gallery_386ed1c67b354572a37c0a92ae0907ab",
+      "sha256": "450543868b46afe78b337c194ac3d79ca62f4573a5bee5572c4f94b4ff38374d",
+      "width": 1024,
+      "height": 1024,
+      "seconds": 53.119
+    },
+    {
+      "seed": 49,
+      "artifactId": "gallery_3e55961ec8ff4655b6f37d0f1ee274ac",
+      "sha256": "680d3f955780195d877cf80e71c636bed477e72d224bce4f9720149f04d91027",
+      "width": 1024,
+      "height": 1024,
+      "seconds": 53.554
+    },
+    {
+      "seed": 50,
+      "artifactId": "gallery_f86eef4acacc4fc8b7746de3c3216a32",
+      "sha256": "901782aff37d847a8e491583b6ccea1aba211e3d8182af392a5d40aaf5b85982",
+      "width": 1024,
+      "height": 1024,
+      "seconds": 53.879
+    },
+    {
+      "seed": 51,
+      "artifactId": "gallery_9dd5ce4e22db421291a1ba4c27d86a38",
+      "sha256": "58fc8f1dc876ee8506bf1295dad6924328cb9f51cf9a5e0048087f54a2fa8401",
+      "width": 1024,
+      "height": 1024,
+      "seconds": 53.519
+    },
+    {
+      "seed": 52,
+      "artifactId": "gallery_bf0897fddcb84cd9b3220de372e15cc5",
+      "sha256": "84ebf7268faa18b052e6c8d23d9f4e32b4d179236a99af21a53ab074a6179515",
+      "width": 1024,
+      "height": 1024,
+      "seconds": 53.381
+    },
+    {
+      "seed": 53,
+      "artifactId": "gallery_3fdc8aadfce94d64afe0b10e40ea28b4",
+      "sha256": "4ae87e6e31f48ce33caa43f332bd203ef6f8781dc28f6001e5ec889017789fa0",
+      "width": 1024,
+      "height": 1024,
+      "seconds": 53.868
+    },
+    {
+      "seed": 54,
+      "artifactId": "gallery_c4096b6d28b941c8b69277eae3b13ec2",
+      "sha256": "0fbce35f275a7e123d98cc0b399de12bf1f05eef4e91bcad85082359b50efb6b",
+      "width": 1024,
+      "height": 1024,
+      "seconds": 58.835
+    },
+    {
+      "seed": 55,
+      "artifactId": "gallery_01b89e09d03248faaf539c046dcc9adb",
+      "sha256": "8e0a5f5b953314bcf7b02df4ff60170f984e617d4cf03b7d545267f957766015",
+      "width": 1024,
+      "height": 1024,
+      "seconds": 53.869
+    },
+    {
+      "seed": 56,
+      "artifactId": "gallery_df9ceb4609684b288cf9703c848b63e2",
+      "sha256": "225a5b95131906a7f9091945d88d139992606969f766bb7cd15d2c09abd3b573",
+      "width": 1024,
+      "height": 1024,
+      "seconds": 54.335
+    },
+    {
+      "seed": 57,
+      "artifactId": "gallery_a74bd64834ad4d2b803a9097fa92492f",
+      "sha256": "c9715879c73a94c06c9c5bc78681f731e39891dea2522d18cbb264b66025e969",
+      "width": 1024,
+      "height": 1024,
+      "seconds": 52.893
+    },
+    {
+      "seed": 58,
+      "artifactId": "gallery_43140905ed40425f98186e0830b8ee6c",
+      "sha256": "9b316921b75de5eecc2798a6761ddd67a4d6680e4ab718f390a418e898bdce39",
+      "width": 1024,
+      "height": 1024,
+      "seconds": 53.26
+    },
+    {
+      "seed": 59,
+      "artifactId": "gallery_997e34a597f84b2d9c58c0df933e3a68",
+      "sha256": "9364e904df9f69bb83f9ed2c98ef75d74fea25cc7b94ff440b231e1b414b9e21",
+      "width": 1024,
+      "height": 1024,
+      "seconds": 56.234
+    },
+    {
+      "seed": 60,
+      "artifactId": "gallery_7bc2241690884feda0407e5f2b82fbc0",
+      "sha256": "9be2a5da781dcc47f924bbbd9f14fa0c4d93f893926e594c4551d4393674dc08",
+      "width": 1024,
+      "height": 1024,
+      "seconds": 55.171
+    },
+    {
+      "seed": 61,
+      "artifactId": "gallery_8e6289b93fa541a1b67f4a1a90a16548",
+      "sha256": "df372ffe5dab640c68844ac1c1703338de70ca3df0f574689db97fa64827412f",
+      "width": 1024,
+      "height": 1024,
+      "seconds": 54.833
+    },
+    {
+      "seed": 62,
+      "artifactId": "gallery_e7c03853e31c4e369f31ebd1a4d6a077",
+      "sha256": "573ebaeb15311fe7f35e6dc3c51053e53653bc180c6157c66718c04f81b4fb22",
+      "width": 1024,
+      "height": 1024,
+      "seconds": 52.999
+    },
+    {
+      "seed": 63,
+      "artifactId": "gallery_91f4d829940446cc8d44985848718354",
+      "sha256": "4b531c8da4b562bd82c743cd0ea09a95cbdb7d945d938052f9c2378a03b7efd9",
+      "width": 1024,
+      "height": 1024,
+      "seconds": 53.091
+    },
+    {
+      "seed": 64,
+      "artifactId": "gallery_592578c489e04ed7a78a5d590e7d1370",
+      "sha256": "0e82f684cfff9e0486f534746562e4d4a3cc72a5b00aedef6b18aea820769749",
+      "width": 1024,
+      "height": 1024,
+      "seconds": 53.346
+    },
+    {
+      "seed": 65,
+      "artifactId": "gallery_d4cabca4a5fa4623a680002a24a51ddd",
+      "sha256": "c2c85b5ac12efab3db7cf6e61b6de8019b7fb030bb2cf78e79b2694f3b006bba",
+      "width": 1024,
+      "height": 1024,
+      "seconds": 52.601
+    },
+    {
+      "seed": 66,
+      "artifactId": "gallery_7d0bf1df87af4452b78809a71c6d6433",
+      "sha256": "122a1becef5fe7d6baae6818d83f145c0d7acd24ae7b736636a9c809ca0b91a2",
+      "width": 1024,
+      "height": 1024,
+      "seconds": 53.33
+    },
+    {
+      "seed": 67,
+      "artifactId": "gallery_37cb60474bdd4d3b993797e3667ee785",
+      "sha256": "c99ef012baa9b09a2d1182e3473f867ff93d7631b477488b2ec86aa6f7ef050e",
+      "width": 1024,
+      "height": 1024,
+      "seconds": 52.96
+    },
+    {
+      "seed": 68,
+      "artifactId": "gallery_3afe8a7f49004ab6807162616f47b9cf",
+      "sha256": "e033608ccb37f8e44b9e5a2eae592b50fdc87dfb92c9b7c9dba6478e00c7b5fa",
+      "width": 1024,
+      "height": 1024,
+      "seconds": 52.455
+    },
+    {
+      "seed": 69,
+      "artifactId": "gallery_77da2d9340ae4363b0423e7db957840c",
+      "sha256": "a1842cfe37054be7dff23bf3d973d052358ad9a62fe6716811df20563f1cd72c",
+      "width": 1024,
+      "height": 1024,
+      "seconds": 52.556
+    },
+    {
+      "seed": 70,
+      "artifactId": "gallery_c60ad118754649d0a28c96add060b815",
+      "sha256": "f1a1fcc975af8d5a846a09f99bce28118fd29f9170a6a92c052bb67d4faca0ff",
+      "width": 1024,
+      "height": 1024,
+      "seconds": 54.275
+    },
+    {
+      "seed": 71,
+      "artifactId": "gallery_3d642fe3bea94534b2d47c26a9f58192",
+      "sha256": "53b34a343c2abdb5b0a0612fa32f2d322a71ef66d8b502b3b99c6ecf2f5c1537",
+      "width": 1024,
+      "height": 1024,
+      "seconds": 52.979
+    },
+    {
+      "seed": 72,
+      "artifactId": "gallery_2aab92f1fef3442991e0627fb9ed828d",
+      "sha256": "f1366a4e2ac6a0efec7e10579270437e0db976cb5ace894afc98f20ac38d60f5",
+      "width": 1024,
+      "height": 1024,
+      "seconds": 52.567
+    },
+    {
+      "seed": 73,
+      "artifactId": "gallery_6d924eb174c646b3a57880a61d362c88",
+      "sha256": "59634a536626d35973848d443c36e2812dea61933badb961edd4ab0d3428a169",
+      "width": 1024,
+      "height": 1024,
+      "seconds": 52.953
+    },
+    {
+      "seed": 74,
+      "artifactId": "gallery_6acebd6451314cc4a6c3f5b7d71639b4",
+      "sha256": "ff9997321f1aa3b758619ea4a9cf8d2bed3671ed392899544b5395573cddd95b",
+      "width": 1024,
+      "height": 1024,
+      "seconds": 52.852
+    },
+    {
+      "seed": 75,
+      "artifactId": "gallery_344b4190853245548bfcd061f7ca7720",
+      "sha256": "f75432cd3eb1ed4bc462a07d062eb2f046298b2779528d90e83d550c1882a1de",
+      "width": 1024,
+      "height": 1024,
+      "seconds": 52.845
+    }
+  ]
+}

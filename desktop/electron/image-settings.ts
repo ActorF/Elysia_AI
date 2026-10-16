@@ -33,7 +33,7 @@ export interface ImageSettingsProfile {
 export interface ImageSettingsStatus {
   readonly configured: boolean
   readonly ready: boolean
-  readonly state: 'unconfigured' | 'missing_model' | 'hash_mismatch' | 'ready' | 'invalid'
+  readonly state: 'unconfigured' | 'missing_model' | 'hash_mismatch' | 'ready' | 'invalid' | 'recovery_required'
   readonly message: string
   readonly revision: number
   readonly defaultProfileId: string | null
@@ -51,6 +51,19 @@ export interface ImageInstallationReview {
   readonly checkpointSha256: string
 }
 
+/** Describe bounded incomplete state without exposing prompt text or native names. */
+export interface ImageRecoveryReview {
+  readonly runCount: number
+  readonly fileCount: number
+  readonly byteSize: number
+}
+
+/** Keep private recovery ownership receipts inside Main rather than renderer IPC. */
+export interface ImageRecoveryResult {
+  readonly applied: boolean
+  readonly status: ImageSettingsStatus
+}
+
 /** Bind startup-owned roots and native dialogs without a renderer path surface. */
 export interface ImageSettingsOptions {
   readonly projectRoot: string
@@ -64,6 +77,8 @@ export interface ImageSettingsOptions {
   readonly chooseCheckpoint: (signal: AbortSignal) => Promise<string | null>
   /** Explicitly confirm paths, computed hashes, model source, and license. */
   readonly confirmInstallation: (review: ImageInstallationReview, signal: AbortSignal) => Promise<boolean>
+  /** Ask native consent to move incomplete runs into fixed private quarantine. */
+  readonly confirmRecovery?: (review: ImageRecoveryReview, signal: AbortSignal) => Promise<boolean>
   /** Inject a trusted worker runner for inert tests; private requests stay in Main. */
   readonly runWorker?: (request: Record<string, unknown>, signal: AbortSignal) => Promise<unknown>
   readonly timeoutMs?: number
@@ -95,7 +110,12 @@ const MESSAGES = {
   hash_mismatch: 'A reviewed model or runtime SHA-256 no longer matches. Review the installation.',
   ready: 'The trusted local image installation is ready.',
   invalid: 'Local image settings or runtime readiness checks failed. Review the installation.',
+  recovery_required: '图片临时目录有未完成任务，请确认隔离保留这些文件后恢复生成。',
 } as const
+const PREPARATION_MESSAGE = 'The embedded Python environment needs reviewed absolute dependency roots. '
+  + 'Run scripts/prepare_image_python.py with the trusted installation paths and --apply before checking image readiness again.'
+const REDIRECTOR_MESSAGE = 'Windows virtual-environment redirectors are unsupported for image generation. '
+  + 'Choose an actual Python interpreter or a reviewed portable installation.'
 
 /** Validate the exact metadata contract before showing native installation UI. */
 export function parseImageProfileMetadata(value: unknown): ImageProfileMetadata {
@@ -152,10 +172,15 @@ export function parseImageSettingsStatus(value: unknown): ImageSettingsStatus {
     if (new Set(profiles.map((profile) => profile.profileId)).size !== profiles.length
       || raw.configured !== (profiles.length > 0) || raw.configured !== (defaultProfileId !== null)
       || defaultProfileId !== null && !profiles.some((profile) => profile.profileId === defaultProfileId)
-      || raw.configured && raw.state === 'unconfigured' || !raw.configured && raw.state !== 'invalid' && raw.state !== 'unconfigured'
+      || raw.configured && raw.state === 'unconfigured' || !raw.configured
+      && !['invalid', 'unconfigured', 'recovery_required'].includes(raw.state)
       || raw.configured && raw.revision === 0) throw new Error()
     const state = raw.state as ImageSettingsStatus['state']
-    return Object.freeze({ configured: raw.configured, ready: raw.ready, state, message: MESSAGES[state],
+    const message = state === 'invalid' && raw.message === PREPARATION_MESSAGE
+      ? '便携 Python 需要先配置依赖路径。请按本地图片文档运行 prepare_image_python.py，再重新检查。'
+      : state === 'invalid' && raw.message === REDIRECTOR_MESSAGE
+        ? '请选择完整的 Python 解释器或已审查的便携安装；Windows venv 重定向器暂不支持。' : MESSAGES[state]
+    return Object.freeze({ configured: raw.configured, ready: raw.ready, state, message,
       revision: raw.revision as number, defaultProfileId, profiles: Object.freeze(profiles) })
   } catch {
     throw new ImageSettingsError('unavailable')
@@ -170,7 +195,7 @@ export function parseImageSettingsStatus(value: unknown): ImageSettingsStatus {
  * newer installation from being overwritten after a long selection workflow.
  */
 export class ImageSettingsManager {
-  private active: Promise<ImageSettingsStatus> | null = null
+  private active: Promise<unknown> | null = null
   private controller: AbortController | null = null
   private readonly timeoutMs: number
   private closed = false
@@ -200,6 +225,34 @@ export class ImageSettingsManager {
     return this.owned((signal) => this.configureOnce(checked, signal))
   }
 
+  /** Confirm a snapshot, stop the owned Backend, then quarantine without deleting private data. */
+  recover(beforeApply: () => Promise<void>): Promise<ImageRecoveryResult> {
+    return this.owned(async signal => {
+      if (!this.options.confirmRecovery || typeof beforeApply !== 'function') throw new ImageSettingsError('unavailable')
+      const raw = fields(await this.invokeRaw({ op: 'recovery.preview' }, signal),
+        ['kind', 'snapshot', 'runCount', 'fileCount', 'byteSize'])
+      if (raw.kind !== 'image.recovery.preview' || typeof raw.snapshot !== 'string' || !/^[0-9a-f]{64}$/u.test(raw.snapshot)
+        || !Number.isSafeInteger(raw.runCount) || (raw.runCount as number) < 0 || (raw.runCount as number) > 32
+        || !Number.isSafeInteger(raw.fileCount) || (raw.fileCount as number) < 0 || (raw.fileCount as number) > 100_000
+        || !Number.isSafeInteger(raw.byteSize) || (raw.byteSize as number) < 0) throw new ImageSettingsError('unavailable')
+      const review = Object.freeze({ runCount: raw.runCount as number, fileCount: raw.fileCount as number, byteSize: raw.byteSize as number })
+      if (review.runCount === 0 || await callback(() => this.options.confirmRecovery!(review, signal), signal) !== true) {
+        return { applied: false, status: await this.invoke({ op: 'status' }, signal) }
+      }
+      // Backend stop owns physical processes and must settle even if quit
+      // aborts this operation. Releasing our reservation on a raced signal
+      // would leave that cleanup running outside the Settings close drain.
+      await beforeApply()
+      checkAbort(signal)
+      const receipt = fields(await this.invokeRaw({ op: 'recovery.apply', snapshot: raw.snapshot,
+        trustedConfirmation: true }, signal), ['kind', 'quarantinedCount', 'status'])
+      if (receipt.kind !== 'image.recovery.result' || receipt.quarantinedCount !== review.runCount) {
+        throw new ImageSettingsError('unavailable')
+      }
+      return { applied: true, status: parseImageSettingsStatus(receipt.status) }
+    })
+  }
+
   /** Abort outstanding waits and drain the exact worker before Main may exit. */
   async close(): Promise<void> {
     this.closed = true
@@ -207,7 +260,7 @@ export class ImageSettingsManager {
     await this.active?.catch(() => {})
   }
 
-  private owned(operation: (signal: AbortSignal) => Promise<ImageSettingsStatus>): Promise<ImageSettingsStatus> {
+  private owned<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
     if (this.closed) return Promise.reject(new ImageSettingsError('closed'))
     if (this.active !== null) return Promise.reject(new ImageSettingsError('busy'))
     const controller = new AbortController()
@@ -223,7 +276,7 @@ export class ImageSettingsManager {
     return pending
   }
 
-  private release(pending: Promise<ImageSettingsStatus>): void {
+  private release(pending: Promise<unknown>): void {
     if (this.active === pending) { this.active = null; this.controller = null }
   }
 
@@ -265,12 +318,16 @@ export class ImageSettingsManager {
   }
 
   private async invoke(request: Record<string, unknown>, signal: AbortSignal): Promise<ImageSettingsStatus> {
+    return parseImageSettingsStatus(await this.invokeRaw(request, signal))
+  }
+
+  private async invokeRaw(request: Record<string, unknown>, signal: AbortSignal): Promise<unknown> {
     checkAbort(signal)
     const raw = this.options.runWorker === undefined
       ? await this.spawnWorker(request, signal)
       : await callback(() => this.options.runWorker!(request, signal), signal)
     checkAbort(signal)
-    return parseImageSettingsStatus(raw)
+    return raw
   }
 
   private spawnWorker(request: Record<string, unknown>, signal: AbortSignal): Promise<unknown> {

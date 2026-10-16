@@ -20,6 +20,7 @@ const initialMetadata: ImageProfileMetadata = {
 const stateLabels: Record<ImageSettingsSummary['state'], string> = {
   unconfigured: '尚未配置本地图片生成', ready: '本地图片生成已就绪',
   missing_model: '缺少已配置的模型', hash_mismatch: '文件校验不一致', invalid: '图片配置需要检查',
+  recovery_required: '有未完成的图片任务需要恢复',
 }
 const dialectLabels: Record<string, string> = {
   'sdxl-natural': 'SDXL 自然语言', 'pony-tags': 'Pony 标签', 'illustrious-tags': 'Illustrious 标签',
@@ -128,6 +129,27 @@ export function ImageSettingsSection({ active = true }: ImageSettingsSectionProp
     }
   }
 
+  async function recover(): Promise<void> {
+    if (api === undefined || loading || installing.current) return
+    const revision = ++operation.current
+    installing.current = true
+    setConfiguring(true)
+    setError(null)
+    setNotice(null)
+    try {
+      const next = await api.recoverImageRuntime()
+      if (!mounted.current || revision !== operation.current) return
+      setStatus(next)
+      setNotice(next.state === 'recovery_required' ? '恢复尚未完成，临时文件继续保留。'
+        : '恢复检查完成，未完成任务的文件已保留。')
+    } catch (failure) {
+      if (mounted.current && revision === operation.current) setError(errorText(failure))
+    } finally {
+      installing.current = false
+      if (mounted.current && revision === operation.current) setConfiguring(false)
+    }
+  }
+
   return <section className="settings-section image-settings" aria-labelledby="image-settings-heading" aria-busy={loading || configuring}
     onKeyDown={(event) => {
       // These controls live inside the shared Settings form, but installation
@@ -143,6 +165,12 @@ export function ImageSettingsSection({ active = true }: ImageSettingsSectionProp
       {status?.state === 'missing_model' && <p>请恢复已确认的模型文件，或重新选择并确认本地安装。</p>}
       {status?.state === 'hash_mismatch' && <p>文件已发生变化。请确认来源与许可证，再重新选择安装以审阅新的校验值。</p>}
       {status?.state === 'invalid' && <p>请检查安装是否完整。配置文档损坏时，可重新选择并确认安装进行恢复；原配置会保留备份。</p>}
+      {status?.state === 'recovery_required' && <div>
+        <p>通过系统确认窗口，将未完成任务移入私有隔离目录并保留全部文件，然后重新检查运行环境。</p>
+        <button type="button" className="secondary-button image-settings-recovery" onClick={() => { void recover() }} disabled={loading || configuring}>
+          {configuring ? '正在恢复…' : '隔离保留并恢复图片生成'}
+        </button>
+      </div>}
       {notice !== null && <p role="status">{notice}</p>}
     </div>
     {error !== null && <p role="alert">{error}</p>}

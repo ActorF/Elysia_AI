@@ -20,7 +20,7 @@ export interface ImageProfileMetadata {
 export interface ImageSettingsSummary {
   configured: boolean
   ready: boolean
-  state: 'unconfigured' | 'missing_model' | 'hash_mismatch' | 'ready' | 'invalid'
+  state: 'unconfigured' | 'missing_model' | 'hash_mismatch' | 'ready' | 'invalid' | 'recovery_required'
   message: string
   revision: number
   defaultProfileId: string | null
@@ -49,6 +49,8 @@ export interface ImageClient {
   getImageSettings(): Promise<ImageSettingsSummary>
   /** Run native installation picks and explicit hash/provenance consent before saving. */
   configureImageInstallation(metadata: ImageProfileMetadata): Promise<ImageSettingsSummary>
+  /** Quarantine incomplete private runs after Main's native confirmation, retaining their files. */
+  recoverImageRuntime(): Promise<ImageSettingsSummary>
   /** Generate and commit one structured original-character request. */
   generateImage(params: ImageGenerateParams): Promise<ImageGenerationResult>
   /** Cancel the current image task without releasing its physical admission early. */

@@ -1,0 +1,174 @@
+# 本地图片生成真实环境验收
+
+本次验收使用 Windows、RTX 4070 SUPER 12 GiB、官方 ComfyUI v0.41.0
+便携运行时和官方 SDXL Base 1.0。安装、模型、运行目录和 Gallery 均放在
+忽略的验收目录，未覆盖用户的正式图片配置。来源、固定摘要、许可证和
+依赖清单见 [运行时审计](17-LOCAL-IMAGE-RUNTIME-AUDIT.md)。
+
+## 已准备好的本机安装位置
+
+本机已下载模型并准备好便携 Python，设置页选择受信安装时可使用：
+
+| 项目 | 路径 |
+| --- | --- |
+| ComfyUI 根目录 | `D:\Elysia_AI\models\cache\image-acceptance\ComfyUI_windows_portable\ComfyUI` |
+| Python 解释器 | `D:\Elysia_AI\models\cache\image-acceptance\ComfyUI_windows_portable\python_embeded\python.exe` |
+| 模型根目录 | `D:\Elysia_AI\models\cache\image-acceptance\models` |
+| Checkpoint | `D:\Elysia_AI\models\cache\image-acceptance\models\checkpoints\sd_xl_base_1.0.safetensors` |
+
+该 Checkpoint 的来源填写官方
+[SDXL Base 1.0](https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0)，
+许可证声明为 `CreativeML Open RAIL++-M`，Prompt Dialect 使用 SDXL Natural。
+正式应用仍通过设置页的文件选择与原生确认流程保存受信安装配置。
+
+## 实际发现并修复的兼容性问题
+
+Windows `CreateProcessW` 拒绝 `\\?\Volume{GUID}\...` 形式的可执行文件名，
+返回错误 87。共享 Windows launcher 仅把经过严格规范检查的可执行文件前缀
+转换成指向同一卷的 `\\.\Volume{GUID}\...`，同时同步命令行首项。
+转换不经过盘符；解释器、ComfyUI 入口和 Checkpoint 仍通过原有文件 Guard
+保持固定文件身份。脚本参数和模型路径继续使用受保护的卷 GUID 路径。
+含 `..`、空分量、尾部空格/句点、ADS 或 DOS 保留名的转换请求会被拒绝。
+
+CPython 3.13 的现代 DLL 搜索标志 `0x1100` 不接受卷 GUID 形式的 `.pyd`
+依赖路径。便携版原有的相对 `._pth` 声明因此无法直接配合卷 GUID 解释器启动。
+明确的安装准备只将已审核的 Python 根目录及同一便携安装中的 ComfyUI 目录
+写成普通绝对依赖路径，并显式列出 `Lib/site-packages`；唯一允许的执行指令
+是原有的 `import site`。原始文件与准备后的文件摘要均已记录在来源审计中。
+静态 readiness 会拒绝尚未准备的嵌入环境及 Windows venv redirector，并给出
+路径不可见的操作说明。
+
+这是安装依赖的信任边界：依赖树由安装者审核，并由正常的 Windows/CPython
+加载机制解析，DLL 搜索标志保持 `0x1100`。原生 Guard 的固定文件身份保证
+覆盖解释器、入口和 Checkpoint 三项；依赖 DLL、包文件及其盘符映射属于
+上述受信安装边界。
+
+ComfyUI 的内部根相对路径规范化不能以卷 GUID 目录作为 Windows 当前目录。
+进程当前目录改成此次任务拥有并重新检查过的私有运行目录，与输入、输出及
+缓存目录使用同一普通路径约定。Windows 子进程在运行时持有其当前目录。
+`PrivateRunDirectory` 沿用普通目录和所有权检查；三个核心文件的原生 Guard
+保持上述规则。
+
+## 已完成的真实 Smoke
+
+第一张图使用原创、纯虚构、明确 30 岁的单人角色描述：银发女性、白色连衣裙、
+安静花园、柔和插画。固定 Workflow、1024 × 1024、Seed 42、8 Steps。
+生成总计 61.210 秒，经过 `sampling → verifying → completed`，最终 PNG
+1,714,939 字节，SHA-256：
+
+```text
+f3d4c2f9a63621f5c3f015ac9b5cfaabc52428976d5c47aa24fb1b50323ae873
+```
+
+已目视检查输出。Gallery 提交后才发布 100%，重新打开的规范 PNG 通过尺寸与
+摘要检查。任务结束后私有运行根为空，原有无关 GPU 进程保留。
+
+最终执行了真实 `BackendProcess` 桥接验收，耗时 130.976 秒，覆盖：
+
+- 正式 Backend 启动、图片 capability 和 Main GPU 准入。
+- `image.generate`、Gallery 提交及关联进度。
+- 私有 fd4 二进制 PNG、摘要校验和一次性 Preview URL。
+- Main 持有的原子导出，Renderer 仅提交 Artifact ID。
+- 应用服务报告 `sampling` 后取消，确认收到取消请求 ACK 和明确的取消领域错误，未增加 Gallery 记录。
+- Gallery 删除、Backend 关闭和全局 GPU Lease 释放。
+
+桥接报告记录导出 PNG 为 1024 × 1024、1,626,886 字节，SHA-256：
+
+```text
+dffe0af67aabb39e9b820910bc9b89574e2026860803f72cb9c6da0dfaebabeb
+```
+
+## 实际 Electron 图片显示
+
+另外启动隔离的 Electron 43.7.7 Renderer，使用生产协议 Handler、生产 CSP、
+二进制 Reader 和 Preview Owner，实际将前述 1024 × 1024 PNG 绘制到 `<img>`。
+检查了分片 `ELYSIMG1` 帧、原生 PNG 解码、响应摘要、首读成功、重读/刷新后
+失效、撤销、过期，以及 POST 请求拒绝且保留可用能力。上下文隔离与 Sandbox
+开启，Node Integration 关闭；硬件加速关闭，因此该步骤未使用推理 GPU。
+
+该步骤验证独立 Renderer 的真实自定义协议和图片绘制。完整 React 页面交互
+由 UI 测试覆盖，完整 Backend/模型链路由桥接验收覆盖。原始报告和窗口截图
+保留于 `tmp/image-preview-acceptance/real-render-005/report.json` 与 `preview.png`；
+最终报告核对了桥接报告中的显式尺寸及当前生产源码摘要。
+
+## 重复生成与恢复验收工具
+
+2026-10-16 的实际长跑全部通过，摘要保存在
+[image-runtime-smoke-2026-10-16.json](image-runtime-smoke-2026-10-16.json)。
+
+| 项目 | 实测结果 |
+| --- | --- |
+| 生成窗口 | 1,823.349 秒（30 分 23.349 秒） |
+| 全套验收 | 1,971.305 秒（32 分 51.305 秒） |
+| 输出 | 连续 34 张，1024 × 1024，28 Steps，Seed 42–75 |
+| 每张生成耗时 | 最短 52.455 秒，最长 58.835 秒，平均 53.628 秒 |
+| PNG 校验 | 34 个不同摘要，全部通过 Gallery 重新读取校验 |
+| 取消 | 应用服务报告 sampling 后等待 4 秒请求取消，结果 requested，无 Gallery 提交 |
+| 损坏模型 | 真实子进程产生 ImageGenerationFailedError，私有目录清理完成，无 Gallery 提交 |
+| 关闭 | 跨线程取消并排空，排空耗时 0.110 秒，私有目录清理完成 |
+| 保留与恢复 | 未知运行目录被拒绝并保留，精确清理工具自己的合成夹具后，34 份 Gallery 结果完整保留 |
+| 后代进程 | 独立观察到 74 个后代 PID，结束时残留 0，观察无失败 |
+| 全卡显存 | 基线 2,486 MiB，峰值 11,380 MiB，末次 2,479 MiB，总量 12,282 MiB |
+
+全套时间为 `2026-10-16T19:32:59.865272Z` 至
+`2026-10-16T20:05:51.167514Z`。原始报告、逐张 PNG 和私有 Gallery 保留于
+`tmp/image-real-acceptance/58dbf4cfc9c14b829a2b31d12187c302`。
+表中的显存是全卡数据，含验收之前已存在的其他应用；3,572 次采样用于报告
+该观察区间的峰值，不表示图片进程独占的显存用量。
+
+在已验证并完成显式 Python 环境准备的安装上运行：
+
+```bat
+.venv\Scripts\python.exe scripts\smoke_local_image_generation.py --cycles 3 --soak-seconds 1800 --steps 28
+```
+
+工具每次在 `tmp/image-real-acceptance/<uuid>` 建立独立数据根，记录逐张生成耗时、
+完整 Gallery PNG 校验、应用服务报告 `sampling` 后等待 4 秒并提交取消、损坏
+Checkpoint 的真实执行失败、
+跨线程关闭与排空。另用明确属于工具的合成孤留目录检查运行时拒绝未知私有状态，
+确认保留内容后仅删除该工具自己创建的精确标记文件和空目录，再验证 Gallery
+重新打开后的持久化数据。
+
+此命令使用生产 Application Service 组合；Main 的跨进程 GPU 准入和二进制
+桌面协议已由前述 Backend 桥接验收另行覆盖。
+
+未知真实运行目录不会被自动接管或清空。对真实硬崩溃留下的目录，需要先确认
+没有存活的任务，再走原生确认的隔离恢复流程；本工具的合成恢复检查不等同于
+自动恢复。
+
+## 原生隔离恢复的真实 Windows 验收
+
+使用已关闭的桥接验收数据根另行执行真实 `ImageSettingsManager`、真实 Python
+Worker 和原生 `MoveFileExW` 隔离恢复，未启动推理。测试拥有的一个 UUID 运行目录
+含两份文件、共 1,626,950 字节，其中包含前述真实导出的 PNG。
+隔离后两个文件逐字节保留，PNG 摘要仍为 `dffe0af6…faebabeb`，Gallery Index
+逐字节保持一致，readiness 从 `recovery_required` 变成 `ready`。
+
+产品设置页提供“隔离保留并恢复图片生成”入口。Main 先预览遗留状态，获得原生
+确认后停止并等待 Backend 退出，再由 Worker 取得 Gallery Lease，将固定私有
+运行根中的遗留任务移动到固定隔离目录。它保留图片和其他私有文件，
+不会删除 Gallery，也不允许 Renderer 提交恢复路径。并发进程持有 Gallery Lease
+时，恢复会被拒绝。
+
+将 `ELYSIA_IMAGE_ACCEPTANCE_ROOT` 设为已经完成桥接验收且带专用标记的独立
+数据根后，可重复执行元数据恢复验收：
+
+```bat
+cd desktop
+npm run smoke:image-recovery -- --data-root "%ELYSIA_IMAGE_ACCEPTANCE_ROOT%"
+```
+
+该命令由操作员给生产 Main Manager 提供确认适配器。确认与取消的调用分支由
+UI/Manager 测试覆盖；本次未自动点击真实操作系统对话框。验收报告位于该数据根的
+`backend-smoke/recovery-report.json`，明确记录这个确认边界。
+
+## 采样和时长边界
+
+GPU 采样报告全卡已用显存的基线、峰值和末次值，其中包含原有其他应用；
+不能将它解释为图片任务独占的峰值。独立 Windows 进程快照记录本工具观察到的
+后代进程，即使中间父进程已结束，仍检查已观察到的后代是否残留。真正的所有权
+与停止证明仍来自原生 Job Object，而非 PID 名称匹配。
+
+`--soak-seconds` 的范围为 0–3600，最多生成 50 张；达到数量上限但未达到请求
+时长会报告失败。实际耗时和全部结果写入验收数据根中的 `acceptance.json`。
+验收不得被描述成 24 小时压力测试或对其他 GPU/驱动/模型的全面保证。

@@ -1,6 +1,6 @@
 # 本地图片生成
 
-已实现受信生成核心、私有 ComfyUI 监督器、持久 Gallery、应用服务、Python Backend 路由、Electron 私有预览/原生导出和 React 图片生成器。**受信安装配置尚未接通**；真实模型/GPU 验收和跨模型 GPU 调度也未完成。
+已接通受信生成核心、私有 ComfyUI 监督器、持久 Gallery、应用服务、Python Backend 路由、Electron 私有预览/原生导出、React 图片生成器、受信安装配置与 Readiness，以及跨模型 GPU 准入。真实模型、桌面预览和恢复验收的范围与证据见[真实环境验收记录](18-LOCAL-IMAGE-REAL-ACCEPTANCE.md)。
 
 ## 架构与责任
 
@@ -76,7 +76,7 @@ CheckpointLoaderSimple
 
 终止通过所拥有的 Windows Job Object，绝不接管共享 ComfyUI。确认完整进程树退出后才释放守卫，并在有界、不跟随链接的目录盘点后删除准确 UUID 根。Startup/Finalize/Close 共用终态锁，避免关闭后又启动或重复删除。清理无法证明完成就阻止结果发布。
 
-硬崩溃/断电后，Job Object 在宿主句柄关闭时终止子进程，但磁盘目录可能残留。下次 preflight 保留现场并拒绝启动；当前没有自动残留恢复 UI，不猜测归属后删除。
+硬崩溃/断电后，Job Object 在宿主句柄关闭时终止子进程，但磁盘目录可能残留。下次 preflight 保留现场并拒绝启动；Settings 提供原生确认后的私有目录隔离恢复，保留全部字节，不自动删除或猜测未知目录归属。
 
 **认证范围有限：** 尚未给 ComfyUI 所有模块和 Python 包建立完整清单。固定解释器、入口与模型摘要不等于整个依赖树可信；当前仍依赖用户受信的本机安装，升级需要重审摘要和真实验收。
 
@@ -143,11 +143,11 @@ RUNNING → CANCEL_REQUESTED → 丢弃结果，不创建 Gallery
 
 ## Python Desktop Backend 与预览合同
 
-Protocol v1 已定义并接通 `image.generate` 和 `image.gallery.list/get/delete/open`，但不代表已有产品入口。请求禁止路径、任意 Graph、图片字节或内容模式字段；Backend 固定 `new-character`。图片请求只要求已完成认证握手，不依赖 Brain、Ollama 或 Chat 初始化，也不会将提示词交给语音模块。
+Protocol v1 已定义并接通 `image.generate` 和 `image.gallery.list/get/delete/open`，由桌面图片生成器和 Gallery 入口使用。请求禁止路径、任意 Graph、图片字节或内容模式字段；Backend 固定 `new-character`。图片请求只要求已完成认证握手，不依赖 Brain、Ollama 或 Chat 初始化，也不会将提示词交给语音模块。
 
 `create_managed_image_application_service(profiles, config, data_root)` 为受信启动组合入口：对所有 Profile 完成解释器、入口和 Checkpoint 文件/Hash 预检，再打开固定的 `<data-root>/workspace/gallery`，并组合现有 Core 与应用服务。预检不启动 ComfyUI，不代表真实 GPU/API 验收；每次生成仍重新验证资产并检查私有 ComfyUI API。私有运行根与 Gallery 不得重叠，构造失败分别关闭已分配的 Runtime 和 Gallery，公开错误不保留私有异常链。
 
-启动宿主将返回的服务和独立 `ImageChannelWriter` 分别注入 `DesktopBackend(image_service=..., image_writer=...)`，Backend 接管两者的关闭责任。只有两者都存在时，握手才广告五项图片 Capability；缺少任一依赖时，所有合法图片请求明确返回 `image.unavailable`。当前 `main()` 已接收固定 fd4 图片 Pipe，但尚无受信安装配置，因此默认不创建图片服务，也不广告图片能力。请求解析成功但尚未实现的其他方法同样有明确的兜底拒绝。
+启动宿主将返回的服务和独立 `ImageChannelWriter` 分别注入 `DesktopBackend(image_service=..., image_writer=...)`，Backend 接管两者的关闭责任。`main()` 从私有受信配置创建并预检服务，接收固定 fd4 图片 Pipe；只有服务和 Pipe 都完整就绪时，握手才广告五项图片 Capability。缺少或无效配置时，所有合法图片请求明确返回 `image.unavailable`。请求解析成功但尚未实现的其他方法同样有明确的兜底拒绝。
 
 `desktop_images.py` 将同步生成和 Gallery I/O 放在独立工作线程，保持请求读取和取消可响应。生成只准入一个任务，以请求 ID 关联内部单次 `imageop_<uuid>`；预留与应用服务准入之间的取消意图会保留，并在首次进度回调后重送，避免立即取消丢失。最终取消或提交仍由应用服务裁决，过期请求 ID 不能取消后续任务。
 
@@ -175,9 +175,13 @@ Settings 的“图片生成”页通过 Main 原生选择 ComfyUI 目录、解�
 
 配置保存到私有数据根的 `workspace/settings/images.json`，使用 Revision 比较交换和原子发布。Backend 启动只从该受信配置组合 Runtime/Profile/Gallery；缺失模型、摘要变化和不可用安装明确呈现。损坏配置只能在原生确认后修复，原字节备份到固定私有文件，Gallery 保留。启动期间读取多 GiB 模型摘要，因此握手期限为 180 秒。
 
-下一步需要：
+Windows 受管启动保留卷 GUID 文件身份，解释器的原生启动拼写使用同一卷的 `\\.\Volume{GUID}\...`；入口和模型仍使用受保护路径。私有工作目录为应用拥有的普通 DOS 路径，不具有这些文件的原生卷身份固定保证。Windows venv 重定向器不能通过该命名空间查找 `pyvenv.cfg`，因此需选择完整解释器。嵌入式 Python 的 `_pth` 需审查并使用安装内标准库与依赖的绝对路径，保持 CPython 原有安全 DLL 搜索标志。三项固定摘要保护解释器、ComfyUI 入口和 Checkpoint；第三方 DLL、标准库和 `site-packages` 属于受信完整安装，使用 Windows/CPython 常规路径解析，不享有上述卷身份固定保证。依赖清单与文件摘要审计不能视为进程沙箱或第三方代码无缺陷的证明。
 
-- 完成真实 ComfyUI/模型/GPU smoke 与 soak、依赖树认证和可见的崩溃残留恢复。
+实际依赖摘要、模型许可和来源见[运行环境审计](17-LOCAL-IMAGE-RUNTIME-AUDIT.md)；本机真实生成、私有预览、导出、取消及持续运行的事实与范围见[真实验收记录](18-LOCAL-IMAGE-REAL-ACCEPTANCE.md)。
+
+Windows 便携 Python 可先用 `scripts/prepare_image_python.py --python <完整绝对路径> --runtime-root <ComfyUI绝对路径>` 预览静态准备计划；仅在审核来源与依赖目录后增加 `--apply`。工具保留带原始摘要的备份，拒绝逃逸目录、重定向文件及额外执行指令。Settings 的 Readiness 会明确提示尚未准备的环境。
+
+硬崩溃残留会显示 `recovery_required`，停止广告图片能力。Settings 的“隔离保留并恢复图片生成”先通过私有 Worker 取得有界目录快照，再原生确认、排空 Backend、取得 Gallery 跨进程 Lease，原子移动已确认的普通 UUID 任务目录到固定 `workspace/image-recovery`。全部文件保留，Gallery 不变；快照变化、链接、外来目标或部分失败都保留现有内容供重新检查。私有快照和路径不进入 Renderer，取消确认窗口不移动任何目录。
 
 参考图、OpenPose/ControlNet、Inpaint、FaceDetailer 和连续角色变体需各自合同及验证，不能开放任意 Workflow JSON 代替设计。
 
@@ -193,7 +197,7 @@ Ollama Daemon 可能在 Python 退出后存活，因此每个新物理任务在�
 
 仓库不分发 ComfyUI、Checkpoint、LoRA/ControlNet/IP-Adapter/VAE、Custom Nodes、生成图片或本机 Gallery。Profile 记录来源和许可不等于取得权利；真实模型加入前需核对内容、商业使用和再分发条件。
 
-爱莉希雅 GPT-SoVITS 随附说明禁止 R18 使用。成人图片流程不得调用该模型、参考音频或衍生语音；状态提示保持无声，或仅用独立且许可允许的通用系统提示。Image Core 不导入 `voice/`、不携带 Voice Profile/Emotion；后续接线不能自动朗读成人图片提示词或结果。此隔离不替代图片模型本身的许可审核。详见 [MODEL_LICENSE.md](../MODEL_LICENSE.md)。
+爱莉希雅 GPT-SoVITS 随附说明禁止 R18 使用。成人图片流程不得调用该模型、参考音频或衍生语音；状态提示保持无声，或仅用独立且许可允许的通用系统提示。图片业务不调用语音合成、不携带 Voice Profile/Emotion；受管 Runtime 仅复用 `voice/` 内的 Windows 文件保护与进程监督工具。桌面图片流程不自动朗读成人图片提示词或结果。此隔离不替代图片模型本身的许可审核。详见 [MODEL_LICENSE.md](../MODEL_LICENSE.md)。
 
 ## 验证
 
@@ -206,4 +210,4 @@ npm run test:contract
 npm run test:image
 ```
 
-真实模型画质、显存峰值、长时间取消与目标 GPU 兼容性需要单独本机验收。
+本机真实模型、显存峰值、取消与持续运行的验收基线见[真实验收记录](18-LOCAL-IMAGE-REAL-ACCEPTANCE.md)；其他模型、升级后的依赖与不同目标 GPU 仍需单独验收。

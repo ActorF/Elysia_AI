@@ -16,6 +16,7 @@ import sys
 from typing import NoReturn, Sequence, cast
 
 from desktop_image_settings import DesktopImageSettingsStore, TrustedImageInstallation
+from desktop_image_recovery import preview_image_recovery, quarantine_image_recovery
 from image_generation.profiles import (
     ImageSizePreset, ModelArchitecture, ModelProfile, ModelProfileCatalog, PromptDialect,
 )
@@ -125,6 +126,15 @@ def handle_request(request: object, data_root: Path) -> dict[str, object]:
     if raw.get("op") == "status":
         _fields(raw, frozenset({"op"}))
         return store.status().to_public_dict()
+    if raw.get("op") == "recovery.preview":
+        _fields(raw, frozenset({"op"}))
+        return preview_image_recovery(data_root).to_private_dict()
+    if raw.get("op") == "recovery.apply":
+        _fields(raw, frozenset({"op", "snapshot", "trustedConfirmation"}))
+        if raw["trustedConfirmation"] is not True:
+            raise ValueError("Confirm private image recovery in the native dialog.")
+        count = quarantine_image_recovery(data_root, snapshot=_digest(raw["snapshot"]), trusted_confirmation=True)
+        return {"kind": "image.recovery.result", "quarantinedCount": count, "status": store.status().to_public_dict()}
     if raw.get("op") != "configure":
         raise ValueError("Image settings operation is unsupported.")
     expected_fields = frozenset({"op", "installation", "expectedRevision", "trustedConfirmation"})

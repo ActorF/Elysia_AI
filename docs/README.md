@@ -22,7 +22,9 @@
 | [数据管理](./13-PRODUCTION-DATA-LAYOUT.md) | 本地目录、迁移、容量与清理 |
 | [桌宠](./14-LIVE2D-RUNTIME.md) | 静态应用内角色与可选外部桌宠 |
 | [本机翻唱](./15-SONG-COVER.md) | 运行时准备、生成、试听与导出 |
-| [本地图片生成](./16-LOCAL-IMAGE-GENERATION.md) | 已有核心、可信模型与待接入能力 |
+| [本地图片生成](./16-LOCAL-IMAGE-GENERATION.md) | 桌面生成器、Gallery、原生导出、受信配置与 GPU 准入 |
+| [图片运行环境审计](./17-LOCAL-IMAGE-RUNTIME-AUDIT.md) | 固定来源、许可、依赖摘要与审计范围 |
+| [真实图片验收](./18-LOCAL-IMAGE-REAL-ACCEPTANCE.md) | 本机生成、取消、关闭、恢复与连续运行记录 |
 | [Work 工作流](./17-WORKFLOW-AND-DESKTOP-AGENT.md) | 计划、工具、审批、恢复与审计 |
 | [图片与屏幕](./18-VISION-AND-SCREEN.md) | 图片输入、OCR、截图与隐私 |
 | [联网与服务](./19-INTERNET-AND-SERVICES.md) | 网络开关、查询、来源与外部写入 |

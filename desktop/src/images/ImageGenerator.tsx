@@ -39,6 +39,7 @@ const stageLabels: Record<string, string> = {
 const readinessLabels: Record<ImageSettingsSummary['state'], string> = {
   unconfigured: '尚未配置本地图片模型', missing_model: '缺少已配置的模型文件',
   hash_mismatch: '模型或运行文件校验不一致', invalid: '本地图片运行环境需要检查',
+  recovery_required: '请到图片设置恢复未完成任务',
   ready: '本地图片模型已就绪',
 }
 

@@ -53,6 +53,7 @@ from .exceptions import (
 )
 from .png import CanonicalPng
 from .profiles import ModelProfile
+from .python_environment import PythonEnvironmentError, check_python_environment
 from .service import _MANAGED_RUNTIME_CAPABILITY
 from .workflow import CompiledWorkflow
 
@@ -684,6 +685,12 @@ class ManagedComfyUiRuntime:
             self._dependencies.path_volume_verifier(
                 self._config.python_executable
             )
+            try:
+                check_python_environment(
+                    self._config.python_executable, self._config.runtime_root,
+                )
+            except PythonEnvironmentError as error:
+                raise ImageGenerationUnavailableError(str(error)) from None
             _require_private_state_ownership(
                 self._config.private_state_root,
                 expected_run=None,
@@ -938,6 +945,7 @@ class ManagedComfyUiRuntime:
             if type(port) is not int or not 1 <= port <= 65_535:
                 raise ImageGenerationUnavailableError(_UNAVAILABLE_MESSAGE)
             transport = self._dependencies.transport_factory()
+            _require_safe_existing_path(run.root, directory=True)
             process = self._dependencies.launcher(
                 self._command(
                     run,
@@ -949,7 +957,12 @@ class ManagedComfyUiRuntime:
                 stdin_handle=transport.stdin_handle,
                 stdout_handle=transport.stdout_handle,
                 stderr_handle=transport.stderr_handle,
-                cwd=str(main_path.parent),
+                # ComfyUI uses root-relative paths internally; Windows Python
+                # cannot normalize them from a volume-GUID current directory.
+                # The owned scratch directory uses the same reviewed DOS root
+                # as input/output/cache. Critical executable, main-script, and
+                # checkpoint paths remain pinned to their guarded volume names.
+                cwd=str(run.root),
                 environment=self._dependencies.environment_factory(run),
             )
             transport.close()

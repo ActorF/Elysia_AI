@@ -34,6 +34,7 @@ Optional features use separately prepared local assets:
 | Speech recognition | `requirements-stt.txt` and a complete `models/weights/faster-whisper/<model>/` directory. |
 | Speech playback | GPT-SoVITS runtime, checkpoints/reference audio under `models/weights/gpt-sovits/`, and active-root `workspace/settings/voice-profiles.json`. |
 | Song Cover | Private CUDA/WSL runtimes in the [Song Cover guide](../docs/15-SONG-COVER.md); unavailable in the current installer. |
+| Image generation | Reviewed ComfyUI, a complete Python interpreter, and SDXL checkpoint selected in Settings → 图片生成; see [local images](../docs/16-LOCAL-IMAGE-GENERATION.md). |
 | Desktop Pet | A supported external program selected in Settings; see [character presentation](../docs/14-LIVE2D-RUNTIME.md). |
 
 These assets are not downloaded automatically or bundled. Text Chat does not
@@ -59,6 +60,7 @@ room for Ollama and GPT-SoVITS. Model directories stay Git-ignored.
 | Dictate | Listens continuously, transcribes bounded segments in order, and appends final text to the draft without sending. Stop closes the microphone and drains pending transcription. |
 | Voice Call | Opens a separate window and automatically sends each completed utterance to the current Chat. Mute pauses capture; End call or Escape releases its audio resources. |
 | Read aloud | Speaks one persisted Assistant reply. Ordinary text Chat is silent by default. |
+| 图片生成 | Opens the generator and private Gallery. Progress, cancellation, deletion, preview and native PNG export use the owned Backend. |
 | Use Project Sources | Opts the current turn or retry into the Chat's canonical Project corpus; reload or a context change resets the choice. |
 
 Chat attachments remain message data; they are not automatically indexed.
@@ -232,6 +234,12 @@ and migration gates.
   receives sanitized status only. Exact request/Chat ownership prevents stale
   cancellation; a missing selected speaker fails the clip. Runtime manifests
   prove launch consistency, not full provenance; speech caching stays off.
+- Images use independent bounded fd4 PNG framing and one-use preview URLs.
+  Main owns Save dialogs and native export paths. Incomplete run recovery
+  requires native confirmation and preserves its files in private quarantine.
+- Main serializes Ollama, image, GPT-SoVITS and Song Cover GPU work through
+  private fd5 admission. Cancellation retains capacity until physical cleanup;
+  external Ollama residency must be cleared before another model starts.
 - Desktop Pet is off by default. Main revalidates pinned program identities,
   owns only its child, and preserves external configuration. Path-based launch
   retains a check-to-use interval. The reviewed launcher uses `RunAsInvoker`
