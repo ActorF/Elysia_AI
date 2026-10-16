@@ -946,6 +946,8 @@ const desktopApi: DesktopApi = {
       active,
     ) as Promise<void>,
 
+  /** Request only an opaque artifact; Main owns transport and URL lifetime. */
+  openImagePreview: (artifactId: string) => ipcRenderer.invoke('elysia:image:preview', artifactId),
   getSnapshot: () =>
     ipcRenderer.invoke(
       'backend:get-snapshot',

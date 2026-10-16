@@ -1,6 +1,6 @@
 # 本地图片生成
 
-已实现受信生成核心、私有 ComfyUI 监督器、持久 Gallery、应用服务、Desktop Protocol 合同和 Python Backend 图片路由。**Electron 预览管道、受信安装配置和 React 界面尚未接通**，普通用户还不能从应用中直接使用；真实模型/GPU 验收和跨模型 GPU 调度也未完成。
+已实现受信生成核心、私有 ComfyUI 监督器、持久 Gallery、应用服务、Python Backend 路由和 Electron 私有预览通道。**受信安装配置和 React 界面尚未接通**，普通用户还不能从应用中直接使用；真实模型/GPU 验收和跨模型 GPU 调度也未完成。
 
 ## 架构与责任
 
@@ -12,7 +12,8 @@
   → 应用服务裁决取消或提交
   → 私有 Gallery
   → Python Desktop Backend / 二进制预览 Writer
-  → Electron 私有管道与 React（待接线）
+  → Electron fd4 / 一次性预览 URL
+  → React（待接线）
 ```
 
 | 层 | 责任 |
@@ -146,7 +147,7 @@ Protocol v1 已定义并接通 `image.generate` 和 `image.gallery.list/get/dele
 
 `create_managed_image_application_service(profiles, config, data_root)` 为受信启动组合入口：对所有 Profile 完成解释器、入口和 Checkpoint 文件/Hash 预检，再打开固定的 `<data-root>/workspace/gallery`，并组合现有 Core 与应用服务。预检不启动 ComfyUI，不代表真实 GPU/API 验收；每次生成仍重新验证资产并检查私有 ComfyUI API。私有运行根与 Gallery 不得重叠，构造失败分别关闭已分配的 Runtime 和 Gallery，公开错误不保留私有异常链。
 
-启动宿主将返回的服务和独立 `ImageChannelWriter` 分别注入 `DesktopBackend(image_service=..., image_writer=...)`，Backend 接管两者的关闭责任。只有两者都存在时，握手才广告五项图片 Capability；缺少任一依赖时，所有合法图片请求明确返回 `image.unavailable`。当前 `main()` 尚无受信安装配置或 Electron 图片 Pipe，因此默认不创建图片服务，也不广告图片能力。请求解析成功但尚未实现的其他方法同样有明确的兜底拒绝。
+启动宿主将返回的服务和独立 `ImageChannelWriter` 分别注入 `DesktopBackend(image_service=..., image_writer=...)`，Backend 接管两者的关闭责任。只有两者都存在时，握手才广告五项图片 Capability；缺少任一依赖时，所有合法图片请求明确返回 `image.unavailable`。当前 `main()` 已接收固定 fd4 图片 Pipe，但尚无受信安装配置，因此默认不创建图片服务，也不广告图片能力。请求解析成功但尚未实现的其他方法同样有明确的兜底拒绝。
 
 `desktop_images.py` 将同步生成和 Gallery I/O 放在独立工作线程，保持请求读取和取消可响应。生成只准入一个任务，以请求 ID 关联内部单次 `imageop_<uuid>`；预留与应用服务准入之间的取消意图会保留，并在首次进度回调后重送，避免立即取消丢失。最终取消或提交仍由应用服务裁决，过期请求 ID 不能取消后续任务。
 
@@ -156,13 +157,16 @@ Open 的 JSON 只含 artifact ID、一次性 64-hex token、尺寸、长度、�
 
 Gallery Open 在读取时重新验证 PNG，由 Writer 创建一次性 Token；先发送 JSON Metadata，再在工作线程写入准确的一帧，避免 Main 等待 Token 而 Writer 被 Pipe 背压阻塞。已发送 Metadata 后的写入失败不会再次发送矛盾的 JSON 终态；通道失败后停止图片准入并撤销后续握手中的图片 Capability。PNG 不进入 NDJSON，也不转为 Base64。
 
-关闭、stdin EOF 和读取异常都先关闭图片输出 Gate，并通过应用服务 `request_shutdown()` 原子停止准入。已经获胜的 Gallery Commit 必须排空后才确认关闭；其余推理和预览关闭使用有界等待，后台所有者继续持有资源直到排空。Runtime 经由应用服务/Core 关闭，不能提前直接关闭在用 Runtime。Writer 在独立关闭线程等待已有写入结束，不阻塞 Runtime 清理；Electron 下一模块必须在退出/失败时销毁私有 Pipe 读端，释放可能阻塞的 Writer。关闭失败保留所有者供后续调用重试；有界等待结束不表示资源已证明释放。
+关闭、stdin EOF 和读取异常都先关闭图片输出 Gate，并通过应用服务 `request_shutdown()` 原子停止准入。已经获胜的 Gallery Commit 必须排空后才确认关闭；其余推理和预览关闭使用有界等待，后台所有者继续持有资源直到排空。Runtime 经由应用服务/Core 关闭，不能提前直接关闭在用 Runtime。Writer 在独立关闭线程等待已有写入结束，不阻塞 Runtime 清理；Electron 在退出/失败时先销毁私有 Pipe 读端，释放可能阻塞的 Writer。关闭失败保留所有者供后续调用重试；有界等待结束不表示资源已证明释放。
+
+Electron Main 创建并拥有 fd4，Python 接管前验证它是 Pipe 并关闭可继承标志。`image-preview-channel.ts` 在有界分片缓冲中验证 Header、保留字节、Token 序列、32 MiB 上限、SHA-256 和 canonical PNG envelope；只有已消费的一帧被释放后才继续读取。截断、超时、错配或流错误销毁图片通道，不能回退到 stdout 或 fd3。
+
+`ImagePreviewOwner` 将 Open Metadata 与私有帧的 Token、长度、摘要、尺寸、媒体类型绑定，最多容纳一帧短暂先于 Metadata 到达的乱序数据。源 Token 和 Renderer URL 都只能使用一次；Renderer URL 使用独立随机值、最多 60 秒、内存上限两个图片，采用 `elysia-image://preview/<token>`，不包含磁盘路径。Main 的受信 IPC 只接受 opaque artifact ID，协议处理器使用 `no-store`/`nosniff` 返回 PNG。关闭或重启撤销全部 URL 和等待者；已取消的控制请求保留有界退休 ID，跨管道迟到响应不会破坏关闭流程。
 
 ## 待接线工作
 
 下一步需要：
 
-- Main 拥有私有预览 pipe，核对 token 后给 Renderer 短期预览能力；PNG 不通过 Base64 进入 NDJSON。
 - Settings 配置受信安装、模型和尺寸；原生导出只接收 artifact ID，由 Main 保存对话框决定路径并原子写入。
 - 建立与 Ollama、Voice、Song Cover 共用的重型 GPU 准入，提供有上限的可取消等待，并按 job 在失败/重启/关闭时释放 lease。
 - 完成真实 ComfyUI/模型/GPU smoke 与 soak、依赖树认证和可见的崩溃残留恢复。
@@ -183,6 +187,7 @@ Gallery Open 在读取时重新验证 PNG，由 Writer 创建一次性 Token；�
 python -m pytest tests/test_image_generation_core.py tests/test_comfyui_client.py tests/test_managed_comfyui.py tests/test_private_run_directory.py tests/test_windows_loopback_owner.py tests/test_image_gallery_store.py tests/test_image_application_service.py tests/test_desktop_image_composition.py tests/test_desktop_backend_images.py tests/test_desktop_backend.py tests/test_desktop_image_channel.py tests/test_desktop_protocol.py
 cd desktop
 npm run test:contract
+npm run test:image
 ```
 
 真实模型画质、显存峰值、长时间取消与目标 GPU 兼容性需要单独本机验收。

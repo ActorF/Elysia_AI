@@ -13,6 +13,8 @@ import { randomBytes, randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import path from 'node:path'
 import { Readable } from 'node:stream'
+import { ImagePreviewChannelReader } from './image-preview-channel.js'
+import { ImagePreviewOwner, type ImagePreview, type VerifiedImagePreview } from './image-preview-owner.js'
 import { parseWorkTurnOptions, parseWorkToolResult, parseWorkResolved,
   type WorkTurnOptions, type WorkActivity, type WorkRequestEvent, type WorkProgressEvent,
   type WorkToolCall as WorkAgentCall, type WorkToolResult as WorkAgentResult } from './work-agent-protocol.js'
@@ -108,6 +110,7 @@ import {
   parseVoiceSettingsStateResult,
   parseVoiceTranscriptionResult,
   parseServerMessage,
+  parseImageGalleryOpenResult,
   type ProtocolMethod,
   type RequestParamsByMethod,
   type ErrorResponse,
@@ -645,6 +648,19 @@ export class BackendProcess {
   private speechDelivery: SpeechDeliveryCoordinator | null = null
   private speechAudioInput: Readable | null = null
   private speechDeliveryDisabled = false
+  private imageReader: ImagePreviewChannelReader | null = null
+  private imageOwner: ImagePreviewOwner | null = null
+  private imageDeliveryDisabled = false
+  private imageOpenInFlight = false
+  private readonly retiredImageRequests = new Set<string>()
+  private readonly imageRequests = new Map<string, {
+    method: ProtocolMethod
+    params: Record<string, unknown>
+    resolve: (value: Record<string, unknown>) => void
+    reject: (error: Error) => void
+    timeout: ReturnType<typeof setTimeout>
+    completed: number
+  }>()
   private handshakeRequestId: string | null = null
   private initializeRequestId: string | null = null
   private handshakeTimeout: ReturnType<typeof setTimeout> | null = null
@@ -761,11 +777,10 @@ export class BackendProcess {
         } satisfies ActiveKnowledgeOperation
     return {
       ...this.snapshot,
-      capabilities: this.speechDeliveryDisabled
-        ? this.snapshot.capabilities.filter(
-            (capability) => capability !== 'voice.speech',
-          )
-        : [...this.snapshot.capabilities],
+      capabilities: this.snapshot.capabilities.filter((capability) => (
+        !(this.speechDeliveryDisabled && capability === 'voice.speech')
+        && !(this.imageDeliveryDisabled && capability.startsWith('image.'))
+      )),
       models: [...this.snapshot.models],
       ...(activity === undefined ? {} : { workActivity: structuredClone(activity) }),
       ...(activeGeneration === undefined ? {} : { activeGeneration }),
@@ -785,10 +800,97 @@ export class BackendProcess {
     return this.speechDelivery?.hasActiveTurn() === true
   }
 
+  /** Open one reverified Gallery PNG as a short-lived single-use renderer URL. */
+  async openImagePreview(artifactId: string): Promise<ImagePreview> {
+    const { owner, metadata } = await this.requestImageFrame(artifactId)
+    try { return await owner.expect(artifactId, metadata) }
+    finally { this.imageOpenInFlight = false }
+  }
+
+  /** Obtain verified image bytes only for Main-owned native export. */
+  async openVerifiedImage(artifactId: string): Promise<VerifiedImagePreview> {
+    const { owner, metadata } = await this.requestImageFrame(artifactId)
+    try { return await owner.takeVerified(artifactId, metadata) }
+    finally { this.imageOpenInFlight = false }
+  }
+
+  /** Consume an opaque URL for the private Electron protocol handler. */
+  readImagePreviewUrl(url: string): { bytes: Buffer; mediaType: 'image/png' } | null {
+    return this.imageOwner?.readUrl(url) ?? null
+  }
+
+  private async requestImageFrame(artifactId: string) {
+    if (this.imageOpenInFlight || this.imageOwner === null || this.imageDeliveryDisabled) {
+      throw new Error('Private image preview is unavailable or busy.')
+    }
+    const owner = this.imageOwner
+    this.imageOpenInFlight = true
+    try {
+      const response = await this.requestImageOperation('image.gallery.open', { artifactId })
+      let metadata: ReturnType<typeof parseImageGalleryOpenResult>
+      try { metadata = parseImageGalleryOpenResult(response) }
+      catch {
+        this.disableImageDelivery()
+        throw new Error('Image preview metadata is invalid.')
+      }
+      if (metadata.artifactId !== artifactId || this.imageOwner !== owner) {
+        this.disableImageDelivery()
+        throw new Error('Image preview does not match its owner.')
+      }
+      return { owner, metadata }
+    } catch (error) {
+      this.imageOpenInFlight = false
+      throw error
+    }
+  }
+
+  private requestImageOperation(method: ProtocolMethod, params: Record<string, unknown>): Promise<Record<string, unknown>> {
+    if (this.child === null || this.snapshot.status !== 'ready'
+      || !this.getSnapshot().capabilities.includes(method)) {
+      return Promise.reject(new Error('Local image generation is unavailable. Configure its trusted runtime first.'))
+    }
+    const child = this.child
+    return new Promise((resolve, reject) => {
+      const id = randomUUID()
+      const request = createRequest(id, method, params as RequestParamsByMethod[ProtocolMethod])
+      const timeout = setTimeout(() => {
+        this.protocolFailure('The local image operation timed out.')
+      }, method === 'image.generate' ? 1_000_000 : 30_000)
+      this.imageRequests.set(id, { method, params, resolve, reject, timeout, completed: 0 })
+      try { child.stdin.write(`${JSON.stringify(request)}\n`) }
+      catch { this.protocolFailure('The local image request could not be written.') }
+    })
+  }
+
+  private disableImageDelivery(): void {
+    this.imageDeliveryDisabled = true
+    this.disposeImageDelivery()
+    this.updateSnapshot({})
+  }
+
+  private disposeImageDelivery(): void {
+    // Destroy the pipe read end before waiting for shutdown, releasing Python
+    // even when a 32 MiB write is blocked. Restart revokes all old URL tokens.
+    this.imageReader?.dispose()
+    this.imageReader = null
+    this.imageOwner?.close()
+    this.imageOwner = null
+    this.imageOpenInFlight = false
+    for (const [id, pending] of this.imageRequests) {
+      // Control and pixels use independent pipes. Retire outstanding IDs so a
+      // valid stdout tail cannot fail healthy Backend shutdown after fd4 closes.
+      if (this.retiredImageRequests.size < 128) this.retiredImageRequests.add(id)
+      clearTimeout(pending.timeout)
+      pending.reject(new Error('The private image channel closed.'))
+    }
+    this.imageRequests.clear()
+  }
+
   /** Report Backend leases separately so a native action does not deny its own owner recheck. */
   hasActiveBackendWork(): boolean {
     return this.restartInProgress
       || this.restartCompletion !== null
+      || this.imageRequests.size > 0 || this.imageOpenInFlight
       || this.pendingRequests.size > 0
       || this.hasActiveSpeechTurn()
       || this.hasWorkPlanLease()
@@ -863,7 +965,10 @@ export class BackendProcess {
     this.timedOutVoiceCaptureRequestIds.clear()
     this.timedOutSpeechStartRequestIds.clear()
     this.disposeSpeechDelivery()
+    this.disposeImageDelivery()
+    this.retiredImageRequests.clear()
     this.speechDeliveryDisabled = false
+    this.imageDeliveryDisabled = false
     this.updateSnapshot({
       status: 'starting',
       protocolName: undefined,
@@ -906,12 +1011,30 @@ export class BackendProcess {
         env: childEnvironment,
         // fd3 is a dedicated binary-only channel. Keeping it out of stdout
         // prevents WAV bytes from ever entering NDJSON or renderer events.
-        stdio: ['pipe', 'pipe', 'pipe', 'pipe'],
+        stdio: ['pipe', 'pipe', 'pipe', 'pipe', 'pipe'],
         windowsHide: true,
       },
     ) as ChildProcessWithoutNullStreams
 
     this.child = child
+    const imageInput = child.stdio[4]
+    if (imageInput instanceof Readable) {
+      const disableImage = (): void => {
+        if (this.child === child) this.disableImageDelivery()
+      }
+      this.imageOwner = new ImagePreviewOwner({ onFailure: disableImage })
+      this.imageReader = new ImagePreviewChannelReader(imageInput, (frame) => {
+        if (this.child !== child) return
+        try {
+          this.imageOwner?.accept(frame)
+          this.imageReader?.release(frame.previewToken)
+        } catch {
+          disableImage()
+        }
+      }, disableImage, disableImage)
+    } else {
+      this.imageDeliveryDisabled = true
+    }
     child.stderr.setEncoding('utf8')
     const audioInput = child.stdio[3]
     if (!(audioInput instanceof Readable)) {
@@ -1226,6 +1349,7 @@ export class BackendProcess {
 
   /** Shut down the child process and settle every outstanding renderer request. */
   async stop(): Promise<void> {
+    this.disposeImageDelivery()
     this.rejectRestartCompletion(
       'Python Backend stopped before its restart completed.',
     )
@@ -2980,6 +3104,15 @@ export class BackendProcess {
   private handleResponse(
     message: SuccessResponse | ErrorResponse,
   ): void {
+    if (message.id !== null && this.retiredImageRequests.delete(message.id)) return
+    if (message.id !== null && this.imageRequests.has(message.id)) {
+      const pending = this.imageRequests.get(message.id)!
+      this.imageRequests.delete(message.id)
+      clearTimeout(pending.timeout)
+      if (message.ok) pending.resolve(message.result)
+      else pending.reject(new Error('The local image operation failed. Check image runtime readiness.'))
+      return
+    }
     if (message.id === null) {
       this.protocolFailure(
         message.ok
@@ -3859,6 +3992,18 @@ export class BackendProcess {
   }
 
   private handleProgress(message: ProgressMessage): void {
+    if (this.retiredImageRequests.has(message.requestId)) return
+    const imagePending = this.imageRequests.get(message.requestId)
+    if (imagePending !== undefined) {
+      if (imagePending.method !== 'image.generate' || message.operation !== 'image.generate'
+        || message.completed < imagePending.completed) {
+        this.protocolFailure('Backend image progress does not match its operation.')
+        return
+      }
+      imagePending.completed = message.completed
+      this.emitToRenderer({ ...message })
+      return
+    }
     const pending = this.pendingRequests.get(message.requestId)
     if (pending === undefined) {
       this.protocolFailure('Backend progress has no matching request.')
@@ -4363,6 +4508,7 @@ export class BackendProcess {
     this.protocolReader?.dispose()
     this.protocolReader = null
     this.disposeSpeechDelivery()
+    this.disposeImageDelivery()
     this.child = null
     this.handshakeRequestId = null
     this.initializeRequestId = null
@@ -4589,6 +4735,7 @@ export class BackendProcess {
     this.lastDiagnostic = message
     this.fail(message)
     this.disposeSpeechDelivery()
+    this.disposeImageDelivery()
     // Stop consuming immediately even if several frames arrived in one stdout
     // chunk. The first invalid sequence is terminal and later bytes are no
     // longer authenticated protocol input.

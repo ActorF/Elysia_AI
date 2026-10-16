@@ -20,6 +20,7 @@ import {
   nativeImage,
   nativeTheme,
   Notification,
+  protocol,
   type NotificationCloseEventParams,
   screen,
   session,
@@ -345,6 +346,9 @@ let shutdownStarted = false
 const applicationShutdownGate = new ApplicationShutdownGate()
 let rendererReadyTimer: ReturnType<typeof setTimeout> | null = null
 const hasSingleInstanceLock = app.requestSingleInstanceLock()
+protocol.registerSchemesAsPrivileged([{ scheme: 'elysia-image', privileges: {
+  standard: true, secure: true, supportFetchAPI: true,
+} }])
 
 function clearRendererReadyTimer(): void {
   if (rendererReadyTimer !== null) {
@@ -3074,6 +3078,13 @@ function requireMainWindow(): BrowserWindow {
 }
 
 function registerIpcHandlers(): void {
+  ipcMain.handle('elysia:image:preview', async (event, artifactId: unknown) => {
+    assertTrustedSender(event)
+    if (typeof artifactId !== 'string' || !/^gallery_[0-9a-f]{32}$/u.test(artifactId)) {
+      throw new Error('The image artifact identity is invalid.')
+    }
+    return requireBackend().openImagePreview(artifactId)
+  })
   ipcMain.handle('desktop:internet-research:cache', (event, value: unknown) => {
     assertTrustedSender(event)
     const chatId = parseInternetChatId(value)
@@ -4771,6 +4782,15 @@ if (!hasSingleInstanceLock) {
   })
 
   void app.whenReady().then(async () => {
+    protocol.handle('elysia-image', (request) => {
+      if (request.method !== 'GET') return new Response(null, { status: 405 })
+      const image = backendProcess?.readImagePreviewUrl(request.url)
+      if (!image) return new Response(null, { status: 404 })
+      return new Response(new Uint8Array(image.bytes), { headers: {
+        'Content-Type': 'image/png', 'Cache-Control': 'no-store',
+        'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': "default-src 'none'",
+      } })
+    })
     if (process.platform === 'win32') {
       app.setAppUserModelId('ai.elysia.desktop')
     }

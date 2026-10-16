@@ -146,7 +146,7 @@ from desktop_speech import (
 from start import create_brain, validate_settings
 from desktop_work import DesktopWorkRuntime
 from desktop_images import DesktopImageCoordinator
-from desktop_protocol.image_channel import ImageChannelWriter
+from desktop_protocol.image_channel import ImageChannelError, ImageChannelWriter
 from image_generation import ImageGenerationApplicationService
 from voice import (
     FasterWhisperConfig,
@@ -5097,7 +5097,12 @@ def main() -> None:
         # Direct Python/console launches legitimately have no fd3 capability.
         # Text Chat remains fully usable and no arbitrary descriptor is used.
         logger.error("Desktop speech audio channel is unavailable.")
-    DesktopBackend(audio_writer=audio_writer).run()
+    image_writer: ImageChannelWriter | None = None
+    try:
+        image_writer = ImageChannelWriter.from_inherited_fd4()
+    except ImageChannelError:
+        logger.error("Desktop image preview channel is unavailable.")
+    DesktopBackend(audio_writer=audio_writer, image_writer=image_writer).run()
 
 
 if __name__ == "__main__":

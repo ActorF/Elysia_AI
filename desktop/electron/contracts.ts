@@ -6,6 +6,7 @@
  */
 
 import type { WorkActivity, WorkTurnOptions } from './work-agent-protocol.js'
+import type { ImageClient } from './image-client.js'
 import type {
   SettingsStateResult,
   SettingsValues,
@@ -596,7 +597,7 @@ export type BackendEvent =
  * Renderer code receives domain data and owned actions, never Electron or raw
  * filesystem primitives.
  */
-export interface DesktopApi extends WorkWorkspaceClient, WorkToolClient, WorkPlanClient, WorkAuditClient, WorkDesktopClient, VisionClient, VisionAnalysisClient, VisionCaptureClient, VisionContextClient, VisionHistoryClient, InternetPolicyClient, InternetResearchClient, InternetReviewClient, InternetWriteClient, InternetCacheClient {
+export interface DesktopApi extends ImageClient, WorkWorkspaceClient, WorkToolClient, WorkPlanClient, WorkAuditClient, WorkDesktopClient, VisionClient, VisionAnalysisClient, VisionCaptureClient, VisionContextClient, VisionHistoryClient, InternetPolicyClient, InternetResearchClient, InternetReviewClient, InternetWriteClient, InternetCacheClient {
   /** Signal that the renderer can receive events and the main window may appear. */
   rendererReady(): Promise<void>
   /** Keep native window chrome aligned with the renderer's saved appearance. */

@@ -11,8 +11,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
+import importlib
+import os
 import re
 import secrets
+import stat
 import struct
 from threading import Condition, Lock, get_ident
 from typing import BinaryIO, Final
@@ -27,6 +30,7 @@ IMAGE_CHANNEL_HEADER_BYTES: Final = 88
 IMAGE_CHANNEL_MAX_PNG_BYTES: Final = MAX_GENERATED_PNG_BYTES
 IMAGE_CHANNEL_MAX_EDGE_PIXELS: Final = MAX_IMAGE_EDGE_PIXELS
 IMAGE_CHANNEL_MEDIA_TYPE: Final = "image/png"
+IMAGE_CHANNEL_FD: Final = 4
 
 _HEADER = struct.Struct("<8sB3x32sIII32s")
 _TOKEN_PATTERN = re.compile(r"^[0-9a-f]{64}$")
@@ -279,6 +283,22 @@ def _safe_close(stream: BinaryIO) -> bool:
     return True
 
 
+def _is_image_pipe_descriptor() -> bool:
+    """Verify the fixed descriptor before transferring its ownership to FileIO."""
+
+    if os.name == "nt":
+        import ctypes
+
+        get_handle = getattr(importlib.import_module("msvcrt"), "get_osfhandle")
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        file_type = kernel32.GetFileType
+        file_type.argtypes = [ctypes.c_void_p]
+        file_type.restype = ctypes.c_uint32
+        return file_type(ctypes.c_void_p(get_handle(IMAGE_CHANNEL_FD))) == 3
+    mode = os.fstat(IMAGE_CHANNEL_FD).st_mode
+    return stat.S_ISFIFO(mode) or stat.S_ISSOCK(mode)
+
+
 class ImageChannelWriter:
     """Prepare and serialize one bounded PNG frame at a time.
 
@@ -328,6 +348,32 @@ class ImageChannelWriter:
         self._close_attempt = 0
         self._close_results: dict[int, bool] = {}
         self._close_waiters: dict[int, int] = {}
+
+    @classmethod
+    def from_inherited_fd4(cls) -> "ImageChannelWriter":
+        """Own only the fixed private image pipe and prevent descendant inheritance.
+
+        Electron creates fd4 separately from speech fd3 and NDJSON stdout.
+        Reject ordinary files or console descriptors before any PNG write so a
+        console launch cannot accidentally send image pixels to another file.
+        """
+
+        stream: BinaryIO | None = None
+        try:
+            os.set_inheritable(IMAGE_CHANNEL_FD, False)
+            if not _is_image_pipe_descriptor():
+                raise ValueError
+            stream = os.fdopen(IMAGE_CHANNEL_FD, "wb", buffering=0, closefd=True)
+            return cls(stream)
+        except Exception:
+            if stream is not None:
+                _safe_close(stream)
+            else:
+                try:
+                    os.close(IMAGE_CHANNEL_FD)
+                except OSError:
+                    pass
+        raise ImageChannelIOError(_IO_MESSAGE)
 
     def prepare_png(
         self,
@@ -718,6 +764,7 @@ class ImageChannelReader:
 
 __all__ = [
     "IMAGE_CHANNEL_HEADER_BYTES",
+    "IMAGE_CHANNEL_FD",
     "IMAGE_CHANNEL_MAGIC",
     "IMAGE_CHANNEL_MAX_EDGE_PIXELS",
     "IMAGE_CHANNEL_MAX_PNG_BYTES",
