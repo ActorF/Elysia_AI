@@ -5,6 +5,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { _electron as electron } from 'playwright'
 import { expect, test, type ElectronApplication, type Page } from '@playwright/test'
+import { conversationMode } from './conversation-helpers.ts'
 import { reviewVisionImage } from './vision-helpers.ts'
 
 interface ContextTestControl {
@@ -109,12 +110,12 @@ test('description edits, expiry, and image removal invalidate displayed reviews'
 test('a late review keeps its physical lease through disconnect and cannot publish into a reconnected owner', async () => {
   await page.evaluate(() => { (window as ContextWindow).elysiaDesktopTest.setVisionReviewDelay(true) })
   await page.getByRole('button', { name: 'Review context', exact: true }).click()
-  await expect(page.getByRole('combobox', { name: 'Conversation mode', includeHidden: true })).toBeDisabled()
+  await expect(conversationMode(page)).toBeDisabled()
   await page.evaluate((next) => { (window as ContextWindow).elysiaDesktopTest.emitBackendEvent({ type: 'snapshot', snapshot: next }) }, snapshot('error', 2))
   await expect(page.locator('.connection-pill')).toContainText('Connection error')
   await page.evaluate((next) => { (window as ContextWindow).elysiaDesktopTest.emitBackendEvent({ type: 'snapshot', snapshot: next }) }, snapshot('ready', 3))
-  await expect(page.getByRole('combobox', { name: 'Conversation mode', includeHidden: true })).toBeDisabled()
+  await expect(conversationMode(page)).toBeDisabled()
   await page.evaluate(() => { (window as ContextWindow).elysiaDesktopTest.releaseNextVisionReview() })
-  await expect(page.getByRole('combobox', { name: 'Conversation mode', includeHidden: true })).toBeEnabled()
+  await expect(conversationMode(page)).toBeEnabled()
   await expect(page.getByRole('region', { name: 'Reviewed image context', exact: true })).toHaveCount(0)
 })

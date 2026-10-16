@@ -1,0 +1,60 @@
+/* Keep Chat and Codex in a conversation-first layout with a persistent, responsive task inspector and restrained Elysia accents. */
+
+.chat-surface,
+.chat-surface.chat-surface-work { position: relative; grid-template-rows: auto minmax(0, 1fr); }
+.chat-body { position: relative; display: flex; min-width: 0; min-height: 0; overflow: hidden; }
+.chat-dialogue { display: flex; flex: 1 1 0; flex-direction: column; min-width: 0; min-height: 0; }
+.chat-dialogue > .chat-conversation { flex: 1 1 0; min-width: 0; min-height: 0; }
+.chat-surface [hidden] { display: none !important; }
+.chat-surface .topbar { gap: .75rem; }
+.chat-surface .connection-controls { gap: .25rem; }
+.codex-workspace-toggle { display: inline-flex; align-items: center; gap: .45rem; min-height: 2.1rem; padding: .4rem .65rem; border: 1px solid transparent; border-radius: .65rem; color: var(--color-text-secondary); background: transparent; font-size: var(--font-size-xs); }
+.codex-workspace-toggle svg { width: 1rem; height: 1rem; }
+.codex-workspace-toggle:hover,
+.codex-workspace-toggle[aria-expanded="true"] { color: var(--color-accent); background: var(--color-accent-soft); }
+.codex-task-dot { flex: 0 0 auto; width: .375rem; height: .375rem; border-radius: 50%; background: var(--color-accent); }
+.codex-task-status { display: flex; flex: 0 0 auto; align-items: center; align-self: center; gap: .5rem; max-width: calc(100% - 2rem); margin: .45rem 1rem 0; padding: .4rem .7rem; border-radius: .65rem; color: var(--color-text-secondary); background: var(--color-accent-soft); font-size: var(--font-size-xs); }
+.codex-task-status > button { display: inline-flex; align-items: center; gap: .15rem; padding: .2rem; color: var(--color-accent); font: inherit; }
+.codex-task-status svg { width: .85rem; height: .85rem; }
+.codex-workspace-dock { display: flex; flex: 0 0 min(25rem, 46%); flex-direction: column; min-width: 0; min-height: 0; border-left: 1px solid var(--color-border); background: var(--color-bg-surface); }
+.codex-workspace-dock:focus { outline: none; }
+.codex-workspace-dock:focus-visible { outline: 2px solid var(--color-border-focus); outline-offset: -3px; }
+.codex-workspace-header { display: flex; flex: 0 0 auto; align-items: center; justify-content: space-between; gap: .65rem; padding: .7rem 1rem; border-bottom: 1px solid var(--color-border); }
+.codex-workspace-header > div { display: flex; align-items: center; gap: .5rem; min-width: 0; }
+.codex-workspace-header h2 { margin: 0; color: var(--color-text-primary); font-size: var(--font-size-sm); font-weight: 500; }
+.codex-workspace-header > div > svg { width: 1rem; height: 1rem; color: var(--color-accent); }
+.codex-workspace-header > button { width: 1.9rem; height: 1.9rem; }
+.codex-workspace-content { flex: 1; min-width: 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; }
+.conversation-options { position: relative; display: flex; }
+.conversation-options > button { width: 2rem; height: 2rem; }
+.conversation-options > button[aria-expanded="true"] { color: var(--color-accent); background: var(--color-accent-soft); }
+.conversation-options-popover { position: absolute; z-index: 40; top: calc(100% + .45rem); right: 0; width: min(16.5rem, calc(100vw - 2rem)); padding: .9rem; border: 1px solid var(--color-border); border-radius: .85rem; background: var(--color-bg-surface); box-shadow: var(--shadow-md); }
+.conversation-options-popover > label { display: grid; gap: .5rem; color: var(--color-text-secondary); font-size: var(--font-size-xs); }
+.conversation-mode-select { width: 100%; padding: .55rem .65rem; border: 1px solid var(--color-border); border-radius: .5rem; background: var(--color-bg-canvas); color: var(--color-text-primary); font: inherit; }
+.conversation-options-popover > p { margin: .65rem 0 0; color: var(--color-text-muted); font-size: var(--font-size-xs); line-height: 1.5; }
+.chat-surface :is(.codex-workspace-toggle, .conversation-options button, .conversation-mode-select, .codex-task-status button):focus-visible { outline: 2px solid var(--color-border-focus); outline-offset: 3px; }
+.chat-conversation-empty .conversation-empty .empty-state-icon { width: 2.4rem; height: 2.4rem; margin-bottom: .1rem; color: var(--color-accent); stroke-width: 1.3; }
+.chat-conversation-empty .conversation-empty h2 { color: var(--color-text-primary); }
+.chat-surface-work .conversation-empty p { max-width: 26rem; margin-inline: auto; }
+.chat-surface .conversation-starters button { border-color: color-mix(in srgb, var(--color-accent) 15%, var(--color-border)); }
+.chat-surface .conversation-starters button:hover { color: var(--color-accent); background: var(--color-accent-soft); }
+
+/* Modal presentation depends on the available chat canvas, which can shrink
+   with navigation and character panels even on a wide monitor. Cover the whole
+   application so the dialog's focus boundary matches its visual boundary. */
+.codex-workspace-backdrop { position: fixed; z-index: 40; inset: 0; width: 100%; height: 100%; border: 0; border-radius: 0; background: var(--color-bg-overlay); cursor: default; }
+.chat-body[data-workspace-modal="true"] .codex-workspace-dock { position: fixed; z-index: 41; inset-block: 0; right: 0; width: min(25rem, 100vw); box-shadow: -.75rem 0 2.5rem rgb(0 0 0 / 12%); }
+@media (max-width: 42rem) {
+  .chat-surface .topbar { padding-inline: .85rem; }
+  .chat-surface .chat-heading h1 { font-size: var(--font-size-sm); }
+  .chat-surface .connection-controls { gap: .1rem; padding: 0; }
+  .chat-surface .connection-pill.ready { display: none; }
+  .codex-workspace-toggle { gap: .3rem; padding-inline: .4rem; }
+  .codex-workspace-toggle > svg { display: none; }
+  .codex-task-status { flex-wrap: wrap; justify-content: center; font-size: .6875rem; }
+}
+@media (forced-colors: active) {
+  .codex-workspace-toggle,
+  .codex-workspace-dock { border-color: CanvasText; }
+  .codex-workspace-backdrop { background: transparent; }
+}

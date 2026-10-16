@@ -1174,15 +1174,6 @@ svg {
   padding: var(--space-1);
 }
 
-.chat-mode-select {
-  min-height: 2rem;
-  padding: var(--space-1) var(--space-2);
-  color: var(--color-text-primary);
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: var(--radius-md);
-}
-
 .connection-pill {
   display: inline-flex;
   gap: var(--space-2);
@@ -1255,63 +1246,11 @@ svg {
   grid-template-rows: auto minmax(0, 1fr);
 }
 
-.chat-surface-work {
-  grid-template-rows: auto auto minmax(0, 1fr);
-}
-
 .chat-conversation {
   display: grid;
   grid-template-rows: minmax(2rem, 1fr) minmax(0, auto);
   min-width: 0;
   min-height: 0;
-}
-
-.chat-workspace-navigation {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-4);
-  min-width: 0;
-  padding: var(--space-2) var(--space-6);
-  border-bottom: 1px solid var(--color-border);
-}
-
-.chat-workspace-navigation .tool-tabs {
-  display: flex;
-  gap: var(--space-1);
-  padding: 0.2rem;
-  background: var(--color-bg-sidebar);
-  border-radius: var(--radius-md);
-}
-
-.chat-workspace-navigation [role="tab"] {
-  min-height: 2rem;
-  padding: var(--space-1) var(--space-3);
-  color: var(--color-text-muted);
-  font-size: var(--font-size-sm);
-  border-radius: var(--radius-sm);
-}
-
-.chat-workspace-navigation [aria-selected="true"] {
-  color: var(--color-text-primary);
-  background: var(--color-bg-raised);
-  box-shadow: var(--shadow-sm);
-}
-
-.chat-workspace-vision {
-  display: flex;
-  align-items: center;
-  gap: var(--space-1);
-  color: var(--color-text-muted);
-  font-size: var(--font-size-xs);
-}
-
-.chat-workspace-surface {
-  min-width: 0;
-  min-height: 0;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  scrollbar-width: thin;
 }
 
 .message-scroll {

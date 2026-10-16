@@ -194,8 +194,7 @@ export function ToolConsole({ api, chatId, workspacePath, ready, readAvailable, 
 
   return (
     <section className="work-tool-console" aria-label="File tools">
-      <div className="work-section-heading"><h3>File actions</h3>
-        <p>Read a file, prepare a change, or add a step to your plan.</p></div>
+      <p className="work-section-hint">Read files, preview changes, or add a plan step.</p>
       {workspacePath === null && <p>Choose a Workspace to enable file tools.</p>}
       <form onSubmit={(event) => { event.preventDefault(); void run() }} aria-busy={pending}>
         <fieldset disabled={blocked}>

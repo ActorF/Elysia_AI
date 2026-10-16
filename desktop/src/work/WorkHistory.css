@@ -1,6 +1,6 @@
 /** Render Work history as a quiet activity list, preserving explicit Undo decisions and verified recovery paths. */
 
-.work-history { display: grid; gap: 1.25rem; min-width: 0; font-size: var(--font-size-sm); }
+.work-history { display: grid; gap: 1rem; min-width: 0; font-size: var(--font-size-sm); }
 .work-history h3 { font-size: var(--font-size-sm); margin: 0; }
 .work-history-heading { display: flex; flex-wrap: wrap; align-items: start; justify-content: space-between; gap: .5rem; }
 .work-history-heading .work-section-heading { margin: 0; }
@@ -16,5 +16,5 @@
 .work-undo-decision > div { display: flex; flex-wrap: wrap; gap: .5rem; }
 .work-history button { justify-self: start; }
 .work-history p { margin: 0; }
-.work-history-empty { display: grid; gap: .5rem; padding: 3rem 1rem; text-align: center; }
-.work-panel .work-history-empty h3 { font-size: 1.2rem; font-weight: 500; }
+.work-history-empty { display: grid; gap: .5rem; padding: .5rem 0; }
+.work-panel .work-history-empty h3 { font-size: var(--font-size-sm); font-weight: 500; }

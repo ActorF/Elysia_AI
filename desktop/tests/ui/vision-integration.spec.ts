@@ -5,6 +5,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { _electron as electron } from 'playwright'
 import { expect, test, type ElectronApplication, type Page } from '@playwright/test'
+import { selectConversationMode, showWorkspace } from './conversation-helpers.ts'
 import { closeVision, openVision, reviewVisionImage } from './vision-helpers.ts'
 
 interface IntegrationControl {
@@ -70,12 +71,11 @@ test('selects a native context reference for an explicit Work plan while preserv
   await page.evaluate(() => { (window as IntegrationWindow).elysiaDesktopTest.setWorkWorkspaceState({
     kind: 'work.workspace', chatId: 'chat_vision_integration', workspacePath: 'D:\\synthetic-vision-work',
   }) })
-  await page.getByRole('combobox', { name: 'Conversation mode', includeHidden: true }).selectOption('work')
+  await selectConversationMode(page, 'work')
   await review()
   await page.getByRole('button', { name: 'Use in Work plan', exact: true }).click()
   await expect(page.getByRole('dialog', { name: 'Vision', exact: true })).toBeHidden()
-  await expect(page.getByRole('tablist', { name: 'Work views', exact: true })
-    .getByRole('tab', { name: 'Workspace', exact: true })).toBeFocused()
+  await expect(page.locator('#codex-workspace')).toBeFocused()
   const plan = page.getByRole('region', { name: 'Work plan', exact: true })
   await expect(plan.getByRole('region', { name: 'Selected visual context', exact: true })).toContainText(fixture.fileName)
   expect(await page.evaluate(() => (window as IntegrationWindow).elysiaDesktopTest.getCalls().filter((call) => call.method === 'createWorkPlan'))).toHaveLength(0)
@@ -102,7 +102,7 @@ test('a new Chat cannot inherit the previous visual review or its selected Work 
   await page.evaluate(() => { (window as IntegrationWindow).elysiaDesktopTest.setWorkWorkspaceState({
     kind: 'work.workspace', chatId: 'chat_vision_integration', workspacePath: 'D:\\synthetic-vision-work',
   }) })
-  await page.getByRole('combobox', { name: 'Conversation mode', includeHidden: true }).selectOption('work')
+  await selectConversationMode(page, 'work')
   await review()
   await page.getByRole('button', { name: 'Use in Work plan', exact: true }).click()
   await expect(page.getByRole('dialog', { name: 'Vision', exact: true })).toBeHidden()
@@ -117,13 +117,12 @@ test('a Work image review returns to its preserved conversation draft without se
   await closeVision(page)
   const draft = page.getByLabel('Message Elysia', { exact: true })
   await draft.fill('Keep this unfinished question.')
-  await page.getByRole('combobox', { name: 'Conversation mode', exact: true }).selectOption('work')
-  const views = page.getByRole('tablist', { name: 'Work views', exact: true })
-  await expect(views.getByRole('tab', { name: 'Workspace', exact: true })).toHaveAttribute('aria-selected', 'true')
+  await selectConversationMode(page, 'work')
+  await showWorkspace(page)
   await review()
   await page.getByRole('button', { name: 'Add to Chat draft', exact: true }).click()
   await expect(page.getByRole('dialog', { name: 'Vision', exact: true })).toBeHidden()
-  await expect(views.getByRole('tab', { name: 'Conversation', exact: true })).toHaveAttribute('aria-selected', 'true')
+  await expect(page.getByRole('button', { name: 'Workspace', exact: true })).toHaveAttribute('aria-expanded', 'false')
   await expect(draft).toBeFocused()
   await expect(draft).toHaveValue(/Keep this unfinished question\.[\s\S]*Image context selected by the user/u)
   await expect(draft).toHaveValue(/synthetic-integration\.png/u)

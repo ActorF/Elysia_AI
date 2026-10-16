@@ -11,6 +11,7 @@ import {
   type Page,
 } from '@playwright/test'
 import { _electron as electron } from 'playwright'
+import { conversationMode, selectConversationMode, showWorkspace } from './conversation-helpers.ts'
 
 import type {
   VoiceCallWindowApi,
@@ -1720,9 +1721,9 @@ async function waitForTwoAnimationFrames(): Promise<void> {
   }))
 }
 
-/** Switch between Work tools and the mounted conversation without changing the Chat mode. */
+/** Show or dismiss Work tools while preserving the task conversation and draft. */
 async function selectWorkView(name: 'Workspace' | 'Conversation'): Promise<void> {
-  await page.getByRole('tablist', { name: 'Work views', exact: true }).getByRole('tab', { name, exact: true }).click()
+  await showWorkspace(page, name === 'Workspace')
 }
 
 async function setWindowAndZoom(
@@ -1927,7 +1928,8 @@ test('presents a restrained, character-led welcome for a new chat', async () => 
   await expect(emptyConversation).toHaveText(
     '今天，想聊些什么？一个想法，一件小事，都可以从这里开始。',
   )
-  await expect(emptyConversation.locator('svg')).toHaveCount(0)
+  await expect(emptyConversation.locator('svg')).toHaveCount(1)
+  await expect(emptyConversation.locator('svg')).toHaveAttribute('aria-hidden', 'true')
 })
 
 test('offers conversation ideas only for an empty draft and leaves sending explicit', async () => {
@@ -2251,9 +2253,7 @@ test('renders canonical Chat metadata and opens persisted sessions', async () =>
   await expect(page.getByText('Loaded from persisted history.')).toBeVisible()
 
   await clearCalls()
-  await page.getByRole('button', {
-    name: `Open chat ${second.title}`,
-  }).click()
+  await page.getByRole('navigation', { name: 'Primary' }).getByRole('button', { name: 'Chat', exact: true }).click()
   await expect.poll(async () => (
     (await getCalls()).find((call) => call.method === 'openChat')?.args
   )).toEqual([second.chatId])
@@ -2269,7 +2269,7 @@ test('renders canonical Chat metadata and opens persisted sessions', async () =>
 
 test('persists explicit modes per Chat and preserves history across reload', async () => {
   await emitSnapshot(readySnapshot())
-  const mode = page.getByRole('combobox', { name: 'Conversation mode' })
+  const mode = conversationMode(page)
   await expect(mode).toHaveValue('chat')
   await expect(page.locator('#chat-mode-capabilities')).toContainText(
     'Computer tools are disabled.',
@@ -2277,7 +2277,7 @@ test('persists explicit modes per Chat and preserves history across reload', asy
   const composer = page.getByLabel('Message Elysia')
   await composer.fill('Please edit a file; this text must not enable tools.')
   await expect(mode).toHaveValue('chat')
-  await mode.selectOption('work')
+  await selectConversationMode(page, 'work')
   await expect.poll(async () => (
     (await getCalls()).find((call) => call.method === 'setChatMode')?.args
   )).toEqual([{ chatId: 'chat-test', mode: 'work' }])
@@ -2288,35 +2288,35 @@ test('persists explicit modes per Chat and preserves history across reload', asy
   await expect(composer).toHaveValue('Please edit a file; this text must not enable tools.')
 
   await page.getByRole('button', { name: 'Create chat' }).click()
-  await expect(mode).toHaveValue('chat')
+  await expect(mode).toHaveValue('work')
   await page.getByRole('button', { name: 'Open chat Elysia Chat' }).click()
   await expect(mode).toHaveValue('work')
   await persistBackendForReload()
   await page.reload()
-  await expect(page.getByRole('combobox', { name: 'Conversation mode' })).toHaveValue('work')
+  await expect(conversationMode(page)).toHaveValue('work')
   await expect(page.getByLabel('Message Elysia')).toHaveValue(
     'Please edit a file; this text must not enable tools.',
   )
-  await page.getByRole('combobox', { name: 'Conversation mode' }).selectOption('chat')
+  await selectConversationMode(page, 'chat')
   await expect(page.locator('#chat-mode-capabilities')).toContainText(
     'Computer tools are disabled.',
   )
 })
 
 test('keeps the saved mode after a failed switch and blocks switching while busy', async () => {
-  const mode = page.getByRole('combobox', { name: 'Conversation mode' })
+  const mode = conversationMode(page)
   await expect(mode).toBeDisabled()
   await emitSnapshot(readySnapshot())
   await page.evaluate(() => {
     ;(window as TestWindow).elysiaDesktopTest.failNextChatMode('Mode could not be saved.')
   })
-  await mode.selectOption('work')
+  await selectConversationMode(page, 'work')
   await expect(page.getByRole('alert')).toContainText('Mode could not be saved.')
   await expect(mode).toHaveValue('chat')
   await page.evaluate(() => {
     ;(window as TestWindow).elysiaDesktopTest.setChatActionDelay(true)
   })
-  await mode.selectOption('work')
+  await selectConversationMode(page, 'work')
   await expect(mode).toBeDisabled()
   await expect(mode).toHaveValue('chat')
   await page.evaluate(() => {
@@ -2389,9 +2389,7 @@ test('renames, pins, and confirms permanent Chat deletion', async () => {
 
 test('requires confirmation for bulk archive and delete actions', async () => {
   const first = chatSummary('chat-bulk-one', 'Bulk one')
-  const second = chatSummary('chat-bulk-two', 'Bulk two', {
-    mode: 'work',
-  })
+  const second = chatSummary('chat-bulk-two', 'Bulk two')
   await setChatState({
     activeChat: { ...first, messages: [] },
     chats: [first, second],
@@ -5335,8 +5333,9 @@ test('continuous dictation keeps Work and mode controls locked until final trans
   await emitSnapshot(readySnapshot({ capabilities: [
     ...readySnapshot().capabilities, 'voice.settings', 'voice.capture', 'voice.transcription',
   ] }))
-  const mode = page.getByRole('combobox', { name: 'Conversation mode' })
-  await mode.selectOption('work')
+  const mode = conversationMode(page)
+  await selectConversationMode(page, 'work')
+  await showWorkspace(page)
   await page.evaluate(() => {
     ;(window as TestWindow).elysiaDesktopTest.setSelectedWorkspace('D:\\work-dictation')
   })
@@ -6726,7 +6725,7 @@ test('keeps panel controls inside a narrow header with long Work titles and stat
   const workChat = chatSummary('chat-test', title, { mode: 'work' })
   await setChatState({ activeChat: { ...workChat, messages: [] }, chats: [workChat] })
   await emitSnapshot(readySnapshot({ chatTitle: title }))
-  await expect(page.getByRole('combobox', { name: 'Conversation mode', exact: true })).toHaveValue('work')
+  await expect(conversationMode(page)).toHaveValue('work')
   await setWindowAndZoom(640, 640, 2)
 
   let revision = 2

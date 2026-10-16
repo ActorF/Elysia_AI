@@ -1,5 +1,5 @@
 /**
- * Render primary navigation and the server-owned Chat session collection.
+ * Render independent Chat and Codex navigation with mode-scoped session history.
  *
  * Chat callbacks cross the DesktopApi boundary in the parent. This component
  * waits for those promises and never fabricates IDs, metadata, or successful
@@ -24,6 +24,7 @@ import {
 } from '../../electron/protocol-text.js'
 import { Icon } from '../design-system/Icon.tsx'
 import { ChatActionDialog } from './ChatActionDialog.tsx'
+import './Sidebar.css'
 
 const MAX_CHAT_TITLE_LENGTH = 200
 
@@ -32,10 +33,14 @@ export type AppView = 'chat' | 'projects' | 'memory' | 'settings'
 
 interface SidebarProps {
   activeChatId?: string
+  /** Partition history by the canonical destination without converting sessions. */
+  activeMode: 'chat' | 'work'
   activeView: AppView
   busyChatId?: string
   chats: ChatSessionSummary[]
   modal: boolean
+  /** Block crossing destinations while an active capture, generation, or native lease owns the session. */
+  modeNavigationDisabled: boolean
   mutationPending: boolean
   open: boolean
   projectCount: number
@@ -48,6 +53,8 @@ interface SidebarProps {
   onCreate(): Promise<void>
   onDelete(chatId: string): Promise<void>
   onNavigate(view: AppView): boolean
+  /** Open or create a session in the requested destination; reject when navigation cannot settle. */
+  onNavigateMode(mode: 'chat' | 'work'): Promise<void>
   onOpen(chatId: string): Promise<void>
   onPin(chatId: string, pinned: boolean): Promise<void>
   onRename(chatId: string, title: string): Promise<void>
@@ -149,7 +156,7 @@ function ChatSummaryCopy({ busy, chat }: ChatSummaryCopyProps) {
       </span>
       <span className="chat-item-meta">
         {chat.mode === 'work' ? (
-          <span className="mode-badge mode-badge-work">Work</span>
+          <span className="visually-hidden">Work</span>
         ) : (
           <span className="visually-hidden">Chat</span>
         )}
@@ -203,10 +210,12 @@ function dialogChatNames(titles: string[]): ReactNode {
 /** Render accessible navigation, Chat actions, and compact-safe focus flows. */
 export function Sidebar({
   activeChatId,
+  activeMode,
   activeView,
   busyChatId,
   chats,
   modal,
+  modeNavigationDisabled,
   mutationPending,
   open,
   projectCount,
@@ -219,6 +228,7 @@ export function Sidebar({
   onCreate,
   onDelete,
   onNavigate,
+  onNavigateMode,
   onOpen,
   onPin,
   onRename,
@@ -246,12 +256,14 @@ export function Sidebar({
   const menuButtonRefs = useRef(new Map<string, HTMLButtonElement>())
   const menuRefs = useRef(new Map<string, HTMLDivElement>())
   const openButtonRefs = useRef(new Map<string, HTMLButtonElement>())
+  const previousModeRef = useRef(activeMode)
   const pending = mutationPending || localPending
+  const taskMode = activeMode === 'work'
 
   const visibleChats = useMemo(() => {
     const query = searchQuery.trim().toLocaleLowerCase()
     return chats.filter((chat) => {
-      if (chat.archived !== showArchived) {
+      if (chat.mode !== activeMode || chat.archived !== showArchived) {
         return false
       }
       if (!query) {
@@ -263,7 +275,7 @@ export function Sidebar({
         chat.mode,
       ].some((value) => value.toLocaleLowerCase().includes(query))
     })
-  }, [chats, searchQuery, showArchived])
+  }, [activeMode, chats, searchQuery, showArchived])
 
   const selectableChats = useMemo(() => (
     visibleChats.filter((chat) => chat.chatId !== busyChatId)
@@ -278,6 +290,25 @@ export function Sidebar({
   const selectedSelectableCount = selectableChats.filter(
     (chat) => selectedChatIds.has(chat.chatId),
   ).length
+
+  useEffect(() => {
+    if (previousModeRef.current === activeMode) return
+    previousModeRef.current = activeMode
+    // Bulk submissions also intersect visibleChats at the moment of review.
+    // Clear transient choices when canonical navigation changes modes so a
+    // later return cannot revive a selection from another history section.
+    let current = true
+    queueMicrotask(() => {
+      if (!current) return
+      setSelectionMode(false)
+      setSelectedChatIds(new Set())
+      setOpenMenuId(null)
+      setDialogState(null)
+      setDialogError(null)
+      setSidebarError(null)
+    })
+    return () => { current = false }
+  }, [activeMode])
 
   useEffect(() => {
     if (searchOpen) {
@@ -379,6 +410,26 @@ export function Sidebar({
       setOpenMenuId(null)
     }
     return true
+  }
+
+  async function navigateMode(mode: 'chat' | 'work'): Promise<void> {
+    if (pending || openingChatId !== null || mode !== activeMode && modeNavigationDisabled) return
+    setSidebarError(null)
+    setLocalPending(true)
+    try {
+      // The parent opens or creates a canonical session for this destination;
+      // selecting a navigation section never converts the current session.
+      await onNavigateMode(mode)
+      if (mode !== activeMode) {
+        onSearchOpenChange(false)
+        onSearchQueryChange('')
+        onShowArchivedChange(false)
+      }
+    } catch (error) {
+      setSidebarError(actionError(error, `Could not open ${mode === 'work' ? 'Codex' : 'Chat'}.`))
+    } finally {
+      setLocalPending(false)
+    }
   }
 
   function closeSelectionMode(restoreFocus: boolean): void {
@@ -646,6 +697,7 @@ export function Sidebar({
     <aside
       className="sidebar"
       id="app-sidebar"
+      data-mode={activeMode}
       aria-label="Elysia navigation"
       aria-modal={modal && open ? true : undefined}
       aria-hidden={!open}
@@ -668,11 +720,11 @@ export function Sidebar({
           type="button"
           className="sidebar-new-chat"
           aria-label="Create chat"
-          title="Create chat"
+          title={taskMode ? 'Create task' : 'Create chat'}
           disabled={pending}
           onClick={() => { void createChat() }}
         >
-          <Icon name="plus" /><span>New chat</span>
+          <Icon name="plus" /><span>{taskMode ? 'New task' : 'New chat'}</span>
         </button>
         <button
           ref={searchTriggerRef}
@@ -682,7 +734,7 @@ export function Sidebar({
           aria-controls="chat-search"
           aria-expanded={searchOpen}
           aria-keyshortcuts="Control+K Meta+K"
-          title="Search chats (Ctrl+K)"
+          title={taskMode ? 'Search tasks (Ctrl+K)' : 'Search chats (Ctrl+K)'}
           onClick={() => {
             if (!navigate('chat')) {
               return
@@ -705,7 +757,7 @@ export function Sidebar({
             ref={searchInputRef}
             value={searchQuery}
             onChange={(event) => { onSearchQueryChange(event.target.value) }}
-            placeholder="Search chats"
+            placeholder={taskMode ? 'Search tasks' : 'Search chats'}
           />
         </label>
       )}
@@ -713,15 +765,25 @@ export function Sidebar({
       <nav className="primary-nav" aria-label="Primary">
         <button
           type="button"
-          className={'nav-item' + (activeView === 'chat' ? ' active' : '')}
-          aria-current={activeView === 'chat' ? 'page' : undefined}
-          onClick={() => { navigate('chat') }}
+          className={'nav-item nav-mode-entry' + (activeView === 'chat' && activeMode === 'chat' ? ' active' : '')}
+          aria-current={activeView === 'chat' && activeMode === 'chat' ? 'page' : undefined}
+          disabled={pending || (activeMode !== 'chat' && modeNavigationDisabled)}
+          onClick={() => { void navigateMode('chat') }}
         >
           <Icon name="chat" /><span>Chat</span>
         </button>
         <button
           type="button"
-          className={'nav-item' + (activeView === 'projects' ? ' active' : '')}
+          className={'nav-item nav-mode-entry' + (activeView === 'chat' && activeMode === 'work' ? ' active' : '')}
+          aria-current={activeView === 'chat' && activeMode === 'work' ? 'page' : undefined}
+          disabled={pending || (activeMode !== 'work' && modeNavigationDisabled)}
+          onClick={() => { void navigateMode('work') }}
+        >
+          <Icon name="monitor" /><span>Codex</span>
+        </button>
+        <button
+          type="button"
+          className={'nav-item nav-library-entry' + (activeView === 'projects' ? ' active' : '')}
           aria-current={activeView === 'projects' ? 'page' : undefined}
           onClick={() => { navigate('projects') }}
         >
@@ -744,14 +806,14 @@ export function Sidebar({
 
       <section className="chat-section" aria-labelledby="chat-section-title" aria-busy={pending}>
         <div className="section-heading">
-          <span id="chat-section-title">{showArchived ? 'Archived chats' : 'Recents'}</span>
+          <span id="chat-section-title">{showArchived ? taskMode ? 'Archived tasks' : 'Archived chats' : taskMode ? 'Tasks' : 'Recents'}</span>
           {!selectionMode && (
             <div className="chat-management-controls">
               <button
                 type="button"
                 className="icon-button chat-filter-button"
                 aria-label="Archived"
-                title={showArchived ? 'Show recent chats' : 'Show archived chats'}
+                title={showArchived ? taskMode ? 'Show recent tasks' : 'Show recent chats' : taskMode ? 'Show archived tasks' : 'Show archived chats'}
                 aria-pressed={showArchived}
                 disabled={pending}
                 onClick={() => {
@@ -767,7 +829,7 @@ export function Sidebar({
                 type="button"
                 className="icon-button chat-filter-button"
                 aria-label="Select chats"
-                title="Select chats"
+                title={taskMode ? 'Select tasks' : 'Select chats'}
                 disabled={pending || selectableChats.length === 0}
                 onClick={() => {
                   setSelectionMode(true)
@@ -844,12 +906,12 @@ export function Sidebar({
 
         {pending && (
           <div className="sidebar-operation-status" role="status">
-            {chats.length === 0 ? 'Loading chats…' : 'Updating chats…'}
+            {taskMode ? 'Updating tasks…' : chats.length === 0 ? 'Loading chats…' : 'Updating chats…'}
           </div>
         )}
 
         {visibleChats.length > 0 ? (
-          <ul className="chat-list" aria-label={showArchived ? 'Archived chats' : 'Active chats'}>
+          <ul className="chat-list" aria-label={showArchived ? taskMode ? 'Archived tasks' : 'Archived chats' : taskMode ? 'Active tasks' : 'Active chats'}>
             {visibleChats.map((chat) => {
               const busy = chat.chatId === busyChatId
               const selected = selectedChatIds.has(chat.chatId)
@@ -1028,13 +1090,13 @@ export function Sidebar({
           </ul>
         ) : (
           <div className="sidebar-empty" role="status">
-            <Icon name={searchQuery.trim() ? 'search' : showArchived ? 'archive' : 'chat'} />
+            <Icon name={searchQuery.trim() ? 'search' : showArchived ? 'archive' : taskMode ? 'monitor' : 'chat'} />
             <span>
               {searchQuery.trim()
-                ? 'No matching chats'
+                ? taskMode ? 'No matching tasks' : 'No matching chats'
                 : showArchived
-                  ? 'No archived chats'
-                  : 'No chats yet'}
+                  ? taskMode ? 'No archived tasks' : 'No archived chats'
+                  : taskMode ? 'No tasks yet' : 'No chats yet'}
             </span>
           </div>
         )}

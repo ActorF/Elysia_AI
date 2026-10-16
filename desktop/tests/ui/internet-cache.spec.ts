@@ -5,6 +5,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { _electron as electron } from 'playwright'
 import { expect, test, type ElectronApplication, type Page } from '@playwright/test'
+import { conversationMode } from './conversation-helpers.ts'
 import type { InternetPolicyState } from '../../electron/internet-policy-protocol.ts'
 import { expectResearchNavigationLocked, openInternetResearch, returnToChat } from './internet-helpers.ts'
 
@@ -142,7 +143,7 @@ test('late metadata cannot appear in another Chat and retains its lease until th
   await page.evaluate(() => { (window as CacheWindow).elysiaDesktopTest.releaseNextInternetCache() })
   await expect(page.getByRole('region', { name: 'Internet research', exact: true })).toHaveAttribute('aria-busy', 'false')
   await returnToChat(page)
-  await expect(page.getByRole('combobox', { name: 'Conversation mode', exact: true })).toBeEnabled()
+  await expect(conversationMode(page)).toBeEnabled()
   await openInternetResearch(page)
   await page.getByRole('tab', { name: 'Saved', exact: true }).click()
   await expect(page.getByRole('article', { name: 'Cached result Synthetic cached result', exact: true })).toHaveCount(0)

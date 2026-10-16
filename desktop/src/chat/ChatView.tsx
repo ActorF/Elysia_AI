@@ -1,9 +1,10 @@
 /**
- * Present focused conversation and Work views without retiring hidden request
- * owners; leave Backend coordination to the parent controller.
+ * Keep Chat and Codex conversations central, with a persistent task inspector
+ * that preserves native request owners when its presentation closes.
  */
 
 import {
+  useEffect,
   useLayoutEffect,
   useRef,
   useState,
@@ -30,7 +31,7 @@ import {
   LoadingState,
 } from '../design-system/Feedback.tsx'
 import { Icon } from '../design-system/Icon.tsx'
-import { ToolTabs } from '../design-system/ToolPanel.tsx'
+import './ChatView.css'
 
 interface ChatViewProps {
   attachmentAdding: boolean
@@ -43,6 +44,8 @@ interface ChatViewProps {
   callButtonRef: RefObject<HTMLButtonElement | null>
   canSend: boolean
   chatMode: 'chat' | 'work'
+  /** Explain why task ownership temporarily blocks sending from the conversation. */
+  workBusy: boolean
   modeSelectionDisabled: boolean
   chatTitle: string
   dictationActive: boolean
@@ -139,6 +142,7 @@ export function ChatView({
   callButtonRef,
   canSend,
   chatMode,
+  workBusy,
   modeSelectionDisabled,
   chatTitle,
   dictationActive,
@@ -201,28 +205,121 @@ export function ChatView({
   onToggleDictation,
 }: ChatViewProps) {
   const scrollRef = useRef<HTMLElement | null>(null)
+  const bodyRef = useRef<HTMLDivElement | null>(null)
+  const workspaceRef = useRef<HTMLElement | null>(null)
+  const workspaceToggleRef = useRef<HTMLButtonElement | null>(null)
+  const optionsRef = useRef<HTMLDivElement | null>(null)
+  const optionsToggleRef = useRef<HTMLButtonElement | null>(null)
   const stickToBottomRef = useRef(true)
   const focusedAttentionRef = useRef(workspaceAttentionKey)
-  const [workView, setWorkView] = useState<{
+  const focusedDraftRef = useRef(conversationAttentionRevision)
+  const [optionsOpen, setOptionsOpen] = useState(false)
+  const [narrowWorkspace, setNarrowWorkspace] = useState(true)
+  const [workspace, setWorkspace] = useState<{
     chatId: string | undefined
+    mode: 'chat' | 'work'
     attentionKey: string | undefined
     draftRevision: number | undefined
-    value: 'workspace' | 'conversation'
-  }>({ chatId: snapshot.chatId, attentionKey: workspaceAttentionKey,
-    draftRevision: conversationAttentionRevision, value: 'workspace' })
-  // A new Chat or a newly issued approval must reveal its workspace. Clearing
-  // a reviewed context does not override a user's subsequent view selection.
-  const newWorkspaceAttention = workspaceAttentionKey !== undefined && workView.attentionKey !== workspaceAttentionKey
-  if (workView.chatId !== snapshot.chatId || newWorkspaceAttention
-    || workView.draftRevision !== conversationAttentionRevision) {
-    setWorkView({ chatId: snapshot.chatId, attentionKey: workspaceAttentionKey,
-      draftRevision: conversationAttentionRevision,
-      value: workView.chatId !== snapshot.chatId || newWorkspaceAttention ? 'workspace' : 'conversation' })
+    open: boolean
+  }>({ chatId: snapshot.chatId, mode: chatMode, attentionKey: workspaceAttentionKey,
+    draftRevision: conversationAttentionRevision, open: false })
+  // Every conversation starts in its task dialogue. Only a newly issued review
+  // opens the inspector automatically; clearing a receipt does not reopen it.
+  const newWorkspaceAttention = workspaceAttentionKey !== undefined && workspace.attentionKey !== workspaceAttentionKey
+  const ownerChanged = workspace.chatId !== snapshot.chatId || workspace.mode !== chatMode
+  if (ownerChanged || newWorkspaceAttention || workspace.draftRevision !== conversationAttentionRevision) {
+    setWorkspace({ chatId: snapshot.chatId, mode: chatMode, attentionKey: workspaceAttentionKey,
+      draftRevision: conversationAttentionRevision, open: !ownerChanged && newWorkspaceAttention })
+    if (optionsOpen) setOptionsOpen(false)
   }
-  const workspaceVisible = chatMode === 'work' && workView.value === 'workspace'
+  const workspaceVisible = chatMode === 'work' && workspace.open
+  const workspaceModal = workspaceVisible && narrowWorkspace
   const generationAnnouncement = streaming
     ? 'Elysia is generating a reply.'
     : 'Elysia is ready for your next message.'
+
+  function closeWorkspace(): void {
+    setWorkspace(current => ({ ...current, open: false }))
+    requestAnimationFrame(() => { workspaceToggleRef.current?.focus() })
+  }
+
+  function openWorkspace(): void {
+    setOptionsOpen(false)
+    setWorkspace(current => ({ ...current, open: true }))
+    requestAnimationFrame(() => { workspaceRef.current?.focus() })
+  }
+
+  useLayoutEffect(() => {
+    const body = bodyRef.current
+    if (body === null) return
+    // Navigation and the character panel consume width independently of the
+    // viewport. Measure the actual conversation canvas before docking tools.
+    const update = (): void => { setNarrowWorkspace(body.clientWidth < 880) }
+    const observer = new ResizeObserver(update)
+    update(); observer.observe(body)
+    return () => { observer.disconnect() }
+  }, [])
+
+  useEffect(() => {
+    if (!optionsOpen) return
+    const dismissOutside = (event: PointerEvent): void => {
+      if (event.target instanceof Node && !optionsRef.current?.contains(event.target)) setOptionsOpen(false)
+    }
+    const dismissEscape = (event: KeyboardEvent): void => {
+      if (event.key !== 'Escape') return
+      event.preventDefault(); event.stopImmediatePropagation()
+      setOptionsOpen(false); optionsToggleRef.current?.focus()
+    }
+    document.addEventListener('pointerdown', dismissOutside)
+    window.addEventListener('keydown', dismissEscape, true)
+    return () => {
+      document.removeEventListener('pointerdown', dismissOutside)
+      window.removeEventListener('keydown', dismissEscape, true)
+    }
+  }, [optionsOpen])
+
+  useEffect(() => {
+    if (!workspaceModal) return
+    // The narrow inspector is a modal surface, while the native Vision dialog
+    // takes priority whenever it opens over this already-mounted task owner.
+    const frame = requestAnimationFrame(() => {
+      if (document.querySelector('dialog[open]') === null && workspaceRef.current?.closest('[inert]') === null) workspaceRef.current.focus()
+    })
+    const handleKey = (event: KeyboardEvent): void => {
+      if (document.querySelector('dialog[open]') !== null || workspaceRef.current?.closest('[inert]') !== null) return
+      if (event.key === 'Escape') {
+        event.preventDefault(); event.stopImmediatePropagation()
+        setWorkspace(current => ({ ...current, open: false }))
+        requestAnimationFrame(() => { workspaceToggleRef.current?.focus() })
+      } else if (event.key === 'Tab') {
+        const candidates = Array.from(workspaceRef.current?.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), summary, [href], [tabindex="0"]',
+        ) ?? []).filter(element => element.getClientRects().length > 0 && element.tabIndex >= 0)
+        const first = candidates[0], last = candidates.at(-1)
+        if (first === undefined || last === undefined) return
+        if (!workspaceRef.current?.contains(document.activeElement)) {
+          event.preventDefault(); event.stopImmediatePropagation()
+          ;(event.shiftKey ? last : first).focus()
+        } else if (event.shiftKey && (document.activeElement === first || document.activeElement === workspaceRef.current)
+          || !event.shiftKey && document.activeElement === last) {
+          event.preventDefault(); event.stopImmediatePropagation()
+          ;(event.shiftKey ? last : first).focus()
+        }
+      }
+    }
+    const containFocus = (event: FocusEvent): void => {
+      const inspector = workspaceRef.current
+      if (inspector === null || inspector.closest('[inert]') !== null || document.querySelector('dialog[open]') !== null) return
+      if (event.target instanceof Node && !inspector.contains(event.target)) inspector.focus()
+    }
+    window.addEventListener('keydown', handleKey, true)
+    document.addEventListener('focusin', containFocus, true)
+    return () => {
+      cancelAnimationFrame(frame)
+      window.removeEventListener('keydown', handleKey, true)
+      document.removeEventListener('focusin', containFocus, true)
+    }
+  }, [workspaceModal, sidebarOpen, panelOpen])
 
   useLayoutEffect(() => {
     if (!workspaceVisible || workspaceAttentionKey === undefined
@@ -231,12 +328,23 @@ export function ChatView({
     // focus. An open dialog still owns focus; its later close updates this node
     // and retries the handoff without interrupting the active review.
     const frame = requestAnimationFrame(() => {
-      if (document.querySelector('dialog[open]') !== null) return
+      if (document.querySelector('dialog[open]') !== null || workspaceRef.current?.closest('[inert]') !== null) return
       focusedAttentionRef.current = workspaceAttentionKey
-      document.getElementById('work-view-workspace-tab')?.focus()
+      workspaceRef.current?.focus()
     })
     return () => { cancelAnimationFrame(frame) }
-  }, [workspaceAttentionKey, workspaceVisible, visionPanel])
+  }, [workspaceAttentionKey, workspaceVisible, visionPanel, sidebarOpen, panelOpen])
+
+  useLayoutEffect(() => {
+    if (focusedDraftRef.current === conversationAttentionRevision) return
+    const frame = requestAnimationFrame(() => {
+      const composer = document.getElementById('chat-composer')
+      if (document.querySelector('dialog[open]') !== null || composer?.closest('[inert]') !== null) return
+      focusedDraftRef.current = conversationAttentionRevision
+      composer?.focus()
+    })
+    return () => { cancelAnimationFrame(frame) }
+  }, [conversationAttentionRevision, visionPanel, sidebarOpen, panelOpen])
 
   // Playback time updates do not change the card's layout and should not
   // repeatedly scroll the conversation while a user scrubs the song.
@@ -249,7 +357,7 @@ export function ChatView({
 
   return (
     <div className={'chat-surface' + (chatMode === 'work' ? ' chat-surface-work' : '')}>
-      <header className="topbar">
+      <header className="topbar" inert={workspaceModal}>
         <div className="topbar-leading">
           <button
             type="button"
@@ -268,23 +376,11 @@ export function ChatView({
           </div>
         </div>
         <div className="connection-controls">
-          <select
-            className="chat-mode-select"
-            aria-label="Conversation mode"
-            aria-describedby="chat-mode-capabilities"
-            value={chatMode}
-            disabled={modeSelectionDisabled}
-            onChange={(event) => {
-              const mode = event.currentTarget.value
-              if (mode === 'chat' || mode === 'work') {
-                if (mode === 'work') setWorkView(current => ({ ...current, value: 'workspace' }))
-                onSelectMode(mode)
-              }
-            }}
-          >
-            <option value="chat">Chat</option>
-            <option value="work">Work</option>
-          </select>
+          {chatMode === 'work' && <button ref={workspaceToggleRef} type="button" className="codex-workspace-toggle"
+            aria-label="Workspace" aria-controls="codex-workspace" aria-expanded={workspaceVisible}
+            onClick={() => { if (workspaceVisible) closeWorkspace(); else openWorkspace() }}>
+            <Icon name="folder" /><span>Workspace</span>{workBusy && <span className="codex-task-dot" aria-hidden="true" />}
+          </button>}
           <span
             className={`connection-pill ${snapshot.status}`}
             role="status"
@@ -308,44 +404,40 @@ export function ChatView({
           >
             <Icon name="panel" />
           </button>
+          <div className="conversation-options" ref={optionsRef}>
+            <button ref={optionsToggleRef} type="button" className="icon-button" aria-label="Conversation options"
+              aria-haspopup="dialog" aria-expanded={optionsOpen && !workspaceModal} aria-controls="conversation-options-popover"
+              onClick={() => { setOptionsOpen(current => !current) }}><Icon name="more" /></button>
+            <div id="conversation-options-popover" className="conversation-options-popover" role="dialog"
+              aria-label="Conversation options" hidden={!optionsOpen || workspaceModal}>
+              <label>Conversation mode<select className="conversation-mode-select" aria-label="Conversation mode"
+                aria-describedby="chat-mode-capabilities" value={chatMode} disabled={modeSelectionDisabled}
+                onChange={(event) => {
+                  const mode = event.currentTarget.value
+                  if (mode === 'chat' || mode === 'work') {
+                    onSelectMode(mode)
+                    setOptionsOpen(false)
+                    requestAnimationFrame(() => { optionsToggleRef.current?.focus() })
+                  }
+                }}><option value="chat">Chat</option><option value="work">Codex</option></select></label>
+              <p>{modeSelectionDisabled ? 'Finish the current action before changing mode.' : 'Change the mode of this conversation.'}</p>
+            </div>
+          </div>
         </div>
       </header>
 
         <div className="visually-hidden" id="chat-mode-capabilities" role="status">
           {chatMode === 'work'
-            ? 'Work: plan tasks in a selected Workspace. File changes require your approval.'
+            ? 'Codex: discuss tasks and review tools in Workspace. File changes require your approval.'
             : 'Chat: conversation and answers. Computer tools are disabled.'}
         </div>
-      {chatMode === 'work' && (
-        <div className="chat-workspace-navigation">
-          <ToolTabs
-            idPrefix="work-view"
-            label="Work views"
-            value={workView.value}
-            items={[
-              { value: 'workspace', label: 'Workspace' },
-              { value: 'conversation', label: 'Conversation' },
-            ]}
-            onValueChange={value => { setWorkView(current => ({ ...current, value })) }}
-          />
-          {workspaceVisible && <div className="chat-workspace-vision">{screenshotControl}</div>}
-        </div>
-      )}
-
-      {/* Both views stay mounted: changing the visible surface must preserve
-          drafts, native cancellation handles, and approval expiry timers. */}
-      {chatMode === 'work' && (
-        <div className="chat-workspace-surface" role="tabpanel"
-          id="work-view-workspace-panel" aria-labelledby="work-view-workspace-tab"
-          tabIndex={0} hidden={!workspaceVisible}>
-          {workPanel}
-        </div>
-      )}
-      <div className={'chat-conversation' + (messages.length === 0 ? ' chat-conversation-empty' : '')}
-        hidden={workspaceVisible}
-        role={chatMode === 'work' ? 'tabpanel' : undefined}
-        id="work-view-conversation-panel"
-        aria-labelledby={chatMode === 'work' ? 'work-view-conversation-tab' : undefined}>
+      <div ref={bodyRef} className="chat-body" data-workspace-open={workspaceVisible} data-workspace-modal={narrowWorkspace}>
+      <div className="chat-dialogue" inert={workspaceModal}>
+      {chatMode === 'work' && workBusy && <div className="codex-task-status" role="status">
+        <span className="codex-task-dot" aria-hidden="true" /><span>Workspace is active</span>
+        <button type="button" onClick={openWorkspace}>Review task<Icon name="chevron" /></button>
+      </div>}
+      <div className={'chat-conversation' + (messages.length === 0 ? ' chat-conversation-empty' : '')}>
 
       <main
         ref={scrollRef}
@@ -384,15 +476,15 @@ export function ChatView({
           {messages.length === 0 && (
             <EmptyState
               className="conversation-empty"
-              icon={null}
-              title="今天，想聊些什么？"
-              description="一个想法，一件小事，都可以从这里开始。"
+              icon="sparkles"
+              title={chatMode === 'work' ? '想一起完成什么？' : '今天，想聊些什么？'}
+              description={chatMode === 'work' ? '先聊清楚目标，再在 Workspace 中规划和检查改动。' : '一个想法，一件小事，都可以从这里开始。'}
             />
           )}
 
           {messages.length === 0 && snapshot.status === 'ready' && draft.length === 0 && (
             <div className="conversation-starters" role="group" aria-label="Conversation ideas">
-              {['聊聊今天', '帮我整理想法', '一起写点什么'].map((idea) => (
+              {(chatMode === 'work' ? ['梳理一个任务', '一起看段代码', '规划下一步'] : ['聊聊今天', '帮我整理想法', '一起写点什么']).map((idea) => (
                 <button
                   type="button"
                   key={idea}
@@ -430,7 +522,8 @@ export function ChatView({
       </main>
 
       <Composer
-        visible={!workspaceVisible}
+        visible={!workspaceModal}
+        mode={chatMode}
         attachmentAdding={attachmentAdding}
         attachmentDisabled={attachmentDisabled}
         attachmentError={attachmentError}
@@ -479,6 +572,20 @@ export function ChatView({
         onStopSongCover={onStopSongCover}
         onToggleDictation={onToggleDictation}
       />
+      </div>
+      </div>
+      {workspaceModal && <button type="button" className="codex-workspace-backdrop" tabIndex={-1}
+        aria-label="Dismiss Workspace" onClick={closeWorkspace} />}
+      {/* Closing the inspector changes visibility only. Its native request,
+          cancellation and approval owners survive every presentation change. */}
+      <aside ref={workspaceRef} id="codex-workspace" className="codex-workspace-dock"
+        role={narrowWorkspace ? 'dialog' : 'complementary'} aria-label="Workspace tools panel"
+        aria-modal={workspaceModal ? true : undefined} tabIndex={-1} hidden={!workspaceVisible}>
+        <div className="codex-workspace-header"><div><Icon name="folder" /><h2>Workspace</h2></div>
+          <button type="button" className="icon-button" aria-label="Close workspace" onClick={closeWorkspace}><Icon name="close" /></button>
+        </div>
+        <div className="codex-workspace-content">{chatMode === 'work' ? workPanel : null}</div>
+      </aside>
       </div>
       {/* Vision remains mounted outside the layout grid. Its dialog changes
           visibility without shifting the conversation or retiring native work. */}

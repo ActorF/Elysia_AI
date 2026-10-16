@@ -1,5 +1,5 @@
 /**
- * Warm neutral surfaces and restrained rose accents for light and dark themes.
+ * Elysia's restrained rose visual tokens for system-native light and dark themes.
  *
  * Components consume semantic tokens only. Theme-specific values live in this
  * file so light and dark themes cannot drift into component styles.
@@ -89,24 +89,24 @@
   --layout-main-min-width: 20rem;
   --layout-compact-breakpoint: 65rem;
 
-  /* Quiet surfaces separate navigation from content without tinting every card. */
-  --theme-color: #232322;
-  --color-bg-canvas: #232322;
-  --color-bg-sidebar: #1b1b1a;
-  --color-bg-surface: #2b2b29;
-  --color-bg-raised: #333330;
-  --color-bg-hover: #3a3a37;
-  --color-bg-active: #41413e;
-  --color-bg-soft: rgb(245 242 236 / 4%);
-  --color-bg-overlay: rgb(12 12 11 / 66%);
-  --color-text-primary: #f2f1ed;
-  --color-text-secondary: #c8c6bf;
-  --color-text-muted: #aaa79f;
-  --color-text-disabled: #77756f;
+  /* A faint plum tint connects dark surfaces to the character's rose palette. */
+  --theme-color: #242125;
+  --color-bg-canvas: #242125;
+  --color-bg-sidebar: #1c191d;
+  --color-bg-surface: #2b272c;
+  --color-bg-raised: #343035;
+  --color-bg-hover: #3b353c;
+  --color-bg-active: #443c46;
+  --color-bg-soft: rgb(237 168 202 / 5%);
+  --color-bg-overlay: rgb(14 11 15 / 66%);
+  --color-text-primary: #f6f1f4;
+  --color-text-secondary: #c9c1c7;
+  --color-text-muted: #a99da6;
+  --color-text-disabled: #756b72;
   --color-text-inverse: #292028;
   --color-text-link: #f1b8d3;
-  --color-border: rgb(245 242 236 / 9%);
-  --color-border-strong: rgb(245 242 236 / 17%);
+  --color-border: rgb(255 243 250 / 9%);
+  --color-border-strong: rgb(255 243 250 / 17%);
   --color-border-focus: #eda8ca;
 
   /* Rose marks actions; soft fills keep the character identity unobtrusive. */
@@ -175,23 +175,23 @@
 
 :root[data-theme="light"] {
   color-scheme: light;
-  --theme-color: #faf9f6;
-  --color-bg-canvas: #faf9f6;
-  --color-bg-sidebar: #f0efeb;
+  --theme-color: #fcfafb;
+  --color-bg-canvas: #fcfafb;
+  --color-bg-sidebar: #f5f1f4;
   --color-bg-surface: #ffffff;
   --color-bg-raised: #ffffff;
-  --color-bg-hover: #eae9e4;
-  --color-bg-active: #e3e1da;
-  --color-bg-soft: rgb(45 43 37 / 3%);
-  --color-bg-overlay: rgb(24 23 20 / 36%);
-  --color-text-primary: #292824;
-  --color-text-secondary: #5f5d55;
-  --color-text-muted: #76736b;
-  --color-text-disabled: #a39f96;
+  --color-bg-hover: #f0e8ed;
+  --color-bg-active: #eadde5;
+  --color-bg-soft: rgb(180 81 130 / 4%);
+  --color-bg-overlay: rgb(29 22 28 / 36%);
+  --color-text-primary: #2c252b;
+  --color-text-secondary: #60565e;
+  --color-text-muted: #786b74;
+  --color-text-disabled: #a49ba2;
   --color-text-inverse: #ffffff;
   --color-text-link: #974169;
-  --color-border: rgb(45 43 37 / 10%);
-  --color-border-strong: rgb(45 43 37 / 18%);
+  --color-border: rgb(51 36 47 / 9%);
+  --color-border-strong: rgb(51 36 47 / 17%);
   --color-border-focus: #b45182;
   --color-accent: #b45182;
   --color-accent-hover: #9c3f6b;

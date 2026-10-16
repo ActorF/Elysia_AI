@@ -5,6 +5,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { _electron as electron } from 'playwright'
 import { expect, test, type ElectronApplication, type Page } from '@playwright/test'
+import { conversationMode } from './conversation-helpers.ts'
 import type { InternetPolicyState } from '../../electron/internet-policy-protocol.ts'
 import { expectResearchNavigationLocked, openInternetResearch, returnToChat } from './internet-helpers.ts'
 
@@ -116,7 +117,7 @@ test('turning Internet off retains the native read lease until its callback drai
   await page.evaluate(() => { (window as ReaderWindow).elysiaDesktopTest.releaseNextInternetRead() })
   await expect(page.getByRole('region', { name: 'Internet research', exact: true })).toHaveAttribute('aria-busy', 'false')
   await returnToChat(page)
-  await expect(page.getByRole('combobox', { name: 'Conversation mode', exact: true })).toBeEnabled()
+  await expect(conversationMode(page)).toBeEnabled()
   await openInternetResearch(page)
   await expect(page.getByRole('region', { name: 'Internet research', exact: true }).getByRole('article')).toHaveCount(0)
 })

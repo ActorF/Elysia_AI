@@ -5,6 +5,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { _electron as electron } from 'playwright'
 import { expect, test, type ElectronApplication, type Page } from '@playwright/test'
+import { conversationMode } from './conversation-helpers.ts'
 import type { InternetPolicyState } from '../../electron/internet-policy-protocol.ts'
 import { expectResearchNavigationLocked, openInternetResearch, returnToChat } from './internet-helpers.ts'
 
@@ -156,7 +157,7 @@ for (const interruption of ['off', 'disconnect', 'chat change'] as const) test(`
   await page.evaluate(() => { (window as ServicesWindow).elysiaDesktopTest.releaseNextInternetService() })
   await expect(page.getByRole('region', { name: 'Internet research', exact: true })).toHaveAttribute('aria-busy', 'false')
   await returnToChat(page)
-  await expect(page.getByRole('combobox', { name: 'Conversation mode', exact: true })).toBeEnabled()
+  await expect(conversationMode(page)).toBeEnabled()
   await openInternetResearch(page)
   if (interruption !== 'off') {
     await page.getByRole('tab', { name: 'Services', exact: true }).click()

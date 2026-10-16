@@ -6,6 +6,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { _electron as electron } from 'playwright'
 import { expect, test, type ElectronApplication, type Page } from '@playwright/test'
+import { conversationMode } from './conversation-helpers.ts'
 import { openVision, reviewVisionImage } from './vision-helpers.ts'
 
 interface HistoryControl {
@@ -117,13 +118,13 @@ test('disconnect resets saving consent but retains the busy lease until a delaye
   await panel.getByRole('checkbox', { name: 'Allow saving selected images', exact: true }).check()
   await page.evaluate(() => { (window as HistoryWindow).elysiaDesktopTest.setVisionHistoryDelay(true) })
   await panel.getByRole('button', { name: 'Save selected image', exact: true }).click()
-  await expect(page.getByRole('combobox', { name: 'Conversation mode', includeHidden: true })).toBeDisabled()
+  await expect(conversationMode(page)).toBeDisabled()
   await page.evaluate((next) => { (window as HistoryWindow).elysiaDesktopTest.emitBackendEvent({ type: 'snapshot', snapshot: next }) }, snapshot('error', 2))
   await page.waitForFunction(() => document.querySelector<HTMLInputElement>('.vision-history-opt-in input')?.checked === false)
   await page.evaluate((next) => { (window as HistoryWindow).elysiaDesktopTest.emitBackendEvent({ type: 'snapshot', snapshot: next }) }, snapshot('ready', 3))
-  await expect(page.getByRole('combobox', { name: 'Conversation mode', includeHidden: true })).toBeDisabled()
+  await expect(conversationMode(page)).toBeDisabled()
   await page.evaluate(() => { (window as HistoryWindow).elysiaDesktopTest.releaseNextVisionHistory() })
-  await expect(page.getByRole('combobox', { name: 'Conversation mode', includeHidden: true })).toBeEnabled()
+  await expect(conversationMode(page)).toBeEnabled()
   await openVision(page)
   await page.getByRole('tab', { name: 'Saved images', exact: true }).click()
   await expect(panel).toContainText('Load the saved list')

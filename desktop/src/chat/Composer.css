@@ -1,4 +1,4 @@
-/* Quiet message input, compact direct actions, and canonical image review controls. */
+/* Keep task and conversation input uncluttered while retaining Elysia's rose/plum accents, voice, music and image entry points. */
 
 .composer-zone .composer-card {
   padding: .85rem;
@@ -9,19 +9,19 @@
 }
 
 .composer-zone .composer-card:focus-within {
-  border-color: color-mix(in srgb, var(--color-text-muted) 45%, var(--color-border));
-  box-shadow: 0 3px 12px rgb(0 0 0 / 4%);
+  border-color: color-mix(in srgb, var(--color-accent) 48%, var(--color-border));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-accent) 6%, transparent), 0 3px 12px rgb(0 0 0 / 3%);
 }
 
 .composer-zone .phone-button,
 .composer-zone .song-cover-button {
-  color: var(--color-text-secondary);
+  color: var(--color-accent-secondary);
   background: transparent;
 }
 
 .composer-zone .send-button:not(.stop-button):not(:disabled) {
-  color: var(--color-bg-canvas);
-  background: var(--color-text-primary);
+  color: var(--color-accent-contrast);
+  background: var(--color-accent);
   box-shadow: none;
 }
 
@@ -29,16 +29,10 @@
   border-radius: var(--radius-full);
 }
 
-.composer-zone .elysia-model-mark { display: none; }
+.composer-zone .elysia-model-mark { display: block; width: 1.1rem; height: 1.1rem; flex-basis: 1.1rem; }
+.composer-zone .composer-toolbar { flex-wrap: wrap; }
+.composer-zone .voice-tools { margin-left: auto; }
 .composer-screenshot-label { display: none; }
-.chat-workspace-vision .composer-screenshot-label { display: inline; }
-.chat-workspace-vision .composer-screenshot-button {
-  display: flex;
-  gap: .5rem;
-  width: auto;
-  padding: .4rem .65rem;
-  font-size: var(--font-size-xs);
-}
 
 .chat-conversation-empty {
   /* The welcome and composer form one calm starting point. Both occupied rows
@@ -59,8 +53,6 @@
 }
 
 @media (max-width: 42rem) {
-  .chat-workspace-navigation { padding-inline: .75rem; gap: .5rem; }
-  .chat-workspace-vision .composer-screenshot-label { display: none; }
   .composer-zone .composer-tools { flex-basis: 10rem; }
   .composer-zone .tool-button { width: 2rem; height: 2rem; }
   .composer-zone .voice-tools { margin-left: auto; }

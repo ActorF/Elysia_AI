@@ -5,6 +5,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { _electron as electron } from 'playwright'
 import { expect, test, type ElectronApplication, type Page } from '@playwright/test'
+import { conversationMode } from './conversation-helpers.ts'
 import type { InternetPolicyState } from '../../electron/internet-policy-protocol.ts'
 import { expectResearchNavigationLocked, openInternetResearch, returnToChat } from './internet-helpers.ts'
 
@@ -140,7 +141,7 @@ test('a late comparison keeps its physical lease through reconnect and cannot re
   await expect(page.getByRole('region', { name: 'Reviewed source comparison', exact: true })).toHaveCount(0)
   await expect(page.getByRole('textbox', { name: 'Question or claim', exact: true })).toHaveValue('')
   await returnToChat(page)
-  await expect(page.getByRole('combobox', { name: 'Conversation mode', exact: true })).toBeEnabled()
+  await expect(conversationMode(page)).toBeEnabled()
 })
 
 test('a delayed comparison export cannot append after owner readiness is revoked', async () => {
@@ -150,6 +151,6 @@ test('a delayed comparison export cannot append after owner readiness is revoked
   await emit('error', 2); await emit('ready', 3)
   await page.evaluate(() => { (window as ReviewWindow).elysiaDesktopTest.releaseNextInternetReviewText() })
   await returnToChat(page)
-  await expect(page.getByRole('combobox', { name: 'Conversation mode', exact: true })).toBeEnabled()
+  await expect(conversationMode(page)).toBeEnabled()
   await expect(page.getByLabel('Message Elysia')).toHaveValue('Retain only this draft.')
 })

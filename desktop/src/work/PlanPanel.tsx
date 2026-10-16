@@ -15,7 +15,6 @@ import { ApprovalPreview } from './ApprovalPreview.tsx'
 import { JobProgress } from './JobProgress.tsx'
 import type { WorkJobObservation } from '../../electron/work-job-protocol.ts'
 import type { VisionContext } from '../../electron/vision-context-protocol.ts'
-import { Icon } from '../design-system/Icon.tsx'
 import './PlanPanel.css'
 
 interface PlanPanelProps {
@@ -225,9 +224,8 @@ export function PlanPanel({ api, chatId, workspacePath, ready, disabled, calls,
         <button type="button" disabled={blocked || live} onClick={onClearVisionContext}>Remove image context from plan</button>
       </section>}
       {calls.length === 0 && plan === null && !loading && <div className="work-plan-empty">
-        <span className="work-plan-empty-symbol" aria-hidden="true"><Icon name="file" /></span>
-        <h3>Start with a small step</h3>
-        <p>Choose a file action, add it to your plan, then review before running.</p>
+        <h3>No plan yet</h3>
+        <p>Add file actions to review and run together.</p>
         {onBrowseFiles !== undefined && <button type="button" className="tool-primary" onClick={onBrowseFiles}>Add a step</button>}
         <small>Every file change needs your approval.</small>
       </div>}

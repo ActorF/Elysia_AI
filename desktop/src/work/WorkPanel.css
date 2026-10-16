@@ -1,56 +1,51 @@
-/** Present Work as an independent, spacious workspace while keeping scopes and active plans visible. */
+/** Fit persistent Work tools into a narrow side panel, keeping actual folder scope and active plans readable. */
 
 .work-panel {
   display: grid;
   align-content: start;
-  gap: 1.5rem;
+  gap: 1rem;
   width: 100%;
-  max-width: 60rem;
   min-width: 0;
-  margin-inline: auto;
-  padding: 2.5rem clamp(1rem, 4vw, 3rem) 3rem;
+  padding: 1rem;
   box-sizing: border-box;
   border: 0;
   background: transparent;
 }
 
-.work-panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
-.work-panel-eyebrow { color: var(--color-text-muted); font-size: .625rem; font-weight: 600; letter-spacing: .16em; }
-.work-panel-heading h2 { margin: .5rem 0 .45rem; font-size: clamp(1.55rem, 3vw, 2rem); line-height: 1.25; font-weight: 500; letter-spacing: -.04em; }
-.work-panel-heading p { color: var(--color-text-muted); }
-.work-panel-status { display: flex; gap: .5rem; align-items: center; font-size: var(--font-size-xs); color: var(--color-text-secondary); }
-
-.work-workspace-scope { display: flex; align-items: center; gap: .9rem; min-width: 0; padding: 1rem 1.1rem; border: 1px solid var(--color-border); border-radius: 1rem; background: var(--color-bg-surface); }
-.work-workspace-symbol { display: grid; flex: 0 0 auto; place-items: center; width: 2.4rem; height: 2.4rem; border-radius: .75rem; background: var(--color-bg-soft); color: var(--color-text-secondary); }
-.work-workspace-symbol svg { width: 1.15rem; height: 1.15rem; }
-.work-workspace-copy { display: grid; flex: 1; gap: .2rem; min-width: 0; }
+.work-panel-status { display: inline-flex; gap: .3rem; align-items: center; font-size: .625rem; color: var(--color-accent); }
+.work-workspace-scope { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: .65rem; min-width: 0; padding-bottom: .85rem; border-bottom: 1px solid var(--color-border); }
+.work-workspace-symbol { display: grid; place-items: center; width: 1.9rem; height: 1.9rem; border-radius: .6rem; background: var(--color-accent-soft); color: var(--color-accent); }
+.work-workspace-symbol svg { width: 1rem; height: 1rem; }
+.work-workspace-copy { display: grid; gap: .25rem; min-width: 0; }
+.work-workspace-label-row { display: flex; flex-wrap: wrap; justify-content: space-between; gap: .3rem .6rem; }
 .work-workspace-label { color: var(--color-text-muted); font-size: .625rem; }
-.work-workspace-path { max-height: 4rem; overflow-y: auto; overflow-wrap: anywhere; font-size: var(--font-size-sm); font-weight: 500; }
-.work-workspace-copy small { color: var(--color-text-muted); font-size: .6875rem; }
-.work-workspace-actions { display: flex; flex: 0 0 auto; flex-wrap: wrap; gap: .35rem; }
-.work-panel .work-active-plan { display: flex; align-items: center; justify-content: center; gap: .5rem; border: 0; color: var(--color-accent); background: var(--color-accent-soft); }
+.work-workspace-path { max-height: 4.5rem; overflow-y: auto; overflow-wrap: anywhere; font-size: var(--font-size-xs); font-weight: 500; }
+.work-workspace-copy small { color: var(--color-text-muted); font-size: .625rem; line-height: 1.5; }
+.work-workspace-actions { display: flex; grid-column: 2; flex-wrap: wrap; gap: .25rem; }
+.work-panel .work-workspace-actions button { min-height: 1.7rem; padding: .2rem .5rem; }
+.work-panel .work-workspace-clear { display: inline-grid; place-items: center; width: 1.7rem; padding: .2rem; }
+.work-workspace-clear svg { width: .9rem; height: .9rem; }
+.work-panel .work-active-plan { display: flex; align-items: center; justify-content: center; gap: .4rem; padding: .55rem .65rem; border: 0; color: var(--color-accent); background: var(--color-accent-soft); }
 
-.work-panel > .tool-tabs { gap: 1.35rem; padding: 0; border-bottom: 1px solid var(--color-border); border-radius: 0; background: transparent; }
-.work-panel > .tool-tabs > button { flex: 0 0 auto; min-height: 2.8rem; padding: .65rem .1rem; border: 0; border-bottom: 2px solid transparent; border-radius: 0; font-size: var(--font-size-sm); }
-.work-panel > .tool-tabs > button[aria-selected="true"] { background: transparent; border-color: var(--color-text-primary); color: var(--color-text-primary); box-shadow: none; }
+.work-panel > .tool-tabs { gap: .3rem; padding: .2rem; border-radius: .65rem; background: var(--color-bg-soft); }
+.work-panel > .tool-tabs > button { flex: 1 1 0; min-height: 2rem; padding: .4rem .3rem; border: 1px solid transparent; border-radius: .45rem; font-size: var(--font-size-xs); }
+.work-panel > .tool-tabs > button[aria-selected="true"] { background: var(--color-bg-surface); border-color: var(--color-border); color: var(--color-accent); box-shadow: 0 1px 2px rgb(0 0 0 / 4%); }
 .work-panel [role="tabpanel"] { min-width: 0; overflow-wrap: anywhere; }
 .work-panel [role="tabpanel"] > :last-child { margin-bottom: 0; }
 .work-panel [role="tabpanel"] button, .work-workspace-actions button { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
-.work-section-heading { display: grid; gap: .35rem; margin-bottom: 1.35rem; }
-.work-panel .work-section-heading h3 { font-size: 1rem; font-weight: 500; }
-.work-panel .work-section-heading p, .work-section-hint { color: var(--color-text-muted); font-size: var(--font-size-xs); }
-.work-workspace-error { display: flex; align-items: center; flex-wrap: wrap; gap: .5rem; color: var(--color-danger); font-size: var(--font-size-sm); }
+.work-section-heading { display: grid; gap: .3rem; margin-bottom: .85rem; }
+.work-panel .work-section-heading h3 { font-size: var(--font-size-sm); font-weight: 500; }
+.work-panel .work-section-heading p, .work-panel .work-section-hint { color: var(--color-text-muted); font-size: var(--font-size-xs); }
+.work-panel .work-section-hint { margin-bottom: 1rem; }
+.work-workspace-error { display: grid; gap: .5rem; color: var(--color-danger); font-size: var(--font-size-xs); }
+.work-workspace-error button { justify-self: start; }
 
-.work-tool-inspector { width: 100%; margin-top: 1.25rem; padding-top: 1rem; border-top: 1px solid var(--color-border); font-size: var(--font-size-xs); }
+.work-tool-inspector { width: 100%; margin-top: .75rem; padding-top: .75rem; border-top: 1px solid var(--color-border); font-size: var(--font-size-xs); }
 .work-tool-inspector summary { cursor: pointer; padding-block: .25rem; color: var(--color-text-muted); }
-.work-tool-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr)); max-height: 15rem; overflow-y: auto; gap: 1rem; padding: 1rem 0; margin: 0; list-style: none; }
-.work-tool-list li { display: grid; gap: .3rem; padding: .75rem; border-radius: .65rem; background: var(--color-bg-soft); }
+.work-tool-list { display: grid; grid-template-columns: minmax(0, 1fr); max-height: 15rem; overflow-y: auto; gap: .5rem; padding: .75rem 0; margin: 0; list-style: none; }
+.work-tool-list li { display: grid; gap: .25rem; padding: .65rem; border-radius: .5rem; background: var(--color-bg-soft); }
 .work-tool-list span, .work-tool-list p { margin: 0; color: var(--color-text-secondary); }
 
-@media (max-width: 600px) {
-  .work-panel { gap: 1.2rem; padding-top: 1.5rem; }
-  .work-workspace-scope { flex-wrap: wrap; padding: .85rem; gap: .75rem; }
-  .work-workspace-actions { width: 100%; justify-content: flex-end; }
-  .work-panel > .tool-tabs { gap: 1rem; }
-  .work-panel > .tool-tabs > button { flex: 1 1 auto; }
+@media (max-width: 480px) {
+  .work-panel { padding: .85rem; }
 }

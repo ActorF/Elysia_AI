@@ -1,6 +1,7 @@
 /** Share explicit attachment-to-Vision and presentation gestures using embedded synthetic image fixtures only. */
 
 import { expect, type Page } from '@playwright/test'
+import { showWorkspace } from './conversation-helpers.ts'
 
 interface VisionFixture {
   [key: string]: unknown
@@ -19,6 +20,11 @@ export async function closeVision(page: Page): Promise<void> {
 /** Reopen retained Vision data through the composer screenshot icon without importing another image. */
 export async function openVision(page: Page, capture = false): Promise<void> {
   if (!await page.getByRole('dialog', { name: 'Vision', exact: true }).isVisible()) {
+    // Compact workspaces cover the composer; use the drawer's real close
+    // control before reaching the screenshot action underneath it.
+    if (await page.getByRole('dialog', { name: 'Workspace tools panel', exact: true }).isVisible()) {
+      await showWorkspace(page, false)
+    }
     await page.getByRole('button', { name: 'Take screenshot', exact: true }).click()
   }
   const toggle = page.getByRole('dialog', { name: 'Vision', exact: true }).getByRole('button', { name: 'Screenshot', exact: true })
@@ -28,6 +34,9 @@ export async function openVision(page: Page, capture = false): Promise<void> {
 /** Stage a synthetic PNG/JPEG through the existing Add files flow, without starting Vision. */
 export async function stageVisionImage(page: Page, fixture: VisionFixture): Promise<void> {
   await closeVision(page)
+  if (await page.getByRole('dialog', { name: 'Workspace tools panel', exact: true }).isVisible()) {
+    await showWorkspace(page, false)
+  }
   await page.evaluate((image) => {
     const control = (window as Window & { elysiaDesktopTest: {
       setSelectedVisionImage(value: unknown): void

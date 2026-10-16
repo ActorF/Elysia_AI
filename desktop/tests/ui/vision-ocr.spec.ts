@@ -5,6 +5,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { _electron as electron } from 'playwright'
 import { expect, test, type ElectronApplication, type Page } from '@playwright/test'
+import { conversationMode } from './conversation-helpers.ts'
 import { closeVision, openVision, reviewVisionImage } from './vision-helpers.ts'
 
 interface OcrTestControl {
@@ -124,16 +125,16 @@ test('cancellation and hiding the review keep the physical OCR lease until the n
   const ocr = page.getByRole('region', { name: 'Local OCR', exact: true })
   await ocr.getByRole('button', { name: 'Run OCR', exact: true }).click()
   await expect(page.getByRole('button', { name: 'Cancel analysis', exact: true })).toBeEnabled()
-  await expect(page.getByRole('combobox', { name: 'Conversation mode', includeHidden: true })).toBeDisabled()
+  await expect(conversationMode(page)).toBeDisabled()
   await expect(page.getByRole('combobox', { name: 'AI model', exact: true, includeHidden: true })).toBeDisabled()
   await page.getByRole('button', { name: 'Cancel analysis', exact: true }).click()
   await expect(page.getByRole('region', { name: 'Visual analysis', exact: true })).toContainText('Cancellation requested. Waiting')
   await expect(page.getByRole('button', { name: 'Remove selected image synthetic-ocr.png' })).toBeDisabled()
   await closeVision(page)
   await expect(ocr).toBeHidden()
-  await expect(page.getByRole('combobox', { name: 'Conversation mode', includeHidden: true })).toBeDisabled()
+  await expect(conversationMode(page)).toBeDisabled()
   await page.evaluate(() => { (window as OcrTestWindow).elysiaDesktopTest.releaseNextVisionOcr() })
-  await expect(page.getByRole('combobox', { name: 'Conversation mode', includeHidden: true })).toBeEnabled()
+  await expect(conversationMode(page)).toBeEnabled()
   await openVision(page)
   await expect(ocr.getByRole('alert')).toContainText('cancelled')
   await expect(ocr.getByRole('region', { name: 'OCR evidence', exact: true })).toHaveCount(0)
@@ -146,9 +147,9 @@ test('reconnection clears old evidence and settles a failed OCR callback before 
   await page.evaluate((next) => { (window as OcrTestWindow).elysiaDesktopTest.emitBackendEvent({ type: 'snapshot', snapshot: next }) }, snapshot('error', 2))
   await expect(page.locator('.connection-pill')).toContainText('Connection error')
   await page.evaluate((next) => { (window as OcrTestWindow).elysiaDesktopTest.emitBackendEvent({ type: 'snapshot', snapshot: next }) }, snapshot('ready', 3))
-  await expect(page.getByRole('combobox', { name: 'Conversation mode', includeHidden: true })).toBeDisabled()
+  await expect(conversationMode(page)).toBeDisabled()
   await page.evaluate(() => { (window as OcrTestWindow).elysiaDesktopTest.rejectNextVisionOcr(); (window as OcrTestWindow).elysiaDesktopTest.setVisionOcrDelay(false) })
-  await expect(page.getByRole('combobox', { name: 'Conversation mode', includeHidden: true })).toBeEnabled()
+  await expect(conversationMode(page)).toBeEnabled()
   const panel = page.getByRole('region', { name: 'Vision images', exact: true, includeHidden: true })
   await openVision(page)
   await panel.getByText('Image options', { exact: true }).click()
@@ -167,7 +168,7 @@ test('switching tool tabs retains an OCR lease and the active task shortcut rest
   await panel.getByRole('button', { name: 'Run OCR', exact: true }).click()
   await panel.getByRole('tab', { name: 'Saved images', exact: true }).click()
   await expect(panel.getByRole('region', { name: 'Visual analysis', exact: true })).toBeHidden()
-  await expect(page.getByRole('combobox', { name: 'Conversation mode', includeHidden: true })).toBeDisabled()
+  await expect(conversationMode(page)).toBeDisabled()
   await expect(panel.getByRole('combobox', { name: 'Vision image', exact: true })).toBeDisabled()
   await panel.getByRole('button', { name: 'View active task', exact: true }).click()
   await expect(panel.getByRole('tab', { name: 'Analyze', exact: true })).toHaveAttribute('aria-selected', 'true')
@@ -176,9 +177,9 @@ test('switching tool tabs retains an OCR lease and the active task shortcut rest
   await openVision(page)
   await panel.getByRole('button', { name: 'View active task', exact: true }).click()
   await expect(panel.getByRole('region', { name: 'Visual analysis', exact: true })).toContainText('Cancellation requested. Waiting')
-  await expect(page.getByRole('combobox', { name: 'Conversation mode', includeHidden: true })).toBeDisabled()
+  await expect(conversationMode(page)).toBeDisabled()
   await page.evaluate(() => { (window as OcrTestWindow).elysiaDesktopTest.releaseNextVisionOcr() })
-  await expect(page.getByRole('combobox', { name: 'Conversation mode', includeHidden: true })).toBeEnabled()
+  await expect(conversationMode(page)).toBeEnabled()
   await expect(panel.getByRole('button', { name: 'View active task', exact: true })).toHaveCount(0)
   expect(await page.evaluate(() => (window as OcrTestWindow).elysiaDesktopTest.getCalls().filter((call) => call.method === 'runVisionOcr'))).toHaveLength(1)
 })

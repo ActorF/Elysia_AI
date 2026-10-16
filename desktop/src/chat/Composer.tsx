@@ -29,6 +29,8 @@ import './Composer.css'
 interface ComposerProps {
   /** Remeasure drafts when the mounted conversation becomes visible again. */
   visible: boolean
+  /** Describe the current conversation without implying automatic tool execution. */
+  mode: 'chat' | 'work'
   attachmentAdding: boolean
   attachmentDisabled: boolean
   attachmentError: string | null
@@ -80,6 +82,7 @@ interface ComposerProps {
 /** Render the controlled Chat composer and translate user gestures to actions. */
 export function Composer({
   visible,
+  mode,
   attachmentAdding,
   attachmentDisabled,
   attachmentError,
@@ -148,8 +151,8 @@ export function Composer({
 
   useLayoutEffect(() => {
     const textarea = textareaRef.current
-    // Hidden Work conversations have no measurable scroll height. Wait until
-    // visible so a restored or exported multiline draft keeps its full height.
+    // A narrow task inspector temporarily makes this composer inert. Remeasure
+    // after it closes so an exported multiline draft keeps its full height.
     if (textarea === null || !visible) {
       return
     }
@@ -236,7 +239,7 @@ export function Composer({
           onKeyDown={handleKeyDown}
           placeholder={
             snapshot.status === 'ready'
-              ? 'Message Elysia…'
+              ? mode === 'work' ? '描述任务，或聊聊下一步…' : 'Message Elysia…'
               : 'Waiting for the local Backend…'
           }
           disabled={snapshot.status !== 'ready'}

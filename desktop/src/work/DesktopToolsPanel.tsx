@@ -98,8 +98,7 @@ export function DesktopToolsPanel({ api, chatId, workspacePath, ready, disabled,
             : 'Desktop action failed before completion.'
 
   return <section className="desktop-tools" aria-label="Desktop tools" aria-busy={pending}>
-    <div className="work-section-heading"><h3>Desktop actions</h3>
-      <p>Choose an action. Each approval applies only once.</p></div>
+    <p>Each approval applies to one action only.</p>
     <div className="desktop-tool-groups">
       <section className="desktop-tool-group" aria-label="Apps and windows">
         <h4>Apps &amp; windows</h4>

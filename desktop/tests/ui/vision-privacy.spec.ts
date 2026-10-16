@@ -5,6 +5,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { _electron as electron } from 'playwright'
 import { expect, test, type ElectronApplication, type Page } from '@playwright/test'
+import { conversationMode } from './conversation-helpers.ts'
 import { closeVision, openVision, reviewVisionImage } from './vision-helpers.ts'
 import type { ProjectState } from '../../electron/contracts.ts'
 
@@ -49,7 +50,7 @@ test.afterEach(async () => { await application?.close(); application = undefined
 test('an inherited analysis lease drains while disconnected without starting another provider', async () => {
   await page.evaluate(() => { (window as PrivacyWindow).elysiaDesktopTest.setExistingVisionAnalysisBusy(true) })
   await emit()
-  await expect(page.getByRole('combobox', { name: 'Conversation mode', includeHidden: true })).toBeDisabled()
+  await expect(conversationMode(page)).toBeDisabled()
   await expand()
   await page.getByRole('button', { name: 'Cancel analysis', exact: true }).click()
   await expect(page.getByRole('region', { name: 'Visual analysis', exact: true })).toContainText('Cancellation requested')
@@ -63,7 +64,7 @@ test('an inherited analysis lease drains while disconnected without starting ano
   await page.getByRole('button', { name: 'Retry', exact: true }).click()
   await expect.poll(async () => page.evaluate(() => (window as PrivacyWindow).elysiaDesktopTest.getCalls().filter((call) => call.method === 'restartBackend').length)).toBe(1)
   await emit('ready', 4)
-  await expect(page.getByRole('combobox', { name: 'Conversation mode', includeHidden: true })).toBeEnabled()
+  await expect(conversationMode(page)).toBeEnabled()
 })
 
 test('archiving the current Project revokes image reviews even when Chat and Project identifiers stay the same', async () => {

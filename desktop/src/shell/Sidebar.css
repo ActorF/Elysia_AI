@@ -1,0 +1,84 @@
+/* Present distinct Chat and Codex destinations in a compact, shared navigation rail. */
+
+.sidebar .brand-row {
+  min-height: 2.25rem;
+  padding-inline: 0.5rem;
+}
+
+.sidebar .brand {
+  gap: 0.625rem;
+  font-size: 1rem;
+}
+
+.sidebar .sidebar-quick-actions {
+  gap: 0.25rem;
+  margin: 1.125rem 0 0;
+}
+
+.sidebar .sidebar-new-chat,
+.sidebar .sidebar-quick-actions > .icon-button {
+  color: var(--color-text-secondary);
+  background: transparent;
+  border-color: transparent;
+  border-radius: var(--radius-md);
+}
+
+.sidebar .sidebar-new-chat {
+  gap: 0.75rem;
+  padding-inline: 0.75rem;
+}
+
+.sidebar .sidebar-new-chat:hover:not(:disabled),
+.sidebar .sidebar-quick-actions > .icon-button:hover {
+  color: var(--color-text-primary);
+  background: var(--color-bg-hover);
+}
+
+.sidebar .primary-nav {
+  gap: 0.25rem;
+  margin-top: 0.75rem;
+}
+
+.sidebar .nav-item {
+  min-height: 2.25rem;
+  gap: 0.75rem;
+}
+
+.sidebar .nav-mode-entry {
+  color: var(--color-text-primary);
+  font-weight: var(--font-weight-medium);
+}
+
+.sidebar .nav-mode-entry.active {
+  color: var(--color-text-link);
+  background: var(--color-bg-active);
+}
+
+.sidebar .nav-mode-entry:disabled {
+  cursor: default;
+  opacity: var(--opacity-disabled);
+}
+
+.sidebar .nav-library-entry {
+  margin-top: 0.5rem;
+}
+
+.sidebar .sidebar-divider {
+  margin-block: 0.875rem 0.25rem;
+}
+
+.sidebar .section-heading {
+  min-height: 2rem;
+}
+
+.sidebar .chat-list-item {
+  border-radius: var(--radius-md);
+}
+
+.sidebar .chat-open-button.chat-list-item {
+  padding: 0.625rem 0.75rem;
+}
+
+.sidebar .chat-item-title-line strong {
+  font-weight: var(--font-weight-regular);
+}

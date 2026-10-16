@@ -1,6 +1,6 @@
-/** Arrange draft and running plans as readable task lists with always-visible approvals and recovery notices. */
+/** Keep plans compact in the task sidebar while preserving full approval and recovery details. */
 
-.work-plan-panel { display: grid; gap: 1.25rem; width: 100%; min-width: 0; font-size: var(--font-size-sm); }
+.work-plan-panel { display: grid; gap: 1rem; width: 100%; min-width: 0; font-size: var(--font-size-sm); }
 .work-plan-panel .work-section-heading { margin-bottom: 0; }
 .work-plan-panel pre { min-width: 0; max-height: 12rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
 .work-plan-panel p, .work-plan-panel small { color: var(--color-text-secondary); }
@@ -8,28 +8,26 @@
 .work-plan-panel label:has(input[type="checkbox"]) { display: flex; align-items: flex-start; gap: .5rem; font-size: var(--font-size-xs); }
 .work-plan-panel input, .work-plan-panel textarea { width: 100%; min-width: 0; min-height: 2.5rem; padding: .65rem .75rem; box-sizing: border-box; color: var(--color-text-primary); background: var(--color-bg-surface); border: 1px solid var(--color-border); border-radius: .65rem; }
 .work-plan-panel input[type="checkbox"] { flex: 0 0 auto; min-height: 0; width: auto; accent-color: var(--color-accent); }
-.work-plan-draft, .work-plan-current { display: grid; gap: 1.25rem; }
+.work-plan-draft, .work-plan-current { display: grid; gap: 1rem; }
 .work-plan-current-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: .5rem; }
-.work-plan-current-heading h3 { font-size: 1rem; }
+.work-plan-current-heading h3 { font-size: var(--font-size-sm); }
 .work-plan-state { padding: .25rem .6rem; border-radius: 999px; color: var(--color-text-secondary); background: var(--color-bg-soft); font-size: var(--font-size-xs); }
 .work-plan-revision { display: grid; gap: .75rem; margin-top: .75rem; }
 .work-plan-revision textarea { min-height: 8rem; resize: vertical; }
-.work-plan-queue, .work-plan-steps { display: grid; gap: 0; min-width: 0; margin: 0; padding-left: 1.5rem; }
-.work-plan-queue > li, .work-plan-steps > li { min-width: 0; padding: 1rem 0 1rem .35rem; overflow-wrap: anywhere; border-bottom: 1px solid var(--color-border); }
+.work-plan-queue, .work-plan-steps { display: grid; gap: 0; min-width: 0; margin: 0; padding-left: 1.15rem; }
+.work-plan-queue > li, .work-plan-steps > li { min-width: 0; padding: .8rem 0 .8rem .2rem; overflow-wrap: anywhere; border-bottom: 1px solid var(--color-border); }
 .work-plan-queue > li::marker, .work-plan-steps > li::marker { color: var(--color-text-muted); font-size: var(--font-size-xs); }
 .work-plan-queue > li > details { margin: .5rem 0; }
 .work-plan-queue pre, .work-plan-visual-context pre { max-height: 8rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
 .work-plan-steps > li > span { display: inline-block; margin-left: .75rem; color: var(--color-text-muted); font-size: var(--font-size-xs); }
 .work-plan-actions { display: flex; flex-wrap: wrap; gap: .5rem; }
-.work-plan-visual-context, .work-plan-panel [data-work-recovery] { display: grid; gap: .75rem; padding: 1rem; background: var(--color-accent-soft); border-left: 2px solid var(--color-accent); border-radius: .75rem; }
+.work-plan-visual-context, .work-plan-panel [data-work-recovery] { display: grid; gap: .65rem; padding: .75rem; background: var(--color-accent-soft); border-left: 2px solid var(--color-accent); border-radius: .65rem; }
 .work-plan-visual-context > button { justify-self: start; }
-.work-plan-empty { display: grid; justify-items: center; gap: 1rem; padding: clamp(2rem, 7vh, 5rem) 1rem; text-align: center; }
-.work-plan-empty-symbol { display: grid; place-items: center; width: 3.5rem; height: 3.5rem; margin-bottom: .25rem; border-radius: 1.1rem; color: var(--color-accent); background: var(--color-accent-soft); }
-.work-plan-empty-symbol svg { width: 1.5rem; height: 1.5rem; }
-.work-panel .work-plan-empty h3 { font-size: 1.3rem; font-weight: 500; letter-spacing: -.025em; }
-.work-plan-empty p { max-width: 24rem; }
+.work-plan-empty { display: grid; justify-items: start; gap: .65rem; padding: .5rem 0; }
+.work-panel .work-plan-empty h3 { font-size: var(--font-size-sm); font-weight: 500; }
+.work-panel .work-plan-empty p { font-size: var(--font-size-xs); }
 .work-plan-empty small, .work-plan-save-note { font-size: .6875rem; color: var(--color-text-muted); }
-.work-plan-empty .tool-primary { padding-inline: 1.25rem; }
+.work-plan-empty .tool-primary { margin-top: .15rem; padding-inline: .85rem; }
 .work-plan-save-note { margin-top: .25rem; }
 .work-plan-panel [aria-label="Work job progress"] { display: grid; gap: .65rem; }
 .work-plan-panel progress { width: 100%; height: .35rem; accent-color: var(--color-accent); }

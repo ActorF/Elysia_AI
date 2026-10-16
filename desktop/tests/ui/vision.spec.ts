@@ -6,6 +6,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { _electron as electron } from 'playwright'
 import { expect, test, type ElectronApplication, type Page } from '@playwright/test'
+import { conversationMode, selectConversationMode, showWorkspace } from './conversation-helpers.ts'
 import { closeVision, openVision, reviewVisionImage, stageVisionImage } from './vision-helpers.ts'
 
 interface VisionTestControl {
@@ -46,7 +47,7 @@ test.beforeEach(async () => {
   page = await application.firstWindow()
   await page.waitForFunction(() => 'elysiaDesktopTest' in window && (window as VisionTestWindow).elysiaDesktopTest.getCalls().some((call) => call.method === 'onBackendEvent.subscribe'))
   await page.evaluate((next) => { (window as VisionTestWindow).elysiaDesktopTest.emitBackendEvent({ type: 'snapshot', snapshot: next }) }, snapshot())
-  await expect(page.getByRole('combobox', { name: 'Conversation mode', includeHidden: true })).toBeEnabled()
+  await expect(conversationMode(page)).toBeEnabled()
 })
 
 test.afterEach(async () => { await application?.close(); application = undefined })
@@ -75,7 +76,7 @@ test('Add files images enter Vision only on review, preserve picker cancellation
   await page.evaluate(() => { (window as VisionTestWindow).elysiaDesktopTest.cancelNextAttachmentPicker() })
   await page.getByRole('button', { name: 'Choose files', exact: true }).click()
   await expect(page.getByRole('button', { name: `Review image ${image.fileName}`, exact: true })).toBeEnabled()
-  await page.getByRole('combobox', { name: 'Conversation mode' }).selectOption('work')
+  await selectConversationMode(page, 'work')
   await openVision(page)
   await expect(card).toBeVisible()
   await panel.getByRole('button', { name: `Remove selected image ${image.fileName}` }).click()
@@ -115,12 +116,12 @@ test('hiding a pending attachment import retains all computer action locks until
     control.setWorkWorkspaceState({ kind: 'work.workspace', chatId: 'chat_vision_test', workspacePath: 'D:\\synthetic-workspace' })
     control.setVisionSelectionDelay(true)
   })
-  await page.getByRole('combobox', { name: 'Conversation mode' }).selectOption('work')
-  await page.getByRole('tablist', { name: 'Work views', exact: true }).getByRole('tab', { name: 'Conversation', exact: true }).click()
+  await selectConversationMode(page, 'work')
+  await showWorkspace(page, false)
   await page.getByRole('button', { name: `Review image ${image.fileName}`, exact: true }).click()
-  await expect(page.getByRole('combobox', { name: 'Conversation mode', includeHidden: true })).toBeDisabled()
+  await expect(conversationMode(page)).toBeDisabled()
   await closeVision(page)
-  await page.getByRole('tablist', { name: 'Work views', exact: true }).getByRole('tab', { name: 'Workspace', exact: true }).click()
+  await showWorkspace(page)
   await page.getByRole('tab', { name: 'Files', exact: true }).click()
   await expect(page.getByRole('button', { name: 'Change Workspace', exact: true })).toBeDisabled()
   await expect(page.getByRole('button', { name: 'Run tool', exact: true })).toBeDisabled()
@@ -129,7 +130,7 @@ test('hiding a pending attachment import retains all computer action locks until
   await expect(page.getByRole('region', { name: 'Vision images', exact: true })).toHaveAttribute('aria-busy', 'true')
   await closeVision(page)
   await page.evaluate(() => { (window as VisionTestWindow).elysiaDesktopTest.releaseNextVisionSelection() })
-  await expect(page.getByRole('combobox', { name: 'Conversation mode' })).toBeEnabled()
+  await expect(conversationMode(page)).toBeEnabled()
   await openVision(page)
   await expect(page.getByRole('article', { name: `Selected image ${image.fileName}`, exact: true })).toBeVisible()
   expect(await page.evaluate(() => (window as VisionTestWindow).elysiaDesktopTest.getCalls().filter((call) => call.method === 'importVisionAttachment'))).toHaveLength(1)
@@ -142,9 +143,9 @@ test('a disconnect revokes attachment preview publication but releases its physi
   await expect(page.locator('.connection-pill')).toContainText('Connection error')
   await expect(page.getByRole('dialog', { name: 'Vision', exact: true })).toBeHidden()
   await page.evaluate((next) => { (window as VisionTestWindow).elysiaDesktopTest.emitBackendEvent({ type: 'snapshot', snapshot: next }) }, snapshot('ready', 3))
-  await expect(page.getByRole('combobox', { name: 'Conversation mode' })).toBeDisabled()
+  await expect(conversationMode(page)).toBeDisabled()
   await page.evaluate(() => { (window as VisionTestWindow).elysiaDesktopTest.rejectNextVisionSelection() })
-  await expect(page.getByRole('combobox', { name: 'Conversation mode' })).toBeEnabled()
+  await expect(conversationMode(page)).toBeEnabled()
   await openVision(page)
   const panel = page.getByRole('region', { name: 'Vision images', exact: true })
   await expect(panel.getByRole('article')).toHaveCount(0)
@@ -159,8 +160,9 @@ test('a Work plan can pause and cancel its own active read while Vision cannot s
     control.setWorkWorkspaceState({ kind: 'work.workspace', chatId: 'chat_vision_test', workspacePath: 'D:\\synthetic-workspace' })
     control.setWorkPlanReadDelay(true)
   })
-  const mode = page.getByRole('combobox', { name: 'Conversation mode' })
-  await mode.selectOption('work')
+  const mode = conversationMode(page)
+  await selectConversationMode(page, 'work')
+  await showWorkspace(page)
   await page.getByRole('tab', { name: 'Files', exact: true }).click()
   await page.getByLabel('Work tool', { exact: true }).selectOption('read_text')
   await page.getByLabel('Relative path', { exact: true }).fill('notes.txt')
@@ -172,6 +174,7 @@ test('a Work plan can pause and cancel its own active read while Vision cannot s
   await openVision(page, true)
   await expect(page.getByRole('button', { name: 'List displays and windows', exact: true })).toBeDisabled()
   await closeVision(page)
+  await showWorkspace(page)
   await expect(plan.getByRole('button', { name: 'Pause plan', exact: true })).toBeEnabled()
   await expect(plan.getByRole('button', { name: 'Cancel plan', exact: true })).toBeEnabled()
   await plan.getByRole('button', { name: 'Pause plan', exact: true }).click()

@@ -5,6 +5,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { _electron as electron } from 'playwright'
 import { expect, test, type ElectronApplication, type Locator, type Page } from '@playwright/test'
+import { selectConversationMode, showWorkspace } from './conversation-helpers.ts'
 import { closeVision, reviewVisionImage } from './vision-helpers.ts'
 
 interface LayoutControl {
@@ -73,33 +74,58 @@ for (const variant of [
   { name: 'compact light', width: 760, height: 900, scheme: 'light' },
   { name: 'narrow dark', width: 390, height: 844, scheme: 'dark' },
 ] as const) {
-  test(`keeps Work tools separate from the retained conversation in ${variant.name}`, async () => {
+  test(`keeps the Codex conversation and persistent tools usable in ${variant.name}`, async () => {
     await page.setViewportSize({ width: variant.width, height: variant.height })
     await page.emulateMedia({ colorScheme: variant.scheme })
     const draft = page.getByLabel('Message Elysia', { exact: true })
     await draft.fill('An unfinished thought to keep while reviewing files.')
-    await page.getByRole('combobox', { name: 'Conversation mode', exact: true }).selectOption('work')
-    const views = page.getByRole('tablist', { name: 'Work views', exact: true })
-    const workspace = page.getByRole('region', { name: 'Work Workspace', exact: true })
-    await expect(views.getByRole('tab', { name: 'Workspace', exact: true })).toHaveAttribute('aria-selected', 'true')
+    await selectConversationMode(page, 'work')
+    const dock = page.locator('#codex-workspace')
+    const workspace = dock.getByRole('region', { name: 'Work Workspace', exact: true })
+    await expect(dock).toBeHidden()
+    await expect(draft).toBeVisible()
+    await showWorkspace(page)
     await expect(workspace).toBeVisible()
-    await expect(draft).toBeHidden()
     await expectContainedHorizontally(workspace)
-    const workspaceBounds = await workspace.boundingBox()
-    expect(workspaceBounds?.height).toBeGreaterThan(200)
+    await expectContainedHorizontally(dock)
     await expect(workspace.getByRole('tab', { name: 'Plan', exact: true })).toHaveAttribute('aria-selected', 'true')
     await expect(workspace.getByRole('button', { name: 'Run tool', exact: true })).toBeHidden()
+    if (variant.width > 1200) {
+      await expect(dock).toHaveAttribute('role', 'complementary')
+      await expect(draft).toBeVisible()
+      await expectContainedHorizontally(page.locator('.composer-card'))
+      const inputBounds = await draft.boundingBox()
+      const dockBounds = await dock.boundingBox()
+      expect(inputBounds!.x + inputBounds!.width).toBeLessThanOrEqual(dockBounds!.x)
+      expect(dockBounds!.width).toBeGreaterThanOrEqual(360)
+      expect(dockBounds!.width).toBeLessThanOrEqual(440)
+    } else {
+      await expect(dock).toHaveAttribute('role', 'dialog')
+      await expect(dock).toHaveAttribute('aria-modal', 'true')
+      await expect(dock).toBeFocused()
+      await expect(page.locator('.chat-dialogue')).toHaveAttribute('inert', '')
+      await page.keyboard.press('Shift+Tab')
+      expect(await dock.evaluate(element => element.contains(document.activeElement))).toBe(true)
+      await page.keyboard.press('Tab')
+      expect(await dock.evaluate(element => element.contains(document.activeElement))).toBe(true)
+      const sidebarHidden = await page.locator('#app-sidebar').getAttribute('aria-hidden')
+      await page.keyboard.press('Control+b')
+      await page.keyboard.press('Control+k')
+      await expect(page.locator('#app-sidebar')).toHaveAttribute('aria-hidden', sidebarHidden!)
+      await expect(page.locator('#chat-search')).toHaveCount(0)
+      expect(await dock.evaluate(element => element.contains(document.activeElement))).toBe(true)
+    }
     await workspace.getByRole('tab', { name: 'Files', exact: true }).click()
-
-    await views.getByRole('tab', { name: 'Conversation', exact: true }).click()
-    await expect(workspace).toBeHidden()
-    await expect(draft).toBeVisible()
+    await page.keyboard.press('Escape')
+    if (variant.width > 1200) await showWorkspace(page, false)
+    await expect(dock).toBeHidden()
+    await expect(page.getByRole('button', { name: 'Workspace', exact: true })).toBeFocused()
     await expect(draft).toHaveValue('An unfinished thought to keep while reviewing files.')
     await expectContainedHorizontally(page.locator('.composer-card'))
     await expect(page.getByRole('button', { name: 'Send message', exact: true })).toBeInViewport()
-
-    await views.getByRole('tab', { name: 'Workspace', exact: true }).click()
+    await showWorkspace(page)
     await expect(workspace.getByRole('tab', { name: 'Files', exact: true })).toHaveAttribute('aria-selected', 'true')
+    await showWorkspace(page, false)
     await expect(draft).toHaveValue('An unfinished thought to keep while reviewing files.')
     const calls = await page.evaluate(() => (window as LayoutWindow).elysiaDesktopTest.getCalls())
     expect(calls.filter((call) => ['sendMessage', 'runWorkTool', 'createWorkPlan'].includes(call.method))).toHaveLength(0)
@@ -137,3 +163,26 @@ for (const variant of [
     ].includes(call.method))).toHaveLength(0)
   })
 }
+
+test('uses a modal workspace when the character panel reduces the conversation canvas', async () => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  await selectConversationMode(page, 'work')
+  await page.getByRole('button', { name: 'Expand Elysia panel', exact: true }).click()
+  await expect(page.locator('#character-panel')).toBeVisible()
+  const dialogue = page.locator('.chat-dialogue')
+  await expect.poll(async () => (await dialogue.boundingBox())?.width ?? 0).toBeLessThan(880)
+  const before = await dialogue.boundingBox()
+  await showWorkspace(page)
+  const dock = page.locator('#codex-workspace')
+  await expect(dock).toHaveAttribute('role', 'dialog')
+  await expect(dock).toHaveAttribute('aria-modal', 'true')
+  await expect(dock).toBeFocused()
+  const after = await dialogue.boundingBox()
+  expect(Math.abs(after!.width - before!.width)).toBeLessThanOrEqual(1)
+  await expectContainedHorizontally(dock)
+  await page.keyboard.press('Escape')
+  await expect(dock).toBeHidden()
+  await expect(page.getByRole('button', { name: 'Workspace', exact: true })).toBeFocused()
+  await expect(page.locator('#character-panel')).toBeVisible()
+})

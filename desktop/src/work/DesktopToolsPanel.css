@@ -1,26 +1,22 @@
-/** Group native actions by purpose while keeping exact one-time reviews, outcomes, and selected targets in view. */
+/** Stack compact native tool groups for the task sidebar without obscuring one-time reviews or selected targets. */
 
-.desktop-tools { display: grid; gap: 1.25rem; min-width: 0; font-size: var(--font-size-sm); }
+.desktop-tools { display: grid; gap: 1rem; min-width: 0; font-size: var(--font-size-sm); }
 .desktop-tools .work-section-heading { margin-bottom: 0; }
 .desktop-tools h3, .desktop-tools p { margin: 0; }
 .desktop-tools > p { color: var(--color-text-secondary); font-size: var(--font-size-xs); }
-.desktop-tool-groups { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 2rem; }
-.desktop-tool-group { display: grid; align-content: start; min-width: 0; gap: 1rem; }
+.desktop-tool-groups { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1.25rem; }
+.desktop-tool-group { display: grid; align-content: start; min-width: 0; gap: .75rem; }
 .desktop-tool-group-heading { display: flex; align-items: center; flex-wrap: wrap; justify-content: space-between; gap: .5rem; }
 .desktop-tool-group > button { justify-self: start; }
 .desktop-tools-actions { display: flex; flex-wrap: wrap; gap: .5rem; }
 .desktop-tools-action-list { display: grid; gap: .6rem; }
-.desktop-tools-action-list > button { text-align: left; padding: .8rem 1rem; border-color: var(--color-border); border-radius: .7rem; }
+.desktop-tools-action-list > button { text-align: left; padding: .6rem .75rem; border-color: var(--color-border); border-radius: .6rem; }
 .desktop-tools button { white-space: normal; overflow-wrap: anywhere; }
 .desktop-tools pre { max-height: 14rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; margin: .4rem 0; font-size: var(--font-size-xs); }
 .desktop-clipboard-label { display: grid; gap: .5rem; }
 .desktop-tools textarea { width: 100%; min-width: 0; box-sizing: border-box; resize: vertical; padding: .75rem; color: var(--color-text-primary); background: var(--color-bg-surface); border: 1px solid var(--color-border); border-radius: .65rem; }
-.desktop-action-review { display: grid; gap: .75rem; padding: 1.1rem; background: var(--color-bg-soft); border-left: 2px solid var(--color-accent); border-radius: .75rem; }
+.desktop-action-review { display: grid; gap: .65rem; padding: .75rem; background: var(--color-bg-soft); border-left: 2px solid var(--color-accent); border-radius: .65rem; }
 .desktop-tools fieldset { min-width: 0; display: flex; flex-wrap: wrap; gap: .5rem; margin: 0; padding: 1rem; border: 1px solid var(--color-border); border-radius: .75rem; }
 .desktop-tools fieldset p { flex-basis: 100%; }
 .desktop-tools ol { padding-left: 1.5rem; }
 .desktop-tools-footer { display: flex; justify-content: space-between; flex-wrap: wrap; gap: .5rem; padding-top: 1rem; border-top: 1px solid var(--color-border); }
-
-@media (max-width: 760px) {
-  .desktop-tool-groups { grid-template-columns: minmax(0, 1fr); gap: 1.75rem; }
-}

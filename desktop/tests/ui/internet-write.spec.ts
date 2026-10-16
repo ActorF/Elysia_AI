@@ -5,6 +5,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { _electron as electron } from 'playwright'
 import { expect, test, type ElectronApplication, type Page } from '@playwright/test'
+import { conversationMode } from './conversation-helpers.ts'
 import type { InternetPolicyState } from '../../electron/internet-policy-protocol.ts'
 import type { GithubIssueWriteResult } from '../../electron/internet-write-protocol.ts'
 import { expectResearchNavigationLocked, openInternetResearch, returnToChat } from './internet-helpers.ts'
@@ -160,7 +161,7 @@ test('Create invokes an independent native confirmation once and consumes its re
   await expect(page.getByRole('region', { name: 'Internet research', exact: true })).toHaveAttribute('aria-busy', 'false')
   await expect(page.getByRole('button', { name: 'Create Issue…', exact: true })).toHaveCount(0)
   await returnToChat(page)
-  await expect(page.getByRole('combobox', { name: 'Conversation mode', exact: true })).toBeEnabled()
+  await expect(conversationMode(page)).toBeEnabled()
 })
 
 test('unknown outcomes warn about possible creation and do not retry automatically', async () => {
@@ -226,7 +227,7 @@ test('a same-task reconnect discards a late created result without releasing its
   expect(await page.evaluate(() => (window as WriteWindow).elysiaDesktopTest.getCalls()
     .filter(call => call.method === 'confirmGithubIssue'))).toHaveLength(1)
   await returnToChat(page)
-  await expect(page.getByRole('combobox', { name: 'Conversation mode', exact: true })).toBeEnabled()
+  await expect(conversationMode(page)).toBeEnabled()
 })
 
 for (const change of ['disconnect', 'Chat switch'] as const) test(`a late created result is discarded after ${change} while the physical lease drains`, async () => {
@@ -264,5 +265,5 @@ for (const change of ['disconnect', 'Chat switch'] as const) test(`a late create
   await expect(page.getByRole('textbox', { name: 'Issue title', exact: true })).toHaveValue('')
   await expect(page.getByRole('region', { name: 'GitHub Issue preview', exact: true })).toHaveCount(0)
   await returnToChat(page)
-  await expect(page.getByRole('combobox', { name: 'Conversation mode', exact: true })).toBeEnabled()
+  await expect(conversationMode(page)).toBeEnabled()
 })

@@ -5,6 +5,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { _electron as electron } from 'playwright'
 import { expect, test, type ElectronApplication, type Page } from '@playwright/test'
+import { conversationMode } from './conversation-helpers.ts'
 import type { InternetPolicyState } from '../../electron/internet-policy-protocol.ts'
 import { expectResearchNavigationLocked, openInternetResearch, returnToChat } from './internet-helpers.ts'
 
@@ -164,7 +165,7 @@ test('off and cancellation retain admission through disconnect until the physica
   await expect(page.getByRole('region', { name: 'Internet research', exact: true }).getByRole('article')).toHaveCount(0)
   expect(await page.evaluate(() => (window as ResearchWindow).elysiaDesktopTest.getCalls().filter(call => call.method === 'searchInternet'))).toHaveLength(1)
   await returnToChat(page)
-  await expect(page.getByRole('combobox', { name: 'Conversation mode', exact: true })).toBeEnabled()
+  await expect(conversationMode(page)).toBeEnabled()
 })
 
 test('an inherited physical lease can finish offline without a new provider call', async () => {
@@ -190,7 +191,7 @@ test('a delayed source export cannot append after the same Chat disconnects and 
   await expect(page.getByRole('region', { name: 'Internet research', exact: true })).toHaveAttribute('aria-busy', 'false')
   await expect(page.getByRole('region', { name: 'Reviewed Internet source', exact: true })).toHaveCount(0)
   await returnToChat(page)
-  await expect(page.getByRole('combobox', { name: 'Conversation mode', exact: true })).toBeEnabled()
+  await expect(conversationMode(page)).toBeEnabled()
   await expect(page.getByLabel('Message Elysia')).toHaveValue('Retain this draft.')
 })
 

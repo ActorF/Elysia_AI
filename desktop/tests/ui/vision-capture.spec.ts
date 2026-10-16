@@ -5,6 +5,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { _electron as electron } from 'playwright'
 import { expect, test, type ElectronApplication, type Page } from '@playwright/test'
+import { conversationMode } from './conversation-helpers.ts'
 import { closeVision, openVision } from './vision-helpers.ts'
 
 interface CaptureTestControl {
@@ -103,12 +104,12 @@ test('cancelling and collapsing capture retains all physical action locks until 
   await page.evaluate(() => { (window as CaptureTestWindow).elysiaDesktopTest.setVisionCaptureDelay(true) })
   const capture = page.getByRole('region', { name: 'Screenshot permission', exact: true })
   await capture.getByRole('button', { name: 'Capture this source once', exact: true }).click()
-  await expect(page.getByRole('combobox', { name: 'Conversation mode', includeHidden: true })).toBeDisabled()
+  await expect(conversationMode(page)).toBeDisabled()
   await expect(page.getByRole('combobox', { name: 'AI model', exact: true, includeHidden: true })).toBeDisabled()
   await expect(page.getByRole('button', { name: 'Choose files', exact: true, includeHidden: true })).toBeDisabled()
   await page.getByRole('button', { name: 'Screenshot', exact: true }).click()
   await expect(capture).toBeHidden()
-  await expect(page.getByRole('combobox', { name: 'Conversation mode', includeHidden: true })).toBeDisabled()
+  await expect(conversationMode(page)).toBeDisabled()
   await page.getByRole('region', { name: 'Vision images', exact: true, includeHidden: true }).getByRole('button', { name: 'View active task', exact: true }).click()
   await expect(capture.getByRole('button', { name: 'Cancel capture', exact: true })).toBeEnabled()
   await capture.getByRole('button', { name: 'Cancel capture', exact: true }).click()
@@ -116,9 +117,9 @@ test('cancelling and collapsing capture retains all physical action locks until 
   const images = page.getByRole('region', { name: 'Vision images', exact: true, includeHidden: true })
   await closeVision(page)
   await expect(capture).toBeHidden()
-  await expect(page.getByRole('combobox', { name: 'Conversation mode', includeHidden: true })).toBeDisabled()
+  await expect(conversationMode(page)).toBeDisabled()
   await page.evaluate(() => { (window as CaptureTestWindow).elysiaDesktopTest.releaseNextVisionCapture() })
-  await expect(page.getByRole('combobox', { name: 'Conversation mode', includeHidden: true })).toBeEnabled()
+  await expect(conversationMode(page)).toBeEnabled()
   await openVision(page, true)
   await expect(images.getByRole('article')).toHaveCount(0)
 })
@@ -130,9 +131,9 @@ test('reconnection rejects late capture publication and accepts a new reviewed s
   await page.evaluate((next) => { (window as CaptureTestWindow).elysiaDesktopTest.emitBackendEvent({ type: 'snapshot', snapshot: next }) }, snapshot('error', 2))
   await expect(page.locator('.connection-pill')).toContainText('Connection error')
   await page.evaluate((next) => { (window as CaptureTestWindow).elysiaDesktopTest.emitBackendEvent({ type: 'snapshot', snapshot: next }) }, snapshot('ready', 3))
-  await expect(page.getByRole('combobox', { name: 'Conversation mode', includeHidden: true })).toBeDisabled()
+  await expect(conversationMode(page)).toBeDisabled()
   await page.evaluate(() => { (window as CaptureTestWindow).elysiaDesktopTest.rejectNextVisionCapture(); (window as CaptureTestWindow).elysiaDesktopTest.setVisionCaptureDelay(false) })
-  await expect(page.getByRole('combobox', { name: 'Conversation mode', includeHidden: true })).toBeEnabled()
+  await expect(conversationMode(page)).toBeEnabled()
   const images = page.getByRole('region', { name: 'Vision images', exact: true, includeHidden: true })
   await openVision(page, true)
   await expect(images.getByRole('article')).toHaveCount(0)
@@ -150,7 +151,7 @@ test('adopts a capture from an earlier renderer and observes its physical drain 
     control.setExistingVisionCaptureBusy(true)
     control.emitBackendEvent({ type: 'snapshot', snapshot: next })
   }, snapshot('ready', 3))
-  await expect(page.getByRole('combobox', { name: 'Conversation mode', includeHidden: true })).toBeDisabled()
+  await expect(conversationMode(page)).toBeDisabled()
   const images = page.getByRole('region', { name: 'Vision images', exact: true, includeHidden: true })
   await openVision(page, true)
   const capture = page.getByRole('region', { name: 'Screenshot permission', exact: true })
@@ -164,5 +165,5 @@ test('adopts a capture from an earlier renderer and observes its physical drain 
   await expect(images).toHaveAttribute('aria-busy', 'false')
   expect(await page.evaluate(() => (window as CaptureTestWindow).elysiaDesktopTest.getCalls().filter((call) => ['listVisionCaptureSources', 'captureVision'].includes(call.method)))).toHaveLength(0)
   await page.evaluate((next) => { (window as CaptureTestWindow).elysiaDesktopTest.emitBackendEvent({ type: 'snapshot', snapshot: next }) }, snapshot('ready', 5))
-  await expect(page.getByRole('combobox', { name: 'Conversation mode', includeHidden: true })).toBeEnabled()
+  await expect(conversationMode(page)).toBeEnabled()
 })

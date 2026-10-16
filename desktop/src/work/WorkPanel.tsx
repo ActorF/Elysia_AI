@@ -50,7 +50,7 @@ interface WorkPanelProps {
   onAttention?(key: string): void
 }
 
-/** Present a plan-first workspace while preserving mounted tool owners and explicit directory access. */
+/** Present compact task tools while preserving mounted operation owners and explicit directory access. */
 export function WorkPanel({ api, chatId, ready, disabled, readAvailable, previewAvailable, confirmAvailable,
   planAvailable, auditAvailable, undoAvailable, visionContext = null, onClearVisionContext, onBusyChange, onAttention }: WorkPanelProps) {
   const [activeTab, setActiveTab] = useState<WorkspaceTab>(planAvailable ? 'plan' : 'files')
@@ -200,32 +200,28 @@ export function WorkPanel({ api, chatId, ready, disabled, readAvailable, preview
 
   return (
     <section id="work-workspace" className="tool-panel work-panel" aria-label="Work Workspace" aria-busy={busy}>
-      <header className="work-panel-heading">
-        <div><span className="work-panel-eyebrow">WORK</span><h2>Your workspace</h2>
-          <p>A clear plan. One step at a time.</p></div>
-        {busy && <span className="work-panel-status" role="status"><span className="tool-busy-dot" aria-hidden="true" />Working</span>}
-      </header>
       <div className="work-workspace-scope">
         <span className="work-workspace-symbol" aria-hidden="true"><Icon name="folder" /></span>
         <div className="work-workspace-copy">
-          <span className="work-workspace-label">Working folder</span>
+          <div className="work-workspace-label-row"><span className="work-workspace-label">Working folder</span>
+            {busy && <span className="work-panel-status" role="status"><span className="tool-busy-dot" aria-hidden="true" />{planLeased ? 'Plan active' : 'Working'}</span>}</div>
           <span className="work-workspace-path" data-workspace-path>
             {visibleScope?.workspacePath ?? (pending ? 'Loading Workspace…' : 'No Workspace selected')}
           </span>
           <small>
             {visibleScope?.workspacePath === null || visibleScope === null
-              ? 'Choose a folder before using file tools.'
+              ? 'Select a folder to enable file tools.'
               : 'File access is limited to this folder.'}
           </small>
         </div>
         <div className="work-workspace-actions">
           <button className={visibleScope?.workspacePath ? 'tool-quiet' : 'tool-primary'} type="button" disabled={controlsDisabled}
             aria-label={visibleScope?.workspacePath ? 'Change Workspace' : 'Choose Workspace'} onClick={() => { void changeScope(false) }}>
-            {visibleScope?.workspacePath ? 'Change' : 'Choose Workspace'}
+            {visibleScope?.workspacePath ? 'Change' : 'Choose'}
           </button>
           {visibleScope?.workspacePath && (
-            <button className="tool-quiet" type="button" aria-label="Clear Workspace" disabled={controlsDisabled} onClick={() => { void changeScope(true) }}>
-              Clear
+            <button className="tool-quiet work-workspace-clear" type="button" aria-label="Clear Workspace" title="Clear Workspace" disabled={controlsDisabled} onClick={() => { void changeScope(true) }}>
+              <Icon name="close" />
             </button>
           )}
         </div>

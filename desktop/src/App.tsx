@@ -1079,6 +1079,7 @@ function App() {
   const activeChatProjectIdRef = useRef<string | null>(null)
   const activeChatModeRef = useRef<'chat' | 'work'>('chat')
   const activeChatArchivedRef = useRef(false)
+  const lastChatByModeRef = useRef<Partial<Record<'chat' | 'work', string>>>({})
   const canonicalProjectStateRef = useRef<ProjectState | null>(null)
   const visionProjectAllowedRef = useRef(true)
   const activeViewRef = useRef<AppView>('chat')
@@ -1373,6 +1374,7 @@ function App() {
   const modeSelectionDisabled = workControlsDisabled
     || workOperationPending
     || !snapshot.capabilities.includes('chat.mode')
+  const sectionNavigationDisabled = workControlsDisabled || workOperationPending
   const updateWorkBusy = useCallback((busy: boolean): void => {
     workLeaseRef.current = busy
     const pending = busy || visionOperationPendingRef.current || internetOperationPendingRef.current
@@ -2823,6 +2825,9 @@ function App() {
     activeChatProjectIdRef.current = nextState.activeChat.projectId
     activeChatModeRef.current = nextState.activeChat.mode
     activeChatArchivedRef.current = nextState.activeChat.archived
+    if (!nextState.activeChat.archived) {
+      lastChatByModeRef.current[nextState.activeChat.mode] = nextState.activeChat.chatId
+    }
     setChatState(nextState)
     setMessages(presentChatMessages(nextState.activeChat))
   }, [])
@@ -5844,7 +5849,7 @@ function App() {
     function handleGlobalKeyDown(event: globalThis.KeyboardEvent): void {
       if (
         document.querySelector(
-          'dialog[open], #character-panel[aria-modal="true"]',
+          'dialog[open], #character-panel[aria-modal="true"], #codex-workspace[aria-modal="true"]',
         ) !== null
       ) {
         return
@@ -6897,14 +6902,35 @@ function App() {
     }
   }
 
-  function createChat(): Promise<void> {
+  function createChat(mode: 'chat' | 'work' = activeChatModeRef.current): Promise<void> {
     if (desktopApi === undefined) {
       return Promise.reject(new Error('Desktop API is unavailable.'))
     }
     return runSessionAction(
-      () => desktopApi.createChat({ title: 'New Chat', mode: 'chat' }),
+      () => desktopApi.createChat({ title: mode === 'work' ? 'New task' : 'New Chat', mode }),
       'Could not create the Chat.',
     )
+  }
+
+  async function navigateConversationMode(mode: 'chat' | 'work'): Promise<void> {
+    if (mode !== activeChatModeRef.current && sectionNavigationDisabled) {
+      throw new Error('Wait for the current action to finish before switching sections.')
+    }
+    if (!navigate('chat')) return
+    // Chat and Codex are separate collections. Navigation restores a canonical
+    // session of the selected kind instead of converting the current history.
+    // Only the explicit conversation-options control changes an existing mode.
+    if (chatState?.activeChat.mode !== mode || chatState.activeChat.archived) {
+      const candidates = (chatState?.chats ?? []).filter(chat => chat.mode === mode && !chat.archived)
+      const remembered = candidates.find(chat => chat.chatId === lastChatByModeRef.current[mode])
+      const destination = remembered ?? candidates.sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))[0]
+      if (destination !== undefined) await openChat(destination.chatId)
+      else await createChat(mode)
+    }
+    setSearchOpen(false)
+    setSearchQuery('')
+    setShowArchived(false)
+    if (activeViewRef.current === 'chat') focusChatComposer()
   }
 
   async function openChat(chatId: string): Promise<void> {
@@ -8324,12 +8350,13 @@ function App() {
         attachmentDisabled={sessionUiPending || activeChatId === undefined}
         workspaceAttentionKey={workspaceAttentionKey}
         conversationAttentionRevision={conversationAttentionRevision}
+        workBusy={workLeaseRef.current}
         workPanel={activeChatId === undefined ? undefined : (
           <WorkPanel
             key={activeChatId}
             api={desktopApi}
             chatId={activeChatId}
-            ready={snapshot.status === 'ready'
+            ready={chatState?.activeChat.mode === 'work' && snapshot.status === 'ready'
               && snapshot.chatId === activeChatId
               && snapshot.capabilities.includes('work.workspace')}
             disabled={workControlsDisabled || visionOperationPending || internetOperationPending}
@@ -8526,6 +8553,8 @@ function App() {
           <Sidebar
           activeChatId={chatState?.activeChat.chatId}
           activeView={activeView}
+          activeMode={chatState?.activeChat.mode ?? 'chat'}
+          modeNavigationDisabled={sectionNavigationDisabled}
           busyChatId={generationBusy ? inFlightTurn?.chatId : undefined}
           chats={chatState?.chats ?? []}
           modal={compactShell}
@@ -8544,6 +8573,7 @@ function App() {
           onCreate={createChat}
           onDelete={deleteChat}
           onNavigate={navigate}
+          onNavigateMode={navigateConversationMode}
           onOpen={openChat}
           onPin={pinChat}
           onRename={renameChat}
