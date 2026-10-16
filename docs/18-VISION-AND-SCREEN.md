@@ -1,92 +1,98 @@
 # 图片与屏幕理解
 
-Stage 11 在 Chat 和 Work 中使用 Vision 弹窗处理已添加的图片或单次截图。图片统一从输入栏的 Add Files 添加；点击图片附件的复查按钮可打开预览与分析。Add Files 右侧的截图图标直接打开截图弹窗，不改变聊天框位置。关闭弹窗只隐藏界面，正在处理的原生任务仍保留取消入口和操作占用，直到实际结束。图片导入不会自动发送 Chat 消息、加载模型或执行 Work 动作。
+从输入栏 **Add Files** 添加图片，点击附件的 **Review image** 打开 Vision；右侧截图图标打开单次截图弹窗。导入不会发送消息、加载模型或执行 Work 动作。关闭弹窗只隐藏界面，原生任务实际结束前仍保留取消入口和操作占用。
 
 ## 图片输入
 
-通过 **Add Files** 选择 PNG 或 JPEG 后，点击对应图片附件的 **Review image**。不再提供重复的 Choose image 文件选择入口。Backend 从当前 Chat 所有的已验证附件中读取有界快照，经内部字节协议交给 Main；Renderer 只提供附件 ID，不能提供路径。Main 校验真实格式和画布尺寸后才交给 Electron 解码，再保存去除元数据的 PNG 像素。JPEG 的 EXIF 方向会应用到像素；路径、EXIF、原生句柄与原始文件不会交给界面。透明 PNG 的必要透明度信息保留。动画 PNG、带 EXIF 的 PNG 和不支持的像素格式明确拒绝。
+支持 PNG、JPEG。Backend 从当前 Chat 的已验证附件读取有界快照，经内部字节协议交给 Main；Renderer 只提交附件 ID。Main 先校验格式和画布，再解码为去除元数据的 PNG。JPEG 的 EXIF 方向由导入层应用到像素，保留 PNG 必要透明度；动画 PNG、带 EXIF 的 PNG 及不支持的像素格式拒绝。
 
-| 边界 | 上限 |
+| 项目 | 上限 |
 | --- | --- |
-| 单次读取的源文件 | 8 MiB |
-| 图片尺寸 | 每边 8192 像素，总计 16 × 1024 × 1024 像素 |
-| 规范化后的单张 PNG | 16 MiB |
-| 当前集合 | 8 张图片，规范化像素总计 64 MiB |
-| 界面预览 | 每边 512 像素，PNG 最多 1 MiB |
+| 源文件 | 8 MiB |
+| 画布 | 每边 8192 像素，总计 16 × 1024 × 1024 像素 |
+| 规范化 PNG | 单张 16 MiB；集合最多 8 张、64 MiB |
+| 界面预览 | 每边 512 像素、PNG 最多 1 MiB |
 
-文件读取拒绝链接、硬链接和读取期间的文件身份变化。名称仅用于显示，不能选择路径。导入、解码和发布结果都绑定规范的当前 Chat、Project 和模式；迟到的旧范围结果会丢弃。原生选择器和读取回调真正结束前，仍占用与 Chat、Work、语音及数据迁移共用的操作容量。
+读取拒绝链接、硬链接及文件身份变化。路径、EXIF、原生句柄与原文件不进入界面。导入、解码和结果发布绑定当前 Chat、Project 和模式；旧范围结果丢弃，原生回调结束前仍占用与 Chat、Work、语音和数据迁移共用的容量。
 
-Vision 默认仅保留当前会话的内存副本；Add Files 导入的原附件仍由既有附件存储管理。切换 Chat 或 Project、连接失效、归档或退出会撤销当前 Vision 集合。**Remove image** 和 **Clear selected images** 删除 Vision 内存副本，不删除用户选择的原文件。移除 Vision 副本不会移除 Add Files 附件；需要时可从附件重新复查。绘图图库仍沿用原有流程。
+Vision 默认只保留内存副本，切换 Chat/Project、连接失效、归档或退出即撤销。**Remove image** / **Clear selected images** 不删除原文件或 Add Files 附件；附件可再次复查。绘图图库独立管理。
 
-Electron 的图片 API 本身不应用 EXIF 方向，因此方向校正属于本项目导入层的职责，而不是依赖解码器隐式处理。支持范围参见 [Electron nativeImage 文档](https://www.electronjs.org/docs/latest/api/native-image)。
+## OCR 与视觉模型
 
-## 本地 OCR
+### 本地 OCR
 
-选择图片后，点击 **Check OCR** 检查现有 Tesseract 与语言数据，再选择英文、简体中文加英文或繁体中文加英文进行识别。检查和识别都由用户触发，不会安装引擎或下载语言包。Windows 先检查 `Program Files/Tesseract-OCR/tesseract.exe`，仅在该文件不存在时检查 `%LOCALAPPDATA%/Programs/Tesseract-OCR/tesseract.exe`，支持无需管理员权限的当前用户安装。自定义安装可在启动应用前设置 `ELYSIA_TESSERACT_PATH`；显式指定的安装不可用时不会改用其他引擎，也不搜索 PATH。中文选项需要安装目录 `tessdata` 中对应的 `chi_sim.traineddata` 或 `chi_tra.traineddata` 与 `eng.traineddata`，缺少引擎和缺少语言包分别显示。
+选择图片后点击 **Check OCR**，再选英文、简体中文加英文或繁体中文加英文。检查和识别都需明确触发，不安装引擎或下载语言数据。
 
-识别只把当前已审核图片的规范化 PNG 通过标准输入交给固定本地程序，不使用 Shell，也不产生临时图片。返回结果保留文字、像素位置和置信度；结果作为普通文本显示，图片内的命令和链接不能成为操作授权。TSV 输出上限为 1 MiB、文字 32 KiB、单词框 2048 个；越界坐标、异常置信度或超限输出会拒绝发布。进程超过 20 秒会请求停止。
+Windows 依次检查 `Program Files/Tesseract-OCR/tesseract.exe`，仅在不存在时检查 `%LOCALAPPDATA%/Programs/Tesseract-OCR/tesseract.exe`。自定义安装可在启动前设置 `ELYSIA_TESSERACT_PATH`；指定失败不回退，也不搜索 PATH。安装目录的 `tessdata` 需要 `eng.traineddata`，中文另需 `chi_sim.traineddata` 或 `chi_tra.traineddata`。
 
-**Cancel analysis** 会立即请求取消，但实际进程关闭前仍占用操作容量。切换分析对象、删除图片或会话失效会撤销相关结果；迟到的旧结果不会覆盖新会话。OCR 结果仅在内存中保留，不会自动加入聊天或 Work 计划。Tesseract 的输出约定参见[官方命令行文档](https://tesseract-ocr.github.io/tessdoc/Command-Line-Usage.html)。
+规范化 PNG 通过标准输入交给固定程序，不用 Shell、不写临时图片。结果保留文字、像素位置与置信度；TSV 最多 1 MiB、文字 32 KiB、单词框 2048 个。异常坐标、置信度或超限输出拒绝，20 秒后请求停止。文字中的命令和链接只是数据。
 
-## 本地视觉模型
+**Cancel analysis** 请求取消，进程实际结束后才释放容量。换图、删除或会话失效会撤销结果；OCR 不会自动加入 Chat 或 Work。
 
-**Check vision models** 只检查本机 Ollama 中已经安装的模型及其图片能力，不下载模型或加载权重。选择模型、图片并输入问题后，**Ask about image** 才提交图片。支持图片与文本补全、且允许关闭思考输出的模型才会列入选项；Ollama 云端模型和转发元数据会拒绝。检查约定参见 [Ollama 模型信息 API](https://docs.ollama.com/api-reference/show-model-details) 与[图片输入文档](https://docs.ollama.com/capabilities/vision)。
+### 本地视觉模型
 
-Main 保留原图身份，另外生成最长边不超过 2048 像素、最多 8 MiB 的 PNG 供模型使用。问题最多 4 KiB，回答最多 16 KiB，生成预算为 1024 token；达到生成预算时会标记回答不完整。结果明确标为模型推测，保留提问和模型名称，不与 OCR 文字混为一谈。
+**Check vision models** 只检查 Ollama 已安装模型的图片能力，不下载或加载权重。只有支持图片与文本补全、允许关闭思考输出且无云端/转发元数据的模型可选。选择图片、模型和问题后，**Ask about image** 才提交。
 
-传输读取 Settings 中当前生效的 Ollama Origin，只接受 HTTP 本机回环地址及其端口；远程或不支持的 Origin 会显示不可用，不会改用另一个地址。客户端不使用系统代理、不跟随重定向，也不把图片发送到远程接口。请求最多 120 秒，取消后等待当前客户端连接关闭再释放容量。模型回答不会触发工具；图片中的命令或链接仍是待审核内容。开发验收用内存生成的红蓝方块 PNG 调用本机 `qwen3.5:9b`，正确回答了两种颜色和左右位置，没有读取用户图片或屏幕。
+| 输入/输出 | 限制 |
+| --- | --- |
+| 模型用 PNG | 最长边 2048 像素、8 MiB；Main 保留原图身份 |
+| 问题 | 4 KiB |
+| 回答 | 16 KiB、1024 token；预算耗尽标记不完整 |
+| 请求 | 最多 120 秒 |
 
-## 单次截图授权
+结果明确标为模型推测，并保留问题和模型名。连接使用 Settings 当前 Ollama Origin，只接受 HTTP 本机回环及端口，拒绝代理、重定向和远程地址，不另选替代地址。取消后等客户端连接关闭才释放容量；模型回答不能触发工具。
 
-**List displays and windows** 只枚举来源名称和显示器尺寸，不读取缩略图、图标或窗口像素。选择一个显示器或窗口后，点击 **Review capture scope** 查看此次范围，再点击 **Capture this source once** 才允许捕获。每份选择与批准最多有效 60 秒；拒绝、取消、使用一次或所属会话改变后即失效，不能成为持续读屏权限。
+## 单次截图
 
-显示器支持完整画面或按左侧、顶部、宽度、高度百分比指定区域。区域捕获会暂时读取所选显示器的一帧，再向内取整裁剪，保留区域内像素并丢弃其余像素；确认面板会明确说明这一过程。窗口选项只捕获所选窗口。来源已消失、名称或显示器布局改变时要求重新选择，不会退回完整桌面或另一个窗口。
+1. **List displays and windows** 只列名称和显示器尺寸，不取缩略图、图标或像素。
+2. 选择来源，点击 **Review capture scope** 查看范围。
+3. **Capture this source once** 才授权一次捕获。选择/批准最多 60 秒，拒绝、取消、使用或范围变化即失效。
 
-捕获在独立临时 Session 的固定本地页面中完成，只有该任务的单次视频许可，没有音频、摄像头、网络或主界面 API。取得一帧后停止所有媒体轨道，销毁辅助窗口，再将有界 PNG 加入当前图片集合；之后仍须明确点击 OCR 或图片问答。超时或取消立即撤销许可，原生资源真正关闭前保留操作锁。应用不会定时截图，也不会通过 Work 建议自动触发截图。
+显示器可选完整画面或百分比区域。区域捕获会暂取所选显示器一帧，再向内取整裁剪并丢弃范围外像素；确认面板说明此过程。窗口选项只捕获所选窗口。来源消失、名称或显示器布局变化时必须重新选择，不回退到其他来源。
 
-界面重载后可通过只含忙碌布尔值的原生状态查询继续显示或取消捕获；Backend 断开也能观察资源是否已释放，不因此重新枚举窗口或读屏。真实捕获验收使用 Windows 上由测试创建的唯一合成窗口，没有选择实际桌面或用户窗口；Linux 运行授权、生命周期和裁剪的替身测试，不将其记为真实捕获通过。
+捕获使用独立临时 Session 的固定本地页面，仅有此次视频许可，没有音频、摄像头、网络或主界面 API。取得一帧后停止轨道、销毁辅助窗口，再把 PNG 加入集合；OCR/问答仍需另行触发。取消和超时撤销许可，资源关闭前保留锁。应用不定时截图，Work 建议也不能触发截图。
 
-## 视觉上下文审核
+界面重载或 Backend 断开后，可用仅含忙碌布尔值的查询观察/取消现有任务，不因此重新枚举窗口或读屏。
 
-在选中的图片下填写 **Your description**，点击 **Review context**，分别查看图片来源、OCR 提取、模型推测和自己的说明。审核只读取 Main 已经持有的当前图片与分析结果，不自动运行 OCR、模型或截图。没有分析结果时明确显示缺少的部分；图片来源只标识所选像素，不能冒充对场景的判断。
+## 审核后用于 Chat 或 Work
 
-Main 按当前 Chat、Project、图片 ID 和像素摘要生成五分钟有效的内存审核记录，最多保留八份。界面只提交图片 ID 与最多 4 KiB 的用户说明，不能自行注入“已审核”的 OCR、模型回答或批准字段。OCR 与模型正文各最多保留 8 KiB，按完整 Unicode 字符截取并标明缩短；模型原先因生成预算被截断的标记也保留。
+填写 **Your description** 后点击 **Review context**，分别查看来源、OCR、模型推测和用户说明。审核只用 Main 已持有的内容，不触发新分析；缺失部分明确显示。
 
-重新审核同一图片会替代旧记录。图片移除、所属 Chat/Project 变化、连接失效或退出会撤销相关记录，修改说明也会清除界面上的旧审核。后续使用必须重新核对仍有效的原生记录与原图身份；图片中的命令、链接和权限声明始终属于待审核数据。
+审核记录绑定 Chat、Project、图片 ID 和像素摘要，内存最多八份、五分钟有效。用户说明最多 4 KiB；OCR 和模型正文各最多 8 KiB，按完整 Unicode 字符缩短并保留截断标记。Renderer 不能注入审核正文或批准字段。重审、移除图片、范围变化、断连或退出撤销旧记录；修改说明清除旧界面审核。
 
-## 用于 Chat 与 Work
+| 操作 | 效果 |
+| --- | --- |
+| **Add to Chat draft** | 将分开的来源、OCR、模型推测和说明追加到现有草稿；不附像素、路径、ID 或摘要，不自动发送 |
+| **Use in Work plan** | 为下一计划选择审核 ID；Main 重验后传递有界文本，实际步骤、Start 和写入批准仍由用户决定 |
 
-审核后，**Add to Chat draft** 将带来源说明的文本追加到现有草稿，保留用户已写的内容，不自动发送。内容包含分开的来源、OCR、模型推测与用户说明，不附加原始像素、原生路径、图片 ID 或摘要。加入草稿后沿用普通 Chat 草稿与消息的保存规则；用户明确 Send 后才通过当前 Chat 模型连接处理。
+进入草稿后的文字沿用 Chat 保存规则。Work 视觉证据只留在当前进程；修改未完成步骤可继续使用同一份证据，但检查点、审计和 Chat 历史不保存它，重启不恢复图片或旧批准。图片中的权限声明始终不能成为操作授权。
 
-切换到 Work 后，**Use in Work plan** 只选择供下一份计划参考的审核记录，不自动建立步骤或开始任务。界面向 Main 提交不透明记录 ID，Main 重新核对原图、所属范围与有效期，再交给 Backend 有界的文本证据。Work 建议使用当前模型连接，回复不能增加工具调用或批准操作；实际步骤仍由用户明确加入计划，开始与每次写入批准沿用原有流程。
+## 可选保存与清除
 
-Work 的视觉证据只保存在当前进程内，修改未完成步骤时可保留同一份已接纳证据；检查点、审计与 Chat 历史不保存它，重启恢复时不会重新获取图片或恢复视觉证据。恢复的写入仍须重新审阅。验证覆盖了包含“批准删除”文字的合成 OCR：计划保持等待批准，原文件和范围外的测试文件未改变，恢复后没有继承旧批准或视觉正文。
+**Allow saving selected images** 默认关闭，重载、切换 Chat/Project 或断连后重新关闭。开启只启用 **Save selected image**；每次明确保存才把规范化 PNG 和安全来源标签写入 `workspace/vision/history`，不保存路径、OCR、回答或 Chat 文本。
 
-## 可选保存与历史清除
+图片未加密，保存前应检查像素中的敏感内容。历史最多 32 份、128 MiB，包含记录头与中断临时副本；超限拒绝新保存，不自动淘汰。关闭开关不删除已有副本。
 
-**Allow saving selected images** 默认关闭，重载界面、切换 Chat/Project 或连接失效后重新关闭。打开开关只启用 **Save selected image**；选择图片、截图、识别或问答都不会自动保存。每次明确点击保存，只把当前图片的规范化 PNG 和安全来源标签写入当前应用数据目录的 `workspace/vision/history`，不保存原始路径、OCR、模型回答或 Chat 文本。
+**Load saved images** 按当前 Chat/Project 列表；**Restore to selected images** 重验文件、摘要和 PNG 并分配新会话 ID，不恢复审核、分析、截图批准或发送消息。
 
-保存的图片未加密，可能包含密码、个人资料或其他敏感内容；应在保存前检查所选像素。整个历史最多 32 份、128 MiB（包含记录头与中断写入的临时副本），超限拒绝新保存，不自动淘汰旧记录。界面上的保存开关不写入长期偏好，关闭它不会删除已有副本。
+单份删除、**Clear this Chat’s saved images** 和 **Clear all saved Vision images** 各有独立确认。全局清除含其他或已删除 Chat 的副本；损坏记录仍可按已验证文件名清除。链接、未知文件和目录拒绝操作，不递归删除外部内容。删除历史不删除原文件、内存图片、Chat 消息或绘图图库。
 
-**Load saved images** 按当前 Chat 和 Project 显示历史。点击单份记录的 **Restore to selected images** 后，Main 重新验证文件、摘要和 PNG，再给它新的会话图片 ID；不会恢复旧审核、OCR、模型结果或截图批准，也不会自动发送消息。
+历史随应用数据目录迁移，容量计入 Other，不属于临时音频/缓存/日志清理。删除只作用于当前根；Settings 列出的迁移恢复副本需另行检查。Chat JSON 导出不包含 Vision 图片，要保留它们应备份应用数据目录。
 
-单份删除、**Clear this Chat’s saved images** 和 **Clear all saved Vision images** 都有独立确认。全局清除包含其他或已删除 Chat 遗留的 Vision 副本；即使某份记录损坏，也可以清除已验证的历史文件名和中断写入临时文件。链接、未知文件和目录仍拒绝操作，不递归删除外部内容。删除历史不会删除原文件、当前选中的内存图片、Chat 消息或绘图图库。
+## 验证
 
-历史随 Settings 的应用数据目录迁移，容量计入 Other，不属于 Audio/Cache/Log 的临时清理。上述删除只操作当前生效的数据目录；迁移失败或校验变化而保留的恢复目录会在 Settings 单独列出，需要按该提示另行检查。Chat JSON 恢复导出只导出原有允许的数据，不包含这些 Vision 图片；需要保留图片历史时应备份应用数据目录。
+自动化覆盖格式/EXIF、坐标、模型连接、一次性截图、过期审核、旧会话结果、Work 批准、历史 CRUD 和迁移。真实 Windows 截图只捕获测试创建的合成窗口；Linux 替身测试不算真实捕获验收。
 
-## 验证与本机依赖
+本机 OCR 验收使用 [Tesseract 5.5.3](https://github.com/tesseract-ocr/tesseract/releases/tag/5.5.3)、[tessdata_best 英文/简繁数据](https://github.com/tesseract-ocr/tessdata_best/tree/e12c65a915945e4c28e237a9b52bc4a8f39a0cec)，以及 Windows Arial、Microsoft YaHei、Microsoft JhengHei 字体。语言数据经过来源/摘要核对但不提交 Git；实际精度仍取决于清晰度、字体和排版。
 
-自动化检查覆盖图片格式与尺寸、EXIF 方向、OCR 坐标与文本边界、本机模型连接、一次性截图批准、旧会话结果丢弃、审核过期、Work 写入批准、图片保存与删除，以及数据迁移。界面检查覆盖默认关闭、不自动发送或执行、断线与归档后的撤销、延迟原生操作实际结束前的忙碌状态。真实 Windows 截图测试只捕获测试自己创建的合成窗口，并检查源码与 ASAR 包内辅助页。
-
-开发验收已使用本机 Ollama 视觉模型完成合成图片问答。2026-10-14 补齐了当前用户目录的 [Tesseract 5.5.3 Windows 安装](https://github.com/tesseract-ocr/tesseract/releases/tag/5.5.3)（引擎报告 `v5.5.3.20260724`），以及官方 [tessdata_best 英文、简体、繁体数据](https://github.com/tesseract-ocr/tessdata_best/tree/e12c65a915945e4c28e237a9b52bc4a8f39a0cec)。安装包与语言文件经过来源及摘要核对，运行时文件不提交 Git。普通 `tessdata_fast` 数据在本次繁体样例上误识别了部分笔画，验收使用上述 `best` 数据；这属于本机依赖选择，应用不会自行下载或替换模型。
-
-真实 OCR 验收通过产品的图片规范化、图片所有权、分析控制器、Tesseract 进程及严格结果协议，识别英文 `Local OCR 2026` / `English text recognition`、简体 `简体中文识别测试` 和繁体 `繁體中文識別測試`。验证逐字内容（忽略分词空白）、原图像素坐标、文字框内实际笔画、置信度范围和原生进程结束后的空闲状态。测试只在内存中渲染合成文字，不读用户图片或屏幕。识别精度仍受实际图片清晰度、字体和排版影响。
-
-安装上述引擎与语言数据后，在 `desktop` 目录运行以下 Windows 原生验收；需先运行 `npm run electron:build`，并具备 Windows 的 Arial、Microsoft YaHei、Microsoft JhengHei 字体：
+在 `desktop` 执行：
 
 ```powershell
+npm run electron:build
 $env:ELYSIA_OCR_NATIVE_TEST = '1'
 node --test tests/vision-ocr-native.test.mjs
 ```
 
-验收显式启用后，缺引擎、语言数据、字体或识别结果不符都会失败，不会静默跳过。普通协议检查无需安装 OCR。验证新打包的代码时，先运行 `npm run package`，再设置 `$env:ELYSIA_OCR_PACKAGE_ASAR = (Resolve-Path 'out/win-unpacked/resources/app.asar').Path` 并重跑同一命令；本次开发输出与新构建的 ASAR 已分别通过三种语言及坐标检查。
+显式启用后，缺引擎、语言、字体或结果不符会失败，不静默跳过。普通协议测试无需 OCR。包内验收先 `npm run package`，再设置 `$env:ELYSIA_OCR_PACKAGE_ASAR = (Resolve-Path 'out/win-unpacked/resources/app.asar').Path` 并重跑同一测试。
+
+接口参考：[Electron nativeImage](https://www.electronjs.org/docs/latest/api/native-image)、[Tesseract CLI](https://tesseract-ocr.github.io/tessdoc/Command-Line-Usage.html)、[Ollama 模型信息](https://docs.ollama.com/api-reference/show-model-details)与[图片输入](https://docs.ollama.com/capabilities/vision)。

@@ -1,176 +1,97 @@
-# Voice Performance, Safety, and Rights Acceptance
+# Voice performance and acceptance
 
-> Acceptance date: 2026-09-23
-> Scope: local Ollama + managed GPT-SoVITS + Faster-Whisper voice pipeline
-> Result: accepted for the current local-first development baseline, subject to the limitations below
+Recorded on **2026-09-23** for the local Ollama, managed GPT-SoVITS, and Faster-Whisper pipeline. These are historical measurements on one machine, not current regression counts or a latency guarantee.
 
-## 1. What was accepted
+## Resource policy
 
-This acceptance closes the performance, cleanup, and voice-asset distribution work for the current Voice implementation. It establishes four concrete facts:
+Ollama and GPT-SoVITS can overlap on the target GPU; Faster-Whisper runs afterward on CPU under Backend exclusion.
 
-1. the configured Ollama model and managed GPT-SoVITS worker can run together on the target GPU while Faster-Whisper runs on CPU;
-2. repeated STT, speech-queue, and Renderer Voice turns release their owned jobs, buffers, credits, callbacks, and worker threads;
-3. the selected Elysia Voice Profile has recorded provenance but still lacks adequate redistribution permission, so it remains local-evaluation-only; and
-4. Git, Electron Builder configuration, CI packaging, and produced package trees have automated checks that reject local weights, reference audio, caches, runtime data, and packaging escape routes.
+- `TRANSCRIPTION_DEVICE=cpu` reserves GPU capacity for generation and speech. Select `auto` or `cuda` only after measuring the full pipeline.
+- Keep one managed GPT-SoVITS worker for the Backend lifetime to avoid repeated cold starts and process races.
+- Closing Elysia's HTTP client does not unload shared Ollama models, which other local clients may use.
+- Cancellation releases logical ownership immediately. Native work may retain physical capacity until its bounded call returns.
 
-This is an engineering acceptance, not a legal opinion or a promise that every computer will have the same latency.
+Managed speech reports only `starting`, `ready`, or `unavailable`; unavailable reasons are `setup_unavailable` or `runtime_failed`. Paths and worker diagnostics remain private. **Read aloud** checks readiness before reserving a turn; Voice Call keeps text replies available when speech is unavailable.
 
-## 2. Resource policy
+Voice Profile and emotion form a restart-bound pair. Saving a new pair validates the exact catalog entry without starting a worker. A mismatch fails before the settings revision changes.
 
-The supported topology is deliberately asymmetric:
+## Reproduce the benchmark
 
-```text
-Ollama on GPU ───────┐
-                    ├─ overlap during reply generation and speech synthesis
-GPT-SoVITS on GPU ──┘
+Prepare Windows with `nvidia-smi.exe`, the local Ollama model, a complete Faster-Whisper model, and a reviewed Voice Profile with matching GPT-SoVITS Runtime, weights, and reference audio. Local evaluation requires explicit `GPT_SOVITS_ALLOW_LOCAL_EVALUATION=True`.
 
-Faster-Whisper on CPU
-  └─ runs after the measured GPU inference pair under the existing Backend exclusion policy
-```
-
-- `TRANSCRIPTION_DEVICE=cpu` is now the safe default. This reserves GPU capacity for Ollama and GPT-SoVITS. `auto` and `cuda` remain explicit, restart-bound choices for machines that have measured sufficient capacity.
-- The managed GPT-SoVITS worker is acquired once for the Backend lifetime. Recreating it for every sentence would repeatedly pay the measured cold-start cost and introduce extra process/guard races.
-- Ollama owns its shared model-residency policy. Elysia closes its HTTP client but does not silently unload a model that another local client may be using.
-- Speech and transcription remain bounded queues. Cancellation releases logical ownership immediately while native work retains physical capacity only until its bounded call returns.
-
-### Managed speech readiness and profile admission
-
-The Python Backend exposes only a closed managed-speech readiness projection:
-`starting`, `ready`, or `unavailable`. An unavailable result carries only
-`setup_unavailable` or `runtime_failed`; local paths, model names, exception
-text, and worker diagnostics remain in Backend logs. A manual **Read aloud**
-request refreshes this state and fails before reserving a speech turn when the
-runtime is not ready, with fixed guidance to review Voice behavior and restart
-the Backend. Voice Call follows the same readiness state but keeps its normal
-text reply path available when spoken playback is unavailable.
-
-Voice Profile and emotion are one restart-bound selection. Before Settings can
-save a changed pair, the Backend resolves that exact pair against the trusted
-local catalog without starting a worker or contacting a service. A profile
-that does not define the selected emotion is rejected without increasing the
-settings revision, so a successful restart acknowledgement cannot defer that
-newly selected catalog mismatch until the first spoken reply.
-
-## 3. Reproducible benchmark
-
-The benchmark accepts only bounded numeric controls. Test Prompt, synthesized WAV, and transcript are fixed internally, remain in memory, and are never included in JSON output.
-
-Prerequisites:
-
-- Windows with `nvidia-smi.exe` and the configured local Ollama model;
-- a complete local Faster-Whisper model;
-- a reviewed local Voice Profile and explicit `GPT_SOVITS_ALLOW_LOCAL_EVALUATION=True` opt-in;
-- ignored GPT-SoVITS Runtime, weights, and reference audio matching that Profile.
-
-Run from Command Prompt:
+Run from the repository root in Command Prompt:
 
 ```bat
-cd /d D:\Elysia_AI
 .venv\Scripts\python.exe scripts\benchmark_voice_pipeline.py --cycles 3 --sample-interval-ms 250 --request-timeout-seconds 180
 ```
 
-The command applies a hard wall-clock deadline and response-size limits to local Ollama calls, samples global GPU state, overlaps Ollama streaming with managed TTS, then sends the in-memory TTS WAV through CPU STT. Every owned monitor, HTTP session, TTS lease, and TTS Runtime is closed even when a measured operation fails.
+The benchmark accepts bounded numeric controls, enforces deadlines and response limits, samples global GPU state, overlaps generation and TTS, then transcribes the in-memory WAV on CPU. Fixed prompts, audio, and transcripts are never included in JSON output. Owned monitors, HTTP sessions, leases, and TTS processes close on success or failure.
 
-## 4. Measured result on the acceptance machine
-
-Environment:
+## Recorded environment
 
 | Item | Value |
 | --- | --- |
-| GPU | NVIDIA GeForce RTX 4070 SUPER |
-| Driver | 610.88 |
+| GPU / driver | NVIDIA GeForce RTX 4070 SUPER / 610.88 |
 | Reported GPU memory | 12,282 MiB |
-| Ollama model | `qwen3.5:9b`, Q4_K_M |
-| Ollama reported model VRAM | 5,490,081,790 bytes, about 5,235.75 MiB |
-| GPT-SoVITS | managed local v2 worker, CUDA half precision |
-| Faster-Whisper | local `small`, CPU int8 policy |
-| Cycles / GPU interval | 3 / 250 ms |
+| Ollama | `qwen3.5:9b`, Q4_K_M |
+| Ollama model VRAM | 5,490,081,790 bytes; about 5,235.75 MiB |
+| GPT-SoVITS | Managed local v2 worker, CUDA half precision |
+| Faster-Whisper | Local `small`, CPU int8 |
+| Cycles / sampling interval | 3 / 250 ms |
 
-Aggregate result:
+## Measurements
 
 | Measurement | Result |
 | --- | ---: |
-| Global GPU baseline | 1,770 MiB |
-| Global GPU peak | 9,824 MiB, 79.99% of reported capacity |
-| Remaining capacity at observed peak | 2,458 MiB |
+| Global GPU baseline / peak | 1,770 / 9,824 MiB |
+| Peak capacity used / remaining | 79.99% / 2,458 MiB |
 | Peak GPU utilization | 100% |
-| GPT-SoVITS managed-worker cold acquisition | 18.619 s |
-| Ollama first-token p50 | 0.260 s |
-| Ollama total elapsed p50 | 0.606 s |
-| GPT-SoVITS synthesis p50 | 1.291 s for 4.06 s of audio |
-| CPU Faster-Whisper p50 | 1.193 s |
-| Owned TTS/monitor/HTTP cleanup | 0.282 s |
+| GPT-SoVITS cold acquisition | 18.619 s |
+| Ollama first-token / total p50 | 0.260 / 0.606 s |
+| TTS p50 | 1.291 s for 4.06 s of audio |
+| CPU STT p50 | 1.193 s |
+| Owned TTS, monitor, and HTTP cleanup | 0.282 s |
 
-Per-cycle measurements:
-
-| Cycle | Ollama TTFT | Ollama elapsed | TTS elapsed | CPU STT elapsed |
-| ---: | ---: | ---: | ---: | ---: |
-| 1, cold Ollama load | 5.647 s | 5.780 s | 1.819 s | 2.070 s |
+| Cycle | Ollama first token | Ollama total | TTS | CPU STT |
+| --- | ---: | ---: | ---: | ---: |
+| 1, cold | 5.647 s | 5.780 s | 1.819 s | 2.070 s |
 | 2, warm | 0.176 s | 0.501 s | 1.197 s | 1.193 s |
 | 3, warm | 0.260 s | 0.606 s | 1.291 s | 1.139 s |
 
-The GPU numbers are global WDDM observations and include the desktop plus unrelated GPU applications; they are intentionally not presented as per-process attribution. Three samples are sufficient for this compatibility decision, not for a statistically strong percentile claim—the three-cycle p95 equals the maximum and should not be generalized.
+GPU observations are global WDDM values, including unrelated applications. Three cycles support this compatibility decision, not a statistically strong percentile claim.
 
-The benchmark's final GPU sample was 8,219 MiB because its Ollama request deliberately used a ten-minute keep-alive and the shared model remained resident. The managed GPT-SoVITS process was absent after cleanup. Because `/api/ps` was empty before this acceptance run, the verifier explicitly stopped the benchmark-loaded Ollama model afterward; `/api/ps` returned no models and global usage returned to the 1,770 MiB baseline. The benchmark itself does not unload shared Ollama state because doing so could disrupt another local client.
+The final GPU sample was 8,219 MiB because Ollama retained its model with a ten-minute keep-alive. The managed TTS process had exited. Since `/api/ps` was empty before this run, the verifier explicitly stopped the benchmark-loaded model afterward; GPU use returned to 1,770 MiB. The benchmark itself does not unload shared models.
 
-## 5. Long-session cleanup evidence
-
-The automated soak checks exercise lifecycle ownership rather than performing hundreds of expensive model inferences:
+## Cleanup evidence and limits
 
 | Layer | Soak | Required final state |
 | --- | --- | --- |
-| Python transcription jobs | 256 mixed success/failure cycles | zero running, queued, occupied, or retained jobs; every worker stopped |
-| Python speech queue | 256 completed/cancelled turns | zero active/retained turns, sentence credits, notifications, delivery events, clips, bytes, or callbacks; worker/notifier/aborter stopped |
-| Renderer Voice controller | 200 alternating speech/text turns with both terminal orders | `IDLE`, no Capture/STT/Chat/Speech owner, no retained transcript or PCM-related state; final Hang-up clears binding |
+| Python transcription | 256 mixed success/failure cycles | No running, queued, occupied, or retained jobs; workers stopped |
+| Python speech queue | 256 completed/cancelled turns | No turns, credits, events, clips, bytes, or callbacks; workers stopped |
+| Renderer Voice | 200 alternating speech/text turns, both terminal orders | `IDLE`; no Capture/STT/Chat/Speech owner or retained transcript; hang-up clears binding |
 
-Focused acceptance completed with 50 Python tests and 17 Voice-controller tests passing. These deterministic tests cover cleanup invariants and late-event rejection; they do not claim that a person completed a multi-hour call on physical devices. The project owner waived the manual microphone/speaker/room/Narrator matrix as a closing requirement, so those observations remain unclaimed.
+The focused acceptance recorded 50 Python and 17 Voice-controller tests passing. The historical full regression recorded 1,761 Python passes with 4 skipped, 348 desktop protocol/controller passes, and 126 Playwright passes, alongside documentation, type, lint, build, package, and npm high-severity checks.
 
-The final repository regression run additionally passed 1,761 Python tests with 4 skipped, 348 desktop protocol/controller tests, and 126 Playwright UI tests. Python and desktop documentation audits, mypy, ESLint, TypeScript checks, the production build, the Windows package build, and the npm high-severity audit also passed.
+These deterministic tests cover ownership cleanup and late-event rejection. The physical microphone, speaker, room-echo, Narrator, and multi-hour human-call matrix was not executed; the project owner waived it as a closing requirement for this baseline. No manual pass is claimed.
 
-## 6. Voice rights decision
+## Assets and distribution
 
-The exact selected checkpoint and reference-audio digests, named publisher/integration source, supplied restrictions, character/performance boundary, and unresolved authorization gap are recorded in [`MODEL_LICENSE.md`](../MODEL_LICENSE.md).
+The Elysia Voice Profile remains **local-evaluation-only**. Opting in does not grant rights. Weights and recordings must stay out of Git, releases, installers, containers, mirrors, and shared diagnostics. Publication requires retained permission for the exact asset version, redistribution, modification, attribution, commercial scope, and recording/performance rights.
 
-The operative decision is:
+[MODEL_LICENSE.md](../MODEL_LICENSE.md) retains provenance, publisher names, fixed digests, restrictions, and unresolved permissions. Reviewed visual assets have separate notices; their inclusion does not authorize voice assets.
 
-- the Elysia Voice Profile remains `local-evaluation-only`;
-- a local opt-in enables technical evaluation but does not create permission;
-- checkpoints and reference recordings must not enter Git, GitHub Releases, installers, containers, mirrors, or shared diagnostic archives; and
-- publication remains blocked until retained permission covers the exact asset version, redistribution, modification, attribution, commercial scope, and applicable recording/performance rights.
-
-The separately tracked official Elysia signet branding remains governed by its own notice and project-owner decision. The generated in-app portrait has a separate provenance record and an exact path/length/SHA-256 distribution pin. Allowing either reviewed visual asset does not authorize voice assets, and neither visual belongs to the source-code license.
-
-## 7. Distribution enforcement
-
-Run the repository check before every change and the artifact check after every package build:
+Run the repository gate from the root:
 
 ```bat
-cd /d D:\Elysia_AI
 .venv\Scripts\python.exe scripts\check_distribution_assets.py
-cd desktop
-npm run package
-npx --no-install asar list out\win-unpacked\resources\app.asar > "%TEMP%\elysia-asar-listing.txt"
-if exist "%TEMP%\elysia-asar-extracted" rmdir /s /q "%TEMP%\elysia-asar-extracted"
-call "D:\Elysia_AI\desktop\node_modules\.bin\asar.cmd" extract "D:\Elysia_AI\desktop\out\win-unpacked\resources\app.asar" "%TEMP%\elysia-asar-extracted"
-cd ..
-.venv\Scripts\python.exe scripts\check_distribution_assets.py --unpacked-tree desktop\out\win-unpacked --asar-listing "%TEMP%\elysia-asar-listing.txt" --extracted-asar-tree "%TEMP%\elysia-asar-extracted"
 ```
 
-The checker rejects forbidden Git paths/extensions and freezes the complete reviewed Electron Builder configuration. This prevents inherited configuration, platform-specific `files`, alternate app roots, hooks, custom Electron distributions, NSIS scripts, `extraResources`, `extraFiles`, and `asarUnpack` from silently expanding package input. GitHub Actions also builds the unpacked Windows application, captures the real ASAR listing, extracts the complete archive, and verifies every pinned static character asset by exact path, cardinality, size, and SHA-256. It rejects every external desktop-pet EXE, DLL, configuration, Live2D model, texture, motion, expression, physics file, runtime, and packaging escape. The current Git index and local `desktop\out\win-unpacked` scan pass with no local inference-model, reference-audio, or external desktop-pet assets included.
+After packaging, inspect the unpacked tree, real ASAR listing, and extracted archive using the [desktop packaging checks](../desktop/README.md#package-and-audit). The audit freezes reviewed build inputs, verifies static asset paths/counts/bytes, and rejects private model/audio data and external desktop-pet programs. It reduces accidental distribution risk; it does not establish ownership.
 
-The in-app Character State panel is permanently static and remains independent from both Voice audio and the optional animated Desktop Pet. The Pet is off by default and runs one original local `@书呆儿` Bongo Cat Mver program in place only after the user chooses a collection folder and a program. Electron Main bounds the scan, rejects path/link escapes and unreviewed native code, verifies pinned executable/DLL/resource sizes and SHA-256 identities, and repeats the complete validation immediately before launch. The original program—not Elysia—owns keyboard/mouse response, eye tracking, expressions, and dynamic character rendering. Elysia reads each original `config.json` only for bounded supported-profile validation and never modifies, copies, uploads, or packages it.
+The optional desktop pet runs an independently validated local program. Its configuration, executables, and dynamic assets remain outside the repository and package; implementation details are in the [desktop-pet guide](./14-LIVE2D-RUNTIME.md).
 
-Elysia owns at most one program it launched. Switching first closes the exact Elysia-owned root PID and its child-process tree without process-name matching; a failed or timed-out stop blocks the replacement and leaves manually started same-name programs untouched. Unexpected exit becomes a sanitized failed state that can be retried from the tray; Hidden stops the owned process while preserving selection, and Disabled remains the default. The paid program collection stays outside Git and every package. The recorded free-version page, <https://pan.quark.cn/s/cb5d84acad8e>, has not had its current contents, authorization, terms, availability, or equivalence to the purchased local collection independently verified.
+## When to repeat acceptance
 
-This gate is defense in depth, not proof of ownership. Reviewers must still examine newly introduced data, generated bundles, and third-party dependencies.
+Revisit the benchmark when models, quantization, context length, keep-alive, Runtime, precision, device, sentence concurrency, GPU/driver, Electron audio, queue capacity, or cancellation ownership changes.
 
-## 8. Revisit triggers
-
-Repeat the benchmark and reconsider the policy when any of these changes:
-
-- Ollama model, quantization, context length, or keep-alive policy;
-- GPT-SoVITS Runtime, checkpoint, precision, device, or sentence concurrency;
-- Faster-Whisper model, compute type, or device;
-- GPU/driver, Electron audio path, queue capacity, or cancellation ownership;
-- a new package input, dependency containing model/audio data, or Voice Profile; or
-- observed peak approaches capacity, latency becomes unacceptable, cleanup counters do not return to zero, or a rights claim is disputed.
+Revisit distribution and rights review for new package inputs, dependencies carrying model/audio data, or Voice Profiles. Repeat investigation when latency or memory use becomes unacceptable, cleanup counters stay nonzero, or asset rights are disputed.

@@ -1,11 +1,10 @@
-# Real document regression fixtures
+# Document fixtures
 
-This directory contains small, deterministic files used to verify the real PDF
-and DOCX ingestion path. The text is intentionally unique so retrieval tests can
-prove that both formats remain usable inside one Project without relying on a
+Deterministic PDF and DOCX files for ingestion and mixed-format Project
+retrieval tests. Unique text keeps retrieval assertions independent of a
 network model.
 
-## Fixture inventory
+## Files
 
 | File | Expected content | SHA-256 |
 | --- | --- | --- |
@@ -17,16 +16,13 @@ DOCX is a standard OOXML package containing prose and a two-column table. ZIP
 member timestamps, document properties, and PDF metadata are fixed so a rebuild
 produces the same bytes.
 
-## Provenance and attribution
+## Source and license
 
-Elysia AI contributors authored all visible text specifically for these tests.
-The files do not reproduce or adapt third-party prose, branding, images, fonts,
-or datasets. ReportLab and python-docx generated the containers; those tools do
-not contribute copyrighted fixture content.
+Elysia AI contributors wrote the text for these tests. It does not reproduce
+or adapt third-party prose, branding, images, fonts, or datasets. ReportLab
+and python-docx generated the containers, not the fixture content.
 
 Optional attribution: `Elysia AI real-document regression fixtures`.
-
-## License
 
 To the extent possible under law, the fixture authors waive all copyright and
 related rights in these two files under

@@ -1,554 +1,80 @@
 <p align="center">
-  <img src="./desktop/public/elysia-icon.png" alt="Elysia AI" width="104">
+  <img src="./desktop/public/elysia-icon.png" alt="Elysia AI" width="88">
 </p>
 
 <h1 align="center">Elysia AI</h1>
 
-<p align="center">
-  <a href="./README.en.md">English</a> | <strong>中文</strong>
-</p>
+<p align="center">在你的电脑上，与你对话。</p>
+<p align="center">以爱莉希雅为角色的本地优先 Windows AI 伴侣。</p>
 
 <p align="center">
-  <a href="https://github.com/ActorF/Elysia_AI/actions/workflows/tests.yml"><img src="https://github.com/ActorF/Elysia_AI/actions/workflows/tests.yml/badge.svg?branch=main" alt="Tests"></a>
+  <strong>中文</strong> · <a href="./README.en.md">English</a> · <a href="#开始使用">开始使用</a> · <a href="./docs/README.md">文档</a>
 </p>
 
-**Elysia AI 是一个以爱莉希雅为角色核心、面向 Windows 的本地优先 AI 伴侣。**
+<br>
 
-> Python Core 负责 Chat、Project、Memory、恢复与本地 Ollama 推理，<br>
-> React + Electron 桌面端通过经过认证、版本化的本地协议连接 Python，<br>
-> 在保留角色化交流的同时，把用户数据、硬件权限和文件访问限制在清晰边界内。
+## 陪伴，也能协助
 
-> [!IMPORTANT]
->
-> 本项目目前是 **开发预览**，不是下载即用的正式发行版。桌面壳仍依赖源码目录中的 Python 环境、Ollama 和本地模型；Project Sources 管理、本地文件问答与可信引用、Composer Dictate、本地 Voice Call、受管 GPT-SoVITS 分句播放，以及思考/朗读期间的安全 Barge-in 已经接通。Dictate 把一次完整语音转写追加到当前消息草稿且绝不自动发送；打开 Voice Call 会立即开始监听，每段完整语句经本地转写后自动通过当前 Chat 的正常路径发送，回复及预期 TTS 完成后只要未静音就继续监听。Mute 暂停麦克风，Close 结束通话。这个循环仍是基于完整语句（utterance-based）的 Final Transcript 流程，不提供实时 Partial Transcript 或无缝（gapless）音频流。文件问答必须由用户在 Project Chat 中明确开启。封闭的 Character State API 把 Chat、Voice 与 Knowledge 生命周期映射到审核静态角色素材：主界面使用半身状态板，Voice Call 使用居中的圆形头像；应用内角色始终静态，不创建 Live2D 或动态嘴型。独立桌宠默认关闭；用户选择本机 `@书呆儿` Bongo Cat Mver 程序合集目录后，Electron Main 只列出通过固定 Hash 校验的程序，用户明确开启时只启动选中的原程序，由它提供动态角色、键鼠反馈、眼部追踪与表情。付费程序、EXE、DLL、Live2D 模型及其 Runtime 不进入 Git、GitHub、安装包或构建输出。用户限定的十种 Voice Emotion（`neutral / happy / sad / caring / moved / playful / affectionate / teasing / serious / surprised`）选择 TTS 参考与静态角色表情，模型不能下发任意情绪、路径或动画指令。固定文案的系统通知继续默认关闭。通知允许独立开启回复完成提示，并可另选 Daily / Weekly 中性提醒，也可一键全部关闭。提醒的调度与投递只在 Elysia 已运行时发生，不建立后台服务、开机自启、连续打卡或模型生成的主动消息。可选语音 Runtime、模型和参考音频均不随基础安装提供，实时 Partial Transcript 与正式安装体验尚未完成；Work 使用显式计划、目录边界与单次批准。真实麦克风/扬声器、房间回声和长通话人工矩阵未执行，项目负责人已明确豁免其作为当前交付的关闭门槛，因此本项目不声称这些人工观察已经通过。
+- **自在对话** — 本地模型、流式回复、独立会话与分范围记忆。
+- **整理知识** — 用 Project 组织聊天与文件，让回答附上可查看的来源。
+- **开口交流** — 语音输入、回复朗读，以及与当前聊天相连的语音通话。
+- **一起完成工作** — 查看计划，在选定目录内执行操作，确认写入并保留审计记录。
+- **按需扩展** — 图片与屏幕理解、联网查询、本机翻唱和可选桌宠。
 
-> 所有 Final Transcript 与 Elysia 的中文回复都会先经固定 OpenCC `t2s` 边界统一为简体中文。回复中的代码、URL、Markdown 目标与边界明确的真实路径保持原样；含空格且没有扩展名的路径需放入引号或代码格式。普通对话中，已识别的段首括号或星号动作旁白会在显示、保存和朗读前移除；用户明确要求小说、剧本、角色扮演或动作分析时保留为作品内容。
+聊天与数据默认留在本机。联网默认关闭，截图由用户触发，外部写入需要独立确认。
 
----
+当前为**开发预览**，需从源码运行；Python、Ollama 和模型尚未随安装包提供。语音等可选能力需要另行配置，本地图片生成仍在接入桌面端。
 
-## ✨ 速览
+## 开始使用
 
-- 💬 **本地文字聊天** — 使用 Ollama 本地模型生成流式回复，完整对话轮次原子保存
-- 🗂️ **多 Chat 历史** — 支持创建、打开、重命名、置顶、归档、恢复、删除、停止生成与重试
-- 📁 **Project 工作空间** — 支持 Instructions、Workspace 绑定、归档以及 Chat 的归属与移动
-- 🧠 **分范围记忆** — 为 Global、Project、Chat 提供独立边界，并保留长期记忆、摘要与人工确认流程
-- 🛡️ **严格桌面边界** — Renderer 沙箱、受限 Preload、来源校验与认证 NDJSON Protocol v1
-- 📎 **Project Sources 与本地文件问答** — Project 文件可添加、替换、重新索引、导出、撤销和删除，并可向前恢复中断的持久操作；生产 Python Runtime 有界加载、清洗、分块、索引和检索，从 canonical Chat→Project 关系授权共享 Sources，经固定本地 Ollama Adapter 生成结构化回答，并在桌面 Chat 中持久显示可信 Citation
-- 🎙️ **本地 Dictate 与 Voice Call** — Dictate 只把单次转写写入草稿；Voice Call 打开即监听、按完整语句自动发送，并在未静音时循环继续
-- 🔊 **本地回复朗读** — 普通文字 Chat 默认静音；用户可对已保存的爱莉希雅回复明确选择 **Read aloud**，Voice Call 回复则按设置自动讲话。Python 按自然断句排队调用受管 GPT-SoVITS，Electron 在可信 Preload 中按序播放经过双重校验的 PCM WAV
-- 🎭 **角色状态 API** — 将 Chat、Voice 与 Knowledge 生命周期归一为封闭语义状态，并为未来 Work/Approval 保留闭集；角色组件不直接操作动画文件
-- 🌸 **应用内静态角色** — 主界面使用审核半身素材，Voice Call 使用居中圆形头像来呈现语义状态和用户限定情绪；两者始终静态且不依赖 Live2D
-- 🌷 **可选动态桌宠** — 默认关闭；Settings 扫描用户选择的本机 `@书呆儿` Bongo Cat Mver 程序合集，选定后由原程序提供完整动态交互
-- 🔕 **可选 Presence 与系统通知** — 回复完成通知和 Daily / Weekly 中性提醒均默认关闭、静音且可完全停用；固定文案不包含对话、Project 或文件内容
-- 💾 **恢复优先** — 本地 JSON 存储、旧会话迁移、损坏隔离、原子写入以及导入/导出服务
-- ♿ **桌面可用性** — 主题、键盘导航、焦点管理、Windows 缩放、中文 IME 与离线/错误恢复
+准备 Windows 10 / 11、Python 3.14、Node.js 24、Git 和 [Ollama](https://ollama.com/)。以下命令在 **CMD** 中执行。
 
----
-
-## 📊 当前状态
-
-| 能力 | 状态 | 当前边界 |
-| --- | :---: | --- |
-| 本地文字 Chat | ✅ 可用 | Ollama 流式回复、原子保存、停止与重试 |
-| Chat History | ✅ 可用 | 多会话、置顶、归档、恢复、删除与独立草稿 |
-| Project | ✅ 可用 | 元数据、Instructions、Workspace 绑定和 Chat 归属 |
-| Memory Core | ✅ 可用 | Global / Project / Chat Scope、检索、摘要与长期记忆基础 |
-| Settings | ✅ 可用 | Chat/Ollama/Memory/文件/STT、主题、本机桌宠程序目录与程序选择，以及 Voice Call 自动讲话、语速、音量、Voice Profile 与十种 Voice Emotion |
-| Attachments / Sources | ✅ 可用 | Scope-bound 文件存储与 Project Sources UI；生命周期写操作支持进度、受限协作取消和显式恢复；已验证原始文件导出共用全局 Knowledge 租约，但不进入操作日志、也没有 Renderer Stop |
-| Audio Devices | ✅ 可用 | 麦克风/扬声器选择、Windows 权限、输入电平与输出音调测试 |
-| 单句录音与本地 VAD | ✅ 可用 | Dictate 由用户显式启动且只更新草稿；Voice Call 打开即启动下一段完整语句采集；16 kHz mono `s16le` 临时处理 |
-| STT / Faster-Whisper | ✅ 基础可用 | Electron/React 与本地 Final Transcript 已接通；需另装可选依赖并放置本地模型 |
-| 有界 Voice Call | ✅ 可用 | `IDLE → LISTENING → TRANSCRIBING → THINKING → SPEAKING → IDLE`；绑定准确 Chat/Project，每段 Final Transcript 自动走正常 Chat 发送路径 |
-| GPT-SoVITS / TTS | ✅ 基础可用 | Chat 串流分句、受管本机 Worker、有界队列、私有 fd3 传输与 Electron 播放已接通；需本机 Runtime、Profile、权重和参考音频 |
-| Barge-in / 语音打断 | ✅ 可用 | 在 Voice Call 自动提交的 Turn 回复期间启用；要求经过验证的 WebRTC 回声消除与持续语音确认，并精确取消该 Turn |
-| Voice Call 连续循环 | ✅ 可用 | 打开即监听；正常回复与预期朗读结束后，未静音就继续下一段完整语句；Mute 暂停，Close 结束 |
-| Character State API | ✅ 可用 | 封闭的 `idle / listening / thinking / speaking / working / waiting_approval / error` 合同；Chat、Voice 与 Knowledge 已接入，审批状态保留给后续真实 Work/Approval 流程 |
-| 应用内角色 | ✅ 可用 | 主界面使用审核静态半身素材，Voice Call 使用居中圆形头像，并由语义状态和十种用户限定表情选择；不执行 Live2D、动态角色渲染或音频驱动嘴型 |
-| 外部动态桌宠 | ✅ 可用 | 默认 `disabled`；用户选择本机程序合集目录后，Settings 列出严格验证通过的程序，`visible` 只启动选中项；切换时必须先关闭由 Elysia 启动的旧 PID Tree，失败则不启动新项 |
-| Presence 与系统通知 | ✅ 可用 | 回复完成通知默认 Off；中性提醒只允许 Off / Daily / Weekly，前台、Voice 或忙碌时不弹出且不补发；无云推送、后台服务、行为追踪或模型生成通知 |
-| 文件解析与本地 RAG | ✅ 基础可用 | 版本化 Chunk Lineage、固定本地 Embedding 空间、Scope-safe SQLite 索引、有界 Retriever/Reranker、loopback-only Grounded Generator、同 Project 多 Chat 共享且跨 Project fail-closed；Chat 需显式开启 **Use Project Sources**，证据不足不会生成无引用回答 |
-| Work Agent 与工具权限 | ✅ 基础可用 | 显式多步骤计划、本地目录边界、写入预览与单次批准、暂停/恢复、审计；模型建议不能增加调用或批准操作。见 [Work 工作流](./docs/17-WORKFLOW-AND-DESKTOP-AGENT.md) |
-| 图片与屏幕理解 | ✅ 基础可用 | 用户选图、本地 OCR/Ollama 问答、单次授权截图、Chat 草稿与 Work 参考、默认关闭的保存和独立历史清除。OCR 需本机 Tesseract 与语言数据。见 [Vision 使用与边界](./docs/18-VISION-AND-SCREEN.md) |
-| Internet 与外部服务 | ✅ 已完成 | Stage 12：默认关闭的网络策略、Wikipedia 搜索、网页读取、来源比较、天气/GitHub 查询、独立确认的 Issue 创建与离线缓存，见 [联网说明](docs/19-INTERNET-AND-SERVICES.md) |
-| 外部桌宠程序支持 | ✅ 可用 | 动态渲染、键盘/鼠标反馈、眼部追踪和表情由用户持有的原 Bongo Cat Mver 程序负责；其程序、模型与配置不复制进仓库、安装包或应用数据 |
-| 独立安装与更新 | ⏳ 计划中 | 当前打包结果不内置 Python、Ollama 或模型，也未签名 |
-
-`✅ 可用` 表示核心流程已经实现；`🚧 开发中` 表示代码已进入集成或验收，但不应视为稳定能力；`⏳ 计划中` 表示当前界面或路线中可能已有入口，底层服务仍未完成。
-
----
-
-## 🧭 架构与边界
-
-```mermaid
-flowchart LR
-    R[React Renderer] -->|受限 IPC| E[Electron Main]
-    E -->|会话令牌 + NDJSON v1| P[Python Backend]
-    P --> B[Brain]
-    B --> O[Ollama]
-    B --> D[(workspace 本地数据)]
-    P --> Q[有界分句队列]
-    Q --> M[受管 GPT-SoVITS Worker]
-    M -->|私有 fd3 PCM WAV| E
-    E -->|私有 IPC| W[Preload Web Audio]
-    E -->|固定 Hash 复核 + 本机启动| DP[外部 Bongo Cat Mver 桌宠程序]
-    E -->|固定静音文案| NO[操作系统通知]
-    C[Python CLI / Library] -. 显式单次合成 .-> T[Python TTS Service]
-    T -->|Loopback IP /tts| G[外部 GPT-SoVITS Runtime]
-    E --> H[原生文件与音频边界]
-    P --> DK[Desktop Knowledge Runtime]
-    A[Scope + Ownership Link] --> S[Document Processing Service]
-    S --> L[Verified Document Loader]
-    L --> N[Conservative Cleaner]
-    N --> K[Versioned Chunks + Provenance]
-    K --> V[Exact Lineage + Mapping Validation]
-    V --> X[Pinned Local Embedding Space]
-    X --> Z[(Scope-safe SQLite Index)]
-    Z --> Y[Bounded Retriever + Optional Reranker]
-    Y --> J[Bounded Grounded Answer + Trusted Citations]
-    U[Canonical Chat to Project Authority] --> RAG[Project Source Catalog + Lease]
-    KL[Project-only Durable Lifecycle] --> RAG
-    KL --> X
-    RAG -->|Exact Scope + Generations| Y
-    DK --> KL
-    DK --> J
-```
-
-- **Python 是业务事实来源**：Chat、Project、Memory、附件状态和持久化由 Python Domain/Service/Repository 管理。
-- **Electron 是可信桌面边界**：它拥有 Python 子进程、原生文件选择、硬件权限与窗口生命周期。
-- **React 保持沙箱化**：`contextIsolation: true`、`nodeIntegration: false`、`sandbox: true`；Renderer 不能直接读取 Node、Python、Chat、Memory 或本地源路径。
-- **桌宠能力独立且默认关闭**：没有保存偏好或旧版偏好迁移时，Main 保持 `disabled`。用户在 Settings 选择本机 `@书呆儿` Bongo Cat Mver 程序合集目录后，Main 以有界规则扫描候选目录，并按固定字节长度与 SHA-256 校验 Launcher、UI、DLL 和必要资源；每次启动前还会对选中程序重新执行同等校验。Main 只启动用户选中的程序；切换时先按 Elysia 持有的准确根 PID 及其子进程树关闭旧项，关闭失败或超时就不启动新项，绝不按进程名影响用户手动运行的同名程序。每套程序原有 `config.json` 始终留在原目录，Elysia 只做有界结构验证，不改写、不复制，因此切换后仍保留各自设置。原 Bongo Cat Mver 程序负责键盘、鼠标、眼部追踪、表情和 Live2D 动态；应用内角色仍永远静态。
-- **Presence 与通知默认全关**：Main 独占严格、revisioned 的设备偏好、计时器和原生通知对象；Renderer 不能提交标题、正文、链接、声音、Urgency 或任意计划。回复完成只观察经过最终一致性验证的 `chat-complete`，提醒按 24 小时或 7 天从明确选择时重新计时；到期周期会先保存处理锚点，再仅在窗口不存在、隐藏或最小化且 Backend 空闲时投递。窗口仍可见，或 Chat、Voice、完整受管朗读生命周期（包括合成空档和最终播放排空）、Knowledge 忙碌时只消费该周期；退出会停止计时器与投递，不会伪造新的已处理周期。
-- **协议双端校验**：TypeScript 与 Python 使用同一组 JSON Schema/fixture 约束，连接前完成版本、能力与随机会话令牌握手。
-- **本地数据可恢复**：关键 JSON 使用严格 Schema、revision、原子替换和损坏隔离；生成取消不会保存残缺的正式回复。
-- **文档派生、授权、检索与回答保持可验证**：生产 Python Pipeline 从无路径 `LoadedDocument` 生成版本化 Chunk，复核 Piece-table、Fingerprint/Lineage 与 Source Mapping，再把精确 Chunk Lineage 绑定到固定本地 Embedding 空间和 Scope-safe SQLite 索引。Project-only Knowledge Lifecycle 用路径私有 journal 协调 add/replace/reindex/rebuild/revoke/delete：新 Generation 最后发布 catalog，破坏性操作先 tombstone 再清理。`ProjectSourceAnswerService` 只从 canonical Chat→Project 关系、原子 ownership snapshot 与显式 catalog 派生准确 Generation；Retriever 只搜索该闭集。`GroundedAnswerService` 再选择完整命中的有界前缀，把问题、片段与 style guidance 作为不可信 JSON Data 交给固定 digest、loopback-only 的同步结构化 Generator，并只发布能解析到可信 Evidence 的陈述与 Citation。Assistant 文本和 proof 原子保存，桌面可展开安全来源与页/块/单元格定位；结构闭包仍不能证明模型概括或推断在语义上必然正确。
-- **副作用保持在明确入口内**：点击 Dictate 是一次只写入当前草稿的麦克风操作；点击 **Voice Call** 是开启持续语音循环并请求麦克风的明确操作。Voice Call 按完整语句转写并自动发送，回复阶段使用受保护的打断监听，正常回复和预期朗读排空后在未静音时继续下一段；Mute 暂停，Close、切换 Chat/Project 或能力失败会结束或阻止旧 Owner 重开麦克风。选择附件不会自动读取内容，Project 的 Workspace 绑定也不会自动执行工具。
-
-更多实现细节见 [Desktop 开发指南](./desktop/README.md)、[Protocol v1](./desktop_protocol/README.md)、[Document Cleaning and Chunking](./docs/06-DOCUMENT-CLEANING-CHUNKING.md)、[Local Embeddings and Vector Store](./docs/07-LOCAL-EMBEDDINGS-VECTOR-STORE.md)、[Retriever and Reranking](./docs/08-RETRIEVER-RERANKING.md)、[Grounded Answers and Citations](./docs/09-GROUNDED-ANSWERS-CITATIONS.md)、[Project Sources](./docs/10-PROJECT-SOURCES.md)、[Knowledge Lifecycle](./docs/11-KNOWLEDGE-LIFECYCLE.md)、[Knowledge UI and Testing](./docs/12-KNOWLEDGE-UI-TESTING.md) 与 [Electron Shell 决策记录](./docs/decisions/0001-desktop-shell.md)。
-
----
-
-## 🚀 快速开始
-
-### 前置条件
-
-- **Windows 10 / 11 64 位**（主要开发与测试平台）
-- **Python 3.14**
-- **Node.js 24** 与 npm
-- **[Ollama](https://ollama.com/)**
-- Git
-
-> [!NOTE]
->
-> 以下命令均为 **CMD / Command Prompt** 写法，不需要修改 PowerShell Execution Policy。
-
-### 1. 克隆仓库
+**1. 安装项目**
 
 ```bat
 git clone https://github.com/ActorF/Elysia_AI.git
 cd /d Elysia_AI
-```
-
-### 2. 创建 Python 环境
-
-```bat
 py -3.14 -m venv .venv
 .venv\Scripts\python.exe -m pip install --upgrade pip
 .venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-如需本地语音转写，再安装独立的可选依赖：
-
-```bat
-.venv\Scripts\python.exe -m pip install -r requirements-stt.txt
-```
-
-把完整的 Faster-Whisper 模型目录放在
-`models\weights\faster-whisper\<model>\`；默认 `<model>` 是 `small`。
-可选名称为 `tiny`、`base`、`small`、`medium`、`large-v3`、`turbo`。
-Elysia 只打开所选本地目录，不会自动下载模型，模型权重也不得提交到 Git。
-
-如需测试本地语音合成，请另行准备你有权使用的 GPT-SoVITS Runtime、Checkpoint 和参考音频。把 `config\voice_profiles.example.json` 复制为被忽略的 `workspace\settings\voice-profiles.json`，再填写准确参考文本与语言，并把每个资产对象的 `path`、实际字节数 `bytes` 和 64 位小写 `sha256` 全部替换为真实值；示例中的长度和 Hash 只是占位符，不能用于真实资产。Catalog 只接受严格的 Schema v2，不会回退读取旧版字符串路径。资产路径在 Windows 上也使用 `/`，权重和参考音频只能位于被忽略的 `models\weights\gpt-sovits\` 下。读取 Catalog 只验证声明格式，不代表文件或外部服务已受信；当前 Loopback HTTP Adapter 仍报告 `service_binding_unverified`。确认这些本机内容后，在 `.env` 设置 `GPT_SOVITS_ALLOW_LOCAL_EVALUATION=True`。基础安装不会下载或启动 GPT-SoVITS，也不会把这些素材提交或打包。
-
-从旧版字符串路径手动迁移时，可在 CMD 中逐项取得精确长度和 SHA-256；命令不会修改文件。`certutil` 输出中的 `A-F` 写入 JSON 时需改为小写（若写进 `.bat`，把 `%I` 改成 `%%I`）：
-
-```bat
-for %I in ("models\weights\gpt-sovits\sample-voice\weights\sample.ckpt") do @echo bytes=%~zI
-certutil -hashfile "models\weights\gpt-sovits\sample-voice\weights\sample.ckpt" SHA256
-```
-
-### 3. 准备本地模型
-
-默认模型是 `qwen3.5:9b`：
+**2. 准备本地模型**
 
 ```bat
 ollama pull qwen3.5:9b
 ```
 
-启动桌面端前，请确认 Ollama 正在运行，并且 `http://localhost:11434` 可访问。模型权重由 Ollama 本地管理，不随本仓库提供。
+保持 Ollama 运行，默认地址为 `http://localhost:11434`。
 
-可选：只在单独开发或测试文档 Embedding/索引 Library 时，再显式安装已固定的 Embedding 模型；基础文字 Chat 不需要它，程序也不会自动下载：
-
-```bat
-ollama pull qwen3-embedding:0.6b
-```
-
-### 4. 安装桌面依赖
+**3. 打开桌面应用**
 
 ```bat
 cd desktop
 npm ci
-cd ..
-```
-
-### 5. 启动桌面端
-
-在一个 CMD 窗口中运行一次：
-
-```bat
-cd /d D:\Elysia_AI\desktop
 npm run dev
 ```
 
-该命令会先编译 Electron Main/Preload，再启动 Vite，并在 Renderer 就绪后启动 Electron。Electron 会从 Project Root 推导 `.venv\Scripts\python.exe` 与 `desktop_backend.py`，退出应用时也会清理该子进程。若仓库不在 `D:\Elysia_AI`，只需把工作目录替换成你的实际位置。
+使用自动打开的 Electron 窗口。模型与偏好可在 **Settings** 中调整；基础文字聊天不需要云端 API Key 或 `.env`。
 
-只检查 Renderer 页面时可运行 `npm run dev:renderer`。它是裸浏览器预览，不会注入 Electron Preload，因此不能连接 Python Backend、麦克风或 Desktop Pet；完整功能必须使用 `npm run dev` 打开的 Electron 窗口。
+## 按需开启
 
-### 可选：启动 Console
+**文件问答** · 在 Project 中 **Add sources**，待 **Ready** 后开启 **Use Project Sources**；另需 `qwen3-embedding:0.6b`。[查看指南](./docs/12-KNOWLEDGE-UI-TESTING.md)
 
-```bat
-cd /d D:\Elysia_AI
-.venv\Scripts\python.exe start.py
-```
+**语音交流** · 配置本地 Faster-Whisper / GPT-SoVITS。Dictate 写入草稿；Voice Call 按完整语句发送。[桌面配置](./desktop/README.md)
 
-Console 与 Electron Desktop 是两个入口，不需要同时启动。
+**翻唱与桌宠** · 使用自己有权使用的本机素材。[翻唱](./docs/15-SONG-COVER.md) · [桌宠](./docs/14-LIVE2D-RUNTIME.md)
 
----
+**数据管理** · 在 **Settings → Data & storage** 查看或移动数据。[了解详情](./docs/13-PRODUCTION-DATA-LAYOUT.md)
 
-## ⚙️ 配置
+## 深入了解
 
-根目录 `.env` 是可选的。本项目在未创建 `.env` 时也有安全默认值：
+[文档索引](./docs/README.md) · [开发指南](./desktop/README.md) · [源码导览](./SOURCE_FILE_GUIDE.md) · [本地协议](./desktop_protocol/README.md)
 
-```dotenv
-MODEL_NAME=qwen3.5:9b
-OLLAMA_HOST=http://localhost:11434
-SHORT_TERM_MEMORY_TOKEN_BUDGET=2048
-MEMORY_RETRIEVAL_LIMIT=5
-DATA_IMPORT_MAX_BYTES=16777216
-TRANSCRIPTION_MODEL=small
-TRANSCRIPTION_DEVICE=cpu
-TRANSCRIPTION_LANGUAGE=auto
-GPT_SOVITS_ALLOW_LOCAL_EVALUATION=False
-GPT_SOVITS_REQUEST_TIMEOUT_SECONDS=120
-GPT_SOVITS_PROBE_TIMEOUT_SECONDS=1
-GPT_SOVITS_DETERMINISTIC_SEED=42
-LOG_LEVEL=INFO
-DEBUG=False
-```
-
-桌面端 **Settings** 允许修改 Chat 模型、Ollama Origin、Memory 限额、文件导入大小，以及本地转写模型、设备和默认语言；这些公开设置使用独立 revision 并写入当前数据根下的 `workspace/settings/global.json`。转写模型可选 `tiny` / `base` / `small` / `medium` / `large-v3` / `turbo`，设备可选 `auto` / `cuda` / `cpu`，语言可选 `auto` / `zh` / `en`。默认使用 `cpu`，为同时驻留的 Ollama 与 GPT-SoVITS 保留 GPU 显存；只有在目标机器完成三组件资源基准后才建议显式改为 `auto` 或 `cuda`。
-
-当前 Settings 展示五个有效语音行为字段：Voice Call 自动讲话、50–200% 语速、0–100% 音量、受限的逻辑 Voice Profile ID，以及十种 Voice Emotion：`neutral / happy / sad / caring / moved / playful / affectionate / teasing / serious / surprised`。普通文字 Chat 永远不会因为这个开关自动出声；其回复只能由用户点击 **Read aloud** 后朗读。Voice Call 自动讲话与音量在下一次获准操作时实时生效；语速、Voice Profile 与 Voice Emotion 进入 `restartFields`，在 Backend 重启前保持 Saved/Active 分离。成功重启后，同一 Active Emotion 同时选择本地 TTS 参考与审核静态表情。旧版 `captionsEnabled`、`transcriptReviewMode` 与 `automaticRelisten` 字段只为读取旧设置和协议兼容保留，不再显示为控件，也不改变现在的 Dictate/Voice Call 流程。其余模型、Ollama、Memory/文件限额与 STT Runtime 设置继续遵守既有重启边界；主题保存在当前设备的 Renderer Storage 中并立即生效。
-
-桌面应用不要求云端 API Key。文字 Chat 只连接本地 Ollama；可选桌面 TTS 由 Python Backend 从固定本机目录启动受管 GPT-SoVITS Worker，并经私有 fd3 把音频交给 Electron。独立的 Python Smoke CLI 仍可连接 Loopback GPT-SoVITS 进行诊断。`GPT_SOVITS_ALLOW_LOCAL_EVALUATION` 默认关闭；只有在你确认本地 Voice Profile 的权利与路径后才应显式开启。不要把未来的密钥、Token、私人 Prompt 或私人配置提交到仓库。
+欢迎提交 Issue 或 Pull Request。修改源码前请阅读 [贡献与注释规则](./AGENTS.md)，并运行其中的检查。
 
 ---
 
-## 🔍 功能说明
+本项目为非官方、非商业粉丝项目，与 HoYoverse / miHoYo 无隶属或背书关系。角色及相关素材权利归各自权利人；模型、参考音频与付费桌宠资源不随项目分发。
 
-### 💬 Chat 与消息可靠性
-
-- Assistant 回复使用安全 GFM 渲染，User 消息保持纯文本。
-- 支持代码块、复制、流式状态、停止生成、Regenerate 与 Edit and retry。
-- 草稿按 Chat 保存在本机；Renderer 刷新后可恢复草稿，并可重新附着到 Electron 持有的进行中请求。
-- Chat 与 Project 的状态变更经过 Python 服务写入，Renderer 不自行生成持久化 ID 或直接修改索引。
-
-### 📁 Project 与附件
-
-- Project 可保存名称、Instructions、可选模型、Workspace 绑定和归档状态。
-- Chat 可以在 Project 与未分配区域之间移动。
-- 文件选择与拖放路径只在可信 Preload/Electron 边界处理；React 只看到 opaque ID、安全文件名、媒体类型和大小。
-- Sources/Attachments 负责本地安全存储；生产 Document Pipeline 只能通过 Scope-bound 验证读取生成带来源映射的 Chunk，再以版本化本地 Embedding 和精确 Project 过滤的 SQLite Store 建立索引。Project-only Knowledge Lifecycle 用持久 saga journal 安全协调 add/replace/reindex/rebuild/revoke/delete，新 Generation 最后授权、删除先撤销 catalog。原始文件导出共用全局 Knowledge operation coordinator，但不进入 saga journal；它使用身份固定的私有 cleanup intent 收敛崩溃遗留。用户选定目标且请求进入 Python 后，Electron 会跨 Renderer 刷新和 Project 切换继续持有该不可由 Renderer 取消的导出，并在路径私有的 receipt 与已认证 Source metadata 完全匹配后才发布关联终态；目标路径不会进入 React。Project Chat 明确开启 **Use Project Sources** 后，`ProjectSourceAnswerService` 从 canonical Chat→Project 关系派生准确 Allowlist；Retriever 只搜索该闭集，Grounded Answer 层固定拥有同一次检索与生成操作，空命中不调用模型，回答中的安全文件名、页码和 Block/Cell/Offset 都从可信 Evidence 构造。结构化回答与 Citation 随 Assistant Message 原子持久化并由 Renderer 安全显示。
-
-### 🧠 Memory 与恢复
-
-- Memory 支持 Global、Project、Chat 三种 Scope，并按当前 Chat 的允许范围检索。
-- Core 已包含 Profile、近期对话、长期记忆、摘要、候选记忆确认、搜索、编辑、删除和导出基础。
-- Python 已有 Chat、Project 与全量用户数据的导入/导出、Legacy Conversation 迁移和损坏隔离服务；对应桌面管理 UI 尚未完成。
-
-### 🎙️ Voice
-
-- 已实现麦克风/扬声器枚举、设备偏好、Windows 麦克风权限状态、短暂输入电平与输出音调测试。
-- Composer 左侧的 **Dictate** 只在用户点击后启动一次有界采集；Renderer 本地 downmix、重采样并运行本地 VAD，Final Transcript 追加到当前消息草稿且不会发送。
-- 有效片段固定为 16 kHz、mono、signed 16-bit little-endian PCM；同一份 PCM 只提交一次并保持临时，最终协议结果不含音频、模型路径或 Native Error。
-- 点击 **Voice Call** 会打开长方形通话框并立即进入监听。每段完整语句经本地 VAD 和 Faster-Whisper 得到 Final Transcript 后自动进入 `THINKING`；没有人工 Transcript 编辑、确认或发送步骤。
-- Voice Call 的自动提交复用与文字 Composer 相同的可靠 Chat 发送路径，不存在第二套 Voice Brain。用户消息、Brain 串流回复、Chat 持久化、Summary 与 Scoped Memory 都属于打开通话时绑定的准确 Chat 和可选 Project；文字与语音可以在同一 Chat History 中交替使用。语音提交不会消费已有 Composer 草稿，也不会附带暂存文件。
-- 播放开始后 Session 进入 `SPEAKING`。文字终态与播放终态可以任意先后到达，只有两侧都结束后才回到 `IDLE`；若 `voice.speech` 不可用或运行中失效，文字回复仍正常完成，不会因等待可选语音而卡住。
-- 快速生成的长回复先进入有界原文 Spool，再由独立 Feeder 按合成队列背压逐句送入；不会因瞬间超过八个待合成分句就截断整段朗读。停止或替换回复只丢弃过期输出，不再把健康的受管语音 Worker 当作故障永久停用。Preload 在连续分句间复用一个可信 Web Audio 输出图，每句仍重新应用当前音量与输出设备；失败、超时或异常回执只退役当前播放世代，同一个可信窗口可自动恢复下一句。
-- Voice Call 自动提交一段语句后，回复处于 `THINKING` 或 `SPEAKING` 时会启动专用 Barge-in 监听。它要求 WebRTC `echoCancellation: { exact: true }`，并验证实际 Track Settings；无法确认回声消除时会 Fail Closed、释放麦克风并让当前回复安全继续，不信任未经验证的回声路径。已验证的 AEC 用于降低 Elysia 扬声器输出造成自身打断的风险；本文不据此声称已通过真实麦克风/扬声器设备矩阵验收。
-- Barge-in VAD 要求持续语音达到确认阈值。确认用户开口后，可信边界先停止本地播放，再以准确 `{requestId, chatId}` 取消该 Turn 的待处理/运行中 Speech，并以准确 Chat Request 请求停止 LLM Stream；重复、迟到或错误归属的取消不能影响其他 Turn。
-- Session 绑定准确的 Chat ID、Project ID 和本地 epoch；Capture、STT、Chat Request 与 Speech Sequence 都必须匹配。接受打断会递增 Epoch，并把已确认的新采集接入新的 `LISTENING`；旧轮次迟到事件以及关闭 Voice、切换 Chat/Project 或导航后的跨上下文事件都会被拒绝。
-- Chat 继续使用原有事务 Commit Gate：取消在 Commit 前胜出时，不会保存残缺的 Assistant Message；若完整提交已先胜出，则保留完整文字并只停止仍属于该 Turn 的播放。若新一轮 PCM 已完成但旧 Chat 仍未终止，它只在内存中等待最多 10 秒；超时、挂断、上下文切换和其他隐私边界会覆盖并丢弃该缓冲区，不会发送或保存。
-- Voice Call 会显示当前生命周期和计时，中间是圆形爱莉希雅头像，底部只保留无常驻文字的圆形 **Mute/Unmute** 与 **Close voice** 控件；控件名称通过 Hover Tooltip 和可访问名称提供，不再显示字幕、Transcript 审核、设备入口或自动续听开关。
-- Voice Call 未静音时持续执行“监听一段完整语句 → Final Transcript 自动发送 → 等待回复及预期 TTS 结束 → 继续监听”的循环；Unmute 会恢复当前阶段允许的监听，Mute 暂停，Close 与上下文变化会阻止旧 Owner 恢复。可恢复的麦克风、STT、Chat 或播放失败只会在终止旧 Owner 后建立全新监听 Owner；自动发送失败时，会在本地草稿存储可用的前提下先把 Transcript 恢复到 Composer 草稿。它是 utterance-based 循环，并非实时 Partial Transcript 或 gapless streaming。
-- Settings 与 Voice 页面只显示经过枚举净化的就绪状态。缺模型、缺可选依赖、CUDA 不可用或初始化失败时会给出可操作步骤，不显示本地路径、底层异常或 Native 诊断；`auto` 可以选择安全的 CPU 回退。
-- 已完成一次真实 CPU Runtime/模型的本地转写 Smoke 验证；CUDA 成功路径尚未在本文声称为实机验证。自动化测试同时覆盖 Fake Runtime、Cancel、Timeout、Native Draining 和迟到结果丢弃。
-- 2026-09-23 的三组件实机基准让 `qwen3.5:9b` 与受管 GPT-SoVITS 并行使用 RTX 4070 SUPER，并在两者驻留时用 CPU Faster-Whisper 转写；观察到全局峰值 9,824 / 12,282 MiB。完整测量、清理证据、限制与重测条件见 [Voice Performance, Safety, and Rights Acceptance](./docs/03-VOICE-PERFORMANCE-SAFETY-RIGHTS.md)。
-- Python 已提供引擎无关的合成 Contract、本地 Voice Profile Catalog、惰性 Composition Root 和只接受 Loopback IP Origin 的 GPT-SoVITS `/tts` Adapter；`localhost` 会先规范化为 `127.0.0.1`。通用 Contract 对最大 32 MiB 的 PCM WAV、Ogg Opus 与受支持 ADTS AAC 子集执行完整 Container/Transport Framing 检查，不冒充 Codec 解码；当前非流式 GPT-SoVITS Adapter 只配置 WAV/AAC，并要求有界、声明 `Content-Length`、非压缩且非 `Transfer-Encoding` 的响应。
-- 本机真实验收基线使用同一固定中文测试句，对 `neutral`、`happy`、`sad` 各连续合成两次，六次均得到有效 WAV；本次十值扩展又通过受管 CUDA Runtime 对全部十种情绪各合成一次，十次均得到有效的 32 kHz、单声道、16-bit PCM WAV。停掉服务后 Smoke 返回稳定的 `service_unreachable`，完整文字 Chat 回归仍通过。`service_binding_unverified` 表示服务在线但上游 API 不能证明当前加载的是 Catalog 所声明的权重，不是对权重身份的背书。
-- 桌面路径从 `Brain.stream_chat()` 复制准确文本块，在自然标点或长度上限处分句；有界 FIFO 只允许一个受管 Worker 合成。NDJSON 只承载关联 Metadata，PCM WAV 通过独立 fd3 进入 Electron Main，再由不属于公开 `DesktopApi` 的私有 IPC 送到 Preload Web Audio；每个片段会应用已保存的扬声器选择和当前音量，通过 GainNode 控制增益。指定设备不可用时跳过该片段，不会悄悄回退到其他扬声器；音量为 0 时只静音该片段，不会关闭合成。主界面与 Voice 的角色图保持静态，可信 Preload 不为它们建立音频分析器或发布嘴型提示。用户在 Settings 选择的十种闭集值（`neutral / happy / sad / caring / moved / playful / affectionate / teasing / serious / surprised`）是唯一允许的 Voice Emotion；成功重启后，同一 Active 值选择 GPT-SoVITS 参考与有界静态表情，模型不能提交任意情绪、路径、参数、图集格或动画命令。React 只收到 Request/Chat、`playing|played|skipped` 加 Sequence 或 `completed|cancelled` 终态，不接触 WAV、Token、Hash、文本、准确 Prompt、诊断或本机资产路径；以准确 Request ID 与 Chat ID 停止播放也必须经过可信 Main 校验。Profile 配置、Runtime、权重和参考音频均留在被 Git 忽略的本机目录；来源和使用限制见 [MODEL_LICENSE.md](./MODEL_LICENSE.md)。
-
-### 🎵 本机爱莉希雅翻唱
-
-- Composer 的音符按钮位于 **Dictate** 左侧。默认 **Voice conversion** 从原唱音频转换，支持选择《妖精小姐的魔法邀约》或《Elysia》歌唱参考，完整保留处理时间轴并保守修正短时音高误判；调性由用户选择。该路径全程本地，不查询歌词。**Lyrics-driven singing** 是可选的普通话同步歌词重唱路径，只把歌名、歌手和时长送入 LRCLIB，不上传音频；**Legacy RVC** 显式保留旧 RVC 引擎。引擎失败不会静默回退；有限样本通过不构成所有语言、歌曲和音域的音质保证。
-- 设置窗口支持选择一首完整歌曲，或直接选择已对齐的人声/伴奏 Stem；完整歌曲模式使用固定 Demucs `htdemucs` 分离，Stem 模式跳过分离。调性滑块可保留原调，或把主唱升/降一至十二个整数半音；任何非零选择都会移动主唱。**Shift accompaniment with vocal** 默认勾选，此时伴奏使用同一档位；取消勾选则让伴奏保持原调。该选项对三种引擎与两种输入方式都生效。主唱单独进行非八度移调时通常会与原调伴奏跑调或不协和；`±12` 会改变主唱音区，但保留音级关系。移调属于音域取舍，不是更准确的原唱复刻；应使用刚好适合声线的最小档位。越接近整八度端点，越容易软化瞬态、放大人声伪影或触及 RVC 音高边界，端点可选不代表音质保证。
-- Lyrics-driven 推理使用只保留在本机的 59 条 Prompt bank（48 corpus + 10 emotion + 1 anchor）。每段先按音域、语速与 phoneme 覆盖选最多两个 Prompt；歌词/谱面推断的 emotion/style 只在 acoustic cost 同分时决胜。推理固定 `control=score`、`auto_shift=False`、`pitch_shift=0`，先生成确定性 C0，只有结构失败或 soft loss 较高时才在全局固定预算内尝试同 Prompt 新 seed 的 C1 与第二 Prompt 的 C2。结构硬门禁排除明显无效波形，F0/note、掉音、误有声和频谱仅作候选软评分；全局 DP 选出边界一致的路径，再按绝对 sample offset 拼成精确时间线，不逐段隐式移调、拉伸或无限重试。
-- 支持 AAC、FLAC、M4A、MP3、OGG、Opus 与 WAV；输入限制为 1 秒至 12 分钟、最多 1 GiB。歌词驱动路径显示 `validating → separating → transcribing → aligning → synthesizing → mixing`，Legacy 路径显示 `validating → separating → converting → mixing`；都可取消，完成后自动播放，并提供重新播放、停止和无损 WAV 导出。
-- 原歌曲路径、输出路径、模型路径、进程 ID 与音频字节只存在于 Electron Main、私有 Worker 和可信 Preload；React 只收到安全文件名、有界进度与生命周期状态。播放使用私有 Blob URL、所选扬声器和当前语音音量，结束或取消后立即撤销。
-- 未导出的结果、在线取得的歌词和所有中间 Stem 都属于受管临时数据：创建下一首、清理临时音频、取消失败后的受管清理或退出会删除它们。SoulX、FunASR、ROSVOT、RMVPE、OpenCC、RVC v2、HuBERT、FAISS Index、Demucs、爱莉希雅 Prompt bank/模型及示例翻唱均留在 Git 忽略的本机目录，不进入 GitHub、Release 或当前安装包；Prompt 音频、metadata、准确文本及 private manifest 内容也不得复制到仓库、测试 Fixture、诊断或文档。
-- 三条路径共用保留句间动态的 60 Hz High-pass、0.5 dB Presence、线性 +1.3 dB 主唱补偿、Vocal-keyed Ducking 和 -1 dBFS Limiter。歌词驱动路径还使用 -18 dB 严格无声辅音层；RVC 路径固定使用 RMVPE、speaker `0`、Index Rate `0.00`、Protect `0.33` 与 RMS Mix Rate `0.25`。零 Index Rate 下 Protect 的 Feature Blend 是恒等操作，不能被解释成无声辅音恢复保证；RVC 不混回原唱辅音的目的是避免原唱泄漏及重新引入分离伪影。RVC 单次子进程会关闭会按音频形状缓存显存的 CUDA Graph，并在每项任务构建模型前固定 upstream seed `114514`、cuDNN 算法选择与 cuBLAS workspace；在同一已审核 Runtime 与 Device 上，相同输入不会仅因重新启动进程而随机得到不同波形。Adapter 还会拒绝全零或持续满幅的异常结果；当前机器已用 248.294 秒完整 Stem 作业验证 RVC，并用 194.808 秒完整 Lyrics-SVS 作业验证多 Prompt、多候选、拼接、混音、WAV/MP3 发布与中间文件清理；6.71 秒受控 Lyrics-SVS 目标的两次重放得到相同输出摘要。当前私有声学模型只由说话语料训练，持续低音、高音、停顿和摩擦音仍可能发哑或出现电音。该能力仍是需要手动准备 CUDA/WSL 私有 Runtime 的源码开发预览，不声称自动查词等于歌词授权，也不把这些有限验收当作所有音区、歌曲和咬字质量的证明。准确目录、模型字节身份、测试方法、限制和权利边界见 [本机爱莉希雅翻唱](./docs/15-SONG-COVER.md) 与 [MODEL_LICENSE.md](./MODEL_LICENSE.md)。
-
-### 🌷 可选外部动态桌宠
-
-- 应用内 Chat 角色状态板使用审核静态半身素材，Voice Call 使用审核静态圆形头像。动态桌宠是独立、默认关闭的本机程序能力：首次运行或偏好损坏时保持 `disabled`；`hidden` 保留目录与程序选择但不运行外部程序；只有用户明确选择 `visible` 才尝试启动。
-- Settings 的 **Choose downloaded folder** 使用原生目录选择器选择用户已持有的 `@书呆儿` Bongo Cat Mver 程序合集。Main 按有界深度、条目数和候选数扫描，拒绝链接逃逸，只接受同时具备 `standard / keyboard / gamepad` 三套完整配置的候选；Settings 显示实际验证通过的程序数量，不硬编码“六套”。记录的免费版下载页为 <https://pan.quark.cn/s/cb5d84acad8e>，但其当前内容、授权、条款和可用性尚未核验，不能假定与项目所有者购买的本机合集相同。
-- “选择一个文件夹”不等于允许执行其中任意 EXE。Main 要求 Launcher、`BongoCatUI.exe`、`BongoCatMverUI.dll`、全部允许的顶层 DLL 与必要资源匹配固定字节长度和 SHA-256；每次实际启动前重新验证选中程序，任何变化都会 Fail Closed，并要求重新扫描。绝对路径只存在于 Electron Main，React 只接收净化后的程序摘要与稳定选中 ID。
-- Main 只以原目录为工作目录启动当前选中的程序，不加载或渲染其中的 Live2D。键盘/鼠标反馈、眼部追踪、表情快捷键、窗口移动缩放和动态角色表现全部由原 Bongo Cat Mver 程序负责。每套原 `config.json` 留在原程序目录；Elysia 只为识别受支持输入配置做有界结构验证，不改写、不复制，也不把配置变成应用数据。
-- 受审 Launcher 自带 `requireAdministrator` manifest；Elysia 只对这个固定 Hash 的子进程应用 Windows `RunAsInvoker`，让它留在当前用户权限下，不向未签名外部程序授予管理员权限，同时保留可安全停止和切换的准确 PID tree。Windows 完整性隔离仍可能阻止它读取另一个管理员程序中的输入，Elysia 不会为绕过该系统边界而提权。
-- 同一时刻最多由 Elysia 持有一个桌宠进程。切换外观时，Main 先以 Elysia 启动并记录的准确根 PID 关闭该进程及其子进程树；不按进程名查找，因此不会关闭用户手动启动的同名程序。旧进程未能在期限内安全结束时，新程序不会启动；迟到的旧进程事件也不能覆盖新程序状态。
-- 付费合集中的 EXE、DLL、Live2D 模型、纹理、动作、表情、物理文件、Runtime、配置和源压缩包均保持本机私有，不进入 Git、GitHub、Release、安装包、ASAR 或构建输出。目录选择、程序验证或启动失败只产生净化后的可恢复状态，不影响主 Chat、Voice 或 Python Backend。
-
-### 🔕 Presence 与系统通知
-
-- Settings 中的 **Reply completion notifications** 与 **Neutral presence reminders** 属于 Electron Main 本机偏好，不依赖 Python Backend 设置，也不要求重启。两项默认值分别为 Off 与 Off；提醒频率闭集只有 Off、Daily 和 Weekly，**Turn all off** 会用一次 revisioned 更新完整停用两项能力。
-- 回复提示只在用户发起的 Chat 或 Retry 已通过完整流与最终回复一致性校验、主窗口不受注意且没有 Voice 页面、尚未排空的受管朗读或 Knowledge 工作时显示。取消、错误、流式片段、语音转写、Knowledge 进度都不会触发；通知正文固定为本地文案，绝不包含 Prompt、Reply、Chat/Project 名称、文件名、Memory 或模型输出。
-- 中性提醒从启用或改频率时重新计算完整 24 小时 / 7 天间隔，只在 Elysia 已运行、主窗口不存在、隐藏或最小化、Backend Ready 且没有 Chat、Voice、尚未排空的受管朗读或 Knowledge 工作时显示。到期时若因窗口仍可见或这些活动仍忙而被抑制，该周期会安全记为已处理，不会在稍后隐藏窗口或恢复空闲后追补；退出期间不会运行提醒任务。通知固定静音、用固定 ID/Group 保持全局至多一个，点击只显示并聚焦 Elysia。
-- 严格 16 KiB JSON 只保存选择、revision、更新时间和 Main 私有的最后处理周期；损坏文件 Fail Closed 到全部关闭。Renderer 的 Web Notification 权限仍被拒绝，公开 Preload 只允许读取、完整 CAS 更新、状态订阅和一个只用于抑制通知投递的 Voice-active 布尔值；没有任意 `notify(title, body)` 能力，也不注册后台任务、自启动、云推送、连续打卡或参与度追踪。
-
----
-
-## 🧪 开发与验证
-
-### Python
-
-```bat
-cd /d D:\Elysia_AI
-.venv\Scripts\python.exe scripts\check_python_documentation.py
-.venv\Scripts\python.exe scripts\check_distribution_assets.py
-.venv\Scripts\python.exe -m pytest -q
-.venv\Scripts\python.exe -m mypy --platform win32 agent attachments chats config core desktop_protocol documents knowledge_lifecycle localization memory models project_sources projects recovery scripts tools ui voice desktop_backend.py desktop_knowledge.py desktop_speech.py start.py
-```
-
-只验证歌词驱动歌唱的 Prompt 选择、质量门禁、候选预算、全局 DP 与精确时间线拼接时，可运行不加载私有模型的纯单元测试：
-
-```bat
-cd /d D:\Elysia_AI
-.venv\Scripts\python.exe -m pytest tests\test_song_svs_quality.py tests\test_song_svs_inference.py -q
-```
-
-已单独启动 Loopback GPT-SoVITS 并完成本地 Profile 配置后，可用固定、不会回显参考文本或路径的 Smoke 命令验证单次合成；每个情绪会合成同一句话两次：
-
-```bat
-cd /d D:\Elysia_AI
-.venv\Scripts\python.exe scripts\smoke_gpt_sovits.py --profile default --emotion neutral --emotion happy --emotion sad --emotion caring --emotion moved --emotion playful --emotion affectionate --emotion teasing --emotion serious --emotion surprised
-```
-
-成功输出只含 Readiness Code、格式、字节数、时长与 SHA-256；服务未启动时输出 `{"error":"service_unreachable"}` 并返回非零退出码。Smoke 不会把音频写入磁盘。当前本机被忽略的 v2 Runtime 可在另一个 CMD 窗口按其本地配置启动，并用 `Ctrl+C` 停止：
-
-```bat
-cd /d D:\Elysia_AI\models\cache\GPT-SoVITS-v2-240821
-runtime\python.exe -X utf8 api_v2.py -c GPT_SoVITS\configs\tts_infer_elysia.yaml -a 127.0.0.1 -p 9880
-```
-
-该具体目录和 YAML 只是本机验收环境，不在仓库中；其他开发者应使用自己核验过的 Runtime 与 Profile，不能从这个命令推断模型素材可再分发。
-
-在 Ollama、被忽略的 Faster-Whisper 模型、受管 GPT-SoVITS Runtime 与已经完成权利审查但仍只限本机评估的 Voice Profile 都准备好，并显式启用 `GPT_SOVITS_ALLOW_LOCAL_EVALUATION=True` 后，可以运行三组件多周期资源基准：
-
-```bat
-cd /d D:\Elysia_AI
-.venv\Scripts\python.exe scripts\benchmark_voice_pipeline.py --cycles 3
-```
-
-基准会并发执行 Ollama Streaming 与受管 TTS，再在两者仍驻留时使用 CPU Faster-Whisper 转写内存中的合成 WAV。输出 JSON 只包含延迟、Ollama `/api/ps` 的模型显存值和 `nvidia-smi` 全局采样；不会保存或输出音频、测试文本、转写内容或本机路径。Windows WDDM 下进程级显存通常不可用，因此全局 GPU 峰值可能包含桌面和其他进程负载；运行前应关闭无关 GPU 工作，并在目标机器上重复足够周期。当前验收结果见 [完整记录](./docs/03-VOICE-PERFORMANCE-SAFETY-RIGHTS.md)。
-
-### Desktop
-
-```bat
-cd /d D:\Elysia_AI\desktop
-npm run docs:check
-npm run lint
-npm run typecheck
-npm run test:contract
-npm run test:ui
-npm run build
-npm audit --audit-level=high
-```
-
-`npm test` 会依次执行共享协议测试和 Electron Renderer UI 测试。GitHub Actions 在 Ubuntu 上运行 Python 与 Desktop 检查，并额外在 Windows 上运行原生附件桥接、文件守卫、不加载真实模型的受管 GPT-SoVITS 进程/Runtime 边界测试，以及真实 Unpacked Package + ASAR 分发审计；真实 Runtime/模型验收仍需在配置完整的本机执行。
-
-### 本地打包烟雾测试
-
-```bat
-cd /d D:\Elysia_AI\desktop
-npm run package
-npx --no-install asar list out\win-unpacked\resources\app.asar > "%TEMP%\elysia-asar-listing.txt"
-if exist "%TEMP%\elysia-asar-extracted" rmdir /s /q "%TEMP%\elysia-asar-extracted"
-call "D:\Elysia_AI\desktop\node_modules\.bin\asar.cmd" extract "D:\Elysia_AI\desktop\out\win-unpacked\resources\app.asar" "%TEMP%\elysia-asar-extracted"
-cd /d D:\Elysia_AI
-.venv\Scripts\python.exe scripts\check_distribution_assets.py --unpacked-tree desktop\out\win-unpacked --asar-listing "%TEMP%\elysia-asar-listing.txt" --extracted-asar-tree "%TEMP%\elysia-asar-extracted"
-```
-
-输出位于 `desktop\out\win-unpacked`。审计会同时检查真实 Unpacked Tree、ASAR 清单与完整抽取树；应用图标及全部审核静态角色素材必须恰好出现一次且符合固定长度与 SHA-256，而任何外部桌宠 EXE、DLL、配置、Live2D manifest、MOC、纹理、physics、motion、expression、Runtime 或编辑器模型文件都必须为零。Git 和安装包中的 PNG、ICO、WebP 等视觉素材还受准确路径白名单约束，因此把付费纹理改名为普通图片或移动到普通目录也会被拒绝。审计同样拒绝本机 AI 模型权重、音频、Runtime/User Data、压缩包、退役构建残留或链接逃逸；它必须在每次发布产物前运行。`npm run make` 可以生成未签名的 NSIS Installer，但当前产物不包含 Python、Ollama 或推理模型，不能视为独立发行版。
-
----
-
-## 🧱 技术栈
-
-| 层级 | 技术 |
-| --- | --- |
-| AI Runtime | Ollama + `langchain-ollama`；可选受管本机 GPT-SoVITS Worker；本机 Demucs + RVC v2 音色转换与 SoulX-Singer 歌词驱动翻唱流水线 |
-| Python Core | Python 3.14、typed domain/service/repository boundaries |
-| Desktop Runtime | Node.js 24 + Electron 43 |
-| Renderer | React 19 + TypeScript 6 + Vite 8 |
-| Local Protocol | authenticated NDJSON Protocol v1 + JSON Schema |
-| Persistence | 可移动的版本化数据根；原子 JSON、SQLite 索引与私有附件 Blob |
-| Python Quality | AST 文档覆盖检查 + pytest 9 + mypy 2 |
-| Desktop Quality | 源码文档覆盖检查 + ESLint 10 + Playwright 1.62 + TypeScript compiler |
-| Packaging | electron-builder + unsigned NSIS development artifact |
-
----
-
-## 📦 项目结构
-
-```text
-Elysia_AI/
-├── attachments/        # Chat / Project 范围的本地附件存储边界
-├── chats/              # Chat Domain、序列化、Repository 与迁移
-├── config/             # 环境默认值、ProductionDataLayout 与桌面设置
-├── core/               # Brain、Ollama Adapter、Prompt 与 Active Conversation
-├── data/characters/    # 角色参考语料；不属于源码许可范围
-├── desktop/
-│   ├── electron/       # Electron Main、Preload、Protocol 与原生边界
-│   ├── src/            # React Renderer
-│   └── tests/          # Protocol 与真实 Electron UI 测试
-├── desktop_protocol/   # Python/TypeScript 共用的 Schema、Fixture 与校验器
-├── documents/          # Path-private 文档派生、索引、检索与 Grounded Answer/Citation
-├── knowledge_lifecycle/ # Project-only 可恢复生命周期 saga 与已验证导出清理/恢复
-├── memory/             # Profile、Summary、Long-term Memory 与 Scope
-├── models/             # Python namespace；本地模型权重目录被 Git 忽略
-├── projects/           # Project Domain、Repository 与 Chat 关系服务
-├── project_sources/    # Chat-derived Project Source 授权、Catalog 与回答组合
-├── recovery/           # 导入、导出、迁移与损坏隔离
-├── scripts/            # 审计、Smoke 与短生命周期本机翻唱 Worker
-├── tests/              # Python 测试
-├── voice/              # 音频设备、PCM/STT、TTS Contract/Profile、分句队列与受管 Runtime
-├── workspace/          # 仅 Console/旧开发布局；Desktop 首次运行会安全复制
-├── desktop_backend.py  # Electron ↔ Python 进程入口
-├── desktop_speech.py   # 桌面语音分句、受管合成与二进制交付协调器
-└── start.py            # Console 入口与服务组合根
-```
-
-`logs/`、`.env`、`.venv/`、旧开发用 `workspace/`、Ollama blobs/manifests（包括 `manifests-v2`）、`models/cache/` 与 `models/weights/` 都被 Git 忽略。Desktop 的正式数据根默认位于 Electron `userData/data`，可在 **Settings → Data & storage** 查看、移动、统计容量，并只清理应用自有的临时音频、Cache 与 Log；无法安全删除的旧副本会跨重启显示为 Recovery Copy，等待人工核对。精确布局和失败回滚规则见 [Production Data Layout](./docs/13-PRODUCTION-DATA-LAYOUT.md)。
-
----
-
-## ❓ FAQ
-
-### 为什么在 CMD 中执行 `cd D:\Elysia_AI\desktop` 后仍停在 `C:\Windows\System32`？
-
-CMD 的 `cd` 默认不会切换盘符。请使用：
-
-```bat
-cd /d D:\Elysia_AI\desktop
-```
-
-### PowerShell 提示 `npm.ps1 cannot be loaded` 怎么办？
-
-直接使用 CMD 执行本文的 `npm` 命令即可，不需要为了本项目放宽系统的 PowerShell Execution Policy。
-
-### 为什么页面提示只能通过 Electron 打开，无法连接 Python Backend？
-
-你打开的是 `npm run dev:renderer` 提供的裸浏览器预览，浏览器没有 Electron Preload，因此 Python Backend、麦克风和 Desktop Pet 都不会连接。关闭该预览，在 `desktop` 目录运行一次 `npm run dev`，并使用随后自动打开的 Electron 窗口。
-
-### 为什么桌面端显示 `Connection error` 或一直等待 Backend？
-
-请确认：
-
-1. 已在 `desktop` 目录通过 `npm run dev` 启动 Electron，而不是只在浏览器中运行 `npm run dev:renderer`。
-2. `.venv\Scripts\python.exe` 存在且依赖已安装。
-3. Ollama 正在运行，Settings 中的 Origin 可访问。
-4. 配置的模型已经通过 `ollama pull <model>` 安装。
-5. **Settings → Data & storage** 所示目录内的 `logs\app.log` 与 Electron 终端中没有新的启动错误；Console 模式仍使用仓库内 `logs\app.log`。
-
-### 为什么 Voice 页面显示本地转写不可用？
-
-先用 `requirements-stt.txt` 安装可选 Runtime，把所选模型的完整本地目录放到 `models\weights\faster-whisper\<model>\`，再到 **Settings → Speech recognition** 选择模型、`auto` / `cuda` / `cpu` 设备和 `auto` / `zh` / `en` 语言，保存并重启 Backend。界面会显示安全的具体恢复提示。Composer 的 **Dictate** 把一次 Final Transcript 写入当前消息草稿且不发送；**Voice Call** 则在打开后监听，并把每段完整语句的 Final Transcript 自动通过当前 Chat 的正常发送、持久化、Memory 和回复链提交。
-
-### 为什么桌面端仍可能没有语音？
-
-桌面回复朗读已经接通，但它是可选能力：必须存在完整本机 GPT-SoVITS Runtime、严格 Voice Profile、匹配 Hash 的权重与参考音频，并显式开启 `GPT_SOVITS_ALLOW_LOCAL_EVALUATION`。普通文字 Chat 请求明确关闭自动语音，只有点击某条已保存回复的 **Read aloud** 才会按该消息 ID 从 Python 的规范 Chat 记录读取文字并播放；Renderer 不能提交任意合成文本。Voice Call 回复则可按设置自动讲话。长回复的分句会经过有界 Spool 和背压 Feeder 完整排队；连续分句在 Preload 中复用同一个 Web Audio 输出图，避免反复重建 Windows 音频设备。若单句合成、解码或播放失败，受影响句子会被跳过；播放超时或异常回执会自动换用新的播放 Owner，只有无法安全继续的通道或生命周期故障才会停用语音，文字 Chat 始终继续工作。用户在单句 Native 合成正在执行时停止或替换回复，该过期单句会被静默排空，以免强制中止污染整个受管 Worker；新朗读因此可能等待该单句返回，若第三方 Runtime 卡住则最长等到已配置的合成超时，但文字回复不受影响。Voice Call 的 utterance-based 自动提交、回复期间 Barge-in 和未静音时的下一语句监听均已接通；Barge-in 还要求浏览器能启用并证实 WebRTC Echo Cancellation，否则会安全关闭监听并继续回复。实时 Partial Transcript 与 gapless streaming 尚未完成；256 轮 Python STT、256 轮 Speech Queue 与 200 轮 Renderer Voice Soak 已证明程序内 Owner 会清空，但真实设备、房间回声和多小时人类通话矩阵未执行，并由项目负责人明确豁免为当前交付的关闭门槛，不代表这些人工观察已经通过。
-
-### 如何让 Project Chat 回答文件内容？
-
-先在 Project 页面用 **Add sources** 添加受支持文档，等待状态变为 **Ready**；然后打开属于该 Project 的 Chat，并明确开启 **Use Project Sources**。本地 Ollama 必须同时安装当前 Chat 模型和固定的 Embedding 模型。回答会区分来源事实、模型概括与推断，并显示可展开 Citation；如果当前 corpus 无充分证据，Elysia 会返回明确的 evidence-insufficient 状态，而不是生成无引用答案。`stale`、`revoked` 或 `recovery_required` 时请分别 Reindex/Rebuild 或 Recover。完整边界见 [Knowledge UI and Testing](./docs/12-KNOWLEDGE-UI-TESTING.md)。
-
----
-
-## 🔐 本地数据与隐私
-
-- Desktop 的 Chat、Project、Memory、Attachments、Sources、Knowledge 索引、Settings、恢复与迁移状态保存在 Main 选择的版本化数据根；Console 与旧开发模式在未注入独立根时仍兼容仓库内 `workspace/`。
-- 正式数据根、旧 `workspace/` 和 `logs/` 都不进入 Git；请把它们视为私人数据，也不要随调试包公开。
-- Song Cover 只读取用户通过原生文件选择器明确选择的完整歌曲，或明确选择的一对人声/伴奏 Stem；选中路径不进入 React 或协议日志，生成结果仅在受管数据根临时保留到下一次生成、清理或退出，只有用户通过原生保存对话框导出的 WAV 才会保留在所选位置。
-- `.env` 被 Git 忽略，但仍不应放入不受信任的同步目录。
-- 文件源路径不会返回给 React；附件公开状态只包含最小安全元数据。
-- 音频测试不会保存录音。有界采集的 PCM 只在校验或转写所需的短暂生命周期内存在，不进入 Chat 或 Memory；协议结果不包含 PCM、模型路径或 Native Error。打断后的新 PCM 若需等待旧 Chat 终态，最多保留 10 秒，并会在超时、挂断、切换 Chat/Project、关闭 Voice 或其他隐私边界被覆盖和丢弃。
-- 独立 TTS Adapter 只允许 Loopback 服务；Smoke 只输出 SHA-256 摘要和音频元数据，不保存合成音频。桌面受管路径不会使用 HTTP，且只把最小关联 Metadata 和经过校验的 WAV 送入 Electron；Voice Profile、准确参考文本、权重路径和参考音频不会进入 Desktop Protocol 或 React。当前局部 Manifest 只证明同一次启动所见文件一致，不是完整供应链证明，因此桌面缓存保持关闭，Runtime 与同一 Windows 用户在租约启动时仍属于信任范围。
-- Elysia 的 Smoke 输出已经脱敏，但外部 GPT-SoVITS Runtime 自己的控制台或日志可能显示目标文本、参考文本与本地路径；这些上游日志也应视为私人本机数据，不要随调试包公开。
-- 不要在清理源码时删除旧 `workspace/`。目录移动使用 Settings 中由 Main 独占的离线、校验和可回滚流程；它不是备份。现有 Recovery Service 导出只覆盖部分 Domain JSON，不能冒充完整数据根备份。
-
----
-
-## ⚠️ 模型、角色与素材说明
-
-本地 Faster-Whisper 模型、GPT-SoVITS 权重、参考音频、Ollama 模型和缓存不属于 Elysia AI 源码；当前 Git Index 与打包文件清单不包含这些文件。详细来源、限制与待核验事项见 [MODEL_LICENSE.md](./MODEL_LICENSE.md)。
-
-尤其需要注意：本地模型包的说明没有提供可核验的完整再分发授权，因此不得把权重或参考音频提交到本仓库、上传到 Release，或打进安装包。
-
-`data/characters/elysia_character_reference_zh.md` 已被 Git 跟踪，其中语录与语音转写尚未完成逐条来源和授权审查。这是当前仓库的分发风险，不应等到正式发行时才处理；详情与建议动作同样记录在 [MODEL_LICENSE.md](./MODEL_LICENSE.md)。
-
-运行时不会把这份混合语料直接交给模型。维护者用本地资料、官方发布内容和往世乐土剧情索引整理出原创的[十二类角色分析](./data/characters/elysia_character_analysis_zh.md)，再将可执行的人格、短回复、无动作旁白、事实与工具边界独立维护在[`core/elysia_system_prompt_zh.md`](./core/elysia_system_prompt_zh.md)。`core/prompts.py` 只负责验证并加载这份受信 Markdown，以及把动态 Profile、Memory 和 Chat/Project Context 隔离为 JSON 数据。
-
-项目所有者明确选择把《崩坏3》爱莉希雅官方刻印作为本非官方、非商业粉丝项目的公开品牌素材。PNG/ICO 不属于项目源码许可，相关权利仍归 HoYoverse / miHoYo；本项目不声称获得官方背书，并会响应权利人的移除要求。
-
-应用内的爱莉希雅立绘、七态图集、表情图集与嘴型审阅图集由 OpenAI 内置图像生成工具参考项目所有者提供的爱莉希雅图片生成。外部原始参考图片不进入仓库或安装包；已审核的旧立绘保留在仓库与安装包中，并作为图集的二次参考和故障回退。主界面和 Voice 只选择静态状态/表情素材，不使用嘴型审阅图集、不采样音频，也不执行 Live2D。全部审核 PNG 仍以准确路径、字节长度和 SHA-256 固定在分发门禁中，真实 ASAR 还必须恰好包含一次各路径并通过抽取字节复核。这些图片不属于源码许可，只用于本非官方、非商业粉丝项目；底层爱莉希雅与《崩坏3》角色 IP 仍归 HoYoverse / miHoYo 等适用权利人所有，不代表官方背书，并会响应有效的权利人移除要求。
-
-可选动态桌宠调用用户本机持有的 `@书呆儿` Bongo Cat Mver 原程序；程序本身负责 Live2D 动态、键鼠反馈、眼部追踪与表情。项目不会复制、提交、上传或打包其中任何 EXE、DLL、模型、Runtime 或配置。记录的免费版下载页为 <https://pan.quark.cn/s/cb5d84acad8e>，但其当前内容、授权、条款和可用性尚未独立核验，也不能假定与项目所有者购买的本机合集相同。完整记录见 [MODEL_LICENSE.md](./MODEL_LICENSE.md)。
-
----
-
-## ⚖️ 免责声明与许可证状态
-
-Elysia AI 是非官方粉丝开发项目，与 HoYoverse / miHoYo **没有隶属、合作、赞助或背书关系**。《崩坏3》、爱莉希雅以及相关角色、剧情、美术、声音、表演、名称与商标的权利归各自权利人所有。本项目不会也不能授予这些第三方内容的权利。
-
-2026-09-23 已重新核对 [HoYoverse Fan-made Content 帮助说明](https://support.hoyoverse.com/hc/en-us/articles/51005649400729-What-are-the-guidelines-for-creating-and-selling-fan-made-content)；它当前链接的特定产品同人指南，以及此前记录的[《Honkai Impact 3rd》素材与同人创作指南](https://www.hoyolab.com/article/1463874)，都不是本地声音模型、录音或表演权的再分发许可。具体授权缺口与处理决定见 [MODEL_LICENSE.md](./MODEL_LICENSE.md)。
-
-本仓库目前 **没有根级源代码 `LICENSE` 文件**。因此，仓库可见或可克隆不代表已获得复制、修改、再分发或商用源代码的通用许可。若项目所有者之后选择软件许可证，应单独添加正式 `LICENSE`，并明确排除角色 IP、角色语料、模型权重、参考音频以及其他第三方资产。
-
-本节与 [MODEL_LICENSE.md](./MODEL_LICENSE.md) 只是事实与边界说明，不构成法律意见，也不替代权利人的许可。
-
----
-
-## 🙏 致谢
-
-- **爱莉希雅 /《崩坏3》**：© HoYoverse / miHoYo
-- **本地 Elysia GPT-SoVITS v2 模型包**：模型发布标注为 `TinyLight微光小明`，整合包提供者标注为 `花儿不哭`
-- **角色配音表演**：本地模型说明标注 CV 为宴宁；相关声音与表演权利不属于本项目
-- **GPT-SoVITS**：[RVC-Boss/GPT-SoVITS](https://github.com/RVC-Boss/GPT-SoVITS)
-- **核心工具链**：Ollama、Python、pypdf、Electron、React、TypeScript、Vite、Playwright、pytest 与 mypy
-
-如来源、署名或权利说明存在错误，请通过 GitHub Issue 或仓库维护渠道提出更正；在事实核实前，相关资产应继续保持本地、非分发状态。
-
----
-
-## 💌 参与项目
-
-欢迎提交与代码、测试、文档和可访问性有关的 Issue 或 Pull Request。源码注释要求见 [`AGENTS.md`](./AGENTS.md)，新增或修改源码必须通过其中的文档覆盖检查。请勿提交模型权重、游戏语音、运行时用户数据、日志、`.env`，或未记录来源、权利人规则和维护者决定的第三方素材。
+仓库目前没有根级源代码 `LICENSE`。来源、署名、使用限制与待核验事项见 [素材与权利说明](./MODEL_LICENSE.md)。

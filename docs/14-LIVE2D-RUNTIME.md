@@ -1,285 +1,153 @@
-# External Desktop Pet Program Integration
+# External Desktop Pet
 
-> Scope: the permanently static in-app character, opt-in discovery and launch
-> of local Bongo Cat Mver companion programs, process ownership, failure
-> recovery, and paid-asset distribution boundaries.
+Elysia's in-app character is static. The optional animated Desktop Pet launches
+an independently owned, reviewed Bongo Cat Mver program. The historical
+filename is retained for existing links.
 
-The filename is retained so existing documentation links remain valid. Elysia
-no longer embeds or renders a dynamic desktop-pet model.
+## Use and modes
 
-## Delivered behavior
+In Settings, choose a local companion-program collection and select a
+validated program. The default is `disabled`.
 
-The character panels inside Main Chat and Voice are always static. Character
-state and the user-selected ten-value Voice Emotion choose only explicitly
-reviewed PNG atlas cells. The closed values are `neutral`, `happy`, `sad`,
-`caring`, `moved`, `playful`, `affectionate`, `teasing`, `serious`, and
-`surprised`. There is no Animated/Still switch for those panels, and model
-output cannot select files, atlas cells, expressions, or animation parameters.
+| Mode | Behavior |
+| --- | --- |
+| `disabled` | Capability off; no external program runs |
+| `hidden` | Retain folder and selection, stop the owned program |
+| `visible` | Revalidate and launch the selected program |
 
-The optional animated Desktop Pet is a separate external-program integration.
-It is `disabled` by default. After the user chooses a local program-collection
-folder, Settings lists only programs that Electron Main validates against the
-reviewed Bongo Cat Mver build. `visible` starts only the selected program;
-`hidden` preserves the folder and selection without running it; `disabled`
-turns the capability off. The original program—not an Elysia rendering
-surface—provides the animated character and owns its interaction behavior.
+The tray offers Launch, Stop, Retry or Disable according to state. Without a
+trusted selection it directs the user to Settings. Hidden or visible intent
+keeps Elysia in the tray after the main window closes; disabling restores the
+normal last-window-close behavior. Pet failures leave Chat, Voice, Knowledge
+and static artwork available.
 
-## Architecture split
+The expanded main-window character panel selects fixed, reviewed cells from
+`elysia-ui-illustrations.png` by application state. Voice Emotion remains
+metadata there; it does not replace the illustration sheet. The independent
+Voice Call window uses the fixed, dimmed `voice-call-background.webp` image.
+Neither surface renders a dynamic model, and model output cannot choose files,
+atlas cells, expressions or animation parameters.
+
+## Ownership
 
 | Component | Responsibility |
 | --- | --- |
-| `desktop/public/character/elysia-state-atlas.png` | Static closed-state artwork for the in-app character panel |
-| `desktop/public/character/elysia-expression-atlas.png` | Static user-selected expression artwork |
-| `desktop/public/character/elysia-portrait.png` | Reviewed static fallback artwork |
-| `desktop/electron/desktop-pet-program-library.ts` | Main-private bounded discovery, structural validation, pinned hashes, and launch-time revalidation |
-| `desktop/electron/desktop-pet-program-manager.ts` | Single-child launch, exact PID-tree stop, switching, and stale-event isolation |
-| `desktop/electron/desktop-pet-window-controller.ts` | Hidden startup, native loading readiness, and one-time compact placement for the owned window |
-| `desktop/electron/desktop-pet-preferences.ts` | Default-off intent, Main-private folder, stable selection, migration, and atomic persistence |
-| `desktop/electron/desktop-pet-contracts.ts` | Path-free state and update contracts exposed to the main Renderer |
-| `desktop/electron/main.ts` | Native folder picker, serialized reconciliation, tray actions, and shutdown ownership |
-| `desktop/src/settings/SettingsView.tsx` | User-facing folder, detected-program, and mode controls |
+| `desktop/public/character/` | Reviewed static illustrations, atlases and fallback portrait |
+| `desktop/public/voice/voice-call-background.webp` | Fixed artwork for the independent Voice Call window |
+| `desktop-pet-program-library.ts` | Bounded discovery, structural validation and pinned hashes |
+| `desktop-pet-program-manager.ts` | One owned child, switching and exact PID-tree termination |
+| `desktop-pet-window-controller.ts` | Hidden startup, readiness and initial window placement |
+| `desktop-pet-preferences.ts` | Private folder, selection and atomic preferences |
+| Electron Main | Native picker, serialized reconciliation, tray and shutdown |
 
-There is no separate Elysia-owned Pet HTML entry, Pet Preload, dynamic rendering
-surface, embedded model loader, custom model-asset protocol, or packaged
-dynamic-character runtime in the current architecture. The external program
-keeps its own window, position, rendering resources, model behavior, and UI.
+The TypeScript modules above are in `desktop/electron/`. Public state contains
+safe labels, stable IDs, status and fixed warnings; native paths and PIDs stay
+in Main. Elysia has no embedded model loader, Pet HTML/Preload entry, custom
+asset protocol or dynamic-character rendering runtime.
 
-## Local source and rights boundary
+The external program owns its keyboard/mouse/gamepad behavior, tracking,
+expressions, rendering, audio, tray and UI. Its `config.json` stays beside the
+program. Elysia reads only the fields needed for validation and never rewrites,
+copies or migrates that configuration. Each appearance therefore keeps its
+original settings. Elysia stores only mode, collection path and program ID.
 
-The project owner's purchased local collection is attributed to `@书呆儿` and
-is currently stored under an ignored local directory:
+## Validation and launch
 
-```text
-data/characters/爱莉希雅原版猫猫版总合集_34be1/
-```
+Choosing a directory does not authorize every executable inside it. Main
+bounds scan depth, entries, candidates, JSON and referenced-file sizes. It
+rejects links, junction/path escapes, absolute or parent-relative model
+references, URLs, control characters and ambiguous identities.
 
-That path is not a product requirement. Settings uses a native folder picker,
-and installed builds do not probe the source checkout for the paid directory.
-The selected absolute path remains private to Main. React receives only a safe
-folder label, stable program IDs, display names, status, and sanitized warning.
+A candidate needs complete `standard`, `keyboard` and `gamepad` model profiles,
+with all referenced files inside both the candidate and collection roots. Its
+bounded `config.json` needs `decoration`, `standard`, `keyboard`, `gamepad`,
+`network` and `workarea` sections and a supported input mode.
 
-The recorded free-version page is
-<https://pan.quark.cn/s/cb5d84acad8e>. Its current contents, authorization,
-terms, availability, and equivalence to the purchased local collection have
-not been independently verified. The link records provenance context only; it
-is not a redistribution grant, security endorsement, or promise that a
-download will pass this application's reviewed-build checks.
+The launcher, `BongoCatUI.exe`, `BongoCatMverUI.dll`, admitted dependency DLLs
+and required resources must match pinned lengths and SHA-256 identities.
+Unreviewed top-level EXEs/DLLs fail validation. Hash reads also check metadata
+again to detect files changing during the read. Selection IDs combine the
+normalized relative directory and pinned launcher identity; mutable settings
+do not change the ID. Program count comes from the validated scan.
 
-Every paid EXE, DLL, Live2D model, texture, motion, expression, physics file,
-runtime, configuration, and source archive remains local to the user. None may
-enter Git, GitHub, releases, installers, ASAR, unpacked builds, fixtures,
-examples, screenshots, generated test output, or shared diagnostics.
+Before every launch, Main resolves the same canonical collection, program and
+launcher, confirms the descriptor/ID, and repeats structure and hash checks.
+Observed replacement or disappearance fails with a rescan warning. Launch is
+still path-based: a local actor who can modify the collection may replace a
+path between verification and Windows loading it. Revalidation narrows this
+TOCTOU interval; it does not eliminate it.
 
-## Discovery is not arbitrary execution authority
+## Native window and process lifecycle
 
-Electron Main owns discovery because a folder chosen by the user can contain
-arbitrary native code. A successful directory selection therefore does not
-authorize every EXE below that directory. The scanner applies bounded depth,
-entry, candidate, top-level-entry, JSON-size, reference-count, reference-length,
-and referenced-file-size limits. It rejects symbolic links, junction/path
-escapes, absolute or parent-relative model references, URLs, control
-characters, and ambiguous program identities.
+Launch uses no arguments or shell, the program directory as `cwd`, ignored
+standard streams, and `detached: false`, `windowsHide: true`. The Windows
+helper is ready first and keeps the original 1500-by-1500 loading window off
+screen until a normal character frame is ready.
 
-A candidate must contain complete `standard`, `keyboard`, and `gamepad` model
-profiles whose manifests and referenced local files remain inside both the
-candidate program directory and selected collection root. Its `config.json`
-must be a bounded JSON object with the required `decoration`, `standard`,
-`keyboard`, `gamepad`, `network`, and `workarea` sections and a supported input
-mode.
+The pinned program ignores a simple hidden-start request and exposes no
+loading-complete property. The helper therefore reads its initialization guard
+and rendering clocks, accounting for the loaded image base. It rehashes the
+relevant executable/SFML binaries before reading those addresses and never
+writes process memory. After resizing, two normal presentations—or two normal
+event-loop clock advances for uncapped rendering—confirm readiness before
+showing without activation. New binary hashes require revalidating this
+contract. Failure never exposes the unprepared oversized window.
 
-Native code is a stricter boundary. Main rejects any unreviewed top-level EXE
-or DLL. The launcher, `BongoCatUI.exe`, `BongoCatMverUI.dll`, every admitted
-dependency DLL, and required resource files must match pinned byte lengths and
-SHA-256 identities. Hashing reads an exact size and checks file metadata again,
-so a file that changes during validation fails closed.
+Initial placement is beside Elysia's lower-right corner, clamped to the current
+monitor's work area; tray-only launch uses the display corner. DIP-to-physical
+pixel conversion handles mixed DPI and negative coordinates. This is one-time
+placement: the user can move and resize the pet afterward.
 
-The stable selection ID derives from the program's normalized relative
-directory plus the pinned launcher identity. Mutable user configuration is not
-part of that ID, so legitimate per-program settings do not silently create a
-new selection. The number of available programs is always the validated scan
-result; no product path assumes that a collection contains exactly six.
+The reviewed launcher requests administrator rights, so Main applies
+`RunAsInvoker` to that child only. It remains under the interactive user token;
+Windows may prevent it from observing input in elevated applications.
 
-## Launch-time revalidation
+`DesktopPetProgramManager` serializes transitions and owns at most the exact
+child returned by its launch call. It never adopts manually started copies.
+Switching stops and awaits A before launching B. Windows termination uses only
+`taskkill.exe /PID <owned-root-pid> /T`, with deadlines; it never matches process
+names. If termination cannot be confirmed, ownership remains, state becomes
+failed and B is not launched.
 
-A completed Settings scan is a snapshot, not permanent execution authority.
-Immediately before every launch, Main confirms that the collection root,
-program directory, launcher path, selected descriptor, and stable ID still
-refer to the same canonical locations. It then repeats the complete structural
-validation and every pinned executable, DLL, and resource hash.
+Callbacks keep child object identity so old exit/error events cannot overwrite
+a replacement. Unexpected exits become `failed`; expected stops become
+`absent`. Window preparation is bound to the selected child's SFML window and
+is cancelled on exit or shutdown. Application shutdown rejects new launches
+and attempts a bounded stop, so optional cleanup cannot block exit forever.
+Settings, startup/rescan, tray and selection changes share one mutation queue;
+the old program stops before a new selection label is published.
 
-This second gate rejects a stale selection or replacement that is already
-observable when revalidation runs, and it shortens the interval between the
-last validation and process creation. It does not eliminate TOCTOU: launch is
-still path-based, not bound to a verified open file handle or immutable Windows
-file identity, so a local actor able to modify the collection could replace a
-path after revalidation and before Windows resolves the executable or one of
-its dependencies. A moved, missing, modified, newly injected, or link-replaced
-native component observed by revalidation prevents launch and produces a fixed
-warning asking the user to rescan. Native paths and underlying diagnostics do
-not cross into React.
+## Preferences and migration
 
-## Configuration ownership
+Preferences under Electron `userData` are strict, bounded, revisioned and
+atomically replaced. Invalid data defaults to `disabled`.
 
-Each original `config.json` stays beside its program and remains owned by the
-original Bongo Cat Mver application. Elysia performs only the bounded read
-needed to validate its required sections and supported input mode. It never
-modifies, replaces, normalizes, copies, uploads, packages, or migrates that
-file, and it does not mirror the program's settings into Electron application
-data.
+- Version 1 belonged to the removed embedded model window. Migration disables
+  the Pet, clears placement and requires a new local program selection.
+- Version 2 already describes an external program. Migration keeps valid mode,
+  path and ID, discards obsolete placement, then rescans and revalidates before
+  launch. Stored preferences are not execution authority.
 
-Consequently, each appearance keeps its keyboard, mouse, gamepad, expression,
-audio, and other original settings when the user switches away and later
-returns. Elysia overrides only the newly launched native window's initial
-size and position, without writing those values to the purchased configuration.
-The Elysia preference stores only its own mode, chosen collection path, and
-selected stable program ID.
+## Assets and distribution
 
-## Original-program interaction behavior
+The owner's purchased collection is attributed to `@书呆儿` and remains in the
+ignored local directory `data/characters/爱莉希雅原版猫猫版总合集_34be1/`.
+Installed builds use the folder picker and never probe that checkout path.
+The recorded [free-version page](https://pan.quark.cn/s/cb5d84acad8e) is
+provenance context only: its contents, terms and equivalence to the reviewed
+collection have not been verified.
 
-Elysia launches the selected reviewed executable with no arguments, with the
-program's own directory as its working directory, and without a command shell.
-The external window is the actual Desktop Pet. On Windows a helper is ready
-before the program starts. It moves the initially hidden native window outside
-the visible desktop while the original loading animation runs, then places the
-compact window beside Elysia after a normal character frame is ready. This keeps
-the welcome animation and the original 1500-by-1500 startup window from covering
-the conversation.
+Paid programs, DLLs, models, textures, motions, expressions, physics,
+configurations and archives stay local. They must not enter Git, releases,
+installers, fixtures, screenshots or shared diagnostics. The full rights record
+is [MODEL_LICENSE.md](../MODEL_LICENSE.md).
 
-The reviewed program has no window property that identifies the end of its
-loading animation, and it ignores a simple hidden-start request. Readiness is
-therefore specific to the pinned executable and SFML build: the helper reads
-the owned process's completed initialization guard and rendering clocks. The
-window is resized and positioned while hidden, then two normal presentations
-confirm that the resized scene is ready before it is shown without activation.
-Uncapped rendering uses two advances of the normal event-loop clock instead.
-The helper rehashes the relevant binaries before interpreting those addresses, accounts
-for the loaded image base, and never writes process memory. Updating the
-reviewed binary hashes requires revalidating this readiness contract. A failed
-or cancelled preparation follows the manager's owned-process cleanup path.
-
-Every launch and appearance switch uses the current Elysia window's lower-right
-corner, with the pet mainly beside the app when the monitor has room. Placement
-is clamped to that monitor's work area. Electron DIP bounds are converted to
-physical pixels for the native controller, including mixed-DPI and
-negative-coordinate displays. When only the tray remains, the display's
-lower-right corner is used. This is initial placement, not continuous docking:
-the user can move and resize the pet normally afterward.
-
-The reviewed Bongo Cat Mver launcher embeds a `requireAdministrator` manifest,
-but Elysia deliberately applies Windows `RunAsInvoker` compatibility for that
-child only. The companion therefore stays under the current interactive user
-token instead of receiving administrator rights, while Main retains the exact
-PID tree needed for safe switching and shutdown. Windows integrity isolation
-may prevent the companion from observing input sent to a separately elevated
-application; Elysia does not elevate itself or the unsigned companion to bypass
-that operating-system boundary.
-
-The original program is responsible for:
-
-- standard mouse-and-keyboard response;
-- keyboard-only and gamepad input modes;
-- mouse and Live2D eye tracking, including its own mirror controls;
-- expression shortcuts and restoration behavior;
-- model motion, expressions, physics, and rendering;
-- moving and resizing after initial placement, always-on-top behavior, and
-  desktop/game display options;
-- its own UI, tray behavior, frame limit, background, audio, and compatibility
-  settings.
-
-Elysia does not emulate these controls, inject input, interpret their model
-parameters, or promise that a differently built third-party download behaves
-like the reviewed local program.
-
-## Process ownership and switching
-
-`DesktopPetProgramManager` serializes all admitted transitions and owns at most
-one child returned by its exact launch call. It never adopts a process that the
-user started manually. Launch uses the selected executable path, an empty
-argument list, its program directory as `cwd`, `shell: false`,
-`detached: false`, `windowsHide: true`, and ignored standard streams. The
-manager remains `loading` while the owned native window is prepared; a PID
-alone does not mean the pet is ready to display. Preparation only targets the
-selected child's own SFML window and is cancelled when that child exits or
-the manager shuts down. Failure does not fall back to showing the giant
-unprepared window.
-
-Switching from program A to B always stops and awaits A before launching B. On
-Windows, the stop path invokes the system `taskkill.exe` with only
-`/PID <owned-root-pid> /T`. It does not use `/IM`, enumerate processes, or
-match executable names; therefore a manually started copy with the same name
-is outside Elysia's authority. `/T` covers descendants created by the exact
-owned root. Native termination and the higher-level stop both have deadlines.
-If the old PID tree cannot be confirmed stopped, ownership is retained, the
-runtime becomes failed, and B is not launched.
-
-Process callbacks also retain object identity. An exit or error from an old
-child cannot overwrite the state of a replacement. An unexpected exit of the
-active child changes runtime state to `failed` with a sanitized warning; an
-expected stop converges to `absent`. Startup errors, missing PIDs, stop errors,
-and timeouts expose fixed messages rather than native paths or command output.
-
-## Modes, failures, exit, and tray recovery
-
-- `disabled` is the default and runs no external program.
-- `hidden` retains the chosen folder and program but stops the Elysia-owned
-  process and releases its resources.
-- `visible` requires a ready scan and selected program, repeats launch-time
-  validation, and then starts that program.
-- A missing/disconnected directory, invalid candidate set, changed program,
-  launch failure, or unexpected process exit affects only the optional Pet.
-  Chat, Voice, Knowledge, local speech, and static character art continue.
-- The tray offers **Launch Desktop Pet**, **Stop Desktop Pet**, or **Retry
-  Desktop Pet** according to current state, plus **Disable Desktop Pet**.
-  When no trusted selection exists, it directs the user to Settings.
-- Hidden or visible intent keeps Elysia tray-resident when the main window is
-  closed, so the Pet can be launched or stopped again. Disabling restores the
-  normal last-window-close behavior.
-- Application shutdown makes the manager reject new launches and performs a
-  bounded stop of the exact owned process. Optional cleanup cannot block exit
-  forever.
-
-Settings mutations, startup scan, rescan, tray requests, and selection changes
-share a serialized mutation queue. A selection change stops the old process
-before publishing and reconciling the new selection, so Settings never pairs a
-new label with the previous running program.
-
-## Persistence and migration
-
-Electron stores its own strict, bounded, revisioned desktop-pet preference
-under `userData` with atomic replacement. The default and every invalid stored
-document fail closed to `disabled`. Main keeps the absolute collection path
-private; public state contains no native path or PID.
-
-Migration is version-specific:
-
-- A version-1 preference belongs to the removed embedded-model window. Loading
-  it forces Desktop Pet to `disabled`, clears the obsolete placement, carries
-  forward no external path or selection, and asks the user to choose a local
-  companion-program folder.
-- A version-2 preference already describes an external program. Loading it
-  preserves its valid mode, collection path, and selected stable program ID,
-  but discards the obsolete placement field because Bongo Cat Mver owns its own
-  position. Persisted values are not launch authority: Main rescans the
-  collection, resolves the saved ID against the newly validated result, and
-  performs launch-time revalidation before starting the program.
-
-## Distribution integrity
-
-`scripts/check_distribution_assets.py` audits the Git index, reviewed Electron
-Builder configuration, real unpacked package, ASAR listing, and extracted ASAR
-tree. The package may contain only the reviewed static character assets and
-ordinary application code. The checker rejects the named paid directory and
-external desktop-pet executables, DLLs, configurations, Live2D manifests,
-MOCs, textures, motions, expressions, physics, runtimes, editor files, archives,
-or packaging escape mechanisms.
-
-This engineering gate reduces accidental distribution risk; it does not prove
-ownership or grant rights. The complete provenance and rights record remains in
-[`MODEL_LICENSE.md`](../MODEL_LICENSE.md).
+`scripts/check_distribution_assets.py` audits the Git index, Builder
+configuration, unpacked package, ASAR listing and extracted ASAR tree. Only
+reviewed static art and ordinary application code may ship. This gate reduces
+accidental distribution; it does not grant rights.
 
 ## Verification
-
-The required automated gates are:
 
 ```text
 python scripts/check_python_documentation.py
@@ -293,6 +161,4 @@ npm test
 npm run make
 ```
 
-Package CI additionally captures `asar list`, extracts the complete ASAR tree,
-and audits both. A valid package contains reviewed static in-app art but no
-external desktop-pet program, paid Live2D asset, or dynamic-character runtime.
+Package CI also captures and extracts the complete ASAR for distribution audit.
