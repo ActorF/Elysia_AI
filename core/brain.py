@@ -906,7 +906,7 @@ class Brain:
 
             research_suffix = ""
             if internet_research is not None and active_conversation.chat_session.mode == "chat":
-                recent = [
+                recent: list[ChatMessage] = [
                     {"role": message.role, "content": message.content}
                     for message in active_conversation.chat_session.messages[-4:]
                     if message.role in ("user", "assistant")

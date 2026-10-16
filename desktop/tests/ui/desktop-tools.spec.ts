@@ -6,6 +6,8 @@ import { fileURLToPath } from 'node:url'
 import { _electron as electron } from 'playwright'
 import { expect, test, type ElectronApplication, type Page } from '@playwright/test'
 
+import { conversationMode, selectConversationMode, showWorkspace } from './conversation-helpers.ts'
+
 interface TestControl {
   getCalls(): Array<{ method: string; args: unknown[] }>
   emitBackendEvent(event: unknown): void
@@ -34,9 +36,11 @@ function snapshot(status = 'ready', revision = 1) {
 test.beforeEach(async () => {
   application = await electron.launch({ args: [path.join(directory, 'electron-main.cjs')], executablePath: require('electron') as string, cwd: desktopDirectory })
   page = await application.firstWindow()
+  await page.setViewportSize({ width: 1440, height: 900 })
   await page.waitForFunction(() => 'elysiaDesktopTest' in window && (window as TestWindow).elysiaDesktopTest.getCalls().some((call) => call.method === 'onBackendEvent.subscribe'))
   await page.evaluate((next) => { (window as TestWindow).elysiaDesktopTest.emitBackendEvent({ type: 'snapshot', snapshot: next }) }, snapshot())
-  await page.getByRole('combobox', { name: 'Conversation mode' }).selectOption('work')
+  await selectConversationMode(page, 'work')
+  await showWorkspace(page)
   await page.getByRole('tab', { name: 'Desktop', exact: true }).click()
   await expect(page.getByRole('region', { name: 'Desktop tools', exact: true })).toBeVisible()
 })
@@ -116,16 +120,16 @@ test('Pending desktop confirmation retains Work, scope and conversation locks un
   await panel.getByRole('button', { name: 'Review clipboard replacement' }).click()
   await page.evaluate(() => { (window as TestWindow).elysiaDesktopTest.setDesktopDecisionDelay(true) })
   await panel.getByRole('button', { name: 'Approve desktop action once' }).click()
-  await expect(page.getByRole('combobox', { name: 'Conversation mode' })).toBeDisabled()
+  await expect(conversationMode(page)).toBeDisabled()
   await expect(page.getByRole('button', { name: 'Change Workspace', exact: true })).toBeDisabled()
   await page.getByRole('tab', { name: 'Files', exact: true }).click()
   await expect(page.getByRole('button', { name: 'Run tool', exact: true })).toBeDisabled()
-  await expect(page.getByRole('combobox', { name: 'Conversation mode' })).toBeDisabled()
+  await expect(conversationMode(page)).toBeDisabled()
   await page.getByRole('tab', { name: 'Desktop', exact: true }).click()
   await expect(panel.getByRole('button', { name: 'Read clipboard text', exact: true })).toBeDisabled()
   await expect(panel.getByRole('button', { name: 'Approve desktop action once' })).toHaveCount(0)
   await page.evaluate(() => { (window as TestWindow).elysiaDesktopTest.releaseNextDesktopDecision() })
-  await expect(page.getByRole('combobox', { name: 'Conversation mode' })).toBeEnabled()
+  await expect(conversationMode(page)).toBeEnabled()
   await expect(panel.getByRole('status')).toHaveText('Desktop action completed.')
   await page.getByRole('tab', { name: 'Files', exact: true }).click()
   await expect(page.getByRole('button', { name: 'Run tool', exact: true })).toBeEnabled()
@@ -140,7 +144,7 @@ test('Disconnect during native confirmation releases physical busy after failure
   await page.evaluate((next) => { (window as TestWindow).elysiaDesktopTest.emitBackendEvent({ type: 'snapshot', snapshot: next }) }, snapshot('error', 2))
   await page.evaluate(() => { (window as TestWindow).elysiaDesktopTest.rejectNextDesktopDecision() })
   await page.evaluate((next) => { (window as TestWindow).elysiaDesktopTest.emitBackendEvent({ type: 'snapshot', snapshot: next }) }, snapshot('ready', 3))
-  await expect(page.getByRole('combobox', { name: 'Conversation mode' })).toBeEnabled()
+  await expect(conversationMode(page)).toBeEnabled()
   await expect(panel.getByRole('button', { name: 'Read clipboard text', exact: true })).toBeEnabled()
   await expect(panel.getByRole('region', { name: 'Desktop action review' })).toHaveCount(0)
   expect(await page.evaluate(() => (window as TestWindow).elysiaDesktopTest.getDesktopClipboardText())).toBe('Private clipboard text.')

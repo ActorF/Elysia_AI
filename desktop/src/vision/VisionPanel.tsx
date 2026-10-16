@@ -53,6 +53,7 @@ export function VisionPanel({ api, chatId, projectId, ready, disabled, open, ini
   const [contextBusy, setContextBusy] = useState(false)
   const [historyBusy, setHistoryBusy] = useState(false)
   const [selectedImageId, setSelectedImageId] = useState('')
+  const imageOptions = useRef<HTMLDetailsElement>(null)
   const version = useRef(0)
   const physicalPending = useRef(false)
   const analysisLease = useRef(false)
@@ -63,6 +64,11 @@ export function VisionPanel({ api, chatId, projectId, ready, disabled, open, ini
   const previousOwner = useRef({ chatId, projectId, ready })
   const previousPresentation = useRef({ open: false, initialView, attachmentId })
   useEffect(() => { closeRef.current = onClose }, [onClose])
+  useEffect(() => {
+    // The workspace stays mounted while hidden, but a transient options menu
+    // must not reopen over the analysis controls with the next image review.
+    if (!open && imageOptions.current !== null) imageOptions.current.open = false
+  }, [open])
   const reportBusy = useCallback((): void => {
     onBusyChange(physicalPending.current || analysisLease.current || captureLease.current || contextLease.current || historyLease.current)
   }, [onBusyChange])
@@ -116,6 +122,13 @@ export function VisionPanel({ api, chatId, projectId, ready, disabled, open, ini
 
   const act = useCallback(async (operation: (client: VisionClient) => Promise<VisionState | VisionAttachmentSelectionResult>): Promise<void> => {
     if (!ready || disabled || api === undefined || physicalPending.current || analysisLease.current || captureLease.current || contextLease.current || historyLease.current) return
+    const options = imageOptions.current
+    if (options?.open) {
+      // Dismiss the command menu before awaiting native work so it cannot
+      // intercept the next analysis action; retain a visible keyboard target.
+      options.open = false
+      options.querySelector('summary')?.focus()
+    }
     physicalPending.current = true
     const token = ++version.current
     setPending(true); setLoading(false); setError(null)
@@ -174,7 +187,7 @@ export function VisionPanel({ api, chatId, projectId, ready, disabled, open, ini
         {typeof api?.listVisionCaptureSources === 'function' && <button type="button" aria-expanded={captureOpen}
           className="vision-screenshot-toggle" aria-controls="vision-capture-workspace" onClick={() => { setCaptureOpen((current) => !current) }}>
           <Icon name="monitor" />Screenshot</button>}
-        <details className="vision-image-options"><summary>Image options</summary>
+        <details ref={imageOptions} className="vision-image-options"><summary>Image options</summary>
           <div className="vision-options-menu"><p className="vision-session-note">Images stay in this session and clear when the Chat or Project changes.</p>
           <button type="button" disabled={locked} onClick={() => { void act((client) => client.getVisionState(chatId)) }}>Reload images</button>
           <button type="button" disabled={locked || images.length === 0} onClick={() => {

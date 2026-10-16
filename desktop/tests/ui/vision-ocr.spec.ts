@@ -154,6 +154,7 @@ test('reconnection clears old evidence and settles a failed OCR callback before 
   await openVision(page)
   await panel.getByText('Image options', { exact: true }).click()
   await panel.getByRole('button', { name: 'Reload images', exact: true }).click()
+  await expect(panel.getByRole('button', { name: 'Reload images', exact: true })).toBeHidden()
   await expect(panel.getByRole('article')).toHaveCount(0)
   await selectImage(); await enableOcr()
   await page.getByRole('button', { name: 'Run OCR', exact: true }).click()
