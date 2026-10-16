@@ -3081,6 +3081,32 @@ function requireMainWindow(): BrowserWindow {
 }
 
 function registerIpcHandlers(): void {
+  ipcMain.handle('elysia:image:settings', (event) => {
+    assertTrustedSender(event)
+    return { configured: false, ready: false, state: 'unconfigured', revision: 0,
+      message: '请在图片设置中配置受信 ComfyUI 安装与模型。', defaultProfileId: null, profiles: [] }
+  })
+  ipcMain.handle('elysia:image:generate', (event, value) => {
+    assertTrustedSender(event)
+    if (shutdownStarted || dataStorageOperation !== null) throw new Error('图片生成暂不可用。')
+    return requireBackend().generateImage(value)
+  })
+  ipcMain.handle('elysia:image:cancel', (event) => {
+    assertTrustedSender(event)
+    return requireBackend().cancelImageGeneration()
+  })
+  ipcMain.handle('elysia:image:list', (event, value) => {
+    assertTrustedSender(event)
+    return requireBackend().getImageGallery(value)
+  })
+  ipcMain.handle('elysia:image:get', (event, value) => {
+    assertTrustedSender(event)
+    return requireBackend().getImageArtifact(value)
+  })
+  ipcMain.handle('elysia:image:delete', (event, value) => {
+    assertTrustedSender(event)
+    return requireBackend().deleteImageArtifact(value)
+  })
   ipcMain.handle('elysia:image:export', async (event, artifactId: unknown) => {
     assertTrustedSender(event)
     if (shutdownStarted || dataStorageOperation !== null || imageExportInFlight

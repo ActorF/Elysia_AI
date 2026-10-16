@@ -29,7 +29,7 @@ import './Sidebar.css'
 const MAX_CHAT_TITLE_LENGTH = 200
 
 /** Identifies the renderer surface selected by primary navigation. */
-export type AppView = 'chat' | 'projects' | 'memory' | 'settings'
+export type AppView = 'chat' | 'projects' | 'memory' | 'images' | 'settings'
 
 interface SidebarProps {
   activeChatId?: string
@@ -799,6 +799,11 @@ export function Sidebar({
           onClick={() => { navigate('memory') }}
         >
           <Icon name="memory" /><span>Memory</span>
+        </button>
+        <button type="button" className={'nav-item' + (activeView === 'images' ? ' active' : '')}
+          aria-current={activeView === 'images' ? 'page' : undefined}
+          onClick={() => { navigate('images') }}>
+          <Icon name="image" /><span>图片生成</span>
         </button>
       </nav>
 

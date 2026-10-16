@@ -111,6 +111,12 @@ import {
   parseVoiceTranscriptionResult,
   parseServerMessage,
   parseImageGalleryOpenResult,
+  parseImageGenerateParams, parseImageGenerationResult,
+  parseImageGalleryListParams, parseImageGalleryListResult,
+  parseImageGalleryGetResult, parseImageGalleryDeleteResult,
+  type ImageGenerateParams, type ImageGenerationResult,
+  type ImageGalleryListParams, type ImageGalleryListResult,
+  type ImageGalleryGetResult, type ImageGalleryDeleteResult,
   type ProtocolMethod,
   type RequestParamsByMethod,
   type ErrorResponse,
@@ -798,6 +804,50 @@ export class BackendProcess {
    */
   hasActiveSpeechTurn(): boolean {
     return this.speechDelivery?.hasActiveTurn() === true
+  }
+
+  /** Admit one fixed image request until its durable application terminal. */
+  async generateImage(params: ImageGenerateParams): Promise<ImageGenerationResult> {
+    if ([...this.imageRequests.values()].some((pending) => pending.method === 'image.generate')) {
+      throw new Error('已有图片任务正在运行。')
+    }
+    const spec = parseImageGenerateParams(params)
+    const result = parseImageGenerationResult(await this.requestImageOperation('image.generate', { ...spec }))
+    if (result.artifact.profileId !== spec.profileId || result.artifact.seed !== spec.seed) {
+      this.protocolFailure('Image generation receipt does not match its request.')
+      throw new Error('图片生成结果与请求不匹配。')
+    }
+    return result
+  }
+
+  /** Request cancellation of the exact current image request and retain its lease. */
+  async cancelImageGeneration(): Promise<void> {
+    const target = [...this.imageRequests].find(([, pending]) => pending.method === 'image.generate')
+    if (!target) throw new Error('没有可以取消的图片任务。')
+    const response = await this.requestImageOperation('request.cancel', { requestId: target[0] })
+    if (response.stopped !== true) throw new Error('图片任务未确认取消。')
+  }
+
+  /** Read a Gallery page and verify that pagination echoes the requested selection. */
+  async getImageGallery(params: ImageGalleryListParams): Promise<ImageGalleryListResult> {
+    const selection = parseImageGalleryListParams(params)
+    const result = parseImageGalleryListResult(await this.requestImageOperation('image.gallery.list', { ...selection }))
+    if (result.limit !== selection.limit || result.offset !== selection.offset) throw new Error('图片画廊分页不匹配。')
+    return result
+  }
+
+  /** Read one artifact selected only by its opaque Gallery identity. */
+  async getImageArtifact(artifactId: string): Promise<ImageGalleryGetResult> {
+    const result = parseImageGalleryGetResult(await this.requestImageOperation('image.gallery.get', { artifactId }))
+    if (result.item.artifactId !== artifactId) throw new Error('图片记录不匹配。')
+    return result
+  }
+
+  /** Delete one exact Gallery identity and verify its durable deletion receipt. */
+  async deleteImageArtifact(artifactId: string): Promise<ImageGalleryDeleteResult> {
+    const result = parseImageGalleryDeleteResult(await this.requestImageOperation('image.gallery.delete', { artifactId }))
+    if (result.artifactId !== artifactId) throw new Error('图片删除结果不匹配。')
+    return result
   }
 
   /** Open one reverified Gallery PNG as a short-lived single-use renderer URL. */
@@ -3110,7 +3160,10 @@ export class BackendProcess {
       this.imageRequests.delete(message.id)
       clearTimeout(pending.timeout)
       if (message.ok) pending.resolve(message.result)
-      else pending.reject(new Error('The local image operation failed. Check image runtime readiness.'))
+      else pending.reject(new Error(message.error.code === 'image.cancelled'
+        ? '图片生成已取消。'
+        : message.error.code === 'request.not_cancellable' ? '图片正在保存，请等待任务完成。'
+          : '本地图片操作未完成，请检查模型状态后重试。'))
       return
     }
     if (message.id === null) {

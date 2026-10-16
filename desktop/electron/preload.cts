@@ -948,6 +948,18 @@ const desktopApi: DesktopApi = {
 
   /** Request only an opaque artifact; Main owns transport and URL lifetime. */
   openImagePreview: (artifactId: string) => ipcRenderer.invoke('elysia:image:preview', artifactId),
+  /** Read only path-free model readiness from Main. */
+  getImageSettings: () => ipcRenderer.invoke('elysia:image:settings'),
+  /** Structured prompts follow the same fixed protocol for every description. */
+  generateImage: (params) => ipcRenderer.invoke('elysia:image:generate', params),
+  /** Target selection remains owned by Main. */
+  cancelImageGeneration: () => ipcRenderer.invoke('elysia:image:cancel'),
+  /** Read a bounded metadata-only Gallery page. */
+  getImageGallery: (params) => ipcRenderer.invoke('elysia:image:list', params),
+  /** Resolve one opaque artifact's public metadata. */
+  getImageArtifact: (artifactId) => ipcRenderer.invoke('elysia:image:get', artifactId),
+  /** Submit only a confirmed opaque deletion selection. */
+  deleteImageArtifact: (artifactId) => ipcRenderer.invoke('elysia:image:delete', artifactId),
   /** Native paths remain inside Main's Save dialog. */
   exportImageArtifact: (artifactId: string) => ipcRenderer.invoke('elysia:image:export', artifactId),
   getSnapshot: () =>

@@ -66,6 +66,7 @@ import { CharacterPanel } from './character/CharacterPanel.tsx'
 import { resolveCharacterEmotion } from './character/character-emotion.ts'
 import { deriveApplicationCharacterState } from './character/character-state.ts'
 import { ChatView } from './chat/ChatView.tsx'
+import { ImageGenerator } from './images/ImageGenerator.tsx'
 import { WorkPanel } from './work/WorkPanel.tsx'
 import { VisionPanel } from './vision/VisionPanel.tsx'
 import { InternetPanel } from './internet/InternetPanel.tsx'
@@ -8392,6 +8393,8 @@ function App() {
         onUpdate={updateProject}
       />
     )
+  } else if (activeView === 'images') {
+    content = null
   } else if (activeView === 'memory') {
     content = (
       <PlaceholderView
@@ -8734,6 +8737,13 @@ function App() {
         }
       >
         {content}
+        {/* Keeping the generator mounted preserves its cancellation owner and
+            terminal promise when the user visits another application view. */}
+        <div hidden={activeView !== 'images'}>
+          <ImageGenerator active={activeView === 'images'} sidebarOpen={sidebarOpen}
+            onToggleSidebar={() => { setSidebarOpen((open) => !open) }}
+            onOpenSettings={() => { navigate('settings') }} />
+        </div>
       </AppShell>
       {callPreviewOpen && voiceCallId !== null && (
         <CallPreview

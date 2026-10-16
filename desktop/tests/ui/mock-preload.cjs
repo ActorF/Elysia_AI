@@ -230,6 +230,15 @@ function defaultSongCoverReadiness() {
   }
 }
 
+/** Start the image studio without claiming an installed local runtime. */
+function defaultImageSettings() {
+  return {
+    configured: false, ready: false, state: 'unconfigured',
+    message: 'Choose and confirm a trusted ComfyUI installation.',
+    revision: 0, defaultProfileId: null, profiles: [],
+  }
+}
+
 function defaultVoiceSettingsState() {
   return {
     kind: 'voice.settings',
@@ -450,6 +459,11 @@ let pendingInternetWriteConfirmations = []
 let nextInternetWriteResult = { status: 'cancelled', issueUrl: null, number: null, error: 'cancelled' }
 let songCoverReadiness = defaultSongCoverReadiness()
 let songCoverState = defaultSongCoverState()
+let imageSettings = defaultImageSettings()
+let imageGallery = []
+let delayImageGeneration = false
+let pendingImageGeneration = null
+let nextImageNumber = 1
 let voiceSettingsState = defaultVoiceSettingsState()
 let microphonePermissionStatus = 'granted'
 let nextSettingsError = null
@@ -789,6 +803,8 @@ if (reloadState !== null) {
   songCoverState = clone(
     reloadState.songCoverState ?? defaultSongCoverState(),
   )
+  imageSettings = clone(reloadState.imageSettings ?? defaultImageSettings())
+  imageGallery = clone(reloadState.imageGallery ?? [])
   voiceSettingsState = clone(
     reloadState.voiceSettingsState ?? defaultVoiceSettingsState(),
   )
@@ -1253,7 +1269,94 @@ function discardAllVoiceTranscriptions() {
   pendingVoiceTranscriptions = []
 }
 
+/** Commit one delayed mock generation so tests control the actual terminal boundary. */
+function completeImageGeneration() {
+  const pending = pendingImageGeneration
+  if (pending === null) return false
+  pendingImageGeneration = null
+  const { params, number, resolve } = pending
+  const preset = imageSettings.profiles.find((profile) => profile.profileId === params.profileId)
+    ?.sizePresets.find((item) => item.presetId === params.sizePresetId)
+  const artifact = {
+    artifactId: `gallery_${String(10_000 + number).padStart(32, '0')}`,
+    createdAt: '2026-10-16T12:00:00.000Z', width: preset?.width ?? 1024,
+    height: preset?.height ?? 1024, byteSize: 72, sha256: 'a'.repeat(64),
+    mediaType: 'image/png', profileId: params.profileId, seed: params.seed,
+  }
+  imageGallery.unshift(artifact)
+  resolve({ kind: 'image.generation', operationId: `imageop_00000000-0000-4000-8000-${String(number).padStart(12, '0')}`, artifact: clone(artifact) })
+  return true
+}
+
+/** Fail one delayed generation without publishing an artifact or retrying it. */
+function rejectImageGeneration(message) {
+  const pending = pendingImageGeneration
+  if (pending === null) return false
+  pendingImageGeneration = null
+  pending.reject(new Error(message))
+  return true
+}
+
 const desktopApi = {
+  /** Return path-free configured model choices for the image surface. */
+  getImageSettings: async () => {
+    record('getImageSettings')
+    return clone(imageSettings)
+  },
+
+  /** Hold one structured image request until the mock's explicit completion. */
+  generateImage: async (params) => {
+    record('generateImage', [params])
+    if (!imageSettings.ready) throw new Error('The local image runtime is not ready.')
+    if (pendingImageGeneration !== null) throw new Error('An image generation is already active.')
+    return new Promise((resolve, reject) => {
+      pendingImageGeneration = { params: clone(params), number: nextImageNumber++, resolve, reject }
+      if (!delayImageGeneration) completeImageGeneration()
+    })
+  },
+
+  /** Acknowledge cancellation while retaining admission until terminal release. */
+  cancelImageGeneration: async () => { record('cancelImageGeneration') },
+
+  /** Return a deterministic bounded page without preview bytes or paths. */
+  getImageGallery: async ({ limit, offset }) => {
+    record('getImageGallery', [{ limit, offset }])
+    return { kind: 'image.gallery.list', items: clone(imageGallery.slice(offset, offset + limit)),
+      limit, offset, hasMore: offset + limit < imageGallery.length }
+  },
+
+  /** Resolve only a known mock Gallery identity to its public metadata. */
+  getImageArtifact: async (artifactId) => {
+    record('getImageArtifact', [artifactId])
+    const item = imageGallery.find((artifact) => artifact.artifactId === artifactId)
+    if (!item) throw new Error('The Gallery artifact was not found.')
+    return { kind: 'image.gallery.get', item: clone(item) }
+  },
+
+  /** Remove exactly one opaque artifact after the renderer's confirmation. */
+  deleteImageArtifact: async (artifactId) => {
+    record('deleteImageArtifact', [artifactId])
+    if (!imageGallery.some((artifact) => artifact.artifactId === artifactId)) throw new Error('The Gallery artifact was not found.')
+    imageGallery = imageGallery.filter((artifact) => artifact.artifactId !== artifactId)
+    return { kind: 'image.gallery.delete', artifactId, deleted: true }
+  },
+
+  /** Return a short-lived mock capability; native pixel verification has separate tests. */
+  openImagePreview: async (artifactId) => {
+    record('openImagePreview', [artifactId])
+    const item = imageGallery.find((artifact) => artifact.artifactId === artifactId)
+    if (!item) throw new Error('The Gallery artifact was not found.')
+    return { artifactId, url: `elysia-image://preview/${artifactId}`, width: item.width, height: item.height,
+      expiresAt: Date.now() + 30_000 }
+  },
+
+  /** Simulate native Save completion while recording only the opaque source ID. */
+  exportImageArtifact: async (artifactId) => {
+    record('exportImageArtifact', [artifactId])
+    if (!imageGallery.some((artifact) => artifact.artifactId === artifactId)) throw new Error('The Gallery artifact was not found.')
+    return { artifactId, exported: true }
+  },
+
   openVoiceCallWindow: async (state) => {
     record('openVoiceCallWindow', [state])
     latestVoiceCallWindowState = clone(state)
@@ -3306,6 +3409,16 @@ const desktopApi = {
 }
 
 const testControl = {
+  /** Replace reviewed path-free runtime settings before opening the studio. */
+  setImageSettings: (summary) => { imageSettings = clone(summary) },
+  /** Seed saved artifact metadata without touching the production Gallery. */
+  setImageGallery: (items) => { imageGallery = clone(items) },
+  /** Retain a generation promise until an explicit completion or failure. */
+  setImageGenerationDelay: (delayed) => { delayImageGeneration = delayed },
+  /** Commit the current mock generation and release its promise exactly once. */
+  completeImageGeneration,
+  /** Reject the current mock generation and release its promise exactly once. */
+  rejectImageGeneration,
   setInternetSources: (sources) => { nextInternetSources = clone(sources) },
   setInternetSearchDelay: (delayed) => { internetSearchDelay = delayed },
   setInternetSourceDelay: (delayed) => { internetSourceDelay = delayed },
@@ -3435,6 +3548,8 @@ const testControl = {
   getLatestVoiceCallState: () => clone(latestVoiceCallWindowState),
 
   reset: () => {
+    rejectImageGeneration('Image test reset.')
+    imageSettings = defaultImageSettings(); imageGallery = []; delayImageGeneration = false; nextImageNumber = 1
     visionOwnerKey = null; visionState = null; selectedVisionImage = null; nextVisionImageNumber = 1
     nextVisionError = null; delayVisionSelection = false
     for (const pending of pendingVisionSelections) pending.reject(new Error('Vision test reset.'))
@@ -4008,6 +4123,8 @@ const testControl = {
       internetPolicyState,
       songCoverReadiness,
       songCoverState,
+      imageSettings,
+      imageGallery,
       voiceSettingsState,
       microphonePermissionStatus,
       chatMessages: [...chatMessages.entries()],

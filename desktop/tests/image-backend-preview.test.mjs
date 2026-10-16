@@ -22,6 +22,23 @@ const ARTIFACT = `gallery_${'a'.repeat(32)}`
 const OTHER_ARTIFACT = `gallery_${'b'.repeat(32)}`
 const playback = { async play() {}, cancel() {} }
 
+function generationSpec() {
+  return {
+    profileId: 'trusted_sdxl',
+    sizePresetId: 'square_1024',
+    appearance: 'One original fictional adult woman, 25 years old',
+    outfit: 'blue jacket',
+    pose: 'standing',
+    scene: 'quiet garden',
+    style: 'illustration',
+    camera: 'portrait',
+    lighting: 'soft daylight',
+    negativePrompt: 'blur',
+    seed: 42,
+    originalFictionalConfirmed: true,
+  }
+}
+
 function canonicalPng() {
   function chunk(kind, payload) {
     const name = Buffer.from(kind, 'ascii')
@@ -63,6 +80,8 @@ function fakeBackend(configuration) {
   let shutdown = null
   let pressure = false
   let pipeClosed = false
+  let generationCount = 0
+  let generationRequest = null
 
   function capture(event, details = {}) {
     fs.appendFileSync(configuration.capturePath, `${JSON.stringify({ event, pid: process.pid, ...details })}\n`)
@@ -72,6 +91,63 @@ function fakeBackend(configuration) {
     process.stdout.write(`${JSON.stringify({
       type: 'response', protocol: descriptor, id: request.id, ok: true, result,
     })}\n`)
+  }
+
+  function failure(request, code = 'image.failed') {
+    process.stdout.write(`${JSON.stringify({
+      type: 'response', protocol: descriptor, id: request.id, ok: false,
+      error: { code, message: 'Private worker detail at C:\\private\\checkpoint', retryable: true },
+    })}\n`)
+  }
+
+  function artifact(artifactId, spec = {}) {
+    const payload = Buffer.from(configuration.pngHex, 'hex')
+    return {
+      artifactId,
+      createdAt: '2026-10-16T12:00:00.000000Z',
+      width: 2,
+      height: 3,
+      byteSize: payload.length,
+      sha256: createHash('sha256').update(payload).digest('hex'),
+      mediaType: 'image/png',
+      profileId: spec.profileId ?? 'trusted_sdxl',
+      seed: spec.seed ?? 42,
+    }
+  }
+
+  function progress(request, completed, message) {
+    process.stdout.write(`${JSON.stringify({
+      type: 'progress', protocol: descriptor, requestId: request.id,
+      operation: 'image.generate', completed, total: 100, message,
+    })}\n`)
+  }
+
+  function generateImage(request) {
+    generationCount += 1
+    generationRequest = request
+    progress(request, 5, 'validating')
+    if (configuration.generationMode === 'cancel-first' && generationCount === 1) return
+    if (configuration.generationMode === 'nonmonotonic-progress') {
+      progress(request, 35, 'sampling')
+      progress(request, 15, 'probing')
+      return
+    }
+    setTimeout(() => {
+      generationRequest = null
+      if (configuration.generationMode === 'fail-once' && generationCount === 1) {
+        failure(request)
+        return
+      }
+      for (const [completed, phase] of [[15, 'probing'], [25, 'submitting'], [35, 'sampling'], [90, 'verifying'], [100, 'completed']]) {
+        progress(request, completed, phase)
+      }
+      const item = artifact(configuration.artifact, request.params)
+      if (configuration.generationMode === 'wrong-seed') item.seed += 1
+      if (configuration.generationMode === 'wrong-profile') item.profileId = 'unrequested_profile'
+      response(request, {
+        kind: 'image.generation', operationId: `imageop_${'d'.repeat(32)}`, artifact: item,
+      })
+    }, 40)
   }
 
   function finishShutdown() {
@@ -151,6 +227,7 @@ function fakeBackend(configuration) {
   capture('started', { imageFd: 4, descriptorOpen: fs.fstatSync(4) !== undefined })
   readline.createInterface({ input: process.stdin }).on('line', (line) => {
     const request = JSON.parse(line)
+    capture('rpc', { method: request.method, params: request.params, id: request.id })
     if (request.method === 'handshake') {
       response(request, {
         protocol: descriptor,
@@ -159,7 +236,7 @@ function fakeBackend(configuration) {
           'chat.stream', 'chat.retry', 'chat.sessions', 'project.management',
           'settings.management', 'voice.settings', 'voice.capture', 'attachment.management',
           'knowledge.management', 'request.cancel', 'stream', 'progress', 'event',
-          'image.gallery.open',
+          'image.generate', 'image.gallery.open', 'image.gallery.list', 'image.gallery.get', 'image.gallery.delete',
         ],
       })
     } else if (request.method === 'initialize') {
@@ -168,6 +245,34 @@ function fakeBackend(configuration) {
       })
     } else if (request.method === 'image.gallery.open') {
       openImage(request)
+    } else if (request.method === 'image.generate') {
+      generateImage(request)
+    } else if (request.method === 'request.cancel') {
+      response(request, { stopped: true })
+      const target = generationRequest
+      if (target !== null && target.id === request.params.requestId) {
+        setTimeout(() => {
+          generationRequest = null
+          failure(target, 'request.cancelled')
+          capture('generation-cancelled')
+        }, 125)
+      }
+    } else if (request.method === 'image.gallery.list') {
+      response(request, {
+        kind: 'image.gallery.list', items: [],
+        limit: request.params.limit + Number(configuration.paginationMismatch === 'limit'),
+        offset: request.params.offset + Number(configuration.paginationMismatch === 'offset'),
+        hasMore: false,
+      })
+    } else if (request.method === 'image.gallery.get') {
+      response(request, {
+        kind: 'image.gallery.get', item: artifact(configuration.getMismatch ? configuration.otherArtifact : request.params.artifactId),
+      })
+    } else if (request.method === 'image.gallery.delete') {
+      response(request, {
+        kind: 'image.gallery.delete', artifactId: configuration.deleteMismatch ? configuration.otherArtifact : request.params.artifactId,
+        deleted: true,
+      })
     } else if (request.method === 'shutdown') {
       capture('shutdown-request')
       shutdown = request
@@ -195,7 +300,7 @@ async function withBackend(configuration, run) {
   let backend
   try {
     await mkdir(projectRoot)
-    const settings = { ...configuration, capturePath, pngHex: canonicalPng().toString('hex') }
+    const settings = { ...configuration, artifact: ARTIFACT, otherArtifact: OTHER_ARTIFACT, capturePath, pngHex: canonicalPng().toString('hex') }
     await writeFile(
       path.join(projectRoot, 'desktop_backend.py'),
       `/** Generated process-boundary test fixture. */\n(${fakeBackend.toString()})(${JSON.stringify(settings)})\n`,
@@ -340,6 +445,141 @@ test('a valid response already scheduled when stop closes fd4 does not fail shut
     await rejected
     assert.equal(backend.getSnapshot().status, 'stopped')
     assert.equal(events.some((event) => event.type === 'snapshot' && event.snapshot.status === 'error'), false)
+  })
+})
+
+test('generation forwards a frozen request selection and associated progress through its terminal', async () => {
+  await withBackend({}, async ({ backend, events, capture }) => {
+    const spec = generationSpec()
+    const admitted = structuredClone(spec)
+    const generation = backend.generateImage(spec)
+    spec.profileId = 'changed_after_admission'
+    spec.seed = 99
+    assert.equal(backend.hasActiveBackendWork(), true)
+    const result = await generation
+    assert.equal(result.kind, 'image.generation')
+    assert.equal(result.artifact.artifactId, ARTIFACT)
+    assert.equal(result.artifact.profileId, admitted.profileId)
+    assert.equal(result.artifact.seed, admitted.seed)
+    const request = (await capture()).find((entry) => entry.method === 'image.generate')
+    assert.deepEqual(request.params, admitted)
+    const progress = events.filter((event) => event.type === 'progress' && event.operation === 'image.generate')
+    assert.deepEqual(progress.map((event) => event.completed), [5, 15, 25, 35, 90, 100])
+    assert.ok(progress.every((event) => event.requestId === request.id && event.total === 100))
+    assert.equal(backend.hasActiveBackendWork(), false)
+  })
+})
+
+test('cancel acknowledgement retains image admission until the exact target terminal', async () => {
+  await withBackend({ generationMode: 'cancel-first' }, async ({ backend, capture }) => {
+    const generation = assert.rejects(backend.generateImage(generationSpec()))
+    const request = await waitFor(async () => (await capture()).find((entry) => entry.method === 'image.generate'), 'the active image request')
+    await backend.cancelImageGeneration()
+    const cancellation = (await capture()).find((entry) => entry.method === 'request.cancel')
+    assert.equal(cancellation.params.requestId, request.id)
+    assert.equal(backend.hasActiveBackendWork(), true)
+    await assert.rejects(backend.generateImage(generationSpec()))
+    await generation
+    assert.equal(backend.hasActiveBackendWork(), false)
+    const retried = await backend.generateImage(generationSpec())
+    assert.equal(retried.artifact.seed, 42)
+    await assert.rejects(backend.cancelImageGeneration())
+    assert.equal((await capture()).filter((entry) => entry.method === 'request.cancel').length, 1)
+  })
+})
+
+test('invalid image generation and Gallery selections never reach child stdin', async () => {
+  await withBackend({}, async ({ backend, capture }) => {
+    for (const invalid of [
+      { ...generationSpec(), appearance: ' ' },
+      { ...generationSpec(), originalFictionalConfirmed: false },
+      { ...generationSpec(), originalFictionalConfirmed: 'true' },
+      { ...generationSpec(), seed: -1 },
+      { ...generationSpec(), seed: 1.5 },
+      { ...generationSpec(), profileId: '..\\private-model' },
+      { ...generationSpec(), workflow: {} },
+    ]) {
+      await assert.rejects(backend.generateImage(invalid))
+    }
+    for (const selection of [{ limit: 0, offset: 0 }, { limit: 256, offset: 0 }, { limit: 5, offset: -1 }]) {
+      await assert.rejects(backend.getImageGallery(selection))
+    }
+    for (const artifactId of ['..\\private.png', 'gallery_invalid', 'gallery_' + 'A'.repeat(32)]) {
+      await assert.rejects(backend.getImageArtifact(artifactId))
+      await assert.rejects(backend.deleteImageArtifact(artifactId))
+    }
+    assert.equal((await capture()).some((entry) => entry.method?.startsWith('image.')), false)
+    assert.equal(backend.hasActiveBackendWork(), false)
+    assert.equal(backend.getSnapshot().status, 'ready')
+  })
+})
+
+test('Gallery list, get, and delete preserve requested pagination and opaque artifact IDs', async () => {
+  await withBackend({}, async ({ backend, capture }) => {
+    assert.deepEqual(await backend.getImageGallery({ limit: 12, offset: 7 }), {
+      kind: 'image.gallery.list', items: [], limit: 12, offset: 7, hasMore: false,
+    })
+    const item = await backend.getImageArtifact(ARTIFACT)
+    assert.equal(item.item.artifactId, ARTIFACT)
+    assert.deepEqual(await backend.deleteImageArtifact(ARTIFACT), {
+      kind: 'image.gallery.delete', artifactId: ARTIFACT, deleted: true,
+    })
+    const requests = (await capture()).filter((entry) => entry.method?.startsWith('image.'))
+    assert.deepEqual(requests.map((entry) => [entry.method, entry.params]), [
+      ['image.gallery.list', { limit: 12, offset: 7 }],
+      ['image.gallery.get', { artifactId: ARTIFACT }],
+      ['image.gallery.delete', { artifactId: ARTIFACT }],
+    ])
+  })
+})
+
+for (const paginationMismatch of ['limit', 'offset']) {
+  test(`Gallery rejects a response for the wrong pagination ${paginationMismatch}`, async () => {
+    await withBackend({ paginationMismatch }, async ({ backend }) => {
+      await assert.rejects(backend.getImageGallery({ limit: 12, offset: 7 }))
+      assert.equal(backend.hasActiveBackendWork(), false)
+    })
+  })
+}
+
+test('Gallery get and delete reject receipts for another artifact', async () => {
+  await withBackend({ getMismatch: true, deleteMismatch: true }, async ({ backend }) => {
+    await assert.rejects(backend.getImageArtifact(ARTIFACT))
+    await assert.rejects(backend.deleteImageArtifact(ARTIFACT))
+    assert.equal(backend.hasActiveBackendWork(), false)
+  })
+})
+
+for (const generationMode of ['wrong-profile', 'wrong-seed']) {
+  test(`generation rejects an unassociated ${generationMode} receipt`, async () => {
+    await withBackend({ generationMode }, async ({ backend }) => {
+      await assert.rejects(backend.generateImage(generationSpec()))
+      assert.equal(backend.getSnapshot().status, 'error')
+      assert.equal(backend.hasActiveBackendWork(), false)
+    })
+  })
+}
+
+test('nonmonotonic image progress poisons the protocol and rejects its active generation', async () => {
+  await withBackend({ generationMode: 'nonmonotonic-progress' }, async ({ backend }) => {
+    await assert.rejects(backend.generateImage(generationSpec()))
+    assert.equal(backend.getSnapshot().status, 'error')
+    assert.equal(backend.hasActiveBackendWork(), false)
+  })
+})
+
+test('a failed generation releases admission for retry without leaking worker diagnostics', async () => {
+  await withBackend({ generationMode: 'fail-once' }, async ({ backend, events, capture }) => {
+    await assert.rejects(backend.generateImage(generationSpec()), (error) => {
+      assert.equal(error.message.includes('private'), false)
+      assert.equal(error.message.includes('checkpoint'), false)
+      return true
+    })
+    assert.equal(backend.hasActiveBackendWork(), false)
+    assert.equal(backend.getSnapshot().status, 'ready')
+    assert.equal((await backend.generateImage(generationSpec())).artifact.profileId, 'trusted_sdxl')
+    assert.equal((await capture()).filter((entry) => entry.method === 'image.generate').length, 2)
+    assert.equal(JSON.stringify(events).includes('Private worker detail'), false)
   })
 })
 
